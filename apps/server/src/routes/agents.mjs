@@ -34,6 +34,7 @@ export async function handleAgentRoutes({
     if (!device) return true;
     const body = await readJson(req);
     device.applicationBinaryReadiness = normalizeApplicationBinaryReadiness(body?.applicationBinaryReadiness, now());
+    device.applicationCredentialReadiness = normalizeApplicationCredentialReadiness(body?.applicationCredentialReadiness, now());
     device.updatedAt = now();
     sendJson(res, 200, { device: publicDeviceView(device) });
     return true;
@@ -93,6 +94,7 @@ export async function handleAgentRoutes({
     device.bridgeVersion = String(body.bridgeVersion ?? "0.0.0");
     device.registeredCapabilities = Array.isArray(body.capabilities) ? body.capabilities.map(String) : [];
     device.applicationBinaryReadiness = normalizeApplicationBinaryReadiness(body.applicationBinaryReadiness, device.lastSeenAt);
+    device.applicationCredentialReadiness = normalizeApplicationCredentialReadiness(body.applicationCredentialReadiness, device.lastSeenAt);
     device.updatedAt = now();
     // NOTE: this marks every local agent available, not just the ones located on
     // the registering device. Correct while one device exists; scoping it to
@@ -237,6 +239,25 @@ export async function handleAgentRoutes({
   }
 
   return false;
+}
+
+// Device-reported credential readiness (#977, ADR 0010). The device reports what
+// it HOLDS — application, provider, scope — and never a credential. This
+// normalizer is the server's independent guarantee of that: it constructs a
+// fresh row from four validated scalars, so nothing else a bridge sends (a token
+// smuggled in an extra field, a nested object) can enter server state. The scope
+// comparison against the descriptor happens in the application service; the
+// device is never told what scope the server wants, so it cannot claim a match.
+function normalizeApplicationCredentialReadiness(rows, checkedAt) {
+  if (!Array.isArray(rows)) return [];
+  return rows.flatMap((row) => {
+    const applicationId = String(row?.applicationId ?? "").trim();
+    const provider = String(row?.provider ?? "").trim().toLowerCase();
+    const scope = String(row?.scope ?? "").trim();
+    if (!/^app_[a-z0-9_]{1,48}$/.test(applicationId)) return [];
+    if (!/^[a-z][a-z0-9_.-]{0,31}$/.test(provider) || !/^[a-z][a-z0-9_.-]{0,63}$/.test(scope)) return [];
+    return [{ applicationId, provider, scope, status: "present", checkedAt }];
+  });
 }
 
 function normalizeApplicationBinaryReadiness(rows, checkedAt) {

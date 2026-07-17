@@ -15,7 +15,9 @@
 //      20 000 chars, so a large `log` silently loses its tail — a record that
 //      parsed 40 of 50 commits must not present itself as complete.
 
+import { makeRunTx } from "../runtime/store/run-tx.mjs";
 import { gitCommandIdOf, parseGitApplicationResult } from "./git-result.mjs";
+import { parseMailApplicationResult } from "./mail-result.mjs";
 
 const MAX_APPLICATION_RESULTS = 500;
 // The wrapper runner's non-JSON fallback: `{ text: stdout.trim().slice(0, 20000) }`.
@@ -30,6 +32,7 @@ const MAX_STORED_TEXT = 20000;
 // succeeds and its raw result stays on the invocation, exactly as before.
 const RESULT_PARSERS = {
   git: ({ capability, text }) => parseGitApplicationResult({ commandId: gitCommandIdOf(capability), text }),
+  mail_headers: ({ text }) => parseMailApplicationResult({ text }),
 };
 
 export function createApplicationResultImportService({
@@ -38,22 +41,31 @@ export function createApplicationResultImportService({
   nextId,
   appendEvent,
   persistStateSoon = () => {},
+  store,
 }) {
+  const runTx = makeRunTx({ store, persistStateSoon });
   function recordApplicationResult({ invocation, result }) {
     const metadata = invocation?.options?.metadata ?? {};
     const wrapper = metadata.applicationWrapper;
-    const resultImport = wrapper?.resultImport ?? null;
+    // Both facades import through this one path. A wrapper carries its resultImport
+    // under applicationWrapper; an agent_facade carries it at metadata.resultImport
+    // (#975). Same declaration, same parsers — no per-mode branch downstream.
+    const resultImport = metadata.resultImport ?? wrapper?.resultImport ?? null;
     const source = stringOrNull(resultImport?.source);
     if (!source) return [];
     const parse = RESULT_PARSERS[source];
     if (!parse) return [];
 
+    // Wrapper results arrive in the application envelope ({source:"application",
+    // report}); an agent (MCP) result arrives as {toolName, output:"..."} or a
+    // bare string. Read the text per shape — never guess one from the other.
     const output = result?.output;
-    if (!output || output.source !== "application") return [];
-
-    const capability = stringOrNull(metadata.capability ?? wrapper.capability);
-    const text = outputText(output.report);
+    const text = wrapper
+      ? (output && output.source === "application" ? outputText(output.report) : null)
+      : agentResultText(output);
     if (text === null) return [];
+
+    const capability = stringOrNull(metadata.capability ?? wrapper?.capability);
 
     const truncated = text.length >= RUNNER_TEXT_CAP;
     const data = parse({ capability, text });
@@ -84,28 +96,28 @@ export function createApplicationResultImportService({
       createdAt,
     };
 
-    state.applicationResults = state.applicationResults ?? [];
-    state.applicationResults.unshift(record);
-    state.applicationResults = state.applicationResults.slice(0, MAX_APPLICATION_RESULTS);
-
-    appendEvent({
-      invocationId: invocation.id,
-      type: "application_result_imported",
-      level: data ? "info" : "warn",
-      message: data
-        ? `Imported a ${source} ${record.kind ?? "result"} from ${capability ?? "an application capability"}.`
-        : `Stored an unparsed ${source} result from ${capability ?? "an application capability"}.`,
-      data: {
-        applicationResultId: record.id,
-        applicationId: record.applicationId,
-        capability,
-        source,
-        kind: record.kind,
-        parsed: Boolean(data),
-        truncated,
-      },
+    runTx(() => {
+      state.applicationResults = state.applicationResults ?? [];
+      state.applicationResults.unshift(record);
+      state.applicationResults = state.applicationResults.slice(0, MAX_APPLICATION_RESULTS);
+      appendEvent({
+        invocationId: invocation.id,
+        type: "application_result_imported",
+        level: data ? "info" : "warn",
+        message: data
+          ? `Imported a ${source} ${record.kind ?? "result"} from ${capability ?? "an application capability"}.`
+          : `Stored an unparsed ${source} result from ${capability ?? "an application capability"}.`,
+        data: {
+          applicationResultId: record.id,
+          applicationId: record.applicationId,
+          capability,
+          source,
+          kind: record.kind,
+          parsed: Boolean(data),
+          truncated,
+        },
+      });
     });
-    persistStateSoon();
     return [record];
   }
 
@@ -118,6 +130,15 @@ export function createApplicationResultImportService({
 function outputText(report) {
   if (typeof report === "string") return report;
   if (report && typeof report === "object" && typeof report.text === "string") return report.text;
+  return null;
+}
+
+// An agent (MCP) result: the protocol client returns `{ toolName, output }` where
+// output is the tool's text, or occasionally a bare string. Read the text without
+// requiring the application envelope a wrapper produces.
+function agentResultText(output) {
+  if (typeof output === "string") return output;
+  if (output && typeof output === "object" && typeof output.output === "string") return output.output;
   return null;
 }
 

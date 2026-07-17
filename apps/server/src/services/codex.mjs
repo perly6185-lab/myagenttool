@@ -1,5 +1,6 @@
 import { LOCAL_TEAM_ID, teamOf } from "../runtime/auth.mjs";
 import { createRefusalRuntime } from "../runtime/refusal-log.mjs";
+import { makeRunTx } from "../runtime/store/run-tx.mjs";
 import { isCodexCliCommand } from "./agents.mjs";
 
 export function createCodexService({
@@ -13,9 +14,13 @@ export function createCodexService({
   persistStateSoon,
   uniqueStrings,
   worktreeForProject,
+  store,
 }) {
   // Shared writer in production; a state-bound fallback for direct construction.
   const refuse = injectedRefuse ?? createRefusalRuntime({ state, now, nextId, appendEvent }).refuse;
+  // #1001 Phase A: durable codex session/evidence/review writes commit through
+  // the Store's unit of work (falls back to the debounce where no store injected).
+  const runTx = makeRunTx({ store, persistStateSoon });
   function normalizeCodexSessionMode(value, agent) {
     if (!isCodexCliCommand(agent?.adapter?.command)) {
       return "not_applicable";
@@ -54,8 +59,7 @@ export function createCodexService({
       createdAt,
       lastSeenAt: createdAt,
     };
-    state.codexWorkspaces.unshift(workspace);
-    persistStateSoon();
+    runTx(() => state.codexWorkspaces.unshift(workspace));
     return workspace;
   }
 
@@ -76,6 +80,9 @@ export function createCodexService({
       workspaceId: workspace?.id ?? null,
       agentId: agent.id,
       sessionMode: codexSessionMode,
+      // #123: user-authored label (never auto-filled from task content — the
+      // issue's retention rule). Null until the user names it.
+      name: null,
       startedAt: createdAt,
       lastSeenAt: createdAt,
       status: "registered",
@@ -83,11 +90,12 @@ export function createCodexService({
       retentionProfile: "local_demo_retention",
       evidenceIds: [],
     };
-    state.codexSessions.unshift(session);
-    persistStateSoon();
-    if (workspace) {
-      workspace.sessionIds = uniqueStrings([...workspace.sessionIds, session.id]);
-    }
+    runTx(() => {
+      state.codexSessions.unshift(session);
+      if (workspace) {
+        workspace.sessionIds = uniqueStrings([...workspace.sessionIds, session.id]);
+      }
+    });
     return session;
   }
 
@@ -121,29 +129,78 @@ export function createCodexService({
     return match?.codexSessionId ?? null;
   }
 
+  // #123: name a session for safe selection. The name is USER-authored — the
+  // server never auto-populates it from task content, so no retention/redaction
+  // surface opens here. Empty clears. Tenancy: only the session's own user may
+  // name it; a foreign session reads as not-found.
+  const CODEX_SESSION_NAME_MAX = 80;
+  function setCodexSessionName(sessionRegistryId, name, actor = null) {
+    const session = state.codexSessions.find((item) => item.id === String(sessionRegistryId ?? "")) ?? null;
+    if (!session || (actor?.userId && session.userId !== actor.userId)) {
+      return { ok: false, status: 404, body: { error: "codex_session_not_found", sessionId: String(sessionRegistryId ?? "") } };
+    }
+    const trimmed = String(name ?? "").trim();
+    if (trimmed.length > CODEX_SESSION_NAME_MAX) {
+      return { ok: false, status: 400, body: { error: "codex_session_name_too_long", maxLength: CODEX_SESSION_NAME_MAX } };
+    }
+    return runTx(() => {
+      session.name = trimmed || null;
+      session.lastSeenAt = now();
+      appendEvent({
+        invocationId: session.invocationId,
+        type: "codex_session_named",
+        level: "info",
+        message: trimmed ? `Codex session ${session.id} named "${trimmed}".` : `Codex session ${session.id} name cleared.`,
+        data: { codexSessionRegistryId: session.id, named: Boolean(trimmed) },
+      });
+      return { ok: true, status: 200, body: { session: { id: session.id, name: session.name, invocationId: session.invocationId } } };
+    });
+  }
+
+  // #123: the picker read model — which sessions CAN be continued, newest
+  // first, scoped to the caller (and optionally a repo). Projects only safe
+  // metadata: no task content, no evidence bodies.
+  function resumableCodexSessions({ repoPath = null, userId = null } = {}) {
+    return state.codexSessions
+      .filter((session) => session.codexSessionId
+        && (userId ? session.userId === userId : true)
+        && (repoPath ? session.repoPath === repoPath : true))
+      .map((session) => ({
+        id: session.id,
+        name: session.name ?? null,
+        invocationId: session.invocationId,
+        repoPath: session.repoPath,
+        sessionMode: session.sessionMode,
+        startedAt: session.startedAt,
+        lastSeenAt: session.lastSeenAt,
+        status: session.status,
+      }));
+  }
+
   function updateCodexSessionFromEvent(record) {
     const session = codexSessionForInvocation(record.invocationId);
     if (!session) {
       return;
     }
-    session.lastSeenAt = record.createdAt;
-    const workspace = codexWorkspaceForSession(session);
-    if (workspace) {
-      workspace.lastSeenAt = record.createdAt;
-    }
-    if (record.type === "execution_preview" && record.data) {
-      updateCodexWorkspaceFromPreview(workspace, record.data);
-    }
-    if (record.type === "agent_output" && record.data?.source === "codex_jsonl") {
-      session.status = "observing";
-      if (record.data.threadId) {
-        session.codexThreadId = record.data.threadId;
+    runTx(() => {
+      session.lastSeenAt = record.createdAt;
+      const workspace = codexWorkspaceForSession(session);
+      if (workspace) {
+        workspace.lastSeenAt = record.createdAt;
       }
-      if (record.data.sessionId) {
-        session.codexSessionId = record.data.sessionId;
+      if (record.type === "execution_preview" && record.data) {
+        updateCodexWorkspaceFromPreview(workspace, record.data);
       }
-    }
-    persistStateSoon();
+      if (record.type === "agent_output" && record.data?.source === "codex_jsonl") {
+        session.status = "observing";
+        if (record.data.threadId) {
+          session.codexThreadId = record.data.threadId;
+        }
+        if (record.data.sessionId) {
+          session.codexSessionId = record.data.sessionId;
+        }
+      }
+    });
   }
 
   function codexWorkspaceForSession(session) {
@@ -157,14 +214,15 @@ export function createCodexService({
     if (!workspace) {
       return;
     }
-    workspace.repoPath = data.workspace?.repoPath ?? data.cwd ?? workspace.repoPath;
-    workspace.worktreePath = data.workspace?.worktreePath ?? (workspace.policy === "current_repo" ? null : workspace.worktreePath);
-    workspace.baseBranch = data.workspace?.baseBranch ?? workspace.baseBranch;
-    workspace.branchName = data.workspace?.branchName ?? workspace.branchName;
-    workspace.dirtyState = data.workspace?.dirtyState ?? workspace.dirtyState;
-    workspace.lastCommit = data.workspace?.lastCommit ?? workspace.lastCommit;
-    workspace.status = data.workspace?.status ?? (workspace.policy === "new_worktree" ? "pending_explicit_creation" : "observed");
-    persistStateSoon();
+    runTx(() => {
+      workspace.repoPath = data.workspace?.repoPath ?? data.cwd ?? workspace.repoPath;
+      workspace.worktreePath = data.workspace?.worktreePath ?? (workspace.policy === "current_repo" ? null : workspace.worktreePath);
+      workspace.baseBranch = data.workspace?.baseBranch ?? workspace.baseBranch;
+      workspace.branchName = data.workspace?.branchName ?? workspace.branchName;
+      workspace.dirtyState = data.workspace?.dirtyState ?? workspace.dirtyState;
+      workspace.lastCommit = data.workspace?.lastCommit ?? workspace.lastCommit;
+      workspace.status = data.workspace?.status ?? (workspace.policy === "new_worktree" ? "pending_explicit_creation" : "observed");
+    });
   }
 
   function createCodexEvidenceRecord(record) {
@@ -192,11 +250,12 @@ export function createCodexService({
       redactionState: "summary_only",
       createdAt: record.createdAt,
     };
-    state.codexEvidenceRecords.unshift(evidence);
-    persistStateSoon();
-    if (session) {
-      session.evidenceIds = uniqueStrings([...session.evidenceIds, evidence.id]);
-    }
+    runTx(() => {
+      state.codexEvidenceRecords.unshift(evidence);
+      if (session) {
+        session.evidenceIds = uniqueStrings([...session.evidenceIds, evidence.id]);
+      }
+    });
     return evidence;
   }
 
@@ -248,20 +307,21 @@ export function createCodexService({
       auditState: "recorded",
       createdAt,
     };
-    state.codexChangeReviews.unshift(review);
-    persistStateSoon();
-    appendEvent({
-      invocationId: evidence.invocationId,
-      type: decision === "feedback" ? "codex_change_feedback_requested" : "codex_change_reviewed",
-      level: decision === "rejected" ? "warn" : "info",
-      message: codexChangeReviewMessage(review),
-      data: {
-        codexChangeReviewId: review.id,
-        evidenceId: evidence.id,
-        decision,
-        fileChangeSummary: evidence.fileChangeSummary,
-        followUpPrompt: review.followUpPrompt,
-      },
+    runTx(() => {
+      state.codexChangeReviews.unshift(review);
+      appendEvent({
+        invocationId: evidence.invocationId,
+        type: decision === "feedback" ? "codex_change_feedback_requested" : "codex_change_reviewed",
+        level: decision === "rejected" ? "warn" : "info",
+        message: codexChangeReviewMessage(review),
+        data: {
+          codexChangeReviewId: review.id,
+          evidenceId: evidence.id,
+          decision,
+          fileChangeSummary: evidence.fileChangeSummary,
+          followUpPrompt: review.followUpPrompt,
+        },
+      });
     });
     return review;
   }
@@ -297,9 +357,10 @@ export function createCodexService({
     if (!session) {
       return;
     }
-    session.lastSeenAt = now();
-    session.status = status === "succeeded" ? "completed" : status === "cancelled" ? "cancelled" : "failed";
-    persistStateSoon();
+    runTx(() => {
+      session.lastSeenAt = now();
+      session.status = status === "succeeded" ? "completed" : status === "cancelled" ? "cancelled" : "failed";
+    });
   }
 
   function recordCodexHookEvent(body) {
@@ -314,44 +375,45 @@ export function createCodexService({
     const eventName = normalizeCodexHookEventName(body.eventName);
     const policy = evaluateCodexHookPolicy(eventName, body);
     const session = codexSessionForInvocation(invocationId);
-    const record = {
-      id: nextId("cdx_hook"),
-      invocationId,
-      codexSessionRegistryId: session?.id ?? null,
-      eventName,
-      toolName: body.toolName ? String(body.toolName) : null,
-      policyDecision: policy.decision,
-      policyReason: policy.reason,
-      summary: String(body.summary ?? policy.summary),
-      redactionState: "summary_only",
-      createdAt: now(),
-    };
-    state.codexHookEvents.unshift(record);
-    persistStateSoon();
-    if (session) {
-      session.lastSeenAt = record.createdAt;
-    }
-    const brokerRequest = eventName === "PermissionRequest"
-      ? createCodexApprovalBrokerRequest({ invocation, session, hookEvent: record, body, policy })
-      : null;
-    appendEvent({
-      invocationId,
-      type: "codex_hook_event",
-      level: policy.decision === "blocked" ? "warn" : "info",
-      message: `${eventName}: ${policy.reason}`,
-      data: {
-        hookEventId: record.id,
-        brokerRequestId: brokerRequest?.id ?? null,
+    return runTx(() => {
+      const record = {
+        id: nextId("cdx_hook"),
+        invocationId,
+        codexSessionRegistryId: session?.id ?? null,
         eventName,
-        toolName: record.toolName,
+        toolName: body.toolName ? String(body.toolName) : null,
         policyDecision: policy.decision,
-      },
+        policyReason: policy.reason,
+        summary: String(body.summary ?? policy.summary),
+        redactionState: "summary_only",
+        createdAt: now(),
+      };
+      state.codexHookEvents.unshift(record);
+      if (session) {
+        session.lastSeenAt = record.createdAt;
+      }
+      const brokerRequest = eventName === "PermissionRequest"
+        ? createCodexApprovalBrokerRequest({ invocation, session, hookEvent: record, body, policy })
+        : null;
+      appendEvent({
+        invocationId,
+        type: "codex_hook_event",
+        level: policy.decision === "blocked" ? "warn" : "info",
+        message: `${eventName}: ${policy.reason}`,
+        data: {
+          hookEventId: record.id,
+          brokerRequestId: brokerRequest?.id ?? null,
+          eventName,
+          toolName: record.toolName,
+          policyDecision: policy.decision,
+        },
+      });
+      return {
+        hookEvent: record,
+        brokerRequest,
+        policyDecision: policy.decision,
+      };
     });
-    return {
-      hookEvent: record,
-      brokerRequest,
-      policyDecision: policy.decision,
-    };
   }
 
   function createCodexApprovalBrokerRequest({ invocation, session, hookEvent, body, policy }) {
@@ -375,28 +437,29 @@ export function createCodexService({
       createdAt,
       updatedAt: createdAt,
     };
-    state.codexApprovalBrokerRequests.unshift(request);
-    persistStateSoon();
-    appendEvent({
-      invocationId: invocation.id,
-      type: "codex_approval_requested",
-      level: request.status === "pending" ? "warn" : "info",
-      message: request.status === "pending"
-        ? `Codex approval broker is waiting on ${request.toolName}.`
-        : request.status === "approved"
-          ? `Codex approval broker approved ${request.toolName} by ${approvalMode} mode.`
-          : `Codex approval broker denied ${request.toolName}.`,
-      data: { approvalBrokerRequestId: request.id, status: request.status },
-    });
-    if (autoApproved) {
+    runTx(() => {
+      state.codexApprovalBrokerRequests.unshift(request);
       appendEvent({
         invocationId: invocation.id,
-        type: "codex_approval_granted",
-        level: "info",
-        message: `Codex approval broker auto-approved the request in ${approvalMode} mode.`,
-        data: { approvalBrokerRequestId: request.id, decision: request.decision, approvalMode },
+        type: "codex_approval_requested",
+        level: request.status === "pending" ? "warn" : "info",
+        message: request.status === "pending"
+          ? `Codex approval broker is waiting on ${request.toolName}.`
+          : request.status === "approved"
+            ? `Codex approval broker approved ${request.toolName} by ${approvalMode} mode.`
+            : `Codex approval broker denied ${request.toolName}.`,
+        data: { approvalBrokerRequestId: request.id, status: request.status },
       });
-    }
+      if (autoApproved) {
+        appendEvent({
+          invocationId: invocation.id,
+          type: "codex_approval_granted",
+          level: "info",
+          message: `Codex approval broker auto-approved the request in ${approvalMode} mode.`,
+          data: { approvalBrokerRequestId: request.id, decision: request.decision, approvalMode },
+        });
+      }
+    });
     return request;
   }
 
@@ -450,17 +513,20 @@ export function createCodexService({
     }
   }
 
-  function resolveCodexApprovalBrokerRequest(request, action) {
+  function resolveCodexApprovalBrokerRequest(request, action, actor = null) {
     if (request.status !== "pending") {
       return request;
     }
     const timedOut = action === "timeout";
+    return runTx(() => {
     request.status = action === "approve" ? "approved" : timedOut ? "timed_out" : "denied";
     request.decision = action === "approve" ? "allow" : timedOut ? "timeout_deny" : "deny";
     request.decidedAt = now();
+    // #1151: settle must record WHO, not only when — a second operator acting on
+    // this row is told who beat them. A timeout is the system's decision.
+    request.decidedBy = timedOut ? "system:timeout" : (actor?.userId ?? "usr_local");
     request.updatedAt = request.decidedAt;
     request.notificationState = "resolved";
-    persistStateSoon();
     const event = {
       invocationId: request.invocationId,
       type: action === "approve" ? "codex_approval_granted" : timedOut ? "codex_approval_timed_out" : "codex_approval_denied",
@@ -490,6 +556,7 @@ export function createCodexService({
       appendEvent(event);
     }
     return request;
+    });
   }
 
   function createCodexImportedEvidenceRecord(body, actor = null) {
@@ -518,18 +585,19 @@ export function createCodexService({
       createdAt,
       updatedAt: createdAt,
     };
-    state.codexImportedEvidenceRecords.unshift(record);
-    persistStateSoon();
-    appendEvent({
-      invocationId: null,
-      type: "codex_imported_evidence_recorded",
-      level: "info",
-      message: "Imported Codex evidence was recorded after explicit preview and confirmation.",
-      data: {
-        importedEvidenceId: record.id,
-        marker: record.marker,
-        redactionState: record.redactionState,
-      },
+    runTx(() => {
+      state.codexImportedEvidenceRecords.unshift(record);
+      appendEvent({
+        invocationId: null,
+        type: "codex_imported_evidence_recorded",
+        level: "info",
+        message: "Imported Codex evidence was recorded after explicit preview and confirmation.",
+        data: {
+          importedEvidenceId: record.id,
+          marker: record.marker,
+          redactionState: record.redactionState,
+        },
+      });
     });
     return record;
   }
@@ -627,6 +695,8 @@ export function createCodexService({
     repoPathForEvidence,
     resolveCodexApprovalBrokerRequest,
     resolveResumeCodexSessionId,
+    setCodexSessionName,
+    resumableCodexSessions,
     updateCodexSessionFromEvent,
   };
 }

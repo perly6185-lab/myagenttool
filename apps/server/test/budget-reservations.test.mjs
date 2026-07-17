@@ -149,6 +149,26 @@ test("#890 reconcileBudgetReservations releases holds for settled/missing runs, 
   assert.equal(m3.budgetStatusFor("projA").reservedUsd, 2, "the active run keeps its hold");
 });
 
+test("#890.1-tail reconcile releases an invocation hold once its run is terminal/gone, keeps live ones", () => {
+  const state = baseState();
+  const m3 = m3For(state);
+  m3.upsertBudget({ projectId: "projA", limitUsd: 100, policy: "block" });
+  m3.reserveBudget({ projectId: "projA", amountUsd: 2, invocationId: "inv_live" });
+  m3.reserveBudget({ projectId: "projA", amountUsd: 2, invocationId: "inv_done" });
+  m3.reserveBudget({ projectId: "projA", amountUsd: 2, invocationId: "inv_gone" }); // no such invocation
+  assert.equal(m3.budgetStatusFor("projA").reservedUsd, 6);
+
+  const terminal = new Set(["inv_done"]);
+  const known = new Set(["inv_live", "inv_done"]);
+  const released = m3.reconcileBudgetReservations({
+    // no auto-run holds here; only the invocation predicate matters
+    isSettled: () => true,
+    isInvocationTerminal: (id) => !known.has(id) || terminal.has(id),
+  });
+  assert.equal(released, 2, "terminal + missing invocation holds released");
+  assert.equal(m3.budgetStatusFor("projA").reservedUsd, 2, "the live invocation keeps its hold");
+});
+
 test("#890 a team pool block budget gates admissions across its projects", () => {
   const state = baseState();
   const m3 = m3For(state);

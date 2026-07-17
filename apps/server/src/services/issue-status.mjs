@@ -42,6 +42,20 @@ export async function runIssueStatusTransition({ cwd, issueNumber, to, gh = defa
   }
 }
 
+// #1150: mirror an issue claim to the GitHub assignee, so ownership taken in
+// the console is visible to people who only look at GitHub. Best-effort mirror
+// — the local claim stays authoritative; "@me" is whoever gh is authed as on
+// this server. Never throws; returns a structured result the caller can log.
+export async function runIssueAssigneeEdit({ cwd, issueNumber, action = "add", assignee = "@me", gh = defaultGh }) {
+  const flag = action === "remove" ? "--remove-assignee" : "--add-assignee";
+  try {
+    await gh(["issue", "edit", String(issueNumber), flag, assignee], cwd);
+    return { ok: true, issueNumber, action, assignee };
+  } catch (error) {
+    return { ok: false, issueNumber, action, error: String(error?.stderr ?? error?.message ?? error).trim() };
+  }
+}
+
 // Read the issue body (read-only, no opt-in needed — same trust level as the
 // console's live gh issue listing). Null on any failure.
 export async function runIssueBodyFetch({ cwd, issueNumber, gh = defaultGh }) {

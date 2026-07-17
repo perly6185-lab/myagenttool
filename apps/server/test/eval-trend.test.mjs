@@ -140,3 +140,17 @@ test("a COMPLETED infra failure (real low subcap number) is excluded from the se
   assert.equal(s.subcap.regressed, false, "an outage is never a capability regression");
   assert.equal(s.infraFailures, 1, "still counted in the separate infra tally");
 });
+
+test("#250: with >=3 clean runs the panel floor is trend-DERIVED and labelled non-provisional", () => {
+  const s = summarizeEvalTrend([
+    subcap("2026-07-02T00:00:00Z", 1, 15, 15),
+    subcap("2026-07-03T00:00:00Z", 0.93, 14, 15),
+    subcap("2026-07-04T00:00:00Z", 1, 15, 15),
+  ]);
+  assert.equal(s.subcap.floor, 0.8, "min 0.93 - 0.13 margin, ratcheted at the 0.80 baseline");
+  assert.equal(s.subcap.floorProvisional, false, "the #250 line is live once derived");
+  assert.equal(s.subcap.floorDerivation.derived, true);
+  assert.equal(s.subcap.floorDerivation.observedMin, 0.93);
+  // heldout still has no data -> provisional, labelled.
+  assert.equal(s.heldout.floorProvisional, true);
+});

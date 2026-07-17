@@ -1,5 +1,6 @@
 import { teamOf } from "../runtime/auth.mjs";
 import { isGovernedCodexExecAgent } from "./codex-agent.mjs";
+import { makeRunTx } from "../runtime/store/run-tx.mjs";
 
 const MAX_CODEX_EXEC_CHANGES = 1000;
 const MAX_CHANGES_PER_RUN = 1000;
@@ -14,7 +15,9 @@ export function createCodexExecImportService({
   nextId,
   appendEvent,
   persistStateSoon = () => {},
+  store,
 }) {
+  const runTx = makeRunTx({ store, persistStateSoon });
   function recordCodexExecChanges({ invocation, result, agent }) {
     if (!isGovernedCodexExecAgent(agent) || !isCodexExecResult(result)) {
       return [];
@@ -50,21 +53,22 @@ export function createCodexExecImportService({
       raw: change.raw,
       createdAt,
     }));
-    state.codexExecChanges.unshift(...records);
-    state.codexExecChanges = state.codexExecChanges.slice(0, MAX_CODEX_EXEC_CHANGES);
-    appendEvent({
-      invocationId: invocation.id,
-      type: "codex_exec_changes_recorded",
-      level: "info",
-      message: `Imported ${records.length} Codex exec change(s).`,
-      data: {
-        codexExecChangeIds: records.map((record) => record.id),
-        tool: "codex.exec",
-        authoritative: false,
-        droppedChangeCount,
-      },
+    runTx(() => {
+      state.codexExecChanges.unshift(...records);
+      state.codexExecChanges = state.codexExecChanges.slice(0, MAX_CODEX_EXEC_CHANGES);
+      appendEvent({
+        invocationId: invocation.id,
+        type: "codex_exec_changes_recorded",
+        level: "info",
+        message: `Imported ${records.length} Codex exec change(s).`,
+        data: {
+          codexExecChangeIds: records.map((record) => record.id),
+          tool: "codex.exec",
+          authoritative: false,
+          droppedChangeCount,
+        },
+      });
     });
-    persistStateSoon();
     return records;
   }
 
@@ -115,16 +119,17 @@ export function createCodexExecImportService({
       auditState: "recorded",
       createdAt,
     };
-    state.codexExecChangeReviews.unshift(review);
-    persistStateSoon();
-    appendEvent({
-      invocationId: change.invocationId,
-      type: decision === "feedback" ? "codex_exec_change_feedback_requested" : "codex_exec_change_reviewed",
-      level: decision === "rejected" ? "warn" : "info",
-      message: execReviewMessage(review),
-      data: { codexExecChangeReviewId: review.id, execChangeId: change.id, decision, followUpPrompt: review.followUpPrompt },
+    return runTx(() => {
+      state.codexExecChangeReviews.unshift(review);
+      appendEvent({
+        invocationId: change.invocationId,
+        type: decision === "feedback" ? "codex_exec_change_feedback_requested" : "codex_exec_change_reviewed",
+        level: decision === "rejected" ? "warn" : "info",
+        message: execReviewMessage(review),
+        data: { codexExecChangeReviewId: review.id, execChangeId: change.id, decision, followUpPrompt: review.followUpPrompt },
+      });
+      return review;
     });
-    return review;
   }
 
   // The change is promotable only when its most recent review approved it. A

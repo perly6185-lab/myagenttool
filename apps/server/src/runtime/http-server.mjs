@@ -6,6 +6,8 @@ import { handleApplicationRoutes } from "../routes/applications.mjs";
 import { handleApprovalGrantRoutes } from "../routes/approval-grants.mjs";
 import { handleBridgeRoutes } from "../routes/bridge.mjs";
 import { handleCapabilityRoutes } from "../routes/capabilities.mjs";
+import { handleMailRoutes } from "../routes/mail.mjs";
+import { handleChannelRoutes } from "../routes/channels.mjs";
 import { handleCodexRoutes } from "../routes/codex.mjs";
 import { handleControlPlaneRoutes } from "../routes/control-plane.mjs";
 import { handleIntegrationRoutes } from "../routes/integrations.mjs";
@@ -36,6 +38,9 @@ export function createHttpServer({
   startAutoRun,
   retryAutoRun,
   mergeAutoRunPr,
+  claimIssue,
+  releaseIssueClaim,
+  listIssueClaims,
   approveDesign,
   rejectDesign,
   answerClarify,
@@ -56,7 +61,10 @@ export function createHttpServer({
   createAgentSkill,
   updateAgentSkill,
   deleteAgentSkill,
+  cancelApplicationInstall,
+  completeApplicationInstall,
   findApplication,
+  findApplicationInstallRun,
   getApplicationOrchestrationRunRecovery,
   listApplicationOrchestrationRecoveryAgentCandidates,
   getApplicationOrchestrationRun,
@@ -65,6 +73,8 @@ export function createHttpServer({
   listApplicationOrchestrationRunEvents,
   listApplicationOrchestrationRuns,
   probeApplication,
+  queueApplicationInstall,
+  recordApplicationInstallProgress,
   registerApplication,
   requestApplicationOrchestrationRecoveryAction,
   readApplicationRecoveryArchive,
@@ -89,6 +99,7 @@ export function createHttpServer({
   redeliverExpiredDispatches,
   registerAgent,
   findAgent,
+  requestObservabilityDeletion,
   disableAgent,
   enableAgent,
   createAgentHealthCheck,
@@ -103,6 +114,8 @@ export function createHttpServer({
   createCodexImportedEvidenceRecord,
   createCodexChangeReview,
   createCodexExecReview,
+  setCodexSessionName,
+  resumableCodexSessions,
   execRunPromotionGate,
   createDiscoveryRun,
   createIntegrationArtifact,
@@ -147,6 +160,7 @@ export function createHttpServer({
   normalizeStringArray,
   completeDiscoveryRun,
   nextBridgeProbeRun,
+  nextBridgeApplicationInstall,
   markLifecycleActionStarted,
   completeLifecycleAction,
   nextBridgeLifecycleAction,
@@ -167,12 +181,29 @@ export function createHttpServer({
   promoteCompareRun,
   cancelInvocation,
   createTroubleshootingReport,
+  claimDecision,
+  releaseDecisionClaim,
   createToolInvocation,
   getTool,
   listTools,
+  rollbackClaudeApply,
   createCapabilityInvocation,
   getCapability,
   listCapabilities,
+  createMailIssueFromImport,
+  replyOnIssue,
+  confirmReplyDraft,
+  sendConfirmedDraft,
+  registerChannel,
+  listChannels,
+  enableChannel,
+  disableChannel,
+  channelHealth,
+  mapChannelIdentity,
+  removeChannelIdentity,
+  listChannelIdentities,
+  setChannelAllowlist,
+  retryChannelDelivery,
   nextId,
   persistStateSoon,
 }) {
@@ -238,6 +269,33 @@ export function createHttpServer({
         // fires through the same dispatch the Run panel uses (#847).
         getCapability,
         createCapabilityInvocation,
+        // ADR 0018: owner-gated per-subject observability data deletion.
+        requestObservabilityDeletion,
+      })) {
+        return;
+      }
+
+      if (await handleMailRoutes({ req, res, url, sendJson, readJson, actor, createMailIssueFromImport, replyOnIssue, confirmReplyDraft, sendConfirmedDraft })) {
+        return;
+      }
+
+      if (await handleChannelRoutes({
+        req,
+        res,
+        url,
+        sendJson,
+        readJson,
+        actor,
+        registerChannel,
+        listChannels,
+        enableChannel,
+        disableChannel,
+        channelHealth,
+        mapChannelIdentity,
+        removeChannelIdentity,
+        listChannelIdentities,
+        setChannelAllowlist,
+        retryChannelDelivery,
       })) {
         return;
       }
@@ -266,6 +324,9 @@ export function createHttpServer({
         startAutoRun,
         retryAutoRun,
         mergeAutoRunPr,
+        claimIssue,
+        releaseIssueClaim,
+        listIssueClaims,
         approveDesign,
         rejectDesign,
         answerClarify,
@@ -314,7 +375,10 @@ export function createHttpServer({
         readJson,
         state,
         actor,
+        now,
+        cancelApplicationInstall,
         findApplication,
+        findApplicationInstallRun,
         getApplicationOrchestrationRunRecovery,
         listApplicationOrchestrationRecoveryAgentCandidates,
         getApplicationOrchestrationRun,
@@ -323,6 +387,7 @@ export function createHttpServer({
         listApplicationOrchestrationRunEvents,
         listApplicationOrchestrationRuns,
         probeApplication,
+        queueApplicationInstall,
         registerApplication,
         requestApplicationOrchestrationRecoveryAction,
         readApplicationRecoveryArchive,
@@ -400,7 +465,7 @@ export function createHttpServer({
         execRunPromotionGate,
         createWorktreePr,
         findInvocation,
-        appendEvent,
+        appendEvent, setCodexSessionName, resumableCodexSessions,
       })) {
         return;
       }
@@ -483,6 +548,7 @@ export function createHttpServer({
         listTools,
         getTool,
         createToolInvocation,
+        rollbackClaudeApply,
       })) {
         return;
       }
@@ -523,6 +589,10 @@ export function createHttpServer({
         findDiscoveryRun,
         completeDiscoveryRun,
         nextBridgeProbeRun,
+        nextBridgeApplicationInstall,
+        findApplicationInstallRun,
+        recordApplicationInstallProgress,
+        completeApplicationInstall,
         markLifecycleActionStarted,
         completeLifecycleAction,
         nextBridgeLifecycleAction,
@@ -564,6 +634,8 @@ export function createHttpServer({
         promoteCompareRun,
         cancelInvocation,
         createTroubleshootingReport,
+        claimDecision,
+        releaseDecisionClaim,
       })) {
         return;
       }

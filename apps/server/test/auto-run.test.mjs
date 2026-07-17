@@ -227,6 +227,8 @@ test("startAutoRun materializes the worktree and starts an issue-seeded invocati
   assert.equal(autoRun.invocationId, "inv_fake_1");
   assert.equal(autoRun.projectId, sourceProjectId);
   assert.equal(autoRun.link.number, 12);
+  // #1152: the owning team is stamped at creation, not re-derived per read.
+  assert.equal(autoRun.teamId, "team_a");
 });
 
 test("startAutoRun reflects the local-approval gate instead of bypassing it", async () => {

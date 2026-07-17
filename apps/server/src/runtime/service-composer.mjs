@@ -1,8 +1,10 @@
 import { createEventLogRuntime } from "./event-log.mjs";
 import { createRefusalRuntime } from "./refusal-log.mjs";
 import { createBridgeCredentialRuntime } from "./bridge-auth.mjs";
-import { createPersistenceRuntime } from "./persistence.mjs";
+import { captureSeededDefaults, createPersistenceRuntime, normalizeLoadedState, persistedArrayKeys, persistedObjectKeys } from "./persistence.mjs";
 import { createReadModelRuntime } from "./read-models.mjs";
+import { createInMemoryStore } from "./store/in-memory-store.mjs";
+import { createIncrementalMirror, isStoreEmpty, mirrorState, seedOrHydrate } from "./store/sqlite-backing.mjs";
 import {
   createAgentService,
   isAgentDisabled,
@@ -14,13 +16,22 @@ import { dirname, resolve, sep } from "node:path";
 import { mergeFileAccesses } from "../read-models/file-ledger.mjs";
 import { createAgentSkillService } from "../services/agent-skills.mjs";
 import { createApplicationService, validateApplicationRoutineDraft } from "../services/applications.mjs";
+import { createApplicationInstallService } from "../services/application-installs.mjs";
 import { createApprovalGrantService } from "../services/approval-grants.mjs";
 import { createRetentionArchive } from "../services/retention-archive.mjs";
 import { createApplicationStatsRuntime } from "../services/application-stats.mjs";
 import { createCapabilityService } from "../services/capabilities.mjs";
+import { createMailIssueWriteService } from "../services/mail-issue-write.mjs";
+import { createMailReplyDraftService } from "../services/mail-reply-draft.mjs";
+import { createMailSendService } from "../services/mail-send.mjs";
+import { createChannelService } from "../services/channels.mjs";
+import { createChannelConversationService } from "../services/channel-conversation.mjs";
+import { createChannelDeliveryService } from "../services/channel-delivery.mjs";
 import { createApplicationResultImportService } from "../services/application-results.mjs";
 import { createCcusageImportService } from "../services/ccusage-imports.mjs";
 import { createClaudeReviewImportService } from "../services/claude-review-imports.mjs";
+import { createClaudeApplyImportService } from "../services/claude-apply-imports.mjs";
+import { isGovernedClaudeApplyAgent } from "../services/claude-apply-agent.mjs";
 import { createCodexReviewImportService } from "../services/codex-review-imports.mjs";
 import { createCodexExecImportService } from "../services/codex-exec-imports.mjs";
 import { createRoundTelemetryRuntime } from "../services/round-telemetry.mjs";
@@ -30,8 +41,10 @@ import { createInvocationService } from "../services/invocations.mjs";
 import { createM3Service } from "../services/m3.mjs";
 import { createProjectService, sameProjectPath } from "../services/projects.mjs";
 import { createAutoRunService } from "../services/auto-run.mjs";
+import { createDecisionSoftClaimService } from "../services/decision-soft-claims.mjs";
+import { createIssueClaimService } from "../services/issue-claims.mjs";
 import { resolveAutoRunVerifyCommand, resolveAutoRunVerifyCommandFor, runWorktreeVerification } from "../services/worktree-verify.mjs";
-import { resolveStatusWritebackConfig, runIssueBodyFetch, runIssueComment, runIssueStatusTransition, runPrChecks, runPrMerge, runPrStateFetch, runIssueStateFetch } from "../services/issue-status.mjs";
+import { resolveStatusWritebackConfig, runIssueAssigneeEdit, runIssueBodyFetch, runIssueComment, runIssueStatusTransition, runPrChecks, runPrMerge, runPrStateFetch, runIssueStateFetch } from "../services/issue-status.mjs";
 import { deciderTimeoutMs, resolveDeciderCommand, runDeciderCommand } from "../services/decision-command.mjs";
 import { childIssueBody, childIssueTitle, extractProjectFieldsBlock, runChildIssueCreate, spawnIssuesConfig } from "../services/auto-run-spawn.mjs";
 import { refreshPrDispositions } from "../services/auto-run-eval.mjs";
@@ -43,8 +56,11 @@ import { resolveDeployCommand, deployTimeoutMs, runDeployCommand, resolveRollbac
 import { decisionConfig } from "../services/auto-run-decision.mjs";
 import { autoRunSettingsEnvOverlay } from "../services/auto-run-config.mjs";
 import { createAlertDispatcher } from "../services/auto-run-alerts.mjs";
+import { createOtlpTraceExporter } from "../services/otlp-export.mjs";
+import { canDeleteObservabilityData, deleteObservabilityData, deletionScopes } from "../services/observability-deletion.mjs";
+import { DEFAULT_SLO_TARGETS, evaluateSloAlert, summarizeAutoRunSlos } from "../services/auto-run-slo.mjs";
 import { createTerminalService } from "../services/terminal.mjs";
-import { createToolService } from "../services/tools.mjs";
+import { createToolService, failStrandedIssueFetches } from "../services/tools.mjs";
 
 export function createServerRuntimeServices({
   namespace,
@@ -57,6 +73,10 @@ export function createServerRuntimeServices({
   stateSchemaVersion,
   dispatchLeaseMs,
   now,
+  // #1002 Phase B: an opened SQLite store makes SQLite the durable backing — the
+  // in-memory `state` stays the live view, its commit MIRRORS to SQLite, and boot
+  // hydrates `state` from SQLite. null (default) = today's JSON-snapshot backing.
+  sqliteStore = null,
 }) {
   let idCounter = 1;
   let invocationService = null;
@@ -65,11 +85,18 @@ export function createServerRuntimeServices({
     updateCodexSessionFromEvent: () => null,
   };
 
+  // #1041: every durable flush (persistStateNow AND the debounced persistStateSoon,
+  // from ANY of the ~40 write sites) mirrors the state into SQLite via this hook —
+  // not only store.transaction commits — so SQLite never lags the JSON snapshot and
+  // the last writes before shutdown are captured. A no-op until the mirror is primed
+  // (and always, when there is no SQLite backing).
+  let durableSync = () => {};
   const {
     persistStateSoon,
     persistStateNow,
     restorePersistentState,
     savePersistentState,
+    exportJsonSnapshot,
   } = createPersistenceRuntime({
     state,
     enabled: persistenceEnabled,
@@ -78,8 +105,86 @@ export function createServerRuntimeServices({
     now,
     defaultProject,
     sameProjectPath,
+    afterFlush: () => durableSync(),
+    // #1042: on the SQLite backing, JSON is retired AS the backing — per-commit
+    // flushes write SQLite only; JSON becomes an explicit export (exportJsonSnapshot).
+    // JSON stays the backing on the memory / Node<22.13-degrade paths (no sqliteStore).
+    jsonBacking: !sqliteStore,
   });
-  const restored = restorePersistentState();
+  // #966 (#124): the Store seam over today's snapshot — reads scan `state`, a
+  // transaction stages writes and commits atomically through the synchronous
+  // barrier. #1002 Phase B: when a SQLite store is wired, the commit ALSO mirrors
+  // the whole `state` view into SQLite (the durable backing); the JSON snapshot is
+  // kept current too during the soak so flipping the flag off loses nothing (Phase
+  // C retires it). Default (no sqliteStore): today's JSON-only barrier, unchanged.
+  // `projects` and `devices` are id-keyed arrays that persist through their OWN JSON
+  // paths (not the persistedArrayKeys loop), so the SQLite backing mirrors them here
+  // too — otherwise the project registry / device fleet would be lost once the JSON
+  // snapshot is retired (Phase C). #1003 prep. (`currentProjectId` is a scalar the
+  // hydrate reconciles via normalizeLoadedState; a dedicated durable slot for it is
+  // a small follow-up before JSON is fully retired.)
+  const mirroredArrayKeys = [...persistedArrayKeys, "projects", "devices"];
+  // #1040: top-level scalars (the operator's selected project, the id counter) that
+  // are neither arrays nor object singletons — mirrored as one reserved meta row so
+  // they survive once the JSON snapshot is retired (else currentProjectId resets to
+  // default each boot and idCounter falls back to the #832-risky records scan).
+  const mirroredScalarKeys = ["currentProjectId", "idCounter"];
+  // #1003: the commit sink mirrors only the DELTA (changed/new/deleted rows) into
+  // SQLite rather than rewriting the whole record table each commit — see
+  // createIncrementalMirror. Primed to match the store right after seed/hydrate.
+  const incrementalMirror = sqliteStore
+    ? createIncrementalMirror({ store: sqliteStore, arrayKeys: mirroredArrayKeys, objectKeys: persistedObjectKeys, scalarKeys: mirroredScalarKeys })
+    : null;
+  // The store's commit is just persistStateNow now — persistStateNow already mirrors
+  // to SQLite via the afterFlush hook (durableSync), so a store.transaction commit
+  // and any other durable flush stay on the same, unified path (#1041).
+  const store = createInMemoryStore({ state, commit: persistStateNow });
+  // #1003: capture the fresh seeded defaults BEFORE the restore overwrites them, so
+  // a SQLite hydrate can run the SAME normalization the JSON restore does.
+  const seededDefaults = sqliteStore ? captureSeededDefaults(state) : null;
+  // #1042: JSON is no longer the backing. Restore it ONLY as a one-time migration
+  // when SQLite is empty (a fresh deploy, or an existing deployment upgrading in
+  // place); a populated SQLite hydrates directly and the JSON restore is skipped.
+  // Without a SQLite backing (memory / degrade), JSON IS the backing — restore it.
+  let restored;
+  if (!sqliteStore) {
+    restored = restorePersistentState();
+  } else if (isStoreEmpty({ store: sqliteStore, arrayKeys: mirroredArrayKeys, objectKeys: persistedObjectKeys })) {
+    restored = restorePersistentState();
+  }
+  // After the (conditional) restore, reconcile with the SQLite backing — SEED it from
+  // the restored/fresh state when empty (one-time JSON→SQLite migration), or HYDRATE
+  // `state` from SQLite when it already holds data (SQLite authoritative).
+  if (sqliteStore) {
+    const outcome = seedOrHydrate({ store: sqliteStore, state, arrayKeys: mirroredArrayKeys, objectKeys: persistedObjectKeys, scalarKeys: mirroredScalarKeys });
+    if (outcome.mode === "seeded" && outcome.mirror?.skipped > 0) {
+      console.warn(`[store:sqlite] initial seed dropped ${outcome.mirror.skipped} id-less row(s) in ${outcome.mirror.skippedCollections.join(", ")}.`);
+    }
+    if (outcome.mode === "hydrated") {
+      // Raw hydration loads records verbatim; run the SHARED normalization so the
+      // SQLite backing fails closed EXACTLY like the JSON restore — path-missing
+      // project drop + default guarantee, new-default merge for agents/singletons/
+      // devices, dup-id repair, every device offline, ownership diagnostics.
+      normalizeLoadedState(state, { seededDefaults, defaultProject, sameProjectPath });
+    }
+    // A hydrate's normalization (dropped project, merged defaults, device offline)
+    // makes `state` diverge from the raw SQLite rows, so fully re-mirror ONCE here
+    // to reconcile SQLite (deletes propagate) before priming. On seed, SQLite
+    // already equals `state`. Then prime the incremental mirror's shadow so every
+    // subsequent commit writes only its delta.
+    if (outcome.mode === "hydrated") {
+      mirrorState({ store: sqliteStore, state, arrayKeys: mirroredArrayKeys, objectKeys: persistedObjectKeys, scalarKeys: mirroredScalarKeys });
+    }
+    incrementalMirror.prime(state);
+    // From here every durable flush mirrors the delta into SQLite (#1041).
+    durableSync = () => {
+      const { skipped, skippedCollections } = incrementalMirror.sync(state);
+      if (skipped > 0) {
+        console.warn(`[store:sqlite] mirror dropped ${skipped} id-less row(s) in ${skippedCollections.join(", ")} — those records are not durable in the SQLite backing.`);
+      }
+    };
+    console.log(`[store:sqlite] durable backing ${outcome.mode} (${mirroredArrayKeys.length} collections).`);
+  }
   // The counter comes from the snapshot it minted ids for. The scan is kept ONLY
   // as a floor — for a snapshot written before the counter was persisted, and as a
   // backstop if a restored counter is somehow behind the records it must not
@@ -105,6 +210,10 @@ export function createServerRuntimeServices({
     persistStateSoon,
     getCodexEventHandlers: () => codexEventHandlers,
   });
+  // Audit find (2026-07-16): an analyze.issue invocation restored mid-fetch has
+  // a resolver that died with the previous process — fail it closed now, before
+  // anything can claim it.
+  failStrandedIssueFetches(state, { now, appendEvent });
   // Refusal model Phase 2 (#760): the single writer for the device's veto.
   const { refuse, firstRefusal } = createRefusalRuntime({
     state,
@@ -144,13 +253,13 @@ export function createServerRuntimeServices({
     selectProject,
     updateProject,
     worktreeForProject,
-  } = createProjectService({ state, now, nextId, appendEvent, persistStateSoon });
+  } = createProjectService({ state, now, nextId, appendEvent, persistStateSoon, store });
 
   const {
     createAgentSkill,
     updateAgentSkill,
     deleteAgentSkill,
-  } = createAgentSkillService({ state, now, nextId, persistStateSoon });
+  } = createAgentSkillService({ state, now, nextId, persistStateSoon, store });
 
   // Approval grants (docs/design/APPROVAL_GRANTS.md): the issuance flow behind
   // every approvalToken field. Composed before the application service so the
@@ -158,7 +267,7 @@ export function createServerRuntimeServices({
   // Cap-evicted audit rows land in an on-disk JSONL archive instead of
   // vanishing (docs: retention-archive.mjs). Disabled with persistence (tests).
   const retentionArchive = createRetentionArchive({ stateStorePath, enabled: persistenceEnabled, now });
-  const { recordApplicationExecutionStat } = createApplicationStatsRuntime({ state, now, persistStateSoon });
+  const { recordApplicationExecutionStat } = createApplicationStatsRuntime({ state, now, persistStateSoon, store });
 
   // The read half of the audit loop: recovery actions the 200-row cap evicted are
   // recoverable per application, not just greppable on disk. Scoped by the route's
@@ -177,7 +286,17 @@ export function createServerRuntimeServices({
     appendEvent,
     persistStateSoon,
     archiveEvicted: retentionArchive.archiveEvicted,
+    store,
   });
+
+  const {
+    cancelApplicationInstall,
+    completeApplicationInstall,
+    findApplicationInstallRun,
+    nextBridgeApplicationInstall,
+    queueApplicationInstall,
+    recordApplicationInstallProgress,
+  } = createApplicationInstallService({ state, now, nextId, appendEvent, persistStateSoon, validateApprovalToken, store });
 
   const {
     applicationHealthSweep,
@@ -185,6 +304,7 @@ export function createServerRuntimeServices({
     invokeApplicationCapability,
     listApplicationCapabilities,
     listApplications,
+    planAgentFacadeInvocation,
     planApplicationWrapperInvocation,
     probeApplication,
     registerApplication,
@@ -204,6 +324,7 @@ export function createServerRuntimeServices({
     // time (post-composition), so the late binding is safe.
     sendAlert: (alert) => void autoRunAlerts.dispatch(alert),
     validateApprovalToken,
+    store,
   });
 
   const {
@@ -215,7 +336,7 @@ export function createServerRuntimeServices({
     markHealthCheckStarted,
     nextBridgeHealthCheck,
     registerAgent,
-  } = createAgentService({ state, now, nextId, appendEvent, persistStateSoon });
+  } = createAgentService({ state, now, nextId, appendEvent, persistStateSoon, store });
 
   const {
     closeCodexSession,
@@ -234,6 +355,8 @@ export function createServerRuntimeServices({
     repoPathForEvidence,
     resolveCodexApprovalBrokerRequest: resolveCodexApprovalBrokerRequestBase,
     resolveResumeCodexSessionId,
+    resumableCodexSessions,
+    setCodexSessionName,
     updateCodexSessionFromEvent,
   } = createCodexService({
     state,
@@ -246,6 +369,7 @@ export function createServerRuntimeServices({
     persistStateSoon,
     uniqueStrings,
     worktreeForProject,
+    store,
   });
   codexEventHandlers = {
     createCodexEvidenceRecord,
@@ -269,6 +393,7 @@ export function createServerRuntimeServices({
     summarizeText,
     uniqueStrings,
     codexSessionForInvocation,
+    store,
   });
 
   const {
@@ -288,6 +413,7 @@ export function createServerRuntimeServices({
     budgetGateForProject,
     reserveBudget,
     releaseReservationsForAutoRun,
+    releaseReservationsForInvocation,
     reconcileBudgetReservations,
     findLifecycleLocalApproval,
     findLifecycleRollbackRequest,
@@ -312,16 +438,57 @@ export function createServerRuntimeServices({
     appendEvent,
     findAgent,
     persistStateSoon,
+    // #968: commit lifecycle-action transitions through the Store's unit of work.
+    store,
     // autoRunAlerts is created later in this factory; the closure is only invoked
     // at run-completion (well after init), so referencing it here is safe.
     dispatchAlert: (alert) => autoRunAlerts.dispatch(alert),
   });
+  // #1151 decision soft-claims: the Approvals queue's advisory "X is handling
+  // this" markers. Independent of the decision paths themselves (which enforce
+  // idempotency on their own records).
+  const { claimDecision, releaseDecisionClaim } = createDecisionSoftClaimService({
+    state,
+    now,
+    nextId,
+    persistStateSoon,
+    store,
+  });
+
+  // #1143 issue claims: the issue-level develop lease. Composed before the
+  // auto-run service, which gates admission on it and releases it on settle.
+  const {
+    claimIssue,
+    releaseIssueClaim,
+    releaseClaimsForAutoRun: releaseIssueClaimsForAutoRun,
+    listIssueClaims,
+  } = createIssueClaimService({
+    state,
+    now,
+    nextId,
+    appendEvent,
+    persistStateSoon,
+    store,
+    // #1150: GitHub assignee mirror — opt-in (console knob or env), checked
+    // LIVE per call so flipping it needs no restart. Resolves the project's
+    // ready checkout the same way the gh issue listing does.
+    mirrorAssignee: async ({ projectId, issueNumber, action }) => {
+      const enabled = state.autoRunSettings?.issueAssigneeMirror === true
+        || process.env.MYAGENTTOOL_ISSUE_ASSIGNEE_MIRROR === "1";
+      if (!enabled) return null;
+      const target = (state.projectTargets ?? []).find((t) => t.projectId === projectId && t.state === "ready");
+      if (!target?.rootPath) return null;
+      return runIssueAssigneeEdit({ cwd: target.rootPath, issueNumber, action });
+    },
+  });
+
   const { recordCcusageImportedEstimates } = createCcusageImportService({
     state,
     now,
     nextId,
     appendEvent,
     persistStateSoon,
+    store,
   });
   const { recordApplicationResult } = createApplicationResultImportService({
     state,
@@ -329,6 +496,7 @@ export function createServerRuntimeServices({
     nextId,
     appendEvent,
     persistStateSoon,
+    store,
   });
   const { recordCodexReviewFindings } = createCodexReviewImportService({
     state,
@@ -336,6 +504,7 @@ export function createServerRuntimeServices({
     nextId,
     appendEvent,
     persistStateSoon,
+    store,
   });
   const { recordClaudeReviewFindings } = createClaudeReviewImportService({
     state,
@@ -343,6 +512,27 @@ export function createServerRuntimeServices({
     nextId,
     appendEvent,
     persistStateSoon,
+    store,
+  });
+  const { recordClaudeApplyResult, reconcileClaudeApplyTermination } = createClaudeApplyImportService({
+    state,
+    now,
+    appendEvent,
+    persistStateSoon,
+    store,
+    // #1052: the deferred-verify dispatch. Late-bound lambdas — the invocation
+    // service (which owns createInvocation/startInvocationIfAllowed) is composed
+    // BELOW this service because completion needs recordClaudeApplyResult; these
+    // close over the outer bindings and only run at completion time, long after
+    // both exist.
+    createInvocation: (task, agent, options) => createInvocation(task, agent, options),
+    startInvocationIfAllowed: (invocation, agent) => startInvocationIfAllowed(invocation, agent),
+    findApplyRunner: () => {
+      const runner = (state.agents ?? []).find(isGovernedClaudeApplyAgent) ?? null;
+      if (!runner || runner.status === "disabled" || runner.health?.status === "unhealthy") return null;
+      if (runner.location?.type === "local_device" && state.device?.unlinkState === "unlinked") return null;
+      return runner;
+    },
   });
   const { recordCodexExecChanges, createCodexExecReview, isExecChangeApproved, execRunPromotionGate } = createCodexExecImportService({
     state,
@@ -350,12 +540,20 @@ export function createServerRuntimeServices({
     nextId,
     appendEvent,
     persistStateSoon,
+    store,
   });
 
   // Late-bound so completion can trigger the auto-run reaction, which is created
   // below (it needs createInvocation from this very service). Set after the
   // auto-run service exists; until then completion has nothing to advance.
   let advanceAutoRunHook = null;
+  // #1147: same late-binding for the mail send fold — the send service needs
+  // createInvocation (composed below), completion needs the fold here.
+  let mailSendHooks = null;
+  // S5 (#1090): channel-originated invocations report their outcome back to the
+  // originating conversation. Late-bound like the auto-run hook — the delivery
+  // service composes after the invocation service.
+  let channelDeliveryHook = null;
   let approvalAutoRunHook = null;
   let denialAutoRunHook = null;
   // Same late-binding for orchestration auto-recovery: it reuses the recovery
@@ -381,6 +579,8 @@ export function createServerRuntimeServices({
     recordCcusageImportedEstimates,
     recordCodexReviewFindings,
     recordClaudeReviewFindings,
+    recordClaudeApplyResult,
+    recordMailSendResult: (args) => mailSendHooks?.recordMailSendResult(args) ?? null,
     recordCodexExecChanges,
     recordApplicationResult,
     currentProject,
@@ -398,7 +598,14 @@ export function createServerRuntimeServices({
     resolveResumeCodexSessionId,
     closeCodexSession,
     budgetGateForProject,
+    // #890.1 tail: hold budget at manual/API accept, release on completion.
+    reserveBudget,
+    releaseReservationsForInvocation,
+    // #968: the Store seam — dispatch claim/ack commit through its unit of work.
+    store,
     checkUsageQuota,
+    // #1084: transcript count-cap evictions spill to the retention archive.
+    capWithArchive: retentionArchive.capWithArchive,
     onInvocationCompleted: (invocation) => {
       advanceAutoRunHook?.(invocation);
       try {
@@ -411,9 +618,21 @@ export function createServerRuntimeServices({
       } catch {
         /* auto-recovery is best-effort; completion must never fail because of it */
       }
+      try {
+        channelDeliveryHook?.(invocation);
+      } catch {
+        /* channel notification is best-effort; completion must never fail because of it */
+      }
     },
     onInvocationApproved: (invocation) => approvalAutoRunHook?.(invocation),
-    onInvocationDenied: (invocation) => denialAutoRunHook?.(invocation),
+    onInvocationDenied: (invocation) => {
+      // Deny skips the completion runtime, so an apply/rollback held at the local
+      // gate and denied would strand its authorization at applying/rolling_back.
+      reconcileClaudeApplyTermination(invocation);
+      // #1147: same for a denied send — the draft must read send_unconfirmed.
+      mailSendHooks?.reconcileMailSendTermination(invocation);
+      denialAutoRunHook?.(invocation);
+    },
   });
 
   const {
@@ -444,6 +663,83 @@ export function createServerRuntimeServices({
   // applies without a restart. No-op when unconfigured; never throws.
   const autoRunAlerts = createAlertDispatcher({ getWebhookUrl: () => state.autoRunSettings?.alertWebhookUrl ?? null });
 
+  // O5.2 follow-up: close the SLO → alert loop. Evaluate the loop's SLOs on a
+  // slow tick (index.mjs) and dispatch when the below-target set CHANGES —
+  // throttled so a persistently-below SLO isn't re-alerted every tick. Emits an
+  // audit event alongside the (best-effort) webhook so the breach is provable
+  // from the event log even when no webhook is configured.
+  function sweepAutoRunSloAlerts() {
+    const targets = state.autoRunSettings?.sloTargets
+      ? { ...DEFAULT_SLO_TARGETS, ...state.autoRunSettings.sloTargets }
+      : DEFAULT_SLO_TARGETS;
+    const summary = summarizeAutoRunSlos(state.autoRuns ?? [], targets);
+    const previous = state.autoRunSloAlert?.signature ?? "";
+    const { changed, signature, alert } = evaluateSloAlert(summary, previous);
+    if (!changed) return { alerted: false };
+    state.autoRunSloAlert = { signature, at: now() };
+    if (alert) {
+      void autoRunAlerts.dispatch(alert);
+      appendEvent({
+        invocationId: null,
+        type: "auto_run_slo_alert",
+        level: alert.severity === "info" ? "info" : "warn",
+        message: alert.message,
+        data: alert.data,
+      });
+    }
+    persistStateSoon();
+    return { alerted: Boolean(alert), kind: alert?.kind ?? null };
+  }
+
+  // ADR 0017: opt-in, best-effort OTLP/HTTP JSON trace export. Reads the endpoint
+  // live so an operator edit applies without a restart; a fire-and-forget mirror
+  // of the authoritative in-memory spans. On a slow tick (index.mjs) it exports
+  // completed, not-yet-exported spans and marks them optimistically, rolling the
+  // mark back if the POST fails so the batch retries next tick. No-op when
+  // unconfigured; never throws into or slows an invocation.
+  const otlpExporter = createOtlpTraceExporter({ now });
+  function flushTraceExport() {
+    if (!(process.env.OTEL_EXPORTER_OTLP_ENDPOINT ?? "").trim()) return { exported: 0 };
+    const pending = (state.spans ?? []).filter((span) => span.endedAt && !span.otlpExportedAt);
+    if (pending.length === 0) return { exported: 0 };
+    const at = now();
+    for (const span of pending) span.otlpExportedAt = at;
+    void otlpExporter.exportSpans(pending).then((result) => {
+      // On failure, roll the optimistic mark back so the batch retries next tick.
+      // Persist in BOTH branches: an unrelated persist between the mark and this
+      // callback can flush the mark, so the rollback must be persisted too — else
+      // a failed export leaves the span marked-exported-but-never-sent on restart.
+      if (!result?.sent) {
+        for (const span of pending) if (span.otlpExportedAt === at) span.otlpExportedAt = null;
+      }
+      persistStateSoon();
+    });
+    return { exported: pending.length };
+  }
+
+  // ADR 0018: owner-gated per-subject deletion of observability data. Erases the
+  // subject's CONTENT (and, at tier `full`, its telemetry rows) through the same
+  // reap primitives as retention; the shielded set (ledger/audit/refusals) is
+  // never touched. A non-owner is refused through the single refusal writer.
+  function requestObservabilityDeletion({ scope, subjectId, tier = "operational", actor } = {}) {
+    if (!deletionScopes.includes(scope) || !subjectId) {
+      return { ok: false, error: "invalid_request" };
+    }
+    if (!canDeleteObservabilityData(actor)) {
+      refuse({
+        category: "policy",
+        code: "action_not_permitted",
+        requester: { kind: "control_plane", id: actor?.userId ?? null },
+        summary: `Observability data deletion is owner-gated; role "${actor?.role ?? "unknown"}" refused.`,
+        remedy: "Retry as an owner or admin.",
+      });
+      return { ok: false, error: "not_permitted" };
+    }
+    const result = deleteObservabilityData(state, { scope, subjectId, tier, now, appendEvent, actor });
+    persistStateSoon();
+    return { ok: true, ...result };
+  }
+
   const { startAutoRun, advanceAutoRunForInvocation, syncAutoRunOnApproval, syncAutoRunOnDenial, retryAutoRun, cancelAutoRun, mergeAutoRunPr, reapStuckAutoRuns, autoMergeSweep, approveDesign, rejectDesign, answerClarify, approveDecomposition, rejectDecomposition } = createAutoRunService({
     state,
     now,
@@ -456,6 +752,10 @@ export function createServerRuntimeServices({
     reserveBudget,
     releaseReservationsForAutoRun,
     reconcileBudgetReservations,
+    // #1143 issue claims: hold the issue's develop lease at admission, release
+    // it when the run settles.
+    claimIssueForRun: claimIssue,
+    releaseIssueClaimsForAutoRun,
     // A1 alerting: best-effort operational webhook (budget breach, stuck reap).
     sendAlert: (alert) => autoRunAlerts.dispatch(alert),
     // O1 reliability: find a run's invocation for stuck/crash reconcile.
@@ -667,6 +967,7 @@ export function createServerRuntimeServices({
     // Self-healing (H2): file the auto-labeled remediation issue after a failed
     // deploy (gh issue create; gated at call-time on remediateOnDeployFailure).
     fileRemediationIssue: async ({ repoPath, title, body, labels }) => runChildIssueCreate({ cwd: repoPath, title, body, labels }),
+    store,
   });
   // Now that the reaction exists, let completion drive it.
   advanceAutoRunHook = advanceAutoRunForInvocation;
@@ -758,15 +1059,23 @@ export function createServerRuntimeServices({
     createToolInvocation,
     getTool,
     listTools,
+    rollbackClaudeApply,
   } = createToolService({
     state,
     now,
+    nextId,
     appendEvent,
     createInvocation,
     startInvocationIfAllowed,
     findApplication,
     findAgent,
     planApplicationWrapperInvocation,
+    validateApprovalToken,
+    persistStateSoon,
+    store,
+    // #1050: claude.analyze.issue resolves the issue body server-side through the
+    // same governed gh read auto-run uses; the caller can never inline issue text.
+    fetchIssueBody: async ({ issueNumber, repoPath }) => runIssueBodyFetch({ cwd: repoPath, issueNumber }),
   });
 
   const {
@@ -785,8 +1094,94 @@ export function createServerRuntimeServices({
     listApplications,
     listApplicationCapabilities,
     invokeApplicationCapability,
+    planAgentFacadeInvocation,
     planApplicationWrapperInvocation,
   });
+
+  // Phase 3 (#979): the first governed GitHub write. Approval-gated, idempotent
+  // by Message-ID, and transcribed from the server's imported record — reusing
+  // the existing gh-write primitives, not a new one.
+  const { createMailIssueFromImport } = createMailIssueWriteService({
+    state,
+    now,
+    nextId,
+    appendEvent,
+    persistStateSoon,
+    store,
+    validateApprovalToken,
+    repoCwd: defaultProjectPath,
+  });
+
+  // Phase 4 (#979): the outbound reply goes ON the issue first (approval-gated
+  // GitHub write), and only a reviewed+confirmed reply becomes an INERT outgoing
+  // draft. No send — that boundary needs a separate credential (ADR 0010) and
+  // stays human.
+  const { replyOnIssue, confirmReplyDraft } = createMailReplyDraftService({
+    state, now, nextId, appendEvent, persistStateSoon, store,
+    validateApprovalToken, repoCwd: defaultProjectPath,
+  });
+
+  // #1147 (ADR 0014): the send gate — the exfiltration boundary, executable
+  // only for a review-confirmed draft under flag + write-credential Application
+  // + credential readiness + single-use grant. The completion fold and the deny
+  // reconcile are late-bound into the invocation runtime above.
+  const mailSendService = createMailSendService({
+    state, now, appendEvent, persistStateSoon, store,
+    validateApprovalToken,
+    createInvocation: (task, agent, options) => createInvocation(task, agent, options),
+    startInvocationIfAllowed: (invocation, agent) => startInvocationIfAllowed(invocation, agent),
+    findAgent,
+    findApplication,
+  });
+  mailSendHooks = mailSendService;
+  const { sendConfirmedDraft } = mailSendService;
+
+  // Channel Registry (S2, #1090/ADR 0012): owner-team-scoped channel lifecycle
+  // + fail-closed identity mappings. Readiness is env-presence booleans; enable
+  // is approval-gated like every other side-effecting action. Import denials
+  // (S3) go through the refuse() chokepoint like every other veto.
+  const channelService = createChannelService({
+    state, now, nextId, appendEvent, persistStateSoon, store, validateApprovalToken, refuse,
+  });
+
+  // Conversation execution (S4): imported events dispatch into GOVERNED
+  // capability invocations — fail-closed identity, channel allowlist, taint,
+  // correlation. The gateway gets the composed import→dispatch pipeline.
+  const channelConversationService = createChannelConversationService({
+    state, now, nextId, appendEvent, refuse, persistStateSoon, store,
+    createCapabilityInvocation, cancelInvocation,
+    // S6: in-channel /approve mints + consumes a single-use grant, then flips
+    // the SAME approval the console acts on.
+    mintDecisionGrant, validateApprovalToken, approveInvocation, denyInvocation,
+  });
+  // Outbound delivery (S5/#1110): provider senders are late-bound by index.mjs
+  // when each gateway is configured — this service never sees any provider
+  // secret. Keyed by provider so a WeCom and a Feishu delivery route to their
+  // own client (delivery picks by channel.provider).
+  const channelSenders = {};
+  const channelDeliveryService = createChannelDeliveryService({
+    state, now, nextId, appendEvent, refuse, persistStateSoon, store,
+    resolveSender: (provider) => channelSenders[provider] ?? null,
+    validateApprovalToken,
+  });
+  channelDeliveryHook = channelDeliveryService.notifyInvocationCompleted;
+
+  const receiveChannelEvent = (payload) => {
+    const imported = channelService.importChannelEvent(payload);
+    if (imported?.ok && !imported.duplicate) {
+      const dispatched = channelConversationService.dispatchImportedChannelEvent({ eventId: imported.eventId });
+      // Staged command replies become durable outbound deliveries.
+      if (dispatched?.reply) {
+        channelDeliveryService.enqueueChannelDelivery({
+          channelId: payload?.channelId,
+          conversationId: imported.conversationId,
+          invocationId: dispatched.invocationId ?? null,
+          content: dispatched.reply,
+        });
+      }
+    }
+    return imported;
+  };
 
   function runApplicationOrchestration(applicationId, routineId, body = {}, actor = null) {
     const application = findApplication(applicationId);
@@ -1684,7 +2079,7 @@ export function createServerRuntimeServices({
   }
 
   function resolveCodexApprovalBrokerRequest(request, action, actor = null) {
-    const updated = resolveCodexApprovalBrokerRequestBase(request, action);
+    const updated = resolveCodexApprovalBrokerRequestBase(request, action, actor);
     syncApplicationRecoveryActionApproval(updated, actor);
     return updated;
   }
@@ -1716,6 +2111,8 @@ export function createServerRuntimeServices({
     if (previousStatus === nextStatus) return;
     actionRequest.status = nextStatus;
     actionRequest.decidedAt = approvalRequest.decidedAt ?? actionRequest.decidedAt ?? null;
+    // #1151: mirror who decided from the broker row (already stamped there).
+    actionRequest.decidedBy = approvalRequest.decidedBy ?? actionRequest.decidedBy ?? null;
     actionRequest.updatedAt = now();
     persistStateSoon();
     if (approvalRequest.status === "pending") return;
@@ -2433,7 +2830,10 @@ export function createServerRuntimeServices({
     completeInvocation,
     createAgentHealthCheck,
     createCapabilityInvocation,
+    cancelApplicationInstall,
+    completeApplicationInstall,
     findApplication,
+    findApplicationInstallRun,
     getApplicationOrchestrationRunRecovery,
     listApplicationOrchestrationRecoveryAgentCandidates,
     getApplicationOrchestrationRun,
@@ -2445,6 +2845,8 @@ export function createServerRuntimeServices({
     listApplicationOrchestrationRunEvents,
     listApplicationOrchestrationRuns,
     probeApplication,
+    queueApplicationInstall,
+    recordApplicationInstallProgress,
     registerApplication,
     requestApplicationOrchestrationRecoveryAction,
     readApplicationRecoveryArchive,
@@ -2457,6 +2859,8 @@ export function createServerRuntimeServices({
     transitionApplication,
     createCodexChangeReview,
     createCodexExecReview,
+    setCodexSessionName,
+    resumableCodexSessions,
     isExecChangeApproved,
     execRunPromotionGate,
     createCodexImportedEvidenceRecord,
@@ -2473,6 +2877,8 @@ export function createServerRuntimeServices({
     createSshConnectionTest,
     createSshTarget,
     createTroubleshootingReport,
+    claimDecision,
+    releaseDecisionClaim,
     createToolInvocation,
     defaultAgent,
     disableAgent,
@@ -2554,6 +2960,7 @@ export function createServerRuntimeServices({
     persistStateSoon,
     capWithArchive: retentionArchive.capWithArchive,
     archiveEvicted: retentionArchive.archiveEvicted,
+    store,
   });
 
   const httpDependencies = {
@@ -2581,7 +2988,13 @@ export function createServerRuntimeServices({
     retryAutoRun,
     cancelAutoRun,
     reapStuckAutoRuns,
+    sweepAutoRunSloAlerts,
+    flushTraceExport,
+    requestObservabilityDeletion,
     autoMergeSweep,
+    claimIssue,
+    releaseIssueClaim,
+    listIssueClaims,
     approveDesign,
     rejectDesign,
     answerClarify,
@@ -2589,6 +3002,30 @@ export function createServerRuntimeServices({
     rejectDecomposition,
     mergeAutoRunPr,
     refreshAutoRunPrDispositions,
+    createMailIssueFromImport,
+    replyOnIssue,
+    confirmReplyDraft,
+    sendConfirmedDraft,
+    registerChannel: channelService.registerChannel,
+    listChannels: channelService.listChannels,
+    enableChannel: channelService.enableChannel,
+    disableChannel: channelService.disableChannel,
+    channelHealth: channelService.channelHealth,
+    mapChannelIdentity: channelService.mapChannelIdentity,
+    removeChannelIdentity: channelService.removeChannelIdentity,
+    listChannelIdentities: channelService.listChannelIdentities,
+    setChannelAllowlist: channelService.setChannelAllowlist,
+    // The gateway's handoff: import + dispatch + reply-enqueue as one pipeline (S3+S4+S5).
+    importChannelEvent: receiveChannelEvent,
+    sweepChannelDeliveries: channelDeliveryService.sweepChannelDeliveries,
+    retryChannelDelivery: channelDeliveryService.retryChannelDelivery,
+    // Bind a provider's outbound sender (index.mjs calls this once per configured
+    // gateway). Back-compat: a bare fn with no provider binds WeCom.
+    setChannelDeliverySender: (providerOrFn, maybeFn) => {
+      const provider = typeof providerOrFn === "string" ? providerOrFn : "wecom";
+      const fn = typeof providerOrFn === "function" ? providerOrFn : maybeFn;
+      channelSenders[provider] = typeof fn === "function" ? fn : null;
+    },
     selectProject,
     removeProject,
     removeWorktree,
@@ -2604,7 +3041,10 @@ export function createServerRuntimeServices({
     updateAgentSkill,
     deleteAgentSkill,
     createCapabilityInvocation,
+    cancelApplicationInstall,
+    completeApplicationInstall,
     findApplication,
+    findApplicationInstallRun,
     getApplicationOrchestrationRunRecovery,
     listApplicationOrchestrationRecoveryAgentCandidates,
     getApplicationOrchestrationRun,
@@ -2616,6 +3056,8 @@ export function createServerRuntimeServices({
     listApplicationOrchestrationRunEvents,
     listApplicationOrchestrationRuns,
     probeApplication,
+    queueApplicationInstall,
+    recordApplicationInstallProgress,
     registerApplication,
     requestApplicationOrchestrationRecoveryAction,
     readApplicationRecoveryArchive,
@@ -2652,6 +3094,8 @@ export function createServerRuntimeServices({
     createCodexImportedEvidenceRecord,
     createCodexChangeReview,
     createCodexExecReview,
+    setCodexSessionName,
+    resumableCodexSessions,
     isExecChangeApproved,
     execRunPromotionGate,
     createDiscoveryRun,
@@ -2700,6 +3144,7 @@ export function createServerRuntimeServices({
     normalizeStringArray,
     completeDiscoveryRun,
     nextBridgeProbeRun,
+    nextBridgeApplicationInstall,
     markLifecycleActionStarted,
     nextBridgeLifecycleAction,
     markIntegrationProbeStarted,
@@ -2722,6 +3167,7 @@ export function createServerRuntimeServices({
     createToolInvocation,
     getTool,
     listTools,
+    rollbackClaudeApply,
     nextId,
     persistStateSoon,
     budgetStatusFor,
@@ -2731,7 +3177,14 @@ export function createServerRuntimeServices({
   return {
     httpDependencies,
     savePersistentState,
+    // #1084: the retention sweep (index.mjs) leaves an audit event per reap batch.
+    appendEvent,
+    // #1042: an explicit JSON export (rollback/backup), written at shutdown so an
+    // operator always has a recent rollback artifact even on the SQLite backing.
+    exportJsonSnapshot,
     selfCheckDependencies,
+    // #966: the Store seam, exposed for incremental service migration (#968).
+    store,
   };
 }
 

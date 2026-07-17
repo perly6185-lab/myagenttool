@@ -1,5 +1,6 @@
 import { LOCAL_TEAM_ID, teamOf } from "../runtime/auth.mjs";
 import { publicDeviceView } from "../runtime/bridge-auth.mjs";
+import { channelOperations } from "./channels.mjs";
 import { pendingDecisions } from "./pending-decisions.mjs";
 import { evidenceLedger } from "./evidence-ledger.mjs";
 import { scheduleHealthReadModel } from "./schedule-health.mjs";
@@ -53,6 +54,19 @@ export function buildPublicState({
     teamId == null || !invocationId || visibleInvIds.has(invocationId);
   const byInvocation = (rows) => (rows ?? []).filter((r) => invVisible(r?.invocationId));
   const byProject = (rows) => (rows ?? []).filter((r) => projectVisible(r?.projectId));
+  // #969: ledger rows carry an explicit owning `teamId` (stamped at write time).
+  // Scope by the SAME project gate as before, then ADD the team check — this can
+  // only NARROW visibility, never broaden it: a scoped viewer still needs the
+  // project to be theirs, and a stamped team must match. This closes the leak
+  // where a null-projectId ledger row (projectVisible(null) === true) was visible
+  // to every scoped team; a mismatched (inconsistent) stamp hides it from both,
+  // the conservative choice. Unscoped/local-dev (teamId == null) is unchanged.
+  const ledgerEntryVisible = (entry) => {
+    if (teamId == null) return true;
+    if (!projectVisible(entry?.projectId)) return false;
+    const stamped = entry?.teamId ?? null;
+    return stamped == null || stamped === teamId;
+  };
   const visibleEvents = byInvocation(state.events).filter(eventVisible);
   const eventsByInvocationId = groupRowsByKey(visibleEvents, (event) => event?.invocationId);
   const recoveryEventsByRequestId = groupRecoveryEventsByRequestId(visibleEvents);
@@ -85,6 +99,13 @@ export function buildPublicState({
   // Governed codex.exec changesets — same invocation-scoped visibility + raw strip
   // as review findings (the git porcelain preview stays out of public state).
   const codexExecChanges = byInvocation(state.codexExecChanges).map(({ raw, ...row }) => row);
+  // Claude apply authorizations (Phase 4a): invocation-scoped. The full patch stays
+  // server-side; public rows carry a bounded preview so a client can see what an
+  // authorized apply would touch without shipping the whole diff.
+  const claudeApplyAuthorizations = byInvocation(state.claudeApplyAuthorizations).map(({ patch, ...row }) => ({
+    ...row,
+    patchPreview: typeof patch === "string" ? patch.slice(0, 2000) : null,
+  }));
   // Imported evidence has no invocation, so it can't ride byInvocation (a null
   // invocationId reads as globally visible). Scope it by its stamped owning team
   // instead; rows written before that stamp existed belong to the local team.
@@ -112,6 +133,18 @@ export function buildPublicState({
   const sshConnectionTests = (state.sshConnectionTests ?? []).filter((test) =>
     teamId == null || visibleSshTargetIds.has(test?.targetId),
   );
+  // Channels (S2, #1090): owner-team scoped; child rows follow their channel's
+  // visibility so a foreign team's channel never leaks through events/deliveries.
+  const channelVisible = (row) =>
+    teamId == null || (row?.ownerTeamId ?? LOCAL_TEAM_ID) === teamId;
+  const channels = (state.channels ?? []).filter(channelVisible);
+  const visibleChannelIds = new Set(channels.map((channel) => channel.id));
+  const byChannel = (rows) =>
+    (rows ?? []).filter((row) => teamId == null || visibleChannelIds.has(row?.channelId));
+  const channelIdentities = byChannel(state.channelIdentities);
+  const channelEvents = byChannel(state.channelEvents);
+  const channelConversations = byChannel(state.channelConversations);
+  const channelDeliveries = byChannel(state.channelDeliveries);
   // A compare run is visible when it spans at least one invocation the team can
   // see; unscoped mode passes everything through.
   const byCompareRun = (rows) =>
@@ -149,6 +182,10 @@ export function buildPublicState({
   );
   const visibleAutomations = byProject(state.automations);
   const autoRuns = byProject(state.autoRuns);
+  // #1143 issue claims carry a projectId; project-team scoping is the boundary.
+  const issueClaims = byProject(state.issueClaims);
+  // #1152: their durable lifecycle history, scoped the same way.
+  const issueClaimEvents = byProject(state.issueClaimEvents ?? []);
   const autoRunsByInvocationId = groupRowsByKey(
     autoRuns.filter((autoRun) => visibleInvIds.has(autoRun?.invocationId)),
     (autoRun) => autoRun?.invocationId,
@@ -161,14 +198,64 @@ export function buildPublicState({
   // this read-model. The rest of the wrapper (capability, cwdPolicy, policies,
   // resultImport) is the public contract and stays.
   const sanitizeInvocationOptions = (options) => {
-    const wrapper = options?.metadata?.applicationWrapper;
-    if (!wrapper || (wrapper.execCommand === undefined && wrapper.execArgs === undefined)) return options;
-    const { execCommand, execArgs, ...safeWrapper } = wrapper;
-    return { ...options, metadata: { ...options.metadata, applicationWrapper: safeWrapper } };
+    const metadata = options?.metadata;
+    // The Phase 4b apply invocation carries the full patch so the bridge can write
+    // it to a temp file. The bridge gets it over its own work channel; keep the
+    // (up to 100 KB) blob out of every public state fetch — the authorization row
+    // already exposes a bounded patchPreview.
+    const hasApplyPatch = typeof metadata?.applyPatch === "string";
+    const wrapper = metadata?.applicationWrapper;
+    const hasWrapperExec = wrapper && (wrapper.execCommand !== undefined || wrapper.execArgs !== undefined);
+    if (!hasApplyPatch && !hasWrapperExec) return options;
+    const nextMetadata = { ...metadata };
+    if (hasApplyPatch) delete nextMetadata.applyPatch;
+    if (hasWrapperExec) {
+      const { execCommand, execArgs, ...safeWrapper } = wrapper;
+      nextMetadata.applicationWrapper = safeWrapper;
+    }
+    return { ...options, metadata: nextMetadata };
+  };
+  // A claude.propose.patch result carries the full proposed diff (up to 100 KB).
+  // Shipping it verbatim in every /api/state poll is pure bandwidth — the console
+  // only ever needs a preview to display and the invocation id to apply. Bound it
+  // here; a detail view can fetch the full patch on demand later.
+  const PROPOSAL_PATCH_PREVIEW = 8000;
+  // #913: an artifact's apply-validity must be VISIBLE in the read model, not
+  // discovered when the apply gate refuses it. Structural checks only — the gate
+  // recomputes the content hash authoritatively at authorize time; re-hashing a
+  // 100 KB patch on every state poll would be wasted CPU. `descriptor_stale`
+  // mirrors the gate's lineage refusal (#897).
+  const proposalApplyValidity = (invocation) => {
+    const output = invocation.result?.output ?? {};
+    const reasons = [];
+    if (invocation.status !== "succeeded") reasons.push("not_succeeded");
+    if (output.patchRedacted === true) reasons.push("payload_reaped");
+    else if (typeof output.patch !== "string" || !output.patch.trim()) reasons.push("no_patch");
+    if (!output.contentHash) reasons.push("bindings_missing");
+    if (output.applicationId) {
+      const app = (state.applications ?? []).find((item) => item.id === output.applicationId) ?? null;
+      const revisionMoved = output.descriptorRevision != null && Number(app?.descriptorRevision ?? 1) !== Number(output.descriptorRevision);
+      if (!app || app.successorApplicationId || revisionMoved) reasons.push("descriptor_stale");
+    }
+    return { applyReady: reasons.length === 0, reasons };
+  };
+  const sanitizeInvocationResult = (invocation) => {
+    const result = invocation.result;
+    if (invocation.options?.metadata?.tool !== "claude.propose.patch" || !result?.output) {
+      return result;
+    }
+    const output = { ...result.output };
+    if (typeof output.patch === "string" && output.patch.length > PROPOSAL_PATCH_PREVIEW) {
+      output.patch = `${output.patch.slice(0, PROPOSAL_PATCH_PREVIEW)}\n... (patch truncated; ${output.patch.length} chars — apply does not need the full patch)`;
+      output.patchTruncated = true;
+    }
+    output.applyValidity = proposalApplyValidity(invocation);
+    return { ...result, output };
   };
   const invocations = visibleInvocations.map((invocation) => ({
     ...invocation,
     options: sanitizeInvocationOptions(invocation.options),
+    result: sanitizeInvocationResult(invocation),
     explanation: buildInvocationExplanation(invocation, {
       applicationRecoveryActionsByInvocationId,
       applicationRecoveryActionsByResultInvocationId,
@@ -213,6 +300,15 @@ export function buildPublicState({
   // already team-scoped locals so it inherits tenancy; this also surfaces the
   // auto-run lifecycle gates in /api/state for the first time.
   const codexApprovalBrokerRequests = byInvocation(state.codexApprovalBrokerRequests);
+  // #1151: advisory soft-claims on queue rows — active, unexpired, and only the
+  // viewer's own team's markers (a foreign team's "handling this" must not leak).
+  const softClaimCutoff = Date.now();
+  const decisionSoftClaims = (state.decisionSoftClaims ?? []).filter(
+    (claim) =>
+      claim?.status === "active" &&
+      (!claim.expiresAt || Date.parse(claim.expiresAt) > softClaimCutoff) &&
+      (teamId == null || (claim.teamId ?? LOCAL_TEAM_ID) === teamId),
+  );
   const pendingDecisionQueue = pendingDecisions({
     approvalRequests,
     autoRuns,
@@ -223,6 +319,7 @@ export function buildPublicState({
     applicationRecoveryActions,
     applicationsById: new Map(applications.map((application) => [application.id, application])),
     invocationsById: visibleInvocationsById,
+    decisionSoftClaims,
   });
 
   // Per-run trust ledger (the Evidence section). Scope the Codex/terminal evidence
@@ -241,6 +338,9 @@ export function buildPublicState({
     troubleshootingReports,
     evidenceCenterRecords: evidenceCenterVisible,
     applicationRecoveryActions,
+    // #1085: transcript summary metadata joins the trust ledger. Scoped by
+    // invocation visibility; the ledger row carries hash/counts, never blocks.
+    runTranscripts: byInvocation(state.runTranscripts ?? []),
   });
 
   const devices = (state.devices ?? [state.device])
@@ -281,6 +381,8 @@ export function buildPublicState({
     worktrees: byProject(state.worktrees),
     worktreeReviews: byProject(state.worktreeReviews),
     deployments: byProject(state.deployments ?? []),
+    issueClaims,
+    issueClaimEvents,
     agent: defaultAgent(),
     agents: state.agents,
     invocations,
@@ -306,20 +408,23 @@ export function buildPublicState({
     aiUsageRecords: byInvocation(state.aiUsageRecords),
     invocationRounds: byInvocation(state.invocationRounds),
     toolInvocationRecords: byInvocation(state.toolInvocationRecords),
-    ledgerEntries: byProject(state.ledgerEntries),
+    ledgerEntries: (state.ledgerEntries ?? []).filter(ledgerEntryVisible),
     importedUsageEstimates: importedUsagePublic(state.importedUsageEstimates),
     applicationResults: applicationResultPublic(state.applicationResults),
     codexReviewFindings,
     claudeReviewFindings,
     reviewFindings,
     codexExecChanges,
+    claudeApplyAuthorizations,
     // Scope the economics rollup to the viewer's team: an unscoped viewer
     // (teamId == null, local dev/admin) gets the platform total; a scoped viewer
-    // gets only its own entries, mirroring `ledgerEntries: byProject(...)` above.
-    // Passing the global summary here leaks foreign totals + project names (#891).
+    // gets only its own entries, mirroring the `ledgerEntries` filter above (#969:
+    // same narrow-only project-gate + stamped-team check, so the rollup can't
+    // leak a foreign null-projectId row's cost either). Passing the global summary
+    // here leaks foreign totals + project names (#891).
     ledgerSummary:
       typeof ledgerSummary === "function"
-        ? ledgerSummary(teamId == null ? undefined : (entry) => projectVisible(entry?.projectId))
+        ? ledgerSummary(teamId == null ? undefined : ledgerEntryVisible)
         : null,
     // Project budgets scope by project; team pools (rows with teamId, no
     // projectId) scope by the viewer's team — byProject alone would treat them
@@ -366,6 +471,18 @@ export function buildPublicState({
     terminalBridgeActions,
     sshTargets,
     sshConnectionTests,
+    channels,
+    channelIdentities,
+    channelEvents,
+    channelConversations,
+    channelDeliveries,
+    channelOperations: channelOperations({
+      channels,
+      channelIdentities,
+      channelEvents,
+      channelConversations,
+      channelDeliveries,
+    }),
   };
 }
 

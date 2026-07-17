@@ -15,9 +15,16 @@ export function createInvocationApprovalRuntime({
   startInvocationIfAllowed,
   onInvocationApproved,
   onInvocationDenied,
+  store,
 }) {
   // Shared writer in production; a state-bound fallback for direct construction.
   const refuse = injectedRefuse ?? createRefusalRuntime({ state, now, nextId, appendEvent }).refuse;
+  // #968: commit a human approval/denial through the Store's unit of work so the
+  // decision is durable synchronously — before this it persisted only via the
+  // appendEvent debounce, so a crash could lose a granted approval (the run stays
+  // parked) or a denial. The follow-on dispatch + reaction hooks run AFTER the
+  // commit (outside the tx) to avoid nesting a dispatch transaction inside this one.
+  const runTx = (fn) => (typeof store?.transaction === "function" ? store.transaction(fn) : fn());
   function evaluateInvocationPolicy(agent, options = {}) {
     const capabilities = Array.isArray(agent.capabilities) ? agent.capabilities : [];
     const riskLevel = highestRiskLevel(capabilities.map((capability) => capability.riskLevel));
@@ -90,40 +97,43 @@ export function createInvocationApprovalRuntime({
     }
     const decidedBy = actor?.userId ?? "usr_local";
     const agent = findAgent(invocation.agentId);
-    approval.status = "approved";
-    approval.decidedAt = now();
-    approval.decidedBy = decidedBy;
-    invocation.status = agent?.adapter.type === "http" ? "running" : "queued";
-    invocation.delivery.state = agent?.adapter.type === "http" ? "not_required" : "queued";
-    invocation.delivery.dispatchAttempts = agent?.adapter.type === "http" ? 1 : 0;
-    invocation.delivery.lastDispatchAt = agent?.adapter.type === "http" ? now() : null;
-    invocation.delivery.acknowledgedAt = agent?.adapter.type === "http" ? now() : null;
-    invocation.updatedAt = now();
-    const policyRecord = state.policyDecisionRecords.find((item) => item.id === invocation.policyDecisionId);
-    if (policyRecord) {
-      policyRecord.decision = "allowed";
-      policyRecord.approver = decidedBy;
-      policyRecord.reason = "Local approval granted for high-risk invocation.";
-    }
-    appendEvent({
-      invocationId: invocation.id,
-      type: "local_approval_granted",
-      level: "info",
-      message: "Local approval granted. Invocation can run.",
-      data: { approvalRequestId: approval.id }
+    runTx(() => {
+      approval.status = "approved";
+      approval.decidedAt = now();
+      approval.decidedBy = decidedBy;
+      invocation.status = agent?.adapter.type === "http" ? "running" : "queued";
+      invocation.delivery.state = agent?.adapter.type === "http" ? "not_required" : "queued";
+      invocation.delivery.dispatchAttempts = agent?.adapter.type === "http" ? 1 : 0;
+      invocation.delivery.lastDispatchAt = agent?.adapter.type === "http" ? now() : null;
+      invocation.delivery.acknowledgedAt = agent?.adapter.type === "http" ? now() : null;
+      invocation.updatedAt = now();
+      const policyRecord = state.policyDecisionRecords.find((item) => item.id === invocation.policyDecisionId);
+      if (policyRecord) {
+        policyRecord.decision = "allowed";
+        policyRecord.approver = decidedBy;
+        policyRecord.reason = "Local approval granted for high-risk invocation.";
+      }
+      appendEvent({
+        invocationId: invocation.id,
+        type: "local_approval_granted",
+        level: "info",
+        message: "Local approval granted. Invocation can run.",
+        data: { approvalRequestId: approval.id }
+      });
+      appendEvent({
+        invocationId: invocation.id,
+        type: "invocation_authorized",
+        level: "info",
+        message: `Invocation authorized after local approval for ${agent?.name ?? invocation.agentId}.`
+      });
+      appendEvent({
+        invocationId: invocation.id,
+        type: agent?.adapter.type === "http" ? "invocation_started" : "delivery_queued",
+        level: "info",
+        message: agent?.adapter.type === "http" ? "HTTP Agent invocation started after approval." : "Invocation queued for Desktop Bridge after approval."
+      });
     });
-    appendEvent({
-      invocationId: invocation.id,
-      type: "invocation_authorized",
-      level: "info",
-      message: `Invocation authorized after local approval for ${agent?.name ?? invocation.agentId}.`
-    });
-    appendEvent({
-      invocationId: invocation.id,
-      type: agent?.adapter.type === "http" ? "invocation_started" : "delivery_queued",
-      level: "info",
-      message: agent?.adapter.type === "http" ? "HTTP Agent invocation started after approval." : "Invocation queued for Desktop Bridge after approval."
-    });
+    // After the durable commit: dispatch (opens its own tx) + the reaction hook.
     startInvocationIfAllowed(invocation, agent);
     // Late-bound reaction hook (e.g. auto-run: reflect the approval on the run
     // card instead of leaving it parked at awaiting_approval).
@@ -137,6 +147,7 @@ export function createInvocationApprovalRuntime({
       return;
     }
     const decidedBy = actor?.userId ?? "usr_local";
+    runTx(() => {
     approval.status = "denied";
     approval.decidedAt = now();
     approval.decidedBy = decidedBy;
@@ -183,9 +194,10 @@ export function createInvocationApprovalRuntime({
       errorSummary: "Local approval denied before execution.",
     });
     recordAgentUsage(invocation, "rejected");
-    // Late-bound reaction hook (mirrors onInvocationApproved): let an auto-run
-    // react to a denial — mark the run terminal and tear down its worktree/branch
-    // so a denied issue doesn't leak an orphaned branch that blocks a re-run.
+    });
+    // After the durable commit: the reaction hook (mirrors onInvocationApproved) —
+    // let an auto-run react to a denial, marking the run terminal and tearing down
+    // its worktree/branch so a denied issue doesn't leak an orphaned branch.
     if (typeof onInvocationDenied === "function") {
       onInvocationDenied(invocation);
     }

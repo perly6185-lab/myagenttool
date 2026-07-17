@@ -25,6 +25,7 @@ export function createInvocationService({
   recordCcusageImportedEstimates,
   recordCodexReviewFindings,
   recordClaudeReviewFindings,
+  recordClaudeApplyResult,
   recordCodexExecChanges,
   recordApplicationResult,
   currentProject,
@@ -41,8 +42,12 @@ export function createInvocationService({
   createManagedCodexSession,
   resolveResumeCodexSessionId,
   budgetGateForProject,
+  reserveBudget,
+  releaseReservationsForInvocation,
   checkUsageQuota,
   closeCodexSession,
+  store,
+  capWithArchive,
   onInvocationCompleted,
   onInvocationApproved,
   onInvocationDenied,
@@ -59,6 +64,9 @@ export function createInvocationService({
     now,
     appendEvent,
     persistStateSoon,
+    // #890.2: completion writes the terminal status + ledger entry; give it the
+    // synchronous barrier so a crash can't lose a committed charge and re-run.
+    persistStateNow,
     namespace,
     protocolVersion,
     findAgent,
@@ -66,10 +74,12 @@ export function createInvocationService({
     closeCodexSession,
     isTerminal,
     recordInvocationLedgerEntry,
+    releaseReservationsForInvocation,
     recordInvocationRoundUsage,
     recordCcusageImportedEstimates,
     recordCodexReviewFindings,
     recordClaudeReviewFindings,
+    recordClaudeApplyResult,
     recordCodexExecChanges,
     // #804's generic importer was composed and handed to this service, and then
     // never forwarded to the runtime that calls it — so `typeof
@@ -77,6 +87,9 @@ export function createInvocationService({
     // import silently never ran. Every unit test passed: they exercised the
     // importer directly and never this wire.
     recordApplicationResult,
+    // #1084: the transcript ingest's count-cap eviction spills to the retention
+    // archive instead of vanishing.
+    capWithArchive,
     onInvocationCompleted,
   });
   const {
@@ -108,6 +121,7 @@ export function createInvocationService({
     startInvocationIfAllowed,
     onInvocationApproved,
     onInvocationDenied,
+    store,
   });
   const { createInvocation } = createInvocationCreationRuntime({
     state,
@@ -134,6 +148,7 @@ export function createInvocationService({
     createAuditSummary,
     recordAgentUsage,
     budgetGateForProject,
+    reserveBudget,
     checkUsageQuota,
   });
   const {
@@ -148,6 +163,7 @@ export function createInvocationService({
     dispatchLeaseMs,
     findAgent,
     completeInvocation,
+    store,
   });
   const { createCompareRun, setCompareRunPreferred, promoteCompareRun } = createInvocationCompareRuntime({
     state,

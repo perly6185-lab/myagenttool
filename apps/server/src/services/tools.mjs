@@ -14,21 +14,92 @@ import {
   CLAUDE_REVIEW_TOOL_CONTRACT,
   isGovernedClaudeReviewAgent,
 } from "./claude-agent.mjs";
+import {
+  CLAUDE_EXPLAIN_TOOL_CONTRACT,
+  isGovernedClaudeExplainAgent,
+} from "./claude-explain-agent.mjs";
+import {
+  CLAUDE_EXPLAIN_CODE_TOOL_CONTRACT,
+  isGovernedClaudeExplainCodeAgent,
+  isSafeWorktreeRelativePath,
+} from "./claude-explain-code-agent.mjs";
+import {
+  CLAUDE_ANALYZE_ISSUE_TOOL_CONTRACT,
+  isGovernedClaudeAnalyzeIssueAgent,
+} from "./claude-analyze-issue-agent.mjs";
+import {
+  CLAUDE_PLAN_CHANGE_TOOL_CONTRACT,
+  isGovernedClaudePlanChangeAgent,
+} from "./claude-plan-change-agent.mjs";
+import { detectPromptInjection, untrustedBodyBlock } from "@myagenttool/protocol/issue-prompt";
+import {
+  CLAUDE_PROPOSE_TOOL_CONTRACT,
+  isGovernedClaudeProposeAgent,
+} from "./claude-propose-agent.mjs";
+import {
+  CLAUDE_APPLY_TOOL_CONTRACT,
+  CLAUDE_APPLY_VERIFY_COMMANDS,
+  isClaudeApplyEnabled,
+  isGovernedClaudeApplyAgent,
+} from "./claude-apply-agent.mjs";
 import { CLAUDE_APPLICATION_ID } from "./claude-application.mjs";
-import { teamOf } from "../runtime/auth.mjs";
+import { proposalContentHash } from "./claude-propose-imports.mjs";
+import { LOCAL_TEAM_ID, teamOf } from "../runtime/auth.mjs";
+import { makeRunTx } from "../runtime/store/run-tx.mjs";
 
 const CCUSAGE_APPROVAL_REQUIRED_REPORTS = new Set(["session"]);
+
+const ANALYZE_TERMINAL_STATUSES = new Set(["succeeded", "failed", "cancelled", "timed_out", "rejected"]);
+
+// Audit find (2026-07-16): the analyze.issue resolver is an in-process
+// continuation — it dies with the server. An invocation restored still carrying
+// `pendingIssueFetch` has a resolver that will NEVER run: fail it closed at boot
+// (same issue_fetch_failed contract as a live fetch miss) instead of leaving a
+// held/queued row stranded forever. Called by the composer after state restore.
+export function failStrandedIssueFetches(state, { now, appendEvent }) {
+  let reconciled = 0;
+  for (const invocation of state.invocations ?? []) {
+    if (invocation?.options?.metadata?.pendingIssueFetch !== true) continue;
+    delete invocation.options.metadata.pendingIssueFetch;
+    if (ANALYZE_TERMINAL_STATUSES.has(invocation.status)) continue;
+    invocation.status = "failed";
+    invocation.result = { errorCode: "issue_fetch_failed", summary: "The issue-body resolver did not survive a server restart; re-run the analysis." };
+    invocation.completedAt = now();
+    invocation.updatedAt = now();
+    appendEvent({
+      invocationId: invocation.id,
+      type: "invocation_failed",
+      level: "warn",
+      message: "Issue analysis failed: the server restarted before its issue body was resolved.",
+      data: { reconciled: true },
+    });
+    reconciled += 1;
+  }
+  return { reconciled };
+}
 
 export function createToolService({
   state,
   now,
+  nextId,
   appendEvent,
   createInvocation,
   startInvocationIfAllowed,
   findApplication,
   findAgent,
   planApplicationWrapperInvocation,
+  // Phase 4a apply gate: the dual-accept grant validator (APPROVAL_GRANTS.md).
+  // Absent in unit tests that never exercise apply; the apply path fails closed
+  // without it, exactly like the application service's approvalCheck.
+  validateApprovalToken = null,
+  persistStateSoon = () => {},
+  store,
+  // #1050: the governed gh read used to resolve an issue body server-side for
+  // claude.analyze.issue (same function auto-run uses). Absent in unit tests
+  // that never exercise analyze; the analyze path fails the run closed without it.
+  fetchIssueBody = null,
 }) {
+  const runTx = makeRunTx({ store, persistStateSoon });
   function listTools() {
     return discoverTools();
   }
@@ -64,6 +135,67 @@ export function createToolService({
         agentLabel: "Claude",
         application: application ? { id: application.id, capability: `app.${application.id}.review.diff` } : null,
       });
+    }
+    if (name === CLAUDE_EXPLAIN_TOOL_CONTRACT.name) {
+      const application = resolveClaudeApp();
+      return createReviewInvocation({
+        input,
+        actor,
+        contract: CLAUDE_EXPLAIN_TOOL_CONTRACT,
+        validate: validateClaudeExplainInput,
+        selectAgent: selectClaudeExplainAgent,
+        buildTask: buildClaudeExplainTask,
+        // Read-only analysis is not queryable evidence: the explanation rides the
+        // invocation result and the generic Application-result lineage.
+        outputCollection: "invocations",
+        agentLabel: "Claude",
+        application: application ? { id: application.id, capability: `app.${application.id}.explain.diff` } : null,
+      });
+    }
+    if (name === CLAUDE_EXPLAIN_CODE_TOOL_CONTRACT.name) {
+      const application = resolveClaudeApp();
+      return createReviewInvocation({
+        input,
+        actor,
+        contract: CLAUDE_EXPLAIN_CODE_TOOL_CONTRACT,
+        validate: validateClaudeExplainCodeInput,
+        selectAgent: selectClaudeExplainCodeAgent,
+        buildTask: buildClaudeExplainCodeTask,
+        // Same posture as explain.diff: analysis rides the invocation result.
+        outputCollection: "invocations",
+        agentLabel: "Claude",
+        application: application ? { id: application.id, capability: `app.${application.id}.explain.code` } : null,
+      });
+    }
+    if (name === CLAUDE_ANALYZE_ISSUE_TOOL_CONTRACT.name) {
+      return createAnalyzeIssueInvocation(input, actor);
+    }
+    if (name === CLAUDE_PLAN_CHANGE_TOOL_CONTRACT.name) {
+      return createPlanChangeInvocation(input, actor);
+    }
+    if (name === CLAUDE_PROPOSE_TOOL_CONTRACT.name) {
+      const application = resolveClaudeApp();
+      return createReviewInvocation({
+        input,
+        actor,
+        contract: CLAUDE_PROPOSE_TOOL_CONTRACT,
+        validate: validateClaudeProposeInput,
+        selectAgent: selectClaudeProposeAgent,
+        buildTask: buildClaudeProposeTask,
+        // The proposal is an immutable artifact on the invocation result; a later
+        // approval-bound apply (Phase 4) consumes it by invocation id. The
+        // descriptor revision rides along (#913) so the artifact is bound to the
+        // exact contract it was generated under and a replaced descriptor (#897
+        // lineage) visibly staleness-refuses the apply.
+        outputCollection: "invocations",
+        agentLabel: "Claude",
+        application: application
+          ? { id: application.id, capability: `app.${application.id}.propose.patch`, descriptorRevision: application.descriptorRevision ?? 1 }
+          : null,
+      });
+    }
+    if (name === CLAUDE_APPLY_TOOL_CONTRACT.name) {
+      return authorizeApply(input, actor);
     }
     if (name === CODEX_EXEC_TOOL_CONTRACT.name) {
       return createExecInvocation({ input, actor });
@@ -157,8 +289,8 @@ export function createToolService({
     };
   }
 
-  function createReviewInvocation({ input, actor, contract, selectAgent, buildTask, outputCollection, agentLabel, application = null }) {
-    const validation = validateReviewInput(input);
+  function createReviewInvocation({ input, actor, contract, selectAgent, buildTask, outputCollection, agentLabel, application = null, validate = validateReviewInput }) {
+    const validation = validate(input);
     if (!validation.ok) {
       return { status: validation.status, body: validation.body };
     }
@@ -195,11 +327,24 @@ export function createToolService({
         worktreeId: worktree.id,
         severityFloor: value.severityFloor,
           instruction: value.instruction,
+          // Present only for propose.patch; the bridge injects it as --task.
+          ...(value.task ? { task: value.task } : {}),
+          // Present only for explain.code; the bridge injects --path/--symbol/
+          // --lines. The path passed server-side shape validation (worktree-
+          // relative, traversal-free) and the wrapper re-checks confinement.
+          ...(value.path ? { targetPath: value.path } : {}),
+          ...(value.symbol ? { targetSymbol: value.symbol } : {}),
+          ...(value.lineRange ? { targetLines: value.lineRange } : {}),
+          // Present only for plan.change (#1051): the fenced analysis context
+          // (the bridge injects --plan-context only when fenced) + provenance id.
+          ...(value.planContextBlock ? { planContextBlock: value.planContextBlock } : {}),
+          ...(value.analysisInvocationId ? { planAnalysisInvocationId: value.analysisInvocationId } : {}),
           ...(application ? {
             providerType: "application",
             applicationId: application.id,
             capability: application.capability,
             applicationAction: `tool:${contract.name}`,
+            ...(application.descriptorRevision != null ? { descriptorRevision: application.descriptorRevision } : {}),
           } : {}),
         },
       timeoutSeconds: 120,
@@ -325,6 +470,11 @@ export function createToolService({
     const ccusageAvailable = ccusageApp && ["registered", "active"].includes(ccusageApp.status);
     const codexReviewAgents = (state.agents ?? []).filter(isGovernedCodexReviewAgent);
     const claudeReviewAgents = (state.agents ?? []).filter(isGovernedClaudeReviewAgent);
+    const claudeExplainAgents = (state.agents ?? []).filter(isGovernedClaudeExplainAgent);
+    const claudeExplainCodeAgents = (state.agents ?? []).filter(isGovernedClaudeExplainCodeAgent);
+    const claudeAnalyzeIssueAgents = (state.agents ?? []).filter(isGovernedClaudeAnalyzeIssueAgent);
+    const claudePlanChangeAgents = (state.agents ?? []).filter(isGovernedClaudePlanChangeAgent);
+    const claudeProposeAgents = (state.agents ?? []).filter(isGovernedClaudeProposeAgent);
     // Only surface the write-capable exec tool when the feature flag is on, so an
     // off-by-default deployment has no discoverable or invokable Codex write path.
     const codexExecAgents = isCodexExecEnabled() ? (state.agents ?? []).filter(isGovernedCodexExecAgent) : [];
@@ -332,6 +482,14 @@ export function createToolService({
       ...(ccusageAvailable ? [buildCcusageToolDescriptor(ccusageApp)] : []),
       ...(codexReviewAgents.length ? [buildCodexReviewToolDescriptor(codexReviewAgents)] : []),
       ...(claudeReviewAgents.length ? [buildClaudeReviewToolDescriptor(claudeReviewAgents, resolveClaudeApp())] : []),
+      ...(claudeExplainAgents.length ? [buildClaudeExplainToolDescriptor(claudeExplainAgents, resolveClaudeApp())] : []),
+      ...(claudeExplainCodeAgents.length ? [buildClaudeExplainCodeToolDescriptor(claudeExplainCodeAgents, resolveClaudeApp())] : []),
+      ...(claudeAnalyzeIssueAgents.length ? [buildClaudeAnalyzeIssueToolDescriptor(claudeAnalyzeIssueAgents, resolveClaudeApp())] : []),
+      ...(claudePlanChangeAgents.length ? [buildClaudePlanChangeToolDescriptor(claudePlanChangeAgents, resolveClaudeApp())] : []),
+      ...(claudeProposeAgents.length ? [buildClaudeProposeToolDescriptor(claudeProposeAgents, resolveClaudeApp())] : []),
+      // Apply is server-side (no runner agent in 4a) and write-adjacent, so it is
+      // discoverable ONLY when the default-OFF flag is set.
+      ...(isClaudeApplyEnabled() ? [buildClaudeApplyToolDescriptor(resolveClaudeApp())] : []),
       ...(codexExecAgents.length ? [buildCodexExecToolDescriptor(codexExecAgents)] : []),
     ];
   }
@@ -346,6 +504,571 @@ export function createToolService({
 
   function selectClaudeReviewAgent() {
     return (state.agents ?? []).find(isGovernedClaudeReviewAgent) ?? null;
+  }
+
+  function selectClaudeExplainAgent() {
+    return (state.agents ?? []).find(isGovernedClaudeExplainAgent) ?? null;
+  }
+
+  function selectClaudeExplainCodeAgent() {
+    return (state.agents ?? []).find(isGovernedClaudeExplainCodeAgent) ?? null;
+  }
+
+  function selectClaudeAnalyzeIssueAgent() {
+    return (state.agents ?? []).find(isGovernedClaudeAnalyzeIssueAgent) ?? null;
+  }
+
+  function selectClaudePlanChangeAgent() {
+    return (state.agents ?? []).find(isGovernedClaudePlanChangeAgent) ?? null;
+  }
+
+  // #1051: plan.change reuses the shared review-invocation gate, with one extra
+  // resolve step first — the optional analysis context is a LINK to a prior
+  // succeeded claude.analyze.issue run in the SAME project, never free text, and
+  // its content re-enters the prompt fenced as untrusted data (the analysis was
+  // derived from attacker-adjacent issue text; the taint propagates through
+  // derivation, it does not wash off).
+  const PLAN_ANALYSIS_CONTEXT_CAP = 4000;
+
+  function createPlanChangeInvocation(input, actor) {
+    const validation = validateClaudePlanChangeInput(input);
+    if (!validation.ok) {
+      return { status: validation.status, body: validation.body };
+    }
+    const value = validation.value;
+    let planContextBlock = null;
+    if (value.analysisInvocationId) {
+      const project = resolveToolProjectId(value.projectId, actor);
+      if (!project.ok) {
+        return { status: project.status, body: project.body };
+      }
+      const analysis = (state.invocations ?? []).find((item) => item.id === value.analysisInvocationId) ?? null;
+      const analysisMeta = analysis?.options?.metadata ?? {};
+      const analysisProjectId = analysis?.projectId ?? analysisMeta.projectId ?? null;
+      // A cross-project or unknown reference reads as not-applicable — no
+      // existence leak, mirroring the apply gate's proposal binding.
+      if (
+        !analysis
+        || analysisProjectId !== project.value
+        || analysisMeta.tool !== CLAUDE_ANALYZE_ISSUE_TOOL_CONTRACT.name
+        || analysis.status !== "succeeded"
+        || !analysis.result?.output
+      ) {
+        return { status: 409, body: { error: "analysis_not_applicable", message: "analysisInvocationId must reference a completed claude.analyze.issue run in the same project." } };
+      }
+      const { summary, problem, affectedAreas, suggestedAcceptance, risks } = analysis.result.output;
+      const serialized = JSON.stringify({ summary, problem, affectedAreas, suggestedAcceptance, risks }).slice(0, PLAN_ANALYSIS_CONTEXT_CAP);
+      planContextBlock = untrustedBodyBlock("analysis", serialized);
+    }
+    const application = resolveClaudeApp();
+    return createReviewInvocation({
+      input,
+      actor,
+      contract: CLAUDE_PLAN_CHANGE_TOOL_CONTRACT,
+      // Shape validation already ran above; hand the shared gate the enriched
+      // value (the goal rides as `task` so the bridge's existing --task
+      // injection carries it to the wrapper).
+      validate: () => ({ ok: true, value: { ...value, task: value.goal, planContextBlock } }),
+      selectAgent: selectClaudePlanChangeAgent,
+      buildTask: buildClaudePlanChangeTask,
+      outputCollection: "invocations",
+      agentLabel: "Claude",
+      application: application ? { id: application.id, capability: `app.${application.id}.plan.change` } : null,
+    });
+  }
+
+  // #1050: analyze.issue takes an issue NUMBER, never issue text. The invocation
+  // is created immediately (sync, like every tool) but is NOT started until the
+  // server has resolved the body through the governed gh path, bounded it, fenced
+  // it as untrusted DATA (ADR 0011), and recorded any injection markers as
+  // evidence. A failed or timed-out resolve fails the run closed — the wrapper
+  // never spawns without a server-fenced body.
+  const ANALYZE_ISSUE_BODY_CAP = 6000;
+  const ANALYZE_ISSUE_FETCH_TIMEOUT_MS = 15_000;
+
+  function createAnalyzeIssueInvocation(input, actor) {
+    const validation = validateClaudeAnalyzeIssueInput(input);
+    if (!validation.ok) {
+      return { status: validation.status, body: validation.body };
+    }
+    const value = validation.value;
+    const project = resolveToolProjectId(value.projectId, actor);
+    if (!project.ok) {
+      return { status: project.status, body: project.body };
+    }
+    const projectId = project.value;
+    const worktree = findToolWorktree(value.worktreeId, projectId);
+    if (!worktree) {
+      return { status: 404, body: { error: "worktree_not_found" } };
+    }
+    const agent = selectClaudeAnalyzeIssueAgent();
+    if (!agent || agent.status === "disabled" || agent.health?.status === "unhealthy") {
+      return { status: 409, body: { error: "agent_not_available", message: "No governed Claude issue-analysis agent is available." } };
+    }
+    if (agent.location?.type === "local_device" && state.device?.unlinkState === "unlinked") {
+      return { status: 409, body: { error: "agent_not_available", message: "The local device is unlinked.", agentId: agent.id } };
+    }
+    const application = resolveClaudeApp();
+    const invocation = createInvocation(buildClaudeAnalyzeIssueTask(value), agent, {
+      actor,
+      requestedBy: actor?.userId,
+      metadata: {
+        tool: CLAUDE_ANALYZE_ISSUE_TOOL_CONTRACT.name,
+        toolVersion: CLAUDE_ANALYZE_ISSUE_TOOL_CONTRACT.version,
+        projectId,
+        worktreeId: worktree.id,
+        issueNumber: value.issueNumber,
+        instruction: value.instruction,
+        // Start is DEFERRED until the fenced body is stamped (see resolver).
+        pendingIssueFetch: true,
+        ...(application ? {
+          providerType: "application",
+          applicationId: application.id,
+          capability: `app.${application.id}.analyze.issue`,
+          applicationAction: `tool:${CLAUDE_ANALYZE_ISSUE_TOOL_CONTRACT.name}`,
+        } : {}),
+      },
+      timeoutSeconds: 240,
+    });
+    // Audit find (2026-07-16): "queued" is claimable by the bridge IMMEDIATELY —
+    // startInvocationIfAllowed only gates the direct-HTTP path, so without this
+    // hold the bridge could claim the run during the fetch window and spawn the
+    // wrapper with no fenced body. `held` is outside the claim filter's accepted
+    // states; the resolver releases it (or the boot reconcile fails it closed).
+    if (invocation.delivery && invocation.delivery.state === "queued") {
+      invocation.delivery.state = "held";
+    }
+    appendEvent({
+      invocationId: invocation.id,
+      type: "tool_invocation_created",
+      level: "info",
+      message: `Tool ${CLAUDE_ANALYZE_ISSUE_TOOL_CONTRACT.name} created issue-analysis invocation for #${value.issueNumber}.`,
+      data: { tool: CLAUDE_ANALYZE_ISSUE_TOOL_CONTRACT.name, issueNumber: value.issueNumber, agentId: agent.id, worktreeId: worktree.id },
+    });
+    // Fire-and-forget continuation: resolve → fence → start. Never throws; a
+    // rejected fetch fails the invocation instead of leaking an unhandled error.
+    resolveAnalyzeIssueAndStart({ invocation, agent, projectId, issueNumber: value.issueNumber })
+      .catch(() => {});
+    return {
+      status: 201,
+      body: {
+        tool: CLAUDE_ANALYZE_ISSUE_TOOL_CONTRACT.name,
+        invocationId: invocation.id,
+        agentId: agent.id,
+        status: invocation.status,
+        outputCollection: "invocations",
+        invocation,
+      },
+    };
+  }
+
+  async function resolveAnalyzeIssueAndStart({ invocation, agent, projectId, issueNumber }) {
+    const projectPath = (state.projects ?? []).find((item) => item.id === projectId)?.path ?? null;
+    let body = null;
+    if (typeof fetchIssueBody === "function" && projectPath) {
+      // The timeout timer must not outlive the race — a dangling 15s timer keeps
+      // the process (and every test run) alive after the fetch already resolved.
+      let timer = null;
+      try {
+        body = await Promise.race([
+          fetchIssueBody({ issueNumber, repoPath: projectPath }),
+          new Promise((resolveTimeout) => { timer = setTimeout(resolveTimeout, ANALYZE_ISSUE_FETCH_TIMEOUT_MS, null); }),
+        ]);
+      } catch {
+        body = null;
+      } finally {
+        if (timer) clearTimeout(timer);
+      }
+    }
+    runTx(() => {
+      delete invocation.options.metadata.pendingIssueFetch;
+      // Audit find (2026-07-16): the run can go terminal DURING the fetch (a
+      // cancel is legal on a queued invocation). A terminal verdict must never
+      // be overwritten by this late resolver — in either branch.
+      if (ANALYZE_TERMINAL_STATUSES.has(invocation.status)) {
+        return;
+      }
+      if (typeof body !== "string" || !body.trim()) {
+        // Fail closed: no server-resolved body, no run. The caller sees an
+        // explicit terminal error, never a wrapper spawned on missing data.
+        invocation.status = "failed";
+        invocation.result = { errorCode: "issue_fetch_failed", summary: `Could not resolve issue #${issueNumber} through the governed gh path.` };
+        invocation.completedAt = now();
+        invocation.updatedAt = now();
+        appendEvent({
+          invocationId: invocation.id,
+          type: "invocation_failed",
+          level: "warn",
+          message: `Issue analysis failed: issue #${issueNumber} could not be resolved.`,
+          data: { issueNumber },
+        });
+        return;
+      }
+      const bounded = body.trim().slice(0, ANALYZE_ISSUE_BODY_CAP);
+      const injection = detectPromptInjection(bounded);
+      // The fenced block is what the wrapper embeds — data, never instruction.
+      invocation.options.metadata.issueUntrustedBlock = untrustedBodyBlock("issue", bounded);
+      // Flag-not-block (B1a): markers are evidence for the operator, the run
+      // still proceeds — read-only analysis is exactly the reviewing context.
+      invocation.options.metadata.injectionMarkers = injection.markers;
+      if (injection.suspicious) {
+        appendEvent({
+          invocationId: invocation.id,
+          type: "untrusted_input_flagged",
+          level: "warning",
+          message: `Issue #${issueNumber} body carries prompt-injection markers (${injection.markers.join(", ")}); preserved as fenced evidence.`,
+          data: { issueNumber, markers: injection.markers },
+        });
+      }
+      // Release the delivery hold now that the fenced body is stamped — the
+      // bridge may claim it from here. Use a FRESH agent lookup: the reference
+      // captured at creation may have been disabled during the fetch.
+      if (invocation.delivery?.state === "held") {
+        invocation.delivery.state = "queued";
+      }
+      const freshAgent = typeof findAgent === "function" ? findAgent(agent.id) ?? agent : agent;
+      startInvocationIfAllowed(invocation, freshAgent);
+    });
+  }
+
+  function selectClaudeProposeAgent() {
+    return (state.agents ?? []).find(isGovernedClaudeProposeAgent) ?? null;
+  }
+
+  // Phase 4a apply GATE (#914): bind to a Phase 3 proposal, enforce tenancy, and
+  // require a valid single-use approval grant. On success record an immutable,
+  // non-executable authorization — NO file is written here. Fails closed without
+  // the grant validator. A later slice (4b) executes an authorization.
+  function authorizeApply(input, actor = null) {
+    if (!isClaudeApplyEnabled()) {
+      return { status: 403, body: { error: "apply_not_enabled", message: "The Claude apply capability is disabled." } };
+    }
+    const validation = validateClaudeApplyInput(input);
+    if (!validation.ok) return { status: validation.status, body: validation.body };
+    const value = validation.value;
+
+    const project = resolveToolProjectId(value.projectId, actor);
+    if (!project.ok) return { status: project.status, body: project.body };
+    const projectId = project.value;
+    const worktree = findToolWorktree(value.worktreeId, projectId);
+    if (!worktree) return { status: 404, body: { error: "worktree_not_found" } };
+
+    // Bind to the referenced proposal. An unknown or cross-project invocation is
+    // proposal_not_found (no existence leak); a non-proposal or unfinished one is
+    // proposal_not_applicable.
+    const proposal = (state.invocations ?? []).find((item) => item.id === value.proposalInvocationId) ?? null;
+    const proposalProjectId = proposal?.projectId ?? proposal?.options?.metadata?.projectId ?? null;
+    if (!proposal || proposalProjectId !== projectId) {
+      return { status: 404, body: { error: "proposal_not_found" } };
+    }
+    const meta = proposal.options?.metadata ?? {};
+    const patch = proposal.result?.output?.patch;
+    if (meta.tool !== CLAUDE_PROPOSE_TOOL_CONTRACT.name || proposal.status !== "succeeded" || typeof patch !== "string" || !patch.trim()) {
+      return { status: 409, body: { error: "proposal_not_applicable", message: "The referenced invocation is not a completed claude.propose.patch proposal." } };
+    }
+    // Binding: apply only to the worktree the proposal targeted.
+    if (meta.worktreeId && meta.worktreeId !== worktree.id) {
+      return { status: 409, body: { error: "worktree_binding_mismatch", proposalWorktreeId: meta.worktreeId, requestedWorktreeId: worktree.id } };
+    }
+
+    // #913/#914: revalidate the artifact's immutable bindings BEFORE the grant is
+    // consumed and before any mutation path opens. Fail closed: an artifact
+    // without a stamped content hash (pre-stamp legacy, or a result that skipped
+    // completion stamping) is not applicable — regenerate the proposal.
+    const stampedHash = stringOrNull(proposal.result?.output?.contentHash);
+    if (!stampedHash) {
+      return { status: 409, body: { error: "proposal_bindings_missing", message: "The proposal artifact carries no content hash. Regenerate the proposal." } };
+    }
+    if (proposalContentHash(patch) !== stampedHash) {
+      // The stored patch no longer hashes to what completion stamped — a tampered
+      // or corrupted artifact must not apply even when it would patch cleanly.
+      return { status: 409, body: { error: "proposal_integrity_mismatch", message: "The stored proposal patch does not match its stamped content hash. Regenerate the proposal." } };
+    }
+    const stampedApplicationId = stringOrNull(proposal.result?.output?.applicationId) ?? stringOrNull(meta.applicationId);
+    const stampedRevision = proposal.result?.output?.descriptorRevision ?? meta.descriptorRevision ?? null;
+    if (stampedApplicationId) {
+      // Descriptor lineage (#897): a proposal generated under a since-replaced
+      // Application descriptor was reviewed against a contract that no longer
+      // governs — visibly stale, never silently retargeted to the successor.
+      const boundApp = typeof findApplication === "function" ? findApplication(stampedApplicationId) : null;
+      const revisionMoved = stampedRevision != null && Number(boundApp?.descriptorRevision ?? 1) !== Number(stampedRevision);
+      if (!boundApp || boundApp.successorApplicationId || revisionMoved) {
+        return {
+          status: 409,
+          body: {
+            error: "proposal_descriptor_stale",
+            message: "The Application descriptor this proposal was generated under has been replaced. Regenerate the proposal.",
+            applicationId: stampedApplicationId,
+            ...(boundApp?.successorApplicationId ? { replacedBy: boundApp.successorApplicationId } : {}),
+          },
+        };
+      }
+    }
+    // The worktree HEAD the proposal was generated against (wrapper-reported,
+    // shape-validated at stamping). The apply runner re-checks it device-side at
+    // the last moment before writing (--expect-base); absent on a legacy artifact.
+    const expectedBaseCommit = typeof proposal.result?.output?.baseCommit === "string" && /^[0-9a-f]{40}$/.test(proposal.result.output.baseCommit)
+      ? proposal.result.output.baseCommit
+      : null;
+
+    // Require a runner BEFORE consuming the single-use grant: a grant that cannot
+    // be executed must not be burned, and an authorization we can never run must not
+    // be stranded (the old "4a-only, executable:false" path was a permanent dead
+    // end — no UI or server route ever executed it). No runner → refuse; the
+    // operator registers one and retries with a fresh grant.
+    const runner = availableClaudeApplyRunner();
+    if (!runner) {
+      return { status: 409, body: { error: "agent_not_available", message: "No governed Claude apply runner is available." } };
+    }
+
+    // Approval: a valid, single-use grant for (apply_patch, proposalInvocationId).
+    // Fail closed if the validator is not wired — a missing validator must never
+    // authorize a write-adjacent action.
+    if (typeof validateApprovalToken !== "function") {
+      return { status: 409, body: { error: "approval_required", reason: "approval_validator_unavailable" } };
+    }
+    const approval = validateApprovalToken(value.approvalToken, {
+      action: "apply_patch",
+      targetId: value.proposalInvocationId,
+      actor,
+    });
+    if (!approval.approved) {
+      return { status: 409, body: { error: "approval_required", reason: approval.reason ?? "grant_required" } };
+    }
+
+    const files = Array.isArray(proposal.result?.output?.files) ? proposal.result.output.files : [];
+    const invocation = createInvocation(`Apply an authorized Claude patch to worktree ${worktree.id}.`, runner, {
+      actor,
+      requestedBy: actor?.userId,
+      metadata: {
+        tool: CLAUDE_APPLY_TOOL_CONTRACT.name,
+        toolVersion: CLAUDE_APPLY_TOOL_CONTRACT.version,
+        projectId,
+        worktreeId: worktree.id,
+        claudeApplyAuthorizationId: null, // set below once the id is known
+        proposalInvocationId: value.proposalInvocationId,
+        // The bridge writes this to a temp file and passes --patch-file. Stripped
+        // from public state (see sanitizeInvocationOptions).
+        applyPatch: patch,
+        // #914: the bridge injects --expect-base so the runner refuses a worktree
+        // whose HEAD moved off the proposal's base. Never set on rollback runs.
+        ...(expectedBaseCommit ? { expectedBaseCommit } : {}),
+        // #1052: verification is NOT stamped on the apply dispatch anymore. A
+        // synchronous verify occupied the single-lane bridge for the whole test
+        // run; the verify now runs as its own dispatch, created when the apply
+        // result folds (claude-apply-imports.mjs) from the verifyCommandId held
+        // on the authorization row.
+      },
+      timeoutSeconds: 120,
+    });
+    const authorization = {
+      id: typeof nextId === "function" ? nextId("cap_demo") : `cap_${(state.claudeApplyAuthorizations?.length ?? 0) + 1}`,
+      source: "claude",
+      tool: CLAUDE_APPLY_TOOL_CONTRACT.name,
+      proposalInvocationId: value.proposalInvocationId,
+      // Scope this artifact to the proposal's invocation in the public read model.
+      invocationId: value.proposalInvocationId,
+      executionInvocationId: invocation.id,
+      projectId,
+      // Team ownership stamped at creation so tenancy survives the project row
+      // being deleted/archived later (a project lookup would then resolve null).
+      ownerTeamId: authorizationOwnerTeam(projectId, actor),
+      worktreeId: worktree.id,
+      requestedBy: actor?.userId ?? null,
+      grantId: approval.grantId ?? null,
+      summary: stringOrNull(proposal.result?.output?.summary),
+      patch,
+      files,
+      // The bindings this authorization was validated against (#913/#914) — part
+      // of the durable write record, so rollback/audit can show exactly what the
+      // integrity gate saw.
+      contentHash: stampedHash,
+      baseCommit: expectedBaseCommit,
+      descriptorRevision: stampedRevision ?? null,
+      verifyCommandId: value.verify ?? null,
+      status: "applying",
+      applied: false,
+      createdAt: now(),
+    };
+    runTx(() => {
+      invocation.options.metadata.claudeApplyAuthorizationId = authorization.id;
+      state.claudeApplyAuthorizations = state.claudeApplyAuthorizations ?? [];
+      state.claudeApplyAuthorizations.unshift(authorization);
+      pruneClaudeApplyAuthorizations();
+      // Audit find (2026-07-16): invocation creation can gate-reject
+      // synchronously (over_budget / over_quota / reservation refused). A
+      // rejected run never reaches completion, so the fold that would resolve
+      // this authorization never fires — without this it sits "applying"
+      // forever with the grant already burned and the patch blob never dropped.
+      if (invocation.status === "rejected") {
+        authorization.status = "failed";
+        authorization.applied = false;
+        authorization.resultSummary = `apply dispatch rejected at creation (${stringOrNull(invocation.result?.errorCode) ?? "admission gate"}); the grant was consumed — request a fresh one after resolving the gate.`;
+        delete invocation.options.metadata.applyPatch;
+        appendEvent({
+          invocationId: value.proposalInvocationId,
+          type: "claude_apply_failed",
+          level: "warn",
+          message: `Claude patch apply for authorization ${authorization.id} was rejected at creation by an admission gate; the worktree was not mutated.`,
+          data: { claudeApplyAuthorizationId: authorization.id, proposalInvocationId: value.proposalInvocationId, errorCode: stringOrNull(invocation.result?.errorCode) },
+        });
+        return;
+      }
+      startInvocationIfAllowed(invocation, runner);
+      appendEvent({
+        invocationId: value.proposalInvocationId,
+        type: "claude_apply_authorized",
+        level: "info",
+        message: `Authorized a Claude patch apply for proposal ${value.proposalInvocationId} (grant ${approval.grantId ?? "legacy"}).`,
+        data: {
+          claudeApplyAuthorizationId: authorization.id,
+          proposalInvocationId: value.proposalInvocationId,
+          worktreeId: worktree.id,
+          grantId: approval.grantId ?? null,
+        },
+      });
+    });
+    return {
+      status: 201,
+      body: {
+        tool: CLAUDE_APPLY_TOOL_CONTRACT.name,
+        authorizationId: authorization.id,
+        // Reflects the gate outcome: "applying" normally, "failed" when the
+        // dispatch was admission-rejected inside the transaction above.
+        status: authorization.status,
+        applied: false,
+        executionInvocationId: invocation.id,
+        agentId: runner.id,
+        proposalInvocationId: value.proposalInvocationId,
+        worktreeId: worktree.id,
+        files,
+      },
+    };
+  }
+
+  // Owning team of an apply authorization: the project's team when known, else the
+  // actor's, else the local team. Stamped once so rollback tenancy never depends on
+  // the project row still existing.
+  function authorizationOwnerTeam(projectId, actor) {
+    const project = projectId ? (state.projects ?? []).find((item) => item.id === projectId) : null;
+    return (project ? teamOf(project) : null) ?? actor?.teamId ?? LOCAL_TEAM_ID;
+  }
+
+  // Status-aware cap: never evict an in-flight authorization (applying/rolling_back)
+  // — it is the only server-held copy of the patch and the only durable write
+  // record — and keep the most recent MAX terminal rows. Evicting an in-flight row
+  // would silently drop its git-apply result and strand the write.
+  function pruneClaudeApplyAuthorizations() {
+    const MAX_TERMINAL = 500;
+    let terminalKept = 0;
+    // Preserve newest-first order (rows are unshifted); keep every in-flight row and
+    // the newest MAX_TERMINAL terminal rows.
+    state.claudeApplyAuthorizations = (state.claudeApplyAuthorizations ?? []).filter((row) => {
+      if (row.status === "applying" || row.status === "rolling_back") return true;
+      if (terminalKept < MAX_TERMINAL) { terminalKept += 1; return true; }
+      return false;
+    });
+  }
+
+  // A governed apply runner that can actually execute now: registered, enabled,
+  // healthy, and on a linked device.
+  function availableClaudeApplyRunner() {
+    const runner = (state.agents ?? []).find(isGovernedClaudeApplyAgent) ?? null;
+    if (!runner || runner.status === "disabled") return null;
+    if (runner.health?.status === "unhealthy") return null;
+    if (runner.location?.type === "local_device" && state.device?.unlinkState === "unlinked") return null;
+    return runner;
+  }
+
+  // Governed ROLLBACK of an applied authorization (#914 follow-up): the recorded
+  // rollback guidance becomes an executable action. Same trust shape as the apply:
+  // tenancy-scoped, bound to the authorization artifact, and gated on a fresh
+  // single-use grant for (rollback_patch, authorizationId) — undoing a write is a
+  // write. The runner re-applies the SAME server-held patch with --reverse.
+  function rollbackClaudeApply(authorizationId, body = {}, actor = null) {
+    if (!isClaudeApplyEnabled()) {
+      return { status: 403, body: { error: "apply_not_enabled", message: "The Claude apply capability is disabled." } };
+    }
+    const authorization = (state.claudeApplyAuthorizations ?? []).find((item) => item.id === String(authorizationId ?? "")) ?? null;
+    // Tenancy off the STAMPED owning team, not a project lookup: a scoped actor
+    // must match the authorization's team, and an authorization whose team is
+    // unknown reads as not-found. (The old project-lookup guard silently passed a
+    // foreign actor once the project row was deleted, since `project` went null.)
+    const projectRow = authorization?.projectId ? (state.projects ?? []).find((item) => item.id === authorization.projectId) ?? null : null;
+    const ownerTeam = authorization?.ownerTeamId ?? (projectRow ? teamOf(projectRow) : null);
+    if (!authorization || (actor?.teamId && ownerTeam !== actor.teamId)) {
+      return { status: 404, body: { error: "authorization_not_found" } };
+    }
+    if (authorization.status !== "applied") {
+      return { status: 409, body: { error: "authorization_not_applied", status: authorization.status, message: "Only an applied authorization can be rolled back." } };
+    }
+    // Re-validate the bound worktree still exists. Without this, createInvocation
+    // silently substitutes the project's default worktree for a dangling id and the
+    // --reverse could git-revert in the WRONG tree (e.g. the main checkout).
+    const worktree = findToolWorktree(authorization.worktreeId, authorization.projectId);
+    if (!worktree) {
+      return { status: 409, body: { error: "worktree_not_found", message: "The bound worktree no longer exists; the patch cannot be safely rolled back." } };
+    }
+    const token = stringOrNull(body?.approvalToken);
+    if (!token) {
+      return { status: 409, body: { error: "approval_required", reason: "missing_token" } };
+    }
+    if (typeof validateApprovalToken !== "function") {
+      return { status: 409, body: { error: "approval_required", reason: "approval_validator_unavailable" } };
+    }
+    // Check the runner BEFORE consuming the single-use grant — a 409 here must not
+    // burn the grant (the web UI mints-then-calls in one click).
+    const runner = availableClaudeApplyRunner();
+    if (!runner) {
+      return { status: 409, body: { error: "agent_not_available", message: "No governed Claude apply runner is available to execute the rollback." } };
+    }
+    const approval = validateApprovalToken(token, { action: "rollback_patch", targetId: authorization.id, actor });
+    if (!approval.approved) {
+      return { status: 409, body: { error: "approval_required", reason: approval.reason ?? "grant_required" } };
+    }
+    const invocation = createInvocation(`Roll back an applied Claude patch on worktree ${authorization.worktreeId}.`, runner, {
+      actor,
+      requestedBy: actor?.userId,
+      metadata: {
+        tool: CLAUDE_APPLY_TOOL_CONTRACT.name,
+        toolVersion: CLAUDE_APPLY_TOOL_CONTRACT.version,
+        projectId: authorization.projectId,
+        worktreeId: authorization.worktreeId,
+        claudeApplyAuthorizationId: authorization.id,
+        // The bridge injects --reverse for this flag; the runner then refuses a
+        // reverse that no longer checks cleanly (worktree moved on).
+        claudeApplyRollback: true,
+        applyPatch: authorization.patch,
+      },
+      timeoutSeconds: 120,
+    });
+    runTx(() => {
+      startInvocationIfAllowed(invocation, runner);
+      authorization.status = "rolling_back";
+      authorization.rollbackInvocationId = invocation.id;
+      appendEvent({
+        invocationId: invocation.id,
+        type: "claude_rollback_authorized",
+        level: "warn",
+        message: `Authorized rolling back Claude patch authorization ${authorization.id} (grant ${approval.grantId ?? "legacy"}).`,
+        data: {
+          claudeApplyAuthorizationId: authorization.id,
+          proposalInvocationId: authorization.proposalInvocationId,
+          worktreeId: authorization.worktreeId,
+          grantId: approval.grantId ?? null,
+        },
+      });
+    });
+    return {
+      status: 202,
+      body: {
+        authorizationId: authorization.id,
+        status: "rolling_back",
+        rollbackInvocationId: invocation.id,
+        agentId: runner.id,
+        worktreeId: authorization.worktreeId,
+      },
+    };
   }
 
   function resolveToolProjectId(projectId, actor) {
@@ -382,6 +1105,7 @@ export function createToolService({
     createToolInvocation,
     getTool,
     listTools,
+    rollbackClaudeApply,
     validateCodexReviewInput,
     validateClaudeReviewInput,
     validateCodexExecInput,
@@ -473,6 +1197,162 @@ function buildClaudeReviewToolDescriptor(agents, application = null) {
     authoritativeBilling: false,
     outputCollection: "claudeReviewFindings",
     application: application ? { id: application.id, capability: `app.${application.id}.review.diff` } : null,
+  };
+}
+
+function buildClaudeExplainToolDescriptor(agents, application = null) {
+  return {
+    name: CLAUDE_EXPLAIN_TOOL_CONTRACT.name,
+    version: CLAUDE_EXPLAIN_TOOL_CONTRACT.version,
+    displayName: "Claude Diff Explain",
+    description: "Run a governed read-only Claude explanation over a project worktree diff.",
+    riskLevel: "low",
+    riskTags: ["read_only", "read_project", "code_analysis", "local_agent"],
+    requiresLocalDevice: true,
+    inputSchema: CLAUDE_EXPLAIN_TOOL_CONTRACT.inputSchema,
+    outputSchema: CLAUDE_EXPLAIN_TOOL_CONTRACT.outputSchema,
+    agents: agents.map((agent) => ({
+      id: agent.id,
+      name: agent.name,
+      status: agent.status,
+      mode: "diff-explain",
+    })),
+    approvalPolicy: {
+      defaultReadOnlyAnalysis: "allowed",
+    },
+    authoritativeBilling: false,
+    outputCollection: "invocations",
+    application: application ? { id: application.id, capability: `app.${application.id}.explain.diff` } : null,
+  };
+}
+
+function buildClaudeExplainCodeToolDescriptor(agents, application = null) {
+  return {
+    name: CLAUDE_EXPLAIN_CODE_TOOL_CONTRACT.name,
+    version: CLAUDE_EXPLAIN_CODE_TOOL_CONTRACT.version,
+    displayName: "Claude Code Explain",
+    description: "Run a governed read-only Claude explanation of a file, symbol, or line range in a project worktree.",
+    riskLevel: "low",
+    riskTags: ["read_only", "read_project", "code_analysis", "local_agent"],
+    requiresLocalDevice: true,
+    inputSchema: CLAUDE_EXPLAIN_CODE_TOOL_CONTRACT.inputSchema,
+    outputSchema: CLAUDE_EXPLAIN_CODE_TOOL_CONTRACT.outputSchema,
+    agents: agents.map((agent) => ({
+      id: agent.id,
+      name: agent.name,
+      status: agent.status,
+      mode: "code-explain",
+    })),
+    approvalPolicy: {
+      defaultReadOnlyAnalysis: "allowed",
+    },
+    authoritativeBilling: false,
+    outputCollection: "invocations",
+    application: application ? { id: application.id, capability: `app.${application.id}.explain.code` } : null,
+  };
+}
+
+function buildClaudeAnalyzeIssueToolDescriptor(agents, application = null) {
+  return {
+    name: CLAUDE_ANALYZE_ISSUE_TOOL_CONTRACT.name,
+    version: CLAUDE_ANALYZE_ISSUE_TOOL_CONTRACT.version,
+    displayName: "Claude Issue Analysis",
+    description: "Run a governed read-only Claude analysis of a repo issue, with the issue body server-resolved and fenced as untrusted data.",
+    riskLevel: "low",
+    riskTags: ["read_only", "read_project", "code_analysis", "local_agent", "untrusted_input"],
+    requiresLocalDevice: true,
+    inputSchema: CLAUDE_ANALYZE_ISSUE_TOOL_CONTRACT.inputSchema,
+    outputSchema: CLAUDE_ANALYZE_ISSUE_TOOL_CONTRACT.outputSchema,
+    agents: agents.map((agent) => ({
+      id: agent.id,
+      name: agent.name,
+      status: agent.status,
+      mode: "issue-analyze",
+    })),
+    approvalPolicy: {
+      defaultReadOnlyAnalysis: "allowed",
+    },
+    authoritativeBilling: false,
+    outputCollection: "invocations",
+    application: application ? { id: application.id, capability: `app.${application.id}.analyze.issue` } : null,
+  };
+}
+
+function buildClaudePlanChangeToolDescriptor(agents, application = null) {
+  return {
+    name: CLAUDE_PLAN_CHANGE_TOOL_CONTRACT.name,
+    version: CLAUDE_PLAN_CHANGE_TOOL_CONTRACT.version,
+    displayName: "Claude Change Planning",
+    description: "Run a governed read-only Claude session that turns a bounded goal into a structured, server-capped change plan.",
+    riskLevel: "low",
+    riskTags: ["read_only", "read_project", "change_planning", "local_agent"],
+    requiresLocalDevice: true,
+    inputSchema: CLAUDE_PLAN_CHANGE_TOOL_CONTRACT.inputSchema,
+    outputSchema: CLAUDE_PLAN_CHANGE_TOOL_CONTRACT.outputSchema,
+    agents: agents.map((agent) => ({
+      id: agent.id,
+      name: agent.name,
+      status: agent.status,
+      mode: "change-plan",
+    })),
+    approvalPolicy: {
+      defaultReadOnlyAnalysis: "allowed",
+    },
+    authoritativeBilling: false,
+    outputCollection: "invocations",
+    application: application ? { id: application.id, capability: `app.${application.id}.plan.change` } : null,
+  };
+}
+
+function buildClaudeProposeToolDescriptor(agents, application = null) {
+  return {
+    name: CLAUDE_PROPOSE_TOOL_CONTRACT.name,
+    version: CLAUDE_PROPOSE_TOOL_CONTRACT.version,
+    displayName: "Claude Patch Proposal",
+    description: "Run a governed Claude session that proposes a change as an immutable patch artifact — never applied.",
+    riskLevel: "low",
+    riskTags: ["read_only", "read_project", "code_proposal", "local_agent"],
+    requiresLocalDevice: true,
+    inputSchema: CLAUDE_PROPOSE_TOOL_CONTRACT.inputSchema,
+    outputSchema: CLAUDE_PROPOSE_TOOL_CONTRACT.outputSchema,
+    agents: agents.map((agent) => ({
+      id: agent.id,
+      name: agent.name,
+      status: agent.status,
+      mode: "propose-patch",
+    })),
+    approvalPolicy: {
+      // Generating a proposal is read-only. Applying it is the separate,
+      // approval-bound Phase 4 path.
+      proposePatch: "allowed",
+      applyPatch: "approval_required",
+    },
+    authoritativeBilling: false,
+    outputCollection: "invocations",
+    application: application ? { id: application.id, capability: `app.${application.id}.propose.patch` } : null,
+  };
+}
+
+function buildClaudeApplyToolDescriptor(application = null) {
+  return {
+    name: CLAUDE_APPLY_TOOL_CONTRACT.name,
+    version: CLAUDE_APPLY_TOOL_CONTRACT.version,
+    displayName: "Claude Patch Apply",
+    description: "Authorize applying a reviewed Claude patch proposal to its bound worktree. Requires a single-use approval grant. Phase 4a records the authorization only; execution is a follow-up.",
+    riskLevel: "high",
+    riskTags: ["write_worktree", "code_change", "local_agent", "approval_required"],
+    requiresLocalDevice: true,
+    inputSchema: CLAUDE_APPLY_TOOL_CONTRACT.inputSchema,
+    outputSchema: CLAUDE_APPLY_TOOL_CONTRACT.outputSchema,
+    // No runner agent in 4a: the gate is server-side. 4b adds the bridge apply runner.
+    agents: [],
+    approvalPolicy: {
+      applyPatch: "approval_required",
+      executable: false,
+    },
+    authoritativeBilling: false,
+    outputCollection: "claudeApplyAuthorizations",
+    application: application ? { id: application.id, capability: `app.${application.id}.apply.patch` } : null,
   };
 }
 
@@ -661,6 +1541,172 @@ function validateClaudeReviewInput(input = {}) {
   return validateReviewInput(input);
 }
 
+// Explain takes no severityFloor (it does not judge), so it cannot reuse the
+// review validator — a stray severityFloor must be a hard unknown_field, matching
+// the contract's additionalProperties:false.
+function validateClaudeExplainInput(input = {}) {
+  if (!input || typeof input !== "object" || Array.isArray(input)) {
+    return { ok: false, status: 400, body: { error: "invalid_input", message: "Tool input must be an object." } };
+  }
+  const allowed = new Set(["projectId", "worktreeId", "instruction"]);
+  const unknown = Object.keys(input).filter((key) => !allowed.has(key));
+  if (unknown.length) {
+    return { ok: false, status: 400, body: { error: "unknown_field", fields: unknown } };
+  }
+  const worktreeId = stringOrNull(input.worktreeId);
+  if (!worktreeId) {
+    return { ok: false, status: 400, body: { error: "worktree_required" } };
+  }
+  const instruction = input.instruction === undefined || input.instruction === null
+    ? null
+    : String(input.instruction).trim();
+  if (instruction && instruction.length > 1200) {
+    return { ok: false, status: 400, body: { error: "instruction_too_long", maxLength: 1200 } };
+  }
+  return {
+    ok: true,
+    value: {
+      projectId: stringOrNull(input.projectId),
+      worktreeId,
+      instruction,
+    },
+  };
+}
+
+// explain.code targets code in place: a required worktree-relative path plus
+// optional symbol / 1-indexed line range / instruction. Unknown fields are hard
+// errors; the path shape gate refuses absolute paths and traversal outright.
+function validateClaudeExplainCodeInput(input = {}) {
+  if (!input || typeof input !== "object" || Array.isArray(input)) {
+    return { ok: false, status: 400, body: { error: "invalid_input", message: "Tool input must be an object." } };
+  }
+  const allowed = new Set(["projectId", "worktreeId", "path", "symbol", "startLine", "endLine", "instruction"]);
+  const unknown = Object.keys(input).filter((key) => !allowed.has(key));
+  if (unknown.length) {
+    return { ok: false, status: 400, body: { error: "unknown_field", fields: unknown } };
+  }
+  const worktreeId = stringOrNull(input.worktreeId);
+  if (!worktreeId) {
+    return { ok: false, status: 400, body: { error: "worktree_required" } };
+  }
+  const path = input.path === undefined || input.path === null ? "" : String(input.path).trim();
+  if (!path) {
+    return { ok: false, status: 400, body: { error: "path_required" } };
+  }
+  if (path.length > 512) {
+    return { ok: false, status: 400, body: { error: "path_too_long", maxLength: 512 } };
+  }
+  if (!isSafeWorktreeRelativePath(path)) {
+    return { ok: false, status: 400, body: { error: "path_invalid", message: "path must be worktree-relative with no traversal segments." } };
+  }
+  const symbol = input.symbol === undefined || input.symbol === null ? null : String(input.symbol).trim() || null;
+  if (symbol && symbol.length > 200) {
+    return { ok: false, status: 400, body: { error: "symbol_too_long", maxLength: 200 } };
+  }
+  const startLine = input.startLine === undefined ? null : Number(input.startLine);
+  const endLine = input.endLine === undefined ? null : Number(input.endLine);
+  const validLine = (line) => line === null || (Number.isInteger(line) && line >= 1);
+  if (!validLine(startLine) || !validLine(endLine) || (startLine !== null) !== (endLine !== null) || (startLine !== null && endLine < startLine)) {
+    return { ok: false, status: 400, body: { error: "line_range_invalid", message: "startLine and endLine must be 1-indexed integers given together, with endLine >= startLine." } };
+  }
+  const instruction = input.instruction === undefined || input.instruction === null
+    ? null
+    : String(input.instruction).trim();
+  if (instruction && instruction.length > 1200) {
+    return { ok: false, status: 400, body: { error: "instruction_too_long", maxLength: 1200 } };
+  }
+  return {
+    ok: true,
+    value: {
+      projectId: stringOrNull(input.projectId),
+      worktreeId,
+      path,
+      symbol,
+      lineRange: startLine === null ? null : `${startLine}-${endLine}`,
+      instruction,
+    },
+  };
+}
+
+// analyze.issue accepts an issue NUMBER only — issue text can never be inlined
+// by the caller (ADR 0011: the body is attacker-adjacent and must be resolved,
+// bounded, and fenced server-side). A stray field is a hard unknown_field.
+function validateClaudeAnalyzeIssueInput(input = {}) {
+  if (!input || typeof input !== "object" || Array.isArray(input)) {
+    return { ok: false, status: 400, body: { error: "invalid_input", message: "Tool input must be an object." } };
+  }
+  const allowed = new Set(["projectId", "worktreeId", "issueNumber", "instruction"]);
+  const unknown = Object.keys(input).filter((key) => !allowed.has(key));
+  if (unknown.length) {
+    return { ok: false, status: 400, body: { error: "unknown_field", fields: unknown } };
+  }
+  const worktreeId = stringOrNull(input.worktreeId);
+  if (!worktreeId) {
+    return { ok: false, status: 400, body: { error: "worktree_required" } };
+  }
+  if (input.issueNumber === undefined || input.issueNumber === null) {
+    return { ok: false, status: 400, body: { error: "issue_number_required" } };
+  }
+  const issueNumber = Number(input.issueNumber);
+  if (!Number.isInteger(issueNumber) || issueNumber < 1) {
+    return { ok: false, status: 400, body: { error: "issue_number_invalid", message: "issueNumber must be a positive integer." } };
+  }
+  const instruction = input.instruction === undefined || input.instruction === null
+    ? null
+    : String(input.instruction).trim();
+  if (instruction && instruction.length > 1200) {
+    return { ok: false, status: 400, body: { error: "instruction_too_long", maxLength: 1200 } };
+  }
+  return {
+    ok: true,
+    value: {
+      projectId: stringOrNull(input.projectId),
+      worktreeId,
+      issueNumber,
+      instruction,
+    },
+  };
+}
+
+// Propose requires a task (the change to propose) and an optional instruction; it
+// takes no severityFloor. A stray field is a hard unknown_field.
+function validateClaudeProposeInput(input = {}) {
+  if (!input || typeof input !== "object" || Array.isArray(input)) {
+    return { ok: false, status: 400, body: { error: "invalid_input", message: "Tool input must be an object." } };
+  }
+  const allowed = new Set(["projectId", "worktreeId", "task", "instruction"]);
+  const unknown = Object.keys(input).filter((key) => !allowed.has(key));
+  if (unknown.length) {
+    return { ok: false, status: 400, body: { error: "unknown_field", fields: unknown } };
+  }
+  const worktreeId = stringOrNull(input.worktreeId);
+  if (!worktreeId) {
+    return { ok: false, status: 400, body: { error: "worktree_required" } };
+  }
+  const task = input.task === undefined || input.task === null ? "" : String(input.task).trim();
+  if (!task) {
+    return { ok: false, status: 400, body: { error: "task_required" } };
+  }
+  if (task.length > 4000) {
+    return { ok: false, status: 400, body: { error: "task_too_long", maxLength: 4000 } };
+  }
+  const instruction = input.instruction === undefined || input.instruction === null
+    ? null
+    : String(input.instruction).trim();
+  if (instruction && instruction.length > 1200) {
+    return { ok: false, status: 400, body: { error: "instruction_too_long", maxLength: 1200 } };
+  }
+  return {
+    ok: true,
+    value: {
+      projectId: stringOrNull(input.projectId),
+      worktreeId,
+      task,
+      instruction,
+    },
+  };
+}
+
 function buildCcusageTask(value) {
   const filters = [
     value.since ? `since ${value.since}` : null,
@@ -680,6 +1726,108 @@ function buildCodexReviewTask(value) {
 function buildClaudeReviewTask(value) {
   const suffix = value.instruction ? ` Instruction: ${value.instruction}` : "";
   return `Review the selected worktree diff with Claude. Severity floor: ${value.severityFloor}.${suffix}`;
+}
+
+function buildClaudeExplainTask(value) {
+  const suffix = value.instruction ? ` Instruction: ${value.instruction}` : "";
+  return `Explain the selected worktree diff with Claude.${suffix}`;
+}
+
+function buildClaudeExplainCodeTask(value) {
+  const target = [
+    value.path,
+    value.symbol ? `symbol ${value.symbol}` : null,
+    value.lineRange ? `lines ${value.lineRange}` : null,
+  ].filter(Boolean).join(", ");
+  const suffix = value.instruction ? ` Instruction: ${value.instruction}` : "";
+  return `Explain code with Claude: ${target}.${suffix}`;
+}
+
+function buildClaudeAnalyzeIssueTask(value) {
+  const suffix = value.instruction ? ` Instruction: ${value.instruction}` : "";
+  return `Analyze repo issue #${value.issueNumber} with Claude.${suffix}`;
+}
+
+function buildClaudePlanChangeTask(value) {
+  const context = value.analysisInvocationId ? ` (context: analysis ${value.analysisInvocationId})` : "";
+  const suffix = value.instruction ? ` Instruction: ${value.instruction}` : "";
+  return `Plan a change with Claude: ${value.goal}.${context}${suffix}`;
+}
+
+// plan.change requires a bounded goal; the optional analysis reference is a
+// LINK to a prior invocation, never free text. A stray field is a hard
+// unknown_field.
+function validateClaudePlanChangeInput(input = {}) {
+  if (!input || typeof input !== "object" || Array.isArray(input)) {
+    return { ok: false, status: 400, body: { error: "invalid_input", message: "Tool input must be an object." } };
+  }
+  const allowed = new Set(["projectId", "worktreeId", "goal", "analysisInvocationId", "instruction"]);
+  const unknown = Object.keys(input).filter((key) => !allowed.has(key));
+  if (unknown.length) {
+    return { ok: false, status: 400, body: { error: "unknown_field", fields: unknown } };
+  }
+  const worktreeId = stringOrNull(input.worktreeId);
+  if (!worktreeId) {
+    return { ok: false, status: 400, body: { error: "worktree_required" } };
+  }
+  const goal = input.goal === undefined || input.goal === null ? "" : String(input.goal).trim();
+  if (!goal) {
+    return { ok: false, status: 400, body: { error: "goal_required" } };
+  }
+  if (goal.length > 4000) {
+    return { ok: false, status: 400, body: { error: "goal_too_long", maxLength: 4000 } };
+  }
+  const instruction = input.instruction === undefined || input.instruction === null
+    ? null
+    : String(input.instruction).trim();
+  if (instruction && instruction.length > 1200) {
+    return { ok: false, status: 400, body: { error: "instruction_too_long", maxLength: 1200 } };
+  }
+  return {
+    ok: true,
+    value: {
+      projectId: stringOrNull(input.projectId),
+      worktreeId,
+      goal,
+      analysisInvocationId: stringOrNull(input.analysisInvocationId),
+      instruction,
+    },
+  };
+}
+
+function buildClaudeProposeTask(value) {
+  const suffix = value.instruction ? ` Instruction: ${value.instruction}` : "";
+  return `Propose a patch with Claude for: ${value.task}.${suffix}`;
+}
+
+// Apply requires the bound proposal id and a grant token; it produces no task.
+function validateClaudeApplyInput(input = {}) {
+  if (!input || typeof input !== "object" || Array.isArray(input)) {
+    return { ok: false, status: 400, body: { error: "invalid_input", message: "Tool input must be an object." } };
+  }
+  const allowed = new Set(["projectId", "worktreeId", "proposalInvocationId", "approvalToken", "verify"]);
+  const unknown = Object.keys(input).filter((key) => !allowed.has(key));
+  if (unknown.length) {
+    return { ok: false, status: 400, body: { error: "unknown_field", fields: unknown } };
+  }
+  const worktreeId = stringOrNull(input.worktreeId);
+  if (!worktreeId) {
+    return { ok: false, status: 400, body: { error: "worktree_required" } };
+  }
+  const proposalInvocationId = stringOrNull(input.proposalInvocationId);
+  if (!proposalInvocationId) {
+    return { ok: false, status: 400, body: { error: "proposal_required" } };
+  }
+  // Post-apply verification: an allowlisted command ID only, never argv.
+  const verify = stringOrNull(input.verify);
+  if (verify && !CLAUDE_APPLY_VERIFY_COMMANDS.includes(verify)) {
+    return { ok: false, status: 400, body: { error: "invalid_verify_command", allowed: CLAUDE_APPLY_VERIFY_COMMANDS } };
+  }
+  const approvalToken = stringOrNull(input.approvalToken);
+  if (!approvalToken) {
+    return { ok: false, status: 409, body: { error: "approval_required", reason: "missing_token" } };
+  }
+  return { ok: true, value: { projectId: stringOrNull(input.projectId), worktreeId, proposalInvocationId, approvalToken, verify } };
 }
 
 function buildCodexExecTask(value) {

@@ -1,7 +1,8 @@
 import { spawn, spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
-import { dirname, isAbsolute, relative, resolve } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { delimiter } from "node:path";
 import * as pty from "node-pty";
 import { callMcpTool, probeMcpServer } from "./mcp-client.mjs";
@@ -14,6 +15,8 @@ import { extractClaudeFileAccesses } from "./claude-file-access.mjs";
 import { newRoundState, claudeRoundEmits, codexRoundEmits } from "./round-telemetry.mjs";
 import { applicationWrapperArgs } from "./application-wrapper-args.mjs";
 import { collectApplicationBinaryReadiness } from "./application-binary-readiness.mjs";
+import { collectApplicationCredentialReadiness } from "./application-credential-readiness.mjs";
+import { runApprovedApplicationInstall } from "./application-installer.mjs";
 import {
   createLocalExecutionPolicyManifest,
   localExecutionGate,
@@ -63,6 +66,11 @@ const serverUrl = process.env.BRIDGE_SERVER_URL ?? "http://127.0.0.1:5001";
 const pollIntervalMs = Number(process.env.BRIDGE_POLL_INTERVAL_MS ?? 700);
 const terminalPollIntervalMs = Number(process.env.BRIDGE_TERMINAL_POLL_INTERVAL_MS ?? 40);
 const binaryReadinessIntervalMs = Number(process.env.BRIDGE_BINARY_READINESS_INTERVAL_MS ?? 5 * 60 * 1000);
+// Where the one-time login flow leaves its NON-SECRET sidecar records
+// (application id, provider, scope). The secret itself lives in the OS
+// credential store and is read only by the MCP server that uses it; the bridge
+// never opens it. Unset means "this device reports holding no credentials".
+const credentialDir = process.env.BRIDGE_CREDENTIAL_DIR ?? null;
 const demoAgentPath = resolve(__dirname, "demo-agent.mjs");
 const codexFixtureAgentPath = resolve(__dirname, "codex-fixture-agent.mjs");
 const remoteRelayPath = resolve(__dirname, "remote-relay.mjs");
@@ -342,6 +350,7 @@ try {
     bridgeVersion: "0.0.0",
     capabilities: ["demo_cli_agent", "managed_terminal_pty", "remote_ssh_relay"],
     applicationBinaryReadiness: collectApplicationBinaryReadiness(localExecutionPolicyManifest),
+    applicationCredentialReadiness: collectApplicationCredentialReadiness(credentialDir),
   });
 } catch (error) {
   const message = error instanceof Error ? error.message : String(error);
@@ -383,6 +392,10 @@ const guarded = (fn, label) => () => Promise.resolve().then(fn).catch((error) =>
 async function refreshApplicationBinaryReadiness() {
   await request("POST", "/api/bridge/readiness", {
     applicationBinaryReadiness: collectApplicationBinaryReadiness(localExecutionPolicyManifest),
+    // A credential revoked in the provider's account shows up here as the sidecar
+    // going away — the same tick that reports a binary vanishing. That is what
+    // lets the server's health probe auto-degrade the application to offline.
+    applicationCredentialReadiness: collectApplicationCredentialReadiness(credentialDir),
   });
 }
 
@@ -449,8 +462,33 @@ async function poll() {
     } finally {
       busy = false;
     }
+    return;
   }
 
+  const installWork = await request("GET", "/api/bridge/application-install-next");
+  if (installWork) {
+    busy = true;
+    try {
+      await runApplicationInstall(installWork);
+    } finally {
+      busy = false;
+    }
+  }
+
+}
+
+async function runApplicationInstall(work) {
+  const result = await runApprovedApplicationInstall({
+    plan: work.plan,
+    env: buildEnv({ command: "application-installer", environmentPolicy: "inherit_safe" }),
+    pollCancellation: async () => {
+      const status = await request("GET", `/api/bridge/application-install-cancel-status?runId=${encodeURIComponent(work.runId)}`);
+      return status?.cancelRequested === true;
+    },
+    onProgress: (progress) => request("POST", "/api/bridge/application-install-progress", { runId: work.runId, ...progress }),
+    terminate: (child) => terminateProcessTree(child),
+  });
+  await request("POST", "/api/bridge/application-install-complete", { runId: work.runId, ...result });
 }
 
 async function runLifecycleAction(work) {
@@ -1036,6 +1074,10 @@ async function runInvocation(work) {
   });
   clearInterval(cancelTimer);
   clearTimeout(timeoutTimer);
+  // The temp patch file the apply runner read (materialized in governedApplyWrapperArgs)
+  // is a per-run throwaway — delete it now that the child has exited so an authorized
+  // diff does not linger in the shared temp directory.
+  cleanupApplyPatchFile(spawnPlan.args);
 
   if (stdoutBuffer.trim()) {
     const result = await handleAgentLine(invocationId, stdoutBuffer.trim(), adapter, roundState);
@@ -1480,7 +1522,7 @@ function createCliSpawnPlan(adapter, payload) {
   const renderedArgs = isCodexCliCommand(adapter.command)
     ? applyCodexPermissionMode(renderArgs(argsTemplate, payloadJson, payload), payload)
     : applicationWrapperArgs(
-        governedExecWrapperArgs(governedReviewWrapperArgs(renderArgs(argsTemplate, payloadJson, payload), payload), payload),
+        governedApplyWrapperArgs(governedExecWrapperArgs(governedReviewWrapperArgs(renderArgs(argsTemplate, payloadJson, payload), payload), payload), payload),
         payload,
         { resolveCwd: (spec, metadata) => normalizedExistingPath(spec.cwd) ?? normalizedExistingPath(metadata?.worktreePath) ?? normalizedExistingPath(metadata?.projectPath) },
       );
@@ -1544,6 +1586,134 @@ function governedReviewWrapperArgs(renderedArgs, payload) {
   if (severityFloor && !hasFlag(injected, "--severity-floor")) {
     injected.push("--severity-floor", severityFloor);
   }
+  // Present only for claude.propose.patch — the change to propose. Read-only:
+  // the wrapper stays in plan mode and outputs a diff as text, never applies it.
+  const task = boundedString(metadata.task, 4000);
+  if (task && !hasFlag(injected, "--task")) {
+    injected.push("--task", task);
+  }
+  // Present only for claude.explain.code (#1049) — the code target. The server
+  // shape-gated the path (worktree-relative, traversal-free) and the wrapper
+  // re-checks filesystem confinement against --cwd before Claude spawns; the
+  // bridge refuses to inject a path that fails the same relative-shape test.
+  const targetPath = boundedString(metadata.targetPath, 512);
+  if (targetPath && !isAbsolute(targetPath) && !targetPath.includes("..") && !hasFlag(injected, "--path")) {
+    injected.push("--path", targetPath);
+  }
+  const targetSymbol = boundedString(metadata.targetSymbol, 200);
+  if (targetSymbol && !hasFlag(injected, "--symbol")) {
+    injected.push("--symbol", targetSymbol);
+  }
+  const targetLines = typeof metadata.targetLines === "string" && /^\d+-\d+$/.test(metadata.targetLines)
+    ? metadata.targetLines
+    : null;
+  if (targetLines && !hasFlag(injected, "--lines")) {
+    injected.push("--lines", targetLines);
+  }
+  // Present only for claude.analyze.issue (#1050) — the server-resolved issue
+  // reference. The bridge injects the fenced block ONLY when it carries the
+  // ADR-0011 BEGIN/END markers (mirrored in the wrapper, which refuses an
+  // unfenced body); a raw body can never reach the prompt through this path.
+  const issueNumber = Number.isInteger(metadata.issueNumber) && metadata.issueNumber >= 1
+    ? String(metadata.issueNumber)
+    : null;
+  if (issueNumber && !hasFlag(injected, "--issue")) {
+    injected.push("--issue", issueNumber);
+  }
+  const issueBlock = boundedString(metadata.issueUntrustedBlock, 8000);
+  const fenced = issueBlock
+    && /----- BEGIN ISSUE DESCRIPTION \(untrusted\) -----/.test(issueBlock)
+    && /----- END ISSUE DESCRIPTION -----/.test(issueBlock);
+  if (fenced && !hasFlag(injected, "--issue-data")) {
+    injected.push("--issue-data", issueBlock);
+  }
+  // Present only for claude.plan.change (#1051) — the optional fenced analysis
+  // context (the goal itself rides the --task injection above). Same fence rule:
+  // an unfenced block is never injected, and the wrapper refuses one anyway.
+  const planContext = boundedString(metadata.planContextBlock, 6000);
+  const planFenced = planContext
+    && /----- BEGIN ANALYSIS DESCRIPTION \(untrusted\) -----/.test(planContext)
+    && /----- END ANALYSIS DESCRIPTION -----/.test(planContext);
+  if (planFenced && !hasFlag(injected, "--plan-context")) {
+    injected.push("--plan-context", planContext);
+  }
+  return injected;
+}
+
+// Phase 4b: materialize the authorized patch for the Claude apply runner. The
+// server sends the patch in metadata (too large for argv); write it to a temp file
+// and inject --cwd + --patch-file. The runner git-applies it into the bound
+// worktree. Only fires for the governed claude.apply.patch wrapper.
+// Delete the temp patch file passed to the apply runner (--patch-file <path>),
+// but only when it lives under our own myagenttool-apply temp dir so we never
+// remove a caller-supplied file.
+function cleanupApplyPatchFile(args) {
+  const list = Array.isArray(args) ? args.map(String) : [];
+  const idx = list.indexOf("--patch-file");
+  const path = idx >= 0 ? list[idx + 1] : null;
+  const applyTempDir = join(tmpdir(), "myagenttool-apply");
+  if (path && resolve(path).startsWith(resolve(applyTempDir))) {
+    try { rmSync(path, { force: true }); } catch { /* best-effort */ }
+  }
+}
+
+function governedApplyWrapperArgs(renderedArgs, payload) {
+  const metadata = payload.options?.metadata && typeof payload.options.metadata === "object" && !Array.isArray(payload.options.metadata)
+    ? payload.options.metadata
+    : {};
+  const usesApplyWrapper = String(metadata.tool ?? "") === "claude.apply.patch"
+    && renderedArgs.some((arg) => String(arg).replaceAll("\\", "/").endsWith("tools/agents/claude-apply-wrapper.mjs"));
+  if (!usesApplyWrapper) {
+    return renderedArgs;
+  }
+  const injected = [...renderedArgs];
+  const cwd = normalizedExistingPath(metadata.worktreePath) ?? normalizedExistingPath(metadata.projectPath);
+  if (cwd && !hasFlag(injected, "--cwd")) {
+    injected.push("--cwd", cwd);
+  }
+  // #1052: the deferred verify leg — a read-only run of the allowlisted command
+  // in the already-applied worktree. Nothing write-shaped is injected for it;
+  // the wrapper additionally refuses any such combination.
+  if (metadata.claudeApplyVerify === true) {
+    const verifyOnlyId = boundedString(metadata.verifyCommandId, 64);
+    if (verifyOnlyId && !hasFlag(injected, "--verify-only")) {
+      injected.push("--verify-only", verifyOnlyId);
+    }
+    return injected;
+  }
+  const patch = typeof metadata.applyPatch === "string" ? metadata.applyPatch : null;
+  if (patch && !hasFlag(injected, "--patch-file")) {
+    const dir = join(tmpdir(), "myagenttool-apply");
+    mkdirSync(dir, { recursive: true, mode: 0o700 });
+    // Name by the (globally unique) invocation id, not payload.id (always
+    // undefined here) — the old fixed `patch-<pid>-inv.diff` name left one
+    // world-readable diff on disk and overwrote it every run. The wrapper deletes
+    // this file when it exits.
+    const invocationId = String(payload.invocationId ?? payload.id ?? `inv-${process.pid}`).replace(/[^A-Za-z0-9_-]/g, "");
+    const patchFile = join(dir, `patch-${invocationId}.diff`);
+    writeFileSync(patchFile, patch, { encoding: "utf8", mode: 0o600 });
+    injected.push("--patch-file", patchFile);
+  }
+  // A governed rollback run re-applies the same server-held patch in reverse; the
+  // runner then refuses a reverse that no longer checks cleanly.
+  if (metadata.claudeApplyRollback === true && !hasFlag(injected, "--reverse")) {
+    injected.push("--reverse");
+  }
+  // #914: the apply gate stamps the proposal's base commit; the runner refuses a
+  // worktree whose HEAD moved off it. Never on rollback — a rollback reverses on
+  // top of the APPLIED state, whose HEAD legitimately differs from the base.
+  const expectedBase = typeof metadata.expectedBaseCommit === "string" && /^[0-9a-f]{40}$/i.test(metadata.expectedBaseCommit)
+    ? metadata.expectedBaseCommit.toLowerCase()
+    : null;
+  if (expectedBase && metadata.claudeApplyRollback !== true && !hasFlag(injected, "--expect-base")) {
+    injected.push("--expect-base", expectedBase);
+  }
+  // Post-apply verification: an allowlisted command ID (never argv); the wrapper
+  // maps it to fixed argv independently and refuses unknown IDs. Never on rollback.
+  const verifyId = boundedString(metadata.verifyCommandId, 64);
+  if (verifyId && metadata.claudeApplyRollback !== true && !hasFlag(injected, "--verify")) {
+    injected.push("--verify", verifyId);
+  }
   return injected;
 }
 
@@ -1571,7 +1741,7 @@ function governedExecWrapperArgs(renderedArgs, payload) {
 function usesGovernedReviewWrapper(tool, args) {
   const wrapper = tool === "codex.review.diff"
     ? "codex-review-wrapper.mjs"
-    : tool === "claude.review.diff"
+    : tool === "claude.review.diff" || tool === "claude.explain.diff" || tool === "claude.explain.code" || tool === "claude.analyze.issue" || tool === "claude.plan.change" || tool === "claude.propose.patch"
       ? "claude-review-wrapper.mjs"
       : null;
   // Require the full canonical directory segment, not just the basename — a

@@ -38,6 +38,11 @@ export declare function roleAutoRunPrompt(
   },
 ): string;
 
+/** The taint (ADR 0011): risk tag on an attacker-controlled-output capability. */
+export declare const UNTRUSTED_INPUT_TAG: "untrusted_input";
+/** The taint (ADR 0011): issue label applied when such output is transcribed. */
+export declare const UNTRUSTED_INPUT_LABEL: "untrusted-input";
+
 /** B1a: wrap an untrusted issue body as delimited data (not instructions). */
 export declare function untrustedBodyBlock(label: string, body: string): string;
 

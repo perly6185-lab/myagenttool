@@ -1,0 +1,13 @@
+{
+  "name": "@myagenttool/mail-mcp",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test test/*.test.mjs"
+  },
+  "dependencies": {
+    "imapflow": "^1.0.195",
+    "mailparser": "^3.7.4"
+  }
+}

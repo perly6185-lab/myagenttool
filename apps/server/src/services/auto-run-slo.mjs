@@ -69,3 +69,60 @@ export function summarizeAutoRunSlos(autoRuns = [], targets = DEFAULT_SLO_TARGET
     // not yet attributed per run, and regression lives in the eval-trend panel.
   };
 }
+
+// Close the SLO → alert loop (O5.2 follow-up). The metrics summary already
+// exposes `anyBelow`, but nothing fired on it — an operator had to be looking at
+// the panel. This decides whether a breach warrants an alert, THROTTLED so a
+// persistently-below SLO is not re-alerted on every tick: an alert fires only
+// when the SET of below-target indicators CHANGES (a new one drops below, the
+// set shifts, or it clears). `previousSignature` is the last-emitted set, stored
+// on state between ticks; the returned `signature` is what to store next.
+//
+// A "below" verdict requires meets === false — meets === null (no data yet) is
+// never a breach, so an idle loop never false-alarms.
+export function evaluateSloAlert(sloSummary, previousSignature = "") {
+  const slos = Array.isArray(sloSummary?.slos) ? sloSummary.slos : [];
+  const below = slos.filter((s) => s.meets === false);
+  const signature = below.map((s) => s.key).sort().join(",");
+  const prev = typeof previousSignature === "string" ? previousSignature : "";
+  if (signature === prev) return { changed: false, signature, alert: null };
+  if (below.length === 0) {
+    // Reaching here means a breach cleared (prev was non-empty). Only announce a
+    // real RECOVERY when there is data that now meets target. Going to NO DATA
+    // (every SLO meets===null — e.g. an empty loop after a restart while the
+    // breach signature is still persisted) is NOT a recovery: clear the stale
+    // signature silently, no false "back on target" alert.
+    const recovered = slos.some((s) => s.meets === true);
+    return {
+      changed: true,
+      signature,
+      alert: recovered
+        ? {
+            kind: "auto_run_slo_recovered",
+            severity: "info",
+            message: "All auto-run SLOs are back on target.",
+            data: { previouslyBelow: prev ? prev.split(",") : [] },
+          }
+        : null,
+    };
+  }
+  return {
+    changed: true,
+    signature,
+    alert: {
+      kind: "auto_run_slo_below",
+      severity: "warning",
+      message: `Auto-run SLO below target: ${below.map((s) => s.label).join(", ")}.`,
+      data: {
+        below: below.map((s) => ({
+          key: s.key,
+          label: s.label,
+          value: s.value,
+          target: s.target,
+          direction: s.direction,
+          unit: s.unit,
+        })),
+      },
+    },
+  };
+}

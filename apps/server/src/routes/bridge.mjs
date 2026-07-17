@@ -57,6 +57,10 @@ export async function handleBridgeRoutes({
   findDiscoveryRun,
   completeDiscoveryRun,
   nextBridgeProbeRun,
+  nextBridgeApplicationInstall,
+  findApplicationInstallRun,
+  recordApplicationInstallProgress,
+  completeApplicationInstall,
   markLifecycleActionStarted,
   completeLifecycleAction,
   nextBridgeLifecycleAction,
@@ -401,6 +405,60 @@ export async function handleBridgeRoutes({
       command: lifecycleAction.command,
       summary: lifecycleAction.summary,
     });
+    return true;
+  }
+
+  if (req.method === "GET" && url.pathname === "/api/bridge/application-install-next") {
+    device.lastSeenAt = now();
+    if (device.unlinkState !== "linked") {
+      sendJson(res, 204, null);
+      return true;
+    }
+    const run = nextBridgeApplicationInstall(device.id);
+    if (!run) {
+      sendJson(res, 204, null);
+      return true;
+    }
+    sendJson(res, 200, { namespace, protocolVersion, runId: run.id, deviceId: run.deviceId, plan: run.plan });
+    return true;
+  }
+
+  if (req.method === "GET" && url.pathname === "/api/bridge/application-install-cancel-status") {
+    const run = findApplicationInstallRun(url.searchParams.get("runId"));
+    if (!run || run.deviceId !== device.id || !["running", "cancelling"].includes(run.status)) {
+      sendJson(res, 404, { error: "application_install_run_not_found" });
+      return true;
+    }
+    sendJson(res, 200, { cancelRequested: Boolean(run.cancelRequestedAt) });
+    return true;
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/bridge/application-install-progress") {
+    const body = await readJson(req);
+    const run = findApplicationInstallRun(body?.runId);
+    if (!run || run.deviceId !== device.id) {
+      sendJson(res, 404, { error: "application_install_run_not_found" });
+      return true;
+    }
+    recordApplicationInstallProgress(run, body);
+    sendJson(res, 200, { ok: true });
+    return true;
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/bridge/application-install-complete") {
+    const body = await readJson(req);
+    const run = findApplicationInstallRun(body?.runId);
+    if (!run || run.deviceId !== device.id) {
+      sendJson(res, 404, { error: "application_install_run_not_found" });
+      return true;
+    }
+    try {
+      completeApplicationInstall(run, body);
+    } catch (error) {
+      sendJson(res, 409, { error: "application_install_not_completable", message: error instanceof Error ? error.message : String(error) });
+      return true;
+    }
+    sendJson(res, 200, { ok: true, run });
     return true;
   }
 

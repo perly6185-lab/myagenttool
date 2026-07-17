@@ -14,7 +14,7 @@ const allowedLifecycleActions = ["install", "update", "uninstall"];
 const allowedRecipeSources = ["local_file", "workspace_catalog", "private_catalog", "generated_artifact", "manual_entry"];
 const allowedSignatureStatuses = ["unsigned", "signed_verified", "signed_unverified", "signature_missing", "not_required"];
 const allowedDeploymentModes = ["local_developer", "self_hosted", "saas", "private_deployment"];
-const allowedAuditSubjects = ["invocation", "lifecycle", "quota", "usage", "ledger", "policy", "audit", "catalog", "bundle"];
+const allowedAuditSubjects = ["invocation", "lifecycle", "quota", "usage", "ledger", "policy", "audit", "catalog", "bundle", "transcript"];
 const allowedCatalogChannels = ["stable", "beta", "dev"];
 const allowedCatalogVisibility = ["private", "team", "workspace"];
 const lifecycleCommandAllowlist = new Set([
@@ -41,7 +41,17 @@ export function createM3Service({
   findAgent,
   persistStateSoon = () => {},
   dispatchAlert = () => {},
+  store,
 }) {
+  // #968: run a lifecycle-action transition as one durable unit of work — commit
+  // synchronously through the Store when wired, else fall back to the debounce so
+  // behavior is unchanged where no store is injected (many hermetic m3 tests).
+  const runTx = (fn) => {
+    if (typeof store?.transaction === "function") return store.transaction(fn);
+    const result = fn();
+    persistStateSoon();
+    return result;
+  };
   function createPrivateCatalogEntry(body = {}) {
     const createdAt = now();
     const entry = {
@@ -60,16 +70,17 @@ export function createM3Service({
       createdAt,
       updatedAt: createdAt,
     };
-    state.privateCatalogEntries.unshift(entry);
-    state.privateCatalogEntries = state.privateCatalogEntries.slice(0, 100);
-    appendEvent({
-      invocationId: null,
-      type: "lifecycle_requested",
-      level: "info",
-      message: `Private catalog entry ${entry.packageName}@${entry.version} created.`,
-      data: { catalogEntryId: entry.id, packageName: entry.packageName, version: entry.version },
+    runTx(() => {
+      state.privateCatalogEntries.unshift(entry);
+      state.privateCatalogEntries = state.privateCatalogEntries.slice(0, 100);
+      appendEvent({
+        invocationId: null,
+        type: "lifecycle_requested",
+        level: "info",
+        message: `Private catalog entry ${entry.packageName}@${entry.version} created.`,
+        data: { catalogEntryId: entry.id, packageName: entry.packageName, version: entry.version },
+      });
     });
-    persistStateSoon();
     return entry;
   }
 
@@ -95,17 +106,18 @@ export function createM3Service({
       createdAt,
       updatedAt: createdAt,
     };
-    state.signedBundleManifests.unshift(manifest);
-    state.signedBundleManifests = state.signedBundleManifests.slice(0, 100);
-    linkBundleToCatalog(manifest.catalogEntryId, manifest.id);
-    appendEvent({
-      invocationId: null,
-      type: "policy_decision_recorded",
-      level: manifest.policy.decision === "blocked" ? "warn" : "info",
-      message: `Signed bundle policy: ${manifest.policy.decision}.`,
-      data: { bundleId: manifest.id, signatureStatus: manifest.signatureStatus, decision: manifest.policy.decision },
+    runTx(() => {
+      state.signedBundleManifests.unshift(manifest);
+      state.signedBundleManifests = state.signedBundleManifests.slice(0, 100);
+      linkBundleToCatalog(manifest.catalogEntryId, manifest.id);
+      appendEvent({
+        invocationId: null,
+        type: "policy_decision_recorded",
+        level: manifest.policy.decision === "blocked" ? "warn" : "info",
+        message: `Signed bundle policy: ${manifest.policy.decision}.`,
+        data: { bundleId: manifest.id, signatureStatus: manifest.signatureStatus, decision: manifest.policy.decision },
+      });
     });
-    persistStateSoon();
     return manifest;
   }
 
@@ -161,17 +173,18 @@ export function createM3Service({
       createdAt,
       updatedAt: createdAt,
     };
-    state.lifecycleRecipes.unshift(recipe);
-    state.lifecycleRecipes = state.lifecycleRecipes.slice(0, 100);
-    linkRecipeToCatalog(recipe.catalogEntryId, recipe.id);
-    appendEvent({
-      invocationId: null,
-      type: "lifecycle_requested",
-      level: "info",
-      message: `${recipe.name} created as a reviewable lifecycle recipe. No command was executed.`,
-      data: { recipeId: recipe.id, action: recipe.action, reviewState: recipe.reviewState },
+    runTx(() => {
+      state.lifecycleRecipes.unshift(recipe);
+      state.lifecycleRecipes = state.lifecycleRecipes.slice(0, 100);
+      linkRecipeToCatalog(recipe.catalogEntryId, recipe.id);
+      appendEvent({
+        invocationId: null,
+        type: "lifecycle_requested",
+        level: "info",
+        message: `${recipe.name} created as a reviewable lifecycle recipe. No command was executed.`,
+        data: { recipeId: recipe.id, action: recipe.action, reviewState: recipe.reviewState },
+      });
     });
-    persistStateSoon();
     return recipe;
   }
 
@@ -189,17 +202,18 @@ export function createM3Service({
     if (!nextState) {
       throw new Error(`Unsupported lifecycle recipe transition: ${action}`);
     }
-    recipe.reviewState = nextState;
-    recipe.updatedAt = now();
-    appendEvent({
-      invocationId: null,
-      type: "lifecycle_requested",
-      level: nextState === "rejected" ? "warn" : "info",
-      message: `${recipe.name} moved to ${nextState}. No lifecycle command was executed.`,
-      data: { recipeId: recipe.id, reviewState: recipe.reviewState },
+    return runTx(() => {
+      recipe.reviewState = nextState;
+      recipe.updatedAt = now();
+      appendEvent({
+        invocationId: null,
+        type: "lifecycle_requested",
+        level: nextState === "rejected" ? "warn" : "info",
+        message: `${recipe.name} moved to ${nextState}. No lifecycle command was executed.`,
+        data: { recipeId: recipe.id, reviewState: recipe.reviewState },
+      });
+      return recipe;
     });
-    persistStateSoon();
-    return recipe;
   }
 
   function evaluateLifecyclePolicy(recipe) {
@@ -244,20 +258,21 @@ export function createM3Service({
       checks,
       createdAt: now(),
     };
-    state.lifecyclePolicyDecisions.unshift(record);
-    state.lifecyclePolicyDecisions = state.lifecyclePolicyDecisions.slice(0, 100);
-    appendEvent({
-      invocationId: null,
-      type: "policy_decision_recorded",
-      level: decision === "blocked" ? "warn" : "info",
-      message: `Lifecycle policy decision: ${decision}.`,
-      data: { policyDecisionId: record.id, recipeId: recipe.id, decision },
+    runTx(() => {
+      state.lifecyclePolicyDecisions.unshift(record);
+      state.lifecyclePolicyDecisions = state.lifecyclePolicyDecisions.slice(0, 100);
+      appendEvent({
+        invocationId: null,
+        type: "policy_decision_recorded",
+        level: decision === "blocked" ? "warn" : "info",
+        message: `Lifecycle policy decision: ${decision}.`,
+        data: { policyDecisionId: record.id, recipeId: recipe.id, decision },
+      });
+      if (decision === "blocked") {
+        recipe.queueState = "blocked";
+        recipe.updatedAt = now();
+      }
     });
-    if (decision === "blocked") {
-      recipe.queueState = "blocked";
-      recipe.updatedAt = now();
-    }
-    persistStateSoon();
     return record;
   }
 
@@ -285,18 +300,19 @@ export function createM3Service({
       decidedBy: null,
       expiresAt: new Date(Date.now() + 30 * 60 * 1000).toISOString(),
     };
-    state.lifecycleLocalApprovals.unshift(approval);
-    state.lifecycleLocalApprovals = state.lifecycleLocalApprovals.slice(0, 100);
-    recipe.queueState = "local_approval_required";
-    recipe.updatedAt = now();
-    appendEvent({
-      invocationId: null,
-      type: "local_approval_requested",
-      level: "info",
-      message: `${recipe.name} requires local approval before lifecycle queueing.`,
-      data: { approvalId: approval.id, recipeId: recipe.id },
+    runTx(() => {
+      state.lifecycleLocalApprovals.unshift(approval);
+      state.lifecycleLocalApprovals = state.lifecycleLocalApprovals.slice(0, 100);
+      recipe.queueState = "local_approval_required";
+      recipe.updatedAt = now();
+      appendEvent({
+        invocationId: null,
+        type: "local_approval_requested",
+        level: "info",
+        message: `${recipe.name} requires local approval before lifecycle queueing.`,
+        data: { approvalId: approval.id, recipeId: recipe.id },
+      });
     });
-    persistStateSoon();
     return approval;
   }
 
@@ -307,23 +323,31 @@ export function createM3Service({
     if (!["approve", "deny"].includes(decision)) {
       throw new Error(`Unsupported lifecycle approval decision: ${decision}`);
     }
-    approval.status = decision === "approve" ? "approved" : "denied";
-    approval.decidedAt = now();
-    approval.decidedBy = actor?.userId ?? "usr_local";
-    const recipe = findLifecycleRecipe(approval.recipeId);
-    if (recipe && approval.status === "denied") {
-      recipe.queueState = "blocked";
-      recipe.updatedAt = now();
+    // #1151: a settled approval is immutable — without this, a second operator's
+    // click silently CLOBBERED status/decidedBy/decidedAt (an approved recipe
+    // could flip to denied with no trace). Idempotent return; the route tells
+    // the second operator who decided and when.
+    if (approval.status !== "pending") {
+      return approval;
     }
-    appendEvent({
-      invocationId: null,
-      type: decision === "approve" ? "local_approval_granted" : "local_approval_denied",
-      level: decision === "approve" ? "info" : "warn",
-      message: `Lifecycle local approval ${approval.status}.`,
-      data: { approvalId: approval.id, recipeId: approval.recipeId },
+    return runTx(() => {
+      approval.status = decision === "approve" ? "approved" : "denied";
+      approval.decidedAt = now();
+      approval.decidedBy = actor?.userId ?? "usr_local";
+      const recipe = findLifecycleRecipe(approval.recipeId);
+      if (recipe && approval.status === "denied") {
+        recipe.queueState = "blocked";
+        recipe.updatedAt = now();
+      }
+      appendEvent({
+        invocationId: null,
+        type: decision === "approve" ? "local_approval_granted" : "local_approval_denied",
+        level: decision === "approve" ? "info" : "warn",
+        message: `Lifecycle local approval ${approval.status}.`,
+        data: { approvalId: approval.id, recipeId: approval.recipeId },
+      });
+      return approval;
     });
-    persistStateSoon();
-    return approval;
   }
 
   function findLifecycleLocalApproval(id) {
@@ -349,6 +373,7 @@ export function createM3Service({
       requestLifecycleLocalApproval(recipe);
       throw new Error("Lifecycle action requires approved local approval before queueing.");
     }
+    return runTx(() => {
     const createdAt = now();
     const command = buildExecutableLifecycleCommand(recipe);
     const executionEnabled = Boolean(command);
@@ -396,8 +421,8 @@ export function createM3Service({
       message: queued.summary,
       data: { queuedActionId: queued.id, recipeId: recipe.id, executionEnabled },
     });
-    persistStateSoon();
     return queued;
+    });
   }
 
   function nextBridgeLifecycleAction() {
@@ -413,6 +438,7 @@ export function createM3Service({
     if (!lifecycleAction || lifecycleAction.status !== "queued") {
       return lifecycleAction;
     }
+    return runTx(() => {
     if (!lifecycleAction.executionEnabled || !isExecutableLifecycleActionCommand(lifecycleAction.command, lifecycleAction.action)) {
       const completedAt = now();
       lifecycleAction.status = "observed";
@@ -447,7 +473,6 @@ export function createM3Service({
         message: lifecycleAction.result.summary,
         data: { queuedActionId: lifecycleAction.id, recipeId: lifecycleAction.recipeId, executionEnabled: false },
       });
-      persistStateSoon();
       return lifecycleAction;
     }
     lifecycleAction.status = "running";
@@ -469,8 +494,8 @@ export function createM3Service({
       message: "Desktop Bridge started allowlisted lifecycle execution.",
       data: { queuedActionId: lifecycleAction.id, recipeId: lifecycleAction.recipeId, commandId: lifecycleAction.command.commandId },
     });
-    persistStateSoon();
     return lifecycleAction;
+    });
   }
 
   function completeLifecycleAction(lifecycleAction, body = {}) {
@@ -480,6 +505,7 @@ export function createM3Service({
     if (lifecycleAction.status !== "running") {
       throw new Error(`Lifecycle action is not completable from ${lifecycleAction.status}.`);
     }
+    return runTx(() => {
     const status = normalizeLifecycleResultStatus(body.status);
     const recipe = findLifecycleRecipe(lifecycleAction.recipeId);
     const completedAt = now();
@@ -533,8 +559,8 @@ export function createM3Service({
     if (status === "failed" && lifecycleAction.result.rollbackAvailable) {
       createRollbackRequest(lifecycleAction, recipe);
     }
-    persistStateSoon();
     return lifecycleAction;
+    });
   }
 
   function createRollbackRequest(failedAction, recipe = findLifecycleRecipe(failedAction?.recipeId)) {
@@ -560,20 +586,21 @@ export function createM3Service({
       createdAt,
       updatedAt: createdAt,
     };
-    state.lifecycleRollbackRequests.unshift(rollback);
-    state.lifecycleRollbackRequests = state.lifecycleRollbackRequests.slice(0, 100);
-    appendEvent({
-      invocationId: null,
-      type: "lifecycle_failed",
-      level: "warn",
-      message: rollback.summary,
-      data: { rollbackRequestId: rollback.id, failedActionId: failedAction.id, recipeId: recipe.id },
+    runTx(() => {
+      state.lifecycleRollbackRequests.unshift(rollback);
+      state.lifecycleRollbackRequests = state.lifecycleRollbackRequests.slice(0, 100);
+      appendEvent({
+        invocationId: null,
+        type: "lifecycle_failed",
+        level: "warn",
+        message: rollback.summary,
+        data: { rollbackRequestId: rollback.id, failedActionId: failedAction.id, recipeId: recipe.id },
+      });
     });
-    persistStateSoon();
     return rollback;
   }
 
-  function queueRollbackAction(rollback) {
+  function queueRollbackAction(rollback, { actor = null } = {}) {
     if (!rollback) {
       throw new Error("Rollback request not found.");
     }
@@ -601,32 +628,36 @@ export function createM3Service({
       startedAt: null,
       completedAt: null,
     };
-    state.lifecycleQueuedActions.unshift(queued);
-    state.lifecycleQueuedActions = state.lifecycleQueuedActions.slice(0, 100);
-    state.lifecycleAuditRecords.unshift({
-      id: queued.id,
-      agentId: queued.agentId ?? "agt_lifecycle_pending",
-      deviceId: queued.deviceId ?? undefined,
-      requestedBy: queued.requestedBy,
-      operation: "rollback",
-      status: "queued",
-      reason: "Rollback requested for failed lifecycle action.",
-      message: queued.summary,
-      createdAt,
-      completedAt: null,
+    runTx(() => {
+      state.lifecycleQueuedActions.unshift(queued);
+      state.lifecycleQueuedActions = state.lifecycleQueuedActions.slice(0, 100);
+      state.lifecycleAuditRecords.unshift({
+        id: queued.id,
+        agentId: queued.agentId ?? "agt_lifecycle_pending",
+        deviceId: queued.deviceId ?? undefined,
+        requestedBy: queued.requestedBy,
+        operation: "rollback",
+        status: "queued",
+        reason: "Rollback requested for failed lifecycle action.",
+        message: queued.summary,
+        createdAt,
+        completedAt: null,
+      });
+      capLifecycleAuditRecords(state);
+      rollback.status = "queued";
+      rollback.queuedActionId = queued.id;
+      // #1151: record WHO queued it — `requestedBy` is who asked for the rollback,
+      // not who pulled the trigger.
+      rollback.queuedBy = actor?.userId ?? "usr_local";
+      rollback.updatedAt = createdAt;
+      appendEvent({
+        invocationId: null,
+        type: "lifecycle_requested",
+        level: "info",
+        message: queued.summary,
+        data: { rollbackRequestId: rollback.id, queuedActionId: queued.id, executionEnabled },
+      });
     });
-    capLifecycleAuditRecords(state);
-    rollback.status = "queued";
-    rollback.queuedActionId = queued.id;
-    rollback.updatedAt = createdAt;
-    appendEvent({
-      invocationId: null,
-      type: "lifecycle_requested",
-      level: "info",
-      message: queued.summary,
-      data: { rollbackRequestId: rollback.id, queuedActionId: queued.id, executionEnabled },
-    });
-    persistStateSoon();
     return queued;
   }
 
@@ -656,9 +687,10 @@ export function createM3Service({
       createdAt,
       updatedAt: createdAt,
     };
-    state.quotaPolicies.unshift(policy);
-    state.quotaPolicies = state.quotaPolicies.slice(0, 100);
-    persistStateSoon();
+    runTx(() => {
+      state.quotaPolicies.unshift(policy);
+      state.quotaPolicies = state.quotaPolicies.slice(0, 100);
+    });
     return policy;
   }
 
@@ -688,14 +720,14 @@ export function createM3Service({
   // this is what makes token/USD quotas track REAL consumption from BYOK runs.
   function accrueUsageQuota(usage) {
     if (!usage) return;
-    let touched = false;
-    for (const policy of policiesForSubject(usage.userId, usage.provider)) {
-      if (policy.meter === "requests") continue;
-      policy.used += meterQuantity(usage, policy.meter);
-      policy.updatedAt = now();
-      touched = true;
-    }
-    if (touched) persistStateSoon();
+    const metered = policiesForSubject(usage.userId, usage.provider).filter((policy) => policy.meter !== "requests");
+    if (metered.length === 0) return;
+    runTx(() => {
+      for (const policy of metered) {
+        policy.used += meterQuantity(usage, policy.meter);
+        policy.updatedAt = now();
+      }
+    });
   }
 
   // Pre-flight: is this subject already over a metered window allowance? Applies
@@ -719,6 +751,7 @@ export function createM3Service({
   }
 
   function recordAiUsage(body = {}) {
+    return runTx(() => {
     const providerMode = normalizeProviderMode(body.providerMode, "platform_managed");
     const provider = String(body.provider ?? "openai");
     const model = String(body.model ?? "default");
@@ -740,7 +773,6 @@ export function createM3Service({
       data: quotaDecision,
     });
     if (providerMode === "platform_managed" && quotaDecision.decision !== "allowed") {
-      persistStateSoon();
       return {
         quotaDecision,
         usageRecord: null,
@@ -793,13 +825,13 @@ export function createM3Service({
       message: `AI usage recorded for ${provider}/${model}.`,
       data: { usageRecordId: usageRecord.id, quotaDecisionId: quotaDecision.id, ledgerEntryIds: usageRecord.ledgerEntryIds },
     });
-    persistStateSoon();
     return {
       quotaDecision,
       usageRecord,
       ledgerEntries: [ledgerEntry],
       blocked: false,
     };
+    });
   }
 
   // Sum an invocation's per-round telemetry (state.invocationRounds, #808) into
@@ -901,29 +933,29 @@ export function createM3Service({
       errorCode: null,
       createdAt,
     };
-    state.aiUsageRecords.unshift(usageRecord);
-    state.aiUsageRecords = state.aiUsageRecords.slice(0, 200);
-    for (const round of rounds) round.usageRecordId = usageRecord.id;
-    // Charge this real BYOK usage against the subject's metered quota windows.
-    accrueUsageQuota(usageRecord);
-    detectCostAnomaly(usageRecord);
-
-    appendEvent({
-      invocationId: invocation.id,
-      type: "ai_usage_recorded",
-      level: "info",
-      message: `AI usage summed from ${rounds.length} round(s) for ${usageRecord.provider}/${usageRecord.model}.`,
-      data: {
-        usageRecordId: usageRecord.id,
-        derivedFrom: "rounds",
-        roundCount: rounds.length,
-        inputTokens: usageRecord.inputTokens,
-        outputTokens: usageRecord.outputTokens,
-        pricingVersion: usageRecord.pricingVersion,
-        pricingModelPriceId: usageRecord.pricingModelPriceId,
-      },
+    runTx(() => {
+      state.aiUsageRecords.unshift(usageRecord);
+      state.aiUsageRecords = state.aiUsageRecords.slice(0, 200);
+      for (const round of rounds) round.usageRecordId = usageRecord.id;
+      // Charge this real BYOK usage against the subject's metered quota windows.
+      accrueUsageQuota(usageRecord);
+      detectCostAnomaly(usageRecord);
+      appendEvent({
+        invocationId: invocation.id,
+        type: "ai_usage_recorded",
+        level: "info",
+        message: `AI usage summed from ${rounds.length} round(s) for ${usageRecord.provider}/${usageRecord.model}.`,
+        data: {
+          usageRecordId: usageRecord.id,
+          derivedFrom: "rounds",
+          roundCount: rounds.length,
+          inputTokens: usageRecord.inputTokens,
+          outputTokens: usageRecord.outputTokens,
+          pricingVersion: usageRecord.pricingVersion,
+          pricingModelPriceId: usageRecord.pricingModelPriceId,
+        },
+      });
     });
-    persistStateSoon();
     return usageRecord;
   }
 
@@ -995,15 +1027,16 @@ export function createM3Service({
       createdAt: existing.createdAt,
       updatedAt,
     };
-    state.privateDeploymentConfig = config;
-    appendEvent({
-      invocationId: null,
-      type: "billing_recorded",
-      level: "info",
-      message: "Private deployment export configuration updated.",
-      data: { deploymentConfigId: config.id, mode: config.mode },
+    runTx(() => {
+      state.privateDeploymentConfig = config;
+      appendEvent({
+        invocationId: null,
+        type: "billing_recorded",
+        level: "info",
+        message: "Private deployment export configuration updated.",
+        data: { deploymentConfigId: config.id, mode: config.mode },
+      });
     });
-    persistStateSoon();
     return config;
   }
 
@@ -1031,18 +1064,19 @@ export function createM3Service({
       request.manifest = createAuditExportManifest(request);
       request.exportedAt = request.manifest.generatedAt;
     }
-    state.auditExportRequests.unshift(request);
-    state.auditExportRequests = state.auditExportRequests.slice(0, 100);
-    appendEvent({
-      invocationId: null,
-      type: "billing_recorded",
-      level: validation.ok ? "info" : "warn",
-      message: validation.ok
-        ? dryRun ? "Audit export dry-run validated." : "Audit export manifest generated."
-        : "Audit export blocked by configuration findings.",
-      data: { auditExportId: request.id, status: request.status, dryRun: request.dryRun },
+    runTx(() => {
+      state.auditExportRequests.unshift(request);
+      state.auditExportRequests = state.auditExportRequests.slice(0, 100);
+      appendEvent({
+        invocationId: null,
+        type: "billing_recorded",
+        level: validation.ok ? "info" : "warn",
+        message: validation.ok
+          ? dryRun ? "Audit export dry-run validated." : "Audit export manifest generated."
+          : "Audit export blocked by configuration findings.",
+        data: { auditExportId: request.id, status: request.status, dryRun: request.dryRun },
+      });
     });
-    persistStateSoon();
     return request;
   }
 
@@ -1065,6 +1099,7 @@ export function createM3Service({
     reserveBudget,
     releaseBudgetReservation,
     releaseReservationsForAutoRun,
+    releaseReservationsForInvocation,
     reconcileBudgetReservations,
     findLifecycleLocalApproval,
     completeLifecycleAction,
@@ -1107,13 +1142,19 @@ export function createM3Service({
     const source = reported ? "reported" : hasEstimate ? "estimated" : "unknown";
     const meta = invocation.input?.metadata ?? {};
     const projectId = meta.projectId ?? invocation.projectId ?? state.currentProjectId ?? state.projects[0]?.id ?? null;
+    // #969: stamp the OWNING TEAM on the ledger row (was hardcoded null). An
+    // explicit owner column lets the read-model scope by team directly — robust to
+    // the owning project row being dropped on restore, and the future durable store
+    // indexes on it. Derived from the row's project; null when there is no project.
+    const ledgerProject = projectId ? state.projects.find((project) => project.id === projectId) : null;
+    const ledgerTeamId = ledgerProject ? teamOf(ledgerProject) : null;
     const createdAt = now();
     const model = String(cost.model ?? "unknown");
     const entry = {
       id: nextId("led_demo"),
       workspaceId: agent?.economics?.budgetPoolId ?? "team_local",
       userId: invocation?.requestedBy ?? agent?.economics?.costOwner ?? "usr_local",
-      teamId: null,
+      teamId: ledgerTeamId,
       agentId: invocation.agentId ?? null,
       agentName: agent?.name ?? null,
       invocationId: invocation.id,
@@ -1139,6 +1180,14 @@ export function createM3Service({
       revenueOwner: null,
       budgetPoolId: agent?.economics?.budgetPoolId ?? null,
       projectId,
+      // Per-run cost attribution (agent_run_cost_total). The develop/repair/retry
+      // invocations of an auto-run all carry autoRunId in their input metadata;
+      // stamping it here lets ledgerSummary roll a run's whole cost up in one line
+      // without re-deriving it from telemetry. Null for manual/non-auto-run spend.
+      autoRunId: meta.autoRunId ?? null,
+      // Explicit model dimension for the byModel rollup, independent of
+      // `counterparty` (whose meaning differs across ledger paths).
+      model,
       counterparty: model,
       provider: model,
       pricingVersion: pricing.price?.pricingVersion ?? null,
@@ -1151,20 +1200,21 @@ export function createM3Service({
       createdAt,
       finalizedAt: hasEstimate ? null : createdAt,
     };
-    state.ledgerEntries.unshift(entry);
-    capLedgerEntries(state);
-    appendEvent({
-      invocationId: invocation.id,
-      type: "ledger_entry_recorded",
-      level: "info",
-      message: reported
-        ? `Recorded ${entry.currency} ${entry.amountUsd} reported cost for ${model}.`
-        : hasEstimate
-          ? `Recorded estimated ${entry.currency} ${entry.amountUsd} for ${model} (${inputTokens}+${outputTokens} tokens).`
-          : `Recorded unmetered token usage (${inputTokens}+${outputTokens} tokens) for ${model}.`,
-      data: { ledgerEntryId: entry.id, amountUsd: entry.amountUsd, amountSource: source, inputTokens, outputTokens, projectId },
+    runTx(() => {
+      state.ledgerEntries.unshift(entry);
+      capLedgerEntries(state);
+      appendEvent({
+        invocationId: invocation.id,
+        type: "ledger_entry_recorded",
+        level: "info",
+        message: reported
+          ? `Recorded ${entry.currency} ${entry.amountUsd} reported cost for ${model}.`
+          : hasEstimate
+            ? `Recorded estimated ${entry.currency} ${entry.amountUsd} for ${model} (${inputTokens}+${outputTokens} tokens).`
+            : `Recorded unmetered token usage (${inputTokens}+${outputTokens} tokens) for ${model}.`,
+        data: { ledgerEntryId: entry.id, amountUsd: entry.amountUsd, amountSource: source, inputTokens, outputTokens, projectId },
+      });
     });
-    persistStateSoon();
     return entry;
   }
 
@@ -1273,6 +1323,9 @@ export function createM3Service({
       revenueOwner: body.revenueOwner ? String(body.revenueOwner) : null,
       budgetPoolId: body.budgetPoolId ? String(body.budgetPoolId) : null,
       projectId: body.projectId ? String(body.projectId) : state.currentProjectId ?? state.projects[0]?.id ?? null,
+      // Stamp the real model (not the provider) so byModel rolls up by model, not
+      // by "anthropic"/"openai". counterparty stays the provider for chargeback.
+      model: usageRecord.model,
       counterparty: usageRecord.provider,
       provider: usageRecord.provider,
       billable: usageRecord.providerMode === "platform_managed",
@@ -1312,24 +1365,25 @@ export function createM3Service({
       }
       const existing = state.budgets.find((item) => item.teamId === teamId);
       const budget = existing ?? { id: nextId("bud_demo"), teamId, createdAt: nowValue };
-      budget.teamName = team.name;
-      budget.limitUsd = Number(limitUsd.toFixed(2));
-      budget.policy = normalizeBudgetPolicy(body.policy);
-      budget.currency = "USD";
-      budget.updatedAt = nowValue;
-      if (!existing) {
-        state.budgets.unshift(budget);
-      }
-      state.budgets = state.budgets.slice(0, 200);
-      appendEvent({
-        invocationId: null,
-        type: "billing_recorded",
-        level: "info",
-        message: `Team budget updated for ${team.name}.`,
-        data: { budgetId: budget.id, teamId, policy: budget.policy },
+      return runTx(() => {
+        budget.teamName = team.name;
+        budget.limitUsd = Number(limitUsd.toFixed(2));
+        budget.policy = normalizeBudgetPolicy(body.policy);
+        budget.currency = "USD";
+        budget.updatedAt = nowValue;
+        if (!existing) {
+          state.budgets.unshift(budget);
+        }
+        state.budgets = state.budgets.slice(0, 200);
+        appendEvent({
+          invocationId: null,
+          type: "billing_recorded",
+          level: "info",
+          message: `Team budget updated for ${team.name}.`,
+          data: { budgetId: budget.id, teamId, policy: budget.policy },
+        });
+        return budget;
       });
-      persistStateSoon();
-      return budget;
     }
 
     const project = state.projects.find((item) => item.id === projectId);
@@ -1342,24 +1396,25 @@ export function createM3Service({
       projectId,
       createdAt: nowValue,
     };
-    budget.projectName = project.name;
-    budget.limitUsd = Number(limitUsd.toFixed(2));
-    budget.policy = normalizeBudgetPolicy(body.policy);
-    budget.currency = "USD";
-    budget.updatedAt = nowValue;
-    if (!existing) {
-      state.budgets.unshift(budget);
-    }
-    state.budgets = state.budgets.slice(0, 200);
-    appendEvent({
-      invocationId: null,
-      type: "billing_recorded",
-      level: "info",
-      message: `Budget updated for ${project.name}.`,
-      data: { budgetId: budget.id, projectId, policy: budget.policy },
+    return runTx(() => {
+      budget.projectName = project.name;
+      budget.limitUsd = Number(limitUsd.toFixed(2));
+      budget.policy = normalizeBudgetPolicy(body.policy);
+      budget.currency = "USD";
+      budget.updatedAt = nowValue;
+      if (!existing) {
+        state.budgets.unshift(budget);
+      }
+      state.budgets = state.budgets.slice(0, 200);
+      appendEvent({
+        invocationId: null,
+        type: "billing_recorded",
+        level: "info",
+        message: `Budget updated for ${project.name}.`,
+        data: { budgetId: budget.id, projectId, policy: budget.policy },
+      });
+      return budget;
     });
-    persistStateSoon();
-    return budget;
   }
 
   function budgetStatusFor(projectId) {
@@ -1555,34 +1610,36 @@ export function createM3Service({
       settledAt: null,
       outcome: null,
     };
-    (state.budgetReservations ??= []).unshift(reservation);
-    capBudgetReservations();
-    appendEvent({
-      invocationId,
-      type: "budget_reserved",
-      level: "info",
-      message: `Reserved $${reserveUsd} for ${projectId ?? "unscoped"} (auto-run ${autoRunId ?? "n/a"}).`,
-      data: { reservationId: reservation.id, projectId, autoRunId, amountUsd: reserveUsd },
+    runTx(() => {
+      (state.budgetReservations ??= []).unshift(reservation);
+      capBudgetReservations();
+      appendEvent({
+        invocationId,
+        type: "budget_reserved",
+        level: "info",
+        message: `Reserved $${reserveUsd} for ${projectId ?? "unscoped"} (auto-run ${autoRunId ?? "n/a"}).`,
+        data: { reservationId: reservation.id, projectId, autoRunId, amountUsd: reserveUsd },
+      });
     });
-    persistStateSoon();
     return { ok: true, reservationId: reservation.id, amountUsd: reserveUsd };
   }
 
   function releaseBudgetReservation(reservationId, { outcome = "released" } = {}) {
     const reservation = (state.budgetReservations ?? []).find((item) => item.id === reservationId);
     if (!reservation || reservation.status !== "active") return false; // idempotent
-    reservation.status = "settled";
-    reservation.outcome = outcome;
-    reservation.settledAt = now();
-    appendEvent({
-      invocationId: reservation.invocationId,
-      type: "budget_reservation_released",
-      level: "info",
-      message: `Released reservation ${reservation.id} (${outcome}).`,
-      data: { reservationId: reservation.id, projectId: reservation.projectId, autoRunId: reservation.autoRunId, outcome },
+    return runTx(() => {
+      reservation.status = "settled";
+      reservation.outcome = outcome;
+      reservation.settledAt = now();
+      appendEvent({
+        invocationId: reservation.invocationId,
+        type: "budget_reservation_released",
+        level: "info",
+        message: `Released reservation ${reservation.id} (${outcome}).`,
+        data: { reservationId: reservation.id, projectId: reservation.projectId, autoRunId: reservation.autoRunId, outcome },
+      });
+      return true;
     });
-    persistStateSoon();
-    return true;
   }
 
   function releaseReservationsForAutoRun(autoRunId, { outcome = "released" } = {}) {
@@ -1596,15 +1653,37 @@ export function createM3Service({
     return released;
   }
 
-  // Boot/sweep reconcile: release any active hold whose owning auto-run is already
-  // settled or gone (a crash between reserve and settle would otherwise leak a
-  // hold that blocks the budget forever). `isSettled(autoRunId)` is injected by the
-  // caller (it owns the auto-run lifecycle).
-  function reconcileBudgetReservations({ isSettled } = {}) {
+  // Release a plain (non-auto-run) invocation's hold when it reaches a terminal
+  // state — the manual/API accept path reserves against the invocation id.
+  function releaseReservationsForInvocation(invocationId, { outcome = "released" } = {}) {
+    if (!invocationId) return 0;
+    let released = 0;
+    for (const reservation of [...(state.budgetReservations ?? [])]) {
+      if (reservation.invocationId === invocationId && !reservation.autoRunId && reservation.status === "active") {
+        if (releaseBudgetReservation(reservation.id, { outcome })) released += 1;
+      }
+    }
+    return released;
+  }
+
+  // Boot/sweep reconcile: release any active hold whose owner is already settled or
+  // gone (a crash between reserve and settle would otherwise leak a hold that
+  // blocks the budget forever). An auto-run hold is judged by `isSettled(autoRunId)`;
+  // a plain-invocation hold by `isInvocationTerminal(invocationId)`; a hold with no
+  // owner link at all can't be tracked, so it is reclaimed. Both predicates are
+  // injected by the caller that owns those lifecycles.
+  function reconcileBudgetReservations({ isSettled, isInvocationTerminal } = {}) {
     let released = 0;
     for (const reservation of [...(state.budgetReservations ?? [])]) {
       if (reservation.status !== "active") continue;
-      const orphaned = !reservation.autoRunId || (typeof isSettled === "function" && isSettled(reservation.autoRunId));
+      let orphaned;
+      if (reservation.autoRunId) {
+        orphaned = typeof isSettled === "function" && isSettled(reservation.autoRunId);
+      } else if (reservation.invocationId) {
+        orphaned = typeof isInvocationTerminal === "function" && isInvocationTerminal(reservation.invocationId);
+      } else {
+        orphaned = true; // no owner link → untrackable, reclaim
+      }
       if (orphaned) {
         if (releaseBudgetReservation(reservation.id, { outcome: "reconciled" })) released += 1;
       }
@@ -1659,13 +1738,22 @@ export function createM3Service({
       byCostOwner: [],
       byProject: [],
       byAgent: [],
+      byModel: [],
+      byAutoRun: [],
     };
     const owners = new Map();
     const projects = new Map();
     const agents = new Map();
+    const models = new Map();
+    const autoRuns = new Map();
     for (const entry of entries) {
       if (["voided", "cancelled"].includes(entry.status)) {
+        // Count it, then skip it for ALL spend — a voided/cancelled entry is not
+        // real spend and must not inflate totalCostUsd or any rollup (byModel /
+        // byAutoRun / byAgent / byProject / byCostOwner). Mirrors
+        // ledgerSpendForProject, which already skips these.
         summary.voidedEntries += 1;
+        continue;
       }
       if (entry.billable) summary.billableEntries += 1;
       const amount = ledgerEntryAmount(entry);
@@ -1688,10 +1776,27 @@ export function createM3Service({
       const agentId = entry.agentId ?? "unknown";
       const agent = findAgent(agentId);
       addRollup(agents, agentId, amount, source, { agentId, agentName: agent?.name, provider: entry.provider });
+      // cost_by_model: key on the explicit `model` field (falling back to the
+      // legacy counterparty for pre-fix entries), NOT the provider — so an
+      // AI-usage row whose counterparty is "anthropic"/"openai" still buckets by
+      // its actual model rather than polluting the model dimension.
+      const modelKey = entry.model ?? entry.counterparty ?? entry.provider ?? "unknown";
+      addRollup(models, modelKey, amount, source, { model: modelKey, provider: entry.provider });
+      // agent_run_cost_total: sum a single auto-run's whole spend. Only entries
+      // stamped with an autoRunId participate — manual/unrelated spend is not
+      // conflated into a "none" bucket.
+      if (entry.autoRunId) {
+        addRollup(autoRuns, entry.autoRunId, amount, source, { autoRunId: entry.autoRunId });
+      }
     }
     summary.byCostOwner = [...owners.values()].sort((a, b) => b.entries - a.entries);
     summary.byProject = [...projects.values()].sort((a, b) => b.entries - a.entries);
     summary.byAgent = [...agents.values()].sort((a, b) => b.entries - a.entries);
+    summary.byModel = [...models.values()].sort((a, b) => b.entries - a.entries);
+    // Sorted by total cost desc — "which runs cost the most" is the useful view.
+    summary.byAutoRun = [...autoRuns.values()].sort(
+      (a, b) => b.knownCostUsd + b.estimatedCostUsd - (a.knownCostUsd + a.estimatedCostUsd),
+    );
     return summary;
   }
 
@@ -1737,6 +1842,9 @@ export function createM3Service({
       audit: state.auditSummaries.length,
       catalog: state.privateCatalogEntries.length,
       bundle: state.signedBundleManifests.length,
+      // #1085: run transcripts are exportable evidence (skeleton + hashes
+      // survive retention; payload only while unreaped).
+      transcript: (state.runTranscripts ?? []).length,
     };
     return Object.fromEntries(subjects.map((subject) => [subject, counts[subject] ?? 0]));
   }
@@ -1782,6 +1890,7 @@ export function createM3Service({
     pushRefs("audit", state.auditSummaries);
     pushRefs("catalog", state.privateCatalogEntries);
     pushRefs("bundle", state.signedBundleManifests);
+    pushRefs("transcript", state.runTranscripts ?? []);
     return refs;
   }
 

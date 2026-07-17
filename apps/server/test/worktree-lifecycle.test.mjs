@@ -209,3 +209,16 @@ test("createWorktree fetchBase forks from FRESH origin/<base>, not the stale loc
   // despite the stale local. (Without fetchBase it would fork from the stale local main.)
   assert.ok(existsSync(join(worktree.worktreePath, "ADVANCE.txt")), "forked from FRESH origin/main, not the stale local checkout");
 });
+
+test("worktreeForProject resolves from BOTH the source and the derived workspace project", () => {
+  const source = svc.addProject({ name: "Repo", path: repoDir, ownerTeamId: "team_a" });
+  state.currentProjectId = source.id;
+  const { worktree, project: derivedProject } = svc.createWorktree({ projectId: source.id, name: "bind me", branchName: "myagent/bind-me" });
+
+  assert.equal(svc.worktreeForProject(source.id)?.id, worktree.id, "reachable from the source repo project");
+  // Regression: matching only the source project meant an invocation created
+  // while the WORKSPACE project was current (exactly what createWorktree selects)
+  // carried no worktreeId — sessions/evidence silently lost their worktree scope.
+  assert.equal(svc.worktreeForProject(derivedProject.id)?.id, worktree.id, "reachable from the derived workspace project");
+  assert.equal(svc.worktreeForProject("prj_ghost"), null);
+});

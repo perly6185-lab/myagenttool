@@ -63,7 +63,10 @@ admit before the real spend catches up); too high over-throttles concurrency.
 
 ## Scope / follow-ups
 
-- The manual invocation-creation path (`invocations/creation.mjs`) still uses the
-  finalized-spend gate; extending reservations there is a small follow-up.
-- The full transactional store boundary + dispatch-claim/idempotency consistency
-  and crash-recovery of accepted invocations remain the rest of #890.
+- The manual/API invocation-creation path (`invocations/creation.mjs`) now also
+  reserves at accept (keyed by invocation id), so two manual runs near a block
+  limit can't both pass; it skips auto-run-initiated runs (`metadata.autoRunId`)
+  to avoid a double hold, releases on completion, and `reconcileBudgetReservations`
+  reclaims a terminal/gone invocation's hold on the reap sweep (#962).
+- The full transactional store boundary landed for invocation accept + completion
+  (#957); the broader per-record store remains the rest of #890.

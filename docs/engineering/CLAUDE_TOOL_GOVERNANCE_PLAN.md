@@ -177,6 +177,21 @@ Acceptance:
 - External orchestrators can consume governed Claude analysis without arbitrary
   command, cwd, environment, or permission control.
 
+Implementation status (first slice): `claude.explain.diff` ships as the first
+Phase 2 capability — it explains a worktree diff (what changed / why it matters)
+instead of judging it. It reuses the Phase 1 machinery: the same fixed wrapper
+(`claude-review-wrapper.mjs`) with a new read-only `--mode diff-explain`
+(`--permission-mode plan`), the same project/worktree tenancy guard via
+`createReviewInvocation`, and the same `tool_facade` discovery
+(`app.app_claude.explain.diff`). It takes no `severityFloor` (a stray one is a
+hard `unknown_field`) and, because an explanation is analysis rather than
+queryable evidence, it does not write a bespoke findings collection — the
+explanation rides the invocation result and the durable Application-result
+lineage. The governed identity gate (`isGovernedClaudeExplainAgent`) pins the
+`diff-explain` mode and the canonical wrapper path, and the Desktop Bridge injects
+only the governed `--cwd`/`--instruction` flags. Remaining Phase 2 surface (broader
+inspection capabilities) can follow the same pattern.
+
 ### Phase 3: Immutable Patch Proposal (#913)
 
 - Add `claude.plan.change` or `claude.propose.patch`.
@@ -187,6 +202,21 @@ Acceptance:
 
 - Other agents can ask Claude for proposed changes without gaining write access
   to a worktree.
+
+Implementation status: `claude.propose.patch` ships as the Phase 3 capability. It
+reuses the Phase 1/2 machinery — the same fixed wrapper with a new read-only
+`--mode propose-patch` (`--permission-mode plan`), the same tenancy guard, and the
+same `tool_facade` discovery (`app.app_claude.propose.patch`). It requires a
+`task` (the change to propose) and returns an immutable artifact: a unified diff
+plus a summary and the touched files (recovered from the diff headers if the model
+omits them). Claude NEVER writes the worktree — the proposal is diff-as-text and
+rides the durable invocation result, so generating it is read-only and needs no
+approval (`requiresApproval: false`); the descriptor's `approvalPolicy.applyPatch`
+stays `approval_required`. A later apply consumes the proposal by invocation id.
+The Desktop Bridge injects only the governed `--cwd`/`--task`/`--instruction`
+flags. Broader-scope/high-risk approval gating for proposal generation, if needed,
+can layer onto the same facade. Phase 4 (below) consumes this proposal by
+invocation id under an approval grant.
 
 ### Phase 4: Approval-Bound Apply (#914)
 
@@ -199,6 +229,108 @@ Acceptance:
 - Missing, denied, or stale approvals cannot mutate files.
 - Successful apply records verification and rollback evidence bound to the
   approved proposal artifact.
+
+Implementation status (Phase 4a — the gate, not the write): `claude.apply.patch`
+ships behind a default-OFF flag (`MYAGENTTOOL_CLAUDE_APPLY_ENABLED`), so a
+deployment that has not opted in has no discoverable or invokable apply path. It
+binds to a Phase 3 proposal by invocation id (same actor-owned project; the apply
+worktree must match the proposal's), enforces tenancy, and requires a valid,
+single-use approval grant for `(action apply_patch, target proposalInvocationId)`
+— it fails closed if the grant validator is unwired. On success it records an
+immutable `claudeApplyAuthorizations` row (grant consumed, patch + files bound,
+`status: "authorized"`, `executable: false`) and a `claude_apply_authorized`
+event. **No file is written in 4a** — the acceptance "missing, denied, or stale
+approvals cannot mutate files" holds because there is no mutation path and no
+authorization exists without a valid grant + applicable, bound proposal.
+
+Implementation status (Phase 4b — the write): shipped, still behind the same
+default-OFF flag. When a governed apply RUNNER agent (`agt_claude_apply_patch`,
+`isGovernedClaudeApplyAgent`) is registered, `authorizeApply` dispatches the
+git-apply as a queued bridge invocation carrying the authorized patch; without a
+runner it stays a 4a authorization. The runner is `tools/agents/claude-apply-wrapper.mjs`:
+it `git apply --check`s first and refuses a patch that does not apply cleanly (no
+half-applied tree), then `git apply`s, and reports the authoritative file list
+(from `git apply --numstat`) plus reversible rollback guidance (`git apply
+--reverse`). On completion `recordClaudeApplyResult` folds the outcome into the
+authorization — `status: applied`/`failed`, applied files, verification, rollback
+— so the authorization row is the one durable record of the write. The Desktop
+Bridge classifies the runner as its own write-capable `claudeApply` policy kind
+(`workspace_write`, no network — never read_only) and materializes the patch to a
+temp file (`--patch-file`); the full patch is stripped from public state. The
+wrapper is verified against a real git worktree (apply, clean-check refusal,
+rollback). The full server -> bridge -> git-apply seam is exercised end to end by
+`tools/dev/claude-apply-caller-smoke.mjs` (`pnpm smoke:claude-apply`): it boots a
+real server + Desktop Bridge, proposes a patch (fake Claude), issues an approval
+grant, applies, and asserts the file is git-applied on disk in the bound worktree,
+the authorization transitions to `applied` with the file list + reversible
+rollback, and the rollback genuinely reverts — proving the patch reaches the
+bridge via invocation metadata (it is stripped only from public state).
+
+Post-merge hardening (review follow-up): the apply lifecycle was tightened after
+a recall review found lifecycle/tenancy holes. apply and rollback now require a
+governed runner BEFORE consuming the single-use grant (a runner-absent 409 no
+longer burns the grant, and the old stranded "authorized, no runner" state is
+gone — apply always dispatches or refuses). rollback re-validates the bound
+worktree still exists (a dangling worktree would otherwise let createInvocation
+fall back to the project's default checkout and `git apply --reverse` the wrong
+tree) and enforces tenancy off a team stamped on the authorization at creation
+(robust to the project row being deleted). A result-less terminal — deny at the
+platform gate, timeout, cancel, liveness reclaim — now reconciles the
+authorization (apply → failed; rollback → back to applied, retryable) instead of
+stranding it at applying/rolling_back; the cap never evicts an in-flight row; the
+bridge deletes the per-run temp patch file (uniquely named per invocation) and
+the terminal invocation drops its patch blob so a patch is not kept in three
+durable copies. The full proposal patch is bounded to an ~8 KB preview in public state
+(`buildPublicState`) so it no longer rides every poll verbatim — the console only
+needs a preview to display and the invocation id to apply. Known residual
+(tracked, deferred to avoid colliding with the in-flight #890 Store migration of
+the completion/dispatch write paths): post-apply verification still runs
+synchronously in the single-lane bridge (a long test suite delays other bridge
+work) — the fix is a follow-up verify invocation, best landed after #890 Phase A
+settles.
+
+Governed rollback (follow-up, shipped): the recorded rollback guidance is an
+executable action, not just text. `POST
+/api/claude-apply/authorizations/:id/rollback` requires a fresh single-use grant
+for `(rollback_patch, authorizationId)` — undoing a write is a write — then
+dispatches the same runner with `--reverse` over the same server-held patch. The
+wrapper enforces check-then-apply in reverse too, so a reverse that no longer
+checks cleanly (the worktree moved on) is refused with nothing written. Success
+retires the authorization (`rolled_back`, guidance consumed); failure returns it
+to `applied` with the error recorded so the operator can retry under a fresh
+grant. The Approvals view renders each authorization (status, files, bounded
+patch preview) with a grant-backed Roll back action, and the e2e smoke drives the
+whole rollback leg through the bridge.
+
+Operator UX + evidence unification (follow-up, shipped): the Approvals view also
+renders a "Patch proposals" panel — every completed `claude.propose.patch`
+invocation with its summary, touched files, and the proposed diff — with a
+grant-backed "Approve & apply" action, closing the browse -> approve -> apply loop
+in one surface; a proposal already moving through the apply lifecycle shows its
+authorization status instead, and a failed or rolled-back apply may be re-applied
+under a fresh grant. On the evidence side, Claude applies now share the
+codex.exec trust-ledger vocabulary: each applied file surfaces in the Evidence
+Center as a governed `file_change` record (`source:
+"governed_claude_apply"`, summary-only), and a rollback does not erase the
+evidence — the record's summary flips to `rolled back: <file>`, so a supervisor
+sees every AI-authored change that reached a worktree, whichever write path
+produced it.
+
+Web-initiated proposals + verification hook (follow-up, shipped): the Approvals
+"Patch proposals" panel gains a compose form — pick a worktree, describe the
+change, and Claude proposes a diff (read-only, no grant needed; an unregistered
+propose agent surfaces `agent_not_available`). The apply input gains an optional
+`verify`: an allowlisted command ID (`node-test` → `node --test`; never argv,
+double-allowlisted server- and wrapper-side like the git wrapper). After a
+successful `git apply` the runner executes the command in the worktree and
+records `verification.testsPassed` / exit code / bounded output on the
+authorization. A FAILING verification does not undo the apply — the honest
+record ("applied, tests failed") plus the governed rollback beats a silent
+revert; the Approvals UI shows a tests-passed/failed badge with the failure
+output, next to the Roll back action. The wrapper scrubs inherited
+NODE_TEST_CONTEXT so a nested test-runner context can never fake a pass. The
+e2e smoke applies with `verify: node-test` against a seeded real test and
+asserts the recorded verdict.
 
 Phases are stage-gated. Phase 2 implementation starts only after Phase 1
 acceptance is verified; the same rule applies between later phases.

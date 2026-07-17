@@ -2,9 +2,13 @@ import { normalizeA2aAdapterConfig } from "@myagenttool/adapters/a2a";
 import { normalizeContainerAdapterConfig } from "@myagenttool/adapters/container";
 import { normalizeMcpAdapterConfig } from "@myagenttool/adapters/mcp";
 
+import { makeRunTx } from "../runtime/store/run-tx.mjs";
 import { capLifecycleAuditRecords } from "./retention.mjs";
 
-export function createAgentService({ state, now, nextId, appendEvent, persistStateSoon = () => {} }) {
+export function createAgentService({ state, now, nextId, appendEvent, persistStateSoon = () => {}, store }) {
+  // #1001: durable agent/health writes commit through the Store's unit of work
+  // (falls back to the debounce where no store is injected). See run-tx.mjs.
+  const runTx = makeRunTx({ store, persistStateSoon });
   const AGENT_FACTORIES = {
     cli: (body) => createCliAgent(body),
     http: (body) => createHttpAgent(body),
@@ -22,26 +26,26 @@ export function createAgentService({ state, now, nextId, appendEvent, persistSta
 
     const agent = factory(body);
     if (actor?.userId) agent.ownerUserId = actor.userId; // register under the acting user
-    const existingIndex = state.agents.findIndex((item) => item.id === agent.id);
-    if (existingIndex >= 0) {
-      const existing = state.agents[existingIndex];
-      const merged = {
-        ...existing,
-        ...agent,
-        health: existing.health ?? agent.health,
-        updatedAt: now(),
-      };
-      if (isAgentDisabled(existing)) {
-        merged.lifecycle = { ...agent.lifecycle, state: "disabled" };
-        merged.status = "disabled";
+    return runTx(() => {
+      const existingIndex = state.agents.findIndex((item) => item.id === agent.id);
+      if (existingIndex >= 0) {
+        const existing = state.agents[existingIndex];
+        const merged = {
+          ...existing,
+          ...agent,
+          health: existing.health ?? agent.health,
+          updatedAt: now(),
+        };
+        if (isAgentDisabled(existing)) {
+          merged.lifecycle = { ...agent.lifecycle, state: "disabled" };
+          merged.status = "disabled";
+        }
+        state.agents[existingIndex] = merged;
+        return merged;
       }
-      state.agents[existingIndex] = merged;
-      persistStateSoon();
-      return merged;
-    }
-    state.agents.push(agent);
-    persistStateSoon();
-    return agent;
+      state.agents.push(agent);
+      return agent;
+    });
   }
 
   function createCliAgent(body) {
@@ -128,6 +132,7 @@ export function createAgentService({ state, now, nextId, appendEvent, persistSta
       type: "mcp",
       name: body.name ?? "MCP Server Agent",
       description: body.description ?? "Manually registered MCP server (stdio).",
+      provider: normalizeAgentProvider(body.provider),
       location: { type: "local_device", deviceId: state.device.id },
       // The slice config uses `kind`; the control plane dispatches on
       // `adapter.type`, so carry both.
@@ -260,13 +265,14 @@ export function createAgentService({ state, now, nextId, appendEvent, persistSta
     });
   }
 
-  function baseAgent({ id, name, description, location, adapter, capabilities, status, registrationNotes, economics = {}, toolContract = null }) {
+  function baseAgent({ id, name, description, location, adapter, capabilities, status, registrationNotes, economics = {}, toolContract = null, provider = null }) {
     const createdAt = now();
     const agent = {
       id,
       name: String(name),
       description: String(description),
       ownerUserId: "usr_local",
+      provider,
       location,
       adapter,
       lifecycle: {
@@ -303,39 +309,43 @@ export function createAgentService({ state, now, nextId, appendEvent, persistSta
   }
 
   function disableAgent(agent, actor = null) {
-    const operation = createLifecycleOperation(agent, "disable", "Disabled from Web Console.", actor);
-    startLifecycleOperation(operation, `Disabling ${agent.name}.`);
-    agent.lifecycle = { ...agent.lifecycle, state: "disabled" };
-    agent.status = "disabled";
-    agent.updatedAt = now();
-    finishLifecycleOperation(operation, "succeeded", `${agent.name} is disabled. New invocations are blocked.`);
-    persistStateSoon();
-    return operation;
+    return runTx(() => {
+      const operation = createLifecycleOperation(agent, "disable", "Disabled from Web Console.", actor);
+      startLifecycleOperation(operation, `Disabling ${agent.name}.`);
+      agent.lifecycle = { ...agent.lifecycle, state: "disabled" };
+      agent.status = "disabled";
+      agent.updatedAt = now();
+      finishLifecycleOperation(operation, "succeeded", `${agent.name} is disabled. New invocations are blocked.`);
+      return operation;
+    });
   }
 
   function enableAgent(agent, actor = null) {
-    const operation = createLifecycleOperation(agent, "enable", "Enabled from Web Console.", actor);
-    startLifecycleOperation(operation, `Enabling ${agent.name}.`);
-    agent.lifecycle = { ...agent.lifecycle, state: "enabled" };
-    agent.status = enabledAgentStatus(agent);
-    agent.updatedAt = now();
-    finishLifecycleOperation(operation, "succeeded", `${agent.name} is enabled.`);
-    persistStateSoon();
-    return operation;
+    return runTx(() => {
+      const operation = createLifecycleOperation(agent, "enable", "Enabled from Web Console.", actor);
+      startLifecycleOperation(operation, `Enabling ${agent.name}.`);
+      agent.lifecycle = { ...agent.lifecycle, state: "enabled" };
+      agent.status = enabledAgentStatus(agent);
+      agent.updatedAt = now();
+      finishLifecycleOperation(operation, "succeeded", `${agent.name} is enabled.`);
+      return operation;
+    });
   }
 
   function createAgentHealthCheck(agent, actor = null) {
-    const operation = createLifecycleOperation(agent, "health_check", "Health check requested from Web Console.", actor);
-    state.healthChecks.unshift(operation);
-    state.healthChecks = state.healthChecks.slice(0, 50);
-    agent.health = {
-      status: "checking",
-      checkedAt: null,
-      message: "Health check requested.",
-      nextAction: "Wait for the health result.",
-    };
-    agent.updatedAt = now();
-    persistStateSoon();
+    const operation = runTx(() => {
+      const op = createLifecycleOperation(agent, "health_check", "Health check requested from Web Console.", actor);
+      state.healthChecks.unshift(op);
+      state.healthChecks = state.healthChecks.slice(0, 50);
+      agent.health = {
+        status: "checking",
+        checkedAt: null,
+        message: "Health check requested.",
+        nextAction: "Wait for the health result.",
+      };
+      agent.updatedAt = now();
+      return op;
+    });
 
     if (agent.adapter.type === "http" && agent.location.type === "remote_http") {
       queueMicrotask(() => runHttpHealthCheck(operation, agent).catch((error) => {
@@ -437,18 +447,19 @@ export function createAgentService({ state, now, nextId, appendEvent, persistSta
   }
 
   function markHealthCheckStarted(operation) {
-    const agent = findAgent(operation.agentId);
-    if (agent) {
-      agent.health = {
-        status: "checking",
-        checkedAt: null,
-        message: "Desktop Bridge is checking this agent.",
-        nextAction: "Wait for the health result.",
-      };
-      agent.updatedAt = now();
-    }
-    startLifecycleOperation(operation, `Health check started for ${agent?.name ?? operation.agentId}.`);
-    persistStateSoon();
+    runTx(() => {
+      const agent = findAgent(operation.agentId);
+      if (agent) {
+        agent.health = {
+          status: "checking",
+          checkedAt: null,
+          message: "Desktop Bridge is checking this agent.",
+          nextAction: "Wait for the health result.",
+        };
+        agent.updatedAt = now();
+      }
+      startLifecycleOperation(operation, `Health check started for ${agent?.name ?? operation.agentId}.`);
+    });
   }
 
   async function runHttpHealthCheck(operation, agent) {
@@ -485,26 +496,27 @@ export function createAgentService({ state, now, nextId, appendEvent, persistSta
   }
 
   function completeHealthCheck(operation, result) {
-    const agent = findAgent(operation.agentId);
-    const healthy = result.status === "healthy" || result.status === "ok" || result.status === "succeeded";
-    const message = String(result.message ?? (healthy ? "Agent health check passed." : "Agent health check failed."));
-    const nextAction = result.nextAction === undefined
-      ? healthy ? null : "Review the agent setup, then run another health check."
-      : result.nextAction;
+    runTx(() => {
+      const agent = findAgent(operation.agentId);
+      const healthy = result.status === "healthy" || result.status === "ok" || result.status === "succeeded";
+      const message = String(result.message ?? (healthy ? "Agent health check passed." : "Agent health check failed."));
+      const nextAction = result.nextAction === undefined
+        ? healthy ? null : "Review the agent setup, then run another health check."
+        : result.nextAction;
 
-    finishLifecycleOperation(operation, healthy ? "succeeded" : "failed", message);
-    if (!agent) {
-      return;
-    }
+      finishLifecycleOperation(operation, healthy ? "succeeded" : "failed", message);
+      if (!agent) {
+        return;
+      }
 
-    agent.health = {
-      status: healthy ? "healthy" : "unhealthy",
-      checkedAt: now(),
-      message,
-      nextAction,
-    };
-    agent.updatedAt = now();
-    persistStateSoon();
+      agent.health = {
+        status: healthy ? "healthy" : "unhealthy",
+        checkedAt: now(),
+        message,
+        nextAction,
+      };
+      agent.updatedAt = now();
+    });
   }
 
   function enabledAgentStatus(agent) {
@@ -694,6 +706,26 @@ export function sanitizeAgentId(id) {
   const raw = String(id).trim();
   const withPrefix = raw.startsWith("agt_") ? raw : `agt_${raw}`;
   return withPrefix.replace(/[^a-zA-Z0-9_]/g, "_");
+}
+
+// The external service an agent fronts — `google`, `netease`. Applications have
+// modelled this all along (`source.credential.provider`); agents did not, which
+// is why discovery could only ever count candidates and never identify one
+// (#1185). Undeclared stays null: an agent with no provider is not a match for
+// anyone, which is the safe reading.
+//
+// A supplied-but-malformed provider throws instead of normalizing to null. The
+// two failure modes are not equal: null means "declares nothing" and no script
+// will wire to it, but a caller who MEANT to say `google` and typo'd would get
+// an agent that silently never matches, and would go looking in the wrong place.
+// Registration is the cheap, loud place to fail.
+export function normalizeAgentProvider(value) {
+  if (value === undefined || value === null) return null;
+  const normalized = String(value).trim().toLowerCase();
+  if (!/^[a-z0-9][a-z0-9_.-]{0,62}$/.test(normalized)) {
+    throw new Error(`Agent provider must be a slug like "google" or "netease" (got ${JSON.stringify(value)}).`);
+  }
+  return normalized;
 }
 
 export function isAgentDisabled(agent) {

@@ -3,6 +3,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { basename, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { normalizeLoopRoutine, validateLoopRoutine } from "../../../../tools/ai/src/loop/routine.mjs";
 import { teamOf } from "../runtime/auth.mjs";
+import { makeRunTx } from "../runtime/store/run-tx.mjs";
 
 // Consecutive failed health checks before an active application is auto-offlined
 // (docs/design/APPLICATION_HEALTH_PROBE.md) — fixed, to avoid flapping on
@@ -14,6 +15,10 @@ const APPLICATION_SOURCE_TYPES = new Set(["git", "local", "npm", "binary", "manu
 // A binary source names a bare program (`git`), never a path on disk. The bridge
 // allowlist decides what may actually run; the caller does not get to name a path.
 const BINARY_SOURCE_NAME = /^[a-z][a-z0-9_-]{0,31}$/;
+// A declarable credential scope must be read-only on its face (ADR 0010). The
+// suffix is what a provider calls read: `gmail.readonly`, `drive.read`, `*.ro`.
+// Anything else — send, write, modify, full, admin — is refused at registration.
+const READ_ONLY_CREDENTIAL_SCOPE = /^[a-z][a-z0-9_.-]{0,63}\.(readonly|read|ro)$/;
 const APPLICATION_STATUSES = new Set(["draft", "probing", "registered", "active", "offline", "archived", "failed"]);
 const NPM_WRAPPER_MODES = new Set(["metadata-only", "installed-wrapper"]);
 const APPLICATION_ROUTINE_REQUIRED_APPROVALS = ["apply", "push", "pr-create", "pr-merge"];
@@ -31,7 +36,9 @@ export function createApplicationService({
   defaultProjectPath = process.cwd(),
   sendAlert = null,
   validateApprovalToken = null,
+  store,
 }) {
+  const runTx = makeRunTx({ store, persistStateSoon });
   // Approval check behind every `approvalToken` field (docs/design/
   // APPROVAL_GRANTS.md): issued grants are validated + consumed; in phase 1 a
   // legacy free-text token still passes (stamped + counted by the validator).
@@ -61,6 +68,30 @@ export function createApplicationService({
     const name = normalizeApplicationName(body.name ?? nameFromSource(source));
     const requestedId = body.id == null ? null : sanitizeApplicationId(body.id);
     const capabilityFacades = normalizeApplicationCapabilityFacades(body.capabilityFacades);
+    // ADR 0014: the write-credential exception class. Invariant 2 (every
+    // capability approval-gated) and invariant 3 (a separate Application —
+    // the credential pair may not already belong to another registration)
+    // need both the facades and the registry, so they live here rather than
+    // in the credential normalizer.
+    if (source.credential?.write === true) {
+      if (capabilityFacades.some((facade) => facade.requiresApproval !== true)) {
+        throw applicationRegistrationError(
+          "application_write_capability_unapproved",
+          "A write-credential Application must approval-gate every capability facade (ADR 0014); approval is the floor for write authority.",
+        );
+      }
+      const pairHolder = (state.applications ?? []).find(
+        (item) => item.source?.credential?.provider === source.credential.provider
+          && item.source?.credential?.scope === source.credential.scope
+          && !item.successorApplicationId,
+      );
+      if (pairHolder && pairHolder.id !== body.replacesApplicationId) {
+        throw applicationRegistrationError(
+          "application_write_credential_conflict",
+          `Credential ${source.credential.provider}/${source.credential.scope} is already held by ${pairHolder.id}; a write credential is never shared (ADR 0014).`,
+        );
+      }
+    }
     const descriptorSchemaVersion = normalizeDescriptorSchemaVersion(body.descriptorSchemaVersion);
     const descriptorFingerprint = fingerprintApplicationDescriptor(
       applicationDescriptor({ ...body, name, source, capabilityFacades }, descriptorSchemaVersion),
@@ -148,18 +179,20 @@ export function createApplicationService({
       createdAt,
       updatedAt: createdAt,
     };
-    state.applications = state.applications ?? [];
-    state.applications.unshift(app);
-    appendEvent({
-      invocationId: null,
-      type: "application_registered",
-      level: "info",
-      message: `${app.name} application registered.`,
-      data: {
-        applicationId: app.id,
-        sourceType: app.source.type,
-        projectId: app.projectId,
-      },
+    runTx(() => {
+      state.applications = state.applications ?? [];
+      state.applications.unshift(app);
+      appendEvent({
+        invocationId: null,
+        type: "application_registered",
+        level: "info",
+        message: `${app.name} application registered.`,
+        data: {
+          applicationId: app.id,
+          sourceType: app.source.type,
+          projectId: app.projectId,
+        },
+      });
     });
     // Background git clone — off the event loop; settle the app when done (#305).
     if (source.type === "git") {
@@ -171,34 +204,35 @@ export function createApplicationService({
         color: body.color,
         ownerTeamId: actor?.teamId,
       })).then((cloned) => {
-        app.projectId = cloned.id;
-        app.path = cloned.path;
-        app.status = "registered";
-        app.lifecycle = { state: "registered", lastOperation: "clone", lastOperationAt: now() };
-        app.updatedAt = now();
-        appendEvent({
-          invocationId: null,
-          type: "application_clone_completed",
-          level: "info",
-          message: `${app.name} git source cloned.`,
-          data: { applicationId: app.id, projectId: cloned.id },
+        runTx(() => {
+          app.projectId = cloned.id;
+          app.path = cloned.path;
+          app.status = "registered";
+          app.lifecycle = { state: "registered", lastOperation: "clone", lastOperationAt: now() };
+          app.updatedAt = now();
+          appendEvent({
+            invocationId: null,
+            type: "application_clone_completed",
+            level: "info",
+            message: `${app.name} git source cloned.`,
+            data: { applicationId: app.id, projectId: cloned.id },
+          });
         });
-        persistStateSoon();
       }).catch((error) => {
-        app.status = "failed";
-        app.lifecycle = { state: "failed", lastOperation: "clone", lastOperationAt: now(), error: String(error?.message ?? error) };
-        app.updatedAt = now();
-        appendEvent({
-          invocationId: null,
-          type: "application_clone_failed",
-          level: "warn",
-          message: `${app.name} git clone failed: ${String(error?.message ?? error)}`,
-          data: { applicationId: app.id },
+        runTx(() => {
+          app.status = "failed";
+          app.lifecycle = { state: "failed", lastOperation: "clone", lastOperationAt: now(), error: String(error?.message ?? error) };
+          app.updatedAt = now();
+          appendEvent({
+            invocationId: null,
+            type: "application_clone_failed",
+            level: "warn",
+            message: `${app.name} git clone failed: ${String(error?.message ?? error)}`,
+            data: { applicationId: app.id },
+          });
         });
-        persistStateSoon();
       });
     }
-    persistStateSoon();
     return app;
   }
 
@@ -232,12 +266,13 @@ export function createApplicationService({
       createdAt,
       updatedAt: createdAt,
     };
-    existing.successorApplicationId = app.id;
-    existing.status = existing.status === "archived" ? "archived" : "offline";
-    existing.updatedAt = createdAt;
-    state.applications.unshift(app);
-    appendEvent({ invocationId: null, type: "application_descriptor_replaced", level: "warning", message: `${existing.name} application descriptor replaced by immutable revision ${app.id}.`, data: { applicationId: app.id, predecessorApplicationId: existing.id, descriptorFingerprint } });
-    persistStateSoon();
+    runTx(() => {
+      existing.successorApplicationId = app.id;
+      existing.status = existing.status === "archived" ? "archived" : "offline";
+      existing.updatedAt = createdAt;
+      state.applications.unshift(app);
+      appendEvent({ invocationId: null, type: "application_descriptor_replaced", level: "warning", message: `${existing.name} application descriptor replaced by immutable revision ${app.id}.`, data: { applicationId: app.id, predecessorApplicationId: existing.id, descriptorFingerprint } });
+    });
     return app;
   }
 
@@ -249,24 +284,25 @@ export function createApplicationService({
     if (!nextStatus) {
       throw new Error(`Unsupported application lifecycle action: ${normalizedAction}`);
     }
-    app.status = nextStatus;
-    app.lifecycle = {
-      ...app.lifecycle,
-      state: nextStatus,
-      lastOperation: normalizedAction,
-      lastOperationAt: now(),
-      lastActorId: actor?.userId ?? null,
-    };
-    app.updatedAt = app.lifecycle.lastOperationAt;
-    appendEvent({
-      invocationId: null,
-      type: `application_${normalizedAction}`,
-      level: nextStatus === "offline" || nextStatus === "archived" ? "warn" : "info",
-      message: `${app.name} application ${normalizedAction}.`,
-      data: { applicationId: app.id, status: app.status },
+    return runTx(() => {
+      app.status = nextStatus;
+      app.lifecycle = {
+        ...app.lifecycle,
+        state: nextStatus,
+        lastOperation: normalizedAction,
+        lastOperationAt: now(),
+        lastActorId: actor?.userId ?? null,
+      };
+      app.updatedAt = app.lifecycle.lastOperationAt;
+      appendEvent({
+        invocationId: null,
+        type: `application_${normalizedAction}`,
+        level: nextStatus === "offline" || nextStatus === "archived" ? "warn" : "info",
+        message: `${app.name} application ${normalizedAction}.`,
+        data: { applicationId: app.id, status: app.status },
+      });
+      return app;
     });
-    persistStateSoon();
-    return app;
   }
 
   function probeApplication(applicationId, actor = null) {
@@ -274,43 +310,86 @@ export function createApplicationService({
     if (!app) return null;
     const probedAt = now();
     const probe = buildApplicationProbe(app);
-    app.probe = {
-      status: "completed",
-      checkedAt: probedAt,
-      summary: probe.summary,
-      source: probe.source,
-      package: probe.package,
-      readme: probe.readme,
-      capabilities: probe.capabilities,
-      capabilityNames: probe.capabilities.map((capability) => capability.name),
-      warnings: probe.warnings,
-    };
-    app.lifecycle = {
-      ...app.lifecycle,
-      lastOperation: "probe",
-      lastOperationAt: probedAt,
-      lastActorId: actor?.userId ?? null,
-    };
-    app.updatedAt = probedAt;
-    appendEvent({
-      invocationId: null,
-      type: "application_probed",
-      level: "info",
-      message: `${app.name} application probe completed.`,
-      data: {
-        applicationId: app.id,
-        capabilityCount: app.probe.capabilities.length,
-        inferredCapabilityCount: app.probe.capabilities.filter((capability) => capability.source === "inferred").length,
-        declaredCapabilityCount: app.probe.capabilities.filter((capability) => capability.source === "declared").length,
-      },
+    return runTx(() => {
+      app.probe = {
+        status: "completed",
+        checkedAt: probedAt,
+        summary: probe.summary,
+        source: probe.source,
+        package: probe.package,
+        readme: probe.readme,
+        capabilities: probe.capabilities,
+        capabilityNames: probe.capabilities.map((capability) => capability.name),
+        warnings: probe.warnings,
+      };
+      app.lifecycle = {
+        ...app.lifecycle,
+        lastOperation: "probe",
+        lastOperationAt: probedAt,
+        lastActorId: actor?.userId ?? null,
+      };
+      app.updatedAt = probedAt;
+      appendEvent({
+        invocationId: null,
+        type: "application_probed",
+        level: "info",
+        message: `${app.name} application probe completed.`,
+        data: {
+          applicationId: app.id,
+          capabilityCount: app.probe.capabilities.length,
+          inferredCapabilityCount: app.probe.capabilities.filter((capability) => capability.source === "inferred").length,
+          declaredCapabilityCount: app.probe.capabilities.filter((capability) => capability.source === "declared").length,
+        },
+      });
+      return app;
     });
-    persistStateSoon();
-    return app;
   }
 
   function listApplicationCapabilities(applicationId) {
     const app = findApplication(applicationId);
-    return app ? projectApplicationCapabilities(app) : null;
+    return app ? projectApplicationCapabilities(app, { credential: credentialStatusForApplication(app) }) : null;
+  }
+
+  // Authorization as READINESS (ADR 0010): the control plane observes the
+  // credential's state; it never mints, transports, stores, or reads one.
+  //
+  // Two independently-sourced facts meet here and nowhere else: what the DEVICE
+  // reports it holds (provider + scope, never the secret) and what the immutable
+  // DESCRIPTOR requires. The device is never told what the server wants, so it
+  // cannot claim a match it does not have.
+  //
+  // Refusals are precise, in the #802 shape — `not_authorized` and
+  // `scope_mismatch` are different problems with different fixes, and the
+  // operator is told which, on which device, and what to run.
+  function credentialStatusForApplication(app) {
+    const required = app?.source?.credential ?? null;
+    if (!required) return null;
+    const device = state.device ?? null;
+    const held = (device?.applicationCredentialReadiness ?? []).find((row) => row.applicationId === app.id);
+    const base = { provider: required.provider, requiredScope: required.scope, deviceId: device?.id ?? null };
+    if (!held) {
+      return {
+        ...base,
+        status: "not_authorized",
+        reason: "no_credential_on_device",
+        checkedAt: device?.updatedAt ?? null,
+        nextAction: `Run the ${required.provider} login flow on device ${device?.id ?? "(none registered)"} to grant ${required.scope}.`,
+      };
+    }
+    if (held.provider !== required.provider || held.scope !== required.scope) {
+      return {
+        ...base,
+        status: "not_authorized",
+        // A held-but-wrong credential is NOT the same failure as a missing one:
+        // the operator must re-consent to a different scope, not simply log in.
+        reason: "scope_mismatch",
+        heldScope: held.scope,
+        heldProvider: held.provider,
+        checkedAt: held.checkedAt,
+        nextAction: `Device ${device?.id ?? "?"} holds ${held.provider} scope "${held.scope}", but this application requires "${required.scope}". Re-run the login flow and consent to ${required.scope}.`,
+      };
+    }
+    return { ...base, status: "authorized", reason: "credential_present", checkedAt: held.checkedAt, nextAction: null };
   }
 
   function invokeApplicationCapability(capabilityName, input = {}, actor = null, options = {}) {
@@ -349,19 +428,20 @@ export function createApplicationService({
       }
     }
 
-    const result = executeApplicationAction({ application, action, input, actor, defaultProjectPath, now });
-    if (result?.ok === false) {
-      return result;
-    }
-    appendEvent({
-      invocationId: null,
-      type: "application_capability_executed",
-      level: ["offline", "archive"].includes(action) ? "warn" : "info",
-      message: `${application.name} application capability ${action} executed.`,
-      data: { applicationId: application.id, capability: capabilityName, action },
+    return runTx(() => {
+      const result = executeApplicationAction({ application, action, input, actor, defaultProjectPath, now });
+      if (result?.ok === false) {
+        return result;
+      }
+      appendEvent({
+        invocationId: null,
+        type: "application_capability_executed",
+        level: ["offline", "archive"].includes(action) ? "warn" : "info",
+        message: `${application.name} application capability ${action} executed.`,
+        data: { applicationId: application.id, capability: capabilityName, action },
+      });
+      return { ok: true, application, action, result };
     });
-    persistStateSoon();
-    return { ok: true, application, action, result };
   }
 
   // Plan a wrapper-capability invocation for bridge execution (#359). Applies the
@@ -418,6 +498,51 @@ export function createApplicationService({
     };
   }
 
+  // Plan an agent-facade capability invocation (#975). Same split as the wrapper
+  // planner: every guard that belongs to the APPLICATION — tenancy, lifecycle
+  // status, the facade's declared approval requirement — is applied here; the
+  // capability service owns what belongs to the AGENT (existence, status, its
+  // own allowedTools). Two independent layers on purpose, like every other
+  // boundary in this registry: a mis-pointed descriptor still cannot reach a
+  // tool the agent's own registration does not allow.
+  function planAgentFacadeInvocation({ applicationId, facadeId, input = {}, actor = null } = {}) {
+    const application = findApplication(applicationId);
+    if (!application || !actorCanAccessApplication(state, actor, application)) {
+      return { ok: false, status: 404, body: { error: "capability_not_found" } };
+    }
+    if (application.status === "archived") {
+      return { ok: false, status: 409, body: { error: "application_archived", applicationId } };
+    }
+    if (application.status === "offline") {
+      return { ok: false, status: 409, body: { error: "application_offline", applicationId } };
+    }
+    const facade = (application.capabilityFacades ?? []).find((candidate) => candidate.id === facadeId && candidate.agentId);
+    if (!facade) {
+      return { ok: false, status: 404, body: { error: "agent_facade_not_found", applicationId, facadeId } };
+    }
+    // ADR 0014: a gate-only facade refuses direct invocation outright — its
+    // server gate is the only path, because the gate (not the caller) resolves
+    // the payload. Without this, a caller holding a grant could pass free-form
+    // toolArguments straight to the agent.
+    if (facade.directInvocation === false) {
+      return { ok: false, status: 409, body: { error: "capability_gate_only", message: "This capability executes only through its dedicated server gate; direct invocation is disabled by the descriptor.", applicationId, facadeId } };
+    }
+    if (facade.requiresApproval) {
+      const approval = approvalCheck(input, `agent:${facadeId}`, applicationId, actor);
+      if (!approval.approved) {
+        return { ok: false, status: 409, body: { error: "approval_required", reason: approval.reason === "missing_token" ? "This agent-facade capability requires an explicit approvalToken." : `approvalToken rejected: ${approval.reason}.`, applicationId } };
+      }
+    }
+    return {
+      ok: true,
+      facade: {
+        agentId: facade.agentId,
+        toolName: facade.agentToolName ?? null,
+        outputCollection: facade.outputCollection,
+      },
+    };
+  }
+
   // Opt-in switch for orchestration auto-recovery (docs/design/
   // ORCHESTRATION_AUTO_RECOVERY.md). A side-effecting, write-control config
   // change — it enables autonomous execution — so it demands the explicit
@@ -437,19 +562,20 @@ export function createApplicationService({
     // touching the application-level policy. clearOverride returns the routine
     // to the app default.
     if (routineId && body.clearOverride === true) {
-      const overrides = { ...(app.autoRecovery?.routineOverrides ?? {}) };
-      delete overrides[routineId];
-      app.autoRecovery = { ...(app.autoRecovery ?? { enabled: false, maxAttempts: 2 }), routineOverrides: overrides };
-      app.updatedAt = now();
-      appendEvent({
-        invocationId: null,
-        type: "application_auto_recovery_configured",
-        level: "info",
-        message: `Application ${app.name} auto-recovery override for ${routineId} cleared (back to app default).`,
-        data: { applicationId: app.id, routineId, cleared: true, actorId: actor?.userId ?? null },
+      return runTx(() => {
+        const overrides = { ...(app.autoRecovery?.routineOverrides ?? {}) };
+        delete overrides[routineId];
+        app.autoRecovery = { ...(app.autoRecovery ?? { enabled: false, maxAttempts: 2 }), routineOverrides: overrides };
+        app.updatedAt = now();
+        appendEvent({
+          invocationId: null,
+          type: "application_auto_recovery_configured",
+          level: "info",
+          message: `Application ${app.name} auto-recovery override for ${routineId} cleared (back to app default).`,
+          data: { applicationId: app.id, routineId, cleared: true, actorId: actor?.userId ?? null },
+        });
+        return app;
       });
-      persistStateSoon();
-      return app;
     }
     if (typeof body.enabled !== "boolean") {
       throw new Error("auto-recovery configuration requires enabled: boolean.");
@@ -458,29 +584,30 @@ export function createApplicationService({
     if (!Number.isInteger(maxAttempts) || maxAttempts < 1 || maxAttempts > 5) {
       throw new Error("auto-recovery maxAttempts must be an integer between 1 and 5.");
     }
-    if (routineId) {
-      app.autoRecovery = {
-        ...(app.autoRecovery ?? { enabled: false, maxAttempts: 2 }),
-        routineOverrides: {
-          ...(app.autoRecovery?.routineOverrides ?? {}),
-          [routineId]: { enabled: body.enabled, maxAttempts },
-        },
-      };
-    } else {
-      app.autoRecovery = { ...(app.autoRecovery ?? {}), enabled: body.enabled, maxAttempts };
-    }
-    app.updatedAt = now();
-    appendEvent({
-      invocationId: null,
-      type: "application_auto_recovery_configured",
-      level: body.enabled ? "warn" : "info",
-      message: routineId
-        ? `Application ${app.name} auto-recovery override for ${routineId}: ${body.enabled ? `enabled (max ${maxAttempts} attempts)` : "disabled"}.`
-        : `Application ${app.name} auto-recovery ${body.enabled ? `enabled (max ${maxAttempts} attempts)` : "disabled"}.`,
-      data: { applicationId: app.id, routineId, enabled: body.enabled, maxAttempts, actorId: actor?.userId ?? null },
+    return runTx(() => {
+      if (routineId) {
+        app.autoRecovery = {
+          ...(app.autoRecovery ?? { enabled: false, maxAttempts: 2 }),
+          routineOverrides: {
+            ...(app.autoRecovery?.routineOverrides ?? {}),
+            [routineId]: { enabled: body.enabled, maxAttempts },
+          },
+        };
+      } else {
+        app.autoRecovery = { ...(app.autoRecovery ?? {}), enabled: body.enabled, maxAttempts };
+      }
+      app.updatedAt = now();
+      appendEvent({
+        invocationId: null,
+        type: "application_auto_recovery_configured",
+        level: body.enabled ? "warn" : "info",
+        message: routineId
+          ? `Application ${app.name} auto-recovery override for ${routineId}: ${body.enabled ? `enabled (max ${maxAttempts} attempts)` : "disabled"}.`
+          : `Application ${app.name} auto-recovery ${body.enabled ? `enabled (max ${maxAttempts} attempts)` : "disabled"}.`,
+        data: { applicationId: app.id, routineId, enabled: body.enabled, maxAttempts, actorId: actor?.userId ?? null },
+      });
+      return app;
     });
-    persistStateSoon();
-    return app;
   }
 
   // Opt-in periodic health probe (docs/design/APPLICATION_HEALTH_PROBE.md).
@@ -502,17 +629,18 @@ export function createApplicationService({
     if (!Number.isInteger(intervalMinutes) || intervalMinutes < 1 || intervalMinutes > 60) {
       throw new Error("health-probe intervalMinutes must be an integer between 1 and 60.");
     }
-    app.healthProbe = { enabled: body.enabled, intervalMinutes, lastCheckedAt: app.healthProbe?.lastCheckedAt ?? null };
-    app.updatedAt = now();
-    appendEvent({
-      invocationId: null,
-      type: "application_health_probe_configured",
-      level: "info",
-      message: `Application ${app.name} health probe ${body.enabled ? `enabled (every ${intervalMinutes}m)` : "disabled"}.`,
-      data: { applicationId: app.id, enabled: body.enabled, intervalMinutes, actorId: actor?.userId ?? null },
+    return runTx(() => {
+      app.healthProbe = { enabled: body.enabled, intervalMinutes, lastCheckedAt: app.healthProbe?.lastCheckedAt ?? null };
+      app.updatedAt = now();
+      appendEvent({
+        invocationId: null,
+        type: "application_health_probe_configured",
+        level: "info",
+        message: `Application ${app.name} health probe ${body.enabled ? `enabled (every ${intervalMinutes}m)` : "disabled"}.`,
+        data: { applicationId: app.id, enabled: body.enabled, intervalMinutes, actorId: actor?.userId ?? null },
+      });
+      return app;
     });
-    persistStateSoon();
-    return app;
   }
 
   // One health check: source availability. local/git check the materialized
@@ -529,6 +657,18 @@ export function createApplicationService({
     }
     if (["npm", "binary"].includes(app.source?.type)) {
       return checkApplicationHealthFromRuns(app);
+    }
+    // A credential-backed application HAS something to check, even with no local
+    // materialization: is the device still authorized? A token revoked in the
+    // provider's account is exactly the "the app should be offline" case this
+    // probe exists for — so it is health, not `unsupported`. A revocation
+    // auto-degrades to offline through the ordinary path; recovery still never
+    // auto-onlines (re-enabling execution stays a human, approval-gated act).
+    const credential = credentialStatusForApplication(app);
+    if (credential) {
+      return credential.status === "authorized"
+        ? { status: "healthy", reason: null }
+        : { status: "unhealthy", reason: `${credential.reason}: ${credential.nextAction}` };
     }
     return { status: "unsupported", reason: `source type ${app.source?.type ?? "unknown"} has no local materialization to check` };
   }
@@ -560,24 +700,25 @@ export function createApplicationService({
     // own health signal, or a wedged sweep is indistinguishable from "all
     // sources healthy". index.mjs's tick swallows exceptions by design; this
     // records the last run + last error where /api/state can expose them.
-    let checkedCount = 0;
-    let lastError = null;
-    for (const app of listApplications()) {
-      try {
-        if (!app.healthProbe?.enabled || app.status === "archived") continue;
-        const intervalMs = (app.healthProbe.intervalMinutes ?? 5) * 60_000;
-        const last = app.healthProbe.lastCheckedAt ? Date.parse(app.healthProbe.lastCheckedAt) : 0;
-        if (!force && Date.parse(checkedAt) - last < intervalMs) continue;
-        app.healthProbe.lastCheckedAt = checkedAt;
-        checkedCount += 1;
-        checkApplicationHealthAndReact(app, checkedAt);
-      } catch (error) {
-        // One application's failure must not starve the rest of the sweep.
-        lastError = `${app?.id ?? "unknown"}: ${error?.message ?? error}`;
+    runTx(() => {
+      let checkedCount = 0;
+      let lastError = null;
+      for (const app of listApplications()) {
+        try {
+          if (!app.healthProbe?.enabled || app.status === "archived") continue;
+          const intervalMs = (app.healthProbe.intervalMinutes ?? 5) * 60_000;
+          const last = app.healthProbe.lastCheckedAt ? Date.parse(app.healthProbe.lastCheckedAt) : 0;
+          if (!force && Date.parse(checkedAt) - last < intervalMs) continue;
+          app.healthProbe.lastCheckedAt = checkedAt;
+          checkedCount += 1;
+          checkApplicationHealthAndReact(app, checkedAt);
+        } catch (error) {
+          // One application's failure must not starve the rest of the sweep.
+          lastError = `${app?.id ?? "unknown"}: ${error?.message ?? error}`;
+        }
       }
-    }
-    state.applicationHealthSweepStatus = { lastSweepAt: checkedAt, checkedCount, lastError };
-    persistStateSoon();
+      state.applicationHealthSweepStatus = { lastSweepAt: checkedAt, checkedCount, lastError };
+    });
   }
 
   function checkApplicationHealthAndReact(app, checkedAt) {
@@ -634,6 +775,7 @@ export function createApplicationService({
     invokeApplicationCapability,
     listApplicationCapabilities,
     listApplications,
+    planAgentFacadeInvocation,
     planApplicationWrapperInvocation,
     probeApplication,
     registerApplication,
@@ -808,10 +950,13 @@ export function applicationWrapperExecutionPlan(application, commandId, input = 
   };
 }
 
-export function projectApplicationCapabilities(app) {
+// `context.credential` is the device-vs-descriptor authorization verdict, when
+// the service has state to compute it from. Projection itself stays pure: the
+// verdict is passed in, never fetched here.
+export function projectApplicationCapabilities(app, context = {}) {
   const prefix = `app.${slugify(app.id || app.name)}`;
   const disabled = app.status === "offline" || app.status === "archived";
-  return [
+  return withCredentialReadiness([
     managedCapability(app, `${prefix}.inspect`, "Inspect application", "read", "low", ["read_only", "application_asset"], false, disabled, emptyInputSchema()),
     managedCapability(app, `${prefix}.search`, "Search application", "read", "low", ["read_only", "application_asset"], false, disabled, {
       type: "object",
@@ -825,26 +970,73 @@ export function projectApplicationCapabilities(app) {
     managedCapability(app, `${prefix}.generate_orchestration`, "Generate application orchestration", "orchestration", "medium", ["generated_artifact", "orchestration"], true, disabled, emptyInputSchema()),
     ...projectCapabilityFacades(app, prefix, disabled),
     ...projectWrapperCapabilities(app, prefix, disabled),
-  ];
+  ], context.credential);
+}
+
+// Overlay the authorization verdict onto the capabilities that actually depend
+// on it: an agent_facade whose Application declares a credential requirement.
+// A capability the credential does not gate (inspect, search, lifecycle) is left
+// alone — an unauthorized mailbox must not make "inspect this application" look
+// broken.
+//
+// A `disabled` capability keeps its disabled readiness: the application being
+// offline is the more fundamental fact, and overwriting it would hide it.
+function withCredentialReadiness(capabilities, credential) {
+  if (!credential) return capabilities;
+  return capabilities.map((capability) => {
+    if (capability.kind !== "agent_facade" || capability.metadata?.readiness?.state === "disabled") return capability;
+    const authorized = credential.status === "authorized";
+    return {
+      ...capability,
+      metadata: {
+        ...capability.metadata,
+        readiness: {
+          ...capability.metadata.readiness,
+          state: authorized ? capability.metadata.readiness.state : "needs_setup",
+          reason: authorized ? capability.metadata.readiness.reason : credential.reason,
+          // The verdict travels with the capability so the console can render
+          // "why" and "what to do" without a second call. It carries provider,
+          // scopes, device, and the next action — and, by construction, nothing
+          // that could be a secret.
+          credential,
+        },
+      },
+    };
+  });
 }
 
 function projectCapabilityFacades(app, prefix, disabled) {
-  return (app.capabilityFacades ?? []).map((facade) => managedCapability(
-    app,
-    `${prefix}.${facade.id}`,
-    facade.displayName,
-    "tool_facade",
-    facade.riskLevel,
-    facade.riskTags,
-    facade.requiresApproval,
-    disabled,
-    facade.inputSchema,
-    {
-      compatibilityFacade: { type: "tool", name: facade.toolName },
-      execution: { mode: "tool_facade", toolName: facade.toolName },
-      outputCollection: facade.outputCollection,
-    },
-  ));
+  return (app.capabilityFacades ?? []).map((facade) => {
+    // The mode name is load-bearing audit metadata: it records WHICH trust
+    // regime execution was delegated to. A Tool is a platform-curated contract;
+    // a registered Agent is user-registered code. Projecting agents as Tools
+    // would launder that provenance, so each keeps its own mode (#975).
+    const isAgentFacade = Boolean(facade.agentId);
+    return managedCapability(
+      app,
+      `${prefix}.${facade.id}`,
+      facade.displayName,
+      isAgentFacade ? "agent_facade" : "tool_facade",
+      facade.riskLevel,
+      facade.riskTags,
+      facade.requiresApproval,
+      disabled,
+      facade.inputSchema,
+      isAgentFacade
+        ? {
+            compatibilityFacade: { type: "agent", name: facade.agentId },
+            execution: { mode: "agent_facade", agentId: facade.agentId, toolName: facade.agentToolName ?? null },
+            outputCollection: facade.outputCollection,
+            resultImport: facade.resultImport ?? null,
+          }
+        : {
+            compatibilityFacade: { type: "tool", name: facade.toolName },
+            execution: { mode: "tool_facade", toolName: facade.toolName },
+            outputCollection: facade.outputCollection,
+            resultImport: facade.resultImport ?? null,
+          },
+    );
+  });
 }
 
 function managedCapability(app, name, displayName, kind, riskLevel, riskTags, requiresApproval, disabled, inputSchema, metadata = {}) {
@@ -951,6 +1143,18 @@ function capabilityReadiness(app, { disabled, kind, metadata }) {
       reason: "system_binary",
       applicationStatus: app.status,
       executionMode: "bridge_wrapper",
+    };
+  }
+  if (kind === "agent_facade") {
+    // Projection is pure — it cannot see the live agent. The capability service
+    // overlays the agent's actual status (missing/disabled) where findAgent is
+    // available; the invocation guard refuses precisely either way.
+    return {
+      state: "ready",
+      reason: "delegates_to_registered_agent",
+      applicationStatus: app.status,
+      executionMode: "agent_facade",
+      agentId: metadata?.execution?.agentId ?? null,
     };
   }
   return {
@@ -1456,13 +1660,35 @@ function normalizeApplicationCapabilityFacades(value) {
     }
     const id = slugify(facade.id);
     const toolName = stringOrNull(facade.toolName);
-    if (!id || !toolName || seen.has(id)) {
-      throw applicationRegistrationError("invalid_application_capability_facade", "Application capability facade requires a unique id and toolName.");
+    const agentId = stringOrNull(facade.agentId);
+    const agentToolName = stringOrNull(facade.agentToolName);
+    if (!id || seen.has(id)) {
+      throw applicationRegistrationError("invalid_application_capability_facade", "Application capability facade requires a unique id.");
+    }
+    // A facade delegates to exactly one kind of governed executor, and the
+    // descriptor must say which: a Tool (platform-curated contract) or a
+    // registered Agent (user-registered execution identity). The two trust
+    // regimes are different, so the shape refuses to blur them — one of
+    // toolName / agentId, never both, never neither (#975).
+    if (Boolean(toolName) === Boolean(agentId)) {
+      throw applicationRegistrationError("invalid_application_capability_facade", "Application capability facade requires exactly one of toolName (tool facade) or agentId (agent facade).");
+    }
+    if (agentToolName && !agentId) {
+      throw applicationRegistrationError("invalid_application_capability_facade", "agentToolName is only valid on an agent facade (agentId).");
     }
     seen.add(id);
     return {
       id,
       toolName,
+      agentId,
+      // Which tool on the agent this capability calls (MCP servers can expose
+      // several). Null lets the bridge's single-tool auto-resolution apply.
+      agentToolName,
+      // ADR 0014: a gate-only facade is discoverable but not directly invokable —
+      // its execution goes through a dedicated server gate that resolves the
+      // inputs itself (mail.send resolves everything from the confirmed draft).
+      // Default true: ordinary facades are unaffected.
+      directInvocation: facade.directInvocation !== false,
       displayName: stringOrNull(facade.displayName) ?? id,
       description: stringOrNull(facade.description),
       riskLevel: normalizeRiskLevel(facade.riskLevel, "medium"),
@@ -1472,8 +1698,22 @@ function normalizeApplicationCapabilityFacades(value) {
         ? publicJsonObject(facade.inputSchema)
         : emptyInputSchema(),
       outputCollection: stringOrNull(facade.outputCollection) ?? "invocations",
+      // A facade may declare how to import its result, exactly like a wrapper
+      // command. Same generic mechanism (application-results RESULT_PARSERS), so
+      // a new importing application adds a parser, not a branch in completion.
+      resultImport: normalizeFacadeResultImport(facade.resultImport),
     };
   });
+}
+
+function normalizeFacadeResultImport(resultImport) {
+  if (resultImport == null) return null;
+  if (typeof resultImport !== "object" || Array.isArray(resultImport)) {
+    throw applicationRegistrationError("invalid_application_capability_facade", "Application capability facade resultImport must be an object.");
+  }
+  const source = stringOrNull(resultImport.source);
+  if (!source) return null;
+  return { source, kind: stringOrNull(resultImport.kind) };
 }
 
 function highestCapabilityRiskLevel(capabilities) {
@@ -1929,10 +2169,58 @@ function normalizeApplicationSource(source = {}) {
   return {
     type: "manual",
     uri: stringOrNull(source.uri),
+    credential: normalizeCredentialRequirement(source.credential),
     manifest: source.manifest && typeof source.manifest === "object" && !Array.isArray(source.manifest)
       ? source.manifest
       : {},
   };
+}
+
+// A credential REQUIREMENT — never a credential (ADR 0010). The descriptor pins
+// the authority the application's agent must hold (`provider` + `scope`); the
+// secret itself lives with the process that uses it, in the device's credential
+// store, and never enters the registry, persisted state, or an audit record.
+//
+// Because the descriptor is immutable (ADR 0009), widening `scope` is a
+// re-registration — a reviewed event — while rotating the secret behind it is
+// free. Permission change and key rotation are different things, and this is
+// what keeps them apart.
+function normalizeCredentialRequirement(credential) {
+  if (credential == null) return null;
+  if (typeof credential !== "object" || Array.isArray(credential)) {
+    throw new Error("Application source credential must be an object.");
+  }
+  const provider = String(credential.provider ?? "").trim().toLowerCase();
+  const scope = String(credential.scope ?? "").trim();
+  if (!/^[a-z][a-z0-9_.-]{0,31}$/.test(provider)) {
+    throw new Error("Application credential provider must be a bare provider name.");
+  }
+  if (!scope) {
+    throw new Error("Application credential requires a scope.");
+  }
+  // ADR 0014: the write-credential exception class. Declaring it takes an
+  // explicit `write: true` plus a non-empty justification; the class's other
+  // invariants (every capability approval-gated; the credential pair unique)
+  // are enforced in registerApplication where facades and registry are visible.
+  if (credential.write === true) {
+    const justification = String(credential.justification ?? "").trim();
+    if (!justification) {
+      throw applicationRegistrationError(
+        "application_write_credential_invalid",
+        "A write-credential Application requires credential.justification (ADR 0014).",
+      );
+    }
+    return { provider, scope, write: true, justification: justification.slice(0, 500) };
+  }
+  // Read-only by construction. A registration may not declare a write-capable
+  // scope: read and write authority never share a credential (ADR 0010); a
+  // write-capable scope needs the ADR 0014 write-credential class — an explicit
+  // `credential.write: true` with its own invariants — never a quiet widening
+  // of a read registration.
+  if (!READ_ONLY_CREDENTIAL_SCOPE.test(scope)) {
+    throw new Error(`Application credential scope "${scope}" is not read-only; a write-capable scope needs the ADR 0014 write-credential class (credential.write: true), a separately consented credential — never a widening of this one.`);
+  }
+  return { provider, scope };
 }
 
 function normalizeGitUrl(value) {

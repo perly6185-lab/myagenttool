@@ -44,6 +44,7 @@ export const persistedArrayKeys = [
   "tokens",
   "agents",
   "applications",
+  "applicationInstallRuns",
   "applicationRecoveryActions",
   "approvalGrants",
   "applicationDailyStats",
@@ -76,15 +77,21 @@ export const persistedArrayKeys = [
   "aiUsageRecords",
   "invocationRounds",
   "toolInvocationRecords",
+  "runTranscripts",
   "ledgerEntries",
   "importedUsageEstimates",
   "codexReviewFindings",
   "claudeReviewFindings",
   "codexExecChanges",
   "codexExecChangeReviews",
+  "claudeApplyAuthorizations",
   "applicationResults",
   "budgets",
   "budgetReservations",
+  "decisionSoftClaims",
+  "issueClaims",
+  "issueClaimEvents",
+  "dispatchAssignments",
   "automations",
   "agentSkills",
   "auditExportRequests",
@@ -104,6 +111,11 @@ export const persistedArrayKeys = [
   "terminalBridgeActions",
   "sshTargets",
   "sshConnectionTests",
+  "channels",
+  "channelIdentities",
+  "channelEvents",
+  "channelConversations",
+  "channelDeliveries",
 ];
 
 // NOTE: `devices` is deliberately absent from both key lists — it restores
@@ -116,6 +128,9 @@ export const persistedObjectKeys = [
   // knobs) un-arms itself on restart.
   "autoRunSettings",
   "autoRunBreaker",
+  // O5.2 follow-up: the last-emitted below-target SLO set. Durable so a restart
+  // does not re-fire an alert for a breach that was already reported.
+  "autoRunSloAlert",
   "approvalTokenLegacyUses",
   "privateDeploymentConfig",
   "retentionSettings",
@@ -131,7 +146,11 @@ export const persistedObjectKeys = [
 // auditable diagnostic on restore — never delete it, never broaden its visibility.
 const OWNER_STAMPED_PROJECT_COLLECTIONS = [
   { key: "applications", owner: "ownerTeamId" },
+  { key: "applicationInstallRuns", owner: "ownerTeamId" },
   { key: "applicationResults", owner: "ownerTeamId" },
+  // #1152: auto-runs stamp their owning team at creation. Pre-stamp rows have
+  // no `teamId` and are skipped by the scan (no stamp → nothing to cross-check).
+  { key: "autoRuns", owner: "teamId" },
 ];
 
 /**
@@ -163,6 +182,137 @@ export function detectOwnershipInconsistencies(state, { limit = 100 } = {}) {
   return diagnostics;
 }
 
+// A snapshot carrying two records under one id is CORRUPT (#832): `find` by id then
+// returns an arbitrary one, so the record an operator reads and the one the
+// scheduler acts on can differ. Records are unshifted (newest first), so the FIRST
+// occurrence is the newest — keep it, drop the rest, and be loud. Pure: returns the
+// deduped array + how many were dropped (the caller accumulates for the forensic copy).
+function dedupeById(key, records) {
+  const seen = new Set();
+  const kept = [];
+  let dropped = 0;
+  for (const record of records) {
+    const id = record?.id;
+    if (typeof id !== "string" || !id) {
+      kept.push(record);
+      continue;
+    }
+    if (seen.has(id)) {
+      dropped += 1;
+      continue;
+    }
+    seen.add(id);
+    kept.push(record);
+  }
+  if (dropped > 0) {
+    console.error(
+      `[server] state snapshot had ${dropped} duplicate-id record(s) in "${key}" — kept the newest of each id and dropped the rest. This is corruption (see #832).`,
+    );
+  }
+  return { kept, dropped };
+}
+
+// Merge loaded devices onto the seeded defaults (so a NEW default device introduced
+// in a version upgrade survives), then keep the defaults when nothing was loaded —
+// mirrors the old restoreDevices semantics but over already-loaded `state.devices`.
+function mergeDevicesWithDefaults(state, seededDevices) {
+  const persisted = Array.isArray(state.devices) && state.devices.length ? state.devices : null;
+  if (!persisted) {
+    state.devices = seededDevices;
+    return;
+  }
+  const restored = persisted.filter(isPlainObject).map((device) => {
+    const base = seededDevices.find((seeded) => seeded.id === device.id);
+    return base ? { ...base, ...device } : device;
+  });
+  state.devices = restored.length ? restored : seededDevices;
+}
+
+/**
+ * Snapshot the fresh, seeded state's mergeable defaults BEFORE any restore/hydrate
+ * overwrites them — the bases normalizeLoadedState merges new defaults from. Must be
+ * captured at boot entry, off the createServerState output.
+ */
+export function captureSeededDefaults(state) {
+  const arrays = {};
+  for (const key of persistedArrayKeys) {
+    arrays[key] = Array.isArray(state[key]) ? [...state[key]] : [];
+  }
+  const objects = {};
+  for (const key of persistedObjectKeys) {
+    if (isPlainObject(state[key])) objects[key] = { ...state[key] };
+  }
+  const devices = Array.isArray(state.devices) ? [...state.devices] : [];
+  return { arrays, objects, devices };
+}
+
+/**
+ * Shared post-load normalization for BOTH restore paths (#1003). The JSON restore and
+ * the SQLite hydrate each load raw records into `state`; this then makes the state
+ * WHOLE, identically, so the SQLite backing fails closed exactly like the JSON one:
+ *   - drop path-missing projects + guarantee the default project + valid currentProjectId,
+ *   - merge new seeded defaults into agents / object singletons / devices (version upgrades),
+ *   - repair duplicate ids, force every device offline (a restart implies no liveness),
+ *   - surface ownership-inconsistent records as an auditable diagnostic.
+ * Operates in place; returns { duplicateIdsRepaired, ownershipInconsistencies }.
+ */
+export function normalizeLoadedState(state, { seededDefaults, defaultProject, sameProjectPath }) {
+  const same = typeof sameProjectPath === "function" ? sameProjectPath : (a, b) => a === b;
+  const seededArrays = seededDefaults?.arrays ?? {};
+  const seededObjects = seededDefaults?.objects ?? {};
+
+  // Projects: fail-closed path filter, default-project guarantee, currentProjectId.
+  let projects = Array.isArray(state.projects)
+    ? state.projects.filter((project) => project?.id && project?.path && existsSync(project.path))
+    : [];
+  projects = projects.filter((project) => project.id !== defaultProject.id || same(project.path, defaultProject.path));
+  let defaultPathProject = projects.find((project) => same(project.path, defaultProject.path));
+  if (!defaultPathProject) {
+    projects.unshift(defaultProject);
+    defaultPathProject = defaultProject;
+  }
+  state.projects = projects;
+  state.currentProjectId = projects.some((project) => project.id === state.currentProjectId)
+    ? state.currentProjectId
+    : defaultPathProject.id;
+
+  // Arrays: agents merge with the seeded defaults (new demo agents survive an
+  // upgrade); every other collection is duplicate-id repaired.
+  let duplicateIdsRepaired = 0;
+  for (const key of persistedArrayKeys) {
+    if (!Array.isArray(state[key])) continue;
+    if (key === "agents") {
+      state.agents = mergeRecordsById(seededArrays.agents ?? [], state.agents);
+    } else {
+      const { kept, dropped } = dedupeById(key, state[key]);
+      state[key] = kept;
+      duplicateIdsRepaired += dropped;
+    }
+  }
+
+  // Object singletons: a new default field added in an upgrade merges UNDER the
+  // restored values (restored wins on conflict).
+  for (const key of persistedObjectKeys) {
+    if (isPlainObject(state[key])) {
+      state[key] = { ...(isPlainObject(seededObjects[key]) ? seededObjects[key] : {}), ...state[key] };
+    }
+  }
+
+  // Devices: dedupe + merge defaults + force offline.
+  if (Array.isArray(state.devices)) {
+    const { kept, dropped } = dedupeById("devices", state.devices);
+    state.devices = kept;
+    duplicateIdsRepaired += dropped;
+  }
+  mergeDevicesWithDefaults(state, seededDefaults?.devices ?? []);
+  for (const device of listDevices(state)) {
+    if (device) device.status = "offline";
+  }
+
+  const ownershipInconsistencies = detectOwnershipInconsistencies(state);
+  return { duplicateIdsRepaired, ownershipInconsistencies };
+}
+
 export function createPersistenceRuntime({
   state,
   enabled,
@@ -171,6 +321,19 @@ export function createPersistenceRuntime({
   now,
   defaultProject,
   sameProjectPath,
+  // #1041: called after every durable flush (persistStateNow AND the debounced
+  // persistStateSoon). The SQLite backing hooks here to mirror the state on EVERY
+  // write path — invocation accept/completion (runStateTransaction), route-level
+  // persistStateSoon, and the runtime helpers — not only store.transaction commits,
+  // so SQLite never lags the JSON snapshot (and the last writes before shutdown are
+  // captured). No-op by default (JSON-only backing).
+  afterFlush = () => {},
+  // #1042: when false, a per-commit flush writes ONLY the durable backing (SQLite via
+  // afterFlush), not the JSON snapshot — JSON is retired AS the backing and becomes
+  // an explicit export (exportJsonSnapshot: shutdown + on-demand rollback artifact).
+  // Stays true on the MYAGENTTOOL_STORE=memory path and the Node<22.13 degradation,
+  // where JSON IS the backing.
+  jsonBacking = true,
 }) {
   let saveStateTimer = null;
 
@@ -197,8 +360,9 @@ export function createPersistenceRuntime({
     savePersistentState();
   }
 
-  function savePersistentState() {
-    if (!enabled) return;
+  // The actual JSON snapshot write. Called per-commit only when JSON is the backing
+  // (jsonBacking); otherwise it's the explicit export (exportJsonSnapshot).
+  function writeSnapshotFile() {
     const snapshot = {
       schemaVersion,
       savedAt: now(),
@@ -237,6 +401,28 @@ export function createPersistenceRuntime({
     }
   }
 
+  function savePersistentState() {
+    if (!enabled) return;
+    // JSON is written per-commit only when it is the backing (#1042). On the SQLite
+    // backing this is a no-op — the durable write is the mirror below.
+    if (jsonBacking) writeSnapshotFile();
+    // Mirror the same state into the durable backing (SQLite) on the SAME flush, so
+    // every write path stays in sync. Best-effort: a mirror failure must not crash
+    // the control plane.
+    try {
+      afterFlush();
+    } catch (error) {
+      console.error(`[server] durable backing sync failed: ${error?.message ?? error}`);
+    }
+  }
+
+  // #1042: explicit JSON export — a rollback/backup artifact, independent of the
+  // backing. Written at shutdown and on demand even when SQLite is the backing.
+  function exportJsonSnapshot() {
+    if (!enabled) return;
+    writeSnapshotFile();
+  }
+
   // A snapshot we refuse to load must be MOVED ASIDE, not left in place: the
   // server continues with fresh state and the next debounced save would
   // overwrite the only copy of the old data. Renaming preserves a forensic
@@ -251,14 +437,8 @@ export function createPersistenceRuntime({
     }
   }
 
-  // Set by repairDuplicateIds; consumed at the end of restore. The repair is
-  // useless if it only ever lives in memory — the next process would read the same
-  // corrupt file and log the same alarm forever.
-  let duplicateIdsRepaired = 0;
-
   function restorePersistentState() {
     if (!enabled || !existsSync(stateStorePath)) return;
-    duplicateIdsRepaired = 0;
     let snapshot;
     try {
       snapshot = JSON.parse(readFileSync(stateStorePath, "utf8"));
@@ -270,66 +450,35 @@ export function createPersistenceRuntime({
       quarantineSnapshot(`schema-${snapshot?.schemaVersion ?? "unknown"}`);
       return;
     }
-    let restoredProjects = Array.isArray(snapshot.projects)
-      ? snapshot.projects.filter((project) => project?.id && project?.path && existsSync(project.path))
-      : [];
-    restoredProjects = restoredProjects.filter((project) => project.id !== defaultProject.id || sameProjectPath(project.path, defaultProject.path));
-    let defaultPathProject = restoredProjects.find((project) => sameProjectPath(project.path, defaultProject.path));
-    if (!defaultPathProject) {
-      restoredProjects.unshift(defaultProject);
-      defaultPathProject = defaultProject;
-    }
-    if (restoredProjects.length) {
-      state.projects = restoredProjects;
-      state.currentProjectId = restoredProjects.some((project) => project.id === snapshot.currentProjectId)
-        ? snapshot.currentProjectId
-        : defaultPathProject.id;
-    }
-    const defaultArrays = {};
+    // Capture the fresh seeded defaults BEFORE loading the snapshot over them, then
+    // load the raw records (present keys only — an absent key keeps its default) and
+    // hand off to the SHARED normalization (identical to the SQLite hydrate path).
+    const seededDefaults = captureSeededDefaults(state);
+    if (Array.isArray(snapshot.projects)) state.projects = snapshot.projects;
+    state.currentProjectId = snapshot.currentProjectId;
     for (const key of persistedArrayKeys) {
-      defaultArrays[key] = Array.isArray(state[key]) ? state[key] : [];
-    }
-    for (const key of persistedArrayKeys) {
-      if (Array.isArray(snapshot[key])) {
-        state[key] = key === "agents"
-          ? mergeRecordsById(defaultArrays[key], snapshot[key])
-          : repairDuplicateIds(key, snapshot[key]);
-      }
+      if (Array.isArray(snapshot[key])) state[key] = snapshot[key];
     }
     for (const key of persistedObjectKeys) {
-      if (isPlainObject(snapshot[key])) {
-        state[key] = {
-          ...(isPlainObject(state[key]) ? state[key] : {}),
-          ...snapshot[key],
-        };
-      }
+      if (isPlainObject(snapshot[key])) state[key] = snapshot[key];
     }
-    // `devices` restores through its own path (per-record merge + legacy
-    // migration), so it would otherwise sail past the duplicate-id repair every
-    // other collection gets. It is the NEWEST collection, which is exactly the
-    // case #832 warns about: a guard that only covers the arrays someone
-    // remembered to route through it is not a guard. Repair it here, on the
-    // snapshot, so restoreDevices sees a fleet with unique ids.
-    if (Array.isArray(snapshot.devices)) {
-      snapshot.devices = repairDuplicateIds("devices", snapshot.devices);
-    }
-    restoreDevices(state, snapshot);
-    if (Number.isFinite(snapshot.idCounter)) {
-      state.idCounter = snapshot.idCounter;
-    }
-    // Every device is offline until its own bridge re-registers — a restart
-    // tells us nothing about which machines are still up.
-    for (const device of listDevices(state)) {
-      device.status = "offline";
-    }
+    // `devices` has its own snapshot key (+ a legacy `device` singular that older
+    // snapshots wrote); load either form, the shared normalization does the rest.
+    if (Array.isArray(snapshot.devices)) state.devices = snapshot.devices;
+    else if (isPlainObject(snapshot.device)) state.devices = [snapshot.device];
+    if (Number.isFinite(snapshot.idCounter)) state.idCounter = snapshot.idCounter;
+
+    const { duplicateIdsRepaired, ownershipInconsistencies } = normalizeLoadedState(state, {
+      seededDefaults,
+      defaultProject,
+      sameProjectPath,
+    });
+
     // Keep the evidence before anything overwrites it — the same forensic move
-    // quarantineSnapshot makes. Otherwise the next ordinary save silently destroys
-    // the only copy of what went wrong.
-    //
-    // The repaired snapshot is NOT written here: the id counter is not settled yet
-    // (the composer raises it right after this returns), and persisting a counter
-    // that is behind its own records is the exact bug this is fixing. The caller
-    // writes it once the state is whole.
+    // quarantineSnapshot makes. The repaired snapshot is NOT written back here: the
+    // id counter is not settled yet (the composer raises it right after this
+    // returns), and persisting a counter behind its own records is the exact bug
+    // this is fixing. The caller writes it once the state is whole.
     if (duplicateIdsRepaired > 0) {
       const preservedPath = `${stateStorePath}.duplicate-ids-${Date.now()}`;
       try {
@@ -340,11 +489,8 @@ export function createPersistenceRuntime({
       }
     }
     // #891: surface any ownership-inconsistent restored record as an auditable
-    // diagnostic. This is loud-not-silent by design — the record is neither
-    // deleted nor made more visible (scoped views already attribute it by its
-    // project's team); the log is the "quarantined/omitted with auditable
-    // diagnostics" contract so an operator can reconcile it.
-    const ownershipInconsistencies = detectOwnershipInconsistencies(state);
+    // diagnostic — loud-not-silent (the record is neither deleted nor made more
+    // visible; scoped views already attribute it by its project's team).
     if (ownershipInconsistencies.length > 0) {
       const preview = ownershipInconsistencies
         .slice(0, 10)
@@ -359,83 +505,13 @@ export function createPersistenceRuntime({
     return { duplicateIdsRepaired, ownershipInconsistencies };
   }
 
-  /**
-   * A snapshot carrying two records under one id is CORRUPT (#832): `find` by id
-   * then returns an arbitrary one of them, so the record an operator reads and the
-   * record the scheduler acts on can be different objects. That is exactly how a
-   * ghost invocation — stuck `running`, unreachable by its own id — wedged a
-   * device's dispatch for three weeks while every read of it said `cancelled`.
-   *
-   * Repair rather than quarantine: the whole snapshot is not junk, and an operator
-   * needs a way back that is not "throw the state away". Records are unshifted
-   * (newest first), so the FIRST occurrence is the newest — keep it, drop the rest,
-   * and be loud about what was dropped. Loading it silently is what let this hide.
-   */
-  function repairDuplicateIds(key, records) {
-    const seen = new Set();
-    const kept = [];
-    let dropped = 0;
-    for (const record of records) {
-      const id = record?.id;
-      if (typeof id !== "string" || !id) {
-        kept.push(record);
-        continue;
-      }
-      if (seen.has(id)) {
-        dropped += 1;
-        continue;
-      }
-      seen.add(id);
-      kept.push(record);
-    }
-    if (dropped > 0) {
-      duplicateIdsRepaired += dropped;
-      console.error(
-        `[server] state snapshot had ${dropped} duplicate-id record(s) in "${key}" — kept the newest of each id and dropped the rest. This is corruption (see #832).`,
-      );
-    }
-    return kept;
-  }
-
   return {
     persistStateSoon,
     persistStateNow,
     restorePersistentState,
     savePersistentState,
+    exportJsonSnapshot,
   };
-}
-
-/**
- * Restore the device fleet, accepting both shapes:
- *   - `devices: [...]`  — current.
- *   - `device: {...}`   — pre-fleet snapshot, migrated by wrapping it in a list.
- *
- * A restored device is merged OVER its seeded default (matched by id) rather
- * than replacing it, which is what the old single-object restore did: a field
- * introduced by a code upgrade is absent from an older snapshot, and the merge
- * is what lets it pick up its default instead of coming back `undefined`. A
- * device with no seeded counterpart (an enrolled machine) has no defaults to
- * inherit and is taken as-is.
- *
- * An empty or unusable list leaves the seeded defaults in place: `state.device`
- * aliases devices[0], so an empty fleet would make the alias null and every
- * singleton read in the services throw.
- */
-function restoreDevices(state, snapshot) {
-  const defaults = listDevices(state);
-  const persisted = Array.isArray(snapshot.devices) && snapshot.devices.length
-    ? snapshot.devices
-    : isPlainObject(snapshot.device)
-      ? [snapshot.device]
-      : null;
-  if (!persisted) return;
-  const restored = persisted.filter(isPlainObject).map((device) => {
-    const base = defaults.find((seeded) => seeded.id === device.id);
-    return base ? { ...base, ...device } : device;
-  });
-  if (restored.length) {
-    state.devices = restored;
-  }
 }
 
 function mergeRecordsById(defaultRecords, restoredRecords) {

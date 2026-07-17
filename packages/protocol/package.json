@@ -14,6 +14,10 @@
     "./issue-prompt": {
       "types": "./src/issue-prompt.ts",
       "default": "./src/issue-prompt.mjs"
+    },
+    "./channel": {
+      "types": "./src/channel.ts",
+      "default": "./src/channel.mjs"
     }
   },
   "scripts": {
