@@ -16,6 +16,7 @@
 import { workBoard } from "../read-models/work-board.mjs";
 import { pendingDecisions } from "../read-models/pending-decisions.mjs";
 import { workReport, calendarPeriods } from "../read-models/work-report.mjs";
+import { makeRunTx } from "../runtime/store/run-tx.mjs";
 
 const PERIOD_KEYS = new Set(["day", "week", "month", "quarter"]);
 const CADENCES = new Set(["daily", "weekly"]);
@@ -124,8 +125,10 @@ export function assembleGlobalWorkReport(state, nowMs) {
  * @param {() => void} [deps.persistStateSoon]
  * @param {(event:object) => void} [deps.appendEvent]
  */
-export function createReportScheduleRuntime({ state, now, enqueueChannelDelivery, persistStateSoon = () => {}, appendEvent = () => {} }) {
+export function createReportScheduleRuntime({ state, now, enqueueChannelDelivery, persistStateSoon = () => {}, store, appendEvent = () => {} }) {
   if (!state.reportSchedule) state.reportSchedule = createDefaultReportSchedule();
+  // Durable writes go through the Store's unit-of-work (#1001), not a bare persist.
+  const runTx = makeRunTx({ store, persistStateSoon });
 
   // Enqueue the given period's report to the configured channel. Dedupe-aware
   // unless `force` (the manual "post now"). Never throws — a bad channel/config
@@ -158,50 +161,52 @@ export function createReportScheduleRuntime({ state, now, enqueueChannelDelivery
   }
 
   // Slow-tick sweep: post when the schedule is due, then always roll nextRunAt
-  // forward so neither a skip nor a failure busy-loops.
+  // forward so neither a skip nor a failure busy-loops. The mutation + enqueue
+  // commit atomically through runTx.
   function sweepReportSchedule() {
     const cfg = state.reportSchedule;
     if (!cfg?.enabled || !cfg.channelId || !cfg.conversationId) return { posted: false, reason: "disabled" };
     const nowIso = now();
     if (!cfg.nextRunAt || Date.parse(nowIso) < Date.parse(cfg.nextRunAt)) return { posted: false, reason: "not_due" };
-    const result = post(cfg);
-    cfg.nextRunAt = computeReportNextRun(nowIso, cfg);
-    cfg.updatedAt = nowIso;
-    persistStateSoon();
-    return result;
+    return runTx(() => {
+      const result = post(cfg);
+      cfg.nextRunAt = computeReportNextRun(nowIso, cfg);
+      cfg.updatedAt = nowIso;
+      return result;
+    });
   }
 
   // Manual "post now" — ignores dedupe + schedule, for setup/testing.
   function postReportNow() {
     const cfg = state.reportSchedule;
-    const result = post(cfg, { force: true });
-    if (result.posted) {
-      cfg.updatedAt = now();
-      persistStateSoon();
-    }
-    return result;
+    return runTx(() => {
+      const result = post(cfg, { force: true });
+      if (result.posted) cfg.updatedAt = now();
+      return result;
+    });
   }
 
   function setReportSchedule(patch = {}) {
-    const cur = state.reportSchedule ?? createDefaultReportSchedule();
-    const next = {
-      ...cur,
-      enabled: patch.enabled != null ? Boolean(patch.enabled) : cur.enabled,
-      channelId: "channelId" in patch ? (patch.channelId || null) : cur.channelId,
-      conversationId: "conversationId" in patch ? (patch.conversationId || null) : cur.conversationId,
-      periodKey: PERIOD_KEYS.has(patch.periodKey) ? patch.periodKey : cur.periodKey,
-      cadence: CADENCES.has(patch.cadence) ? patch.cadence : cur.cadence,
-      weekday: patch.weekday != null ? clampInt(patch.weekday, 0, 6, cur.weekday) : cur.weekday,
-      time: patch.time != null ? normalizeTime(patch.time, cur.time) : cur.time,
-    };
-    const nowIso = now();
-    // Recompute nextRunAt whenever the cadence/time could have moved, or when
-    // arming an enabled schedule that has none yet.
-    next.nextRunAt = next.enabled ? computeReportNextRun(nowIso, next) : null;
-    next.updatedAt = nowIso;
-    state.reportSchedule = next;
-    persistStateSoon();
-    return next;
+    return runTx(() => {
+      const cur = state.reportSchedule ?? createDefaultReportSchedule();
+      const next = {
+        ...cur,
+        enabled: patch.enabled != null ? Boolean(patch.enabled) : cur.enabled,
+        channelId: "channelId" in patch ? (patch.channelId || null) : cur.channelId,
+        conversationId: "conversationId" in patch ? (patch.conversationId || null) : cur.conversationId,
+        periodKey: PERIOD_KEYS.has(patch.periodKey) ? patch.periodKey : cur.periodKey,
+        cadence: CADENCES.has(patch.cadence) ? patch.cadence : cur.cadence,
+        weekday: patch.weekday != null ? clampInt(patch.weekday, 0, 6, cur.weekday) : cur.weekday,
+        time: patch.time != null ? normalizeTime(patch.time, cur.time) : cur.time,
+      };
+      const nowIso = now();
+      // Recompute nextRunAt whenever the cadence/time could have moved, or when
+      // arming an enabled schedule that has none yet.
+      next.nextRunAt = next.enabled ? computeReportNextRun(nowIso, next) : null;
+      next.updatedAt = nowIso;
+      state.reportSchedule = next;
+      return next;
+    });
   }
 
   return { sweepReportSchedule, postReportNow, setReportSchedule, getReportSchedule: () => state.reportSchedule };

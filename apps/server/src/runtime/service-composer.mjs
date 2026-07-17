@@ -1216,6 +1216,7 @@ export function createServerRuntimeServices({
     now,
     enqueueChannelDelivery: channelDeliveryService.enqueueChannelDelivery,
     persistStateSoon,
+    store,
     appendEvent,
   });
 
