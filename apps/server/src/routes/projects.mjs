@@ -41,6 +41,7 @@ export async function handleProjectRoutes({
   createWorktree,
   createWorktreePr,
   publishWorktreeBranch,
+  ensureLocalOrigin,
   startAutoRun,
   retryAutoRun,
   cancelAutoRun,
@@ -142,6 +143,21 @@ export async function handleProjectRoutes({
   if (req.method === "POST" && url.pathname === "/api/worktrees") {
     const body = await readJson(req);
     await createWorktreeResponse({ body, createWorktree, sendJson, res });
+    return true;
+  }
+
+  // #1210: give a project somewhere to push, without an internet account.
+  const localOriginMatch = url.pathname.match(/^\/api\/projects\/([^/]+)\/local-origin$/);
+  if (localOriginMatch && req.method === "POST") {
+    const projectId = decodeURIComponent(localOriginMatch[1]);
+    if (denyForeignProject({ res, sendJson, state, actor, projectId, notFound: { error: "project_not_found" } })) {
+      return true;
+    }
+    try {
+      sendJson(res, 201, await ensureLocalOrigin(projectId));
+    } catch (error) {
+      sendJson(res, 400, { error: "local_origin_unavailable", message: errorMessage(error) });
+    }
     return true;
   }
 

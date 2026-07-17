@@ -260,6 +260,7 @@ export function createServerRuntimeServices({
     gitProjectSummary,
     projectBranches,
     publishWorktreeBranch,
+    ensureLocalOrigin,
     createWorktreePr,
     worktreeDiff,
     submitWorktreeReview,
@@ -275,7 +276,7 @@ export function createServerRuntimeServices({
     selectProject,
     updateProject,
     worktreeForProject,
-  } = createProjectService({ state, now, nextId, appendEvent, persistStateSoon, store });
+  } = createProjectService({ state, now, nextId, appendEvent, persistStateSoon, store, stateStorePath });
 
   const {
     createAgentSkill,
@@ -3003,6 +3004,7 @@ export function createServerRuntimeServices({
     createWorktree,
     createWorktreePr,
     publishWorktreeBranch,
+    ensureLocalOrigin,
     startAutoRun,
     retryAutoRun,
     cancelAutoRun,

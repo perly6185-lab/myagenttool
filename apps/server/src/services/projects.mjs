@@ -91,7 +91,7 @@ export function readGitFacts(cwd) {
   return { repoPath: cwd, remoteUrl, defaultBranch, currentBranch, isRepo: true };
 }
 
-export function createProjectService({ state, now, nextId, appendEvent, persistStateSoon, store }) {
+export function createProjectService({ state, now, nextId, appendEvent, persistStateSoon, store, stateStorePath = null }) {
   // #1001 Phase A: durable project/worktree/review writes commit through the
   // Store's unit of work (falls back to the debounce where no store is injected).
   const runTx = makeRunTx({ store, persistStateSoon });
@@ -533,6 +533,81 @@ export function createProjectService({ state, now, nextId, appendEvent, persistS
     return { committed, hasCommits, base };
   }
 
+  // A place to push, for a project that has nowhere. `publishWorktreeBranch` is a
+  // plain `git push origin`, and git pushes to a `file://` remote exactly as it
+  // does to an https one — so the only thing standing between a local-only
+  // project and the platform's own loop is the absence of a remote. That absence
+  // is normally answered with "go get a GitHub account", which buys nothing when
+  // the work never leaves the machine (#1210).
+  //
+  // The bare repo sits beside the state store — platform data, keyed by project
+  // id — and NOT under the project's own path. The application-routines path
+  // (service-composer.mjs:2771) does root at the project, but a bare repo cannot:
+  // an unignored directory inside a user's checkout becomes untracked clutter in
+  // their diff and gets swept into a commit by the first `git add -A`. This repo's
+  // own .gitignore hides `.myagenttool/`, which is exactly why the mistake would
+  // survive here and break on a real user's project.
+  //
+  // No process, no port, no account. This is a directory.
+  async function ensureLocalOrigin(projectId) {
+    const project = state.projects.find((item) => item.id === projectId);
+    if (!project) throw new Error("Project not found.");
+    const cwd = project.path ?? null;
+    if (!cwd || !existsSync(cwd)) throw new Error("Project working directory is missing.");
+
+    const isRepo = await runGitCapture(cwd, ["rev-parse", "--is-inside-work-tree"], { timeout: 5_000 });
+    if (!isRepo.ok || isRepo.stdout.trim() !== "true") {
+      throw new Error("Local origin needs a git repository. This project's path is not one.");
+    }
+
+    if (!stateStorePath) throw new Error("Local origin needs the platform's data root; no state store is configured.");
+    const bareRoot = resolve(dirname(stateStorePath), "repos");
+    const barePath = join(bareRoot, `${sanitizeLocalOriginSegment(projectId)}.git`);
+    // file:// (not a bare path) so the URL is unambiguous on Windows, where a
+    // drive-letter path is not a valid git URL to every caller.
+    const originUrl = `file:///${barePath.replaceAll("\\", "/").replace(/^\/+/, "")}`;
+
+    // An existing origin is answered two different ways, and the difference is the
+    // whole safety of this call. If it is the local origin we manage, this is a
+    // repeat call: report it. If it is anything else, it is a remote the user
+    // chose — re-pointing it would silently divert their pushes into a directory
+    // they never look at. Refuse, and name what is already there.
+    const existing = await originRemoteUrl(cwd);
+    if (existing && existing !== originUrl) {
+      throw new Error(
+        `Project already has an 'origin' (${existing}). Local origin will not re-point an existing remote — `
+        + "remove it first if that is really the intent.",
+      );
+    }
+
+    // Reuse, never re-initialize: a second call must not blow away the history the
+    // first call's pushes put there.
+    const created = !existsSync(barePath);
+    if (created) {
+      mkdirSync(bareRoot, { recursive: true });
+      const init = await runGitCapture(bareRoot, ["init", "--bare", barePath], { timeout: 20_000 });
+      if (!init.ok) throw new Error(`git init --bare failed: ${init.stderr || `exit ${init.code}`}`);
+    }
+
+    if (!existing) {
+      const add = await runGitCapture(cwd, ["remote", "add", "origin", originUrl], { timeout: 10_000 });
+      if (!add.ok) throw new Error(`git remote add origin failed: ${add.stderr || `exit ${add.code}`}`);
+    }
+
+    if (created) {
+      runTx(() => {
+        appendEvent({
+          invocationId: null,
+          type: "project_local_origin_created",
+          level: "info",
+          message: `Local origin created for ${project.name ?? project.id}.`,
+          data: { projectId: project.id, originUrl, barePath },
+        });
+      });
+    }
+    return { ok: true, projectId: project.id, originUrl, barePath, created };
+  }
+
   // Push the worktree's branch to origin and record its upstream. Real git push
   // (no --force unless asked), so an unreachable/missing origin surfaces as an
   // error rather than the old silent skipped:true stub.
@@ -696,6 +771,7 @@ export function createProjectService({ state, now, nextId, appendEvent, persistS
     gitProjectSummary,
     projectBranches,
     publishWorktreeBranch,
+    ensureLocalOrigin,
     worktreeDiff: (worktree) => worktreeDiff(worktree, { projectTargets: state.projectTargets }),
     projectGithubItems: (project) => projectGithubItems(project, { projectTargets: state.projectTargets }),
     projectForInvocation,
@@ -827,6 +903,17 @@ async function runGitCapture(cwd, args, { timeout = 30_000 } = {}) {
       code: error?.code ?? 1,
     };
   }
+}
+
+// The project id becomes a directory name. Ids are server-minted (`prj_...`), but
+// this path is built from one, so it is confined here rather than trusted: a `..`
+// or a separator arriving from anywhere would otherwise place a bare repo outside
+// the platform tree.
+function sanitizeLocalOriginSegment(projectId) {
+  const raw = String(projectId ?? "").trim();
+  const safe = raw.replace(/[^A-Za-z0-9_-]/g, "_");
+  if (!safe || safe === "." || safe === "..") throw new Error("Project id is not usable as a local origin path.");
+  return safe.slice(0, 64);
 }
 
 async function originRemoteUrl(cwd) {
