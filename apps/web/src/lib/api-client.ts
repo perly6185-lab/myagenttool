@@ -267,8 +267,21 @@ export interface RunTranscriptRecord {
   createdAt: string;
 }
 
+export interface ObservabilityDeletionResult {
+  deleted: boolean;
+  scope: string;
+  subjectId: string;
+  tier: string;
+  invocationCount: number;
+  counts: Record<string, number>;
+}
+
 export const api = {
   updateDevice: (payload: { maxConcurrency?: number }) => request("PATCH", "/api/device", payload),
+  // ADR 0018: owner/admin-only per-subject observability data deletion. Throws
+  // with the server's message on 403 (non-owner) / 400 (invalid request).
+  deleteObservabilityData: (payload: { scope: string; subjectId: string; tier: string }) =>
+    request<ObservabilityDeletionResult>("POST", "/api/observability/delete", payload),
   fetchInvocationTranscript: (invocationId: string) =>
     request<{ invocationId: string; transcript: RunTranscriptRecord | null }>(
       "GET",

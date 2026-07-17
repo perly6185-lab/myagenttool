@@ -3,6 +3,7 @@ import { Badge } from "@/components/ui/badge";
 import { EmptyState } from "@/components/common/empty-state";
 import { useConsoleState } from "@/data/use-console-state";
 import { readableAudit, readableLifecycleAudit } from "@/lib/readable-labels";
+import { ObservabilityDeletionCard } from "./observability-deletion-card";
 
 export function AuditView() {
   const { data: state } = useConsoleState();
@@ -11,7 +12,9 @@ export function AuditView() {
   const policies = state?.policyDecisionRecords ?? [];
 
   return (
-    <div className="grid gap-5 lg:grid-cols-2">
+    <div className="space-y-5">
+      <ObservabilityDeletionCard />
+      <div className="grid gap-5 lg:grid-cols-2">
       <Card>
         <CardHeader>
           <CardTitle>Invocation audit</CardTitle>
@@ -88,6 +91,7 @@ export function AuditView() {
             )}
           </CardContent>
         </Card>
+      </div>
       </div>
     </div>
   );
