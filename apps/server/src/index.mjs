@@ -295,6 +295,18 @@ if (typeof httpDependencies.bridgeLivenessSweep === "function") {
   }, 60_000).unref?.();
 }
 
+// Scheduled work-report → channel push: on a slow tick, post the configured
+// day/week report once per period when due. No-op unless a schedule is armed.
+if (typeof httpDependencies.sweepReportSchedule === "function") {
+  setInterval(() => {
+    try {
+      httpDependencies.sweepReportSchedule();
+    } catch {
+      /* best-effort sweep */
+    }
+  }, 60_000).unref?.();
+}
+
 // #970 retention: reap telemetry (events/traces/spans) past the configured
 // retention window on boot + a slow (hourly) tick. Time policy on top of the
 // per-collection count caps; shielded evidence (ledger/audit/refusals) untouched.

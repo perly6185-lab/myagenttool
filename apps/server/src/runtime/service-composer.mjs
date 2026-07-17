@@ -27,6 +27,7 @@ import { createMailSendService } from "../services/mail-send.mjs";
 import { createChannelService } from "../services/channels.mjs";
 import { createChannelConversationService } from "../services/channel-conversation.mjs";
 import { createChannelDeliveryService } from "../services/channel-delivery.mjs";
+import { createReportScheduleRuntime } from "../services/report-schedule.mjs";
 import { createApplicationResultImportService } from "../services/application-results.mjs";
 import { createCcusageImportService } from "../services/ccusage-imports.mjs";
 import { createClaudeReviewImportService } from "../services/claude-review-imports.mjs";
@@ -1206,6 +1207,17 @@ export function createServerRuntimeServices({
     validateApprovalToken,
   });
   channelDeliveryHook = channelDeliveryService.notifyInvocationCompleted;
+
+  // Scheduled work-report → channel push. Closes over the delivery service's
+  // enqueue so a due schedule lands in the same durable outbound pipeline as an
+  // invocation reply. Its sweep is registered on a slow tick in index.mjs.
+  const reportScheduleService = createReportScheduleRuntime({
+    state,
+    now,
+    enqueueChannelDelivery: channelDeliveryService.enqueueChannelDelivery,
+    persistStateSoon,
+    appendEvent,
+  });
 
   const receiveChannelEvent = (payload) => {
     const imported = channelService.importChannelEvent(payload);
@@ -3061,6 +3073,11 @@ export function createServerRuntimeServices({
     importChannelEvent: receiveChannelEvent,
     sweepChannelDeliveries: channelDeliveryService.sweepChannelDeliveries,
     retryChannelDelivery: channelDeliveryService.retryChannelDelivery,
+    // Scheduled work-report post: the slow-tick sweep (index.mjs), the manual
+    // "post now", and the config setter (routes).
+    sweepReportSchedule: reportScheduleService.sweepReportSchedule,
+    postReportNow: reportScheduleService.postReportNow,
+    setReportSchedule: reportScheduleService.setReportSchedule,
     // Bind a provider's outbound sender (index.mjs calls this once per configured
     // gateway). Back-compat: a bare fn with no provider binds WeCom.
     setChannelDeliverySender: (providerOrFn, maybeFn) => {

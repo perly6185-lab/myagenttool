@@ -46,6 +46,8 @@ export async function handleProjectRoutes({
   retryAutoRun,
   cancelAutoRun,
   mergeAutoRunPr,
+  setReportSchedule,
+  postReportNow,
   claimIssue,
   releaseIssueClaim,
   listIssueClaims,
@@ -456,6 +458,29 @@ export async function handleProjectRoutes({
     state.autoRunSettings = normalizeAutoRunSettings(body ?? {}, state.autoRunSettings ?? {});
     persistStateSoon?.();
     sendJson(res, 200, { config: resolveAutoRunConfig(state) });
+    return true;
+  }
+
+  // Scheduled work-report → channel push. GET reads the current config; PUT edits
+  // it (arming/rearming nextRunAt); post-now sends immediately for setup/testing.
+  if (req.method === "GET" && url.pathname === "/api/report-schedule") {
+    sendJson(res, 200, { reportSchedule: state.reportSchedule ?? null });
+    return true;
+  }
+  if (req.method === "PUT" && url.pathname === "/api/report-schedule") {
+    // The schedule is a single GLOBAL admin-plane singleton (it names a channel
+    // target and posts platform-wide data) — a team-scoped actor must not edit it
+    // or trigger a send, mirroring the read gate in buildPublicState.
+    if (actor?.teamId != null) { sendJson(res, 403, { error: "admin_only" }); return true; }
+    const body = await readJson(req);
+    const config = typeof setReportSchedule === "function" ? setReportSchedule(body ?? {}) : null;
+    sendJson(res, 200, { reportSchedule: config });
+    return true;
+  }
+  if (req.method === "POST" && url.pathname === "/api/report-schedule/post-now") {
+    if (actor?.teamId != null) { sendJson(res, 403, { error: "admin_only" }); return true; }
+    const result = typeof postReportNow === "function" ? postReportNow() : { posted: false, reason: "unavailable" };
+    sendJson(res, result.posted ? 200 : 409, result);
     return true;
   }
 

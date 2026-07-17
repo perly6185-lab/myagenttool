@@ -297,6 +297,24 @@ export interface WorkReport {
   periods: Record<WorkPeriodKey, WorkPeriodReport>;
 }
 
+/** Scheduled push of a work report to a channel (server `reportSchedule`). Posts
+ * to a conversation's user (WeCom `touser`) — there is no group-broadcast today. */
+export interface ReportSchedule {
+  enabled: boolean;
+  channelId: string | null;
+  conversationId: string | null;
+  periodKey: WorkPeriodKey;
+  cadence: "daily" | "weekly";
+  /** 0=Sun..6=Sat, used when cadence === "weekly". */
+  weekday: number;
+  /** HH:MM, server local time. */
+  time: string;
+  nextRunAt: string | null;
+  lastPostedStartDate: string | null;
+  lastPostedAt: string | null;
+  updatedAt: string | null;
+}
+
 /** #1143: an issue's develop/review lease — one active develop claim per issue. */
 export interface IssueClaim {
   id: string;
@@ -1139,6 +1157,10 @@ export interface ConsoleSnapshot {
   workBoard?: WorkBoard;
   /** Day/week/month/quarter work reports — flow + standing + attention, server read-model `workReport`. */
   workReport?: WorkReport;
+  /** Scheduled work-report → channel push config (admin-plane; null when team-scoped). */
+  reportSchedule?: ReportSchedule | null;
+  /** Inbound-established channel conversations — the addressable outbound targets. */
+  channelConversations?: ChannelConversation[];
   /** Durable per-application daily execution counters (survive the invocation cap). */
   applicationDailyStats?: ApplicationDailyStat[];
   applicationHealthSweepStatus?: ApplicationHealthSweepStatus | null;
@@ -1205,6 +1227,16 @@ export interface ChannelOperations {
     injectionFlagged: number;
   };
   lastActivityAt?: string | null;
+}
+
+/** An inbound-established conversation — the addressable target for an outbound
+ * message (its externalUserId becomes the WeCom `touser`). */
+export interface ChannelConversation {
+  id: string;
+  channelId: string;
+  externalUserId: string;
+  status?: string;
+  updatedAt?: string | null;
 }
 
 export interface ChannelDelivery {

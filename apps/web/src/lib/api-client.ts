@@ -627,6 +627,9 @@ export const api = {
   // Human-triggered PR merge for a pr_open auto-run (merge stays human — a person
   // clicks Merge in the console; runs `gh pr merge` server-side).
   mergeAutoRunPr: (id: string) => request("POST", `/api/auto-runs/${encodeURIComponent(id)}/merge`),
+  // Scheduled work-report → channel push: edit the config, or post immediately.
+  setReportSchedule: (patch: Record<string, unknown>) => request("PUT", "/api/report-schedule", patch),
+  postReportNow: () => request("POST", "/api/report-schedule/post-now"),
   // D4: the human design gate — approve spawns the implementation child issue.
   designApproval: (id: string, action: "approve" | "reject", feedback?: string) =>
     request("POST", `/api/auto-runs/${encodeURIComponent(id)}/design-approval`, { action, feedback }),

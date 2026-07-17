@@ -1,13 +1,14 @@
-import { useState } from "react";
-import { AlertTriangle, CheckCircle2, ClipboardCopy, Inbox, KanbanSquare, Loader2, PauseCircle, type LucideIcon } from "lucide-react";
+import { useState, type ReactNode } from "react";
+import { AlertTriangle, CheckCircle2, ClipboardCopy, Inbox, KanbanSquare, Loader2, PauseCircle, Send, type LucideIcon } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { EmptyState } from "@/components/common/empty-state";
 import { cn } from "@/lib/cn";
-import { useConsoleState } from "@/data/use-console-state";
+import { useConsoleState, useRefreshConsoleState } from "@/data/use-console-state";
+import { api, useAsyncAction } from "@/data/use-console-actions";
 import { useUiStore, type SectionKey } from "@/store/ui-store";
-import type { WorkBoard, WorkItem, WorkPeriodKey, WorkReport, WorkState } from "@/lib/console-state";
+import type { ReportSchedule, WorkBoard, WorkItem, WorkPeriodKey, WorkReport, WorkState } from "@/lib/console-state";
 
 // The Status board: six lenses over the same work (server read-model `workBoard`)
 // so a supervisor can see, on one screen, what is 待决策 / 在等待 / 正在做 / 已做完 /
@@ -86,6 +87,13 @@ export function WorkBoardView() {
       </div>
 
       {report ? <WorkReportStrip report={report} /> : null}
+      {state?.reportSchedule ? (
+        <ReportSchedulePanel
+          schedule={state.reportSchedule}
+          channels={(state.channelOperations ?? []).map((c) => ({ id: c.id, name: c.name }))}
+          conversations={state.channelConversations ?? []}
+        />
+      ) : null}
 
       {total === 0 ? (
         <EmptyState title="Nothing tracked yet" hint="Auto-runs, pending decisions, and recent refusals land here, grouped by state." />
@@ -101,6 +109,153 @@ export function WorkBoardView() {
 }
 
 const PERIOD_ORDER: WorkPeriodKey[] = ["day", "week", "month", "quarter"];
+const WEEKDAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+
+// Config for the scheduled work-report → channel push. Admin-plane (only rendered
+// when the server exposes `reportSchedule`, i.e. an unscoped/local viewer). Posts
+// to a conversation's user — WeCom has no group broadcast here, so the target is
+// picked from conversations someone has already opened with the bot.
+function ReportSchedulePanel({
+  schedule,
+  channels,
+  conversations,
+}: {
+  schedule: ReportSchedule;
+  channels: { id: string; name: string }[];
+  conversations: { id: string; channelId: string; externalUserId: string }[];
+}) {
+  const [open, setOpen] = useState(false);
+  const [form, setForm] = useState<ReportSchedule>(schedule);
+  const { execute, pending, error } = useAsyncAction();
+  const refresh = useRefreshConsoleState();
+  const [posted, setPosted] = useState<string | null>(null);
+
+  const set = <K extends keyof ReportSchedule>(k: K, v: ReportSchedule[K]) => setForm((f) => ({ ...f, [k]: v }));
+  const convOptions = conversations.filter((c) => !form.channelId || c.channelId === form.channelId);
+
+  const save = () =>
+    execute(async () => {
+      await api.setReportSchedule({
+        enabled: form.enabled,
+        channelId: form.channelId,
+        conversationId: form.conversationId,
+        periodKey: form.periodKey,
+        cadence: form.cadence,
+        weekday: form.weekday,
+        time: form.time,
+      });
+      await refresh();
+    });
+
+  const postNow = async () => {
+    setPosted(null);
+    const ok = await execute(async () => {
+      const r = (await api.postReportNow()) as { posted?: boolean; reason?: string; chunks?: number };
+      setPosted(r?.posted ? `Posted (${r.chunks} message${r.chunks === 1 ? "" : "s"})` : `Not posted: ${r?.reason ?? "unknown"}`);
+    });
+    if (ok) void refresh();
+  };
+
+  return (
+    <Card>
+      <CardContent className="flex flex-col gap-2 px-3 py-2.5">
+        <div className="flex flex-wrap items-center gap-2">
+          <Send className="size-4 text-muted-foreground" />
+          <span className="text-xs font-semibold">Schedule to channel</span>
+          <Badge tone={schedule.enabled ? "success" : "neutral"}>{schedule.enabled ? "on" : "off"}</Badge>
+          {schedule.enabled && schedule.nextRunAt ? (
+            <span className="text-[11px] text-muted-foreground">next {schedule.nextRunAt.replace("T", " ").slice(0, 16)}</span>
+          ) : null}
+          {schedule.lastPostedAt ? (
+            <span className="text-[11px] text-muted-foreground">· last {schedule.lastPostedAt.replace("T", " ").slice(0, 16)}</span>
+          ) : null}
+          <Button variant="ghost" size="sm" className="ml-auto h-7 px-2 text-xs" onClick={() => setOpen((v) => !v)}>
+            {open ? "Close" : "Configure"}
+          </Button>
+        </div>
+
+        {open ? (
+          <div className="flex flex-col gap-2 border-t border-border pt-2 text-xs">
+            {channels.length === 0 ? (
+              <p className="text-muted-foreground">No channels registered — add a WeCom channel first (Channels section).</p>
+            ) : conversations.length === 0 ? (
+              <p className="text-muted-foreground">No conversations yet — someone must message the bot once so there is a user to post to (WeCom has no group broadcast here).</p>
+            ) : null}
+
+            <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
+              <label className="flex items-center gap-1.5">
+                <input type="checkbox" checked={form.enabled} onChange={(e) => set("enabled", e.target.checked)} />
+                Enabled
+              </label>
+
+              <Field label="Channel">
+                <select className={selectCls} value={form.channelId ?? ""} onChange={(e) => set("channelId", e.target.value || null)}>
+                  <option value="">— pick —</option>
+                  {channels.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+                </select>
+              </Field>
+
+              <Field label="To">
+                <select className={selectCls} value={form.conversationId ?? ""} onChange={(e) => set("conversationId", e.target.value || null)}>
+                  <option value="">— pick —</option>
+                  {convOptions.map((c) => <option key={c.id} value={c.id}>{c.externalUserId}</option>)}
+                </select>
+              </Field>
+
+              <Field label="Report">
+                <select className={selectCls} value={form.periodKey} onChange={(e) => set("periodKey", e.target.value as WorkPeriodKey)}>
+                  {PERIOD_ORDER.map((k) => <option key={k} value={k}>{k}</option>)}
+                </select>
+              </Field>
+
+              <Field label="Cadence">
+                <select className={selectCls} value={form.cadence} onChange={(e) => set("cadence", e.target.value as "daily" | "weekly")}>
+                  <option value="daily">daily</option>
+                  <option value="weekly">weekly</option>
+                </select>
+              </Field>
+
+              {form.cadence === "weekly" ? (
+                <Field label="Day">
+                  <select className={selectCls} value={form.weekday} onChange={(e) => set("weekday", Number(e.target.value))}>
+                    {WEEKDAYS.map((d, i) => <option key={d} value={i}>{d}</option>)}
+                  </select>
+                </Field>
+              ) : null}
+
+              <Field label="Time">
+                <input type="time" className={selectCls} value={form.time} onChange={(e) => set("time", e.target.value)} />
+              </Field>
+            </div>
+
+            <div className="flex flex-wrap items-center gap-2">
+              <Button variant="primary" size="sm" className="h-7 px-2.5 text-xs" disabled={pending} onClick={save}>
+                {pending ? <Loader2 className="mr-1 size-3 animate-spin" /> : null}Save
+              </Button>
+              <Button variant="secondary" size="sm" className="h-7 px-2.5 text-xs" disabled={pending || !form.channelId || !form.conversationId} onClick={postNow} title="Send the configured report to the channel right now">
+                <Send className="mr-1 size-3" />Post now
+              </Button>
+              {posted ? <span className="text-[11px] text-muted-foreground">{posted}</span> : null}
+              {error ? <span className="text-[11px] text-destructive">{error}</span> : null}
+              <span className="ml-auto text-[11px] text-muted-foreground">Time is server-local; posts once per period.</span>
+            </div>
+          </div>
+        ) : null}
+      </CardContent>
+    </Card>
+  );
+}
+
+const selectCls = "h-7 rounded-md border border-border bg-background px-1.5 text-xs";
+
+function Field({ label, children }: { label: string; children: ReactNode }) {
+  return (
+    <span className="flex items-center gap-1.5">
+      <span className="text-muted-foreground">{label}</span>
+      {children}
+    </span>
+  );
+}
 
 // The report strip at the top of the board — a day/week/month/quarter switch
 // over the flow numbers, the aging-attention nudge, and a one-click copy of the

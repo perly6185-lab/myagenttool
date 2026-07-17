@@ -137,6 +137,8 @@ export const persistedObjectKeys = [
   "privateDeploymentConfig",
   "retentionSettings",
   "terminalRuntimeCapability",
+  // The scheduled work-report post config (channel + cadence + dedupe cursor).
+  "reportSchedule",
 ];
 
 // Collections that carry BOTH a self-stamped owning team AND a project link. The
