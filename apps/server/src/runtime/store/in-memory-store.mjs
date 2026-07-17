@@ -178,5 +178,38 @@ export function createInMemoryStore({ state, commit }) {
     return result;
   }
 
-  return { get, query, transaction };
+  // ADR 0019: history API for contract parity. The memory backing has no durable
+  // store beyond `state`, so this is an in-PROCESS history (not persisted across
+  // restart — the JSONL archive is the memory-backing's durable long store). It
+  // gives callers ONE shape: append + paginated query behave identically to the
+  // SQLite adapter within a run; only durability differs.
+  let historySeq = 0;
+  const history = [];
+  const historyKeys = new Set();
+  function appendHistory(collection, rows) {
+    if (!Array.isArray(rows)) return { appended: 0 };
+    let appended = 0;
+    for (const row of rows) {
+      if (!row || row.id == null) continue;
+      const key = `${collection}:${row.id}`;
+      if (historyKeys.has(key)) continue; // dedup by (collection,id), like OR IGNORE
+      historyKeys.add(key);
+      history.push({ seq: (historySeq += 1), collection, invocationId: row.invocationId ?? row.subjectId ?? null, row });
+      appended += 1;
+    }
+    return { appended };
+  }
+  function queryHistory(collection, { invocationId = null, before = null, limit = 100 } = {}) {
+    const cap = Math.min(1000, Math.max(1, Number.parseInt(limit, 10) || 100));
+    const matches = history
+      .filter((h) => h.collection === collection
+        && (invocationId == null || String(h.invocationId) === String(invocationId))
+        && (before == null || !Number.isFinite(Number(before)) || h.seq < Number(before)))
+      .sort((a, b) => b.seq - a.seq); // newest first
+    const hasMore = matches.length > cap;
+    const page = matches.slice(0, cap);
+    return { rows: page.map((h) => h.row), nextBefore: hasMore && page.length > 0 ? page[page.length - 1].seq : null };
+  }
+
+  return { get, query, transaction, appendHistory, queryHistory };
 }
