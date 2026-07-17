@@ -554,6 +554,10 @@ export const api = {
       baseBranch?: string;
     },
   ) => request("POST", `/api/projects/${encodeURIComponent(projectId)}/auto-runs`, payload),
+  // Creates a platform-managed bare repo and points the project's origin at it —
+  // somewhere to push, with no account anywhere (#1210).
+  createLocalOrigin: (projectId: string) =>
+    request("POST", `/api/projects/${encodeURIComponent(projectId)}/local-origin`),
   removeWorktree: (id: string) => request("DELETE", `/api/worktrees/${encodeURIComponent(id)}`),
   // `path` lists one directory (the route's ?path=); omitted, it lists the root.
   // The tree loads a level at a time — a worktree is too big to walk eagerly.
