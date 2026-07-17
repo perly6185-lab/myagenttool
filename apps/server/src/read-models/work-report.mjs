@@ -32,6 +32,7 @@ const STATE_LABELS = {
 // feeds so the date semantics live in one place.
 export function calendarPeriods(nowMs) {
   const d = new Date(nowMs);
+  if (Number.isNaN(d.getTime())) return []; // degrade rather than throw on a bad clock
   const y = d.getUTCFullYear();
   const m = d.getUTCMonth();
   const day = Date.UTC(y, m, d.getUTCDate());
@@ -63,15 +64,20 @@ function ageHours(iso, now) {
 }
 
 // Runs opened/completed/failed within [windowStart, now], from the snapshot.
+// "Completed" mirrors the board's 已做完 lens: no auto-run status is ever set to
+// "done" — a successful run settles as a MERGED pr_open — so a merged PR is the
+// real completion signal, timestamped at prMergedAt (merge does not bump
+// updatedAt). The bare `done` status is kept for forward-compat.
 function runFlow(autoRuns, windowStart, now) {
   let opened = 0;
   let completed = 0;
   let failed = 0;
   for (const run of autoRuns) {
     if (inWindow(run?.createdAt, windowStart, now)) opened += 1;
-    const finishedAt = run?.updatedAt ?? run?.createdAt ?? null;
-    if (run?.status === "done" && inWindow(finishedAt, windowStart, now)) completed += 1;
-    if (run?.status === "failed" && inWindow(finishedAt, windowStart, now)) failed += 1;
+    const merged = run?.status === "pr_open" && run?.prState === "MERGED";
+    const finishedAt = merged ? (run?.prMergedAt ?? run?.updatedAt) : (run?.updatedAt ?? run?.createdAt ?? null);
+    if ((merged || run?.status === "done") && inWindow(finishedAt, windowStart, now)) completed += 1;
+    if (run?.status === "failed" && inWindow(run?.updatedAt ?? run?.createdAt ?? null, windowStart, now)) failed += 1;
   }
   return { opened, completed, failed };
 }
@@ -129,7 +135,9 @@ export function workReport({ board, autoRuns = [], refusalDailyStats = [], refus
     (items ?? [])
       .map((i) => ({ id: i.id, title: i.title, section: i.section, targetId: i.targetId ?? null, ageHours: ageHours(i.updatedAt, now) }))
       .filter((i) => i.ageHours != null && i.ageHours * HOUR_MS >= AGING_THRESHOLD_MS)
-      .sort((a, b) => b.ageHours - a.ageHours)
+      // Oldest first; stable id tiebreak so equal-age rows don't reshuffle (and
+      // flip which survive the slice) between refreshes.
+      .sort((a, b) => (b.ageHours !== a.ageHours ? b.ageHours - a.ageHours : a.id < b.id ? -1 : a.id > b.id ? 1 : 0))
       .slice(0, ATTENTION_LIMIT);
   const attention = {
     agingDecisions: agingFrom(states.pending_decision?.items),

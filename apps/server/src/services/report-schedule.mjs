@@ -135,29 +135,35 @@ export function createReportScheduleRuntime({ state, now, enqueueChannelDelivery
   // is returned as a reason, so the sweep tick and the route stay safe.
   function post(cfg, { force = false } = {}) {
     if (!cfg.channelId || !cfg.conversationId) return { posted: false, reason: "no_target" };
-    const nowIso = now();
-    const report = assembleGlobalWorkReport(state, Date.parse(nowIso));
-    const period = report.periods?.[cfg.periodKey];
-    if (!period) return { posted: false, reason: "no_report" };
-    if (!force && cfg.lastPostedStartDate === period.startDate) return { posted: false, reason: "already_posted" };
-    const chunks = chunkContent(period.markdown);
+    let period;
     try {
-      for (const content of chunks) {
-        enqueueChannelDelivery({ channelId: cfg.channelId, conversationId: cfg.conversationId, content });
-      }
+      const nowIso = now();
+      const report = assembleGlobalWorkReport(state, Date.parse(nowIso));
+      period = report.periods?.[cfg.periodKey];
+      if (!period) return { posted: false, reason: "no_report" };
+      if (!force && cfg.lastPostedStartDate === period.startDate) return { posted: false, reason: "already_posted" };
+      const chunks = chunkContent(period.markdown);
+      // enqueueChannelDelivery returns {ok:false} (does NOT throw) on a stale/
+      // mismatched target — honor it, or we would mark the period posted with
+      // nothing queued and dedupe would suppress it forever.
+      const results = chunks.map((content) => enqueueChannelDelivery({ channelId: cfg.channelId, conversationId: cfg.conversationId, content }));
+      const okCount = results.filter((r) => r?.ok).length;
+      if (okCount === 0) return { posted: false, reason: results[0]?.reason ?? "enqueue_failed" };
+      cfg.lastPostedStartDate = period.startDate;
+      cfg.lastPostedAt = nowIso;
+      appendEvent({
+        invocationId: null,
+        type: "work_report_posted",
+        level: "info",
+        message: `Posted the ${period.label} work report to channel ${cfg.channelId}.`,
+        data: { channelId: cfg.channelId, periodKey: cfg.periodKey, startDate: period.startDate, chunks: okCount, ofChunks: chunks.length },
+      });
+      return { posted: true, chunks: okCount, startDate: period.startDate, label: period.label };
     } catch (error) {
-      return { posted: false, reason: "enqueue_failed", error: String(error?.message ?? error) };
+      // Never throw: a malformed-state assemble error must not propagate and
+      // stall the sweep's nextRunAt roll-forward (which would busy-loop).
+      return { posted: false, reason: "error", error: String(error?.message ?? error) };
     }
-    cfg.lastPostedStartDate = period.startDate;
-    cfg.lastPostedAt = nowIso;
-    appendEvent({
-      invocationId: null,
-      type: "work_report_posted",
-      level: "info",
-      message: `Posted the ${period.label} work report to channel ${cfg.channelId}.`,
-      data: { channelId: cfg.channelId, periodKey: cfg.periodKey, startDate: period.startDate, chunks: chunks.length },
-    });
-    return { posted: true, chunks: chunks.length, startDate: period.startDate, label: period.label };
   }
 
   // Slow-tick sweep: post when the schedule is due, then always roll nextRunAt
@@ -170,6 +176,18 @@ export function createReportScheduleRuntime({ state, now, enqueueChannelDelivery
     if (!cfg.nextRunAt || Date.parse(nowIso) < Date.parse(cfg.nextRunAt)) return { posted: false, reason: "not_due" };
     return runTx(() => {
       const result = post(cfg);
+      // A due post that didn't land (stale target, assemble error) is skipped to
+      // the next period — surface it so a persistently-broken schedule is visible
+      // instead of silently dropping every report. "already_posted" is not a fault.
+      if (!result.posted && result.reason !== "already_posted") {
+        appendEvent({
+          invocationId: null,
+          type: "work_report_post_failed",
+          level: "warn",
+          message: `Scheduled work report was not posted (${result.reason}).`,
+          data: { channelId: cfg.channelId, periodKey: cfg.periodKey, reason: result.reason },
+        });
+      }
       cfg.nextRunAt = computeReportNextRun(nowIso, cfg);
       cfg.updatedAt = nowIso;
       return result;

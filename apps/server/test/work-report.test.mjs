@@ -30,6 +30,22 @@ test("run flow is windowed per period; a run finished this month counts in month
   assert.equal(r.periods.quarter.flow.failed, 0); // ar_lastq was Q2
 });
 
+test("a MERGED pr_open run counts as completed at its prMergedAt (no status is ever 'done')", () => {
+  // Real success path: a run settles as pr_open + prState MERGED; the merge time
+  // is prMergedAt (merge does not bump updatedAt). It must count as completed.
+  const autoRuns = [
+    { id: "ar_merged", status: "pr_open", prState: "MERGED", prNumber: 7, createdAt: "2026-07-05T00:00:00Z", updatedAt: "2026-07-05T00:00:00Z", prMergedAt: "2026-07-17T09:00:00Z" },
+    { id: "ar_open", status: "pr_open", prState: "OPEN", prNumber: 8, createdAt: "2026-07-17T08:00:00Z", updatedAt: "2026-07-17T08:00:00Z" },
+  ];
+  const board = workBoard({ autoRuns, now: NOW });
+  const r = workReport({ board, autoRuns, periods: calendarPeriods(NOW), now: NOW });
+  // Merged today (by prMergedAt) → completed in day/week/month; open PR is not completed.
+  assert.equal(r.periods.day.flow.completed, 1);
+  assert.equal(r.periods.week.flow.completed, 1);
+  // The report's completed must agree with the board's 已做完 lens count.
+  assert.equal(r.periods.day.flow.completed <= board.states.done.count, true);
+});
+
 test("refusals sum from the durable daily rollup, windowed and by category", () => {
   const refusalDailyStats = [
     { date: "2026-07-17", total: 2, byCategory: { policy: 1, human: 1 } },
