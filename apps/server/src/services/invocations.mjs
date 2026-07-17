@@ -25,6 +25,7 @@ export function createInvocationService({
   recordCcusageImportedEstimates,
   recordCodexReviewFindings,
   recordClaudeReviewFindings,
+  recordClaudeApplyResult,
   recordCodexExecChanges,
   recordApplicationResult,
   currentProject,
@@ -46,6 +47,7 @@ export function createInvocationService({
   checkUsageQuota,
   closeCodexSession,
   store,
+  capWithArchive,
   onInvocationCompleted,
   onInvocationApproved,
   onInvocationDenied,
@@ -77,6 +79,7 @@ export function createInvocationService({
     recordCcusageImportedEstimates,
     recordCodexReviewFindings,
     recordClaudeReviewFindings,
+    recordClaudeApplyResult,
     recordCodexExecChanges,
     // #804's generic importer was composed and handed to this service, and then
     // never forwarded to the runtime that calls it — so `typeof
@@ -84,6 +87,9 @@ export function createInvocationService({
     // import silently never ran. Every unit test passed: they exercised the
     // importer directly and never this wire.
     recordApplicationResult,
+    // #1084: the transcript ingest's count-cap eviction spills to the retention
+    // archive instead of vanishing.
+    capWithArchive,
     onInvocationCompleted,
   });
   const {

@@ -9,6 +9,7 @@ import {
 } from "../agents.mjs";
 import { capLifecycleAuditRecords } from "../retention.mjs";
 import { conservativeRiskHints } from "./helpers.mjs";
+import { makeRunTx } from "../../runtime/store/run-tx.mjs";
 
 export function createDiscoveryRuntime({
   state,
@@ -18,7 +19,9 @@ export function createDiscoveryRuntime({
   disableAgent,
   registerAgent,
   persistStateSoon = () => {},
+  store,
 }) {
+  const runTx = makeRunTx({ store, persistStateSoon });
   function createDiscoveryRun(body = {}) {
     const allowedScope = [
       "known_command_allowlist",
@@ -49,30 +52,31 @@ export function createDiscoveryRuntime({
     if (discoveryRun.status === "failed") {
       discoveryRun.message = "Desktop Bridge is offline. Start the bridge before discovery.";
     }
-    state.discoveryRuns.unshift(discoveryRun);
-    state.discoveryRuns = state.discoveryRuns.slice(0, 20);
-    state.lifecycleAuditRecords.unshift({
-      id: discoveryRun.id,
-      agentId: "agt_demo_cli",
-      deviceId: state.device.id,
-      requestedBy: body.requestedBy ?? "usr_local",
-      operation: "discover",
-      status: discoveryRun.status,
-      reason: "Conservative local agent discovery requested.",
-      message: discoveryRun.message,
-      createdAt,
-      completedAt: discoveryRun.completedAt,
+    return runTx(() => {
+      state.discoveryRuns.unshift(discoveryRun);
+      state.discoveryRuns = state.discoveryRuns.slice(0, 20);
+      state.lifecycleAuditRecords.unshift({
+        id: discoveryRun.id,
+        agentId: "agt_demo_cli",
+        deviceId: state.device.id,
+        requestedBy: body.requestedBy ?? "usr_local",
+        operation: "discover",
+        status: discoveryRun.status,
+        reason: "Conservative local agent discovery requested.",
+        message: discoveryRun.message,
+        createdAt,
+        completedAt: discoveryRun.completedAt,
+      });
+      capLifecycleAuditRecords(state);
+      appendEvent({
+        invocationId: null,
+        type: "lifecycle_requested",
+        level: discoveryRun.status === "failed" ? "warn" : "info",
+        message: discoveryRun.message,
+        data: { operationId: discoveryRun.id, operation: "discover", deviceId: state.device.id },
+      });
+      return discoveryRun;
     });
-    capLifecycleAuditRecords(state);
-    appendEvent({
-      invocationId: null,
-      type: "lifecycle_requested",
-      level: discoveryRun.status === "failed" ? "warn" : "info",
-      message: discoveryRun.message,
-      data: { operationId: discoveryRun.id, operation: "discover", deviceId: state.device.id },
-    });
-    persistStateSoon();
-    return discoveryRun;
   }
 
   function nextBridgeDiscoveryRun() {
@@ -85,49 +89,52 @@ export function createDiscoveryRuntime({
     if (discoveryRun.status !== "queued") {
       return;
     }
-    discoveryRun.status = "running";
-    discoveryRun.message = "Desktop Bridge is checking conservative discovery sources.";
-    updateLifecycleAudit(discoveryRun.id, {
-      status: "running",
-      message: discoveryRun.message,
+    runTx(() => {
+      discoveryRun.status = "running";
+      discoveryRun.message = "Desktop Bridge is checking conservative discovery sources.";
+      updateLifecycleAudit(discoveryRun.id, {
+        status: "running",
+        message: discoveryRun.message,
+      });
+      appendEvent({
+        invocationId: null,
+        type: "lifecycle_started",
+        level: "info",
+        message: discoveryRun.message,
+        data: { operationId: discoveryRun.id, operation: "discover", deviceId: discoveryRun.deviceId },
+      });
     });
-    appendEvent({
-      invocationId: null,
-      type: "lifecycle_started",
-      level: "info",
-      message: discoveryRun.message,
-      data: { operationId: discoveryRun.id, operation: "discover", deviceId: discoveryRun.deviceId },
-    });
-    persistStateSoon();
   }
 
   function completeDiscoveryRun(discoveryRun, body) {
     const candidates = Array.isArray(body.candidates) ? body.candidates : [];
-    discoveryRun.candidates = candidates.map((candidate, index) => normalizeDiscoveryCandidate(candidate, index));
-    discoveryRun.status = body.status === "failed" ? "failed" : "succeeded";
-    discoveryRun.message = body.message ?? `Discovery found ${discoveryRun.candidates.length} conservative candidate(s).`;
-    discoveryRun.completedAt = now();
-    updateLifecycleAudit(discoveryRun.id, {
-      status: discoveryRun.status,
-      message: discoveryRun.message,
-      completedAt: discoveryRun.completedAt,
+    runTx(() => {
+      discoveryRun.candidates = candidates.map((candidate, index) => normalizeDiscoveryCandidate(candidate, index));
+      discoveryRun.status = body.status === "failed" ? "failed" : "succeeded";
+      discoveryRun.message = body.message ?? `Discovery found ${discoveryRun.candidates.length} conservative candidate(s).`;
+      discoveryRun.completedAt = now();
+      updateLifecycleAudit(discoveryRun.id, {
+        status: discoveryRun.status,
+        message: discoveryRun.message,
+        completedAt: discoveryRun.completedAt,
+      });
+      appendEvent({
+        invocationId: null,
+        type: discoveryRun.status === "succeeded" ? "lifecycle_completed" : "lifecycle_failed",
+        level: discoveryRun.status === "succeeded" ? "info" : "warn",
+        message: discoveryRun.message,
+        data: {
+          operationId: discoveryRun.id,
+          operation: "discover",
+          deviceId: discoveryRun.deviceId,
+          candidateCount: discoveryRun.candidates.length,
+        },
+      });
     });
-    appendEvent({
-      invocationId: null,
-      type: discoveryRun.status === "succeeded" ? "lifecycle_completed" : "lifecycle_failed",
-      level: discoveryRun.status === "succeeded" ? "info" : "warn",
-      message: discoveryRun.message,
-      data: {
-        operationId: discoveryRun.id,
-        operation: "discover",
-        deviceId: discoveryRun.deviceId,
-        candidateCount: discoveryRun.candidates.length,
-      },
-    });
-    persistStateSoon();
   }
 
   function registerDiscoveredCandidate(discoveryRun, candidate) {
+    return runTx(() => {
     const agent = registerAgent({
       id: candidate.registration.agentId,
       type: candidate.adapter.type,
@@ -176,8 +183,8 @@ export function createDiscoveryRuntime({
         : `${candidate.name} was registered from discovery and left disabled for review.`,
       data: { operationId: discoveryRun.id, operation: "discover", agentId: agent.id, candidateId: candidate.id },
     });
-    persistStateSoon();
     return agent;
+    });
   }
 
   function findDiscoveryRun(id) {

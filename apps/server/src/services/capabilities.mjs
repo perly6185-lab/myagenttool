@@ -12,6 +12,7 @@ export function createCapabilityService({
   listApplications,
   listApplicationCapabilities,
   invokeApplicationCapability,
+  planAgentFacadeInvocation,
   planApplicationWrapperInvocation,
 }) {
   function listCapabilities(actor = null) {
@@ -19,7 +20,7 @@ export function createCapabilityService({
       ...listTools().map(toolToCapability),
       ...visibleApplications(state, actor, listApplications()).flatMap((application) =>
         (listApplicationCapabilities(application.id) ?? []).map((capability) => ({
-          ...capability,
+          ...overlayAgentFacadeReadiness(capability),
           application: {
             id: application.id,
             name: application.name,
@@ -29,6 +30,44 @@ export function createCapabilityService({
         })),
       ),
     ];
+  }
+
+  // Projection is pure and cannot see the live agent; this is the one place
+  // that has findAgent, so agent_facade readiness gets its live overlay here.
+  // The same precise-refusal shape as #802's binary_unavailable: discovery says
+  // WHY the capability is not ready, instead of a run failing opaquely later.
+  function overlayAgentFacadeReadiness(capability) {
+    const execution = capability.metadata?.execution;
+    if (execution?.mode !== "agent_facade" || capability.metadata?.readiness?.state === "disabled") {
+      return capability;
+    }
+    const agent = findAgent(execution.agentId);
+    // The agent and the credential are BOTH preconditions; a capability is ready
+    // only if both pass. A missing/disabled agent means it cannot run at all, so
+    // it takes precedence and forces needs_setup. An available agent does NOT
+    // force ready — it must preserve a needs_setup the credential gate already set
+    // (an authorized process is no use against an unauthorized mailbox). The two
+    // overlays compose instead of clobbering each other.
+    const incoming = capability.metadata?.readiness ?? {};
+    const readiness = !agent
+      ? { state: "needs_setup", reason: "agent_not_registered" }
+      : agent.status === "disabled"
+        ? { state: "needs_setup", reason: "agent_disabled" }
+        : incoming.state === "needs_setup"
+          ? {} // an unmet precondition (e.g. credential) already set — leave it
+          : { state: "ready", reason: "agent_available" };
+    return {
+      ...capability,
+      metadata: {
+        ...capability.metadata,
+        readiness: {
+          ...incoming,
+          ...readiness,
+          agentId: execution.agentId,
+          agentStatus: agent?.status ?? null,
+        },
+      },
+    };
   }
 
   function getCapability(name, actor = null) {
@@ -83,6 +122,12 @@ export function createCapabilityService({
           };
         }
         return result;
+      }
+      // Agent-facade capabilities delegate to a registered agent through the
+      // normal governed invocation path (async through the bridge), stamping
+      // Application lineage — the agent-shaped sibling of tool_facade (#975).
+      if (capability.metadata?.execution?.mode === "agent_facade") {
+        return dispatchAgentFacade(capability, name, input, actor);
       }
       // Wrapper capabilities execute a real command on the local machine, so they
       // run through the bridge (async), not the synchronous Application Control
@@ -161,6 +206,88 @@ export function createCapabilityService({
       };
     }
     return { status: 409, body: { error: "capability_not_invokable", capability: name } };
+  }
+
+  // Dispatch an agent_facade capability (#975). Application-side guards
+  // (tenancy, lifecycle, approval) live in planAgentFacadeInvocation; this side
+  // owns the AGENT-side guards, in refusal-precision order: approval before
+  // availability, availability before allowlist.
+  function dispatchAgentFacade(capability, name, input, actor) {
+    const applicationId = capability.provider.id;
+    const facadeId = String(name ?? "").split(".").at(-1);
+    const planned = planAgentFacadeInvocation({ applicationId, facadeId, input, actor });
+    if (!planned.ok) {
+      return { status: planned.status, body: planned.body };
+    }
+    const agent = findAgent(planned.facade.agentId);
+    if (!agent || agent.status === "disabled") {
+      return {
+        status: 409,
+        body: {
+          error: "agent_not_available",
+          message: `The registered agent backing this capability is ${agent ? "disabled" : "not registered"}.`,
+          capability: name,
+          agentId: planned.facade.agentId,
+        },
+      };
+    }
+    // The agent's own allowedTools is the SECOND, independent gate: even a
+    // mis-registered descriptor cannot name a tool the agent's registration
+    // does not allow. Checked server-side for a precise refusal; the bridge's
+    // describeMcpToolCall enforces it again client-side before the wire.
+    const toolName = planned.facade.toolName;
+    const allowedTools = Array.isArray(agent.adapter?.allowedTools) ? agent.adapter.allowedTools : [];
+    if (toolName && allowedTools.length > 0 && !allowedTools.includes(toolName)) {
+      return {
+        status: 409,
+        body: {
+          error: "agent_tool_not_allowlisted",
+          message: `Tool ${toolName} is not in the agent's allowed tools.`,
+          capability: name,
+          agentId: agent.id,
+        },
+      };
+    }
+    // The capability's validated inputs become the agent's tool arguments;
+    // control-plane fields never travel to the agent.
+    const { approvalToken, projectId, automationId, scheduled, ...toolArguments } = input ?? {};
+    // Carry the facade's declared result handling to completion so an agent_facade
+    // result imports through the SAME generic path as a wrapper result (keyed on
+    // metadata.resultImport in application-results), not a per-mode branch.
+    const resultImport = capability.metadata?.resultImport ?? null;
+    const outputCollection = capability.metadata?.outputCollection ?? null;
+    const invocation = createInvocation(`Run application capability ${name}.`, agent, {
+      actor,
+      requestedBy: actor?.userId,
+      ...(toolName ? { toolName } : {}),
+      ...(Object.keys(toolArguments).length > 0 ? { toolArguments } : {}),
+      metadata: {
+        capability: name,
+        providerType: "application",
+        applicationId,
+        applicationAction: toolName ? `agent:${agent.id}:${toolName}` : `agent:${agent.id}`,
+        projectId: capability.application?.projectId ?? projectId ?? null,
+        ...(resultImport ? { resultImport } : {}),
+        ...(outputCollection && outputCollection !== "invocations" ? { outputCollection } : {}),
+        ...(automationId ? { automationId: String(automationId) } : {}),
+        ...(scheduled ? { scheduled: true } : {}),
+      },
+    });
+    if (invocation.status === "rejected") {
+      return { status: 409, body: { capability: name, invocationId: invocation.id, status: invocation.status, invocation } };
+    }
+    return {
+      status: 202,
+      body: {
+        capability: name,
+        invocationId: invocation.id,
+        agentId: agent.id,
+        status: invocation.status,
+        outputCollection: planned.facade.outputCollection ?? "invocations",
+        provider: capability.provider,
+        invocation,
+      },
+    };
   }
 
   function dispatchApplicationWrapper(capability, name, commandId, input, actor) {

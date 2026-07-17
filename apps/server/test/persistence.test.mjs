@@ -6,7 +6,7 @@ import { test } from "node:test";
 
 import { buildEvidenceCenterRecords } from "../src/read-models/evidence-center.mjs";
 import { buildPublicState } from "../src/read-models/state.mjs";
-import { createPersistenceRuntime } from "../src/runtime/persistence.mjs";
+import { captureSeededDefaults, createPersistenceRuntime, normalizeLoadedState } from "../src/runtime/persistence.mjs";
 import { createServerRuntimeServices } from "../src/runtime/service-composer.mjs";
 import { createServerState } from "../src/runtime/state-factory.mjs";
 import { createAgentService } from "../src/services/agents.mjs";
@@ -1473,5 +1473,51 @@ test("persistence restores the auto-run brakes across restart (kill switch + ope
     assert.equal(second.state.autoRunBreaker.consecutiveFailures, 3);
   } finally {
     rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("normalizeLoadedState: shared boot normalization (SQLite hydrate parity with the JSON restore)", () => {
+  const dir = mkdtempSync(join(tmpdir(), "normalize-loaded-"));
+  try {
+    const { state, defaultProject } = createServerState({ defaultProjectPath: dir, now: () => "2026-07-15T00:00:00.000Z" });
+    // Capture the fresh seeded defaults BEFORE simulating a raw hydrate over them.
+    const seededDefaults = captureSeededDefaults(state);
+    const defaultAgentIds = seededDefaults.arrays.agents.map((a) => a.id);
+    const seededSettingKeys = Object.keys(seededDefaults.objects.autoRunSettings ?? {});
+    assert(defaultAgentIds.length > 0, "there are seeded default agents to merge back");
+
+    // A raw hydrate that (a) carries a path-missing project, (b) dropped the default
+    // agents + carries a non-default one, (c) a device marked online, (d) an
+    // autoRunSettings missing default fields, (e) a duplicate-id row.
+    state.projects = [{ id: "prj_gone", path: join(dir, "does-not-exist") }];
+    state.currentProjectId = "prj_gone";
+    state.agents = [{ id: "agt_enrolled", type: "cli" }];
+    state.devices = [{ id: "dev_local_001", status: "online" }];
+    state.autoRunSettings = { globalMaxConcurrent: 7 };
+    state.invocations = [{ id: "inv_dup" }, { id: "inv_dup" }];
+
+    const res = normalizeLoadedState(state, { seededDefaults, defaultProject, sameProjectPath });
+
+    // (a) fail-closed project filter + default guarantee + currentProjectId fallback.
+    assert(!state.projects.some((p) => p.id === "prj_gone"), "path-missing project dropped");
+    assert(state.projects.some((p) => p.id === defaultProject.id), "default project guaranteed");
+    assert.equal(state.currentProjectId, defaultProject.id);
+    // (b) default agents merged back in (new demo agents survive an upgrade) + the
+    //     enrolled machine kept.
+    for (const id of defaultAgentIds) assert(state.agents.some((a) => a.id === id), `default agent ${id} survives`);
+    assert(state.agents.some((a) => a.id === "agt_enrolled"), "the enrolled agent is kept");
+    // (c) every hydrated device forced offline.
+    assert.equal(state.devices.find((d) => d.id === "dev_local_001").status, "offline");
+    // (d) singleton merge: restored value wins, missing default fields fill in.
+    assert.equal(state.autoRunSettings.globalMaxConcurrent, 7);
+    for (const key of seededSettingKeys) {
+      if (key !== "globalMaxConcurrent") assert(key in state.autoRunSettings, `default setting ${key} merged under`);
+    }
+    // (e) duplicate-id repair (SQLite can't produce dups, but a JSON snapshot can —
+    //     the shared path repairs either).
+    assert.equal(state.invocations.filter((i) => i.id === "inv_dup").length, 1, "duplicate id collapsed");
+    assert(res.duplicateIdsRepaired >= 1, "the repair was counted");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
   }
 });

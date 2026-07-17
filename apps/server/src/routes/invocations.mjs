@@ -23,7 +23,33 @@ export async function handleInvocationRoutes({
   promoteCompareRun,
   cancelInvocation,
   createTroubleshootingReport,
+  claimDecision,
+  releaseDecisionClaim,
 }) {
+  // #1151 decision soft-claims: mark a pending-decision row "I'm handling this".
+  // Advisory — a 409 tells the caller who holds the marker, but the decision
+  // endpoints themselves are never gated by it. `:id` is the pendingDecisions
+  // row id ("<kind>:<record id>").
+  const decisionClaimMatch = url.pathname.match(/^\/api\/pending-decisions\/([^/]+)\/(claim|release)$/);
+  if (decisionClaimMatch && req.method === "POST") {
+    const decisionId = decodeURIComponent(decisionClaimMatch[1]);
+    if (decisionClaimMatch[2] === "claim") {
+      const result = claimDecision({ decisionId, actor });
+      if (!result.ok && result.claim) {
+        sendJson(res, 409, { error: "decision_already_claimed", message: result.reason, claim: result.claim });
+        return true;
+      }
+      if (!result.ok) {
+        sendJson(res, 400, { error: "invalid_decision_claim", message: result.reason });
+        return true;
+      }
+      sendJson(res, 201, { claim: result.claim, renewed: result.renewed === true });
+      return true;
+    }
+    sendJson(res, 200, { released: releaseDecisionClaim({ decisionId, actor }) });
+    return true;
+  }
+
   const eventsMatch = url.pathname.match(/^\/api\/invocations\/([^/]+)\/events$/);
   if (req.method === "GET" && eventsMatch) {
     const invocationId = decodeURIComponent(eventsMatch[1]);
@@ -68,6 +94,17 @@ export async function handleInvocationRoutes({
       return true;
     }
 
+    // #1151: acting on a settled approval was a silent 200 no-op — the second
+    // operator never learned they lost the race. Same 200 + record shape, plus
+    // an explicit "already decided by X at T".
+    if (approval.status !== "pending") {
+      sendJson(res, 200, {
+        approval,
+        invocation,
+        alreadyDecided: { decidedBy: approval.decidedBy ?? null, decidedAt: approval.decidedAt ?? null, status: approval.status },
+      });
+      return true;
+    }
     if (approvalMatch[2] === "approve") {
       approveInvocation(approval, invocation, actor);
     } else {
@@ -206,12 +243,39 @@ export async function handleInvocationRoutes({
     const compareRun = state.compareRuns.find((c) => c.id === compareRunId);
     if (!compareRun) { sendJson(res, 404, { error: "compare_run_not_found" }); return true; }
     if (denyForeignProject({ res, sendJson, state, actor, projectId: compareRunProjectId(compareRun, findInvocation), notFound: { error: "compare_run_not_found" } })) return true;
+    // #1151: promote is already idempotent in the service (returns the run
+    // unchanged); surface who promoted instead of an indistinguishable success.
+    if (compareRun.promotion?.prNumber) {
+      sendJson(res, 200, {
+        compareRun,
+        alreadyDecided: { decidedBy: compareRun.promotion.by ?? null, decidedAt: compareRun.promotion.at ?? null, status: "promoted" },
+      });
+      return true;
+    }
     try {
       const result = await promoteCompareRun(compareRunId, { actor });
       sendJson(res, 200, { compareRun: result });
     } catch (error) {
       sendJson(res, 400, { error: "promote_failed", message: error instanceof Error ? error.message : String(error) });
     }
+    return true;
+  }
+
+  // #1072: per-run stream transcript, guarded exactly like reading the
+  // invocation itself. Deliberately NOT part of the /api/state snapshot — a
+  // transcript can be 256KB and belongs behind an on-demand fetch.
+  const transcriptMatch = url.pathname.match(/^\/api\/invocations\/([^/]+)\/transcript$/);
+  if (req.method === "GET" && transcriptMatch) {
+    const invocation = findInvocation(decodeURIComponent(transcriptMatch[1]));
+    if (!invocation) {
+      sendJson(res, 404, { error: "invocation_not_found" });
+      return true;
+    }
+    if (denyForeignInvocationRead({ res, sendJson, state, actor, invocation })) {
+      return true;
+    }
+    const transcript = (state.runTranscripts ?? []).find((item) => item?.invocationId === invocation.id) ?? null;
+    sendJson(res, 200, { invocationId: invocation.id, transcript });
     return true;
   }
 

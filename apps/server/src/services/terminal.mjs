@@ -1,6 +1,7 @@
 import { resolve, sep } from "node:path";
 
 import { DEFAULT_DEVICE_ID } from "../runtime/device.mjs";
+import { makeRunTx } from "../runtime/store/run-tx.mjs";
 
 // A local managed terminal is the broadest execution surface on the bridge (an
 // interactive shell). Its cwd must stay inside a registered project or worktree
@@ -62,7 +63,11 @@ export function createTerminalService({
   summarizeText,
   uniqueStrings,
   codexSessionForInvocation,
+  store,
 }) {
+  // #1001 Phase A: durable SSH/terminal/evidence writes commit through the Store's
+  // unit of work (falls back to the debounce where no store is injected).
+  const runTx = makeRunTx({ store, persistStateSoon });
   function createSshTarget(body = {}) {
     const host = normalizeSshHost(body.host);
     const port = normalizeSshPort(body.port);
@@ -97,24 +102,25 @@ export function createTerminalService({
       updatedAt: now(),
       lastTestId: null,
     };
-    state.sshTargets.unshift(target);
-    appendEvent({
-      invocationId: null,
-      type: "ssh.target.registered",
-      level: "info",
-      message: "SSH runtime target registered for safety preflight.",
-      data: {
-        targetId: target.id,
-        host: target.host,
-        port: target.port,
-        user: target.user,
-        authMethod: target.authMethod,
-        knownHostPolicy: target.knownHostPolicy,
-        workspaceRoot: target.workspaceRoot,
-        remoteRelayEnabled: target.remoteRelayEnabled,
-      },
+    runTx(() => {
+      state.sshTargets.unshift(target);
+      appendEvent({
+        invocationId: null,
+        type: "ssh.target.registered",
+        level: "info",
+        message: "SSH runtime target registered for safety preflight.",
+        data: {
+          targetId: target.id,
+          host: target.host,
+          port: target.port,
+          user: target.user,
+          authMethod: target.authMethod,
+          knownHostPolicy: target.knownHostPolicy,
+          workspaceRoot: target.workspaceRoot,
+          remoteRelayEnabled: target.remoteRelayEnabled,
+        },
+      });
     });
-    persistStateSoon();
     return target;
   }
 
@@ -156,23 +162,24 @@ export function createTerminalService({
       summary: sshConnectionTestSummary(blocking, warning),
       createdAt: now(),
     };
-    state.sshConnectionTests.unshift(report);
-    target.lastTestId = report.id;
-    target.status = report.status;
-    target.updatedAt = now();
-    appendEvent({
-      invocationId: null,
-      type: "ssh.target.test",
-      level: report.status === "blocked" ? "warn" : "info",
-      message: report.summary,
-      data: {
-        targetId: target.id,
-        reportId: report.id,
-        status: report.status,
-        checks: checks.map((check) => `${check.id}:${check.status}`),
-      },
+    runTx(() => {
+      state.sshConnectionTests.unshift(report);
+      target.lastTestId = report.id;
+      target.status = report.status;
+      target.updatedAt = now();
+      appendEvent({
+        invocationId: null,
+        type: "ssh.target.test",
+        level: report.status === "blocked" ? "warn" : "info",
+        message: report.summary,
+        data: {
+          targetId: target.id,
+          reportId: report.id,
+          status: report.status,
+          checks: checks.map((check) => `${check.id}:${check.status}`),
+        },
+      });
     });
-    persistStateSoon();
     return report;
   }
 
@@ -228,8 +235,8 @@ export function createTerminalService({
       exitCode: null,
       evidenceIds: [],
     };
+    return runTx(() => {
     state.terminalSessions.unshift(session);
-    persistStateSoon();
     const action = runtimeAvailable
       ? queueTerminalBridgeAction(session, "create", { shell, cwd, cols: Number(body.cols ?? 100), rows: Number(body.rows ?? 30), target: sshTarget })
       : null;
@@ -263,6 +270,7 @@ export function createTerminalService({
       },
     });
     return session;
+    });
   }
 
   function normalizeTerminalCodexSessionId(ownerCodexSessionId, ownerInvocationId) {
@@ -276,22 +284,23 @@ export function createTerminalService({
   }
 
   function closeManagedTerminalSession(session) {
-    session.status = session.status === "attached" ? "detached" : "closed";
-    session.exitedAt = now();
-    session.lastSeenAt = now();
-    session.exitCode = null;
-    recordTerminalEvidence(session, "terminal_exit", "Managed terminal session closed from Web Console.", {
-      status: session.status,
-      exitCode: session.exitCode,
+    runTx(() => {
+      session.status = session.status === "attached" ? "detached" : "closed";
+      session.exitedAt = now();
+      session.lastSeenAt = now();
+      session.exitCode = null;
+      recordTerminalEvidence(session, "terminal_exit", "Managed terminal session closed from Web Console.", {
+        status: session.status,
+        exitCode: session.exitCode,
+      });
+      appendEvent({
+        invocationId: session.ownerInvocationId === "manual_terminal_surface" ? null : session.ownerInvocationId,
+        type: "terminal.close",
+        level: "info",
+        message: "Managed terminal session closed.",
+        data: { terminalSessionId: session.terminalSessionId, status: session.status },
+      });
     });
-    appendEvent({
-      invocationId: session.ownerInvocationId === "manual_terminal_surface" ? null : session.ownerInvocationId,
-      type: "terminal.close",
-      level: "info",
-      message: "Managed terminal session closed.",
-      data: { terminalSessionId: session.terminalSessionId, status: session.status },
-    });
-    persistStateSoon();
   }
 
   function teamIdForUser(userId) {
@@ -309,19 +318,21 @@ export function createTerminalService({
       dispatchedAt: null,
       completedAt: null,
     };
-    state.terminalBridgeActions.push(action);
-    session.lastSeenAt = now();
-    persistStateSoon();
+    runTx(() => {
+      state.terminalBridgeActions.push(action);
+      session.lastSeenAt = now();
+    });
     return action;
   }
 
   function nextTerminalBridgeAction() {
     const action = state.terminalBridgeActions.find((item) => item.status === "queued");
     if (!action) return null;
-    action.status = "dispatched";
-    action.dispatchedAt = now();
-    const session = state.terminalSessions.find((item) => item.terminalSessionId === action.terminalSessionId);
-    persistStateSoon();
+    const session = runTx(() => {
+      action.status = "dispatched";
+      action.dispatchedAt = now();
+      return state.terminalSessions.find((item) => item.terminalSessionId === action.terminalSessionId);
+    });
     return {
       ...action,
       session,
@@ -331,9 +342,10 @@ export function createTerminalService({
   function completeTerminalBridgeAction(actionId) {
     const action = state.terminalBridgeActions.find((item) => item.id === actionId);
     if (!action) return;
-    action.status = "completed";
-    action.completedAt = now();
-    persistStateSoon();
+    runTx(() => {
+      action.status = "completed";
+      action.completedAt = now();
+    });
   }
 
   function recordTerminalBridgeEvent(body = {}) {
@@ -422,9 +434,10 @@ export function createTerminalService({
       data,
       createdAt: now(),
     };
-    state.terminalEvidenceRecords.unshift(evidence);
-    session.evidenceIds = uniqueStrings([...(session.evidenceIds ?? []), evidence.id]);
-    persistStateSoon();
+    runTx(() => {
+      state.terminalEvidenceRecords.unshift(evidence);
+      session.evidenceIds = uniqueStrings([...(session.evidenceIds ?? []), evidence.id]);
+    });
     return evidence;
   }
 

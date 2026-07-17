@@ -6,6 +6,7 @@ import {
   normalizeUnknownCostPolicy,
 } from "../agents.mjs";
 import { normalizeRetentionDays } from "./helpers.mjs";
+import { makeRunTx } from "../../runtime/store/run-tx.mjs";
 
 export function createIntegrationGovernanceRuntime({
   state,
@@ -13,26 +14,29 @@ export function createIntegrationGovernanceRuntime({
   nextId,
   appendEvent,
   persistStateSoon = () => {},
+  store,
 }) {
+  const runTx = makeRunTx({ store, persistStateSoon });
   function updateIntegrationRetentionSettings(body = {}) {
-    state.retentionSettings = {
-      ...state.retentionSettings,
-      logsDays: normalizeRetentionDays(body.logsDays, state.retentionSettings.logsDays),
-      promptsDays: normalizeRetentionDays(body.promptsDays, state.retentionSettings.promptsDays),
-      responsesDays: normalizeRetentionDays(body.responsesDays, state.retentionSettings.responsesDays),
-      artifactsDays: normalizeRetentionDays(body.artifactsDays, state.retentionSettings.artifactsDays),
-      refusalsDays: normalizeRetentionDays(body.refusalsDays, state.retentionSettings.refusalsDays),
-      updatedAt: now(),
-    };
-    appendEvent({
-      invocationId: null,
-      type: "integration_reviewed",
-      level: "info",
-      message: "Integration data retention settings updated.",
-      data: state.retentionSettings,
+    return runTx(() => {
+      state.retentionSettings = {
+        ...state.retentionSettings,
+        logsDays: normalizeRetentionDays(body.logsDays, state.retentionSettings.logsDays),
+        promptsDays: normalizeRetentionDays(body.promptsDays, state.retentionSettings.promptsDays),
+        responsesDays: normalizeRetentionDays(body.responsesDays, state.retentionSettings.responsesDays),
+        artifactsDays: normalizeRetentionDays(body.artifactsDays, state.retentionSettings.artifactsDays),
+        refusalsDays: normalizeRetentionDays(body.refusalsDays, state.retentionSettings.refusalsDays),
+        updatedAt: now(),
+      };
+      appendEvent({
+        invocationId: null,
+        type: "integration_reviewed",
+        level: "info",
+        message: "Integration data retention settings updated.",
+        data: state.retentionSettings,
+      });
+      return state.retentionSettings;
     });
-    persistStateSoon();
-    return state.retentionSettings;
   }
 
   function buildIntegrationGovernance(body, payload) {
@@ -67,16 +71,17 @@ export function createIntegrationGovernanceRuntime({
       reason: "M2 records quota decisions without enterprise policy enforcement.",
       createdAt: now(),
     };
-    state.quotaDecisionRecords.unshift(record);
-    state.quotaDecisionRecords = state.quotaDecisionRecords.slice(0, 100);
-    appendEvent({
-      invocationId: null,
-      type: "quota_checked",
-      level: "info",
-      message: "Quota decision recorded for integration artifact.",
-      data: record,
+    runTx(() => {
+      state.quotaDecisionRecords.unshift(record);
+      state.quotaDecisionRecords = state.quotaDecisionRecords.slice(0, 100);
+      appendEvent({
+        invocationId: null,
+        type: "quota_checked",
+        level: "info",
+        message: "Quota decision recorded for integration artifact.",
+        data: record,
+      });
     });
-    persistStateSoon();
     return record;
   }
 

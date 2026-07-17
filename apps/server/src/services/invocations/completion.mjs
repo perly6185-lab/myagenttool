@@ -1,4 +1,7 @@
 import { runStateTransaction } from "../../runtime/state-transaction.mjs";
+import { stampClaudeProposalArtifact } from "../claude-propose-imports.mjs";
+import { capClaudePlanResult } from "../claude-plan-imports.mjs";
+import { recordRunTranscript } from "../run-transcripts.mjs";
 
 export function createInvocationCompletionRuntime({
   state,
@@ -18,8 +21,11 @@ export function createInvocationCompletionRuntime({
   recordCcusageImportedEstimates,
   recordCodexReviewFindings,
   recordClaudeReviewFindings,
+  recordClaudeApplyResult,
+  recordMailSendResult,
   recordCodexExecChanges,
   recordApplicationResult,
+  capWithArchive,
   onInvocationCompleted,
 }) {
   // #890.2: prefer the synchronous barrier so a completion — terminal status,
@@ -55,6 +61,23 @@ export function createInvocationCompletionRuntime({
             : "succeeded";
     invocation.status = terminalStatus;
     invocation.result = body.result ?? null;
+    // #913: a succeeded proposal becomes an immutable artifact NOW — stamp its
+    // bindings (content hash, validated base commit, descriptor lineage) before
+    // anything reads or persists the result. Pure no-op for every other tool.
+    if (terminalStatus === "succeeded") {
+      stampClaudeProposalArtifact({ invocation, result: invocation.result });
+      // #1051: the plan result is server-capped here — the wrapper's own caps
+      // are belt, this is the braces the read model actually relies on.
+      capClaudePlanResult({ invocation, result: invocation.result });
+    }
+    // #1072: the wrapper's bounded stream transcript (#1071) moves to its durable
+    // per-run home on ANY terminal status — a failed run's transcript is the most
+    // valuable one. Re-clamped server-side; the raw payload is stripped off
+    // invocation.result so it is stored exactly once and never ships with the
+    // /api/state snapshot. Committed by the enclosing transaction.
+    // #1084: appendEvent leaves the recorded/superseded trail; capWithArchive
+    // spills count-cap evictions to the retention archive.
+    recordRunTranscript({ state, invocation, result: invocation.result, now, appendEvent, capWithArchive });
     invocation.completedAt = now();
     invocation.updatedAt = now();
     completeRootSpan(invocation, terminalStatus);
@@ -118,6 +141,18 @@ export function createInvocationCompletionRuntime({
       });
       attachApplicationResult({ invocation, auditSummary, records, outputCollection: "claudeReviewFindings" });
     }
+    // Apply runs on ANY terminal status: a refused/failed git apply exits non-zero
+    // but still reports a result, and the authorization must be marked failed (not
+    // left "applying"). recordClaudeApplyResult no-ops for non-apply invocations.
+    if (typeof recordClaudeApplyResult === "function") {
+      recordClaudeApplyResult({ invocation, result: body.result ?? null, agent: findAgent(invocation.agentId) });
+    }
+    // #1147: the send fold runs on ANY terminal status too — a result-less
+    // terminal must resolve the draft to send_unconfirmed, never leave it
+    // "sending". No-ops for non-send invocations (keyed on mailSendDraftId).
+    if (typeof recordMailSendResult === "function") {
+      recordMailSendResult({ invocation, result: body.result ?? null });
+    }
     if (terminalStatus === "succeeded" && typeof recordCodexExecChanges === "function") {
       const records = recordCodexExecChanges({
         invocation,
@@ -137,7 +172,9 @@ export function createInvocationCompletionRuntime({
         invocation,
         auditSummary,
         records,
-        outputCollection: invocation.options?.metadata?.applicationWrapper?.outputCollection ?? "applicationResults",
+        outputCollection: invocation.options?.metadata?.applicationWrapper?.outputCollection
+          ?? invocation.options?.metadata?.outputCollection
+          ?? "applicationResults",
       });
     }
     attachApplicationResult({ invocation, auditSummary, records: [], outputCollection: "invocations" });
@@ -221,9 +258,21 @@ export function createInvocationCompletionRuntime({
   }
 
   function createAuditSummary(invocation, summary) {
+    // #1085: the audit summary is a sanctioned audit exit — it must state
+    // whether a transcript was captured. Summary metadata only, never payload.
+    // Runs on the reject/cancel paths too, where no transcript exists → null.
+    const transcriptRecord = (state.runTranscripts ?? []).find((item) => item?.invocationId === invocation.id);
     return {
       invocationId: invocation.id,
       requesterId: invocation.requestedBy,
+      transcript: transcriptRecord
+        ? {
+            present: true,
+            contentHash: transcriptRecord.contentHash ?? null,
+            blocks: transcriptRecord.blocks?.length ?? 0,
+            truncated: transcriptRecord.truncated === true,
+          }
+        : null,
       agentId: invocation.agentId,
       deviceId: invocation.delivery.deviceId,
       status: invocation.status,
@@ -261,8 +310,8 @@ export function createInvocationCompletionRuntime({
       applicationAction: metadata.applicationAction ?? null,
       outputCollection: importedRecords.length > 0
         ? outputCollection
-        : existing?.outputCollection ?? metadata.applicationWrapper?.outputCollection ?? outputCollection,
-      resultImport: metadata.applicationWrapper?.resultImport ?? null,
+        : existing?.outputCollection ?? metadata.applicationWrapper?.outputCollection ?? metadata.outputCollection ?? outputCollection,
+      resultImport: metadata.resultImport ?? metadata.applicationWrapper?.resultImport ?? null,
       importedRecordIds: importedRecords.map((record) => record.id),
       importedRecordCount: importedRecords.length,
       invocationId: invocation.id,

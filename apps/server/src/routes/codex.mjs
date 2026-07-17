@@ -26,7 +26,26 @@ export async function handleCodexRoutes({
   createWorktreePr,
   findInvocation,
   appendEvent,
+  setCodexSessionName,
+  resumableCodexSessions,
 }) {
+  // #123: name a session (user-authored label; tenancy inside the service).
+  const nameMatch = url.pathname.match(/^\/api\/codex\/sessions\/([^/]+)\/name$/);
+  if (req.method === "POST" && nameMatch && typeof setCodexSessionName === "function") {
+    const body = await readJson(req);
+    const result = setCodexSessionName(decodeURIComponent(nameMatch[1]), body?.name, actor);
+    sendJson(res, result.status, result.body);
+    return true;
+  }
+  // #123: the resume picker — sessions the CALLER can continue, safe metadata only.
+  if (req.method === "GET" && url.pathname === "/api/codex/sessions/resumable" && typeof resumableCodexSessions === "function") {
+    const sessions = resumableCodexSessions({
+      repoPath: url.searchParams.get("repoPath") || null,
+      userId: actor?.userId ?? null,
+    });
+    sendJson(res, 200, { sessions });
+    return true;
+  }
   if (req.method === "POST" && url.pathname === "/api/codex/hooks") {
     const body = await readJson(req);
     let result;
@@ -69,6 +88,15 @@ export async function handleCodexRoutes({
       return true;
     }
     if (denyForeignProject({ res, sendJson, state, actor, projectId: codexInvocationProjectId(state, request.invocationId), notFound: { error: "codex_approval_request_not_found" } })) {
+      return true;
+    }
+    // #1151: a settled broker request is immutable (the service already no-ops);
+    // tell the second operator who decided instead of silently echoing the row.
+    if (request.status !== "pending") {
+      sendJson(res, 200, {
+        approvalRequest: request,
+        alreadyDecided: { decidedBy: request.decidedBy ?? null, decidedAt: request.decidedAt ?? null, status: request.status },
+      });
       return true;
     }
     const updated = resolveCodexApprovalBrokerRequest(request, approvalMatch[2], actor);

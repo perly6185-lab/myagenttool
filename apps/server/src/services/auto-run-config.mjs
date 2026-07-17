@@ -104,6 +104,11 @@ export function normalizeAutoRunSettings(patch = {}, prev = {}) {
     // O2 graduated approval (UI-only): auto-approve NON-CODE paths (design/
     // clarify/prototype). develop and merge always stay human. Default off.
     autoApproveNonCodePaths: keep("autoApproveNonCodePaths", asBool),
+    // #1150 (UI-only, default off): mirror an issue's develop claim to the
+    // GitHub assignee (gh issue edit --add/--remove-assignee @me). Best-effort;
+    // the local claim stays authoritative. Off = no GitHub writes (the default
+    // posture, same as statusWriteback).
+    issueAssigneeMirror: keep("issueAssigneeMirror", asBool),
     // Self-repair: how many times a develop run may re-attempt after a verify
     // failure (feeding the failure back to the agent) before it blocks. 0 disables.
     maxRepairAttempts: keep("maxRepairAttempts", (v) => clampInt(v, 0, 3)),

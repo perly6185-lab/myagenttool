@@ -1,5 +1,6 @@
 import { normalizeStringArray } from "../agents.mjs";
 import { adapterFromArtifact } from "./helpers.mjs";
+import { makeRunTx } from "../../runtime/store/run-tx.mjs";
 
 export function createIntegrationProbeRuntime({
   state,
@@ -8,7 +9,9 @@ export function createIntegrationProbeRuntime({
   appendEvent,
   findIntegrationArtifact,
   persistStateSoon = () => {},
+  store,
 }) {
+  const runTx = makeRunTx({ store, persistStateSoon });
   function createIntegrationProbeRun(artifact) {
     if (artifact.artifactType !== "adapter_config") {
       throw new Error("Only adapter config artifacts can be probed.");
@@ -37,16 +40,17 @@ export function createIntegrationProbeRuntime({
       createdAt,
       completedAt: null,
     };
-    state.integrationProbeRuns.unshift(probeRun);
-    state.integrationProbeRuns = state.integrationProbeRuns.slice(0, 100);
-    appendEvent({
-      invocationId: null,
-      type: "integration_tested",
-      level: "info",
-      message: `Probe queued for ${artifact.summary}.`,
-      data: { probeRunId: probeRun.id, artifactId: artifact.id },
+    runTx(() => {
+      state.integrationProbeRuns.unshift(probeRun);
+      state.integrationProbeRuns = state.integrationProbeRuns.slice(0, 100);
+      appendEvent({
+        invocationId: null,
+        type: "integration_tested",
+        level: "info",
+        message: `Probe queued for ${artifact.summary}.`,
+        data: { probeRunId: probeRun.id, artifactId: artifact.id },
+      });
     });
-    persistStateSoon();
     if (adapter.type === "http") {
       queueMicrotask(() => runHttpIntegrationProbe(probeRun).catch((error) => {
         completeIntegrationProbeRun(probeRun, {
@@ -115,40 +119,42 @@ export function createIntegrationProbeRuntime({
     if (probeRun.status !== "queued") {
       return;
     }
-    probeRun.status = "running";
-    probeRun.summary = "Desktop Bridge is running a restricted adapter probe.";
-    probeRun.updatedAt = now();
-    appendEvent({
-      invocationId: null,
-      type: "integration_tested",
-      level: "info",
-      message: probeRun.summary,
-      data: { probeRunId: probeRun.id, artifactId: probeRun.artifactId },
+    runTx(() => {
+      probeRun.status = "running";
+      probeRun.summary = "Desktop Bridge is running a restricted adapter probe.";
+      probeRun.updatedAt = now();
+      appendEvent({
+        invocationId: null,
+        type: "integration_tested",
+        level: "info",
+        message: probeRun.summary,
+        data: { probeRunId: probeRun.id, artifactId: probeRun.artifactId },
+      });
     });
-    persistStateSoon();
   }
 
   function completeIntegrationProbeRun(probeRun, body = {}) {
-    const succeeded = ["ok", "healthy", "succeeded"].includes(body.status) || body.status === true;
-    probeRun.status = body.status === "failed" || !succeeded ? "failed" : "succeeded";
-    probeRun.summary = String(body.summary ?? body.message ?? (succeeded ? "Probe passed." : "Probe failed."));
-    probeRun.details = normalizeStringArray(body.details).length > 0 ? normalizeStringArray(body.details) : probeRun.details;
-    if (Array.isArray(body.tools)) probeRun.tools = body.tools.map(String);
-    probeRun.completedAt = now();
-    probeRun.updatedAt = probeRun.completedAt;
-    const artifact = findIntegrationArtifact(probeRun.artifactId);
-    if (artifact && probeRun.status === "succeeded") {
-      artifact.reviewState = "tested";
-      artifact.updatedAt = now();
-    }
-    appendEvent({
-      invocationId: null,
-      type: "integration_tested",
-      level: probeRun.status === "succeeded" ? "info" : "warn",
-      message: `${probeRun.summary} Registration remains explicit.`,
-      data: { probeRunId: probeRun.id, artifactId: probeRun.artifactId, status: probeRun.status },
+    runTx(() => {
+      const succeeded = ["ok", "healthy", "succeeded"].includes(body.status) || body.status === true;
+      probeRun.status = body.status === "failed" || !succeeded ? "failed" : "succeeded";
+      probeRun.summary = String(body.summary ?? body.message ?? (succeeded ? "Probe passed." : "Probe failed."));
+      probeRun.details = normalizeStringArray(body.details).length > 0 ? normalizeStringArray(body.details) : probeRun.details;
+      if (Array.isArray(body.tools)) probeRun.tools = body.tools.map(String);
+      probeRun.completedAt = now();
+      probeRun.updatedAt = probeRun.completedAt;
+      const artifact = findIntegrationArtifact(probeRun.artifactId);
+      if (artifact && probeRun.status === "succeeded") {
+        artifact.reviewState = "tested";
+        artifact.updatedAt = now();
+      }
+      appendEvent({
+        invocationId: null,
+        type: "integration_tested",
+        level: probeRun.status === "succeeded" ? "info" : "warn",
+        message: `${probeRun.summary} Registration remains explicit.`,
+        data: { probeRunId: probeRun.id, artifactId: probeRun.artifactId, status: probeRun.status },
+      });
     });
-    persistStateSoon();
   }
 
   function findIntegrationProbeRun(id) {

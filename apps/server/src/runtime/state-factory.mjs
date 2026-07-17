@@ -49,6 +49,9 @@ export function createServerState({ defaultProjectPath, now }) {
     projectTargets: [createProjectTargetRecord(defaultProject, now)],
     worktrees: [],
     autoRuns: [],
+    // O5.2 follow-up: the last-emitted set of below-target SLO keys, so the
+    // breach→alert sweep only fires when the breach set changes (not every tick).
+    autoRunSloAlert: null,
     // D1 deploy stage: one record per post-merge deploy attempt (feeds deploy
     // frequency + change-failure/recovery). Empty until deployOnMerge is used.
     deployments: [],
@@ -86,6 +89,9 @@ export function createServerState({ defaultProjectPath, now }) {
     // Per-round (per model turn) telemetry — Epic #805, Phase 3 (#808).
     invocationRounds: [],
     toolInvocationRecords: [],
+    // Per-run stream transcripts (#1072, Epic #1070): the wrapper-captured
+    // thinking / tool IN-OUT / assistant-text timeline, one record per invocation.
+    runTranscripts: [],
     ledgerEntries: [],
     importedUsageEstimates: [],
     codexReviewFindings: [],
@@ -101,6 +107,17 @@ export function createServerState({ defaultProjectPath, now }) {
     // #890: in-flight budget holds placed at admission and released on settle so
     // concurrent spend-bearing runs cannot jointly exceed a hard block budget.
     budgetReservations: [],
+    // #1151: advisory "X is handling this" markers on pending-decision rows.
+    decisionSoftClaims: [],
+    // #1143: issue develop leases — one active develop claim per issue, so
+    // concurrent humans/agents sharing a backlog never start duplicate work.
+    issueClaims: [],
+    // #1152: durable claim lifecycle history (claimed/released/expired), kept
+    // outside the 500-row event ring buffer so it survives churn + restart.
+    issueClaimEvents: [],
+    // #1165: dispatcher-mode bookkeeping — one row per issue assignment written
+    // by THIS server acting as the dispatcher (single writer; the staleness clock).
+    dispatchAssignments: [],
     automations: createDefaultAutomations(defaultProject.id, now),
     agentSkills: createDefaultAgentSkills(now),
     // Auto-run config overrides (services/auto-run-config.mjs). Empty = every
@@ -126,7 +143,15 @@ export function createServerState({ defaultProjectPath, now }) {
     terminalEvidenceRecords: [],
     terminalBridgeActions: [],
     sshTargets: [],
-    sshConnectionTests: []
+    sshConnectionTests: [],
+    // Channel subsystem (ADR 0012, initiative #1090): owner-team-scoped
+    // conversation boundaries. Credentials never live here — a channel record
+    // carries readiness booleans only.
+    channels: [],
+    channelIdentities: [],
+    channelEvents: [],
+    channelConversations: [],
+    channelDeliveries: []
   };
   defineDeviceAlias(state);
   return { defaultProject, state };
@@ -198,6 +223,7 @@ export function resetStateForSelfCheck({ state, now }) {
   state.aiUsageRecords = [];
   state.invocationRounds = [];
   state.toolInvocationRecords = [];
+  state.runTranscripts = [];
   state.ledgerEntries = [];
   state.importedUsageEstimates = [];
   state.codexReviewFindings = [];
@@ -207,6 +233,10 @@ export function resetStateForSelfCheck({ state, now }) {
   state.claudeApplyAuthorizations = [];
   state.applicationResults = [];
   state.budgets = [];
+  state.decisionSoftClaims = [];
+  state.issueClaims = [];
+  state.issueClaimEvents = [];
+  state.dispatchAssignments = [];
   state.automations = createDefaultAutomations(state.currentProjectId ?? state.projects[0]?.id ?? "prj_myagenttool", now);
   state.privateDeploymentConfig = createDefaultPrivateDeploymentConfig(now);
   state.auditExportRequests = [];
@@ -235,6 +265,11 @@ export function resetStateForSelfCheck({ state, now }) {
   state.terminalBridgeActions = [];
   state.sshTargets = [];
   state.sshConnectionTests = [];
+  state.channels = [];
+  state.channelIdentities = [];
+  state.channelEvents = [];
+  state.channelConversations = [];
+  state.channelDeliveries = [];
   state.terminalRuntimeCapability = createTerminalRuntimeCapability();
 }
 
@@ -253,6 +288,9 @@ function createDefaultDevice(now) {
     lastSeenAt: null,
     registeredCapabilities: [],
     applicationBinaryReadiness: [],
+    // What the device HOLDS (application, provider, scope) — never a credential
+    // (ADR 0010). The server compares it against the immutable descriptor.
+    applicationCredentialReadiness: [],
     credentialRevokedAt: null,
     bridgeCredential: null,
     maxConcurrency: defaultMaxConcurrency,

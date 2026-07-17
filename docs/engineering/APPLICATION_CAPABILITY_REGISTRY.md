@@ -35,6 +35,53 @@ Git and local sources may also create or reuse project records. NPM and manual
 sources are registered as application assets first; execution and installation
 remain separate lifecycle capabilities.
 
+## Registered Applications (current inventory, 2026-07-16)
+
+| Application | Source | Capabilities | Execution | Readiness | Wiring |
+| --- | --- | --- | --- | --- | --- |
+| `app_ccusage` | npm `ccusage@20.0.14` | 6 usage reports (`session` approval-gated) | installed wrapper | binary probe | register script + quick-register catalog + install recipes (3 platforms) |
+| `app_git` | binary `git` | 8 read-only repo inspections | wrapper argv (closed positionals) | binary probe | register script + catalog + install recipes (win/mac; Linux fails closed, #994) |
+| `app_claude` | binary `claude` | 6 read-only `tool_facade`s (review.diff, explain.diff, explain.code, analyze.issue, plan.change, propose.patch) | governed Tool contracts | binary probe | register script + catalog + install recipe (npm) |
+| `app_gmail` | manual, non-executable | 2 `agent_facade`s (list_unread, fetch), both `untrusted_input` | delegated mail MCP agent | **external credential readiness (ADR 0010)** | wired via `pnpm gmail:register-app` (resolves the mail MCP agent declaring `provider: "google"`; quick-register is deliberately not used — it cannot express the agent prerequisite) + `smoke:gmail-app` |
+| `app_163_mail` | manual, non-executable | 2 `agent_facade`s (list_unread, fetch), both `untrusted_input` | delegated 163 mail MCP agent (`tools/mail-mcp`, provider `netease`) | **external credential readiness (ADR 0010)**; Windows DPAPI store, `not_authorized` off-Windows | wired via `pnpm mail:163:register` + `pnpm mail:163:setup` to authorize + `smoke:163-app` |
+
+`app_claude`'s `analyze.issue` carries the `untrusted_input` tag (ADR 0011): the
+issue body is server-resolved, bounded, and fenced as data before the wrapper
+ever spawns.
+
+### Which agent a mail Application delegates to (#1185)
+
+An Application that delegates to an agent must resolve *which* agent, and mail is
+where that stopped being obvious: `mail.read` is declared by every mail MCP agent
+and `mail_send` by every send-capable one, so neither says whose mailbox. When
+only one mail agent existed the register scripts took the single match, which
+silently became "wire `app_gmail` to whatever mail agent is present" as soon as a
+second provider (163/IMAP) appeared — up to and including reading a NetEase
+mailbox under Gmail's identity, exit 0.
+
+Agents therefore declare the service they front, the same way Applications always
+have (`source.credential.provider`):
+
+```
+POST /api/agents { type: "mcp", capabilityName: "mail.read", provider: "google", ... }
+```
+
+`pnpm gmail:register-app` and `pnpm gmail:register-send-app` resolve the agent
+whose `provider` matches the one their descriptor pins (`google`), and refuse
+otherwise:
+
+- **no agent declares `google`** — refuse, naming the mail agents present and each
+  one's provider. An agent for another provider is never adopted for want of an
+  alternative.
+- **more than one declares `google`** — refuse as ambiguous, naming the candidates
+  (two Gmail accounts are both honestly `google`; only an operator can choose).
+- **`--agent-id <id>`** — always wins, and is the documented way past either
+  refusal.
+
+An agent with no declared provider matches nobody. That direction is deliberate:
+an unmarked agent being undiscoverable is a loud, fixable state, while an unmarked
+agent matching by default is how the original defect worked.
+
 ## Lifecycle
 
 Application status values:
@@ -111,6 +158,18 @@ Inferred capabilities are discovery candidates only. They are intentionally
 later slice. NPM probes inspect registration metadata only; they do not install
 packages, run scripts, or execute package code.
 
+### External credential readiness (ADR 0010)
+
+Binary probes answer "is the executable present"; some Applications instead
+depend on an **externally authorized credential** (an OAuth grant completed
+outside the platform). ADR 0010 models this as a readiness dimension:
+`app_gmail` declares `credential { provider: google, scope: gmail.readonly }`,
+the Desktop Bridge reports non-secret credential metadata
+(`application-credential-readiness.mjs`), and the server authorizes it against
+the descriptor — unauthorized reads as `needs_setup`, a revoked credential
+auto-degrades the Application to `offline` and never auto-onlines. No secret
+ever appears in state or the public contract.
+
 ## Governed Installation Plans
 
 Known Applications can request a plan through
@@ -155,6 +214,22 @@ Offline devices, approval failures, installation failures, and probe failures
 remain distinct operator-facing outcomes. Advanced source registration stays
 available as a collapsed secondary path.
 
+P4 hardens the release boundary. NPM recipes use an exact approved version and
+the canonical npm registry instead of a moving `latest` alias. Plans expire ten
+minutes after issuance, and both the server and Desktop Bridge independently
+reject expired, modified, wrong-platform, or elevation-requesting plans. Git is
+enabled only on Windows and macOS until Linux has an explicit elevation broker;
+the Bridge never turns plan metadata into implicit privilege escalation.
+
+Bridge progress and completion evidence are bounded, sensitive assignments and
+user-home paths are redacted, and terminal status/classification pairs are
+allowlisted. Install and readiness-probe timeouts are separate. Automatic
+rollback and uninstall remain disabled because package-manager state may have
+existed before setup; every non-successful run records that operator review is
+required. Cross-platform contract tests run on Windows, macOS, and Linux. The
+release evidence and rollback boundary are recorded in
+`docs/engineering/APPLICATION_INSTALL_RELEASE_EVIDENCE.md`.
+
 ## NPM Wrapper Descriptors
 
 NPM application sources may include a governed wrapper descriptor:
@@ -180,6 +255,57 @@ The first wrapper slice still does not install packages or execute npm. A
 wrapper invocation creates the normal governed invocation, requires approval,
 and returns the audited wrapper execution plan with `executable = false`.
 Runtime adapter wiring is a follow-up slice.
+
+## Agent Facades
+
+An Application capability may delegate to a **registered Agent** (an MCP, A2A,
+HTTP, or CLI agent) the way a `tool_facade` delegates to a governed Tool:
+
+```text
+capabilityFacades: [
+  { id, toolName, ... }                    -> tool_facade  (governed Tool)
+  { id, agentId, agentToolName?, ... }     -> agent_facade (registered Agent)
+]
+```
+
+A facade declares **exactly one** of `toolName` / `agentId`. `agentToolName`
+names which tool on the agent the capability calls (an MCP server can expose
+several); omitted, the bridge's single-tool auto-resolution applies.
+
+Invocation goes through `POST /api/capabilities/:capabilityName/invocations`,
+creates a normal governed invocation on the named agent (async through the
+bridge), and stamps Application lineage (`applicationId`, `capability`,
+`applicationAction: agent:<agentId>:<toolName>`). Guards run in two layers, on
+purpose:
+
+- **Application-side** (`planAgentFacadeInvocation`): tenancy, lifecycle status
+  (`archived`/`offline` refuse), and the facade's declared `requiresApproval`
+  (missing token -> `409 approval_required`).
+- **Agent-side** (capability service): the agent must exist and not be disabled
+  (`409 agent_not_available`), and a named tool must be inside the agent's own
+  registered `allowedTools` (`409 agent_tool_not_allowlisted`). The bridge's MCP
+  client enforces the same allowlist again client-side before the wire — a
+  mis-pointed descriptor still cannot reach a tool the agent's registration
+  does not allow.
+
+Discovery overlays the **live** agent state onto the capability's readiness
+(`agent_not_registered` / `agent_disabled` / `agent_available`), so a
+capability whose agent has gone away explains itself instead of failing a run
+opaquely — the same precise-refusal shape the device gives a missing binary.
+
+### Why a new mode, not agents projected as Tools
+
+The alternative — projecting registered agents into the Tool Registry so the
+existing `tool_facade` covers them — was rejected (#975). The mode name is
+load-bearing audit metadata: it records **which trust regime** execution was
+delegated to. A Tool is a platform-curated, reviewed contract; a registered
+Agent is user-registered code. Projecting agents as Tools would launder that
+provenance — an audit row saying `tool:` would imply a review status the
+executor does not have — and would churn `/api/tools` (a surface this document
+commits to keeping stable) every time an agent registers, goes offline, or is
+removed, while inheriting none of the agent's tenancy scoping. Convergence
+already happens where it belongs: `/api/capabilities` is the one discovery
+surface, and `provider.type` keeps the provenance honest there.
 
 ## Relationship To Existing Agents
 
@@ -231,8 +357,32 @@ forbidden, and can be validated with `pnpm ai:loop-routine-check`.
 npm package -> application asset -> governed report capability -> fixed wrapper agents
 ```
 
-Existing `ccusage.report` APIs and import guards should remain compatible while
-adding an `app_ccusage` application record later.
+**Status: complete.** `app_ccusage` exists (`services/ccusage-application.mjs`)
+and the `ccusage.report` tool remains a stable compatibility facade over the
+Application path, enforced by the tool-registry contract smoke.
+
+## What Is Deliberately NOT an Application
+
+Three governed surfaces sit outside the Application registry on purpose; the
+distinction is load-bearing, not an accident:
+
+- **Claude apply (write capability).** The `app_claude` descriptor stops at
+  `propose.patch` — read-only generation. The approval-bound apply/rollback
+  (#914) is a governed Tool behind the default-OFF
+  `MYAGENTTOOL_CLAUDE_APPLY_ENABLED` flag, with its own single-use-grant gate
+  and artifact-binding revalidation. Keeping the write capability out of the
+  discoverable catalog is a decision: discovery advertises what an operator may
+  freely invoke; the write path is opt-in infrastructure with its own audit
+  trail (`claudeApplyAuthorizations`), not a browsable capability.
+- **Codex.** `codex.review.diff` / `codex.exec` are governed agents/tools
+  (exec behind default-OFF `MYAGENTTOOL_CODEX_EXEC_ENABLED`); opening Codex as
+  an Application-path capability is tracked as #925.
+- **Channel providers (WeCom / Feishu / DingTalk / Slack / Teams).** The
+  channel subsystem (`services/channels.mjs`, ADR 0013) has its own
+  env-presence readiness probes and delivery lifecycle and does NOT register
+  Application descriptors. Whether channel readiness should converge onto the
+  Application readiness model is an open architecture question — today the
+  split is intentional (channels are transport, not governed local software).
 
 ## Next Phase: Discovery -> Access -> Execute -> Result
 

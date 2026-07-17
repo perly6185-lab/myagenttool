@@ -1,5 +1,6 @@
 import { detectPromptInjection, roleAutoRunPrompt } from "@myagenttool/protocol/issue-prompt";
 
+import { teamOf } from "../runtime/auth.mjs";
 import { createRefusalRuntime } from "../runtime/refusal-log.mjs";
 import { isTerminal } from "./invocations.mjs";
 import { normalizeWorktreeLink } from "./projects.mjs";
@@ -11,6 +12,7 @@ import { resolveAutoRunVerifyCommandFor } from "./worktree-verify.mjs";
 import { composeDesignIssueComment, designArtifactIndex, buildDesignImageUrls } from "./auto-run-design.mjs";
 import { decompositionTree, issueTreeApplyFailures, humanApprovalRequiredReasons } from "../../../../tools/ai/src/issue-tree-core.mjs";
 import { scoreDecompositionOverlap } from "./auto-run-epic.mjs";
+import { makeRunTx } from "../runtime/store/run-tx.mjs";
 
 // One-click "Auto" orchestrator. It closes the seam the console never had:
 // turning a linked GitHub issue into a worktree AND a started agent run seeded
@@ -69,6 +71,11 @@ export function createAutoRunService({
   reserveBudget,
   releaseReservationsForAutoRun,
   reconcileBudgetReservations,
+  // #1143 issue claims: hold the issue's develop lease at admission, release it
+  // on settle. Both optional — absent (unit tests, claims not composed) the
+  // gate is a no-op and behavior is byte-identical to before.
+  claimIssueForRun,
+  releaseIssueClaimsForAutoRun,
   sendAlert,
   createInvocation,
   findInvocation,
@@ -98,7 +105,9 @@ export function createAutoRunService({
   runDeploy,
   runRollback,
   fileRemediationIssue,
+  store,
 }) {
+  const runTx = makeRunTx({ store, persistStateSoon });
   // Production injects the shared refusal writer; fall back to one bound to this
   // service's own state so a directly-constructed service (unit tests) still
   // records the veto instead of throwing (refusal model Phase 2, #760).
@@ -170,12 +179,14 @@ export function createAutoRunService({
     try {
       const child = await spawnChildIssue({ parentLink: autoRun.link, design, repoPath });
       if (!child || !Number.isFinite(child.number)) return null;
-      appendEvent({
-        invocationId: autoRun.invocationId,
-        type: "auto_run_child_spawned",
-        level: "info",
-        message: `Auto-run ${autoRun.id} spawned pending-decision child issue #${child.number}.`,
-        data: { autoRunId: autoRun.id, parentIssue: autoRun.link.number, childIssue: child.number, url: child.url ?? null },
+      runTx(() => {
+        appendEvent({
+          invocationId: autoRun.invocationId,
+          type: "auto_run_child_spawned",
+          level: "info",
+          message: `Auto-run ${autoRun.id} spawned pending-decision child issue #${child.number}.`,
+          data: { autoRunId: autoRun.id, parentIssue: autoRun.link.number, childIssue: child.number, url: child.url ?? null },
+        });
       });
       return { child: { number: child.number, url: child.url ?? null } };
     } catch (error) {
@@ -343,6 +354,11 @@ export function createAutoRunService({
     if (settledStatuses.has(status) && typeof releaseReservationsForAutoRun === "function") {
       releaseReservationsForAutoRun(autoRun.id, { outcome: status === "failed" ? "released_failed" : "committed" });
     }
+    // #1143: a settled run hands its issue back to the pool — the develop lease
+    // held at admission releases here, next to the budget hold. Idempotent.
+    if (settledStatuses.has(status) && typeof releaseIssueClaimsForAutoRun === "function") {
+      releaseIssueClaimsForAutoRun(autoRun.id, { outcome: status === "failed" ? "released_failed" : "committed" });
+    }
     appendEvent({
       invocationId: autoRun.invocationId,
       type: "auto_run_status_changed",
@@ -410,74 +426,123 @@ export function createAutoRunService({
     const autoRunId = nextId("aur_demo");
     const createdAt = now();
 
-    // #890 budget reservation: place the hold SYNCHRONOUSLY here — before the
-    // decision/issue-fetch awaits below — so a second run starting in that same
-    // window sees this run's hold and cannot also pass a near-limit budget. The
-    // hold is released when the run settles (setAutoRunStatus) or, if a pre-record
-    // throw leaks it, by reconcileBudgetReservations on the next sweep. Disabled
-    // (estimate <= 0) → no hold written, byte-identical to before.
-    const reservationEstimateUsd = Number(state.autoRunSettings?.reservationEstimateUsd ?? 0) || 0;
-    if (reservationEstimateUsd > 0 && typeof reserveBudget === "function" && projectId) {
-      const reservation = reserveBudget({ projectId, amountUsd: reservationEstimateUsd, autoRunId });
-      if (!reservation.ok) {
-        void sendAlert?.({
-          kind: "budget_exceeded",
-          severity: "high",
-          message: `Auto-run blocked at admission: ${reservation.reason}`,
-          data: { projectId, link: normalizedLink, reason: reservation.reason },
+    // #1143 issue claim gate: take (or renew) the issue's develop lease
+    // SYNCHRONOUSLY, before any spend, so a colleague already developing this
+    // issue blocks a duplicate run at admission. Same-actor re-entry renews and
+    // attaches this run; a foreign active develop claim refuses with the holder
+    // named. PR-linked runs have no issue to claim and skip the gate, as does a
+    // composition without the claim service (unit tests) — byte-identical then.
+    if (typeof claimIssueForRun === "function" && normalizedLink.type === "issue" && Number.isFinite(normalizedLink.number)) {
+      const claimed = claimIssueForRun({
+        projectId: projectId ?? state.currentProjectId ?? null,
+        issueNumber: normalizedLink.number,
+        actor,
+        mode: "develop",
+        agentId: agent.id,
+        autoRunId,
+      });
+      if (!claimed.ok) {
+        appendEvent({
+          invocationId: null,
+          type: "auto_run_claim_rejected",
+          level: "warn",
+          message: `Auto-run on issue #${normalizedLink.number} refused: ${claimed.reason}`,
+          data: { projectId, issueNumber: normalizedLink.number, requestedBy: actor?.userId ?? "usr_local", holder: claimed.claim?.claimedBy ?? null },
         });
-        throw new Error(`${reservation.reason} Raise the budget, wait for in-flight runs to finish, or reset spend.`);
+        throw new Error(claimed.reason);
       }
     }
 
-    // 0. Decision step: the injected decider (or the heuristic floor) triages the
-    // issue into a path BEFORE any execution. The decision is data, not action.
-    // Both the decider and the role prompt get the issue body when it's readable.
-    const issueBody = await maybeFetchIssueBody(normalizedLink, projectId ?? state.currentProjectId);
-    // B1a: scan the untrusted issue body for prompt-injection markers. A hit
-    // never blocks the run (avoids weaponizing false positives into a DoS), but
-    // it is recorded, alerted, and — crucially — makes the run ineligible for
-    // O2 auto-approval, so a human always reviews a suspicious body.
-    const injection = detectPromptInjection(issueBody);
-    if (injection.suspicious) {
-      void sendAlert?.({
-        kind: "prompt_injection_suspected",
-        severity: "high",
-        message: `Auto-run on ${normalizedLink.type} #${normalizedLink.number}: possible prompt injection in the body (${injection.markers.join(", ")}). Human review required.`,
-        data: { link: normalizedLink, markers: injection.markers },
-      });
-    }
-    const decision = await resolveDecision({
-      link: normalizedLink,
-      issueBody,
-      decideIssuePath,
-      // Console-saved overrides when present; undefined falls back to the env
-      // defaults inside resolveDecision (decisionConfig()).
-      minConfidence: decisionSettings?.minConfidence,
-      fastPath: decisionSettings?.fastPath,
-      // Opt-in: an epic/initiative routes to decompose (a plan, not a diff).
-      epicDecomposition: state.autoRunSettings?.epicDecomposition === true,
-    });
+    // Admission steps below can throw BEFORE the autoRun record exists — the
+    // window where a taken issue claim would dangle (blocking the issue for the
+    // whole lease). Any throw in this zone hands the claim back; after the
+    // record exists, settle (setAutoRunStatus) owns the release.
+    let issueBody;
+    let injection;
+    let decision;
+    let worktree;
+    try {
+      // #890 budget reservation: place the hold SYNCHRONOUSLY here — before the
+      // decision/issue-fetch awaits below — so a second run starting in that same
+      // window sees this run's hold and cannot also pass a near-limit budget. The
+      // hold is released when the run settles (setAutoRunStatus) or, if a pre-record
+      // throw leaks it, by reconcileBudgetReservations on the next sweep. Disabled
+      // (estimate <= 0) → no hold written, byte-identical to before.
+      const reservationEstimateUsd = Number(state.autoRunSettings?.reservationEstimateUsd ?? 0) || 0;
+      if (reservationEstimateUsd > 0 && typeof reserveBudget === "function" && projectId) {
+        const reservation = reserveBudget({ projectId, amountUsd: reservationEstimateUsd, autoRunId });
+        if (!reservation.ok) {
+          void sendAlert?.({
+            kind: "budget_exceeded",
+            severity: "high",
+            message: `Auto-run blocked at admission: ${reservation.reason}`,
+            data: { projectId, link: normalizedLink, reason: reservation.reason },
+          });
+          throw new Error(`${reservation.reason} Raise the budget, wait for in-flight runs to finish, or reset spend.`);
+        }
+      }
 
-    // 1. Materialize the worktree from the issue.
-    const { worktree } = createWorktree({
-      projectId,
-      name: name || `issue-${normalizedLink.number}`,
-      baseBranch,
-      // Fork from the FRESH remote base (origin/<base>), not the stale local branch —
-      // otherwise every run's PR conflicts with work merged since the local checkout.
-      fetchBase: true,
-      agentId: agent.id,
-      link: normalizedLink,
-    });
+      // 0. Decision step: the injected decider (or the heuristic floor) triages the
+      // issue into a path BEFORE any execution. The decision is data, not action.
+      // Both the decider and the role prompt get the issue body when it's readable.
+      issueBody = await maybeFetchIssueBody(normalizedLink, projectId ?? state.currentProjectId);
+      // B1a: scan the untrusted issue body for prompt-injection markers. A hit
+      // never blocks the run (avoids weaponizing false positives into a DoS), but
+      // it is recorded, alerted, and — crucially — makes the run ineligible for
+      // O2 auto-approval, so a human always reviews a suspicious body.
+      injection = detectPromptInjection(issueBody);
+      if (injection.suspicious) {
+        void sendAlert?.({
+          kind: "prompt_injection_suspected",
+          severity: "high",
+          message: `Auto-run on ${normalizedLink.type} #${normalizedLink.number}: possible prompt injection in the body (${injection.markers.join(", ")}). Human review required.`,
+          data: { link: normalizedLink, markers: injection.markers },
+        });
+      }
+      decision = await resolveDecision({
+        link: normalizedLink,
+        issueBody,
+        decideIssuePath,
+        // Console-saved overrides when present; undefined falls back to the env
+        // defaults inside resolveDecision (decisionConfig()).
+        minConfidence: decisionSettings?.minConfidence,
+        fastPath: decisionSettings?.fastPath,
+        // Opt-in: an epic/initiative routes to decompose (a plan, not a diff).
+        epicDecomposition: state.autoRunSettings?.epicDecomposition === true,
+      });
+
+      // 1. Materialize the worktree from the issue.
+      ({ worktree } = createWorktree({
+        projectId,
+        name: name || `issue-${normalizedLink.number}`,
+        baseBranch,
+        // Fork from the FRESH remote base (origin/<base>), not the stale local branch —
+        // otherwise every run's PR conflicts with work merged since the local checkout.
+        fetchBase: true,
+        agentId: agent.id,
+        link: normalizedLink,
+      }));
+    } catch (error) {
+      if (typeof releaseIssueClaimsForAutoRun === "function") {
+        releaseIssueClaimsForAutoRun(autoRunId, { outcome: "released_failed" });
+      }
+      throw error;
+    }
 
     // Record the auto-run BEFORE starting the invocation so the dedup key exists
     // even if invocation creation throws — otherwise auto-trigger, which dedups on
     // autoRuns, would re-pick this issue every tick and pile up orphan worktrees.
+    const resolvedProjectId = worktree.sourceProjectId ?? worktree.projectId ?? projectId ?? null;
+    const owningProject = resolvedProjectId ? (state.projects ?? []).find((p) => p.id === resolvedProjectId) ?? null : null;
     const autoRun = {
       id: autoRunId,
       status: "materializing",
-      projectId: worktree.sourceProjectId ?? worktree.projectId ?? projectId ?? null,
+      projectId: resolvedProjectId,
+      // #1152: the owning team, stamped directly at creation. Visibility still
+      // scopes project-first (the stamp is redundant by construction) — the
+      // stamp exists so per-team queues don't re-derive it per row, and so the
+      // #891 ownership-consistency audit can cross-check it on restore.
+      teamId: owningProject ? teamOf(owningProject) : null,
       worktreeId: worktree.id,
       invocationId: null,
       agentId: agent.id,
@@ -498,21 +563,23 @@ export function createAutoRunService({
       createdAt,
       updatedAt: createdAt,
     };
-    state.autoRuns.unshift(autoRun);
-    // The routing decision is auditable evidence: path, who decided, and why.
-    appendEvent({
-      invocationId: null,
-      type: "auto_run_decided",
-      level: "info",
-      message: `Auto-run ${autoRunId} routed to "${decision.path}" by ${decision.decidedBy}.`,
-      data: {
-        autoRunId,
-        path: decision.path,
-        decidedBy: decision.decidedBy,
-        confidence: decision.confidence,
-        spawnChildIssues: decision.spawnChildIssues,
-        rationale: decision.rationale,
-      },
+    runTx(() => {
+      state.autoRuns.unshift(autoRun);
+      // The routing decision is auditable evidence: path, who decided, and why.
+      appendEvent({
+        invocationId: null,
+        type: "auto_run_decided",
+        level: "info",
+        message: `Auto-run ${autoRunId} routed to "${decision.path}" by ${decision.decidedBy}.`,
+        data: {
+          autoRunId,
+          path: decision.path,
+          decidedBy: decision.decidedBy,
+          confidence: decision.confidence,
+          spawnChildIssues: decision.spawnChildIssues,
+          rationale: decision.rationale,
+        },
+      });
     });
 
     // 2. Seed the prompt from the issue, and 3. start the agent run in the worktree.
@@ -532,11 +599,13 @@ export function createAutoRunService({
       });
       startInvocationIfAllowed(invocation, agent);
     } catch (error) {
-      setAutoRunStatus(autoRun, "failed", { error: `Could not start the agent run: ${String(error?.message ?? error)}` });
-      persistStateSoon();
+      runTx(() => {
+        setAutoRunStatus(autoRun, "failed", { error: `Could not start the agent run: ${String(error?.message ?? error)}` });
+      });
       throw error;
     }
 
+    return runTx(() => {
     autoRun.invocationId = invocation.id;
     setAutoRunStatus(autoRun, autoRunStatusForInvocation(invocation));
     appendEvent({
@@ -574,8 +643,8 @@ export function createAutoRunService({
     if (autoRun.status !== "failed") {
       maybeWriteIssueStatus(autoRun, worktree, "in-progress");
     }
-    persistStateSoon();
     return { autoRun, worktree, invocation };
+    });
   }
 
   // Reaction: when an auto-run's invocation reaches a terminal state, advance the
@@ -598,9 +667,8 @@ export function createAutoRunService({
         if (autoRun.decision?.path === "decompose") {
           const proposal = buildDecompositionProposal(autoRun, worktree, invocation);
           maybePostIssueReport(autoRun, worktree, proposal.comment);
-          setAutoRunStatus(autoRun, "plan_proposed", proposal.status);
+          runTx(() => setAutoRunStatus(autoRun, "plan_proposed", proposal.status));
           maybeWriteIssueStatus(autoRun, worktree, "review");
-          persistStateSoon();
           return autoRun;
         }
 
@@ -612,8 +680,7 @@ export function createAutoRunService({
           try {
             commitResult = await commitWorktreeChanges(autoRun.worktreeId, { message: commitMessageFor(autoRun) });
           } catch (error) {
-            setAutoRunStatus(autoRun, "failed", { error: `Commit failed: ${String(error?.message ?? error)}` });
-            persistStateSoon();
+            runTx(() => setAutoRunStatus(autoRun, "failed", { error: `Commit failed: ${String(error?.message ?? error)}` }));
             return autoRun;
           }
           if (!commitResult.hasCommits) {
@@ -628,12 +695,12 @@ export function createAutoRunService({
               const summary = extractRunSummary(invocation) ?? "Investigation complete — no code change was needed.";
               maybePostIssueReport(autoRun, worktree, summary);
               const spawn = await maybeSpawnChildIssue(autoRun, worktree, summary);
-              setAutoRunStatus(autoRun, "report_posted", {
+              runTx(() => setAutoRunStatus(autoRun, "report_posted", {
                 report: summary,
                 error: null,
                 ...(spawn?.child ? { childIssues: [spawn.child] } : {}),
                 ...(spawn?.error ? { spawnError: spawn.error } : {}),
-              });
+              }));
               // The design is delivered and waits on a human — the issue label
               // should say review, not linger at in-progress. (Pilot finding.)
               maybeWriteIssueStatus(autoRun, worktree, "review");
@@ -643,15 +710,14 @@ export function createAutoRunService({
               const report = questions.length
                 ? `${summary ? `${summary}\n\n` : ""}Open questions:\n${questions.map((q) => `- ${q}`).join("\n")}`
                 : summary;
-              setAutoRunStatus(autoRun, "needs_input", {
+              runTx(() => setAutoRunStatus(autoRun, "needs_input", {
                 report,
                 error: "The run needs a human decision before it can proceed.",
-              });
+              }));
               maybeWriteIssueStatus(autoRun, worktree, "review");
             } else {
-              setAutoRunStatus(autoRun, "blocked", { error: "The agent run produced no changes to open a pull request with." });
+              runTx(() => setAutoRunStatus(autoRun, "blocked", { error: "The agent run produced no changes to open a pull request with." }));
             }
-            persistStateSoon();
             return autoRun;
           }
 
@@ -690,16 +756,15 @@ export function createAutoRunService({
               // where to open it. Layer B's URLs embed the previews inline.
               maybePostIssueReport(autoRun, worktree, composeDesignIssueComment({ brief: summary, artifacts: changed, imageUrls }));
               const spawn = await maybeSpawnChildIssue(autoRun, worktree, summary);
-              setAutoRunStatus(autoRun, "report_posted", {
+              runTx(() => setAutoRunStatus(autoRun, "report_posted", {
                 report: summary,
                 designArtifacts: changed,
                 ...(Object.keys(imageUrls).length ? { designImageUrls: imageUrls } : {}),
                 error: null,
                 ...(spawn?.child ? { childIssues: [spawn.child] } : {}),
                 ...(spawn?.error ? { spawnError: spawn.error } : {}),
-              });
+              }));
               maybeWriteIssueStatus(autoRun, worktree, "review");
-              persistStateSoon();
               return autoRun;
             }
           }
@@ -712,14 +777,13 @@ export function createAutoRunService({
             const summary = brief || extractRunSummary(invocation) || "Prototype spike complete — see the findings.";
             maybePostIssueReport(autoRun, worktree, summary);
             const spawn = await maybeSpawnChildIssue(autoRun, worktree, summary);
-            setAutoRunStatus(autoRun, "report_posted", {
+            runTx(() => setAutoRunStatus(autoRun, "report_posted", {
               report: summary,
               error: null,
               ...(spawn?.child ? { childIssues: [spawn.child] } : {}),
               ...(spawn?.error ? { spawnError: spawn.error } : {}),
-            });
+            }));
             maybeWriteIssueStatus(autoRun, worktree, "review");
-            persistStateSoon();
             return autoRun;
           }
         }
@@ -774,26 +838,26 @@ export function createAutoRunService({
                 repair = null;
               }
               if (repair) {
-                autoRun.invocationId = repair.id;
-                setAutoRunStatus(autoRun, autoRunStatusForInvocation(repair), { error: null });
-                appendEvent({
-                  invocationId: repair.id,
-                  type: "auto_run_repair_started",
-                  level: "info",
-                  message: `Auto-run ${autoRun.id} self-repair attempt ${autoRun.repairAttempts}/${maxRepairs} after a failed check.`,
-                  data: { autoRunId: autoRun.id, attempt: autoRun.repairAttempts },
+                return runTx(() => {
+                  autoRun.invocationId = repair.id;
+                  setAutoRunStatus(autoRun, autoRunStatusForInvocation(repair), { error: null });
+                  appendEvent({
+                    invocationId: repair.id,
+                    type: "auto_run_repair_started",
+                    level: "info",
+                    message: `Auto-run ${autoRun.id} self-repair attempt ${autoRun.repairAttempts}/${maxRepairs} after a failed check.`,
+                    data: { autoRunId: autoRun.id, attempt: autoRun.repairAttempts },
+                  });
+                  startInvocationIfAllowed(repair, agent);
+                  return autoRun;
                 });
-                startInvocationIfAllowed(repair, agent);
-                persistStateSoon();
-                return autoRun;
               }
             }
           }
           const blockReason = repairRefusal
             ? `Self-repair paused: ${repairRefusal}. ${verification.summary ?? ""}`.trim()
             : verification.summary ?? "Verification failed.";
-          setAutoRunStatus(autoRun, "blocked", { error: blockReason });
-          persistStateSoon();
+          runTx(() => setAutoRunStatus(autoRun, "blocked", { error: blockReason }));
           return autoRun;
         }
         // Acceptance judge (Phase B): did the diff solve THIS issue — the quality
@@ -811,9 +875,8 @@ export function createAutoRunService({
             : { solved: null, confidence: null, summary: "Judge errored — verdict unavailable.", gaps: [] };
           if (judgment && judgment.solved === false) {
             const gaps = judgment.gaps.length ? ` Gaps: ${judgment.gaps.join("; ")}` : "";
-            setAutoRunStatus(autoRun, "blocked", { error: `Acceptance judge: the change does not solve the issue.${gaps}` });
+            runTx(() => setAutoRunStatus(autoRun, "blocked", { error: `Acceptance judge: the change does not solve the issue.${gaps}` }));
             maybeWriteIssueStatus(autoRun, worktree, "review");
-            persistStateSoon();
             return autoRun;
           }
         }
@@ -838,23 +901,21 @@ export function createAutoRunService({
           const changeFailureRef = extractChangeFailureRef(autoRun.issueBody);
           const prBody = verificationEvidenceBody(verification, judgment) + (changeFailureRef ? `\n\nChange-failure: #${changeFailureRef}\n` : "");
           const pr = await createWorktreePr(autoRun.worktreeId, { body: prBody });
-          setAutoRunStatus(autoRun, "pr_open", { prNumber: pr?.number ?? null, prUrl: pr?.url ?? null, error: null, ...(screenshots.length ? { screenshots } : {}) });
+          runTx(() => setAutoRunStatus(autoRun, "pr_open", { prNumber: pr?.number ?? null, prUrl: pr?.url ?? null, error: null, ...(screenshots.length ? { screenshots } : {}) }));
           maybeWriteIssueStatus(autoRun, worktree, "review");
         } catch (error) {
-          setAutoRunStatus(autoRun, "failed", { error: String(error?.message ?? error) });
+          runTx(() => setAutoRunStatus(autoRun, "failed", { error: String(error?.message ?? error) }));
         }
       } else {
         // failed | timed_out | cancelled | rejected
-        setAutoRunStatus(autoRun, "failed", { error: `Agent run ${invocation.status}.` });
+        runTx(() => setAutoRunStatus(autoRun, "failed", { error: `Agent run ${invocation.status}.` }));
       }
-      persistStateSoon();
       return autoRun;
     } catch (error) {
       // Never let a reaction error escape the fire-and-forget caller, but do not
       // leave the operator-facing run stuck in "running" with no explanation.
       if (autoRun && !settledStatuses.has(autoRun.status)) {
-        setAutoRunStatus(autoRun, "failed", { error: `Auto-run reaction failed: ${String(error?.message ?? error)}` });
-        persistStateSoon();
+        runTx(() => setAutoRunStatus(autoRun, "failed", { error: `Auto-run reaction failed: ${String(error?.message ?? error)}` }));
         return autoRun;
       }
       return null;
@@ -866,9 +927,10 @@ export function createAutoRunService({
   function syncAutoRunOnApproval(invocation) {
     const autoRun = state.autoRuns.find((item) => item.invocationId === invocation?.id);
     if (!autoRun || autoRun.status !== "awaiting_approval") return null;
-    setAutoRunStatus(autoRun, "running");
-    persistStateSoon();
-    return autoRun;
+    return runTx(() => {
+      setAutoRunStatus(autoRun, "running");
+      return autoRun;
+    });
   }
 
   // Reflect a DENIED approval: the human rejected the run at the gate, so mark it
@@ -891,6 +953,7 @@ export function createAutoRunService({
       }
     }
     const kept = worktreeId && state.worktrees.some((w) => w.id === worktreeId);
+    return runTx(() => {
     setAutoRunStatus(autoRun, "failed", {
       error: kept
         ? "Local approval denied. The worktree was kept because it holds un-pushed work."
@@ -915,8 +978,8 @@ export function createAutoRunService({
         data: { autoRunId: autoRun.id, worktreeId, worktreeKept: Boolean(kept) },
       },
     });
-    persistStateSoon();
     return autoRun;
+    });
   }
 
   // Retry a failed/blocked auto-run on its existing worktree: rebuild the role
@@ -945,9 +1008,10 @@ export function createAutoRunService({
         }
       }
     }
-    setAutoRunStatus(autoRun, "cancelled", { error: null });
-    persistStateSoon();
-    return autoRun;
+    return runTx(() => {
+      setAutoRunStatus(autoRun, "cancelled", { error: null });
+      return autoRun;
+    });
   }
 
   async function retryAutoRun(autoRunId, { actor } = {}) {
@@ -977,34 +1041,50 @@ export function createAutoRunService({
       });
       startInvocationIfAllowed(invocation, agent);
     } catch (error) {
-      setAutoRunStatus(autoRun, "failed", { error: `Retry could not start the agent run: ${String(error?.message ?? error)}` });
-      persistStateSoon();
+      runTx(() => {
+        setAutoRunStatus(autoRun, "failed", { error: `Retry could not start the agent run: ${String(error?.message ?? error)}` });
+      });
       throw error;
     }
-    autoRun.invocationId = invocation.id;
-    // Fresh repair budget for the retry — otherwise a run that exhausted its
-    // repairs stays at the cap and the retried attempt gets zero self-repair.
-    autoRun.repairAttempts = 0;
-    setAutoRunStatus(autoRun, autoRunStatusForInvocation(invocation), { error: null, prNumber: null, prUrl: null });
-    appendEvent({
-      invocationId: invocation.id,
-      type: "auto_run_retried",
-      level: "info",
-      message: `Auto-run ${autoRun.id} retried on its existing worktree.`,
-      data: { autoRunId: autoRun.id, worktreeId: worktree.id, invocationId: invocation.id, status: autoRun.status },
+    return runTx(() => {
+      autoRun.invocationId = invocation.id;
+      // Fresh repair budget for the retry — otherwise a run that exhausted its
+      // repairs stays at the cap and the retried attempt gets zero self-repair.
+      autoRun.repairAttempts = 0;
+      setAutoRunStatus(autoRun, autoRunStatusForInvocation(invocation), { error: null, prNumber: null, prUrl: null });
+      appendEvent({
+        invocationId: invocation.id,
+        type: "auto_run_retried",
+        level: "info",
+        message: `Auto-run ${autoRun.id} retried on its existing worktree.`,
+        data: { autoRunId: autoRun.id, worktreeId: worktree.id, invocationId: invocation.id, status: autoRun.status },
+      });
+      return { autoRun, invocation };
     });
-    persistStateSoon();
-    return { autoRun, invocation };
   }
 
   // Human-triggered PR merge from the console. The merge stays human — this only
   // runs when a person clicks Merge on a pr_open run; it is never automatic.
   // Guards: the run must have an open PR; a MERGED run is a no-op. On success
   // the record flips to prState=MERGED (the routing eval then counts it merged).
+  // #1151: the uniform "someone already decided this" shape returned by every
+  // gate's idempotent branch — the second operator learns who and when instead
+  // of a silent success (or worse, a silent overwrite).
+  function alreadyDecidedRef(mark) {
+    return { decidedBy: mark?.by ?? mark?.decidedBy ?? null, decidedAt: mark?.at ?? mark?.decidedAt ?? null, status: mark?.status ?? null };
+  }
+
   async function mergeAutoRunPr(autoRunId, { actor } = {}) {
     const autoRun = state.autoRuns.find((item) => item.id === autoRunId);
     if (!autoRun) throw new Error("Auto-run not found.");
-    if (autoRun.prState === "MERGED") return { ok: true, alreadyMerged: true, prNumber: autoRun.prNumber };
+    if (autoRun.prState === "MERGED") {
+      return {
+        ok: true,
+        alreadyMerged: true,
+        alreadyDecided: { decidedBy: autoRun.prMergedBy ?? null, decidedAt: autoRun.prMergedAt ?? null, status: "merged" },
+        prNumber: autoRun.prNumber,
+      };
+    }
     if (autoRun.status !== "pr_open" || !autoRun.prNumber) {
       throw new Error("Only an auto-run with an open PR can be merged.");
     }
@@ -1040,16 +1120,21 @@ export function createAutoRunService({
     if (!result?.ok) {
       throw new Error(result?.error || "gh pr merge failed.");
     }
-    autoRun.prState = "MERGED";
-    autoRun.prStateCheckedAt = now();
-    appendEvent({
-      invocationId: autoRun.invocationId,
-      type: "auto_run_pr_merged",
-      level: "info",
-      message: `Auto-run ${autoRun.id} PR #${autoRun.prNumber} merged by ${actor?.userId ?? "usr_local"}.`,
-      data: { autoRunId: autoRun.id, prNumber: autoRun.prNumber, method: result.method ?? "squash" },
+    runTx(() => {
+      autoRun.prState = "MERGED";
+      autoRun.prStateCheckedAt = now();
+      // #1151: merge was the one autoRun gate whose settle recorded WHO only in
+      // the event log (500-row ring buffer) — stamp it on the record.
+      autoRun.prMergedBy = actor?.userId ?? "usr_local";
+      autoRun.prMergedAt = now();
+      appendEvent({
+        invocationId: autoRun.invocationId,
+        type: "auto_run_pr_merged",
+        level: "info",
+        message: `Auto-run ${autoRun.id} PR #${autoRun.prNumber} merged by ${actor?.userId ?? "usr_local"}.`,
+        data: { autoRunId: autoRun.id, prNumber: autoRun.prNumber, method: result.method ?? "squash" },
+      });
     });
-    persistStateSoon();
     // D1 deploy stage: fire the deploy asynchronously so the merge call returns
     // promptly; the deployment record + card update land when it finishes.
     void maybeDeployAfterMerge(autoRun);
@@ -1091,12 +1176,14 @@ export function createAutoRunService({
     // that leaves no trace reads as "deployed" to an operator. Emit an event +
     // medium alert so it is visible, then bail without recording a deployment.
     if (!outcome || typeof outcome.deployed !== "boolean") {
-      appendEvent({
-        invocationId: autoRun.invocationId,
-        type: "auto_run_deploy_infra_miss",
-        level: "warn",
-        message: `Auto-run ${autoRun.id} deploy of PR #${autoRun.prNumber} did not run to a result (infra miss: command missing, timed out, or ambiguous).`,
-        data: { autoRunId: autoRun.id, prNumber: autoRun.prNumber },
+      runTx(() => {
+        appendEvent({
+          invocationId: autoRun.invocationId,
+          type: "auto_run_deploy_infra_miss",
+          level: "warn",
+          message: `Auto-run ${autoRun.id} deploy of PR #${autoRun.prNumber} did not run to a result (infra miss: command missing, timed out, or ambiguous).`,
+          data: { autoRunId: autoRun.id, prNumber: autoRun.prNumber },
+        });
       });
       void sendAlert?.({
         kind: "deploy_infra_miss",
@@ -1115,17 +1202,19 @@ export function createAutoRunService({
       summary: outcome.summary || null,
       at: now(),
     };
-    state.deployments = [record, ...(state.deployments ?? [])].slice(0, 500);
-    autoRun.deployment = { status: record.status, at: record.at, summary: record.summary, prNumber: record.prNumber };
-    appendEvent({
-      invocationId: autoRun.invocationId,
-      type: outcome.deployed ? "auto_run_deployed" : "auto_run_deploy_failed",
-      level: outcome.deployed ? "info" : "warn",
-      message: `Auto-run ${autoRun.id} deploy of PR #${autoRun.prNumber} ${outcome.deployed ? "succeeded" : "FAILED"}.`,
-      // Carry the failure reason on the timeline event itself (M3), so an operator
-      // reading the run's events sees WHY it failed without cross-querying the
-      // deployments collection or the alert channel.
-      data: { autoRunId: autoRun.id, prNumber: autoRun.prNumber, deployed: outcome.deployed, summary: record.summary ?? null },
+    runTx(() => {
+      state.deployments = [record, ...(state.deployments ?? [])].slice(0, 500);
+      autoRun.deployment = { status: record.status, at: record.at, summary: record.summary, prNumber: record.prNumber };
+      appendEvent({
+        invocationId: autoRun.invocationId,
+        type: outcome.deployed ? "auto_run_deployed" : "auto_run_deploy_failed",
+        level: outcome.deployed ? "info" : "warn",
+        message: `Auto-run ${autoRun.id} deploy of PR #${autoRun.prNumber} ${outcome.deployed ? "succeeded" : "FAILED"}.`,
+        // Carry the failure reason on the timeline event itself (M3), so an operator
+        // reading the run's events sees WHY it failed without cross-querying the
+        // deployments collection or the alert channel.
+        data: { autoRunId: autoRun.id, prNumber: autoRun.prNumber, deployed: outcome.deployed, summary: record.summary ?? null },
+      });
     });
     if (!outcome.deployed) {
       void sendAlert?.({
@@ -1145,7 +1234,6 @@ export function createAutoRunService({
       // PR carries the Change-failure: #N marker (propagated from the issue body).
       await maybeRemediateDeploy(autoRun, project, { summary: record.summary, rolledBack: Boolean(rolledBack) });
     }
-    persistStateSoon();
     return record;
     } finally {
       autoRun.deployInFlight = false;
@@ -1188,12 +1276,14 @@ export function createAutoRunService({
           : remediationError != null
             ? String(remediationError)
             : "the issue could not be created";
-      appendEvent({
-        invocationId: autoRun.invocationId,
-        type: "auto_run_remediation_failed",
-        level: "warn",
-        message: `Auto-run ${autoRun.id}: could not file the remediation issue for the failed deploy of PR #${culprit} — file the fix-forward manually (${detail}).`,
-        data: { autoRunId: autoRun.id, prNumber: culprit },
+      runTx(() => {
+        appendEvent({
+          invocationId: autoRun.invocationId,
+          type: "auto_run_remediation_failed",
+          level: "warn",
+          message: `Auto-run ${autoRun.id}: could not file the remediation issue for the failed deploy of PR #${culprit} — file the fix-forward manually (${detail}).`,
+          data: { autoRunId: autoRun.id, prNumber: culprit },
+        });
       });
       void sendAlert?.({
         kind: "remediation_failed",
@@ -1203,13 +1293,15 @@ export function createAutoRunService({
       });
       return null;
     }
-    autoRun.remediationIssue = { number: created.number, url: created.url ?? null, culpritPr: culprit };
-    appendEvent({
-      invocationId: autoRun.invocationId,
-      type: "auto_run_remediation_filed",
-      level: "warn",
-      message: `Auto-run ${autoRun.id}: filed remediation issue #${created.number} for the failed deploy of PR #${culprit}.`,
-      data: { autoRunId: autoRun.id, prNumber: culprit, remediationIssue: created.number },
+    runTx(() => {
+      autoRun.remediationIssue = { number: created.number, url: created.url ?? null, culpritPr: culprit };
+      appendEvent({
+        invocationId: autoRun.invocationId,
+        type: "auto_run_remediation_filed",
+        level: "warn",
+        message: `Auto-run ${autoRun.id}: filed remediation issue #${created.number} for the failed deploy of PR #${culprit}.`,
+        data: { autoRunId: autoRun.id, prNumber: culprit, remediationIssue: created.number },
+      });
     });
     return created;
   }
@@ -1236,12 +1328,14 @@ export function createAutoRunService({
           : rollbackError != null
             ? String(rollbackError)
             : "the rollback command reported it did not roll back";
-      appendEvent({
-        invocationId: autoRun.invocationId,
-        type: "auto_run_rollback_failed",
-        level: "error",
-        message: `Auto-run ${autoRun.id}: auto-rollback of the failed deploy of PR #${autoRun.prNumber} did NOT succeed — the bad deploy may still be live (${detail}).`,
-        data: { autoRunId: autoRun.id, prNumber: autoRun.prNumber ?? null },
+      runTx(() => {
+        appendEvent({
+          invocationId: autoRun.invocationId,
+          type: "auto_run_rollback_failed",
+          level: "error",
+          message: `Auto-run ${autoRun.id}: auto-rollback of the failed deploy of PR #${autoRun.prNumber} did NOT succeed — the bad deploy may still be live (${detail}).`,
+          data: { autoRunId: autoRun.id, prNumber: autoRun.prNumber ?? null },
+        });
       });
       void sendAlert?.({
         kind: "rollback_failed",
@@ -1260,14 +1354,16 @@ export function createAutoRunService({
       summary: rb.summary || `Rolled back after the failed deploy of PR #${autoRun.prNumber}.`,
       at: now(),
     };
-    state.deployments = [rbRecord, ...(state.deployments ?? [])].slice(0, 500);
-    autoRun.deployment = { status: "rolled_back", at: rbRecord.at, summary: rbRecord.summary, prNumber: rbRecord.prNumber };
-    appendEvent({
-      invocationId: autoRun.invocationId,
-      type: "auto_run_rolled_back",
-      level: "warn",
-      message: `Auto-run ${autoRun.id}: auto-rolled back the failed deploy of PR #${autoRun.prNumber}.`,
-      data: { autoRunId: autoRun.id, prNumber: autoRun.prNumber },
+    runTx(() => {
+      state.deployments = [rbRecord, ...(state.deployments ?? [])].slice(0, 500);
+      autoRun.deployment = { status: "rolled_back", at: rbRecord.at, summary: rbRecord.summary, prNumber: rbRecord.prNumber };
+      appendEvent({
+        invocationId: autoRun.invocationId,
+        type: "auto_run_rolled_back",
+        level: "warn",
+        message: `Auto-run ${autoRun.id}: auto-rolled back the failed deploy of PR #${autoRun.prNumber}.`,
+        data: { autoRunId: autoRun.id, prNumber: autoRun.prNumber },
+      });
     });
     void sendAlert?.({
       kind: "deploy_rolled_back",
@@ -1292,21 +1388,28 @@ export function createAutoRunService({
       // Already approved, or a near-simultaneous approve is mid-flight — short
       // circuit so two POSTs (double-click / CSRF burst) don't spawn two child
       // issues. (audit finding: approveDesign TOCTOU)
-      return { ok: true, alreadyApproved: true, childIssues: autoRun.childIssues ?? [] };
+      return { ok: true, alreadyApproved: true, alreadyDecided: alreadyDecidedRef(autoRun.designApproval), childIssues: autoRun.childIssues ?? [] };
+    }
+    // #1151: a REJECTED design is settled too — approve doesn't change the run's
+    // status (report_posted), so without this a later approve would overwrite the
+    // recorded rejection.
+    if (autoRun.designApproval) {
+      return { ok: true, alreadyDecided: alreadyDecidedRef(autoRun.designApproval) };
     }
     if (Array.isArray(autoRun.childIssues) && autoRun.childIssues.length > 0) {
       // The implementation issue already exists (auto-spawned at report time);
       // the approval is the human sign-off on record.
-      autoRun.designApproval = { status: "approved", by, at: now() };
-      appendEvent({
-        invocationId: autoRun.invocationId,
-        type: "auto_run_design_approved",
-        level: "info",
-        message: `Auto-run ${autoRun.id} design approved by ${by} (implementation issue already spawned).`,
-        data: { autoRunId: autoRun.id, childIssues: autoRun.childIssues },
+      return runTx(() => {
+        autoRun.designApproval = { status: "approved", by, at: now() };
+        appendEvent({
+          invocationId: autoRun.invocationId,
+          type: "auto_run_design_approved",
+          level: "info",
+          message: `Auto-run ${autoRun.id} design approved by ${by} (implementation issue already spawned).`,
+          data: { autoRunId: autoRun.id, childIssues: autoRun.childIssues },
+        });
+        return { ok: true, childIssues: autoRun.childIssues };
       });
-      persistStateSoon();
-      return { ok: true, childIssues: autoRun.childIssues };
     }
     if (autoRun.link?.type !== "issue" || !Number.isFinite(autoRun.link?.number)) {
       throw new Error("The design run has no linked issue to spawn an implementation issue from.");
@@ -1324,50 +1427,58 @@ export function createAutoRunService({
     ].join("\n");
     const child = await spawnChildIssueDirect({ parentLink: autoRun.link, design, repoPath });
     if (!child || !Number.isFinite(child.number)) throw new Error("Child issue creation failed.");
-    autoRun.childIssues = [{ number: child.number, url: child.url ?? null }];
-    autoRun.designApproval = { status: "approved", by, at: now() };
-    appendEvent({
-      invocationId: autoRun.invocationId,
-      type: "auto_run_design_approved",
-      level: "info",
-      message: `Auto-run ${autoRun.id} design approved by ${by}; implementation issue #${child.number} spawned.`,
-      data: { autoRunId: autoRun.id, childIssue: child.number, url: child.url ?? null },
+    return runTx(() => {
+      autoRun.childIssues = [{ number: child.number, url: child.url ?? null }];
+      autoRun.designApproval = { status: "approved", by, at: now() };
+      appendEvent({
+        invocationId: autoRun.invocationId,
+        type: "auto_run_design_approved",
+        level: "info",
+        message: `Auto-run ${autoRun.id} design approved by ${by}; implementation issue #${child.number} spawned.`,
+        data: { autoRunId: autoRun.id, childIssue: child.number, url: child.url ?? null },
+      });
+      return { ok: true, childIssues: autoRun.childIssues };
     });
-    persistStateSoon();
-    return { ok: true, childIssues: autoRun.childIssues };
   }
 
   async function rejectDesign(autoRunId, { actor, feedback } = {}) {
     const autoRun = state.autoRuns.find((item) => item.id === autoRunId);
     if (!autoRun) throw new Error("Auto-run not found.");
     if ((autoRun.decision?.path ?? null) !== "design") throw new Error("Only a design run's report can be rejected.");
+    // #1151: approve leaves the run at report_posted, so the old status guard let
+    // a reject silently OVERWRITE a recorded approval (and a second reject repeat
+    // its side effects). Any existing decision settles this gate.
+    if (autoRun.designApproval) {
+      return { ok: true, alreadyDecided: alreadyDecidedRef(autoRun.designApproval) };
+    }
     if (autoRun.status !== "report_posted") throw new Error("Only a posted design report can be rejected.");
     const by = actor?.userId ?? "usr_local";
     const note = String(feedback ?? "").trim().slice(0, 2000);
-    autoRun.designApproval = { status: "rejected", by, at: now(), feedback: note || null };
     const worktree = state.worktrees.find((item) => item.id === autoRun.worktreeId) ?? null;
-    maybePostIssueReport(autoRun, worktree, `Design not approved by ${by}.${note ? `\n\nRequested changes:\n${note}` : ""}`);
-    refuse({
-      subject: { kind: "invocation", id: autoRun.invocationId },
-      requester: { kind: "automation", id: autoRun.id },
-      category: "human",
-      code: "deliverable_rejected",
-      decidedBy: { kind: "user", id: by },
-      summary: `Auto-run ${autoRun.id} design rejected by ${by}.`,
-      evidence: { autoRunId: autoRun.id, feedback: note || null },
-      remedy: note || "Revise the design to address the reviewer's requested changes and re-post.",
-      retryAfter: null,
-      appealTo: "device_owner",
-      event: {
-        invocationId: autoRun.invocationId,
-        type: "auto_run_design_rejected",
-        level: "info",
-        message: `Auto-run ${autoRun.id} design rejected by ${by}.`,
-        data: { autoRunId: autoRun.id, feedback: note || null },
-      },
+    return runTx(() => {
+      autoRun.designApproval = { status: "rejected", by, at: now(), feedback: note || null };
+      maybePostIssueReport(autoRun, worktree, `Design not approved by ${by}.${note ? `\n\nRequested changes:\n${note}` : ""}`);
+      refuse({
+        subject: { kind: "invocation", id: autoRun.invocationId },
+        requester: { kind: "automation", id: autoRun.id },
+        category: "human",
+        code: "deliverable_rejected",
+        decidedBy: { kind: "user", id: by },
+        summary: `Auto-run ${autoRun.id} design rejected by ${by}.`,
+        evidence: { autoRunId: autoRun.id, feedback: note || null },
+        remedy: note || "Revise the design to address the reviewer's requested changes and re-post.",
+        retryAfter: null,
+        appealTo: "device_owner",
+        event: {
+          invocationId: autoRun.invocationId,
+          type: "auto_run_design_rejected",
+          level: "info",
+          message: `Auto-run ${autoRun.id} design rejected by ${by}.`,
+          data: { autoRunId: autoRun.id, feedback: note || null },
+        },
+      });
+      return { ok: true };
     });
-    persistStateSoon();
-    return { ok: true };
   }
 
   // Epic decomposition (Slice 3): the human approves a proposed plan → spawn the N
@@ -1383,7 +1494,12 @@ export function createAutoRunService({
     // or a near-simultaneous approving) short-circuits instead of erroring — two
     // POSTs (double-click / CSRF burst) must never double-spawn. (mirrors approveDesign)
     if (autoRun.decompositionApproval?.status === "approved" || autoRun.decompositionApproval?.status === "approving") {
-      return { ok: true, alreadyApproved: true, childIssues: autoRun.childIssues ?? [] };
+      return { ok: true, alreadyApproved: true, alreadyDecided: alreadyDecidedRef(autoRun.decompositionApproval), childIssues: autoRun.childIssues ?? [] };
+    }
+    // #1151: a rejected plan is settled — approving it afterwards would overwrite
+    // the recorded rejection. (`partial` deliberately passes: re-approve = retry.)
+    if (autoRun.decompositionApproval?.status === "rejected") {
+      return { ok: true, alreadyDecided: alreadyDecidedRef(autoRun.decompositionApproval) };
     }
     if (autoRun.status !== "plan_proposed") throw new Error("Only a proposed plan can be approved.");
     const by = actor?.userId ?? "usr_local";
@@ -1414,67 +1530,76 @@ export function createAutoRunService({
         errors.push(`${spec.title}: ${String(error?.message ?? error).slice(0, 200)}`);
       }
     }
-    autoRun.childIssues = created;
     // Only a FULLY-created plan settles as `decomposed`. On any failure the run
     // stays `plan_proposed` with a retryable `partial` approval so a re-approve
     // creates the rest — the idempotency guard above lets `partial` through.
     const complete = errors.length === 0 && created.length === specs.length;
-    if (complete) {
-      autoRun.decompositionApproval = { status: "approved", by, at: now(), created: created.length, errors: [] };
-      setAutoRunStatus(autoRun, "decomposed", { error: null });
-    } else {
-      autoRun.decompositionApproval = { status: "partial", by, at: now(), created: created.length, errors };
-      setAutoRunStatus(autoRun, "plan_proposed", { error: `${errors.length} of ${specs.length} child issue(s) failed to create — approve again to retry the rest.` });
-    }
-    maybePostIssueReport(autoRun, worktree, [
-      `Decomposition approved by ${by} — created ${created.length}/${specs.length} child issue(s):`,
-      ...created.map((c) => `- #${c.number} ${c.title}`),
-      ...(errors.length ? ["", "Failed to create (approve again to retry):", ...errors.map((e) => `- ${e}`)] : []),
-      "",
-      "Label a child `auto` to start it (or run it manually) — children are never implemented automatically.",
-    ].join("\n"));
-    appendEvent({
-      invocationId: autoRun.invocationId,
-      type: complete ? "auto_run_decomposition_approved" : "auto_run_decomposition_partial",
-      level: complete ? "info" : "warn",
-      message: `Auto-run ${autoRun.id} decomposition approved by ${by}: ${created.length}/${specs.length} child issue(s) created${errors.length ? `, ${errors.length} failed` : ""}.`,
-      data: { autoRunId: autoRun.id, childIssues: created, errors },
+    return runTx(() => {
+      autoRun.childIssues = created;
+      if (complete) {
+        autoRun.decompositionApproval = { status: "approved", by, at: now(), created: created.length, errors: [] };
+        setAutoRunStatus(autoRun, "decomposed", { error: null });
+      } else {
+        autoRun.decompositionApproval = { status: "partial", by, at: now(), created: created.length, errors };
+        setAutoRunStatus(autoRun, "plan_proposed", { error: `${errors.length} of ${specs.length} child issue(s) failed to create — approve again to retry the rest.` });
+      }
+      maybePostIssueReport(autoRun, worktree, [
+        `Decomposition approved by ${by} — created ${created.length}/${specs.length} child issue(s):`,
+        ...created.map((c) => `- #${c.number} ${c.title}`),
+        ...(errors.length ? ["", "Failed to create (approve again to retry):", ...errors.map((e) => `- ${e}`)] : []),
+        "",
+        "Label a child `auto` to start it (or run it manually) — children are never implemented automatically.",
+      ].join("\n"));
+      appendEvent({
+        invocationId: autoRun.invocationId,
+        type: complete ? "auto_run_decomposition_approved" : "auto_run_decomposition_partial",
+        level: complete ? "info" : "warn",
+        message: `Auto-run ${autoRun.id} decomposition approved by ${by}: ${created.length}/${specs.length} child issue(s) created${errors.length ? `, ${errors.length} failed` : ""}.`,
+        data: { autoRunId: autoRun.id, childIssues: created, errors },
+      });
+      return { ok: true, childIssues: created, errors, complete };
     });
-    persistStateSoon();
-    return { ok: true, childIssues: created, errors, complete };
   }
 
   async function rejectDecomposition(autoRunId, { actor, feedback } = {}) {
     const autoRun = state.autoRuns.find((item) => item.id === autoRunId);
     if (!autoRun) throw new Error("Auto-run not found.");
     if ((autoRun.decision?.path ?? null) !== "decompose") throw new Error("Only a decomposition run's plan can be rejected.");
+    // #1151: reject had no idempotency guard — a rejected plan keeps status
+    // plan_proposed, so a second reject re-ran its side effects (duplicate issue
+    // comment + duplicate refusal), and a reject could land on an already
+    // approving/partial plan whose children exist. Any decision settles this gate.
+    if (autoRun.decompositionApproval) {
+      return { ok: true, alreadyDecided: alreadyDecidedRef(autoRun.decompositionApproval) };
+    }
     if (autoRun.status !== "plan_proposed") throw new Error("Only a proposed plan can be rejected.");
     const by = actor?.userId ?? "usr_local";
     const note = String(feedback ?? "").trim().slice(0, 2000);
-    autoRun.decompositionApproval = { status: "rejected", by, at: now(), feedback: note || null };
     const worktree = state.worktrees.find((item) => item.id === autoRun.worktreeId) ?? null;
-    maybePostIssueReport(autoRun, worktree, `Decomposition plan not approved by ${by}.${note ? `\n\nRequested changes:\n${note}` : ""}`);
-    refuse({
-      subject: { kind: "invocation", id: autoRun.invocationId },
-      requester: { kind: "automation", id: autoRun.id },
-      category: "human",
-      code: "deliverable_rejected",
-      decidedBy: { kind: "user", id: by },
-      summary: `Auto-run ${autoRun.id} decomposition rejected by ${by}.`,
-      evidence: { autoRunId: autoRun.id, feedback: note || null },
-      remedy: note || "Revise the decomposition plan to address the reviewer's requested changes and re-propose.",
-      retryAfter: null,
-      appealTo: "device_owner",
-      event: {
-        invocationId: autoRun.invocationId,
-        type: "auto_run_decomposition_rejected",
-        level: "info",
-        message: `Auto-run ${autoRun.id} decomposition rejected by ${by}.`,
-        data: { autoRunId: autoRun.id, feedback: note || null },
-      },
+    return runTx(() => {
+      autoRun.decompositionApproval = { status: "rejected", by, at: now(), feedback: note || null };
+      maybePostIssueReport(autoRun, worktree, `Decomposition plan not approved by ${by}.${note ? `\n\nRequested changes:\n${note}` : ""}`);
+      refuse({
+        subject: { kind: "invocation", id: autoRun.invocationId },
+        requester: { kind: "automation", id: autoRun.id },
+        category: "human",
+        code: "deliverable_rejected",
+        decidedBy: { kind: "user", id: by },
+        summary: `Auto-run ${autoRun.id} decomposition rejected by ${by}.`,
+        evidence: { autoRunId: autoRun.id, feedback: note || null },
+        remedy: note || "Revise the decomposition plan to address the reviewer's requested changes and re-propose.",
+        retryAfter: null,
+        appealTo: "device_owner",
+        event: {
+          invocationId: autoRun.invocationId,
+          type: "auto_run_decomposition_rejected",
+          level: "info",
+          message: `Auto-run ${autoRun.id} decomposition rejected by ${by}.`,
+          data: { autoRunId: autoRun.id, feedback: note || null },
+        },
+      });
+      return { ok: true };
     });
-    persistStateSoon();
-    return { ok: true };
   }
 
   // Risk-based merge (opt-in, default off): auto-merge low-risk PRs on the same
@@ -1492,6 +1617,11 @@ export function createAutoRunService({
     const autoRun = state.autoRuns.find((item) => item.id === autoRunId);
     if (!autoRun) throw new Error("Auto-run not found.");
     if ((autoRun.decision?.path ?? null) !== "clarify") throw new Error("Only a clarify run's questions can be answered.");
+    // #1151: answering leaves the run at needs_input, so a second answer would
+    // repeat the issue comment and overwrite the recorded answer. First answer wins.
+    if (autoRun.clarifyAnswer) {
+      return { ok: true, alreadyDecided: { decidedBy: autoRun.clarifyAnswer.by ?? null, decidedAt: autoRun.clarifyAnswer.at ?? null, status: "answered" } };
+    }
     if (autoRun.status !== "needs_input") throw new Error("Only a run awaiting input can be answered.");
     const text = String(answers ?? "").trim();
     if (!text) throw new Error("An answer is required.");
@@ -1505,17 +1635,18 @@ export function createAutoRunService({
       questions.length ? "" : null,
       text,
     ].filter((l) => l !== null).join("\n");
-    maybePostIssueReport(autoRun, worktree, body);
-    autoRun.clarifyAnswer = { by, at: now(), text: text.slice(0, 4000) };
-    appendEvent({
-      invocationId: autoRun.invocationId,
-      type: "auto_run_clarify_answered",
-      level: "info",
-      message: `Auto-run ${autoRun.id} clarify questions answered by ${by}.`,
-      data: { autoRunId: autoRun.id, issue: autoRun.link?.number ?? null },
+    return runTx(() => {
+      maybePostIssueReport(autoRun, worktree, body);
+      autoRun.clarifyAnswer = { by, at: now(), text: text.slice(0, 4000) };
+      appendEvent({
+        invocationId: autoRun.invocationId,
+        type: "auto_run_clarify_answered",
+        level: "info",
+        message: `Auto-run ${autoRun.id} clarify questions answered by ${by}.`,
+        data: { autoRunId: autoRun.id, issue: autoRun.link?.number ?? null },
+      });
+      return { ok: true };
     });
-    persistStateSoon();
-    return { ok: true };
   }
 
   const breakerOpen = () => {
@@ -1600,12 +1731,14 @@ export function createAutoRunService({
       try {
         await mergeAutoRunPr(autoRun.id, { actor: { userId: "usr_autorun_automerge" } });
         merged.push(autoRun.id);
-        appendEvent({
-          invocationId: autoRun.invocationId,
-          type: "auto_run_auto_merged",
-          level: "info",
-          message: `Auto-run ${autoRun.id} PR #${autoRun.prNumber} AUTO-merged (low risk).`,
-          data: { autoRunId: autoRun.id, prNumber: autoRun.prNumber, diffLines: autoRun.diffLines ?? null, link: autoRun.link },
+        runTx(() => {
+          appendEvent({
+            invocationId: autoRun.invocationId,
+            type: "auto_run_auto_merged",
+            level: "info",
+            message: `Auto-run ${autoRun.id} PR #${autoRun.prNumber} AUTO-merged (low risk).`,
+            data: { autoRunId: autoRun.id, prNumber: autoRun.prNumber, diffLines: autoRun.diffLines ?? null, link: autoRun.link },
+          });
         });
         void sendAlert?.({
           kind: "auto_merged",
@@ -1617,7 +1750,6 @@ export function createAutoRunService({
         /* merge refused (checks flipped, conflict, gate) → leave for a human */
       }
     }
-    if (merged.length) persistStateSoon();
     return { merged, evaluated: open.length };
   }
 
@@ -1649,7 +1781,7 @@ export function createAutoRunService({
       }
       // Orphaned by a restart: the invocation record is gone.
       if (run.invocationId && !inv) {
-        setAutoRunStatus(run, "failed", { error: "Run reaped: its invocation no longer exists (server restart)." });
+        runTx(() => setAutoRunStatus(run, "failed", { error: "Run reaped: its invocation no longer exists (server restart)." }));
         void sendAlert?.({ kind: "run_reaped", severity: "medium", message: `Auto-run ${run.id} reaped (orphaned invocation).`, data: { autoRunId: run.id, reason: "orphaned", link: run.link } });
         reaped += 1;
         continue;
@@ -1659,7 +1791,7 @@ export function createAutoRunService({
       const agent = run.agentId ? findAgent(run.agentId) : null;
       const deadlineMs = Math.max(maxIdleMs, Number(agent?.adapter?.timeoutSeconds ?? 0) * 1000 + REAP_MARGIN_MS);
       if (Number.isFinite(idleMs) && idleMs > deadlineMs) {
-        setAutoRunStatus(run, "failed", { error: `Run reaped: no progress for ${Math.round(idleMs / 1000)}s (stuck).` });
+        runTx(() => setAutoRunStatus(run, "failed", { error: `Run reaped: no progress for ${Math.round(idleMs / 1000)}s (stuck).` }));
         void sendAlert?.({ kind: "run_reaped", severity: "medium", message: `Auto-run ${run.id} reaped (stuck ${Math.round(idleMs / 1000)}s).`, data: { autoRunId: run.id, reason: "stuck", idleSeconds: Math.round(idleMs / 1000), link: run.link } });
         reaped += 1;
       }
@@ -1670,7 +1802,7 @@ export function createAutoRunService({
     let holdsReleased = 0;
     if (typeof reconcileBudgetReservations === "function") {
       const activeById = new Map((state.autoRuns ?? []).map((r) => [r.id, r]));
-      holdsReleased = reconcileBudgetReservations({
+      holdsReleased = runTx(() => reconcileBudgetReservations({
         isSettled: (autoRunId) => {
           const run = activeById.get(autoRunId);
           return !run || settledStatuses.has(run.status);
@@ -1682,9 +1814,8 @@ export function createAutoRunService({
           const inv = typeof findInvocation === "function" ? findInvocation(invocationId) : null;
           return !inv || isTerminal(inv.status);
         },
-      });
+      }));
     }
-    if (reaped > 0 || holdsReleased > 0) persistStateSoon();
     return { reaped, readvanced, holdsReleased };
   }
 

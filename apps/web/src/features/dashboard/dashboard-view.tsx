@@ -7,6 +7,7 @@ import { Field } from "@/components/common/field";
 import { FactList } from "@/components/common/fact-list";
 import { SectionHeading } from "@/components/common/section-heading";
 import { Transcript } from "@/features/invocations/transcript";
+import { RunTranscriptSection } from "@/features/invocations/run-transcript";
 import { DecisionAction } from "@/features/invocations/decision-action";
 import { GettingStartedCard } from "@/features/dashboard/getting-started-card";
 import { useConsoleState } from "@/data/use-console-state";
@@ -169,6 +170,10 @@ export function DashboardView({ surface = "overview" }: { surface?: DashboardSur
               </div>
             </div>
           ) : null}
+          {/* #1074/#1086: the rich per-run transcript (thinking / tool IN-OUT /
+              Markdown). While running it announces itself honestly; the fetch
+              only fires once the run is terminal. */}
+          <RunTranscriptSection invocationId={invocation?.id} terminal={Boolean(terminalStatus)} />
           <Transcript
             events={events}
             renderAction={(event) => <DecisionAction event={event} />}

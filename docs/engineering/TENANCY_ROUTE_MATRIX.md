@@ -85,6 +85,11 @@ Legend: ✅ guarded · ➖ N/A on this axis · 📌 decided (documented, no guar
 | terminal | POST `/api/bridge/terminal-events` | bridge | ➖ |
 | agents | POST `/api/agents`, `/api/bridge/register`, `/api/device/unlink` | device/agent | ➖ device/agent-scoped |
 | bridge | POST `/api/bridge/*` (next/complete/ack/events/…) | bridge | ➖ bridge credential |
+| channels | POST `/api/channels` | team (create) | ➖ creation stamps `ownerTeamId` from the actor |
+| channels | POST `/api/channels/:id/(enable\|disable)` | team | ✅ owner-team check inside the service (`findOwnChannel`, foreign → 404); enable additionally approval-gated |
+| channels | POST/DELETE `/api/channels/:id/identities[/:iid]` | team | ✅ same guard; mapped user must belong to the channel's team (cross-team mapping → 404) |
+| channels | GET `/api/channels[…]` | team | ✅ list/health/identities filtered to the actor's team; `buildPublicState` scopes channel child rows by channel visibility |
+| channels | POST `/api/channels/:id/allowlist` | team | ✅ same `findOwnChannel` guard; additionally approval-gated (`channel.allowlist` grant) |
 
 ## Resolved in the P1.2 pass
 

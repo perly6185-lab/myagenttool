@@ -303,6 +303,28 @@ test("invocation event detail is readable by its team and existence-hidden from 
   assert.deepEqual(foreign.body, { error: "invocation_not_found" });
 });
 
+test("decision soft-claim HTTP routes are wired through the composed runtime", async () => {
+  const path = "/api/pending-decisions/approval%3Aapr_http/claim";
+  const claimed = await call(path, { token: "tok_a", method: "POST" });
+  assert.equal(claimed.status, 201);
+  assert.equal(claimed.body.claim.decisionId, "approval:apr_http");
+  assert.equal(claimed.body.claim.claimedBy, "usr_a");
+
+  const foreignRelease = await call(
+    "/api/pending-decisions/approval%3Aapr_http/release",
+    { token: "tok_b", method: "POST" },
+  );
+  assert.equal(foreignRelease.status, 200);
+  assert.equal(foreignRelease.body.released, false, "only the holder may release the advisory marker");
+
+  const released = await call(
+    "/api/pending-decisions/approval%3Aapr_http/release",
+    { token: "tok_a", method: "POST" },
+  );
+  assert.equal(released.status, 200);
+  assert.equal(released.body.released, true);
+});
+
 test("write guard: team B cannot control team A's terminal session (404)", async () => {
   const beforeActions = (await call("/api/state", { token: "tok_a" })).body.terminalBridgeActions.length;
   const input = await call("/api/terminal/sessions/term_a/input", {

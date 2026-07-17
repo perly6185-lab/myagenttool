@@ -9,6 +9,7 @@ import { useConsoleState, useRefreshConsoleState } from "@/data/use-console-stat
 import { api, useAsyncAction } from "@/data/use-console-actions";
 import { Transcript } from "@/features/invocations/transcript";
 import type { WorktreeReview } from "@/lib/console-state";
+import { RunTranscriptSection, isTerminalRunStatus } from "@/features/invocations/run-transcript";
 
 // #128 Phase 4: run ONE task on 2+ agents and compare their transcripts side by side.
 // The server (createCompareRun / POST /api/compare-runs) already fans out, tracks the
@@ -155,6 +156,8 @@ export function CompareView() {
                   </CardHeader>
                   <CardContent className="min-h-0 flex-1 space-y-2 overflow-y-auto">
                     <Transcript events={invEvents} summary={inv.result?.summary ? { text: inv.result.summary, status: inv.status } : undefined} />
+                    {/* #1086: judge agents by their actual work, not just events. */}
+                    <RunTranscriptSection invocationId={inv.id} terminal={isTerminalRunStatus(inv.status)} defaultOpen={false} />
                     {inv.worktreeId ? (
                       <div className="flex flex-wrap items-center gap-1.5 rounded-md border border-border px-2 py-1 text-xs">
                         <span className="text-muted-foreground">Review:</span>

@@ -8,6 +8,7 @@ import { test } from "node:test";
 
 import {
   resolveStatusWritebackConfig,
+  runIssueAssigneeEdit,
   runIssueBodyFetch,
   runIssueComment,
   runIssueStatusTransition,
@@ -193,4 +194,28 @@ test("runIssueStatusTransition skips an unknown status without calling gh", asyn
   const result = await runIssueStatusTransition({ cwd: "/repo", issueNumber: 1, to: "done", gh });
   assert.equal(result.skipped, true);
   assert.equal(called, false);
+});
+
+// #1150: the assignee mirror — exact gh args for add/remove, and a gh failure
+// returns a structured result instead of throwing (the claim must never fail
+// because the mirror did).
+test("runIssueAssigneeEdit adds and removes @me, and never throws on gh failure", async () => {
+  const calls = [];
+  const gh = async (args, cwd) => calls.push({ args, cwd });
+
+  const added = await runIssueAssigneeEdit({ cwd: "/repo", issueNumber: 42, action: "add", gh });
+  assert.equal(added.ok, true);
+  assert.deepEqual(calls[0].args, ["issue", "edit", "42", "--add-assignee", "@me"]);
+  assert.equal(calls[0].cwd, "/repo");
+
+  const removed = await runIssueAssigneeEdit({ cwd: "/repo", issueNumber: 42, action: "remove", gh });
+  assert.equal(removed.ok, true);
+  assert.deepEqual(calls[1].args, ["issue", "edit", "42", "--remove-assignee", "@me"]);
+
+  const failing = async () => {
+    throw Object.assign(new Error("boom"), { stderr: "gh: not authed" });
+  };
+  const failed = await runIssueAssigneeEdit({ cwd: "/repo", issueNumber: 42, gh: failing });
+  assert.equal(failed.ok, false);
+  assert.match(failed.error, /not authed/);
 });

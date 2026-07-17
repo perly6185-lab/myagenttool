@@ -3,6 +3,7 @@ import { Badge } from "@/components/ui/badge";
 import { EmptyState } from "@/components/common/empty-state";
 import { useConsoleState } from "@/data/use-console-state";
 import { readableAudit, readableLifecycleAudit } from "@/lib/readable-labels";
+import { ObservabilityDeletionCard } from "./observability-deletion-card";
 
 export function AuditView() {
   const { data: state } = useConsoleState();
@@ -10,8 +11,18 @@ export function AuditView() {
   const lifecycle = state?.lifecycleAuditRecords ?? [];
   const policies = state?.policyDecisionRecords ?? [];
 
+  // Pick-from-list subjects for the deletion card, per scope. Empty lists fall
+  // back to a free-text id input in the card.
+  const deletionSubjects = {
+    user: (state?.users ?? []).map((user) => ({ id: user.id, label: user.name ?? user.id })),
+    team: (state?.teams ?? []).map((team) => ({ id: team.id, label: team.name ?? team.id })),
+    device: (state?.devices ?? []).map((device) => ({ id: device.id, label: device.name ?? device.id })),
+  };
+
   return (
-    <div className="grid gap-5 lg:grid-cols-2">
+    <div className="space-y-5">
+      <ObservabilityDeletionCard subjects={deletionSubjects} />
+      <div className="grid gap-5 lg:grid-cols-2">
       <Card>
         <CardHeader>
           <CardTitle>Invocation audit</CardTitle>
@@ -88,6 +99,7 @@ export function AuditView() {
             )}
           </CardContent>
         </Card>
+      </div>
       </div>
     </div>
   );

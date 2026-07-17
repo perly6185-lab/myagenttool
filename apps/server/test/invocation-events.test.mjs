@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -368,6 +368,34 @@ test("restart never reissues an event id already durable in a shard when the sta
 
     // Let the restarted runtime drain its debounce timer before cleanup.
     await new Promise((resolve) => setTimeout(resolve, 40));
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("startup refuses to allocate ids when the invocation-event archive high-water is unreadable", () => {
+  const root = mkdtempSync(join(tmpdir(), "invocation-history-unreadable-floor-"));
+  const stateStorePath = join(root, "state", "snapshot.json");
+  const archiveDir = join(root, "state", "archive");
+  mkdirSync(archiveDir, { recursive: true });
+  writeFileSync(join(archiveDir, "events-by-invocation"), "not a directory\n");
+  try {
+    const created = createServerState({ defaultProjectPath: root, now: monotonicClock() });
+    assert.throws(
+      () => createServerRuntimeServices({
+        namespace: "test",
+        protocolVersion: "0.0.0",
+        state: created.state,
+        defaultProject: created.defaultProject,
+        defaultProjectPath: root,
+        persistenceEnabled: true,
+        stateStorePath,
+        stateSchemaVersion: 1,
+        dispatchLeaseMs: 30_000,
+        now: monotonicClock(),
+      }),
+      /Cannot establish invocation event id high-water/,
+    );
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

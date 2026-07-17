@@ -54,6 +54,26 @@ test("rejects invalid MCP config with the slice's plain-language error", () => {
   assert.throws(() => svc.registerAgent({ type: "grpc" }), /cli, http, mcp, a2a, and container/);
 });
 
+// #1185: the provider is the only positive evidence of WHICH external service an
+// agent fronts. Without it, discovery could only count candidates, and a lone
+// wrong-provider agent was wired by default (app_gmail -> a NetEase mailbox).
+test("carries the declared provider into state, normalized", () => {
+  const { svc } = service();
+  const agent = svc.registerAgent({ type: "mcp", transport: "stdio", command: "mail", provider: "  Google  " });
+  assert.equal(agent.provider, "google", "trimmed and lowercased so comparison is exact");
+
+  const undeclared = svc.registerAgent({ type: "mcp", transport: "stdio", command: "mail" });
+  assert.equal(undeclared.provider, null, "undeclared is null — a match for nobody, not for everybody");
+});
+
+test("rejects a malformed provider instead of silently dropping it", () => {
+  const { svc } = service();
+  // Dropping to null would leave an agent the operator BELIEVES is discoverable
+  // but which never matches — a confusing failure far from its cause.
+  assert.throws(() => svc.registerAgent({ type: "mcp", transport: "stdio", command: "mail", provider: "not a slug!" }), /must be a slug/);
+  assert.throws(() => svc.registerAgent({ type: "mcp", transport: "stdio", command: "mail", provider: "" }), /must be a slug/);
+});
+
 test("registers an A2A agent: client runs on the bridge, adapter validated by the slice", () => {
   const { svc } = service();
   const agent = svc.registerAgent({ type: "a2a", name: "Remote", agentUrl: "https://agent.example/", allowedSkills: ["echo"] });

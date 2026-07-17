@@ -6,6 +6,8 @@
 // lineage — an inspectable artifact that a later, approval-bound apply (Phase 4)
 // consumes by invocation id. This is write-ADJACENT but never write-CAPABLE.
 
+import { isGovernedWrapperAgent } from "./governed-agent.mjs";
+
 export const CLAUDE_PROPOSE_TOOL_CONTRACT = {
   name: "claude.propose.patch",
   version: "1",
@@ -87,29 +89,11 @@ export function createClaudeProposeAgentRegistration({
 }
 
 export function isGovernedClaudeProposeAgent(agent) {
-  if (!agent) {
-    return false;
-  }
-  const hasId = agent.id === "agt_claude_propose_patch";
-  const hasCliAdapter = agent.adapter?.type === "cli";
-  const hasNodeCommand = String(agent.adapter?.command ?? "") === "node";
-  const hasPlainResultOutput = agent.adapter?.outputFormat === "plain_result";
-  const hasToolContract = agent.toolContract?.name === CLAUDE_PROPOSE_TOOL_CONTRACT.name;
-  const hasProposalCapability = (agent.capabilities ?? []).some((capability) => capability?.name === "code_proposal");
-  const adapterArgs = Array.isArray(agent.adapter?.args) ? agent.adapter.args.map(String) : [];
-  const fixedWrapperArgs = isExactGovernedProposeWrapperArgs(adapterArgs, "claude-review-wrapper.mjs");
-  return hasId && hasCliAdapter && hasNodeCommand && hasPlainResultOutput && hasToolContract && hasProposalCapability && fixedWrapperArgs;
-}
-
-function isExactGovernedProposeWrapperArgs(args, wrapperName) {
-  if (args.length !== 3) {
-    return false;
-  }
-  // Same canonical-path guard as the review/explain agents: match the full
-  // trailing repo path segment, never a bare basename, so a forged registration
-  // cannot point the governed facade at an attacker-controlled script. The mode is
-  // hardcoded to propose-patch.
-  return args[0].replaceAll("\\", "/").endsWith(`tools/agents/${wrapperName}`)
-    && args[1] === "--mode"
-    && args[2] === "propose-patch";
+  return isGovernedWrapperAgent(agent, {
+    id: "agt_claude_propose_patch",
+    toolName: CLAUDE_PROPOSE_TOOL_CONTRACT.name,
+    capabilityName: "code_proposal",
+    wrapper: "claude-review-wrapper.mjs",
+    mode: "propose-patch",
+  });
 }

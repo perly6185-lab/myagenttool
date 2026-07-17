@@ -6,7 +6,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { summarizeAutoRuns } from "../src/services/auto-run-metrics.mjs";
+import { summarizeAutoRuns, deriveFinalStatus } from "../src/services/auto-run-metrics.mjs";
 
 test("empty input: zero-filled statuses and a null success rate (no data yet)", () => {
   const s = summarizeAutoRuns([]);
@@ -115,4 +115,60 @@ test("summarizeAutoRuns applies operator SLO target overrides", () => {
   const tuned = summarizeAutoRuns(runs, { sloTargets: { prSuccessRate: 0.4 } }).slo.slos.find((s) => s.key === "prSuccessRate");
   assert.equal(tuned.target, 0.4, "overridden target");
   assert.equal(tuned.meets, true, "0.5 >= 0.4 now meets");
+});
+
+test("quality rates: humanEscalation over all runs, selfRepair over develop runs", () => {
+  const s = summarizeAutoRuns([
+    { status: "pr_open", decision: { path: "develop" }, repairAttempts: 2 }, // develop, repaired
+    { status: "pr_open", decision: { path: "develop" } },                    // develop, clean
+    { status: "needs_input", decision: { path: "develop" } },                // develop + escalated
+    { status: "blocked", decision: { path: "design" } },                     // escalated, non-develop
+    { status: "report_posted", decision: { path: "design" } },               // neither
+  ]);
+  // 2 of 5 runs handed control to a human (needs_input + blocked).
+  assert.equal(s.rates.humanEscalation, 0.4);
+  // 3 develop runs, 1 needed a self-repair round.
+  assert.equal(s.rates.selfRepair, Number((1 / 3).toFixed(4)));
+});
+
+test("quality rates are null until their population exists (no fake 0%)", () => {
+  const empty = summarizeAutoRuns([]);
+  assert.equal(empty.rates.humanEscalation, null);
+  assert.equal(empty.rates.selfRepair, null);
+  // Runs with no develop path → selfRepair stays null, escalation is real.
+  const noDevelop = summarizeAutoRuns([{ status: "report_posted", decision: { path: "design" } }]);
+  assert.equal(noDevelop.rates.selfRepair, null);
+  assert.equal(noDevelop.rates.humanEscalation, 0);
+});
+
+test("a run with no decision defaults to the develop population", () => {
+  const s = summarizeAutoRuns([{ status: "pr_open", repairAttempts: 1 }]);
+  assert.equal(s.rates.selfRepair, 1, "no decision.path is treated as develop");
+});
+
+// --- Derived terminal grade (finalStatus) ------------------------------------
+
+test("deriveFinalStatus grades a terminal run without changing its stored status", () => {
+  assert.equal(deriveFinalStatus({ status: "pr_open" }), "clean_success");
+  assert.equal(deriveFinalStatus({ status: "pr_open", repairAttempts: 2 }), "degraded_success");
+  assert.equal(deriveFinalStatus({ status: "pr_open", verification: { verified: false } }), "unverified_success", "opened but no check ran");
+  // A ran-and-passed check with a repair is degraded, not unverified.
+  assert.equal(deriveFinalStatus({ status: "pr_open", verification: { verified: true, passed: true }, repairAttempts: 1 }), "degraded_success");
+  assert.equal(deriveFinalStatus({ status: "failed" }), "failed");
+  assert.equal(deriveFinalStatus({ status: "blocked" }), "failed");
+  // Non-terminal / needs-human runs are not graded yet.
+  assert.equal(deriveFinalStatus({ status: "running" }), null);
+  assert.equal(deriveFinalStatus({ status: "needs_input" }), null);
+  assert.equal(deriveFinalStatus(null), null);
+});
+
+test("summarizeAutoRuns distributes runs across the finalStatuses grades", () => {
+  const s = summarizeAutoRuns([
+    { status: "pr_open" },                                        // clean
+    { status: "pr_open", repairAttempts: 1 },                     // degraded
+    { status: "pr_open", verification: { verified: false } },     // unverified
+    { status: "failed" },                                         // failed
+    { status: "running" },                                        // ungraded
+  ]);
+  assert.deepEqual(s.finalStatuses, { clean_success: 1, degraded_success: 1, unverified_success: 1, failed: 1 });
 });

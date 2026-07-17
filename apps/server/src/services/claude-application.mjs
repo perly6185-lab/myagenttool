@@ -1,5 +1,8 @@
 import { CLAUDE_REVIEW_TOOL_CONTRACT } from "./claude-agent.mjs";
 import { CLAUDE_EXPLAIN_TOOL_CONTRACT } from "./claude-explain-agent.mjs";
+import { CLAUDE_EXPLAIN_CODE_TOOL_CONTRACT } from "./claude-explain-code-agent.mjs";
+import { CLAUDE_ANALYZE_ISSUE_TOOL_CONTRACT } from "./claude-analyze-issue-agent.mjs";
+import { CLAUDE_PLAN_CHANGE_TOOL_CONTRACT } from "./claude-plan-change-agent.mjs";
 import { CLAUDE_PROPOSE_TOOL_CONTRACT } from "./claude-propose-agent.mjs";
 
 export const CLAUDE_APPLICATION_ID = "app_claude";
@@ -39,6 +42,49 @@ export function createClaudeApplicationRegistration({ autoOnline = false } = {})
         riskTags: ["read_only", "read_project", "code_analysis", "local_agent"],
         requiresApproval: false,
         inputSchema: CLAUDE_EXPLAIN_TOOL_CONTRACT.inputSchema,
+        outputCollection: "invocations",
+      },
+      {
+        // #1049 (#912): read-only code-in-place analysis beside the diff explain.
+        // Same posture: collects on the invocation; the target path is confined
+        // to the bound worktree (server shape gate + wrapper filesystem check).
+        id: "explain.code",
+        toolName: CLAUDE_EXPLAIN_CODE_TOOL_CONTRACT.name,
+        displayName: "Claude Code Explain",
+        description: "Explain a file, symbol, or line range in an actor-owned worktree with the governed Claude analysis tool.",
+        riskLevel: "low",
+        riskTags: ["read_only", "read_project", "code_analysis", "local_agent"],
+        requiresApproval: false,
+        inputSchema: CLAUDE_EXPLAIN_CODE_TOOL_CONTRACT.inputSchema,
+        outputCollection: "invocations",
+      },
+      {
+        // #1050 (#912): read-only issue analysis. The issue body is attacker-
+        // adjacent text (ADR 0011): server-resolved by number, bounded, fenced as
+        // untrusted DATA, injection markers recorded — the untrusted_input tag
+        // makes the taint visible in discovery.
+        id: "analyze.issue",
+        toolName: CLAUDE_ANALYZE_ISSUE_TOOL_CONTRACT.name,
+        displayName: "Claude Issue Analysis",
+        description: "Analyze a repo issue against an actor-owned worktree with the governed Claude analysis tool; the issue body is fenced as untrusted data.",
+        riskLevel: "low",
+        riskTags: ["read_only", "read_project", "code_analysis", "local_agent", "untrusted_input"],
+        requiresApproval: false,
+        inputSchema: CLAUDE_ANALYZE_ISSUE_TOOL_CONTRACT.inputSchema,
+        outputCollection: "invocations",
+      },
+      {
+        // #1051 (#912): read-only change planning — the bridge between analysis
+        // and proposal. The plan is server-capped at completion and its
+        // invocation id is the provenance a later propose.patch references.
+        id: "plan.change",
+        toolName: CLAUDE_PLAN_CHANGE_TOOL_CONTRACT.name,
+        displayName: "Claude Change Planning",
+        description: "Plan a change to an actor-owned worktree with the governed Claude analysis tool (structured plan, never implemented).",
+        riskLevel: "low",
+        riskTags: ["read_only", "read_project", "change_planning", "local_agent"],
+        requiresApproval: false,
+        inputSchema: CLAUDE_PLAN_CHANGE_TOOL_CONTRACT.inputSchema,
         outputCollection: "invocations",
       },
       {

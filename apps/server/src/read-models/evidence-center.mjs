@@ -90,6 +90,76 @@ export function buildEvidenceCenterRecords({
       createdAt: change.createdAt
     });
   }
+  // Claude apply/rollback shares the SAME trust-ledger vocabulary as codex.exec:
+  // an AI-authored change that reached the worktree is a governed `file_change`,
+  // whichever write path produced it. One record per applied file, scoped to the
+  // proposal invocation; a rolled-back authorization keeps its records with the
+  // final state in the summary — evidence of a write does not vanish on undo.
+  for (const authorization of state.claudeApplyAuthorizations ?? []) {
+    const appliedFiles = Array.isArray(authorization.appliedFiles) ? authorization.appliedFiles : [];
+    if (!appliedFiles.length) continue; // nothing reached the worktree
+    const worktree = authorization.worktreeId ? (state.worktrees ?? []).find((item) => item.id === authorization.worktreeId) : null;
+    const verb = authorization.status === "rolled_back"
+      ? "rolled back"
+      : authorization.status === "rolling_back"
+        ? "rolling back"
+        : "applied";
+    for (const [index, file] of appliedFiles.entries()) {
+      records.push({
+        id: `${authorization.id}_f${index}`,
+        type: "file_change",
+        source: "governed_claude_apply",
+        redactionState: "summary_only",
+        invocationId: authorization.invocationId ?? authorization.proposalInvocationId,
+        codexSessionRegistryId: null,
+        agentId: findInvocation(authorization.executionInvocationId)?.agentId ?? null,
+        repoPath: worktree?.worktreePath ?? null,
+        summary: `${verb}: ${file.path}`,
+        detail: authorization.resultSummary ?? authorization.summary ?? `${verb}: ${file.path}`,
+        marker: "governed",
+        createdAt: authorization.rolledBackAt ?? authorization.appliedAt ?? authorization.createdAt
+      });
+    }
+  }
+  // #913: the proposal ARTIFACT itself is trust-ledger evidence — the provenance
+  // of an AI-authored change proposal (what it was generated from, under which
+  // descriptor contract) plus how to verify it before the approval-bound apply.
+  // One record per completed proposal; it survives the raw payload being reaped
+  // (redactionState then says so) — provenance must not vanish with the payload.
+  for (const invocation of state.invocations ?? []) {
+    const meta = invocation?.options?.metadata ?? {};
+    if (meta.tool !== "claude.propose.patch" || invocation.status !== "succeeded") continue;
+    const output = invocation.result?.output ?? {};
+    const payloadReaped = output.patchRedacted === true;
+    if (typeof output.patch !== "string" && !payloadReaped) continue;
+    const files = Array.isArray(output.files) ? output.files : [];
+    const worktree = meta.worktreeId ? (state.worktrees ?? []).find((item) => item.id === meta.worktreeId) : null;
+    records.push({
+      id: `${invocation.id}_proposal`,
+      type: "patch_proposal",
+      source: "governed_claude_propose",
+      redactionState: payloadReaped ? "payload_reaped" : "summary_only",
+      invocationId: invocation.id,
+      codexSessionRegistryId: null,
+      agentId: invocation.agentId ?? null,
+      repoPath: worktree?.worktreePath ?? null,
+      summary: `proposed: ${files.length} file(s)${output.summary ? ` — ${String(output.summary).slice(0, 200)}` : ""}`,
+      detail: [
+        output.contentHash ? `contentHash ${output.contentHash}` : "no content hash (pre-stamp artifact)",
+        output.baseCommit ? `base ${output.baseCommit}` : null,
+        output.descriptorRevision != null ? `descriptor r${output.descriptorRevision}` : null,
+      ].filter(Boolean).join(" · "),
+      provenance: {
+        contentHash: output.contentHash ?? null,
+        baseCommit: output.baseCommit ?? null,
+        descriptorRevision: output.descriptorRevision ?? null,
+        applicationId: output.applicationId ?? null,
+      },
+      verificationGuidance: "Review the bounded patch preview and file list; the apply gate revalidates the content hash and descriptor lineage server-side and the worktree base commit device-side before any write.",
+      marker: "governed",
+      createdAt: invocation.completedAt ?? invocation.createdAt
+    });
+  }
   // A human's review of an exec changeset — the governance decision that gates a
   // later promote — is itself trust-ledger evidence.
   for (const review of state.codexExecChangeReviews ?? []) {
