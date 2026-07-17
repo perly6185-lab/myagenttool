@@ -7,6 +7,11 @@
 // reported by the Desktop Bridge separately.
 import { createGmailApplicationRegistration } from "../../apps/server/src/services/gmail-application.mjs";
 
+// The provider app_gmail's descriptor pins in `credential { provider: google }`.
+// Discovery matches the agent that declares the SAME provider, so the mailbox
+// read is the mailbox the Application says it reads.
+const GMAIL_PROVIDER = "google";
+
 const options = parseArgs(process.argv.slice(2));
 const serverUrl = options.serverUrl ?? process.env.MYAGENTTOOL_SERVER_URL ?? "http://127.0.0.1:5001";
 
@@ -16,21 +21,29 @@ if (!agentId) {
   const state = await stateResponse.json();
   if (!stateResponse.ok) throw new Error(`Reading server state failed: ${JSON.stringify(state)}`);
   const isMcp = (agent) => agent.type === "mcp" || agent.adapter?.type === "mcp";
-  const byCapability = (state.agents ?? []).filter(
+  const mailAgents = (state.agents ?? []).filter(
     (agent) => isMcp(agent)
       && (agent.capabilities ?? []).some((capability) => (capability?.name ?? capability) === "mail.read"),
   );
-  // `mail.read` is the capability EVERY mail MCP agent declares, not a Gmail
-  // marker — a second provider (163/IMAP, Outlook) is an equally good match. So
-  // more than one candidate is ambiguous, and guessing would silently wire
-  // app_gmail to another provider's mailbox: the Gmail Application would read,
-  // and label as Gmail, mail that never came from Gmail. Refuse and name them.
-  const candidates = byCapability.length
-    ? byCapability
-    : (state.agents ?? []).filter((agent) => isMcp(agent) && /mail/i.test(agent.name ?? ""));
+  // `mail.read` says an agent reads SOME mailbox, never whose. Counting matches
+  // was the old shape (#1176) and it could only catch the >=2 case — with one
+  // NetEase agent and nothing else, app_gmail was wired to it, silently, exit 0
+  // (#1185). So match on the provider the agent declares (#1185), which is the
+  // only positive Gmail evidence that exists, and treat "declares nothing" as
+  // "not a match" rather than as a match by default.
+  const candidates = mailAgents.filter((agent) => agent.provider === GMAIL_PROVIDER);
+  if (!candidates.length && mailAgents.length) {
+    throw new Error(
+      `No mail MCP agent declares provider "${GMAIL_PROVIDER}", but ${mailAgents.length} mail `
+      + `MCP agent(s) are registered (${mailAgents.map((agent) => `${agent.id} -> provider ${agent.provider ?? "(none)"}`).join(", ")}). `
+      + `app_gmail reads a ${GMAIL_PROVIDER} mailbox (ADR 0010), so wiring it to one of these would read the wrong mailbox `
+      + "under Gmail's identity. Re-register the Gmail mail agent with `provider: \"google\"`, or pass --agent-id <id> to name it deliberately.",
+    );
+  }
   if (candidates.length > 1) {
     throw new Error(
-      `Ambiguous: ${candidates.length} mail MCP agents are registered (${candidates.map((agent) => agent.id).join(", ")}). `
+      `Ambiguous: ${candidates.length} mail MCP agents declare provider "${GMAIL_PROVIDER}" `
+      + `(${candidates.map((agent) => agent.id).join(", ")}). `
       + "Pass --agent-id <id> to name the one app_gmail delegates to.",
     );
   }
