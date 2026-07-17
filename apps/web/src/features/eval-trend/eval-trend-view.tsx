@@ -191,7 +191,7 @@ interface DispatchShadow {
   disagreements: number;
   agreementRate: number | null;
   settledDisagreements: number;
-  counterfactualWinRate: number | null;
+  baselineReassignRate: number | null;
   verdict: "measured" | "indeterminate";
   sample: string;
   promotionRule: string;
@@ -287,16 +287,18 @@ function DispatchEvaluationCard({ evaluation }: { evaluation: DispatchEvaluation
         </div>
         {evaluation.shadow.shadowAssignments > 0 ? (
           <div className="rounded-md border border-border bg-muted/30 px-2.5 py-2 text-xs">
-            <div className="mb-1 font-medium">Shadow evaluation (router in shadow mode)</div>
+            <div className="mb-1 font-medium">Shadow evaluation (recorded counterfactuals, per issue)</div>
             <div className="grid grid-cols-2 gap-2 md:grid-cols-4">
-              <StatTile label="Shadow assignments" value={String(evaluation.shadow.shadowAssignments)} hint={`${evaluation.shadow.disagreements} disagreed`} />
-              <StatTile label="Agreement" value={evaluation.shadow.agreementRate != null ? pct(evaluation.shadow.agreementRate) : "—"} hint="baseline = scored" />
-              <StatTile label="Settled disagreements" value={String(evaluation.shadow.settledDisagreements)} hint={`target ≥ ${evaluation.minSamples}`} />
+              <StatTile label="Shadow issues" value={String(evaluation.shadow.shadowAssignments)} hint={`${evaluation.shadow.disagreements} diverged`} />
+              <StatTile label="Agreement" value={evaluation.shadow.agreementRate != null ? pct(evaluation.shadow.agreementRate) : `insufficient (n=${evaluation.shadow.shadowAssignments})`} hint="baseline = scored" />
+              <StatTile label="Settled diverged" value={String(evaluation.shadow.settledDisagreements)} hint={`target ≥ ${evaluation.minSamples}`} />
+              {/* #1184: a high reassign rate is evidence TOWARD promoting scored,
+                  not a regression — no danger tone; the promotion rule carries
+                  the recommendation (and the TTL-churn caveat). */}
               <StatTile
-                label="Counterfactual win (scored)"
-                value={evaluation.shadow.verdict === "measured" && evaluation.shadow.counterfactualWinRate != null ? pct(evaluation.shadow.counterfactualWinRate) : `insufficient (${evaluation.shadow.sample})`}
-                hint="baseline pick later reassigned"
-                tone={evaluation.shadow.counterfactualWinRate != null && evaluation.shadow.counterfactualWinRate >= 0.5 ? "danger" : undefined}
+                label="Baseline reassigned on divergence"
+                value={evaluation.shadow.verdict === "measured" && evaluation.shadow.baselineReassignRate != null ? pct(evaluation.shadow.baselineReassignRate) : `insufficient (${evaluation.shadow.sample})`}
+                hint="baseline's divergent pick, not scored's outcome"
               />
             </div>
             <p className="mt-1 text-[11px] text-muted-foreground">{evaluation.shadow.promotionRule}</p>

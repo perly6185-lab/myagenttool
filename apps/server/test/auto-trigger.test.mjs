@@ -432,13 +432,14 @@ test("#1172 area affinity beats load among eligible; load breaks affinity ties; 
     { id: "webber", platform: null, areas: ["web"], agents: null, maxRisk: null },
   ];
   const issue = { number: 1, labels: ["area/web"] };
-  // webber is BUSIER but has affinity → still wins.
+  // webber is BUSIER but has affinity → still wins. scoreWorkers returns the
+  // eligible set unsorted (#1184); the pickers own the ordering.
   const load = new Map([["generalist", 0], ["webber", 1]]);
   const { eligible } = scoreWorkers({ issue, profiles, load, workerCap: 2 });
-  assert.equal(eligible[0].id, "webber", "affinity outranks load");
+  assert.equal(scoredPick(eligible), "webber", "affinity outranks load");
   // Without affinity, least-loaded wins.
   const plain = scoreWorkers({ issue: { number: 2, labels: [] }, profiles, load, workerCap: 2 });
-  assert.equal(plain.eligible[0].id, "generalist");
+  assert.equal(scoredPick(plain.eligible), "generalist");
 });
 
 test("#1172 bare-id profiles keep planDispatch byte-identical to least-loaded round-robin", () => {
