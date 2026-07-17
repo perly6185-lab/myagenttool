@@ -116,3 +116,32 @@ test("summarizeAutoRuns applies operator SLO target overrides", () => {
   assert.equal(tuned.target, 0.4, "overridden target");
   assert.equal(tuned.meets, true, "0.5 >= 0.4 now meets");
 });
+
+test("quality rates: humanEscalation over all runs, selfRepair over develop runs", () => {
+  const s = summarizeAutoRuns([
+    { status: "pr_open", decision: { path: "develop" }, repairAttempts: 2 }, // develop, repaired
+    { status: "pr_open", decision: { path: "develop" } },                    // develop, clean
+    { status: "needs_input", decision: { path: "develop" } },                // develop + escalated
+    { status: "blocked", decision: { path: "design" } },                     // escalated, non-develop
+    { status: "report_posted", decision: { path: "design" } },               // neither
+  ]);
+  // 2 of 5 runs handed control to a human (needs_input + blocked).
+  assert.equal(s.rates.humanEscalation, 0.4);
+  // 3 develop runs, 1 needed a self-repair round.
+  assert.equal(s.rates.selfRepair, Number((1 / 3).toFixed(4)));
+});
+
+test("quality rates are null until their population exists (no fake 0%)", () => {
+  const empty = summarizeAutoRuns([]);
+  assert.equal(empty.rates.humanEscalation, null);
+  assert.equal(empty.rates.selfRepair, null);
+  // Runs with no develop path → selfRepair stays null, escalation is real.
+  const noDevelop = summarizeAutoRuns([{ status: "report_posted", decision: { path: "design" } }]);
+  assert.equal(noDevelop.rates.selfRepair, null);
+  assert.equal(noDevelop.rates.humanEscalation, 0);
+});
+
+test("a run with no decision defaults to the develop population", () => {
+  const s = summarizeAutoRuns([{ status: "pr_open", repairAttempts: 1 }]);
+  assert.equal(s.rates.selfRepair, 1, "no decision.path is treated as develop");
+});
