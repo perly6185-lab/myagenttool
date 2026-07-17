@@ -99,6 +99,7 @@ export function createHttpServer({
   redeliverExpiredDispatches,
   registerAgent,
   findAgent,
+  requestObservabilityDeletion,
   disableAgent,
   enableAgent,
   createAgentHealthCheck,
@@ -268,6 +269,8 @@ export function createHttpServer({
         // fires through the same dispatch the Run panel uses (#847).
         getCapability,
         createCapabilityInvocation,
+        // ADR 0018: owner-gated per-subject observability data deletion.
+        requestObservabilityDeletion,
       })) {
         return;
       }
