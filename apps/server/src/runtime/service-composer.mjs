@@ -38,6 +38,7 @@ import { createRoundTelemetryRuntime } from "../services/round-telemetry.mjs";
 import { createCodexService } from "../services/codex.mjs";
 import { createIntegrationService } from "../services/integrations.mjs";
 import { createInvocationEventService } from "../services/invocation-events.mjs";
+import { createInvocationRefusalService } from "../services/invocation-refusals.mjs";
 import { createInvocationService } from "../services/invocations.mjs";
 import { createM3Service } from "../services/m3.mjs";
 import { createProjectService, sameProjectPath } from "../services/projects.mjs";
@@ -221,6 +222,10 @@ export function createServerRuntimeServices({
   const { listInvocationEvents } = createInvocationEventService({
     state,
     readInvocationEventArchive: retentionArchive.readInvocationEventArchive,
+  });
+  const { listInvocationRefusals } = createInvocationRefusalService({
+    state,
+    readArchiveWithMetadata: retentionArchive.readArchiveWithMetadata,
   });
   const { appendEvent } = createEventLogRuntime({
     state,
@@ -3175,6 +3180,7 @@ export function createServerRuntimeServices({
     acknowledgeInvocation,
     completeInvocation,
     listInvocationEvents,
+    listInvocationRefusals,
     findApprovalRequest,
     claimDecision,
     releaseDecisionClaim,
