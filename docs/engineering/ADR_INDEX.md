@@ -49,8 +49,8 @@ Accepted 2026-07-17 (AI-agent observability gap closure):
   existing span model — not an OpenTelemetry SDK adoption (ADR 0017).
 - Per-subject deletion: erase observability CONTENT through the retention
   chokepoint, scoped to the actor's team; shielded billing/audit evidence is
-  retained-of-record (ADR 0018). Follow-ups: shielded-row PII redaction +
-  legal sign-off on the erasure-vs-retention policy.
+  retained-of-record with its subject PII scrubbed (ADR 0018). Remaining
+  follow-up is non-code: a legal sign-off on the erasure-vs-retention policy.
 
 ## Open Decision Rules
 

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { createRoundTelemetryRuntime, redactDigest } from "../src/services/round-telemetry.mjs";
+import { createRoundTelemetryRuntime, redactDigest, scrubPii } from "../src/services/round-telemetry.mjs";
 
 const T0 = "2026-07-13T00:00:00.000Z";
 const T5 = "2026-07-13T00:00:05.000Z";
@@ -272,6 +272,16 @@ test("redactDigest scrubs secret-shaped tokens and bounds length", () => {
   const out = redactDigest(long);
   assert.equal(out.length, 500);
   assert.ok(out.endsWith("..."));
+});
+
+test("scrubPii removes PII spans but does NOT truncate (retained records keep full text)", () => {
+  const long = `prefix ${"y".repeat(1000)} mail a@b.com tail`;
+  const out = scrubPii(long);
+  assert.ok(out.length > 500, "full text retained, not bounded to 500 like redactDigest");
+  assert.ok(out.includes("[redacted]"), "email scrubbed");
+  assert.ok(!/a@b\.com/.test(out));
+  assert.equal(scrubPii("clean text"), "clean text", "clean text unchanged");
+  assert.equal(scrubPii(""), "", "empty stays empty (not null)");
 });
 
 test("redactDigest scrubs mainland-China PII: mobile, resident id, bank card", () => {

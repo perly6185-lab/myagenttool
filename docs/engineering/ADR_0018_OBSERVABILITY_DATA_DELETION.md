@@ -8,10 +8,14 @@ Decision: Accepted, including the erasure-vs-retention policy (invariant 4):
 observability CONTENT is erasable, shielded billing/compliance evidence is
 retained-of-record. The engine, tenancy guard, route, and UI shipped
 (#1192/#1193/#1195/#1197) and were hardened against cross-tenant deletion
-(#1199). Two accepted follow-ups remain unbuilt: (a) PII-redaction of the
-shielded rows themselves (today they are retained un-redacted), and (b) a
-compliance/legal sign-off recorded against invariant 4 before this is relied on
-for a formal Right-to-Erasure response.
+(#1199). Follow-up (a) — PII-redaction of the shielded rows themselves — is now
+BUILT: a subject deletion scrubs the subject's PII from its retained refusal
+free text (summary / evidence / remedy) in place, keeping the record and its
+taxonomy (invariant 4). One accepted follow-up remains NON-CODE: (b) a recorded
+compliance/legal sign-off against invariant 4 before this backs a formal
+Right-to-Erasure response. Scope note: ledger and audit-summary rows are
+id/amount-keyed (no free-text subject PII), so refusals are the only shielded
+carrier scrubbed today.
 
 Related issue: [#1182](https://github.com/perly6185-lab/myagenttool/issues/1182)
 

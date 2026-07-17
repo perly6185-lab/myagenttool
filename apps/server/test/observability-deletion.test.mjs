@@ -39,7 +39,7 @@ function baseState() {
     // Shielded — must survive every deletion.
     ledgerEntries: [{ id: "led_1", userId: "usr_1", amountUsd: 5 }],
     lifecycleAuditRecords: [{ id: "lco_1", status: "failed" }],
-    refusals: [{ id: "ref_1" }],
+    refusals: [{ id: "ref_1", invocationId: "inv_u1", category: "policy", summary: "blocked send to alice@example.com", evidence: { attempted: "call 13800138000" }, remedy: "ask alice@example.com" }],
     auditSummaries: [{ id: "aud_1" }],
   };
 }
@@ -100,6 +100,33 @@ test("no tier ever deletes a shielded row (ledger/audit/refusals/summaries)", ()
   assert.equal(s.lifecycleAuditRecords.length, 1);
   assert.equal(s.refusals.length, 1);
   assert.equal(s.auditSummaries.length, 1);
+});
+
+test("a subject's shielded refusal is RETAINED but its PII is scrubbed (ADR 0018 invariant 4)", () => {
+  const s = baseState();
+  const events = [];
+  const result = deleteObservabilityData(s, { scope: "user", subjectId: "usr_1", tier: "operational", now, appendEvent: (e) => events.push(e) });
+  const refusal = s.refusals.find((r) => r.id === "ref_1");
+  assert.ok(refusal, "the refusal is NOT deleted (retained of record)");
+  assert.equal(refusal.category, "policy", "the taxonomy survives");
+  assert.ok(!/alice@example\.com/.test(refusal.summary), "email PII scrubbed from summary");
+  assert.ok(refusal.summary.includes("[redacted]"));
+  assert.ok(!/13800138000/.test(refusal.evidence.attempted), "phone PII scrubbed from evidence");
+  assert.ok(!/alice@example\.com/.test(refusal.remedy), "email PII scrubbed from remedy");
+  assert.equal(refusal.piiRedacted, true);
+  assert.equal(refusal.piiRedactedAt, now());
+  assert.equal(result.counts.shieldedPiiRedacted, 1);
+  const audit = events.find((e) => e.type === "observability_data_deleted");
+  assert.equal(audit.data.counts.shieldedPiiRedacted, 1);
+});
+
+test("shielded PII scrub is idempotent and leaves other subjects' refusals alone", () => {
+  const s = baseState();
+  s.refusals.push({ id: "ref_2", invocationId: "inv_u2", summary: "other bob@example.com" });
+  deleteObservabilityData(s, { scope: "user", subjectId: "usr_1", tier: "full", now });
+  const second = deleteObservabilityData(s, { scope: "user", subjectId: "usr_1", tier: "full", now });
+  assert.equal(second.counts.shieldedPiiRedacted, 0, "already-scrubbed refusal is not re-counted");
+  assert.equal(s.refusals.find((r) => r.id === "ref_2").summary, "other bob@example.com", "team's other subject untouched");
 });
 
 test("deletion is idempotent — a second run changes nothing and still audits", () => {
