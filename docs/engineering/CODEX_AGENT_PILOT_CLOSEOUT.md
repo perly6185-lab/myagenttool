@@ -64,6 +64,8 @@ Acceptance evidence:
   live model call during repository checks.
 - Real authenticated Codex CLI validation is tracked in #109 with local
   evidence under `.myagenttool/runs/issue-109-real-codex/`.
+- Issue #114 follows up on that evidence with selected-agent event copy and
+  explicit cancellation applied timestamps and messages for audit review.
 
 Acceptance evidence:
 
@@ -97,4 +99,3 @@ Acceptance evidence:
 - Plan persistent storage for demo state, Codex evidence, and session metadata
   before production-like use; tracked in #124.
 - Add browser screenshot automation for Web Console visual QA; tracked in #125.
-

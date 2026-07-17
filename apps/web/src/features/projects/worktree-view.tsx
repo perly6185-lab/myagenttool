@@ -7,17 +7,38 @@ import { Input, Select, Textarea } from "@/components/ui/input";
 import { Field } from "@/components/common/field";
 import { Modal } from "@/components/ui/modal";
 import { EmptyState } from "@/components/common/empty-state";
-import { EventTimeline } from "@/features/invocations/event-timeline";
 import { DecisionAction } from "@/features/invocations/decision-action";
+import { InvocationEventHistory } from "@/features/invocations/invocation-event-history";
+import { InvocationRefusalHistory } from "@/features/invocations/invocation-refusal-history";
 import { WorktreeLinkPopover } from "@/features/projects/worktree-link-popover";
 import { useConsoleState } from "@/data/use-console-state";
 import { useAsyncAction, api } from "@/data/use-console-actions";
 import { useUiStore } from "@/store/ui-store";
 import { cn } from "@/lib/cn";
-import type { WorktreeSnapshot } from "@/lib/console-state";
+import type { InvocationSnapshot, WorktreeSnapshot } from "@/lib/console-state";
 
 const RUNNING = ["queued", "dispatching", "waiting_for_local_approval", "running", "cancelling"];
-type TreeNode = { name: string; path: string; dir: boolean; children?: TreeNode[] };
+// `children` absent = this directory has not been read yet; `[]` = read, empty.
+// The distinction is the whole fix in #1200: the two were conflated, so an
+// unfetched directory and an empty one both rendered as nothing.
+export type TreeNode = { name: string; path: string; dir: boolean; children?: TreeNode[] };
+
+export function findNode(nodes: TreeNode[], path: string): TreeNode | null {
+  for (const node of nodes) {
+    if (node.path === path) return node;
+    const hit = node.children ? findNode(node.children, path) : null;
+    if (hit) return hit;
+  }
+  return null;
+}
+
+export function withChildren(nodes: TreeNode[], path: string, children: TreeNode[]): TreeNode[] {
+  return nodes.map((node) => {
+    if (node.path === path) return { ...node, children };
+    if (node.children) return { ...node, children: withChildren(node.children, path, children) };
+    return node;
+  });
+}
 type SearchMatch = { path: string; line?: number; text?: string };
 type PaneTab = "project" | "sessions" | "changes" | "checks";
 const PANE_TABS: [PaneTab, string, ComponentType<{ className?: string }>][] = [
@@ -49,6 +70,8 @@ export function WorktreeView({ worktree }: { worktree: WorktreeSnapshot }) {
   // don't share pending/error state with the run button.
   const { execute: execGit, pending: gitPending, error: gitError } = useAsyncAction();
   const setSelectedWorktreeId = useUiStore((s) => s.setSelectedWorktreeId);
+  const selectedInvocationId = useUiStore((s) => s.selectedInvocationId);
+  const setSelectedInvocationId = useUiStore((s) => s.setSelectedInvocationId);
 
   const agents = state?.agents ?? [];
   const project = (state?.projects ?? []).find((p) => p.id === worktree.projectId);
@@ -61,6 +84,7 @@ export function WorktreeView({ worktree }: { worktree: WorktreeSnapshot }) {
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const [tree, setTree] = useState<TreeNode[]>([]);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
+  const [loadingDirs, setLoadingDirs] = useState<Set<string>>(new Set());
   const [fileQuery, setFileQuery] = useState("");
   const [searchMode, setSearchMode] = useState<"name" | "content">("name");
   const [results, setResults] = useState<SearchMatch[]>([]);
@@ -72,6 +96,11 @@ export function WorktreeView({ worktree }: { worktree: WorktreeSnapshot }) {
   // Tracks the latest run's status across renders so we can detect the
   // running→finished edge and refresh the workspace once.
   const prevStatusRef = useRef<string | null>(null);
+  const selectionWorktreeRef = useRef(worktree.id);
+  // Bridge the short gap between POST /invocations succeeding and the next
+  // console-state refresh. Without this, the selection repair effect can snap
+  // back to the previous run before the newly-created invocation is visible.
+  const [createdInvocation, setCreatedInvocation] = useState<InvocationSnapshot | null>(null);
   const [sessionScope, setSessionScope] = useState<"worktree" | "all">("worktree");
   const [sessionQuery, setSessionQuery] = useState("");
   const [prOpen, setPrOpen] = useState(false);
@@ -117,27 +146,56 @@ export function WorktreeView({ worktree }: { worktree: WorktreeSnapshot }) {
     });
   }
 
-  // Load (or reload) the file tree, expanding all directories by default.
+  // Load (or reload) the root of the file tree. Directories start collapsed and
+  // their contents are fetched on first expand (#1200): the server returns one
+  // level, so eagerly expanding everything would fan out a request per directory
+  // and still show nothing until each lands.
   function loadTree() {
+    setExpanded(new Set());
+    setLoadingDirs(new Set());
     (api.listWorktreeFiles(worktree.id) as Promise<{ tree: TreeNode[] }>)
-      .then((r) => {
-        const t = r.tree ?? [];
-        setTree(t);
-        const dirs = new Set<string>();
-        const collect = (ns: TreeNode[]) =>
-          ns.forEach((n) => {
-            if (n.dir) {
-              dirs.add(n.path);
-              if (n.children) collect(n.children);
-            }
-          });
-        collect(t);
-        setExpanded(dirs);
-      })
+      .then((r) => setTree(r.tree ?? []))
       .catch(() => {
         setTree([]);
         setExpanded(new Set());
       });
+  }
+
+  // Fetch one directory's entries and splice them in. `children` absent means
+  // "not read yet" and `[]` means "empty", so a directory that genuinely has no
+  // entries resolves to [] and is not re-fetched on the next expand.
+  function loadDir(path: string) {
+    setLoadingDirs((prev) => new Set(prev).add(path));
+    (api.listWorktreeFiles(worktree.id, path) as Promise<{ tree: TreeNode[] }>)
+      .then((r) => setTree((prev) => withChildren(prev, path, r.tree ?? [])))
+      .catch(() =>
+        // Leave `children` absent so the directory stays unread and a later
+        // expand retries. Marking it [] here would present a failed fetch as an
+        // empty directory — the exact lie #1200 was about.
+        setExpanded((prev) => {
+          const next = new Set(prev);
+          next.delete(path);
+          return next;
+        }),
+      )
+      .finally(() =>
+        setLoadingDirs((prev) => {
+          const next = new Set(prev);
+          next.delete(path);
+          return next;
+        }),
+      );
+  }
+
+  function toggleDir(path: string) {
+    const willOpen = !expanded.has(path);
+    setExpanded((prev) => {
+      const next = new Set(prev);
+      if (next.has(path)) next.delete(path);
+      else next.add(path);
+      return next;
+    });
+    if (willOpen && !findNode(tree, path)?.children && !loadingDirs.has(path)) loadDir(path);
   }
 
   useEffect(() => {
@@ -153,6 +211,9 @@ export function WorktreeView({ worktree }: { worktree: WorktreeSnapshot }) {
     setResults([]);
     setPaneTab("project");
     setFileView("content");
+    setSessionScope("worktree");
+    setSessionQuery("");
+    setCreatedInvocation(null);
     // Reset the run target to this worktree's own agent (the instance is reused
     // across worktree switches, so a stale agent would otherwise carry over).
     setAgentId(worktree.agentId ?? agents[0]?.id ?? "");
@@ -189,15 +250,19 @@ export function WorktreeView({ worktree }: { worktree: WorktreeSnapshot }) {
     (api.worktreeDiff(worktree.id) as Promise<WorktreeDiff>).then(setDiff).catch(() => setDiff(null));
   }, [paneTab, activeTab, fileView, diff, worktree.id]);
 
-  // Invocations are newest-first; the latest one in this worktree is the session.
-  const invocations = (state?.invocations ?? []).filter((i) => i.worktreeId === worktree.id);
-  const latest = invocations[0];
+  const invocations = (state?.invocations ?? [])
+    .filter((i) => i.worktreeId === worktree.id)
+    .sort((left, right) => {
+      const byTime = String(right.createdAt ?? "").localeCompare(String(left.createdAt ?? ""));
+      return byTime || right.id.localeCompare(left.id);
+    });
+  const latestInvocation = invocations[0];
 
   // When a run in this worktree finishes, the agent may have rewritten or added
   // files — drop this worktree's cached contents, refetch what's open, and
   // refresh the tree + git/diff so the workspace reflects the agent's output.
   useEffect(() => {
-    const status = latest?.status ?? null;
+    const status = latestInvocation?.status ?? null;
     const justFinished = RUNNING.includes(prevStatusRef.current ?? "") && status !== null && !RUNNING.includes(status);
     prevStatusRef.current = status;
     if (!justFinished) return;
@@ -210,14 +275,35 @@ export function WorktreeView({ worktree }: { worktree: WorktreeSnapshot }) {
     setGit(null);
     setDiff(null);
     loadTree();
-  }, [latest?.status, latest?.id, worktree.id]);
+  }, [latestInvocation?.status, latestInvocation?.id, worktree.id]);
 
   // Sessions tab: agent session history, scoped to this worktree or the project.
   const scopedSessions =
     sessionScope === "all"
-      ? (state?.invocations ?? []).filter((i) => i.projectId === worktree.projectId)
+      ? (state?.invocations ?? [])
+          .filter((i) => i.projectId === worktree.projectId)
+          .sort((left, right) => {
+            const byTime = String(right.createdAt ?? "").localeCompare(String(left.createdAt ?? ""));
+            return byTime || right.id.localeCompare(left.id);
+          })
       : invocations;
   const sessions = scopedSessions.filter((i) => i.id.toLowerCase().includes(sessionQuery.trim().toLowerCase()));
+  // Keep a selection only while it belongs to the visible session scope. A
+  // stale selection from another worktree falls back to this worktree's latest
+  // run, including on the first render after switching worktrees.
+  const selectedInvocation =
+    selectionWorktreeRef.current === worktree.id
+      ? scopedSessions.find((invocation) => invocation.id === selectedInvocationId)
+        ?? (createdInvocation?.id === selectedInvocationId ? createdInvocation : null)
+        ?? latestInvocation
+      : latestInvocation;
+
+  useEffect(() => {
+    if (!state) return;
+    selectionWorktreeRef.current = worktree.id;
+    const nextId = selectedInvocation?.id ?? null;
+    if (nextId !== selectedInvocationId) setSelectedInvocationId(nextId);
+  }, [state, worktree.id, selectedInvocation?.id, selectedInvocationId, setSelectedInvocationId]);
 
   // Checks tab: a readiness checklist for this worktree.
   const checks = [
@@ -225,12 +311,17 @@ export function WorktreeView({ worktree }: { worktree: WorktreeSnapshot }) {
     { label: "Agent assigned", ok: Boolean(worktree.agentId) },
     { label: "Branch published", ok: Boolean(git?.hasUpstream) },
     { label: "Linked to issue/PR", ok: Boolean(worktree.link) },
-    { label: "Latest run succeeded", ok: latest?.status === "succeeded" },
+    { label: "Latest run succeeded", ok: latestInvocation?.status === "succeeded" },
   ];
-  const events = (state?.events ?? []).filter((e) => e.invocationId === latest?.id).slice(0, 40);
-  const isRunning = RUNNING.includes(latest?.status ?? "");
+  const createdInvocationAwaitingSnapshot = Boolean(
+    createdInvocation
+      && !invocations.some((invocation) => invocation.id === createdInvocation.id),
+  );
+  const latestIsRunning = RUNNING.includes(latestInvocation?.status ?? "")
+    || (createdInvocationAwaitingSnapshot && RUNNING.includes(createdInvocation?.status ?? ""));
+  const selectedIsRunning = RUNNING.includes(selectedInvocation?.status ?? "");
   const agent = agents.find((a) => a.id === agentId);
-  const runDisabled = !state || !task.trim() || !agent || isRunning || pending;
+  const runDisabled = !state || !task.trim() || !agent || latestIsRunning || pending;
 
   // Read picked/pasted files into base64 and stage them. Awaits all reads so a
   // run that starts right after a paste sees the files; the count cap is applied
@@ -269,11 +360,18 @@ export function WorktreeView({ worktree }: { worktree: WorktreeSnapshot }) {
           finalTask += `\n\nAttached files (in the worktree):\n${saved.map((a) => `- ${a.path}`).join("\n")}`;
         }
       }
-      const invocation = await api.createInvocation(finalTask, agentId || null, worktree.projectId, worktree.id, { permissionLevel });
+      const created = (await api.createInvocation(finalTask, agentId || null, worktree.projectId, worktree.id, { permissionLevel })) as {
+        invocation?: InvocationSnapshot;
+      };
+      if (created.invocation?.id) {
+        setCreatedInvocation(created.invocation);
+        setSelectedInvocationId(created.invocation.id);
+        selectTab("session");
+      }
       // Clear only after the run is created, so a failed create keeps the staged
       // files for a retry instead of silently dropping them.
       setAttachments([]);
-      return invocation;
+      return created;
     });
   }
 
@@ -464,7 +562,7 @@ export function WorktreeView({ worktree }: { worktree: WorktreeSnapshot }) {
                       </Select>
                     </Field>
                     <Button onClick={run} disabled={runDisabled}>
-                      {isRunning ? "Running…" : "Run in this worktree"}
+                      {latestIsRunning ? "Running…" : "Run in this worktree"}
                     </Button>
                   </div>
                   {error ? <p className="text-xs text-destructive">{error}</p> : null}
@@ -474,15 +572,22 @@ export function WorktreeView({ worktree }: { worktree: WorktreeSnapshot }) {
               <Card>
                 <CardHeader>
                   <CardTitle>Session output</CardTitle>
-                  {latest ? (
+                  {selectedInvocation ? (
                     <p className="text-sm text-muted-foreground">
-                      {latest.id} · {latest.status}
+                      {selectedInvocation.id} · {selectedInvocation.status}
                     </p>
                   ) : null}
                 </CardHeader>
                 <CardContent>
-                  {latest ? (
-                    <EventTimeline events={events} renderAction={(event) => <DecisionAction event={event} />} />
+                  {selectedInvocation ? (
+                    <>
+                      <InvocationEventHistory
+                        invocationId={selectedInvocation.id}
+                        live={selectedIsRunning}
+                        renderAction={(event) => <DecisionAction event={event} />}
+                      />
+                      <InvocationRefusalHistory invocationId={selectedInvocation.id} />
+                    </>
                   ) : (
                     <EmptyState title="No runs yet" hint="Run an agent above to start a session in this worktree." />
                   )}
@@ -577,16 +682,10 @@ export function WorktreeView({ worktree }: { worktree: WorktreeSnapshot }) {
                     nodes={tree}
                     depth={0}
                     expanded={expanded}
+                    loadingDirs={loadingDirs}
                     activePath={activeTab}
                     onOpen={openFile}
-                    toggle={(p) =>
-                      setExpanded((prev) => {
-                        const next = new Set(prev);
-                        if (next.has(p)) next.delete(p);
-                        else next.add(p);
-                        return next;
-                      })
-                    }
+                    toggle={toggleDir}
                   />
                 )}
               </div>
@@ -709,11 +808,26 @@ export function WorktreeView({ worktree }: { worktree: WorktreeSnapshot }) {
                 ) : (
                   <ul className="space-y-1 text-xs">
                     {sessions.slice(0, 30).map((inv) => (
-                      <li key={inv.id} className="flex items-center justify-between gap-2 rounded border border-border px-2 py-1">
-                        <span className="truncate font-mono text-[11px]">{inv.id}</span>
-                        <Badge tone={inv.status === "succeeded" ? "success" : RUNNING.includes(inv.status ?? "") ? "neutral" : "warning"}>
-                          {inv.status}
-                        </Badge>
+                      <li key={inv.id}>
+                        <button
+                          type="button"
+                          aria-pressed={inv.id === selectedInvocation?.id}
+                          onClick={() => {
+                            setSelectedInvocationId(inv.id);
+                            selectTab("session");
+                          }}
+                          className={cn(
+                            "flex w-full items-center justify-between gap-2 rounded border px-2 py-1 text-left transition-colors",
+                            inv.id === selectedInvocation?.id
+                              ? "border-primary bg-primary/5"
+                              : "border-border hover:bg-accent",
+                          )}
+                        >
+                          <span className="truncate font-mono text-[11px]">{inv.id}</span>
+                          <Badge tone={inv.status === "succeeded" ? "success" : RUNNING.includes(inv.status ?? "") ? "neutral" : "warning"}>
+                            {inv.status}
+                          </Badge>
+                        </button>
                       </li>
                     ))}
                   </ul>
@@ -767,6 +881,7 @@ function FileTree({
   nodes,
   depth,
   expanded,
+  loadingDirs,
   activePath,
   toggle,
   onOpen,
@@ -774,6 +889,7 @@ function FileTree({
   nodes: TreeNode[];
   depth: number;
   expanded: Set<string>;
+  loadingDirs: Set<string>;
   activePath: string;
   toggle: (path: string) => void;
   onOpen: (path: string, name: string) => void;
@@ -809,8 +925,29 @@ function FileTree({
               )}
               <span className="truncate">{n.name}</span>
             </button>
-            {n.dir && open && n.children ? (
-              <FileTree nodes={n.children} depth={depth + 1} expanded={expanded} activePath={activePath} toggle={toggle} onOpen={onOpen} />
+            {n.dir && open ? (
+              n.children ? (
+                n.children.length > 0 ? (
+                  <FileTree
+                    nodes={n.children}
+                    depth={depth + 1}
+                    expanded={expanded}
+                    loadingDirs={loadingDirs}
+                    activePath={activePath}
+                    toggle={toggle}
+                    onOpen={onOpen}
+                  />
+                ) : (
+                  <p style={{ paddingLeft: (depth + 1) * 12 + 16 }} className="py-0.5 text-[11px] text-muted-foreground">
+                    Empty
+                  </p>
+                )
+              ) : (
+                // Not read yet — say so, rather than render nothing and look broken.
+                <p style={{ paddingLeft: (depth + 1) * 12 + 16 }} className="py-0.5 text-[11px] text-muted-foreground">
+                  {loadingDirs.has(n.path) ? "Loading…" : "Could not load."}
+                </p>
+              )
             ) : null}
           </li>
         );

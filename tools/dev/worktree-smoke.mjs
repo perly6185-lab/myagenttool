@@ -14,7 +14,10 @@ runGit(["init", "-b", "main"], repoPath);
 runGit(["config", "user.email", "smoke@example.test"], repoPath);
 runGit(["config", "user.name", "Smoke Test"], repoPath);
 writeFileSync(join(repoPath, "README.md"), "# Smoke repo\n");
-runGit(["add", "README.md"], repoPath);
+// A nested directory, so the file tree has something to descend into (#1200).
+mkdirSync(join(repoPath, "apps", "web"), { recursive: true });
+writeFileSync(join(repoPath, "apps", "web", "main.ts"), "export const ok = true;\n");
+runGit(["add", "README.md", "apps"], repoPath);
 runGit(["commit", "-m", "initial"], repoPath);
 
 const server = spawn(process.execPath, ["apps/server/src/index.mjs"], {
@@ -53,6 +56,42 @@ try {
 
   const tree = await request("GET", `/api/projects/${encodeURIComponent(created.project.id)}/tree`);
   assert(tree.entries.some((entry) => entry.name === "README.md"), "worktree project tree should be readable");
+
+  // #1200: the file tree loads one level at a time. The root listing must not
+  // claim to know what is inside a directory — it only ran one readdir. Saying
+  // `children: []` there asserted "empty", and the browser rendered an unread
+  // directory and an empty one identically: as nothing. Clicking did nothing.
+  const rootFiles = await request("GET", `/api/worktrees/${encodeURIComponent(created.worktree.id)}/files`);
+  const appsNode = (rootFiles.tree ?? []).find((node) => node.name === "apps");
+  assert(appsNode, "root listing should include the apps directory");
+  assert(appsNode.dir === true, "apps should be reported as a directory");
+  assert(!("children" in appsNode), "an unread directory must NOT claim children — absent means 'not read yet'");
+  const readmeNode = (rootFiles.tree ?? []).find((node) => node.name === "README.md");
+  assert(readmeNode && readmeNode.dir === false, "root listing should include README.md as a file");
+
+  // ...and the level below is fetchable by path, which is what expanding does.
+  const appsFiles = await request(
+    "GET",
+    `/api/worktrees/${encodeURIComponent(created.worktree.id)}/files?path=${encodeURIComponent("apps")}`,
+  );
+  const webNode = (appsFiles.tree ?? []).find((node) => node.name === "web");
+  assert(webNode && webNode.dir === true, "?path=apps should list the nested web directory");
+  assert(webNode.path === "apps/web", `nested node should carry its full path (got ${webNode.path})`);
+
+  const webFiles = await request(
+    "GET",
+    `/api/worktrees/${encodeURIComponent(created.worktree.id)}/files?path=${encodeURIComponent("apps/web")}`,
+  );
+  assert((webFiles.tree ?? []).some((node) => node.name === "main.ts" && !node.dir), "?path=apps/web should list main.ts");
+
+  // Path confinement still holds on the listing route.
+  let escaped = null;
+  try {
+    escaped = await request("GET", `/api/worktrees/${encodeURIComponent(created.worktree.id)}/files?path=${encodeURIComponent("../..")}`);
+  } catch (error) {
+    escaped = { refused: true, message: String(error?.message ?? error) };
+  }
+  assert(escaped?.refused === true, "listing must refuse a path escaping the worktree root");
 
   const invoked = await request("POST", "/api/invocations", {
     task: "Worktree smoke task.",

@@ -57,6 +57,22 @@ test("byModel keys on the explicit model, not the provider (AI-usage chargeback 
   assert.equal(summary.byModel[0].knownCostUsd, 5);
 });
 
+test("voided/cancelled entries are counted but excluded from totals and every rollup", () => {
+  const { state } = createServerState({ defaultProjectPath: PROJECT_DIR, now });
+  const m3 = m3For(state);
+  state.ledgerEntries = [
+    { id: "led_ok", model: "gpt-4", counterparty: "gpt-4", autoRunId: "aur_1", amountUsd: 5, status: "finalized", billable: true },
+    { id: "led_void", model: "gpt-4", counterparty: "gpt-4", autoRunId: "aur_1", amountUsd: 9, status: "voided", billable: true },
+    { id: "led_cancel", model: "gpt-4", counterparty: "gpt-4", autoRunId: "aur_1", amountUsd: 7, status: "cancelled", billable: true },
+  ];
+  const summary = m3.ledgerSummary();
+  assert.equal(summary.voidedEntries, 2, "both voided + cancelled are counted");
+  assert.equal(summary.totalCostUsd, 5, "only the finalized entry contributes to the total");
+  assert.equal(summary.byModel.find((r) => r.model === "gpt-4").knownCostUsd, 5, "voided spend not in byModel");
+  assert.equal(summary.byAutoRun.find((r) => r.autoRunId === "aur_1").knownCostUsd, 5, "voided spend not in agent_run_cost_total");
+  assert.equal(summary.billableEntries, 1, "a voided entry is not billable spend");
+});
+
 test("ledgerSummary rolls a whole auto-run's spend up (agent_run_cost_total)", () => {
   const { state } = createServerState({ defaultProjectPath: PROJECT_DIR, now });
   state.projects = [{ id: "proj_a", name: "A", path: PROJECT_DIR, ownerTeamId: "team_a" }];

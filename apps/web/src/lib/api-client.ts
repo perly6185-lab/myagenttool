@@ -32,6 +32,31 @@ export interface LoopRefusalsResponse {
   truncatedRuns: boolean;
 }
 
+export interface InvocationEventsResponse {
+  invocationId: string;
+  events: InvocationEventSnapshot[];
+  nextCursor: string | null;
+  hasMore: boolean;
+  retentionTruncated: boolean;
+}
+
+export interface RefusalSnapshot {
+  id: string;
+  invocationId?: string;
+  at?: string;
+  category: string;
+  code?: string;
+  summary?: string;
+  remedy?: string;
+  piiRedacted?: boolean;
+}
+
+export interface InvocationRefusalsResponse {
+  invocationId: string;
+  refusals: RefusalSnapshot[];
+  truncated: boolean;
+}
+
 // The dev server's default port (tools/dev/run-local-demo.mjs SERVER_PORT).
 const SERVER_PORT = "5001";
 const FALLBACK_API_BASE = `http://127.0.0.1:${SERVER_PORT}`;
@@ -441,6 +466,26 @@ export const api = {
     worktreeId?: string | null,
     options?: Record<string, unknown>,
   ) => request("POST", "/api/invocations", { task, agentId, projectId, worktreeId, options }),
+  listInvocationEvents: (
+    id: string,
+    options: { limit?: number; before?: string } = {},
+  ) => {
+    const query = new URLSearchParams({ limit: String(options.limit ?? 100) });
+    if (options.before) query.set("before", options.before);
+    return request<InvocationEventsResponse>(
+      "GET",
+      `/api/invocations/${encodeURIComponent(id)}/events?${query}`,
+    );
+  },
+  // Refusals for one invocation, INCLUDING the ones the 200-row cap evicted to the
+  // durable archive (server slice 1/3).
+  listInvocationRefusals: (id: string, options: { limit?: number } = {}) => {
+    const query = new URLSearchParams({ limit: String(options.limit ?? 200) });
+    return request<InvocationRefusalsResponse>(
+      "GET",
+      `/api/invocations/${encodeURIComponent(id)}/refusals?${query}`,
+    );
+  },
   uploadWorktreeAttachments: (id: string, files: { name: string; dataBase64: string }[]) =>
     request("POST", `/api/worktrees/${encodeURIComponent(id)}/attachments`, { files }),
   cancelInvocation: (id: string) =>
@@ -535,8 +580,18 @@ export const api = {
       baseBranch?: string;
     },
   ) => request("POST", `/api/projects/${encodeURIComponent(projectId)}/auto-runs`, payload),
+  // Creates a platform-managed bare repo and points the project's origin at it —
+  // somewhere to push, with no account anywhere (#1210).
+  createLocalOrigin: (projectId: string) =>
+    request("POST", `/api/projects/${encodeURIComponent(projectId)}/local-origin`),
   removeWorktree: (id: string) => request("DELETE", `/api/worktrees/${encodeURIComponent(id)}`),
-  listWorktreeFiles: (id: string) => request("GET", `/api/worktrees/${encodeURIComponent(id)}/files`),
+  // `path` lists one directory (the route's ?path=); omitted, it lists the root.
+  // The tree loads a level at a time — a worktree is too big to walk eagerly.
+  listWorktreeFiles: (id: string, path?: string) =>
+    request(
+      "GET",
+      `/api/worktrees/${encodeURIComponent(id)}/files${path ? `?path=${encodeURIComponent(path)}` : ""}`,
+    ),
   searchWorktree: (id: string, q: string, mode: "name" | "content") =>
     request("GET", `/api/worktrees/${encodeURIComponent(id)}/search?mode=${mode}&q=${encodeURIComponent(q)}`),
   readWorktreeFile: (id: string, filePath: string) =>

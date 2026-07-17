@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 
-import { createRoundTelemetryRuntime, redactDigest } from "../src/services/round-telemetry.mjs";
+import { createRoundTelemetryRuntime, redactDigest, scrubPii } from "../src/services/round-telemetry.mjs";
 
 const T0 = "2026-07-13T00:00:00.000Z";
 const T5 = "2026-07-13T00:00:05.000Z";
@@ -274,6 +274,16 @@ test("redactDigest scrubs secret-shaped tokens and bounds length", () => {
   assert.ok(out.endsWith("..."));
 });
 
+test("scrubPii removes PII spans but does NOT truncate (retained records keep full text)", () => {
+  const long = `prefix ${"y".repeat(1000)} mail a@b.com tail`;
+  const out = scrubPii(long);
+  assert.ok(out.length > 500, "full text retained, not bounded to 500 like redactDigest");
+  assert.ok(out.includes("[redacted]"), "email scrubbed");
+  assert.ok(!/a@b\.com/.test(out));
+  assert.equal(scrubPii("clean text"), "clean text", "clean text unchanged");
+  assert.equal(scrubPii(""), "", "empty stays empty (not null)");
+});
+
 test("redactDigest scrubs mainland-China PII: mobile, resident id, bank card", () => {
   assert.equal(redactDigest("call me at 13800138000 tomorrow"), "call me at [redacted] tomorrow");
   assert.equal(redactDigest("id 11010119900307765X on file"), "id [redacted] on file");
@@ -316,6 +326,7 @@ test("every ingestion routes global retention through the archive, not a silent 
   const collections = capCalls.map((c) => `${c.collection}:${c.max}`);
   assert.ok(collections.includes("invocationRounds:5000"), "rounds capped via archive");
   assert.ok(collections.includes("toolInvocationRecords:5000"), "tool records capped via archive");
+  assert.ok(collections.includes("spans:20000"), "the whole spans array is capped via archive too");
 });
 
 test("a per-invocation over-cap round is archived, never silently lost", () => {

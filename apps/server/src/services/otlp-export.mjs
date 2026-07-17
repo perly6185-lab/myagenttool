@@ -117,6 +117,7 @@ export function createOtlpTraceExporter({
     if (!endpoint || typeof fetchImpl !== "function") return { sent: false, reason: "no endpoint configured" };
     const payload = spansToOtlp(spans, { serviceName });
     if (payload.resourceSpans[0].scopeSpans[0].spans.length === 0) return { sent: false, reason: "no completed spans" };
+    const count = payload.resourceSpans[0].scopeSpans[0].spans.length;
     // OTLP/HTTP traces path.
     const url = endpoint.replace(/\/+$/, "") + "/v1/traces";
     const controller = new AbortController();
@@ -128,9 +129,24 @@ export function createOtlpTraceExporter({
         body: JSON.stringify(payload),
         signal: controller.signal,
       });
-      return { sent: true, status: res?.status ?? null, count: payload.resourceSpans[0].scopeSpans[0].spans.length };
-    } catch (error) {
-      return { sent: false, reason: String(error?.message ?? error) };
+      const status = Number.isInteger(res?.status) ? res.status : null;
+      if (status !== null && status >= 200 && status < 300) {
+        return { sent: true, status, count };
+      }
+      // A response body may contain collector internals or echoed credentials;
+      // do not read or surface it. The stable reason is enough for callers to
+      // decide whether the batch must remain pending.
+      return { sent: false, status, count, reason: "http_status" };
+    } catch {
+      // Never expose fetch errors: they commonly include the destination URL.
+      // This controller is private to the timeout, so an aborted signal is a
+      // deterministic timeout classification; every other throw is network I/O.
+      return {
+        sent: false,
+        status: null,
+        count,
+        reason: controller.signal.aborted ? "timeout" : "network_error",
+      };
     } finally {
       clearTimeout(timer);
     }

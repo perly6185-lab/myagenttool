@@ -835,7 +835,7 @@ async function runInvocation(work) {
   const invocationId = work.invocationId;
   const task = String(work.input?.task ?? "");
   const adapter = work.adapter;
-  const runtimeName = agentRuntimeName(adapter);
+  const runtimeName = agentRuntimeName(work.agentName, adapter);
   console.log(`[desktop] running ${invocationId}: ${task}`);
 
   // Pre-ack refusal (docs/design/BRIDGE_LIVENESS_AND_REFUSAL.md): a delivery whose
@@ -2288,7 +2288,9 @@ function isClaudeCliCommand(command) {
   return ["claude", "claude.cmd", "claude.ps1", "claude.exe"].some((name) => normalized === name || normalized.endsWith(`/${name}`) || normalized.endsWith(`\\${name}`));
 }
 
-function agentRuntimeName(adapter) {
+function agentRuntimeName(agentName, adapter) {
+  const selectedAgentName = typeof agentName === "string" ? agentName.trim() : "";
+  if (selectedAgentName) return selectedAgentName;
   if (isCodexCliCommand(adapter?.command)) return "Codex CLI";
   if (isClaudeCliCommand(adapter?.command)) return "Claude CLI";
   return "Demo CLI Agent";

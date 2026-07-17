@@ -7,14 +7,14 @@ const fixedNow = () => "2026-07-14T09:00:00.000Z";
 const supported = {
   windows: ["git", "ccusage", "claude"],
   macos: ["git", "ccusage", "claude"],
-  linux: ["ccusage", "claude"],
+  linux: ["git", "ccusage", "claude"],
 };
 
 test("P1 catalog exposes only supported applications and safe policy metadata", () => {
   const catalog = listApplicationInstallCatalog();
   assert.deepEqual(catalog.map((entry) => entry.name), ["git", "ccusage", "claude"]);
   assert.ok(catalog.every((entry) => entry.approvalRequired));
-  assert.deepEqual(catalog.find((entry) => entry.name === "git").supportedPlatforms, ["windows", "macos"]);
+  assert.deepEqual(catalog.find((entry) => entry.name === "git").supportedPlatforms, ["windows", "macos", "linux"]);
   assert.ok(!JSON.stringify(catalog).includes("argv"));
 });
 
@@ -47,12 +47,22 @@ test("P4 pins npm packages and registry without latest aliases", () => {
   }
 });
 
-test("P4 rejects expired plans and Linux Git without an elevation broker", () => {
+test("P4 rejects expired plans; Linux Git now plans as an ELEVATED apt-get install (#994/ADR 0015)", () => {
   const target = device("windows");
   const plan = createApplicationInstallPlan({ name: "git" }, { device: target, now: fixedNow });
   assert.equal(applicationInstallPlanMatchesCurrent(plan, { device: target, now: () => "2026-07-14T09:10:00.000Z" }), true);
   assert.equal(applicationInstallPlanMatchesCurrent(plan, { device: target, now: () => "2026-07-14T09:10:00.001Z" }), false);
-  assert.throws(() => createApplicationInstallPlan({ name: "git" }, { device: device("linux"), now: fixedNow }), { code: "install_platform_not_supported" });
+  // ADR 0015 slice 1: the Linux git plan exists, records the REAL command
+  // (pkexec is the bridge's business), and is honest about elevation + risk.
+  const linuxPlan = createApplicationInstallPlan({ name: "git" }, { device: device("linux"), now: fixedNow });
+  assert.equal(linuxPlan.execution.executable, "apt-get");
+  assert.deepEqual(linuxPlan.execution.args, ["install", "--yes", "git"]);
+  assert.equal(linuxPlan.execution.elevated, true);
+  assert.equal(linuxPlan.risk.level, "high");
+  assert.ok(linuxPlan.risk.reasons.includes("requires_elevation"));
+  assert.equal(linuxPlan.package.versionPolicy.kind, "provider-managed", "apt cannot pin portably — explicit decision, like Homebrew");
+  // Every other platform stays unelevated.
+  assert.equal(plan.execution.elevated, false);
 });
 
 test("P1 rejects unknown applications, unsupported platforms, and target mismatch", () => {

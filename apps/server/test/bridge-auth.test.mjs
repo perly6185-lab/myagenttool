@@ -228,10 +228,12 @@ async function assertBridgeWorkOwnership({ token }) {
     deliveryState: "queued",
     deviceId: state.device.id,
   });
+  localQueuedInvocation.options.metadata = { agentName: "Untrusted client-supplied name" };
   state.invocations.unshift(otherDeviceQueuedInvocation, localQueuedInvocation);
   const invocationPoll = await call("/api/bridge/next", { token });
   assert.equal(invocationPoll.status, 200);
   assert.equal(invocationPoll.body.invocationId, localQueuedInvocation.id);
+  assert.equal(invocationPoll.body.agentName, state.agents.find((agent) => agent.id === localQueuedInvocation.agentId)?.name);
   assert.equal(localQueuedInvocation.status, "dispatching");
   assert.equal(otherDeviceQueuedInvocation.status, "queued");
 

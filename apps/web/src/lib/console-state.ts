@@ -346,7 +346,11 @@ export interface InvocationSnapshot {
   approvalRequestId?: string;
   policyDecisionId?: string;
   delivery?: { state?: string; dispatchAttempts?: number };
-  cancellation?: { state?: string };
+  cancellation?: {
+    state?: string;
+    appliedAt?: string | null;
+    message?: string | null;
+  };
   result?: { summary?: string; touchedUserFiles?: boolean; errorCode?: string | null; output?: unknown };
   explanation?: InvocationExplanation | null;
   createdAt?: string;
@@ -855,6 +859,19 @@ export interface ProjectSnapshot {
   isolation: "shared" | "worktree";
   createdAt: string;
   updatedAt?: string;
+  /**
+   * Git facts read from the project's real root (`readGitFacts`, projects.mjs:68).
+   * The server has always sent these — `state.projects` is projected wholesale —
+   * but the type never declared them, so the console could not say where a project
+   * pushes (#1213). `remoteUrl: null` on a repo means it has nowhere to publish.
+   */
+  git?: {
+    repoPath: string | null;
+    remoteUrl: string | null;
+    defaultBranch: string | null;
+    currentBranch: string | null;
+    isRepo: boolean;
+  };
 }
 
 export interface ProjectTargetSnapshot {

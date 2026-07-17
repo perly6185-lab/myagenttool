@@ -1,8 +1,12 @@
 # ADR 0017: Trace export is a zero-dependency, opt-in OTLP/HTTP JSON exporter over the existing span model, never an OpenTelemetry SDK rewrite
 
-Status: proposed · 2026-07-17
+Status: accepted · 2026-07-17
 
 Date: 2026-07-17
+
+Decision: Accepted, including the hand-rolled-exporter-over-SDK trade-off. Shipped
+(#1188), hardened (#1199). The serializer tracks the stable OTLP/HTTP JSON schema;
+a breaking OTLP change updates that one serializer rather than adding a dependency.
 
 Related issue: [#1182](https://github.com/perly6185-lab/myagenttool/issues/1182)
 

@@ -24,6 +24,10 @@ import { estimateCostUsdFromTokens } from "./m3.mjs";
 const MAX_ROUNDS_PER_INVOCATION = 500;
 const MAX_ROUNDS_TOTAL = 5000;
 const MAX_TOOL_RECORDS_TOTAL = 5000;
+// Spans had NO count cap (only time-reap, which is off by default): one root span
+// per invocation + one per round, so state.spans could grow unbounded in memory.
+// Bound it and archive the over-cap (oldest) spans, like rounds/tool records.
+const MAX_SPANS_TOTAL = 20000;
 
 const ROUND_TERMINAL_STATUSES = new Set(["succeeded", "failed", "cancelled"]);
 const TOOL_STATUSES = new Set(["started", "succeeded", "failed"]);
@@ -117,6 +121,9 @@ export function createRoundTelemetryRuntime({
       // Global retention: keep the newest N in memory, archive the overflow.
       state.invocationRounds = capList(state.invocationRounds, MAX_ROUNDS_TOTAL, "invocationRounds");
       state.toolInvocationRecords = capList(state.toolInvocationRecords, MAX_TOOL_RECORDS_TOTAL, "toolInvocationRecords");
+      // Caps the WHOLE spans array (root spans from creation.mjs + round child
+      // spans here) — fires on every round event, so spans stay bounded.
+      if (Array.isArray(state.spans)) state.spans = capList(state.spans, MAX_SPANS_TOTAL, "spans");
     });
   }
 
@@ -379,6 +386,17 @@ export function digestHasSecret(text) {
     pattern.lastIndex = 0; // shared global-flag regex — reset before test
     return pattern.test(text);
   });
+}
+
+// Scrub PII/secret-shaped substrings but do NOT truncate — for RETAINED records
+// (ADR 0018: shielded evidence kept of-record with its subject PII redacted).
+// Unlike redactDigest, the full text survives with only the sensitive spans
+// replaced, so a compliance/audit record stays intact minus the PII.
+export function scrubPii(text) {
+  if (typeof text !== "string" || text.length === 0) return text;
+  let value = text;
+  for (const pattern of SECRET_PATTERNS) value = value.replace(pattern, "[redacted]");
+  return value;
 }
 
 const DIGEST_FIELDS = ["responseDigest", "requestDigest", "inputDigest", "outputDigest"];

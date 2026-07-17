@@ -132,6 +132,7 @@ export const persistedObjectKeys = [
   // does not re-fire an alert for a breach that was already reported.
   "autoRunSloAlert",
   "approvalTokenLegacyUses",
+  "eventHistoryRetention",
   "privateDeploymentConfig",
   "retentionSettings",
   "terminalRuntimeCapability",

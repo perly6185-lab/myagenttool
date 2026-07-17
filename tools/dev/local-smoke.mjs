@@ -34,6 +34,7 @@ try {
   const queuedInvocation = queuedState.invocations.find((item) => item.id === offlineInvocationId);
   assert(queuedInvocation?.status === "queued", "offline invocation should be queued before bridge registration");
   assert(queuedInvocation?.delivery.state === "queued", "offline delivery should be queued before bridge registration");
+  assert(queuedInvocation?.cancellation.appliedAt === null && queuedInvocation.cancellation.message === null, "new invocation cancellation metadata should start empty");
 
   start("desktop", process.execPath, ["apps/desktop/src/index.mjs"], {
     BRIDGE_SERVER_URL: serverUrl,
@@ -199,6 +200,7 @@ try {
   assert(codexHooks.some((item) => item.eventName === "PreToolUse" && item.policyDecision === "review_required"), "Codex hook bridge should policy-check tool use");
   assert(codexHooks.every((item) => item.redactionState === "summary_only"), "Codex hook bridge should keep redacted summaries");
   assert(codexBroker?.status === "approved", "Codex PermissionRequest should be approved before execution");
+  assert(codexEvents.some((item) => item.type === "invocation_started" && item.message === `${registeredCodexIntegration.agent.name} started.`), "Codex invocation start event should use the selected agent name");
   assert(codexEvents.some((item) => item.type === "codex_runtime_warning" && item.data?.source === "codex_stderr"), "Codex runtime stderr should be recorded as a Codex warning");
   assert(codexEvents.some((item) => item.type === "codex_runtime_warning" && item.message?.includes("plugin catalog warning")), "Codex plugin catalog stderr should be summarized for operators");
   assert(!codexEvents.some((item) => item.type === "agent_output" && item.message?.includes("featured plugins")), "Codex runtime stderr should not be recorded as agent output");
@@ -430,8 +432,13 @@ try {
   }, "running Codex fixture cancellation");
   const codexCancelled = codexCancelState.invocations.find((item) => item.id === codexCancelRun.invocation.id);
   const codexCancelEvents = codexCancelState.events.filter((item) => item.invocationId === codexCancelRun.invocation.id);
+  const codexCancelAppliedEvent = codexCancelEvents.find((item) => item.type === "cancel_applied");
   assert(codexCancelled.cancellation.state === "applied", "Codex fixture cancellation should be applied");
-  assert(codexCancelEvents.some((item) => item.type === "cancel_dispatched"), "Codex fixture cancellation should dispatch to bridge");
+  assert(codexCancelled.cancellation.appliedAt === codexCancelled.completedAt, "Codex fixture cancellation should timestamp applied cancellation at completion");
+  assert(codexCancelAppliedEvent, "Codex fixture cancellation should emit cancel_applied");
+  assert(typeof codexCancelAppliedEvent.message === "string" && codexCancelAppliedEvent.message.trim().length > 0, "Codex cancel_applied event should include a non-empty message");
+  assert(codexCancelled.cancellation.message === codexCancelAppliedEvent.message, "Codex fixture cancellation should expose its applied event message");
+  assert(codexCancelEvents.some((item) => item.type === "cancel_dispatched" && item.message === `Desktop Bridge sent cancellation to ${registeredCodexIntegration.agent.name}.`), "Codex fixture cancellation should retain selected-agent Desktop Bridge copy");
 
   const draftIntegration = await request("POST", "/api/integration-artifacts", {
     artifactType: "integration_plan",
@@ -913,7 +920,7 @@ try {
   const cancelledInvocation = cancelledState.invocations.find((item) => item.id === cancelInvocationId);
   const cancelEvents = cancelledState.events.filter((item) => item.invocationId === cancelInvocationId);
   assert(cancelledInvocation.cancellation.state === "applied", "running cancellation should be applied");
-  assert(cancelEvents.some((item) => item.type === "cancel_dispatched"), "running cancellation should dispatch to bridge");
+  assert(cancelEvents.some((item) => item.type === "cancel_dispatched" && item.message === `Desktop Bridge sent cancellation to ${registeredCli.agent.name}.`), "custom CLI cancellation should use the selected agent name");
   assert(cancelEvents.some((item) => item.type === "cancel_applied"), "running cancellation should be visible as applied");
 
   console.log("[smoke] M0 local invocation loop OK");
