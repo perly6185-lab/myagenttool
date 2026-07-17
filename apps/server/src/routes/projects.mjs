@@ -806,12 +806,17 @@ function projectForWorktree(state, worktree) {
     ?? null;
 }
 
+// One level only — readProjectTree does a single readdir, so this knows a
+// directory EXISTS but nothing about what is in it. It used to answer `[]` for
+// every directory, which asserts "empty" and is a claim it cannot make; the
+// browser could not tell an unread directory from a genuinely empty one and
+// rendered both as nothing (#1200). Absent `children` means "not read yet"; the
+// client fetches it with ?path=. `[]` is then honest: an empty directory.
 function treeEntriesToNodes(entries) {
   return entries.map((entry) => ({
     name: entry.name,
     path: entry.path,
     dir: entry.kind === "directory",
-    children: entry.kind === "directory" ? [] : undefined,
   }));
 }
 

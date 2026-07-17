@@ -536,7 +536,13 @@ export const api = {
     },
   ) => request("POST", `/api/projects/${encodeURIComponent(projectId)}/auto-runs`, payload),
   removeWorktree: (id: string) => request("DELETE", `/api/worktrees/${encodeURIComponent(id)}`),
-  listWorktreeFiles: (id: string) => request("GET", `/api/worktrees/${encodeURIComponent(id)}/files`),
+  // `path` lists one directory (the route's ?path=); omitted, it lists the root.
+  // The tree loads a level at a time — a worktree is too big to walk eagerly.
+  listWorktreeFiles: (id: string, path?: string) =>
+    request(
+      "GET",
+      `/api/worktrees/${encodeURIComponent(id)}/files${path ? `?path=${encodeURIComponent(path)}` : ""}`,
+    ),
   searchWorktree: (id: string, q: string, mode: "name" | "content") =>
     request("GET", `/api/worktrees/${encodeURIComponent(id)}/search?mode=${mode}&q=${encodeURIComponent(q)}`),
   readWorktreeFile: (id: string, filePath: string) =>
