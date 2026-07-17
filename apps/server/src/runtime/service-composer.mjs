@@ -200,6 +200,13 @@ export function createServerRuntimeServices({
   const historyQuery = sqliteStore && typeof sqliteStore.queryHistory === "function"
     ? (collection, options) => sqliteStore.queryHistory(collection, options)
     : null;
+  // ADR 0019 B-3: erasure of the durable history table (null on the memory backing).
+  const historyDelete = sqliteStore && typeof sqliteStore.deleteHistory === "function"
+    ? (collection, scopeId) => sqliteStore.deleteHistory(collection, scopeId)
+    : null;
+  const historyRedact = sqliteStore && typeof sqliteStore.redactHistory === "function"
+    ? (collection, scopeId, redactRow) => sqliteStore.redactHistory(collection, scopeId, redactRow)
+    : null;
   const retentionArchive = createRetentionArchive({ stateStorePath, enabled: persistenceEnabled, now, appendHistory: historyAppend });
   const eventArchive = retentionArchive.prepareInvocationEventArchive();
   if (eventArchive.readError) {
@@ -777,7 +784,7 @@ export function createServerRuntimeServices({
       });
       return { ok: false, error: "not_permitted" };
     }
-    const result = deleteObservabilityData(state, { scope, subjectId, tier, now, appendEvent, actor });
+    const result = deleteObservabilityData(state, { scope, subjectId, tier, now, appendEvent, actor, deleteHistory: historyDelete, redactHistory: historyRedact, queryHistory: historyQuery });
     persistStateSoon();
     return { ok: true, ...result };
   }
