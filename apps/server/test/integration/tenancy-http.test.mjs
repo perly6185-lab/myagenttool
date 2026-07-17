@@ -303,6 +303,17 @@ test("invocation event detail is readable by its team and existence-hidden from 
   assert.deepEqual(foreign.body, { error: "invocation_not_found" });
 });
 
+test("dispatch-health queue is team-scoped; team B never sees team A's queued invocation", async () => {
+  const own = await call("/api/invocation-dispatch-health", { token: "tok_a" });
+  assert.equal(own.status, 200);
+  assert.ok(own.body.queue.items.some((i) => i.invocationId === "inv_a"), "team A sees its own queued invocation");
+  assert.equal(typeof own.body.capacity.maxConcurrency, "number", "device capacity is reported");
+
+  const foreign = await call("/api/invocation-dispatch-health", { token: "tok_b" });
+  assert.equal(foreign.status, 200);
+  assert.ok(!foreign.body.queue.items.some((i) => i.invocationId === "inv_a"), "team B's queue excludes team A's invocation");
+});
+
 test("decision soft-claim HTTP routes are wired through the composed runtime", async () => {
   const path = "/api/pending-decisions/approval%3Aapr_http/claim";
   const claimed = await call(path, { token: "tok_a", method: "POST" });

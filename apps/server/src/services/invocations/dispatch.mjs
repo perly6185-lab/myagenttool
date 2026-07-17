@@ -1,4 +1,11 @@
-import { isAgentDisabled } from "../agents.mjs";
+import {
+  INFLIGHT_STATUSES,
+  belongsToThisBridge as belongsToThisBridgeShared,
+  classifyDispatchEligibility,
+  DISPATCH_REASONS,
+  invocationDirKey,
+  isBridgeExecuted as isBridgeExecutedShared,
+} from "./dispatch-eligibility.mjs";
 
 export function createInvocationDispatchRuntime({
   state,
@@ -16,41 +23,11 @@ export function createInvocationDispatchRuntime({
   // commits the same state object); the transaction just owns the durable commit.
   // Falls back to a direct call when no store is injected (hermetic unit tests).
   const runTx = (fn) => (typeof store?.transaction === "function" ? store.transaction(fn) : fn());
-  // The directory a run occupies. Two runs in the same worktree (or the same
-  // base project) must not execute concurrently — they'd write the same tree.
-  //
-  // The metadata lives on `options`, NOT on `input` — `input` is `{ task }` (see
-  // invocations/creation.mjs, which writes projectPath/worktreePath into
-  // options.metadata). Reading `input.metadata` yielded undefined for every
-  // invocation ever created, so every dir key was "__default__": the per-worktree
-  // lock silently became a GLOBAL one, and any single stuck in-flight run wedged
-  // all dispatch on the device forever (#817).
-  function invocationDirKey(invocation) {
-    const meta = invocation.options?.metadata ?? {};
-    return meta.worktreePath || meta.projectPath || "__default__";
-  }
-
-  // Bridge-executed = a run that consumes this device's compute (CLI, a locally
-  // spawned stdio MCP server, container). Off-device work (remote_http/platform,
-  // a2a, and http-transport MCP — the bridge only drives the client; the work
-  // happens on the remote server) must not consume a bridge concurrency slot.
-  // Unknown agent → count it (conservative for the cap).
-  function isBridgeExecuted(invocation) {
-    const agent = findAgent(invocation.agentId);
-    if (!agent) return true;
-    if (agent.location?.type !== "local_device") return false;
-    if (!belongsToThisBridge(invocation, agent)) return false;
-    const adapter = agent.adapter ?? {};
-    if (adapter.type === "mcp") return adapter.transport !== "http";
-    return ["cli", "container"].includes(adapter.type);
-  }
-
-  function belongsToThisBridge(invocation, agent) {
-    const deliveryDeviceId = invocation.delivery?.deviceId ?? null;
-    const agentDeviceId = agent?.location?.type === "local_device" ? agent.location.deviceId : null;
-    const deviceId = deliveryDeviceId ?? agentDeviceId;
-    return deviceId === state.device.id;
-  }
+  // Dir-lock, bridge-executed, and belongs-to-this-bridge predicates are shared
+  // (dispatch-eligibility.mjs) with the read-model so the operator sees exactly
+  // what the bridge decides. Bind the device-id-dependent ones to this device.
+  const isBridgeExecuted = (invocation) => isBridgeExecutedShared(invocation, { findAgent, deviceId: state.device.id });
+  const belongsToThisBridge = (invocation, agent) => belongsToThisBridgeShared(invocation, agent, state.device.id);
 
   // Force a terminal status on runs stuck in "cancelling" past a grace (e.g. the
   // bridge died mid-cancel). Otherwise they'd hold a concurrency slot and lock
@@ -78,7 +55,7 @@ export function createInvocationDispatchRuntime({
     // platform/HTTP agent (off-device) must not consume a bridge slot and
     // starve CLI dispatch.
     const inFlight = state.invocations.filter(
-      (i) => ["dispatching", "running", "cancelling"].includes(i.status) && isBridgeExecuted(i),
+      (i) => INFLIGHT_STATUSES.includes(i.status) && isBridgeExecuted(i),
     );
     // Authoritative cross-worktree concurrency cap.
     if (inFlight.length >= (state.device.maxConcurrency || 1)) {
@@ -89,20 +66,12 @@ export function createInvocationDispatchRuntime({
     // writing the same directory.
     const busyDirs = new Set(inFlight.map(invocationDirKey));
     return state.invocations.find((item) => {
-      if (item.status !== "queued" || !["queued", "redelivering"].includes(item.delivery.state)) {
-        return false;
-      }
-      if (busyDirs.has(invocationDirKey(item))) {
-        return false;
-      }
       const agent = findAgent(item.agentId);
-      if (!agent) {
-        return false;
-      }
-      if (agent.location?.type === "local_device" && !belongsToThisBridge(item, agent)) {
-        return false;
-      }
-      return !isAgentDisabled(agent) && agent?.health?.status !== "unhealthy";
+      return classifyDispatchEligibility(item, {
+        agent,
+        dirBusy: busyDirs.has(invocationDirKey(item)),
+        onThisBridge: agent ? belongsToThisBridge(item, agent) : false,
+      }) === DISPATCH_REASONS.DISPATCHABLE;
     });
   }
 

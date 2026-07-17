@@ -1,3 +1,4 @@
+import { computeInvocationDispatchHealth } from "../read-models/invocation-dispatch-health.mjs";
 import { denyForeignProject } from "../runtime/auth.mjs";
 
 export async function handleInvocationRoutes({
@@ -49,6 +50,30 @@ export async function handleInvocationRoutes({
       return true;
     }
     sendJson(res, 200, { released: releaseDecisionClaim({ decisionId, actor }) });
+    return true;
+  }
+
+  // Layer-A dispatch observability: why queued invocations aren't running, how
+  // long they've waited, device capacity, and dispatch latency. The queue/stats
+  // are team-scoped (only this actor's work); device capacity is global infra.
+  // Mirrors /api/dispatch-evaluation, which is the Layer-B (issue→worker) view.
+  if (req.method === "GET" && url.pathname === "/api/invocation-dispatch-health") {
+    const teamId = actor?.teamId ?? null;
+    const visibleInvocation = (invocation) => {
+      if (teamId == null) return true;
+      const projectId = invocationProjectId(invocation);
+      if (projectId) {
+        const project = (state.projects ?? []).find((p) => p.id === projectId);
+        return (project?.ownerTeamId ?? null) === teamId;
+      }
+      const requester = (state.users ?? []).find((user) => user.id === invocation?.requestedBy);
+      return (requester?.teamId ?? "team_local") === teamId;
+    };
+    sendJson(res, 200, computeInvocationDispatchHealth(state, {
+      findAgent,
+      now: () => new Date().toISOString(),
+      visibleInvocation,
+    }));
     return true;
   }
 
