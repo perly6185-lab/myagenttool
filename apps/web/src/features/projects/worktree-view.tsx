@@ -17,7 +17,27 @@ import { cn } from "@/lib/cn";
 import type { WorktreeSnapshot } from "@/lib/console-state";
 
 const RUNNING = ["queued", "dispatching", "waiting_for_local_approval", "running", "cancelling"];
-type TreeNode = { name: string; path: string; dir: boolean; children?: TreeNode[] };
+// `children` absent = this directory has not been read yet; `[]` = read, empty.
+// The distinction is the whole fix in #1200: the two were conflated, so an
+// unfetched directory and an empty one both rendered as nothing.
+export type TreeNode = { name: string; path: string; dir: boolean; children?: TreeNode[] };
+
+export function findNode(nodes: TreeNode[], path: string): TreeNode | null {
+  for (const node of nodes) {
+    if (node.path === path) return node;
+    const hit = node.children ? findNode(node.children, path) : null;
+    if (hit) return hit;
+  }
+  return null;
+}
+
+export function withChildren(nodes: TreeNode[], path: string, children: TreeNode[]): TreeNode[] {
+  return nodes.map((node) => {
+    if (node.path === path) return { ...node, children };
+    if (node.children) return { ...node, children: withChildren(node.children, path, children) };
+    return node;
+  });
+}
 type SearchMatch = { path: string; line?: number; text?: string };
 type PaneTab = "project" | "sessions" | "changes" | "checks";
 const PANE_TABS: [PaneTab, string, ComponentType<{ className?: string }>][] = [
@@ -61,6 +81,7 @@ export function WorktreeView({ worktree }: { worktree: WorktreeSnapshot }) {
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const [tree, setTree] = useState<TreeNode[]>([]);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
+  const [loadingDirs, setLoadingDirs] = useState<Set<string>>(new Set());
   const [fileQuery, setFileQuery] = useState("");
   const [searchMode, setSearchMode] = useState<"name" | "content">("name");
   const [results, setResults] = useState<SearchMatch[]>([]);
@@ -117,27 +138,56 @@ export function WorktreeView({ worktree }: { worktree: WorktreeSnapshot }) {
     });
   }
 
-  // Load (or reload) the file tree, expanding all directories by default.
+  // Load (or reload) the root of the file tree. Directories start collapsed and
+  // their contents are fetched on first expand (#1200): the server returns one
+  // level, so eagerly expanding everything would fan out a request per directory
+  // and still show nothing until each lands.
   function loadTree() {
+    setExpanded(new Set());
+    setLoadingDirs(new Set());
     (api.listWorktreeFiles(worktree.id) as Promise<{ tree: TreeNode[] }>)
-      .then((r) => {
-        const t = r.tree ?? [];
-        setTree(t);
-        const dirs = new Set<string>();
-        const collect = (ns: TreeNode[]) =>
-          ns.forEach((n) => {
-            if (n.dir) {
-              dirs.add(n.path);
-              if (n.children) collect(n.children);
-            }
-          });
-        collect(t);
-        setExpanded(dirs);
-      })
+      .then((r) => setTree(r.tree ?? []))
       .catch(() => {
         setTree([]);
         setExpanded(new Set());
       });
+  }
+
+  // Fetch one directory's entries and splice them in. `children` absent means
+  // "not read yet" and `[]` means "empty", so a directory that genuinely has no
+  // entries resolves to [] and is not re-fetched on the next expand.
+  function loadDir(path: string) {
+    setLoadingDirs((prev) => new Set(prev).add(path));
+    (api.listWorktreeFiles(worktree.id, path) as Promise<{ tree: TreeNode[] }>)
+      .then((r) => setTree((prev) => withChildren(prev, path, r.tree ?? [])))
+      .catch(() =>
+        // Leave `children` absent so the directory stays unread and a later
+        // expand retries. Marking it [] here would present a failed fetch as an
+        // empty directory — the exact lie #1200 was about.
+        setExpanded((prev) => {
+          const next = new Set(prev);
+          next.delete(path);
+          return next;
+        }),
+      )
+      .finally(() =>
+        setLoadingDirs((prev) => {
+          const next = new Set(prev);
+          next.delete(path);
+          return next;
+        }),
+      );
+  }
+
+  function toggleDir(path: string) {
+    const willOpen = !expanded.has(path);
+    setExpanded((prev) => {
+      const next = new Set(prev);
+      if (next.has(path)) next.delete(path);
+      else next.add(path);
+      return next;
+    });
+    if (willOpen && !findNode(tree, path)?.children && !loadingDirs.has(path)) loadDir(path);
   }
 
   useEffect(() => {
@@ -577,16 +627,10 @@ export function WorktreeView({ worktree }: { worktree: WorktreeSnapshot }) {
                     nodes={tree}
                     depth={0}
                     expanded={expanded}
+                    loadingDirs={loadingDirs}
                     activePath={activeTab}
                     onOpen={openFile}
-                    toggle={(p) =>
-                      setExpanded((prev) => {
-                        const next = new Set(prev);
-                        if (next.has(p)) next.delete(p);
-                        else next.add(p);
-                        return next;
-                      })
-                    }
+                    toggle={toggleDir}
                   />
                 )}
               </div>
@@ -767,6 +811,7 @@ function FileTree({
   nodes,
   depth,
   expanded,
+  loadingDirs,
   activePath,
   toggle,
   onOpen,
@@ -774,6 +819,7 @@ function FileTree({
   nodes: TreeNode[];
   depth: number;
   expanded: Set<string>;
+  loadingDirs: Set<string>;
   activePath: string;
   toggle: (path: string) => void;
   onOpen: (path: string, name: string) => void;
@@ -809,8 +855,29 @@ function FileTree({
               )}
               <span className="truncate">{n.name}</span>
             </button>
-            {n.dir && open && n.children ? (
-              <FileTree nodes={n.children} depth={depth + 1} expanded={expanded} activePath={activePath} toggle={toggle} onOpen={onOpen} />
+            {n.dir && open ? (
+              n.children ? (
+                n.children.length > 0 ? (
+                  <FileTree
+                    nodes={n.children}
+                    depth={depth + 1}
+                    expanded={expanded}
+                    loadingDirs={loadingDirs}
+                    activePath={activePath}
+                    toggle={toggle}
+                    onOpen={onOpen}
+                  />
+                ) : (
+                  <p style={{ paddingLeft: (depth + 1) * 12 + 16 }} className="py-0.5 text-[11px] text-muted-foreground">
+                    Empty
+                  </p>
+                )
+              ) : (
+                // Not read yet — say so, rather than render nothing and look broken.
+                <p style={{ paddingLeft: (depth + 1) * 12 + 16 }} className="py-0.5 text-[11px] text-muted-foreground">
+                  {loadingDirs.has(n.path) ? "Loading…" : "Could not load."}
+                </p>
+              )
             ) : null}
           </li>
         );
