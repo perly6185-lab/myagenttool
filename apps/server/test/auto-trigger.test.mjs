@@ -9,14 +9,17 @@ import { test } from "node:test";
 
 import {
   createAutoTriggerRuntime,
+  issueRequirements,
+  parseWorkerProfiles,
   planDispatch,
   resolveAutoTriggerConfig,
+  scoreWorkers,
   selectAutoTriggerCandidates,
 } from "../src/services/auto-trigger.mjs";
 
 test("resolveAutoTriggerConfig is off by default and reads the env opt-in", () => {
   // #1165 dispatch defaults ride along: standalone role = today's behavior.
-  const dispatchDefaults = { dispatchRole: "standalone", serverId: null, dispatchWorkers: [], dispatchWorkerCap: 2, dispatchAssignTtlMinutes: 120, dispatchTtlEnabled: false };
+  const dispatchDefaults = { dispatchRole: "standalone", serverId: null, dispatchWorkers: [], dispatchWorkerCap: 2, dispatchAssignTtlMinutes: 120, dispatchTtlEnabled: false, dispatchWorkerProfiles: null };
   assert.deepEqual(resolveAutoTriggerConfig({}), { enabled: false, label: "auto", maxConcurrent: 1, requireProjectFields: true, ...dispatchDefaults });
   const on = resolveAutoTriggerConfig({
     MYAGENTTOOL_AUTOTRIGGER_ENABLED: "1",
@@ -378,4 +381,122 @@ test("#1169 dispatcher runtime applies settle + adopt bookkeeping without gh wri
   const adopted = state.dispatchAssignments.find((r) => r.issueNumber === 5);
   assert.equal(adopted?.status, "open");
   assert.equal(adopted?.adopted, true, "stranded label adopted into bookkeeping");
+});
+
+// ── #1172 R1: capability-aware routing ───────────────────────────────────────
+
+test("#1172 WORKERS_JSON parses profiles, derives the worker list, and falls back loudly on garbage", () => {
+  const cfg = resolveAutoTriggerConfig({
+    MYAGENTTOOL_AUTOTRIGGER_WORKERS_JSON: JSON.stringify([
+      { id: "desk", platform: "macos", areas: ["server", "web"], agents: ["cli"], maxRisk: "high" },
+      { id: "office" },
+    ]),
+    MYAGENTTOOL_AUTOTRIGGER_WORKERS: "ignored,list",
+  });
+  assert.deepEqual(cfg.dispatchWorkers, ["desk", "office"], "worker ids derive from profiles; the plain list is ignored");
+  assert.equal(cfg.dispatchWorkerProfiles[0].maxRisk, "high");
+  assert.deepEqual(cfg.dispatchWorkerProfiles[1], { id: "office", platform: null, areas: null, agents: null, maxRisk: null }, "bare id = all wildcards");
+
+  assert.equal(parseWorkerProfiles("not json"), null);
+  assert.equal(parseWorkerProfiles("[]"), null);
+  assert.equal(parseWorkerProfiles(JSON.stringify([{ platform: "macos" }])), null, "a row without an id invalidates the whole config");
+});
+
+test("#1172 issueRequirements reads the governance taxonomy; all/none are unconstrained", () => {
+  const issue = { labels: ["auto", "platform/macos", "area/web", "risk/high", "agent/cli", "priority/p1"] };
+  assert.deepEqual(issueRequirements(issue), { platforms: ["macos"], areas: ["web"], risk: "high", agents: ["cli"] });
+  assert.deepEqual(issueRequirements({ labels: ["platform/all", "agent/none"] }), { platforms: [], areas: [], risk: null, agents: [] });
+});
+
+test("#1172 hard constraints are never overridden: mismatched workers are ineligible with named reasons", () => {
+  const profiles = [
+    { id: "winbox", platform: "windows", areas: null, agents: null, maxRisk: null },
+    { id: "lowrisk", platform: "macos", areas: null, agents: null, maxRisk: "low" },
+    { id: "nocli", platform: "macos", areas: null, agents: ["http"], maxRisk: null },
+    { id: "fit", platform: "macos", areas: ["web"], agents: ["cli"], maxRisk: "high" },
+  ];
+  const issue = { number: 1, labels: ["platform/macos", "risk/high", "agent/cli", "area/web"] };
+  const { eligible, ineligible } = scoreWorkers({ issue, profiles, load: new Map(), workerCap: 2 });
+  assert.deepEqual(eligible.map((e) => e.id), ["fit"]);
+  const reasons = Object.fromEntries(ineligible.map((i) => [i.id, i.reason]));
+  assert.match(reasons.winbox, /platform_mismatch/);
+  assert.match(reasons.lowrisk, /risk_above_ceiling/);
+  assert.match(reasons.nocli, /agent_mismatch/);
+});
+
+test("#1172 area affinity beats load among eligible; load breaks affinity ties; hard constraints beat both", () => {
+  const profiles = [
+    { id: "generalist", platform: null, areas: null, agents: null, maxRisk: null },
+    { id: "webber", platform: null, areas: ["web"], agents: null, maxRisk: null },
+  ];
+  const issue = { number: 1, labels: ["area/web"] };
+  // webber is BUSIER but has affinity → still wins.
+  const load = new Map([["generalist", 0], ["webber", 1]]);
+  const { eligible } = scoreWorkers({ issue, profiles, load, workerCap: 2 });
+  assert.equal(eligible[0].id, "webber", "affinity outranks load");
+  // Without affinity, least-loaded wins.
+  const plain = scoreWorkers({ issue: { number: 2, labels: [] }, profiles, load, workerCap: 2 });
+  assert.equal(plain.eligible[0].id, "generalist");
+});
+
+test("#1172 bare-id profiles keep planDispatch byte-identical to least-loaded round-robin", () => {
+  const issues = [1, 2, 3].map((n) => ({ number: n, title: `t${n}`, state: "open", labels: ["auto"] }));
+  const base = planDispatch({ issues, assignments: [], projectId: "prj", workers: ["a", "b"], workerCap: 2, requireProjectFields: false, nowIso: T0 });
+  const withBareProfiles = planDispatch({
+    issues, assignments: [], projectId: "prj", workers: ["a", "b"], workerCap: 2, requireProjectFields: false, nowIso: T0,
+    profiles: [{ id: "a", platform: null, areas: null, agents: null, maxRisk: null }, { id: "b", platform: null, areas: null, agents: null, maxRisk: null }],
+  });
+  assert.deepEqual(
+    withBareProfiles.assign.map((x) => `${x.issue.number}:${x.workerId}`),
+    base.assign.map((x) => `${x.issue.number}:${x.workerId}`),
+    "wildcard profiles degenerate to the unconstrained pick",
+  );
+});
+
+test("#1172 assignments carry an explainable routing record; unroutable issues surface instead of parking silently", () => {
+  const profiles = [
+    { id: "mac", platform: "macos", areas: ["web"], agents: null, maxRisk: null },
+    { id: "linux", platform: "linux", areas: null, agents: null, maxRisk: null },
+  ];
+  const issues = [
+    { number: 1, title: "mac web", state: "open", labels: ["auto", "platform/macos", "area/web"] },
+    { number: 2, title: "windows only", state: "open", labels: ["auto", "platform/windows"] },
+  ];
+  const plan = planDispatch({ issues, assignments: [], projectId: "prj", workers: ["mac", "linux"], workerCap: 2, requireProjectFields: false, nowIso: T0, profiles });
+  assert.equal(plan.assign.length, 1);
+  assert.equal(plan.assign[0].workerId, "mac");
+  assert.equal(plan.assign[0].routing.why, "area_affinity");
+  assert.match(plan.assign[0].routing.ineligible.find((i) => i.id === "linux").reason, /platform_mismatch/);
+  assert.equal(plan.unroutable.length, 1);
+  assert.equal(plan.unroutable[0].issue.number, 2, "no configured worker can ever take it — visible, not parked");
+});
+
+test("#1172 dispatcher runtime stamps routing on the assignment row and events unroutable once", async () => {
+  const state = {
+    projects: [{ id: "prj", name: "P", source: "default" }],
+    projectTargets: [{ projectId: "prj", state: "ready", rootPath: "/repo" }],
+    autoRuns: [], issueClaims: [], dispatchAssignments: [], events: [],
+  };
+  const events = [];
+  const runtime = createAutoTriggerRuntime({
+    state,
+    config: {
+      enabled: true, label: "auto", maxConcurrent: 5, requireProjectFields: false,
+      dispatchRole: "dispatcher", serverId: "hub", dispatchWorkers: ["mac"], dispatchWorkerCap: 2, dispatchAssignTtlMinutes: 120, dispatchTtlEnabled: false,
+      dispatchWorkerProfiles: [{ id: "mac", platform: "macos", areas: null, agents: null, maxRisk: null }],
+    },
+    listLabeledIssues: async () => [
+      { number: 1, title: "fits", state: "open", labels: ["auto", "platform/macos"] },
+      { number: 2, title: "never fits", state: "open", labels: ["auto", "platform/windows"] },
+    ],
+    startAutoRun: async () => ({}),
+    editIssueLabels: async () => {},
+    appendEvent: (e) => events.push(e),
+    persistStateSoon: () => {},
+  });
+  await runtime.scanOnce();
+  await runtime.scanOnce(); // second tick: unroutable must NOT re-event
+  const row = state.dispatchAssignments.find((r) => r.issueNumber === 1);
+  assert.equal(row.routing.chosen, "mac");
+  assert.equal(events.filter((e) => e.type === "auto_trigger_unroutable").length, 1, "reported once per process, not per tick");
 });

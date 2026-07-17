@@ -573,6 +573,7 @@ export const api = {
   listEvalTrend: () => request("GET", "/api/eval-trend"),
   maturity: () => request("GET", "/api/maturity"),
   dora: () => request("GET", "/api/dora"),
+  dispatchEvaluation: () => request("GET", "/api/dispatch-evaluation"),
   loopRoutineRuns: () => request("GET", "/api/loop-routines"),
   loopRoutineFindings: (runId: string) => request("GET", `/api/loop-routines/${encodeURIComponent(runId)}/findings`),
   // Auto-run effective configuration (safe knobs overlaid on env + per-command
