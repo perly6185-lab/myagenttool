@@ -27,6 +27,19 @@ export function resolveBridgeConcurrency({ serverMaxConcurrency, envValue, fallb
 }
 
 /**
+ * #1272: adopt a live cap change (Devices UI) from a readiness-response
+ * `device.maxConcurrency` WITHOUT a bridge restart. Returns the new cap, or the
+ * current one unchanged when the server did not send a usable positive value —
+ * so a malformed/absent field never silently drops the cap to the env/default
+ * fallback (which `resolveBridgeConcurrency` would otherwise do).
+ */
+export function refreshedConcurrency(current, { serverMaxConcurrency, envValue } = {}) {
+  const server = Number(serverMaxConcurrency);
+  if (!Number.isFinite(server) || server <= 0) return current;
+  return resolveBridgeConcurrency({ serverMaxConcurrency, envValue });
+}
+
+/**
  * @param {object} opts
  * @param {number|(() => number)} opts.cap - max concurrent runs (or a getter)
  * @param {() => Promise<any>} opts.claim - claim one work item; falsy = nothing queued / server 204
