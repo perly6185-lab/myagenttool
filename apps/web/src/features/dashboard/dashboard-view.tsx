@@ -150,11 +150,11 @@ export function DashboardView({ surface = "overview" }: { surface?: DashboardSur
     : undefined;
 
   return (
-    <div className="flex h-full flex-col gap-4">
+    <div className="flex min-h-full flex-col gap-4">
       {/* Onboarding is a home concern — Workspace embeds the composer without it (#927). */}
       {surface === "overview" ? <GettingStartedCard /> : null}
       {/* Transcript — the scrolling conversation area. */}
-      <Card className="flex min-h-0 flex-1 flex-col">
+      <Card className="flex min-h-48 flex-1 flex-col">
         <CardHeader>
           <SectionHeading
             eyebrow="Activity"

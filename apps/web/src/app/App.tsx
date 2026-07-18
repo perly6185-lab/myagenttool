@@ -24,7 +24,7 @@ export function App() {
       <div className="flex min-w-0 flex-1 flex-col">
         <Topbar />
         <div className="flex min-h-0 flex-1">
-          <main className="min-w-0 flex-1 overflow-y-auto px-6 py-6">
+          <main className="min-w-0 flex-1 overflow-y-auto px-3 py-3 sm:px-6 sm:py-6">
             <ErrorBoundary resetKey={section}>
               <View />
             </ErrorBoundary>
