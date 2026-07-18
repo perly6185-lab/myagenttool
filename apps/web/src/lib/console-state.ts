@@ -381,6 +381,22 @@ export interface InvocationSnapshot {
   // (server read-models/file-ledger.mjs). Deduped + capped; `truncated` when it hit
   // the cap. Absent for agents whose stream we don't parse.
   fileLedger?: { reads?: string[]; writes?: string[]; truncated?: boolean } | null;
+  // Request-setup summary captured from the agent CLI's stream-json init event
+  // (server read-models/request-context.mjs): model, permission mode, and the
+  // tool / MCP / skill / agent inventory the run was dispatched with. This is the
+  // wrapper-visible SUMMARY — tool NAMES only, NOT the raw system prompt or full
+  // tool schemas (the CLI never emits those). Absent until the init event lands.
+  requestContext?: {
+    provider?: string;
+    model?: string | null;
+    permissionMode?: string | null;
+    tools?: string[];
+    mcpServers?: { name: string; status?: string | null }[];
+    skills?: string[];
+    agents?: string[];
+    slashCommandCount?: number;
+    sessionId?: string | null;
+  } | null;
   traceId?: string;
   rootSpanId?: string;
   approvalRequestId?: string;
