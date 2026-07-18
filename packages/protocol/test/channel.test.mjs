@@ -35,6 +35,7 @@ test("channel vocabulary is the ADR 0012 closed set", () => {
     "/status",
     "/apps",
     "/run",
+    "/task",
     "/result",
     "/approve",
     "/cancel",

@@ -12,6 +12,7 @@ export async function handleChannelRoutes({
   readJson,
   actor,
   registerChannel,
+  setChannelTaskProject,
   listChannels,
   enableChannel,
   disableChannel,
@@ -62,6 +63,17 @@ export async function handleChannelRoutes({
         statusCapability: body?.statusCapability ?? null,
         approvalToken: body?.approvalToken,
       },
+      actor,
+    );
+    sendJson(res, result.status, result.body);
+    return true;
+  }
+
+  const taskProject = url.pathname.match(/^\/api\/channels\/([^/]+)\/task-project$/);
+  if (taskProject && req.method === "POST") {
+    const body = await readJson(req);
+    const result = setChannelTaskProject(
+      { channelId: decodeURIComponent(taskProject[1]), projectId: body?.projectId ?? null, approvalToken: body?.approvalToken },
       actor,
     );
     sendJson(res, result.status, result.body);

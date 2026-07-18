@@ -8,6 +8,7 @@ import { FactList } from "@/components/common/fact-list";
 import { useConsoleState } from "@/data/use-console-state";
 import { useAsyncAction, api } from "@/data/use-console-actions";
 import { readableDeviceStatus, shortTime } from "@/lib/readable-labels";
+import { InvocationDispatchHealth } from "./invocation-dispatch-health";
 
 export function DevicesView() {
   const { data: state } = useConsoleState();
@@ -19,6 +20,7 @@ export function DevicesView() {
   useEffect(() => setConc(current), [current]);
 
   return (
+    <div className="flex flex-col gap-4">
     <Card className="max-w-xl">
       <CardHeader className="flex-row items-center justify-between">
         <CardTitle>{device?.name ?? "No device"}</CardTitle>
@@ -72,5 +74,7 @@ export function DevicesView() {
         )}
       </CardContent>
     </Card>
+    <InvocationDispatchHealth />
+    </div>
   );
 }

@@ -38,6 +38,10 @@ export function createChannelConversationService({
   store,
   createCapabilityInvocation,
   cancelInvocation,
+  // /task: files a GitHub issue in the channel's bound project (with the
+  // auto-trigger label) so the existing dispatcher routes + starts a tracked
+  // auto-run. Async (runs `gh`); null → /task unavailable.
+  createChannelTaskIssue = null,
   // S6: the grant chokepoint — /approve mints a single-use grant sourced from
   // the channel message, consumes it, and only then flips the invocation.
   mintDecisionGrant = null,
@@ -105,6 +109,61 @@ export function createChannelConversationService({
     return lines.join("\n");
   }
 
+  // Shared sliding-window rate check for work-spawning commands (/run, /task).
+  function runRateCheck(conversation) {
+    const nowMs = Date.parse(now());
+    const recentRuns = (conversation.recentRuns ?? []).filter((t) => nowMs - t < RUN_RATE_WINDOW_MS);
+    return { nowMs, recentRuns, limited: recentRuns.length >= RUN_RATE_MAX };
+  }
+
+  // /task: record free-text work as a TRACKED item. Files a GitHub issue in the
+  // channel's bound project with the auto-trigger label — the existing single
+  // dispatcher then routes it to a worker and starts an auto-run, so the task
+  // shows on the six-state board with a status and work path. The bound project
+  // (owner-set) IS the authorization to file from this channel's untrusted input.
+  async function dispatchTask(event, channel, conversation, description) {
+    const text = String(description ?? "").replace(/\s+/g, " ").trim();
+    if (!text) {
+      return settle(event, { status: "refused", reply: "Usage: /task <what needs doing>", data: { reason: "missing_description" } });
+    }
+    if (!channel.taskProjectId || typeof createChannelTaskIssue !== "function") {
+      return settle(event, {
+        status: "refused",
+        reply: "This channel can't file tasks yet — an admin must bind a task project in the console.",
+        data: { reason: "no_task_project" },
+      });
+    }
+    const rate = runRateCheck(conversation);
+    if (rate.limited) {
+      return settle(event, { status: "refused", reply: `Too many requests — at most ${RUN_RATE_MAX} per minute. Try again shortly.`, data: { reason: "rate_limited" } });
+    }
+    let filed;
+    try {
+      filed = await createChannelTaskIssue({
+        projectId: channel.taskProjectId,
+        title: text.slice(0, 120),
+        description: text,
+        channelId: channel.id,
+        externalUserId: event.externalUserId,
+      });
+    } catch (error) {
+      filed = { ok: false, error: String(error?.message ?? error) };
+    }
+    if (!filed?.ok || !Number.isFinite(filed.number)) {
+      return settle(event, { status: "refused", reply: "Could not file the task right now — please try again.", data: { reason: "issue_create_failed" } });
+    }
+    runTx(() => {
+      conversation.taskIssues = [...(conversation.taskIssues ?? []), { number: filed.number, url: filed.url ?? null, at: now() }].slice(-50);
+      conversation.recentRuns = [...rate.recentRuns, rate.nowMs];
+      conversation.updatedAt = now();
+    });
+    return settle(event, {
+      status: "dispatched",
+      reply: `Filed issue #${filed.number} — queued for routing; it'll be assigned and tracked.${filed.url ? ` (${filed.url})` : ""}`,
+      data: { command: "/task", issueNumber: filed.number, projectId: channel.taskProjectId },
+    });
+  }
+
   function dispatchRun(event, channel, conversation, actor, capabilityName, args) {
     const name = String(capabilityName ?? "").trim();
     if (!name) {
@@ -119,18 +178,18 @@ export function createChannelConversationService({
         evidence: { capability: name },
       });
     }
-    // Flow control: bound how many /run a single conversation can spawn per window
-    // (each is a governed, budget-consuming invocation). Not a policy veto — it's
-    // rate limiting — so it settles as a refused reply, not a taxonomy refusal.
-    const nowMs = Date.parse(now());
-    const recentRuns = (conversation.recentRuns ?? []).filter((t) => nowMs - t < RUN_RATE_WINDOW_MS);
-    if (recentRuns.length >= RUN_RATE_MAX) {
+    // Flow control: bound how many governed tasks a single conversation can spawn
+    // per window. Not a policy veto — rate limiting — so it settles as a refused
+    // reply, not a taxonomy refusal.
+    const rate = runRateCheck(conversation);
+    if (rate.limited) {
       return settle(event, {
         status: "refused",
-        reply: `Too many requests — at most ${RUN_RATE_MAX} /run per minute. Try again shortly.`,
+        reply: `Too many requests — at most ${RUN_RATE_MAX} per minute. Try again shortly.`,
         data: { reason: "rate_limited", capability: name },
       });
     }
+    const { nowMs, recentRuns } = rate;
     const result = createCapabilityInvocation(name, { text: args.join(" "), source: "channel" }, actor);
     const invocation = result?.body?.invocation ?? null;
     if (!invocation) {
@@ -173,6 +232,10 @@ export function createChannelConversationService({
    * Dispatch one imported event. Deterministic and total: every path settles
    * the event as dispatched/refused with a staged reply.
    */
+  // Returns the settled result synchronously for every command EXCEPT /task,
+  // which does I/O (files a GitHub issue) and returns a Promise. The composer
+  // `await`s the result, which normalizes both; sync-command callers/tests are
+  // unaffected (they never hit the /task path).
   function dispatchImportedChannelEvent({ eventId } = {}) {
     const event = (state.channelEvents ?? []).find((row) => row.id === String(eventId ?? ""));
     if (!event || event.status !== "imported") {
@@ -250,6 +313,8 @@ export function createChannelConversationService({
       }
       case "/run":
         return dispatchRun(event, channel, conversation, actor, parsed.args[0], parsed.args.slice(1));
+      case "/task":
+        return dispatchTask(event, channel, conversation, parsed.args.join(" "));
       case "/result": {
         const invocation = correlatedInvocation(conversation, parsed.args[0]);
         if (!invocation) {
