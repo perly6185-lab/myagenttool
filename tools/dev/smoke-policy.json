@@ -8,6 +8,7 @@
     "smoke:claude-agent",
     "smoke:ccusage-agent",
     "smoke:codex-capability",
+    "smoke:codex-exec",
     "smoke:cost-attribution",
     "smoke:tenancy",
     "smoke:gmail-app",
@@ -28,7 +29,6 @@
         "smoke:ssh-target",
         "smoke:terminal",
         "smoke:codex-tool",
-        "smoke:codex-exec",
         "smoke:claude-review-wrapper",
         "smoke:claude-tool",
         "smoke:claude-apply"

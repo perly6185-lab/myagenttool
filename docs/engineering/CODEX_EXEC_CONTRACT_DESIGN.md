@@ -1,12 +1,26 @@
-# Codex Exec Capability — Design Draft (`codex.exec`)
+# Codex Exec Capability — Design (`codex.exec`)
 
-Status: **DRAFT** (not implemented). Author-facing design for extending the
-governed Codex integration from read-only review to a **write-capable** capability
-that internal application agents can call over the open capability API.
+Status: **IMPLEMENTED** (#925, closed 2026-07-16). This document extends the
+governed Codex integration from read-only review to a **write-capable**
+capability that internal application agents call over the open capability API.
+It is kept as the reference for the contract's intent; the sections below
+describe the shipped design.
 
-Companion proof: PR #915 (`codex-capability-caller-smoke`) shows an internal
-caller already consumes the read-only `codex.review.diff` capability end to end
-with zero product changes. This draft is the "B" follow-up: let an internal agent
+Shipped surface:
+
+- Dispatch: `createExecInvocation` ([tools.mjs](../../apps/server/src/services/tools.mjs)),
+  reached from `/api/capabilities` via tool projection.
+- Flag: default-OFF `MYAGENTTOOL_CODEX_EXEC_ENABLED`; without it the capability
+  is absent and invocation returns `409 codex_exec_disabled`.
+- Changeset: git-derived in [codex-exec-imports.mjs](../../apps/server/src/services/codex-exec-imports.mjs).
+- Evidence: `governed_codex_exec` / `governed_codex_exec_review` rows in the
+  Evidence Center trust ledger.
+- Regression: `pnpm smoke:codex-exec` (`tools/dev/codex-exec-caller-smoke.mjs`),
+  part of `pnpm smoke:port`.
+
+Companion proof: PR #915 (`codex-capability-caller-smoke`) showed an internal
+caller consuming the read-only `codex.review.diff` capability end to end with
+zero product changes. This document was the "B" follow-up: let an internal agent
 ask Codex to **make code changes** — still governed, auditable, tenant-scoped, and
 never auto-merged.
 
