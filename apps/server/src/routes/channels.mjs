@@ -16,6 +16,9 @@ export async function handleChannelRoutes({
   setChannelApprovalPolicy,
   routeChannelTask,
   dismissChannelTask,
+  retryChannelTask,
+  rerouteChannelTask,
+  takeoverChannelTask,
   listChannels,
   enableChannel,
   disableChannel,
@@ -26,7 +29,7 @@ export async function handleChannelRoutes({
   setChannelAllowlist,
   retryChannelDelivery,
 }) {
-  if (!url.pathname.startsWith("/api/channels")) return false;
+  if (!url.pathname.startsWith("/api/channels") && !url.pathname.startsWith("/api/channel-tasks/")) return false;
 
   if (req.method === "GET" && url.pathname === "/api/channels") {
     const result = listChannels(actor);
@@ -74,10 +77,11 @@ export async function handleChannelRoutes({
 
   // Capture-then-promote: route a pending /task request into a tracked auto-run,
   // or dismiss it (close the issue). Actor-gated same-team inside the action.
-  const channelTask = url.pathname.match(/^\/api\/channel-tasks\/([^/]+)\/(route|dismiss)$/);
+  const channelTask = url.pathname.match(/^\/api\/channel-tasks\/([^/]+)\/(route|dismiss|retry|reroute|takeover)$/);
   if (channelTask && req.method === "POST") {
     const id = decodeURIComponent(channelTask[1]);
-    const action = channelTask[2] === "route" ? routeChannelTask : dismissChannelTask;
+    const actions = { route: routeChannelTask, dismiss: dismissChannelTask, retry: retryChannelTask, reroute: rerouteChannelTask, takeover: takeoverChannelTask };
+    const action = actions[channelTask[2]];
     const result = typeof action === "function" ? await action(id, actor) : { status: 501, body: { error: "unavailable" } };
     sendJson(res, result.status, result.body);
     return true;

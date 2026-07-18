@@ -1,6 +1,6 @@
 import { LOCAL_TEAM_ID, teamOf } from "../runtime/auth.mjs";
 import { publicDeviceView } from "../runtime/bridge-auth.mjs";
-import { channelOperations } from "./channels.mjs";
+import { channelOperations, channelTaskOperations } from "./channels.mjs";
 import { pendingDecisions } from "./pending-decisions.mjs";
 import { workBoard } from "./work-board.mjs";
 import { workReport, calendarPeriods } from "./work-report.mjs";
@@ -184,6 +184,12 @@ export function buildPublicState({
   );
   const visibleAutomations = byProject(state.automations);
   const autoRuns = byProject(state.autoRuns);
+  const channelTaskRequests = channelTaskOperations({
+    requests: byChannel(state.channelTaskRequests),
+    autoRuns,
+    invocations: visibleInvocations,
+    deliveries: channelDeliveries,
+  });
   // #1143 issue claims carry a projectId; project-team scoping is the boundary.
   const issueClaims = byProject(state.issueClaims);
   // #1152: their durable lifecycle history, scoped the same way.
@@ -318,7 +324,7 @@ export function buildPublicState({
     codexApprovalBrokerRequests,
     lifecycleLocalApprovals: state.lifecycleLocalApprovals ?? [],
     lifecycleRollbackRequests: state.lifecycleRollbackRequests ?? [],
-    channelTaskRequests: byChannel(state.channelTaskRequests),
+    channelTaskRequests,
     applicationRecoveryActions,
     applicationsById: new Map(applications.map((application) => [application.id, application])),
     invocationsById: visibleInvocationsById,
@@ -519,6 +525,7 @@ export function buildPublicState({
     channelEvents,
     channelConversations,
     channelDeliveries,
+    channelTaskRequests,
     channelOperations: channelOperations({
       channels,
       channelIdentities,

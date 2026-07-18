@@ -795,7 +795,7 @@ export function createServerRuntimeServices({
     return { ok: true, ...result };
   }
 
-  const { startAutoRun, advanceAutoRunForInvocation, syncAutoRunOnApproval, syncAutoRunOnDenial, retryAutoRun, cancelAutoRun, mergeAutoRunPr, reapStuckAutoRuns, autoMergeSweep, approveDesign, rejectDesign, answerClarify, approveDecomposition, rejectDecomposition } = createAutoRunService({
+  const { startAutoRun, advanceAutoRunForInvocation, syncAutoRunOnApproval, syncAutoRunOnDenial, retryAutoRun, attemptFailover, cancelAutoRun, mergeAutoRunPr, reapStuckAutoRuns, autoMergeSweep, approveDesign, rejectDesign, answerClarify, approveDecomposition, rejectDecomposition } = createAutoRunService({
     state,
     now,
     nextId,
@@ -1256,6 +1256,7 @@ export function createServerRuntimeServices({
     const req = (state.channelTaskRequests ?? []).find((r) => r.id === id && r.status === "pending");
     if (!req) return null;
     const channel = (state.channels ?? []).find((c) => c.id === req.channelId);
+    if (!channel) return null;
     if (actor?.teamId != null && (channel?.ownerTeamId ?? LOCAL_TEAM_ID) !== actor.teamId) return null; // opaque 404
     return req;
   };
@@ -1321,6 +1322,58 @@ export function createServerRuntimeServices({
     });
     appendEvent({ invocationId: null, type: "channel_task_dismissed", level: "info", message: `Channel task ${req.id} dismissed (issue #${req.issueNumber} closed).`, data: { channelTaskRequestId: req.id, issueNumber: req.issueNumber } });
     return { status: 200, body: { ok: true } };
+  };
+  const findOwnChannelTask = (id, actor) => {
+    const req = (state.channelTaskRequests ?? []).find((item) => item.id === id);
+    if (!req) return null;
+    const channel = (state.channels ?? []).find((item) => item.id === req.channelId);
+    if (!channel) return null;
+    if (actor?.teamId != null && (channel?.ownerTeamId ?? LOCAL_TEAM_ID) !== actor.teamId) return null;
+    return req;
+  };
+  const retryChannelTask = async (id, actor) => {
+    const req = findOwnChannelTask(id, actor);
+    const autoRun = req?.autoRunId ? (state.autoRuns ?? []).find((item) => item.id === req.autoRunId) : null;
+    if (!req || req.status !== "routed" || !autoRun) return { status: 404, body: { error: "channel_task_not_found" } };
+    try {
+      const result = await retryAutoRun(autoRun.id, { actor });
+      channelTaskRunTx(() => { req.lastAction = "retry"; req.lastActionAt = now(); req.lastActionBy = actor?.userId ?? null; });
+      return { status: 200, body: { ok: true, autoRunId: autoRun.id, invocationId: result.invocation.id } };
+    } catch (error) {
+      return { status: 409, body: { error: "channel_task_retry_failed", reason: String(error?.message ?? error) } };
+    }
+  };
+  const rerouteChannelTask = async (id, actor) => {
+    const req = findOwnChannelTask(id, actor);
+    const autoRun = req?.autoRunId ? (state.autoRuns ?? []).find((item) => item.id === req.autoRunId) : null;
+    if (!req || req.status !== "routed" || !autoRun) return { status: 404, body: { error: "channel_task_not_found" } };
+    const previousInvocationId = autoRun.invocationId ?? null;
+    const rerouted = await attemptFailover(autoRun);
+    if (!rerouted) return { status: 409, body: { error: "channel_task_reroute_unavailable", reason: autoRun.failoverOutcome?.status ?? "no_eligible_agent" } };
+    channelTaskRunTx(() => { req.lastAction = "reroute"; req.lastActionAt = now(); req.lastActionBy = actor?.userId ?? null; });
+    return { status: 200, body: { ok: true, autoRunId: autoRun.id, previousInvocationId, invocationId: autoRun.invocationId } };
+  };
+  const takeoverChannelTask = async (id, actor) => {
+    const req = findOwnChannelTask(id, actor);
+    const autoRun = req?.autoRunId ? (state.autoRuns ?? []).find((item) => item.id === req.autoRunId) : null;
+    if (!req || req.status !== "routed" || !autoRun) return { status: 404, body: { error: "channel_task_not_found" } };
+    const activeStatuses = ["materializing", "running", "verifying", "publishing", "awaiting_approval"];
+    if (![...activeStatuses, "failed", "blocked"].includes(autoRun.status)) {
+      return { status: 409, body: { error: "channel_task_takeover_unavailable", reason: `run_${autoRun.status}` } };
+    }
+    if (activeStatuses.includes(autoRun.status)) {
+      try { cancelAutoRun(autoRun.id, { actor }); } catch (error) {
+        return { status: 409, body: { error: "channel_task_takeover_failed", reason: String(error?.message ?? error) } };
+      }
+    }
+    channelTaskRunTx(() => {
+      req.status = "human_takeover";
+      req.lastAction = "takeover";
+      req.lastActionAt = now();
+      req.lastActionBy = actor?.userId ?? null;
+    });
+    appendEvent({ invocationId: autoRun.invocationId ?? null, type: "channel_task_human_takeover", level: "warn", message: `Channel task ${req.id} moved to human takeover.`, data: { channelTaskRequestId: req.id, autoRunId: autoRun.id } });
+    return { status: 200, body: { ok: true, autoRunId: autoRun.id, status: req.status } };
   };
 
   const channelConversationService = createChannelConversationService({
@@ -3222,6 +3275,9 @@ export function createServerRuntimeServices({
     setChannelApprovalPolicy: channelService.setChannelApprovalPolicy,
     routeChannelTask,
     dismissChannelTask,
+    retryChannelTask,
+    rerouteChannelTask,
+    takeoverChannelTask,
     // The gateway's handoff: import + dispatch + reply-enqueue as one pipeline (S3+S4+S5).
     importChannelEvent: receiveChannelEvent,
     sweepChannelDeliveries: channelDeliveryService.sweepChannelDeliveries,

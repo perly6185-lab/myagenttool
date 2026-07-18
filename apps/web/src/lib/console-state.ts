@@ -1229,6 +1229,26 @@ export interface ConsoleSnapshot {
   /** Channel subsystem (#1090): operational rollup per channel, team-scoped. */
   channelOperations?: ChannelOperations[];
   channelDeliveries?: ChannelDelivery[];
+  channelTaskRequests?: ChannelTaskRequest[];
+}
+
+export interface ChannelTaskRequest {
+  id: string;
+  channelId: string;
+  projectId: string;
+  issueNumber: number;
+  issueUrl?: string | null;
+  title: string;
+  status: string;
+  stage: string;
+  autoRunId?: string | null;
+  runStatus?: string | null;
+  invocationId?: string | null;
+  invocationStatus?: string | null;
+  resultSummary?: string | null;
+  deliveryStatus?: string | null;
+  createdAt?: string | null;
+  actions: { retry: boolean; reroute: boolean; takeover: boolean };
 }
 
 /** Per-channel operational rollup (read-models/channels.mjs). No secrets — readiness is booleans. */

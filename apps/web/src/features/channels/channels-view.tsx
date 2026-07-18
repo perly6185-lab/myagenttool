@@ -6,7 +6,7 @@ import { EmptyState } from "@/components/common/empty-state";
 import { SectionHeading } from "@/components/common/section-heading";
 import { useConsoleState } from "@/data/use-console-state";
 import { api, useAsyncAction } from "@/data/use-console-actions";
-import type { ChannelDelivery, ChannelOperations, ProjectSnapshot } from "@/lib/console-state";
+import type { ChannelDelivery, ChannelOperations, ChannelTaskRequest, ProjectSnapshot } from "@/lib/console-state";
 import type { Tone } from "@/lib/readable-labels";
 
 function healthTone(health: string): Tone {
@@ -50,6 +50,7 @@ export function ChannelsView() {
               channel={channel}
               deliveries={(state?.channelDeliveries ?? []).filter((d) => d.channelId === channel.id)}
               projects={(state?.projects ?? []).filter((p) => p.status !== "archived")}
+              tasks={(state?.channelTaskRequests ?? []).filter((task) => task.channelId === channel.id)}
             />
           ))}
         </div>
@@ -58,7 +59,7 @@ export function ChannelsView() {
   );
 }
 
-function ChannelCard({ channel, deliveries, projects }: { channel: ChannelOperations; deliveries: ChannelDelivery[]; projects: ProjectSnapshot[] }) {
+function ChannelCard({ channel, deliveries, projects, tasks }: { channel: ChannelOperations; deliveries: ChannelDelivery[]; projects: ProjectSnapshot[]; tasks: ChannelTaskRequest[] }) {
   const { execute, pending, error } = useAsyncAction();
   const [taskProject, setTaskProject] = useState(channel.taskProjectId ?? "");
   const [autoRoute, setAutoRoute] = useState(Boolean(channel.taskAutoRoute));
@@ -90,6 +91,11 @@ function ChannelCard({ channel, deliveries, projects }: { channel: ChannelOperat
   async function saveTaskProject() {
     const grant = await api.issueApprovalGrant("channel.taskProject", channel.id);
     await execute(() => api.setChannelTaskProject(channel.id, taskProject || null, autoRoute, dailyLimit, grant.token));
+  }
+
+  async function taskAction(task: ChannelTaskRequest, action: "route" | "dismiss" | "retry" | "reroute" | "takeover") {
+    const handlers = { route: api.routeChannelTask, dismiss: api.dismissChannelTask, retry: api.retryChannelTask, reroute: api.rerouteChannelTask, takeover: api.takeoverChannelTask };
+    await execute(() => handlers[action](task.id));
   }
 
   return (
@@ -185,6 +191,32 @@ function ChannelCard({ channel, deliveries, projects }: { channel: ChannelOperat
             <span className="text-muted-foreground">unbound — /task refused</span>
           )}
         </div>
+
+        {tasks.length > 0 && (
+          <div className="space-y-2 border-t border-border pt-3" data-testid="channel-task-operations">
+            <p className="text-xs font-medium">Channel tasks</p>
+            {tasks.slice().reverse().slice(0, 10).map((task) => (
+              <div key={task.id} className="grid gap-2 rounded-md border border-border p-3 text-xs sm:grid-cols-[minmax(0,1fr)_auto]">
+                <div className="min-w-0 space-y-1">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <Badge tone={task.stage.includes("failed") || task.stage === "run_blocked" ? "danger" : task.stage === "run_succeeded" ? "success" : "neutral"}>{task.stage.replaceAll("_", " ")}</Badge>
+                    <a className="text-primary underline-offset-2 hover:underline" href={task.issueUrl ?? undefined} target="_blank" rel="noreferrer">Issue #{task.issueNumber}</a>
+                    {task.invocationId ? <span className="font-mono text-muted-foreground">{task.invocationId}</span> : null}
+                    {task.deliveryStatus ? <span className="text-muted-foreground">delivery {task.deliveryStatus.replaceAll("_", " ")}</span> : null}
+                  </div>
+                  <p className="truncate font-medium" title={task.title}>{task.title}</p>
+                  {task.resultSummary ? <p className="line-clamp-2 text-muted-foreground">{task.resultSummary}</p> : null}
+                </div>
+                <div className="flex flex-wrap items-start gap-1.5">
+                  {task.status === "pending" ? <><Button size="sm" onClick={() => taskAction(task, "route")} disabled={pending}>Route</Button><Button variant="ghost" size="sm" onClick={() => taskAction(task, "dismiss")} disabled={pending}>Dismiss</Button></> : null}
+                  {task.actions.retry ? <Button variant="secondary" size="sm" onClick={() => taskAction(task, "retry")} disabled={pending}>Retry</Button> : null}
+                  {task.actions.reroute ? <Button variant="secondary" size="sm" onClick={() => taskAction(task, "reroute")} disabled={pending}>Reroute</Button> : null}
+                  {task.actions.takeover ? <Button variant="ghost" size="sm" onClick={() => taskAction(task, "takeover")} disabled={pending}>Take over</Button> : null}
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
 
         {failed.length > 0 && (
           <div className="space-y-2 rounded-md border border-destructive/30 bg-destructive/5 p-3">
