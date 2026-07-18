@@ -137,29 +137,44 @@ export function createChannelConversationService({
     if (rate.limited) {
       return settle(event, { status: "refused", reply: `Too many requests — at most ${RUN_RATE_MAX} per minute. Try again shortly.`, data: { reason: "rate_limited" } });
     }
+    // Reserve the rate slot SYNCHRONOUSLY, before the `await` below — otherwise
+    // two concurrent /task both read the pre-write window and both pass (TOCTOU),
+    // and the stale-snapshot write would clobber a /run appended during the await.
+    runTx(() => {
+      conversation.recentRuns = [...rate.recentRuns, rate.nowMs];
+      conversation.updatedAt = now();
+    });
     let filed;
     try {
       filed = await createChannelTaskIssue({
         projectId: channel.taskProjectId,
+        // Use-time tenancy re-check: a binding is validated same-team when SET,
+        // but a project's ownerTeamId can change (re-registration) — pass the
+        // channel's team so the filer refuses a drifted cross-team binding.
+        channelOwnerTeamId: channel.ownerTeamId ?? null,
         title: text.slice(0, 120),
         description: text,
         channelId: channel.id,
         externalUserId: event.externalUserId,
+        // Taint travels: a message the injection detector flagged files with the
+        // untrusted marker so downstream governance sees it (parity with mail).
+        injectionSuspicious: Boolean(event.injectionSuspicious),
       });
     } catch (error) {
       filed = { ok: false, error: String(error?.message ?? error) };
     }
     if (!filed?.ok || !Number.isFinite(filed.number)) {
-      return settle(event, { status: "refused", reply: "Could not file the task right now — please try again.", data: { reason: "issue_create_failed" } });
+      return settle(event, { status: "refused", reply: "Could not file the task right now — please try again.", data: { reason: filed?.reason ?? "issue_create_failed" } });
     }
     runTx(() => {
       conversation.taskIssues = [...(conversation.taskIssues ?? []), { number: filed.number, url: filed.url ?? null, at: now() }].slice(-50);
-      conversation.recentRuns = [...rate.recentRuns, rate.nowMs];
       conversation.updatedAt = now();
     });
+    // Honest reply: the issue is filed + tracked; routing only happens if the
+    // dispatcher is enabled (off by default), so don't state it as a fact.
     return settle(event, {
       status: "dispatched",
-      reply: `Filed issue #${filed.number} — queued for routing; it'll be assigned and tracked.${filed.url ? ` (${filed.url})` : ""}`,
+      reply: `Filed issue #${filed.number}${filed.url ? ` (${filed.url})` : ""} — tracked; it'll be routed automatically when the dispatcher is enabled.`,
       data: { command: "/task", issueNumber: filed.number, projectId: channel.taskProjectId },
     });
   }

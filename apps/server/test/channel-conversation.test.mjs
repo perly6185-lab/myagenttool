@@ -164,15 +164,29 @@ test("/task files a GitHub issue in the bound project and replies with the track
   const settled = await dispatched;
   assert.equal(settled.status, "dispatched");
   assert.match(settled.reply, /#42/);
-  assert.match(settled.reply, /queued for routing/i);
-  // The filer got the bound project + normalized description + provenance.
+  assert.match(settled.reply, /tracked/i);
+  // The filer got the bound project + normalized description + provenance + team.
   assert.equal(calls.length, 1);
   assert.equal(calls[0].projectId, "proj_a");
+  assert.equal(calls[0].channelOwnerTeamId, "team_local");
   assert.equal(calls[0].description, "fix the login error");
   assert.equal(calls[0].externalUserId, "wx_alice");
   // The conversation records the filed task for traceability.
   const conv = harness.state.channelConversations.at(-1);
   assert.deepEqual(conv.taskIssues.map((t) => t.number), [42]);
+});
+
+test("/task reserves the rate slot BEFORE the async filing (closes the TOCTOU)", async () => {
+  let resolveFile;
+  const harness = makeHarness({ createChannelTaskIssue: () => new Promise((r) => { resolveFile = r; }) });
+  harness.bindTaskProject("proj_a");
+  const pending = harness.receive("/task slow one").dispatched; // in-flight; not resolved yet
+  // The slot is reserved synchronously (before the first await), so a concurrent
+  // /task would already see the updated window — no double-pass.
+  const conv = harness.state.channelConversations.at(-1);
+  assert.equal(conv.recentRuns.length, 1, "slot reserved before filing resolves");
+  resolveFile({ ok: true, number: 7 });
+  await pending;
 });
 
 test("/task counts against the per-conversation rate limit and fails gracefully when filing errors", async () => {
