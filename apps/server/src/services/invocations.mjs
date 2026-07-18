@@ -156,6 +156,7 @@ export function createInvocationService({
     acknowledgeInvocation,
     markDispatched,
     nextDispatchableInvocation,
+    isInvocationDispatchable,
     redeliverExpiredDispatches,
   } = createInvocationDispatchRuntime({
     state,
@@ -235,6 +236,7 @@ export function createInvocationService({
     isTerminal,
     markDispatched,
     nextDispatchableInvocation,
+    isInvocationDispatchable,
     recordAgentUsage,
     redeliverExpiredDispatches,
     startInvocationIfAllowed,
