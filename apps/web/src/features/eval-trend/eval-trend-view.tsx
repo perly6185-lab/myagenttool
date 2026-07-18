@@ -5,6 +5,8 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { EmptyState } from "@/components/common/empty-state";
 import { api } from "@/data/use-console-actions";
+import { useConsoleState } from "@/data/use-console-state";
+import type { DispatchAssignment } from "@/lib/console-state";
 import { cn } from "@/lib/cn";
 
 interface MetricPoint {
@@ -240,9 +242,15 @@ function verdictTone(v: string): "success" | "danger" | "neutral" {
 // #1174: dispatch routing outcomes. Rates render only past the sample threshold
 // (else "insufficient data"); the panel is explicit that time-to-PR is a
 // cross-server signal the dispatcher can't see — honest gap, not a blank.
-function DispatchEvaluationCard({ evaluation }: { evaluation: DispatchEvaluation }) {
+function DispatchEvaluationCard({ evaluation, assignments = [] }: { evaluation: DispatchEvaluation; assignments?: DispatchAssignment[] }) {
   const rate = (r: number | null) => (r == null ? "—" : pct(r));
   const rows: DispatchSlice[] = [...evaluation.workers, ...evaluation.workerAreas];
+  // Most-recent routing decisions with their "why" (the per-decision reasoning
+  // the aggregate rates above can't show). Newest first, capped.
+  const recent = [...assignments]
+    .filter((a) => a.routing)
+    .sort((a, b) => String(b.assignedAt ?? "").localeCompare(String(a.assignedAt ?? "")))
+    .slice(0, 8);
   return (
     <Card>
       <CardHeader className="flex-row items-center justify-between gap-2 py-3">
@@ -304,6 +312,30 @@ function DispatchEvaluationCard({ evaluation }: { evaluation: DispatchEvaluation
             <p className="mt-1 text-[11px] text-muted-foreground">{evaluation.shadow.promotionRule}</p>
           </div>
         ) : null}
+        {recent.length > 0 ? (
+          <div className="rounded-md border border-border bg-muted/20 px-2.5 py-2 text-xs">
+            <div className="mb-1.5 font-medium">Recent decisions — why routed here</div>
+            <ul className="space-y-1.5">
+              {recent.map((a) => (
+                <li key={a.id} className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
+                  <span className="font-mono text-muted-foreground">#{a.issueNumber}</span>
+                  <span>→ <span className="font-mono font-medium">{a.routing?.chosen ?? "—"}</span></span>
+                  {a.routing?.why ? <Badge tone="neutral">{a.routing.why.replace(/_/g, " ")}{a.routing.margin ? ` · ${a.routing.margin}` : ""}</Badge> : null}
+                  {(a.routing?.candidates?.length ?? 0) > 1 ? (
+                    <span className="text-muted-foreground">
+                      over {a.routing!.candidates!.filter((c) => c.id !== a.routing?.chosen).map((c) => `${c.id} (aff ${c.affinity}, load ${c.load})`).join(", ")}
+                    </span>
+                  ) : null}
+                  {(a.routing?.ineligible?.length ?? 0) > 0 ? (
+                    <span className="text-muted-foreground" title={a.routing!.ineligible!.map((i) => `${i.id}: ${i.reason}`).join("; ")}>
+                      · {a.routing!.ineligible!.length} ineligible
+                    </span>
+                  ) : null}
+                </li>
+              ))}
+            </ul>
+          </div>
+        ) : null}
         <p className="text-[11px] text-muted-foreground">
           Not shown: time-to-in-progress and time-to-PR — those live in each worker's own server state (the dispatcher only sees assign → settle/reassign). Per-area rows can exceed the worker total when an issue declares multiple areas.
         </p>
@@ -363,6 +395,8 @@ function MaturityScorecardCard({ scorecard }: { scorecard: MaturityScorecard }) 
 }
 
 export function EvalTrendView() {
+  const { data: consoleState } = useConsoleState();
+  const assignments = consoleState?.dispatchAssignments ?? [];
   const [summary, setSummary] = useState<EvalTrendSummary | null>(null);
   const [maturity, setMaturity] = useState<MaturityScorecard | null>(null);
   const [dora, setDora] = useState<DoraReport | null>(null);
@@ -422,7 +456,7 @@ export function EvalTrendView() {
 
       {dora ? <DoraCard dora={dora} /> : null}
 
-      {dispatch && dispatch.total.assignments > 0 ? <DispatchEvaluationCard evaluation={dispatch} /> : null}
+      {dispatch && dispatch.total.assignments > 0 ? <DispatchEvaluationCard evaluation={dispatch} assignments={assignments} /> : null}
 
       {summary && summary.total > 0 ? (
         <>

@@ -238,6 +238,9 @@ export function readableEventType(type: string): string {
     cancel_force_killed: "Force-stopped (SIGKILL)",
     // Auto-run pipeline lifecycle (issue → worktree → agent → verify → judge → PR → merge → deploy → heal).
     auto_run_decided: "Routed",
+    auto_trigger_assigned: "Dispatched to worker",
+    auto_trigger_reassigned: "Reassigned (stale)",
+    auto_trigger_unroutable: "No eligible worker",
     auto_run_started: "Agent started",
     auto_run_status_changed: "Stage changed",
     auto_run_retried: "Retried",

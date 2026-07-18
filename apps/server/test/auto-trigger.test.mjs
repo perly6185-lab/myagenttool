@@ -469,6 +469,11 @@ test("#1172 assignments carry an explainable routing record; unroutable issues s
   assert.equal(plan.assign.length, 1);
   assert.equal(plan.assign[0].workerId, "mac");
   assert.equal(plan.assign[0].routing.why, "area_affinity");
+  // #routing-observability: the ranked candidates the picker considered + the
+  // winning margin are now recorded, so "why over the others" is answerable.
+  const cands = plan.assign[0].routing.candidates;
+  assert.ok(Array.isArray(cands) && cands[0].id === "mac", "winner is first candidate");
+  assert.equal(cands[0].affinity, 1, "winner's affinity signal recorded");
   assert.match(plan.assign[0].routing.ineligible.find((i) => i.id === "linux").reason, /platform_mismatch/);
   assert.equal(plan.unroutable.length, 1);
   assert.equal(plan.unroutable[0].issue.number, 2, "no configured worker can ever take it — visible, not parked");

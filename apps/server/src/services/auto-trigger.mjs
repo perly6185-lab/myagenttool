@@ -293,10 +293,24 @@ export function planDispatch({
     const baselineId = baselinePick(scored.eligible);
     const activeId = routerMode === "scored" ? scoredId : baselineId;
     const chosen = scored.eligible.find((e) => e.id === activeId) ?? null;
+    // The ranked candidates the ACTIVE picker considered — so "why this worker
+    // over the others" is answerable, not just "who won". Ordered by the active
+    // comparator; bounded to a top-N. This is the signal pickWorker used to
+    // discard one line before persistence.
+    const ranked = routerMode === "scored"
+      ? [...scored.eligible].sort((a, b) => b.affinity - a.affinity || a.load - b.load || a.order - b.order)
+      : [...scored.eligible].sort((a, b) => a.load - b.load || a.order - b.order);
+    const runnerUp = ranked[1] ?? null;
     const routing = {
       chosen: activeId,
       why: chosen ? (routerMode === "scored" && chosen.affinity > 0 ? "area_affinity" : "least_loaded") : null,
       mode: routerMode,
+      candidates: ranked.slice(0, 5).map((e) => ({ id: e.id, affinity: e.affinity, load: e.load })),
+      // Why the winner beat the closest rival: affinity edge, lighter load, or the
+      // declaration-order tiebreak. Null when there was no rival.
+      margin: chosen && runnerUp
+        ? (chosen.affinity !== runnerUp.affinity ? "affinity" : chosen.load !== runnerUp.load ? "load" : "tiebreak")
+        : null,
       ineligible: scored.ineligible,
       requirements: scored.requirements,
     };
@@ -476,7 +490,7 @@ export function createAutoTriggerRuntime({ state, config, listLabeledIssues, sta
           type: "auto_trigger_assigned",
           level: "info",
           message: `Dispatcher assigned issue #${issue.number} to ${workerId}.`,
-          data: { projectId: project.id, issueNumber: issue.number, workerId },
+          data: { projectId: project.id, issueNumber: issue.number, workerId, routing },
         });
         assigned += 1;
       } catch (error) {
@@ -494,7 +508,7 @@ export function createAutoTriggerRuntime({ state, config, listLabeledIssues, sta
           type: "auto_trigger_reassigned",
           level: "warn",
           message: `Dispatcher reassigned stale issue #${issue.number}: ${from} → ${to} (no progress within ${config.dispatchAssignTtlMinutes}m).`,
-          data: { projectId: project.id, issueNumber: issue.number, from, to },
+          data: { projectId: project.id, issueNumber: issue.number, from, to, routing },
         });
         assigned += 1;
       } catch (error) {

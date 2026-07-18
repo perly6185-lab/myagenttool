@@ -593,9 +593,15 @@ export function createAutoRunService({
           autoRunId,
           path: decision.path,
           decidedBy: decision.decidedBy,
+          // WHICH mechanism decided (epic-detector / fast-path / heuristic /
+          // fallback / agent) + how long the decider hop took — so the audit
+          // trail is as rich as the auto-run record it mirrors.
+          via: decision.via,
+          latencyMs: decision.latencyMs,
           confidence: decision.confidence,
           spawnChildIssues: decision.spawnChildIssues,
           rationale: decision.rationale,
+          clarifyingQuestions: decision.clarifyingQuestions,
         },
       });
     });
