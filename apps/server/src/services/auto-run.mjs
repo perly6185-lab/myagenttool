@@ -3,6 +3,7 @@ import { detectPromptInjection, roleAutoRunPrompt } from "@myagenttool/protocol/
 import { teamOf } from "../runtime/auth.mjs";
 import { createRefusalRuntime } from "../runtime/refusal-log.mjs";
 import { isTerminal } from "./invocations.mjs";
+import { FAILOVER_INFRA_CODES, MAX_FAILOVERS, selectFailoverAgent } from "./invocations/agent-failover.mjs";
 import { normalizeWorktreeLink } from "./projects.mjs";
 import { intentForPath, resolveDecision } from "./auto-run-decision.mjs";
 import { isSpawnedChildBody, decompositionChildBody, extractProjectFieldsBlock } from "./auto-run-spawn.mjs";
@@ -570,6 +571,11 @@ export function createAutoRunService({
       // "dispatch_timeout" | "orphaned" | "stuck" for an infrastructure reclaim, or
       // null for a genuine task failure — the infra-vs-task signal #3 keys off.
       errorCode: null,
+      // #1268 (3b): same-device failover bookkeeping — how many times this run has
+      // been re-dispatched to an alternate agent, and which agents are already spent
+      // (excluded so failover can't ping-pong back to a dead one).
+      failoverAttempts: 0,
+      failoverExcludedAgentIds: [],
       createdAt,
       updatedAt: createdAt,
     };
@@ -923,6 +929,9 @@ export function createAutoRunService({
         // (null code) — the signal #3 failover keys off. Null for a plain failure.
         const errorCode = invocation.result?.errorCode ?? null;
         runTx(() => setAutoRunStatus(autoRun, "failed", { error: `Agent run ${invocation.status}.`, errorCode }));
+        // #1268 (3b): an infrastructure reclaim (dispatch_timeout) can fail over to
+        // a healthy same-device alternate agent; a genuine task failure does not.
+        await attemptFailover(autoRun);
       }
       return autoRun;
     } catch (error) {
@@ -1074,6 +1083,85 @@ export function createAutoRunService({
         data: { autoRunId: autoRun.id, worktreeId: worktree.id, invocationId: invocation.id, status: autoRun.status },
       });
       return { autoRun, invocation };
+    });
+  }
+
+  // #1268 (3b): after a run fails for an INFRASTRUCTURE reason (the executor died,
+  // not the task), try to re-dispatch it to a healthy same-device, same-adapter
+  // alternate agent on its existing worktree. No-op (returns false, run stays
+  // failed) for a genuine task failure, when no alternate exists, when the worktree
+  // is gone, or once the failover cap is hit. Bounded + exclude-set so it can't
+  // ping-pong across a pool of dead agents.
+  async function attemptFailover(autoRun) {
+    if (!autoRun || autoRun.status !== "failed" || !FAILOVER_INFRA_CODES.includes(autoRun.errorCode)) {
+      return false;
+    }
+    const reason = autoRun.errorCode;
+    if ((autoRun.failoverAttempts ?? 0) >= MAX_FAILOVERS) {
+      appendEvent({
+        invocationId: autoRun.invocationId,
+        type: "auto_run_failover_exhausted",
+        level: "warn",
+        message: `Auto-run ${autoRun.id} hit the failover cap (${MAX_FAILOVERS}) after "${reason}"; left failed for a human.`,
+        data: { autoRunId: autoRun.id, reason, failoverAttempts: autoRun.failoverAttempts ?? 0 },
+      });
+      return false;
+    }
+    const worktree = state.worktrees.find((item) => item.id === autoRun.worktreeId) ?? null;
+    if (!worktree) return false; // the device-local worktree is gone; nothing to resume
+    const failedAgent = autoRun.agentId ? findAgent(autoRun.agentId) : null;
+    const excludeIds = [autoRun.agentId, ...(autoRun.failoverExcludedAgentIds ?? [])];
+    const alternate = selectFailoverAgent(state.agents ?? [], failedAgent, excludeIds);
+    if (!alternate) {
+      appendEvent({
+        invocationId: autoRun.invocationId,
+        type: "auto_run_failover_unavailable",
+        level: "info",
+        message: `Auto-run ${autoRun.id} could not fail over after "${reason}": no healthy same-device alternate agent.`,
+        data: { autoRunId: autoRun.id, reason, fromAgentId: autoRun.agentId ?? null },
+      });
+      return false;
+    }
+    if (alternate.location?.type === "local_device" && state.device?.unlinkState !== "linked") {
+      return false;
+    }
+
+    const issueBody = await maybeFetchIssueBody(autoRun.link, autoRun.projectId);
+    const path = autoRun.decision?.path ?? "develop";
+    const task = roleAutoRunPrompt(autoRun.link, { path, issueBody });
+    let invocation;
+    try {
+      invocation = createInvocation(task, alternate, {
+        metadata: { worktreeId: worktree.id, projectId: worktree.projectId, autoRunId: autoRun.id, role: path },
+      });
+      startInvocationIfAllowed(invocation, alternate);
+    } catch (error) {
+      runTx(() => setAutoRunStatus(autoRun, "failed", { error: `Failover to ${alternate.id} could not start: ${String(error?.message ?? error)}`, errorCode: reason }));
+      return false;
+    }
+    return runTx(() => {
+      const fromAgentId = autoRun.agentId ?? null;
+      autoRun.invocationId = invocation.id;
+      autoRun.agentId = alternate.id;
+      autoRun.repairAttempts = 0; // fresh repair budget on the alternate
+      autoRun.failoverAttempts = (autoRun.failoverAttempts ?? 0) + 1;
+      autoRun.failoverExcludedAgentIds = [...new Set([...(autoRun.failoverExcludedAgentIds ?? []), fromAgentId].filter(Boolean))];
+      // Clears errorCode (no explicit code in extra) — the run is live again.
+      setAutoRunStatus(autoRun, autoRunStatusForInvocation(invocation), { error: null, prNumber: null, prUrl: null });
+      appendEvent({
+        invocationId: invocation.id,
+        type: "auto_run_failed_over",
+        level: "warn",
+        message: `Auto-run ${autoRun.id} failed over from ${fromAgentId} to ${alternate.id} after "${reason}" (attempt ${autoRun.failoverAttempts}).`,
+        data: { autoRunId: autoRun.id, fromAgentId, toAgentId: alternate.id, reason, failoverAttempts: autoRun.failoverAttempts, worktreeId: worktree.id, invocationId: invocation.id },
+      });
+      void sendAlert?.({
+        kind: "run_failed_over",
+        severity: "medium",
+        message: `Auto-run ${autoRun.id} failed over to ${alternate.id} after ${reason}.`,
+        data: { autoRunId: autoRun.id, fromAgentId, toAgentId: alternate.id, reason, link: autoRun.link },
+      });
+      return true;
     });
   }
 
@@ -1798,6 +1886,7 @@ export function createAutoRunService({
         runTx(() => setAutoRunStatus(run, "failed", { error: "Run reaped: its invocation no longer exists (server restart).", errorCode: "orphaned" }));
         void sendAlert?.({ kind: "run_reaped", severity: "medium", message: `Auto-run ${run.id} reaped (orphaned invocation).`, data: { autoRunId: run.id, reason: "orphaned", link: run.link } });
         reaped += 1;
+        await attemptFailover(run); // #1268 (3b): re-dispatch to a same-device alternate if one is healthy
         continue;
       }
       // Stuck: no progress past the deadline (agent timeout + margin, or the floor).
@@ -1808,6 +1897,7 @@ export function createAutoRunService({
         runTx(() => setAutoRunStatus(run, "failed", { error: `Run reaped: no progress for ${Math.round(idleMs / 1000)}s (stuck).`, errorCode: "stuck" }));
         void sendAlert?.({ kind: "run_reaped", severity: "medium", message: `Auto-run ${run.id} reaped (stuck ${Math.round(idleMs / 1000)}s).`, data: { autoRunId: run.id, reason: "stuck", idleSeconds: Math.round(idleMs / 1000), link: run.link } });
         reaped += 1;
+        await attemptFailover(run); // #1268 (3b): re-dispatch to a same-device alternate if one is healthy
       }
     }
     // #890: release any budget hold whose owning run is already settled or gone
@@ -1833,5 +1923,5 @@ export function createAutoRunService({
     return { reaped, readvanced, holdsReleased };
   }
 
-  return { startAutoRun, advanceAutoRunForInvocation, syncAutoRunOnApproval, syncAutoRunOnDenial, retryAutoRun, cancelAutoRun, mergeAutoRunPr, maybeDeployAfterMerge, reapStuckAutoRuns, autoMergeSweep, approveDesign, rejectDesign, answerClarify, approveDecomposition, rejectDecomposition };
+  return { startAutoRun, advanceAutoRunForInvocation, syncAutoRunOnApproval, syncAutoRunOnDenial, retryAutoRun, attemptFailover, cancelAutoRun, mergeAutoRunPr, maybeDeployAfterMerge, reapStuckAutoRuns, autoMergeSweep, approveDesign, rejectDesign, answerClarify, approveDecomposition, rejectDecomposition };
 }

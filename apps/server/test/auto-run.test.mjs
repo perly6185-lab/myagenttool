@@ -14,6 +14,7 @@ import { before, beforeEach, test } from "node:test";
 
 import { createProjectService } from "../src/services/projects.mjs";
 import { createAutoRunService, extractChangeFailureRef } from "../src/services/auto-run.mjs";
+import { MAX_FAILOVERS } from "../src/services/invocations/agent-failover.mjs";
 import { createM3Service } from "../src/services/m3.mjs";
 
 function git(cwd, ...args) {
@@ -1309,6 +1310,117 @@ test("O1 reaper: a stuck active run (live invocation, no progress past deadline)
   assert.equal(run.status, "failed");
   assert.match(run.error, /no progress/);
   assert.equal(run.errorCode, "stuck", "stuck reap is machine-tagged (infra, not task failure)");
+});
+
+test("3b: an infra reclaim fails over to a healthy same-device alternate agent", async () => {
+  const { svc, calls } = makeAutoRun({});
+  const { autoRun } = await svc.startAutoRun({
+    projectId: sourceProjectId,
+    link: { type: "issue", number: 300, title: "Failover", url: null, state: "open" },
+    agentId: "agt_1", name: "issue-300",
+  });
+  const savedAgents = state.agents;
+  const savedUnlink = state.device?.unlinkState;
+  try {
+    state.agents = [fakeAgent(), fakeAgent({ id: "agt_2", name: "Coder 2" })]; // both dev_1 cli, healthy
+    if (state.device) state.device.unlinkState = "linked";
+    autoRun.status = "failed";
+    autoRun.errorCode = "dispatch_timeout"; // bridge went offline mid-run
+
+    const did = await svc.attemptFailover(autoRun);
+    assert.equal(did, true, "failover happened");
+    assert.equal(autoRun.agentId, "agt_2", "re-dispatched to the same-device alternate");
+    assert.equal(autoRun.failoverAttempts, 1);
+    assert.deepEqual(autoRun.failoverExcludedAgentIds, ["agt_1"], "the dead agent is excluded from future failovers");
+    assert.notEqual(autoRun.status, "failed", "the run is live again");
+    assert.equal(autoRun.errorCode, null, "the infra code is cleared on the restart");
+    assert.ok(calls.events.some((e) => e.type === "auto_run_failed_over" && e.data.toAgentId === "agt_2"));
+  } finally {
+    state.agents = savedAgents;
+    if (state.device) state.device.unlinkState = savedUnlink;
+  }
+});
+
+test("3b: a genuine task failure never fails over", async () => {
+  const { svc, calls } = makeAutoRun({});
+  const { autoRun } = await svc.startAutoRun({
+    projectId: sourceProjectId,
+    link: { type: "issue", number: 301, title: "TaskFail", url: null, state: "open" },
+    agentId: "agt_1", name: "issue-301",
+  });
+  const savedAgents = state.agents;
+  try {
+    state.agents = [fakeAgent(), fakeAgent({ id: "agt_2" })];
+    autoRun.status = "failed";
+    autoRun.errorCode = null; // a real task failure, not infra
+    assert.equal(await svc.attemptFailover(autoRun), false);
+    assert.equal(autoRun.status, "failed", "still failed — a bad task is not retried on another agent");
+    assert.equal(calls.events.filter((e) => e.type === "auto_run_failed_over").length, 0);
+  } finally {
+    state.agents = savedAgents;
+  }
+});
+
+test("3b: no same-device alternate → stays failed with an 'unavailable' event", async () => {
+  const { svc, calls } = makeAutoRun({});
+  const { autoRun } = await svc.startAutoRun({
+    projectId: sourceProjectId,
+    link: { type: "issue", number: 302, title: "NoAlt", url: null, state: "open" },
+    agentId: "agt_1", name: "issue-302",
+  });
+  const savedAgents = state.agents;
+  try {
+    state.agents = [fakeAgent()]; // only the (failed) agent, no alternate
+    autoRun.status = "failed";
+    autoRun.errorCode = "stuck";
+    assert.equal(await svc.attemptFailover(autoRun), false);
+    assert.equal(autoRun.status, "failed");
+    assert.ok(calls.events.some((e) => e.type === "auto_run_failover_unavailable"));
+  } finally {
+    state.agents = savedAgents;
+  }
+});
+
+test("3b: the failover cap is bounded (no ping-pong)", async () => {
+  const { svc, calls } = makeAutoRun({});
+  const { autoRun } = await svc.startAutoRun({
+    projectId: sourceProjectId,
+    link: { type: "issue", number: 303, title: "Cap", url: null, state: "open" },
+    agentId: "agt_1", name: "issue-303",
+  });
+  const savedAgents = state.agents;
+  try {
+    state.agents = [fakeAgent(), fakeAgent({ id: "agt_2" })];
+    autoRun.status = "failed";
+    autoRun.errorCode = "orphaned";
+    autoRun.failoverAttempts = MAX_FAILOVERS; // already at the cap
+    assert.equal(await svc.attemptFailover(autoRun), false);
+    assert.equal(autoRun.status, "failed");
+    assert.ok(calls.events.some((e) => e.type === "auto_run_failover_exhausted"));
+  } finally {
+    state.agents = savedAgents;
+  }
+});
+
+test("3b: a timed_out invocation (dispatch_timeout) fails over through the reaction path", async () => {
+  const { svc } = makeAutoRun({});
+  const { autoRun, invocation } = await svc.startAutoRun({
+    projectId: sourceProjectId,
+    link: { type: "issue", number: 304, title: "ReactionFailover", url: null, state: "open" },
+    agentId: "agt_1", name: "issue-304",
+  });
+  const savedAgents = state.agents;
+  const savedUnlink = state.device?.unlinkState;
+  try {
+    state.agents = [fakeAgent(), fakeAgent({ id: "agt_2" })];
+    if (state.device) state.device.unlinkState = "linked";
+    await svc.advanceAutoRunForInvocation({ ...invocation, status: "timed_out", result: { summary: "reclaimed", errorCode: "dispatch_timeout" } });
+    assert.equal(autoRun.agentId, "agt_2", "the reaction path failed the run over automatically");
+    assert.notEqual(autoRun.status, "failed");
+  } finally {
+    state.agents = savedAgents;
+    if (state.device) state.device.unlinkState = savedUnlink;
+  }
 });
 
 test("errorCode is cleared on retry (no stale infra code survives the restart)", async () => {
