@@ -176,6 +176,35 @@ export function claudeRoundEmits(state, event, now) {
 }
 
 /**
+ * The claude stream-json `system/init` event carries the run's request-setup
+ * SUMMARY: model, permission mode, and the tool / MCP / skill / agent inventory
+ * the agent had available for the call. It is NOT the raw provider envelope —
+ * init omits the literal system prompt and full tool JSON schemas (tool NAMES
+ * only). Returns the bridge `request_context` payload, or null for any other
+ * event. The server re-clamps it (sanitizeRequestContext); this side only shapes.
+ */
+export function claudeRequestContext(event) {
+  if (!event || typeof event !== "object") return null;
+  if (event.type !== "system" || event.subtype !== "init") return null;
+  const strList = (value) => (Array.isArray(value) ? value.filter((x) => typeof x === "string") : []);
+  return {
+    provider: "anthropic",
+    model: typeof event.model === "string" ? event.model : null,
+    permissionMode: typeof event.permissionMode === "string" ? event.permissionMode : null,
+    tools: strList(event.tools),
+    mcpServers: Array.isArray(event.mcp_servers)
+      ? event.mcp_servers
+          .filter((server) => server && typeof server === "object" && typeof server.name === "string")
+          .map((server) => ({ name: server.name, status: typeof server.status === "string" ? server.status : null }))
+      : [],
+    skills: strList(event.skills),
+    agents: strList(event.agents),
+    slashCommandCount: Array.isArray(event.slash_commands) ? event.slash_commands.length : 0,
+    sessionId: typeof event.session_id === "string" ? event.session_id : null,
+  };
+}
+
+/**
  * Codex JSONL: usage arrives only at `turn.completed`, so item events accumulate
  * the turn's files/message, and the turn boundary emits one round. `turn.failed`
  * / `error` ends the turn as failed.

@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { AppWindow, Bot, ExternalLink, GitMerge, Hand, HelpCircle, Inbox, ListChecks, Loader2, PenLine, RotateCcw, ShieldAlert, Sparkles, Trophy, Wrench, type LucideIcon } from "lucide-react";
+import { AppWindow, Bot, ExternalLink, GitMerge, Hand, HelpCircle, Inbox, ListChecks, Loader2, MessagesSquare, PenLine, RotateCcw, Route, ShieldAlert, Sparkles, Trophy, Wrench, type LucideIcon } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -27,6 +27,7 @@ const KIND_META: Record<PendingDecisionKind, { icon: LucideIcon; label: string }
   application_recovery: { icon: AppWindow, label: "Recovery" },
   lifecycle_approval: { icon: Wrench, label: "Lifecycle" },
   lifecycle_rollback: { icon: RotateCcw, label: "Rollback" },
+  channel_task: { icon: MessagesSquare, label: "Channel task" },
 };
 
 function since(iso?: string | null): string | null {
@@ -271,6 +272,25 @@ function DecisionActions({
             </a>
           ) : null}
           {openBtn}
+        </>
+      );
+    // Channel /task: a captured inbound request — Route starts a tracked auto-run,
+    // Dismiss closes the issue.
+    case "channel_task":
+      return (
+        <>
+          <Button variant="primary" size="sm" className="h-7 px-2.5 text-xs" disabled={pending} onClick={() => d.ref?.channelTaskRequestId && act(() => api.routeChannelTask(d.ref!.channelTaskRequestId!))}>
+            {spin}
+            <Route className="mr-1 size-3" />Route
+          </Button>
+          <Button variant="ghost" size="sm" className="h-7 px-2 text-xs" disabled={pending} onClick={() => d.ref?.channelTaskRequestId && act(() => api.dismissChannelTask(d.ref!.channelTaskRequestId!))}>
+            Dismiss
+          </Button>
+          {d.ref?.issueUrl ? (
+            <a href={d.ref.issueUrl} target="_blank" rel="noreferrer" className={cn("inline-flex h-7 items-center gap-1 rounded-md px-2 text-xs text-muted-foreground hover:text-foreground")}>
+              Issue <ExternalLink className="size-3" />
+            </a>
+          ) : null}
         </>
       );
     // decomposition / design / clarify need their rich native UI to act on.

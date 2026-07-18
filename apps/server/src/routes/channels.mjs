@@ -13,6 +13,12 @@ export async function handleChannelRoutes({
   actor,
   registerChannel,
   setChannelTaskProject,
+  setChannelApprovalPolicy,
+  routeChannelTask,
+  dismissChannelTask,
+  retryChannelTask,
+  rerouteChannelTask,
+  takeoverChannelTask,
   listChannels,
   enableChannel,
   disableChannel,
@@ -23,7 +29,7 @@ export async function handleChannelRoutes({
   setChannelAllowlist,
   retryChannelDelivery,
 }) {
-  if (!url.pathname.startsWith("/api/channels")) return false;
+  if (!url.pathname.startsWith("/api/channels") && !url.pathname.startsWith("/api/channel-tasks/")) return false;
 
   if (req.method === "GET" && url.pathname === "/api/channels") {
     const result = listChannels(actor);
@@ -69,11 +75,34 @@ export async function handleChannelRoutes({
     return true;
   }
 
+  // Capture-then-promote: route a pending /task request into a tracked auto-run,
+  // or dismiss it (close the issue). Actor-gated same-team inside the action.
+  const channelTask = url.pathname.match(/^\/api\/channel-tasks\/([^/]+)\/(route|dismiss|retry|reroute|takeover)$/);
+  if (channelTask && req.method === "POST") {
+    const id = decodeURIComponent(channelTask[1]);
+    const actions = { route: routeChannelTask, dismiss: dismissChannelTask, retry: retryChannelTask, reroute: rerouteChannelTask, takeover: takeoverChannelTask };
+    const action = actions[channelTask[2]];
+    const result = typeof action === "function" ? await action(id, actor) : { status: 501, body: { error: "unavailable" } };
+    sendJson(res, result.status, result.body);
+    return true;
+  }
+
   const taskProject = url.pathname.match(/^\/api\/channels\/([^/]+)\/task-project$/);
   if (taskProject && req.method === "POST") {
     const body = await readJson(req);
     const result = setChannelTaskProject(
-      { channelId: decodeURIComponent(taskProject[1]), projectId: body?.projectId ?? null, approvalToken: body?.approvalToken },
+      { channelId: decodeURIComponent(taskProject[1]), projectId: body?.projectId ?? null, autoRoute: body?.autoRoute, dailyLimit: body?.dailyLimit, approvalToken: body?.approvalToken },
+      actor,
+    );
+    sendJson(res, result.status, result.body);
+    return true;
+  }
+
+  const approvalPolicy = url.pathname.match(/^\/api\/channels\/([^/]+)\/approval-policy$/);
+  if (approvalPolicy && req.method === "POST") {
+    const body = await readJson(req);
+    const result = setChannelApprovalPolicy(
+      { channelId: decodeURIComponent(approvalPolicy[1]), allowSelfApprove: body?.allowSelfApprove, approvalToken: body?.approvalToken },
       actor,
     );
     sendJson(res, result.status, result.body);

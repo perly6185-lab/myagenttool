@@ -192,11 +192,11 @@ try {
   console.log(`[acceptance] application=${gitInvocationId} evidence=${gitState.evidence.id}`);
   console.log(`[acceptance] web=${webUrl} offline=${offlineInvocationId} cli=${cliInvocationId} http=${httpInvocationId} cancelled=${cancelInvocationId} unlinked=${unlinkInvocationId}`);
 } finally {
-  stopChildren();
+  await stopChildren();
   if (httpAgentServer) {
     await new Promise((resolve) => httpAgentServer.close(resolve));
   }
-  rmSync(tempRoot, { recursive: true, force: true });
+  rmSync(tempRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
 }
 
 function assertTraceAuditAndLogs(state, invocationId, label, options = {}) {
@@ -338,10 +338,11 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-function stopChildren() {
-  for (const { child } of children) {
-    if (!child.killed) {
-      child.kill("SIGTERM");
-    }
-  }
+async function stopChildren() {
+  await Promise.all(children.map(async ({ child }) => {
+    if (child.exitCode !== null) return;
+    const exited = new Promise((resolve) => child.once("exit", resolve));
+    if (!child.killed) child.kill("SIGTERM");
+    await Promise.race([exited, sleep(2_000)]);
+  }));
 }

@@ -1,5 +1,6 @@
-import { UNTRUSTED_INPUT_LABEL } from "@myagenttool/protocol/issue-prompt";
+import { UNTRUSTED_INPUT_LABEL, UNTRUSTED_INPUT_TAG } from "@myagenttool/protocol/issue-prompt";
 import { LOCAL_TEAM_ID } from "./auth.mjs";
+import { makeRunTx } from "./store/run-tx.mjs";
 import { createEventLogRuntime } from "./event-log.mjs";
 import { createRefusalRuntime } from "./refusal-log.mjs";
 import { createBridgeCredentialRuntime } from "./bridge-auth.mjs";
@@ -16,6 +17,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { dirname, resolve, sep } from "node:path";
 import { mergeFileAccesses } from "../read-models/file-ledger.mjs";
+import { sanitizeRequestContext } from "../read-models/request-context.mjs";
 import { createAgentSkillService } from "../services/agent-skills.mjs";
 import { createApplicationService, validateApplicationRoutineDraft } from "../services/applications.mjs";
 import { createApplicationInstallService } from "../services/application-installs.mjs";
@@ -50,7 +52,7 @@ import { createAutoRunService } from "../services/auto-run.mjs";
 import { createDecisionSoftClaimService } from "../services/decision-soft-claims.mjs";
 import { createIssueClaimService } from "../services/issue-claims.mjs";
 import { resolveAutoRunVerifyCommand, resolveAutoRunVerifyCommandFor, runWorktreeVerification } from "../services/worktree-verify.mjs";
-import { resolveStatusWritebackConfig, runIssueAssigneeEdit, runIssueBodyFetch, runIssueComment, runIssueStatusTransition, runPrChecks, runPrMerge, runPrStateFetch, runIssueStateFetch } from "../services/issue-status.mjs";
+import { resolveStatusWritebackConfig, runIssueAssigneeEdit, runIssueBodyFetch, runIssueClose, runIssueComment, runIssueStatusTransition, runPrChecks, runPrMerge, runPrStateFetch, runIssueStateFetch } from "../services/issue-status.mjs";
 import { deciderTimeoutMs, resolveDeciderCommand, runDeciderCommand } from "../services/decision-command.mjs";
 import { childIssueBody, childIssueTitle, extractProjectFieldsBlock, runChildIssueCreate, spawnIssuesConfig } from "../services/auto-run-spawn.mjs";
 import { refreshPrDispositions } from "../services/auto-run-eval.mjs";
@@ -793,7 +795,7 @@ export function createServerRuntimeServices({
     return { ok: true, ...result };
   }
 
-  const { startAutoRun, advanceAutoRunForInvocation, syncAutoRunOnApproval, syncAutoRunOnDenial, retryAutoRun, cancelAutoRun, mergeAutoRunPr, reapStuckAutoRuns, autoMergeSweep, approveDesign, rejectDesign, answerClarify, approveDecomposition, rejectDecomposition } = createAutoRunService({
+  const { startAutoRun, advanceAutoRunForInvocation, syncAutoRunOnApproval, syncAutoRunOnDenial, retryAutoRun, attemptFailover, cancelAutoRun, mergeAutoRunPr, reapStuckAutoRuns, autoMergeSweep, approveDesign, rejectDesign, answerClarify, approveDecomposition, rejectDecomposition } = createAutoRunService({
     state,
     now,
     nextId,
@@ -1204,7 +1206,7 @@ export function createServerRuntimeServices({
   // `gh issue create` with the auto-trigger label so the single dispatcher routes
   // + starts a tracked auto-run. Never throws — returns {ok:false} on any failure
   // so the channel reply stays graceful.
-  const createChannelTaskIssue = async ({ projectId, channelOwnerTeamId, title, description, channelId, externalUserId, injectionSuspicious = false }) => {
+  const createChannelTaskIssue = async ({ projectId, channelOwnerTeamId, title, description, channelId, externalUserId, injectionSuspicious = false, autoRoute = false }) => {
     const project = (state.projects ?? []).find((p) => p.id === projectId);
     const repoPath = project?.path ?? null;
     if (!repoPath) return { ok: false, reason: "project_not_resolvable" };
@@ -1234,13 +1236,144 @@ export function createServerRuntimeServices({
     ].join("\n");
     // Taint travels (parity with the mail→issue path): the untrusted-input label
     // marks the issue + its eventual auto-run for downstream governance filters.
-    const labels = [autoLabel, "channel", UNTRUSTED_INPUT_LABEL, ...(injectionSuspicious ? ["needs-triage"] : [])];
+    // The dispatcher label is added ONLY in auto-route mode — in capture mode the
+    // issue stays un-routed until a human promotes it (a route action adds it / or
+    // starts the run directly).
+    const labels = [...(autoRoute ? [autoLabel] : []), "channel", UNTRUSTED_INPUT_LABEL, ...(injectionSuspicious ? ["needs-triage"] : [])];
     try {
       const { number, url } = await runChildIssueCreate({ cwd: repoPath, title, body, labels });
       return { ok: true, number, url };
     } catch (error) {
       return { ok: false, reason: "gh_failed", error: String(error?.message ?? error) };
     }
+  };
+
+  // Human promotion of a captured /task request (the capture-then-promote trust
+  // model). Route → start a tracked auto-run now; Dismiss → close the issue.
+  // Both are same-team gated on the request's channel and never throw.
+  const channelTaskRunTx = makeRunTx({ store, persistStateSoon });
+  const findPendingChannelTask = (id, actor) => {
+    const req = (state.channelTaskRequests ?? []).find((r) => r.id === id && r.status === "pending");
+    if (!req) return null;
+    const channel = (state.channels ?? []).find((c) => c.id === req.channelId);
+    if (!channel) return null;
+    if (actor?.teamId != null && (channel?.ownerTeamId ?? LOCAL_TEAM_ID) !== actor.teamId) return null; // opaque 404
+    return req;
+  };
+  const routeChannelTask = async (id, actor) => {
+    const req = findPendingChannelTask(id, actor);
+    if (!req) return { status: 404, body: { error: "channel_task_not_found" } };
+    let result;
+    let error;
+    try {
+      result = await startAutoRun({
+        projectId: req.projectId,
+        link: { type: "issue", number: req.issueNumber, title: req.title, url: req.issueUrl, state: "open" },
+        actor,
+      });
+    } catch (e) {
+      error = String(e?.message ?? e);
+    }
+    const autoRun = result?.autoRun ?? null;
+    const autoRunId = autoRun?.id ?? null;
+    if (!autoRunId) {
+      return { status: 409, body: { error: "route_failed", reason: error ?? result?.reason ?? "auto_run_not_started" } };
+    }
+    // Backlink both ways: the request points at its auto-run (autoRunId), and the
+    // auto-run carries its channel ORIGIN — so evidence/audit and the console can
+    // tie the run (and its actions) back to the originating channel, conversation,
+    // and untrusted sender without a manual issue-number join.
+    const origin = { channelId: req.channelId, conversationId: req.conversationId, channelTaskRequestId: req.id, externalUserId: req.externalUserId ?? null, issueNumber: req.issueNumber };
+    channelTaskRunTx(() => {
+      req.status = "routed";
+      req.autoRunId = autoRunId;
+      req.decidedAt = now();
+      req.decidedBy = actor?.userId ?? null;
+      autoRun.channelOrigin = origin;
+      // If the run already has an invocation, correlate it to the conversation so
+      // in-channel /result /cancel /status reach it, and stamp the same untrusted
+      // taint + channel metadata the /run path carries.
+      const invocation = result?.invocation ?? null;
+      if (invocation?.id) {
+        invocation.options = invocation.options ?? {};
+        invocation.options.metadata = {
+          ...invocation.options.metadata,
+          channel: { channelId: req.channelId, conversationId: req.conversationId, channelTaskRequestId: req.id },
+          riskTags: [...new Set([...(invocation.options.metadata?.riskTags ?? []), UNTRUSTED_INPUT_TAG])],
+        };
+        const conv = (state.channelConversations ?? []).find((c) => c.id === req.conversationId);
+        if (conv) conv.invocationIds = [...new Set([...(conv.invocationIds ?? []), invocation.id])];
+      }
+    });
+    appendEvent({ invocationId: null, type: "channel_task_routed", level: "info", message: `Channel task ${req.id} routed → auto-run ${autoRunId}.`, data: { channelTaskRequestId: req.id, issueNumber: req.issueNumber, autoRunId } });
+    return { status: 200, body: { ok: true, autoRunId, issueNumber: req.issueNumber } };
+  };
+  const dismissChannelTask = async (id, actor) => {
+    const req = findPendingChannelTask(id, actor);
+    if (!req) return { status: 404, body: { error: "channel_task_not_found" } };
+    const project = (state.projects ?? []).find((p) => p.id === req.projectId);
+    if (project?.path && Number.isFinite(req.issueNumber)) {
+      await runIssueClose({ cwd: project.path, issueNumber: req.issueNumber, comment: "Dismissed from the console — not routed to work." }).catch(() => {});
+    }
+    channelTaskRunTx(() => {
+      req.status = "dismissed";
+      req.decidedAt = now();
+      req.decidedBy = actor?.userId ?? null;
+    });
+    appendEvent({ invocationId: null, type: "channel_task_dismissed", level: "info", message: `Channel task ${req.id} dismissed (issue #${req.issueNumber} closed).`, data: { channelTaskRequestId: req.id, issueNumber: req.issueNumber } });
+    return { status: 200, body: { ok: true } };
+  };
+  const findOwnChannelTask = (id, actor) => {
+    const req = (state.channelTaskRequests ?? []).find((item) => item.id === id);
+    if (!req) return null;
+    const channel = (state.channels ?? []).find((item) => item.id === req.channelId);
+    if (!channel) return null;
+    if (actor?.teamId != null && (channel?.ownerTeamId ?? LOCAL_TEAM_ID) !== actor.teamId) return null;
+    return req;
+  };
+  const retryChannelTask = async (id, actor) => {
+    const req = findOwnChannelTask(id, actor);
+    const autoRun = req?.autoRunId ? (state.autoRuns ?? []).find((item) => item.id === req.autoRunId) : null;
+    if (!req || req.status !== "routed" || !autoRun) return { status: 404, body: { error: "channel_task_not_found" } };
+    try {
+      const result = await retryAutoRun(autoRun.id, { actor });
+      channelTaskRunTx(() => { req.lastAction = "retry"; req.lastActionAt = now(); req.lastActionBy = actor?.userId ?? null; });
+      return { status: 200, body: { ok: true, autoRunId: autoRun.id, invocationId: result.invocation.id } };
+    } catch (error) {
+      return { status: 409, body: { error: "channel_task_retry_failed", reason: String(error?.message ?? error) } };
+    }
+  };
+  const rerouteChannelTask = async (id, actor) => {
+    const req = findOwnChannelTask(id, actor);
+    const autoRun = req?.autoRunId ? (state.autoRuns ?? []).find((item) => item.id === req.autoRunId) : null;
+    if (!req || req.status !== "routed" || !autoRun) return { status: 404, body: { error: "channel_task_not_found" } };
+    const previousInvocationId = autoRun.invocationId ?? null;
+    const rerouted = await attemptFailover(autoRun);
+    if (!rerouted) return { status: 409, body: { error: "channel_task_reroute_unavailable", reason: autoRun.failoverOutcome?.status ?? "no_eligible_agent" } };
+    channelTaskRunTx(() => { req.lastAction = "reroute"; req.lastActionAt = now(); req.lastActionBy = actor?.userId ?? null; });
+    return { status: 200, body: { ok: true, autoRunId: autoRun.id, previousInvocationId, invocationId: autoRun.invocationId } };
+  };
+  const takeoverChannelTask = async (id, actor) => {
+    const req = findOwnChannelTask(id, actor);
+    const autoRun = req?.autoRunId ? (state.autoRuns ?? []).find((item) => item.id === req.autoRunId) : null;
+    if (!req || req.status !== "routed" || !autoRun) return { status: 404, body: { error: "channel_task_not_found" } };
+    const activeStatuses = ["materializing", "running", "verifying", "publishing", "awaiting_approval"];
+    if (![...activeStatuses, "failed", "blocked"].includes(autoRun.status)) {
+      return { status: 409, body: { error: "channel_task_takeover_unavailable", reason: `run_${autoRun.status}` } };
+    }
+    if (activeStatuses.includes(autoRun.status)) {
+      try { cancelAutoRun(autoRun.id, { actor }); } catch (error) {
+        return { status: 409, body: { error: "channel_task_takeover_failed", reason: String(error?.message ?? error) } };
+      }
+    }
+    channelTaskRunTx(() => {
+      req.status = "human_takeover";
+      req.lastAction = "takeover";
+      req.lastActionAt = now();
+      req.lastActionBy = actor?.userId ?? null;
+    });
+    appendEvent({ invocationId: autoRun.invocationId ?? null, type: "channel_task_human_takeover", level: "warn", message: `Channel task ${req.id} moved to human takeover.`, data: { channelTaskRequestId: req.id, autoRunId: autoRun.id } });
+    return { status: 200, body: { ok: true, autoRunId: autoRun.id, status: req.status } };
   };
 
   const channelConversationService = createChannelConversationService({
@@ -3084,6 +3217,18 @@ export function createServerRuntimeServices({
       invocation.fileLedger = mergeFileAccesses(invocation.fileLedger, accesses);
       persistStateSoon();
     },
+    // Request context (wrapper-visible SUMMARY): model, permission mode, and the
+    // tool/MCP/skill/agent inventory the run was dispatched with, from the CLI's
+    // stream-json init event. First report wins — a run has one setup. Stored on
+    // the invocation so it ships with state.invocations. See
+    // read-models/request-context.mjs (NOT the raw provider envelope).
+    recordRequestContext: (invocation, raw) => {
+      if (!invocation || invocation.requestContext) return;
+      const context = sanitizeRequestContext(raw);
+      if (!context) return;
+      invocation.requestContext = context;
+      persistStateSoon();
+    },
     publicState,
     currentLoopRoutineProjectContext,
     currentProject,
@@ -3127,6 +3272,12 @@ export function createServerRuntimeServices({
     listChannelIdentities: channelService.listChannelIdentities,
     setChannelAllowlist: channelService.setChannelAllowlist,
     setChannelTaskProject: channelService.setChannelTaskProject,
+    setChannelApprovalPolicy: channelService.setChannelApprovalPolicy,
+    routeChannelTask,
+    dismissChannelTask,
+    retryChannelTask,
+    rerouteChannelTask,
+    takeoverChannelTask,
     // The gateway's handoff: import + dispatch + reply-enqueue as one pipeline (S3+S4+S5).
     importChannelEvent: receiveChannelEvent,
     sweepChannelDeliveries: channelDeliveryService.sweepChannelDeliveries,

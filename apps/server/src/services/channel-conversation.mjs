@@ -27,6 +27,9 @@ export const CHANNEL_APPROVAL_TTL_MS = 10 * 60 * 1000;
 // be able to spawn governed invocations without bound and drain the team budget.
 const RUN_RATE_MAX = 10;
 const RUN_RATE_WINDOW_MS = 60 * 1000;
+// Fallback per-channel/day /task ceiling for a channel record that predates the
+// field (mirrors DEFAULT_TASK_DAILY_LIMIT in channels.mjs).
+const TASK_DAILY_LIMIT_FALLBACK = 50;
 
 export function createChannelConversationService({
   state,
@@ -50,7 +53,6 @@ export function createChannelConversationService({
   denyInvocation = null,
 }) {
   const runTx = makeRunTx({ store, persistStateSoon });
-  void nextId;
 
   const findChannel = (channelId) => (state.channels ?? []).find((row) => row.id === channelId) ?? null;
   const findConversation = (conversationId) =>
@@ -137,13 +139,27 @@ export function createChannelConversationService({
     if (rate.limited) {
       return settle(event, { status: "refused", reply: `Too many requests — at most ${RUN_RATE_MAX} per minute. Try again shortly.`, data: { reason: "rate_limited" } });
     }
-    // Reserve the rate slot SYNCHRONOUSLY, before the `await` below — otherwise
-    // two concurrent /task both read the pre-write window and both pass (TOCTOU),
+    // Second limiter: a per-channel/day aggregate ceiling across ALL users (the
+    // per-conversation minute limit alone lets many identities flood the repo).
+    const today = String(now()).slice(0, 10);
+    const dayCount = channel.taskDayDate === today ? (channel.taskDayCount ?? 0) : 0;
+    const dailyLimit = Number.isInteger(channel.taskDailyLimit) ? channel.taskDailyLimit : TASK_DAILY_LIMIT_FALLBACK;
+    if (dayCount >= dailyLimit) {
+      return settle(event, { status: "refused", reply: `This channel has reached its daily task limit (${dailyLimit}). Try again tomorrow.`, data: { reason: "daily_limit_reached" } });
+    }
+    // Reserve BOTH slots SYNCHRONOUSLY, before the `await` below — otherwise two
+    // concurrent /task both read the pre-write windows and both pass (TOCTOU),
     // and the stale-snapshot write would clobber a /run appended during the await.
     runTx(() => {
       conversation.recentRuns = [...rate.recentRuns, rate.nowMs];
+      channel.taskDayDate = today;
+      channel.taskDayCount = dayCount + 1;
       conversation.updatedAt = now();
     });
+    // Trust model: default = CAPTURE (file a tracked request a human promotes);
+    // opt-in per channel = auto-route (file with the dispatcher label directly).
+    const autoRoute = Boolean(channel.taskAutoRoute);
+    const title = text.slice(0, 120);
     let filed;
     try {
       filed = await createChannelTaskIssue({
@@ -152,13 +168,14 @@ export function createChannelConversationService({
         // but a project's ownerTeamId can change (re-registration) — pass the
         // channel's team so the filer refuses a drifted cross-team binding.
         channelOwnerTeamId: channel.ownerTeamId ?? null,
-        title: text.slice(0, 120),
+        title,
         description: text,
         channelId: channel.id,
         externalUserId: event.externalUserId,
         // Taint travels: a message the injection detector flagged files with the
         // untrusted marker so downstream governance sees it (parity with mail).
         injectionSuspicious: Boolean(event.injectionSuspicious),
+        autoRoute,
       });
     } catch (error) {
       filed = { ok: false, error: String(error?.message ?? error) };
@@ -168,14 +185,32 @@ export function createChannelConversationService({
     }
     runTx(() => {
       conversation.taskIssues = [...(conversation.taskIssues ?? []), { number: filed.number, url: filed.url ?? null, at: now() }].slice(-50);
+      // Capture mode: record a request that shows up as a pending decision until a
+      // human routes (→ auto-run) or dismisses it. Bounded newest-keeps.
+      if (!autoRoute) {
+        const request = {
+          id: nextId("ctr"),
+          channelId: channel.id,
+          conversationId: conversation.id,
+          projectId: channel.taskProjectId,
+          issueNumber: filed.number,
+          issueUrl: filed.url ?? null,
+          title,
+          externalUserId: event.externalUserId,
+          status: "pending",
+          autoRunId: null,
+          createdAt: now(),
+        };
+        state.channelTaskRequests = [...(state.channelTaskRequests ?? []), request].slice(-500);
+      }
       conversation.updatedAt = now();
     });
-    // Honest reply: the issue is filed + tracked; routing only happens if the
-    // dispatcher is enabled (off by default), so don't state it as a fact.
     return settle(event, {
       status: "dispatched",
-      reply: `Filed issue #${filed.number}${filed.url ? ` (${filed.url})` : ""} — tracked; it'll be routed automatically when the dispatcher is enabled.`,
-      data: { command: "/task", issueNumber: filed.number, projectId: channel.taskProjectId },
+      reply: autoRoute
+        ? `Filed issue #${filed.number}${filed.url ? ` (${filed.url})` : ""} — auto-routing; it'll be assigned and tracked.`
+        : `Filed issue #${filed.number}${filed.url ? ` (${filed.url})` : ""} — awaiting a route/dismiss decision in the console.`,
+      data: { command: "/task", issueNumber: filed.number, projectId: channel.taskProjectId, autoRoute },
     });
   }
 
@@ -416,6 +451,20 @@ export function createChannelConversationService({
             summary: `Channel /approve refused: confirmation expired or undatable for ${invocation.id}.`,
             evidence: { invocationId: invocation.id, requestedAt: approval.createdAt ?? null },
             reply: `The confirmation for ${invocation.id} has expired. Send the command again.`,
+          });
+        }
+        // Self-approval gate (#channel-audit): a channel conversation IS one
+        // external identity, so /approve here is ALWAYS requester == approver —
+        // the same person who /run the risky capability would satisfy its own
+        // local-approval gate. Unless the owner explicitly opted this channel into
+        // self-approval, route the decision to the console (a separate operator),
+        // preserving the human gate's separation.
+        if (!channel.allowSelfApprove) {
+          return refuseDispatch(event, {
+            code: "action_not_permitted",
+            summary: `Channel /approve refused: self-approval disabled for ${invocation.id}.`,
+            evidence: { invocationId: invocation.id, channelId: channel.id },
+            reply: `${invocation.id} needs approval by a separate operator — approve it in the console Approvals Center.`,
           });
         }
         if (typeof mintDecisionGrant !== "function" || typeof validateApprovalToken !== "function" || typeof approveInvocation !== "function") {

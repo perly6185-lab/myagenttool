@@ -1,0 +1,95 @@
+{
+  "ciGating": [
+    "smoke:local",
+    "smoke:tool-contract",
+    "smoke:agent-skills",
+    "smoke:dispatch-concurrency",
+    "smoke:channel-providers",
+    "smoke:automation-scheduler",
+    "smoke:claude-agent",
+    "smoke:ccusage-agent",
+    "smoke:codex-capability",
+    "smoke:codex-exec",
+    "smoke:cost-attribution",
+    "smoke:tenancy",
+    "smoke:gmail-app",
+    "smoke:163-app",
+    "smoke:worktree-diff",
+    "smoke:mcp-agent",
+    "smoke:mail-agent",
+    "smoke:local-origin",
+    "smoke:persistence",
+    "smoke:project-registry",
+    "smoke:project-tree",
+    "smoke:session-history"
+  ],
+  "manual": [
+    {
+      "reason": "Requires a locally installed or configured external CLI, terminal, or SSH target.",
+      "scripts": [
+        "smoke:ssh-target",
+        "smoke:terminal",
+        "smoke:codex-tool",
+        "smoke:claude-review-wrapper",
+        "smoke:claude-tool",
+        "smoke:claude-apply"
+      ]
+    },
+    {
+      "reason": "Exercises local Git worktrees or promotion mutations and is reserved for an isolated maintainer environment.",
+      "scripts": [
+        "smoke:loop-worker-child-run",
+        "smoke:loop-worker-child-apply",
+        "smoke:loop-worker-child-apply-isolated",
+        "smoke:loop-worktree-lifecycle",
+        "smoke:loop-worktree-review-promotion",
+        "smoke:loop-worktree-promotion-apply",
+        "smoke:loop-worktree-promotion-verify",
+        "smoke:loop-worktree-promotion-pr-prep",
+        "smoke:loop-worktree-promotion-commit",
+        "smoke:loop-worktree-promotion-push-plan",
+        "smoke:loop-worktree-promotion-push-preflight",
+        "smoke:loop-worktree-promotion-push-execute",
+        "smoke:loop-worktree-promotion-pr-create-prep",
+        "smoke:loop-worktree-promotion-pr-create-execute",
+        "smoke:loop-worktree-promotion-pr-merge-prep",
+        "smoke:loop-worktree-promotion-pr-merge-execute",
+        "smoke:worktree"
+      ]
+    },
+    {
+      "reason": "Long-running AI-loop orchestration coverage is run selectively while the subsystem is under active development.",
+      "scripts": [
+        "smoke:loop-registry",
+        "smoke:loop-scheduler",
+        "smoke:loop-worker",
+        "smoke:loop-routine-check",
+        "smoke:loop-routine-plan",
+        "smoke:loop-routine-run-dry",
+        "smoke:loop-routine-run-findings",
+        "smoke:loop-routine-github-inputs",
+        "smoke:loop-routine-schedule-plan",
+        "smoke:loop-routine-schedule-run",
+        "smoke:loop-routine-inspect",
+        "smoke:loop-routine-api",
+        "smoke:loop-routine-index",
+        "smoke:loop-routine-fanout-plan",
+        "smoke:loop-routine-fanout-execute",
+        "smoke:loop-routine-fanout-enqueue",
+        "smoke:loop-routine-fanout-worker"
+      ]
+    },
+    {
+      "reason": "Specialized contract or observability coverage remains an explicit local diagnostic rather than a merge gate.",
+      "scripts": [
+        "smoke:tool-review-client",
+        "smoke:observability",
+        "smoke:applications"
+      ]
+    },
+    {
+      "reason": "Legacy aggregate retained for local compatibility; smoke:ci is the authoritative CI aggregate.",
+      "scripts": ["smoke:port"]
+    }
+  ]
+}

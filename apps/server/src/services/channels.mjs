@@ -24,12 +24,17 @@ import { makeRunTx } from "../runtime/store/run-tx.mjs";
 export const CHANNEL_ENABLE_ACTION = "channel.enable";
 export const CHANNEL_ALLOWLIST_ACTION = "channel.allowlist";
 export const CHANNEL_TASK_PROJECT_ACTION = "channel.taskProject";
+export const CHANNEL_APPROVAL_POLICY_ACTION = "channel.approvalPolicy";
 const MAX_NAME_LENGTH = 80;
 const MAX_ALLOWLIST = 50;
 // Inbound-flood bounds (#channel-audit): a signed corp user's messages clear the
 // gateway, so the event log must be bounded in both per-message size and count.
 const MAX_EVENT_CONTENT_CHARS = 4000;
 const MAX_CHANNEL_EVENTS = 2000;
+// Per-channel /task aggregate ceiling (across ALL the channel's users, per UTC
+// day) — the second limiter above the per-conversation 10/min. Owner-configurable.
+const DEFAULT_TASK_DAILY_LIMIT = 50;
+const MAX_TASK_DAILY_LIMIT = 10_000;
 
 /** WeCom readiness probe: configuration PRESENCE from the gateway env — never values. */
 export function wecomEnvReadiness(env = process.env) {
@@ -162,6 +167,18 @@ export function createChannelService({
       // channel; the owner binding a project IS the authorization to file tasks
       // from this channel's (untrusted) inbound into that repo.
       taskProjectId: null,
+      // Trust model (default = capture, NOT auto-route): a /task is filed as a
+      // tracked REQUEST a human promotes to work. Opt-in to auto-route to file
+      // with the dispatcher label directly (no human in the loop).
+      taskAutoRoute: false,
+      // Aggregate /task ceiling: at most this many per UTC day across all users.
+      taskDailyLimit: DEFAULT_TASK_DAILY_LIMIT,
+      taskDayDate: null, // the UTC day taskDayCount is counting
+      taskDayCount: 0,
+      // In-channel /approve is requester==approver by construction (a conversation
+      // is one identity), so it's DISABLED by default — risky runs are approved in
+      // the console by a separate operator. Owner opt-in for trusted channels.
+      allowSelfApprove: false,
       createdAt: now(),
       updatedAt: now(),
     };
@@ -394,7 +411,7 @@ export function createChannelService({
   // Bind (or clear, projectId=null) the project that /task files GitHub issues
   // into. Owner-scoped + approval-gated like the allowlist; the bound project
   // must belong to the channel's owning team (no cross-team task filing).
-  function setChannelTaskProject({ channelId, projectId, approvalToken } = {}, actor = null) {
+  function setChannelTaskProject({ channelId, projectId, autoRoute, dailyLimit, approvalToken } = {}, actor = null) {
     const channel = findOwnChannel(channelId, actor);
     if (!channel) return notFound();
     const target = projectId == null ? null : (state.projects ?? []).find((p) => p.id === String(projectId));
@@ -423,13 +440,54 @@ export function createChannelService({
     }
     runTx(() => {
       channel.taskProjectId = target ? target.id : null;
+      if (autoRoute != null) channel.taskAutoRoute = Boolean(autoRoute);
+      if (dailyLimit != null) {
+        const n = Number(dailyLimit);
+        if (Number.isInteger(n) && n >= 0) channel.taskDailyLimit = Math.min(n, MAX_TASK_DAILY_LIMIT);
+      }
       channel.updatedAt = now();
       appendEvent({
         invocationId: null,
         type: "channel_task_project_set",
         level: "info",
-        message: `Channel ${channel.id}: task project ${target ? `bound to ${target.id}` : "cleared"}.`,
-        data: { channelId: channel.id, projectId: target?.id ?? null },
+        message: `Channel ${channel.id}: task project ${target ? `bound to ${target.id}` : "cleared"}${autoRoute != null ? `, auto-route ${channel.taskAutoRoute ? "on" : "off"}` : ""}.`,
+        data: { channelId: channel.id, projectId: target?.id ?? null, autoRoute: channel.taskAutoRoute },
+      });
+    });
+    return { ok: true, status: 200, body: { channel: publicChannel(channel) } };
+  }
+
+  // Owner opt-in for in-channel self-approval (default off). Approval-gated +
+  // owner-scoped like the other channel-trust setters.
+  function setChannelApprovalPolicy({ channelId, allowSelfApprove, approvalToken } = {}, actor = null) {
+    const channel = findOwnChannel(channelId, actor);
+    if (!channel) return notFound();
+    const approval = typeof validateApprovalToken === "function"
+      ? validateApprovalToken(approvalToken, { action: CHANNEL_APPROVAL_POLICY_ACTION, targetId: channel.id, actor })
+      : { approved: false, reason: "approval_validator_unavailable" };
+    if (!approval.approved) {
+      return {
+        ok: false,
+        status: 409,
+        body: {
+          error: "approval_required",
+          reason: approval.reason === "missing_token"
+            ? "Changing in-channel approval policy requires an explicit approvalToken."
+            : `approvalToken rejected: ${approval.reason}.`,
+          action: CHANNEL_APPROVAL_POLICY_ACTION,
+          targetId: channel.id,
+        },
+      };
+    }
+    runTx(() => {
+      channel.allowSelfApprove = Boolean(allowSelfApprove);
+      channel.updatedAt = now();
+      appendEvent({
+        invocationId: null,
+        type: "channel_approval_policy_set",
+        level: "info",
+        message: `Channel ${channel.id}: in-channel self-approval ${channel.allowSelfApprove ? "enabled" : "disabled"}.`,
+        data: { channelId: channel.id, allowSelfApprove: channel.allowSelfApprove },
       });
     });
     return { ok: true, status: 200, body: { channel: publicChannel(channel) } };
@@ -571,6 +629,7 @@ export function createChannelService({
     listChannelIdentities,
     setChannelAllowlist,
     setChannelTaskProject,
+    setChannelApprovalPolicy,
     importChannelEvent,
     findOwnChannel,
   };

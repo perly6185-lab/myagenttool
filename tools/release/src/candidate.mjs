@@ -9,6 +9,7 @@ const checkOnly = process.argv.includes("--check");
 const outputArg = process.argv.find((arg) => arg.startsWith("--out="));
 const outputPath = resolve(repoRoot, outputArg?.slice(6) || `.myagenttool/release-candidate/${process.platform}.json`);
 const checkTimeoutMs = Number(process.env.RELEASE_CANDIDATE_CHECK_TIMEOUT_MS ?? 5 * 60 * 1000);
+const pnpmEntry = process.env.npm_execpath;
 
 const checks = [
   { id: "descriptor-lineage", command: "node", args: ["--test", "test/ccusage-application.test.mjs", "test/application-git-capability.test.mjs", "test/claude-application.test.mjs"], cwd: "apps/server", evidence: ["immutable descriptor replay/replacement", "Git, ccusage, and Claude generic contract", "Application result evidence lineage"] },
@@ -16,10 +17,16 @@ const checks = [
   { id: "recovery-and-approval", command: "node", args: ["--test", "test/approval-grants.test.mjs", "test/application-auto-recovery.test.mjs", "test/pending-decisions.test.mjs"], cwd: "apps/server", evidence: ["strict grants", "parked approval", "bounded recovery"] },
   { id: "economics", command: "node", args: ["--test", "test/model-pricing.test.mjs", "test/usage-quota.test.mjs"], cwd: "apps/server", evidence: ["versioned pricing", "unknown price", "quota refusal"] },
   { id: "delivery-faults", command: "node", args: ["--test", "test/bridge-auth.test.mjs", "test/bridge-liveness.test.mjs"], cwd: "apps/server", evidence: ["reconnect", "credential refusal", "liveness loss"] },
+  { id: "runtime-reliability", command: "node", args: ["--test", "test/invocation-dispatch-health.test.mjs", "test/agent-failover.test.mjs", "test/dispatch-durability.test.mjs", "test/issue-claims.test.mjs"], cwd: "apps/server", evidence: ["combined health", "bounded failover", "durable lease", "claim expiry"] },
+  { id: "channel-provider-contracts", command: "node", args: ["tools/dev/channel-provider-contract-smoke.mjs"], cwd: ".", evidence: ["signature", "replay", "timeout", "message length", "idempotency", "WeCom result loop"], expectedOutput: ["5 providers passed"] },
   { id: "durable-restart", command: "node", args: ["--test", "test/persistence.test.mjs"], cwd: "apps/server", evidence: ["snapshot restore", "restart read models", "audit references"] },
   { id: "application-result-loop", command: "node", args: ["tools/dev/ccusage-agent-smoke.mjs"], cwd: ".", evidence: ["Application capability execution", "result import", "public-state redaction"], expectedOutput: ["ccusage-agent-smoke:", "checks passed"] },
   { id: "claude-application-loop", command: "node", args: ["tools/dev/claude-tool-smoke.mjs"], cwd: ".", evidence: ["Claude Application registration", "governed Tool facade execution", "worktree scope", "fixed plan permission mode", "finding import", "Application result evidence", "cost capture"], expectedOutput: ["claude-tool-smoke:", "Application invocation lineage and Evidence Center result are complete", "checks passed"] },
   { id: "m0-process-e2e", command: "node", args: ["tools/dev/m0-acceptance.mjs"], cwd: ".", evidence: ["Web to Server process loop", "Server to Bridge Git Application execution", "Application result import", "Evidence Center projection", "cancellation", "device unlink audit"], expectedOutput: ["M0 manual acceptance evidence OK", "application=", "evidence=", "cancelled=", "unlinked="] },
+  ...(pnpmEntry ? [
+    { id: "web-build", command: process.execPath, args: [pnpmEntry, "--filter", "@myagenttool/web", "build"], cwd: ".", evidence: ["production Web bundle"] },
+    { id: "browser-acceptance", command: "node", args: ["tools/dev/visual-qa.mjs", "--require-browser"], cwd: ".", evidence: ["desktop/mobile", "runtime health", "Channel failure actions", "nonblank and overflow checks"], expectedOutput: ["report written"] },
+  ] : []),
 ];
 
 if (checkOnly) {

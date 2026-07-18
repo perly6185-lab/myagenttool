@@ -5,6 +5,7 @@ import {
   newRoundState,
   claudeRoundEmits,
   codexRoundEmits,
+  claudeRequestContext,
 } from "../src/round-telemetry.mjs";
 
 const T0 = "2026-07-13T00:00:00.000Z";
@@ -125,4 +126,34 @@ test("Codex turn.failed ends a failed round", () => {
   const done = completed(emits).data;
   assert.equal(done.status, "failed");
   assert.equal(done.errorCode, "turn_failed");
+});
+
+test("claudeRequestContext shapes the stream-json init into a request_context payload", () => {
+  const init = {
+    type: "system",
+    subtype: "init",
+    model: "claude-opus-4-8[1m]",
+    permissionMode: "acceptEdits",
+    tools: ["Task", "Bash", "Read"],
+    mcp_servers: [{ name: "claude.ai Google Drive", status: "needs-auth" }],
+    skills: ["deep-research"],
+    agents: ["claude", "Explore"],
+    slash_commands: ["a", "b", "c", "d"],
+    session_id: "sess-123",
+  };
+  const ctx = claudeRequestContext(init);
+  assert.equal(ctx.model, "claude-opus-4-8[1m]");
+  assert.equal(ctx.permissionMode, "acceptEdits");
+  assert.deepEqual(ctx.tools, ["Task", "Bash", "Read"]);
+  assert.deepEqual(ctx.mcpServers, [{ name: "claude.ai Google Drive", status: "needs-auth" }]);
+  assert.deepEqual(ctx.skills, ["deep-research"]);
+  assert.deepEqual(ctx.agents, ["claude", "Explore"]);
+  assert.equal(ctx.slashCommandCount, 4, "the slash-command list is reduced to a count");
+  assert.equal(ctx.sessionId, "sess-123");
+});
+
+test("claudeRequestContext returns null for non-init events (assistant/result/etc.)", () => {
+  assert.equal(claudeRequestContext({ type: "assistant", message: {} }), null);
+  assert.equal(claudeRequestContext({ type: "system", subtype: "other" }), null);
+  assert.equal(claudeRequestContext(null), null);
 });

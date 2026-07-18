@@ -201,7 +201,8 @@ export type PendingDecisionKind =
   | "codex_broker"
   | "application_recovery"
   | "lifecycle_approval"
-  | "lifecycle_rollback";
+  | "lifecycle_rollback"
+  | "channel_task";
 
 export interface PendingDecision {
   id: string;
@@ -230,6 +231,9 @@ export interface PendingDecision {
     rollbackRequestId?: string;
     recoveryActionRequestId?: string | null;
     applicationId?: string | null;
+    channelTaskRequestId?: string;
+    issueNumber?: number | null;
+    issueUrl?: string | null;
   };
 }
 
@@ -377,6 +381,22 @@ export interface InvocationSnapshot {
   // (server read-models/file-ledger.mjs). Deduped + capped; `truncated` when it hit
   // the cap. Absent for agents whose stream we don't parse.
   fileLedger?: { reads?: string[]; writes?: string[]; truncated?: boolean } | null;
+  // Request-setup summary captured from the agent CLI's stream-json init event
+  // (server read-models/request-context.mjs): model, permission mode, and the
+  // tool / MCP / skill / agent inventory the run was dispatched with. This is the
+  // wrapper-visible SUMMARY — tool NAMES only, NOT the raw system prompt or full
+  // tool schemas (the CLI never emits those). Absent until the init event lands.
+  requestContext?: {
+    provider?: string;
+    model?: string | null;
+    permissionMode?: string | null;
+    tools?: string[];
+    mcpServers?: { name: string; status?: string | null }[];
+    skills?: string[];
+    agents?: string[];
+    slashCommandCount?: number;
+    sessionId?: string | null;
+  } | null;
   traceId?: string;
   rootSpanId?: string;
   approvalRequestId?: string;
@@ -456,6 +476,9 @@ export interface InvocationExplanation {
     recoveryActionType?: string | null;
     automationId?: string | null;
     automationName?: string | null;
+    channelId?: string | null;
+    conversationId?: string | null;
+    channelTaskRequestId?: string | null;
     scheduled?: boolean;
     autoRunId?: string | null;
     compareRunId?: string | null;
@@ -1206,6 +1229,26 @@ export interface ConsoleSnapshot {
   /** Channel subsystem (#1090): operational rollup per channel, team-scoped. */
   channelOperations?: ChannelOperations[];
   channelDeliveries?: ChannelDelivery[];
+  channelTaskRequests?: ChannelTaskRequest[];
+}
+
+export interface ChannelTaskRequest {
+  id: string;
+  channelId: string;
+  projectId: string;
+  issueNumber: number;
+  issueUrl?: string | null;
+  title: string;
+  status: string;
+  stage: string;
+  autoRunId?: string | null;
+  runStatus?: string | null;
+  invocationId?: string | null;
+  invocationStatus?: string | null;
+  resultSummary?: string | null;
+  deliveryStatus?: string | null;
+  createdAt?: string | null;
+  actions: { retry: boolean; reroute: boolean; takeover: boolean };
 }
 
 /** Per-channel operational rollup (read-models/channels.mjs). No secrets — readiness is booleans. */
@@ -1222,6 +1265,14 @@ export interface ChannelOperations {
   statusCapability?: string | null;
   /** The project `/task` files GitHub issues into (null = /task disabled). */
   taskProjectId?: string | null;
+  /** Auto-route /task straight to work (default off = capture-then-promote). */
+  taskAutoRoute?: boolean;
+  /** Per-channel/day aggregate /task ceiling + today's usage. */
+  taskDailyLimit?: number;
+  taskDayDate?: string | null;
+  taskDayCount?: number;
+  /** Whether in-channel /approve is allowed (default off — approve in the console). */
+  allowSelfApprove?: boolean;
   counts: {
     identities: number;
     conversations: number;

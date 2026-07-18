@@ -12,7 +12,7 @@ import { callA2aAgent, probeA2aAgent } from "./a2a-client.mjs";
 import { probeContainerRuntime, runContainerAgent } from "./container-client.mjs";
 import { codexResumeArgs } from "./codex-resume.mjs";
 import { extractClaudeFileAccesses } from "./claude-file-access.mjs";
-import { newRoundState, claudeRoundEmits, codexRoundEmits } from "./round-telemetry.mjs";
+import { newRoundState, claudeRoundEmits, codexRoundEmits, claudeRequestContext } from "./round-telemetry.mjs";
 import { createAgentLineSink } from "./agent-line-sink.mjs";
 import { createInvocationPool, resolveBridgeConcurrency, refreshedConcurrency } from "./invocation-pool.mjs";
 import { spawnCapture } from "./spawn-capture.mjs";
@@ -2665,6 +2665,21 @@ async function handleClaudeJsonLine(invocationId, line, roundState = null) {
   }
 
   await emitRoundEvents(invocationId, roundState, event, claudeRoundEmits);
+
+  // The init event carries the run's request-setup summary (model, permission
+  // mode, tool/MCP/skill/agent inventory). Report it once so the console can show
+  // what the call was dispatched with — NOT the raw system prompt (the CLI never
+  // emits that; only a wire proxy can see it).
+  const requestContext = claudeRequestContext(event);
+  if (requestContext) {
+    await request("POST", "/api/bridge/events", {
+      invocationId,
+      type: "request_context",
+      level: "info",
+      message: "Claude request context captured.",
+      data: requestContext,
+    });
+  }
 
   const message = claudeEventMessage(event);
   if (message) {

@@ -7,7 +7,7 @@ import assert from "node:assert/strict";
 import { tmpdir } from "node:os";
 import { test } from "node:test";
 
-import { channelOperations } from "../src/read-models/channels.mjs";
+import { channelOperations, channelTaskOperations } from "../src/read-models/channels.mjs";
 import { createServerState } from "../src/runtime/state-factory.mjs";
 import { createChannelDeliveryService } from "../src/services/channel-delivery.mjs";
 import { createChannelService } from "../src/services/channels.mjs";
@@ -45,6 +45,25 @@ test("channelOperations rolls up readiness, health, counts, and last activity", 
 
   assert.equal(rows.find((r) => r.id === "chn_2").health, "idle"); // not enabled
   assert.equal(rows.find((r) => r.id === "chn_3").health, "attention"); // enabled but not ready
+});
+
+test("channelTaskOperations joins Issue, auto-run, Invocation, result, delivery, and recovery actions", () => {
+  const rows = channelTaskOperations({
+    requests: [
+      { id: "ctr_pending", channelId: "chn_1", status: "pending", issueNumber: 7, title: "pending" },
+      { id: "ctr_failed", channelId: "chn_1", status: "routed", issueNumber: 8, title: "failed", autoRunId: "run_1" },
+    ],
+    autoRuns: [{ id: "run_1", status: "failed", invocationId: "inv_1", errorCode: "stuck", error: "Agent stopped" }],
+    invocations: [{ id: "inv_1", status: "failed", result: { error: "Bridge disconnected" } }],
+    deliveries: [{ invocationId: "inv_1", status: "failed_terminal" }],
+  });
+  assert.equal(rows[0].stage, "awaiting_route");
+  assert.deepEqual(rows[0].actions, { retry: false, reroute: false, takeover: false });
+  assert.equal(rows[1].stage, "run_failed");
+  assert.equal(rows[1].invocationId, "inv_1");
+  assert.equal(rows[1].resultSummary, "Bridge disconnected");
+  assert.equal(rows[1].deliveryStatus, "failed_terminal");
+  assert.deepEqual(rows[1].actions, { retry: true, reroute: true, takeover: true });
 });
 
 function makeRetryHarness() {

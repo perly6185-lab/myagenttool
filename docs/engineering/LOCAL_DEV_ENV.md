@@ -39,7 +39,7 @@ pnpm smoke:local
 ```
 
 `pnpm dev` starts the local server, Desktop Bridge, and web console. It also
-starts a localhost-only development control endpoint on `127.0.0.1:3999`.
+starts a localhost-only development control endpoint on `127.0.0.1:5999`.
 After a validation pass, run `pnpm dev:restart-changed` to inspect changed git
 paths and restart only affected local services:
 

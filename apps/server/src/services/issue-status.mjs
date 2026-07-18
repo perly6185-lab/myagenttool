@@ -42,6 +42,19 @@ export async function runIssueStatusTransition({ cwd, issueNumber, to, gh = defa
   }
 }
 
+// Close an issue with a short reason comment (a dismissed channel-task request).
+// Best-effort; never throws.
+export async function runIssueClose({ cwd, issueNumber, comment = "", gh = defaultGh }) {
+  const args = ["issue", "close", String(issueNumber)];
+  if (comment) args.push("--comment", comment);
+  try {
+    await gh(args, cwd);
+    return { ok: true, issueNumber };
+  } catch (error) {
+    return { ok: false, issueNumber, error: String(error?.stderr ?? error?.message ?? error).trim() };
+  }
+}
+
 // #1150: mirror an issue claim to the GitHub assignee, so ownership taken in
 // the console is visible to people who only look at GitHub. Best-effort mirror
 // — the local claim stays authoritative; "@me" is whoever gh is authed as on

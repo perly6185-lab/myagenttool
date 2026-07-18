@@ -86,6 +86,11 @@ export interface InvocationDispatchHealthResponse {
     redeliveryRate: number | null;
     exhaustedCount: number;
   };
+  reliability: {
+    failover: { attempts: number; recovered: number; exhausted: number; latest: Array<Record<string, unknown>> };
+    claims: { active: number; expired: number; nextExpiryAt: string | null };
+    intervention: { required: number; items: Array<{ autoRunId: string; invocationId: string | null; reason: string; state: string }> };
+  };
 }
 
 // The dev server's default port (tools/dev/run-local-demo.mjs SERVER_PORT).
@@ -725,7 +730,17 @@ export const api = {
       `/api/channels/${encodeURIComponent(channelId)}/deliveries/${encodeURIComponent(deliveryId)}/retry`,
       { approvalToken },
     ),
-  // Bind (projectId) or clear (null) the project /task files issues into. Approval-gated.
-  setChannelTaskProject: (channelId: string, projectId: string | null, approvalToken: string) =>
-    request("POST", `/api/channels/${encodeURIComponent(channelId)}/task-project`, { projectId, approvalToken }),
+  // Bind (projectId) or clear (null) the project /task files issues into, and the
+  // auto-route mode. Approval-gated.
+  setChannelTaskProject: (channelId: string, projectId: string | null, autoRoute: boolean, dailyLimit: number, approvalToken: string) =>
+    request("POST", `/api/channels/${encodeURIComponent(channelId)}/task-project`, { projectId, autoRoute, dailyLimit, approvalToken }),
+  // Promote a captured /task request into a tracked auto-run, or dismiss it.
+  routeChannelTask: (id: string) => request<{ ok: boolean; autoRunId: string | null }>("POST", `/api/channel-tasks/${encodeURIComponent(id)}/route`),
+  dismissChannelTask: (id: string) => request("POST", `/api/channel-tasks/${encodeURIComponent(id)}/dismiss`),
+  retryChannelTask: (id: string) => request("POST", `/api/channel-tasks/${encodeURIComponent(id)}/retry`),
+  rerouteChannelTask: (id: string) => request("POST", `/api/channel-tasks/${encodeURIComponent(id)}/reroute`),
+  takeoverChannelTask: (id: string) => request("POST", `/api/channel-tasks/${encodeURIComponent(id)}/takeover`),
+  // Opt a channel into in-channel /approve (default off). Approval-gated.
+  setChannelApprovalPolicy: (channelId: string, allowSelfApprove: boolean, approvalToken: string) =>
+    request("POST", `/api/channels/${encodeURIComponent(channelId)}/approval-policy`, { allowSelfApprove, approvalToken }),
 };
