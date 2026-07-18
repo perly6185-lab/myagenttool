@@ -1,4 +1,4 @@
-import { UNTRUSTED_INPUT_LABEL } from "@myagenttool/protocol/issue-prompt";
+import { UNTRUSTED_INPUT_LABEL, UNTRUSTED_INPUT_TAG } from "@myagenttool/protocol/issue-prompt";
 import { LOCAL_TEAM_ID } from "./auth.mjs";
 import { makeRunTx } from "./store/run-tx.mjs";
 import { createEventLogRuntime } from "./event-log.mjs";
@@ -1272,15 +1272,36 @@ export function createServerRuntimeServices({
     } catch (e) {
       error = String(e?.message ?? e);
     }
-    const autoRunId = result?.autoRun?.id ?? null;
+    const autoRun = result?.autoRun ?? null;
+    const autoRunId = autoRun?.id ?? null;
     if (!autoRunId) {
       return { status: 409, body: { error: "route_failed", reason: error ?? result?.reason ?? "auto_run_not_started" } };
     }
+    // Backlink both ways: the request points at its auto-run (autoRunId), and the
+    // auto-run carries its channel ORIGIN — so evidence/audit and the console can
+    // tie the run (and its actions) back to the originating channel, conversation,
+    // and untrusted sender without a manual issue-number join.
+    const origin = { channelId: req.channelId, conversationId: req.conversationId, channelTaskRequestId: req.id, externalUserId: req.externalUserId ?? null, issueNumber: req.issueNumber };
     channelTaskRunTx(() => {
       req.status = "routed";
       req.autoRunId = autoRunId;
       req.decidedAt = now();
       req.decidedBy = actor?.userId ?? null;
+      autoRun.channelOrigin = origin;
+      // If the run already has an invocation, correlate it to the conversation so
+      // in-channel /result /cancel /status reach it, and stamp the same untrusted
+      // taint + channel metadata the /run path carries.
+      const invocation = result?.invocation ?? null;
+      if (invocation?.id) {
+        invocation.options = invocation.options ?? {};
+        invocation.options.metadata = {
+          ...invocation.options.metadata,
+          channel: { channelId: req.channelId, conversationId: req.conversationId, channelTaskRequestId: req.id },
+          riskTags: [...new Set([...(invocation.options.metadata?.riskTags ?? []), UNTRUSTED_INPUT_TAG])],
+        };
+        const conv = (state.channelConversations ?? []).find((c) => c.id === req.conversationId);
+        if (conv) conv.invocationIds = [...new Set([...(conv.invocationIds ?? []), invocation.id])];
+      }
     });
     appendEvent({ invocationId: null, type: "channel_task_routed", level: "info", message: `Channel task ${req.id} routed → auto-run ${autoRunId}.`, data: { channelTaskRequestId: req.id, issueNumber: req.issueNumber, autoRunId } });
     return { status: 200, body: { ok: true, autoRunId, issueNumber: req.issueNumber } };

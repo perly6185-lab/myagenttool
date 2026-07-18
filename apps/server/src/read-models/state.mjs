@@ -728,6 +728,17 @@ function invocationSourceExplanation(invocation, context, metadata, recoveryRequ
       targetInvocationId: stringOrNull(metadata.targetInvocationId),
     };
   }
+  // A run that originated from a channel message (/run or a routed /task) — so the
+  // Invocations ledger can identify + filter channel-originated work instead of
+  // labeling it "direct".
+  if (metadata.channel?.channelId) {
+    return {
+      type: "channel",
+      channelId: stringOrNull(metadata.channel.channelId),
+      conversationId: stringOrNull(metadata.channel.conversationId),
+      channelTaskRequestId: stringOrNull(metadata.channel.channelTaskRequestId),
+    };
+  }
   if (metadata.source === "application_orchestration" || stringOrNull(metadata.applicationId)) {
     return {
       type: "application_orchestration",

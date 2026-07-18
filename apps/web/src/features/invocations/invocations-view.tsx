@@ -616,6 +616,7 @@ function sourceBadgeLabel(explanation: InvocationExplanation | null): string | n
   if (type === "troubleshooting") return "Troubleshooting";
   if (type === "recovery_result") return "Recovery result";
   if (type === "tool") return "Tool";
+  if (type === "channel") return "Channel";
   return null;
 }
 

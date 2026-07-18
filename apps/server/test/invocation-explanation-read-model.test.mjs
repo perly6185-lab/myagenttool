@@ -51,6 +51,25 @@ function publicState(state) {
   });
 }
 
+test("a channel-originated invocation reads as source type 'channel', not 'direct'", () => {
+  const snapshot = publicState(baseState({
+    invocations: [{
+      id: "inv_ch",
+      projectId: "proj_a",
+      agentId: "agt_high",
+      status: "running",
+      delivery: { state: "not_required", deviceId: null },
+      cancellation: { state: "none" },
+      options: { metadata: { channel: { channelId: "chn_1", conversationId: "cnv_1", channelTaskRequestId: "ctr_1" } } },
+      createdAt: "2026-07-05T01:00:00.000Z",
+    }],
+  }));
+  const source = snapshot.invocations[0].explanation.source;
+  assert.equal(source.type, "channel");
+  assert.equal(source.channelId, "chn_1");
+  assert.equal(source.channelTaskRequestId, "ctr_1");
+});
+
 test("public invocation explanation points pending local approval at the approval request", () => {
   const snapshot = publicState(baseState({
     invocations: [{
