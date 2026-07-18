@@ -48,7 +48,7 @@ export function InvocationDispatchHealth() {
   }
   if (!data) return null;
 
-  const { capacity, queue, stats } = data;
+  const { capacity, queue, stats, reliability } = data;
 
   return (
     <Card className="max-w-xl" data-testid="dispatch-health">
@@ -108,6 +108,11 @@ export function InvocationDispatchHealth() {
             </>
           )}
         </p>
+        <div className="grid grid-cols-3 gap-2 border-t border-border pt-3 text-xs" data-testid="runtime-reliability">
+          <div><span className="block text-muted-foreground">Failover</span><strong>{reliability.failover.recovered}/{reliability.failover.attempts} recovered</strong></div>
+          <div><span className="block text-muted-foreground">Claims</span><strong>{reliability.claims.active} active</strong>{reliability.claims.expired ? <span className="block text-warning">{reliability.claims.expired} expired</span> : null}</div>
+          <div><span className="block text-muted-foreground">Intervention</span><strong className={reliability.intervention.required ? "text-destructive" : ""}>{reliability.intervention.required ? `${reliability.intervention.required} need review` : "None"}</strong></div>
+        </div>
       </CardContent>
     </Card>
   );

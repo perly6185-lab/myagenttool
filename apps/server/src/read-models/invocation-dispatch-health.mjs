@@ -33,7 +33,7 @@ function median(values) {
   return sorted.length % 2 === 0 ? Math.round((sorted[mid - 1] + sorted[mid]) / 2) : sorted[mid];
 }
 
-export function computeInvocationDispatchHealth(state, { findAgent, now, visibleInvocation = () => true } = {}) {
+export function computeInvocationDispatchHealth(state, { findAgent, now, visibleInvocation = () => true, visibleProject = () => true } = {}) {
   const invocations = state?.invocations ?? [];
   const deviceId = state?.device?.id ?? null;
   const maxConcurrency = state?.device?.maxConcurrency || 1;
@@ -96,6 +96,26 @@ export function computeInvocationDispatchHealth(state, { findAgent, now, visible
   }
   const indeterminate = settled < MIN_STATS_SAMPLES;
 
+  const visibleIds = new Set(invocations.filter(visibleInvocation).map((item) => item.id));
+  const visibleRuns = (state?.autoRuns ?? []).filter((run) =>
+    [run.invocationId, ...(run.failoverHistory ?? []).flatMap((item) => [item.fromInvocationId, item.toInvocationId])]
+      .filter(Boolean)
+      .some((id) => visibleIds.has(id)),
+  );
+  const failoverHistory = visibleRuns.flatMap((run) => (run.failoverHistory ?? []).map((item) => ({ autoRunId: run.id, ...item })));
+  const failoverOutcomes = visibleRuns.map((run) => run.failoverOutcome).filter(Boolean);
+  const claims = (state?.issueClaims ?? []).filter((claim) => visibleProject(claim.projectId));
+  const activeClaims = claims.filter((claim) => claim.status === "active");
+  const expiredClaims = claims.filter((claim) => claim.status === "expired" || claim.outcome === "lease_expired");
+  const interventionItems = visibleRuns
+    .filter((run) => run.status === "failed" && ["exhausted", "alternate_unavailable", "worktree_unavailable", "device_unlinked", "start_failed"].includes(run.failoverOutcome?.status))
+    .map((run) => ({
+      autoRunId: run.id,
+      invocationId: run.invocationId ?? null,
+      reason: run.errorCode ?? run.failoverOutcome?.reason ?? "failed",
+      state: "needs_human",
+    }));
+
   return {
     capacity: {
       maxConcurrency,
@@ -114,6 +134,23 @@ export function computeInvocationDispatchHealth(state, { findAgent, now, visible
       medianMsToDispatch: indeterminate ? null : median(latencies),
       redeliveryRate: indeterminate ? null : Math.round((redelivered / settled) * 1000) / 1000,
       exhaustedCount: exhausted,
+    },
+    reliability: {
+      failover: {
+        attempts: failoverHistory.length,
+        recovered: failoverOutcomes.filter((item) => item.status === "recovered").length,
+        exhausted: failoverOutcomes.filter((item) => item.status === "exhausted").length,
+        latest: failoverHistory.sort((a, b) => String(b.at).localeCompare(String(a.at))).slice(0, 10),
+      },
+      claims: {
+        active: activeClaims.length,
+        expired: expiredClaims.length,
+        nextExpiryAt: activeClaims.map((item) => item.leaseExpiresAt).filter(Boolean).sort()[0] ?? null,
+      },
+      intervention: {
+        required: interventionItems.length,
+        items: interventionItems,
+      },
     },
   };
 }

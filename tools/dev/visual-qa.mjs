@@ -295,12 +295,13 @@ function visualScenarios(baseline) {
     { name: "running", state: withRun("running"), invocationId: "inv_visual_running" },
     { name: "succeeded", state: withRun("succeeded", { summary: "Authentication boundaries reviewed; no unsafe write was performed." }), invocationId: "inv_visual_succeeded" },
     { name: "approval", state: withRun("waiting_for_local_approval"), invocationId: "inv_visual_waiting_for_local_approval" },
+    { name: "runtime-health", state: structuredClone(ready), invocationId: null, section: "devices" },
     { name: "disconnected", disconnected: true, state: null, invocationId: null },
   ];
   return scenarios.map((scenario) => ({
     ...scenario,
     selection: {
-      section: "dashboard",
+      section: scenario.section ?? "dashboard",
       selectedAgentId: scenario.name === "empty" || scenario.disconnected ? null : codexAgent.id,
       selectedInvocationId: scenario.invocationId,
       selectedProjectId: ready.projects?.[0]?.id ?? null,
@@ -312,6 +313,11 @@ function visualScenarios(baseline) {
 async function assertVisualState(page, scenario) {
   if (scenario.disconnected) {
     await page.locator("span:visible", { hasText: "Server is offline." }).first().waitFor({ timeout: 15_000 });
+    return;
+  }
+  if (scenario.name === "runtime-health") {
+    await page.locator('[data-testid="dispatch-health"]:visible').waitFor({ timeout: 15_000 });
+    await page.locator('[data-testid="runtime-reliability"]:visible').waitFor();
     return;
   }
   await page.locator('textarea[aria-label="Task"]:visible').waitFor({ timeout: 15_000 });
