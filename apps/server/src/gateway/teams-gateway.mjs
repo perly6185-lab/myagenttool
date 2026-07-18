@@ -19,6 +19,7 @@ const MAX_BODY_BYTES = 256 * 1024; // Activities can carry attachments metadata
 const MAX_SEEN = 10_000;
 const OPENID_METADATA_URL = "https://login.botframework.com/v1/.well-known/openidconfiguration";
 const JWKS_TTL_MS = 24 * 60 * 60 * 1000; // Bot Framework keys rotate slowly
+const REPLAY_TTL_MS = 5 * 60 * 1000; // an activity id need only be remembered briefly
 
 async function defaultFetchJwks() {
   const meta = await fetch(OPENID_METADATA_URL).then((r) => r.json());
@@ -66,7 +67,7 @@ export function createTeamsGateway({
     }
     while (seen.size > MAX_SEEN) seen.delete(seen.keys().next().value);
     if (seen.has(activityId)) return false;
-    seen.set(activityId, nowMs + JWKS_TTL_MS);
+    seen.set(activityId, nowMs + REPLAY_TTL_MS);
     return true;
   }
 
@@ -126,6 +127,13 @@ export function createTeamsGateway({
       return;
     }
 
+    // SECURITY (#channel-audit): the reply serviceUrl must come from the SIGNED
+    // token's `serviceurl` claim, NOT the request body. The JWT authenticates the
+    // sender but does not sign the body, so a body-supplied serviceUrl is
+    // attacker-controlled — trusting it would POST the bot's outbound bearer token
+    // to any host (credential exfiltration / SSRF). The body's serviceUrl is
+    // ignored; if the token carries no claim there is no trusted reply address.
+    const replyServiceUrl = String(verdict.payload?.serviceurl ?? "").trim();
     try {
       await importChannelEvent({
         channelId,
@@ -135,8 +143,8 @@ export function createTeamsGateway({
         content: parsed.content,
         providerCreateTime: parsed.createTime,
         agentId: null,
-        // The reply address for this conversation (#1135).
-        replyContext: { serviceUrl: parsed.serviceUrl, conversationId: parsed.conversationId },
+        // The reply address for this conversation (#1135) — token-attested only.
+        replyContext: { serviceUrl: replyServiceUrl, conversationId: parsed.conversationId },
       });
     } catch {
       // Import must never take the public socket down; Teams just retries.

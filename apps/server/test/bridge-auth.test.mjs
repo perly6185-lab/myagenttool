@@ -99,6 +99,7 @@ test("bridge registration issues a device-bound credential and protects bridge r
 
 const protectedBridgeRoutes = [
   { method: "GET", path: "/api/bridge/next" },
+  { method: "GET", path: "/api/bridge/aux-next" },
   { method: "GET", path: "/api/bridge/health-next" },
   { method: "POST", path: "/api/bridge/health-complete", body: {} },
   { method: "GET", path: "/api/bridge/discovery-next" },

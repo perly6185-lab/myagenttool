@@ -15,6 +15,7 @@ import { extractClaudeFileAccesses } from "./claude-file-access.mjs";
 import { newRoundState, claudeRoundEmits, codexRoundEmits } from "./round-telemetry.mjs";
 import { createAgentLineSink } from "./agent-line-sink.mjs";
 import { createInvocationPool, resolveBridgeConcurrency } from "./invocation-pool.mjs";
+import { spawnCapture } from "./spawn-capture.mjs";
 import { applicationWrapperArgs } from "./application-wrapper-args.mjs";
 import { collectApplicationBinaryReadiness } from "./application-binary-readiness.mjs";
 import { collectApplicationCredentialReadiness } from "./application-credential-readiness.mjs";
@@ -357,7 +358,7 @@ try {
   registration = await request("POST", "/api/bridge/register", {
     bridgeVersion: "0.0.0",
     capabilities: ["demo_cli_agent", "managed_terminal_pty", "remote_ssh_relay"],
-    applicationBinaryReadiness: collectApplicationBinaryReadiness(localExecutionPolicyManifest),
+    applicationBinaryReadiness: await collectApplicationBinaryReadiness(localExecutionPolicyManifest),
     applicationCredentialReadiness: collectApplicationCredentialReadiness(credentialDir),
   });
 } catch (error) {
@@ -419,7 +420,7 @@ const guarded = (fn, label) => () => Promise.resolve().then(fn).catch((error) =>
 
 async function refreshApplicationBinaryReadiness() {
   await request("POST", "/api/bridge/readiness", {
-    applicationBinaryReadiness: collectApplicationBinaryReadiness(localExecutionPolicyManifest),
+    applicationBinaryReadiness: await collectApplicationBinaryReadiness(localExecutionPolicyManifest),
     // A credential revoked in the provider's account shows up here as the sidecar
     // going away — the same tick that reports a binary vanishing. That is what
     // lets the server's health probe auto-degrade the application to offline.
@@ -434,37 +435,41 @@ const terminalTimer = setInterval(guarded(pollTerminal, "terminal"), terminalPol
 const binaryReadinessTimer = setInterval(guarded(refreshApplicationBinaryReadiness, "binary readiness"), binaryReadinessIntervalMs);
 
 // Aux (non-invocation) work: still single-flight, but decoupled from
-// invocations so a long run no longer starves health/discovery. Tried in order;
-// the first route with work wins the tick. Each runner self-reports its own
+// invocations so a long run no longer starves health/discovery. #1251: one
+// multiplexed GET /api/bridge/aux-next replaces walking five endpoints per
+// tick; the server returns the first available item across all queues in the
+// same priority order, tagged with `kind`. Each runner self-reports its own
 // terminal state to the server.
-const AUX_ROUTES = [
-  ["/api/bridge/health-next", (work) => runHealthCheck(work)],
-  ["/api/bridge/discovery-next", (work) => runDiscovery(work)],
-  ["/api/bridge/probe-next", (work) => runIntegrationProbe(work)],
-  ["/api/bridge/lifecycle-next", (work) => runLifecycleAction(work)],
-  ["/api/bridge/application-install-next", (work) => runApplicationInstall(work)],
-];
+const AUX_RUNNERS = {
+  health: (work) => runHealthCheck(work),
+  discovery: (work) => runDiscovery(work),
+  probe: (work) => runIntegrationProbe(work),
+  lifecycle: (work) => runLifecycleAction(work),
+  application_install: (work) => runApplicationInstall(work),
+};
 
 async function pumpAux() {
   if (auxBusy) {
     return;
   }
-  for (const [path, runner] of AUX_ROUTES) {
-    const work = await request("GET", path);
-    if (!work) {
-      continue;
-    }
-    // Launch in the background and free the tick — like invocations, aux work
-    // must not block the poll loop (an install can take minutes).
-    auxBusy = true;
-    Promise.resolve()
-      .then(() => runner(work))
-      .catch((error) => logPollError("aux", error))
-      .finally(() => {
-        auxBusy = false;
-      });
+  const work = await request("GET", "/api/bridge/aux-next");
+  if (!work) {
     return;
   }
+  const runner = AUX_RUNNERS[work.kind];
+  if (!runner) {
+    logPollError("aux", new Error(`Unknown aux work kind: ${work.kind}`));
+    return;
+  }
+  // Launch in the background and free the tick — like invocations, aux work
+  // must not block the poll loop (an install can take minutes).
+  auxBusy = true;
+  Promise.resolve()
+    .then(() => runner(work))
+    .catch((error) => logPollError("aux", error))
+    .finally(() => {
+      auxBusy = false;
+    });
 }
 
 async function poll() {
@@ -529,14 +534,15 @@ async function runLifecycleAction(work) {
 
   console.log(`[desktop] lifecycle action ${work.lifecycleActionId}: ${work.command.commandId}`);
   const startedAt = Date.now();
-  const result = spawnSync(plan.command, plan.args, {
+  // #1246: async so a slow lifecycle command (10s timeout) no longer freezes
+  // the loop and stalls every in-flight agent run's output forwarding.
+  const result = await spawnCapture(plan.command, plan.args, {
     cwd: process.cwd(),
     env: buildEnv({ command: "demo-agent", environmentPolicy: "inherit_safe" }),
     timeout: 10_000,
     windowsHide: true,
     encoding: "utf8",
     shell: false,
-    stdio: ["ignore", "pipe", "pipe"]
   });
   const durationMs = Date.now() - startedAt;
   const succeeded = result.status === 0 && !result.error;

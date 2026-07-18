@@ -126,6 +126,19 @@ test("/run: allowlisted capability dispatches governed, tainted, and correlated"
   assert.equal(eventRecord.invocationId, invocation.id);
 });
 
+test("/run is rate-limited per conversation — the 11th within a minute is refused, not dispatched", () => {
+  const harness = makeHarness();
+  for (let i = 0; i < 10; i += 1) {
+    assert.equal(harness.receive("/run git.status").dispatched.status, "dispatched", `run ${i} should dispatch`);
+  }
+  // 10 dispatched; the next is throttled (refused, not dispatched).
+  const throttled = harness.receive("/run git.status");
+  assert.equal(throttled.dispatched.status, "refused");
+  assert.match(throttled.dispatched.reply, /Too many requests/);
+  // The throttled request spawned no invocation (budget protected).
+  assert.equal(harness.capabilityCalls.length, 10);
+});
+
 test("two independent gates: channel allowlist refuses BEFORE the gateway; the gateway's own refusal stays opaque", () => {
   const harness = makeHarness();
   const denied = harness.receive("/run rm.everything now");

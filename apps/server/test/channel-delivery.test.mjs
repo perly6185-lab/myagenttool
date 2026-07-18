@@ -88,6 +88,18 @@ test("wecom client: expired token (42001) refreshes and retries exactly once; ra
   assert.equal(terminal.retryable, false);
 });
 
+test("wecom client truncates content by UTF-8 BYTES (2048), not chars — a long Chinese message stays deliverable", async () => {
+  const { client, calls } = makeClient({ responses: [{ errcode: 0, access_token: "T", expires_in: 7200 }, { errcode: 0, msgid: "m1" }] });
+  const chinese = "报".repeat(1000); // 1000 chars = 3000 UTF-8 bytes (> 2048)
+  const r = await client.sendApplicationMessage({ toUser: "u", content: chinese });
+  assert.equal(r.ok, true);
+  const sentContent = calls.at(-1).options.body.text.content;
+  assert.ok(Buffer.byteLength(sentContent, "utf8") <= 2048, "payload must fit WeCom's 2048-byte cap");
+  assert.ok(sentContent.length < chinese.length, "was truncated");
+  // Truncation is on a code-point boundary — no broken half-characters.
+  assert.equal(sentContent, "报".repeat(Math.floor(2048 / 3)));
+});
+
 function makeDeliveryHarness({ sendMessage } = {}) {
   let clockMs = 1_800_000_000_000;
   const { state } = createServerState({ defaultProjectPath: tmpdir(), now: () => new Date(clockMs).toISOString() });
@@ -169,6 +181,34 @@ test("retryable failures back off and exhaust into failed_terminal with an undel
   // Terminal rows never re-enter the sweep.
   const { processed } = await harness.service.sweepChannelDeliveries();
   assert.equal(processed, 0);
+});
+
+test("a delivery stranded in 'sending' by a crash is reaped back to retrying and re-sent", async () => {
+  const harness = makeDeliveryHarness();
+  harness.service.enqueueChannelDelivery({ channelId: harness.channelId, conversationId: harness.conversationId, content: "hi" });
+  const row = harness.state.channelDeliveries.at(-1);
+  // Simulate a process that died mid-send: durably claimed "sending", never committed an outcome.
+  row.status = "sending";
+  row.updatedAt = harness.state ? new Date(1_800_000_000_000).toISOString() : row.updatedAt;
+  harness.advance(3 * 60 * 1000); // past STALE_SENDING_MS
+  const { processed } = await harness.service.sweepChannelDeliveries();
+  assert.equal(processed, 1, "reaped row is re-processed");
+  assert.equal(row.status, "delivered");
+  assert.equal(harness.sent.length, 1, "the stranded message is actually re-sent");
+});
+
+test("inbound event content is capped in length (flood bound)", () => {
+  const { state } = createServerState({ defaultProjectPath: tmpdir(), now: () => new Date(1_800_000_000_000).toISOString() });
+  let n = 0;
+  const svc = createChannelService({
+    state, now: () => new Date(1_800_000_000_000).toISOString(), nextId: (p) => `${p}_${++n}`,
+    appendEvent: () => {}, validateApprovalToken: () => ({ approved: true }),
+  });
+  const { body } = svc.registerChannel({ provider: "wecom", name: "ops" }, owner);
+  svc.enableChannel({ channelId: body.channel.id, approvalToken: "ok" }, owner);
+  svc.importChannelEvent({ channelId: body.channel.id, providerMessageId: "m1", externalUserId: "wx_a", content: "x".repeat(10_000) });
+  const event = state.channelEvents.at(-1);
+  assert.equal(event.content.length, 4000, "content is capped at MAX_EVENT_CONTENT_CHARS");
 });
 
 test("a delivery scheduled for later is not due until its backoff elapses; non-retryable fails immediately", async () => {

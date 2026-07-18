@@ -42,6 +42,12 @@ function pkcs7Unpad(buffer) {
   if (!pad || pad > BLOCK_SIZE || pad > buffer.length) {
     throw new Error("feishu_invalid_padding");
   }
+  // Verify EVERY padding byte, per PKCS#7 (mirrors the WeCom #1167 hardening) —
+  // checking only the length byte lets a tampered final block slip through when
+  // its last byte happens to match the pad value.
+  for (let i = buffer.length - pad; i < buffer.length; i += 1) {
+    if (buffer[i] !== pad) throw new Error("feishu_invalid_padding");
+  }
   return buffer.subarray(0, buffer.length - pad);
 }
 

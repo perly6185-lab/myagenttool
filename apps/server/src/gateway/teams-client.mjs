@@ -23,6 +23,7 @@ async function fetchJson(url, { method = "GET", headers, body, form } = {}) {
       ...(headers ?? {}),
     },
     body: form ? new URLSearchParams(form).toString() : body ? JSON.stringify(body) : undefined,
+    signal: AbortSignal.timeout(10_000),
   });
   const status = response.status;
   let json = {};

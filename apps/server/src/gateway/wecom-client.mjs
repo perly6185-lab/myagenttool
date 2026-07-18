@@ -12,11 +12,30 @@ const WECOM_API_BASE = "https://qyapi.weixin.qq.com/cgi-bin";
 // Refresh slightly early so a token never expires mid-send.
 const TOKEN_SAFETY_MS = 60 * 1000;
 
+// WeCom's text `content` limit is 2048 BYTES, not characters — a Chinese char is
+// 3 UTF-8 bytes, so a char-based slice of 2048 sends up to ~6KB and WeCom rejects
+// the whole message. Truncate on a code-point boundary within the byte budget.
+function truncateUtf8(value, maxBytes) {
+  const s = String(value ?? "");
+  if (Buffer.byteLength(s, "utf8") <= maxBytes) return s;
+  let bytes = 0;
+  let out = "";
+  for (const ch of s) {
+    const b = Buffer.byteLength(ch, "utf8");
+    if (bytes + b > maxBytes) break;
+    bytes += b;
+    out += ch;
+  }
+  return out;
+}
+
 async function fetchJson(url, { method = "GET", body } = {}) {
   const response = await fetch(url, {
     method,
     headers: body ? { "content-type": "application/json" } : undefined,
     body: body ? JSON.stringify(body) : undefined,
+    // A hung provider must not stall the serialized delivery sweep indefinitely.
+    signal: AbortSignal.timeout(10_000),
   });
   return response.json();
 }
@@ -90,7 +109,7 @@ export function createWecomClient({
         touser: String(toUser ?? ""),
         msgtype: "text",
         agentid: Number(agentId),
-        text: { content: String(content ?? "").slice(0, 2048) },
+        text: { content: truncateUtf8(content, 2048) },
         enable_duplicate_check: 1,
         duplicate_check_interval: 600,
       },
