@@ -65,11 +65,11 @@ test("timeout: a hung container times out at the configured limit", async () => 
   assert.equal(outcome.status, "timed_out");
 });
 
-test("probeContainerRuntime: fake runtime is healthy and pinning stance is surfaced", () => {
-  const ok = probeContainerRuntime(adapterFor("acme/agent:1"));
+test("probeContainerRuntime: fake runtime is healthy and pinning stance is surfaced", async () => {
+  const ok = await probeContainerRuntime(adapterFor("acme/agent:1"));
   assert.equal(ok.ok, true);
   assert.match(ok.message, /not digest-pinned/);
-  const bad = probeContainerRuntime({ runtime: "/nonexistent/containerd-xyz", pinned: false });
+  const bad = await probeContainerRuntime({ runtime: "/nonexistent/containerd-xyz", pinned: false });
   assert.equal(bad.ok, false);
 });
 

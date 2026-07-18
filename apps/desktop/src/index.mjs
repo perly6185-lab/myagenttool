@@ -1,4 +1,4 @@
-import { spawn, spawnSync } from "node:child_process";
+import { spawn } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
@@ -904,7 +904,7 @@ async function runInvocation(work) {
   }
 
   const spawnPlan = createCliSpawnPlan(adapter, { invocationId, task, options: work.options ?? {} });
-  const preview = executionPreview(adapter, spawnPlan, task);
+  const preview = await executionPreview(adapter, spawnPlan, task);
   await sendCodexHookEvent(invocationId, adapter, {
     eventName: "SessionStart",
     summary: `Managed Codex launcher started with ${preview.sessionMode}.`
@@ -1294,7 +1294,7 @@ async function runHealthCheck(work) {
     return;
   }
 
-  const result = checkCliAgentHealth(adapter);
+  const result = await checkCliAgentHealth(adapter);
   await request("POST", "/api/bridge/health-complete", {
     checkId: work.checkId,
     agentId: work.agentId,
@@ -1304,9 +1304,9 @@ async function runHealthCheck(work) {
   });
 }
 
-function checkCliAgentHealth(adapter) {
+async function checkCliAgentHealth(adapter) {
   if (isCodexCliCommand(adapter.command)) {
-    const probe = probeCodexCli(adapter);
+    const probe = await probeCodexCli(adapter);
     return {
       ok: probe.ok,
       message: probe.ok ? "Codex CLI non-interactive surface is reachable." : probe.summary,
@@ -1314,7 +1314,7 @@ function checkCliAgentHealth(adapter) {
     };
   }
   if (isClaudeCliCommand(adapter.command)) {
-    const probe = probeClaudeCli(adapter);
+    const probe = await probeClaudeCli(adapter);
     return {
       ok: probe.ok,
       message: probe.ok ? "Claude CLI surface is reachable." : probe.summary,
@@ -1468,7 +1468,7 @@ async function runIntegrationProbe(work) {
   }
 
   if (isCodexCliCommand(adapter.command)) {
-    const probe = probeCodexCli(adapter);
+    const probe = await probeCodexCli(adapter);
     await request("POST", "/api/bridge/probe-complete", {
       probeRunId: work.probeRunId,
       status: probe.ok ? "succeeded" : "failed",
@@ -1478,7 +1478,7 @@ async function runIntegrationProbe(work) {
     return;
   }
 
-  const health = checkCliAgentHealth(adapter);
+  const health = await checkCliAgentHealth(adapter);
   const highRisk = highRiskCliCommand(adapter.command);
   await request("POST", "/api/bridge/probe-complete", {
     probeRunId: work.probeRunId,
@@ -1921,7 +1921,7 @@ function dedupeCommandPrefixArgs(prefixArgs, renderedArgs) {
   return lastPrefixArg === firstRenderedArg ? renderedArgs.slice(1) : renderedArgs;
 }
 
-function executionPreview(adapter, spawnPlan, task) {
+async function executionPreview(adapter, spawnPlan, task) {
   const args = previewArgs(adapter, spawnPlan.args, task);
   return {
     adapterType: adapter.type,
@@ -1931,7 +1931,7 @@ function executionPreview(adapter, spawnPlan, task) {
     cwd: spawnPlan.cwd,
     taskSummary: summarizeTask(task),
     sessionMode: spawnPlan.sessionMode,
-    workspace: workspacePreview(adapter, spawnPlan),
+    workspace: await workspacePreview(adapter, spawnPlan),
     environmentPolicy: withMinimizedAgentEnv(adapter).environmentPolicy ?? "inherit_safe",
     envVisible: false,
     attachments: spawnPlan.attachments?.map((attachment) => ({
@@ -1944,11 +1944,11 @@ function executionPreview(adapter, spawnPlan, task) {
   };
 }
 
-function workspacePreview(adapter, spawnPlan) {
+async function workspacePreview(adapter, spawnPlan) {
   if (!isCodexCliCommand(adapter.command)) {
     return null;
   }
-  const git = inspectGitWorkspace(spawnPlan.cwd);
+  const git = await inspectGitWorkspace(spawnPlan.cwd);
   return {
     policy: spawnPlan.workspacePolicy,
     repoPath: git.repoPath ?? spawnPlan.cwd,
@@ -1961,8 +1961,8 @@ function workspacePreview(adapter, spawnPlan) {
   };
 }
 
-function inspectGitWorkspace(cwd) {
-  const root = gitOutput(cwd, ["rev-parse", "--show-toplevel"]);
+async function inspectGitWorkspace(cwd) {
+  const root = await gitOutput(cwd, ["rev-parse", "--show-toplevel"]);
   if (!root.ok) {
     return {
       status: "unknown",
@@ -1973,9 +1973,13 @@ function inspectGitWorkspace(cwd) {
       lastCommit: null
     };
   }
-  const branch = gitOutput(cwd, ["rev-parse", "--abbrev-ref", "HEAD"]);
-  const commit = gitOutput(cwd, ["rev-parse", "--short", "HEAD"]);
-  const dirty = gitOutput(cwd, ["status", "--porcelain"]);
+  // #1266: the three follow-up reads are independent — run them in parallel so a
+  // preview costs one git round trip, not three, and never blocks the loop.
+  const [branch, commit, dirty] = await Promise.all([
+    gitOutput(cwd, ["rev-parse", "--abbrev-ref", "HEAD"]),
+    gitOutput(cwd, ["rev-parse", "--short", "HEAD"]),
+    gitOutput(cwd, ["status", "--porcelain"]),
+  ]);
   return {
     status: "observed",
     repoPath: root.stdout,
@@ -1986,8 +1990,8 @@ function inspectGitWorkspace(cwd) {
   };
 }
 
-function gitOutput(cwd, args) {
-  const result = spawnSync("git", args, {
+async function gitOutput(cwd, args) {
+  const result = await spawnCapture("git", args, {
     cwd,
     encoding: "utf8",
     windowsHide: true,
@@ -2264,7 +2268,7 @@ function highRiskCliCommand(command) {
   return ["codex", "codex.cmd", "codex.ps1", "claude", "qwen", "qwen-code", "openclaw", "qclaw"].some((name) => normalized === name || normalized.endsWith(`/${name}`) || normalized.endsWith(`\\${name}`));
 }
 
-function probeCodexCli(adapter) {
+async function probeCodexCli(adapter) {
   const codexCommandOverride = process.env.MYAGENTTOOL_CODEX_COMMAND;
   const helpArgs = ["exec", "--help"];
   const commandPlan = codexCommandPlan({ ...adapter, command: adapter.command ?? "codex" }, helpArgs, "");
@@ -2274,13 +2278,12 @@ function probeCodexCli(adapter) {
   const args = codexCommandOverride === "fixture"
     ? [codexFixtureAgentPath, "exec", "--help"]
     : commandPlan.args;
-  const result = spawnSync(command, args, {
+  const result = await spawnCapture(command, args, {
     cwd: process.cwd(),
     env: buildEnv({ ...adapter, environmentPolicy: "inherit_safe" }),
     windowsHide: true,
     encoding: "utf8",
     shell: false,
-    stdio: ["ignore", "pipe", "pipe"]
   });
   const combined = `${result.stdout ?? ""}\n${result.stderr ?? ""}`;
   const hasExecHelp = result.status === 0 && /Run Codex non-interactively|Usage:\s+codex exec/i.test(combined);
@@ -2299,15 +2302,14 @@ function probeCodexCli(adapter) {
   };
 }
 
-function probeClaudeCli(adapter) {
+async function probeClaudeCli(adapter) {
   const command = String(adapter.command ?? "claude");
-  const result = spawnSync(command, ["--help"], {
+  const result = await spawnCapture(command, ["--help"], {
     cwd: process.cwd(),
     env: buildEnv({ ...adapter, environmentPolicy: "inherit_safe" }),
     windowsHide: true,
     encoding: "utf8",
     shell: false,
-    stdio: ["ignore", "pipe", "pipe"]
   });
   const combined = `${result.stdout ?? ""}\n${result.stderr ?? ""}`;
   const hasHelp = result.status === 0 && /claude|anthropic|usage/i.test(combined);
