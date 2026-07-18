@@ -409,12 +409,12 @@ const invocationPool = createInvocationPool({
   onError: (error) => logPollError("invocation", error),
 });
 
-// #1251: one shared cancellation poll for all in-flight runs. Each run watches
-// its own id; the watcher does a single GET /api/bridge/cancellations every
-// 250ms instead of one cancel-status GET per run. Started once, here.
+// #1251/#1302: one shared cancellation channel for all in-flight runs. Each run
+// watches its own id; the watcher long-polls GET /api/bridge/cancellations?wait=1
+// once for the whole device instead of one cancel-status GET per run. Started
+// once, here.
 const cancellationWatcher = createCancellationWatcher({
   request: (method, path) => request(method, path),
-  intervalMs: 250,
   onError: (error) => logPollError("cancellation", error),
 }).start();
 

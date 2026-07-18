@@ -1,7 +1,7 @@
 /**
- * #1251 — the shared cancellation watcher. Hermetic: `request` is a fake that
- * returns a controllable cancel-requested set; no HTTP, no timers (we drive
- * pollOnce directly).
+ * #1251/#1302 — the shared cancellation watcher. Hermetic: `request` is a fake
+ * that returns a controllable cancel-requested set; most tests drive pollOnce
+ * directly, one drives the real long-poll loop with tiny timings.
  */
 import test from "node:test";
 import assert from "node:assert/strict";
@@ -90,6 +90,38 @@ test("a transient GET failure is swallowed and reported, not thrown", async () =
   await watcher.pollOnce(); // recovers on the next tick
   await tick();
   assert.deepEqual(fired, ["inv_a"], "the next poll recovers");
+});
+
+test("start() long-polls in a loop, delivers a cancellation, and stop() halts it (#1302)", async () => {
+  let calls = 0;
+  let requested = [];
+  const fired = [];
+  const watcher = createCancellationWatcher({
+    request: async (_method, path) => {
+      calls += 1;
+      assert.match(path, /wait=1/, "the loop long-polls with wait=1");
+      return { invocationIds: requested };
+    },
+    idleMs: 5,
+    minCycleMs: 5,
+  });
+  watcher.watch("inv_a", () => fired.push("inv_a"));
+  watcher.start();
+
+  await new Promise((r) => setTimeout(r, 50));
+  assert.ok(calls >= 2, `loop re-polls; got ${calls}`);
+
+  // A cancellation delivered mid-loop fires the handler once.
+  requested = ["inv_a"];
+  await new Promise((r) => setTimeout(r, 30));
+  assert.deepEqual(fired, ["inv_a"]);
+
+  // stop() halts further polling.
+  watcher.stop();
+  await new Promise((r) => setTimeout(r, 20));
+  const settled = calls;
+  await new Promise((r) => setTimeout(r, 30));
+  assert.equal(calls, settled, "no polls after stop()");
 });
 
 test("a handler that rejects is isolated via onError", async () => {

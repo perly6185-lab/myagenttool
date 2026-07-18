@@ -46,6 +46,7 @@ import { createInvocationEventService } from "../services/invocation-events.mjs"
 import { createInvocationRefusalService } from "../services/invocation-refusals.mjs";
 import { createInvocationTraceService } from "../services/invocation-trace.mjs";
 import { createInvocationService } from "../services/invocations.mjs";
+import { createCancellationSignal } from "../services/cancellation-signal.mjs";
 import { createM3Service } from "../services/m3.mjs";
 import { createProjectService, sameProjectPath } from "../services/projects.mjs";
 import { createAutoRunService } from "../services/auto-run.mjs";
@@ -615,12 +616,17 @@ export function createServerRuntimeServices({
   // completion never fails because auto-recovery did.
   let orchestrationAutoRecoveryHook = null;
 
+  // #1302 long-poll: one per-device wakeup shared by the cancellation service
+  // (notify when a run is asked to cancel) and the bridge cancellations route
+  // (hold the poll open until notified or a max-wait timeout).
+  const cancellationSignal = createCancellationSignal();
   invocationService = createInvocationService({
     state,
     now,
     nextId,
     appendEvent,
     refuse,
+    notifyCancellation: (deviceId) => cancellationSignal.notify(deviceId),
     persistStateSoon,
     persistStateNow,
     dispatchLeaseMs,
@@ -3208,6 +3214,8 @@ export function createServerRuntimeServices({
   const httpDependencies = {
     state,
     now,
+    // #1302 long-poll: the bridge cancellations route waits on this shared signal.
+    cancellationSignal,
     recordRoundEvent,
     // Agent file ledger: accumulate a run's read/written files (deduped, capped)
     // from the bridge's tool_use stream. Stored on the invocation so it ships to

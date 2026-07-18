@@ -43,6 +43,7 @@ export async function handleBridgeRoutes({
   namespace,
   protocolVersion,
   now,
+  cancellationSignal,
   redeliverExpiredDispatches,
   nextDispatchableInvocation,
   markDispatched,
@@ -579,14 +580,20 @@ export async function handleBridgeRoutes({
     return true;
   }
 
-  // #1251: device-wide cancellation poll. One call replaces the per-run
+  // #1251/#1302: device-wide cancellation poll. One call replaces the per-run
   // /api/bridge/cancel-status polls — the bridge runs a single shared watcher
   // instead of one 250ms GET per in-flight run. Returns the ids of THIS device's
   // acknowledged, in-flight invocations whose cancellation was requested — the
   // same ownership + actionable-state predicate as cancel-status, applied
   // set-wise (an unowned or terminal invocation simply never appears).
+  //
+  // With ?wait=1 (#1302 long-poll): if nothing is cancel-requested yet, hold the
+  // response open until cancelInvocation notifies this device or a max-wait
+  // timeout, then recompute and return. The bridge re-issues immediately, so an
+  // idle device makes ~one call per max-wait window instead of 4/second, and a
+  // cancellation is delivered near-instantly instead of up to 250ms later.
   if (req.method === "GET" && url.pathname === "/api/bridge/cancellations") {
-    const invocationIds = state.invocations
+    const requestedIds = () => state.invocations
       .filter((invocation) => {
         const delivery = invocation.delivery ?? {};
         return delivery.deviceId === device.id
@@ -595,7 +602,28 @@ export async function handleBridgeRoutes({
           && invocation.cancellation?.state === "requested";
       })
       .map((invocation) => invocation.id);
-    sendJson(res, 200, { invocationIds });
+
+    const wantsWait = url.searchParams.get("wait") === "1" && cancellationSignal;
+    const current = requestedIds();
+    if (current.length > 0 || !wantsWait) {
+      sendJson(res, 200, { invocationIds: current });
+      return true;
+    }
+
+    // Long-poll: park until this device is notified or the wait times out. Cancel
+    // the waiter on client disconnect so a dropped poll never leaks a held
+    // resolver, and skip the write once the socket is gone.
+    const waiter = cancellationSignal.wait(device.id);
+    let clientGone = false;
+    const onClose = () => { clientGone = true; waiter.cancel(); };
+    res.on("close", onClose);
+    try {
+      await waiter.promise;
+    } finally {
+      res.off("close", onClose);
+    }
+    if (clientGone) return true;
+    sendJson(res, 200, { invocationIds: requestedIds() });
     return true;
   }
 
