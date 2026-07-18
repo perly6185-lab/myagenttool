@@ -1186,6 +1186,8 @@ export interface ConsoleSnapshot {
   reportSchedule?: ReportSchedule | null;
   /** Inbound-established channel conversations — the addressable outbound targets. */
   channelConversations?: ChannelConversation[];
+  /** Per-decision dispatch routing — who was chosen, why, and over which candidates. */
+  dispatchAssignments?: DispatchAssignment[];
   /** Durable per-application daily execution counters (survive the invocation cap). */
   applicationDailyStats?: ApplicationDailyStat[];
   applicationHealthSweepStatus?: ApplicationHealthSweepStatus | null;
@@ -1249,6 +1251,26 @@ export interface ChannelTaskRequest {
   deliveryStatus?: string | null;
   createdAt?: string | null;
   actions: { retry: boolean; reroute: boolean; takeover: boolean };
+}
+
+/** One dispatcher routing decision (state.dispatchAssignments) — the "why here". */
+export interface DispatchAssignment {
+  id: string;
+  projectId: string;
+  issueNumber: number;
+  workerId: string | null;
+  status: string;
+  adopted?: boolean;
+  assignedAt?: string;
+  routing?: {
+    chosen: string | null;
+    why: string | null;
+    margin?: string | null;
+    mode?: string;
+    candidates?: { id: string; affinity: number; load: number }[];
+    ineligible?: { id: string; reason: string }[];
+    requirements?: { areas?: string[]; platforms?: string[]; agents?: string[]; risk?: string | null };
+  } | null;
 }
 
 /** Per-channel operational rollup (read-models/channels.mjs). No secrets — readiness is booleans. */
