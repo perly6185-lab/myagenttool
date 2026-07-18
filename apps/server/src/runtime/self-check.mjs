@@ -57,6 +57,7 @@ export async function runProtocolSelfCheck(deps) {
   nextBridgeHealthCheck,
   nextBridgeLifecycleAction,
   nextDispatchableInvocation,
+  isInvocationDispatchable,
   nextTerminalBridgeAction,
   queueTerminalBridgeAction,
   recordCodexHookEvent,
@@ -721,7 +722,7 @@ export async function runProtocolSelfCheck(deps) {
   assert(disableOperation.status === "succeeded", "disable operation should complete");
 
   const disabledInvocation = createInvocation("disabled dispatch should wait", cliAgent);
-  assert(nextDispatchableInvocation()?.id !== disabledInvocation.id, "disabled agent work should not dispatch");
+  assert(!isInvocationDispatchable(disabledInvocation), "disabled agent work should not dispatch");
 
   const enableOperation = enableAgent(cliAgent);
   assert(enableOperation.status === "succeeded", "enable operation should complete");
@@ -759,8 +760,11 @@ export async function runProtocolSelfCheck(deps) {
   assert(invocation.status === "queued", "expired dispatch lease should return invocation to queued");
   assert(invocation.delivery.state === "redelivering", "expired dispatch lease should mark redelivering");
 
-  const redelivery = nextDispatchableInvocation();
-  assert(redelivery?.id === invocation.id, "redelivering invocation should be dispatchable");
+  // Assert the redelivering target is itself dispatchable — not that it wins fair
+  // selection (#1254), which may hand out an older queued peer from the same
+  // project first. isInvocationDispatchable applies the same cap/dir/eligibility
+  // gate to this one invocation, so the check is order-independent.
+  assert(isInvocationDispatchable(invocation), "redelivering invocation should be dispatchable");
   markDispatched(invocation);
   assert(invocation.delivery.dispatchAttempts === 2, "redelivery should increment attempts");
 
@@ -806,7 +810,7 @@ export async function runProtocolSelfCheck(deps) {
   const approvalInvocation = createInvocation("high-risk invocation approval path", highRiskAgent);
   assert(approvalInvocation.status === "waiting_for_local_approval", "high-risk invocation should wait for local approval");
   assert(approvalInvocation.delivery.dispatchAttempts === 0, "approval-gated invocation should not dispatch");
-  assert(nextDispatchableInvocation()?.id !== approvalInvocation.id, "approval-gated invocation should not be dispatchable");
+  assert(!isInvocationDispatchable(approvalInvocation), "approval-gated invocation should not be dispatchable");
   const approval = findApprovalRequest(approvalInvocation.approvalRequestId);
   assert(approval?.status === "pending", "approval request should be pending");
   assert(approval.summary.risk && approval.summary.data && approval.summary.cost && approval.summary.cancellation, "approval request should include plain-language summary");
@@ -816,7 +820,9 @@ export async function runProtocolSelfCheck(deps) {
   approveInvocation(approval, approvalInvocation);
   assert(approval.status === "approved", "approval should be granted");
   assert(approvalInvocation.status === "queued", "approved local invocation should enter queue");
-  assert(nextDispatchableInvocation()?.id === approvalInvocation.id, "approved local invocation should become dispatchable");
+  // Dispatchable in its own right (order-independent — fair selection may prefer an
+  // older queued peer); the point is that approval un-gated it into the queue.
+  assert(isInvocationDispatchable(approvalInvocation), "approved local invocation should become dispatchable");
   cancelInvocation(approvalInvocation);
   assert(approvalInvocation.status === "cancelled", "approved self-check invocation should be cancellable before dispatch");
 

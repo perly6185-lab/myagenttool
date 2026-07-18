@@ -176,6 +176,22 @@ test("fairness: a flooding project at the front of the queue doesn't starve an i
   assert.equal(rt.nextDispatchableInvocation()?.id, "q_B", "the idle tenant is served ahead of the already-running one");
 });
 
+test("isInvocationDispatchable: order-independent per-invocation gate (cap, dir, eligibility)", () => {
+  const rt = runtimeWith(
+    [running("run", "/w1"), queued("q_free", "/w2"), queued("q_busy", "/w1"), queued("q_off", "/w3", "agt_off")],
+    3,
+  );
+  agents.agt_off = { ...cliAgent, id: "agt_off", status: "disabled" };
+  assert.equal(rt.isInvocationDispatchable(queued("q_free", "/w2")), true, "free worktree, healthy agent → dispatchable");
+  assert.equal(rt.isInvocationDispatchable(queued("q_busy", "/w1")), false, "worktree busy with the running job → not dispatchable");
+  assert.equal(rt.isInvocationDispatchable(queued("q_off", "/w3", "agt_off")), false, "disabled agent → not dispatchable");
+  delete agents.agt_off;
+
+  const capped = runtimeWith([running("r1", "/w1"), running("r2", "/w2"), queued("q", "/w3")], 2);
+  assert.equal(capped.isInvocationDispatchable(queued("q", "/w3")), false, "device at capacity → not dispatchable even on a free worktree");
+  assert.equal(capped.isInvocationDispatchable(null), false, "null → false, never throws");
+});
+
 test("#817: the per-directory guard still holds on the real metadata shape", () => {
   const rt = runtimeWith(
     [

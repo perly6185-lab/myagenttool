@@ -102,6 +102,23 @@ export function createInvocationDispatchRuntime({
     });
   }
 
+  // Whether a SPECIFIC invocation is dispatchable right now — the device cap, the
+  // dir lock, and the same eligibility classifier the selector uses, but for one
+  // invocation rather than "who goes next". Lets callers assert a run is dispatch-
+  // ready without depending on the fair-selection order among its queued peers.
+  function isInvocationDispatchable(invocation) {
+    if (!invocation) return false;
+    const inFlight = state.invocations.filter((i) => INFLIGHT_STATUSES.includes(i.status) && isBridgeExecuted(i));
+    if (inFlight.length >= (state.device.maxConcurrency || 1)) return false;
+    const busyDirs = new Set(inFlight.map(invocationDirKey));
+    const agent = findAgent(invocation.agentId);
+    return classifyDispatchEligibility(invocation, {
+      agent,
+      dirBusy: busyDirs.has(invocationDirKey(invocation)),
+      onThisBridge: agent ? belongsToThisBridge(invocation, agent) : false,
+    }) === DISPATCH_REASONS.DISPATCHABLE;
+  }
+
   function markDispatched(invocation) {
     runTx(() => {
       invocation.status = "dispatching";
@@ -203,6 +220,7 @@ export function createInvocationDispatchRuntime({
     acknowledgeInvocation,
     markDispatched,
     nextDispatchableInvocation,
+    isInvocationDispatchable,
     redeliverExpiredDispatches,
   };
 }
