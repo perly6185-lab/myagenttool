@@ -1,0 +1,31 @@
+{
+  "schemaVersion": 1,
+  "requiredContracts": ["signature", "replay", "timeout", "messageLength", "idempotency"],
+  "providers": {
+    "wecom": {
+      "gateway": "apps/server/src/gateway/wecom-gateway.mjs",
+      "client": "apps/server/src/gateway/wecom-client.mjs",
+      "tests": ["apps/server/test/wecom-gateway.test.mjs", "apps/server/test/channel-delivery.test.mjs", "apps/server/test/integration/channel-security.test.mjs", "apps/server/test/integration/wecom-channel-acceptance.test.mjs"]
+    },
+    "feishu": {
+      "gateway": "apps/server/src/gateway/feishu-gateway.mjs",
+      "client": "apps/server/src/gateway/feishu-client.mjs",
+      "tests": ["apps/server/test/feishu-gateway.test.mjs", "apps/server/test/feishu-client.test.mjs", "apps/server/test/integration/feishu-security.test.mjs"]
+    },
+    "dingtalk": {
+      "gateway": "apps/server/src/gateway/dingtalk-gateway.mjs",
+      "client": "apps/server/src/gateway/dingtalk-client.mjs",
+      "tests": ["apps/server/test/dingtalk-gateway.test.mjs", "apps/server/test/dingtalk-client.test.mjs", "apps/server/test/integration/dingtalk-security.test.mjs"]
+    },
+    "slack": {
+      "gateway": "apps/server/src/gateway/slack-gateway.mjs",
+      "client": "apps/server/src/gateway/slack-client.mjs",
+      "tests": ["apps/server/test/slack-gateway.test.mjs", "apps/server/test/slack-client.test.mjs", "apps/server/test/integration/slack-security.test.mjs"]
+    },
+    "teams": {
+      "gateway": "apps/server/src/gateway/teams-gateway.mjs",
+      "client": "apps/server/src/gateway/teams-client.mjs",
+      "tests": ["apps/server/test/teams-gateway.test.mjs", "apps/server/test/teams-client.test.mjs", "apps/server/test/integration/teams-security.test.mjs"]
+    }
+  }
+}

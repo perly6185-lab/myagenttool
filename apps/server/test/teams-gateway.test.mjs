@@ -124,3 +124,12 @@ test("JWKS is cached (fetched once across requests) and config comes from env", 
   assert.equal(cfg.port, 5306);
   assert.throws(() => createTeamsGateway({ appId: "", channelId: "c", importChannelEvent: () => {} }), /teams_gateway_misconfigured/);
 });
+
+test("an oversized Activity is rejected before JWT/JWKS processing", async () => {
+  let fetches = 0;
+  const { gateway, imported } = makeGateway({ fetchJwks: async () => { fetches += 1; return [jwk]; } });
+  const res = await drive(gateway, post(activity("x".repeat(300 * 1024))));
+  assert.equal(res.statusCode, 413);
+  assert.equal(fetches, 0);
+  assert.equal(imported.length, 0);
+});

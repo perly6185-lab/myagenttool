@@ -1,6 +1,6 @@
 {
   "name": "myagenttool",
-  "version": "0.1.0",
+  "version": "0.2.0-rc.1",
   "private": true,
   "description": "Personal and small-team Agent Control Plane.",
   "packageManager": "pnpm@9.15.0",
@@ -147,6 +147,7 @@
     "smoke:applications": "node tools/dev/application-registry-smoke.mjs",
     "smoke:agent-skills": "node tools/dev/agent-skills-smoke.mjs",
     "smoke:dispatch-concurrency": "node tools/dev/dispatch-concurrency-smoke.mjs",
+    "smoke:channel-providers": "node tools/dev/channel-provider-contract-smoke.mjs",
     "benchmark:runtime-health": "node tools/dev/runtime-health-benchmark.mjs",
     "smoke:automation-scheduler": "node tools/dev/automation-scheduler-smoke.mjs",
     "smoke:claude-agent": "node tools/dev/claude-agent-smoke.mjs",
