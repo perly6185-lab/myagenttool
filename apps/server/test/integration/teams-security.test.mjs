@@ -33,7 +33,7 @@ const jwk = { ...publicKey.export({ format: "jwk" }), kid: "kid1", alg: "RS256",
 function b64url(o) { return Buffer.from(JSON.stringify(o)).toString("base64url"); }
 function jwt(over = {}) {
   const h = b64url({ alg: "RS256", kid: "kid1", typ: "JWT" });
-  const p = b64url({ iss: "https://api.botframework.com", aud: APP_ID, exp: nowSec + 3600, nbf: nowSec - 60, ...over });
+  const p = b64url({ iss: "https://api.botframework.com", aud: APP_ID, exp: nowSec + 3600, nbf: nowSec - 60, serviceurl: "https://smba.example/amer/", ...over });
   const si = `${h}.${p}`;
   return `${si}.${sign("RSA-SHA256", Buffer.from(si), privateKey).toString("base64url")}`;
 }

@@ -126,6 +126,13 @@ export function createTeamsGateway({
       return;
     }
 
+    // SECURITY (#channel-audit): the reply serviceUrl must come from the SIGNED
+    // token's `serviceurl` claim, NOT the request body. The JWT authenticates the
+    // sender but does not sign the body, so a body-supplied serviceUrl is
+    // attacker-controlled — trusting it would POST the bot's outbound bearer token
+    // to any host (credential exfiltration / SSRF). The body's serviceUrl is
+    // ignored; if the token carries no claim there is no trusted reply address.
+    const replyServiceUrl = String(verdict.payload?.serviceurl ?? "").trim();
     try {
       await importChannelEvent({
         channelId,
@@ -135,8 +142,8 @@ export function createTeamsGateway({
         content: parsed.content,
         providerCreateTime: parsed.createTime,
         agentId: null,
-        // The reply address for this conversation (#1135).
-        replyContext: { serviceUrl: parsed.serviceUrl, conversationId: parsed.conversationId },
+        // The reply address for this conversation (#1135) — token-attested only.
+        replyContext: { serviceUrl: replyServiceUrl, conversationId: parsed.conversationId },
       });
     } catch {
       // Import must never take the public socket down; Teams just retries.

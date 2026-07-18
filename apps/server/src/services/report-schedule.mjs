@@ -21,7 +21,10 @@ import { makeRunTx } from "../runtime/store/run-tx.mjs";
 const PERIOD_KEYS = new Set(["day", "week", "month", "quarter"]);
 const COVERAGES = new Set(["previous", "current"]);
 const CADENCES = new Set(["daily", "weekly"]);
-const CONTENT_LIMIT = 2000; // margin under the 2048 hard cap in channel-delivery
+// Byte budget per chunk — WeCom's text cap is 2048 BYTES (a Chinese char is 3),
+// so chunk by encoded length, not char count, or a Chinese report is truncated.
+const CONTENT_BYTE_LIMIT = 1900; // margin under 2048 for the provider envelope
+const utf8Len = (s) => Buffer.byteLength(s, "utf8");
 
 export function createDefaultReportSchedule() {
   return {
@@ -74,20 +77,27 @@ export function computeReportNextRun(fromIso, cfg) {
   return at.toISOString();
 }
 
-/** Split a report body into ≤CONTENT_LIMIT chunks on line boundaries. */
-export function chunkContent(text, limit = CONTENT_LIMIT) {
+/** Split a report body into ≤byteLimit (UTF-8) chunks on line boundaries — so a
+ * Chinese report is chunked losslessly to fit WeCom's byte cap, not truncated. */
+export function chunkContent(text, byteLimit = CONTENT_BYTE_LIMIT) {
   const s = String(text ?? "");
-  if (s.length <= limit) return [s];
+  if (utf8Len(s) <= byteLimit) return [s];
   const chunks = [];
   let cur = "";
+  const flush = () => { if (cur) { chunks.push(cur); cur = ""; } };
   for (const line of s.split("\n")) {
-    // A single over-long line is hard-split rather than dropped.
-    if (line.length > limit) {
-      if (cur) { chunks.push(cur); cur = ""; }
-      for (let i = 0; i < line.length; i += limit) chunks.push(line.slice(i, i + limit));
+    // A single over-long line is hard-split on code-point boundaries by bytes.
+    if (utf8Len(line) > byteLimit) {
+      flush();
+      let piece = "";
+      for (const ch of line) {
+        if (utf8Len(piece) + utf8Len(ch) > byteLimit) { chunks.push(piece); piece = ch; }
+        else piece += ch;
+      }
+      cur = piece; // carry the remainder to merge with following lines
       continue;
     }
-    if (cur.length + line.length + 1 > limit) { chunks.push(cur); cur = line; }
+    if (utf8Len(cur ? `${cur}\n${line}` : line) > byteLimit) { flush(); cur = line; }
     else cur = cur ? `${cur}\n${line}` : line;
   }
   if (cur) chunks.push(cur);

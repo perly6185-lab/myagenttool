@@ -25,6 +25,10 @@ export const CHANNEL_ENABLE_ACTION = "channel.enable";
 export const CHANNEL_ALLOWLIST_ACTION = "channel.allowlist";
 const MAX_NAME_LENGTH = 80;
 const MAX_ALLOWLIST = 50;
+// Inbound-flood bounds (#channel-audit): a signed corp user's messages clear the
+// gateway, so the event log must be bounded in both per-message size and count.
+const MAX_EVENT_CONTENT_CHARS = 4000;
+const MAX_CHANNEL_EVENTS = 2000;
 
 /** WeCom readiness probe: configuration PRESENCE from the gateway env — never values. */
 export function wecomEnvReadiness(env = process.env) {
@@ -472,7 +476,9 @@ export function createChannelService({
         providerMessageId: messageId,
         externalUserId: senderId,
         msgType: String(msgType ?? "text"),
-        content: String(content ?? ""),
+        // Cap stored content: an inbound message is attacker-controlled; a signed
+        // corp user could otherwise store unbounded text per event (heap + disk).
+        content: String(content ?? "").slice(0, MAX_EVENT_CONTENT_CHARS),
         providerCreateTime: providerCreateTime ? String(providerCreateTime) : null,
         agentId: agentId ? String(agentId) : null,
         status: "imported",
@@ -480,6 +486,12 @@ export function createChannelService({
         receivedAt: now(),
       };
       state.channelEvents.push(event);
+      // Bound the inbound event log (newest-keeps): these are historical records,
+      // persisted, and were the one durable-core family with no cap — a flood of
+      // distinct signed messages would otherwise grow heap + disk without limit.
+      if (state.channelEvents.length > MAX_CHANNEL_EVENTS) {
+        state.channelEvents = state.channelEvents.slice(-MAX_CHANNEL_EVENTS);
+      }
       conversation.updatedAt = now();
       appendEvent({
         invocationId: null,
