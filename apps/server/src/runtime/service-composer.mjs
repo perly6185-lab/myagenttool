@@ -511,6 +511,7 @@ export function createServerRuntimeServices({
     releaseIssueClaim,
     releaseClaimsForAutoRun: releaseIssueClaimsForAutoRun,
     listIssueClaims,
+    sweepExpiredClaims,
   } = createIssueClaimService({
     state,
     now,
@@ -3085,6 +3086,7 @@ export function createServerRuntimeServices({
     retryAutoRun,
     cancelAutoRun,
     reapStuckAutoRuns,
+    sweepExpiredClaims,
     sweepAutoRunSloAlerts,
     flushTraceExport,
     requestObservabilityDeletion,
