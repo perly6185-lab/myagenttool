@@ -46,6 +46,8 @@ export function channelOperations({
       health,
       capabilityAllowlist: channel.capabilityAllowlist ?? [],
       statusCapability: channel.statusCapability ?? null,
+      // The project /task files issues into (null = /task disabled for this channel).
+      taskProjectId: channel.taskProjectId ?? null,
       counts: {
         identities: byChannel(channelIdentities, channel.id).length,
         conversations: byChannel(channelConversations, channel.id).length,

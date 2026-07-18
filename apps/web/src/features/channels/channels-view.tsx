@@ -1,4 +1,4 @@
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -6,7 +6,7 @@ import { EmptyState } from "@/components/common/empty-state";
 import { SectionHeading } from "@/components/common/section-heading";
 import { useConsoleState } from "@/data/use-console-state";
 import { api, useAsyncAction } from "@/data/use-console-actions";
-import type { ChannelDelivery, ChannelOperations } from "@/lib/console-state";
+import type { ChannelDelivery, ChannelOperations, ProjectSnapshot } from "@/lib/console-state";
 import type { Tone } from "@/lib/readable-labels";
 
 function healthTone(health: string): Tone {
@@ -49,6 +49,7 @@ export function ChannelsView() {
               key={channel.id}
               channel={channel}
               deliveries={(state?.channelDeliveries ?? []).filter((d) => d.channelId === channel.id)}
+              projects={(state?.projects ?? []).filter((p) => p.status !== "archived")}
             />
           ))}
         </div>
@@ -57,8 +58,9 @@ export function ChannelsView() {
   );
 }
 
-function ChannelCard({ channel, deliveries }: { channel: ChannelOperations; deliveries: ChannelDelivery[] }) {
+function ChannelCard({ channel, deliveries, projects }: { channel: ChannelOperations; deliveries: ChannelDelivery[]; projects: ProjectSnapshot[] }) {
   const { execute, pending, error } = useAsyncAction();
+  const [taskProject, setTaskProject] = useState(channel.taskProjectId ?? "");
 
   const failed = useMemo(() => deliveries.filter((d) => d.status === "failed_terminal"), [deliveries]);
 
@@ -74,6 +76,11 @@ function ChannelCard({ channel, deliveries }: { channel: ChannelOperations; deli
   async function retry(deliveryId: string) {
     const grant = await api.issueApprovalGrant("channel.delivery.retry", deliveryId);
     await execute(() => api.retryChannelDelivery(channel.id, deliveryId, grant.token));
+  }
+
+  async function saveTaskProject() {
+    const grant = await api.issueApprovalGrant("channel.taskProject", channel.id);
+    await execute(() => api.setChannelTaskProject(channel.id, taskProject || null, grant.token));
   }
 
   return (
@@ -120,6 +127,36 @@ function ChannelCard({ channel, deliveries }: { channel: ChannelOperations; deli
             {channel.statusCapability ? ` · /status → ${channel.statusCapability}` : ""}
           </p>
         )}
+
+        {/* /task target: the project inbound tasks are filed into as tracked
+            GitHub issues. Approval-gated (mints a grant), same as enable. */}
+        <div className="flex flex-wrap items-center gap-2 text-xs">
+          <span className="text-muted-foreground">Task project (/task →)</span>
+          <select
+            className="h-7 rounded-md border border-border bg-background px-1.5"
+            value={taskProject}
+            onChange={(e) => setTaskProject(e.target.value)}
+            disabled={pending}
+          >
+            <option value="">— none (/task disabled) —</option>
+            {projects.map((p) => (
+              <option key={p.id} value={p.id}>{p.name}</option>
+            ))}
+          </select>
+          <Button
+            variant="secondary"
+            size="sm"
+            onClick={saveTaskProject}
+            disabled={pending || (channel.taskProjectId ?? "") === taskProject}
+          >
+            Save
+          </Button>
+          {channel.taskProjectId ? (
+            <Badge tone="success">bound</Badge>
+          ) : (
+            <span className="text-muted-foreground">unbound — /task refused</span>
+          )}
+        </div>
 
         {failed.length > 0 && (
           <div className="space-y-2 rounded-md border border-destructive/30 bg-destructive/5 p-3">
