@@ -435,37 +435,41 @@ const terminalTimer = setInterval(guarded(pollTerminal, "terminal"), terminalPol
 const binaryReadinessTimer = setInterval(guarded(refreshApplicationBinaryReadiness, "binary readiness"), binaryReadinessIntervalMs);
 
 // Aux (non-invocation) work: still single-flight, but decoupled from
-// invocations so a long run no longer starves health/discovery. Tried in order;
-// the first route with work wins the tick. Each runner self-reports its own
+// invocations so a long run no longer starves health/discovery. #1251: one
+// multiplexed GET /api/bridge/aux-next replaces walking five endpoints per
+// tick; the server returns the first available item across all queues in the
+// same priority order, tagged with `kind`. Each runner self-reports its own
 // terminal state to the server.
-const AUX_ROUTES = [
-  ["/api/bridge/health-next", (work) => runHealthCheck(work)],
-  ["/api/bridge/discovery-next", (work) => runDiscovery(work)],
-  ["/api/bridge/probe-next", (work) => runIntegrationProbe(work)],
-  ["/api/bridge/lifecycle-next", (work) => runLifecycleAction(work)],
-  ["/api/bridge/application-install-next", (work) => runApplicationInstall(work)],
-];
+const AUX_RUNNERS = {
+  health: (work) => runHealthCheck(work),
+  discovery: (work) => runDiscovery(work),
+  probe: (work) => runIntegrationProbe(work),
+  lifecycle: (work) => runLifecycleAction(work),
+  application_install: (work) => runApplicationInstall(work),
+};
 
 async function pumpAux() {
   if (auxBusy) {
     return;
   }
-  for (const [path, runner] of AUX_ROUTES) {
-    const work = await request("GET", path);
-    if (!work) {
-      continue;
-    }
-    // Launch in the background and free the tick — like invocations, aux work
-    // must not block the poll loop (an install can take minutes).
-    auxBusy = true;
-    Promise.resolve()
-      .then(() => runner(work))
-      .catch((error) => logPollError("aux", error))
-      .finally(() => {
-        auxBusy = false;
-      });
+  const work = await request("GET", "/api/bridge/aux-next");
+  if (!work) {
     return;
   }
+  const runner = AUX_RUNNERS[work.kind];
+  if (!runner) {
+    logPollError("aux", new Error(`Unknown aux work kind: ${work.kind}`));
+    return;
+  }
+  // Launch in the background and free the tick — like invocations, aux work
+  // must not block the poll loop (an install can take minutes).
+  auxBusy = true;
+  Promise.resolve()
+    .then(() => runner(work))
+    .catch((error) => logPollError("aux", error))
+    .finally(() => {
+      auxBusy = false;
+    });
 }
 
 async function poll() {
