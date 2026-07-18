@@ -23,7 +23,14 @@ export function createDingtalkGateway({
   channelId,
   importChannelEvent,
   callbackPath = "/dingtalk/callback",
-  replayWindowSeconds = 3600, // DingTalk stamps ms timestamps; its own window is ~1h
+  // #channel-audit: DingTalk's signature covers only the timestamp, NOT the body,
+  // and the callback is plaintext (no AES) — so within the freshness window a
+  // MITM can substitute an arbitrary body under a captured (timestamp, sign) pair.
+  // We can't add body integrity (DingTalk's scheme doesn't sign it and there's no
+  // ciphertext to protect it — TLS + the msgId import-idempotency are the body's
+  // real defenses), but we DO narrow the window from DingTalk's lax ~1h to 300s
+  // (matching Slack/WeCom/Feishu), shrinking that replay/forgery window 12×.
+  replayWindowSeconds = 300,
   now = () => Date.now(),
 }) {
   if (!appSecret || !channelId || !importChannelEvent) {
