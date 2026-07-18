@@ -14,7 +14,7 @@ import { codexResumeArgs } from "./codex-resume.mjs";
 import { extractClaudeFileAccesses } from "./claude-file-access.mjs";
 import { newRoundState, claudeRoundEmits, codexRoundEmits } from "./round-telemetry.mjs";
 import { createAgentLineSink } from "./agent-line-sink.mjs";
-import { createInvocationPool, resolveBridgeConcurrency } from "./invocation-pool.mjs";
+import { createInvocationPool, resolveBridgeConcurrency, refreshedConcurrency } from "./invocation-pool.mjs";
 import { spawnCapture } from "./spawn-capture.mjs";
 import { isInactiveInvocationError } from "./bridge-events.mjs";
 import { applicationWrapperArgs } from "./application-wrapper-args.mjs";
@@ -388,15 +388,18 @@ console.log(`[desktop] registered with ${serverUrl}`);
 // Cross-worktree concurrency: honor the server's authoritative cap (echoed on
 // the register response), falling back to env then a default. The server stays
 // the hard limit — it 204s past its own cap or the per-worktree lock — so this
-// is the bridge's own ceiling on parallel children. Read once at register time;
-// a live change in the Devices UI applies after the bridge re-registers (#1242).
-const bridgeConcurrency = resolveBridgeConcurrency({
+// is the bridge's own ceiling on parallel children. Seeded at register time and
+// refreshed from the readiness response (#1272), so a live change in the Devices
+// UI takes effect within one readiness cycle without a bridge restart.
+let bridgeConcurrency = resolveBridgeConcurrency({
   serverMaxConcurrency: registration?.device?.maxConcurrency,
   envValue: process.env.BRIDGE_MAX_CONCURRENT,
 });
 console.log(`[desktop] invocation concurrency: ${bridgeConcurrency}`);
 const invocationPool = createInvocationPool({
-  cap: bridgeConcurrency,
+  // A getter, not a number: the pool re-reads it every fill(), so a refreshed
+  // cap takes effect on the next tick.
+  cap: () => bridgeConcurrency,
   claim: () => request("GET", "/api/bridge/next"),
   run: (work) => runInvocation(work),
   // runInvocation self-reports every terminal outcome; a reject here is an
@@ -420,13 +423,24 @@ function logPollError(label, error) {
 const guarded = (fn, label) => () => Promise.resolve().then(fn).catch((error) => logPollError(label, error));
 
 async function refreshApplicationBinaryReadiness() {
-  await request("POST", "/api/bridge/readiness", {
+  const response = await request("POST", "/api/bridge/readiness", {
     applicationBinaryReadiness: await collectApplicationBinaryReadiness(localExecutionPolicyManifest),
     // A credential revoked in the provider's account shows up here as the sidecar
     // going away — the same tick that reports a binary vanishing. That is what
     // lets the server's health probe auto-degrade the application to offline.
     applicationCredentialReadiness: collectApplicationCredentialReadiness(credentialDir),
   });
+  // #1272: the readiness response echoes the device (publicDeviceView), so adopt
+  // a live maxConcurrency change here — no restart needed. Only a usable server
+  // value moves the cap; an absent/invalid field leaves it as-is.
+  const next = refreshedConcurrency(bridgeConcurrency, {
+    serverMaxConcurrency: response?.device?.maxConcurrency,
+    envValue: process.env.BRIDGE_MAX_CONCURRENT,
+  });
+  if (next !== bridgeConcurrency) {
+    console.log(`[desktop] invocation concurrency updated ${bridgeConcurrency} -> ${next}`);
+    bridgeConcurrency = next;
+  }
 }
 
 guarded(poll, "bridge")();

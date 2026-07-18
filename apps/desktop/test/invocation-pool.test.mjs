@@ -4,7 +4,7 @@
  */
 import test from "node:test";
 import assert from "node:assert/strict";
-import { createInvocationPool, resolveBridgeConcurrency } from "../src/invocation-pool.mjs";
+import { createInvocationPool, resolveBridgeConcurrency, refreshedConcurrency } from "../src/invocation-pool.mjs";
 
 function deferred() {
   let resolve;
@@ -21,6 +21,19 @@ test("resolveBridgeConcurrency: server value wins, then env, then fallback", () 
   assert.equal(resolveBridgeConcurrency({ serverMaxConcurrency: undefined, envValue: "4" }), 4);
   assert.equal(resolveBridgeConcurrency({ serverMaxConcurrency: null, envValue: undefined }), 3);
   assert.equal(resolveBridgeConcurrency({}), 3);
+});
+
+test("refreshedConcurrency: adopts a usable server value, ignores an unusable one", () => {
+  // A live change: server now says 6 → adopt it (clamped like resolve).
+  assert.equal(refreshedConcurrency(3, { serverMaxConcurrency: 6 }), 6);
+  assert.equal(refreshedConcurrency(3, { serverMaxConcurrency: 99 }), 16);
+  // Unusable / absent server value → keep the current cap, never drop to fallback.
+  assert.equal(refreshedConcurrency(5, { serverMaxConcurrency: undefined }), 5);
+  assert.equal(refreshedConcurrency(5, { serverMaxConcurrency: null }), 5);
+  assert.equal(refreshedConcurrency(5, { serverMaxConcurrency: 0 }), 5);
+  assert.equal(refreshedConcurrency(5, { serverMaxConcurrency: "not-a-number" }), 5);
+  // Server wins over env, matching resolveBridgeConcurrency.
+  assert.equal(refreshedConcurrency(3, { serverMaxConcurrency: 4, envValue: "9" }), 4);
 });
 
 test("resolveBridgeConcurrency: clamps to [1,16] and ignores non-positive", () => {
@@ -48,6 +61,34 @@ test("fill launches up to the cap and no further", async () => {
   assert.equal(pool.size(), 3);
   // Claimed exactly cap times — the loop stops on the capacity check, not an extra claim.
   assert.equal(claims, 3);
+  gate.resolve();
+});
+
+test("cap as a getter is re-read every fill — a live cap change takes effect (#1272)", async () => {
+  const gate = deferred();
+  let cap = 1;
+  let claims = 0;
+  const pool = createInvocationPool({
+    cap: () => cap,
+    claim: async () => ({ id: ++claims }),
+    run: async () => {
+      await gate.promise;
+    },
+  });
+  // Cap 1: one run in flight, pool full.
+  assert.equal(await pool.fill(), 1);
+  assert.equal(pool.size(), 1);
+  assert.equal(await pool.fill(), 0, "still full at cap 1");
+
+  // Operator raises the cap live → the next fill re-reads the getter and grows.
+  cap = 3;
+  assert.equal(await pool.fill(), 2, "fills up to the new cap of 3");
+  assert.equal(pool.size(), 3);
+
+  // Operator lowers the cap live → no force-kill, just no new launches until it drains.
+  cap = 1;
+  assert.equal(await pool.fill(), 0, "already above the lowered cap; launches nothing");
+  assert.equal(pool.size(), 3, "in-flight runs above the new cap keep running");
   gate.resolve();
 });
 
