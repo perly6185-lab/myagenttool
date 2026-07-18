@@ -61,6 +61,7 @@ export function ChannelsView() {
 function ChannelCard({ channel, deliveries, projects }: { channel: ChannelOperations; deliveries: ChannelDelivery[]; projects: ProjectSnapshot[] }) {
   const { execute, pending, error } = useAsyncAction();
   const [taskProject, setTaskProject] = useState(channel.taskProjectId ?? "");
+  const [autoRoute, setAutoRoute] = useState(Boolean(channel.taskAutoRoute));
 
   const failed = useMemo(() => deliveries.filter((d) => d.status === "failed_terminal"), [deliveries]);
 
@@ -80,7 +81,7 @@ function ChannelCard({ channel, deliveries, projects }: { channel: ChannelOperat
 
   async function saveTaskProject() {
     const grant = await api.issueApprovalGrant("channel.taskProject", channel.id);
-    await execute(() => api.setChannelTaskProject(channel.id, taskProject || null, grant.token));
+    await execute(() => api.setChannelTaskProject(channel.id, taskProject || null, autoRoute, grant.token));
   }
 
   return (
@@ -143,16 +144,20 @@ function ChannelCard({ channel, deliveries, projects }: { channel: ChannelOperat
               <option key={p.id} value={p.id}>{p.name}</option>
             ))}
           </select>
+          <label className="flex items-center gap-1 text-muted-foreground">
+            <input type="checkbox" checked={autoRoute} onChange={(e) => setAutoRoute(e.target.checked)} disabled={pending || !taskProject} />
+            auto-route
+          </label>
           <Button
             variant="secondary"
             size="sm"
             onClick={saveTaskProject}
-            disabled={pending || (channel.taskProjectId ?? "") === taskProject}
+            disabled={pending || ((channel.taskProjectId ?? "") === taskProject && Boolean(channel.taskAutoRoute) === autoRoute)}
           >
             Save
           </Button>
           {channel.taskProjectId ? (
-            <Badge tone="success">bound</Badge>
+            <Badge tone="success">{channel.taskAutoRoute ? "auto-route" : "capture"}</Badge>
           ) : (
             <span className="text-muted-foreground">unbound — /task refused</span>
           )}

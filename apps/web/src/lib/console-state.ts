@@ -201,7 +201,8 @@ export type PendingDecisionKind =
   | "codex_broker"
   | "application_recovery"
   | "lifecycle_approval"
-  | "lifecycle_rollback";
+  | "lifecycle_rollback"
+  | "channel_task";
 
 export interface PendingDecision {
   id: string;
@@ -230,6 +231,9 @@ export interface PendingDecision {
     rollbackRequestId?: string;
     recoveryActionRequestId?: string | null;
     applicationId?: string | null;
+    channelTaskRequestId?: string;
+    issueNumber?: number | null;
+    issueUrl?: string | null;
   };
 }
 
@@ -1222,6 +1226,8 @@ export interface ChannelOperations {
   statusCapability?: string | null;
   /** The project `/task` files GitHub issues into (null = /task disabled). */
   taskProjectId?: string | null;
+  /** Auto-route /task straight to work (default off = capture-then-promote). */
+  taskAutoRoute?: boolean;
   counts: {
     identities: number;
     conversations: number;

@@ -243,3 +243,19 @@ test("empty inputs → empty queue (no throw on missing fields)", () => {
   assert.deepEqual(pendingDecisions(), []);
   assert.deepEqual(pendingDecisions({ approvalRequests: [{ id: "x", status: "pending" }] }).length, 1);
 });
+
+test("a pending channel /task request becomes a route/dismiss decision; routed/dismissed are excluded", () => {
+  const rows = pendingDecisions({
+    channelTaskRequests: [
+      { id: "ctr_1", status: "pending", channelId: "chn_1", projectId: "proj_a", issueNumber: 7, issueUrl: "u", title: "fix login", createdAt: "2026-07-18T00:00:00Z" },
+      { id: "ctr_2", status: "routed", channelId: "chn_1", issueNumber: 8 },
+      { id: "ctr_3", status: "dismissed", channelId: "chn_1", issueNumber: 9 },
+    ],
+  });
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].kind, "channel_task");
+  assert.equal(rows[0].id, "channeltask:ctr_1");
+  assert.match(rows[0].subtitle, /#7 fix login/);
+  assert.equal(rows[0].ref.channelTaskRequestId, "ctr_1");
+  assert.equal(rows[0].section, "channels");
+});

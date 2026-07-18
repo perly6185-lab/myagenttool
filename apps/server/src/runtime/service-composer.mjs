@@ -1,5 +1,6 @@
 import { UNTRUSTED_INPUT_LABEL } from "@myagenttool/protocol/issue-prompt";
 import { LOCAL_TEAM_ID } from "./auth.mjs";
+import { makeRunTx } from "./store/run-tx.mjs";
 import { createEventLogRuntime } from "./event-log.mjs";
 import { createRefusalRuntime } from "./refusal-log.mjs";
 import { createBridgeCredentialRuntime } from "./bridge-auth.mjs";
@@ -50,7 +51,7 @@ import { createAutoRunService } from "../services/auto-run.mjs";
 import { createDecisionSoftClaimService } from "../services/decision-soft-claims.mjs";
 import { createIssueClaimService } from "../services/issue-claims.mjs";
 import { resolveAutoRunVerifyCommand, resolveAutoRunVerifyCommandFor, runWorktreeVerification } from "../services/worktree-verify.mjs";
-import { resolveStatusWritebackConfig, runIssueAssigneeEdit, runIssueBodyFetch, runIssueComment, runIssueStatusTransition, runPrChecks, runPrMerge, runPrStateFetch, runIssueStateFetch } from "../services/issue-status.mjs";
+import { resolveStatusWritebackConfig, runIssueAssigneeEdit, runIssueBodyFetch, runIssueClose, runIssueComment, runIssueStatusTransition, runPrChecks, runPrMerge, runPrStateFetch, runIssueStateFetch } from "../services/issue-status.mjs";
 import { deciderTimeoutMs, resolveDeciderCommand, runDeciderCommand } from "../services/decision-command.mjs";
 import { childIssueBody, childIssueTitle, extractProjectFieldsBlock, runChildIssueCreate, spawnIssuesConfig } from "../services/auto-run-spawn.mjs";
 import { refreshPrDispositions } from "../services/auto-run-eval.mjs";
@@ -1204,7 +1205,7 @@ export function createServerRuntimeServices({
   // `gh issue create` with the auto-trigger label so the single dispatcher routes
   // + starts a tracked auto-run. Never throws — returns {ok:false} on any failure
   // so the channel reply stays graceful.
-  const createChannelTaskIssue = async ({ projectId, channelOwnerTeamId, title, description, channelId, externalUserId, injectionSuspicious = false }) => {
+  const createChannelTaskIssue = async ({ projectId, channelOwnerTeamId, title, description, channelId, externalUserId, injectionSuspicious = false, autoRoute = false }) => {
     const project = (state.projects ?? []).find((p) => p.id === projectId);
     const repoPath = project?.path ?? null;
     if (!repoPath) return { ok: false, reason: "project_not_resolvable" };
@@ -1234,13 +1235,70 @@ export function createServerRuntimeServices({
     ].join("\n");
     // Taint travels (parity with the mail→issue path): the untrusted-input label
     // marks the issue + its eventual auto-run for downstream governance filters.
-    const labels = [autoLabel, "channel", UNTRUSTED_INPUT_LABEL, ...(injectionSuspicious ? ["needs-triage"] : [])];
+    // The dispatcher label is added ONLY in auto-route mode — in capture mode the
+    // issue stays un-routed until a human promotes it (a route action adds it / or
+    // starts the run directly).
+    const labels = [...(autoRoute ? [autoLabel] : []), "channel", UNTRUSTED_INPUT_LABEL, ...(injectionSuspicious ? ["needs-triage"] : [])];
     try {
       const { number, url } = await runChildIssueCreate({ cwd: repoPath, title, body, labels });
       return { ok: true, number, url };
     } catch (error) {
       return { ok: false, reason: "gh_failed", error: String(error?.message ?? error) };
     }
+  };
+
+  // Human promotion of a captured /task request (the capture-then-promote trust
+  // model). Route → start a tracked auto-run now; Dismiss → close the issue.
+  // Both are same-team gated on the request's channel and never throw.
+  const channelTaskRunTx = makeRunTx({ store, persistStateSoon });
+  const findPendingChannelTask = (id, actor) => {
+    const req = (state.channelTaskRequests ?? []).find((r) => r.id === id && r.status === "pending");
+    if (!req) return null;
+    const channel = (state.channels ?? []).find((c) => c.id === req.channelId);
+    if (actor?.teamId != null && (channel?.ownerTeamId ?? LOCAL_TEAM_ID) !== actor.teamId) return null; // opaque 404
+    return req;
+  };
+  const routeChannelTask = async (id, actor) => {
+    const req = findPendingChannelTask(id, actor);
+    if (!req) return { status: 404, body: { error: "channel_task_not_found" } };
+    let result;
+    let error;
+    try {
+      result = await startAutoRun({
+        projectId: req.projectId,
+        link: { type: "issue", number: req.issueNumber, title: req.title, url: req.issueUrl, state: "open" },
+        actor,
+      });
+    } catch (e) {
+      error = String(e?.message ?? e);
+    }
+    const autoRunId = result?.autoRun?.id ?? null;
+    if (!autoRunId) {
+      return { status: 409, body: { error: "route_failed", reason: error ?? result?.reason ?? "auto_run_not_started" } };
+    }
+    channelTaskRunTx(() => {
+      req.status = "routed";
+      req.autoRunId = autoRunId;
+      req.decidedAt = now();
+      req.decidedBy = actor?.userId ?? null;
+    });
+    appendEvent({ invocationId: null, type: "channel_task_routed", level: "info", message: `Channel task ${req.id} routed → auto-run ${autoRunId}.`, data: { channelTaskRequestId: req.id, issueNumber: req.issueNumber, autoRunId } });
+    return { status: 200, body: { ok: true, autoRunId, issueNumber: req.issueNumber } };
+  };
+  const dismissChannelTask = async (id, actor) => {
+    const req = findPendingChannelTask(id, actor);
+    if (!req) return { status: 404, body: { error: "channel_task_not_found" } };
+    const project = (state.projects ?? []).find((p) => p.id === req.projectId);
+    if (project?.path && Number.isFinite(req.issueNumber)) {
+      await runIssueClose({ cwd: project.path, issueNumber: req.issueNumber, comment: "Dismissed from the console — not routed to work." }).catch(() => {});
+    }
+    channelTaskRunTx(() => {
+      req.status = "dismissed";
+      req.decidedAt = now();
+      req.decidedBy = actor?.userId ?? null;
+    });
+    appendEvent({ invocationId: null, type: "channel_task_dismissed", level: "info", message: `Channel task ${req.id} dismissed (issue #${req.issueNumber} closed).`, data: { channelTaskRequestId: req.id, issueNumber: req.issueNumber } });
+    return { status: 200, body: { ok: true } };
   };
 
   const channelConversationService = createChannelConversationService({
@@ -3127,6 +3185,8 @@ export function createServerRuntimeServices({
     listChannelIdentities: channelService.listChannelIdentities,
     setChannelAllowlist: channelService.setChannelAllowlist,
     setChannelTaskProject: channelService.setChannelTaskProject,
+    routeChannelTask,
+    dismissChannelTask,
     // The gateway's handoff: import + dispatch + reply-enqueue as one pipeline (S3+S4+S5).
     importChannelEvent: receiveChannelEvent,
     sweepChannelDeliveries: channelDeliveryService.sweepChannelDeliveries,

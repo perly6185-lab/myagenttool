@@ -50,7 +50,6 @@ export function createChannelConversationService({
   denyInvocation = null,
 }) {
   const runTx = makeRunTx({ store, persistStateSoon });
-  void nextId;
 
   const findChannel = (channelId) => (state.channels ?? []).find((row) => row.id === channelId) ?? null;
   const findConversation = (conversationId) =>
@@ -144,6 +143,10 @@ export function createChannelConversationService({
       conversation.recentRuns = [...rate.recentRuns, rate.nowMs];
       conversation.updatedAt = now();
     });
+    // Trust model: default = CAPTURE (file a tracked request a human promotes);
+    // opt-in per channel = auto-route (file with the dispatcher label directly).
+    const autoRoute = Boolean(channel.taskAutoRoute);
+    const title = text.slice(0, 120);
     let filed;
     try {
       filed = await createChannelTaskIssue({
@@ -152,13 +155,14 @@ export function createChannelConversationService({
         // but a project's ownerTeamId can change (re-registration) — pass the
         // channel's team so the filer refuses a drifted cross-team binding.
         channelOwnerTeamId: channel.ownerTeamId ?? null,
-        title: text.slice(0, 120),
+        title,
         description: text,
         channelId: channel.id,
         externalUserId: event.externalUserId,
         // Taint travels: a message the injection detector flagged files with the
         // untrusted marker so downstream governance sees it (parity with mail).
         injectionSuspicious: Boolean(event.injectionSuspicious),
+        autoRoute,
       });
     } catch (error) {
       filed = { ok: false, error: String(error?.message ?? error) };
@@ -168,14 +172,32 @@ export function createChannelConversationService({
     }
     runTx(() => {
       conversation.taskIssues = [...(conversation.taskIssues ?? []), { number: filed.number, url: filed.url ?? null, at: now() }].slice(-50);
+      // Capture mode: record a request that shows up as a pending decision until a
+      // human routes (→ auto-run) or dismisses it. Bounded newest-keeps.
+      if (!autoRoute) {
+        const request = {
+          id: nextId("ctr"),
+          channelId: channel.id,
+          conversationId: conversation.id,
+          projectId: channel.taskProjectId,
+          issueNumber: filed.number,
+          issueUrl: filed.url ?? null,
+          title,
+          externalUserId: event.externalUserId,
+          status: "pending",
+          autoRunId: null,
+          createdAt: now(),
+        };
+        state.channelTaskRequests = [...(state.channelTaskRequests ?? []), request].slice(-500);
+      }
       conversation.updatedAt = now();
     });
-    // Honest reply: the issue is filed + tracked; routing only happens if the
-    // dispatcher is enabled (off by default), so don't state it as a fact.
     return settle(event, {
       status: "dispatched",
-      reply: `Filed issue #${filed.number}${filed.url ? ` (${filed.url})` : ""} — tracked; it'll be routed automatically when the dispatcher is enabled.`,
-      data: { command: "/task", issueNumber: filed.number, projectId: channel.taskProjectId },
+      reply: autoRoute
+        ? `Filed issue #${filed.number}${filed.url ? ` (${filed.url})` : ""} — auto-routing; it'll be assigned and tracked.`
+        : `Filed issue #${filed.number}${filed.url ? ` (${filed.url})` : ""} — awaiting a route/dismiss decision in the console.`,
+      data: { command: "/task", issueNumber: filed.number, projectId: channel.taskProjectId, autoRoute },
     });
   }
 
