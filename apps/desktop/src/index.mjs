@@ -1,4 +1,4 @@
-import { spawn, spawnSync } from "node:child_process";
+import { spawn } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
@@ -16,6 +16,7 @@ import { newRoundState, claudeRoundEmits, codexRoundEmits } from "./round-teleme
 import { createAgentLineSink } from "./agent-line-sink.mjs";
 import { createInvocationPool, resolveBridgeConcurrency } from "./invocation-pool.mjs";
 import { spawnCapture } from "./spawn-capture.mjs";
+import { isInactiveInvocationError } from "./bridge-events.mjs";
 import { applicationWrapperArgs } from "./application-wrapper-args.mjs";
 import { collectApplicationBinaryReadiness } from "./application-binary-readiness.mjs";
 import { collectApplicationCredentialReadiness } from "./application-credential-readiness.mjs";
@@ -871,6 +872,12 @@ async function runInvocation(work) {
   let cancelResult = null;
   let timedOut = false;
   let spawnError = null;
+  // #1250: flipped true the instant the child closes and the main flow takes
+  // over the terminal outcome. The detached cancel/timeout pollers check it
+  // (before AND after their awaits) so they stop posting events once the run is
+  // settling — otherwise a late event races the terminal /api/bridge/complete
+  // and the server rejects it with bridge_invocation_not_active.
+  let settled = false;
   const roundState = newRoundState();
 
   if (adapter?.type === "mcp") {
@@ -897,7 +904,7 @@ async function runInvocation(work) {
   }
 
   const spawnPlan = createCliSpawnPlan(adapter, { invocationId, task, options: work.options ?? {} });
-  const preview = executionPreview(adapter, spawnPlan, task);
+  const preview = await executionPreview(adapter, spawnPlan, task);
   await sendCodexHookEvent(invocationId, adapter, {
     eventName: "SessionStart",
     summary: `Managed Codex launcher started with ${preview.sessionMode}.`
@@ -1014,40 +1021,57 @@ async function runInvocation(work) {
 
   const timeoutMs = Number(adapter.timeoutSeconds ?? work.options?.timeoutSeconds ?? 30) * 1000;
   const timeoutTimer = setTimeout(async () => {
-    if (child.exitCode !== null || child.killed || cancelled) {
-      return;
-    }
-    timedOut = true;
-    await request("POST", "/api/bridge/events", {
-      invocationId,
-      type: "invocation_timed_out",
-      level: "warn",
-      message: `${runtimeName} exceeded its configured timeout.`
-    });
-    cancelResult = await terminateProcessTree(child);
-    await reportForcedKill(invocationId, runtimeName, cancelResult);
-  }, timeoutMs);
-
-  const cancelTimer = setInterval(async () => {
-    const status = await request("GET", `/api/bridge/cancel-status?invocationId=${encodeURIComponent(invocationId)}`);
-    if (status?.cancelRequested && !cancelled) {
-      cancelled = true;
+    try {
+      if (settled || child.exitCode !== null || child.killed || cancelled) {
+        return;
+      }
+      timedOut = true;
       await request("POST", "/api/bridge/events", {
         invocationId,
-        type: "cancel_dispatched",
-        level: "info",
-        message: `Desktop Bridge sent cancellation to ${runtimeName}.`
+        type: "invocation_timed_out",
+        level: "warn",
+        message: `${runtimeName} exceeded its configured timeout.`
       });
       cancelResult = await terminateProcessTree(child);
       await reportForcedKill(invocationId, runtimeName, cancelResult);
-      if (!cancelResult.ok) {
+    } catch (error) {
+      tolerateLateEvent("timeout", invocationId, error);
+    }
+  }, timeoutMs);
+
+  const cancelTimer = setInterval(async () => {
+    try {
+      if (settled || cancelled) {
+        return;
+      }
+      const status = await request("GET", `/api/bridge/cancel-status?invocationId=${encodeURIComponent(invocationId)}`);
+      // Re-check after the await: the child may have closed (settled) while the
+      // status GET was in flight. Posting a cancel now would race the terminal
+      // complete and hit bridge_invocation_not_active (#1250).
+      if (settled || cancelled) {
+        return;
+      }
+      if (status?.cancelRequested) {
+        cancelled = true;
         await request("POST", "/api/bridge/events", {
           invocationId,
-          type: "cancel_failed",
-          level: "warn",
-          message: cancelResult.message
+          type: "cancel_dispatched",
+          level: "info",
+          message: `Desktop Bridge sent cancellation to ${runtimeName}.`
         });
+        cancelResult = await terminateProcessTree(child);
+        await reportForcedKill(invocationId, runtimeName, cancelResult);
+        if (!cancelResult.ok) {
+          await request("POST", "/api/bridge/events", {
+            invocationId,
+            type: "cancel_failed",
+            level: "warn",
+            message: cancelResult.message
+          });
+        }
       }
+    } catch (error) {
+      tolerateLateEvent("cancel", invocationId, error);
     }
   }, 250);
 
@@ -1085,6 +1109,10 @@ async function runInvocation(work) {
   const exitCode = await new Promise((resolveExit) => {
     child.on("close", resolveExit);
   });
+  // #1250: the main flow now owns the terminal outcome. Mark settled BEFORE
+  // clearing the timers so any poller tick already mid-await bails on its
+  // post-await re-check instead of posting an event after complete.
+  settled = true;
   clearInterval(cancelTimer);
   clearTimeout(timeoutTimer);
   // The temp patch file the apply runner read (materialized in governedApplyWrapperArgs)
@@ -1189,17 +1217,26 @@ async function runClientInvocation(work, clientFn, runtimeLabel) {
   const adapter = work.adapter;
 
   let cancelRequested = false;
+  // #1250: same terminal-race guard as the CLI path — once the client finishes
+  // and the finally marks settled, a cancel poll already mid-await must not post
+  // an event after the terminal complete.
+  let settled = false;
   const cancelTimer = setInterval(async () => {
-    if (cancelRequested) return;
-    const status = await request("GET", `/api/bridge/cancel-status?invocationId=${encodeURIComponent(invocationId)}`);
-    if (status?.cancelRequested) {
-      cancelRequested = true;
-      await request("POST", "/api/bridge/events", {
-        invocationId,
-        type: "cancel_dispatched",
-        level: "info",
-        message: `Desktop Bridge sent cancellation to the ${runtimeLabel}.`
-      });
+    try {
+      if (settled || cancelRequested) return;
+      const status = await request("GET", `/api/bridge/cancel-status?invocationId=${encodeURIComponent(invocationId)}`);
+      if (settled || cancelRequested) return;
+      if (status?.cancelRequested) {
+        cancelRequested = true;
+        await request("POST", "/api/bridge/events", {
+          invocationId,
+          type: "cancel_dispatched",
+          level: "info",
+          message: `Desktop Bridge sent cancellation to the ${runtimeLabel}.`
+        });
+      }
+    } catch (error) {
+      tolerateLateEvent("cancel", invocationId, error);
     }
   }, 250);
 
@@ -1220,6 +1257,7 @@ async function runClientInvocation(work, clientFn, runtimeLabel) {
       }
     });
   } finally {
+    settled = true;
     clearInterval(cancelTimer);
   }
 
@@ -1256,7 +1294,7 @@ async function runHealthCheck(work) {
     return;
   }
 
-  const result = checkCliAgentHealth(adapter);
+  const result = await checkCliAgentHealth(adapter);
   await request("POST", "/api/bridge/health-complete", {
     checkId: work.checkId,
     agentId: work.agentId,
@@ -1266,9 +1304,9 @@ async function runHealthCheck(work) {
   });
 }
 
-function checkCliAgentHealth(adapter) {
+async function checkCliAgentHealth(adapter) {
   if (isCodexCliCommand(adapter.command)) {
-    const probe = probeCodexCli(adapter);
+    const probe = await probeCodexCli(adapter);
     return {
       ok: probe.ok,
       message: probe.ok ? "Codex CLI non-interactive surface is reachable." : probe.summary,
@@ -1276,7 +1314,7 @@ function checkCliAgentHealth(adapter) {
     };
   }
   if (isClaudeCliCommand(adapter.command)) {
-    const probe = probeClaudeCli(adapter);
+    const probe = await probeClaudeCli(adapter);
     return {
       ok: probe.ok,
       message: probe.ok ? "Claude CLI surface is reachable." : probe.summary,
@@ -1430,7 +1468,7 @@ async function runIntegrationProbe(work) {
   }
 
   if (isCodexCliCommand(adapter.command)) {
-    const probe = probeCodexCli(adapter);
+    const probe = await probeCodexCli(adapter);
     await request("POST", "/api/bridge/probe-complete", {
       probeRunId: work.probeRunId,
       status: probe.ok ? "succeeded" : "failed",
@@ -1440,7 +1478,7 @@ async function runIntegrationProbe(work) {
     return;
   }
 
-  const health = checkCliAgentHealth(adapter);
+  const health = await checkCliAgentHealth(adapter);
   const highRisk = highRiskCliCommand(adapter.command);
   await request("POST", "/api/bridge/probe-complete", {
     probeRunId: work.probeRunId,
@@ -1883,7 +1921,7 @@ function dedupeCommandPrefixArgs(prefixArgs, renderedArgs) {
   return lastPrefixArg === firstRenderedArg ? renderedArgs.slice(1) : renderedArgs;
 }
 
-function executionPreview(adapter, spawnPlan, task) {
+async function executionPreview(adapter, spawnPlan, task) {
   const args = previewArgs(adapter, spawnPlan.args, task);
   return {
     adapterType: adapter.type,
@@ -1893,7 +1931,7 @@ function executionPreview(adapter, spawnPlan, task) {
     cwd: spawnPlan.cwd,
     taskSummary: summarizeTask(task),
     sessionMode: spawnPlan.sessionMode,
-    workspace: workspacePreview(adapter, spawnPlan),
+    workspace: await workspacePreview(adapter, spawnPlan),
     environmentPolicy: withMinimizedAgentEnv(adapter).environmentPolicy ?? "inherit_safe",
     envVisible: false,
     attachments: spawnPlan.attachments?.map((attachment) => ({
@@ -1906,11 +1944,11 @@ function executionPreview(adapter, spawnPlan, task) {
   };
 }
 
-function workspacePreview(adapter, spawnPlan) {
+async function workspacePreview(adapter, spawnPlan) {
   if (!isCodexCliCommand(adapter.command)) {
     return null;
   }
-  const git = inspectGitWorkspace(spawnPlan.cwd);
+  const git = await inspectGitWorkspace(spawnPlan.cwd);
   return {
     policy: spawnPlan.workspacePolicy,
     repoPath: git.repoPath ?? spawnPlan.cwd,
@@ -1923,8 +1961,8 @@ function workspacePreview(adapter, spawnPlan) {
   };
 }
 
-function inspectGitWorkspace(cwd) {
-  const root = gitOutput(cwd, ["rev-parse", "--show-toplevel"]);
+async function inspectGitWorkspace(cwd) {
+  const root = await gitOutput(cwd, ["rev-parse", "--show-toplevel"]);
   if (!root.ok) {
     return {
       status: "unknown",
@@ -1935,9 +1973,13 @@ function inspectGitWorkspace(cwd) {
       lastCommit: null
     };
   }
-  const branch = gitOutput(cwd, ["rev-parse", "--abbrev-ref", "HEAD"]);
-  const commit = gitOutput(cwd, ["rev-parse", "--short", "HEAD"]);
-  const dirty = gitOutput(cwd, ["status", "--porcelain"]);
+  // #1266: the three follow-up reads are independent — run them in parallel so a
+  // preview costs one git round trip, not three, and never blocks the loop.
+  const [branch, commit, dirty] = await Promise.all([
+    gitOutput(cwd, ["rev-parse", "--abbrev-ref", "HEAD"]),
+    gitOutput(cwd, ["rev-parse", "--short", "HEAD"]),
+    gitOutput(cwd, ["status", "--porcelain"]),
+  ]);
   return {
     status: "observed",
     repoPath: root.stdout,
@@ -1948,8 +1990,8 @@ function inspectGitWorkspace(cwd) {
   };
 }
 
-function gitOutput(cwd, args) {
-  const result = spawnSync("git", args, {
+async function gitOutput(cwd, args) {
+  const result = await spawnCapture("git", args, {
     cwd,
     encoding: "utf8",
     windowsHide: true,
@@ -2226,7 +2268,7 @@ function highRiskCliCommand(command) {
   return ["codex", "codex.cmd", "codex.ps1", "claude", "qwen", "qwen-code", "openclaw", "qclaw"].some((name) => normalized === name || normalized.endsWith(`/${name}`) || normalized.endsWith(`\\${name}`));
 }
 
-function probeCodexCli(adapter) {
+async function probeCodexCli(adapter) {
   const codexCommandOverride = process.env.MYAGENTTOOL_CODEX_COMMAND;
   const helpArgs = ["exec", "--help"];
   const commandPlan = codexCommandPlan({ ...adapter, command: adapter.command ?? "codex" }, helpArgs, "");
@@ -2236,13 +2278,12 @@ function probeCodexCli(adapter) {
   const args = codexCommandOverride === "fixture"
     ? [codexFixtureAgentPath, "exec", "--help"]
     : commandPlan.args;
-  const result = spawnSync(command, args, {
+  const result = await spawnCapture(command, args, {
     cwd: process.cwd(),
     env: buildEnv({ ...adapter, environmentPolicy: "inherit_safe" }),
     windowsHide: true,
     encoding: "utf8",
     shell: false,
-    stdio: ["ignore", "pipe", "pipe"]
   });
   const combined = `${result.stdout ?? ""}\n${result.stderr ?? ""}`;
   const hasExecHelp = result.status === 0 && /Run Codex non-interactively|Usage:\s+codex exec/i.test(combined);
@@ -2261,15 +2302,14 @@ function probeCodexCli(adapter) {
   };
 }
 
-function probeClaudeCli(adapter) {
+async function probeClaudeCli(adapter) {
   const command = String(adapter.command ?? "claude");
-  const result = spawnSync(command, ["--help"], {
+  const result = await spawnCapture(command, ["--help"], {
     cwd: process.cwd(),
     env: buildEnv({ ...adapter, environmentPolicy: "inherit_safe" }),
     windowsHide: true,
     encoding: "utf8",
     shell: false,
-    stdio: ["ignore", "pipe", "pipe"]
   });
   const combined = `${result.stdout ?? ""}\n${result.stderr ?? ""}`;
   const hasHelp = result.status === 0 && /claude|anthropic|usage/i.test(combined);
@@ -2428,6 +2468,19 @@ async function reportForcedKill(invocationId, runtimeName, result) {
     level: result.ok ? "warn" : "error",
     message: `${runtimeName}: ${result.message}`
   });
+}
+
+// #1250: the detached cancel/timeout pollers post events off the main await
+// chain. The `settled` guard stops them in the common case, but a post already
+// in flight when the run settles can still land after complete — the server
+// answers bridge_invocation_not_active. Swallow exactly that (and a missing
+// invocation) so it does not surface as an unhandledRejection; anything else is
+// a real fault and is logged.
+function tolerateLateEvent(label, invocationId, error) {
+  if (isInactiveInvocationError(error)) {
+    return;
+  }
+  console.error(`[desktop] ${invocationId} ${label} poller error (continuing): ${error instanceof Error ? error.message : String(error)}`);
 }
 
 async function handleAgentLine(invocationId, line, adapter = {}, roundState = null) {

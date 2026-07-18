@@ -210,6 +210,7 @@ export function createHttpServer({
   removeChannelIdentity,
   listChannelIdentities,
   setChannelAllowlist,
+  setChannelTaskProject,
   retryChannelDelivery,
   nextId,
   persistStateSoon,
@@ -290,6 +291,7 @@ export function createHttpServer({
       }
 
       if (await handleChannelRoutes({
+        setChannelTaskProject,
         req,
         res,
         url,

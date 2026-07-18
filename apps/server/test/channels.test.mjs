@@ -205,6 +205,28 @@ test("enable is approval-gated; disable is not; both audit", () => {
   assert.equal(events.at(-1).type, "channel_disabled");
 });
 
+test("task-project binding is approval-gated, same-team only, and set/clear audits", () => {
+  const { state, events, service } = makeService();
+  state.projects.push({ id: "proj_own", ownerTeamId: "team_local", path: "/tmp/own" });
+  state.projects.push({ id: "proj_foreign", ownerTeamId: "team_b", path: "/tmp/foreign" });
+  const { body } = service.registerChannel({ provider: "wecom", name: "ops" }, owner);
+  const channelId = body.channel.id;
+
+  // Approval required.
+  assert.equal(service.setChannelTaskProject({ channelId, projectId: "proj_own" }, owner).status, 409);
+  // A project owned by another team can't be bound (no cross-team task filing).
+  assert.equal(service.setChannelTaskProject({ channelId, projectId: "proj_foreign", approvalToken: "ok" }, owner).status, 403);
+  // A missing project is rejected.
+  assert.equal(service.setChannelTaskProject({ channelId, projectId: "proj_nope", approvalToken: "ok" }, owner).body.error, "project_not_found");
+  // Bind, then clear.
+  const set = service.setChannelTaskProject({ channelId, projectId: "proj_own", approvalToken: "ok" }, owner);
+  assert.equal(set.status, 200);
+  assert.equal(set.body.channel.taskProjectId, "proj_own");
+  assert.equal(events.at(-1).type, "channel_task_project_set");
+  const cleared = service.setChannelTaskProject({ channelId, projectId: null, approvalToken: "ok" }, owner);
+  assert.equal(cleared.body.channel.taskProjectId, null);
+});
+
 test("a foreign team's channel is opaque: 404 on every route, never 403", () => {
   const { service } = makeService();
   const { body } = service.registerChannel({ provider: "wecom", name: "ops" }, owner);

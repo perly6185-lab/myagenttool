@@ -43,6 +43,10 @@ export const channelCommands = [
   "/status",
   "/apps",
   "/run",
+  // Record free-text work as a tracked task: files a GitHub issue in the
+  // channel's bound project with the auto-trigger label, so the existing
+  // single-dispatcher routes + starts a tracked auto-run (six-state board).
+  "/task",
   "/result",
   "/approve",
   "/cancel",

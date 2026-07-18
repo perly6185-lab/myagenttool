@@ -11,8 +11,9 @@
  * runtime binary; index.mjs owns the events/complete glue.
  */
 
-import { spawn, spawnSync } from "node:child_process";
+import { spawn } from "node:child_process";
 import { extname } from "node:path";
+import { spawnCapture } from "./spawn-capture.mjs";
 import { describeContainerRun } from "@myagenttool/adapters/container";
 
 const CANCEL_GRACE_MS = 500;
@@ -200,9 +201,11 @@ export async function runContainerAgent({ adapter, task, onEvent = () => {}, sho
 
 /** Health probe: the configured runtime binary must answer --version. Also
  *  surfaces the digest-pinning stance so unpinned images are visible. */
-export function probeContainerRuntime(adapter) {
+export async function probeContainerRuntime(adapter) {
   const probePlan = runtimeCommand(adapter.runtime, ["--version"]);
-  const probe = spawnSync(probePlan.command, probePlan.args, { encoding: "utf8", timeout: 5_000 });
+  // #1266: async so the runtime `--version` probe never freezes the loop. The
+  // caller (runHealthCheck) already awaits this.
+  const probe = await spawnCapture(probePlan.command, probePlan.args, { encoding: "utf8", timeout: 5_000 });
   if (probe.error || probe.status !== 0) {
     return {
       ok: false,
