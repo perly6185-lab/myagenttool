@@ -1,4 +1,5 @@
 import { execFileSync } from "node:child_process";
+import { servicesForFiles } from "./restart-changed-services-lib.mjs";
 
 const controlUrl = process.env.DEV_CONTROL_URL ?? "http://127.0.0.1:5999";
 const args = process.argv.slice(2);
@@ -58,48 +59,6 @@ function changedGitFiles({ includeUntracked }) {
     .map((line) => line.trim())
     .filter(Boolean);
   return unique([...tracked, ...untracked]);
-}
-
-function servicesForFiles(files) {
-  const services = new Set();
-  for (const file of files) {
-    const normalized = file.replaceAll("\\", "/");
-    if (normalized === "package.json" || normalized === "pnpm-lock.yaml" || normalized === "pnpm-workspace.yaml") {
-      services.add("server");
-      services.add("desktop");
-      services.add("web");
-      continue;
-    }
-    if (normalized.startsWith("packages/protocol/") || normalized.startsWith("packages/shared/")) {
-      services.add("server");
-      services.add("desktop");
-      services.add("web");
-      continue;
-    }
-    if (normalized.startsWith("packages/adapters/")) {
-      services.add("server");
-      services.add("desktop");
-      continue;
-    }
-    if (normalized.startsWith("apps/server/")) {
-      services.add("server");
-      continue;
-    }
-    if (normalized.startsWith("apps/desktop/")) {
-      services.add("desktop");
-      continue;
-    }
-    if (normalized.startsWith("apps/web/")) {
-      services.add("web");
-      continue;
-    }
-    if (normalized === "tools/dev/run-local-demo.mjs") {
-      services.add("server");
-      services.add("desktop");
-      services.add("web");
-    }
-  }
-  return [...services];
 }
 
 function unique(items) {
