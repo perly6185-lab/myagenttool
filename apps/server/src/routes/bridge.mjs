@@ -91,6 +91,102 @@ export async function handleBridgeRoutes({
     return true;
   }
 
+  // #1251: one source of truth for each aux queue's "hand out the next item"
+  // step (select + markStarted + response payload). Both the dedicated
+  // per-queue endpoints AND the multiplexed /api/bridge/aux-next call these, so
+  // the payload shape and the mark-started side effect cannot drift apart.
+  // Each returns { kind, payload } when it has work, or null. markStarted runs
+  // ONLY on a hit, so trying builders in order until the first hit leaves the
+  // skipped-over queues untouched.
+  function buildHealthNext() {
+    const operation = nextBridgeHealthCheck();
+    if (!operation) return null;
+    markHealthCheckStarted(operation);
+    return {
+      kind: "health",
+      payload: {
+        namespace,
+        protocolVersion,
+        checkId: operation.id,
+        agentId: operation.agentId,
+        adapter: findAgent(operation.agentId)?.adapter ?? null,
+      },
+    };
+  }
+  function buildDiscoveryNext() {
+    const discoveryRun = nextBridgeDiscoveryRun();
+    if (!discoveryRun) return null;
+    markDiscoveryStarted(discoveryRun);
+    return {
+      kind: "discovery",
+      payload: {
+        namespace,
+        protocolVersion,
+        discoveryRunId: discoveryRun.id,
+        deviceId: discoveryRun.deviceId,
+        scope: discoveryRun.scope,
+        knownCommands: ["demo-agent"],
+        knownLocalEndpoints: [
+          {
+            name: "Smoke HTTP Agent",
+            baseUrl: "http://127.0.0.1:3212",
+            requestPath: "/invoke",
+            healthPath: "/health",
+          },
+        ],
+        userProvidedPaths: normalizeStringArray(discoveryRun.options?.userProvidedPaths),
+        userProvidedEndpoints: normalizeStringArray(discoveryRun.options?.userProvidedEndpoints),
+      },
+    };
+  }
+  function buildProbeNext() {
+    const probeRun = nextBridgeProbeRun();
+    if (!probeRun) return null;
+    markIntegrationProbeStarted(probeRun);
+    return {
+      kind: "probe",
+      payload: {
+        namespace,
+        protocolVersion,
+        probeRunId: probeRun.id,
+        artifactId: probeRun.artifactId,
+        deviceId: probeRun.deviceId,
+        adapter: probeRun.adapter,
+      },
+    };
+  }
+  function buildLifecycleNext() {
+    const lifecycleAction = nextBridgeLifecycleAction();
+    if (!lifecycleAction) return null;
+    markLifecycleActionStarted(lifecycleAction);
+    return {
+      kind: "lifecycle",
+      payload: {
+        namespace,
+        protocolVersion,
+        lifecycleActionId: lifecycleAction.id,
+        recipeId: lifecycleAction.recipeId,
+        agentId: lifecycleAction.agentId,
+        deviceId: lifecycleAction.deviceId,
+        action: lifecycleAction.action,
+        executionEnabled: lifecycleAction.executionEnabled,
+        command: lifecycleAction.command,
+        summary: lifecycleAction.summary,
+      },
+    };
+  }
+  function buildApplicationInstallNext() {
+    const run = nextBridgeApplicationInstall(device.id);
+    if (!run) return null;
+    return {
+      kind: "application_install",
+      payload: { namespace, protocolVersion, runId: run.id, deviceId: run.deviceId, plan: run.plan },
+    };
+  }
+  // Priority order — MUST match the order the bridge used to poll the dedicated
+  // endpoints, so multiplexing does not reshuffle which queue wins a tick.
+  const AUX_BUILDERS = [buildHealthNext, buildDiscoveryNext, buildProbeNext, buildLifecycleNext, buildApplicationInstallNext];
+
   function bridgeInvocationGate(invocation, operation, { allowedStatuses, allowedDeliveryStates } = {}) {
     if (!invocation) {
       return { allowed: false, status: 404, body: { error: "invocation_not_found" } };
@@ -263,27 +359,40 @@ export async function handleBridgeRoutes({
     return true;
   }
 
+  // Multiplexed aux poll (#1251): one request returns the first available aux
+  // work item across all queues, in the same priority order the dedicated
+  // endpoints are polled (health > discovery > probe > lifecycle > install), so
+  // a bridge no longer walks five endpoints per idle tick. The payload matches
+  // the dedicated endpoint plus a `kind` discriminator.
+  if (req.method === "GET" && url.pathname === "/api/bridge/aux-next") {
+    device.lastSeenAt = now();
+    if (device.unlinkState !== "linked") {
+      sendJson(res, 204, null);
+      return true;
+    }
+    for (const build of AUX_BUILDERS) {
+      const item = build();
+      if (item) {
+        sendJson(res, 200, { ...item.payload, kind: item.kind });
+        return true;
+      }
+    }
+    sendJson(res, 204, null);
+    return true;
+  }
+
   if (req.method === "GET" && url.pathname === "/api/bridge/health-next") {
     device.lastSeenAt = now();
     if (device.unlinkState !== "linked") {
       sendJson(res, 204, null);
       return true;
     }
-
-    const operation = nextBridgeHealthCheck();
-    if (!operation) {
+    const item = buildHealthNext();
+    if (!item) {
       sendJson(res, 204, null);
       return true;
     }
-
-    markHealthCheckStarted(operation);
-    sendJson(res, 200, {
-      namespace,
-      protocolVersion,
-      checkId: operation.id,
-      agentId: operation.agentId,
-      adapter: findAgent(operation.agentId)?.adapter ?? null,
-    });
+    sendJson(res, 200, item.payload);
     return true;
   }
 
@@ -311,32 +420,12 @@ export async function handleBridgeRoutes({
       sendJson(res, 204, null);
       return true;
     }
-
-    const discoveryRun = nextBridgeDiscoveryRun();
-    if (!discoveryRun) {
+    const item = buildDiscoveryNext();
+    if (!item) {
       sendJson(res, 204, null);
       return true;
     }
-
-    markDiscoveryStarted(discoveryRun);
-    sendJson(res, 200, {
-      namespace,
-      protocolVersion,
-      discoveryRunId: discoveryRun.id,
-      deviceId: discoveryRun.deviceId,
-      scope: discoveryRun.scope,
-      knownCommands: ["demo-agent"],
-      knownLocalEndpoints: [
-        {
-          name: "Smoke HTTP Agent",
-          baseUrl: "http://127.0.0.1:3212",
-          requestPath: "/invoke",
-          healthPath: "/health",
-        },
-      ],
-      userProvidedPaths: normalizeStringArray(discoveryRun.options?.userProvidedPaths),
-      userProvidedEndpoints: normalizeStringArray(discoveryRun.options?.userProvidedEndpoints),
-    });
+    sendJson(res, 200, item.payload);
     return true;
   }
 
@@ -360,22 +449,12 @@ export async function handleBridgeRoutes({
       sendJson(res, 204, null);
       return true;
     }
-
-    const probeRun = nextBridgeProbeRun();
-    if (!probeRun) {
+    const item = buildProbeNext();
+    if (!item) {
       sendJson(res, 204, null);
       return true;
     }
-
-    markIntegrationProbeStarted(probeRun);
-    sendJson(res, 200, {
-      namespace,
-      protocolVersion,
-      probeRunId: probeRun.id,
-      artifactId: probeRun.artifactId,
-      deviceId: probeRun.deviceId,
-      adapter: probeRun.adapter,
-    });
+    sendJson(res, 200, item.payload);
     return true;
   }
 
@@ -385,26 +464,12 @@ export async function handleBridgeRoutes({
       sendJson(res, 204, null);
       return true;
     }
-
-    const lifecycleAction = nextBridgeLifecycleAction();
-    if (!lifecycleAction) {
+    const item = buildLifecycleNext();
+    if (!item) {
       sendJson(res, 204, null);
       return true;
     }
-    markLifecycleActionStarted(lifecycleAction);
-
-    sendJson(res, 200, {
-      namespace,
-      protocolVersion,
-      lifecycleActionId: lifecycleAction.id,
-      recipeId: lifecycleAction.recipeId,
-      agentId: lifecycleAction.agentId,
-      deviceId: lifecycleAction.deviceId,
-      action: lifecycleAction.action,
-      executionEnabled: lifecycleAction.executionEnabled,
-      command: lifecycleAction.command,
-      summary: lifecycleAction.summary,
-    });
+    sendJson(res, 200, item.payload);
     return true;
   }
 
@@ -414,12 +479,12 @@ export async function handleBridgeRoutes({
       sendJson(res, 204, null);
       return true;
     }
-    const run = nextBridgeApplicationInstall(device.id);
-    if (!run) {
+    const item = buildApplicationInstallNext();
+    if (!item) {
       sendJson(res, 204, null);
       return true;
     }
-    sendJson(res, 200, { namespace, protocolVersion, runId: run.id, deviceId: run.deviceId, plan: run.plan });
+    sendJson(res, 200, item.payload);
     return true;
   }
 
