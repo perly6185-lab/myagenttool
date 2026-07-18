@@ -17,7 +17,7 @@ import { pendingDecisions } from "../src/read-models/pending-decisions.mjs";
 
 const owner = { userId: "usr_local", teamId: "team_local", role: "owner", authenticated: true };
 
-function makeHarness({ approveApplies = true } = {}) {
+function makeHarness({ approveApplies = true, allowSelfApprove = true } = {}) {
   let clockMs = 1_800_000_000_000;
   const { state } = createServerState({ defaultProjectPath: tmpdir(), now: () => new Date(clockMs).toISOString() });
   const now = () => new Date(clockMs).toISOString();
@@ -79,6 +79,7 @@ function makeHarness({ approveApplies = true } = {}) {
   const channelId = body.channel.id;
   channelService.enableChannel({ channelId, approvalToken: "ok" }, owner);
   channelService.setChannelAllowlist({ channelId, capabilities: ["deploy.app"], approvalToken: "ok" }, owner);
+  if (allowSelfApprove) channelService.setChannelApprovalPolicy({ channelId, allowSelfApprove: true, approvalToken: "ok" }, owner);
   channelService.mapChannelIdentity({ channelId, externalUserId: "wx_alice", userId: "usr_local" }, owner);
 
   let seq = 0;
@@ -90,6 +91,17 @@ function makeHarness({ approveApplies = true } = {}) {
 
   return { state, events, refusals, grants, approveCalls, denyCalls, channelId, channelService, receive, advance: (ms) => { clockMs += ms; } };
 }
+
+test("by default (no opt-in) in-channel /approve is refused → the run must be approved in the console", () => {
+  const h = makeHarness({ allowSelfApprove: false });
+  const { dispatched } = h.receive("/run deploy.app prod");
+  const invocation = h.state.invocations.at(-1);
+  const approved = h.receive(`/approve ${invocation.id}`).dispatched;
+  assert.equal(approved.status, "refused");
+  assert.match(approved.reply, /separate operator|console/i);
+  assert.equal(h.approveCalls.length, 0, "no approval was applied");
+  assert.equal(invocation.status, "waiting_for_local_approval", "still parked");
+});
 
 test("a write /run parks for approval and names the exact /approve reply", () => {
   const h = makeHarness();

@@ -732,4 +732,7 @@ export const api = {
   // Promote a captured /task request into a tracked auto-run, or dismiss it.
   routeChannelTask: (id: string) => request<{ ok: boolean; autoRunId: string | null }>("POST", `/api/channel-tasks/${encodeURIComponent(id)}/route`),
   dismissChannelTask: (id: string) => request("POST", `/api/channel-tasks/${encodeURIComponent(id)}/dismiss`),
+  // Opt a channel into in-channel /approve (default off). Approval-gated.
+  setChannelApprovalPolicy: (channelId: string, allowSelfApprove: boolean, approvalToken: string) =>
+    request("POST", `/api/channels/${encodeURIComponent(channelId)}/approval-policy`, { allowSelfApprove, approvalToken }),
 };

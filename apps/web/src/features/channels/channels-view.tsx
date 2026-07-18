@@ -82,6 +82,11 @@ function ChannelCard({ channel, deliveries, projects }: { channel: ChannelOperat
     await execute(() => api.retryChannelDelivery(channel.id, deliveryId, grant.token));
   }
 
+  async function toggleSelfApprove(next: boolean) {
+    const grant = await api.issueApprovalGrant("channel.approvalPolicy", channel.id);
+    await execute(() => api.setChannelApprovalPolicy(channel.id, next, grant.token));
+  }
+
   async function saveTaskProject() {
     const grant = await api.issueApprovalGrant("channel.taskProject", channel.id);
     await execute(() => api.setChannelTaskProject(channel.id, taskProject || null, autoRoute, dailyLimit, grant.token));
@@ -103,7 +108,11 @@ function ChannelCard({ channel, deliveries, projects }: { channel: ChannelOperat
               {channel.counts.injectionFlagged > 0 ? ` · ${channel.counts.injectionFlagged} flagged` : ""}
             </p>
           </div>
-          <div className="flex gap-2">
+          <div className="flex items-center gap-3">
+            <label className="flex items-center gap-1 text-xs text-muted-foreground" title="Allow /approve from inside this channel (default off — risky runs are approved in the console by a separate operator)">
+              <input type="checkbox" checked={Boolean(channel.allowSelfApprove)} onChange={(e) => toggleSelfApprove(e.target.checked)} disabled={pending} />
+              in-channel /approve
+            </label>
             {channel.status === "enabled" ? (
               <Button variant="secondary" size="sm" onClick={disable} disabled={pending}>
                 Disable

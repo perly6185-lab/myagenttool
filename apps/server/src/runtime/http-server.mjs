@@ -212,6 +212,7 @@ export function createHttpServer({
   listChannelIdentities,
   setChannelAllowlist,
   setChannelTaskProject,
+  setChannelApprovalPolicy,
   routeChannelTask,
   dismissChannelTask,
   retryChannelDelivery,
@@ -295,6 +296,7 @@ export function createHttpServer({
 
       if (await handleChannelRoutes({
         setChannelTaskProject,
+        setChannelApprovalPolicy,
         routeChannelTask,
         dismissChannelTask,
         req,

@@ -1251,6 +1251,8 @@ export interface ChannelOperations {
   taskDailyLimit?: number;
   taskDayDate?: string | null;
   taskDayCount?: number;
+  /** Whether in-channel /approve is allowed (default off — approve in the console). */
+  allowSelfApprove?: boolean;
   counts: {
     identities: number;
     conversations: number;

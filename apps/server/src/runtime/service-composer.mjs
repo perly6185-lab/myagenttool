@@ -3219,6 +3219,7 @@ export function createServerRuntimeServices({
     listChannelIdentities: channelService.listChannelIdentities,
     setChannelAllowlist: channelService.setChannelAllowlist,
     setChannelTaskProject: channelService.setChannelTaskProject,
+    setChannelApprovalPolicy: channelService.setChannelApprovalPolicy,
     routeChannelTask,
     dismissChannelTask,
     // The gateway's handoff: import + dispatch + reply-enqueue as one pipeline (S3+S4+S5).
