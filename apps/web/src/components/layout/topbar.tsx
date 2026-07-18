@@ -37,6 +37,23 @@ function ProjectSwitcher() {
   );
 }
 
+function MobileSectionSwitcher() {
+  const section = useUiStore((s) => s.section);
+  const setSection = useUiStore((s) => s.setSection);
+  return (
+    <Select
+      aria-label="Section"
+      className="h-8 w-32 md:hidden"
+      value={section}
+      onChange={(event) => setSection(event.target.value as typeof section)}
+    >
+      {SECTIONS.map((item) => (
+        <option key={item.key} value={item.key}>{item.label}</option>
+      ))}
+    </Select>
+  );
+}
+
 export function Topbar() {
   const section = useUiStore((s) => s.section);
   const { data: state, isError, isLoading } = useConsoleState();
@@ -49,12 +66,13 @@ export function Topbar() {
       : { tone: "success" as const, label: "Connected" };
 
   return (
-    <header className="flex h-14 shrink-0 items-center justify-between gap-4 border-b border-border bg-background/80 px-6 backdrop-blur">
-      <div className="min-w-0">
+    <header className="flex h-14 shrink-0 items-center justify-between gap-2 border-b border-border bg-background/80 px-3 backdrop-blur sm:gap-4 sm:px-6">
+      <div className="hidden min-w-0 sm:block">
         <h1 className="truncate text-sm font-semibold">{current?.label ?? "Overview"}</h1>
         <p className="truncate text-xs text-muted-foreground">{current?.blurb}</p>
       </div>
       <div className="flex items-center gap-3">
+        <MobileSectionSwitcher />
         <ProjectSwitcher />
         {state?.device ? (
           <span className="hidden text-xs text-muted-foreground sm:inline">

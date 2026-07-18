@@ -8,9 +8,10 @@ baseline for product-facing Web Console changes. Use
 scenario, prototype state, and usability task that the screenshot or visual
 artifact must prove.
 
-## Current M0 Level
+## Automated Browser Level
 
-M0 uses lightweight visual QA until a browser automation dependency is added.
+The repository uses its project-managed Playwright dependency for repeatable
+browser screenshots. Build the Web Console, then run:
 
 Automated checks currently verify:
 
@@ -25,9 +26,9 @@ These checks run through:
 
 ```text
 pnpm --filter @myagenttool/web test
+pnpm --filter @myagenttool/web build
 pnpm visual:qa
 pnpm visual:qa:browser
-pnpm test
 ```
 
 `pnpm visual:qa` writes repeatable local artifacts:
@@ -37,15 +38,17 @@ pnpm test
 .myagenttool/visual-qa/latest.md
 ```
 
-The current tool records desktop and mobile viewport metadata, key Web Console
-state markers, column ownership checks, overflow guards, and a scripted IA
-violation fixture. Browser screenshot automation is still optional until a
-project-managed browser dependency is added.
+`visual:qa:browser` starts an isolated local API and static Web server, injects
+deterministic state through the normal `/api/state` boundary, and captures 12
+screenshots: empty, ready, running, succeeded, approval, and disconnected at
+1366 x 768 and 390 x 844. It fails on a blank page, horizontal overflow, missing
+task/project/agent controls, or missing Safety, Data, Cost, and Computer panels.
+The ready and run states use a Codex CLI agent so selector and session-oriented
+task controls remain in coverage.
 
-Use `pnpm visual:qa:browser` when closing work that explicitly requires browser
-screenshot automation. It fails until Playwright or Puppeteer is installed, so a
-phase that requires screenshots should not be marked fully verified from the
-lightweight artifact alone.
+Generated screenshots remain under the gitignored
+`.myagenttool/visual-qa/screenshots/` directory. Attach the relevant files and
+`.myagenttool/visual-qa/latest.md` to the PR instead of committing routine output.
 
 ## Manual Screenshot Checklist
 
@@ -69,15 +72,6 @@ Confirm:
 - Technical IDs do not dominate the first screen.
 - Safety, data, cost, cancellation, and audit are described in plain language.
 
-## Future Browser Automation
+## Follow-up Coverage
 
-Issue #125 tracks browser screenshot automation for Web Console visual QA.
 Issue #136 tracks Visual QA and Design Mode for AI-assisted frontend work.
-
-Target automation:
-
-- Start local demo services.
-- Capture desktop and mobile screenshots.
-- Assert no horizontal overflow.
-- Assert key panels are visible.
-- Attach screenshots or artifact paths to PR evidence.

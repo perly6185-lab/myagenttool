@@ -28,7 +28,7 @@ export function NavRail() {
   return (
     <nav
       aria-label="Control plane sections"
-      className="flex h-full w-60 shrink-0 flex-col border-r border-sidebar-border bg-sidebar"
+      className="hidden h-full w-60 shrink-0 flex-col border-r border-sidebar-border bg-sidebar md:flex"
     >
       <div className="flex items-center gap-2.5 px-5 py-4">
         <span className="grid size-8 place-items-center rounded-lg bg-primary text-primary-foreground">
