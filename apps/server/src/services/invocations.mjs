@@ -13,6 +13,7 @@ export function createInvocationService({
   nextId,
   appendEvent,
   refuse,
+  notifyCancellation,
   persistStateSoon,
   persistStateNow,
   dispatchLeaseMs,
@@ -202,6 +203,7 @@ export function createInvocationService({
     createAuditSummary,
     recordAgentUsage,
     isTerminal,
+    notifyCancellation,
   });
 
   function findInvocation(id) {
