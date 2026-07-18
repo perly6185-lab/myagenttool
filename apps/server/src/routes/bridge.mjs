@@ -579,6 +579,26 @@ export async function handleBridgeRoutes({
     return true;
   }
 
+  // #1251: device-wide cancellation poll. One call replaces the per-run
+  // /api/bridge/cancel-status polls — the bridge runs a single shared watcher
+  // instead of one 250ms GET per in-flight run. Returns the ids of THIS device's
+  // acknowledged, in-flight invocations whose cancellation was requested — the
+  // same ownership + actionable-state predicate as cancel-status, applied
+  // set-wise (an unowned or terminal invocation simply never appears).
+  if (req.method === "GET" && url.pathname === "/api/bridge/cancellations") {
+    const invocationIds = state.invocations
+      .filter((invocation) => {
+        const delivery = invocation.delivery ?? {};
+        return delivery.deviceId === device.id
+          && delivery.state === "acknowledged"
+          && ["running", "cancelling"].includes(invocation.status)
+          && invocation.cancellation?.state === "requested";
+      })
+      .map((invocation) => invocation.id);
+    sendJson(res, 200, { invocationIds });
+    return true;
+  }
+
   if (req.method === "POST" && url.pathname === "/api/bridge/ack") {
     const body = await readJson(req);
     const invocation = findInvocation(body.invocationId);
