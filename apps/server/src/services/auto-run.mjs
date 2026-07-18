@@ -347,6 +347,12 @@ export function createAutoRunService({
     autoRun.status = status;
     autoRun.updatedAt = now();
     if (extra) Object.assign(autoRun, extra);
+    // errorCode reflects only the CURRENT failure: a machine-readable reason a run
+    // failed (e.g. "dispatch_timeout" / "orphaned" / "stuck" for an infrastructure
+    // reclaim vs a null code for a genuine task failure). Cleared on any transition
+    // that doesn't explicitly carry one, so a stale infra code can't survive a
+    // retry or success — this is the signal #3 failover keys off (infra vs task).
+    if (!(extra && "errorCode" in extra)) autoRun.errorCode = null;
     updateBreakerForTerminal(status);
     // #890: a settled run has finished spending — release its budget hold so the
     // (now-recorded) real ledger spend is what gates the next admission, not a
@@ -364,7 +370,7 @@ export function createAutoRunService({
       type: "auto_run_status_changed",
       level: status === "failed" ? "warn" : "info",
       message: `Auto-run ${autoRun.id} → ${status}.`,
-      data: { autoRunId: autoRun.id, status, worktreeId: autoRun.worktreeId },
+      data: { autoRunId: autoRun.id, status, worktreeId: autoRun.worktreeId, errorCode: autoRun.errorCode ?? null },
     });
   }
 
@@ -560,6 +566,10 @@ export function createAutoRunService({
       isChildIssue: isSpawnedChildBody(issueBody),
       branchName: worktree.branchName ?? worktree.branch ?? null,
       requestedBy: actor?.userId ?? "usr_local",
+      // Machine-readable failure reason (null while healthy). Set on failure to
+      // "dispatch_timeout" | "orphaned" | "stuck" for an infrastructure reclaim, or
+      // null for a genuine task failure — the infra-vs-task signal #3 keys off.
+      errorCode: null,
       createdAt,
       updatedAt: createdAt,
     };
@@ -907,8 +917,12 @@ export function createAutoRunService({
           runTx(() => setAutoRunStatus(autoRun, "failed", { error: String(error?.message ?? error) }));
         }
       } else {
-        // failed | timed_out | cancelled | rejected
-        runTx(() => setAutoRunStatus(autoRun, "failed", { error: `Agent run ${invocation.status}.` }));
+        // failed | timed_out | cancelled | rejected. Carry the invocation's
+        // errorCode onto the run: an infrastructure reclaim (bridge offline →
+        // "dispatch_timeout") is distinguishable from a genuine task failure
+        // (null code) — the signal #3 failover keys off. Null for a plain failure.
+        const errorCode = invocation.result?.errorCode ?? null;
+        runTx(() => setAutoRunStatus(autoRun, "failed", { error: `Agent run ${invocation.status}.`, errorCode }));
       }
       return autoRun;
     } catch (error) {
@@ -1781,7 +1795,7 @@ export function createAutoRunService({
       }
       // Orphaned by a restart: the invocation record is gone.
       if (run.invocationId && !inv) {
-        runTx(() => setAutoRunStatus(run, "failed", { error: "Run reaped: its invocation no longer exists (server restart)." }));
+        runTx(() => setAutoRunStatus(run, "failed", { error: "Run reaped: its invocation no longer exists (server restart).", errorCode: "orphaned" }));
         void sendAlert?.({ kind: "run_reaped", severity: "medium", message: `Auto-run ${run.id} reaped (orphaned invocation).`, data: { autoRunId: run.id, reason: "orphaned", link: run.link } });
         reaped += 1;
         continue;
@@ -1791,7 +1805,7 @@ export function createAutoRunService({
       const agent = run.agentId ? findAgent(run.agentId) : null;
       const deadlineMs = Math.max(maxIdleMs, Number(agent?.adapter?.timeoutSeconds ?? 0) * 1000 + REAP_MARGIN_MS);
       if (Number.isFinite(idleMs) && idleMs > deadlineMs) {
-        runTx(() => setAutoRunStatus(run, "failed", { error: `Run reaped: no progress for ${Math.round(idleMs / 1000)}s (stuck).` }));
+        runTx(() => setAutoRunStatus(run, "failed", { error: `Run reaped: no progress for ${Math.round(idleMs / 1000)}s (stuck).`, errorCode: "stuck" }));
         void sendAlert?.({ kind: "run_reaped", severity: "medium", message: `Auto-run ${run.id} reaped (stuck ${Math.round(idleMs / 1000)}s).`, data: { autoRunId: run.id, reason: "stuck", idleSeconds: Math.round(idleMs / 1000), link: run.link } });
         reaped += 1;
       }
