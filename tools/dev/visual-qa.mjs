@@ -296,6 +296,17 @@ function visualScenarios(baseline) {
     { name: "succeeded", state: withRun("succeeded", { summary: "Authentication boundaries reviewed; no unsafe write was performed." }), invocationId: "inv_visual_succeeded" },
     { name: "approval", state: withRun("waiting_for_local_approval"), invocationId: "inv_visual_waiting_for_local_approval" },
     { name: "runtime-health", state: structuredClone(ready), invocationId: null, section: "devices" },
+    {
+      name: "channel-task-failed",
+      section: "channels",
+      invocationId: null,
+      state: {
+        ...structuredClone(ready),
+        channelOperations: [{ id: "chn_visual", provider: "wecom", name: "Operations", status: "enabled", readiness: { callback_token: true, encoding_aes_key: true, corp_secret: true }, ready: true, health: "attention", capabilityAllowlist: [], taskProjectId: ready.projects?.[0]?.id ?? null, counts: { identities: 1, conversations: 1, events: 3, deliveries: 1, failedDeliveries: 1, injectionFlagged: 0 } }],
+        channelDeliveries: [],
+        channelTaskRequests: [{ id: "ctr_visual", channelId: "chn_visual", projectId: ready.projects?.[0]?.id ?? "prj_visual", issueNumber: 42, issueUrl: "https://example.test/issues/42", title: "Repair the failed deployment workflow", status: "routed", stage: "run_failed", autoRunId: "run_visual", runStatus: "failed", invocationId: "inv_visual_failed", invocationStatus: "failed", resultSummary: "The bridge disconnected before the result was delivered.", deliveryStatus: "failed_terminal", actions: { retry: true, reroute: true, takeover: true } }],
+      },
+    },
     { name: "disconnected", disconnected: true, state: null, invocationId: null },
   ];
   return scenarios.map((scenario) => ({
@@ -318,6 +329,11 @@ async function assertVisualState(page, scenario) {
   if (scenario.name === "runtime-health") {
     await page.locator('[data-testid="dispatch-health"]:visible').waitFor({ timeout: 15_000 });
     await page.locator('[data-testid="runtime-reliability"]:visible').waitFor();
+    return;
+  }
+  if (scenario.name === "channel-task-failed") {
+    await page.locator('[data-testid="channel-task-operations"]:visible').waitFor({ timeout: 15_000 });
+    for (const label of ["Issue #42", "Retry", "Reroute", "Take over"]) await page.getByText(label, { exact: true }).waitFor();
     return;
   }
   await page.locator('textarea[aria-label="Task"]:visible').waitFor({ timeout: 15_000 });

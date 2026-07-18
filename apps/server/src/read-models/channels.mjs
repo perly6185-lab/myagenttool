@@ -65,3 +65,34 @@ export function channelOperations({
     };
   });
 }
+
+export function channelTaskOperations({ requests = [], autoRuns = [], invocations = [], deliveries = [] } = {}) {
+  const runById = new Map(autoRuns.map((item) => [item.id, item]));
+  const invocationById = new Map(invocations.map((item) => [item.id, item]));
+  return requests.map((request) => {
+    const autoRun = request.autoRunId ? runById.get(request.autoRunId) ?? null : null;
+    const invocation = autoRun?.invocationId ? invocationById.get(autoRun.invocationId) ?? null : null;
+    const delivery = invocation ? deliveries.find((item) => item.invocationId === invocation.id) ?? null : null;
+    const runStatus = autoRun?.status ?? null;
+    const stage = request.status === "pending" ? "awaiting_route"
+      : request.status === "dismissed" ? "dismissed"
+        : request.status === "human_takeover" ? "human_takeover"
+          : runStatus ? `run_${runStatus}` : request.status;
+    const failed = ["failed", "blocked"].includes(runStatus);
+    const active = ["materializing", "running", "verifying", "publishing", "awaiting_approval"].includes(runStatus);
+    return {
+      ...request,
+      stage,
+      runStatus,
+      invocationId: invocation?.id ?? null,
+      invocationStatus: invocation?.status ?? null,
+      resultSummary: invocation?.result?.summary ?? invocation?.result?.error ?? autoRun?.error ?? null,
+      deliveryStatus: delivery?.status ?? null,
+      actions: {
+        retry: failed,
+        reroute: failed && ["dispatch_timeout", "orphaned", "stuck"].includes(autoRun?.errorCode),
+        takeover: request.status === "routed" && (active || failed),
+      },
+    };
+  });
+}

@@ -1,0 +1,23 @@
+import assert from "node:assert/strict";
+import { test } from "node:test";
+
+import { handleChannelRoutes } from "../src/routes/channels.mjs";
+
+test("task operation routes dispatch route, dismiss, retry, reroute, and takeover to distinct handlers", async () => {
+  for (const action of ["route", "dismiss", "retry", "reroute", "takeover"]) {
+    const calls = [];
+    let response;
+    const handlers = Object.fromEntries(["route", "dismiss", "retry", "reroute", "takeover"].map((name) => [`${name}ChannelTask`, async (id, actor) => {
+      calls.push({ name, id, actor });
+      return { status: 200, body: { ok: true, action: name } };
+    }]));
+    const handled = await handleChannelRoutes({
+      req: { method: "POST" }, res: {}, url: new URL(`http://local/api/channel-tasks/ctr_1/${action}`),
+      sendJson: (_res, status, body) => { response = { status, body }; }, readJson: async () => ({}),
+      actor: { userId: "usr_1", teamId: "team_1" }, ...handlers,
+    });
+    assert.equal(handled, true);
+    assert.deepEqual(calls, [{ name: action, id: "ctr_1", actor: { userId: "usr_1", teamId: "team_1" } }]);
+    assert.deepEqual(response, { status: 200, body: { ok: true, action } });
+  }
+});
