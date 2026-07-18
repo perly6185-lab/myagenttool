@@ -103,9 +103,11 @@ export function createSlackGateway({
       send(res, 200, "");
       return;
     }
-    // event_id replay backstop; msgId idempotency is enforced at import.
-    if (parsed.eventId && !replayChecked(parsed.eventId)) {
-      send(res, 200, ""); // a Slack retry — ack, do not re-import
+    // event_id replay backstop; msgId idempotency is enforced at import. An event
+    // with no id at all cannot be deduped, so drop it rather than let it bypass
+    // the backstop (#channel-audit) — real Slack events always carry event_id/ts.
+    if (!parsed.eventId || !replayChecked(parsed.eventId)) {
+      send(res, 200, ""); // a Slack retry or an unidentifiable event — ack, don't import
       return;
     }
 

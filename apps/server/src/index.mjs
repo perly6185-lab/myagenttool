@@ -119,7 +119,10 @@ server.listen(port, host, () => {
 
   // WeCom (#1090).
   const wecomConfig = wecomGatewayConfigFromEnv();
-  if (wecomConfig.port && wecomConfig.token && wecomConfig.encodingAesKey && wecomConfig.channelId) {
+  // receiveId (CorpID) is REQUIRED to activate: the crypto's tenant-binding check
+  // is skipped when it's unset (#channel-audit), so a missing WECOM_CORP_ID would
+  // silently run with cross-corp isolation disabled. Fail closed — don't start.
+  if (wecomConfig.port && wecomConfig.token && wecomConfig.encodingAesKey && wecomConfig.channelId && wecomConfig.receiveId) {
     createWecomGateway({
       token: wecomConfig.token,
       encodingAesKey: wecomConfig.encodingAesKey,
