@@ -86,6 +86,11 @@ export interface InvocationDispatchHealthResponse {
     redeliveryRate: number | null;
     exhaustedCount: number;
   };
+  reliability: {
+    failover: { attempts: number; recovered: number; exhausted: number; latest: Array<Record<string, unknown>> };
+    claims: { active: number; expired: number; nextExpiryAt: string | null };
+    intervention: { required: number; items: Array<{ autoRunId: string; invocationId: string | null; reason: string; state: string }> };
+  };
 }
 
 // The dev server's default port (tools/dev/run-local-demo.mjs SERVER_PORT).

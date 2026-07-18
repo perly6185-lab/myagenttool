@@ -147,6 +147,7 @@
     "smoke:applications": "node tools/dev/application-registry-smoke.mjs",
     "smoke:agent-skills": "node tools/dev/agent-skills-smoke.mjs",
     "smoke:dispatch-concurrency": "node tools/dev/dispatch-concurrency-smoke.mjs",
+    "benchmark:runtime-health": "node tools/dev/runtime-health-benchmark.mjs",
     "smoke:automation-scheduler": "node tools/dev/automation-scheduler-smoke.mjs",
     "smoke:claude-agent": "node tools/dev/claude-agent-smoke.mjs",
     "smoke:ccusage-agent": "node tools/dev/ccusage-agent-smoke.mjs",

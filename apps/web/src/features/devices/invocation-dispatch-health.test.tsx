@@ -22,6 +22,7 @@ const base = {
   capacity: { maxConcurrency: 3, inFlight: 1, utilization: 0.33, atCapacity: false },
   queue: { depth: 0, byReason: {}, items: [] },
   stats: { sampleSize: 0, indeterminate: true, medianMsToDispatch: null, redeliveryRate: null, exhaustedCount: 0 },
+  reliability: { failover: { attempts: 0, recovered: 0, exhausted: 0, latest: [] }, claims: { active: 0, expired: 0, nextExpiryAt: null }, intervention: { required: 0, items: [] } },
 };
 
 describe("InvocationDispatchHealth", () => {
@@ -45,6 +46,7 @@ describe("InvocationDispatchHealth", () => {
         ],
       },
       stats: { sampleSize: 12, indeterminate: false, medianMsToDispatch: 4_000, redeliveryRate: 0.25, exhaustedCount: 1 },
+      reliability: { failover: { attempts: 2, recovered: 1, exhausted: 1, latest: [] }, claims: { active: 1, expired: 2, nextExpiryAt: "2026-07-18T01:00:00Z" }, intervention: { required: 1, items: [{ autoRunId: "run_1", invocationId: "inv_2", reason: "stuck", state: "needs_human" }] } },
     });
     renderWithClient(<InvocationDispatchHealth />);
     await waitFor(() => expect(screen.getByText("Waiting for a free slot")).toBeTruthy());
@@ -55,6 +57,8 @@ describe("InvocationDispatchHealth", () => {
     // Stats past the sample floor: median + redelivery + exhausted.
     expect(screen.getByText(/redelivery/)).toBeTruthy();
     expect(screen.getByText(/exhausted/)).toBeTruthy();
+    expect(screen.getByText("1/2 recovered")).toBeTruthy();
+    expect(screen.getByText("1 need review")).toBeTruthy();
   });
 
   it("surfaces a failed fetch distinctly (not a silent empty queue)", async () => {

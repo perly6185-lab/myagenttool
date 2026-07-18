@@ -134,3 +134,25 @@ test("tenancy: queue + stats are filtered by visibleInvocation; capacity stays d
   assert.equal(health.capacity.atCapacity, true);
   assert.equal(health.queue.items[0].blockedReason, "waiting_concurrency", "blocked by the global cap the other team consumes");
 });
+
+test("unifies failover, claim expiry, and human intervention without leaking foreign projects", () => {
+  const state = {
+    device: { id: "dev_1", maxConcurrency: 3 },
+    invocations: [Object.assign(queued("q_mine", "agt_ok"), { team: "mine" }), Object.assign(queued("q_other", "agt_ok"), { team: "other" })],
+    autoRuns: [
+      { id: "run_mine", status: "failed", invocationId: "q_mine", errorCode: "stuck", failoverHistory: [{ attempt: 1, fromInvocationId: "old_mine", toInvocationId: "q_mine", at: "2026-07-18T00:05:00Z" }], failoverOutcome: { status: "exhausted", reason: "stuck" } },
+      { id: "run_other", status: "failed", invocationId: "q_other", failoverHistory: [{ attempt: 1, toInvocationId: "q_other", at: "2026-07-18T00:06:00Z" }], failoverOutcome: { status: "recovered" } },
+    ],
+    issueClaims: [
+      { projectId: "mine", status: "active", leaseExpiresAt: "2026-07-18T01:00:00Z" },
+      { projectId: "mine", status: "expired", outcome: "lease_expired" },
+      { projectId: "other", status: "expired", outcome: "lease_expired" },
+    ],
+  };
+  const health = computeInvocationDispatchHealth(state, { findAgent, now, visibleInvocation: (item) => item.team === "mine", visibleProject: (id) => id === "mine" });
+  assert.deepEqual(health.reliability.claims, { active: 1, expired: 1, nextExpiryAt: "2026-07-18T01:00:00Z" });
+  assert.equal(health.reliability.failover.attempts, 1);
+  assert.equal(health.reliability.failover.exhausted, 1);
+  assert.equal(health.reliability.failover.recovered, 0);
+  assert.deepEqual(health.reliability.intervention.items.map((item) => item.autoRunId), ["run_mine"]);
+});

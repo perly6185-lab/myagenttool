@@ -69,10 +69,16 @@ export async function handleInvocationRoutes({
       const requester = (state.users ?? []).find((user) => user.id === invocation?.requestedBy);
       return (requester?.teamId ?? "team_local") === teamId;
     };
+    const visibleProject = (projectId) => {
+      if (teamId == null) return true;
+      const project = (state.projects ?? []).find((item) => item.id === projectId);
+      return (project?.ownerTeamId ?? null) === teamId;
+    };
     sendJson(res, 200, computeInvocationDispatchHealth(state, {
       findAgent,
       now: () => new Date().toISOString(),
       visibleInvocation,
+      visibleProject,
     }));
     return true;
   }
