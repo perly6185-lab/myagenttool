@@ -24,6 +24,10 @@ This index lists accepted engineering decisions that guide implementation.
 - [ADR 0018: Per-subject deletion erases observability content through the retention chokepoint, but shielded evidence is retained-of-record and only PII-redacted](ADR_0018_OBSERVABILITY_DATA_DELETION.md)
 - [ADR 0019: Durable observability history is an indexed SQLite table outside the state mirror, with the JSONL archive as the memory-backing/degraded fallback](ADR_0019_OBSERVABILITY_HISTORY_TABLE.md)
 
+## Proposed
+
+- [ADR 0020: The invocation plane and the loop plane are two deliberately separate governed-run planes over one shared governance vocabulary](ADR_0020_TWO_GOVERNED_RUN_PLANES.md) — raised during the 2026-07 architecture governance review; awaiting ratification.
+
 ## M0 Decision Summary
 
 - Realtime transport: WebSocket from Desktop Bridge to server.

@@ -20,6 +20,12 @@
  *
  * This module is a leaf: it imports nothing from `../services`, so `state-factory`
  * (which the services import from) can depend on it without a cycle.
+ *
+ * The seam's size is frozen by `test/device-seam.test.mjs`: new `state.device`
+ * reads fail that ratchet, so new code lands on the sanctioned accessors below
+ * (`listDevices` / `findDevice`) or on `deviceForToken` for "which machine is
+ * this?". The count only ever ratchets down. See ADR 0020 and
+ * `docs/ARCHITECTURE_OVERVIEW.md` §1.
  */
 
 /** The seeded local device. Kept stable so existing state snapshots restore. */
