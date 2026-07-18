@@ -453,6 +453,20 @@ export function createChannelConversationService({
             reply: `The confirmation for ${invocation.id} has expired. Send the command again.`,
           });
         }
+        // Self-approval gate (#channel-audit): a channel conversation IS one
+        // external identity, so /approve here is ALWAYS requester == approver —
+        // the same person who /run the risky capability would satisfy its own
+        // local-approval gate. Unless the owner explicitly opted this channel into
+        // self-approval, route the decision to the console (a separate operator),
+        // preserving the human gate's separation.
+        if (!channel.allowSelfApprove) {
+          return refuseDispatch(event, {
+            code: "action_not_permitted",
+            summary: `Channel /approve refused: self-approval disabled for ${invocation.id}.`,
+            evidence: { invocationId: invocation.id, channelId: channel.id },
+            reply: `${invocation.id} needs approval by a separate operator — approve it in the console Approvals Center.`,
+          });
+        }
         if (typeof mintDecisionGrant !== "function" || typeof validateApprovalToken !== "function" || typeof approveInvocation !== "function") {
           return settle(event, {
             status: "refused",

@@ -52,6 +52,7 @@ export function channelOperations({
       taskDailyLimit: Number.isInteger(channel.taskDailyLimit) ? channel.taskDailyLimit : 50,
       taskDayDate: channel.taskDayDate ?? null,
       taskDayCount: channel.taskDayCount ?? 0,
+      allowSelfApprove: Boolean(channel.allowSelfApprove),
       counts: {
         identities: byChannel(channelIdentities, channel.id).length,
         conversations: byChannel(channelConversations, channel.id).length,

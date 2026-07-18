@@ -24,6 +24,7 @@ import { makeRunTx } from "../runtime/store/run-tx.mjs";
 export const CHANNEL_ENABLE_ACTION = "channel.enable";
 export const CHANNEL_ALLOWLIST_ACTION = "channel.allowlist";
 export const CHANNEL_TASK_PROJECT_ACTION = "channel.taskProject";
+export const CHANNEL_APPROVAL_POLICY_ACTION = "channel.approvalPolicy";
 const MAX_NAME_LENGTH = 80;
 const MAX_ALLOWLIST = 50;
 // Inbound-flood bounds (#channel-audit): a signed corp user's messages clear the
@@ -174,6 +175,10 @@ export function createChannelService({
       taskDailyLimit: DEFAULT_TASK_DAILY_LIMIT,
       taskDayDate: null, // the UTC day taskDayCount is counting
       taskDayCount: 0,
+      // In-channel /approve is requester==approver by construction (a conversation
+      // is one identity), so it's DISABLED by default — risky runs are approved in
+      // the console by a separate operator. Owner opt-in for trusted channels.
+      allowSelfApprove: false,
       createdAt: now(),
       updatedAt: now(),
     };
@@ -452,6 +457,42 @@ export function createChannelService({
     return { ok: true, status: 200, body: { channel: publicChannel(channel) } };
   }
 
+  // Owner opt-in for in-channel self-approval (default off). Approval-gated +
+  // owner-scoped like the other channel-trust setters.
+  function setChannelApprovalPolicy({ channelId, allowSelfApprove, approvalToken } = {}, actor = null) {
+    const channel = findOwnChannel(channelId, actor);
+    if (!channel) return notFound();
+    const approval = typeof validateApprovalToken === "function"
+      ? validateApprovalToken(approvalToken, { action: CHANNEL_APPROVAL_POLICY_ACTION, targetId: channel.id, actor })
+      : { approved: false, reason: "approval_validator_unavailable" };
+    if (!approval.approved) {
+      return {
+        ok: false,
+        status: 409,
+        body: {
+          error: "approval_required",
+          reason: approval.reason === "missing_token"
+            ? "Changing in-channel approval policy requires an explicit approvalToken."
+            : `approvalToken rejected: ${approval.reason}.`,
+          action: CHANNEL_APPROVAL_POLICY_ACTION,
+          targetId: channel.id,
+        },
+      };
+    }
+    runTx(() => {
+      channel.allowSelfApprove = Boolean(allowSelfApprove);
+      channel.updatedAt = now();
+      appendEvent({
+        invocationId: null,
+        type: "channel_approval_policy_set",
+        level: "info",
+        message: `Channel ${channel.id}: in-channel self-approval ${channel.allowSelfApprove ? "enabled" : "disabled"}.`,
+        data: { channelId: channel.id, allowSelfApprove: channel.allowSelfApprove },
+      });
+    });
+    return { ok: true, status: 200, body: { channel: publicChannel(channel) } };
+  }
+
   /**
    * Import one verified, decrypted inbound message from the gateway (S3). This
    * is the exactly-once boundary: a duplicate providerMessageId is a no-op ACK,
@@ -588,6 +629,7 @@ export function createChannelService({
     listChannelIdentities,
     setChannelAllowlist,
     setChannelTaskProject,
+    setChannelApprovalPolicy,
     importChannelEvent,
     findOwnChannel,
   };

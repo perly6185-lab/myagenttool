@@ -13,6 +13,7 @@ export async function handleChannelRoutes({
   actor,
   registerChannel,
   setChannelTaskProject,
+  setChannelApprovalPolicy,
   routeChannelTask,
   dismissChannelTask,
   listChannels,
@@ -86,7 +87,18 @@ export async function handleChannelRoutes({
   if (taskProject && req.method === "POST") {
     const body = await readJson(req);
     const result = setChannelTaskProject(
-      { channelId: decodeURIComponent(taskProject[1]), projectId: body?.projectId ?? null, approvalToken: body?.approvalToken },
+      { channelId: decodeURIComponent(taskProject[1]), projectId: body?.projectId ?? null, autoRoute: body?.autoRoute, dailyLimit: body?.dailyLimit, approvalToken: body?.approvalToken },
+      actor,
+    );
+    sendJson(res, result.status, result.body);
+    return true;
+  }
+
+  const approvalPolicy = url.pathname.match(/^\/api\/channels\/([^/]+)\/approval-policy$/);
+  if (approvalPolicy && req.method === "POST") {
+    const body = await readJson(req);
+    const result = setChannelApprovalPolicy(
+      { channelId: decodeURIComponent(approvalPolicy[1]), allowSelfApprove: body?.allowSelfApprove, approvalToken: body?.approvalToken },
       actor,
     );
     sendJson(res, result.status, result.body);
