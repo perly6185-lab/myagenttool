@@ -234,7 +234,7 @@ test("startAutoRun materializes the worktree and starts an issue-seeded invocati
 
 test("startAutoRun reflects the local-approval gate instead of bypassing it", async () => {
   const { svc } = makeAutoRun({ invocationStatus: "waiting_for_local_approval" });
-  const { autoRun } = await svc.startAutoRun({
+  const { autoRun, invocation } = await svc.startAutoRun({
     projectId: sourceProjectId,
     link: { type: "issue", number: 3, title: "Risky", url: null, state: "open" },
     agentId: "agt_1",
@@ -1314,7 +1314,7 @@ test("O1 reaper: a stuck active run (live invocation, no progress past deadline)
 
 test("3b: an infra reclaim fails over to a healthy same-device alternate agent", async () => {
   const { svc, calls } = makeAutoRun({});
-  const { autoRun } = await svc.startAutoRun({
+  const { autoRun, invocation } = await svc.startAutoRun({
     projectId: sourceProjectId,
     link: { type: "issue", number: 300, title: "Failover", url: null, state: "open" },
     agentId: "agt_1", name: "issue-300",
@@ -1332,6 +1332,11 @@ test("3b: an infra reclaim fails over to a healthy same-device alternate agent",
     assert.equal(autoRun.agentId, "agt_2", "re-dispatched to the same-device alternate");
     assert.equal(autoRun.failoverAttempts, 1);
     assert.deepEqual(autoRun.failoverExcludedAgentIds, ["agt_1"], "the dead agent is excluded from future failovers");
+    assert.equal(autoRun.failoverHistory.length, 1);
+    assert.equal(autoRun.failoverHistory[0].fromInvocationId, invocation.id);
+    assert.equal(autoRun.failoverHistory[0].toInvocationId, autoRun.invocationId);
+    assert.equal(autoRun.failoverOutcome.status, "recovered");
+    assert.equal(autoRun.failoverOutcome.reason, "dispatch_timeout");
     assert.notEqual(autoRun.status, "failed", "the run is live again");
     assert.equal(autoRun.errorCode, null, "the infra code is cleared on the restart");
     assert.ok(calls.events.some((e) => e.type === "auto_run_failed_over" && e.data.toAgentId === "agt_2"));
@@ -1375,6 +1380,8 @@ test("3b: no same-device alternate → stays failed with an 'unavailable' event"
     autoRun.errorCode = "stuck";
     assert.equal(await svc.attemptFailover(autoRun), false);
     assert.equal(autoRun.status, "failed");
+    assert.equal(autoRun.failoverOutcome.status, "alternate_unavailable");
+    assert.equal(autoRun.failoverOutcome.reason, "stuck");
     assert.ok(calls.events.some((e) => e.type === "auto_run_failover_unavailable"));
   } finally {
     state.agents = savedAgents;
@@ -1396,6 +1403,8 @@ test("3b: the failover cap is bounded (no ping-pong)", async () => {
     autoRun.failoverAttempts = MAX_FAILOVERS; // already at the cap
     assert.equal(await svc.attemptFailover(autoRun), false);
     assert.equal(autoRun.status, "failed");
+    assert.equal(autoRun.failoverOutcome.status, "exhausted");
+    assert.equal(autoRun.failoverOutcome.maxAttempts, MAX_FAILOVERS);
     assert.ok(calls.events.some((e) => e.type === "auto_run_failover_exhausted"));
   } finally {
     state.agents = savedAgents;

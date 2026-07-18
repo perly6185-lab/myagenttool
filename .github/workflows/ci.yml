@@ -80,6 +80,30 @@ jobs:
       - name: Build
         run: pnpm build
 
+  smoke-gates:
+    if: vars.ENABLE_GITHUB_HOSTED_RUNNERS == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9.15.0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Run CI-gating smoke suite
+        run: pnpm smoke:ci
+
   # L4 evaluation gates that are deterministic and free of AI spend: the mock
   # provider exercises the eval plumbing, and the issue-gate cases assert
   # product behavior (the runner exits non-zero if any issue-gate case fails —

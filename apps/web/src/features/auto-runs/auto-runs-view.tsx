@@ -40,6 +40,9 @@ export interface AutoRunRecord {
   branchName?: string | null;
   worktreeId?: string | null;
   invocationId?: string | null;
+  failoverAttempts?: number;
+  failoverHistory?: FailoverTransition[] | null;
+  failoverOutcome?: FailoverOutcome | null;
   mergeRisk?: { level: "low" | "medium" | "high"; reasons: string[] } | null;
   prNumber?: number | null;
   prUrl?: string | null;
@@ -66,6 +69,42 @@ export interface AutoRunRecord {
   error?: string | null;
   createdAt?: string;
   updatedAt?: string;
+}
+export interface FailoverTransition {
+  attempt: number;
+  reason: string;
+  fromAgentId?: string | null;
+  toAgentId?: string | null;
+  fromInvocationId?: string | null;
+  toInvocationId?: string | null;
+  worktreeId?: string | null;
+  at?: string | null;
+}
+export interface FailoverOutcome extends Partial<FailoverTransition> {
+  status: "recovered" | "exhausted" | "alternate_unavailable" | "worktree_unavailable" | "device_unlinked" | "start_failed" | string;
+  maxAttempts?: number;
+  error?: string | null;
+}
+
+const FAILOVER_REASON_LABEL: Record<string, string> = {
+  dispatch_timeout: "dispatch timed out",
+  orphaned: "run was orphaned",
+  stuck: "run stopped responding",
+};
+const FAILOVER_STATUS_LABEL: Record<string, string> = {
+  recovered: "Recovered on another agent",
+  exhausted: "Failover limit reached",
+  alternate_unavailable: "No healthy alternate agent",
+  worktree_unavailable: "Worktree unavailable",
+  device_unlinked: "Device is unlinked",
+  start_failed: "Alternate agent could not start",
+};
+
+export function failoverSummary(outcome?: FailoverOutcome | null): string | null {
+  if (!outcome) return null;
+  const status = FAILOVER_STATUS_LABEL[outcome.status] ?? outcome.status;
+  const reason = outcome.reason ? FAILOVER_REASON_LABEL[outcome.reason] ?? outcome.reason : null;
+  return reason ? `${status} after ${reason}` : status;
 }
 /** D2 deploy metrics served alongside the auto-runs summary. */
 interface DeploymentSummary {
@@ -442,6 +481,40 @@ function RunTraceLinks({ run }: { run: AutoRunRecord }) {
   );
 }
 
+function FailoverTrace({ run }: { run: AutoRunRecord }) {
+  const setSection = useUiStore((s) => s.setSection);
+  const setSelectedInvocationId = useUiStore((s) => s.setSelectedInvocationId);
+  const history = run.failoverHistory ?? [];
+  const summary = failoverSummary(run.failoverOutcome);
+  if (!summary && history.length === 0) return null;
+  function openInvocation(invocationId?: string | null) {
+    if (!invocationId) return;
+    setSelectedInvocationId(invocationId);
+    setSection("invocations");
+  }
+  return (
+    <div className="flex w-full flex-wrap items-center gap-x-2 gap-y-1 rounded-md border border-border bg-muted/30 px-2.5 py-2 text-xs">
+      <RefreshCw className="size-3.5 text-amber-600 dark:text-amber-400" />
+      <span className="font-medium">{summary ?? `${history.length} failover attempt${history.length === 1 ? "" : "s"}`}</span>
+      {history.map((transition) => (
+        <span key={`${transition.at ?? transition.attempt}-${transition.toInvocationId ?? "unknown"}`} className="inline-flex items-center gap-1 text-muted-foreground">
+          <span>#{transition.attempt} {transition.fromAgentId ?? "unknown"} → {transition.toAgentId ?? "unknown"}</span>
+          {transition.fromInvocationId ? (
+            <button type="button" className="text-primary hover:underline" onClick={() => openInvocation(transition.fromInvocationId)}>
+              previous run
+            </button>
+          ) : null}
+          {transition.toInvocationId ? (
+            <button type="button" className="text-primary hover:underline" onClick={() => openInvocation(transition.toInvocationId)}>
+              recovered run
+            </button>
+          ) : null}
+        </span>
+      ))}
+    </div>
+  );
+}
+
 // Per-run lifecycle TIMELINE (execution 过程). The server records every pipeline
 // transition as an `auto_run_*` event keyed by data.autoRunId; the client already
 // receives them in the state snapshot, so we filter + order them here (oldest→newest)
@@ -504,6 +577,7 @@ function RunChip({ run }: { run: AutoRunRecord }) {
     <div className="flex flex-col gap-1 rounded-md border border-border bg-card p-2 text-xs">
       <div className="flex items-center gap-1.5">
         <Badge tone={statusTone(run.status)}>{STATUS_LABEL[run.status] ?? run.status}</Badge>
+        {(run.failoverAttempts ?? 0) > 0 ? <Badge tone="warning">failover {run.failoverAttempts}</Badge> : null}
         {run.prUrl ? (
           <a href={run.prUrl} target="_blank" rel="noreferrer" className="inline-flex items-center gap-0.5 text-primary hover:underline">
             <GitPullRequest className="size-3" />#{run.prNumber}
@@ -1087,6 +1161,7 @@ export function AutoRunsView() {
                   ) : null}
                   <RunTraceLinks run={run} />
                 </div>
+                <FailoverTrace run={run} />
                 {run.worktreeId ? <WorktreeDiffPeek worktreeId={run.worktreeId} /> : null}
                 {run.invocationId ? <RunFilesPeek invocationId={run.invocationId} worktreeId={run.worktreeId} /> : null}
                 <RunTimeline

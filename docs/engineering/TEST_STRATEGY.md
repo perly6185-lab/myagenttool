@@ -179,6 +179,24 @@ Specific paths:
 - All non-doc behavior changes should keep `pnpm smoke:local` in the evidence
   set unless the PR explains why it is not relevant.
 
+## Smoke Test Policy
+
+Every root `smoke:*` script is classified in
+`tools/dev/smoke-policy.json`. The two supported classes are:
+
+- `ciGating`: hermetic tests that run through `pnpm smoke:ci` in the
+  `smoke-gates` CI job. A failure blocks that job.
+- `manual`: environment-dependent, mutating, or deliberately selective tests.
+  Each group records why it is not a merge gate.
+
+`pnpm repo:check` enforces that every smoke script is classified exactly once
+and that every `tools/dev/*-smoke.mjs` file is reachable through a package
+script. New smoke tests cannot silently remain outside the declared policy.
+
+`smoke:port` remains available as a legacy local aggregate, but it is not the
+authoritative CI list. Change `smoke-policy.json` when promoting or demoting a
+test instead of editing the workflow command directly.
+
 ## Manual Verification
 
 Manual verification is acceptable for early M0 demos, but it must be recorded in

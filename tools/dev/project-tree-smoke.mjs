@@ -10,9 +10,11 @@ const statePath = join(tmpdir(), `myagenttool-tree-smoke-state-${Date.now()}.jso
 mkdirSync(join(projectPath, "src"), { recursive: true });
 writeFileSync(join(projectPath, "README.md"), "# Smoke\n");
 writeFileSync(join(projectPath, "src", "app.js"), "console.log('smoke');\n");
-spawnSync("git", ["init"], { cwd: projectPath, stdio: "ignore" });
-spawnSync("git", ["add", "README.md"], { cwd: projectPath, stdio: "ignore" });
-spawnSync("git", ["commit", "-m", "init"], { cwd: projectPath, stdio: "ignore" });
+runGit("init");
+runGit("config", "user.email", "smoke@example.test");
+runGit("config", "user.name", "Smoke Test");
+runGit("add", "README.md");
+runGit("commit", "-m", "init");
 writeFileSync(join(projectPath, "README.md"), "# Smoke changed\n");
 
 const server = spawn(process.execPath, ["apps/server/src/index.mjs"], {
@@ -91,5 +93,12 @@ async function waitFor(check, label) {
 function assert(condition, message) {
   if (!condition) {
     throw new Error(message);
+  }
+}
+
+function runGit(...args) {
+  const result = spawnSync("git", args, { cwd: projectPath, encoding: "utf8" });
+  if (result.status !== 0) {
+    throw new Error(`git ${args.join(" ")} failed: ${result.stderr || result.stdout}`);
   }
 }

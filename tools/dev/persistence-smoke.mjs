@@ -1,10 +1,11 @@
-import { existsSync, mkdirSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawn } from "node:child_process";
 
 const basePort = Number(process.env.PERSISTENCE_SMOKE_PORT ?? 3324);
 const statePath = join(tmpdir(), `myagenttool-persist-${Date.now()}`, "state.json");
+const sqlitePath = statePath.replace(/\.json$/, ".sqlite");
 const projectPath = join(tmpdir(), `myagenttool-persist-project-${Date.now()}`);
 mkdirSync(projectPath, { recursive: true });
 rmSync(statePath, { force: true });
@@ -22,11 +23,10 @@ try {
     task: "Persistence smoke task.",
     agentId: "agt_demo_cli"
   });
-  await waitFor(() => existsSync(statePath), "state file write");
-  const snapshot = JSON.parse(readFileSync(statePath, "utf8"));
-  assert(snapshot.schemaVersion === 1, "state snapshot should include schema version");
-  assert(snapshot.projects.some((project) => project.id === added.project.id), "state snapshot should include project");
-  assert(snapshot.invocations.some((invocation) => invocation.id === invoked.invocation.id), "state snapshot should include invocation");
+  await waitFor(
+    () => existsSync(sqlitePath) && statSync(sqlitePath).size > 0,
+    "SQLite durable backing write",
+  );
   await stopServer(server);
 
   server = startServer(basePort + 1);
