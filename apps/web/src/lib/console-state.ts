@@ -1228,6 +1228,10 @@ export interface ChannelOperations {
   taskProjectId?: string | null;
   /** Auto-route /task straight to work (default off = capture-then-promote). */
   taskAutoRoute?: boolean;
+  /** Per-channel/day aggregate /task ceiling + today's usage. */
+  taskDailyLimit?: number;
+  taskDayDate?: string | null;
+  taskDayCount?: number;
   counts: {
     identities: number;
     conversations: number;

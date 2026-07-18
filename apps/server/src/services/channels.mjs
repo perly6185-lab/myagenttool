@@ -30,6 +30,10 @@ const MAX_ALLOWLIST = 50;
 // gateway, so the event log must be bounded in both per-message size and count.
 const MAX_EVENT_CONTENT_CHARS = 4000;
 const MAX_CHANNEL_EVENTS = 2000;
+// Per-channel /task aggregate ceiling (across ALL the channel's users, per UTC
+// day) — the second limiter above the per-conversation 10/min. Owner-configurable.
+const DEFAULT_TASK_DAILY_LIMIT = 50;
+const MAX_TASK_DAILY_LIMIT = 10_000;
 
 /** WeCom readiness probe: configuration PRESENCE from the gateway env — never values. */
 export function wecomEnvReadiness(env = process.env) {
@@ -166,6 +170,10 @@ export function createChannelService({
       // tracked REQUEST a human promotes to work. Opt-in to auto-route to file
       // with the dispatcher label directly (no human in the loop).
       taskAutoRoute: false,
+      // Aggregate /task ceiling: at most this many per UTC day across all users.
+      taskDailyLimit: DEFAULT_TASK_DAILY_LIMIT,
+      taskDayDate: null, // the UTC day taskDayCount is counting
+      taskDayCount: 0,
       createdAt: now(),
       updatedAt: now(),
     };
@@ -398,7 +406,7 @@ export function createChannelService({
   // Bind (or clear, projectId=null) the project that /task files GitHub issues
   // into. Owner-scoped + approval-gated like the allowlist; the bound project
   // must belong to the channel's owning team (no cross-team task filing).
-  function setChannelTaskProject({ channelId, projectId, autoRoute, approvalToken } = {}, actor = null) {
+  function setChannelTaskProject({ channelId, projectId, autoRoute, dailyLimit, approvalToken } = {}, actor = null) {
     const channel = findOwnChannel(channelId, actor);
     if (!channel) return notFound();
     const target = projectId == null ? null : (state.projects ?? []).find((p) => p.id === String(projectId));
@@ -428,6 +436,10 @@ export function createChannelService({
     runTx(() => {
       channel.taskProjectId = target ? target.id : null;
       if (autoRoute != null) channel.taskAutoRoute = Boolean(autoRoute);
+      if (dailyLimit != null) {
+        const n = Number(dailyLimit);
+        if (Number.isInteger(n) && n >= 0) channel.taskDailyLimit = Math.min(n, MAX_TASK_DAILY_LIMIT);
+      }
       channel.updatedAt = now();
       appendEvent({
         invocationId: null,

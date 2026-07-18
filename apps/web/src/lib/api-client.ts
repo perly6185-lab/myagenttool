@@ -727,8 +727,8 @@ export const api = {
     ),
   // Bind (projectId) or clear (null) the project /task files issues into, and the
   // auto-route mode. Approval-gated.
-  setChannelTaskProject: (channelId: string, projectId: string | null, autoRoute: boolean, approvalToken: string) =>
-    request("POST", `/api/channels/${encodeURIComponent(channelId)}/task-project`, { projectId, autoRoute, approvalToken }),
+  setChannelTaskProject: (channelId: string, projectId: string | null, autoRoute: boolean, dailyLimit: number, approvalToken: string) =>
+    request("POST", `/api/channels/${encodeURIComponent(channelId)}/task-project`, { projectId, autoRoute, dailyLimit, approvalToken }),
   // Promote a captured /task request into a tracked auto-run, or dismiss it.
   routeChannelTask: (id: string) => request<{ ok: boolean; autoRunId: string | null }>("POST", `/api/channel-tasks/${encodeURIComponent(id)}/route`),
   dismissChannelTask: (id: string) => request("POST", `/api/channel-tasks/${encodeURIComponent(id)}/dismiss`),

@@ -62,6 +62,9 @@ function ChannelCard({ channel, deliveries, projects }: { channel: ChannelOperat
   const { execute, pending, error } = useAsyncAction();
   const [taskProject, setTaskProject] = useState(channel.taskProjectId ?? "");
   const [autoRoute, setAutoRoute] = useState(Boolean(channel.taskAutoRoute));
+  const [dailyLimit, setDailyLimit] = useState(channel.taskDailyLimit ?? 50);
+  const today = new Date().toISOString().slice(0, 10);
+  const usedToday = channel.taskDayDate === today ? (channel.taskDayCount ?? 0) : 0;
 
   const failed = useMemo(() => deliveries.filter((d) => d.status === "failed_terminal"), [deliveries]);
 
@@ -81,7 +84,7 @@ function ChannelCard({ channel, deliveries, projects }: { channel: ChannelOperat
 
   async function saveTaskProject() {
     const grant = await api.issueApprovalGrant("channel.taskProject", channel.id);
-    await execute(() => api.setChannelTaskProject(channel.id, taskProject || null, autoRoute, grant.token));
+    await execute(() => api.setChannelTaskProject(channel.id, taskProject || null, autoRoute, dailyLimit, grant.token));
   }
 
   return (
@@ -148,11 +151,22 @@ function ChannelCard({ channel, deliveries, projects }: { channel: ChannelOperat
             <input type="checkbox" checked={autoRoute} onChange={(e) => setAutoRoute(e.target.checked)} disabled={pending || !taskProject} />
             auto-route
           </label>
+          <label className="flex items-center gap-1 text-muted-foreground">
+            <input
+              type="number" min={0} max={10000}
+              className="h-6 w-16 rounded border border-border bg-background px-1"
+              value={dailyLimit}
+              onChange={(e) => setDailyLimit(Math.max(0, Math.floor(Number(e.target.value) || 0)))}
+              disabled={pending || !taskProject}
+            />
+            /day
+          </label>
+          {taskProject ? <span className="text-muted-foreground">{usedToday}/{channel.taskDailyLimit ?? 50} today</span> : null}
           <Button
             variant="secondary"
             size="sm"
             onClick={saveTaskProject}
-            disabled={pending || ((channel.taskProjectId ?? "") === taskProject && Boolean(channel.taskAutoRoute) === autoRoute)}
+            disabled={pending || ((channel.taskProjectId ?? "") === taskProject && Boolean(channel.taskAutoRoute) === autoRoute && (channel.taskDailyLimit ?? 50) === dailyLimit)}
           >
             Save
           </Button>
