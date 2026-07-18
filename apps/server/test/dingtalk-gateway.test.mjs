@@ -78,8 +78,13 @@ test("forged signature and expired timestamp are rejected without import", async
   const { gateway, imported } = makeGateway();
   assert.equal((await drive(gateway, post(message("/status"), { signature: "AAAA" }))).statusCode, 403);
 
-  const staleTs = String(NOW_MS - 2 * 3600 * 1000); // 2h old, beyond the 1h window
+  const staleTs = String(NOW_MS - 2 * 3600 * 1000); // 2h old
   assert.equal((await drive(gateway, post(message("/status", { msgId: "msg_stale" }), { timestamp: staleTs }))).statusCode, 400);
+  // #channel-audit: the freshness window is tightened to 300s, so a 30-min-old
+  // timestamp (which DingTalk's ~1h tolerance would have accepted) is now rejected
+  // — shrinking the body-forgery/replay window.
+  const halfHour = String(NOW_MS - 30 * 60 * 1000);
+  assert.equal((await drive(gateway, post(message("/status", { msgId: "msg_30m" }), { timestamp: halfHour }))).statusCode, 400);
   assert.equal(imported.length, 0);
 });
 
