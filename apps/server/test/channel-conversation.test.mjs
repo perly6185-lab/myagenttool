@@ -182,6 +182,26 @@ test("/task files a GitHub issue in the bound project and replies with the track
   assert.deepEqual(conv.taskIssues.map((t) => t.number), [42]);
 });
 
+test("/task enforces a per-channel/day aggregate cap across all users, resetting on a new day", async () => {
+  const harness = makeHarness({ createChannelTaskIssue: async () => ({ ok: true, number: 1 }) });
+  harness.bindTaskProject("proj_a");
+  const channel = harness.state.channels.find((c) => c.id === harness.channelId);
+  channel.taskDailyLimit = 2;
+  channel.taskDayDate = "2026-07-15"; // NOW's UTC day
+  channel.taskDayCount = 2; // already at the cap today
+  const capped = await harness.receive("/task one more").dispatched;
+  assert.equal(capped.status, "refused");
+  assert.match(capped.reply, /daily task limit \(2\)/i);
+  // A stale day (counter is for a prior date) resets → the next task is allowed
+  // and the counter re-bases to today at 1.
+  channel.taskDayDate = "2026-07-14";
+  channel.taskDayCount = 99;
+  const allowed = await harness.receive("/task new day").dispatched;
+  assert.equal(allowed.status, "dispatched");
+  assert.equal(channel.taskDayDate, "2026-07-15");
+  assert.equal(channel.taskDayCount, 1, "counter reset + reserved for the new day");
+});
+
 test("/task auto-route mode files with the dispatcher path and records NO pending request", async () => {
   const calls = [];
   const harness = makeHarness({

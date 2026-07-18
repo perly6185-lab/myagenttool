@@ -49,6 +49,9 @@ export function channelOperations({
       // The project /task files issues into (null = /task disabled for this channel).
       taskProjectId: channel.taskProjectId ?? null,
       taskAutoRoute: Boolean(channel.taskAutoRoute),
+      taskDailyLimit: Number.isInteger(channel.taskDailyLimit) ? channel.taskDailyLimit : 50,
+      taskDayDate: channel.taskDayDate ?? null,
+      taskDayCount: channel.taskDayCount ?? 0,
       counts: {
         identities: byChannel(channelIdentities, channel.id).length,
         conversations: byChannel(channelConversations, channel.id).length,

@@ -27,6 +27,9 @@ export const CHANNEL_APPROVAL_TTL_MS = 10 * 60 * 1000;
 // be able to spawn governed invocations without bound and drain the team budget.
 const RUN_RATE_MAX = 10;
 const RUN_RATE_WINDOW_MS = 60 * 1000;
+// Fallback per-channel/day /task ceiling for a channel record that predates the
+// field (mirrors DEFAULT_TASK_DAILY_LIMIT in channels.mjs).
+const TASK_DAILY_LIMIT_FALLBACK = 50;
 
 export function createChannelConversationService({
   state,
@@ -136,11 +139,21 @@ export function createChannelConversationService({
     if (rate.limited) {
       return settle(event, { status: "refused", reply: `Too many requests — at most ${RUN_RATE_MAX} per minute. Try again shortly.`, data: { reason: "rate_limited" } });
     }
-    // Reserve the rate slot SYNCHRONOUSLY, before the `await` below — otherwise
-    // two concurrent /task both read the pre-write window and both pass (TOCTOU),
+    // Second limiter: a per-channel/day aggregate ceiling across ALL users (the
+    // per-conversation minute limit alone lets many identities flood the repo).
+    const today = String(now()).slice(0, 10);
+    const dayCount = channel.taskDayDate === today ? (channel.taskDayCount ?? 0) : 0;
+    const dailyLimit = Number.isInteger(channel.taskDailyLimit) ? channel.taskDailyLimit : TASK_DAILY_LIMIT_FALLBACK;
+    if (dayCount >= dailyLimit) {
+      return settle(event, { status: "refused", reply: `This channel has reached its daily task limit (${dailyLimit}). Try again tomorrow.`, data: { reason: "daily_limit_reached" } });
+    }
+    // Reserve BOTH slots SYNCHRONOUSLY, before the `await` below — otherwise two
+    // concurrent /task both read the pre-write windows and both pass (TOCTOU),
     // and the stale-snapshot write would clobber a /run appended during the await.
     runTx(() => {
       conversation.recentRuns = [...rate.recentRuns, rate.nowMs];
+      channel.taskDayDate = today;
+      channel.taskDayCount = dayCount + 1;
       conversation.updatedAt = now();
     });
     // Trust model: default = CAPTURE (file a tracked request a human promotes);
