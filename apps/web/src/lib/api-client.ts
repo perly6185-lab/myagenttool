@@ -725,4 +725,7 @@ export const api = {
       `/api/channels/${encodeURIComponent(channelId)}/deliveries/${encodeURIComponent(deliveryId)}/retry`,
       { approvalToken },
     ),
+  // Bind (projectId) or clear (null) the project /task files issues into. Approval-gated.
+  setChannelTaskProject: (channelId: string, projectId: string | null, approvalToken: string) =>
+    request("POST", `/api/channels/${encodeURIComponent(channelId)}/task-project`, { projectId, approvalToken }),
 };
