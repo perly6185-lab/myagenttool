@@ -13,6 +13,8 @@ export async function handleChannelRoutes({
   actor,
   registerChannel,
   setChannelTaskProject,
+  routeChannelTask,
+  dismissChannelTask,
   listChannels,
   enableChannel,
   disableChannel,
@@ -65,6 +67,17 @@ export async function handleChannelRoutes({
       },
       actor,
     );
+    sendJson(res, result.status, result.body);
+    return true;
+  }
+
+  // Capture-then-promote: route a pending /task request into a tracked auto-run,
+  // or dismiss it (close the issue). Actor-gated same-team inside the action.
+  const channelTask = url.pathname.match(/^\/api\/channel-tasks\/([^/]+)\/(route|dismiss)$/);
+  if (channelTask && req.method === "POST") {
+    const id = decodeURIComponent(channelTask[1]);
+    const action = channelTask[2] === "route" ? routeChannelTask : dismissChannelTask;
+    const result = typeof action === "function" ? await action(id, actor) : { status: 501, body: { error: "unavailable" } };
     sendJson(res, result.status, result.body);
     return true;
   }

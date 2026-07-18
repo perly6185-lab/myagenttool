@@ -45,6 +45,7 @@ export function pendingDecisions({
   codexApprovalBrokerRequests = [],
   lifecycleLocalApprovals = [],
   lifecycleRollbackRequests = [],
+  channelTaskRequests = [],
   applicationRecoveryActions = [],
   applicationsById = new Map(),
   invocationsById = new Map(),
@@ -207,6 +208,24 @@ export function pendingDecisions({
       section: "agents",
       targetId: r.agentId ?? null,
       ref: { rollbackRequestId: r.id, recipeId: r.recipeId ?? null, agentId: r.agentId ?? null },
+    });
+  }
+
+  // 7. Channel /task requests — a captured inbound task awaiting a human's
+  // route-or-dismiss decision (the capture-then-promote trust model). Routing
+  // starts a tracked auto-run; dismissing closes the issue.
+  for (const r of channelTaskRequests) {
+    if (r?.status !== "pending") continue;
+    out.push({
+      id: `channeltask:${r.id}`,
+      kind: "channel_task",
+      title: "Channel task ready to route",
+      subtitle: truncate(`#${r.issueNumber}${r.title ? ` ${r.title}` : ""}`),
+      projectId: r.projectId ?? null,
+      createdAt: r.createdAt ?? null,
+      section: "channels",
+      targetId: r.id,
+      ref: { channelTaskRequestId: r.id, issueNumber: r.issueNumber ?? null, issueUrl: r.issueUrl ?? null },
     });
   }
 

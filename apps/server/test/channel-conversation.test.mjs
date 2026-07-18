@@ -164,7 +164,13 @@ test("/task files a GitHub issue in the bound project and replies with the track
   const settled = await dispatched;
   assert.equal(settled.status, "dispatched");
   assert.match(settled.reply, /#42/);
-  assert.match(settled.reply, /tracked/i);
+  // Default is CAPTURE — awaits a human route/dismiss, not auto-routed.
+  assert.match(settled.reply, /route\/dismiss/i);
+  assert.equal(calls[0].autoRoute, false);
+  // A pending request is recorded for the Approvals queue.
+  assert.equal(harness.state.channelTaskRequests.length, 1);
+  assert.equal(harness.state.channelTaskRequests[0].status, "pending");
+  assert.equal(harness.state.channelTaskRequests[0].issueNumber, 42);
   // The filer got the bound project + normalized description + provenance + team.
   assert.equal(calls.length, 1);
   assert.equal(calls[0].projectId, "proj_a");
@@ -174,6 +180,20 @@ test("/task files a GitHub issue in the bound project and replies with the track
   // The conversation records the filed task for traceability.
   const conv = harness.state.channelConversations.at(-1);
   assert.deepEqual(conv.taskIssues.map((t) => t.number), [42]);
+});
+
+test("/task auto-route mode files with the dispatcher path and records NO pending request", async () => {
+  const calls = [];
+  const harness = makeHarness({
+    createChannelTaskIssue: async (args) => { calls.push(args); return { ok: true, number: 9, url: "u" }; },
+  });
+  harness.bindTaskProject("proj_a");
+  harness.state.channels.find((c) => c.id === harness.channelId).taskAutoRoute = true;
+  const settled = await harness.receive("/task ship it").dispatched;
+  assert.equal(settled.status, "dispatched");
+  assert.equal(calls[0].autoRoute, true);
+  assert.match(settled.reply, /auto-routing/i);
+  assert.equal((harness.state.channelTaskRequests ?? []).length, 0, "no pending request in auto-route mode");
 });
 
 test("/task reserves the rate slot BEFORE the async filing (closes the TOCTOU)", async () => {

@@ -318,6 +318,7 @@ export function buildPublicState({
     codexApprovalBrokerRequests,
     lifecycleLocalApprovals: state.lifecycleLocalApprovals ?? [],
     lifecycleRollbackRequests: state.lifecycleRollbackRequests ?? [],
+    channelTaskRequests: byChannel(state.channelTaskRequests),
     applicationRecoveryActions,
     applicationsById: new Map(applications.map((application) => [application.id, application])),
     invocationsById: visibleInvocationsById,

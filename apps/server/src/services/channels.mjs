@@ -162,6 +162,10 @@ export function createChannelService({
       // channel; the owner binding a project IS the authorization to file tasks
       // from this channel's (untrusted) inbound into that repo.
       taskProjectId: null,
+      // Trust model (default = capture, NOT auto-route): a /task is filed as a
+      // tracked REQUEST a human promotes to work. Opt-in to auto-route to file
+      // with the dispatcher label directly (no human in the loop).
+      taskAutoRoute: false,
       createdAt: now(),
       updatedAt: now(),
     };
@@ -394,7 +398,7 @@ export function createChannelService({
   // Bind (or clear, projectId=null) the project that /task files GitHub issues
   // into. Owner-scoped + approval-gated like the allowlist; the bound project
   // must belong to the channel's owning team (no cross-team task filing).
-  function setChannelTaskProject({ channelId, projectId, approvalToken } = {}, actor = null) {
+  function setChannelTaskProject({ channelId, projectId, autoRoute, approvalToken } = {}, actor = null) {
     const channel = findOwnChannel(channelId, actor);
     if (!channel) return notFound();
     const target = projectId == null ? null : (state.projects ?? []).find((p) => p.id === String(projectId));
@@ -423,13 +427,14 @@ export function createChannelService({
     }
     runTx(() => {
       channel.taskProjectId = target ? target.id : null;
+      if (autoRoute != null) channel.taskAutoRoute = Boolean(autoRoute);
       channel.updatedAt = now();
       appendEvent({
         invocationId: null,
         type: "channel_task_project_set",
         level: "info",
-        message: `Channel ${channel.id}: task project ${target ? `bound to ${target.id}` : "cleared"}.`,
-        data: { channelId: channel.id, projectId: target?.id ?? null },
+        message: `Channel ${channel.id}: task project ${target ? `bound to ${target.id}` : "cleared"}${autoRoute != null ? `, auto-route ${channel.taskAutoRoute ? "on" : "off"}` : ""}.`,
+        data: { channelId: channel.id, projectId: target?.id ?? null, autoRoute: channel.taskAutoRoute },
       });
     });
     return { ok: true, status: 200, body: { channel: publicChannel(channel) } };

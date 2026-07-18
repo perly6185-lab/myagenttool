@@ -117,6 +117,7 @@ export const persistedArrayKeys = [
   "channelEvents",
   "channelConversations",
   "channelDeliveries",
+  "channelTaskRequests",
 ];
 
 // NOTE: `devices` is deliberately absent from both key lists — it restores

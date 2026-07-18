@@ -725,7 +725,11 @@ export const api = {
       `/api/channels/${encodeURIComponent(channelId)}/deliveries/${encodeURIComponent(deliveryId)}/retry`,
       { approvalToken },
     ),
-  // Bind (projectId) or clear (null) the project /task files issues into. Approval-gated.
-  setChannelTaskProject: (channelId: string, projectId: string | null, approvalToken: string) =>
-    request("POST", `/api/channels/${encodeURIComponent(channelId)}/task-project`, { projectId, approvalToken }),
+  // Bind (projectId) or clear (null) the project /task files issues into, and the
+  // auto-route mode. Approval-gated.
+  setChannelTaskProject: (channelId: string, projectId: string | null, autoRoute: boolean, approvalToken: string) =>
+    request("POST", `/api/channels/${encodeURIComponent(channelId)}/task-project`, { projectId, autoRoute, approvalToken }),
+  // Promote a captured /task request into a tracked auto-run, or dismiss it.
+  routeChannelTask: (id: string) => request<{ ok: boolean; autoRunId: string | null }>("POST", `/api/channel-tasks/${encodeURIComponent(id)}/route`),
+  dismissChannelTask: (id: string) => request("POST", `/api/channel-tasks/${encodeURIComponent(id)}/dismiss`),
 };
