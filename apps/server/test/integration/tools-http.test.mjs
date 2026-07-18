@@ -233,6 +233,16 @@ test("GET /api/capabilities includes governed tools and scoped application capab
   assert.ok(!teamB.body.capabilities.some((item) => item.name === "app.app_team_a.inspect"), "foreign application capability should be hidden");
 });
 
+test("GET /api/capabilities filters the provider-neutral coding-agent operation", async () => {
+  const res = await call("/api/capabilities?interfaceFamily=coding_agent&operation=review.diff", { token: "tok_a" });
+  assert.equal(res.status, 200);
+  assert.deepEqual(res.body.capabilities.map((item) => item.name).sort(), ["claude.review.diff", "codex.review.diff"]);
+  for (const capability of res.body.capabilities) {
+    assert.equal(capability.metadata.interface.version, "1");
+    assert.equal(capability.metadata.interface.mutation, "read_only");
+  }
+});
+
 test("POST /api/capabilities proxies governed tools and executes application capabilities", async () => {
   const ccusage = await call("/api/capabilities/ccusage.report/invocations", {
     method: "POST",

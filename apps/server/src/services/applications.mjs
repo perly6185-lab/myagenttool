@@ -4,6 +4,7 @@ import { basename, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { normalizeLoopRoutine, validateLoopRoutine } from "../../../../tools/ai/src/loop/routine.mjs";
 import { teamOf } from "../runtime/auth.mjs";
 import { makeRunTx } from "../runtime/store/run-tx.mjs";
+import { codingAgentInterfaceForTool } from "./coding-agent-interface.mjs";
 
 // Consecutive failed health checks before an active application is auto-offlined
 // (docs/design/APPLICATION_HEALTH_PROBE.md) — fixed, to avoid flapping on
@@ -1012,6 +1013,7 @@ function projectCapabilityFacades(app, prefix, disabled) {
     // a registered Agent is user-registered code. Projecting agents as Tools
     // would launder that provenance, so each keeps its own mode (#975).
     const isAgentFacade = Boolean(facade.agentId);
+    const interfaceContract = codingAgentInterfaceForTool(facade.toolName ?? facade.agentToolName, { outputCollection: facade.outputCollection });
     return managedCapability(
       app,
       `${prefix}.${facade.id}`,
@@ -1028,12 +1030,14 @@ function projectCapabilityFacades(app, prefix, disabled) {
             execution: { mode: "agent_facade", agentId: facade.agentId, toolName: facade.agentToolName ?? null },
             outputCollection: facade.outputCollection,
             resultImport: facade.resultImport ?? null,
+            ...(interfaceContract ? { interface: interfaceContract } : {}),
           }
         : {
             compatibilityFacade: { type: "tool", name: facade.toolName },
             execution: { mode: "tool_facade", toolName: facade.toolName },
             outputCollection: facade.outputCollection,
             resultImport: facade.resultImport ?? null,
+            ...(interfaceContract ? { interface: interfaceContract } : {}),
           },
     );
   });

@@ -1,4 +1,5 @@
 import { teamOf } from "../runtime/auth.mjs";
+import { codingAgentInterfaceForTool, normalizeCapabilityInvocationResult } from "./coding-agent-interface.mjs";
 
 export function createCapabilityService({
   state,
@@ -75,11 +76,11 @@ export function createCapabilityService({
   }
 
   function createCapabilityInvocation(name, input = {}, actor = null) {
+    const capability = getCapability(name, actor);
     const tool = getTool(name);
     if (tool) {
-      return createToolInvocation(name, input, actor);
+      return normalizeCapabilityInvocationResult(createToolInvocation(name, input, actor), capability ?? toolToCapability(tool));
     }
-    const capability = getCapability(name, actor);
     if (!capability) {
       // Refusal model Phase 4 (#758): if the capability EXISTS but is not granted
       // to this requester (tenancy/ownership), record a `not_granted` refusal —
@@ -121,7 +122,7 @@ export function createCapabilityService({
             applicationAction: `tool:${toolName}`,
           };
         }
-        return result;
+        return normalizeCapabilityInvocationResult(result, capability);
       }
       // Agent-facade capabilities delegate to a registered agent through the
       // normal governed invocation path (async through the bridge), stamping
@@ -378,6 +379,7 @@ function wrapperCommandIdFromCapabilityName(capabilityName) {
 }
 
 function toolToCapability(tool) {
+  const interfaceContract = codingAgentInterfaceForTool(tool.name, { outputCollection: tool.outputCollection });
   return {
     ...tool,
     provider: {
@@ -388,6 +390,10 @@ function toolToCapability(tool) {
     source: "governed_tool",
     invocationMode: "tool-facade",
     status: tool.agents?.some((agent) => agent.status !== "disabled") ? "available" : "disabled",
+    metadata: {
+      ...(tool.metadata ?? {}),
+      ...(interfaceContract ? { interface: interfaceContract } : {}),
+    },
   };
 }
 

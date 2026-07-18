@@ -323,6 +323,11 @@ The next slice should generalize the Tool Registry so application capabilities
 can appear beside `ccusage.report`, `codex.review.diff`, and
 `claude.review.diff` without callers depending on adapter internals.
 
+That caller-facing convergence now ships as the versioned
+[`coding_agent/v1` capability interface](CODING_AGENT_CAPABILITY_INTERFACE.md).
+It normalizes discovery filters and successful invocation envelopes while
+preserving the settled Codex Tool / Claude Application provenance boundary.
+
 The first generalized discovery slice adds `/api/capabilities` while keeping
 `/api/tools` stable. Existing tools are mapped with `provider.type = "tool"`;
 application-projected capabilities use `provider.type = "application"`.
