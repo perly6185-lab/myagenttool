@@ -177,9 +177,12 @@ async function internalCallerAgent({ projectId, worktreeId }) {
     instruction: "Internal caller agent requested this review.",
     severityFloor: "medium",
   });
-  assert(invoked.capability === CAPABILITY_NAME || invoked.tool === CAPABILITY_NAME, "invocation response should identify the capability");
+  assert(invoked.capability === CAPABILITY_NAME, "invocation response should identify the provider-neutral capability");
+  assert(invoked.provider?.type === "tool", "Codex capability should preserve governed Tool provenance");
+  assert(invoked.interface?.family === "coding_agent" && invoked.interface?.operation === "review.diff", "Codex capability should publish coding-agent/v1 review metadata");
   assert(invoked.invocationId, "invocation response should carry an invocationId to poll");
   assert(invoked.outputCollection === "codexReviewFindings", "response should advertise where findings land");
+  assert(invoked.tool === CAPABILITY_NAME, "legacy Tool response field should remain compatible");
   ok("caller invoked Codex via POST /api/capabilities/<name>/invocations");
 
   // (d) Poll until the invocation completes and findings are queryable.

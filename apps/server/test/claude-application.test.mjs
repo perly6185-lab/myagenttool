@@ -32,6 +32,16 @@ test("Claude registers as a binary Application with a governed review facade", (
   assert.equal(capability.kind, "tool_facade");
   assert.equal(capability.metadata.execution.toolName, "claude.review.diff");
   assert.equal(capability.metadata.resultPath.outputCollection, "claudeReviewFindings");
+  assert.deepEqual(capability.metadata.interface, {
+    family: "coding_agent",
+    version: "1",
+    provider: "claude",
+    operation: "review.diff",
+    mutation: "read_only",
+    session: "isolated",
+    approval: "allowed",
+    resultCollection: "claudeReviewFindings",
+  });
   assert.equal(capability.requiresApproval, false);
   const replay = service.registerApplication(createClaudeApplicationRegistration({ autoOnline: true }));
   assert.equal(replay.id, application.id);

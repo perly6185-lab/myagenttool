@@ -43,14 +43,18 @@ export async function handleCapabilityRoutes({
   return false;
 }
 
-function filterCapabilities(capabilities, searchParams) {
+export function filterCapabilities(capabilities, searchParams) {
   const providerType = searchParams.get("providerType");
   const kind = searchParams.get("kind");
   const status = searchParams.get("status");
+  const interfaceFamily = searchParams.get("interfaceFamily");
+  const operation = searchParams.get("operation");
   return capabilities.filter((capability) => {
     if (providerType && capability.provider?.type !== providerType) return false;
     if (kind && capability.kind !== kind) return false;
     if (status && capability.status !== status) return false;
+    if (interfaceFamily && capability.metadata?.interface?.family !== interfaceFamily) return false;
+    if (operation && capability.metadata?.interface?.operation !== operation) return false;
     return true;
   });
 }
