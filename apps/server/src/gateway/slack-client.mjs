@@ -15,6 +15,7 @@ async function fetchJson(url, { method = "POST", headers, body } = {}) {
     method,
     headers: { "content-type": "application/json; charset=utf-8", ...(headers ?? {}) },
     body: body ? JSON.stringify(body) : undefined,
+    signal: AbortSignal.timeout(10_000),
   });
   const status = response.status;
   let json = {};

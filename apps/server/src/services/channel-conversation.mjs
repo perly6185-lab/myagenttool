@@ -23,6 +23,11 @@ const USAGE_REPLY = `Commands: ${channelCommands.join(" ")}`;
 // (mirrors the approval-grant TTL: a confirm-click artifact, not a work queue).
 export const CHANNEL_APPROVAL_TTL_MS = 10 * 60 * 1000;
 
+// Per-conversation /run flow control (#channel-audit): a mapped identity must not
+// be able to spawn governed invocations without bound and drain the team budget.
+const RUN_RATE_MAX = 10;
+const RUN_RATE_WINDOW_MS = 60 * 1000;
+
 export function createChannelConversationService({
   state,
   now,
@@ -114,6 +119,18 @@ export function createChannelConversationService({
         evidence: { capability: name },
       });
     }
+    // Flow control: bound how many /run a single conversation can spawn per window
+    // (each is a governed, budget-consuming invocation). Not a policy veto — it's
+    // rate limiting — so it settles as a refused reply, not a taxonomy refusal.
+    const nowMs = Date.parse(now());
+    const recentRuns = (conversation.recentRuns ?? []).filter((t) => nowMs - t < RUN_RATE_WINDOW_MS);
+    if (recentRuns.length >= RUN_RATE_MAX) {
+      return settle(event, {
+        status: "refused",
+        reply: `Too many requests — at most ${RUN_RATE_MAX} /run per minute. Try again shortly.`,
+        data: { reason: "rate_limited", capability: name },
+      });
+    }
     const result = createCapabilityInvocation(name, { text: args.join(" "), source: "channel" }, actor);
     const invocation = result?.body?.invocation ?? null;
     if (!invocation) {
@@ -134,6 +151,8 @@ export function createChannelConversationService({
         riskTags: [...new Set([...(invocation.options.metadata?.riskTags ?? []), UNTRUSTED_INPUT_TAG])],
       };
       conversation.invocationIds = [...(conversation.invocationIds ?? []), invocation.id];
+      // Record this run for the sliding-window rate limit (pruned to the window).
+      conversation.recentRuns = [...recentRuns, nowMs];
       conversation.updatedAt = now();
     });
     const pending = invocation.status === "waiting_for_local_approval";

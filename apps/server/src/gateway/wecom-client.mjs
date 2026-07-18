@@ -34,6 +34,8 @@ async function fetchJson(url, { method = "GET", body } = {}) {
     method,
     headers: body ? { "content-type": "application/json" } : undefined,
     body: body ? JSON.stringify(body) : undefined,
+    // A hung provider must not stall the serialized delivery sweep indefinitely.
+    signal: AbortSignal.timeout(10_000),
   });
   return response.json();
 }

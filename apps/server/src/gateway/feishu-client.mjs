@@ -18,6 +18,7 @@ async function fetchJson(url, { method = "GET", headers, body } = {}) {
     method,
     headers: { ...(body ? { "content-type": "application/json" } : {}), ...(headers ?? {}) },
     body: body ? JSON.stringify(body) : undefined,
+    signal: AbortSignal.timeout(10_000),
   });
   return response.json();
 }
