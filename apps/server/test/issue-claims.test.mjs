@@ -239,6 +239,34 @@ test("#1150 the assignee mirror fires on develop claim/release, never for review
   assert.deepEqual(mirrored[1], { projectId: "projA", issueNumber: 7, action: "remove" });
 });
 
+test("#6 proactive sweep settles an expired develop claim and removes its assignee mirror (timer path)", async () => {
+  const state = baseState();
+  const mirrored = [];
+  const clock = makeClock();
+  let id = 0;
+  const svc = createIssueClaimService({
+    state,
+    now: clock,
+    nextId: (prefix) => `${prefix}_${++id}`,
+    appendEvent: () => {},
+    persistStateSoon: () => {},
+    mirrorAssignee: async (payload) => { mirrored.push(payload); },
+  });
+
+  svc.claimIssue({ projectId: "projA", issueNumber: 7, actor: { userId: "usr_a" } });
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(mirrored.at(-1), { projectId: "projA", issueNumber: 7, action: "add" });
+
+  clock.advanceMinutes(24 * 60 + 1); // past the 24h TTL
+  // The timer sweeps proactively — nobody re-claims or lists this project.
+  assert.equal(svc.sweepExpiredClaims(), 1, "the sweep reports what it settled");
+  assert.equal(state.issueClaims.find((c) => c.claimedBy === "usr_a").status, "expired");
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepEqual(mirrored.at(-1), { projectId: "projA", issueNumber: 7, action: "remove" }, "the lingering GitHub assignee is cleaned up without an admission path");
+
+  assert.equal(svc.sweepExpiredClaims(), 0, "idempotent — a second sweep settles nothing");
+});
+
 test("#1152 claim lifecycle history lands in issueClaimEvents and survives ring-buffer churn semantics", () => {
   const state = baseState();
   state.issueClaimEvents = [];

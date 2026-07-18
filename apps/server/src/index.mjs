@@ -241,6 +241,23 @@ if (typeof httpDependencies.reapStuckAutoRuns === "function") {
   setInterval(() => httpDependencies.reapStuckAutoRuns().catch(() => {}), 60_000).unref?.();
 }
 
+// #6: issue-claim leases expire lazily (only when an admission path looks at
+// them). A slow proactive sweep settles expired claims even when nobody re-claims
+// or lists that project — so the issue_claim_expired event/history fire promptly
+// and the GitHub assignee mirror is removed (admission was already expiry-safe).
+// Self-durable via the service's runTx; persist only when something expired.
+if (typeof httpDependencies.sweepExpiredClaims === "function") {
+  const sweepClaims = () => {
+    try {
+      if (httpDependencies.sweepExpiredClaims() > 0) savePersistentState();
+    } catch {
+      /* best-effort claim sweep */
+    }
+  };
+  sweepClaims();
+  setInterval(sweepClaims, 60_000).unref?.();
+}
+
 // O5.2 follow-up: close the SLO → alert loop. Evaluate the loop's SLOs on a slow
 // tick and dispatch an operational alert when the below-target set changes
 // (throttled internally; no-op when SLOs are on target or there is no data).
