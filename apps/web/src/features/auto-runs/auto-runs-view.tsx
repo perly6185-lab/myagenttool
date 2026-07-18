@@ -36,7 +36,7 @@ export interface AutoRunRecord {
   projectId?: string | null;
   link?: AutoRunLink | null;
   intent?: string | null;
-  decision?: { path: string; decidedBy: string; confidence: number; rationale?: string | null } | null;
+  decision?: { path: string; decidedBy: string; confidence: number; rationale?: string | null; via?: string | null; clarifyingQuestions?: string[] | null } | null;
   branchName?: string | null;
   worktreeId?: string | null;
   invocationId?: string | null;
@@ -1135,9 +1135,10 @@ export function AutoRunsView() {
                   {run.decision ? (
                     <span
                       className="rounded bg-muted px-1.5 py-0.5 font-medium"
-                      title={`${run.decision.rationale ?? ""} (by ${run.decision.decidedBy}, confidence ${Math.round((run.decision.confidence ?? 0) * 100)}%)`}
+                      title={`${run.decision.rationale ?? ""} (${run.decision.via ? `${run.decision.via}, ` : ""}by ${run.decision.decidedBy}, confidence ${Math.round((run.decision.confidence ?? 0) * 100)}%)`}
                     >
                       {run.decision.path}
+                      {run.decision.via ? <span className="ml-1 font-normal text-muted-foreground">· {run.decision.via}</span> : null}
                     </span>
                   ) : null}
                   {run.branchName ? (

@@ -8,6 +8,9 @@ export function createInvocationCancellationRuntime({
   createAuditSummary,
   recordAgentUsage,
   isTerminal,
+  // #1302 long-poll: wake any bridge holding a /api/bridge/cancellations poll
+  // for this invocation's device the instant a running run is asked to cancel.
+  notifyCancellation = () => {},
 }) {
   function cancelInvocation(invocation, actor = null) {
     if (isTerminal(invocation.status)) {
@@ -39,6 +42,7 @@ export function createInvocationCancellationRuntime({
       level: "info",
       message: "Running invocation cancellation requested."
     });
+    notifyCancellation(invocation.delivery?.deviceId ?? null);
 
     if (agent?.adapter.type === "http") {
       if (abortDirectHttpRun(invocation)) {
@@ -118,6 +122,7 @@ export function createInvocationCancellationRuntime({
       level: "warn",
       message: "Device unlink requested cancellation for running local work."
     });
+    notifyCancellation(invocation.delivery?.deviceId ?? null);
   }
 
   return {

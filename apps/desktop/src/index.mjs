@@ -15,6 +15,7 @@ import { extractClaudeFileAccesses } from "./claude-file-access.mjs";
 import { newRoundState, claudeRoundEmits, codexRoundEmits, claudeRequestContext } from "./round-telemetry.mjs";
 import { createAgentLineSink } from "./agent-line-sink.mjs";
 import { createInvocationPool, resolveBridgeConcurrency, refreshedConcurrency } from "./invocation-pool.mjs";
+import { createCancellationWatcher } from "./cancellation-watcher.mjs";
 import { spawnCapture } from "./spawn-capture.mjs";
 import { isInactiveInvocationError } from "./bridge-events.mjs";
 import { applicationWrapperArgs } from "./application-wrapper-args.mjs";
@@ -407,6 +408,15 @@ const invocationPool = createInvocationPool({
   // finally already decremented), never crash the poll loop.
   onError: (error) => logPollError("invocation", error),
 });
+
+// #1251/#1302: one shared cancellation channel for all in-flight runs. Each run
+// watches its own id; the watcher long-polls GET /api/bridge/cancellations?wait=1
+// once for the whole device instead of one cancel-status GET per run. Started
+// once, here.
+const cancellationWatcher = createCancellationWatcher({
+  request: (method, path) => request(method, path),
+  onError: (error) => logPollError("cancellation", error),
+}).start();
 
 // A transient server blip — e.g. ECONNRESET while the API restarts — must never
 // escape a poll tick as an unhandled rejection: the dev supervisor tears down the
@@ -1053,41 +1063,36 @@ async function runInvocation(work) {
     }
   }, timeoutMs);
 
-  const cancelTimer = setInterval(async () => {
+  // #1251: react to cancellation via the shared watcher (one device-wide poll)
+  // instead of a per-run cancel-status timer. The handler fires at most once,
+  // and keeps the #1250 terminal-race guards: it does nothing once the run owns
+  // its terminal outcome, and tolerates a late event post.
+  const stopWatchingCancel = cancellationWatcher.watch(invocationId, async () => {
+    if (settled || cancelled) {
+      return;
+    }
+    cancelled = true;
     try {
-      if (settled || cancelled) {
-        return;
-      }
-      const status = await request("GET", `/api/bridge/cancel-status?invocationId=${encodeURIComponent(invocationId)}`);
-      // Re-check after the await: the child may have closed (settled) while the
-      // status GET was in flight. Posting a cancel now would race the terminal
-      // complete and hit bridge_invocation_not_active (#1250).
-      if (settled || cancelled) {
-        return;
-      }
-      if (status?.cancelRequested) {
-        cancelled = true;
+      await request("POST", "/api/bridge/events", {
+        invocationId,
+        type: "cancel_dispatched",
+        level: "info",
+        message: `Desktop Bridge sent cancellation to ${runtimeName}.`
+      });
+      cancelResult = await terminateProcessTree(child);
+      await reportForcedKill(invocationId, runtimeName, cancelResult);
+      if (!cancelResult.ok) {
         await request("POST", "/api/bridge/events", {
           invocationId,
-          type: "cancel_dispatched",
-          level: "info",
-          message: `Desktop Bridge sent cancellation to ${runtimeName}.`
+          type: "cancel_failed",
+          level: "warn",
+          message: cancelResult.message
         });
-        cancelResult = await terminateProcessTree(child);
-        await reportForcedKill(invocationId, runtimeName, cancelResult);
-        if (!cancelResult.ok) {
-          await request("POST", "/api/bridge/events", {
-            invocationId,
-            type: "cancel_failed",
-            level: "warn",
-            message: cancelResult.message
-          });
-        }
       }
     } catch (error) {
       tolerateLateEvent("cancel", invocationId, error);
     }
-  }, 250);
+  });
 
   // #1228: line handling is serialized and drained before any outcome is
   // reported. The jsonl handlers await event posts BEFORE returning the
@@ -1124,10 +1129,10 @@ async function runInvocation(work) {
     child.on("close", resolveExit);
   });
   // #1250: the main flow now owns the terminal outcome. Mark settled BEFORE
-  // clearing the timers so any poller tick already mid-await bails on its
-  // post-await re-check instead of posting an event after complete.
+  // detaching the watcher / clearing the timeout so any cancel handler already
+  // in flight bails on its `settled` guard instead of posting after complete.
   settled = true;
-  clearInterval(cancelTimer);
+  stopWatchingCancel();
   clearTimeout(timeoutTimer);
   // The temp patch file the apply runner read (materialized in governedApplyWrapperArgs)
   // is a per-run throwaway — delete it now that the child has exited so an authorized
@@ -1210,9 +1215,10 @@ async function runInvocation(work) {
 }
 
 // Protocol-client dispatch: the transports live in {mcp,a2a,container}-client
-// modules; this shared glue polls cancel-status, forwards client events to the
-// server, and completes the invocation with the client's terminal outcome. The
-// ack already happened in runInvocation before dispatching here.
+// modules; this shared glue watches for cancellation (via the shared watcher),
+// forwards client events to the server, and completes the invocation with the
+// client's terminal outcome. The ack already happened in runInvocation before
+// dispatching here.
 async function runMcpInvocation(work) {
   await runClientInvocation(work, callMcpTool, "MCP server");
 }
@@ -1232,27 +1238,26 @@ async function runClientInvocation(work, clientFn, runtimeLabel) {
 
   let cancelRequested = false;
   // #1250: same terminal-race guard as the CLI path — once the client finishes
-  // and the finally marks settled, a cancel poll already mid-await must not post
-  // an event after the terminal complete.
+  // and the finally marks settled, a late cancel handler must not post an event
+  // after the terminal complete.
   let settled = false;
-  const cancelTimer = setInterval(async () => {
+  // #1251: react via the shared cancellation watcher (one device-wide poll)
+  // instead of a per-run cancel-status timer. clientFn reads cancelRequested
+  // through shouldCancel; the handler sets it and posts cancel_dispatched once.
+  const stopWatchingCancel = cancellationWatcher.watch(invocationId, async () => {
+    if (settled || cancelRequested) return;
+    cancelRequested = true;
     try {
-      if (settled || cancelRequested) return;
-      const status = await request("GET", `/api/bridge/cancel-status?invocationId=${encodeURIComponent(invocationId)}`);
-      if (settled || cancelRequested) return;
-      if (status?.cancelRequested) {
-        cancelRequested = true;
-        await request("POST", "/api/bridge/events", {
-          invocationId,
-          type: "cancel_dispatched",
-          level: "info",
-          message: `Desktop Bridge sent cancellation to the ${runtimeLabel}.`
-        });
-      }
+      await request("POST", "/api/bridge/events", {
+        invocationId,
+        type: "cancel_dispatched",
+        level: "info",
+        message: `Desktop Bridge sent cancellation to the ${runtimeLabel}.`
+      });
     } catch (error) {
       tolerateLateEvent("cancel", invocationId, error);
     }
-  }, 250);
+  });
 
   let outcome;
   try {
@@ -1272,7 +1277,7 @@ async function runClientInvocation(work, clientFn, runtimeLabel) {
     });
   } finally {
     settled = true;
-    clearInterval(cancelTimer);
+    stopWatchingCancel();
   }
 
   await request("POST", "/api/bridge/complete", {
@@ -2971,5 +2976,6 @@ function stop() {
   clearInterval(timer);
   clearInterval(terminalTimer);
   clearInterval(binaryReadinessTimer);
+  cancellationWatcher.stop();
   process.exit(0);
 }

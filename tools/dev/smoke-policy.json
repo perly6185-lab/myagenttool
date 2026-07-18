@@ -5,6 +5,7 @@
     "smoke:agent-skills",
     "smoke:dispatch-concurrency",
     "smoke:channel-providers",
+    "smoke:coding-agent-interface",
     "smoke:automation-scheduler",
     "smoke:claude-agent",
     "smoke:ccusage-agent",

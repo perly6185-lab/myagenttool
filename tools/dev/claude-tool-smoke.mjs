@@ -126,6 +126,9 @@ try {
     severityFloor: "medium",
   });
   assert(created.tool === "claude.review.diff", "tool invocation should identify the tool");
+  assert(created.capability === "app.app_claude.review.diff", "invocation response should identify the provider-neutral capability");
+  assert(created.provider?.type === "application" && created.provider?.id === "app_claude", "Claude capability should preserve Application provenance");
+  assert(created.interface?.family === "coding_agent" && created.interface?.operation === "review.diff", "Claude capability should publish coding-agent/v1 review metadata");
   assert(created.outputCollection === "claudeReviewFindings", "tool invocation should advertise the import collection");
   ok("tool facade created a governed invocation");
 

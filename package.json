@@ -148,6 +148,7 @@
     "smoke:agent-skills": "node tools/dev/agent-skills-smoke.mjs",
     "smoke:dispatch-concurrency": "node tools/dev/dispatch-concurrency-smoke.mjs",
     "smoke:channel-providers": "node tools/dev/channel-provider-contract-smoke.mjs",
+    "smoke:coding-agent-interface": "node --test apps/server/test/coding-agent-interface.test.mjs apps/server/test/claude-application.test.mjs",
     "benchmark:runtime-health": "node tools/dev/runtime-health-benchmark.mjs",
     "smoke:automation-scheduler": "node tools/dev/automation-scheduler-smoke.mjs",
     "smoke:claude-agent": "node tools/dev/claude-agent-smoke.mjs",

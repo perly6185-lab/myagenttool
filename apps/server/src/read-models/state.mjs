@@ -423,6 +423,10 @@ export function buildPublicState({
     worktrees: byProject(state.worktrees),
     worktreeReviews: byProject(state.worktreeReviews),
     deployments: byProject(state.deployments ?? []),
+    // Per-decision dispatch routing (#routing-observability): who was chosen, why,
+    // the ranked candidates, and the ineligible-with-reasons — the "why routed
+    // here" the Dispatch panel renders. Team-scoped by the assignment's project.
+    dispatchAssignments: byProject(state.dispatchAssignments ?? []),
     issueClaims,
     issueClaimEvents,
     agent: defaultAgent(),
