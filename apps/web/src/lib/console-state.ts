@@ -1220,6 +1220,8 @@ export interface ChannelOperations {
   health: "ok" | "attention" | "idle" | string;
   capabilityAllowlist: string[];
   statusCapability?: string | null;
+  /** The project `/task` files GitHub issues into (null = /task disabled). */
+  taskProjectId?: string | null;
   counts: {
     identities: number;
     conversations: number;
