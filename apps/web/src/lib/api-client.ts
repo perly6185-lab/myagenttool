@@ -57,6 +57,37 @@ export interface InvocationRefusalsResponse {
   truncated: boolean;
 }
 
+export interface DispatchQueueItem {
+  invocationId: string;
+  agentId: string | null;
+  agentName: string | null;
+  deliveryState: string | null;
+  dispatchAttempts: number;
+  queuedForMs: number | null;
+  blockedReason: string;
+}
+
+export interface InvocationDispatchHealthResponse {
+  capacity: {
+    maxConcurrency: number;
+    inFlight: number;
+    utilization: number | null;
+    atCapacity: boolean;
+  };
+  queue: {
+    depth: number;
+    byReason: Record<string, number>;
+    items: DispatchQueueItem[];
+  };
+  stats: {
+    sampleSize: number;
+    indeterminate: boolean;
+    medianMsToDispatch: number | null;
+    redeliveryRate: number | null;
+    exhaustedCount: number;
+  };
+}
+
 // The dev server's default port (tools/dev/run-local-demo.mjs SERVER_PORT).
 const SERVER_PORT = "5001";
 const FALLBACK_API_BASE = `http://127.0.0.1:${SERVER_PORT}`;
@@ -645,6 +676,7 @@ export const api = {
   maturity: () => request("GET", "/api/maturity"),
   dora: () => request("GET", "/api/dora"),
   dispatchEvaluation: () => request("GET", "/api/dispatch-evaluation"),
+  getInvocationDispatchHealth: () => request<InvocationDispatchHealthResponse>("GET", "/api/invocation-dispatch-health"),
   loopRoutineRuns: () => request("GET", "/api/loop-routines"),
   loopRoutineFindings: (runId: string) => request("GET", `/api/loop-routines/${encodeURIComponent(runId)}/findings`),
   // Auto-run effective configuration (safe knobs overlaid on env + per-command
