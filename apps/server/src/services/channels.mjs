@@ -23,6 +23,7 @@ import { makeRunTx } from "../runtime/store/run-tx.mjs";
 
 export const CHANNEL_ENABLE_ACTION = "channel.enable";
 export const CHANNEL_ALLOWLIST_ACTION = "channel.allowlist";
+export const CHANNEL_TASK_PROJECT_ACTION = "channel.taskProject";
 const MAX_NAME_LENGTH = 80;
 const MAX_ALLOWLIST = 50;
 // Inbound-flood bounds (#channel-audit): a signed corp user's messages clear the
@@ -157,6 +158,10 @@ export function createChannelService({
       // the channel-side gate, independent of the capability gateway's own.
       capabilityAllowlist: [],
       statusCapability: null,
+      // The project /task files GitHub issues into. Null = /task disabled for this
+      // channel; the owner binding a project IS the authorization to file tasks
+      // from this channel's (untrusted) inbound into that repo.
+      taskProjectId: null,
       createdAt: now(),
       updatedAt: now(),
     };
@@ -386,6 +391,50 @@ export function createChannelService({
     return { ok: true, status: 200, body: { channel: publicChannel(channel) } };
   }
 
+  // Bind (or clear, projectId=null) the project that /task files GitHub issues
+  // into. Owner-scoped + approval-gated like the allowlist; the bound project
+  // must belong to the channel's owning team (no cross-team task filing).
+  function setChannelTaskProject({ channelId, projectId, approvalToken } = {}, actor = null) {
+    const channel = findOwnChannel(channelId, actor);
+    if (!channel) return notFound();
+    const target = projectId == null ? null : (state.projects ?? []).find((p) => p.id === String(projectId));
+    if (projectId != null && !target) {
+      return { ok: false, status: 400, body: { error: "project_not_found" } };
+    }
+    if (target && (target.ownerTeamId ?? LOCAL_TEAM_ID) !== (channel.ownerTeamId ?? LOCAL_TEAM_ID)) {
+      return { ok: false, status: 403, body: { error: "project_foreign_team" } };
+    }
+    const approval = typeof validateApprovalToken === "function"
+      ? validateApprovalToken(approvalToken, { action: CHANNEL_TASK_PROJECT_ACTION, targetId: channel.id, actor })
+      : { approved: false, reason: "approval_validator_unavailable" };
+    if (!approval.approved) {
+      return {
+        ok: false,
+        status: 409,
+        body: {
+          error: "approval_required",
+          reason: approval.reason === "missing_token"
+            ? "Binding a channel's task project requires an explicit approvalToken."
+            : `approvalToken rejected: ${approval.reason}.`,
+          action: CHANNEL_TASK_PROJECT_ACTION,
+          targetId: channel.id,
+        },
+      };
+    }
+    runTx(() => {
+      channel.taskProjectId = target ? target.id : null;
+      channel.updatedAt = now();
+      appendEvent({
+        invocationId: null,
+        type: "channel_task_project_set",
+        level: "info",
+        message: `Channel ${channel.id}: task project ${target ? `bound to ${target.id}` : "cleared"}.`,
+        data: { channelId: channel.id, projectId: target?.id ?? null },
+      });
+    });
+    return { ok: true, status: 200, body: { channel: publicChannel(channel) } };
+  }
+
   /**
    * Import one verified, decrypted inbound message from the gateway (S3). This
    * is the exactly-once boundary: a duplicate providerMessageId is a no-op ACK,
@@ -521,6 +570,7 @@ export function createChannelService({
     removeChannelIdentity,
     listChannelIdentities,
     setChannelAllowlist,
+    setChannelTaskProject,
     importChannelEvent,
     findOwnChannel,
   };
