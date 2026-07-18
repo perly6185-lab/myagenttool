@@ -699,6 +699,7 @@ export function createServerRuntimeServices({
     getAgentUsageSummary,
     markDispatched,
     nextDispatchableInvocation,
+    isInvocationDispatchable,
     redeliverExpiredDispatches,
     startInvocationIfAllowed,
   } = invocationService;
@@ -2963,6 +2964,7 @@ export function createServerRuntimeServices({
     nextBridgeDiscoveryRun,
     nextBridgeHealthCheck,
     nextDispatchableInvocation,
+    isInvocationDispatchable,
     nextTerminalBridgeAction,
     queueTerminalBridgeAction,
     recordApplicationResult,

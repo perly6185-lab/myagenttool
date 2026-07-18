@@ -3,7 +3,7 @@ import { mkdtempSync, writeFileSync } from "node:fs";
 import { createServer as createHttpReceiver } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { after, before, test } from "node:test";
+import { after, before, beforeEach, test } from "node:test";
 
 // Orchestration auto-recovery (docs/design/ORCHESTRATION_AUTO_RECOVERY.md),
 // driven end-to-end over real HTTP including the bridge protocol: opt-in config,
@@ -88,6 +88,21 @@ after(() => {
   hookServer?.close();
 });
 
+// Each test drives its OWN routine run through the bridge; leftover non-terminal
+// invocations from a prior test (its auto-reruns, or a drained-but-unacked demo
+// seed) otherwise persist in the shared device queue and compete for its dispatch
+// slots. In production those self-heal via lease-expiry redelivery, but this suite
+// never advances time, so they stay stuck `dispatching` and — under fair dispatch
+// — make the drain ORDER (and thus these error-classification assertions) depend
+// on the dispatch policy. Isolate each test by dropping non-terminal leftovers.
+beforeEach(() => {
+  if (Array.isArray(state?.invocations)) {
+    state.invocations = state.invocations.filter(
+      (i) => !["queued", "dispatching", "running", "cancelling"].includes(i.status),
+    );
+  }
+});
+
 let hookServer;
 const receivedAlerts = [];
 
@@ -110,13 +125,23 @@ async function runAndComplete({ status, summary }) {
   return invocationId;
 }
 
-async function completeViaBridge(invocationId, { status, summary }) {
-  // Drain the dispatch queue until this invocation's delivery is leased.
-  for (let i = 0; i < 10; i += 1) {
+// Poll the bridge until `targetId` is leased, COMPLETING any other invocation the
+// device hands us first (e.g. a prior step's auto-rerun) so it can't hold a device
+// slot and starve the target. Fair dispatch may surface a competing run before the
+// target, so a drain that merely polls-and-breaks is order-fragile; this drains.
+async function leaseForTarget(targetId) {
+  for (let i = 0; i < 40; i += 1) {
     const next = await call("/api/bridge/next", { token: bridgeToken });
-    if (next.status === 204) break;
-    if (next.body?.invocationId === invocationId) break;
+    if (next.status === 204) return;
+    const got = next.body?.invocationId;
+    if (got === targetId) return;
+    await call("/api/bridge/ack", { method: "POST", body: { invocationId: got }, token: bridgeToken });
+    await call("/api/bridge/complete", { method: "POST", body: { invocationId: got, status: "cancelled", result: { summary: "drained by test plumbing" } }, token: bridgeToken });
   }
+}
+
+async function completeViaBridge(invocationId, { status, summary }) {
+  await leaseForTarget(invocationId);
   const ack = await call("/api/bridge/ack", { method: "POST", body: { invocationId }, token: bridgeToken });
   assert.equal(ack.status, 200, `ack ${invocationId}: ${JSON.stringify(ack.body)}`);
   const complete = await call("/api/bridge/complete", {
@@ -231,10 +256,7 @@ test("a declared errorCode beats misleading runtime-looking text (no auto-rerun 
   // (The invocation above is already terminal; make a fresh one carrying the code.)
   const run2 = await call(`/api/applications/${appId}/orchestrations/${routineId}/run`, { method: "POST", body: {} });
   const inv2 = run2.body.invocation.id;
-  for (let i = 0; i < 10; i += 1) {
-    const next = await call("/api/bridge/next", { token: bridgeToken });
-    if (next.status === 204 || next.body?.invocationId === inv2) break;
-  }
+  await leaseForTarget(inv2);
   await call("/api/bridge/ack", { method: "POST", body: { invocationId: inv2 }, token: bridgeToken });
   await call("/api/bridge/complete", {
     method: "POST",
@@ -259,10 +281,7 @@ test("a declared runtime_error beats validation-looking text (the live-drive mis
   await runAndComplete({ status: "succeeded", summary: "healthy again" });
   const run = await call(`/api/applications/${appId}/orchestrations/${routineId}/run`, { method: "POST", body: {} });
   const invocationId = run.body.invocation.id;
-  for (let i = 0; i < 10; i += 1) {
-    const next = await call("/api/bridge/next", { token: bridgeToken });
-    if (next.status === 204 || next.body?.invocationId === invocationId) break;
-  }
+  await leaseForTarget(invocationId);
   await call("/api/bridge/ack", { method: "POST", body: { invocationId }, token: bridgeToken });
   await call("/api/bridge/complete", {
     method: "POST",
@@ -279,10 +298,7 @@ test("an unknown errorCode falls back to haystack inference (never a fabricated 
   await runAndComplete({ status: "succeeded", summary: "healthy again" });
   const run = await call(`/api/applications/${appId}/orchestrations/${routineId}/run`, { method: "POST", body: {} });
   const invocationId = run.body.invocation.id;
-  for (let i = 0; i < 10; i += 1) {
-    const next = await call("/api/bridge/next", { token: bridgeToken });
-    if (next.status === 204 || next.body?.invocationId === invocationId) break;
-  }
+  await leaseForTarget(invocationId);
   await call("/api/bridge/ack", { method: "POST", body: { invocationId }, token: bridgeToken });
   await call("/api/bridge/complete", {
     method: "POST",

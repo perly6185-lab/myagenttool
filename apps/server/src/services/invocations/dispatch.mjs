@@ -6,6 +6,7 @@ import {
   invocationDirKey,
   isBridgeExecuted as isBridgeExecutedShared,
 } from "./dispatch-eligibility.mjs";
+import { invocationProjectKey, invocationTeamKey, selectFairInvocation } from "./dispatch-fairness.mjs";
 
 export function createInvocationDispatchRuntime({
   state,
@@ -65,7 +66,7 @@ export function createInvocationDispatchRuntime({
     // busy so the bridge can run other worktrees concurrently without two agents
     // writing the same directory.
     const busyDirs = new Set(inFlight.map(invocationDirKey));
-    return state.invocations.find((item) => {
+    const dispatchable = state.invocations.filter((item) => {
       const agent = findAgent(item.agentId);
       return classifyDispatchEligibility(item, {
         agent,
@@ -73,6 +74,49 @@ export function createInvocationDispatchRuntime({
         onThisBridge: agent ? belongsToThisBridge(item, agent) : false,
       }) === DISPATCH_REASONS.DISPATCHABLE;
     });
+    if (dispatchable.length === 0) {
+      return undefined;
+    }
+    // Fair selection instead of array-order first-match: pick from the least-loaded
+    // team, then its least-loaded project, then the oldest-waiting invocation — so
+    // one tenant's burst can't monopolize the device and starve the rest. Load is
+    // measured over the SAME in-flight set that governs the cap.
+    const teamLoad = new Map();
+    const projectLoad = new Map();
+    for (const item of inFlight) {
+      const team = invocationTeamKey(item, state);
+      const project = invocationProjectKey(item);
+      teamLoad.set(team, (teamLoad.get(team) ?? 0) + 1);
+      projectLoad.set(project, (projectLoad.get(project) ?? 0) + 1);
+    }
+    const nowMs = Date.parse(now());
+    return selectFairInvocation(dispatchable, {
+      levels: [
+        { keyOf: (item) => invocationTeamKey(item, state), loadOf: (key) => teamLoad.get(key) ?? 0 },
+        { keyOf: (item) => invocationProjectKey(item), loadOf: (key) => projectLoad.get(key) ?? 0 },
+      ],
+      ageMsOf: (item) => {
+        const created = Date.parse(item.createdAt ?? "");
+        return Number.isFinite(created) && Number.isFinite(nowMs) ? Math.max(0, nowMs - created) : 0;
+      },
+    });
+  }
+
+  // Whether a SPECIFIC invocation is dispatchable right now — the device cap, the
+  // dir lock, and the same eligibility classifier the selector uses, but for one
+  // invocation rather than "who goes next". Lets callers assert a run is dispatch-
+  // ready without depending on the fair-selection order among its queued peers.
+  function isInvocationDispatchable(invocation) {
+    if (!invocation) return false;
+    const inFlight = state.invocations.filter((i) => INFLIGHT_STATUSES.includes(i.status) && isBridgeExecuted(i));
+    if (inFlight.length >= (state.device.maxConcurrency || 1)) return false;
+    const busyDirs = new Set(inFlight.map(invocationDirKey));
+    const agent = findAgent(invocation.agentId);
+    return classifyDispatchEligibility(invocation, {
+      agent,
+      dirBusy: busyDirs.has(invocationDirKey(invocation)),
+      onThisBridge: agent ? belongsToThisBridge(invocation, agent) : false,
+    }) === DISPATCH_REASONS.DISPATCHABLE;
   }
 
   function markDispatched(invocation) {
@@ -176,6 +220,7 @@ export function createInvocationDispatchRuntime({
     acknowledgeInvocation,
     markDispatched,
     nextDispatchableInvocation,
+    isInvocationDispatchable,
     redeliverExpiredDispatches,
   };
 }
