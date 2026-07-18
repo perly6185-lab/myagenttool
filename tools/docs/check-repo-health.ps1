@@ -51,4 +51,9 @@ if ($missing.Count -gt 0) {
   exit 1
 }
 
+& node (Join-Path $root "tools/dev/check-smoke-policy.mjs")
+if ($LASTEXITCODE -ne 0) {
+  exit $LASTEXITCODE
+}
+
 Write-Output "Repository scaffold OK"

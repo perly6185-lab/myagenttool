@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { runLane } from "./auto-runs-view";
+import { failoverSummary, runLane } from "./auto-runs-view";
 import type { AutoRunRecord } from "./auto-runs-view";
 
 const run = (over: Partial<AutoRunRecord>): AutoRunRecord => ({ id: "ar", status: "running", ...over });
@@ -31,5 +31,20 @@ describe("runLane — stage board grouping", () => {
     for (const status of ["materializing", "running", "verifying", "publishing"]) {
       expect(runLane(run({ status }))).toBe("running");
     }
+  });
+});
+
+describe("failoverSummary", () => {
+  it("explains successful infrastructure recovery in plain language", () => {
+    expect(failoverSummary({ status: "recovered", reason: "dispatch_timeout" })).toBe(
+      "Recovered on another agent after dispatch timed out",
+    );
+  });
+
+  it("explains why a failed run needs human attention", () => {
+    expect(failoverSummary({ status: "alternate_unavailable", reason: "stuck" })).toBe(
+      "No healthy alternate agent after run stopped responding",
+    );
+    expect(failoverSummary(null)).toBeNull();
   });
 });

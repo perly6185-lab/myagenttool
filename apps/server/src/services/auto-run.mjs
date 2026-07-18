@@ -576,6 +576,8 @@ export function createAutoRunService({
       // (excluded so failover can't ping-pong back to a dead one).
       failoverAttempts: 0,
       failoverExcludedAgentIds: [],
+      failoverHistory: [],
+      failoverOutcome: null,
       createdAt,
       updatedAt: createdAt,
     };
@@ -1097,7 +1099,24 @@ export function createAutoRunService({
       return false;
     }
     const reason = autoRun.errorCode;
+    const failedInvocationId = autoRun.invocationId ?? null;
+    const failedAgentId = autoRun.agentId ?? null;
+    function recordFailoverOutcome(status, detail = {}) {
+      runTx(() => {
+        autoRun.failoverOutcome = {
+          status,
+          reason,
+          attempt: autoRun.failoverAttempts ?? 0,
+          fromAgentId: failedAgentId,
+          fromInvocationId: failedInvocationId,
+          at: now(),
+          ...detail,
+        };
+        autoRun.updatedAt = now();
+      });
+    }
     if ((autoRun.failoverAttempts ?? 0) >= MAX_FAILOVERS) {
+      recordFailoverOutcome("exhausted", { maxAttempts: MAX_FAILOVERS });
       appendEvent({
         invocationId: autoRun.invocationId,
         type: "auto_run_failover_exhausted",
@@ -1108,11 +1127,15 @@ export function createAutoRunService({
       return false;
     }
     const worktree = state.worktrees.find((item) => item.id === autoRun.worktreeId) ?? null;
-    if (!worktree) return false; // the device-local worktree is gone; nothing to resume
+    if (!worktree) {
+      recordFailoverOutcome("worktree_unavailable");
+      return false;
+    }
     const failedAgent = autoRun.agentId ? findAgent(autoRun.agentId) : null;
     const excludeIds = [autoRun.agentId, ...(autoRun.failoverExcludedAgentIds ?? [])];
     const alternate = selectFailoverAgent(state.agents ?? [], failedAgent, excludeIds);
     if (!alternate) {
+      recordFailoverOutcome("alternate_unavailable");
       appendEvent({
         invocationId: autoRun.invocationId,
         type: "auto_run_failover_unavailable",
@@ -1123,6 +1146,7 @@ export function createAutoRunService({
       return false;
     }
     if (alternate.location?.type === "local_device" && state.device?.unlinkState !== "linked") {
+      recordFailoverOutcome("device_unlinked", { toAgentId: alternate.id });
       return false;
     }
 
@@ -1137,6 +1161,7 @@ export function createAutoRunService({
       startInvocationIfAllowed(invocation, alternate);
     } catch (error) {
       runTx(() => setAutoRunStatus(autoRun, "failed", { error: `Failover to ${alternate.id} could not start: ${String(error?.message ?? error)}`, errorCode: reason }));
+      recordFailoverOutcome("start_failed", { toAgentId: alternate.id, error: String(error?.message ?? error) });
       return false;
     }
     return runTx(() => {
@@ -1146,6 +1171,18 @@ export function createAutoRunService({
       autoRun.repairAttempts = 0; // fresh repair budget on the alternate
       autoRun.failoverAttempts = (autoRun.failoverAttempts ?? 0) + 1;
       autoRun.failoverExcludedAgentIds = [...new Set([...(autoRun.failoverExcludedAgentIds ?? []), fromAgentId].filter(Boolean))];
+      const transition = {
+        attempt: autoRun.failoverAttempts,
+        reason,
+        fromAgentId,
+        toAgentId: alternate.id,
+        fromInvocationId: failedInvocationId,
+        toInvocationId: invocation.id,
+        worktreeId: worktree.id,
+        at: now(),
+      };
+      autoRun.failoverHistory = [...(autoRun.failoverHistory ?? []), transition];
+      autoRun.failoverOutcome = { status: "recovered", ...transition };
       // Clears errorCode (no explicit code in extra) — the run is live again.
       setAutoRunStatus(autoRun, autoRunStatusForInvocation(invocation), { error: null, prNumber: null, prUrl: null });
       appendEvent({
