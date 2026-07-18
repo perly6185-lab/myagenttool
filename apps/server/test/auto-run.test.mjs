@@ -284,8 +284,27 @@ test("advanceAutoRunForInvocation marks the auto-run failed when the run fails",
   await svc.advanceAutoRunForInvocation({ ...invocation, status: "failed" });
 
   assert.equal(autoRun.status, "failed");
+  assert.equal(autoRun.errorCode, null, "a genuine task failure carries no infra errorCode");
   assert.equal(calls.publish.length, 0, "a failed run never publishes");
   assert.equal(calls.pr.length, 0);
+});
+
+test("advanceAutoRunForInvocation carries the invocation's infra errorCode onto the run (#3 signal)", async () => {
+  const { svc } = makeAutoRun();
+  const { autoRun, invocation } = await svc.startAutoRun({
+    projectId: sourceProjectId,
+    link: { type: "issue", number: 22, title: "Reclaimed", url: null, state: "open" },
+    agentId: "agt_1",
+    name: "issue-22-reclaimed",
+  });
+
+  // The bridge went offline mid-run → the invocation was reclaimed as timed_out
+  // with errorCode "dispatch_timeout". The run must record that as its errorCode,
+  // distinguishing an infrastructure reclaim from a genuine task failure.
+  await svc.advanceAutoRunForInvocation({ ...invocation, status: "timed_out", result: { summary: "reclaimed", errorCode: "dispatch_timeout" } });
+
+  assert.equal(autoRun.status, "failed");
+  assert.equal(autoRun.errorCode, "dispatch_timeout", "infra reclaim is distinguishable from a task failure");
 });
 
 test("advanceAutoRunForInvocation fails the auto-run (never throws) when publish errors", async () => {
@@ -1269,6 +1288,7 @@ test("O1 reaper: an orphaned active run (invocation gone) is failed", async () =
   assert.equal(reaped, 1);
   assert.equal(run.status, "failed");
   assert.match(run.error, /no longer exists/);
+  assert.equal(run.errorCode, "orphaned", "orphaned reap is machine-tagged (infra, not task failure)");
 });
 
 test("O1 reaper: awaiting_approval is NEVER reaped (waits for a human)", async () => {
@@ -1288,6 +1308,20 @@ test("O1 reaper: a stuck active run (live invocation, no progress past deadline)
   assert.equal(reaped, 1);
   assert.equal(run.status, "failed");
   assert.match(run.error, /no progress/);
+  assert.equal(run.errorCode, "stuck", "stuck reap is machine-tagged (infra, not task failure)");
+});
+
+test("errorCode is cleared on retry (no stale infra code survives the restart)", async () => {
+  const { svc } = makeAutoRun({});
+  const { autoRun } = await svc.startAutoRun({
+    projectId: sourceProjectId,
+    link: { type: "issue", number: 184, title: "Reclaimed then retried", url: null, state: "open" },
+    agentId: "agt_1", name: "issue-184",
+  });
+  autoRun.status = "failed";
+  autoRun.errorCode = "dispatch_timeout"; // an infra reclaim left this behind
+  await svc.retryAutoRun(autoRun.id);
+  assert.equal(autoRun.errorCode, null, "the retry clears the stale infra failure code");
 });
 
 test("O1 reaper: a recent active run is left alone", async () => {
