@@ -460,6 +460,9 @@ export interface InvocationExplanation {
     recoveryActionType?: string | null;
     automationId?: string | null;
     automationName?: string | null;
+    channelId?: string | null;
+    conversationId?: string | null;
+    channelTaskRequestId?: string | null;
     scheduled?: boolean;
     autoRunId?: string | null;
     compareRunId?: string | null;
