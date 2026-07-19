@@ -22,6 +22,14 @@ const repoRoot = resolve(fileURLToPath(new URL("../../..", import.meta.url)));
 const initScript = join(repoRoot, "tools/dev/init-agent-proxy.sh");
 const migrateScript = join(repoRoot, "tools/dev/migrate-agent-host.sh");
 
+// This case wires its mock ssh straight to /bin/dash, so the migration's remote
+// prerequisite check runs against the REAL host (uname must report Linux x86_64).
+// CI runs on ubuntu-latest where that holds; skip it off-target instead of failing.
+const linuxHostOnly =
+  process.platform !== "linux" || process.arch !== "x64"
+    ? "requires a Linux x86_64 host (runs the real target prereq check through dash)"
+    : false;
+
 function fixture(t, label) {
   const root = mkdtempSync(join(tmpdir(), `myagenttool-${label}-`));
   const home = join(root, "home");
@@ -221,7 +229,7 @@ test("migration with both payloads skipped does not contact or preflight the sou
   assert.ok(!calls.includes("claude --version"), `--skip-verify still ran CLI verification:\n${calls}`);
 });
 
-test("migration supports a POSIX login shell and rolls back skip-home wrapper refresh", (t) => {
+test("migration supports a POSIX login shell and rolls back skip-home wrapper refresh", { skip: linuxHostOnly }, (t) => {
   const state = fixture(t, "migrate-dash-rollback");
   const sshLog = join(state.root, "ssh.log");
   const profileDir = join(state.home, "profile");
