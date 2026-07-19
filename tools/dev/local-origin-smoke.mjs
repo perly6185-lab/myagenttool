@@ -63,7 +63,11 @@ try {
   assert(existsSync(created.barePath), `bare repo exists on disk at ${created.barePath}`);
   assert(!created.barePath.startsWith(resolve(repoPath)), "the bare repo lives OUTSIDE the project's own checkout");
 
-  const bareType = spawnSync("git", ["-C", created.barePath, "rev-parse", "--is-bare-repository"], { encoding: "utf8" });
+  // Use --git-dir (not -C) so the check still works when the developer's global
+  // git config sets `safe.bareRepository = explicit`, which otherwise makes git
+  // refuse to operate on a bare repo reached via -C. CI runners lack that setting
+  // and behave identically either way.
+  const bareType = spawnSync("git", ["--git-dir", created.barePath, "rev-parse", "--is-bare-repository"], { encoding: "utf8" });
   assert(bareType.stdout.trim() === "true", "the created repo is bare");
 
   // No listener was opened for any of this.
@@ -87,7 +91,7 @@ try {
 
   // The assertion that matters: the commit is IN the bare repo, reachable by the
   // branch name — not merely that the API said "ok".
-  const remoteRef = spawnSync("git", ["-C", created.barePath, "rev-parse", branch], { encoding: "utf8" });
+  const remoteRef = spawnSync("git", ["--git-dir", created.barePath, "rev-parse", branch], { encoding: "utf8" });
   assert(remoteRef.status === 0, `the branch exists in the bare repo: ${remoteRef.stderr?.slice(0, 120)}`);
   assert(remoteRef.stdout.trim() === localHead, `the bare repo carries the same commit (${remoteRef.stdout.trim().slice(0, 8)} vs ${localHead.slice(0, 8)})`);
 
@@ -101,7 +105,7 @@ try {
   const again = await request("POST", `/api/projects/${encodeURIComponent(projectId)}/local-origin`);
   assert(again.originUrl === created.originUrl, "a second call reports the same origin");
   assert(again.created === false, "a second call reports created:false — it reused, it did not re-init");
-  const afterRef = spawnSync("git", ["-C", created.barePath, "rev-parse", branch], { encoding: "utf8" });
+  const afterRef = spawnSync("git", ["--git-dir", created.barePath, "rev-parse", branch], { encoding: "utf8" });
   assert(afterRef.stdout.trim() === localHead, "the pushed history survives a second call (no re-init)");
 
   // A remote the USER chose must never be re-pointed into a local directory —
