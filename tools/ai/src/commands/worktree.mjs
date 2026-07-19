@@ -196,7 +196,7 @@ export function loopWorktreeCleanupMerged(args) {
   const apply = args.includes("--apply");
   const approval = option(args, "--approval") ?? option(args, "--human-approved") ?? "";
   const records = collectLoopWorktreeRecords();
-  const { reclaim, skip } = partitionWorktreesForReclaim(records, (path) =>
+  const { reclaim, reconcile, skip } = partitionWorktreesForReclaim(records, (path) =>
     Boolean(gitStatusForRoot(path).trim()),
   );
 
@@ -206,6 +206,7 @@ export function loopWorktreeCleanupMerged(args) {
         {
           apply,
           reclaim: reclaim.map((r) => r.worktreePath),
+          reconcile: reconcile.map((r) => r.worktreePath),
           skip: skip.map((s) => ({ path: s.record.worktreePath, reason: s.reason })),
         },
         null,
@@ -216,21 +217,49 @@ export function loopWorktreeCleanupMerged(args) {
   }
 
   if (!apply) {
-    console.log(`Reclaimable (clean, finished) isolated worktrees: ${reclaim.length}`);
-    for (const record of reclaim) console.log(`  RECLAIM  ${record.parentRunId} | ${record.worktreePath}`);
-    for (const entry of skip) console.log(`  skip     ${entry.record.parentRunId ?? "?"} | ${entry.reason}`);
     console.log(
-      `\nDry run: re-run with --apply --approval "reason" to reclaim ${reclaim.length}. Dirty worktrees are always preserved.`,
+      `Reclaimable (clean): ${reclaim.length} · reconcile (already gone): ${reconcile.length} · preserved/skip: ${skip.length}`,
+    );
+    for (const record of reclaim) console.log(`  RECLAIM    ${record.parentRunId} | ${record.worktreePath}`);
+    for (const record of reconcile) console.log(`  RECONCILE  ${record.parentRunId} | ${record.worktreePath}`);
+    for (const entry of skip) console.log(`  skip       ${entry.record.parentRunId ?? "?"} | ${entry.reason}`);
+    console.log(
+      `\nDry run: re-run with --apply --approval "reason" to reclaim ${reclaim.length} + reconcile ${reconcile.length}. Dirty worktrees are always preserved.`,
     );
     return;
   }
 
   if (!approval.trim()) fail('Batch worktree cleanup requires --approval "reason".');
 
+  const markCleaned = (record, note) => {
+    const entry = findLoopRegistryEntry(record.parentRunId);
+    if (!entry) return;
+    updateLoopWorkerResult(entry, {
+      cleanup: {
+        status: "completed",
+        requestedAt: null,
+        completedAt: new Date().toISOString(),
+        approval,
+        worktreePath: record.worktreePath,
+        childRunId: record.childRunId,
+        dirty: false,
+        dirtyStatus: "",
+        reason: null,
+      },
+      cleanupPolicy: "removed",
+    });
+    appendLoopEvent(entry, "loop_worktree_cleanup_completed", entry.state, note, {
+      worktreePath: record.worktreePath,
+      childRunId: record.childRunId,
+      approval,
+      dirty: false,
+      reason: null,
+    });
+  };
+
   let removed = 0;
   let failed = 0;
   for (const record of reclaim) {
-    const entry = findLoopRegistryEntry(record.parentRunId);
     try {
       execFileSync("git", ["worktree", "remove", record.worktreePath], {
         cwd: repoRoot,
@@ -242,33 +271,17 @@ export function loopWorktreeCleanupMerged(args) {
       console.log(`failed:    ${record.worktreePath} — ${childProcessErrorMessage(error)}`);
       continue;
     }
-    if (entry) {
-      updateLoopWorkerResult(entry, {
-        cleanup: {
-          status: "completed",
-          requestedAt: null,
-          completedAt: new Date().toISOString(),
-          approval,
-          worktreePath: record.worktreePath,
-          childRunId: record.childRunId,
-          dirty: false,
-          dirtyStatus: "",
-          reason: null,
-        },
-        cleanupPolicy: "removed",
-      });
-      appendLoopEvent(
-        entry,
-        "loop_worktree_cleanup_completed",
-        entry.state,
-        "Isolated worktree cleanup completed (batch --merged).",
-        { worktreePath: record.worktreePath, childRunId: record.childRunId, approval, dirty: false, reason: null },
-      );
-    }
+    markCleaned(record, "Isolated worktree cleanup completed (batch --merged).");
     removed += 1;
     console.log(`reclaimed: ${record.worktreePath}`);
   }
-  console.log(`\nReclaimed ${removed}, failed ${failed}, preserved/skipped ${skip.length}.`);
+  for (const record of reconcile) {
+    markCleaned(record, "Isolated worktree record reconciled (already gone, batch --merged).");
+    console.log(`reconciled: ${record.worktreePath}`);
+  }
+  console.log(
+    `\nReclaimed ${removed}, reconciled ${reconcile.length}, failed ${failed}, preserved/skipped ${skip.length}.`,
+  );
   if (failed > 0) process.exit(1);
 }
 
