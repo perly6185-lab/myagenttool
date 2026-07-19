@@ -21,6 +21,29 @@ import { fileURLToPath } from "node:url";
 const repoRoot = resolve(fileURLToPath(new URL("../../..", import.meta.url)));
 const initScript = join(repoRoot, "tools/dev/init-agent-proxy.sh");
 const migrateScript = join(repoRoot, "tools/dev/migrate-agent-host.sh");
+const bashCommand = findUsableBash();
+
+function findUsableBash() {
+  const candidates = [
+    process.env.MYAGENTTOOL_TEST_BASH,
+    "bash",
+    "C:\\Program Files\\Git\\bin\\bash.exe",
+    "C:\\Program Files\\Git\\usr\\bin\\bash.exe",
+    "C:\\msys64\\usr\\bin\\bash.exe",
+  ].filter(Boolean);
+  for (const candidate of candidates) {
+    const result = spawnSync(candidate, ["-lc", "printf ok"], {
+      encoding: "utf8",
+      windowsHide: true,
+    });
+    if (result.status === 0 && result.stdout === "ok") return candidate;
+  }
+  return null;
+}
+
+function hostScriptTest(name, fn) {
+  test(name, bashCommand ? {} : { skip: "requires a usable bash shell" }, fn);
+}
 
 // This case wires its mock ssh straight to /bin/dash, so the migration's remote
 // prerequisite check runs against the REAL host (uname must report Linux x86_64).
@@ -69,7 +92,7 @@ function isolatedEnv({ home, mockBin, temp }, extra = {}) {
 }
 
 function runShell(script, args, env) {
-  return spawnSync("bash", [script, ...args], {
+  return spawnSync(bashCommand ?? "bash", [script, ...args], {
     cwd: repoRoot,
     env,
     encoding: "utf8",
@@ -86,7 +109,7 @@ function diagnostic(result) {
   ].filter(Boolean).join("\n");
 }
 
-test("init propagates a curl transport failure during network verification", (t) => {
+hostScriptTest("init propagates a curl transport failure during network verification", (t) => {
   const state = fixture(t, "init-curl-failure");
   const curlLog = join(state.root, "curl.log");
 
@@ -115,7 +138,7 @@ test("init propagates a curl transport failure during network verification", (t)
   assert.notEqual(result.status, 0, `curl failure was swallowed\n${diagnostic(result)}`);
 });
 
-test("an unexpected awk failure leaves a symlinked bashrc untouched", (t) => {
+hostScriptTest("an unexpected awk failure leaves a symlinked bashrc untouched", (t) => {
   const state = fixture(t, "init-awk-failure");
   const profileDir = join(state.home, "profile");
   const realBashrc = join(profileDir, "bashrc");
@@ -138,7 +161,7 @@ test("an unexpected awk failure leaves a symlinked bashrc untouched", (t) => {
   assert.equal(readFileSync(realBashrc, "utf8"), original, "the symlink target was modified");
 });
 
-test("wrappers installed in a custom bin directory remain self-contained", (t) => {
+hostScriptTest("wrappers installed in a custom bin directory remain self-contained", (t) => {
   const state = fixture(t, "init-custom-bin");
   const customBin = join(state.home, "agent-bin");
   const userBin = join(state.home, "launcher-bin");
@@ -194,7 +217,7 @@ test("wrappers installed in a custom bin directory remain self-contained", (t) =
   );
 });
 
-test("migration with both payloads skipped does not contact or preflight the source", (t) => {
+hostScriptTest("migration with both payloads skipped does not contact or preflight the source", (t) => {
   const state = fixture(t, "migrate-verify-only");
   const sshLog = join(state.root, "ssh.log");
   writeExecutable(join(state.mockBin, "ssh"), [
@@ -229,7 +252,7 @@ test("migration with both payloads skipped does not contact or preflight the sou
   assert.ok(!calls.includes("claude --version"), `--skip-verify still ran CLI verification:\n${calls}`);
 });
 
-test("migration supports a POSIX login shell and rolls back skip-home wrapper refresh", { skip: linuxHostOnly }, (t) => {
+hostScriptTest("migration supports a POSIX login shell and rolls back skip-home wrapper refresh", (t) => {
   const state = fixture(t, "migrate-dash-rollback");
   const sshLog = join(state.root, "ssh.log");
   const profileDir = join(state.home, "profile");
