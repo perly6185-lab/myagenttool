@@ -17,6 +17,7 @@ import { fileURLToPath } from "node:url";
 import { readEvalTrend, summarizeEvalTrend } from "../services/eval-trend.mjs";
 import { summarizeDeployments } from "../services/auto-run-deploy-metrics.mjs";
 import { summarizeOrchestrationRecovery } from "../services/application-recovery-metrics.mjs";
+import { triageReport } from "../../../../tools/ai/src/feedback/triage.mjs";
 
 const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../../../..");
 const METRICS_DIR = resolve(REPO_ROOT, ".myagenttool/metrics");
@@ -209,19 +210,23 @@ export function computeMaturityScorecard({
 
   // L6 — inbound feedback auto-triaged to tracked items (frontier local target).
   const conv = feedback?.conversionRate ?? null;
+  const feedbackN = feedback?.events ?? null;
   levels.push({
     level: 6,
     name: "Feedback auto-becomes tracked items",
     gate: "≥X% inbound feedback auto-triaged; false-triage tracked",
     anchor: "none — frontier",
     frontier: "yes",
-    measured: conv == null ? null : `${pct(conv)} conversion`,
+    // Surface the sample size alongside the rate (like L5's recoveryCount): a "met"
+    // that rests on a handful of ledger events is not a strong autonomy claim.
+    measured: conv == null ? null : `${pct(conv)} conversion (n=${feedbackN})`,
     verdict: conv == null ? "indeterminate" : verdict(conv, conv > 0),
+    feedbackSample: conv == null ? null : { events: feedbackN, created: feedback.created, pendingApproval: feedback.pendingApproval },
     // Honest about WHY it is indeterminate: the feedback input is a structural
-    // dead input (nothing feeds `feedback` yet), not "data pending".
+    // dead input (no ledger) — not "data pending".
     detail: conv == null
-      ? "not instrumented — no feedback-triage input is wired into the scorecard yet"
-      : "frontier — local target only; no external standard for the autonomy claim",
+      ? "not instrumented — no feedback-triage ledger (.myagenttool/feedback/processed.jsonl) to read yet"
+      : `frontier — local target only; ${feedback.created} auto-filed + ${feedback.pendingApproval} queued over n=${feedbackN} ledger events (thin samples are a weak claim)`,
   });
 
   // Current level = the highest level reached WITHOUT a gap ("reached only when the
@@ -299,12 +304,33 @@ function artifactGeneratedAt(kind, metricsDir = METRICS_DIR) {
   }
 }
 
+// L6 feedback-triage conversion: read the processed-feedback ledger and reduce it
+// with the SAME triageReport the `ai:feedback-triage --report` command uses, so
+// the scorecard and the CLI can never drift. closedAutoIssues (the false-triage
+// numerator) needs a GitHub query, so this local read-model omits it — falseTriage
+// stays honestly null offline. Returns null when there is no ledger, keeping L6
+// indeterminate rather than a faked pass.
+function loadFeedbackTriage(repoRoot = REPO_ROOT) {
+  try {
+    const ledgerPath = resolve(repoRoot, ".myagenttool/feedback/processed.jsonl");
+    if (!existsSync(ledgerPath)) return null;
+    const ledgerEntries = readFileSync(ledgerPath, "utf8")
+      .split("\n")
+      .filter(Boolean)
+      .map((line) => JSON.parse(line));
+    if (!ledgerEntries.length) return null;
+    return triageReport({ ledgerEntries, closedAutoIssues: [] });
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Gather the latest measured evidence for the scorecard. Best-effort: any input
  * that can't be read stays null (→ indeterminate levels). `metricsDir`/`evalTrend`
  * are injectable for tests.
  */
-export function loadMaturityInputs({ metricsDir = METRICS_DIR, evalTrend, repoRoot = REPO_ROOT, deployments = null, invocations = null } = {}) {
+export function loadMaturityInputs({ metricsDir = METRICS_DIR, evalTrend, repoRoot = REPO_ROOT, deployments = null, invocations = null, feedback } = {}) {
   const dora = latestArtifact("dora", metricsDir);
   const backlog = latestArtifact("backlog", metricsDir);
   const governance = latestArtifact("governance", metricsDir);
@@ -325,8 +351,12 @@ export function loadMaturityInputs({ metricsDir = METRICS_DIR, evalTrend, repoRo
     : orchestration && orchestration.recoveryHours?.median != null
       ? { recoveryHours: orchestration.recoveryHours.median, recoveryCount: orchestration.recoveryHours.count, source: "orchestration", deployPresentNoRecovery: Boolean(deploy && deploy.total > 0) }
       : null;
+  // L6: feedback→tracked-item conversion, from the local triage ledger unless a
+  // caller injects it (tests / a gh-enriched report with false-triage data).
+  const feedbackTriage = feedback ?? loadFeedbackTriage(repoRoot);
   return {
     docsOk, dora, backlog, governance, evalSummary, release, deploy, orchestration,
+    feedback: feedbackTriage,
     // How fresh each artifact-sourced input is (L5's deploy/orchestration are live
     // state, so they have no artifact timestamp — they are always current).
     generatedAt: {
