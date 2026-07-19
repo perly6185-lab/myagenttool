@@ -283,6 +283,40 @@ test("L6: an unwired feedback input reads as 'not instrumented', not silent-inde
   assert.match(l6.detail, /not instrumented/);
 });
 
+test("L6: a wired feedback ledger reads measured with the conversion rate + sample size", () => {
+  const l6 = byLevel(computeMaturityScorecard({
+    feedback: { conversionRate: 0.25, events: 4, created: 0, pendingApproval: 1 },
+  }))[6];
+  assert.equal(l6.verdict, "met", "conversion > 0 meets the frontier gate");
+  assert.match(l6.measured, /25% conversion \(n=4\)/, "the rate carries its sample size");
+  assert.deepEqual(l6.feedbackSample, { events: 4, created: 0, pendingApproval: 1 });
+  assert.doesNotMatch(l6.detail, /not instrumented/);
+});
+
+test("loadMaturityInputs reads the feedback ledger into the L6 input via triageReport", () => {
+  const root = mkdtempSync(pjoin(tmp(), "mx-fb-"));
+  mkdirSync(pjoin(root, ".myagenttool", "feedback"), { recursive: true });
+  writeFileSync(
+    pjoin(root, ".myagenttool", "feedback", "processed.jsonl"),
+    [
+      JSON.stringify({ dedupeKey: "a", action: "created", eventCreatedAt: "2026-07-01T00:00:00.000Z", processedAt: "2026-07-01T00:05:00.000Z" }),
+      JSON.stringify({ dedupeKey: "b", action: "skipped-duplicate" }),
+    ].join("\n") + "\n",
+  );
+  const inputs = loadMaturityInputs({ repoRoot: root, metricsDir: pjoin(root, "no-metrics"), evalTrend: [] });
+  assert.ok(inputs.feedback, "the ledger populates the feedback input");
+  assert.equal(inputs.feedback.events, 2);
+  assert.equal(inputs.feedback.conversionRate, 0.5, "1 handled of 2 ledger events");
+  assert.equal(byLevel(computeMaturityScorecard(inputs))[6].verdict, "met");
+});
+
+test("loadMaturityInputs leaves feedback null (L6 indeterminate) when there is no ledger", () => {
+  const root = mkdtempSync(pjoin(tmp(), "mx-nofb-"));
+  const inputs = loadMaturityInputs({ repoRoot: root, metricsDir: pjoin(root, "no-metrics"), evalTrend: [] });
+  assert.equal(inputs.feedback, null, "no ledger → no faked pass");
+  assert.equal(byLevel(computeMaturityScorecard(inputs))[6].verdict, "indeterminate");
+});
+
 test("maturityScorecard surfaces metrics freshness + a stale flag (H5)", () => {
   const dir = mkdtempSync(pjoin(tmp(), "mx-fresh-"));
   mkdirSync(pjoin(dir, "2020-01-01T00-00-00-000Z-governance"));
