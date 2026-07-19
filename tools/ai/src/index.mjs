@@ -310,6 +310,7 @@ configureWorkRunnerContext({
   appendLoopEvent,
   applyLoopHumanGate,
   buildBranchName,
+  commandOutput,
   createCodePlan,
   createLoopHumanGate,
   createLoopRegistryEntry,
