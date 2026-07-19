@@ -138,6 +138,35 @@ export function loopWorktreeCleanupValidationError(record) {
   return null;
 }
 
+// Decide which recorded worktrees a batch reclaim (`loop-worktree-cleanup
+// --merged`) should remove. Reclaimable = passes the same per-run validation AND
+// is clean. Dirty worktrees are PRESERVED — a batch sweep must never destroy
+// uncommitted work. `isDirty` and `validate` are injected so this stays testable.
+export function partitionWorktreesForReclaim(records, isDirty, validate = loopWorktreeCleanupValidationError) {
+  const reclaim = [];
+  const skip = [];
+  for (const record of records ?? []) {
+    const validationError = validate(record);
+    if (validationError) {
+      skip.push({ record, reason: validationError });
+      continue;
+    }
+    let dirty;
+    try {
+      dirty = isDirty(record.worktreePath);
+    } catch {
+      skip.push({ record, reason: "Unable to inspect worktree status." });
+      continue;
+    }
+    if (dirty) {
+      skip.push({ record, reason: "Dirty — uncommitted work preserved." });
+      continue;
+    }
+    reclaim.push(record);
+  }
+  return { reclaim, skip };
+}
+
 export function updateLoopWorkerResult(entry, updates) {
   const resultPath = entry.evidence?.workerResult ? resolve(repoRoot(), entry.evidence.workerResult) : null;
   if (!resultPath || !existsSync(resultPath)) {
