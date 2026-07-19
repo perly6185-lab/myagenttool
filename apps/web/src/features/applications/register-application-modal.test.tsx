@@ -30,7 +30,10 @@ vi.mock("@/data/use-console-actions", () => ({
 }));
 
 const catalog = {
-  applications: [{ name: "ccusage", displayName: "ccusage", aliases: ["ccusage"], command: "ccusage", installHint: "Managed install" }],
+  applications: [
+    { name: "ccusage", displayName: "ccusage", aliases: ["ccusage"], command: "ccusage", installHint: "Managed install" },
+    { name: "codex", displayName: "Codex CLI", aliases: ["codex", "codex cli"], command: "codex", installHint: "Managed install" },
+  ],
 };
 const plan = {
   schemaVersion: "application-install-plan/v1",
@@ -62,9 +65,9 @@ function renderModal(onClose = vi.fn()) {
   return onClose;
 }
 
-async function enterKnownApplication() {
-  const input = screen.getByPlaceholderText("ccusage, git, or claude");
-  fireEvent.change(input, { target: { value: "ccusage" } });
+async function enterKnownApplication(value = "ccusage") {
+  const input = screen.getByPlaceholderText("ccusage, git, claude, codex, git-bash, or wsl");
+  fireEvent.change(input, { target: { value } });
   const button = screen.getByRole("button", { name: "Set up" }) as HTMLButtonElement;
   await waitFor(() => expect(button.disabled).toBe(false));
   fireEvent.click(button);
@@ -89,6 +92,45 @@ describe("RegisterApplicationModal governed setup", () => {
     expect(useUiStore.getState().selectedApplicationId).toBe("app_ccusage");
     fireEvent.click(screen.getByRole("button", { name: "Done" }));
     expect(onClose).toHaveBeenCalledOnce();
+  });
+
+  it("registers the Codex Application when its bundled CLI is already present", async () => {
+    consoleState.data = {
+      projects: [],
+      device: { id: "dev_local", name: "Workstation", status: "online", platform: "windows", architecture: "x64", lastSeenAt: null, applicationBinaryReadiness: [{ command: "codex", capabilityPrefix: "app.setup.codex.", status: "available", version: "0.144.6", checkedAt: "2026-07-14T00:00:00Z" }] },
+      devices: [],
+    };
+    apiMock.listKnownApplications.mockResolvedValue(catalog);
+    apiMock.quickRegisterApplication.mockResolvedValue({ application: { id: "app_codex", name: "Codex" }, capabilities: [] });
+    renderModal();
+
+    await enterKnownApplication("codex");
+
+    expect(await screen.findByText(/Codex is registered and ready/i)).toBeTruthy();
+    expect(apiMock.quickRegisterApplication).toHaveBeenCalledWith({ name: "codex" });
+    expect(apiMock.createApplicationInstallPlan).not.toHaveBeenCalled();
+    expect(useUiStore.getState().selectedApplicationId).toBe("app_codex");
+  });
+
+  it("stops before registration when Codex is installed but not authenticated", async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
+    consoleState.data = {
+      projects: [],
+      device: { id: "dev_local", name: "Workstation", status: "online", platform: "windows", architecture: "x64", lastSeenAt: null, applicationBinaryReadiness: [{ command: "codex", capabilityPrefix: "app.setup.codex.", status: "available", version: "0.144.6", authenticationStatus: "unauthenticated", authenticationMethod: null, checkedAt: "2026-07-19T00:00:00Z" }] },
+      devices: [],
+    };
+    apiMock.listKnownApplications.mockResolvedValue(catalog);
+    renderModal();
+
+    await enterKnownApplication("codex");
+
+    expect(await screen.findByText(/Sign in with codex login/i)).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Copy login command" }));
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith("codex login"));
+    expect(await screen.findByText(/Copied codex login/i)).toBeTruthy();
+    expect(apiMock.quickRegisterApplication).not.toHaveBeenCalled();
+    expect(apiMock.createApplicationInstallPlan).not.toHaveBeenCalled();
   });
 
   it("shows a safe plan summary and requires explicit approval for a missing binary", async () => {

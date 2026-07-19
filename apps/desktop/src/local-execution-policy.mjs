@@ -1,5 +1,5 @@
 import { existsSync } from "node:fs";
-import { delimiter, isAbsolute, join, resolve, sep } from "node:path";
+import { delimiter, extname, isAbsolute, join, resolve, sep } from "node:path";
 
 // Per-device binary availability (#802). git is a per-device property; a wrapper
 // command whose binary PATH cannot resolve would spawn-fail with an opaque exit
@@ -10,10 +10,10 @@ export function binaryAvailableOnPath(command, env = process.env) {
   if (!command || typeof command !== "string") return false;
   if (command.includes("/") || command.includes(sep) || isAbsolute(command)) return existsSync(command);
   const dirs = String(env.PATH ?? "").split(delimiter).filter(Boolean);
-  const extensions = process.platform === "win32"
-    ? String(env.PATHEXT ?? ".COM;.EXE;.BAT;.CMD").split(";").filter(Boolean)
-    : [""];
-  return dirs.some((dir) => extensions.some((extension) => existsSync(join(dir, `${command}${extension}`))));
+  const names = process.platform === "win32" && !extname(command)
+    ? String(env.PATHEXT ?? ".COM;.EXE;.BAT;.CMD").split(";").filter(Boolean).map((extension) => `${command}${extension}`)
+    : [command];
+  return dirs.some((dir) => names.some((name) => existsSync(join(dir, name))));
 }
 
 const FILE_POLICIES = new Set(["forbidden", "read_only", "workspace_write", "native_controls"]);
@@ -105,10 +105,40 @@ export function createLocalExecutionPolicyManifest({
         networkPolicy: "forbidden",
       },
       {
+        command: "git-bash",
+        capabilityPrefix: "app.setup.git_bash.",
+        filePolicy: "read_only",
+        networkPolicy: "forbidden",
+        probe: {
+          executable: "C:\\Program Files\\Git\\bin\\bash.exe",
+          args: ["--version"],
+          candidates: [
+            { executable: "C:\\Program Files\\Git\\bin\\bash.exe", args: ["--version"] },
+            { executable: "C:\\Program Files (x86)\\Git\\bin\\bash.exe", args: ["--version"] },
+            { executable: "git", args: ["--version"] },
+          ],
+        },
+      },
+      {
+        command: "wsl",
+        capabilityPrefix: "app.setup.wsl.",
+        filePolicy: "read_only",
+        networkPolicy: "forbidden",
+        probe: { executable: "wsl.exe", args: ["--status"] },
+      },
+      {
         command: "claude",
         capabilityPrefix: "app.app_claude.",
         filePolicy: "read_only",
         networkPolicy: "forbidden",
+        authenticationProbe: { executable: "claude", args: ["auth", "status"], format: "claude-json" },
+      },
+      {
+        command: "codex",
+        capabilityPrefix: "app.setup.codex.",
+        filePolicy: "read_only",
+        networkPolicy: "forbidden",
+        authenticationProbe: { executable: "codex", args: ["login", "status"], format: "exit-code" },
       },
     ],
     policies: {

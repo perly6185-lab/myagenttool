@@ -5,16 +5,18 @@ import { applicationInstallPlanMatchesCurrent, createApplicationInstallPlan, lis
 const device = (platform, architecture = "x64") => ({ id: `dev_${platform}`, name: `${platform} device`, platform, architecture });
 const fixedNow = () => "2026-07-14T09:00:00.000Z";
 const supported = {
-  windows: ["git", "ccusage", "claude"],
-  macos: ["git", "ccusage", "claude"],
-  linux: ["git", "ccusage", "claude"],
+  windows: ["git", "git-bash", "wsl", "ccusage", "claude", "codex"],
+  macos: ["git", "ccusage", "claude", "codex"],
+  linux: ["git", "ccusage", "claude", "codex"],
 };
 
 test("P1 catalog exposes only supported applications and safe policy metadata", () => {
   const catalog = listApplicationInstallCatalog();
-  assert.deepEqual(catalog.map((entry) => entry.name), ["git", "ccusage", "claude"]);
+  assert.deepEqual(catalog.map((entry) => entry.name), ["git", "git-bash", "wsl", "ccusage", "claude", "codex"]);
   assert.ok(catalog.every((entry) => entry.approvalRequired));
   assert.deepEqual(catalog.find((entry) => entry.name === "git").supportedPlatforms, ["windows", "macos", "linux"]);
+  assert.deepEqual(catalog.find((entry) => entry.name === "git-bash").supportedPlatforms, ["windows"]);
+  assert.deepEqual(catalog.find((entry) => entry.name === "wsl").supportedPlatforms, ["windows"]);
   assert.ok(!JSON.stringify(catalog).includes("argv"));
 });
 
@@ -38,13 +40,29 @@ for (const platform of ["windows", "macos", "linux"]) {
 }
 
 test("P4 pins npm packages and registry without latest aliases", () => {
-  for (const name of ["ccusage", "claude"]) {
+  for (const name of ["ccusage", "claude", "codex"]) {
     const plan = createApplicationInstallPlan({ name }, { device: device("linux"), now: fixedNow });
     assert.equal(plan.package.versionPolicy.kind, "exact");
     assert.equal(plan.package.source.registry, "https://registry.npmjs.org/");
     assert.doesNotMatch(plan.package.resolvedIdentifier, /@latest$/);
     assert.ok(plan.execution.args.includes(`--registry=${plan.package.source.registry}`));
   }
+});
+
+test("P5 plans Windows shell prerequisites without treating caller input as command text", () => {
+  const gitBash = createApplicationInstallPlan({ name: "git-bash" }, { device: device("windows"), now: fixedNow });
+  assert.equal(gitBash.package.identifier, "Git.Git");
+  assert.equal(gitBash.execution.executable, "winget");
+  assert.equal(gitBash.postInstallProbe.executable, "C:\\Program Files\\Git\\bin\\bash.exe");
+  assert.ok(gitBash.postInstallProbe.candidates.some((candidate) => candidate.executable === "git"));
+  assert.ok(gitBash.risk.reasons.includes("adds_shell_runtime"));
+
+  const wsl = createApplicationInstallPlan({ name: "wsl" }, { device: device("windows"), now: fixedNow });
+  assert.equal(wsl.execution.executable, "wsl.exe");
+  assert.deepEqual(wsl.execution.args, ["--install", "--no-launch"]);
+  assert.deepEqual(wsl.postInstallProbe.args, ["--status"]);
+  assert.equal(wsl.risk.level, "high");
+  assert.ok(wsl.risk.reasons.includes("may_require_reboot"));
 });
 
 test("P4 rejects expired plans; Linux Git now plans as an ELEVATED apt-get install (#994/ADR 0015)", () => {

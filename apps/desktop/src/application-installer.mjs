@@ -3,29 +3,103 @@ import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 
 const SCHEMA_VERSION = "application-install-plan/v1";
-const RECIPE_VERSION = "2026-07-16.2";
+const RECIPE_VERSION = "2026-07-19.1";
 const PLAN_TTL_MS = 10 * 60 * 1000;
 const NPM_REGISTRY = "https://registry.npmjs.org/";
+const GIT_FOR_WINDOWS_VERSION = "2.50.1";
+const WINDOWS_GIT_BASH = "C:\\Program Files\\Git\\bin\\bash.exe";
+const WINDOWS_GIT_BASH_X86 = "C:\\Program Files (x86)\\Git\\bin\\bash.exe";
+const PROVIDER_MANAGED = { kind: "provider-managed", channel: "stable", allowCallerOverride: false, exactVersion: null };
+const WINDOWS_GIT_BASH_PROBE = {
+  executable: WINDOWS_GIT_BASH,
+  args: ["--version"],
+  candidates: [
+    { executable: WINDOWS_GIT_BASH, args: ["--version"] },
+    { executable: WINDOWS_GIT_BASH_X86, args: ["--version"] },
+    { executable: "git", args: ["--version"] },
+  ],
+};
 
 const RECIPES = {
   git: {
-    windows: ["winget", ["install", "--id", "Git.Git", "--version", "2.50.1", "--exact", "--source", "winget", "--silent", "--disable-interactivity", "--accept-package-agreements", "--accept-source-agreements"], "Git.Git@2.50.1"],
-    macos: ["brew", ["install", "--formula", "git"], "git"],
+    windows: recipe("winget", ["install", "--id", "Git.Git", "--version", GIT_FOR_WINDOWS_VERSION, "--exact", "--source", "winget", "--silent", "--disable-interactivity", "--accept-package-agreements", "--accept-source-agreements"], `Git.Git@${GIT_FOR_WINDOWS_VERSION}`, {
+      provider: "winget",
+      identifier: "git",
+      source: { kind: "winget-source", name: "winget" },
+      versionPolicy: exactVersionPolicy(GIT_FOR_WINDOWS_VERSION),
+      probe: { executable: "git", args: ["--version"] },
+    }),
+    macos: recipe("brew", ["install", "--formula", "git"], "git", {
+      provider: "homebrew",
+      identifier: "git",
+      source: { kind: "homebrew-core", name: "homebrew/core" },
+      versionPolicy: PROVIDER_MANAGED,
+      probe: { executable: "git", args: ["--version"] },
+    }),
     // #994 / ADR 0015: the mirror records the REAL command; pkexec wraps it at
     // spawn time, and only for this exact entry.
-    linux: ["apt-get", ["install", "--yes", "git"], "git"],
+    linux: recipe("apt-get", ["install", "--yes", "git"], "git", {
+      provider: "apt",
+      identifier: "git",
+      elevated: true,
+      source: { kind: "apt-repository", name: "distro-main" },
+      versionPolicy: PROVIDER_MANAGED,
+      probe: { executable: "git", args: ["--version"] },
+    }),
+  },
+  "git-bash": {
+    windows: recipe("winget", ["install", "--id", "Git.Git", "--version", GIT_FOR_WINDOWS_VERSION, "--exact", "--source", "winget", "--silent", "--disable-interactivity", "--accept-package-agreements", "--accept-source-agreements"], `Git.Git@${GIT_FOR_WINDOWS_VERSION}`, {
+      provider: "winget",
+      identifier: "Git.Git",
+      source: { kind: "winget-source", name: "winget" },
+      versionPolicy: exactVersionPolicy(GIT_FOR_WINDOWS_VERSION),
+      probe: WINDOWS_GIT_BASH_PROBE,
+    }),
+  },
+  wsl: {
+    windows: recipe("wsl.exe", ["--install", "--no-launch"], "Microsoft.WSL", {
+      provider: "windows-wsl",
+      identifier: "Microsoft.WSL",
+      source: { kind: "windows-feature", name: "wsl" },
+      versionPolicy: PROVIDER_MANAGED,
+      probe: { executable: "wsl.exe", args: ["--status"] },
+    }),
   },
   ccusage: {
-    windows: ["npm.cmd", ["install", "--global", `--registry=${NPM_REGISTRY}`, "ccusage@20.0.14"], "ccusage@20.0.14"],
-    macos: ["npm", ["install", "--global", `--registry=${NPM_REGISTRY}`, "ccusage@20.0.14"], "ccusage@20.0.14"],
-    linux: ["npm", ["install", "--global", `--registry=${NPM_REGISTRY}`, "ccusage@20.0.14"], "ccusage@20.0.14"],
+    windows: npmRecipe("npm.cmd", "ccusage", "20.0.14", "ccusage"),
+    macos: npmRecipe("npm", "ccusage", "20.0.14", "ccusage"),
+    linux: npmRecipe("npm", "ccusage", "20.0.14", "ccusage"),
   },
   claude: {
-    windows: ["npm.cmd", ["install", "--global", `--registry=${NPM_REGISTRY}`, "@anthropic-ai/claude-code@2.1.206"], "@anthropic-ai/claude-code@2.1.206"],
-    macos: ["npm", ["install", "--global", `--registry=${NPM_REGISTRY}`, "@anthropic-ai/claude-code@2.1.206"], "@anthropic-ai/claude-code@2.1.206"],
-    linux: ["npm", ["install", "--global", `--registry=${NPM_REGISTRY}`, "@anthropic-ai/claude-code@2.1.206"], "@anthropic-ai/claude-code@2.1.206"],
+    windows: npmRecipe("npm.cmd", "@anthropic-ai/claude-code", "2.1.215", "claude"),
+    macos: npmRecipe("npm", "@anthropic-ai/claude-code", "2.1.215", "claude"),
+    linux: npmRecipe("npm", "@anthropic-ai/claude-code", "2.1.215", "claude"),
+  },
+  codex: {
+    windows: npmRecipe("npm.cmd", "@openai/codex", "0.144.6", "codex"),
+    macos: npmRecipe("npm", "@openai/codex", "0.144.6", "codex"),
+    linux: npmRecipe("npm", "@openai/codex", "0.144.6", "codex"),
   },
 };
+
+function exactVersionPolicy(version) {
+  return { kind: "exact", channel: null, allowCallerOverride: false, exactVersion: version };
+}
+
+function recipe(command, args, resolvedIdentifier, { provider, identifier, elevated = false, source, versionPolicy, probe }) {
+  return { command, args, resolvedIdentifier, provider, identifier, elevated, source, versionPolicy, probe };
+}
+
+function npmRecipe(command, packageName, version, probeExecutable) {
+  const resolvedIdentifier = `${packageName}@${version}`;
+  return recipe(command, ["install", "--global", `--registry=${NPM_REGISTRY}`, resolvedIdentifier], resolvedIdentifier, {
+    provider: "npm",
+    identifier: packageName,
+    source: { kind: "npm-registry", registry: NPM_REGISTRY, packageName },
+    versionPolicy: exactVersionPolicy(version),
+    probe: { executable: probeExecutable, args: ["--version"] },
+  });
+}
 
 function bridgePlatform(value = process.platform) {
   if (value === "win32" || value === "windows") return "windows";
@@ -65,32 +139,21 @@ export function resolveApplicationInstallSpawnPlan(plan, { platform = process.pl
   if (plan.target?.platform !== targetPlatform || plan.execution?.shell !== false) return null;
   const recipe = RECIPES[plan.application?.name]?.[targetPlatform];
   if (!recipe) return null;
-  const [executable, args, resolvedIdentifier] = recipe;
-  const expectedProvider = plan.application?.name === "git"
-    ? { windows: "winget", macos: "homebrew", linux: "apt" }[targetPlatform]
-    : "npm";
-  const expectedIdentifier = { git: "git", ccusage: "ccusage", claude: "@anthropic-ai/claude-code" }[plan.application?.name];
-  const expectedProbe = plan.application?.name === "git" ? "git" : plan.application?.name === "claude" ? "claude" : "ccusage";
+  const { command: executable, args, resolvedIdentifier } = recipe;
   if (plan.execution.executable !== executable || !sameArgs(plan.execution.args, args)) return null;
-  if (plan.package?.provider !== expectedProvider || plan.package?.identifier !== expectedIdentifier || plan.package?.resolvedIdentifier !== resolvedIdentifier) return null;
+  if (plan.package?.provider !== recipe.provider || plan.package?.identifier !== recipe.identifier || plan.package?.resolvedIdentifier !== resolvedIdentifier) return null;
   // ADR 0015: elevation is an exact per-mirror expectation, both directions —
   // an elevated plan for an unelevated recipe is refused, and vice versa.
-  const expectedElevated = plan.application?.name === "git" && targetPlatform === "linux";
+  const expectedElevated = Boolean(recipe.elevated);
   if (plan.execution.elevated !== expectedElevated) return null;
-  const expectedSource = plan.application?.name === "git"
-    ? { windows: { kind: "winget-source", name: "winget" }, macos: { kind: "homebrew-core", name: "homebrew/core" }, linux: { kind: "apt-repository", name: "distro-main" } }[targetPlatform]
-    : { kind: "npm-registry", registry: NPM_REGISTRY, packageName: expectedIdentifier };
   // #995/#994: git-windows is exact-pinned like the npm apps; git-macos
   // (homebrew/core has no versioned formula) and git-linux (apt cannot pin
   // portably) stay provider-managed — explicit decisions, mirrored from the
   // server recipes.
-  const expectedVersionPolicy = plan.application?.name === "git" && (targetPlatform === "macos" || targetPlatform === "linux")
-    ? { kind: "provider-managed", channel: "stable", allowCallerOverride: false, exactVersion: null }
-    : { kind: "exact", channel: null, allowCallerOverride: false, exactVersion: resolvedIdentifier.slice(resolvedIdentifier.lastIndexOf("@") + 1) };
-  if (JSON.stringify(plan.package?.source) !== JSON.stringify(expectedSource) || JSON.stringify(plan.package?.versionPolicy) !== JSON.stringify(expectedVersionPolicy)) return null;
+  if (JSON.stringify(plan.package?.source) !== JSON.stringify(recipe.source) || JSON.stringify(plan.package?.versionPolicy) !== JSON.stringify(recipe.versionPolicy)) return null;
   if (plan.approval?.required !== true || plan.approval?.action !== "application.install" || plan.approval?.bindsToPlanFingerprint !== true) return null;
   if (plan.policy?.timeoutMs !== 300_000 || plan.policy?.cancellable !== true) return null;
-  if (plan.postInstallProbe?.executable !== expectedProbe || !sameArgs(plan.postInstallProbe?.args, ["--version"]) || plan.postInstallProbe?.timeoutMs !== 15_000) return null;
+  if (!sameProbe(plan.postInstallProbe, recipe.probe)) return null;
   const issuedAtMs = Date.parse(plan.validity?.issuedAt);
   const expiresAtMs = Date.parse(plan.validity?.expiresAt);
   const currentMs = Number(now());
@@ -149,6 +212,7 @@ export async function runApprovedApplicationInstall({
   scheduleTimeout = setTimeout,
   clearScheduledTimeout = clearTimeout,
   now = Date.now,
+  preInstallProbe = true,
 }) {
   const spawnPlan = resolveApplicationInstallSpawnPlan(plan, { platform, now });
   if (!spawnPlan) {
@@ -159,8 +223,28 @@ export async function runApprovedApplicationInstall({
   if (spawnPlan.refusal) {
     return { status: "refused", classification: spawnPlan.refusal.classification, summary: spawnPlan.refusal.summary, exitCode: null, durationMs: null };
   }
-  await onProgress({ type: "spawning", summary: `Starting approved ${plan.application.displayName} installation.` });
   const startedAt = now();
+  if (preInstallProbe) {
+    await onProgress({ type: "probing", summary: `Checking whether ${plan.application.displayName} is already available.` });
+    const existing = await runProbe({
+      probe: plan.postInstallProbe,
+      spawnProcess,
+      env,
+      scheduleTimeout,
+      clearScheduledTimeout,
+      terminate,
+    });
+    if (existing.ok) {
+      return {
+        status: "succeeded",
+        classification: "already_installed",
+        summary: `${plan.application.displayName} is already available; installation was skipped.`,
+        exitCode: existing.exitCode,
+        durationMs: now() - startedAt,
+      };
+    }
+  }
+  await onProgress({ type: "spawning", summary: `Starting approved ${plan.application.displayName} installation.` });
   return new Promise((resolve) => {
     let settled = false;
     let cancelled = false;
@@ -251,5 +335,92 @@ export async function runApprovedApplicationInstall({
         await terminate(child);
       }
     }, 500);
+  });
+}
+
+function runProbe({
+  probe,
+  spawnProcess,
+  env,
+  scheduleTimeout,
+  clearScheduledTimeout,
+  terminate,
+}) {
+  return new Promise((resolve) => {
+    let settled = false;
+    let child;
+    const candidates = probeCandidates(probe);
+    let index = 0;
+    const finish = (result) => {
+      if (settled) return;
+      settled = true;
+      if (timeoutTimer) clearScheduledTimeout(timeoutTimer);
+      resolve(result);
+    };
+    const timeoutTimer = scheduleTimeout(async () => {
+      if (child) await terminate(child);
+      finish({ ok: false, exitCode: null, timedOut: true });
+    }, Math.max(1_000, Math.min(30_000, Number(probe?.timeoutMs ?? 15_000))));
+    const tryNext = () => {
+      if (settled) return;
+      const candidate = candidates[index++];
+      if (!candidate) {
+        finish({ ok: false, exitCode: null, timedOut: false });
+        return;
+      }
+      try {
+        child = spawnProcess(candidate.executable, [...candidate.args], {
+          cwd: process.cwd(), env, windowsHide: true, shell: false, stdio: ["ignore", "pipe", "pipe"],
+        });
+      } catch {
+        tryNext();
+        return;
+      }
+      child.stdout?.resume?.();
+      child.stderr?.resume?.();
+      let childDone = false;
+      const failCandidate = () => {
+        if (childDone) return;
+        childDone = true;
+        tryNext();
+      };
+      child.on("error", failCandidate);
+      child.on("close", (code) => {
+        if (childDone) return;
+        if (code === 0) {
+          childDone = true;
+          finish({ ok: true, exitCode: 0, timedOut: false });
+          return;
+        }
+        failCandidate();
+      });
+    };
+    tryNext();
+  });
+}
+
+function sameProbe(actual, expected) {
+  if (actual?.executable !== expected.executable || !sameArgs(actual?.args, expected.args) || actual?.timeoutMs !== 15_000) return false;
+  return JSON.stringify(probeCandidates(actual)) === JSON.stringify(probeCandidates(expected));
+}
+
+function probeCandidates(probe) {
+  const primary = {
+    executable: String(probe?.executable ?? "").trim(),
+    args: Array.isArray(probe?.args) ? probe.args.map(String) : ["--version"],
+  };
+  const candidates = [
+    primary,
+    ...(Array.isArray(probe?.candidates) ? probe.candidates.map((candidate) => ({
+      executable: String(candidate?.executable ?? "").trim(),
+      args: Array.isArray(candidate?.args) ? candidate.args.map(String) : primary.args,
+    })) : []),
+  ].filter((candidate) => candidate.executable);
+  const seen = new Set();
+  return candidates.filter((candidate) => {
+    const key = `${candidate.executable}\0${JSON.stringify(candidate.args)}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
   });
 }

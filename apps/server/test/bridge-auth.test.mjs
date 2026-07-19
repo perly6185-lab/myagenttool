@@ -40,7 +40,7 @@ test("bridge registration issues a device-bound credential and protects bridge r
   const registered = await call("/api/bridge/register", { method: "POST", body: {
     bridgeVersion: "test",
     applicationBinaryReadiness: [
-      { command: "git", capabilityPrefix: "app.app_git.wrapper.", status: "available", version: "git version 2.50.0" },
+      { command: "git", capabilityPrefix: "app.app_git.wrapper.", status: "available", version: "git version 2.50.0", authenticationStatus: "authenticated", authenticationMethod: "API Key $$$" },
       { command: "C:/evil.exe", capabilityPrefix: "app.app_git.wrapper.", status: "available", version: "bad" },
       { command: "node", capabilityPrefix: "not-an-app", status: "available", version: "bad" },
     ],
@@ -56,17 +56,20 @@ test("bridge registration issues a device-bound credential and protects bridge r
     capabilityPrefix: "app.app_git.wrapper.",
     status: "available",
     version: "git version 2.50.0",
+    authenticationStatus: "authenticated",
+    authenticationMethod: "api_key_",
     checkedAt: state.device.lastSeenAt,
   }]);
 
   const refreshed = await call("/api/bridge/readiness", {
     method: "POST",
     token: registered.body.bridgeToken,
-    body: { applicationBinaryReadiness: [{ command: "git", capabilityPrefix: "app.app_git.wrapper.", status: "absent", version: "must be dropped" }] },
+    body: { applicationBinaryReadiness: [{ command: "git", capabilityPrefix: "app.app_git.wrapper.", status: "absent", version: "must be dropped", authenticationStatus: "authenticated", authenticationMethod: "must_drop" }] },
   });
   assert.equal(refreshed.status, 200);
   assert.equal(state.device.applicationBinaryReadiness[0].status, "absent");
   assert.equal(state.device.applicationBinaryReadiness[0].version, null);
+  assert.equal(state.device.applicationBinaryReadiness[0].authenticationStatus, undefined);
 
   const unauthenticatedPoll = await call("/api/bridge/next");
   assert.equal(unauthenticatedPoll.status, 401);

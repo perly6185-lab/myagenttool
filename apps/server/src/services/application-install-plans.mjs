@@ -2,13 +2,17 @@ import crypto from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 
 const SCHEMA_VERSION = "application-install-plan/v1";
-const RECIPE_VERSION = "2026-07-16.2";
+const RECIPE_VERSION = "2026-07-19.1";
 const PLAN_TTL_MS = 10 * 60 * 1000;
 const SUPPORTED_PLATFORMS = ["windows", "macos", "linux"];
 const ALLOWED_REQUEST_FIELDS = new Set(["name", "projectId", "deviceId", "platform", "architecture"]);
 const NPM_REGISTRY = "https://registry.npmjs.org/";
 const CCUSAGE_VERSION = "20.0.14";
-const CLAUDE_CODE_VERSION = "2.1.206";
+const CLAUDE_CODE_VERSION = "2.1.215";
+const CODEX_VERSION = "0.144.6";
+const GIT_FOR_WINDOWS_VERSION = "2.50.1";
+const WINDOWS_GIT_BASH = "C:\\Program Files\\Git\\bin\\bash.exe";
+const WINDOWS_GIT_BASH_X86 = "C:\\Program Files (x86)\\Git\\bin\\bash.exe";
 
 const APPLICATIONS = {
   git: {
@@ -20,9 +24,9 @@ const APPLICATIONS = {
       // #995: winget supports exact-version install — the promoted Git version
       // is PINNED like the npm apps; bumping it is a reviewed recipe change
       // (recipeVersion bump + release evidence), never a silent provider drift.
-      windows: recipe("winget", "winget", ["install", "--id", "Git.Git", "--version", "2.50.1", "--exact", "--source", "winget", "--silent", "--disable-interactivity", "--accept-package-agreements", "--accept-source-agreements"], "Git.Git@2.50.1", {
+      windows: recipe("winget", "winget", ["install", "--id", "Git.Git", "--version", GIT_FOR_WINDOWS_VERSION, "--exact", "--source", "winget", "--silent", "--disable-interactivity", "--accept-package-agreements", "--accept-source-agreements"], `Git.Git@${GIT_FOR_WINDOWS_VERSION}`, {
         source: { kind: "winget-source", name: "winget" },
-        versionPolicy: exactVersionPolicy("2.50.1"),
+        versionPolicy: exactVersionPolicy(GIT_FOR_WINDOWS_VERSION),
       }),
       // #995 decision: homebrew/core has no versioned git formula, so an
       // arbitrary-version pin is structurally impossible without shipping our
@@ -45,6 +49,41 @@ const APPLICATIONS = {
       }),
     },
   },
+  "git-bash": {
+    displayName: "Git Bash",
+    aliases: ["git-bash", "git bash"],
+    packageIdentifier: "Git.Git",
+    probe: {
+      executable: WINDOWS_GIT_BASH,
+      args: ["--version"],
+      candidates: [
+        { executable: WINDOWS_GIT_BASH, args: ["--version"] },
+        { executable: WINDOWS_GIT_BASH_X86, args: ["--version"] },
+        { executable: "git", args: ["--version"] },
+      ],
+    },
+    recipes: {
+      windows: recipe("winget", "winget", ["install", "--id", "Git.Git", "--version", GIT_FOR_WINDOWS_VERSION, "--exact", "--source", "winget", "--silent", "--disable-interactivity", "--accept-package-agreements", "--accept-source-agreements"], `Git.Git@${GIT_FOR_WINDOWS_VERSION}`, {
+        source: { kind: "winget-source", name: "winget" },
+        versionPolicy: exactVersionPolicy(GIT_FOR_WINDOWS_VERSION),
+        riskReasons: ["installs_device_software", "adds_shell_runtime"],
+      }),
+    },
+  },
+  wsl: {
+    displayName: "WSL",
+    aliases: ["wsl", "wsl bash", "wsl-bash"],
+    packageIdentifier: "Microsoft.WSL",
+    probe: { executable: "wsl.exe", args: ["--status"] },
+    recipes: {
+      windows: recipe("windows-wsl", "wsl.exe", ["--install", "--no-launch"], "Microsoft.WSL", {
+        source: { kind: "windows-feature", name: "wsl" },
+        versionPolicy: providerVersionPolicy(),
+        riskLevel: "high",
+        riskReasons: ["installs_device_software", "enables_windows_subsystem", "may_require_reboot"],
+      }),
+    },
+  },
   ccusage: {
     displayName: "ccusage",
     aliases: ["ccusage"],
@@ -59,6 +98,13 @@ const APPLICATIONS = {
     probe: { executable: "claude", args: ["--version"] },
     recipes: npmRecipes("@anthropic-ai/claude-code", CLAUDE_CODE_VERSION),
   },
+  codex: {
+    displayName: "Codex CLI",
+    aliases: ["codex", "codex cli"],
+    packageIdentifier: "@openai/codex",
+    probe: { executable: "codex", args: ["--version"] },
+    recipes: npmRecipes("@openai/codex", CODEX_VERSION),
+  },
 };
 
 function providerVersionPolicy() {
@@ -69,8 +115,8 @@ function exactVersionPolicy(version) {
   return { kind: "exact", channel: null, allowCallerOverride: false, exactVersion: version };
 }
 
-function recipe(provider, executable, args, packageIdentifier, { elevated = false, source, versionPolicy } = {}) {
-  return { provider, executable, args, packageIdentifier, elevated, source, versionPolicy };
+function recipe(provider, executable, args, packageIdentifier, { elevated = false, source, versionPolicy, riskLevel = null, riskReasons = null } = {}) {
+  return { provider, executable, args, packageIdentifier, elevated, source, versionPolicy, riskLevel, riskReasons };
 }
 
 function npmRecipes(packageName, version) {
@@ -179,19 +225,28 @@ export function createApplicationInstallPlan(input, { device, projectId = null, 
     },
     execution: { executable: selected.executable, args: [...selected.args], shell: false, elevated: selected.elevated },
     risk: {
-      level: selected.elevated ? "high" : "medium",
-      reasons: selected.elevated ? ["installs_device_software", "requires_elevation"] : ["installs_device_software"],
+      level: selected.riskLevel ?? (selected.elevated ? "high" : "medium"),
+      reasons: selected.riskReasons ?? (selected.elevated ? ["installs_device_software", "requires_elevation"] : ["installs_device_software"]),
     },
     approval: { required: true, action: "application.install", bindsToPlanFingerprint: true },
     policy: { timeoutMs: 300_000, cancellable: true },
     validity: { issuedAt: identity.issuedAt, expiresAt, ttlMs: PLAN_TTL_MS },
-    postInstallProbe: { executable: application.probe.executable, args: [...application.probe.args], timeoutMs: 15_000 },
+    postInstallProbe: publicProbe(application.probe),
     rollback: {
       automatic: false,
       uninstallSupported: false,
       summary: "Automatic rollback is disabled because installation may modify pre-existing package-manager state; failed installs require operator review.",
     },
     summary: `Install ${application.displayName} on ${device.name ?? device.id} with ${selected.provider}; explicit local approval is required.`,
+  };
+}
+
+function publicProbe(probe) {
+  return {
+    executable: probe.executable,
+    args: [...probe.args],
+    timeoutMs: 15_000,
+    ...(Array.isArray(probe.candidates) ? { candidates: probe.candidates.map((candidate) => ({ executable: candidate.executable, args: [...candidate.args] })) } : {}),
   };
 }
 
