@@ -17,6 +17,7 @@
 
 import {
   hasVerificationEvidence,
+  mentionsLinkedIssue,
   prFilePath,
   reviewRiskGates,
 } from "./pr-evidence.mjs";
@@ -25,7 +26,7 @@ export function judgePrEvidence(pr) {
   const body = pr.body ?? "";
   const files = (pr.files ?? []).map(prFilePath).filter(Boolean);
   const linksIssue =
-    (pr.closingIssuesReferences ?? []).length > 0 || /\b(refs|closes|fixes)\s+#\d+/i.test(body);
+    (pr.closingIssuesReferences ?? []).length > 0 || mentionsLinkedIssue(body);
   const verification = hasVerificationEvidence(body);
   const riskFindings = reviewRiskGates(files, body, pr.number).warnings;
   return {
