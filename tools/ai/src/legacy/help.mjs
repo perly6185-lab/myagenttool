@@ -62,6 +62,7 @@ Usage:
   node tools/ai/src/index.mjs eval-heldout [--set DIR] [--resolver mock|command] [--resolver-command-json JSON] [--min-pass-rate 0..1] [--json] [--out path]
   node tools/ai/src/index.mjs feedback-triage [--apply] [--human-approved "reason"] [--report]
   node tools/ai/src/index.mjs eval-subcap [--set DIR] [--provider mock|openai|command] [--min-pass-rate 0..1] [--json] [--out path]
+  node tools/ai/src/index.mjs impact [--base REF] [--provider mock|openai|command] [--repo R] [--pr N] [--issue N] [--apply] [--out path]
 
 Providers:
   openai   Uses OPENAI_API_KEY and the Responses API.
