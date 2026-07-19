@@ -16,8 +16,8 @@ test("reports only allowlisted application binaries with sanitized versions", as
   });
 
   assert.deepEqual(rows, [
-    { command: "git", capabilityPrefix: "app.app_git.wrapper.", status: "available", version: "git version 2.50.0 secret second line", checkedAt: "2026-07-13T00:00:00.000Z" },
-    { command: "ccusage", capabilityPrefix: "app.app_ccusage.wrapper.", status: "absent", version: null, checkedAt: "2026-07-13T00:00:00.000Z" },
+    { runtimeId: "runtime_git", command: "git", capabilityPrefix: "app.app_git.wrapper.", status: "available", version: "git version 2.50.0 secret second line", checkedAt: "2026-07-13T00:00:00.000Z" },
+    { runtimeId: "runtime_ccusage", command: "ccusage", capabilityPrefix: "app.app_ccusage.wrapper.", status: "absent", version: null, checkedAt: "2026-07-13T00:00:00.000Z" },
   ]);
 });
 
@@ -30,6 +30,7 @@ test("the bridge manifest reports readiness for Claude Application capabilities"
   });
   const claude = rows.find((row) => row.command === "claude");
   assert.deepEqual(claude, {
+    runtimeId: "runtime_claude",
     command: "claude",
     capabilityPrefix: "app.app_claude.",
     status: "available",
@@ -53,6 +54,7 @@ test("authentication probes publish only normalized status and method", async ()
   });
   const codex = rows.find((row) => row.command === "codex");
   assert.deepEqual(codex, {
+    runtimeId: "runtime_codex",
     command: "codex",
     capabilityPrefix: "app.setup.codex.",
     status: "available",
@@ -72,6 +74,7 @@ test("candidate probes mark setup-only tools available when a fallback succeeds"
   });
   const gitBash = rows.find((row) => row.command === "git-bash");
   assert.deepEqual(gitBash, {
+    runtimeId: "runtime_git_bash",
     command: "git-bash",
     capabilityPrefix: "app.setup.git_bash.",
     status: "available",

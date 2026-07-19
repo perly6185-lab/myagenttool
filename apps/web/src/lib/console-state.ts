@@ -14,7 +14,13 @@ export interface DeviceSnapshot {
   lastSeenAt: string | null;
   /** Max invocations this machine runs at once (across distinct worktrees). */
   maxConcurrency?: number;
-  applicationBinaryReadiness?: Array<{
+  runtimeReadiness?: DeviceRuntimeReadiness[];
+  /** Compatibility alias for older servers. */
+  applicationBinaryReadiness?: DeviceRuntimeReadiness[];
+}
+
+export interface DeviceRuntimeReadiness {
+    runtimeId?: string;
     command: string;
     capabilityPrefix: string;
     status: "available" | "absent" | "stale";
@@ -22,7 +28,6 @@ export interface DeviceSnapshot {
     authenticationStatus?: "authenticated" | "unauthenticated" | "unknown";
     authenticationMethod?: string | null;
     checkedAt: string;
-  }>;
 }
 
 export interface AgentHealth {
@@ -1656,7 +1661,18 @@ export interface KnownApplicationCatalogEntry {
   aliases: string[];
   command: string;
   installHint: string;
-  setupOnly?: boolean;
+  runtimeRequirements: Array<{ runtimeId: string; required: boolean }>;
+}
+
+export interface RuntimeCatalogEntry {
+  id: string;
+  command: string;
+  displayName: string;
+  kind: "agent_cli" | "tool" | "shell";
+  aliases: string[];
+  applicationIds: string[];
+  authenticationRequired: boolean;
+  userVisible: boolean;
 }
 
 export interface ApplicationInstallPlan {

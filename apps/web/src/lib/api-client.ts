@@ -398,6 +398,11 @@ export const api = {
       "GET",
       "/api/applications/quick-register/catalog",
     ),
+  listKnownRuntimes: () =>
+    request<{ runtimes: import("./console-state").RuntimeCatalogEntry[] }>(
+      "GET",
+      "/api/runtimes/catalog",
+    ),
   quickRegisterApplication: (body: { name: string; projectId?: string | null }) =>
     request<{ application: ApplicationSnapshot; capabilities: ApplicationCapability[]; catalog: KnownApplicationCatalogEntry }>(
       "POST",

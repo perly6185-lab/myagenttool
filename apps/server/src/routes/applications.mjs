@@ -2,6 +2,7 @@ import { denyForeignProject, teamOf } from "../runtime/auth.mjs";
 import { findDevice, primaryDevice } from "../runtime/device.mjs";
 import { createKnownApplicationRegistration, listKnownApplications } from "../services/application-catalog.mjs";
 import { createApplicationInstallPlan, listApplicationInstallCatalog } from "../services/application-install-plans.mjs";
+import { listKnownRuntimes } from "../services/runtime-catalog.mjs";
 
 export async function handleApplicationRoutes({
   req,
@@ -40,6 +41,11 @@ export async function handleApplicationRoutes({
 
   if (req.method === "GET" && url.pathname === "/api/applications/quick-register/catalog") {
     sendJson(res, 200, { applications: listKnownApplications() });
+    return true;
+  }
+
+  if (req.method === "GET" && url.pathname === "/api/runtimes/catalog") {
+    sendJson(res, 200, { runtimes: listKnownRuntimes() });
     return true;
   }
 

@@ -31,6 +31,12 @@ before(async () => {
 after(() => server?.close());
 
 test("P1 HTTP catalog and plan endpoints are additive and plan-only", async () => {
+  const applications = await call("/api/applications/quick-register/catalog");
+  assert.equal(applications.status, 200);
+  assert.deepEqual(applications.body.applications.map((entry) => entry.name), ["git", "ccusage", "claude", "codex"]);
+  const runtimes = await call("/api/runtimes/catalog");
+  assert.equal(runtimes.status, 200);
+  assert.deepEqual(runtimes.body.runtimes.filter((entry) => entry.kind === "shell").map((entry) => entry.id), ["runtime_git_bash", "runtime_wsl"]);
   const catalog = await call("/api/applications/install/catalog");
   assert.equal(catalog.status, 200);
   assert.deepEqual(catalog.body.applications.map((entry) => entry.name), ["git", "git-bash", "wsl", "ccusage", "claude", "codex"]);

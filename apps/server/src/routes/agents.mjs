@@ -3,6 +3,7 @@ import { normalizeMcpAdapterConfig } from "@myagenttool/adapters/mcp";
 import { isClaudeCliCommand, isCodexCliCommand } from "../services/agents.mjs";
 import { bearerToken, publicDeviceView } from "../runtime/bridge-auth.mjs";
 import { listDevices, primaryDevice } from "../runtime/device.mjs";
+import { runtimeIdForCommand } from "../services/runtime-catalog.mjs";
 
 export async function handleAgentRoutes({
   req,
@@ -33,7 +34,9 @@ export async function handleAgentRoutes({
     const device = requireBridgeCredential({ req, res, sendJson });
     if (!device) return true;
     const body = await readJson(req);
-    device.applicationBinaryReadiness = normalizeApplicationBinaryReadiness(body?.applicationBinaryReadiness, now());
+    const runtimeReadiness = normalizeRuntimeReadiness(body?.runtimeReadiness ?? body?.applicationBinaryReadiness, now());
+    device.runtimeReadiness = runtimeReadiness;
+    device.applicationBinaryReadiness = runtimeReadiness;
     device.applicationCredentialReadiness = normalizeApplicationCredentialReadiness(body?.applicationCredentialReadiness, now());
     device.updatedAt = now();
     sendJson(res, 200, { device: publicDeviceView(device) });
@@ -93,7 +96,9 @@ export async function handleAgentRoutes({
     device.lastSeenAt = now();
     device.bridgeVersion = String(body.bridgeVersion ?? "0.0.0");
     device.registeredCapabilities = Array.isArray(body.capabilities) ? body.capabilities.map(String) : [];
-    device.applicationBinaryReadiness = normalizeApplicationBinaryReadiness(body.applicationBinaryReadiness, device.lastSeenAt);
+    const runtimeReadiness = normalizeRuntimeReadiness(body.runtimeReadiness ?? body.applicationBinaryReadiness, device.lastSeenAt);
+    device.runtimeReadiness = runtimeReadiness;
+    device.applicationBinaryReadiness = runtimeReadiness;
     device.applicationCredentialReadiness = normalizeApplicationCredentialReadiness(body.applicationCredentialReadiness, device.lastSeenAt);
     device.updatedAt = now();
     // NOTE: this marks every local agent available, not just the ones located on
@@ -260,13 +265,14 @@ function normalizeApplicationCredentialReadiness(rows, checkedAt) {
   });
 }
 
-function normalizeApplicationBinaryReadiness(rows, checkedAt) {
+function normalizeRuntimeReadiness(rows, checkedAt) {
   if (!Array.isArray(rows)) return [];
   return rows.flatMap((row) => {
     const command = String(row?.command ?? "").trim();
+    const runtimeId = runtimeIdForCommand(command);
     const capabilityPrefix = String(row?.capabilityPrefix ?? "").trim();
     const status = row?.status === "available" ? "available" : row?.status === "absent" ? "absent" : null;
-    if (!/^[a-z][a-z0-9_-]{0,31}$/.test(command) || !capabilityPrefix.startsWith("app.") || !status) return [];
+    if (!runtimeId || !capabilityPrefix.startsWith("app.") || !status) return [];
     const authenticationStatus = status === "available" && ["authenticated", "unauthenticated", "unknown"].includes(row?.authenticationStatus)
       ? row.authenticationStatus
       : null;
@@ -274,6 +280,7 @@ function normalizeApplicationBinaryReadiness(rows, checkedAt) {
       ? String(row?.authenticationMethod ?? "").trim().toLowerCase().replace(/[^a-z0-9_.-]+/g, "_").slice(0, 32) || null
       : null;
     return [{
+      runtimeId,
       command,
       capabilityPrefix,
       status,

@@ -296,6 +296,7 @@ function createDefaultDevice(now) {
     unlinkState: "linked",
     lastSeenAt: null,
     registeredCapabilities: [],
+    runtimeReadiness: [],
     applicationBinaryReadiness: [],
     // What the device HOLDS (application, provider, scope) — never a credential
     // (ADR 0010). The server compares it against the immutable descriptor.

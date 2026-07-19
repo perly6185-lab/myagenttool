@@ -95,7 +95,7 @@ export function ApplicationsView() {
         description="Applications registered as governed assets from git, local, npm, or manual sources. Select one to inspect its capabilities, probe, and orchestrations."
         actions={
           <Button size="sm" onClick={() => setRegisterOpen(true)}>
-            Register application
+            Add application
           </Button>
         }
       />

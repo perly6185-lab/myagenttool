@@ -546,13 +546,16 @@ function publicDeviceReadinessView(device) {
   const view = publicDeviceView(device);
   if (!view) return view;
   const nowMs = Date.now();
+  const readiness = view.runtimeReadiness ?? view.applicationBinaryReadiness ?? [];
+  const runtimeReadiness = readiness.map((row) => {
+    const checkedAtMs = Date.parse(row.checkedAt ?? "");
+    const stale = view.status !== "online" || !Number.isFinite(checkedAtMs) || nowMs - checkedAtMs > APPLICATION_BINARY_READINESS_TTL_MS;
+    return stale ? { ...row, status: "stale" } : row;
+  });
   return {
     ...view,
-    applicationBinaryReadiness: (view.applicationBinaryReadiness ?? []).map((row) => {
-      const checkedAtMs = Date.parse(row.checkedAt ?? "");
-      const stale = view.status !== "online" || !Number.isFinite(checkedAtMs) || nowMs - checkedAtMs > APPLICATION_BINARY_READINESS_TTL_MS;
-      return stale ? { ...row, status: "stale" } : row;
-    }),
+    runtimeReadiness,
+    applicationBinaryReadiness: runtimeReadiness,
   };
 }
 

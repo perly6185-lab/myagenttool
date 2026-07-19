@@ -1,13 +1,20 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { createKnownApplicationRegistration, listKnownApplications } from "../src/services/application-catalog.mjs";
+import { listKnownRuntimes } from "../src/services/runtime-catalog.mjs";
 
-test("known application catalog exposes governed entries and setup-only prerequisites", () => {
-  assert.deepEqual(listKnownApplications().map((entry) => entry.name), ["git", "ccusage", "claude", "codex", "git-bash", "wsl"]);
-  assert.deepEqual(
-    listKnownApplications().filter((entry) => entry.setupOnly).map((entry) => entry.name),
-    ["git-bash", "wsl"],
-  );
+test("known application catalog exposes only user-facing applications", () => {
+  assert.deepEqual(listKnownApplications().map((entry) => entry.name), ["git", "ccusage", "claude", "codex"]);
+  assert.deepEqual(listKnownApplications().find((entry) => entry.name === "codex").runtimeRequirements, [
+    { runtimeId: "runtime_codex", required: true },
+  ]);
+});
+
+test("runtime catalog keeps shell infrastructure separate from Applications", () => {
+  assert.deepEqual(listKnownRuntimes().map((entry) => entry.id), [
+    "runtime_git", "runtime_ccusage", "runtime_claude", "runtime_codex", "runtime_git_bash", "runtime_wsl",
+  ]);
+  assert.deepEqual(listKnownRuntimes().filter((entry) => entry.kind === "shell").map((entry) => entry.applicationIds), [[], []]);
 });
 
 test("known application registration resolves aliases and preserves project scope", () => {
@@ -28,7 +35,7 @@ test("unknown text cannot become an install or registration request", () => {
   assert.equal(createKnownApplicationRegistration("left-pad"), null);
 });
 
-test("Codex resolves to a governed registration while setup-only prerequisites do not", () => {
+test("Codex resolves to a governed registration while runtime-only shells do not", () => {
   assert.equal(createKnownApplicationRegistration("codex cli").registration.id, "app_codex");
   assert.equal(createKnownApplicationRegistration("git bash"), null);
   assert.equal(createKnownApplicationRegistration("wsl bash"), null);

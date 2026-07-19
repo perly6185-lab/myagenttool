@@ -1528,7 +1528,7 @@ export function ApplicationsInspector() {
   const sourceBinary = application.source.type === "binary" ? application.source.binary : application.source.type === "npm" ? application.source.package : null;
   const readinessDevices = state?.devices?.length ? state.devices : state?.device ? [state.device] : [];
   const binaryReadiness = sourceBinary
-    ? readinessDevices.map((device) => ({ device, readiness: device.applicationBinaryReadiness?.find((row) => row.command === sourceBinary) ?? null }))
+    ? readinessDevices.map((device) => ({ device, readiness: (device.runtimeReadiness ?? device.applicationBinaryReadiness)?.find((row) => row.command === sourceBinary) ?? null }))
     : [];
   const binaryReadinessSummary = sourceBinary
     ? binaryReadiness.map(({ device, readiness }) => `${device.name}: ${readiness ? `${readiness.status}${readiness.version && readiness.status !== "stale" ? ` · ${readiness.version}` : ""}${readiness.authenticationStatus ? ` · auth ${readiness.authenticationStatus}${readiness.authenticationMethod ? ` (${readiness.authenticationMethod})` : ""}` : ""} · ${shortTime(readiness.checkedAt)}` : "never reported"}`).join(" | ") || "No eligible devices"

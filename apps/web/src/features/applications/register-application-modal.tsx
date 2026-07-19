@@ -74,7 +74,7 @@ export function RegisterApplicationModal({ open, onClose }: { open: boolean; onC
   }, [knownApplication, knownApplicationData]);
   const selectedDevice = devices.find((device) => device.id === deviceId) ?? null;
   const readiness = knownEntry && selectedDevice
-    ? selectedDevice.applicationBinaryReadiness?.find((row) => row.command === knownEntry.command) ?? null
+    ? (selectedDevice.runtimeReadiness ?? selectedDevice.applicationBinaryReadiness)?.find((row) => row.command === knownEntry.command) ?? null
     : null;
   const authenticationLoginCommand = readiness?.authenticationStatus === "unauthenticated"
     ? knownEntry?.command === "codex" ? "codex login" : knownEntry?.command === "claude" ? "claude auth login" : null
@@ -122,11 +122,6 @@ export function RegisterApplicationModal({ open, onClose }: { open: boolean; onC
 
   async function registerKnownApplication() {
     try {
-      if (knownEntry?.setupOnly) {
-        setSetupPhase("ready");
-        setSetupMessage(`${knownEntry.displayName} is installed and ready on the selected device.`);
-        return;
-      }
       const result = await api.quickRegisterApplication({ name: knownApplication.trim(), ...(projectId ? { projectId } : {}) });
       if (result.application?.id) setSelectedApplicationId(result.application.id);
       setSetupPhase("ready");
@@ -246,7 +241,7 @@ export function RegisterApplicationModal({ open, onClose }: { open: boolean; onC
   const workflowActive = ["installing", "probing", "registering"].includes(setupPhase);
 
   return (
-    <Modal open={open} onClose={onClose} closeDisabled={workflowActive} title="Register application" description="Set up a known Application or register an advanced source." size="lg">
+    <Modal open={open} onClose={onClose} closeDisabled={workflowActive} title="Add application" description="Add a ready-to-use application or register an advanced source." size="lg">
       <form className="space-y-3" onSubmit={submit}>
         <div className="space-y-3 rounded-xl border border-border bg-muted/30 p-3 sm:p-4">
           <div>
@@ -258,7 +253,7 @@ export function RegisterApplicationModal({ open, onClose }: { open: boolean; onC
               list="known-application-options"
               value={knownApplication}
               onChange={(event) => { setKnownApplication(event.target.value); resetSetup(); }}
-              placeholder="ccusage, git, claude, codex, git-bash, or wsl"
+              placeholder="Codex, Claude, Git, or ccusage"
               disabled={workflowActive}
             />
             <Select value={deviceId} onChange={(event) => { setDeviceId(event.target.value); resetSetup("Device changed. Run detection again."); }} disabled={workflowActive} aria-label="Target device">
