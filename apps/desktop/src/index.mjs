@@ -70,7 +70,7 @@ async function activeRunAsUser() {
 const serverUrl = process.env.BRIDGE_SERVER_URL ?? "http://127.0.0.1:5001";
 const pollIntervalMs = Number(process.env.BRIDGE_POLL_INTERVAL_MS ?? 700);
 const terminalPollIntervalMs = Number(process.env.BRIDGE_TERMINAL_POLL_INTERVAL_MS ?? 40);
-const binaryReadinessIntervalMs = Number(process.env.BRIDGE_BINARY_READINESS_INTERVAL_MS ?? 5 * 60 * 1000);
+const binaryReadinessIntervalMs = Number(process.env.BRIDGE_BINARY_READINESS_INTERVAL_MS ?? 15 * 1000);
 // Where the one-time login flow leaves its NON-SECRET sidecar records
 // (application id, provider, scope). The secret itself lives in the OS
 // credential store and is read only by the MCP server that uses it; the bridge
@@ -79,7 +79,9 @@ const credentialDir = process.env.BRIDGE_CREDENTIAL_DIR ?? null;
 const demoAgentPath = resolve(__dirname, "demo-agent.mjs");
 const codexFixtureAgentPath = resolve(__dirname, "codex-fixture-agent.mjs");
 const remoteRelayPath = resolve(__dirname, "remote-relay.mjs");
-const localExecutionPolicyManifest = createLocalExecutionPolicyManifest({ demoAgentPath, codexFixtureAgentPath });
+const localExecutionPolicyManifest = withBundledAgentProbes(
+  createLocalExecutionPolicyManifest({ demoAgentPath, codexFixtureAgentPath }),
+);
 const bridgeTokenPath = resolve(process.env.MYAGENTTOOL_BRIDGE_TOKEN_PATH ?? ".myagenttool/bridge-token.json");
 let bridgeToken = String(process.env.MYAGENTTOOL_BRIDGE_TOKEN ?? "").trim() || loadBridgeToken();
 
@@ -842,7 +844,7 @@ async function postTerminalEvent(event) {
 function resolveTerminalShell(requested) {
   const normalized = String(requested ?? "").trim().toLowerCase();
   if (process.platform === "win32") {
-    const gitBash = "C:\\Program Files\\Git\\bin\\bash.exe";
+    const gitBash = process.env.MYAGENTTOOL_GIT_BASH_COMMAND || "C:\\Program Files\\Git\\bin\\bash.exe";
     const candidates = {
       cmd: { file: "cmd.exe", args: [], label: "cmd.exe" },
       "cmd.exe": { file: "cmd.exe", args: [], label: "cmd.exe" },
@@ -1580,6 +1582,7 @@ function uniqueCandidates(candidates) {
 function createCliSpawnPlan(adapter, payload) {
   const payloadJson = JSON.stringify(payload);
   const codexCommandOverride = isCodexCliCommand(adapter.command) ? process.env.MYAGENTTOOL_CODEX_COMMAND : null;
+  const claudeCommandOverride = isClaudeCliCommand(adapter.command) ? process.env.MYAGENTTOOL_CLAUDE_COMMAND : null;
   const codexImageAttachments = isCodexCliCommand(adapter.command) ? prepareCodexImageAttachments(payload) : [];
   const argsTemplate = isCodexCliCommand(adapter.command)
     ? insertCodexImageArgs(codexArgsTemplate(adapter, payload), codexImageAttachments)
@@ -1591,7 +1594,7 @@ function createCliSpawnPlan(adapter, payload) {
         payload,
         { resolveCwd: (spec, metadata) => normalizedExistingPath(spec.cwd) ?? normalizedExistingPath(metadata?.worktreePath) ?? normalizedExistingPath(metadata?.projectPath) },
       );
-  const baseCommand = codexCommandOverride || String(adapter.command);
+  const baseCommand = codexCommandOverride || claudeCommandOverride || String(adapter.command);
   const command = adapter.command === "demo-agent" || codexCommandOverride === "fixture"
     ? process.execPath
     : isCodexCliCommand(adapter.command)
@@ -2322,7 +2325,7 @@ async function probeCodexCli(adapter) {
 }
 
 async function probeClaudeCli(adapter) {
-  const command = String(adapter.command ?? "claude");
+  const command = process.env.MYAGENTTOOL_CLAUDE_COMMAND || String(adapter.command ?? "claude");
   const result = await spawnCapture(command, ["--help"], {
     cwd: process.cwd(),
     env: buildEnv({ ...adapter, environmentPolicy: "inherit_safe" }),
@@ -2342,6 +2345,32 @@ async function probeClaudeCli(adapter) {
       `Configured output format: ${adapter.outputFormat ?? "unknown"}.`,
       hasHelp ? "Claude CLI help is available." : `Claude help was not detected. Exit: ${result.status ?? "unknown"}.`
     ]
+  };
+}
+
+function withBundledAgentProbes(manifest) {
+  const codexPrefix = parseCodexCommandJson();
+  const claudeCommand = String(process.env.MYAGENTTOOL_CLAUDE_COMMAND ?? "").trim();
+  const gitBashCommand = String(process.env.MYAGENTTOOL_GIT_BASH_COMMAND ?? "").trim();
+  const gitCommand = String(process.env.MYAGENTTOOL_GIT_COMMAND ?? "").trim();
+  return {
+    ...manifest,
+    applicationWrapperCommands: (manifest.applicationWrapperCommands ?? []).map((entry) => {
+      if (entry.command === "codex" && codexPrefix) {
+        const [executable, ...prefixArgs] = codexPrefix;
+        return { ...entry, probe: { executable, args: [...prefixArgs, "--version"] }, authenticationProbe: { executable, args: [...prefixArgs, "login", "status"], format: "exit-code" } };
+      }
+      if (entry.command === "claude" && claudeCommand) {
+        return { ...entry, probe: { executable: claudeCommand, args: ["--version"] }, authenticationProbe: { executable: claudeCommand, args: ["auth", "status"], format: "claude-json" } };
+      }
+      if (entry.command === "git-bash" && gitBashCommand) {
+        return { ...entry, probe: { executable: gitBashCommand, args: ["--version"] } };
+      }
+      if (entry.command === "git" && gitCommand) {
+        return { ...entry, probe: { executable: gitCommand, args: ["--version"] } };
+      }
+      return entry;
+    }),
   };
 }
 

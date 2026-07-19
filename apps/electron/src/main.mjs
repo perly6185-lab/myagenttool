@@ -5,6 +5,7 @@ import net from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { bundledAgentEnv } from "./bundled-agent-runtime.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(__dirname, "../../..");
@@ -83,6 +84,7 @@ async function startApp() {
     BRIDGE_SERVER_URL: serverUrl,
     BRIDGE_TERMINAL_POLL_INTERVAL_MS: process.env.BRIDGE_TERMINAL_POLL_INTERVAL_MS ?? "40",
     MYAGENTTOOL_BRIDGE_TOKEN_PATH: join(app.getPath("userData"), "state", "bridge-token.json"),
+    ...bundledAgentEnv({ appRoot: paths.runtimeRoot, resourcesRoot: paths.resourcesRoot, execPath: process.execPath }),
   }, paths.runtimeRoot);
 
   startNodeService("web", paths.webEntry, {
@@ -110,6 +112,7 @@ function runtimePaths() {
     const appRoot = app.getAppPath();
     return {
       runtimeRoot: appRoot,
+      resourcesRoot: process.resourcesPath,
       serverEntry: join(appRoot, "apps", "server", "src", "index.mjs"),
       desktopEntry: join(appRoot, "apps", "desktop", "src", "index.mjs"),
       webEntry: join(appRoot, "apps", "electron", "src", "static-web-server.mjs"),
@@ -119,6 +122,7 @@ function runtimePaths() {
 
   return {
     runtimeRoot: repoRoot,
+    resourcesRoot: join(repoRoot, "apps", "electron", "vendor"),
     serverEntry: join(repoRoot, "apps", "server", "src", "index.mjs"),
     desktopEntry: join(repoRoot, "apps", "desktop", "src", "index.mjs"),
     webEntry: join(repoRoot, "apps", "electron", "src", "static-web-server.mjs"),
@@ -369,6 +373,7 @@ function runCheck() {
   const requiredFiles = [
     "apps/electron/src/main.mjs",
     "apps/electron/src/static-web-server.mjs",
+    "apps/electron/src/bundled-agent-runtime.mjs",
     "apps/electron/electron-builder.yml",
     "apps/server/src/index.mjs",
     "apps/desktop/src/index.mjs",

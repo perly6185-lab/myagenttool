@@ -32,7 +32,7 @@ vi.mock("@/data/use-console-actions", () => ({
 const catalog = {
   applications: [
     { name: "ccusage", displayName: "ccusage", aliases: ["ccusage"], command: "ccusage", installHint: "Managed install" },
-    { name: "codex", displayName: "Codex CLI", aliases: ["codex", "codex cli"], command: "codex", installHint: "Managed install", setupOnly: true },
+    { name: "codex", displayName: "Codex CLI", aliases: ["codex", "codex cli"], command: "codex", installHint: "Managed install" },
   ],
 };
 const plan = {
@@ -94,10 +94,30 @@ describe("RegisterApplicationModal governed setup", () => {
     expect(onClose).toHaveBeenCalledOnce();
   });
 
-  it("skips Application registration for setup-only tools that are already present", async () => {
+  it("registers the Codex Application when its bundled CLI is already present", async () => {
     consoleState.data = {
       projects: [],
       device: { id: "dev_local", name: "Workstation", status: "online", platform: "windows", architecture: "x64", lastSeenAt: null, applicationBinaryReadiness: [{ command: "codex", capabilityPrefix: "app.setup.codex.", status: "available", version: "0.144.6", checkedAt: "2026-07-14T00:00:00Z" }] },
+      devices: [],
+    };
+    apiMock.listKnownApplications.mockResolvedValue(catalog);
+    apiMock.quickRegisterApplication.mockResolvedValue({ application: { id: "app_codex", name: "Codex" }, capabilities: [] });
+    renderModal();
+
+    await enterKnownApplication("codex");
+
+    expect(await screen.findByText(/Codex is registered and ready/i)).toBeTruthy();
+    expect(apiMock.quickRegisterApplication).toHaveBeenCalledWith({ name: "codex" });
+    expect(apiMock.createApplicationInstallPlan).not.toHaveBeenCalled();
+    expect(useUiStore.getState().selectedApplicationId).toBe("app_codex");
+  });
+
+  it("stops before registration when Codex is installed but not authenticated", async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
+    consoleState.data = {
+      projects: [],
+      device: { id: "dev_local", name: "Workstation", status: "online", platform: "windows", architecture: "x64", lastSeenAt: null, applicationBinaryReadiness: [{ command: "codex", capabilityPrefix: "app.setup.codex.", status: "available", version: "0.144.6", authenticationStatus: "unauthenticated", authenticationMethod: null, checkedAt: "2026-07-19T00:00:00Z" }] },
       devices: [],
     };
     apiMock.listKnownApplications.mockResolvedValue(catalog);
@@ -105,10 +125,12 @@ describe("RegisterApplicationModal governed setup", () => {
 
     await enterKnownApplication("codex");
 
-    expect(await screen.findByText(/Codex CLI is installed and ready/i)).toBeTruthy();
+    expect(await screen.findByText(/Sign in with codex login/i)).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Copy login command" }));
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith("codex login"));
+    expect(await screen.findByText(/Copied codex login/i)).toBeTruthy();
     expect(apiMock.quickRegisterApplication).not.toHaveBeenCalled();
     expect(apiMock.createApplicationInstallPlan).not.toHaveBeenCalled();
-    expect(useUiStore.getState().selectedApplicationId).toBeNull();
   });
 
   it("shows a safe plan summary and requires explicit approval for a missing binary", async () => {

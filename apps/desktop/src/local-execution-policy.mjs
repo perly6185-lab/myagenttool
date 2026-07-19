@@ -131,12 +131,14 @@ export function createLocalExecutionPolicyManifest({
         capabilityPrefix: "app.app_claude.",
         filePolicy: "read_only",
         networkPolicy: "forbidden",
+        authenticationProbe: { executable: "claude", args: ["auth", "status"], format: "claude-json" },
       },
       {
         command: "codex",
         capabilityPrefix: "app.setup.codex.",
         filePolicy: "read_only",
         networkPolicy: "forbidden",
+        authenticationProbe: { executable: "codex", args: ["login", "status"], format: "exit-code" },
       },
     ],
     policies: {

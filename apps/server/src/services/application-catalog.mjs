@@ -1,5 +1,6 @@
 import { createCcusageApplicationRegistration } from "./ccusage-application.mjs";
 import { createClaudeApplicationRegistration } from "./claude-application.mjs";
+import { createCodexApplicationRegistration } from "./codex-application.mjs";
 import { createGitApplicationRegistration } from "./git-application.mjs";
 
 const KNOWN_APPLICATIONS = [
@@ -32,8 +33,8 @@ const KNOWN_APPLICATIONS = [
     displayName: "Codex CLI",
     aliases: ["codex", "codex cli"],
     command: "codex",
-    installHint: "Install Codex CLI through its approved local installation flow, then connect it from the coding-agent setup surface.",
-    setupOnly: true,
+    installHint: "Install Codex CLI through its approved local installation flow, then register its governed Application capabilities.",
+    createRegistration: createCodexApplicationRegistration,
   },
   {
     name: "git-bash",

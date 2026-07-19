@@ -8,7 +8,7 @@
     "dev": "pnpm --dir ../.. desktop:dev",
     "pack:win": "pnpm --dir ../.. desktop:pack",
     "dist:win": "pnpm --dir ../.. desktop:dist",
-    "test": "node ./src/main.mjs --check && node ./src/static-web-server.mjs --check",
+    "test": "node ./src/main.mjs --check && node ./src/static-web-server.mjs --check && node --test test/*.test.mjs",
     "lint": "node ./src/main.mjs --check && node ./src/static-web-server.mjs --check"
   }
 }

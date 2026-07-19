@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { AlertTriangle, Check, ChevronDown, ChevronUp, LoaderCircle, ShieldCheck } from "lucide-react";
+import { AlertTriangle, Check, ChevronDown, ChevronUp, Copy, LoaderCircle, ShieldCheck } from "lucide-react";
 import { Modal } from "@/components/ui/modal";
 import { Button } from "@/components/ui/button";
 import { Input, Select } from "@/components/ui/input";
@@ -76,6 +76,9 @@ export function RegisterApplicationModal({ open, onClose }: { open: boolean; onC
   const readiness = knownEntry && selectedDevice
     ? selectedDevice.applicationBinaryReadiness?.find((row) => row.command === knownEntry.command) ?? null
     : null;
+  const authenticationLoginCommand = readiness?.authenticationStatus === "unauthenticated"
+    ? knownEntry?.command === "codex" ? "codex login" : knownEntry?.command === "claude" ? "claude auth login" : null
+    : null;
 
   useEffect(() => {
     const run = installRunData?.run;
@@ -147,6 +150,12 @@ export function RegisterApplicationModal({ open, onClose }: { open: boolean; onC
         return;
       }
       if (readiness?.status === "available") {
+        if (readiness.authenticationStatus === "unauthenticated") {
+          const loginCommand = knownEntry.command === "codex" ? "codex login" : knownEntry.command === "claude" ? "claude auth login" : null;
+          setSetupPhase("failed");
+          setSetupError(`${knownEntry.displayName} is installed but not authenticated.${loginCommand ? ` Sign in with ${loginCommand}, wait for device readiness to refresh, then retry.` : " Sign in locally, wait for device readiness to refresh, then retry."}`);
+          return;
+        }
         setSetupPhase("registering");
         setSetupMessage(`${knownEntry.displayName} ${readiness.version ?? ""} is already available. Registering it now.`);
         await registerKnownApplication();
@@ -167,6 +176,16 @@ export function RegisterApplicationModal({ open, onClose }: { open: boolean; onC
       setSetupError(caught instanceof Error ? caught.message : "Setup planning failed.");
     } finally {
       setSetupBusy(false);
+    }
+  }
+
+  async function copyAuthenticationLoginCommand() {
+    if (!authenticationLoginCommand) return;
+    try {
+      await navigator.clipboard.writeText(authenticationLoginCommand);
+      setSetupMessage(`Copied ${authenticationLoginCommand}. Run it locally, complete sign-in, then retry detection.`);
+    } catch {
+      setSetupError(`Could not access the clipboard. Run ${authenticationLoginCommand} locally, then retry detection.`);
     }
   }
 
@@ -273,6 +292,11 @@ export function RegisterApplicationModal({ open, onClose }: { open: boolean; onC
                 <p className="font-medium capitalize">{setupPhase === "detect" ? "Ready to detect" : setupPhase}</p>
                 <p className="mt-0.5 text-muted-foreground">{setupMessage}</p>
                 {setupError ? <p className="mt-1 text-destructive">{setupError}</p> : null}
+                {authenticationLoginCommand ? (
+                  <Button type="button" size="sm" variant="secondary" className="mt-2" onClick={() => void copyAuthenticationLoginCommand()}>
+                    <Copy className="size-3.5" aria-hidden /> Copy login command
+                  </Button>
+                ) : null}
               </div>
             </div>
           </div>

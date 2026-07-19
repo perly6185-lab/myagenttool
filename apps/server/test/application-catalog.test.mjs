@@ -6,7 +6,7 @@ test("known application catalog exposes governed entries and setup-only prerequi
   assert.deepEqual(listKnownApplications().map((entry) => entry.name), ["git", "ccusage", "claude", "codex", "git-bash", "wsl"]);
   assert.deepEqual(
     listKnownApplications().filter((entry) => entry.setupOnly).map((entry) => entry.name),
-    ["codex", "git-bash", "wsl"],
+    ["git-bash", "wsl"],
   );
 });
 
@@ -28,8 +28,8 @@ test("unknown text cannot become an install or registration request", () => {
   assert.equal(createKnownApplicationRegistration("left-pad"), null);
 });
 
-test("setup-only entries can be installed but cannot become Application registrations", () => {
-  assert.equal(createKnownApplicationRegistration("codex cli"), null);
+test("Codex resolves to a governed registration while setup-only prerequisites do not", () => {
+  assert.equal(createKnownApplicationRegistration("codex cli").registration.id, "app_codex");
   assert.equal(createKnownApplicationRegistration("git bash"), null);
   assert.equal(createKnownApplicationRegistration("wsl bash"), null);
 });
