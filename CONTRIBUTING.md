@@ -52,6 +52,14 @@ runtime file has zero business impact — say so, with evidence (tests green,
 `--check` self-tests pass). Report faithfully: if a step was skipped or a check
 failed, state it. Skip the assessment only for changes with no file diff.
 
+**Where it lives:** put the assessment in the **PR body** — the
+`## Change Impact & Risk Assessment` section of the PR template — so it is a
+permanent part of the change record, and mirror it as a comment on the linked
+issue before it closes. `pnpm pr:evidence` reports whether the section is present
+(`changeImpact`). This is a **non-blocking** signal today: its absence does not
+fail `pr-governance` — it is a convention, enforced by review and habit, not a
+hard gate.
+
 ## Conventions
 
 - Runtime code is `.mjs` (Node, no build step); `.ts` files are type contracts and the React web app.

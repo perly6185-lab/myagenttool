@@ -14,6 +14,14 @@ export function hasAcceptanceMention(body) {
   return /Acceptance/i.test(body) || /Closes\s+#\d+/i.test(body);
 }
 
+// Whether the body carries the Change Impact & Risk Assessment section
+// (CONTRIBUTING.md convention). A NON-blocking signal: surfaced by planPrEvidence
+// and the PR template, but deliberately not part of allSatisfied and not wired
+// into the pr-governance hard gate.
+export function hasChangeImpactAssessment(body) {
+  return /##\s+Change Impact/i.test(String(body ?? ""));
+}
+
 // Issue-link keywords: GitHub's closing keywords (close/closes/closed,
 // fix/fixes/fixed, resolve/resolves/resolved) plus "refs" (link-only, no
 // auto-close). One source of truth so the link checks in governance.mjs and
@@ -117,10 +125,12 @@ export function planPrEvidence({ files, body = "" }) {
   const bodyProvided = Boolean(String(body ?? "").trim());
   const linksIssue = bodyProvided ? mentionsLinkedIssue(body) : null;
   const verification = bodyProvided ? hasVerificationEvidence(body) : null;
+  // Non-blocking: reported for author awareness, deliberately NOT part of allSatisfied.
+  const changeImpact = bodyProvided ? hasChangeImpactAssessment(body) : null;
   const allSatisfied =
     routes.every((r) => r.present) && (!bodyProvided || (linksIssue === true && verification === true));
 
-  return { routes, bodyProvided, linksIssue, verification, allSatisfied };
+  return { routes, bodyProvided, linksIssue, verification, changeImpact, allSatisfied };
 }
 
 // Change-failure marker adoption (L3 anchor). A change failure is a PR that
