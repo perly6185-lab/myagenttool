@@ -34,6 +34,7 @@ const REQUIRED_PR_SECTIONS = [
   "## Acceptance",
   "## Product Flow",
   "## Verification",
+  "## Change Impact & Risk Assessment",
   "## Risk Gates",
 ];
 

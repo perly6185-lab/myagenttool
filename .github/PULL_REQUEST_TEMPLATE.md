@@ -47,6 +47,19 @@
 - [ ] Manual verification:
 - [ ] Automated checks:
 
+## Change Impact & Risk Assessment
+
+<!-- Required by CONTRIBUTING.md for any change that adds/edits/deletes files.
+     Ground it in the real diff, not intent — a comment-only edit to a runtime
+     file has zero business impact; say so with evidence. -->
+
+- Changes: <!-- file · add/edit/delete · kind (docs/test/source/config) -->
+- Touches business flow: <!-- yes/no; if yes, name the flow, e.g. invocation → dispatch → bridge → result -->
+- On the runtime import graph: <!-- yes/no -->
+- Risk: <!-- low/medium/high + why -->
+- Blast radius: <!-- callers / affected modules -->
+- Rollback cost: <!-- low/medium/high -->
+
 ## Risk Gates
 
 - [ ] Visual QA evidence for web UI changes, or not applicable.
