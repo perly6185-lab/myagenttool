@@ -112,16 +112,16 @@ fi
 [ -n "$target" ] || { usage >&2; exit 2; }
 
 ssh_target() {
-    ssh "${ssh_opts[@]}" "${default_ssh_opts[@]}" "$target" "$@"
+    ssh ${ssh_opts[@]+"${ssh_opts[@]}"} "${default_ssh_opts[@]}" "$target" "$@"
 }
 
 ssh_target_tty() {
-    ssh -tt "${ssh_opts[@]}" "${default_ssh_opts[@]}" "$target" "$@"
+    ssh -tt ${ssh_opts[@]+"${ssh_opts[@]}"} "${default_ssh_opts[@]}" "$target" "$@"
 }
 
 ssh_source() {
     [ "$source_host" != "local" ] || die "ssh_source called for local source"
-    ssh "${ssh_opts[@]}" "${default_ssh_opts[@]}" "$source_host" "$@"
+    ssh ${ssh_opts[@]+"${ssh_opts[@]}"} "${default_ssh_opts[@]}" "$source_host" "$@"
 }
 
 # SSH passes its command through the target user's login shell before bash sees
