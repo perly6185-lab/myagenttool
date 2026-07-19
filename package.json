@@ -3,9 +3,13 @@
   "version": "0.2.0-rc.1",
   "private": true,
   "description": "Personal and small-team Agent Control Plane.",
+  "main": "apps/electron/src/main.mjs",
   "packageManager": "pnpm@9.15.0",
   "scripts": {
     "dev": "node tools/dev/run-local-demo.mjs",
+    "desktop:dev": "pnpm --filter @myagenttool/web build && electron .",
+    "desktop:pack": "pnpm --filter @myagenttool/web build && electron-builder --dir -c apps/electron/electron-builder.yml",
+    "desktop:dist": "pnpm --filter @myagenttool/web build && electron-builder --win nsis --x64 -c apps/electron/electron-builder.yml",
     "dev:restart-changed": "node tools/dev/restart-changed-services.mjs",
     "ccusage:register-app": "node tools/dev/register-ccusage-application.mjs",
     "git:register-app": "node tools/dev/register-git-application.mjs",
@@ -187,7 +191,22 @@
     "eval:install-cron": "sh tools/dev/install-eval-launchagent.sh"
   },
   "devDependencies": {
+    "electron": "^43.1.1",
+    "electron-builder": "^26.15.3",
     "playwright": "^1.61.1",
     "typescript": "^5.7.2"
+  },
+  "dependencies": {
+    "@myagenttool/adapters": "workspace:^",
+    "@myagenttool/desktop": "workspace:^",
+    "@myagenttool/protocol": "workspace:^",
+    "@myagenttool/server": "workspace:^",
+    "@myagenttool/shared": "workspace:^",
+    "node-pty": "^1.1.0"
+  },
+  "pnpm": {
+    "patchedDependencies": {
+      "node-pty@1.1.0": "patches/node-pty@1.1.0.patch"
+    }
   }
 }

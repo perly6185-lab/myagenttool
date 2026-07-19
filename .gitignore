@@ -1,10 +1,12 @@
 # Dependencies
 node_modules/
+.pnpm-patches/
 
 # Build outputs
 dist/
 build/
 coverage/
+apps/electron/release/
 
 # Local env files
 .env

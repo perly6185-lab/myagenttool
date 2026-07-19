@@ -36,3 +36,19 @@ test("the bridge manifest reports readiness for Claude Application capabilities"
     checkedAt: "2026-07-14T00:00:00.000Z",
   });
 });
+
+test("candidate probes mark setup-only tools available when a fallback succeeds", async () => {
+  const rows = await collectApplicationBinaryReadiness(createLocalExecutionPolicyManifest(), {
+    now: () => "2026-07-14T00:00:00.000Z",
+    resolveBinary: (command) => command === "git",
+    runVersion: async (command) => command === "git" ? "git version 2.50.1.windows.1" : "",
+  });
+  const gitBash = rows.find((row) => row.command === "git-bash");
+  assert.deepEqual(gitBash, {
+    command: "git-bash",
+    capabilityPrefix: "app.setup.git_bash.",
+    status: "available",
+    version: "git version 2.50.1.windows.1",
+    checkedAt: "2026-07-14T00:00:00.000Z",
+  });
+});

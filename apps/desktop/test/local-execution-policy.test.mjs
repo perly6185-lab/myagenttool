@@ -152,7 +152,7 @@ test("derives applicationWrapper file/network policies for the bridge gate", () 
   });
 });
 
-import { mkdirSync, mkdtempSync } from "node:fs";
+import { closeSync, mkdirSync, mkdtempSync, openSync } from "node:fs";
 
 test("cwd confinement: allows a cwd inside the approved worktree root", () => {
   const root = mkdtempSync(join(tmpdir(), "wt-root-"));
@@ -358,6 +358,12 @@ test("#802: binaryAvailableOnPath resolves a bare name against PATH and a path d
   assert.equal(binaryAvailableOnPath("definitely-not-a-real-binary-xyz", { PATH: process.env.PATH }), false);
   assert.equal(binaryAvailableOnPath(process.execPath), true, "an absolute path is checked directly");
   assert.equal(binaryAvailableOnPath("git", { PATH: "" }), false, "empty PATH resolves nothing");
+});
+
+test("#802: binaryAvailableOnPath accepts Windows command names that already include an extension", () => {
+  const dir = mkdtempSync(join(tmpdir(), "path-ext-"));
+  closeSync(openSync(join(dir, "tool.EXE"), "w"));
+  assert.equal(binaryAvailableOnPath("tool.EXE", { PATH: dir, PATHEXT: ".EXE;.CMD" }), true);
 });
 
 test("git wrapper: ccusage argv is unaffected by the generalization", () => {

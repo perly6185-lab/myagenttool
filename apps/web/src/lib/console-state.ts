@@ -1654,6 +1654,7 @@ export interface KnownApplicationCatalogEntry {
   aliases: string[];
   command: string;
   installHint: string;
+  setupOnly?: boolean;
 }
 
 export interface ApplicationInstallPlan {

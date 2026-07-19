@@ -119,6 +119,11 @@ export function RegisterApplicationModal({ open, onClose }: { open: boolean; onC
 
   async function registerKnownApplication() {
     try {
+      if (knownEntry?.setupOnly) {
+        setSetupPhase("ready");
+        setSetupMessage(`${knownEntry.displayName} is installed and ready on the selected device.`);
+        return;
+      }
       const result = await api.quickRegisterApplication({ name: knownApplication.trim(), ...(projectId ? { projectId } : {}) });
       if (result.application?.id) setSelectedApplicationId(result.application.id);
       setSetupPhase("ready");
@@ -234,7 +239,7 @@ export function RegisterApplicationModal({ open, onClose }: { open: boolean; onC
               list="known-application-options"
               value={knownApplication}
               onChange={(event) => { setKnownApplication(event.target.value); resetSetup(); }}
-              placeholder="ccusage, git, or claude"
+              placeholder="ccusage, git, claude, codex, git-bash, or wsl"
               disabled={workflowActive}
             />
             <Select value={deviceId} onChange={(event) => { setDeviceId(event.target.value); resetSetup("Device changed. Run detection again."); }} disabled={workflowActive} aria-label="Target device">
