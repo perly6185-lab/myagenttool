@@ -50,6 +50,23 @@ export const PM_BRIEF_SCHEMA = {
   },
 };
 
+export const IMPACT_SCHEMA = {
+  name: "myagenttool_impact",
+  schema: {
+    type: "object",
+    additionalProperties: false,
+    required: ["touchesBusinessFlow", "businessFlowNote", "risk", "riskReason", "blastRadius", "rollback"],
+    properties: {
+      touchesBusinessFlow: { type: "boolean" },
+      businessFlowNote: { type: "string" },
+      risk: { type: "string", enum: ["low", "medium", "high"] },
+      riskReason: { type: "string" },
+      blastRadius: { type: "array", items: { type: "string" } },
+      rollback: { type: "string", enum: ["low", "medium", "high"] },
+    },
+  },
+};
+
 export const CODE_PLAN_SCHEMA = {
   name: "myagenttool_code_plan",
   schema: {
