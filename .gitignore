@@ -38,3 +38,6 @@ apps/server/data/
 # from the main worktree must never commit them)
 .worktrees/
 scratch_diff.txt
+
+# Claude Code local settings
+.claude/settings.local.json
