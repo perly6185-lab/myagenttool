@@ -183,6 +183,7 @@
     "eval:real": "node tools/dev/eval-real-run.mjs",
     "eval:trend": "node tools/dev/eval-real-run.mjs --trend",
     "ai:feedback-triage": "node tools/ai/src/index.mjs feedback-triage",
+    "ai:impact": "node tools/ai/src/index.mjs impact",
     "eval:install-cron": "sh tools/dev/install-eval-launchagent.sh"
   },
   "devDependencies": {
