@@ -1,5 +1,17 @@
+import { assessChanges, classifyKind, renderImpactMarkdown } from "../impact.mjs";
+
 function list(items) {
   return items.length > 0 ? items.map((item) => `- ${item}`).join("\n") : "- None.";
+}
+
+// Render the Change Impact & Risk Assessment from a promotion's changed-file
+// list. Only paths are known here, so change type is reported as "edit"; the
+// risk / business-flow judgment is path-based and therefore accurate.
+function impactSectionFromFiles(changedFiles) {
+  const changes = (changedFiles ?? []).map((path) => ({ path, change: "edit", kind: classifyKind(path) }));
+  return renderImpactMarkdown(assessChanges(changes), {
+    note: "Auto-generated from the promotion's changed files (ai:impact).",
+  });
 }
 
 function orderedList(items) {
@@ -186,6 +198,7 @@ ${result.diffStat || "No diff."}
 - Exit code: ${result.verifyExitCode ?? "not recorded"}
 - Status: ${result.verifyStatus ?? "not recorded"}
 
+${impactSectionFromFiles(result.changedFiles)}
 ## Evidence
 
 - Apply result: ${result.evidenceRefs.promotionApply}
