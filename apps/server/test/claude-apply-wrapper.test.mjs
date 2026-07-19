@@ -105,6 +105,8 @@ test("apply wrapper --reverse rolls back an applied patch and refuses a second r
 function makeRepoWithVerifiablePatches() {
   const dir = realpathSync(mkdtempSync(join(tmpdir(), "claude-apply-verify-")));
   git(dir, ["init"]);
+  git(dir, ["config", "core.autocrlf", "false"]);
+  git(dir, ["config", "core.eol", "lf"]);
   git(dir, ["config", "user.email", "t@t"]);
   git(dir, ["config", "user.name", "t"]);
   writeFileSync(join(dir, "lib.mjs"), "export const v = 1;\n");
