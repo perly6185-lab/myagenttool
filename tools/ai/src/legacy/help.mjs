@@ -27,6 +27,7 @@ Usage:
   node tools/ai/src/index.mjs loop-worktree-list [--json]
   node tools/ai/src/index.mjs loop-worktree-show --run RUN_ID [--json]
   node tools/ai/src/index.mjs loop-worktree-cleanup --run RUN_ID --approval "..." [--json]
+  node tools/ai/src/index.mjs loop-worktree-cleanup --merged [--apply] [--approval "..."] [--json]
   node tools/ai/src/index.mjs loop-worktree-diff --run RUN_ID [--patch] [--json]
   node tools/ai/src/index.mjs loop-worktree-review --run RUN_ID [--json]
   node tools/ai/src/index.mjs loop-worktree-promote --run RUN_ID --approval "..." [--json]

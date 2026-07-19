@@ -10,6 +10,7 @@ import {
   gitStatusForRoot,
   loopWorktreeCleanupValidationError,
   loopWorktreeRecordFromEntry,
+  partitionWorktreesForReclaim,
   updateLoopWorkerResult,
   writeLoopWorktreeReviewEvidence,
 } from "../loop/worktree.mjs";
@@ -186,6 +187,89 @@ export function loopWorktreeCleanup(args) {
     reason: null,
     exitCode: 0,
   });
+}
+
+// Batch reclaim: remove every finished (clean) isolated worktree in one command,
+// preserving dirty (in-progress) ones. Dry-run by default; --apply --approval to
+// remove. `git worktree remove` keeps the branch, so committed work is never lost.
+export function loopWorktreeCleanupMerged(args) {
+  const apply = args.includes("--apply");
+  const approval = option(args, "--approval") ?? option(args, "--human-approved") ?? "";
+  const records = collectLoopWorktreeRecords();
+  const { reclaim, skip } = partitionWorktreesForReclaim(records, (path) =>
+    Boolean(gitStatusForRoot(path).trim()),
+  );
+
+  if (args.includes("--json")) {
+    console.log(
+      `${JSON.stringify(
+        {
+          apply,
+          reclaim: reclaim.map((r) => r.worktreePath),
+          skip: skip.map((s) => ({ path: s.record.worktreePath, reason: s.reason })),
+        },
+        null,
+        2,
+      )}`.trimEnd(),
+    );
+    if (!apply) return;
+  }
+
+  if (!apply) {
+    console.log(`Reclaimable (clean, finished) isolated worktrees: ${reclaim.length}`);
+    for (const record of reclaim) console.log(`  RECLAIM  ${record.parentRunId} | ${record.worktreePath}`);
+    for (const entry of skip) console.log(`  skip     ${entry.record.parentRunId ?? "?"} | ${entry.reason}`);
+    console.log(
+      `\nDry run: re-run with --apply --approval "reason" to reclaim ${reclaim.length}. Dirty worktrees are always preserved.`,
+    );
+    return;
+  }
+
+  if (!approval.trim()) fail('Batch worktree cleanup requires --approval "reason".');
+
+  let removed = 0;
+  let failed = 0;
+  for (const record of reclaim) {
+    const entry = findLoopRegistryEntry(record.parentRunId);
+    try {
+      execFileSync("git", ["worktree", "remove", record.worktreePath], {
+        cwd: repoRoot,
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+    } catch (error) {
+      failed += 1;
+      console.log(`failed:    ${record.worktreePath} — ${childProcessErrorMessage(error)}`);
+      continue;
+    }
+    if (entry) {
+      updateLoopWorkerResult(entry, {
+        cleanup: {
+          status: "completed",
+          requestedAt: null,
+          completedAt: new Date().toISOString(),
+          approval,
+          worktreePath: record.worktreePath,
+          childRunId: record.childRunId,
+          dirty: false,
+          dirtyStatus: "",
+          reason: null,
+        },
+        cleanupPolicy: "removed",
+      });
+      appendLoopEvent(
+        entry,
+        "loop_worktree_cleanup_completed",
+        entry.state,
+        "Isolated worktree cleanup completed (batch --merged).",
+        { worktreePath: record.worktreePath, childRunId: record.childRunId, approval, dirty: false, reason: null },
+      );
+    }
+    removed += 1;
+    console.log(`reclaimed: ${record.worktreePath}`);
+  }
+  console.log(`\nReclaimed ${removed}, failed ${failed}, preserved/skipped ${skip.length}.`);
+  if (failed > 0) process.exit(1);
 }
 
 export function loopWorktreeDiff(args) {

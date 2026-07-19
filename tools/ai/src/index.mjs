@@ -122,6 +122,7 @@ import { configureLoopPromotionContext } from "./loop/promotion.mjs";
 import {
   configureLoopWorktreeCommandsContext,
   loopWorktreeCleanup,
+  loopWorktreeCleanupMerged,
   loopWorktreeDiff,
   loopWorktreeList,
   loopWorktreeReview,
@@ -465,7 +466,8 @@ function main() {
   }
 
   if (command === "loop-worktree-cleanup") {
-    loopWorktreeCleanup(args);
+    if (args.includes("--merged")) loopWorktreeCleanupMerged(args);
+    else loopWorktreeCleanup(args);
     return;
   }
 
