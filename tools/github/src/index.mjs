@@ -6,7 +6,7 @@ import { fileURLToPath } from "node:url";
 import { computeDoraStats, doraSelfCheck, formatDoraReport, rollupFromActionsRuns } from "./dora.mjs";
 import { backlogSelfCheck, computeBacklogStats, formatBacklogReport } from "./backlog.mjs";
 import { computeGovernanceStats, countBypassCommits, formatGovernanceReport, governanceSelfCheck, RISK_GATE_ENFORCEMENT_SINCE } from "./governance.mjs";
-import { changeFailureMarkerStatus, detectRemediationSignal, hasAcceptanceMention, hasProductFlowEvidence, hasVerificationEvidence, planPrEvidence, prFilePath, reviewRiskGates } from "./pr-evidence.mjs";
+import { changeFailureMarkerStatus, detectRemediationSignal, extractLinkedIssueNumbers, hasAcceptanceMention, hasProductFlowEvidence, hasVerificationEvidence, mentionsLinkedIssue, planPrEvidence, prFilePath, reviewRiskGates } from "./pr-evidence.mjs";
 import { buildProjectFieldMap, currentProjectFields, hasProjectFields, normalizeValue, parseProjectFields, planProjectFieldOperations } from "./project-fields.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -801,7 +801,7 @@ function checkPullRequest(args) {
     warnings.push(`PR #${pr.number} is draft`);
   }
 
-  if (pr.closingIssuesReferences.length === 0 && !/\b(refs|closes|fixes)\s+#\d+/i.test(body)) {
+  if (pr.closingIssuesReferences.length === 0 && !mentionsLinkedIssue(body)) {
     failures.push(`PR #${pr.number} does not link or close an issue`);
   }
 
@@ -878,9 +878,8 @@ function linkedIssueNumbers(body, closingIssuesReferences = []) {
   for (const issue of closingIssuesReferences) {
     if (issue?.number) numbers.add(Number(issue.number));
   }
-  const text = body ?? "";
-  for (const match of text.matchAll(/\b(?:refs|closes|fixes)\s+#(\d+)/gi)) {
-    numbers.add(Number(match[1]));
+  for (const number of extractLinkedIssueNumbers(body)) {
+    numbers.add(number);
   }
   return [...numbers].filter(Number.isInteger);
 }
