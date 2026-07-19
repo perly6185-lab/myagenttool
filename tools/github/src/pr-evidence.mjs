@@ -14,6 +14,27 @@ export function hasAcceptanceMention(body) {
   return /Acceptance/i.test(body) || /Closes\s+#\d+/i.test(body);
 }
 
+// Issue-link keywords: GitHub's closing keywords (close/closes/closed,
+// fix/fixes/fixed, resolve/resolves/resolved) plus "refs" (link-only, no
+// auto-close). One source of truth so the link checks in governance.mjs and
+// index.mjs never drift. A fresh RegExp per call keeps the global (g) form's
+// lastIndex from leaking between callers.
+export const ISSUE_LINK_KEYWORDS =
+  "refs|close|closes|closed|fix|fixes|fixed|resolve|resolves|resolved";
+
+export function mentionsLinkedIssue(body) {
+  return new RegExp(String.raw`\b(?:${ISSUE_LINK_KEYWORDS})\s+#\d+`, "i").test(String(body ?? ""));
+}
+
+export function extractLinkedIssueNumbers(body) {
+  const numbers = [];
+  const re = new RegExp(String.raw`\b(?:${ISSUE_LINK_KEYWORDS})\s+#(\d+)`, "gi");
+  for (const match of String(body ?? "").matchAll(re)) {
+    numbers.push(Number(match[1]));
+  }
+  return numbers;
+}
+
 export function reviewRiskWarnings(files, body, prNumber) {
   return reviewRiskGates(files, body, prNumber).warnings;
 }
@@ -94,7 +115,7 @@ export function planPrEvidence({ files, body = "" }) {
   const routes = required.map((meta) => ({ ...meta, present: !stillMissing.has(meta.label) }));
 
   const bodyProvided = Boolean(String(body ?? "").trim());
-  const linksIssue = bodyProvided ? /\b(closes|fixes|refs)\s+#\d+/i.test(body) : null;
+  const linksIssue = bodyProvided ? mentionsLinkedIssue(body) : null;
   const verification = bodyProvided ? hasVerificationEvidence(body) : null;
   const allSatisfied =
     routes.every((r) => r.present) && (!bodyProvided || (linksIssue === true && verification === true));
