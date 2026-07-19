@@ -1,3 +1,5 @@
+import { execFileSync } from "node:child_process";
+
 import { appendLoopEvent, loopRunPath } from "../loop/registry.mjs";
 import {
   buildLoopWorktreeDiff,
@@ -8,6 +10,7 @@ import {
   gitStatusForRoot,
   loopWorktreeRecordFromEntry,
   loopWorktreeReviewValidationError,
+  partitionWorktreesForReclaim,
   updateLoopWorkerResult,
   writeLoopWorktreeReviewEvidence,
 } from "../loop/worktree.mjs";
@@ -1387,6 +1390,13 @@ export function loopWorktreePromotionPrMergeExecute(args) {
     exitCode: merge.exitCode,
     evidence,
   });
+  // Fully unattended cleanup: a successful promotion merge reclaims the parent's
+  // isolated worktree, riding this step's existing --approval. Best-effort — the
+  // merge already succeeded, so a cleanup problem never fails it — and dirty
+  // worktrees are always preserved. Opt out with --keep-worktree.
+  if (status === "succeeded" && !args.includes("--keep-worktree")) {
+    autoReclaimWorktreeAfterMerge(entry, approval);
+  }
   const payload = { promotionPrMergeExecute: { ...result, evidence } };
   if (args.includes("--json")) {
     console.log(`${JSON.stringify(payload, null, 2)}\n`.trimEnd());
@@ -1394,4 +1404,73 @@ export function loopWorktreePromotionPrMergeExecute(args) {
     console.log(formatLoopWorktreePromotionPrMergeExecute(result));
   }
   if (status !== "succeeded") process.exit(1);
+}
+
+function markWorktreeReclaimed(entry, record, approval, note) {
+  updateLoopWorkerResult(entry, {
+    cleanup: {
+      status: "completed",
+      requestedAt: null,
+      completedAt: new Date().toISOString(),
+      approval,
+      worktreePath: record.worktreePath,
+      childRunId: record.childRunId,
+      dirty: false,
+      dirtyStatus: "",
+      reason: null,
+    },
+    cleanupPolicy: "removed",
+  });
+  appendLoopEvent(entry, "loop_worktree_cleanup_completed", entry.state, note, {
+    worktreePath: record.worktreePath,
+    childRunId: record.childRunId,
+    approval,
+    dirty: false,
+    autoAfterMerge: true,
+    reason: null,
+  });
+}
+
+// Reclaim the parent run's isolated worktree after its promotion merged. Reuses
+// the tested partition decision (reclaim clean / reconcile gone / preserve dirty)
+// and never throws — cleanup must not undo a completed merge.
+function autoReclaimWorktreeAfterMerge(entry, approval) {
+  try {
+    const record = loopWorktreeRecordFromEntry(entry);
+    if (!record) return;
+    const { reclaim, reconcile, skip } = partitionWorktreesForReclaim([record], (path) =>
+      Boolean(gitStatusForRoot(path).trim()),
+    );
+    for (const target of reclaim) {
+      try {
+        execFileSync("git", ["worktree", "remove", target.worktreePath], {
+          cwd: repoRoot,
+          encoding: "utf8",
+          stdio: ["ignore", "pipe", "pipe"],
+        });
+      } catch (error) {
+        appendLoopEvent(entry, "loop_worktree_cleanup_refused", entry.state, `Auto-reclaim after merge failed: ${childProcessErrorMessage(error)}`, {
+          worktreePath: target.worktreePath,
+          autoAfterMerge: true,
+        });
+        continue;
+      }
+      markWorktreeReclaimed(entry, target, approval, "Isolated worktree auto-reclaimed after promotion merge.");
+      console.log(`Auto-reclaimed worktree after merge: ${target.worktreePath}`);
+    }
+    for (const target of reconcile) {
+      markWorktreeReclaimed(entry, target, approval, "Isolated worktree record reconciled after promotion merge.");
+    }
+    for (const entryRecord of skip) {
+      appendLoopEvent(entry, "loop_worktree_cleanup_refused", entry.state, entryRecord.reason, {
+        worktreePath: entryRecord.record.worktreePath,
+        autoAfterMerge: true,
+      });
+      console.log(`Worktree preserved after merge (${entryRecord.reason}): ${entryRecord.record.worktreePath}`);
+    }
+  } catch (error) {
+    appendLoopEvent(entry, "loop_worktree_cleanup_refused", entry.state, `Auto-reclaim after merge errored: ${childProcessErrorMessage(error)}`, {
+      autoAfterMerge: true,
+    });
+  }
 }

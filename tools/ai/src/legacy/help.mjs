@@ -41,7 +41,7 @@ Usage:
   node tools/ai/src/index.mjs loop-worktree-promotion-pr-create-prep --run RUN_ID --approval "..." [--base main] [--json]
   node tools/ai/src/index.mjs loop-worktree-promotion-pr-create-execute --run RUN_ID --approval "..." --confirm-head BRANCH [--json]
   node tools/ai/src/index.mjs loop-worktree-promotion-pr-merge-prep --run RUN_ID --approval "..." --confirm-pr NUMBER [--allow-no-checks] [--json]
-  node tools/ai/src/index.mjs loop-worktree-promotion-pr-merge-execute --run RUN_ID --approval "..." --confirm-pr NUMBER --confirm-commit SHA --merge-method squash|merge|rebase [--json]
+  node tools/ai/src/index.mjs loop-worktree-promotion-pr-merge-execute --run RUN_ID --approval "..." --confirm-pr NUMBER --confirm-commit SHA --merge-method squash|merge|rebase [--keep-worktree] [--json]
   node tools/ai/src/index.mjs loop-routine-check --file path [--json]
   node tools/ai/src/index.mjs loop-routine-plan --file path [--json]
   node tools/ai/src/index.mjs loop-routine-run --file path [--dry-run] [--json]
