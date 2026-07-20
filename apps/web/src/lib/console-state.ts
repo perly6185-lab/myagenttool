@@ -19,6 +19,8 @@ export interface DeviceSnapshot {
     capabilityPrefix: string;
     status: "available" | "absent" | "stale";
     version: string | null;
+    authenticationStatus?: "authenticated" | "unauthenticated" | "unknown";
+    authenticationMethod?: string | null;
     checkedAt: string;
   }>;
 }
@@ -1654,6 +1656,7 @@ export interface KnownApplicationCatalogEntry {
   aliases: string[];
   command: string;
   installHint: string;
+  setupOnly?: boolean;
 }
 
 export interface ApplicationInstallPlan {

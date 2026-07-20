@@ -10,6 +10,7 @@ import {
   isGovernedCodexExecAgent,
   isGovernedCodexReviewAgent,
 } from "./codex-agent.mjs";
+import { CODEX_APPLICATION_ID } from "./codex-application.mjs";
 import {
   CLAUDE_REVIEW_TOOL_CONTRACT,
   isGovernedClaudeReviewAgent,
@@ -113,6 +114,7 @@ export function createToolService({
       return createCcusageToolInvocation(input, actor);
     }
     if (name === CODEX_REVIEW_TOOL_CONTRACT.name) {
+      const application = resolveCodexApp();
       return createReviewInvocation({
         input,
         actor,
@@ -121,6 +123,7 @@ export function createToolService({
         buildTask: buildCodexReviewTask,
         outputCollection: "codexReviewFindings",
         agentLabel: "Codex",
+        application: application ? { id: application.id, capability: `app.${application.id}.review.diff` } : null,
       });
     }
     if (name === CLAUDE_REVIEW_TOOL_CONTRACT.name) {
@@ -409,6 +412,7 @@ export function createToolService({
     if (agent.location?.type === "local_device" && state.device?.unlinkState === "unlinked") {
       return { status: 409, body: { error: "agent_not_available", message: "The local device is unlinked.", agentId: agent.id } };
     }
+    const application = resolveCodexApp();
     const invocation = createInvocation(buildCodexExecTask(value), agent, {
       actor,
       requestedBy: actor?.userId,
@@ -423,6 +427,13 @@ export function createToolService({
         worktreeId: worktree.id,
         task: value.task,
         permissionMode: value.approvalMode,
+        ...(application ? {
+          providerType: "application",
+          applicationId: application.id,
+          capability: `app.${application.id}.exec`,
+          applicationAction: `tool:${CODEX_EXEC_TOOL_CONTRACT.name}`,
+          outputCollection: "codexExecChanges",
+        } : {}),
       },
       timeoutSeconds: 600,
     });
@@ -465,6 +476,12 @@ export function createToolService({
     return application && ["registered", "active"].includes(application.status) ? application : null;
   }
 
+  function resolveCodexApp() {
+    if (typeof findApplication !== "function") return null;
+    const application = findApplication(CODEX_APPLICATION_ID);
+    return application && ["registered", "active"].includes(application.status) ? application : null;
+  }
+
   function discoverTools() {
     const ccusageApp = resolveCcusageApp();
     const ccusageAvailable = ccusageApp && ["registered", "active"].includes(ccusageApp.status);
@@ -480,7 +497,7 @@ export function createToolService({
     const codexExecAgents = isCodexExecEnabled() ? (state.agents ?? []).filter(isGovernedCodexExecAgent) : [];
     return [
       ...(ccusageAvailable ? [buildCcusageToolDescriptor(ccusageApp)] : []),
-      ...(codexReviewAgents.length ? [buildCodexReviewToolDescriptor(codexReviewAgents)] : []),
+      ...(codexReviewAgents.length ? [buildCodexReviewToolDescriptor(codexReviewAgents, resolveCodexApp())] : []),
       ...(claudeReviewAgents.length ? [buildClaudeReviewToolDescriptor(claudeReviewAgents, resolveClaudeApp())] : []),
       ...(claudeExplainAgents.length ? [buildClaudeExplainToolDescriptor(claudeExplainAgents, resolveClaudeApp())] : []),
       ...(claudeExplainCodeAgents.length ? [buildClaudeExplainCodeToolDescriptor(claudeExplainCodeAgents, resolveClaudeApp())] : []),
@@ -490,7 +507,7 @@ export function createToolService({
       // Apply is server-side (no runner agent in 4a) and write-adjacent, so it is
       // discoverable ONLY when the default-OFF flag is set.
       ...(isClaudeApplyEnabled() ? [buildClaudeApplyToolDescriptor(resolveClaudeApp())] : []),
-      ...(codexExecAgents.length ? [buildCodexExecToolDescriptor(codexExecAgents)] : []),
+      ...(codexExecAgents.length ? [buildCodexExecToolDescriptor(codexExecAgents, resolveCodexApp())] : []),
     ];
   }
 
@@ -1145,7 +1162,7 @@ function buildCcusageToolDescriptor(app) {
   };
 }
 
-function buildCodexReviewToolDescriptor(agents) {
+function buildCodexReviewToolDescriptor(agents, application = null) {
   return {
     name: CODEX_REVIEW_TOOL_CONTRACT.name,
     version: CODEX_REVIEW_TOOL_CONTRACT.version,
@@ -1169,6 +1186,7 @@ function buildCodexReviewToolDescriptor(agents) {
     },
     authoritativeBilling: false,
     outputCollection: "codexReviewFindings",
+    application: application ? { id: application.id, capability: `app.${application.id}.review.diff` } : null,
   };
 }
 
@@ -1356,7 +1374,7 @@ function buildClaudeApplyToolDescriptor(application = null) {
   };
 }
 
-function buildCodexExecToolDescriptor(agents) {
+function buildCodexExecToolDescriptor(agents, application = null) {
   return {
     name: CODEX_EXEC_TOOL_CONTRACT.name,
     version: CODEX_EXEC_TOOL_CONTRACT.version,
@@ -1381,6 +1399,7 @@ function buildCodexExecToolDescriptor(agents) {
     },
     authoritativeBilling: false,
     outputCollection: "codexExecChanges",
+    application: application ? { id: application.id, capability: `app.${application.id}.exec` } : null,
   };
 }
 

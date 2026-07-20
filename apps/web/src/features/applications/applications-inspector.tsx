@@ -1531,7 +1531,7 @@ export function ApplicationsInspector() {
     ? readinessDevices.map((device) => ({ device, readiness: device.applicationBinaryReadiness?.find((row) => row.command === sourceBinary) ?? null }))
     : [];
   const binaryReadinessSummary = sourceBinary
-    ? binaryReadiness.map(({ device, readiness }) => `${device.name}: ${readiness ? `${readiness.status}${readiness.version && readiness.status !== "stale" ? ` · ${readiness.version}` : ""} · ${shortTime(readiness.checkedAt)}` : "never reported"}`).join(" | ") || "No eligible devices"
+    ? binaryReadiness.map(({ device, readiness }) => `${device.name}: ${readiness ? `${readiness.status}${readiness.version && readiness.status !== "stale" ? ` · ${readiness.version}` : ""}${readiness.authenticationStatus ? ` · auth ${readiness.authenticationStatus}${readiness.authenticationMethod ? ` (${readiness.authenticationMethod})` : ""}` : ""} · ${shortTime(readiness.checkedAt)}` : "never reported"}`).join(" | ") || "No eligible devices"
     : "Not applicable";
 
   function viewInvocation(invocationId: string) {

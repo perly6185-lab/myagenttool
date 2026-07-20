@@ -8,9 +8,9 @@ import { resolveApplicationInstallSpawnPlan, runApprovedApplicationInstall, setP
 const nodePlatform = { windows: "win32", macos: "darwin", linux: "linux" };
 const device = (platform) => ({ id: `dev_${platform}`, name: platform, platform, architecture: "x64" });
 const supported = {
-  windows: ["git", "ccusage", "claude"],
-  macos: ["git", "ccusage", "claude"],
-  linux: ["ccusage", "claude"],
+  windows: ["git", "git-bash", "wsl", "ccusage", "claude", "codex"],
+  macos: ["git", "ccusage", "claude", "codex"],
+  linux: ["ccusage", "claude", "codex"],
 };
 
 for (const platform of ["windows", "macos", "linux"]) {
@@ -33,6 +33,7 @@ test("P2 Desktop Bridge rejects modified and stale plans before spawn", async ()
   const result = await runApprovedApplicationInstall({
     plan: { ...plan, execution: { ...plan.execution, args: [...plan.execution.args, "--inject"] } },
     platform: "win32",
+    preInstallProbe: false,
     spawnProcess: () => { spawned = true; },
   });
   assert.equal(result.status, "refused");
@@ -41,6 +42,7 @@ test("P2 Desktop Bridge rejects modified and stale plans before spawn", async ()
   const policyResult = await runApprovedApplicationInstall({
     plan: { ...plan, policy: { ...plan.policy, timeoutMs: 900_000 } },
     platform: "win32",
+    preInstallProbe: false,
     spawnProcess: () => { spawned = true; },
   });
   assert.equal(policyResult.status, "refused");
@@ -54,6 +56,7 @@ test("P2 runs fixed discrete argv with shell disabled", async () => {
   const result = await runApprovedApplicationInstall({
     plan,
     platform: "darwin",
+    preInstallProbe: false,
     spawnProcess: (command, args, options) => {
       observed.push({ command, args, options });
       const child = fakeChild();
@@ -77,6 +80,7 @@ test("P3 probe failure is distinct from install failure", async () => {
   const result = await runApprovedApplicationInstall({
     plan,
     platform: "darwin",
+    preInstallProbe: false,
     spawnProcess: () => {
       const child = fakeChild();
       const code = spawnCount++ === 0 ? 0 : 1;
@@ -96,6 +100,7 @@ test("P2 cancellation terminates the child and reports cancelled", async () => {
   const result = await runApprovedApplicationInstall({
     plan,
     platform: "linux",
+    preInstallProbe: false,
     spawnProcess: () => child,
     pollCancellation: async () => ++polls >= 1,
     terminate: async () => {
@@ -113,6 +118,7 @@ test("P2 timeout terminates the child and reports timed_out", async () => {
   const result = await runApprovedApplicationInstall({
     plan,
     platform: "linux",
+    preInstallProbe: false,
     spawnProcess: () => child,
     scheduleTimeout: (callback) => {
       queueMicrotask(callback);
@@ -136,6 +142,7 @@ test("P4 rejects expired and elevated plans before spawn", async () => {
     plan,
     platform: "win32",
     now: () => Date.parse("2026-07-14T09:10:00.001Z"),
+    preInstallProbe: false,
     spawnProcess: () => { spawned = true; },
   });
   assert.equal(expired.status, "refused");
@@ -143,6 +150,7 @@ test("P4 rejects expired and elevated plans before spawn", async () => {
     plan: { ...plan, execution: { ...plan.execution, elevated: true } },
     platform: "win32",
     now: () => Date.parse("2026-07-14T09:00:00.000Z"),
+    preInstallProbe: false,
     spawnProcess: () => { spawned = true; },
   });
   assert.equal(elevated.status, "refused");
@@ -157,6 +165,7 @@ test("P4 reports probe timeout separately", async () => {
   const result = await runApprovedApplicationInstall({
     plan,
     platform: "linux",
+    preInstallProbe: false,
     spawnProcess: () => {
       const child = children[spawnCount++];
       if (spawnCount === 1) queueMicrotask(() => child.emit("close", 0));
@@ -181,10 +190,56 @@ test("P4 does not expose spawn error details", async () => {
   const result = await runApprovedApplicationInstall({
     plan,
     platform: "win32",
+    preInstallProbe: false,
     spawnProcess: () => { throw new Error("token=secret C:\\Users\\alice\\private"); },
   });
   assert.equal(result.classification, "spawn_failed");
   assert.doesNotMatch(result.summary, /secret|alice|token/i);
+});
+
+test("P5 skips installer spawn when the target is already present", async () => {
+  const plan = createApplicationInstallPlan({ name: "codex" }, { device: device("windows") });
+  const observed = [];
+  const result = await runApprovedApplicationInstall({
+    plan,
+    platform: "win32",
+    spawnProcess: (command, args, options) => {
+      observed.push({ command, args, options });
+      const child = fakeChild();
+      queueMicrotask(() => child.emit("close", 0));
+      return child;
+    },
+  });
+  assert.equal(result.status, "succeeded");
+  assert.equal(result.classification, "already_installed");
+  assert.equal(observed.length, 1);
+  assert.equal(observed[0].command, "codex");
+  assert.deepEqual(observed[0].args, ["--version"]);
+  assert.equal(observed[0].options.shell, false);
+});
+
+test("P5 git-bash pre-install probe accepts a Git-for-Windows fallback", async () => {
+  const plan = createApplicationInstallPlan({ name: "git-bash" }, { device: device("windows") });
+  const observed = [];
+  const result = await runApprovedApplicationInstall({
+    plan,
+    platform: "win32",
+    spawnProcess: (command, args) => {
+      observed.push({ command, args });
+      if (command === "winget") throw new Error("installer should be skipped");
+      const child = fakeChild();
+      queueMicrotask(() => child.emit("close", command === "git" ? 0 : 1));
+      return child;
+    },
+  });
+  assert.equal(result.status, "succeeded");
+  assert.equal(result.classification, "already_installed");
+  assert.deepEqual(observed.map((item) => item.command), [
+    "C:\\Program Files\\Git\\bin\\bash.exe",
+    "C:\\Program Files (x86)\\Git\\bin\\bash.exe",
+    "git",
+  ]);
+  assert.deepEqual(observed.at(-1).args, ["--version"]);
 });
 
 function fakeChild() {
@@ -220,6 +275,7 @@ test("adr0015: polkit absent -> a coded pre-privilege refusal, never an opaque s
       plan,
       platform: "linux",
       now: () => Date.parse("2026-07-14T09:01:00.000Z"),
+      preInstallProbe: false,
       spawnProcess: () => { throw new Error("must never spawn without polkit"); },
     });
     assert.equal(result.status, "refused");
@@ -269,6 +325,7 @@ test("adr0015: every outcome of an elevated run is audited as elevated", async (
         plan,
         platform: "linux",
         now: () => Date.parse("2026-07-14T09:01:00.000Z"),
+        preInstallProbe: false,
         spawnProcess: (command, args) => {
           assert.equal(command, "/usr/bin/pkexec");
           assert.equal(args[0], "apt-get");

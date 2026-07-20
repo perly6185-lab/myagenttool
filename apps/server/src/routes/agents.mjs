@@ -267,6 +267,19 @@ function normalizeApplicationBinaryReadiness(rows, checkedAt) {
     const capabilityPrefix = String(row?.capabilityPrefix ?? "").trim();
     const status = row?.status === "available" ? "available" : row?.status === "absent" ? "absent" : null;
     if (!/^[a-z][a-z0-9_-]{0,31}$/.test(command) || !capabilityPrefix.startsWith("app.") || !status) return [];
-    return [{ command, capabilityPrefix, status, version: status === "available" ? String(row?.version ?? "").trim().slice(0, 120) || null : null, checkedAt }];
+    const authenticationStatus = status === "available" && ["authenticated", "unauthenticated", "unknown"].includes(row?.authenticationStatus)
+      ? row.authenticationStatus
+      : null;
+    const authenticationMethod = authenticationStatus === "authenticated"
+      ? String(row?.authenticationMethod ?? "").trim().toLowerCase().replace(/[^a-z0-9_.-]+/g, "_").slice(0, 32) || null
+      : null;
+    return [{
+      command,
+      capabilityPrefix,
+      status,
+      version: status === "available" ? String(row?.version ?? "").trim().slice(0, 120) || null : null,
+      ...(authenticationStatus ? { authenticationStatus, authenticationMethod } : {}),
+      checkedAt,
+    }];
   });
 }

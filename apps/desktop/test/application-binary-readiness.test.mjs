@@ -26,6 +26,7 @@ test("the bridge manifest reports readiness for Claude Application capabilities"
     now: () => "2026-07-14T00:00:00.000Z",
     resolveBinary: (command) => command === "claude",
     runVersion: async () => "2.1.0",
+    runAuthentication: async () => ({ status: "authenticated", method: "oauth" }),
   });
   const claude = rows.find((row) => row.command === "claude");
   assert.deepEqual(claude, {
@@ -33,6 +34,48 @@ test("the bridge manifest reports readiness for Claude Application capabilities"
     capabilityPrefix: "app.app_claude.",
     status: "available",
     version: "2.1.0",
+    authenticationStatus: "authenticated",
+    authenticationMethod: "oauth",
+    checkedAt: "2026-07-14T00:00:00.000Z",
+  });
+});
+
+test("authentication probes publish only normalized status and method", async () => {
+  const calls = [];
+  const rows = await collectApplicationBinaryReadiness(createLocalExecutionPolicyManifest(), {
+    now: () => "2026-07-19T00:00:00.000Z",
+    resolveBinary: (command) => command === "codex",
+    runVersion: async () => "codex-cli 0.144.6",
+    runAuthentication: async (...args) => {
+      calls.push(args);
+      return { status: "authenticated", method: "api_key" };
+    },
+  });
+  const codex = rows.find((row) => row.command === "codex");
+  assert.deepEqual(codex, {
+    command: "codex",
+    capabilityPrefix: "app.setup.codex.",
+    status: "available",
+    version: "codex-cli 0.144.6",
+    authenticationStatus: "authenticated",
+    authenticationMethod: "api_key",
+    checkedAt: "2026-07-19T00:00:00.000Z",
+  });
+  assert.deepEqual(calls, [["codex", ["login", "status"], "exit-code"]]);
+});
+
+test("candidate probes mark setup-only tools available when a fallback succeeds", async () => {
+  const rows = await collectApplicationBinaryReadiness(createLocalExecutionPolicyManifest(), {
+    now: () => "2026-07-14T00:00:00.000Z",
+    resolveBinary: (command) => command === "git",
+    runVersion: async (command) => command === "git" ? "git version 2.50.1.windows.1" : "",
+  });
+  const gitBash = rows.find((row) => row.command === "git-bash");
+  assert.deepEqual(gitBash, {
+    command: "git-bash",
+    capabilityPrefix: "app.setup.git_bash.",
+    status: "available",
+    version: "git version 2.50.1.windows.1",
     checkedAt: "2026-07-14T00:00:00.000Z",
   });
 });

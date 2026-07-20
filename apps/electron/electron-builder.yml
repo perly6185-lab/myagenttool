@@ -1,0 +1,54 @@
+appId: com.myagenttool.desktop
+productName: MyAgentTool
+copyright: Copyright (c) 2026 MyAgentTool
+asar: false
+npmRebuild: false
+
+directories:
+  output: apps/electron/release
+
+files:
+  - package.json
+  - apps/electron/src/**
+  - node_modules/@openai/codex/**
+  - node_modules/@openai/codex-win32-x64/**
+  - node_modules/@anthropic-ai/claude-code/**
+  - apps/server/package.json
+  - apps/server/src/**
+  - apps/desktop/package.json
+  - apps/desktop/src/**
+  - apps/web/package.json
+  - apps/web/dist/**
+  - packages/protocol/package.json
+  - packages/protocol/src/**
+  - packages/shared/package.json
+  - packages/shared/src/**
+  - packages/adapters/package.json
+  - packages/adapters/src/**
+  - tools/agents/**
+  - tools/ai/package.json
+  - tools/ai/src/**
+  - "!**/test/**"
+  - "!**/*.test.*"
+
+extraResources:
+  - from: apps/electron/vendor/portable-git
+    to: portable-git
+    filter:
+      - "**/*"
+
+win:
+  target:
+    - target: nsis
+      arch:
+        - x64
+
+nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  shortcutName: MyAgentTool
+
+artifactName: ${productName}-Setup-${version}-${arch}.${ext}
