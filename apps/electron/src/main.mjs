@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { bundledAgentEnv } from "./bundled-agent-runtime.mjs";
-import { readSkinSettings, registerSkinChrome } from "./skin-chrome.mjs";
+import { overlayFromChrome, readSkinSettings, registerSkinChrome } from "./skin-chrome.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(__dirname, "../../..");
@@ -156,6 +156,14 @@ function createMainWindow(url) {
   const chrome = readSkinSettings(skinStateDir());
   nativeTheme.themeSource = chrome.themeSource;
 
+  // Windows only: drop the native title bar and draw a skin-colored window-
+  // controls overlay so the caption buttons match the active skin. macOS/Linux
+  // keep their default frame. The overlay is recolored on skin change via IPC.
+  const overlayChrome =
+    process.platform === "win32"
+      ? { titleBarStyle: "hidden", titleBarOverlay: overlayFromChrome(chrome) }
+      : {};
+
   mainWindow = new BrowserWindow({
     width: 1280,
     height: 860,
@@ -164,6 +172,7 @@ function createMainWindow(url) {
     title: "MyAgentTool",
     show: false,
     backgroundColor: chrome.bg,
+    ...overlayChrome,
     webPreferences: {
       contextIsolation: true,
       nodeIntegration: false,

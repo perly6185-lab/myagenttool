@@ -84,7 +84,7 @@ export function applySkin(skin: SkinId, mode: SkinMode): void {
   root.classList.toggle("dark", resolved === "dark");
   root.style.colorScheme = resolved;
   const bg = skinById(skin).chrome[resolved];
-  window.myagenttoolDesktop?.applyChrome?.({ bg, themeSource: mode });
+  window.myagenttoolDesktop?.applyChrome?.({ bg, themeSource: mode, resolved });
 }
 
 /**
@@ -102,7 +102,7 @@ declare global {
   interface Window {
     /** Bridge exposed by the Electron preload; absent in a plain browser. */
     myagenttoolDesktop?: {
-      applyChrome?: (chrome: { bg: string; themeSource: SkinMode }) => void;
+      applyChrome?: (chrome: { bg: string; themeSource: SkinMode; resolved: ResolvedMode }) => void;
     };
   }
 }

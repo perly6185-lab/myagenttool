@@ -184,6 +184,26 @@
     font-size: 0.875rem;
   }
 
+  /*
+   * Windows window-controls-overlay support. On Windows the native title bar is
+   * hidden and skin-colored caption buttons are drawn over the top-right; the
+   * topbar becomes the drag surface and must leave room for those buttons. All
+   * of this is inert on macOS/Linux/browsers, where the env() vars are absent
+   * (spacer collapses to 0) and app-region is ignored.
+   */
+  .app-titlebar {
+    -webkit-app-region: drag;
+  }
+  .app-titlebar :is(button, a, select, input, textarea, label, [role="button"]) {
+    -webkit-app-region: no-drag;
+  }
+  .app-wco-spacer {
+    flex: none;
+    align-self: stretch;
+    width: calc(100vw - env(titlebar-area-width, 100vw) - env(titlebar-area-x, 0px));
+    -webkit-app-region: drag;
+  }
+
   ::-webkit-scrollbar {
     width: 10px;
     height: 10px;

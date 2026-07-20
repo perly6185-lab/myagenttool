@@ -115,15 +115,23 @@ Each skin declares two **chrome** background colors — the resolved hex of its
 window frame never mismatches or flashes white.
 
 - **Renderer → main IPC.** On skin/mode change, the renderer sends
-  `{ skin, mode, bg }`. The main process calls `win.setBackgroundColor(bg)` and,
-  on Windows, updates `titleBarOverlay` (caption button colors).
-- **Persisted natively.** The main process writes the active skin/mode to
-  `settings.json` in `userData` — not only to `localStorage` — so the value is
-  available before any web code runs.
+  `{ bg, themeSource, resolved }`. The main process calls
+  `win.setBackgroundColor(bg)`, sets `nativeTheme.themeSource`, and (Windows
+  only) recolors the caption buttons via `setTitleBarOverlay`.
+- **Persisted natively.** The main process writes the active chrome to
+  `skin-settings.json` in `userData` — not only to `localStorage` — so the value
+  is available before any web code runs. The payload is validated first
+  (hex + enum whitelist) so a compromised renderer can't inject arbitrary values.
 - **Startup, no white flash.** `BrowserWindow` is created with
-  `backgroundColor` read from `settings.json`. The window shell is already the
-  correct base color before the SPA finishes loading, so both cold start and
+  `backgroundColor` read from `skin-settings.json`. The window shell is already
+  the correct base color before the SPA finishes loading, so both cold start and
   skin switches avoid a white flash and a mismatched native frame.
+- **Windows caption buttons.** On Windows only, the window is created with
+  `titleBarStyle: 'hidden'` + a skin-colored `titleBarOverlay`; the native title
+  bar is replaced by a window-controls overlay whose strip and glyphs follow the
+  skin. The web topbar becomes the drag surface (`.app-titlebar`) and reserves
+  the button width (`.app-wco-spacer`, via `env(titlebar-area-*)`). All of that
+  is inert on macOS/Linux, which keep their default frame.
 
 ## File map
 
