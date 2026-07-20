@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type ComponentType } from "react";
-import { ChevronDown, ChevronLeft, ChevronRight, File, FileText, Folder, GitBranch, GitCompare, ListChecks, MessageSquare, Paperclip, X } from "lucide-react";
+import { ChevronDown, ChevronLeft, ChevronRight, File, FileText, Folder, GitBranch, GitCompare, Images, ListChecks, MessageSquare, Paperclip, X } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -11,6 +11,7 @@ import { DecisionAction } from "@/features/invocations/decision-action";
 import { InvocationEventHistory } from "@/features/invocations/invocation-event-history";
 import { InvocationRefusalHistory } from "@/features/invocations/invocation-refusal-history";
 import { WorktreeLinkPopover } from "@/features/projects/worktree-link-popover";
+import { OfficecliVisualDiff } from "@/features/projects/officecli-visual-diff";
 import { useConsoleState } from "@/data/use-console-state";
 import { useAsyncAction, api } from "@/data/use-console-actions";
 import { useUiStore } from "@/store/ui-store";
@@ -92,7 +93,7 @@ export function WorktreeView({ worktree }: { worktree: WorktreeSnapshot }) {
   const [git, setGit] = useState<GitStatus | null>(null);
   const [diff, setDiff] = useState<WorktreeDiff | null>(null);
   // Per file-tab view: show the file's current content or just its changes.
-  const [fileView, setFileView] = useState<"content" | "diff">("content");
+  const [fileView, setFileView] = useState<"content" | "diff" | "visual">("content");
   // Tracks the latest run's status across renders so we can detect the
   // running→finished edge and refresh the workspace once.
   const prevStatusRef = useRef<string | null>(null);
@@ -116,6 +117,9 @@ export function WorktreeView({ worktree }: { worktree: WorktreeSnapshot }) {
   const activeTab = tabs.activeTab;
   const cacheKey = `${worktree.id}::${activeTab}`;
   const isFileTab = activeTab !== "session" && activeTab !== DIFF_TAB;
+  // Office documents get a third file view: a rendered before/after visual diff
+  // (worktree vs base) via the officecli preview route (#1349 polish).
+  const activeIsOfficeDoc = isFileTab && /\.(docx|xlsx|pptx)$/i.test(activeTab);
 
   function updateTabs(fn: (t: { openFiles: { path: string; name: string }[]; activeTab: string }) => { openFiles: { path: string; name: string }[]; activeTab: string }) {
     setTabsByWt((prev) => ({ ...prev, [worktree.id]: fn(prev[worktree.id] ?? { openFiles: [], activeTab: "session" }) }));
@@ -459,7 +463,9 @@ export function WorktreeView({ worktree }: { worktree: WorktreeSnapshot }) {
                   [
                     ["content", "File content", FileText],
                     ["diff", "File changes", GitCompare],
-                  ] as ["content" | "diff", string, ComponentType<{ className?: string }>][]
+                    // Rendered before/after — Office documents only.
+                    ...(activeIsOfficeDoc ? [["visual", "Visual diff (rendered)", Images]] : []),
+                  ] as ["content" | "diff" | "visual", string, ComponentType<{ className?: string }>][]
                 ).map(([key, label, Icon]) => (
                   <button
                     key={key}
@@ -596,6 +602,8 @@ export function WorktreeView({ worktree }: { worktree: WorktreeSnapshot }) {
             </>
           ) : activeTab === DIFF_TAB ? (
             <DiffView diff={diff} onOpenFile={openFile} />
+          ) : fileView === "visual" && activeIsOfficeDoc ? (
+            <OfficecliVisualDiff projectId={worktree.projectId} worktreeId={worktree.id} path={activeTab} />
           ) : fileView === "diff" ? (
             <FileDiffView path={activeTab} diff={diff} />
           ) : (
