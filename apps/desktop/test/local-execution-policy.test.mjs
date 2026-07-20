@@ -774,6 +774,30 @@ test("officecliApply: add with an out-of-set --type is refused (closed enum)", (
   assert.equal(gate.allowed, false);
 });
 
+test("officecliApply: merge with two safe office files + --data JSON (+ --force) is allowed", () => {
+  const gate = officecliApplyGate({
+    capability: "app.app_officecli.apply.merge",
+    execArgs: ["merge", "tmpl.xlsx", "out.xlsx", "--data", '{"name":"World"}', "--force"],
+  });
+  assert.equal(gate.allowed, true, gate.reason);
+});
+
+test("officecliApply: merge with a traversal output file is refused", () => {
+  const gate = officecliApplyGate({
+    capability: "app.app_officecli.apply.merge",
+    execArgs: ["merge", "tmpl.xlsx", "../out.xlsx", "--data", '{"a":1}'],
+  });
+  assert.equal(gate.allowed, false);
+});
+
+test("officecliApply: merge with malformed --data JSON is refused", () => {
+  const gate = officecliApplyGate({
+    capability: "app.app_officecli.apply.merge",
+    execArgs: ["merge", "tmpl.xlsx", "out.xlsx", "--data", "not json"],
+  });
+  assert.equal(gate.allowed, false);
+});
+
 test("officecliApply: import with worktree-safe source + --header/--format is allowed", () => {
   const gate = officecliApplyGate({
     capability: "app.app_officecli.apply.import",

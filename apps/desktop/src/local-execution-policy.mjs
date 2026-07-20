@@ -78,6 +78,14 @@ const isSafeRelPath = (value) =>
 const isOfficeFile = (value) => isSafeRelPath(value) && /\.(docx|xlsx|pptx)$/i.test(value);
 // A CSV/TSV source file (officecli import) — same worktree-safe rule, data ext.
 const isOfficeCsvFile = (value) => isSafeRelPath(value) && /\.(csv|tsv)$/i.test(value);
+// Inline merge --data: a JSON object/array within a byte bound. Independent mirror
+// of the server's normalizeJsonData. One discrete argv token (no shell).
+const isOfficeJsonData = (value) => {
+  if (typeof value !== "string" || value.length > 16 * 1024) return false;
+  let parsed;
+  try { parsed = JSON.parse(value); } catch { return false; }
+  return parsed !== null && typeof parsed === "object";
+};
 // `html` renders a self-contained preview to stdout (read-only); svg/screenshot
 // write temp files and stay out of the read-only wrapper. Mirror the server enum.
 const OFFICE_VIEW_MODES = new Set(["text", "annotated", "outline", "stats", "issues", "forms", "html"]);
@@ -147,6 +155,13 @@ const OFFICECLI_APPLY_WRAPPER_ARGS = {
     base: ["import"],
     flags: { "--header": true, "--format": (v) => v === "csv" || v === "tsv" },
     positionals: [isOfficeFile, isOfficeArg, isOfficeCsvFile],
+  },
+  // merge <template> <output> --data <json> [--force] — two worktree-safe office
+  // files (template in, output out) + inline JSON data + a valueless --force.
+  merge: {
+    base: ["merge"],
+    flags: { "--data": isOfficeJsonData, "--force": true },
+    positionals: [isOfficeFile, isOfficeFile],
   },
 };
 
