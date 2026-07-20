@@ -3,6 +3,7 @@ import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, writeFile
 import { basename, dirname, extname, join, relative, resolve, sep } from "node:path";
 import { denyForeignProject, teamOf, LOCAL_TEAM_ID } from "../runtime/auth.mjs";
 import { computeDispatchEvaluation } from "../read-models/dispatch-evaluation.mjs";
+import { computeIssueOwnership } from "../read-models/issue-ownership.mjs";
 import { recordHttpGateRefusal } from "./refusal-http-gate.mjs";
 import { deriveFinalStatus, summarizeAutoRuns } from "../services/auto-run-metrics.mjs";
 import { summarizeDeployments } from "../services/auto-run-deploy-metrics.mjs";
@@ -419,6 +420,19 @@ export async function handleProjectRoutes({
     );
     const scoped = (state.dispatchAssignments ?? []).filter((a) => visibleProjectIds.has(a?.projectId));
     sendJson(res, 200, computeDispatchEvaluation(scoped));
+    return true;
+  }
+
+  if (req.method === "GET" && url.pathname === "/api/issue-ownership") {
+    // #6: "who owns this issue" — the develop/review claim lease + the Layer-B
+    // dispatch assignment, unified per issue. Per-project data, so team-scoped like
+    // /api/dispatch-evaluation (decision soft-claims are a different domain and are
+    // intentionally not folded in — see read-models/issue-ownership.mjs).
+    const teamId = actor?.teamId ?? null;
+    const visibleProjectIds = new Set(
+      (state.projects ?? []).filter((p) => teamId == null || teamOf(p) === teamId).map((p) => p.id),
+    );
+    sendJson(res, 200, computeIssueOwnership(state, { includeProject: (projectId) => visibleProjectIds.has(projectId) }));
     return true;
   }
 

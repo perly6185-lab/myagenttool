@@ -86,6 +86,13 @@ before(async () => {
     data: null,
     createdAt: now(),
   });
+  // Team A ownership signals (for /api/issue-ownership tenancy).
+  state.issueClaims = [
+    { id: "icl_a", status: "active", mode: "develop", claimedBy: "usr_a", projectId: "projA", issueNumber: 42, leaseExpiresAt: "2099-01-01T00:00:00.000Z" },
+  ];
+  state.dispatchAssignments = [
+    { status: "open", workerId: "worker-a", projectId: "projA", issueNumber: 42, assignedAt: now() },
+  ];
   state.codexApprovalBrokerRequests.push({
     id: "cdx_appr_a",
     invocationId: "inv_a",
@@ -301,6 +308,19 @@ test("invocation event detail is readable by its team and existence-hidden from 
   assert.equal(foreign.status, 404);
   assert.deepEqual(foreign.body, missing.body);
   assert.deepEqual(foreign.body, { error: "invocation_not_found" });
+});
+
+test("issue-ownership is team-scoped; team B never sees team A's issue owner", async () => {
+  const own = await call("/api/issue-ownership", { token: "tok_a" });
+  assert.equal(own.status, 200);
+  const mine = own.body.issues.find((i) => i.projectId === "projA" && i.issueNumber === 42);
+  assert.ok(mine, "team A sees its own issue ownership");
+  assert.equal(mine.develop.claimedBy, "usr_a");
+  assert.equal(mine.dispatch.workerId, "worker-a");
+
+  const foreign = await call("/api/issue-ownership", { token: "tok_b" });
+  assert.equal(foreign.status, 200);
+  assert.ok(!foreign.body.issues.some((i) => i.projectId === "projA"), "team B's view excludes team A's issues");
 });
 
 test("dispatch-health queue is team-scoped; team B never sees team A's queued invocation", async () => {
