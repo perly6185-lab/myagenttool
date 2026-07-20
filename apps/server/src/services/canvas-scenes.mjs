@@ -204,7 +204,7 @@ export function createCanvasSceneService({
         type: "canvas_scene_created",
         level: "info",
         message: `Canvas scene ${scene.id} created (${scene.elements.length} elements).`,
-        data: { canvasSceneId: scene.id, projectId: scene.projectId, revision: scene.revision },
+        data: { canvasSceneId: scene.id, actorId: actorUser(actor), actorTeamId: actorTeam(actor), projectId: scene.projectId, revision: scene.revision },
       });
     });
     return { ok: true, status: 201, body: { scene: publicScene(scene) } };
@@ -246,7 +246,7 @@ export function createCanvasSceneService({
         type: "canvas_scene_updated",
         level: "info",
         message: `Canvas scene ${scene.id} updated to revision ${scene.revision}.`,
-        data: { canvasSceneId: scene.id, revision: scene.revision },
+        data: { canvasSceneId: scene.id, actorId: actorUser(actor), actorTeamId: actorTeam(actor), revision: scene.revision },
       });
     });
     return { ok: true, status: 200, body: { scene: publicScene(scene) } };
@@ -296,7 +296,7 @@ export function createCanvasSceneService({
       appendEvent({
         invocationId: null, type: "canvas_scene_elements_added", level: "info",
         message: `Canvas scene ${scene.id}: ${changedElementIds.length} element(s) added (revision ${scene.revision}).`,
-        data: { canvasSceneId: scene.id, revision: scene.revision, changedElementIds },
+        data: { canvasSceneId: scene.id, actorId: actorUser(actor), actorTeamId: actorTeam(actor), revision: scene.revision, changedElementIds },
       });
     });
     return { ok: true, status: 200, body: { scene: sceneSummary(scene), revision: scene.revision, changedElementIds } };
@@ -328,7 +328,7 @@ export function createCanvasSceneService({
       appendEvent({
         invocationId: null, type: "canvas_scene_elements_updated", level: "info",
         message: `Canvas scene ${scene.id}: ${changedElementIds.length} element(s) updated (revision ${scene.revision}).`,
-        data: { canvasSceneId: scene.id, revision: scene.revision, changedElementIds },
+        data: { canvasSceneId: scene.id, actorId: actorUser(actor), actorTeamId: actorTeam(actor), revision: scene.revision, changedElementIds },
       });
     });
     return { ok: true, status: 200, body: { scene: sceneSummary(scene), revision: scene.revision, changedElementIds } };
@@ -357,7 +357,7 @@ export function createCanvasSceneService({
       appendEvent({
         invocationId: null, type: "canvas_scene_elements_removed", level: "warn",
         message: `Canvas scene ${scene.id}: ${removedElementIds.length} element(s) removed (revision ${scene.revision}).`,
-        data: { canvasSceneId: scene.id, revision: scene.revision, removedElementIds },
+        data: { canvasSceneId: scene.id, actorId: actorUser(actor), actorTeamId: actorTeam(actor), revision: scene.revision, removedElementIds },
       });
     });
     return { ok: true, status: 200, body: { scene: sceneSummary(scene), revision: scene.revision, removedElementIds } };
@@ -383,7 +383,7 @@ export function createCanvasSceneService({
         type: "canvas_scene_deleted",
         level: "info",
         message: `Canvas scene ${scene.id} deleted.`,
-        data: { canvasSceneId: scene.id, revision: scene.revision },
+        data: { canvasSceneId: scene.id, actorId: actorUser(actor), actorTeamId: actorTeam(actor), revision: scene.revision },
       });
     });
     return { ok: true, status: 200, body: { deleted: scene.id } };
