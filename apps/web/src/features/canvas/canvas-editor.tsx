@@ -24,6 +24,7 @@ interface ExcalidrawApi {
   getAppState: () => AppState;
   getFiles: () => BinaryFiles;
   updateScene: (scene: { elements?: unknown[] }) => void;
+  addFiles: (files: unknown[]) => void;
 }
 
 const SAVE_DEBOUNCE_MS = 800;
@@ -60,9 +61,13 @@ export function CanvasEditor() {
   const loadIntoEditor = useCallback((scene: CanvasScene, elementsOverride?: unknown[]) => {
     const elements = (elementsOverride ?? scene.elements) as unknown[];
     apiRef.current?.updateScene({ elements });
+    // updateScene carries no files — load a scene's binary files (images) via the
+    // dedicated API, or image elements render blank and the next save drops them.
+    const files = scene.files ?? {};
+    if (Object.keys(files).length) apiRef.current?.addFiles(Object.values(files));
     localRevisionRef.current = scene.revision;
     setDisplayRevision(scene.revision);
-    lastSyncedJsonRef.current = serialize(elements);
+    lastSyncedJsonRef.current = serialize(elements, files);
     suppressUntilRef.current = Date.now() + 600;
     dirtyRef.current = false;
     loadedSceneIdRef.current = scene.id;
@@ -78,8 +83,11 @@ export function CanvasEditor() {
       const offline = loadOfflineDraft(serverScene.id);
       if (offline) {
         try {
-          const draftElements = (JSON.parse(offline).elements ?? []) as unknown[];
-          loadIntoEditor(serverScene, draftElements);
+          const draft = JSON.parse(offline) as { elements?: unknown[]; baseRevision?: number };
+          loadIntoEditor(serverScene, draft.elements ?? []);
+          // Anchor the unsaved work to the revision it was BASED on, not the
+          // current server one — a retry then conflicts if the server has moved.
+          if (typeof draft.baseRevision === "number") localRevisionRef.current = draft.baseRevision;
           dirtyRef.current = true;
           setStatus("offline");
           return;
@@ -131,8 +139,10 @@ export function CanvasEditor() {
         setStatus("error");
       }
     } catch {
-      // Network failure → keep the work as an offline draft, reconcile later.
-      saveOfflineDraft(selectedSceneId, serialize(elements, files));
+      // Network failure → keep the work as an offline draft WITH its base
+      // revision, so a later retry re-checks against the server (a stale retry
+      // must conflict, never silently overwrite a newer revision).
+      saveOfflineDraft(selectedSceneId, JSON.stringify({ elements, files, baseRevision: localRevisionRef.current }));
       setStatus("offline");
     }
   }, [selectedSceneId, refreshCanvas]);
