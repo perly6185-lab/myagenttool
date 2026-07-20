@@ -316,6 +316,28 @@ export function createCapabilityService({
         },
       };
     }
+    // A worktree-scoped write: resolve the requested worktreeId to its path and
+    // stamp it as the invocation's worktreePath, so a cwdPolicy:invocation_root
+    // command runs INSIDE the worktree (the device refuses an officecli write
+    // outside one). The worktree must belong to the resolved project — a foreign
+    // or unknown worktree is refused, not silently downgraded to the project clone.
+    let worktreePath = null;
+    const requestedWorktreeId = input?.worktreeId ? String(input.worktreeId) : null;
+    if (requestedWorktreeId) {
+      const worktree = (state.worktrees ?? []).find((w) => w.id === requestedWorktreeId);
+      if (!worktree || (resolvedProjectId && worktree.projectId !== resolvedProjectId)) {
+        return {
+          status: 409,
+          body: {
+            error: "worktree_not_found",
+            capability: name,
+            worktreeId: requestedWorktreeId,
+            message: "The requested worktree is not registered for this project.",
+          },
+        };
+      }
+      worktreePath = worktree.path ?? worktree.worktreePath ?? null;
+    }
     const agent = findAgent("agt_platform_application_wrapper");
     if (!agent || agent.status === "disabled") {
       return {
@@ -336,6 +358,8 @@ export function createCapabilityService({
         applicationId,
         applicationWrapper: planned.wrapper,
         projectId: capability.application?.projectId ?? input?.projectId ?? null,
+        // The resolved worktree the command runs in (writes require one).
+        ...(worktreePath ? { worktreePath } : {}),
         // A run fired by a schedule must be traceable back to it (#847). The agent
         // path has always stamped this; without it here, a scheduled capability run
         // is an orphan — no way to ask "which schedule produced this?", and no way

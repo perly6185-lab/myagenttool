@@ -23,6 +23,12 @@ export interface CapabilityRunContract {
    * ask for a project rather than let the run 409.
    */
   needsProject: boolean;
+  /**
+   * A workspace_write command MUST run in a worktree, never the project clone —
+   * the device refuses a write outside one. So the panel asks for a worktree (and
+   * the run sends worktreeId), rather than let the run be refused.
+   */
+  needsWorktree: boolean;
   requiresApproval: boolean;
   inputs: CapabilityInput[];
 }
@@ -30,6 +36,7 @@ export interface CapabilityRunContract {
 export function capabilityRunContract(capability: ApplicationCapability): CapabilityRunContract {
   const wrapper = capability.metadata?.wrapper;
   const needsProject = wrapper?.cwdPolicy === "invocation_root";
+  const needsWorktree = wrapper?.filePolicy === "workspace_write";
   const inputs = declaredInputs(capability);
   const blockedReason =
     capability.status === "disabled"
@@ -41,6 +48,7 @@ export function capabilityRunContract(capability: ApplicationCapability): Capabi
     invokable: blockedReason === null,
     blockedReason,
     needsProject,
+    needsWorktree,
     requiresApproval: capability.requiresApproval === true,
     inputs,
   };
@@ -61,6 +69,8 @@ function declaredInputs(capability: ApplicationCapability): CapabilityInput[] {
 
 export interface RunFormState {
   projectId: string;
+  /** The worktree a write lands in — only needed for a workspace_write capability. */
+  worktreeId?: string;
   values: Record<string, string>;
 }
 
@@ -118,6 +128,9 @@ export function runBlocker(contract: CapabilityRunContract, form: RunFormState):
   if (contract.needsProject && !form.projectId) {
     return "Choose the repository this command runs in.";
   }
+  if (contract.needsWorktree && !form.worktreeId) {
+    return "Choose the worktree this write lands in — a write cannot touch the project directly.";
+  }
   if (Object.keys(fieldErrors(contract, form)).length > 0) {
     return "Fix the highlighted inputs before running.";
   }
@@ -136,6 +149,7 @@ export function buildInvokeBody(
 ): Record<string, string> {
   const body: Record<string, string> = {};
   if (form.projectId) body.projectId = form.projectId;
+  if (form.worktreeId) body.worktreeId = form.worktreeId;
   for (const input of contract.inputs) {
     const value = (form.values[input.key] ?? "").trim();
     if (value) body[input.key] = value;
@@ -147,6 +161,12 @@ export function buildInvokeBody(
 export function explainRunFailure(error: string): string {
   if (error.includes("invocation_root_requires_project")) {
     return "This command runs inside a repository, but no project was scoped to the run. Choose a project and try again.";
+  }
+  if (error.includes("worktree_not_found")) {
+    return "The chosen worktree is not registered for this project. Pick a current worktree and try again.";
+  }
+  if (error.includes("outside a worktree") || error.includes("never the project clone")) {
+    return "A write must land in a worktree, not the project directly. Choose a worktree for this run.";
   }
   if (error.includes("approval_required")) {
     return "This capability needs an explicit approval before it can run.";

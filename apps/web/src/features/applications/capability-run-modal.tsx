@@ -38,9 +38,10 @@ export function CapabilityRunModal({
 }) {
   const { data: state } = useConsoleState();
   const { execute, pending, error } = useAsyncAction();
-  const [form, setForm] = useState<RunFormState>({ projectId: "", values: {} });
+  const [form, setForm] = useState<RunFormState>({ projectId: "", worktreeId: "", values: {} });
 
   const projects = state?.projects ?? [];
+  const worktrees = (state?.worktrees ?? []).filter((w) => w.projectId === form.projectId);
   const contract = useMemo(
     () => (capability ? capabilityRunContract(capability) : null),
     [capability],
@@ -93,7 +94,7 @@ export function CapabilityRunModal({
           <Field label="Repository">
             <Select
               value={form.projectId}
-              onChange={(e) => setForm((prev) => ({ ...prev, projectId: e.target.value }))}
+              onChange={(e) => setForm((prev) => ({ ...prev, projectId: e.target.value, worktreeId: "" }))}
             >
               <option value="">Choose a repository…</option>
               {projects.map((project) => (
@@ -104,6 +105,27 @@ export function CapabilityRunModal({
             </Select>
             <p className="mt-1 text-xs text-muted-foreground">
               This command runs inside the repository you choose, on the device that owns it.
+            </p>
+          </Field>
+        ) : null}
+
+        {contract.needsWorktree ? (
+          <Field label="Worktree">
+            <Select
+              value={form.worktreeId}
+              onChange={(e) => setForm((prev) => ({ ...prev, worktreeId: e.target.value }))}
+              disabled={!form.projectId}
+            >
+              <option value="">{form.projectId ? "Choose a worktree…" : "Choose a repository first"}</option>
+              {worktrees.map((worktree) => (
+                <option key={worktree.id} value={worktree.id}>
+                  {worktree.branch ?? worktree.id}
+                </option>
+              ))}
+            </Select>
+            <p className="mt-1 text-xs text-muted-foreground">
+              A write lands in this worktree — never the project directly — so it can be reviewed before promotion.
+              {form.projectId && worktrees.length === 0 ? " This project has no worktree yet; create one first." : ""}
             </p>
           </Field>
         ) : null}
