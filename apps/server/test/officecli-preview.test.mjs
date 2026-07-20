@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 
-import { renderOfficecliPreview, OfficecliPreviewError } from "../src/services/officecli-preview.mjs";
+import { renderOfficecliPreview, readOfficecliDocParagraphs, OfficecliPreviewError } from "../src/services/officecli-preview.mjs";
 
 function projectWith(files = { "demo.xlsx": "x" }) {
   const root = mkdtempSync(join(tmpdir(), "officecli-preview-"));
@@ -80,5 +80,45 @@ test("an empty render is reported, not returned as a blank preview", async () =>
   await assert.rejects(
     renderOfficecliPreview({ projectPath: root, relativeFile: "demo.xlsx", run: async () => ({ stdout: "   " }) }),
     (e) => e instanceof OfficecliPreviewError && e.code === "empty_render",
+  );
+});
+
+// --- docx paragraph outline (paragraph-level inline editor source) ---
+
+const GET_BODY_JSON = JSON.stringify({
+  success: true,
+  data: { matches: 1, results: [{ path: "/body", type: "body", children: [
+    { path: "/body/p[@paraId=00100000]", type: "paragraph", text: "Introduction", style: "Heading1" },
+    { path: "/body/p[@paraId=00100002]", type: "paragraph", text: "First paragraph.", style: null },
+    { path: "/body/tbl[1]", type: "table" }, // non-paragraph child is skipped
+  ] }] },
+});
+
+test("readOfficecliDocParagraphs returns path-addressed paragraphs (skipping non-paragraphs)", async () => {
+  const root = projectWith({ "memo.docx": "x" });
+  const out = await readOfficecliDocParagraphs({
+    projectPath: root,
+    relativeFile: "memo.docx",
+    run: async (_cmd, argv) => {
+      assert.deepEqual(argv, ["get", "memo.docx", "/body", "--json"]);
+      return { stdout: GET_BODY_JSON };
+    },
+  });
+  assert.equal(out.path, "memo.docx");
+  assert.deepEqual(out.paragraphs, [
+    { path: "/body/p[@paraId=00100000]", type: "paragraph", text: "Introduction", style: "Heading1" },
+    { path: "/body/p[@paraId=00100002]", type: "paragraph", text: "First paragraph.", style: null },
+  ]);
+});
+
+test("readOfficecliDocParagraphs refuses a non-.docx and a traversal path", async () => {
+  const root = projectWith({ "book.xlsx": "x" });
+  await assert.rejects(
+    readOfficecliDocParagraphs({ projectPath: root, relativeFile: "book.xlsx", run: async () => ({ stdout: "{}" }) }),
+    (e) => e instanceof OfficecliPreviewError && e.code === "unsupported_type",
+  );
+  await assert.rejects(
+    readOfficecliDocParagraphs({ projectPath: root, relativeFile: "../../etc/passwd.docx", run: async () => assert.fail("must not spawn") }),
+    (e) => e instanceof OfficecliPreviewError && e.code === "path_escape",
   );
 });

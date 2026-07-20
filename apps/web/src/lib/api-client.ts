@@ -689,6 +689,12 @@ export const api = {
       "GET",
       `/api/projects/${encodeURIComponent(projectId)}/officecli-preview?path=${encodeURIComponent(filePath)}${worktreeId ? `&worktree=${encodeURIComponent(worktreeId)}` : ""}`,
     ),
+  // A .docx's body paragraphs (path-addressed) for the paragraph-level inline editor.
+  officecliDocOutline: (projectId: string, filePath: string, worktreeId?: string) =>
+    request<{ path: string; paragraphs: { path: string; type: string; text: string; style: string | null }[] }>(
+      "GET",
+      `/api/projects/${encodeURIComponent(projectId)}/officecli-doc-outline?path=${encodeURIComponent(filePath)}${worktreeId ? `&worktree=${encodeURIComponent(worktreeId)}` : ""}`,
+    ),
   worktreeGit: (id: string) => request("GET", `/api/worktrees/${encodeURIComponent(id)}/git`),
   worktreeDiff: (id: string) => request("GET", `/api/worktrees/${encodeURIComponent(id)}/diff`),
   reviewWorktree: (id: string, payload: { verdict: "approved" | "changes_requested"; summary?: string; comments?: { path: string | null; body: string }[] }) =>
