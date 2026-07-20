@@ -101,6 +101,48 @@ test("`add` drops an out-of-set element type (closed enum)", () => {
   assert.deepEqual(plan.args, ["add", "demo.xlsx", "/Sheet1", "--prop", "ref=F1"]);
 });
 
+test("`batch` emits the file positional + a compacted, verb-validated --commands JSON", () => {
+  const app = register();
+  const commands = [
+    { command: "set", path: "/Sheet1/A1", props: { value: "B1" } },
+    { command: "add", parent: "/Sheet1", type: "cell", props: { ref: "C1", value: "x" } },
+    { command: "remove", path: "/Sheet1/A2" },
+  ];
+  const plan = applicationWrapperExecutionPlan(app, "batch", { file: "demo.xlsx", commands });
+  assert.equal(plan.capability, "app.app_officecli.apply.batch");
+  assert.equal(plan.filePolicy, "workspace_write");
+  assert.deepEqual(plan.args.slice(0, 3), ["batch", "demo.xlsx", "--commands"]);
+  assert.deepEqual(JSON.parse(plan.args[3]), commands);
+});
+
+test("`batch` drops the WHOLE list if any item uses a non-write verb (all-or-nothing)", () => {
+  const app = register();
+  const plan = applicationWrapperExecutionPlan(app, "batch", {
+    file: "demo.xlsx",
+    commands: [
+      { command: "set", path: "/A1", props: { value: "x" } },
+      { command: "raw-set", part: "/document" }, // low-level verb — not allowed
+    ],
+  });
+  assert.deepEqual(plan.args, ["batch", "demo.xlsx"]);
+});
+
+test("`batch` accepts a JSON string; a non-array or oversized payload is dropped", () => {
+  const app = register();
+  const ok = applicationWrapperExecutionPlan(app, "batch", {
+    file: "demo.xlsx",
+    commands: '[{"command":"remove","path":"/Sheet1/A1"}]',
+  });
+  assert.deepEqual(JSON.parse(ok.args[3]), [{ command: "remove", path: "/Sheet1/A1" }]);
+  const notArray = applicationWrapperExecutionPlan(app, "batch", { file: "demo.xlsx", commands: '{"command":"set"}' });
+  assert.deepEqual(notArray.args, ["batch", "demo.xlsx"]);
+  const tooMany = applicationWrapperExecutionPlan(app, "batch", {
+    file: "demo.xlsx",
+    commands: Array.from({ length: 101 }, () => ({ command: "remove", path: "/A1" })),
+  });
+  assert.deepEqual(tooMany.args, ["batch", "demo.xlsx"]);
+});
+
 test("`set` allows a value containing `=` (formulas) but drops malformed/oversized/injection pairs", () => {
   const app = register();
   const plan = applicationWrapperExecutionPlan(app, "set", {
