@@ -23,7 +23,7 @@ const SETUP_STEPS: Array<{ phase: Exclude<SetupPhase, "failed" | "cancelled">; l
   { phase: "ready", label: "Ready" },
 ];
 
-export function RegisterApplicationModal({ open, onClose }: { open: boolean; onClose: () => void }) {
+export function RegisterApplicationModal({ open, onClose, initialApplication = "" }: { open: boolean; onClose: () => void; initialApplication?: string }) {
   const { data: state } = useConsoleState();
   const setSelectedApplicationId = useUiStore((s) => s.setSelectedApplicationId);
   const { execute, pending, error } = useAsyncAction();
@@ -39,7 +39,6 @@ export function RegisterApplicationModal({ open, onClose }: { open: boolean; onC
   const [manualUri, setManualUri] = useState("");
   const [name, setName] = useState("");
   const [projectId, setProjectId] = useState("");
-  const [deviceId, setDeviceId] = useState("");
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const [setupPhase, setSetupPhase] = useState<SetupPhase>("detect");
   const [setupBusy, setSetupBusy] = useState(false);
@@ -50,7 +49,6 @@ export function RegisterApplicationModal({ open, onClose }: { open: boolean; onC
   const [installRun, setInstallRun] = useState<ApplicationInstallRun | null>(null);
 
   const projects = state?.projects ?? [];
-  const devices = state?.devices?.length ? state.devices : state?.device ? [state.device] : [];
   const { data: knownApplicationData } = useQuery({
     queryKey: ["known-application-catalog"],
     queryFn: () => api.listKnownApplications(),
@@ -58,21 +56,23 @@ export function RegisterApplicationModal({ open, onClose }: { open: boolean; onC
     staleTime: 60_000,
   });
   const { data: installRunData } = useQuery({
-    queryKey: ["application-install-run", installRunId],
+    queryKey: ["runtime-install-run", installRunId],
     queryFn: () => api.getApplicationInstallRun(installRunId!),
     enabled: Boolean(open && installRunId),
     refetchInterval: 700,
   });
 
   useEffect(() => {
-    if (!deviceId && devices[0]?.id) setDeviceId(devices[0].id);
-  }, [deviceId, devices]);
+    if (!open || !initialApplication) return;
+    setKnownApplication(initialApplication);
+    resetSetup("Check this local application and repair it if needed.");
+  }, [open, initialApplication]);
 
   const knownEntry = useMemo(() => {
     const normalized = knownApplication.trim().toLowerCase();
     return (knownApplicationData?.applications ?? []).find((entry) => entry.aliases.includes(normalized)) ?? null;
   }, [knownApplication, knownApplicationData]);
-  const selectedDevice = devices.find((device) => device.id === deviceId) ?? null;
+  const selectedDevice = state?.device ?? null;
   const readiness = knownEntry && selectedDevice
     ? (selectedDevice.runtimeReadiness ?? selectedDevice.applicationBinaryReadiness)?.find((row) => row.command === knownEntry.command) ?? null
     : null;
@@ -133,12 +133,23 @@ export function RegisterApplicationModal({ open, onClose }: { open: boolean; onC
   }
 
   async function startQuickSetup() {
-    if (!knownEntry || !selectedDevice) return;
+    if (!knownEntry) return;
     setSetupBusy(true);
     setSetupError(null);
     setSetupPhase("detect");
-    setSetupMessage(`Checking ${knownEntry.displayName} on ${selectedDevice.name}.`);
+    setSetupMessage(`Checking ${knownEntry.displayName} on this computer.`);
     try {
+      if (knownEntry.runtimeRequirements.length === 0) {
+        setSetupPhase("registering");
+        setSetupMessage(`${knownEntry.displayName} is built in. Adding it now.`);
+        await registerKnownApplication();
+        return;
+      }
+      if (!selectedDevice) {
+        setSetupPhase("failed");
+        setSetupError("Start the local Desktop Bridge, then retry.");
+        return;
+      }
       if (selectedDevice.status !== "online") {
         setSetupPhase("failed");
         setSetupError("The selected device is offline. Start Desktop Bridge or choose an online device, then retry.");
@@ -149,6 +160,11 @@ export function RegisterApplicationModal({ open, onClose }: { open: boolean; onC
           const loginCommand = knownEntry.command === "codex" ? "codex login" : knownEntry.command === "claude" ? "claude auth login" : null;
           setSetupPhase("failed");
           setSetupError(`${knownEntry.displayName} is installed but not authenticated.${loginCommand ? ` Sign in with ${loginCommand}, wait for device readiness to refresh, then retry.` : " Sign in locally, wait for device readiness to refresh, then retry."}`);
+          return;
+        }
+        if (readiness.authenticationStatus === "unknown") {
+          setSetupPhase("failed");
+          setSetupError(`${knownEntry.displayName} is installed, but local sign-in could not be verified. Retry detection after checking the application locally.`);
           return;
         }
         setSetupPhase("registering");
@@ -248,16 +264,17 @@ export function RegisterApplicationModal({ open, onClose }: { open: boolean; onC
             <p className="text-sm font-semibold">Quick setup</p>
             <p className="text-xs text-muted-foreground">Detect, approve, install, verify, and register a known Application without entering commands.</p>
           </div>
-          <div className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_10rem]">
-            <Input
-              list="known-application-options"
+          <div className="grid gap-2">
+            <Select
               value={knownApplication}
               onChange={(event) => { setKnownApplication(event.target.value); resetSetup(); }}
-              placeholder="Codex, Claude, Git, or ccusage"
               disabled={workflowActive}
-            />
-            <Select value={deviceId} onChange={(event) => { setDeviceId(event.target.value); resetSetup("Device changed. Run detection again."); }} disabled={workflowActive} aria-label="Target device">
-              {devices.map((device) => <option key={device.id} value={device.id}>{device.name}</option>)}
+              aria-label="Application"
+            >
+              <option value="">Choose an application</option>
+              {(knownApplicationData?.applications ?? []).map((application) => (
+                <option key={application.name} value={application.name}>{application.displayName}</option>
+              ))}
             </Select>
           </div>
           <Select value={projectId} onChange={(event) => { setProjectId(event.target.value); resetSetup("Project scope changed. Run detection again."); }} disabled={workflowActive} aria-label="Project scope">
@@ -300,7 +317,7 @@ export function RegisterApplicationModal({ open, onClose }: { open: boolean; onC
             <div className="grid gap-2 rounded-lg border border-primary/20 bg-primary/5 p-3 text-xs sm:grid-cols-2">
               <div><span className="text-muted-foreground">Package</span><p className="font-medium break-words">{installPlan.package.identifier}</p></div>
               <div><span className="text-muted-foreground">Provider</span><p className="font-medium capitalize">{installPlan.package.provider}</p></div>
-              <div><span className="text-muted-foreground">Target</span><p className="font-medium">{selectedDevice?.name} · {installPlan.target.platform}</p></div>
+              <div><span className="text-muted-foreground">This computer</span><p className="font-medium">{installPlan.target.platform}</p></div>
               <div><span className="text-muted-foreground">Policy</span><p className="font-medium capitalize">{installPlan.risk.level} risk · cancellable</p></div>
               <p className="sm:col-span-2 text-muted-foreground">No shell string or custom arguments are accepted. Approval is single-use and bound to this exact plan.</p>
             </div>
@@ -311,7 +328,7 @@ export function RegisterApplicationModal({ open, onClose }: { open: boolean; onC
             {["installing", "probing"].includes(setupPhase) ? <Button size="sm" variant="destructive" disabled={setupBusy || !installRun?.id} onClick={() => void cancelInstallation()}>{setupBusy ? "Cancelling…" : "Cancel installation"}</Button> : null}
             {["failed", "cancelled"].includes(setupPhase) ? <Button size="sm" variant="secondary" onClick={() => { resetSetup("Retrying setup from readiness detection."); void startQuickSetup(); }}>Retry</Button> : null}
             {setupPhase === "ready" ? <Button size="sm" onClick={onClose}>Done</Button> : null}
-            {["detect", "plan"].includes(setupPhase) ? <Button size="sm" disabled={setupBusy || !knownEntry || !selectedDevice} onClick={() => void startQuickSetup()}>{setupBusy ? "Detecting…" : "Set up"}</Button> : null}
+            {["detect", "plan"].includes(setupPhase) ? <Button size="sm" disabled={setupBusy || !knownEntry || (knownEntry.runtimeRequirements.length > 0 && !selectedDevice)} onClick={() => void startQuickSetup()}>{setupBusy ? "Detecting…" : "Set up"}</Button> : null}
           </div>
         </div>
 

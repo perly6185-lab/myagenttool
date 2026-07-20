@@ -2,8 +2,18 @@ import { createCcusageApplicationRegistration } from "./ccusage-application.mjs"
 import { createClaudeApplicationRegistration } from "./claude-application.mjs";
 import { createCodexApplicationRegistration } from "./codex-application.mjs";
 import { createGitApplicationRegistration } from "./git-application.mjs";
+import { createMarkdownApplicationRegistration } from "./markdown-application.mjs";
 
 const KNOWN_APPLICATIONS = [
+  {
+    name: "markdown",
+    displayName: "Markdown",
+    aliases: ["markdown", "md"],
+    command: "",
+    runtimeRequirements: [],
+    installHint: "Built into MyAgentTool and ready without external installation.",
+    createRegistration: createMarkdownApplicationRegistration,
+  },
   {
     name: "git",
     displayName: "Git",
@@ -66,6 +76,8 @@ export function createKnownApplicationRegistration(value, { projectId = null } =
     },
     registration: {
       ...registration,
+      executionScope: "local",
+      runtimeRequirements: entry.runtimeRequirements.map((requirement) => ({ ...requirement })),
       ...(projectId ? { projectId } : {}),
     },
   };

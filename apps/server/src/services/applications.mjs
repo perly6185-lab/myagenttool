@@ -5,13 +5,14 @@ import { normalizeLoopRoutine, validateLoopRoutine } from "../../../../tools/ai/
 import { teamOf } from "../runtime/auth.mjs";
 import { makeRunTx } from "../runtime/store/run-tx.mjs";
 import { codingAgentInterfaceForTool } from "./coding-agent-interface.mjs";
+import { findKnownRuntime } from "./runtime-catalog.mjs";
 
 // Consecutive failed health checks before an active application is auto-offlined
 // (docs/design/APPLICATION_HEALTH_PROBE.md) — fixed, to avoid flapping on
 // transient filesystem states.
 const HEALTH_FAILURE_THRESHOLD = 2;
 
-const APPLICATION_SOURCE_TYPES = new Set(["git", "local", "npm", "binary", "manual"]);
+const APPLICATION_SOURCE_TYPES = new Set(["git", "local", "npm", "binary", "builtin", "manual"]);
 
 // A binary source names a bare program (`git`), never a path on disk. The bridge
 // allowlist decides what may actually run; the caller does not get to name a path.
@@ -69,6 +70,7 @@ export function createApplicationService({
     const name = normalizeApplicationName(body.name ?? nameFromSource(source));
     const requestedId = body.id == null ? null : sanitizeApplicationId(body.id);
     const capabilityFacades = normalizeApplicationCapabilityFacades(body.capabilityFacades);
+    const runtimeRequirements = normalizeRuntimeRequirements(body.runtimeRequirements);
     // ADR 0014: the write-credential exception class. Invariant 2 (every
     // capability approval-gated) and invariant 3 (a separate Application —
     // the credential pair may not already belong to another registration)
@@ -114,6 +116,13 @@ export function createApplicationService({
       if (requestedId && requestedId !== existing.id && body.replacesApplicationId !== existing.id) {
         throw new Error(`Application source is already registered as ${existing.id}.`);
       }
+      if (body.executionScope === "local" || runtimeRequirements.length > 0) {
+        runTx(() => {
+          existing.executionScope = "local";
+          existing.runtimeRequirements = runtimeRequirements;
+          existing.updatedAt = now();
+        });
+      }
       const existingFingerprint = existing.descriptorFingerprint
         ?? fingerprintApplicationDescriptor(applicationDescriptor(existing, existing.descriptorSchemaVersion));
       if (existingFingerprint === descriptorFingerprint) {
@@ -127,7 +136,7 @@ export function createApplicationService({
           `Application source is registered as immutable revision ${existing.id}; re-register with replacesApplicationId to replace it.`,
         );
       }
-      return createApplicationRevision({ body, actor, source, name, requestedId, capabilityFacades, descriptorSchemaVersion, descriptorFingerprint, existing });
+      return createApplicationRevision({ body, actor, source, name, requestedId, capabilityFacades, runtimeRequirements, descriptorSchemaVersion, descriptorFingerprint, existing });
     }
     const applicationId = requestedId ?? sanitizeApplicationId(nextId("app"));
     if (findApplication(applicationId)) {
@@ -171,6 +180,8 @@ export function createApplicationService({
       ownerTeamId: ownerTeamId ?? project?.ownerTeamId ?? "team_local",
       capabilitiesVersion: 1,
       capabilityFacades,
+      executionScope: "local",
+      runtimeRequirements,
       descriptorSchemaVersion,
       descriptorFingerprint,
       descriptorRevision: 1,
@@ -237,7 +248,7 @@ export function createApplicationService({
     return app;
   }
 
-  function createApplicationRevision({ body, actor, source, name, requestedId, capabilityFacades, descriptorSchemaVersion, descriptorFingerprint, existing }) {
+  function createApplicationRevision({ body, actor, source, name, requestedId, capabilityFacades, runtimeRequirements, descriptorSchemaVersion, descriptorFingerprint, existing }) {
     if (existing.successorApplicationId) {
       throw applicationRegistrationError("application_already_replaced", `Application revision ${existing.id} was already replaced by ${existing.successorApplicationId}.`);
     }
@@ -258,6 +269,8 @@ export function createApplicationService({
       ownerTeamId: existing.ownerTeamId ?? actor?.teamId ?? "team_local",
       capabilitiesVersion: 1,
       capabilityFacades,
+      executionScope: "local",
+      runtimeRequirements,
       descriptorSchemaVersion,
       descriptorFingerprint,
       descriptorRevision: Number(existing.descriptorRevision ?? 1) + 1,
@@ -964,6 +977,14 @@ export function projectApplicationCapabilities(app, context = {}) {
       additionalProperties: false,
       properties: { query: { type: "string", maxLength: 200 } },
     }),
+    ...(app.source?.type === "builtin" && app.source?.id === "markdown" ? [
+      managedCapability(app, `${prefix}.preview`, "Preview Markdown", "read", "low", ["read_only", "builtin", "markdown"], false, disabled, {
+        type: "object",
+        additionalProperties: false,
+        required: ["markdown"],
+        properties: { markdown: { type: "string", maxLength: 100000 } },
+      }),
+    ] : []),
     managedCapability(app, `${prefix}.refresh`, "Refresh application source", "lifecycle", "medium", ["network_access", "lifecycle"], true, disabled, approvalInputSchema()),
     managedCapability(app, `${prefix}.online`, "Bring application online", "lifecycle", "medium", ["lifecycle", "write_control"], true, app.status === "archived" || app.status === "active", approvalInputSchema()),
     managedCapability(app, `${prefix}.offline`, "Take application offline", "lifecycle", "high", ["lifecycle", "write_control"], true, app.status === "archived", approvalInputSchema()),
@@ -1228,7 +1249,7 @@ function actionFromCapabilityName(capabilityName) {
   const wrapperAction = wrapperActionFromCapabilityName(capabilityName);
   if (wrapperAction) return wrapperAction;
   const suffix = String(capabilityName ?? "").split(".").at(-1);
-  return ["inspect", "search", "refresh", "online", "offline", "archive", "generate_orchestration"].includes(suffix) ? suffix : null;
+  return ["inspect", "search", "preview", "refresh", "online", "offline", "archive", "generate_orchestration"].includes(suffix) ? suffix : null;
 }
 
 function wrapperActionFromCapabilityName(capabilityName) {
@@ -1265,6 +1286,22 @@ function executeApplicationAction({ application, action, input, actor, defaultPr
         action,
         query,
         matches: query && haystack.includes(query) ? [publicApplicationSnapshot(application)] : [],
+      },
+    };
+  }
+  if (action === "preview" && application.source?.type === "builtin" && application.source?.id === "markdown") {
+    const markdown = String(input?.markdown ?? "").slice(0, 100000);
+    return {
+      summary: "Markdown preview prepared locally.",
+      output: {
+        source: "application",
+        action,
+        markdown,
+        statistics: {
+          characters: markdown.length,
+          lines: markdown ? markdown.split(/\r?\n/).length : 0,
+          headings: (markdown.match(/^#{1,6}\s+/gm) ?? []).length,
+        },
       },
     };
   }
@@ -1608,6 +1645,8 @@ function publicApplicationSnapshot(application) {
     kind: application.kind,
     source: application.source,
     status: application.status,
+    executionScope: "local",
+    runtimeRequirements: application.runtimeRequirements ?? [],
     projectId: application.projectId,
     path: application.path,
     wrapper: application.source?.wrapper ? publicNpmWrapperSnapshot(application.source.wrapper) : null,
@@ -1618,6 +1657,22 @@ function publicApplicationSnapshot(application) {
     predecessorApplicationId: application.predecessorApplicationId ?? null,
     successorApplicationId: application.successorApplicationId ?? null,
   };
+}
+
+function normalizeRuntimeRequirements(value) {
+  if (value == null) return [];
+  if (!Array.isArray(value)) {
+    throw applicationRegistrationError("invalid_application_runtime_requirements", "Application runtimeRequirements must be an array.");
+  }
+  const seen = new Set();
+  return value.map((requirement) => {
+    const runtime = findKnownRuntime(requirement?.runtimeId);
+    if (!runtime || seen.has(runtime.id)) {
+      throw applicationRegistrationError("invalid_application_runtime_requirement", "Application runtimeRequirements must reference unique known runtimes.");
+    }
+    seen.add(runtime.id);
+    return { runtimeId: runtime.id, required: requirement?.required !== false };
+  });
 }
 
 function normalizeDescriptorSchemaVersion(value) {
@@ -2116,7 +2171,7 @@ function sourceFromLegacyBody(body) {
 function normalizeApplicationSource(source = {}) {
   const type = String(source.type ?? "").trim().toLowerCase();
   if (!APPLICATION_SOURCE_TYPES.has(type)) {
-    throw new Error("Application source type must be git, local, npm, binary, or manual.");
+    throw new Error("Application source type must be git, local, npm, binary, builtin, or manual.");
   }
   if (type === "git") {
     const url = normalizeGitUrl(source.url ?? source.repoUrl ?? source.gitUrl);
@@ -2169,6 +2224,11 @@ function normalizeApplicationSource(source = {}) {
       }
     }
     return { type, binary, wrapper };
+  }
+  if (type === "builtin") {
+    const id = String(source.id ?? "").trim().toLowerCase();
+    if (id !== "markdown") throw new Error("Unknown built-in Application source.");
+    return { type, id };
   }
   return {
     type: "manual",
@@ -2251,6 +2311,7 @@ function nameFromSource(source) {
   if (source.type === "local") return basename(source.path);
   if (source.type === "npm") return source.package.split("/").at(-1);
   if (source.type === "binary") return source.binary;
+  if (source.type === "builtin") return source.id;
   return "Application";
 }
 
@@ -2259,6 +2320,7 @@ function normalizeApplicationKind(value, source) {
   if (text) return text;
   if (source.type === "npm") return "npm-package";
   if (source.type === "binary") return "binary";
+  if (source.type === "builtin") return "builtin";
   if (source.type === "git" || source.type === "local") return "repository";
   return "manual";
 }
@@ -2436,6 +2498,7 @@ function sameApplicationSourceIdentity(left, right) {
   if (left.type === "binary") return left.binary === right.binary;
   if (left.type === "git") return left.url === right.url && (left.ref ?? null) === (right.ref ?? null);
   if (left.type === "local") return left.path === right.path;
+  if (left.type === "builtin") return left.id === right.id;
   return left.uri === right.uri;
 }
 
@@ -2453,6 +2516,8 @@ function sourceKey(source) {
   if (source.type === "git") return `git:${source.url}:${source.ref ?? ""}`;
   if (source.type === "local") return `local:${resolve(source.path)}`;
   if (source.type === "npm") return `npm:${source.package}:${source.version ?? "latest"}`;
+  if (source.type === "binary") return `binary:${source.binary}`;
+  if (source.type === "builtin") return `builtin:${source.id}`;
   return `manual:${source.uri ?? JSON.stringify(source.manifest ?? {})}`;
 }
 

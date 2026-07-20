@@ -1341,6 +1341,7 @@ export type ApplicationSource =
   | { type: "npm"; package: string; version?: string | null; wrapper?: NpmWrapperSnapshot | null }
   // A system binary the platform runs on the device (git) — #774.
   | { type: "binary"; binary: string; wrapper?: NpmWrapperSnapshot | null }
+  | { type: "builtin"; id: "markdown" }
   | { type: "manual"; uri?: string | null; manifest?: Record<string, unknown> };
 
 export interface NpmWrapperSnapshot {
@@ -1543,6 +1544,14 @@ export interface ApplicationSnapshot {
   kind: string;
   source: ApplicationSource;
   status: "draft" | "probing" | "registered" | "active" | "offline" | "archived" | "failed" | string;
+  executionScope?: "local";
+  runtimeRequirements?: Array<{ runtimeId: string; required: boolean }>;
+  localReadiness?: {
+    state: "ready" | "login_required" | "repair_required" | "bridge_offline" | "archived" | string;
+    summary: string;
+    action: "login" | "repair" | "retry" | "start_bridge" | null;
+    scope: "local";
+  };
   lifecycle?: { state?: string; lastOperation?: string; lastOperationAt?: string | null };
   projectId?: string | null;
   path?: string | null;

@@ -31,6 +31,7 @@ vi.mock("@/data/use-console-actions", () => ({
 
 const catalog = {
   applications: [
+    { name: "markdown", displayName: "Markdown", aliases: ["markdown", "md"], command: "", installHint: "Built in", runtimeRequirements: [] },
     { name: "ccusage", displayName: "ccusage", aliases: ["ccusage"], command: "ccusage", installHint: "Managed install", runtimeRequirements: [{ runtimeId: "runtime_ccusage", required: true }] },
     { name: "codex", displayName: "Codex CLI", aliases: ["codex", "codex cli"], command: "codex", installHint: "Managed install", runtimeRequirements: [{ runtimeId: "runtime_codex", required: true }] },
   ],
@@ -66,14 +67,27 @@ function renderModal(onClose = vi.fn()) {
 }
 
 async function enterKnownApplication(value = "ccusage") {
-  const input = screen.getByPlaceholderText("Codex, Claude, Git, or ccusage");
-  fireEvent.change(input, { target: { value } });
+  await screen.findByRole("option", { name: catalog.applications.find((entry) => entry.name === value)?.displayName ?? value });
+  fireEvent.change(screen.getByRole("combobox", { name: "Application" }), { target: { value } });
   const button = screen.getByRole("button", { name: "Set up" }) as HTMLButtonElement;
   await waitFor(() => expect(button.disabled).toBe(false));
   fireEvent.click(button);
 }
 
 describe("RegisterApplicationModal governed setup", () => {
+  it("adds the built-in Markdown Application without a bridge or install plan", async () => {
+    consoleState.data = { projects: [], device: null, devices: [] };
+    apiMock.listKnownApplications.mockResolvedValue(catalog);
+    apiMock.quickRegisterApplication.mockResolvedValue({ application: { id: "app_markdown", name: "Markdown" }, capabilities: [] });
+    renderModal();
+
+    await enterKnownApplication("markdown");
+
+    await waitFor(() => expect(apiMock.quickRegisterApplication).toHaveBeenCalledWith({ name: "markdown" }));
+    expect(apiMock.createApplicationInstallPlan).not.toHaveBeenCalled();
+    expect(await screen.findByText(/Markdown is registered and ready/i)).toBeTruthy();
+  });
+
   it("skips installation when readiness already confirms the binary", async () => {
     consoleState.data = {
       projects: [],
@@ -148,7 +162,7 @@ describe("RegisterApplicationModal governed setup", () => {
 
     await enterKnownApplication();
     expect(await screen.findByRole("button", { name: "Approve & install" })).toBeTruthy();
-    expect(screen.getByText("ccusage")).toBeTruthy();
+    expect(screen.getAllByText("ccusage").length).toBeGreaterThan(0);
     expect(screen.getByText("npm")).toBeTruthy();
     expect(screen.queryByText("npm.cmd")).toBeNull();
 

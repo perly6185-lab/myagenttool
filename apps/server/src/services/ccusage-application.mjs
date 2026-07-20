@@ -32,6 +32,8 @@ export function createCcusageApplicationRegistration({
 } = {}) {
   return {
     id: CCUSAGE_APPLICATION_ID,
+    executionScope: "local",
+    runtimeRequirements: [{ runtimeId: "runtime_ccusage", required: true }],
     name: "ccusage",
     autoOnline,
     source: {

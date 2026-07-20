@@ -36,3 +36,9 @@ export function findKnownRuntime(value) {
 export function runtimeIdForCommand(command) {
   return RUNTIMES.find((entry) => entry.command === String(command ?? "").trim().toLowerCase())?.id ?? null;
 }
+
+export function runtimeRequirementsForApplicationId(applicationId) {
+  return RUNTIMES
+    .filter((entry) => entry.applicationIds.includes(String(applicationId ?? "")))
+    .map((entry) => ({ runtimeId: entry.id, required: true }));
+}

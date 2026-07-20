@@ -26,6 +26,21 @@ function statusTone(status: string): Tone {
   return "neutral";
 }
 
+function readinessTone(state?: string): Tone {
+  if (state === "ready") return "success";
+  if (["login_required", "repair_required", "bridge_offline"].includes(state ?? "")) return "warning";
+  if (state === "archived") return "danger";
+  return "neutral";
+}
+
+function readinessLabel(state?: string): string {
+  if (state === "login_required") return "Sign in";
+  if (state === "repair_required") return "Repair";
+  if (state === "bridge_offline") return "Local bridge offline";
+  if (state === "ready") return "Ready";
+  return state ?? "Checking";
+}
+
 function sweepAgo(iso: string): string {
   const secs = Math.max(0, Math.round((Date.now() - Date.parse(iso)) / 1000));
   if (secs < 90) return "just now";
@@ -44,6 +59,8 @@ export function sourceSummary(source: ApplicationSource): string {
       return `${source.package}${source.version ? `@${source.version}` : ""}`;
     case "binary":
       return `${source.binary} (system binary on the device)`;
+    case "builtin":
+      return "Built into MyAgentTool";
     default:
       return source.uri ?? "manual manifest";
   }
@@ -58,6 +75,7 @@ export function ApplicationsView() {
   const [status, setStatus] = useState<"all" | ApplicationSnapshot["status"]>("all");
   const [kind, setKind] = useState<"all" | string>("all");
   const [registerOpen, setRegisterOpen] = useState(false);
+  const [setupApplication, setSetupApplication] = useState("");
 
   const all = state?.applications ?? [];
   const projectName = useMemo(() => {
@@ -94,13 +112,13 @@ export function ApplicationsView() {
         title="Applications"
         description="Applications registered as governed assets from git, local, npm, or manual sources. Select one to inspect its capabilities, probe, and orchestrations."
         actions={
-          <Button size="sm" onClick={() => setRegisterOpen(true)}>
+          <Button size="sm" onClick={() => { setSetupApplication(""); setRegisterOpen(true); }}>
             Add application
           </Button>
         }
       />
 
-      <RegisterApplicationModal open={registerOpen} onClose={() => setRegisterOpen(false)} />
+      <RegisterApplicationModal open={registerOpen} initialApplication={setupApplication} onClose={() => setRegisterOpen(false)} />
 
       {/* No filters before there's anything to filter — the empty state carries the Register CTA (#930). */}
       {all.length ? (
@@ -175,6 +193,7 @@ export function ApplicationsView() {
                   {sourceSummary(app.source)}
                 </p>
                 <div className="flex flex-wrap gap-1.5">
+                  <Badge tone={readinessTone(app.localReadiness?.state)}>{readinessLabel(app.localReadiness?.state)}</Badge>
                   {projectName(app.projectId) ? <Badge>{projectName(app.projectId)}</Badge> : null}
                   {app.probe?.capabilities?.length ? (
                     <Badge>{app.probe.capabilities.length} probed capabilities</Badge>
@@ -221,6 +240,18 @@ export function ApplicationsView() {
                     );
                   })()}
                 </div>
+                {app.localReadiness && !["ready", "archived"].includes(app.localReadiness.state) ? (
+                  <div className="flex items-center justify-between gap-3 pt-1">
+                    <p className="text-xs text-muted-foreground">{app.localReadiness.summary}</p>
+                    <Button size="sm" variant="secondary" onClick={(event) => {
+                      event.stopPropagation();
+                      setSetupApplication(app.source.type === "binary" ? app.source.binary : app.name.toLowerCase());
+                      setRegisterOpen(true);
+                    }}>
+                      {app.localReadiness.state === "login_required" ? "Sign in" : "Repair"}
+                    </Button>
+                  </div>
+                ) : null}
               </CardContent>
             </Card>
           ))}

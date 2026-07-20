@@ -4,8 +4,10 @@ Tracked by #1342.
 
 ## Decision
 
-MyAgentTool presents user-facing Applications. A Runtime is an internal,
-device-local executable or environment required by an Application.
+MyAgentTool presents user-facing Applications. An Application belongs to the
+current desktop instance only; it is not a cross-machine or fleet object. A
+Runtime is an internal, local executable or environment required by that
+Application.
 
 - Codex and Claude are Applications backed by Agent CLI runtimes.
 - Git and ccusage are Applications backed by tool runtimes.
@@ -23,9 +25,13 @@ Application does not uninstall its Runtime. A registered Application remains
 visible when its Runtime is absent, unauthenticated, stale, or unavailable on a
 selected device.
 
+There is no preferred-device binding, remote Application installation, or
+cross-device failover. Existing device collections are infrastructure
+compatibility and do not define Application identity.
+
 For an Application backed by a Runtime, setup follows this sequence:
 
-1. Select the Application and target device.
+1. Select the Application for this computer.
 2. Prefer an existing supported system Runtime.
 3. Use or install an approved bundled fallback when needed.
 4. Complete local authentication when required.
@@ -41,3 +47,13 @@ first and fall back to the legacy alias.
 Readiness reports contain normalized status, version, and authentication method
 only. Tokens, account identifiers, raw command output, and executable paths are
 not part of the public device state.
+
+## Delivery Stages
+
+1. Split Application and Runtime catalogs and add the compatibility field.
+2. Persist local execution scope and Runtime requirements.
+3. Derive one local, user-facing readiness state.
+4. Complete local add, install, login, and registration setup.
+5. Keep broken Applications visible and route repair through governed setup.
+6. Add the built-in Markdown Application without an external Runtime.
+7. Move new clients to Runtime install routes and retain explicit legacy aliases.

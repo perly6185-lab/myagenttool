@@ -410,13 +410,13 @@ export const api = {
       body,
     ),
   createApplicationInstallPlan: (body: { name: string; projectId?: string | null; deviceId: string }) =>
-    request<{ plan: ApplicationInstallPlan }>("POST", "/api/applications/install/plan", body),
+    request<{ plan: ApplicationInstallPlan }>("POST", "/api/runtimes/install/plan", body),
   queueApplicationInstall: (body: { plan: ApplicationInstallPlan; approvalToken: string }) =>
-    request<{ run: ApplicationInstallRun }>("POST", "/api/applications/install/runs", body),
+    request<{ run: ApplicationInstallRun }>("POST", "/api/runtimes/install/runs", body),
   getApplicationInstallRun: (id: string) =>
-    request<{ run: ApplicationInstallRun }>("GET", `/api/applications/install/runs/${encodeURIComponent(id)}`),
+    request<{ run: ApplicationInstallRun }>("GET", `/api/runtimes/install/runs/${encodeURIComponent(id)}`),
   cancelApplicationInstall: (id: string) =>
-    request<{ run: ApplicationInstallRun }>("POST", `/api/applications/install/runs/${encodeURIComponent(id)}/cancel`, {}),
+    request<{ run: ApplicationInstallRun }>("POST", `/api/runtimes/install/runs/${encodeURIComponent(id)}/cancel`, {}),
   applicationLifecycle: (
     id: string,
     action: "probe" | "online" | "offline" | "archive" | "refresh",
