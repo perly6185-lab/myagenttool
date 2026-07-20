@@ -59,7 +59,23 @@ const isGitRev = (value) => /^[A-Za-z0-9._/-]{1,100}$/.test(value) && !value.inc
 // STRICTER than the server where it costs nothing: `file` must end in a known
 // Office extension, and `mode` must be one of the stdout view modes.
 const isOfficeArg = (value) => value.length >= 1 && value.length <= 200 && !/[\r\n]/.test(value);
-const isOfficeFile = (value) => isOfficeArg(value) && /\.(docx|xlsx|pptx)$/i.test(value);
+// A document FILE positional is a filesystem path officecli resolves against its
+// cwd (the worktree). Confining the cwd is NOT enough — a `../` or absolute path
+// in this positional escapes the worktree and reads/writes an arbitrary file
+// (confirmed: `officecli set ../x.xlsx …` wrote outside the worktree). So a file
+// must be a SAFE RELATIVE path: no traversal segment, not absolute (no leading
+// `/`, `~`, `\`, or a Windows drive), plus a known Office extension. Document DOM
+// paths (isOfficeArg, e.g. `/Sheet1/A1`) are NOT files and keep their leading `/`.
+const isSafeRelPath = (value) =>
+  value.length >= 1
+  && value.length <= 200
+  && !/[\r\n\0]/.test(value)
+  && !value.startsWith("/")
+  && !value.startsWith("~")
+  && !value.startsWith("\\")
+  && !/^[A-Za-z]:/.test(value)
+  && !value.split(/[/\\]/).includes("..");
+const isOfficeFile = (value) => isSafeRelPath(value) && /\.(docx|xlsx|pptx)$/i.test(value);
 // `html` renders a self-contained preview to stdout (read-only); svg/screenshot
 // write temp files and stay out of the read-only wrapper. Mirror the server enum.
 const OFFICE_VIEW_MODES = new Set(["text", "annotated", "outline", "stats", "issues", "forms", "html"]);
