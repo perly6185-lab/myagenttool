@@ -151,6 +151,31 @@ test("element ops: update/remove validate references atomically", () => {
   assert.equal(service.getScene({ sceneId: scene.id }, ACTOR_A).body.scene.elements.length, 0);
 });
 
+test("add_elements remaps batch-internal references when reassigning ids", () => {
+  const { service } = harness();
+  const scene = service.createScene({ elements: [] }, ACTOR_A).body.scene;
+  // An arrow bound to two shapes, all added in one batch with caller ids.
+  const added = service.addElements(
+    {
+      sceneId: scene.id,
+      expectedRevision: 1,
+      elements: [
+        { id: "a", type: "rectangle", boundElements: [{ id: "arrow", type: "arrow" }] },
+        { id: "b", type: "rectangle" },
+        { id: "arrow", type: "arrow", startBinding: { elementId: "a" }, endBinding: { elementId: "b" }, containerId: "a" },
+      ],
+    },
+    ACTOR_A,
+  ).body;
+  const [newA, newB, newArrow] = added.changedElementIds;
+  const els = service.getScene({ sceneId: scene.id }, ACTOR_A).body.scene.elements;
+  const arrow = els.find((e) => e.id === newArrow);
+  assert.equal(arrow.startBinding.elementId, newA); // remapped to the new server id
+  assert.equal(arrow.endBinding.elementId, newB);
+  assert.equal(arrow.containerId, newA);
+  assert.equal(els.find((e) => e.id === newA).boundElements[0].id, newArrow);
+});
+
 test("element ops are team-scoped and export is a read", () => {
   const { service } = harness();
   const scene = service.createScene({ elements: [{ id: "a", type: "rectangle" }] }, ACTOR_A).body.scene;
