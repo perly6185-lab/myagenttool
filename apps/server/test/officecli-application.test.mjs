@@ -177,6 +177,46 @@ test("`batch` emits the file positional + a compacted, verb-validated --commands
   assert.deepEqual(JSON.parse(plan.args[3]), commands);
 });
 
+test("a media-source prop (src/path/preview) that escapes the worktree is DROPPED; text props are untouched", () => {
+  const app = register();
+  // src is a file officecli opens — a traversal/absolute/URL source is dropped.
+  for (const src of ["../../../etc/passwd.png", "/etc/x.png", "~/x.png", "https://attacker/x.png", "file:///etc/x", "a/../../b.png"]) {
+    const plan = applicationWrapperExecutionPlan(app, "add", { file: "b.xlsx", parent: "/Sheet1", type: "picture", props: { src } });
+    assert.ok(!plan.args.some((a) => a.startsWith("src=")), `unsafe src "${src}" must be dropped`);
+  }
+  // a worktree-relative source and a data: URI are kept.
+  assert.ok(applicationWrapperExecutionPlan(app, "add", { file: "b.xlsx", parent: "/Sheet1", type: "picture", props: { src: "assets/logo.png" } }).args.includes("src=assets/logo.png"));
+  assert.ok(applicationWrapperExecutionPlan(app, "set", { file: "b.xlsx", path: "/p", props: { src: "data:image/png;base64,AAA" } }).args.some((a) => a.startsWith("src=data:")));
+  // path (src alias) and preview are guarded too.
+  assert.ok(!applicationWrapperExecutionPlan(app, "add", { file: "b.xlsx", parent: "/Sheet1", type: "ole", props: { path: "../secret" } }).args.some((a) => a.startsWith("path=")));
+  // a NON-source prop with the same-looking value is kept (only src/path/preview are paths).
+  assert.ok(applicationWrapperExecutionPlan(app, "set", { file: "b.xlsx", path: "/Sheet1/A1", props: { value: "../this/is/text" } }).args.includes("value=../this/is/text"));
+});
+
+test("`batch` drops the WHOLE list if an item's media-source prop escapes the worktree", () => {
+  const app = register();
+  const plan = applicationWrapperExecutionPlan(app, "batch", {
+    file: "b.xlsx",
+    commands: [
+      { command: "set", path: "/Sheet1/A1", props: { value: "ok" } },
+      { command: "add", parent: "/Sheet1", type: "picture", props: { src: "../../etc/passwd.png" } },
+    ],
+  });
+  assert.deepEqual(plan.args, ["batch", "b.xlsx"]);
+});
+
+test("a write command is forced to require approval at registration even if the descriptor says false", () => {
+  const svc = service();
+  const app = svc.registerApplication({
+    id: "app_x", name: "x",
+    source: { type: "binary", binary: "officecli", wrapper: { mode: "installed-wrapper", commands: [
+      { id: "sneaky", commandType: "bin", command: "officecli", args: ["set"], status: "approved", segment: "apply", filePolicy: "workspace_write", requiresApproval: false },
+    ] } },
+  });
+  const cmd = app.source.wrapper.commands.find((c) => c.id === "sneaky");
+  assert.equal(cmd.requiresApproval, true, "an apply/workspace_write command must require approval regardless of the descriptor");
+});
+
 test("`batch` drops the WHOLE list if any item uses a non-write verb (all-or-nothing)", () => {
   const app = register();
   const plan = applicationWrapperExecutionPlan(app, "batch", {
