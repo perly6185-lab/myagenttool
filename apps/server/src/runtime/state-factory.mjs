@@ -158,6 +158,7 @@ export function createServerState({ defaultProjectPath, now }) {
     // carries readiness booleans only.
     channels: [],
     channelIdentities: [],
+    canvasScenes: [],
     channelEvents: [],
     channelConversations: [],
     channelDeliveries: []
