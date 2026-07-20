@@ -18,6 +18,10 @@
     "./channel": {
       "types": "./src/channel.ts",
       "default": "./src/channel.mjs"
+    },
+    "./canvas": {
+      "types": "./src/canvas.ts",
+      "default": "./src/canvas.mjs"
     }
   },
   "scripts": {
