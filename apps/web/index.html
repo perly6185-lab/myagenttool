@@ -5,6 +5,31 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="color-scheme" content="dark light" />
     <title>MyAgentTool · Agent Control Plane</title>
+    <script>
+      // Paint the persisted skin + mode before first paint (no flash). Mirrors
+      // applySkin() in src/lib/skins.ts; keep them in sync. Defaults match
+      // DEFAULT_SKIN / DEFAULT_MODE.
+      (function () {
+        try {
+          var raw = localStorage.getItem("myagenttool-ui");
+          var s = raw ? JSON.parse(raw).state || {} : {};
+          var skin = s.skin || "default";
+          var mode = s.mode || "dark";
+          var resolved =
+            mode === "system"
+              ? window.matchMedia("(prefers-color-scheme: dark)").matches
+                ? "dark"
+                : "light"
+              : mode;
+          var el = document.documentElement;
+          el.setAttribute("data-skin", skin);
+          el.classList.toggle("dark", resolved === "dark");
+          el.style.colorScheme = resolved;
+        } catch (e) {
+          /* first run / private mode — fall back to the static class="dark". */
+        }
+      })();
+    </script>
   </head>
   <body>
     <div id="root">

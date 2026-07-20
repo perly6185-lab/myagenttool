@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { bundledAgentEnv } from "./bundled-agent-runtime.mjs";
+import { overlayFromChrome, readSkinSettings, registerSkinChrome } from "./skin-chrome.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(__dirname, "../../..");
@@ -15,7 +16,7 @@ if (process.argv.includes("--check")) {
   process.exit(0);
 }
 
-const { app, BrowserWindow, dialog, shell } = await import("electron");
+const { app, BrowserWindow, dialog, ipcMain, nativeTheme, shell } = await import("electron");
 
 const smokeMode = process.argv.includes("--smoke") || process.env.MYAGENTTOOL_ELECTRON_SMOKE === "1";
 const host = "127.0.0.1";
@@ -130,7 +131,39 @@ function runtimePaths() {
   };
 }
 
+// Native window chrome (backing color + OS theme source) persisted by the
+// renderer so a cold start paints the correct frame before the web app loads.
+// Logic lives in skin-chrome.mjs; see docs/design/SKIN_SYSTEM.md.
+function skinStateDir() {
+  return join(app.getPath("userData"), "state");
+}
+
+let skinIpcRegistered = false;
+function registerSkinIpc() {
+  if (skinIpcRegistered) return;
+  skinIpcRegistered = true;
+  registerSkinChrome({
+    ipcMain,
+    nativeTheme,
+    stateDir: skinStateDir(),
+    getWindow: () => mainWindow,
+    onError: (error) => appendLog("electron", `failed to persist skin settings: ${error.message}`),
+  });
+}
+
 function createMainWindow(url) {
+  registerSkinIpc();
+  const chrome = readSkinSettings(skinStateDir());
+  nativeTheme.themeSource = chrome.themeSource;
+
+  // Windows only: drop the native title bar and draw a skin-colored window-
+  // controls overlay so the caption buttons match the active skin. macOS/Linux
+  // keep their default frame. The overlay is recolored on skin change via IPC.
+  const overlayChrome =
+    process.platform === "win32"
+      ? { titleBarStyle: "hidden", titleBarOverlay: overlayFromChrome(chrome) }
+      : {};
+
   mainWindow = new BrowserWindow({
     width: 1280,
     height: 860,
@@ -138,10 +171,13 @@ function createMainWindow(url) {
     minHeight: 680,
     title: "MyAgentTool",
     show: false,
+    backgroundColor: chrome.bg,
+    ...overlayChrome,
     webPreferences: {
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true,
+      preload: join(__dirname, "preload.cjs"),
     },
   });
 

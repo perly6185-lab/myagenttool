@@ -88,6 +88,24 @@ The `StatusBadge` / `Badge` `tone` prop is the one place state color is encoded:
 Map protocol enums to a tone via `statusTone` / `healthTone` in
 `readable-labels.ts` — components never branch on raw enum → color.
 
+## Skins
+
+A **skin** is one alternate set of values for the tokens above; the `:root` /
+`.dark` pair in `main.css` is the `default` skin. Built-in skins live in
+`src/assets/skins/<id>.css` under `:root[data-skin="<id>"]:not(.dark)` (light) and
+`:root[data-skin="<id>"].dark` (dark), and are registered in `src/lib/skins.ts`
+(the source of truth for the picker and the `SkinId` union). The active skin +
+mode are UI state (`ui-store`), applied to `<html>` by `useSkinSync`; an inline
+script in `index.html` paints the persisted skin before React mounts. In the
+Electron shell the chrome color is forwarded to the native window so the frame
+matches and cold start never flashes white.
+
+Adding a skin: define the full token set (light + dark) in a new
+`skins/<id>.css`, `@import` it from `main.css`, register it in `skins.ts` with a
+label, swatches, and native chrome colors. Every token in the contract must be
+present in both modes and meet AA — `skins.contract.test.mjs` enforces
+completeness. Full spec: [`docs/design/SKIN_SYSTEM.md`](../../docs/design/SKIN_SYSTEM.md).
+
 ## Resolution order
 
 When this guide is silent: reach for **muted/accent/border before color**, a
