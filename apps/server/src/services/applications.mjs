@@ -828,7 +828,7 @@ export function createApplicationWrapperAgentRegistration({
 // anything else returns null. This is the single source of truth for WHAT may
 // execute — the bridge only ever runs a command that came through here, so an
 // unapproved or unregistered command can never reach execution.
-const WRAPPER_ARG_INPUT_TYPES = new Set(["date", "token", "enum", "string", "boolean-flag", "git-rev", "count", "props"]);
+const WRAPPER_ARG_INPUT_TYPES = new Set(["date", "token", "enum", "string", "office_file", "boolean-flag", "git-rev", "count", "props", "json_commands"]);
 const RESERVED_WRAPPER_ARG_INPUT_KEYS = new Set([
   "approvalToken",
   "idempotencyKey",
@@ -874,7 +874,16 @@ function normalizeWrapperArgInputs(argInputs) {
       }
     }
     const type = WRAPPER_ARG_INPUT_TYPES.has(String(entry.type)) ? String(entry.type) : "token";
-    return { key, flag, positional, type, values: type === "enum" ? normalizeStringList(entry.values) : [] };
+    return {
+      key,
+      flag,
+      positional,
+      type,
+      values: type === "enum" ? normalizeStringList(entry.values) : [],
+      // For a json_commands input, the closed set of item verbs (`command` field)
+      // the batch may contain — the write-verb allowlist. Mirrors enum's `values`.
+      verbs: type === "json_commands" ? normalizeStringList(entry.verbs) : [],
+    };
   });
 }
 
@@ -907,6 +916,17 @@ function resolveWrapperInputArgs(argInputs, input, { positionalsFirst = false } 
         flagArgs.push(spec.flag, `${propKey}=${propText}`);
         count += 1;
       }
+      continue;
+    }
+    if (spec.type === "json_commands") {
+      // A batch operation list (officecli batch --commands <json>). Accept a JS
+      // array or a JSON string; it MUST parse to an array of ≤100 objects, each
+      // with a `command` in the declared write-verb allowlist. The whole list is
+      // re-serialized compactly and emitted as one --commands token. A malformed
+      // list, an unlisted verb, or an oversized payload drops the input entirely
+      // (never a partial or unvalidated batch).
+      const list = normalizeJsonCommands(raw, spec.verbs);
+      if (list) flagArgs.push(spec.flag, list);
       continue;
     }
     if (spec.type === "boolean-flag") {
@@ -942,8 +962,43 @@ function isValidWrapperArgValue(spec, value) {
     // server itself approved failed the run. The two validators stay independent
     // copies — this narrows the server to the device's real bound, not the reverse.
     case "count": return /^\d{1,4}$/.test(value) && Number(value) >= 1 && Number(value) <= 1000;
+    // A document FILE path officecli resolves against its worktree cwd. Must be a
+    // SAFE RELATIVE path (no traversal, not absolute) so it cannot escape the
+    // worktree, plus an Office extension. Mirrors the device's isOfficeFile — the
+    // two allowlists reject a `../` or absolute file INDEPENDENTLY.
+    case "office_file":
+      return value.length <= 200
+        && !/[\r\n\0]/.test(value)
+        && !/^[/~\\]/.test(value)
+        && !/^[A-Za-z]:/.test(value)
+        && !value.split(/[/\\]/).includes("..")
+        && /\.(docx|xlsx|pptx)$/i.test(value);
     default: return false;
   }
+}
+
+const JSON_COMMANDS_MAX_ITEMS = 100;
+const JSON_COMMANDS_MAX_BYTES = 16 * 1024;
+
+// Validate + compact a batch operation list. `raw` may be a JS array or a JSON
+// string; `allowedVerbs` is the closed set the `command` field may take. Returns
+// a compact JSON string, or null if anything is off — a batch is all-or-nothing,
+// never a partial or unvalidated list. The verb allowlist is the governance
+// boundary; per-item document fields (path/props/type) are officecli semantics.
+function normalizeJsonCommands(raw, allowedVerbs) {
+  const verbs = new Set(Array.isArray(allowedVerbs) ? allowedVerbs : []);
+  let list = raw;
+  if (typeof raw === "string") {
+    try { list = JSON.parse(raw); } catch { return null; }
+  }
+  if (!Array.isArray(list) || list.length === 0 || list.length > JSON_COMMANDS_MAX_ITEMS) return null;
+  for (const item of list) {
+    if (!item || typeof item !== "object" || Array.isArray(item)) return null;
+    if (!verbs.has(String(item.command))) return null;
+  }
+  const compact = JSON.stringify(list);
+  if (compact.length > JSON_COMMANDS_MAX_BYTES) return null;
+  return compact;
 }
 
 // A wrapper command's capability segment. Read commands live under `.wrapper.`;
@@ -1240,7 +1295,10 @@ function wrapperInputSchema(command) {
 // every pre-existing type keeps emitting its raw string verbatim, so existing
 // apps' projected schemas stay byte-identical (a pinned-fixture invariant).
 function wrapperArgInputJsonType(type) {
-  return type === "props" ? "object" : type;
+  if (type === "props") return "object";
+  if (type === "json_commands") return "array";
+  if (type === "office_file") return "string";
+  return type;
 }
 
 function approvalInputSchema() {

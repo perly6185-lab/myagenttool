@@ -774,6 +774,59 @@ test("officecliApply: add with an out-of-set --type is refused (closed enum)", (
   assert.equal(gate.allowed, false);
 });
 
+test("officecliApply: swap with three positional paths is allowed", () => {
+  const gate = officecliApplyGate({
+    capability: "app.app_officecli.apply.swap",
+    execArgs: ["swap", "demo.xlsx", "/Sheet1/row[2]", "/Sheet1/row[3]"],
+  });
+  assert.equal(gate.allowed, true, gate.reason);
+});
+
+test("officecliApply: move with a --to/--after/--before path flag is allowed", () => {
+  const gate = officecliApplyGate({
+    capability: "app.app_officecli.apply.move",
+    execArgs: ["move", "deck.pptx", "/slide[3]", "--after", "/slide[1]"],
+  });
+  assert.equal(gate.allowed, true, gate.reason);
+});
+
+test("officecliApply: move with an undeclared destination flag is refused", () => {
+  const gate = officecliApplyGate({
+    capability: "app.app_officecli.apply.move",
+    execArgs: ["move", "deck.pptx", "/slide[3]", "--into", "/slide[1]"],
+  });
+  assert.equal(gate.allowed, false);
+});
+
+test("officecliApply: batch with a verb-allowlisted --commands JSON is allowed", () => {
+  const cmds = JSON.stringify([
+    { command: "set", path: "/Sheet1/A1", props: { value: "x" } },
+    { command: "remove", path: "/Sheet1/A2" },
+  ]);
+  const gate = officecliApplyGate({
+    capability: "app.app_officecli.apply.batch",
+    execArgs: ["batch", "demo.xlsx", "--commands", cmds],
+  });
+  assert.equal(gate.allowed, true, gate.reason);
+});
+
+test("officecliApply: batch with a non-write verb in --commands is refused", () => {
+  const cmds = JSON.stringify([{ command: "set", path: "/A1" }, { command: "raw-set", part: "/document" }]);
+  const gate = officecliApplyGate({
+    capability: "app.app_officecli.apply.batch",
+    execArgs: ["batch", "demo.xlsx", "--commands", cmds],
+  });
+  assert.equal(gate.allowed, false);
+});
+
+test("officecliApply: batch with malformed JSON in --commands is refused", () => {
+  const gate = officecliApplyGate({
+    capability: "app.app_officecli.apply.batch",
+    execArgs: ["batch", "demo.xlsx", "--commands", "not json"],
+  });
+  assert.equal(gate.allowed, false);
+});
+
 test("officecliApply: a write with NO worktree is refused (never the project clone)", () => {
   const gate = officecliApplyGate({
     capability: "app.app_officecli.apply.remove",
@@ -797,6 +850,34 @@ test("officecliApply: a write whose cwd is the project root (not the worktree) i
   });
   assert.equal(gate.allowed, false);
   assert.equal(gate.evidence.refusalCode, "cwd_outside_approved_root");
+});
+
+test("officecliApply: a file positional that escapes the worktree is REFUSED (traversal/absolute)", () => {
+  // Confining the cwd is not enough — a `../`/absolute file argv resolves outside
+  // the worktree and writes an arbitrary file. The device refuses it.
+  for (const file of ["../outside.xlsx", "/etc/evil.xlsx", "a/../../b.xlsx", "~/x.xlsx", "C:\\x.xlsx"]) {
+    const gate = officecliApplyGate({
+      capability: "app.app_officecli.apply.set",
+      execArgs: ["set", file, "/Sheet1/A1", "--prop", "value=x"],
+    });
+    assert.equal(gate.allowed, false, `write to escaping file "${file}" must be refused`);
+  }
+});
+
+test("officecli read: a traversal file positional is refused too (no arbitrary reads)", () => {
+  const gate = officecliGate({
+    capability: "app.app_officecli.wrapper.get",
+    execArgs: ["get", "--json", "../../etc/passwd.xlsx", "/"],
+  });
+  assert.equal(gate.allowed, false);
+});
+
+test("officecliApply: a safe subdirectory file inside the worktree is allowed", () => {
+  const gate = officecliApplyGate({
+    capability: "app.app_officecli.apply.set",
+    execArgs: ["set", "reports/q1.xlsx", "/Sheet1/A1", "--prop", "value=x"],
+  });
+  assert.equal(gate.allowed, true, gate.reason);
 });
 
 test("officecliApply: the read wrapper bucket is unchanged — a read command still works", () => {

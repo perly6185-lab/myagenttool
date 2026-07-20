@@ -45,7 +45,7 @@ const OFFICECLI_WRAPPER_COMMANDS = [
     description: "Read a document node by OpenXML path as JSON (defaults to the document root).",
     args: ["get", "--json"],
     argInputs: [
-      { key: "file", positional: true, type: "string" },
+      { key: "file", positional: true, type: "office_file" },
       { key: "path", positional: true, type: "string" },
     ],
   },
@@ -55,7 +55,7 @@ const OFFICECLI_WRAPPER_COMMANDS = [
     description: "Query document elements with a CSS-like selector, as JSON.",
     args: ["query", "--json"],
     argInputs: [
-      { key: "file", positional: true, type: "string" },
+      { key: "file", positional: true, type: "office_file" },
       { key: "selector", positional: true, type: "string" },
     ],
   },
@@ -65,7 +65,7 @@ const OFFICECLI_WRAPPER_COMMANDS = [
     description: "Render a document to a stdout view (text/annotated/outline/stats/issues/forms).",
     args: ["view"],
     argInputs: [
-      { key: "file", positional: true, type: "string" },
+      { key: "file", positional: true, type: "office_file" },
       { key: "mode", positional: true, type: "enum", values: OFFICECLI_VIEW_MODES },
     ],
   },
@@ -74,7 +74,7 @@ const OFFICECLI_WRAPPER_COMMANDS = [
     displayName: "OfficeCLI validate",
     description: "Validate a document against the OpenXML schema, as JSON.",
     args: ["validate", "--json"],
-    argInputs: [{ key: "file", positional: true, type: "string" }],
+    argInputs: [{ key: "file", positional: true, type: "office_file" }],
   },
   {
     id: "dump",
@@ -82,7 +82,7 @@ const OFFICECLI_WRAPPER_COMMANDS = [
     description: "Serialize a document subtree into a replayable batch script (read-only round-trip).",
     args: ["dump"],
     argInputs: [
-      { key: "file", positional: true, type: "string" },
+      { key: "file", positional: true, type: "office_file" },
       { key: "path", positional: true, type: "string" },
     ],
   },
@@ -104,6 +104,11 @@ export const OFFICECLI_ELEMENT_TYPES = [
   "slide", "shape", "picture", "diagram", "flowchart", "ole", "video",
 ];
 
+// The verbs a `batch --commands` item may use — the structural WRITE verbs only.
+// Read verbs (get/query) and low-level XML verbs (raw/raw-set/add-part) are
+// excluded, so a batch can never read out of band or splice raw OpenXML.
+export const OFFICECLI_BATCH_VERBS = ["add", "set", "remove", "move", "swap"];
+
 const OFFICECLI_WRITE_COMMANDS = [
   {
     id: "remove",
@@ -111,7 +116,7 @@ const OFFICECLI_WRITE_COMMANDS = [
     description: "Remove an element from a document by OpenXML path. Writes in place — runs in the invocation's worktree so the change is reviewable before promotion.",
     args: ["remove"],
     argInputs: [
-      { key: "file", positional: true, type: "string" },
+      { key: "file", positional: true, type: "office_file" },
       { key: "path", positional: true, type: "string" },
     ],
   },
@@ -124,7 +129,7 @@ const OFFICECLI_WRITE_COMMANDS = [
     // BEFORE the options — the CLI ignores a --prop that precedes the file/path.
     argOrder: "positionals_first",
     argInputs: [
-      { key: "file", positional: true, type: "string" },
+      { key: "file", positional: true, type: "office_file" },
       { key: "path", positional: true, type: "string" },
       // A repeatable `--prop key=value` map (value/formula/bold/font.size/...).
       { key: "props", flag: "--prop", type: "props" },
@@ -138,11 +143,50 @@ const OFFICECLI_WRITE_COMMANDS = [
     // Same positional-before-options requirement as `set`.
     argOrder: "positionals_first",
     argInputs: [
-      { key: "file", positional: true, type: "string" },
+      { key: "file", positional: true, type: "office_file" },
       { key: "parent", positional: true, type: "string" },
       // The element kind. A closed enum — the device mirrors it independently.
       { key: "type", flag: "--type", type: "enum", values: OFFICECLI_ELEMENT_TYPES },
       { key: "props", flag: "--prop", type: "props" },
+    ],
+  },
+  {
+    id: "swap",
+    displayName: "OfficeCLI swap",
+    description: "Swap two elements by path (e.g. reorder two rows or slides). Writes in place in the invocation's worktree.",
+    args: ["swap"],
+    argInputs: [
+      { key: "file", positional: true, type: "office_file" },
+      { key: "path1", positional: true, type: "string" },
+      { key: "path2", positional: true, type: "string" },
+    ],
+  },
+  {
+    id: "move",
+    displayName: "OfficeCLI move",
+    description: "Move an element to a new position or parent (`--to` / `--after` / `--before`). Writes in place in the invocation's worktree.",
+    args: ["move"],
+    argOrder: "positionals_first",
+    argInputs: [
+      { key: "file", positional: true, type: "office_file" },
+      { key: "path", positional: true, type: "string" },
+      { key: "to", flag: "--to", type: "string" },
+      { key: "after", flag: "--after", type: "string" },
+      { key: "before", flag: "--before", type: "string" },
+    ],
+  },
+  {
+    id: "batch",
+    displayName: "OfficeCLI batch",
+    description: "Apply multiple edits in one pass from a JSON operation list (`--commands`). Each item's `command` must be a write verb; runs in place in the invocation's worktree.",
+    args: ["batch"],
+    argOrder: "positionals_first",
+    argInputs: [
+      { key: "file", positional: true, type: "office_file" },
+      // A JSON array of operations. Only these write verbs are allowed as an item's
+      // `command`; a read verb (get/query) or a low-level verb (raw-set/add-part)
+      // in the list drops the whole batch. The device re-validates independently.
+      { key: "commands", flag: "--commands", type: "json_commands", verbs: OFFICECLI_BATCH_VERBS },
     ],
   },
 ];

@@ -101,6 +101,71 @@ test("`add` drops an out-of-set element type (closed enum)", () => {
   assert.deepEqual(plan.args, ["add", "demo.xlsx", "/Sheet1", "--prop", "ref=F1"]);
 });
 
+test("`swap` emits three positionals (file, path1, path2) under the apply segment", () => {
+  const app = register();
+  const plan = applicationWrapperExecutionPlan(app, "swap", {
+    file: "demo.xlsx",
+    path1: "/Sheet1/row[2]",
+    path2: "/Sheet1/row[3]",
+  });
+  assert.equal(plan.capability, "app.app_officecli.apply.swap");
+  assert.equal(plan.filePolicy, "workspace_write");
+  assert.deepEqual(plan.args, ["swap", "demo.xlsx", "/Sheet1/row[2]", "/Sheet1/row[3]"]);
+});
+
+test("`move` emits file+path positionals before the destination flag", () => {
+  const app = register();
+  const plan = applicationWrapperExecutionPlan(app, "move", {
+    file: "deck.pptx",
+    path: "/slide[3]",
+    after: "/slide[1]",
+  });
+  assert.equal(plan.capability, "app.app_officecli.apply.move");
+  assert.deepEqual(plan.args, ["move", "deck.pptx", "/slide[3]", "--after", "/slide[1]"]);
+});
+
+test("`batch` emits the file positional + a compacted, verb-validated --commands JSON", () => {
+  const app = register();
+  const commands = [
+    { command: "set", path: "/Sheet1/A1", props: { value: "B1" } },
+    { command: "add", parent: "/Sheet1", type: "cell", props: { ref: "C1", value: "x" } },
+    { command: "remove", path: "/Sheet1/A2" },
+  ];
+  const plan = applicationWrapperExecutionPlan(app, "batch", { file: "demo.xlsx", commands });
+  assert.equal(plan.capability, "app.app_officecli.apply.batch");
+  assert.equal(plan.filePolicy, "workspace_write");
+  assert.deepEqual(plan.args.slice(0, 3), ["batch", "demo.xlsx", "--commands"]);
+  assert.deepEqual(JSON.parse(plan.args[3]), commands);
+});
+
+test("`batch` drops the WHOLE list if any item uses a non-write verb (all-or-nothing)", () => {
+  const app = register();
+  const plan = applicationWrapperExecutionPlan(app, "batch", {
+    file: "demo.xlsx",
+    commands: [
+      { command: "set", path: "/A1", props: { value: "x" } },
+      { command: "raw-set", part: "/document" }, // low-level verb — not allowed
+    ],
+  });
+  assert.deepEqual(plan.args, ["batch", "demo.xlsx"]);
+});
+
+test("`batch` accepts a JSON string; a non-array or oversized payload is dropped", () => {
+  const app = register();
+  const ok = applicationWrapperExecutionPlan(app, "batch", {
+    file: "demo.xlsx",
+    commands: '[{"command":"remove","path":"/Sheet1/A1"}]',
+  });
+  assert.deepEqual(JSON.parse(ok.args[3]), [{ command: "remove", path: "/Sheet1/A1" }]);
+  const notArray = applicationWrapperExecutionPlan(app, "batch", { file: "demo.xlsx", commands: '{"command":"set"}' });
+  assert.deepEqual(notArray.args, ["batch", "demo.xlsx"]);
+  const tooMany = applicationWrapperExecutionPlan(app, "batch", {
+    file: "demo.xlsx",
+    commands: Array.from({ length: 101 }, () => ({ command: "remove", path: "/A1" })),
+  });
+  assert.deepEqual(tooMany.args, ["batch", "demo.xlsx"]);
+});
+
 test("`set` allows a value containing `=` (formulas) but drops malformed/oversized/injection pairs", () => {
   const app = register();
   const plan = applicationWrapperExecutionPlan(app, "set", {
@@ -166,4 +231,19 @@ test("flag-shaped and control-character positionals are DROPPED (refusals before
     const plan = applicationWrapperExecutionPlan(app, "get", { file });
     assert.deepEqual(plan.args, ["get", "--json"], `file "${file}" must be dropped`);
   }
+});
+
+test("a file positional that would escape the worktree (traversal / absolute) is DROPPED", () => {
+  const app = register();
+  // officecli resolves the file against its worktree cwd; a `..`/absolute path
+  // would escape it (a real write-outside-worktree hole), so office_file drops it.
+  for (const file of ["../../etc/passwd.xlsx", "/etc/evil.xlsx", "~/secret.xlsx", "a/../../b.xlsx", "C:\\x.xlsx", "\\\\host\\share\\x.xlsx"]) {
+    const plan = applicationWrapperExecutionPlan(app, "get", { file });
+    assert.deepEqual(plan.args, ["get", "--json"], `escaping file "${file}" must be dropped`);
+  }
+  // a safe relative path — including a subdirectory of the worktree — is kept.
+  assert.deepEqual(
+    applicationWrapperExecutionPlan(app, "get", { file: "reports/q1.xlsx", path: "/Sheet1/A1" }).args,
+    ["get", "--json", "reports/q1.xlsx", "/Sheet1/A1"],
+  );
 });

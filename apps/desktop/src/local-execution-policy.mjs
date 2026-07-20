@@ -59,7 +59,23 @@ const isGitRev = (value) => /^[A-Za-z0-9._/-]{1,100}$/.test(value) && !value.inc
 // STRICTER than the server where it costs nothing: `file` must end in a known
 // Office extension, and `mode` must be one of the stdout view modes.
 const isOfficeArg = (value) => value.length >= 1 && value.length <= 200 && !/[\r\n]/.test(value);
-const isOfficeFile = (value) => isOfficeArg(value) && /\.(docx|xlsx|pptx)$/i.test(value);
+// A document FILE positional is a filesystem path officecli resolves against its
+// cwd (the worktree). Confining the cwd is NOT enough — a `../` or absolute path
+// in this positional escapes the worktree and reads/writes an arbitrary file
+// (confirmed: `officecli set ../x.xlsx …` wrote outside the worktree). So a file
+// must be a SAFE RELATIVE path: no traversal segment, not absolute (no leading
+// `/`, `~`, `\`, or a Windows drive), plus a known Office extension. Document DOM
+// paths (isOfficeArg, e.g. `/Sheet1/A1`) are NOT files and keep their leading `/`.
+const isSafeRelPath = (value) =>
+  value.length >= 1
+  && value.length <= 200
+  && !/[\r\n\0]/.test(value)
+  && !value.startsWith("/")
+  && !value.startsWith("~")
+  && !value.startsWith("\\")
+  && !/^[A-Za-z]:/.test(value)
+  && !value.split(/[/\\]/).includes("..");
+const isOfficeFile = (value) => isSafeRelPath(value) && /\.(docx|xlsx|pptx)$/i.test(value);
 // `html` renders a self-contained preview to stdout (read-only); svg/screenshot
 // write temp files and stay out of the read-only wrapper. Mirror the server enum.
 const OFFICE_VIEW_MODES = new Set(["text", "annotated", "outline", "stats", "issues", "forms", "html"]);
@@ -94,6 +110,20 @@ const OFFICE_ELEMENT_TYPES = new Set([
 ]);
 const isOfficeElementType = (value) => OFFICE_ELEMENT_TYPES.has(value);
 
+// A `batch --commands` JSON value. Independent mirror of the server's
+// normalizeJsonCommands: it must parse to an array of ≤100 objects, each with a
+// `command` in the write-verb allowlist, within a byte bound. A read/low-level
+// verb, a non-array, or an oversized payload is refused.
+const OFFICE_BATCH_VERBS = new Set(["add", "set", "remove", "move", "swap"]);
+const isOfficeBatchCommands = (value) => {
+  if (typeof value !== "string" || value.length > 16 * 1024) return false;
+  let list;
+  try { list = JSON.parse(value); } catch { return false; }
+  if (!Array.isArray(list) || list.length === 0 || list.length > 100) return false;
+  return list.every((item) =>
+    item && typeof item === "object" && !Array.isArray(item) && OFFICE_BATCH_VERBS.has(String(item.command)));
+};
+
 const OFFICECLI_APPLY_WRAPPER_ARGS = {
   remove: { base: ["remove"], flags: {}, positionals: [isOfficeFile, isOfficeArg] },
   // set <file> <path> --prop key=value ... — repeatable --prop (each value is a
@@ -102,6 +132,12 @@ const OFFICECLI_APPLY_WRAPPER_ARGS = {
   // add <file> <parent> --type <kind> --prop key=value ... — a closed --type enum
   // plus repeatable --prop pairs, positionals (file, parent) first.
   add: { base: ["add"], flags: { "--type": isOfficeElementType, "--prop": isOfficePropPair }, positionals: [isOfficeFile, isOfficeArg] },
+  // batch <file> --commands <json> — one JSON operation list, verb-allowlisted.
+  batch: { base: ["batch"], flags: { "--commands": isOfficeBatchCommands }, positionals: [isOfficeFile] },
+  // swap <file> <path1> <path2> — three positionals, no options.
+  swap: { base: ["swap"], flags: {}, positionals: [isOfficeFile, isOfficeArg, isOfficeArg] },
+  // move <file> <path> [--to|--after|--before <target-path>] — positionals + path flags.
+  move: { base: ["move"], flags: { "--to": isOfficeArg, "--after": isOfficeArg, "--before": isOfficeArg }, positionals: [isOfficeFile, isOfficeArg] },
 };
 
 const GIT_WRAPPER_ARGS = {
