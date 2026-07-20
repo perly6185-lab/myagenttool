@@ -104,6 +104,11 @@ export const OFFICECLI_ELEMENT_TYPES = [
   "slide", "shape", "picture", "diagram", "flowchart", "ole", "video",
 ];
 
+// The verbs a `batch --commands` item may use — the structural WRITE verbs only.
+// Read verbs (get/query) and low-level XML verbs (raw/raw-set/add-part) are
+// excluded, so a batch can never read out of band or splice raw OpenXML.
+export const OFFICECLI_BATCH_VERBS = ["add", "set", "remove", "move", "swap"];
+
 const OFFICECLI_WRITE_COMMANDS = [
   {
     id: "remove",
@@ -143,6 +148,20 @@ const OFFICECLI_WRITE_COMMANDS = [
       // The element kind. A closed enum — the device mirrors it independently.
       { key: "type", flag: "--type", type: "enum", values: OFFICECLI_ELEMENT_TYPES },
       { key: "props", flag: "--prop", type: "props" },
+    ],
+  },
+  {
+    id: "batch",
+    displayName: "OfficeCLI batch",
+    description: "Apply multiple edits in one pass from a JSON operation list (`--commands`). Each item's `command` must be a write verb; runs in place in the invocation's worktree.",
+    args: ["batch"],
+    argOrder: "positionals_first",
+    argInputs: [
+      { key: "file", positional: true, type: "string" },
+      // A JSON array of operations. Only these write verbs are allowed as an item's
+      // `command`; a read verb (get/query) or a low-level verb (raw-set/add-part)
+      // in the list drops the whole batch. The device re-validates independently.
+      { key: "commands", flag: "--commands", type: "json_commands", verbs: OFFICECLI_BATCH_VERBS },
     ],
   },
 ];

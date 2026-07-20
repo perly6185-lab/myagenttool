@@ -94,6 +94,20 @@ const OFFICE_ELEMENT_TYPES = new Set([
 ]);
 const isOfficeElementType = (value) => OFFICE_ELEMENT_TYPES.has(value);
 
+// A `batch --commands` JSON value. Independent mirror of the server's
+// normalizeJsonCommands: it must parse to an array of ≤100 objects, each with a
+// `command` in the write-verb allowlist, within a byte bound. A read/low-level
+// verb, a non-array, or an oversized payload is refused.
+const OFFICE_BATCH_VERBS = new Set(["add", "set", "remove", "move", "swap"]);
+const isOfficeBatchCommands = (value) => {
+  if (typeof value !== "string" || value.length > 16 * 1024) return false;
+  let list;
+  try { list = JSON.parse(value); } catch { return false; }
+  if (!Array.isArray(list) || list.length === 0 || list.length > 100) return false;
+  return list.every((item) =>
+    item && typeof item === "object" && !Array.isArray(item) && OFFICE_BATCH_VERBS.has(String(item.command)));
+};
+
 const OFFICECLI_APPLY_WRAPPER_ARGS = {
   remove: { base: ["remove"], flags: {}, positionals: [isOfficeFile, isOfficeArg] },
   // set <file> <path> --prop key=value ... — repeatable --prop (each value is a
@@ -102,6 +116,8 @@ const OFFICECLI_APPLY_WRAPPER_ARGS = {
   // add <file> <parent> --type <kind> --prop key=value ... — a closed --type enum
   // plus repeatable --prop pairs, positionals (file, parent) first.
   add: { base: ["add"], flags: { "--type": isOfficeElementType, "--prop": isOfficePropPair }, positionals: [isOfficeFile, isOfficeArg] },
+  // batch <file> --commands <json> — one JSON operation list, verb-allowlisted.
+  batch: { base: ["batch"], flags: { "--commands": isOfficeBatchCommands }, positionals: [isOfficeFile] },
 };
 
 const GIT_WRAPPER_ARGS = {

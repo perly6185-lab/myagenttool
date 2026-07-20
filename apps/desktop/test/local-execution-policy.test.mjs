@@ -774,6 +774,35 @@ test("officecliApply: add with an out-of-set --type is refused (closed enum)", (
   assert.equal(gate.allowed, false);
 });
 
+test("officecliApply: batch with a verb-allowlisted --commands JSON is allowed", () => {
+  const cmds = JSON.stringify([
+    { command: "set", path: "/Sheet1/A1", props: { value: "x" } },
+    { command: "remove", path: "/Sheet1/A2" },
+  ]);
+  const gate = officecliApplyGate({
+    capability: "app.app_officecli.apply.batch",
+    execArgs: ["batch", "demo.xlsx", "--commands", cmds],
+  });
+  assert.equal(gate.allowed, true, gate.reason);
+});
+
+test("officecliApply: batch with a non-write verb in --commands is refused", () => {
+  const cmds = JSON.stringify([{ command: "set", path: "/A1" }, { command: "raw-set", part: "/document" }]);
+  const gate = officecliApplyGate({
+    capability: "app.app_officecli.apply.batch",
+    execArgs: ["batch", "demo.xlsx", "--commands", cmds],
+  });
+  assert.equal(gate.allowed, false);
+});
+
+test("officecliApply: batch with malformed JSON in --commands is refused", () => {
+  const gate = officecliApplyGate({
+    capability: "app.app_officecli.apply.batch",
+    execArgs: ["batch", "demo.xlsx", "--commands", "not json"],
+  });
+  assert.equal(gate.allowed, false);
+});
+
 test("officecliApply: a write with NO worktree is refused (never the project clone)", () => {
   const gate = officecliApplyGate({
     capability: "app.app_officecli.apply.remove",
