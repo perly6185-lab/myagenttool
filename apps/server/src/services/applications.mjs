@@ -1181,7 +1181,7 @@ function projectRegisteredManaged(app, prefix, disabled) {
       spec.requiresApproval,
       disabled,
       spec.inputSchema,
-      { execution: { mode: "application_control", action: spec.id } },
+      { execution: { mode: "application_control", action: spec.id }, description: spec.description },
     ),
   );
 }
@@ -1261,7 +1261,9 @@ function managedCapability(app, name, displayName, kind, riskLevel, riskTags, re
     name,
     version: "1",
     displayName,
-    description: `${displayName} for ${app.name}.`,
+    // A capability may carry richer agent-facing guidance (e.g. Canvas element-op
+    // usage, #1355); otherwise fall back to a generated one-liner.
+    description: metadata.description ?? `${displayName} for ${app.name}.`,
     provider: {
       type: "application",
       id: app.id,
