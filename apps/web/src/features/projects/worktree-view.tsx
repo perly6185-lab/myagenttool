@@ -11,7 +11,7 @@ import { DecisionAction } from "@/features/invocations/decision-action";
 import { InvocationEventHistory } from "@/features/invocations/invocation-event-history";
 import { InvocationRefusalHistory } from "@/features/invocations/invocation-refusal-history";
 import { WorktreeLinkPopover } from "@/features/projects/worktree-link-popover";
-import { OfficecliVisualDiff } from "@/features/projects/officecli-visual-diff";
+import { OfficecliVisualDiff, OfficecliFilePreview } from "@/features/projects/officecli-visual-diff";
 import { useConsoleState } from "@/data/use-console-state";
 import { useAsyncAction, api } from "@/data/use-console-actions";
 import { useUiStore } from "@/store/ui-store";
@@ -606,6 +606,10 @@ export function WorktreeView({ worktree }: { worktree: WorktreeSnapshot }) {
             <OfficecliVisualDiff projectId={worktree.projectId} worktreeId={worktree.id} path={activeTab} />
           ) : fileView === "diff" ? (
             <FileDiffView path={activeTab} diff={diff} />
+          ) : activeIsOfficeDoc ? (
+            // An Office document is binary OOXML — render it instead of dumping raw
+            // bytes into the code view (which reads as garbage). Browses like any file.
+            <OfficecliFilePreview projectId={worktree.projectId} worktreeId={worktree.id} path={activeTab} />
           ) : (
             <FileCodeView path={activeTab} data={fileCache[cacheKey]} />
           )}
