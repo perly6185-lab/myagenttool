@@ -924,11 +924,20 @@ function isValidWrapperArgValue(spec, value) {
   }
 }
 
+// A wrapper command's capability segment. Read commands live under `.wrapper.`;
+// a write-capable command opts into `.apply.` so the device classifies and gates
+// it under a distinct WRITE policy kind (officecliApply), never the read-only
+// wrapper bucket that git/ccusage/claude share. Defaults to "wrapper", so every
+// existing app's capability names stay byte-identical.
+function wrapperSegment(command) {
+  return command?.segment === "apply" ? "apply" : "wrapper";
+}
+
 export function applicationWrapperExecutionPlan(application, commandId, input = {}) {
   const command = findNpmWrapperCommand(application, commandId);
   if (!command) return null;
   return {
-    capability: `app.${slugify(application.id || application.name)}.wrapper.${command.id}`,
+    capability: `app.${slugify(application.id || application.name)}.${wrapperSegment(command)}.${command.id}`,
     commandId: command.id,
     commandType: command.commandType,
     command: command.command,
@@ -1086,7 +1095,7 @@ function projectWrapperCapabilities(app, prefix, disabled) {
     .filter((command) => command.status === "approved")
     .map((command) => managedCapability(
       app,
-      `${prefix}.wrapper.${command.id}`,
+      `${prefix}.${wrapperSegment(command)}.${command.id}`,
       command.displayName,
       wrapperKind,
       command.riskLevel,
@@ -1232,7 +1241,10 @@ function actionFromCapabilityName(capabilityName) {
 }
 
 function wrapperActionFromCapabilityName(capabilityName) {
-  const match = String(capabilityName ?? "").match(/\.wrapper\.([a-z0-9._-]+)$/);
+  // Both `.wrapper.` (read) and `.apply.` (write) wrapper commands map to the same
+  // `wrapper:<id>` governance action — resolution is by command id, and the write
+  // policy is enforced at the device, not in the action label.
+  const match = String(capabilityName ?? "").match(/\.(?:wrapper|apply)\.([a-z0-9._-]+)$/);
   return match ? `wrapper:${match[1]}` : null;
 }
 
@@ -2312,6 +2324,10 @@ function normalizeWrapperCommand(command, index) {
     description: stringOrNull(command.description) ?? `Governed NPM wrapper command ${id}.`,
     commandType,
     command: commandText,
+    // The capability segment: "apply" for a write command (routed to the device's
+    // write policy), else "wrapper" (read). Preserved through registration so the
+    // projected capability name and the device classification agree.
+    segment: command.segment === "apply" ? "apply" : "wrapper",
     args: normalizeStringList(command.args),
     cwd: stringOrNull(command.cwd) ?? ".",
     // cwdPolicy governs where the command runs. "fixed" (default, ccusage's

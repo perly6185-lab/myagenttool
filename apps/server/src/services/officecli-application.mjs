@@ -88,6 +88,81 @@ const OFFICECLI_WRAPPER_COMMANDS = [
   },
 ];
 
+// P3.1 (write / "operate", #1349): the first governed WRITE verb. `remove` deletes
+// an element by path — its argv is two positionals (file, path), the same trivial
+// shape as `get`, which is why it is the proving verb for the write-policy path
+// before the `--prop`/JSON verbs (set/add/batch). A write command opts into the
+// `apply` capability segment so the device classifies it under the `officecliApply`
+// WRITE policy (workspace_write) instead of the read-only wrapper bucket, and it
+// requires an approval token. `officecli` writes in place, so a write MUST run in
+// the invocation's worktree (cwdPolicy: invocation_root) to stay reviewable before
+// promotion — never against the project clone directly.
+const OFFICECLI_WRITE_COMMANDS = [
+  {
+    id: "remove",
+    displayName: "OfficeCLI remove",
+    description: "Remove an element from a document by OpenXML path. Writes in place — runs in the invocation's worktree so the change is reviewable before promotion.",
+    args: ["remove"],
+    argInputs: [
+      { key: "file", positional: true, type: "string" },
+      { key: "path", positional: true, type: "string" },
+    ],
+  },
+];
+
+function readCommand(command) {
+  return {
+    id: command.id,
+    displayName: command.displayName,
+    description: command.description,
+    commandType: "bin",
+    command: "officecli",
+    args: command.args,
+    argInputs: command.argInputs ?? [],
+    status: "approved",
+    // Explicit — the `bin` default is `high`. Read-only offline document reads are
+    // low risk; nothing is written and no network is touched.
+    riskLevel: "low",
+    riskTags: ["office-document", "read-only"],
+    requiresApproval: false,
+    filePolicy: "read_only",
+    networkPolicy: "forbidden",
+    // Resolve cwd to the invocation's project/worktree so a relative file path
+    // (e.g. "deck.pptx") resolves inside the scoped repository (#773).
+    cwdPolicy: "invocation_root",
+    // The runner's non-JSON fallback stores { text } (capped at 20 000 chars).
+    outputCollection: "applicationResults",
+    resultImport: { source: "officecli", kind: "document_read" },
+  };
+}
+
+function writeCommand(command) {
+  return {
+    id: command.id,
+    displayName: command.displayName,
+    description: command.description,
+    commandType: "bin",
+    command: "officecli",
+    args: command.args,
+    argInputs: command.argInputs ?? [],
+    status: "approved",
+    // `segment: "apply"` routes this under the device's officecliApply WRITE policy
+    // (workspace_write) — never the read-only wrapper bucket git/ccusage/claude share.
+    segment: "apply",
+    riskLevel: "medium",
+    riskTags: ["office-document", "write"],
+    // A write is only allowed with an explicit approval token.
+    requiresApproval: true,
+    filePolicy: "workspace_write",
+    networkPolicy: "forbidden",
+    // A write is defined by the worktree it runs in; invocation_root confines it
+    // there (the server refuses an unrooted invocation_root command).
+    cwdPolicy: "invocation_root",
+    outputCollection: "applicationResults",
+    resultImport: { source: "officecli", kind: "document_write" },
+  };
+}
+
 /**
  * Build a `registerApplication` body for the canonical OfficeCLI application.
  * Registered (not auto-online) by default — enabling is an explicit lifecycle
@@ -103,29 +178,10 @@ export function createOfficecliApplicationRegistration({ autoOnline = false } = 
       binary: "officecli",
       wrapper: {
         mode: "installed-wrapper",
-        commands: OFFICECLI_WRAPPER_COMMANDS.map((command) => ({
-          id: command.id,
-          displayName: command.displayName,
-          description: command.description,
-          commandType: "bin",
-          command: "officecli",
-          args: command.args,
-          argInputs: command.argInputs ?? [],
-          status: "approved",
-          // Explicit — the `bin` default is `high`. Read-only offline document
-          // reads are low risk; nothing is written and no network is touched.
-          riskLevel: "low",
-          riskTags: ["office-document", "read-only"],
-          requiresApproval: false,
-          filePolicy: "read_only",
-          networkPolicy: "forbidden",
-          // Resolve cwd to the invocation's project/worktree so a relative file
-          // path (e.g. "deck.pptx") resolves inside the scoped repository (#773).
-          cwdPolicy: "invocation_root",
-          // The runner's non-JSON fallback stores { text } (capped at 20 000 chars).
-          outputCollection: "applicationResults",
-          resultImport: { source: "officecli", kind: "document_read" },
-        })),
+        commands: [
+          ...OFFICECLI_WRAPPER_COMMANDS.map(readCommand),
+          ...OFFICECLI_WRITE_COMMANDS.map(writeCommand),
+        ],
       },
     },
   };

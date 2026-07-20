@@ -30,20 +30,38 @@ function register() {
   return service().registerApplication(createOfficecliApplicationRegistration());
 }
 
-test("registration projects the five read verbs, all read-only / no approval", () => {
+test("registration projects five read verbs (read-only, no approval) + the write verb", () => {
   const app = register();
   assert.equal(app.id, OFFICECLI_APPLICATION_ID);
   const commands = app.source?.wrapper?.commands ?? [];
-  assert.deepEqual(
-    commands.map((c) => c.id).sort(),
-    ["dump", "get", "query", "validate", "view"],
-  );
-  for (const command of commands) {
-    assert.equal(command.filePolicy, "read_only", `${command.id} must be read-only`);
+  const reads = commands.filter((c) => c.filePolicy === "read_only");
+  assert.deepEqual(reads.map((c) => c.id).sort(), ["dump", "get", "query", "validate", "view"]);
+  for (const command of reads) {
     assert.equal(command.networkPolicy, "forbidden", `${command.id} must be offline`);
     assert.equal(command.requiresApproval, false, `${command.id} needs no approval`);
     assert.equal(command.cwdPolicy, "invocation_root");
+    assert.notEqual(command.segment, "apply", `${command.id} is a read command`);
   }
+});
+
+test("the write verb `remove` is workspace_write, approval-required, and lives under the apply segment", () => {
+  const app = register();
+  const remove = (app.source?.wrapper?.commands ?? []).find((c) => c.id === "remove");
+  assert.ok(remove, "remove is registered");
+  assert.equal(remove.filePolicy, "workspace_write");
+  assert.equal(remove.networkPolicy, "forbidden");
+  assert.equal(remove.requiresApproval, true, "a write must carry an approval token");
+  assert.equal(remove.segment, "apply", "routes under the officecliApply write policy");
+  assert.equal(remove.cwdPolicy, "invocation_root", "a write is confined to the worktree it runs in");
+});
+
+test("the write verb's execution plan carries the apply capability + workspace_write policy", () => {
+  const app = register();
+  const plan = applicationWrapperExecutionPlan(app, "remove", { file: "deck.pptx", path: "/slide[2]/shape[3]" });
+  assert.equal(plan.capability, "app.app_officecli.apply.remove", "write commands use the .apply. segment");
+  assert.deepEqual(plan.args, ["remove", "deck.pptx", "/slide[2]/shape[3]"]);
+  assert.equal(plan.filePolicy, "workspace_write");
+  assert.equal(plan.cwdPolicy, "invocation_root");
 });
 
 test("read verbs append their positionals after the fixed base, in declaration order", () => {

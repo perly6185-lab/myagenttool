@@ -372,10 +372,13 @@ function actionFromCapabilityName(capabilityName) {
   return String(capabilityName ?? "").split(".").at(-1) ?? "unknown";
 }
 
-// A wrapper capability is named `app.<slug>.wrapper.<commandId>`; return the
-// command id (or null for non-wrapper application capabilities).
+// A wrapper capability is named `app.<slug>.<segment>.<commandId>`, where segment
+// is `wrapper` (read) or `apply` (write). Both dispatch through the same governed
+// bridge path — the read/write distinction is enforced downstream by the device's
+// per-kind file policy, not here. Returns the command id (or null for non-wrapper
+// application capabilities).
 function wrapperCommandIdFromCapabilityName(capabilityName) {
-  return String(capabilityName ?? "").match(/\.wrapper\.([a-z0-9._-]+)$/)?.[1] ?? null;
+  return String(capabilityName ?? "").match(/\.(?:wrapper|apply)\.([a-z0-9._-]+)$/)?.[1] ?? null;
 }
 
 function toolToCapability(tool) {

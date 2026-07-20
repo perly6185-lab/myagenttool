@@ -10,13 +10,18 @@ test("known application catalog exposes governed entries and setup-only prerequi
   );
 });
 
-test("known officecli registration resolves aliases and uses the read-only descriptor", () => {
+test("known officecli registration resolves aliases; reads need no approval, the write does", () => {
   const resolved = createKnownApplicationRegistration("office-cli");
   assert.equal(resolved.registration.id, "app_officecli");
   assert.equal(resolved.entry.command, "officecli");
   const commands = resolved.registration.source.wrapper.commands;
-  assert.equal(commands.length, 5);
-  assert.ok(commands.every((c) => c.filePolicy === "read_only" && c.requiresApproval === false));
+  const reads = commands.filter((c) => c.filePolicy === "read_only");
+  const writes = commands.filter((c) => c.filePolicy === "workspace_write");
+  assert.equal(reads.length, 5);
+  assert.ok(reads.every((c) => c.requiresApproval === false));
+  // Every write verb is approval-gated (P3.1 currently ships `remove`).
+  assert.ok(writes.length >= 1);
+  assert.ok(writes.every((c) => c.requiresApproval === true && c.segment === "apply"));
 });
 
 test("known application registration resolves aliases and preserves project scope", () => {
