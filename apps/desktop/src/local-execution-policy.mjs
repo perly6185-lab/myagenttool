@@ -86,11 +86,22 @@ const OFFICECLI_WRAPPER_ARGS = {
 // start with a letter), so a prop pair can never smuggle a new flag.
 const isOfficePropPair = (value) => /^[a-zA-Z][a-zA-Z0-9._-]{0,39}=[^\r\n]{0,200}$/.test(value);
 
+// The closed set of element kinds `add --type` accepts. Independent mirror of the
+// server's OFFICECLI_ELEMENT_TYPES — an unknown --type value is refused here too.
+const OFFICE_ELEMENT_TYPES = new Set([
+  "paragraph", "run", "table", "sheet", "row", "column", "cell",
+  "slide", "shape", "picture", "diagram", "flowchart", "ole", "video",
+]);
+const isOfficeElementType = (value) => OFFICE_ELEMENT_TYPES.has(value);
+
 const OFFICECLI_APPLY_WRAPPER_ARGS = {
   remove: { base: ["remove"], flags: {}, positionals: [isOfficeFile, isOfficeArg] },
   // set <file> <path> --prop key=value ... — repeatable --prop (each value is a
   // key=value pair). The matcher handles repeated flags + ordered positionals.
   set: { base: ["set"], flags: { "--prop": isOfficePropPair }, positionals: [isOfficeFile, isOfficeArg] },
+  // add <file> <parent> --type <kind> --prop key=value ... — a closed --type enum
+  // plus repeatable --prop pairs, positionals (file, parent) first.
+  add: { base: ["add"], flags: { "--type": isOfficeElementType, "--prop": isOfficePropPair }, positionals: [isOfficeFile, isOfficeArg] },
 };
 
 const GIT_WRAPPER_ARGS = {

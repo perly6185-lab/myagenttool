@@ -76,6 +76,31 @@ test("`set` emits positionals BEFORE the repeatable --prop pairs (officecli requ
   assert.deepEqual(plan.args, ["set", "demo.xlsx", "/Sheet1/A1", "--prop", "value=Hi", "--prop", "bold=true"]);
 });
 
+test("`add` emits file+parent positionals, then --type (enum) and --prop pairs", () => {
+  const app = register();
+  const plan = applicationWrapperExecutionPlan(app, "add", {
+    file: "demo.xlsx",
+    parent: "/Sheet1",
+    type: "cell",
+    props: { ref: "F1", value: "ADDED" },
+  });
+  assert.equal(plan.capability, "app.app_officecli.apply.add");
+  assert.equal(plan.filePolicy, "workspace_write");
+  assert.deepEqual(plan.args, ["add", "demo.xlsx", "/Sheet1", "--type", "cell", "--prop", "ref=F1", "--prop", "value=ADDED"]);
+});
+
+test("`add` drops an out-of-set element type (closed enum)", () => {
+  const app = register();
+  const plan = applicationWrapperExecutionPlan(app, "add", {
+    file: "demo.xlsx",
+    parent: "/Sheet1",
+    type: "malware",
+    props: { ref: "F1" },
+  });
+  // unknown --type is dropped; the rest still resolves
+  assert.deepEqual(plan.args, ["add", "demo.xlsx", "/Sheet1", "--prop", "ref=F1"]);
+});
+
 test("`set` allows a value containing `=` (formulas) but drops malformed/oversized/injection pairs", () => {
   const app = register();
   const plan = applicationWrapperExecutionPlan(app, "set", {

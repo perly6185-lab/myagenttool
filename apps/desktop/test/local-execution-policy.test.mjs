@@ -758,6 +758,22 @@ test("officecliApply: a --prop missing its value token is refused", () => {
   assert.equal(gate.allowed, false);
 });
 
+test("officecliApply: add with file, parent, --type (enum) and --prop pairs is allowed", () => {
+  const gate = officecliApplyGate({
+    capability: "app.app_officecli.apply.add",
+    execArgs: ["add", "demo.xlsx", "/Sheet1", "--type", "cell", "--prop", "ref=F1", "--prop", "value=ADDED"],
+  });
+  assert.equal(gate.allowed, true, gate.reason);
+});
+
+test("officecliApply: add with an out-of-set --type is refused (closed enum)", () => {
+  const gate = officecliApplyGate({
+    capability: "app.app_officecli.apply.add",
+    execArgs: ["add", "demo.xlsx", "/Sheet1", "--type", "malware", "--prop", "ref=F1"],
+  });
+  assert.equal(gate.allowed, false);
+});
+
 test("officecliApply: a write with NO worktree is refused (never the project clone)", () => {
   const gate = officecliApplyGate({
     capability: "app.app_officecli.apply.remove",
