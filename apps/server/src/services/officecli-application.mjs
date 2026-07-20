@@ -191,6 +191,20 @@ const OFFICECLI_WRITE_COMMANDS = [
     ],
   },
   {
+    id: "merge",
+    displayName: "OfficeCLI merge",
+    description: "Render a template document to a new output by replacing {{key}} placeholders with `--data` JSON. Both paths stay inside the worktree.",
+    args: ["merge"],
+    argOrder: "positionals_first",
+    argInputs: [
+      { key: "template", positional: true, type: "office_file" },
+      { key: "output", positional: true, type: "office_file" },
+      // Inline template data substituted into {{key}} placeholders.
+      { key: "data", flag: "--data", type: "json_data" },
+      { key: "force", flag: "--force", type: "boolean-flag" },
+    ],
+  },
+  {
     id: "batch",
     displayName: "OfficeCLI batch",
     description: "Apply multiple edits in one pass from a JSON operation list (`--commands`). Each item's `command` must be a write verb; runs in place in the invocation's worktree.",
