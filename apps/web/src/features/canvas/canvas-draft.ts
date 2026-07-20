@@ -1,41 +1,14 @@
 /**
- * Local-only Canvas draft persistence and file helpers. The browser draft is
- * intentionally offline scratch space; server-authoritative scenes arrive in
- * #1352. Kept free of Excalidraw imports so it is unit-testable and never pulls
- * the heavy editor bundle (#1351).
+ * Canvas file helpers: import validation, download, and filenames — kept free of
+ * Excalidraw imports so they stay unit-testable and never pull the heavy editor
+ * bundle. Draft persistence moved to per-scene offline drafts in canvas-sync.ts
+ * when the canvas became server-authoritative (#1352/#1354).
  */
-
-export const CANVAS_DRAFT_KEY = "myagenttool-canvas-draft";
 
 export interface ImportedScene {
   elements: unknown[];
   appState?: Record<string, unknown>;
   files?: Record<string, unknown>;
-}
-
-/** The raw serialized draft (Excalidraw JSON string), or null when absent. */
-export function loadDraftJSON(): string | null {
-  try {
-    return localStorage.getItem(CANVAS_DRAFT_KEY);
-  } catch {
-    return null;
-  }
-}
-
-export function saveDraftJSON(json: string): void {
-  try {
-    localStorage.setItem(CANVAS_DRAFT_KEY, json);
-  } catch {
-    /* quota exceeded / private mode — the draft is best-effort */
-  }
-}
-
-export function clearDraft(): void {
-  try {
-    localStorage.removeItem(CANVAS_DRAFT_KEY);
-  } catch {
-    /* ignore */
-  }
 }
 
 /**

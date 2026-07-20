@@ -50,6 +50,7 @@ interface UiState {
   selectedProjectId: string | null;
   selectedWorktreeId: string | null;
   selectedAgentSkillId: string | null;
+  selectedCanvasSceneId: string | null;
   selectedToolName: string | null;
   selectedApplicationId: string | null;
   selectedApplicationRun: ApplicationRunSelection | null;
@@ -73,6 +74,7 @@ interface UiState {
   setSelectedProjectId: (id: string | null) => void;
   setSelectedWorktreeId: (id: string | null) => void;
   setSelectedAgentSkillId: (id: string | null) => void;
+  setSelectedCanvasSceneId: (id: string | null) => void;
   setSelectedToolName: (name: string | null) => void;
   setSelectedApplicationId: (id: string | null) => void;
   setSelectedApplicationRun: (selection: ApplicationRunSelection | null) => void;
@@ -226,6 +228,7 @@ export const useUiStore = create<UiState>()(
         selectedProjectId: null,
         selectedWorktreeId: null,
         selectedAgentSkillId: null,
+        selectedCanvasSceneId: null,
         selectedToolName: null,
         selectedApplicationId: initialNavigation.selectedApplicationId ?? null,
         selectedApplicationRun: initialNavigation.selectedApplicationRun ?? null,
@@ -245,6 +248,7 @@ export const useUiStore = create<UiState>()(
         setSelectedProjectId: (selectedProjectId) => set({ selectedProjectId }),
         setSelectedWorktreeId: (selectedWorktreeId) => set({ selectedWorktreeId }),
         setSelectedAgentSkillId: (selectedAgentSkillId) => set({ selectedAgentSkillId }),
+        setSelectedCanvasSceneId: (selectedCanvasSceneId) => set({ selectedCanvasSceneId }),
         setSelectedToolName: (selectedToolName) => set({ selectedToolName }),
         setSelectedApplicationId: (selectedApplicationId) => set({ selectedApplicationId }),
         setSelectedApplicationRun: (selectedApplicationRun) => set({ selectedApplicationRun }),
@@ -273,6 +277,7 @@ export const useUiStore = create<UiState>()(
         selectedProjectId: state.selectedProjectId,
         selectedWorktreeId: state.selectedWorktreeId,
         selectedAgentSkillId: state.selectedAgentSkillId,
+        selectedCanvasSceneId: state.selectedCanvasSceneId,
         selectedToolName: state.selectedToolName,
         selectedApplicationId: state.selectedApplicationId,
         selectedApplicationRun: state.selectedApplicationRun,
