@@ -8,6 +8,7 @@ import { handleBridgeRoutes } from "../routes/bridge.mjs";
 import { handleCapabilityRoutes } from "../routes/capabilities.mjs";
 import { handleMailRoutes } from "../routes/mail.mjs";
 import { handleChannelRoutes } from "../routes/channels.mjs";
+import { handleCanvasSceneRoutes } from "../routes/canvas-scenes.mjs";
 import { handleCodexRoutes } from "../routes/codex.mjs";
 import { handleControlPlaneRoutes } from "../routes/control-plane.mjs";
 import { handleIntegrationRoutes } from "../routes/integrations.mjs";
@@ -203,6 +204,11 @@ export function createHttpServer({
   replyOnIssue,
   confirmReplyDraft,
   sendConfirmedDraft,
+  listCanvasScenes,
+  getCanvasScene,
+  createCanvasScene,
+  updateCanvasScene,
+  deleteCanvasScene,
   registerChannel,
   listChannels,
   enableChannel,
@@ -322,6 +328,17 @@ export function createHttpServer({
         listChannelIdentities,
         setChannelAllowlist,
         retryChannelDelivery,
+      })) {
+        return;
+      }
+
+      if (await handleCanvasSceneRoutes({
+        req, res, url, sendJson, readJson, actor,
+        listScenes: listCanvasScenes,
+        getScene: getCanvasScene,
+        createScene: createCanvasScene,
+        updateScene: updateCanvasScene,
+        deleteScene: deleteCanvasScene,
       })) {
         return;
       }

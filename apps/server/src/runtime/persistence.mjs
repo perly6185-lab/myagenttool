@@ -114,6 +114,7 @@ export const persistedArrayKeys = [
   "sshConnectionTests",
   "channels",
   "channelIdentities",
+  "canvasScenes",
   "channelEvents",
   "channelConversations",
   "channelDeliveries",
