@@ -1,5 +1,6 @@
 import { SECTIONS } from "@/app/sections";
 import { LoginControl } from "@/components/layout/login-control";
+import { SkinPicker } from "@/components/layout/skin-picker";
 import { StatusBadge } from "@/components/ui/badge";
 import { Select } from "@/components/ui/input";
 import { useConsoleState } from "@/data/use-console-state";
@@ -80,6 +81,7 @@ export function Topbar() {
           </span>
         ) : null}
         <StatusBadge tone={connection.tone}>{connection.label}</StatusBadge>
+        <SkinPicker />
         <LoginControl />
       </div>
     </header>

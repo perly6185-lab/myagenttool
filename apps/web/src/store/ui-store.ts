@@ -1,5 +1,13 @@
 import { create } from "zustand";
 import { createJSONStorage, persist } from "zustand/middleware";
+import {
+  DEFAULT_MODE,
+  DEFAULT_SKIN,
+  isSkinId,
+  isSkinMode,
+  type SkinId,
+  type SkinMode,
+} from "@/lib/skins";
 
 export type SectionKey =
   | "dashboard"
@@ -50,6 +58,11 @@ interface UiState {
   resumeFromInvocationId: string | null;
   /** Nav groups the operator has collapsed; expert groups start here so the rail isn't a wall of 22 (#928). */
   collapsedNavGroups: string[];
+  /** Active visual skin + light/dark mode; applied to <html> by useSkinSync. */
+  skin: SkinId;
+  mode: SkinMode;
+  setSkin: (skin: SkinId) => void;
+  setMode: (mode: SkinMode) => void;
   setSection: (section: SectionKey) => void;
   setSelectedAgentId: (id: string | null) => void;
   setSelectedInvocationId: (id: string | null) => void;
@@ -208,6 +221,10 @@ export const useUiStore = create<UiState>()(
         selectedAutomationId: initialNavigation.selectedAutomationId ?? null,
         resumeFromInvocationId: null,
         collapsedNavGroups: [...DEFAULT_COLLAPSED_NAV_GROUPS],
+        skin: DEFAULT_SKIN,
+        mode: DEFAULT_MODE,
+        setSkin: (skin) => set({ skin }),
+        setMode: (mode) => set({ mode }),
         setSection: (section) => set({ section }),
         setSelectedAgentId: (selectedAgentId) => set({ selectedAgentId }),
         setSelectedInvocationId: (selectedInvocationId) => set({ selectedInvocationId }),
@@ -247,6 +264,8 @@ export const useUiStore = create<UiState>()(
         selectedApplicationRun: state.selectedApplicationRun,
         selectedEvidenceId: state.selectedEvidenceId,
         collapsedNavGroups: state.collapsedNavGroups,
+        skin: state.skin,
+        mode: state.mode,
       }),
       merge: (persisted, current) => {
         const saved = (persisted ?? {}) as Partial<UiState>;
@@ -259,6 +278,9 @@ export const useUiStore = create<UiState>()(
         if (!merged.section || !SECTION_KEYS.includes(merged.section)) {
           merged.section = "dashboard";
         }
+        // A skin/mode removed in a later release falls back to the default.
+        if (!isSkinId(merged.skin)) merged.skin = DEFAULT_SKIN;
+        if (!isSkinMode(merged.mode)) merged.mode = DEFAULT_MODE;
         // Explicit deep-link params override restored navigation selections.
         applyUrlNavigation(merged, navigationFromCurrentUrl());
         return merged;

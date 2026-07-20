@@ -1,6 +1,16 @@
 @import "tailwindcss";
 
 /*
+ * Built-in skins. Each file overrides the token values below under a
+ * `:root[data-skin="<id>"]` selector (light) and `…[data-skin="<id>"].dark`
+ * (dark), so it wins over the default skin regardless of source order. The
+ * `default` skin is the `:root` / `.dark` blocks in this file. See
+ * docs/design/SKIN_SYSTEM.md for the contract.
+ */
+@import "./skins/ocean.css";
+@import "./skins/ink.css";
+
+/*
  * Design tokens — the single source of truth for color, radius, and surface
  * roles in the web console. Components must reach for these tokens (via the
  * Tailwind theme bindings below) instead of hardcoding hex values. See
@@ -8,7 +18,8 @@
  *
  * Tokens come in surface/foreground pairs that meet contrast together. The
  * identity is quiet and neutral; color is reserved for state (selection,
- * risk, success, destructive).
+ * risk, success, destructive). A "skin" is one alternate set of these values;
+ * this `:root` / `.dark` pair is the `default` skin.
  */
 
 @custom-variant dark (&:where(.dark, .dark *));
