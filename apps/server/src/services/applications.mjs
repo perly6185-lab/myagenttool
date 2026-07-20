@@ -828,7 +828,7 @@ export function createApplicationWrapperAgentRegistration({
 // anything else returns null. This is the single source of truth for WHAT may
 // execute — the bridge only ever runs a command that came through here, so an
 // unapproved or unregistered command can never reach execution.
-const WRAPPER_ARG_INPUT_TYPES = new Set(["date", "token", "enum", "string", "office_file", "boolean-flag", "git-rev", "count", "props", "json_commands"]);
+const WRAPPER_ARG_INPUT_TYPES = new Set(["date", "token", "enum", "string", "office_file", "csv_file", "boolean-flag", "git-rev", "count", "props", "json_commands"]);
 const RESERVED_WRAPPER_ARG_INPUT_KEYS = new Set([
   "approvalToken",
   "idempotencyKey",
@@ -967,14 +967,29 @@ function isValidWrapperArgValue(spec, value) {
     // worktree, plus an Office extension. Mirrors the device's isOfficeFile — the
     // two allowlists reject a `../` or absolute file INDEPENDENTLY.
     case "office_file":
-      return value.length <= 200
-        && !/[\r\n\0]/.test(value)
-        && !/^[/~\\]/.test(value)
-        && !/^[A-Za-z]:/.test(value)
-        && !value.split(/[/\\]/).includes("..")
-        && /\.(docx|xlsx|pptx)$/i.test(value);
+      return isSafeRelFilePath(value) && /\.(docx|xlsx|pptx)$/i.test(value);
+    // A CSV/TSV SOURCE file (officecli import). Same worktree-safe relative-path
+    // rule as office_file, but a data extension — it is read, never opened as a
+    // document.
+    case "csv_file":
+      return isSafeRelFilePath(value) && /\.(csv|tsv)$/i.test(value);
     default: return false;
   }
+}
+
+// A filesystem path officecli resolves against its worktree cwd (a document file
+// or a data source). Must be a SAFE RELATIVE path so it cannot escape the
+// worktree: no traversal segment, not absolute (no leading `/`, `~`, `\`, Windows
+// drive, or UNC). Mirrors the device's isSafeRelPath — the two allowlists reject
+// a `../`/absolute path INDEPENDENTLY. Callers add the extension check.
+function isSafeRelFilePath(value) {
+  return typeof value === "string"
+    && value.length >= 1
+    && value.length <= 200
+    && !/[\r\n\0]/.test(value)
+    && !/^[/~\\]/.test(value)
+    && !/^[A-Za-z]:/.test(value)
+    && !value.split(/[/\\]/).includes("..");
 }
 
 const JSON_COMMANDS_MAX_ITEMS = 100;
@@ -1297,7 +1312,7 @@ function wrapperInputSchema(command) {
 function wrapperArgInputJsonType(type) {
   if (type === "props") return "object";
   if (type === "json_commands") return "array";
-  if (type === "office_file") return "string";
+  if (type === "office_file" || type === "csv_file") return "string";
   return type;
 }
 

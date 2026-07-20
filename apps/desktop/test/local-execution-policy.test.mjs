@@ -774,6 +774,30 @@ test("officecliApply: add with an out-of-set --type is refused (closed enum)", (
   assert.equal(gate.allowed, false);
 });
 
+test("officecliApply: import with worktree-safe source + --header/--format is allowed", () => {
+  const gate = officecliApplyGate({
+    capability: "app.app_officecli.apply.import",
+    execArgs: ["import", "book.xlsx", "/Sheet1", "data/rows.csv", "--header", "--format", "csv"],
+  });
+  assert.equal(gate.allowed, true, gate.reason);
+});
+
+test("officecliApply: import with a traversal CSV source is refused", () => {
+  const gate = officecliApplyGate({
+    capability: "app.app_officecli.apply.import",
+    execArgs: ["import", "book.xlsx", "/Sheet1", "../secret.csv"],
+  });
+  assert.equal(gate.allowed, false);
+});
+
+test("officecliApply: import with a bad --format value is refused", () => {
+  const gate = officecliApplyGate({
+    capability: "app.app_officecli.apply.import",
+    execArgs: ["import", "book.xlsx", "/Sheet1", "data.csv", "--format", "exe"],
+  });
+  assert.equal(gate.allowed, false);
+});
+
 test("officecliApply: swap with three positional paths is allowed", () => {
   const gate = officecliApplyGate({
     capability: "app.app_officecli.apply.swap",

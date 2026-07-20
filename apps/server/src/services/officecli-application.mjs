@@ -176,6 +176,21 @@ const OFFICECLI_WRITE_COMMANDS = [
     ],
   },
   {
+    id: "import",
+    displayName: "OfficeCLI import",
+    description: "Import CSV/TSV rows from a worktree source file into a sheet (`--header`, `--format`). Writes in place in the invocation's worktree.",
+    args: ["import"],
+    argOrder: "positionals_first",
+    argInputs: [
+      { key: "file", positional: true, type: "office_file" },
+      { key: "parent", positional: true, type: "string" },
+      // The CSV/TSV source — a worktree-safe relative path (never escapes it).
+      { key: "source", positional: true, type: "csv_file" },
+      { key: "header", flag: "--header", type: "boolean-flag" },
+      { key: "format", flag: "--format", type: "enum", values: ["csv", "tsv"] },
+    ],
+  },
+  {
     id: "batch",
     displayName: "OfficeCLI batch",
     description: "Apply multiple edits in one pass from a JSON operation list (`--commands`). Each item's `command` must be a write verb; runs in place in the invocation's worktree.",
