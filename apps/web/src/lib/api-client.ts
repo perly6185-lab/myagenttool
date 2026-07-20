@@ -337,6 +337,56 @@ export interface ObservabilityDeletionResult {
   counts: Record<string, number>;
 }
 
+// Canvas scenes (#1352 API, surfaced in the Web Canvas by #1354). The list
+// returns summaries; the detail carries the full element/file bodies.
+export interface CanvasSceneSummary {
+  id: string;
+  projectId: string | null;
+  name: string;
+  revision: number;
+  elementCount: number;
+  fileCount: number;
+  createdAt: string;
+  updatedAt: string;
+  lastModifiedBy: string;
+}
+export interface CanvasScene extends CanvasSceneSummary {
+  elements: unknown[];
+  files: Record<string, unknown>;
+}
+/** A revision-aware save outcome: success, a typed conflict, or another failure. */
+export type CanvasSaveResult =
+  | { ok: true; scene: CanvasScene }
+  | { ok: false; conflict: true; currentRevision: number }
+  | { ok: false; conflict: false; error: string };
+
+// Structured variant of `request`: never throws on a non-2xx, so the Canvas save
+// path can branch on a 409 revision conflict instead of losing it to an Error.
+async function requestResult(
+  method: string,
+  path: string,
+  body?: unknown,
+  retry = true,
+): Promise<{ status: number; ok: boolean; data: Record<string, unknown> }> {
+  await ensureSession();
+  const token = getToken();
+  const headers: Record<string, string> = {};
+  if (body) headers["Content-Type"] = "application/json";
+  if (token) headers.Authorization = `Bearer ${token}`;
+  const response = await fetch(`${apiBase}${path}`, {
+    method,
+    headers: Object.keys(headers).length ? headers : undefined,
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  if (response.status === 401 && retry) {
+    setToken(null);
+    await ensureSession();
+    return requestResult(method, path, body, false);
+  }
+  const data = (await response.json().catch(() => ({}))) as Record<string, unknown>;
+  return { status: response.status, ok: response.ok, data };
+}
+
 export const api = {
   updateDevice: (payload: { maxConcurrency?: number }) => request("PATCH", "/api/device", payload),
   // ADR 0018: owner/admin-only per-subject observability data deletion. Throws
@@ -750,4 +800,25 @@ export const api = {
   // Opt a channel into in-channel /approve (default off). Approval-gated.
   setChannelApprovalPolicy: (channelId: string, allowSelfApprove: boolean, approvalToken: string) =>
     request("POST", `/api/channels/${encodeURIComponent(channelId)}/approval-policy`, { allowSelfApprove, approvalToken }),
+
+  // Canvas scenes (#1354): server-authoritative, revision-aware.
+  listCanvasScenes: () => request<{ scenes: CanvasSceneSummary[]; count: number }>("GET", "/api/canvas/scenes"),
+  getCanvasScene: (id: string) =>
+    request<{ scene: CanvasScene }>("GET", `/api/canvas/scenes/${encodeURIComponent(id)}`),
+  createCanvasScene: (body: { name?: string; projectId?: string | null; elements?: unknown[]; files?: Record<string, unknown> }) =>
+    request<{ scene: CanvasScene }>("POST", "/api/canvas/scenes", body),
+  deleteCanvasScene: (id: string, expectedRevision: number) =>
+    request("DELETE", `/api/canvas/scenes/${encodeURIComponent(id)}`, { expectedRevision }),
+  // Revision-aware save: returns a typed conflict on 409 rather than throwing.
+  saveCanvasScene: async (
+    id: string,
+    body: { name?: string; elements?: unknown[]; files?: Record<string, unknown>; expectedRevision: number },
+  ): Promise<CanvasSaveResult> => {
+    const { status, ok, data } = await requestResult("PUT", `/api/canvas/scenes/${encodeURIComponent(id)}`, body);
+    if (ok) return { ok: true, scene: data.scene as CanvasScene };
+    if (status === 409 && data.error === "canvas_scene_revision_conflict") {
+      return { ok: false, conflict: true, currentRevision: Number(data.currentRevision) };
+    }
+    return { ok: false, conflict: false, error: String(data.message ?? data.error ?? "Save failed.") };
+  },
 };
