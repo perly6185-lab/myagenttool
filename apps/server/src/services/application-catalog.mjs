@@ -2,6 +2,7 @@ import { createCcusageApplicationRegistration } from "./ccusage-application.mjs"
 import { createClaudeApplicationRegistration } from "./claude-application.mjs";
 import { createCodexApplicationRegistration } from "./codex-application.mjs";
 import { createGitApplicationRegistration } from "./git-application.mjs";
+import { createCanvasApplicationRegistration } from "./canvas-application.mjs";
 import { createOfficecliApplicationRegistration } from "./officecli-application.mjs";
 
 const KNOWN_APPLICATIONS = [
@@ -60,6 +61,14 @@ const KNOWN_APPLICATIONS = [
     command: "officecli",
     installHint: "Install with npm install -g @officecli/officecli, then re-run setup.",
     createRegistration: createOfficecliApplicationRegistration,
+  },
+  {
+    name: "canvas",
+    displayName: "Canvas",
+    aliases: ["canvas", "excalidraw"],
+    command: "canvas",
+    installHint: "Canvas is built in; no installation is required.",
+    createRegistration: createCanvasApplicationRegistration,
   },
 ];
 

@@ -14,7 +14,7 @@
  *      enforced on every write; anything malformed or over-limit is rejected 400.
  */
 
-import { canvasAllowedUrlSchemes, canvasSceneBounds, canvasSceneIdPrefix } from "@myagenttool/protocol/canvas";
+import { canvasAllowedUrlSchemes, canvasElementIdPrefix, canvasSceneBounds, canvasSceneIdPrefix } from "@myagenttool/protocol/canvas";
 import { actorCanAccessProject, LOCAL_TEAM_ID, LOCAL_USER_ID } from "../runtime/auth.mjs";
 import { makeRunTx } from "../runtime/store/run-tx.mjs";
 
@@ -228,6 +228,116 @@ export function createCanvasSceneService({
     return { ok: true, status: 200, body: { scene: publicScene(scene) } };
   }
 
+  function bumpRevision(scene, actor) {
+    scene.revision += 1;
+    scene.updatedAt = now();
+    scene.lastModifiedBy = actorUser(actor);
+  }
+
+  // ---- Bounded element operations (#1353) --------------------------------
+  // Each computes the resulting element list, re-validates the WHOLE scene
+  // (bounds + per-element + URL policy) BEFORE committing, and bumps revision.
+  // Element references are validated atomically: one bad id rejects the batch.
+
+  function addElements({ sceneId, elements, expectedRevision } = {}, actor = null) {
+    const scene = findOwnScene(sceneId, actor);
+    if (!scene) return notFound();
+    const conflict = checkRevision(scene, expectedRevision);
+    if (conflict) return conflict;
+    if (!Array.isArray(elements) || elements.length === 0) {
+      return { ok: false, status: 400, body: { error: "invalid_canvas_elements", message: "elements must be a non-empty array." } };
+    }
+    // The server assigns durable ids — a caller cannot dictate element identity.
+    const added = elements.map((element) =>
+      element && typeof element === "object" && !Array.isArray(element)
+        ? { ...element, id: nextId(canvasElementIdPrefix) }
+        : element,
+    );
+    const nextElements = [...scene.elements, ...added];
+    const validated = validateScenePayload({ name: scene.name, elements: nextElements, files: scene.files });
+    if (validated.error) return { ok: false, status: 400, body: { error: validated.error, message: validated.message } };
+    const changedElementIds = added.map((element) => element?.id).filter(Boolean);
+    runTx(() => {
+      scene.elements = validated.value.elements;
+      bumpRevision(scene, actor);
+      appendEvent({
+        invocationId: null, type: "canvas_scene_elements_added", level: "info",
+        message: `Canvas scene ${scene.id}: ${changedElementIds.length} element(s) added (revision ${scene.revision}).`,
+        data: { canvasSceneId: scene.id, revision: scene.revision, changedElementIds },
+      });
+    });
+    return { ok: true, status: 200, body: { scene: sceneSummary(scene), revision: scene.revision, changedElementIds } };
+  }
+
+  function updateElements({ sceneId, elements: updates, expectedRevision } = {}, actor = null) {
+    const scene = findOwnScene(sceneId, actor);
+    if (!scene) return notFound();
+    const conflict = checkRevision(scene, expectedRevision);
+    if (conflict) return conflict;
+    if (!Array.isArray(updates) || updates.length === 0) {
+      return { ok: false, status: 400, body: { error: "invalid_canvas_elements", message: "elements must be a non-empty array of {id, ...patch}." } };
+    }
+    const byId = new Map(scene.elements.map((element) => [element.id, element]));
+    for (const update of updates) {
+      if (!update || typeof update !== "object" || typeof update.id !== "string" || !byId.has(update.id)) {
+        return { ok: false, status: 400, body: { error: "invalid_element_reference", message: "Every update must reference an existing element id." } };
+      }
+    }
+    const patched = new Map(byId);
+    for (const update of updates) patched.set(update.id, { ...byId.get(update.id), ...update });
+    const nextElements = scene.elements.map((element) => patched.get(element.id));
+    const validated = validateScenePayload({ name: scene.name, elements: nextElements, files: scene.files });
+    if (validated.error) return { ok: false, status: 400, body: { error: validated.error, message: validated.message } };
+    const changedElementIds = updates.map((update) => update.id);
+    runTx(() => {
+      scene.elements = validated.value.elements;
+      bumpRevision(scene, actor);
+      appendEvent({
+        invocationId: null, type: "canvas_scene_elements_updated", level: "info",
+        message: `Canvas scene ${scene.id}: ${changedElementIds.length} element(s) updated (revision ${scene.revision}).`,
+        data: { canvasSceneId: scene.id, revision: scene.revision, changedElementIds },
+      });
+    });
+    return { ok: true, status: 200, body: { scene: sceneSummary(scene), revision: scene.revision, changedElementIds } };
+  }
+
+  function removeElements({ sceneId, elementIds, expectedRevision } = {}, actor = null) {
+    const scene = findOwnScene(sceneId, actor);
+    if (!scene) return notFound();
+    const conflict = checkRevision(scene, expectedRevision);
+    if (conflict) return conflict;
+    if (!Array.isArray(elementIds) || elementIds.length === 0) {
+      return { ok: false, status: 400, body: { error: "invalid_canvas_elements", message: "elementIds must be a non-empty array." } };
+    }
+    const ids = new Set(elementIds.map(String));
+    const existing = new Set(scene.elements.map((element) => element.id));
+    for (const id of ids) {
+      if (!existing.has(id)) {
+        return { ok: false, status: 400, body: { error: "invalid_element_reference", message: "Every id must reference an existing element." } };
+      }
+    }
+    const nextElements = scene.elements.filter((element) => !ids.has(element.id));
+    const removedElementIds = [...ids];
+    runTx(() => {
+      scene.elements = nextElements;
+      bumpRevision(scene, actor);
+      appendEvent({
+        invocationId: null, type: "canvas_scene_elements_removed", level: "warn",
+        message: `Canvas scene ${scene.id}: ${removedElementIds.length} element(s) removed (revision ${scene.revision}).`,
+        data: { canvasSceneId: scene.id, revision: scene.revision, removedElementIds },
+      });
+    });
+    return { ok: true, status: 200, body: { scene: sceneSummary(scene), revision: scene.revision, removedElementIds } };
+  }
+
+  /** Read-only export of the authoritative scene (CLI-backed render/export is #1356). */
+  function exportScene({ sceneId, format = "excalidraw" } = {}, actor = null) {
+    const scene = findOwnScene(sceneId, actor);
+    if (!scene) return notFound();
+    const fmt = ["excalidraw", "json"].includes(String(format)) ? String(format) : "excalidraw";
+    return { ok: true, status: 200, body: { format: fmt, scene: publicScene(scene) } };
+  }
+
   function deleteScene({ sceneId, expectedRevision } = {}, actor = null) {
     const scene = findOwnScene(sceneId, actor);
     if (!scene) return notFound();
@@ -252,6 +362,10 @@ export function createCanvasSceneService({
     createScene,
     updateScene,
     deleteScene,
+    addElements,
+    updateElements,
+    removeElements,
+    exportScene,
     findOwnScene,
   };
 }

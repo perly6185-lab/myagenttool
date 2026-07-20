@@ -9,6 +9,23 @@
 /** Id prefix for a durable canvas scene, e.g. `cvs_0001`. */
 export const canvasSceneIdPrefix = "cvs";
 
+/** Id prefix for a server-assigned canvas element, e.g. `cel_0001` (#1353). */
+export const canvasElementIdPrefix = "cel";
+
+/**
+ * Governed Canvas capability ids (#1353). Reads are low-risk; create/add/update
+ * are medium (bounded schema + revision); remove is high-risk + approval-gated.
+ */
+export const canvasCapabilityIds = [
+  "list",
+  "get",
+  "create",
+  "add_elements",
+  "update_elements",
+  "remove_elements",
+  "export",
+];
+
 /**
  * Payload bounds. Every write fails closed (400) when any bound is exceeded — a
  * scene is user/agent-authored content that must never grow heap or disk without

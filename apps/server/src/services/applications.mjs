@@ -6,6 +6,7 @@ import { normalizeLoopRoutine, validateLoopRoutine } from "../../../../tools/ai/
 import { teamOf } from "../runtime/auth.mjs";
 import { makeRunTx } from "../runtime/store/run-tx.mjs";
 import { codingAgentInterfaceForTool } from "./coding-agent-interface.mjs";
+import { managedSpecFor, managedSpecsForApp, REGISTERED_MANAGED_ACTIONS } from "./managed-capability-registry.mjs";
 
 // Consecutive failed health checks before an active application is auto-offlined
 // (docs/design/APPLICATION_HEALTH_PROBE.md) — fixed, to avoid flapping on
@@ -39,6 +40,10 @@ export function createApplicationService({
   sendAlert = null,
   validateApprovalToken = null,
   store,
+  // Registry-driven managed capability handlers (#1353): { [appId]: { [action]:
+  // ({ application, input, actor }) => result } }. Injected so the in-process
+  // execution of e.g. canvas.* lives outside this file.
+  managedCapabilityHandlers = {},
 }) {
   const runTx = makeRunTx({ store, persistStateSoon });
   // Approval check behind every `approvalToken` field (docs/design/
@@ -412,7 +417,14 @@ export function createApplicationService({
     // Every side-effecting action — status changes, the orchestration-draft
     // write, and wrapper commands — requires an approval: an issued grant for
     // (action, application), or in phase 1 a legacy token (stamped + counted).
-    if (["archive", "offline", "online", "refresh", "generate_orchestration"].includes(action) || action.startsWith("wrapper:")) {
+    // Additive gate (#1353): the hardcoded lifecycle set, wrapper commands, OR a
+    // registry-declared managed capability that marks itself requiresApproval
+    // (e.g. canvas.remove_elements). Existing actions are byte-unchanged.
+    if (
+      ["archive", "offline", "online", "refresh", "generate_orchestration"].includes(action)
+      || action.startsWith("wrapper:")
+      || managedSpecFor(application.id, action)?.requiresApproval === true
+    ) {
       const approval = approvalCheck(input, action, application.id, actor);
       if (!approval.approved) {
         return {
@@ -431,7 +443,7 @@ export function createApplicationService({
     }
 
     return runTx(() => {
-      const result = executeApplicationAction({ application, action, input, actor, defaultProjectPath, now });
+      const result = executeApplicationAction({ application, action, input, actor, defaultProjectPath, now, managedCapabilityHandlers });
       if (result?.ok === false) {
         return result;
       }
@@ -1109,8 +1121,31 @@ export function projectApplicationCapabilities(app, context = {}) {
     managedCapability(app, `${prefix}.archive`, "Archive application", "lifecycle", "high", ["lifecycle", "write_control"], true, app.status === "archived", approvalInputSchema()),
     managedCapability(app, `${prefix}.generate_orchestration`, "Generate application orchestration", "orchestration", "medium", ["generated_artifact", "orchestration"], true, disabled, emptyInputSchema()),
     ...projectCapabilityFacades(app, prefix, disabled),
+    ...projectRegisteredManaged(app, prefix, disabled),
     ...projectWrapperCapabilities(app, prefix, disabled),
   ], context.credential);
+}
+
+// Registry-driven, in-process managed capabilities (#1353): a built-in with an
+// entry in the managed-capability registry (e.g. app_canvas) projects its
+// governed capabilities here. Executed synchronously via application_control (no
+// bridge). No per-application special case lives in this file — canvas is one
+// registry entry; adding a future built-in adds another.
+function projectRegisteredManaged(app, prefix, disabled) {
+  return managedSpecsForApp(app.id).map((spec) =>
+    managedCapability(
+      app,
+      `${prefix}.${spec.id}`,
+      spec.displayName,
+      spec.kind,
+      spec.riskLevel,
+      spec.riskTags,
+      spec.requiresApproval,
+      disabled,
+      spec.inputSchema,
+      { execution: { mode: "application_control", action: spec.id } },
+    ),
+  );
 }
 
 // Overlay the authorization verdict onto the capabilities that actually depend
@@ -1378,7 +1413,10 @@ function actionFromCapabilityName(capabilityName) {
   const wrapperAction = wrapperActionFromCapabilityName(capabilityName);
   if (wrapperAction) return wrapperAction;
   const suffix = String(capabilityName ?? "").split(".").at(-1);
-  return ["inspect", "search", "refresh", "online", "offline", "archive", "generate_orchestration"].includes(suffix) ? suffix : null;
+  if (["inspect", "search", "refresh", "online", "offline", "archive", "generate_orchestration"].includes(suffix)) return suffix;
+  // Registry-driven managed actions (#1353) are only ever projected for the app
+  // that declares them, so a match here belongs to a real projected capability.
+  return REGISTERED_MANAGED_ACTIONS.has(suffix) ? suffix : null;
 }
 
 function wrapperActionFromCapabilityName(capabilityName) {
@@ -1389,8 +1427,16 @@ function wrapperActionFromCapabilityName(capabilityName) {
   return match ? `wrapper:${match[1]}` : null;
 }
 
-function executeApplicationAction({ application, action, input, actor, defaultProjectPath, now = () => new Date().toISOString() }) {
+function executeApplicationAction({ application, action, input, actor, defaultProjectPath, now = () => new Date().toISOString(), managedCapabilityHandlers = {} }) {
   const executedAt = now();
+  // Registry-driven managed capability (#1353): dispatch to the injected handler
+  // BEFORE the built-in action switch. The handler returns either a
+  // `{ summary, output }` success or a `{ ok:false, status, body }` failure the
+  // caller propagates verbatim.
+  const managedHandler = managedCapabilityHandlers?.[application.id]?.[action];
+  if (typeof managedHandler === "function") {
+    return managedHandler({ application, input, actor });
+  }
   if (action === "inspect") {
     return {
       summary: `${application.name} application inspected.`,
