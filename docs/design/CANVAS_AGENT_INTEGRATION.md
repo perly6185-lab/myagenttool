@@ -138,6 +138,37 @@ Design choices, so the capability layer holds no per-application special cases:
 Registration is opt-in like the other built-ins (`pnpm canvas:register-app` /
 `node tools/dev/register-canvas-application.mjs`); nothing auto-registers at boot.
 
+## Closing the collaboration loop (#1355)
+
+Codex and Claude drive the Canvas through the **same provider-neutral capability
+gateway** — there is no provider-of-caller filter in discovery and no
+Codex/Claude-specific code on the Canvas execution path, so neither adapter can
+widen Canvas authority. Both see the identical 7 operations, closed input
+schemas, risk posture, and approval gate.
+
+- **Agent guidance is in the capability descriptions** (`canvasCapabilitySpecs`),
+  not just prose here: favor element-level ops over full-scene replacement, carry
+  the current `expectedRevision`, reference elements by their server-assigned ids,
+  and on a `canvas_scene_revision_conflict` re-read with `get` to rebase rather
+  than retry stale.
+- **Attribution.** A capability invocation records `actor` + `provider`
+  (`app_canvas`) + capability/action in its lineage; scene writes stamp
+  `lastModifiedBy` on the record and carry `actorId`/`actorTeamId`, scene id,
+  revision, and changed element ids in their audit events.
+- **The loop, end to end** (verified by `test/integration/canvas-agent-loop.test.mjs`):
+  create → add connected, labeled shapes (arrow bound to boxes + text label, ids
+  remapped) → read → update elements by stable id → a later turn sees the user's
+  direct edit with ids intact → a stale revision conflicts with an actionable
+  `currentRevision` and no mutation → the destructive remove is approval-denied
+  without a grant.
+
+**Deferred (separate task): the CLI caller channel.** The running Codex/Claude
+CLI processes do not yet call `/api/capabilities` themselves — the loop is proven
+over the provider-neutral HTTP contract both providers share. A real caller
+surface for the CLIs (an MCP tool exposing the capability API, or a canvas-caller
+wrapper, plus base-URL/token plumbing) is net-new wiring tracked separately; the
+governed contract it would speak is complete and unchanged by it.
+
 ## Where the other tasks plug in
 
 - **#1351 (Web draft, shipped)** — the offline browser scene + import/export. It
