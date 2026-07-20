@@ -34,6 +34,30 @@ function byteLength(value) {
 }
 
 /**
+ * Rewrite an element's references to OTHER elements in the same add batch to
+ * their newly-assigned ids. Only ids present in `idMap` (i.e. batch-internal) are
+ * remapped; a reference to a pre-existing scene element is left as-is. Group ids
+ * are a separate namespace and are preserved verbatim.
+ */
+function remapElementReferences(element, idMap) {
+  const remap = (id) => (typeof id === "string" && idMap.has(id) ? idMap.get(id) : id);
+  const out = { ...element };
+  if (typeof out.containerId === "string") out.containerId = remap(out.containerId);
+  if (typeof out.frameId === "string") out.frameId = remap(out.frameId);
+  if (Array.isArray(out.boundElements)) {
+    out.boundElements = out.boundElements.map((bound) =>
+      bound && typeof bound === "object" && typeof bound.id === "string" ? { ...bound, id: remap(bound.id) } : bound,
+    );
+  }
+  for (const key of ["startBinding", "endBinding"]) {
+    if (out[key] && typeof out[key] === "object" && typeof out[key].elementId === "string") {
+      out[key] = { ...out[key], elementId: remap(out[key].elementId) };
+    }
+  }
+  return out;
+}
+
+/**
  * Validate + normalize a scene payload. Returns `{ error, message }` on any
  * violation (fail closed) or `{ value: { name, elements, files } }` when clean.
  */
@@ -248,10 +272,19 @@ export function createCanvasSceneService({
       return { ok: false, status: 400, body: { error: "invalid_canvas_elements", message: "elements must be a non-empty array." } };
     }
     // The server assigns durable ids — a caller cannot dictate element identity.
-    const added = elements.map((element) =>
-      element && typeof element === "object" && !Array.isArray(element)
-        ? { ...element, id: nextId(canvasElementIdPrefix) }
-        : element,
+    // Reassigning ids must remap batch-internal references (bindings/containers/
+    // frames), or an added arrow-with-bound-shapes / grouped set arrives with
+    // dangling references. References to pre-existing scene elements are left
+    // untouched (they are not in the batch's id map).
+    const idMap = new Map();
+    const reidentified = elements.map((element) => {
+      if (!element || typeof element !== "object" || Array.isArray(element)) return element;
+      const newId = nextId(canvasElementIdPrefix);
+      if (typeof element.id === "string") idMap.set(element.id, newId);
+      return { ...element, id: newId };
+    });
+    const added = reidentified.map((element) =>
+      element && typeof element === "object" && !Array.isArray(element) ? remapElementReferences(element, idMap) : element,
     );
     const nextElements = [...scene.elements, ...added];
     const validated = validateScenePayload({ name: scene.name, elements: nextElements, files: scene.files });
