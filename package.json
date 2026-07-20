@@ -19,6 +19,7 @@
     "dev:restart-changed": "node tools/dev/restart-changed-services.mjs",
     "ccusage:register-app": "node tools/dev/register-ccusage-application.mjs",
     "git:register-app": "node tools/dev/register-git-application.mjs",
+    "canvas:register-app": "node tools/dev/register-canvas-application.mjs",
     "claude:register-app": "node tools/dev/register-claude-application.mjs",
     "officecli:register-app": "node tools/dev/register-officecli-application.mjs",
     "gmail:register-app": "node tools/dev/register-gmail-application.mjs",

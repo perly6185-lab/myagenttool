@@ -100,6 +100,44 @@ over-limit is rejected `400`. Limits live in `packages/protocol/src/canvas.mjs`
 - Each write emits an audit event (`canvas_scene_created|updated|deleted`) inside
   the same transaction, so the record and its audit commit atomically.
 
+## Governed capabilities (#1353)
+
+The built-in **`app_canvas`** Application (`services/canvas-application.mjs`,
+manual source, no runtime) exposes 7 provider-neutral governed capabilities that
+Codex and Claude invoke through the same `POST /api/capabilities/:name/invocations`
+gateway. They run **in-process** via the Application Control agent
+(`application_control` execution mode) — ready without the Desktop Bridge.
+
+| Capability | Risk | Approval | Backing op |
+| --- | --- | --- | --- |
+| `canvas.list` / `canvas.get` / `canvas.export` | low | no | reads |
+| `canvas.create` | medium | no | `createScene` |
+| `canvas.add_elements` / `canvas.update_elements` | medium | no | bounded element ops |
+| `canvas.remove_elements` | **high** | **yes (single-use grant)** | `removeElements` |
+
+Design choices, so the capability layer holds no per-application special cases:
+
+- **Registry, not descriptor field.** Specs (id/risk/schema) live in
+  `services/canvas-capabilities.mjs` and are registered in
+  `services/managed-capability-registry.mjs` keyed by Application id. Projection,
+  action resolution, and the approval gate in `applications.mjs` consult that
+  registry generically — the descriptor fingerprint is untouched.
+- **Injected handlers.** The in-process handlers close over the live scene
+  service and are injected into the application service
+  (`managedCapabilityHandlers`), so no canvas logic lives in `applications.mjs`.
+- **Additive approval gate.** The existing lifecycle/wrapper gate is unchanged;
+  a registry capability that sets `requiresApproval` (only `remove_elements`)
+  additionally routes through the single-use grant validator + audit.
+- **Element ops, not scene replacement.** Agents call bounded element operations
+  (`add`/`update`/`remove_elements`) with `expectedRevision`; the server assigns
+  durable element ids and validates references atomically. Callers cannot submit
+  opaque full-scene JSON, scripts, or filesystem paths.
+- **Result contract.** Each capability returns `{ summary, output }` where output
+  carries the scene id, the new `revision`, and the changed element ids.
+
+Registration is opt-in like the other built-ins (`pnpm canvas:register-app` /
+`node tools/dev/register-canvas-application.mjs`); nothing auto-registers at boot.
+
 ## Where the other tasks plug in
 
 - **#1351 (Web draft, shipped)** — the offline browser scene + import/export. It

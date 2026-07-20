@@ -30,6 +30,7 @@ import { createMailReplyDraftService } from "../services/mail-reply-draft.mjs";
 import { createMailSendService } from "../services/mail-send.mjs";
 import { createChannelService } from "../services/channels.mjs";
 import { createCanvasSceneService } from "../services/canvas-scenes.mjs";
+import { CANVAS_APPLICATION_ID, createCanvasCapabilityHandlers } from "../services/canvas-capabilities.mjs";
 import { createChannelConversationService } from "../services/channel-conversation.mjs";
 import { createChannelDeliveryService } from "../services/channel-delivery.mjs";
 import { createReportScheduleRuntime } from "../services/report-schedule.mjs";
@@ -353,6 +354,12 @@ export function createServerRuntimeServices({
     recordApplicationInstallProgress,
   } = createApplicationInstallService({ state, now, nextId, appendEvent, persistStateSoon, validateApprovalToken, store });
 
+  // Durable, team-owned Canvas scenes (#1352) — created before the application
+  // service so its element ops back the built-in Canvas capabilities (#1353).
+  const canvasSceneService = createCanvasSceneService({
+    state, now, nextId, appendEvent, persistStateSoon, store,
+  });
+
   const {
     applicationHealthSweep,
     findApplication,
@@ -380,6 +387,8 @@ export function createServerRuntimeServices({
     sendAlert: (alert) => void autoRunAlerts.dispatch(alert),
     validateApprovalToken,
     store,
+    // Built-in Canvas capabilities (#1353) run in-process against the scene service.
+    managedCapabilityHandlers: { [CANVAS_APPLICATION_ID]: createCanvasCapabilityHandlers(canvasSceneService) },
   });
 
   const {
@@ -1204,12 +1213,6 @@ export function createServerRuntimeServices({
   // (S3) go through the refuse() chokepoint like every other veto.
   const channelService = createChannelService({
     state, now, nextId, appendEvent, persistStateSoon, store, validateApprovalToken, refuse,
-  });
-
-  // Durable, team-owned Canvas scenes (#1352): optimistic-revision CRUD behind
-  // the Store transaction boundary; the Web draft (#1351) syncs into these in #1354.
-  const canvasSceneService = createCanvasSceneService({
-    state, now, nextId, appendEvent, persistStateSoon, store,
   });
 
   // Conversation execution (S4): imported events dispatch into GOVERNED
