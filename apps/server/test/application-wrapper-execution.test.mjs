@@ -11,7 +11,8 @@ import { test } from "node:test";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
-import { createApplicationService, applicationWrapperExecutionPlan } from "../src/services/applications.mjs";
+import { isAbsolute } from "node:path";
+import { createApplicationService, applicationWrapperExecutionPlan, createApplicationWrapperAgentRegistration } from "../src/services/applications.mjs";
 import { createCcusageApplicationRegistration } from "../src/services/ccusage-application.mjs";
 
 const RUNNER = fileURLToPath(new URL("../../../tools/agents/application-wrapper.mjs", import.meta.url));
@@ -104,4 +105,18 @@ test("runner reports a non-zero child exit as a failure", async () => {
   ]);
   assert.equal(code, 1);
   assert.match(resultFrom(stdout).error, /exited with code 3/);
+});
+
+test("the wrapper runner agent script path is ABSOLUTE (found regardless of the runner's cwd)", () => {
+  // An invocation_root app (git/officecli) spawns the runner with cwd = the
+  // project/worktree; a relative `node <script>` then fails MODULE_NOT_FOUND. The
+  // registration must resolve the script to an absolute path. (OfficeCLI live E2E.)
+  const reg = createApplicationWrapperAgentRegistration();
+  assert.equal(reg.command, "node");
+  assert.equal(reg.args.length, 1);
+  assert.ok(isAbsolute(reg.args[0]), `wrapper script must be absolute, got: ${reg.args[0]}`);
+  assert.ok(reg.args[0].endsWith("tools/agents/application-wrapper.mjs"));
+  // A relative override is resolved to absolute too (against the repo root).
+  const overridden = createApplicationWrapperAgentRegistration({ wrapperScriptPath: "tools/agents/application-wrapper.mjs" });
+  assert.ok(isAbsolute(overridden.args[0]));
 });

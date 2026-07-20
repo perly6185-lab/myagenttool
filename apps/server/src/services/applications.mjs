@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { basename, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { fileURLToPath } from "node:url";
 import { normalizeLoopRoutine, validateLoopRoutine } from "../../../../tools/ai/src/loop/routine.mjs";
 import { teamOf } from "../runtime/auth.mjs";
 import { makeRunTx } from "../runtime/store/run-tx.mjs";
@@ -791,12 +792,25 @@ export function createApplicationService({
 // the resolved, approved command via allowlisted metadata; the agent command
 // itself is constant, so nothing arbitrary reaches the bridge's allowlist.
 // Opt-in (registered like the ccusage agents), keeping the registry conservative.
+// Resolve the wrapper runner script to an ABSOLUTE path (against the repo root),
+// so `node <script>` is found even when the runner is spawned with the invocation
+// cwd — a project/worktree for an `invocation_root` app (git/officecli). With a
+// relative path the runner failed to load (MODULE_NOT_FOUND) once the bridge set
+// its cwd to the project; `fixed`-cwd apps (ccusage) happened to dodge it because
+// the runner then ran from the repo. (Found by the OfficeCLI live E2E.)
+const APPLICATION_WRAPPER_SCRIPT = fileURLToPath(
+  new URL("../../../../tools/agents/application-wrapper.mjs", import.meta.url),
+);
+
 export function createApplicationWrapperAgentRegistration({
-  wrapperScriptPath = "tools/agents/application-wrapper.mjs",
+  wrapperScriptPath = APPLICATION_WRAPPER_SCRIPT,
   costOwner = "usr_local",
 } = {}) {
-  const scriptPath = String(wrapperScriptPath ?? "").trim();
-  if (!scriptPath) throw new Error("application wrapper scriptPath is required.");
+  const raw = String(wrapperScriptPath ?? "").trim();
+  if (!raw) throw new Error("application wrapper scriptPath is required.");
+  // A relative override is resolved against the repo root (the module's anchor),
+  // for the same reason: the runner must be found regardless of the spawn cwd.
+  const scriptPath = isAbsolute(raw) ? raw : fileURLToPath(new URL(`../../../../${raw}`, import.meta.url));
   return {
     id: "agt_platform_application_wrapper",
     type: "cli",
