@@ -322,6 +322,21 @@ export function localExecutionGate(work, adapter, spawnPlan, { permissionDecisio
       : "network_policy_exceeded";
     return refused("Local execution gate refused a command whose file or network policy exceeds the local allowlist.", { ...evidence, refusalCode });
   }
+  // OfficeCLI writes edit a document IN PLACE, so they must land in the invocation's
+  // WORKTREE — never the project clone — to stay reviewable before promotion. The
+  // general cwd check above admits the project root as an approved root; a write
+  // demands the stricter guarantee. Refuse a write with no worktree, or whose cwd
+  // is not inside it (e.g. resolved to the project fallback). (#1357)
+  if (commandKind === "officecliApply") {
+    const worktreeRoot = work?.options?.metadata?.worktreePath;
+    if (typeof worktreeRoot !== "string" || !worktreeRoot.trim() || !pathWithin(worktreeRoot, spawnPlan.cwd)) {
+      return refused(
+        "Local execution gate refused an OfficeCLI write outside a worktree — writes must run in the invocation's worktree, never the project clone.",
+        { ...evidence, refusalCode: "cwd_outside_approved_root" },
+        "policy_blocked",
+      );
+    }
+  }
   if (isApplicationWrapperSpawn(spawnPlan, manifest)) {
     const wrapperGate = applicationWrapperGate(work, spawnPlan, localPolicy, approvedRoots, manifest, resolveBinary);
     evidence.applicationWrapper = wrapperGate.evidence;
