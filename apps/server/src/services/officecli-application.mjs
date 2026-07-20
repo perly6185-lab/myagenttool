@@ -97,6 +97,13 @@ const OFFICECLI_WRAPPER_COMMANDS = [
 // requires an approval token. `officecli` writes in place, so a write MUST run in
 // the invocation's worktree (cwdPolicy: invocation_root) to stay reviewable before
 // promotion — never against the project clone directly.
+// The element kinds `add --type` accepts (officecli help add). A closed set so a
+// caller can only add a known element, never smuggle an arbitrary --type value.
+export const OFFICECLI_ELEMENT_TYPES = [
+  "paragraph", "run", "table", "sheet", "row", "column", "cell",
+  "slide", "shape", "picture", "diagram", "flowchart", "ole", "video",
+];
+
 const OFFICECLI_WRITE_COMMANDS = [
   {
     id: "remove",
@@ -106,6 +113,36 @@ const OFFICECLI_WRITE_COMMANDS = [
     argInputs: [
       { key: "file", positional: true, type: "string" },
       { key: "path", positional: true, type: "string" },
+    ],
+  },
+  {
+    id: "set",
+    displayName: "OfficeCLI set",
+    description: "Set properties on an element by path — a cell value/formula, run text, or formatting (props are `--prop key=value`). Writes in place; runs in the invocation's worktree.",
+    args: ["set"],
+    // `officecli set <file> <path> --prop k=v` requires the subject positionals
+    // BEFORE the options — the CLI ignores a --prop that precedes the file/path.
+    argOrder: "positionals_first",
+    argInputs: [
+      { key: "file", positional: true, type: "string" },
+      { key: "path", positional: true, type: "string" },
+      // A repeatable `--prop key=value` map (value/formula/bold/font.size/...).
+      { key: "props", flag: "--prop", type: "props" },
+    ],
+  },
+  {
+    id: "add",
+    displayName: "OfficeCLI add",
+    description: "Add a new element under a parent path — a cell, row, shape, slide, paragraph, etc. (`--type` + `--prop key=value`). Appends to the end; writes in place in the invocation's worktree.",
+    args: ["add"],
+    // Same positional-before-options requirement as `set`.
+    argOrder: "positionals_first",
+    argInputs: [
+      { key: "file", positional: true, type: "string" },
+      { key: "parent", positional: true, type: "string" },
+      // The element kind. A closed enum — the device mirrors it independently.
+      { key: "type", flag: "--type", type: "enum", values: OFFICECLI_ELEMENT_TYPES },
+      { key: "props", flag: "--prop", type: "props" },
     ],
   },
 ];
@@ -145,6 +182,7 @@ function writeCommand(command) {
     command: "officecli",
     args: command.args,
     argInputs: command.argInputs ?? [],
+    ...(command.argOrder ? { argOrder: command.argOrder } : {}),
     status: "approved",
     // `segment: "apply"` routes this under the device's officecliApply WRITE policy
     // (workspace_write) — never the read-only wrapper bucket git/ccusage/claude share.

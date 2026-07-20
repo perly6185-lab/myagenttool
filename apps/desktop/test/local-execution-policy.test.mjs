@@ -718,10 +718,10 @@ test("officecliApply: a non-Office file is refused (device stays stricter than t
   assert.match(gate.reason, /args outside the local allowlist/);
 });
 
-test("officecliApply: an unregistered write verb is refused (only `remove` ships in P3.1)", () => {
+test("officecliApply: an unregistered write verb is refused (batch/add not shipped yet)", () => {
   const gate = officecliApplyGate({
-    capability: "app.app_officecli.apply.set",
-    execArgs: ["set", "deck.pptx", "/slide[1]", "--prop", "bold=true"],
+    capability: "app.app_officecli.apply.batch",
+    execArgs: ["batch", "deck.pptx", "--commands", "[]"],
   });
   assert.equal(gate.allowed, false);
 });
@@ -730,6 +730,46 @@ test("officecliApply: an undeclared trailing flag is refused (no extra-arg smugg
   const gate = officecliApplyGate({
     capability: "app.app_officecli.apply.remove",
     execArgs: ["remove", "deck.pptx", "/slide[1]", "--force"],
+  });
+  assert.equal(gate.allowed, false);
+});
+
+test("officecliApply: set with file, path, and repeated --prop key=value is allowed", () => {
+  const gate = officecliApplyGate({
+    capability: "app.app_officecli.apply.set",
+    execArgs: ["set", "deck.pptx", "/slide[1]/shape[1]", "--prop", "text=Hi", "--prop", "bold=true", "--prop", "formula=SUM(A1:A2)"],
+  });
+  assert.equal(gate.allowed, true, gate.reason);
+});
+
+test("officecliApply: a --prop with a flag-shaped key is refused (no option smuggling via props)", () => {
+  const gate = officecliApplyGate({
+    capability: "app.app_officecli.apply.set",
+    execArgs: ["set", "deck.pptx", "/slide[1]", "--prop", "--inject=x"],
+  });
+  assert.equal(gate.allowed, false);
+});
+
+test("officecliApply: a --prop missing its value token is refused", () => {
+  const gate = officecliApplyGate({
+    capability: "app.app_officecli.apply.set",
+    execArgs: ["set", "deck.pptx", "/slide[1]", "--prop"],
+  });
+  assert.equal(gate.allowed, false);
+});
+
+test("officecliApply: add with file, parent, --type (enum) and --prop pairs is allowed", () => {
+  const gate = officecliApplyGate({
+    capability: "app.app_officecli.apply.add",
+    execArgs: ["add", "demo.xlsx", "/Sheet1", "--type", "cell", "--prop", "ref=F1", "--prop", "value=ADDED"],
+  });
+  assert.equal(gate.allowed, true, gate.reason);
+});
+
+test("officecliApply: add with an out-of-set --type is refused (closed enum)", () => {
+  const gate = officecliApplyGate({
+    capability: "app.app_officecli.apply.add",
+    execArgs: ["add", "demo.xlsx", "/Sheet1", "--type", "malware", "--prop", "ref=F1"],
   });
   assert.equal(gate.allowed, false);
 });
