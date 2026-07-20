@@ -570,3 +570,93 @@ test("cwdPolicy: an unknown or missing policy is read as 'fixed', never inferred
     assert.equal(gate.evidence.applicationWrapper.cwdPolicy, "fixed");
   }
 });
+
+// --- OfficeCLI read-only wrapper allowlist (P1, default-deny at the bridge) ---
+
+function officecliGate({ execArgs, capability, root = gitRoot, cwd = gitRoot, resolveBinary = () => true }) {
+  const spec = { execCommand: "officecli", execArgs, capability, filePolicy: "read_only", networkPolicy: "forbidden" };
+  const work = { project: { path: root }, options: { metadata: { applicationWrapper: spec, worktreePath: root } } };
+  return localExecutionGate(
+    work,
+    { type: "cli", command: "node" },
+    {
+      command: process.execPath,
+      args: wrapperArgs(spec, { cwd }),
+      cwd,
+      localPolicy: { filePolicy: "read_only", networkPolicy: "forbidden", source: "application_wrapper" },
+    },
+    { manifest, resolveBinary },
+  );
+}
+
+test("officecli wrapper: get with file + path positionals is allowed", () => {
+  const gate = officecliGate({
+    capability: "app.app_officecli.wrapper.get",
+    execArgs: ["get", "--json", "demo.xlsx", "/Sheet1/A1"],
+  });
+  assert.equal(gate.allowed, true, gate.reason);
+});
+
+test("officecli wrapper: view with an in-set mode positional is allowed", () => {
+  for (const mode of ["text", "html"]) {
+    const gate = officecliGate({
+      capability: "app.app_officecli.wrapper.view",
+      execArgs: ["view", "report.docx", mode],
+    });
+    assert.equal(gate.allowed, true, `${mode}: ${gate.reason}`);
+  }
+});
+
+test("officecli wrapper: a non-Office file extension is refused (device is stricter than the server)", () => {
+  const gate = officecliGate({
+    capability: "app.app_officecli.wrapper.get",
+    execArgs: ["get", "--json", "/etc/passwd"],
+  });
+  assert.equal(gate.allowed, false);
+  assert.match(gate.reason, /args outside the local allowlist/);
+});
+
+test("officecli wrapper: an out-of-set view mode is refused", () => {
+  const gate = officecliGate({
+    capability: "app.app_officecli.wrapper.view",
+    execArgs: ["view", "report.docx", "screenshot"],
+  });
+  assert.equal(gate.allowed, false);
+  assert.match(gate.reason, /args outside the local allowlist/);
+});
+
+test("officecli wrapper: an undeclared trailing flag is refused (no write/verb smuggling)", () => {
+  const gate = officecliGate({
+    capability: "app.app_officecli.wrapper.get",
+    execArgs: ["get", "--json", "demo.xlsx", "--set", "value=x"],
+  });
+  assert.equal(gate.allowed, false);
+});
+
+test("officecli wrapper: argv not matching the registered base prefix is refused", () => {
+  // A write verb under a read capability id → base mismatch, refused.
+  const gate = officecliGate({
+    capability: "app.app_officecli.wrapper.get",
+    execArgs: ["set", "demo.xlsx", "/Sheet1/A1"],
+  });
+  assert.equal(gate.allowed, false);
+  assert.match(gate.reason, /args outside the local allowlist/);
+});
+
+test("officecli wrapper: an unregistered command id is refused (default-deny within the app)", () => {
+  const gate = officecliGate({
+    capability: "app.app_officecli.wrapper.batch",
+    execArgs: ["batch", "demo.xlsx"],
+  });
+  assert.equal(gate.allowed, false);
+});
+
+test("#802: an allowlisted officecli command whose binary is absent is refused with binary_unavailable", () => {
+  const gate = officecliGate({
+    capability: "app.app_officecli.wrapper.get",
+    execArgs: ["get", "--json", "demo.xlsx", "/"],
+    resolveBinary: () => false,
+  });
+  assert.equal(gate.allowed, false);
+  assert.equal(gate.evidence.refusalCode, "binary_unavailable");
+});

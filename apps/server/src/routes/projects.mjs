@@ -7,6 +7,7 @@ import { computeIssueOwnership } from "../read-models/issue-ownership.mjs";
 import { recordHttpGateRefusal } from "./refusal-http-gate.mjs";
 import { deriveFinalStatus, summarizeAutoRuns } from "../services/auto-run-metrics.mjs";
 import { summarizeDeployments } from "../services/auto-run-deploy-metrics.mjs";
+import { renderOfficecliPreview, OfficecliPreviewError } from "../services/officecli-preview.mjs";
 import { readEvalTrend, summarizeEvalTrend } from "../services/eval-trend.mjs";
 import { maturityScorecard, latestDora } from "../read-models/maturity-scorecard.mjs";
 import { normalizeAutoRunSettings, resolveAutoRunConfig } from "../services/auto-run-config.mjs";
@@ -613,6 +614,30 @@ export async function handleProjectRoutes({
         error: "project_tree_unavailable",
         message: error instanceof Error ? error.message : String(error),
       });
+    }
+    return true;
+  }
+
+  const officecliPreviewMatch = url.pathname.match(/^\/api\/projects\/([^/]+)\/officecli-preview$/);
+  if (officecliPreviewMatch && req.method === "GET") {
+    const project = state.projects.find((item) => item.id === decodeURIComponent(officecliPreviewMatch[1]));
+    if (!project) {
+      sendJson(res, 404, { error: "project_not_found" });
+      return true;
+    }
+    if (denyForeignProject({ res, sendJson, state, actor, projectId: project.id, notFound: { error: "project_not_found" } })) return true;
+    const worktreeId = url.searchParams.get("worktree");
+    const worktree = worktreeId ? (state.worktrees ?? []).find((w) => w.id === worktreeId && w.projectId === project.id) : null;
+    const rootPath = worktree?.path ?? worktree?.worktreePath ?? project.path;
+    try {
+      const preview = await renderOfficecliPreview({ projectPath: rootPath, relativeFile: url.searchParams.get("path") ?? "" });
+      sendJson(res, 200, preview);
+    } catch (error) {
+      // Map the typed preview errors to a precise HTTP status; anything else is a
+      // 400 with the message (a render failure is user-facing, not a 500).
+      const code = error instanceof OfficecliPreviewError ? error.code : "preview_failed";
+      const status = code === "not_found" ? 404 : code === "officecli_unavailable" ? 503 : 400;
+      sendJson(res, status, { error: code, message: error instanceof Error ? error.message : String(error) });
     }
     return true;
   }
