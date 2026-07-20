@@ -23,9 +23,12 @@ if (!response.ok) {
   throw new Error(`Register OfficeCLI application failed: ${JSON.stringify(data)}`);
 }
 const app = data.application ?? data;
+const commands = app.source?.wrapper?.commands ?? [];
+const reads = commands.filter((command) => command.filePolicy !== "workspace_write").length;
+const writes = commands.length - reads;
 console.log(
   `[officecli] registered application ${app.id}: ${app.name} ` +
-    `(${app.source?.wrapper?.commands?.length ?? 0} read capabilities)`,
+    `(${reads} read${writes ? ` + ${writes} write (approval-gated)` : ""} capabilities)`,
 );
 
 function parseArgs(argv) {

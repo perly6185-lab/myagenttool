@@ -660,3 +660,110 @@ test("#802: an allowlisted officecli command whose binary is absent is refused w
   assert.equal(gate.allowed, false);
   assert.equal(gate.evidence.refusalCode, "binary_unavailable");
 });
+
+// --- OfficeCLI WRITE verbs (P3.1): the officecliApply write-policy kind ---
+
+function officecliApplyGate({ execArgs, capability, root = gitRoot, cwd = gitRoot, worktreePath = root, filePolicy = "workspace_write", resolveBinary = () => true }) {
+  const spec = { execCommand: "officecli", execArgs, capability, filePolicy, networkPolicy: "forbidden" };
+  const metadata = { applicationWrapper: spec };
+  if (worktreePath !== null) metadata.worktreePath = worktreePath;
+  const work = { project: { path: root }, options: { metadata } };
+  return localExecutionGate(
+    work,
+    { type: "cli", command: "node" },
+    {
+      command: process.execPath,
+      args: wrapperArgs(spec, { cwd }),
+      cwd,
+      localPolicy: { filePolicy, networkPolicy: "forbidden", source: "application_wrapper" },
+    },
+    { manifest, resolveBinary },
+  );
+}
+
+test("officecliApply: a workspace_write remove with file+path positionals is allowed", () => {
+  const gate = officecliApplyGate({
+    capability: "app.app_officecli.apply.remove",
+    execArgs: ["remove", "deck.pptx", "/slide[2]/shape[3]"],
+  });
+  assert.equal(gate.allowed, true, gate.reason);
+  assert.equal(gate.evidence.commandKind, "officecliApply", "a write is classified into its own bucket, never read-only wrapper");
+});
+
+test("officecliApply: the read-only wrapper bucket does NOT permit an officecli write", () => {
+  // Same argv, but presented under the READ capability prefix → classified `wrapper`,
+  // whose bucket is read_only-only, so a workspace_write policy is refused there.
+  const gate = officecliApplyGate({
+    capability: "app.app_officecli.wrapper.remove",
+    execArgs: ["remove", "deck.pptx", "/slide[2]/shape[3]"],
+  });
+  assert.equal(gate.allowed, false, "a write under the read prefix must not slip through");
+});
+
+test("officecliApply: a read_only file policy under the apply prefix is refused (policy must match)", () => {
+  const gate = officecliApplyGate({
+    capability: "app.app_officecli.apply.remove",
+    execArgs: ["remove", "deck.pptx", "/slide[1]"],
+    filePolicy: "read_only",
+  });
+  assert.equal(gate.allowed, false);
+});
+
+test("officecliApply: a non-Office file is refused (device stays stricter than the server)", () => {
+  const gate = officecliApplyGate({
+    capability: "app.app_officecli.apply.remove",
+    execArgs: ["remove", "/etc/hosts", "/x"],
+  });
+  assert.equal(gate.allowed, false);
+  assert.match(gate.reason, /args outside the local allowlist/);
+});
+
+test("officecliApply: an unregistered write verb is refused (only `remove` ships in P3.1)", () => {
+  const gate = officecliApplyGate({
+    capability: "app.app_officecli.apply.set",
+    execArgs: ["set", "deck.pptx", "/slide[1]", "--prop", "bold=true"],
+  });
+  assert.equal(gate.allowed, false);
+});
+
+test("officecliApply: an undeclared trailing flag is refused (no extra-arg smuggling on a write)", () => {
+  const gate = officecliApplyGate({
+    capability: "app.app_officecli.apply.remove",
+    execArgs: ["remove", "deck.pptx", "/slide[1]", "--force"],
+  });
+  assert.equal(gate.allowed, false);
+});
+
+test("officecliApply: a write with NO worktree is refused (never the project clone)", () => {
+  const gate = officecliApplyGate({
+    capability: "app.app_officecli.apply.remove",
+    execArgs: ["remove", "deck.pptx", "/slide[1]"],
+    worktreePath: null, // invocation has no worktree → the write would hit the project clone
+  });
+  assert.equal(gate.allowed, false);
+  assert.equal(gate.evidence.refusalCode, "cwd_outside_approved_root");
+  assert.match(gate.reason, /must run in the invocation's worktree/i);
+});
+
+test("officecliApply: a write whose cwd is the project root (not the worktree) is refused", () => {
+  const worktree = mkdtempSync(join(tmpdir(), "oc-worktree-"));
+  // worktree exists but the command's cwd is the project root → not inside the worktree.
+  const gate = officecliApplyGate({
+    capability: "app.app_officecli.apply.remove",
+    execArgs: ["remove", "deck.pptx", "/slide[1]"],
+    root: gitRoot,
+    cwd: gitRoot,
+    worktreePath: worktree,
+  });
+  assert.equal(gate.allowed, false);
+  assert.equal(gate.evidence.refusalCode, "cwd_outside_approved_root");
+});
+
+test("officecliApply: the read wrapper bucket is unchanged — a read command still works", () => {
+  const gate = officecliGate({
+    capability: "app.app_officecli.wrapper.get",
+    execArgs: ["get", "--json", "demo.xlsx", "/"],
+  });
+  assert.equal(gate.allowed, true, gate.reason);
+  assert.equal(gate.evidence.commandKind, "wrapper");
+});
