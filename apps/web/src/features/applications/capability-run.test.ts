@@ -28,6 +28,36 @@ function capability(overrides: Partial<ApplicationCapability> = {}): Application
   };
 }
 
+function writeCapability(overrides: Partial<ApplicationCapability> = {}): ApplicationCapability {
+  return capability({
+    name: "app.app_officecli.apply.set",
+    requiresApproval: true,
+    metadata: { wrapper: { cwdPolicy: "invocation_root", filePolicy: "workspace_write" } },
+    ...overrides,
+  });
+}
+
+describe("worktree-scoped writes", () => {
+  it("a workspace_write capability needsWorktree; a read one does not", () => {
+    expect(capabilityRunContract(writeCapability()).needsWorktree).toBe(true);
+    expect(capabilityRunContract(capability()).needsWorktree).toBe(false);
+  });
+
+  it("a write is blocked until a worktree is chosen, then buildInvokeBody carries worktreeId", () => {
+    const contract = capabilityRunContract(writeCapability());
+    expect(runBlocker(contract, { projectId: "prj_1", values: {} })).toMatch(/worktree/i);
+    expect(runBlocker(contract, { projectId: "prj_1", worktreeId: "wtr_1", values: {} })).toBeNull();
+    const body = buildInvokeBody(contract, { projectId: "prj_1", worktreeId: "wtr_1", values: {} });
+    expect(body.projectId).toBe("prj_1");
+    expect(body.worktreeId).toBe("wtr_1");
+  });
+
+  it("explains a device refusal to write outside a worktree", () => {
+    expect(explainRunFailure("local_execution_refused: OfficeCLI write outside a worktree")).toMatch(/must land in a worktree/i);
+    expect(explainRunFailure("worktree_not_found")).toMatch(/not registered for this project/i);
+  });
+});
+
 describe("capabilityRunContract", () => {
   it("reads the need for a repository from the published contract, not from the app's name", () => {
     // The panel must stay generic: nothing here knows what git is. A capability

@@ -608,8 +608,9 @@ export function WorktreeView({ worktree }: { worktree: WorktreeSnapshot }) {
             <FileDiffView path={activeTab} diff={diff} />
           ) : activeIsOfficeDoc ? (
             // An Office document is binary OOXML — render it instead of dumping raw
-            // bytes into the code view (which reads as garbage). Browses like any file.
-            <OfficecliFilePreview projectId={worktree.projectId} worktreeId={worktree.id} path={activeTab} />
+            // bytes into the code view (which reads as garbage). Browses like any file,
+            // and (in a worktree) offers a governed inline edit.
+            <OfficecliFilePreview projectId={worktree.projectId} worktreeId={worktree.id} path={activeTab} editable />
           ) : (
             <FileCodeView path={activeTab} data={fileCache[cacheKey]} />
           )}

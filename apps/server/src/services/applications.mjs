@@ -866,6 +866,10 @@ const RESERVED_WRAPPER_ARG_INPUT_KEYS = new Set([
   // fields the scheduler uses to attribute a run to its schedule.
   "automationId",
   "scheduled",
+  // The worktree the write runs in — a control-plane field resolved to the
+  // invocation's worktreePath, never a wrapper argument.
+  "projectId",
+  "worktreeId",
 ]);
 
 // Normalize a wrapper command's declared per-invocation flag inputs. Each entry
