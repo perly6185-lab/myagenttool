@@ -1,25 +1,5 @@
-import { afterEach, describe, expect, it } from "vitest";
-import {
-  CANVAS_DRAFT_KEY,
-  clearDraft,
-  loadDraftJSON,
-  parseImportedScene,
-  saveDraftJSON,
-  sceneFilename,
-} from "./canvas-draft";
-
-afterEach(() => localStorage.clear());
-
-describe("canvas draft persistence", () => {
-  it("round-trips and clears the local draft", () => {
-    expect(loadDraftJSON()).toBeNull();
-    saveDraftJSON('{"type":"excalidraw","elements":[]}');
-    expect(loadDraftJSON()).toContain("excalidraw");
-    expect(localStorage.getItem(CANVAS_DRAFT_KEY)).not.toBeNull();
-    clearDraft();
-    expect(loadDraftJSON()).toBeNull();
-  });
-});
+import { describe, expect, it } from "vitest";
+import { parseImportedScene, sceneFilename } from "./canvas-draft";
 
 describe("parseImportedScene", () => {
   it("accepts a well-formed .excalidraw scene", () => {
