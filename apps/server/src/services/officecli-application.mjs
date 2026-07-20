@@ -151,6 +151,31 @@ const OFFICECLI_WRITE_COMMANDS = [
     ],
   },
   {
+    id: "swap",
+    displayName: "OfficeCLI swap",
+    description: "Swap two elements by path (e.g. reorder two rows or slides). Writes in place in the invocation's worktree.",
+    args: ["swap"],
+    argInputs: [
+      { key: "file", positional: true, type: "string" },
+      { key: "path1", positional: true, type: "string" },
+      { key: "path2", positional: true, type: "string" },
+    ],
+  },
+  {
+    id: "move",
+    displayName: "OfficeCLI move",
+    description: "Move an element to a new position or parent (`--to` / `--after` / `--before`). Writes in place in the invocation's worktree.",
+    args: ["move"],
+    argOrder: "positionals_first",
+    argInputs: [
+      { key: "file", positional: true, type: "string" },
+      { key: "path", positional: true, type: "string" },
+      { key: "to", flag: "--to", type: "string" },
+      { key: "after", flag: "--after", type: "string" },
+      { key: "before", flag: "--before", type: "string" },
+    ],
+  },
+  {
     id: "batch",
     displayName: "OfficeCLI batch",
     description: "Apply multiple edits in one pass from a JSON operation list (`--commands`). Each item's `command` must be a write verb; runs in place in the invocation's worktree.",

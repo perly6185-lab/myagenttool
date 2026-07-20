@@ -774,6 +774,30 @@ test("officecliApply: add with an out-of-set --type is refused (closed enum)", (
   assert.equal(gate.allowed, false);
 });
 
+test("officecliApply: swap with three positional paths is allowed", () => {
+  const gate = officecliApplyGate({
+    capability: "app.app_officecli.apply.swap",
+    execArgs: ["swap", "demo.xlsx", "/Sheet1/row[2]", "/Sheet1/row[3]"],
+  });
+  assert.equal(gate.allowed, true, gate.reason);
+});
+
+test("officecliApply: move with a --to/--after/--before path flag is allowed", () => {
+  const gate = officecliApplyGate({
+    capability: "app.app_officecli.apply.move",
+    execArgs: ["move", "deck.pptx", "/slide[3]", "--after", "/slide[1]"],
+  });
+  assert.equal(gate.allowed, true, gate.reason);
+});
+
+test("officecliApply: move with an undeclared destination flag is refused", () => {
+  const gate = officecliApplyGate({
+    capability: "app.app_officecli.apply.move",
+    execArgs: ["move", "deck.pptx", "/slide[3]", "--into", "/slide[1]"],
+  });
+  assert.equal(gate.allowed, false);
+});
+
 test("officecliApply: batch with a verb-allowlisted --commands JSON is allowed", () => {
   const cmds = JSON.stringify([
     { command: "set", path: "/Sheet1/A1", props: { value: "x" } },
