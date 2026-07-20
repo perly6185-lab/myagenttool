@@ -828,7 +828,7 @@ export function createApplicationWrapperAgentRegistration({
 // anything else returns null. This is the single source of truth for WHAT may
 // execute — the bridge only ever runs a command that came through here, so an
 // unapproved or unregistered command can never reach execution.
-const WRAPPER_ARG_INPUT_TYPES = new Set(["date", "token", "enum", "string", "boolean-flag", "git-rev", "count"]);
+const WRAPPER_ARG_INPUT_TYPES = new Set(["date", "token", "enum", "string", "boolean-flag", "git-rev", "count", "props"]);
 const RESERVED_WRAPPER_ARG_INPUT_KEYS = new Set([
   "approvalToken",
   "idempotencyKey",
@@ -881,13 +881,34 @@ function normalizeWrapperArgInputs(argInputs) {
 // Turn a caller's input into args, appending ONLY declared flags whose value
 // passes its type validator. Undeclared keys are ignored; a value that looks like
 // a flag (leading "-") is refused so it can never inject a new option.
-function resolveWrapperInputArgs(argInputs, input) {
+//
+// `positionalsFirst` flips the order to `positionals then flags` — some CLIs
+// (e.g. `officecli set <file> <path> --prop k=v`) require the subject positionals
+// before their options. Default is flags-then-positionals (git/ccusage contract).
+function resolveWrapperInputArgs(argInputs, input, { positionalsFirst = false } = {}) {
   if (!Array.isArray(argInputs) || !input || typeof input !== "object" || Array.isArray(input)) return [];
   const flagArgs = [];
   const positionalArgs = [];
   for (const spec of argInputs) {
     const raw = input[spec.key];
     if (raw === undefined || raw === null) continue;
+    if (spec.type === "props") {
+      // A repeatable `--prop key=value` map (e.g. officecli set/add props). Each
+      // pair is validated independently — an identifier key + a bounded, control-
+      // char-free value — and emitted as a discrete `--prop key=value` argv token.
+      // Never a scalar; a malformed or oversized pair is dropped, not injected.
+      if (typeof raw !== "object" || Array.isArray(raw)) continue;
+      let count = 0;
+      for (const [propKey, propValue] of Object.entries(raw)) {
+        if (count >= 30) break;
+        if (!/^[a-zA-Z][a-zA-Z0-9._-]{0,39}$/.test(propKey)) continue;
+        const propText = String(propValue ?? "");
+        if (propText.length > 200 || /[\r\n]/.test(propText)) continue;
+        flagArgs.push(spec.flag, `${propKey}=${propText}`);
+        count += 1;
+      }
+      continue;
+    }
     if (spec.type === "boolean-flag") {
       if (raw === true || raw === "true") flagArgs.push(spec.flag);
       continue;
@@ -901,8 +922,9 @@ function resolveWrapperInputArgs(argInputs, input) {
       flagArgs.push(spec.flag, value);
     }
   }
-  // Positionals are appended AFTER all flags, in declaration order (#777).
-  return [...flagArgs, ...positionalArgs];
+  // Default: positionals AFTER all flags, in declaration order (#777). With
+  // positionalsFirst, the subject positionals lead (officecli set/add).
+  return positionalsFirst ? [...positionalArgs, ...flagArgs] : [...flagArgs, ...positionalArgs];
 }
 
 function isValidWrapperArgValue(spec, value) {
@@ -924,16 +946,25 @@ function isValidWrapperArgValue(spec, value) {
   }
 }
 
+// A wrapper command's capability segment. Read commands live under `.wrapper.`;
+// a write-capable command opts into `.apply.` so the device classifies and gates
+// it under a distinct WRITE policy kind (officecliApply), never the read-only
+// wrapper bucket that git/ccusage/claude share. Defaults to "wrapper", so every
+// existing app's capability names stay byte-identical.
+function wrapperSegment(command) {
+  return command?.segment === "apply" ? "apply" : "wrapper";
+}
+
 export function applicationWrapperExecutionPlan(application, commandId, input = {}) {
   const command = findNpmWrapperCommand(application, commandId);
   if (!command) return null;
   return {
-    capability: `app.${slugify(application.id || application.name)}.wrapper.${command.id}`,
+    capability: `app.${slugify(application.id || application.name)}.${wrapperSegment(command)}.${command.id}`,
     commandId: command.id,
     commandType: command.commandType,
     command: command.command,
     // Base args + only the declared, validated per-invocation flag inputs.
-    args: [...command.args, ...resolveWrapperInputArgs(command.argInputs, input)],
+    args: [...command.args, ...resolveWrapperInputArgs(command.argInputs, input, { positionalsFirst: command.argOrder === "positionals_first" })],
     // "invocation_root" emits cwd:null so the bridge's worktreePath → projectPath
     // fallback resolves it to the invocation's repository (#773). "fixed" keeps
     // ccusage's behavior byte-for-byte.
@@ -1086,7 +1117,7 @@ function projectWrapperCapabilities(app, prefix, disabled) {
     .filter((command) => command.status === "approved")
     .map((command) => managedCapability(
       app,
-      `${prefix}.wrapper.${command.id}`,
+      `${prefix}.${wrapperSegment(command)}.${command.id}`,
       command.displayName,
       wrapperKind,
       command.riskLevel,
@@ -1197,11 +1228,19 @@ function wrapperInputSchema(command) {
     properties: Object.fromEntries(command.argInputs.map((input) => [
       input.key,
       {
-        type: input.type,
+        type: wrapperArgInputJsonType(input.type),
         ...(input.values?.length ? { enum: input.values } : {}),
       },
     ])),
   };
+}
+
+// The capability input-schema type for an argInput. Only `props` needs a real
+// JSON type (a key→value map is an object, and the input must validate as one);
+// every pre-existing type keeps emitting its raw string verbatim, so existing
+// apps' projected schemas stay byte-identical (a pinned-fixture invariant).
+function wrapperArgInputJsonType(type) {
+  return type === "props" ? "object" : type;
 }
 
 function approvalInputSchema() {
@@ -1232,7 +1271,10 @@ function actionFromCapabilityName(capabilityName) {
 }
 
 function wrapperActionFromCapabilityName(capabilityName) {
-  const match = String(capabilityName ?? "").match(/\.wrapper\.([a-z0-9._-]+)$/);
+  // Both `.wrapper.` (read) and `.apply.` (write) wrapper commands map to the same
+  // `wrapper:<id>` governance action — resolution is by command id, and the write
+  // policy is enforced at the device, not in the action label.
+  const match = String(capabilityName ?? "").match(/\.(?:wrapper|apply)\.([a-z0-9._-]+)$/);
   return match ? `wrapper:${match[1]}` : null;
 }
 
@@ -2312,6 +2354,13 @@ function normalizeWrapperCommand(command, index) {
     description: stringOrNull(command.description) ?? `Governed NPM wrapper command ${id}.`,
     commandType,
     command: commandText,
+    // The capability segment: "apply" for a write command (routed to the device's
+    // write policy), else "wrapper" (read). Preserved through registration so the
+    // projected capability name and the device classification agree.
+    segment: command.segment === "apply" ? "apply" : "wrapper",
+    // Argv ordering: "positionals_first" emits subject positionals before flags
+    // (officecli set/add). Default "flags_first" keeps git/ccusage byte-identical.
+    argOrder: command.argOrder === "positionals_first" ? "positionals_first" : "flags_first",
     args: normalizeStringList(command.args),
     cwd: stringOrNull(command.cwd) ?? ".",
     // cwdPolicy governs where the command runs. "fixed" (default, ccusage's

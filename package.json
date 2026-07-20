@@ -20,6 +20,7 @@
     "ccusage:register-app": "node tools/dev/register-ccusage-application.mjs",
     "git:register-app": "node tools/dev/register-git-application.mjs",
     "claude:register-app": "node tools/dev/register-claude-application.mjs",
+    "officecli:register-app": "node tools/dev/register-officecli-application.mjs",
     "gmail:register-app": "node tools/dev/register-gmail-application.mjs",
     "gmail:register-send-app": "node tools/dev/register-gmail-send-application.mjs",
     "mail:163:register": "node tools/dev/register-163-mail-application.mjs",

@@ -3,11 +3,25 @@ import test from "node:test";
 import { createKnownApplicationRegistration, listKnownApplications } from "../src/services/application-catalog.mjs";
 
 test("known application catalog exposes governed entries and setup-only prerequisites", () => {
-  assert.deepEqual(listKnownApplications().map((entry) => entry.name), ["git", "ccusage", "claude", "codex", "git-bash", "wsl"]);
+  assert.deepEqual(listKnownApplications().map((entry) => entry.name), ["git", "ccusage", "claude", "codex", "git-bash", "wsl", "officecli"]);
   assert.deepEqual(
     listKnownApplications().filter((entry) => entry.setupOnly).map((entry) => entry.name),
     ["git-bash", "wsl"],
   );
+});
+
+test("known officecli registration resolves aliases; reads need no approval, the write does", () => {
+  const resolved = createKnownApplicationRegistration("office-cli");
+  assert.equal(resolved.registration.id, "app_officecli");
+  assert.equal(resolved.entry.command, "officecli");
+  const commands = resolved.registration.source.wrapper.commands;
+  const reads = commands.filter((c) => c.filePolicy === "read_only");
+  const writes = commands.filter((c) => c.filePolicy === "workspace_write");
+  assert.equal(reads.length, 5);
+  assert.ok(reads.every((c) => c.requiresApproval === false));
+  // Every write verb is approval-gated (P3.1 currently ships `remove`).
+  assert.ok(writes.length >= 1);
+  assert.ok(writes.every((c) => c.requiresApproval === true && c.segment === "apply"));
 });
 
 test("known application registration resolves aliases and preserves project scope", () => {

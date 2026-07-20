@@ -2,6 +2,7 @@ import { createCcusageApplicationRegistration } from "./ccusage-application.mjs"
 import { createClaudeApplicationRegistration } from "./claude-application.mjs";
 import { createCodexApplicationRegistration } from "./codex-application.mjs";
 import { createGitApplicationRegistration } from "./git-application.mjs";
+import { createOfficecliApplicationRegistration } from "./officecli-application.mjs";
 
 const KNOWN_APPLICATIONS = [
   {
@@ -51,6 +52,14 @@ const KNOWN_APPLICATIONS = [
     command: "wsl",
     installHint: "Install Windows Subsystem for Linux; a reboot or first distro launch may still be required by Windows.",
     setupOnly: true,
+  },
+  {
+    name: "officecli",
+    displayName: "OfficeCLI",
+    aliases: ["officecli", "office", "office-cli"],
+    command: "officecli",
+    installHint: "Install with npm install -g @officecli/officecli, then re-run setup.",
+    createRegistration: createOfficecliApplicationRegistration,
   },
 ];
 

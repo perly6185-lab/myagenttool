@@ -56,6 +56,8 @@ interface UiState {
   selectedAutomationId: string | null;
   /** Transient: the invocation whose Codex session the composer will continue on next send (#163). */
   resumeFromInvocationId: string | null;
+  /** Transient: the project-relative Office document the workspace preview is showing (#1347). */
+  officecliPreviewPath: string | null;
   /** Nav groups the operator has collapsed; expert groups start here so the rail isn't a wall of 22 (#928). */
   collapsedNavGroups: string[];
   /** Active visual skin + light/dark mode; applied to <html> by useSkinSync. */
@@ -76,6 +78,7 @@ interface UiState {
   setSelectedEvidenceId: (id: string | null) => void;
   setSelectedAutomationId: (id: string | null) => void;
   setResumeFromInvocationId: (id: string | null) => void;
+  setOfficecliPreviewPath: (path: string | null) => void;
   toggleNavGroup: (group: string) => void;
 }
 
@@ -220,6 +223,7 @@ export const useUiStore = create<UiState>()(
         selectedEvidenceId: initialNavigation.selectedEvidenceId ?? null,
         selectedAutomationId: initialNavigation.selectedAutomationId ?? null,
         resumeFromInvocationId: null,
+        officecliPreviewPath: null,
         collapsedNavGroups: [...DEFAULT_COLLAPSED_NAV_GROUPS],
         skin: DEFAULT_SKIN,
         mode: DEFAULT_MODE,
@@ -238,6 +242,7 @@ export const useUiStore = create<UiState>()(
         setSelectedEvidenceId: (selectedEvidenceId) => set({ selectedEvidenceId }),
         setSelectedAutomationId: (selectedAutomationId) => set({ selectedAutomationId }),
         setResumeFromInvocationId: (resumeFromInvocationId) => set({ resumeFromInvocationId }),
+        setOfficecliPreviewPath: (officecliPreviewPath) => set({ officecliPreviewPath }),
         toggleNavGroup: (group) =>
           set((state) => ({
             collapsedNavGroups: state.collapsedNavGroups.includes(group)

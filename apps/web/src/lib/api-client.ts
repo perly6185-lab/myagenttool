@@ -632,6 +632,13 @@ export const api = {
     request("GET", `/api/worktrees/${encodeURIComponent(id)}/search?mode=${mode}&q=${encodeURIComponent(q)}`),
   readWorktreeFile: (id: string, filePath: string) =>
     request("GET", `/api/worktrees/${encodeURIComponent(id)}/file?path=${encodeURIComponent(filePath)}`),
+  // OfficeCLI preview (P2b): render a project .docx/.xlsx/.pptx to self-contained
+  // HTML, server-side and read-only. Full-fidelity (no 20k cap), never persisted.
+  officecliPreview: (projectId: string, filePath: string, worktreeId?: string) =>
+    request<{ path: string; content: string; mime: string; encoding: string; bytes: number }>(
+      "GET",
+      `/api/projects/${encodeURIComponent(projectId)}/officecli-preview?path=${encodeURIComponent(filePath)}${worktreeId ? `&worktree=${encodeURIComponent(worktreeId)}` : ""}`,
+    ),
   worktreeGit: (id: string) => request("GET", `/api/worktrees/${encodeURIComponent(id)}/git`),
   worktreeDiff: (id: string) => request("GET", `/api/worktrees/${encodeURIComponent(id)}/diff`),
   reviewWorktree: (id: string, payload: { verdict: "approved" | "changes_requested"; summary?: string; comments?: { path: string | null; body: string }[] }) =>

@@ -44,6 +44,66 @@ const isMaxCount = (value) => /^\d{1,4}$/.test(value) && Number(value) >= 1 && N
 // validator INDEPENDENTLY — closed char class, no leading "-", no "..".
 const isGitRev = (value) => /^[A-Za-z0-9._/-]{1,100}$/.test(value) && !value.includes("..");
 
+// The bridge's OWN copy of the OfficeCLI read-only argv spec (P1). Deliberately
+// duplicated from the server spec (apps/server .../officecli-application.mjs) —
+// two independent allowlists, so a buggy or compromised server still cannot make
+// a device spawn something new. Do NOT factor into a shared constant.
+//
+// Every command is READ-ONLY (stdout view / JSON read). Positionals are ordered
+// and heterogeneous (file, then path/selector/mode), so unlike the git spec each
+// command declares an ORDERED list of positional validators — position N is
+// checked by positionals[N]. A value with a leading "-" never validates as a
+// positional (it is treated as a flag, and no flags are declared), so a
+// flag-shaped injection in a value slot is refused.
+//
+// STRICTER than the server where it costs nothing: `file` must end in a known
+// Office extension, and `mode` must be one of the stdout view modes.
+const isOfficeArg = (value) => value.length >= 1 && value.length <= 200 && !/[\r\n]/.test(value);
+const isOfficeFile = (value) => isOfficeArg(value) && /\.(docx|xlsx|pptx)$/i.test(value);
+// `html` renders a self-contained preview to stdout (read-only); svg/screenshot
+// write temp files and stay out of the read-only wrapper. Mirror the server enum.
+const OFFICE_VIEW_MODES = new Set(["text", "annotated", "outline", "stats", "issues", "forms", "html"]);
+const isOfficeViewMode = (value) => OFFICE_VIEW_MODES.has(value);
+
+const OFFICECLI_WRAPPER_ARGS = {
+  get: { base: ["get", "--json"], flags: {}, positionals: [isOfficeFile, isOfficeArg] },
+  query: { base: ["query", "--json"], flags: {}, positionals: [isOfficeFile, isOfficeArg] },
+  view: { base: ["view"], flags: {}, positionals: [isOfficeFile, isOfficeViewMode] },
+  validate: { base: ["validate", "--json"], flags: {}, positionals: [isOfficeFile] },
+  dump: { base: ["dump"], flags: {}, positionals: [isOfficeFile, isOfficeArg] },
+};
+
+// The bridge's OWN copy of the OfficeCLI WRITE argv spec (P3.1, #1349). Same
+// two-allowlist duplication rule as the read spec above. These run under the
+// `officecliApply` write policy (workspace_write), NOT the read-only wrapper
+// bucket — see classifySpawn + policies.officecliApply. `remove` is the first
+// write verb; its argv is two positionals (file, path), identical in shape to the
+// read `get`, which is exactly why it proves the write path with no new argv
+// modeling. A value with a leading "-" never validates as a positional.
+// A `--prop key=value` pair: an identifier key, then `=`, then a bounded value
+// that may itself contain `=` (formulas/text) but no control chars. Independent
+// mirror of the server's props validator. A leading "-" can't match (key must
+// start with a letter), so a prop pair can never smuggle a new flag.
+const isOfficePropPair = (value) => /^[a-zA-Z][a-zA-Z0-9._-]{0,39}=[^\r\n]{0,200}$/.test(value);
+
+// The closed set of element kinds `add --type` accepts. Independent mirror of the
+// server's OFFICECLI_ELEMENT_TYPES — an unknown --type value is refused here too.
+const OFFICE_ELEMENT_TYPES = new Set([
+  "paragraph", "run", "table", "sheet", "row", "column", "cell",
+  "slide", "shape", "picture", "diagram", "flowchart", "ole", "video",
+]);
+const isOfficeElementType = (value) => OFFICE_ELEMENT_TYPES.has(value);
+
+const OFFICECLI_APPLY_WRAPPER_ARGS = {
+  remove: { base: ["remove"], flags: {}, positionals: [isOfficeFile, isOfficeArg] },
+  // set <file> <path> --prop key=value ... — repeatable --prop (each value is a
+  // key=value pair). The matcher handles repeated flags + ordered positionals.
+  set: { base: ["set"], flags: { "--prop": isOfficePropPair }, positionals: [isOfficeFile, isOfficeArg] },
+  // add <file> <parent> --type <kind> --prop key=value ... — a closed --type enum
+  // plus repeatable --prop pairs, positionals (file, parent) first.
+  add: { base: ["add"], flags: { "--type": isOfficeElementType, "--prop": isOfficePropPair }, positionals: [isOfficeFile, isOfficeArg] },
+};
+
 const GIT_WRAPPER_ARGS = {
   status: { base: ["--no-pager", "status", "--porcelain=v2", "--branch"], flags: {} },
   log: {
@@ -140,6 +200,21 @@ export function createLocalExecutionPolicyManifest({
         networkPolicy: "forbidden",
         authenticationProbe: { executable: "codex", args: ["login", "status"], format: "exit-code" },
       },
+      {
+        command: "officecli",
+        capabilityPrefix: "app.app_officecli.wrapper.",
+        filePolicy: "read_only",
+        networkPolicy: "forbidden",
+      },
+      {
+        // OfficeCLI WRITE verbs (P3.1). A distinct capability prefix + filePolicy
+        // from the read entry above, so a read command can never resolve to a
+        // write policy and vice versa. Gated by the officecliApply policy bucket.
+        command: "officecli",
+        capabilityPrefix: "app.app_officecli.apply.",
+        filePolicy: "workspace_write",
+        networkPolicy: "forbidden",
+      },
     ],
     policies: {
       demoAgent: { file: ["read_only"], network: ["forbidden"] },
@@ -152,6 +227,11 @@ export function createLocalExecutionPolicyManifest({
       // claude.apply: the runner writes to the worktree with git apply and needs no
       // network. workspace_write only; never native_controls (there is no sandbox).
       claudeApply: { file: ["workspace_write", "read_only"], network: ["forbidden"] },
+      // officecli.apply (P3.1): OfficeCLI write verbs edit a document IN PLACE in the
+      // invocation's worktree. workspace_write, never network; no sandbox, so never
+      // native_controls. Its own bucket keeps the read-only `wrapper` bucket — which
+      // ccusage/git/claude/read-officecli share — from ever widening to writes.
+      officecliApply: { file: ["workspace_write", "read_only"], network: ["forbidden"] },
     },
   };
 }
@@ -262,6 +342,21 @@ export function localExecutionGate(work, adapter, spawnPlan, { permissionDecisio
       : "network_policy_exceeded";
     return refused("Local execution gate refused a command whose file or network policy exceeds the local allowlist.", { ...evidence, refusalCode });
   }
+  // OfficeCLI writes edit a document IN PLACE, so they must land in the invocation's
+  // WORKTREE — never the project clone — to stay reviewable before promotion. The
+  // general cwd check above admits the project root as an approved root; a write
+  // demands the stricter guarantee. Refuse a write with no worktree, or whose cwd
+  // is not inside it (e.g. resolved to the project fallback). (#1357)
+  if (commandKind === "officecliApply") {
+    const worktreeRoot = work?.options?.metadata?.worktreePath;
+    if (typeof worktreeRoot !== "string" || !worktreeRoot.trim() || !pathWithin(worktreeRoot, spawnPlan.cwd)) {
+      return refused(
+        "Local execution gate refused an OfficeCLI write outside a worktree — writes must run in the invocation's worktree, never the project clone.",
+        { ...evidence, refusalCode: "cwd_outside_approved_root" },
+        "policy_blocked",
+      );
+    }
+  }
   if (isApplicationWrapperSpawn(spawnPlan, manifest)) {
     const wrapperGate = applicationWrapperGate(work, spawnPlan, localPolicy, approvedRoots, manifest, resolveBinary);
     evidence.applicationWrapper = wrapperGate.evidence;
@@ -293,6 +388,14 @@ function classifySpawn(adapter, spawnPlan, manifest = {}) {
   if (isAllowlistedCodexExecWrapper(spawnPlan, manifest)) return "codexExec";
   // Same for the write-capable Claude apply runner — never read_only.
   if (isAllowlistedClaudeApplyWrapper(spawnPlan, manifest)) return "claudeApply";
+  // OfficeCLI WRITE verbs (P3.1) run through the SAME application-wrapper.mjs runner
+  // as the read verbs, so they can't be told apart by script path — the write spec's
+  // `apply` capability is the signal. Classify it BEFORE the generic read-only
+  // `wrapper` kind so a write lands in the officecliApply bucket, never read_only.
+  if (isApplicationWrapperSpawn(spawnPlan, manifest)
+    && String(parseApplicationWrapperArgs(spawnPlan.args ?? []).capability ?? "").startsWith("app.app_officecli.apply.")) {
+    return "officecliApply";
+  }
   if (isAllowlistedNodeWrapper(adapter, spawnPlan, manifest)) return "wrapper";
   return null;
 }
@@ -497,7 +600,48 @@ function wrapperArgsAllowed(capability, args) {
   const cap = String(capability ?? "");
   if (cap.startsWith("app.app_ccusage.wrapper.")) return ccusageArgsAllowed(cap, args);
   if (cap.startsWith("app.app_git.wrapper.")) return gitArgsAllowed(cap, args);
+  if (cap.startsWith("app.app_officecli.wrapper.")) return officecliArgsAllowed(cap, args);
+  if (cap.startsWith("app.app_officecli.apply.")) return officecliApplyArgsAllowed(cap, args);
   return false;
+}
+
+function officecliApplyArgsAllowed(capability, args) {
+  const cmd = String(capability ?? "").match(/^app\.app_officecli\.apply\.([a-z0-9_]+)$/)?.[1] ?? null;
+  const spec = cmd ? OFFICECLI_APPLY_WRAPPER_ARGS[cmd] : null;
+  return officecliArgvMatches(spec, args);
+}
+
+function officecliArgsAllowed(capability, args) {
+  const cmd = String(capability ?? "").match(/^app\.app_officecli\.wrapper\.([a-z0-9_]+)$/)?.[1] ?? null;
+  return officecliArgvMatches(cmd ? OFFICECLI_WRAPPER_ARGS[cmd] : null, args);
+}
+
+// Shared argv matcher for the read (.wrapper.) and write (.apply.) officecli specs.
+// Args must match the declared base as a PREFIX, then declared flag/value pairs,
+// then declared positionals — each position validated by its OWN validator
+// (positionals[N]). An undeclared flag, an over-count positional, or a positional
+// failing its position validator is refused.
+function officecliArgvMatches(spec, args) {
+  if (!spec || !stringArrayStartsWith(args, spec.base)) return false;
+  const rest = args.slice(spec.base.length);
+  const positionals = Array.isArray(spec.positionals) ? spec.positionals : [];
+  let positionalIndex = 0;
+  let index = 0;
+  while (index < rest.length) {
+    const token = String(rest[index] ?? "");
+    if (token.startsWith("-")) {
+      const validate = spec.flags[token];
+      const value = rest[index + 1];
+      if (typeof validate !== "function" || value === undefined || !validate(value)) return false;
+      index += 2;
+    } else {
+      const validate = positionals[positionalIndex];
+      if (typeof validate !== "function" || !validate(token)) return false;
+      positionalIndex += 1;
+      index += 1;
+    }
+  }
+  return true;
 }
 
 function ccusageArgsAllowed(capability, args) {
