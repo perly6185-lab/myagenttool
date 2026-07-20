@@ -6,6 +6,7 @@ import { api } from "@/data/use-console-actions";
 import { ProjectTree } from "@/features/projects/project-tree";
 import { DashboardView } from "@/features/dashboard/dashboard-view";
 import { SessionHistory } from "@/features/invocations/session-history";
+import { OfficecliPreview } from "@/features/workspace/officecli-preview";
 
 // Agent Workspace MVP (#158): the interactive, project-scoped surface. Instead of
 // the file browser, transcript, and history competing across separate sections
@@ -87,6 +88,17 @@ export function WorkspaceView() {
           </span>
         ) : null}
       </header>
+
+      {current ? (
+        <details className="shrink-0 rounded-lg border border-border bg-card">
+          <summary className="cursor-pointer select-none px-3 py-2 text-sm font-medium text-foreground/90">
+            Office preview <span className="text-xs font-normal text-muted-foreground">— render a .docx / .xlsx / .pptx</span>
+          </summary>
+          <div className="border-t border-border p-3">
+            <OfficecliPreview projectId={current.id} />
+          </div>
+        </details>
+      ) : null}
 
       <div className="grid min-h-0 flex-1 grid-cols-1 gap-3 lg:grid-cols-[minmax(200px,260px)_minmax(0,1fr)_minmax(220px,300px)]">
         <aside className="hidden min-h-0 overflow-y-auto rounded-lg border border-border bg-card p-2 lg:block" aria-label="Project files">

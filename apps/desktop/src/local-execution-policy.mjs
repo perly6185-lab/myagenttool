@@ -44,6 +44,35 @@ const isMaxCount = (value) => /^\d{1,4}$/.test(value) && Number(value) >= 1 && N
 // validator INDEPENDENTLY — closed char class, no leading "-", no "..".
 const isGitRev = (value) => /^[A-Za-z0-9._/-]{1,100}$/.test(value) && !value.includes("..");
 
+// The bridge's OWN copy of the OfficeCLI read-only argv spec (P1). Deliberately
+// duplicated from the server spec (apps/server .../officecli-application.mjs) —
+// two independent allowlists, so a buggy or compromised server still cannot make
+// a device spawn something new. Do NOT factor into a shared constant.
+//
+// Every command is READ-ONLY (stdout view / JSON read). Positionals are ordered
+// and heterogeneous (file, then path/selector/mode), so unlike the git spec each
+// command declares an ORDERED list of positional validators — position N is
+// checked by positionals[N]. A value with a leading "-" never validates as a
+// positional (it is treated as a flag, and no flags are declared), so a
+// flag-shaped injection in a value slot is refused.
+//
+// STRICTER than the server where it costs nothing: `file` must end in a known
+// Office extension, and `mode` must be one of the stdout view modes.
+const isOfficeArg = (value) => value.length >= 1 && value.length <= 200 && !/[\r\n]/.test(value);
+const isOfficeFile = (value) => isOfficeArg(value) && /\.(docx|xlsx|pptx)$/i.test(value);
+// `html` renders a self-contained preview to stdout (read-only); svg/screenshot
+// write temp files and stay out of the read-only wrapper. Mirror the server enum.
+const OFFICE_VIEW_MODES = new Set(["text", "annotated", "outline", "stats", "issues", "forms", "html"]);
+const isOfficeViewMode = (value) => OFFICE_VIEW_MODES.has(value);
+
+const OFFICECLI_WRAPPER_ARGS = {
+  get: { base: ["get", "--json"], flags: {}, positionals: [isOfficeFile, isOfficeArg] },
+  query: { base: ["query", "--json"], flags: {}, positionals: [isOfficeFile, isOfficeArg] },
+  view: { base: ["view"], flags: {}, positionals: [isOfficeFile, isOfficeViewMode] },
+  validate: { base: ["validate", "--json"], flags: {}, positionals: [isOfficeFile] },
+  dump: { base: ["dump"], flags: {}, positionals: [isOfficeFile, isOfficeArg] },
+};
+
 const GIT_WRAPPER_ARGS = {
   status: { base: ["--no-pager", "status", "--porcelain=v2", "--branch"], flags: {} },
   log: {
@@ -139,6 +168,12 @@ export function createLocalExecutionPolicyManifest({
         filePolicy: "read_only",
         networkPolicy: "forbidden",
         authenticationProbe: { executable: "codex", args: ["login", "status"], format: "exit-code" },
+      },
+      {
+        command: "officecli",
+        capabilityPrefix: "app.app_officecli.wrapper.",
+        filePolicy: "read_only",
+        networkPolicy: "forbidden",
       },
     ],
     policies: {
@@ -497,7 +532,37 @@ function wrapperArgsAllowed(capability, args) {
   const cap = String(capability ?? "");
   if (cap.startsWith("app.app_ccusage.wrapper.")) return ccusageArgsAllowed(cap, args);
   if (cap.startsWith("app.app_git.wrapper.")) return gitArgsAllowed(cap, args);
+  if (cap.startsWith("app.app_officecli.wrapper.")) return officecliArgsAllowed(cap, args);
   return false;
+}
+
+function officecliArgsAllowed(capability, args) {
+  const cmd = String(capability ?? "").match(/^app\.app_officecli\.wrapper\.([a-z0-9_]+)$/)?.[1] ?? null;
+  const spec = cmd ? OFFICECLI_WRAPPER_ARGS[cmd] : null;
+  // Args must match the declared base as a PREFIX, then declared flag/value pairs,
+  // then declared positionals — each position validated by its OWN validator
+  // (positionals[N]). An undeclared flag, an over-count positional, or a
+  // positional failing its position validator is refused.
+  if (!spec || !stringArrayStartsWith(args, spec.base)) return false;
+  const rest = args.slice(spec.base.length);
+  const positionals = Array.isArray(spec.positionals) ? spec.positionals : [];
+  let positionalIndex = 0;
+  let index = 0;
+  while (index < rest.length) {
+    const token = String(rest[index] ?? "");
+    if (token.startsWith("-")) {
+      const validate = spec.flags[token];
+      const value = rest[index + 1];
+      if (typeof validate !== "function" || value === undefined || !validate(value)) return false;
+      index += 2;
+    } else {
+      const validate = positionals[positionalIndex];
+      if (typeof validate !== "function" || !validate(token)) return false;
+      positionalIndex += 1;
+      index += 1;
+    }
+  }
+  return true;
 }
 
 function ccusageArgsAllowed(capability, args) {
