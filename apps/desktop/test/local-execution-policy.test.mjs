@@ -742,6 +742,34 @@ test("officecliApply: set with file, path, and repeated --prop key=value is allo
   assert.equal(gate.allowed, true, gate.reason);
 });
 
+test("officecliApply: a --prop media source (src/path/preview) that escapes the worktree is refused", () => {
+  for (const src of ["src=../secret.png", "src=/etc/x.png", "path=../../x", "preview=https://attacker/x.png", "src=~/x", "src=C:\\x.png"]) {
+    const gate = officecliApplyGate({
+      capability: "app.app_officecli.apply.add",
+      execArgs: ["add", "b.xlsx", "/Sheet1", "--type", "picture", "--prop", src],
+    });
+    assert.equal(gate.allowed, false, `unsafe media source "${src}" must be refused`);
+  }
+});
+
+test("officecliApply: a worktree-relative media source and a data: URI are allowed; non-source props unaffected", () => {
+  const rel = officecliApplyGate({ capability: "app.app_officecli.apply.add", execArgs: ["add", "b.xlsx", "/Sheet1", "--type", "picture", "--prop", "src=assets/logo.png"] });
+  assert.equal(rel.allowed, true, rel.reason);
+  const data = officecliApplyGate({ capability: "app.app_officecli.apply.set", execArgs: ["set", "b.xlsx", "/Sheet1/pic", "--prop", "src=data:image/png;base64,AAA"] });
+  assert.equal(data.allowed, true, data.reason);
+  const text = officecliApplyGate({ capability: "app.app_officecli.apply.set", execArgs: ["set", "b.xlsx", "/Sheet1/A1", "--prop", "value=../this/is/text"] });
+  assert.equal(text.allowed, true, "a non-source prop with a path-looking value stays allowed");
+});
+
+test("officecliApply: a batch item with an unsafe media-source prop is refused", () => {
+  const cmds = JSON.stringify([{ command: "add", parent: "/Sheet1", type: "picture", props: { src: "../../etc/passwd.png" } }]);
+  const gate = officecliApplyGate({
+    capability: "app.app_officecli.apply.batch",
+    execArgs: ["batch", "b.xlsx", "--commands", cmds],
+  });
+  assert.equal(gate.allowed, false);
+});
+
 test("officecliApply: a --prop with a flag-shaped key is refused (no option smuggling via props)", () => {
   const gate = officecliApplyGate({
     capability: "app.app_officecli.apply.set",
