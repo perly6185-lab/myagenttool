@@ -110,7 +110,22 @@ const OFFICECLI_WRAPPER_ARGS = {
 // that may itself contain `=` (formulas/text) but no control chars. Independent
 // mirror of the server's props validator. A leading "-" can't match (key must
 // start with a letter), so a prop pair can never smuggle a new flag.
-const isOfficePropPair = (value) => /^[a-zA-Z][a-zA-Z0-9._-]{0,39}=[^\r\n]{0,200}$/.test(value);
+// Prop keys officecli opens as a MEDIA FILE SOURCE (src/path alias, preview). A
+// value here must be worktree-safe (a data: URI or a safe relative file), never a
+// `../`/absolute path or a remote URL — else `--prop src=../../etc/x.png` reads an
+// arbitrary host file into the document. Independent mirror of the server rule.
+const OFFICE_SOURCE_PROP_KEYS = new Set(["src", "path", "preview"]);
+const isOfficeSafeMediaSource = (value) => {
+  if (typeof value !== "string" || value.length > 500 || /[\r\n\0]/.test(value)) return false;
+  if (/^data:/i.test(value)) return true;
+  if (/^[a-zA-Z][a-zA-Z0-9+.\-]*:/.test(value)) return false; // any scheme / drive letter
+  return isSafeRelPath(value);
+};
+const isOfficePropPair = (value) => {
+  const m = /^([a-zA-Z][a-zA-Z0-9._-]{0,39})=([^\r\n]{0,200})$/.exec(value);
+  if (!m) return false;
+  return OFFICE_SOURCE_PROP_KEYS.has(m[1].toLowerCase()) ? isOfficeSafeMediaSource(m[2]) : true;
+};
 
 // The closed set of element kinds `add --type` accepts. Independent mirror of the
 // server's OFFICECLI_ELEMENT_TYPES — an unknown --type value is refused here too.
@@ -131,7 +146,17 @@ const isOfficeBatchCommands = (value) => {
   try { list = JSON.parse(value); } catch { return false; }
   if (!Array.isArray(list) || list.length === 0 || list.length > 100) return false;
   return list.every((item) =>
-    item && typeof item === "object" && !Array.isArray(item) && OFFICE_BATCH_VERBS.has(String(item.command)));
+    item && typeof item === "object" && !Array.isArray(item)
+    && OFFICE_BATCH_VERBS.has(String(item.command))
+    // A batch item's props are otherwise unchecked — a media-source prop that
+    // escapes the worktree must be refused inside a batch too.
+    && officeItemPropsSafe(item.props));
+};
+// A batch item's props: any media-source key (src/path/preview) must be worktree-safe.
+const officeItemPropsSafe = (props) => {
+  if (!props || typeof props !== "object" || Array.isArray(props)) return true;
+  return Object.entries(props).every(([key, val]) =>
+    !OFFICE_SOURCE_PROP_KEYS.has(String(key).toLowerCase()) || isOfficeSafeMediaSource(String(val ?? "")));
 };
 
 const OFFICECLI_APPLY_WRAPPER_ARGS = {
@@ -410,7 +435,12 @@ export function localExecutionGate(work, adapter, spawnPlan, { permissionDecisio
   // is not inside it (e.g. resolved to the project fallback). (#1357)
   if (commandKind === "officecliApply") {
     const worktreeRoot = work?.options?.metadata?.worktreePath;
-    if (typeof worktreeRoot !== "string" || !worktreeRoot.trim() || !pathWithin(worktreeRoot, spawnPlan.cwd)) {
+    // Confine the directory officecli ACTUALLY writes in — the wrapper's `--cwd`
+    // (parsed.cwd), the same value applicationWrapperGate confines — not the outer
+    // runner's spawnPlan.cwd. They normally coincide, but the write lands in --cwd,
+    // so that is the value the worktree-only rule must check.
+    const officecliCwd = parseApplicationWrapperArgs(spawnPlan.args ?? []).cwd ?? spawnPlan.cwd;
+    if (typeof worktreeRoot !== "string" || !worktreeRoot.trim() || !pathWithin(worktreeRoot, officecliCwd)) {
       return refused(
         "Local execution gate refused an OfficeCLI write outside a worktree — writes must run in the invocation's worktree, never the project clone.",
         { ...evidence, refusalCode: "cwd_outside_approved_root" },

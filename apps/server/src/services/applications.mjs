@@ -927,6 +927,10 @@ function resolveWrapperInputArgs(argInputs, input, { positionalsFirst = false } 
         if (!/^[a-zA-Z][a-zA-Z0-9._-]{0,39}$/.test(propKey)) continue;
         const propText = String(propValue ?? "");
         if (propText.length > 200 || /[\r\n]/.test(propText)) continue;
+        // A media-source prop (src/path/preview) is a file path officecli opens —
+        // confine it to the worktree, or drop the pair. A leading `../`/absolute
+        // source would read an arbitrary host file into the document.
+        if (OFFICECLI_SOURCE_PROP_KEYS.has(propKey.toLowerCase()) && !isSafeMediaSource(propText)) continue;
         flagArgs.push(spec.flag, `${propKey}=${propText}`);
         count += 1;
       }
@@ -1015,6 +1019,36 @@ function isSafeRelFilePath(value) {
     && !value.split(/[/\\]/).includes("..");
 }
 
+// Prop keys officecli resolves as a MEDIA FILE SOURCE at add/set time (it opens
+// the path and embeds the bytes): `src` (+ its alias `path`) and `preview`. A
+// value here is a de-facto file path, so it must be confined the same way the
+// `file` positional is — otherwise `--prop src=../../etc/x.png` reads an arbitrary
+// host file into the document (confirmed exfiltration). Everything else (value,
+// formula, colors, text) is inert data and keeps the plain length/newline check.
+const OFFICECLI_SOURCE_PROP_KEYS = new Set(["src", "path", "preview"]);
+
+// A media source is safe iff it is a self-contained data: URI, or a worktree-safe
+// relative file path. Any other scheme (http(s)://, file://, a Windows drive) is
+// refused — a remote URL is also a network-exfil vector, and the wrapper is
+// network-forbidden.
+function isSafeMediaSource(value) {
+  if (typeof value !== "string" || value.length > 500 || /[\r\n\0]/.test(value)) return false;
+  if (/^data:/i.test(value)) return true;
+  if (/^[a-zA-Z][a-zA-Z0-9+.\-]*:/.test(value)) return false; // any scheme (incl. drive letter)
+  return isSafeRelFilePath(value);
+}
+
+// True if a prop map has a media-source key whose value is not worktree-safe.
+function propsHaveUnsafeSource(props) {
+  if (!props || typeof props !== "object" || Array.isArray(props)) return false;
+  for (const [key, val] of Object.entries(props)) {
+    if (OFFICECLI_SOURCE_PROP_KEYS.has(String(key).toLowerCase()) && !isSafeMediaSource(String(val ?? ""))) {
+      return true;
+    }
+  }
+  return false;
+}
+
 const JSON_COMMANDS_MAX_ITEMS = 100;
 const JSON_COMMANDS_MAX_BYTES = 16 * 1024;
 
@@ -1033,6 +1067,10 @@ function normalizeJsonCommands(raw, allowedVerbs) {
   for (const item of list) {
     if (!item || typeof item !== "object" || Array.isArray(item)) return null;
     if (!verbs.has(String(item.command))) return null;
+    // A batch item's props are otherwise unvalidated — a `src`/`path`/`preview`
+    // that escapes the worktree would exfiltrate a host file via a batch just as a
+    // direct `add`/`set` would. Reject the whole batch (all-or-nothing).
+    if (propsHaveUnsafeSource(item.props)) return null;
   }
   const compact = JSON.stringify(list);
   if (compact.length > JSON_COMMANDS_MAX_BYTES) return null;
@@ -2482,7 +2520,13 @@ function normalizeWrapperCommand(command, index) {
     status: normalizeWrapperCommandStatus(command.status),
     riskLevel: normalizeRiskLevel(command.riskLevel, commandType === "npm_script" ? "medium" : "high"),
     riskTags: normalizeStringList(command.riskTags ?? command.tags),
-    requiresApproval: command.requiresApproval !== false,
+    // A write command (apply segment OR workspace_write) ALWAYS requires approval —
+    // the invariant is enforced at registration, not left to the descriptor, so a
+    // re-registration cannot ship an approval-free write. Read commands keep the
+    // descriptor's choice (default: required unless explicitly false).
+    requiresApproval: (command.segment === "apply" || normalizeAccessPolicy(command.filePolicy, "read_only") === "workspace_write")
+      ? true
+      : command.requiresApproval !== false,
     inputSchema: command.inputSchema && typeof command.inputSchema === "object" && !Array.isArray(command.inputSchema)
       ? command.inputSchema
       : emptyInputSchema(),
