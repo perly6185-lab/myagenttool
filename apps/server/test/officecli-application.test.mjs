@@ -101,6 +101,29 @@ test("`add` drops an out-of-set element type (closed enum)", () => {
   assert.deepEqual(plan.args, ["add", "demo.xlsx", "/Sheet1", "--prop", "ref=F1"]);
 });
 
+test("`swap` emits three positionals (file, path1, path2) under the apply segment", () => {
+  const app = register();
+  const plan = applicationWrapperExecutionPlan(app, "swap", {
+    file: "demo.xlsx",
+    path1: "/Sheet1/row[2]",
+    path2: "/Sheet1/row[3]",
+  });
+  assert.equal(plan.capability, "app.app_officecli.apply.swap");
+  assert.equal(plan.filePolicy, "workspace_write");
+  assert.deepEqual(plan.args, ["swap", "demo.xlsx", "/Sheet1/row[2]", "/Sheet1/row[3]"]);
+});
+
+test("`move` emits file+path positionals before the destination flag", () => {
+  const app = register();
+  const plan = applicationWrapperExecutionPlan(app, "move", {
+    file: "deck.pptx",
+    path: "/slide[3]",
+    after: "/slide[1]",
+  });
+  assert.equal(plan.capability, "app.app_officecli.apply.move");
+  assert.deepEqual(plan.args, ["move", "deck.pptx", "/slide[3]", "--after", "/slide[1]"]);
+});
+
 test("`batch` emits the file positional + a compacted, verb-validated --commands JSON", () => {
   const app = register();
   const commands = [

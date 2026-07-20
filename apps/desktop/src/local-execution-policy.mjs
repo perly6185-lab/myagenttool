@@ -118,6 +118,10 @@ const OFFICECLI_APPLY_WRAPPER_ARGS = {
   add: { base: ["add"], flags: { "--type": isOfficeElementType, "--prop": isOfficePropPair }, positionals: [isOfficeFile, isOfficeArg] },
   // batch <file> --commands <json> — one JSON operation list, verb-allowlisted.
   batch: { base: ["batch"], flags: { "--commands": isOfficeBatchCommands }, positionals: [isOfficeFile] },
+  // swap <file> <path1> <path2> — three positionals, no options.
+  swap: { base: ["swap"], flags: {}, positionals: [isOfficeFile, isOfficeArg, isOfficeArg] },
+  // move <file> <path> [--to|--after|--before <target-path>] — positionals + path flags.
+  move: { base: ["move"], flags: { "--to": isOfficeArg, "--after": isOfficeArg, "--before": isOfficeArg }, positionals: [isOfficeFile, isOfficeArg] },
 };
 
 const GIT_WRAPPER_ARGS = {
