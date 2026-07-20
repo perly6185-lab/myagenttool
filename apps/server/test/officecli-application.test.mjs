@@ -101,6 +101,22 @@ test("`add` drops an out-of-set element type (closed enum)", () => {
   assert.deepEqual(plan.args, ["add", "demo.xlsx", "/Sheet1", "--prop", "ref=F1"]);
 });
 
+test("`import` emits three positionals + --header/--format; a traversal source is dropped", () => {
+  const app = register();
+  const plan = applicationWrapperExecutionPlan(app, "import", {
+    file: "book.xlsx", parent: "/Sheet1", source: "data/rows.csv", header: "true", format: "csv",
+  });
+  assert.equal(plan.capability, "app.app_officecli.apply.import");
+  assert.equal(plan.filePolicy, "workspace_write");
+  assert.deepEqual(plan.args, ["import", "book.xlsx", "/Sheet1", "data/rows.csv", "--header", "--format", "csv"]);
+  // A CSV source that would escape the worktree is dropped (csv_file is worktree-safe).
+  const bad = applicationWrapperExecutionPlan(app, "import", { file: "book.xlsx", parent: "/Sheet1", source: "../secret.csv" });
+  assert.deepEqual(bad.args, ["import", "book.xlsx", "/Sheet1"]);
+  // A non-csv/tsv source is dropped too.
+  const notCsv = applicationWrapperExecutionPlan(app, "import", { file: "book.xlsx", parent: "/Sheet1", source: "data.txt" });
+  assert.deepEqual(notCsv.args, ["import", "book.xlsx", "/Sheet1"]);
+});
+
 test("`swap` emits three positionals (file, path1, path2) under the apply segment", () => {
   const app = register();
   const plan = applicationWrapperExecutionPlan(app, "swap", {

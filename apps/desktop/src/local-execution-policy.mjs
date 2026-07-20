@@ -76,6 +76,8 @@ const isSafeRelPath = (value) =>
   && !/^[A-Za-z]:/.test(value)
   && !value.split(/[/\\]/).includes("..");
 const isOfficeFile = (value) => isSafeRelPath(value) && /\.(docx|xlsx|pptx)$/i.test(value);
+// A CSV/TSV source file (officecli import) — same worktree-safe rule, data ext.
+const isOfficeCsvFile = (value) => isSafeRelPath(value) && /\.(csv|tsv)$/i.test(value);
 // `html` renders a self-contained preview to stdout (read-only); svg/screenshot
 // write temp files and stay out of the read-only wrapper. Mirror the server enum.
 const OFFICE_VIEW_MODES = new Set(["text", "annotated", "outline", "stats", "issues", "forms", "html"]);
@@ -138,6 +140,14 @@ const OFFICECLI_APPLY_WRAPPER_ARGS = {
   swap: { base: ["swap"], flags: {}, positionals: [isOfficeFile, isOfficeArg, isOfficeArg] },
   // move <file> <path> [--to|--after|--before <target-path>] — positionals + path flags.
   move: { base: ["move"], flags: { "--to": isOfficeArg, "--after": isOfficeArg, "--before": isOfficeArg }, positionals: [isOfficeFile, isOfficeArg] },
+  // import <file> <sheet> <source.csv> [--header] [--format csv|tsv] — three
+  // positionals (target xlsx, sheet DOM path, worktree-safe CSV source) plus a
+  // valueless --header (flag=true) and a csv/tsv --format enum.
+  import: {
+    base: ["import"],
+    flags: { "--header": true, "--format": (v) => v === "csv" || v === "tsv" },
+    positionals: [isOfficeFile, isOfficeArg, isOfficeCsvFile],
+  },
 };
 
 const GIT_WRAPPER_ARGS = {
@@ -667,6 +677,9 @@ function officecliArgvMatches(spec, args) {
     const token = String(rest[index] ?? "");
     if (token.startsWith("-")) {
       const validate = spec.flags[token];
+      // A valueless boolean flag is declared as `true` (e.g. --header) — it
+      // consumes no value token.
+      if (validate === true) { index += 1; continue; }
       const value = rest[index + 1];
       if (typeof validate !== "function" || value === undefined || !validate(value)) return false;
       index += 2;
