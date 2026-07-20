@@ -1,5 +1,6 @@
 import { SECTIONS } from "@/app/sections";
 import { LoginControl } from "@/components/layout/login-control";
+import { SkinPicker } from "@/components/layout/skin-picker";
 import { StatusBadge } from "@/components/ui/badge";
 import { Select } from "@/components/ui/input";
 import { useConsoleState } from "@/data/use-console-state";
@@ -66,7 +67,7 @@ export function Topbar() {
       : { tone: "success" as const, label: "Connected" };
 
   return (
-    <header className="flex h-14 shrink-0 items-center justify-between gap-2 border-b border-border bg-background/80 px-3 backdrop-blur sm:gap-4 sm:px-6">
+    <header className="app-titlebar flex h-14 shrink-0 items-center justify-between gap-2 border-b border-border bg-background/80 px-3 backdrop-blur sm:gap-4 sm:px-6">
       <div className="hidden min-w-0 sm:block">
         <h1 className="truncate text-sm font-semibold">{current?.label ?? "Overview"}</h1>
         <p className="truncate text-xs text-muted-foreground">{current?.blurb}</p>
@@ -80,7 +81,9 @@ export function Topbar() {
           </span>
         ) : null}
         <StatusBadge tone={connection.tone}>{connection.label}</StatusBadge>
+        <SkinPicker />
         <LoginControl />
+        <div className="app-wco-spacer" aria-hidden="true" />
       </div>
     </header>
   );

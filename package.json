@@ -5,6 +5,11 @@
   "description": "Personal and small-team Agent Control Plane.",
   "main": "apps/electron/src/main.mjs",
   "packageManager": "pnpm@9.15.0",
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "electron"
+    ]
+  },
   "scripts": {
     "dev": "node tools/dev/run-local-demo.mjs",
     "desktop:dev": "pnpm --filter @myagenttool/web build && electron .",
