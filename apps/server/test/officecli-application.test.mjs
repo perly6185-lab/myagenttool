@@ -232,3 +232,18 @@ test("flag-shaped and control-character positionals are DROPPED (refusals before
     assert.deepEqual(plan.args, ["get", "--json"], `file "${file}" must be dropped`);
   }
 });
+
+test("a file positional that would escape the worktree (traversal / absolute) is DROPPED", () => {
+  const app = register();
+  // officecli resolves the file against its worktree cwd; a `..`/absolute path
+  // would escape it (a real write-outside-worktree hole), so office_file drops it.
+  for (const file of ["../../etc/passwd.xlsx", "/etc/evil.xlsx", "~/secret.xlsx", "a/../../b.xlsx", "C:\\x.xlsx", "\\\\host\\share\\x.xlsx"]) {
+    const plan = applicationWrapperExecutionPlan(app, "get", { file });
+    assert.deepEqual(plan.args, ["get", "--json"], `escaping file "${file}" must be dropped`);
+  }
+  // a safe relative path — including a subdirectory of the worktree — is kept.
+  assert.deepEqual(
+    applicationWrapperExecutionPlan(app, "get", { file: "reports/q1.xlsx", path: "/Sheet1/A1" }).args,
+    ["get", "--json", "reports/q1.xlsx", "/Sheet1/A1"],
+  );
+});

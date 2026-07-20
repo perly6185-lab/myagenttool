@@ -828,7 +828,7 @@ export function createApplicationWrapperAgentRegistration({
 // anything else returns null. This is the single source of truth for WHAT may
 // execute — the bridge only ever runs a command that came through here, so an
 // unapproved or unregistered command can never reach execution.
-const WRAPPER_ARG_INPUT_TYPES = new Set(["date", "token", "enum", "string", "boolean-flag", "git-rev", "count", "props", "json_commands"]);
+const WRAPPER_ARG_INPUT_TYPES = new Set(["date", "token", "enum", "string", "office_file", "boolean-flag", "git-rev", "count", "props", "json_commands"]);
 const RESERVED_WRAPPER_ARG_INPUT_KEYS = new Set([
   "approvalToken",
   "idempotencyKey",
@@ -962,6 +962,17 @@ function isValidWrapperArgValue(spec, value) {
     // server itself approved failed the run. The two validators stay independent
     // copies — this narrows the server to the device's real bound, not the reverse.
     case "count": return /^\d{1,4}$/.test(value) && Number(value) >= 1 && Number(value) <= 1000;
+    // A document FILE path officecli resolves against its worktree cwd. Must be a
+    // SAFE RELATIVE path (no traversal, not absolute) so it cannot escape the
+    // worktree, plus an Office extension. Mirrors the device's isOfficeFile — the
+    // two allowlists reject a `../` or absolute file INDEPENDENTLY.
+    case "office_file":
+      return value.length <= 200
+        && !/[\r\n\0]/.test(value)
+        && !/^[/~\\]/.test(value)
+        && !/^[A-Za-z]:/.test(value)
+        && !value.split(/[/\\]/).includes("..")
+        && /\.(docx|xlsx|pptx)$/i.test(value);
     default: return false;
   }
 }
@@ -1286,6 +1297,7 @@ function wrapperInputSchema(command) {
 function wrapperArgInputJsonType(type) {
   if (type === "props") return "object";
   if (type === "json_commands") return "array";
+  if (type === "office_file") return "string";
   return type;
 }
 
