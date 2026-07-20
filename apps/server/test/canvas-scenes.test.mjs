@@ -112,3 +112,51 @@ test("bounds and embedded-URL policy fail closed", () => {
   const many = Array.from({ length: 5001 }, (_, i) => rect(`e${i}`));
   assert.equal(create({ elements: many }).body.error, "canvas_scene_too_large");
 });
+
+test("element ops: add assigns server ids, bumps revision, and is revision-gated", () => {
+  const { service } = harness();
+  const scene = service.createScene({ elements: [] }, ACTOR_A).body.scene;
+
+  assert.equal(service.addElements({ sceneId: scene.id, elements: [{ type: "rectangle" }], expectedRevision: 9 }, ACTOR_A).status, 409);
+
+  const added = service.addElements({ sceneId: scene.id, elements: [{ type: "rectangle", id: "client-supplied" }], expectedRevision: 1 }, ACTOR_A);
+  assert.equal(added.status, 200);
+  assert.equal(added.body.revision, 2);
+  assert.equal(added.body.changedElementIds.length, 1);
+  assert.match(added.body.changedElementIds[0], /^cel_/); // server-assigned, not "client-supplied"
+
+  const full = service.getScene({ sceneId: scene.id }, ACTOR_A).body.scene;
+  assert.equal(full.elements[0].id, added.body.changedElementIds[0]);
+});
+
+test("element ops: update/remove validate references atomically", () => {
+  const { service } = harness();
+  const scene = service.createScene({ elements: [] }, ACTOR_A).body.scene;
+  const elId = service.addElements({ sceneId: scene.id, elements: [{ type: "rectangle" }], expectedRevision: 1 }, ACTOR_A).body.changedElementIds[0];
+
+  // One bad reference rejects the whole batch (atomic), no mutation.
+  const badUpdate = service.updateElements({ sceneId: scene.id, elements: [{ id: elId, x: 5 }, { id: "nope", x: 1 }], expectedRevision: 2 }, ACTOR_A);
+  assert.equal(badUpdate.status, 400);
+  assert.equal(badUpdate.body.error, "invalid_element_reference");
+  assert.equal(service.getScene({ sceneId: scene.id }, ACTOR_A).body.scene.revision, 2); // unchanged
+
+  const okUpdate = service.updateElements({ sceneId: scene.id, elements: [{ id: elId, x: 5 }], expectedRevision: 2 }, ACTOR_A);
+  assert.equal(okUpdate.status, 200);
+  assert.equal(okUpdate.body.revision, 3);
+
+  assert.equal(service.removeElements({ sceneId: scene.id, elementIds: ["nope"], expectedRevision: 3 }, ACTOR_A).body.error, "invalid_element_reference");
+  const removed = service.removeElements({ sceneId: scene.id, elementIds: [elId], expectedRevision: 3 }, ACTOR_A);
+  assert.equal(removed.status, 200);
+  assert.deepEqual(removed.body.removedElementIds, [elId]);
+  assert.equal(service.getScene({ sceneId: scene.id }, ACTOR_A).body.scene.elements.length, 0);
+});
+
+test("element ops are team-scoped and export is a read", () => {
+  const { service } = harness();
+  const scene = service.createScene({ elements: [{ id: "a", type: "rectangle" }] }, ACTOR_A).body.scene;
+  assert.equal(service.addElements({ sceneId: scene.id, elements: [{ type: "rectangle" }], expectedRevision: 1 }, ACTOR_B).status, 404);
+  const exported = service.exportScene({ sceneId: scene.id, format: "excalidraw" }, ACTOR_A);
+  assert.equal(exported.status, 200);
+  assert.equal(exported.body.format, "excalidraw");
+  assert.equal(exported.body.scene.elements.length, 1);
+});
