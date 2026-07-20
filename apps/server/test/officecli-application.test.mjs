@@ -64,6 +64,39 @@ test("the write verb's execution plan carries the apply capability + workspace_w
   assert.equal(plan.cwdPolicy, "invocation_root");
 });
 
+test("`set` emits positionals BEFORE the repeatable --prop pairs (officecli requires that order)", () => {
+  const app = register();
+  const plan = applicationWrapperExecutionPlan(app, "set", {
+    file: "demo.xlsx",
+    path: "/Sheet1/A1",
+    props: { value: "Hi", bold: "true" },
+  });
+  assert.equal(plan.capability, "app.app_officecli.apply.set");
+  assert.equal(plan.filePolicy, "workspace_write");
+  assert.deepEqual(plan.args, ["set", "demo.xlsx", "/Sheet1/A1", "--prop", "value=Hi", "--prop", "bold=true"]);
+});
+
+test("`set` allows a value containing `=` (formulas) but drops malformed/oversized/injection pairs", () => {
+  const app = register();
+  const plan = applicationWrapperExecutionPlan(app, "set", {
+    file: "demo.xlsx",
+    path: "/Sheet1/B5",
+    props: {
+      formula: "SUM(B2:B4)", // value with parens — fine
+      note: "a=b",           // value may itself contain '='
+      "-bad": "x",           // key must start with a letter → dropped
+      "has space": "y",      // invalid key → dropped
+      big: "z".repeat(201),  // oversized value → dropped
+      nl: "a\nb",            // control char → dropped
+    },
+  });
+  assert.deepEqual(plan.args, [
+    "set", "demo.xlsx", "/Sheet1/B5",
+    "--prop", "formula=SUM(B2:B4)",
+    "--prop", "note=a=b",
+  ]);
+});
+
 test("read verbs append their positionals after the fixed base, in declaration order", () => {
   const app = register();
   assert.deepEqual(

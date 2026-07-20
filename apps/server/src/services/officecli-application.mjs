@@ -108,6 +108,21 @@ const OFFICECLI_WRITE_COMMANDS = [
       { key: "path", positional: true, type: "string" },
     ],
   },
+  {
+    id: "set",
+    displayName: "OfficeCLI set",
+    description: "Set properties on an element by path — a cell value/formula, run text, or formatting (props are `--prop key=value`). Writes in place; runs in the invocation's worktree.",
+    args: ["set"],
+    // `officecli set <file> <path> --prop k=v` requires the subject positionals
+    // BEFORE the options — the CLI ignores a --prop that precedes the file/path.
+    argOrder: "positionals_first",
+    argInputs: [
+      { key: "file", positional: true, type: "string" },
+      { key: "path", positional: true, type: "string" },
+      // A repeatable `--prop key=value` map (value/formula/bold/font.size/...).
+      { key: "props", flag: "--prop", type: "props" },
+    ],
+  },
 ];
 
 function readCommand(command) {
@@ -145,6 +160,7 @@ function writeCommand(command) {
     command: "officecli",
     args: command.args,
     argInputs: command.argInputs ?? [],
+    ...(command.argOrder ? { argOrder: command.argOrder } : {}),
     status: "approved",
     // `segment: "apply"` routes this under the device's officecliApply WRITE policy
     // (workspace_write) — never the read-only wrapper bucket git/ccusage/claude share.

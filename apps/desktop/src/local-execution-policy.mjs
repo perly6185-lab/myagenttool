@@ -80,8 +80,17 @@ const OFFICECLI_WRAPPER_ARGS = {
 // write verb; its argv is two positionals (file, path), identical in shape to the
 // read `get`, which is exactly why it proves the write path with no new argv
 // modeling. A value with a leading "-" never validates as a positional.
+// A `--prop key=value` pair: an identifier key, then `=`, then a bounded value
+// that may itself contain `=` (formulas/text) but no control chars. Independent
+// mirror of the server's props validator. A leading "-" can't match (key must
+// start with a letter), so a prop pair can never smuggle a new flag.
+const isOfficePropPair = (value) => /^[a-zA-Z][a-zA-Z0-9._-]{0,39}=[^\r\n]{0,200}$/.test(value);
+
 const OFFICECLI_APPLY_WRAPPER_ARGS = {
   remove: { base: ["remove"], flags: {}, positionals: [isOfficeFile, isOfficeArg] },
+  // set <file> <path> --prop key=value ... — repeatable --prop (each value is a
+  // key=value pair). The matcher handles repeated flags + ordered positionals.
+  set: { base: ["set"], flags: { "--prop": isOfficePropPair }, positionals: [isOfficeFile, isOfficeArg] },
 };
 
 const GIT_WRAPPER_ARGS = {

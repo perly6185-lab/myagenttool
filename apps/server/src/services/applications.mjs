@@ -828,7 +828,7 @@ export function createApplicationWrapperAgentRegistration({
 // anything else returns null. This is the single source of truth for WHAT may
 // execute — the bridge only ever runs a command that came through here, so an
 // unapproved or unregistered command can never reach execution.
-const WRAPPER_ARG_INPUT_TYPES = new Set(["date", "token", "enum", "string", "boolean-flag", "git-rev", "count"]);
+const WRAPPER_ARG_INPUT_TYPES = new Set(["date", "token", "enum", "string", "boolean-flag", "git-rev", "count", "props"]);
 const RESERVED_WRAPPER_ARG_INPUT_KEYS = new Set([
   "approvalToken",
   "idempotencyKey",
@@ -881,13 +881,34 @@ function normalizeWrapperArgInputs(argInputs) {
 // Turn a caller's input into args, appending ONLY declared flags whose value
 // passes its type validator. Undeclared keys are ignored; a value that looks like
 // a flag (leading "-") is refused so it can never inject a new option.
-function resolveWrapperInputArgs(argInputs, input) {
+//
+// `positionalsFirst` flips the order to `positionals then flags` — some CLIs
+// (e.g. `officecli set <file> <path> --prop k=v`) require the subject positionals
+// before their options. Default is flags-then-positionals (git/ccusage contract).
+function resolveWrapperInputArgs(argInputs, input, { positionalsFirst = false } = {}) {
   if (!Array.isArray(argInputs) || !input || typeof input !== "object" || Array.isArray(input)) return [];
   const flagArgs = [];
   const positionalArgs = [];
   for (const spec of argInputs) {
     const raw = input[spec.key];
     if (raw === undefined || raw === null) continue;
+    if (spec.type === "props") {
+      // A repeatable `--prop key=value` map (e.g. officecli set/add props). Each
+      // pair is validated independently — an identifier key + a bounded, control-
+      // char-free value — and emitted as a discrete `--prop key=value` argv token.
+      // Never a scalar; a malformed or oversized pair is dropped, not injected.
+      if (typeof raw !== "object" || Array.isArray(raw)) continue;
+      let count = 0;
+      for (const [propKey, propValue] of Object.entries(raw)) {
+        if (count >= 30) break;
+        if (!/^[a-zA-Z][a-zA-Z0-9._-]{0,39}$/.test(propKey)) continue;
+        const propText = String(propValue ?? "");
+        if (propText.length > 200 || /[\r\n]/.test(propText)) continue;
+        flagArgs.push(spec.flag, `${propKey}=${propText}`);
+        count += 1;
+      }
+      continue;
+    }
     if (spec.type === "boolean-flag") {
       if (raw === true || raw === "true") flagArgs.push(spec.flag);
       continue;
@@ -901,8 +922,9 @@ function resolveWrapperInputArgs(argInputs, input) {
       flagArgs.push(spec.flag, value);
     }
   }
-  // Positionals are appended AFTER all flags, in declaration order (#777).
-  return [...flagArgs, ...positionalArgs];
+  // Default: positionals AFTER all flags, in declaration order (#777). With
+  // positionalsFirst, the subject positionals lead (officecli set/add).
+  return positionalsFirst ? [...positionalArgs, ...flagArgs] : [...flagArgs, ...positionalArgs];
 }
 
 function isValidWrapperArgValue(spec, value) {
@@ -942,7 +964,7 @@ export function applicationWrapperExecutionPlan(application, commandId, input = 
     commandType: command.commandType,
     command: command.command,
     // Base args + only the declared, validated per-invocation flag inputs.
-    args: [...command.args, ...resolveWrapperInputArgs(command.argInputs, input)],
+    args: [...command.args, ...resolveWrapperInputArgs(command.argInputs, input, { positionalsFirst: command.argOrder === "positionals_first" })],
     // "invocation_root" emits cwd:null so the bridge's worktreePath → projectPath
     // fallback resolves it to the invocation's repository (#773). "fixed" keeps
     // ccusage's behavior byte-for-byte.
@@ -1206,11 +1228,23 @@ function wrapperInputSchema(command) {
     properties: Object.fromEntries(command.argInputs.map((input) => [
       input.key,
       {
-        type: input.type,
+        type: wrapperArgInputJsonType(input.type),
         ...(input.values?.length ? { enum: input.values } : {}),
       },
     ])),
   };
+}
+
+// Map an argInput type to a valid JSON Schema type for the capability input
+// schema. `props` is a key→value map (object); count/boolean-flag get their JSON
+// primitives; every string-like arg type is a string.
+function wrapperArgInputJsonType(type) {
+  switch (type) {
+    case "props": return "object";
+    case "count": return "integer";
+    case "boolean-flag": return "boolean";
+    default: return "string";
+  }
 }
 
 function approvalInputSchema() {
@@ -2328,6 +2362,9 @@ function normalizeWrapperCommand(command, index) {
     // write policy), else "wrapper" (read). Preserved through registration so the
     // projected capability name and the device classification agree.
     segment: command.segment === "apply" ? "apply" : "wrapper",
+    // Argv ordering: "positionals_first" emits subject positionals before flags
+    // (officecli set/add). Default "flags_first" keeps git/ccusage byte-identical.
+    argOrder: command.argOrder === "positionals_first" ? "positionals_first" : "flags_first",
     args: normalizeStringList(command.args),
     cwd: stringOrNull(command.cwd) ?? ".",
     // cwdPolicy governs where the command runs. "fixed" (default, ccusage's
