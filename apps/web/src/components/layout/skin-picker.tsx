@@ -8,7 +8,7 @@ const MODE_OPTIONS: { value: SkinMode; label: string }[] = [
   { value: "system", label: "跟随系统" },
 ];
 
-/** Topbar controls for the active skin and light/dark mode (#skins). */
+/** Topbar controls for the active skin and light/dark mode (#1360). */
 export function SkinPicker() {
   const skin = useUiStore((s) => s.skin);
   const setSkin = useUiStore((s) => s.setSkin);

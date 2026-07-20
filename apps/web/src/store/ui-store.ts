@@ -85,6 +85,13 @@ interface UiState {
 /** Expert groups collapsed by default — Work/Run/Oversee stay open (#928). */
 export const DEFAULT_COLLAPSED_NAV_GROUPS = ["configure", "ledgers"];
 
+/**
+ * localStorage key for the persisted UI store. The index.html no-flash boot
+ * script reads the same key before React mounts; boot-skin-script.test.mjs pins
+ * them together so the two can't drift (#1360).
+ */
+export const UI_STORE_PERSIST_KEY = "myagenttool-ui";
+
 export const SECTION_KEYS: SectionKey[] = [
   "dashboard",
   "workBoard",
@@ -252,7 +259,7 @@ export const useUiStore = create<UiState>()(
       };
     },
     {
-      name: "myagenttool-ui",
+      name: UI_STORE_PERSIST_KEY,
       version: 1,
       storage: createJSONStorage(() => localStorage),
       // Persist navigation + selection only, never the setter functions.

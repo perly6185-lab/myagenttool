@@ -1,6 +1,7 @@
 import { SECTIONS } from "@/app/sections";
 import { LoginControl } from "@/components/layout/login-control";
 import { SkinPicker } from "@/components/layout/skin-picker";
+import { useWindowControlsOverlay } from "@/lib/window-controls-overlay";
 import { StatusBadge } from "@/components/ui/badge";
 import { Select } from "@/components/ui/input";
 import { useConsoleState } from "@/data/use-console-state";
@@ -59,6 +60,7 @@ export function Topbar() {
   const section = useUiStore((s) => s.section);
   const { data: state, isError, isLoading } = useConsoleState();
   const current = SECTIONS.find((item) => item.key === section);
+  const wcoVisible = useWindowControlsOverlay();
 
   const connection = isError
     ? { tone: "danger" as const, label: "Server offline" }
@@ -83,7 +85,7 @@ export function Topbar() {
         <StatusBadge tone={connection.tone}>{connection.label}</StatusBadge>
         <SkinPicker />
         <LoginControl />
-        <div className="app-wco-spacer" aria-hidden="true" />
+        {wcoVisible ? <div className="app-wco-spacer" aria-hidden="true" /> : null}
       </div>
     </header>
   );
