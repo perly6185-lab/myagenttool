@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { Loader2, Pencil, X } from "lucide-react";
 import { api } from "@/data/use-console-actions";
 import { useConsoleState } from "@/data/use-console-state";
+import { DocxParagraphEditor } from "@/features/projects/docx-paragraph-editor";
 
 // Visual before/after review for an OfficeCLI write in a worktree (#1349 polish):
 // render the document as it is in the project BASE (before) and in the WORKTREE
@@ -59,15 +60,24 @@ export function OfficecliFilePreview({ projectId, worktreeId, path, editable = f
           </button>
         ) : null}
       </div>
-      {editing ? (
-        <OfficecliInlineEdit projectId={projectId} worktreeId={worktreeId} file={path} onApplied={load} />
-      ) : null}
-      {side.state === "loading" ? (
-        <span className="flex items-center gap-1 px-2 py-6 text-xs text-muted-foreground"><Loader2 className="size-3 animate-spin" /> rendering…</span>
-      ) : side.state === "error" ? (
-        <span className="px-2 py-6 text-xs text-red-600 dark:text-red-400">Preview unavailable — the document may not render, or officecli is not installed.</span>
+      {editing && /\.docx$/i.test(path) ? (
+        // A .docx gets the paragraph-level editor (full-document text editing that
+        // maps to surgical, governed set — no formatting loss). It IS the edit
+        // surface, so the static render below is hidden while editing.
+        <DocxParagraphEditor projectId={projectId} worktreeId={worktreeId} file={path} onChanged={load} />
       ) : (
-        <iframe title={path} sandbox="" srcDoc={`${CSP}${side.html ?? ""}`} className="h-full min-h-[24rem] w-full bg-white" />
+        <>
+          {editing ? (
+            <OfficecliInlineEdit projectId={projectId} worktreeId={worktreeId} file={path} onApplied={load} />
+          ) : null}
+          {side.state === "loading" ? (
+            <span className="flex items-center gap-1 px-2 py-6 text-xs text-muted-foreground"><Loader2 className="size-3 animate-spin" /> rendering…</span>
+          ) : side.state === "error" ? (
+            <span className="px-2 py-6 text-xs text-red-600 dark:text-red-400">Preview unavailable — the document may not render, or officecli is not installed.</span>
+          ) : (
+            <iframe title={path} sandbox="" srcDoc={`${CSP}${side.html ?? ""}`} className="h-full min-h-[24rem] w-full bg-white" />
+          )}
+        </>
       )}
     </div>
   );

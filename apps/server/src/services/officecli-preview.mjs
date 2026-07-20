@@ -114,3 +114,59 @@ export async function renderOfficecliPreview({ projectPath, relativeFile, timeou
     bytes: Buffer.byteLength(content, "utf8"),
   };
 }
+
+/**
+ * Read a .docx's body paragraphs as a flat, path-addressed outline — the source
+ * for a paragraph-level inline editor. Runs `officecli get <file> /body --json`
+ * (read-only), returning each paragraph's stable path (e.g.
+ * `/body/p[@paraId=..]`), text, and style. Editing one maps to a surgical
+ * `set <path> --prop text=..`, preserving the rest of the document (unlike a
+ * markdown round-trip, which regenerates the whole file and loses formatting).
+ *
+ * @returns {Promise<{ path:string, paragraphs:Array<{path:string,type:string,text:string,style:string|null}> }>}
+ */
+export async function readOfficecliDocParagraphs({ projectPath, relativeFile, timeoutMs = DEFAULT_TIMEOUT_MS, run } = {}) {
+  if (!projectPath) throw new OfficecliPreviewError("invalid_project", "A project path is required.");
+  const { root, relPath } = resolveDocument(projectPath, relativeFile);
+  if (!/\.docx$/i.test(relPath)) {
+    throw new OfficecliPreviewError("unsupported_type", "Paragraph editing is available for .docx documents only.");
+  }
+  const spawn = run ?? ((cmd, argv, opts) => execFileAsync(cmd, argv, opts));
+
+  let stdout;
+  try {
+    ({ stdout } = await spawn("officecli", ["get", relPath, "/body", "--json"], {
+      cwd: root,
+      timeout: timeoutMs,
+      maxBuffer: MAX_HTML_BYTES,
+      encoding: "utf8",
+      windowsHide: true,
+    }));
+  } catch (error) {
+    if (error?.code === "ENOENT") {
+      throw new OfficecliPreviewError("officecli_unavailable", "The officecli binary is not installed on this device.");
+    }
+    if (error?.killed || error?.signal === "SIGTERM") {
+      throw new OfficecliPreviewError("render_timeout", `Reading the document timed out after ${timeoutMs} ms.`);
+    }
+    throw new OfficecliPreviewError("read_failed", `officecli get failed: ${error?.message ?? String(error)}`);
+  }
+
+  let parsed;
+  try {
+    parsed = JSON.parse(String(stdout ?? ""));
+  } catch {
+    throw new OfficecliPreviewError("read_failed", "officecli did not return valid JSON.");
+  }
+  const body = parsed?.data?.results?.[0];
+  const children = Array.isArray(body?.children) ? body.children : [];
+  const paragraphs = children
+    .filter((child) => child?.type === "paragraph" && typeof child?.path === "string")
+    .map((child) => ({
+      path: child.path,
+      type: child.type,
+      text: typeof child.text === "string" ? child.text : "",
+      style: typeof child.style === "string" ? child.style : null,
+    }));
+  return { path: relPath, paragraphs };
+}
