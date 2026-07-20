@@ -1,6 +1,7 @@
-import { useCallback, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { FileText, Loader2 } from "lucide-react";
 import { api } from "@/data/use-console-actions";
+import { useUiStore } from "@/store/ui-store";
 
 // OfficeCLI preview (P2b): render a project .docx/.xlsx/.pptx to self-contained
 // HTML and show it in a sandboxed iframe. The full HTML comes from the dedicated
@@ -23,9 +24,11 @@ export function OfficecliPreview({ projectId }: { projectId: string | null }) {
   const [file, setFile] = useState<PreviewResponse | null>(null);
   const [state, setState] = useState<"idle" | "loading" | "error" | "done">("idle");
   const [error, setError] = useState<string | null>(null);
+  // Selecting an Office file in the project tree drives the preview here (#1347).
+  const selectedPath = useUiStore((s) => s.officecliPreviewPath);
 
-  const render = useCallback(async () => {
-    const trimmed = path.trim();
+  const render = useCallback(async (target?: string) => {
+    const trimmed = (target ?? path).trim();
     if (!projectId || !trimmed) return;
     setState("loading");
     setError(null);
@@ -39,6 +42,15 @@ export function OfficecliPreview({ projectId }: { projectId: string | null }) {
       setState("error");
     }
   }, [projectId, path]);
+
+  // When a document is chosen in the tree, mirror it into the input and render.
+  useEffect(() => {
+    if (!selectedPath) return;
+    setPath(selectedPath);
+    void render(selectedPath);
+    // Render only when the selection changes, not on every render() identity change.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selectedPath, projectId]);
 
   const valid = OFFICE_EXT.test(path.trim());
 

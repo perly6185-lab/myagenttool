@@ -1,3 +1,4 @@
+import { useEffect, useState } from "react";
 import { FolderGit2, FolderPlus, PanelsTopLeft } from "lucide-react";
 import { useConsoleState, useRefreshConsoleState } from "@/data/use-console-state";
 import { useUiStore } from "@/store/ui-store";
@@ -32,6 +33,12 @@ export function WorkspaceView() {
   const { data: state } = useConsoleState();
   const refresh = useRefreshConsoleState();
   const setSection = useUiStore((s) => s.setSection);
+  const previewPath = useUiStore((s) => s.officecliPreviewPath);
+  const [previewOpen, setPreviewOpen] = useState(false);
+  // Selecting an Office file in the tree opens the preview panel (#1347).
+  useEffect(() => {
+    if (previewPath) setPreviewOpen(true);
+  }, [previewPath]);
   const projects = (state?.projects ?? []) as Array<{ id: string; name: string; git?: GitFacts }>;
   const currentId = state?.currentProjectId ?? null;
   const current = projects.find((p) => p.id === currentId) ?? null;
@@ -90,9 +97,13 @@ export function WorkspaceView() {
       </header>
 
       {current ? (
-        <details className="shrink-0 rounded-lg border border-border bg-card">
+        <details
+          className="shrink-0 rounded-lg border border-border bg-card"
+          open={previewOpen}
+          onToggle={(e) => setPreviewOpen((e.currentTarget as HTMLDetailsElement).open)}
+        >
           <summary className="cursor-pointer select-none px-3 py-2 text-sm font-medium text-foreground/90">
-            Office preview <span className="text-xs font-normal text-muted-foreground">— render a .docx / .xlsx / .pptx</span>
+            Office preview <span className="text-xs font-normal text-muted-foreground">— click a .docx / .xlsx / .pptx in the file tree, or enter a path</span>
           </summary>
           <div className="border-t border-border p-3">
             <OfficecliPreview projectId={current.id} />
