@@ -828,7 +828,7 @@ export function createApplicationWrapperAgentRegistration({
 // anything else returns null. This is the single source of truth for WHAT may
 // execute — the bridge only ever runs a command that came through here, so an
 // unapproved or unregistered command can never reach execution.
-const WRAPPER_ARG_INPUT_TYPES = new Set(["date", "token", "enum", "string", "office_file", "boolean-flag", "git-rev", "count", "props", "json_commands"]);
+const WRAPPER_ARG_INPUT_TYPES = new Set(["date", "token", "enum", "string", "office_file", "csv_file", "boolean-flag", "git-rev", "count", "props", "json_commands", "json_data"]);
 const RESERVED_WRAPPER_ARG_INPUT_KEYS = new Set([
   "approvalToken",
   "idempotencyKey",
@@ -918,6 +918,15 @@ function resolveWrapperInputArgs(argInputs, input, { positionalsFirst = false } 
       }
       continue;
     }
+    if (spec.type === "json_data") {
+      // Arbitrary template data (officecli merge --data). Accept a JS object/array
+      // or a JSON string; it must parse to an object/array within the byte bound,
+      // and is re-serialized compactly as one --data token. Not a command list —
+      // there is no verb allowlist; it is substituted into {{key}} placeholders.
+      const data = normalizeJsonData(raw);
+      if (data) flagArgs.push(spec.flag, data);
+      continue;
+    }
     if (spec.type === "json_commands") {
       // A batch operation list (officecli batch --commands <json>). Accept a JS
       // array or a JSON string; it MUST parse to an array of ≤100 objects, each
@@ -967,14 +976,29 @@ function isValidWrapperArgValue(spec, value) {
     // worktree, plus an Office extension. Mirrors the device's isOfficeFile — the
     // two allowlists reject a `../` or absolute file INDEPENDENTLY.
     case "office_file":
-      return value.length <= 200
-        && !/[\r\n\0]/.test(value)
-        && !/^[/~\\]/.test(value)
-        && !/^[A-Za-z]:/.test(value)
-        && !value.split(/[/\\]/).includes("..")
-        && /\.(docx|xlsx|pptx)$/i.test(value);
+      return isSafeRelFilePath(value) && /\.(docx|xlsx|pptx)$/i.test(value);
+    // A CSV/TSV SOURCE file (officecli import). Same worktree-safe relative-path
+    // rule as office_file, but a data extension — it is read, never opened as a
+    // document.
+    case "csv_file":
+      return isSafeRelFilePath(value) && /\.(csv|tsv)$/i.test(value);
     default: return false;
   }
+}
+
+// A filesystem path officecli resolves against its worktree cwd (a document file
+// or a data source). Must be a SAFE RELATIVE path so it cannot escape the
+// worktree: no traversal segment, not absolute (no leading `/`, `~`, `\`, Windows
+// drive, or UNC). Mirrors the device's isSafeRelPath — the two allowlists reject
+// a `../`/absolute path INDEPENDENTLY. Callers add the extension check.
+function isSafeRelFilePath(value) {
+  return typeof value === "string"
+    && value.length >= 1
+    && value.length <= 200
+    && !/[\r\n\0]/.test(value)
+    && !/^[/~\\]/.test(value)
+    && !/^[A-Za-z]:/.test(value)
+    && !value.split(/[/\\]/).includes("..");
 }
 
 const JSON_COMMANDS_MAX_ITEMS = 100;
@@ -997,6 +1021,21 @@ function normalizeJsonCommands(raw, allowedVerbs) {
     if (!verbs.has(String(item.command))) return null;
   }
   const compact = JSON.stringify(list);
+  if (compact.length > JSON_COMMANDS_MAX_BYTES) return null;
+  return compact;
+}
+
+// Validate + compact arbitrary merge data. `raw` may be a JS object/array or a
+// JSON string; returns a compact JSON string, or null if it does not parse to an
+// object/array within the byte bound. No verb allowlist — this is placeholder
+// data, not commands; it is one discrete argv token (no shell).
+function normalizeJsonData(raw) {
+  let value = raw;
+  if (typeof raw === "string") {
+    try { value = JSON.parse(raw); } catch { return null; }
+  }
+  if (value === null || typeof value !== "object") return null;
+  const compact = JSON.stringify(value);
   if (compact.length > JSON_COMMANDS_MAX_BYTES) return null;
   return compact;
 }
@@ -1295,9 +1334,9 @@ function wrapperInputSchema(command) {
 // every pre-existing type keeps emitting its raw string verbatim, so existing
 // apps' projected schemas stay byte-identical (a pinned-fixture invariant).
 function wrapperArgInputJsonType(type) {
-  if (type === "props") return "object";
+  if (type === "props" || type === "json_data") return "object";
   if (type === "json_commands") return "array";
-  if (type === "office_file") return "string";
+  if (type === "office_file" || type === "csv_file") return "string";
   return type;
 }
 

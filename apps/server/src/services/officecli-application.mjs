@@ -176,6 +176,35 @@ const OFFICECLI_WRITE_COMMANDS = [
     ],
   },
   {
+    id: "import",
+    displayName: "OfficeCLI import",
+    description: "Import CSV/TSV rows from a worktree source file into a sheet (`--header`, `--format`). Writes in place in the invocation's worktree.",
+    args: ["import"],
+    argOrder: "positionals_first",
+    argInputs: [
+      { key: "file", positional: true, type: "office_file" },
+      { key: "parent", positional: true, type: "string" },
+      // The CSV/TSV source — a worktree-safe relative path (never escapes it).
+      { key: "source", positional: true, type: "csv_file" },
+      { key: "header", flag: "--header", type: "boolean-flag" },
+      { key: "format", flag: "--format", type: "enum", values: ["csv", "tsv"] },
+    ],
+  },
+  {
+    id: "merge",
+    displayName: "OfficeCLI merge",
+    description: "Render a template document to a new output by replacing {{key}} placeholders with `--data` JSON. Both paths stay inside the worktree.",
+    args: ["merge"],
+    argOrder: "positionals_first",
+    argInputs: [
+      { key: "template", positional: true, type: "office_file" },
+      { key: "output", positional: true, type: "office_file" },
+      // Inline template data substituted into {{key}} placeholders.
+      { key: "data", flag: "--data", type: "json_data" },
+      { key: "force", flag: "--force", type: "boolean-flag" },
+    ],
+  },
+  {
     id: "batch",
     displayName: "OfficeCLI batch",
     description: "Apply multiple edits in one pass from a JSON operation list (`--commands`). Each item's `command` must be a write verb; runs in place in the invocation's worktree.",

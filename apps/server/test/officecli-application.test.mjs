@@ -101,6 +101,45 @@ test("`add` drops an out-of-set element type (closed enum)", () => {
   assert.deepEqual(plan.args, ["add", "demo.xlsx", "/Sheet1", "--prop", "ref=F1"]);
 });
 
+test("`merge` emits template+output positionals + a compacted --data JSON (+ --force)", () => {
+  const app = register();
+  const plan = applicationWrapperExecutionPlan(app, "merge", {
+    template: "tmpl.xlsx", output: "out.xlsx", data: { name: "World", n: 3 }, force: "true",
+  });
+  assert.equal(plan.capability, "app.app_officecli.apply.merge");
+  assert.equal(plan.filePolicy, "workspace_write");
+  assert.deepEqual(plan.args.slice(0, 3), ["merge", "tmpl.xlsx", "out.xlsx"]);
+  const dataIdx = plan.args.indexOf("--data");
+  assert.deepEqual(JSON.parse(plan.args[dataIdx + 1]), { name: "World", n: 3 });
+  assert.ok(plan.args.includes("--force"));
+});
+
+test("`merge` drops a traversal template/output and a non-object --data", () => {
+  const app = register();
+  // template/output are office_file → traversal is dropped
+  const esc = applicationWrapperExecutionPlan(app, "merge", { template: "../t.xlsx", output: "out.xlsx", data: { a: 1 } });
+  assert.equal(esc.args.includes("../t.xlsx"), false);
+  // a --data that is not a JSON object/array is dropped
+  const badData = applicationWrapperExecutionPlan(app, "merge", { template: "t.xlsx", output: "o.xlsx", data: "not json" });
+  assert.equal(badData.args.includes("--data"), false);
+});
+
+test("`import` emits three positionals + --header/--format; a traversal source is dropped", () => {
+  const app = register();
+  const plan = applicationWrapperExecutionPlan(app, "import", {
+    file: "book.xlsx", parent: "/Sheet1", source: "data/rows.csv", header: "true", format: "csv",
+  });
+  assert.equal(plan.capability, "app.app_officecli.apply.import");
+  assert.equal(plan.filePolicy, "workspace_write");
+  assert.deepEqual(plan.args, ["import", "book.xlsx", "/Sheet1", "data/rows.csv", "--header", "--format", "csv"]);
+  // A CSV source that would escape the worktree is dropped (csv_file is worktree-safe).
+  const bad = applicationWrapperExecutionPlan(app, "import", { file: "book.xlsx", parent: "/Sheet1", source: "../secret.csv" });
+  assert.deepEqual(bad.args, ["import", "book.xlsx", "/Sheet1"]);
+  // A non-csv/tsv source is dropped too.
+  const notCsv = applicationWrapperExecutionPlan(app, "import", { file: "book.xlsx", parent: "/Sheet1", source: "data.txt" });
+  assert.deepEqual(notCsv.args, ["import", "book.xlsx", "/Sheet1"]);
+});
+
 test("`swap` emits three positionals (file, path1, path2) under the apply segment", () => {
   const app = register();
   const plan = applicationWrapperExecutionPlan(app, "swap", {
