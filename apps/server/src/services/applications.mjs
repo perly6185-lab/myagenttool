@@ -1235,16 +1235,12 @@ function wrapperInputSchema(command) {
   };
 }
 
-// Map an argInput type to a valid JSON Schema type for the capability input
-// schema. `props` is a key→value map (object); count/boolean-flag get their JSON
-// primitives; every string-like arg type is a string.
+// The capability input-schema type for an argInput. Only `props` needs a real
+// JSON type (a key→value map is an object, and the input must validate as one);
+// every pre-existing type keeps emitting its raw string verbatim, so existing
+// apps' projected schemas stay byte-identical (a pinned-fixture invariant).
 function wrapperArgInputJsonType(type) {
-  switch (type) {
-    case "props": return "object";
-    case "count": return "integer";
-    case "boolean-flag": return "boolean";
-    default: return "string";
-  }
+  return type === "props" ? "object" : type;
 }
 
 function approvalInputSchema() {
