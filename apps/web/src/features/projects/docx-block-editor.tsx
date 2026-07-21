@@ -18,18 +18,6 @@ interface Block {
   md: string;
 }
 
-// Mirror of the server projection (officecli-block-ops.mjs) for DISPLAY only — the
-// authoritative diff is computed server-side from the same rules, so a heading
-// shown as `# x` here is parsed back to the same level there.
-function headingLevelForStyle(style: string | null): number {
-  const m = /^heading([1-6])$/.exec(String(style ?? "").toLowerCase().replace(/\s+/g, ""));
-  return m ? Number(m[1]) : 0;
-}
-function paragraphToMd(p: { text: string; style: string | null }): string {
-  const level = headingLevelForStyle(p.style);
-  return level > 0 ? `${"#".repeat(level)} ${p.text}` : p.text;
-}
-
 export function DocxBlockEditor({ projectId, worktreeId, file, onChanged }: { projectId: string; worktreeId: string; file: string; onChanged?: () => void }) {
   const { data: state } = useConsoleState();
   const [blocks, setBlocks] = useState<Block[] | null>(null);
@@ -46,9 +34,9 @@ export function DocxBlockEditor({ projectId, worktreeId, file, onChanged }: { pr
     setError(null);
     try {
       const r = (await api.officecliDocOutline(projectId, file, worktreeId)) as {
-        paragraphs: { path: string; type: string; text: string; style: string | null }[];
+        paragraphs: { path: string; type: string; text: string; style: string | null; md: string }[];
       };
-      const next = r.paragraphs.map((p) => ({ key: nextKey(), path: p.path, md: paragraphToMd(p) }));
+      const next = r.paragraphs.map((p) => ({ key: nextKey(), path: p.path, md: p.md }));
       setBlocks(next);
       setOriginal(next.map((b) => ({ path: b.path, md: b.md })));
       setLoadState("done");
@@ -146,7 +134,7 @@ export function DocxBlockEditor({ projectId, worktreeId, file, onChanged }: { pr
     <div className="flex min-h-0 flex-1 flex-col">
       <div className="flex items-center justify-between gap-2 border-b border-border px-2 py-1.5">
         <span className="text-[11px] text-muted-foreground">
-          Markdown-style editing — <code className="font-mono"># </code> is a heading. Each save is one governed, worktree-scoped batch; unedited formatting is preserved.
+          Markdown-style editing — <code className="font-mono"># </code> heading, <code className="font-mono">**bold**</code>, <code className="font-mono">*italic*</code>. Each save is one governed, worktree-scoped batch; unedited formatting is preserved.
         </span>
         <button
           type="button"

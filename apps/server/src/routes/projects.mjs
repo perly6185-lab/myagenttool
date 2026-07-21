@@ -8,7 +8,7 @@ import { recordHttpGateRefusal } from "./refusal-http-gate.mjs";
 import { deriveFinalStatus, summarizeAutoRuns } from "../services/auto-run-metrics.mjs";
 import { summarizeDeployments } from "../services/auto-run-deploy-metrics.mjs";
 import { renderOfficecliPreview, readOfficecliDocParagraphs, OfficecliPreviewError } from "../services/officecli-preview.mjs";
-import { computeBlockOps } from "../services/officecli-block-ops.mjs";
+import { computeBlockOps, paragraphToMd } from "../services/officecli-block-ops.mjs";
 import { readEvalTrend, summarizeEvalTrend } from "../services/eval-trend.mjs";
 import { maturityScorecard, latestDora } from "../read-models/maturity-scorecard.mjs";
 import { normalizeAutoRunSettings, resolveAutoRunConfig } from "../services/auto-run-config.mjs";
@@ -656,7 +656,11 @@ export async function handleProjectRoutes({
     const rootPath = worktree?.path ?? worktree?.worktreePath ?? project.path;
     try {
       const outline = await readOfficecliDocParagraphs({ projectPath: rootPath, relativeFile: url.searchParams.get("path") ?? "" });
-      sendJson(res, 200, outline);
+      // Attach the markdown projection per paragraph (heading + inline runs) so the
+      // editor displays it directly — a single, server-owned source of truth for
+      // the projection (no client-side mirror to drift).
+      const paragraphs = outline.paragraphs.map((p) => ({ ...p, md: paragraphToMd(p) }));
+      sendJson(res, 200, { ...outline, paragraphs });
     } catch (error) {
       const code = error instanceof OfficecliPreviewError ? error.code : "outline_failed";
       const status = code === "not_found" ? 404 : code === "officecli_unavailable" ? 503 : 400;

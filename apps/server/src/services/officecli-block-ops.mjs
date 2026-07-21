@@ -11,13 +11,18 @@
  * images, runs, non-heading styles) is preserved by never being touched.
  *
  * Scope (v0): heading level (via style) + paragraph text + add / delete / reorder.
- * Inline formatting (bold/italic → runs) and a free-form whole-document markdown
- * textarea are later slices; this module is the shared, unit-tested core they build
- * on. No I/O — pure functions over the outline shape from readOfficecliDocParagraphs.
+ * L1.5 adds inline bold/italic: a paragraph's runs project to `**`/`*` markdown,
+ * and a formatted edit rebuilds that paragraph's runs (reverse-remove + append) —
+ * plain-text edits stay on the simple `set text` path. A whole-document markdown
+ * textarea is a later slice; this module is the shared, unit-tested core. No I/O —
+ * pure functions over the outline shape from readOfficecliDocParagraphs.
  */
 
+import { parseInline, runsToInlineMd, normalizeRuns } from "./officecli-inline.mjs";
+
 /**
- * @typedef {{ path: string, style: string|null, text: string }} OutlineParagraph
+ * @typedef {{ text: string, bold: boolean, italic: boolean }} Run
+ * @typedef {{ path: string, style: string|null, text: string, runs?: Run[] }} OutlineParagraph
  * @typedef {{ path: string|null, md: string }} EditedBlock
  * @typedef {Record<string, unknown>} BatchCommand
  */
@@ -38,11 +43,20 @@ export function styleForHeadingLevel(level) {
   return level >= 1 && level <= 6 ? `Heading${level}` : NORMAL_STYLE;
 }
 
-/** One outline paragraph → its markdown source line. */
+/** One outline paragraph → its markdown source line (heading prefix + inline). */
 export function paragraphToMd(para) {
   const level = headingLevelForStyle(para?.style);
-  const text = typeof para?.text === "string" ? para.text : "";
-  return level > 0 ? `${"#".repeat(level)} ${text}` : text;
+  const prefix = level > 0 ? `${"#".repeat(level)} ` : "";
+  const runs = Array.isArray(para?.runs) ? para.runs : null;
+  const inline = runs && runs.length ? runsToInlineMd(runs) : typeof para?.text === "string" ? para.text : "";
+  return prefix + inline;
+}
+
+function runsEqual(a, b) {
+  const x = normalizeRuns(a);
+  const y = normalizeRuns(b);
+  if (x.length !== y.length) return false;
+  return x.every((r, i) => r.text === y[i].text && r.bold === y[i].bold && r.italic === y[i].italic);
 }
 
 /** Markdown source → { headingLevel, text }. A leading `#{1,6} ` is the heading. */
@@ -95,9 +109,48 @@ function longestIncreasingSubsequenceIndices(arr) {
 }
 
 function addCommand(block, position) {
-  const props = { text: block.text };
+  // A new paragraph is created with its PLAIN text (markers stripped) — its paraId
+  // isn't known mid-batch, so its runs can't be formatted in this same write.
+  const props = { text: block.plainText };
   if (block.headingLevel > 0) props.style = styleForHeadingLevel(block.headingLevel);
   return { command: "add", parent: "/body", type: "paragraph", props, ...position };
+}
+
+// The set/rebuild ops for one surviving paragraph: a style change, and either a
+// plain `set text` or a run-rebuild (reverse-remove existing runs + append the new
+// run sequence) when inline formatting is involved.
+function surviveContentCommands(eb) {
+  const paraPath = eb.orig.path;
+  const out = [];
+  const styleChanged = eb.headingLevel !== headingLevelForStyle(eb.orig.style);
+  const targetStyle = styleForHeadingLevel(eb.headingLevel);
+
+  const origRuns = eb.orig.runs ?? [];
+  const newFormatted = eb.newRuns.some((r) => r.bold || r.italic);
+  const origFormatted = normalizeRuns(origRuns).some((r) => r.bold || r.italic);
+
+  if (!newFormatted && !origFormatted) {
+    // Plain path — combine an optional style + text change into one `set`.
+    const props = {};
+    if (styleChanged) props.style = targetStyle;
+    if (eb.plainText !== eb.orig.text) props.text = eb.plainText;
+    if (Object.keys(props).length > 0) out.push({ command: "set", path: paraPath, props });
+    return out;
+  }
+
+  if (styleChanged) out.push({ command: "set", path: paraPath, props: { style: targetStyle } });
+  if (!runsEqual(eb.newRuns, origRuns)) {
+    // Reverse-remove the actual runs (r[1..n], including empties), then append the
+    // new run sequence. The paragraph's paraId is preserved throughout.
+    for (let k = origRuns.length; k >= 1; k--) out.push({ command: "remove", path: `${paraPath}/r[${k}]` });
+    for (const r of eb.newRuns) {
+      const props = { text: r.text };
+      if (r.bold) props.bold = "true";
+      if (r.italic) props.italic = "true";
+      out.push({ command: "add", parent: paraPath, type: "run", props });
+    }
+  }
+  return out;
 }
 
 /**
@@ -118,27 +171,36 @@ export function computeBlockOps({ original = [], edited = [] } = {}) {
     }
   });
 
-  // Normalize each edited block: parse its md, resolve identity. A `path` that
-  // doesn't match a real original block is treated as a new (unanchored) block.
+  // Normalize each edited block: parse its md (heading prefix + inline runs),
+  // resolve identity. A `path` that doesn't match a real original block is treated
+  // as a new (unanchored) block.
   const editedNorm = (Array.isArray(edited) ? edited : []).map((eb) => {
     const parsed = parseBlockMd(eb?.md ?? "");
+    const newRuns = parseInline(parsed.text);
     const orig = eb && typeof eb.path === "string" ? origByPath.get(eb.path) : undefined;
-    return { orig: orig ?? null, headingLevel: parsed.headingLevel, text: parsed.text };
+    return {
+      orig: orig ?? null,
+      rawMd: typeof eb?.md === "string" ? eb.md : "",
+      headingLevel: parsed.headingLevel,
+      newRuns,
+      plainText: newRuns.map((r) => r.text).join(""),
+    };
   });
 
   const commands = [];
 
-  // Phase 1 — sets on surviving existing blocks (order-independent; paraId stable).
+  // Phase 1 — content on surviving existing blocks (order-independent; paraId
+  // stable). A style change (heading markup) is only emitted when it actually
+  // changed, preserving non-heading custom styles (Quote/Title/…). Inline
+  // formatting triggers a run-rebuild; plain edits stay a single `set text`.
   for (const eb of editedNorm) {
     if (!eb.orig) continue;
-    const props = {};
-    if (eb.text !== eb.orig.text) props.text = eb.text;
-    // Only touch style when the heading markup actually changed — this preserves
-    // non-heading custom styles (Quote/Title/…) the md view can't represent.
-    if (eb.headingLevel !== headingLevelForStyle(eb.orig.style)) {
-      props.style = styleForHeadingLevel(eb.headingLevel);
-    }
-    if (Object.keys(props).length > 0) commands.push({ command: "set", path: eb.orig.path, props });
+    // An untouched block (the client echoed the exact projection) emits nothing —
+    // this is the safety guarantee: a paragraph is only ever rebuilt when its
+    // markdown string actually changed, so the ambiguous adjacent-emphasis case
+    // can never silently rewrite a paragraph the user did not edit.
+    if (paragraphToMd(eb.orig) === eb.rawMd) continue;
+    for (const cmd of surviveContentCommands(eb)) commands.push(cmd);
   }
 
   // Phase 2 — removes: originals no longer present in the edited list.
