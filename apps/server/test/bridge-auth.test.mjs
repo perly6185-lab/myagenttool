@@ -51,7 +51,9 @@ test("bridge registration issues a device-bound credential and protects bridge r
   assert.equal(registered.body.device.bridgeCredential.tokenHash, undefined);
   assert.equal(registered.body.bridgeCredential.tokenHash, undefined);
   assert.equal(typeof state.device.bridgeCredential.tokenHash, "string");
+  assert.deepEqual(state.device.runtimeReadiness, state.device.applicationBinaryReadiness);
   assert.deepEqual(state.device.applicationBinaryReadiness, [{
+    runtimeId: "runtime_git",
     command: "git",
     capabilityPrefix: "app.app_git.wrapper.",
     status: "available",

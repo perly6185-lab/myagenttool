@@ -31,8 +31,9 @@ vi.mock("@/data/use-console-actions", () => ({
 
 const catalog = {
   applications: [
-    { name: "ccusage", displayName: "ccusage", aliases: ["ccusage"], command: "ccusage", installHint: "Managed install" },
-    { name: "codex", displayName: "Codex CLI", aliases: ["codex", "codex cli"], command: "codex", installHint: "Managed install" },
+    { name: "markdown", displayName: "Markdown", aliases: ["markdown", "md"], command: "", installHint: "Built in", runtimeRequirements: [] },
+    { name: "ccusage", displayName: "ccusage", aliases: ["ccusage"], command: "ccusage", installHint: "Managed install", runtimeRequirements: [{ runtimeId: "runtime_ccusage", required: true }] },
+    { name: "codex", displayName: "Codex CLI", aliases: ["codex", "codex cli"], command: "codex", installHint: "Managed install", runtimeRequirements: [{ runtimeId: "runtime_codex", required: true }] },
   ],
 };
 const plan = {
@@ -66,14 +67,27 @@ function renderModal(onClose = vi.fn()) {
 }
 
 async function enterKnownApplication(value = "ccusage") {
-  const input = screen.getByPlaceholderText("ccusage, git, claude, codex, git-bash, or wsl");
-  fireEvent.change(input, { target: { value } });
+  await screen.findByRole("option", { name: catalog.applications.find((entry) => entry.name === value)?.displayName ?? value });
+  fireEvent.change(screen.getByRole("combobox", { name: "Application" }), { target: { value } });
   const button = screen.getByRole("button", { name: "Set up" }) as HTMLButtonElement;
   await waitFor(() => expect(button.disabled).toBe(false));
   fireEvent.click(button);
 }
 
 describe("RegisterApplicationModal governed setup", () => {
+  it("adds the built-in Markdown Application without a bridge or install plan", async () => {
+    consoleState.data = { projects: [], device: null, devices: [] };
+    apiMock.listKnownApplications.mockResolvedValue(catalog);
+    apiMock.quickRegisterApplication.mockResolvedValue({ application: { id: "app_markdown", name: "Markdown" }, capabilities: [] });
+    renderModal();
+
+    await enterKnownApplication("markdown");
+
+    await waitFor(() => expect(apiMock.quickRegisterApplication).toHaveBeenCalledWith({ name: "markdown" }));
+    expect(apiMock.createApplicationInstallPlan).not.toHaveBeenCalled();
+    expect(await screen.findByText(/Markdown is registered and ready/i)).toBeTruthy();
+  });
+
   it("skips installation when readiness already confirms the binary", async () => {
     consoleState.data = {
       projects: [],
@@ -97,7 +111,7 @@ describe("RegisterApplicationModal governed setup", () => {
   it("registers the Codex Application when its bundled CLI is already present", async () => {
     consoleState.data = {
       projects: [],
-      device: { id: "dev_local", name: "Workstation", status: "online", platform: "windows", architecture: "x64", lastSeenAt: null, applicationBinaryReadiness: [{ command: "codex", capabilityPrefix: "app.setup.codex.", status: "available", version: "0.144.6", checkedAt: "2026-07-14T00:00:00Z" }] },
+      device: { id: "dev_local", name: "Workstation", status: "online", platform: "windows", architecture: "x64", lastSeenAt: null, runtimeReadiness: [{ runtimeId: "runtime_codex", command: "codex", capabilityPrefix: "app.setup.codex.", status: "available", version: "0.144.6", checkedAt: "2026-07-14T00:00:00Z" }] },
       devices: [],
     };
     apiMock.listKnownApplications.mockResolvedValue(catalog);
@@ -148,7 +162,7 @@ describe("RegisterApplicationModal governed setup", () => {
 
     await enterKnownApplication();
     expect(await screen.findByRole("button", { name: "Approve & install" })).toBeTruthy();
-    expect(screen.getByText("ccusage")).toBeTruthy();
+    expect(screen.getAllByText("ccusage").length).toBeGreaterThan(0);
     expect(screen.getByText("npm")).toBeTruthy();
     expect(screen.queryByText("npm.cmd")).toBeNull();
 
