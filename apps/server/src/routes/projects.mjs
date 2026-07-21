@@ -7,10 +7,11 @@ import { computeIssueOwnership } from "../read-models/issue-ownership.mjs";
 import { recordHttpGateRefusal } from "./refusal-http-gate.mjs";
 import { deriveFinalStatus, summarizeAutoRuns } from "../services/auto-run-metrics.mjs";
 import { summarizeDeployments } from "../services/auto-run-deploy-metrics.mjs";
-import { renderOfficecliPreview, readOfficecliDocParagraphs, readOfficecliSheet, OfficecliPreviewError } from "../services/officecli-preview.mjs";
+import { renderOfficecliPreview, readOfficecliDocParagraphs, readOfficecliSheet, readOfficecliDeck, OfficecliPreviewError } from "../services/officecli-preview.mjs";
 import { computeBlockOps, paragraphToMd } from "../services/officecli-block-ops.mjs";
 import { parseDocumentMd, alignBlocks } from "../services/officecli-doc-md.mjs";
 import { computeSheetOps, cellEditableText } from "../services/officecli-sheet-ops.mjs";
+import { computeDeckOps } from "../services/officecli-deck-ops.mjs";
 import { readEvalTrend, summarizeEvalTrend } from "../services/eval-trend.mjs";
 import { maturityScorecard, latestDora } from "../read-models/maturity-scorecard.mjs";
 import { normalizeAutoRunSettings, resolveAutoRunConfig } from "../services/auto-run-config.mjs";
@@ -764,6 +765,61 @@ export async function handleProjectRoutes({
       sendJson(res, 200, { commands, sheet: grid.sheet });
     } catch (error) {
       const code = error instanceof OfficecliPreviewError ? error.code : "sheet_ops_failed";
+      const status = code === "not_found" ? 404 : code === "officecli_unavailable" ? 503 : 400;
+      sendJson(res, status, { error: code, message: error instanceof Error ? error.message : String(error) });
+    }
+    return true;
+  }
+
+  // pptx slide editing: read the deck's slides+shapes, and compute shape-text ops.
+  const deckMatch = url.pathname.match(/^\/api\/projects\/([^/]+)\/officecli-deck$/);
+  if (deckMatch && req.method === "GET") {
+    const project = state.projects.find((item) => item.id === decodeURIComponent(deckMatch[1]));
+    if (!project) {
+      sendJson(res, 404, { error: "project_not_found" });
+      return true;
+    }
+    if (denyForeignProject({ res, sendJson, state, actor, projectId: project.id, notFound: { error: "project_not_found" } })) return true;
+    const worktreeId = url.searchParams.get("worktree");
+    const worktree = worktreeId ? (state.worktrees ?? []).find((w) => w.id === worktreeId && w.projectId === project.id) : null;
+    const rootPath = worktree?.path ?? worktree?.worktreePath ?? project.path;
+    try {
+      const deck = await readOfficecliDeck({ projectPath: rootPath, relativeFile: url.searchParams.get("path") ?? "" });
+      sendJson(res, 200, deck);
+    } catch (error) {
+      const code = error instanceof OfficecliPreviewError ? error.code : "deck_failed";
+      const status = code === "not_found" ? 404 : code === "officecli_unavailable" ? 503 : 400;
+      sendJson(res, status, { error: code, message: error instanceof Error ? error.message : String(error) });
+    }
+    return true;
+  }
+
+  const deckOpsMatch = url.pathname.match(/^\/api\/projects\/([^/]+)\/officecli-deck-ops$/);
+  if (deckOpsMatch && req.method === "POST") {
+    const project = state.projects.find((item) => item.id === decodeURIComponent(deckOpsMatch[1]));
+    if (!project) {
+      sendJson(res, 404, { error: "project_not_found" });
+      return true;
+    }
+    if (denyForeignProject({ res, sendJson, state, actor, projectId: project.id, notFound: { error: "project_not_found" } })) return true;
+    const body = await readJson(req);
+    const worktreeId = body?.worktree ?? body?.worktreeId ?? null;
+    const worktree = worktreeId ? (state.worktrees ?? []).find((w) => w.id === worktreeId && w.projectId === project.id) : null;
+    const rootPath = worktree?.path ?? worktree?.worktreePath ?? project.path;
+    const editedShapes = body?.shapes && typeof body.shapes === "object" ? body.shapes : null;
+    if (!editedShapes) {
+      sendJson(res, 400, { error: "invalid_shapes", message: "A shapes map is required." });
+      return true;
+    }
+    try {
+      const deck = await readOfficecliDeck({ projectPath: rootPath, relativeFile: body?.file ?? body?.path ?? "" });
+      // The original editable-shape text map, from the fresh read.
+      const original = {};
+      for (const slide of deck.slides) for (const shape of slide.shapes) if (shape.editable) original[shape.path] = shape.text;
+      const { commands } = computeDeckOps({ original, edited: editedShapes });
+      sendJson(res, 200, { commands });
+    } catch (error) {
+      const code = error instanceof OfficecliPreviewError ? error.code : "deck_ops_failed";
       const status = code === "not_found" ? 404 : code === "officecli_unavailable" ? 503 : 400;
       sendJson(res, status, { error: code, message: error instanceof Error ? error.message : String(error) });
     }
