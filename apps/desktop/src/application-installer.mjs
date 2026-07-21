@@ -3,7 +3,7 @@ import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 
 const SCHEMA_VERSION = "application-install-plan/v1";
-const RECIPE_VERSION = "2026-07-19.1";
+const RECIPE_VERSION = "2026-07-21.1";
 const PLAN_TTL_MS = 10 * 60 * 1000;
 const NPM_REGISTRY = "https://registry.npmjs.org/";
 const GIT_FOR_WINDOWS_VERSION = "2.50.1";
@@ -79,6 +79,14 @@ const RECIPES = {
     windows: npmRecipe("npm.cmd", "@openai/codex", "0.144.6", "codex"),
     macos: npmRecipe("npm", "@openai/codex", "0.144.6", "codex"),
     linux: npmRecipe("npm", "@openai/codex", "0.144.6", "codex"),
+  },
+  // #1356: the optional Excalidraw CLI runtime. Byte-aligned mirror of the server
+  // recipe (application-install-plans.mjs) — the bridge re-derives and refuses any
+  // plan that does not match this exact argv, so the two copies stay in lockstep.
+  "excalidraw-cli": {
+    windows: npmRecipe("npm.cmd", "@tommywalkie/excalidraw-cli", "0.5.0", "excalidraw-cli"),
+    macos: npmRecipe("npm", "@tommywalkie/excalidraw-cli", "0.5.0", "excalidraw-cli"),
+    linux: npmRecipe("npm", "@tommywalkie/excalidraw-cli", "0.5.0", "excalidraw-cli"),
   },
 };
 

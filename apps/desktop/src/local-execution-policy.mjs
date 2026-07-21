@@ -301,6 +301,20 @@ export function createLocalExecutionPolicyManifest({
         filePolicy: "workspace_write",
         networkPolicy: "forbidden",
       },
+      {
+        // Excalidraw CLI runtime (#1356, PR1 scaffolding). PRESENCE-ONLY: this
+        // entry lets the device probe the approved binary for readiness/version
+        // (oclif `--version`, exit 0) and, when absent, refuse a future invocation
+        // with `binary_unavailable` instead of an opaque exit 127 — the graceful
+        // degradation to browser export. No export verb is wired yet (the governed
+        // workspace_write export/layout slice is PR2), so `wrapperArgsAllowed` has
+        // NO branch for this prefix and every invocation is default-denied.
+        command: "excalidraw-cli",
+        capabilityPrefix: "app.app_excalidraw_cli.wrapper.",
+        filePolicy: "read_only",
+        networkPolicy: "forbidden",
+        probe: { executable: "excalidraw-cli", args: ["--version"] },
+      },
     ],
     policies: {
       demoAgent: { file: ["read_only"], network: ["forbidden"] },
