@@ -28,12 +28,13 @@ function statusTone(status: string): Tone {
 
 function readinessTone(state?: string): Tone {
   if (state === "ready") return "success";
-  if (["login_required", "repair_required", "bridge_offline"].includes(state ?? "")) return "warning";
+  if (["not_installed", "login_required", "repair_required", "bridge_offline"].includes(state ?? "")) return "warning";
   if (state === "archived") return "danger";
   return "neutral";
 }
 
 function readinessLabel(state?: string): string {
+  if (state === "not_installed") return "Not installed";
   if (state === "login_required") return "Sign in";
   if (state === "repair_required") return "Repair";
   if (state === "bridge_offline") return "Local bridge offline";
@@ -248,7 +249,7 @@ export function ApplicationsView() {
                       setSetupApplication(app.source.type === "binary" ? app.source.binary : app.name.toLowerCase());
                       setRegisterOpen(true);
                     }}>
-                      {app.localReadiness.state === "login_required" ? "Sign in" : "Repair"}
+                      {app.localReadiness.state === "login_required" ? "Sign in" : app.localReadiness.state === "not_installed" ? "Install" : "Repair"}
                     </Button>
                   </div>
                 ) : null}
