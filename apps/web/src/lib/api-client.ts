@@ -695,6 +695,17 @@ export const api = {
       "GET",
       `/api/projects/${encodeURIComponent(projectId)}/officecli-doc-outline?path=${encodeURIComponent(filePath)}${worktreeId ? `&worktree=${encodeURIComponent(worktreeId)}` : ""}`,
     ),
+  // L1 block editing: given the edited block list, the server re-reads the current
+  // .docx outline and returns the batch item list for one governed `apply.batch`.
+  officecliBlockOps: (
+    projectId: string,
+    payload: { file: string; worktree: string; blocks: { path: string | null; md: string }[] },
+  ) =>
+    request<{ commands: Record<string, unknown>[] }>(
+      "POST",
+      `/api/projects/${encodeURIComponent(projectId)}/officecli-block-ops`,
+      payload,
+    ),
   worktreeGit: (id: string) => request("GET", `/api/worktrees/${encodeURIComponent(id)}/git`),
   worktreeDiff: (id: string) => request("GET", `/api/worktrees/${encodeURIComponent(id)}/diff`),
   reviewWorktree: (id: string, payload: { verdict: "approved" | "changes_requested"; summary?: string; comments?: { path: string | null; body: string }[] }) =>
