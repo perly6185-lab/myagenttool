@@ -99,6 +99,18 @@ test("short in-place edits below the similarity threshold keep their paraId (F4)
   );
 });
 
+test("the positional pass never pairs onto a COMPLEX original (no silent edit-drop + wrong delete)", () => {
+  // A complex paragraph (inline picture) can't be rewritten by computeBlockOps, so
+  // pairing an unrelated new block onto it would drop the edit AND delete the kept
+  // paragraph. It must fall through to the correct outcome instead.
+  const o = [{ path: "p1", md: "X", complex: true }, { path: "p2", md: "Y" }];
+  // typed a single new paragraph -> pairs onto the plain p2, complex p1 deletes.
+  assert.deepEqual(paths(alignBlocks(o, ["Z"])), ["p2"]);
+  // an exact (unchanged) projection of a complex paragraph still matches it (no-op),
+  // so keeping its text verbatim preserves it.
+  assert.deepEqual(paths(alignBlocks(o, ["X", "Ynew"])), ["p1", "p2"]);
+});
+
 test("a genuine insert and delete in DIFFERENT places don't cross-pair into an edit", () => {
   // delete p2, insert a new block later — anchors (p1, p3) keep the gaps apart, so
   // p2 is a delete and the new block is an insert (not a spurious p2→new edit).

@@ -182,12 +182,23 @@ export async function readOfficecliDocParagraphs({ projectPath, relativeFile, ti
     .filter((child) => child?.type === "paragraph" && typeof child?.path === "string")
     .map((child) => {
       const kids = Array.isArray(child.children) ? child.children : [];
-      // A paragraph is `complex` if it holds any run-level child that ISN'T a run
-      // (an inline picture, hyperlink, field, …). officecli still addresses those
-      // positionally as r[n], so the run-rebuild / set-text edit path would DELETE
-      // them. Such paragraphs must not be edited via the run model — only the runs
-      // are surfaced, and the mapper refuses to rewrite them (see computeBlockOps).
-      const complex = kids.some((c) => c?.type && c.type !== "run");
+      // A paragraph is `complex` if editing it via the run model (set-text /
+      // run-rebuild, which removes+re-adds r[n]) would DESTROY content the markdown
+      // projection can't reconstruct. That is any RUN-INDEXED (`…/r[N]`) child that
+      // is not a plain run (an inline picture/OLE), a hyperlink run (its rel is lost
+      // on rebuild), or a footnote/endnote/comment reference run. Non-run-indexed
+      // children (a bookmark at `…/bookmark[N]`) are NOT touched by `remove r[k]`,
+      // so they must NOT freeze the paragraph. officecli flattens a hyperlink/ref's
+      // inner run to `type:"run"`, so type alone is insufficient — check the run's
+      // format markers too.
+      const complex = kids.some((c) => {
+        if (!/\/r\[\d+\]$/.test(String(c?.path ?? ""))) return false;
+        if (c.type !== "run") return true;
+        const fmt = c.format ?? {};
+        if (fmt.isHyperlink || fmt._hyperlinkParent) return true;
+        const rStyle = typeof fmt.rStyle === "string" ? fmt.rStyle.toLowerCase() : "";
+        return rStyle === "footnotereference" || rStyle === "endnotereference" || rStyle === "commentreference";
+      });
       return {
         path: child.path,
         type: child.type,

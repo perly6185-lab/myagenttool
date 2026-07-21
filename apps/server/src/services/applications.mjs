@@ -1065,11 +1065,17 @@ function isSafeRelFilePath(value) {
 // formula, colors, text) is inert data and keeps the plain length/newline check.
 // Prop keys officecli resolves to READ a local file into the document (verified
 // against v1.0.139: picture/ole `src`, `path`/`preview` aliases, table `data`,
-// cell/shape `image`). Each value must be worktree-safe.
-const OFFICECLI_SOURCE_PROP_KEYS = new Set(["src", "path", "preview", "data", "image"]);
-// Keys whose value is literal document CONTENT, never resolved as a file — a cell
-// value / paragraph or shape text may legitimately look like a path (`/x`, `../y`).
-const OFFICECLI_CONTENT_PROP_KEYS = new Set(["value", "formula", "text"]);
+// cell/shape `image` and its `imagefill`/`img` aliases). Each value must be
+// worktree-safe.
+const OFFICECLI_SOURCE_PROP_KEYS = new Set(["src", "path", "preview", "data", "image", "imagefill", "img"]);
+// Keys whose value is NOT a local file read, so the escaping-path backstop must not
+// touch them: literal document CONTENT (a cell value / text may look like a path),
+// and hyperlink/reference TARGETS (a stored URI/anchor officecli never opens — a
+// site-relative `/team`, a `../doc.docx`, or a `C:\file` link is legitimate).
+const OFFICECLI_CONTENT_PROP_KEYS = new Set([
+  "value", "formula", "text",
+  "link", "href", "target", "url", "hyperlink", "anchor", "tooltip",
+]);
 
 // A media source is safe iff it is a self-contained data: URI, or a worktree-safe
 // relative file path. Any other scheme (http(s)://, file://, a Windows drive) is

@@ -139,6 +139,25 @@ test("readOfficecliDocParagraphs flags a paragraph with inline non-run content a
   assert.deepEqual(out.paragraphs[0].runs.map((r) => r.text), ["before ", " after"]);
 });
 
+test("complex detection: hyperlink/footnote runs (flattened to type=run) are flagged; bookmark is NOT", async () => {
+  const root = projectWith({ "memo.docx": "x" });
+  const para = (pid, kids) => ({ path: `/body/p[@paraId=${pid}]`, type: "paragraph", text: "t", style: null, children: kids });
+  const r = (pid, n, fmt = {}) => ({ path: `/body/p[@paraId=${pid}]/r[${n}]`, type: "run", text: "x", format: fmt });
+  const json = JSON.stringify({ success: true, data: { results: [{ path: "/body", type: "body", children: [
+    // hyperlink: inner run flattened to type:run but marked isHyperlink
+    para("1", [r("1", 1), r("1", 2, { isHyperlink: true, url: "https://x" })]),
+    // footnote reference run (rStyle)
+    para("2", [r("2", 1), r("2", 2, { rStyle: "FootnoteReference" })]),
+    // bookmark: a non-run-indexed child — safe, must stay editable
+    para("3", [r("3", 1), { path: "/body/p[@paraId=3]/bookmark[1]", type: "bookmark" }]),
+    // plain multi-run — editable
+    para("4", [r("4", 1), r("4", 2, { bold: true })]),
+  ] }] } });
+  const out = await readOfficecliDocParagraphs({ projectPath: root, relativeFile: "memo.docx", run: async () => ({ stdout: json }) });
+  assert.deepEqual(out.paragraphs.map((p) => p.complex), [true, true, false, false],
+    "hyperlink+footnote complex; bookmark+plain editable");
+});
+
 const WORKBOOK_JSON = JSON.stringify({
   success: true,
   data: { results: [{ path: "/", type: "workbook", children: [{ path: "/Sheet1", type: "sheet" }] }] },

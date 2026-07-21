@@ -63,7 +63,7 @@ export function similarity(a, b) {
  * @returns {{path:string|null, md:string}[]}
  */
 export function alignBlocks(original, newBlocks, { threshold = 0.5 } = {}) {
-  const origs = (Array.isArray(original) ? original : []).map((o, i) => ({ i, path: o.path, md: o.md, used: false }));
+  const origs = (Array.isArray(original) ? original : []).map((o, i) => ({ i, path: o.path, md: o.md, complex: Boolean(o.complex), used: false }));
   const news = (Array.isArray(newBlocks) ? newBlocks : []).map((md, idx) => ({ idx, md, path: null, matched: false, origIdx: -1 }));
 
   const claim = (n, o) => {
@@ -115,7 +115,12 @@ export function alignBlocks(original, newBlocks, { threshold = 0.5 } = {}) {
   let prevOi = -1;
   for (const a of [...anchors, { ni: news.length, oi: origs.length }]) {
     const gapNews = news.filter((n) => n.idx > prevNi && n.idx < a.ni && !n.matched);
-    const gapOrigs = origs.filter((o) => o.i > prevOi && o.i < a.oi && !o.used);
+    // Exclude COMPLEX originals (inline picture/link/field) from a positional guess:
+    // computeBlockOps refuses to rewrite them, so pairing an unrelated new block onto
+    // one would silently drop the edit AND delete the paragraph the user actually kept.
+    // Left unpaired, a complex original falls through to a delete (its content isn't
+    // representable in the textarea), and the new block becomes an insert — no loss.
+    const gapOrigs = origs.filter((o) => o.i > prevOi && o.i < a.oi && !o.used && !o.complex);
     const k = Math.min(gapNews.length, gapOrigs.length);
     for (let t = 0; t < k; t++) claim(gapNews[t], gapOrigs[t]);
     prevNi = a.ni;
