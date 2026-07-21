@@ -44,6 +44,167 @@ const isMaxCount = (value) => /^\d{1,4}$/.test(value) && Number(value) >= 1 && N
 // validator INDEPENDENTLY — closed char class, no leading "-", no "..".
 const isGitRev = (value) => /^[A-Za-z0-9._/-]{1,100}$/.test(value) && !value.includes("..");
 
+// The bridge's OWN copy of the OfficeCLI read-only argv spec (P1). Deliberately
+// duplicated from the server spec (apps/server .../officecli-application.mjs) —
+// two independent allowlists, so a buggy or compromised server still cannot make
+// a device spawn something new. Do NOT factor into a shared constant.
+//
+// Every command is READ-ONLY (stdout view / JSON read). Positionals are ordered
+// and heterogeneous (file, then path/selector/mode), so unlike the git spec each
+// command declares an ORDERED list of positional validators — position N is
+// checked by positionals[N]. A value with a leading "-" never validates as a
+// positional (it is treated as a flag, and no flags are declared), so a
+// flag-shaped injection in a value slot is refused.
+//
+// STRICTER than the server where it costs nothing: `file` must end in a known
+// Office extension, and `mode` must be one of the stdout view modes.
+const isOfficeArg = (value) => value.length >= 1 && value.length <= 200 && !/[\r\n]/.test(value);
+// A document FILE positional is a filesystem path officecli resolves against its
+// cwd (the worktree). Confining the cwd is NOT enough — a `../` or absolute path
+// in this positional escapes the worktree and reads/writes an arbitrary file
+// (confirmed: `officecli set ../x.xlsx …` wrote outside the worktree). So a file
+// must be a SAFE RELATIVE path: no traversal segment, not absolute (no leading
+// `/`, `~`, `\`, or a Windows drive), plus a known Office extension. Document DOM
+// paths (isOfficeArg, e.g. `/Sheet1/A1`) are NOT files and keep their leading `/`.
+const isSafeRelPath = (value) =>
+  value.length >= 1
+  && value.length <= 200
+  && !/[\r\n\0]/.test(value)
+  && !value.startsWith("/")
+  && !value.startsWith("~")
+  && !value.startsWith("\\")
+  && !/^[A-Za-z]:/.test(value)
+  && !value.split(/[/\\]/).includes("..");
+const isOfficeFile = (value) => isSafeRelPath(value) && /\.(docx|xlsx|pptx)$/i.test(value);
+// A CSV/TSV source file (officecli import) — same worktree-safe rule, data ext.
+const isOfficeCsvFile = (value) => isSafeRelPath(value) && /\.(csv|tsv)$/i.test(value);
+// Inline merge --data: a JSON object/array within a byte bound. Independent mirror
+// of the server's normalizeJsonData. One discrete argv token (no shell).
+const isOfficeJsonData = (value) => {
+  if (typeof value !== "string" || value.length > 16 * 1024) return false;
+  let parsed;
+  try { parsed = JSON.parse(value); } catch { return false; }
+  return parsed !== null && typeof parsed === "object";
+};
+// `html` renders a self-contained preview to stdout (read-only); svg/screenshot
+// write temp files and stay out of the read-only wrapper. Mirror the server enum.
+const OFFICE_VIEW_MODES = new Set(["text", "annotated", "outline", "stats", "issues", "forms", "html"]);
+const isOfficeViewMode = (value) => OFFICE_VIEW_MODES.has(value);
+
+const OFFICECLI_WRAPPER_ARGS = {
+  get: { base: ["get", "--json"], flags: {}, positionals: [isOfficeFile, isOfficeArg] },
+  query: { base: ["query", "--json"], flags: {}, positionals: [isOfficeFile, isOfficeArg] },
+  view: { base: ["view"], flags: {}, positionals: [isOfficeFile, isOfficeViewMode] },
+  validate: { base: ["validate", "--json"], flags: {}, positionals: [isOfficeFile] },
+  dump: { base: ["dump"], flags: {}, positionals: [isOfficeFile, isOfficeArg] },
+};
+
+// The bridge's OWN copy of the OfficeCLI WRITE argv spec (P3.1, #1349). Same
+// two-allowlist duplication rule as the read spec above. These run under the
+// `officecliApply` write policy (workspace_write), NOT the read-only wrapper
+// bucket — see classifySpawn + policies.officecliApply. `remove` is the first
+// write verb; its argv is two positionals (file, path), identical in shape to the
+// read `get`, which is exactly why it proves the write path with no new argv
+// modeling. A value with a leading "-" never validates as a positional.
+// A `--prop key=value` pair: an identifier key, then `=`, then a bounded value
+// that may itself contain `=` (formulas/text) but no control chars. Independent
+// mirror of the server's props validator. A leading "-" can't match (key must
+// start with a letter), so a prop pair can never smuggle a new flag.
+// Prop keys officecli opens as a MEDIA FILE SOURCE (src/path alias, preview). A
+// value here must be worktree-safe (a data: URI or a safe relative file), never a
+// `../`/absolute path or a remote URL — else `--prop src=../../etc/x.png` reads an
+// arbitrary host file into the document. Independent mirror of the server rule.
+const OFFICE_SOURCE_PROP_KEYS = new Set(["src", "path", "preview"]);
+const isOfficeSafeMediaSource = (value) => {
+  if (typeof value !== "string" || value.length > 500 || /[\r\n\0]/.test(value)) return false;
+  if (/^data:/i.test(value)) return true;
+  if (/^[a-zA-Z][a-zA-Z0-9+.\-]*:/.test(value)) return false; // any scheme / drive letter
+  return isSafeRelPath(value);
+};
+const isOfficePropPair = (value) => {
+  const m = /^([a-zA-Z][a-zA-Z0-9._-]{0,39})=([^\r\n]{0,200})$/.exec(value);
+  if (!m) return false;
+  return OFFICE_SOURCE_PROP_KEYS.has(m[1].toLowerCase()) ? isOfficeSafeMediaSource(m[2]) : true;
+};
+
+// The closed set of element kinds `add --type` accepts. Independent mirror of the
+// server's OFFICECLI_ELEMENT_TYPES — an unknown --type value is refused here too.
+const OFFICE_ELEMENT_TYPES = new Set([
+  "paragraph", "run", "table", "sheet", "row", "column", "cell",
+  "slide", "shape", "picture", "diagram", "flowchart", "ole", "video",
+]);
+const isOfficeElementType = (value) => OFFICE_ELEMENT_TYPES.has(value);
+
+// A `batch --commands` JSON value. Independent mirror of the server's
+// normalizeJsonCommands: it must parse to an array of ≤100 objects, each with a
+// `command` in the write-verb allowlist, within a byte bound. A read/low-level
+// verb, a non-array, or an oversized payload is refused.
+const OFFICE_BATCH_VERBS = new Set(["add", "set", "remove", "move", "swap"]);
+const isOfficeBatchCommands = (value) => {
+  if (typeof value !== "string" || value.length > 16 * 1024) return false;
+  let list;
+  try { list = JSON.parse(value); } catch { return false; }
+  if (!Array.isArray(list) || list.length === 0 || list.length > 100) return false;
+  return list.every((item) =>
+    item && typeof item === "object" && !Array.isArray(item)
+    && OFFICE_BATCH_VERBS.has(String(item.command))
+    // A batch item's props are otherwise unchecked — a media-source prop that
+    // escapes the worktree must be refused inside a batch too.
+    && officeItemPropsSafe(item.props));
+};
+// A batch item's props: any media-source key (src/path/preview) must be worktree-safe.
+const officeItemPropsSafe = (props) => {
+  if (!props || typeof props !== "object" || Array.isArray(props)) return true;
+  return Object.entries(props).every(([key, val]) =>
+    !OFFICE_SOURCE_PROP_KEYS.has(String(key).toLowerCase()) || isOfficeSafeMediaSource(String(val ?? "")));
+};
+
+const OFFICECLI_APPLY_WRAPPER_ARGS = {
+  remove: { base: ["remove"], flags: {}, positionals: [isOfficeFile, isOfficeArg] },
+  // set <file> <path> --prop key=value ... — repeatable --prop (each value is a
+  // key=value pair). The matcher handles repeated flags + ordered positionals.
+  set: { base: ["set"], flags: { "--prop": isOfficePropPair }, positionals: [isOfficeFile, isOfficeArg] },
+  // add <file> <parent> --type <kind> --prop key=value ... — a closed --type enum
+  // plus repeatable --prop pairs, positionals (file, parent) first.
+  add: { base: ["add"], flags: { "--type": isOfficeElementType, "--prop": isOfficePropPair }, positionals: [isOfficeFile, isOfficeArg] },
+  // batch <file> --commands <json> — one JSON operation list, verb-allowlisted.
+  batch: { base: ["batch"], flags: { "--commands": isOfficeBatchCommands }, positionals: [isOfficeFile] },
+  // swap <file> <path1> <path2> — three positionals, no options.
+  swap: { base: ["swap"], flags: {}, positionals: [isOfficeFile, isOfficeArg, isOfficeArg] },
+  // move <file> <path> [--to|--after|--before <target-path>] — positionals + path flags.
+  move: { base: ["move"], flags: { "--to": isOfficeArg, "--after": isOfficeArg, "--before": isOfficeArg }, positionals: [isOfficeFile, isOfficeArg] },
+  // import <file> <sheet> <source.csv> [--header] [--format csv|tsv] — three
+  // positionals (target xlsx, sheet DOM path, worktree-safe CSV source) plus a
+  // valueless --header (flag=true) and a csv/tsv --format enum.
+  import: {
+    base: ["import"],
+    flags: { "--header": true, "--format": (v) => v === "csv" || v === "tsv" },
+    positionals: [isOfficeFile, isOfficeArg, isOfficeCsvFile],
+  },
+  // merge <template> <output> --data <json> [--force] — two worktree-safe office
+  // files (template in, output out) + inline JSON data + a valueless --force.
+  merge: {
+    base: ["merge"],
+    flags: { "--data": isOfficeJsonData, "--force": true },
+    positionals: [isOfficeFile, isOfficeFile],
+  },
+};
+
+// The bridge's OWN copy of the excalidraw-cli WRITE argv spec (#1356, PR2). Same
+// two-allowlist duplication rule as the officecli specs above — do NOT factor into
+// a shared constant. `export` renders an Excalidraw scene FILE to a PNG, both
+// worktree-safe relative paths (no traversal, not absolute) with a required
+// extension, so neither positional can escape the worktree. A value with a leading
+// "-" never validates as a positional. Runs under the excalidrawCliApply write
+// policy (workspace_write), NOT the read-only wrapper bucket.
+const isExcalidrawSceneFile = (value) => isSafeRelPath(value) && /\.excalidraw$/i.test(value);
+const isExcalidrawPngFile = (value) => isSafeRelPath(value) && /\.png$/i.test(value);
+const EXCALIDRAW_CLI_APPLY_WRAPPER_ARGS = {
+  // Both positionals are REQUIRED: `excalidraw-cli <input.excalidraw> <output.png>`.
+  // minPositionals refuses a partial argv (a run missing its output) outright.
+  export: { base: [], flags: {}, positionals: [isExcalidrawSceneFile, isExcalidrawPngFile], minPositionals: 2 },
+};
+
 const GIT_WRAPPER_ARGS = {
   status: { base: ["--no-pager", "status", "--porcelain=v2", "--branch"], flags: {} },
   log: {
@@ -140,6 +301,45 @@ export function createLocalExecutionPolicyManifest({
         networkPolicy: "forbidden",
         authenticationProbe: { executable: "codex", args: ["login", "status"], format: "exit-code" },
       },
+      {
+        command: "officecli",
+        capabilityPrefix: "app.app_officecli.wrapper.",
+        filePolicy: "read_only",
+        networkPolicy: "forbidden",
+      },
+      {
+        // OfficeCLI WRITE verbs (P3.1). A distinct capability prefix + filePolicy
+        // from the read entry above, so a read command can never resolve to a
+        // write policy and vice versa. Gated by the officecliApply policy bucket.
+        command: "officecli",
+        capabilityPrefix: "app.app_officecli.apply.",
+        filePolicy: "workspace_write",
+        networkPolicy: "forbidden",
+      },
+      {
+        // Excalidraw CLI runtime (#1356, PR1 scaffolding). PRESENCE-ONLY: this
+        // entry lets the device probe the approved binary for readiness/version
+        // (oclif `--version`, exit 0) and, when absent, refuse a future invocation
+        // with `binary_unavailable` instead of an opaque exit 127 — the graceful
+        // degradation to browser export. No export verb is wired yet (the governed
+        // workspace_write export/layout slice is PR2), so `wrapperArgsAllowed` has
+        // NO branch for this prefix and every invocation is default-denied.
+        command: "excalidraw-cli",
+        capabilityPrefix: "app.app_excalidraw_cli.wrapper.",
+        filePolicy: "read_only",
+        networkPolicy: "forbidden",
+        probe: { executable: "excalidraw-cli", args: ["--version"] },
+      },
+      {
+        // Excalidraw CLI WRITE verb (#1356, PR2). A distinct capability prefix +
+        // filePolicy from the presence-only read entry above, so a probe can never
+        // resolve to a write policy and vice versa. Gated by the excalidrawCliApply
+        // policy bucket; the render writes a PNG in the invocation's worktree.
+        command: "excalidraw-cli",
+        capabilityPrefix: "app.app_excalidraw_cli.apply.",
+        filePolicy: "workspace_write",
+        networkPolicy: "forbidden",
+      },
     ],
     policies: {
       demoAgent: { file: ["read_only"], network: ["forbidden"] },
@@ -152,6 +352,16 @@ export function createLocalExecutionPolicyManifest({
       // claude.apply: the runner writes to the worktree with git apply and needs no
       // network. workspace_write only; never native_controls (there is no sandbox).
       claudeApply: { file: ["workspace_write", "read_only"], network: ["forbidden"] },
+      // officecli.apply (P3.1): OfficeCLI write verbs edit a document IN PLACE in the
+      // invocation's worktree. workspace_write, never network; no sandbox, so never
+      // native_controls. Its own bucket keeps the read-only `wrapper` bucket — which
+      // ccusage/git/claude/read-officecli share — from ever widening to writes.
+      officecliApply: { file: ["workspace_write", "read_only"], network: ["forbidden"] },
+      // excalidrawCliApply (#1356 PR2): the excalidraw-cli export verb renders a
+      // scene to a PNG IN PLACE in the invocation's worktree. workspace_write, never
+      // network; no sandbox, so never native_controls. Its own bucket keeps the
+      // read-only wrapper bucket from ever widening to writes.
+      excalidrawCliApply: { file: ["workspace_write", "read_only"], network: ["forbidden"] },
     },
   };
 }
@@ -262,6 +472,26 @@ export function localExecutionGate(work, adapter, spawnPlan, { permissionDecisio
       : "network_policy_exceeded";
     return refused("Local execution gate refused a command whose file or network policy exceeds the local allowlist.", { ...evidence, refusalCode });
   }
+  // OfficeCLI writes edit a document IN PLACE, so they must land in the invocation's
+  // WORKTREE — never the project clone — to stay reviewable before promotion. The
+  // general cwd check above admits the project root as an approved root; a write
+  // demands the stricter guarantee. Refuse a write with no worktree, or whose cwd
+  // is not inside it (e.g. resolved to the project fallback). (#1357)
+  if (commandKind === "officecliApply" || commandKind === "excalidrawCliApply") {
+    const worktreeRoot = work?.options?.metadata?.worktreePath;
+    // Confine the directory the CLI ACTUALLY writes in — the wrapper's `--cwd`
+    // (parsed.cwd), the same value applicationWrapperGate confines — not the outer
+    // runner's spawnPlan.cwd. They normally coincide, but the write lands in --cwd,
+    // so that is the value the worktree-only rule must check.
+    const writeCwd = parseApplicationWrapperArgs(spawnPlan.args ?? []).cwd ?? spawnPlan.cwd;
+    if (typeof worktreeRoot !== "string" || !worktreeRoot.trim() || !pathWithin(worktreeRoot, writeCwd)) {
+      return refused(
+        "Local execution gate refused an application write outside a worktree — writes must run in the invocation's worktree, never the project clone.",
+        { ...evidence, refusalCode: "cwd_outside_approved_root" },
+        "policy_blocked",
+      );
+    }
+  }
   if (isApplicationWrapperSpawn(spawnPlan, manifest)) {
     const wrapperGate = applicationWrapperGate(work, spawnPlan, localPolicy, approvedRoots, manifest, resolveBinary);
     evidence.applicationWrapper = wrapperGate.evidence;
@@ -293,6 +523,21 @@ function classifySpawn(adapter, spawnPlan, manifest = {}) {
   if (isAllowlistedCodexExecWrapper(spawnPlan, manifest)) return "codexExec";
   // Same for the write-capable Claude apply runner — never read_only.
   if (isAllowlistedClaudeApplyWrapper(spawnPlan, manifest)) return "claudeApply";
+  // OfficeCLI WRITE verbs (P3.1) run through the SAME application-wrapper.mjs runner
+  // as the read verbs, so they can't be told apart by script path — the write spec's
+  // `apply` capability is the signal. Classify it BEFORE the generic read-only
+  // `wrapper` kind so a write lands in the officecliApply bucket, never read_only.
+  if (isApplicationWrapperSpawn(spawnPlan, manifest)
+    && String(parseApplicationWrapperArgs(spawnPlan.args ?? []).capability ?? "").startsWith("app.app_officecli.apply.")) {
+    return "officecliApply";
+  }
+  // Same for the excalidraw-cli export WRITE verb (#1356 PR2): its `apply` capability
+  // is the signal, classified BEFORE the generic read-only `wrapper` kind so a render
+  // lands in the excalidrawCliApply bucket, never read_only.
+  if (isApplicationWrapperSpawn(spawnPlan, manifest)
+    && String(parseApplicationWrapperArgs(spawnPlan.args ?? []).capability ?? "").startsWith("app.app_excalidraw_cli.apply.")) {
+    return "excalidrawCliApply";
+  }
   if (isAllowlistedNodeWrapper(adapter, spawnPlan, manifest)) return "wrapper";
   return null;
 }
@@ -497,7 +742,66 @@ function wrapperArgsAllowed(capability, args) {
   const cap = String(capability ?? "");
   if (cap.startsWith("app.app_ccusage.wrapper.")) return ccusageArgsAllowed(cap, args);
   if (cap.startsWith("app.app_git.wrapper.")) return gitArgsAllowed(cap, args);
+  if (cap.startsWith("app.app_officecli.wrapper.")) return officecliArgsAllowed(cap, args);
+  if (cap.startsWith("app.app_officecli.apply.")) return officecliApplyArgsAllowed(cap, args);
+  // #1356 PR2: the excalidraw-cli export WRITE verb. The presence-only read prefix
+  // (app.app_excalidraw_cli.wrapper.) still has NO branch — it stays default-denied.
+  if (cap.startsWith("app.app_excalidraw_cli.apply.")) return excalidrawCliApplyArgsAllowed(cap, args);
   return false;
+}
+
+function excalidrawCliApplyArgsAllowed(capability, args) {
+  const cmd = String(capability ?? "").match(/^app\.app_excalidraw_cli\.apply\.([a-z0-9_]+)$/)?.[1] ?? null;
+  // Reuse the shared officecli argv matcher: match the declared base as a prefix,
+  // then each positional against its OWN validator. An undeclared flag, an
+  // over-count positional, or a positional failing its validator is refused.
+  return officecliArgvMatches(cmd ? EXCALIDRAW_CLI_APPLY_WRAPPER_ARGS[cmd] : null, args);
+}
+
+function officecliApplyArgsAllowed(capability, args) {
+  const cmd = String(capability ?? "").match(/^app\.app_officecli\.apply\.([a-z0-9_]+)$/)?.[1] ?? null;
+  const spec = cmd ? OFFICECLI_APPLY_WRAPPER_ARGS[cmd] : null;
+  return officecliArgvMatches(spec, args);
+}
+
+function officecliArgsAllowed(capability, args) {
+  const cmd = String(capability ?? "").match(/^app\.app_officecli\.wrapper\.([a-z0-9_]+)$/)?.[1] ?? null;
+  return officecliArgvMatches(cmd ? OFFICECLI_WRAPPER_ARGS[cmd] : null, args);
+}
+
+// Shared argv matcher for the read (.wrapper.) and write (.apply.) officecli specs.
+// Args must match the declared base as a PREFIX, then declared flag/value pairs,
+// then declared positionals — each position validated by its OWN validator
+// (positionals[N]). An undeclared flag, an over-count positional, or a positional
+// failing its position validator is refused.
+function officecliArgvMatches(spec, args) {
+  if (!spec || !stringArrayStartsWith(args, spec.base)) return false;
+  const rest = args.slice(spec.base.length);
+  const positionals = Array.isArray(spec.positionals) ? spec.positionals : [];
+  let positionalIndex = 0;
+  let index = 0;
+  while (index < rest.length) {
+    const token = String(rest[index] ?? "");
+    if (token.startsWith("-")) {
+      const validate = spec.flags[token];
+      // A valueless boolean flag is declared as `true` (e.g. --header) — it
+      // consumes no value token.
+      if (validate === true) { index += 1; continue; }
+      const value = rest[index + 1];
+      if (typeof validate !== "function" || value === undefined || !validate(value)) return false;
+      index += 2;
+    } else {
+      const validate = positionals[positionalIndex];
+      if (typeof validate !== "function" || !validate(token)) return false;
+      positionalIndex += 1;
+      index += 1;
+    }
+  }
+  // A spec may require a MINIMUM positional count so a partial argv (e.g. an
+  // export missing its output path, which a server-side dropped input can produce)
+  // is refused rather than run as a valid-but-wrong single-arg invocation. Default
+  // 0 keeps every existing spec's behavior unchanged.
+  return positionalIndex >= (spec.minPositionals ?? 0);
 }
 
 function ccusageArgsAllowed(capability, args) {

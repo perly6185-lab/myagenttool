@@ -15,6 +15,8 @@
 
 import { spawn } from "node:child_process";
 
+import { resolveWrapperChildEnv } from "./application-wrapper-env.mjs";
+
 // Cap captured output so a runaway command can't OOM the runner or produce a
 // RESULT line too large for the consumer's line buffer. Once exceeded we stop
 // accumulating and terminate the child (truncated output still yields a
@@ -94,6 +96,9 @@ function run(command, args, cwd, timeoutMs) {
   return new Promise((resolveResult) => {
     const child = spawn(command, args, {
       cwd: cwd || process.cwd(),
+      // officecli writes must flush to disk before this runner returns success
+      // (a deferred resident write could otherwise be captured stale by a promote).
+      env: resolveWrapperChildEnv(command),
       windowsHide: true,
       shell: false,
       stdio: ["ignore", "pipe", "pipe"],

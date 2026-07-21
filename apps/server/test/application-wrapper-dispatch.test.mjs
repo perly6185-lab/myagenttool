@@ -144,3 +144,54 @@ test("an unknown wrapper command resolves no plan and is refused", () => {
   assert.equal(res.status, 404);
   assert.equal(created.length, 0);
 });
+
+// --- worktree-scoped writes: officecli apply.* runs IN a worktree (#human-edit) ---
+import { createOfficecliApplicationRegistration } from "../src/services/officecli-application.mjs";
+
+function officecliHarness() {
+  const state = {
+    applications: [],
+    projects: [{ id: "prj_1", path: "/tmp/repo" }],
+    worktrees: [{ id: "wtr_1", projectId: "prj_1", path: "/tmp/repo-wt", branch: "edit" }],
+  };
+  const appSvc = createApplicationService({
+    state, now: () => "t", nextId: (p) => `${p}_x`, appendEvent: () => {}, persistStateSoon: () => {},
+    addProject: () => null, cloneProject: () => null, defaultProjectPath: "/tmp/repo",
+    validateApprovalToken: () => ({ approved: true, mode: "test" }),
+  });
+  appSvc.registerApplication(createOfficecliApplicationRegistration());
+  const created = [];
+  const capSvc = createCapabilityService({
+    state, listTools: () => [], getTool: () => null, createToolInvocation: () => ({ status: 500 }),
+    createInvocation: (task, agent, options) => { created.push({ task, agent, options }); return { id: "inv_1", status: "queued", agentId: agent.id, options }; },
+    completeInvocation: () => {},
+    findAgent: (id) => (id === "agt_platform_application_wrapper" ? { id, status: "available" } : null),
+    listApplications: appSvc.listApplications,
+    listApplicationCapabilities: appSvc.listApplicationCapabilities,
+    invokeApplicationCapability: appSvc.invokeApplicationCapability,
+    planApplicationWrapperInvocation: appSvc.planApplicationWrapperInvocation,
+  });
+  return { capSvc, created };
+}
+
+test("a workspace_write capability with a valid worktreeId stamps worktreePath on the invocation", () => {
+  const { capSvc, created } = officecliHarness();
+  const res = capSvc.createCapabilityInvocation("app.app_officecli.apply.set", {
+    projectId: "prj_1", worktreeId: "wtr_1", approvalToken: "ok",
+    file: "a.xlsx", path: "/Sheet1/A1", props: { value: "x" },
+  });
+  assert.equal(res.status, 202);
+  assert.equal(created[0].options.metadata.worktreePath, "/tmp/repo-wt", "the write runs IN the worktree");
+  assert.equal(created[0].options.metadata.projectId, "prj_1");
+});
+
+test("a foreign or unknown worktreeId is refused, never downgraded to the project clone", () => {
+  const { capSvc } = officecliHarness();
+  for (const worktreeId of ["wtr_unknown", "wtr_other"]) {
+    const res = capSvc.createCapabilityInvocation("app.app_officecli.apply.set", {
+      projectId: "prj_1", worktreeId, approvalToken: "ok", file: "a.xlsx", path: "/x", props: { value: "x" },
+    });
+    assert.equal(res.status, 409);
+    assert.equal(res.body.error, "worktree_not_found");
+  }
+});

@@ -5,6 +5,11 @@
   "description": "Personal and small-team Agent Control Plane.",
   "main": "apps/electron/src/main.mjs",
   "packageManager": "pnpm@9.15.0",
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "electron"
+    ]
+  },
   "scripts": {
     "dev": "node tools/dev/run-local-demo.mjs",
     "desktop:dev": "pnpm --filter @myagenttool/web build && electron .",
@@ -14,7 +19,9 @@
     "dev:restart-changed": "node tools/dev/restart-changed-services.mjs",
     "ccusage:register-app": "node tools/dev/register-ccusage-application.mjs",
     "git:register-app": "node tools/dev/register-git-application.mjs",
+    "canvas:register-app": "node tools/dev/register-canvas-application.mjs",
     "claude:register-app": "node tools/dev/register-claude-application.mjs",
+    "officecli:register-app": "node tools/dev/register-officecli-application.mjs",
     "gmail:register-app": "node tools/dev/register-gmail-application.mjs",
     "gmail:register-send-app": "node tools/dev/register-gmail-send-application.mjs",
     "mail:163:register": "node tools/dev/register-163-mail-application.mjs",

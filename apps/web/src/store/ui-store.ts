@@ -1,10 +1,19 @@
 import { create } from "zustand";
 import { createJSONStorage, persist } from "zustand/middleware";
+import {
+  DEFAULT_MODE,
+  DEFAULT_SKIN,
+  isSkinId,
+  isSkinMode,
+  type SkinId,
+  type SkinMode,
+} from "@/lib/skins";
 
 export type SectionKey =
   | "dashboard"
   | "workBoard"
   | "workspace"
+  | "canvas"
   | "compare"
   | "projects"
   | "task"
@@ -41,6 +50,7 @@ interface UiState {
   selectedProjectId: string | null;
   selectedWorktreeId: string | null;
   selectedAgentSkillId: string | null;
+  selectedCanvasSceneId: string | null;
   selectedToolName: string | null;
   selectedApplicationId: string | null;
   selectedApplicationRun: ApplicationRunSelection | null;
@@ -48,8 +58,15 @@ interface UiState {
   selectedAutomationId: string | null;
   /** Transient: the invocation whose Codex session the composer will continue on next send (#163). */
   resumeFromInvocationId: string | null;
+  /** Transient: the project-relative Office document the workspace preview is showing (#1347). */
+  officecliPreviewPath: string | null;
   /** Nav groups the operator has collapsed; expert groups start here so the rail isn't a wall of 22 (#928). */
   collapsedNavGroups: string[];
+  /** Active visual skin + light/dark mode; applied to <html> by useSkinSync. */
+  skin: SkinId;
+  mode: SkinMode;
+  setSkin: (skin: SkinId) => void;
+  setMode: (mode: SkinMode) => void;
   setSection: (section: SectionKey) => void;
   setSelectedAgentId: (id: string | null) => void;
   setSelectedInvocationId: (id: string | null) => void;
@@ -57,22 +74,32 @@ interface UiState {
   setSelectedProjectId: (id: string | null) => void;
   setSelectedWorktreeId: (id: string | null) => void;
   setSelectedAgentSkillId: (id: string | null) => void;
+  setSelectedCanvasSceneId: (id: string | null) => void;
   setSelectedToolName: (name: string | null) => void;
   setSelectedApplicationId: (id: string | null) => void;
   setSelectedApplicationRun: (selection: ApplicationRunSelection | null) => void;
   setSelectedEvidenceId: (id: string | null) => void;
   setSelectedAutomationId: (id: string | null) => void;
   setResumeFromInvocationId: (id: string | null) => void;
+  setOfficecliPreviewPath: (path: string | null) => void;
   toggleNavGroup: (group: string) => void;
 }
 
 /** Expert groups collapsed by default — Work/Run/Oversee stay open (#928). */
 export const DEFAULT_COLLAPSED_NAV_GROUPS = ["configure", "ledgers"];
 
+/**
+ * localStorage key for the persisted UI store. The index.html no-flash boot
+ * script reads the same key before React mounts; boot-skin-script.test.mjs pins
+ * them together so the two can't drift (#1360).
+ */
+export const UI_STORE_PERSIST_KEY = "myagenttool-ui";
+
 export const SECTION_KEYS: SectionKey[] = [
   "dashboard",
   "workBoard",
   "workspace",
+  "canvas",
   "compare",
   "projects",
   "task",
@@ -201,13 +228,19 @@ export const useUiStore = create<UiState>()(
         selectedProjectId: null,
         selectedWorktreeId: null,
         selectedAgentSkillId: null,
+        selectedCanvasSceneId: null,
         selectedToolName: null,
         selectedApplicationId: initialNavigation.selectedApplicationId ?? null,
         selectedApplicationRun: initialNavigation.selectedApplicationRun ?? null,
         selectedEvidenceId: initialNavigation.selectedEvidenceId ?? null,
         selectedAutomationId: initialNavigation.selectedAutomationId ?? null,
         resumeFromInvocationId: null,
+        officecliPreviewPath: null,
         collapsedNavGroups: [...DEFAULT_COLLAPSED_NAV_GROUPS],
+        skin: DEFAULT_SKIN,
+        mode: DEFAULT_MODE,
+        setSkin: (skin) => set({ skin }),
+        setMode: (mode) => set({ mode }),
         setSection: (section) => set({ section }),
         setSelectedAgentId: (selectedAgentId) => set({ selectedAgentId }),
         setSelectedInvocationId: (selectedInvocationId) => set({ selectedInvocationId }),
@@ -215,12 +248,14 @@ export const useUiStore = create<UiState>()(
         setSelectedProjectId: (selectedProjectId) => set({ selectedProjectId }),
         setSelectedWorktreeId: (selectedWorktreeId) => set({ selectedWorktreeId }),
         setSelectedAgentSkillId: (selectedAgentSkillId) => set({ selectedAgentSkillId }),
+        setSelectedCanvasSceneId: (selectedCanvasSceneId) => set({ selectedCanvasSceneId }),
         setSelectedToolName: (selectedToolName) => set({ selectedToolName }),
         setSelectedApplicationId: (selectedApplicationId) => set({ selectedApplicationId }),
         setSelectedApplicationRun: (selectedApplicationRun) => set({ selectedApplicationRun }),
         setSelectedEvidenceId: (selectedEvidenceId) => set({ selectedEvidenceId }),
         setSelectedAutomationId: (selectedAutomationId) => set({ selectedAutomationId }),
         setResumeFromInvocationId: (resumeFromInvocationId) => set({ resumeFromInvocationId }),
+        setOfficecliPreviewPath: (officecliPreviewPath) => set({ officecliPreviewPath }),
         toggleNavGroup: (group) =>
           set((state) => ({
             collapsedNavGroups: state.collapsedNavGroups.includes(group)
@@ -230,7 +265,7 @@ export const useUiStore = create<UiState>()(
       };
     },
     {
-      name: "myagenttool-ui",
+      name: UI_STORE_PERSIST_KEY,
       version: 1,
       storage: createJSONStorage(() => localStorage),
       // Persist navigation + selection only, never the setter functions.
@@ -242,11 +277,14 @@ export const useUiStore = create<UiState>()(
         selectedProjectId: state.selectedProjectId,
         selectedWorktreeId: state.selectedWorktreeId,
         selectedAgentSkillId: state.selectedAgentSkillId,
+        selectedCanvasSceneId: state.selectedCanvasSceneId,
         selectedToolName: state.selectedToolName,
         selectedApplicationId: state.selectedApplicationId,
         selectedApplicationRun: state.selectedApplicationRun,
         selectedEvidenceId: state.selectedEvidenceId,
         collapsedNavGroups: state.collapsedNavGroups,
+        skin: state.skin,
+        mode: state.mode,
       }),
       merge: (persisted, current) => {
         const saved = (persisted ?? {}) as Partial<UiState>;
@@ -259,6 +297,9 @@ export const useUiStore = create<UiState>()(
         if (!merged.section || !SECTION_KEYS.includes(merged.section)) {
           merged.section = "dashboard";
         }
+        // A skin/mode removed in a later release falls back to the default.
+        if (!isSkinId(merged.skin)) merged.skin = DEFAULT_SKIN;
+        if (!isSkinMode(merged.mode)) merged.mode = DEFAULT_MODE;
         // Explicit deep-link params override restored navigation selections.
         applyUrlNavigation(merged, navigationFromCurrentUrl());
         return merged;

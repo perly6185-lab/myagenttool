@@ -6,8 +6,12 @@ import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { useConsoleState } from "@/data/use-console-state";
 import { api } from "@/data/use-console-actions";
+import { useUiStore } from "@/store/ui-store";
 import { cn } from "@/lib/cn";
 import type { Tone } from "@/lib/readable-labels";
+
+// Clicking one of these opens it in the workspace Office preview (#1347).
+const OFFICE_DOC = /\.(docx|xlsx|pptx)$/i;
 
 // Single-letter git-status marker + tone for a tree entry.
 export function gitStatusMarker(status: string): { label: string; tone: Tone } | null {
@@ -203,12 +207,35 @@ function TreeNode({
   );
 }
 
-function TreeRow({ entry, depth }: { entry: { name: string; gitStatus: string }; depth: number }) {
+function TreeRow({ entry, depth }: { entry: { name: string; path: string; gitStatus: string }; depth: number }) {
+  const setPreviewPath = useUiStore((s) => s.setOfficecliPreviewPath);
+  const activePath = useUiStore((s) => s.officecliPreviewPath);
+  const isOffice = OFFICE_DOC.test(entry.name);
+  const active = isOffice && activePath === entry.path;
+  const style = { paddingLeft: depth * 12 + 4 + 18 };
+
+  // An Office document opens in the workspace preview; other files stay inert
+  // (the tree is a read-only browser).
+  if (isOffice) {
+    return (
+      <button
+        type="button"
+        onClick={() => setPreviewPath(entry.path)}
+        title="Open in Office preview"
+        className={cn(
+          "flex w-full items-center gap-1 rounded px-1 py-0.5 text-left text-sm hover:bg-accent",
+          active && "bg-accent font-medium",
+        )}
+        style={style}
+      >
+        <File className="size-3.5 shrink-0 text-muted-foreground" />
+        <span className="truncate">{entry.name}</span>
+        <StatusDot status={entry.gitStatus} />
+      </button>
+    );
+  }
   return (
-    <div
-      className="flex items-center gap-1 rounded px-1 py-0.5 text-sm"
-      style={{ paddingLeft: depth * 12 + 4 + 18 }}
-    >
+    <div className="flex items-center gap-1 rounded px-1 py-0.5 text-sm" style={style}>
       <File className="size-3.5 shrink-0 text-muted-foreground" />
       <span className={cn("truncate", entry.gitStatus !== "clean" && "text-foreground")}>{entry.name}</span>
       <StatusDot status={entry.gitStatus} />

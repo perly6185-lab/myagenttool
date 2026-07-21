@@ -41,6 +41,38 @@ test("the bridge manifest reports readiness for Claude Application capabilities"
   });
 });
 
+test("#1356: the bridge manifest detects the excalidraw-cli runtime — available when present, absent (degraded) when not", async () => {
+  const present = await collectApplicationBinaryReadiness(createLocalExecutionPolicyManifest(), {
+    now: () => "2026-07-21T00:00:00.000Z",
+    resolveBinary: (command) => command === "excalidraw-cli",
+    runVersion: async (command, args) => (command === "excalidraw-cli" && args[0] === "--version" ? "excalidraw-cli/0.5.0" : ""),
+  });
+  assert.deepEqual(present.find((row) => row.command === "excalidraw-cli"), {
+    runtimeId: "runtime_excalidraw_cli",
+    command: "excalidraw-cli",
+    capabilityPrefix: "app.app_excalidraw_cli.wrapper.",
+    status: "available",
+    version: "excalidraw-cli/0.5.0",
+    checkedAt: "2026-07-21T00:00:00.000Z",
+  });
+
+  // Absent binary → readiness "absent", never a false-positive; this is what the
+  // Canvas export capability (PR2) keys on to degrade to browser export.
+  const absent = await collectApplicationBinaryReadiness(createLocalExecutionPolicyManifest(), {
+    now: () => "2026-07-21T00:00:00.000Z",
+    resolveBinary: () => false,
+    runVersion: async () => "",
+  });
+  assert.deepEqual(absent.find((row) => row.command === "excalidraw-cli"), {
+    runtimeId: "runtime_excalidraw_cli",
+    command: "excalidraw-cli",
+    capabilityPrefix: "app.app_excalidraw_cli.wrapper.",
+    status: "absent",
+    version: null,
+    checkedAt: "2026-07-21T00:00:00.000Z",
+  });
+});
+
 test("authentication probes publish only normalized status and method", async () => {
   const calls = [];
   const rows = await collectApplicationBinaryReadiness(createLocalExecutionPolicyManifest(), {

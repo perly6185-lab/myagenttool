@@ -1,0 +1,92 @@
+/*
+ * Skin: ink (石墨). Near-neutral graphite with a restrained teal primary.
+ * Lightness values mirror the default skin, so surface/foreground contrast
+ * matches the default (which meets WCAG AA); chroma is pulled toward gray.
+ * Contract + selector rationale: docs/design/SKIN_SYSTEM.md.
+ */
+
+:root[data-skin="ink"]:not(.dark) {
+  --background: oklch(0.98 0.001 285);
+  --foreground: oklch(0.21 0.006 285);
+
+  --card: oklch(1 0 0);
+  --card-foreground: oklch(0.21 0.006 285);
+
+  --popover: oklch(1 0 0);
+  --popover-foreground: oklch(0.21 0.006 285);
+
+  --primary: oklch(0.52 0.06 195);
+  --primary-foreground: oklch(0.98 0.003 200);
+
+  --secondary: oklch(0.96 0.003 285);
+  --secondary-foreground: oklch(0.28 0.006 285);
+
+  --muted: oklch(0.96 0.003 285);
+  --muted-foreground: oklch(0.53 0.006 285);
+
+  --accent: oklch(0.95 0.004 285);
+  --accent-foreground: oklch(0.28 0.006 285);
+
+  --destructive: oklch(0.58 0.22 27);
+  --destructive-foreground: oklch(0.98 0.003 250);
+
+  --success: oklch(0.62 0.15 152);
+  --success-foreground: oklch(0.98 0.003 250);
+
+  --warning: oklch(0.74 0.16 75);
+  --warning-foreground: oklch(0.27 0.05 75);
+
+  --border: oklch(0.9 0.003 285);
+  --input: oklch(0.92 0.003 285);
+  --ring: oklch(0.52 0.06 195);
+
+  --sidebar: oklch(0.97 0.002 285);
+  --sidebar-foreground: oklch(0.21 0.006 285);
+  --sidebar-accent: oklch(0.94 0.004 285);
+  --sidebar-accent-foreground: oklch(0.28 0.006 285);
+  --sidebar-border: oklch(0.9 0.003 285);
+  --sidebar-ring: oklch(0.52 0.06 195);
+}
+
+:root[data-skin="ink"].dark {
+  --background: oklch(0.17 0.004 285);
+  --foreground: oklch(0.93 0.003 285);
+
+  --card: oklch(0.21 0.005 285);
+  --card-foreground: oklch(0.93 0.003 285);
+
+  --popover: oklch(0.22 0.005 285);
+  --popover-foreground: oklch(0.93 0.003 285);
+
+  --primary: oklch(0.68 0.07 190);
+  --primary-foreground: oklch(0.19 0.01 285);
+
+  --secondary: oklch(0.27 0.005 285);
+  --secondary-foreground: oklch(0.92 0.003 285);
+
+  --muted: oklch(0.27 0.005 285);
+  --muted-foreground: oklch(0.72 0.005 285);
+
+  --accent: oklch(0.29 0.006 285);
+  --accent-foreground: oklch(0.93 0.003 285);
+
+  --destructive: oklch(0.66 0.2 25);
+  --destructive-foreground: oklch(0.98 0.003 250);
+
+  --success: oklch(0.7 0.14 153);
+  --success-foreground: oklch(0.18 0.02 264);
+
+  --warning: oklch(0.79 0.15 80);
+  --warning-foreground: oklch(0.24 0.04 80);
+
+  --border: oklch(0.3 0.005 285);
+  --input: oklch(0.32 0.005 285);
+  --ring: oklch(0.68 0.07 190);
+
+  --sidebar: oklch(0.19 0.004 285);
+  --sidebar-foreground: oklch(0.93 0.003 285);
+  --sidebar-accent: oklch(0.27 0.006 285);
+  --sidebar-accent-foreground: oklch(0.93 0.003 285);
+  --sidebar-border: oklch(0.3 0.005 285);
+  --sidebar-ring: oklch(0.68 0.07 190);
+}

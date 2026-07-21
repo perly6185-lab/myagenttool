@@ -1,6 +1,8 @@
 const RUNTIMES = [
   runtime("runtime_git", "git", "Git", "tool", ["git"], ["app_git"]),
   runtime("runtime_ccusage", "ccusage", "ccusage CLI", "tool", ["ccusage"], ["app_ccusage"]),
+  runtime("runtime_officecli", "officecli", "OfficeCLI", "tool", ["officecli", "office", "office-cli"], ["app_officecli"]),
+  runtime("runtime_excalidraw_cli", "excalidraw-cli", "Excalidraw CLI", "tool", ["excalidraw-cli", "excalidraw cli"], ["app_excalidraw_cli"]),
   runtime("runtime_claude", "claude", "Claude Code", "agent_cli", ["claude", "claude code"], ["app_claude"], { authenticationRequired: true }),
   runtime("runtime_codex", "codex", "Codex CLI", "agent_cli", ["codex", "codex cli"], ["app_codex"], { authenticationRequired: true }),
   runtime("runtime_git_bash", "git-bash", "Git Bash", "shell", ["git-bash", "git bash"], []),

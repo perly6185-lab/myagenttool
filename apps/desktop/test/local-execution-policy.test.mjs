@@ -570,3 +570,498 @@ test("cwdPolicy: an unknown or missing policy is read as 'fixed', never inferred
     assert.equal(gate.evidence.applicationWrapper.cwdPolicy, "fixed");
   }
 });
+
+// --- OfficeCLI read-only wrapper allowlist (P1, default-deny at the bridge) ---
+
+function officecliGate({ execArgs, capability, root = gitRoot, cwd = gitRoot, resolveBinary = () => true }) {
+  const spec = { execCommand: "officecli", execArgs, capability, filePolicy: "read_only", networkPolicy: "forbidden" };
+  const work = { project: { path: root }, options: { metadata: { applicationWrapper: spec, worktreePath: root } } };
+  return localExecutionGate(
+    work,
+    { type: "cli", command: "node" },
+    {
+      command: process.execPath,
+      args: wrapperArgs(spec, { cwd }),
+      cwd,
+      localPolicy: { filePolicy: "read_only", networkPolicy: "forbidden", source: "application_wrapper" },
+    },
+    { manifest, resolveBinary },
+  );
+}
+
+test("officecli wrapper: get with file + path positionals is allowed", () => {
+  const gate = officecliGate({
+    capability: "app.app_officecli.wrapper.get",
+    execArgs: ["get", "--json", "demo.xlsx", "/Sheet1/A1"],
+  });
+  assert.equal(gate.allowed, true, gate.reason);
+});
+
+test("officecli wrapper: view with an in-set mode positional is allowed", () => {
+  for (const mode of ["text", "html"]) {
+    const gate = officecliGate({
+      capability: "app.app_officecli.wrapper.view",
+      execArgs: ["view", "report.docx", mode],
+    });
+    assert.equal(gate.allowed, true, `${mode}: ${gate.reason}`);
+  }
+});
+
+test("officecli wrapper: a non-Office file extension is refused (device is stricter than the server)", () => {
+  const gate = officecliGate({
+    capability: "app.app_officecli.wrapper.get",
+    execArgs: ["get", "--json", "/etc/passwd"],
+  });
+  assert.equal(gate.allowed, false);
+  assert.match(gate.reason, /args outside the local allowlist/);
+});
+
+test("officecli wrapper: an out-of-set view mode is refused", () => {
+  const gate = officecliGate({
+    capability: "app.app_officecli.wrapper.view",
+    execArgs: ["view", "report.docx", "screenshot"],
+  });
+  assert.equal(gate.allowed, false);
+  assert.match(gate.reason, /args outside the local allowlist/);
+});
+
+test("officecli wrapper: an undeclared trailing flag is refused (no write/verb smuggling)", () => {
+  const gate = officecliGate({
+    capability: "app.app_officecli.wrapper.get",
+    execArgs: ["get", "--json", "demo.xlsx", "--set", "value=x"],
+  });
+  assert.equal(gate.allowed, false);
+});
+
+test("officecli wrapper: argv not matching the registered base prefix is refused", () => {
+  // A write verb under a read capability id → base mismatch, refused.
+  const gate = officecliGate({
+    capability: "app.app_officecli.wrapper.get",
+    execArgs: ["set", "demo.xlsx", "/Sheet1/A1"],
+  });
+  assert.equal(gate.allowed, false);
+  assert.match(gate.reason, /args outside the local allowlist/);
+});
+
+test("officecli wrapper: an unregistered command id is refused (default-deny within the app)", () => {
+  const gate = officecliGate({
+    capability: "app.app_officecli.wrapper.batch",
+    execArgs: ["batch", "demo.xlsx"],
+  });
+  assert.equal(gate.allowed, false);
+});
+
+test("#802: an allowlisted officecli command whose binary is absent is refused with binary_unavailable", () => {
+  const gate = officecliGate({
+    capability: "app.app_officecli.wrapper.get",
+    execArgs: ["get", "--json", "demo.xlsx", "/"],
+    resolveBinary: () => false,
+  });
+  assert.equal(gate.allowed, false);
+  assert.equal(gate.evidence.refusalCode, "binary_unavailable");
+});
+
+test("#1356: the excalidraw-cli runtime is presence-only — any invocation is default-denied (no verb wired in PR1)", () => {
+  // The manifest carries an excalidraw-cli probe entry (for readiness), but
+  // wrapperArgsAllowed has NO branch for its prefix, so the device refuses every
+  // invocation regardless of argv. This locks the PR1 scaffolding: the runtime can
+  // be detected/installed but NOT executed until the governed export slice (PR2).
+  const spec = { execCommand: "excalidraw-cli", execArgs: ["export", "diagram.excalidraw"], capability: "app.app_excalidraw_cli.wrapper.export", filePolicy: "read_only", networkPolicy: "forbidden" };
+  const work = { project: { path: gitRoot }, options: { metadata: { applicationWrapper: spec, worktreePath: gitRoot } } };
+  const gate = localExecutionGate(
+    work,
+    { type: "cli", command: "node" },
+    {
+      command: process.execPath,
+      args: wrapperArgs(spec, { cwd: gitRoot }),
+      cwd: gitRoot,
+      localPolicy: { filePolicy: "read_only", networkPolicy: "forbidden", source: "application_wrapper" },
+    },
+    { manifest, resolveBinary: () => true },
+  );
+  assert.equal(gate.allowed, false);
+  assert.match(gate.reason, /args outside the local allowlist/);
+});
+
+// --- excalidraw-cli export WRITE verb (#1356 PR2): the excalidrawCliApply policy ---
+
+function excalidrawApplyGate({ execArgs, capability, root = gitRoot, cwd = gitRoot, worktreePath = root, resolveBinary = () => true }) {
+  const spec = { execCommand: "excalidraw-cli", execArgs, capability, filePolicy: "workspace_write", networkPolicy: "forbidden" };
+  const metadata = { applicationWrapper: spec };
+  if (worktreePath !== null) metadata.worktreePath = worktreePath;
+  const work = { project: { path: root }, options: { metadata } };
+  return localExecutionGate(
+    work,
+    { type: "cli", command: "node" },
+    {
+      command: process.execPath,
+      args: wrapperArgs(spec, { cwd }),
+      cwd,
+      localPolicy: { filePolicy: "workspace_write", networkPolicy: "forbidden", source: "application_wrapper" },
+    },
+    { manifest, resolveBinary },
+  );
+}
+
+test("#1356 PR2: a workspace_write export with .excalidraw input + .png output is allowed and classified excalidrawCliApply", () => {
+  const gate = excalidrawApplyGate({
+    capability: "app.app_excalidraw_cli.apply.export",
+    execArgs: ["diagrams/flow.excalidraw", "out/flow.png"],
+  });
+  assert.equal(gate.allowed, true, gate.reason);
+  assert.equal(gate.evidence.commandKind, "excalidrawCliApply", "a render is its own write bucket, never read-only wrapper");
+});
+
+test("#1356 PR2: an export outside a worktree is refused (writes must run in the invocation's worktree)", () => {
+  const gate = excalidrawApplyGate({
+    capability: "app.app_excalidraw_cli.apply.export",
+    execArgs: ["flow.excalidraw", "flow.png"],
+    worktreePath: null,
+  });
+  assert.equal(gate.allowed, false);
+  assert.equal(gate.evidence.refusalCode, "cwd_outside_approved_root");
+});
+
+test("#1356 PR2: a traversal input or a wrong-extension output is refused (args outside the allowlist)", () => {
+  for (const execArgs of [["../secret.excalidraw", "flow.png"], ["flow.excalidraw", "flow.svg"], ["flow.excalidraw", "/etc/out.png"]]) {
+    const gate = excalidrawApplyGate({ capability: "app.app_excalidraw_cli.apply.export", execArgs });
+    assert.equal(gate.allowed, false, `must refuse ${JSON.stringify(execArgs)}`);
+    assert.match(gate.reason, /args outside the local allowlist/);
+  }
+});
+
+test("#1356: a partial export argv (missing the output positional) is refused, not run one-arg", () => {
+  const gate = excalidrawApplyGate({
+    capability: "app.app_excalidraw_cli.apply.export",
+    execArgs: ["flow.excalidraw"], // output dropped (e.g. server dropped an invalid one)
+  });
+  assert.equal(gate.allowed, false);
+  assert.match(gate.reason, /args outside the local allowlist/);
+});
+
+test("#1356 PR2: an export whose binary is absent is refused with binary_unavailable", () => {
+  const gate = excalidrawApplyGate({
+    capability: "app.app_excalidraw_cli.apply.export",
+    execArgs: ["flow.excalidraw", "flow.png"],
+    resolveBinary: () => false,
+  });
+  assert.equal(gate.allowed, false);
+  assert.equal(gate.evidence.refusalCode, "binary_unavailable");
+});
+
+test("#1356 PR2: a write filePolicy presented under the presence-only READ prefix is refused (read bucket never widens to a write)", () => {
+  // The read prefix routes to the read-only `wrapper` bucket; a workspace_write
+  // policy there is refused by the file-policy gate — a read entry can never
+  // resolve to a write policy. (The args-level default-deny of the read prefix is
+  // covered by the PR1 presence-only test above.)
+  const gate = excalidrawApplyGate({
+    capability: "app.app_excalidraw_cli.wrapper.export",
+    execArgs: ["flow.excalidraw", "flow.png"],
+  });
+  assert.equal(gate.allowed, false);
+  assert.equal(gate.evidence.refusalCode, "file_policy_exceeded");
+});
+
+// --- OfficeCLI WRITE verbs (P3.1): the officecliApply write-policy kind ---
+
+function officecliApplyGate({ execArgs, capability, root = gitRoot, cwd = gitRoot, worktreePath = root, filePolicy = "workspace_write", resolveBinary = () => true }) {
+  const spec = { execCommand: "officecli", execArgs, capability, filePolicy, networkPolicy: "forbidden" };
+  const metadata = { applicationWrapper: spec };
+  if (worktreePath !== null) metadata.worktreePath = worktreePath;
+  const work = { project: { path: root }, options: { metadata } };
+  return localExecutionGate(
+    work,
+    { type: "cli", command: "node" },
+    {
+      command: process.execPath,
+      args: wrapperArgs(spec, { cwd }),
+      cwd,
+      localPolicy: { filePolicy, networkPolicy: "forbidden", source: "application_wrapper" },
+    },
+    { manifest, resolveBinary },
+  );
+}
+
+test("officecliApply: a workspace_write remove with file+path positionals is allowed", () => {
+  const gate = officecliApplyGate({
+    capability: "app.app_officecli.apply.remove",
+    execArgs: ["remove", "deck.pptx", "/slide[2]/shape[3]"],
+  });
+  assert.equal(gate.allowed, true, gate.reason);
+  assert.equal(gate.evidence.commandKind, "officecliApply", "a write is classified into its own bucket, never read-only wrapper");
+});
+
+test("officecliApply: the read-only wrapper bucket does NOT permit an officecli write", () => {
+  // Same argv, but presented under the READ capability prefix → classified `wrapper`,
+  // whose bucket is read_only-only, so a workspace_write policy is refused there.
+  const gate = officecliApplyGate({
+    capability: "app.app_officecli.wrapper.remove",
+    execArgs: ["remove", "deck.pptx", "/slide[2]/shape[3]"],
+  });
+  assert.equal(gate.allowed, false, "a write under the read prefix must not slip through");
+});
+
+test("officecliApply: a read_only file policy under the apply prefix is refused (policy must match)", () => {
+  const gate = officecliApplyGate({
+    capability: "app.app_officecli.apply.remove",
+    execArgs: ["remove", "deck.pptx", "/slide[1]"],
+    filePolicy: "read_only",
+  });
+  assert.equal(gate.allowed, false);
+});
+
+test("officecliApply: a non-Office file is refused (device stays stricter than the server)", () => {
+  const gate = officecliApplyGate({
+    capability: "app.app_officecli.apply.remove",
+    execArgs: ["remove", "/etc/hosts", "/x"],
+  });
+  assert.equal(gate.allowed, false);
+  assert.match(gate.reason, /args outside the local allowlist/);
+});
+
+test("officecliApply: an unregistered write verb is refused (batch/add not shipped yet)", () => {
+  const gate = officecliApplyGate({
+    capability: "app.app_officecli.apply.batch",
+    execArgs: ["batch", "deck.pptx", "--commands", "[]"],
+  });
+  assert.equal(gate.allowed, false);
+});
+
+test("officecliApply: an undeclared trailing flag is refused (no extra-arg smuggling on a write)", () => {
+  const gate = officecliApplyGate({
+    capability: "app.app_officecli.apply.remove",
+    execArgs: ["remove", "deck.pptx", "/slide[1]", "--force"],
+  });
+  assert.equal(gate.allowed, false);
+});
+
+test("officecliApply: set with file, path, and repeated --prop key=value is allowed", () => {
+  const gate = officecliApplyGate({
+    capability: "app.app_officecli.apply.set",
+    execArgs: ["set", "deck.pptx", "/slide[1]/shape[1]", "--prop", "text=Hi", "--prop", "bold=true", "--prop", "formula=SUM(A1:A2)"],
+  });
+  assert.equal(gate.allowed, true, gate.reason);
+});
+
+test("officecliApply: a --prop media source (src/path/preview) that escapes the worktree is refused", () => {
+  for (const src of ["src=../secret.png", "src=/etc/x.png", "path=../../x", "preview=https://attacker/x.png", "src=~/x", "src=C:\\x.png"]) {
+    const gate = officecliApplyGate({
+      capability: "app.app_officecli.apply.add",
+      execArgs: ["add", "b.xlsx", "/Sheet1", "--type", "picture", "--prop", src],
+    });
+    assert.equal(gate.allowed, false, `unsafe media source "${src}" must be refused`);
+  }
+});
+
+test("officecliApply: a worktree-relative media source and a data: URI are allowed; non-source props unaffected", () => {
+  const rel = officecliApplyGate({ capability: "app.app_officecli.apply.add", execArgs: ["add", "b.xlsx", "/Sheet1", "--type", "picture", "--prop", "src=assets/logo.png"] });
+  assert.equal(rel.allowed, true, rel.reason);
+  const data = officecliApplyGate({ capability: "app.app_officecli.apply.set", execArgs: ["set", "b.xlsx", "/Sheet1/pic", "--prop", "src=data:image/png;base64,AAA"] });
+  assert.equal(data.allowed, true, data.reason);
+  const text = officecliApplyGate({ capability: "app.app_officecli.apply.set", execArgs: ["set", "b.xlsx", "/Sheet1/A1", "--prop", "value=../this/is/text"] });
+  assert.equal(text.allowed, true, "a non-source prop with a path-looking value stays allowed");
+});
+
+test("officecliApply: a batch item with an unsafe media-source prop is refused", () => {
+  const cmds = JSON.stringify([{ command: "add", parent: "/Sheet1", type: "picture", props: { src: "../../etc/passwd.png" } }]);
+  const gate = officecliApplyGate({
+    capability: "app.app_officecli.apply.batch",
+    execArgs: ["batch", "b.xlsx", "--commands", cmds],
+  });
+  assert.equal(gate.allowed, false);
+});
+
+test("officecliApply: a --prop with a flag-shaped key is refused (no option smuggling via props)", () => {
+  const gate = officecliApplyGate({
+    capability: "app.app_officecli.apply.set",
+    execArgs: ["set", "deck.pptx", "/slide[1]", "--prop", "--inject=x"],
+  });
+  assert.equal(gate.allowed, false);
+});
+
+test("officecliApply: a --prop missing its value token is refused", () => {
+  const gate = officecliApplyGate({
+    capability: "app.app_officecli.apply.set",
+    execArgs: ["set", "deck.pptx", "/slide[1]", "--prop"],
+  });
+  assert.equal(gate.allowed, false);
+});
+
+test("officecliApply: add with file, parent, --type (enum) and --prop pairs is allowed", () => {
+  const gate = officecliApplyGate({
+    capability: "app.app_officecli.apply.add",
+    execArgs: ["add", "demo.xlsx", "/Sheet1", "--type", "cell", "--prop", "ref=F1", "--prop", "value=ADDED"],
+  });
+  assert.equal(gate.allowed, true, gate.reason);
+});
+
+test("officecliApply: add with an out-of-set --type is refused (closed enum)", () => {
+  const gate = officecliApplyGate({
+    capability: "app.app_officecli.apply.add",
+    execArgs: ["add", "demo.xlsx", "/Sheet1", "--type", "malware", "--prop", "ref=F1"],
+  });
+  assert.equal(gate.allowed, false);
+});
+
+test("officecliApply: merge with two safe office files + --data JSON (+ --force) is allowed", () => {
+  const gate = officecliApplyGate({
+    capability: "app.app_officecli.apply.merge",
+    execArgs: ["merge", "tmpl.xlsx", "out.xlsx", "--data", '{"name":"World"}', "--force"],
+  });
+  assert.equal(gate.allowed, true, gate.reason);
+});
+
+test("officecliApply: merge with a traversal output file is refused", () => {
+  const gate = officecliApplyGate({
+    capability: "app.app_officecli.apply.merge",
+    execArgs: ["merge", "tmpl.xlsx", "../out.xlsx", "--data", '{"a":1}'],
+  });
+  assert.equal(gate.allowed, false);
+});
+
+test("officecliApply: merge with malformed --data JSON is refused", () => {
+  const gate = officecliApplyGate({
+    capability: "app.app_officecli.apply.merge",
+    execArgs: ["merge", "tmpl.xlsx", "out.xlsx", "--data", "not json"],
+  });
+  assert.equal(gate.allowed, false);
+});
+
+test("officecliApply: import with worktree-safe source + --header/--format is allowed", () => {
+  const gate = officecliApplyGate({
+    capability: "app.app_officecli.apply.import",
+    execArgs: ["import", "book.xlsx", "/Sheet1", "data/rows.csv", "--header", "--format", "csv"],
+  });
+  assert.equal(gate.allowed, true, gate.reason);
+});
+
+test("officecliApply: import with a traversal CSV source is refused", () => {
+  const gate = officecliApplyGate({
+    capability: "app.app_officecli.apply.import",
+    execArgs: ["import", "book.xlsx", "/Sheet1", "../secret.csv"],
+  });
+  assert.equal(gate.allowed, false);
+});
+
+test("officecliApply: import with a bad --format value is refused", () => {
+  const gate = officecliApplyGate({
+    capability: "app.app_officecli.apply.import",
+    execArgs: ["import", "book.xlsx", "/Sheet1", "data.csv", "--format", "exe"],
+  });
+  assert.equal(gate.allowed, false);
+});
+
+test("officecliApply: swap with three positional paths is allowed", () => {
+  const gate = officecliApplyGate({
+    capability: "app.app_officecli.apply.swap",
+    execArgs: ["swap", "demo.xlsx", "/Sheet1/row[2]", "/Sheet1/row[3]"],
+  });
+  assert.equal(gate.allowed, true, gate.reason);
+});
+
+test("officecliApply: move with a --to/--after/--before path flag is allowed", () => {
+  const gate = officecliApplyGate({
+    capability: "app.app_officecli.apply.move",
+    execArgs: ["move", "deck.pptx", "/slide[3]", "--after", "/slide[1]"],
+  });
+  assert.equal(gate.allowed, true, gate.reason);
+});
+
+test("officecliApply: move with an undeclared destination flag is refused", () => {
+  const gate = officecliApplyGate({
+    capability: "app.app_officecli.apply.move",
+    execArgs: ["move", "deck.pptx", "/slide[3]", "--into", "/slide[1]"],
+  });
+  assert.equal(gate.allowed, false);
+});
+
+test("officecliApply: batch with a verb-allowlisted --commands JSON is allowed", () => {
+  const cmds = JSON.stringify([
+    { command: "set", path: "/Sheet1/A1", props: { value: "x" } },
+    { command: "remove", path: "/Sheet1/A2" },
+  ]);
+  const gate = officecliApplyGate({
+    capability: "app.app_officecli.apply.batch",
+    execArgs: ["batch", "demo.xlsx", "--commands", cmds],
+  });
+  assert.equal(gate.allowed, true, gate.reason);
+});
+
+test("officecliApply: batch with a non-write verb in --commands is refused", () => {
+  const cmds = JSON.stringify([{ command: "set", path: "/A1" }, { command: "raw-set", part: "/document" }]);
+  const gate = officecliApplyGate({
+    capability: "app.app_officecli.apply.batch",
+    execArgs: ["batch", "demo.xlsx", "--commands", cmds],
+  });
+  assert.equal(gate.allowed, false);
+});
+
+test("officecliApply: batch with malformed JSON in --commands is refused", () => {
+  const gate = officecliApplyGate({
+    capability: "app.app_officecli.apply.batch",
+    execArgs: ["batch", "demo.xlsx", "--commands", "not json"],
+  });
+  assert.equal(gate.allowed, false);
+});
+
+test("officecliApply: a write with NO worktree is refused (never the project clone)", () => {
+  const gate = officecliApplyGate({
+    capability: "app.app_officecli.apply.remove",
+    execArgs: ["remove", "deck.pptx", "/slide[1]"],
+    worktreePath: null, // invocation has no worktree → the write would hit the project clone
+  });
+  assert.equal(gate.allowed, false);
+  assert.equal(gate.evidence.refusalCode, "cwd_outside_approved_root");
+  assert.match(gate.reason, /must run in the invocation's worktree/i);
+});
+
+test("officecliApply: a write whose cwd is the project root (not the worktree) is refused", () => {
+  const worktree = mkdtempSync(join(tmpdir(), "oc-worktree-"));
+  // worktree exists but the command's cwd is the project root → not inside the worktree.
+  const gate = officecliApplyGate({
+    capability: "app.app_officecli.apply.remove",
+    execArgs: ["remove", "deck.pptx", "/slide[1]"],
+    root: gitRoot,
+    cwd: gitRoot,
+    worktreePath: worktree,
+  });
+  assert.equal(gate.allowed, false);
+  assert.equal(gate.evidence.refusalCode, "cwd_outside_approved_root");
+});
+
+test("officecliApply: a file positional that escapes the worktree is REFUSED (traversal/absolute)", () => {
+  // Confining the cwd is not enough — a `../`/absolute file argv resolves outside
+  // the worktree and writes an arbitrary file. The device refuses it.
+  for (const file of ["../outside.xlsx", "/etc/evil.xlsx", "a/../../b.xlsx", "~/x.xlsx", "C:\\x.xlsx"]) {
+    const gate = officecliApplyGate({
+      capability: "app.app_officecli.apply.set",
+      execArgs: ["set", file, "/Sheet1/A1", "--prop", "value=x"],
+    });
+    assert.equal(gate.allowed, false, `write to escaping file "${file}" must be refused`);
+  }
+});
+
+test("officecli read: a traversal file positional is refused too (no arbitrary reads)", () => {
+  const gate = officecliGate({
+    capability: "app.app_officecli.wrapper.get",
+    execArgs: ["get", "--json", "../../etc/passwd.xlsx", "/"],
+  });
+  assert.equal(gate.allowed, false);
+});
+
+test("officecliApply: a safe subdirectory file inside the worktree is allowed", () => {
+  const gate = officecliApplyGate({
+    capability: "app.app_officecli.apply.set",
+    execArgs: ["set", "reports/q1.xlsx", "/Sheet1/A1", "--prop", "value=x"],
+  });
+  assert.equal(gate.allowed, true, gate.reason);
+});
+
+test("officecliApply: the read wrapper bucket is unchanged — a read command still works", () => {
+  const gate = officecliGate({
+    capability: "app.app_officecli.wrapper.get",
+    execArgs: ["get", "--json", "demo.xlsx", "/"],
+  });
+  assert.equal(gate.allowed, true, gate.reason);
+  assert.equal(gate.evidence.commandKind, "wrapper");
+});

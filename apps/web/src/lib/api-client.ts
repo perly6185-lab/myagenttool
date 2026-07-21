@@ -337,6 +337,56 @@ export interface ObservabilityDeletionResult {
   counts: Record<string, number>;
 }
 
+// Canvas scenes (#1352 API, surfaced in the Web Canvas by #1354). The list
+// returns summaries; the detail carries the full element/file bodies.
+export interface CanvasSceneSummary {
+  id: string;
+  projectId: string | null;
+  name: string;
+  revision: number;
+  elementCount: number;
+  fileCount: number;
+  createdAt: string;
+  updatedAt: string;
+  lastModifiedBy: string;
+}
+export interface CanvasScene extends CanvasSceneSummary {
+  elements: unknown[];
+  files: Record<string, unknown>;
+}
+/** A revision-aware save outcome: success, a typed conflict, or another failure. */
+export type CanvasSaveResult =
+  | { ok: true; scene: CanvasScene }
+  | { ok: false; conflict: true; currentRevision: number }
+  | { ok: false; conflict: false; error: string };
+
+// Structured variant of `request`: never throws on a non-2xx, so the Canvas save
+// path can branch on a 409 revision conflict instead of losing it to an Error.
+async function requestResult(
+  method: string,
+  path: string,
+  body?: unknown,
+  retry = true,
+): Promise<{ status: number; ok: boolean; data: Record<string, unknown> }> {
+  await ensureSession();
+  const token = getToken();
+  const headers: Record<string, string> = {};
+  if (body) headers["Content-Type"] = "application/json";
+  if (token) headers.Authorization = `Bearer ${token}`;
+  const response = await fetch(`${apiBase}${path}`, {
+    method,
+    headers: Object.keys(headers).length ? headers : undefined,
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  if (response.status === 401 && retry) {
+    setToken(null);
+    await ensureSession();
+    return requestResult(method, path, body, false);
+  }
+  const data = (await response.json().catch(() => ({}))) as Record<string, unknown>;
+  return { status: response.status, ok: response.ok, data };
+}
+
 export const api = {
   updateDevice: (payload: { maxConcurrency?: number }) => request("PATCH", "/api/device", payload),
   // ADR 0018: owner/admin-only per-subject observability data deletion. Throws
@@ -637,6 +687,35 @@ export const api = {
     request("GET", `/api/worktrees/${encodeURIComponent(id)}/search?mode=${mode}&q=${encodeURIComponent(q)}`),
   readWorktreeFile: (id: string, filePath: string) =>
     request("GET", `/api/worktrees/${encodeURIComponent(id)}/file?path=${encodeURIComponent(filePath)}`),
+  // OfficeCLI preview (P2b): render a project .docx/.xlsx/.pptx to self-contained
+  // HTML, server-side and read-only. Full-fidelity (no 20k cap), never persisted.
+  officecliPreview: (projectId: string, filePath: string, worktreeId?: string) =>
+    request<{ path: string; content: string; mime: string; encoding: string; bytes: number }>(
+      "GET",
+      `/api/projects/${encodeURIComponent(projectId)}/officecli-preview?path=${encodeURIComponent(filePath)}${worktreeId ? `&worktree=${encodeURIComponent(worktreeId)}` : ""}`,
+    ),
+  // A .docx's body paragraphs (path-addressed) for the block editor: each carries
+  // its server-computed markdown projection (`md`, heading + inline bold/italic).
+  officecliDocOutline: (projectId: string, filePath: string, worktreeId?: string) =>
+    request<{ path: string; paragraphs: { path: string; type: string; text: string; style: string | null; md: string }[] }>(
+      "GET",
+      `/api/projects/${encodeURIComponent(projectId)}/officecli-doc-outline?path=${encodeURIComponent(filePath)}${worktreeId ? `&worktree=${encodeURIComponent(worktreeId)}` : ""}`,
+    ),
+  // L1 block editing: given the edited block list (block editor) OR whole-document
+  // markdown text (textarea mode, re-aligned to paraIds server-side), the server
+  // re-reads the current .docx outline and returns the batch item list for one
+  // governed `apply.batch`.
+  officecliBlockOps: (
+    projectId: string,
+    payload:
+      | { file: string; worktree: string; blocks: { path: string | null; md: string }[] }
+      | { file: string; worktree: string; text: string },
+  ) =>
+    request<{ commands: Record<string, unknown>[] }>(
+      "POST",
+      `/api/projects/${encodeURIComponent(projectId)}/officecli-block-ops`,
+      payload,
+    ),
   worktreeGit: (id: string) => request("GET", `/api/worktrees/${encodeURIComponent(id)}/git`),
   worktreeDiff: (id: string) => request("GET", `/api/worktrees/${encodeURIComponent(id)}/diff`),
   reviewWorktree: (id: string, payload: { verdict: "approved" | "changes_requested"; summary?: string; comments?: { path: string | null; body: string }[] }) =>
@@ -748,4 +827,25 @@ export const api = {
   // Opt a channel into in-channel /approve (default off). Approval-gated.
   setChannelApprovalPolicy: (channelId: string, allowSelfApprove: boolean, approvalToken: string) =>
     request("POST", `/api/channels/${encodeURIComponent(channelId)}/approval-policy`, { allowSelfApprove, approvalToken }),
+
+  // Canvas scenes (#1354): server-authoritative, revision-aware.
+  listCanvasScenes: () => request<{ scenes: CanvasSceneSummary[]; count: number }>("GET", "/api/canvas/scenes"),
+  getCanvasScene: (id: string) =>
+    request<{ scene: CanvasScene }>("GET", `/api/canvas/scenes/${encodeURIComponent(id)}`),
+  createCanvasScene: (body: { name?: string; projectId?: string | null; elements?: unknown[]; files?: Record<string, unknown> }) =>
+    request<{ scene: CanvasScene }>("POST", "/api/canvas/scenes", body),
+  deleteCanvasScene: (id: string, expectedRevision: number) =>
+    request("DELETE", `/api/canvas/scenes/${encodeURIComponent(id)}`, { expectedRevision }),
+  // Revision-aware save: returns a typed conflict on 409 rather than throwing.
+  saveCanvasScene: async (
+    id: string,
+    body: { name?: string; elements?: unknown[]; files?: Record<string, unknown>; expectedRevision: number },
+  ): Promise<CanvasSaveResult> => {
+    const { status, ok, data } = await requestResult("PUT", `/api/canvas/scenes/${encodeURIComponent(id)}`, body);
+    if (ok) return { ok: true, scene: data.scene as CanvasScene };
+    if (status === 409 && data.error === "canvas_scene_revision_conflict") {
+      return { ok: false, conflict: true, currentRevision: Number(data.currentRevision) };
+    }
+    return { ok: false, conflict: false, error: String(data.message ?? data.error ?? "Save failed.") };
+  },
 };

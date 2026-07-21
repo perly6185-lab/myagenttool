@@ -2,7 +2,7 @@ import crypto from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 
 const SCHEMA_VERSION = "application-install-plan/v1";
-const RECIPE_VERSION = "2026-07-19.1";
+const RECIPE_VERSION = "2026-07-21.1";
 const PLAN_TTL_MS = 10 * 60 * 1000;
 const SUPPORTED_PLATFORMS = ["windows", "macos", "linux"];
 const ALLOWED_REQUEST_FIELDS = new Set(["name", "projectId", "deviceId", "platform", "architecture"]);
@@ -10,6 +10,11 @@ const NPM_REGISTRY = "https://registry.npmjs.org/";
 const CCUSAGE_VERSION = "20.0.14";
 const CLAUDE_CODE_VERSION = "2.1.215";
 const CODEX_VERSION = "0.144.6";
+// #1356 (excalidraw-cli runtime, PR1 scaffolding). An OFFLINE Excalidraw CLI
+// (oclif single command over node-canvas + roughjs — no browser, no network)
+// whose bin is `excalidraw-cli`. Pinned like every other npm app; a bump is a
+// reviewed recipe change (RECIPE_VERSION bump + release evidence), never drift.
+const EXCALIDRAW_CLI_VERSION = "0.5.0";
 const GIT_FOR_WINDOWS_VERSION = "2.50.1";
 const WINDOWS_GIT_BASH = "C:\\Program Files\\Git\\bin\\bash.exe";
 const WINDOWS_GIT_BASH_X86 = "C:\\Program Files (x86)\\Git\\bin\\bash.exe";
@@ -104,6 +109,18 @@ const APPLICATIONS = {
     packageIdentifier: "@openai/codex",
     probe: { executable: "codex", args: ["--version"] },
     recipes: npmRecipes("@openai/codex", CODEX_VERSION),
+  },
+  // #1356: the optional Excalidraw CLI runtime. npm-installed, cross-platform,
+  // provider-neutral pinned version — installs identically on all three OSes with
+  // no remote-install semantics. The probe is the oclif `--version` (exit 0 +
+  // version string); an absent binary simply reports readiness "absent" and the
+  // Canvas export/layout capability (PR2) degrades to browser export.
+  "excalidraw-cli": {
+    displayName: "Excalidraw CLI",
+    aliases: ["excalidraw-cli"],
+    packageIdentifier: "@tommywalkie/excalidraw-cli",
+    probe: { executable: "excalidraw-cli", args: ["--version"] },
+    recipes: npmRecipes("@tommywalkie/excalidraw-cli", EXCALIDRAW_CLI_VERSION),
   },
 };
 

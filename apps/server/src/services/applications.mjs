@@ -1,11 +1,13 @@
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { basename, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { fileURLToPath } from "node:url";
 import { normalizeLoopRoutine, validateLoopRoutine } from "../../../../tools/ai/src/loop/routine.mjs";
 import { teamOf } from "../runtime/auth.mjs";
 import { makeRunTx } from "../runtime/store/run-tx.mjs";
 import { codingAgentInterfaceForTool } from "./coding-agent-interface.mjs";
 import { findKnownRuntime } from "./runtime-catalog.mjs";
+import { managedSpecFor, managedSpecsForApp, REGISTERED_MANAGED_ACTIONS } from "./managed-capability-registry.mjs";
 
 // Consecutive failed health checks before an active application is auto-offlined
 // (docs/design/APPLICATION_HEALTH_PROBE.md) — fixed, to avoid flapping on
@@ -39,6 +41,10 @@ export function createApplicationService({
   sendAlert = null,
   validateApprovalToken = null,
   store,
+  // Registry-driven managed capability handlers (#1353): { [appId]: { [action]:
+  // ({ application, input, actor }) => result } }. Injected so the in-process
+  // execution of e.g. canvas.* lives outside this file.
+  managedCapabilityHandlers = {},
 }) {
   const runTx = makeRunTx({ store, persistStateSoon });
   // Approval check behind every `approvalToken` field (docs/design/
@@ -424,7 +430,14 @@ export function createApplicationService({
     // Every side-effecting action — status changes, the orchestration-draft
     // write, and wrapper commands — requires an approval: an issued grant for
     // (action, application), or in phase 1 a legacy token (stamped + counted).
-    if (["archive", "offline", "online", "refresh", "generate_orchestration"].includes(action) || action.startsWith("wrapper:")) {
+    // Additive gate (#1353): the hardcoded lifecycle set, wrapper commands, OR a
+    // registry-declared managed capability that marks itself requiresApproval
+    // (e.g. canvas.remove_elements). Existing actions are byte-unchanged.
+    if (
+      ["archive", "offline", "online", "refresh", "generate_orchestration"].includes(action)
+      || action.startsWith("wrapper:")
+      || managedSpecFor(application.id, action)?.requiresApproval === true
+    ) {
       const approval = approvalCheck(input, action, application.id, actor);
       if (!approval.approved) {
         return {
@@ -443,7 +456,7 @@ export function createApplicationService({
     }
 
     return runTx(() => {
-      const result = executeApplicationAction({ application, action, input, actor, defaultProjectPath, now });
+      const result = executeApplicationAction({ application, action, input, actor, defaultProjectPath, now, managedCapabilityHandlers });
       if (result?.ok === false) {
         return result;
       }
@@ -804,12 +817,25 @@ export function createApplicationService({
 // the resolved, approved command via allowlisted metadata; the agent command
 // itself is constant, so nothing arbitrary reaches the bridge's allowlist.
 // Opt-in (registered like the ccusage agents), keeping the registry conservative.
+// Resolve the wrapper runner script to an ABSOLUTE path (against the repo root),
+// so `node <script>` is found even when the runner is spawned with the invocation
+// cwd — a project/worktree for an `invocation_root` app (git/officecli). With a
+// relative path the runner failed to load (MODULE_NOT_FOUND) once the bridge set
+// its cwd to the project; `fixed`-cwd apps (ccusage) happened to dodge it because
+// the runner then ran from the repo. (Found by the OfficeCLI live E2E.)
+const APPLICATION_WRAPPER_SCRIPT = fileURLToPath(
+  new URL("../../../../tools/agents/application-wrapper.mjs", import.meta.url),
+);
+
 export function createApplicationWrapperAgentRegistration({
-  wrapperScriptPath = "tools/agents/application-wrapper.mjs",
+  wrapperScriptPath = APPLICATION_WRAPPER_SCRIPT,
   costOwner = "usr_local",
 } = {}) {
-  const scriptPath = String(wrapperScriptPath ?? "").trim();
-  if (!scriptPath) throw new Error("application wrapper scriptPath is required.");
+  const raw = String(wrapperScriptPath ?? "").trim();
+  if (!raw) throw new Error("application wrapper scriptPath is required.");
+  // A relative override is resolved against the repo root (the module's anchor),
+  // for the same reason: the runner must be found regardless of the spawn cwd.
+  const scriptPath = isAbsolute(raw) ? raw : fileURLToPath(new URL(`../../../../${raw}`, import.meta.url));
   return {
     id: "agt_platform_application_wrapper",
     type: "cli",
@@ -841,7 +867,7 @@ export function createApplicationWrapperAgentRegistration({
 // anything else returns null. This is the single source of truth for WHAT may
 // execute — the bridge only ever runs a command that came through here, so an
 // unapproved or unregistered command can never reach execution.
-const WRAPPER_ARG_INPUT_TYPES = new Set(["date", "token", "enum", "string", "boolean-flag", "git-rev", "count"]);
+const WRAPPER_ARG_INPUT_TYPES = new Set(["date", "token", "enum", "string", "office_file", "csv_file", "excalidraw_file", "png_file", "boolean-flag", "git-rev", "count", "props", "json_commands", "json_data"]);
 const RESERVED_WRAPPER_ARG_INPUT_KEYS = new Set([
   "approvalToken",
   "idempotencyKey",
@@ -853,6 +879,10 @@ const RESERVED_WRAPPER_ARG_INPUT_KEYS = new Set([
   // fields the scheduler uses to attribute a run to its schedule.
   "automationId",
   "scheduled",
+  // The worktree the write runs in — a control-plane field resolved to the
+  // invocation's worktreePath, never a wrapper argument.
+  "projectId",
+  "worktreeId",
 ]);
 
 // Normalize a wrapper command's declared per-invocation flag inputs. Each entry
@@ -887,20 +917,74 @@ function normalizeWrapperArgInputs(argInputs) {
       }
     }
     const type = WRAPPER_ARG_INPUT_TYPES.has(String(entry.type)) ? String(entry.type) : "token";
-    return { key, flag, positional, type, values: type === "enum" ? normalizeStringList(entry.values) : [] };
+    return {
+      key,
+      flag,
+      positional,
+      type,
+      values: type === "enum" ? normalizeStringList(entry.values) : [],
+      // For a json_commands input, the closed set of item verbs (`command` field)
+      // the batch may contain — the write-verb allowlist. Mirrors enum's `values`.
+      verbs: type === "json_commands" ? normalizeStringList(entry.verbs) : [],
+    };
   });
 }
 
 // Turn a caller's input into args, appending ONLY declared flags whose value
 // passes its type validator. Undeclared keys are ignored; a value that looks like
 // a flag (leading "-") is refused so it can never inject a new option.
-function resolveWrapperInputArgs(argInputs, input) {
+//
+// `positionalsFirst` flips the order to `positionals then flags` — some CLIs
+// (e.g. `officecli set <file> <path> --prop k=v`) require the subject positionals
+// before their options. Default is flags-then-positionals (git/ccusage contract).
+function resolveWrapperInputArgs(argInputs, input, { positionalsFirst = false } = {}) {
   if (!Array.isArray(argInputs) || !input || typeof input !== "object" || Array.isArray(input)) return [];
   const flagArgs = [];
   const positionalArgs = [];
   for (const spec of argInputs) {
     const raw = input[spec.key];
     if (raw === undefined || raw === null) continue;
+    if (spec.type === "props") {
+      // A repeatable `--prop key=value` map (e.g. officecli set/add props). Each
+      // pair is validated independently — an identifier key + a bounded, control-
+      // char-free value — and emitted as a discrete `--prop key=value` argv token.
+      // Never a scalar; a malformed or oversized pair is dropped, not injected.
+      if (typeof raw !== "object" || Array.isArray(raw)) continue;
+      let count = 0;
+      for (const [propKey, propValue] of Object.entries(raw)) {
+        if (count >= 30) break;
+        if (!/^[a-zA-Z][a-zA-Z0-9._-]{0,39}$/.test(propKey)) continue;
+        const propText = String(propValue ?? "");
+        if (propText.length > 200 || /[\r\n]/.test(propText)) continue;
+        // A media-source prop (src/path/preview) is a file path officecli opens —
+        // confine it to the worktree, or drop the pair. A leading `../`/absolute
+        // source would read an arbitrary host file into the document.
+        if (OFFICECLI_SOURCE_PROP_KEYS.has(propKey.toLowerCase()) && !isSafeMediaSource(propText)) continue;
+        flagArgs.push(spec.flag, `${propKey}=${propText}`);
+        count += 1;
+      }
+      continue;
+    }
+    if (spec.type === "json_data") {
+      // Arbitrary template data (officecli merge --data). Accept a JS object/array
+      // or a JSON string; it must parse to an object/array within the byte bound,
+      // and is re-serialized compactly as one --data token. Not a command list —
+      // there is no verb allowlist; it is substituted into {{key}} placeholders.
+      const data = normalizeJsonData(raw);
+      if (data) flagArgs.push(spec.flag, data);
+      continue;
+    }
+    if (spec.type === "json_commands") {
+      // A batch operation list (officecli batch --commands <json>). Accept a JS
+      // array or a JSON string; it MUST parse to an array of ≤100 objects, each
+      // with a `command` in the declared write-verb allowlist. The whole list is
+      // re-serialized compactly and emitted as one --commands token. A malformed
+      // list, an unlisted verb, or an oversized payload drops the input entirely
+      // (never a partial or unvalidated batch).
+      const list = normalizeJsonCommands(raw, spec.verbs);
+      if (list) flagArgs.push(spec.flag, list);
+      continue;
+    }
     if (spec.type === "boolean-flag") {
       if (raw === true || raw === "true") flagArgs.push(spec.flag);
       continue;
@@ -914,8 +998,9 @@ function resolveWrapperInputArgs(argInputs, input) {
       flagArgs.push(spec.flag, value);
     }
   }
-  // Positionals are appended AFTER all flags, in declaration order (#777).
-  return [...flagArgs, ...positionalArgs];
+  // Default: positionals AFTER all flags, in declaration order (#777). With
+  // positionalsFirst, the subject positionals lead (officecli set/add).
+  return positionalsFirst ? [...positionalArgs, ...flagArgs] : [...flagArgs, ...positionalArgs];
 }
 
 function isValidWrapperArgValue(spec, value) {
@@ -933,20 +1018,137 @@ function isValidWrapperArgValue(spec, value) {
     // server itself approved failed the run. The two validators stay independent
     // copies — this narrows the server to the device's real bound, not the reverse.
     case "count": return /^\d{1,4}$/.test(value) && Number(value) >= 1 && Number(value) <= 1000;
+    // A document FILE path officecli resolves against its worktree cwd. Must be a
+    // SAFE RELATIVE path (no traversal, not absolute) so it cannot escape the
+    // worktree, plus an Office extension. Mirrors the device's isOfficeFile — the
+    // two allowlists reject a `../` or absolute file INDEPENDENTLY.
+    case "office_file":
+      return isSafeRelFilePath(value) && /\.(docx|xlsx|pptx)$/i.test(value);
+    // A CSV/TSV SOURCE file (officecli import). Same worktree-safe relative-path
+    // rule as office_file, but a data extension — it is read, never opened as a
+    // document.
+    case "csv_file":
+      return isSafeRelFilePath(value) && /\.(csv|tsv)$/i.test(value);
+    // An Excalidraw scene FILE (excalidraw-cli export input) — same worktree-safe
+    // relative-path rule, `.excalidraw` extension. Mirrors the device's
+    // isExcalidrawSceneFile; the two allowlists reject a `../`/absolute path independently.
+    case "excalidraw_file":
+      return isSafeRelFilePath(value) && /\.excalidraw$/i.test(value);
+    // The PNG OUTPUT path (excalidraw-cli export output) — worktree-safe relative,
+    // `.png` extension. The render writes here in place, confined to the worktree.
+    case "png_file":
+      return isSafeRelFilePath(value) && /\.png$/i.test(value);
     default: return false;
   }
+}
+
+// A filesystem path officecli resolves against its worktree cwd (a document file
+// or a data source). Must be a SAFE RELATIVE path so it cannot escape the
+// worktree: no traversal segment, not absolute (no leading `/`, `~`, `\`, Windows
+// drive, or UNC). Mirrors the device's isSafeRelPath — the two allowlists reject
+// a `../`/absolute path INDEPENDENTLY. Callers add the extension check.
+function isSafeRelFilePath(value) {
+  return typeof value === "string"
+    && value.length >= 1
+    && value.length <= 200
+    && !/[\r\n\0]/.test(value)
+    && !/^[/~\\]/.test(value)
+    && !/^[A-Za-z]:/.test(value)
+    && !value.split(/[/\\]/).includes("..");
+}
+
+// Prop keys officecli resolves as a MEDIA FILE SOURCE at add/set time (it opens
+// the path and embeds the bytes): `src` (+ its alias `path`) and `preview`. A
+// value here is a de-facto file path, so it must be confined the same way the
+// `file` positional is — otherwise `--prop src=../../etc/x.png` reads an arbitrary
+// host file into the document (confirmed exfiltration). Everything else (value,
+// formula, colors, text) is inert data and keeps the plain length/newline check.
+const OFFICECLI_SOURCE_PROP_KEYS = new Set(["src", "path", "preview"]);
+
+// A media source is safe iff it is a self-contained data: URI, or a worktree-safe
+// relative file path. Any other scheme (http(s)://, file://, a Windows drive) is
+// refused — a remote URL is also a network-exfil vector, and the wrapper is
+// network-forbidden.
+function isSafeMediaSource(value) {
+  if (typeof value !== "string" || value.length > 500 || /[\r\n\0]/.test(value)) return false;
+  if (/^data:/i.test(value)) return true;
+  if (/^[a-zA-Z][a-zA-Z0-9+.\-]*:/.test(value)) return false; // any scheme (incl. drive letter)
+  return isSafeRelFilePath(value);
+}
+
+// True if a prop map has a media-source key whose value is not worktree-safe.
+function propsHaveUnsafeSource(props) {
+  if (!props || typeof props !== "object" || Array.isArray(props)) return false;
+  for (const [key, val] of Object.entries(props)) {
+    if (OFFICECLI_SOURCE_PROP_KEYS.has(String(key).toLowerCase()) && !isSafeMediaSource(String(val ?? ""))) {
+      return true;
+    }
+  }
+  return false;
+}
+
+const JSON_COMMANDS_MAX_ITEMS = 100;
+const JSON_COMMANDS_MAX_BYTES = 16 * 1024;
+
+// Validate + compact a batch operation list. `raw` may be a JS array or a JSON
+// string; `allowedVerbs` is the closed set the `command` field may take. Returns
+// a compact JSON string, or null if anything is off — a batch is all-or-nothing,
+// never a partial or unvalidated list. The verb allowlist is the governance
+// boundary; per-item document fields (path/props/type) are officecli semantics.
+function normalizeJsonCommands(raw, allowedVerbs) {
+  const verbs = new Set(Array.isArray(allowedVerbs) ? allowedVerbs : []);
+  let list = raw;
+  if (typeof raw === "string") {
+    try { list = JSON.parse(raw); } catch { return null; }
+  }
+  if (!Array.isArray(list) || list.length === 0 || list.length > JSON_COMMANDS_MAX_ITEMS) return null;
+  for (const item of list) {
+    if (!item || typeof item !== "object" || Array.isArray(item)) return null;
+    if (!verbs.has(String(item.command))) return null;
+    // A batch item's props are otherwise unvalidated — a `src`/`path`/`preview`
+    // that escapes the worktree would exfiltrate a host file via a batch just as a
+    // direct `add`/`set` would. Reject the whole batch (all-or-nothing).
+    if (propsHaveUnsafeSource(item.props)) return null;
+  }
+  const compact = JSON.stringify(list);
+  if (compact.length > JSON_COMMANDS_MAX_BYTES) return null;
+  return compact;
+}
+
+// Validate + compact arbitrary merge data. `raw` may be a JS object/array or a
+// JSON string; returns a compact JSON string, or null if it does not parse to an
+// object/array within the byte bound. No verb allowlist — this is placeholder
+// data, not commands; it is one discrete argv token (no shell).
+function normalizeJsonData(raw) {
+  let value = raw;
+  if (typeof raw === "string") {
+    try { value = JSON.parse(raw); } catch { return null; }
+  }
+  if (value === null || typeof value !== "object") return null;
+  const compact = JSON.stringify(value);
+  if (compact.length > JSON_COMMANDS_MAX_BYTES) return null;
+  return compact;
+}
+
+// A wrapper command's capability segment. Read commands live under `.wrapper.`;
+// a write-capable command opts into `.apply.` so the device classifies and gates
+// it under a distinct WRITE policy kind (officecliApply), never the read-only
+// wrapper bucket that git/ccusage/claude share. Defaults to "wrapper", so every
+// existing app's capability names stay byte-identical.
+function wrapperSegment(command) {
+  return command?.segment === "apply" ? "apply" : "wrapper";
 }
 
 export function applicationWrapperExecutionPlan(application, commandId, input = {}) {
   const command = findNpmWrapperCommand(application, commandId);
   if (!command) return null;
   return {
-    capability: `app.${slugify(application.id || application.name)}.wrapper.${command.id}`,
+    capability: `app.${slugify(application.id || application.name)}.${wrapperSegment(command)}.${command.id}`,
     commandId: command.id,
     commandType: command.commandType,
     command: command.command,
     // Base args + only the declared, validated per-invocation flag inputs.
-    args: [...command.args, ...resolveWrapperInputArgs(command.argInputs, input)],
+    args: [...command.args, ...resolveWrapperInputArgs(command.argInputs, input, { positionalsFirst: command.argOrder === "positionals_first" })],
     // "invocation_root" emits cwd:null so the bridge's worktreePath → projectPath
     // fallback resolves it to the invocation's repository (#773). "fixed" keeps
     // ccusage's behavior byte-for-byte.
@@ -991,8 +1193,31 @@ export function projectApplicationCapabilities(app, context = {}) {
     managedCapability(app, `${prefix}.archive`, "Archive application", "lifecycle", "high", ["lifecycle", "write_control"], true, app.status === "archived", approvalInputSchema()),
     managedCapability(app, `${prefix}.generate_orchestration`, "Generate application orchestration", "orchestration", "medium", ["generated_artifact", "orchestration"], true, disabled, emptyInputSchema()),
     ...projectCapabilityFacades(app, prefix, disabled),
+    ...projectRegisteredManaged(app, prefix, disabled),
     ...projectWrapperCapabilities(app, prefix, disabled),
   ], context.credential);
+}
+
+// Registry-driven, in-process managed capabilities (#1353): a built-in with an
+// entry in the managed-capability registry (e.g. app_canvas) projects its
+// governed capabilities here. Executed synchronously via application_control (no
+// bridge). No per-application special case lives in this file — canvas is one
+// registry entry; adding a future built-in adds another.
+function projectRegisteredManaged(app, prefix, disabled) {
+  return managedSpecsForApp(app.id).map((spec) =>
+    managedCapability(
+      app,
+      `${prefix}.${spec.id}`,
+      spec.displayName,
+      spec.kind,
+      spec.riskLevel,
+      spec.riskTags,
+      spec.requiresApproval,
+      disabled,
+      spec.inputSchema,
+      { execution: { mode: "application_control", action: spec.id }, description: spec.description },
+    ),
+  );
 }
 
 // Overlay the authorization verdict onto the capabilities that actually depend
@@ -1070,7 +1295,9 @@ function managedCapability(app, name, displayName, kind, riskLevel, riskTags, re
     name,
     version: "1",
     displayName,
-    description: `${displayName} for ${app.name}.`,
+    // A capability may carry richer agent-facing guidance (e.g. Canvas element-op
+    // usage, #1355); otherwise fall back to a generated one-liner.
+    description: metadata.description ?? `${displayName} for ${app.name}.`,
     provider: {
       type: "application",
       id: app.id,
@@ -1107,7 +1334,7 @@ function projectWrapperCapabilities(app, prefix, disabled) {
     .filter((command) => command.status === "approved")
     .map((command) => managedCapability(
       app,
-      `${prefix}.wrapper.${command.id}`,
+      `${prefix}.${wrapperSegment(command)}.${command.id}`,
       command.displayName,
       wrapperKind,
       command.riskLevel,
@@ -1218,11 +1445,22 @@ function wrapperInputSchema(command) {
     properties: Object.fromEntries(command.argInputs.map((input) => [
       input.key,
       {
-        type: input.type,
+        type: wrapperArgInputJsonType(input.type),
         ...(input.values?.length ? { enum: input.values } : {}),
       },
     ])),
   };
+}
+
+// The capability input-schema type for an argInput. Only `props` needs a real
+// JSON type (a key→value map is an object, and the input must validate as one);
+// every pre-existing type keeps emitting its raw string verbatim, so existing
+// apps' projected schemas stay byte-identical (a pinned-fixture invariant).
+function wrapperArgInputJsonType(type) {
+  if (type === "props" || type === "json_data") return "object";
+  if (type === "json_commands") return "array";
+  if (type === "office_file" || type === "csv_file") return "string";
+  return type;
 }
 
 function approvalInputSchema() {
@@ -1249,16 +1487,30 @@ function actionFromCapabilityName(capabilityName) {
   const wrapperAction = wrapperActionFromCapabilityName(capabilityName);
   if (wrapperAction) return wrapperAction;
   const suffix = String(capabilityName ?? "").split(".").at(-1);
-  return ["inspect", "search", "preview", "refresh", "online", "offline", "archive", "generate_orchestration"].includes(suffix) ? suffix : null;
+  if (["inspect", "search", "preview", "refresh", "online", "offline", "archive", "generate_orchestration"].includes(suffix)) return suffix;
+  // Registry-driven managed actions (#1353) are only ever projected for the app
+  // that declares them, so a match here belongs to a real projected capability.
+  return REGISTERED_MANAGED_ACTIONS.has(suffix) ? suffix : null;
 }
 
 function wrapperActionFromCapabilityName(capabilityName) {
-  const match = String(capabilityName ?? "").match(/\.wrapper\.([a-z0-9._-]+)$/);
+  // Both `.wrapper.` (read) and `.apply.` (write) wrapper commands map to the same
+  // `wrapper:<id>` governance action — resolution is by command id, and the write
+  // policy is enforced at the device, not in the action label.
+  const match = String(capabilityName ?? "").match(/\.(?:wrapper|apply)\.([a-z0-9._-]+)$/);
   return match ? `wrapper:${match[1]}` : null;
 }
 
-function executeApplicationAction({ application, action, input, actor, defaultProjectPath, now = () => new Date().toISOString() }) {
+function executeApplicationAction({ application, action, input, actor, defaultProjectPath, now = () => new Date().toISOString(), managedCapabilityHandlers = {} }) {
   const executedAt = now();
+  // Registry-driven managed capability (#1353): dispatch to the injected handler
+  // BEFORE the built-in action switch. The handler returns either a
+  // `{ summary, output }` success or a `{ ok:false, status, body }` failure the
+  // caller propagates verbatim.
+  const managedHandler = managedCapabilityHandlers?.[application.id]?.[action];
+  if (typeof managedHandler === "function") {
+    return managedHandler({ application, input, actor });
+  }
   if (action === "inspect") {
     return {
       summary: `${application.name} application inspected.`,
@@ -2374,6 +2626,13 @@ function normalizeWrapperCommand(command, index) {
     description: stringOrNull(command.description) ?? `Governed NPM wrapper command ${id}.`,
     commandType,
     command: commandText,
+    // The capability segment: "apply" for a write command (routed to the device's
+    // write policy), else "wrapper" (read). Preserved through registration so the
+    // projected capability name and the device classification agree.
+    segment: command.segment === "apply" ? "apply" : "wrapper",
+    // Argv ordering: "positionals_first" emits subject positionals before flags
+    // (officecli set/add). Default "flags_first" keeps git/ccusage byte-identical.
+    argOrder: command.argOrder === "positionals_first" ? "positionals_first" : "flags_first",
     args: normalizeStringList(command.args),
     cwd: stringOrNull(command.cwd) ?? ".",
     // cwdPolicy governs where the command runs. "fixed" (default, ccusage's
@@ -2384,7 +2643,13 @@ function normalizeWrapperCommand(command, index) {
     status: normalizeWrapperCommandStatus(command.status),
     riskLevel: normalizeRiskLevel(command.riskLevel, commandType === "npm_script" ? "medium" : "high"),
     riskTags: normalizeStringList(command.riskTags ?? command.tags),
-    requiresApproval: command.requiresApproval !== false,
+    // A write command (apply segment OR workspace_write) ALWAYS requires approval —
+    // the invariant is enforced at registration, not left to the descriptor, so a
+    // re-registration cannot ship an approval-free write. Read commands keep the
+    // descriptor's choice (default: required unless explicitly false).
+    requiresApproval: (command.segment === "apply" || normalizeAccessPolicy(command.filePolicy, "read_only") === "workspace_write")
+      ? true
+      : command.requiresApproval !== false,
     inputSchema: command.inputSchema && typeof command.inputSchema === "object" && !Array.isArray(command.inputSchema)
       ? command.inputSchema
       : emptyInputSchema(),

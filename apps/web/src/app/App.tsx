@@ -5,6 +5,7 @@ import { CommandPalette } from "@/components/layout/command-palette";
 import { ErrorBoundary } from "@/components/common/error-boundary";
 import { SECTION_VIEWS } from "@/app/routes";
 import { useUrlNavigationSync } from "@/app/url-navigation-sync";
+import { useSkinSync } from "@/app/use-skin-sync";
 import { useUiStore } from "@/store/ui-store";
 
 /**
@@ -14,6 +15,7 @@ import { useUiStore } from "@/store/ui-store";
  */
 export function App() {
   useUrlNavigationSync();
+  useSkinSync();
   const section = useUiStore((s) => s.section);
   const View = SECTION_VIEWS[section];
 
