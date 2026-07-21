@@ -1,6 +1,7 @@
 # OfficeCLI Integration Line
 
-**Status:** complete · 15 PRs merged to `main` (through `3a96e35`).
+**Status:** complete · 20 PRs merged to `main` (browse + governed writes through `3a96e35`;
+in-app markdown editing — L1 — through `c903862`).
 
 OfficeCLI ([`@officecli/officecli`](https://github.com/iOfficeAI/OfficeCLI), a .NET CLI
 that reads/edits `.docx` / `.xlsx` / `.pptx`) is integrated as a first-class,
@@ -27,7 +28,8 @@ Browse ──▶ Edit ──▶ Compare ──▶ Review ──▶ Promote
 ```
 
 1. **Browse** — click a document in the file tree → it renders inline, not as raw OOXML bytes.
-2. **Edit** — the docx paragraph editor, or a path + value form → a governed `set` into the worktree.
+2. **Edit** — the docx markdown editor (block or whole-document mode; see *In-app markdown
+   editing* below), or a path + value form → one governed `batch`/`set` into the worktree.
 3. **Compare** — rendered *before* (base) vs *after* (worktree), side by side.
 4. **Review** — an explicit approval verdict on the worktree change.
 5. **Promote** — merge the approved worktree into the base branch.
@@ -128,25 +130,67 @@ confirmed exploitable and all are fixed.
 
 ---
 
+## In-app markdown editing (L1)
+
+The "markdown-syntax editing done right" that the first pass deferred — built as
+**surgical in-app editing, never a lossy round-trip**. The docx stays the source of
+truth and is *never regenerated*; a human edits markdown and every change maps to
+**one governed `apply.batch`** of precise ops keyed on each paragraph's native OOXML
+paraId. Content the projection can't express (tables, images, non-heading styles) is
+preserved by never being touched.
+
+| Slice | PR | Commit | What shipped |
+| --- | --- | --- | --- |
+| L1 · mapper | [#1403](https://github.com/perly6185-lab/myagenttool/pull/1403) | `0fd5498` | Pure-logic core: paragraph↔markdown projection, diff→batch (set/remove/move/add), the ordering algorithm (LIS-minimal moves + reverse-insert of consecutive new blocks). |
+| L1 · editor | [#1405](https://github.com/perly6185-lab/myagenttool/pull/1405) | `485d5a6` | `DocxBlockEditor` + the compute route; edit text/headings + add/delete/reorder blocks. |
+| L1.5 · inline | [#1407](https://github.com/perly6185-lab/myagenttool/pull/1407) | `94ad0c7` | Inline **bold**/*italic*: runs project to `**`/`*` markdown; a formatted edit rebuilds that paragraph's runs (reverse-remove + append). |
+| L1b · whole-doc | [#1411](https://github.com/perly6185-lab/myagenttool/pull/1411) | `c903862` | A Markdown mode: edit the whole document as one textarea. The server re-aligns edited blocks to their original paraIds (exact pass + Dice-similarity pass), then reuses the same mapper. |
+
+**Two editing surfaces, one backend.** *Blocks* mode keeps each paraId in memory
+(exact, zero alignment risk) and is the default. *Markdown* mode edits the whole doc
+as flowing markdown and re-aligns by content on save — an opt-in convenience whose
+worst case is a suboptimal (still governed, still reviewed) diff, never silent
+corruption. Both produce one `apply.batch`. Scope: text, headings, structure, inline
+bold/italic; links are excluded (officecli has no hyperlink verb) and a brand-new
+paragraph is created plain (its paraId isn't known mid-batch).
+
 ## Out of scope — deliberate
 
 - **Markdown round-trip editing — declined.** `docx → md → docx` regenerates the
   whole file, loses formatting, makes the diff the entire document, and only works
-  for docx. The paragraph editor delivers the editing feel without the fidelity loss.
-- **Markdown-syntax editing done right — deferred.** A markdown-diff → surgical
-  OOXML-op mapper. The ideal, but a separate build.
+  for docx. The block/markdown editor delivers the editing feel *surgically* — the
+  diff is only what changed.
 - **Click-a-cell in-render editing — deferred.** The render is a sandboxed static
   iframe; true click-to-edit needs a non-sandboxed interactive renderer.
+- **New-paragraph inline formatting, external-editor round-trip — follow-ups.**
+  Formatting a brand-new paragraph (an idempotent second save round) and an
+  "export markdown with embedded anchors → edit anywhere → re-import" workflow are
+  scoped but not built.
 
 ---
 
-## Verification & the one open item
+## Verification & open items
 
 Every backend path was verified live through the real stack (server + desktop
 bridge): reads execute, the worktree-only gate refuses out-of-tree writes, and the
 full edit → diff → review → promote loop ran on real `.docx` / `.xlsx` / `.pptx`.
 
-The web surfaces (preview pane, visual diff, inline and paragraph editors) are
-typecheck- and lint-clean with their data paths proven, but their **rendered layout
-was not visually QA'd** — the CI sandbox cannot run a browser. They need a human
-pass in a real browser before being relied on.
+The **markdown editor was re-verified live end-to-end** (server + bridge on a real
+worktree): the compute route aligned a whole-document markdown edit, minted a grant,
+and the governed `apply.batch` executed through the bridge — the inline-bold +
+insert landed in the worktree with the project clone untouched. The mapper's ops
+were also proven directly against the officecli binary (set/move/add honour the full
+`/body/p[@paraId=..]` path; run-rebuild and reverse-insert land correctly).
+
+Two open items:
+
+- **Web layout not visually QA'd.** The preview pane, visual diff, and the block /
+  markdown editors are typecheck-clean with proven data paths, but the CI sandbox
+  cannot run a browser. They need a human pass in a real browser.
+- **Resident write durability (known gap, fix pending).** officecli auto-spawns a
+  `__resident-serve__` process per file (a read triggers it too), after which a
+  write's disk save is *deferred* 2–10 s unless `OFFICECLI_RESIDENT_FLUSH=each` is
+  set. No shipped code sets it, so a `promote` immediately after an `apply`
+  invocation reports success can capture stale on-disk content. The governed write
+  path should force a synchronous flush (env on the officecli apply spawn) so a
+  worktree write is durable before the invocation completes.

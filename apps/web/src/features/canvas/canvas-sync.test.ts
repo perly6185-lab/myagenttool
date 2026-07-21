@@ -1,7 +1,58 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { clearOfflineDraft, loadOfflineDraft, offlineDraftKey, reconcile, saveOfflineDraft } from "./canvas-sync";
+import {
+  clearOfflineDraft,
+  heldImageElementIds,
+  loadOfflineDraft,
+  normalizeLoadedImageElements,
+  offlineDraftKey,
+  reconcile,
+  saveOfflineDraft,
+} from "./canvas-sync";
 
 afterEach(() => localStorage.clear());
+
+describe("normalizeLoadedImageElements", () => {
+  const files = new Set(["f1"]);
+
+  it("flips a pending image whose file we hold to saved (else Excalidraw renders it blank)", () => {
+    const [img] = normalizeLoadedImageElements([{ id: "a", type: "image", status: "pending", fileId: "f1" }], files);
+    expect(img.status).toBe("saved");
+  });
+
+  it("leaves a pending image whose file is ABSENT untouched (nothing to render against)", () => {
+    const [img] = normalizeLoadedImageElements([{ id: "a", type: "image", status: "pending", fileId: "missing" }], files);
+    expect(img.status).toBe("pending");
+  });
+
+  it("passes non-image elements and already-saved images through unchanged (no needless copy)", () => {
+    const rect = { id: "r", type: "rectangle" };
+    const saved = { id: "a", type: "image", status: "saved", fileId: "f1" };
+    const out = normalizeLoadedImageElements([rect, saved], files);
+    expect(out[0]).toBe(rect);
+    expect(out[1]).toBe(saved);
+  });
+});
+
+describe("heldImageElementIds", () => {
+  const files = new Set(["f1", "f2"]);
+
+  it("returns only image elements whose binary is present (a reachable reassert target)", () => {
+    const ids = heldImageElementIds(
+      [
+        { id: "a", type: "image", fileId: "f1" },
+        { id: "b", type: "image", fileId: "missing" }, // pruned permanently — never sticks
+        { id: "c", type: "rectangle" },
+        { id: "d", type: "image", fileId: "f2" },
+      ],
+      files,
+    );
+    expect(ids).toEqual(["a", "d"]);
+  });
+
+  it("returns [] when no image has a held file (so the reassert loop never starts)", () => {
+    expect(heldImageElementIds([{ id: "a", type: "image", fileId: "missing" }], files)).toEqual([]);
+  });
+});
 
 describe("reconcile", () => {
   it("does nothing when the server is not ahead", () => {
