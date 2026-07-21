@@ -1018,7 +1018,7 @@ function isValidWrapperArgValue(spec, value) {
       return isSafeRelFilePath(value) && /\.(csv|tsv)$/i.test(value);
     // An Excalidraw scene FILE (excalidraw-cli export input) — same worktree-safe
     // relative-path rule, `.excalidraw` extension. Mirrors the device's
-    // isExcalidrawFile; the two allowlists reject a `../`/absolute path independently.
+    // isExcalidrawSceneFile; the two allowlists reject a `../`/absolute path independently.
     case "excalidraw_file":
       return isSafeRelFilePath(value) && /\.excalidraw$/i.test(value);
     // The PNG OUTPUT path (excalidraw-cli export output) — worktree-safe relative,
