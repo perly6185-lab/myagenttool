@@ -59,12 +59,45 @@ export function CanvasEditor() {
 
   /** Load a scene's content into the editor; resets local revision + dirty. */
   const loadIntoEditor = useCallback((scene: CanvasScene, elementsOverride?: unknown[]) => {
-    const elements = (elementsOverride ?? scene.elements) as unknown[];
-    apiRef.current?.updateScene({ elements });
-    // updateScene carries no files — load a scene's binary files (images) via the
-    // dedicated API, or image elements render blank and the next save drops them.
     const files = scene.files ?? {};
-    if (Object.keys(files).length) apiRef.current?.addFiles(Object.values(files));
+    const haveFile = new Set(Object.keys(files));
+    // Excalidraw only resolves an image element against the file cache when the
+    // element is "saved"; a "pending" one is treated as still-uploading and stays
+    // blank. Freshly dropped images can persist as "pending", so on load flip any
+    // image whose binary we actually hold back to "saved" — else it never renders.
+    const elements = ((elementsOverride ?? scene.elements) as Record<string, unknown>[]).map((el) =>
+      el && el.type === "image" && el.status !== "saved" && haveFile.has(el.fileId as string)
+        ? { ...el, status: "saved" }
+        : el,
+    );
+    // Warm the file cache BEFORE adding the elements that reference it, so
+    // updateScene resolves each "saved" image against a file already present.
+    const applyScene = () => {
+      if (haveFile.size) apiRef.current?.addFiles(Object.values(files));
+      apiRef.current?.updateScene({ elements });
+    };
+    applyScene();
+    // At first mount Excalidraw's image-file cache isn't ready, so it silently
+    // prunes image elements whose binary hasn't decoded yet — a scene's images
+    // vanish on load. Re-assert the scene over a few animation frames until every
+    // image element sticks; it's idempotent, and the post-load suppression window
+    // below absorbs the extra onChange noise so it never marks the editor dirty.
+    const wantImageIds = elements
+      .filter((e) => e && e.type === "image")
+      .map((e) => e.id as string);
+    if (wantImageIds.length) {
+      let tries = 0;
+      const reassert = () => {
+        if (loadedSceneIdRef.current !== scene.id) return; // scene changed under us
+        const have = new Set(((apiRef.current?.getSceneElements() ?? []) as Record<string, unknown>[]).map((e) => e.id));
+        if (wantImageIds.some((id) => !have.has(id)) && tries < 10) {
+          tries += 1;
+          applyScene();
+          requestAnimationFrame(reassert);
+        }
+      };
+      requestAnimationFrame(reassert);
+    }
     localRevisionRef.current = scene.revision;
     setDisplayRevision(scene.revision);
     lastSyncedJsonRef.current = serialize(elements, files);
