@@ -80,10 +80,30 @@ test("merge: two paragraphs become one — one paraId kept, the other deleted", 
   assert.ok(aligned[0].path === "p1" || aligned[0].path === "p2");
 });
 
-test("unrelated replacement is a delete + insert, not a false edit", () => {
+test("a same-position replacement is an in-place edit (keeps the paraId, classic-diff semantics)", () => {
+  // One block in, one out, at the same position → treat as an edit so the paraId
+  // (and, via computeBlockOps, the formatting) is preserved. This is what fixes the
+  // short-edit case below; a delete+insert would drop formatting and the paraId.
   const o = [orig("p1", "the quick brown fox")];
-  const aligned = alignBlocks(o, ["completely different content here"]);
-  assert.deepEqual(paths(aligned), [null]); // below threshold -> insertion, p1 deleted
+  assert.deepEqual(paths(alignBlocks(o, ["completely different content here"])), ["p1"]);
+});
+
+test("short in-place edits below the similarity threshold keep their paraId (F4)", () => {
+  // `**TODO**`→`**DONE**` (Dice ~0.43) and `Yes`→`No` (Dice 0) are edits, not
+  // delete+insert — positional pairing keeps the paraId so formatting survives.
+  assert.deepEqual(paths(alignBlocks([orig("p1", "**TODO**")], ["**DONE**"])), ["p1"]);
+  assert.deepEqual(paths(alignBlocks([orig("p1", "Yes")], ["No"])), ["p1"]);
+  assert.deepEqual(
+    paths(alignBlocks([orig("p1", "Draft"), orig("p2", "body stays")], ["Final", "body stays"])),
+    ["p1", "p2"],
+  );
+});
+
+test("a genuine insert and delete in DIFFERENT places don't cross-pair into an edit", () => {
+  // delete p2, insert a new block later — anchors (p1, p3) keep the gaps apart, so
+  // p2 is a delete and the new block is an insert (not a spurious p2→new edit).
+  const o = [orig("p1", "alpha"), orig("p2", "beta"), orig("p3", "gamma")];
+  assert.deepEqual(paths(alignBlocks(o, ["alpha", "gamma", "NEW tail"])), ["p1", "p3", null]);
 });
 
 test("duplicate paragraphs pair by rank, not all onto the first", () => {
