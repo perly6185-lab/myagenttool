@@ -6,6 +6,7 @@ import { createMarkdownApplicationRegistration } from "./markdown-application.mj
 import { createCanvasApplicationRegistration } from "./canvas-application.mjs";
 import { createOfficecliApplicationRegistration } from "./officecli-application.mjs";
 import { createExcalidrawCliApplicationRegistration } from "./excalidraw-cli-application.mjs";
+import { findKnownRuntime } from "./runtime-catalog.mjs";
 
 const KNOWN_APPLICATIONS = [
   {
@@ -96,6 +97,12 @@ export function listKnownApplications() {
     ...entry,
     aliases: [...aliases],
     runtimeRequirements: runtimeRequirements.map((requirement) => ({ ...requirement })),
+    // Stage 4-3 (#1342): the server-owned local sign-in command (from the first
+    // backing runtime that needs authentication), so the Add flow guides sign-in
+    // without hardcoding per-app commands. null when no runtime requires auth.
+    loginCommand: runtimeRequirements
+      .map((requirement) => findKnownRuntime(requirement.runtimeId)?.loginCommand)
+      .find(Boolean) ?? null,
   }));
 }
 

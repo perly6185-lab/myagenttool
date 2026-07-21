@@ -1671,6 +1671,8 @@ export interface KnownApplicationCatalogEntry {
   command: string;
   installHint: string;
   runtimeRequirements: Array<{ runtimeId: string; required: boolean }>;
+  // Stage 4 (#1342): server-owned local sign-in command; null when no runtime needs auth.
+  loginCommand: string | null;
 }
 
 export interface RuntimeCatalogEntry {
