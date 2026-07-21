@@ -125,6 +125,16 @@ function surviveContentCommands(eb) {
   const styleChanged = eb.headingLevel !== headingLevelForStyle(eb.orig.style);
   const targetStyle = styleForHeadingLevel(eb.headingLevel);
 
+  // A complex paragraph (inline picture/hyperlink/field alongside runs) must NOT be
+  // rewritten: both `set text` (collapses runs) and the run-rebuild (reverse-remove
+  // r[n]) would DELETE the non-run content officecli addresses as r[n]. Only a
+  // paragraph-level style change is safe; text/run edits are dropped (the editor
+  // shows these read-only).
+  if (eb.orig.complex) {
+    if (styleChanged) out.push({ command: "set", path: paraPath, props: { style: targetStyle } });
+    return out;
+  }
+
   const origRuns = eb.orig.runs ?? [];
   const newFormatted = eb.newRuns.some((r) => r.bold || r.italic);
   const origFormatted = normalizeRuns(origRuns).some((r) => r.bold || r.italic);

@@ -17,6 +17,7 @@ interface Block {
   key: string; // stable local key for React (new blocks have no paraId yet)
   path: string | null; // native OOXML paraId path, or null for a new block
   md: string;
+  complex?: boolean; // holds an inline picture/link/field — read-only (editing would destroy it)
 }
 
 export function DocxBlockEditor({ projectId, worktreeId, file, onChanged }: { projectId: string; worktreeId: string; file: string; onChanged?: () => void }) {
@@ -37,9 +38,9 @@ export function DocxBlockEditor({ projectId, worktreeId, file, onChanged }: { pr
     setError(null);
     try {
       const r = (await api.officecliDocOutline(projectId, file, worktreeId)) as {
-        paragraphs: { path: string; type: string; text: string; style: string | null; md: string }[];
+        paragraphs: { path: string; type: string; text: string; style: string | null; md: string; complex?: boolean }[];
       };
-      const next = r.paragraphs.map((p) => ({ key: nextKey(), path: p.path, md: p.md }));
+      const next = r.paragraphs.map((p) => ({ key: nextKey(), path: p.path, md: p.md, complex: p.complex }));
       setBlocks(next);
       setOriginal(next.map((b) => ({ path: b.path, md: b.md })));
       setLoadState("done");
@@ -206,9 +207,12 @@ export function DocxBlockEditor({ projectId, worktreeId, file, onChanged }: { pr
                 value={block.md}
                 onChange={(e) => setMd(block.key, e.target.value)}
                 rows={Math.min(6, Math.max(1, Math.ceil((block.md.length || 1) / 80)))}
-                className="w-full resize-y rounded border border-border bg-background px-2 py-1 text-sm"
-                spellCheck
+                readOnly={block.complex}
+                title={block.complex ? "This paragraph contains an inline image or link and can't be edited as text here — editing would remove it." : undefined}
+                className={`w-full resize-y rounded border border-border px-2 py-1 text-sm ${block.complex ? "bg-muted text-muted-foreground" : "bg-background"}`}
+                spellCheck={!block.complex}
               />
+              {block.complex ? <p className="mt-0.5 px-1 text-[10px] text-muted-foreground/70">contains an inline image or link — read-only (editing here would remove it)</p> : null}
             </div>
           );
         })}

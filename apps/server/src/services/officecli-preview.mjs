@@ -168,19 +168,29 @@ export async function readOfficecliDocParagraphs({ projectPath, relativeFile, ti
   const children = Array.isArray(body?.children) ? body.children : [];
   const paragraphs = children
     .filter((child) => child?.type === "paragraph" && typeof child?.path === "string")
-    .map((child) => ({
-      path: child.path,
-      type: child.type,
-      text: typeof child.text === "string" ? child.text : "",
-      style: typeof child.style === "string" ? child.style : null,
-      runs: (Array.isArray(child.children) ? child.children : [])
-        .filter((c) => c?.type === "run")
-        .map((c) => ({
-          text: typeof c.text === "string" ? c.text : "",
-          bold: Boolean(c.format?.bold),
-          italic: Boolean(c.format?.italic),
-        })),
-    }));
+    .map((child) => {
+      const kids = Array.isArray(child.children) ? child.children : [];
+      // A paragraph is `complex` if it holds any run-level child that ISN'T a run
+      // (an inline picture, hyperlink, field, …). officecli still addresses those
+      // positionally as r[n], so the run-rebuild / set-text edit path would DELETE
+      // them. Such paragraphs must not be edited via the run model — only the runs
+      // are surfaced, and the mapper refuses to rewrite them (see computeBlockOps).
+      const complex = kids.some((c) => c?.type && c.type !== "run");
+      return {
+        path: child.path,
+        type: child.type,
+        text: typeof child.text === "string" ? child.text : "",
+        style: typeof child.style === "string" ? child.style : null,
+        complex,
+        runs: kids
+          .filter((c) => c?.type === "run")
+          .map((c) => ({
+            text: typeof c.text === "string" ? c.text : "",
+            bold: Boolean(c.format?.bold),
+            italic: Boolean(c.format?.italic),
+          })),
+      };
+    });
   return { path: relPath, paragraphs };
 }
 

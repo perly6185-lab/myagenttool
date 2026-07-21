@@ -111,14 +111,32 @@ test("readOfficecliDocParagraphs returns path-addressed paragraphs with runs (sk
   });
   assert.equal(out.path, "memo.docx");
   assert.deepEqual(out.paragraphs, [
-    { path: "/body/p[@paraId=00100000]", type: "paragraph", text: "Introduction", style: "Heading1", runs: [
+    { path: "/body/p[@paraId=00100000]", type: "paragraph", text: "Introduction", style: "Heading1", complex: false, runs: [
       { text: "Introduction", bold: false, italic: false },
     ] },
-    { path: "/body/p[@paraId=00100002]", type: "paragraph", text: "First paragraph.", style: null, runs: [
+    { path: "/body/p[@paraId=00100002]", type: "paragraph", text: "First paragraph.", style: null, complex: false, runs: [
       { text: "First ", bold: false, italic: false },
       { text: "paragraph.", bold: true, italic: false },
     ] },
   ]);
+});
+
+test("readOfficecliDocParagraphs flags a paragraph with inline non-run content as complex", async () => {
+  const root = projectWith({ "memo.docx": "x" });
+  const json = JSON.stringify({
+    success: true,
+    data: { results: [{ path: "/body", type: "body", children: [
+      { path: "/body/p[@paraId=1]", type: "paragraph", text: "before  after", style: null, children: [
+        { path: "/body/p[@paraId=1]/r[1]", type: "run", text: "before ", format: {} },
+        { path: "/body/p[@paraId=1]/r[2]", type: "picture", text: "", format: {} },
+        { path: "/body/p[@paraId=1]/r[3]", type: "run", text: " after", format: {} },
+      ] },
+    ] }] },
+  });
+  const out = await readOfficecliDocParagraphs({ projectPath: root, relativeFile: "memo.docx", run: async () => ({ stdout: json }) });
+  assert.equal(out.paragraphs[0].complex, true, "a paragraph with an inline picture is complex");
+  // only the runs are surfaced (the picture is not representable), but the flag marks it unsafe to rewrite.
+  assert.deepEqual(out.paragraphs[0].runs.map((r) => r.text), ["before ", " after"]);
 });
 
 const WORKBOOK_JSON = JSON.stringify({

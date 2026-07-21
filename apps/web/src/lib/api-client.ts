@@ -697,7 +697,7 @@ export const api = {
   // A .docx's body paragraphs (path-addressed) for the block editor: each carries
   // its server-computed markdown projection (`md`, heading + inline bold/italic).
   officecliDocOutline: (projectId: string, filePath: string, worktreeId?: string) =>
-    request<{ path: string; paragraphs: { path: string; type: string; text: string; style: string | null; md: string }[] }>(
+    request<{ path: string; paragraphs: { path: string; type: string; text: string; style: string | null; md: string; complex?: boolean }[] }>(
       "GET",
       `/api/projects/${encodeURIComponent(projectId)}/officecli-doc-outline?path=${encodeURIComponent(filePath)}${worktreeId ? `&worktree=${encodeURIComponent(worktreeId)}` : ""}`,
     ),
