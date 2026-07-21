@@ -22,7 +22,6 @@
 // are what keep "all argv comes from an allowlist" intact.
 
 export const EXCALIDRAW_CLI_APPLICATION_ID = "app_excalidraw_cli";
-export const EXCALIDRAW_CLI_DEFAULT_VERSION = "0.5.0";
 
 // One governed WRITE verb. `excalidraw-cli <input.excalidraw> <output.png>` renders
 // a scene file to a PNG in the invocation's worktree. Both positionals are values,

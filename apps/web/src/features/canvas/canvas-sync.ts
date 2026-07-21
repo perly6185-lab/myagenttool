@@ -29,6 +29,41 @@ export function reconcile({
   return dirty ? "conflict" : "apply-server";
 }
 
+// --- Image-load normalization (#1401 / reload-render) -------------------------
+// Excalidraw prunes image elements whose binary isn't ready at first mount, and
+// only resolves an image against the file cache when the element is "saved". The
+// editor re-asserts the scene until images stick; these two pure helpers decide
+// WHAT to normalize and WHICH images to wait for, so the contract is unit-testable
+// without a browser.
+
+type CanvasElementLike = Record<string, unknown>;
+
+/**
+ * Flip any image element whose binary we actually hold (`fileId` in `fileIds`)
+ * from "pending" to "saved" — a "pending" image is treated as still-uploading and
+ * renders blank. An image whose file is absent is left untouched (nothing to
+ * render against). Non-image elements pass through unchanged.
+ */
+export function normalizeLoadedImageElements(elements: CanvasElementLike[], fileIds: Set<string>): CanvasElementLike[] {
+  return elements.map((el) =>
+    el && el.type === "image" && el.status !== "saved" && fileIds.has(el.fileId as string)
+      ? { ...el, status: "saved" }
+      : el,
+  );
+}
+
+/**
+ * The ids of image elements whose binary is present — i.e. the ones that CAN
+ * stick once the file cache is warm, so the reassert loop has a reachable target.
+ * An image with a missing file is excluded: Excalidraw prunes it permanently, so
+ * waiting for it would burn the whole retry budget on every load.
+ */
+export function heldImageElementIds(elements: CanvasElementLike[], fileIds: Set<string>): string[] {
+  return elements
+    .filter((el) => el && el.type === "image" && fileIds.has(el.fileId as string))
+    .map((el) => el.id as string);
+}
+
 // Offline draft: when a save fails with a network error, the user's work is
 // preserved locally keyed by scene id and reconciled ONLY on an explicit action.
 const OFFLINE_DRAFT_PREFIX = "myagenttool-canvas-offline:";

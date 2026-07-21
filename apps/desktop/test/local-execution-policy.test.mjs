@@ -730,6 +730,15 @@ test("#1356 PR2: a traversal input or a wrong-extension output is refused (args 
   }
 });
 
+test("#1356: a partial export argv (missing the output positional) is refused, not run one-arg", () => {
+  const gate = excalidrawApplyGate({
+    capability: "app.app_excalidraw_cli.apply.export",
+    execArgs: ["flow.excalidraw"], // output dropped (e.g. server dropped an invalid one)
+  });
+  assert.equal(gate.allowed, false);
+  assert.match(gate.reason, /args outside the local allowlist/);
+});
+
 test("#1356 PR2: an export whose binary is absent is refused with binary_unavailable", () => {
   const gate = excalidrawApplyGate({
     capability: "app.app_excalidraw_cli.apply.export",
