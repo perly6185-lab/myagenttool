@@ -324,6 +324,21 @@ test("italic + bold combined run", () => {
   ]);
 });
 
+test("a complex paragraph (inline picture/link) is NEVER rewritten — non-run content preserved", () => {
+  // The reader surfaces only the runs; the picture lives at r[n] and would be
+  // destroyed by set-text / run-rebuild. computeBlockOps must emit no content op.
+  const orig = [{ path: "p1", text: "before  after", style: null, complex: true, runs: [RUN("before "), RUN(" after")] }];
+  assert.deepEqual(computeBlockOps({ original: orig, edited: [{ path: "p1", md: "before **bold** after" }] }).commands, []);
+  assert.deepEqual(computeBlockOps({ original: orig, edited: [{ path: "p1", md: "totally different" }] }).commands, []);
+});
+
+test("a complex paragraph still accepts a safe heading (style) change", () => {
+  const orig = [{ path: "p1", text: "x", style: null, complex: true, runs: [RUN("x")] }];
+  assert.deepEqual(computeBlockOps({ original: orig, edited: [{ path: "p1", md: "## x" }] }).commands, [
+    { command: "set", path: "p1", props: { style: "Heading2" } },
+  ]);
+});
+
 test("new block with formatting is created plain (markers stripped)", () => {
   const { commands } = computeBlockOps({ original: [], edited: [{ path: null, md: "**bold** new" }] });
   assert.deepEqual(commands, [

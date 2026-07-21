@@ -82,7 +82,13 @@ function resolveDocument(projectPath, relativeFile) {
 export async function renderOfficecliPreview({ projectPath, relativeFile, timeoutMs = DEFAULT_TIMEOUT_MS, run } = {}) {
   if (!projectPath) throw new OfficecliPreviewError("invalid_project", "A project path is required.");
   const { root, relPath } = resolveDocument(projectPath, relativeFile);
-  const spawn = run ?? ((cmd, argv, opts) => execFileAsync(cmd, argv, opts));
+  // Spawn officecli reads with OFFICECLI_RESIDENT_FLUSH=each. A resident's flush
+  // mode is fixed when it is SPAWNED; a flush-less read that warms the resident
+  // first would make a later governed write non-durable (its edit stays in memory,
+  // so a promote could capture stale on-disk content). Setting it here keeps every
+  // officecli invocation — reads and the write runner alike — flush-each, so any
+  // resident is flush-each regardless of who touches the file first.
+  const spawn = run ?? ((cmd, argv, opts) => execFileAsync(cmd, argv, { ...opts, env: { ...process.env, OFFICECLI_RESIDENT_FLUSH: "each" } }));
 
   let stdout;
   try {
@@ -136,7 +142,13 @@ export async function readOfficecliDocParagraphs({ projectPath, relativeFile, ti
   if (!/\.docx$/i.test(relPath)) {
     throw new OfficecliPreviewError("unsupported_type", "Paragraph editing is available for .docx documents only.");
   }
-  const spawn = run ?? ((cmd, argv, opts) => execFileAsync(cmd, argv, opts));
+  // Spawn officecli reads with OFFICECLI_RESIDENT_FLUSH=each. A resident's flush
+  // mode is fixed when it is SPAWNED; a flush-less read that warms the resident
+  // first would make a later governed write non-durable (its edit stays in memory,
+  // so a promote could capture stale on-disk content). Setting it here keeps every
+  // officecli invocation — reads and the write runner alike — flush-each, so any
+  // resident is flush-each regardless of who touches the file first.
+  const spawn = run ?? ((cmd, argv, opts) => execFileAsync(cmd, argv, { ...opts, env: { ...process.env, OFFICECLI_RESIDENT_FLUSH: "each" } }));
 
   let stdout;
   try {
@@ -168,19 +180,29 @@ export async function readOfficecliDocParagraphs({ projectPath, relativeFile, ti
   const children = Array.isArray(body?.children) ? body.children : [];
   const paragraphs = children
     .filter((child) => child?.type === "paragraph" && typeof child?.path === "string")
-    .map((child) => ({
-      path: child.path,
-      type: child.type,
-      text: typeof child.text === "string" ? child.text : "",
-      style: typeof child.style === "string" ? child.style : null,
-      runs: (Array.isArray(child.children) ? child.children : [])
-        .filter((c) => c?.type === "run")
-        .map((c) => ({
-          text: typeof c.text === "string" ? c.text : "",
-          bold: Boolean(c.format?.bold),
-          italic: Boolean(c.format?.italic),
-        })),
-    }));
+    .map((child) => {
+      const kids = Array.isArray(child.children) ? child.children : [];
+      // A paragraph is `complex` if it holds any run-level child that ISN'T a run
+      // (an inline picture, hyperlink, field, …). officecli still addresses those
+      // positionally as r[n], so the run-rebuild / set-text edit path would DELETE
+      // them. Such paragraphs must not be edited via the run model — only the runs
+      // are surfaced, and the mapper refuses to rewrite them (see computeBlockOps).
+      const complex = kids.some((c) => c?.type && c.type !== "run");
+      return {
+        path: child.path,
+        type: child.type,
+        text: typeof child.text === "string" ? child.text : "",
+        style: typeof child.style === "string" ? child.style : null,
+        complex,
+        runs: kids
+          .filter((c) => c?.type === "run")
+          .map((c) => ({
+            text: typeof c.text === "string" ? c.text : "",
+            bold: Boolean(c.format?.bold),
+            italic: Boolean(c.format?.italic),
+          })),
+      };
+    });
   return { path: relPath, paragraphs };
 }
 
@@ -199,7 +221,13 @@ export async function readOfficecliSheet({ projectPath, relativeFile, sheet, tim
   if (!/\.xlsx$/i.test(relPath)) {
     throw new OfficecliPreviewError("unsupported_type", "Grid editing is available for .xlsx documents only.");
   }
-  const spawn = run ?? ((cmd, argv, opts) => execFileAsync(cmd, argv, opts));
+  // Spawn officecli reads with OFFICECLI_RESIDENT_FLUSH=each. A resident's flush
+  // mode is fixed when it is SPAWNED; a flush-less read that warms the resident
+  // first would make a later governed write non-durable (its edit stays in memory,
+  // so a promote could capture stale on-disk content). Setting it here keeps every
+  // officecli invocation — reads and the write runner alike — flush-each, so any
+  // resident is flush-each regardless of who touches the file first.
+  const spawn = run ?? ((cmd, argv, opts) => execFileAsync(cmd, argv, { ...opts, env: { ...process.env, OFFICECLI_RESIDENT_FLUSH: "each" } }));
   const getJson = async (selector, extra = []) => {
     let stdout;
     try {
@@ -267,7 +295,13 @@ export async function readOfficecliDeck({ projectPath, relativeFile, timeoutMs =
   if (!/\.pptx$/i.test(relPath)) {
     throw new OfficecliPreviewError("unsupported_type", "Slide editing is available for .pptx documents only.");
   }
-  const spawn = run ?? ((cmd, argv, opts) => execFileAsync(cmd, argv, opts));
+  // Spawn officecli reads with OFFICECLI_RESIDENT_FLUSH=each. A resident's flush
+  // mode is fixed when it is SPAWNED; a flush-less read that warms the resident
+  // first would make a later governed write non-durable (its edit stays in memory,
+  // so a promote could capture stale on-disk content). Setting it here keeps every
+  // officecli invocation — reads and the write runner alike — flush-each, so any
+  // resident is flush-each regardless of who touches the file first.
+  const spawn = run ?? ((cmd, argv, opts) => execFileAsync(cmd, argv, { ...opts, env: { ...process.env, OFFICECLI_RESIDENT_FLUSH: "each" } }));
   let stdout;
   try {
     ({ stdout } = await spawn("officecli", ["get", relPath, "/", "--json", "--depth", "2"], {
