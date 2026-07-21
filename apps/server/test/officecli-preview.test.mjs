@@ -88,26 +88,36 @@ test("an empty render is reported, not returned as a blank preview", async () =>
 const GET_BODY_JSON = JSON.stringify({
   success: true,
   data: { matches: 1, results: [{ path: "/body", type: "body", children: [
-    { path: "/body/p[@paraId=00100000]", type: "paragraph", text: "Introduction", style: "Heading1" },
-    { path: "/body/p[@paraId=00100002]", type: "paragraph", text: "First paragraph.", style: null },
+    { path: "/body/p[@paraId=00100000]", type: "paragraph", text: "Introduction", style: "Heading1", children: [
+      { path: "/body/p[@paraId=00100000]/r[1]", type: "run", text: "Introduction", format: {} },
+    ] },
+    { path: "/body/p[@paraId=00100002]", type: "paragraph", text: "First paragraph.", style: null, children: [
+      { path: "/body/p[@paraId=00100002]/r[1]", type: "run", text: "First ", format: {} },
+      { path: "/body/p[@paraId=00100002]/r[2]", type: "run", text: "paragraph.", format: { bold: true } },
+    ] },
     { path: "/body/tbl[1]", type: "table" }, // non-paragraph child is skipped
   ] }] },
 });
 
-test("readOfficecliDocParagraphs returns path-addressed paragraphs (skipping non-paragraphs)", async () => {
+test("readOfficecliDocParagraphs returns path-addressed paragraphs with runs (skipping non-paragraphs)", async () => {
   const root = projectWith({ "memo.docx": "x" });
   const out = await readOfficecliDocParagraphs({
     projectPath: root,
     relativeFile: "memo.docx",
     run: async (_cmd, argv) => {
-      assert.deepEqual(argv, ["get", "memo.docx", "/body", "--json"]);
+      assert.deepEqual(argv, ["get", "memo.docx", "/body", "--json", "--depth", "2"]);
       return { stdout: GET_BODY_JSON };
     },
   });
   assert.equal(out.path, "memo.docx");
   assert.deepEqual(out.paragraphs, [
-    { path: "/body/p[@paraId=00100000]", type: "paragraph", text: "Introduction", style: "Heading1" },
-    { path: "/body/p[@paraId=00100002]", type: "paragraph", text: "First paragraph.", style: null },
+    { path: "/body/p[@paraId=00100000]", type: "paragraph", text: "Introduction", style: "Heading1", runs: [
+      { text: "Introduction", bold: false, italic: false },
+    ] },
+    { path: "/body/p[@paraId=00100002]", type: "paragraph", text: "First paragraph.", style: null, runs: [
+      { text: "First ", bold: false, italic: false },
+      { text: "paragraph.", bold: true, italic: false },
+    ] },
   ]);
 });
 

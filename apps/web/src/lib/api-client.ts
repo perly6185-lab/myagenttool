@@ -689,11 +689,23 @@ export const api = {
       "GET",
       `/api/projects/${encodeURIComponent(projectId)}/officecli-preview?path=${encodeURIComponent(filePath)}${worktreeId ? `&worktree=${encodeURIComponent(worktreeId)}` : ""}`,
     ),
-  // A .docx's body paragraphs (path-addressed) for the paragraph-level inline editor.
+  // A .docx's body paragraphs (path-addressed) for the block editor: each carries
+  // its server-computed markdown projection (`md`, heading + inline bold/italic).
   officecliDocOutline: (projectId: string, filePath: string, worktreeId?: string) =>
-    request<{ path: string; paragraphs: { path: string; type: string; text: string; style: string | null }[] }>(
+    request<{ path: string; paragraphs: { path: string; type: string; text: string; style: string | null; md: string }[] }>(
       "GET",
       `/api/projects/${encodeURIComponent(projectId)}/officecli-doc-outline?path=${encodeURIComponent(filePath)}${worktreeId ? `&worktree=${encodeURIComponent(worktreeId)}` : ""}`,
+    ),
+  // L1 block editing: given the edited block list, the server re-reads the current
+  // .docx outline and returns the batch item list for one governed `apply.batch`.
+  officecliBlockOps: (
+    projectId: string,
+    payload: { file: string; worktree: string; blocks: { path: string | null; md: string }[] },
+  ) =>
+    request<{ commands: Record<string, unknown>[] }>(
+      "POST",
+      `/api/projects/${encodeURIComponent(projectId)}/officecli-block-ops`,
+      payload,
     ),
   worktreeGit: (id: string) => request("GET", `/api/worktrees/${encodeURIComponent(id)}/git`),
   worktreeDiff: (id: string) => request("GET", `/api/worktrees/${encodeURIComponent(id)}/diff`),

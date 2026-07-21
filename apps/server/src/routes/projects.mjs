@@ -8,6 +8,7 @@ import { recordHttpGateRefusal } from "./refusal-http-gate.mjs";
 import { deriveFinalStatus, summarizeAutoRuns } from "../services/auto-run-metrics.mjs";
 import { summarizeDeployments } from "../services/auto-run-deploy-metrics.mjs";
 import { renderOfficecliPreview, readOfficecliDocParagraphs, OfficecliPreviewError } from "../services/officecli-preview.mjs";
+import { computeBlockOps, paragraphToMd } from "../services/officecli-block-ops.mjs";
 import { readEvalTrend, summarizeEvalTrend } from "../services/eval-trend.mjs";
 import { maturityScorecard, latestDora } from "../read-models/maturity-scorecard.mjs";
 import { normalizeAutoRunSettings, resolveAutoRunConfig } from "../services/auto-run-config.mjs";
@@ -655,9 +656,48 @@ export async function handleProjectRoutes({
     const rootPath = worktree?.path ?? worktree?.worktreePath ?? project.path;
     try {
       const outline = await readOfficecliDocParagraphs({ projectPath: rootPath, relativeFile: url.searchParams.get("path") ?? "" });
-      sendJson(res, 200, outline);
+      // Attach the markdown projection per paragraph (heading + inline runs) so the
+      // editor displays it directly — a single, server-owned source of truth for
+      // the projection (no client-side mirror to drift).
+      const paragraphs = outline.paragraphs.map((p) => ({ ...p, md: paragraphToMd(p) }));
+      sendJson(res, 200, { ...outline, paragraphs });
     } catch (error) {
       const code = error instanceof OfficecliPreviewError ? error.code : "outline_failed";
+      const status = code === "not_found" ? 404 : code === "officecli_unavailable" ? 503 : 400;
+      sendJson(res, status, { error: code, message: error instanceof Error ? error.message : String(error) });
+    }
+    return true;
+  }
+
+  // L1 in-app block editing: compute the batch item list for a markdown-style edit
+  // of a .docx. The client sends the edited block list ({path|null, md}); the
+  // server re-reads the CURRENT outline (so the diff is against real worktree state,
+  // never the client's possibly-stale snapshot) and runs the tested block-ops
+  // mapper. Pure/read — the resulting commands still flow through the governed
+  // `apply.batch` capability (both allowlists) before anything is written.
+  const blockOpsMatch = url.pathname.match(/^\/api\/projects\/([^/]+)\/officecli-block-ops$/);
+  if (blockOpsMatch && req.method === "POST") {
+    const project = state.projects.find((item) => item.id === decodeURIComponent(blockOpsMatch[1]));
+    if (!project) {
+      sendJson(res, 404, { error: "project_not_found" });
+      return true;
+    }
+    if (denyForeignProject({ res, sendJson, state, actor, projectId: project.id, notFound: { error: "project_not_found" } })) return true;
+    const body = await readJson(req);
+    const worktreeId = body?.worktree ?? body?.worktreeId ?? null;
+    const worktree = worktreeId ? (state.worktrees ?? []).find((w) => w.id === worktreeId && w.projectId === project.id) : null;
+    const rootPath = worktree?.path ?? worktree?.worktreePath ?? project.path;
+    const blocks = Array.isArray(body?.blocks) ? body.blocks : null;
+    if (!blocks) {
+      sendJson(res, 400, { error: "invalid_blocks", message: "A blocks array is required." });
+      return true;
+    }
+    try {
+      const outline = await readOfficecliDocParagraphs({ projectPath: rootPath, relativeFile: body?.file ?? body?.path ?? "" });
+      const { commands } = computeBlockOps({ original: outline.paragraphs, edited: blocks });
+      sendJson(res, 200, { commands });
+    } catch (error) {
+      const code = error instanceof OfficecliPreviewError ? error.code : "block_ops_failed";
       const status = code === "not_found" ? 404 : code === "officecli_unavailable" ? 503 : 400;
       sendJson(res, status, { error: code, message: error instanceof Error ? error.message : String(error) });
     }
