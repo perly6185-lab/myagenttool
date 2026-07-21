@@ -117,13 +117,15 @@ export async function renderOfficecliPreview({ projectPath, relativeFile, timeou
 
 /**
  * Read a .docx's body paragraphs as a flat, path-addressed outline — the source
- * for a paragraph-level inline editor. Runs `officecli get <file> /body --json`
- * (read-only), returning each paragraph's stable path (e.g.
- * `/body/p[@paraId=..]`), text, and style. Editing one maps to a surgical
- * `set <path> --prop text=..`, preserving the rest of the document (unlike a
- * markdown round-trip, which regenerates the whole file and loses formatting).
+ * for the markdown-style block editor. Runs `officecli get <file> /body --json
+ * --depth 2` (read-only), returning each paragraph's stable path (e.g.
+ * `/body/p[@paraId=..]`), text, style, and its RUN sequence (text + bold/italic)
+ * so inline formatting can be projected to markdown. Editing a paragraph maps to
+ * surgical, governed ops keyed on the paraId, preserving the rest of the document
+ * (unlike a markdown round-trip, which regenerates the whole file and loses
+ * formatting).
  *
- * @returns {Promise<{ path:string, paragraphs:Array<{path:string,type:string,text:string,style:string|null}> }>}
+ * @returns {Promise<{ path:string, paragraphs:Array<{path:string,type:string,text:string,style:string|null,runs:Array<{text:string,bold:boolean,italic:boolean}>}> }>}
  */
 export async function readOfficecliDocParagraphs({ projectPath, relativeFile, timeoutMs = DEFAULT_TIMEOUT_MS, run } = {}) {
   if (!projectPath) throw new OfficecliPreviewError("invalid_project", "A project path is required.");
@@ -135,7 +137,8 @@ export async function readOfficecliDocParagraphs({ projectPath, relativeFile, ti
 
   let stdout;
   try {
-    ({ stdout } = await spawn("officecli", ["get", relPath, "/body", "--json"], {
+    // --depth 2 nests each paragraph's runs (one call, no per-paragraph reads).
+    ({ stdout } = await spawn("officecli", ["get", relPath, "/body", "--json", "--depth", "2"], {
       cwd: root,
       timeout: timeoutMs,
       maxBuffer: MAX_HTML_BYTES,
@@ -167,6 +170,13 @@ export async function readOfficecliDocParagraphs({ projectPath, relativeFile, ti
       type: child.type,
       text: typeof child.text === "string" ? child.text : "",
       style: typeof child.style === "string" ? child.style : null,
+      runs: (Array.isArray(child.children) ? child.children : [])
+        .filter((c) => c?.type === "run")
+        .map((c) => ({
+          text: typeof c.text === "string" ? c.text : "",
+          bold: Boolean(c.format?.bold),
+          italic: Boolean(c.format?.italic),
+        })),
     }));
   return { path: relPath, paragraphs };
 }

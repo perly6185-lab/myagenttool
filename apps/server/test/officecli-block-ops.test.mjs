@@ -266,6 +266,71 @@ test("property: every permutation with edits/inserts/deletes reconstructs", () =
   assert.ok(checked > 300, `expected many permutation checks, ran ${checked}`);
 });
 
+// --- L1.5 inline formatting (run rebuild) --------------------------------
+
+const RUN = (text, bold = false, italic = false) => ({ text, bold, italic });
+function paraR(path, runs, style = null) {
+  return { path, text: runs.map((r) => r.text).join(""), style, runs };
+}
+
+test("bold a plain paragraph -> run rebuild", () => {
+  const orig = [paraR("p1", [RUN("hello")])];
+  const { commands } = computeBlockOps({ original: orig, edited: [{ path: "p1", md: "**hello**" }] });
+  assert.deepEqual(commands, [
+    { command: "remove", path: "p1/r[1]" },
+    { command: "add", parent: "p1", type: "run", props: { text: "hello", bold: "true" } },
+  ]);
+});
+
+test("unchanged formatted paragraph emits nothing (md-string guard)", () => {
+  const orig = [paraR("p1", [RUN("Hi "), RUN("bold", true)])];
+  const { commands } = computeBlockOps({ original: orig, edited: [{ path: "p1", md: "Hi **bold**" }] });
+  assert.deepEqual(commands, []);
+});
+
+test("edit text inside a formatted paragraph rebuilds the run sequence", () => {
+  const orig = [paraR("p1", [RUN("Hi "), RUN("bold", true)])];
+  const { commands } = computeBlockOps({ original: orig, edited: [{ path: "p1", md: "Hey **bold**!" }] });
+  assert.deepEqual(commands, [
+    { command: "remove", path: "p1/r[2]" },
+    { command: "remove", path: "p1/r[1]" },
+    { command: "add", parent: "p1", type: "run", props: { text: "Hey " } },
+    { command: "add", parent: "p1", type: "run", props: { text: "bold", bold: "true" } },
+    { command: "add", parent: "p1", type: "run", props: { text: "!" } },
+  ]);
+});
+
+test("removing all formatting still rebuilds (was formatted)", () => {
+  const orig = [paraR("p1", [RUN("word", true)])];
+  const { commands } = computeBlockOps({ original: orig, edited: [{ path: "p1", md: "word" }] });
+  assert.deepEqual(commands, [
+    { command: "remove", path: "p1/r[1]" },
+    { command: "add", parent: "p1", type: "run", props: { text: "word" } },
+  ]);
+});
+
+test("heading change on a formatted paragraph with unchanged runs -> style only", () => {
+  const orig = [paraR("p1", [RUN("Title", true)], "Normal")];
+  const { commands } = computeBlockOps({ original: orig, edited: [{ path: "p1", md: "## **Title**" }] });
+  assert.deepEqual(commands, [{ command: "set", path: "p1", props: { style: "Heading2" } }]);
+});
+
+test("italic + bold combined run", () => {
+  const orig = [paraR("p1", [RUN("plain")])];
+  const { commands } = computeBlockOps({ original: orig, edited: [{ path: "p1", md: "***x***" }] });
+  assert.deepEqual(commands, [
+    { command: "remove", path: "p1/r[1]" },
+    { command: "add", parent: "p1", type: "run", props: { text: "x", bold: "true", italic: "true" } },
+  ]);
+});
+
+test("new block with formatting is created plain (markers stripped)", () => {
+  const { commands } = computeBlockOps({ original: [], edited: [{ path: null, md: "**bold** new" }] });
+  assert.deepEqual(commands, [
+    { command: "add", parent: "/body", type: "paragraph", props: { text: "bold new" } },
+  ]);
+});
+
 function permutations(arr) {
   if (arr.length <= 1) return [arr];
   const out = [];
