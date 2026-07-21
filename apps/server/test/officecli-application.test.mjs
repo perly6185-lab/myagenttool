@@ -223,6 +223,23 @@ test("image aliases (imagefill/img) are guarded; hyperlink target keys (link/hre
   }
 });
 
+test("the officecli `image:<path>` fill form is validated (slide background reads a file)", () => {
+  const app = register();
+  const kept = (props) => applicationWrapperExecutionPlan(app, "set", { file: "deck.pptx", path: "/slide[1]", props }).args.some((a) => a.startsWith(`${Object.keys(props)[0]}=`));
+  // `background=image:<abs|../>` embeds a host image — the `image:` prefix hid the
+  // path from the escaping-path check; it must now be refused.
+  assert.equal(kept({ background: "image:/etc/passwd" }), false);
+  assert.equal(kept({ background: "image:../secret.png" }), false);
+  assert.equal(kept({ background: "image:http://attacker/x.png" }), false);
+  // a worktree-relative image fill and a plain colour stay allowed.
+  assert.equal(kept({ background: "image:assets/bg.png" }), true);
+  assert.equal(kept({ background: "#FF0000" }), true);
+  // poster/fallback are file-source keys now — escaping/URL refused, relative kept.
+  assert.equal(kept({ poster: "http://attacker/x.png" }), false);
+  assert.equal(kept({ fallback: "../x.png" }), false);
+  assert.equal(kept({ poster: "thumb.png" }), true);
+});
+
 test("fail-closed backstop: an UNKNOWN prop key carrying an escaping local path is dropped; formatting values pass", () => {
   const app = register();
   // A future/unknown officecli file-source key can't exfiltrate — a `..`/absolute

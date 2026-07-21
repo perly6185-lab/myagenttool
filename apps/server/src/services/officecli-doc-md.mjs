@@ -117,9 +117,13 @@ export function alignBlocks(original, newBlocks, { threshold = 0.5 } = {}) {
     const gapNews = news.filter((n) => n.idx > prevNi && n.idx < a.ni && !n.matched);
     // Exclude COMPLEX originals (inline picture/link/field) from a positional guess:
     // computeBlockOps refuses to rewrite them, so pairing an unrelated new block onto
-    // one would silently drop the edit AND delete the paragraph the user actually kept.
-    // Left unpaired, a complex original falls through to a delete (its content isn't
-    // representable in the textarea), and the new block becomes an insert — no loss.
+    // one would silently drop the edit AND delete the paragraph the user actually kept
+    // (the round-1 data-loss bug). Left unpaired, a complex original that is edited
+    // beyond recognition in the textarea falls through to a whole-paragraph delete +
+    // an insert of the typed text — which loses that paragraph's inline object (it
+    // isn't representable in a plain textarea). That is the least-bad outcome and is
+    // surfaced in the before/after diff before promotion; the block editor never hits
+    // it (it echoes complex paragraphs verbatim, so they exact-match and are kept).
     const gapOrigs = origs.filter((o) => o.i > prevOi && o.i < a.oi && !o.used && !o.complex);
     const k = Math.min(gapNews.length, gapOrigs.length);
     for (let t = 0; t < k; t++) claim(gapNews[t], gapOrigs[t]);
