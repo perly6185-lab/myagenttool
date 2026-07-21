@@ -3,7 +3,7 @@ import test from "node:test";
 import { createKnownApplicationRegistration, listKnownApplications } from "../src/services/application-catalog.mjs";
 
 test("known application catalog exposes governed entries and setup-only prerequisites", () => {
-  assert.deepEqual(listKnownApplications().map((entry) => entry.name), ["git", "ccusage", "claude", "codex", "git-bash", "wsl", "officecli", "canvas"]);
+  assert.deepEqual(listKnownApplications().map((entry) => entry.name), ["git", "ccusage", "claude", "codex", "git-bash", "wsl", "officecli", "canvas", "excalidraw-cli"]);
   assert.deepEqual(
     listKnownApplications().filter((entry) => entry.setupOnly).map((entry) => entry.name),
     ["git-bash", "wsl"],
@@ -31,6 +31,17 @@ test("known officecli registration resolves aliases; reads need no approval, the
   // Every write verb is approval-gated (P3.1 currently ships `remove`).
   assert.ok(writes.length >= 1);
   assert.ok(writes.every((c) => c.requiresApproval === true && c.segment === "apply"));
+});
+
+test("#1356: known excalidraw-cli registration resolves aliases as a governed binary write app (not the in-process canvas)", () => {
+  const resolved = createKnownApplicationRegistration("excalidraw-cli");
+  assert.equal(resolved.registration.id, "app_excalidraw_cli");
+  assert.equal(resolved.entry.command, "excalidraw-cli");
+  assert.equal(resolved.registration.source.type, "binary");
+  const writes = resolved.registration.source.wrapper.commands.filter((c) => c.filePolicy === "workspace_write");
+  assert.ok(writes.length >= 1 && writes.every((c) => c.requiresApproval === true && c.segment === "apply"));
+  // The `excalidraw` alias still resolves to the in-process Canvas app, never this one.
+  assert.equal(createKnownApplicationRegistration("excalidraw").registration.id, "app_canvas");
 });
 
 test("known application registration resolves aliases and preserves project scope", () => {

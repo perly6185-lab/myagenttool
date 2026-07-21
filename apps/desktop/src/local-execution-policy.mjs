@@ -190,6 +190,19 @@ const OFFICECLI_APPLY_WRAPPER_ARGS = {
   },
 };
 
+// The bridge's OWN copy of the excalidraw-cli WRITE argv spec (#1356, PR2). Same
+// two-allowlist duplication rule as the officecli specs above — do NOT factor into
+// a shared constant. `export` renders an Excalidraw scene FILE to a PNG, both
+// worktree-safe relative paths (no traversal, not absolute) with a required
+// extension, so neither positional can escape the worktree. A value with a leading
+// "-" never validates as a positional. Runs under the excalidrawCliApply write
+// policy (workspace_write), NOT the read-only wrapper bucket.
+const isExcalidrawSceneFile = (value) => isSafeRelPath(value) && /\.excalidraw$/i.test(value);
+const isExcalidrawPngFile = (value) => isSafeRelPath(value) && /\.png$/i.test(value);
+const EXCALIDRAW_CLI_APPLY_WRAPPER_ARGS = {
+  export: { base: [], flags: {}, positionals: [isExcalidrawSceneFile, isExcalidrawPngFile] },
+};
+
 const GIT_WRAPPER_ARGS = {
   status: { base: ["--no-pager", "status", "--porcelain=v2", "--branch"], flags: {} },
   log: {
@@ -315,6 +328,16 @@ export function createLocalExecutionPolicyManifest({
         networkPolicy: "forbidden",
         probe: { executable: "excalidraw-cli", args: ["--version"] },
       },
+      {
+        // Excalidraw CLI WRITE verb (#1356, PR2). A distinct capability prefix +
+        // filePolicy from the presence-only read entry above, so a probe can never
+        // resolve to a write policy and vice versa. Gated by the excalidrawCliApply
+        // policy bucket; the render writes a PNG in the invocation's worktree.
+        command: "excalidraw-cli",
+        capabilityPrefix: "app.app_excalidraw_cli.apply.",
+        filePolicy: "workspace_write",
+        networkPolicy: "forbidden",
+      },
     ],
     policies: {
       demoAgent: { file: ["read_only"], network: ["forbidden"] },
@@ -332,6 +355,11 @@ export function createLocalExecutionPolicyManifest({
       // native_controls. Its own bucket keeps the read-only `wrapper` bucket — which
       // ccusage/git/claude/read-officecli share — from ever widening to writes.
       officecliApply: { file: ["workspace_write", "read_only"], network: ["forbidden"] },
+      // excalidrawCliApply (#1356 PR2): the excalidraw-cli export verb renders a
+      // scene to a PNG IN PLACE in the invocation's worktree. workspace_write, never
+      // network; no sandbox, so never native_controls. Its own bucket keeps the
+      // read-only wrapper bucket from ever widening to writes.
+      excalidrawCliApply: { file: ["workspace_write", "read_only"], network: ["forbidden"] },
     },
   };
 }
@@ -447,16 +475,16 @@ export function localExecutionGate(work, adapter, spawnPlan, { permissionDecisio
   // general cwd check above admits the project root as an approved root; a write
   // demands the stricter guarantee. Refuse a write with no worktree, or whose cwd
   // is not inside it (e.g. resolved to the project fallback). (#1357)
-  if (commandKind === "officecliApply") {
+  if (commandKind === "officecliApply" || commandKind === "excalidrawCliApply") {
     const worktreeRoot = work?.options?.metadata?.worktreePath;
-    // Confine the directory officecli ACTUALLY writes in — the wrapper's `--cwd`
+    // Confine the directory the CLI ACTUALLY writes in — the wrapper's `--cwd`
     // (parsed.cwd), the same value applicationWrapperGate confines — not the outer
     // runner's spawnPlan.cwd. They normally coincide, but the write lands in --cwd,
     // so that is the value the worktree-only rule must check.
-    const officecliCwd = parseApplicationWrapperArgs(spawnPlan.args ?? []).cwd ?? spawnPlan.cwd;
-    if (typeof worktreeRoot !== "string" || !worktreeRoot.trim() || !pathWithin(worktreeRoot, officecliCwd)) {
+    const writeCwd = parseApplicationWrapperArgs(spawnPlan.args ?? []).cwd ?? spawnPlan.cwd;
+    if (typeof worktreeRoot !== "string" || !worktreeRoot.trim() || !pathWithin(worktreeRoot, writeCwd)) {
       return refused(
-        "Local execution gate refused an OfficeCLI write outside a worktree — writes must run in the invocation's worktree, never the project clone.",
+        "Local execution gate refused an application write outside a worktree — writes must run in the invocation's worktree, never the project clone.",
         { ...evidence, refusalCode: "cwd_outside_approved_root" },
         "policy_blocked",
       );
@@ -500,6 +528,13 @@ function classifySpawn(adapter, spawnPlan, manifest = {}) {
   if (isApplicationWrapperSpawn(spawnPlan, manifest)
     && String(parseApplicationWrapperArgs(spawnPlan.args ?? []).capability ?? "").startsWith("app.app_officecli.apply.")) {
     return "officecliApply";
+  }
+  // Same for the excalidraw-cli export WRITE verb (#1356 PR2): its `apply` capability
+  // is the signal, classified BEFORE the generic read-only `wrapper` kind so a render
+  // lands in the excalidrawCliApply bucket, never read_only.
+  if (isApplicationWrapperSpawn(spawnPlan, manifest)
+    && String(parseApplicationWrapperArgs(spawnPlan.args ?? []).capability ?? "").startsWith("app.app_excalidraw_cli.apply.")) {
+    return "excalidrawCliApply";
   }
   if (isAllowlistedNodeWrapper(adapter, spawnPlan, manifest)) return "wrapper";
   return null;
@@ -707,7 +742,18 @@ function wrapperArgsAllowed(capability, args) {
   if (cap.startsWith("app.app_git.wrapper.")) return gitArgsAllowed(cap, args);
   if (cap.startsWith("app.app_officecli.wrapper.")) return officecliArgsAllowed(cap, args);
   if (cap.startsWith("app.app_officecli.apply.")) return officecliApplyArgsAllowed(cap, args);
+  // #1356 PR2: the excalidraw-cli export WRITE verb. The presence-only read prefix
+  // (app.app_excalidraw_cli.wrapper.) still has NO branch — it stays default-denied.
+  if (cap.startsWith("app.app_excalidraw_cli.apply.")) return excalidrawCliApplyArgsAllowed(cap, args);
   return false;
+}
+
+function excalidrawCliApplyArgsAllowed(capability, args) {
+  const cmd = String(capability ?? "").match(/^app\.app_excalidraw_cli\.apply\.([a-z0-9_]+)$/)?.[1] ?? null;
+  // Reuse the shared officecli argv matcher: match the declared base as a prefix,
+  // then each positional against its OWN validator. An undeclared flag, an
+  // over-count positional, or a positional failing its validator is refused.
+  return officecliArgvMatches(cmd ? EXCALIDRAW_CLI_APPLY_WRAPPER_ARGS[cmd] : null, args);
 }
 
 function officecliApplyArgsAllowed(capability, args) {
