@@ -1,4 +1,4 @@
-import { findKnownRuntime, runtimeRequirementsForApplicationId } from "./runtime-catalog.mjs";
+import { findKnownRuntime, loginCommandForApplicationId, runtimeRequirementsForApplicationId } from "./runtime-catalog.mjs";
 
 export function localApplicationReadiness(application, device) {
   if (application?.status === "archived") {
@@ -63,6 +63,9 @@ export function setupNextStep(application, device, { registered = false } = {}) 
     state: current.state,
     summary: current.summary,
     action: current.action ?? (step === "register" ? "register" : null),
+    // Stage 4-2: a login step carries the server-owned sign-in command so the web
+    // guides the user without hardcoding it. Absent for every other step.
+    ...(step === "login" ? { loginCommand: loginCommandForApplicationId(application?.id) } : {}),
     scope: "local",
   };
 }
