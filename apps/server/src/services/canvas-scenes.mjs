@@ -51,6 +51,24 @@ function mergeIncomingFiles(existing, incoming) {
   return { ...(existing ?? {}), ...incoming };
 }
 
+/**
+ * Drop binary files no element references (#canvas-images GC). Element ops merged
+ * files IN but never took them OUT, so removing/replacing an image left its binary
+ * orphaned forever — accumulating against `maxAggregateBytes` until a scene with
+ * few visible elements started rejecting legitimate writes. A file is kept iff some
+ * element's `fileId` points at it. Returns a non-object `files` untouched so the
+ * downstream validator still rejects it (never a silent coercion).
+ */
+function pruneUnreferencedFiles(elements, files) {
+  if (files == null || typeof files !== "object" || Array.isArray(files)) return files;
+  const referenced = new Set(
+    (Array.isArray(elements) ? elements : [])
+      .map((element) => (element && typeof element === "object" ? element.fileId : null))
+      .filter((fileId) => typeof fileId === "string"),
+  );
+  return Object.fromEntries(Object.entries(files).filter(([fileId]) => referenced.has(fileId)));
+}
+
 function remapElementReferences(element, idMap) {
   const remap = (id) => (typeof id === "string" && idMap.has(id) ? idMap.get(id) : id);
   const out = { ...element };
@@ -238,10 +256,13 @@ export function createCanvasSceneService({
     if (!scene) return notFound();
     const conflict = checkRevision(scene, expectedRevision);
     if (conflict) return conflict;
+    const resolvedElements = elements ?? scene.elements;
     const validated = validateScenePayload({
       name: name ?? scene.name,
-      elements: elements ?? scene.elements,
-      files: files ?? scene.files,
+      elements: resolvedElements,
+      // GC orphans BEFORE the bounds check so the aggregate-bytes limit reflects
+      // only files an element still references.
+      files: pruneUnreferencedFiles(resolvedElements, files ?? scene.files),
     });
     if (validated.error) {
       return { ok: false, status: 400, body: { error: validated.error, message: validated.message } };
@@ -333,7 +354,8 @@ export function createCanvasSceneService({
     const patched = new Map(byId);
     for (const update of updates) patched.set(update.id, { ...byId.get(update.id), ...update });
     const nextElements = scene.elements.map((element) => patched.get(element.id));
-    const nextFiles = mergeIncomingFiles(scene.files, files);
+    // An update can re-point or drop an image's fileId; GC any now-orphaned file.
+    const nextFiles = pruneUnreferencedFiles(nextElements, mergeIncomingFiles(scene.files, files));
     const validated = validateScenePayload({ name: scene.name, elements: nextElements, files: nextFiles });
     if (validated.error) return { ok: false, status: 400, body: { error: validated.error, message: validated.message } };
     const changedElementIds = updates.map((update) => update.id);
@@ -366,9 +388,13 @@ export function createCanvasSceneService({
       }
     }
     const nextElements = scene.elements.filter((element) => !ids.has(element.id));
+    // Removing an image element orphans its binary — GC it so deleted images don't
+    // accumulate against the scene's aggregate-bytes budget.
+    const nextFiles = pruneUnreferencedFiles(nextElements, scene.files);
     const removedElementIds = [...ids];
     runTx(() => {
       scene.elements = nextElements;
+      scene.files = nextFiles;
       bumpRevision(scene, actor);
       appendEvent({
         invocationId: null, type: "canvas_scene_elements_removed", level: "warn",

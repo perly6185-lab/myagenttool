@@ -204,13 +204,51 @@ test("add_elements / update_elements attach binary files (images) to an existing
   assert.equal(bad.body.error, "unsupported_canvas_url");
   assert.equal(service.getScene({ sceneId: scene.id }, ACTOR_A).body.scene.revision, 2);
 
-  // update_elements can attach a file too (https: is allowed).
+  // update_elements can attach a file too (https: is allowed) — re-pointing the
+  // image to the new binary. The old binary is now unreferenced and GC'd.
   const upd = service.updateElements(
-    { sceneId: scene.id, expectedRevision: 2, elements: [{ id: imageEl.id, x: 5 }], files: { f2: { mimeType: "image/png", dataURL: "https://ok/img.png" } } },
+    { sceneId: scene.id, expectedRevision: 2, elements: [{ id: imageEl.id, fileId: "f2" }], files: { f2: { mimeType: "image/png", dataURL: "https://ok/img.png" } } },
     ACTOR_A,
   );
   assert.equal(upd.status, 200);
-  assert.ok(service.getScene({ sceneId: scene.id }, ACTOR_A).body.scene.files.f2);
+  const files = service.getScene({ sceneId: scene.id }, ACTOR_A).body.scene.files;
+  assert.ok(files.f2, "the newly-referenced binary is attached");
+  assert.equal(files.f1, undefined, "the image's previous binary is GC'd once unreferenced");
+});
+
+test("removing/replacing an image GCs its now-orphaned binary file (no aggregate-bytes leak)", () => {
+  const { service } = harness();
+  const scene = service.createScene({ elements: [] }, ACTOR_A).body.scene;
+
+  // Two standalone images, each with its own binary.
+  const added = service.addElements(
+    {
+      sceneId: scene.id,
+      expectedRevision: 1,
+      elements: [{ id: "imgA", type: "image", fileId: "fA" }, { id: "imgB", type: "image", fileId: "fB" }],
+      files: {
+        fA: { mimeType: "image/png", dataURL: "data:image/png;base64,AAAA" },
+        fB: { mimeType: "image/png", dataURL: "data:image/png;base64,BBBB" },
+      },
+    },
+    ACTOR_A,
+  ).body;
+  const [newA, newB] = added.changedElementIds;
+  const withBoth = service.getScene({ sceneId: scene.id }, ACTOR_A).body.scene;
+  const fileIdA = withBoth.elements.find((e) => e.id === newA).fileId;
+  const fileIdB = withBoth.elements.find((e) => e.id === newB).fileId;
+  assert.deepEqual(Object.keys(withBoth.files).sort(), [fileIdA, fileIdB].sort());
+
+  // Remove image A → its file is dropped; B's file survives.
+  const removed = service.removeElements({ sceneId: scene.id, elementIds: [newA], expectedRevision: withBoth.revision }, ACTOR_A);
+  assert.equal(removed.status, 200);
+  const afterRemove = service.getScene({ sceneId: scene.id }, ACTOR_A).body.scene;
+  assert.deepEqual(Object.keys(afterRemove.files), [fileIdB], "the removed image's binary is GC'd, the survivor's is kept");
+
+  // A full updateScene that drops the last image prunes its orphan too.
+  const updated = service.updateScene({ sceneId: scene.id, elements: [{ id: "r", type: "rectangle" }], expectedRevision: afterRemove.revision }, ACTOR_A);
+  assert.equal(updated.status, 200);
+  assert.deepEqual(Object.keys(service.getScene({ sceneId: scene.id }, ACTOR_A).body.scene.files), [], "no elements reference a file → all binaries GC'd");
 });
 
 test("element ops are team-scoped and export is a read", () => {
