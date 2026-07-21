@@ -3,6 +3,7 @@ import { Loader2, Pencil, X } from "lucide-react";
 import { api } from "@/data/use-console-actions";
 import { useConsoleState } from "@/data/use-console-state";
 import { DocxBlockEditor } from "@/features/projects/docx-block-editor";
+import { XlsxGridEditor } from "@/features/projects/xlsx-grid-editor";
 
 // Visual before/after review for an OfficeCLI write in a worktree (#1349 polish):
 // render the document as it is in the project BASE (before) and in the WORKTREE
@@ -66,6 +67,10 @@ export function OfficecliFilePreview({ projectId, worktreeId, path, editable = f
         // governed, surgical `apply.batch` (no formatting loss). It IS the edit
         // surface, so the static render below is hidden while editing.
         <DocxBlockEditor projectId={projectId} worktreeId={worktreeId} file={path} onChanged={load} />
+      ) : editing && /\.xlsx$/i.test(path) ? (
+        // A .xlsx gets the grid editor: edit cells (values + `=`formulas) → one
+        // governed, surgical `apply.batch` keyed on stable A1 addresses.
+        <XlsxGridEditor projectId={projectId} worktreeId={worktreeId} file={path} onChanged={load} />
       ) : (
         <>
           {editing ? (
