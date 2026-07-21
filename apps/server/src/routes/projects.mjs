@@ -9,6 +9,7 @@ import { deriveFinalStatus, summarizeAutoRuns } from "../services/auto-run-metri
 import { summarizeDeployments } from "../services/auto-run-deploy-metrics.mjs";
 import { renderOfficecliPreview, readOfficecliDocParagraphs, OfficecliPreviewError } from "../services/officecli-preview.mjs";
 import { computeBlockOps, paragraphToMd } from "../services/officecli-block-ops.mjs";
+import { parseDocumentMd, alignBlocks } from "../services/officecli-doc-md.mjs";
 import { readEvalTrend, summarizeEvalTrend } from "../services/eval-trend.mjs";
 import { maturityScorecard, latestDora } from "../read-models/maturity-scorecard.mjs";
 import { normalizeAutoRunSettings, resolveAutoRunConfig } from "../services/auto-run-config.mjs";
@@ -687,14 +688,23 @@ export async function handleProjectRoutes({
     const worktreeId = body?.worktree ?? body?.worktreeId ?? null;
     const worktree = worktreeId ? (state.worktrees ?? []).find((w) => w.id === worktreeId && w.projectId === project.id) : null;
     const rootPath = worktree?.path ?? worktree?.worktreePath ?? project.path;
+    // Two input modes: `blocks` (the block editor, each carrying its paraId) or
+    // `text` (the whole-document markdown textarea — re-aligned to paraIds here).
     const blocks = Array.isArray(body?.blocks) ? body.blocks : null;
-    if (!blocks) {
-      sendJson(res, 400, { error: "invalid_blocks", message: "A blocks array is required." });
+    const text = typeof body?.text === "string" ? body.text : null;
+    if (!blocks && text === null) {
+      sendJson(res, 400, { error: "invalid_blocks", message: "A blocks array or document text is required." });
       return true;
     }
     try {
       const outline = await readOfficecliDocParagraphs({ projectPath: rootPath, relativeFile: body?.file ?? body?.path ?? "" });
-      const { commands } = computeBlockOps({ original: outline.paragraphs, edited: blocks });
+      const edited = blocks
+        ? blocks
+        : alignBlocks(
+            outline.paragraphs.map((p) => ({ path: p.path, md: paragraphToMd(p) })),
+            parseDocumentMd(text),
+          );
+      const { commands } = computeBlockOps({ original: outline.paragraphs, edited });
       sendJson(res, 200, { commands });
     } catch (error) {
       const code = error instanceof OfficecliPreviewError ? error.code : "block_ops_failed";
