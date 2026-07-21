@@ -92,6 +92,20 @@ test("remove_elements is approval-gated (single-use grant), reads are not", () =
   assert.equal(approved.result.output.removedElementIds.length, 1);
 });
 
+test("add_elements places a standalone image (element + file) on an existing scene", () => {
+  const { invoke } = harness();
+  const sceneId = invoke("create", { elements: [] }).result.output.scene.id;
+  const added = invoke("add_elements", {
+    sceneId, expectedRevision: 1,
+    elements: [{ id: "img", type: "image", fileId: "f1" }],
+    files: { f1: { mimeType: "image/png", dataURL: "data:image/png;base64,AAAA" } },
+  });
+  assert.equal(added.ok, true);
+  const scene = invoke("get", { sceneId }).result.output.scene;
+  assert.equal(scene.files.f1.dataURL, "data:image/png;base64,AAAA"); // the image binary rode the capability
+  assert.equal(scene.elements.find((e) => e.type === "image").fileId, "f1");
+});
+
 test("capability handlers propagate service failures (revision conflict, bad reference)", () => {
   const { invoke } = harness();
   const sceneId = invoke("create", { elements: [] }).result.output.scene.id;
