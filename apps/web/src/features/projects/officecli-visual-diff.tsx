@@ -4,6 +4,7 @@ import { api } from "@/data/use-console-actions";
 import { useConsoleState } from "@/data/use-console-state";
 import { DocxBlockEditor } from "@/features/projects/docx-block-editor";
 import { XlsxGridEditor } from "@/features/projects/xlsx-grid-editor";
+import { PptxSlideEditor } from "@/features/projects/pptx-slide-editor";
 
 // Visual before/after review for an OfficeCLI write in a worktree (#1349 polish):
 // render the document as it is in the project BASE (before) and in the WORKTREE
@@ -71,6 +72,10 @@ export function OfficecliFilePreview({ projectId, worktreeId, path, editable = f
         // A .xlsx gets the grid editor: edit cells (values + `=`formulas) → one
         // governed, surgical `apply.batch` keyed on stable A1 addresses.
         <XlsxGridEditor projectId={projectId} worktreeId={worktreeId} file={path} onChanged={load} />
+      ) : editing && /\.pptx$/i.test(path) ? (
+        // A .pptx gets the slide text editor: edit each slide's text shapes → one
+        // governed, surgical `apply.batch` keyed on stable shape @id paths.
+        <PptxSlideEditor projectId={projectId} worktreeId={worktreeId} file={path} onChanged={load} />
       ) : (
         <>
           {editing ? (

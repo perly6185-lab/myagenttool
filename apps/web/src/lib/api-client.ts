@@ -741,6 +741,26 @@ export const api = {
       `/api/projects/${encodeURIComponent(projectId)}/officecli-sheet-ops`,
       payload,
     ),
+  // pptx deck: read slides + shapes (text shapes are `editable`).
+  officecliDeck: (projectId: string, filePath: string, worktreeId?: string) =>
+    request<{
+      path: string;
+      slides: { path: string; shapes: { path: string; type: string; text: string; editable: boolean }[] }[];
+    }>(
+      "GET",
+      `/api/projects/${encodeURIComponent(projectId)}/officecli-deck?path=${encodeURIComponent(filePath)}${worktreeId ? `&worktree=${encodeURIComponent(worktreeId)}` : ""}`,
+    ),
+  // Given the edited shape-text map, the server re-reads the deck and returns the
+  // batch item list for one governed `apply.batch`.
+  officecliDeckOps: (
+    projectId: string,
+    payload: { file: string; worktree: string; shapes: Record<string, string> },
+  ) =>
+    request<{ commands: Record<string, unknown>[] }>(
+      "POST",
+      `/api/projects/${encodeURIComponent(projectId)}/officecli-deck-ops`,
+      payload,
+    ),
   worktreeGit: (id: string) => request("GET", `/api/worktrees/${encodeURIComponent(id)}/git`),
   worktreeDiff: (id: string) => request("GET", `/api/worktrees/${encodeURIComponent(id)}/diff`),
   reviewWorktree: (id: string, payload: { verdict: "approved" | "changes_requested"; summary?: string; comments?: { path: string | null; body: string }[] }) =>
