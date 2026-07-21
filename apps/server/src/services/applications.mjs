@@ -854,7 +854,7 @@ export function createApplicationWrapperAgentRegistration({
 // anything else returns null. This is the single source of truth for WHAT may
 // execute — the bridge only ever runs a command that came through here, so an
 // unapproved or unregistered command can never reach execution.
-const WRAPPER_ARG_INPUT_TYPES = new Set(["date", "token", "enum", "string", "office_file", "csv_file", "boolean-flag", "git-rev", "count", "props", "json_commands", "json_data"]);
+const WRAPPER_ARG_INPUT_TYPES = new Set(["date", "token", "enum", "string", "office_file", "csv_file", "excalidraw_file", "png_file", "boolean-flag", "git-rev", "count", "props", "json_commands", "json_data"]);
 const RESERVED_WRAPPER_ARG_INPUT_KEYS = new Set([
   "approvalToken",
   "idempotencyKey",
@@ -1016,6 +1016,15 @@ function isValidWrapperArgValue(spec, value) {
     // document.
     case "csv_file":
       return isSafeRelFilePath(value) && /\.(csv|tsv)$/i.test(value);
+    // An Excalidraw scene FILE (excalidraw-cli export input) — same worktree-safe
+    // relative-path rule, `.excalidraw` extension. Mirrors the device's
+    // isExcalidrawFile; the two allowlists reject a `../`/absolute path independently.
+    case "excalidraw_file":
+      return isSafeRelFilePath(value) && /\.excalidraw$/i.test(value);
+    // The PNG OUTPUT path (excalidraw-cli export output) — worktree-safe relative,
+    // `.png` extension. The render writes here in place, confined to the worktree.
+    case "png_file":
+      return isSafeRelFilePath(value) && /\.png$/i.test(value);
     default: return false;
   }
 }
