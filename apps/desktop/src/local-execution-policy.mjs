@@ -116,7 +116,7 @@ const OFFICECLI_WRAPPER_ARGS = {
 // `--prop data=/etc/passwd` reads an arbitrary host file into the document.
 // Content keys (value/formula/text) are literal content, exempt. Independent
 // mirror of the server rule; fail-closed on unknown keys.
-const OFFICE_SOURCE_PROP_KEYS = new Set(["src", "path", "preview", "data", "image", "imagefill", "img"]);
+const OFFICE_SOURCE_PROP_KEYS = new Set(["src", "path", "preview", "data", "image", "imagefill", "img", "poster", "fallback"]);
 // Content + hyperlink/reference-target keys: never a local file read, so exempt
 // from the escaping-path backstop (a `link=/team` or `link=C:\x` target is valid).
 const OFFICE_CONTENT_PROP_KEYS = new Set([
@@ -125,6 +125,9 @@ const OFFICE_CONTENT_PROP_KEYS = new Set([
 ]);
 const isOfficeSafeMediaSource = (value) => {
   if (typeof value !== "string" || value.length > 500 || /[\r\n\0]/.test(value)) return false;
+  // officecli `image:<path>` fill form (e.g. slide background) reads the file.
+  const img = /^image:(.*)$/i.exec(value);
+  if (img) return isOfficeSafeMediaSource(img[1]);
   if (/^data:/i.test(value)) return true;
   if (/^[a-zA-Z][a-zA-Z0-9+.\-]*:/.test(value)) return false; // any scheme / drive letter
   return isSafeRelPath(value);
@@ -140,6 +143,8 @@ const isOfficePropUnsafe = (key, val) => {
   const v = String(val ?? "");
   if (OFFICE_CONTENT_PROP_KEYS.has(k)) return false;
   if (OFFICE_SOURCE_PROP_KEYS.has(k)) return !isOfficeSafeMediaSource(v);
+  // `image:<path>` fill form reads a file even on a non-source key (slide background).
+  if (/^image:/i.test(v)) return !isOfficeSafeMediaSource(v);
   return isOfficeEscapingLocalPath(v);
 };
 const isOfficePropPair = (value) => {

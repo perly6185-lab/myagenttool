@@ -1067,7 +1067,7 @@ function isSafeRelFilePath(value) {
 // against v1.0.139: picture/ole `src`, `path`/`preview` aliases, table `data`,
 // cell/shape `image` and its `imagefill`/`img` aliases). Each value must be
 // worktree-safe.
-const OFFICECLI_SOURCE_PROP_KEYS = new Set(["src", "path", "preview", "data", "image", "imagefill", "img"]);
+const OFFICECLI_SOURCE_PROP_KEYS = new Set(["src", "path", "preview", "data", "image", "imagefill", "img", "poster", "fallback"]);
 // Keys whose value is NOT a local file read, so the escaping-path backstop must not
 // touch them: literal document CONTENT (a cell value / text may look like a path),
 // and hyperlink/reference TARGETS (a stored URI/anchor officecli never opens — a
@@ -1083,6 +1083,10 @@ const OFFICECLI_CONTENT_PROP_KEYS = new Set([
 // network-forbidden.
 function isSafeMediaSource(value) {
   if (typeof value !== "string" || value.length > 500 || /[\r\n\0]/.test(value)) return false;
+  // officecli's `image:<path>` fill form (e.g. a slide `background`) reads the
+  // referenced file — validate the path, not the literal `image:…` string.
+  const img = /^image:(.*)$/i.exec(value);
+  if (img) return isSafeMediaSource(img[1]);
   if (/^data:/i.test(value)) return true;
   if (/^[a-zA-Z][a-zA-Z0-9+.\-]*:/.test(value)) return false; // any scheme (incl. drive letter)
   return isSafeRelFilePath(value);
@@ -1105,6 +1109,10 @@ function officecliPropUnsafe(key, value) {
   const v = String(value ?? "");
   if (OFFICECLI_CONTENT_PROP_KEYS.has(k)) return false;
   if (OFFICECLI_SOURCE_PROP_KEYS.has(k)) return !isSafeMediaSource(v);
+  // An `image:<path>` fill form reads a file even on a non-source key (a pptx slide
+  // `background=image:/etc/x.png` embeds a host image) — validate the path. Its
+  // leading `image:` hides the absolute path from the escaping-path check.
+  if (/^image:/i.test(v)) return !isSafeMediaSource(v);
   return isEscapingLocalPath(v);
 }
 
