@@ -956,10 +956,10 @@ function resolveWrapperInputArgs(argInputs, input, { positionalsFirst = false } 
         if (!/^[a-zA-Z][a-zA-Z0-9._-]{0,39}$/.test(propKey)) continue;
         const propText = String(propValue ?? "");
         if (propText.length > 200 || /[\r\n]/.test(propText)) continue;
-        // A media-source prop (src/path/preview) is a file path officecli opens —
-        // confine it to the worktree, or drop the pair. A leading `../`/absolute
-        // source would read an arbitrary host file into the document.
-        if (OFFICECLI_SOURCE_PROP_KEYS.has(propKey.toLowerCase()) && !isSafeMediaSource(propText)) continue;
+        // A file-source prop (src/path/preview/data/image, or any unknown key with
+        // an escaping local path) would read an arbitrary host file into the
+        // document — drop the pair. Content keys (value/formula/text) are exempt.
+        if (officecliPropUnsafe(propKey, propText)) continue;
         flagArgs.push(spec.flag, `${propKey}=${propText}`);
         count += 1;
       }
@@ -1063,7 +1063,13 @@ function isSafeRelFilePath(value) {
 // `file` positional is — otherwise `--prop src=../../etc/x.png` reads an arbitrary
 // host file into the document (confirmed exfiltration). Everything else (value,
 // formula, colors, text) is inert data and keeps the plain length/newline check.
-const OFFICECLI_SOURCE_PROP_KEYS = new Set(["src", "path", "preview"]);
+// Prop keys officecli resolves to READ a local file into the document (verified
+// against v1.0.139: picture/ole `src`, `path`/`preview` aliases, table `data`,
+// cell/shape `image`). Each value must be worktree-safe.
+const OFFICECLI_SOURCE_PROP_KEYS = new Set(["src", "path", "preview", "data", "image"]);
+// Keys whose value is literal document CONTENT, never resolved as a file — a cell
+// value / paragraph or shape text may legitimately look like a path (`/x`, `../y`).
+const OFFICECLI_CONTENT_PROP_KEYS = new Set(["value", "formula", "text"]);
 
 // A media source is safe iff it is a self-contained data: URI, or a worktree-safe
 // relative file path. Any other scheme (http(s)://, file://, a Windows drive) is
@@ -1076,13 +1082,31 @@ function isSafeMediaSource(value) {
   return isSafeRelFilePath(value);
 }
 
-// True if a prop map has a media-source key whose value is not worktree-safe.
+// A value that points at an escaping LOCAL file: absolute (/, ~, \, drive letter)
+// or containing a `..` traversal segment. NOT schemes/URLs (those aren't a local
+// file read and are handled per-key by isSafeMediaSource).
+function isEscapingLocalPath(value) {
+  const v = String(value ?? "");
+  return /^[/~\\]/.test(v) || /^[A-Za-z]:/.test(v) || v.split(/[/\\]/).includes("..");
+}
+
+// Whether a single prop pair is unsafe. Fail-closed: content keys are exempt,
+// known file-source keys must be a safe media source, and ANY OTHER key is refused
+// if it carries an escaping local path — so a future officecli file-source key
+// cannot silently exfiltrate a host file (the gap that let `data`/`image` through).
+function officecliPropUnsafe(key, value) {
+  const k = String(key).toLowerCase();
+  const v = String(value ?? "");
+  if (OFFICECLI_CONTENT_PROP_KEYS.has(k)) return false;
+  if (OFFICECLI_SOURCE_PROP_KEYS.has(k)) return !isSafeMediaSource(v);
+  return isEscapingLocalPath(v);
+}
+
+// True if a prop map has any unsafe pair.
 function propsHaveUnsafeSource(props) {
   if (!props || typeof props !== "object" || Array.isArray(props)) return false;
   for (const [key, val] of Object.entries(props)) {
-    if (OFFICECLI_SOURCE_PROP_KEYS.has(String(key).toLowerCase()) && !isSafeMediaSource(String(val ?? ""))) {
-      return true;
-    }
+    if (officecliPropUnsafe(key, val)) return true;
   }
   return false;
 }
