@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 
-import { renderOfficecliPreview, readOfficecliDocParagraphs, OfficecliPreviewError } from "../src/services/officecli-preview.mjs";
+import { renderOfficecliPreview, readOfficecliDocParagraphs, readOfficecliSheet, OfficecliPreviewError } from "../src/services/officecli-preview.mjs";
 
 function projectWith(files = { "demo.xlsx": "x" }) {
   const root = mkdtempSync(join(tmpdir(), "officecli-preview-"));
@@ -119,6 +119,52 @@ test("readOfficecliDocParagraphs returns path-addressed paragraphs with runs (sk
       { text: "paragraph.", bold: true, italic: false },
     ] },
   ]);
+});
+
+const WORKBOOK_JSON = JSON.stringify({
+  success: true,
+  data: { results: [{ path: "/", type: "workbook", children: [{ path: "/Sheet1", type: "sheet" }] }] },
+});
+const SHEET_JSON = JSON.stringify({
+  success: true,
+  data: { results: [{ path: "/Sheet1", type: "sheet", children: [
+    { path: "/Sheet1/row[1]", type: "row", children: [
+      { path: "/Sheet1/A1", type: "cell", text: "Name", preview: "A1", format: { type: "String" } },
+      { path: "/Sheet1/B1", type: "cell", text: "Qty", preview: "B1", format: { type: "String" } },
+    ] },
+    { path: "/Sheet1/row[2]", type: "row", children: [
+      { path: "/Sheet1/A2", type: "cell", text: "Widget", preview: "A2", format: { type: "String" } },
+      { path: "/Sheet1/C2", type: "cell", text: "84", preview: "C2", format: { type: "Number", formula: "B2*2" } },
+    ] },
+  ] }] },
+});
+
+test("readOfficecliSheet returns a cell grid + formulas, listing sheets", async () => {
+  const root = projectWith({ "grid.xlsx": "x" });
+  const out = await readOfficecliSheet({
+    projectPath: root,
+    relativeFile: "grid.xlsx",
+    run: async (_cmd, argv) => {
+      // First call lists sheets (`get / --json`), second reads the sheet grid.
+      if (argv[2] === "/") { assert.deepEqual(argv, ["get", "grid.xlsx", "/", "--json"]); return { stdout: WORKBOOK_JSON }; }
+      assert.deepEqual(argv, ["get", "grid.xlsx", "/Sheet1", "--json", "--depth", "2"]);
+      return { stdout: SHEET_JSON };
+    },
+  });
+  assert.equal(out.sheet, "Sheet1");
+  assert.deepEqual(out.sheets, ["Sheet1"]);
+  assert.equal(out.maxRow, 2);
+  assert.equal(out.maxCol, 3); // C = column 3
+  assert.deepEqual(out.cells.A1, { text: "Name", formula: null, type: "String" });
+  assert.deepEqual(out.cells.C2, { text: "84", formula: "B2*2", type: "Number" });
+});
+
+test("readOfficecliSheet refuses a non-.xlsx", async () => {
+  const root = projectWith({ "memo.docx": "x" });
+  await assert.rejects(
+    readOfficecliSheet({ projectPath: root, relativeFile: "memo.docx", run: async () => assert.fail("must not spawn") }),
+    /Grid editing is available for .xlsx/,
+  );
 });
 
 test("readOfficecliDocParagraphs refuses a non-.docx and a traversal path", async () => {
