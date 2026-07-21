@@ -7,10 +7,11 @@ scene capabilities (which never shell out). It is **optional**: when the binary 
 absent the platform says so and Canvas falls back to browser export, never
 pretending the runtime is there.
 
-This document covers the runtime end to end. **PR1 (this slice)** ships the
-governed *scaffolding* — catalog, install contract, readiness/degradation, and the
-device presence-probe — with **no export verb wired yet**. The governed export
-(`workspace_write`, approval-gated, non-empty + revision-validated) is **PR2**.
+This document covers the runtime end to end. **PR1** shipped the governed
+*scaffolding* — catalog, install contract, readiness/degradation, and the device
+presence-probe. **PR2 (this slice)** wires the governed **`export`** write verb:
+`excalidraw-cli <input.excalidraw> <output.png>`, approval-gated, `workspace_write`,
+worktree-confined.
 
 ## Architecture
 
@@ -44,26 +45,35 @@ device presence-probe — with **no export verb wired yet**. The governed export
    ([`application-installer.mjs`](../../apps/desktop/src/application-installer.mjs)).
 2. **Detect**: once installed, the device readiness sweep flips the runtime to
    `available` with its version. No binary → `absent`.
-3. **Use** (PR2): the Canvas export/layout capability runs the CLI in the
-   invocation's worktree and returns the artifact. Until PR2 lands, Canvas export
-   stays browser-side (the PNG/SVG buttons in the Web editor).
+3. **Use**: the governed `export` capability runs `excalidraw-cli` in the
+   invocation's worktree — `export <input.excalidraw> <output.png>` — writing the
+   PNG in place so it is reviewable before promotion. It requires an approval grant.
+   When the binary is absent, Canvas export stays browser-side (the PNG/SVG buttons
+   in the Web editor).
 
 ## Security limits
 
 - **No caller-controlled command/args/paths.** The argv base is fixed; caller
   input can only fill declared, typed inputs. A leading-`-` value is dropped;
   unknown capability prefixes are default-denied.
-- **Presence-only in PR1.** The device carries a probe entry for readiness but
-  `wrapperArgsAllowed` has **no branch** for `app.app_excalidraw_cli.wrapper.`, so
-  every invocation is refused (`args outside the local allowlist`). The runtime can
-  be detected and installed, never executed, until the PR2 export slice.
+- **Two capability prefixes, never crossed.** The presence-only READ prefix
+  (`app.app_excalidraw_cli.wrapper.`) still has **no** `wrapperArgsAllowed` branch —
+  it exists only for the readiness probe, and any invocation under it is refused. The
+  WRITE verb runs under a distinct prefix (`app.app_excalidraw_cli.apply.`) mapped to
+  the `excalidrawCliApply` policy bucket; a read prefix can never resolve to the
+  write policy, or vice versa.
+- **Approval-gated write.** `export` carries `requiresApproval: true` — a single-use
+  approval grant is enforced server-side before the wrapper plan is built.
+- **Path containment.** The `export` positionals are worktree-safe RELATIVE paths —
+  the input must end `.excalidraw`, the output `.png`, neither may traverse (`..`) or
+  be absolute. The render runs under `cwdPolicy: invocation_root`, and the device
+  refuses a write whose `--cwd` is not inside the invocation's worktree
+  (`cwd_outside_approved_root`). Both allowlists (server + device) validate the paths
+  independently.
 - **No remote install.** Discrete pinned npm argv from `registry.npmjs.org`
   (no `@latest`), `execution.shell === false`, no URL-fetch/curl-pipe path.
 - **Offline execution.** `networkPolicy: "forbidden"` — the approved binary needs
   no network; a runtime that reached out would be refused by the network policy.
-- **Path containment (PR2).** Export writes will be confined to the invocation's
-  worktree (`cwdPolicy: invocation_root`), with the output path server-derived
-  (never caller-supplied) and read back through a realpath-confinement guard.
 
 ## Troubleshooting
 
@@ -98,12 +108,29 @@ No elevation; identical argv on all three OSes; version bump = reviewed
 - `node --test apps/desktop/test/application-binary-readiness.test.mjs`
   — readiness detects the runtime (available/absent).
 - `node --test apps/desktop/test/local-execution-policy.test.mjs`
-  — presence-only default-deny is enforced.
+  — the read prefix stays default-denied; the `export` write is allowed only under
+  the apply prefix, worktree-confined, and refused when the binary is absent.
+- `node --test apps/server/test/excalidraw-cli-application.test.mjs`
+  — the `export` verb is workspace_write + approval-gated; unsafe/wrong-extension
+  paths are dropped from the argv.
+
+## Nonempty output & source-scene revision
+
+The `export` verb renders a worktree `.excalidraw` FILE to a worktree `.png`, so
+the artifact is associated with the **worktree revision** the invocation is pinned
+to (branch/commit + source file), and "nonempty" is enforced by the CLI's exit
+code — a failed render exits non-zero and fails the invocation honestly. Byte-level
+server-side nonempty validation and association with a *durable* `app_canvas` scene
+revision belong to a future in-process `render_export` capability on the scene
+service (it would materialize the durable scene to the worktree, then invoke this
+verb) — see Follow-ups.
 
 ## Follow-ups
 
-- **PR2 — governed export/layout.** Add the export verb(s) under the
-  `workspace_write` apply policy (mirroring the OfficeCLI write slice): worktree-
-  confined output, non-empty validation, source-scene-revision association, and an
-  approval grant. Register the server Application + capability projection and the
-  `wrapperArgsAllowed` branch at that point.
+- **`layout`.** The approved binary renders only; it has no DSL/JSON auto-layout.
+  A layout verb needs a CLI that supports it (or an in-process layout pass); it is
+  not wired here.
+- **In-process `render_export`.** For byte-level nonempty validation and durable
+  `app_canvas` scene-revision association, add an in-process capability on the scene
+  service that materializes the scene, invokes this `export` verb, and reads the PNG
+  back through a realpath-confinement guard.

@@ -683,6 +683,76 @@ test("#1356: the excalidraw-cli runtime is presence-only — any invocation is d
   assert.match(gate.reason, /args outside the local allowlist/);
 });
 
+// --- excalidraw-cli export WRITE verb (#1356 PR2): the excalidrawCliApply policy ---
+
+function excalidrawApplyGate({ execArgs, capability, root = gitRoot, cwd = gitRoot, worktreePath = root, resolveBinary = () => true }) {
+  const spec = { execCommand: "excalidraw-cli", execArgs, capability, filePolicy: "workspace_write", networkPolicy: "forbidden" };
+  const metadata = { applicationWrapper: spec };
+  if (worktreePath !== null) metadata.worktreePath = worktreePath;
+  const work = { project: { path: root }, options: { metadata } };
+  return localExecutionGate(
+    work,
+    { type: "cli", command: "node" },
+    {
+      command: process.execPath,
+      args: wrapperArgs(spec, { cwd }),
+      cwd,
+      localPolicy: { filePolicy: "workspace_write", networkPolicy: "forbidden", source: "application_wrapper" },
+    },
+    { manifest, resolveBinary },
+  );
+}
+
+test("#1356 PR2: a workspace_write export with .excalidraw input + .png output is allowed and classified excalidrawCliApply", () => {
+  const gate = excalidrawApplyGate({
+    capability: "app.app_excalidraw_cli.apply.export",
+    execArgs: ["diagrams/flow.excalidraw", "out/flow.png"],
+  });
+  assert.equal(gate.allowed, true, gate.reason);
+  assert.equal(gate.evidence.commandKind, "excalidrawCliApply", "a render is its own write bucket, never read-only wrapper");
+});
+
+test("#1356 PR2: an export outside a worktree is refused (writes must run in the invocation's worktree)", () => {
+  const gate = excalidrawApplyGate({
+    capability: "app.app_excalidraw_cli.apply.export",
+    execArgs: ["flow.excalidraw", "flow.png"],
+    worktreePath: null,
+  });
+  assert.equal(gate.allowed, false);
+  assert.equal(gate.evidence.refusalCode, "cwd_outside_approved_root");
+});
+
+test("#1356 PR2: a traversal input or a wrong-extension output is refused (args outside the allowlist)", () => {
+  for (const execArgs of [["../secret.excalidraw", "flow.png"], ["flow.excalidraw", "flow.svg"], ["flow.excalidraw", "/etc/out.png"]]) {
+    const gate = excalidrawApplyGate({ capability: "app.app_excalidraw_cli.apply.export", execArgs });
+    assert.equal(gate.allowed, false, `must refuse ${JSON.stringify(execArgs)}`);
+    assert.match(gate.reason, /args outside the local allowlist/);
+  }
+});
+
+test("#1356 PR2: an export whose binary is absent is refused with binary_unavailable", () => {
+  const gate = excalidrawApplyGate({
+    capability: "app.app_excalidraw_cli.apply.export",
+    execArgs: ["flow.excalidraw", "flow.png"],
+    resolveBinary: () => false,
+  });
+  assert.equal(gate.allowed, false);
+  assert.equal(gate.evidence.refusalCode, "binary_unavailable");
+});
+
+test("#1356 PR2: a write filePolicy presented under the presence-only READ prefix is refused (read bucket never widens to a write)", () => {
+  // The read prefix routes to the read-only `wrapper` bucket; a workspace_write
+  // policy there is refused by the file-policy gate — a read entry can never
+  // resolve to a write policy. (The args-level default-deny of the read prefix is
+  // covered by the PR1 presence-only test above.)
+  const gate = excalidrawApplyGate({
+    capability: "app.app_excalidraw_cli.wrapper.export",
+    execArgs: ["flow.excalidraw", "flow.png"],
+  });
+  assert.equal(gate.allowed, false);
+  assert.equal(gate.evidence.refusalCode, "file_policy_exceeded");
+});
+
 // --- OfficeCLI WRITE verbs (P3.1): the officecliApply write-policy kind ---
 
 function officecliApplyGate({ execArgs, capability, root = gitRoot, cwd = gitRoot, worktreePath = root, filePolicy = "workspace_write", resolveBinary = () => true }) {

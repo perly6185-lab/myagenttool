@@ -4,6 +4,7 @@ import { createCodexApplicationRegistration } from "./codex-application.mjs";
 import { createGitApplicationRegistration } from "./git-application.mjs";
 import { createCanvasApplicationRegistration } from "./canvas-application.mjs";
 import { createOfficecliApplicationRegistration } from "./officecli-application.mjs";
+import { createExcalidrawCliApplicationRegistration } from "./excalidraw-cli-application.mjs";
 
 const KNOWN_APPLICATIONS = [
   {
@@ -69,6 +70,18 @@ const KNOWN_APPLICATIONS = [
     command: "canvas",
     installHint: "Canvas is built in; no installation is required.",
     createRegistration: createCanvasApplicationRegistration,
+  },
+  {
+    // #1356: the optional excalidraw-cli Runtime — a governed external binary that
+    // renders Canvas scenes to PNG through the Desktop Bridge. Distinct from the
+    // in-process `canvas` app above; the `excalidraw` alias stays with Canvas, so
+    // this app keys off `excalidraw-cli` only.
+    name: "excalidraw-cli",
+    displayName: "Excalidraw CLI",
+    aliases: ["excalidraw-cli", "excalidraw cli"],
+    command: "excalidraw-cli",
+    installHint: "Install with npm install -g @tommywalkie/excalidraw-cli, then re-run setup.",
+    createRegistration: createExcalidrawCliApplicationRegistration,
   },
 ];
 
