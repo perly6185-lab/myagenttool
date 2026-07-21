@@ -110,21 +110,37 @@ const OFFICECLI_WRAPPER_ARGS = {
 // that may itself contain `=` (formulas/text) but no control chars. Independent
 // mirror of the server's props validator. A leading "-" can't match (key must
 // start with a letter), so a prop pair can never smuggle a new flag.
-// Prop keys officecli opens as a MEDIA FILE SOURCE (src/path alias, preview). A
-// value here must be worktree-safe (a data: URI or a safe relative file), never a
-// `../`/absolute path or a remote URL — else `--prop src=../../etc/x.png` reads an
-// arbitrary host file into the document. Independent mirror of the server rule.
-const OFFICE_SOURCE_PROP_KEYS = new Set(["src", "path", "preview"]);
+// Prop keys officecli resolves to READ a local file (src/path/preview, table
+// `data`, cell/shape `image`). A value here must be worktree-safe (a data: URI or
+// a safe relative file), never a `../`/absolute path or a remote URL — else
+// `--prop data=/etc/passwd` reads an arbitrary host file into the document.
+// Content keys (value/formula/text) are literal content, exempt. Independent
+// mirror of the server rule; fail-closed on unknown keys.
+const OFFICE_SOURCE_PROP_KEYS = new Set(["src", "path", "preview", "data", "image"]);
+const OFFICE_CONTENT_PROP_KEYS = new Set(["value", "formula", "text"]);
 const isOfficeSafeMediaSource = (value) => {
   if (typeof value !== "string" || value.length > 500 || /[\r\n\0]/.test(value)) return false;
   if (/^data:/i.test(value)) return true;
   if (/^[a-zA-Z][a-zA-Z0-9+.\-]*:/.test(value)) return false; // any scheme / drive letter
   return isSafeRelPath(value);
 };
+const isOfficeEscapingLocalPath = (value) => {
+  const v = String(value ?? "");
+  return /^[/~\\]/.test(v) || /^[A-Za-z]:/.test(v) || v.split(/[/\\]/).includes("..");
+};
+// Fail-closed: content keys exempt; source keys must be a safe media source; any
+// other key is refused if it carries an escaping local path (future source keys).
+const isOfficePropUnsafe = (key, val) => {
+  const k = String(key).toLowerCase();
+  const v = String(val ?? "");
+  if (OFFICE_CONTENT_PROP_KEYS.has(k)) return false;
+  if (OFFICE_SOURCE_PROP_KEYS.has(k)) return !isOfficeSafeMediaSource(v);
+  return isOfficeEscapingLocalPath(v);
+};
 const isOfficePropPair = (value) => {
   const m = /^([a-zA-Z][a-zA-Z0-9._-]{0,39})=([^\r\n]{0,200})$/.exec(value);
   if (!m) return false;
-  return OFFICE_SOURCE_PROP_KEYS.has(m[1].toLowerCase()) ? isOfficeSafeMediaSource(m[2]) : true;
+  return !isOfficePropUnsafe(m[1], m[2]);
 };
 
 // The closed set of element kinds `add --type` accepts. Independent mirror of the
@@ -152,11 +168,11 @@ const isOfficeBatchCommands = (value) => {
     // escapes the worktree must be refused inside a batch too.
     && officeItemPropsSafe(item.props));
 };
-// A batch item's props: any media-source key (src/path/preview) must be worktree-safe.
+// A batch item's props: no file-source key (or unknown key with an escaping local
+// path) may read a host file into the document.
 const officeItemPropsSafe = (props) => {
   if (!props || typeof props !== "object" || Array.isArray(props)) return true;
-  return Object.entries(props).every(([key, val]) =>
-    !OFFICE_SOURCE_PROP_KEYS.has(String(key).toLowerCase()) || isOfficeSafeMediaSource(String(val ?? "")));
+  return Object.entries(props).every(([key, val]) => !isOfficePropUnsafe(key, val));
 };
 
 const OFFICECLI_APPLY_WRAPPER_ARGS = {
