@@ -878,6 +878,18 @@ test("officecliApply: the full file-source key set is guarded — data (table) +
   assert.equal(officecliApplyGate({ capability: "app.app_officecli.apply.batch", execArgs: ["batch", "b.docx", "--commands", cmds] }).allowed, false);
 });
 
+test("officecliApply: image aliases guarded; hyperlink target keys exempt", () => {
+  const gate = (p) => officecliApplyGate({ capability: "app.app_officecli.apply.add", execArgs: ["add", "b.docx", "/body", "--type", "picture", "--prop", p] }).allowed;
+  // imagefill/img resolve a file source too.
+  assert.equal(gate("imagefill=http://attacker/x.png"), false);
+  assert.equal(gate("img=/etc/passwd"), false);
+  assert.equal(gate("imagefill=assets/logo.png"), true);
+  // hyperlink/reference targets are stored URIs, not file reads — kept.
+  for (const link of ["link=/team/report", "link=../shared/report.docx", "link=C:\\Reports\\q3.xlsx", "href=https://example.com/a/../b"]) {
+    assert.equal(gate(link), true, `hyperlink target ${link} must be allowed`);
+  }
+});
+
 test("officecliApply: a batch item with an unsafe media-source prop is refused", () => {
   const cmds = JSON.stringify([{ command: "add", parent: "/Sheet1", type: "picture", props: { src: "../../etc/passwd.png" } }]);
   const gate = officecliApplyGate({

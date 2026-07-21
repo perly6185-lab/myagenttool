@@ -205,6 +205,24 @@ test("the full file-source key set is guarded — data (table) and image (cell/s
   assert.ok(applicationWrapperExecutionPlan(app, "add", { file: "b.docx", parent: "/body", type: "table", props: { data: "rows.csv" } }).args.includes("data=rows.csv"));
 });
 
+test("image aliases (imagefill/img) are guarded; hyperlink target keys (link/href/...) are exempt", () => {
+  const app = register();
+  const kept = (props) => {
+    const pl = applicationWrapperExecutionPlan(app, "add", { file: "b.docx", parent: "/body", type: "picture", props });
+    return pl.args.some((a) => a.startsWith(`${Object.keys(props)[0]}=`));
+  };
+  // image aliases resolve a file source too — escaping/scheme values dropped.
+  assert.equal(kept({ imagefill: "http://attacker/x.png" }), false);
+  assert.equal(kept({ imagefill: "../out.png" }), false);
+  assert.equal(kept({ img: "/etc/passwd" }), false);
+  assert.equal(kept({ imagefill: "assets/logo.png" }), true); // worktree-relative ok
+  // hyperlink/reference TARGETS are stored URIs, never a local file read — a
+  // path/drive/URL target is legitimate and must NOT be dropped by the backstop.
+  for (const link of ["/team/report", "../shared/report.docx", "C:\\Reports\\q3.xlsx", "https://example.com/a/../b"]) {
+    assert.equal(kept({ link }), true, `hyperlink target ${link} must be kept`);
+  }
+});
+
 test("fail-closed backstop: an UNKNOWN prop key carrying an escaping local path is dropped; formatting values pass", () => {
   const app = register();
   // A future/unknown officecli file-source key can't exfiltrate — a `..`/absolute
