@@ -31,9 +31,9 @@ vi.mock("@/data/use-console-actions", () => ({
 
 const catalog = {
   applications: [
-    { name: "markdown", displayName: "Markdown", aliases: ["markdown", "md"], command: "", installHint: "Built in", runtimeRequirements: [] },
-    { name: "ccusage", displayName: "ccusage", aliases: ["ccusage"], command: "ccusage", installHint: "Managed install", runtimeRequirements: [{ runtimeId: "runtime_ccusage", required: true }] },
-    { name: "codex", displayName: "Codex CLI", aliases: ["codex", "codex cli"], command: "codex", installHint: "Managed install", runtimeRequirements: [{ runtimeId: "runtime_codex", required: true }] },
+    { name: "markdown", displayName: "Markdown", aliases: ["markdown", "md"], command: "", installHint: "Built in", runtimeRequirements: [], loginCommand: null },
+    { name: "ccusage", displayName: "ccusage", aliases: ["ccusage"], command: "ccusage", installHint: "Managed install", runtimeRequirements: [{ runtimeId: "runtime_ccusage", required: true }], loginCommand: null },
+    { name: "codex", displayName: "Codex CLI", aliases: ["codex", "codex cli"], command: "codex", installHint: "Managed install", runtimeRequirements: [{ runtimeId: "runtime_codex", required: true }], loginCommand: "codex login" },
   ],
 };
 const plan = {
@@ -139,10 +139,13 @@ describe("RegisterApplicationModal governed setup", () => {
 
     await enterKnownApplication("codex");
 
-    expect(await screen.findByText(/Sign in with codex login/i)).toBeTruthy();
+    // Login is a resumable STEP (not a failure): the server-owned command is shown,
+    // copyable, and a Re-check button re-runs detection after sign-in.
+    expect(await screen.findByText(/Run codex login locally, then re-check/i)).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Copy login command" }));
     await waitFor(() => expect(writeText).toHaveBeenCalledWith("codex login"));
     expect(await screen.findByText(/Copied codex login/i)).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Re-check" })).toBeTruthy();
     expect(apiMock.quickRegisterApplication).not.toHaveBeenCalled();
     expect(apiMock.createApplicationInstallPlan).not.toHaveBeenCalled();
   });
