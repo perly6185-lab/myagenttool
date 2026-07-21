@@ -43,3 +43,23 @@ test("carries the readiness state + a non-null action for actionable steps", () 
 test("an archived Application has no next step", () => {
   assert.equal(setupNextStep({ status: "archived", runtimeRequirements: [] }, null).step, "none");
 });
+
+test("Stage 4-4: the machine advances add→install→login→register→ready as readiness progresses", () => {
+  const codex = { id: "app_codex", status: "active", runtimeRequirements: [{ runtimeId: "runtime_codex", required: true }] };
+  const online = (row) => ({ status: "online", runtimeReadiness: [row].filter(Boolean) });
+  const row = (extra) => ({ runtimeId: "runtime_codex", ...extra });
+
+  // No bridge → start it. Then, at each fixed point, the SINGLE next step advances.
+  assert.equal(setupNextStep(codex, null).step, "start_bridge");
+  assert.equal(setupNextStep(codex, online(null)).step, "install"); // absent
+  assert.equal(setupNextStep(codex, online(row({ status: "available", authenticationStatus: "unauthenticated" }))).step, "login");
+  assert.equal(setupNextStep(codex, online(row({ status: "available", authenticationStatus: "authenticated" })), { registered: false }).step, "register");
+  assert.equal(setupNextStep(codex, online(row({ status: "available", authenticationStatus: "authenticated" })), { registered: true }).step, "ready");
+});
+
+test("Stage 4-4: a mid-flow bridge drop re-derives to start_bridge, never a stuck state", () => {
+  const codex = { id: "app_codex", status: "active", runtimeRequirements: [{ runtimeId: "runtime_codex", required: true }] };
+  // Was progressing on an online device; the bridge goes offline → the pure
+  // re-derivation returns start_bridge, not a frozen prior step.
+  assert.equal(setupNextStep(codex, { status: "offline", runtimeReadiness: [{ runtimeId: "runtime_codex", status: "available", authenticationStatus: "authenticated" }] }).step, "start_bridge");
+});

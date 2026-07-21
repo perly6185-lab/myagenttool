@@ -11,9 +11,9 @@ import { useUiStore } from "@/store/ui-store";
 import type { ApplicationInstallPlan, ApplicationInstallRun, ApplicationRegisterRequest, ApplicationSource } from "@/lib/console-state";
 
 type SourceType = ApplicationSource["type"];
-type SetupPhase = "detect" | "plan" | "approval" | "installing" | "probing" | "registering" | "ready" | "failed" | "cancelled";
+type SetupPhase = "detect" | "plan" | "approval" | "installing" | "probing" | "registering" | "ready" | "login" | "failed" | "cancelled";
 
-const SETUP_STEPS: Array<{ phase: Exclude<SetupPhase, "failed" | "cancelled">; label: string }> = [
+const SETUP_STEPS: Array<{ phase: Exclude<SetupPhase, "failed" | "cancelled" | "login">; label: string }> = [
   { phase: "detect", label: "Detect" },
   { phase: "plan", label: "Plan" },
   { phase: "approval", label: "Approve" },
@@ -76,8 +76,9 @@ export function RegisterApplicationModal({ open, onClose, initialApplication = "
   const readiness = knownEntry && selectedDevice
     ? (selectedDevice.runtimeReadiness ?? selectedDevice.applicationBinaryReadiness)?.find((row) => row.command === knownEntry.command) ?? null
     : null;
+  // Server-owned local sign-in command (Stage 4-2), never hardcoded here.
   const authenticationLoginCommand = readiness?.authenticationStatus === "unauthenticated"
-    ? knownEntry?.command === "codex" ? "codex login" : knownEntry?.command === "claude" ? "claude auth login" : null
+    ? knownEntry?.loginCommand ?? null
     : null;
 
   useEffect(() => {
@@ -157,9 +158,11 @@ export function RegisterApplicationModal({ open, onClose, initialApplication = "
       }
       if (readiness?.status === "available") {
         if (readiness.authenticationStatus === "unauthenticated") {
-          const loginCommand = knownEntry.command === "codex" ? "codex login" : knownEntry.command === "claude" ? "claude auth login" : null;
-          setSetupPhase("failed");
-          setSetupError(`${knownEntry.displayName} is installed but not authenticated.${loginCommand ? ` Sign in with ${loginCommand}, wait for device readiness to refresh, then retry.` : " Sign in locally, wait for device readiness to refresh, then retry."}`);
+          // A resumable login STEP, not a failure: show the server-owned command,
+          // let the user sign in locally, then re-check (Copy + Re-check buttons).
+          const loginCommand = knownEntry.loginCommand;
+          setSetupPhase("login");
+          setSetupMessage(`${knownEntry.displayName} is installed but not signed in.${loginCommand ? ` Run ${loginCommand} locally, then re-check.` : " Sign in locally, then re-check."}`);
           return;
         }
         if (readiness.authenticationStatus === "unknown") {
@@ -326,6 +329,7 @@ export function RegisterApplicationModal({ open, onClose, initialApplication = "
           <div className="flex flex-wrap justify-end gap-2">
             {setupPhase === "approval" ? <Button size="sm" disabled={setupBusy} onClick={() => void approveInstallation()}>{setupBusy ? "Approving…" : "Approve & install"}</Button> : null}
             {["installing", "probing"].includes(setupPhase) ? <Button size="sm" variant="destructive" disabled={setupBusy || !installRun?.id} onClick={() => void cancelInstallation()}>{setupBusy ? "Cancelling…" : "Cancel installation"}</Button> : null}
+            {setupPhase === "login" ? <Button size="sm" onClick={() => { resetSetup("Re-checking sign-in after local login."); void startQuickSetup(); }}>Re-check</Button> : null}
             {["failed", "cancelled"].includes(setupPhase) ? <Button size="sm" variant="secondary" onClick={() => { resetSetup("Retrying setup from readiness detection."); void startQuickSetup(); }}>Retry</Button> : null}
             {setupPhase === "ready" ? <Button size="sm" onClick={onClose}>Done</Button> : null}
             {["detect", "plan"].includes(setupPhase) ? <Button size="sm" disabled={setupBusy || !knownEntry || (knownEntry.runtimeRequirements.length > 0 && !selectedDevice)} onClick={() => void startQuickSetup()}>{setupBusy ? "Detecting…" : "Set up"}</Button> : null}
