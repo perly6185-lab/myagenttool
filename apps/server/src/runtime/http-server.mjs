@@ -17,6 +17,7 @@ import { handleLoopRoutineRoutes } from "../routes/loop-routines.mjs";
 import { handleM3Routes } from "../routes/m3.mjs";
 import { handleProjectRoutes } from "../routes/projects.mjs";
 import { backfillProjectGitFacts } from "../services/projects.mjs";
+import { backfillApplicationRuntimeMetadata } from "../services/applications.mjs";
 import { handleReviewFindingRoutes } from "../routes/review-findings.mjs";
 import { handleTerminalRoutes } from "../routes/terminal.mjs";
 import { handleToolRoutes } from "../routes/tools.mjs";
@@ -268,6 +269,9 @@ export function createHttpServer({
         // One-time per project: turn the seeded `git` placeholder into real facts,
         // so the Projects list can say where a project pushes (#1213).
         backfillProjectGitFacts(state.projects);
+        // Stage 2 (#1342): backfill executionScope + runtimeRequirements onto legacy
+        // Application descriptors persisted before the dual-layer model (idempotent).
+        backfillApplicationRuntimeMetadata(state.applications);
         sendJson(res, 200, publicState(actor));
         return;
       }
