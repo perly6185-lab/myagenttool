@@ -39,6 +39,34 @@ function readiness(state, summary, action) {
   return { state, summary, action, scope: "local" };
 }
 
+// Stage 4 (#1342): the add/install/login/register state-machine CORE, as a pure
+// derivation over the Stage 3 local readiness. Given an Application (a catalog
+// draft being added, or an already-registered one) and the local device, it
+// returns the single next step toward a ready + registered Application:
+//   start_bridge → install → login → repair → register → ready
+// A runtime-blocked state maps to its remediation step; once the runtime is ready
+// (or none is needed) the step is `register` for an unregistered app, else `ready`.
+// Pure and endpoint/UI-free so the flow is unit-testable in isolation.
+const SETUP_STEP_BY_READINESS = {
+  bridge_offline: "start_bridge",
+  not_installed: "install",
+  login_required: "login",
+  repair_required: "repair",
+  archived: "none",
+};
+
+export function setupNextStep(application, device, { registered = false } = {}) {
+  const current = localApplicationReadiness(application, device);
+  const step = SETUP_STEP_BY_READINESS[current.state] ?? (registered ? "ready" : "register");
+  return {
+    step,
+    state: current.state,
+    summary: current.summary,
+    action: current.action ?? (step === "register" ? "register" : null),
+    scope: "local",
+  };
+}
+
 export function withLocalApplicationReadiness(application, device) {
   const runtimeRequirements = resolvedRuntimeRequirements(application);
   return {
