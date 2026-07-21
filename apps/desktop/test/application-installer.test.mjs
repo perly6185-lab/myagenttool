@@ -8,9 +8,9 @@ import { resolveApplicationInstallSpawnPlan, runApprovedApplicationInstall, setP
 const nodePlatform = { windows: "win32", macos: "darwin", linux: "linux" };
 const device = (platform) => ({ id: `dev_${platform}`, name: platform, platform, architecture: "x64" });
 const supported = {
-  windows: ["git", "git-bash", "wsl", "ccusage", "claude", "codex"],
-  macos: ["git", "ccusage", "claude", "codex"],
-  linux: ["ccusage", "claude", "codex"],
+  windows: ["git", "git-bash", "wsl", "ccusage", "claude", "codex", "excalidraw-cli"],
+  macos: ["git", "ccusage", "claude", "codex", "excalidraw-cli"],
+  linux: ["ccusage", "claude", "codex", "excalidraw-cli"],
 };
 
 for (const platform of ["windows", "macos", "linux"]) {

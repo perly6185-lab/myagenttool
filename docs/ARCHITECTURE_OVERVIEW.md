@@ -94,6 +94,7 @@ flowchart TB
 | **Local Agent Bridge** | 机器侧执行者；出站长轮询，token 即设备身份 | `desktop/src/index.mjs` · `routes/bridge.mjs` · `runtime/bridge-auth.mjs` |
 | **Bridge Liveness & Refusal** | 存活探测；`refuse` 动词让 Bridge 诚实拒绝（refusal ≠ failure） | `protocol/refusal.ts` · `docs/design/BRIDGE_LIVENESS_AND_REFUSAL.md` |
 | **Applications Registry** | 受治理的外部工具（git/ccusage/gmail），descriptor 不可变 | `services/applications.mjs` · ADR 0007–0010 |
+| **Excalidraw CLI Runtime** | 可选的受治理外部二进制；经 Desktop Bridge 做 Canvas 布局/导出，缺失即优雅降级 | `services/application-install-plans.mjs` · `docs/engineering/EXCALIDRAW_CLI_RUNTIME.md` |
 | **Web Console** | 操作面 React SPA；每个控制平面概念一个 feature | `apps/web/src/` · `lib/api-client.ts` |
 
 - **Registry 种子**：demo CLI、Codex、Claude + 3 个 platform agent（troubleshooter / integration builder / application control）。

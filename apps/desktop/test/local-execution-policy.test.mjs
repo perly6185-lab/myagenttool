@@ -661,6 +661,28 @@ test("#802: an allowlisted officecli command whose binary is absent is refused w
   assert.equal(gate.evidence.refusalCode, "binary_unavailable");
 });
 
+test("#1356: the excalidraw-cli runtime is presence-only — any invocation is default-denied (no verb wired in PR1)", () => {
+  // The manifest carries an excalidraw-cli probe entry (for readiness), but
+  // wrapperArgsAllowed has NO branch for its prefix, so the device refuses every
+  // invocation regardless of argv. This locks the PR1 scaffolding: the runtime can
+  // be detected/installed but NOT executed until the governed export slice (PR2).
+  const spec = { execCommand: "excalidraw-cli", execArgs: ["export", "diagram.excalidraw"], capability: "app.app_excalidraw_cli.wrapper.export", filePolicy: "read_only", networkPolicy: "forbidden" };
+  const work = { project: { path: gitRoot }, options: { metadata: { applicationWrapper: spec, worktreePath: gitRoot } } };
+  const gate = localExecutionGate(
+    work,
+    { type: "cli", command: "node" },
+    {
+      command: process.execPath,
+      args: wrapperArgs(spec, { cwd: gitRoot }),
+      cwd: gitRoot,
+      localPolicy: { filePolicy: "read_only", networkPolicy: "forbidden", source: "application_wrapper" },
+    },
+    { manifest, resolveBinary: () => true },
+  );
+  assert.equal(gate.allowed, false);
+  assert.match(gate.reason, /args outside the local allowlist/);
+});
+
 // --- OfficeCLI WRITE verbs (P3.1): the officecliApply write-policy kind ---
 
 function officecliApplyGate({ execArgs, capability, root = gitRoot, cwd = gitRoot, worktreePath = root, filePolicy = "workspace_write", resolveBinary = () => true }) {
