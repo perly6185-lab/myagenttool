@@ -64,9 +64,17 @@ export function similarity(a, b) {
  */
 export function alignBlocks(original, newBlocks, { threshold = 0.5 } = {}) {
   const origs = (Array.isArray(original) ? original : []).map((o, i) => ({ i, path: o.path, md: o.md, used: false }));
-  const news = (Array.isArray(newBlocks) ? newBlocks : []).map((md) => ({ md, path: null, matched: false }));
+  const news = (Array.isArray(newBlocks) ? newBlocks : []).map((md, idx) => ({ idx, md, path: null, matched: false, origIdx: -1 }));
 
-  // Pass 1 — exact md, order-aware for duplicates.
+  const claim = (n, o) => {
+    o.used = true;
+    n.path = o.path;
+    n.matched = true;
+    n.origIdx = o.i;
+  };
+
+  // Pass 1 — exact md, order-aware for duplicates. Matching ALL equal-md blocks
+  // (moved or not) lets computeBlockOps realize a reorder with `move` ops.
   const byMd = new Map();
   for (const o of origs) {
     if (!byMd.has(o.md)) byMd.set(o.md, []);
@@ -74,12 +82,7 @@ export function alignBlocks(original, newBlocks, { threshold = 0.5 } = {}) {
   }
   for (const n of news) {
     const q = byMd.get(n.md);
-    if (q && q.length) {
-      const o = q.shift();
-      o.used = true;
-      n.path = o.path;
-      n.matched = true;
-    }
+    if (q && q.length) claim(n, q.shift());
   }
 
   // Pass 2 — best similarity above threshold among the remaining originals.
@@ -95,12 +98,61 @@ export function alignBlocks(original, newBlocks, { threshold = 0.5 } = {}) {
         best = o;
       }
     }
-    if (best) {
-      best.used = true;
-      n.path = best.path;
-      n.matched = true;
-    }
+    if (best) claim(n, best);
+  }
+
+  // Pass 3 — positional fallback. Similarity is unreliable for short paragraphs
+  // (`Yes`→`No` shares no bigrams, yet is an in-place edit), so pair each remaining
+  // unmatched block with the unused original at the CORRESPONDING position. Anchors
+  // = the order-preserving (monotonic) subset of the matches so far; within each
+  // anchor-bounded gap, residue is paired 1:1 in order (an in-place edit — keeps the
+  // paraId + formatting). A genuine insert and delete in DIFFERENT gaps are kept
+  // apart by the anchors, so they never cross-pair into a spurious edit.
+  const matched = news.filter((n) => n.matched).map((n) => ({ ni: n.idx, oi: n.origIdx }));
+  const anchorNi = new Set(monotonicAnchors(matched));
+  const anchors = matched.filter((m) => anchorNi.has(m.ni)).sort((a, b) => a.ni - b.ni);
+  let prevNi = -1;
+  let prevOi = -1;
+  for (const a of [...anchors, { ni: news.length, oi: origs.length }]) {
+    const gapNews = news.filter((n) => n.idx > prevNi && n.idx < a.ni && !n.matched);
+    const gapOrigs = origs.filter((o) => o.i > prevOi && o.i < a.oi && !o.used);
+    const k = Math.min(gapNews.length, gapOrigs.length);
+    for (let t = 0; t < k; t++) claim(gapNews[t], gapOrigs[t]);
+    prevNi = a.ni;
+    prevOi = a.oi;
   }
 
   return news.map((n) => ({ path: n.path, md: n.md }));
+}
+
+// Given matched {ni, oi} pairs sorted by ni, return the ni's of a longest subset
+// whose oi is strictly increasing — the order-preserving anchors that partition
+// both sequences into gaps (a non-monotonic match is a MOVE, left out of the
+// anchors so it doesn't define a gap boundary).
+function monotonicAnchors(matched) {
+  const arr = [...matched].sort((a, b) => a.ni - b.ni);
+  const oi = arr.map((m) => m.oi);
+  const n = oi.length;
+  if (n === 0) return [];
+  const tails = [];
+  const prev = new Array(n).fill(-1);
+  for (let i = 0; i < n; i++) {
+    let lo = 0;
+    let hi = tails.length;
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      if (oi[tails[mid]] < oi[i]) lo = mid + 1;
+      else hi = mid;
+    }
+    if (lo > 0) prev[i] = tails[lo - 1];
+    if (lo === tails.length) tails.push(i);
+    else tails[lo] = i;
+  }
+  const out = [];
+  let k = tails[tails.length - 1];
+  while (k !== -1) {
+    out.push(arr[k].ni);
+    k = prev[k];
+  }
+  return out;
 }
