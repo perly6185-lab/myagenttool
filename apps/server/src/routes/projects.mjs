@@ -703,7 +703,7 @@ export async function handleProjectRoutes({
       const edited = blocks
         ? blocks
         : alignBlocks(
-            outline.paragraphs.map((p) => ({ path: p.path, md: paragraphToMd(p) })),
+            outline.paragraphs.map((p) => ({ path: p.path, md: paragraphToMd(p), complex: p.complex })),
             parseDocumentMd(text),
           );
       const { commands } = computeBlockOps({ original: outline.paragraphs, edited });

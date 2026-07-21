@@ -116,8 +116,13 @@ const OFFICECLI_WRAPPER_ARGS = {
 // `--prop data=/etc/passwd` reads an arbitrary host file into the document.
 // Content keys (value/formula/text) are literal content, exempt. Independent
 // mirror of the server rule; fail-closed on unknown keys.
-const OFFICE_SOURCE_PROP_KEYS = new Set(["src", "path", "preview", "data", "image"]);
-const OFFICE_CONTENT_PROP_KEYS = new Set(["value", "formula", "text"]);
+const OFFICE_SOURCE_PROP_KEYS = new Set(["src", "path", "preview", "data", "image", "imagefill", "img"]);
+// Content + hyperlink/reference-target keys: never a local file read, so exempt
+// from the escaping-path backstop (a `link=/team` or `link=C:\x` target is valid).
+const OFFICE_CONTENT_PROP_KEYS = new Set([
+  "value", "formula", "text",
+  "link", "href", "target", "url", "hyperlink", "anchor", "tooltip",
+]);
 const isOfficeSafeMediaSource = (value) => {
   if (typeof value !== "string" || value.length > 500 || /[\r\n\0]/.test(value)) return false;
   if (/^data:/i.test(value)) return true;
