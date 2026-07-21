@@ -696,11 +696,15 @@ export const api = {
       "GET",
       `/api/projects/${encodeURIComponent(projectId)}/officecli-doc-outline?path=${encodeURIComponent(filePath)}${worktreeId ? `&worktree=${encodeURIComponent(worktreeId)}` : ""}`,
     ),
-  // L1 block editing: given the edited block list, the server re-reads the current
-  // .docx outline and returns the batch item list for one governed `apply.batch`.
+  // L1 block editing: given the edited block list (block editor) OR whole-document
+  // markdown text (textarea mode, re-aligned to paraIds server-side), the server
+  // re-reads the current .docx outline and returns the batch item list for one
+  // governed `apply.batch`.
   officecliBlockOps: (
     projectId: string,
-    payload: { file: string; worktree: string; blocks: { path: string | null; md: string }[] },
+    payload:
+      | { file: string; worktree: string; blocks: { path: string | null; md: string }[] }
+      | { file: string; worktree: string; text: string },
   ) =>
     request<{ commands: Record<string, unknown>[] }>(
       "POST",

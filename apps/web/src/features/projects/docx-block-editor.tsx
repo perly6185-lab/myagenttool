@@ -3,14 +3,15 @@ import { Loader2, Plus, Save, Trash2, ChevronUp, ChevronDown } from "lucide-reac
 import { api } from "@/data/use-console-actions";
 import { useConsoleState } from "@/data/use-console-state";
 
-// L1 in-app markdown-style block editor for a .docx (Slice 3). Each block is one
-// <w:p>, shown as its markdown source (a `#`-prefixed heading or plain text). A
-// human edits block text, adds/deletes/reorders blocks; "Save all" sends the
-// edited list to the server, which re-reads the current outline and returns the
-// item list for ONE governed `apply.batch` — a surgical set/remove/move/add keyed
-// on each block's native paraId path. The docx is never regenerated: content the
-// projection can't express (tables, images, runs, non-heading styles) is preserved
-// by never being touched.
+// L1 in-app markdown-style editor for a .docx. Two modes over the same document:
+//  - Blocks: each <w:p> is a block (heading/text/**bold**/*italic*) with add/
+//    delete/reorder controls, keyed on its native paraId — zero alignment risk.
+//  - Markdown: the whole document as one markdown textarea; on save the server
+//    re-aligns the edited blocks to their original paraIds by content.
+// Either way, "Save all" produces ONE governed `apply.batch` — surgical
+// set/remove/move/add/run-rebuild. The docx is never regenerated: content the
+// projection can't express (tables, images, non-heading styles) is preserved by
+// never being touched.
 
 interface Block {
   key: string; // stable local key for React (new blocks have no paraId yet)
@@ -22,6 +23,8 @@ export function DocxBlockEditor({ projectId, worktreeId, file, onChanged }: { pr
   const { data: state } = useConsoleState();
   const [blocks, setBlocks] = useState<Block[] | null>(null);
   const [original, setOriginal] = useState<{ path: string | null; md: string }[]>([]);
+  const [mode, setMode] = useState<"blocks" | "markdown">("blocks");
+  const [docMd, setDocMd] = useState("");
   const [loadState, setLoadState] = useState<"loading" | "error" | "done">("loading");
   const [saving, setSaving] = useState(false);
   const [invId, setInvId] = useState<string | null>(null);
@@ -49,11 +52,24 @@ export function DocxBlockEditor({ projectId, worktreeId, file, onChanged }: { pr
     void load();
   }, [load]);
 
+  const baselineMd = useMemo(() => original.map((o) => o.md).join("\n\n"), [original]);
   const dirty = useMemo(() => {
     if (!blocks) return false;
+    if (mode === "markdown") return docMd !== baselineMd;
     const now = blocks.map((b) => ({ path: b.path, md: b.md }));
     return JSON.stringify(now) !== JSON.stringify(original);
-  }, [blocks, original]);
+  }, [blocks, original, mode, docMd, baselineMd]);
+
+  // Blocks -> Markdown seeds the textarea from current blocks; Markdown -> Blocks
+  // reloads (unsaved textarea edits are discarded rather than fuzzily re-split).
+  const toMarkdown = () => {
+    setDocMd((blocks ?? []).map((b) => b.md).join("\n\n"));
+    setMode("markdown");
+  };
+  const toBlocks = () => {
+    setMode("blocks");
+    void load();
+  };
 
   const setMd = (key: string, md: string) => setBlocks((bs) => (bs ? bs.map((b) => (b.key === key ? { ...b, md } : b)) : bs));
   const addBelow = (index: number) =>
@@ -79,8 +95,11 @@ export function DocxBlockEditor({ projectId, worktreeId, file, onChanged }: { pr
     setSaving(true);
     setError(null);
     try {
-      const edited = blocks.map((b) => ({ path: b.path, md: b.md }));
-      const { commands } = (await api.officecliBlockOps(projectId, { file, worktree: worktreeId, blocks: edited })) as {
+      const payload =
+        mode === "markdown"
+          ? { file, worktree: worktreeId, text: docMd }
+          : { file, worktree: worktreeId, blocks: blocks.map((b) => ({ path: b.path, md: b.md })) };
+      const { commands } = (await api.officecliBlockOps(projectId, payload)) as {
         commands: Record<string, unknown>[];
       };
       if (!commands.length) {
@@ -104,7 +123,7 @@ export function DocxBlockEditor({ projectId, worktreeId, file, onChanged }: { pr
       setSaving(false);
       setError(e instanceof Error ? e.message : String(e));
     }
-  }, [blocks, projectId, worktreeId, file, load]);
+  }, [blocks, projectId, worktreeId, file, load, mode, docMd]);
 
   // Watch the batch to completion, then reload the outline (new blocks get real paraIds).
   useEffect(() => {
@@ -133,8 +152,12 @@ export function DocxBlockEditor({ projectId, worktreeId, file, onChanged }: { pr
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       <div className="flex items-center justify-between gap-2 border-b border-border px-2 py-1.5">
-        <span className="text-[11px] text-muted-foreground">
-          Markdown-style editing — <code className="font-mono"># </code> heading, <code className="font-mono">**bold**</code>, <code className="font-mono">*italic*</code>. Each save is one governed, worktree-scoped batch; unedited formatting is preserved.
+        <div className="flex items-center gap-1 rounded border border-border p-0.5 text-[11px]">
+          <button type="button" onClick={toBlocks} className={`rounded px-1.5 py-0.5 ${mode === "blocks" ? "bg-accent font-medium" : "text-muted-foreground"}`}>Blocks</button>
+          <button type="button" onClick={toMarkdown} className={`rounded px-1.5 py-0.5 ${mode === "markdown" ? "bg-accent font-medium" : "text-muted-foreground"}`}>Markdown</button>
+        </div>
+        <span className="min-w-0 flex-1 truncate text-[11px] text-muted-foreground">
+          <code className="font-mono"># </code> heading, <code className="font-mono">**bold**</code>, <code className="font-mono">*italic*</code>{mode === "markdown" ? " — blank line separates paragraphs" : ""}. One governed batch; unedited formatting preserved.
         </span>
         <button
           type="button"
@@ -147,6 +170,20 @@ export function DocxBlockEditor({ projectId, worktreeId, file, onChanged }: { pr
         </button>
       </div>
       {error ? <p className="px-2 pt-1 text-xs text-red-600 dark:text-red-400">{error}</p> : null}
+      {mode === "markdown" ? (
+        <div className="min-h-0 flex-1 overflow-auto p-2">
+          <textarea
+            value={docMd}
+            onChange={(e) => setDocMd(e.target.value)}
+            className="h-full min-h-[24rem] w-full resize-none rounded border border-border bg-background px-3 py-2 font-mono text-sm leading-relaxed"
+            spellCheck
+            placeholder="# Heading&#10;&#10;Body paragraph with **bold** and *italic*."
+          />
+          <p className="px-1 pt-1 text-[11px] text-muted-foreground">
+            Edited blocks are re-aligned to their original paragraphs by content, so unchanged paragraphs stay untouched. Review the before/after diff before promoting.
+          </p>
+        </div>
+      ) : (
       <div className="min-h-0 flex-1 space-y-1.5 overflow-auto p-2">
         {blocks.length === 0 ? (
           <button type="button" onClick={() => addBelow(-1)} className="flex items-center gap-1 rounded border border-dashed border-border px-2 py-1 text-[11px] text-muted-foreground">
@@ -176,6 +213,7 @@ export function DocxBlockEditor({ projectId, worktreeId, file, onChanged }: { pr
           );
         })}
       </div>
+      )}
     </div>
   );
 }
