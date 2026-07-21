@@ -859,7 +859,23 @@ test("officecliApply: a worktree-relative media source and a data: URI are allow
   const data = officecliApplyGate({ capability: "app.app_officecli.apply.set", execArgs: ["set", "b.xlsx", "/Sheet1/pic", "--prop", "src=data:image/png;base64,AAA"] });
   assert.equal(data.allowed, true, data.reason);
   const text = officecliApplyGate({ capability: "app.app_officecli.apply.set", execArgs: ["set", "b.xlsx", "/Sheet1/A1", "--prop", "value=../this/is/text"] });
-  assert.equal(text.allowed, true, "a non-source prop with a path-looking value stays allowed");
+  assert.equal(text.allowed, true, "a CONTENT prop (value/formula/text) with a path-looking value stays allowed");
+});
+
+test("officecliApply: the full file-source key set is guarded — data (table) + image, and a fail-closed backstop", () => {
+  // data/image are file sources too — an escaping value must be refused.
+  for (const p of ["data=/etc/passwd", "data=../secret.csv", "image=../out.png", "image=/etc/hosts"]) {
+    const gate = officecliApplyGate({ capability: "app.app_officecli.apply.add", execArgs: ["add", "b.docx", "/body", "--type", "table", "--prop", p] });
+    assert.equal(gate.allowed, false, `unsafe file source "${p}" must be refused`);
+  }
+  // a worktree-relative data source is allowed.
+  assert.equal(officecliApplyGate({ capability: "app.app_officecli.apply.add", execArgs: ["add", "b.docx", "/body", "--type", "table", "--prop", "data=rows.csv"] }).allowed, true);
+  // backstop: an unknown key with an escaping local path is refused; formatting passes.
+  assert.equal(officecliApplyGate({ capability: "app.app_officecli.apply.add", execArgs: ["add", "b.docx", "/body", "--type", "shape", "--prop", "future=/etc/passwd"] }).allowed, false);
+  assert.equal(officecliApplyGate({ capability: "app.app_officecli.apply.set", execArgs: ["set", "b.docx", "/body/p[1]", "--prop", "style=Heading1", "--prop", "width=6in"] }).allowed, true);
+  // and inside a batch item.
+  const cmds = JSON.stringify([{ command: "add", parent: "/body", type: "table", props: { data: "/etc/passwd" } }]);
+  assert.equal(officecliApplyGate({ capability: "app.app_officecli.apply.batch", execArgs: ["batch", "b.docx", "--commands", cmds] }).allowed, false);
 });
 
 test("officecliApply: a batch item with an unsafe media-source prop is refused", () => {

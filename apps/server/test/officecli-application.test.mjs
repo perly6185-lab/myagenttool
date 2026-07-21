@@ -189,8 +189,31 @@ test("a media-source prop (src/path/preview) that escapes the worktree is DROPPE
   assert.ok(applicationWrapperExecutionPlan(app, "set", { file: "b.xlsx", path: "/p", props: { src: "data:image/png;base64,AAA" } }).args.some((a) => a.startsWith("src=data:")));
   // path (src alias) and preview are guarded too.
   assert.ok(!applicationWrapperExecutionPlan(app, "add", { file: "b.xlsx", parent: "/Sheet1", type: "ole", props: { path: "../secret" } }).args.some((a) => a.startsWith("path=")));
-  // a NON-source prop with the same-looking value is kept (only src/path/preview are paths).
+  // CONTENT keys (value/formula/text) are literal — a path-looking value is kept.
   assert.ok(applicationWrapperExecutionPlan(app, "set", { file: "b.xlsx", path: "/Sheet1/A1", props: { value: "../this/is/text" } }).args.includes("value=../this/is/text"));
+  assert.ok(applicationWrapperExecutionPlan(app, "set", { file: "b.xlsx", path: "/p", props: { text: "/etc/passwd" } }).args.includes("text=/etc/passwd"));
+});
+
+test("the full file-source key set is guarded — data (table) and image (cell/shape), not just src/path/preview", () => {
+  const app = register();
+  // data=<escaping> reads a host file into a table — must be dropped (the gap that
+  // let host-file exfiltration through before).
+  assert.ok(!applicationWrapperExecutionPlan(app, "add", { file: "b.docx", parent: "/body", type: "table", props: { data: "/etc/passwd" } }).args.some((a) => a.startsWith("data=")));
+  assert.ok(!applicationWrapperExecutionPlan(app, "add", { file: "b.docx", parent: "/body", type: "table", props: { data: "../secret.csv" } }).args.some((a) => a.startsWith("data=")));
+  assert.ok(!applicationWrapperExecutionPlan(app, "set", { file: "b.xlsx", path: "/Sheet1/A1", props: { image: "../out.png" } }).args.some((a) => a.startsWith("image=")));
+  // a worktree-relative data/image source is still allowed.
+  assert.ok(applicationWrapperExecutionPlan(app, "add", { file: "b.docx", parent: "/body", type: "table", props: { data: "rows.csv" } }).args.includes("data=rows.csv"));
+});
+
+test("fail-closed backstop: an UNKNOWN prop key carrying an escaping local path is dropped; formatting values pass", () => {
+  const app = register();
+  // A future/unknown officecli file-source key can't exfiltrate — a `..`/absolute
+  // value on any non-content key is refused.
+  assert.ok(!applicationWrapperExecutionPlan(app, "add", { file: "b.docx", parent: "/body", type: "shape", props: { future: "/etc/passwd" } }).args.some((a) => a.startsWith("future=")));
+  assert.ok(!applicationWrapperExecutionPlan(app, "add", { file: "b.docx", parent: "/body", type: "shape", props: { blip: "../x" } }).args.some((a) => a.startsWith("blip=")));
+  // ordinary formatting values are not escaping paths — kept.
+  const plan = applicationWrapperExecutionPlan(app, "set", { file: "b.docx", path: "/body/p[1]", props: { style: "Heading1", bold: "true", width: "6in", color: "#FF0000" } });
+  for (const kv of ["style=Heading1", "bold=true", "width=6in", "color=#FF0000"]) assert.ok(plan.args.includes(kv), `formatting ${kv} must be kept`);
 });
 
 test("`batch` drops the WHOLE list if an item's media-source prop escapes the worktree", () => {
