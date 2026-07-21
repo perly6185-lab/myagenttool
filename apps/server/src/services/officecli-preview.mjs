@@ -24,6 +24,7 @@ import { relative, resolve, sep } from "node:path";
 import { promisify } from "node:util";
 
 import { parseAddr } from "./officecli-sheet-ops.mjs";
+import { shapeIsEditable } from "./officecli-deck-ops.mjs";
 
 const execFileAsync = promisify(execFile);
 
@@ -250,4 +251,55 @@ export async function readOfficecliSheet({ projectPath, relativeFile, sheet, tim
     }
   }
   return { path: relPath, sheet: target, sheets, cells, maxRow, maxCol };
+}
+
+/**
+ * Read a .pptx as slides of shapes for the slide text editor. One
+ * `officecli get / --json --depth 2` nests each slide's shapes; a text shape
+ * (textbox) carries its stable `@id` path and text. Editing a shape maps to a
+ * surgical `set /slide[N]/shape[@id=..] --prop text=`.
+ *
+ * @returns {Promise<{ path:string, slides:Array<{ path:string, shapes:Array<{path:string,type:string,text:string,editable:boolean}> }> }>}
+ */
+export async function readOfficecliDeck({ projectPath, relativeFile, timeoutMs = DEFAULT_TIMEOUT_MS, run } = {}) {
+  if (!projectPath) throw new OfficecliPreviewError("invalid_project", "A project path is required.");
+  const { root, relPath } = resolveDocument(projectPath, relativeFile);
+  if (!/\.pptx$/i.test(relPath)) {
+    throw new OfficecliPreviewError("unsupported_type", "Slide editing is available for .pptx documents only.");
+  }
+  const spawn = run ?? ((cmd, argv, opts) => execFileAsync(cmd, argv, opts));
+  let stdout;
+  try {
+    ({ stdout } = await spawn("officecli", ["get", relPath, "/", "--json", "--depth", "2"], {
+      cwd: root,
+      timeout: timeoutMs,
+      maxBuffer: MAX_HTML_BYTES,
+      encoding: "utf8",
+      windowsHide: true,
+    }));
+  } catch (error) {
+    if (error?.code === "ENOENT") throw new OfficecliPreviewError("officecli_unavailable", "The officecli binary is not installed on this device.");
+    if (error?.killed || error?.signal === "SIGTERM") throw new OfficecliPreviewError("render_timeout", `Reading the document timed out after ${timeoutMs} ms.`);
+    throw new OfficecliPreviewError("read_failed", `officecli get failed: ${error?.message ?? String(error)}`);
+  }
+  let parsed;
+  try {
+    parsed = JSON.parse(String(stdout ?? ""));
+  } catch {
+    throw new OfficecliPreviewError("read_failed", "officecli did not return valid JSON.");
+  }
+  const slides = (parsed?.data?.results?.[0]?.children ?? [])
+    .filter((s) => s?.type === "slide" && typeof s?.path === "string")
+    .map((s) => ({
+      path: s.path,
+      shapes: (Array.isArray(s.children) ? s.children : [])
+        .filter((sh) => sh?.type && typeof sh?.path === "string")
+        .map((sh) => ({
+          path: sh.path,
+          type: sh.type,
+          text: typeof sh.text === "string" ? sh.text : "",
+          editable: shapeIsEditable(sh),
+        })),
+    }));
+  return { path: relPath, slides };
 }
