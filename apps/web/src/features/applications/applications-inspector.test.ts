@@ -117,8 +117,8 @@ describe("ApplicationsInspector recovery guidance", () => {
     const state = closedLoopConsoleState();
     state.applications = [{ id: "app_git", name: "Git", kind: "binary", status: "active", source: { type: "binary", binary: "git" } }];
     state.devices = [
-      { id: "dev_a", name: "Laptop", status: "online", platform: "windows", architecture: "x64", lastSeenAt: "2026-07-14T00:00:00Z", applicationBinaryReadiness: [{ command: "git", capabilityPrefix: "app.app_git.wrapper.", status: "absent", version: null, checkedAt: "2026-07-14T00:00:00Z" }] },
-      { id: "dev_b", name: "Build Mac", status: "offline", platform: "macos", architecture: "arm64", lastSeenAt: "2026-07-13T00:00:00Z", applicationBinaryReadiness: [{ command: "git", capabilityPrefix: "app.app_git.wrapper.", status: "stale", version: "git version 2.50", checkedAt: "2026-07-13T00:00:00Z" }] },
+      { id: "dev_a", name: "Laptop", status: "online", platform: "windows", architecture: "x64", lastSeenAt: "2026-07-14T00:00:00Z", runtimeReadiness: [{ command: "git", capabilityPrefix: "app.app_git.wrapper.", status: "absent", version: null, checkedAt: "2026-07-14T00:00:00Z" }] },
+      { id: "dev_b", name: "Build Mac", status: "offline", platform: "macos", architecture: "arm64", lastSeenAt: "2026-07-13T00:00:00Z", runtimeReadiness: [{ command: "git", capabilityPrefix: "app.app_git.wrapper.", status: "stale", version: "git version 2.50", checkedAt: "2026-07-13T00:00:00Z" }] },
     ];
     state.device = state.devices[0];
     apiMock.fetchState.mockResolvedValue(state);

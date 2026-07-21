@@ -91,7 +91,7 @@ describe("RegisterApplicationModal governed setup", () => {
   it("skips installation when readiness already confirms the binary", async () => {
     consoleState.data = {
       projects: [],
-      device: { id: "dev_local", name: "Workstation", status: "online", platform: "windows", architecture: "x64", lastSeenAt: null, applicationBinaryReadiness: [{ command: "ccusage", capabilityPrefix: "app.app_ccusage.wrapper.", status: "available", version: "20.0.14", checkedAt: "2026-07-14T00:00:00Z" }] },
+      device: { id: "dev_local", name: "Workstation", status: "online", platform: "windows", architecture: "x64", lastSeenAt: null, runtimeReadiness: [{ command: "ccusage", capabilityPrefix: "app.app_ccusage.wrapper.", status: "available", version: "20.0.14", checkedAt: "2026-07-14T00:00:00Z" }] },
       devices: [],
     };
     apiMock.listKnownApplications.mockResolvedValue(catalog);
@@ -131,7 +131,7 @@ describe("RegisterApplicationModal governed setup", () => {
     Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText } });
     consoleState.data = {
       projects: [],
-      device: { id: "dev_local", name: "Workstation", status: "online", platform: "windows", architecture: "x64", lastSeenAt: null, applicationBinaryReadiness: [{ command: "codex", capabilityPrefix: "app.setup.codex.", status: "available", version: "0.144.6", authenticationStatus: "unauthenticated", authenticationMethod: null, checkedAt: "2026-07-19T00:00:00Z" }] },
+      device: { id: "dev_local", name: "Workstation", status: "online", platform: "windows", architecture: "x64", lastSeenAt: null, runtimeReadiness: [{ command: "codex", capabilityPrefix: "app.setup.codex.", status: "available", version: "0.144.6", authenticationStatus: "unauthenticated", authenticationMethod: null, checkedAt: "2026-07-19T00:00:00Z" }] },
       devices: [],
     };
     apiMock.listKnownApplications.mockResolvedValue(catalog);
@@ -153,7 +153,7 @@ describe("RegisterApplicationModal governed setup", () => {
   it("shows a safe plan summary and requires explicit approval for a missing binary", async () => {
     consoleState.data = {
       projects: [],
-      device: { id: "dev_local", name: "Workstation", status: "online", platform: "windows", architecture: "x64", lastSeenAt: null, applicationBinaryReadiness: [{ command: "ccusage", capabilityPrefix: "app.app_ccusage.wrapper.", status: "absent", version: null, checkedAt: "2026-07-14T00:00:00Z" }] },
+      device: { id: "dev_local", name: "Workstation", status: "online", platform: "windows", architecture: "x64", lastSeenAt: null, runtimeReadiness: [{ command: "ccusage", capabilityPrefix: "app.app_ccusage.wrapper.", status: "absent", version: null, checkedAt: "2026-07-14T00:00:00Z" }] },
       devices: [],
     };
     apiMock.listKnownApplications.mockResolvedValue(catalog);
@@ -178,7 +178,7 @@ describe("RegisterApplicationModal governed setup", () => {
   it("explains how to recover when the selected device is offline", async () => {
     consoleState.data = {
       projects: [],
-      device: { id: "dev_local", name: "Offline laptop", status: "offline", platform: "windows", architecture: "x64", lastSeenAt: null, applicationBinaryReadiness: [] },
+      device: { id: "dev_local", name: "Offline laptop", status: "offline", platform: "windows", architecture: "x64", lastSeenAt: null, runtimeReadiness: [] },
       devices: [],
     };
     apiMock.listKnownApplications.mockResolvedValue(catalog);
