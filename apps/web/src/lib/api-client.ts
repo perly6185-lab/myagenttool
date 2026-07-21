@@ -716,6 +716,31 @@ export const api = {
       `/api/projects/${encodeURIComponent(projectId)}/officecli-block-ops`,
       payload,
     ),
+  // xlsx grid: read a worksheet as a cell grid (each cell carries `edit` = its
+  // editable text, a formula shown as `=…`).
+  officecliSheet: (projectId: string, filePath: string, worktreeId?: string, sheet?: string) =>
+    request<{
+      path: string;
+      sheet: string;
+      sheets: string[];
+      maxRow: number;
+      maxCol: number;
+      cells: Record<string, { text: string; formula: string | null; type: string | null; edit: string }>;
+    }>(
+      "GET",
+      `/api/projects/${encodeURIComponent(projectId)}/officecli-sheet?path=${encodeURIComponent(filePath)}${worktreeId ? `&worktree=${encodeURIComponent(worktreeId)}` : ""}${sheet ? `&sheet=${encodeURIComponent(sheet)}` : ""}`,
+    ),
+  // Given the edited cell map, the server re-reads the sheet and returns the batch
+  // item list for one governed `apply.batch`.
+  officecliSheetOps: (
+    projectId: string,
+    payload: { file: string; worktree: string; sheet?: string; cells: Record<string, string> },
+  ) =>
+    request<{ commands: Record<string, unknown>[]; sheet: string }>(
+      "POST",
+      `/api/projects/${encodeURIComponent(projectId)}/officecli-sheet-ops`,
+      payload,
+    ),
   worktreeGit: (id: string) => request("GET", `/api/worktrees/${encodeURIComponent(id)}/git`),
   worktreeDiff: (id: string) => request("GET", `/api/worktrees/${encodeURIComponent(id)}/diff`),
   reviewWorktree: (id: string, payload: { verdict: "approved" | "changes_requested"; summary?: string; comments?: { path: string | null; body: string }[] }) =>

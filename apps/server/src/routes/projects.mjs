@@ -7,9 +7,10 @@ import { computeIssueOwnership } from "../read-models/issue-ownership.mjs";
 import { recordHttpGateRefusal } from "./refusal-http-gate.mjs";
 import { deriveFinalStatus, summarizeAutoRuns } from "../services/auto-run-metrics.mjs";
 import { summarizeDeployments } from "../services/auto-run-deploy-metrics.mjs";
-import { renderOfficecliPreview, readOfficecliDocParagraphs, OfficecliPreviewError } from "../services/officecli-preview.mjs";
+import { renderOfficecliPreview, readOfficecliDocParagraphs, readOfficecliSheet, OfficecliPreviewError } from "../services/officecli-preview.mjs";
 import { computeBlockOps, paragraphToMd } from "../services/officecli-block-ops.mjs";
 import { parseDocumentMd, alignBlocks } from "../services/officecli-doc-md.mjs";
+import { computeSheetOps, cellEditableText } from "../services/officecli-sheet-ops.mjs";
 import { readEvalTrend, summarizeEvalTrend } from "../services/eval-trend.mjs";
 import { maturityScorecard, latestDora } from "../read-models/maturity-scorecard.mjs";
 import { normalizeAutoRunSettings, resolveAutoRunConfig } from "../services/auto-run-config.mjs";
@@ -708,6 +709,61 @@ export async function handleProjectRoutes({
       sendJson(res, 200, { commands });
     } catch (error) {
       const code = error instanceof OfficecliPreviewError ? error.code : "block_ops_failed";
+      const status = code === "not_found" ? 404 : code === "officecli_unavailable" ? 503 : 400;
+      sendJson(res, status, { error: code, message: error instanceof Error ? error.message : String(error) });
+    }
+    return true;
+  }
+
+  // xlsx grid editing: read a worksheet as a grid, and compute the cell-edit ops.
+  const sheetMatch = url.pathname.match(/^\/api\/projects\/([^/]+)\/officecli-sheet$/);
+  if (sheetMatch && req.method === "GET") {
+    const project = state.projects.find((item) => item.id === decodeURIComponent(sheetMatch[1]));
+    if (!project) {
+      sendJson(res, 404, { error: "project_not_found" });
+      return true;
+    }
+    if (denyForeignProject({ res, sendJson, state, actor, projectId: project.id, notFound: { error: "project_not_found" } })) return true;
+    const worktreeId = url.searchParams.get("worktree");
+    const worktree = worktreeId ? (state.worktrees ?? []).find((w) => w.id === worktreeId && w.projectId === project.id) : null;
+    const rootPath = worktree?.path ?? worktree?.worktreePath ?? project.path;
+    try {
+      const grid = await readOfficecliSheet({ projectPath: rootPath, relativeFile: url.searchParams.get("path") ?? "", sheet: url.searchParams.get("sheet") ?? undefined });
+      // Attach each cell's editable text (a formula shows as `=…`) — server-owned,
+      // so the grid UI has no projection logic to drift.
+      const cells = Object.fromEntries(Object.entries(grid.cells).map(([addr, cell]) => [addr, { ...cell, edit: cellEditableText(cell) }]));
+      sendJson(res, 200, { ...grid, cells });
+    } catch (error) {
+      const code = error instanceof OfficecliPreviewError ? error.code : "sheet_failed";
+      const status = code === "not_found" ? 404 : code === "officecli_unavailable" ? 503 : 400;
+      sendJson(res, status, { error: code, message: error instanceof Error ? error.message : String(error) });
+    }
+    return true;
+  }
+
+  const sheetOpsMatch = url.pathname.match(/^\/api\/projects\/([^/]+)\/officecli-sheet-ops$/);
+  if (sheetOpsMatch && req.method === "POST") {
+    const project = state.projects.find((item) => item.id === decodeURIComponent(sheetOpsMatch[1]));
+    if (!project) {
+      sendJson(res, 404, { error: "project_not_found" });
+      return true;
+    }
+    if (denyForeignProject({ res, sendJson, state, actor, projectId: project.id, notFound: { error: "project_not_found" } })) return true;
+    const body = await readJson(req);
+    const worktreeId = body?.worktree ?? body?.worktreeId ?? null;
+    const worktree = worktreeId ? (state.worktrees ?? []).find((w) => w.id === worktreeId && w.projectId === project.id) : null;
+    const rootPath = worktree?.path ?? worktree?.worktreePath ?? project.path;
+    const editedCells = body?.cells && typeof body.cells === "object" ? body.cells : null;
+    if (!editedCells) {
+      sendJson(res, 400, { error: "invalid_cells", message: "A cells map is required." });
+      return true;
+    }
+    try {
+      const grid = await readOfficecliSheet({ projectPath: rootPath, relativeFile: body?.file ?? body?.path ?? "", sheet: body?.sheet ?? undefined });
+      const { commands } = computeSheetOps({ sheet: grid.sheet, original: grid.cells, edited: editedCells });
+      sendJson(res, 200, { commands, sheet: grid.sheet });
+    } catch (error) {
+      const code = error instanceof OfficecliPreviewError ? error.code : "sheet_ops_failed";
       const status = code === "not_found" ? 404 : code === "officecli_unavailable" ? 503 : 400;
       sendJson(res, status, { error: code, message: error instanceof Error ? error.message : String(error) });
     }

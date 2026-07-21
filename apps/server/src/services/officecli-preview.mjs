@@ -23,6 +23,8 @@ import { existsSync, realpathSync } from "node:fs";
 import { relative, resolve, sep } from "node:path";
 import { promisify } from "node:util";
 
+import { parseAddr } from "./officecli-sheet-ops.mjs";
+
 const execFileAsync = promisify(execFile);
 
 export const OFFICECLI_PREVIEW_EXTENSIONS = new Set([".docx", ".xlsx", ".pptx"]);
@@ -179,4 +181,73 @@ export async function readOfficecliDocParagraphs({ projectPath, relativeFile, ti
         })),
     }));
   return { path: relPath, paragraphs };
+}
+
+/**
+ * Read a .xlsx worksheet as a grid for the cell editor. Runs `officecli get /
+ * --json` to list sheets, then `get /<sheet> --json --depth 2` for the target
+ * sheet's cells. Each cell keeps its A1 address, value, and (if any) formula.
+ * Editing a cell maps to a surgical `set /<sheet>/<addr>`; the rest of the sheet is
+ * untouched.
+ *
+ * @returns {Promise<{ path:string, sheet:string, sheets:string[], cells:Record<string,{text:string,formula:string|null,type:string|null}>, maxRow:number, maxCol:number }>}
+ */
+export async function readOfficecliSheet({ projectPath, relativeFile, sheet, timeoutMs = DEFAULT_TIMEOUT_MS, run } = {}) {
+  if (!projectPath) throw new OfficecliPreviewError("invalid_project", "A project path is required.");
+  const { root, relPath } = resolveDocument(projectPath, relativeFile);
+  if (!/\.xlsx$/i.test(relPath)) {
+    throw new OfficecliPreviewError("unsupported_type", "Grid editing is available for .xlsx documents only.");
+  }
+  const spawn = run ?? ((cmd, argv, opts) => execFileAsync(cmd, argv, opts));
+  const getJson = async (selector, extra = []) => {
+    let stdout;
+    try {
+      ({ stdout } = await spawn("officecli", ["get", relPath, selector, "--json", ...extra], {
+        cwd: root,
+        timeout: timeoutMs,
+        maxBuffer: MAX_HTML_BYTES,
+        encoding: "utf8",
+        windowsHide: true,
+      }));
+    } catch (error) {
+      if (error?.code === "ENOENT") throw new OfficecliPreviewError("officecli_unavailable", "The officecli binary is not installed on this device.");
+      if (error?.killed || error?.signal === "SIGTERM") throw new OfficecliPreviewError("render_timeout", `Reading the document timed out after ${timeoutMs} ms.`);
+      throw new OfficecliPreviewError("read_failed", `officecli get failed: ${error?.message ?? String(error)}`);
+    }
+    try {
+      return JSON.parse(String(stdout ?? ""));
+    } catch {
+      throw new OfficecliPreviewError("read_failed", "officecli did not return valid JSON.");
+    }
+  };
+
+  // List sheets from the workbook root; pick the requested one (or the first).
+  const wb = await getJson("/");
+  const sheets = (wb?.data?.results?.[0]?.children ?? [])
+    .filter((c) => c?.type === "sheet" && typeof c?.path === "string")
+    .map((c) => c.path.replace(/^\//, ""));
+  const target = sheet && sheets.includes(sheet) ? sheet : sheets[0] ?? "Sheet1";
+
+  const sheetData = await getJson(`/${target}`, ["--depth", "2"]);
+  const rows = sheetData?.data?.results?.[0]?.children ?? [];
+  const cells = {};
+  let maxRow = 0;
+  let maxCol = 0;
+  for (const row of rows) {
+    for (const c of Array.isArray(row?.children) ? row.children : []) {
+      if (c?.type !== "cell" || typeof c?.preview !== "string") continue;
+      const addr = c.preview;
+      cells[addr] = {
+        text: typeof c.text === "string" ? c.text : "",
+        formula: typeof c.format?.formula === "string" ? c.format.formula : null,
+        type: typeof c.format?.type === "string" ? c.format.type : null,
+      };
+      const parsed = parseAddr(addr);
+      if (parsed) {
+        maxRow = Math.max(maxRow, parsed.row);
+        maxCol = Math.max(maxCol, parsed.col);
+      }
+    }
+  }
+  return { path: relPath, sheet: target, sheets, cells, maxRow, maxCol };
 }
