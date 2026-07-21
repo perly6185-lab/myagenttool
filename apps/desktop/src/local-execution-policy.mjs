@@ -200,7 +200,9 @@ const OFFICECLI_APPLY_WRAPPER_ARGS = {
 const isExcalidrawSceneFile = (value) => isSafeRelPath(value) && /\.excalidraw$/i.test(value);
 const isExcalidrawPngFile = (value) => isSafeRelPath(value) && /\.png$/i.test(value);
 const EXCALIDRAW_CLI_APPLY_WRAPPER_ARGS = {
-  export: { base: [], flags: {}, positionals: [isExcalidrawSceneFile, isExcalidrawPngFile] },
+  // Both positionals are REQUIRED: `excalidraw-cli <input.excalidraw> <output.png>`.
+  // minPositionals refuses a partial argv (a run missing its output) outright.
+  export: { base: [], flags: {}, positionals: [isExcalidrawSceneFile, isExcalidrawPngFile], minPositionals: 2 },
 };
 
 const GIT_WRAPPER_ARGS = {
@@ -795,7 +797,11 @@ function officecliArgvMatches(spec, args) {
       index += 1;
     }
   }
-  return true;
+  // A spec may require a MINIMUM positional count so a partial argv (e.g. an
+  // export missing its output path, which a server-side dropped input can produce)
+  // is refused rather than run as a valid-but-wrong single-arg invocation. Default
+  // 0 keeps every existing spec's behavior unchanged.
+  return positionalIndex >= (spec.minPositionals ?? 0);
 }
 
 function ccusageArgsAllowed(capability, args) {
