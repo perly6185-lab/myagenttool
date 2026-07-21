@@ -6,7 +6,7 @@ import { normalizeLoopRoutine, validateLoopRoutine } from "../../../../tools/ai/
 import { teamOf } from "../runtime/auth.mjs";
 import { makeRunTx } from "../runtime/store/run-tx.mjs";
 import { codingAgentInterfaceForTool } from "./coding-agent-interface.mjs";
-import { findKnownRuntime } from "./runtime-catalog.mjs";
+import { findKnownRuntime, runtimeRequirementsForApplicationId } from "./runtime-catalog.mjs";
 import { managedSpecFor, managedSpecsForApp, REGISTERED_MANAGED_ACTIONS } from "./managed-capability-registry.mjs";
 
 // Consecutive failed health checks before an active application is auto-offlined
@@ -1909,6 +1909,26 @@ function publicApplicationSnapshot(application) {
     predecessorApplicationId: application.predecessorApplicationId ?? null,
     successorApplicationId: application.successorApplicationId ?? null,
   };
+}
+
+/**
+ * Stage 2 (#1342): backfill `executionScope` + `runtimeRequirements` onto legacy
+ * Application descriptors persisted before the dual-layer model. Idempotent and
+ * additive — it only fills a field that is `undefined`, mirroring
+ * backfillProjectGitFacts, so a descriptor that already carries the fields is never
+ * rewritten. `runtimeRequirements` are DERIVED from the Runtime Catalog by
+ * application id (a custom app with no known runtime backfills to `[]`). Neither
+ * field is part of the descriptor fingerprint, so this cannot change an
+ * Application's immutable-revision identity or break re-registration.
+ */
+export function backfillApplicationRuntimeMetadata(applications = []) {
+  for (const application of applications) {
+    if (!application || typeof application !== "object") continue;
+    if (application.executionScope === undefined) application.executionScope = "local";
+    if (application.runtimeRequirements === undefined) {
+      application.runtimeRequirements = runtimeRequirementsForApplicationId(application.id);
+    }
+  }
 }
 
 function normalizeRuntimeRequirements(value) {
