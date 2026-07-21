@@ -39,6 +39,18 @@ function byteLength(value) {
  * remapped; a reference to a pre-existing scene element is left as-is. Group ids
  * are a separate namespace and are preserved verbatim.
  */
+/**
+ * Merge caller-supplied binary files (e.g. an image's `data:`/`https:` dataURL,
+ * #canvas-images) into the scene's existing files. Element ops carry files so an
+ * agent can drop a standalone local image onto an EXISTING scene, not only at
+ * create. A non-object `incoming` is returned as-is so validation rejects it.
+ */
+function mergeIncomingFiles(existing, incoming) {
+  if (incoming == null) return existing;
+  if (typeof incoming !== "object" || Array.isArray(incoming)) return incoming;
+  return { ...(existing ?? {}), ...incoming };
+}
+
 function remapElementReferences(element, idMap) {
   const remap = (id) => (typeof id === "string" && idMap.has(id) ? idMap.get(id) : id);
   const out = { ...element };
@@ -263,7 +275,7 @@ export function createCanvasSceneService({
   // (bounds + per-element + URL policy) BEFORE committing, and bumps revision.
   // Element references are validated atomically: one bad id rejects the batch.
 
-  function addElements({ sceneId, elements, expectedRevision } = {}, actor = null) {
+  function addElements({ sceneId, elements, files, expectedRevision } = {}, actor = null) {
     const scene = findOwnScene(sceneId, actor);
     if (!scene) return notFound();
     const conflict = checkRevision(scene, expectedRevision);
@@ -287,11 +299,13 @@ export function createCanvasSceneService({
       element && typeof element === "object" && !Array.isArray(element) ? remapElementReferences(element, idMap) : element,
     );
     const nextElements = [...scene.elements, ...added];
-    const validated = validateScenePayload({ name: scene.name, elements: nextElements, files: scene.files });
+    const nextFiles = mergeIncomingFiles(scene.files, files);
+    const validated = validateScenePayload({ name: scene.name, elements: nextElements, files: nextFiles });
     if (validated.error) return { ok: false, status: 400, body: { error: validated.error, message: validated.message } };
     const changedElementIds = added.map((element) => element?.id).filter(Boolean);
     runTx(() => {
       scene.elements = validated.value.elements;
+      scene.files = validated.value.files;
       bumpRevision(scene, actor);
       appendEvent({
         invocationId: null, type: "canvas_scene_elements_added", level: "info",
@@ -302,7 +316,7 @@ export function createCanvasSceneService({
     return { ok: true, status: 200, body: { scene: sceneSummary(scene), revision: scene.revision, changedElementIds } };
   }
 
-  function updateElements({ sceneId, elements: updates, expectedRevision } = {}, actor = null) {
+  function updateElements({ sceneId, elements: updates, files, expectedRevision } = {}, actor = null) {
     const scene = findOwnScene(sceneId, actor);
     if (!scene) return notFound();
     const conflict = checkRevision(scene, expectedRevision);
@@ -319,11 +333,13 @@ export function createCanvasSceneService({
     const patched = new Map(byId);
     for (const update of updates) patched.set(update.id, { ...byId.get(update.id), ...update });
     const nextElements = scene.elements.map((element) => patched.get(element.id));
-    const validated = validateScenePayload({ name: scene.name, elements: nextElements, files: scene.files });
+    const nextFiles = mergeIncomingFiles(scene.files, files);
+    const validated = validateScenePayload({ name: scene.name, elements: nextElements, files: nextFiles });
     if (validated.error) return { ok: false, status: 400, body: { error: validated.error, message: validated.message } };
     const changedElementIds = updates.map((update) => update.id);
     runTx(() => {
       scene.elements = validated.value.elements;
+      scene.files = validated.value.files;
       bumpRevision(scene, actor);
       appendEvent({
         invocationId: null, type: "canvas_scene_elements_updated", level: "info",

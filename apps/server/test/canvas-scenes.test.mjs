@@ -176,6 +176,43 @@ test("add_elements remaps batch-internal references when reassigning ids", () =>
   assert.equal(els.find((e) => e.id === newA).boundElements[0].id, newArrow);
 });
 
+test("add_elements / update_elements attach binary files (images) to an existing scene, fail closed on bad URLs", () => {
+  const { service } = harness();
+  const scene = service.createScene({ elements: [] }, ACTOR_A).body.scene;
+
+  // Place a standalone image: an image element + its binary file (a data: URL).
+  const added = service.addElements(
+    {
+      sceneId: scene.id,
+      expectedRevision: 1,
+      elements: [{ id: "img", type: "image", fileId: "f1" }],
+      files: { f1: { mimeType: "image/png", dataURL: "data:image/png;base64,AAAA" } },
+    },
+    ACTOR_A,
+  );
+  assert.equal(added.status, 200);
+  const scene2 = service.getScene({ sceneId: scene.id }, ACTOR_A).body.scene;
+  assert.equal(scene2.files.f1.dataURL, "data:image/png;base64,AAAA");
+  const imageEl = scene2.elements.find((e) => e.type === "image");
+  assert.equal(imageEl.fileId, "f1"); // fileId reference preserved through id reassignment
+
+  // A file with a forbidden scheme fails closed and does not mutate the scene.
+  const bad = service.addElements(
+    { sceneId: scene.id, expectedRevision: 2, elements: [{ id: "x", type: "rectangle" }], files: { evil: { mimeType: "image/png", dataURL: "javascript:x" } } },
+    ACTOR_A,
+  );
+  assert.equal(bad.body.error, "unsupported_canvas_url");
+  assert.equal(service.getScene({ sceneId: scene.id }, ACTOR_A).body.scene.revision, 2);
+
+  // update_elements can attach a file too (https: is allowed).
+  const upd = service.updateElements(
+    { sceneId: scene.id, expectedRevision: 2, elements: [{ id: imageEl.id, x: 5 }], files: { f2: { mimeType: "image/png", dataURL: "https://ok/img.png" } } },
+    ACTOR_A,
+  );
+  assert.equal(upd.status, 200);
+  assert.ok(service.getScene({ sceneId: scene.id }, ACTOR_A).body.scene.files.f2);
+});
+
 test("element ops are team-scoped and export is a read", () => {
   const { service } = harness();
   const scene = service.createScene({ elements: [{ id: "a", type: "rectangle" }] }, ACTOR_A).body.scene;

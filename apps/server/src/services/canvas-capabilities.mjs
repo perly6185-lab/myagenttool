@@ -70,7 +70,7 @@ export const canvasCapabilitySpecs = [
   {
     id: "add_elements",
     displayName: "Add elements to a canvas scene",
-    description: "Add bounded Excalidraw elements to a scene. The server assigns durable element ids (use the returned changedElementIds to reference them later) and remaps intra-batch bindings, so connect shapes with arrows and attach text labels here rather than replacing the whole scene. Carry the current expectedRevision.",
+    description: "Add bounded Excalidraw elements to a scene. The server assigns durable element ids (use the returned changedElementIds to reference them later) and remaps intra-batch bindings, so connect shapes with arrows and attach text labels here rather than replacing the whole scene. To place a standalone image, add an `image` element plus its binary in `files` (a data: or https: dataURL — e.g. a local worktree image fetched as base64) in the same call. Carry the current expectedRevision.",
     kind: "write",
     riskLevel: "medium",
     riskTags: ["write_control", "application_asset"],
@@ -79,7 +79,7 @@ export const canvasCapabilitySpecs = [
       type: "object",
       additionalProperties: false,
       required: ["sceneId", "expectedRevision", "elements"],
-      properties: { sceneId: sceneIdSchema, expectedRevision: revisionSchema, elements: elementsSchema },
+      properties: { sceneId: sceneIdSchema, expectedRevision: revisionSchema, elements: elementsSchema, files: filesSchema },
     },
   },
   {
@@ -94,7 +94,7 @@ export const canvasCapabilitySpecs = [
       type: "object",
       additionalProperties: false,
       required: ["sceneId", "expectedRevision", "elements"],
-      properties: { sceneId: sceneIdSchema, expectedRevision: revisionSchema, elements: elementsSchema },
+      properties: { sceneId: sceneIdSchema, expectedRevision: revisionSchema, elements: elementsSchema, files: filesSchema },
     },
   },
   {
@@ -159,12 +159,12 @@ export function createCanvasCapabilityHandlers(canvasSceneService) {
       ),
     add_elements: ({ input, actor }) =>
       ok(
-        canvasSceneService.addElements({ sceneId: input?.sceneId, elements: input?.elements, expectedRevision: input?.expectedRevision }, actor),
+        canvasSceneService.addElements({ sceneId: input?.sceneId, elements: input?.elements, files: input?.files, expectedRevision: input?.expectedRevision }, actor),
         (b) => `Added ${b.changedElementIds?.length ?? 0} element(s) to ${b.scene?.id} (revision ${b.revision}).`,
       ),
     update_elements: ({ input, actor }) =>
       ok(
-        canvasSceneService.updateElements({ sceneId: input?.sceneId, elements: input?.elements, expectedRevision: input?.expectedRevision }, actor),
+        canvasSceneService.updateElements({ sceneId: input?.sceneId, elements: input?.elements, files: input?.files, expectedRevision: input?.expectedRevision }, actor),
         (b) => `Updated ${b.changedElementIds?.length ?? 0} element(s) in ${b.scene?.id} (revision ${b.revision}).`,
       ),
     remove_elements: ({ input, actor }) =>
