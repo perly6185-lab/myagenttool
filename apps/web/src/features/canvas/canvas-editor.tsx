@@ -10,7 +10,9 @@ import { useUiStore } from "@/store/ui-store";
 import { downloadBlob, parseImportedScene, sceneFilename } from "@/features/canvas/canvas-draft";
 import {
   clearOfflineDraft,
+  heldImageElementIds,
   loadOfflineDraft,
+  normalizeLoadedImageElements,
   reconcile,
   saveOfflineDraft,
   type CanvasSaveStatus,
@@ -47,7 +49,13 @@ export function CanvasEditor() {
   // Excalidraw fires onChange while it normalizes freshly-loaded elements; treat
   // those as the new baseline (never a user edit) so a load can't spuriously save.
   const suppressUntilRef = useRef(0);
+  // True while the reassert loop is re-applying a freshly-loaded scene. onChange is
+  // suppressed on THIS flag (not just the wall-clock window) so a reassert that
+  // outran the window — slow device, or a backgrounded tab where rAF pauses while
+  // Date.now keeps advancing — can't be mis-read as a user edit.
+  const reassertingRef = useRef(false);
   const loadedSceneIdRef = useRef<string | null>(null);
+  const mountedRef = useRef(true);
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [status, setStatus] = useState<CanvasSaveStatus>("idle");
   const [displayRevision, setDisplayRevision] = useState(0);
@@ -61,40 +69,43 @@ export function CanvasEditor() {
   const loadIntoEditor = useCallback((scene: CanvasScene, elementsOverride?: unknown[]) => {
     const files = scene.files ?? {};
     const haveFile = new Set(Object.keys(files));
-    // Excalidraw only resolves an image element against the file cache when the
-    // element is "saved"; a "pending" one is treated as still-uploading and stays
-    // blank. Freshly dropped images can persist as "pending", so on load flip any
-    // image whose binary we actually hold back to "saved" — else it never renders.
-    const elements = ((elementsOverride ?? scene.elements) as Record<string, unknown>[]).map((el) =>
-      el && el.type === "image" && el.status !== "saved" && haveFile.has(el.fileId as string)
-        ? { ...el, status: "saved" }
-        : el,
+    // Flip any image whose binary we hold from "pending" to "saved" — Excalidraw
+    // only resolves a "saved" image against the file cache; a "pending" one (how a
+    // freshly dropped image can persist) stays blank.
+    const elements = normalizeLoadedImageElements(
+      (elementsOverride ?? scene.elements) as Record<string, unknown>[],
+      haveFile,
     );
-    // Warm the file cache BEFORE adding the elements that reference it, so
-    // updateScene resolves each "saved" image against a file already present.
-    const applyScene = () => {
-      if (haveFile.size) apiRef.current?.addFiles(Object.values(files));
-      apiRef.current?.updateScene({ elements });
-    };
-    applyScene();
+    // Warm the file cache ONCE before adding the elements that reference it — the
+    // file set never changes between frames, so re-adding (re-decoding) MBs of
+    // base64 per reassert frame is wasted work. Only updateScene is re-asserted.
+    if (haveFile.size) apiRef.current?.addFiles(Object.values(files));
+    apiRef.current?.updateScene({ elements });
     // At first mount Excalidraw's image-file cache isn't ready, so it silently
-    // prunes image elements whose binary hasn't decoded yet — a scene's images
-    // vanish on load. Re-assert the scene over a few animation frames until every
-    // image element sticks; it's idempotent, and the post-load suppression window
-    // below absorbs the extra onChange noise so it never marks the editor dirty.
-    const wantImageIds = elements
-      .filter((e) => e && e.type === "image")
-      .map((e) => e.id as string);
-    if (wantImageIds.length) {
+    // prunes image elements whose binary hasn't decoded — a scene's images vanish
+    // on load. Re-assert updateScene over a few animation frames until every image
+    // we HOLD A FILE FOR sticks (an image with a missing file can never stick, so
+    // it is excluded — else the loop would burn all 10 frames on every load).
+    const wantImageIds = heldImageElementIds(elements, haveFile);
+    reassertingRef.current = wantImageIds.length > 0;
+    if (reassertingRef.current) {
       let tries = 0;
       const reassert = () => {
-        if (loadedSceneIdRef.current !== scene.id) return; // scene changed under us
+        // A newer load (scene switch) or unmount owns the flag now — stop silently.
+        if (!mountedRef.current || loadedSceneIdRef.current !== scene.id) return;
         const have = new Set(((apiRef.current?.getSceneElements() ?? []) as Record<string, unknown>[]).map((e) => e.id));
         if (wantImageIds.some((id) => !have.has(id)) && tries < 10) {
           tries += 1;
-          applyScene();
+          apiRef.current?.updateScene({ elements });
           requestAnimationFrame(reassert);
+          return;
         }
+        // Settled (images stuck, or the retry budget is spent). Close suppression on
+        // the SAME clock the loop runs on: extend (never shrink) the window so the
+        // final normalization onChange is absorbed even when the loop outran the
+        // original wall-clock window.
+        reassertingRef.current = false;
+        suppressUntilRef.current = Math.max(suppressUntilRef.current, Date.now() + 300);
       };
       requestAnimationFrame(reassert);
     }
@@ -104,6 +115,13 @@ export function CanvasEditor() {
     suppressUntilRef.current = Date.now() + 600;
     dirtyRef.current = false;
     loadedSceneIdRef.current = scene.id;
+  }, []);
+
+  // On unmount, stop the reassert loop and cancel a pending debounced save so
+  // neither reaches into a torn-down Excalidraw instance.
+  useEffect(() => () => {
+    mountedRef.current = false;
+    if (saveTimer.current) clearTimeout(saveTimer.current);
   }, []);
 
   // First load / scene switch / background refresh — all driven by the polled
@@ -185,7 +203,9 @@ export function CanvasEditor() {
     // idle appState noise never mark the editor dirty (no save loop).
     const json = serialize(elements, files);
     // Absorb post-load normalization noise as the baseline; never a user edit.
-    if (Date.now() < suppressUntilRef.current) {
+    // Gate on the reassert flag AND the wall-clock window: the flag covers the whole
+    // (frame-paced) reassert, the window the brief tail after it settles.
+    if (reassertingRef.current || Date.now() < suppressUntilRef.current) {
       lastSyncedJsonRef.current = json;
       return;
     }
