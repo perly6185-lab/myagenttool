@@ -359,10 +359,12 @@ process.on("unhandledRejection", (reason) => {
 await waitForServer();
 let registration;
 try {
+  const runtimeReadiness = await collectApplicationBinaryReadiness(localExecutionPolicyManifest);
   registration = await request("POST", "/api/bridge/register", {
     bridgeVersion: "0.0.0",
     capabilities: ["demo_cli_agent", "managed_terminal_pty", "remote_ssh_relay"],
-    applicationBinaryReadiness: await collectApplicationBinaryReadiness(localExecutionPolicyManifest),
+    runtimeReadiness,
+    applicationBinaryReadiness: runtimeReadiness,
     applicationCredentialReadiness: collectApplicationCredentialReadiness(credentialDir),
   });
 } catch (error) {
@@ -435,8 +437,10 @@ function logPollError(label, error) {
 const guarded = (fn, label) => () => Promise.resolve().then(fn).catch((error) => logPollError(label, error));
 
 async function refreshApplicationBinaryReadiness() {
+  const runtimeReadiness = await collectApplicationBinaryReadiness(localExecutionPolicyManifest);
   const response = await request("POST", "/api/bridge/readiness", {
-    applicationBinaryReadiness: await collectApplicationBinaryReadiness(localExecutionPolicyManifest),
+    runtimeReadiness,
+    applicationBinaryReadiness: runtimeReadiness,
     // A credential revoked in the provider's account shows up here as the sidecar
     // going away — the same tick that reports a binary vanishing. That is what
     // lets the server's health probe auto-degrade the application to offline.

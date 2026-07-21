@@ -11,7 +11,8 @@ import type { DeviceUnlinkState } from "./states.js";
 
 export type DeviceStatus = "online" | "offline" | "unknown";
 
-export interface DeviceBinaryReadiness {
+export interface DeviceRuntimeReadiness {
+  runtimeId: string;
   command: string;
   capabilityPrefix: string;
   status: "available" | "absent" | "stale";
@@ -20,6 +21,9 @@ export interface DeviceBinaryReadiness {
   authenticationMethod?: string | null;
   checkedAt: IsoDateTime;
 }
+
+/** @deprecated Use DeviceRuntimeReadiness. */
+export type DeviceBinaryReadiness = Omit<DeviceRuntimeReadiness, "runtimeId"> & { runtimeId?: string };
 
 export interface Device {
   id: DeviceId;
@@ -34,6 +38,8 @@ export interface Device {
   unlinkState: DeviceUnlinkState;
   lastSeenAt: IsoDateTime | null;
   registeredCapabilities?: string[];
+  runtimeReadiness?: DeviceRuntimeReadiness[];
+  /** @deprecated Compatibility alias during the Application/Runtime migration. */
   applicationBinaryReadiness?: DeviceBinaryReadiness[];
   credentialRevokedAt?: IsoDateTime | null;
   createdAt: IsoDateTime;

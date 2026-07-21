@@ -14,7 +14,13 @@ export interface DeviceSnapshot {
   lastSeenAt: string | null;
   /** Max invocations this machine runs at once (across distinct worktrees). */
   maxConcurrency?: number;
-  applicationBinaryReadiness?: Array<{
+  runtimeReadiness?: DeviceRuntimeReadiness[];
+  /** Compatibility alias for older servers. */
+  applicationBinaryReadiness?: DeviceRuntimeReadiness[];
+}
+
+export interface DeviceRuntimeReadiness {
+    runtimeId?: string;
     command: string;
     capabilityPrefix: string;
     status: "available" | "absent" | "stale";
@@ -22,7 +28,6 @@ export interface DeviceSnapshot {
     authenticationStatus?: "authenticated" | "unauthenticated" | "unknown";
     authenticationMethod?: string | null;
     checkedAt: string;
-  }>;
 }
 
 export interface AgentHealth {
@@ -1336,6 +1341,7 @@ export type ApplicationSource =
   | { type: "npm"; package: string; version?: string | null; wrapper?: NpmWrapperSnapshot | null }
   // A system binary the platform runs on the device (git) — #774.
   | { type: "binary"; binary: string; wrapper?: NpmWrapperSnapshot | null }
+  | { type: "builtin"; id: "markdown" }
   | { type: "manual"; uri?: string | null; manifest?: Record<string, unknown> };
 
 export interface NpmWrapperSnapshot {
@@ -1538,6 +1544,14 @@ export interface ApplicationSnapshot {
   kind: string;
   source: ApplicationSource;
   status: "draft" | "probing" | "registered" | "active" | "offline" | "archived" | "failed" | string;
+  executionScope?: "local";
+  runtimeRequirements?: Array<{ runtimeId: string; required: boolean }>;
+  localReadiness?: {
+    state: "ready" | "login_required" | "repair_required" | "bridge_offline" | "archived" | string;
+    summary: string;
+    action: "login" | "repair" | "retry" | "start_bridge" | null;
+    scope: "local";
+  };
   lifecycle?: { state?: string; lastOperation?: string; lastOperationAt?: string | null };
   projectId?: string | null;
   path?: string | null;
@@ -1656,7 +1670,18 @@ export interface KnownApplicationCatalogEntry {
   aliases: string[];
   command: string;
   installHint: string;
-  setupOnly?: boolean;
+  runtimeRequirements: Array<{ runtimeId: string; required: boolean }>;
+}
+
+export interface RuntimeCatalogEntry {
+  id: string;
+  command: string;
+  displayName: string;
+  kind: "agent_cli" | "tool" | "shell";
+  aliases: string[];
+  applicationIds: string[];
+  authenticationRequired: boolean;
+  userVisible: boolean;
 }
 
 export interface ApplicationInstallPlan {

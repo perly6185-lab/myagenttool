@@ -1,11 +1,13 @@
 import { LOCAL_TEAM_ID, teamOf } from "../runtime/auth.mjs";
 import { publicDeviceView } from "../runtime/bridge-auth.mjs";
+import { primaryDevice } from "../runtime/device.mjs";
 import { channelOperations, channelTaskOperations } from "./channels.mjs";
 import { pendingDecisions } from "./pending-decisions.mjs";
 import { workBoard } from "./work-board.mjs";
 import { workReport, calendarPeriods } from "./work-report.mjs";
 import { evidenceLedger } from "./evidence-ledger.mjs";
 import { scheduleHealthReadModel } from "./schedule-health.mjs";
+import { withLocalApplicationReadiness } from "../services/application-readiness.mjs";
 
 export function buildPublicState({
   namespace,
@@ -299,10 +301,10 @@ export function buildPublicState({
   // this, the Applications view keeps calling it healthy while the thing it
   // schedules has been broken for a week — the sweep only ever checked the
   // application's own source, never what it was asked to do on a timer.
-  const applicationsWithSchedules = applications.map((application) => ({
+  const applicationsWithSchedules = applications.map((application) => withLocalApplicationReadiness({
     ...application,
     scheduleHealth: scheduleHealthByApplicationId.get(application.id) ?? null,
-  }));
+  }, primaryDevice(state)));
 
   // Consolidated pending-decision queue (the Approvals section). Built from the
   // already team-scoped locals so it inherits tenancy; this also surfaces the
@@ -546,13 +548,16 @@ function publicDeviceReadinessView(device) {
   const view = publicDeviceView(device);
   if (!view) return view;
   const nowMs = Date.now();
+  const readiness = view.runtimeReadiness ?? view.applicationBinaryReadiness ?? [];
+  const runtimeReadiness = readiness.map((row) => {
+    const checkedAtMs = Date.parse(row.checkedAt ?? "");
+    const stale = view.status !== "online" || !Number.isFinite(checkedAtMs) || nowMs - checkedAtMs > APPLICATION_BINARY_READINESS_TTL_MS;
+    return stale ? { ...row, status: "stale" } : row;
+  });
   return {
     ...view,
-    applicationBinaryReadiness: (view.applicationBinaryReadiness ?? []).map((row) => {
-      const checkedAtMs = Date.parse(row.checkedAt ?? "");
-      const stale = view.status !== "online" || !Number.isFinite(checkedAtMs) || nowMs - checkedAtMs > APPLICATION_BINARY_READINESS_TTL_MS;
-      return stale ? { ...row, status: "stale" } : row;
-    }),
+    runtimeReadiness,
+    applicationBinaryReadiness: runtimeReadiness,
   };
 }
 

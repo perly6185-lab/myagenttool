@@ -10,6 +10,8 @@ export const CLAUDE_APPLICATION_ID = "app_claude";
 export function createClaudeApplicationRegistration({ autoOnline = false } = {}) {
   return {
     id: CLAUDE_APPLICATION_ID,
+    executionScope: "local",
+    runtimeRequirements: [{ runtimeId: "runtime_claude", required: true }],
     name: "Claude",
     kind: "binary",
     autoOnline,

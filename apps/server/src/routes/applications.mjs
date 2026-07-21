@@ -2,6 +2,8 @@ import { denyForeignProject, teamOf } from "../runtime/auth.mjs";
 import { findDevice, primaryDevice } from "../runtime/device.mjs";
 import { createKnownApplicationRegistration, listKnownApplications } from "../services/application-catalog.mjs";
 import { createApplicationInstallPlan, listApplicationInstallCatalog } from "../services/application-install-plans.mjs";
+import { listKnownRuntimes } from "../services/runtime-catalog.mjs";
+import { withLocalApplicationReadiness } from "../services/application-readiness.mjs";
 
 export async function handleApplicationRoutes({
   req,
@@ -34,7 +36,7 @@ export async function handleApplicationRoutes({
   runApplicationOrchestration,
 }) {
   if (req.method === "GET" && url.pathname === "/api/applications") {
-    sendJson(res, 200, { applications: visibleApplications(state, actor, listApplications()) });
+    sendJson(res, 200, { applications: visibleApplications(state, actor, listApplications()).map((application) => withLocalApplicationReadiness(application, primaryDevice(state))) });
     return true;
   }
 
@@ -43,12 +45,18 @@ export async function handleApplicationRoutes({
     return true;
   }
 
-  if (req.method === "GET" && url.pathname === "/api/applications/install/catalog") {
-    sendJson(res, 200, { applications: listApplicationInstallCatalog() });
+  if (req.method === "GET" && url.pathname === "/api/runtimes/catalog") {
+    sendJson(res, 200, { runtimes: listKnownRuntimes() });
     return true;
   }
 
-  if (req.method === "POST" && url.pathname === "/api/applications/install/plan") {
+  if (req.method === "GET" && ["/api/runtimes/install/catalog", "/api/applications/install/catalog"].includes(url.pathname)) {
+    const runtimes = listApplicationInstallCatalog();
+    sendJson(res, 200, url.pathname.startsWith("/api/runtimes/") ? { runtimes } : { applications: runtimes });
+    return true;
+  }
+
+  if (req.method === "POST" && ["/api/runtimes/install/plan", "/api/applications/install/plan"].includes(url.pathname)) {
     const body = await readJson(req);
     if (!body || typeof body !== "object" || Array.isArray(body)) {
       sendJson(res, 400, { error: "invalid_install_plan_request", message: "Request body must be an object." });
@@ -75,7 +83,7 @@ export async function handleApplicationRoutes({
     return true;
   }
 
-  if (req.method === "POST" && url.pathname === "/api/applications/install/runs") {
+  if (req.method === "POST" && ["/api/runtimes/install/runs", "/api/applications/install/runs"].includes(url.pathname)) {
     const body = await readJson(req);
     const plan = body?.plan;
     const projectId = plan?.target?.projectId ?? null;
@@ -99,7 +107,7 @@ export async function handleApplicationRoutes({
     return true;
   }
 
-  const installRunMatch = url.pathname.match(/^\/api\/applications\/install\/runs\/([^/]+)$/);
+  const installRunMatch = url.pathname.match(/^\/api\/(?:runtimes|applications)\/install\/runs\/([^/]+)$/);
   if (req.method === "GET" && installRunMatch) {
     const run = findApplicationInstallRun(decodeURIComponent(installRunMatch[1]));
     if (!run || (actor && run.ownerTeamId !== actor.teamId)) {
@@ -110,7 +118,7 @@ export async function handleApplicationRoutes({
     return true;
   }
 
-  const installCancelMatch = url.pathname.match(/^\/api\/applications\/install\/runs\/([^/]+)\/cancel$/);
+  const installCancelMatch = url.pathname.match(/^\/api\/(?:runtimes|applications)\/install\/runs\/([^/]+)\/cancel$/);
   if (req.method === "POST" && installCancelMatch) {
     const run = findApplicationInstallRun(decodeURIComponent(installCancelMatch[1]));
     if (!run || (actor && run.ownerTeamId !== actor.teamId)) {
@@ -401,7 +409,7 @@ export async function handleApplicationRoutes({
       return true;
     }
     sendJson(res, 200, {
-      application,
+      application: withLocalApplicationReadiness(application, primaryDevice(state)),
       capabilities: listApplicationCapabilities(application.id) ?? [],
     });
     return true;

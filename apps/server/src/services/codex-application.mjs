@@ -5,6 +5,8 @@ export const CODEX_APPLICATION_ID = "app_codex";
 export function createCodexApplicationRegistration({ autoOnline = false } = {}) {
   return {
     id: CODEX_APPLICATION_ID,
+    executionScope: "local",
+    runtimeRequirements: [{ runtimeId: "runtime_codex", required: true }],
     name: "Codex",
     kind: "binary",
     autoOnline,

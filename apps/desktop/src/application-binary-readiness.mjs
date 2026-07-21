@@ -1,6 +1,15 @@
 import { binaryAvailableOnPath } from "./local-execution-policy.mjs";
 import { spawnCapture } from "./spawn-capture.mjs";
 
+const RUNTIME_IDS = new Map([
+  ["git", "runtime_git"],
+  ["ccusage", "runtime_ccusage"],
+  ["claude", "runtime_claude"],
+  ["codex", "runtime_codex"],
+  ["git-bash", "runtime_git_bash"],
+  ["wsl", "runtime_wsl"],
+]);
+
 // #1246: async so the `--version` probes never freeze the event loop (this runs
 // at register time and every 5 minutes; a sync sweep stalled every in-flight
 // run). Probes run in parallel with the row order preserved, so a sweep costs
@@ -28,6 +37,7 @@ export async function collectApplicationBinaryReadiness(
             ? await runAuthentication(authenticationProbe.executable, authenticationProbe.args, authenticationProbe.format)
             : null;
           return {
+            runtimeId: runtimeIdFor(command),
             command,
             capabilityPrefix,
             status: "available",
@@ -40,9 +50,13 @@ export async function collectApplicationBinaryReadiness(
           };
         }
       }
-      return { command, capabilityPrefix, status: "absent", version: null, checkedAt: now() };
+      return { runtimeId: runtimeIdFor(command), command, capabilityPrefix, status: "absent", version: null, checkedAt: now() };
     }),
   );
+}
+
+function runtimeIdFor(command) {
+  return RUNTIME_IDS.get(command) ?? `runtime_${command.replace(/-/g, "_")}`;
 }
 
 function normalizeAuthenticationProbe(entry) {

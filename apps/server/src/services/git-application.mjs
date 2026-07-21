@@ -91,6 +91,8 @@ const GIT_WRAPPER_COMMANDS = [
 export function createGitApplicationRegistration({ autoOnline = false } = {}) {
   return {
     id: GIT_APPLICATION_ID,
+    executionScope: "local",
+    runtimeRequirements: [{ runtimeId: "runtime_git", required: true }],
     name: "git",
     autoOnline,
     source: {
