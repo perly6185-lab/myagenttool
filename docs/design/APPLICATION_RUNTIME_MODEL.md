@@ -48,6 +48,35 @@ Readiness reports contain normalized status, version, and authentication method
 only. Tokens, account identifiers, raw command output, and executable paths are
 not part of the public device state.
 
+## Setup state machine (Stage 4)
+
+Adding a runtime-backed Application walks a single local state machine, derived
+from the Stage 3 readiness by the pure `setupNextStep(application, device)`
+(`services/application-readiness.mjs`). It names the ONE next step toward a ready
++ registered Application:
+
+| Next step | When | Action |
+|---|---|---|
+| `start_bridge` | the local Desktop Bridge is offline | start the bridge |
+| `install` | a required runtime is absent (never installed) | approve a governed install plan |
+| `login` | the runtime is installed but not signed in | run the server-owned `loginCommand`, then re-check |
+| `repair` | the runtime is stale (installed but broken) | repair |
+| `register` | the runtime is ready (or none needed) and the app is not yet registered | register / enable |
+| `ready` | ready and already registered | done |
+
+Properties:
+
+- **Server-authoritative, local only.** Steps derive from the current device's
+  readiness — no remote install, no cross-device failover. The `loginCommand` is
+  owned by the Runtime Catalog, never hardcoded in the client.
+- **Resumable, never stuck.** `login`, `install`, `repair`, and `start_bridge` are
+  steps with a remediation action and a re-check, not terminal failures. The
+  machine is a pure re-derivation over readiness, so re-checking after any local
+  change (sign-in, install, bridge start) simply advances it; a mid-flow bridge
+  drop re-derives to `start_bridge` rather than a stuck state.
+- **Install → register auto-advances.** A succeeded governed install run
+  re-detects readiness and, when ready, registers without a manual retry.
+
 ## Delivery Stages
 
 1. Split Application and Runtime catalogs and add the compatibility field.
