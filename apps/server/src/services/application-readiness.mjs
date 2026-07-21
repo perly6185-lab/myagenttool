@@ -17,7 +17,12 @@ export function localApplicationReadiness(application, device) {
     const runtime = findKnownRuntime(requirement.runtimeId);
     const row = rows.find((entry) => entry?.runtimeId === requirement.runtimeId
       || (!entry?.runtimeId && runtime && entry?.command === runtime.command));
-    if (!row || row.status === "absent" || row.status === "stale") {
+    // Stage 3 (#1342): a missing/absent runtime is NOT INSTALLED (offer install),
+    // distinct from a `stale` one that IS installed but needs repair.
+    if (!row || row.status === "absent") {
+      return readiness("not_installed", "Install the required local runtime to use this application.", "install");
+    }
+    if (row.status === "stale") {
       return readiness("repair_required", "A required local component needs repair.", "repair");
     }
     if (row.authenticationStatus === "unauthenticated") {

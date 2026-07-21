@@ -1547,9 +1547,9 @@ export interface ApplicationSnapshot {
   executionScope?: "local";
   runtimeRequirements?: Array<{ runtimeId: string; required: boolean }>;
   localReadiness?: {
-    state: "ready" | "login_required" | "repair_required" | "bridge_offline" | "archived" | string;
+    state: "ready" | "not_installed" | "login_required" | "repair_required" | "bridge_offline" | "archived" | string;
     summary: string;
-    action: "login" | "repair" | "retry" | "start_bridge" | null;
+    action: "install" | "login" | "repair" | "retry" | "start_bridge" | null;
     scope: "local";
   };
   lifecycle?: { state?: string; lastOperation?: string; lastOperationAt?: string | null };
