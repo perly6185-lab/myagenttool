@@ -1,5 +1,6 @@
 import { existsSync } from "node:fs";
 import { delimiter, extname, isAbsolute, join, resolve, sep } from "node:path";
+import { homedir } from "node:os";
 
 // Per-device binary availability (#802). git is a per-device property; a wrapper
 // command whose binary PATH cannot resolve would spawn-fail with an opaque exit
@@ -9,7 +10,8 @@ import { delimiter, extname, isAbsolute, join, resolve, sep } from "node:path";
 export function binaryAvailableOnPath(command, env = process.env) {
   if (!command || typeof command !== "string") return false;
   if (command.includes("/") || command.includes(sep) || isAbsolute(command)) return existsSync(command);
-  const dirs = String(env.PATH ?? "").split(delimiter).filter(Boolean);
+  const managedBin = String(env.MYAGENTTOOL_RUNTIME_BIN ?? "").trim() || join(homedir(), ".myagenttool", "bin");
+  const dirs = [managedBin, ...String(env.PATH ?? "").split(delimiter)].filter(Boolean);
   const names = process.platform === "win32" && !extname(command)
     ? String(env.PATHEXT ?? ".COM;.EXE;.BAT;.CMD").split(";").filter(Boolean).map((extension) => `${command}${extension}`)
     : [command];
@@ -76,6 +78,7 @@ const isSafeRelPath = (value) =>
   && !/^[A-Za-z]:/.test(value)
   && !value.split(/[/\\]/).includes("..");
 const isOfficeFile = (value) => isSafeRelPath(value) && /\.(docx|xlsx|pptx)$/i.test(value);
+const isPdfFile = (value) => isSafeRelPath(value) && /\.pdf$/i.test(value);
 // A CSV/TSV source file (officecli import) — same worktree-safe rule, data ext.
 const isOfficeCsvFile = (value) => isSafeRelPath(value) && /\.(csv|tsv)$/i.test(value);
 // Inline merge --data: a JSON object/array within a byte bound. Independent mirror
@@ -97,6 +100,20 @@ const OFFICECLI_WRAPPER_ARGS = {
   view: { base: ["view"], flags: {}, positionals: [isOfficeFile, isOfficeViewMode] },
   validate: { base: ["validate", "--json"], flags: {}, positionals: [isOfficeFile] },
   dump: { base: ["dump"], flags: {}, positionals: [isOfficeFile, isOfficeArg] },
+};
+
+// pdfcpu phase 1: only two fixed, offline, read-only invocations. `--conf
+// disable` prevents configuration-directory writes, while the device independently
+// requires one worktree-safe PDF positional.
+const PDFCPU_WRAPPER_ARGS = {
+  validate: {
+    base: ["validate", "--offline", "--conf", "disable", "--mode", "strict"],
+    flags: {}, positionals: [isPdfFile], minPositionals: 1,
+  },
+  info: {
+    base: ["info", "--offline", "--conf", "disable", "--json"],
+    flags: {}, positionals: [isPdfFile], minPositionals: 1,
+  },
 };
 
 // The bridge's OWN copy of the OfficeCLI WRITE argv spec (P3.1, #1349). Same
@@ -335,6 +352,13 @@ export function createLocalExecutionPolicyManifest({
         capabilityPrefix: "app.app_officecli.wrapper.",
         filePolicy: "read_only",
         networkPolicy: "forbidden",
+      },
+      {
+        command: "pdfcpu",
+        capabilityPrefix: "app.app_pdfcpu.wrapper.",
+        filePolicy: "read_only",
+        networkPolicy: "forbidden",
+        probe: { executable: "pdfcpu", args: ["version", "--conf", "disable"] },
       },
       {
         // OfficeCLI WRITE verbs (P3.1). A distinct capability prefix + filePolicy
@@ -772,11 +796,17 @@ function wrapperArgsAllowed(capability, args) {
   if (cap.startsWith("app.app_ccusage.wrapper.")) return ccusageArgsAllowed(cap, args);
   if (cap.startsWith("app.app_git.wrapper.")) return gitArgsAllowed(cap, args);
   if (cap.startsWith("app.app_officecli.wrapper.")) return officecliArgsAllowed(cap, args);
+  if (cap.startsWith("app.app_pdfcpu.wrapper.")) return pdfcpuArgsAllowed(cap, args);
   if (cap.startsWith("app.app_officecli.apply.")) return officecliApplyArgsAllowed(cap, args);
   // #1356 PR2: the excalidraw-cli export WRITE verb. The presence-only read prefix
   // (app.app_excalidraw_cli.wrapper.) still has NO branch — it stays default-denied.
   if (cap.startsWith("app.app_excalidraw_cli.apply.")) return excalidrawCliApplyArgsAllowed(cap, args);
   return false;
+}
+
+function pdfcpuArgsAllowed(capability, args) {
+  const cmd = String(capability ?? "").match(/^app\.app_pdfcpu\.wrapper\.([a-z0-9_]+)$/)?.[1] ?? null;
+  return officecliArgvMatches(cmd ? PDFCPU_WRAPPER_ARGS[cmd] : null, args);
 }
 
 function excalidrawCliApplyArgsAllowed(capability, args) {

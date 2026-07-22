@@ -5,14 +5,14 @@ import { applicationInstallPlanMatchesCurrent, createApplicationInstallPlan, lis
 const device = (platform, architecture = "x64") => ({ id: `dev_${platform}`, name: `${platform} device`, platform, architecture });
 const fixedNow = () => "2026-07-14T09:00:00.000Z";
 const supported = {
-  windows: ["git", "git-bash", "wsl", "ccusage", "claude", "codex", "excalidraw-cli"],
-  macos: ["git", "ccusage", "claude", "codex", "excalidraw-cli"],
-  linux: ["git", "ccusage", "claude", "codex", "excalidraw-cli"],
+  windows: ["git", "git-bash", "wsl", "ccusage", "claude", "codex", "excalidraw-cli", "pdfcpu"],
+  macos: ["git", "ccusage", "claude", "codex", "excalidraw-cli", "pdfcpu"],
+  linux: ["git", "ccusage", "claude", "codex", "excalidraw-cli", "pdfcpu"],
 };
 
 test("P1 catalog exposes only supported applications and safe policy metadata", () => {
   const catalog = listApplicationInstallCatalog();
-  assert.deepEqual(catalog.map((entry) => entry.name), ["git", "git-bash", "wsl", "ccusage", "claude", "codex", "excalidraw-cli"]);
+  assert.deepEqual(catalog.map((entry) => entry.name), ["git", "git-bash", "wsl", "ccusage", "claude", "codex", "excalidraw-cli", "pdfcpu"]);
   assert.ok(catalog.every((entry) => entry.approvalRequired));
   assert.deepEqual(catalog.find((entry) => entry.name === "git").supportedPlatforms, ["windows", "macos", "linux"]);
   assert.deepEqual(catalog.find((entry) => entry.name === "git-bash").supportedPlatforms, ["windows"]);

@@ -867,7 +867,7 @@ export function createApplicationWrapperAgentRegistration({
 // anything else returns null. This is the single source of truth for WHAT may
 // execute — the bridge only ever runs a command that came through here, so an
 // unapproved or unregistered command can never reach execution.
-const WRAPPER_ARG_INPUT_TYPES = new Set(["date", "token", "enum", "string", "office_file", "csv_file", "excalidraw_file", "png_file", "boolean-flag", "git-rev", "count", "props", "json_commands", "json_data"]);
+const WRAPPER_ARG_INPUT_TYPES = new Set(["date", "token", "enum", "string", "office_file", "pdf_file", "csv_file", "excalidraw_file", "png_file", "boolean-flag", "git-rev", "count", "props", "json_commands", "json_data"]);
 const RESERVED_WRAPPER_ARG_INPUT_KEYS = new Set([
   "approvalToken",
   "idempotencyKey",
@@ -1024,6 +1024,8 @@ function isValidWrapperArgValue(spec, value) {
     // two allowlists reject a `../` or absolute file INDEPENDENTLY.
     case "office_file":
       return isSafeRelFilePath(value) && /\.(docx|xlsx|pptx)$/i.test(value);
+    case "pdf_file":
+      return isSafeRelFilePath(value) && /\.pdf$/i.test(value);
     // A CSV/TSV SOURCE file (officecli import). Same worktree-safe relative-path
     // rule as office_file, but a data extension — it is read, never opened as a
     // document.
@@ -1501,7 +1503,7 @@ function wrapperInputSchema(command) {
 function wrapperArgInputJsonType(type) {
   if (type === "props" || type === "json_data") return "object";
   if (type === "json_commands") return "array";
-  if (type === "office_file" || type === "csv_file") return "string";
+  if (type === "office_file" || type === "pdf_file" || type === "csv_file") return "string";
   return type;
 }
 

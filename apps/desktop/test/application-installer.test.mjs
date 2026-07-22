@@ -1,6 +1,9 @@
 import assert from "node:assert/strict";
 import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
+import { mkdtempSync, readdirSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { test } from "node:test";
 import { createApplicationInstallPlan } from "../../server/src/services/application-install-plans.mjs";
 import { resolveApplicationInstallSpawnPlan, runApprovedApplicationInstall, setPolkitProbeForTests } from "../src/application-installer.mjs";
@@ -8,9 +11,9 @@ import { resolveApplicationInstallSpawnPlan, runApprovedApplicationInstall, setP
 const nodePlatform = { windows: "win32", macos: "darwin", linux: "linux" };
 const device = (platform) => ({ id: `dev_${platform}`, name: platform, platform, architecture: "x64" });
 const supported = {
-  windows: ["git", "git-bash", "wsl", "ccusage", "claude", "codex", "excalidraw-cli"],
-  macos: ["git", "ccusage", "claude", "codex", "excalidraw-cli"],
-  linux: ["ccusage", "claude", "codex", "excalidraw-cli"],
+  windows: ["git", "git-bash", "wsl", "ccusage", "claude", "codex", "excalidraw-cli", "pdfcpu"],
+  macos: ["git", "ccusage", "claude", "codex", "excalidraw-cli", "pdfcpu"],
+  linux: ["ccusage", "claude", "codex", "excalidraw-cli", "pdfcpu"],
 };
 
 for (const platform of ["windows", "macos", "linux"]) {
@@ -47,6 +50,29 @@ test("P2 Desktop Bridge rejects modified and stale plans before spawn", async ()
   });
   assert.equal(policyResult.status, "refused");
   assert.equal(spawned, false);
+});
+
+test("pdfcpu installer refuses a checksum mismatch before extraction or destination writes", async () => {
+  const target = { id: "dev_pdf", name: "pdf device", platform: "macos", architecture: "arm64" };
+  const plan = createApplicationInstallPlan({ name: "pdfcpu" }, { device: target });
+  const runtimeBinDirectory = mkdtempSync(join(tmpdir(), "pdfcpu-runtime-test-"));
+  let spawned = false;
+  try {
+    const result = await runApprovedApplicationInstall({
+      plan,
+      platform: "darwin",
+      preInstallProbe: false,
+      runtimeBinDirectory,
+      fetchImpl: async () => ({ ok: true, headers: { get: () => null }, arrayBuffer: async () => Buffer.from("tampered artifact") }),
+      spawnProcess: () => { spawned = true; throw new Error("must not extract"); },
+    });
+    assert.equal(result.status, "failed");
+    assert.equal(result.classification, "checksum_mismatch");
+    assert.equal(spawned, false);
+    assert.deepEqual(readdirSync(runtimeBinDirectory), []);
+  } finally {
+    rmSync(runtimeBinDirectory, { recursive: true, force: true });
+  }
 });
 
 test("P2 runs fixed discrete argv with shell disabled", async () => {

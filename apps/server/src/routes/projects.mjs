@@ -19,6 +19,7 @@ import { computeAutoRunReadiness } from "../services/auto-run-readiness.mjs";
 import { computeMergeRisk, sensitivePathHit, DEFAULT_SENSITIVE_PATHS } from "../services/auto-run-risk.mjs";
 import { summarizeEpicChildren } from "../services/auto-run-epic.mjs";
 import { resolveAutoRunVerifyCommandFor } from "../services/worktree-verify.mjs";
+import { PdfDocumentReadError, readProjectPdf } from "../services/pdf-document-read.mjs";
 
 const IMAGE_MIME = {
   ".png": "image/png",
@@ -651,6 +652,32 @@ export async function handleProjectRoutes({
       });
     } catch (error) {
       sendJson(res, 400, { error: "project_documents_unavailable", message: error instanceof Error ? error.message : String(error) });
+    }
+    return true;
+  }
+
+  const pdfDocumentMatch = url.pathname.match(/^\/api\/projects\/([^/]+)\/pdf-document$/);
+  if (pdfDocumentMatch && req.method === "GET") {
+    const project = state.projects.find((item) => item.id === decodeURIComponent(pdfDocumentMatch[1]));
+    if (!project) { sendJson(res, 404, { error: "project_not_found" }); return true; }
+    if (denyForeignProject({ res, sendJson, state, actor, projectId: project.id, notFound: { error: "project_not_found" } })) return true;
+    const worktreeId = url.searchParams.get("worktree");
+    const worktree = worktreeId ? (state.worktrees ?? []).find((item) => item.id === worktreeId && item.projectId === project.id) : null;
+    if (worktreeId && !worktree) { sendJson(res, 404, { error: "worktree_not_found" }); return true; }
+    try {
+      const root = worktree?.path ?? worktree?.worktreePath ?? project.path;
+      const pdf = readProjectPdf({ projectPath: root, relativeFile: url.searchParams.get("path") ?? "" });
+      res.statusCode = 200;
+      res.setHeader("Content-Type", "application/pdf");
+      res.setHeader("Content-Length", String(pdf.size));
+      res.setHeader("Content-Disposition", "inline");
+      res.setHeader("Cache-Control", "private, no-store");
+      res.setHeader("X-Content-Type-Options", "nosniff");
+      res.end(pdf.bytes);
+    } catch (error) {
+      const code = error instanceof PdfDocumentReadError ? error.code : "pdf_read_failed";
+      const status = code === "not_found" ? 404 : code === "pdf_too_large" ? 413 : 400;
+      sendJson(res, status, { error: code, message: error instanceof Error ? error.message : String(error) });
     }
     return true;
   }

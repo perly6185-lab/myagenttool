@@ -589,6 +589,46 @@ function officecliGate({ execArgs, capability, root = gitRoot, cwd = gitRoot, re
   );
 }
 
+function pdfcpuGate({ execArgs, capability, root = gitRoot, cwd = gitRoot, resolveBinary = () => true }) {
+  const spec = { execCommand: "pdfcpu", execArgs, capability, filePolicy: "read_only", networkPolicy: "forbidden" };
+  const work = { project: { path: root }, options: { metadata: { applicationWrapper: spec, worktreePath: root } } };
+  return localExecutionGate(
+    work,
+    { type: "cli", command: "node" },
+    {
+      command: process.execPath,
+      args: wrapperArgs(spec, { cwd }),
+      cwd,
+      localPolicy: { filePolicy: "read_only", networkPolicy: "forbidden", source: "application_wrapper" },
+    },
+    { manifest, resolveBinary },
+  );
+}
+
+test("pdfcpu wrapper: fixed validate and info commands are allowed for safe PDF paths", () => {
+  assert.equal(pdfcpuGate({
+    capability: "app.app_pdfcpu.wrapper.validate",
+    execArgs: ["validate", "--offline", "--conf", "disable", "--mode", "strict", "docs/report.pdf"],
+  }).allowed, true);
+  assert.equal(pdfcpuGate({
+    capability: "app.app_pdfcpu.wrapper.info",
+    execArgs: ["info", "--offline", "--conf", "disable", "--json", "report.PDF"],
+  }).allowed, true);
+});
+
+test("pdfcpu wrapper: mutations, unsafe paths, extra flags, and missing files are refused", () => {
+  const cases = [
+    ["app.app_pdfcpu.wrapper.merge", ["merge", "out.pdf", "a.pdf"]],
+    ["app.app_pdfcpu.wrapper.validate", ["validate", "--offline", "--conf", "disable", "--mode", "strict", "../secret.pdf"]],
+    ["app.app_pdfcpu.wrapper.info", ["info", "--offline", "--conf", "disable", "--json", "report.pdf", "--pages", "1"]],
+    ["app.app_pdfcpu.wrapper.info", ["info", "--offline", "--conf", "disable", "--json"]],
+    ["app.app_pdfcpu.wrapper.info", ["info", "--offline", "--conf", "disable", "--json", "report.docx"]],
+  ];
+  for (const [capability, execArgs] of cases) {
+    assert.equal(pdfcpuGate({ capability, execArgs }).allowed, false, `${capability}: ${execArgs.join(" ")}`);
+  }
+});
+
 test("officecli wrapper: get with file + path positionals is allowed", () => {
   const gate = officecliGate({
     capability: "app.app_officecli.wrapper.get",

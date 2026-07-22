@@ -21,7 +21,7 @@ import { isInactiveInvocationError } from "./bridge-events.mjs";
 import { applicationWrapperArgs } from "./application-wrapper-args.mjs";
 import { collectApplicationBinaryReadiness } from "./application-binary-readiness.mjs";
 import { collectApplicationCredentialReadiness } from "./application-credential-readiness.mjs";
-import { runApprovedApplicationInstall } from "./application-installer.mjs";
+import { managedRuntimeBinDirectory, runApprovedApplicationInstall } from "./application-installer.mjs";
 import {
   createLocalExecutionPolicyManifest,
   localExecutionGate,
@@ -2184,6 +2184,7 @@ function buildEnv(adapter) {
       : merged;
   }
   const baseEnv = { ...process.env, ...explicitEnv };
+  baseEnv.PATH = `${managedRuntimeBinDirectory(baseEnv)}${delimiter}${baseEnv.PATH ?? ""}`;
   const inheritedEnv = { ...baseEnv, ...codexLocalEnv(baseEnv), ...explicitEnv };
   return isCodexCliCommand(adapter.command) ? sanitizeCodexChildEnv(withCodexUserDefaults(inheritedEnv)) : inheritedEnv;
 }

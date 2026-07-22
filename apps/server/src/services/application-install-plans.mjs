@@ -1,8 +1,9 @@
 import crypto from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
+import { PDFCPU_RELEASE_VERSION, resolvePdfcpuReleaseArtifact } from "./pdfcpu-release.mjs";
 
 const SCHEMA_VERSION = "application-install-plan/v1";
-const RECIPE_VERSION = "2026-07-21.1";
+const RECIPE_VERSION = "2026-07-22.1";
 const PLAN_TTL_MS = 10 * 60 * 1000;
 const SUPPORTED_PLATFORMS = ["windows", "macos", "linux"];
 const ALLOWED_REQUEST_FIELDS = new Set(["name", "projectId", "deviceId", "platform", "architecture"]);
@@ -122,6 +123,18 @@ const APPLICATIONS = {
     probe: { executable: "excalidraw-cli", args: ["--version"] },
     recipes: npmRecipes("@tommywalkie/excalidraw-cli", EXCALIDRAW_CLI_VERSION),
   },
+  pdfcpu: {
+    displayName: "pdfcpu",
+    aliases: ["pdfcpu", "pdf cpu"],
+    packageIdentifier: "pdfcpu",
+    probe: { executable: "pdfcpu", args: ["version", "--conf", "disable"] },
+    // The concrete recipe is selected from the fixed platform/architecture
+    // matrix in createApplicationInstallPlan; these keys advertise support only.
+    recipes: Object.fromEntries(SUPPORTED_PLATFORMS.map((platform) => [platform, {
+      provider: "verified-github-release",
+      versionPolicy: exactVersionPolicy(PDFCPU_RELEASE_VERSION),
+    }])),
+  },
 };
 
 function providerVersionPolicy() {
@@ -197,7 +210,9 @@ export function createApplicationInstallPlan(input, { device, projectId = null, 
   if (input.architecture && String(input.architecture).toLowerCase() !== String(device.architecture ?? "").toLowerCase()) {
     throw planError("install_plan_target_mismatch", "Requested architecture does not match the target device.", 409);
   }
-  const selected = application.recipes[platform];
+  const selected = name === "pdfcpu"
+    ? pdfcpuArtifactRecipe(platform, device.architecture)
+    : application.recipes[platform];
   if (!selected) {
     throw planError("install_platform_not_supported", `Installation is not supported on platform: ${platform || "unknown"}.`);
   }
@@ -256,6 +271,23 @@ export function createApplicationInstallPlan(input, { device, projectId = null, 
     },
     summary: `Install ${application.displayName} on ${device.name ?? device.id} with ${selected.provider}; explicit local approval is required.`,
   };
+}
+
+function pdfcpuArtifactRecipe(platform, architecture) {
+  const artifact = resolvePdfcpuReleaseArtifact(platform, architecture);
+  if (!artifact) return null;
+  return recipe("verified-github-release", "myagenttool-verified-artifact-installer", [artifact.filename], artifact.filename, {
+    source: {
+      kind: "github-release-artifact",
+      repository: "pdfcpu/pdfcpu",
+      version: PDFCPU_RELEASE_VERSION,
+      url: artifact.url,
+      filename: artifact.filename,
+      sha256: artifact.sha256,
+      archive: artifact.archive,
+    },
+    versionPolicy: exactVersionPolicy(PDFCPU_RELEASE_VERSION),
+  });
 }
 
 function publicProbe(probe) {

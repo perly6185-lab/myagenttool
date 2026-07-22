@@ -6,6 +6,7 @@ const RUNTIME_IDS = new Map([
   ["ccusage", "runtime_ccusage"],
   ["claude", "runtime_claude"],
   ["codex", "runtime_codex"],
+  ["pdfcpu", "runtime_pdfcpu"],
   ["git-bash", "runtime_git_bash"],
   ["wsl", "runtime_wsl"],
 ]);
