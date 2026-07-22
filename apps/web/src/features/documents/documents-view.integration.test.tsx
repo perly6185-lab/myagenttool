@@ -10,6 +10,7 @@ const mocks = vi.hoisted(() => ({
   invokeCapability: vi.fn(),
   manageOfficeDocument: vi.fn(),
   projectPdfData: vi.fn(),
+  projectPdfSource: vi.fn(),
   selectProject: vi.fn(),
   setSection: vi.fn(),
   setOfficecliPreviewPath: vi.fn(),
@@ -26,6 +27,7 @@ vi.mock("@/data/use-console-actions", () => ({
     invokeCapability: mocks.invokeCapability,
     manageOfficeDocument: mocks.manageOfficeDocument,
     projectPdfData: mocks.projectPdfData,
+    projectPdfSource: mocks.projectPdfSource,
     selectProject: mocks.selectProject,
   },
 }));
@@ -57,6 +59,7 @@ beforeEach(() => {
   mocks.issueApprovalGrant.mockResolvedValue({ token: "grant_1" });
   mocks.invokeCapability.mockResolvedValue({ invocationId: "inv_1" });
   mocks.manageOfficeDocument.mockResolvedValue({ operation: "copy", source: "docs/report.docx", destination: "docs/copy-of-report.docx" });
+  mocks.projectPdfSource.mockResolvedValue({ url: "http://localhost/report.pdf", httpHeaders: { Authorization: "Bearer test" } });
 });
 
 afterEach(() => { cleanup(); vi.clearAllMocks(); });

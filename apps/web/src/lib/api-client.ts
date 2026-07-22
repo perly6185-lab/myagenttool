@@ -686,6 +686,12 @@ export const api = {
   },
   projectPdfData: (id: string, path: string, worktreeId?: string) =>
     requestBytes(`/api/projects/${encodeURIComponent(id)}/pdf-document?path=${encodeURIComponent(path)}${worktreeId ? `&worktree=${encodeURIComponent(worktreeId)}` : ""}`),
+  projectPdfSource: async (id: string, path: string, worktreeId?: string) => {
+    await ensureSession();
+    const token = getToken();
+    const resource = `/api/projects/${encodeURIComponent(id)}/pdf-document?path=${encodeURIComponent(path)}${worktreeId ? `&worktree=${encodeURIComponent(worktreeId)}` : ""}`;
+    return { url: `${apiBase}${resource}`, httpHeaders: token ? { Authorization: `Bearer ${token}` } : undefined };
+  },
   // Content search within a registered project root (Agent Workspace #161).
   projectSearch: (id: string, q: string) =>
     request<{ results: { path: string; line: number; preview: string }[] }>(

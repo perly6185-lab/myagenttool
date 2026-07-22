@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { readProjectPdf } from "../src/services/pdf-document-read.mjs";
+import { readProjectPdf, resolvePdfByteRange } from "../src/services/pdf-document-read.mjs";
 
 function fixture() {
   const root = mkdtempSync(join(tmpdir(), "pdf-read-"));
@@ -31,4 +31,12 @@ test("readProjectPdf refuses direct symbolic links even when their target is ins
   const root = fixture();
   symlinkSync(join(root, "docs", "report.pdf"), join(root, "linked.pdf"));
   assert.throws(() => readProjectPdf({ projectPath: root, relativeFile: "linked.pdf" }), (error) => error.code === "symlink_refused");
+});
+
+test("readProjectPdf serves bounded ranges after validating the file signature", () => {
+  const root = fixture();
+  const result = readProjectPdf({ projectPath: root, relativeFile: "docs/report.pdf", range: "bytes=5-9" });
+  assert.deepEqual({ size: result.size, start: result.start, end: result.end, text: result.bytes.toString() }, { size: 16, start: 5, end: 9, text: "1.7\nf" });
+  assert.deepEqual(resolvePdfByteRange("bytes=-4", 16), { start: 12, end: 15 });
+  assert.throws(() => resolvePdfByteRange("bytes=99-100", 16), (error) => error.code === "range_not_satisfiable");
 });
