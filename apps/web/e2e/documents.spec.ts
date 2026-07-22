@@ -37,10 +37,11 @@ test("opens a project-local document without uploading or copying it", async ({ 
   expect(requests.some((url) => url.includes("office-document-import"))).toBe(false);
 });
 
-test("discovers and previews a document through the real route", async ({ page }) => {
+test("discovers and previews a document through the real route", async ({ page }, testInfo) => {
   await page.getByRole("button", { name: "report.docx" }).click();
   await expect(page.locator('iframe[title="docs/report.docx"]')).toBeVisible();
   await expect(page).toHaveURL(/section=documents.*document=docs%2Freport.docx/);
+  await page.screenshot({ path: testInfo.outputPath("documents-desktop.png"), fullPage: true });
 });
 
 test("creates an Excel document through the governed capability flow", async ({ page }) => {
