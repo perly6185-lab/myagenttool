@@ -239,7 +239,13 @@ function DocumentPreview({ projectId, document, worktrees, worktreeId, onWorktre
     <section className="flex min-h-[24rem] min-w-0 flex-col overflow-hidden rounded-lg border border-border bg-card">
       <header className="flex flex-wrap items-center gap-2 border-b border-border px-3 py-2"><DocumentIcon type={document.type} /><div className="min-w-0 flex-1"><p className="truncate text-sm font-medium">{document.name}</p><p className="truncate font-mono text-[10px] text-muted-foreground">{document.path}</p></div><Button size="sm" variant="secondary" onClick={openWorkspace}>Open in Workspace</Button>{document.worktreeId ? <><Button size="sm" variant="secondary" onClick={onUseTemplate}>Use as template</Button><Button size="sm" variant="secondary" onClick={onSaveTemplate}>Add to templates</Button><Button size="icon" variant="ghost" aria-label="Rename document" onClick={() => onManage("rename")}><Pencil /></Button><Button size="icon" variant="ghost" aria-label="Move document" onClick={() => onManage("move")}><Move /></Button><Button size="icon" variant="ghost" aria-label="Copy document" onClick={() => onManage("copy")}><Copy /></Button><Button size="icon" variant="ghost" aria-label="Delete document" className="text-destructive" onClick={() => onManage("delete")}><Trash2 /></Button></> : null}{worktrees.length > 0 ? <><Select aria-label="Worktree" className="h-8 max-w-44" value={worktreeId} onChange={(event) => onWorktreeChange(event.target.value)}>{worktrees.map((worktree) => <option key={worktree.id} value={worktree.id}>{worktree.name ?? worktree.branchName ?? worktree.branch ?? worktree.id}</option>)}</Select><Button size="sm" onClick={openWorktree} disabled={!worktreeId}>Edit in worktree</Button></> : <Button size="sm" variant="secondary" onClick={() => { setSelectedProjectId(projectId); setSelectedWorktreeId(null); setSection("projects"); }}>Create a worktree to edit</Button>}</header>
       {preview.isLoading ? <p className="flex items-center gap-1 p-4 text-sm text-muted-foreground"><Loader2 className="size-4 animate-spin" /> Rendering…</p>
-        : preview.error ? <PreviewFailure error={preview.error} onOpenApplications={() => setSection("applications")} onRetry={() => void preview.refetch()} />
+        : preview.error ? <PreviewFailure
+          key={`${document.worktreeId ?? "base"}:${document.path}`}
+          error={preview.error}
+          onOpenApplications={() => setSection("applications")}
+          onRetry={() => void preview.refetch()}
+          onOpenSystem={window.myagenttoolDesktop?.openContainedOfficeDocument ? () => window.myagenttoolDesktop!.openContainedOfficeDocument!({ projectId, relativePath: document.path, ...(document.worktreeId ? { worktreeId: document.worktreeId } : {}) }) : undefined}
+        />
         : preview.data ? <OfficeDocumentFrame title={document.path} content={preview.data.content} className="min-h-[32rem] flex-1" /> : null}
     </section>
   );
@@ -256,14 +262,30 @@ export function previewFailureCopy(error: Error): { title: string; detail: strin
       return { title: "Preview timed out", detail: "The document may be large or OfficeCLI may be busy. Try again.", showApplications: false };
     case "unsupported_type":
       return { title: "Unsupported document type", detail: "Documents supports .docx, .xlsx, and .pptx files.", showApplications: false };
+    case "office_password_required":
+      return { title: "Password-protected Office document", detail: "This encrypted document cannot be previewed here yet. Open it with Word, Excel, or PowerPoint to enter its password.", showApplications: false };
+    case "office_encryption_unsupported":
+      return { title: "Unsupported Office encryption", detail: "Open this document with its system Office application.", showApplications: false };
+    case "office_file_corrupted":
+      return { title: "Invalid Office document", detail: "The file is damaged or is not a valid OOXML document.", showApplications: false };
     default:
       return { title: "Preview unavailable", detail: error.message || "OfficeCLI could not render this document.", showApplications: true };
   }
 }
 
-function PreviewFailure({ error, onOpenApplications, onRetry }: { error: Error; onOpenApplications: () => void; onRetry: () => void }) {
+function PreviewFailure({ error, onOpenApplications, onRetry, onOpenSystem }: { error: Error; onOpenApplications: () => void; onRetry: () => void; onOpenSystem?: () => Promise<{ opened: true }> }) {
   const copy = previewFailureCopy(error);
-  return <div className="space-y-3 p-4"><div><p className="text-sm font-medium text-destructive">{copy.title}</p><p className="mt-1 text-xs text-muted-foreground">{copy.detail}</p></div><div className="flex gap-2"><Button size="sm" variant="secondary" onClick={onRetry}>Retry</Button>{copy.showApplications ? <Button size="sm" variant="secondary" onClick={onOpenApplications}>Open Applications</Button> : null}</div></div>;
+  const encrypted = error instanceof ApiError && (error.code === "office_password_required" || error.code === "office_encryption_unsupported");
+  const [opening, setOpening] = useState(false);
+  const [openError, setOpenError] = useState<string | null>(null);
+  const openSystem = async () => {
+    if (!onOpenSystem) return;
+    setOpening(true); setOpenError(null);
+    try { await onOpenSystem(); }
+    catch { setOpenError("The system application could not open this document."); }
+    finally { setOpening(false); }
+  };
+  return <div className="space-y-3 p-4"><div><p className="text-sm font-medium text-destructive">{copy.title}</p><p className="mt-1 text-xs text-muted-foreground">{copy.detail}</p>{encrypted && !onOpenSystem ? <p className="mt-1 text-xs text-muted-foreground">System application access is available in the desktop app.</p> : null}{openError ? <p role="alert" className="mt-1 text-xs text-destructive">{openError}</p> : null}</div><div className="flex gap-2">{encrypted && onOpenSystem ? <Button size="sm" variant="secondary" onClick={() => void openSystem()} disabled={opening}>{opening ? "Opening…" : "Open in system application"}</Button> : <Button size="sm" variant="secondary" onClick={onRetry}>Retry</Button>}{copy.showApplications ? <Button size="sm" variant="secondary" onClick={onOpenApplications}>Open Applications</Button> : null}</div></div>;
 }
 
 function urlParam(name: string): string {

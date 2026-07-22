@@ -105,6 +105,7 @@ declare global {
       applyChrome?: (chrome: { bg: string; themeSource: SkinMode; resolved: ResolvedMode }) => void;
       pickLocalOfficeDocument?: () => Promise<{ selectionId: string; absolutePath: string; name: string; type: "docx" | "xlsx" | "pptx"; size: number } | null>;
       copySelectedOfficeDocument?: (input: { selectionId: string; worktreeId: string; destination: string; onConflict?: "rename" }) => Promise<{ path: string; bytes: number; type: "docx" | "xlsx" | "pptx" }>;
+      openContainedOfficeDocument?: (input: { projectId: string; worktreeId?: string; relativePath: string }) => Promise<{ opened: true }>;
     };
   }
 }

@@ -31,6 +31,53 @@ export function registerLocalOfficeDocumentPicker({ ipcMain, dialog, getWindow, 
   });
 }
 
+export function registerContainedOfficeDocumentOpen({ ipcMain, getState, openPath }) {
+  ipcMain.removeHandler("documents:open-contained-office");
+  ipcMain.handle("documents:open-contained-office", async (_event, input) => {
+    let target;
+    try {
+      target = resolveContainedOfficeDocument(await getState(), input);
+    } catch {
+      // Never let native filesystem errors (which can contain absolute paths)
+      // cross the renderer boundary.
+      throw new Error("The requested Office document could not be opened safely.");
+    }
+    try {
+      const failure = await openPath(target);
+      if (failure) throw new Error("open failed");
+    } catch {
+      throw new Error("The system application could not open this Office document.");
+    }
+    return { opened: true };
+  });
+}
+
+export function resolveContainedOfficeDocument(state, input) {
+  const projectId = String(input?.projectId ?? "").trim();
+  const worktreeId = String(input?.worktreeId ?? "").trim();
+  const relativePath = String(input?.relativePath ?? "").trim().replaceAll("\\", "/");
+  if (!projectId || !relativePath || relativePath.startsWith("/") || relativePath.startsWith("~") || relativePath.split("/").includes("..")) {
+    throw new Error("A contained project-relative Office document path is required.");
+  }
+  const project = (state?.projects ?? []).find((item) => item.id === projectId);
+  if (!project?.path) throw new Error("Selected project is unavailable.");
+  const worktree = worktreeId ? (state?.worktrees ?? []).find((item) => item.id === worktreeId && item.projectId === projectId) : null;
+  if (worktreeId && !worktree) throw new Error("Selected Worktree is unavailable.");
+  const configuredRoot = worktree ? (worktree.path ?? worktree.worktreePath) : project.path;
+  if (!configuredRoot) throw new Error("Selected document root is unavailable.");
+  const root = realpathSync(configuredRoot);
+  const candidate = resolve(root, relativePath);
+  const rel = relative(root, candidate);
+  if (!rel || rel === ".." || rel.startsWith(`..${sep}`) || isAbsolute(rel)) throw new Error("Requested document escapes its project root.");
+  const target = realpathSync(candidate);
+  const realRel = relative(root, target);
+  if (!realRel || realRel === ".." || realRel.startsWith(`..${sep}`) || isAbsolute(realRel)) throw new Error("Requested document escapes its project root.");
+  const stat = statSync(target);
+  if (!stat.isFile()) throw new Error("Requested document is not a regular file.");
+  if (!OFFICE_TYPES.has(extname(target).toLowerCase())) throw new Error("Only .docx, .xlsx, and .pptx documents can be opened.");
+  return target;
+}
+
 export function describeLocalOfficeDocument(inputPath) {
   const absolutePath = realpathSync(inputPath);
   const stat = statSync(absolutePath);
