@@ -20,6 +20,14 @@ export const resources = {
       shared: { confirm: "Confirm", cancel: "Cancel", working: "Working…", governedConfirmation: "This action is governed and requires explicit confirmation.", errorTitle: "This view hit an error", errorBody: "The rest of the console still works — switch sections from the sidebar, or try again.", tryAgain: "Try again" },
       login: { signIn: "Sign in", signOut: "Sign out", userId: "User id", password: "Password", signingIn: "Signing in…", failed: "Sign in failed." },
       inspector: { label: "Context inspector", bridgeTitle: "Local Agent Bridge", bridgeBody: "The cloud can request local work, but the bridge owns final execution. Start Desktop Bridge to bring this device online.", discoveryTitle: "Conservative by design", discoveryBody: "Discovery checks only known or user-provided sources and never enables a candidate automatically.", reviewTitle: "Findings, not raw output", reviewBody: "Review findings are structured, non-authoritative output. Raw model transcripts and CLI output stay server-side.", economicsTitle: "One economic ledger", economicsBody: "Agent cost, AI usage, chargeback, and settlement roll up through one ledger." },
+      dashboard: {
+        defaultTask: "Summarize the local demo state and confirm the bridge is working.", activity: "Activity", composerTitle: "What should your computer do?", task: "Task", project: "Project", agent: "Agent", noProject: "No project", noAgent: "No agent registered",
+        continueSession: "Continuing session", startFresh: "Start fresh", runningIn: "Running in worktree {{branch}}", projectDefault: "Use project default", queue: "Queue for this computer", run: "Run on this computer", cancel: "Cancel task", details: "Technical details",
+        safety: "Safety", data: "Data", cost: "Cost", cancellation: "Cancellation", computer: "Computer", adapter: "Adapter", lifecycle: "Lifecycle", taskId: "Task ID", trace: "Trace", state: "State", noTask: "No task yet", noTrace: "No trace yet", noDelivery: "no delivery",
+        reviewAgent: "Review the selected agent before running.", recorded: "Task input and result are recorded.",
+        block: { offline: "Server is offline.", task: "Enter a task before running.", agent: "Select an agent before running.", disabled: "{{name}} is disabled. Enable it before running a new task.", unhealthy: "{{name}} is unhealthy. Run a health check after fixing it.", running: "Wait for the current task to finish or cancel it." },
+        gettingStarted: "Getting started", go: "Go →", device: "Link a local device", deviceOnline: "Device online", deviceDetail: "The local bridge runs your agents", registerProject: "Register a project", projects_one: "{{count}} project", projects_other: "{{count}} projects", projectDetail: "Clone or link a repo to work in", readyAgent: "Have a ready agent", agentReady: "An agent is ready", agentDetail: "An agent executes your tasks", firstTask: "Run your first task", runs_one: "{{count}} run", runs_other: "{{count}} runs", taskDetail: "Use the composer below",
+      },
       languagePicker: {
         label: "Language",
         english: "English",
@@ -48,6 +56,14 @@ export const resources = {
       shared: { confirm: "确认", cancel: "取消", working: "处理中…", governedConfirmation: "此操作受治理，需要明确确认。", errorTitle: "此视图发生错误", errorBody: "控制台其他部分仍可使用；请从侧栏切换栏目或重试。", tryAgain: "重试" },
       login: { signIn: "登录", signOut: "退出登录", userId: "用户 ID", password: "密码", signingIn: "登录中…", failed: "登录失败。" },
       inspector: { label: "上下文检查器", bridgeTitle: "本地 Agent 桥接", bridgeBody: "云端可以请求本地工作，但最终执行由桥接程序控制。请启动桌面桥接使设备上线。", discoveryTitle: "保守发现", discoveryBody: "发现功能只检查已知或用户提供的来源，绝不会自动启用候选项。", reviewTitle: "结构化发现，而非原始输出", reviewBody: "评审发现是结构化、非权威的输出；原始模型记录和 CLI 输出保留在服务器端。", economicsTitle: "统一成本台账", economicsBody: "Agent 成本、AI 用量、分摊与结算统一汇总到一个台账。" },
+      dashboard: {
+        defaultTask: "总结本地演示状态，并确认桥接程序运行正常。", activity: "活动", composerTitle: "希望这台电脑做什么？", task: "任务", project: "项目", agent: "Agent", noProject: "无项目", noAgent: "尚未注册 Agent",
+        continueSession: "继续会话", startFresh: "开始新会话", runningIn: "在工作树 {{branch}} 中运行", projectDefault: "使用项目默认设置", queue: "排队等待此电脑", run: "在此电脑上运行", cancel: "取消任务", details: "技术详情",
+        safety: "安全", data: "数据", cost: "成本", cancellation: "取消能力", computer: "电脑", adapter: "适配器", lifecycle: "生命周期", taskId: "任务 ID", trace: "追踪", state: "状态", noTask: "尚无任务", noTrace: "尚无追踪", noDelivery: "未投递",
+        reviewAgent: "运行前请检查所选 Agent。", recorded: "任务输入和结果会被记录。",
+        block: { offline: "服务器离线。", task: "请先输入任务。", agent: "请先选择 Agent。", disabled: "{{name}} 已禁用，请先启用再运行新任务。", unhealthy: "{{name}} 状态异常，请修复后执行健康检查。", running: "请等待当前任务结束或将其取消。" },
+        gettingStarted: "开始使用", go: "前往 →", device: "连接本地设备", deviceOnline: "设备在线", deviceDetail: "本地桥接程序负责运行 Agent", registerProject: "注册项目", projects_one: "{{count}} 个项目", projects_other: "{{count}} 个项目", projectDetail: "克隆或连接一个代码仓库", readyAgent: "准备可用的 Agent", agentReady: "Agent 已就绪", agentDetail: "Agent 会执行你的任务", firstTask: "运行第一个任务", runs_one: "{{count}} 次运行", runs_other: "{{count}} 次运行", taskDetail: "使用下方任务输入框",
+      },
       languagePicker: {
         label: "语言",
         english: "英语",
