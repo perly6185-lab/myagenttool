@@ -9,12 +9,12 @@ const mocks = vi.hoisted(() => ({
   issueApprovalGrant: vi.fn(),
   invokeCapability: vi.fn(),
   manageOfficeDocument: vi.fn(),
-  importOfficeDocument: vi.fn(),
   selectProject: vi.fn(),
   setSection: vi.fn(),
   setOfficecliPreviewPath: vi.fn(),
   setSelectedProjectId: vi.fn(),
   setSelectedWorktreeId: vi.fn(),
+  setPendingLocalDocumentRegistration: vi.fn(),
 }));
 
 vi.mock("@/data/use-console-actions", () => ({
@@ -24,15 +24,14 @@ vi.mock("@/data/use-console-actions", () => ({
     issueApprovalGrant: mocks.issueApprovalGrant,
     invokeCapability: mocks.invokeCapability,
     manageOfficeDocument: mocks.manageOfficeDocument,
-    importOfficeDocument: mocks.importOfficeDocument,
     selectProject: mocks.selectProject,
   },
 }));
 vi.mock("@/data/use-console-state", () => ({
   useConsoleState: () => ({ data: {
     currentProjectId: "prj_1",
-    projects: [{ id: "prj_1", name: "Demo" }],
-    worktrees: [{ id: "wt_1", projectId: "prj_1", branchName: "docs" }],
+    projects: [{ id: "prj_1", name: "Demo", git: { repoPath: "/projects/demo" } }],
+    worktrees: [{ id: "wt_1", projectId: "prj_1", branchName: "docs", path: "/projects/demo/.worktrees/docs" }],
   } }),
   useRefreshConsoleState: () => vi.fn(),
 }));
@@ -42,19 +41,20 @@ vi.mock("@/store/ui-store", () => ({
     setOfficecliPreviewPath: mocks.setOfficecliPreviewPath,
     setSelectedProjectId: mocks.setSelectedProjectId,
     setSelectedWorktreeId: mocks.setSelectedWorktreeId,
+    setPendingLocalDocumentRegistration: mocks.setPendingLocalDocumentRegistration,
   }),
 }));
 
 beforeEach(() => {
   const values = new Map<string, string>();
   vi.stubGlobal("localStorage", { getItem: (key: string) => values.get(key) ?? null, setItem: (key: string, value: string) => values.set(key, value), removeItem: (key: string) => values.delete(key), clear: () => values.clear() });
+  window.myagenttoolDesktop = undefined;
   window.history.replaceState({}, "", "/?section=documents");
   mocks.projectDocuments.mockResolvedValue({ projectId: "prj_1", worktreeId: null, truncated: false, scanned: 1, documents: [{ projectId: "prj_1", worktreeId: null, name: "report.docx", path: "docs/report.docx", type: "docx", gitStatus: "clean" }] });
   mocks.officecliPreview.mockResolvedValue({ path: "docs/report.docx", content: "<p>Report preview</p>" });
   mocks.issueApprovalGrant.mockResolvedValue({ token: "grant_1" });
   mocks.invokeCapability.mockResolvedValue({ invocationId: "inv_1" });
   mocks.manageOfficeDocument.mockResolvedValue({ operation: "copy", source: "docs/report.docx", destination: "docs/copy-of-report.docx" });
-  mocks.importOfficeDocument.mockResolvedValue({ path: "docs/imported.docx", bytes: 4, type: "docx" });
 });
 
 afterEach(() => { cleanup(); vi.clearAllMocks(); });
@@ -140,23 +140,38 @@ describe("DocumentsView interaction", () => {
     }
   });
 
-  it("validates an empty import and imports a selected Office file", async () => {
-    class MockFileReader {
-      result: string | ArrayBuffer | null = null;
-      onload: null | (() => void) = null;
-      onerror: null | (() => void) = null;
-      readAsDataURL() { this.result = "data:application/octet-stream;base64,UEsDBA=="; this.onload?.(); }
-    }
-    vi.stubGlobal("FileReader", MockFileReader);
+  it("opens a selected project document in place and explains external files", async () => {
+    const pick = vi.fn().mockResolvedValueOnce({ selectionId: "sel_project", absolutePath: "/projects/demo/docs/report.docx", name: "report.docx", type: "docx", size: 10 });
+    const copySelectedOfficeDocument = vi.fn().mockResolvedValue({ path: "docs/external.docx", bytes: 10, type: "docx" });
+    window.myagenttoolDesktop = { pickLocalOfficeDocument: pick, copySelectedOfficeDocument };
     renderView();
-    fireEvent.click(screen.getByRole("button", { name: "Import" }));
-    let dialog = screen.getByRole("dialog", { name: "Import Office document" });
-    fireEvent.click(within(dialog).getByRole("button", { name: "Import document" }));
-    expect(await within(dialog).findByText(/Choose a Word/)).toBeTruthy();
-    fireEvent.change(within(dialog).getByLabelText("Office file"), { target: { files: [new File(["PK"], "imported.docx")] } });
-    dialog = screen.getByRole("dialog", { name: "Import Office document" });
-    fireEvent.click(within(dialog).getByRole("button", { name: "Import document" }));
-    await waitFor(() => expect(mocks.importOfficeDocument).toHaveBeenCalledWith("wt_1", { destination: "docs/imported.docx", dataBase64: "UEsDBA==" }));
+    fireEvent.click(screen.getByRole("button", { name: "Open local document" }));
+    await waitFor(() => expect(window.location.search).toContain("document=docs%2Freport.docx"));
+    pick.mockResolvedValueOnce({ selectionId: "sel_external", absolutePath: "/Downloads/external.docx", name: "external.docx", type: "docx", size: 10 });
+    fireEvent.click(screen.getByRole("button", { name: "Open local document" }));
+    expect(await screen.findByRole("dialog", { name: "Document is outside registered projects" })).toBeTruthy();
+    expect(screen.getByText("/Downloads/external.docx")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Add copy to Worktree" }));
+    await waitFor(() => expect(copySelectedOfficeDocument).toHaveBeenCalledWith({ selectionId: "sel_external", worktreeId: "wt_1", destination: "docs/external.docx" }));
+  });
+
+  it("hands an external document directory to Projects registration", async () => {
+    window.myagenttoolDesktop = { pickLocalOfficeDocument: vi.fn().mockResolvedValue({ selectionId: "sel", absolutePath: "C:\\Users\\psy\\Reports\\Q4.docx", name: "Q4.docx", type: "docx", size: 10 }) };
+    renderView();
+    fireEvent.click(screen.getByRole("button", { name: "Open local document" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Go to Projects" }));
+    expect(mocks.setPendingLocalDocumentRegistration).toHaveBeenCalledWith({ directory: "C:/Users/psy/Reports", documentName: "Q4.docx" });
+    expect(mocks.setSection).toHaveBeenCalledWith("projects");
+  });
+
+  it("offers a non-overwriting available name when an external copy conflicts", async () => {
+    const copySelectedOfficeDocument = vi.fn().mockRejectedValueOnce(new Error("A document already exists at the destination.")).mockResolvedValueOnce({ path: "docs/Q4 (1).docx", bytes: 10, type: "docx" });
+    window.myagenttoolDesktop = { pickLocalOfficeDocument: vi.fn().mockResolvedValue({ selectionId: "sel", absolutePath: "/Downloads/Q4.docx", name: "Q4.docx", type: "docx", size: 10 }), copySelectedOfficeDocument };
+    renderView();
+    fireEvent.click(screen.getByRole("button", { name: "Open local document" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Add copy to Worktree" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Use available name" }));
+    await waitFor(() => expect(copySelectedOfficeDocument).toHaveBeenLastCalledWith({ selectionId: "sel", worktreeId: "wt_1", destination: "docs/Q4.docx", onConflict: "rename" }));
   });
 
   it("renames and moves a worktree document and surfaces conflicts", async () => {

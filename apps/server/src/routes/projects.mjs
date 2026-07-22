@@ -1057,15 +1057,6 @@ export async function handleProjectRoutes({
       }
       return true;
     }
-    if (action === "office-document-import" && req.method === "POST") {
-      try {
-        const body = await readJson(req);
-        sendJson(res, 201, importOfficeDocument(worktree, body));
-      } catch (error) {
-        sendJson(res, 400, { error: "office_document_import_failed", message: errorMessage(error) });
-      }
-      return true;
-    }
     if (action === "office-document-manage" && req.method === "POST") {
       try {
         const body = await readJson(req);
@@ -1181,42 +1172,7 @@ function gitSummaryForWorktree(summary) {
 // contained .gitignore so attachments never show up as untracked clutter in the
 // worktree diff or get swept into a commit by ephemeral cleanup.
 const MAX_ATTACHMENT_BYTES = 5 * 1024 * 1024;
-const MAX_OFFICE_IMPORT_BYTES = 10 * 1024 * 1024;
 const OFFICE_IMPORT_EXTENSIONS = new Set([".docx", ".xlsx", ".pptx"]);
-
-export function importOfficeDocument(worktree, body) {
-  const root = resolve(worktree.path);
-  const destination = String(body?.destination ?? body?.path ?? "").trim().replaceAll("\\", "/");
-  if (!destination || destination.startsWith("/") || destination.startsWith("~") || destination.split("/").includes("..")) {
-    throw new Error("Import destination must be a relative path inside the worktree.");
-  }
-  const extension = extname(destination).toLowerCase();
-  if (!OFFICE_IMPORT_EXTENSIONS.has(extension)) throw new Error("Import supports only .docx, .xlsx, and .pptx files.");
-  const encoded = String(body?.dataBase64 ?? "");
-  if (!encoded || !/^[A-Za-z0-9+/]+={0,2}$/.test(encoded)) throw new Error("A valid base64 document is required.");
-  const buffer = Buffer.from(encoded, "base64");
-  if (buffer.length === 0 || buffer.length > MAX_OFFICE_IMPORT_BYTES) throw new Error("Office document must be between 1 byte and 10 MiB.");
-  // OOXML documents are ZIP packages. This is a cheap corruption/wrong-file
-  // guard; OfficeCLI performs the authoritative parse when previewing/editing.
-  if (buffer[0] !== 0x50 || buffer[1] !== 0x4b) throw new Error("The uploaded file is not an OOXML package.");
-
-  const target = resolve(root, destination);
-  const rel = relative(root, target);
-  if (!rel || rel === ".." || rel.startsWith(`..${sep}`) || isAbsolute(rel)) throw new Error("Import destination escapes the worktree.");
-  const parent = dirname(target);
-  // Refuse any existing symlink component before mkdir/write can follow it.
-  let cursor = root;
-  for (const part of relative(root, parent).split(sep).filter(Boolean)) {
-    cursor = join(cursor, part);
-    if (existsSync(cursor) && lstatSync(cursor).isSymbolicLink()) throw new Error("Import destination escapes the worktree through a symlink.");
-  }
-  mkdirSync(parent, { recursive: true });
-  const realRoot = realpathSync(root);
-  const realParent = realpathSync(parent);
-  if (realParent !== realRoot && !realParent.startsWith(realRoot + sep)) throw new Error("Import destination escapes the worktree.");
-  writeFileSync(target, buffer, { flag: "wx" });
-  return { path: destination, bytes: buffer.length, type: extension.slice(1) };
-}
 
 export function manageOfficeDocument(worktree, body) {
   const operation = String(body?.operation ?? "");

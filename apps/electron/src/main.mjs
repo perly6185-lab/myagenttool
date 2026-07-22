@@ -7,6 +7,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { bundledAgentEnv } from "./bundled-agent-runtime.mjs";
 import { overlayFromChrome, readSkinSettings, registerSkinChrome } from "./skin-chrome.mjs";
+import { registerLocalOfficeDocumentPicker } from "./local-office-document-picker.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(__dirname, "../../..");
@@ -105,7 +106,7 @@ async function startApp() {
     return;
   }
 
-  createMainWindow(`${webUrl}/?api=${encodeURIComponent(serverUrl)}`);
+  createMainWindow(`${webUrl}/?api=${encodeURIComponent(serverUrl)}`, serverUrl);
 }
 
 function runtimePaths() {
@@ -151,8 +152,9 @@ function registerSkinIpc() {
   });
 }
 
-function createMainWindow(url) {
+function createMainWindow(url, serverUrl) {
   registerSkinIpc();
+  registerLocalOfficeDocumentPicker({ ipcMain, dialog, getWindow: () => mainWindow, getWorktrees: async () => (await (await fetch(`${serverUrl}/api/state`)).json()).worktrees ?? [] });
   const chrome = readSkinSettings(skinStateDir());
   nativeTheme.themeSource = chrome.themeSource;
 

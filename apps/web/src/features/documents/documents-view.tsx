@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { Copy, FilePlus2, FileSpreadsheet, FileText, Loader2, Move, Pencil, Pin, PinOff, Presentation, Search, Trash2, Upload, X } from "lucide-react";
+import { Copy, FilePlus2, FileSpreadsheet, FileText, FolderOpen, Loader2, Move, Pencil, Pin, PinOff, Presentation, Search, Trash2, X } from "lucide-react";
 import { api } from "@/data/use-console-actions";
 import { useConsoleState, useRefreshConsoleState } from "@/data/use-console-state";
 import { Button } from "@/components/ui/button";
@@ -13,6 +13,7 @@ import { ApiError } from "@/lib/api-client";
 import { useUiStore } from "@/store/ui-store";
 import { clearRecentDocuments, readRecentDocuments, recordRecentDocument, removeRecentDocument, toggleRecentDocumentPinned, type RecentDocument } from "@/features/documents/recent-documents";
 import { readDocumentTemplates, removeDocumentTemplate, saveDocumentTemplate, type DocumentTemplate } from "@/features/documents/document-templates";
+import { classifyLocalDocumentPath, directoryOfLocalPath, type LocalOfficeDocumentSelection } from "@/features/documents/local-document-location";
 
 type DocumentType = "all" | "docx" | "xlsx" | "pptx";
 const FILTERS: Array<{ value: DocumentType; label: string }> = [
@@ -40,8 +41,12 @@ export function DocumentsView() {
   const [worktreeId, setWorktreeId] = useState("");
   const [browseScope, setBrowseScope] = useState<"base" | "worktree">("base");
   const [pendingSelectionPath, setPendingSelectionPath] = useState<string | null>(null);
+  const [pendingSelectionError, setPendingSelectionError] = useState<string | null>(null);
   const [createOpen, setCreateOpen] = useState(false);
-  const [importOpen, setImportOpen] = useState(false);
+  const [externalSelection, setExternalSelection] = useState<LocalOfficeDocumentSelection | null>(null);
+  const [openLocalError, setOpenLocalError] = useState<string | null>(null);
+  const setPendingLocalDocumentRegistration = useUiStore((state) => state.setPendingLocalDocumentRegistration);
+  const setSection = useUiStore((state) => state.setSection);
   const [templateOpen, setTemplateOpen] = useState(false);
   const [manageOperation, setManageOperation] = useState<"rename" | "move" | "copy" | "delete" | null>(null);
   const [recent, setRecent] = useState<RecentDocument[]>(() => readRecentDocuments());
@@ -90,7 +95,14 @@ export function DocumentsView() {
     setSelected(match);
     writeDocumentUrl(projectId, match.path, match.worktreeId ?? undefined);
     setPendingSelectionPath(null);
+    setPendingSelectionError(null);
   }, [pendingSelectionPath, rows, projectId]);
+
+  useEffect(() => {
+    if (!pendingSelectionPath) return;
+    const timer = window.setTimeout(() => { setPendingSelectionError(`Could not locate ${pendingSelectionPath}. It may have moved or been deleted.`); setPendingSelectionPath(null); }, 5_000);
+    return () => window.clearTimeout(timer);
+  }, [pendingSelectionPath]);
 
   useEffect(() => {
     if (projectWorktrees.some((worktree) => worktree.id === worktreeId)) return;
@@ -108,6 +120,22 @@ export function DocumentsView() {
     setSelected(null);
     await api.selectProject(nextId);
     await refresh();
+  };
+
+  const openLocalDocument = async () => {
+    setOpenLocalError(null);
+    const picker = window.myagenttoolDesktop?.pickLocalOfficeDocument;
+    if (!picker) { setOpenLocalError("Opening a local path is available in the desktop app."); return; }
+    try {
+      const selection = await picker();
+      if (!selection) return;
+      const location = classifyLocalDocumentPath(selection.absolutePath, projects, state?.worktrees ?? []);
+      if (location.scope === "external") { setExternalSelection(selection); return; }
+      if (location.projectId !== projectId) await switchProject(location.projectId);
+      if (location.scope === "worktree") setWorktreeId(location.worktreeId);
+      setBrowseScope(location.scope === "worktree" ? "worktree" : "base");
+      setPendingSelectionPath(location.relativePath);
+    } catch (caught) { setOpenLocalError(caught instanceof Error ? caught.message : "Could not open the local document."); }
   };
 
   if (state && projects.length === 0) return <DocumentsEmptyProjects />;
@@ -135,9 +163,11 @@ export function DocumentsView() {
           <Search className="pointer-events-none absolute left-2.5 top-2 size-3.5 text-muted-foreground" />
           <Input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search documents…" className="h-8 pl-8" />
         </label>
-        <Button size="sm" variant="secondary" disabled={!projectId} onClick={() => setImportOpen(true)}><Upload className="mr-1 size-3.5" /> Import</Button>
+        <Button size="sm" variant="secondary" disabled={!projectId} onClick={() => void openLocalDocument()}><FolderOpen className="mr-1 size-3.5" /> Open local document</Button>
         <Button size="sm" disabled={!projectId} onClick={() => setCreateOpen(true)}><FilePlus2 className="mr-1 size-3.5" /> New</Button>
       </header>
+      {openLocalError ? <p className="rounded-md border border-warning/40 bg-warning/10 px-3 py-2 text-sm">{openLocalError}</p> : null}
+      {pendingSelectionError ? <div className="flex items-center justify-between gap-3 rounded-md border border-warning/40 bg-warning/10 px-3 py-2 text-sm"><span>{pendingSelectionError}</span><Button size="sm" variant="secondary" onClick={() => void openLocalDocument()}>Select again</Button></div> : null}
 
       <div className="grid min-h-0 flex-1 grid-cols-1 gap-3 lg:grid-cols-[minmax(260px,360px)_minmax(0,1fr)]">
         <section className="min-h-0 overflow-y-auto rounded-lg border border-border bg-card" aria-label="Office documents">
@@ -149,7 +179,7 @@ export function DocumentsView() {
         <DocumentPreview projectId={projectId} document={selected} worktrees={projectWorktrees} worktreeId={worktreeId} onWorktreeChange={setWorktreeId} onUseTemplate={() => { setTemplateSource(null); setTemplateOpen(true); }} onSaveTemplate={() => setSaveTemplateOpen(true)} onManage={setManageOperation} />
       </div>
       <DocumentWriteModal mode="create" open={createOpen} onClose={() => setCreateOpen(false)} projectId={projectId} worktrees={projectWorktrees} defaultWorktreeId={worktreeId} onComplete={(targetWorktreeId, path) => { setWorktreeId(targetWorktreeId); setBrowseScope("worktree"); setPendingSelectionPath(path); }} />
-      <DocumentWriteModal mode="import" open={importOpen} onClose={() => setImportOpen(false)} projectId={projectId} worktrees={projectWorktrees} defaultWorktreeId={worktreeId} onComplete={(targetWorktreeId, path) => { setWorktreeId(targetWorktreeId); setBrowseScope("worktree"); setPendingSelectionPath(path); }} />
+      <ExternalDocumentModal selection={externalSelection} worktrees={projectWorktrees} defaultWorktreeId={worktreeId} onClose={() => setExternalSelection(null)} onRegister={() => { if (!externalSelection) return; setPendingLocalDocumentRegistration({ directory: directoryOfLocalPath(externalSelection.absolutePath), documentName: externalSelection.name }); setExternalSelection(null); setSection("projects"); }} onCopied={(targetWorktreeId, path) => { setExternalSelection(null); setWorktreeId(targetWorktreeId); setBrowseScope("worktree"); setPendingSelectionPath(path); }} />
       <DocumentWriteModal mode="template" open={templateOpen} onClose={() => setTemplateOpen(false)} projectId={projectId} worktrees={projectWorktrees} defaultWorktreeId={templateSource?.worktreeId ?? selected?.worktreeId ?? worktreeId} template={templateSource ? { ...templateSource, name: templateSource.path.split("/").at(-1) ?? templateSource.name, gitStatus: "clean" } : selected ?? undefined} templateDefinition={templateSource ?? undefined} onComplete={(targetWorktreeId, path) => { setWorktreeId(targetWorktreeId); setBrowseScope("worktree"); setPendingSelectionPath(path); }} />
       <SaveTemplateModal open={saveTemplateOpen} document={selected} onClose={() => setSaveTemplateOpen(false)} onSave={(name, fields) => { if (selected) setTemplates(saveDocumentTemplate(selected, name, fields)); setSaveTemplateOpen(false); }} />
       <DocumentManageModal operation={manageOperation} document={selected} onClose={() => setManageOperation(null)} onComplete={(path) => { setManageOperation(null); if (path) setPendingSelectionPath(path); else setSelected(null); }} />
@@ -276,12 +306,11 @@ export function normalizeDocumentDestination(input: string, type: Exclude<Docume
   return `${withoutOfficeExtension}.${type}`;
 }
 
-function DocumentWriteModal({ mode, open, onClose, projectId, worktrees, defaultWorktreeId, onComplete, template, templateDefinition }: { mode: "create" | "import" | "template"; open: boolean; onClose: () => void; projectId: string; worktrees: Array<{ id: string; name?: string; branchName?: string; branch?: string }>; defaultWorktreeId: string; onComplete: (worktreeId: string, path: string) => void; template?: ProjectDocumentEntry; templateDefinition?: DocumentTemplate }) {
+function DocumentWriteModal({ mode, open, onClose, projectId, worktrees, defaultWorktreeId, onComplete, template, templateDefinition }: { mode: "create" | "template"; open: boolean; onClose: () => void; projectId: string; worktrees: Array<{ id: string; name?: string; branchName?: string; branch?: string }>; defaultWorktreeId: string; onComplete: (worktreeId: string, path: string) => void; template?: ProjectDocumentEntry; templateDefinition?: DocumentTemplate }) {
   const queryClient = useQueryClient();
   const [type, setType] = useState<Exclude<DocumentType, "all">>("docx");
   const [destination, setDestination] = useState("untitled.docx");
   const [worktreeId, setWorktreeId] = useState(defaultWorktreeId);
-  const [file, setFile] = useState<File | null>(null);
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [templateData, setTemplateData] = useState("{}");
@@ -306,10 +335,6 @@ function DocumentWriteModal({ mode, open, onClose, projectId, worktrees, default
       if (mode === "create") {
         const grant = (await api.issueApprovalGrant("wrapper:create", "app_officecli")) as { token: string };
         await api.invokeCapability("app.app_officecli.apply.create", { projectId, worktreeId, file: path, approvalToken: grant.token });
-      } else if (mode === "import") {
-        if (!file) throw new Error("Choose a Word, Excel, or PowerPoint file to import.");
-        const dataBase64 = await readFileBase64(file);
-        await api.importOfficeDocument(worktreeId, { destination: path, dataBase64 });
       } else {
         if (!template?.worktreeId || template.worktreeId !== worktreeId) throw new Error("Template and output must use the same worktree.");
         const data = templateDefinition?.fields.length ? templateValues : JSON.parse(templateData) as Record<string, unknown>;
@@ -328,13 +353,13 @@ function DocumentWriteModal({ mode, open, onClose, projectId, worktrees, default
   };
 
   return (
-    <Modal open={open} onClose={pending ? () => undefined : onClose} title={mode === "create" ? "New Office document" : mode === "import" ? "Import Office document" : "Create from template"} description="Writes are confined to a worktree so changes remain reviewable before promotion.">
+    <Modal open={open} onClose={pending ? () => undefined : onClose} title={mode === "create" ? "New Office document" : "Create from template"} description="Writes are confined to a worktree so changes remain reviewable before promotion.">
       <div className="space-y-3">
         {worktrees.length === 0 ? <p className="rounded-md border border-warning/40 bg-warning/10 p-3 text-sm">This project has no worktree. Create one from Projects before writing documents.</p> : <label className="block space-y-1 text-sm"><span>Worktree</span><Select value={worktreeId} onChange={(event) => setWorktreeId(event.target.value)}>{worktrees.map((worktree) => <option key={worktree.id} value={worktree.id}>{worktree.name ?? worktree.branchName ?? worktree.branch ?? worktree.id}</option>)}</Select></label>}
-        {mode === "create" ? <label className="block space-y-1 text-sm"><span>Document type</span><Select value={type} onChange={(event) => setType(event.target.value as Exclude<DocumentType, "all">)}><option value="docx">Word (.docx)</option><option value="xlsx">Excel (.xlsx)</option><option value="pptx">PowerPoint (.pptx)</option></Select></label> : mode === "import" ? <label className="block space-y-1 text-sm"><span>Office file</span><Input type="file" accept=".docx,.xlsx,.pptx" onChange={(event) => { const next = event.target.files?.[0] ?? null; setFile(next); if (next) setDestination(`docs/${next.name}`); }} /></label> : <><p className="rounded bg-muted p-2 font-mono text-xs">Template: {template?.path}</p>{templateDefinition?.fields.length ? templateDefinition.fields.map((field) => <label key={field.key} className="block space-y-1 text-sm"><span>{field.label}</span><Input aria-label={field.label} value={templateValues[field.key] ?? ""} onChange={(event) => setTemplateValues((values) => ({ ...values, [field.key]: event.target.value }))} /></label>) : <label className="block space-y-1 text-sm"><span>Template data (JSON)</span><textarea value={templateData} onChange={(event) => setTemplateData(event.target.value)} rows={5} className="w-full rounded-md border border-border bg-background p-2 font-mono text-xs" /></label>}</>}
+        {mode === "create" ? <label className="block space-y-1 text-sm"><span>Document type</span><Select value={type} onChange={(event) => setType(event.target.value as Exclude<DocumentType, "all">)}><option value="docx">Word (.docx)</option><option value="xlsx">Excel (.xlsx)</option><option value="pptx">PowerPoint (.pptx)</option></Select></label> : <><p className="rounded bg-muted p-2 font-mono text-xs">Template: {template?.path}</p>{templateDefinition?.fields.length ? templateDefinition.fields.map((field) => <label key={field.key} className="block space-y-1 text-sm"><span>{field.label}</span><Input aria-label={field.label} value={templateValues[field.key] ?? ""} onChange={(event) => setTemplateValues((values) => ({ ...values, [field.key]: event.target.value }))} /></label>) : <label className="block space-y-1 text-sm"><span>Template data (JSON)</span><textarea value={templateData} onChange={(event) => setTemplateData(event.target.value)} rows={5} className="w-full rounded-md border border-border bg-background p-2 font-mono text-xs" /></label>}</>}
         <label className="block space-y-1 text-sm"><span>Destination in worktree</span><Input value={destination} onChange={(event) => setDestination(event.target.value)} placeholder="docs/report.docx" spellCheck={false} /></label>
         {error ? <p className="text-sm text-destructive">{error}</p> : null}
-        <div className="flex justify-end gap-2"><Button variant="secondary" onClick={onClose} disabled={pending}>Cancel</Button><Button onClick={() => void submit()} disabled={pending || worktrees.length === 0}>{pending ? "Working…" : mode === "create" ? "Create document" : mode === "import" ? "Import document" : "Create from template"}</Button></div>
+        <div className="flex justify-end gap-2"><Button variant="secondary" onClick={onClose} disabled={pending}>Cancel</Button><Button onClick={() => void submit()} disabled={pending || worktrees.length === 0}>{pending ? "Working…" : mode === "create" ? "Create document" : "Create from template"}</Button></div>
       </div>
     </Modal>
   );
@@ -346,6 +371,23 @@ function SaveTemplateModal({ open, document, onClose, onSave }: { open: boolean;
   useEffect(() => { if (open && document) { setName(document.name.replace(/\.(docx|xlsx|pptx)$/i, "")); setFields(""); } }, [open, document]);
   if (!document?.worktreeId) return null;
   return <Modal open={open} onClose={onClose} title="Add to templates" description="Define the fields users fill in when creating a document from this template."><div className="space-y-3"><label className="block space-y-1 text-sm"><span>Template name</span><Input aria-label="Template name" value={name} onChange={(event) => setName(event.target.value)} /></label><label className="block space-y-1 text-sm"><span>Field keys</span><Input aria-label="Template field keys" value={fields} onChange={(event) => setFields(event.target.value)} placeholder="title, owner, quarter" /><span className="block text-xs text-muted-foreground">Comma-separated keys matching placeholders in the template.</span></label><div className="flex justify-end gap-2"><Button variant="secondary" onClick={onClose}>Cancel</Button><Button onClick={() => onSave(name, fields.split(","))}>Save template</Button></div></div></Modal>;
+}
+
+function ExternalDocumentModal({ selection, worktrees, defaultWorktreeId, onClose, onRegister, onCopied }: { selection: LocalOfficeDocumentSelection | null; worktrees: Array<{ id: string; name?: string; branchName?: string; branch?: string }>; defaultWorktreeId: string; onClose: () => void; onRegister: () => void; onCopied: (worktreeId: string, path: string) => void }) {
+  const [targetWorktreeId, setTargetWorktreeId] = useState(defaultWorktreeId);
+  const [destination, setDestination] = useState("");
+  const [pending, setPending] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  useEffect(() => { if (selection) { setTargetWorktreeId(defaultWorktreeId || worktrees[0]?.id || ""); setDestination(`docs/${selection.name}`); setError(null); } }, [selection, defaultWorktreeId, worktrees]);
+  const copy = async (onConflict?: "rename") => {
+    const bridge = window.myagenttoolDesktop?.copySelectedOfficeDocument;
+    if (!selection || !bridge) { setError("Copying local files requires the desktop app."); return; }
+    setPending(true); setError(null);
+    try { const result = await bridge({ selectionId: selection.selectionId, worktreeId: targetWorktreeId, destination, ...(onConflict ? { onConflict } : {}) }); onCopied(targetWorktreeId, result.path); }
+    catch (caught) { setError(caught instanceof Error ? caught.message : "Could not copy the document."); }
+    finally { setPending(false); }
+  };
+  return <Modal open={Boolean(selection)} onClose={pending ? () => undefined : onClose} closeDisabled={pending} title="Document is outside registered projects" description="MyAgentTool will not upload or silently copy this local file."><div className="space-y-3"><p className="rounded bg-muted p-2 font-mono text-xs break-all">{selection?.absolutePath}</p><p className="text-sm text-muted-foreground">Register its containing folder to open in place, or explicitly add one local copy to a Worktree.</p>{worktrees.length ? <><label className="block space-y-1 text-sm"><span>Target Worktree</span><Select value={targetWorktreeId} onChange={(event) => setTargetWorktreeId(event.target.value)}>{worktrees.map((item) => <option key={item.id} value={item.id}>{item.name ?? item.branchName ?? item.branch ?? item.id}</option>)}</Select></label><label className="block space-y-1 text-sm"><span>Destination in worktree</span><Input value={destination} onChange={(event) => setDestination(event.target.value)} /></label></> : null}{error ? <div className="space-y-2"><p className="text-sm text-destructive">{error}</p>{error.includes("already exists") ? <Button size="sm" variant="secondary" onClick={() => void copy("rename")}>Use available name</Button> : null}</div> : null}<div className="flex flex-wrap justify-end gap-2"><Button variant="secondary" onClick={onClose} disabled={pending}>Cancel</Button><Button variant="secondary" onClick={onRegister} disabled={pending}>Go to Projects</Button>{worktrees.length ? <Button onClick={() => void copy()} disabled={pending || !destination.trim()}>Add copy to Worktree</Button> : null}</div></div></Modal>;
 }
 
 function DocumentManageModal({ operation, document, onClose, onComplete }: { operation: "rename" | "move" | "copy" | "delete" | null; document: ProjectDocumentEntry | null; onClose: () => void; onComplete: (path: string | null) => void }) {
@@ -383,13 +425,4 @@ function DocumentManageModal({ operation, document, onClose, onComplete }: { ope
       <div className="flex justify-end gap-2"><Button variant="secondary" onClick={onClose} disabled={pending}>Cancel</Button><Button variant={operation === "delete" ? "destructive" : "primary"} onClick={() => void submit()} disabled={pending || (operation !== "delete" && !destination.trim())}>{pending ? "Working…" : labels[operation]}</Button></div>
     </div>
   </Modal>;
-}
-
-function readFileBase64(file: File): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(String(reader.result ?? "").split(",")[1] ?? "");
-    reader.onerror = () => reject(new Error("Could not read the selected file."));
-    reader.readAsDataURL(file);
-  });
 }

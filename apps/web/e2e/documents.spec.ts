@@ -2,8 +2,8 @@ import { expect, test, type Page } from "playwright/test";
 
 const state = {
   currentProjectId: "prj_1",
-  projects: [{ id: "prj_1", name: "E2E Project" }],
-  worktrees: [{ id: "wt_1", projectId: "prj_1", branchName: "documents-e2e" }],
+  projects: [{ id: "prj_1", name: "E2E Project", git: { repoPath: "/projects/e2e" } }],
+  worktrees: [{ id: "wt_1", projectId: "prj_1", branchName: "documents-e2e", path: "/projects/e2e/.worktrees/documents" }],
   device: { id: "dev_1", name: "Test device", status: "online" },
 };
 
@@ -21,9 +21,20 @@ async function mockApi(page: Page) {
 }
 
 test.beforeEach(async ({ page }) => {
+  await page.addInitScript(() => {
+    window.myagenttoolDesktop = { pickLocalOfficeDocument: async () => ({ selectionId: "sel_1", absolutePath: "/projects/e2e/docs/report.docx", name: "report.docx", type: "docx", size: 100 }) };
+  });
   await mockApi(page);
   await page.goto("/?section=documents");
   await expect(page.getByRole("heading", { name: "Documents" })).toBeVisible();
+});
+
+test("opens a project-local document without uploading or copying it", async ({ page }) => {
+  const requests: string[] = [];
+  page.on("request", (request) => { if (request.method() !== "GET") requests.push(request.url()); });
+  await page.getByRole("button", { name: "Open local document" }).click();
+  await expect(page).toHaveURL(/document=docs%2Freport.docx/);
+  expect(requests.some((url) => url.includes("office-document-import"))).toBe(false);
 });
 
 test("discovers and previews a document through the real route", async ({ page }) => {

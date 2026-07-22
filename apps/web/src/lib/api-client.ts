@@ -587,12 +587,6 @@ export const api = {
   },
   uploadWorktreeAttachments: (id: string, files: { name: string; dataBase64: string }[]) =>
     request("POST", `/api/worktrees/${encodeURIComponent(id)}/attachments`, { files }),
-  importOfficeDocument: (id: string, payload: { destination: string; dataBase64: string }) =>
-    request<{ path: string; bytes: number; type: "docx" | "xlsx" | "pptx" }>(
-      "POST",
-      `/api/worktrees/${encodeURIComponent(id)}/office-document-import`,
-      payload,
-    ),
   manageOfficeDocument: (id: string, payload: { operation: "rename" | "move" | "copy" | "delete"; source: string; destination?: string }) =>
     request<{ operation: string; source: string; destination?: string }>(
       "POST",

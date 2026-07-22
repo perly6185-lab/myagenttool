@@ -8,4 +8,6 @@ contextBridge.exposeInMainWorld("myagenttoolDesktop", {
   applyChrome: (chrome) => {
     ipcRenderer.send("skin:apply-chrome", chrome);
   },
+  pickLocalOfficeDocument: () => ipcRenderer.invoke("documents:pick-local-office"),
+  copySelectedOfficeDocument: (input) => ipcRenderer.invoke("documents:copy-selected-office", input),
 });
