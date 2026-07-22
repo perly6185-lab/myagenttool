@@ -92,7 +92,7 @@ test("loads and searches a multi-page PDF through authenticated byte ranges", as
   expect(pdfRanges.length).toBeGreaterThan(0);
 });
 
-test("browses a deterministic DXF with layers, search, and zoom", async ({ page }) => {
+test("browses a deterministic DXF with layers, search, and zoom", async ({ page }, testInfo) => {
   const layoutRequests: URL[] = [];
   page.on("request", (request) => { if (request.url().includes("/cad-document/layout")) layoutRequests.push(new URL(request.url())); });
   await page.getByRole("button", { name: "deterministic.dxf" }).click();
@@ -105,6 +105,7 @@ test("browses a deterministic DXF with layers, search, and zoom", async ({ page 
   expect(layoutRequests.at(-1)?.searchParams.get("layersMode")).toBe("selected");
   await page.getByLabel("Zoom in").click();
   await expect(page.getByText("125%")).toBeVisible();
+  await page.screenshot({ path: testInfo.outputPath("cad-preview-desktop.png"), fullPage: true });
 });
 
 test("retries an incorrect password and unlocks a genuinely encrypted PDF", async ({ page }) => {
