@@ -666,17 +666,20 @@ export async function handleProjectRoutes({
     if (worktreeId && !worktree) { sendJson(res, 404, { error: "worktree_not_found" }); return true; }
     try {
       const root = worktree?.path ?? worktree?.worktreePath ?? project.path;
-      const pdf = readProjectPdf({ projectPath: root, relativeFile: url.searchParams.get("path") ?? "" });
-      res.statusCode = 200;
+      const pdf = readProjectPdf({ projectPath: root, relativeFile: url.searchParams.get("path") ?? "", range: req.headers.range ?? null });
+      res.statusCode = req.headers.range ? 206 : 200;
       res.setHeader("Content-Type", "application/pdf");
-      res.setHeader("Content-Length", String(pdf.size));
+      res.setHeader("Content-Length", String(pdf.bytes.length));
+      res.setHeader("Accept-Ranges", "bytes");
+      if (req.headers.range) res.setHeader("Content-Range", `bytes ${pdf.start}-${pdf.end}/${pdf.size}`);
       res.setHeader("Content-Disposition", "inline");
       res.setHeader("Cache-Control", "private, no-store");
       res.setHeader("X-Content-Type-Options", "nosniff");
       res.end(pdf.bytes);
     } catch (error) {
       const code = error instanceof PdfDocumentReadError ? error.code : "pdf_read_failed";
-      const status = code === "not_found" ? 404 : code === "pdf_too_large" ? 413 : 400;
+      const status = code === "not_found" ? 404 : code === "pdf_too_large" ? 413 : code === "range_not_satisfiable" || code === "invalid_range" ? 416 : 400;
+      if (status === 416) res.setHeader("Content-Range", "bytes */*");
       sendJson(res, status, { error: code, message: error instanceof Error ? error.message : String(error) });
     }
     return true;
