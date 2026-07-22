@@ -8,7 +8,7 @@ import {
 
 beforeEach(() => {
   localStorage.clear();
-  useUiStore.setState({ collapsedNavGroups: [...DEFAULT_COLLAPSED_NAV_GROUPS] });
+  useUiStore.setState({ collapsedNavGroups: [...DEFAULT_COLLAPSED_NAV_GROUPS], locale: "en-US" });
 });
 
 describe("ui-store persistence", () => {
@@ -21,6 +21,7 @@ describe("ui-store persistence", () => {
       invocationId: "inv_123",
     });
     useUiStore.getState().setSelectedEvidenceId("ev_123");
+    useUiStore.getState().setLocale("zh-CN");
 
     const raw = localStorage.getItem("myagenttool-ui");
     expect(raw).toBeTruthy();
@@ -34,10 +35,24 @@ describe("ui-store persistence", () => {
       invocationId: "inv_123",
     });
     expect(parsed.state.selectedEvidenceId).toBe("ev_123");
+    expect(parsed.state.locale).toBe("zh-CN");
     // Setter functions must never be serialized.
     expect(parsed.state.setSection).toBeUndefined();
     expect(parsed.state.setSelectedApplicationId).toBeUndefined();
     expect(parsed.state.setSelectedEvidenceId).toBeUndefined();
+  });
+
+  it("restores a valid locale and rejects stale unsupported values", async () => {
+    useUiStore.setState({ locale: "en-US" });
+    // setState persists, so write the simulated previous-session blob after it.
+    localStorage.setItem("myagenttool-ui", JSON.stringify({ version: 1, state: { locale: "zh-CN" } }));
+    await useUiStore.persist.rehydrate();
+    expect(useUiStore.getState().locale).toBe("zh-CN");
+
+    useUiStore.setState({ locale: "en-US" });
+    localStorage.setItem("myagenttool-ui", JSON.stringify({ version: 1, state: { locale: "fr-FR" } }));
+    await useUiStore.persist.rehydrate();
+    expect(useUiStore.getState().locale).toBe("en-US");
   });
 });
 

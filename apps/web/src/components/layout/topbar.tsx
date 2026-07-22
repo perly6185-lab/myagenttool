@@ -1,6 +1,7 @@
 import { SECTIONS } from "@/app/sections";
 import { LoginControl } from "@/components/layout/login-control";
 import { SkinPicker } from "@/components/layout/skin-picker";
+import { LanguagePicker } from "@/components/layout/language-picker";
 import { useWindowControlsOverlay } from "@/lib/window-controls-overlay";
 import { StatusBadge } from "@/components/ui/badge";
 import { Select } from "@/components/ui/input";
@@ -83,6 +84,7 @@ export function Topbar() {
           </span>
         ) : null}
         <StatusBadge tone={connection.tone}>{connection.label}</StatusBadge>
+        <LanguagePicker />
         <SkinPicker />
         <LoginControl />
         {wcoVisible ? <div className="app-wco-spacer" aria-hidden="true" /> : null}
