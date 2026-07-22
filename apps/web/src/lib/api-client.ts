@@ -296,6 +296,20 @@ async function requestBytes(path: string, retry = true): Promise<ArrayBuffer> {
   return response.arrayBuffer();
 }
 
+async function requestByteRange(path: string, start: number, end: number, retry = true): Promise<{ data: ArrayBuffer; total: number }> {
+  await ensureSession();
+  const token = getToken();
+  const response = await fetch(`${apiBase}${path}`, { method: "GET", headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}), Range: `bytes=${start}-${end - 1}` } });
+  if (response.status === 401 && retry) { setToken(null); await ensureSession(); return requestByteRange(path, start, end, false); }
+  if (response.status !== 206) {
+    const detail = await response.json().catch(() => ({})) as { message?: string; error?: string };
+    throw new ApiError(detail.error ?? "pdf_range_failed", detail.message ?? "PDF server did not honor the byte-range request.", response.status);
+  }
+  const match = /\/(\d+)$/.exec(response.headers.get("Content-Range") ?? "");
+  if (!match) throw new ApiError("invalid_content_range", "PDF byte-range response omitted its total size.", 502);
+  return { data: await response.arrayBuffer(), total: Number(match[1]) };
+}
+
 export function fetchState(): Promise<ConsoleSnapshot> {
   return request<ConsoleSnapshot>("GET", "/api/state");
 }
@@ -692,6 +706,8 @@ export const api = {
     const resource = `/api/projects/${encodeURIComponent(id)}/pdf-document?path=${encodeURIComponent(path)}${worktreeId ? `&worktree=${encodeURIComponent(worktreeId)}` : ""}`;
     return { url: `${apiBase}${resource}`, httpHeaders: token ? { Authorization: `Bearer ${token}` } : undefined };
   },
+  projectPdfRange: (id: string, path: string, start: number, end: number, worktreeId?: string) =>
+    requestByteRange(`/api/projects/${encodeURIComponent(id)}/pdf-document?path=${encodeURIComponent(path)}${worktreeId ? `&worktree=${encodeURIComponent(worktreeId)}` : ""}`, start, end),
   // Content search within a registered project root (Agent Workspace #161).
   projectSearch: (id: string, q: string) =>
     request<{ results: { path: string; line: number; preview: string }[] }>(
