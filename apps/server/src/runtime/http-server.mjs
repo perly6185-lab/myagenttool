@@ -58,6 +58,7 @@ export function createHttpServer({
   removeProject,
   removeWorktree,
   updateProject,
+  readProjectDocuments,
   readProjectTree,
   searchProjectContent,
   gitProjectSummary,
@@ -388,6 +389,7 @@ export function createHttpServer({
         removeProject,
         removeWorktree,
         updateProject,
+        readProjectDocuments,
         readProjectTree,
         searchProjectContent,
         gitProjectSummary,
@@ -708,7 +710,8 @@ export function createHttpServer({
 function setCors(res) {
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "GET,POST,PUT,PATCH,DELETE,OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "Authorization,Content-Type");
+  res.setHeader("Access-Control-Allow-Headers", "Authorization,Content-Type,Range");
+  res.setHeader("Access-Control-Expose-Headers", "Accept-Ranges,Content-Length,Content-Range");
 }
 
 async function readJson(req) {

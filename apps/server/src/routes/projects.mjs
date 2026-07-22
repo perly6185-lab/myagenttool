@@ -1,6 +1,6 @@
 import { randomBytes } from "node:crypto";
-import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
-import { basename, dirname, extname, join, relative, resolve, sep } from "node:path";
+import { constants as fsConstants, copyFileSync, existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
+import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { denyForeignProject, teamOf, LOCAL_TEAM_ID } from "../runtime/auth.mjs";
 import { computeDispatchEvaluation } from "../read-models/dispatch-evaluation.mjs";
 import { computeIssueOwnership } from "../read-models/issue-ownership.mjs";
@@ -19,6 +19,8 @@ import { computeAutoRunReadiness } from "../services/auto-run-readiness.mjs";
 import { computeMergeRisk, sensitivePathHit, DEFAULT_SENSITIVE_PATHS } from "../services/auto-run-risk.mjs";
 import { summarizeEpicChildren } from "../services/auto-run-epic.mjs";
 import { resolveAutoRunVerifyCommandFor } from "../services/worktree-verify.mjs";
+import { PdfDocumentReadError, readProjectPdf } from "../services/pdf-document-read.mjs";
+import { CadPreviewError, inspectCadDocument, renderCadDocument } from "../services/cad-preview.mjs";
 
 const IMAGE_MIME = {
   ".png": "image/png",
@@ -68,6 +70,7 @@ export async function handleProjectRoutes({
   removeProject,
   removeWorktree,
   updateProject,
+  readProjectDocuments,
   readProjectTree,
   searchProjectContent,
   gitProjectSummary,
@@ -622,6 +625,92 @@ export async function handleProjectRoutes({
     return true;
   }
 
+  const projectDocumentsMatch = url.pathname.match(/^\/api\/projects\/([^/]+)\/documents$/);
+  if (projectDocumentsMatch && req.method === "GET") {
+    const project = state.projects.find((item) => item.id === decodeURIComponent(projectDocumentsMatch[1]));
+    if (!project) {
+      sendJson(res, 404, { error: "project_not_found" });
+      return true;
+    }
+    if (denyForeignProject({ res, sendJson, state, actor, projectId: project.id, notFound: { error: "project_not_found" } })) return true;
+    try {
+      const worktreeId = url.searchParams.get("worktree");
+      const worktree = worktreeId ? (state.worktrees ?? []).find((item) => item.id === worktreeId && item.projectId === project.id) : null;
+      if (worktreeId && !worktree) {
+        sendJson(res, 404, { error: "worktree_not_found" });
+        return true;
+      }
+      const root = worktree?.path ?? worktree?.worktreePath ?? project.path;
+      const result = readProjectDocuments({ ...project, path: root }, {
+        type: url.searchParams.get("type") ?? "all",
+        search: url.searchParams.get("q") ?? "",
+        limit: url.searchParams.get("limit") ?? 200,
+      });
+      sendJson(res, 200, {
+        ...result,
+        worktreeId: worktree?.id ?? null,
+        documents: result.documents.map((document) => ({ ...document, worktreeId: worktree?.id ?? null })),
+      });
+    } catch (error) {
+      sendJson(res, 400, { error: "project_documents_unavailable", message: error instanceof Error ? error.message : String(error) });
+    }
+    return true;
+  }
+
+  const pdfDocumentMatch = url.pathname.match(/^\/api\/projects\/([^/]+)\/pdf-document$/);
+  if (pdfDocumentMatch && req.method === "GET") {
+    const project = state.projects.find((item) => item.id === decodeURIComponent(pdfDocumentMatch[1]));
+    if (!project) { sendJson(res, 404, { error: "project_not_found" }); return true; }
+    if (denyForeignProject({ res, sendJson, state, actor, projectId: project.id, notFound: { error: "project_not_found" } })) return true;
+    const worktreeId = url.searchParams.get("worktree");
+    const worktree = worktreeId ? (state.worktrees ?? []).find((item) => item.id === worktreeId && item.projectId === project.id) : null;
+    if (worktreeId && !worktree) { sendJson(res, 404, { error: "worktree_not_found" }); return true; }
+    try {
+      const root = worktree?.path ?? worktree?.worktreePath ?? project.path;
+      const pdf = readProjectPdf({ projectPath: root, relativeFile: url.searchParams.get("path") ?? "", range: req.headers.range ?? null });
+      res.statusCode = req.headers.range ? 206 : 200;
+      res.setHeader("Content-Type", "application/pdf");
+      res.setHeader("Content-Length", String(pdf.bytes.length));
+      res.setHeader("Accept-Ranges", "bytes");
+      if (req.headers.range) res.setHeader("Content-Range", `bytes ${pdf.start}-${pdf.end}/${pdf.size}`);
+      res.setHeader("Content-Disposition", "inline");
+      res.setHeader("Cache-Control", "private, no-store");
+      res.setHeader("X-Content-Type-Options", "nosniff");
+      res.end(pdf.bytes);
+    } catch (error) {
+      const code = error instanceof PdfDocumentReadError ? error.code : "pdf_read_failed";
+      const status = code === "not_found" ? 404 : code === "pdf_too_large" ? 413 : code === "range_not_satisfiable" || code === "invalid_range" ? 416 : 400;
+      if (status === 416) res.setHeader("Content-Range", "bytes */*");
+      sendJson(res, status, { error: code, message: error instanceof Error ? error.message : String(error) });
+    }
+    return true;
+  }
+
+  const cadDocumentMatch = url.pathname.match(/^\/api\/projects\/([^/]+)\/cad-document(\/layout)?$/);
+  if (cadDocumentMatch && req.method === "GET") {
+    const project = state.projects.find((item) => item.id === decodeURIComponent(cadDocumentMatch[1]));
+    if (!project) { sendJson(res, 404, { error: "project_not_found" }); return true; }
+    if (denyForeignProject({ res, sendJson, state, actor, projectId: project.id, notFound: { error: "project_not_found" } })) return true;
+    const worktreeId = url.searchParams.get("worktree");
+    const worktree = worktreeId ? (state.worktrees ?? []).find((item) => item.id === worktreeId && item.projectId === project.id) : null;
+    if (worktreeId && !worktree) { sendJson(res, 404, { error: "worktree_not_found" }); return true; }
+    const rootPath = worktree?.path ?? worktree?.worktreePath ?? project.path;
+    const args = { projectPath: rootPath, relativeFile: url.searchParams.get("path") ?? "" };
+    try {
+      const result = cadDocumentMatch[2]
+        ? await renderCadDocument({ ...args, layout: url.searchParams.get("layout") ?? "Model", visibleLayers: url.searchParams.get("layersMode") === "selected" ? url.searchParams.getAll("layers") : undefined })
+        : await inspectCadDocument(args);
+      res.setHeader("Cache-Control", "private, no-store");
+      res.setHeader("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; img-src 'none'; font-src 'none'; connect-src 'none'; frame-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'");
+      sendJson(res, 200, result);
+    } catch (error) {
+      const code = error instanceof CadPreviewError ? error.code : "cad_processing_failed";
+      const status = code === "cad_not_found" ? 404 : code === "cad_file_too_large" || code === "cad_output_too_large" || code.endsWith("_limit_exceeded") ? 413 : code === "ezdxf_unavailable" || code === "oda_unavailable" ? 503 : 400;
+      sendJson(res, status, { error: code, message: error instanceof CadPreviewError ? error.message : "CAD preview could not be produced." });
+    }
+    return true;
+  }
+
   const officecliPreviewMatch = url.pathname.match(/^\/api\/projects\/([^/]+)\/officecli-preview$/);
   if (officecliPreviewMatch && req.method === "GET") {
     const project = state.projects.find((item) => item.id === decodeURIComponent(officecliPreviewMatch[1]));
@@ -1024,6 +1113,15 @@ export async function handleProjectRoutes({
       }
       return true;
     }
+    if (action === "office-document-manage" && req.method === "POST") {
+      try {
+        const body = await readJson(req);
+        sendJson(res, 200, manageOfficeDocument(worktree, body));
+      } catch (error) {
+        sendJson(res, 400, { error: "office_document_manage_failed", message: errorMessage(error) });
+      }
+      return true;
+    }
     if (action === "push" && req.method === "POST") {
       try {
         const result = await publishWorktreeBranch(worktree.id);
@@ -1130,6 +1228,48 @@ function gitSummaryForWorktree(summary) {
 // contained .gitignore so attachments never show up as untracked clutter in the
 // worktree diff or get swept into a commit by ephemeral cleanup.
 const MAX_ATTACHMENT_BYTES = 5 * 1024 * 1024;
+const OFFICE_IMPORT_EXTENSIONS = new Set([".docx", ".xlsx", ".pptx"]);
+
+export function manageOfficeDocument(worktree, body) {
+  const operation = String(body?.operation ?? "");
+  if (!["rename", "move", "copy", "delete"].includes(operation)) throw new Error("Unsupported document operation.");
+  const root = resolve(worktree.path);
+  const source = resolveOfficeDocumentPath(root, body?.source, { mustExist: true });
+  if (lstatSync(source.absolute).isSymbolicLink() || !lstatSync(source.absolute).isFile()) throw new Error("Source must be a regular Office document.");
+  if (operation === "delete") {
+    unlinkSync(source.absolute);
+    return { operation, source: source.relative };
+  }
+  const destination = resolveOfficeDocumentPath(root, body?.destination, { mustExist: false, createParent: true });
+  if (extname(source.relative).toLowerCase() !== extname(destination.relative).toLowerCase()) {
+    throw new Error("Destination must keep the source document type.");
+  }
+  if (existsSync(destination.absolute)) throw new Error("A document already exists at the destination.");
+  if (operation === "copy") copyFileSync(source.absolute, destination.absolute, fsConstants.COPYFILE_EXCL);
+  else renameSync(source.absolute, destination.absolute);
+  return { operation, source: source.relative, destination: destination.relative };
+}
+
+function resolveOfficeDocumentPath(root, input, { mustExist, createParent = false }) {
+  const value = String(input ?? "").trim().replaceAll("\\", "/");
+  if (!value || value.startsWith("/") || value.startsWith("~") || value.split("/").includes("..")) throw new Error("Document path must be relative to the worktree.");
+  if (!OFFICE_IMPORT_EXTENSIONS.has(extname(value).toLowerCase())) throw new Error("Document path must end in .docx, .xlsx, or .pptx.");
+  const absolute = resolve(root, value);
+  const rel = relative(root, absolute);
+  if (!rel || rel === ".." || rel.startsWith(`..${sep}`) || isAbsolute(rel)) throw new Error("Document path escapes the worktree.");
+  const parent = dirname(absolute);
+  let cursor = root;
+  for (const part of relative(root, parent).split(sep).filter(Boolean)) {
+    cursor = join(cursor, part);
+    if (existsSync(cursor) && lstatSync(cursor).isSymbolicLink()) throw new Error("Document path escapes the worktree through a symlink.");
+  }
+  if (createParent) mkdirSync(parent, { recursive: true });
+  const realRoot = realpathSync(root);
+  const realParent = realpathSync(parent);
+  if (realParent !== realRoot && !realParent.startsWith(realRoot + sep)) throw new Error("Document path escapes the worktree.");
+  if (mustExist && !existsSync(absolute)) throw new Error("Source document does not exist.");
+  return { absolute, relative: value };
+}
 
 function saveAttachments(worktree, files) {
   const list = Array.isArray(files) ? files.slice(0, 6) : [];

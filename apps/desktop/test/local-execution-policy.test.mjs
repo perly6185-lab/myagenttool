@@ -589,6 +589,46 @@ function officecliGate({ execArgs, capability, root = gitRoot, cwd = gitRoot, re
   );
 }
 
+function pdfcpuGate({ execArgs, capability, root = gitRoot, cwd = gitRoot, resolveBinary = () => true }) {
+  const spec = { execCommand: "pdfcpu", execArgs, capability, filePolicy: "read_only", networkPolicy: "forbidden" };
+  const work = { project: { path: root }, options: { metadata: { applicationWrapper: spec, worktreePath: root } } };
+  return localExecutionGate(
+    work,
+    { type: "cli", command: "node" },
+    {
+      command: process.execPath,
+      args: wrapperArgs(spec, { cwd }),
+      cwd,
+      localPolicy: { filePolicy: "read_only", networkPolicy: "forbidden", source: "application_wrapper" },
+    },
+    { manifest, resolveBinary },
+  );
+}
+
+test("pdfcpu wrapper: fixed validate and info commands are allowed for safe PDF paths", () => {
+  assert.equal(pdfcpuGate({
+    capability: "app.app_pdfcpu.wrapper.validate",
+    execArgs: ["validate", "--offline", "--conf", "disable", "--mode", "strict", "docs/report.pdf"],
+  }).allowed, true);
+  assert.equal(pdfcpuGate({
+    capability: "app.app_pdfcpu.wrapper.info",
+    execArgs: ["info", "--offline", "--conf", "disable", "--json", "report.PDF"],
+  }).allowed, true);
+});
+
+test("pdfcpu wrapper: mutations, unsafe paths, extra flags, and missing files are refused", () => {
+  const cases = [
+    ["app.app_pdfcpu.wrapper.merge", ["merge", "out.pdf", "a.pdf"]],
+    ["app.app_pdfcpu.wrapper.validate", ["validate", "--offline", "--conf", "disable", "--mode", "strict", "../secret.pdf"]],
+    ["app.app_pdfcpu.wrapper.info", ["info", "--offline", "--conf", "disable", "--json", "report.pdf", "--pages", "1"]],
+    ["app.app_pdfcpu.wrapper.info", ["info", "--offline", "--conf", "disable", "--json"]],
+    ["app.app_pdfcpu.wrapper.info", ["info", "--offline", "--conf", "disable", "--json", "report.docx"]],
+  ];
+  for (const [capability, execArgs] of cases) {
+    assert.equal(pdfcpuGate({ capability, execArgs }).allowed, false, `${capability}: ${execArgs.join(" ")}`);
+  }
+});
+
 test("officecli wrapper: get with file + path positionals is allowed", () => {
   const gate = officecliGate({
     capability: "app.app_officecli.wrapper.get",
@@ -789,6 +829,19 @@ test("officecliApply: a workspace_write remove with file+path positionals is all
   });
   assert.equal(gate.allowed, true, gate.reason);
   assert.equal(gate.evidence.commandKind, "officecliApply", "a write is classified into its own bucket, never read-only wrapper");
+});
+
+test("officecliApply: create allows one confined Office file and refuses traversal", () => {
+  const allowed = officecliApplyGate({
+    capability: "app.app_officecli.apply.create",
+    execArgs: ["create", "docs/report.docx"],
+  });
+  assert.equal(allowed.allowed, true, allowed.reason);
+  const escaped = officecliApplyGate({
+    capability: "app.app_officecli.apply.create",
+    execArgs: ["create", "../report.docx"],
+  });
+  assert.equal(escaped.allowed, false);
 });
 
 test("officecliApply: the read-only wrapper bucket does NOT permit an officecli write", () => {

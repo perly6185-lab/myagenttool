@@ -18,6 +18,7 @@ import type {
   InvocationEventSnapshot,
   KnownApplicationCatalogEntry,
   ProjectTreeResponse,
+  ProjectDocumentsResponse,
   RefusalRow,
   ReviewFindingQueryResponse,
   ToolDescriptor,
@@ -96,6 +97,13 @@ export interface InvocationDispatchHealthResponse {
 // The dev server's default port (tools/dev/run-local-demo.mjs SERVER_PORT).
 const SERVER_PORT = "5001";
 const FALLBACK_API_BASE = `http://127.0.0.1:${SERVER_PORT}`;
+
+export class ApiError extends Error {
+  constructor(public readonly code: string, message: string, public readonly status: number) {
+    super(message);
+    this.name = "ApiError";
+  }
+}
 
 /**
  * Resolve the API base. Priority:
@@ -264,9 +272,42 @@ async function request<T = unknown>(
   const data = await response.json().catch(() => ({}));
   if (!response.ok) {
     const record = data as { message?: string; error?: string };
-    throw new Error(record.message ?? record.error ?? `${method} ${path} failed.`);
+    throw new ApiError(record.error ?? "request_failed", record.message ?? record.error ?? `${method} ${path} failed.`, response.status);
   }
   return data as T;
+}
+
+async function requestBytes(path: string, retry = true): Promise<ArrayBuffer> {
+  await ensureSession();
+  const token = getToken();
+  const response = await fetch(`${apiBase}${path}`, {
+    method: "GET",
+    headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+  });
+  if (response.status === 401 && retry) {
+    setToken(null);
+    await ensureSession();
+    return requestBytes(path, false);
+  }
+  if (!response.ok) {
+    const data = await response.json().catch(() => ({})) as { message?: string; error?: string };
+    throw new ApiError(data.error ?? "request_failed", data.message ?? data.error ?? `GET ${path} failed.`, response.status);
+  }
+  return response.arrayBuffer();
+}
+
+async function requestByteRange(path: string, start: number, end: number, retry = true): Promise<{ data: ArrayBuffer; total: number }> {
+  await ensureSession();
+  const token = getToken();
+  const response = await fetch(`${apiBase}${path}`, { method: "GET", headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}), Range: `bytes=${start}-${end - 1}` } });
+  if (response.status === 401 && retry) { setToken(null); await ensureSession(); return requestByteRange(path, start, end, false); }
+  if (response.status !== 206) {
+    const detail = await response.json().catch(() => ({})) as { message?: string; error?: string };
+    throw new ApiError(detail.error ?? "pdf_range_failed", detail.message ?? "PDF server did not honor the byte-range request.", response.status);
+  }
+  const match = /\/(\d+)$/.exec(response.headers.get("Content-Range") ?? "");
+  if (!match) throw new ApiError("invalid_content_range", "PDF byte-range response omitted its total size.", 502);
+  return { data: await response.arrayBuffer(), total: Number(match[1]) };
 }
 
 export function fetchState(): Promise<ConsoleSnapshot> {
@@ -579,6 +620,12 @@ export const api = {
   },
   uploadWorktreeAttachments: (id: string, files: { name: string; dataBase64: string }[]) =>
     request("POST", `/api/worktrees/${encodeURIComponent(id)}/attachments`, { files }),
+  manageOfficeDocument: (id: string, payload: { operation: "rename" | "move" | "copy" | "delete"; source: string; destination?: string }) =>
+    request<{ operation: string; source: string; destination?: string }>(
+      "POST",
+      `/api/worktrees/${encodeURIComponent(id)}/office-document-manage`,
+      payload,
+    ),
   cancelInvocation: (id: string) =>
     request("POST", `/api/invocations/${encodeURIComponent(id)}/cancel`),
   // #128 Phase 4: run one task on 2+ agents and compare (server fans out + tracks).
@@ -641,6 +688,36 @@ export const api = {
     if (opts.search) query.set("search", opts.search);
     const suffix = query.toString() ? `?${query}` : "";
     return request<ProjectTreeResponse>("GET", `/api/projects/${encodeURIComponent(id)}/tree${suffix}`);
+  },
+  projectDocuments: (id: string, opts: { type?: "all" | "docx" | "xlsx" | "pptx" | "pdf" | "dxf" | "dwg"; search?: string; limit?: number; worktreeId?: string } = {}) => {
+    const query = new URLSearchParams();
+    if (opts.type && opts.type !== "all") query.set("type", opts.type);
+    if (opts.search) query.set("q", opts.search);
+    if (opts.limit) query.set("limit", String(opts.limit));
+    if (opts.worktreeId) query.set("worktree", opts.worktreeId);
+    const suffix = query.toString() ? `?${query}` : "";
+    return request<ProjectDocumentsResponse>("GET", `/api/projects/${encodeURIComponent(id)}/documents${suffix}`);
+  },
+  projectPdfData: (id: string, path: string, worktreeId?: string) =>
+    requestBytes(`/api/projects/${encodeURIComponent(id)}/pdf-document?path=${encodeURIComponent(path)}${worktreeId ? `&worktree=${encodeURIComponent(worktreeId)}` : ""}`),
+  projectPdfSource: async (id: string, path: string, worktreeId?: string) => {
+    await ensureSession();
+    const token = getToken();
+    const resource = `/api/projects/${encodeURIComponent(id)}/pdf-document?path=${encodeURIComponent(path)}${worktreeId ? `&worktree=${encodeURIComponent(worktreeId)}` : ""}`;
+    return { url: `${apiBase}${resource}`, httpHeaders: token ? { Authorization: `Bearer ${token}` } : undefined };
+  },
+  projectPdfRange: (id: string, path: string, start: number, end: number, worktreeId?: string) =>
+    requestByteRange(`/api/projects/${encodeURIComponent(id)}/pdf-document?path=${encodeURIComponent(path)}${worktreeId ? `&worktree=${encodeURIComponent(worktreeId)}` : ""}`, start, end),
+  cadDocumentInfo: (id: string, path: string, worktreeId?: string) =>
+    request<{ path: string; size: number; version: string; units: number; extents: { min: number[]; max: number[] } | null; layouts: string[]; layers: string[]; entityCounts: Record<string, number>; texts: Array<{ text: string; type: string; layer: string }>; warnings: string[]; audit: { errors: number; fixes: number } }>(
+      "GET",
+      `/api/projects/${encodeURIComponent(id)}/cad-document?path=${encodeURIComponent(path)}${worktreeId ? `&worktree=${encodeURIComponent(worktreeId)}` : ""}`,
+    ),
+  cadDocumentLayout: (id: string, path: string, layout: string, layers: string[], worktreeId?: string) => {
+    const query = new URLSearchParams({ path, layout, layersMode: "selected" });
+    if (worktreeId) query.set("worktree", worktreeId);
+    for (const layer of layers) query.append("layers", layer);
+    return request<{ path: string; size: number; svg: string }>("GET", `/api/projects/${encodeURIComponent(id)}/cad-document/layout?${query}`);
   },
   // Content search within a registered project root (Agent Workspace #161).
   projectSearch: (id: string, q: string) =>

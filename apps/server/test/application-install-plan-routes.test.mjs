@@ -33,13 +33,13 @@ after(() => server?.close());
 test("P1 HTTP catalog and plan endpoints are additive and plan-only", async () => {
   const applications = await call("/api/applications/quick-register/catalog");
   assert.equal(applications.status, 200);
-  assert.deepEqual(applications.body.applications.map((entry) => entry.name), ["markdown", "git", "ccusage", "claude", "codex", "officecli", "canvas", "excalidraw-cli"]);
+  assert.deepEqual(applications.body.applications.map((entry) => entry.name), ["markdown", "git", "ccusage", "claude", "codex", "officecli", "pdfcpu", "canvas", "excalidraw-cli"]);
   const runtimes = await call("/api/runtimes/catalog");
   assert.equal(runtimes.status, 200);
   assert.deepEqual(runtimes.body.runtimes.filter((entry) => entry.kind === "shell").map((entry) => entry.id), ["runtime_git_bash", "runtime_wsl"]);
   const catalog = await call("/api/runtimes/install/catalog");
   assert.equal(catalog.status, 200);
-  assert.deepEqual(catalog.body.runtimes.map((entry) => entry.name), ["git", "git-bash", "wsl", "ccusage", "claude", "codex", "excalidraw-cli"]);
+  assert.deepEqual(catalog.body.runtimes.map((entry) => entry.name), ["git", "git-bash", "wsl", "ccusage", "claude", "codex", "excalidraw-cli", "pdfcpu"]);
   const planned = await call("/api/runtimes/install/plan", { method: "POST", body: { name: "ccusage", deviceId: state.device.id, projectId: state.projects[0].id } });
   assert.equal(planned.status, 200, JSON.stringify(planned.body));
   assert.equal(planned.body.plan.execution.shell, false);
