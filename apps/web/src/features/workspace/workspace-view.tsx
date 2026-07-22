@@ -8,6 +8,7 @@ import { ProjectTree } from "@/features/projects/project-tree";
 import { DashboardView } from "@/features/dashboard/dashboard-view";
 import { SessionHistory } from "@/features/invocations/session-history";
 import { OfficecliPreview } from "@/features/workspace/officecli-preview";
+import { useAppTranslation } from "@/lib/i18n/use-app-translation";
 
 // Agent Workspace MVP (#158): the interactive, project-scoped surface. Instead of
 // the file browser, transcript, and history competing across separate sections
@@ -30,6 +31,7 @@ export function shortRemote(url: string): string {
 }
 
 export function WorkspaceView() {
+  const { t } = useAppTranslation();
   const { data: state } = useConsoleState();
   const refresh = useRefreshConsoleState();
   const setSection = useUiStore((s) => s.setSection);
@@ -51,11 +53,11 @@ export function WorkspaceView() {
       <div className="flex h-full flex-col items-center justify-center gap-3 text-center">
         <PanelsTopLeft className="size-8 text-muted-foreground" />
         <div>
-          <p className="font-medium">No projects yet</p>
-          <p className="text-sm text-muted-foreground">Register a local project to browse its files and run tasks against it.</p>
+          <p className="font-medium">{t("workspace.noProjects")}</p>
+          <p className="text-sm text-muted-foreground">{t("workspace.noProjectsHint")}</p>
         </div>
         <Button variant="primary" onClick={() => setSection("projects")}>
-          <FolderPlus className="mr-1.5 size-4" /> Register a project
+          <FolderPlus className="mr-1.5 size-4" /> {t("workspace.register")}
         </Button>
       </div>
     );
@@ -72,25 +74,25 @@ export function WorkspaceView() {
       <header className="flex flex-wrap items-center gap-3 rounded-lg border border-border bg-muted/30 px-3 py-2">
         <PanelsTopLeft className="size-4 shrink-0 text-muted-foreground" />
         <label className="flex items-center gap-2 text-sm">
-          <span className="text-muted-foreground">Project</span>
+          <span className="text-muted-foreground">{t("workspace.project")}</span>
           <select
             value={currentId ?? ""}
             onChange={(e) => void onSwitch(e.target.value)}
             className="rounded-md border border-border bg-background px-2 py-1 text-sm"
           >
-            {projects.length === 0 ? <option value="">No projects registered</option> : <option value="" disabled>Select a project…</option>}
+            {projects.length === 0 ? <option value="">{t("workspace.noRegistered")}</option> : <option value="" disabled>{t("workspace.select")}</option>}
             {projects.map((p) => (
               <option key={p.id} value={p.id}>{p.name}</option>
             ))}
           </select>
         </label>
         {!current ? (
-          <span className="text-xs text-muted-foreground">Register or select a project to start.</span>
+          <span className="text-xs text-muted-foreground">{t("workspace.selectHint")}</span>
         ) : (git?.isRepo === false || git?.currentBranch || git?.defaultBranch || git?.remoteUrl) ? (
           <span className="flex items-center gap-1.5 text-xs text-muted-foreground">
             <FolderGit2 className="size-3.5" />
             {git?.isRepo === false
-              ? "not a git repository"
+              ? t("workspace.notGit")
               : <>{git?.currentBranch ?? git?.defaultBranch ?? ""}{git?.remoteUrl ? <> · {shortRemote(git.remoteUrl)}</> : null}</>}
           </span>
         ) : null}
@@ -103,7 +105,7 @@ export function WorkspaceView() {
           onToggle={(e) => setPreviewOpen((e.currentTarget as HTMLDetailsElement).open)}
         >
           <summary className="cursor-pointer select-none px-3 py-2 text-sm font-medium text-foreground/90">
-            Office preview <span className="text-xs font-normal text-muted-foreground">— click a .docx / .xlsx / .pptx in the file tree, or enter a path</span>
+            {t("workspace.preview")} <span className="text-xs font-normal text-muted-foreground">— {t("workspace.previewHint")}</span>
           </summary>
           <div className="border-t border-border p-3">
             <OfficecliPreview projectId={current.id} />
@@ -112,13 +114,13 @@ export function WorkspaceView() {
       ) : null}
 
       <div className="grid min-h-0 flex-1 grid-cols-1 gap-3 lg:grid-cols-[minmax(200px,260px)_minmax(0,1fr)_minmax(220px,300px)]">
-        <aside className="hidden min-h-0 overflow-y-auto rounded-lg border border-border bg-card p-2 lg:block" aria-label="Project files">
+        <aside className="hidden min-h-0 overflow-y-auto rounded-lg border border-border bg-card p-2 lg:block" aria-label={t("workspace.files")}>
           <ProjectTree />
         </aside>
-        <main className="min-h-0 overflow-hidden" aria-label="Agent transcript">
+        <main className="min-h-0 overflow-hidden" aria-label={t("workspace.transcript")}>
           <DashboardView surface="workspace" />
         </main>
-        <aside className="hidden min-h-0 overflow-y-auto rounded-lg border border-border bg-card p-2 lg:block" aria-label="Session history">
+        <aside className="hidden min-h-0 overflow-y-auto rounded-lg border border-border bg-card p-2 lg:block" aria-label={t("workspace.history")}>
           <SessionHistory />
         </aside>
       </div>
