@@ -1072,16 +1072,16 @@ export function readProjectTree(project, { relativePath = "", search = "" } = {}
   };
 }
 
-const OFFICE_DOCUMENT_EXTENSIONS = new Set([".docx", ".xlsx", ".pptx"]);
+const DOCUMENT_EXTENSIONS = new Set([".docx", ".xlsx", ".pptx", ".pdf"]);
 const DOCUMENT_SCAN_IGNORES = new Set([".git", "node_modules", "dist", "build", ".next", ".cache"]);
 
-/** Bounded, read-only Office document discovery for the Documents surface. */
+/** Bounded, read-only local document discovery for the Documents surface. */
 export function readProjectDocuments(project, { type = "all", search = "", limit = 200 } = {}) {
   const root = resolve(project.path);
   const realRoot = realpathSync(root);
   const requestedType = String(type ?? "all").toLowerCase();
-  if (requestedType !== "all" && !OFFICE_DOCUMENT_EXTENSIONS.has(`.${requestedType}`)) {
-    throw new Error("Document type must be all, docx, xlsx, or pptx.");
+  if (requestedType !== "all" && !DOCUMENT_EXTENSIONS.has(`.${requestedType}`)) {
+    throw new Error("Document type must be all, docx, xlsx, pptx, or pdf.");
   }
   const query = String(search ?? "").trim().toLowerCase().slice(0, 120);
   const maxResults = Math.min(500, Math.max(1, Number(limit) || 200));
@@ -1124,7 +1124,7 @@ export function readProjectDocuments(project, { type = "all", search = "", limit
       }
       if (!entry.isFile()) continue;
       const extension = `.${entry.name.split(".").pop()?.toLowerCase() ?? ""}`;
-      if (!OFFICE_DOCUMENT_EXTENSIONS.has(extension)) continue;
+      if (!DOCUMENT_EXTENSIONS.has(extension)) continue;
       const documentType = extension.slice(1);
       if (requestedType !== "all" && requestedType !== documentType) continue;
       if (query && !entry.name.toLowerCase().includes(query) && !relPath.toLowerCase().includes(query)) continue;

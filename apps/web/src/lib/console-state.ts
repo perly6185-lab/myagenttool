@@ -1661,7 +1661,7 @@ export interface ProjectDocumentEntry {
   worktreeId?: string | null;
   name: string;
   path: string;
-  type: "docx" | "xlsx" | "pptx";
+  type: "docx" | "xlsx" | "pptx" | "pdf";
   gitStatus: string;
 }
 

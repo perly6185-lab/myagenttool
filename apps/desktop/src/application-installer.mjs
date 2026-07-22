@@ -1,9 +1,13 @@
 import crypto from "node:crypto";
 import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
+import { chmod, copyFile, mkdir, mkdtemp, rename, rm, writeFile } from "node:fs/promises";
+import { homedir, tmpdir } from "node:os";
+import { basename, delimiter, join } from "node:path";
+import { pdfcpuArtifactChecksumMatches, resolveAllowedPdfcpuArtifact } from "./pdfcpu-artifact-policy.mjs";
 
 const SCHEMA_VERSION = "application-install-plan/v1";
-const RECIPE_VERSION = "2026-07-21.1";
+const RECIPE_VERSION = "2026-07-22.1";
 const PLAN_TTL_MS = 10 * 60 * 1000;
 const NPM_REGISTRY = "https://registry.npmjs.org/";
 const GIT_FOR_WINDOWS_VERSION = "2.50.1";
@@ -88,14 +92,15 @@ const RECIPES = {
     macos: npmRecipe("npm", "@tommywalkie/excalidraw-cli", "0.5.0", "excalidraw-cli"),
     linux: npmRecipe("npm", "@tommywalkie/excalidraw-cli", "0.5.0", "excalidraw-cli"),
   },
+  pdfcpu: {}, // selected by platform + architecture in resolveApplicationInstallSpawnPlan
 };
 
 function exactVersionPolicy(version) {
   return { kind: "exact", channel: null, allowCallerOverride: false, exactVersion: version };
 }
 
-function recipe(command, args, resolvedIdentifier, { provider, identifier, elevated = false, source, versionPolicy, probe }) {
-  return { command, args, resolvedIdentifier, provider, identifier, elevated, source, versionPolicy, probe };
+function recipe(command, args, resolvedIdentifier, { provider, identifier, elevated = false, source, versionPolicy, probe, artifact = null }) {
+  return { command, args, resolvedIdentifier, provider, identifier, elevated, source, versionPolicy, probe, artifact };
 }
 
 function npmRecipe(command, packageName, version, probeExecutable) {
@@ -145,7 +150,9 @@ export function resolveApplicationInstallSpawnPlan(plan, { platform = process.pl
   if (!plan || plan.schemaVersion !== SCHEMA_VERSION || plan.recipeVersion !== RECIPE_VERSION) return null;
   const targetPlatform = bridgePlatform(platform);
   if (plan.target?.platform !== targetPlatform || plan.execution?.shell !== false) return null;
-  const recipe = RECIPES[plan.application?.name]?.[targetPlatform];
+  const recipe = plan.application?.name === "pdfcpu"
+    ? pdfcpuRecipe(targetPlatform, plan.target?.architecture)
+    : RECIPES[plan.application?.name]?.[targetPlatform];
   if (!recipe) return null;
   const { command: executable, args, resolvedIdentifier } = recipe;
   if (plan.execution.executable !== executable || !sameArgs(plan.execution.args, args)) return null;
@@ -194,7 +201,22 @@ export function resolveApplicationInstallSpawnPlan(plan, { platform = process.pl
     elevated: false,
     timeoutMs: Math.max(1_000, Math.min(900_000, Number(plan.policy?.timeoutMs ?? 300_000))),
     probeTimeoutMs: plan.postInstallProbe.timeoutMs,
+    ...(recipe.artifact ? { installKind: "verified-artifact", artifact: recipe.artifact } : {}),
   };
+}
+
+function pdfcpuRecipe(platform, architecture) {
+  const artifact = resolveAllowedPdfcpuArtifact(platform, architecture);
+  if (!artifact) return null;
+  const archive = artifact.filename.endsWith(".zip") ? "zip" : "tar.xz";
+  return recipe("myagenttool-verified-artifact-installer", [artifact.filename], artifact.filename, {
+    provider: "verified-github-release",
+    identifier: "pdfcpu",
+    source: { kind: "github-release-artifact", repository: "pdfcpu/pdfcpu", version: artifact.version, url: artifact.url, filename: artifact.filename, sha256: artifact.sha256, archive },
+    versionPolicy: exactVersionPolicy(artifact.version),
+    probe: { executable: "pdfcpu", args: ["version", "--conf", "disable"] },
+    artifact: { ...artifact, archive },
+  });
 }
 
 // ADR 0015: pkexec presence is the device-side readiness signal for elevated
@@ -221,6 +243,8 @@ export async function runApprovedApplicationInstall({
   clearScheduledTimeout = clearTimeout,
   now = Date.now,
   preInstallProbe = true,
+  fetchImpl = globalThis.fetch,
+  runtimeBinDirectory = managedRuntimeBinDirectory(),
 }) {
   const spawnPlan = resolveApplicationInstallSpawnPlan(plan, { platform, now });
   if (!spawnPlan) {
@@ -232,6 +256,7 @@ export async function runApprovedApplicationInstall({
     return { status: "refused", classification: spawnPlan.refusal.classification, summary: spawnPlan.refusal.summary, exitCode: null, durationMs: null };
   }
   const startedAt = now();
+  env = withRuntimePath(env, runtimeBinDirectory);
   if (preInstallProbe) {
     await onProgress({ type: "probing", summary: `Checking whether ${plan.application.displayName} is already available.` });
     const existing = await runProbe({
@@ -251,6 +276,19 @@ export async function runApprovedApplicationInstall({
         durationMs: now() - startedAt,
       };
     }
+  }
+  if (spawnPlan.installKind === "verified-artifact") {
+    await onProgress({ type: "downloading", summary: `Downloading verified ${plan.application.displayName} release.` });
+    return installVerifiedPdfcpuArtifact({
+      artifact: spawnPlan.artifact,
+      runtimeBinDirectory,
+      fetchImpl,
+      spawnProcess,
+      env,
+      now,
+      startedAt,
+      onProgress,
+    });
   }
   await onProgress({ type: "spawning", summary: `Starting approved ${plan.application.displayName} installation.` });
   return new Promise((resolve) => {
@@ -343,6 +381,71 @@ export async function runApprovedApplicationInstall({
         await terminate(child);
       }
     }, 500);
+  });
+}
+
+export function managedRuntimeBinDirectory(env = process.env) {
+  return String(env.MYAGENTTOOL_RUNTIME_BIN ?? "").trim() || join(homedir(), ".myagenttool", "bin");
+}
+
+function withRuntimePath(env, runtimeBinDirectory) {
+  return { ...env, PATH: `${runtimeBinDirectory}${delimiter}${env?.PATH ?? ""}` };
+}
+
+async function installVerifiedPdfcpuArtifact({ artifact, runtimeBinDirectory, fetchImpl, spawnProcess, env, now, startedAt, onProgress }) {
+  let temporaryDirectory;
+  try {
+    if (typeof fetchImpl !== "function") throw new Error("download_unavailable");
+    const response = await fetchImpl(artifact.url, { redirect: "follow" });
+    if (!response?.ok) throw new Error(`download_http_${response?.status ?? "unknown"}`);
+    const declaredLength = Number(response.headers?.get?.("content-length") ?? 0);
+    if (declaredLength > 100 * 1024 * 1024) throw new Error("artifact_too_large");
+    const bytes = Buffer.from(await response.arrayBuffer());
+    if (bytes.length > 100 * 1024 * 1024) throw new Error("artifact_too_large");
+    if (!pdfcpuArtifactChecksumMatches(bytes, artifact.sha256)) {
+      return { status: "failed", classification: "checksum_mismatch", summary: "Downloaded pdfcpu artifact failed SHA-256 verification; nothing was installed.", exitCode: null, durationMs: now() - startedAt };
+    }
+    await onProgress({ type: "verifying", summary: "pdfcpu SHA-256 verified; extracting the approved binary." });
+    temporaryDirectory = await mkdtemp(join(tmpdir(), "myagenttool-pdfcpu-"));
+    const archivePath = join(temporaryDirectory, basename(artifact.filename));
+    const extractDirectory = join(temporaryDirectory, "extract");
+    await mkdir(extractDirectory);
+    await writeFile(archivePath, bytes, { flag: "wx" });
+    const extraction = artifact.archive === "zip"
+      ? ["powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", "Expand-Archive -LiteralPath $args[0] -DestinationPath $args[1] -Force", archivePath, extractDirectory]]
+      : ["tar", ["-xJf", archivePath, "-C", extractDirectory]];
+    const extracted = await runDiscreteProcess(extraction[0], extraction[1], { spawnProcess, env });
+    if (!extracted) throw new Error("extract_failed");
+    const directoryName = artifact.filename.replace(/\.tar\.xz$|\.zip$/i, "");
+    const executableName = artifact.archive === "zip" ? "pdfcpu.exe" : "pdfcpu";
+    const sourceBinary = join(extractDirectory, directoryName, executableName);
+    if (!existsSync(sourceBinary)) throw new Error("binary_missing");
+    await mkdir(runtimeBinDirectory, { recursive: true });
+    const destination = join(runtimeBinDirectory, executableName);
+    const staging = `${destination}.installing`;
+    await copyFile(sourceBinary, staging);
+    if (artifact.archive !== "zip") await chmod(staging, 0o755);
+    await rename(staging, destination);
+    const ready = await runDiscreteProcess(destination, ["version", "--conf", "disable"], { spawnProcess, env });
+    if (!ready) {
+      return { status: "failed", classification: "probe_failed", summary: "pdfcpu installed, but the fixed version readiness probe failed.", exitCode: null, durationMs: now() - startedAt };
+    }
+    return { status: "succeeded", classification: "installed_and_ready", summary: "pdfcpu was checksum-verified and installed into the managed runtime directory.", exitCode: 0, durationMs: now() - startedAt };
+  } catch (error) {
+    return { status: "failed", classification: "verified_artifact_install_failed", summary: `Verified pdfcpu installation failed (${String(error?.message ?? "unknown")}).`, exitCode: null, durationMs: now() - startedAt };
+  } finally {
+    if (temporaryDirectory) await rm(temporaryDirectory, { recursive: true, force: true });
+  }
+}
+
+function runDiscreteProcess(command, args, { spawnProcess, env }) {
+  return new Promise((resolve) => {
+    try {
+      const child = spawnProcess(command, args, { cwd: tmpdir(), env, windowsHide: true, shell: false, stdio: ["ignore", "pipe", "pipe"] });
+      child.stdout?.resume?.(); child.stderr?.resume?.();
+      child.once("error", () => resolve(false));
+      child.once("close", (code) => resolve(code === 0));
+    } catch { resolve(false); }
   });
 }
 

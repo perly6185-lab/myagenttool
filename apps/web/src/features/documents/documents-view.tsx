@@ -14,18 +14,21 @@ import { useUiStore } from "@/store/ui-store";
 import { clearRecentDocuments, readRecentDocuments, recordRecentDocument, removeRecentDocument, toggleRecentDocumentPinned, type RecentDocument } from "@/features/documents/recent-documents";
 import { readDocumentTemplates, removeDocumentTemplate, saveDocumentTemplate, type DocumentTemplate } from "@/features/documents/document-templates";
 import { classifyLocalDocumentPath, directoryOfLocalPath, type LocalOfficeDocumentSelection } from "@/features/documents/local-document-location";
+import { PdfDocumentViewer } from "@/features/documents/pdf-document-viewer";
 
-type DocumentType = "all" | "docx" | "xlsx" | "pptx";
+type DocumentType = "all" | "docx" | "xlsx" | "pptx" | "pdf";
 const FILTERS: Array<{ value: DocumentType; label: string }> = [
   { value: "all", label: "All" },
   { value: "docx", label: "Word" },
   { value: "xlsx", label: "Excel" },
   { value: "pptx", label: "PowerPoint" },
+  { value: "pdf", label: "PDF" },
 ];
 
 function DocumentIcon({ type }: { type: ProjectDocumentEntry["type"] }) {
   if (type === "xlsx") return <FileSpreadsheet className="size-4 text-emerald-600" />;
   if (type === "pptx") return <Presentation className="size-4 text-orange-600" />;
+  if (type === "pdf") return <FileText className="size-4 text-red-600" />;
   return <FileText className="size-4 text-blue-600" />;
 }
 
@@ -170,7 +173,7 @@ export function DocumentsView() {
       {pendingSelectionError ? <div className="flex items-center justify-between gap-3 rounded-md border border-warning/40 bg-warning/10 px-3 py-2 text-sm"><span>{pendingSelectionError}</span><Button size="sm" variant="secondary" onClick={() => void openLocalDocument()}>Select again</Button></div> : null}
 
       <div className="grid min-h-0 flex-1 grid-cols-1 gap-3 lg:grid-cols-[minmax(260px,360px)_minmax(0,1fr)]">
-        <section className="min-h-0 overflow-y-auto rounded-lg border border-border bg-card" aria-label="Office documents">
+        <section className="min-h-0 overflow-y-auto rounded-lg border border-border bg-card" aria-label="Documents">
           {templates.length > 0 ? <div className="border-b border-border p-2"><p className="mb-1 px-1 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">Templates</p><div className="space-y-1">{templates.filter((item) => (type === "all" || item.type === type) && (!search.trim() || item.name.toLowerCase().includes(search.trim().toLowerCase()))).map((item) => <div key={item.id} className="flex items-center gap-1"><button type="button" className="min-w-0 flex-1 truncate rounded bg-muted px-2 py-1 text-left text-xs" onClick={() => { setTemplateSource(item); setTemplateOpen(true); }}>{item.name}</button><button type="button" className="px-1 text-xs text-muted-foreground hover:text-destructive" aria-label={`Remove template ${item.name}`} onClick={() => setTemplates(removeDocumentTemplate(item.id))}>×</button></div>)}</div></div> : null}
           <RecentDocuments items={recent} projects={projects} worktrees={state?.worktrees ?? []} onOpen={(item) => openRecent(item, projects, projectId, setWorktreeId, setBrowseScope, setPendingSelectionPath, switchProject)} onPin={(item) => setRecent(toggleRecentDocumentPinned(item))} onRemove={(item) => setRecent(removeRecentDocument(item))} onClear={() => setRecent(clearRecentDocuments())} />
           <DocumentList loading={documents.isLoading} error={documents.error} rows={rows} selected={selected} onSelect={(row) => { setSelected(row); setRecent(recordRecentDocument(row)); writeDocumentUrl(projectId, row.path, row.worktreeId ?? undefined); }} />
@@ -200,7 +203,7 @@ function RecentDocuments({ items, projects, worktrees, onOpen, onPin, onRemove, 
 function DocumentList({ loading, error, rows, selected, onSelect }: { loading: boolean; error: Error | null; rows: ProjectDocumentEntry[]; selected: ProjectDocumentEntry | null; onSelect: (row: ProjectDocumentEntry) => void }) {
   if (loading) return <p className="flex items-center gap-1 p-4 text-sm text-muted-foreground"><Loader2 className="size-4 animate-spin" /> Loading documents…</p>;
   if (error) return <p className="p-4 text-sm text-destructive">{error.message || "Could not load documents."}</p>;
-  if (rows.length === 0) return <p className="p-4 text-sm text-muted-foreground">No Word, Excel, or PowerPoint files found in this project.</p>;
+  if (rows.length === 0) return <p className="p-4 text-sm text-muted-foreground">No Word, Excel, PowerPoint, or PDF files found in this project.</p>;
   return <ul className="divide-y divide-border">{rows.map((row) => (
     <li key={row.path}>
       <button type="button" onClick={() => onSelect(row)} className={cn("flex w-full items-start gap-2 px-3 py-2.5 text-left hover:bg-muted/60", selected?.path === row.path && "bg-muted")}>
@@ -220,9 +223,10 @@ function DocumentPreview({ projectId, document, worktrees, worktreeId, onWorktre
   const preview = useQuery({
     queryKey: ["office-document-preview", projectId, document?.path],
     queryFn: () => api.officecliPreview(projectId, document?.path ?? "", document?.worktreeId ?? undefined),
-    enabled: Boolean(projectId && document),
+    enabled: Boolean(projectId && document && document.type !== "pdf"),
   });
   if (!document) return <section className="grid min-h-[24rem] place-items-center rounded-lg border border-dashed border-border bg-card text-sm text-muted-foreground">Select a document to preview it.</section>;
+  if (document.type === "pdf") return <section className="flex min-h-[24rem] min-w-0 flex-col overflow-hidden rounded-lg border border-border bg-card"><header className="flex items-center gap-2 border-b border-border px-3 py-2"><DocumentIcon type={document.type} /><div className="min-w-0"><p className="truncate text-sm font-medium">{document.name}</p><p className="truncate font-mono text-[10px] text-muted-foreground">{document.path}</p></div></header><PdfDocumentViewer projectId={projectId} path={document.path} worktreeId={document.worktreeId} /></section>;
   const openWorkspace = () => { setOfficecliPreviewPath(document.path); setSection("workspace"); };
   const openWorktree = () => {
     if (!worktreeId) return;

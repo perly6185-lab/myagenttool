@@ -9,6 +9,7 @@ const mocks = vi.hoisted(() => ({
   issueApprovalGrant: vi.fn(),
   invokeCapability: vi.fn(),
   manageOfficeDocument: vi.fn(),
+  projectPdfData: vi.fn(),
   selectProject: vi.fn(),
   setSection: vi.fn(),
   setOfficecliPreviewPath: vi.fn(),
@@ -24,6 +25,7 @@ vi.mock("@/data/use-console-actions", () => ({
     issueApprovalGrant: mocks.issueApprovalGrant,
     invokeCapability: mocks.invokeCapability,
     manageOfficeDocument: mocks.manageOfficeDocument,
+    projectPdfData: mocks.projectPdfData,
     selectProject: mocks.selectProject,
   },
 }));

@@ -60,7 +60,7 @@ export const SECTIONS: SectionDef[] = [
   { key: "dashboard", label: "Overview", icon: LayoutDashboard, blurb: "Start a task and watch it run", group: "work" },
   { key: "workBoard", label: "Status", icon: KanbanSquare, blurb: "Every work item by state: to-decide, waiting, running, done, failed, follow-up", group: "work" },
   { key: "workspace", label: "Workspace", icon: PanelsTopLeft, blurb: "Project files, transcript, and history in one place", group: "work" },
-  { key: "documents", label: "Documents", icon: Files, blurb: "Browse Word, Excel, and PowerPoint files", group: "work" },
+  { key: "documents", label: "Documents", icon: Files, blurb: "Browse Word, Excel, PowerPoint, and PDF files", group: "work" },
   { key: "canvas", label: "Canvas", icon: Shapes, blurb: "Draw and edit diagrams; import and export Excalidraw scenes", group: "work" },
   // Run — the ways work executes.
   { key: "autoRuns", label: "Auto-runs", icon: Bot, blurb: "Autonomous issue → worktree → PR runs", group: "run" },

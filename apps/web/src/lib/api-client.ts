@@ -277,6 +277,25 @@ async function request<T = unknown>(
   return data as T;
 }
 
+async function requestBytes(path: string, retry = true): Promise<ArrayBuffer> {
+  await ensureSession();
+  const token = getToken();
+  const response = await fetch(`${apiBase}${path}`, {
+    method: "GET",
+    headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+  });
+  if (response.status === 401 && retry) {
+    setToken(null);
+    await ensureSession();
+    return requestBytes(path, false);
+  }
+  if (!response.ok) {
+    const data = await response.json().catch(() => ({})) as { message?: string; error?: string };
+    throw new ApiError(data.error ?? "request_failed", data.message ?? data.error ?? `GET ${path} failed.`, response.status);
+  }
+  return response.arrayBuffer();
+}
+
 export function fetchState(): Promise<ConsoleSnapshot> {
   return request<ConsoleSnapshot>("GET", "/api/state");
 }
@@ -656,7 +675,7 @@ export const api = {
     const suffix = query.toString() ? `?${query}` : "";
     return request<ProjectTreeResponse>("GET", `/api/projects/${encodeURIComponent(id)}/tree${suffix}`);
   },
-  projectDocuments: (id: string, opts: { type?: "all" | "docx" | "xlsx" | "pptx"; search?: string; limit?: number; worktreeId?: string } = {}) => {
+  projectDocuments: (id: string, opts: { type?: "all" | "docx" | "xlsx" | "pptx" | "pdf"; search?: string; limit?: number; worktreeId?: string } = {}) => {
     const query = new URLSearchParams();
     if (opts.type && opts.type !== "all") query.set("type", opts.type);
     if (opts.search) query.set("q", opts.search);
@@ -665,6 +684,8 @@ export const api = {
     const suffix = query.toString() ? `?${query}` : "";
     return request<ProjectDocumentsResponse>("GET", `/api/projects/${encodeURIComponent(id)}/documents${suffix}`);
   },
+  projectPdfData: (id: string, path: string, worktreeId?: string) =>
+    requestBytes(`/api/projects/${encodeURIComponent(id)}/pdf-document?path=${encodeURIComponent(path)}${worktreeId ? `&worktree=${encodeURIComponent(worktreeId)}` : ""}`),
   // Content search within a registered project root (Agent Workspace #161).
   projectSearch: (id: string, q: string) =>
     request<{ results: { path: string; line: number; preview: string }[] }>(
