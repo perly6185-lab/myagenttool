@@ -3,6 +3,7 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-li
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { DocumentsView } from "@/features/documents/documents-view";
 import { ApiError } from "@/lib/api-client";
+import { i18n } from "@/lib/i18n";
 
 const mocks = vi.hoisted(() => ({
   projectDocuments: vi.fn(),
@@ -56,7 +57,8 @@ vi.mock("@/store/ui-store", () => ({
   }),
 }));
 
-beforeEach(() => {
+beforeEach(async () => {
+  await i18n.changeLanguage("en-US");
   const values = new Map<string, string>();
   vi.stubGlobal("localStorage", { getItem: (key: string) => values.get(key) ?? null, setItem: (key: string, value: string) => values.set(key, value), removeItem: (key: string) => values.delete(key), clear: () => values.clear() });
   window.myagenttoolDesktop = undefined;
@@ -254,5 +256,15 @@ describe("DocumentsView interaction", () => {
     expect(screen.queryByText(/lost.docx/)).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Clear" }));
     expect(screen.queryByText("Recent")).toBeNull();
+  });
+
+  it("renders document chrome in Simplified Chinese while preserving file names and paths", async () => {
+    await i18n.changeLanguage("zh-CN");
+    renderView();
+    expect(screen.getByText("项目")).toBeTruthy();
+    expect(screen.getByPlaceholderText("搜索文档…")).toBeTruthy();
+    fireEvent.click(await screen.findByText("report.docx"));
+    expect(await screen.findByTitle("docs/report.docx")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "在工作树中编辑" })).toBeTruthy();
   });
 });

@@ -1,10 +1,13 @@
 import { cleanup, render, screen } from "@testing-library/react";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { DashboardView } from "@/features/dashboard/dashboard-view";
+import { i18n } from "@/lib/i18n";
 
 const mocks = vi.hoisted(() => ({ useConsoleState: vi.fn(), useAsyncAction: vi.fn() }));
 vi.mock("@/data/use-console-state", () => ({ useConsoleState: mocks.useConsoleState }));
 vi.mock("@/data/use-console-actions", () => ({ useAsyncAction: mocks.useAsyncAction, api: {} }));
+
+beforeEach(async () => { await i18n.changeLanguage("en-US"); });
 
 afterEach(() => {
   cleanup();
