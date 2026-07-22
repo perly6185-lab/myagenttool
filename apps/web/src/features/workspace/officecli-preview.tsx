@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { FileText, Loader2 } from "lucide-react";
 import { api } from "@/data/use-console-actions";
 import { useUiStore } from "@/store/ui-store";
+import { OfficeDocumentFrame } from "@/components/common/office-document-frame";
 
 // OfficeCLI preview (P2b): render a project .docx/.xlsx/.pptx to self-contained
 // HTML and show it in a sandboxed iframe. The full HTML comes from the dedicated
@@ -89,15 +90,7 @@ export function OfficecliPreview({ projectId }: { projectId: string | null }) {
         <span className="px-1 py-2 text-xs text-red-600 dark:text-red-400">{error ?? "Preview unavailable."}</span>
       ) : file ? (
         <div className="min-h-0 flex-1 overflow-hidden rounded-md border border-border bg-white">
-          {/* sandbox="" blocks scripts / same-origin / forms / navigation; the injected
-              CSP (default-src 'none') also blocks passive subresource beacons. We inject
-              it ourselves — never trust the rendered document to include it. */}
-          <iframe
-            title={file.path}
-            sandbox=""
-            srcDoc={`<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; img-src data:; font-src data:">${file.content}`}
-            className="h-full min-h-[24rem] w-full bg-white"
-          />
+          <OfficeDocumentFrame title={file.path} content={file.content} />
         </div>
       ) : (
         <p className="px-1 py-2 text-[11px] text-muted-foreground">

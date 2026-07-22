@@ -18,6 +18,7 @@ import type {
   InvocationEventSnapshot,
   KnownApplicationCatalogEntry,
   ProjectTreeResponse,
+  ProjectDocumentsResponse,
   RefusalRow,
   ReviewFindingQueryResponse,
   ToolDescriptor,
@@ -96,6 +97,13 @@ export interface InvocationDispatchHealthResponse {
 // The dev server's default port (tools/dev/run-local-demo.mjs SERVER_PORT).
 const SERVER_PORT = "5001";
 const FALLBACK_API_BASE = `http://127.0.0.1:${SERVER_PORT}`;
+
+export class ApiError extends Error {
+  constructor(public readonly code: string, message: string, public readonly status: number) {
+    super(message);
+    this.name = "ApiError";
+  }
+}
 
 /**
  * Resolve the API base. Priority:
@@ -264,7 +272,7 @@ async function request<T = unknown>(
   const data = await response.json().catch(() => ({}));
   if (!response.ok) {
     const record = data as { message?: string; error?: string };
-    throw new Error(record.message ?? record.error ?? `${method} ${path} failed.`);
+    throw new ApiError(record.error ?? "request_failed", record.message ?? record.error ?? `${method} ${path} failed.`, response.status);
   }
   return data as T;
 }
@@ -579,6 +587,12 @@ export const api = {
   },
   uploadWorktreeAttachments: (id: string, files: { name: string; dataBase64: string }[]) =>
     request("POST", `/api/worktrees/${encodeURIComponent(id)}/attachments`, { files }),
+  manageOfficeDocument: (id: string, payload: { operation: "rename" | "move" | "copy" | "delete"; source: string; destination?: string }) =>
+    request<{ operation: string; source: string; destination?: string }>(
+      "POST",
+      `/api/worktrees/${encodeURIComponent(id)}/office-document-manage`,
+      payload,
+    ),
   cancelInvocation: (id: string) =>
     request("POST", `/api/invocations/${encodeURIComponent(id)}/cancel`),
   // #128 Phase 4: run one task on 2+ agents and compare (server fans out + tracks).
@@ -641,6 +655,15 @@ export const api = {
     if (opts.search) query.set("search", opts.search);
     const suffix = query.toString() ? `?${query}` : "";
     return request<ProjectTreeResponse>("GET", `/api/projects/${encodeURIComponent(id)}/tree${suffix}`);
+  },
+  projectDocuments: (id: string, opts: { type?: "all" | "docx" | "xlsx" | "pptx"; search?: string; limit?: number; worktreeId?: string } = {}) => {
+    const query = new URLSearchParams();
+    if (opts.type && opts.type !== "all") query.set("type", opts.type);
+    if (opts.search) query.set("q", opts.search);
+    if (opts.limit) query.set("limit", String(opts.limit));
+    if (opts.worktreeId) query.set("worktree", opts.worktreeId);
+    const suffix = query.toString() ? `?${query}` : "";
+    return request<ProjectDocumentsResponse>("GET", `/api/projects/${encodeURIComponent(id)}/documents${suffix}`);
   },
   // Content search within a registered project root (Agent Workspace #161).
   projectSearch: (id: string, q: string) =>

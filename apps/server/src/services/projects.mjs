@@ -781,6 +781,7 @@ export function createProjectService({ state, now, nextId, appendEvent, persistS
     worktreeDiff: (worktree) => worktreeDiff(worktree, { projectTargets: state.projectTargets }),
     projectGithubItems: (project) => projectGithubItems(project, { projectTargets: state.projectTargets }),
     projectForInvocation,
+    readProjectDocuments,
     readProjectTree,
     removeProject,
     removeWorktree,
@@ -1069,6 +1070,80 @@ export function readProjectTree(project, { relativePath = "", search = "" } = {}
     // clean, it's unknown. The web can flag it instead of implying no changes.
     gitStatusUnavailable: Boolean(gitStatus.unavailable),
   };
+}
+
+const OFFICE_DOCUMENT_EXTENSIONS = new Set([".docx", ".xlsx", ".pptx"]);
+const DOCUMENT_SCAN_IGNORES = new Set([".git", "node_modules", "dist", "build", ".next", ".cache"]);
+
+/** Bounded, read-only Office document discovery for the Documents surface. */
+export function readProjectDocuments(project, { type = "all", search = "", limit = 200 } = {}) {
+  const root = resolve(project.path);
+  const realRoot = realpathSync(root);
+  const requestedType = String(type ?? "all").toLowerCase();
+  if (requestedType !== "all" && !OFFICE_DOCUMENT_EXTENSIONS.has(`.${requestedType}`)) {
+    throw new Error("Document type must be all, docx, xlsx, or pptx.");
+  }
+  const query = String(search ?? "").trim().toLowerCase().slice(0, 120);
+  const maxResults = Math.min(500, Math.max(1, Number(limit) || 200));
+  const scanLimit = 20_000;
+  const statuses = gitStatusMap(root);
+  const documents = [];
+  const pending = [root];
+  let scanned = 0;
+  let truncated = false;
+
+  while (pending.length > 0 && documents.length < maxResults && scanned < scanLimit) {
+    const directory = pending.pop();
+    let entries;
+    try {
+      entries = readdirSync(directory, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const entry of entries) {
+      scanned += 1;
+      if (scanned >= scanLimit) {
+        truncated = true;
+        break;
+      }
+      if (entry.isSymbolicLink() || DOCUMENT_SCAN_IGNORES.has(entry.name)) continue;
+      const fullPath = resolve(directory, entry.name);
+      const relPath = normalizeRelativePath(relative(root, fullPath));
+      if (entry.isDirectory()) {
+        // String and realpath containment are both checked before recursion.
+        const rel = relative(root, fullPath);
+        if (rel === ".." || rel.startsWith(`..${sep}`) || isAbsolute(rel)) continue;
+        try {
+          const realRel = relative(realRoot, realpathSync(fullPath));
+          if (realRel === ".." || realRel.startsWith(`..${sep}`) || isAbsolute(realRel)) continue;
+        } catch {
+          continue;
+        }
+        pending.push(fullPath);
+        continue;
+      }
+      if (!entry.isFile()) continue;
+      const extension = `.${entry.name.split(".").pop()?.toLowerCase() ?? ""}`;
+      if (!OFFICE_DOCUMENT_EXTENSIONS.has(extension)) continue;
+      const documentType = extension.slice(1);
+      if (requestedType !== "all" && requestedType !== documentType) continue;
+      if (query && !entry.name.toLowerCase().includes(query) && !relPath.toLowerCase().includes(query)) continue;
+      documents.push({
+        projectId: project.id,
+        name: entry.name,
+        path: relPath,
+        type: documentType,
+        gitStatus: statuses.get(relPath) ?? "clean",
+      });
+      if (documents.length >= maxResults) {
+        truncated = pending.length > 0 || entries.indexOf(entry) < entries.length - 1;
+        break;
+      }
+    }
+  }
+
+  documents.sort((a, b) => a.path.localeCompare(b.path));
+  return { projectId: project.id, documents, truncated, scanned };
 }
 
 export function searchProjectContent(project, { query = "", include = "", exclude = "" } = {}) {

@@ -17,6 +17,9 @@ export function ProjectRegisterForm({ onDone }: { onDone?: () => void }) {
   const { execute, pending, error } = useAsyncAction();
   const { data: state } = useConsoleState();
   const setSelectedProjectId = useUiStore((s) => s.setSelectedProjectId);
+  const setSection = useUiStore((s) => s.setSection);
+  const pendingLocalDocumentRegistration = useUiStore((s) => s.pendingLocalDocumentRegistration);
+  const setPendingLocalDocumentRegistration = useUiStore((s) => s.setPendingLocalDocumentRegistration);
   const defaultCloneParent = state?.defaults?.cloneParentDir ?? "";
 
   const [mode, setMode] = useState<Mode>("clone");
@@ -33,11 +36,22 @@ export function ProjectRegisterForm({ onDone }: { onDone?: () => void }) {
     if (defaultCloneParent) setParentDir((cur) => cur || defaultCloneParent);
   }, [defaultCloneParent]);
 
+  useEffect(() => {
+    if (!pendingLocalDocumentRegistration) return;
+    setMode("local");
+    setRepoPath(pendingLocalDocumentRegistration.directory);
+  }, [pendingLocalDocumentRegistration]);
+
   function afterCreate(created: { project?: { id: string } }) {
     if (created.project?.id) setSelectedProjectId(created.project.id);
     setName("");
     setRepoUrl("");
     setRepoPath("");
+    if (created.project?.id && pendingLocalDocumentRegistration) {
+      window.history.replaceState(window.history.state, "", localDocumentReturnUrl(window.location.href, created.project.id, pendingLocalDocumentRegistration.documentName));
+      setPendingLocalDocumentRegistration(null);
+      setSection("documents");
+    }
     onDone?.();
   }
 
@@ -148,4 +162,13 @@ export function ProjectRegisterForm({ onDone }: { onDone?: () => void }) {
       {error ? <p className="text-xs text-destructive">{error}</p> : null}
     </div>
   );
+}
+
+export function localDocumentReturnUrl(currentUrl: string, projectId: string, documentName: string): string {
+  const url = new URL(currentUrl);
+  url.searchParams.set("section", "documents");
+  url.searchParams.set("project", projectId);
+  url.searchParams.set("document", documentName);
+  url.searchParams.delete("worktree");
+  return `${url.pathname}${url.search}${url.hash}`;
 }

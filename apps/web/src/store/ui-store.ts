@@ -13,6 +13,7 @@ export type SectionKey =
   | "dashboard"
   | "workBoard"
   | "workspace"
+  | "documents"
   | "canvas"
   | "compare"
   | "projects"
@@ -42,6 +43,11 @@ export interface ApplicationRunSelection {
   invocationId: string;
 }
 
+export interface PendingLocalDocumentRegistration {
+  directory: string;
+  documentName: string;
+}
+
 interface UiState {
   section: SectionKey;
   selectedAgentId: string | null;
@@ -60,6 +66,8 @@ interface UiState {
   resumeFromInvocationId: string | null;
   /** Transient: the project-relative Office document the workspace preview is showing (#1347). */
   officecliPreviewPath: string | null;
+  /** Transient handoff from Documents to local project registration. */
+  pendingLocalDocumentRegistration: PendingLocalDocumentRegistration | null;
   /** Nav groups the operator has collapsed; expert groups start here so the rail isn't a wall of 22 (#928). */
   collapsedNavGroups: string[];
   /** Active visual skin + light/dark mode; applied to <html> by useSkinSync. */
@@ -82,6 +90,7 @@ interface UiState {
   setSelectedAutomationId: (id: string | null) => void;
   setResumeFromInvocationId: (id: string | null) => void;
   setOfficecliPreviewPath: (path: string | null) => void;
+  setPendingLocalDocumentRegistration: (value: PendingLocalDocumentRegistration | null) => void;
   toggleNavGroup: (group: string) => void;
 }
 
@@ -99,6 +108,7 @@ export const SECTION_KEYS: SectionKey[] = [
   "dashboard",
   "workBoard",
   "workspace",
+  "documents",
   "canvas",
   "compare",
   "projects",
@@ -236,6 +246,7 @@ export const useUiStore = create<UiState>()(
         selectedAutomationId: initialNavigation.selectedAutomationId ?? null,
         resumeFromInvocationId: null,
         officecliPreviewPath: null,
+        pendingLocalDocumentRegistration: null,
         collapsedNavGroups: [...DEFAULT_COLLAPSED_NAV_GROUPS],
         skin: DEFAULT_SKIN,
         mode: DEFAULT_MODE,
@@ -256,6 +267,7 @@ export const useUiStore = create<UiState>()(
         setSelectedAutomationId: (selectedAutomationId) => set({ selectedAutomationId }),
         setResumeFromInvocationId: (resumeFromInvocationId) => set({ resumeFromInvocationId }),
         setOfficecliPreviewPath: (officecliPreviewPath) => set({ officecliPreviewPath }),
+        setPendingLocalDocumentRegistration: (pendingLocalDocumentRegistration) => set({ pendingLocalDocumentRegistration }),
         toggleNavGroup: (group) =>
           set((state) => ({
             collapsedNavGroups: state.collapsedNavGroups.includes(group)

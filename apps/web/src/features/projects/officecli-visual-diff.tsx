@@ -5,6 +5,7 @@ import { useConsoleState } from "@/data/use-console-state";
 import { DocxBlockEditor } from "@/features/projects/docx-block-editor";
 import { XlsxGridEditor } from "@/features/projects/xlsx-grid-editor";
 import { PptxSlideEditor } from "@/features/projects/pptx-slide-editor";
+import { OfficeDocumentFrame } from "@/components/common/office-document-frame";
 
 // Visual before/after review for an OfficeCLI write in a worktree (#1349 polish):
 // render the document as it is in the project BASE (before) and in the WORKTREE
@@ -21,10 +22,6 @@ interface PreviewResponse {
 }
 
 type Side = { state: "loading" | "done" | "error" | "absent"; html: string | null };
-
-// The console injects the CSP itself — never trust the rendered document to. sandbox=""
-// blocks scripts/same-origin/forms/navigation; default-src 'none' blocks subresources.
-const CSP = `<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; img-src data:; font-src data:">`;
 
 // Single-pane rendered view of ONE Office document (the worktree version) — the
 // content view for a .docx/.xlsx/.pptx, so clicking it browses the rendered
@@ -86,7 +83,7 @@ export function OfficecliFilePreview({ projectId, worktreeId, path, editable = f
           ) : side.state === "error" ? (
             <span className="px-2 py-6 text-xs text-red-600 dark:text-red-400">Preview unavailable — the document may not render, or officecli is not installed.</span>
           ) : (
-            <iframe title={path} sandbox="" srcDoc={`${CSP}${side.html ?? ""}`} className="h-full min-h-[24rem] w-full bg-white" />
+            <OfficeDocumentFrame title={path} content={side.html ?? ""} />
           )}
         </>
       )}
@@ -236,12 +233,7 @@ function Pane({ title, side, path, absentLabel }: { title: string; side: Side; p
       ) : side.state === "error" ? (
         <span className="px-2 py-6 text-xs text-red-600 dark:text-red-400">Preview unavailable — the document may not render, or officecli is not installed.</span>
       ) : (
-        <iframe
-          title={`${title}: ${path}`}
-          sandbox=""
-          srcDoc={`${CSP}${side.html ?? ""}`}
-          className="h-full min-h-[24rem] w-full bg-white"
-        />
+        <OfficeDocumentFrame title={`${title}: ${path}`} content={side.html ?? ""} />
       )}
     </div>
   );
