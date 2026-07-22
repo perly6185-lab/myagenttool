@@ -1083,6 +1083,10 @@ const OFFICECLI_CONTENT_PROP_KEYS = new Set([
 // network-forbidden.
 function isSafeMediaSource(value) {
   if (typeof value !== "string" || value.length > 500 || /[\r\n\0]/.test(value)) return false;
+  // officecli trims surrounding whitespace before resolving a path (notably the
+  // path AFTER an `image:` prefix — `image: /etc/x` reads /etc/x), so validate the
+  // trimmed form or a `image: /abs` value would slip past the path checks.
+  value = value.trim();
   // officecli's `image:<path>` fill form (e.g. a slide `background`) reads the
   // referenced file — validate the path, not the literal `image:…` string.
   const img = /^image:(.*)$/i.exec(value);
@@ -1096,7 +1100,7 @@ function isSafeMediaSource(value) {
 // or containing a `..` traversal segment. NOT schemes/URLs (those aren't a local
 // file read and are handled per-key by isSafeMediaSource).
 function isEscapingLocalPath(value) {
-  const v = String(value ?? "");
+  const v = String(value ?? "").trim();
   return /^[/~\\]/.test(v) || /^[A-Za-z]:/.test(v) || v.split(/[/\\]/).includes("..");
 }
 

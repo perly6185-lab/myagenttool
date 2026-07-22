@@ -125,6 +125,8 @@ const OFFICE_CONTENT_PROP_KEYS = new Set([
 ]);
 const isOfficeSafeMediaSource = (value) => {
   if (typeof value !== "string" || value.length > 500 || /[\r\n\0]/.test(value)) return false;
+  // officecli trims whitespace before resolving (incl. the path after `image:`).
+  value = value.trim();
   // officecli `image:<path>` fill form (e.g. slide background) reads the file.
   const img = /^image:(.*)$/i.exec(value);
   if (img) return isOfficeSafeMediaSource(img[1]);
@@ -133,7 +135,7 @@ const isOfficeSafeMediaSource = (value) => {
   return isSafeRelPath(value);
 };
 const isOfficeEscapingLocalPath = (value) => {
-  const v = String(value ?? "");
+  const v = String(value ?? "").trim();
   return /^[/~\\]/.test(v) || /^[A-Za-z]:/.test(v) || v.split(/[/\\]/).includes("..");
 };
 // Fail-closed: content keys exempt; source keys must be a safe media source; any
