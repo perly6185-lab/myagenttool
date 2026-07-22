@@ -13,6 +13,7 @@ export type SectionKey =
   | "dashboard"
   | "workBoard"
   | "workspace"
+  | "documents"
   | "canvas"
   | "compare"
   | "projects"
@@ -99,6 +100,7 @@ export const SECTION_KEYS: SectionKey[] = [
   "dashboard",
   "workBoard",
   "workspace",
+  "documents",
   "canvas",
   "compare",
   "projects",

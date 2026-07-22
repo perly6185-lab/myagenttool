@@ -188,6 +188,7 @@ const officeItemPropsSafe = (props) => {
 };
 
 const OFFICECLI_APPLY_WRAPPER_ARGS = {
+  create: { base: ["create"], flags: {}, positionals: [isOfficeFile] },
   remove: { base: ["remove"], flags: {}, positionals: [isOfficeFile, isOfficeArg] },
   // set <file> <path> --prop key=value ... — repeatable --prop (each value is a
   // key=value pair). The matcher handles repeated flags + ordered positionals.

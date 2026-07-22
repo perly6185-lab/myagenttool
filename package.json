@@ -12,6 +12,7 @@
   },
   "scripts": {
     "dev": "node tools/dev/run-local-demo.mjs",
+    "test:documents:e2e": "playwright test -c apps/web/playwright.config.ts",
     "desktop:dev": "pnpm --filter @myagenttool/web build && electron .",
     "desktop:prepare-assets": "node apps/electron/scripts/prepare-portable-git.mjs",
     "desktop:pack": "pnpm desktop:prepare-assets && pnpm --filter @myagenttool/web build && electron-builder --dir -c apps/electron/electron-builder.yml",

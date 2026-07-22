@@ -73,6 +73,8 @@ export function WorktreeView({ worktree }: { worktree: WorktreeSnapshot }) {
   const setSelectedWorktreeId = useUiStore((s) => s.setSelectedWorktreeId);
   const selectedInvocationId = useUiStore((s) => s.selectedInvocationId);
   const setSelectedInvocationId = useUiStore((s) => s.setSelectedInvocationId);
+  const requestedOfficeDocument = useUiStore((s) => s.officecliPreviewPath);
+  const setOfficecliPreviewPath = useUiStore((s) => s.setOfficecliPreviewPath);
 
   const agents = state?.agents ?? [];
   const project = (state?.projects ?? []).find((p) => p.id === worktree.projectId);
@@ -223,6 +225,14 @@ export function WorktreeView({ worktree }: { worktree: WorktreeSnapshot }) {
     setAgentId(worktree.agentId ?? agents[0]?.id ?? "");
     loadTree();
   }, [worktree.id]);
+
+  // Documents can hand an Office file to an existing worktree editor. Consume
+  // the transient path once the target worktree is mounted, then open its file tab.
+  useEffect(() => {
+    if (!requestedOfficeDocument || !/\.(docx|xlsx|pptx)$/i.test(requestedOfficeDocument)) return;
+    openFile(requestedOfficeDocument, requestedOfficeDocument.split("/").pop() ?? requestedOfficeDocument);
+    setOfficecliPreviewPath(null);
+  }, [worktree.id, requestedOfficeDocument]);
 
   // Debounced file search (by name or content) when the box has a query.
   useEffect(() => {

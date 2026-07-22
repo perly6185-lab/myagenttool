@@ -34,6 +34,7 @@ describe("NavRail collapsible groups (#928)", () => {
     useUiStore.setState({ section: "dashboard", collapsedNavGroups: [...DEFAULT_COLLAPSED_NAV_GROUPS] });
     renderNav();
     expect(screen.getByText("Overview")).toBeTruthy(); // Work — open
+    expect(screen.getByText("Documents")).toBeTruthy();
     expect(screen.queryByText("Agents")).toBeNull(); // Configure — collapsed
     expect(screen.queryByText("Economics")).toBeNull(); // Ledgers — collapsed
   });

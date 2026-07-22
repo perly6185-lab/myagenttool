@@ -1656,6 +1656,23 @@ export interface ProjectTreeResponse {
   gitSummary?: { modified?: number; added?: number; deleted?: number };
 }
 
+export interface ProjectDocumentEntry {
+  projectId: string;
+  worktreeId?: string | null;
+  name: string;
+  path: string;
+  type: "docx" | "xlsx" | "pptx";
+  gitStatus: string;
+}
+
+export interface ProjectDocumentsResponse {
+  projectId: string;
+  worktreeId?: string | null;
+  documents: ProjectDocumentEntry[];
+  truncated: boolean;
+  scanned: number;
+}
+
 export interface ApplicationRegisterRequest {
   name?: string;
   projectId?: string | null;

@@ -791,6 +791,19 @@ test("officecliApply: a workspace_write remove with file+path positionals is all
   assert.equal(gate.evidence.commandKind, "officecliApply", "a write is classified into its own bucket, never read-only wrapper");
 });
 
+test("officecliApply: create allows one confined Office file and refuses traversal", () => {
+  const allowed = officecliApplyGate({
+    capability: "app.app_officecli.apply.create",
+    execArgs: ["create", "docs/report.docx"],
+  });
+  assert.equal(allowed.allowed, true, allowed.reason);
+  const escaped = officecliApplyGate({
+    capability: "app.app_officecli.apply.create",
+    execArgs: ["create", "../report.docx"],
+  });
+  assert.equal(escaped.allowed, false);
+});
+
 test("officecliApply: the read-only wrapper bucket does NOT permit an officecli write", () => {
   // Same argv, but presented under the READ capability prefix → classified `wrapper`,
   // whose bucket is read_only-only, so a workspace_write policy is refused there.

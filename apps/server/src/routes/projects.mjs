@@ -1,6 +1,6 @@
 import { randomBytes } from "node:crypto";
-import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
-import { basename, dirname, extname, join, relative, resolve, sep } from "node:path";
+import { constants as fsConstants, copyFileSync, existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
+import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { denyForeignProject, teamOf, LOCAL_TEAM_ID } from "../runtime/auth.mjs";
 import { computeDispatchEvaluation } from "../read-models/dispatch-evaluation.mjs";
 import { computeIssueOwnership } from "../read-models/issue-ownership.mjs";
@@ -68,6 +68,7 @@ export async function handleProjectRoutes({
   removeProject,
   removeWorktree,
   updateProject,
+  readProjectDocuments,
   readProjectTree,
   searchProjectContent,
   gitProjectSummary,
@@ -622,6 +623,38 @@ export async function handleProjectRoutes({
     return true;
   }
 
+  const projectDocumentsMatch = url.pathname.match(/^\/api\/projects\/([^/]+)\/documents$/);
+  if (projectDocumentsMatch && req.method === "GET") {
+    const project = state.projects.find((item) => item.id === decodeURIComponent(projectDocumentsMatch[1]));
+    if (!project) {
+      sendJson(res, 404, { error: "project_not_found" });
+      return true;
+    }
+    if (denyForeignProject({ res, sendJson, state, actor, projectId: project.id, notFound: { error: "project_not_found" } })) return true;
+    try {
+      const worktreeId = url.searchParams.get("worktree");
+      const worktree = worktreeId ? (state.worktrees ?? []).find((item) => item.id === worktreeId && item.projectId === project.id) : null;
+      if (worktreeId && !worktree) {
+        sendJson(res, 404, { error: "worktree_not_found" });
+        return true;
+      }
+      const root = worktree?.path ?? worktree?.worktreePath ?? project.path;
+      const result = readProjectDocuments({ ...project, path: root }, {
+        type: url.searchParams.get("type") ?? "all",
+        search: url.searchParams.get("q") ?? "",
+        limit: url.searchParams.get("limit") ?? 200,
+      });
+      sendJson(res, 200, {
+        ...result,
+        worktreeId: worktree?.id ?? null,
+        documents: result.documents.map((document) => ({ ...document, worktreeId: worktree?.id ?? null })),
+      });
+    } catch (error) {
+      sendJson(res, 400, { error: "project_documents_unavailable", message: error instanceof Error ? error.message : String(error) });
+    }
+    return true;
+  }
+
   const officecliPreviewMatch = url.pathname.match(/^\/api\/projects\/([^/]+)\/officecli-preview$/);
   if (officecliPreviewMatch && req.method === "GET") {
     const project = state.projects.find((item) => item.id === decodeURIComponent(officecliPreviewMatch[1]));
@@ -1024,6 +1057,24 @@ export async function handleProjectRoutes({
       }
       return true;
     }
+    if (action === "office-document-import" && req.method === "POST") {
+      try {
+        const body = await readJson(req);
+        sendJson(res, 201, importOfficeDocument(worktree, body));
+      } catch (error) {
+        sendJson(res, 400, { error: "office_document_import_failed", message: errorMessage(error) });
+      }
+      return true;
+    }
+    if (action === "office-document-manage" && req.method === "POST") {
+      try {
+        const body = await readJson(req);
+        sendJson(res, 200, manageOfficeDocument(worktree, body));
+      } catch (error) {
+        sendJson(res, 400, { error: "office_document_manage_failed", message: errorMessage(error) });
+      }
+      return true;
+    }
     if (action === "push" && req.method === "POST") {
       try {
         const result = await publishWorktreeBranch(worktree.id);
@@ -1130,6 +1181,83 @@ function gitSummaryForWorktree(summary) {
 // contained .gitignore so attachments never show up as untracked clutter in the
 // worktree diff or get swept into a commit by ephemeral cleanup.
 const MAX_ATTACHMENT_BYTES = 5 * 1024 * 1024;
+const MAX_OFFICE_IMPORT_BYTES = 10 * 1024 * 1024;
+const OFFICE_IMPORT_EXTENSIONS = new Set([".docx", ".xlsx", ".pptx"]);
+
+export function importOfficeDocument(worktree, body) {
+  const root = resolve(worktree.path);
+  const destination = String(body?.destination ?? body?.path ?? "").trim().replaceAll("\\", "/");
+  if (!destination || destination.startsWith("/") || destination.startsWith("~") || destination.split("/").includes("..")) {
+    throw new Error("Import destination must be a relative path inside the worktree.");
+  }
+  const extension = extname(destination).toLowerCase();
+  if (!OFFICE_IMPORT_EXTENSIONS.has(extension)) throw new Error("Import supports only .docx, .xlsx, and .pptx files.");
+  const encoded = String(body?.dataBase64 ?? "");
+  if (!encoded || !/^[A-Za-z0-9+/]+={0,2}$/.test(encoded)) throw new Error("A valid base64 document is required.");
+  const buffer = Buffer.from(encoded, "base64");
+  if (buffer.length === 0 || buffer.length > MAX_OFFICE_IMPORT_BYTES) throw new Error("Office document must be between 1 byte and 10 MiB.");
+  // OOXML documents are ZIP packages. This is a cheap corruption/wrong-file
+  // guard; OfficeCLI performs the authoritative parse when previewing/editing.
+  if (buffer[0] !== 0x50 || buffer[1] !== 0x4b) throw new Error("The uploaded file is not an OOXML package.");
+
+  const target = resolve(root, destination);
+  const rel = relative(root, target);
+  if (!rel || rel === ".." || rel.startsWith(`..${sep}`) || isAbsolute(rel)) throw new Error("Import destination escapes the worktree.");
+  const parent = dirname(target);
+  // Refuse any existing symlink component before mkdir/write can follow it.
+  let cursor = root;
+  for (const part of relative(root, parent).split(sep).filter(Boolean)) {
+    cursor = join(cursor, part);
+    if (existsSync(cursor) && lstatSync(cursor).isSymbolicLink()) throw new Error("Import destination escapes the worktree through a symlink.");
+  }
+  mkdirSync(parent, { recursive: true });
+  const realRoot = realpathSync(root);
+  const realParent = realpathSync(parent);
+  if (realParent !== realRoot && !realParent.startsWith(realRoot + sep)) throw new Error("Import destination escapes the worktree.");
+  writeFileSync(target, buffer, { flag: "wx" });
+  return { path: destination, bytes: buffer.length, type: extension.slice(1) };
+}
+
+export function manageOfficeDocument(worktree, body) {
+  const operation = String(body?.operation ?? "");
+  if (!["rename", "move", "copy", "delete"].includes(operation)) throw new Error("Unsupported document operation.");
+  const root = resolve(worktree.path);
+  const source = resolveOfficeDocumentPath(root, body?.source, { mustExist: true });
+  if (lstatSync(source.absolute).isSymbolicLink() || !lstatSync(source.absolute).isFile()) throw new Error("Source must be a regular Office document.");
+  if (operation === "delete") {
+    unlinkSync(source.absolute);
+    return { operation, source: source.relative };
+  }
+  const destination = resolveOfficeDocumentPath(root, body?.destination, { mustExist: false, createParent: true });
+  if (extname(source.relative).toLowerCase() !== extname(destination.relative).toLowerCase()) {
+    throw new Error("Destination must keep the source document type.");
+  }
+  if (existsSync(destination.absolute)) throw new Error("A document already exists at the destination.");
+  if (operation === "copy") copyFileSync(source.absolute, destination.absolute, fsConstants.COPYFILE_EXCL);
+  else renameSync(source.absolute, destination.absolute);
+  return { operation, source: source.relative, destination: destination.relative };
+}
+
+function resolveOfficeDocumentPath(root, input, { mustExist, createParent = false }) {
+  const value = String(input ?? "").trim().replaceAll("\\", "/");
+  if (!value || value.startsWith("/") || value.startsWith("~") || value.split("/").includes("..")) throw new Error("Document path must be relative to the worktree.");
+  if (!OFFICE_IMPORT_EXTENSIONS.has(extname(value).toLowerCase())) throw new Error("Document path must end in .docx, .xlsx, or .pptx.");
+  const absolute = resolve(root, value);
+  const rel = relative(root, absolute);
+  if (!rel || rel === ".." || rel.startsWith(`..${sep}`) || isAbsolute(rel)) throw new Error("Document path escapes the worktree.");
+  const parent = dirname(absolute);
+  let cursor = root;
+  for (const part of relative(root, parent).split(sep).filter(Boolean)) {
+    cursor = join(cursor, part);
+    if (existsSync(cursor) && lstatSync(cursor).isSymbolicLink()) throw new Error("Document path escapes the worktree through a symlink.");
+  }
+  if (createParent) mkdirSync(parent, { recursive: true });
+  const realRoot = realpathSync(root);
+  const realParent = realpathSync(parent);
+  if (realParent !== realRoot && !realParent.startsWith(realRoot + sep)) throw new Error("Document path escapes the worktree.");
+  if (mustExist && !existsSync(absolute)) throw new Error("Source document does not exist.");
+  return { absolute, relative: value };
+}
 
 function saveAttachments(worktree, files) {
   const list = Array.isArray(files) ? files.slice(0, 6) : [];
