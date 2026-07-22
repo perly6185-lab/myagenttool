@@ -15,6 +15,16 @@ describe("Documents preview failure guidance", () => {
     expect(previewFailureCopy(new ApiError("not_found", "missing", 404)).showApplications).toBe(false);
   });
 
+  it("explains encrypted and malformed Office files without exposing backend details", () => {
+    expect(previewFailureCopy(new ApiError("office_password_required", "secret parser detail", 400))).toEqual({
+      title: "Password-protected Office document",
+      detail: "This encrypted document cannot be previewed here yet. Open it with Word, Excel, or PowerPoint to enter its password.",
+      showApplications: false,
+    });
+    expect(previewFailureCopy(new ApiError("office_encryption_unsupported", "secret parser detail", 400)).detail).not.toContain("secret");
+    expect(previewFailureCopy(new ApiError("office_file_corrupted", "secret parser detail", 400)).title).toBe("Invalid Office document");
+  });
+
   it("preserves an unknown render failure detail", () => {
     expect(previewFailureCopy(new Error("corrupt package"))).toMatchObject({
       title: "Preview unavailable",

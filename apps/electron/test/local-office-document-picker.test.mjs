@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, symlink
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { copySelectedOfficeDocument, describeLocalOfficeDocument, registerLocalOfficeDocumentPicker } from "../src/local-office-document-picker.mjs";
+import { copySelectedOfficeDocument, describeLocalOfficeDocument, registerContainedOfficeDocumentOpen, registerLocalOfficeDocumentPicker, resolveContainedOfficeDocument } from "../src/local-office-document-picker.mjs";
 
 test("describes only a selected regular Office document", () => {
   const root = mkdtempSync(join(tmpdir(), "office-picker-"));
@@ -49,4 +49,43 @@ test("copies a selected Office document only into a confined Worktree destinatio
   symlinkSync(outside, join(worktree, "linked"));
   assert.throws(() => copySelectedOfficeDocument(source, worktree, "linked/secret.docx"), /symlink/);
   assert.equal(existsSync(join(outside, "secret.docx")), false);
+});
+
+test("resolves only regular Office documents contained by the selected project or worktree", () => {
+  const root = mkdtempSync(join(tmpdir(), "office-open-"));
+  const project = join(root, "project");
+  const worktree = join(root, "worktree");
+  mkdirSync(join(project, "docs"), { recursive: true });
+  mkdirSync(worktree);
+  writeFileSync(join(project, "docs", "report.docx"), "PK-office");
+  writeFileSync(join(project, "notes.txt"), "no");
+  writeFileSync(join(worktree, "deck.pptx"), "PK-office");
+  const state = { projects: [{ id: "project", path: project }], worktrees: [{ id: "wt", projectId: "project", path: worktree }] };
+  assert.equal(resolveContainedOfficeDocument(state, { projectId: "project", relativePath: "docs/report.docx" }), realpathSync(join(project, "docs", "report.docx")));
+  assert.equal(resolveContainedOfficeDocument(state, { projectId: "project", worktreeId: "wt", relativePath: "deck.pptx" }), realpathSync(join(worktree, "deck.pptx")));
+  assert.throws(() => resolveContainedOfficeDocument(state, { projectId: "project", relativePath: "../outside.docx" }), /contained/);
+  assert.throws(() => resolveContainedOfficeDocument(state, { projectId: "project", relativePath: "notes.txt" }), /Only/);
+  const outside = join(root, "outside.docx");
+  writeFileSync(outside, "PK-office");
+  symlinkSync(outside, join(project, "linked.docx"));
+  assert.throws(() => resolveContainedOfficeDocument(state, { projectId: "project", relativePath: "linked.docx" }), /escapes/);
+});
+
+test("the contained-open IPC resolves identity in main and sanitizes system failures", async () => {
+  const root = mkdtempSync(join(tmpdir(), "office-open-ipc-"));
+  const file = join(root, "report.xlsx");
+  writeFileSync(file, "PK-office");
+  const handlers = new Map();
+  const ipcMain = { removeHandler: (name) => handlers.delete(name), handle: (name, handler) => handlers.set(name, handler) };
+  const opened = [];
+  registerContainedOfficeDocumentOpen({
+    ipcMain,
+    getState: async () => ({ projects: [{ id: "project", path: root }], worktrees: [] }),
+    openPath: async (path) => { opened.push(path); return ""; },
+  });
+  assert.deepEqual(await handlers.get("documents:open-contained-office")(null, { projectId: "project", relativePath: "report.xlsx" }), { opened: true });
+  assert.deepEqual(opened, [realpathSync(file)]);
+  await assert.rejects(() => handlers.get("documents:open-contained-office")(null, { projectId: "project", relativePath: "missing.xlsx" }), (error) => error.message === "The requested Office document could not be opened safely." && !error.message.includes(root));
+  registerContainedOfficeDocumentOpen({ ipcMain, getState: async () => ({ projects: [{ id: "project", path: root }] }), openPath: async () => "sensitive OS detail" });
+  await assert.rejects(() => handlers.get("documents:open-contained-office")(null, { projectId: "project", relativePath: "report.xlsx" }), (error) => error.message === "The system application could not open this Office document." && !error.message.includes("sensitive"));
 });
