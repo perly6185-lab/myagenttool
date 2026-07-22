@@ -28,6 +28,12 @@ export const resources = {
         block: { offline: "Server is offline.", task: "Enter a task before running.", agent: "Select an agent before running.", disabled: "{{name}} is disabled. Enable it before running a new task.", unhealthy: "{{name}} is unhealthy. Run a health check after fixing it.", running: "Wait for the current task to finish or cancel it." },
         gettingStarted: "Getting started", go: "Go →", device: "Link a local device", deviceOnline: "Device online", deviceDetail: "The local bridge runs your agents", registerProject: "Register a project", projects_one: "{{count}} project", projects_other: "{{count}} projects", projectDetail: "Clone or link a repo to work in", readyAgent: "Have a ready agent", agentReady: "An agent is ready", agentDetail: "An agent executes your tasks", firstTask: "Run your first task", runs_one: "{{count}} run", runs_other: "{{count}} runs", taskDetail: "Use the composer below",
       },
+      workBoard: {
+        title: "Status", items: "{{count}} items", subtitle: "Every work item by state · newest first", emptyTitle: "Nothing tracked yet", emptyHint: "Auto-runs, pending decisions, and recent refusals land here, grouped by state.", none: "None", more: "+{{count}} more",
+        lens: { pending_decision: "Pending decision", follow_up: "Follow-up", in_progress: "In progress", waiting: "Waiting", failed: "Failed", done: "Done" },
+        schedule: "Schedule to channel", on: "on", off: "off", next: "next {{time}}", last: "last {{time}}", close: "Close", configure: "Configure", noChannels: "No channels registered — add a WeCom channel first.", noConversations: "No conversations yet — someone must message the bot before reports can be posted.", enabled: "Enabled", channel: "Channel", to: "To", report: "Report", cover: "Cover", cadence: "Cadence", day: "Day", time: "Time", pick: "— pick —", previous: "last period", current: "this period", daily: "daily", weekly: "weekly", save: "Save", postNow: "Post now", postTitle: "Send the configured report to the channel now", posted_one: "Posted ({{count}} message)", posted_other: "Posted ({{count}} messages)", notPosted: "Not posted: {{reason}}", serverTime: "Time is server-local; posts once per period.",
+        period: { day: "day", week: "week", month: "month", quarter: "quarter" }, since: "since {{date}}", copyTitle: "Copy this period's Markdown report", copied: "Copied", copy: "Copy report", opened: "Opened", completed: "Completed", failed: "Failed", refusals: "Refusals", refusalsPartial: "Refusals*", refusalHint: "Lower bound — the durable rollup started after this window's start", aging: "Aging >24h",
+      },
       languagePicker: {
         label: "Language",
         english: "English",
@@ -63,6 +69,12 @@ export const resources = {
         reviewAgent: "运行前请检查所选 Agent。", recorded: "任务输入和结果会被记录。",
         block: { offline: "服务器离线。", task: "请先输入任务。", agent: "请先选择 Agent。", disabled: "{{name}} 已禁用，请先启用再运行新任务。", unhealthy: "{{name}} 状态异常，请修复后执行健康检查。", running: "请等待当前任务结束或将其取消。" },
         gettingStarted: "开始使用", go: "前往 →", device: "连接本地设备", deviceOnline: "设备在线", deviceDetail: "本地桥接程序负责运行 Agent", registerProject: "注册项目", projects_one: "{{count}} 个项目", projects_other: "{{count}} 个项目", projectDetail: "克隆或连接一个代码仓库", readyAgent: "准备可用的 Agent", agentReady: "Agent 已就绪", agentDetail: "Agent 会执行你的任务", firstTask: "运行第一个任务", runs_one: "{{count}} 次运行", runs_other: "{{count}} 次运行", taskDetail: "使用下方任务输入框",
+      },
+      workBoard: {
+        title: "状态", items: "{{count}} 项", subtitle: "按状态查看所有工作项 · 最新优先", emptyTitle: "尚无跟踪项", emptyHint: "自动运行、待决策事项和最近的拒绝会按状态汇总到这里。", none: "无", more: "另有 {{count}} 项",
+        lens: { pending_decision: "待决策", follow_up: "需跟进", in_progress: "进行中", waiting: "等待中", failed: "已失败", done: "已完成" },
+        schedule: "定时发送到渠道", on: "开启", off: "关闭", next: "下次 {{time}}", last: "上次 {{time}}", close: "关闭", configure: "配置", noChannels: "尚未注册渠道，请先添加企业微信渠道。", noConversations: "尚无会话；需要有人先向机器人发送消息，才能投递报告。", enabled: "启用", channel: "渠道", to: "接收人", report: "报告", cover: "范围", cadence: "频率", day: "星期", time: "时间", pick: "— 选择 —", previous: "上一周期", current: "当前周期", daily: "每天", weekly: "每周", save: "保存", postNow: "立即发送", postTitle: "立即将已配置的报告发送到渠道", posted_one: "已发送（{{count}} 条消息）", posted_other: "已发送（{{count}} 条消息）", notPosted: "未发送：{{reason}}", serverTime: "时间以服务器本地时区为准；每周期仅发送一次。",
+        period: { day: "日", week: "周", month: "月", quarter: "季度" }, since: "自 {{date}} 起", copyTitle: "复制本周期 Markdown 报告", copied: "已复制", copy: "复制报告", opened: "新增", completed: "完成", failed: "失败", refusals: "拒绝", refusalsPartial: "拒绝*", refusalHint: "这是下限值；持久化汇总在本时间窗口开始后才启用", aging: "超过 24 小时",
       },
       languagePicker: {
         label: "语言",
