@@ -8,8 +8,20 @@ import { renderOfficecliPreview, readOfficecliDocParagraphs, readOfficecliSheet,
 
 function projectWith(files = { "demo.xlsx": "x" }) {
   const root = mkdtempSync(join(tmpdir(), "officecli-preview-"));
-  for (const [name, body] of Object.entries(files)) writeFileSync(join(root, name), body);
+  for (const [name, body] of Object.entries(files)) {
+    const value = /\.(docx|xlsx|pptx)$/i.test(name) && typeof body === "string" && !body.startsWith("PK") ? Buffer.concat([Buffer.from("PK\x03\x04", "binary"), Buffer.from(body)]) : body;
+    writeFileSync(join(root, name), value);
+  }
   return root;
+}
+
+function encryptedOfficeContainer() {
+  return Buffer.concat([
+    Buffer.from([0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1]),
+    Buffer.alloc(64),
+    Buffer.from("EncryptionInfo\0", "utf16le"),
+    Buffer.from("EncryptedPackage\0", "utf16le"),
+  ]);
 }
 
 // A spawn stub standing in for `officecli view <file> html`.
@@ -72,6 +84,29 @@ test("a missing officecli binary maps to officecli_unavailable", async () => {
   await assert.rejects(
     renderOfficecliPreview({ projectPath: root, relativeFile: "demo.xlsx", run: async () => { throw enoent; } }),
     (e) => e instanceof OfficecliPreviewError && e.code === "officecli_unavailable",
+  );
+});
+
+test("detects encrypted OOXML before spawning OfficeCLI", async () => {
+  const root = projectWith({ "secret.docx": encryptedOfficeContainer() });
+  await assert.rejects(
+    renderOfficecliPreview({ projectPath: root, relativeFile: "secret.docx", run: async () => assert.fail("must not spawn") }),
+    (e) => e instanceof OfficecliPreviewError && e.code === "office_password_required" && !e.message.includes("EncryptionInfo"),
+  );
+});
+
+test("separates unsupported encrypted containers from malformed Office files", async () => {
+  const ole = Buffer.concat([Buffer.from([0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1]), Buffer.alloc(64)]);
+  const unsupportedRoot = projectWith({ "legacy.xlsx": ole });
+  await assert.rejects(
+    renderOfficecliPreview({ projectPath: unsupportedRoot, relativeFile: "legacy.xlsx", run: async () => assert.fail("must not spawn") }),
+    (e) => e instanceof OfficecliPreviewError && e.code === "office_encryption_unsupported",
+  );
+  const malformedRoot = projectWith({ "broken.pptx": "not-an-office-container" });
+  writeFileSync(join(malformedRoot, "broken.pptx"), "not-an-office-container");
+  await assert.rejects(
+    renderOfficecliPreview({ projectPath: malformedRoot, relativeFile: "broken.pptx", run: async () => assert.fail("must not spawn") }),
+    (e) => e instanceof OfficecliPreviewError && e.code === "office_file_corrupted",
   );
 });
 

@@ -21,6 +21,7 @@ export function PdfDocumentViewer({ projectId, path, worktreeId }: { projectId: 
   const textTaskRef = useRef<TextLayer | null>(null);
   const searchGeneration = useRef(0);
   const passwordCallbackRef = useRef<((password: string) => void) | null>(null);
+  const loadingTaskRef = useRef<PDFDocumentLoadingTask | null>(null);
   const [document, setDocument] = useState<PDFDocumentProxy | null>(null);
   const [status, setStatus] = useState<"loading" | "ready" | "error">("loading");
   const [error, setError] = useState("");
@@ -47,6 +48,7 @@ export function PdfDocumentViewer({ projectId, path, worktreeId }: { projectId: 
   const [passwordPrompt, setPasswordPrompt] = useState(false);
   const [password, setPassword] = useState("");
   const [passwordError, setPasswordError] = useState("");
+  const [reloadKey, setReloadKey] = useState(0);
 
   useEffect(() => {
     let cancelled = false;
@@ -54,10 +56,19 @@ export function PdfDocumentViewer({ projectId, path, worktreeId }: { projectId: 
     setStatus("loading"); setError(""); setDocument(null); setPage(1); setPageInput("1"); setHits([]); setActiveHit(-1);
     void (async () => {
       try {
-        const [pdfjs, source] = await Promise.all([import("pdfjs-dist"), api.projectPdfSource(projectId, path, worktreeId ?? undefined)]);
+        const [pdfjs, initial] = await Promise.all([import("pdfjs-dist"), api.projectPdfRange(projectId, path, 0, 64 * 1024, worktreeId ?? undefined)]);
         if (cancelled) return;
         pdfjs.GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
-        loadingTask = pdfjs.getDocument({ ...source, rangeChunkSize: 64 * 1024 });
+        class AuthenticatedPdfRangeTransport extends pdfjs.PDFDataRangeTransport {
+          requestDataRange(begin: number, end: number) {
+            void api.projectPdfRange(projectId, path, begin, end, worktreeId ?? undefined)
+              .then((chunk) => { if (!cancelled) this.onDataRange(begin, new Uint8Array(chunk.data)); })
+              .catch((rangeError) => { if (!cancelled) { setError(pdfErrorMessage(rangeError)); setStatus("error"); } });
+          }
+        }
+        const range = new AuthenticatedPdfRangeTransport(initial.total, new Uint8Array(initial.data));
+        loadingTask = pdfjs.getDocument({ range, rangeChunkSize: 64 * 1024, disableStream: true });
+        loadingTaskRef.current = loadingTask;
         loadingTask.onPassword = (updatePassword: (password: string) => void, reason: number) => {
           if (cancelled) return;
           passwordCallbackRef.current = updatePassword;
@@ -76,11 +87,11 @@ export function PdfDocumentViewer({ projectId, path, worktreeId }: { projectId: 
           if (linkedPage) setPage(Math.min(loaded.numPages, linkedPage));
         }
       } catch (caught) {
-        if (!cancelled) { setError(caught instanceof Error ? caught.message : "PDF preview failed."); setStatus("error"); }
+        if (!cancelled) { setError(pdfErrorMessage(caught)); setStatus("error"); }
       }
     })();
-    return () => { cancelled = true; passwordCallbackRef.current = null; searchGeneration.current += 1; renderTaskRef.current?.cancel(); textTaskRef.current?.cancel(); void loadingTask?.destroy(); };
-  }, [projectId, path, worktreeId]);
+    return () => { cancelled = true; passwordCallbackRef.current = null; loadingTaskRef.current = null; searchGeneration.current += 1; renderTaskRef.current?.cancel(); textTaskRef.current?.cancel(); void loadingTask?.destroy(); };
+  }, [projectId, path, worktreeId, reloadKey]);
 
   useEffect(() => {
     const element = viewportRef.current;
@@ -188,7 +199,7 @@ export function PdfDocumentViewer({ projectId, path, worktreeId }: { projectId: 
   };
 
   const pageCount = document?.numPages ?? 0;
-  const invocation = consoleState?.invocations.find((item) => item.id === toolInvocationId);
+  const invocation = consoleState?.invocations?.find((item) => item.id === toolInvocationId);
   const importedResult = consoleState?.applicationResults?.find((item) => item.invocationId === toolInvocationId);
   const pdfcpu = consoleState?.applications?.find((item) => item.id === "app_pdfcpu");
   const runTool = async (action: "validate" | "info") => {
@@ -197,7 +208,7 @@ export function PdfDocumentViewer({ projectId, path, worktreeId }: { projectId: 
       const result = await api.invokeCapability(`app.app_pdfcpu.wrapper.${action}`, { projectId, file: path, ...(worktreeId ? { worktreeId } : {}) });
       setToolInvocationId(result.invocationId);
       await refreshConsoleState();
-    } catch (caught) { setToolError(caught instanceof Error ? caught.message : `PDF ${action} failed.`); }
+    } catch (caught) { setToolError(pdfcpuErrorMessage(caught, action)); }
   };
   const withPdfUrl = async (callback: (url: string) => void) => {
     const bytes = pdfBytes ?? await api.projectPdfData(projectId, path, worktreeId ?? undefined);
@@ -233,7 +244,7 @@ export function PdfDocumentViewer({ projectId, path, worktreeId }: { projectId: 
     </div>
     {pageInputError ? <p role="alert" className="border-b border-destructive/30 bg-destructive/5 px-3 py-1 text-xs text-destructive">{pageInputError}</p> : null}
     {passwordPrompt ? <form className="border-b border-amber-500/30 bg-amber-500/10 px-3 py-2" aria-label="Unlock PDF" onSubmit={(event) => { event.preventDefault(); if (!password) return; const callback = passwordCallbackRef.current; passwordCallbackRef.current = null; setPasswordPrompt(false); callback?.(password); setPassword(""); }}>
-      <div className="flex flex-wrap items-center gap-2"><label className="text-xs font-medium" htmlFor="pdf-password">PDF password</label><Input id="pdf-password" type="password" autoFocus value={password} onChange={(event) => setPassword(event.target.value)} className="h-8 max-w-64" autoComplete="off" /><Button size="sm" type="submit" disabled={!password}>Unlock</Button></div>
+      <div className="flex flex-wrap items-center gap-2"><label className="text-xs font-medium" htmlFor="pdf-password">PDF password</label><Input id="pdf-password" type="password" autoFocus value={password} onChange={(event) => setPassword(event.target.value)} className="h-8 max-w-64" autoComplete="off" /><Button size="sm" type="submit" disabled={!password}>Unlock</Button><Button size="sm" type="button" variant="ghost" onClick={() => { passwordCallbackRef.current = null; setPassword(""); setPasswordPrompt(false); setError("Password entry was cancelled. You can retry when ready."); setStatus("error"); void loadingTaskRef.current?.destroy(); }}>Cancel</Button></div>
       <p role="status" className="mt-1 text-xs text-muted-foreground">{passwordError} The password is used only in memory and is not stored.</p>
     </form> : null}
     {detailsOpen ? <section className="border-b border-border bg-card px-3 py-2 text-xs" aria-label="PDF details">
@@ -256,7 +267,7 @@ export function PdfDocumentViewer({ projectId, path, worktreeId }: { projectId: 
       if (next !== page) { event.preventDefault(); setPage(next); }
     }} className="relative min-h-0 flex-1 overflow-auto bg-muted/50 p-4 outline-none focus-visible:ring-2 focus-visible:ring-primary" aria-label={`PDF preview ${path}`}>
       {status === "loading" ? <p className="absolute inset-x-0 top-4 flex items-center justify-center gap-1 text-sm text-muted-foreground"><Loader2 className="size-4 animate-spin" /> Loading PDF…</p> : null}
-      {status === "error" ? <div role="alert" className="mx-auto max-w-lg rounded-md border border-destructive/30 bg-card p-4 text-sm"><p className="font-medium text-destructive">PDF preview unavailable</p><p className="mt-1 text-muted-foreground">{error}</p></div> : null}
+      {status === "error" ? <div role="alert" className="mx-auto max-w-lg rounded-md border border-destructive/30 bg-card p-4 text-sm"><p className="font-medium text-destructive">PDF preview unavailable</p><p className="mt-1 text-muted-foreground">{error}</p><Button size="sm" variant="secondary" className="mt-3" onClick={() => setReloadKey((value) => value + 1)}>Try again</Button></div> : null}
       <div className={`relative mx-auto w-fit bg-white shadow-sm ${status === "ready" ? "block" : "invisible"}`}>
         <canvas ref={canvasRef} className="block" aria-label={`Page ${page} of ${pageCount || 1}`} />
         <div ref={textLayerRef} className="textLayer pdf-selectable-text absolute inset-0 overflow-hidden opacity-100" aria-label={`Selectable text for page ${page}`} />
@@ -308,6 +319,28 @@ function formatBytes(bytes: number) {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
   return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
+}
+
+function pdfErrorMessage(caught: unknown) {
+  const error = caught as { name?: string; code?: string; status?: number; message?: string };
+  const code = String(error?.code ?? "").toLowerCase(); const message = String(error?.message ?? "");
+  if (error?.status === 401 || /unauthor|forbidden/.test(code)) return "Your session cannot access this PDF. Sign in again and retry.";
+  if (code === "pdf_too_large") return "This PDF exceeds the local preview size limit.";
+  if (code === "not_found" || error?.name === "MissingPDFException") return "The PDF no longer exists at this project path.";
+  if (code === "invalid_pdf" || error?.name === "InvalidPDFException") return "This file is malformed or is not a supported PDF.";
+  if (/timeout|timed out/i.test(`${code} ${message}`)) return "PDF loading timed out. Check the local runtime and retry.";
+  if (error?.name === "UnexpectedResponseException" || code === "pdf_range_failed" || code === "invalid_content_range") return "The local PDF service returned an invalid range response. Retry or restart the local service.";
+  if (error?.name === "PasswordException") return "The PDF password was not accepted. Retry with the correct password.";
+  return message || "PDF preview failed.";
+}
+
+function pdfcpuErrorMessage(caught: unknown, action: "validate" | "info") {
+  const error = caught as { code?: string; status?: number; message?: string };
+  const code = String(error?.code ?? "").toLowerCase(); const message = String(error?.message ?? "");
+  if (/not_installed|not_available|runtime.*offline|agent_not_available/.test(`${code} ${message}`)) return "pdfcpu is unavailable on this device. Install or restart the local runtime, then retry.";
+  if (/timeout|timed out/.test(`${code} ${message}`.toLowerCase())) return `PDF ${action} timed out. Check pdfcpu readiness and retry.`;
+  if (error?.status === 401 || error?.status === 403) return "Your session is not authorized to inspect this PDF.";
+  return message || `PDF ${action} failed.`;
 }
 
 function highlightTextLayer(container: HTMLElement | null, query: string, activeOccurrence: number) {

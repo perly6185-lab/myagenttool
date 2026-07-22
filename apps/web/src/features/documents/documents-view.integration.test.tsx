@@ -2,6 +2,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { DocumentsView } from "@/features/documents/documents-view";
+import { ApiError } from "@/lib/api-client";
 
 const mocks = vi.hoisted(() => ({
   projectDocuments: vi.fn(),
@@ -11,6 +12,7 @@ const mocks = vi.hoisted(() => ({
   manageOfficeDocument: vi.fn(),
   projectPdfData: vi.fn(),
   projectPdfSource: vi.fn(),
+  projectPdfRange: vi.fn(),
   selectProject: vi.fn(),
   setSection: vi.fn(),
   setOfficecliPreviewPath: vi.fn(),
@@ -28,6 +30,7 @@ vi.mock("@/data/use-console-actions", () => ({
     manageOfficeDocument: mocks.manageOfficeDocument,
     projectPdfData: mocks.projectPdfData,
     projectPdfSource: mocks.projectPdfSource,
+    projectPdfRange: mocks.projectPdfRange,
     selectProject: mocks.selectProject,
   },
 }));
@@ -60,6 +63,7 @@ beforeEach(() => {
   mocks.invokeCapability.mockResolvedValue({ invocationId: "inv_1" });
   mocks.manageOfficeDocument.mockResolvedValue({ operation: "copy", source: "docs/report.docx", destination: "docs/copy-of-report.docx" });
   mocks.projectPdfSource.mockResolvedValue({ url: "http://localhost/report.pdf", httpHeaders: { Authorization: "Bearer test" } });
+  mocks.projectPdfRange.mockResolvedValue({ data: new ArrayBuffer(8), total: 2048 });
 });
 
 afterEach(() => { cleanup(); vi.clearAllMocks(); });
@@ -80,6 +84,25 @@ describe("DocumentsView interaction", () => {
     expect(mocks.setOfficecliPreviewPath).toHaveBeenCalledWith("docs/report.docx");
     expect(mocks.setSelectedWorktreeId).toHaveBeenCalledWith("wt_1");
     expect(mocks.setSection).toHaveBeenCalledWith("projects");
+  });
+
+  it("offers a contained desktop system-open action for an encrypted Office document", async () => {
+    const openContainedOfficeDocument = vi.fn().mockResolvedValue({ opened: true });
+    window.myagenttoolDesktop = { openContainedOfficeDocument };
+    mocks.officecliPreview.mockRejectedValue(new ApiError("office_password_required", "protected", 400));
+    renderView();
+    fireEvent.click(await screen.findByText("report.docx"));
+    expect(await screen.findByText("Password-protected Office document")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Open in system application" }));
+    await waitFor(() => expect(openContainedOfficeDocument).toHaveBeenCalledWith({ projectId: "prj_1", relativePath: "docs/report.docx" }));
+  });
+
+  it("explains the desktop requirement for encrypted Office documents in a browser", async () => {
+    mocks.officecliPreview.mockRejectedValue(new ApiError("office_password_required", "protected", 400));
+    renderView();
+    fireEvent.click(await screen.findByText("report.docx"));
+    expect(await screen.findByText("System application access is available in the desktop app.")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Open in system application" })).toBeNull();
   });
 
   it("creates a worktree document from a template with JSON data", async () => {

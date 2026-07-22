@@ -5,6 +5,7 @@ import { PdfDocumentViewer } from "@/features/documents/pdf-document-viewer";
 const mocks = vi.hoisted(() => ({
   projectPdfData: vi.fn(),
   projectPdfSource: vi.fn(),
+  projectPdfRange: vi.fn(),
   destroy: vi.fn(async () => undefined),
   cancel: vi.fn(),
   render: vi.fn(),
@@ -13,11 +14,12 @@ const mocks = vi.hoisted(() => ({
   passwordHandler: undefined as undefined | ((callback: (password: string) => void, reason: number) => void),
 }));
 
-vi.mock("@/data/use-console-actions", () => ({ api: { projectPdfData: mocks.projectPdfData, projectPdfSource: mocks.projectPdfSource, invokeCapability: mocks.invokeCapability } }));
+vi.mock("@/data/use-console-actions", () => ({ api: { projectPdfData: mocks.projectPdfData, projectPdfSource: mocks.projectPdfSource, projectPdfRange: mocks.projectPdfRange, invokeCapability: mocks.invokeCapability } }));
 vi.mock("@/data/use-console-state", () => ({ useConsoleState: () => ({ data: { invocations: [], applicationResults: [], applications: [] } }), useRefreshConsoleState: () => vi.fn(async () => undefined) }));
 vi.mock("pdfjs-dist/build/pdf.worker.min.mjs?url", () => ({ default: "/assets/pdf.worker.mjs" }));
 vi.mock("pdfjs-dist", () => ({
   GlobalWorkerOptions: { workerSrc: "" },
+  PDFDataRangeTransport: class { constructor(_length: number, _initialData: Uint8Array) {} onDataRange() {} },
   TextLayer: class {
     container: HTMLElement;
     constructor({ container }: { container: HTMLElement }) { this.container = container; }
@@ -41,7 +43,7 @@ vi.mock("pdfjs-dist", () => ({
   }),
 }));
 
-beforeEach(() => { mocks.projectPdfSource.mockResolvedValue({ url: "http://localhost/report.pdf", httpHeaders: { Authorization: "Bearer test" } }); });
+beforeEach(() => { mocks.projectPdfSource.mockResolvedValue({ url: "http://localhost/report.pdf", httpHeaders: { Authorization: "Bearer test" } }); mocks.projectPdfRange.mockResolvedValue({ data: new ArrayBuffer(8), total: 2048 }); });
 afterEach(() => { cleanup(); vi.clearAllMocks(); mocks.passwordHandler = undefined; window.history.replaceState({}, "", "/"); });
 
 it("loads an authenticated project PDF and renders its first page", async () => {
@@ -51,7 +53,7 @@ it("loads an authenticated project PDF and renders its first page", async () => 
   render(<PdfDocumentViewer projectId="prj_1" path="docs/report.pdf" worktreeId="wt_1" />);
   expect(screen.getByText("Loading PDF…")).toBeTruthy();
   expect(await screen.findByText("/ 3")).toBeTruthy();
-  expect(mocks.projectPdfSource).toHaveBeenCalledWith("prj_1", "docs/report.pdf", "wt_1");
+  expect(mocks.projectPdfRange).toHaveBeenCalledWith("prj_1", "docs/report.pdf", 0, 65536, "wt_1");
   expect(mocks.render).toHaveBeenCalledOnce();
   await waitFor(() => expect(screen.getByLabelText("Page 1 of 3")).toBeTruthy());
 });
@@ -75,7 +77,7 @@ it("supports paging, zoom, fit width, and text-search page navigation without re
   expect(document.querySelectorAll("mark[data-active=true]")).toHaveLength(1);
   fireEvent.click(screen.getByText("Next"));
   expect(await screen.findByText("2/2")).toBeTruthy();
-  expect(mocks.projectPdfSource).toHaveBeenCalledOnce();
+  expect(mocks.projectPdfRange).toHaveBeenCalledOnce();
 });
 
 it("validates direct page entry before navigation", async () => {
@@ -141,8 +143,23 @@ it("rotates the view and submits an ephemeral password without persisting it", a
   expect(screen.queryByLabelText("PDF password")).toBeNull();
 });
 
+it("cancels password entry and can retry loading without retaining the password", async () => {
+  mocks.render.mockReturnValue({ promise: Promise.resolve(), cancel: mocks.cancel });
+  vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({} as CanvasRenderingContext2D);
+  render(<PdfDocumentViewer projectId="prj_1" path="docs/protected.pdf" />);
+  await screen.findByText("/ 3");
+  mocks.passwordHandler?.(vi.fn(), 1);
+  const input = await screen.findByLabelText("PDF password");
+  fireEvent.change(input, { target: { value: "temporary" } });
+  fireEvent.click(screen.getByText("Cancel"));
+  expect(screen.queryByLabelText("PDF password")).toBeNull();
+  expect((await screen.findByRole("alert")).textContent).toContain("Password entry was cancelled");
+  fireEvent.click(screen.getByText("Try again"));
+  await waitFor(() => expect(mocks.projectPdfRange).toHaveBeenCalledTimes(2));
+});
+
 it("shows a contained error instead of replacing the Documents page", async () => {
-  mocks.projectPdfSource.mockRejectedValue(new Error("PDF was not found"));
+  mocks.projectPdfRange.mockRejectedValue(Object.assign(new Error("parse failed"), { code: "invalid_pdf" }));
   render(<PdfDocumentViewer projectId="prj_1" path="missing.pdf" />);
-  expect((await screen.findByRole("alert")).textContent).toContain("PDF was not found");
+  expect((await screen.findByRole("alert")).textContent).toContain("malformed or is not a supported PDF");
 });
