@@ -1072,7 +1072,7 @@ export function readProjectTree(project, { relativePath = "", search = "" } = {}
   };
 }
 
-const DOCUMENT_EXTENSIONS = new Set([".docx", ".xlsx", ".pptx", ".pdf"]);
+const DOCUMENT_EXTENSIONS = new Set([".docx", ".xlsx", ".pptx", ".pdf", ".dxf", ".dwg"]);
 const DOCUMENT_SCAN_IGNORES = new Set([".git", "node_modules", "dist", "build", ".next", ".cache"]);
 
 /** Bounded, read-only local document discovery for the Documents surface. */
@@ -1081,7 +1081,7 @@ export function readProjectDocuments(project, { type = "all", search = "", limit
   const realRoot = realpathSync(root);
   const requestedType = String(type ?? "all").toLowerCase();
   if (requestedType !== "all" && !DOCUMENT_EXTENSIONS.has(`.${requestedType}`)) {
-    throw new Error("Document type must be all, docx, xlsx, pptx, or pdf.");
+    throw new Error("Document type must be all, docx, xlsx, pptx, pdf, dxf, or dwg.");
   }
   const query = String(search ?? "").trim().toLowerCase().slice(0, 120);
   const maxResults = Math.min(500, Math.max(1, Number(limit) || 200));

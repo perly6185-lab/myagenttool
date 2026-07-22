@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { Copy, FilePlus2, FileSpreadsheet, FileText, FolderOpen, Loader2, Move, Pencil, Pin, PinOff, Presentation, Search, Trash2, X } from "lucide-react";
+import { Copy, DraftingCompass, FilePlus2, FileSpreadsheet, FileText, FolderOpen, Loader2, Move, Pencil, Pin, PinOff, Presentation, Search, Trash2, X } from "lucide-react";
 import { api } from "@/data/use-console-actions";
 import { useConsoleState, useRefreshConsoleState } from "@/data/use-console-state";
 import { Button } from "@/components/ui/button";
@@ -15,20 +15,25 @@ import { clearRecentDocuments, readRecentDocuments, recordRecentDocument, remove
 import { readDocumentTemplates, removeDocumentTemplate, saveDocumentTemplate, type DocumentTemplate } from "@/features/documents/document-templates";
 import { classifyLocalDocumentPath, directoryOfLocalPath, type LocalOfficeDocumentSelection } from "@/features/documents/local-document-location";
 import { PdfDocumentViewer } from "@/features/documents/pdf-document-viewer";
+import { CadDocumentViewer } from "@/features/documents/cad-document-viewer";
 
-type DocumentType = "all" | "docx" | "xlsx" | "pptx" | "pdf";
+type OfficeDocumentType = "docx" | "xlsx" | "pptx";
+type DocumentType = "all" | OfficeDocumentType | "pdf" | "dxf" | "dwg";
 const FILTERS: Array<{ value: DocumentType; label: string }> = [
   { value: "all", label: "All" },
   { value: "docx", label: "Word" },
   { value: "xlsx", label: "Excel" },
   { value: "pptx", label: "PowerPoint" },
   { value: "pdf", label: "PDF" },
+  { value: "dxf", label: "DXF" },
+  { value: "dwg", label: "DWG" },
 ];
 
 function DocumentIcon({ type }: { type: ProjectDocumentEntry["type"] }) {
   if (type === "xlsx") return <FileSpreadsheet className="size-4 text-emerald-600" />;
   if (type === "pptx") return <Presentation className="size-4 text-orange-600" />;
   if (type === "pdf") return <FileText className="size-4 text-red-600" />;
+  if (type === "dxf" || type === "dwg") return <DraftingCompass className="size-4 text-cyan-600" />;
   return <FileText className="size-4 text-blue-600" />;
 }
 
@@ -223,10 +228,11 @@ function DocumentPreview({ projectId, document, worktrees, worktreeId, onWorktre
   const preview = useQuery({
     queryKey: ["office-document-preview", projectId, document?.path],
     queryFn: () => api.officecliPreview(projectId, document?.path ?? "", document?.worktreeId ?? undefined),
-    enabled: Boolean(projectId && document && document.type !== "pdf"),
+    enabled: Boolean(projectId && document && !["pdf", "dxf", "dwg"].includes(document.type)),
   });
   if (!document) return <section className="grid min-h-[24rem] place-items-center rounded-lg border border-dashed border-border bg-card text-sm text-muted-foreground">Select a document to preview it.</section>;
   if (document.type === "pdf") return <section className="flex min-h-[24rem] min-w-0 flex-col overflow-hidden rounded-lg border border-border bg-card"><header className="flex items-center gap-2 border-b border-border px-3 py-2"><DocumentIcon type={document.type} /><div className="min-w-0"><p className="truncate text-sm font-medium">{document.name}</p><p className="truncate font-mono text-[10px] text-muted-foreground">{document.path}</p></div></header><PdfDocumentViewer projectId={projectId} path={document.path} worktreeId={document.worktreeId} /></section>;
+  if (document.type === "dxf" || document.type === "dwg") return <section className="flex min-h-[24rem] min-w-0 flex-col overflow-hidden rounded-lg border border-border bg-card"><header className="flex items-center gap-2 border-b border-border px-3 py-2"><DocumentIcon type={document.type} /><div className="min-w-0 flex-1"><p className="truncate text-sm font-medium">{document.name}</p><p className="truncate font-mono text-[10px] text-muted-foreground">{document.path}</p></div><span className="rounded bg-muted px-2 py-1 text-xs text-muted-foreground">Read-only CAD preview</span></header><CadDocumentViewer projectId={projectId} path={document.path} type={document.type} worktreeId={document.worktreeId} /></section>;
   const openWorkspace = () => { setOfficecliPreviewPath(document.path); setSection("workspace"); };
   const openWorktree = () => {
     if (!worktreeId) return;
@@ -322,10 +328,10 @@ async function openRecent(
 
 function DocumentsEmptyProjects() {
   const setSection = useUiStore((state) => state.setSection);
-  return <div className="grid h-full place-items-center"><div className="space-y-3 text-center"><FileText className="mx-auto size-8 text-muted-foreground" /><div><p className="font-medium">No projects yet</p><p className="text-sm text-muted-foreground">Register a project before browsing Office documents.</p></div><Button onClick={() => setSection("projects")}>Register a project</Button></div></div>;
+  return <div className="grid h-full place-items-center"><div className="space-y-3 text-center"><FileText className="mx-auto size-8 text-muted-foreground" /><div><p className="font-medium">No projects yet</p><p className="text-sm text-muted-foreground">Register a project before browsing local documents.</p></div><Button onClick={() => setSection("projects")}>Register a project</Button></div></div>;
 }
 
-export function normalizeDocumentDestination(input: string, type: Exclude<DocumentType, "all">): string {
+export function normalizeDocumentDestination(input: string, type: OfficeDocumentType): string {
   const trimmed = input.trim().replaceAll("\\", "/").replace(/^\/+/, "");
   if (!trimmed) return `untitled.${type}`;
   const withoutOfficeExtension = trimmed.replace(/\.(docx|xlsx|pptx)$/i, "");
@@ -334,7 +340,7 @@ export function normalizeDocumentDestination(input: string, type: Exclude<Docume
 
 function DocumentWriteModal({ mode, open, onClose, projectId, worktrees, defaultWorktreeId, onComplete, template, templateDefinition }: { mode: "create" | "template"; open: boolean; onClose: () => void; projectId: string; worktrees: Array<{ id: string; name?: string; branchName?: string; branch?: string }>; defaultWorktreeId: string; onComplete: (worktreeId: string, path: string) => void; template?: ProjectDocumentEntry; templateDefinition?: DocumentTemplate }) {
   const queryClient = useQueryClient();
-  const [type, setType] = useState<Exclude<DocumentType, "all">>("docx");
+  const [type, setType] = useState<OfficeDocumentType>("docx");
   const [destination, setDestination] = useState("untitled.docx");
   const [worktreeId, setWorktreeId] = useState(defaultWorktreeId);
   const [pending, setPending] = useState(false);
@@ -346,6 +352,7 @@ function DocumentWriteModal({ mode, open, onClose, projectId, worktrees, default
   useEffect(() => { if (mode === "create") setDestination((value) => normalizeDocumentDestination(value, type)); }, [mode, type]);
   useEffect(() => {
     if (!open || mode !== "template" || !template) return;
+    if (template.type !== "docx" && template.type !== "xlsx" && template.type !== "pptx") return;
     setType(template.type);
     setDestination(normalizeDocumentDestination(`copy-of-${template.name}`, template.type));
     setTemplateValues(Object.fromEntries((templateDefinition?.fields ?? []).map((field) => [field.key, field.defaultValue])));
@@ -382,7 +389,7 @@ function DocumentWriteModal({ mode, open, onClose, projectId, worktrees, default
     <Modal open={open} onClose={pending ? () => undefined : onClose} title={mode === "create" ? "New Office document" : "Create from template"} description="Writes are confined to a worktree so changes remain reviewable before promotion.">
       <div className="space-y-3">
         {worktrees.length === 0 ? <p className="rounded-md border border-warning/40 bg-warning/10 p-3 text-sm">This project has no worktree. Create one from Projects before writing documents.</p> : <label className="block space-y-1 text-sm"><span>Worktree</span><Select value={worktreeId} onChange={(event) => setWorktreeId(event.target.value)}>{worktrees.map((worktree) => <option key={worktree.id} value={worktree.id}>{worktree.name ?? worktree.branchName ?? worktree.branch ?? worktree.id}</option>)}</Select></label>}
-        {mode === "create" ? <label className="block space-y-1 text-sm"><span>Document type</span><Select value={type} onChange={(event) => setType(event.target.value as Exclude<DocumentType, "all">)}><option value="docx">Word (.docx)</option><option value="xlsx">Excel (.xlsx)</option><option value="pptx">PowerPoint (.pptx)</option></Select></label> : <><p className="rounded bg-muted p-2 font-mono text-xs">Template: {template?.path}</p>{templateDefinition?.fields.length ? templateDefinition.fields.map((field) => <label key={field.key} className="block space-y-1 text-sm"><span>{field.label}</span><Input aria-label={field.label} value={templateValues[field.key] ?? ""} onChange={(event) => setTemplateValues((values) => ({ ...values, [field.key]: event.target.value }))} /></label>) : <label className="block space-y-1 text-sm"><span>Template data (JSON)</span><textarea value={templateData} onChange={(event) => setTemplateData(event.target.value)} rows={5} className="w-full rounded-md border border-border bg-background p-2 font-mono text-xs" /></label>}</>}
+        {mode === "create" ? <label className="block space-y-1 text-sm"><span>Document type</span><Select value={type} onChange={(event) => setType(event.target.value as OfficeDocumentType)}><option value="docx">Word (.docx)</option><option value="xlsx">Excel (.xlsx)</option><option value="pptx">PowerPoint (.pptx)</option></Select></label> : <><p className="rounded bg-muted p-2 font-mono text-xs">Template: {template?.path}</p>{templateDefinition?.fields.length ? templateDefinition.fields.map((field) => <label key={field.key} className="block space-y-1 text-sm"><span>{field.label}</span><Input aria-label={field.label} value={templateValues[field.key] ?? ""} onChange={(event) => setTemplateValues((values) => ({ ...values, [field.key]: event.target.value }))} /></label>) : <label className="block space-y-1 text-sm"><span>Template data (JSON)</span><textarea value={templateData} onChange={(event) => setTemplateData(event.target.value)} rows={5} className="w-full rounded-md border border-border bg-background p-2 font-mono text-xs" /></label>}</>}
         <label className="block space-y-1 text-sm"><span>Destination in worktree</span><Input value={destination} onChange={(event) => setDestination(event.target.value)} placeholder="docs/report.docx" spellCheck={false} /></label>
         {error ? <p className="text-sm text-destructive">{error}</p> : null}
         <div className="flex justify-end gap-2"><Button variant="secondary" onClick={onClose} disabled={pending}>Cancel</Button><Button onClick={() => void submit()} disabled={pending || worktrees.length === 0}>{pending ? "Working…" : mode === "create" ? "Create document" : "Create from template"}</Button></div>
