@@ -17,11 +17,14 @@ async function mockApi(page: Page) {
     const request = route.request();
     const url = new URL(request.url());
     if (url.pathname === "/api/state") return route.fulfill({ json: state });
-    if (url.pathname.endsWith("/documents")) return route.fulfill({ json: { projectId: "prj_1", worktreeId: url.searchParams.get("worktree"), truncated: false, scanned: 3, documents: [
+    if (url.pathname.endsWith("/documents")) return route.fulfill({ json: { projectId: "prj_1", worktreeId: url.searchParams.get("worktree"), truncated: false, scanned: 4, documents: [
       { projectId: "prj_1", worktreeId: url.searchParams.get("worktree"), name: "report.docx", path: "docs/report.docx", type: "docx", gitStatus: "clean" },
       { projectId: "prj_1", worktreeId: url.searchParams.get("worktree"), name: "searchable.pdf", path: "docs/searchable.pdf", type: "pdf", gitStatus: "clean" },
       { projectId: "prj_1", worktreeId: url.searchParams.get("worktree"), name: "protected.pdf", path: "docs/protected.pdf", type: "pdf", gitStatus: "clean" },
+      { projectId: "prj_1", worktreeId: url.searchParams.get("worktree"), name: "deterministic.dxf", path: "drawings/deterministic.dxf", type: "dxf", gitStatus: "clean" },
     ] } });
+    if (url.pathname.endsWith("/cad-document/layout")) return route.fulfill({ json: { path: "drawings/deterministic.dxf", size: 384, svg: '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 50"><path d="M0 50L100 50L100 0" fill="none" stroke="white"/><text x="10" y="40" fill="white">Lobby</text></svg>' } });
+    if (url.pathname.endsWith("/cad-document")) return route.fulfill({ json: { path: "drawings/deterministic.dxf", size: 384, version: "AC1027", units: 6, extents: { min: [0, 0, 0], max: [100, 50, 0] }, layouts: ["Model"], layers: ["Walls", "Notes"], entityCounts: { LINE: 2, TEXT: 1 }, texts: [{ text: "Lobby", type: "TEXT", layer: "Notes" }], warnings: [], audit: { errors: 0, fixes: 0 } } });
     if (url.pathname.endsWith("/pdf-document")) {
       const pdf = url.searchParams.get("path")?.endsWith("protected.pdf") ? protectedPdf : searchablePdf;
       const range = request.headers().range;
@@ -87,6 +90,21 @@ test("loads and searches a multi-page PDF through authenticated byte ranges", as
   await page.getByRole("button", { name: "Next", exact: true }).click();
   await expect(page.getByLabel("Page 2 of 2")).toBeVisible();
   expect(pdfRanges.length).toBeGreaterThan(0);
+});
+
+test("browses a deterministic DXF with layers, search, and zoom", async ({ page }) => {
+  const layoutRequests: URL[] = [];
+  page.on("request", (request) => { if (request.url().includes("/cad-document/layout")) layoutRequests.push(new URL(request.url())); });
+  await page.getByRole("button", { name: "deterministic.dxf" }).click();
+  await expect(page.getByText("Version: AC1027")).toBeVisible();
+  await expect(page.locator('iframe[title="CAD layout Model"]')).toBeVisible();
+  await page.getByLabel("Search CAD text").fill("lobby");
+  await expect(page.getByText("Lobby")).toBeVisible();
+  await page.getByText("Walls", { exact: true }).click();
+  await expect.poll(() => layoutRequests.at(-1)?.searchParams.getAll("layers")).toEqual(["Notes"]);
+  expect(layoutRequests.at(-1)?.searchParams.get("layersMode")).toBe("selected");
+  await page.getByLabel("Zoom in").click();
+  await expect(page.getByText("125%")).toBeVisible();
 });
 
 test("retries an incorrect password and unlocks a genuinely encrypted PDF", async ({ page }) => {

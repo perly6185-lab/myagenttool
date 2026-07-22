@@ -689,7 +689,7 @@ export const api = {
     const suffix = query.toString() ? `?${query}` : "";
     return request<ProjectTreeResponse>("GET", `/api/projects/${encodeURIComponent(id)}/tree${suffix}`);
   },
-  projectDocuments: (id: string, opts: { type?: "all" | "docx" | "xlsx" | "pptx" | "pdf"; search?: string; limit?: number; worktreeId?: string } = {}) => {
+  projectDocuments: (id: string, opts: { type?: "all" | "docx" | "xlsx" | "pptx" | "pdf" | "dxf" | "dwg"; search?: string; limit?: number; worktreeId?: string } = {}) => {
     const query = new URLSearchParams();
     if (opts.type && opts.type !== "all") query.set("type", opts.type);
     if (opts.search) query.set("q", opts.search);
@@ -708,6 +708,17 @@ export const api = {
   },
   projectPdfRange: (id: string, path: string, start: number, end: number, worktreeId?: string) =>
     requestByteRange(`/api/projects/${encodeURIComponent(id)}/pdf-document?path=${encodeURIComponent(path)}${worktreeId ? `&worktree=${encodeURIComponent(worktreeId)}` : ""}`, start, end),
+  cadDocumentInfo: (id: string, path: string, worktreeId?: string) =>
+    request<{ path: string; size: number; version: string; units: number; extents: { min: number[]; max: number[] } | null; layouts: string[]; layers: string[]; entityCounts: Record<string, number>; texts: Array<{ text: string; type: string; layer: string }>; warnings: string[]; audit: { errors: number; fixes: number } }>(
+      "GET",
+      `/api/projects/${encodeURIComponent(id)}/cad-document?path=${encodeURIComponent(path)}${worktreeId ? `&worktree=${encodeURIComponent(worktreeId)}` : ""}`,
+    ),
+  cadDocumentLayout: (id: string, path: string, layout: string, layers: string[], worktreeId?: string) => {
+    const query = new URLSearchParams({ path, layout, layersMode: "selected" });
+    if (worktreeId) query.set("worktree", worktreeId);
+    for (const layer of layers) query.append("layers", layer);
+    return request<{ path: string; size: number; svg: string }>("GET", `/api/projects/${encodeURIComponent(id)}/cad-document/layout?${query}`);
+  },
   // Content search within a registered project root (Agent Workspace #161).
   projectSearch: (id: string, q: string) =>
     request<{ results: { path: string; line: number; preview: string }[] }>(

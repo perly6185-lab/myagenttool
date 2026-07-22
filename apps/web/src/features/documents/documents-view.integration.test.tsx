@@ -13,6 +13,8 @@ const mocks = vi.hoisted(() => ({
   projectPdfData: vi.fn(),
   projectPdfSource: vi.fn(),
   projectPdfRange: vi.fn(),
+  cadDocumentInfo: vi.fn(),
+  cadDocumentLayout: vi.fn(),
   selectProject: vi.fn(),
   setSection: vi.fn(),
   setOfficecliPreviewPath: vi.fn(),
@@ -31,6 +33,8 @@ vi.mock("@/data/use-console-actions", () => ({
     projectPdfData: mocks.projectPdfData,
     projectPdfSource: mocks.projectPdfSource,
     projectPdfRange: mocks.projectPdfRange,
+    cadDocumentInfo: mocks.cadDocumentInfo,
+    cadDocumentLayout: mocks.cadDocumentLayout,
     selectProject: mocks.selectProject,
   },
 }));
@@ -64,6 +68,8 @@ beforeEach(() => {
   mocks.manageOfficeDocument.mockResolvedValue({ operation: "copy", source: "docs/report.docx", destination: "docs/copy-of-report.docx" });
   mocks.projectPdfSource.mockResolvedValue({ url: "http://localhost/report.pdf", httpHeaders: { Authorization: "Bearer test" } });
   mocks.projectPdfRange.mockResolvedValue({ data: new ArrayBuffer(8), total: 2048 });
+  mocks.cadDocumentInfo.mockResolvedValue({ path: "drawings/plan.dxf", size: 512, version: "AC1027", units: 6, extents: { min: [0, 0, 0], max: [100, 50, 0] }, layouts: ["Model", "Sheet 1"], layers: ["Walls", "Notes"], entityCounts: { LINE: 4, TEXT: 1 }, texts: [{ text: "Lobby", type: "TEXT", layer: "Notes" }], warnings: [], audit: { errors: 0, fixes: 0 } });
+  mocks.cadDocumentLayout.mockResolvedValue({ path: "drawings/plan.dxf", size: 512, svg: '<svg xmlns="http://www.w3.org/2000/svg"><path d="M0 0L1 1"/></svg>' });
 });
 
 afterEach(() => { cleanup(); vi.clearAllMocks(); });
@@ -74,6 +80,18 @@ function renderView() {
 }
 
 describe("DocumentsView interaction", () => {
+  it("opens DXF drawings in the contained read-only viewer", async () => {
+    mocks.projectDocuments.mockResolvedValue({ projectId: "prj_1", worktreeId: null, truncated: false, scanned: 1, documents: [{ projectId: "prj_1", worktreeId: null, name: "plan.dxf", path: "drawings/plan.dxf", type: "dxf", gitStatus: "clean" }] });
+    renderView();
+    fireEvent.click(await screen.findByText("plan.dxf"));
+    expect(await screen.findByText("Version: AC1027")).toBeTruthy();
+    expect(await screen.findByTitle("CAD layout Model")).toBeTruthy();
+    fireEvent.change(screen.getByLabelText("Search CAD text"), { target: { value: "lobby" } });
+    expect(screen.getByText("Lobby")).toBeTruthy();
+    fireEvent.click(screen.getByText("Walls").closest("label")!.querySelector("input")!);
+    await waitFor(() => expect(mocks.cadDocumentLayout).toHaveBeenLastCalledWith("prj_1", "drawings/plan.dxf", "Model", ["Notes"], undefined));
+  });
+
   it("discovers, previews, filters, and hands a document to a worktree", async () => {
     renderView();
     fireEvent.click(await screen.findByText("report.docx"));

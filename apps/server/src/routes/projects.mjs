@@ -20,6 +20,7 @@ import { computeMergeRisk, sensitivePathHit, DEFAULT_SENSITIVE_PATHS } from "../
 import { summarizeEpicChildren } from "../services/auto-run-epic.mjs";
 import { resolveAutoRunVerifyCommandFor } from "../services/worktree-verify.mjs";
 import { PdfDocumentReadError, readProjectPdf } from "../services/pdf-document-read.mjs";
+import { CadPreviewError, inspectCadDocument, renderCadDocument } from "../services/cad-preview.mjs";
 
 const IMAGE_MIME = {
   ".png": "image/png",
@@ -681,6 +682,31 @@ export async function handleProjectRoutes({
       const status = code === "not_found" ? 404 : code === "pdf_too_large" ? 413 : code === "range_not_satisfiable" || code === "invalid_range" ? 416 : 400;
       if (status === 416) res.setHeader("Content-Range", "bytes */*");
       sendJson(res, status, { error: code, message: error instanceof Error ? error.message : String(error) });
+    }
+    return true;
+  }
+
+  const cadDocumentMatch = url.pathname.match(/^\/api\/projects\/([^/]+)\/cad-document(\/layout)?$/);
+  if (cadDocumentMatch && req.method === "GET") {
+    const project = state.projects.find((item) => item.id === decodeURIComponent(cadDocumentMatch[1]));
+    if (!project) { sendJson(res, 404, { error: "project_not_found" }); return true; }
+    if (denyForeignProject({ res, sendJson, state, actor, projectId: project.id, notFound: { error: "project_not_found" } })) return true;
+    const worktreeId = url.searchParams.get("worktree");
+    const worktree = worktreeId ? (state.worktrees ?? []).find((item) => item.id === worktreeId && item.projectId === project.id) : null;
+    if (worktreeId && !worktree) { sendJson(res, 404, { error: "worktree_not_found" }); return true; }
+    const rootPath = worktree?.path ?? worktree?.worktreePath ?? project.path;
+    const args = { projectPath: rootPath, relativeFile: url.searchParams.get("path") ?? "" };
+    try {
+      const result = cadDocumentMatch[2]
+        ? await renderCadDocument({ ...args, layout: url.searchParams.get("layout") ?? "Model", visibleLayers: url.searchParams.get("layersMode") === "selected" ? url.searchParams.getAll("layers") : undefined })
+        : await inspectCadDocument(args);
+      res.setHeader("Cache-Control", "private, no-store");
+      res.setHeader("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; img-src 'none'; font-src 'none'; connect-src 'none'; frame-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'");
+      sendJson(res, 200, result);
+    } catch (error) {
+      const code = error instanceof CadPreviewError ? error.code : "cad_processing_failed";
+      const status = code === "cad_not_found" ? 404 : code === "cad_file_too_large" || code === "cad_output_too_large" || code.endsWith("_limit_exceeded") ? 413 : code === "ezdxf_unavailable" || code === "oda_unavailable" ? 503 : 400;
+      sendJson(res, status, { error: code, message: error instanceof CadPreviewError ? error.message : "CAD preview could not be produced." });
     }
     return true;
   }
