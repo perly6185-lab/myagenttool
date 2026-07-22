@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   applyDocumentLocale,
+  detectInitialLocale,
   detectLocale,
   localeDirection,
   normalizeLocale,
@@ -31,6 +32,11 @@ describe("locale resolution", () => {
     expect(detectLocale(["fr-FR", "zh-Hans", "en-US"])).toBe("zh-CN");
     expect(detectLocale(["de-DE", "zh-TW"])).toBe("en-US");
     expect(detectLocale([])).toBe("en-US");
+  });
+
+  it("prefers a valid persisted locale and ignores corrupt snapshots", () => {
+    expect(detectInitialLocale({ getItem: () => JSON.stringify({ state: { locale: "zh-CN" } }) })).toBe("zh-CN");
+    expect(detectInitialLocale({ getItem: () => "not-json" })).toBe("en-US");
   });
 });
 

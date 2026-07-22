@@ -12,6 +12,7 @@ import {
   DEFAULT_LOCALE,
   detectLocale,
   isSupportedLocale,
+  LOCALE_STORAGE_KEY,
   normalizeLocale,
   type SupportedLocale,
 } from "@/lib/i18n/locale";
@@ -112,7 +113,7 @@ export const DEFAULT_COLLAPSED_NAV_GROUPS = ["configure", "ledgers"];
  * script reads the same key before React mounts; boot-skin-script.test.mjs pins
  * them together so the two can't drift (#1360).
  */
-export const UI_STORE_PERSIST_KEY = "myagenttool-ui";
+export const UI_STORE_PERSIST_KEY = LOCALE_STORAGE_KEY;
 
 export const SECTION_KEYS: SectionKey[] = [
   "dashboard",

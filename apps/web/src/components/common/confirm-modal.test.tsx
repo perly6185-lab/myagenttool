@@ -1,6 +1,11 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { ConfirmModal } from "@/components/common/confirm-modal";
+import { i18n } from "@/lib/i18n";
+
+beforeEach(async () => {
+  await i18n.changeLanguage("en-US");
+});
 
 afterEach(cleanup);
 

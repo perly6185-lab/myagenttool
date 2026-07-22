@@ -7,6 +7,7 @@ import { SessionHistory } from "@/features/invocations/session-history";
 import { ToolsInspector } from "@/features/tools/tools-inspector";
 import { ApplicationsInspector } from "@/features/applications/applications-inspector";
 import { useUiStore, type SectionKey } from "@/store/ui-store";
+import { useAppTranslation } from "@/lib/i18n/use-app-translation";
 
 function HintCard({ title, body }: { title: string; body: string }) {
   return (
@@ -24,7 +25,7 @@ function HintCard({ title, body }: { title: string; body: string }) {
 // The context each section shows in the right rail, or null when it has none.
 // Sections that return null get no rail at all, so the main column fills the
 // freed width instead of leaving an empty bordered gap.
-function inspectorContent(section: SectionKey): ReactNode {
+function inspectorContent(section: SectionKey, t: ReturnType<typeof useAppTranslation>["t"]): ReactNode {
   switch (section) {
     case "dashboard":
       return (
@@ -46,8 +47,8 @@ function inspectorContent(section: SectionKey): ReactNode {
     case "devices":
       return (
         <HintCard
-          title="Local Agent Bridge"
-          body="The cloud can request local work, but the bridge owns final execution. Start Desktop Bridge to bring this device online."
+          title={t("inspector.bridgeTitle")}
+          body={t("inspector.bridgeBody")}
         />
       );
     case "discovery":
@@ -55,8 +56,8 @@ function inspectorContent(section: SectionKey): ReactNode {
         <div className="space-y-4">
           <DeviceInspector />
           <HintCard
-            title="Conservative by design"
-            body="Discovery only checks known or user-provided sources, never auto-enables, and keeps every candidate disabled until you register it."
+            title={t("inspector.discoveryTitle")}
+            body={t("inspector.discoveryBody")}
           />
         </div>
       );
@@ -70,8 +71,8 @@ function inspectorContent(section: SectionKey): ReactNode {
       return (
         <div className="space-y-4">
           <HintCard
-            title="Findings, not raw output"
-            body="Review findings are the structured, non-authoritative output of governed Codex and Claude diff reviews. Raw model transcripts and CLI output are kept server-side and never shown here."
+            title={t("inspector.reviewTitle")}
+            body={t("inspector.reviewBody")}
           />
           <RunContextInspector />
         </div>
@@ -80,8 +81,8 @@ function inspectorContent(section: SectionKey): ReactNode {
       return (
         <div className="space-y-4">
           <HintCard
-            title="One economic ledger"
-            body="Agent cost, AI usage, chargeback, and settlement roll up through a single ledger. Claude reports real spend; unmetered runs stay visible, never hidden."
+            title={t("inspector.economicsTitle")}
+            body={t("inspector.economicsBody")}
           />
           <GovernanceInspector />
         </div>
@@ -100,15 +101,16 @@ function inspectorContent(section: SectionKey): ReactNode {
 
 /** Right-hand context panel — content follows the active section + selection. */
 export function Inspector() {
+  const { t } = useAppTranslation();
   const section = useUiStore((s) => s.section);
-  const content = inspectorContent(section);
+  const content = inspectorContent(section, t);
   // No context for this section (e.g. Projects, Tasks) → render no rail so the
   // main column expands to fill the width instead of leaving an empty gap.
   if (!content) return null;
 
   return (
     <aside
-      aria-label="Context inspector"
+      aria-label={t("inspector.label")}
       className="hidden h-full w-80 shrink-0 overflow-y-auto border-l border-border bg-background px-4 py-5 xl:block"
     >
       {content}

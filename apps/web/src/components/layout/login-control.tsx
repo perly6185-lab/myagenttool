@@ -8,6 +8,7 @@ import {
   logout,
   type SessionUser,
 } from "@/lib/api-client";
+import { useAppTranslation } from "@/lib/i18n/use-app-translation";
 
 /**
  * Account control (9B). In default local dev the client auto-logs-in as the
@@ -17,6 +18,7 @@ import {
  * state poll reflects the new identity.
  */
 export function LoginControl() {
+  const { t } = useAppTranslation();
   const refresh = useRefreshConsoleState();
   const [user, setUser] = useState<SessionUser | null>(() => getSessionUser());
   const [open, setOpen] = useState(false);
@@ -37,7 +39,7 @@ export function LoginControl() {
       setPassword("");
       await refresh();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Sign in failed.");
+      setError(err instanceof Error ? err.message : t("login.failed"));
     } finally {
       setBusy(false);
     }
@@ -61,11 +63,11 @@ export function LoginControl() {
         ) : null}
         {user ? (
           <Button variant="ghost" size="sm" onClick={signOut} disabled={busy}>
-            Sign out
+            {t("login.signOut")}
           </Button>
         ) : (
           <Button variant="secondary" size="sm" onClick={() => setOpen((v) => !v)}>
-            Sign in
+            {t("login.signIn")}
           </Button>
         )}
       </div>
@@ -75,26 +77,26 @@ export function LoginControl() {
           onSubmit={submit}
           className="absolute right-0 top-10 z-20 w-64 space-y-2 rounded-md border border-border bg-card p-3 shadow-lg"
         >
-          <p className="text-xs font-medium text-foreground">Sign in</p>
+          <p className="text-xs font-medium text-foreground">{t("login.signIn")}</p>
           <Input
-            placeholder="User id"
+            placeholder={t("login.userId")}
             value={userId}
             onChange={(e) => setUserId(e.target.value)}
             autoFocus
           />
           <Input
             type="password"
-            placeholder="Password"
+            placeholder={t("login.password")}
             value={password}
             onChange={(e) => setPassword(e.target.value)}
           />
           {error ? <p className="text-xs text-destructive">{error}</p> : null}
           <div className="flex justify-end gap-2">
             <Button type="button" variant="ghost" size="sm" onClick={() => setOpen(false)}>
-              Cancel
+              {t("shared.cancel")}
             </Button>
             <Button type="submit" size="sm" disabled={busy || !userId.trim()}>
-              {busy ? "Signing in…" : "Sign in"}
+              {busy ? t("login.signingIn") : t("login.signIn")}
             </Button>
           </div>
         </form>

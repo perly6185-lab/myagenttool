@@ -1,12 +1,11 @@
 import i18next from "i18next";
 import { initReactI18next } from "react-i18next";
-import { applyDocumentLocale, DEFAULT_LOCALE } from "@/lib/i18n/locale";
+import { applyDocumentLocale, DEFAULT_LOCALE, detectInitialLocale } from "@/lib/i18n/locale";
 import { defaultNamespace, resources } from "@/lib/i18n/resources";
-import { useUiStore } from "@/store/ui-store";
 
 export const i18n = i18next.createInstance();
 
-const initialLocale = useUiStore.getState().locale;
+const initialLocale = detectInitialLocale();
 
 void i18n
   .use(initReactI18next)

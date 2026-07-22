@@ -12,8 +12,10 @@ import { ProjectSettingsForm } from "@/features/projects/project-settings-form";
 import { WorktreeCreator } from "@/features/projects/worktree-creator";
 import { WorktreeLinkPopover } from "@/features/projects/worktree-link-popover";
 import type { ProjectSnapshot } from "@/lib/console-state";
+import { useAppTranslation } from "@/lib/i18n/use-app-translation";
 
 export function NavRail() {
+  const { t } = useAppTranslation();
   const section = useUiStore((s) => s.section);
   const setSection = useUiStore((s) => s.setSection);
   const collapsedNavGroups = useUiStore((s) => s.collapsedNavGroups);
@@ -27,7 +29,7 @@ export function NavRail() {
 
   return (
     <nav
-      aria-label="Control plane sections"
+      aria-label={t("shell.navLabel")}
       className="hidden h-full w-60 shrink-0 flex-col border-r border-sidebar-border bg-sidebar md:flex"
     >
       <div className="flex items-center gap-2.5 px-5 py-4">
@@ -36,7 +38,7 @@ export function NavRail() {
         </span>
         <div className="leading-tight">
           <p className="text-sm font-semibold">MyAgentTool</p>
-          <p className="text-xs text-muted-foreground">Control plane</p>
+          <p className="text-xs text-muted-foreground">{t("shell.controlPlane")}</p>
         </div>
       </div>
 
@@ -57,7 +59,7 @@ export function NavRail() {
               className="flex w-full items-center gap-1 rounded px-2 pb-1 pt-1 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground/80 hover:text-sidebar-foreground"
             >
               <ChevronRight className={cn("size-3 shrink-0 transition-transform", groupOpen && "rotate-90")} />
-              {grp.label}
+              {t(grp.labelKey)}
             </button>
             {groupOpen ? (
             <ul className="flex flex-col gap-0.5">
@@ -78,15 +80,15 @@ export function NavRail() {
                 <button
                   type="button"
                   aria-current={active ? "page" : undefined}
-                  title={item.blurb}
+                  title={t(item.blurbKey)}
                   onClick={() => setSection(item.key)}
                   className="flex flex-1 items-center gap-3 px-3 py-2 text-left"
                 >
                   <Icon className="size-4 shrink-0" />
-                  {item.label}
+                  {t(item.labelKey)}
                   {item.key === "approvals" && pendingCount > 0 ? (
                     <span
-                      aria-label={`${pendingCount} pending`}
+                      aria-label={t("shell.pending", { count: pendingCount })}
                       className={cn(
                         "ml-auto min-w-5 rounded-full px-1.5 py-0.5 text-center text-[10px] font-semibold",
                         active ? "bg-sidebar-foreground/15 text-sidebar-accent-foreground" : "bg-primary text-primary-foreground",
@@ -97,7 +99,7 @@ export function NavRail() {
                   ) : null}
                   {item.key === "evidence" && attentionCount > 0 ? (
                     <span
-                      aria-label={`${attentionCount} need attention`}
+                      aria-label={t("shell.attention", { count: attentionCount })}
                       className={cn(
                         "ml-auto min-w-5 rounded-full px-1.5 py-0.5 text-center text-[10px] font-semibold",
                         active ? "bg-sidebar-foreground/15 text-sidebar-accent-foreground" : "bg-warning text-warning-foreground",
@@ -110,8 +112,8 @@ export function NavRail() {
                 {isProjects ? (
                   <button
                     type="button"
-                    aria-label="Register a project"
-                    title="Register a project"
+                    aria-label={t("shell.registerProject")}
+                    title={t("shell.registerProject")}
                     onClick={() => setShowRegister(true)}
                     className="mr-1 grid size-6 shrink-0 place-items-center rounded hover:bg-sidebar-accent"
                   >
@@ -131,7 +133,7 @@ export function NavRail() {
       </ul>
 
       <p className="px-5 py-4 text-xs text-muted-foreground">
-        Register agents, route calls, enforce permission, and record what happened.
+        {t("shell.footer")}
       </p>
 
       <Modal

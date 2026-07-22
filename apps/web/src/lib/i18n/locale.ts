@@ -3,6 +3,7 @@ export const SUPPORTED_LOCALES = ["en-US", "zh-CN"] as const;
 export type SupportedLocale = (typeof SUPPORTED_LOCALES)[number];
 
 export const DEFAULT_LOCALE: SupportedLocale = "en-US";
+export const LOCALE_STORAGE_KEY = "myagenttool-ui";
 
 export function isSupportedLocale(value: unknown): value is SupportedLocale {
   return typeof value === "string" && SUPPORTED_LOCALES.includes(value as SupportedLocale);
@@ -39,6 +40,19 @@ export function detectLocale(languages?: readonly string[]): SupportedLocale {
     if (locale) return locale;
   }
   return DEFAULT_LOCALE;
+}
+
+export function detectInitialLocale(storage?: Pick<Storage, "getItem">): SupportedLocale {
+  const target = storage ?? (typeof localStorage === "undefined" ? null : localStorage);
+  if (target) {
+    try {
+      const saved = JSON.parse(target.getItem(LOCALE_STORAGE_KEY) ?? "null") as { state?: { locale?: unknown } } | null;
+      if (isSupportedLocale(saved?.state?.locale)) return saved.state.locale;
+    } catch {
+      // A corrupt UI preference must never block application startup.
+    }
+  }
+  return detectLocale();
 }
 
 export function localeDirection(_locale: SupportedLocale): "ltr" | "rtl" {

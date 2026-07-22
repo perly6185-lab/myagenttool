@@ -1,10 +1,10 @@
-import { useTranslation } from "react-i18next";
 import { Select } from "@/components/ui/input";
 import type { SupportedLocale } from "@/lib/i18n";
+import { useAppTranslation } from "@/lib/i18n/use-app-translation";
 import { useUiStore } from "@/store/ui-store";
 
 export function LanguagePicker() {
-  const { t } = useTranslation();
+  const { t } = useAppTranslation();
   const locale = useUiStore((state) => state.locale);
   const setLocale = useUiStore((state) => state.setLocale);
 
