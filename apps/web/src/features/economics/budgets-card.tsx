@@ -11,6 +11,7 @@ import { useUiStore } from "@/store/ui-store";
 import { cn } from "@/lib/cn";
 import { formatUsd as usd } from "@/lib/money";
 import type { BudgetStatus } from "@/lib/console-state";
+import { useAppTranslation } from "@/lib/i18n/use-app-translation";
 
 const POLICY_LABEL: Record<string, string> = {
   warn: "Warn",
@@ -19,6 +20,7 @@ const POLICY_LABEL: Record<string, string> = {
 };
 
 export function BudgetsCard() {
+  const { t } = useAppTranslation();
   const { data: state } = useConsoleState();
   const { execute, pending, error } = useAsyncAction();
   const statuses = state?.budgetStatuses ?? [];
@@ -39,14 +41,14 @@ export function BudgetsCard() {
   return (
     <Card>
       <CardHeader>
-        <CardTitle>Budget pools</CardTitle>
+        <CardTitle>{t("economicsBudget.title")}</CardTitle>
         <p className="text-sm text-muted-foreground">
-          Cap a project's metered spend. Over budget, the policy decides: warn, require approval, or block new runs.
+          {t("economicsBudget.description")}
         </p>
       </CardHeader>
       <CardContent className="space-y-4">
         {statuses.length === 0 ? (
-          <EmptyState title="No budgets set" hint="Set a budget below to enforce spend limits." />
+          <EmptyState title={t("economicsBudget.empty")} hint={t("economicsBudget.emptyHint")} />
         ) : (
           <div className="space-y-2">
             {statuses.map((status) => (
@@ -56,9 +58,9 @@ export function BudgetsCard() {
         )}
 
         <div className="grid gap-3 sm:grid-cols-[1fr_auto_auto_auto] sm:items-end">
-          <Field label="Project">
+          <Field label={t("economicsBudget.project")}>
             <Select value={projectId} onChange={(e) => setProjectOverride(e.target.value || null)}>
-              {projects.length === 0 ? <option value="">No project</option> : null}
+              {projects.length === 0 ? <option value="">{t("economicsBudget.noProject")}</option> : null}
               {projects.map((p) => (
                 <option key={p.id} value={p.id}>
                   {p.name}
@@ -66,7 +68,7 @@ export function BudgetsCard() {
               ))}
             </Select>
           </Field>
-          <Field label="Limit (USD)">
+          <Field label={t("economicsBudget.limit")}>
             <Input
               type="number"
               min="0"
@@ -76,15 +78,15 @@ export function BudgetsCard() {
               className="w-28"
             />
           </Field>
-          <Field label="Policy">
+          <Field label={t("economicsBudget.policy")}>
             <Select value={policy} onChange={(e) => setPolicy(e.target.value)}>
-              <option value="warn">Warn</option>
-              <option value="require_approval">Require approval</option>
-              <option value="block">Block</option>
+              <option value="warn">{t("economicsBudget.warn")}</option>
+              <option value="require_approval">{t("economicsBudget.requireApproval")}</option>
+              <option value="block">{t("economicsBudget.block")}</option>
             </Select>
           </Field>
           <Button disabled={pending} onClick={save}>
-            Set budget
+            {t("economicsBudget.setBudget")}
           </Button>
         </div>
         {error ? <p className="text-xs text-destructive">{error}</p> : null}
@@ -94,6 +96,7 @@ export function BudgetsCard() {
 }
 
 function BudgetRow({ status }: { status: BudgetStatus }) {
+  const { t } = useAppTranslation();
   const limit = status.limitUsd ?? 0;
   const pct = limit > 0 ? Math.min(100, (status.spentUsd / limit) * 100) : status.spentUsd > 0 ? 100 : 0;
   const tone = status.over ? "danger" : pct > 80 ? "warning" : "success";
@@ -119,12 +122,12 @@ function BudgetRow({ status }: { status: BudgetStatus }) {
       </div>
       {status.estimatedUsd ? (
         <p className="mt-1.5 text-xs text-muted-foreground">
-          Includes ~{usd(status.estimatedUsd)} token-estimated spend.
+          {t("economicsBudget.includesEstimated", { amount: usd(status.estimatedUsd) })}
         </p>
       ) : null}
       {status.over ? (
         <p className="mt-1 text-xs text-destructive">
-          Over budget — new runs are {status.policy === "block" ? "blocked" : status.policy === "require_approval" ? "held for approval" : "allowed with a warning"}.
+          {t("economicsBudget.overBudget")} — {t(status.policy === "block" ? "economicsBudget.blocked" : status.policy === "require_approval" ? "economicsBudget.held" : "economicsBudget.allowedWarning")}.
         </p>
       ) : null}
     </div>
