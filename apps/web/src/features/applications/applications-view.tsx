@@ -18,6 +18,7 @@ import {
 import { durableSuccessRate } from "@/features/applications/application-executions";
 import type { ApplicationSnapshot, ApplicationSource } from "@/lib/console-state";
 import type { Tone } from "@/lib/readable-labels";
+import { useAppTranslation } from "@/lib/i18n/use-app-translation";
 
 function statusTone(status: string): Tone {
   if (status === "active") return "success";
@@ -31,15 +32,6 @@ function readinessTone(state?: string): Tone {
   if (["not_installed", "login_required", "repair_required", "bridge_offline"].includes(state ?? "")) return "warning";
   if (state === "archived") return "danger";
   return "neutral";
-}
-
-function readinessLabel(state?: string): string {
-  if (state === "not_installed") return "Not installed";
-  if (state === "login_required") return "Sign in";
-  if (state === "repair_required") return "Repair";
-  if (state === "bridge_offline") return "Local bridge offline";
-  if (state === "ready") return "Ready";
-  return state ?? "Checking";
 }
 
 function sweepAgo(iso: string): string {
@@ -69,6 +61,7 @@ export function sourceSummary(source: ApplicationSource): string {
 
 /** Registered applications and their governed capabilities (read-only slice). */
 export function ApplicationsView() {
+  const { t } = useAppTranslation();
   const { data: state } = useConsoleState();
   const selectedApplicationId = useUiStore((s) => s.selectedApplicationId);
   const setSelectedApplicationId = useUiStore((s) => s.setSelectedApplicationId);
@@ -109,12 +102,12 @@ export function ApplicationsView() {
   return (
     <div className="space-y-5">
       <SectionHeading
-        eyebrow="Governed assets"
-        title="Applications"
-        description="Applications registered as governed assets from git, local, npm, or manual sources. Select one to inspect its capabilities, probe, and orchestrations."
+        eyebrow={t("applicationsPage.governed")}
+        title={t("applicationsPage.title")}
+        description={t("applicationsPage.description")}
         actions={
           <Button size="sm" onClick={() => { setSetupApplication(""); setRegisterOpen(true); }}>
-            Add application
+            {t("applicationsPage.add")}
           </Button>
         }
       />
@@ -124,19 +117,19 @@ export function ApplicationsView() {
       {/* No filters before there's anything to filter — the empty state carries the Register CTA (#930). */}
       {all.length ? (
       <div className="flex flex-wrap items-end gap-3">
-        <Field label="Status" className="w-40">
+        <Field label={t("applicationsPage.status")} className="w-40">
           <Select value={status} onChange={(e) => setStatus(e.target.value as typeof status)}>
-            <option value="all">All statuses</option>
-            <option value="active">Active</option>
-            <option value="registered">Registered</option>
-            <option value="offline">Offline</option>
-            <option value="archived">Archived</option>
-            <option value="failed">Failed</option>
+            <option value="all">{t("applicationsPage.allStatuses")}</option>
+            <option value="active">{t("applicationsPage.active")}</option>
+            <option value="registered">{t("applicationsPage.registered")}</option>
+            <option value="offline">{t("applicationsPage.offline")}</option>
+            <option value="archived">{t("applicationsPage.archived")}</option>
+            <option value="failed">{t("applicationsPage.failed")}</option>
           </Select>
         </Field>
-        <Field label="Kind" className="w-44">
+        <Field label={t("applicationsPage.kind")} className="w-44">
           <Select value={kind} onChange={(e) => setKind(e.target.value)}>
-            <option value="all">All kinds</option>
+            <option value="all">{t("applicationsPage.allKinds")}</option>
             {kinds.map((option) => (
               <option key={option} value={option}>
                 {option}
@@ -145,13 +138,13 @@ export function ApplicationsView() {
           </Select>
         </Field>
         <span className="pb-2 text-xs text-muted-foreground">
-          {applications.length} of {all.length} application(s)
+          {t("applicationsPage.count", { visible: applications.length, total: all.length })}
         </span>
         {state?.applicationHealthSweepStatus?.lastSweepAt ? (
           <span className="pb-2 text-xs text-muted-foreground">
-            · health sweep {sweepAgo(state.applicationHealthSweepStatus.lastSweepAt)}
+            · {t("applicationsPage.healthSweep")} {sweepAgo(state.applicationHealthSweepStatus.lastSweepAt)}
             {state.applicationHealthSweepStatus.lastError ? (
-              <span className="text-destructive"> · last error: {state.applicationHealthSweepStatus.lastError}</span>
+              <span className="text-destructive"> · {t("applicationsPage.lastError")}: {state.applicationHealthSweepStatus.lastError}</span>
             ) : null}
           </span>
         ) : null}
@@ -160,11 +153,11 @@ export function ApplicationsView() {
 
       {!applications.length ? (
         <EmptyState
-          title={all.length ? "No applications match these filters" : "No applications registered"}
+          title={t(all.length ? "applicationsPage.noMatches" : "applicationsPage.empty")}
           hint={
             all.length
-              ? "Loosen the status or kind filter."
-              : "Register an application (git, local, npm, or manual) to expose its governed capabilities."
+              ? t("applicationsPage.noMatchesHint")
+              : t("applicationsPage.emptyHint")
           }
         />
       ) : (
@@ -183,7 +176,7 @@ export function ApplicationsView() {
               <CardHeader>
                 <div className="flex items-start justify-between gap-3">
                   <CardTitle>{app.name}</CardTitle>
-                  <Badge tone={statusTone(app.status)}>{app.status}</Badge>
+                  <Badge tone={statusTone(app.status)}>{t(`applicationsPage.appStatus.${app.status}` as never, { defaultValue: app.status })}</Badge>
                 </div>
                 <p className="text-sm text-muted-foreground">
                   {app.kind} · {app.source.type}
@@ -194,13 +187,13 @@ export function ApplicationsView() {
                   {sourceSummary(app.source)}
                 </p>
                 <div className="flex flex-wrap gap-1.5">
-                  <Badge tone={readinessTone(app.localReadiness?.state)}>{readinessLabel(app.localReadiness?.state)}</Badge>
+                  <Badge tone={readinessTone(app.localReadiness?.state)}>{t(`applicationsPage.readiness.${app.localReadiness?.state ?? "checking"}` as never)}</Badge>
                   {projectName(app.projectId) ? <Badge>{projectName(app.projectId)}</Badge> : null}
                   {app.probe?.capabilities?.length ? (
-                    <Badge>{app.probe.capabilities.length} probed capabilities</Badge>
+                    <Badge>{t("applicationsPage.probed", { count: app.probe.capabilities.length })}</Badge>
                   ) : null}
                   {app.orchestrationIds?.length ? (
-                    <Badge>{app.orchestrationIds.length} orchestration(s)</Badge>
+                    <Badge>{t("applicationsPage.orchestrations", { count: app.orchestrationIds.length })}</Badge>
                   ) : null}
                   {applicationOpsBadges(app).map((badge) => (
                     <Badge key={badge.label} tone={badge.tone}>{badge.label}</Badge>
@@ -236,7 +229,7 @@ export function ApplicationsView() {
                     const rate = durableSuccessRate(state?.applicationDailyStats ?? [], app.id, 30);
                     return rate == null ? null : (
                       <Badge tone={rate >= 0.9 ? "success" : rate >= 0.5 ? "warning" : "danger"}>
-                        {Math.round(rate * 100)}% success · 30d
+                        {t("applicationsPage.success30d", { rate: Math.round(rate * 100) })}
                       </Badge>
                     );
                   })()}
@@ -249,7 +242,7 @@ export function ApplicationsView() {
                       setSetupApplication(app.source.type === "binary" ? app.source.binary : app.name.toLowerCase());
                       setRegisterOpen(true);
                     }}>
-                      {app.localReadiness.state === "login_required" ? "Sign in" : app.localReadiness.state === "not_installed" ? "Install" : "Repair"}
+                      {t(app.localReadiness.state === "login_required" ? "applicationsPage.signIn" : app.localReadiness.state === "not_installed" ? "applicationsPage.install" : "applicationsPage.repair")}
                     </Button>
                   </div>
                 ) : null}
