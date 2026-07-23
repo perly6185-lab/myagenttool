@@ -4,17 +4,19 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { api, useAsyncAction } from "@/data/use-console-actions";
 import type { AutoRunRecord } from "./auto-runs-view";
+import { useAppTranslation } from "@/lib/i18n/use-app-translation";
 
 // E3 (decision-path expansion): answer a clarify run's questions inline. The
 // answers post back to the issue so a re-triggered run has the context; then the
 // human re-labels the issue `auto` to proceed.
 export function ClarifyAnswer({ run, onDone }: { run: AutoRunRecord; onDone: () => Promise<void> | void }) {
+  const { t } = useAppTranslation();
   const [open, setOpen] = useState(false);
   const [text, setText] = useState("");
   const { execute, pending, error } = useAsyncAction();
 
   if (run.clarifyAnswer) {
-    return <Badge tone="success" title={`answered by ${run.clarifyAnswer.by ?? "?"}`}>answered</Badge>;
+    return <Badge tone="success" title={t("autoRunActions.answeredBy", { name: run.clarifyAnswer.by ?? "?" })}>{t("autoRunActions.answered")}</Badge>;
   }
 
   const submit = async () => {
@@ -30,8 +32,8 @@ export function ClarifyAnswer({ run, onDone }: { run: AutoRunRecord; onDone: () 
   if (!open) {
     return (
       <Button variant="secondary" size="sm" className="h-6 self-start px-2 text-xs" onClick={() => setOpen(true)}
-        title="Answer the clarifying questions — posts to the issue">
-        <MessageSquareReply className="mr-1 size-3" /> Answer questions
+        title={t("autoRunActions.answerHint")}>
+        <MessageSquareReply className="mr-1 size-3" /> {t("autoRunActions.answerQuestions")}
       </Button>
     );
   }
@@ -41,14 +43,14 @@ export function ClarifyAnswer({ run, onDone }: { run: AutoRunRecord; onDone: () 
         value={text}
         onChange={(e) => setText(e.target.value)}
         rows={3}
-        placeholder="Answer the questions above…"
+        placeholder={t("autoRunActions.answerPlaceholder")}
         className="rounded-md border border-border bg-background px-2 py-1 text-xs"
       />
       <div className="flex gap-2">
         <Button variant="primary" size="sm" className="h-6 px-2 text-xs" disabled={pending || !text.trim()} onClick={() => void submit()}>
-          {pending ? <Loader2 className="mr-1 size-3 animate-spin" /> : null} Post answers to issue
+          {pending ? <Loader2 className="mr-1 size-3 animate-spin" /> : null} {t("autoRunActions.postAnswers")}
         </Button>
-        <Button variant="ghost" size="sm" className="h-6 px-2 text-xs" disabled={pending} onClick={() => setOpen(false)}>Cancel</Button>
+        <Button variant="ghost" size="sm" className="h-6 px-2 text-xs" disabled={pending} onClick={() => setOpen(false)}>{t("autoRunActions.cancel")}</Button>
       </div>
       {error ? <p className="text-xs text-red-600 dark:text-red-400">{error}</p> : null}
     </div>

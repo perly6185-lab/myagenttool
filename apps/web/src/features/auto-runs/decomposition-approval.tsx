@@ -4,12 +4,14 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { api, useAsyncAction } from "@/data/use-console-actions";
 import type { AutoRunRecord } from "./auto-runs-view";
+import { useAppTranslation } from "@/lib/i18n/use-app-translation";
 
 // Epic S3 (EPIC_DECOMPOSITION_PLAN.md): the human gate on a proposed decomposition.
 // Approve spawns the N governed child issues (the click IS the authorization);
 // request-changes posts feedback back to the epic. Both audited server-side. The
 // children are never auto-implemented — a human still labels each `auto`.
 export function DecompositionApproval({ run, onDone }: { run: AutoRunRecord; onDone: () => Promise<void> | void }) {
+  const { t } = useAppTranslation();
   const [rejecting, setRejecting] = useState(false);
   const [feedback, setFeedback] = useState("");
   const { execute, pending, error } = useAsyncAction();
@@ -18,12 +20,12 @@ export function DecompositionApproval({ run, onDone }: { run: AutoRunRecord; onD
   if (approval?.status === "approved") {
     return (
       <Badge tone="success" title={`approved by ${approval.by ?? "?"}`}>
-        {run.childIssues?.length ?? approval.created ?? 0} child issue(s) created
+        {t("autoRunActions.childrenCreated", { count: run.childIssues?.length ?? approval.created ?? 0 })}
       </Badge>
     );
   }
   if (approval?.status === "rejected") {
-    return <Badge tone="warning" title={approval.feedback ?? undefined}>changes requested</Badge>;
+    return <Badge tone="warning" title={approval.feedback ?? undefined}>{t("autoRunActions.changesRequested")}</Badge>;
   }
 
   const plan = run.decompositionPlan;
@@ -43,7 +45,7 @@ export function DecompositionApproval({ run, onDone }: { run: AutoRunRecord; onD
   return (
     <div className="flex w-full flex-col gap-1.5 rounded-lg border border-border bg-muted/30 p-2">
       <span className="flex items-center gap-1 text-xs font-medium text-foreground/80">
-        <GitFork className="size-3.5" /> Proposed decomposition — {children.length} child issue(s)
+        <GitFork className="size-3.5" /> {t("autoRunActions.proposedDecomposition", { count: children.length })}
       </span>
       {children.length ? (
         <ol className="ml-4 list-decimal text-[11px] text-muted-foreground">
@@ -52,16 +54,16 @@ export function DecompositionApproval({ run, onDone }: { run: AutoRunRecord; onD
           ))}
         </ol>
       ) : (
-        <span className="text-[11px] text-amber-600 dark:text-amber-400">No children were proposed — re-run the epic.</span>
+        <span className="text-[11px] text-amber-600 dark:text-amber-400">{t("autoRunActions.noChildren")}</span>
       )}
       {blocking.length ? (
         <p className="rounded-md border border-amber-500/40 bg-amber-500/5 px-2 py-1 text-[11px] text-amber-700 dark:text-amber-300">
-          {blocking.length} governance issue(s) must be fixed before spawning.
+          {t("autoRunActions.governanceIssues", { count: blocking.length })}
         </p>
       ) : null}
       {overlaps.length ? (
         <div className="rounded-md border border-amber-500/40 bg-amber-500/5 px-2 py-1 text-[11px] text-amber-700 dark:text-amber-300">
-          <span className="font-medium">Possible overlap</span> — children may cover the same scope; review before spawning:
+          <span className="font-medium">{t("autoRunActions.possibleOverlap")}</span> — {t("autoRunActions.overlapHint")}:
           <ul className="ml-3 list-disc">
             {overlaps.slice(0, 3).map((p, i) => (
               <li key={i}>#{p.a + 1} ↔ #{p.b + 1} ({Math.round(p.score * 100)}%)</li>
@@ -74,13 +76,13 @@ export function DecompositionApproval({ run, onDone }: { run: AutoRunRecord; onD
           variant="primary" size="sm" className="h-6 px-2 text-xs"
           disabled={pending || !children.length || blocking.length > 0}
           onClick={() => void act("approve")}
-          title={blocking.length ? "Resolve the governance issues first" : "Approve — creates the child issues"}
+          title={t(blocking.length ? "autoRunActions.resolveGovernance" : "autoRunActions.approveChildrenHint")}
         >
-          {pending && !rejecting ? <Loader2 className="mr-1 size-3 animate-spin" /> : <Check className="mr-1 size-3" />} Approve &amp; create {children.length}
+          {pending && !rejecting ? <Loader2 className="mr-1 size-3 animate-spin" /> : <Check className="mr-1 size-3" />} {t("autoRunActions.approveCreate", { count: children.length })}
         </Button>
         <Button variant="secondary" size="sm" className="h-6 px-2 text-xs" disabled={pending} onClick={() => setRejecting((v) => !v)}
-          title="Request changes — posts your feedback back to the epic">
-          <MessageSquareX className="mr-1 size-3" /> Request changes
+          title={t("autoRunActions.requestEpicChangesHint")}>
+          <MessageSquareX className="mr-1 size-3" /> {t("autoRunActions.requestChanges")}
         </Button>
       </div>
       {rejecting ? (
@@ -89,11 +91,11 @@ export function DecompositionApproval({ run, onDone }: { run: AutoRunRecord; onD
             value={feedback}
             onChange={(e) => setFeedback(e.target.value)}
             rows={2}
-            placeholder="What should change in this breakdown?"
+            placeholder={t("autoRunActions.breakdownFeedback")}
             className="rounded-md border border-border bg-background px-2 py-1 text-xs"
           />
           <Button variant="secondary" size="sm" className="h-6 self-start px-2 text-xs" disabled={pending} onClick={() => void act("reject")}>
-            {pending ? <Loader2 className="mr-1 size-3 animate-spin" /> : null} Send feedback
+            {pending ? <Loader2 className="mr-1 size-3 animate-spin" /> : null} {t("autoRunActions.sendFeedback")}
           </Button>
         </div>
       ) : null}
