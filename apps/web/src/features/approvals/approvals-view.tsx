@@ -10,6 +10,7 @@ import { api, useAsyncAction } from "@/data/use-console-actions";
 import { useUiStore, type SectionKey } from "@/store/ui-store";
 import type { ClaudeApplyAuthorization, InvocationSnapshot, PendingDecision, PendingDecisionKind, WorktreeSnapshot } from "@/lib/console-state";
 import { RunTranscriptSection } from "@/features/invocations/run-transcript";
+import { useAppTranslation } from "@/lib/i18n/use-app-translation";
 
 // The Approvals section: ONE queue of every pending human decision, aggregated
 // server-side (read-model `pendingDecisions`) from surfaces that used to be
@@ -44,6 +45,7 @@ function since(iso?: string | null): string | null {
 }
 
 export function ApprovalsView() {
+  const { t } = useAppTranslation();
   const { data: state } = useConsoleState();
   const refresh = useRefreshConsoleState();
   const { execute, pending, error } = useAsyncAction();
@@ -68,7 +70,7 @@ export function ApprovalsView() {
       const ad = (result as { alreadyDecided?: { decidedBy?: string | null; decidedAt?: string | null; status?: string | null } } | undefined)?.alreadyDecided;
       setDecidedNote(
         ad
-          ? `Already decided${ad.status ? ` (${ad.status})` : ""} by ${ad.decidedBy ?? "someone else"}${ad.decidedAt ? ` at ${ad.decidedAt.replace("T", " ").slice(0, 16)}` : ""}.`
+          ? t("approvals.alreadyDecided", { status: ad.status ? ` (${ad.status})` : "", actor: ad.decidedBy ?? t("approvals.someoneElse"), time: ad.decidedAt ? ` ${t("approvals.at")} ${ad.decidedAt.replace("T", " ").slice(0, 16)}` : "" })
           : null,
       );
       void refresh();
@@ -87,9 +89,9 @@ export function ApprovalsView() {
     <div className="flex h-full flex-col gap-3">
       <div className="flex items-center gap-2">
         <Inbox className="size-5 text-muted-foreground" />
-        <h1 className="text-lg font-semibold">Approvals</h1>
-        <Badge tone={decisions.length ? "warning" : "neutral"}>{decisions.length} pending</Badge>
-        <span className="ml-auto text-xs text-muted-foreground">Every human decision, oldest first</span>
+        <h1 className="text-lg font-semibold">{t("approvals.title")}</h1>
+        <Badge tone={decisions.length ? "warning" : "neutral"}>{t("approvals.pending", { count: decisions.length })}</Badge>
+        <span className="ml-auto text-xs text-muted-foreground">{t("approvals.oldestFirst")}</span>
       </div>
 
       {error ? <p className="text-sm text-destructive">{error}</p> : null}
@@ -97,19 +99,19 @@ export function ApprovalsView() {
 
       {state?.approvalTokenLegacyUses ? (
         <div className="flex flex-wrap items-center gap-2 rounded-md border border-border bg-muted/40 px-3 py-2 text-xs">
-          <span className="font-medium">Approval grants</span>
+          <span className="font-medium">{t("approvals.grants")}</span>
           {state.approvalTokenLegacyUses.count > 0 ? (
             <Badge tone="warning">
-              {state.approvalTokenLegacyUses.count} legacy token use(s)
-              {state.approvalTokenLegacyUses.lastAt ? ` · last ${state.approvalTokenLegacyUses.lastAt.slice(0, 10)}` : ""}
+              {t("approvals.legacyUses", { count: state.approvalTokenLegacyUses.count })}
+              {state.approvalTokenLegacyUses.lastAt ? ` · ${t("approvals.last", { date: state.approvalTokenLegacyUses.lastAt.slice(0, 10) })}` : ""}
             </Badge>
           ) : (
-            <Badge tone="success">no legacy token use — safe to require issued grants</Badge>
+            <Badge tone="success">{t("approvals.noLegacy")}</Badge>
           )}
           <span className="text-muted-foreground">
             {state.approvalTokenLegacyUses.count > 0
-              ? "Some callers still send free-text tokens; migrate them, then flip strict mode in Auto-run settings."
-              : "Strict mode (require issued grants) can be enabled in Auto-run settings."}
+              ? t("approvals.legacyHint")
+              : t("approvals.strictHint")}
           </span>
         </div>
       ) : null}
@@ -129,7 +131,7 @@ export function ApprovalsView() {
       />
 
       {decisions.length === 0 ? (
-        <EmptyState title="Nothing waiting on you" hint="Approvals, decomposition plans, design sign-offs, clarify answers, PR merges, and compare promotions all land here." />
+        <EmptyState title={t("approvals.empty")} hint={t("approvals.emptyHint")} />
       ) : (
         <ul className="flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto">
           {decisions.map((d) => {
@@ -146,11 +148,11 @@ export function ApprovalsView() {
                     <div className="min-w-0 flex-1">
                       <div className="flex items-center gap-2">
                         <span className="truncate text-sm font-medium">{d.title}</span>
-                        <Badge tone="neutral" className="shrink-0">{meta?.label ?? d.kind}</Badge>
+                        <Badge tone="neutral" className="shrink-0">{t(`approvals.kind.${d.kind}` as never)}</Badge>
                         {d.softClaim?.claimedBy ? (
                           <Badge tone="warning" className="shrink-0">
                             <Hand className="mr-1 size-3" />
-                            handling · {d.softClaim.claimedBy}
+                            {t("approvals.handling")} · {d.softClaim.claimedBy}
                           </Badge>
                         ) : null}
                         {age ? <span className="shrink-0 text-xs text-muted-foreground">{age}</span> : null}
@@ -160,12 +162,12 @@ export function ApprovalsView() {
                     <div className="flex shrink-0 items-center gap-1.5">
                       {/* #1151 soft-claim: advisory — marks the row, never gates the buttons. */}
                       {d.softClaim ? (
-                        <Button variant="ghost" size="sm" className="h-7 px-2 text-xs" disabled={pending} title={`Handled by ${d.softClaim.claimedBy ?? "someone"} — release the marker`} onClick={() => act(() => api.releaseDecisionClaim(d.id))}>
-                          <Hand className="mr-1 size-3" />Release
+                        <Button variant="ghost" size="sm" className="h-7 px-2 text-xs" disabled={pending} title={t("approvals.releaseHint", { actor: d.softClaim.claimedBy ?? t("approvals.someone") })} onClick={() => act(() => api.releaseDecisionClaim(d.id))}>
+                          <Hand className="mr-1 size-3" />{t("approvals.release")}
                         </Button>
                       ) : (
-                        <Button variant="ghost" size="sm" className="h-7 px-2 text-xs" disabled={pending} title="Mark that you're handling this decision" onClick={() => act(() => api.claimDecision(d.id))}>
-                          <Hand className="mr-1 size-3" />Handle
+                        <Button variant="ghost" size="sm" className="h-7 px-2 text-xs" disabled={pending} title={t("approvals.handleHint")} onClick={() => act(() => api.claimDecision(d.id))}>
+                          <Hand className="mr-1 size-3" />{t("approvals.handle")}
                         </Button>
                       )}
                       <DecisionActions d={d} pending={pending} act={act} open={open} />
@@ -192,10 +194,11 @@ function DecisionActions({
   act: (fn: () => Promise<unknown>) => void;
   open: (d: PendingDecision) => void;
 }) {
+  const { t } = useAppTranslation();
   const spin = pending ? <Loader2 className="mr-1 size-3 animate-spin" /> : null;
   const openBtn = (
     <Button variant="ghost" size="sm" className="h-7 px-2 text-xs" onClick={() => open(d)}>
-      Open
+      {t("approvals.open")}
     </Button>
   );
 
@@ -204,10 +207,10 @@ function DecisionActions({
       return (
         <>
           <Button variant="primary" size="sm" className="h-7 px-2.5 text-xs" disabled={pending} onClick={() => d.ref?.approvalId && act(() => api.approveApproval(d.ref!.approvalId!))}>
-            {spin}Approve
+            {spin}{t("approvals.approve")}
           </Button>
           <Button variant="ghost" size="sm" className="h-7 px-2 text-xs" disabled={pending} onClick={() => d.ref?.approvalId && act(() => api.denyApproval(d.ref!.approvalId!))}>
-            Deny
+            {t("approvals.deny")}
           </Button>
           {openBtn}
         </>
@@ -219,10 +222,10 @@ function DecisionActions({
       return (
         <>
           <Button variant="primary" size="sm" className="h-7 px-2.5 text-xs" disabled={pending} onClick={() => d.ref?.requestId && act(() => api.approveCodexApproval(d.ref!.requestId!))}>
-            {spin}Approve
+            {spin}{t("approvals.approve")}
           </Button>
           <Button variant="ghost" size="sm" className="h-7 px-2 text-xs" disabled={pending} onClick={() => d.ref?.requestId && act(() => api.denyCodexApproval(d.ref!.requestId!))}>
-            Deny
+            {t("approvals.deny")}
           </Button>
           {openBtn}
         </>
@@ -231,10 +234,10 @@ function DecisionActions({
       return (
         <>
           <Button variant="primary" size="sm" className="h-7 px-2.5 text-xs" disabled={pending} onClick={() => d.ref?.approvalId && act(() => api.approveLifecycleApproval(d.ref!.approvalId!))}>
-            {spin}Approve
+            {spin}{t("approvals.approve")}
           </Button>
           <Button variant="ghost" size="sm" className="h-7 px-2 text-xs" disabled={pending} onClick={() => d.ref?.approvalId && act(() => api.denyLifecycleApproval(d.ref!.approvalId!))}>
-            Deny
+            {t("approvals.deny")}
           </Button>
           {openBtn}
         </>
@@ -244,7 +247,7 @@ function DecisionActions({
         <>
           <Button variant="primary" size="sm" className="h-7 px-2.5 text-xs" disabled={pending} onClick={() => d.ref?.rollbackRequestId && act(() => api.queueLifecycleRollback(d.ref!.rollbackRequestId!))}>
             {spin}
-            <RotateCcw className="mr-1 size-3" />Queue rollback
+            <RotateCcw className="mr-1 size-3" />{t("approvals.queueRollback")}
           </Button>
           {openBtn}
         </>
@@ -254,7 +257,7 @@ function DecisionActions({
         <>
           <Button variant="primary" size="sm" className="h-7 px-2.5 text-xs" disabled={pending} onClick={() => d.ref?.compareRunId && act(() => api.promoteCompareRun(d.ref!.compareRunId!))}>
             {spin}
-            <Trophy className="mr-1 size-3" />Promote
+            <Trophy className="mr-1 size-3" />{t("approvals.promote")}
           </Button>
           {openBtn}
         </>
@@ -264,7 +267,7 @@ function DecisionActions({
         <>
           <Button variant="primary" size="sm" className="h-7 px-2.5 text-xs" disabled={pending} onClick={() => d.ref?.autoRunId && act(() => api.mergeAutoRunPr(d.ref!.autoRunId!))}>
             {spin}
-            <GitMerge className="mr-1 size-3" />Merge
+            <GitMerge className="mr-1 size-3" />{t("approvals.merge")}
           </Button>
           {d.ref?.prUrl ? (
             <a href={d.ref.prUrl} target="_blank" rel="noreferrer" className={cn("inline-flex h-7 items-center gap-1 rounded-md px-2 text-xs text-muted-foreground hover:text-foreground")}>
@@ -281,10 +284,10 @@ function DecisionActions({
         <>
           <Button variant="primary" size="sm" className="h-7 px-2.5 text-xs" disabled={pending} onClick={() => d.ref?.channelTaskRequestId && act(() => api.routeChannelTask(d.ref!.channelTaskRequestId!))}>
             {spin}
-            <Route className="mr-1 size-3" />Route
+            <Route className="mr-1 size-3" />{t("approvals.route")}
           </Button>
           <Button variant="ghost" size="sm" className="h-7 px-2 text-xs" disabled={pending} onClick={() => d.ref?.channelTaskRequestId && act(() => api.dismissChannelTask(d.ref!.channelTaskRequestId!))}>
-            Dismiss
+            {t("approvals.dismiss")}
           </Button>
           {d.ref?.issueUrl ? (
             <a href={d.ref.issueUrl} target="_blank" rel="noreferrer" className={cn("inline-flex h-7 items-center gap-1 rounded-md px-2 text-xs text-muted-foreground hover:text-foreground")}>
@@ -297,7 +300,7 @@ function DecisionActions({
     default:
       return (
         <Button variant="secondary" size="sm" className="h-7 px-2.5 text-xs" onClick={() => open(d)}>
-          Review in Auto-runs
+          {t("approvals.reviewAutoRuns")}
         </Button>
       );
   }
@@ -362,6 +365,7 @@ function ProposalsPanel({
   pending: boolean;
   act: (fn: () => Promise<unknown>) => void;
 }) {
+  const { t } = useAppTranslation();
   const [composing, setComposing] = useState(false);
   const proposals = invocations.map(proposalOf).filter((p): p is PatchProposal => p !== null);
   const composable = worktrees.filter((w) => !w.isMain);
@@ -369,13 +373,13 @@ function ProposalsPanel({
   return (
     <div className="flex flex-col gap-2">
       <div className="flex items-center gap-2">
-        <h2 className="text-sm font-semibold">Patch proposals</h2>
+        <h2 className="text-sm font-semibold">{t("approvals.patchProposals")}</h2>
         <Badge tone="neutral">{proposals.length}</Badge>
-        <span className="text-xs text-muted-foreground">Claude-proposed changes — nothing is applied without an approval grant</span>
+        <span className="text-xs text-muted-foreground">{t("approvals.patchProposalsHint")}</span>
         {composable.length ? (
           <Button variant="secondary" size="sm" className="ml-auto h-7 px-2 text-xs" onClick={() => setComposing((v) => !v)}>
             <PenLine className="mr-1 size-3" />
-            New proposal
+            {t("approvals.newProposal")}
           </Button>
         ) : null}
       </div>
@@ -420,6 +424,7 @@ function ComposeProposal({
   pending: boolean;
   onSubmit: (body: Record<string, string>) => void;
 }) {
+  const { t } = useAppTranslation();
   const [worktreeId, setWorktreeId] = useState(worktrees[0]?.id ?? "");
   const [task, setTask] = useState("");
   const worktree = worktrees.find((w) => w.id === worktreeId) ?? null;
@@ -427,7 +432,7 @@ function ComposeProposal({
     <Card>
       <CardContent className="flex flex-col gap-2 py-3">
         <div className="flex flex-wrap items-center gap-2 text-xs">
-          <label className="text-muted-foreground" htmlFor="proposal-worktree">Worktree</label>
+          <label className="text-muted-foreground" htmlFor="proposal-worktree">{t("approvals.worktree")}</label>
           <select
             id="proposal-worktree"
             className="h-7 rounded-md border border-border bg-background px-2 text-xs"
@@ -441,7 +446,7 @@ function ComposeProposal({
         </div>
         <textarea
           className="min-h-16 w-full rounded-md border border-border bg-background p-2 text-xs"
-          placeholder="What change should Claude propose? (e.g. Add a null guard to the parser.)"
+          placeholder={t("approvals.proposalPlaceholder")}
           value={task}
           maxLength={4000}
           onChange={(event) => setTask(event.target.value)}
@@ -461,9 +466,9 @@ function ComposeProposal({
             }
           >
             {pending ? <Loader2 className="mr-1 size-3 animate-spin" /> : <Sparkles className="mr-1 size-3" />}
-            Propose
+            {t("approvals.propose")}
           </Button>
-          <span className="text-xs text-muted-foreground">Read-only: Claude proposes a diff, nothing is written.</span>
+          <span className="text-xs text-muted-foreground">{t("approvals.readOnlyHint")}</span>
         </div>
       </CardContent>
     </Card>
@@ -481,6 +486,7 @@ function ProposalRow({
   pending: boolean;
   act: (fn: () => Promise<unknown>) => void;
 }) {
+  const { t } = useAppTranslation();
   const [verify, setVerify] = useState("");
   const applicable = !authorization || authorization.status === "failed" || authorization.status === "rolled_back";
   return (
@@ -488,7 +494,7 @@ function ProposalRow({
       <Card>
         <CardContent className="flex flex-col gap-2 py-3">
           <div className="flex flex-wrap items-center gap-2">
-            <Badge tone="neutral">proposal</Badge>
+            <Badge tone="neutral">{t("approvals.proposal")}</Badge>
             <span className="min-w-0 flex-1 truncate text-sm">
               {proposal.summary ?? `Proposal ${proposal.invocationId}`}
             </span>
@@ -498,7 +504,7 @@ function ProposalRow({
             {applicable && proposal.worktreeId ? (
               <>
                 <select
-                  aria-label="Post-apply verification"
+                  aria-label={t("approvals.postApplyVerification")}
                   className="h-7 rounded-md border border-border bg-background px-1.5 text-xs"
                   value={verify}
                   onChange={(event) => setVerify(event.target.value)}
@@ -526,7 +532,7 @@ function ProposalRow({
                   }
                 >
                   {pending ? <Loader2 className="mr-1 size-3 animate-spin" /> : <ShieldAlert className="mr-1 size-3" />}
-                  Approve &amp; apply
+                  {t("approvals.approveApply")}
                 </Button>
               </>
             ) : null}
@@ -537,7 +543,7 @@ function ProposalRow({
             </div>
           ) : null}
           <details className="text-xs">
-            <summary className="cursor-pointer text-muted-foreground">Proposed patch</summary>
+            <summary className="cursor-pointer text-muted-foreground">{t("approvals.proposedPatch")}</summary>
             <pre className="mt-1 max-h-64 overflow-auto rounded-md bg-muted/40 p-2 font-mono text-[11px] leading-4">{proposal.patch.slice(0, 20000)}</pre>
           </details>
           {/* #1086: how the agent arrived at this patch — read before approving.
@@ -571,13 +577,14 @@ function ApplyAuthorizationsPanel({
   pending: boolean;
   act: (fn: () => Promise<unknown>) => void;
 }) {
+  const { t } = useAppTranslation();
   if (!rows.length) return null;
   return (
     <div className="flex flex-col gap-2">
       <div className="flex items-center gap-2">
-        <h2 className="text-sm font-semibold">Patch applies</h2>
+        <h2 className="text-sm font-semibold">{t("approvals.patchApplies")}</h2>
         <Badge tone="neutral">{rows.length}</Badge>
-        <span className="text-xs text-muted-foreground">Approval-bound Claude patch applies and their rollback state</span>
+        <span className="text-xs text-muted-foreground">{t("approvals.patchAppliesHint")}</span>
       </div>
       <ul className="flex flex-col gap-2">
         {rows.map((row) => {
@@ -605,7 +612,7 @@ function ApplyAuthorizationsPanel({
                         }
                       >
                         {pending ? <Loader2 className="mr-1 size-3 animate-spin" /> : <RotateCcw className="mr-1 size-3" />}
-                        Roll back
+                        {t("approvals.rollback")}
                       </Button>
                     ) : null}
                   </div>
@@ -613,22 +620,22 @@ function ApplyAuthorizationsPanel({
                     {files.length ? <span className="truncate">{files.map((f) => f.path).join(", ")}</span> : null}
                     {row.verification?.testsPassed !== undefined ? (
                       <Badge tone={row.verification.testsPassed ? "success" : "danger"}>
-                        {row.verification.testsPassed ? "tests passed" : "tests failed"}
+                        {row.verification.testsPassed ? t("approvals.testsPassed") : t("approvals.testsFailed")}
                         {row.verification.verifyCommand ? ` · ${row.verification.verifyCommand}` : ""}
                       </Badge>
                     ) : null}
-                    {row.rolledBackAt ? <span>rolled back {row.rolledBackAt.slice(0, 10)}</span> : null}
-                    {row.rollbackError ? <span className="text-destructive">rollback failed: {row.rollbackError}</span> : null}
+                    {row.rolledBackAt ? <span>{t("approvals.rolledBack", { date: row.rolledBackAt.slice(0, 10) })}</span> : null}
+                    {row.rollbackError ? <span className="text-destructive">{t("approvals.rollbackFailed")}: {row.rollbackError}</span> : null}
                   </div>
                   {row.verification?.testsPassed === false && row.verification.testOutputPreview ? (
                     <details className="text-xs">
-                      <summary className="cursor-pointer text-destructive">Verification output</summary>
+                      <summary className="cursor-pointer text-destructive">{t("approvals.verificationOutput")}</summary>
                       <pre className="mt-1 max-h-40 overflow-auto rounded-md bg-muted/40 p-2 font-mono text-[11px] leading-4">{row.verification.testOutputPreview}</pre>
                     </details>
                   ) : null}
                   {row.patchPreview ? (
                     <details className="text-xs">
-                      <summary className="cursor-pointer text-muted-foreground">Patch preview</summary>
+                      <summary className="cursor-pointer text-muted-foreground">{t("approvals.patchPreview")}</summary>
                       <pre className="mt-1 max-h-48 overflow-auto rounded-md bg-muted/40 p-2 font-mono text-[11px] leading-4">{row.patchPreview}</pre>
                     </details>
                   ) : null}
