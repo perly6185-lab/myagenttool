@@ -11,7 +11,9 @@ import { useConsoleState } from "@/data/use-console-state";
 import { useAsyncAction, api } from "@/data/use-console-actions";
 import { useUiStore } from "@/store/ui-store";
 import { cn } from "@/lib/cn";
-import { readableStatus, statusTone } from "@/lib/readable-labels";
+import { statusTone } from "@/lib/readable-labels";
+import { invocationStatus } from "@/lib/i18n/readable-labels";
+import { useAppTranslation } from "@/lib/i18n/use-app-translation";
 import type { IssueClaimEvent } from "@/lib/console-state";
 import { branchFromIssue, worktreeLinkFor } from "@/features/projects/worktree-payload";
 import { githubItemKindLabel, worktreeAutoRunPrompt } from "@myagenttool/protocol/issue-prompt";
@@ -29,15 +31,13 @@ type GithubResult = { available: boolean; message: string; items: GithubItem[] }
 // Each row also carries which project it came from (for the "All projects" view).
 type Row = GithubItem & { projectId: string; projectName: string };
 
-const TABS: [GithubItem["type"], string][] = [
-  ["issue", "Issues"],
-  ["pr", "PRs"],
-];
+const TABS: GithubItem["type"][] = ["issue", "pr"];
 
 // Task = GitHub issues/PRs across repo-backed projects, surfaced as work items.
 // Mirrors the project's existing per-worktree GitHub list, lifted to a top-level
 // board with project/type/search filters.
 export function TaskView() {
+  const { t } = useAppTranslation();
   const { data: state } = useConsoleState();
   const { execute, pending, error } = useAsyncAction();
   const setSection = useUiStore((s) => s.setSection);
@@ -142,7 +142,7 @@ export function TaskView() {
     let cancelled = false;
     if (targetProjects.length === 0) {
       setRows([]);
-      setNotice(repoProjects.length === 0 ? "No repo-backed project. Clone or link a GitHub repo first." : null);
+      setNotice(repoProjects.length === 0 ? t("tasks.noRepoProject") : null);
       return;
     }
     setLoading(true);
@@ -151,7 +151,7 @@ export function TaskView() {
       targetProjects.map((p) =>
         (api.listGithubItems(p.id) as Promise<GithubResult>)
           .then((r) => ({ p, r }))
-          .catch(() => ({ p, r: { available: false, message: "Request failed.", items: [] } as GithubResult })),
+          .catch(() => ({ p, r: { available: false, message: t("tasks.requestFailed"), items: [] } as GithubResult })),
       ),
     ).then((results) => {
       if (cancelled) return;
@@ -185,15 +185,15 @@ export function TaskView() {
       <CardHeader>
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div>
-            <CardTitle>Tasks</CardTitle>
-            <p className="text-sm text-muted-foreground">GitHub issues and pull requests across your repo-backed projects.</p>
+            <CardTitle>{t("tasks.title")}</CardTitle>
+            <p className="text-sm text-muted-foreground">{t("tasks.description")}</p>
           </div>
           <Button
             variant="secondary"
             size="sm"
             disabled={loading}
             onClick={() => setNonce((n) => n + 1)}
-            title="Refresh"
+            title={t("tasks.refresh")}
           >
             <RefreshCw className={cn("size-4", loading && "animate-spin")} />
           </Button>
@@ -203,7 +203,7 @@ export function TaskView() {
         <div className="flex flex-wrap items-center gap-2">
           {/* Type tabs */}
           <div className="flex gap-1 rounded-lg bg-muted p-0.5 text-xs">
-            {TABS.map(([key, label]) => (
+            {TABS.map((key) => (
               <button
                 key={key}
                 type="button"
@@ -213,15 +213,15 @@ export function TaskView() {
                   tab === key ? "bg-background text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground",
                 )}
               >
-                {label}
+                {t(key === "issue" ? "tasks.issues" : "tasks.prs")}
                 {rows.filter((r) => r.type === key).length > 0 ? (
                   <span className="ml-1.5 text-muted-foreground">{rows.filter((r) => r.type === key).length}</span>
                 ) : null}
               </button>
             ))}
           </div>
-          <Select value={projectId} onChange={(e) => setProjectId(e.target.value)} aria-label="Project" className="h-8 w-auto text-xs">
-            <option value="all">All projects</option>
+          <Select value={projectId} onChange={(e) => setProjectId(e.target.value)} aria-label={t("tasks.project")} className="h-8 w-auto text-xs">
+            <option value="all">{t("tasks.allProjects")}</option>
             {repoProjects.map((p) => (
               <option key={p.id} value={p.id}>
                 {p.name}
@@ -231,8 +231,8 @@ export function TaskView() {
           <Input
             value={query}
             onChange={(e) => setQuery(e.target.value)}
-            placeholder="Search title, #number, project"
-            aria-label="Search tasks"
+            placeholder={t("tasks.searchPlaceholder")}
+            aria-label={t("tasks.search")}
             className="h-8 max-w-xs text-xs"
           />
         </div>
@@ -242,8 +242,8 @@ export function TaskView() {
 
         {visible.length === 0 ? (
           <EmptyState
-            title={loading ? "Loading…" : `No open ${tab === "pr" ? "pull requests" : "issues"}`}
-            hint={loading ? "Fetching from GitHub via gh." : "Nothing matches the current filters."}
+            title={loading ? t("tasks.loading") : t(tab === "pr" ? "tasks.noPrs" : "tasks.noIssues")}
+            hint={loading ? t("tasks.fetching") : t("tasks.noMatches")}
           />
         ) : (
           <div className="overflow-x-auto rounded-lg border border-border">
@@ -251,9 +251,9 @@ export function TaskView() {
               <thead>
                 <tr className="border-b border-border text-left text-xs text-muted-foreground">
                   <th className="px-3 py-2 font-medium">ID</th>
-                  <th className="px-3 py-2 font-medium">Title / context</th>
-                  <th className="px-3 py-2 font-medium">Author</th>
-                  <th className="px-3 py-2 font-medium">State</th>
+                  <th className="px-3 py-2 font-medium">{t("tasks.titleContext")}</th>
+                  <th className="px-3 py-2 font-medium">{t("tasks.author")}</th>
+                  <th className="px-3 py-2 font-medium">{t("tasks.state")}</th>
                   <th className="px-3 py-2 font-medium" />
                 </tr>
               </thead>
@@ -274,7 +274,7 @@ export function TaskView() {
                             <span className="inline-flex items-center gap-1">
                               <GitBranch className="size-3 opacity-70" />
                               <span className="font-mono">{wt.branch}</span>
-                              {run ? <Badge tone={statusTone(run.status)}>{readableStatus(run.status)}</Badge> : null}
+                              {run ? <Badge tone={statusTone(run.status)}>{invocationStatus(t, run.status)}</Badge> : null}
                             </span>
                           );
                         })()}
@@ -284,7 +284,7 @@ export function TaskView() {
                           return claim ? (
                             <Badge tone={claim.mode === "develop" ? "warning" : "neutral"} className="shrink-0">
                               <Hand className="mr-1 size-3" />
-                              {claim.mode === "develop" ? "claimed" : "reviewing"} · {claim.claimedBy}
+                              {t(claim.mode === "develop" ? "tasks.claimed" : "tasks.reviewing")} · {claim.claimedBy}
                             </Badge>
                           ) : null;
                         })()}
@@ -297,7 +297,7 @@ export function TaskView() {
                     <td className="px-3 py-2">
                       <div className="flex items-center justify-end gap-1">
                         {r.type === "issue" && claimHistory(r).length > 0 ? (
-                          <Button variant="ghost" size="sm" disabled={pending} onClick={() => setHistoryRow(r)} title="Who held this issue and how each hold ended">
+                          <Button variant="ghost" size="sm" disabled={pending} onClick={() => setHistoryRow(r)} title={t("taskActions.claimHistoryHint")}>
                             <History className="size-3.5" />
                           </Button>
                         ) : null}
@@ -305,31 +305,31 @@ export function TaskView() {
                           if (r.type !== "issue" || r.state !== "open") return null;
                           const claim = activeClaim(r);
                           return claim ? (
-                            <Button variant="ghost" size="sm" disabled={pending} onClick={() => releaseClaimRow(claim.id)} title={`Release the claim held by ${claim.claimedBy}`}>
-                              <Hand className="mr-1 size-3.5" /> Release
+                            <Button variant="ghost" size="sm" disabled={pending} onClick={() => releaseClaimRow(claim.id)} title={t("taskActions.releaseHint", { owner: claim.claimedBy })}>
+                              <Hand className="mr-1 size-3.5" /> {t("taskActions.release")}
                             </Button>
                           ) : (
-                            <Button variant="secondary" size="sm" disabled={pending} onClick={() => claimIssueRow(r)} title="Claim this issue for development — one develop claim per issue">
-                              <Hand className="mr-1 size-3.5" /> Claim
+                            <Button variant="secondary" size="sm" disabled={pending} onClick={() => claimIssueRow(r)} title={t("taskActions.claimHint")}>
+                              <Hand className="mr-1 size-3.5" /> {t("taskActions.claim")}
                             </Button>
                           );
                         })()}
-                        <Button variant="secondary" size="sm" disabled={pending} onClick={() => automateIssue(r)} title="Create an automation for this item">
-                          <Workflow className="mr-1 size-3.5" /> Automate
+                        <Button variant="secondary" size="sm" disabled={pending} onClick={() => automateIssue(r)} title={t("taskActions.automateHint")}>
+                          <Workflow className="mr-1 size-3.5" /> {t("tasks.automate")}
                         </Button>
                         {(() => {
                           const wt = linkedWorktree(r);
                           return wt ? (
                             <Button variant="secondary" size="sm" onClick={() => openWorktree(wt.id, r.projectId)} title={`Open worktree ${wt.branch}`}>
-                              <GitBranch className="mr-1 size-3.5" /> Open
+                              <GitBranch className="mr-1 size-3.5" /> {t("tasks.open")}
                             </Button>
                           ) : (
                             <>
-                              <Button size="sm" disabled={pending} onClick={() => autoRunIssue(r)} title="Create a worktree and start an agent run for this item">
-                                <Zap className="mr-1 size-3.5" /> Auto
+                              <Button size="sm" disabled={pending} onClick={() => autoRunIssue(r)} title={t("taskActions.autoHint")}>
+                                <Zap className="mr-1 size-3.5" /> {t("tasks.auto")}
                               </Button>
-                              <Button variant="secondary" size="sm" disabled={pending} onClick={() => setWtRow(r)} title="Create a worktree for this item">
-                                <GitBranch className="mr-1 size-3.5" /> Worktree
+                              <Button variant="secondary" size="sm" disabled={pending} onClick={() => setWtRow(r)} title={t("taskActions.worktreeHint")}>
+                                <GitBranch className="mr-1 size-3.5" /> {t("tasks.worktree")}
                               </Button>
                             </>
                           );
@@ -340,7 +340,7 @@ export function TaskView() {
                             target="_blank"
                             rel="noreferrer"
                             className="inline-grid size-7 place-items-center rounded text-muted-foreground hover:bg-muted hover:text-foreground"
-                            title="Open on GitHub"
+                            title={t("tasks.openGithub")}
                           >
                             <ExternalLink className="size-4" />
                           </a>
@@ -355,11 +355,11 @@ export function TaskView() {
         )}
       </CardContent>
 
-      <Modal open={Boolean(historyRow)} onClose={() => setHistoryRow(null)} title={historyRow ? `Claim history · #${historyRow.number}` : "Claim history"}>
+      <Modal open={Boolean(historyRow)} onClose={() => setHistoryRow(null)} title={historyRow ? t("tasks.claimHistoryId", { number: historyRow.number }) : t("tasks.claimHistory")}>
         {historyRow ? <ClaimHistoryList events={claimHistory(historyRow)} /> : null}
       </Modal>
 
-      <Modal open={Boolean(wtRow)} onClose={() => setWtRow(null)} title={wtRow ? `Worktree for #${wtRow.number}` : "Worktree"}>
+      <Modal open={Boolean(wtRow)} onClose={() => setWtRow(null)} title={wtRow ? t("tasks.worktreeFor", { number: wtRow.number }) : t("tasks.worktree")}>
         {wtRow ? (
           <WorktreeOptionsForm
             row={wtRow}
@@ -378,7 +378,8 @@ export function TaskView() {
 // transition from issueClaimEvents (#1152), newest first. Read-only.
 const CLAIM_EVENT_TONE = { claimed: "warning", released: "neutral", expired: "danger" } as const;
 function ClaimHistoryList({ events }: { events: IssueClaimEvent[] }) {
-  if (!events.length) return <p className="text-sm text-muted-foreground">No recorded claim history.</p>;
+  const { t } = useAppTranslation();
+  if (!events.length) return <p className="text-sm text-muted-foreground">{t("tasks.noClaimHistory")}</p>;
   return (
     <ul className="flex max-h-80 flex-col gap-1.5 overflow-y-auto">
       {events.map((e) => (
@@ -387,7 +388,7 @@ function ClaimHistoryList({ events }: { events: IssueClaimEvent[] }) {
           <span className="font-medium">{e.claimedBy}</span>
           <span className="text-muted-foreground">{e.mode}</span>
           {e.type === "released" && e.actorId && e.actorId !== e.claimedBy ? (
-            <span className="text-muted-foreground">released by {e.actorId}</span>
+            <span className="text-muted-foreground">{t("tasks.releasedBy", { actor: e.actorId })}</span>
           ) : null}
           {e.outcome && e.outcome !== "released" ? <span className="text-muted-foreground">{e.outcome.replaceAll("_", " ")}</span> : null}
           {e.autoRunId ? <span className="font-mono text-muted-foreground">{e.autoRunId}</span> : null}
@@ -402,6 +403,7 @@ function ClaimHistoryList({ events }: { events: IssueClaimEvent[] }) {
 // issue), base branch, and agent. A PR checks out its own branch, so only the
 // agent is offered.
 function WorktreeOptionsForm({ row, onDone }: { row: Row; onDone: (wt: { id: string; projectId: string } | null) => void }) {
+  const { t } = useAppTranslation();
   const { data: state } = useConsoleState();
   const { execute, pending, error } = useAsyncAction();
   const agents = state?.agents ?? [];
@@ -439,27 +441,27 @@ function WorktreeOptionsForm({ row, onDone }: { row: Row; onDone: (wt: { id: str
     <div className="space-y-3">
       <p className="text-sm text-muted-foreground">
         {isPr ? (
-          <>Checks out PR #{row.number}{row.headRefName ? <> (<span className="font-mono">{row.headRefName}</span>)</> : null}.</>
+          <>{t("tasks.checkoutPr", { number: row.number })}{row.headRefName ? <> (<span className="font-mono">{row.headRefName}</span>)</> : null}.</>
         ) : (
-          <>Creates a new branch for issue #{row.number} and links it.</>
+          <>{t("tasks.createIssueBranch", { number: row.number })}</>
         )}
       </p>
       {!isPr ? (
         <>
-          <Field label="Branch name">
+          <Field label={t("tasks.branchName")}>
             <div className="flex gap-2">
               <Input value={branch} onChange={(e) => setBranch(e.target.value)} className="font-mono" />
-              <Button variant="secondary" size="sm" disabled={suggesting} onClick={suggest} title="Suggest a name">
-                Suggest
+              <Button variant="secondary" size="sm" disabled={suggesting} onClick={suggest} title={t("tasks.suggestName")}>
+                {t("tasks.suggest")}
               </Button>
             </div>
           </Field>
-          <Field label="Base branch">
+          <Field label={t("tasks.baseBranch")}>
             <Input value={base} onChange={(e) => setBase(e.target.value)} className="font-mono" placeholder="main" />
           </Field>
         </>
       ) : null}
-      <Field label="Agent">
+      <Field label={t("tasks.agent")}>
         <Select value={agentId} onChange={(e) => setAgentId(e.target.value)}>
           {agents.map((a) => (
             <option key={a.id} value={a.id}>
@@ -470,14 +472,13 @@ function WorktreeOptionsForm({ row, onDone }: { row: Row; onDone: (wt: { id: str
       </Field>
       <div className="flex justify-end gap-2 pt-1">
         <Button variant="secondary" size="sm" disabled={pending} onClick={() => onDone(null)}>
-          Cancel
+          {t("tasks.cancel")}
         </Button>
         <Button size="sm" disabled={pending} onClick={create}>
-          Create worktree
+          {t("tasks.createWorktree")}
         </Button>
       </div>
       {error ? <p className="text-xs text-destructive">{error}</p> : null}
     </div>
   );
 }
-
