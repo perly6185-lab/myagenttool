@@ -37,7 +37,7 @@ export function RegisterApplicationModal({ open, onClose, initialApplication = "
   const [setupPhase, setSetupPhase] = useState<SetupPhase>("detect");
   const [setupBusy, setSetupBusy] = useState(false);
   const [setupError, setSetupError] = useState<string | null>(null);
-  const [setupMessage, setSetupMessage] = useState("Choose a known Application to detect local readiness.");
+  const [setupMessage, setSetupMessage] = useState<string>(() => t("applicationRegisterFlow.choose"));
   const [installPlan, setInstallPlan] = useState<ApplicationInstallPlan | null>(null);
   const [installRunId, setInstallRunId] = useState<string | null>(null);
   const [installRun, setInstallRun] = useState<ApplicationInstallRun | null>(null);
@@ -59,7 +59,7 @@ export function RegisterApplicationModal({ open, onClose, initialApplication = "
   useEffect(() => {
     if (!open || !initialApplication) return;
     setKnownApplication(initialApplication);
-    resetSetup("Check this local application and repair it if needed.");
+    resetSetup(t("applicationRegisterFlow.checkRepair"));
   }, [open, initialApplication]);
 
   const knownEntry = useMemo(() => {
@@ -82,29 +82,29 @@ export function RegisterApplicationModal({ open, onClose, initialApplication = "
     const latestProgress = run.progress.at(-1);
     if (["queued", "running", "cancelling"].includes(run.status)) {
       setSetupPhase(latestProgress?.type === "probing" ? "probing" : "installing");
-      setSetupMessage(latestProgress?.summary ?? "Desktop Bridge is executing the approved installation plan.");
+      setSetupMessage(latestProgress?.summary ?? t("applicationRegisterFlow.executing"));
       return;
     }
     setInstallRunId(null);
     if (run.status === "succeeded" && finalizingRunRef.current !== run.id) {
       finalizingRunRef.current = run.id;
       setSetupPhase("registering");
-      setSetupMessage("Readiness confirmed. Registering the governed Application asset.");
+      setSetupMessage(t("applicationRegisterFlow.readinessConfirmed"));
       void registerKnownApplication().finally(() => { finalizingRunRef.current = null; });
       return;
     }
     if (run.status === "cancelled") {
       setSetupPhase("cancelled");
-      setSetupMessage(run.result?.summary ?? "Installation was cancelled. You can retry safely.");
+      setSetupMessage(run.result?.summary ?? t("applicationRegisterFlow.cancelled"));
       return;
     }
     setSetupPhase("failed");
     setSetupError(run.result?.classification === "probe_failed"
-      ? "Installation completed, but the readiness probe failed. Check PATH or restart Desktop Bridge, then retry."
-      : run.result?.summary ?? "Installation failed. Review the device and retry.");
+      ? t("applicationRegisterFlow.probeFailed")
+      : run.result?.summary ?? t("applicationRegisterFlow.installFailed"));
   }, [installRunData]);
 
-  function resetSetup(message = "Choose a known Application to detect local readiness.") {
+  function resetSetup(message: string = t("applicationRegisterFlow.choose")) {
     setSetupPhase("detect");
     setSetupBusy(false);
     setSetupError(null);
@@ -120,10 +120,10 @@ export function RegisterApplicationModal({ open, onClose, initialApplication = "
       const result = await api.quickRegisterApplication({ name: knownApplication.trim(), ...(projectId ? { projectId } : {}) });
       if (result.application?.id) setSelectedApplicationId(result.application.id);
       setSetupPhase("ready");
-      setSetupMessage(`${result.application?.name ?? knownEntry?.displayName ?? "Application"} is registered and ready.`);
+      setSetupMessage(t("applicationRegisterFlow.registered", { name: result.application?.name ?? knownEntry?.displayName ?? t("applicationRegister.application") }));
     } catch (caught) {
       setSetupPhase("failed");
-      setSetupError(caught instanceof Error ? caught.message : "Registration failed after installation.");
+      setSetupError(caught instanceof Error ? caught.message : t("applicationRegisterFlow.registrationFailed"));
     }
   }
 
@@ -132,7 +132,7 @@ export function RegisterApplicationModal({ open, onClose, initialApplication = "
     setSetupBusy(true);
     setSetupError(null);
     setSetupPhase("detect");
-    setSetupMessage(`Checking ${knownEntry.displayName} on this computer.`);
+    setSetupMessage(t("applicationRegisterFlow.checking", { name: knownEntry.displayName }));
     try {
       if (knownEntry.runtimeRequirements.length === 0) {
         setSetupPhase("registering");
@@ -142,12 +142,12 @@ export function RegisterApplicationModal({ open, onClose, initialApplication = "
       }
       if (!selectedDevice) {
         setSetupPhase("failed");
-        setSetupError("Start the local Desktop Bridge, then retry.");
+        setSetupError(t("applicationRegisterFlow.startBridge"));
         return;
       }
       if (selectedDevice.status !== "online") {
         setSetupPhase("failed");
-        setSetupError("The selected device is offline. Start Desktop Bridge or choose an online device, then retry.");
+        setSetupError(t("applicationRegisterFlow.deviceOffline"));
         return;
       }
       if (readiness?.status === "available") {
@@ -170,7 +170,7 @@ export function RegisterApplicationModal({ open, onClose, initialApplication = "
         return;
       }
       setSetupPhase("plan");
-      setSetupMessage(`Building an allowlisted ${selectedDevice.platform} installation plan.`);
+      setSetupMessage(t("applicationRegisterFlow.buildingPlan", { platform: selectedDevice.platform }));
       const response = await api.createApplicationInstallPlan({
         name: knownEntry.name,
         deviceId: selectedDevice.id,
@@ -178,10 +178,10 @@ export function RegisterApplicationModal({ open, onClose, initialApplication = "
       });
       setInstallPlan(response.plan);
       setSetupPhase("approval");
-      setSetupMessage("Review the safe summary and approve local installation.");
+      setSetupMessage(t("applicationRegisterFlow.reviewPlan"));
     } catch (caught) {
       setSetupPhase("failed");
-      setSetupError(caught instanceof Error ? caught.message : "Setup planning failed.");
+      setSetupError(caught instanceof Error ? caught.message : t("applicationRegisterFlow.planningFailed"));
     } finally {
       setSetupBusy(false);
     }
@@ -191,9 +191,9 @@ export function RegisterApplicationModal({ open, onClose, initialApplication = "
     if (!authenticationLoginCommand) return;
     try {
       await navigator.clipboard.writeText(authenticationLoginCommand);
-      setSetupMessage(`Copied ${authenticationLoginCommand}. Run it locally, complete sign-in, then retry detection.`);
+      setSetupMessage(t("applicationRegisterFlow.copiedCommand", { command: authenticationLoginCommand }));
     } catch {
-      setSetupError(`Could not access the clipboard. Run ${authenticationLoginCommand} locally, then retry detection.`);
+      setSetupError(t("applicationRegisterFlow.clipboardFailed", { command: authenticationLoginCommand }));
     }
   }
 
@@ -207,10 +207,10 @@ export function RegisterApplicationModal({ open, onClose, initialApplication = "
       setInstallRun(queued.run);
       setInstallRunId(queued.run.id);
       setSetupPhase("installing");
-      setSetupMessage("Approval accepted. Waiting for Desktop Bridge to start installation.");
+      setSetupMessage(t("applicationRegisterFlow.approvalAccepted"));
     } catch (caught) {
       setSetupPhase("approval");
-      setSetupError(caught instanceof Error ? caught.message : "Approval or queueing failed. Request a fresh approval and retry.");
+      setSetupError(caught instanceof Error ? caught.message : t("applicationRegisterFlow.queueFailed"));
     } finally {
       setSetupBusy(false);
     }
@@ -221,9 +221,9 @@ export function RegisterApplicationModal({ open, onClose, initialApplication = "
     setSetupBusy(true);
     try {
       await api.cancelApplicationInstall(installRun.id);
-      setSetupMessage("Cancellation requested. Waiting for Desktop Bridge to stop the process.");
+      setSetupMessage(t("applicationRegisterFlow.cancelRequested"));
     } catch (caught) {
-      setSetupError(caught instanceof Error ? caught.message : "Cancellation request failed.");
+      setSetupError(caught instanceof Error ? caught.message : t("applicationRegisterFlow.cancelFailed"));
     } finally {
       setSetupBusy(false);
     }

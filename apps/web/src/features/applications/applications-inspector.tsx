@@ -174,7 +174,7 @@ function ApplicationActions({ application }: { application: ApplicationSnapshot 
           </Button>
           {status !== "active" && status !== "archived" ? (
             <Button size="sm" variant="secondary" disabled={pending} onClick={() => setConfirm({
-              title: `Bring "${application.name}" online?`,
+              title: t("applicationInspectorTitles.online", { name: application.name }),
               description: t("applicationInspectorConfirm.onlineDescription"),
               confirmLabel: t("applicationInspector.lifecycle.online"),
               destructive: false,
@@ -185,7 +185,7 @@ function ApplicationActions({ application }: { application: ApplicationSnapshot 
           ) : null}
           {status === "active" ? (
             <Button size="sm" variant="secondary" disabled={pending} onClick={() => setConfirm({
-              title: `Take "${application.name}" offline?`,
+              title: t("applicationInspectorTitles.offline", { name: application.name }),
               description: t("applicationInspectorConfirm.offlineDescription"),
               confirmLabel: t("applicationInspector.lifecycle.offline"),
               destructive: true,
@@ -196,7 +196,7 @@ function ApplicationActions({ application }: { application: ApplicationSnapshot 
           ) : null}
           {status !== "archived" ? (
             <Button size="sm" variant="secondary" disabled={pending} onClick={() => setConfirm({
-              title: `Archive "${application.name}"?`,
+              title: t("applicationInspectorTitles.archive", { name: application.name }),
               description: t("applicationInspectorConfirm.archiveDescription"),
               confirmLabel: t("applicationInspector.lifecycle.archive"),
               destructive: true,
@@ -207,7 +207,7 @@ function ApplicationActions({ application }: { application: ApplicationSnapshot 
           ) : null}
           {status === "active" ? (
             <Button size="sm" variant="secondary" disabled={pending} onClick={() => setConfirm({
-              title: `Refresh "${application.name}"?`,
+              title: t("applicationInspectorTitles.refresh", { name: application.name }),
               description: t("applicationInspectorConfirm.refreshDescription"),
               confirmLabel: t("applicationInspector.lifecycle.refresh"),
               destructive: false,
@@ -218,7 +218,7 @@ function ApplicationActions({ application }: { application: ApplicationSnapshot 
           ) : null}
           {status !== "archived" && status !== "offline" ? (
             <Button size="sm" disabled={pending} onClick={() => setConfirm({
-              title: `Generate orchestration for "${application.name}"?`,
+              title: t("applicationInspectorTitles.generate", { name: application.name }),
               description: t("applicationInspectorConfirm.generateDescription"),
               confirmLabel: t("applicationInspectorConfirm.generate"),
               destructive: false,
