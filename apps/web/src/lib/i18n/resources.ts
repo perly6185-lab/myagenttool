@@ -10,6 +10,7 @@ export const resources = {
         projects: { label: "Projects", blurb: "Group work and own budgets" }, agents: { label: "Agents", blurb: "Registered agents and health" }, agentSkills: { label: "Agent Skills", blurb: "Instruction docs rendered into agent runs" }, devices: { label: "Devices", blurb: "Local bridges and platforms" }, discovery: { label: "Discovery", blurb: "Find local agents conservatively" }, integrations: { label: "Integrations", blurb: "Connect unsupported agents" }, tools: { label: "Tools", blurb: "Governed tools you can discover and run" }, applications: { label: "Applications", blurb: "Registered apps and governed capabilities" }, channels: { label: "Channels", blurb: "Messaging channels and their deliveries" },
         invocations: { label: "Invocations", blurb: "Every call, status, and result" }, economics: { label: "Economics", blurb: "Metered AI usage and cost ledger" },
       },
+      autoRunLinks: { pendingDecisionIssue: "Pending-decision child issue", openGithub: "Open on GitHub" },
       shell: {
         controlPlane: "Control plane", navLabel: "Control plane sections", footer: "Register agents, route calls, enforce permission, and record what happened.",
         project: "Project", currentProject: "Current project", section: "Section", connected: "Connected", connecting: "Connecting", offline: "Server offline", deviceOnline: "Online and ready", deviceOffline: "Offline", deviceUnknown: "Unknown",
@@ -118,6 +119,7 @@ export const resources = {
         projects: { label: "项目", blurb: "组织工作并管理预算" }, agents: { label: "Agent", blurb: "已注册 Agent 及其健康状态" }, agentSkills: { label: "Agent 技能", blurb: "用于 Agent 运行的指令文档" }, devices: { label: "设备", blurb: "本地桥接与平台" }, discovery: { label: "发现", blurb: "以保守方式发现本地 Agent" }, integrations: { label: "集成", blurb: "连接尚未支持的 Agent" }, tools: { label: "工具", blurb: "可发现和运行的受治理工具" }, applications: { label: "应用", blurb: "已注册应用及受治理能力" }, channels: { label: "渠道", blurb: "消息渠道及其投递" },
         invocations: { label: "调用", blurb: "每次调用、状态与结果" }, economics: { label: "成本", blurb: "AI 用量与成本台账" },
       },
+      autoRunLinks: { pendingDecisionIssue: "待决策的子 Issue", openGithub: "在 GitHub 上打开" },
       shell: {
         controlPlane: "控制平面", navLabel: "控制平面栏目", footer: "注册 Agent、路由调用、执行权限并记录发生的一切。",
         project: "项目", currentProject: "当前项目", section: "栏目", connected: "已连接", connecting: "连接中", offline: "服务器离线", deviceOnline: "在线且就绪", deviceOffline: "离线", deviceUnknown: "未知",

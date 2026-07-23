@@ -1112,7 +1112,7 @@ export function AutoRunsView() {
                     ) : null}
                     {(run.childIssues ?? []).map((child) =>
                       child.url ? (
-                        <a key={child.number} href={child.url} target="_blank" rel="noreferrer" className="text-xs text-primary hover:underline" title="Pending-decision child issue">
+                        <a key={child.number} href={child.url} target="_blank" rel="noreferrer" className="text-xs text-primary hover:underline" title={t("autoRunLinks.pendingDecisionIssue")}>
                           → #{child.number}
                         </a>
                       ) : (
@@ -1120,7 +1120,7 @@ export function AutoRunsView() {
                       ),
                     )}
                     {run.link?.url ? (
-                      <a href={run.link.url} target="_blank" rel="noreferrer" className="text-muted-foreground hover:text-foreground" title="Open on GitHub">
+                      <a href={run.link.url} target="_blank" rel="noreferrer" className="text-muted-foreground hover:text-foreground" title={t("autoRunLinks.openGithub")}>
                         <ExternalLink className="size-4" />
                       </a>
                     ) : null}
