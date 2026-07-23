@@ -16,8 +16,10 @@ beforeEach(async () => {
   await i18n.changeLanguage("en-US");
 });
 
-afterEach(() => {
+afterEach(async () => {
   cleanup();
+  useUiStore.setState({ locale: "en-US" });
+  await i18n.changeLanguage("en-US");
 });
 
 describe("LanguagePicker", () => {
