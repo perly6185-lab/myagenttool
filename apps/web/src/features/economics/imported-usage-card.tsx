@@ -7,6 +7,7 @@ import { useAsyncAction, api } from "@/data/use-console-actions";
 import { formatUsd as usd } from "@/lib/money";
 import { shortTime } from "@/lib/readable-labels";
 import { ImportedUsageTable } from "@/features/economics/imported-usage-table";
+import { useAppTranslation } from "@/lib/i18n/use-app-translation";
 
 // The daily ccusage report capability an opt-in automation targets.
 const CCUSAGE_DAILY_CAPABILITY = "app.app_ccusage.wrapper.daily";
@@ -17,6 +18,7 @@ const CCUSAGE_DAILY_CAPABILITY = "app.app_ccusage.wrapper.daily";
  * must never treat as platform-metered cost.
  */
 export function ImportedUsageCard() {
+  const { t } = useAppTranslation();
   const { data: state } = useConsoleState();
   const estimates = state?.importedUsageEstimates ?? [];
   const { execute, pending, error } = useAsyncAction();
@@ -49,33 +51,32 @@ export function ImportedUsageCard() {
     <Card>
       <CardHeader>
         <div className="flex items-start justify-between gap-3">
-          <CardTitle>Imported usage (ccusage)</CardTitle>
+          <CardTitle>{t("economicsImport.title")}</CardTitle>
           <div className="flex shrink-0 items-center gap-1.5">
-            <Badge tone="neutral">Non-authoritative</Badge>
-            <Badge tone="neutral">External-billed</Badge>
+            <Badge tone="neutral">{t("economicsImport.nonAuthoritative")}</Badge>
+            <Badge tone="neutral">{t("economicsImport.externalBilled")}</Badge>
             <Button
               variant={autoImport ? "secondary" : "ghost"}
               size="sm"
               className="h-7 px-2 text-xs"
               disabled={pending || (!autoImport && !projectId)}
               onClick={toggleAutoImport}
-              title={!autoImport && !projectId ? "Select a project first" : "Schedule a daily ccusage report to import automatically"}
+              title={!autoImport && !projectId ? t("economicsImport.selectProject") : t("economicsImport.scheduleHint")}
             >
-              {autoImport ? "Auto-import daily: on" : "Enable daily auto-import"}
+              {autoImport ? t("economicsImport.autoOn") : t("economicsImport.enableAuto")}
             </Button>
           </div>
         </div>
         <p className="text-sm text-muted-foreground">
-          Estimated token/cost rows imported from governed ccusage reports. Billed by the external
-          Codex/Claude account — shown for visibility, never rolled into metered ledger cost.
+          {t("economicsImport.description")}
         </p>
         {error ? <p className="text-xs text-destructive">{String(error)}</p> : null}
       </CardHeader>
       <CardContent>
         {!estimates.length ? (
           <EmptyState
-            title="No imported usage yet"
-            hint="Enable daily auto-import above, or run the ccusage.report tool from the Tools panel."
+            title={t("economicsImport.empty")}
+            hint={t("economicsImport.emptyHint")}
           />
         ) : (
           <div className="space-y-3">

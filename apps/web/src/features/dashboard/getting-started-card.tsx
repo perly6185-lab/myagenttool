@@ -5,12 +5,14 @@ import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/cn";
 import { useConsoleState } from "@/data/use-console-state";
 import { useUiStore, type SectionKey } from "@/store/ui-store";
+import { useAppTranslation } from "@/lib/i18n/use-app-translation";
 
 // First-run guidance. The console opens to mostly-empty sections; this composes the
 // snapshot's readiness signals into the few steps that unlock real value, each with
 // a jump to the section that completes it. Renders NOTHING once everything is set up,
 // so it never nags a configured workspace.
 export function GettingStartedCard() {
+  const { t } = useAppTranslation();
   const { data: state } = useConsoleState();
   const setSection = useUiStore((s) => s.setSection);
 
@@ -24,10 +26,10 @@ export function GettingStartedCard() {
   const agentReady = agents.some((a) => a.status !== "disabled" && a.health?.status !== "unhealthy");
 
   const steps: { key: string; label: string; done: boolean; detail: string; section: SectionKey }[] = [
-    { key: "device", label: "Link a local device", done: device?.status === "online", detail: device?.status === "online" ? "Device online" : "The local bridge runs your agents", section: "devices" },
-    { key: "project", label: "Register a project", done: projectReady, detail: projectReady ? `${projects.length} project(s)` : "Clone or link a repo to work in", section: "projects" },
-    { key: "agent", label: "Have a ready agent", done: agentReady, detail: agentReady ? "an agent is ready" : "an agent executes your tasks", section: "agents" },
-    { key: "task", label: "Run your first task", done: invocations.length > 0, detail: invocations.length ? `${invocations.length} run(s)` : "use the composer below", section: "dashboard" },
+    { key: "device", label: t("dashboard.device"), done: device?.status === "online", detail: device?.status === "online" ? t("dashboard.deviceOnline") : t("dashboard.deviceDetail"), section: "devices" },
+    { key: "project", label: t("dashboard.registerProject"), done: projectReady, detail: projectReady ? t("dashboard.projects", { count: projects.length }) : t("dashboard.projectDetail"), section: "projects" },
+    { key: "agent", label: t("dashboard.readyAgent"), done: agentReady, detail: agentReady ? t("dashboard.agentReady") : t("dashboard.agentDetail"), section: "agents" },
+    { key: "task", label: t("dashboard.firstTask"), done: invocations.length > 0, detail: invocations.length ? t("dashboard.runs", { count: invocations.length }) : t("dashboard.taskDetail"), section: "dashboard" },
   ];
 
   const doneCount = steps.filter((s) => s.done).length;
@@ -37,7 +39,7 @@ export function GettingStartedCard() {
     <Card>
       <CardHeader className="py-3">
         <CardTitle className="flex items-center gap-2 text-base">
-          <Rocket className="size-4" /> Getting started
+          <Rocket className="size-4" /> {t("dashboard.gettingStarted")}
           <Badge tone="neutral">{doneCount}/{steps.length}</Badge>
         </CardTitle>
       </CardHeader>
@@ -48,7 +50,7 @@ export function GettingStartedCard() {
             <span className={cn(s.done && "text-muted-foreground line-through")}>{s.label}</span>
             <span className="truncate text-xs text-muted-foreground">— {s.detail}</span>
             {!s.done && s.section !== "dashboard" ? (
-              <Button variant="ghost" size="sm" className="ml-auto h-6 shrink-0 px-2 text-xs" onClick={() => setSection(s.section)}>Go →</Button>
+              <Button variant="ghost" size="sm" className="ml-auto h-6 shrink-0 px-2 text-xs" onClick={() => setSection(s.section)}>{t("dashboard.go")}</Button>
             ) : null}
           </div>
         ))}

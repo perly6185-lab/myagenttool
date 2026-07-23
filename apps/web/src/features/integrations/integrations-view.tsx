@@ -9,9 +9,11 @@ import { useConsoleState } from "@/data/use-console-state";
 import { useAsyncAction, api } from "@/data/use-console-actions";
 import { useUiStore } from "@/store/ui-store";
 import { cn } from "@/lib/cn";
-import { readableAdapterType, readableReviewState } from "@/lib/readable-labels";
+import { readableReviewState } from "@/lib/readable-labels";
 import type { IntegrationPayload } from "@/lib/api-client";
 import type { IntegrationArtifact } from "@/lib/console-state";
+import { useAppTranslation } from "@/lib/i18n/use-app-translation";
+import { adapterType } from "@/lib/i18n/readable-labels";
 
 interface BuilderForm {
   targetType: string;
@@ -73,6 +75,7 @@ function actionDisabled(action: string, artifact: IntegrationArtifact): boolean 
 }
 
 export function IntegrationsView() {
+  const { t } = useAppTranslation();
   const { data: state } = useConsoleState();
   const selectedArtifactId = useUiStore((s) => s.selectedArtifactId);
   const setSelectedArtifactId = useUiStore((s) => s.setSelectedArtifactId);
@@ -125,54 +128,54 @@ export function IntegrationsView() {
     <div className="grid gap-5 xl:grid-cols-[minmax(0,0.95fr)_minmax(0,1.05fr)]">
       <Card>
         <CardHeader>
-          <CardTitle>Connect unsupported agent</CardTitle>
+          <CardTitle>{t("integrationsPage.title")}</CardTitle>
           <p className="text-sm text-muted-foreground">
-            Drafts stay disabled until reviewed, tested, and registered explicitly.
+            {t("integrationsPage.description")}
           </p>
         </CardHeader>
         <CardContent className="space-y-4">
           <Textarea rows={4} value={form.description} onChange={(e) => update("description", e.target.value)} />
           <div className="grid gap-3 sm:grid-cols-2">
-            <Field label="Adapter hint">
+            <Field label={t("integrationsPage.adapterHint")}>
               <Select value={form.targetType} onChange={(e) => update("targetType", e.target.value)}>
-                <option value="cli">Local command</option>
-                <option value="http">HTTP endpoint</option>
+                <option value="cli">{t("integrationsPage.localCommand")}</option>
+                <option value="http">{t("integrationsPage.httpEndpoint")}</option>
               </Select>
             </Field>
-            <Field label="Cancellation">
+            <Field label={t("integrationsPage.cancellation")}>
               <Select value={form.cancellation} onChange={(e) => update("cancellation", e.target.value)}>
-                <option value="unknown">Unknown</option>
-                <option value="supported">Supported</option>
-                <option value="unsupported">Unsupported</option>
+                <option value="unknown">{t("integrationsPage.unknown")}</option>
+                <option value="supported">{t("integrationsPage.supported")}</option>
+                <option value="unsupported">{t("integrationsPage.unsupported")}</option>
               </Select>
             </Field>
-            <Field label="Command">
+            <Field label={t("integrationsPage.command")}>
               <Input value={form.command} onChange={(e) => update("command", e.target.value)} />
             </Field>
-            <Field label="URL">
+            <Field label={t("integrationsPage.url")}>
               <Input value={form.baseUrl} onChange={(e) => update("baseUrl", e.target.value)} />
             </Field>
-            <Field label="Working directory">
+            <Field label={t("integrationsPage.workingDirectory")}>
               <Input
                 value={form.workingDirectory}
                 onChange={(e) => update("workingDirectory", e.target.value)}
               />
             </Field>
-            <Field label="Environment needs">
+            <Field label={t("integrationsPage.environmentNeeds")}>
               <Input
                 value={form.environmentNeeds}
                 onChange={(e) => update("environmentNeeds", e.target.value)}
               />
             </Field>
-            <Field label="Cost owner">
+            <Field label={t("integrationsPage.costOwner")}>
               <Input value={form.costOwner} onChange={(e) => update("costOwner", e.target.value)} />
             </Field>
-            <Field label="Cost model">
+            <Field label={t("integrationsPage.costModel")}>
               <Select value={form.economicModel} onChange={(e) => update("economicModel", e.target.value)}>
-                <option value="unknown">Unknown</option>
-                <option value="free">Free</option>
-                <option value="external_billed">External billed</option>
-                <option value="internal_chargeback">Internal chargeback</option>
+                <option value="unknown">{t("integrationsPage.unknown")}</option>
+                <option value="free">{t("integrationsPage.free")}</option>
+                <option value="external_billed">{t("integrationsPage.externalBilled")}</option>
+                <option value="internal_chargeback">{t("integrationsPage.internalChargeback")}</option>
               </Select>
             </Field>
           </div>
@@ -182,17 +185,17 @@ export function IntegrationsView() {
               checked={form.streaming}
               onChange={(e) => update("streaming", e.target.checked)}
             />
-            Streaming
+            {t("integrationsPage.streaming")}
           </label>
           <div className="flex flex-wrap gap-2">
             <Button variant="secondary" disabled={pending || noIntent} onClick={saveDraft}>
-              Save draft
+              {t("integrationsPage.saveDraft")}
             </Button>
             <Button variant="secondary" disabled={pending || noIntent} onClick={platformDraft}>
-              Platform draft
+              {t("integrationsPage.platformDraft")}
             </Button>
             <Button variant="secondary" disabled={generateDisabled} onClick={generate}>
-              Generate artifacts
+              {t("integrationsPage.generate")}
             </Button>
           </div>
           {error ? <p className="text-xs text-destructive">{error}</p> : null}
@@ -201,7 +204,7 @@ export function IntegrationsView() {
 
       <div className="space-y-4">
         {artifacts.length === 0 ? (
-          <EmptyState title="No artifacts yet" hint="Draft an unsupported integration to begin review." />
+          <EmptyState title={t("integrationsPage.empty")} hint={t("integrationsPage.emptyHint")} />
         ) : (
           artifacts.slice(0, 12).map((artifact) => {
             const probe = probeRuns.find((item) => item.artifactId === artifact.id);
@@ -215,20 +218,20 @@ export function IntegrationsView() {
                 <CardHeader>
                   <CardTitle>{artifact.summary}</CardTitle>
                   <p className="text-sm text-muted-foreground">
-                    {artifact.payload?.adapterGuidance ?? "Review this generated integration artifact before use."}
+                    {artifact.payload?.adapterGuidance ?? t("integrationsPage.reviewHint")}
                   </p>
                 </CardHeader>
                 <CardContent className="space-y-3">
                   <div className="flex flex-wrap gap-1.5">
-                    <Badge>Type: {artifact.artifactType.replaceAll("_", " ")}</Badge>
-                    <Badge>Adapter: {readableAdapterType(artifact.targetType)}</Badge>
+                    <Badge>{t("integrationsPage.type")}: {artifact.artifactType.replaceAll("_", " ")}</Badge>
+                    <Badge>{t("integrationsPage.adapter")}: {adapterType(t, artifact.targetType)}</Badge>
                     <Badge tone={artifact.reviewState === "enabled" ? "success" : "neutral"}>
-                      Review: {readableReviewState(artifact.reviewState)}
+                      {t("integrationsPage.review")}: {readableReviewState(artifact.reviewState)}
                     </Badge>
-                    <Badge>{artifact.generatedByAi ? "Generated by AI" : "User draft"}</Badge>
+                    <Badge>{t(artifact.generatedByAi ? "integrationsPage.aiGenerated" : "integrationsPage.userDraft")}</Badge>
                   </div>
                   <p className="text-sm text-muted-foreground">
-                    {probe ? `${probe.summary} (${probe.status})` : "Probe has not run."}
+                    {probe ? `${probe.summary} (${probe.status})` : t("integrationsPage.noProbe")}
                   </p>
                   <div className="flex flex-wrap gap-1.5">
                     {ARTIFACT_ACTIONS.map((action) => (
@@ -243,7 +246,7 @@ export function IntegrationsView() {
                           void execute(() => api.artifactAction(artifact.id, action));
                         }}
                       >
-                        {action === "register" ? "Register disabled" : action[0].toUpperCase() + action.slice(1)}
+                        {t(action === "register" ? "integrationsPage.registerDisabled" : `integrationsPage.action.${action}` as never)}
                       </Button>
                     ))}
                   </div>

@@ -17,6 +17,7 @@ import type {
   ToolInvocationRequest,
   WorktreeSnapshot,
 } from "@/lib/console-state";
+import { useAppTranslation } from "@/lib/i18n/use-app-translation";
 
 const TOOLS_KEY = ["tools"] as const;
 
@@ -28,6 +29,7 @@ function riskTone(risk: string | undefined): "neutral" | "warning" | "danger" {
 
 /** Governed tool registry: discover /api/tools and run a bounded invocation. */
 export function ToolsView() {
+  const { t } = useAppTranslation();
   const { data: state } = useConsoleState();
   const selectedToolName = useUiStore((s) => s.selectedToolName);
   const setSelectedToolName = useUiStore((s) => s.setSelectedToolName);
@@ -46,23 +48,23 @@ export function ToolsView() {
   return (
     <div className="space-y-5">
       <SectionHeading
-        eyebrow="Governed"
-        title="Tools"
-        description="Discover the governed tools this control plane exposes and run a bounded invocation. Raw wrapper commands stay server-side."
+        eyebrow={t("toolsPage.governed")}
+        title={t("toolsPage.title")}
+        description={t("toolsPage.description")}
       />
 
       {!deviceOnline ? (
         <p className="text-xs text-warning">
-          These tools run on the local device — start Desktop Bridge to bring it online before invoking.
+          {t("toolsPage.bridgeRequired")}
         </p>
       ) : null}
 
       {error ? (
-        <EmptyState title="Could not load tools" hint={error instanceof Error ? error.message : "Request failed."} />
+        <EmptyState title={t("toolsPage.loadFailed")} hint={error instanceof Error ? error.message : t("toolsPage.requestFailed")} />
       ) : !tools.length ? (
         <EmptyState
-          title={isLoading ? "Loading tools…" : "No governed tools available"}
-          hint={isLoading ? undefined : "Register a governed ccusage or diff-review agent to expose a tool."}
+          title={isLoading ? t("toolsPage.loading") : t("toolsPage.empty")}
+          hint={isLoading ? undefined : t("toolsPage.emptyHint")}
         />
       ) : (
         <div className="grid gap-4 xl:grid-cols-2">
@@ -98,6 +100,7 @@ function ToolCard({
   selected: boolean;
   onSelect: () => void;
 }) {
+  const { t } = useAppTranslation();
   const isReview = tool.name === "codex.review.diff" || tool.name === "claude.review.diff";
   const isCcusage = tool.name === "ccusage.report";
   const disabledAgents = (tool.agents ?? []).every((agent) => agent.status === "disabled");
@@ -120,18 +123,18 @@ function ToolCard({
       </CardHeader>
       <CardContent className="space-y-4">
         <div className="flex flex-wrap gap-1.5">
-          <Badge tone={riskTone(tool.riskLevel)}>Risk: {tool.riskLevel ?? "unknown"}</Badge>
-          {tool.requiresLocalDevice ? <Badge>Local device</Badge> : null}
-          {tool.authoritativeBilling === false ? <Badge>Non-authoritative billing</Badge> : null}
+          <Badge tone={riskTone(tool.riskLevel)}>{t("toolsPage.risk")}: {t(`labels.risk.${tool.riskLevel ?? "unknown"}` as never, { defaultValue: tool.riskLevel ?? t("toolsPage.unknown") })}</Badge>
+          {tool.requiresLocalDevice ? <Badge>{t("toolsPage.localDevice")}</Badge> : null}
+          {tool.authoritativeBilling === false ? <Badge>{t("toolsPage.nonAuthoritative")}</Badge> : null}
           {(tool.riskTags ?? []).map((tag) => (
             <Badge key={tag}>{tag}</Badge>
           ))}
         </div>
 
         {noAgents ? (
-          <p className="text-xs text-warning">No backing agent is registered for this tool.</p>
+          <p className="text-xs text-warning">{t("toolsPage.noAgent")}</p>
         ) : disabledAgents ? (
-          <p className="text-xs text-warning">Every backing agent is disabled.</p>
+          <p className="text-xs text-warning">{t("toolsPage.agentsDisabled")}</p>
         ) : null}
 
         {isCcusage ? (
@@ -145,7 +148,7 @@ function ToolCard({
           />
         ) : (
           <p className="text-xs text-muted-foreground">
-            This tool has no console invoke form yet. Select it to inspect its schema.
+            {t("toolsPage.noForm")}
           </p>
         )}
       </CardContent>
@@ -189,14 +192,15 @@ function ResultNote({
   outputCollection?: string;
   onView: () => void;
 }) {
+  const { t } = useAppTranslation();
   if (error) return <p className="text-xs text-destructive">{error}</p>;
   if (!invocationId) return null;
   return (
     <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
-      <span className="text-success">Invocation created.</span>
-      {outputCollection ? <span>Results import into {outputCollection}.</span> : null}
+      <span className="text-success">{t("toolsPage.invocationCreated")}</span>
+      {outputCollection ? <span>{t("toolsPage.importsInto", { collection: outputCollection })}</span> : null}
       <button type="button" className="font-medium text-primary hover:underline" onClick={onView}>
-        View invocation →
+        {t("toolsPage.viewInvocation")} →
       </button>
     </div>
   );
@@ -214,6 +218,7 @@ export function ccusageSourcesFor(report: string): Array<"all" | "codex" | "clau
 }
 
 function CcusageForm({ tool, disabled }: { tool: ToolDescriptor; disabled: boolean }) {
+  const { t } = useAppTranslation();
   const reportOptions = useMemo(() => {
     // Drop approval-required reports (e.g. session) — they always 409 here.
     const policy = tool.approvalPolicy ?? {};
@@ -254,7 +259,7 @@ function CcusageForm({ tool, disabled }: { tool: ToolDescriptor; disabled: boole
   return (
     <form className="space-y-3" onSubmit={submit}>
       <div className="grid gap-3 sm:grid-cols-2">
-        <Field label="Report">
+        <Field label={t("toolsPage.report")}>
           <Select value={report} onChange={(e) => setReport(e.target.value)}>
             {reportOptions.map((option) => (
               <option key={option} value={option}>
@@ -263,7 +268,7 @@ function CcusageForm({ tool, disabled }: { tool: ToolDescriptor; disabled: boole
             ))}
           </Select>
         </Field>
-        <Field label="Source">
+        <Field label={t("toolsPage.source")}>
           <Select value={source} onChange={(e) => setSource(e.target.value as typeof source)}>
             {sourceOptions.map((option) => (
               <option key={option} value={option}>
@@ -272,19 +277,19 @@ function CcusageForm({ tool, disabled }: { tool: ToolDescriptor; disabled: boole
             ))}
           </Select>
         </Field>
-        <Field label="Since (YYYY-MM-DD)">
-          <Input value={since} onChange={(e) => setSince(e.target.value)} placeholder="optional" />
+        <Field label={t("toolsPage.since")}>
+          <Input value={since} onChange={(e) => setSince(e.target.value)} placeholder={t("toolsPage.optional")} />
         </Field>
-        <Field label="Until (YYYY-MM-DD)">
-          <Input value={until} onChange={(e) => setUntil(e.target.value)} placeholder="optional" />
+        <Field label={t("toolsPage.until")}>
+          <Input value={until} onChange={(e) => setUntil(e.target.value)} placeholder={t("toolsPage.optional")} />
         </Field>
       </div>
       <p className="text-xs text-muted-foreground">
-        Offline mode only — online and session reports require explicit approval.
+        {t("toolsPage.offlineOnly")}
       </p>
       <div className="flex items-center gap-3">
         <Button type="submit" size="sm" disabled={disabled || pending}>
-          {pending ? "Running…" : "Run report"}
+          {t(pending ? "toolsPage.running" : "toolsPage.runReport")}
         </Button>
         <ResultNote
           invocationId={invocationId}
@@ -308,6 +313,7 @@ function ReviewForm({
   projects: ProjectSnapshot[];
   disabled: boolean;
 }) {
+  const { t } = useAppTranslation();
   const projectName = useMemo(() => {
     const map = new Map(projects.map((project) => [project.id, project.name]));
     return (id: string) => map.get(id) ?? id;
@@ -343,9 +349,9 @@ function ReviewForm({
   return (
     <form className="space-y-3" onSubmit={submit}>
       <div className="grid gap-3 sm:grid-cols-2">
-        <Field label="Worktree">
+        <Field label={t("toolsPage.worktree")}>
           <Select value={worktreeId} onChange={(e) => setWorktreeId(e.target.value)}>
-            {!worktrees.length ? <option value="">No worktrees available</option> : null}
+            {!worktrees.length ? <option value="">{t("toolsPage.noWorktrees")}</option> : null}
             {worktrees.map((worktree) => (
               <option key={worktree.id} value={worktree.id}>
                 {worktree.branch} · {projectName(worktree.projectId)}
@@ -353,7 +359,7 @@ function ReviewForm({
             ))}
           </Select>
         </Field>
-        <Field label="Severity floor">
+        <Field label={t("toolsPage.severity")}>
           <Select
             value={severityFloor}
             onChange={(e) => setSeverityFloor(e.target.value as typeof severityFloor)}
@@ -364,17 +370,17 @@ function ReviewForm({
           </Select>
         </Field>
       </div>
-      <Field label="Instruction (optional)">
+      <Field label={t("toolsPage.instruction")}>
         <Textarea
           value={instruction}
           maxLength={1200}
           onChange={(e) => setInstruction(e.target.value)}
-          placeholder="Focus areas for the reviewer…"
+          placeholder={t("toolsPage.instructionPlaceholder")}
         />
       </Field>
       <div className="flex items-center gap-3">
         <Button type="submit" size="sm" disabled={disabled || pending || !worktreeId}>
-          {pending ? "Starting…" : "Run review"}
+          {t(pending ? "toolsPage.starting" : "toolsPage.runReview")}
         </Button>
         <ResultNote
           invocationId={invocationId}

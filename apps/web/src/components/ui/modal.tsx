@@ -1,6 +1,7 @@
 import { useEffect, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { X } from "lucide-react";
+import { useAppTranslation } from "@/lib/i18n/use-app-translation";
 
 // Minimal centered modal with backdrop + Escape to close. No focus-trap library;
 // enough for the project-register dialog.
@@ -21,6 +22,7 @@ export function Modal({
   size?: "md" | "lg";
   closeDisabled?: boolean;
 }) {
+  const { t } = useAppTranslation();
   useEffect(() => {
     if (!open) return;
     const onKey = (e: KeyboardEvent) => {
@@ -49,7 +51,7 @@ export function Modal({
           type="button"
           onClick={closeDisabled ? undefined : onClose}
           disabled={closeDisabled}
-          aria-label="Close"
+          aria-label={t("shell.close")}
           className="absolute right-3 top-3 grid size-7 place-items-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground"
         >
           <X className="size-4" />

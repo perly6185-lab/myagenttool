@@ -7,10 +7,12 @@ import { api } from "@/data/use-console-actions";
 import { useConsoleState, useRefreshConsoleState } from "@/data/use-console-state";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { useAppTranslation } from "@/lib/i18n/use-app-translation";
 
 type SearchHit = { page: number; occurrence: number };
 
 export function PdfDocumentViewer({ projectId, path, worktreeId }: { projectId: string; path: string; worktreeId?: string | null }) {
+  const { t } = useAppTranslation();
   const { data: consoleState } = useConsoleState();
   const refreshConsoleState = useRefreshConsoleState();
   const rootRef = useRef<HTMLDivElement>(null);
@@ -63,7 +65,7 @@ export function PdfDocumentViewer({ projectId, path, worktreeId }: { projectId: 
           requestDataRange(begin: number, end: number) {
             void api.projectPdfRange(projectId, path, begin, end, worktreeId ?? undefined)
               .then((chunk) => { if (!cancelled) this.onDataRange(begin, new Uint8Array(chunk.data)); })
-              .catch((rangeError) => { if (!cancelled) { setError(pdfErrorMessage(rangeError)); setStatus("error"); } });
+              .catch((rangeError) => { if (!cancelled) { setError(pdfErrorMessage(rangeError, t)); setStatus("error"); } });
           }
         }
         const range = new AuthenticatedPdfRangeTransport(initial.total, new Uint8Array(initial.data));
@@ -72,7 +74,7 @@ export function PdfDocumentViewer({ projectId, path, worktreeId }: { projectId: 
         loadingTask.onPassword = (updatePassword: (password: string) => void, reason: number) => {
           if (cancelled) return;
           passwordCallbackRef.current = updatePassword;
-          setPassword(""); setPasswordError(reason === 2 ? "Incorrect password. Try again." : "This PDF is password protected."); setPasswordPrompt(true);
+          setPassword(""); setPasswordError(t(reason === 2 ? "pdf.incorrectPassword" : "pdf.protected")); setPasswordPrompt(true);
         };
         const loaded = await loadingTask.promise;
         if (!cancelled) {
@@ -81,17 +83,17 @@ export function PdfDocumentViewer({ projectId, path, worktreeId }: { projectId: 
           void loaded.getMetadata?.().then((value) => {
             if (cancelled) return;
             const info = (value?.info ?? {}) as Record<string, unknown>;
-            setMetadata(Object.fromEntries(["PDFFormatVersion", "Title", "Author", "Subject", "Creator", "Producer"].flatMap((key) => typeof info[key] === "string" && info[key] ? [[key === "PDFFormatVersion" ? "PDF version" : key, info[key] as string]] : [])));
+            setMetadata(Object.fromEntries(["PDFFormatVersion", "Title", "Author", "Subject", "Creator", "Producer"].flatMap((key) => typeof info[key] === "string" && info[key] ? [[key, info[key] as string]] : [])));
           }).catch(() => undefined);
           const linkedPage = readLinkedPdfPage();
           if (linkedPage) setPage(Math.min(loaded.numPages, linkedPage));
         }
       } catch (caught) {
-        if (!cancelled) { setError(pdfErrorMessage(caught)); setStatus("error"); }
+        if (!cancelled) { setError(pdfErrorMessage(caught, t)); setStatus("error"); }
       }
     })();
     return () => { cancelled = true; passwordCallbackRef.current = null; loadingTaskRef.current = null; searchGeneration.current += 1; renderTaskRef.current?.cancel(); textTaskRef.current?.cancel(); void loadingTask?.destroy(); };
-  }, [projectId, path, worktreeId, reloadKey]);
+  }, [projectId, path, worktreeId, reloadKey, t]);
 
   useEffect(() => {
     const element = viewportRef.current;
@@ -125,7 +127,7 @@ export function PdfDocumentViewer({ projectId, path, worktreeId }: { projectId: 
         canvas.style.width = `${Math.floor(viewport.width)}px`;
         canvas.style.height = `${Math.floor(viewport.height)}px`;
         const context = canvas.getContext("2d");
-        if (!context) throw new Error("Canvas rendering is unavailable in this browser.");
+        if (!context) throw new Error(t("pdf.error.canvas"));
         const task = pdfPage.render({ canvas, canvasContext: context, viewport, transform: ratio === 1 ? undefined : [ratio, 0, 0, ratio, 0, 0] });
         renderTaskRef.current = task;
         await task.promise;
@@ -143,12 +145,12 @@ export function PdfDocumentViewer({ projectId, path, worktreeId }: { projectId: 
         if (!cancelled) setStatus("ready");
       } catch (caught) {
         if (!cancelled && (caught as { name?: string })?.name !== "RenderingCancelledException") {
-          setError(caught instanceof Error ? caught.message : "PDF page rendering failed."); setStatus("error");
+          setError(caught instanceof Error ? caught.message : t("pdf.error.render")); setStatus("error");
         }
       }
     })();
     return () => { cancelled = true; renderTaskRef.current?.cancel(); textTaskRef.current?.cancel(); };
-  }, [document, page, zoom, fitWidth, containerWidth, rotation]);
+  }, [document, page, zoom, fitWidth, containerWidth, rotation, t]);
 
   useEffect(() => {
     const active = activeHit >= 0 && hits[activeHit]?.page === page ? hits[activeHit].occurrence : -1;
@@ -193,7 +195,7 @@ export function PdfDocumentViewer({ projectId, path, worktreeId }: { projectId: 
   const submitPage = () => {
     const requested = Number(pageInput);
     if (!Number.isInteger(requested) || requested < 1 || requested > pageCount) {
-      setPageInputError(`Enter a page from 1 to ${pageCount}.`); return;
+      setPageInputError(t("pdf.pageRange", { count: pageCount })); return;
     }
     setPage(requested); setPageInputError("");
   };
@@ -208,7 +210,7 @@ export function PdfDocumentViewer({ projectId, path, worktreeId }: { projectId: 
       const result = await api.invokeCapability(`app.app_pdfcpu.wrapper.${action}`, { projectId, file: path, ...(worktreeId ? { worktreeId } : {}) });
       setToolInvocationId(result.invocationId);
       await refreshConsoleState();
-    } catch (caught) { setToolError(pdfcpuErrorMessage(caught, action)); }
+    } catch (caught) { setToolError(pdfcpuErrorMessage(caught, action, t)); }
   };
   const withPdfUrl = async (callback: (url: string) => void) => {
     const bytes = pdfBytes ?? await api.projectPdfData(projectId, path, worktreeId ?? undefined);
@@ -217,60 +219,60 @@ export function PdfDocumentViewer({ projectId, path, worktreeId }: { projectId: 
     callback(url); window.setTimeout(() => URL.revokeObjectURL(url), 60_000);
   };
   return <div ref={rootRef} className="flex min-h-0 flex-1 flex-col bg-background">
-    <div className="flex flex-wrap items-center gap-1 border-b border-border bg-card px-2 py-1.5" aria-label="PDF controls">
-      <Button size="icon" variant={thumbnailsOpen ? "secondary" : "ghost"} aria-label={thumbnailsOpen ? "Hide thumbnails" : "Show thumbnails"} disabled={!document} onClick={() => setThumbnailsOpen((value) => !value)}>{thumbnailsOpen ? <PanelLeftClose /> : <PanelLeftOpen />}</Button>
-      <Button size="icon" variant="ghost" aria-label="Previous page" disabled={!document || page <= 1} onClick={() => setPage((value) => Math.max(1, value - 1))}><ChevronLeft /></Button>
+    <div className="flex flex-wrap items-center gap-1 border-b border-border bg-card px-2 py-1.5" aria-label={t("pdf.controls")}>
+      <Button size="icon" variant={thumbnailsOpen ? "secondary" : "ghost"} aria-label={t(thumbnailsOpen ? "pdf.hideThumbnails" : "pdf.showThumbnails")} disabled={!document} onClick={() => setThumbnailsOpen((value) => !value)}>{thumbnailsOpen ? <PanelLeftClose /> : <PanelLeftOpen />}</Button>
+      <Button size="icon" variant="ghost" aria-label={t("pdf.previousPage")} disabled={!document || page <= 1} onClick={() => setPage((value) => Math.max(1, value - 1))}><ChevronLeft /></Button>
       <form className="flex items-center gap-1" onSubmit={(event) => { event.preventDefault(); submitPage(); }}>
-        <Input aria-label="Page number" aria-invalid={Boolean(pageInputError)} value={pageInput} onChange={(event) => setPageInput(event.target.value)} className="h-7 w-12 px-1 text-center text-xs" inputMode="numeric" />
+        <Input aria-label={t("pdf.pageNumber")} aria-invalid={Boolean(pageInputError)} value={pageInput} onChange={(event) => setPageInput(event.target.value)} className="h-7 w-12 px-1 text-center text-xs" inputMode="numeric" />
         <span className="text-xs text-muted-foreground">/ {pageCount || "–"}</span>
       </form>
-      <Button size="icon" variant="ghost" aria-label="Next page" disabled={!document || page >= pageCount} onClick={() => setPage((value) => Math.min(pageCount, value + 1))}><ChevronRight /></Button>
+      <Button size="icon" variant="ghost" aria-label={t("pdf.nextPage")} disabled={!document || page >= pageCount} onClick={() => setPage((value) => Math.min(pageCount, value + 1))}><ChevronRight /></Button>
       <span className="mx-1 h-5 w-px bg-border" />
-      <Button size="icon" variant="ghost" aria-label="Zoom out" disabled={!document || (!fitWidth && zoom <= 0.25)} onClick={() => changeZoom((fitWidth ? 1 : zoom) - 0.25)}><ZoomOut /></Button>
-      <span className="min-w-12 text-center text-xs">{fitWidth ? "Fit" : `${Math.round(zoom * 100)}%`}</span>
-      <Button size="icon" variant="ghost" aria-label="Zoom in" disabled={!document || (!fitWidth && zoom >= 4)} onClick={() => changeZoom((fitWidth ? 1 : zoom) + 0.25)}><ZoomIn /></Button>
-      <Button size="sm" variant={fitWidth ? "secondary" : "ghost"} aria-label="Fit width" disabled={!document} onClick={() => setFitWidth(true)}><Maximize2 className="mr-1 size-3.5" /> Fit width</Button>
-      <Button size="icon" variant="ghost" aria-label="Rotate clockwise" disabled={!document} onClick={() => setRotation((value) => (value + 90) % 360)}><RotateCw /></Button>
-      <Button size="icon" variant="ghost" aria-label="Download PDF" disabled={!document} onClick={() => void withPdfUrl((url) => { const link = window.document.createElement("a"); link.href = url; link.download = path.split("/").at(-1) || "document.pdf"; link.click(); })}><Download /></Button>
-      <Button size="icon" variant="ghost" aria-label="Print PDF" disabled={!document} onClick={() => void withPdfUrl((url) => { const frame = window.open(url, "_blank", "noopener,noreferrer"); frame?.addEventListener("load", () => frame.print(), { once: true }); })}><Printer /></Button>
-      <Button size="icon" variant="ghost" aria-label="Enter fullscreen" disabled={!document} onClick={() => void rootRef.current?.requestFullscreen?.()}><Maximize2 /></Button>
-      <Button size="icon" variant={detailsOpen ? "secondary" : "ghost"} aria-label={detailsOpen ? "Hide PDF details" : "Show PDF details"} onClick={() => setDetailsOpen((value) => !value)}><Info /></Button>
+      <Button size="icon" variant="ghost" aria-label={t("pdf.zoomOut")} disabled={!document || (!fitWidth && zoom <= 0.25)} onClick={() => changeZoom((fitWidth ? 1 : zoom) - 0.25)}><ZoomOut /></Button>
+      <span className="min-w-12 text-center text-xs">{fitWidth ? t("pdf.fit") : `${Math.round(zoom * 100)}%`}</span>
+      <Button size="icon" variant="ghost" aria-label={t("pdf.zoomIn")} disabled={!document || (!fitWidth && zoom >= 4)} onClick={() => changeZoom((fitWidth ? 1 : zoom) + 0.25)}><ZoomIn /></Button>
+      <Button size="sm" variant={fitWidth ? "secondary" : "ghost"} aria-label={t("pdf.fitWidth")} disabled={!document} onClick={() => setFitWidth(true)}><Maximize2 className="mr-1 size-3.5" /> {t("pdf.fitWidth")}</Button>
+      <Button size="icon" variant="ghost" aria-label={t("pdf.rotate")} disabled={!document} onClick={() => setRotation((value) => (value + 90) % 360)}><RotateCw /></Button>
+      <Button size="icon" variant="ghost" aria-label={t("pdf.download")} disabled={!document} onClick={() => void withPdfUrl((url) => { const link = window.document.createElement("a"); link.href = url; link.download = path.split("/").at(-1) || "document.pdf"; link.click(); })}><Download /></Button>
+      <Button size="icon" variant="ghost" aria-label={t("pdf.print")} disabled={!document} onClick={() => void withPdfUrl((url) => { const frame = window.open(url, "_blank", "noopener,noreferrer"); frame?.addEventListener("load", () => frame.print(), { once: true }); })}><Printer /></Button>
+      <Button size="icon" variant="ghost" aria-label={t("pdf.fullscreen")} disabled={!document} onClick={() => void rootRef.current?.requestFullscreen?.()}><Maximize2 /></Button>
+      <Button size="icon" variant={detailsOpen ? "secondary" : "ghost"} aria-label={t(detailsOpen ? "pdf.hideDetails" : "pdf.showDetails")} onClick={() => setDetailsOpen((value) => !value)}><Info /></Button>
       <form className="ml-auto flex min-w-48 items-center gap-1" onSubmit={(event) => { event.preventDefault(); void search(); }}>
-        <label className="relative flex-1"><Search className="pointer-events-none absolute left-2 top-2 size-3.5 text-muted-foreground" /><Input aria-label="Search PDF text" value={query} onChange={(event) => setQuery(event.target.value)} className="h-8 pl-7" placeholder="Search PDF…" /></label>
-        <Button size="sm" variant="secondary" type="submit" disabled={!document || searching}>{searching ? "Searching…" : "Find"}</Button>
-        <Button size="sm" variant="ghost" type="button" disabled={!hits.length} onClick={nextHit}>Next</Button>
-        <span className="min-w-12 text-right text-[11px] text-muted-foreground">{hits.length ? `${activeHit + 1}/${hits.length}` : query.trim() && !searching ? "0 results" : ""}</span>
+        <label className="relative flex-1"><Search className="pointer-events-none absolute left-2 top-2 size-3.5 text-muted-foreground" /><Input aria-label={t("pdf.searchLabel")} value={query} onChange={(event) => setQuery(event.target.value)} className="h-8 pl-7" placeholder={t("pdf.searchPlaceholder")} /></label>
+        <Button size="sm" variant="secondary" type="submit" disabled={!document || searching}>{t(searching ? "pdf.searching" : "pdf.find")}</Button>
+        <Button size="sm" variant="ghost" type="button" disabled={!hits.length} onClick={nextHit}>{t("pdf.next")}</Button>
+        <span className="min-w-12 text-right text-[11px] text-muted-foreground">{hits.length ? `${activeHit + 1}/${hits.length}` : query.trim() && !searching ? t("pdf.results") : ""}</span>
       </form>
     </div>
     {pageInputError ? <p role="alert" className="border-b border-destructive/30 bg-destructive/5 px-3 py-1 text-xs text-destructive">{pageInputError}</p> : null}
-    {passwordPrompt ? <form className="border-b border-amber-500/30 bg-amber-500/10 px-3 py-2" aria-label="Unlock PDF" onSubmit={(event) => { event.preventDefault(); if (!password) return; const callback = passwordCallbackRef.current; passwordCallbackRef.current = null; setPasswordPrompt(false); callback?.(password); setPassword(""); }}>
-      <div className="flex flex-wrap items-center gap-2"><label className="text-xs font-medium" htmlFor="pdf-password">PDF password</label><Input id="pdf-password" type="password" autoFocus value={password} onChange={(event) => setPassword(event.target.value)} className="h-8 max-w-64" autoComplete="off" /><Button size="sm" type="submit" disabled={!password}>Unlock</Button><Button size="sm" type="button" variant="ghost" onClick={() => { passwordCallbackRef.current = null; setPassword(""); setPasswordPrompt(false); setError("Password entry was cancelled. You can retry when ready."); setStatus("error"); void loadingTaskRef.current?.destroy(); }}>Cancel</Button></div>
-      <p role="status" className="mt-1 text-xs text-muted-foreground">{passwordError} The password is used only in memory and is not stored.</p>
+    {passwordPrompt ? <form className="border-b border-amber-500/30 bg-amber-500/10 px-3 py-2" aria-label={t("pdf.unlockLabel")} onSubmit={(event) => { event.preventDefault(); if (!password) return; const callback = passwordCallbackRef.current; passwordCallbackRef.current = null; setPasswordPrompt(false); callback?.(password); setPassword(""); }}>
+      <div className="flex flex-wrap items-center gap-2"><label className="text-xs font-medium" htmlFor="pdf-password">{t("pdf.password")}</label><Input id="pdf-password" type="password" autoFocus value={password} onChange={(event) => setPassword(event.target.value)} className="h-8 max-w-64" autoComplete="off" /><Button size="sm" type="submit" disabled={!password}>{t("pdf.unlock")}</Button><Button size="sm" type="button" variant="ghost" onClick={() => { passwordCallbackRef.current = null; setPassword(""); setPasswordPrompt(false); setError(t("pdf.passwordCancelled")); setStatus("error"); void loadingTaskRef.current?.destroy(); }}>{t("pdf.cancel")}</Button></div>
+      <p role="status" className="mt-1 text-xs text-muted-foreground">{passwordError} {t("pdf.passwordPrivacy")}</p>
     </form> : null}
-    {detailsOpen ? <section className="border-b border-border bg-card px-3 py-2 text-xs" aria-label="PDF details">
-      <div className="flex flex-wrap items-center gap-2"><strong>Local PDF</strong><span>{pageCount} pages</span><span>{fileSize === null ? "—" : formatBytes(fileSize)}</span><span>pdfcpu: {pdfcpu?.localReadiness?.state ?? pdfcpu?.status ?? "not registered"}</span>
-        <Button size="sm" variant="secondary" disabled={!document || Boolean(toolInvocationId && !importedResult && invocation?.status !== "failed")} onClick={() => void runTool("validate")}>Validate</Button>
-        <Button size="sm" variant="secondary" disabled={!document || Boolean(toolInvocationId && !importedResult && invocation?.status !== "failed")} onClick={() => void runTool("info")}>Read metadata</Button>
+    {detailsOpen ? <section className="border-b border-border bg-card px-3 py-2 text-xs" aria-label={t("pdf.details")}>
+      <div className="flex flex-wrap items-center gap-2"><strong>{t("pdf.local")}</strong><span>{t("pdf.pages", { count: pageCount })}</span><span>{fileSize === null ? "—" : formatBytes(fileSize)}</span><span>pdfcpu: {pdfcpu?.localReadiness?.state ?? pdfcpu?.status ?? t("pdf.notRegistered")}</span>
+        <Button size="sm" variant="secondary" disabled={!document || Boolean(toolInvocationId && !importedResult && invocation?.status !== "failed")} onClick={() => void runTool("validate")}>{t("pdf.validate")}</Button>
+        <Button size="sm" variant="secondary" disabled={!document || Boolean(toolInvocationId && !importedResult && invocation?.status !== "failed")} onClick={() => void runTool("info")}>{t("pdf.readMetadata")}</Button>
       </div>
-      {Object.keys(metadata).length ? <dl className="mt-2 grid grid-cols-[max-content_1fr] gap-x-2 gap-y-1">{Object.entries(metadata).map(([key, value]) => <div className="contents" key={key}><dt className="text-muted-foreground">{key}</dt><dd>{value}</dd></div>)}</dl> : null}
-      {toolInvocationId ? <p className="mt-2">{toolAction === "validate" ? "Validation" : "Metadata inspection"}: {importedResult ? importedResult.status : invocation?.status ?? "queued"}</p> : null}
+      {Object.keys(metadata).length ? <dl className="mt-2 grid grid-cols-[max-content_1fr] gap-x-2 gap-y-1">{Object.entries(metadata).map(([key, value]) => <div className="contents" key={key}><dt className="text-muted-foreground">{t(`pdf.metadata.${key === "PDFFormatVersion" ? "version" : key}` as "pdf.metadata.version")}</dt><dd>{value}</dd></div>)}</dl> : null}
+      {toolInvocationId ? <p className="mt-2">{t(toolAction === "validate" ? "pdf.validation" : "pdf.metadataInspection")}: {importedResult ? importedResult.status : invocation?.status ?? t("pdf.queued")}</p> : null}
       {importedResult?.data ? <pre className="mt-2 max-h-36 overflow-auto whitespace-pre-wrap rounded bg-muted p-2">{JSON.stringify(importedResult.data, null, 2)}</pre> : importedResult?.text ? <pre className="mt-2 max-h-36 overflow-auto whitespace-pre-wrap rounded bg-muted p-2">{importedResult.text}</pre> : null}
       {toolError ? <p role="alert" className="mt-2 text-destructive">{toolError}</p> : null}
     </section> : null}
     <div className="flex min-h-0 flex-1">
-      {thumbnailsOpen && document ? <aside className="w-36 shrink-0 overflow-y-auto border-r border-border bg-card p-2" aria-label="PDF thumbnails">{Array.from({ length: document.numPages }, (_, index) => <PdfThumbnail key={index + 1} document={document} page={index + 1} active={page === index + 1} onSelect={setPage} />)}</aside> : null}
+      {thumbnailsOpen && document ? <aside className="w-36 shrink-0 overflow-y-auto border-r border-border bg-card p-2" aria-label={t("pdf.thumbnails")}>{Array.from({ length: document.numPages }, (_, index) => <PdfThumbnail key={index + 1} document={document} page={index + 1} active={page === index + 1} onSelect={setPage} />)}</aside> : null}
     <div ref={viewportRef} tabIndex={0} onKeyDown={(event) => {
       if (!document || event.target instanceof HTMLInputElement) return;
       const next = event.key === "ArrowRight" || event.key === "PageDown" ? Math.min(pageCount, page + 1)
         : event.key === "ArrowLeft" || event.key === "PageUp" ? Math.max(1, page - 1)
           : event.key === "Home" ? 1 : event.key === "End" ? pageCount : page;
       if (next !== page) { event.preventDefault(); setPage(next); }
-    }} className="relative min-h-0 flex-1 overflow-auto bg-muted/50 p-4 outline-none focus-visible:ring-2 focus-visible:ring-primary" aria-label={`PDF preview ${path}`}>
-      {status === "loading" ? <p className="absolute inset-x-0 top-4 flex items-center justify-center gap-1 text-sm text-muted-foreground"><Loader2 className="size-4 animate-spin" /> Loading PDF…</p> : null}
-      {status === "error" ? <div role="alert" className="mx-auto max-w-lg rounded-md border border-destructive/30 bg-card p-4 text-sm"><p className="font-medium text-destructive">PDF preview unavailable</p><p className="mt-1 text-muted-foreground">{error}</p><Button size="sm" variant="secondary" className="mt-3" onClick={() => setReloadKey((value) => value + 1)}>Try again</Button></div> : null}
+    }} className="relative min-h-0 flex-1 overflow-auto bg-muted/50 p-4 outline-none focus-visible:ring-2 focus-visible:ring-primary" aria-label={t("pdf.preview", { path })}>
+      {status === "loading" ? <p className="absolute inset-x-0 top-4 flex items-center justify-center gap-1 text-sm text-muted-foreground"><Loader2 className="size-4 animate-spin" /> {t("pdf.loading")}</p> : null}
+      {status === "error" ? <div role="alert" className="mx-auto max-w-lg rounded-md border border-destructive/30 bg-card p-4 text-sm"><p className="font-medium text-destructive">{t("pdf.unavailable")}</p><p className="mt-1 text-muted-foreground">{error}</p><Button size="sm" variant="secondary" className="mt-3" onClick={() => setReloadKey((value) => value + 1)}>{t("pdf.tryAgain")}</Button></div> : null}
       <div className={`relative mx-auto w-fit bg-white shadow-sm ${status === "ready" ? "block" : "invisible"}`}>
-        <canvas ref={canvasRef} className="block" aria-label={`Page ${page} of ${pageCount || 1}`} />
-        <div ref={textLayerRef} className="textLayer pdf-selectable-text absolute inset-0 overflow-hidden opacity-100" aria-label={`Selectable text for page ${page}`} />
+        <canvas ref={canvasRef} className="block" aria-label={t("pdf.pageCanvas", { page, count: pageCount || 1 })} />
+        <div ref={textLayerRef} className="textLayer pdf-selectable-text absolute inset-0 overflow-hidden opacity-100" aria-label={t("pdf.selectableText", { page })} />
       </div>
     </div>
     </div>
@@ -278,6 +280,7 @@ export function PdfDocumentViewer({ projectId, path, worktreeId }: { projectId: 
 }
 
 function PdfThumbnail({ document, page, active, onSelect }: { document: PDFDocumentProxy; page: number; active: boolean; onSelect: (page: number) => void }) {
+  const { t } = useAppTranslation();
   const hostRef = useRef<HTMLButtonElement>(null);
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [visible, setVisible] = useState(typeof IntersectionObserver === "undefined");
@@ -303,7 +306,7 @@ function PdfThumbnail({ document, page, active, onSelect }: { document: PDFDocum
     }).catch((error) => { if (!cancelled && error?.name !== "RenderingCancelledException") setVisible(false); });
     return () => { cancelled = true; task?.cancel(); };
   }, [document, page, visible]);
-  return <button ref={hostRef} type="button" aria-label={`Go to page ${page}`} aria-current={active ? "page" : undefined} onClick={() => onSelect(page)} className={`mb-2 block w-full rounded border p-1 text-center text-[10px] ${active ? "border-primary bg-primary/10" : "border-border hover:border-muted-foreground"}`}>
+  return <button ref={hostRef} type="button" aria-label={t("pdf.goToPage", { page })} aria-current={active ? "page" : undefined} onClick={() => onSelect(page)} className={`mb-2 block w-full rounded border p-1 text-center text-[10px] ${active ? "border-primary bg-primary/10" : "border-border hover:border-muted-foreground"}`}>
     <canvas ref={canvasRef} className="mx-auto max-w-full bg-white" />
     <span>{page}</span>
   </button>;
@@ -321,26 +324,28 @@ function formatBytes(bytes: number) {
   return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
 }
 
-function pdfErrorMessage(caught: unknown) {
+type Translate = ReturnType<typeof useAppTranslation>["t"];
+
+function pdfErrorMessage(caught: unknown, t: Translate) {
   const error = caught as { name?: string; code?: string; status?: number; message?: string };
   const code = String(error?.code ?? "").toLowerCase(); const message = String(error?.message ?? "");
-  if (error?.status === 401 || /unauthor|forbidden/.test(code)) return "Your session cannot access this PDF. Sign in again and retry.";
-  if (code === "pdf_too_large") return "This PDF exceeds the local preview size limit.";
-  if (code === "not_found" || error?.name === "MissingPDFException") return "The PDF no longer exists at this project path.";
-  if (code === "invalid_pdf" || error?.name === "InvalidPDFException") return "This file is malformed or is not a supported PDF.";
-  if (/timeout|timed out/i.test(`${code} ${message}`)) return "PDF loading timed out. Check the local runtime and retry.";
-  if (error?.name === "UnexpectedResponseException" || code === "pdf_range_failed" || code === "invalid_content_range") return "The local PDF service returned an invalid range response. Retry or restart the local service.";
-  if (error?.name === "PasswordException") return "The PDF password was not accepted. Retry with the correct password.";
-  return message || "PDF preview failed.";
+  if (error?.status === 401 || /unauthor|forbidden/.test(code)) return t("pdf.error.unauthorized");
+  if (code === "pdf_too_large") return t("pdf.error.tooLarge");
+  if (code === "not_found" || error?.name === "MissingPDFException") return t("pdf.error.missing");
+  if (code === "invalid_pdf" || error?.name === "InvalidPDFException") return t("pdf.error.invalid");
+  if (/timeout|timed out/i.test(`${code} ${message}`)) return t("pdf.error.timeout");
+  if (error?.name === "UnexpectedResponseException" || code === "pdf_range_failed" || code === "invalid_content_range") return t("pdf.error.range");
+  if (error?.name === "PasswordException") return t("pdf.error.password");
+  return message || t("pdf.error.generic");
 }
 
-function pdfcpuErrorMessage(caught: unknown, action: "validate" | "info") {
+function pdfcpuErrorMessage(caught: unknown, action: "validate" | "info", t: Translate) {
   const error = caught as { code?: string; status?: number; message?: string };
   const code = String(error?.code ?? "").toLowerCase(); const message = String(error?.message ?? "");
-  if (/not_installed|not_available|runtime.*offline|agent_not_available/.test(`${code} ${message}`)) return "pdfcpu is unavailable on this device. Install or restart the local runtime, then retry.";
-  if (/timeout|timed out/.test(`${code} ${message}`.toLowerCase())) return `PDF ${action} timed out. Check pdfcpu readiness and retry.`;
-  if (error?.status === 401 || error?.status === 403) return "Your session is not authorized to inspect this PDF.";
-  return message || `PDF ${action} failed.`;
+  if (/not_installed|not_available|runtime.*offline|agent_not_available/.test(`${code} ${message}`)) return t("pdf.error.toolUnavailable");
+  if (/timeout|timed out/.test(`${code} ${message}`.toLowerCase())) return t("pdf.error.toolTimeout", { action });
+  if (error?.status === 401 || error?.status === 403) return t("pdf.error.toolUnauthorized");
+  return message || t("pdf.error.toolFailed", { action });
 }
 
 function highlightTextLayer(container: HTMLElement | null, query: string, activeOccurrence: number) {

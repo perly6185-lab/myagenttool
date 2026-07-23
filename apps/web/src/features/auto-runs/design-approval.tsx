@@ -4,22 +4,24 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { api, useAsyncAction } from "@/data/use-console-actions";
 import type { AutoRunRecord } from "./auto-runs-view";
+import { useAppTranslation } from "@/lib/i18n/use-app-translation";
 
 // D4 (issue→UI-design plan): the human design gate on a posted design report.
 // Approve spawns the implementation child issue carrying the brief + artifact
 // list (the click IS the authorization). Request-changes posts feedback back to
 // the issue. Both audited server-side.
 export function DesignApproval({ run, onDone }: { run: AutoRunRecord; onDone: () => Promise<void> | void }) {
+  const { t } = useAppTranslation();
   const [rejecting, setRejecting] = useState(false);
   const [feedback, setFeedback] = useState("");
   const { execute, pending, error } = useAsyncAction();
 
   const approval = run.designApproval;
   if (approval?.status === "approved") {
-    return <Badge tone="success" title={`approved by ${approval.by ?? "?"}`}>design approved</Badge>;
+    return <Badge tone="success" title={t("autoRunActions.approvedBy", { name: approval.by ?? "?" })}>{t("autoRunActions.designApproved")}</Badge>;
   }
   if (approval?.status === "rejected") {
-    return <Badge tone="warning" title={approval.feedback ?? undefined}>changes requested</Badge>;
+    return <Badge tone="warning" title={approval.feedback ?? undefined}>{t("autoRunActions.changesRequested")}</Badge>;
   }
 
   const act = async (action: "approve" | "reject") => {
@@ -35,12 +37,12 @@ export function DesignApproval({ run, onDone }: { run: AutoRunRecord; onDone: ()
     <div className="flex w-full flex-col gap-1.5">
       <div className="flex flex-wrap items-center gap-1.5">
         <Button variant="primary" size="sm" className="h-6 px-2 text-xs" disabled={pending} onClick={() => void act("approve")}
-          title="Approve this design — spawns the implementation issue carrying the brief + artifacts">
-          {pending && !rejecting ? <Loader2 className="mr-1 size-3 animate-spin" /> : <Check className="mr-1 size-3" />} Approve design
+          title={t("autoRunActions.approveDesignHint")}>
+          {pending && !rejecting ? <Loader2 className="mr-1 size-3 animate-spin" /> : <Check className="mr-1 size-3" />} {t("autoRunActions.approveDesign")}
         </Button>
         <Button variant="secondary" size="sm" className="h-6 px-2 text-xs" disabled={pending} onClick={() => setRejecting((v) => !v)}
-          title="Request changes — posts your feedback back to the issue">
-          <MessageSquareX className="mr-1 size-3" /> Request changes
+          title={t("autoRunActions.requestChangesHint")}>
+          <MessageSquareX className="mr-1 size-3" /> {t("autoRunActions.requestChanges")}
         </Button>
       </div>
       {rejecting ? (
@@ -49,11 +51,11 @@ export function DesignApproval({ run, onDone }: { run: AutoRunRecord; onDone: ()
             value={feedback}
             onChange={(e) => setFeedback(e.target.value)}
             rows={2}
-            placeholder="What should change in this design?"
+            placeholder={t("autoRunActions.designFeedback")}
             className="rounded-md border border-border bg-background px-2 py-1 text-xs"
           />
           <Button variant="secondary" size="sm" className="h-6 self-start px-2 text-xs" disabled={pending} onClick={() => void act("reject")}>
-            {pending ? <Loader2 className="mr-1 size-3 animate-spin" /> : null} Send feedback
+            {pending ? <Loader2 className="mr-1 size-3 animate-spin" /> : null} {t("autoRunActions.sendFeedback")}
           </Button>
         </div>
       ) : null}

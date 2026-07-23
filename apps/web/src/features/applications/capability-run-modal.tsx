@@ -15,6 +15,7 @@ import {
   type RunFormState,
 } from "@/features/applications/capability-run";
 import type { ApplicationCapability } from "@/lib/console-state";
+import { useAppTranslation } from "@/lib/i18n/use-app-translation";
 
 /**
  * Run an Application capability (#800).
@@ -36,6 +37,7 @@ export function CapabilityRunModal({
   onClose: () => void;
   onRan: (invocationId: string) => void;
 }) {
+  const { t } = useAppTranslation();
   const { data: state } = useConsoleState();
   const { execute, pending, error } = useAsyncAction();
   const [form, setForm] = useState<RunFormState>({ projectId: "", worktreeId: "", values: {} });
@@ -73,30 +75,30 @@ export function CapabilityRunModal({
       open
       onClose={onClose}
       title={capability.displayName ?? capability.name}
-      description={capability.description ?? "Run this governed application capability."}
+      description={capability.description ?? t("capabilityRun.description")}
       size="lg"
     >
       <form className="space-y-3" onSubmit={submit}>
         <div className="flex flex-wrap gap-1.5">
           <Badge tone={capability.riskLevel === "low" ? "neutral" : "warning"}>
-            {capability.riskLevel ?? "—"} risk
+            {t("capabilityRun.risk", { level: capability.riskLevel ?? "—" })}
           </Badge>
-          {contract.requiresApproval ? <Badge tone="warning">needs approval</Badge> : null}
+          {contract.requiresApproval ? <Badge tone="warning">{t("capabilityRun.needsApproval")}</Badge> : null}
           {capability.metadata?.wrapper?.filePolicy ? (
-            <Badge tone="neutral">files: {capability.metadata.wrapper.filePolicy}</Badge>
+            <Badge tone="neutral">{t("capabilityRun.files")}: {capability.metadata.wrapper.filePolicy}</Badge>
           ) : null}
           {capability.metadata?.wrapper?.networkPolicy ? (
-            <Badge tone="neutral">network: {capability.metadata.wrapper.networkPolicy}</Badge>
+            <Badge tone="neutral">{t("capabilityRun.network")}: {capability.metadata.wrapper.networkPolicy}</Badge>
           ) : null}
         </div>
 
         {contract.needsProject ? (
-          <Field label="Repository">
+          <Field label={t("capabilityRun.repository")}>
             <Select
               value={form.projectId}
               onChange={(e) => setForm((prev) => ({ ...prev, projectId: e.target.value, worktreeId: "" }))}
             >
-              <option value="">Choose a repository…</option>
+              <option value="">{t("capabilityRun.chooseRepository")}</option>
               {projects.map((project) => (
                 <option key={project.id} value={project.id}>
                   {project.name}
@@ -104,19 +106,19 @@ export function CapabilityRunModal({
               ))}
             </Select>
             <p className="mt-1 text-xs text-muted-foreground">
-              This command runs inside the repository you choose, on the device that owns it.
+              {t("capabilityRun.repositoryHint")}
             </p>
           </Field>
         ) : null}
 
         {contract.needsWorktree ? (
-          <Field label="Worktree">
+          <Field label={t("capabilityRun.worktree")}>
             <Select
               value={form.worktreeId}
               onChange={(e) => setForm((prev) => ({ ...prev, worktreeId: e.target.value }))}
               disabled={!form.projectId}
             >
-              <option value="">{form.projectId ? "Choose a worktree…" : "Choose a repository first"}</option>
+              <option value="">{t(form.projectId ? "capabilityRun.chooseWorktree" : "capabilityRun.chooseRepositoryFirst")}</option>
               {worktrees.map((worktree) => (
                 <option key={worktree.id} value={worktree.id}>
                   {worktree.branch ?? worktree.id}
@@ -124,8 +126,8 @@ export function CapabilityRunModal({
               ))}
             </Select>
             <p className="mt-1 text-xs text-muted-foreground">
-              A write lands in this worktree — never the project directly — so it can be reviewed before promotion.
-              {form.projectId && worktrees.length === 0 ? " This project has no worktree yet; create one first." : ""}
+              {t("capabilityRun.worktreeHint")}
+              {form.projectId && worktrees.length === 0 ? ` ${t("capabilityRun.noWorktree")}` : ""}
             </p>
           </Field>
         ) : null}
@@ -133,7 +135,7 @@ export function CapabilityRunModal({
         {contract.inputs.length ? (
           <div className="grid gap-3 sm:grid-cols-2">
             {contract.inputs.map((input) => (
-              <Field key={input.key} label={`${input.key} (optional)`}>
+              <Field key={input.key} label={`${input.key} (${t("capabilityRun.optional")})`}>
                 {input.values.length ? (
                   <Select
                     value={form.values[input.key] ?? ""}
@@ -144,7 +146,7 @@ export function CapabilityRunModal({
                       }))
                     }
                   >
-                    <option value="">Any</option>
+                    <option value="">{t("capabilityRun.any")}</option>
                     {input.values.map((value) => (
                       <option key={value} value={value}>
                         {value}
@@ -176,13 +178,13 @@ export function CapabilityRunModal({
         {error ? <p className="text-xs text-destructive">{explainRunFailure(error)}</p> : null}
 
         <div className="flex items-center justify-between gap-2 pt-1">
-          <p className="text-xs text-muted-foreground">{blocker ?? "Runs as a governed invocation."}</p>
+          <p className="text-xs text-muted-foreground">{blocker ?? t("capabilityRun.governed")}</p>
           <div className="flex gap-2">
             <Button type="button" variant="secondary" size="sm" onClick={onClose}>
-              Cancel
+              {t("capabilityRun.cancel")}
             </Button>
             <Button type="submit" size="sm" disabled={pending || Boolean(blocker)}>
-              {pending ? "Running…" : "Run"}
+              {t(pending ? "capabilityRun.running" : "capabilityRun.run")}
             </Button>
           </div>
         </div>

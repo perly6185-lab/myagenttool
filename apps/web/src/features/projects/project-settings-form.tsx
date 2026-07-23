@@ -6,11 +6,13 @@ import { useAsyncAction, api } from "@/data/use-console-actions";
 import { cn } from "@/lib/cn";
 import { SWATCHES } from "@/features/projects/project-register-form";
 import type { ProjectSnapshot } from "@/lib/console-state";
+import { useAppTranslation } from "@/lib/i18n/use-app-translation";
 
 // Edit an existing project: name, badge color, per-run worktree isolation, and
 // archive/restore. Backed by PATCH /api/projects/:id. Used by the gear button
 // on each project node in the nav tree.
 export function ProjectSettingsForm({ project, onDone }: { project: ProjectSnapshot; onDone?: () => void }) {
+  const { t } = useAppTranslation();
   const { execute, pending, error } = useAsyncAction();
   const [name, setName] = useState(project.name);
   const [color, setColor] = useState(project.color);
@@ -35,17 +37,17 @@ export function ProjectSettingsForm({ project, onDone }: { project: ProjectSnaps
 
   return (
     <div className="space-y-4">
-      <Field label="Name">
+      <Field label={t("projectsShared.name")}>
         <Input value={name} onChange={(e) => setName(e.target.value)} />
       </Field>
 
-      <Field label="Color">
+      <Field label={t("projectsShared.color")}>
         <div className="flex flex-wrap gap-2">
           {SWATCHES.map((c) => (
             <button
               key={c}
               type="button"
-              aria-label={`Color ${c}`}
+              aria-label={t("projectsRegister.colorValue", { color: c })}
               onClick={() => setColor(c)}
               className="h-7 w-7 rounded-full border-2 transition"
               style={{ backgroundColor: c, borderColor: color === c ? "var(--foreground)" : "transparent" }}
@@ -54,12 +56,12 @@ export function ProjectSettingsForm({ project, onDone }: { project: ProjectSnaps
         </div>
       </Field>
 
-      <Field label="Run isolation">
+      <Field label={t("projectsShared.runIsolation")}>
         <div className="flex gap-1 rounded-lg bg-muted p-1">
           {(
             [
-              ["shared", "Shared worktree"],
-              ["worktree", "Per-run worktree"],
+              ["shared", t("projectsShared.sharedWorktree")],
+              ["worktree", t("projectsShared.perRunWorktree")],
             ] as ["shared" | "worktree", string][]
           ).map(([key, label]) => (
             <button
@@ -79,10 +81,10 @@ export function ProjectSettingsForm({ project, onDone }: { project: ProjectSnaps
 
       <div className="flex items-center justify-between gap-2 pt-1">
         <Button onClick={save} disabled={pending}>
-          Save changes
+          {t("projectsShared.saveChanges")}
         </Button>
         <Button variant="secondary" onClick={toggleArchive} disabled={pending}>
-          {project.status === "archived" ? "Restore" : "Archive"}
+          {t(project.status === "archived" ? "projects.restore" : "projects.archive")}
         </Button>
       </div>
       {error ? <p className="text-xs text-destructive">{error}</p> : null}

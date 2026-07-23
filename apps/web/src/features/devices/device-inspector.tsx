@@ -3,8 +3,10 @@ import { StatusBadge } from "@/components/ui/badge";
 import { FactList } from "@/components/common/fact-list";
 import { useConsoleState } from "@/data/use-console-state";
 import { readableDeviceStatus, shortTime } from "@/lib/readable-labels";
+import { useAppTranslation } from "@/lib/i18n/use-app-translation";
 
 export function DeviceInspector() {
+  const { t } = useAppTranslation();
   const { data: state } = useConsoleState();
   const device = state?.device;
   if (!device) return null;
@@ -19,9 +21,9 @@ export function DeviceInspector() {
       <CardContent>
         <FactList
           facts={[
-            { term: "Platform", value: `${device.platform} / ${device.architecture}` },
-            { term: "Last seen", value: device.lastSeenAt ? shortTime(device.lastSeenAt) : "Not seen yet" },
-            { term: "Device ID", value: device.id },
+            { term: t("devicesPage.platform"), value: `${device.platform} / ${device.architecture}` },
+            { term: t("devicesPage.lastSeen"), value: device.lastSeenAt ? shortTime(device.lastSeenAt) : t("devicesPage.notSeen") },
+            { term: t("devicesPage.deviceId"), value: device.id },
           ]}
         />
       </CardContent>

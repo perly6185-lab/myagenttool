@@ -12,8 +12,10 @@ import { ProjectSettingsForm } from "@/features/projects/project-settings-form";
 import { WorktreeCreator } from "@/features/projects/worktree-creator";
 import { WorktreeLinkPopover } from "@/features/projects/worktree-link-popover";
 import type { ProjectSnapshot } from "@/lib/console-state";
+import { useAppTranslation } from "@/lib/i18n/use-app-translation";
 
 export function NavRail() {
+  const { t } = useAppTranslation();
   const section = useUiStore((s) => s.section);
   const setSection = useUiStore((s) => s.setSection);
   const collapsedNavGroups = useUiStore((s) => s.collapsedNavGroups);
@@ -27,7 +29,7 @@ export function NavRail() {
 
   return (
     <nav
-      aria-label="Control plane sections"
+      aria-label={t("shell.navLabel")}
       className="hidden h-full w-60 shrink-0 flex-col border-r border-sidebar-border bg-sidebar md:flex"
     >
       <div className="flex items-center gap-2.5 px-5 py-4">
@@ -36,7 +38,7 @@ export function NavRail() {
         </span>
         <div className="leading-tight">
           <p className="text-sm font-semibold">MyAgentTool</p>
-          <p className="text-xs text-muted-foreground">Control plane</p>
+          <p className="text-xs text-muted-foreground">{t("shell.controlPlane")}</p>
         </div>
       </div>
 
@@ -57,7 +59,7 @@ export function NavRail() {
               className="flex w-full items-center gap-1 rounded px-2 pb-1 pt-1 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground/80 hover:text-sidebar-foreground"
             >
               <ChevronRight className={cn("size-3 shrink-0 transition-transform", groupOpen && "rotate-90")} />
-              {grp.label}
+              {t(grp.labelKey)}
             </button>
             {groupOpen ? (
             <ul className="flex flex-col gap-0.5">
@@ -78,15 +80,15 @@ export function NavRail() {
                 <button
                   type="button"
                   aria-current={active ? "page" : undefined}
-                  title={item.blurb}
+                  title={t(item.blurbKey)}
                   onClick={() => setSection(item.key)}
                   className="flex flex-1 items-center gap-3 px-3 py-2 text-left"
                 >
                   <Icon className="size-4 shrink-0" />
-                  {item.label}
+                  {t(item.labelKey)}
                   {item.key === "approvals" && pendingCount > 0 ? (
                     <span
-                      aria-label={`${pendingCount} pending`}
+                      aria-label={t("shell.pending", { count: pendingCount })}
                       className={cn(
                         "ml-auto min-w-5 rounded-full px-1.5 py-0.5 text-center text-[10px] font-semibold",
                         active ? "bg-sidebar-foreground/15 text-sidebar-accent-foreground" : "bg-primary text-primary-foreground",
@@ -97,7 +99,7 @@ export function NavRail() {
                   ) : null}
                   {item.key === "evidence" && attentionCount > 0 ? (
                     <span
-                      aria-label={`${attentionCount} need attention`}
+                      aria-label={t("shell.attention", { count: attentionCount })}
                       className={cn(
                         "ml-auto min-w-5 rounded-full px-1.5 py-0.5 text-center text-[10px] font-semibold",
                         active ? "bg-sidebar-foreground/15 text-sidebar-accent-foreground" : "bg-warning text-warning-foreground",
@@ -110,8 +112,8 @@ export function NavRail() {
                 {isProjects ? (
                   <button
                     type="button"
-                    aria-label="Register a project"
-                    title="Register a project"
+                    aria-label={t("shell.registerProject")}
+                    title={t("shell.registerProject")}
                     onClick={() => setShowRegister(true)}
                     className="mr-1 grid size-6 shrink-0 place-items-center rounded hover:bg-sidebar-accent"
                   >
@@ -131,14 +133,14 @@ export function NavRail() {
       </ul>
 
       <p className="px-5 py-4 text-xs text-muted-foreground">
-        Register agents, route calls, enforce permission, and record what happened.
+        {t("shell.footer")}
       </p>
 
       <Modal
         open={showRegister}
         onClose={() => setShowRegister(false)}
-        title="Register a project"
-        description="Clone a repo, link a local checkout, or create an empty project."
+        title={t("navProject.register")}
+        description={t("navProject.registerHint")}
       >
         <ProjectRegisterForm onDone={() => setShowRegister(false)} />
       </Modal>
@@ -149,6 +151,7 @@ export function NavRail() {
 // Orca-style tree under the Projects nav item: each project expands to its
 // worktrees. Clicking a node selects it and routes to the Projects section.
 function ProjectTree() {
+  const { t } = useAppTranslation();
   const { data: state } = useConsoleState();
   const setSection = useUiStore((s) => s.setSection);
   const selectedProjectId = useUiStore((s) => s.selectedProjectId);
@@ -212,7 +215,7 @@ function ProjectTree() {
             >
               <button
                 type="button"
-                aria-label={isOpen ? "Collapse" : "Expand"}
+                aria-label={isOpen ? t("navProject.collapse") : t("navProject.expand")}
                 onClick={() => setExpanded((e) => ({ ...e, [project.id]: !isOpen }))}
                 className="grid size-5 shrink-0 place-items-center rounded hover:bg-sidebar-accent/60"
                 disabled={!hasChildren}
@@ -234,8 +237,8 @@ function ProjectTree() {
               </button>
               <button
                 type="button"
-                aria-label={`Settings for ${project.name}`}
-                title="Project settings"
+                aria-label={t("navProject.settingsFor", { name: project.name })}
+                title={t("navProject.settings")}
                 onClick={() => setSettingsFor(project)}
                 className="grid size-5 shrink-0 place-items-center rounded text-muted-foreground opacity-60 hover:bg-sidebar-accent hover:text-sidebar-foreground hover:opacity-100"
               >
@@ -244,8 +247,8 @@ function ProjectTree() {
               {readyProjectIds.has(project.id) ? (
                 <button
                   type="button"
-                  aria-label={`Create worktree in ${project.name}`}
-                  title="Create worktree"
+                  aria-label={t("navProject.createIn", { name: project.name })}
+                  title={t("navProject.createWorktree")}
                   onClick={() => setCreateWtFor(project)}
                   className="grid size-5 shrink-0 place-items-center rounded text-muted-foreground opacity-60 hover:bg-sidebar-accent hover:text-sidebar-foreground hover:opacity-100"
                 >
@@ -260,7 +263,7 @@ function ProjectTree() {
                   <li>
                     <button
                       type="button"
-                      title="Project checkout — open the project"
+                      title={t("navProject.checkoutHint")}
                       onClick={() => openProject(project.id)}
                       className={cn(
                         "flex w-full min-w-0 items-center gap-1.5 rounded-md px-2 py-1 text-left text-xs transition-colors",
@@ -270,8 +273,8 @@ function ProjectTree() {
                       )}
                     >
                       <GitBranch className="size-3 shrink-0 opacity-70" />
-                      <span className="truncate" title={mainBranch ?? "branch unknown"}>{mainBranch ?? "…"}</span>
-                      <span className="ml-auto shrink-0 text-[10px] opacity-70">checkout</span>
+                      <span className="truncate" title={mainBranch ?? t("navProject.branchUnknown")}>{mainBranch ?? "…"}</span>
+                      <span className="ml-auto shrink-0 text-[10px] opacity-70">{t("navProject.checkout")}</span>
                     </button>
                   </li>
                 ) : null}
@@ -295,7 +298,7 @@ function ProjectTree() {
                         >
                           <GitBranch className="size-3 shrink-0 opacity-70" />
                           <span className="truncate" title={w.branch}>{w.branch}</span>
-                          {w.isMain ? <span className="shrink-0 text-[10px] opacity-70">main</span> : null}
+                          {w.isMain ? <span className="shrink-0 text-[10px] opacity-70">{t("navProject.main")}</span> : null}
                         </button>
                         {w.link ? <WorktreeLinkPopover worktree={w} /> : null}
                       </div>
@@ -312,8 +315,8 @@ function ProjectTree() {
       <Modal
         open={Boolean(settingsFor)}
         onClose={() => setSettingsFor(null)}
-        title={settingsFor ? `${settingsFor.name} settings` : "Project settings"}
-        description="Rename, recolor, set run isolation, or archive this project."
+        title={settingsFor ? t("navProject.namedSettings", { name: settingsFor.name }) : t("navProject.settings")}
+        description={t("navProject.settingsHint")}
       >
         {settingsFor ? <ProjectSettingsForm project={settingsFor} onDone={() => setSettingsFor(null)} /> : null}
       </Modal>
@@ -321,7 +324,7 @@ function ProjectTree() {
       <Modal
         open={Boolean(createWtFor)}
         onClose={() => setCreateWtFor(null)}
-        title="Create worktree"
+        title={t("navProject.createWorktree")}
         size="lg"
       >
         {createWtFor ? (

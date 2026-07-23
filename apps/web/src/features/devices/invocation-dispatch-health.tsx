@@ -4,6 +4,7 @@ import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { api } from "@/lib/api-client";
 import { formatDuration } from "@/lib/format";
+import { useAppTranslation } from "@/lib/i18n/use-app-translation";
 
 // Why a queued invocation isn't running → a tone + a plain-language label. Shares
 // the reason vocabulary the server's dispatch classifier emits (dispatch-
@@ -28,6 +29,7 @@ const pct = (rate: number | null | undefined) => (rate == null ? "—" : `${Math
  * capacity). Polls so the queue stays live while an operator is watching it.
  */
 export function InvocationDispatchHealth() {
+  const { t } = useAppTranslation();
   const { data, isError } = useQuery({
     queryKey: ["invocation-dispatch-health"],
     queryFn: () => api.getInvocationDispatchHealth(),
@@ -38,10 +40,10 @@ export function InvocationDispatchHealth() {
     return (
       <Card className="max-w-xl" data-testid="dispatch-health-error">
         <CardHeader>
-          <CardTitle>Dispatch queue</CardTitle>
+          <CardTitle>{t("devicesPage.dispatchQueue")}</CardTitle>
         </CardHeader>
         <CardContent>
-          <Badge tone="warning">Dispatch health unavailable</Badge>
+          <Badge tone="warning">{t("devicesPage.dispatchUnavailable")}</Badge>
         </CardContent>
       </Card>
     );
@@ -53,22 +55,22 @@ export function InvocationDispatchHealth() {
   return (
     <Card className="max-w-xl" data-testid="dispatch-health">
       <CardHeader className="flex-row items-center justify-between">
-        <CardTitle>Dispatch queue</CardTitle>
+        <CardTitle>{t("devicesPage.dispatchQueue")}</CardTitle>
         <Badge tone={capacity.atCapacity ? "warning" : "neutral"}>
-          {capacity.inFlight}/{capacity.maxConcurrency} in flight
+          {t("devicesPage.inFlight", { count: capacity.inFlight, total: capacity.maxConcurrency })}
         </Badge>
       </CardHeader>
       <CardContent className="space-y-4">
         {queue.depth === 0 ? (
-          <p className="text-sm text-muted-foreground">Queue clear — nothing is waiting to dispatch.</p>
+          <p className="text-sm text-muted-foreground">{t("devicesPage.queueClear")}</p>
         ) : (
           <div className="overflow-x-auto">
             <table className="w-full text-xs" data-testid="dispatch-health-queue">
               <thead>
                 <tr className="text-left text-muted-foreground">
-                  <th className="pb-1 font-medium">Agent</th>
-                  <th className="pb-1 font-medium">Why waiting</th>
-                  <th className="pb-1 font-medium text-right">Waited</th>
+                  <th className="pb-1 font-medium">{t("devicesPage.agent")}</th>
+                  <th className="pb-1 font-medium">{t("devicesPage.whyWaiting")}</th>
+                  <th className="pb-1 font-medium text-right">{t("devicesPage.waited")}</th>
                 </tr>
               </thead>
               <tbody>
@@ -109,9 +111,9 @@ export function InvocationDispatchHealth() {
           )}
         </p>
         <div className="grid grid-cols-3 gap-2 border-t border-border pt-3 text-xs" data-testid="runtime-reliability">
-          <div><span className="block text-muted-foreground">Failover</span><strong>{reliability.failover.recovered}/{reliability.failover.attempts} recovered</strong></div>
-          <div><span className="block text-muted-foreground">Claims</span><strong>{reliability.claims.active} active</strong>{reliability.claims.expired ? <span className="block text-warning">{reliability.claims.expired} expired</span> : null}</div>
-          <div><span className="block text-muted-foreground">Intervention</span><strong className={reliability.intervention.required ? "text-destructive" : ""}>{reliability.intervention.required ? `${reliability.intervention.required} need review` : "None"}</strong></div>
+          <div><span className="block text-muted-foreground">{t("devicesPage.failover")}</span><strong>{t("devicesPage.recovered", { count: reliability.failover.recovered, total: reliability.failover.attempts })}</strong></div>
+          <div><span className="block text-muted-foreground">{t("devicesPage.claims")}</span><strong>{t("devicesPage.active", { count: reliability.claims.active })}</strong>{reliability.claims.expired ? <span className="block text-warning">{t("devicesPage.expired", { count: reliability.claims.expired })}</span> : null}</div>
+          <div><span className="block text-muted-foreground">{t("devicesPage.intervention")}</span><strong className={reliability.intervention.required ? "text-destructive" : ""}>{reliability.intervention.required ? t("devicesPage.needReview", { count: reliability.intervention.required }) : t("devicesPage.none")}</strong></div>
         </div>
       </CardContent>
     </Card>

@@ -8,6 +8,7 @@ import { api } from "@/data/use-console-actions";
 import { useConsoleState } from "@/data/use-console-state";
 import type { DispatchAssignment } from "@/lib/console-state";
 import { cn } from "@/lib/cn";
+import { useAppTranslation } from "@/lib/i18n/use-app-translation";
 
 interface MetricPoint {
   startedAt: string | null;
@@ -40,22 +41,13 @@ interface EvalTrendSummary {
 
 const pct = (rate: number | null | undefined) => (rate == null ? "—" : `${Math.round(rate * 100)}%`);
 
-function fmtDate(iso: string | null): string {
-  if (!iso) return "never";
+function fmtDate(iso: string | null, locale = "en"): string {
+  if (!iso) return "—";
   const t = Date.parse(iso);
-  if (Number.isNaN(t)) return "never";
+  if (Number.isNaN(t)) return "—";
   const ageMs = Date.now() - t;
   const days = Math.floor(ageMs / 86_400_000);
-  if (days <= 0) return "today";
-  if (days === 1) return "1 day ago";
-  return `${days} days ago`;
-}
-
-function fmtDelta(delta: number | null): string {
-  if (delta == null) return "";
-  if (delta === 0) return "±0";
-  const sign = delta > 0 ? "+" : "";
-  return `${sign}${Math.round(delta * 100)}pp vs previous`;
+  return new Intl.RelativeTimeFormat(locale, { numeric: "auto" }).format(-days, "day");
 }
 
 function StatTile({ label, value, hint, tone }: { label: string; value: string; hint?: string; tone?: "danger" }) {
@@ -69,6 +61,7 @@ function StatTile({ label, value, hint, tone }: { label: string; value: string; 
 }
 
 function MetricCard({ title, metric, minRuns }: { title: string; metric: MetricSummary; minRuns: number }) {
+  const { t, i18n } = useAppTranslation();
   const latest = metric.latest;
   return (
     <Card>
@@ -78,11 +71,11 @@ function MetricCard({ title, metric, minRuns }: { title: string; metric: MetricS
           <span className="flex items-center gap-2">
             {metric.regressed ? (
               <Badge tone="danger">
-                <TriangleAlert className="mr-1 size-3" /> below floor
+                <TriangleAlert className="mr-1 size-3" /> {t("evalPage.belowFloor")}
               </Badge>
             ) : null}
             <Badge tone={metric.enoughForLines ? "success" : "neutral"}>
-              {metric.realRuns}/{minRuns} runs
+              {t("evalPage.runProgress", { count: metric.realRuns, total: minRuns })}
             </Badge>
           </span>
         </CardTitle>
@@ -99,7 +92,7 @@ function MetricCard({ title, metric, minRuns }: { title: string; metric: MetricS
               ) : null}
               {metric.delta != null ? (
                 <span className={cn("text-xs", metric.delta < 0 ? "text-red-600 dark:text-red-400" : metric.delta > 0 ? "text-emerald-600 dark:text-emerald-400" : "text-muted-foreground")}>
-                  {fmtDelta(metric.delta)}
+                  {t("evalFormat.delta", { value: `${metric.delta > 0 ? "+" : metric.delta === 0 ? "±" : ""}${Math.round(metric.delta * 100)}pp` })}
                 </span>
               ) : null}
             </div>
@@ -108,7 +101,7 @@ function MetricCard({ title, metric, minRuns }: { title: string; metric: MetricS
               {metric.series.slice(-12).map((p, i) => (
                 <div
                   key={`${p.startedAt ?? i}`}
-                  title={`${fmtDate(p.startedAt)}: ${pct(p.passRate)}`}
+                  title={`${fmtDate(p.startedAt, i18n.language)}: ${pct(p.passRate)}`}
                   className={cn("w-3 rounded-sm", metric.floor != null && p.passRate < metric.floor ? "bg-red-500/60" : "bg-primary/60")}
                   style={{ height: `${Math.max(4, Math.round(p.passRate * 40))}px` }}
                 />
@@ -131,14 +124,14 @@ function MetricCard({ title, metric, minRuns }: { title: string; metric: MetricS
               </div>
             ) : null}
             <p className="text-xs text-muted-foreground">
-              Floor {pct(metric.floor)}
-              {metric.floorProvisional ? " (provisional — #250 sets the real line once ≥" : " (≥"}
+              {t("evalPage.floor")} {pct(metric.floor)}
+              {metric.floorProvisional ? ` (${t("evalPage.provisional")} — #250 ${t("evalPage.realLineOnce")} ≥` : " (≥"}
               {metric.floorProvisional ? `${minRuns} real runs exist)` : ""}
-              {!metric.enoughForLines ? ` · ${minRuns - metric.realRuns} more run(s) before a line can be derived` : ""}
+              {!metric.enoughForLines ? ` · ${t("evalPage.moreBeforeLine", { count: minRuns - metric.realRuns })}` : ""}
             </p>
           </>
         ) : (
-          <p className="text-sm text-muted-foreground">No real data points yet — the scheduled agent hasn't produced a scored run for this set.</p>
+          <p className="text-sm text-muted-foreground">{t("evalPage.noDataPoints")}</p>
         )}
       </CardContent>
     </Card>
@@ -211,22 +204,23 @@ interface DispatchEvaluation {
 // honest merge-to-main proxy (no deploy pipeline); change-fail reads "not recorded"
 // until the marker convention is used — surfaced as-is, never faked.
 function DoraCard({ dora }: { dora: DoraReport }) {
+  const { t } = useAppTranslation();
   const green = dora.ciChecks?.greenRate;
   const cf = dora.changeFailures;
   return (
     <Card>
       <CardHeader className="py-3">
-        <CardTitle className="text-base">DORA — Four Keys</CardTitle>
+        <CardTitle className="text-base">{t("evalPage.dora")}</CardTitle>
       </CardHeader>
       <CardContent className="space-y-2">
         <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
-          <StatTile label="Lead time (median)" value={dora.leadTimeHours?.median != null ? `${dora.leadTimeHours.median}h` : "—"} hint={dora.leadTimeHours?.p90 != null ? `p90 ${dora.leadTimeHours.p90}h` : undefined} />
-          <StatTile label="Deploy freq (proxy)" value={dora.mergesPerWeek != null ? `${dora.mergesPerWeek}/wk` : "—"} hint="merges to main" />
-          <StatTile label="CI-green rate" value={pct(green ?? null)} hint={`target ${pct(dora.ciChecks?.gateTarget ?? 0.95)}`} tone={green != null && green < (dora.ciChecks?.gateTarget ?? 0.95) ? "danger" : undefined} />
-          <StatTile label="Change failure" value={cf?.recorded ? pct(cf.changeFailureRate ?? null) : "not recorded"} hint={cf?.recorded ? (cf.recoveryHours?.median != null ? `recovery ${cf.recoveryHours.median}h` : undefined) : "marker unused"} />
+          <StatTile label={t("evalPage.leadTime")} value={dora.leadTimeHours?.median != null ? `${dora.leadTimeHours.median}h` : "—"} hint={dora.leadTimeHours?.p90 != null ? `p90 ${dora.leadTimeHours.p90}h` : undefined} />
+          <StatTile label={t("evalPage.deployFreq")} value={dora.mergesPerWeek != null ? `${dora.mergesPerWeek}/wk` : "—"} hint={t("evalPage.mergesMain")} />
+          <StatTile label={t("evalPage.ciGreen")} value={pct(green ?? null)} hint={`${t("evalPage.target")} ${pct(dora.ciChecks?.gateTarget ?? 0.95)}`} tone={green != null && green < (dora.ciChecks?.gateTarget ?? 0.95) ? "danger" : undefined} />
+          <StatTile label={t("evalPage.changeFailure")} value={cf?.recorded ? pct(cf.changeFailureRate ?? null) : t("evalPage.notRecorded")} hint={cf?.recorded ? (cf.recoveryHours?.median != null ? `${t("evalPage.recovery")} ${cf.recoveryHours.median}h` : undefined) : t("evalPage.markerUnused")} />
         </div>
         <p className="text-[11px] text-muted-foreground">
-          {dora.mergedPrCount ?? 0} merged PR(s) over {dora.windowDays ?? "?"}d · deploy frequency is a merge-to-main proxy (no deploy pipeline) · change-failure/recovery await the `Change-failure: #N` marker convention.
+          {t("evalPage.doraHint", { count: dora.mergedPrCount ?? 0, days: dora.windowDays ?? "?" })}
         </p>
       </CardContent>
     </Card>
@@ -243,6 +237,7 @@ function verdictTone(v: string): "success" | "danger" | "neutral" {
 // (else "insufficient data"); the panel is explicit that time-to-PR is a
 // cross-server signal the dispatcher can't see — honest gap, not a blank.
 function DispatchEvaluationCard({ evaluation, assignments = [] }: { evaluation: DispatchEvaluation; assignments?: DispatchAssignment[] }) {
+  const { t } = useAppTranslation();
   const rate = (r: number | null) => (r == null ? "—" : pct(r));
   const rows: DispatchSlice[] = [...evaluation.workers, ...evaluation.workerAreas];
   // Most-recent routing decisions with their "why" (the per-decision reasoning
@@ -254,24 +249,24 @@ function DispatchEvaluationCard({ evaluation, assignments = [] }: { evaluation: 
   return (
     <Card>
       <CardHeader className="flex-row items-center justify-between gap-2 py-3">
-        <CardTitle className="text-base">Dispatch routing</CardTitle>
-        <Badge tone="neutral">{evaluation.total.assignments} assignment(s)</Badge>
+        <CardTitle className="text-base">{t("evalPage.dispatchRouting")}</CardTitle>
+        <Badge tone="neutral">{t("evalPage.assignmentCount", { count: evaluation.total.assignments })}</Badge>
       </CardHeader>
       <CardContent className="space-y-2">
         <p className="text-xs text-muted-foreground">
-          Per-worker and per-(worker × area) outcomes from the dispatcher's own bookkeeping. A slice with fewer than {evaluation.minSamples} settled outcomes shows "insufficient data" rather than an extrapolated rate.
+          {t("evalPage.dispatchHint", { count: evaluation.minSamples })}
         </p>
         <div className="overflow-x-auto">
           <table className="w-full text-xs">
             <thead>
               <tr className="border-b border-border text-left text-muted-foreground">
-                <th className="py-1.5 pr-2 font-medium">Worker</th>
-                <th className="py-1.5 pr-2 font-medium">Area</th>
-                <th className="py-1.5 pr-2 font-medium text-right">Assigned</th>
-                <th className="py-1.5 pr-2 font-medium text-right">Completed</th>
-                <th className="py-1.5 pr-2 font-medium text-right">Reassigned</th>
-                <th className="py-1.5 pr-2 font-medium text-right">Median settle</th>
-                <th className="py-1.5 pr-2 font-medium text-right">Outcome</th>
+                <th className="py-1.5 pr-2 font-medium">{t("evalPage.worker")}</th>
+                <th className="py-1.5 pr-2 font-medium">{t("evalPage.area")}</th>
+                <th className="py-1.5 pr-2 font-medium text-right">{t("evalPage.assigned")}</th>
+                <th className="py-1.5 pr-2 font-medium text-right">{t("evalPage.completed")}</th>
+                <th className="py-1.5 pr-2 font-medium text-right">{t("evalPage.reassigned")}</th>
+                <th className="py-1.5 pr-2 font-medium text-right">{t("evalPage.medianSettle")}</th>
+                <th className="py-1.5 pr-2 font-medium text-right">{t("evalPage.outcome")}</th>
               </tr>
             </thead>
             <tbody>
@@ -285,7 +280,7 @@ function DispatchEvaluationCard({ evaluation, assignments = [] }: { evaluation: 
                   <td className="py-1.5 pr-2 text-right">{s.medianMinutesToSettle != null ? `${s.medianMinutesToSettle}m` : "—"}</td>
                   <td className="whitespace-nowrap py-1.5 text-right">
                     <Badge tone={s.verdict === "measured" ? "success" : "neutral"}>
-                      {s.verdict === "measured" ? "measured" : `insufficient data (${s.sample})`}
+                      {s.verdict === "measured" ? t("evalPage.measured") : t("evalPage.insufficientSample", { sample: s.sample })}
                     </Badge>
                   </td>
                 </tr>
@@ -295,18 +290,18 @@ function DispatchEvaluationCard({ evaluation, assignments = [] }: { evaluation: 
         </div>
         {evaluation.shadow.shadowAssignments > 0 ? (
           <div className="rounded-md border border-border bg-muted/30 px-2.5 py-2 text-xs">
-            <div className="mb-1 font-medium">Shadow evaluation (recorded counterfactuals, per issue)</div>
+            <div className="mb-1 font-medium">{t("evalPage.shadowEvaluation")}</div>
             <div className="grid grid-cols-2 gap-2 md:grid-cols-4">
-              <StatTile label="Shadow issues" value={String(evaluation.shadow.shadowAssignments)} hint={`${evaluation.shadow.disagreements} diverged`} />
-              <StatTile label="Agreement" value={evaluation.shadow.agreementRate != null ? pct(evaluation.shadow.agreementRate) : `insufficient (n=${evaluation.shadow.shadowAssignments})`} hint="baseline = scored" />
-              <StatTile label="Settled diverged" value={String(evaluation.shadow.settledDisagreements)} hint={`target ≥ ${evaluation.minSamples}`} />
+              <StatTile label={t("evalPage.shadowIssues")} value={String(evaluation.shadow.shadowAssignments)} hint={t("evalPage.diverged", { count: evaluation.shadow.disagreements })} />
+              <StatTile label={t("evalPage.agreement")} value={evaluation.shadow.agreementRate != null ? pct(evaluation.shadow.agreementRate) : t("evalPage.insufficientN", { count: evaluation.shadow.shadowAssignments })} hint={t("evalPage.baselineScored")} />
+              <StatTile label={t("evalPage.settledDiverged")} value={String(evaluation.shadow.settledDisagreements)} hint={`${t("evalPage.target")} ≥ ${evaluation.minSamples}`} />
               {/* #1184: a high reassign rate is evidence TOWARD promoting scored,
                   not a regression — no danger tone; the promotion rule carries
                   the recommendation (and the TTL-churn caveat). */}
               <StatTile
-                label="Baseline reassigned on divergence"
+                label={t("evalPage.baselineReassigned")}
                 value={evaluation.shadow.verdict === "measured" && evaluation.shadow.baselineReassignRate != null ? pct(evaluation.shadow.baselineReassignRate) : `insufficient (${evaluation.shadow.sample})`}
-                hint="baseline's divergent pick, not scored's outcome"
+                hint={t("evalPage.baselineHint")}
               />
             </div>
             <p className="mt-1 text-[11px] text-muted-foreground">{evaluation.shadow.promotionRule}</p>
@@ -314,7 +309,7 @@ function DispatchEvaluationCard({ evaluation, assignments = [] }: { evaluation: 
         ) : null}
         {recent.length > 0 ? (
           <div className="rounded-md border border-border bg-muted/20 px-2.5 py-2 text-xs">
-            <div className="mb-1.5 font-medium">Recent decisions — why routed here</div>
+            <div className="mb-1.5 font-medium">{t("evalPage.recentDecisions")}</div>
             <ul className="space-y-1.5">
               {recent.map((a) => (
                 <li key={a.id} className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
@@ -323,12 +318,12 @@ function DispatchEvaluationCard({ evaluation, assignments = [] }: { evaluation: 
                   {a.routing?.why ? <Badge tone="neutral">{a.routing.why.replace(/_/g, " ")}{a.routing.margin ? ` · ${a.routing.margin}` : ""}</Badge> : null}
                   {(a.routing?.candidates?.length ?? 0) > 1 ? (
                     <span className="text-muted-foreground">
-                      over {a.routing!.candidates!.filter((c) => c.id !== a.routing?.chosen).map((c) => `${c.id} (aff ${c.affinity}, load ${c.load})`).join(", ")}
+                      {t("evalPage.over")} {a.routing!.candidates!.filter((c) => c.id !== a.routing?.chosen).map((c) => `${c.id} (${t("evalPage.aff")} ${c.affinity}, ${t("evalPage.load")} ${c.load})`).join(", ")}
                     </span>
                   ) : null}
                   {(a.routing?.ineligible?.length ?? 0) > 0 ? (
                     <span className="text-muted-foreground" title={a.routing!.ineligible!.map((i) => `${i.id}: ${i.reason}`).join("; ")}>
-                      · {a.routing!.ineligible!.length} ineligible
+                      · {t("evalPage.ineligible", { count: a.routing!.ineligible!.length })}
                     </span>
                   ) : null}
                 </li>
@@ -337,7 +332,7 @@ function DispatchEvaluationCard({ evaluation, assignments = [] }: { evaluation: 
           </div>
         ) : null}
         <p className="text-[11px] text-muted-foreground">
-          Not shown: time-to-in-progress and time-to-PR — those live in each worker's own server state (the dispatcher only sees assign → settle/reassign). Per-area rows can exceed the worker total when an issue declares multiple areas.
+          {t("evalPage.notShown")}
         </p>
       </CardContent>
     </Card>
@@ -347,23 +342,24 @@ function DispatchEvaluationCard({ evaluation, assignments = [] }: { evaluation: 
 // The computed L0–L6 scorecard: calibration gates applied to measured evidence,
 // replacing the hand-typed status. Honest — an unmeasurable gate is "indeterminate".
 function MaturityScorecardCard({ scorecard }: { scorecard: MaturityScorecard }) {
+  const { t } = useAppTranslation();
   return (
     <Card>
       <CardHeader className="flex-row items-center justify-between gap-2 py-3">
-        <CardTitle className="text-base">Maturity scorecard</CardTitle>
+        <CardTitle className="text-base">{t("evalPage.maturity")}</CardTitle>
         <Badge tone={scorecard.currentLevel >= 0 ? "success" : "neutral"}>
-          Current: {scorecard.currentLevel >= 0 ? `L${scorecard.currentLevel}` : "—"}
+          {t("evalPage.current")}: {scorecard.currentLevel >= 0 ? `L${scorecard.currentLevel}` : "—"}
         </Badge>
       </CardHeader>
       <CardContent className="space-y-2">
         <p className="text-xs text-muted-foreground">
-          Computed from measured evidence (DORA · held-out eval · backlog · governance) — the current level is the highest reached without a gap. A level still shows its own verdict even when a lower gate blocks contiguity.
+          {t("evalPage.maturityHint")}
         </p>
         {scorecard.nextGap ? (
           <div className="rounded-md border border-border bg-muted/30 px-2.5 py-1.5 text-xs">
-            <span className="font-medium">Next: reach L{scorecard.nextGap.level} ({scorecard.nextGap.name})</span>
+            <span className="font-medium">{t("evalPage.nextReach", { level: scorecard.nextGap.level, name: scorecard.nextGap.name })}</span>
             <span className="text-muted-foreground"> — {scorecard.nextGap.action}</span>
-            {scorecard.nextGap.measured ? <span className="text-muted-foreground"> Currently: {scorecard.nextGap.measured}.</span> : null}
+            {scorecard.nextGap.measured ? <span className="text-muted-foreground"> {t("evalPage.currently")}: {scorecard.nextGap.measured}.</span> : null}
             {scorecard.nextGap.detail ? <div className="mt-0.5 text-[11px] text-warning">{scorecard.nextGap.detail}</div> : null}
           </div>
         ) : null}
@@ -381,7 +377,7 @@ function MaturityScorecardCard({ scorecard }: { scorecard: MaturityScorecard }) 
                   <td className="py-1.5 pr-2 text-muted-foreground">{l.measured ?? "—"}</td>
                   <td className="whitespace-nowrap py-1.5 text-right">
                     <Badge tone={verdictTone(l.verdict)}>{l.verdict}</Badge>
-                    {l.frontier ? <div className="mt-0.5 text-[10px] text-muted-foreground">frontier</div> : null}
+                    {l.frontier ? <div className="mt-0.5 text-[10px] text-muted-foreground">{t("evalPage.frontier")}</div> : null}
                   </td>
                 </tr>
               ))}
@@ -395,6 +391,7 @@ function MaturityScorecardCard({ scorecard }: { scorecard: MaturityScorecard }) 
 }
 
 export function EvalTrendView() {
+  const { t, i18n } = useAppTranslation();
   const { data: consoleState } = useConsoleState();
   const assignments = consoleState?.dispatchAssignments ?? [];
   const [summary, setSummary] = useState<EvalTrendSummary | null>(null);
@@ -439,14 +436,14 @@ export function EvalTrendView() {
       <div className="flex items-center justify-between">
         <div>
           <h1 className="flex items-center gap-2 text-lg font-semibold">
-            <Gauge className="size-5" /> Capability
+            <Gauge className="size-5" /> {t("evalPage.title")}
           </h1>
           <p className="text-sm text-muted-foreground">
-            Scheduled real-agent eval trend (#248) — how the system scores itself over time. The scheduler runs locally; this is a read-only view of its results.
+            {t("evalPage.description")}
           </p>
         </div>
         <Button variant="secondary" size="sm" onClick={() => void load()} disabled={loading}>
-          <RefreshCw className={cn("mr-1 size-3.5", loading && "animate-spin")} /> Refresh
+          <RefreshCw className={cn("mr-1 size-3.5", loading && "animate-spin")} /> {t("evalPage.refresh")}
         </Button>
       </div>
 
@@ -461,16 +458,16 @@ export function EvalTrendView() {
       {summary && summary.total > 0 ? (
         <>
           <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
-            <StatTile label="Sub-capability" value={pct(summary.subcap.latest?.passRate)} hint={`${summary.subcap.realRuns} real run(s)`} tone={summary.subcap.regressed ? "danger" : undefined} />
-            <StatTile label="Held-out" value={pct(summary.heldout.latest?.passRate)} hint={`${summary.heldout.realRuns} real run(s)`} tone={summary.heldout.regressed ? "danger" : undefined} />
-            <StatTile label="Last run" value={fmtDate(summary.lastRunAt)} hint={summary.claude ?? undefined} />
-            <StatTile label="Infra failures" value={String(summary.infraFailures)} hint={summary.lastInfraFailure ? `last ${fmtDate(summary.lastInfraFailure.startedAt)}` : "none"} tone={summary.infraFailures > 0 ? "danger" : undefined} />
+            <StatTile label={t("evalPage.subcap")} value={pct(summary.subcap.latest?.passRate)} hint={t("evalPage.realRuns", { count: summary.subcap.realRuns })} tone={summary.subcap.regressed ? "danger" : undefined} />
+            <StatTile label={t("evalPage.heldout")} value={pct(summary.heldout.latest?.passRate)} hint={t("evalPage.realRuns", { count: summary.heldout.realRuns })} tone={summary.heldout.regressed ? "danger" : undefined} />
+            <StatTile label={t("evalPage.lastRun")} value={fmtDate(summary.lastRunAt, i18n.language)} hint={summary.claude ?? undefined} />
+            <StatTile label={t("evalPage.infraFailures")} value={String(summary.infraFailures)} hint={summary.lastInfraFailure ? `${t("evalPage.last")} ${fmtDate(summary.lastInfraFailure.startedAt, i18n.language)}` : t("evalPage.none")} tone={summary.infraFailures > 0 ? "danger" : undefined} />
           </div>
 
           {anyRegression ? (
             <div className="flex items-start gap-2 rounded-lg border border-red-500/40 bg-red-500/5 px-4 py-3 text-sm">
               <TriangleAlert className="mt-0.5 size-4 shrink-0 text-red-600 dark:text-red-400" />
-              <span>A capability metric is below its provisional floor. This is the regression signal #250 will formalize into a hard gate once enough real runs exist.</span>
+              <span>{t("evalPage.regressionWarning")}</span>
             </div>
           ) : null}
 
@@ -478,20 +475,20 @@ export function EvalTrendView() {
             <div className="flex items-start gap-2 rounded-lg border border-amber-500/40 bg-amber-500/5 px-4 py-3 text-xs text-muted-foreground">
               <CircleAlert className="mt-0.5 size-4 shrink-0 text-amber-600 dark:text-amber-400" />
               <span>
-                A scheduled run failed to authenticate ({fmtDate(summary.lastInfraFailure.startedAt)}): {summary.lastInfraFailure.detail ?? "unknown"}. If recent, the scheduler login needs attention — see AUTORUN_PILOT_RUNBOOK.
+                {t("evalPage.authFailure", { time: fmtDate(summary.lastInfraFailure.startedAt, i18n.language), detail: summary.lastInfraFailure.detail ?? t("evalPage.unknown") })}
               </span>
             </div>
           ) : null}
 
           <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
-            <MetricCard title="Sub-capability eval" metric={summary.subcap} minRuns={summary.minRunsForLines} />
-            <MetricCard title="Held-out eval" metric={summary.heldout} minRuns={summary.minRunsForLines} />
+            <MetricCard title={t("evalPage.subcapEval")} metric={summary.subcap} minRuns={summary.minRunsForLines} />
+            <MetricCard title={t("evalPage.heldoutEval")} metric={summary.heldout} minRuns={summary.minRunsForLines} />
           </div>
         </>
       ) : !loading ? (
         <EmptyState
-          title="No eval trend yet"
-          hint="The scheduled real-agent evals (LaunchAgents: nightly subcap, weekly held-out) haven't written a trend record. Run `pnpm eval:real` or kickstart the agent to seed one."
+          title={t("evalPage.empty")}
+          hint={t("evalPage.emptyHint")}
         />
       ) : null}
     </div>

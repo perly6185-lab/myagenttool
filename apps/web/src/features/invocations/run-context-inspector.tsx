@@ -16,20 +16,25 @@ import {
   usageFor,
 } from "@/features/selection";
 import {
-  costOwnerText,
-  readableAudit,
-  readableCancellation,
-  readableDelivery,
-  readableHealthLabel,
   healthTone,
-  resultSummary,
-  resultTitle,
   statusTone,
-  usageText,
 } from "@/lib/readable-labels";
 import type { WebNavigationLink } from "@/lib/console-state";
+import { useAppTranslation } from "@/lib/i18n/use-app-translation";
+import {
+  audit as auditLabel,
+  cancellation,
+  costOwner,
+  delivery,
+  healthLabel,
+  invocationStatus,
+  resultDescription,
+  resultHeading,
+  usage as usageLabel,
+} from "@/lib/i18n/readable-labels";
 
 export function RunContextInspector() {
+  const { t } = useAppTranslation();
   const { data: state } = useConsoleState();
   const selectedAgentId = useUiStore((s) => s.selectedAgentId);
   const selectedInvocationId = useUiStore((s) => s.selectedInvocationId);
@@ -68,14 +73,14 @@ export function RunContextInspector() {
         <Card>
           <CardHeader className="flex-row items-center justify-between">
             <CardTitle>{agent.name}</CardTitle>
-            <StatusBadge tone={healthTone(agent.health)}>{readableHealthLabel(agent.health)}</StatusBadge>
+            <StatusBadge tone={healthTone(agent.health)}>{healthLabel(t, agent.health)}</StatusBadge>
           </CardHeader>
           <CardContent>
             <FactList
               facts={[
-                { term: "Capability", value: agent.capabilities?.[0]?.description ?? "No capability selected" },
-                { term: "Cost owner", value: costOwnerText(agent.economics, usage) },
-                { term: "Usage", value: usageText(usage) },
+                { term: t("runContext.capability"), value: agent.capabilities?.[0]?.description ?? t("runContext.noCapability") },
+                { term: t("runContext.costOwner"), value: costOwner(t, agent.economics, usage) },
+                { term: t("runContext.usage"), value: usageLabel(t, usage) },
               ]}
             />
           </CardContent>
@@ -87,26 +92,26 @@ export function RunContextInspector() {
           <CardHeader>
             <CardTitle>
               {approval.status === "pending"
-                ? "Review before running"
+                ? t("runContext.review")
                 : approval.status === "approved"
-                  ? "Approval granted"
-                  : "Approval denied"}
+                  ? t("runContext.approved")
+                  : t("runContext.denied")}
             </CardTitle>
           </CardHeader>
           <CardContent className="space-y-3">
             <FactList
               facts={[
-                { term: "Risk", value: approval.summary?.risk ?? `${approval.riskLevel} risk` },
-                { term: "Data", value: approval.summary?.data ?? "Task input and result are recorded." },
-                { term: "Cost", value: approval.summary?.cost ?? "Cost is unknown." },
-                { term: "Cancel", value: approval.summary?.cancellation ?? "Cancellation behavior is unknown." },
-                { term: "Tags", value: approval.riskTags?.length ? approval.riskTags.join(", ") : "No tags declared" },
+                { term: t("runContext.risk"), value: approval.summary?.risk ?? t("runContext.riskValue", { level: approval.riskLevel ?? "unknown" }) },
+                { term: t("runContext.data"), value: approval.summary?.data ?? t("runContext.recorded") },
+                { term: t("runContext.cost"), value: approval.summary?.cost ?? t("runContext.unknownCost") },
+                { term: t("runContext.cancel"), value: approval.summary?.cancellation ?? t("runContext.unknownCancel") },
+                { term: t("runContext.tags"), value: approval.riskTags?.length ? approval.riskTags.join(", ") : t("runContext.noTags") },
               ]}
             />
             {approval.status === "pending" ? (
               <div className="flex gap-2">
                 <Button size="sm" disabled={pending} onClick={() => execute(() => api.approveApproval(approval.id))}>
-                  Approve run
+                  {t("runContext.approve")}
                 </Button>
                 <Button
                   size="sm"
@@ -114,7 +119,7 @@ export function RunContextInspector() {
                   disabled={pending}
                   onClick={() => execute(() => api.denyApproval(approval.id))}
                 >
-                  Deny run
+                  {t("runContext.deny")}
                 </Button>
               </div>
             ) : null}
@@ -127,12 +132,12 @@ export function RunContextInspector() {
       <>
       <Card>
         <CardHeader className="flex-row items-center justify-between">
-          <CardTitle>{resultTitle(invocation?.status)}</CardTitle>
-          {invocation ? <StatusBadge tone={statusTone(invocation.status)}>{invocation.status}</StatusBadge> : null}
+          <CardTitle>{resultHeading(t, invocation?.status)}</CardTitle>
+          {invocation ? <StatusBadge tone={statusTone(invocation.status)}>{invocationStatus(t, invocation.status)}</StatusBadge> : null}
         </CardHeader>
         <CardContent className="space-y-3">
           <p className="text-sm text-muted-foreground [overflow-wrap:anywhere]">
-            {resultSummary(invocation, audit)}
+            {resultDescription(t, invocation, audit)}
           </p>
           {invocation ? (
             <Button
@@ -144,24 +149,24 @@ export function RunContextInspector() {
               }
               onClick={() => execute(() => api.troubleshoot(invocation.id))}
             >
-              Troubleshoot
+              {t("runContext.troubleshoot")}
             </Button>
           ) : null}
           {report ? (
             <div className="rounded-lg border border-border bg-muted/40 p-3">
-              <p className="mb-2 text-sm font-medium">Troubleshooting {report.invocationId}</p>
+              <p className="mb-2 text-sm font-medium">{t("runContext.troubleshooting", { id: report.invocationId })}</p>
               <FactList
                 facts={[
-                  { term: "Summary", value: report.summary },
-                  { term: "Bridge", value: report.bridgeState },
-                  { term: "Error", value: report.adapterError ?? "No adapter error text recorded." },
-                  { term: "Logs", value: report.logSummary },
-                  { term: "Fixes", value: report.suggestedFixes?.join(" ") ?? "Review the timeline and retry safely." },
+                  { term: t("runContext.summary"), value: report.summary },
+                  { term: t("runContext.bridge"), value: report.bridgeState },
+                  { term: t("runContext.error"), value: report.adapterError ?? t("runContext.noAdapterError") },
+                  { term: t("runContext.logs"), value: report.logSummary },
+                  { term: t("runContext.fixes"), value: report.suggestedFixes?.join(" ") ?? t("runContext.reviewTimeline") },
                 ]}
               />
               {report.webLinks ? (
                 <WebNavigationLinkActions
-                  title="Report links"
+                  title={t("runContext.reportLinks")}
                   links={[
                     report.webLinks.failedInvocation,
                     report.webLinks.troubleshooterInvocation,
@@ -178,14 +183,14 @@ export function RunContextInspector() {
 
       <Card>
         <CardHeader>
-          <CardTitle>What was recorded</CardTitle>
+          <CardTitle>{t("runContext.whatRecorded")}</CardTitle>
         </CardHeader>
         <CardContent>
           <FactList
             facts={[
-              { term: "Record", value: audit ? readableAudit(audit) : "Nothing recorded yet" },
-              { term: "Delivery", value: readableDelivery(invocation?.delivery?.state) },
-              { term: "Cancel", value: readableCancellation(invocation?.cancellation?.state) },
+              { term: t("runContext.record"), value: audit ? auditLabel(t, audit) : t("runContext.nothingRecorded") },
+              { term: t("runContext.delivery"), value: delivery(t, invocation?.delivery?.state) },
+              { term: t("runContext.cancel"), value: cancellation(t, invocation?.cancellation?.state) },
             ]}
           />
         </CardContent>

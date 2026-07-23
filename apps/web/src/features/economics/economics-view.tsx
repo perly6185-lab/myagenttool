@@ -10,6 +10,7 @@ import { useConsoleState } from "@/data/use-console-state";
 import { shortTime } from "@/lib/readable-labels";
 import { formatUsd as usd } from "@/lib/money";
 import type { LedgerEntry } from "@/lib/console-state";
+import { useAppTranslation } from "@/lib/i18n/use-app-translation";
 
 function statusTone(status?: string): "neutral" | "success" | "warning" {
   if (status === "finalized") return "success";
@@ -41,6 +42,7 @@ function amountCell(entry: LedgerEntry) {
 }
 
 export function EconomicsView() {
+  const { t } = useAppTranslation();
   const { data: state } = useConsoleState();
   const summary = state?.ledgerSummary;
   const entries = state?.ledgerEntries ?? [];
@@ -49,21 +51,21 @@ export function EconomicsView() {
     <div className="space-y-5">
       <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
         <Metric
-          label="Finalized cost"
+          label={t("economicsPage.finalizedCost")}
           value={usd(summary?.finalizedUsd ?? 0)}
-          hint={`${summary?.knownEntries ?? 0} metered run(s)`}
+          hint={t("economicsPage.meteredRuns", { count: summary?.knownEntries ?? 0 })}
         />
         <Metric
-          label="Estimated cost"
+          label={t("economicsPage.estimatedCost")}
           value={`~${usd(summary?.estimatedUsd ?? 0)}`}
-          hint={`${summary?.estimatedEntries ?? 0} token-estimated run(s)`}
+          hint={t("economicsPage.estimatedRuns", { count: summary?.estimatedEntries ?? 0 })}
         />
         <Metric
-          label="Unmetered runs"
+          label={t("economicsPage.unmeteredRuns")}
           value={String(summary?.unknownEntries ?? 0)}
-          hint="No cost reported or estimable"
+          hint={t("economicsPage.noCost")}
         />
-        <Metric label="Billable runs" value={String(summary?.billableEntries ?? 0)} hint="Flagged billable by the agent" />
+        <Metric label={t("economicsPage.billableRuns")} value={String(summary?.billableEntries ?? 0)} hint={t("economicsPage.billableHint")} />
       </div>
 
       <SpendDashboard summary={summary} entries={entries} />
@@ -75,11 +77,11 @@ export function EconomicsView() {
       <div className="grid gap-5 lg:grid-cols-2">
         <Card>
           <CardHeader>
-            <CardTitle>By agent</CardTitle>
+            <CardTitle>{t("economicsPage.byAgent")}</CardTitle>
           </CardHeader>
           <CardContent className="space-y-2">
             {!summary?.byAgent?.length ? (
-              <EmptyState title="No agent spend yet" hint="Codex/Claude runs report cost here." />
+              <EmptyState title={t("economicsPage.noAgentSpend")} hint={t("economicsPage.noAgentSpendHint")} />
             ) : (
               summary.byAgent.map((agent) => (
                 <div
@@ -106,26 +108,20 @@ export function EconomicsView() {
 
       <Card>
         <CardHeader>
-          <CardTitle>Cost ledger</CardTitle>
+          <CardTitle>{t("economicsPage.costLedger")}</CardTitle>
           <p className="text-sm text-muted-foreground">
-            One entry per completed invocation — reported amounts are finalized; token estimates are marked ~.
+            {t("economicsPage.ledgerHint")}
           </p>
         </CardHeader>
         <CardContent>
           {entries.length === 0 ? (
-            <EmptyState title="Ledger is empty" hint="Run an agent (Codex/Claude report real cost) to record entries." />
+            <EmptyState title={t("economicsPage.ledgerEmpty")} hint={t("economicsPage.ledgerEmptyHint")} />
           ) : (
             <div className="overflow-hidden rounded-lg border border-border">
               <table className="w-full text-sm">
                 <thead className="bg-muted/40 text-xs uppercase tracking-wide text-muted-foreground">
                   <tr>
-                    <th className="px-3 py-2 text-left font-medium">Time</th>
-                    <th className="px-3 py-2 text-left font-medium">Agent</th>
-                    <th className="px-3 py-2 text-left font-medium">Provider</th>
-                    <th className="px-3 py-2 text-left font-medium">Cost owner</th>
-                    <th className="px-3 py-2 text-right font-medium">Tokens</th>
-                    <th className="px-3 py-2 text-right font-medium">Amount</th>
-                    <th className="px-3 py-2 text-right font-medium">Status</th>
+                    {["time","agent","provider","costOwner","tokens","amount","status"].map((key) => <th key={key} className={`px-3 py-2 ${["tokens","amount","status"].includes(key) ? "text-right" : "text-left"} font-medium`}>{t(`economicsPage.${key}` as never)}</th>)}
                   </tr>
                 </thead>
                 <tbody>

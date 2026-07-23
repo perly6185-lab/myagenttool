@@ -4,6 +4,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { api } from "@/data/use-console-actions";
 import { cn } from "@/lib/cn";
+import { useAppTranslation } from "@/lib/i18n/use-app-translation";
 
 interface ReadinessCheck {
   key: string;
@@ -26,6 +27,7 @@ function dot(status: ReadinessCheck["status"]) {
 // missing (agent, bridge, verify, budget, brakes) — so the operator isn't left
 // guessing why a run won't start.
 export function AutoRunReadinessCard({ projectId }: { projectId: string | null }) {
+  const { t } = useAppTranslation();
   const [readiness, setReadiness] = useState<Readiness | null>(null);
 
   const load = useCallback(async () => {
@@ -54,9 +56,9 @@ export function AutoRunReadinessCard({ projectId }: { projectId: string | null }
       <CardHeader className="pb-2">
         <CardTitle className="flex items-center justify-between gap-2 text-sm">
           <span className="flex items-center gap-2">
-            <ShieldCheck className="size-4" /> Readiness
+            <ShieldCheck className="size-4" /> {t("autoRunActions.readiness")}
           </span>
-          {readiness.ready ? <Badge tone="success">ready</Badge> : <Badge tone="danger">not ready</Badge>}
+          {readiness.ready ? <Badge tone="success">{t("autoRunActions.ready")}</Badge> : <Badge tone="danger">{t("autoRunActions.notReady")}</Badge>}
         </CardTitle>
       </CardHeader>
       <CardContent className="flex flex-col gap-1">

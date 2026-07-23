@@ -26,6 +26,9 @@ import {
   statusTone,
 } from "@/lib/readable-labels";
 import type { AgentSnapshot, ConsoleSnapshot, InvocationSnapshot } from "@/lib/console-state";
+import { useAppTranslation } from "@/lib/i18n/use-app-translation";
+
+type Translate = ReturnType<typeof useAppTranslation>["t"];
 
 const RUNNING_STATES = ["queued", "dispatching", "waiting_for_local_approval", "running", "cancelling"];
 const CANCELLABLE_STATES = ["queued", "dispatching", "waiting_for_local_approval", "running"];
@@ -35,16 +38,17 @@ function runBlockReason(
   agent: AgentSnapshot | null,
   hasTask: boolean,
   invocation: InvocationSnapshot | null,
+  t: Translate,
 ): string {
-  if (!state) return "Server is offline.";
-  if (!hasTask) return "Enter a task before running.";
-  if (!agent) return "Select an agent before running.";
+  if (!state) return t("dashboard.block.offline");
+  if (!hasTask) return t("dashboard.block.task");
+  if (!agent) return t("dashboard.block.agent");
   if (agent.status === "disabled")
-    return `${agent.name} is disabled. Enable it before running a new task.`;
+    return t("dashboard.block.disabled", { name: agent.name });
   if (agent.health?.status === "unhealthy")
-    return `${agent.name} is unhealthy. Run a health check after fixing it.`;
+    return t("dashboard.block.unhealthy", { name: agent.name });
   if (RUNNING_STATES.includes(invocation?.status ?? ""))
-    return "Wait for the current task to finish or cancel it.";
+    return t("dashboard.block.running");
   return "";
 }
 
@@ -56,6 +60,7 @@ function runBlockReason(
 export type DashboardSurface = "overview" | "workspace";
 
 export function DashboardView({ surface = "overview" }: { surface?: DashboardSurface } = {}) {
+  const { t } = useAppTranslation();
   const { data: state } = useConsoleState();
   const selectedAgentId = useUiStore((s) => s.selectedAgentId);
   const setSelectedAgentId = useUiStore((s) => s.setSelectedAgentId);
@@ -79,8 +84,8 @@ export function DashboardView({ surface = "overview" }: { surface?: DashboardSur
     if (targetWorktree?.agentId) setSelectedAgentId(targetWorktree.agentId);
   }, [targetWorktree?.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const [task, setTask] = useState(
-    "Summarize the local demo state and confirm the bridge is working.",
+  const [task, setTask] = useState<string>(
+    t("dashboard.defaultTask"),
   );
 
   const { agents, agent } = resolveAgents(state, selectedAgentId);
@@ -94,7 +99,7 @@ export function DashboardView({ surface = "overview" }: { surface?: DashboardSur
 
   const runDisabled = !state || !hasTask || !agent || isRunning || disabledAgent || unhealthy || pending;
   const cancelDisabled = !invocation || !CANCELLABLE_STATES.includes(invocation.status ?? "");
-  const blockReason = runBlockReason(state, agent, hasTask, invocation);
+  const blockReason = runBlockReason(state, agent, hasTask, invocation, t);
 
   // Ascending (oldest → newest) so the transcript reads as a conversation and
   // new blocks append at the bottom.
@@ -157,7 +162,7 @@ export function DashboardView({ surface = "overview" }: { surface?: DashboardSur
       <Card className="flex min-h-48 flex-1 flex-col">
         <CardHeader>
           <SectionHeading
-            eyebrow="Activity"
+            eyebrow={t("dashboard.activity")}
             title={activityTitle(invocation?.status)}
             actions={<StatusBadge tone={statusTone(invocation?.status)}>{readableStatus(invocation?.status)}</StatusBadge>}
           />
@@ -186,13 +191,13 @@ export function DashboardView({ surface = "overview" }: { surface?: DashboardSur
       {/* Composer — pinned below the transcript. */}
       <Card className="shrink-0">
         <CardHeader className="pb-2">
-          <CardTitle>What should your computer do?</CardTitle>
+          <CardTitle>{t("dashboard.composerTitle")}</CardTitle>
         </CardHeader>
         <CardContent className="space-y-3">
           {resumeFromInvocationId ? (
             <div className="flex items-center justify-between gap-2 rounded-md border border-primary/40 bg-primary/5 px-3 py-2 text-xs">
               <span className="min-w-0">
-                Continuing session
+                {t("dashboard.continueSession")}
                 <span className="block truncate font-medium [overflow-wrap:anywhere]">
                   {resumeSource?.input?.task ?? resumeFromInvocationId}
                 </span>
@@ -202,20 +207,20 @@ export function DashboardView({ surface = "overview" }: { surface?: DashboardSur
                 onClick={() => setResumeFromInvocationId(null)}
                 className="shrink-0 text-muted-foreground hover:text-foreground"
               >
-                Start fresh
+                {t("dashboard.startFresh")}
               </button>
             </div>
           ) : null}
-          <Textarea rows={3} value={task} onChange={(e) => setTask(e.target.value)} aria-label="Task" />
+          <Textarea rows={3} value={task} onChange={(e) => setTask(e.target.value)} aria-label={t("dashboard.task")} />
 
           <div className="grid gap-3 sm:grid-cols-2">
-            <Field label="Project">
+            <Field label={t("dashboard.project")}>
               <Select
                 value={projectId ?? ""}
                 onChange={(e) => setSelectedProjectId(e.target.value || null)}
-                aria-label="Project"
+                aria-label={t("dashboard.project")}
               >
-                {projects.length === 0 ? <option value="">No project</option> : null}
+                {projects.length === 0 ? <option value="">{t("dashboard.noProject")}</option> : null}
                 {projects.map((p) => (
                   <option key={p.id} value={p.id}>
                     {p.name}
@@ -223,14 +228,14 @@ export function DashboardView({ surface = "overview" }: { surface?: DashboardSur
                 ))}
               </Select>
             </Field>
-            <Field label="Agent">
+            <Field label={t("dashboard.agent")}>
               <Select
                 value={agent?.id ?? ""}
                 onChange={(e) => setSelectedAgentId(e.target.value || null)}
-                aria-label="Agent"
+                aria-label={t("dashboard.agent")}
                 title={agent ? `${agent.name} — ${readableAgentStatus(agent.status)} — ${readableHealthLabel(agent.health)}` : undefined}
               >
-                {agents.length === 0 ? <option value="">No agent registered</option> : null}
+                {agents.length === 0 ? <option value="">{t("dashboard.noAgent")}</option> : null}
                 {agents.map((item) => (
                   <option key={item.id} value={item.id}>
                     {item.name} — {readableAgentStatus(item.status)} — {readableHealthLabel(item.health)}
@@ -243,7 +248,7 @@ export function DashboardView({ surface = "overview" }: { surface?: DashboardSur
           {targetWorktree ? (
             <div className="flex items-center justify-between gap-2 rounded-md border border-primary/40 bg-primary/5 px-3 py-2 text-xs">
               <span className="min-w-0">
-                Running in worktree <span className="font-medium">{targetWorktree.branch}</span>
+                {t("dashboard.runningIn", { branch: targetWorktree.branch })}
                 <span className="block truncate font-mono text-[11px] text-muted-foreground">{targetWorktree.path}</span>
               </span>
               <button
@@ -251,21 +256,21 @@ export function DashboardView({ surface = "overview" }: { surface?: DashboardSur
                 onClick={() => setSelectedWorktreeId(null)}
                 className="shrink-0 text-muted-foreground hover:text-foreground"
               >
-                Use project default
+                {t("dashboard.projectDefault")}
               </button>
             </div>
           ) : null}
 
           <div className="flex flex-wrap items-center gap-2">
             <Button onClick={runTask} disabled={runDisabled}>
-              {localOffline ? "Queue for this computer" : "Run on this computer"}
+              {localOffline ? t("dashboard.queue") : t("dashboard.run")}
             </Button>
             <Button
               variant="secondary"
               disabled={cancelDisabled || pending}
               onClick={() => invocation && execute(() => api.cancelInvocation(invocation.id))}
             >
-              Cancel task
+              {t("dashboard.cancel")}
             </Button>
             {blockReason || error ? (
               <span className="text-xs text-muted-foreground" aria-live="polite">
@@ -276,30 +281,30 @@ export function DashboardView({ surface = "overview" }: { surface?: DashboardSur
 
           <details className="group rounded-lg border border-border px-3 py-2">
             <summary className="cursor-pointer list-none text-sm font-medium text-muted-foreground">
-              Technical details
+              {t("dashboard.details")}
             </summary>
             <div className="space-y-3 pt-3">
               <div className="grid grid-cols-2 gap-3 rounded-lg border border-border bg-muted/30 p-3 text-sm sm:grid-cols-4">
-                <ReviewItem label="Safety" value={agent?.registrationNotes?.risk ?? "Review the selected agent before running."} />
-                <ReviewItem label="Data" value={agent?.registrationNotes?.data ?? "Task input and result are recorded."} />
-                <ReviewItem label="Cost" value={agent?.registrationNotes?.cost ?? costText(agent?.economics)} />
+                <ReviewItem label={t("dashboard.safety")} value={agent?.registrationNotes?.risk ?? t("dashboard.reviewAgent")} />
+                <ReviewItem label={t("dashboard.data")} value={agent?.registrationNotes?.data ?? t("dashboard.recorded")} />
+                <ReviewItem label={t("dashboard.cost")} value={agent?.registrationNotes?.cost ?? costText(agent?.economics)} />
                 <ReviewItem
-                  label="Cancellation"
+                  label={t("dashboard.cancellation")}
                   value={agent?.registrationNotes?.cancellation ?? cancellationText(agent?.adapter)}
                 />
               </div>
               <FactList
                 facts={[
-                  { term: "Computer", value: state?.device ? `${state.device.name} — ${readableAgentStatus(state.device.status)}` : "—" },
-                  { term: "Adapter", value: adapterText(agent?.adapter) },
-                  { term: "Lifecycle", value: lifecycleText(agent) },
-                  { term: "Task ID", value: invocation?.id ?? "No task yet" },
-                  { term: "Trace", value: invocation?.traceId ?? "No trace yet" },
+                  { term: t("dashboard.computer"), value: state?.device ? `${state.device.name} — ${readableAgentStatus(state.device.status)}` : "—" },
+                  { term: t("dashboard.adapter"), value: adapterText(agent?.adapter) },
+                  { term: t("dashboard.lifecycle"), value: lifecycleText(agent) },
+                  { term: t("dashboard.taskId"), value: invocation?.id ?? t("dashboard.noTask") },
+                  { term: t("dashboard.trace"), value: invocation?.traceId ?? t("dashboard.noTrace") },
                   {
-                    term: "State",
+                    term: t("dashboard.state"),
                     value: invocation
-                      ? `${invocation.status} / ${invocation.delivery?.state ?? "no delivery"}`
-                      : "No task yet",
+                      ? `${invocation.status} / ${invocation.delivery?.state ?? t("dashboard.noDelivery")}`
+                      : t("dashboard.noTask"),
                   },
                 ]}
               />

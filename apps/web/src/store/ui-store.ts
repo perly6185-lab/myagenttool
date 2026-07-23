@@ -8,6 +8,14 @@ import {
   type SkinId,
   type SkinMode,
 } from "@/lib/skins";
+import {
+  DEFAULT_LOCALE,
+  detectLocale,
+  isSupportedLocale,
+  LOCALE_STORAGE_KEY,
+  normalizeLocale,
+  type SupportedLocale,
+} from "@/lib/i18n/locale";
 
 export type SectionKey =
   | "dashboard"
@@ -73,8 +81,11 @@ interface UiState {
   /** Active visual skin + light/dark mode; applied to <html> by useSkinSync. */
   skin: SkinId;
   mode: SkinMode;
+  /** Product presentation language; protocol values and user content stay unchanged. */
+  locale: SupportedLocale;
   setSkin: (skin: SkinId) => void;
   setMode: (mode: SkinMode) => void;
+  setLocale: (locale: SupportedLocale) => void;
   setSection: (section: SectionKey) => void;
   setSelectedAgentId: (id: string | null) => void;
   setSelectedInvocationId: (id: string | null) => void;
@@ -102,7 +113,7 @@ export const DEFAULT_COLLAPSED_NAV_GROUPS = ["configure", "ledgers"];
  * script reads the same key before React mounts; boot-skin-script.test.mjs pins
  * them together so the two can't drift (#1360).
  */
-export const UI_STORE_PERSIST_KEY = "myagenttool-ui";
+export const UI_STORE_PERSIST_KEY = LOCALE_STORAGE_KEY;
 
 export const SECTION_KEYS: SectionKey[] = [
   "dashboard",
@@ -250,8 +261,10 @@ export const useUiStore = create<UiState>()(
         collapsedNavGroups: [...DEFAULT_COLLAPSED_NAV_GROUPS],
         skin: DEFAULT_SKIN,
         mode: DEFAULT_MODE,
+        locale: detectLocale(),
         setSkin: (skin) => set({ skin }),
         setMode: (mode) => set({ mode }),
+        setLocale: (locale) => set({ locale: normalizeLocale(locale) ?? DEFAULT_LOCALE }),
         setSection: (section) => set({ section }),
         setSelectedAgentId: (selectedAgentId) => set({ selectedAgentId }),
         setSelectedInvocationId: (selectedInvocationId) => set({ selectedInvocationId }),
@@ -297,6 +310,7 @@ export const useUiStore = create<UiState>()(
         collapsedNavGroups: state.collapsedNavGroups,
         skin: state.skin,
         mode: state.mode,
+        locale: state.locale,
       }),
       merge: (persisted, current) => {
         const saved = (persisted ?? {}) as Partial<UiState>;
@@ -312,6 +326,9 @@ export const useUiStore = create<UiState>()(
         // A skin/mode removed in a later release falls back to the default.
         if (!isSkinId(merged.skin)) merged.skin = DEFAULT_SKIN;
         if (!isSkinMode(merged.mode)) merged.mode = DEFAULT_MODE;
+        // Old blobs have no locale and keep the system-detected current value;
+        // stale/unsupported saved values never escape into i18next or the DOM.
+        if (!isSupportedLocale(saved.locale)) merged.locale = current.locale;
         // Explicit deep-link params override restored navigation selections.
         applyUrlNavigation(merged, navigationFromCurrentUrl());
         return merged;

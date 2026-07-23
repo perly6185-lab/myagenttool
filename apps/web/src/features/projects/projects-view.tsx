@@ -10,7 +10,7 @@ import { useConsoleState } from "@/data/use-console-state";
 import { useAsyncAction, api } from "@/data/use-console-actions";
 import { useUiStore } from "@/store/ui-store";
 import { cn } from "@/lib/cn";
-import { formatUsd as usd } from "@/lib/money";
+import { useAppTranslation } from "@/lib/i18n/use-app-translation";
 import type {
   BudgetStatus,
   ProjectSnapshot,
@@ -19,6 +19,7 @@ import type {
 } from "@/lib/console-state";
 
 export function ProjectsView() {
+  const { t } = useAppTranslation();
   const { data: state } = useConsoleState();
   const { execute, pending } = useAsyncAction();
   const projects = state?.projects ?? [];
@@ -55,14 +56,14 @@ export function ProjectsView() {
     <div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_minmax(0,0.8fr)]">
       <Card>
         <CardHeader>
-          <CardTitle>Projects</CardTitle>
+          <CardTitle>{t("projects.title")}</CardTitle>
           <p className="text-sm text-muted-foreground">
-            A project groups invocations and owns a budget. Repo-backed projects show their main worktree.
+            {t("projects.description")}
           </p>
         </CardHeader>
         <CardContent className="space-y-2">
           {projects.length === 0 ? (
-            <EmptyState title="No projects" hint="Register your first project on the right." />
+            <EmptyState title={t("projects.empty")} hint={t("projects.emptyHint")} />
           ) : (
             projects.map((project) => (
               <ProjectRow
@@ -87,8 +88,8 @@ export function ProjectsView() {
 
       <Card>
         <CardHeader>
-          <CardTitle>Register a project</CardTitle>
-          <p className="text-sm text-muted-foreground">Clone a repo, link a local checkout, or create an empty project.</p>
+          <CardTitle>{t("projects.register")}</CardTitle>
+          <p className="text-sm text-muted-foreground">{t("projects.registerHint")}</p>
         </CardHeader>
         <CardContent>
           <ProjectRegisterForm />
@@ -111,6 +112,7 @@ export function originOf(project: ProjectSnapshot): "none" | "local" | "remote" 
 // Where this project pushes, and — when the answer is "nowhere" — the one click
 // that fixes it without an account.
 function OriginRow({ project }: { project: ProjectSnapshot }) {
+  const { t } = useAppTranslation();
   const { execute, pending, error } = useAsyncAction();
   const kind = originOf(project);
   if (kind === "not-a-repo") return null;
@@ -118,25 +120,25 @@ function OriginRow({ project }: { project: ProjectSnapshot }) {
   return (
     <div className="mt-1.5 flex items-center gap-2 text-xs">
       {kind === "local" ? (
-        <span className="text-muted-foreground">Local repo · publishes on this device</span>
+        <span className="text-muted-foreground">{t("projects.localRepo")}</span>
       ) : kind === "remote" ? (
         <span className="min-w-0 truncate text-muted-foreground" title={project.git?.remoteUrl ?? ""}>
-          Remote · {project.git?.remoteUrl}
+          {t("projects.remote")} · {project.git?.remoteUrl}
         </span>
       ) : (
         <>
           {/* Said here rather than at publish time, where it currently surfaces as
               "No 'origin' remote to publish to. Add a remote first." — too late,
               and it reads as "go get a GitHub account". */}
-          <span className="text-amber-600 dark:text-amber-500">No origin · nowhere to publish yet</span>
+          <span className="text-amber-600 dark:text-amber-500">{t("projects.noOrigin")}</span>
           <Button
             variant="secondary"
             size="sm"
             disabled={pending}
             onClick={() => void execute(() => api.createLocalOrigin(project.id))}
-            title="Create a bare repo on this device and point origin at it — no account anywhere"
+            title={t("projects.createLocalTitle")}
           >
-            {pending ? "Creating…" : "Create local repo"}
+            {t(pending ? "projects.creating" : "projects.createLocal")}
           </Button>
           {error ? (
             <span className="min-w-0 truncate text-destructive" title={error}>
@@ -176,6 +178,7 @@ function ProjectRow({
   selectedWorktreeId: string | null;
   busy: boolean;
 }) {
+  const { t, i18n } = useAppTranslation();
   const isolated = project.isolation === "worktree";
   return (
     <div className={cn("rounded-lg border px-3 py-2.5", active ? "border-primary bg-primary/5" : "border-border")}>
@@ -185,14 +188,14 @@ function ProjectRow({
           <span className="min-w-0">
             <span className="flex items-center gap-2">
               <span className="truncate font-medium">{project.name}</span>
-              {current ? <Badge tone="success">Current</Badge> : null}
-              {active ? <Badge tone="neutral">Active</Badge> : null}
-              {project.status === "archived" ? <Badge tone="warning">Archived</Badge> : null}
+              {current ? <Badge tone="success">{t("projects.current")}</Badge> : null}
+              {active ? <Badge tone="neutral">{t("projects.active")}</Badge> : null}
+              {project.status === "archived" ? <Badge tone="warning">{t("projects.archived")}</Badge> : null}
             </span>
             <span className="block text-xs text-muted-foreground">
               {budget?.exists
-                ? `Budget ${usd(budget.spentUsd)} / ${usd(budget.limitUsd ?? 0)}${budget.over ? " · over" : ""}`
-                : "No budget set"}
+                ? t("projects.budget", { spent: formatProjectUsd(budget.spentUsd, i18n.language), limit: formatProjectUsd(budget.limitUsd ?? 0, i18n.language), over: budget.over ? t("projects.over") : "" })
+                : t("projects.noBudget")}
             </span>
           </span>
         </button>
@@ -203,13 +206,13 @@ function ProjectRow({
               size="sm"
               disabled={busy}
               onClick={onToggleIsolation}
-              title="Toggle per-invocation git worktree isolation"
+              title={t("projects.isolationTitle")}
             >
-              {isolated ? "Isolation: per-run" : "Isolation: shared"}
+              {t(isolated ? "projects.isolationRun" : "projects.isolationShared")}
             </Button>
           ) : null}
           <Button variant="secondary" size="sm" disabled={busy} onClick={onArchive}>
-            {project.status === "archived" ? "Restore" : "Archive"}
+            {t(project.status === "archived" ? "projects.restore" : "projects.archive")}
           </Button>
         </div>
       </div>
@@ -250,6 +253,7 @@ function TargetBlock({
   selectedWorktreeId: string | null;
   busy: boolean;
 }) {
+  const { t } = useAppTranslation();
   const tone = target.state === "ready" ? "success" : target.state === "failed" ? "danger" : "neutral";
   const mainWorktrees = worktrees.filter((w) => w.isMain);
   const named = worktrees.filter((w) => !w.isMain && !w.ephemeral);
@@ -261,7 +265,7 @@ function TargetBlock({
           {target.kind === "clone" ? "⬇ " : "📁 "}
           {target.rootPath}
         </span>
-        <Badge tone={tone}>{target.state}</Badge>
+        <Badge tone={tone}>{t(`projects.targetState.${target.state}` as "projects.targetState.ready")}</Badge>
       </div>
 
       {target.state === "cloning" ? (
@@ -276,14 +280,14 @@ function TargetBlock({
       {target.state === "failed" ? <p className="mt-1 text-xs text-destructive">{target.message}</p> : null}
 
       {mainWorktrees.map((w) => (
-        <WorktreeNode key={w.id} worktree={w} label="Main worktree" selected={w.id === selectedWorktreeId} />
+        <WorktreeNode key={w.id} worktree={w} label={t("projects.mainWorktree")} selected={w.id === selectedWorktreeId} />
       ))}
 
       {named.map((w) => (
         <WorktreeNode
           key={w.id}
           worktree={w}
-          label="worktree"
+          label={t("projects.worktree")}
           selected={w.id === selectedWorktreeId}
           onRemove={() => onRemoveWorktree(w.id)}
           busy={busy}
@@ -295,8 +299,8 @@ function TargetBlock({
       {isolated ? (
         <p className="mt-1.5 pl-3 text-xs text-muted-foreground">
           {ephemeral.length > 0
-            ? `${ephemeral.length} isolated run(s) active — each on its own agent/<id> worktree`
-            : "Per-run isolation on — each invocation gets a fresh git worktree"}
+            ? t("projects.isolatedRuns", { count: ephemeral.length })
+            : t("projects.isolationOn")}
         </p>
       ) : null}
     </div>
@@ -318,6 +322,7 @@ function WorktreeNode({
   onRemove?: () => void;
   busy?: boolean;
 }) {
+  const { t } = useAppTranslation();
   return (
     <div
       className={cn(
@@ -340,9 +345,9 @@ function WorktreeNode({
             disabled={busy}
             onClick={onRemove}
             className="shrink-0 text-muted-foreground hover:text-destructive disabled:opacity-50"
-            title="Remove worktree (keeps the branch)"
+            title={t("projects.removeWorktreeTitle")}
           >
-            Remove
+            {t("projects.remove")}
           </button>
         ) : null}
       </div>
@@ -351,4 +356,8 @@ function WorktreeNode({
       ) : null}
     </div>
   );
+}
+
+function formatProjectUsd(value: number, locale: string): string {
+  return new Intl.NumberFormat(locale, { style: "currency", currency: "USD", minimumFractionDigits: value < 1 ? 4 : 2, maximumFractionDigits: value < 1 ? 4 : 2 }).format(value);
 }

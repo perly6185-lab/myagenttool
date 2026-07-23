@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Loader2, Plus, Save, Trash2, ChevronUp, ChevronDown } from "lucide-react";
 import { api } from "@/data/use-console-actions";
 import { useConsoleState } from "@/data/use-console-state";
+import { useAppTranslation } from "@/lib/i18n/use-app-translation";
 
 // L1 in-app markdown-style editor for a .docx. Two modes over the same document:
 //  - Blocks: each <w:p> is a block (heading/text/**bold**/*italic*) with add/
@@ -21,6 +22,7 @@ interface Block {
 }
 
 export function DocxBlockEditor({ projectId, worktreeId, file, onChanged }: { projectId: string; worktreeId: string; file: string; onChanged?: () => void }) {
+  const { t } = useAppTranslation();
   const { data: state } = useConsoleState();
   const [blocks, setBlocks] = useState<Block[] | null>(null);
   const [original, setOriginal] = useState<{ path: string | null; md: string }[]>([]);
@@ -119,7 +121,7 @@ export function DocxBlockEditor({ projectId, worktreeId, file, onChanged }: { pr
       };
       const res = (await api.invokeCapability("app.app_officecli.apply.batch", body as Record<string, string>)) as { invocationId?: string };
       if (res?.invocationId) setInvId(res.invocationId);
-      else throw new Error("The edit was not accepted.");
+      else throw new Error(t("officeEditors.editRejected"));
     } catch (e) {
       setSaving(false);
       setError(e instanceof Error ? e.message : String(e));
@@ -139,26 +141,26 @@ export function DocxBlockEditor({ projectId, worktreeId, file, onChanged }: { pr
     } else if (inv.status === "failed" || inv.status === "rejected") {
       setInvId(null);
       setSaving(false);
-      setError("The edit was refused (approval, worktree, or an invalid value).");
+      setError(t("officeEditors.editRefused"));
     }
-  }, [state?.invocations, invId, load, onChanged]);
+  }, [state?.invocations, invId, load, onChanged, t]);
 
   if (loadState === "loading") {
-    return <span className="flex items-center gap-1 px-2 py-6 text-xs text-muted-foreground"><Loader2 className="size-3 animate-spin" /> loading document…</span>;
+    return <span className="flex items-center gap-1 px-2 py-6 text-xs text-muted-foreground"><Loader2 className="size-3 animate-spin" /> {t("officeEditors.loadingDocument")}</span>;
   }
   if (loadState === "error" || !blocks) {
-    return <span className="px-2 py-6 text-xs text-red-600 dark:text-red-400">Could not read the document — it may not render, or officecli is not installed.</span>;
+    return <span className="px-2 py-6 text-xs text-red-600 dark:text-red-400">{t("officeEditors.docReadFailed")}</span>;
   }
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       <div className="flex items-center justify-between gap-2 border-b border-border px-2 py-1.5">
         <div className="flex items-center gap-1 rounded border border-border p-0.5 text-[11px]">
-          <button type="button" onClick={toBlocks} className={`rounded px-1.5 py-0.5 ${mode === "blocks" ? "bg-accent font-medium" : "text-muted-foreground"}`}>Blocks</button>
+          <button type="button" onClick={toBlocks} className={`rounded px-1.5 py-0.5 ${mode === "blocks" ? "bg-accent font-medium" : "text-muted-foreground"}`}>{t("officeEditors.blocks")}</button>
           <button type="button" onClick={toMarkdown} className={`rounded px-1.5 py-0.5 ${mode === "markdown" ? "bg-accent font-medium" : "text-muted-foreground"}`}>Markdown</button>
         </div>
         <span className="min-w-0 flex-1 truncate text-[11px] text-muted-foreground">
-          <code className="font-mono"># </code> heading, <code className="font-mono">**bold**</code>, <code className="font-mono">*italic*</code>{mode === "markdown" ? " — blank line separates paragraphs" : ""}. One governed batch; unedited formatting preserved.
+          {t("officeEditors.docHint", { markdownHint: mode === "markdown" ? t("officeEditors.markdownHint") : "" })}
         </span>
         <button
           type="button"
@@ -167,7 +169,7 @@ export function DocxBlockEditor({ projectId, worktreeId, file, onChanged }: { pr
           className="flex shrink-0 items-center gap-1 rounded border border-border bg-background px-2 py-0.5 text-[11px] font-medium disabled:opacity-40"
         >
           {saving ? <Loader2 className="size-3 animate-spin" /> : <Save className="size-3" />}
-          {saving ? "Saving…" : "Save all"}
+          {t(saving ? "officeEditors.saving" : "officeEditors.saveAll")}
         </button>
       </div>
       {error ? <p className="px-2 pt-1 text-xs text-red-600 dark:text-red-400">{error}</p> : null}
@@ -188,7 +190,7 @@ export function DocxBlockEditor({ projectId, worktreeId, file, onChanged }: { pr
       <div className="min-h-0 flex-1 space-y-1.5 overflow-auto p-2">
         {blocks.length === 0 ? (
           <button type="button" onClick={() => addBelow(-1)} className="flex items-center gap-1 rounded border border-dashed border-border px-2 py-1 text-[11px] text-muted-foreground">
-            <Plus className="size-3" /> Add the first paragraph
+            <Plus className="size-3" /> {t("officeEditors.addFirst")}
           </button>
         ) : null}
         {blocks.map((block, index) => {
@@ -196,23 +198,23 @@ export function DocxBlockEditor({ projectId, worktreeId, file, onChanged }: { pr
           return (
             <div key={block.key} className="rounded-md border border-border bg-card p-1.5">
               <div className="mb-1 flex items-center gap-1.5">
-                <span className="font-mono text-[10px] text-muted-foreground">{level > 0 ? `H${level}` : block.path ? "¶" : "new"}</span>
-                <span className="min-w-0 flex-1 truncate font-mono text-[10px] text-muted-foreground/50">{block.path ?? "(unsaved)"}</span>
-                <button type="button" title="Move up" disabled={index === 0} onClick={() => moveBlock(index, -1)} className="rounded p-0.5 disabled:opacity-30"><ChevronUp className="size-3" /></button>
-                <button type="button" title="Move down" disabled={index === blocks.length - 1} onClick={() => moveBlock(index, 1)} className="rounded p-0.5 disabled:opacity-30"><ChevronDown className="size-3" /></button>
-                <button type="button" title="Add block below" onClick={() => addBelow(index)} className="rounded p-0.5"><Plus className="size-3" /></button>
-                <button type="button" title="Delete block" onClick={() => removeBlock(block.key)} className="rounded p-0.5 text-red-600 dark:text-red-400"><Trash2 className="size-3" /></button>
+                <span className="font-mono text-[10px] text-muted-foreground">{level > 0 ? `H${level}` : block.path ? "¶" : t("officeEditors.new")}</span>
+                <span className="min-w-0 flex-1 truncate font-mono text-[10px] text-muted-foreground/50">{block.path ?? t("officeEditors.unsaved")}</span>
+                <button type="button" title={t("officeEditors.moveUp")} disabled={index === 0} onClick={() => moveBlock(index, -1)} className="rounded p-0.5 disabled:opacity-30"><ChevronUp className="size-3" /></button>
+                <button type="button" title={t("officeEditors.moveDown")} disabled={index === blocks.length - 1} onClick={() => moveBlock(index, 1)} className="rounded p-0.5 disabled:opacity-30"><ChevronDown className="size-3" /></button>
+                <button type="button" title={t("officeEditors.addBelow")} onClick={() => addBelow(index)} className="rounded p-0.5"><Plus className="size-3" /></button>
+                <button type="button" title={t("officeEditors.deleteBlock")} onClick={() => removeBlock(block.key)} className="rounded p-0.5 text-red-600 dark:text-red-400"><Trash2 className="size-3" /></button>
               </div>
               <textarea
                 value={block.md}
                 onChange={(e) => setMd(block.key, e.target.value)}
                 rows={Math.min(6, Math.max(1, Math.ceil((block.md.length || 1) / 80)))}
                 readOnly={block.complex}
-                title={block.complex ? "This paragraph contains an inline image or link and can't be edited as text here — editing would remove it." : undefined}
+                title={block.complex ? t("officeEditors.complexTitle") : undefined}
                 className={`w-full resize-y rounded border border-border px-2 py-1 text-sm ${block.complex ? "bg-muted text-muted-foreground" : "bg-background"}`}
                 spellCheck={!block.complex}
               />
-              {block.complex ? <p className="mt-0.5 px-1 text-[10px] text-muted-foreground/70">contains an inline image or link — read-only (editing here would remove it)</p> : null}
+              {block.complex ? <p className="mt-0.5 px-1 text-[10px] text-muted-foreground/70">{t("officeEditors.complexHint")}</p> : null}
             </div>
           );
         })}

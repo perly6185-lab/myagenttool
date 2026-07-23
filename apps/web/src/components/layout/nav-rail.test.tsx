@@ -4,6 +4,7 @@ import { createElement, type ReactElement } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { NavRail } from "@/components/layout/nav-rail";
 import { DEFAULT_COLLAPSED_NAV_GROUPS, useUiStore } from "@/store/ui-store";
+import { i18n } from "@/lib/i18n";
 
 const stateMock = vi.hoisted(() => ({ useConsoleState: vi.fn() }));
 vi.mock("@/data/use-console-state", () => ({ useConsoleState: stateMock.useConsoleState }));
@@ -21,10 +22,11 @@ function renderNav(): void {
   );
 }
 
-afterEach(() => {
+afterEach(async () => {
   cleanup();
   localStorage.clear();
-  useUiStore.setState({ section: "dashboard", collapsedNavGroups: [...DEFAULT_COLLAPSED_NAV_GROUPS] });
+  useUiStore.setState({ section: "dashboard", collapsedNavGroups: [...DEFAULT_COLLAPSED_NAV_GROUPS], locale: "en-US" });
+  await i18n.changeLanguage("en-US");
   vi.clearAllMocks();
 });
 
@@ -54,5 +56,15 @@ describe("NavRail collapsible groups (#928)", () => {
     expect(screen.queryByText("Agents")).toBeNull();
     fireEvent.click(screen.getByText("Configure"));
     expect(screen.getByText("Agents")).toBeTruthy();
+  });
+
+  it("renders stable navigation keys in Simplified Chinese", async () => {
+    mockEmptyState();
+    useUiStore.setState({ section: "dashboard", locale: "zh-CN", collapsedNavGroups: [...DEFAULT_COLLAPSED_NAV_GROUPS] });
+    await i18n.changeLanguage("zh-CN");
+    renderNav();
+    expect(screen.getByText("概览")).toBeTruthy();
+    expect(screen.getByText("文档")).toBeTruthy();
+    expect(screen.getByRole("navigation", { name: "控制平面栏目" })).toBeTruthy();
   });
 });

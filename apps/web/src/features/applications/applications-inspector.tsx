@@ -62,6 +62,7 @@ import {
   sortedRecoveryActionRequests,
 } from "@/features/recovery/application-recovery-ui";
 import { readableStatus, statusTone } from "@/lib/readable-labels";
+import { useAppTranslation } from "@/lib/i18n/use-app-translation";
 import type {
   ApplicationOrchestration,
   ApplicationOrchestrationRecoveryAction,
@@ -113,21 +114,22 @@ interface PendingConfirm {
 // this checklist orients a freshly-registered application to its next step and
 // disappears once set up. The action buttons live in the Lifecycle card below.
 function SetupChecklist({ application, invocations }: { application: ApplicationSnapshot; invocations: InvocationSnapshot[] }) {
+  const { t } = useAppTranslation();
   const setup = applicationSetupState(application, invocations);
   if (setup.nextStep === "done") return null;
   const steps: { key: "probe" | "generate" | "run"; label: string; done: boolean }[] = [
-    { key: "probe", label: "Probe capabilities", done: setup.probed },
-    { key: "generate", label: "Generate orchestration", done: setup.hasOrchestration },
-    { key: "run", label: "First run", done: setup.hasRun },
+    { key: "probe", label: t("applicationInspector.setup.probe"), done: setup.probed },
+    { key: "generate", label: t("applicationInspector.setup.generate"), done: setup.hasOrchestration },
+    { key: "run", label: t("applicationInspector.setup.firstRun"), done: setup.hasRun },
   ];
   return (
     <Card>
       <CardHeader>
         <div className="flex items-center justify-between gap-3">
-          <CardTitle>Get set up</CardTitle>
+          <CardTitle>{t("applicationInspector.setup.title")}</CardTitle>
           <Badge tone="neutral">{setup.completed}/3</Badge>
         </div>
-        <p className="text-xs text-muted-foreground">Next: {setupNextHint(setup.nextStep)}</p>
+        <p className="text-xs text-muted-foreground">{t("applicationInspector.setup.next", { step: setupNextHint(setup.nextStep) })}</p>
       </CardHeader>
       <CardContent>
         <ol className="flex flex-wrap gap-x-4 gap-y-1 text-xs">
@@ -144,13 +146,14 @@ function SetupChecklist({ application, invocations }: { application: Application
             );
           })}
         </ol>
-        <p className="mt-2 text-xs text-muted-foreground">Use the Lifecycle actions below to complete the next step.</p>
+        <p className="mt-2 text-xs text-muted-foreground">{t("applicationInspector.setup.hint")}</p>
       </CardContent>
     </Card>
   );
 }
 
 function ApplicationActions({ application }: { application: ApplicationSnapshot }) {
+  const { t } = useAppTranslation();
   const { execute, pending, error } = useAsyncAction();
   const [confirm, setConfirm] = useState<PendingConfirm | null>(null);
   const status = application.status;
@@ -162,66 +165,66 @@ function ApplicationActions({ application }: { application: ApplicationSnapshot 
   return (
     <Card>
       <CardHeader>
-        <CardTitle>Lifecycle</CardTitle>
+        <CardTitle>{t("applicationInspector.lifecycle.title")}</CardTitle>
       </CardHeader>
       <CardContent className="space-y-2">
         <div className="flex flex-wrap gap-2">
           <Button size="sm" variant="secondary" disabled={pending} onClick={() => void execute(() => api.applicationLifecycle(application.id, "probe"))}>
-            Probe
+            {t("applicationInspector.lifecycle.probe")}
           </Button>
           {status !== "active" && status !== "archived" ? (
             <Button size="sm" variant="secondary" disabled={pending} onClick={() => setConfirm({
-              title: `Bring "${application.name}" online?`,
-              description: "Re-enables the application's execution-like capabilities.",
-              confirmLabel: "Bring online",
+              title: t("applicationInspectorTitles.online", { name: application.name }),
+              description: t("applicationInspectorConfirm.onlineDescription"),
+              confirmLabel: t("applicationInspector.lifecycle.online"),
               destructive: false,
               run: () => lifecycle("online"),
             })}>
-              Bring online
+              {t("applicationInspector.lifecycle.online")}
             </Button>
           ) : null}
           {status === "active" ? (
             <Button size="sm" variant="secondary" disabled={pending} onClick={() => setConfirm({
-              title: `Take "${application.name}" offline?`,
-              description: "Disables its execution-like capabilities until brought back online.",
-              confirmLabel: "Take offline",
+              title: t("applicationInspectorTitles.offline", { name: application.name }),
+              description: t("applicationInspectorConfirm.offlineDescription"),
+              confirmLabel: t("applicationInspector.lifecycle.offline"),
               destructive: true,
               run: () => lifecycle("offline"),
             })}>
-              Take offline
+              {t("applicationInspector.lifecycle.offline")}
             </Button>
           ) : null}
           {status !== "archived" ? (
             <Button size="sm" variant="secondary" disabled={pending} onClick={() => setConfirm({
-              title: `Archive "${application.name}"?`,
-              description: "Archived applications can no longer be invoked.",
-              confirmLabel: "Archive",
+              title: t("applicationInspectorTitles.archive", { name: application.name }),
+              description: t("applicationInspectorConfirm.archiveDescription"),
+              confirmLabel: t("applicationInspector.lifecycle.archive"),
               destructive: true,
               run: () => lifecycle("archive"),
             })}>
-              Archive
+              {t("applicationInspector.lifecycle.archive")}
             </Button>
           ) : null}
           {status === "active" ? (
             <Button size="sm" variant="secondary" disabled={pending} onClick={() => setConfirm({
-              title: `Refresh "${application.name}"?`,
-              description: "Re-records the application source state.",
-              confirmLabel: "Refresh",
+              title: t("applicationInspectorTitles.refresh", { name: application.name }),
+              description: t("applicationInspectorConfirm.refreshDescription"),
+              confirmLabel: t("applicationInspector.lifecycle.refresh"),
               destructive: false,
               run: () => lifecycle("refresh"),
             })}>
-              Refresh
+              {t("applicationInspector.lifecycle.refresh")}
             </Button>
           ) : null}
           {status !== "archived" && status !== "offline" ? (
             <Button size="sm" disabled={pending} onClick={() => setConfirm({
-              title: `Generate orchestration for "${application.name}"?`,
-              description: "Writes a governed LoopRoutine draft into the managed application directory.",
-              confirmLabel: "Generate",
+              title: t("applicationInspectorTitles.generate", { name: application.name }),
+              description: t("applicationInspectorConfirm.generateDescription"),
+              confirmLabel: t("applicationInspectorConfirm.generate"),
               destructive: false,
               run: () => withApprovalGrant("generate_orchestration", application.id, (token) => api.generateApplicationOrchestration(application.id, { approvalToken: token })),
             })}>
-              Generate orchestration
+              {t("applicationInspector.lifecycle.generateOrchestration")}
             </Button>
           ) : null}
           {status !== "archived" ? (
@@ -232,7 +235,7 @@ function ApplicationActions({ application }: { application: ApplicationSnapshot 
                 run: () => withApprovalGrant("auto-recovery-config", application.id, (token) => api.setApplicationAutoRecovery(application.id, { ...next, approvalToken: token })),
               });
             }}>
-              {application.autoRecovery?.enabled ? "Disable auto-recovery" : "Enable auto-recovery"}
+              {t(application.autoRecovery?.enabled ? "applicationInspector.lifecycle.disableRecovery" : "applicationInspector.lifecycle.enableRecovery")}
             </Button>
           ) : null}
           {status !== "archived" ? (
@@ -243,16 +246,16 @@ function ApplicationActions({ application }: { application: ApplicationSnapshot 
                 run: () => withApprovalGrant("health-probe-config", application.id, (token) => api.setApplicationHealthProbe(application.id, { ...next, approvalToken: token })),
               });
             }}>
-              {application.healthProbe?.enabled ? "Disable health probe" : "Enable health probe"}
+              {t(application.healthProbe?.enabled ? "applicationInspector.lifecycle.disableHealth" : "applicationInspector.lifecycle.enableHealth")}
             </Button>
           ) : null}
-          {application.autoRecovery?.enabled ? <Badge tone="warning">auto-recovery on · max {autoRecoveryMaxAttempts(application)}</Badge> : null}
-          {application.healthProbe?.enabled ? <Badge tone="warning">health probe on · every {healthProbeIntervalMinutes(application)}m</Badge> : null}
+          {application.autoRecovery?.enabled ? <Badge tone="warning">{t("applicationInspector.lifecycle.recoveryOn", { count: autoRecoveryMaxAttempts(application) })}</Badge> : null}
+          {application.healthProbe?.enabled ? <Badge tone="warning">{t("applicationInspector.lifecycle.healthOn", { minutes: healthProbeIntervalMinutes(application) })}</Badge> : null}
         </div>
         {application.autoRecovery?.enabled || application.healthProbe?.enabled ? (
           <div className="flex flex-wrap items-end gap-3">
             {application.autoRecovery?.enabled ? (
-              <Field label="Max auto-recovery attempts" className="w-52">
+              <Field label={t("applicationInspector.lifecycle.maxAttempts")} className="w-52">
                 <Select
                   value={String(autoRecoveryMaxAttempts(application))}
                   disabled={pending}
@@ -271,7 +274,7 @@ function ApplicationActions({ application }: { application: ApplicationSnapshot 
               </Field>
             ) : null}
             {application.healthProbe?.enabled ? (
-              <Field label="Health probe interval" className="w-52">
+              <Field label={t("applicationInspector.lifecycle.healthInterval")} className="w-52">
                 <Select
                   value={String(healthProbeIntervalMinutes(application))}
                   disabled={pending}
@@ -293,7 +296,7 @@ function ApplicationActions({ application }: { application: ApplicationSnapshot 
         ) : null}
         {application.health ? (
           <p className="text-xs text-muted-foreground">
-            Health:{" "}
+            {t("applicationInspector.lifecycle.health")}:{" "}
             <Badge tone={application.health.status === "healthy" ? "success" : application.health.status === "unhealthy" ? "danger" : "neutral"}>
               {application.health.status}
             </Badge>
@@ -332,6 +335,7 @@ function ApplicationResultSummary({
   onViewInvocation: (invocationId: string) => void;
   invocations: InvocationSnapshot[];
 }) {
+  const { t } = useAppTranslation();
   const { data: state } = useConsoleState();
   if (!result) return null;
   const importedCount = result.importedRecordCount ?? result.importedRecordIds?.length ?? 0;
@@ -344,23 +348,23 @@ function ApplicationResultSummary({
   return (
     <Card>
       <CardHeader>
-        <CardTitle>Latest result</CardTitle>
+        <CardTitle>{t("applicationInspectorDeep.latestResult")}</CardTitle>
       </CardHeader>
       <CardContent className="space-y-3">
         <div className="flex flex-wrap items-center gap-2">
           <Badge tone={statusTone(result.status ?? "unknown")}>{readableStatus(result.status ?? "unknown")}</Badge>
           {result.outputCollection ? <Badge tone="neutral">{result.outputCollection}</Badge> : null}
-          {importedCount > 0 ? <Badge tone="success">{importedCount} imported</Badge> : null}
-          {parsedResult?.truncated ? <Badge tone="warning">truncated</Badge> : null}
+          {importedCount > 0 ? <Badge tone="success">{t("applicationInspectorDeep.imported", { count: importedCount })}</Badge> : null}
+          {parsedResult?.truncated ? <Badge tone="warning">{t("applicationInspectorDeep.truncated")}</Badge> : null}
         </div>
         <FactList
           facts={[
-            { term: "Capability", value: result.capability ?? result.applicationAction ?? "—" },
-            { term: "Invocation", value: result.invocationId ?? "—" },
-            { term: "Completed", value: shortTime(result.completedAt) },
+            { term: t("applicationInspectorDeep.capability"), value: result.capability ?? result.applicationAction ?? "—" },
+            { term: t("applicationInspectorDeep.invocation"), value: result.invocationId ?? "—" },
+            { term: t("applicationInspectorDeep.completed"), value: shortTime(result.completedAt) },
             {
-              term: "Imported records",
-              value: importedCount > 0 ? (result.importedRecordIds ?? []).join(", ") || String(importedCount) : "None",
+              term: t("applicationInspectorDeep.importedRecords"),
+              value: importedCount > 0 ? (result.importedRecordIds ?? []).join(", ") || String(importedCount) : t("applicationInspectorDeep.none"),
             },
           ]}
         />
@@ -370,7 +374,7 @@ function ApplicationResultSummary({
         {result.invocationId ? (
           <Button size="sm" variant="secondary" onClick={() => onViewInvocation(result.invocationId!)}>
             <ExternalLink />
-            View invocation
+            {t("applicationInspectorDeep.viewInvocation")}
           </Button>
         ) : null}
       </CardContent>
@@ -381,12 +385,13 @@ function ApplicationResultSummary({
 // The bounded, in-place browser for what a run actually PRODUCED — the timeline
 // only ever said "result recorded"; the payload lives here.
 function ResultOutputBrowser({ output }: { output?: unknown }) {
+  const { t } = useAppTranslation();
   const formatted = formatResultOutput(output);
   if (!formatted) return null;
   return (
     <details className="rounded-md border border-border bg-muted/40 p-2">
       <summary className="cursor-pointer text-xs font-medium">
-        Result output{formatted.truncated ? " (truncated)" : ""}
+        {t("applicationInspectorDeep.resultOutput")}{formatted.truncated ? ` (${t("applicationInspectorDeep.truncated")})` : ""}
       </summary>
       <pre className="mt-2 max-h-72 overflow-auto whitespace-pre-wrap break-all text-xs text-muted-foreground">{formatted.text}</pre>
     </details>
@@ -399,11 +404,12 @@ function ResultOutputBrowser({ output }: { output?: unknown }) {
 // `# branch.oid …` text. An `unparsed` result (a git format we could not read)
 // falls back to its raw preview, honestly labelled.
 function RepoStateView({ result }: { result: ApplicationResult }) {
+  const { t } = useAppTranslation();
   const data = result.data ?? null;
   if (result.status === "unparsed" || !data) {
     return (
       <div className="rounded-md border border-border bg-muted/40 p-2 text-xs text-muted-foreground">
-        <span className="font-medium">Unreadable result</span> — the raw output is kept below.
+        <span className="font-medium">{t("applicationInspectorDeep.unreadable")}</span> — {t("applicationInspectorDeep.rawKept")}
       </div>
     );
   }
@@ -458,10 +464,11 @@ function RepoBranchCommit({ commit }: { commit: NonNullable<GitRepoState["commit
 }
 
 function RepoCommitList({ commits }: { commits: NonNullable<GitRepoState["commits"]> }) {
+  const { t } = useAppTranslation();
   const shown = commits.slice(0, 20);
   return (
     <div className="space-y-1">
-      <div className="font-medium">{commits.length} commit{commits.length === 1 ? "" : "s"}</div>
+      <div className="font-medium">{t("applicationInspectorDeep.commitCount", { count: commits.length })}</div>
       <ul className="space-y-0.5">
         {shown.map((commit) => (
           <li key={commit.hash} className="flex items-baseline gap-2">
@@ -470,24 +477,25 @@ function RepoCommitList({ commits }: { commits: NonNullable<GitRepoState["commit
           </li>
         ))}
       </ul>
-      {commits.length > shown.length ? <div className="text-muted-foreground">+{commits.length - shown.length} more</div> : null}
+      {commits.length > shown.length ? <div className="text-muted-foreground">{t("applicationInspectorDeep.more", { count: commits.length - shown.length })}</div> : null}
     </div>
   );
 }
 
 function RepoChangedFiles({ data }: { data: GitRepoState }) {
+  const { t } = useAppTranslation();
   const rows = [
     ...(data.changed ?? []).map((f) => ({ code: f.code ?? "M", path: f.path, tone: "warning" as const })),
     ...(data.unmerged ?? []).map((f) => ({ code: "U", path: f.path, tone: "danger" as const })),
     ...(data.untracked ?? []).map((f) => ({ code: "?", path: f.path, tone: "neutral" as const })),
   ];
   if (!rows.length) {
-    return <div className="text-muted-foreground">Working tree clean</div>;
+    return <div className="text-muted-foreground">{t("applicationInspectorDeep.treeClean")}</div>;
   }
   const shown = rows.slice(0, 30);
   return (
     <div className="space-y-1">
-      <div className="font-medium">{rows.length} changed file{rows.length === 1 ? "" : "s"}</div>
+      <div className="font-medium">{t("applicationInspectorDeep.changedFiles", { count: rows.length })}</div>
       <ul className="space-y-0.5 font-mono">
         {shown.map((row) => (
           <li key={`${row.code}:${row.path}`} className="flex items-baseline gap-2">
@@ -496,12 +504,13 @@ function RepoChangedFiles({ data }: { data: GitRepoState }) {
           </li>
         ))}
       </ul>
-      {rows.length > shown.length ? <div className="text-muted-foreground">+{rows.length - shown.length} more</div> : null}
+      {rows.length > shown.length ? <div className="text-muted-foreground">{t("applicationInspectorDeep.more", { count: rows.length - shown.length })}</div> : null}
     </div>
   );
 }
 
 function RepoDiffStat({ files, summary }: { files: NonNullable<GitRepoState["files"]>; summary?: GitRepoState["summary"] }) {
+  const { t } = useAppTranslation();
   const shown = files.slice(0, 30);
   return (
     <div className="space-y-1">
@@ -510,20 +519,21 @@ function RepoDiffStat({ files, summary }: { files: NonNullable<GitRepoState["fil
         {shown.map((file) => (
           <li key={file.path} className="flex items-baseline gap-2">
             <span className="truncate">{file.path}</span>
-            <span className="text-muted-foreground">{file.binary ? "Bin" : file.changes}</span>
+            <span className="text-muted-foreground">{file.binary ? t("applicationInspectorDeep.binary") : file.changes}</span>
           </li>
         ))}
       </ul>
-      {files.length > shown.length ? <div className="text-muted-foreground">+{files.length - shown.length} more</div> : null}
+      {files.length > shown.length ? <div className="text-muted-foreground">{t("applicationInspectorDeep.more", { count: files.length - shown.length })}</div> : null}
     </div>
   );
 }
 
 function RepoDiffSummaryLine({ summary, fallbackFiles }: { summary?: GitRepoState["summary"]; fallbackFiles?: number }) {
+  const { t } = useAppTranslation();
   const filesChanged = summary?.filesChanged ?? fallbackFiles ?? 0;
   return (
     <div className="flex flex-wrap items-center gap-2 font-medium">
-      <span>{filesChanged} file{filesChanged === 1 ? "" : "s"} changed</span>
+      <span>{t("applicationInspectorDeep.filesChanged", { count: filesChanged })}</span>
       {/* insertions/deletions are null when the summary line was truncated (#866, C3) — show them only when known. */}
       {summary?.insertions != null ? <span className="text-emerald-600 dark:text-emerald-400">+{summary.insertions}</span> : null}
       {summary?.deletions != null ? <span className="text-destructive">−{summary.deletions}</span> : null}
@@ -537,10 +547,11 @@ function RepoDiffSummaryLine({ summary, fallbackFiles }: { summary?: GitRepoStat
 // A compact 14-day run-volume sparkline from the durable daily counters:
 // stacked green (succeeded) over red (failed), normalized to the busiest day.
 function DailyStatsSparkline({ stats, applicationId }: { stats: ApplicationDailyStat[]; applicationId: string }) {
+  const { t } = useAppTranslation();
   const series = dailyStatsSeries(stats, applicationId, 14);
   const max = Math.max(1, ...series.map((b) => b.total));
   return (
-    <div className="mt-1 flex h-8 items-end gap-0.5" title="Runs per day, last 14 days (succeeded / failed)" aria-hidden="true">
+    <div className="mt-1 flex h-8 items-end gap-0.5" title={t("applicationInspectorDeep.sparkline")} aria-hidden="true">
       {series.map((bar) => (
         <div key={bar.date} className="flex w-full flex-col justify-end" style={{ height: "100%" }}>
           <div className="w-full rounded-sm bg-destructive/70" style={{ height: `${(bar.failed / max) * 100}%` }} />
@@ -560,6 +571,7 @@ function ApplicationExecutions({
   invocations: InvocationSnapshot[];
   onViewInvocation: (invocationId: string) => void;
 }) {
+  const { t } = useAppTranslation();
   const { data: state } = useConsoleState();
   const [showAll, setShowAll] = useState(false);
   const rows = applicationInvocations(invocations, application.id);
@@ -573,22 +585,22 @@ function ApplicationExecutions({
     <Card>
       <CardHeader>
         <div className="flex items-start justify-between gap-3">
-          <CardTitle>Executions</CardTitle>
+          <CardTitle>{t("applicationInspectorDeep.executions")}</CardTitle>
           <Badge tone={digestTone(digest)}>
-            {digest.successRate == null ? "no finished runs" : `${Math.round(digest.successRate * 100)}% success`}
+            {digest.successRate == null ? t("applicationInspectorDeep.noFinished") : t("applicationInspectorDeep.successRate", { rate: Math.round(digest.successRate * 100) })}
           </Badge>
         </div>
         <p className="text-xs text-muted-foreground">
-          {digest.total} execution(s) in this window · {digest.succeeded} succeeded · {digest.failed} failed
-          {digest.active ? ` · ${digest.active} active` : ""}
-          {digest.recoveryRuns ? ` · ${digest.recoveryRuns} from recovery` : ""}
-          {digest.lastAt ? ` · last ${shortTime(digest.lastAt)}` : ""}
+          {t("applicationInspectorDeep.executionDigest", { total: digest.total, succeeded: digest.succeeded, failed: digest.failed })}
+          {digest.active ? ` · ${t("applicationInspectorDeep.activeCount", { count: digest.active })}` : ""}
+          {digest.recoveryRuns ? ` · ${t("applicationInspectorDeep.fromRecovery", { count: digest.recoveryRuns })}` : ""}
+          {digest.lastAt ? ` · ${t("applicationInspectorDeep.lastAt", { time: shortTime(digest.lastAt) })}` : ""}
         </p>
         {week.succeeded + week.failed + month.succeeded + month.failed > 0 ? (
           <>
             <p className="text-xs text-muted-foreground">
-              Durable: 7d {week.succeeded} ✓ / {week.failed} ✗ · 30d {month.succeeded} ✓ / {month.failed} ✗
-              {month.recovered ? ` · ${month.recovered} recovered (30d)` : ""}
+              {t("applicationInspectorDeep.durable")}: 7d {week.succeeded} ✓ / {week.failed} ✗ · 30d {month.succeeded} ✓ / {month.failed} ✗
+              {month.recovered ? ` · ${t("applicationInspectorDeep.recovered30d", { count: month.recovered })}` : ""}
             </p>
             <DailyStatsSparkline stats={dailyStats} applicationId={application.id} />
           </>
@@ -609,13 +621,13 @@ function ApplicationExecutions({
             </div>
             <Button size="sm" variant="ghost" className="h-7 px-2 text-xs" onClick={() => onViewInvocation(invocation.id)}>
               <ExternalLink />
-              Open
+              {t("applicationInspectorDeep.open")}
             </Button>
           </div>
         ))}
         {rows.length > 8 ? (
           <Button size="sm" variant="ghost" className="h-7 px-2 text-xs" onClick={() => setShowAll((value) => !value)}>
-            {showAll ? "Show fewer" : `Show all ${rows.length}`}
+            {showAll ? t("applicationInspectorDeep.showFewer") : t("applicationInspectorDeep.showAll", { count: rows.length })}
           </Button>
         ) : null}
       </CardContent>
@@ -641,6 +653,7 @@ function OrchestrationDrafts({
   invocations: InvocationSnapshot[];
   orchestrations: ApplicationOrchestration[];
 }) {
+  const { t } = useAppTranslation();
   const { execute, pending, error } = useAsyncAction();
   const setSelectedInvocationId = useUiStore((s) => s.setSelectedInvocationId);
   const setSection = useUiStore((s) => s.setSection);
@@ -691,7 +704,7 @@ function OrchestrationDrafts({
   return (
     <Card>
       <CardHeader>
-        <CardTitle>Orchestration drafts</CardTitle>
+        <CardTitle>{t("applicationInspectorDeep.orchestrationDrafts")}</CardTitle>
       </CardHeader>
       <CardContent className="space-y-3">
         {orchestrations.map((orchestration) => {
@@ -706,7 +719,7 @@ function OrchestrationDrafts({
                 <div className="min-w-0 space-y-1">
                   <p className="[overflow-wrap:anywhere] font-mono text-xs">{orchestration.routineId}</p>
                   <p className="[overflow-wrap:anywhere] text-xs text-muted-foreground">
-                    {orchestration.relativePath ?? orchestration.path ?? "Draft path not recorded"}
+                    {orchestration.relativePath ?? orchestration.path ?? t("applicationInspectorDeep.draftPathMissing")}
                   </p>
                 </div>
                 <Badge tone={orchestration.validation?.ok === false ? "danger" : "success"}>
@@ -717,8 +730,8 @@ function OrchestrationDrafts({
                 <Button
                   size="icon"
                   variant="secondary"
-                  title="Copy orchestration reference"
-                  aria-label="Copy orchestration reference"
+                  title={t("applicationInspectorDeep.copyReference")}
+                  aria-label={t("applicationInspectorDeep.copyReference")}
                   onClick={() => copyRoutine(orchestration)}
                 >
                   <Clipboard />
@@ -729,20 +742,20 @@ function OrchestrationDrafts({
                   onClick={() => void runOrchestration(orchestration)}
                 >
                   <Play />
-                  {isPendingRoutine ? "Starting..." : "Run"}
+                  {isPendingRoutine ? t("applicationInspectorDeep.starting") : t("applicationInspector.run")}
                 </Button>
                 {invocationId ? (
                   <Button size="sm" variant="secondary" onClick={() => viewInvocation(invocationId)}>
                     <ExternalLink />
-                    View invocation
+                    {t("applicationInspectorDeep.viewInvocation")}
                   </Button>
                 ) : null}
                 {copiedRoutineId === orchestration.routineId ? (
-                  <span className="text-xs text-success">Copied.</span>
+                  <span className="text-xs text-success">{t("applicationInspectorDeep.copied")}</span>
                 ) : null}
                 {application.autoRecovery ? (
                   <label className="ml-auto flex items-center gap-1 text-xs text-muted-foreground">
-                    Auto-recovery
+                    {t("applicationInspectorDeep.autoRecovery")}
                     <Select
                       className="h-7 w-28 text-xs"
                       value={routineOverrideValue(application, orchestration.routineId)}
@@ -756,10 +769,10 @@ function OrchestrationDrafts({
                         ));
                       }}
                     >
-                      <option value="default">App default</option>
-                      <option value="off">Off</option>
+                      <option value="default">{t("applicationInspectorDeep.appDefault")}</option>
+                      <option value="off">{t("applicationInspectorDeep.off")}</option>
                       {[1, 2, 3, 4, 5].map((n) => (
-                        <option key={n} value={n}>On · cap {n}</option>
+                        <option key={n} value={n}>{t("applicationInspectorDeep.onCap", { count: n })}</option>
                       ))}
                     </Select>
                   </label>
@@ -771,7 +784,7 @@ function OrchestrationDrafts({
         })}
         {error ? <p className="text-xs text-destructive">{error}</p> : null}
         {application.status !== "active" ? (
-          <p className="text-xs text-muted-foreground">Bring the application online before running a draft.</p>
+          <p className="text-xs text-muted-foreground">{t("applicationInspectorDeep.onlineBeforeRun")}</p>
         ) : null}
       </CardContent>
     </Card>
@@ -787,6 +800,7 @@ function OrchestrationRunHistory({
   orchestration: ApplicationOrchestration;
   onView: (invocationId: string) => void;
 }) {
+  const { t } = useAppTranslation();
   const { data, isLoading, error } = useQuery({
     queryKey: ["application-orchestration-runs", application.id, orchestration.routineId],
     queryFn: () => api.listApplicationOrchestrationRuns(application.id, orchestration.routineId, 3),
@@ -807,12 +821,12 @@ function OrchestrationRunHistory({
   }, [application.id, orchestration.routineId, selectedApplicationRun]);
 
   if (error) {
-    return <p className="text-xs text-destructive">Could not load run history.</p>;
+    return <p className="text-xs text-destructive">{t("applicationInspectorDeep.runHistoryFailed")}</p>;
   }
   if (!runs.length) {
     return (
       <p className="text-xs text-muted-foreground">
-        {isLoading ? "Loading runs..." : "No runs recorded yet."}
+        {isLoading ? t("applicationInspectorDeep.loadingRuns") : t("applicationInspectorDeep.noRuns")}
       </p>
     );
   }
@@ -849,6 +863,7 @@ function OrchestrationRunRow({
   onToggleInspect: () => void;
   onView: (invocationId: string) => void;
 }) {
+  const { t } = useAppTranslation();
   return (
     <div className="space-y-2 rounded-md border border-border p-2 text-xs">
       <div className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center">
@@ -860,7 +875,7 @@ function OrchestrationRunRow({
             {run.agentId ? <span className="text-muted-foreground">{run.agentId}</span> : null}
             {run.metadata?.retryOfInvocationId ? (
               <span className="text-muted-foreground">
-                Retry of <span className="font-mono">{run.metadata.retryOfInvocationId}</span>
+                {t("applicationInspectorDeep.retryOf")} <span className="font-mono">{run.metadata.retryOfInvocationId}</span>
               </span>
             ) : null}
           </div>
@@ -873,11 +888,11 @@ function OrchestrationRunRow({
         <div className="flex flex-wrap gap-2">
           <Button size="sm" variant="secondary" onClick={onToggleInspect}>
             <Search />
-            {expanded ? "Hide" : "Inspect"}
+            {expanded ? t("applicationInspectorDeep.hide") : t("applicationInspectorDeep.inspect")}
           </Button>
           <Button size="sm" variant="secondary" onClick={() => onView(run.invocationId)}>
             <ExternalLink />
-            View
+            {t("applicationInspectorDeep.view")}
           </Button>
         </div>
       </div>
@@ -904,6 +919,7 @@ function OrchestrationRunDiagnostics({
   invocationId: string;
   canRetry: boolean;
 }) {
+  const { t } = useAppTranslation();
   const { execute, pending, error: retryError } = useAsyncAction();
   const [copiedRunLink, setCopiedRunLink] = useState(false);
   const { data: state } = useConsoleState();
@@ -945,7 +961,7 @@ function OrchestrationRunDiagnostics({
   function retryRun() {
     void execute(() => api.requestApplicationOrchestrationRecoveryAction(applicationId, routineId, invocationId, {
       actionType: "rerun",
-      reason: run?.errorSummary ?? "Manual retry from application orchestration diagnostics.",
+      reason: run?.errorSummary ?? t("applicationInspectorDeep.manualRetryReason"),
     }));
   }
 
@@ -968,10 +984,10 @@ function OrchestrationRunDiagnostics({
   }
 
   if (error) {
-    return <p className="rounded-md bg-destructive/10 p-2 text-destructive">Could not load run diagnostics.</p>;
+    return <p className="rounded-md bg-destructive/10 p-2 text-destructive">{t("applicationInspectorDeep.diagnosticsFailed")}</p>;
   }
   if (isLoading || !run) {
-    return <p className="rounded-md bg-muted p-2 text-muted-foreground">Loading diagnostics...</p>;
+    return <p className="rounded-md bg-muted p-2 text-muted-foreground">{t("applicationInspectorDeep.loadingDiagnostics")}</p>;
   }
 
   const retryOfInvocationId = stringValue(run.metadata?.retryOfInvocationId);
@@ -981,10 +997,10 @@ function OrchestrationRunDiagnostics({
       <ResultOutputBrowser output={runInvocation?.result?.output} />
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div className="min-w-0">
-          <p className="text-xs font-medium">Run diagnostics</p>
+          <p className="text-xs font-medium">{t("applicationInspectorDeep.runDiagnostics")}</p>
           {retryOfInvocationId ? (
             <p className="[overflow-wrap:anywhere] text-xs text-muted-foreground">
-              Retry of <span className="font-mono">{retryOfInvocationId}</span>
+              {t("applicationInspectorDeep.retryOf")} <span className="font-mono">{retryOfInvocationId}</span>
             </p>
           ) : null}
         </div>
@@ -992,30 +1008,30 @@ function OrchestrationRunDiagnostics({
           <Button
             size="icon"
             variant="secondary"
-            title="Copy run link"
-            aria-label="Copy run link"
+            title={t("applicationInspectorDeep.copyRunLink")}
+            aria-label={t("applicationInspectorDeep.copyRunLink")}
             onClick={copyRunLink}
           >
             <Clipboard />
           </Button>
           <Button size="sm" variant="secondary" disabled={!canRetry || pending} onClick={retryRun}>
             <Play />
-            {pending ? "Retrying..." : "Re-run"}
+            {pending ? t("applicationInspectorDeep.retrying") : t("applicationInspectorDeep.rerun")}
           </Button>
-          {copiedRunLink ? <span className="text-xs text-success">Copied.</span> : null}
+          {copiedRunLink ? <span className="text-xs text-success">{t("applicationInspectorDeep.copied")}</span> : null}
         </div>
       </div>
       {retryError ? <p className="text-xs text-destructive">{retryError}</p> : null}
       <FactList
         facts={[
-          { term: "Status", value: readableStatus(run.status) },
-          { term: "Agent", value: run.agentId ?? "Unassigned" },
-          { term: "Delivery", value: run.delivery?.state ?? run.deliveryState ?? "Not recorded" },
-          { term: "Dispatch attempts", value: formatValue(run.delivery?.dispatchAttempts) },
-          { term: "Cancellation", value: run.cancellation?.state ?? run.cancellationState ?? "None" },
-          { term: "Trace", value: run.traceId ?? "Not recorded" },
-          { term: "Policy", value: run.audit?.permissionDecision ?? run.policyDecisionId ?? "Not recorded" },
-          { term: "Cost", value: run.audit?.costSummary ?? "Not recorded" },
+          { term: t("applicationInspector.facts.status"), value: readableStatus(run.status) },
+          { term: t("applicationInspectorDeep.agent"), value: run.agentId ?? t("applicationInspectorDeep.unassigned") },
+          { term: t("applicationInspectorDeep.delivery"), value: run.delivery?.state ?? run.deliveryState ?? t("applicationInspectorDeep.notRecorded") },
+          { term: t("applicationInspectorDeep.dispatchAttempts"), value: formatValue(run.delivery?.dispatchAttempts) },
+          { term: t("applicationInspectorDeep.cancellation"), value: run.cancellation?.state ?? run.cancellationState ?? t("applicationInspectorDeep.none") },
+          { term: t("applicationInspectorDeep.trace"), value: run.traceId ?? t("applicationInspectorDeep.notRecorded") },
+          { term: t("applicationInspectorDeep.policy"), value: run.audit?.permissionDecision ?? run.policyDecisionId ?? t("applicationInspectorDeep.notRecorded") },
+          { term: t("applicationInspectorDeep.cost"), value: run.audit?.costSummary ?? t("applicationInspectorDeep.notRecorded") },
         ]}
       />
       {run.result?.summary || run.errorSummary ? (
@@ -1025,28 +1041,28 @@ function OrchestrationRunDiagnostics({
         </div>
       ) : null}
       <div className="rounded-md border border-border bg-background p-2">
-        <p className="mb-2 text-xs font-medium">Timeline</p>
+        <p className="mb-2 text-xs font-medium">{t("applicationInspectorDeep.timeline")}</p>
         {eventsError ? (
-          <p className="text-xs text-destructive">Could not load run timeline.</p>
+          <p className="text-xs text-destructive">{t("applicationInspectorDeep.timelineFailed")}</p>
         ) : eventsLoading ? (
-          <p className="text-xs text-muted-foreground">Loading timeline...</p>
+          <p className="text-xs text-muted-foreground">{t("applicationInspectorDeep.loadingTimeline")}</p>
         ) : (
           <Transcript events={events} />
         )}
       </div>
       <div className="rounded-md border border-border bg-background p-2">
-        <p className="mb-2 text-xs font-medium">Recovery</p>
+        <p className="mb-2 text-xs font-medium">{t("applicationInspectorDeep.recovery")}</p>
         {recoveryError ? (
-          <p className="text-xs text-destructive">Could not load recovery suggestions.</p>
+          <p className="text-xs text-destructive">{t("applicationInspectorDeep.recoveryFailed")}</p>
         ) : recoveryLoading || !recovery ? (
-          <p className="text-xs text-muted-foreground">Loading recovery...</p>
+          <p className="text-xs text-muted-foreground">{t("applicationInspectorDeep.loadingRecovery")}</p>
         ) : (
           <div className="space-y-2">
             <div className="flex flex-wrap items-center gap-2">
               <Badge tone={recoveryTone(recovery.category)}>{readableRecoveryCategory(recovery.category)}</Badge>
-              <span className="text-muted-foreground">{Math.round(recovery.confidence * 100)}% confidence</span>
-              {recovery.retryRecommended ? <Badge tone="running">Retry recommended</Badge> : null}
-              {recovery.humanApprovalRequired ? <Badge tone="warning">Approval required</Badge> : null}
+              <span className="text-muted-foreground">{t("applicationInspectorDeep.confidence", { rate: Math.round(recovery.confidence * 100) })}</span>
+              {recovery.retryRecommended ? <Badge tone="running">{t("applicationInspectorDeep.retryRecommended")}</Badge> : null}
+              {recovery.humanApprovalRequired ? <Badge tone="warning">{t("applicationInspectorDeep.approvalRequired")}</Badge> : null}
             </div>
             <p className="[overflow-wrap:anywhere] text-xs text-muted-foreground">{recovery.summary}</p>
             <RecoveryTimeline requests={recoveryActionRequests} onViewInvocation={viewInvocation} />
@@ -1073,9 +1089,9 @@ function OrchestrationRunDiagnostics({
           </div>
         )}
       </div>
-      <DiagnosticsBlock title="Metadata" value={run.metadata} />
-      <DiagnosticsBlock title="Result" value={run.result} />
-      <DiagnosticsBlock title="Delivery" value={run.delivery} />
+      <DiagnosticsBlock title={t("applicationInspectorDeep.metadata")} value={run.metadata} />
+      <DiagnosticsBlock title={t("applicationInspectorDeep.result")} value={run.result} />
+      <DiagnosticsBlock title={t("applicationInspectorDeep.delivery")} value={run.delivery} />
     </div>
   );
 }
@@ -1087,13 +1103,14 @@ function RecoveryTimeline({
   requests: ApplicationRecoveryActionRequest[];
   onViewInvocation: (invocationId: string) => void;
 }) {
+  const { t } = useAppTranslation();
   const sortedRequests = sortedRecoveryActionRequests(requests);
   if (sortedRequests.length === 0) return null;
   return (
     <div className="space-y-2 rounded border border-border bg-muted p-2">
       <div className="flex flex-wrap items-center justify-between gap-2">
-        <p className="text-xs font-medium">Recovery history</p>
-        <span className="text-xs text-muted-foreground">{sortedRequests.length} action{sortedRequests.length === 1 ? "" : "s"}</span>
+        <p className="text-xs font-medium">{t("applicationInspectorDeep.recoveryHistory")}</p>
+        <span className="text-xs text-muted-foreground">{t("applicationInspectorDeep.actionCount", { count: sortedRequests.length })}</span>
       </div>
       <div className="space-y-2">
         {sortedRequests.map((request, index) => (
@@ -1101,7 +1118,7 @@ function RecoveryTimeline({
             key={request.id}
             request={request}
             open={index === 0}
-            label={index === 0 ? "Latest recovery" : "Recovery action"}
+            label={index === 0 ? t("applicationInspectorDeep.latestRecovery") : t("applicationInspectorDeep.recoveryAction")}
             onViewInvocation={onViewInvocation}
           />
         ))}
@@ -1121,6 +1138,7 @@ function RecoveryLineage({
   label: string;
   onViewInvocation: (invocationId: string) => void;
 }) {
+  const { t } = useAppTranslation();
   const outcome = request.outcome;
   const explanation = request.explanation ?? null;
   const resultInvocationId = request.resultInvocation?.id ?? request.resultInvocationId ?? null;
@@ -1132,7 +1150,7 @@ function RecoveryLineage({
             <span className="text-xs font-medium">{label}</span>
             <Badge tone="neutral">{readableRecoveryActionType(request.actionType)}</Badge>
             <Badge tone={recoveryActionRequestTone(request.status)}>{readableRecoveryActionRequestStatus(request.status)}</Badge>
-            {request.requestedBy === "system_auto_recovery" ? <Badge tone="warning">auto</Badge> : null}
+            {request.requestedBy === "system_auto_recovery" ? <Badge tone="warning">{t("applicationInspectorDeep.auto")}</Badge> : null}
             {outcome ? <Badge tone={recoveryOutcomeTone(outcome.state)}>{readableRecoveryOutcome(outcome.state)}</Badge> : null}
             {outcome?.reason ? <Badge tone={recoveryOutcomeSeverityTone(outcome.severity)}>{readableRecoveryOutcomeReason(outcome.reason)}</Badge> : null}
             {explanation?.state ? <Badge tone={recoveryExplanationTone(explanation.state)}>{readableRecoveryExplanationState(explanation.state)}</Badge> : null}
@@ -1149,14 +1167,14 @@ function RecoveryLineage({
         />
         <FactList
           facts={[
-            { term: "Source", value: request.sourceInvocation?.id ?? request.invocationId },
-            { term: "Result", value: resultInvocationId ?? "Not linked" },
-            { term: "Result status", value: request.resultInvocation?.status ?? "Not recorded" },
-            { term: "Requested agent", value: request.requestedAgentId ?? "Automatic" },
-            { term: "Selected agent", value: request.selectedAgentId ?? "Not changed" },
-            { term: "Outcome reason", value: outcome?.reason ? readableRecoveryOutcomeReason(outcome.reason) : "Not recorded" },
-            { term: "Next step", value: outcome?.nextStep ?? "Not recorded" },
-            { term: "Updated", value: shortTime(request.updatedAt) },
+            { term: t("applicationInspector.facts.source"), value: request.sourceInvocation?.id ?? request.invocationId },
+            { term: t("applicationInspectorDeep.result"), value: resultInvocationId ?? t("applicationInspectorDeep.notLinked") },
+            { term: t("applicationInspectorDeep.resultStatus"), value: request.resultInvocation?.status ?? t("applicationInspectorDeep.notRecorded") },
+            { term: t("applicationInspectorDeep.requestedAgent"), value: request.requestedAgentId ?? t("applicationInspectorDeep.automatic") },
+            { term: t("applicationInspectorDeep.selectedAgent"), value: request.selectedAgentId ?? t("applicationInspectorDeep.notChanged") },
+            { term: t("applicationInspectorDeep.outcomeReason"), value: outcome?.reason ? readableRecoveryOutcomeReason(outcome.reason) : t("applicationInspectorDeep.notRecorded") },
+            { term: t("applicationInspectorDeep.nextStep"), value: outcome?.nextStep ?? t("applicationInspectorDeep.notRecorded") },
+            { term: t("applicationInspectorDeep.updated"), value: shortTime(request.updatedAt) },
           ]}
         />
         <RecoveryCandidateSnapshot request={request} />
@@ -1177,6 +1195,7 @@ function RecoveryExplanationPanel({
   fallbackResultInvocationId: string | null;
   onViewInvocation: (invocationId: string) => void;
 }) {
+  const { t } = useAppTranslation();
   if (!explanation && !outcome) return null;
   const state = explanation?.state ?? outcome?.state ?? null;
   const reason = explanation?.reason ?? outcome?.reason ?? null;
@@ -1190,7 +1209,7 @@ function RecoveryExplanationPanel({
     <div className="space-y-2 rounded border border-border bg-muted p-2">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div className="flex flex-wrap items-center gap-2">
-          <span className="text-xs font-medium">Recovery guidance</span>
+          <span className="text-xs font-medium">{t("applicationInspectorDeep.recoveryGuidance")}</span>
           {explanation?.selectedAction ? <Badge tone="neutral">{readableRecoveryActionType(explanation.selectedAction)}</Badge> : null}
           {state ? <Badge tone={recoveryExplanationTone(state)}>{readableRecoveryExplanationState(state)}</Badge> : null}
           {reason ? <Badge tone={recoveryExplanationReasonTone(reason)}>{readableRecoveryExplanationReason(reason)}</Badge> : null}
@@ -1202,25 +1221,25 @@ function RecoveryExplanationPanel({
             onClick={() => onViewInvocation(resultInvocationId)}
           >
             <ExternalLink />
-            View result
+            {t("applicationInspectorDeep.viewResult")}
           </Button>
         ) : null}
       </div>
       {summary ? <p className="[overflow-wrap:anywhere] text-xs text-muted-foreground">{summary}</p> : null}
       {nextStep ? (
         <p className="[overflow-wrap:anywhere] rounded bg-background px-2 py-1 text-xs">
-          <span className="font-medium">Next step: </span>
+          <span className="font-medium">{t("applicationInspectorDeep.nextStep")}: </span>
           <span className="text-muted-foreground">{nextStep}</span>
         </p>
       ) : null}
       <FactList
         facts={[
-          { term: "Approval request", value: explanation?.approvalRequestId ?? "Not required" },
-          { term: "Duplicate guard", value: explanation?.blockedReason ? readableRecoveryActionAvailabilityReason(explanation.blockedReason) : "Clear" },
-          { term: "Latest request", value: explanation?.latestRequestId ?? explanation?.recoveryActionRequestId ?? "Not recorded" },
-          { term: "Result invocation", value: resultInvocationId ?? "Not linked" },
-          { term: "Result orchestration", value: resultOrchestration ?? "Not linked" },
-          { term: "Agent choice", value: requestedAgent ?? "Automatic" },
+          { term: t("applicationInspectorDeep.approvalRequest"), value: explanation?.approvalRequestId ?? t("applicationInspectorDeep.notRequired") },
+          { term: t("applicationInspectorDeep.duplicateGuard"), value: explanation?.blockedReason ? readableRecoveryActionAvailabilityReason(explanation.blockedReason) : t("applicationInspectorDeep.clear") },
+          { term: t("applicationInspectorDeep.latestRequest"), value: explanation?.latestRequestId ?? explanation?.recoveryActionRequestId ?? t("applicationInspectorDeep.notRecorded") },
+          { term: t("applicationInspectorDeep.resultInvocation"), value: resultInvocationId ?? t("applicationInspectorDeep.notLinked") },
+          { term: t("applicationInspectorDeep.resultOrchestration"), value: resultOrchestration ?? t("applicationInspectorDeep.notLinked") },
+          { term: t("applicationInspectorDeep.agentChoice"), value: requestedAgent ?? t("applicationInspectorDeep.automatic") },
         ]}
       />
     </div>
@@ -1228,6 +1247,7 @@ function RecoveryExplanationPanel({
 }
 
 function RecoveryCandidateSnapshot({ request }: { request: ApplicationRecoveryActionRequest }) {
+  const { t } = useAppTranslation();
   const candidates = request.agentCandidateSnapshot ?? [];
   if (request.actionType !== "select_agent" || candidates.length === 0) return null;
   const selectableCount = candidates.filter((candidate) => candidate.selectable).length;
@@ -1238,9 +1258,9 @@ function RecoveryCandidateSnapshot({ request }: { request: ApplicationRecoveryAc
   return (
     <div className="space-y-1 rounded border border-border bg-muted p-2">
       <div className="flex flex-wrap items-center gap-2">
-        <span className="text-xs font-medium">Agent candidate snapshot</span>
-        <Badge tone="success">{selectableCount} selectable</Badge>
-        {blocked.length ? <Badge tone="warning">{blocked.length} blocked</Badge> : null}
+        <span className="text-xs font-medium">{t("applicationInspectorDeep.agentSnapshot")}</span>
+        <Badge tone="success">{t("applicationInspectorDeep.selectable", { count: selectableCount })}</Badge>
+        {blocked.length ? <Badge tone="warning">{t("applicationInspectorDeep.blockedCount", { count: blocked.length })}</Badge> : null}
         {selected ? <Badge tone={selected.selectable ? "success" : "warning"}>{selected.name}</Badge> : null}
       </div>
       {blocked.length ? (
@@ -1292,6 +1312,7 @@ function RecoveryActionItem({
   agentsError: boolean;
   onRequest: (actionType: string, reason?: string | null, agentId?: string | null) => void;
 }) {
+  const { t } = useAppTranslation();
   const [selectedAgentId, setSelectedAgentId] = useState<string>("");
   const selectableAgents = agentCandidates.filter((candidate) => candidate.selectable);
   const preferredAgentId = agentCandidates.find((candidate) => candidate.preferred)?.id ?? selectableAgents[0]?.id ?? "";
@@ -1310,12 +1331,12 @@ function RecoveryActionItem({
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div className="flex flex-wrap items-center gap-2">
           <span className="font-medium">{action.label}</span>
-          {action.recommended ? <Badge tone="success">Recommended</Badge> : null}
-          {action.riskLevel ? <Badge tone={riskTone(action.riskLevel)}>Risk {action.riskLevel}</Badge> : null}
+          {action.recommended ? <Badge tone="success">{t("applicationInspectorDeep.recommended")}</Badge> : null}
+          {action.riskLevel ? <Badge tone={riskTone(action.riskLevel)}>{t("applicationInspectorDeep.risk", { level: action.riskLevel })}</Badge> : null}
           {blockedReason ? <Badge tone="warning">{readableRecoveryActionAvailabilityReason(blockedReason)}</Badge> : null}
           {warningReason ? <Badge tone="warning">{readableRecoveryActionAvailabilityReason(warningReason)}</Badge> : null}
-          {action.requiresApproval ? <Badge tone="warning">Approval</Badge> : null}
-          {!isExecutableRecoveryAction(action.type) ? <Badge tone="neutral">Manual</Badge> : null}
+          {action.requiresApproval ? <Badge tone="warning">{t("applicationInspectorDeep.approval")}</Badge> : null}
+          {!isExecutableRecoveryAction(action.type) ? <Badge tone="neutral">{t("applicationInspectorDeep.manual")}</Badge> : null}
           {latestRequest ? <Badge tone={recoveryActionRequestTone(latestRequest.status)}>{readableRecoveryActionRequestStatus(latestRequest.status)}</Badge> : null}
         </div>
         {isExecutableRecoveryAction(action.type) ? (
@@ -1326,7 +1347,7 @@ function RecoveryActionItem({
             onClick={() => onRequest(action.type, action.description, isSelectAgent ? effectiveAgentId : null)}
           >
             <Play />
-            {actionBlocked ? "Blocked" : "Run"}
+            {actionBlocked ? t("applicationInspectorDeep.blocked") : t("applicationInspector.run")}
           </Button>
         ) : action.requiresApproval ? (
           <Button
@@ -1335,11 +1356,11 @@ function RecoveryActionItem({
             disabled={disabled || latestRequest?.status === "approval_pending"}
             onClick={() => onRequest(action.type, action.description)}
           >
-            {actionBlocked ? "Blocked" : latestRequest?.status === "approval_pending" ? "Pending approval" : "Request approval"}
+            {actionBlocked ? t("applicationInspectorDeep.blocked") : latestRequest?.status === "approval_pending" ? t("applicationInspectorDeep.pendingApproval") : t("applicationInspectorDeep.requestApproval")}
           </Button>
         ) : (
           <Button size="sm" variant="secondary" disabled>
-            {action.type === "view_invocation" ? "Open from View" : "Not supported"}
+            {action.type === "view_invocation" ? t("applicationInspectorDeep.openFromView") : t("applicationInspectorDeep.notSupported")}
           </Button>
         )}
       </div>
@@ -1358,7 +1379,7 @@ function RecoveryActionItem({
       {latestExplanation?.nextStep || latestExplanation?.approvalRequestId || latestExplanation?.resultInvocationId ? (
         <div className="mt-2 space-y-1 rounded border border-border bg-background p-2 text-xs">
           <div className="flex flex-wrap items-center gap-2">
-            <span className="font-medium">Latest action guidance</span>
+            <span className="font-medium">{t("applicationInspectorDeep.latestGuidance")}</span>
             {latestExplanation.state ? <Badge tone={recoveryExplanationTone(latestExplanation.state)}>{readableRecoveryExplanationState(latestExplanation.state)}</Badge> : null}
             {latestExplanation.reason ? <Badge tone={recoveryExplanationReasonTone(latestExplanation.reason)}>{readableRecoveryExplanationReason(latestExplanation.reason)}</Badge> : null}
           </div>
@@ -1367,9 +1388,9 @@ function RecoveryActionItem({
           ) : null}
           <FactList
             facts={[
-              { term: "Approval request", value: latestExplanation.approvalRequestId ?? "Not required" },
-              { term: "Result invocation", value: latestExplanation.resultInvocationId ?? "Not linked" },
-              { term: "Result orchestration", value: latestExplanation.resultOrchestrationId ?? "Not linked" },
+              { term: t("applicationInspectorDeep.approvalRequest"), value: latestExplanation.approvalRequestId ?? t("applicationInspectorDeep.notRequired") },
+              { term: t("applicationInspectorDeep.resultInvocation"), value: latestExplanation.resultInvocationId ?? t("applicationInspectorDeep.notLinked") },
+              { term: t("applicationInspectorDeep.resultOrchestration"), value: latestExplanation.resultOrchestrationId ?? t("applicationInspectorDeep.notLinked") },
             ]}
           />
         </div>
@@ -1400,14 +1421,15 @@ function SelectAgentRecoveryPicker({
   value: string;
   onChange: (agentId: string) => void;
 }) {
+  const { t } = useAppTranslation();
   if (error) {
-    return <p className="mt-2 text-xs text-destructive">Could not load recovery agents.</p>;
+    return <p className="mt-2 text-xs text-destructive">{t("applicationInspectorDeep.agentsFailed")}</p>;
   }
   if (loading && candidates.length === 0) {
-    return <p className="mt-2 text-xs text-muted-foreground">Loading recovery agents...</p>;
+    return <p className="mt-2 text-xs text-muted-foreground">{t("applicationInspectorDeep.loadingAgents")}</p>;
   }
   if (candidates.length === 0) {
-    return <p className="mt-2 text-xs text-destructive">No governed application-control agents are registered.</p>;
+    return <p className="mt-2 text-xs text-destructive">{t("applicationInspectorDeep.noAgents")}</p>;
   }
   const selected = candidates.find((candidate) => candidate.id === value) ?? null;
   return (
@@ -1415,9 +1437,9 @@ function SelectAgentRecoveryPicker({
       <Select
         value={value}
         onChange={(event) => onChange(event.target.value)}
-        aria-label="Recovery agent"
+        aria-label={t("applicationInspectorDeep.recoveryAgent")}
       >
-        {!value ? <option value="">No selectable recovery agent</option> : null}
+        {!value ? <option value="">{t("applicationInspectorDeep.noSelectableAgent")}</option> : null}
         {candidates.map((candidate) => (
           <option key={candidate.id} value={candidate.id} disabled={!candidate.selectable}>
             {recoveryAgentOptionLabel(candidate)}
@@ -1425,8 +1447,8 @@ function SelectAgentRecoveryPicker({
         ))}
       </Select>
       <div className="flex flex-wrap items-center gap-2 text-xs">
-        {selected?.preferred ? <Badge tone="success">Recommended</Badge> : null}
-        {selected?.sourceAgent ? <Badge tone="neutral">Original agent</Badge> : null}
+        {selected?.preferred ? <Badge tone="success">{t("applicationInspectorDeep.recommended")}</Badge> : null}
+        {selected?.sourceAgent ? <Badge tone="neutral">{t("applicationInspectorDeep.originalAgent")}</Badge> : null}
         {selected ? (
           <span className="text-muted-foreground">
             {selected.status}
@@ -1492,6 +1514,7 @@ function shortTime(value?: string | null): string {
 
 /** Right-pane detail for the application selected in the Applications view. */
 export function ApplicationsInspector() {
+  const { t } = useAppTranslation();
   const { data: state } = useConsoleState();
   const selectedApplicationId = useUiStore((s) => s.selectedApplicationId);
   const setSelectedInvocationId = useUiStore((s) => s.setSelectedInvocationId);
@@ -1510,11 +1533,11 @@ export function ApplicationsInspector() {
     return (
       <Card>
         <CardHeader>
-          <CardTitle>Application details</CardTitle>
+          <CardTitle>{t("applicationInspector.details")}</CardTitle>
         </CardHeader>
         <CardContent>
           <p className="text-sm text-muted-foreground">
-            Select an application to see its source, capabilities, probe, and orchestration drafts.
+            {t("applicationInspector.selectHint")}
           </p>
         </CardContent>
       </Card>
@@ -1532,8 +1555,8 @@ export function ApplicationsInspector() {
   const binaryReadinessSummary = sourceBinary
     ? localRuntimeReadiness
       ? `${localRuntimeReadiness.status}${localRuntimeReadiness.version && localRuntimeReadiness.status !== "stale" ? ` · ${localRuntimeReadiness.version}` : ""}${localRuntimeReadiness.authenticationStatus ? ` · auth ${localRuntimeReadiness.authenticationStatus}${localRuntimeReadiness.authenticationMethod ? ` (${localRuntimeReadiness.authenticationMethod})` : ""}` : ""} · ${shortTime(localRuntimeReadiness.checkedAt)}`
-      : "Not reported by the local Desktop Bridge"
-    : "Built in";
+      : t("applicationInspector.notReported")
+    : t("applicationInspector.builtIn");
 
   function viewInvocation(invocationId: string) {
     setSelectedInvocationId(invocationId);
@@ -1552,16 +1575,16 @@ export function ApplicationsInspector() {
         <CardContent>
           <FactList
             facts={[
-              { term: "Status", value: application.status },
-              { term: "Local readiness", value: application.localReadiness?.summary ?? "Checking local application" },
-              { term: "Source", value: `${application.source.type} · ${sourceSummary(application.source)}` },
-              { term: "Path", value: application.path ?? "—" },
-              { term: "Owner", value: application.ownerTeamId ?? "—" },
-              { term: "Descriptor revision", value: application.descriptorRevision ?? 1 },
-              { term: "Descriptor fingerprint", value: application.descriptorFingerprint ?? "Legacy / not recorded" },
-              { term: "Previous revision", value: application.predecessorApplicationId ?? "—" },
-              { term: "Replacement revision", value: application.successorApplicationId ?? "—" },
-              { term: "Device readiness", value: binaryReadinessSummary },
+              { term: t("applicationInspector.facts.status"), value: application.status },
+              { term: t("applicationInspector.facts.localReadiness"), value: application.localReadiness?.summary ?? t("applicationInspector.checking") },
+              { term: t("applicationInspector.facts.source"), value: `${application.source.type} · ${sourceSummary(application.source)}` },
+              { term: t("applicationInspector.facts.path"), value: application.path ?? "—" },
+              { term: t("applicationInspector.facts.owner"), value: application.ownerTeamId ?? "—" },
+              { term: t("applicationInspector.facts.descriptorRevision"), value: application.descriptorRevision ?? 1 },
+              { term: t("applicationInspector.facts.descriptorFingerprint"), value: application.descriptorFingerprint ?? t("applicationInspector.legacy") },
+              { term: t("applicationInspector.facts.previousRevision"), value: application.predecessorApplicationId ?? "—" },
+              { term: t("applicationInspector.facts.replacementRevision"), value: application.successorApplicationId ?? "—" },
+              { term: t("applicationInspector.facts.deviceReadiness"), value: binaryReadinessSummary },
             ]}
           />
         </CardContent>
@@ -1576,11 +1599,11 @@ export function ApplicationsInspector() {
 
       <Card>
         <CardHeader>
-          <CardTitle>Capabilities</CardTitle>
+          <CardTitle>{t("applicationInspector.capabilities")}</CardTitle>
         </CardHeader>
         <CardContent className="space-y-2">
           {!capabilities.length ? (
-            <p className="text-sm text-muted-foreground">No capabilities projected.</p>
+            <p className="text-sm text-muted-foreground">{t("applicationInspector.noCapabilities")}</p>
           ) : (
             capabilities.map((capability) => {
               const contract = capabilityRunContract(capability);
@@ -1605,7 +1628,7 @@ export function ApplicationsInspector() {
                     ) : null}
                     {contract.invokable ? (
                       <Button size="sm" variant="secondary" onClick={() => setRunCapability(capability)}>
-                        Run
+                        {t("applicationInspector.run")}
                       </Button>
                     ) : null}
                   </div>
@@ -1613,7 +1636,7 @@ export function ApplicationsInspector() {
               );
             })
           )}
-          <p className="text-xs text-muted-foreground">⚠ requires an explicit approval token</p>
+          <p className="text-xs text-muted-foreground">{t("applicationInspector.approvalRequired")}</p>
         </CardContent>
       </Card>
 
@@ -1626,7 +1649,7 @@ export function ApplicationsInspector() {
       {probe ? (
         <Card>
           <CardHeader>
-            <CardTitle>Probe</CardTitle>
+            <CardTitle>{t("applicationInspector.probe")}</CardTitle>
           </CardHeader>
           <CardContent className="space-y-2">
             {probe.summary ? <p className="text-sm text-muted-foreground">{probe.summary}</p> : null}

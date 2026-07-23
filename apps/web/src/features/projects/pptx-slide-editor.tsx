@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { Loader2, Save } from "lucide-react";
 import { api } from "@/data/use-console-actions";
 import { useConsoleState } from "@/data/use-console-state";
+import { useAppTranslation } from "@/lib/i18n/use-app-translation";
 
 // pptx slide text editor (v0). Each slide's text shapes are shown as editable
 // textareas, keyed on their stable @id path — so editing needs no alignment or
@@ -22,6 +23,7 @@ interface Slide {
 }
 
 export function PptxSlideEditor({ projectId, worktreeId, file, onChanged }: { projectId: string; worktreeId: string; file: string; onChanged?: () => void }) {
+  const { t } = useAppTranslation();
   const { data: state } = useConsoleState();
   const [slides, setSlides] = useState<Slide[] | null>(null);
   const [base, setBase] = useState<Record<string, string>>({}); // shape path -> original text
@@ -78,7 +80,7 @@ export function PptxSlideEditor({ projectId, worktreeId, file, onChanged }: { pr
         approvalToken: grant.token,
       } as unknown as Record<string, string>)) as { invocationId?: string };
       if (res?.invocationId) setInvId(res.invocationId);
-      else throw new Error("The edit was not accepted.");
+      else throw new Error(t("officeEditors.editRejected"));
     } catch (e) {
       setSaving(false);
       setError(e instanceof Error ? e.message : String(e));
@@ -97,22 +99,22 @@ export function PptxSlideEditor({ projectId, worktreeId, file, onChanged }: { pr
     } else if (inv.status === "failed" || inv.status === "rejected") {
       setInvId(null);
       setSaving(false);
-      setError("The edit was refused (approval, worktree, or an invalid value).");
+      setError(t("officeEditors.editRefused"));
     }
-  }, [state?.invocations, invId, load, onChanged]);
+  }, [state?.invocations, invId, load, onChanged, t]);
 
   if (loadState === "loading") {
-    return <span className="flex items-center gap-1 px-2 py-6 text-xs text-muted-foreground"><Loader2 className="size-3 animate-spin" /> loading slides…</span>;
+    return <span className="flex items-center gap-1 px-2 py-6 text-xs text-muted-foreground"><Loader2 className="size-3 animate-spin" /> {t("officeEditors.loadingSlides")}</span>;
   }
   if (loadState === "error" || !slides) {
-    return <span className="px-2 py-6 text-xs text-red-600 dark:text-red-400">Could not read the deck — it may not render, or officecli is not installed.</span>;
+    return <span className="px-2 py-6 text-xs text-red-600 dark:text-red-400">{t("officeEditors.deckReadFailed")}</span>;
   }
 
   return (
     <div className="flex min-h-0 flex-1 flex-col">
       <div className="flex items-center justify-between gap-2 border-b border-border px-2 py-1.5">
         <span className="min-w-0 flex-1 truncate text-[11px] text-muted-foreground">
-          Edit each slide's text. One governed, worktree-scoped batch; layout and formatting are preserved.
+          {t("officeEditors.deckHint")}
         </span>
         <button
           type="button"
@@ -121,7 +123,7 @@ export function PptxSlideEditor({ projectId, worktreeId, file, onChanged }: { pr
           className="flex shrink-0 items-center gap-1 rounded border border-border bg-background px-2 py-0.5 text-[11px] font-medium disabled:opacity-40"
         >
           {saving ? <Loader2 className="size-3 animate-spin" /> : <Save className="size-3" />}
-          {saving ? "Saving…" : "Save all"}
+          {t(saving ? "officeEditors.saving" : "officeEditors.saveAll")}
         </button>
       </div>
       {error ? <p className="px-2 pt-1 text-xs text-red-600 dark:text-red-400">{error}</p> : null}
