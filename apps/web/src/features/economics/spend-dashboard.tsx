@@ -2,6 +2,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { EmptyState } from "@/components/common/empty-state";
 import { formatUsd } from "@/lib/money";
 import type { LedgerEntry, LedgerSummary } from "@/lib/console-state";
+import { useAppTranslation } from "@/lib/i18n/use-app-translation";
 
 // --- pure aggregation (exported for tests) ----------------------------------
 
@@ -38,9 +39,10 @@ export function topSpend(
 // --- marks ------------------------------------------------------------------
 
 function TrendChart({ data }: { data: { date: string; usd: number }[] }) {
+  const { t } = useAppTranslation();
   const max = Math.max(...data.map((d) => d.usd), Number.EPSILON);
   return (
-    <div className="flex h-32 items-end gap-1" role="img" aria-label="Daily spend trend">
+    <div className="flex h-32 items-end gap-1" role="img" aria-label={t("economicsSpend.trend")}>
       {data.map((day) => (
         <div
           key={day.date}
@@ -54,12 +56,13 @@ function TrendChart({ data }: { data: { date: string; usd: number }[] }) {
 }
 
 function BreakdownBars({ title, rows }: { title: string; rows: Rollup[] }) {
+  const { t } = useAppTranslation();
   const max = Math.max(...rows.map((r) => r.usd), Number.EPSILON);
   return (
     <div className="space-y-2">
       <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">{title}</p>
       {rows.length === 0 ? (
-        <p className="text-sm text-muted-foreground">No priced spend yet.</p>
+        <p className="text-sm text-muted-foreground">{t("economicsSpend.noPriced")}</p>
       ) : (
         rows.map((row) => (
           <div key={row.label} className="flex items-center gap-2 text-sm">
@@ -76,6 +79,7 @@ function BreakdownBars({ title, rows }: { title: string; rows: Rollup[] }) {
 }
 
 export function SpendDashboard({ summary, entries }: { summary?: LedgerSummary; entries: LedgerEntry[] }) {
+  const { t } = useAppTranslation();
   const trend = dailySpend(entries);
   const byAgent = topSpend(summary?.byAgent, (row) => String(row.agentName ?? row.agentId ?? "unknown"));
   const byProject = topSpend(summary?.byProject, (row) => String(row.projectName ?? row.projectId ?? "unknown"));
@@ -85,19 +89,19 @@ export function SpendDashboard({ summary, entries }: { summary?: LedgerSummary; 
   return (
     <Card>
       <CardHeader>
-        <CardTitle>Spend dashboard</CardTitle>
+        <CardTitle>{t("economicsSpend.title")}</CardTitle>
         <p className="text-sm text-muted-foreground">
-          Daily spend and the top cost drivers, from the metered ledger.
+          {t("economicsSpend.description")}
         </p>
       </CardHeader>
       <CardContent className="space-y-5">
         {!hasData ? (
-          <EmptyState title="No spend yet" hint="Priced runs will chart here as they complete." />
+          <EmptyState title={t("economicsSpend.empty")} hint={t("economicsSpend.emptyHint")} />
         ) : (
           <>
             {trend.length > 0 ? (
               <div className="space-y-1">
-                <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Daily spend</p>
+                <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">{t("economicsSpend.daily")}</p>
                 <TrendChart data={trend} />
                 <div className="flex justify-between text-xs text-muted-foreground">
                   <span>{trend[0]?.date}</span>
@@ -106,9 +110,9 @@ export function SpendDashboard({ summary, entries }: { summary?: LedgerSummary; 
               </div>
             ) : null}
             <div className="grid gap-5 sm:grid-cols-2">
-              <BreakdownBars title="Top agents" rows={byAgent} />
-              <BreakdownBars title="Top projects" rows={byProject} />
-              <BreakdownBars title="Top models" rows={byModel} />
+              <BreakdownBars title={t("economicsSpend.topAgents")} rows={byAgent} />
+              <BreakdownBars title={t("economicsSpend.topProjects")} rows={byProject} />
+              <BreakdownBars title={t("economicsSpend.topModels")} rows={byModel} />
             </div>
           </>
         )}

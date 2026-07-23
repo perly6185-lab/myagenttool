@@ -4,6 +4,7 @@ import { EmptyState } from "@/components/common/empty-state";
 import { useConsoleState } from "@/data/use-console-state";
 import { formatUsd as usd } from "@/lib/money";
 import type { LedgerEntry } from "@/lib/console-state";
+import { useAppTranslation } from "@/lib/i18n/use-app-translation";
 
 function toCsv(entries: LedgerEntry[]): string {
   const header = [
@@ -38,6 +39,7 @@ function toCsv(entries: LedgerEntry[]): string {
 }
 
 export function ChargebackCard() {
+  const { t } = useAppTranslation();
   const { data: state } = useConsoleState();
   const rollups = state?.ledgerSummary?.byProject ?? [];
   const entries = state?.ledgerEntries ?? [];
@@ -56,27 +58,22 @@ export function ChargebackCard() {
     <Card>
       <CardHeader className="flex-row items-start justify-between">
         <div>
-          <CardTitle>Chargeback statement</CardTitle>
-          <p className="text-sm text-muted-foreground">Settlement-ready rollup per project.</p>
+          <CardTitle>{t("economicsChargeback.title")}</CardTitle>
+          <p className="text-sm text-muted-foreground">{t("economicsChargeback.description")}</p>
         </div>
         <Button variant="secondary" size="sm" disabled={!entries.length} onClick={exportCsv}>
-          Export CSV
+          {t("economicsChargeback.export")}
         </Button>
       </CardHeader>
       <CardContent>
         {rollups.length === 0 ? (
-          <EmptyState title="Nothing to settle" hint="Run agents to build a chargeback statement." />
+          <EmptyState title={t("economicsChargeback.empty")} hint={t("economicsChargeback.emptyHint")} />
         ) : (
           <div className="overflow-hidden rounded-lg border border-border">
             <table className="w-full text-sm">
               <thead className="bg-muted/40 text-xs uppercase tracking-wide text-muted-foreground">
                 <tr>
-                  <th className="px-3 py-2 text-left font-medium">Project</th>
-                  <th className="px-3 py-2 text-right font-medium">Runs</th>
-                  <th className="px-3 py-2 text-right font-medium">Finalized</th>
-                  <th className="px-3 py-2 text-right font-medium">Estimated</th>
-                  <th className="px-3 py-2 text-right font-medium">Unmetered</th>
-                  <th className="px-3 py-2 text-right font-medium">Total</th>
+                  {["project","runs","finalized","estimated","unmetered","total"].map((key, index) => <th key={key} className={`px-3 py-2 ${index ? "text-right" : "text-left"} font-medium`}>{t(`economicsChargeback.${key}` as never)}</th>)}
                 </tr>
               </thead>
               <tbody>
