@@ -8,6 +8,7 @@ import { Field } from "@/components/common/field";
 import { useAsyncAction, api } from "@/data/use-console-actions";
 import { useConsoleState } from "@/data/use-console-state";
 import { useUiStore } from "@/store/ui-store";
+import { useAppTranslation } from "@/lib/i18n/use-app-translation";
 
 export interface McpConnectForm {
   transport: string;
@@ -53,12 +54,13 @@ interface ProbeRunResult {
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 export function ConnectMcpServerCard() {
+  const { t } = useAppTranslation();
   const setSelectedAgentId = useUiStore((s) => s.setSelectedAgentId);
   const setSection = useUiStore((s) => s.setSection);
   const { data: state } = useConsoleState();
   const { execute, pending, error } = useAsyncAction();
 
-  const [name, setName] = useState("MCP server");
+  const [name, setName] = useState<string>(() => t("mcp.defaultName"));
   const [transport, setTransport] = useState("stdio");
   const [command, setCommand] = useState("");
   const [argsText, setArgsText] = useState("");
@@ -97,11 +99,11 @@ export function ConnectMcpServerCard() {
           return probeRun;
         }
         if (probeRun.status === "failed") {
-          setProbe({ status: "failed", message: probeRun.summary ?? "Probe failed." });
+          setProbe({ status: "failed", message: probeRun.summary ?? t("mcp.probeFailed") });
           return probeRun;
         }
       }
-      setProbe({ status: "failed", message: "Probe timed out waiting for the Desktop Bridge." });
+      setProbe({ status: "failed", message: t("mcp.probeTimeout") });
       return null;
     });
     // execute() swallows thrown errors (e.g. offline/invalid config) and surfaces
@@ -113,7 +115,7 @@ export function ConnectMcpServerCard() {
     await execute(async () => {
       const result = (await api.registerAgent({
         type: "mcp",
-        name: name.trim() || "MCP server",
+        name: name.trim() || t("mcp.defaultName"),
         costOwner: costOwner.trim() || "usr_local",
         ...buildMcpProbePayload(form),
       })) as { agent: { id: string } };
@@ -126,33 +128,32 @@ export function ConnectMcpServerCard() {
   return (
     <Card>
       <CardHeader>
-        <CardTitle>Connect MCP server</CardTitle>
+        <CardTitle>{t("mcp.title")}</CardTitle>
         <p className="text-sm text-muted-foreground">
-          Register a Model Context Protocol server as a governed agent. Its tools run on your Desktop Bridge, so
-          test the connection to see what it exposes before you connect it.
+          {t("mcp.description")}
         </p>
       </CardHeader>
       <CardContent className="space-y-4">
         <div className="grid gap-3 sm:grid-cols-2">
-          <Field label="Name">
+          <Field label={t("mcp.name")}>
             <Input value={name} onChange={(e) => setName(e.target.value)} />
           </Field>
-          <Field label="Transport">
+          <Field label={t("mcp.transport")}>
             <Select value={transport} onChange={(e) => edited(setTransport)(e.target.value)}>
-              <option value="stdio">stdio (local command)</option>
-              <option value="http">HTTP (Streamable)</option>
+              <option value="stdio">{t("mcp.stdio")}</option>
+              <option value="http">{t("mcp.http")}</option>
             </Select>
           </Field>
           {transport === "stdio" ? (
             <>
-              <Field label="Command">
+              <Field label={t("mcp.command")}>
                 <Input
                   value={command}
                   placeholder="npx"
                   onChange={(e) => edited(setCommand)(e.target.value)}
                 />
               </Field>
-              <Field label="Arguments (comma-separated)">
+              <Field label={t("mcp.arguments")}>
                 <Input
                   value={argsText}
                   placeholder="-y, @modelcontextprotocol/server-filesystem, /path"
@@ -161,7 +162,7 @@ export function ConnectMcpServerCard() {
               </Field>
             </>
           ) : (
-            <Field label="Server URL">
+            <Field label={t("mcp.serverUrl")}>
               <Input
                 value={url}
                 placeholder="https://mcp.example/rpc"
@@ -169,30 +170,30 @@ export function ConnectMcpServerCard() {
               />
             </Field>
           )}
-          <Field label="Allowed tools (comma-separated, optional)">
+          <Field label={t("mcp.allowedTools")}>
             <Input
               value={allowedToolsText}
               placeholder="read_file, list_dir"
               onChange={(e) => edited(setAllowedToolsText)(e.target.value)}
             />
           </Field>
-          <Field label="Cost owner">
+          <Field label={t("mcp.costOwner")}>
             <Input value={costOwner} onChange={(e) => setCostOwner(e.target.value)} />
           </Field>
         </div>
 
         <div className="flex items-start gap-2 rounded-lg border border-border bg-muted/30 p-3 text-sm">
-          <Badge tone={wideOpen ? "danger" : "warning"}>{wideOpen ? "All tools" : "Allowlisted"}</Badge>
+          <Badge tone={wideOpen ? "danger" : "warning"}>{t(wideOpen ? "mcp.allTools" : "mcp.allowlisted")}</Badge>
           <p className="text-muted-foreground">
             {wideOpen
-              ? "No allowlist set — every tool this server exposes becomes callable. MCP tools can read files and reach the network; treat an unknown server as high-risk."
-              : "Only the listed tools will be callable. Other tools the server exposes are refused before they reach it."}
+              ? t("mcp.allToolsHint")
+              : t("mcp.allowlistedHint")}
           </p>
         </div>
 
         {probe.status === "ok" ? (
           <div className="rounded-lg border border-success/40 bg-success/10 p-3 text-sm">
-            <p className="text-success">{probe.message ?? "Handshake succeeded."}</p>
+            <p className="text-success">{probe.message ?? t("mcp.handshakeSucceeded")}</p>
             {probe.tools && probe.tools.length > 0 ? (
               <div className="mt-2 flex flex-wrap gap-1.5">
                 {probe.tools.map((tool) => (
@@ -200,7 +201,7 @@ export function ConnectMcpServerCard() {
                 ))}
               </div>
             ) : (
-              <p className="mt-1 text-xs text-muted-foreground">The server listed no tools.</p>
+              <p className="mt-1 text-xs text-muted-foreground">{t("mcp.noTools")}</p>
             )}
           </div>
         ) : null}
@@ -210,19 +211,19 @@ export function ConnectMcpServerCard() {
 
         <div className="flex items-center gap-3">
           <Button variant="secondary" disabled={!canProbe} onClick={testConnection}>
-            {probe.status === "probing" ? "Testing…" : "Test connection"}
+            {t(probe.status === "probing" ? "mcp.testing" : "mcp.test")}
           </Button>
           <Button variant={canConnect ? "primary" : "secondary"} disabled={!canConnect || pending} onClick={connect}>
-            {pending && canConnect ? "Connecting…" : "Connect"}
+            {t(pending && canConnect ? "mcp.connecting" : "mcp.connect")}
           </Button>
           {canConnect ? (
             <span className="inline-flex items-center gap-1 text-xs text-success">
               <Check className="size-3.5" />
-              Handshake verified — safe to connect
+              {t("mcp.verified")}
             </span>
           ) : null}
         </div>
-        {offline ? <p className="text-xs text-warning">Connecting an MCP server needs Desktop Bridge online.</p> : null}
+        {offline ? <p className="text-xs text-warning">{t("mcp.bridgeRequired")}</p> : null}
         {error ? <p className="text-xs text-destructive">{error}</p> : null}
       </CardContent>
     </Card>

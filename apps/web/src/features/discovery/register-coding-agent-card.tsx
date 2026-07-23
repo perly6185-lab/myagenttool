@@ -8,6 +8,7 @@ import { Field } from "@/components/common/field";
 import { useAsyncAction, api } from "@/data/use-console-actions";
 import { useConsoleState } from "@/data/use-console-state";
 import { useUiStore } from "@/store/ui-store";
+import { useAppTranslation } from "@/lib/i18n/use-app-translation";
 
 type Tone = "neutral" | "warning" | "danger";
 interface Mode {
@@ -90,6 +91,7 @@ const CONFIGS: Record<"codex" | "claude", CodingAgentConfig> = {
 };
 
 export function RegisterCodingAgentCard({ kind }: { kind: "codex" | "claude" }) {
+  const { t } = useAppTranslation();
   const config = CONFIGS[kind];
   const kindLabel = kind === "codex" ? "Codex" : "Claude";
   const setSelectedAgentId = useUiStore((s) => s.setSelectedAgentId);
@@ -97,7 +99,7 @@ export function RegisterCodingAgentCard({ kind }: { kind: "codex" | "claude" }) 
   const { data: state } = useConsoleState();
   const { execute, pending, error } = useAsyncAction();
 
-  const [name, setName] = useState(config.title.replace("Connect ", ""));
+  const [name, setName] = useState<string>(() => t(`codingAgent.${kind}.defaultName`));
   const [mode, setMode] = useState(config.defaultMode);
   const [costOwner, setCostOwner] = useState("usr_local");
 
@@ -130,38 +132,37 @@ export function RegisterCodingAgentCard({ kind }: { kind: "codex" | "claude" }) 
   return (
     <Card>
       <CardHeader>
-        <CardTitle>{config.title}</CardTitle>
+        <CardTitle>{t(`codingAgent.${kind}.title`)}</CardTitle>
         <p className="text-sm text-muted-foreground">
-          {config.blurb} This coding agent is always high-risk, so every run requires local approval.
+          {t(`codingAgent.${kind}.description`)} {t("codingAgent.highRisk")}
         </p>
       </CardHeader>
       <CardContent className="space-y-4">
         <div className="grid gap-3 sm:grid-cols-2">
-          <Field label="Name">
+          <Field label={t("codingAgent.name")}>
             <Input value={name} onChange={(e) => setName(e.target.value)} />
           </Field>
-          <Field label={config.modeLabel}>
+          <Field label={t(`codingAgent.${kind}.modeLabel`)}>
             <Select value={mode} onChange={(e) => setMode(e.target.value)}>
               {config.modes.map((m) => (
                 <option key={m.value} value={m.value}>
-                  {m.label}
+                  {t(`codingAgent.${kind}.modes.${m.value}.label` as never)}
                 </option>
               ))}
             </Select>
           </Field>
-          <Field label="Cost owner">
+          <Field label={t("codingAgent.costOwner")}>
             <Input value={costOwner} onChange={(e) => setCostOwner(e.target.value)} />
           </Field>
         </div>
 
         <div className="flex items-start gap-2 rounded-lg border border-border bg-muted/30 p-3 text-sm">
-          <Badge tone={active.tone}>{active.label}</Badge>
-          <p className="text-muted-foreground">{active.hint}</p>
+          <Badge tone={active.tone}>{t(`codingAgent.${kind}.modes.${active.value}.label` as never)}</Badge>
+          <p className="text-muted-foreground">{t(`codingAgent.${kind}.modes.${active.value}.hint` as never)}</p>
         </div>
         {writable ? (
           <p className="text-xs text-warning">
-            Writable mode lets this agent modify files in its working directory. The approval gate keeps it safe —
-            review each run before approving.
+            {t("codingAgent.writableWarning")}
           </p>
         ) : null}
 
@@ -172,12 +173,12 @@ export function RegisterCodingAgentCard({ kind }: { kind: "codex" | "claude" }) 
             onClick={register}
           >
             {pending
-              ? "Registering…"
+              ? t("codingAgent.registering")
               : modeAlreadyRegistered
-                ? `Update ${kindLabel} (${mode})`
+                ? t("codingAgent.update", { kind: kindLabel, mode })
                 : alreadyRegistered
-                  ? `Register another ${kindLabel}`
-                  : `Register ${kindLabel}`}
+                  ? t("codingAgent.registerAnother", { kind: kindLabel })
+                  : t("codingAgent.register", { kind: kindLabel })}
           </Button>
           {alreadyRegistered ? (
             <button
@@ -186,7 +187,7 @@ export function RegisterCodingAgentCard({ kind }: { kind: "codex" | "claude" }) 
               onClick={() => setSection("agents")}
             >
               <Check className="size-3.5" />
-              {existing.length} {kindLabel} agent{existing.length > 1 ? "s" : ""} registered — open in Agents →
+              {t("codingAgent.registered", { count: existing.length, kind: kindLabel })}
             </button>
           ) : null}
         </div>
