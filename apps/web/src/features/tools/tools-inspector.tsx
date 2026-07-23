@@ -5,6 +5,7 @@ import { FactList } from "@/components/common/fact-list";
 import { api } from "@/data/use-console-actions";
 import { useUiStore } from "@/store/ui-store";
 import type { ToolDescriptor } from "@/lib/console-state";
+import { useAppTranslation } from "@/lib/i18n/use-app-translation";
 
 function inputFields(tool: ToolDescriptor): { name: string; required: boolean }[] {
   const schema = tool.inputSchema as { properties?: Record<string, unknown>; required?: string[] } | undefined;
@@ -19,6 +20,7 @@ function approvalEntries(tool: ToolDescriptor): { term: string; value: string }[
 
 /** Right-pane detail for the tool selected in the Tools view. */
 export function ToolsInspector() {
+  const { t } = useAppTranslation();
   const selectedToolName = useUiStore((s) => s.selectedToolName);
   const { data } = useQuery({ queryKey: ["tools"], queryFn: () => api.listTools(), refetchInterval: 2000 });
   const tool = data?.tools?.find((item) => item.name === selectedToolName);
@@ -27,11 +29,11 @@ export function ToolsInspector() {
     return (
       <Card>
         <CardHeader>
-          <CardTitle>Tool details</CardTitle>
+          <CardTitle>{t("toolsInspector.title")}</CardTitle>
         </CardHeader>
         <CardContent>
           <p className="text-sm text-muted-foreground">
-            Select a tool to see its input contract, backing agents, and approval policy.
+            {t("toolsInspector.select")}
           </p>
         </CardContent>
       </Card>
@@ -53,13 +55,13 @@ export function ToolsInspector() {
         <CardContent className="space-y-3">
           <FactList
             facts={[
-              { term: "Risk", value: tool.riskLevel ?? "unknown" },
-              { term: "Output", value: tool.outputCollection ?? "—" },
+              { term: t("toolsInspector.risk"), value: tool.riskLevel ?? t("toolsPage.unknown") },
+              { term: t("toolsInspector.output"), value: tool.outputCollection ?? "—" },
               {
-                term: "Billing",
-                value: tool.authoritativeBilling === false ? "Non-authoritative" : "Authoritative",
+                term: t("toolsInspector.billing"),
+                value: t(tool.authoritativeBilling === false ? "toolsInspector.nonAuthoritative" : "toolsInspector.authoritative"),
               },
-              { term: "Device", value: tool.requiresLocalDevice ? "Local device required" : "Any" },
+              { term: t("toolsInspector.device"), value: t(tool.requiresLocalDevice ? "toolsInspector.localRequired" : "toolsInspector.any") },
             ]}
           />
         </CardContent>
@@ -67,7 +69,7 @@ export function ToolsInspector() {
 
       <Card>
         <CardHeader>
-          <CardTitle>Input contract</CardTitle>
+          <CardTitle>{t("toolsInspector.inputContract")}</CardTitle>
         </CardHeader>
         <CardContent>
           {fields.length ? (
@@ -80,16 +82,16 @@ export function ToolsInspector() {
               ))}
             </div>
           ) : (
-            <p className="text-sm text-muted-foreground">No declared input fields.</p>
+            <p className="text-sm text-muted-foreground">{t("toolsInspector.noFields")}</p>
           )}
-          <p className="mt-2 text-xs text-muted-foreground">* required</p>
+          <p className="mt-2 text-xs text-muted-foreground">{t("toolsInspector.required")}</p>
         </CardContent>
       </Card>
 
       {tool.agents?.length ? (
         <Card>
           <CardHeader>
-            <CardTitle>Backing agents</CardTitle>
+            <CardTitle>{t("toolsInspector.backingAgents")}</CardTitle>
           </CardHeader>
           <CardContent className="space-y-2">
             {tool.agents.map((agent) => (
@@ -107,7 +109,7 @@ export function ToolsInspector() {
       {approvals.length ? (
         <Card>
           <CardHeader>
-            <CardTitle>Approval policy</CardTitle>
+            <CardTitle>{t("toolsInspector.approvalPolicy")}</CardTitle>
           </CardHeader>
           <CardContent>
             <FactList facts={approvals} />
