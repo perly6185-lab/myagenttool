@@ -139,8 +139,8 @@ export function NavRail() {
       <Modal
         open={showRegister}
         onClose={() => setShowRegister(false)}
-        title="Register a project"
-        description="Clone a repo, link a local checkout, or create an empty project."
+        title={t("navProject.register")}
+        description={t("navProject.registerHint")}
       >
         <ProjectRegisterForm onDone={() => setShowRegister(false)} />
       </Modal>
@@ -151,6 +151,7 @@ export function NavRail() {
 // Orca-style tree under the Projects nav item: each project expands to its
 // worktrees. Clicking a node selects it and routes to the Projects section.
 function ProjectTree() {
+  const { t } = useAppTranslation();
   const { data: state } = useConsoleState();
   const setSection = useUiStore((s) => s.setSection);
   const selectedProjectId = useUiStore((s) => s.selectedProjectId);
@@ -214,7 +215,7 @@ function ProjectTree() {
             >
               <button
                 type="button"
-                aria-label={isOpen ? "Collapse" : "Expand"}
+                aria-label={isOpen ? t("navProject.collapse") : t("navProject.expand")}
                 onClick={() => setExpanded((e) => ({ ...e, [project.id]: !isOpen }))}
                 className="grid size-5 shrink-0 place-items-center rounded hover:bg-sidebar-accent/60"
                 disabled={!hasChildren}
@@ -236,8 +237,8 @@ function ProjectTree() {
               </button>
               <button
                 type="button"
-                aria-label={`Settings for ${project.name}`}
-                title="Project settings"
+                aria-label={t("navProject.settingsFor", { name: project.name })}
+                title={t("navProject.settings")}
                 onClick={() => setSettingsFor(project)}
                 className="grid size-5 shrink-0 place-items-center rounded text-muted-foreground opacity-60 hover:bg-sidebar-accent hover:text-sidebar-foreground hover:opacity-100"
               >
@@ -246,8 +247,8 @@ function ProjectTree() {
               {readyProjectIds.has(project.id) ? (
                 <button
                   type="button"
-                  aria-label={`Create worktree in ${project.name}`}
-                  title="Create worktree"
+                  aria-label={t("navProject.createIn", { name: project.name })}
+                  title={t("navProject.createWorktree")}
                   onClick={() => setCreateWtFor(project)}
                   className="grid size-5 shrink-0 place-items-center rounded text-muted-foreground opacity-60 hover:bg-sidebar-accent hover:text-sidebar-foreground hover:opacity-100"
                 >
@@ -262,7 +263,7 @@ function ProjectTree() {
                   <li>
                     <button
                       type="button"
-                      title="Project checkout — open the project"
+                      title={t("navProject.checkoutHint")}
                       onClick={() => openProject(project.id)}
                       className={cn(
                         "flex w-full min-w-0 items-center gap-1.5 rounded-md px-2 py-1 text-left text-xs transition-colors",
@@ -272,8 +273,8 @@ function ProjectTree() {
                       )}
                     >
                       <GitBranch className="size-3 shrink-0 opacity-70" />
-                      <span className="truncate" title={mainBranch ?? "branch unknown"}>{mainBranch ?? "…"}</span>
-                      <span className="ml-auto shrink-0 text-[10px] opacity-70">checkout</span>
+                      <span className="truncate" title={mainBranch ?? t("navProject.branchUnknown")}>{mainBranch ?? "…"}</span>
+                      <span className="ml-auto shrink-0 text-[10px] opacity-70">{t("navProject.checkout")}</span>
                     </button>
                   </li>
                 ) : null}
@@ -297,7 +298,7 @@ function ProjectTree() {
                         >
                           <GitBranch className="size-3 shrink-0 opacity-70" />
                           <span className="truncate" title={w.branch}>{w.branch}</span>
-                          {w.isMain ? <span className="shrink-0 text-[10px] opacity-70">main</span> : null}
+                          {w.isMain ? <span className="shrink-0 text-[10px] opacity-70">{t("navProject.main")}</span> : null}
                         </button>
                         {w.link ? <WorktreeLinkPopover worktree={w} /> : null}
                       </div>
@@ -314,8 +315,8 @@ function ProjectTree() {
       <Modal
         open={Boolean(settingsFor)}
         onClose={() => setSettingsFor(null)}
-        title={settingsFor ? `${settingsFor.name} settings` : "Project settings"}
-        description="Rename, recolor, set run isolation, or archive this project."
+        title={settingsFor ? t("navProject.namedSettings", { name: settingsFor.name }) : t("navProject.settings")}
+        description={t("navProject.settingsHint")}
       >
         {settingsFor ? <ProjectSettingsForm project={settingsFor} onDone={() => setSettingsFor(null)} /> : null}
       </Modal>
@@ -323,7 +324,7 @@ function ProjectTree() {
       <Modal
         open={Boolean(createWtFor)}
         onClose={() => setCreateWtFor(null)}
-        title="Create worktree"
+        title={t("navProject.createWorktree")}
         size="lg"
       >
         {createWtFor ? (
