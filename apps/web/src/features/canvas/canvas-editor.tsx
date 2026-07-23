@@ -7,6 +7,7 @@ import { ConfirmModal } from "@/components/common/confirm-modal";
 import { api, type CanvasScene } from "@/lib/api-client";
 import { useCanvasScene, useCanvasScenes, useRefreshCanvas } from "@/data/use-canvas-scenes";
 import { useUiStore } from "@/store/ui-store";
+import { useAppTranslation } from "@/lib/i18n/use-app-translation";
 import { downloadBlob, parseImportedScene, sceneFilename } from "@/features/canvas/canvas-draft";
 import {
   clearOfflineDraft,
@@ -34,6 +35,7 @@ const serialize = (elements: Elements, files: BinaryFiles = {}) =>
   serializeAsJSON(elements as never, {} as never, files as never, "local");
 
 export function CanvasEditor() {
+  const { t } = useAppTranslation();
   const selectedSceneId = useUiStore((s) => s.selectedCanvasSceneId);
   const setSelectedSceneId = useUiStore((s) => s.setSelectedCanvasSceneId);
   const scenesQuery = useCanvasScenes();
@@ -217,7 +219,7 @@ export function CanvasEditor() {
     saveTimer.current = setTimeout(() => void runSave(), SAVE_DEBOUNCE_MS);
   }, [runSave]);
 
-  const createScene = useCallback(async (elements: unknown[] = [], name = "Untitled scene") => {
+  const createScene = useCallback(async (elements: unknown[] = [], name: string = t("canvasPage.untitled")) => {
     try {
       const { scene } = await api.createCanvasScene({ name, elements });
       loadedSceneIdRef.current = null; // force a fresh load of the new scene
@@ -226,7 +228,7 @@ export function CanvasEditor() {
       setError(null);
       await refreshCanvas(scene.id);
     } catch (createError) {
-      setError(createError instanceof Error ? createError.message : "Could not create the scene.");
+      setError(createError instanceof Error ? createError.message : t("canvasPage.createFailed"));
     }
   }, [setSelectedSceneId, refreshCanvas]);
 
@@ -246,7 +248,7 @@ export function CanvasEditor() {
 
   const saveAsCopy = useCallback(async () => {
     const elements = (apiRef.current?.getSceneElements() ?? []) as unknown[];
-    await createScene(elements, `${nameDraft || "Scene"} (copy)`);
+    await createScene(elements, t("canvasPage.copyName", { name: nameDraft || t("canvasPage.scene") }));
   }, [createScene, nameDraft]);
 
   const renameScene = useCallback(async () => {
@@ -272,7 +274,7 @@ export function CanvasEditor() {
       setSelectedSceneId(null);
       await refreshCanvas(selectedSceneId);
     } catch (deleteError) {
-      setError(deleteError instanceof Error ? deleteError.message : "Could not delete the scene.");
+      setError(deleteError instanceof Error ? deleteError.message : t("canvasPage.deleteFailed"));
     }
   }, [selectedSceneId, setSelectedSceneId, refreshCanvas]);
 
@@ -294,7 +296,7 @@ export function CanvasEditor() {
         downloadBlob(new XMLSerializer().serializeToString(svg), sceneFilename("svg", now), "image/svg+xml");
       }
     } catch {
-      setError(`Could not export ${format.toUpperCase()}.`);
+      setError(t("canvasPage.exportFailed", { format: format.toUpperCase() }));
     }
   }, []);
 
@@ -304,19 +306,19 @@ export function CanvasEditor() {
     if (!file) return;
     try {
       const scene = parseImportedScene(await file.text());
-      await createScene(scene.elements, file.name.replace(/\.excalidraw$/i, "") || "Imported scene");
+      await createScene(scene.elements, file.name.replace(/\.excalidraw$/i, "") || t("canvasPage.imported"));
     } catch (importError) {
-      setError(importError instanceof Error ? importError.message : "Import failed.");
+      setError(importError instanceof Error ? importError.message : t("canvasPage.importFailed"));
     }
   }, [createScene]);
 
   const statusLabel = useMemo(() => {
     switch (status) {
-      case "saving": return "Saving…";
-      case "saved": return `Saved · v${displayRevision}`;
-      case "conflict": return "Newer version on server";
-      case "offline": return "Offline · unsaved";
-      case "error": return "Save failed";
+      case "saving": return t("canvasPage.saving");
+      case "saved": return t("canvasPage.saved", { revision: displayRevision });
+      case "conflict": return t("canvasPage.newer");
+      case "offline": return t("canvasPage.offline");
+      case "error": return t("canvasPage.saveFailed");
       default: return "";
     }
   }, [status, displayRevision]);
@@ -327,7 +329,7 @@ export function CanvasEditor() {
     <div className="flex h-[calc(100vh-8rem)] min-h-[480px] flex-col gap-3">
       <div className="flex flex-wrap items-center gap-2">
         <Select
-          aria-label="场景"
+          aria-label={t("canvasPage.scene")}
           className="h-8 w-52"
           value={selectedSceneId ?? ""}
           onChange={(event) => {
@@ -335,17 +337,17 @@ export function CanvasEditor() {
             setSelectedSceneId(event.target.value || null);
           }}
         >
-          <option value="">{scenes.length ? "Select a scene…" : "No scenes yet"}</option>
+          <option value="">{scenes.length ? t("canvasPage.selectScene") : t("canvasPage.noScenes")}</option>
           {scenes.map((scene) => (
             <option key={scene.id} value={scene.id}>{scene.name}</option>
           ))}
         </Select>
-        <Button variant="secondary" size="sm" onClick={() => void createScene()}>New scene</Button>
+        <Button variant="secondary" size="sm" onClick={() => void createScene()}>{t("canvasPage.newScene")}</Button>
 
         {hasScene ? (
           <>
             <input
-              aria-label="场景名称"
+              aria-label={t("canvasPage.sceneName")}
               className="h-8 w-44 rounded-md border border-input bg-background px-2 text-sm"
               value={nameDraft}
               onChange={(event) => setNameDraft(event.target.value)}
@@ -353,32 +355,32 @@ export function CanvasEditor() {
               onKeyDown={(event) => event.key === "Enter" && void renameScene()}
             />
             <input ref={fileInputRef} type="file" accept=".excalidraw,application/json" className="hidden" onChange={onImportFile} />
-            <Button variant="secondary" size="sm" onClick={() => fileInputRef.current?.click()}>Import</Button>
-            <Button variant="secondary" size="sm" onClick={() => void exportScene("excalidraw")}>Export</Button>
+            <Button variant="secondary" size="sm" onClick={() => fileInputRef.current?.click()}>{t("canvasPage.import")}</Button>
+            <Button variant="secondary" size="sm" onClick={() => void exportScene("excalidraw")}>{t("canvasPage.export")}</Button>
             <Button variant="secondary" size="sm" onClick={() => void exportScene("png")}>PNG</Button>
             <Button variant="secondary" size="sm" onClick={() => void exportScene("svg")}>SVG</Button>
-            <Button variant="ghost" size="sm" onClick={() => setConfirmDelete(true)}>Delete</Button>
+            <Button variant="ghost" size="sm" onClick={() => setConfirmDelete(true)}>{t("canvasPage.delete")}</Button>
           </>
         ) : null}
 
         <span className="ml-auto flex items-center gap-2 text-xs text-muted-foreground" aria-live="polite">
-          {serverScene?.lastModifiedBy ? <span className="hidden sm:inline">last edit · {serverScene.lastModifiedBy}</span> : null}
+          {serverScene?.lastModifiedBy ? <span className="hidden sm:inline">{t("canvasPage.lastEdit")} · {serverScene.lastModifiedBy}</span> : null}
           <span data-testid="canvas-save-status">{statusLabel}</span>
         </span>
       </div>
 
       {status === "conflict" ? (
         <div className="flex flex-wrap items-center gap-3 rounded-md border border-warning/50 bg-warning/10 px-3 py-2 text-xs">
-          <span className="text-foreground">A newer version of this scene is on the server. Choose how to keep your work:</span>
-          <Button variant="secondary" size="sm" onClick={reloadNewer}>Reload newer</Button>
-          <Button variant="secondary" size="sm" onClick={() => void saveAsCopy()}>Save my work as a copy</Button>
+          <span className="text-foreground">{t("canvasPage.conflictHint")}</span>
+          <Button variant="secondary" size="sm" onClick={reloadNewer}>{t("canvasPage.reload")}</Button>
+          <Button variant="secondary" size="sm" onClick={() => void saveAsCopy()}>{t("canvasPage.saveCopy")}</Button>
         </div>
       ) : null}
 
       {status === "offline" ? (
         <div className="flex flex-wrap items-center gap-3 rounded-md border border-border bg-muted px-3 py-2 text-xs">
-          <span className="text-foreground">You have unsaved offline edits for this scene.</span>
-          <Button variant="secondary" size="sm" onClick={() => void runSave()}>Retry save</Button>
+          <span className="text-foreground">{t("canvasPage.offlineHint")}</span>
+          <Button variant="secondary" size="sm" onClick={() => void runSave()}>{t("canvasPage.retrySave")}</Button>
         </div>
       ) : null}
 
@@ -393,17 +395,17 @@ export function CanvasEditor() {
         ) : (
           <div className="grid h-full place-items-center px-6 text-center text-sm text-muted-foreground">
             {scenes.length
-              ? "Select a scene above, or create a new one."
-              : "No scenes yet. Create your first scene, or ask an agent to draw one."}
+              ? t("canvasPage.selectHint")
+              : t("canvasPage.emptyHint")}
           </div>
         )}
       </div>
 
       <ConfirmModal
         open={confirmDelete}
-        title="Delete this scene?"
-        description="This permanently removes the scene for the whole team."
-        confirmLabel="Delete scene"
+        title={t("canvasPage.deleteTitle")}
+        description={t("canvasPage.deleteDescription")}
+        confirmLabel={t("canvasPage.deleteScene")}
         destructive
         onConfirm={() => void doDelete()}
         onClose={() => setConfirmDelete(false)}
