@@ -41,7 +41,9 @@ import { useUiStore } from "@/store/ui-store";
 import { cn } from "@/lib/cn";
 import { formatDuration, formatTokens } from "@/lib/format";
 import { formatUsd } from "@/lib/money";
-import { readableDelivery, readableStatus, statusTone } from "@/lib/readable-labels";
+import { statusTone } from "@/lib/readable-labels";
+import { useAppTranslation } from "@/lib/i18n/use-app-translation";
+import { delivery, invocationStatus } from "@/lib/i18n/readable-labels";
 import type {
   ApplicationRecoveryActionRequest,
   ConsoleSnapshot,
@@ -51,6 +53,7 @@ import type {
 } from "@/lib/console-state";
 
 export function InvocationsView() {
+  const { t } = useAppTranslation();
   const { data: state } = useConsoleState();
   const selectedInvocationId = useUiStore((s) => s.selectedInvocationId);
   const setSelectedInvocationId = useUiStore((s) => s.setSelectedInvocationId);
@@ -119,24 +122,24 @@ export function InvocationsView() {
     <div className="space-y-5">
       <Card>
         <CardHeader>
-          <CardTitle>Invocations</CardTitle>
+          <CardTitle>{t("invocations.title")}</CardTitle>
         </CardHeader>
         <CardContent>
           {invocations.length === 0 ? (
             <EmptyState
-              title="No runs yet"
-              hint="Every run — its status and result — shows here."
-              action={<Button size="sm" onClick={() => setSection("dashboard")}>Start a task</Button>}
+              title={t("invocations.emptyTitle")}
+              hint={t("invocations.emptyHint")}
+              action={<Button size="sm" onClick={() => setSection("dashboard")}>{t("invocations.startTask")}</Button>}
             />
           ) : (
             <div className="overflow-hidden rounded-lg border border-border">
               <table className="w-full text-sm">
                 <thead className="bg-muted/40 text-xs uppercase tracking-wide text-muted-foreground">
                   <tr>
-                    <th className="px-3 py-2 text-left font-medium">Task</th>
-                    <th className="px-3 py-2 text-left font-medium">Agent</th>
-                    <th className="px-3 py-2 text-left font-medium">Delivery</th>
-                    <th className="px-3 py-2 text-right font-medium">Status</th>
+                    <th className="px-3 py-2 text-left font-medium">{t("invocations.task")}</th>
+                    <th className="px-3 py-2 text-left font-medium">{t("invocations.agent")}</th>
+                    <th className="px-3 py-2 text-left font-medium">{t("invocations.delivery")}</th>
+                    <th className="px-3 py-2 text-right font-medium">{t("invocations.status")}</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -154,11 +157,11 @@ export function InvocationsView() {
                         <td className="px-3 py-2 font-mono text-xs">{invocation.id}</td>
                         <td className="px-3 py-2 text-muted-foreground">{invocation.agentId ?? "—"}</td>
                         <td className="px-3 py-2 text-muted-foreground">
-                          {readableDelivery(invocation.delivery?.state)}
+                          {delivery(t, invocation.delivery?.state)}
                         </td>
                         <td className="px-3 py-2 text-right">
                           <StatusBadge tone={statusTone(invocation.status)}>
-                            {readableStatus(invocation.status)}
+                            {invocationStatus(t, invocation.status)}
                           </StatusBadge>
                         </td>
                       </tr>
@@ -186,16 +189,16 @@ export function InvocationsView() {
         <Card>
           <CardHeader>
             <div className="flex items-start justify-between gap-3">
-              <CardTitle>Imported usage · this run</CardTitle>
+              <CardTitle>{t("invocations.importedUsage")}</CardTitle>
               <div className="flex shrink-0 items-center gap-2">
-                <Badge tone="neutral">Non-authoritative</Badge>
+                <Badge tone="neutral">{t("invocations.nonAuthoritative")}</Badge>
                 <Button variant="ghost" size="sm" className="h-7 px-2 text-xs" onClick={() => setSection("economics")}>
-                  View in Economics
+                  {t("invocations.viewEconomics")}
                 </Button>
               </div>
             </div>
             <p className="text-sm text-muted-foreground">
-              {importedRows.length} estimate row(s) this run imported — externally billed, never rolled into metered ledger cost.
+              {t("invocations.importedSummary", { count: importedRows.length })}
             </p>
           </CardHeader>
           <CardContent>
@@ -207,18 +210,16 @@ export function InvocationsView() {
       {selected?.requestContext ? (
         <Card>
           <CardHeader>
-            <CardTitle>Request context</CardTitle>
+            <CardTitle>{t("invocations.requestContext")}</CardTitle>
             <p className="text-sm text-muted-foreground">
-              What this run was dispatched with — model, permission mode, and the tool / MCP / skill inventory the
-              agent had available. Tool <em>names</em> only; the raw system prompt and full tool schemas are not
-              emitted by the CLI.
+              {t("invocations.requestContextHint")}
             </p>
           </CardHeader>
           <CardContent>
             <dl className="grid grid-cols-[auto,1fr] gap-x-4 gap-y-2 text-sm">
               {selected.requestContext.model ? (
                 <>
-                  <dt className="text-muted-foreground">Model</dt>
+                  <dt className="text-muted-foreground">{t("invocations.model")}</dt>
                   <dd className="font-mono [overflow-wrap:anywhere]">
                     {selected.requestContext.model}
                     {selected.requestContext.provider ? (
@@ -229,13 +230,13 @@ export function InvocationsView() {
               ) : null}
               {selected.requestContext.permissionMode ? (
                 <>
-                  <dt className="text-muted-foreground">Permission</dt>
+                  <dt className="text-muted-foreground">{t("invocations.permission")}</dt>
                   <dd><Badge tone="neutral">{selected.requestContext.permissionMode}</Badge></dd>
                 </>
               ) : null}
               {selected.requestContext.tools?.length ? (
                 <>
-                  <dt className="text-muted-foreground">Tools ({selected.requestContext.tools.length})</dt>
+                  <dt className="text-muted-foreground">{t("invocations.tools", { count: selected.requestContext.tools.length })}</dt>
                   <dd className="flex flex-wrap gap-1">
                     {selected.requestContext.tools.map((tool) => (
                       <span key={tool} className="rounded border border-border px-1.5 py-0.5 font-mono text-xs">{tool}</span>
@@ -245,7 +246,7 @@ export function InvocationsView() {
               ) : null}
               {selected.requestContext.mcpServers?.length ? (
                 <>
-                  <dt className="text-muted-foreground">MCP servers</dt>
+                  <dt className="text-muted-foreground">{t("invocations.mcpServers")}</dt>
                   <dd className="flex flex-wrap gap-1">
                     {selected.requestContext.mcpServers.map((server) => (
                       <span key={server.name} className="rounded border border-border px-1.5 py-0.5 text-xs">
@@ -258,7 +259,7 @@ export function InvocationsView() {
               ) : null}
               {selected.requestContext.skills?.length ? (
                 <>
-                  <dt className="text-muted-foreground">Skills ({selected.requestContext.skills.length})</dt>
+                  <dt className="text-muted-foreground">{t("invocations.skills", { count: selected.requestContext.skills.length })}</dt>
                   <dd className="font-mono text-xs text-muted-foreground [overflow-wrap:anywhere]">
                     {selected.requestContext.skills.join(", ")}
                   </dd>
@@ -266,7 +267,7 @@ export function InvocationsView() {
               ) : null}
               {selected.requestContext.agents?.length ? (
                 <>
-                  <dt className="text-muted-foreground">Agents ({selected.requestContext.agents.length})</dt>
+                  <dt className="text-muted-foreground">{t("invocations.agents", { count: selected.requestContext.agents.length })}</dt>
                   <dd className="font-mono text-xs text-muted-foreground [overflow-wrap:anywhere]">
                     {selected.requestContext.agents.join(", ")}
                   </dd>
@@ -274,7 +275,7 @@ export function InvocationsView() {
               ) : null}
               {selected.requestContext.slashCommandCount ? (
                 <>
-                  <dt className="text-muted-foreground">Slash commands</dt>
+                  <dt className="text-muted-foreground">{t("invocations.slashCommands")}</dt>
                   <dd className="tabular-nums text-muted-foreground">{selected.requestContext.slashCommandCount}</dd>
                 </>
               ) : null}
@@ -287,13 +288,15 @@ export function InvocationsView() {
         <Card>
           <CardHeader>
             <div className="flex items-start justify-between gap-3">
-              <CardTitle>Rounds · this run</CardTitle>
-              <Badge tone="neutral">{rounds.length} round{rounds.length === 1 ? "" : "s"}</Badge>
+              <CardTitle>{t("invocations.roundsTitle")}</CardTitle>
+              <Badge tone="neutral">{t("invocations.rounds", { count: rounds.length })}</Badge>
             </div>
             <p className="text-sm text-muted-foreground">
-              One row per model turn — measured tokens, timing, and content read.{" "}
-              {formatTokens(roundInputTokens)} in / {formatTokens(roundOutputTokens)} out tokens across this run
-              {anyRoundPriced ? ` · ~${formatUsd(roundCostUsd)} est.` : "."}
+              {t("invocations.roundSummary", {
+                input: formatTokens(roundInputTokens),
+                output: formatTokens(roundOutputTokens),
+                cost: anyRoundPriced ? ` · ~${formatUsd(roundCostUsd)} ${t("invocations.estimated")}` : "",
+              })}
             </p>
           </CardHeader>
           <CardContent>
@@ -302,15 +305,15 @@ export function InvocationsView() {
                 <thead className="bg-muted/40 text-xs uppercase tracking-wide text-muted-foreground">
                   <tr>
                     <th className="px-3 py-2 text-left font-medium">#</th>
-                    <th className="px-3 py-2 text-left font-medium">Model</th>
-                    <th className="px-3 py-2 text-right font-medium">In</th>
-                    <th className="px-3 py-2 text-right font-medium">Out</th>
-                    <th className="px-3 py-2 text-right font-medium">Cached</th>
-                    <th className="px-3 py-2 text-right font-medium">Cost</th>
-                    <th className="px-3 py-2 text-right font-medium">Duration</th>
-                    <th className="px-3 py-2 text-right font-medium">Files</th>
-                    <th className="px-3 py-2 text-right font-medium">Tools</th>
-                    <th className="px-3 py-2 text-right font-medium">Status</th>
+                    <th className="px-3 py-2 text-left font-medium">{t("invocations.model")}</th>
+                    <th className="px-3 py-2 text-right font-medium">{t("invocations.input")}</th>
+                    <th className="px-3 py-2 text-right font-medium">{t("invocations.output")}</th>
+                    <th className="px-3 py-2 text-right font-medium">{t("invocations.cached")}</th>
+                    <th className="px-3 py-2 text-right font-medium">{t("invocations.cost")}</th>
+                    <th className="px-3 py-2 text-right font-medium">{t("invocations.duration")}</th>
+                    <th className="px-3 py-2 text-right font-medium">{t("invocations.files")}</th>
+                    <th className="px-3 py-2 text-right font-medium">{t("invocations.toolsHeader")}</th>
+                    <th className="px-3 py-2 text-right font-medium">{t("invocations.status")}</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -341,7 +344,7 @@ export function InvocationsView() {
                         <td className="px-3 py-2 text-right tabular-nums text-muted-foreground">{(round.toolCallIds ?? []).length}</td>
                         <td className="px-3 py-2 text-right">
                           <StatusBadge tone={statusTone(round.status ?? "")}>
-                            {readableStatus(round.status ?? "")}
+                            {invocationStatus(t, round.status ?? "")}
                           </StatusBadge>
                         </td>
                       </tr>
@@ -363,7 +366,7 @@ export function InvocationsView() {
 
       <Card>
         <CardHeader>
-          <CardTitle>{selected ? `Timeline · ${selected.id}` : "Timeline"}</CardTitle>
+          <CardTitle>{selected ? t("invocations.timelineId", { id: selected.id }) : t("invocations.timeline")}</CardTitle>
         </CardHeader>
         <CardContent>
           <EventTimeline events={events} renderAction={(event) => <DecisionAction event={event} />} />
@@ -388,6 +391,7 @@ function OperatorExplanationCard({
   onViewInvocation: (invocationId: string) => void;
   onViewWebNavigationLink: (link: WebNavigationLink) => void;
 }) {
+  const { t } = useAppTranslation();
   const [copiedLink, setCopiedLink] = useState(false);
   const serverExplanation = invocation.explanation ?? null;
   const metadata = invocation.options?.metadata ?? {};
@@ -502,34 +506,34 @@ function OperatorExplanationCard({
     <Card>
       <CardHeader>
         <div className="flex flex-wrap items-center justify-between gap-2">
-          <CardTitle>Operator explanation</CardTitle>
+          <CardTitle>{t("invocations.operatorExplanation")}</CardTitle>
           <div className="flex flex-wrap items-center gap-2">
             <Button
               size="icon"
               variant="secondary"
-              title="Copy invocation link"
-              aria-label="Copy invocation link"
+              title={t("invocations.copyLink")}
+              aria-label={t("invocations.copyLink")}
               onClick={copyInvocationLink}
             >
               <Clipboard />
             </Button>
-            {copiedLink ? <span className="text-xs text-success">Copied.</span> : null}
+            {copiedLink ? <span className="text-xs text-success">{t("invocations.copied")}</span> : null}
           </div>
         </div>
       </CardHeader>
       <CardContent className="space-y-3">
         <div className="flex flex-wrap items-center gap-2">
-          <Badge tone={statusTone(invocation.status)}>{readableStatus(invocation.status)}</Badge>
+          <Badge tone={statusTone(invocation.status)}>{invocationStatus(t, invocation.status)}</Badge>
           {sourceLabel ? <Badge tone="neutral">{sourceLabel}</Badge> : null}
           {recoveryCategory ? <Badge tone={recoveryTone(recoveryCategory)}>{readableRecoveryCategory(recoveryCategory)}</Badge> : null}
           {recoveryState ? <Badge tone={recoveryExplanationTone(recoveryState)}>{readableRecoveryExplanationState(recoveryState)}</Badge> : null}
           {reasonCode ? <Badge tone={recoveryExplanationReasonTone(reasonCode)}>{readableRecoveryExplanationReason(reasonCode)}</Badge> : null}
-          {recovery?.humanApprovalRequired || approvalRequestId || serverExplanation?.approval ? <Badge tone="warning">Approval</Badge> : null}
+          {recovery?.humanApprovalRequired || approvalRequestId || serverExplanation?.approval ? <Badge tone="warning">{t("invocations.approval")}</Badge> : null}
         </div>
         <p className="[overflow-wrap:anywhere] text-sm text-muted-foreground">{summary}</p>
         {nextStep ? (
           <p className="[overflow-wrap:anywhere] rounded-md bg-muted px-3 py-2 text-sm">
-            <span className="font-medium">Next step: </span>
+            <span className="font-medium">{t("invocations.nextStep")}: </span>
             <span className="text-muted-foreground">{nextStep}</span>
           </p>
         ) : null}
@@ -610,8 +614,8 @@ function OperatorExplanationCard({
             },
           ]}
         />
-        {error ? <p className="text-xs text-destructive">Could not load recovery explanation.</p> : null}
-        {isLoading ? <p className="text-xs text-muted-foreground">Loading recovery explanation...</p> : null}
+        {error ? <p className="text-xs text-destructive">{t("invocations.recoveryLoadFailed")}</p> : null}
+        {isLoading ? <p className="text-xs text-muted-foreground">{t("invocations.recoveryLoading")}</p> : null}
         {troubleshootingTarget?.webLinks ? (
           <WebNavigationLinkActions
             title="Troubleshooting report links"
@@ -626,7 +630,7 @@ function OperatorExplanationCard({
         ) : null}
         {recovery?.actions.length ? (
           <div className="space-y-1 rounded-md border border-border bg-muted p-2">
-            <p className="text-xs font-medium">Recommended recovery</p>
+            <p className="text-xs font-medium">{t("invocations.recommendedRecovery")}</p>
             <ul className="space-y-1 text-xs text-muted-foreground">
               {recovery.actions.slice(0, 3).map((action) => (
                 <li key={`${action.type}:${action.label}`} className="[overflow-wrap:anywhere]">

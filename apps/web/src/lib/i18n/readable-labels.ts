@@ -5,6 +5,9 @@ import type {
   AgentSnapshot,
   AgentUsageSummary,
   ConsoleSnapshot,
+  AuditSnapshot,
+  InvocationSnapshot,
+  LifecycleAuditSnapshot,
 } from "@/lib/console-state";
 import { shortTime } from "@/lib/readable-labels";
 
@@ -13,6 +16,51 @@ export function agentStatus(t: TFunction, status?: string): string {
   if (status === "unavailable") return t("labels.agentStatus.unavailable");
   if (status === "disabled") return t("labels.agentStatus.disabled");
   return status ?? "-";
+}
+
+export function invocationStatus(t: TFunction, status?: string): string {
+  return enumValue(t, "runLabels.invocationStatus", status ?? "waiting");
+}
+
+export function delivery(t: TFunction, state?: string): string {
+  return enumValue(t, "runLabels.delivery", state ?? "not_delivered");
+}
+
+export function cancellation(t: TFunction, state?: string): string {
+  return enumValue(t, "runLabels.cancellation", state ?? "none");
+}
+
+export function audit(t: TFunction, value?: AuditSnapshot | null): string {
+  if (!value) return t("runLabels.audit.none");
+  if (value.permissionDecision === "allowed") return t("runLabels.audit.allowed");
+  if (value.permissionDecision === "denied") return t("runLabels.audit.denied");
+  return t("runLabels.audit.recorded");
+}
+
+export function lifecycleAudit(t: TFunction, value?: LifecycleAuditSnapshot | null): string {
+  if (!value) return t("runLabels.audit.none");
+  const operation = value.operation.replaceAll("_", " ");
+  if (value.status === "succeeded") return t("runLabels.lifecycleAudit.succeeded", { operation });
+  if (value.status === "failed") return t("runLabels.lifecycleAudit.failed", { operation });
+  return `${operation} ${value.status}`;
+}
+
+export function resultHeading(t: TFunction, status?: string): string {
+  return enumValue(t, "runLabels.result", status ?? "none");
+}
+
+export function resultDescription(
+  t: TFunction,
+  invocation: InvocationSnapshot | null,
+  value?: AuditSnapshot | null,
+): string {
+  if (!invocation) return t("runLabels.resultSummary.none");
+  if (invocation.result?.summary) return invocation.result.summary;
+  if (invocation.status === "rejected")
+    return value?.errorSummary ?? t("runLabels.resultSummary.rejected");
+  if (invocation.status === "failed")
+    return value?.errorSummary ?? t("runLabels.resultSummary.failed");
+  return t(`runLabels.resultSummary.${invocation.status ?? "default"}` as never);
 }
 
 export function healthLabel(t: TFunction, health?: AgentSnapshot["health"]): string {
@@ -108,6 +156,6 @@ export function adapter(t: TFunction, value?: AgentAdapter): string {
 }
 
 function enumValue(t: TFunction, group: string, value: string): string {
-  const key = `labels.${group}.${value}`;
+  const key = `${group.startsWith("runLabels.") ? group : `labels.${group}`}.${value}`;
   return t(key, { defaultValue: value.replaceAll("_", " ") });
 }
