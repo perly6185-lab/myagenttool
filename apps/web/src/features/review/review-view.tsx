@@ -10,6 +10,7 @@ import { useConsoleState } from "@/data/use-console-state";
 import { useUiStore } from "@/store/ui-store";
 import type { ReviewFinding } from "@/lib/console-state";
 import type { Tone } from "@/lib/readable-labels";
+import { useAppTranslation } from "@/lib/i18n/use-app-translation";
 
 function severityTone(severity: string): Tone {
   if (severity === "high") return "danger";
@@ -19,6 +20,7 @@ function severityTone(severity: string): Tone {
 
 /** Unified codex/claude diff-review findings, scoped server-side to the actor. */
 export function ReviewView() {
+  const { t } = useAppTranslation();
   const { data: state } = useConsoleState();
   const setSelectedInvocationId = useUiStore((s) => s.setSelectedInvocationId);
   const setSection = useUiStore((s) => s.setSection);
@@ -54,41 +56,41 @@ export function ReviewView() {
   return (
     <div className="space-y-5">
       <SectionHeading
-        eyebrow="Governed review"
-        title="Review findings"
-        description="Structured findings imported from governed Codex and Claude diff reviews. Raw review payloads stay server-side."
+        eyebrow={t("reviewPage.eyebrow")}
+        title={t("reviewPage.title")}
+        description={t("reviewPage.description")}
       />
 
       <div className="flex flex-wrap items-end gap-3">
-        <Field label="Source" className="w-40">
+        <Field label={t("reviewPage.source")} className="w-40">
           <Select value={source} onChange={(e) => setSource(e.target.value as typeof source)}>
-            <option value="all">All sources</option>
+            <option value="all">{t("reviewPage.allSources")}</option>
             <option value="codex">Codex</option>
             <option value="claude">Claude</option>
           </Select>
         </Field>
-        <Field label="Severity" className="w-40">
+        <Field label={t("reviewPage.severity")} className="w-40">
           <Select value={severity} onChange={(e) => setSeverity(e.target.value as typeof severity)}>
-            <option value="all">All severities</option>
-            <option value="high">High</option>
-            <option value="medium">Medium</option>
-            <option value="low">Low</option>
+            <option value="all">{t("reviewPage.allSeverities")}</option>
+            <option value="high">{t("reviewPage.high")}</option>
+            <option value="medium">{t("reviewPage.medium")}</option>
+            <option value="low">{t("reviewPage.low")}</option>
           </Select>
         </Field>
         <span className="pb-2 text-xs text-muted-foreground">
-          {findings.length} of {all.length} finding(s)
+          {t("reviewPage.count", { visible: findings.length, total: all.length })}
         </span>
       </div>
 
       {!findings.length ? (
         <EmptyState
-          title={all.length ? "No findings match these filters" : "No review findings yet"}
+          title={all.length ? t("reviewPage.noMatches") : t("reviewPage.empty")}
           hint={
             all.length
-              ? "Loosen the source or severity filter."
-              : "Run a governed Codex or Claude review from the Tools panel to populate this list."
+              ? t("reviewPage.noMatchesHint")
+              : t("reviewPage.emptyHint")
           }
-          action={!all.length ? <Button size="sm" onClick={() => setSection("tools")}>Open Tools</Button> : undefined}
+          action={!all.length ? <Button size="sm" onClick={() => setSection("tools")}>{t("reviewPage.openTools")}</Button> : undefined}
         />
       ) : (
         <div className="space-y-3">
@@ -96,9 +98,9 @@ export function ReviewView() {
             <Card key={finding.id}>
               <CardContent className="space-y-2 p-4">
                 <div className="flex flex-wrap items-center gap-2">
-                  <StatusBadge tone={severityTone(finding.severity)}>{finding.severity}</StatusBadge>
+                  <StatusBadge tone={severityTone(finding.severity)}>{t(`reviewPage.${finding.severity}` as never)}</StatusBadge>
                   <Badge>{finding.source}</Badge>
-                  <Badge>confidence: {finding.confidence}</Badge>
+                  <Badge>{t("reviewPage.confidence")}: {finding.confidence}</Badge>
                   <span className="[overflow-wrap:anywhere] font-mono text-xs text-muted-foreground">
                     {finding.file}
                     {finding.line != null ? `:${finding.line}` : ""}
@@ -107,7 +109,7 @@ export function ReviewView() {
                 <p className="text-sm text-foreground">{finding.message}</p>
                 {finding.suggestion ? (
                   <p className="text-sm text-muted-foreground">
-                    <span className="font-medium text-foreground">Suggestion: </span>
+                    <span className="font-medium text-foreground">{t("reviewPage.suggestion")}: </span>
                     {finding.suggestion}
                   </p>
                 ) : null}
@@ -117,11 +119,11 @@ export function ReviewView() {
                     className="text-xs font-medium text-primary hover:underline"
                     onClick={() => openInvocation(finding)}
                   >
-                    View invocation →
+                    {t("reviewPage.viewInvocation")} →
                   </button>
                 ) : (
                   <span className="text-xs text-muted-foreground">
-                    Invocation not in the current window
+                    {t("reviewPage.notCurrent")}
                   </span>
                 )}
               </CardContent>

@@ -64,7 +64,7 @@ export function EvidenceView() {
   const refusals = state?.refusals ?? [];
   const attentionCount = useMemo(() => ledger.filter((r) => r.attention).length, [ledger]);
   const rows = useMemo(() => (filter === "attention" ? ledger.filter((r) => r.attention) : ledger), [ledger, filter]);
-  const agentName = (id?: string | null) => state?.agents?.find((a) => a.id === id)?.name ?? id ?? "agent";
+  const agentName = (id?: string | null) => state?.agents?.find((a) => a.id === id)?.name ?? id ?? t("evidenceDetails.agent");
 
   return (
     <div className="space-y-5">
@@ -230,6 +230,7 @@ function RefusalSummaryStrip({ summary }: { summary: RefusalSummary }) {
 }
 
 function RefusalCategorySection({ group }: { group: RefusalCategoryGroup }) {
+  const { t } = useAppTranslation();
   return (
     <div className="space-y-2">
       <div className="flex items-baseline gap-2">
@@ -246,7 +247,7 @@ function RefusalCategorySection({ group }: { group: RefusalCategoryGroup }) {
                   <Ban className="size-3" /> {codeGroup.label}
                 </Badge>
                 <span className="text-xs text-muted-foreground">
-                  {codeGroup.refusals.length} refusal{codeGroup.refusals.length === 1 ? "" : "s"}
+                  {t("evidenceDetails.refusalCount", { count: codeGroup.refusals.length })}
                 </span>
               </div>
               <div className="space-y-2">
@@ -263,6 +264,7 @@ function RefusalCategorySection({ group }: { group: RefusalCategoryGroup }) {
 }
 
 function RefusalItem({ refusal }: { refusal: RefusalRow }) {
+  const { t } = useAppTranslation();
   const [showEvidence, setShowEvidence] = useState(false);
   const appeal = readableAppealTo(refusal.appealTo);
   const age = since(refusal.at);
@@ -272,7 +274,7 @@ function RefusalItem({ refusal }: { refusal: RefusalRow }) {
       <div className="flex items-start justify-between gap-3">
         <p className="min-w-0 flex-1 font-medium">{refusal.summary || readableRefusalCode(refusal.code)}</p>
         <div className="flex shrink-0 items-center gap-2">
-          {refusal.source === "loop" ? <Badge tone="neutral">agent loop</Badge> : null}
+          {refusal.source === "loop" ? <Badge tone="neutral">{t("evidenceDetails.agentLoop")}</Badge> : null}
           {age ? <span className="text-xs text-muted-foreground">{age}</span> : null}
         </div>
       </div>
@@ -290,12 +292,12 @@ function RefusalItem({ refusal }: { refusal: RefusalRow }) {
         ) : null}
         {refusal.retryAfter ? (
           <span className="inline-flex items-center gap-1">
-            <Clock className="size-3" /> retry after {refusal.retryAfter}
+            <Clock className="size-3" /> {t("evidenceDetails.retryAfter", { time: refusal.retryAfter })}
           </span>
         ) : (
-          <span className="text-muted-foreground/70">retry won’t help on its own</span>
+          <span className="text-muted-foreground/70">{t("evidenceDetails.retryNoHelp")}</span>
         )}
-        {appeal ? <span>appeal to {appeal}</span> : <span className="text-muted-foreground/70">final — no appeal</span>}
+        {appeal ? <span>{t("evidenceDetails.appealTo", { target: appeal })}</span> : <span className="text-muted-foreground/70">{t("evidenceDetails.noAppeal")}</span>}
       </div>
       {hasEvidence ? (
         <div className="mt-2">
@@ -304,7 +306,7 @@ function RefusalItem({ refusal }: { refusal: RefusalRow }) {
             onClick={() => setShowEvidence((v) => !v)}
             className="inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground"
           >
-            {showEvidence ? <ChevronDown className="size-3" /> : <ChevronRight className="size-3" />} Evidence
+            {showEvidence ? <ChevronDown className="size-3" /> : <ChevronRight className="size-3" />} {t("evidenceDetails.evidence")}
           </button>
           {showEvidence ? (
             <pre className="mt-1 max-h-56 overflow-auto rounded bg-muted/50 p-2 text-[11px] leading-relaxed">
@@ -357,13 +359,14 @@ function LedgerRow({
 }
 
 function VerdictChips({ row }: { row: EvidenceLedgerRow }) {
+  const { t } = useAppTranslation();
   return (
     <>
       {row.review.total > 0 ? (
         <span className="inline-flex items-center gap-1 text-xs">
-          {row.review.high > 0 ? <StatusBadge tone="danger">{row.review.high} high</StatusBadge> : null}
-          {row.review.medium > 0 ? <StatusBadge tone="warning">{row.review.medium} med</StatusBadge> : null}
-          {row.review.low > 0 ? <StatusBadge tone="neutral">{row.review.low} low</StatusBadge> : null}
+          {row.review.high > 0 ? <StatusBadge tone="danger">{t("evidenceDetails.highCount", { count: row.review.high })}</StatusBadge> : null}
+          {row.review.medium > 0 ? <StatusBadge tone="warning">{t("evidenceDetails.mediumCount", { count: row.review.medium })}</StatusBadge> : null}
+          {row.review.low > 0 ? <StatusBadge tone="neutral">{t("evidenceDetails.lowCount", { count: row.review.low })}</StatusBadge> : null}
         </span>
       ) : null}
       {row.audit?.permissionDecision ? (
@@ -371,8 +374,8 @@ function VerdictChips({ row }: { row: EvidenceLedgerRow }) {
           {row.audit.permissionDecision}
         </StatusBadge>
       ) : null}
-      {row.troubleshooting.present ? <Badge tone="warning">troubleshooting</Badge> : null}
-      {row.runtimeEvidence > 0 ? <Badge tone="neutral">{row.runtimeEvidence} evidence</Badge> : null}
+      {row.troubleshooting.present ? <Badge tone="warning">{t("evidenceDetails.troubleshooting")}</Badge> : null}
+      {row.runtimeEvidence > 0 ? <Badge tone="neutral">{t("evidenceDetails.evidenceCount", { count: row.runtimeEvidence })}</Badge> : null}
       {row.application?.name || row.application?.id ? (
         <Badge tone="neutral" className="inline-flex items-center gap-1">
           <AppWindow className="size-3" />
@@ -381,10 +384,10 @@ function VerdictChips({ row }: { row: EvidenceLedgerRow }) {
       ) : null}
       {row.recovery?.latestStatus ? (
         <StatusBadge tone={recoveryActionRequestTone(row.recovery.latestStatus)}>
-          recovery {readableRecoveryActionRequestStatus(row.recovery.latestStatus).toLowerCase()}
+          {t("evidenceDetails.recoveryStatus", { status: readableRecoveryActionRequestStatus(row.recovery.latestStatus).toLowerCase() })}
         </StatusBadge>
       ) : null}
-      {row.recoveryResultOf ? <Badge tone="success">recovery result</Badge> : null}
+      {row.recoveryResultOf ? <Badge tone="success">{t("evidenceDetails.recoveryResult")}</Badge> : null}
     </>
   );
 }
