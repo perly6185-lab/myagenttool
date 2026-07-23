@@ -62,6 +62,7 @@ import {
   sortedRecoveryActionRequests,
 } from "@/features/recovery/application-recovery-ui";
 import { readableStatus, statusTone } from "@/lib/readable-labels";
+import { useAppTranslation } from "@/lib/i18n/use-app-translation";
 import type {
   ApplicationOrchestration,
   ApplicationOrchestrationRecoveryAction,
@@ -113,21 +114,22 @@ interface PendingConfirm {
 // this checklist orients a freshly-registered application to its next step and
 // disappears once set up. The action buttons live in the Lifecycle card below.
 function SetupChecklist({ application, invocations }: { application: ApplicationSnapshot; invocations: InvocationSnapshot[] }) {
+  const { t } = useAppTranslation();
   const setup = applicationSetupState(application, invocations);
   if (setup.nextStep === "done") return null;
   const steps: { key: "probe" | "generate" | "run"; label: string; done: boolean }[] = [
-    { key: "probe", label: "Probe capabilities", done: setup.probed },
-    { key: "generate", label: "Generate orchestration", done: setup.hasOrchestration },
-    { key: "run", label: "First run", done: setup.hasRun },
+    { key: "probe", label: t("applicationInspector.setup.probe"), done: setup.probed },
+    { key: "generate", label: t("applicationInspector.setup.generate"), done: setup.hasOrchestration },
+    { key: "run", label: t("applicationInspector.setup.firstRun"), done: setup.hasRun },
   ];
   return (
     <Card>
       <CardHeader>
         <div className="flex items-center justify-between gap-3">
-          <CardTitle>Get set up</CardTitle>
+          <CardTitle>{t("applicationInspector.setup.title")}</CardTitle>
           <Badge tone="neutral">{setup.completed}/3</Badge>
         </div>
-        <p className="text-xs text-muted-foreground">Next: {setupNextHint(setup.nextStep)}</p>
+        <p className="text-xs text-muted-foreground">{t("applicationInspector.setup.next", { step: setupNextHint(setup.nextStep) })}</p>
       </CardHeader>
       <CardContent>
         <ol className="flex flex-wrap gap-x-4 gap-y-1 text-xs">
@@ -144,13 +146,14 @@ function SetupChecklist({ application, invocations }: { application: Application
             );
           })}
         </ol>
-        <p className="mt-2 text-xs text-muted-foreground">Use the Lifecycle actions below to complete the next step.</p>
+        <p className="mt-2 text-xs text-muted-foreground">{t("applicationInspector.setup.hint")}</p>
       </CardContent>
     </Card>
   );
 }
 
 function ApplicationActions({ application }: { application: ApplicationSnapshot }) {
+  const { t } = useAppTranslation();
   const { execute, pending, error } = useAsyncAction();
   const [confirm, setConfirm] = useState<PendingConfirm | null>(null);
   const status = application.status;
@@ -162,12 +165,12 @@ function ApplicationActions({ application }: { application: ApplicationSnapshot 
   return (
     <Card>
       <CardHeader>
-        <CardTitle>Lifecycle</CardTitle>
+        <CardTitle>{t("applicationInspector.lifecycle.title")}</CardTitle>
       </CardHeader>
       <CardContent className="space-y-2">
         <div className="flex flex-wrap gap-2">
           <Button size="sm" variant="secondary" disabled={pending} onClick={() => void execute(() => api.applicationLifecycle(application.id, "probe"))}>
-            Probe
+            {t("applicationInspector.lifecycle.probe")}
           </Button>
           {status !== "active" && status !== "archived" ? (
             <Button size="sm" variant="secondary" disabled={pending} onClick={() => setConfirm({
@@ -177,7 +180,7 @@ function ApplicationActions({ application }: { application: ApplicationSnapshot 
               destructive: false,
               run: () => lifecycle("online"),
             })}>
-              Bring online
+              {t("applicationInspector.lifecycle.online")}
             </Button>
           ) : null}
           {status === "active" ? (
@@ -188,7 +191,7 @@ function ApplicationActions({ application }: { application: ApplicationSnapshot 
               destructive: true,
               run: () => lifecycle("offline"),
             })}>
-              Take offline
+              {t("applicationInspector.lifecycle.offline")}
             </Button>
           ) : null}
           {status !== "archived" ? (
@@ -199,7 +202,7 @@ function ApplicationActions({ application }: { application: ApplicationSnapshot 
               destructive: true,
               run: () => lifecycle("archive"),
             })}>
-              Archive
+              {t("applicationInspector.lifecycle.archive")}
             </Button>
           ) : null}
           {status === "active" ? (
@@ -210,7 +213,7 @@ function ApplicationActions({ application }: { application: ApplicationSnapshot 
               destructive: false,
               run: () => lifecycle("refresh"),
             })}>
-              Refresh
+              {t("applicationInspector.lifecycle.refresh")}
             </Button>
           ) : null}
           {status !== "archived" && status !== "offline" ? (
@@ -221,7 +224,7 @@ function ApplicationActions({ application }: { application: ApplicationSnapshot 
               destructive: false,
               run: () => withApprovalGrant("generate_orchestration", application.id, (token) => api.generateApplicationOrchestration(application.id, { approvalToken: token })),
             })}>
-              Generate orchestration
+              {t("applicationInspector.lifecycle.generateOrchestration")}
             </Button>
           ) : null}
           {status !== "archived" ? (
@@ -232,7 +235,7 @@ function ApplicationActions({ application }: { application: ApplicationSnapshot 
                 run: () => withApprovalGrant("auto-recovery-config", application.id, (token) => api.setApplicationAutoRecovery(application.id, { ...next, approvalToken: token })),
               });
             }}>
-              {application.autoRecovery?.enabled ? "Disable auto-recovery" : "Enable auto-recovery"}
+              {t(application.autoRecovery?.enabled ? "applicationInspector.lifecycle.disableRecovery" : "applicationInspector.lifecycle.enableRecovery")}
             </Button>
           ) : null}
           {status !== "archived" ? (
@@ -243,16 +246,16 @@ function ApplicationActions({ application }: { application: ApplicationSnapshot 
                 run: () => withApprovalGrant("health-probe-config", application.id, (token) => api.setApplicationHealthProbe(application.id, { ...next, approvalToken: token })),
               });
             }}>
-              {application.healthProbe?.enabled ? "Disable health probe" : "Enable health probe"}
+              {t(application.healthProbe?.enabled ? "applicationInspector.lifecycle.disableHealth" : "applicationInspector.lifecycle.enableHealth")}
             </Button>
           ) : null}
-          {application.autoRecovery?.enabled ? <Badge tone="warning">auto-recovery on · max {autoRecoveryMaxAttempts(application)}</Badge> : null}
-          {application.healthProbe?.enabled ? <Badge tone="warning">health probe on · every {healthProbeIntervalMinutes(application)}m</Badge> : null}
+          {application.autoRecovery?.enabled ? <Badge tone="warning">{t("applicationInspector.lifecycle.recoveryOn", { count: autoRecoveryMaxAttempts(application) })}</Badge> : null}
+          {application.healthProbe?.enabled ? <Badge tone="warning">{t("applicationInspector.lifecycle.healthOn", { minutes: healthProbeIntervalMinutes(application) })}</Badge> : null}
         </div>
         {application.autoRecovery?.enabled || application.healthProbe?.enabled ? (
           <div className="flex flex-wrap items-end gap-3">
             {application.autoRecovery?.enabled ? (
-              <Field label="Max auto-recovery attempts" className="w-52">
+              <Field label={t("applicationInspector.lifecycle.maxAttempts")} className="w-52">
                 <Select
                   value={String(autoRecoveryMaxAttempts(application))}
                   disabled={pending}
@@ -271,7 +274,7 @@ function ApplicationActions({ application }: { application: ApplicationSnapshot 
               </Field>
             ) : null}
             {application.healthProbe?.enabled ? (
-              <Field label="Health probe interval" className="w-52">
+              <Field label={t("applicationInspector.lifecycle.healthInterval")} className="w-52">
                 <Select
                   value={String(healthProbeIntervalMinutes(application))}
                   disabled={pending}
@@ -293,7 +296,7 @@ function ApplicationActions({ application }: { application: ApplicationSnapshot 
         ) : null}
         {application.health ? (
           <p className="text-xs text-muted-foreground">
-            Health:{" "}
+            {t("applicationInspector.lifecycle.health")}:{" "}
             <Badge tone={application.health.status === "healthy" ? "success" : application.health.status === "unhealthy" ? "danger" : "neutral"}>
               {application.health.status}
             </Badge>
@@ -1492,6 +1495,7 @@ function shortTime(value?: string | null): string {
 
 /** Right-pane detail for the application selected in the Applications view. */
 export function ApplicationsInspector() {
+  const { t } = useAppTranslation();
   const { data: state } = useConsoleState();
   const selectedApplicationId = useUiStore((s) => s.selectedApplicationId);
   const setSelectedInvocationId = useUiStore((s) => s.setSelectedInvocationId);
@@ -1510,11 +1514,11 @@ export function ApplicationsInspector() {
     return (
       <Card>
         <CardHeader>
-          <CardTitle>Application details</CardTitle>
+          <CardTitle>{t("applicationInspector.details")}</CardTitle>
         </CardHeader>
         <CardContent>
           <p className="text-sm text-muted-foreground">
-            Select an application to see its source, capabilities, probe, and orchestration drafts.
+            {t("applicationInspector.selectHint")}
           </p>
         </CardContent>
       </Card>
@@ -1532,8 +1536,8 @@ export function ApplicationsInspector() {
   const binaryReadinessSummary = sourceBinary
     ? localRuntimeReadiness
       ? `${localRuntimeReadiness.status}${localRuntimeReadiness.version && localRuntimeReadiness.status !== "stale" ? ` · ${localRuntimeReadiness.version}` : ""}${localRuntimeReadiness.authenticationStatus ? ` · auth ${localRuntimeReadiness.authenticationStatus}${localRuntimeReadiness.authenticationMethod ? ` (${localRuntimeReadiness.authenticationMethod})` : ""}` : ""} · ${shortTime(localRuntimeReadiness.checkedAt)}`
-      : "Not reported by the local Desktop Bridge"
-    : "Built in";
+      : t("applicationInspector.notReported")
+    : t("applicationInspector.builtIn");
 
   function viewInvocation(invocationId: string) {
     setSelectedInvocationId(invocationId);
@@ -1552,16 +1556,16 @@ export function ApplicationsInspector() {
         <CardContent>
           <FactList
             facts={[
-              { term: "Status", value: application.status },
-              { term: "Local readiness", value: application.localReadiness?.summary ?? "Checking local application" },
-              { term: "Source", value: `${application.source.type} · ${sourceSummary(application.source)}` },
-              { term: "Path", value: application.path ?? "—" },
-              { term: "Owner", value: application.ownerTeamId ?? "—" },
-              { term: "Descriptor revision", value: application.descriptorRevision ?? 1 },
-              { term: "Descriptor fingerprint", value: application.descriptorFingerprint ?? "Legacy / not recorded" },
-              { term: "Previous revision", value: application.predecessorApplicationId ?? "—" },
-              { term: "Replacement revision", value: application.successorApplicationId ?? "—" },
-              { term: "Device readiness", value: binaryReadinessSummary },
+              { term: t("applicationInspector.facts.status"), value: application.status },
+              { term: t("applicationInspector.facts.localReadiness"), value: application.localReadiness?.summary ?? t("applicationInspector.checking") },
+              { term: t("applicationInspector.facts.source"), value: `${application.source.type} · ${sourceSummary(application.source)}` },
+              { term: t("applicationInspector.facts.path"), value: application.path ?? "—" },
+              { term: t("applicationInspector.facts.owner"), value: application.ownerTeamId ?? "—" },
+              { term: t("applicationInspector.facts.descriptorRevision"), value: application.descriptorRevision ?? 1 },
+              { term: t("applicationInspector.facts.descriptorFingerprint"), value: application.descriptorFingerprint ?? t("applicationInspector.legacy") },
+              { term: t("applicationInspector.facts.previousRevision"), value: application.predecessorApplicationId ?? "—" },
+              { term: t("applicationInspector.facts.replacementRevision"), value: application.successorApplicationId ?? "—" },
+              { term: t("applicationInspector.facts.deviceReadiness"), value: binaryReadinessSummary },
             ]}
           />
         </CardContent>
@@ -1576,11 +1580,11 @@ export function ApplicationsInspector() {
 
       <Card>
         <CardHeader>
-          <CardTitle>Capabilities</CardTitle>
+          <CardTitle>{t("applicationInspector.capabilities")}</CardTitle>
         </CardHeader>
         <CardContent className="space-y-2">
           {!capabilities.length ? (
-            <p className="text-sm text-muted-foreground">No capabilities projected.</p>
+            <p className="text-sm text-muted-foreground">{t("applicationInspector.noCapabilities")}</p>
           ) : (
             capabilities.map((capability) => {
               const contract = capabilityRunContract(capability);
@@ -1605,7 +1609,7 @@ export function ApplicationsInspector() {
                     ) : null}
                     {contract.invokable ? (
                       <Button size="sm" variant="secondary" onClick={() => setRunCapability(capability)}>
-                        Run
+                        {t("applicationInspector.run")}
                       </Button>
                     ) : null}
                   </div>
@@ -1613,7 +1617,7 @@ export function ApplicationsInspector() {
               );
             })
           )}
-          <p className="text-xs text-muted-foreground">⚠ requires an explicit approval token</p>
+          <p className="text-xs text-muted-foreground">{t("applicationInspector.approvalRequired")}</p>
         </CardContent>
       </Card>
 
@@ -1626,7 +1630,7 @@ export function ApplicationsInspector() {
       {probe ? (
         <Card>
           <CardHeader>
-            <CardTitle>Probe</CardTitle>
+            <CardTitle>{t("applicationInspector.probe")}</CardTitle>
           </CardHeader>
           <CardContent className="space-y-2">
             {probe.summary ? <p className="text-sm text-muted-foreground">{probe.summary}</p> : null}
