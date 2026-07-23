@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Loader2, Save } from "lucide-react";
 import { api } from "@/data/use-console-actions";
 import { useConsoleState } from "@/data/use-console-state";
+import { useAppTranslation } from "@/lib/i18n/use-app-translation";
 
 // xlsx grid editor (v0). A worksheet is rendered as an editable table; each cell is
 // keyed on its stable A1 address, so editing needs no alignment or ordering — every
@@ -25,6 +26,7 @@ function columnLabel(index: number): string {
 }
 
 export function XlsxGridEditor({ projectId, worktreeId, file, onChanged }: { projectId: string; worktreeId: string; file: string; onChanged?: () => void }) {
+  const { t } = useAppTranslation();
   const { data: state } = useConsoleState();
   const [grid, setGrid] = useState<{ sheet: string; sheets: string[]; maxRow: number; maxCol: number } | null>(null);
   const [base, setBase] = useState<Record<string, string>>({}); // addr -> original editable text
@@ -85,7 +87,7 @@ export function XlsxGridEditor({ projectId, worktreeId, file, onChanged }: { pro
         approvalToken: grant.token,
       } as unknown as Record<string, string>)) as { invocationId?: string };
       if (res?.invocationId) setInvId(res.invocationId);
-      else throw new Error("The edit was not accepted.");
+      else throw new Error(t("officeEditors.editRejected"));
     } catch (e) {
       setSaving(false);
       setError(e instanceof Error ? e.message : String(e));
@@ -104,15 +106,15 @@ export function XlsxGridEditor({ projectId, worktreeId, file, onChanged }: { pro
     } else if (inv.status === "failed" || inv.status === "rejected") {
       setInvId(null);
       setSaving(false);
-      setError("The edit was refused (approval, worktree, or an invalid value).");
+      setError(t("officeEditors.editRefused"));
     }
-  }, [state?.invocations, invId, load, onChanged]);
+  }, [state?.invocations, invId, load, onChanged, t]);
 
   if (loadState === "loading") {
-    return <span className="flex items-center gap-1 px-2 py-6 text-xs text-muted-foreground"><Loader2 className="size-3 animate-spin" /> loading sheet…</span>;
+    return <span className="flex items-center gap-1 px-2 py-6 text-xs text-muted-foreground"><Loader2 className="size-3 animate-spin" /> {t("officeEditors.loadingSheet")}</span>;
   }
   if (loadState === "error" || !grid) {
-    return <span className="px-2 py-6 text-xs text-red-600 dark:text-red-400">Could not read the sheet — it may not render, or officecli is not installed.</span>;
+    return <span className="px-2 py-6 text-xs text-red-600 dark:text-red-400">{t("officeEditors.sheetReadFailed")}</span>;
   }
 
   const rowCount = Math.max(grid.maxRow, 1) + PAD_ROWS;
@@ -124,7 +126,7 @@ export function XlsxGridEditor({ projectId, worktreeId, file, onChanged }: { pro
     <div className="flex min-h-0 flex-1 flex-col">
       <div className="flex items-center justify-between gap-2 border-b border-border px-2 py-1.5">
         <span className="min-w-0 flex-1 truncate text-[11px] text-muted-foreground">
-          Sheet <span className="font-mono">{grid.sheet}</span> — edit cells; start with <code className="font-mono">=</code> for a formula. One governed batch; the rest of the sheet is untouched.
+          {t("officeEditors.sheetHint", { sheet: grid.sheet })}
         </span>
         <button
           type="button"
@@ -133,7 +135,7 @@ export function XlsxGridEditor({ projectId, worktreeId, file, onChanged }: { pro
           className="flex shrink-0 items-center gap-1 rounded border border-border bg-background px-2 py-0.5 text-[11px] font-medium disabled:opacity-40"
         >
           {saving ? <Loader2 className="size-3 animate-spin" /> : <Save className="size-3" />}
-          {saving ? "Saving…" : "Save all"}
+          {t(saving ? "officeEditors.saving" : "officeEditors.saveAll")}
         </button>
       </div>
       {error ? <p className="px-2 pt-1 text-xs text-red-600 dark:text-red-400">{error}</p> : null}
