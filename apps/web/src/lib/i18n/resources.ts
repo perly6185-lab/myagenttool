@@ -14,6 +14,7 @@ export const resources = {
       planningExport: { csv: "Export CSV", json: "Export JSON" },
       planningImport: { button: "Import JSON template", hint: "Restores project settings, views, and rules; work items are not duplicated.", importedName: "{{name}} import" },
       planningInsights: { title: "Insights", statusDistribution: "Status distribution", priorityDistribution: "Priority distribution", milestones: "Milestone progress", workload: "Assignee workload", overdue: "Overdue", blocked: "Blocked", unscheduled: "Unscheduled", noAssignees: "No assigned work", estimatePoints: "Estimate points", points: "pts" },
+      planningCapacity: { capacity: "Project capacity points", utilization: "{{planned}} / {{capacity}} points", over: "Over capacity" },
       planningProjects: { title: "Planning projects", name: "Project name", description: "Description", create: "Create", empty: "No planning projects yet.", noDescription: "No description", archive: "Archive", restore: "Restore", edit: "Edit", save: "Save", editName: "Edit project name", editDescription: "Edit project description", filter: "Filter by planning project", all: "All planning projects", items: "Local issues", board: "Board", total: "Total", open: "Open", completed: "Completed", changeStatus: "Change status for {{ref}}", moveUp: "Move {{ref}} up", moveDown: "Move {{ref}} down", selectItem: "Select {{ref}}", selectedCount: "{{count}} selected", applyBulk: "Apply status", noItems: "Create a local issue to add it here.", select: "Select a planning project", selectHint: "Create or select a project to organize local issues." },
       sectionGroups: { work: "Work", run: "Run", oversee: "Oversee", configure: "Configure", ledgers: "Ledgers" },
       sections: {
@@ -139,6 +140,7 @@ export const resources = {
       planningExport: { csv: "导出 CSV", json: "导出 JSON" },
       planningImport: { button: "导入 JSON 模板", hint: "恢复项目设置、视图和规则；不会重复创建工作项。", importedName: "{{name}} 导入" },
       planningInsights: { title: "洞察", statusDistribution: "状态分布", priorityDistribution: "优先级分布", milestones: "里程碑进度", workload: "负责人负载", overdue: "逾期", blocked: "受阻", unscheduled: "未排期", noAssignees: "暂无已分配工作", estimatePoints: "估算点数", points: "点" },
+      planningCapacity: { capacity: "项目容量点数", utilization: "{{planned}} / {{capacity}} 点", over: "容量超限" },
       planningProjects: { title: "规划项目", name: "项目名称", description: "描述", create: "创建", empty: "尚无规划项目。", noDescription: "暂无描述", archive: "归档", restore: "恢复", edit: "编辑", save: "保存", editName: "编辑项目名称", editDescription: "编辑项目描述", filter: "按规划项目筛选", all: "所有规划项目", items: "本地 Issue", board: "看板", total: "总数", open: "开放", completed: "已完成", changeStatus: "调整 {{ref}} 的状态", moveUp: "上移 {{ref}}", moveDown: "下移 {{ref}}", selectItem: "选择 {{ref}}", selectedCount: "已选择 {{count}} 项", applyBulk: "应用状态", noItems: "请先创建本地 Issue，再添加到此项目。", select: "选择规划项目", selectHint: "创建或选择项目以组织本地 Issue。" },
       sectionGroups: { work: "工作", run: "运行", oversee: "监督", configure: "配置", ledgers: "台账" },
       sections: {

@@ -117,7 +117,11 @@ export function createPlanningProjectService({
     const activeRunCount = linkedRuns.filter((run) =>
       ["materializing", "running", "awaiting_approval", "verifying", "publishing"].includes(run.status)).length;
     const failedRunCount = linkedRuns.filter((run) => ["failed", "blocked"].includes(run.status)).length;
-    const riskScore = blockedItemCount * 3 + overdueItemCount * 2 + failedRunCount * 3;
+    const plannedPoints = workItems.filter((item) => item.status !== "done" && item.state !== "closed")
+      .reduce((sum, item) => sum + (Number(item.estimatePoints) || 0), 0);
+    const capacityPoints = Number(project.capacityPoints) || 0;
+    const overCapacity = capacityPoints > 0 && plannedPoints > capacityPoints;
+    const riskScore = blockedItemCount * 3 + overdueItemCount * 2 + failedRunCount * 3 + (overCapacity ? 3 : 0);
     return {
       ...project,
       itemCount: memberships.length,
@@ -130,6 +134,10 @@ export function createPlanningProjectService({
       activeRunCount,
       failedRunCount,
       riskScore,
+      plannedPoints,
+      capacityPoints,
+      overCapacity,
+      capacityUtilization: capacityPoints > 0 ? Math.round((plannedPoints / capacityPoints) * 100) : null,
       health: riskScore > 0 ? "attention" : activeRunCount > 0 ? "active" : "healthy",
       ...(includeItems ? {
         items: memberships.map((membership) => ({
@@ -161,7 +169,7 @@ export function createPlanningProjectService({
   }
 
   function createProject({
-    name, description, color, templateProjectId = null, savedViews, automationRules,
+    name, description, color, capacityPoints, templateProjectId = null, savedViews, automationRules,
   } = {}, actor = null) {
     const template = templateProjectId ? findOwn(templateProjectId, actor) : null;
     if (templateProjectId && !template) return notFound();
@@ -181,6 +189,10 @@ export function createPlanningProjectService({
     if (automationRules !== undefined && !importedRules) {
       return { ok: false, status: 400, body: { error: "invalid_planning_project_automation_rules" } };
     }
+    const normalizedCapacity = capacityPoints === undefined ? Number(template?.capacityPoints) || 0 : Number(capacityPoints);
+    if (!Number.isInteger(normalizedCapacity) || normalizedCapacity < 0 || normalizedCapacity > 1_000_000) {
+      return { ok: false, status: 400, body: { error: "invalid_planning_project_capacity_points" } };
+    }
     const timestamp = now();
     const project = {
       id: nextId("ppj"),
@@ -188,6 +200,7 @@ export function createPlanningProjectService({
       name: normalizedName,
       description: normalizedDescription,
       color: String(color ?? template?.color ?? "indigo").slice(0, 40),
+      capacityPoints: normalizedCapacity,
       savedViews: importedViews ?? (template?.savedViews ?? []).map((view) => ({ ...view, id: nextId("ppv") })),
       automationRules: importedRules ?? (template?.automationRules ?? []).map((rule) => ({ ...rule, id: nextId("par") })),
       activity: [],
@@ -240,6 +253,13 @@ export function createPlanningProjectService({
       const automationRules = normalizeAutomationRules(changes.automationRules, nextId);
       if (!automationRules) return { ok: false, status: 400, body: { error: "invalid_planning_project_automation_rules" } };
       patch.automationRules = automationRules;
+    }
+    if (Object.hasOwn(changes, "capacityPoints")) {
+      const capacityPoints = Number(changes.capacityPoints);
+      if (!Number.isInteger(capacityPoints) || capacityPoints < 0 || capacityPoints > 1_000_000) {
+        return { ok: false, status: 400, body: { error: "invalid_planning_project_capacity_points" } };
+      }
+      patch.capacityPoints = capacityPoints;
     }
     runTx(() => {
       Object.assign(project, patch, {

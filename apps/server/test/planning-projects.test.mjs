@@ -111,20 +111,24 @@ test("project members support deterministic reorder and batch membership updates
 test("project portfolio summaries expose execution and schedule risk", () => {
   const { service, state } = harness();
   state.workItems[0].dueDate = "2026-07-20";
+  state.workItems[0].estimatePoints = 5;
   state.workItems[0].dependencyIds = ["wi_dependency"];
   state.workItems[0].executionBindings = [{ kind: "auto_run", targetId: "aur_1" }];
   state.workItems.push({
     id: "wi_dependency", ownerTeamId: "team_a", status: "ready", state: "open",
   });
   state.autoRuns = [{ id: "aur_1", status: "failed" }];
-  const project = service.createProject({ name: "At risk" }, ACTOR_A).body.project;
+  const project = service.createProject({ name: "At risk", capacityPoints: 3 }, ACTOR_A).body.project;
   service.addItem({ planningProjectId: project.id, workItemId: "wi_a" }, ACTOR_A);
   const summary = service.listProjects({}, ACTOR_A).body.projects[0];
   assert.equal(summary.blockedItemCount, 1);
   assert.equal(summary.overdueItemCount, 1);
   assert.equal(summary.failedRunCount, 1);
-  assert.equal(summary.riskScore, 8);
+  assert.equal(summary.riskScore, 11);
   assert.equal(summary.health, "attention");
+  assert.equal(summary.plannedPoints, 5);
+  assert.equal(summary.capacityUtilization, 167);
+  assert.equal(summary.overCapacity, true);
 });
 
 test("projects persist validated named views with server-owned identities", () => {
@@ -210,4 +214,15 @@ test("project creation imports validated template configuration", () => {
   assert.equal(service.createProject({
     name: "Invalid import", savedViews: [{}],
   }, ACTOR_A).status, 400);
+});
+
+test("project capacity is validated and revision gated", () => {
+  const { service } = harness();
+  const project = service.createProject({ name: "Capacity", capacityPoints: 20 }, ACTOR_A).body.project;
+  assert.equal(project.capacityPoints, 20);
+  const updated = service.updateProject({
+    planningProjectId: project.id, expectedRevision: 1, capacityPoints: 30,
+  }, ACTOR_A);
+  assert.equal(updated.body.project.capacityPoints, 30);
+  assert.equal(service.createProject({ name: "Invalid", capacityPoints: -1 }, ACTOR_A).status, 400);
 });

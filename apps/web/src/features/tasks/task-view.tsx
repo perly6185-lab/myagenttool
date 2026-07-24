@@ -79,6 +79,10 @@ type PlanningProject = {
   activeRunCount?: number;
   failedRunCount?: number;
   riskScore?: number;
+  plannedPoints?: number;
+  capacityPoints?: number;
+  overCapacity?: boolean;
+  capacityUtilization?: number | null;
   health?: "healthy" | "active" | "attention";
   savedViews?: {
     id: string;
@@ -559,6 +563,7 @@ export function PlanningProjectsPanel({ onChanged = () => {} }: { onChanged?: ()
   };
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
+  const [capacityPoints, setCapacityPoints] = useState("0");
   const [editing, setEditing] = useState(false);
   const storedPlanningView = useUiStore((state) => state.planningProjectView);
   const storePlanningView = useUiStore((state) => state.setPlanningProjectView);
@@ -660,13 +665,14 @@ export function PlanningProjectsPanel({ onChanged = () => {} }: { onChanged?: ()
   const create = () => {
     let created: PlanningProject | null = null;
     void execute(async () => {
-      const result = await api.createPlanningProject({ name, description }) as { project: PlanningProject };
+      const result = await api.createPlanningProject({ name, description, capacityPoints: Number(capacityPoints) }) as { project: PlanningProject };
       created = result.project;
       return result;
     }).then((ok) => {
       if (!ok || !created) return;
       setName("");
       setDescription("");
+      setCapacityPoints("0");
       setSelectedId(created.id);
       setNonce((value) => value + 1);
       onChanged();
@@ -710,6 +716,7 @@ export function PlanningProjectsPanel({ onChanged = () => {} }: { onChanged?: ()
       expectedRevision: selected.revision,
       name,
       description,
+      capacityPoints: Number(capacityPoints),
     })).then((ok) => {
       if (!ok) return;
       setEditing(false);
@@ -886,6 +893,9 @@ export function PlanningProjectsPanel({ onChanged = () => {} }: { onChanged?: ()
       <div className="space-y-2">
         <Input value={name} onChange={(event) => setName(event.target.value)} placeholder={t("planningProjects.name")} />
         <Input value={description} onChange={(event) => setDescription(event.target.value)} placeholder={t("planningProjects.description")} />
+        <Input type="number" min="0" max="1000000" value={capacityPoints}
+          onChange={(event) => setCapacityPoints(event.target.value)}
+          placeholder={t("planningCapacity.capacity")} aria-label={t("planningCapacity.capacity")} />
         <Button size="sm" disabled={pending || !name.trim()} onClick={create}><Plus className="mr-1 size-4" />{t("planningProjects.create")}</Button>
         <label className="inline-flex h-8 cursor-pointer items-center justify-center rounded-md border border-border px-3 text-sm hover:bg-accent">
           {t("planningImport.button")}
@@ -919,6 +929,7 @@ export function PlanningProjectsPanel({ onChanged = () => {} }: { onChanged?: ()
                 <span className="flex gap-1 text-[10px] text-muted-foreground">
                   {(project.blockedItemCount ?? 0) > 0 ? <span>{t("planningPortfolio.blocked", { count: project.blockedItemCount ?? 0 })}</span> : null}
                   {(project.overdueItemCount ?? 0) > 0 ? <span>{t("planningPortfolio.overdue", { count: project.overdueItemCount ?? 0 })}</span> : null}
+                  {project.overCapacity ? <span>{t("planningCapacity.over")}</span> : null}
                 </span>
               </span>
               <Badge tone={project.health === "attention" ? "danger" : project.health === "active" ? "running" : "neutral"}>
@@ -937,13 +948,21 @@ export function PlanningProjectsPanel({ onChanged = () => {} }: { onChanged?: ()
                 <div className="flex-1 space-y-2">
                   <Input value={name} onChange={(event) => setName(event.target.value)} aria-label={t("planningProjects.editName")} />
                   <Input value={description} onChange={(event) => setDescription(event.target.value)} aria-label={t("planningProjects.editDescription")} />
+                  <Input type="number" min="0" max="1000000" value={capacityPoints}
+                    onChange={(event) => setCapacityPoints(event.target.value)}
+                    aria-label={t("planningCapacity.capacity")} />
                 </div>
               ) : <div><h3 className="font-semibold">{selected.name}</h3><p className="text-sm text-muted-foreground">{selected.description || t("planningProjects.noDescription")}</p></div>}
               <div className="flex gap-1">
                 {editing ? (
                   <Button size="sm" disabled={pending || !name.trim()} onClick={save}>{t("planningProjects.save")}</Button>
                 ) : (
-                  <Button variant="secondary" size="sm" onClick={() => { setName(selected.name); setDescription(selected.description); setEditing(true); }}>{t("planningProjects.edit")}</Button>
+                  <Button variant="secondary" size="sm" onClick={() => {
+                    setName(selected.name);
+                    setDescription(selected.description);
+                    setCapacityPoints(String(selected.capacityPoints ?? 0));
+                    setEditing(true);
+                  }}>{t("planningProjects.edit")}</Button>
                 )}
                 <Button variant="secondary" size="sm" disabled={pending} onClick={duplicate}>
                   {t("planningLifecycle.duplicate")}
@@ -1263,7 +1282,11 @@ export function PlanningProjectsPanel({ onChanged = () => {} }: { onChanged?: ()
                 {!filteredProjectItems.length ? <EmptyState title={t("planningFilters.noMatches")} hint={t("planningFilters.adjustFilters")} /> : null}
               </div>
             ) : (
-              <PlanningInsights items={filteredProjectItems.map((row) => row.workItem)} today={today} />
+              <PlanningInsights
+                items={filteredProjectItems.map((row) => row.workItem)}
+                today={today}
+                capacityPoints={selected.capacityPoints ?? 0}
+              />
             )}
             <details className="rounded-md border border-border p-2">
               <summary className="cursor-pointer text-sm font-medium">
@@ -1301,7 +1324,13 @@ export function PlanningProjectsPanel({ onChanged = () => {} }: { onChanged?: ()
   );
 }
 
-function PlanningInsights({ items, today }: { items: LocalWorkItem[]; today: string }) {
+function PlanningInsights({
+  items, today, capacityPoints,
+}: {
+  items: LocalWorkItem[];
+  today: string;
+  capacityPoints: number;
+}) {
   const { t } = useAppTranslation();
   const statusRows = (["backlog", "ready", "in_progress", "review", "blocked", "done"] as const)
     .map((status) => ({ status, count: items.filter((item) => item.status === status).length }));
@@ -1314,6 +1343,9 @@ function PlanningInsights({ items, today }: { items: LocalWorkItem[]; today: str
   const blocked = items.filter((item) => item.status === "blocked"
     || item.blockedBy?.some((dependency) => !dependency.resolved)).length;
   const unscheduled = items.filter((item) => !item.dueDate).length;
+  const plannedPoints = items.filter((item) => item.status !== "done")
+    .reduce((sum, item) => sum + (item.estimatePoints ?? 0), 0);
+  const utilization = capacityPoints > 0 ? Math.round((plannedPoints / capacityPoints) * 100) : null;
   if (!items.length) return <EmptyState title={t("planningFilters.noMatches")} hint={t("planningFilters.adjustFilters")} />;
   return (
     <div className="grid gap-3 lg:grid-cols-2">
@@ -1342,6 +1374,10 @@ function PlanningInsights({ items, today }: { items: LocalWorkItem[]; today: str
           <div><strong className="block text-base text-destructive">{overdue}</strong>{t("planningInsights.overdue")}</div>
           <div><strong className="block text-base text-destructive">{blocked}</strong>{t("planningInsights.blocked")}</div>
           <div><strong className="block text-base">{unscheduled}</strong>{t("planningInsights.unscheduled")}</div>
+        </div>
+        <div className={cn("mt-3 rounded p-2 text-center text-xs", utilization != null && utilization > 100 ? "bg-destructive/10 text-destructive" : "bg-muted")}>
+          <strong className="block text-base">{utilization == null ? "—" : `${utilization}%`}</strong>
+          {t("planningCapacity.utilization", { planned: plannedPoints, capacity: capacityPoints || "—" })}
         </div>
       </section>
       <section className="rounded-md border border-border p-3">

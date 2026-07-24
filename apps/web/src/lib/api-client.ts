@@ -894,6 +894,7 @@ export const api = {
     name: string;
     description?: string;
     color?: string;
+    capacityPoints?: number;
     templateProjectId?: string;
     savedViews?: unknown[];
     automationRules?: unknown[];
