@@ -82,7 +82,7 @@ type PlanningProject = {
   savedViews?: {
     id: string;
     name: string;
-    view: "list" | "board" | "roadmap";
+    view: "list" | "board" | "roadmap" | "insights";
     filters: { status: string; priority: string; milestone: string; due: "all" | "overdue" | "upcoming" | "month" | "quarter" | "unscheduled" };
   }[];
   automationRules?: { id: string; status: string; priority: string; type: string; label: string }[];
@@ -563,10 +563,10 @@ export function PlanningProjectsPanel({ onChanged = () => {} }: { onChanged?: ()
   const storePlanningView = useUiStore((state) => state.setPlanningProjectView);
   const storedFilters = useUiStore((state) => state.planningProjectFilters);
   const storeFilters = useUiStore((state) => state.setPlanningProjectFilters);
-  const [view, setViewLocal] = useState<"items" | "board" | "roadmap">(
-    storedPlanningView === "board" || storedPlanningView === "roadmap" ? storedPlanningView : "items",
+  const [view, setViewLocal] = useState<"items" | "board" | "roadmap" | "insights">(
+    ["board", "roadmap", "insights"].includes(storedPlanningView) ? storedPlanningView as "board" | "roadmap" | "insights" : "items",
   );
-  const setView = (next: "items" | "board" | "roadmap") => {
+  const setView = (next: "items" | "board" | "roadmap" | "insights") => {
     setViewLocal(next);
     storePlanningView(next === "items" ? "list" : next);
   };
@@ -625,7 +625,9 @@ export function PlanningProjectsPanel({ onChanged = () => {} }: { onChanged?: ()
   }, [storedSelectedId]);
 
   useEffect(() => {
-    setViewLocal(storedPlanningView === "board" || storedPlanningView === "roadmap" ? storedPlanningView : "items");
+    setViewLocal(["board", "roadmap", "insights"].includes(storedPlanningView)
+      ? storedPlanningView as "board" | "roadmap" | "insights"
+      : "items");
   }, [storedPlanningView]);
 
   useEffect(() => {
@@ -967,10 +969,12 @@ export function PlanningProjectsPanel({ onChanged = () => {} }: { onChanged?: ()
               </div>
             </div>
             <div className="flex gap-1 rounded-md bg-muted p-0.5 text-xs">
-              {(["items", "board", "roadmap"] as const).map((value) => (
+              {(["items", "board", "roadmap", "insights"] as const).map((value) => (
                 <button key={value} type="button" onClick={() => setView(value)}
                   className={cn("rounded px-2 py-1", view === value && "bg-background shadow-sm")}>
-                  {value === "roadmap" ? t("planningFilters.roadmap") : t(`planningProjects.${value}`)}
+                  {value === "roadmap" ? t("planningFilters.roadmap")
+                    : value === "insights" ? t("planningInsights.title")
+                      : t(`planningProjects.${value}`)}
                 </button>
               ))}
             </div>
@@ -1184,7 +1188,7 @@ export function PlanningProjectsPanel({ onChanged = () => {} }: { onChanged?: ()
                   ))}
                 </div>
               </div>
-            ) : (
+            ) : view === "roadmap" ? (
               <div className="max-h-[28rem] space-y-4 overflow-y-auto">
                 {[...new Set(filteredProjectItems.map((row) => row.workItem.milestone || t("planningFilters.noMilestone")))]
                   .sort()
@@ -1249,6 +1253,8 @@ export function PlanningProjectsPanel({ onChanged = () => {} }: { onChanged?: ()
                   ))}
                 {!filteredProjectItems.length ? <EmptyState title={t("planningFilters.noMatches")} hint={t("planningFilters.adjustFilters")} /> : null}
               </div>
+            ) : (
+              <PlanningInsights items={filteredProjectItems.map((row) => row.workItem)} today={today} />
             )}
             <details className="rounded-md border border-border p-2">
               <summary className="cursor-pointer text-sm font-medium">
@@ -1282,6 +1288,74 @@ export function PlanningProjectsPanel({ onChanged = () => {} }: { onChanged?: ()
           />
         ) : null}
       </Modal>
+    </div>
+  );
+}
+
+function PlanningInsights({ items, today }: { items: LocalWorkItem[]; today: string }) {
+  const { t } = useAppTranslation();
+  const statusRows = (["backlog", "ready", "in_progress", "review", "blocked", "done"] as const)
+    .map((status) => ({ status, count: items.filter((item) => item.status === status).length }));
+  const priorityRows = (["p0", "p1", "p2", "p3"] as const)
+    .map((priority) => ({ priority, count: items.filter((item) => item.priority === priority).length }));
+  const milestones = [...new Set(items.map((item) => item.milestone || t("planningFilters.noMilestone")))].sort();
+  const assignees = [...new Set(items.flatMap((item) => item.assigneeIds))].sort();
+  const total = Math.max(items.length, 1);
+  const overdue = items.filter((item) => item.dueDate && item.dueDate < today && item.status !== "done").length;
+  const blocked = items.filter((item) => item.status === "blocked"
+    || item.blockedBy?.some((dependency) => !dependency.resolved)).length;
+  const unscheduled = items.filter((item) => !item.dueDate).length;
+  if (!items.length) return <EmptyState title={t("planningFilters.noMatches")} hint={t("planningFilters.adjustFilters")} />;
+  return (
+    <div className="grid gap-3 lg:grid-cols-2">
+      <section className="rounded-md border border-border p-3">
+        <h4 className="mb-2 text-sm font-semibold">{t("planningInsights.statusDistribution")}</h4>
+        <div className="space-y-2">
+          {statusRows.map(({ status, count }) => (
+            <div key={status} className="grid grid-cols-[7rem_1fr_2rem] items-center gap-2 text-xs">
+              <span>{t(`tasks.localStatus.${status}`)}</span>
+              <div className="h-2 overflow-hidden rounded bg-muted">
+                <div className="h-full bg-primary" style={{ width: `${(count / total) * 100}%` }} />
+              </div>
+              <span className="text-right">{count}</span>
+            </div>
+          ))}
+        </div>
+      </section>
+      <section className="rounded-md border border-border p-3">
+        <h4 className="mb-2 text-sm font-semibold">{t("planningInsights.priorityDistribution")}</h4>
+        <div className="grid grid-cols-4 gap-2 text-center text-xs">
+          {priorityRows.map(({ priority, count }) => (
+            <div key={priority} className="rounded bg-muted p-2"><strong className="block text-base">{count}</strong>{priority.toUpperCase()}</div>
+          ))}
+        </div>
+        <div className="mt-3 grid grid-cols-3 gap-2 text-center text-xs">
+          <div><strong className="block text-base text-destructive">{overdue}</strong>{t("planningInsights.overdue")}</div>
+          <div><strong className="block text-base text-destructive">{blocked}</strong>{t("planningInsights.blocked")}</div>
+          <div><strong className="block text-base">{unscheduled}</strong>{t("planningInsights.unscheduled")}</div>
+        </div>
+      </section>
+      <section className="rounded-md border border-border p-3">
+        <h4 className="mb-2 text-sm font-semibold">{t("planningInsights.milestones")}</h4>
+        <div className="space-y-1">
+          {milestones.map((milestone) => {
+            const rows = items.filter((item) => (item.milestone || t("planningFilters.noMilestone")) === milestone);
+            const done = rows.filter((item) => item.status === "done").length;
+            return <div key={milestone} className="flex justify-between text-xs"><span>{milestone}</span><span>{done}/{rows.length} · {Math.round((done / rows.length) * 100)}%</span></div>;
+          })}
+        </div>
+      </section>
+      <section className="rounded-md border border-border p-3">
+        <h4 className="mb-2 text-sm font-semibold">{t("planningInsights.workload")}</h4>
+        <div className="space-y-1">
+          {assignees.map((assignee) => (
+            <div key={assignee} className="flex justify-between text-xs">
+              <span>{assignee}</span><span>{items.filter((item) => item.assigneeIds.includes(assignee) && item.status !== "done").length}</span>
+            </div>
+          ))}
+          {!assignees.length ? <p className="text-xs text-muted-foreground">{t("planningInsights.noAssignees")}</p> : null}
+        </div>
+      </section>
     </div>
   );
 }

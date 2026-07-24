@@ -242,6 +242,10 @@ describe("TaskView local work items", () => {
     expect(screen.getByRole("option", { name: "Current month" })).toBeTruthy();
     expect(screen.getByRole("option", { name: "Current quarter" })).toBeTruthy();
     expect(screen.getByText("Project health")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Insights" }));
+    expect(await screen.findByText("Status distribution")).toBeTruthy();
+    expect(screen.getByText("Milestone progress")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Roadmap" }));
     fireEvent.change(screen.getByLabelText("View name"), { target: { value: "Quarter roadmap" } });
     fireEvent.click(screen.getByRole("button", { name: "Save view" }));
     await waitFor(() => expect(mocks.updatePlanningProject).toHaveBeenCalledWith(
