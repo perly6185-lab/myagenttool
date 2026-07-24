@@ -712,15 +712,18 @@ export function createPlanningProjectService({
         candidate.status === "queued"
         || (candidate.status === "running" && Date.parse(candidate.leaseExpiresAt ?? "") <= Date.parse(now())))) {
         const actor = { userId: "usr_planning_executor", teamId: project.ownerTeamId };
-        execution.status = "running";
-        execution.startedAt = now();
-        execution.leaseExpiresAt = new Date(Date.parse(now()) + 5 * 60_000).toISOString();
-        recordActivity(project, actor, "recommended_action_started", {
-          executionId: execution.id, code: execution.code,
+        runTx(() => {
+          execution.status = "running";
+          execution.startedAt = now();
+          execution.leaseExpiresAt = new Date(Date.parse(now()) + 5 * 60_000).toISOString();
+          recordActivity(project, actor, "recommended_action_started", {
+            executionId: execution.id, code: execution.code,
+          });
         });
-        persistStateSoon();
+        let result;
+        const recoveredItems = [];
+        let failure = null;
         try {
-          let result;
           const memberIds = new Set((state.planningProjectItems ?? [])
             .filter((membership) => membership.planningProjectId === project.id
               && membership.ownerTeamId === project.ownerTeamId)
@@ -741,7 +744,6 @@ export function createPlanningProjectService({
             result = { attempted: runIds.length, retried };
           } else if (execution.code === "resolve_blocked_items") {
             const completedIds = new Set(workItems.filter((item) => item.status === "done" || item.state === "closed").map((item) => item.id));
-            const recovered = [];
             const stillBlocked = [];
             for (const item of workItems.filter((candidate) => candidate.status === "blocked")) {
               const blockers = (item.dependencyIds ?? []).filter((id) => !completedIds.has(id));
@@ -749,35 +751,38 @@ export function createPlanningProjectService({
                 stillBlocked.push({ workItemId: item.id, blockers });
                 continue;
               }
-              item.status = "ready";
-              item.revision += 1;
-              item.updatedAt = now();
-              item.lastModifiedBy = actor.userId;
-              recovered.push(item.id);
+              recoveredItems.push(item);
             }
-            result = { attempted: recovered.length + stillBlocked.length, recovered, stillBlocked };
+            result = {
+              attempted: recoveredItems.length + stillBlocked.length,
+              recovered: recoveredItems.map((item) => item.id),
+              stillBlocked,
+            };
           } else {
             throw new Error(`unsupported_recommended_action:${execution.code}`);
           }
-          execution.status = "completed";
-          execution.completedAt = now();
-          execution.leaseExpiresAt = null;
-          execution.result = result;
-          recordActivity(project, actor, "recommended_action_completed", {
-            executionId: execution.id, code: execution.code, result,
-          });
         } catch (error) {
-          execution.status = "failed";
+          failure = error instanceof Error ? error.message : String(error);
+        }
+        runTx(() => {
+          for (const item of recoveredItems) {
+            item.status = "ready";
+            item.revision += 1;
+            item.updatedAt = now();
+            item.lastModifiedBy = actor.userId;
+          }
+          execution.status = failure ? "failed" : "completed";
           execution.completedAt = now();
           execution.leaseExpiresAt = null;
-          execution.result = { error: error instanceof Error ? error.message : String(error) };
-          recordActivity(project, actor, "recommended_action_failed", {
-            executionId: execution.id, code: execution.code, error: execution.result.error,
+          execution.result = failure ? { error: failure } : result;
+          recordActivity(project, actor, failure
+            ? "recommended_action_failed" : "recommended_action_completed", {
+            executionId: execution.id, code: execution.code,
+            ...(failure ? { error: failure } : { result }),
           });
-        }
-        project.revision += 1;
-        project.updatedAt = now();
-        persistStateSoon();
+          project.revision += 1;
+          project.updatedAt = now();
+        });
         processed.push(execution);
       }
     }
