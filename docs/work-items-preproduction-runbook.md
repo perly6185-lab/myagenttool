@@ -88,16 +88,23 @@ Run:
 node tools/dev/work-items-capacity-benchmark.mjs
 ```
 
-The default workload aggregates 10,000 attention rows, processes 1,000 stale
-Webhook deliveries, and atomically claims 100 rows. The script emits one JSON
-report and exits non-zero if counts, retention, or batch atomicity are wrong.
+The default workload aggregates 10,000 attention rows, verifies and parses 1,000
+signed stale Webhook payloads through the service ingestion path, and atomically
+claims 100 rows. It does not include network or durable-storage latency; measure
+those separately against the canary HTTP endpoint. The script emits one JSON
+report and exits non-zero if counts, retention, batch atomicity, or accepted
+duration thresholds regress.
 Override sizes with `WORK_ITEMS_BENCH_QUEUE`, `WORK_ITEMS_BENCH_DELIVERIES`, and
 `WORK_ITEMS_BENCH_BATCH` (batch size remains capped at the API maximum of 100).
+Set environment-specific accepted baselines with
+`WORK_ITEMS_BENCH_QUEUE_BASELINE_MS`, `WORK_ITEMS_BENCH_DELIVERY_BASELINE_MS`,
+and `WORK_ITEMS_BENCH_BATCH_BASELINE_MS`. The default allowed regression factor
+is 1.5 and can be changed with `WORK_ITEMS_BENCH_REGRESSION_FACTOR`.
 
 Initial local baseline on 2026-07-24:
 
 - 10,000-row queue aggregation: 19.8 ms.
-- 1,000 Webhook deliveries: 5.14 ms.
+- 1,000 signed payload verification, parsing, and ingestion operations: 7.8 ms.
 - 100-row atomic claim: 12.5 ms.
 
 Use environment-specific canary measurements for release decisions; these

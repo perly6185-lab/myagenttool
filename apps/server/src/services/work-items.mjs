@@ -343,7 +343,7 @@ export function createWorkItemService({
     }
     const at = Date.parse(now());
     const operations = state.workItemAttentionOperations ?? [];
-    const decorated = rows.map((row) => {
+    const allDecorated = rows.map((row) => {
       const operation = operations.find((candidate) =>
         candidate.ownerTeamId === actorTeam(actor) && candidate.attentionId === row.id);
       const handling = operation?.handling && Date.parse(operation.handling.expiresAt ?? operation.handling.claimedAt) > at
@@ -362,7 +362,8 @@ export function createWorkItemService({
         handling,
         resolution: operation?.resolution ?? null,
       };
-    }).filter((row) => !kind || row.kind === kind)
+    });
+    const decorated = allDecorated.filter((row) => !kind || row.kind === kind)
       .filter((row) => !severity || row.severity === severity)
       .filter((row) => !sla || row.slaStatus === sla)
       .filter((row) => !handler
@@ -371,17 +372,18 @@ export function createWorkItemService({
       .filter((row) => query.includeResolved === "1" || !row.resolution);
     const rank = { high: 3, medium: 2, low: 1 };
     decorated.sort((a, b) => rank[b.severity] - rank[a.severity] || String(a.dueAt).localeCompare(String(b.dueAt)));
-    const oldestCreatedAt = decorated.reduce((oldest, row) =>
+    const openRows = allDecorated.filter((row) => !row.resolution);
+    const oldestCreatedAt = openRows.reduce((oldest, row) =>
       !oldest || row.createdAt < oldest ? row.createdAt : oldest, null);
     return {
       ok: true, status: 200, body: {
         items: decorated,
         count: decorated.length,
         metrics: {
-          backlog: decorated.filter((row) => !row.resolution).length,
-          breached: decorated.filter((row) => row.slaStatus === "breached" && !row.resolution).length,
-          claimed: decorated.filter((row) => row.handling && !row.resolution).length,
-          pendingApprovals: decorated.filter((row) => row.kind === "recommended_action_approval" && !row.resolution).length,
+          backlog: openRows.length,
+          breached: openRows.filter((row) => row.slaStatus === "breached").length,
+          claimed: openRows.filter((row) => row.handling).length,
+          pendingApprovals: openRows.filter((row) => row.kind === "recommended_action_approval").length,
           oldestAgeSeconds: oldestCreatedAt ? Math.max(0, Math.floor((at - Date.parse(oldestCreatedAt)) / 1_000)) : 0,
         },
       },

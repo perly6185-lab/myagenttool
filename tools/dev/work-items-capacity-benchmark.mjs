@@ -1,4 +1,5 @@
 import { performance } from "node:perf_hooks";
+import { createHmac, timingSafeEqual } from "node:crypto";
 import { createWorkItemService } from "../../apps/server/src/services/work-items.mjs";
 
 const queueCount = positiveInt(process.env.WORK_ITEMS_BENCH_QUEUE, 10_000);
@@ -6,6 +7,12 @@ const deliveryCount = positiveInt(process.env.WORK_ITEMS_BENCH_DELIVERIES, 1_000
 const batchCount = Math.min(100, positiveInt(process.env.WORK_ITEMS_BENCH_BATCH, 100));
 const actor = { userId: "usr_bench", teamId: "team_bench" };
 const timestamp = "2026-07-24T00:00:00.000Z";
+const regressionFactor = positiveNumber(process.env.WORK_ITEMS_BENCH_REGRESSION_FACTOR, 1.5);
+const maximums = {
+  queue: positiveNumber(process.env.WORK_ITEMS_BENCH_QUEUE_BASELINE_MS, 19.8) * regressionFactor,
+  deliveries: positiveNumber(process.env.WORK_ITEMS_BENCH_DELIVERY_BASELINE_MS, 7.8) * regressionFactor,
+  batch: positiveNumber(process.env.WORK_ITEMS_BENCH_BATCH_BASELINE_MS, 12.5) * regressionFactor,
+};
 
 const queueState = baseState();
 for (let index = 0; index < queueCount; index += 1) {
@@ -47,10 +54,15 @@ const deliveryPayload = {
     updated_at: "2026-07-24T01:00:00.000Z",
   },
 };
+const deliveryRaw = JSON.stringify(deliveryPayload);
+const webhookSecret = "benchmark-webhook-secret";
+const suppliedSignature = Buffer.from(createHmac("sha256", webhookSecret).update(deliveryRaw).digest("hex"));
 const deliveryStarted = performance.now();
 for (let index = 0; index < deliveryCount; index += 1) {
+  const expectedSignature = Buffer.from(createHmac("sha256", webhookSecret).update(deliveryRaw).digest("hex"));
+  if (!timingSafeEqual(suppliedSignature, expectedSignature)) throw new Error("benchmark signature mismatch");
   deliveryService.ingestGithubWebhook({
-    deliveryId: `delivery_${index}`, event: "issues", payload: deliveryPayload,
+    deliveryId: `delivery_${index}`, event: "issues", payload: JSON.parse(deliveryRaw),
   });
 }
 const deliveryDurationMs = duration(deliveryStarted);
@@ -81,13 +93,17 @@ const report = {
     durationMs: batchDurationMs,
     itemsPerSecond: throughput(batchCount, batchDurationMs),
   },
+  maximumDurationMs: maximums,
 };
 console.log(JSON.stringify(report));
 
 if (queueResult.count !== queueCount
   || deliveryState.githubWorkItemWebhookDeliveries.length !== Math.min(1_000, deliveryCount)
   || batchResult.status !== 200
-  || batchResult.body.count !== batchCount) process.exit(1);
+  || batchResult.body.count !== batchCount
+  || queueDurationMs > maximums.queue
+  || deliveryDurationMs > maximums.deliveries
+  || batchDurationMs > maximums.batch) process.exit(1);
 
 function baseState() {
   return {
@@ -118,4 +134,9 @@ function throughput(count, durationMs) {
 function positiveInt(value, fallback) {
   const parsed = Number(value);
   return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : fallback;
+}
+
+function positiveNumber(value, fallback) {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
 }
