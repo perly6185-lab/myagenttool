@@ -102,7 +102,7 @@ type PlanningProject = {
   savedViews?: {
     id: string;
     name: string;
-    view: "list" | "board" | "roadmap" | "insights";
+    view: "list" | "board" | "roadmap" | "insights" | "executions";
     filters: { status: string; priority: string; milestone: string; due: "all" | "overdue" | "upcoming" | "month" | "quarter" | "unscheduled" };
   }[];
   automationRules?: { id: string; status: string; priority: string; type: string; label: string }[];
@@ -590,10 +590,10 @@ export function PlanningProjectsPanel({ onChanged = () => {} }: { onChanged?: ()
   const storePlanningView = useUiStore((state) => state.setPlanningProjectView);
   const storedFilters = useUiStore((state) => state.planningProjectFilters);
   const storeFilters = useUiStore((state) => state.setPlanningProjectFilters);
-  const [view, setViewLocal] = useState<"items" | "board" | "roadmap" | "insights">(
-    ["board", "roadmap", "insights"].includes(storedPlanningView) ? storedPlanningView as "board" | "roadmap" | "insights" : "items",
+  const [view, setViewLocal] = useState<"items" | "board" | "roadmap" | "insights" | "executions">(
+    ["board", "roadmap", "insights", "executions"].includes(storedPlanningView) ? storedPlanningView as "board" | "roadmap" | "insights" | "executions" : "items",
   );
-  const setView = (next: "items" | "board" | "roadmap" | "insights") => {
+  const setView = (next: "items" | "board" | "roadmap" | "insights" | "executions") => {
     setViewLocal(next);
     storePlanningView(next === "items" ? "list" : next);
   };
@@ -650,14 +650,23 @@ export function PlanningProjectsPanel({ onChanged = () => {} }: { onChanged?: ()
     const run = autoRuns.find((candidate) => candidate.id === binding.targetId);
     return run && activeExecutionStatuses.has(run.status);
   })).length;
+  const linkedExecutions = projectItems.flatMap((workItem) =>
+    (workItem.executionBindings ?? [])
+      .filter((binding) => binding.kind === "auto_run")
+      .map((binding) => ({
+        workItem,
+        binding,
+        run: autoRuns.find((candidate) => candidate.id === binding.targetId),
+      })))
+    .filter((row) => row.run);
 
   useEffect(() => {
     setSelectedIdLocal(storedSelectedId);
   }, [storedSelectedId]);
 
   useEffect(() => {
-    setViewLocal(["board", "roadmap", "insights"].includes(storedPlanningView)
-      ? storedPlanningView as "board" | "roadmap" | "insights"
+    setViewLocal(["board", "roadmap", "insights", "executions"].includes(storedPlanningView)
+      ? storedPlanningView as "board" | "roadmap" | "insights" | "executions"
       : "items");
   }, [storedPlanningView]);
 
@@ -1152,10 +1161,11 @@ export function PlanningProjectsPanel({ onChanged = () => {} }: { onChanged?: ()
               </div>
             </div>
             <div className="flex gap-1 rounded-md bg-muted p-0.5 text-xs">
-              {(["items", "board", "roadmap", "insights"] as const).map((value) => (
+              {(["items", "board", "roadmap", "executions", "insights"] as const).map((value) => (
                 <button key={value} type="button" onClick={() => setView(value)}
                   className={cn("rounded px-2 py-1", view === value && "bg-background shadow-sm")}>
                   {value === "roadmap" ? t("planningFilters.roadmap")
+                    : value === "executions" ? t("planningExecutions.title")
                     : value === "insights" ? t("planningInsights.title")
                       : t(`planningProjects.${value}`)}
                 </button>
@@ -1387,6 +1397,39 @@ export function PlanningProjectsPanel({ onChanged = () => {} }: { onChanged?: ()
                     </div>
                   </section>
                   ))}
+                </div>
+              </div>
+            ) : view === "executions" ? (
+              <div className="space-y-3">
+                <div className="grid grid-cols-2 gap-2 text-center text-xs sm:grid-cols-4">
+                  {([
+                    ["running", linkedExecutions.filter(({ run }) => ["materializing", "running", "verifying", "publishing"].includes(run?.status ?? "")).length],
+                    ["approval", linkedExecutions.filter(({ run }) => run?.status === "awaiting_approval").length],
+                    ["failed", linkedExecutions.filter(({ run }) => ["failed", "blocked"].includes(run?.status ?? "")).length],
+                    ["review", linkedExecutions.filter(({ run }) => ["pr_open", "report_posted", "plan_proposed"].includes(run?.status ?? "")).length],
+                  ] as const).map(([label, count]) => (
+                    <div key={label} className="rounded-md border border-border p-2">
+                      <strong className="block text-base">{count}</strong>{t(`planningExecutions.${label}`)}
+                    </div>
+                  ))}
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  <Button variant="secondary" size="sm" onClick={() => setSection("autoRuns")}>{t("planningExecutions.openAutoRuns")}</Button>
+                  <Button variant="secondary" size="sm" onClick={() => setSection("review")}>{t("planningExecutions.openReview")}</Button>
+                  <Button variant="secondary" size="sm" onClick={() => setSection("evidence")}>{t("planningExecutions.openEvidence")}</Button>
+                </div>
+                <div className="max-h-80 space-y-2 overflow-y-auto">
+                  {linkedExecutions.map(({ workItem, binding, run }) => (
+                    <button key={`${workItem.id}:${binding.targetId}`} type="button"
+                      onClick={() => setSection("autoRuns")}
+                      className="flex w-full items-center justify-between rounded-md border border-border p-2 text-left text-xs hover:bg-muted">
+                      <span><strong>{workItem.localRef}</strong> · {workItem.title}</span>
+                      <Badge tone={statusTone(run?.status ?? "")}>
+                        {t(`autoRuns.status.${run?.status}` as never, { defaultValue: run?.status })}
+                      </Badge>
+                    </button>
+                  ))}
+                  {!linkedExecutions.length ? <EmptyState title={t("planningExecutions.none")} hint={t("planningExecutions.openAutoRuns")} /> : null}
                 </div>
               </div>
             ) : view === "roadmap" ? (

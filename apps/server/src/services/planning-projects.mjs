@@ -4,7 +4,7 @@ import { makeRunTx } from "../runtime/store/run-tx.mjs";
 const MAX_NAME = 200;
 const MAX_DESCRIPTION = 20_000;
 const MAX_SAVED_VIEWS = 20;
-const PLANNING_VIEWS = new Set(["list", "board", "roadmap", "insights"]);
+const PLANNING_VIEWS = new Set(["list", "board", "roadmap", "insights", "executions"]);
 const DUE_FILTERS = new Set(["all", "overdue", "upcoming", "month", "quarter", "unscheduled"]);
 const WORK_ITEM_STATUSES = new Set(["", "backlog", "ready", "in_progress", "review", "blocked", "done"]);
 const WORK_ITEM_PRIORITIES = new Set(["", "p0", "p1", "p2", "p3"]);

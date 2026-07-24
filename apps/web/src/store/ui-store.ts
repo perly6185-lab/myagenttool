@@ -57,7 +57,7 @@ export interface PendingLocalDocumentRegistration {
   documentName: string;
 }
 
-export type PlanningProjectView = "list" | "board" | "roadmap" | "insights";
+export type PlanningProjectView = "list" | "board" | "roadmap" | "insights" | "executions";
 export interface PlanningProjectFilters {
   status: string;
   priority: string;
@@ -219,7 +219,7 @@ export function navigationFromSearch(search: string): UrlNavigationState {
   navigation.selectedAutomationId = automationId;
   if (section === "planning" || NAVIGATION_SEARCH_KEYS.some((key) => key.startsWith("planning") && params.has(key))) {
     navigation.selectedPlanningProjectId = planningProjectId;
-    navigation.planningProjectView = ["board", "roadmap", "insights"].includes(planningViewParam ?? "")
+    navigation.planningProjectView = ["board", "roadmap", "insights", "executions"].includes(planningViewParam ?? "")
       ? planningViewParam as PlanningProjectView
       : "list";
     navigation.planningProjectFilters = {
@@ -395,7 +395,7 @@ export const useUiStore = create<UiState>()(
         // Old blobs have no locale and keep the system-detected current value;
         // stale/unsupported saved values never escape into i18next or the DOM.
         if (!isSupportedLocale(saved.locale)) merged.locale = current.locale;
-        if (!["list", "board", "roadmap", "insights"].includes(merged.planningProjectView)) {
+        if (!["list", "board", "roadmap", "insights", "executions"].includes(merged.planningProjectView)) {
           merged.planningProjectView = "list";
         }
         if (!merged.planningProjectFilters || typeof merged.planningProjectFilters !== "object") {

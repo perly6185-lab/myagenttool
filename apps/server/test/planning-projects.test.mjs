@@ -151,6 +151,15 @@ test("projects persist validated named views with server-owned identities", () =
     expectedRevision: 2,
     savedViews: [{ name: "", view: "roadmap", filters: {} }],
   }, ACTOR_A).status, 400);
+  const executionView = service.updateProject({
+    planningProjectId: project.id,
+    expectedRevision: 2,
+    savedViews: [{
+      name: "Executions", view: "executions",
+      filters: { status: "all", priority: "all", milestone: "", due: "all" },
+    }],
+  }, ACTOR_A);
+  assert.equal(executionView.status, 200);
 });
 
 test("projects can be duplicated as reusable configuration templates", () => {

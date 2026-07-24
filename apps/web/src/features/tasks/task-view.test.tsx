@@ -207,10 +207,11 @@ describe("TaskView local work items", () => {
       body: "", type: "task", status: "backlog", priority: "p2", state: "open",
       labels: [], assigneeIds: [], acceptanceCriteria: [], revision: 1, archivedAt: null,
       dueDate: "2026-08-15", milestone: "M3", updatedAt: "2026-07-24T00:00:00.000Z",
+      executionBindings: [{ kind: "auto_run", targetId: "aur_1", worktreeId: null, createdAt: "2026-07-24T00:00:00.000Z" }],
     };
     const second = {
       ...first, id: "lwi_2", localRef: "LOCAL-2", title: "Second",
-      status: "done", dueDate: "2026-07-10",
+      status: "done", dueDate: "2026-07-10", executionBindings: [],
     };
     const project = {
       id: "ppj_1", name: "Ordered", description: "", revision: 2, archivedAt: null,
@@ -231,6 +232,7 @@ describe("TaskView local work items", () => {
       ],
     };
     mocks.listWorkItems.mockResolvedValue({ workItems: [first, second], count: 2 });
+    mocks.listAutoRuns.mockResolvedValue({ runs: [{ id: "aur_1", status: "awaiting_approval" }] });
     mocks.listPlanningProjects.mockResolvedValue({ projects: [project] });
     mocks.getPlanningProject.mockResolvedValue({ project });
     mocks.reorderPlanningProjectItems.mockResolvedValue({ project });
@@ -261,6 +263,10 @@ describe("TaskView local work items", () => {
     expect(screen.getByTitle("Unpin project")).toBeTruthy();
     expect(screen.getByRole("option", { name: "Target date" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "Clear portfolio filters" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Executions" }));
+    expect(screen.getByText("Awaiting approval")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Open Review" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Open Evidence" })).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Insights" }));
     expect(await screen.findByText("Status distribution")).toBeTruthy();
     expect(screen.getByText("Milestone progress")).toBeTruthy();
