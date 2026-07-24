@@ -55,7 +55,7 @@ it("loads an authenticated project PDF and renders its first page", async () => 
   expect(screen.getByText("Loading PDF…")).toBeTruthy();
   expect(await screen.findByText("/ 3")).toBeTruthy();
   expect(mocks.projectPdfRange).toHaveBeenCalledWith("prj_1", "docs/report.pdf", 0, 65536, "wt_1");
-  expect(mocks.render).toHaveBeenCalledOnce();
+  await waitFor(() => expect(mocks.render).toHaveBeenCalledOnce());
   await waitFor(() => expect(screen.getByLabelText("Page 1 of 3")).toBeTruthy());
 });
 

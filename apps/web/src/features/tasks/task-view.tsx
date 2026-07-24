@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { Hand, History, RefreshCw, ExternalLink, GitBranch, Workflow, Zap, Plus, Save, MessageSquare, Trash2, Pencil, FolderKanban } from "lucide-react";
+import { Hand, History, RefreshCw, ExternalLink, GitBranch, Workflow, Zap, Plus, Save, MessageSquare, Trash2, Pencil, FolderKanban, ArrowUp, ArrowDown } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -41,6 +41,8 @@ type LocalWorkItem = {
   labels: string[];
   assigneeIds: string[];
   acceptanceCriteria: string[];
+  dueDate: string | null;
+  milestone: string;
   revision: number;
   archivedAt: string | null;
   executionBindings?: { kind: "worktree" | "auto_run"; targetId: string; worktreeId: string | null; createdAt: string }[];
@@ -59,7 +61,7 @@ type PlanningProject = {
   completedItemCount: number;
   statusCounts: Record<LocalWorkItem["status"], number>;
   priorityCounts: Record<LocalWorkItem["priority"], number>;
-  items?: { workItem: LocalWorkItem }[];
+  items?: { membership: { position: number }; workItem: LocalWorkItem }[];
 };
 type WorkItemComment = {
   id: string;
@@ -518,8 +520,16 @@ function PlanningProjectsPanel({ onChanged }: { onChanged: () => void }) {
   const [description, setDescription] = useState("");
   const [editing, setEditing] = useState(false);
   const [view, setView] = useState<"items" | "board">("items");
+  const [selectedWorkItemIds, setSelectedWorkItemIds] = useState<string[]>([]);
+  const [bulkStatus, setBulkStatus] = useState<LocalWorkItem["status"]>("ready");
   const [nonce, setNonce] = useState(0);
   const selected = projects.find((project) => project.id === selectedId);
+  const displayWorkItems = selected?.items
+    ? [
+        ...selected.items.map((row) => workItems.find((item) => item.id === row.workItem.id) ?? row.workItem),
+        ...workItems.filter((item) => !selected.items?.some((row) => row.workItem.id === item.id)),
+      ]
+    : workItems;
 
   useEffect(() => {
     let cancelled = false;
@@ -597,6 +607,32 @@ function PlanningProjectsPanel({ onChanged }: { onChanged: () => void }) {
       onChanged();
     });
   };
+  const moveItem = (workItemId: string, direction: -1 | 1) => {
+    if (!selected?.items) return;
+    const ids = selected.items.map((row) => row.workItem.id);
+    const index = ids.indexOf(workItemId);
+    const target = index + direction;
+    if (index < 0 || target < 0 || target >= ids.length) return;
+    [ids[index], ids[target]] = [ids[target], ids[index]];
+    void execute(() => api.reorderPlanningProjectItems(selected.id, selected.revision, ids)).then((ok) => {
+      if (!ok) return;
+      setNonce((value) => value + 1);
+      onChanged();
+    });
+  };
+  const applyBulkStatus = () => {
+    if (!selected?.items || selectedWorkItemIds.length === 0) return;
+    const items = selected.items
+      .map((row) => row.workItem)
+      .filter((item) => selectedWorkItemIds.includes(item.id))
+      .map((item) => ({ id: item.id, expectedRevision: item.revision }));
+    void execute(() => api.bulkUpdateWorkItems({ items, changes: { status: bulkStatus } })).then((ok) => {
+      if (!ok) return;
+      setSelectedWorkItemIds([]);
+      setNonce((value) => value + 1);
+      onChanged();
+    });
+  };
 
   return (
     <div className="grid gap-4 sm:grid-cols-[14rem_1fr]">
@@ -650,20 +686,43 @@ function PlanningProjectsPanel({ onChanged }: { onChanged: () => void }) {
             </div>
             {view === "items" ? (
               <div className="max-h-72 space-y-1 overflow-y-auto">
-                {workItems.map((item) => {
+                {displayWorkItems.map((item) => {
                   const included = selected.items?.some((row) => row.workItem.id === item.id);
+                  const orderIndex = selected.items?.findIndex((row) => row.workItem.id === item.id) ?? -1;
                   return (
                     <label key={item.id} className="flex cursor-pointer items-center gap-2 rounded-md border border-border px-2 py-1.5 text-sm">
                       <input type="checkbox" checked={Boolean(included)} disabled={pending} onChange={() => toggleItem(item)} />
                       <span className="font-mono text-xs text-muted-foreground">{item.localRef}</span><span className="truncate">{item.title}</span>
+                      {included ? (
+                        <span className="ml-auto flex gap-1">
+                          <button type="button" aria-label={t("planningProjects.moveUp", { ref: item.localRef })}
+                            disabled={pending || orderIndex === 0} onClick={(event) => { event.preventDefault(); moveItem(item.id, -1); }}>
+                            <ArrowUp className="size-3.5" />
+                          </button>
+                          <button type="button" aria-label={t("planningProjects.moveDown", { ref: item.localRef })}
+                            disabled={pending || orderIndex === (selected.items?.length ?? 0) - 1} onClick={(event) => { event.preventDefault(); moveItem(item.id, 1); }}>
+                            <ArrowDown className="size-3.5" />
+                          </button>
+                        </span>
+                      ) : null}
                     </label>
                   );
                 })}
                 {!workItems.length ? <p className="text-xs text-muted-foreground">{t("planningProjects.noItems")}</p> : null}
               </div>
             ) : (
-              <div className="grid max-h-96 grid-cols-2 gap-2 overflow-auto lg:grid-cols-3">
-                {(["backlog", "ready", "in_progress", "review", "blocked", "done"] as const).map((status) => (
+              <div className="space-y-2">
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="text-xs text-muted-foreground">{t("planningProjects.selectedCount", { count: selectedWorkItemIds.length })}</span>
+                  <Select value={bulkStatus} onChange={(event) => setBulkStatus(event.target.value as LocalWorkItem["status"])} className="h-8 w-auto text-xs">
+                    {(["backlog", "ready", "in_progress", "review", "blocked", "done"] as const).map((value) => (
+                      <option key={value} value={value}>{t(`tasks.localStatus.${value}`)}</option>
+                    ))}
+                  </Select>
+                  <Button size="sm" disabled={pending || selectedWorkItemIds.length === 0} onClick={applyBulkStatus}>{t("planningProjects.applyBulk")}</Button>
+                </div>
+                <div className="grid max-h-96 grid-cols-2 gap-2 overflow-auto lg:grid-cols-3">
+                  {(["backlog", "ready", "in_progress", "review", "blocked", "done"] as const).map((status) => (
                   <section key={status} className="min-w-36 rounded-md bg-muted/60 p-2">
                     <h4 className="mb-2 flex justify-between text-xs font-semibold">
                       <span>{t(`tasks.localStatus.${status}`)}</span><Badge tone="neutral">{selected.statusCounts?.[status] ?? 0}</Badge>
@@ -671,7 +730,14 @@ function PlanningProjectsPanel({ onChanged }: { onChanged: () => void }) {
                     <div className="space-y-1.5">
                       {selected.items?.filter((row) => row.workItem.status === status).map(({ workItem }) => (
                         <div key={workItem.id} className="rounded border border-border bg-background p-2 text-xs">
-                          <div className="font-mono text-muted-foreground">{workItem.localRef}</div>
+                          <div className="flex items-center gap-1 font-mono text-muted-foreground">
+                            <input type="checkbox" aria-label={t("planningProjects.selectItem", { ref: workItem.localRef })}
+                              checked={selectedWorkItemIds.includes(workItem.id)}
+                              onChange={(event) => setSelectedWorkItemIds((current) => event.target.checked
+                                ? [...current, workItem.id]
+                                : current.filter((id) => id !== workItem.id))} />
+                            {workItem.localRef}
+                          </div>
                           <div className="mb-2 font-medium">{workItem.title}</div>
                           <Select value={workItem.status} disabled={pending}
                             aria-label={t("planningProjects.changeStatus", { ref: workItem.localRef })}
@@ -685,7 +751,8 @@ function PlanningProjectsPanel({ onChanged }: { onChanged: () => void }) {
                       ))}
                     </div>
                   </section>
-                ))}
+                  ))}
+                </div>
               </div>
             )}
           </>
@@ -737,6 +804,14 @@ function LocalWorkItemTable({
                   {item.planningProjects?.filter((project) => !project.archivedAt).map((project) => (
                     <Badge key={project.id} tone="running"><FolderKanban className="mr-1 size-3" />{project.name}</Badge>
                   ))}
+                  {item.milestone ? <Badge tone="neutral">{item.milestone}</Badge> : null}
+                  {item.dueDate ? (
+                    <Badge tone={item.status !== "done" && item.dueDate < new Date().toISOString().slice(0, 10) ? "danger" : "warning"}>
+                      {item.status !== "done" && item.dueDate < new Date().toISOString().slice(0, 10)
+                        ? t("taskLocal.overdue", { date: item.dueDate })
+                        : t("taskLocal.due", { date: item.dueDate })}
+                    </Badge>
+                  ) : null}
                 </div>
               </td>
               <td className="px-3 py-2"><Badge tone="neutral">{t(`tasks.localType.${item.type}`)}</Badge></td>
@@ -775,6 +850,8 @@ function LocalWorkItemDetail({
   const [priority, setPriority] = useState<LocalWorkItem["priority"]>("p2");
   const [labels, setLabels] = useState("");
   const [acceptance, setAcceptance] = useState("");
+  const [dueDate, setDueDate] = useState("");
+  const [milestone, setMilestone] = useState("");
   const [comment, setComment] = useState("");
   const [editingCommentId, setEditingCommentId] = useState<string | null>(null);
   const [editingCommentBody, setEditingCommentBody] = useState("");
@@ -795,6 +872,8 @@ function LocalWorkItemDetail({
       setPriority(next.priority);
       setLabels(next.labels.join(", "));
       setAcceptance(next.acceptanceCriteria.join("\n"));
+      setDueDate(next.dueDate ?? "");
+      setMilestone(next.milestone ?? "");
       setComments(commentResult.comments);
       setActivity(activityResult.activities);
       setLoadError(null);
@@ -822,6 +901,8 @@ function LocalWorkItemDetail({
       priority,
       labels: labels.split(",").map((value) => value.trim()).filter(Boolean),
       acceptanceCriteria: acceptance.split("\n").map((value) => value.trim()).filter(Boolean),
+      dueDate: dueDate || null,
+      milestone,
     })).then(() => {
       onChanged();
       void load();
@@ -886,6 +967,10 @@ function LocalWorkItemDetail({
         <span>{projects.find((project) => project.id === item.projectId)?.name ?? item.projectId}</span>
         <Badge tone={item.state === "open" ? "success" : "neutral"}>{t(`taskLocal.state.${item.state}`)}</Badge>
         <span>{t("taskLocal.revision", { revision: item.revision })}</span>
+      </div>
+      <div className="grid gap-3 sm:grid-cols-2">
+        <Field label={t("taskLocal.dueDate")}><Input type="date" value={dueDate} onChange={(event) => setDueDate(event.target.value)} /></Field>
+        <Field label={t("taskLocal.milestone")}><Input value={milestone} onChange={(event) => setMilestone(event.target.value)} /></Field>
       </div>
       <Field label={t("tasks.localTitle")}><Input value={title} onChange={(event) => setTitle(event.target.value)} /></Field>
       <div className="grid gap-3 sm:grid-cols-3">
@@ -1012,6 +1097,8 @@ function CreateLocalWorkItemForm({
   const [priority, setPriority] = useState<LocalWorkItem["priority"]>("p2");
   const [labels, setLabels] = useState("");
   const [acceptance, setAcceptance] = useState("");
+  const [dueDate, setDueDate] = useState("");
+  const [milestone, setMilestone] = useState("");
   const submit = () => {
     void execute(() => api.createWorkItem({
       projectId,
@@ -1021,6 +1108,8 @@ function CreateLocalWorkItemForm({
       priority,
       labels: labels.split(",").map((value) => value.trim()).filter(Boolean),
       acceptanceCriteria: acceptance.split("\n").map((value) => value.trim()).filter(Boolean),
+      dueDate: dueDate || null,
+      milestone,
     })).then(onDone);
   };
   return (
@@ -1054,6 +1143,10 @@ function CreateLocalWorkItemForm({
       <Field label={t("tasks.acceptanceCriteria")}>
         <textarea className="min-h-20 w-full rounded-md border border-border bg-background p-2 text-sm" value={acceptance} onChange={(event) => setAcceptance(event.target.value)} placeholder={t("tasks.acceptancePlaceholder")} />
       </Field>
+      <div className="grid gap-3 sm:grid-cols-2">
+        <Field label={t("taskLocal.dueDate")}><Input type="date" value={dueDate} onChange={(event) => setDueDate(event.target.value)} /></Field>
+        <Field label={t("taskLocal.milestone")}><Input value={milestone} onChange={(event) => setMilestone(event.target.value)} /></Field>
+      </div>
       {error ? <p className="text-xs text-destructive">{error}</p> : null}
       <div className="flex justify-end gap-2">
         <Button disabled={pending || !projectId || !title.trim()} onClick={submit}>{t("tasks.createLocal")}</Button>

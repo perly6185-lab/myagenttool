@@ -859,10 +859,16 @@ export const api = {
     priority?: "p0" | "p1" | "p2" | "p3";
     labels?: string[];
     acceptanceCriteria?: string[];
+    dueDate?: string | null;
+    milestone?: string;
   }) => request("POST", "/api/work-items", payload),
   getWorkItem: (id: string) => request("GET", `/api/work-items/${encodeURIComponent(id)}`),
   updateWorkItem: (id: string, payload: Record<string, unknown>) =>
     request("PATCH", `/api/work-items/${encodeURIComponent(id)}`, payload),
+  bulkUpdateWorkItems: (payload: {
+    items: { id: string; expectedRevision: number }[];
+    changes: Record<string, unknown>;
+  }) => request("PATCH", "/api/work-items/bulk", payload),
   transitionWorkItem: (id: string, action: "close" | "reopen" | "archive" | "restore", expectedRevision: number) =>
     request("POST", `/api/work-items/${encodeURIComponent(id)}/${action}`, { expectedRevision }),
   listWorkItemComments: (id: string) =>
@@ -893,6 +899,10 @@ export const api = {
     request("PUT", `/api/planning-projects/${encodeURIComponent(planningProjectId)}/items/${encodeURIComponent(workItemId)}`),
   removePlanningProjectItem: (planningProjectId: string, workItemId: string) =>
     request("DELETE", `/api/planning-projects/${encodeURIComponent(planningProjectId)}/items/${encodeURIComponent(workItemId)}`),
+  reorderPlanningProjectItems: (planningProjectId: string, expectedRevision: number, workItemIds: string[]) =>
+    request("PUT", `/api/planning-projects/${encodeURIComponent(planningProjectId)}/items`, { expectedRevision, workItemIds }),
+  updatePlanningProjectItems: (planningProjectId: string, addWorkItemIds: string[], removeWorkItemIds: string[]) =>
+    request("PATCH", `/api/planning-projects/${encodeURIComponent(planningProjectId)}/items`, { addWorkItemIds, removeWorkItemIds }),
   // #1143 issue claims: take/hand back an issue's develop lease. A foreign
   // active develop claim answers 409 with the blocking claim.
   claimIssue: (projectId: string, payload: { issueNumber: number; mode?: "develop" | "review" }) =>

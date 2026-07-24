@@ -20,7 +20,7 @@ export function createPlanningProjectService({
   function visibleMemberships(projectId, actor) {
     return (state.planningProjectItems ?? []).filter(
       (row) => row.planningProjectId === projectId && row.ownerTeamId === teamOfActor(actor),
-    );
+    ).sort((a, b) => (Number(a.position) || 0) - (Number(b.position) || 0) || a.addedAt.localeCompare(b.addedAt));
   }
 
   function projectView(project, actor, { includeItems = false } = {}) {
@@ -164,6 +164,7 @@ export function createPlanningProjectService({
       ownerTeamId: project.ownerTeamId,
       planningProjectId: project.id,
       workItemId: workItem.id,
+      position: Math.max(0, ...visibleMemberships(project.id, actor).map((row) => Number(row.position) || 0)) + 1_000,
       addedAt: now(),
       addedBy: userOfActor(actor),
     };
@@ -192,5 +193,70 @@ export function createPlanningProjectService({
     return { ok: true, status: 200, body: { membership } };
   }
 
-  return { listProjects, getProject, createProject, updateProject, setArchived, addItem, removeItem };
+  function reorderItems({ planningProjectId, expectedRevision, workItemIds } = {}, actor = null) {
+    const project = findOwn(planningProjectId, actor);
+    if (!project) return notFound();
+    if (!Number.isInteger(expectedRevision)) {
+      return { ok: false, status: 400, body: { error: "expected_revision_required" } };
+    }
+    if (project.revision !== expectedRevision) {
+      return { ok: false, status: 409, body: { error: "planning_project_revision_conflict", currentRevision: project.revision } };
+    }
+    const memberships = visibleMemberships(project.id, actor);
+    const ids = Array.isArray(workItemIds) ? workItemIds.map(String) : [];
+    if (ids.length !== memberships.length || new Set(ids).size !== ids.length
+      || ids.some((id) => !memberships.some((row) => row.workItemId === id))) {
+      return { ok: false, status: 400, body: { error: "invalid_planning_project_item_order" } };
+    }
+    runTx(() => {
+      ids.forEach((workItemId, index) => {
+        memberships.find((row) => row.workItemId === workItemId).position = (index + 1) * 1_000;
+      });
+      project.revision += 1;
+      project.updatedAt = now();
+      project.lastModifiedBy = userOfActor(actor);
+    });
+    return { ok: true, status: 200, body: { project: projectView(project, actor, { includeItems: true }) } };
+  }
+
+  function updateItems({ planningProjectId, addWorkItemIds = [], removeWorkItemIds = [] } = {}, actor = null) {
+    const project = findOwn(planningProjectId, actor);
+    if (!project) return notFound();
+    const addIds = [...new Set(Array.isArray(addWorkItemIds) ? addWorkItemIds.map(String) : [])];
+    const removeIds = [...new Set(Array.isArray(removeWorkItemIds) ? removeWorkItemIds.map(String) : [])];
+    if (addIds.length + removeIds.length === 0 || addIds.length + removeIds.length > 100
+      || addIds.some((id) => removeIds.includes(id))) {
+      return { ok: false, status: 400, body: { error: "invalid_planning_project_item_update" } };
+    }
+    const ownItems = new Map((state.workItems ?? [])
+      .filter((row) => row.ownerTeamId === teamOfActor(actor))
+      .map((row) => [row.id, row]));
+    if (addIds.some((id) => !ownItems.has(id))) {
+      return { ok: false, status: 404, body: { error: "work_item_not_found" } };
+    }
+    const current = visibleMemberships(project.id, actor);
+    let nextPosition = Math.max(0, ...current.map((row) => Number(row.position) || 0));
+    runTx(() => {
+      state.planningProjectItems = (state.planningProjectItems ?? []).filter(
+        (row) => !(row.planningProjectId === project.id && row.ownerTeamId === teamOfActor(actor) && removeIds.includes(row.workItemId)),
+      );
+      for (const workItemId of addIds) {
+        if (current.some((row) => row.workItemId === workItemId)) continue;
+        nextPosition += 1_000;
+        state.planningProjectItems.push({
+          id: nextId("ppi"), ownerTeamId: project.ownerTeamId, planningProjectId: project.id,
+          workItemId, position: nextPosition, addedAt: now(), addedBy: userOfActor(actor),
+        });
+      }
+      project.revision += 1;
+      project.updatedAt = now();
+      project.lastModifiedBy = userOfActor(actor);
+    });
+    return { ok: true, status: 200, body: { project: projectView(project, actor, { includeItems: true }) } };
+  }
+
+  return {
+    listProjects, getProject, createProject, updateProject, setArchived,
+    addItem, removeItem, reorderItems, updateItems,
+  };
 }

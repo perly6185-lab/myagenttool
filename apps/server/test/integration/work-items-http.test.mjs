@@ -181,3 +181,35 @@ test("planning projects manage local issue membership over HTTP", async () => {
   });
   assert.equal(restored.body.project.archivedAt, null);
 });
+
+test("planning fields, bulk updates, and project ordering are wired over HTTP", async () => {
+  const first = (await call("/api/work-items", {
+    method: "POST",
+    body: { projectId: "prj_a", title: "First ordered", dueDate: "2026-08-15", milestone: "M3" },
+  })).body.workItem;
+  const second = (await call("/api/work-items", {
+    method: "POST", body: { projectId: "prj_a", title: "Second ordered" },
+  })).body.workItem;
+  const bulk = await call("/api/work-items/bulk", {
+    method: "PATCH",
+    body: {
+      items: [{ id: first.id, expectedRevision: 1 }, { id: second.id, expectedRevision: 1 }],
+      changes: { status: "ready" },
+    },
+  });
+  assert.equal(bulk.status, 200);
+  assert.equal(bulk.body.count, 2);
+  const project = (await call("/api/planning-projects", {
+    method: "POST", body: { name: "Ordered roadmap" },
+  })).body.project;
+  const membership = await call(`/api/planning-projects/${project.id}/items`, {
+    method: "PATCH", body: { addWorkItemIds: [first.id, second.id], removeWorkItemIds: [] },
+  });
+  assert.deepEqual(membership.body.project.items.map((row) => row.workItem.id), [first.id, second.id]);
+  const reordered = await call(`/api/planning-projects/${project.id}/items`, {
+    method: "PUT",
+    body: { expectedRevision: 2, workItemIds: [second.id, first.id] },
+  });
+  assert.equal(reordered.status, 200);
+  assert.deepEqual(reordered.body.project.items.map((row) => row.workItem.id), [second.id, first.id]);
+});

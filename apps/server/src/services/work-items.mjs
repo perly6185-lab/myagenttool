@@ -14,12 +14,20 @@ const MAX_TITLE = 300;
 const MAX_BODY = 200_000;
 const MAX_LABELS = 50;
 const MAX_COMMENT = 100_000;
+const MAX_MILESTONE = 200;
 
 function strings(values, { limit = MAX_LABELS, maxLength = 100 } = {}) {
   if (!Array.isArray(values)) return null;
   const normalized = [...new Set(values.map((value) => String(value).trim()).filter(Boolean))];
   if (normalized.length > limit || normalized.some((value) => value.length > maxLength)) return null;
   return normalized;
+}
+
+function validDateOnly(value) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+  const [year, month, day] = value.split("-").map(Number);
+  const parsed = new Date(Date.UTC(year, month - 1, day));
+  return parsed.getUTCFullYear() === year && parsed.getUTCMonth() === month - 1 && parsed.getUTCDate() === day;
 }
 
 function validateDraft(input, { partial = false } = {}) {
@@ -56,6 +64,16 @@ function validateDraft(input, { partial = false } = {}) {
     const acceptanceCriteria = strings(input.acceptanceCriteria ?? [], { limit: 100, maxLength: 2_000 });
     if (!acceptanceCriteria) return { error: "invalid_work_item_acceptance_criteria" };
     value.acceptanceCriteria = acceptanceCriteria;
+  }
+  if (!partial || Object.hasOwn(input, "dueDate")) {
+    const dueDate = input.dueDate == null || input.dueDate === "" ? null : String(input.dueDate);
+    if (dueDate && !validDateOnly(dueDate)) return { error: "invalid_work_item_due_date" };
+    value.dueDate = dueDate;
+  }
+  if (!partial || Object.hasOwn(input, "milestone")) {
+    const milestone = input.milestone == null ? "" : String(input.milestone).trim();
+    if (milestone.length > MAX_MILESTONE) return { error: "invalid_work_item_milestone" };
+    value.milestone = milestone;
   }
   return { value };
 }
@@ -222,6 +240,59 @@ export function createWorkItemService({
     return { ok: true, status: 200, body: { workItem: item } };
   }
 
+  function bulkUpdateWorkItems({ items, changes } = {}, actor = null) {
+    if (!Array.isArray(items) || items.length === 0 || items.length > 100 || !changes || typeof changes !== "object") {
+      return { ok: false, status: 400, body: { error: "invalid_work_item_bulk_update" } };
+    }
+    const unique = new Map();
+    for (const row of items) {
+      const id = String(row?.id ?? "");
+      if (!id || !Number.isInteger(row?.expectedRevision) || unique.has(id)) {
+        return { ok: false, status: 400, body: { error: "invalid_work_item_bulk_update" } };
+      }
+      unique.set(id, row.expectedRevision);
+    }
+    const allowedChanges = Object.fromEntries(
+      Object.entries(changes).filter(([key]) => ["status", "priority", "assigneeIds", "dueDate", "milestone"].includes(key)),
+    );
+    if (Object.keys(allowedChanges).length === 0 || Object.keys(allowedChanges).length !== Object.keys(changes).length) {
+      return { ok: false, status: 400, body: { error: "invalid_work_item_bulk_changes" } };
+    }
+    const validated = validateDraft(allowedChanges, { partial: true });
+    if (validated.error) return { ok: false, status: 400, body: { error: validated.error } };
+    const targets = [];
+    for (const [id, expectedRevision] of unique) {
+      const item = findOwn(id, actor);
+      if (!item) return notFound();
+      if (item.revision !== expectedRevision) {
+        return {
+          ok: false, status: 409,
+          body: { error: "work_item_revision_conflict", workItemId: item.id, currentRevision: item.revision },
+        };
+      }
+      targets.push(item);
+    }
+    runTx(() => {
+      for (const item of targets) {
+        const previous = Object.fromEntries(Object.keys(validated.value).map((key) => [key, item[key]]));
+        Object.assign(item, validated.value, {
+          revision: item.revision + 1,
+          updatedAt: now(),
+          lastModifiedBy: actorUser(actor),
+        });
+        recordActivity(item, actor, "bulk_updated", {
+          changes: Object.fromEntries(Object.entries(validated.value).map(([key, value]) => [
+            key, { from: previous[key], to: value },
+          ])),
+        });
+      }
+    });
+    return {
+      ok: true, status: 200,
+      body: { workItems: targets.map((item) => workItemView(item, actor)), count: targets.length },
+    };
+  }
+
   function transitionWorkItem({ workItemId, expectedRevision, action } = {}, actor = null) {
     const item = findOwn(workItemId, actor);
     if (!item) return notFound();
@@ -379,7 +450,7 @@ export function createWorkItemService({
   }
 
   return {
-    listWorkItems, getWorkItem, createWorkItem, updateWorkItem, transitionWorkItem,
+    listWorkItems, getWorkItem, createWorkItem, updateWorkItem, bulkUpdateWorkItems, transitionWorkItem,
     listActivity, listComments, createComment, updateComment, deleteComment,
     recordExecutionBinding,
   };
