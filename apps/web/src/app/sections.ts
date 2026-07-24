@@ -2,6 +2,7 @@ import {
   AppWindow,
   Bot,
   Boxes,
+  CalendarRange,
   ClipboardCheck,
   FolderKanban,
   Files,
@@ -59,6 +60,7 @@ export const SECTIONS: SectionDef[] = [
   // Work — the daily home: start a task, live in a project.
   { key: "dashboard", labelKey: "sections.dashboard.label", icon: LayoutDashboard, blurbKey: "sections.dashboard.blurb", group: "work" },
   { key: "workBoard", labelKey: "sections.workBoard.label", icon: KanbanSquare, blurbKey: "sections.workBoard.blurb", group: "work" },
+  { key: "planning", labelKey: "sections.planning.label", icon: CalendarRange, blurbKey: "sections.planning.blurb", group: "work" },
   { key: "workspace", labelKey: "sections.workspace.label", icon: PanelsTopLeft, blurbKey: "sections.workspace.blurb", group: "work" },
   { key: "documents", labelKey: "sections.documents.label", icon: Files, blurbKey: "sections.documents.blurb", group: "work" },
   { key: "canvas", labelKey: "sections.canvas.label", icon: Shapes, blurbKey: "sections.canvas.blurb", group: "work" },

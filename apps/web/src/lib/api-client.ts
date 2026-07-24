@@ -861,6 +861,7 @@ export const api = {
     acceptanceCriteria?: string[];
     dueDate?: string | null;
     milestone?: string;
+    estimatePoints?: number;
   }) => request("POST", "/api/work-items", payload),
   getWorkItem: (id: string) => request("GET", `/api/work-items/${encodeURIComponent(id)}`),
   updateWorkItem: (id: string, payload: Record<string, unknown>) =>
@@ -889,7 +890,19 @@ export const api = {
     request("GET", `/api/planning-projects${includeArchived ? "?includeArchived=1" : ""}`),
   getPlanningProject: (id: string) =>
     request("GET", `/api/planning-projects/${encodeURIComponent(id)}`),
-  createPlanningProject: (payload: { name: string; description?: string; color?: string }) =>
+  createPlanningProject: (payload: {
+    name: string;
+    description?: string;
+    color?: string;
+    capacityPoints?: number;
+    startDate?: string | null;
+    targetDate?: string | null;
+    ownerId?: string | null;
+    status?: "planned" | "active" | "on_hold" | "completed";
+    templateProjectId?: string;
+    savedViews?: unknown[];
+    automationRules?: unknown[];
+  }) =>
     request("POST", "/api/planning-projects", payload),
   updatePlanningProject: (id: string, payload: Record<string, unknown>) =>
     request("PATCH", `/api/planning-projects/${encodeURIComponent(id)}`, payload),

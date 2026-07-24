@@ -75,6 +75,13 @@ function validateDraft(input, { partial = false } = {}) {
     if (milestone.length > MAX_MILESTONE) return { error: "invalid_work_item_milestone" };
     value.milestone = milestone;
   }
+  if (!partial || Object.hasOwn(input, "estimatePoints")) {
+    const estimatePoints = input.estimatePoints == null || input.estimatePoints === "" ? 0 : Number(input.estimatePoints);
+    if (!Number.isInteger(estimatePoints) || estimatePoints < 0 || estimatePoints > 1_000) {
+      return { error: "invalid_work_item_estimate_points" };
+    }
+    value.estimatePoints = estimatePoints;
+  }
   return { value };
 }
 
@@ -112,12 +119,68 @@ export function createWorkItemService({
     return item && item.ownerTeamId === actorTeam(actor) ? item : null;
   }
 
+  function applyPlanningAutomation(item, actor) {
+    const matchingProjects = (state.planningProjects ?? []).filter((project) =>
+      project.ownerTeamId === actorTeam(actor) && !project.archivedAt
+      && (project.automationRules ?? []).some((rule) =>
+        (!rule.status || rule.status === item.status)
+        && (!rule.priority || rule.priority === item.priority)
+        && (!rule.type || rule.type === item.type)
+        && (!rule.label || item.labels.includes(rule.label))));
+    for (const project of matchingProjects) {
+      const memberships = (state.planningProjectItems ?? []).filter((row) =>
+        row.ownerTeamId === actorTeam(actor) && row.planningProjectId === project.id);
+      if (memberships.some((row) => row.workItemId === item.id)) continue;
+      (state.planningProjectItems ??= []).push({
+        id: nextId("ppi"),
+        ownerTeamId: project.ownerTeamId,
+        planningProjectId: project.id,
+        workItemId: item.id,
+        position: Math.max(0, ...memberships.map((row) => Number(row.position) || 0)) + 1_000,
+        addedAt: now(),
+        addedBy: "usr_planning_automation",
+      });
+      project.activity = [{
+        id: nextId("ppa"),
+        action: "item_auto_added",
+        actorId: "usr_planning_automation",
+        createdAt: now(),
+        details: { workItemId: item.id, localRef: item.localRef },
+      }, ...(project.activity ?? [])].slice(0, 100);
+      recordActivity(item, actor, "planning_auto_added", { planningProjectId: project.id });
+      appendEvent({
+        invocationId: null, type: "planning_project_item_auto_added", level: "info",
+        message: `${item.localRef} automatically added to ${project.name}.`,
+        data: { planningProjectId: project.id, workItemId: item.id, actorTeamId: actorTeam(actor) },
+      });
+    }
+  }
+
   function workItemView(item, actor) {
     const memberships = (state.planningProjectItems ?? []).filter(
       (row) => row.workItemId === item.id && row.ownerTeamId === actorTeam(actor),
     );
     return {
       ...item,
+      dependencyIds: item.dependencyIds ?? [],
+      blockedBy: (item.dependencyIds ?? []).map((dependencyId) => {
+        const dependency = findOwn(dependencyId, actor);
+        return dependency ? {
+          id: dependency.id,
+          localRef: dependency.localRef,
+          title: dependency.title,
+          status: dependency.status,
+          state: dependency.state,
+          resolved: dependency.status === "done" || dependency.state === "closed",
+        } : null;
+      }).filter(Boolean),
+      blocks: (state.workItems ?? [])
+        .filter((candidate) => candidate.ownerTeamId === actorTeam(actor)
+          && (candidate.dependencyIds ?? []).includes(item.id))
+        .map((candidate) => ({
+          id: candidate.id, localRef: candidate.localRef, title: candidate.title,
+          status: candidate.status, state: candidate.state,
+        })),
       planningProjects: memberships.map((membership) => {
         const project = (state.planningProjects ?? []).find(
           (row) => row.id === membership.planningProjectId && row.ownerTeamId === actorTeam(actor),
@@ -173,6 +236,7 @@ export function createWorkItemService({
       ownerTeamId: teamId,
       projectId,
       ...validated.value,
+      dependencyIds: [],
       revision: 1,
       state: "open",
       archivedAt: null,
@@ -188,6 +252,7 @@ export function createWorkItemService({
       recordActivity(workItem, actor, "created", {
         title: workItem.title, type: workItem.type, status: workItem.status, priority: workItem.priority,
       });
+      applyPlanningAutomation(workItem, actor);
       appendEvent({
         invocationId: null,
         type: "work_item_created",
@@ -217,6 +282,27 @@ export function createWorkItemService({
       }
       validated.value.projectId = projectId;
     }
+    if (Object.hasOwn(changes, "dependencyIds")) {
+      if (!Array.isArray(changes.dependencyIds)) {
+        return { ok: false, status: 400, body: { error: "invalid_work_item_dependencies" } };
+      }
+      const dependencyIds = [...new Set(changes.dependencyIds.map(String))];
+      if (dependencyIds.length > 50 || dependencyIds.includes(item.id)
+        || dependencyIds.some((id) => !findOwn(id, actor))) {
+        return { ok: false, status: 400, body: { error: "invalid_work_item_dependencies" } };
+      }
+      const reachesItem = (candidateId, visited = new Set()) => {
+        if (candidateId === item.id) return true;
+        if (visited.has(candidateId)) return false;
+        visited.add(candidateId);
+        const candidate = findOwn(candidateId, actor);
+        return (candidate?.dependencyIds ?? []).some((id) => reachesItem(id, visited));
+      };
+      if (dependencyIds.some((id) => reachesItem(id))) {
+        return { ok: false, status: 409, body: { error: "work_item_dependency_cycle" } };
+      }
+      validated.value.dependencyIds = dependencyIds;
+    }
     const previous = Object.fromEntries(Object.keys(validated.value).map((key) => [key, item[key]]));
     runTx(() => {
       Object.assign(item, validated.value, {
@@ -229,6 +315,7 @@ export function createWorkItemService({
           key, { from: previous[key], to: value },
         ])),
       });
+      applyPlanningAutomation(item, actor);
       appendEvent({
         invocationId: null,
         type: "work_item_updated",
@@ -237,7 +324,7 @@ export function createWorkItemService({
         data: { workItemId: item.id, revision: item.revision, actorTeamId: actorTeam(actor) },
       });
     });
-    return { ok: true, status: 200, body: { workItem: item } };
+    return { ok: true, status: 200, body: { workItem: workItemView(item, actor) } };
   }
 
   function bulkUpdateWorkItems({ items, changes } = {}, actor = null) {
@@ -253,7 +340,7 @@ export function createWorkItemService({
       unique.set(id, row.expectedRevision);
     }
     const allowedChanges = Object.fromEntries(
-      Object.entries(changes).filter(([key]) => ["status", "priority", "assigneeIds", "dueDate", "milestone"].includes(key)),
+      Object.entries(changes).filter(([key]) => ["status", "priority", "assigneeIds", "dueDate", "milestone", "estimatePoints"].includes(key)),
     );
     if (Object.keys(allowedChanges).length === 0 || Object.keys(allowedChanges).length !== Object.keys(changes).length) {
       return { ok: false, status: 400, body: { error: "invalid_work_item_bulk_changes" } };

@@ -17,6 +17,7 @@ const mocks = vi.hoisted(() => ({
   listWorkItemActivity: vi.fn(),
   createWorkItemWorktree: vi.fn(),
   startWorkItemAutoRun: vi.fn(),
+  listAutoRuns: vi.fn(),
   listPlanningProjects: vi.fn(),
   getPlanningProject: vi.fn(),
   createPlanningProject: vi.fn(),
@@ -57,6 +58,7 @@ vi.mock("@/data/use-console-actions", () => ({
     listWorkItemActivity: mocks.listWorkItemActivity,
     createWorkItemWorktree: mocks.createWorkItemWorktree,
     startWorkItemAutoRun: mocks.startWorkItemAutoRun,
+    listAutoRuns: mocks.listAutoRuns,
     listPlanningProjects: mocks.listPlanningProjects,
     getPlanningProject: mocks.getPlanningProject,
     createPlanningProject: mocks.createPlanningProject,
@@ -72,6 +74,12 @@ vi.mock("@/store/ui-store", () => ({
   useUiStore: (selector: (state: Record<string, unknown>) => unknown) => selector({
     setSection: vi.fn(),
     setSelectedProjectId: vi.fn(),
+    selectedPlanningProjectId: null,
+    planningProjectView: "list",
+    planningProjectFilters: { status: "all", priority: "all", milestone: "", due: "all" },
+    setSelectedPlanningProjectId: vi.fn(),
+    setPlanningProjectView: vi.fn(),
+    setPlanningProjectFilters: vi.fn(),
     setSelectedWorktreeId: vi.fn(),
   }),
 }));
@@ -84,6 +92,7 @@ afterEach(() => {
 describe("TaskView local work items", () => {
   beforeEach(() => {
     mocks.listPlanningProjects.mockResolvedValue({ projects: [] });
+    mocks.listAutoRuns.mockResolvedValue({ runs: [] });
   });
   it("shows local work items as the default source", async () => {
     mocks.listWorkItems.mockResolvedValue({
@@ -140,8 +149,7 @@ describe("TaskView local work items", () => {
       planningProjectId: "ppj_1",
     })));
     fireEvent.click(screen.getByRole("button", { name: /Planning projects/i }));
-    const checkbox = await screen.findByRole("checkbox");
-    fireEvent.click(checkbox);
+    fireEvent.click(await screen.findByRole("checkbox", { name: "Select LOCAL-1" }));
     await waitFor(() => expect(mocks.addPlanningProjectItem).toHaveBeenCalledWith("ppj_1", "lwi_1"));
   });
 
@@ -163,6 +171,7 @@ describe("TaskView local work items", () => {
     mocks.getPlanningProject.mockResolvedValue({ project: { ...project, items: [{ workItem: item }] } });
     mocks.updateWorkItem.mockResolvedValue({ workItem: { ...item, status: "ready", revision: 2 } });
     mocks.bulkUpdateWorkItems.mockResolvedValue({ workItems: [{ ...item, status: "ready", revision: 2 }], count: 1 });
+    mocks.updatePlanningProjectItems.mockResolvedValue({ project });
     render(<TaskView />);
     fireEvent.click(await screen.findByRole("button", { name: /Planning projects/i }));
     fireEvent.click(await screen.findByRole("button", { name: "Board" }));
@@ -178,6 +187,18 @@ describe("TaskView local work items", () => {
       items: [{ id: "lwi_1", expectedRevision: 1 }],
       changes: { status: "ready" },
     }));
+    fireEvent.click(screen.getByLabelText("Select LOCAL-1"));
+    fireEvent.change(screen.getByLabelText("Bulk field"), { target: { value: "priority" } });
+    fireEvent.change(screen.getByLabelText("Bulk value"), { target: { value: "p1" } });
+    fireEvent.click(screen.getByRole("button", { name: "Apply status" }));
+    await waitFor(() => expect(mocks.bulkUpdateWorkItems).toHaveBeenLastCalledWith({
+      items: [{ id: "lwi_1", expectedRevision: 1 }],
+      changes: { priority: "p1" },
+    }));
+    fireEvent.click(screen.getByLabelText("Select LOCAL-1"));
+    fireEvent.change(screen.getByLabelText("Bulk field"), { target: { value: "remove" } });
+    fireEvent.click(screen.getByRole("button", { name: "Apply status" }));
+    await waitFor(() => expect(mocks.updatePlanningProjectItems).toHaveBeenCalledWith("ppj_1", [], ["lwi_1"]));
   });
 
   it("reorders members inside a planning project", async () => {
@@ -185,11 +206,18 @@ describe("TaskView local work items", () => {
       id: "lwi_1", localRef: "LOCAL-1", projectId: "prj_1", title: "First",
       body: "", type: "task", status: "backlog", priority: "p2", state: "open",
       labels: [], assigneeIds: [], acceptanceCriteria: [], revision: 1, archivedAt: null,
-      dueDate: null, milestone: "", updatedAt: "2026-07-24T00:00:00.000Z",
+      dueDate: "2026-08-15", milestone: "M3", updatedAt: "2026-07-24T00:00:00.000Z",
     };
-    const second = { ...first, id: "lwi_2", localRef: "LOCAL-2", title: "Second" };
+    const second = {
+      ...first, id: "lwi_2", localRef: "LOCAL-2", title: "Second",
+      status: "done", dueDate: "2026-07-10",
+    };
     const project = {
       id: "ppj_1", name: "Ordered", description: "", revision: 2, archivedAt: null,
+      startDate: "2026-07-01", targetDate: "2026-07-31",
+      daysRemaining: 7, projectOverdue: false,
+      ownerId: "usr_release", unowned: false,
+      status: "active",
       itemCount: 2, openItemCount: 2, completedItemCount: 0,
       statusCounts: { backlog: 2, ready: 0, in_progress: 0, review: 0, blocked: 0, done: 0 },
       priorityCounts: { p0: 0, p1: 0, p2: 2, p3: 0 },
@@ -202,12 +230,46 @@ describe("TaskView local work items", () => {
     mocks.listPlanningProjects.mockResolvedValue({ projects: [project] });
     mocks.getPlanningProject.mockResolvedValue({ project });
     mocks.reorderPlanningProjectItems.mockResolvedValue({ project });
+    mocks.startWorkItemAutoRun.mockResolvedValue({ autoRun: { id: "aur_planning" } });
+    mocks.updatePlanningProject.mockResolvedValue({ project: { ...project, revision: 3 } });
+    mocks.createPlanningProject.mockResolvedValue({ project: { ...project, id: "ppj_copy", name: "Ordered copy" } });
     render(<TaskView />);
     fireEvent.click(await screen.findByRole("button", { name: /Planning projects/i }));
     fireEvent.click(await screen.findByRole("button", { name: "Move LOCAL-2 up" }));
     await waitFor(() => expect(mocks.reorderPlanningProjectItems).toHaveBeenCalledWith(
       "ppj_1", 2, ["lwi_2", "lwi_1"],
     ));
+    fireEvent.click(screen.getByRole("button", { name: "Roadmap" }));
+    expect((await screen.findAllByText("M3")).length).toBeGreaterThan(0);
+    expect(screen.getAllByText("2026-08-15").length).toBeGreaterThan(0);
+    expect(screen.getByText("50% complete")).toBeTruthy();
+    expect(screen.getByRole("option", { name: "Current month" })).toBeTruthy();
+    expect(screen.getByRole("option", { name: "Current quarter" })).toBeTruthy();
+    expect(screen.getByText("Project health")).toBeTruthy();
+    expect(screen.getByText(/Owner: usr_release/)).toBeTruthy();
+    expect(screen.getByRole("option", { name: "usr_release" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Insights" }));
+    expect(await screen.findByText("Status distribution")).toBeTruthy();
+    expect(screen.getByText("Milestone progress")).toBeTruthy();
+    expect(screen.getByText("2026-07-01 → 2026-07-31")).toBeTruthy();
+    expect(screen.getByText("7 days remaining")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Roadmap" }));
+    fireEvent.change(screen.getByLabelText("View name"), { target: { value: "Quarter roadmap" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save view" }));
+    await waitFor(() => expect(mocks.updatePlanningProject).toHaveBeenCalledWith(
+      "ppj_1",
+      expect.objectContaining({
+        expectedRevision: 2,
+        savedViews: [expect.objectContaining({ name: "Quarter roadmap", view: "roadmap" })],
+      }),
+    ));
+    fireEvent.click(screen.getAllByTitle("Start Auto-run")[0]);
+    await waitFor(() => expect(mocks.startWorkItemAutoRun).toHaveBeenCalledWith("lwi_2"));
+    fireEvent.click(screen.getByRole("button", { name: "Duplicate" }));
+    await waitFor(() => expect(mocks.createPlanningProject).toHaveBeenCalledWith({
+      name: "Ordered copy",
+      templateProjectId: "ppj_1",
+    }));
   });
 
   it("opens details, saves fields, and posts a comment", async () => {

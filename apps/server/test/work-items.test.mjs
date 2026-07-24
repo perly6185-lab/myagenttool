@@ -79,11 +79,12 @@ test("updates are revision-gated and validate structured fields", () => {
 test("planning fields validate and bulk updates are atomic", () => {
   const { service } = harness();
   const first = service.createWorkItem({
-    projectId: "prj_a", title: "First", dueDate: "2026-08-01", milestone: "M3",
+    projectId: "prj_a", title: "First", dueDate: "2026-08-01", milestone: "M3", estimatePoints: 5,
   }, ACTOR_A).body.workItem;
   const second = service.createWorkItem({ projectId: "prj_a", title: "Second" }, ACTOR_A).body.workItem;
   assert.equal(first.dueDate, "2026-08-01");
   assert.equal(first.milestone, "M3");
+  assert.equal(first.estimatePoints, 5);
   assert.equal(service.updateWorkItem({
     workItemId: first.id, expectedRevision: 1, dueDate: "08/01/2026",
   }, ACTOR_A).status, 400);
@@ -95,10 +96,64 @@ test("planning fields validate and bulk updates are atomic", () => {
   assert.equal(service.getWorkItem({ workItemId: first.id }, ACTOR_A).body.workItem.status, "backlog");
   const updated = service.bulkUpdateWorkItems({
     items: [{ id: first.id, expectedRevision: 1 }, { id: second.id, expectedRevision: 1 }],
-    changes: { status: "ready", milestone: "M4" },
+    changes: { status: "ready", milestone: "M4", estimatePoints: 8 },
   }, ACTOR_A);
   assert.equal(updated.body.count, 2);
-  assert.equal(updated.body.workItems.every((item) => item.status === "ready" && item.milestone === "M4"), true);
+  assert.equal(updated.body.workItems.every((item) =>
+    item.status === "ready" && item.milestone === "M4" && item.estimatePoints === 8), true);
+  assert.equal(service.updateWorkItem({
+    workItemId: first.id, expectedRevision: 2, estimatePoints: -1,
+  }, ACTOR_A).status, 400);
+});
+
+test("dependencies expose blocking state and reject cycles", () => {
+  const { service } = harness();
+  const foundation = service.createWorkItem({ projectId: "prj_a", title: "Foundation" }, ACTOR_A).body.workItem;
+  const delivery = service.createWorkItem({ projectId: "prj_a", title: "Delivery" }, ACTOR_A).body.workItem;
+  const linked = service.updateWorkItem({
+    workItemId: delivery.id,
+    expectedRevision: 1,
+    dependencyIds: [foundation.id],
+  }, ACTOR_A);
+  assert.equal(linked.status, 200);
+  assert.equal(linked.body.workItem.blockedBy[0].resolved, false);
+  assert.equal(service.getWorkItem({ workItemId: foundation.id }, ACTOR_A).body.workItem.blocks[0].id, delivery.id);
+
+  const cycle = service.updateWorkItem({
+    workItemId: foundation.id,
+    expectedRevision: 1,
+    dependencyIds: [delivery.id],
+  }, ACTOR_A);
+  assert.equal(cycle.status, 409);
+  assert.equal(cycle.body.error, "work_item_dependency_cycle");
+
+  service.updateWorkItem({
+    workItemId: foundation.id,
+    expectedRevision: 1,
+    status: "done",
+  }, ACTOR_A);
+  assert.equal(service.getWorkItem({ workItemId: delivery.id }, ACTOR_A).body.workItem.blockedBy[0].resolved, true);
+});
+
+test("planning automation adds matching work items once", () => {
+  const { service, state } = harness();
+  state.planningProjects = [{
+    id: "ppj_1", ownerTeamId: "team_a", name: "Urgent bugs", archivedAt: null,
+    automationRules: [{ id: "par_1", status: "", priority: "p0", type: "bug", label: "release" }],
+  }];
+  state.planningProjectItems = [];
+  const item = service.createWorkItem({
+    projectId: "prj_a", title: "Ship blocker", type: "bug", priority: "p0", labels: ["release"],
+  }, ACTOR_A).body.workItem;
+  assert.equal(state.planningProjectItems.length, 1);
+  assert.equal(state.planningProjectItems[0].workItemId, item.id);
+  assert.equal(state.planningProjects[0].activity[0].action, "item_auto_added");
+  service.updateWorkItem({
+    workItemId: item.id, expectedRevision: 1, status: "ready",
+  }, ACTOR_A);
+  assert.equal(state.planningProjectItems.length, 1);
+  assert.equal(service.listActivity({ workItemId: item.id }, ACTOR_A).body.activities
+    .some((row) => row.action === "planning_auto_added"), true);
 });
 
 test("close, reopen, archive and restore preserve the record", () => {
