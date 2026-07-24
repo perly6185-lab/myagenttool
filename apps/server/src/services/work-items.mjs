@@ -95,6 +95,7 @@ export function createWorkItemService({
   nextId,
   appendEvent = () => {},
   persistStateSoon = () => {},
+  sendAlert = () => Promise.resolve({ sent: false }),
   store,
 }) {
   const runTx = makeRunTx({ store, persistStateSoon });
@@ -583,6 +584,66 @@ export function createWorkItemService({
     });
     state.githubWorkItemWebhookFailures = state.githubWorkItemWebhookFailures.slice(0, 100);
     persistStateSoon();
+  }
+
+  function sweepOperationalAlerts() {
+    const teamIds = [...new Set((state.workItems ?? []).map((item) => item.ownerTeamId).filter(Boolean))];
+    let changed = 0;
+    for (const teamId of teamIds) {
+      const metrics = listAttention({}, { userId: "usr_work_item_alerts", teamId }).body.metrics;
+      const breached = metrics?.breached ?? 0;
+      changed += updateOperationalAlert({
+        scope: `team:${teamId}`,
+        signature: breached > 0 ? "breached" : "healthy",
+        alert: breached > 0 ? {
+          kind: "work_item_sla_breach", severity: "warning",
+          message: `${breached} work item attention SLA(s) breached.`,
+          data: { teamId, breached, backlog: metrics?.backlog ?? 0 },
+        } : null,
+      }) ? 1 : 0;
+    }
+    const deliveries = (state.githubWorkItemWebhookDeliveries ?? []).slice(0, 20);
+    const failures = (state.githubWorkItemWebhookFailures ?? []).slice(0, 20);
+    const attempts = deliveries.length + failures.length;
+    const failureRate = attempts ? failures.length / attempts : 0;
+    changed += updateOperationalAlert({
+      scope: "github_webhook",
+      signature: failureRate >= 0.05 ? "critical" : failureRate >= 0.01 ? "warning" : "healthy",
+      alert: failureRate >= 0.01 ? {
+        kind: "github_work_item_webhook_failures",
+        severity: failureRate >= 0.05 ? "critical" : "warning",
+        message: `GitHub work item Webhook failure rate is ${(failureRate * 100).toFixed(1)}%.`,
+        data: { failureRate, failures: failures.length, attempts },
+      } : null,
+    }) ? 1 : 0;
+    return { changed, failureRate };
+  }
+
+  function updateOperationalAlert({ scope, signature, alert }) {
+    let row = (state.workItemOperationalAlerts ??= []).find((candidate) => candidate.scope === scope);
+    if (!row) {
+      row = { scope, signature: "", updatedAt: null };
+      state.workItemOperationalAlerts.push(row);
+    }
+    if (row.signature === signature) return false;
+    const previous = row.signature;
+    row.signature = signature;
+    row.updatedAt = now();
+    if (alert) {
+      void sendAlert(alert);
+      appendEvent({
+        invocationId: null, type: alert.kind,
+        level: alert.severity === "critical" ? "error" : "warn",
+        message: alert.message, data: alert.data,
+      });
+    } else if (previous) {
+      appendEvent({
+        invocationId: null, type: "work_item_operational_recovered", level: "info",
+        message: `${scope} operational alert recovered.`, data: { scope },
+      });
+    }
+    persistStateSoon();
+    return true;
   }
 
   function getWorkItem({ workItemId }, actor = null) {
@@ -1227,6 +1288,6 @@ export function createWorkItemService({
     listActivity, listComments, createComment, updateComment, deleteComment,
     recordExecutionBinding, claimWorkItem, releaseWorkItemClaim, bindGithubIssue, syncGithubIssue,
     recordVerification, ingestGithubWebhook, replayGithubWebhook, recordGithubWebhookFailure,
-    githubSyncDiagnostics, updateAttention,
+    githubSyncDiagnostics, updateAttention, sweepOperationalAlerts,
   };
 }

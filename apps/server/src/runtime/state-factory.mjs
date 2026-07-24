@@ -131,6 +131,7 @@ export function createServerState({ defaultProjectPath, now }) {
     workItemAttentionOperations: [],
     githubWorkItemWebhookDeliveries: [],
     githubWorkItemWebhookFailures: [],
+    workItemOperationalAlerts: [],
     workItemActivities: [],
     planningProjects: [],
     planningProjectItems: [],

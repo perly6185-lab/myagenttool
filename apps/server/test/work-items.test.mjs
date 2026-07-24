@@ -15,6 +15,7 @@ const ACTOR_C = { userId: "usr_c", teamId: "team_a" };
 function harness({ clock = () => "2026-07-24T00:00:00.000Z" } = {}) {
   let counter = 0;
   const events = [];
+  const alerts = [];
   const state = {
     workItems: [],
     workItemComments: [],
@@ -29,8 +30,12 @@ function harness({ clock = () => "2026-07-24T00:00:00.000Z" } = {}) {
     now: clock,
     nextId: (prefix) => `${prefix}_${++counter}`,
     appendEvent: (event) => events.push(event),
+    sendAlert: (alert) => {
+      alerts.push(alert);
+      return Promise.resolve({ sent: true });
+    },
   });
-  return { state, events, service };
+  return { state, events, alerts, service };
 }
 
 test("creates a local work item with server-owned identity and defaults", () => {
@@ -368,6 +373,31 @@ test("GitHub webhook event storms stay bounded and cannot regress newer state", 
   assert.equal(state.githubWorkItemWebhookDeliveries.length, 1_000);
   assert.equal(service.getWorkItem({ workItemId: item.id }, ACTOR_A).body.workItem.title, "Newest");
   assert.equal(state.githubWorkItemWebhookDeliveries[0].result.outcome, "stale");
+});
+
+test("SLA and Webhook failure alerts are dispatched once per health transition", () => {
+  const { service, state, alerts, events } = harness({
+    clock: () => "2026-07-25T00:00:00.000Z",
+  });
+  const item = service.createWorkItem({ projectId: "prj_a", title: "Alert me" }, ACTOR_A).body.workItem;
+  state.workItems[0].externalBindings = [{
+    kind: "github_issue", number: 1,
+    conflict: { detectedAt: "2026-07-24T00:00:00.000Z", fields: ["title"] },
+  }];
+  service.recordGithubWebhookFailure({
+    deliveryId: "failed-alert", event: "issues", reason: "invalid_signature",
+  });
+  assert.equal(service.sweepOperationalAlerts().changed, 2);
+  assert.deepEqual(new Set(alerts.map((alert) => alert.kind)), new Set([
+    "work_item_sla_breach", "github_work_item_webhook_failures",
+  ]));
+  assert.equal(service.sweepOperationalAlerts().changed, 0);
+  assert.equal(alerts.length, 2);
+  state.workItems[0].externalBindings = [];
+  state.githubWorkItemWebhookFailures = [];
+  assert.equal(service.sweepOperationalAlerts().changed, 2);
+  assert.equal(events.filter((event) => event.type === "work_item_operational_recovered").length, 2);
+  assert.equal(item.id, state.workItems[0].id);
 });
 
 test("team scoping hides foreign work items and foreign projects", () => {

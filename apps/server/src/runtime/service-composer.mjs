@@ -364,6 +364,7 @@ export function createServerRuntimeServices({
   });
   const workItemService = createWorkItemService({
     state, now, nextId, appendEvent, persistStateSoon, store,
+    sendAlert: (alert) => autoRunAlerts.dispatch(alert),
   });
   const planningProjectService = createPlanningProjectService({
     state, now, nextId, appendEvent, persistStateSoon, store, validateApprovalToken,
@@ -3275,6 +3276,7 @@ export function createServerRuntimeServices({
     reapStuckAutoRuns,
     sweepExpiredClaims,
     sweepAutoRunSloAlerts,
+    sweepWorkItemOperationalAlerts: workItemService.sweepOperationalAlerts,
     flushTraceExport,
     requestObservabilityDeletion,
     autoMergeSweep,
