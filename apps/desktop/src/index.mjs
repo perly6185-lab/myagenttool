@@ -2842,7 +2842,7 @@ async function handleCodexJsonLine(invocationId, line, roundState = null) {
     const usage = event.usage ?? null;
     return {
       summary: "Codex CLI completed.",
-      touchedUserFiles: false,
+      touchedUserFiles: Boolean(roundState?.touchedUserFiles),
       output: { usage },
       // Codex reports token usage but no billed USD. Carry the full token
       // breakdown so the server can estimate cost from configured per-token rates

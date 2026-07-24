@@ -77,6 +77,7 @@ export async function refreshPrDispositions({
   state,
   fetchPrState,
   fetchPrChecks,
+  onDispositionChanged,
   now = () => new Date().toISOString(),
   maxChecks = 10,
   minIntervalMs = 10 * 60 * 1000,
@@ -100,6 +101,7 @@ export async function refreshPrDispositions({
       if (prState && ["OPEN", "MERGED", "CLOSED"].includes(prState) && prState !== run.prState) {
         run.prState = prState;
         updated += 1;
+        onDispositionChanged?.({ run, prState });
       }
       // CI check posture so the console can show it before a human merges.
       if (typeof fetchPrChecks === "function" && run.prState !== "MERGED" && run.prState !== "CLOSED") {

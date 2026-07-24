@@ -51,7 +51,7 @@ import { createInvocationService } from "../services/invocations.mjs";
 import { createCancellationSignal } from "../services/cancellation-signal.mjs";
 import { createM3Service } from "../services/m3.mjs";
 import { createProjectService, sameProjectPath } from "../services/projects.mjs";
-import { createAutoRunService } from "../services/auto-run.mjs";
+import { createAutoRunService, syncBoundWorkItemsForAutoRun } from "../services/auto-run.mjs";
 import { createDecisionSoftClaimService } from "../services/decision-soft-claims.mjs";
 import { createIssueClaimService } from "../services/issue-claims.mjs";
 import { createWorkItemService } from "../services/work-items.mjs";
@@ -1065,6 +1065,13 @@ export function createServerRuntimeServices({
       state,
       now,
       fetchPrState: ({ prNumber, repoPath }) => runPrStateFetch({ cwd: repoPath, prNumber }),
+      onDispositionChanged: ({ run, prState }) => {
+        if (prState === "MERGED") {
+          syncBoundWorkItemsForAutoRun({ state, autoRun: run, status: "done", now, nextId });
+        } else if (prState === "CLOSED") {
+          syncBoundWorkItemsForAutoRun({ state, autoRun: run, status: "blocked", now, nextId });
+        }
+      },
       // CI check posture for the merge decision (read-only gh; shown on the card).
       fetchPrChecks: ({ prNumber, repoPath }) => runPrChecks({ cwd: repoPath, prNumber }),
     });

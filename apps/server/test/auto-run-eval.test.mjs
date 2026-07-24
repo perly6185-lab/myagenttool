@@ -58,6 +58,7 @@ test("refreshPrDispositions updates open PRs, skips terminal/throttled/capped", 
     ],
   };
   const fetched = [];
+  const changes = [];
   const result = await refreshPrDispositions({
     state,
     now,
@@ -65,12 +66,14 @@ test("refreshPrDispositions updates open PRs, skips terminal/throttled/capped", 
       fetched.push({ prNumber, repoPath });
       return "MERGED";
     },
+    onDispositionChanged: ({ run: changedRun, prState }) => changes.push({ changedRun, prState }),
   });
   assert.deepEqual(fetched, [{ prNumber: 1, repoPath: "/repo" }]);
   assert.equal(result.checked, 1);
   assert.equal(result.updated, 1);
   assert.equal(state.autoRuns[0].prState, "MERGED");
   assert.equal(state.autoRuns[0].prStateCheckedAt, now());
+  assert.deepEqual(changes, [{ changedRun: state.autoRuns[0], prState: "MERGED" }]);
 });
 
 test("refreshPrDispositions: fetch failure stamps the check time and moves on", async () => {

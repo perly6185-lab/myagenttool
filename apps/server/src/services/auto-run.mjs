@@ -709,6 +709,7 @@ export function createAutoRunService({
       const task = roleAutoRunPrompt(normalizedLink, { path: decision.path, issueBody, verifyCommand });
       invocation = createInvocation(task, agent, {
         actor,
+        timeoutSeconds: Number(agent.adapter?.timeoutSeconds ?? 600),
         // role carries the decided path so role-restricted agent-skills render
         // for this run (creation.mjs → renderAgentSkillsIntoWorktree).
         metadata: { worktreeId: worktree.id, projectId: worktree.projectId, autoRunId, role: decision.path },
@@ -908,7 +909,9 @@ export function createAutoRunService({
         // check that fails BLOCKS the PR; an unconfigured gate opens the PR but
         // labels it unverified (never fabricates a pass).
         setAutoRunStatus(autoRun, "verifying");
-        let verification = { passed: true, verified: false, summary: "No verification command configured." };
+        let verification = state.autoRunSettings?.requireVerification
+          ? { passed: false, verified: false, summary: "Verification is required, but no verification command is configured." }
+          : { passed: true, verified: false, summary: "No verification command configured." };
         try {
           if (typeof verifyWorktree === "function") {
             verification = await verifyWorktree({ worktree, autoRun });
@@ -916,15 +919,25 @@ export function createAutoRunService({
         } catch (error) {
           verification = { passed: false, verified: true, summary: `Verification error: ${String(error?.message ?? error)}` };
         }
+        if (state.autoRunSettings?.requireVerification && !verification.verified) {
+          verification = {
+            passed: false,
+            verified: false,
+            summary: "Verification is required, but no verification command is configured.",
+          };
+        }
         autoRun.verification = { passed: verification.passed, verified: verification.verified, summary: verification.summary ?? null };
-        if (verification.verified && !verification.passed) {
+        if (!verification.passed) {
           // Self-repair: feed the failing check back to the agent for another attempt
           // in the SAME worktree, rather than blocking on the first failure. Bounded
           // by the attempt cap. Only develop runs repair — design/clarify/etc. produce
           // no code to re-verify.
           const maxRepairs = state.autoRunSettings?.maxRepairAttempts ?? 2;
           const attempts = autoRun.repairAttempts ?? 0;
-          const repairEligible = maxRepairs > 0 && attempts < maxRepairs && (autoRun.decision?.path ?? "develop") === "develop";
+          const repairEligible = verification.verified
+            && maxRepairs > 0
+            && attempts < maxRepairs
+            && (autoRun.decision?.path ?? "develop") === "develop";
           // A repair spawns a NEW agent run, so it must clear the same spend/safety
           // gates a fresh run does — otherwise it spends past the budget, ignores the
           // kill switch, and defeats the breaker (worst case: the original run's spend

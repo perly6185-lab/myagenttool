@@ -217,6 +217,7 @@ test("startAutoRun materializes the worktree and starts an issue-seeded invocati
   assert.match(created.task, /implement the change/, "develop role instructions seeded");
   assert.equal(created.options.metadata.worktreeId, worktree.id);
   assert.equal(created.options.metadata.role, "develop", "decided path seeded as role for skill selection");
+  assert.equal(created.options.timeoutSeconds, 600, "invocation records the effective coding-agent timeout");
   assert.equal(created.agent.id, "agt_1");
   assert.equal(invocation.input.task, created.task, "invocation carries the seeded prompt");
   assert.equal(calls.startInvocationIfAllowed.length, 1, "the run is actually kicked off");
@@ -884,6 +885,25 @@ test("verification gate: an unconfigured gate opens the PR but labels it unverif
   assert.equal(autoRun.status, "pr_open", "unverified still opens a PR (Phase 1 behavior preserved)");
   assert.equal(autoRun.verification.verified, false);
   assert.match(calls.pr[0].payload.body, /not run/);
+});
+
+test("verification gate: required verification fails closed when no command is configured", async () => {
+  const { svc, calls } = makeAutoRun();
+  state.autoRunSettings.requireVerification = true;
+  const { autoRun, invocation } = await svc.startAutoRun({
+    projectId: sourceProjectId,
+    link: { type: "issue", number: 321, title: "Required gate", url: null, state: "open" },
+    agentId: "agt_1",
+    name: "issue-321-required-gate",
+  });
+
+  await svc.advanceAutoRunForInvocation({ ...invocation, status: "succeeded" });
+
+  assert.equal(autoRun.status, "blocked");
+  assert.equal(autoRun.verification.verified, false);
+  assert.equal(autoRun.verification.passed, false);
+  assert.match(autoRun.error, /Verification is required/);
+  assert.equal(calls.pr.length, 0);
 });
 
 test("verification gate: a throwing verifier blocks the PR (never fabricates a pass)", async () => {
