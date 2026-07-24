@@ -277,6 +277,9 @@ export function createWorkItemService({
 
   function listAttention(query = {}, actor = null) {
     const projectId = String(query.projectId ?? "");
+    const kind = String(query.kind ?? "");
+    const severity = String(query.severity ?? "");
+    const sla = String(query.sla ?? "");
     const items = (state.workItems ?? []).filter((item) =>
       item.ownerTeamId === actorTeam(actor) && (!projectId || item.projectId === projectId));
     const rows = [];
@@ -319,9 +322,23 @@ export function createWorkItemService({
         });
       }
     }
+    const at = Date.parse(now());
+    const decorated = rows.map((row) => {
+      const hours = row.severity === "high" ? 4 : row.severity === "medium" ? 24 : 72;
+      const dueAt = new Date(Date.parse(row.createdAt) + hours * 3_600_000).toISOString();
+      const history = row.workItemId ? (state.workItemActivities ?? [])
+        .filter((activity) => activity.workItemId === row.workItemId)
+        .slice(0, 5)
+        .map((activity) => ({
+          action: activity.action, actorId: activity.actorId, createdAt: activity.createdAt,
+        })) : [];
+      return { ...row, dueAt, slaStatus: Date.parse(dueAt) < at ? "breached" : "within_sla", history };
+    }).filter((row) => !kind || row.kind === kind)
+      .filter((row) => !severity || row.severity === severity)
+      .filter((row) => !sla || row.slaStatus === sla);
     const rank = { high: 3, medium: 2, low: 1 };
-    rows.sort((a, b) => rank[b.severity] - rank[a.severity] || String(b.createdAt).localeCompare(String(a.createdAt)));
-    return { ok: true, status: 200, body: { items: rows, count: rows.length } };
+    decorated.sort((a, b) => rank[b.severity] - rank[a.severity] || String(a.dueAt).localeCompare(String(b.dueAt)));
+    return { ok: true, status: 200, body: { items: decorated, count: decorated.length } };
   }
 
   function getWorkItem({ workItemId }, actor = null) {

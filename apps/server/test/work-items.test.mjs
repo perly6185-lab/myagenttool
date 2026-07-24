@@ -211,11 +211,14 @@ test("human attention queue aggregates conflicts, approvals, and failed evidence
   }];
   const attention = service.listAttention({}, ACTOR_A).body;
   assert.equal(attention.count, 4);
-  assert.deepEqual(attention.items.map((row) => row.kind), [
-    "github_conflict", "verification_failed", "execution_approval", "acceptance_blocked",
-  ]);
+  assert.deepEqual(new Set(attention.items.slice(0, 3).map((row) => row.kind)), new Set([
+    "github_conflict", "verification_failed", "execution_approval",
+  ]));
+  assert.equal(attention.items[3].kind, "acceptance_blocked");
   assert.equal(service.listAttention({}, ACTOR_B).body.count, 0);
   assert.equal(attention.items.every((row) => row.workItemId === item.id), true);
+  assert.equal(attention.items.every((row) => row.dueAt && row.slaStatus && Array.isArray(row.history)), true);
+  assert.equal(service.listAttention({ kind: "github_conflict" }, ACTOR_A).body.count, 1);
 });
 
 test("team scoping hides foreign work items and foreign projects", () => {

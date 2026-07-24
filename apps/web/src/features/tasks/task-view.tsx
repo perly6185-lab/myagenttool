@@ -160,6 +160,9 @@ type WorkItemAttention = {
   localRef: string | null;
   title: string;
   createdAt: string;
+  dueAt: string;
+  slaStatus: "within_sla" | "breached";
+  history: { action: string; actorId: string; createdAt: string }[];
   details: Record<string, unknown>;
 };
 // Each row also carries which project it came from (for the "All projects" view).
@@ -269,6 +272,8 @@ export function TaskView() {
   const [rows, setRows] = useState<Row[]>([]);
   const [localRows, setLocalRows] = useState<LocalWorkItem[]>([]);
   const [attentionItems, setAttentionItems] = useState<WorkItemAttention[]>([]);
+  const [attentionKind, setAttentionKind] = useState("");
+  const [attentionSla, setAttentionSla] = useState("");
   const [planningProjects, setPlanningProjects] = useState<PlanningProject[]>([]);
   const [planningProjectId, setPlanningProjectId] = useState("all");
   const [createLocalOpen, setCreateLocalOpen] = useState(false);
@@ -299,10 +304,14 @@ export function TaskView() {
   }, [projectId, planningProjectId, nonce]);
 
   useEffect(() => {
-    void (api.listWorkItemAttention(projectId === "all" ? undefined : projectId) as Promise<{ items: WorkItemAttention[] }>)
+    void (api.listWorkItemAttention({
+      projectId: projectId === "all" ? undefined : projectId,
+      kind: attentionKind || undefined,
+      sla: attentionSla || undefined,
+    }) as Promise<{ items: WorkItemAttention[] }>)
       .then((result) => setAttentionItems(result.items))
       .catch(() => setAttentionItems([]));
-  }, [projectId, nonce]);
+  }, [projectId, attentionKind, attentionSla, nonce]);
 
   useEffect(() => {
     void (api.listPlanningProjects() as Promise<{ projects: PlanningProject[] }>)
@@ -438,7 +447,21 @@ export function TaskView() {
               <section className="space-y-2 rounded-lg border border-warning/40 bg-warning/5 p-3">
                 <div className="flex items-center justify-between">
                   <h3 className="text-sm font-semibold">{t("approvals.pending", { count: attentionItems.length })}</h3>
-                  <Badge tone="warning">{t("evidenceDetails.highCount", { count: attentionItems.filter((item) => item.severity === "high").length })}</Badge>
+                  <div className="flex items-center gap-2">
+                    <Select value={attentionKind} onChange={(event) => setAttentionKind(event.target.value)} className="h-7 text-xs">
+                      <option value="">{t("evidence.show")}</option>
+                      <option value="github_conflict">{t("taskLocal.github.conflict")}</option>
+                      <option value="execution_approval">{t("approvals.kind.invocation_approval")}</option>
+                      <option value="verification_failed">{t("approvals.testsFailed")}</option>
+                      <option value="acceptance_blocked">{t("tasks.acceptanceCriteria")}</option>
+                    </Select>
+                    <Select value={attentionSla} onChange={(event) => setAttentionSla(event.target.value)} className="h-7 text-xs">
+                      <option value="">{t("planningFilters.allStatuses")}</option>
+                      <option value="breached">{t("planningSchedule.overdue")}</option>
+                      <option value="within_sla">{t("planningExecution.healthy")}</option>
+                    </Select>
+                    <Badge tone="warning">{t("evidenceDetails.highCount", { count: attentionItems.filter((item) => item.severity === "high").length })}</Badge>
+                  </div>
                 </div>
                 <div className="grid gap-2 lg:grid-cols-2">
                   {attentionItems.map((attention) => (
@@ -455,6 +478,9 @@ export function TaskView() {
                       </Badge>
                       <span className="font-mono">{attention.localRef ?? "—"}</span>
                       <span className="truncate">{attention.title}</span>
+                      <span className={attention.slaStatus === "breached" ? "text-destructive" : "text-muted-foreground"}>
+                        {new Date(attention.dueAt).toLocaleString()}
+                      </span>
                     </button>
                   ))}
                 </div>

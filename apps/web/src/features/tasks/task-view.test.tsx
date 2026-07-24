@@ -105,7 +105,8 @@ describe("TaskView local work items", () => {
     mocks.listWorkItemAttention.mockResolvedValue({ items: [{
       id: "github_conflict:lwi_1", kind: "github_conflict", severity: "high",
       workItemId: "lwi_1", localRef: "LOCAL-1", title: "Plan offline",
-      createdAt: "2026-07-24T00:00:00.000Z", details: { fields: ["title"] },
+      createdAt: "2026-07-24T00:00:00.000Z", dueAt: "2026-07-24T04:00:00.000Z",
+      slaStatus: "within_sla", history: [], details: { fields: ["title"] },
     }] });
     mocks.listWorkItems.mockResolvedValue({
       workItems: [{
@@ -122,7 +123,7 @@ describe("TaskView local work items", () => {
     expect(screen.getByText("Feature")).toBeTruthy();
     expect(screen.getByText("Ready")).toBeTruthy();
     expect(screen.getByText("1 pending")).toBeTruthy();
-    expect(screen.getByText("Conflict")).toBeTruthy();
+    expect(screen.getAllByText("Conflict")).toHaveLength(2);
   });
 
   it("creates a local issue from the modal", async () => {

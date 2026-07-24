@@ -74,10 +74,58 @@ export function syncBoundWorkItemsForAutoRun({ state, autoRun, status, now, next
   for (const item of state.workItems ?? []) {
     if (!(item.executionBindings ?? []).some((binding) =>
       binding.kind === "auto_run" && binding.targetId === autoRun.id)) continue;
-    if (item.status === targetStatus) continue;
+    let verificationRecorded = false;
+    if (["pr_open", "report_posted", "done", "blocked"].includes(status)
+      && autoRun.verification?.verified
+      && !(item.verificationRecords ?? []).some((record) => record.sourceAutoRunId === autoRun.id)) {
+      const recordedAt = now();
+      const record = {
+        id: nextId("wvr"),
+        kind: "test",
+        status: autoRun.verification.passed ? "passed" : "failed",
+        command: null,
+        summary: autoRun.verification.summary ?? "Auto-run verification",
+        evidence: [
+          { kind: "run", ref: autoRun.id, summary: "Auto-run" },
+          ...(autoRun.prUrl ? [{ kind: "url", ref: autoRun.prUrl, summary: "Pull request" }] : []),
+          ...(autoRun.worktreeId ? [{ kind: "artifact", ref: autoRun.worktreeId, summary: "Worktree" }] : []),
+        ],
+        sourceAutoRunId: autoRun.id,
+        recordedAt,
+        recordedBy: "usr_autorun",
+      };
+      (item.verificationRecords ??= []).unshift(record);
+      verificationRecorded = true;
+      if ((item.acceptanceCriteria ?? []).length && autoRun.judgment?.solved != null) {
+        item.acceptanceResults = item.acceptanceCriteria.map((criterion) => ({
+          criterion,
+          status: autoRun.judgment.solved ? "passed" : "failed",
+          note: autoRun.judgment.summary ?? (autoRun.judgment.solved ? "Auto-run acceptance passed." : "Auto-run acceptance failed."),
+          verificationId: record.id,
+          updatedAt: recordedAt,
+        }));
+      }
+    }
+    const completionReady = !(item.acceptanceCriteria ?? []).length
+      || ((item.acceptanceCriteria ?? []).every((criterion) =>
+        (item.acceptanceResults ?? []).some((result) => result.criterion === criterion && result.status === "passed"))
+        && (item.verificationRecords ?? []).some((record) => record.status === "passed"));
+    const effectiveTargetStatus = targetStatus === "done" && !completionReady ? "review" : targetStatus;
+    if (item.status === effectiveTargetStatus) {
+      if (verificationRecorded) {
+        item.revision = (Number(item.revision) || 0) + 1;
+        item.updatedAt = now();
+        (state.workItemActivities ??= []).unshift({
+          id: nextId("wia"), workItemId: item.id, ownerTeamId: item.ownerTeamId, projectId: item.projectId,
+          action: "verification_recorded", actorId: "usr_autorun", createdAt: item.updatedAt,
+          details: { autoRunId: autoRun.id, verificationId: item.verificationRecords[0].id },
+        });
+      }
+      continue;
+    }
     const previousStatus = item.status;
-    item.status = targetStatus;
-    if (targetStatus === "done") item.state = "closed";
+    item.status = effectiveTargetStatus;
+    if (effectiveTargetStatus === "done") item.state = "closed";
     item.revision = (Number(item.revision) || 0) + 1;
     item.updatedAt = now();
     (state.workItemActivities ??= []).unshift({
@@ -88,7 +136,10 @@ export function syncBoundWorkItemsForAutoRun({ state, autoRun, status, now, next
       action: "execution_status_synced",
       actorId: "usr_autorun",
       createdAt: item.updatedAt,
-      details: { autoRunId: autoRun.id, autoRunStatus: status, from: previousStatus, to: targetStatus },
+      details: {
+        autoRunId: autoRun.id, autoRunStatus: status, from: previousStatus, to: effectiveTargetStatus,
+        ...(targetStatus === "done" && !completionReady ? { completionBlocked: true } : {}),
+      },
     });
     changed.push(item);
   }

@@ -851,8 +851,10 @@ export const api = {
     const params = new URLSearchParams(Object.entries(query).filter(([, value]) => Boolean(value)) as [string, string][]);
     return request("GET", `/api/work-items${params.size ? `?${params}` : ""}`);
   },
-  listWorkItemAttention: (projectId?: string) =>
-    request("GET", `/api/work-items/attention${projectId ? `?projectId=${encodeURIComponent(projectId)}` : ""}`),
+  listWorkItemAttention: (query: { projectId?: string; kind?: string; severity?: string; sla?: string } = {}) => {
+    const params = new URLSearchParams(Object.entries(query).filter(([, value]) => Boolean(value)) as [string, string][]);
+    return request("GET", `/api/work-items/attention${params.size ? `?${params}` : ""}`);
+  },
   createWorkItem: (payload: {
     projectId: string;
     title: string;
