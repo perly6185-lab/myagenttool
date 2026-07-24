@@ -154,15 +154,18 @@ type WorkItemActivity = {
 };
 type WorkItemAttention = {
   id: string;
-  kind: "github_conflict" | "execution_approval" | "verification_failed" | "acceptance_blocked" | "governed_action";
+  kind: "github_conflict" | "execution_approval" | "verification_failed" | "acceptance_blocked" | "recommended_action_approval" | "governed_action";
   severity: "low" | "medium" | "high";
   workItemId: string | null;
+  planningProjectId?: string | null;
   localRef: string | null;
   title: string;
   createdAt: string;
   dueAt: string;
   slaStatus: "within_sla" | "breached";
   history: { action: string; actorId: string; createdAt: string }[];
+  handling: { actorId: string; claimedAt: string } | null;
+  resolution: { actorId: string; resolvedAt: string; note: string } | null;
   details: Record<string, unknown>;
 };
 // Each row also carries which project it came from (for the "All projects" view).
@@ -284,6 +287,24 @@ export function TaskView() {
   const [nonce, setNonce] = useState(0);
 
   const targetProjects = projectId === "all" ? repoProjects : repoProjects.filter((p) => p.id === projectId);
+  const updateAttention = (attentionId: string, action: "claim" | "resolve") => {
+    void execute(() => api.updateWorkItemAttention([attentionId], action)).then((ok) => {
+      if (ok) setNonce((value) => value + 1);
+    });
+  };
+  const decideRecommendedAction = (attention: WorkItemAttention, decision: "approve" | "deny") => {
+    const approvalRequestId = typeof attention.details.approvalRequestId === "string"
+      ? attention.details.approvalRequestId
+      : "";
+    if (!attention.planningProjectId || !approvalRequestId) return;
+    void execute(() => api.decidePlanningRecommendedAction(
+      attention.planningProjectId!,
+      approvalRequestId,
+      decision,
+    )).then((ok) => {
+      if (ok) setNonce((value) => value + 1);
+    });
+  };
 
   useEffect(() => {
     let cancelled = false;
@@ -454,6 +475,7 @@ export function TaskView() {
                       <option value="execution_approval">{t("approvals.kind.invocation_approval")}</option>
                       <option value="verification_failed">{t("approvals.testsFailed")}</option>
                       <option value="acceptance_blocked">{t("tasks.acceptanceCriteria")}</option>
+                      <option value="recommended_action_approval">{t("planningDecision.nextActions")}</option>
                     </Select>
                     <Select value={attentionSla} onChange={(event) => setAttentionSla(event.target.value)} className="h-7 text-xs">
                       <option value="">{t("planningFilters.allStatuses")}</option>
@@ -465,10 +487,8 @@ export function TaskView() {
                 </div>
                 <div className="grid gap-2 lg:grid-cols-2">
                   {attentionItems.map((attention) => (
-                    <button key={attention.id} type="button"
-                      disabled={!attention.workItemId}
-                      onClick={() => attention.workItemId && setSelectedLocalId(attention.workItemId)}
-                      className="flex items-center gap-2 rounded border border-border bg-background p-2 text-left text-xs disabled:opacity-70">
+                    <div key={attention.id}
+                      className="flex items-center gap-2 rounded border border-border bg-background p-2 text-left text-xs">
                       <Badge tone={attention.severity === "high" ? "danger" : attention.severity === "medium" ? "warning" : "neutral"}>
                         {attention.kind === "github_conflict" ? t("taskLocal.github.conflict")
                           : attention.kind === "execution_approval" ? t("approvals.kind.invocation_approval")
@@ -481,7 +501,28 @@ export function TaskView() {
                       <span className={attention.slaStatus === "breached" ? "text-destructive" : "text-muted-foreground"}>
                         {new Date(attention.dueAt).toLocaleString()}
                       </span>
-                    </button>
+                      {attention.workItemId ? (
+                        <button type="button" className="text-primary hover:underline" onClick={() => setSelectedLocalId(attention.workItemId)}>
+                          {t("approvals.open")}
+                        </button>
+                      ) : null}
+                      {attention.kind === "recommended_action_approval" ? (
+                        <>
+                          <button type="button" className="text-primary hover:underline" onClick={() => decideRecommendedAction(attention, "approve")}>
+                            {t("approvals.approve")}
+                          </button>
+                          <button type="button" className="text-destructive hover:underline" onClick={() => decideRecommendedAction(attention, "deny")}>
+                            {t("approvals.deny")}
+                          </button>
+                        </>
+                      ) : null}
+                      <button type="button" className="text-primary hover:underline" onClick={() => updateAttention(attention.id, "claim")}>
+                        {attention.handling ? attention.handling.actorId : t("approvals.handle")}
+                      </button>
+                      <button type="button" className="text-primary hover:underline" onClick={() => updateAttention(attention.id, "resolve")}>
+                        {t("tasks.localStatus.done")}
+                      </button>
+                    </div>
                   ))}
                 </div>
               </section>

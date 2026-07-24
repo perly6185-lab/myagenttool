@@ -855,6 +855,8 @@ export const api = {
     const params = new URLSearchParams(Object.entries(query).filter(([, value]) => Boolean(value)) as [string, string][]);
     return request("GET", `/api/work-items/attention${params.size ? `?${params}` : ""}`);
   },
+  updateWorkItemAttention: (attentionIds: string[], action: "claim" | "release" | "resolve" | "reopen", note = "") =>
+    request("POST", "/api/work-items/attention/actions", { attentionIds, action, note }),
   createWorkItem: (payload: {
     projectId: string;
     title: string;
@@ -938,6 +940,8 @@ export const api = {
     request("PATCH", `/api/planning-projects/${encodeURIComponent(planningProjectId)}/items`, { addWorkItemIds, removeWorkItemIds }),
   executePlanningRecommendedAction: (planningProjectId: string, code: string, payload: Record<string, unknown>) =>
     request("POST", `/api/planning-projects/${encodeURIComponent(planningProjectId)}/recommended-actions/${encodeURIComponent(code)}/execute`, payload),
+  decidePlanningRecommendedAction: (planningProjectId: string, approvalRequestId: string, decision: "approve" | "deny") =>
+    request("POST", `/api/planning-projects/${encodeURIComponent(planningProjectId)}/recommended-action-approvals/${encodeURIComponent(approvalRequestId)}/${decision}`),
   // #1143 issue claims: take/hand back an issue's develop lease. A foreign
   // active develop claim answers 409 with the blocking claim.
   claimIssue: (projectId: string, payload: { issueNumber: number; mode?: "develop" | "review" }) =>
