@@ -226,3 +226,25 @@ test("project capacity is validated and revision gated", () => {
   assert.equal(updated.body.project.capacityPoints, 30);
   assert.equal(service.createProject({ name: "Invalid", capacityPoints: -1 }, ACTOR_A).status, 400);
 });
+
+test("project schedule is validated and exposes delivery risk", () => {
+  const { service } = harness();
+  const project = service.createProject({
+    name: "Scheduled", startDate: "2026-07-01", targetDate: "2026-07-20",
+  }, ACTOR_A).body.project;
+  service.addItem({ planningProjectId: project.id, workItemId: "wi_a" }, ACTOR_A);
+  const detail = service.getProject({ planningProjectId: project.id }, ACTOR_A).body.project;
+  assert.equal(detail.startDate, "2026-07-01");
+  assert.equal(detail.targetDate, "2026-07-20");
+  assert.equal(detail.projectOverdue, true);
+  assert.equal(detail.daysRemaining, -4);
+  assert.equal(detail.riskScore, 3);
+  assert.equal(detail.health, "attention");
+  assert.equal(service.createProject({
+    name: "Invalid schedule", startDate: "2026-08-01", targetDate: "2026-07-31",
+  }, ACTOR_A).status, 400);
+  assert.equal(service.updateProject({
+    planningProjectId: project.id, expectedRevision: 1,
+    startDate: "not-a-date",
+  }, ACTOR_A).status, 400);
+});

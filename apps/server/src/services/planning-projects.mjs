@@ -10,6 +10,19 @@ const WORK_ITEM_STATUSES = new Set(["", "backlog", "ready", "in_progress", "revi
 const WORK_ITEM_PRIORITIES = new Set(["", "p0", "p1", "p2", "p3"]);
 const WORK_ITEM_TYPES = new Set(["", "task", "bug", "feature", "initiative"]);
 
+function validDateOnly(value) {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+  const [year, month, day] = value.split("-").map(Number);
+  const parsed = new Date(Date.UTC(year, month - 1, day));
+  return parsed.getUTCFullYear() === year && parsed.getUTCMonth() === month - 1 && parsed.getUTCDate() === day;
+}
+
+function normalizeProjectDate(value) {
+  if (value == null || value === "") return null;
+  const date = String(value);
+  return validDateOnly(date) ? date : undefined;
+}
+
 function normalizeSavedViews(value, nextId) {
   if (!Array.isArray(value) || value.length > MAX_SAVED_VIEWS) return null;
   const names = new Set();
@@ -121,7 +134,13 @@ export function createPlanningProjectService({
       .reduce((sum, item) => sum + (Number(item.estimatePoints) || 0), 0);
     const capacityPoints = Number(project.capacityPoints) || 0;
     const overCapacity = capacityPoints > 0 && plannedPoints > capacityPoints;
-    const riskScore = blockedItemCount * 3 + overdueItemCount * 2 + failedRunCount * 3 + (overCapacity ? 3 : 0);
+    const projectOverdue = Boolean(project.targetDate && project.targetDate < today
+      && workItems.some((item) => item.status !== "done" && item.state !== "closed"));
+    const daysRemaining = project.targetDate
+      ? Math.ceil((Date.parse(`${project.targetDate}T00:00:00Z`) - Date.parse(`${today}T00:00:00Z`)) / 86_400_000)
+      : null;
+    const riskScore = blockedItemCount * 3 + overdueItemCount * 2 + failedRunCount * 3
+      + (overCapacity ? 3 : 0) + (projectOverdue ? 3 : 0);
     return {
       ...project,
       itemCount: memberships.length,
@@ -138,6 +157,8 @@ export function createPlanningProjectService({
       capacityPoints,
       overCapacity,
       capacityUtilization: capacityPoints > 0 ? Math.round((plannedPoints / capacityPoints) * 100) : null,
+      projectOverdue,
+      daysRemaining,
       health: riskScore > 0 ? "attention" : activeRunCount > 0 ? "active" : "healthy",
       ...(includeItems ? {
         items: memberships.map((membership) => ({
@@ -169,7 +190,8 @@ export function createPlanningProjectService({
   }
 
   function createProject({
-    name, description, color, capacityPoints, templateProjectId = null, savedViews, automationRules,
+    name, description, color, capacityPoints, startDate, targetDate,
+    templateProjectId = null, savedViews, automationRules,
   } = {}, actor = null) {
     const template = templateProjectId ? findOwn(templateProjectId, actor) : null;
     if (templateProjectId && !template) return notFound();
@@ -193,6 +215,12 @@ export function createPlanningProjectService({
     if (!Number.isInteger(normalizedCapacity) || normalizedCapacity < 0 || normalizedCapacity > 1_000_000) {
       return { ok: false, status: 400, body: { error: "invalid_planning_project_capacity_points" } };
     }
+    const normalizedStartDate = normalizeProjectDate(startDate === undefined ? template?.startDate : startDate);
+    const normalizedTargetDate = normalizeProjectDate(targetDate === undefined ? template?.targetDate : targetDate);
+    if (normalizedStartDate === undefined || normalizedTargetDate === undefined
+      || (normalizedStartDate && normalizedTargetDate && normalizedStartDate > normalizedTargetDate)) {
+      return { ok: false, status: 400, body: { error: "invalid_planning_project_schedule" } };
+    }
     const timestamp = now();
     const project = {
       id: nextId("ppj"),
@@ -201,6 +229,8 @@ export function createPlanningProjectService({
       description: normalizedDescription,
       color: String(color ?? template?.color ?? "indigo").slice(0, 40),
       capacityPoints: normalizedCapacity,
+      startDate: normalizedStartDate,
+      targetDate: normalizedTargetDate,
       savedViews: importedViews ?? (template?.savedViews ?? []).map((view) => ({ ...view, id: nextId("ppv") })),
       automationRules: importedRules ?? (template?.automationRules ?? []).map((rule) => ({ ...rule, id: nextId("par") })),
       activity: [],
@@ -260,6 +290,15 @@ export function createPlanningProjectService({
         return { ok: false, status: 400, body: { error: "invalid_planning_project_capacity_points" } };
       }
       patch.capacityPoints = capacityPoints;
+    }
+    if (Object.hasOwn(changes, "startDate") || Object.hasOwn(changes, "targetDate")) {
+      const startDate = Object.hasOwn(changes, "startDate") ? normalizeProjectDate(changes.startDate) : project.startDate ?? null;
+      const targetDate = Object.hasOwn(changes, "targetDate") ? normalizeProjectDate(changes.targetDate) : project.targetDate ?? null;
+      if (startDate === undefined || targetDate === undefined || (startDate && targetDate && startDate > targetDate)) {
+        return { ok: false, status: 400, body: { error: "invalid_planning_project_schedule" } };
+      }
+      patch.startDate = startDate;
+      patch.targetDate = targetDate;
     }
     runTx(() => {
       Object.assign(project, patch, {

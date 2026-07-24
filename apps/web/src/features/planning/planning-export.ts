@@ -21,6 +21,8 @@ export interface PlanningExportProject {
   color?: string;
   revision: number;
   capacityPoints?: number;
+  startDate?: string | null;
+  targetDate?: string | null;
   savedViews?: unknown[];
   automationRules?: unknown[];
   activity?: unknown[];
@@ -65,6 +67,8 @@ export function planningProjectJson(project: PlanningExportProject, exportedAt =
       color: project.color,
       revision: project.revision,
       capacityPoints: project.capacityPoints ?? 0,
+      startDate: project.startDate ?? null,
+      targetDate: project.targetDate ?? null,
       savedViews: project.savedViews ?? [],
       automationRules: project.automationRules ?? [],
       activity: project.activity ?? [],
@@ -98,6 +102,8 @@ export function parsePlanningProjectSnapshot(text: string) {
     description,
     color: typeof project.color === "string" ? project.color : undefined,
     capacityPoints: Number.isInteger(project.capacityPoints) ? Number(project.capacityPoints) : 0,
+    startDate: typeof project.startDate === "string" ? project.startDate : null,
+    targetDate: typeof project.targetDate === "string" ? project.targetDate : null,
     savedViews,
     automationRules,
     workItemCount: Array.isArray(snapshot.workItems) ? snapshot.workItems.length : 0,

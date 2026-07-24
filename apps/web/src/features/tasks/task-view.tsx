@@ -83,6 +83,10 @@ type PlanningProject = {
   capacityPoints?: number;
   overCapacity?: boolean;
   capacityUtilization?: number | null;
+  startDate?: string | null;
+  targetDate?: string | null;
+  projectOverdue?: boolean;
+  daysRemaining?: number | null;
   health?: "healthy" | "active" | "attention";
   savedViews?: {
     id: string;
@@ -564,6 +568,8 @@ export function PlanningProjectsPanel({ onChanged = () => {} }: { onChanged?: ()
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
   const [capacityPoints, setCapacityPoints] = useState("0");
+  const [projectStartDate, setProjectStartDate] = useState("");
+  const [projectTargetDate, setProjectTargetDate] = useState("");
   const [editing, setEditing] = useState(false);
   const storedPlanningView = useUiStore((state) => state.planningProjectView);
   const storePlanningView = useUiStore((state) => state.setPlanningProjectView);
@@ -665,7 +671,10 @@ export function PlanningProjectsPanel({ onChanged = () => {} }: { onChanged?: ()
   const create = () => {
     let created: PlanningProject | null = null;
     void execute(async () => {
-      const result = await api.createPlanningProject({ name, description, capacityPoints: Number(capacityPoints) }) as { project: PlanningProject };
+      const result = await api.createPlanningProject({
+        name, description, capacityPoints: Number(capacityPoints),
+        startDate: projectStartDate || null, targetDate: projectTargetDate || null,
+      }) as { project: PlanningProject };
       created = result.project;
       return result;
     }).then((ok) => {
@@ -673,6 +682,8 @@ export function PlanningProjectsPanel({ onChanged = () => {} }: { onChanged?: ()
       setName("");
       setDescription("");
       setCapacityPoints("0");
+      setProjectStartDate("");
+      setProjectTargetDate("");
       setSelectedId(created.id);
       setNonce((value) => value + 1);
       onChanged();
@@ -717,6 +728,8 @@ export function PlanningProjectsPanel({ onChanged = () => {} }: { onChanged?: ()
       name,
       description,
       capacityPoints: Number(capacityPoints),
+      startDate: projectStartDate || null,
+      targetDate: projectTargetDate || null,
     })).then((ok) => {
       if (!ok) return;
       setEditing(false);
@@ -896,6 +909,12 @@ export function PlanningProjectsPanel({ onChanged = () => {} }: { onChanged?: ()
         <Input type="number" min="0" max="1000000" value={capacityPoints}
           onChange={(event) => setCapacityPoints(event.target.value)}
           placeholder={t("planningCapacity.capacity")} aria-label={t("planningCapacity.capacity")} />
+        <div className="grid grid-cols-2 gap-1">
+          <Input type="date" value={projectStartDate} aria-label={t("planningSchedule.startDate")}
+            onChange={(event) => setProjectStartDate(event.target.value)} />
+          <Input type="date" value={projectTargetDate} aria-label={t("planningSchedule.targetDate")}
+            onChange={(event) => setProjectTargetDate(event.target.value)} />
+        </div>
         <Button size="sm" disabled={pending || !name.trim()} onClick={create}><Plus className="mr-1 size-4" />{t("planningProjects.create")}</Button>
         <label className="inline-flex h-8 cursor-pointer items-center justify-center rounded-md border border-border px-3 text-sm hover:bg-accent">
           {t("planningImport.button")}
@@ -930,6 +949,7 @@ export function PlanningProjectsPanel({ onChanged = () => {} }: { onChanged?: ()
                   {(project.blockedItemCount ?? 0) > 0 ? <span>{t("planningPortfolio.blocked", { count: project.blockedItemCount ?? 0 })}</span> : null}
                   {(project.overdueItemCount ?? 0) > 0 ? <span>{t("planningPortfolio.overdue", { count: project.overdueItemCount ?? 0 })}</span> : null}
                   {project.overCapacity ? <span>{t("planningCapacity.over")}</span> : null}
+                  {project.projectOverdue ? <span>{t("planningSchedule.overdue")}</span> : null}
                 </span>
               </span>
               <Badge tone={project.health === "attention" ? "danger" : project.health === "active" ? "running" : "neutral"}>
@@ -951,6 +971,12 @@ export function PlanningProjectsPanel({ onChanged = () => {} }: { onChanged?: ()
                   <Input type="number" min="0" max="1000000" value={capacityPoints}
                     onChange={(event) => setCapacityPoints(event.target.value)}
                     aria-label={t("planningCapacity.capacity")} />
+                  <div className="grid grid-cols-2 gap-2">
+                    <Input type="date" value={projectStartDate} aria-label={t("planningSchedule.startDate")}
+                      onChange={(event) => setProjectStartDate(event.target.value)} />
+                    <Input type="date" value={projectTargetDate} aria-label={t("planningSchedule.targetDate")}
+                      onChange={(event) => setProjectTargetDate(event.target.value)} />
+                  </div>
                 </div>
               ) : <div><h3 className="font-semibold">{selected.name}</h3><p className="text-sm text-muted-foreground">{selected.description || t("planningProjects.noDescription")}</p></div>}
               <div className="flex gap-1">
@@ -961,6 +987,8 @@ export function PlanningProjectsPanel({ onChanged = () => {} }: { onChanged?: ()
                     setName(selected.name);
                     setDescription(selected.description);
                     setCapacityPoints(String(selected.capacityPoints ?? 0));
+                    setProjectStartDate(selected.startDate ?? "");
+                    setProjectTargetDate(selected.targetDate ?? "");
                     setEditing(true);
                   }}>{t("planningProjects.edit")}</Button>
                 )}
@@ -1286,6 +1314,10 @@ export function PlanningProjectsPanel({ onChanged = () => {} }: { onChanged?: ()
                 items={filteredProjectItems.map((row) => row.workItem)}
                 today={today}
                 capacityPoints={selected.capacityPoints ?? 0}
+                startDate={selected.startDate ?? null}
+                targetDate={selected.targetDate ?? null}
+                daysRemaining={selected.daysRemaining ?? null}
+                projectOverdue={selected.projectOverdue ?? false}
               />
             )}
             <details className="rounded-md border border-border p-2">
@@ -1325,11 +1357,15 @@ export function PlanningProjectsPanel({ onChanged = () => {} }: { onChanged?: ()
 }
 
 function PlanningInsights({
-  items, today, capacityPoints,
+  items, today, capacityPoints, startDate, targetDate, daysRemaining, projectOverdue,
 }: {
   items: LocalWorkItem[];
   today: string;
   capacityPoints: number;
+  startDate: string | null;
+  targetDate: string | null;
+  daysRemaining: number | null;
+  projectOverdue: boolean;
 }) {
   const { t } = useAppTranslation();
   const statusRows = (["backlog", "ready", "in_progress", "review", "blocked", "done"] as const)
@@ -1378,6 +1414,16 @@ function PlanningInsights({
         <div className={cn("mt-3 rounded p-2 text-center text-xs", utilization != null && utilization > 100 ? "bg-destructive/10 text-destructive" : "bg-muted")}>
           <strong className="block text-base">{utilization == null ? "—" : `${utilization}%`}</strong>
           {t("planningCapacity.utilization", { planned: plannedPoints, capacity: capacityPoints || "—" })}
+        </div>
+        <div className={cn("mt-2 rounded p-2 text-center text-xs", projectOverdue ? "bg-destructive/10 text-destructive" : "bg-muted")}>
+          <strong className="block text-sm">
+            {startDate || "—"} → {targetDate || "—"}
+          </strong>
+          {!targetDate
+            ? t("planningSchedule.noTarget")
+            : projectOverdue
+              ? t("planningSchedule.overdue")
+              : t("planningSchedule.daysRemaining", { count: daysRemaining ?? 0 })}
         </div>
       </section>
       <section className="rounded-md border border-border p-3">

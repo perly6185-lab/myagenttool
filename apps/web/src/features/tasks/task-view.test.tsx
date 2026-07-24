@@ -214,6 +214,8 @@ describe("TaskView local work items", () => {
     };
     const project = {
       id: "ppj_1", name: "Ordered", description: "", revision: 2, archivedAt: null,
+      startDate: "2026-07-01", targetDate: "2026-07-31",
+      daysRemaining: 7, projectOverdue: false,
       itemCount: 2, openItemCount: 2, completedItemCount: 0,
       statusCounts: { backlog: 2, ready: 0, in_progress: 0, review: 0, blocked: 0, done: 0 },
       priorityCounts: { p0: 0, p1: 0, p2: 2, p3: 0 },
@@ -245,6 +247,8 @@ describe("TaskView local work items", () => {
     fireEvent.click(screen.getByRole("button", { name: "Insights" }));
     expect(await screen.findByText("Status distribution")).toBeTruthy();
     expect(screen.getByText("Milestone progress")).toBeTruthy();
+    expect(screen.getByText("2026-07-01 → 2026-07-31")).toBeTruthy();
+    expect(screen.getByText("7 days remaining")).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Roadmap" }));
     fireEvent.change(screen.getByLabelText("View name"), { target: { value: "Quarter roadmap" } });
     fireEvent.click(screen.getByRole("button", { name: "Save view" }));
