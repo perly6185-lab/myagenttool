@@ -4,6 +4,7 @@ import { createPlanningProjectService } from "../src/services/planning-projects.
 
 const ACTOR_A = { userId: "usr_a", teamId: "team_a" };
 const ACTOR_B = { userId: "usr_b", teamId: "team_b" };
+const ACTOR_C = { userId: "usr_c", teamId: "team_a" };
 
 function harness() {
   let counter = 0;
@@ -354,4 +355,21 @@ test("projects can be pinned with revision gating", () => {
   assert.equal(service.updateProject({
     planningProjectId: project.id, expectedRevision: 1, pinned: true,
   }, ACTOR_A).status, 409);
+});
+
+test("project watches are actor-specific and revision gated", () => {
+  const { service } = harness();
+  const project = service.createProject({ name: "Watched", watching: true }, ACTOR_A).body.project;
+  assert.equal(project.watching, true);
+  assert.equal(project.watcherIds, undefined);
+  assert.equal(service.getProject({ planningProjectId: project.id }, ACTOR_C).body.project.watching, false);
+  const watchedBySecond = service.updateProject({
+    planningProjectId: project.id, expectedRevision: 1, watching: true,
+  }, ACTOR_C).body.project;
+  assert.equal(watchedBySecond.watching, true);
+  const unwatched = service.updateProject({
+    planningProjectId: project.id, expectedRevision: 2, watching: false,
+  }, ACTOR_A).body.project;
+  assert.equal(unwatched.watching, false);
+  assert.equal(service.getProject({ planningProjectId: project.id }, ACTOR_C).body.project.watching, true);
 });

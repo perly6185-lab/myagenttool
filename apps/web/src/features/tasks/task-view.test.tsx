@@ -223,6 +223,7 @@ describe("TaskView local work items", () => {
       statusSummary: "Ready for rollout", daysSinceStatusUpdate: 2, staleStatus: false,
       checkIns: [{ id: "ppc_1", summary: "Scope approved", authorId: "usr_release", createdAt: "2026-07-22T00:00:00.000Z" }],
       pinned: true, updatedAt: "2026-07-24T00:00:00.000Z",
+      watching: true,
       itemCount: 2, openItemCount: 2, completedItemCount: 0,
       statusCounts: { backlog: 2, ready: 0, in_progress: 0, review: 0, blocked: 0, done: 0 },
       priorityCounts: { p0: 0, p1: 0, p2: 2, p3: 0 },
@@ -261,6 +262,8 @@ describe("TaskView local work items", () => {
     expect(screen.getByText("Status history (1)")).toBeTruthy();
     expect(screen.getByText("Scope approved")).toBeTruthy();
     expect(screen.getByTitle("Unpin project")).toBeTruthy();
+    expect(screen.getByTitle("Unwatch project")).toBeTruthy();
+    expect(screen.getByRole("option", { name: "Watched projects" })).toBeTruthy();
     expect(screen.getByRole("option", { name: "Target date" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "Clear portfolio filters" })).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Executions" }));

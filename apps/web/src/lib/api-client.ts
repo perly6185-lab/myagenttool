@@ -902,6 +902,7 @@ export const api = {
     tags?: string[];
     statusSummary?: string;
     pinned?: boolean;
+    watching?: boolean;
     templateProjectId?: string;
     savedViews?: unknown[];
     automationRules?: unknown[];

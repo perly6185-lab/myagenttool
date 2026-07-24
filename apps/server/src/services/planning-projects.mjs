@@ -123,6 +123,7 @@ export function createPlanningProjectService({
   }
 
   function projectView(project, actor, { includeItems = false } = {}) {
+    const { watcherIds: _watcherIds, ...publicProject } = project;
     const memberships = visibleMemberships(project.id, actor);
     const workItems = memberships.map((membership) => (state.workItems ?? []).find(
       (item) => item.id === membership.workItemId && item.ownerTeamId === teamOfActor(actor),
@@ -171,7 +172,7 @@ export function createPlanningProjectService({
       + (overCapacity ? 3 : 0) + (projectOverdue ? 3 : 0) + (unowned ? 1 : 0) + (staleStatus ? 2 : 0);
     const riskScore = project.status === "completed" ? 0 : rawRiskScore;
     return {
-      ...project,
+      ...publicProject,
       itemCount: memberships.length,
       openItemCount: workItems.filter((item) => item.state === "open").length,
       completedItemCount: workItems.filter((item) => item.status === "done" || item.state === "closed").length,
@@ -190,6 +191,7 @@ export function createPlanningProjectService({
       daysRemaining,
       daysSinceStatusUpdate,
       staleStatus,
+      watching: (project.watcherIds ?? []).includes(userOfActor(actor)),
       unowned,
       health: project.status === "completed" ? "healthy"
         : riskScore > 0 ? "attention" : activeRunCount > 0 ? "active" : "healthy",
@@ -224,7 +226,7 @@ export function createPlanningProjectService({
   }
 
   function createProject({
-    name, description, color, capacityPoints, startDate, targetDate, ownerId, status, tags, statusSummary, pinned,
+    name, description, color, capacityPoints, startDate, targetDate, ownerId, status, tags, statusSummary, pinned, watching,
     templateProjectId = null, savedViews, automationRules,
   } = {}, actor = null) {
     const template = templateProjectId ? findOwn(templateProjectId, actor) : null;
@@ -285,6 +287,7 @@ export function createPlanningProjectService({
         createdAt: timestamp,
       }] : [],
       pinned: Boolean(pinned),
+      watcherIds: watching ? [userOfActor(actor)] : [],
       savedViews: importedViews ?? (template?.savedViews ?? []).map((view) => ({ ...view, id: nextId("ppv") })),
       automationRules: importedRules ?? (template?.automationRules ?? []).map((rule) => ({ ...rule, id: nextId("par") })),
       activity: [],
@@ -365,6 +368,12 @@ export function createPlanningProjectService({
       }
     }
     if (Object.hasOwn(changes, "pinned")) patch.pinned = Boolean(changes.pinned);
+    if (Object.hasOwn(changes, "watching")) {
+      const watcherIds = new Set(project.watcherIds ?? []);
+      if (changes.watching) watcherIds.add(userOfActor(actor));
+      else watcherIds.delete(userOfActor(actor));
+      patch.watcherIds = [...watcherIds];
+    }
     if (Object.hasOwn(changes, "savedViews")) {
       const savedViews = normalizeSavedViews(changes.savedViews, nextId);
       if (!savedViews) return { ok: false, status: 400, body: { error: "invalid_planning_project_saved_views" } };
