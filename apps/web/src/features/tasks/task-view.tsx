@@ -562,7 +562,8 @@ export function PlanningProjectsPanel({ onChanged = () => {} }: { onChanged?: ()
   };
   const filters = storedFilters ?? { status: "all", priority: "all", milestone: "", due: "all" as const };
   const [selectedWorkItemIds, setSelectedWorkItemIds] = useState<string[]>([]);
-  const [bulkStatus, setBulkStatus] = useState<LocalWorkItem["status"]>("ready");
+  const [bulkField, setBulkField] = useState<"status" | "priority" | "milestone" | "dueDate" | "remove">("status");
+  const [bulkValue, setBulkValue] = useState("ready");
   const [detailWorkItemId, setDetailWorkItemId] = useState<string | null>(null);
   const [projectQuery, setProjectQuery] = useState("");
   const [projectScope, setProjectScope] = useState<"active" | "attention" | "archived">("active");
@@ -723,13 +724,23 @@ export function PlanningProjectsPanel({ onChanged = () => {} }: { onChanged?: ()
       onChanged();
     });
   };
-  const applyBulkStatus = () => {
+  const applyBulkUpdate = () => {
     if (!selected?.items || selectedWorkItemIds.length === 0) return;
+    if (bulkField === "remove") {
+      void execute(() => api.updatePlanningProjectItems(selected.id, [], selectedWorkItemIds)).then((ok) => {
+        if (!ok) return;
+        setSelectedWorkItemIds([]);
+        setNonce((value) => value + 1);
+        onChanged();
+      });
+      return;
+    }
     const items = selected.items
       .map((row) => row.workItem)
       .filter((item) => selectedWorkItemIds.includes(item.id))
       .map((item) => ({ id: item.id, expectedRevision: item.revision }));
-    void execute(() => api.bulkUpdateWorkItems({ items, changes: { status: bulkStatus } })).then((ok) => {
+    const changes = { [bulkField]: bulkField === "dueDate" ? (bulkValue || null) : bulkValue };
+    void execute(() => api.bulkUpdateWorkItems({ items, changes })).then((ok) => {
       if (!ok) return;
       setSelectedWorkItemIds([]);
       setNonce((value) => value + 1);
@@ -956,12 +967,38 @@ export function PlanningProjectsPanel({ onChanged = () => {} }: { onChanged?: ()
               <div className="space-y-2">
                 <div className="flex flex-wrap items-center gap-2">
                   <span className="text-xs text-muted-foreground">{t("planningProjects.selectedCount", { count: selectedWorkItemIds.length })}</span>
-                  <Select value={bulkStatus} onChange={(event) => setBulkStatus(event.target.value as LocalWorkItem["status"])} className="h-8 w-auto text-xs">
-                    {(["backlog", "ready", "in_progress", "review", "blocked", "done"] as const).map((value) => (
-                      <option key={value} value={value}>{t(`tasks.localStatus.${value}`)}</option>
-                    ))}
+                  <Select value={bulkField} aria-label={t("planningBulk.field")}
+                    onChange={(event) => {
+                      const field = event.target.value as typeof bulkField;
+                      setBulkField(field);
+                      setBulkValue(field === "status" ? "ready" : field === "priority" ? "p2" : "");
+                    }} className="h-8 w-auto text-xs">
+                    <option value="status">{t("planningBulk.status")}</option>
+                    <option value="priority">{t("planningBulk.priority")}</option>
+                    <option value="milestone">{t("planningBulk.milestone")}</option>
+                    <option value="dueDate">{t("planningBulk.dueDate")}</option>
+                    <option value="remove">{t("planningBulk.remove")}</option>
                   </Select>
-                  <Button size="sm" disabled={pending || selectedWorkItemIds.length === 0} onClick={applyBulkStatus}>{t("planningProjects.applyBulk")}</Button>
+                  {bulkField === "status" ? (
+                    <Select value={bulkValue} aria-label={t("planningBulk.value")} onChange={(event) => setBulkValue(event.target.value)} className="h-8 w-auto text-xs">
+                      {(["backlog", "ready", "in_progress", "review", "blocked", "done"] as const).map((value) => (
+                        <option key={value} value={value}>{t(`tasks.localStatus.${value}`)}</option>
+                      ))}
+                    </Select>
+                  ) : bulkField === "priority" ? (
+                    <Select value={bulkValue} aria-label={t("planningBulk.value")} onChange={(event) => setBulkValue(event.target.value)} className="h-8 w-auto text-xs">
+                      {(["p0", "p1", "p2", "p3"] as const).map((value) => <option key={value} value={value}>{value.toUpperCase()}</option>)}
+                    </Select>
+                  ) : bulkField === "milestone" ? (
+                    <Input value={bulkValue} aria-label={t("planningBulk.value")} onChange={(event) => setBulkValue(event.target.value)}
+                      placeholder={t("planningBulk.milestone")} className="h-8 w-auto text-xs" />
+                  ) : bulkField === "dueDate" ? (
+                    <Input type="date" value={bulkValue} aria-label={t("planningBulk.value")} onChange={(event) => setBulkValue(event.target.value)}
+                      className="h-8 w-auto text-xs" />
+                  ) : null}
+                  <Button size="sm" disabled={pending || selectedWorkItemIds.length === 0
+                    || (bulkField !== "remove" && bulkField !== "dueDate" && !bulkValue.trim())}
+                    onClick={applyBulkUpdate}>{t("planningProjects.applyBulk")}</Button>
                 </div>
                 <div className="grid max-h-96 grid-cols-2 gap-2 overflow-auto lg:grid-cols-3">
                   {(["backlog", "ready", "in_progress", "review", "blocked", "done"] as const).map((status) => (

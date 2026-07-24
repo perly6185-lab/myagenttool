@@ -171,6 +171,7 @@ describe("TaskView local work items", () => {
     mocks.getPlanningProject.mockResolvedValue({ project: { ...project, items: [{ workItem: item }] } });
     mocks.updateWorkItem.mockResolvedValue({ workItem: { ...item, status: "ready", revision: 2 } });
     mocks.bulkUpdateWorkItems.mockResolvedValue({ workItems: [{ ...item, status: "ready", revision: 2 }], count: 1 });
+    mocks.updatePlanningProjectItems.mockResolvedValue({ project });
     render(<TaskView />);
     fireEvent.click(await screen.findByRole("button", { name: /Planning projects/i }));
     fireEvent.click(await screen.findByRole("button", { name: "Board" }));
@@ -186,6 +187,18 @@ describe("TaskView local work items", () => {
       items: [{ id: "lwi_1", expectedRevision: 1 }],
       changes: { status: "ready" },
     }));
+    fireEvent.click(screen.getByLabelText("Select LOCAL-1"));
+    fireEvent.change(screen.getByLabelText("Bulk field"), { target: { value: "priority" } });
+    fireEvent.change(screen.getByLabelText("Bulk value"), { target: { value: "p1" } });
+    fireEvent.click(screen.getByRole("button", { name: "Apply status" }));
+    await waitFor(() => expect(mocks.bulkUpdateWorkItems).toHaveBeenLastCalledWith({
+      items: [{ id: "lwi_1", expectedRevision: 1 }],
+      changes: { priority: "p1" },
+    }));
+    fireEvent.click(screen.getByLabelText("Select LOCAL-1"));
+    fireEvent.change(screen.getByLabelText("Bulk field"), { target: { value: "remove" } });
+    fireEvent.click(screen.getByRole("button", { name: "Apply status" }));
+    await waitFor(() => expect(mocks.updatePlanningProjectItems).toHaveBeenCalledWith("ppj_1", [], ["lwi_1"]));
   });
 
   it("reorders members inside a planning project", async () => {
