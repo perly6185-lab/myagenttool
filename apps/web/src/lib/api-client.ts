@@ -932,6 +932,8 @@ export const api = {
     request("PUT", `/api/planning-projects/${encodeURIComponent(planningProjectId)}/items`, { expectedRevision, workItemIds }),
   updatePlanningProjectItems: (planningProjectId: string, addWorkItemIds: string[], removeWorkItemIds: string[]) =>
     request("PATCH", `/api/planning-projects/${encodeURIComponent(planningProjectId)}/items`, { addWorkItemIds, removeWorkItemIds }),
+  executePlanningRecommendedAction: (planningProjectId: string, code: string, payload: Record<string, unknown>) =>
+    request("POST", `/api/planning-projects/${encodeURIComponent(planningProjectId)}/recommended-actions/${encodeURIComponent(code)}/execute`, payload),
   // #1143 issue claims: take/hand back an issue's develop lease. A foreign
   // active develop claim answers 409 with the blocking claim.
   claimIssue: (projectId: string, payload: { issueNumber: number; mode?: "develop" | "review" }) =>

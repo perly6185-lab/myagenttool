@@ -28,6 +28,7 @@ const mocks = vi.hoisted(() => ({
   removePlanningProjectItem: vi.fn(),
   reorderPlanningProjectItems: vi.fn(),
   updatePlanningProjectItems: vi.fn(),
+  executePlanningRecommendedAction: vi.fn(),
   execute: vi.fn(async (fn: () => Promise<unknown>) => { await fn(); return true; }),
 }));
 
@@ -70,6 +71,7 @@ vi.mock("@/data/use-console-actions", () => ({
     removePlanningProjectItem: mocks.removePlanningProjectItem,
     reorderPlanningProjectItems: mocks.reorderPlanningProjectItems,
     updatePlanningProjectItems: mocks.updatePlanningProjectItems,
+    executePlanningRecommendedAction: mocks.executePlanningRecommendedAction,
   },
 }));
 vi.mock("@/store/ui-store", () => ({
@@ -226,7 +228,10 @@ describe("TaskView local work items", () => {
       checkIns: [{ id: "ppc_1", summary: "Scope approved", authorId: "usr_release", createdAt: "2026-07-22T00:00:00.000Z" }],
       pinned: true, updatedAt: "2026-07-24T00:00:00.000Z",
       watching: true,
-      recommendedActions: [{ code: "recover_schedule", count: 3 }],
+      recommendedActions: [
+        { code: "recover_schedule", count: 3, risk: "medium", approvalRequired: false },
+        { code: "refresh_status", count: 15, risk: "low", approvalRequired: false },
+      ],
       itemCount: 2, openItemCount: 2, completedItemCount: 0,
       statusCounts: { backlog: 2, ready: 0, in_progress: 0, review: 0, blocked: 0, done: 0 },
       priorityCounts: { p0: 0, p1: 0, p2: 2, p3: 0 },
@@ -268,6 +273,11 @@ describe("TaskView local work items", () => {
     expect(screen.getByTitle("Unwatch project")).toBeTruthy();
     expect(screen.getByRole("option", { name: "Watched projects" })).toBeTruthy();
     expect(screen.getByText("Recover schedule (3 days)")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Automate" }));
+    await waitFor(() => expect(mocks.executePlanningRecommendedAction).toHaveBeenCalledWith(
+      "ppj_1", "refresh_status",
+      { expectedRevision: 2, idempotencyKey: "ppj_1:refresh_status:2", confirmed: true },
+    ));
     expect(screen.getByText("Create project")).toBeTruthy();
     expect(screen.getByRole("option", { name: "Target date" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "Clear portfolio filters" })).toBeTruthy();

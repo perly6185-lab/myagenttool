@@ -107,7 +107,7 @@ type PlanningProject = {
   activeRunCount?: number;
   failedRunCount?: number;
   riskScore?: number;
-  recommendedActions?: { code: string; count: number }[];
+  recommendedActions?: { code: string; count: number; risk: "low" | "medium" | "high"; approvalRequired: boolean }[];
   plannedPoints?: number;
   capacityPoints?: number;
   overCapacity?: boolean;
@@ -770,6 +770,19 @@ export function PlanningProjectsPanel({ onChanged = () => {} }: { onChanged?: ()
       onChanged();
     });
   };
+  const executeRecommendation = (code: string) => {
+    if (!selected) return;
+    void execute(() => api.executePlanningRecommendedAction(selected.id, code, {
+      expectedRevision: selected.revision,
+      idempotencyKey: `${selected.id}:${code}:${selected.revision}`,
+      confirmed: true,
+    })).then((ok) => {
+      if (ok) {
+        setNonce((value) => value + 1);
+        onChanged();
+      }
+    });
+  };
   const toggleItem = (workItem: LocalWorkItem) => {
     if (!selected) return;
     const included = selected.items?.some((row) => row.workItem.id === workItem.id);
@@ -1219,9 +1232,17 @@ export function PlanningProjectsPanel({ onChanged = () => {} }: { onChanged?: ()
               <h4 className="mb-2 text-sm font-semibold">{t("planningDecision.nextActions")}</h4>
               <div className="flex flex-wrap gap-2">
                 {(selected.recommendedActions ?? []).map((action) => (
-                  <Badge key={action.code} tone={action.code.includes("failed") || action.code.includes("blocked") ? "danger" : "neutral"}>
-                    {t(`planningDecision.actions.${action.code}` as never, { count: action.count })}
-                  </Badge>
+                  <div key={action.code} className="flex items-center gap-1 rounded border border-border p-1">
+                    <Badge tone={action.risk === "high" ? "danger" : action.risk === "medium" ? "warning" : "neutral"}>
+                      {t(`planningDecision.actions.${action.code}` as never, { count: action.count })}
+                    </Badge>
+                    <span className="text-[10px] uppercase text-muted-foreground">{action.risk}</span>
+                    {action.code === "refresh_status" ? (
+                      <Button size="sm" variant="secondary" disabled={pending} onClick={() => executeRecommendation(action.code)}>
+                        {t("tasks.automate")}
+                      </Button>
+                    ) : null}
+                  </div>
                 ))}
                 {!selected.recommendedActions?.length ? <span className="text-xs text-muted-foreground">{t("planningDecision.noActions")}</span> : null}
               </div>

@@ -10,6 +10,15 @@ const WORK_ITEM_STATUSES = new Set(["", "backlog", "ready", "in_progress", "revi
 const WORK_ITEM_PRIORITIES = new Set(["", "p0", "p1", "p2", "p3"]);
 const WORK_ITEM_TYPES = new Set(["", "task", "bug", "feature", "initiative"]);
 const PROJECT_STATUSES = new Set(["planned", "active", "on_hold", "completed"]);
+const RECOMMENDED_ACTION_POLICY = {
+  recover_failed_runs: { risk: "high", approvalRequired: true },
+  resolve_blocked_items: { risk: "high", approvalRequired: true },
+  recover_schedule: { risk: "medium", approvalRequired: false },
+  rebalance_capacity: { risk: "medium", approvalRequired: false },
+  refresh_status: { risk: "low", approvalRequired: false },
+  assign_owner: { risk: "medium", approvalRequired: false },
+  set_target_date: { risk: "medium", approvalRequired: false },
+};
 
 function validDateOnly(value) {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
@@ -94,6 +103,7 @@ function normalizeAutomationRules(value, nextId) {
 
 export function createPlanningProjectService({
   state, now, nextId, appendEvent = () => {}, persistStateSoon = () => {}, store,
+  validateApprovalToken = () => ({ approved: false, reason: "approval_unavailable" }),
 }) {
   const runTx = makeRunTx({ store, persistStateSoon });
   const teamOfActor = (actor) => actor?.teamId ?? LOCAL_TEAM_ID;
@@ -171,7 +181,7 @@ export function createPlanningProjectService({
     const rawRiskScore = blockedItemCount * 3 + overdueItemCount * 2 + failedRunCount * 3
       + (overCapacity ? 3 : 0) + (projectOverdue ? 3 : 0) + (unowned ? 1 : 0) + (staleStatus ? 2 : 0);
     const riskScore = project.status === "completed" ? 0 : rawRiskScore;
-    const recommendedActions = project.status === "completed" ? [] : [
+    const recommendedActions = (project.status === "completed" ? [] : [
       failedRunCount ? { code: "recover_failed_runs", count: failedRunCount } : null,
       blockedItemCount ? { code: "resolve_blocked_items", count: blockedItemCount } : null,
       projectOverdue ? { code: "recover_schedule", count: Math.abs(daysRemaining ?? 0) } : null,
@@ -179,7 +189,7 @@ export function createPlanningProjectService({
       staleStatus ? { code: "refresh_status", count: daysSinceStatusUpdate ?? 0 } : null,
       unowned ? { code: "assign_owner", count: 1 } : null,
       !project.targetDate && project.status === "active" ? { code: "set_target_date", count: 1 } : null,
-    ].filter(Boolean);
+    ].filter(Boolean)).map((action) => ({ ...action, ...RECOMMENDED_ACTION_POLICY[action.code] }));
     return {
       ...publicProject,
       itemCount: memberships.length,
@@ -547,8 +557,79 @@ export function createPlanningProjectService({
     return { ok: true, status: 200, body: { project: projectView(project, actor, { includeItems: true }) } };
   }
 
+  function executeRecommendedAction({
+    planningProjectId, expectedRevision, code, idempotencyKey, confirmed = false,
+    approvalToken = null, parameters = {},
+  } = {}, actor = null) {
+    const project = findOwn(planningProjectId, actor);
+    if (!project) return notFound();
+    if (expectedRevision !== project.revision) {
+      return { ok: false, status: 409, body: { error: "planning_project_revision_conflict", currentRevision: project.revision } };
+    }
+    const key = String(idempotencyKey ?? "").trim();
+    if (!key || key.length > 200) return { ok: false, status: 400, body: { error: "invalid_recommended_action_idempotency_key" } };
+    const replay = (project.recommendedActionExecutions ?? []).find((execution) => execution.idempotencyKey === key);
+    if (replay) return { ok: true, status: 200, body: { execution: replay, project: projectView(project, actor), replayed: true } };
+    const policy = RECOMMENDED_ACTION_POLICY[code];
+    const recommendation = projectView(project, actor).recommendedActions.find((action) => action.code === code);
+    if (!policy || !recommendation) return { ok: false, status: 409, body: { error: "recommended_action_no_longer_applicable" } };
+    if (!confirmed) return { ok: false, status: 400, body: { error: "recommended_action_confirmation_required", risk: policy.risk } };
+    let approval = null;
+    if (policy.approvalRequired) {
+      approval = validateApprovalToken(approvalToken, {
+        action: `planning:${code}`, targetId: project.id, actor, allowLegacy: false,
+      });
+      if (!approval.approved) {
+        return { ok: false, status: 403, body: { error: "recommended_action_approval_required", reason: approval.reason } };
+      }
+    }
+    const changes = {};
+    if (code === "refresh_status") changes.statusUpdatedAt = now();
+    if (code === "assign_owner") {
+      const ownerId = normalizeProjectOwner(parameters.ownerId);
+      if (!ownerId) return { ok: false, status: 400, body: { error: "recommended_action_owner_required" } };
+      changes.ownerId = ownerId;
+    }
+    if (["set_target_date", "recover_schedule"].includes(code)) {
+      const targetDate = normalizeProjectDate(parameters.targetDate);
+      if (!targetDate) return { ok: false, status: 400, body: { error: "recommended_action_target_date_required" } };
+      changes.targetDate = targetDate;
+    }
+    if (code === "rebalance_capacity") {
+      const capacityPoints = Number(parameters.capacityPoints);
+      if (!Number.isInteger(capacityPoints) || capacityPoints < 1 || capacityPoints > 1_000_000) {
+        return { ok: false, status: 400, body: { error: "recommended_action_capacity_required" } };
+      }
+      changes.capacityPoints = capacityPoints;
+    }
+    const execution = {
+      id: nextId("pra"), code, risk: policy.risk, approvalRequired: policy.approvalRequired,
+      approvalGrantId: approval?.grantId ?? null, idempotencyKey: key,
+      requestedBy: userOfActor(actor), requestedAt: now(),
+      status: Object.keys(changes).length ? "completed" : "queued",
+      parameters: structuredClone(parameters),
+      result: Object.keys(changes).length ? { changes } : { queuedFor: code },
+    };
+    runTx(() => {
+      Object.assign(project, changes);
+      (project.recommendedActionExecutions ??= []).unshift(execution);
+      project.revision += 1;
+      project.updatedAt = now();
+      project.lastModifiedBy = userOfActor(actor);
+      recordActivity(project, actor, "recommended_action_executed", {
+        executionId: execution.id, code, status: execution.status, risk: policy.risk,
+      });
+      appendEvent({
+        invocationId: null, type: "planning_recommended_action_executed", level: "info",
+        message: `${code} ${execution.status} for ${project.name}.`,
+        data: { planningProjectId: project.id, executionId: execution.id, code, actorTeamId: teamOfActor(actor) },
+      });
+    });
+    return { ok: true, status: 201, body: { execution, project: projectView(project, actor, { includeItems: true }) } };
+  }
+
   return {
     listProjects, getProject, createProject, updateProject, setArchived,
-    addItem, removeItem, reorderItems, updateItems,
+    addItem, removeItem, reorderItems, updateItems, executeRecommendedAction,
   };
 }

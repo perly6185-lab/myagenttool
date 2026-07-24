@@ -366,7 +366,7 @@ export function createServerRuntimeServices({
     state, now, nextId, appendEvent, persistStateSoon, store,
   });
   const planningProjectService = createPlanningProjectService({
-    state, now, nextId, appendEvent, persistStateSoon, store,
+    state, now, nextId, appendEvent, persistStateSoon, store, validateApprovalToken,
   });
 
   const {
@@ -3345,6 +3345,7 @@ export function createServerRuntimeServices({
     removePlanningProjectItem: planningProjectService.removeItem,
     reorderPlanningProjectItems: planningProjectService.reorderItems,
     updatePlanningProjectItems: planningProjectService.updateItems,
+    executePlanningRecommendedAction: planningProjectService.executeRecommendedAction,
     routeChannelTask,
     dismissChannelTask,
     retryChannelTask,

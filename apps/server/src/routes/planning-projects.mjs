@@ -2,6 +2,7 @@ export async function handlePlanningProjectRoutes({
   req, res, url, sendJson, readJson, actor,
   listProjects, getProject, createProject, updateProject, setArchived,
   addItem, removeItem, reorderItems, updateItems,
+  executeRecommendedAction,
 }) {
   if (!url.pathname.startsWith("/api/planning-projects")) return false;
   if (url.pathname === "/api/planning-projects") {
@@ -38,6 +39,16 @@ export async function handlePlanningProjectRoutes({
       planningProjectId: decodeURIComponent(transitionMatch[1]),
       expectedRevision: body?.expectedRevision,
       archived: transitionMatch[2] === "archive",
+    }, actor);
+    sendJson(res, result.status, result.body);
+    return true;
+  }
+  const actionMatch = url.pathname.match(/^\/api\/planning-projects\/([^/]+)\/recommended-actions\/([^/]+)\/execute$/);
+  if (actionMatch && req.method === "POST") {
+    const result = executeRecommendedAction({
+      planningProjectId: decodeURIComponent(actionMatch[1]),
+      code: decodeURIComponent(actionMatch[2]),
+      ...(await readJson(req)),
     }, actor);
     sendJson(res, result.status, result.body);
     return true;

@@ -241,6 +241,7 @@ export function createHttpServer({
   removePlanningProjectItem,
   reorderPlanningProjectItems,
   updatePlanningProjectItems,
+  executePlanningRecommendedAction,
   registerChannel,
   listChannels,
   enableChannel,
@@ -411,6 +412,7 @@ export function createHttpServer({
         removeItem: removePlanningProjectItem,
         reorderItems: reorderPlanningProjectItems,
         updateItems: updatePlanningProjectItems,
+        executeRecommendedAction: executePlanningRecommendedAction,
       })) {
         return;
       }

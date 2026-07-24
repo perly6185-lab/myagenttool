@@ -377,3 +377,50 @@ test("project watches are actor-specific and revision gated", () => {
   assert.equal(unwatched.watching, false);
   assert.equal(service.getProject({ planningProjectId: project.id }, ACTOR_C).body.project.watching, true);
 });
+
+test("recommended actions are confirmed, idempotent, and auditable", () => {
+  const { service } = harness();
+  let project = service.createProject({ name: "Unowned" }, ACTOR_A).body.project;
+  project = service.updateProject({
+    planningProjectId: project.id, expectedRevision: 1, ownerId: null,
+  }, ACTOR_A).body.project;
+  const recommendation = project.recommendedActions.find((action) => action.code === "assign_owner");
+  assert.equal(recommendation.risk, "medium");
+  assert.equal(recommendation.approvalRequired, false);
+  assert.equal(service.executeRecommendedAction({
+    planningProjectId: project.id, expectedRevision: 2, code: "assign_owner",
+    idempotencyKey: "owner-1", parameters: { ownerId: "usr_a" },
+  }, ACTOR_A).body.error, "recommended_action_confirmation_required");
+  const executed = service.executeRecommendedAction({
+    planningProjectId: project.id, expectedRevision: 2, code: "assign_owner",
+    idempotencyKey: "owner-1", confirmed: true, parameters: { ownerId: "usr_a" },
+  }, ACTOR_A);
+  assert.equal(executed.status, 201);
+  assert.equal(executed.body.execution.status, "completed");
+  assert.equal(executed.body.project.ownerId, "usr_a");
+  const replay = service.executeRecommendedAction({
+    planningProjectId: project.id, expectedRevision: 3, code: "assign_owner",
+    idempotencyKey: "owner-1", confirmed: true, parameters: { ownerId: "usr_a" },
+  }, ACTOR_A);
+  assert.equal(replay.body.replayed, true);
+});
+
+test("high-risk recommended actions require a scoped approval grant", () => {
+  const { service, state } = harness();
+  state.workItems.push({
+    id: "wi_dependency", localRef: "LOCAL-3", ownerTeamId: "team_a",
+    title: "Dependency", status: "backlog", priority: "p2", state: "open",
+  });
+  state.workItems[0].dependencyIds = ["wi_dependency"];
+  const project = service.createProject({ name: "Blocked work" }, ACTOR_A).body.project;
+  service.addItem({ planningProjectId: project.id, workItemId: "wi_a" }, ACTOR_A);
+  const current = service.getProject({ planningProjectId: project.id }, ACTOR_A).body.project;
+  const action = current.recommendedActions.find((candidate) => candidate.code === "resolve_blocked_items");
+  assert.equal(action.risk, "high");
+  const denied = service.executeRecommendedAction({
+    planningProjectId: project.id, expectedRevision: current.revision, code: action.code,
+    idempotencyKey: "blocked-1", confirmed: true,
+  }, ACTOR_A);
+  assert.equal(denied.status, 403);
+  assert.equal(denied.body.error, "recommended_action_approval_required");
+});
