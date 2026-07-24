@@ -851,7 +851,10 @@ export const api = {
     const params = new URLSearchParams(Object.entries(query).filter(([, value]) => Boolean(value)) as [string, string][]);
     return request("GET", `/api/work-items${params.size ? `?${params}` : ""}`);
   },
-  listWorkItemAttention: (query: { projectId?: string; kind?: string; severity?: string; sla?: string } = {}) => {
+  listWorkItemAttention: (query: {
+    projectId?: string; kind?: string; severity?: string; sla?: string;
+    handler?: "mine" | "unclaimed"; includeResolved?: "1";
+  } = {}) => {
     const params = new URLSearchParams(Object.entries(query).filter(([, value]) => Boolean(value)) as [string, string][]);
     return request("GET", `/api/work-items/attention${params.size ? `?${params}` : ""}`);
   },
@@ -948,8 +951,12 @@ export const api = {
     request("PATCH", `/api/planning-projects/${encodeURIComponent(planningProjectId)}/items`, { addWorkItemIds, removeWorkItemIds }),
   executePlanningRecommendedAction: (planningProjectId: string, code: string, payload: Record<string, unknown>) =>
     request("POST", `/api/planning-projects/${encodeURIComponent(planningProjectId)}/recommended-actions/${encodeURIComponent(code)}/execute`, payload),
-  decidePlanningRecommendedAction: (planningProjectId: string, approvalRequestId: string, decision: "approve" | "deny") =>
-    request("POST", `/api/planning-projects/${encodeURIComponent(planningProjectId)}/recommended-action-approvals/${encodeURIComponent(approvalRequestId)}/${decision}`),
+  decidePlanningRecommendedAction: (
+    planningProjectId: string,
+    approvalRequestId: string,
+    decision: "approve" | "deny",
+    payload: { confirmed: boolean; note: string },
+  ) => request("POST", `/api/planning-projects/${encodeURIComponent(planningProjectId)}/recommended-action-approvals/${encodeURIComponent(approvalRequestId)}/${decision}`, payload),
   // #1143 issue claims: take/hand back an issue's develop lease. A foreign
   // active develop claim answers 409 with the blocking claim.
   claimIssue: (projectId: string, payload: { issueNumber: number; mode?: "develop" | "review" }) =>

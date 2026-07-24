@@ -56,10 +56,13 @@ export async function handlePlanningProjectRoutes({
   }
   const decisionMatch = url.pathname.match(/^\/api\/planning-projects\/([^/]+)\/recommended-action-approvals\/([^/]+)\/(approve|deny)$/);
   if (decisionMatch && req.method === "POST") {
+    const body = await readJson(req);
     const result = decideRecommendedAction({
       planningProjectId: decodeURIComponent(decisionMatch[1]),
       approvalRequestId: decodeURIComponent(decisionMatch[2]),
       decision: decisionMatch[3] === "approve" ? "approved" : "denied",
+      confirmed: body?.confirmed,
+      note: body?.note,
     }, actor);
     sendJson(res, result.status, result.body);
     return true;

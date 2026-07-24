@@ -233,6 +233,8 @@ test("human attention queue aggregates conflicts, approvals, and failed evidence
   }, ACTOR_A);
   assert.equal(claimed.body.updated[0].handling.actorId, "usr_a");
   assert.equal(claimed.body.updated[0].handling.expiresAt, "2026-07-24T00:10:00.000Z");
+  assert.equal(service.listAttention({ handler: "mine" }, ACTOR_A).body.items.some((row) => row.id === attentionId), true);
+  assert.equal(service.listAttention({ handler: "unclaimed" }, ACTOR_A).body.items.some((row) => row.id === attentionId), false);
   assert.equal(service.updateAttention({
     attentionIds: [attentionId], action: "claim",
   }, ACTOR_C).status, 409);

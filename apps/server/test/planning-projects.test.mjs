@@ -423,10 +423,20 @@ test("high-risk recommended actions require a scoped approval grant", () => {
   }, ACTOR_A);
   assert.equal(pending.status, 202);
   assert.equal(pending.body.approvalRequest.status, "pending");
+  assert.equal(pending.body.approvalRequest.context.risk, "high");
+  assert.equal(pending.body.approvalRequest.context.affectedCount, 1);
+  assert.equal(service.decideRecommendedAction({
+    planningProjectId: project.id,
+    approvalRequestId: pending.body.approvalRequest.id,
+    decision: "approved",
+    confirmed: true,
+  }, ACTOR_A).body.error, "recommended_action_decision_note_required");
   const resumed = service.decideRecommendedAction({
     planningProjectId: project.id,
     approvalRequestId: pending.body.approvalRequest.id,
     decision: "approved",
+    confirmed: true,
+    note: "Evidence reviewed; recover the blocked dependency.",
   }, ACTOR_A);
   assert.equal(resumed.body.execution.status, "queued");
   assert.equal(resumed.body.execution.approvalRequestId, pending.body.approvalRequest.id);

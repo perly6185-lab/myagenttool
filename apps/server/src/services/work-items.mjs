@@ -280,6 +280,7 @@ export function createWorkItemService({
     const kind = String(query.kind ?? "");
     const severity = String(query.severity ?? "");
     const sla = String(query.sla ?? "");
+    const handler = String(query.handler ?? "");
     const items = (state.workItems ?? []).filter((item) =>
       item.ownerTeamId === actorTeam(actor) && (!projectId || item.projectId === projectId));
     const rows = [];
@@ -324,7 +325,11 @@ export function createWorkItemService({
           planningProjectId: project.id,
           title: project.name,
           createdAt: request.requestedAt,
-          details: { approvalRequestId: request.id, code: request.code },
+          details: {
+            approvalRequestId: request.id, code: request.code,
+            parameters: request.parameters, context: request.context,
+            requestedBy: request.requestedBy,
+          },
         });
       }
       for (const execution of (project.recommendedActionExecutions ?? []).filter((candidate) => candidate.status === "queued")) {
@@ -360,6 +365,9 @@ export function createWorkItemService({
     }).filter((row) => !kind || row.kind === kind)
       .filter((row) => !severity || row.severity === severity)
       .filter((row) => !sla || row.slaStatus === sla)
+      .filter((row) => !handler
+        || (handler === "mine" && row.handling?.actorId === actorUser(actor))
+        || (handler === "unclaimed" && !row.handling))
       .filter((row) => query.includeResolved === "1" || !row.resolution);
     const rank = { high: 3, medium: 2, low: 1 };
     decorated.sort((a, b) => rank[b.severity] - rank[a.severity] || String(a.dueAt).localeCompare(String(b.dueAt)));

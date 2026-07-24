@@ -277,6 +277,9 @@ export function TaskView() {
   const [attentionItems, setAttentionItems] = useState<WorkItemAttention[]>([]);
   const [attentionKind, setAttentionKind] = useState("");
   const [attentionSla, setAttentionSla] = useState("");
+  const [attentionHandler, setAttentionHandler] = useState("");
+  const [showResolvedAttention, setShowResolvedAttention] = useState(false);
+  const [selectedAttentionIds, setSelectedAttentionIds] = useState<Set<string>>(new Set());
   const [planningProjects, setPlanningProjects] = useState<PlanningProject[]>([]);
   const [planningProjectId, setPlanningProjectId] = useState("all");
   const [createLocalOpen, setCreateLocalOpen] = useState(false);
@@ -287,9 +290,24 @@ export function TaskView() {
   const [nonce, setNonce] = useState(0);
 
   const targetProjects = projectId === "all" ? repoProjects : repoProjects.filter((p) => p.id === projectId);
-  const updateAttention = (attentionId: string, action: "claim" | "resolve") => {
+  const updateAttention = (attentionId: string, action: "claim" | "resolve" | "reopen") => {
     void execute(() => api.updateWorkItemAttention([attentionId], action)).then((ok) => {
       if (ok) setNonce((value) => value + 1);
+    });
+  };
+  const updateSelectedAttention = (action: "claim" | "resolve" | "reopen") => {
+    const ids = [...selectedAttentionIds];
+    if (!ids.length) return;
+    void execute(() => api.updateWorkItemAttention(
+      ids,
+      action,
+      "",
+      { idempotencyKey: `${action}:${Date.now()}` },
+    )).then((ok) => {
+      if (ok) {
+        setSelectedAttentionIds(new Set());
+        setNonce((value) => value + 1);
+      }
     });
   };
   const decideRecommendedAction = (attention: WorkItemAttention, decision: "approve" | "deny") => {
@@ -297,10 +315,14 @@ export function TaskView() {
       ? attention.details.approvalRequestId
       : "";
     if (!attention.planningProjectId || !approvalRequestId) return;
+    if (!window.confirm(`${decision === "approve" ? t("approvals.approve") : t("approvals.deny")}?`)) return;
+    const note = window.prompt(t("taskLocal.commentPlaceholder"))?.trim() ?? "";
+    if (!note) return;
     void execute(() => api.decidePlanningRecommendedAction(
       attention.planningProjectId!,
       approvalRequestId,
       decision,
+      { confirmed: true, note },
     )).then((ok) => {
       if (ok) setNonce((value) => value + 1);
     });
@@ -329,10 +351,17 @@ export function TaskView() {
       projectId: projectId === "all" ? undefined : projectId,
       kind: attentionKind || undefined,
       sla: attentionSla || undefined,
+      handler: attentionHandler === "mine" || attentionHandler === "unclaimed" ? attentionHandler : undefined,
+      includeResolved: showResolvedAttention ? "1" : undefined,
     }) as Promise<{ items: WorkItemAttention[] }>)
       .then((result) => setAttentionItems(result.items))
       .catch(() => setAttentionItems([]));
-  }, [projectId, attentionKind, attentionSla, nonce]);
+  }, [projectId, attentionKind, attentionSla, attentionHandler, showResolvedAttention, nonce]);
+
+  useEffect(() => {
+    setSelectedAttentionIds((current) => new Set([...current].filter((id) =>
+      attentionItems.some((item) => item.id === id))));
+  }, [attentionItems]);
 
   useEffect(() => {
     void (api.listPlanningProjects() as Promise<{ projects: PlanningProject[] }>)
@@ -464,11 +493,18 @@ export function TaskView() {
 
         {tab === "local" ? (
           <>
-            {attentionItems.length ? (
-              <section className="space-y-2 rounded-lg border border-warning/40 bg-warning/5 p-3">
+            <section className="space-y-2 rounded-lg border border-warning/40 bg-warning/5 p-3">
                 <div className="flex items-center justify-between">
                   <h3 className="text-sm font-semibold">{t("approvals.pending", { count: attentionItems.length })}</h3>
-                  <div className="flex items-center gap-2">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <label className="flex items-center gap-1 text-xs">
+                      <input type="checkbox"
+                        checked={attentionItems.length > 0 && attentionItems.every((item) => selectedAttentionIds.has(item.id))}
+                        onChange={(event) => setSelectedAttentionIds(event.target.checked
+                          ? new Set(attentionItems.map((item) => item.id))
+                          : new Set())} />
+                      {t("evidence.show")}
+                    </label>
                     <Select value={attentionKind} onChange={(event) => setAttentionKind(event.target.value)} className="h-7 text-xs">
                       <option value="">{t("evidence.show")}</option>
                       <option value="github_conflict">{t("taskLocal.github.conflict")}</option>
@@ -482,13 +518,46 @@ export function TaskView() {
                       <option value="breached">{t("planningSchedule.overdue")}</option>
                       <option value="within_sla">{t("planningExecution.healthy")}</option>
                     </Select>
+                    <Select value={attentionHandler} onChange={(event) => setAttentionHandler(event.target.value)} className="h-7 text-xs">
+                      <option value="">{t("planningFilters.allStatuses")}</option>
+                      <option value="mine">{t("approvals.handling")}</option>
+                      <option value="unclaimed">{t("taskLocal.executionState.unclaimed")}</option>
+                    </Select>
+                    <label className="flex items-center gap-1 text-xs">
+                      <input type="checkbox" checked={showResolvedAttention}
+                        onChange={(event) => setShowResolvedAttention(event.target.checked)} />
+                      {t("tasks.localStatus.done")}
+                    </label>
                     <Badge tone="warning">{t("evidenceDetails.highCount", { count: attentionItems.filter((item) => item.severity === "high").length })}</Badge>
                   </div>
                 </div>
+                {selectedAttentionIds.size ? (
+                  <div className="flex items-center gap-3 rounded border border-border bg-background px-2 py-1 text-xs">
+                    <Badge tone="neutral">{selectedAttentionIds.size}</Badge>
+                    <button type="button" className="text-primary hover:underline" onClick={() => updateSelectedAttention("claim")}>
+                      {t("approvals.handle")}
+                    </button>
+                    <button type="button" className="text-primary hover:underline" onClick={() => updateSelectedAttention("resolve")}>
+                      {t("tasks.localStatus.done")}
+                    </button>
+                    {showResolvedAttention ? (
+                      <button type="button" className="text-primary hover:underline" onClick={() => updateSelectedAttention("reopen")}>
+                        {t("taskLocal.reopen")}
+                      </button>
+                    ) : null}
+                  </div>
+                ) : null}
                 <div className="grid gap-2 lg:grid-cols-2">
                   {attentionItems.map((attention) => (
                     <div key={attention.id}
                       className="flex items-center gap-2 rounded border border-border bg-background p-2 text-left text-xs">
+                      <input type="checkbox" checked={selectedAttentionIds.has(attention.id)}
+                        onChange={(event) => setSelectedAttentionIds((current) => {
+                          const next = new Set(current);
+                          if (event.target.checked) next.add(attention.id);
+                          else next.delete(attention.id);
+                          return next;
+                        })} />
                       <Badge tone={attention.severity === "high" ? "danger" : attention.severity === "medium" ? "warning" : "neutral"}>
                         {attention.kind === "github_conflict" ? t("taskLocal.github.conflict")
                           : attention.kind === "execution_approval" ? t("approvals.kind.invocation_approval")
@@ -498,6 +567,15 @@ export function TaskView() {
                       </Badge>
                       <span className="font-mono">{attention.localRef ?? "—"}</span>
                       <span className="truncate">{attention.title}</span>
+                      {attention.kind === "recommended_action_approval" ? (
+                        <span className="max-w-48 truncate text-muted-foreground"
+                          title={JSON.stringify({ parameters: attention.details.parameters, context: attention.details.context }, null, 2)}>
+                          {String(attention.details.code ?? "")}
+                          {typeof (attention.details.context as { affectedCount?: unknown } | undefined)?.affectedCount === "number"
+                            ? ` · ${(attention.details.context as { affectedCount: number }).affectedCount}`
+                            : ""}
+                        </span>
+                      ) : null}
                       <span className={attention.slaStatus === "breached" ? "text-destructive" : "text-muted-foreground"}>
                         {new Date(attention.dueAt).toLocaleString()}
                       </span>
@@ -519,14 +597,23 @@ export function TaskView() {
                       <button type="button" className="text-primary hover:underline" onClick={() => updateAttention(attention.id, "claim")}>
                         {attention.handling ? attention.handling.actorId : t("approvals.handle")}
                       </button>
-                      <button type="button" className="text-primary hover:underline" onClick={() => updateAttention(attention.id, "resolve")}>
-                        {t("tasks.localStatus.done")}
-                      </button>
+                      {attention.resolution ? (
+                        <button type="button" className="text-primary hover:underline"
+                          onClick={() => updateAttention(attention.id, "reopen")}>
+                          {t("taskLocal.reopen")}
+                        </button>
+                      ) : (
+                        <button type="button" className="text-primary hover:underline" onClick={() => updateAttention(attention.id, "resolve")}>
+                          {t("tasks.localStatus.done")}
+                        </button>
+                      )}
                     </div>
                   ))}
                 </div>
-              </section>
-            ) : null}
+                {!attentionItems.length ? (
+                  <p className="py-3 text-center text-xs text-muted-foreground">{t("approvals.empty")}</p>
+                ) : null}
+            </section>
             <LocalWorkItemTable
               items={visibleLocal}
               projects={projects}

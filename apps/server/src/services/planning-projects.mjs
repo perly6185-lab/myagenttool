@@ -586,7 +586,19 @@ export function createPlanningProjectService({
         const approvalRequest = {
           id: nextId("par"), planningProjectId: project.id, code, idempotencyKey: key,
           parameters: structuredClone(parameters), status: "pending",
+          context: {
+            risk: policy.risk,
+            reasonCode: `planning_${code}`,
+            affectedCount: recommendation.count,
+            impactScope: code === "recover_failed_runs" ? "auto_runs" : "work_items",
+            evidence: {
+              projectRiskScore: projectView(project, actor).riskScore,
+              blockedItemCount: projectView(project, actor).blockedItemCount,
+              failedRunCount: projectView(project, actor).failedRunCount,
+            },
+          },
           requestedBy: userOfActor(actor), requestedAt: now(), decidedAt: null, decidedBy: null,
+          decisionNote: null,
         };
         runTx(() => {
           (project.recommendedActionApprovalRequests ??= []).unshift(approvalRequest);
@@ -642,7 +654,9 @@ export function createPlanningProjectService({
     return { ok: true, status: 201, body: { execution, project: projectView(project, actor, { includeItems: true }) } };
   }
 
-  function decideRecommendedAction({ planningProjectId, approvalRequestId, decision } = {}, actor = null) {
+  function decideRecommendedAction({
+    planningProjectId, approvalRequestId, decision, confirmed = false, note = "",
+  } = {}, actor = null) {
     const project = findOwn(planningProjectId, actor);
     if (!project) return notFound();
     const request = (project.recommendedActionApprovalRequests ?? []).find((candidate) => candidate.id === approvalRequestId);
@@ -651,11 +665,17 @@ export function createPlanningProjectService({
     if (!["approved", "denied"].includes(decision)) {
       return { ok: false, status: 400, body: { error: "invalid_recommended_action_approval_decision" } };
     }
+    const decisionNote = String(note ?? "").trim();
+    if (!confirmed) return { ok: false, status: 400, body: { error: "recommended_action_decision_confirmation_required" } };
+    if (!decisionNote || decisionNote.length > 5_000) {
+      return { ok: false, status: 400, body: { error: "recommended_action_decision_note_required" } };
+    }
     let execution = null;
     runTx(() => {
       request.status = decision;
       request.decidedAt = now();
       request.decidedBy = userOfActor(actor);
+      request.decisionNote = decisionNote;
       if (decision === "approved") {
         execution = {
           id: nextId("pra"), code: request.code, risk: "high", approvalRequired: true,
@@ -670,6 +690,7 @@ export function createPlanningProjectService({
       recordActivity(project, actor, decision === "approved"
         ? "recommended_action_approval_resumed" : "recommended_action_approval_denied", {
         approvalRequestId: request.id, executionId: execution?.id ?? null, code: request.code,
+        decisionNote,
       });
     });
     return { ok: true, status: 200, body: { approvalRequest: request, execution, project: projectView(project, actor, { includeItems: true }) } };
