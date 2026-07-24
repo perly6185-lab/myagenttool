@@ -221,6 +221,16 @@ export interface PendingDecision {
   /** Native section to deep-link to for the full context. */
   section: string;
   targetId?: string | null;
+  context?: {
+    command?: string | null;
+    arguments?: string[];
+    workingDirectory?: string | null;
+    pathPolicy?: string | null;
+    impactScope?: string[];
+    projectId?: string | null;
+    worktreeId?: string | null;
+    autoRunId?: string | null;
+  } | null;
   /** #1151: advisory "X is handling this" marker — display-only, never gates the decision. */
   softClaim?: { claimedBy: string | null; expiresAt: string | null };
   /** Ids the inline actions need (approvalId / autoRunId / compareRunId / requestId / invocationId …). */

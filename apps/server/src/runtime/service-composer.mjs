@@ -51,7 +51,7 @@ import { createInvocationService } from "../services/invocations.mjs";
 import { createCancellationSignal } from "../services/cancellation-signal.mjs";
 import { createM3Service } from "../services/m3.mjs";
 import { createProjectService, sameProjectPath } from "../services/projects.mjs";
-import { createAutoRunService, syncBoundWorkItemsForAutoRun } from "../services/auto-run.mjs";
+import { convergeAutoRunTerminalState, createAutoRunService } from "../services/auto-run.mjs";
 import { createDecisionSoftClaimService } from "../services/decision-soft-claims.mjs";
 import { createIssueClaimService } from "../services/issue-claims.mjs";
 import { createWorkItemService } from "../services/work-items.mjs";
@@ -69,6 +69,7 @@ import { resolveDeployCommand, deployTimeoutMs, runDeployCommand, resolveRollbac
 import { decisionConfig } from "../services/auto-run-decision.mjs";
 import { autoRunSettingsEnvOverlay } from "../services/auto-run-config.mjs";
 import { createAlertDispatcher } from "../services/auto-run-alerts.mjs";
+import { createAlertOutboxService } from "../services/alert-outbox.mjs";
 import { createOtlpTraceExporter } from "../services/otlp-export.mjs";
 import { canDeleteObservabilityData, deleteObservabilityData, deletionScopes } from "../services/observability-deletion.mjs";
 import { DEFAULT_SLO_TARGETS, evaluateSloAlert, summarizeAutoRunSlos } from "../services/auto-run-slo.mjs";
@@ -217,6 +218,15 @@ export function createServerRuntimeServices({
     ? (collection, scopeId, redactRow) => sqliteStore.redactHistory(collection, scopeId, redactRow)
     : null;
   const retentionArchive = createRetentionArchive({ stateStorePath, enabled: persistenceEnabled, now, appendHistory: historyAppend });
+  const autoRunAlerts = createAlertDispatcher({ getWebhookUrl: () => state.autoRunSettings?.alertWebhookUrl ?? null });
+  const alertOutbox = createAlertOutboxService({
+    state,
+    now,
+    nextId,
+    persistStateSoon,
+    store,
+    dispatch: autoRunAlerts.dispatch,
+  });
   const eventArchive = retentionArchive.prepareInvocationEventArchive();
   if (eventArchive.readError) {
     throw new Error(`Cannot establish invocation event id high-water: ${eventArchive.readError}`);
@@ -364,7 +374,7 @@ export function createServerRuntimeServices({
   });
   const workItemService = createWorkItemService({
     state, now, nextId, appendEvent, persistStateSoon, store,
-    sendAlert: (alert) => autoRunAlerts.dispatch(alert),
+    sendAlert: alertOutbox.enqueue,
   });
   const planningProjectService = createPlanningProjectService({
     state, now, nextId, appendEvent, persistStateSoon, store, validateApprovalToken,
@@ -394,7 +404,7 @@ export function createServerRuntimeServices({
     defaultProjectPath,
     // Lazy: autoRunAlerts is composed further down; the thunk only runs at sweep
     // time (post-composition), so the late binding is safe.
-    sendAlert: (alert) => void autoRunAlerts.dispatch(alert),
+    sendAlert: alertOutbox.enqueue,
     validateApprovalToken,
     store,
     // Built-in Canvas capabilities (#1353) run in-process against the scene service.
@@ -516,7 +526,7 @@ export function createServerRuntimeServices({
     store,
     // autoRunAlerts is created later in this factory; the closure is only invoked
     // at run-completion (well after init), so referencing it here is safe.
-    dispatchAlert: (alert) => autoRunAlerts.dispatch(alert),
+    dispatchAlert: alertOutbox.enqueue,
   });
   // #1151 decision soft-claims: the Approvals queue's advisory "X is handling
   // this" markers. Independent of the decision paths themselves (which enforce
@@ -742,8 +752,6 @@ export function createServerRuntimeServices({
 
   // A1 real-time alerting: best-effort webhook, URL read live so a console edit
   // applies without a restart. No-op when unconfigured; never throws.
-  const autoRunAlerts = createAlertDispatcher({ getWebhookUrl: () => state.autoRunSettings?.alertWebhookUrl ?? null });
-
   // O5.2 follow-up: close the SLO → alert loop. Evaluate the loop's SLOs on a
   // slow tick (index.mjs) and dispatch when the below-target set CHANGES —
   // throttled so a persistently-below SLO isn't re-alerted every tick. Emits an
@@ -759,7 +767,7 @@ export function createServerRuntimeServices({
     if (!changed) return { alerted: false };
     state.autoRunSloAlert = { signature, at: now() };
     if (alert) {
-      void autoRunAlerts.dispatch(alert);
+      alertOutbox.enqueue(alert);
       appendEvent({
         invocationId: null,
         type: "auto_run_slo_alert",
@@ -838,7 +846,7 @@ export function createServerRuntimeServices({
     claimIssueForRun: claimIssue,
     releaseIssueClaimsForAutoRun,
     // A1 alerting: best-effort operational webhook (budget breach, stuck reap).
-    sendAlert: (alert) => autoRunAlerts.dispatch(alert),
+    sendAlert: alertOutbox.enqueue,
     // O1 reliability: find a run's invocation for stuck/crash reconcile.
     findInvocation,
     // Operator stop: cancel a run's in-flight agent invocation.
@@ -1066,11 +1074,7 @@ export function createServerRuntimeServices({
       now,
       fetchPrState: ({ prNumber, repoPath }) => runPrStateFetch({ cwd: repoPath, prNumber }),
       onDispositionChanged: ({ run, prState }) => {
-        if (prState === "MERGED") {
-          syncBoundWorkItemsForAutoRun({ state, autoRun: run, status: "done", now, nextId });
-        } else if (prState === "CLOSED") {
-          syncBoundWorkItemsForAutoRun({ state, autoRun: run, status: "blocked", now, nextId });
-        }
+        convergeAutoRunTerminalState({ state, autoRun: run, disposition: prState, now, nextId, source: "github_refresh" });
       },
       // CI check posture for the merge decision (read-only gh; shown on the card).
       fetchPrChecks: ({ prNumber, repoPath }) => runPrChecks({ cwd: repoPath, prNumber }),
@@ -3283,6 +3287,7 @@ export function createServerRuntimeServices({
     reapStuckAutoRuns,
     sweepExpiredClaims,
     sweepAutoRunSloAlerts,
+    sweepAlertOutbox: alertOutbox.sweep,
     sweepWorkItemOperationalAlerts: workItemService.sweepOperationalAlerts,
     flushTraceExport,
     requestObservabilityDeletion,

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { syncBoundWorkItemsForAutoRun } from "../src/services/auto-run.mjs";
+import { convergeAutoRunTerminalState, syncBoundWorkItemsForAutoRun } from "../src/services/auto-run.mjs";
 
 test("auto-run status transitions advance bound local work items", () => {
   let counter = 0;
@@ -90,4 +90,32 @@ test("auto-run cannot close a criteria-bearing item without completion evidence"
   });
   assert.equal(state.workItems[0].status, "review");
   assert.equal(state.workItems[0].state, "open");
+});
+
+test("terminal convergence records one canonical outcome and settles the bound local issue", () => {
+  const item = {
+    id: "wi_1",
+    status: "review",
+    executionBindings: [{ kind: "auto_run", targetId: "aur_1" }],
+    acceptanceCriteria: [],
+  };
+  const autoRun = { id: "aur_1", status: "pr_open", prState: "OPEN" };
+  const state = { workItems: [item], workItemActivities: [] };
+  const result = convergeAutoRunTerminalState({
+    state,
+    autoRun,
+    disposition: "MERGED",
+    source: "github_webhook",
+    now: () => "2026-07-24T12:00:00.000Z",
+    nextId: () => "wia_1",
+  });
+  assert.equal(result.changed, true);
+  assert.equal(autoRun.prState, "MERGED");
+  assert.equal(autoRun.prMergedAt, "2026-07-24T12:00:00.000Z");
+  assert.deepEqual(autoRun.terminalOutcome, {
+    disposition: "MERGED",
+    source: "github_webhook",
+    convergedAt: "2026-07-24T12:00:00.000Z",
+  });
+  assert.equal(item.status, "done");
 });

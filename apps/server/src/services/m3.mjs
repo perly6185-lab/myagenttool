@@ -892,9 +892,7 @@ export function createM3Service({
     };
     appendEvent({ invocationId: usage.invocationId ?? null, type: "alert_triggered", level: "warn", message, data });
     // Alerting must never break or slow a run.
-    runTx.afterCommit(() => {
-      try { void dispatchAlert({ kind: "cost_anomaly", severity: "high", message, data }); } catch { /* best-effort */ }
-    });
+    try { void dispatchAlert({ kind: "cost_anomaly", severity: "high", message, data }); } catch { /* best-effort */ }
     return data;
   }
 
@@ -926,14 +924,23 @@ export function createM3Service({
     const metadata = invocation.input?.metadata ?? {};
     const projectId = metadata.projectId ?? invocation.projectId ?? state.currentProjectId ?? null;
     const project = projectId ? (state.projects ?? []).find((item) => item.id === projectId) ?? null : null;
+    const autoRunId = metadata.autoRunId ?? null;
+    const localIssueId = autoRunId
+      ? (state.workItems ?? []).find((item) => (item.executionBindings ?? []).some((binding) => binding.kind === "auto_run" && binding.targetId === autoRunId))?.id ?? null
+      : metadata.localIssueId ?? null;
+    const budgetPoolId = (state.budgets ?? []).find((budget) => budget.projectId === projectId)?.id
+      ?? (state.budgets ?? []).find((budget) => budget.teamId === (metadata.teamId ?? (project ? teamOf(project) : null)))?.id
+      ?? null;
     const usageRecord = {
       id: nextId("aiu_demo"),
       userId: String(invocation.requestedBy ?? "usr_local"),
       teamId: metadata.teamId ?? (project ? teamOf(project) : null),
       agentId: invocation.agentId ?? null,
       invocationId: invocation.id,
-      autoRunId: metadata.autoRunId ?? null,
+      autoRunId,
+      localIssueId,
       projectId,
+      budgetPoolId,
       deviceId: invocation.delivery?.deviceId ?? null,
       quotaDecisionId: null,
       provider: named.provider ?? "unknown",
@@ -1181,6 +1188,14 @@ export function createM3Service({
     // indexes on it. Derived from the row's project; null when there is no project.
     const ledgerProject = projectId ? state.projects.find((project) => project.id === projectId) : null;
     const ledgerTeamId = ledgerProject ? teamOf(ledgerProject) : null;
+    const autoRunId = meta.autoRunId ?? null;
+    const localIssueId = autoRunId
+      ? (state.workItems ?? []).find((item) => (item.executionBindings ?? []).some((binding) => binding.kind === "auto_run" && binding.targetId === autoRunId))?.id ?? null
+      : meta.localIssueId ?? null;
+    const attributedBudgetPoolId = agent?.economics?.budgetPoolId
+      ?? (state.budgets ?? []).find((budget) => budget.projectId === projectId)?.id
+      ?? (state.budgets ?? []).find((budget) => budget.teamId === ledgerTeamId)?.id
+      ?? null;
     const createdAt = now();
     const model = String(cost.model ?? "unknown");
     const entry = {
@@ -1211,13 +1226,14 @@ export function createM3Service({
       amountDirection: cost.billable ? "payable" : "informational",
       costOwner: agent?.economics?.costOwner ?? invocation?.requestedBy ?? "usr_local",
       revenueOwner: null,
-      budgetPoolId: agent?.economics?.budgetPoolId ?? null,
+      budgetPoolId: attributedBudgetPoolId,
       projectId,
       // Per-run cost attribution (agent_run_cost_total). The develop/repair/retry
       // invocations of an auto-run all carry autoRunId in their input metadata;
       // stamping it here lets ledgerSummary roll a run's whole cost up in one line
       // without re-deriving it from telemetry. Null for manual/non-auto-run spend.
-      autoRunId: meta.autoRunId ?? null,
+      autoRunId,
+      localIssueId,
       // Explicit model dimension for the byModel rollup, independent of
       // `counterparty` (whose meaning differs across ledger paths).
       model,

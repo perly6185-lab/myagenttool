@@ -99,6 +99,7 @@ export const persistedArrayKeys = [
   "githubWorkItemWebhookDeliveries",
   "githubWorkItemWebhookFailures",
   "workItemOperationalAlerts",
+  "alertOutbox",
   "planningProjects",
   "planningProjectItems",
   "dispatchAssignments",

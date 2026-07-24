@@ -144,6 +144,7 @@ export function createServerState({ defaultProjectPath, now }) {
     // knob inherits its env default (today's behavior). Operators edit the safe
     // knobs via the console; applied at server start.
     autoRunSettings: {},
+    alertOutbox: [],
     privateDeploymentConfig: createDefaultPrivateDeploymentConfig(now),
     auditExportRequests: [],
     retentionSettings: createDefaultRetentionSettings(now),

@@ -146,6 +146,28 @@ export function syncBoundWorkItemsForAutoRun({ state, autoRun, status, now, next
   return changed;
 }
 
+export function convergeAutoRunTerminalState({ state, autoRun, disposition, now, nextId, source = "unknown" }) {
+  if (!autoRun || !["MERGED", "CLOSED"].includes(disposition)) return { changed: false };
+  const at = now();
+  const changed = autoRun.prState !== disposition || autoRun.terminalOutcome?.disposition !== disposition;
+  autoRun.prState = disposition;
+  autoRun.prStateCheckedAt = at;
+  if (disposition === "MERGED") autoRun.prMergedAt ??= at;
+  autoRun.terminalOutcome = {
+    disposition,
+    source,
+    convergedAt: at,
+  };
+  syncBoundWorkItemsForAutoRun({
+    state,
+    autoRun,
+    status: disposition === "MERGED" ? "done" : "blocked",
+    now,
+    nextId,
+  });
+  return { changed, disposition };
+}
+
 export function createAutoRunService({
   state,
   now,
@@ -426,7 +448,7 @@ export function createAutoRunService({
           message: `Auto-run circuit breaker opened after ${breaker.consecutiveFailures} consecutive failures; paused until ${breaker.openUntil}.`,
           data: { consecutiveFailures: breaker.consecutiveFailures, openUntil: breaker.openUntil },
         };
-        runTx.afterCommit(() => { void sendAlert?.(alert); });
+        sendAlert?.(alert);
       }
     } else if (status === "pr_open" || status === "report_posted" || status === "done") {
       breaker.consecutiveFailures = 0;
@@ -1310,7 +1332,7 @@ export function createAutoRunService({
         message: `Auto-run ${autoRun.id} failed over to ${alternate.id} after ${reason}.`,
         data: { autoRunId: autoRun.id, fromAgentId, toAgentId: alternate.id, reason, link: autoRun.link },
       };
-      runTx.afterCommit(() => { void sendAlert?.(alert); });
+      sendAlert?.(alert);
       return true;
     });
   }
@@ -1373,12 +1395,11 @@ export function createAutoRunService({
       throw new Error(result?.error || "gh pr merge failed.");
     }
     runTx(() => {
-      autoRun.prState = "MERGED";
-      autoRun.prStateCheckedAt = now();
+      convergeAutoRunTerminalState({ state, autoRun, disposition: "MERGED", now, nextId, source: "in_tool_merge" });
       // #1151: merge was the one autoRun gate whose settle recorded WHO only in
       // the event log (500-row ring buffer) — stamp it on the record.
       autoRun.prMergedBy = actor?.userId ?? "usr_local";
-      autoRun.prMergedAt = now();
+      autoRun.prMergedAt ??= now();
       appendEvent({
         invocationId: autoRun.invocationId,
         type: "auto_run_pr_merged",
