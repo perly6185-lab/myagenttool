@@ -17,6 +17,12 @@ import { useAppTranslation } from "@/lib/i18n/use-app-translation";
 import type { IssueClaimEvent } from "@/lib/console-state";
 import { branchFromIssue, worktreeLinkFor } from "@/features/projects/worktree-payload";
 import { githubItemKindLabel, worktreeAutoRunPrompt } from "@myagenttool/protocol/issue-prompt";
+import {
+  downloadPlanningExport,
+  planningExportFilename,
+  planningProjectCsv,
+  planningProjectJson,
+} from "@/features/planning/planning-export";
 
 type GithubItem = {
   type: "issue" | "pr";
@@ -58,6 +64,7 @@ type PlanningProject = {
   id: string;
   name: string;
   description: string;
+  color?: string;
   revision: number;
   archivedAt: string | null;
   itemCount: number;
@@ -826,6 +833,15 @@ export function PlanningProjectsPanel({ onChanged = () => {} }: { onChanged?: ()
       if (ok) setNonce((value) => value + 1);
     });
   };
+  const exportProject = (format: "csv" | "json") => {
+    if (!selected) return;
+    const content = format === "csv" ? planningProjectCsv(selected) : planningProjectJson(selected);
+    downloadPlanningExport(
+      planningExportFilename(selected.name, format),
+      content,
+      format === "csv" ? "text/csv;charset=utf-8" : "application/json;charset=utf-8",
+    );
+  };
   const visibleProjects = projects
     .filter((project) => !projectQuery.trim()
       || `${project.name} ${project.description}`.toLowerCase().includes(projectQuery.trim().toLowerCase()))
@@ -891,6 +907,12 @@ export function PlanningProjectsPanel({ onChanged = () => {} }: { onChanged?: ()
                 )}
                 <Button variant="secondary" size="sm" disabled={pending} onClick={duplicate}>
                   {t("planningLifecycle.duplicate")}
+                </Button>
+                <Button variant="ghost" size="sm" onClick={() => exportProject("csv")}>
+                  {t("planningExport.csv")}
+                </Button>
+                <Button variant="ghost" size="sm" onClick={() => exportProject("json")}>
+                  {t("planningExport.json")}
                 </Button>
                 <Button variant="ghost" size="sm" disabled={pending} onClick={archive}>
                   {t(selected.archivedAt ? "planningProjects.restore" : "planningProjects.archive")}
