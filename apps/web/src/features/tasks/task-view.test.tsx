@@ -17,6 +17,7 @@ const mocks = vi.hoisted(() => ({
   listWorkItemActivity: vi.fn(),
   createWorkItemWorktree: vi.fn(),
   startWorkItemAutoRun: vi.fn(),
+  listAutoRuns: vi.fn(),
   listPlanningProjects: vi.fn(),
   getPlanningProject: vi.fn(),
   createPlanningProject: vi.fn(),
@@ -57,6 +58,7 @@ vi.mock("@/data/use-console-actions", () => ({
     listWorkItemActivity: mocks.listWorkItemActivity,
     createWorkItemWorktree: mocks.createWorkItemWorktree,
     startWorkItemAutoRun: mocks.startWorkItemAutoRun,
+    listAutoRuns: mocks.listAutoRuns,
     listPlanningProjects: mocks.listPlanningProjects,
     getPlanningProject: mocks.getPlanningProject,
     createPlanningProject: mocks.createPlanningProject,
@@ -90,6 +92,7 @@ afterEach(() => {
 describe("TaskView local work items", () => {
   beforeEach(() => {
     mocks.listPlanningProjects.mockResolvedValue({ projects: [] });
+    mocks.listAutoRuns.mockResolvedValue({ runs: [] });
   });
   it("shows local work items as the default source", async () => {
     mocks.listWorkItems.mockResolvedValue({
@@ -211,6 +214,7 @@ describe("TaskView local work items", () => {
     mocks.listPlanningProjects.mockResolvedValue({ projects: [project] });
     mocks.getPlanningProject.mockResolvedValue({ project });
     mocks.reorderPlanningProjectItems.mockResolvedValue({ project });
+    mocks.startWorkItemAutoRun.mockResolvedValue({ autoRun: { id: "aur_planning" } });
     render(<TaskView />);
     fireEvent.click(await screen.findByRole("button", { name: /Planning projects/i }));
     fireEvent.click(await screen.findByRole("button", { name: "Move LOCAL-2 up" }));
@@ -223,6 +227,9 @@ describe("TaskView local work items", () => {
     expect(screen.getByText("50% complete")).toBeTruthy();
     expect(screen.getByRole("option", { name: "Current month" })).toBeTruthy();
     expect(screen.getByRole("option", { name: "Current quarter" })).toBeTruthy();
+    expect(screen.getByText("Project health")).toBeTruthy();
+    fireEvent.click(screen.getAllByTitle("Start Auto-run")[0]);
+    await waitFor(() => expect(mocks.startWorkItemAutoRun).toHaveBeenCalledWith("lwi_2"));
   });
 
   it("opens details, saves fields, and posts a comment", async () => {

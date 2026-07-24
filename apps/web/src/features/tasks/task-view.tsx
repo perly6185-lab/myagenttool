@@ -53,6 +53,7 @@ type LocalWorkItem = {
   updatedAt: string;
 };
 type LocalWorkItemResult = { workItems: LocalWorkItem[]; count: number };
+type PlanningAutoRun = { id: string; status: string };
 type PlanningProject = {
   id: string;
   name: string;
@@ -524,6 +525,7 @@ export function PlanningProjectsPanel({ onChanged = () => {} }: { onChanged?: ()
   const { execute, pending, error } = useAsyncAction();
   const [projects, setProjects] = useState<PlanningProject[]>([]);
   const [workItems, setWorkItems] = useState<LocalWorkItem[]>([]);
+  const [autoRuns, setAutoRuns] = useState<PlanningAutoRun[]>([]);
   const storedSelectedId = useUiStore((state) => state.selectedPlanningProjectId) ?? "";
   const storeSelectedId = useUiStore((state) => state.setSelectedPlanningProjectId);
   const [selectedId, setSelectedIdLocal] = useState(storedSelectedId);
@@ -576,6 +578,15 @@ export function PlanningProjectsPanel({ onChanged = () => {} }: { onChanged?: ()
       || (filters.due === "unscheduled" && !item.dueDate));
   const filteredDisplayWorkItems = displayWorkItems.filter(matchesFilters);
   const filteredProjectItems = (selected?.items ?? []).filter((row) => matchesFilters(row.workItem));
+  const projectItems = selected?.items?.map((row) => row.workItem) ?? [];
+  const blockedCount = projectItems.filter((item) => item.blockedBy?.some((dependency) => !dependency.resolved)).length;
+  const overdueCount = projectItems.filter((item) => item.dueDate && item.dueDate < today && item.status !== "done").length;
+  const activeExecutionStatuses = new Set(["materializing", "running", "awaiting_approval", "verifying", "publishing"]);
+  const activeExecutionCount = projectItems.filter((item) => item.executionBindings?.some((binding) => {
+    if (binding.kind !== "auto_run") return false;
+    const run = autoRuns.find((candidate) => candidate.id === binding.targetId);
+    return run && activeExecutionStatuses.has(run.status);
+  })).length;
 
   useEffect(() => {
     setSelectedIdLocal(storedSelectedId);
@@ -590,9 +601,11 @@ export function PlanningProjectsPanel({ onChanged = () => {} }: { onChanged?: ()
     void Promise.all([
       api.listPlanningProjects(true) as Promise<{ projects: PlanningProject[] }>,
       api.listWorkItems() as Promise<LocalWorkItemResult>,
-    ]).then(async ([result, workItemResult]) => {
+      api.listAutoRuns() as Promise<{ runs: PlanningAutoRun[] }>,
+    ]).then(async ([result, workItemResult, autoRunResult]) => {
       if (cancelled) return;
       setWorkItems(workItemResult.workItems);
+      setAutoRuns(autoRunResult.runs);
       const nextId = result.projects.some((project) => project.id === selectedId)
         ? selectedId
         : result.projects[0]?.id ?? "";
@@ -689,6 +702,21 @@ export function PlanningProjectsPanel({ onChanged = () => {} }: { onChanged?: ()
       onChanged();
     });
   };
+  const startPlanningExecution = (workItem: LocalWorkItem, kind: "worktree" | "auto_run") => {
+    void execute(() => kind === "worktree"
+      ? api.createWorkItemWorktree(workItem.id)
+      : api.startWorkItemAutoRun(workItem.id))
+      .then((ok) => {
+        if (!ok) return;
+        setNonce((value) => value + 1);
+        onChanged();
+      });
+  };
+  const executionStatus = (workItem: LocalWorkItem) => {
+    const binding = [...(workItem.executionBindings ?? [])].reverse().find((row) => row.kind === "auto_run");
+    if (!binding) return null;
+    return autoRuns.find((run) => run.id === binding.targetId)?.status ?? null;
+  };
 
   return (
     <div className="grid gap-4 sm:grid-cols-[14rem_1fr]">
@@ -731,6 +759,15 @@ export function PlanningProjectsPanel({ onChanged = () => {} }: { onChanged?: ()
               <div className="rounded-md bg-muted p-2"><strong className="block text-base">{selected.itemCount}</strong>{t("planningProjects.total")}</div>
               <div className="rounded-md bg-muted p-2"><strong className="block text-base">{selected.openItemCount}</strong>{t("planningProjects.open")}</div>
               <div className="rounded-md bg-muted p-2"><strong className="block text-base">{selected.completedItemCount}</strong>{t("planningProjects.completed")}</div>
+            </div>
+            <div className="grid grid-cols-2 gap-2 text-center text-xs sm:grid-cols-4">
+              <div className="rounded-md border border-border p-2"><strong className="block text-base">{blockedCount}</strong>{t("planningExecution.blocked")}</div>
+              <div className="rounded-md border border-border p-2"><strong className="block text-base">{overdueCount}</strong>{t("planningExecution.overdue")}</div>
+              <div className="rounded-md border border-border p-2"><strong className="block text-base">{activeExecutionCount}</strong>{t("planningExecution.running")}</div>
+              <div className="rounded-md border border-border p-2">
+                <strong className="block text-base">{blockedCount + overdueCount ? t("planningExecution.atRisk") : t("planningExecution.healthy")}</strong>
+                {t("planningExecution.health")}
+              </div>
             </div>
             <div className="flex gap-1 rounded-md bg-muted p-0.5 text-xs">
               {(["items", "board", "roadmap"] as const).map((value) => (
@@ -831,6 +868,22 @@ export function PlanningProjectsPanel({ onChanged = () => {} }: { onChanged?: ()
                           {workItem.blockedBy?.some((dependency) => !dependency.resolved) ? (
                             <Badge tone="danger">{t("taskDependencies.blocked")}</Badge>
                           ) : null}
+                          {executionStatus(workItem) ? (
+                            <Badge tone={statusTone(executionStatus(workItem) ?? "")}>
+                              {t(`autoRuns.status.${executionStatus(workItem)}` as never, { defaultValue: executionStatus(workItem) })}
+                            </Badge>
+                          ) : (
+                            <div className="mt-2 flex gap-1">
+                              <Button variant="ghost" size="sm" disabled={pending}
+                                onClick={() => startPlanningExecution(workItem, "worktree")}>
+                                <GitBranch className="mr-1 size-3" />{t("planningExecution.worktree")}
+                              </Button>
+                              <Button variant="ghost" size="sm" disabled={pending}
+                                onClick={() => startPlanningExecution(workItem, "auto_run")}>
+                                <Zap className="mr-1 size-3" />{t("planningExecution.autoRun")}
+                              </Button>
+                            </div>
+                          )}
                           <Select value={workItem.status} disabled={pending}
                             aria-label={t("planningProjects.changeStatus", { ref: workItem.localRef })}
                             onChange={(event) => changeStatus(workItem, event.target.value as LocalWorkItem["status"])}
@@ -889,6 +942,17 @@ export function PlanningProjectsPanel({ onChanged = () => {} }: { onChanged?: ()
                                   <Badge tone="danger">{t("taskDependencies.blocked")}</Badge>
                                 ) : null}
                                 <Badge tone={statusTone(workItem.status)}>{t(`tasks.localStatus.${workItem.status}`)}</Badge>
+                                {executionStatus(workItem) ? (
+                                  <Badge tone={statusTone(executionStatus(workItem) ?? "")}>
+                                    {t(`autoRuns.status.${executionStatus(workItem)}` as never, { defaultValue: executionStatus(workItem) })}
+                                  </Badge>
+                                ) : (
+                                  <button type="button" disabled={pending} title={t("planningExecution.startAutoRun")}
+                                    onClick={() => startPlanningExecution(workItem, "auto_run")}
+                                    className="rounded p-0.5 text-muted-foreground hover:bg-muted hover:text-foreground">
+                                    <Zap className="size-3.5" />
+                                  </button>
+                                )}
                               </span>
                             </div>
                           ))}
