@@ -12,6 +12,18 @@ Before rollout, `GET /api/work-items/github/diagnostics` must report
 `secretConfigured: true`. The attention queue must report zero unexplained SLA
 breaches.
 
+Run the offline configuration gate with the same environment that will start
+the service:
+
+```sh
+node tools/dev/work-items-preflight.mjs
+```
+
+For an online canary gate, also set `WORK_ITEMS_PREFLIGHT_URL` and
+`WORK_ITEMS_PREFLIGHT_TOKEN`. The tool then verifies health, team-authenticated
+GitHub diagnostics, and attention metrics. It prints a machine-readable JSON
+report and exits non-zero when a required check fails.
+
 ## Failure drills
 
 ### Service interruption
@@ -55,6 +67,18 @@ signed delivery, approval, batch claim, lease expiry, and safe replay. Roll back
 the application when authorization isolation, persistence, or stale-event
 protection fails. Preserve the state store when rolling back; older binaries
 ignore the additive collections.
+
+Go only when all of the following are true:
+
+- Offline and online preflight reports are both `ready: true`.
+- The capacity benchmark completes without invariant failures.
+- No cross-team data is visible during the replay exercise.
+- Webhook failure rate stays below 1% and there are no unexplained SLA breaches.
+- A backup restore drill has succeeded against the release candidate.
+
+Stop or roll back on any authorization leak, lost approval/claim state,
+newer-to-older issue regression, persistent `degraded` diagnostics, or a
+capacity regression greater than 50% from the environment's accepted baseline.
 
 ## Capacity baseline
 
