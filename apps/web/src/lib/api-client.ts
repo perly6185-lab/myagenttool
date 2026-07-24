@@ -889,7 +889,14 @@ export const api = {
     request("GET", `/api/planning-projects${includeArchived ? "?includeArchived=1" : ""}`),
   getPlanningProject: (id: string) =>
     request("GET", `/api/planning-projects/${encodeURIComponent(id)}`),
-  createPlanningProject: (payload: { name: string; description?: string; color?: string; templateProjectId?: string }) =>
+  createPlanningProject: (payload: {
+    name: string;
+    description?: string;
+    color?: string;
+    templateProjectId?: string;
+    savedViews?: unknown[];
+    automationRules?: unknown[];
+  }) =>
     request("POST", "/api/planning-projects", payload),
   updatePlanningProject: (id: string, payload: Record<string, unknown>) =>
     request("PATCH", `/api/planning-projects/${encodeURIComponent(id)}`, payload),

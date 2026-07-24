@@ -193,3 +193,21 @@ test("projects validate and persist automation rules", () => {
     automationRules: [{ status: "", priority: "", type: "", label: "" }],
   }, ACTOR_A).status, 400);
 });
+
+test("project creation imports validated template configuration", () => {
+  const { service } = harness();
+  const imported = service.createProject({
+    name: "Imported",
+    savedViews: [{
+      name: "Ready", view: "list",
+      filters: { status: "ready", priority: "all", milestone: "", due: "all" },
+    }],
+    automationRules: [{ status: "ready", priority: "", type: "", label: "" }],
+  }, ACTOR_A);
+  assert.equal(imported.status, 201);
+  assert.match(imported.body.project.savedViews[0].id, /^ppv_/);
+  assert.match(imported.body.project.automationRules[0].id, /^par_/);
+  assert.equal(service.createProject({
+    name: "Invalid import", savedViews: [{}],
+  }, ACTOR_A).status, 400);
+});

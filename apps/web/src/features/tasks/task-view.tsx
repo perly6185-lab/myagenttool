@@ -19,6 +19,7 @@ import { branchFromIssue, worktreeLinkFor } from "@/features/projects/worktree-p
 import { githubItemKindLabel, worktreeAutoRunPrompt } from "@myagenttool/protocol/issue-prompt";
 import {
   downloadPlanningExport,
+  parsePlanningProjectSnapshot,
   planningExportFilename,
   planningProjectCsv,
   planningProjectJson,
@@ -842,6 +843,27 @@ export function PlanningProjectsPanel({ onChanged = () => {} }: { onChanged?: ()
       format === "csv" ? "text/csv;charset=utf-8" : "application/json;charset=utf-8",
     );
   };
+  const importProjectTemplate = (file: File) => {
+    let created: PlanningProject | null = null;
+    void execute(async () => {
+      const snapshot = parsePlanningProjectSnapshot(await file.text());
+      const result = await api.createPlanningProject({
+        name: t("planningImport.importedName", { name: snapshot.name }),
+        description: snapshot.description,
+        color: snapshot.color,
+        savedViews: snapshot.savedViews,
+        automationRules: snapshot.automationRules,
+      }) as { project: PlanningProject };
+      created = result.project;
+      return result;
+    }).then((ok) => {
+      if (!ok || !created) return;
+      setProjectScope("active");
+      setSelectedId(created.id);
+      setNonce((value) => value + 1);
+      onChanged();
+    });
+  };
   const visibleProjects = projects
     .filter((project) => !projectQuery.trim()
       || `${project.name} ${project.description}`.toLowerCase().includes(projectQuery.trim().toLowerCase()))
@@ -858,6 +880,17 @@ export function PlanningProjectsPanel({ onChanged = () => {} }: { onChanged?: ()
         <Input value={name} onChange={(event) => setName(event.target.value)} placeholder={t("planningProjects.name")} />
         <Input value={description} onChange={(event) => setDescription(event.target.value)} placeholder={t("planningProjects.description")} />
         <Button size="sm" disabled={pending || !name.trim()} onClick={create}><Plus className="mr-1 size-4" />{t("planningProjects.create")}</Button>
+        <label className="inline-flex h-8 cursor-pointer items-center justify-center rounded-md border border-border px-3 text-sm hover:bg-accent">
+          {t("planningImport.button")}
+          <input type="file" accept="application/json,.json" className="sr-only"
+            aria-label={t("planningImport.button")}
+            onChange={(event) => {
+              const file = event.target.files?.[0];
+              if (file) importProjectTemplate(file);
+              event.target.value = "";
+            }} />
+        </label>
+        <p className="text-[10px] text-muted-foreground">{t("planningImport.hint")}</p>
         <div className="grid grid-cols-2 gap-1 text-center text-xs">
           <div className="rounded-md bg-muted p-1.5"><strong className="block">{portfolioAttention}</strong>{t("planningPortfolio.attention")}</div>
           <div className="rounded-md bg-muted p-1.5"><strong className="block">{portfolioActiveRuns}</strong>{t("planningPortfolio.activeRuns")}</div>

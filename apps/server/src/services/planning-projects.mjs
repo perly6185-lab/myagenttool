@@ -161,7 +161,7 @@ export function createPlanningProjectService({
   }
 
   function createProject({
-    name, description, color, templateProjectId = null,
+    name, description, color, templateProjectId = null, savedViews, automationRules,
   } = {}, actor = null) {
     const template = templateProjectId ? findOwn(templateProjectId, actor) : null;
     if (templateProjectId && !template) return notFound();
@@ -173,6 +173,14 @@ export function createPlanningProjectService({
     if (normalizedDescription.length > MAX_DESCRIPTION) {
       return { ok: false, status: 400, body: { error: "planning_project_description_too_large" } };
     }
+    const importedViews = savedViews === undefined ? null : normalizeSavedViews(savedViews, nextId);
+    if (savedViews !== undefined && !importedViews) {
+      return { ok: false, status: 400, body: { error: "invalid_planning_project_saved_views" } };
+    }
+    const importedRules = automationRules === undefined ? null : normalizeAutomationRules(automationRules, nextId);
+    if (automationRules !== undefined && !importedRules) {
+      return { ok: false, status: 400, body: { error: "invalid_planning_project_automation_rules" } };
+    }
     const timestamp = now();
     const project = {
       id: nextId("ppj"),
@@ -180,8 +188,8 @@ export function createPlanningProjectService({
       name: normalizedName,
       description: normalizedDescription,
       color: String(color ?? template?.color ?? "indigo").slice(0, 40),
-      savedViews: (template?.savedViews ?? []).map((view) => ({ ...view, id: nextId("ppv") })),
-      automationRules: (template?.automationRules ?? []).map((rule) => ({ ...rule, id: nextId("par") })),
+      savedViews: importedViews ?? (template?.savedViews ?? []).map((view) => ({ ...view, id: nextId("ppv") })),
+      automationRules: importedRules ?? (template?.automationRules ?? []).map((rule) => ({ ...rule, id: nextId("par") })),
       activity: [],
       revision: 1,
       archivedAt: null,

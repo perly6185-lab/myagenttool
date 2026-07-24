@@ -70,6 +70,36 @@ export function planningProjectJson(project: PlanningExportProject, exportedAt =
   }, null, 2);
 }
 
+export function parsePlanningProjectSnapshot(text: string) {
+  let value: unknown;
+  try {
+    value = JSON.parse(text);
+  } catch {
+    throw new Error("Invalid Planning snapshot JSON.");
+  }
+  if (!value || typeof value !== "object") throw new Error("Invalid Planning snapshot.");
+  const snapshot = value as Record<string, unknown>;
+  if (snapshot.schemaVersion !== 1) throw new Error("Unsupported Planning snapshot version.");
+  if (!snapshot.project || typeof snapshot.project !== "object") throw new Error("Planning snapshot has no project.");
+  const project = snapshot.project as Record<string, unknown>;
+  const name = String(project.name ?? "").trim();
+  const description = String(project.description ?? "");
+  const savedViews = project.savedViews;
+  const automationRules = project.automationRules;
+  if (!name || name.length > 200 || description.length > 20_000
+    || !Array.isArray(savedViews) || !Array.isArray(automationRules)) {
+    throw new Error("Planning snapshot project configuration is invalid.");
+  }
+  return {
+    name,
+    description,
+    color: typeof project.color === "string" ? project.color : undefined,
+    savedViews,
+    automationRules,
+    workItemCount: Array.isArray(snapshot.workItems) ? snapshot.workItems.length : 0,
+  };
+}
+
 export function planningExportFilename(name: string, extension: "csv" | "json") {
   const slug = name.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "") || "planning-project";
   return `${slug}.${extension}`;

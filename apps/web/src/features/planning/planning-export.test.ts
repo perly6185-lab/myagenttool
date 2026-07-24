@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { planningExportFilename, planningProjectCsv, planningProjectJson } from "./planning-export";
+import {
+  parsePlanningProjectSnapshot,
+  planningExportFilename,
+  planningProjectCsv,
+  planningProjectJson,
+} from "./planning-export";
 
 const project = {
   id: "ppj_1",
@@ -31,5 +36,13 @@ describe("planning export", () => {
     expect(json.project.savedViews[0].name).toBe("Risks");
     expect(json.workItems[0].dependencyIds).toEqual(["lwi_0"]);
     expect(planningExportFilename(project.name, "json")).toBe("q3-release.json");
+  });
+
+  it("validates an exported snapshot for template import", () => {
+    const imported = parsePlanningProjectSnapshot(planningProjectJson(project, "2026-07-24T00:00:00.000Z"));
+    expect(imported.name).toBe("Q3 Release");
+    expect(imported.savedViews).toHaveLength(1);
+    expect(imported.workItemCount).toBe(1);
+    expect(() => parsePlanningProjectSnapshot('{"schemaVersion":2,"project":{}}')).toThrow(/Unsupported/);
   });
 });
