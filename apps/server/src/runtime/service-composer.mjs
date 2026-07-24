@@ -54,6 +54,8 @@ import { createProjectService, sameProjectPath } from "../services/projects.mjs"
 import { createAutoRunService } from "../services/auto-run.mjs";
 import { createDecisionSoftClaimService } from "../services/decision-soft-claims.mjs";
 import { createIssueClaimService } from "../services/issue-claims.mjs";
+import { createWorkItemService } from "../services/work-items.mjs";
+import { createPlanningProjectService } from "../services/planning-projects.mjs";
 import { resolveAutoRunVerifyCommand, resolveAutoRunVerifyCommandFor, runWorktreeVerification } from "../services/worktree-verify.mjs";
 import { resolveStatusWritebackConfig, runIssueAssigneeEdit, runIssueBodyFetch, runIssueClose, runIssueComment, runIssueStatusTransition, runPrChecks, runPrMerge, runPrStateFetch, runIssueStateFetch } from "../services/issue-status.mjs";
 import { deciderTimeoutMs, resolveDeciderCommand, runDeciderCommand } from "../services/decision-command.mjs";
@@ -358,6 +360,12 @@ export function createServerRuntimeServices({
   // Durable, team-owned Canvas scenes (#1352) — created before the application
   // service so its element ops back the built-in Canvas capabilities (#1353).
   const canvasSceneService = createCanvasSceneService({
+    state, now, nextId, appendEvent, persistStateSoon, store,
+  });
+  const workItemService = createWorkItemService({
+    state, now, nextId, appendEvent, persistStateSoon, store,
+  });
+  const planningProjectService = createPlanningProjectService({
     state, now, nextId, appendEvent, persistStateSoon, store,
   });
 
@@ -3297,6 +3305,24 @@ export function createServerRuntimeServices({
     createCanvasScene: canvasSceneService.createScene,
     updateCanvasScene: canvasSceneService.updateScene,
     deleteCanvasScene: canvasSceneService.deleteScene,
+    listWorkItems: workItemService.listWorkItems,
+    getWorkItem: workItemService.getWorkItem,
+    createWorkItem: workItemService.createWorkItem,
+    updateWorkItem: workItemService.updateWorkItem,
+    transitionWorkItem: workItemService.transitionWorkItem,
+    listWorkItemActivity: workItemService.listActivity,
+    listWorkItemComments: workItemService.listComments,
+    createWorkItemComment: workItemService.createComment,
+    updateWorkItemComment: workItemService.updateComment,
+    deleteWorkItemComment: workItemService.deleteComment,
+    recordWorkItemExecutionBinding: workItemService.recordExecutionBinding,
+    listPlanningProjects: planningProjectService.listProjects,
+    getPlanningProject: planningProjectService.getProject,
+    createPlanningProject: planningProjectService.createProject,
+    updatePlanningProject: planningProjectService.updateProject,
+    setPlanningProjectArchived: planningProjectService.setArchived,
+    addPlanningProjectItem: planningProjectService.addItem,
+    removePlanningProjectItem: planningProjectService.removeItem,
     routeChannelTask,
     dismissChannelTask,
     retryChannelTask,

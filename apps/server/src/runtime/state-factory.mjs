@@ -124,6 +124,13 @@ export function createServerState({ defaultProjectPath, now }) {
     // #1152: durable claim lifecycle history (claimed/released/expired), kept
     // outside the 500-row event ring buffer so it survives churn + restart.
     issueClaimEvents: [],
+    // Local-first planning records. These are independent of GitHub Issues and
+    // may later carry one or more external bindings.
+    workItems: [],
+    workItemComments: [],
+    workItemActivities: [],
+    planningProjects: [],
+    planningProjectItems: [],
     // #1165: dispatcher-mode bookkeeping — one row per issue assignment written
     // by THIS server acting as the dispatcher (single writer; the staleness clock).
     dispatchAssignments: [],

@@ -21,6 +21,8 @@ import { backfillApplicationRuntimeMetadata } from "../services/applications.mjs
 import { handleReviewFindingRoutes } from "../routes/review-findings.mjs";
 import { handleTerminalRoutes } from "../routes/terminal.mjs";
 import { handleToolRoutes } from "../routes/tools.mjs";
+import { handleWorkItemRoutes } from "../routes/work-items.mjs";
+import { handlePlanningProjectRoutes } from "../routes/planning-projects.mjs";
 
 export function createHttpServer({
   host,
@@ -211,6 +213,24 @@ export function createHttpServer({
   createCanvasScene,
   updateCanvasScene,
   deleteCanvasScene,
+  listWorkItems,
+  getWorkItem,
+  createWorkItem,
+  updateWorkItem,
+  transitionWorkItem,
+  listWorkItemActivity,
+  listWorkItemComments,
+  createWorkItemComment,
+  updateWorkItemComment,
+  deleteWorkItemComment,
+  recordWorkItemExecutionBinding,
+  listPlanningProjects,
+  getPlanningProject,
+  createPlanningProject,
+  updatePlanningProject,
+  setPlanningProjectArchived,
+  addPlanningProjectItem,
+  removePlanningProjectItem,
   registerChannel,
   listChannels,
   enableChannel,
@@ -344,6 +364,34 @@ export function createHttpServer({
         createScene: createCanvasScene,
         updateScene: updateCanvasScene,
         deleteScene: deleteCanvasScene,
+      })) {
+        return;
+      }
+
+      if (await handleWorkItemRoutes({
+        req, res, url, sendJson, readJson, actor,
+        listWorkItems, getWorkItem, createWorkItem, updateWorkItem, transitionWorkItem,
+        listActivity: listWorkItemActivity,
+        listComments: listWorkItemComments,
+        createComment: createWorkItemComment,
+        updateComment: updateWorkItemComment,
+        deleteComment: deleteWorkItemComment,
+        createWorktree,
+        startAutoRun,
+        recordExecutionBinding: recordWorkItemExecutionBinding,
+      })) {
+        return;
+      }
+
+      if (await handlePlanningProjectRoutes({
+        req, res, url, sendJson, readJson, actor,
+        listProjects: listPlanningProjects,
+        getProject: getPlanningProject,
+        createProject: createPlanningProject,
+        updateProject: updatePlanningProject,
+        setArchived: setPlanningProjectArchived,
+        addItem: addPlanningProjectItem,
+        removeItem: removePlanningProjectItem,
       })) {
         return;
       }

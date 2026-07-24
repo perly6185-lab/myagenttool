@@ -1,0 +1,183 @@
+process.env.MYAGENT_REQUIRE_AUTH = "1";
+process.env.MYAGENTTOOL_STATE_DISABLED = "1";
+
+import assert from "node:assert/strict";
+import { execFileSync } from "node:child_process";
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
+import { after, before, test } from "node:test";
+
+let server;
+let base;
+const root = join(tmpdir(), `myagenttool-work-items-http-${process.pid}`);
+const projectAPath = join(root, "a");
+
+before(async () => {
+  const { createServerState } = await import("../../src/runtime/state-factory.mjs");
+  const { createServerRuntimeServices } = await import("../../src/runtime/service-composer.mjs");
+  const { createHttpServer } = await import("../../src/runtime/http-server.mjs");
+  const now = () => new Date().toISOString();
+  mkdirSync(projectAPath, { recursive: true });
+  execFileSync("git", ["init", "-b", "main", projectAPath]);
+  execFileSync("git", ["-C", projectAPath, "config", "user.email", "test@example.test"]);
+  execFileSync("git", ["-C", projectAPath, "config", "user.name", "Test"]);
+  writeFileSync(join(projectAPath, "README.md"), "# test\n");
+  execFileSync("git", ["-C", projectAPath, "add", "README.md"]);
+  execFileSync("git", ["-C", projectAPath, "commit", "-m", "initial"]);
+  const { defaultProject, state } = createServerState({ defaultProjectPath: projectAPath, now });
+  state.teams.push({ id: "team_a" }, { id: "team_b" });
+  state.users.push({ id: "usr_a", teamId: "team_a" }, { id: "usr_b", teamId: "team_b" });
+  const expiresAt = new Date(Date.now() + 3_600_000).toISOString();
+  state.tokens.push({ token: "tok_a", userId: "usr_a", expiresAt }, { token: "tok_b", userId: "usr_b", expiresAt });
+  state.projects.push(
+    { id: "prj_a", ownerTeamId: "team_a", path: projectAPath },
+    { id: "prj_b", ownerTeamId: "team_b", path: "/tmp/b" },
+  );
+  const { httpDependencies } = createServerRuntimeServices({
+    namespace: "test", protocolVersion: "0.0.0", state, defaultProject, defaultProjectPath: "/tmp",
+    persistenceEnabled: false, stateStorePath: "/tmp/unused.json", stateSchemaVersion: 1, dispatchLeaseMs: 30_000, now,
+  });
+  server = createHttpServer({ host: "127.0.0.1", port: 0, namespace: "test", protocolVersion: "0.0.0", ...httpDependencies });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  base = `http://127.0.0.1:${server.address().port}`;
+});
+
+after(() => {
+  server?.close();
+  rmSync(root, { recursive: true, force: true });
+});
+
+async function call(path, { token = "tok_a", method = "GET", body } = {}) {
+  const response = await fetch(`${base}${path}`, {
+    method,
+    headers: { authorization: `Bearer ${token}`, ...(body ? { "content-type": "application/json" } : {}) },
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  return { status: response.status, body: await response.json() };
+}
+
+test("local work item CRUD is wired through the real HTTP server", async () => {
+  const created = await call("/api/work-items", {
+    method: "POST",
+    body: { projectId: "prj_a", title: "Plan locally", type: "feature" },
+  });
+  assert.equal(created.status, 201);
+  assert.equal(created.body.workItem.localRef, "LOCAL-1");
+
+  const updated = await call(`/api/work-items/${created.body.workItem.id}`, {
+    method: "PATCH",
+    body: { expectedRevision: 1, status: "ready", priority: "p1" },
+  });
+  assert.equal(updated.status, 200);
+  assert.equal(updated.body.workItem.status, "ready");
+
+  const listed = await call("/api/work-items?status=ready&q=plan");
+  assert.equal(listed.status, 200);
+  assert.equal(listed.body.count, 1);
+});
+
+test("foreign work items and projects are existence-hidden", async () => {
+  const created = await call("/api/work-items", {
+    method: "POST",
+    body: { projectId: "prj_a", title: "Private" },
+  });
+  assert.equal((await call(`/api/work-items/${created.body.workItem.id}`, { token: "tok_b" })).status, 404);
+  const foreignProject = await call("/api/work-items", {
+    token: "tok_a", method: "POST", body: { projectId: "prj_b", title: "Denied" },
+  });
+  assert.equal(foreignProject.status, 404);
+});
+
+test("close and archive transitions are revision gated", async () => {
+  const item = (await call("/api/work-items", {
+    method: "POST", body: { projectId: "prj_a", title: "Lifecycle" },
+  })).body.workItem;
+  assert.equal((await call(`/api/work-items/${item.id}/close`, {
+    method: "POST", body: { expectedRevision: 9 },
+  })).status, 409);
+  const closed = await call(`/api/work-items/${item.id}/close`, {
+    method: "POST", body: { expectedRevision: 1 },
+  });
+  assert.equal(closed.body.workItem.state, "closed");
+});
+
+test("comments and activity timeline are available through nested endpoints", async () => {
+  const item = (await call("/api/work-items", {
+    method: "POST", body: { projectId: "prj_a", title: "Discuss over HTTP" },
+  })).body.workItem;
+  const created = await call(`/api/work-items/${item.id}/comments`, {
+    method: "POST", body: { body: "Initial comment" },
+  });
+  assert.equal(created.status, 201);
+  const edited = await call(`/api/work-items/${item.id}/comments/${created.body.comment.id}`, {
+    method: "PATCH", body: { expectedRevision: 1, body: "Edited comment" },
+  });
+  assert.equal(edited.body.comment.body, "Edited comment");
+  assert.equal((await call(`/api/work-items/${item.id}/comments`)).body.count, 1);
+  const activity = await call(`/api/work-items/${item.id}/activity`);
+  assert.equal(activity.status, 200);
+  assert.equal(activity.body.activities.some((row) => row.action === "comment_updated"), true);
+  assert.equal((await call(`/api/work-items/${item.id}/activity`, { token: "tok_b" })).status, 404);
+});
+
+test("a local issue creates a linked git worktree without a GitHub issue binding", async () => {
+  const item = (await call("/api/work-items", {
+    method: "POST", body: { projectId: "prj_a", title: "Local execution" },
+  })).body.workItem;
+  const result = await call(`/api/work-items/${item.id}/worktrees`, { method: "POST", body: {} });
+  assert.equal(result.status, 201);
+  assert.equal(result.body.worktree.link.type, "local_issue");
+  assert.equal(result.body.worktree.link.number, item.localNumber);
+  const detail = await call(`/api/work-items/${item.id}`);
+  assert.equal(detail.body.workItem.executionBindings[0].worktreeId, result.body.worktree.id);
+  const activity = await call(`/api/work-items/${item.id}/activity`);
+  assert.equal(activity.body.activities.some((row) => row.action === "worktree_created"), true);
+});
+
+test("a local issue starts an auto-run with its local body and acceptance criteria", async () => {
+  const item = (await call("/api/work-items", {
+    method: "POST",
+    body: {
+      projectId: "prj_a",
+      title: "Run locally",
+      body: "Implement the local workflow.",
+      acceptanceCriteria: ["The local path is tested"],
+    },
+  })).body.workItem;
+  const result = await call(`/api/work-items/${item.id}/auto-runs`, { method: "POST", body: {} });
+  assert.equal(result.status, 201);
+  assert.equal(result.body.autoRun.link.type, "local_issue");
+  assert.equal(result.body.autoRun.issueBody.includes("Implement the local workflow."), true);
+  assert.equal(result.body.autoRun.issueBody.includes("The local path is tested"), true);
+  const detail = await call(`/api/work-items/${item.id}`);
+  assert.equal(detail.body.workItem.executionBindings.some((binding) => binding.kind === "auto_run"), true);
+});
+
+test("planning projects manage local issue membership over HTTP", async () => {
+  const item = (await call("/api/work-items", {
+    method: "POST", body: { projectId: "prj_a", title: "Plan membership" },
+  })).body.workItem;
+  const created = await call("/api/planning-projects", {
+    method: "POST", body: { name: "Q3 roadmap", description: "Delivery plan" },
+  });
+  assert.equal(created.status, 201);
+  const planningProjectId = created.body.project.id;
+  assert.equal((await call(`/api/planning-projects/${planningProjectId}/items/${item.id}`, {
+    method: "PUT",
+  })).status, 201);
+  const detail = await call(`/api/planning-projects/${planningProjectId}`);
+  assert.equal(detail.body.project.items[0].workItem.id, item.id);
+  const filtered = await call(`/api/work-items?planningProjectId=${planningProjectId}`);
+  assert.equal(filtered.body.count, 1);
+  assert.equal(filtered.body.workItems[0].planningProjects[0].name, "Q3 roadmap");
+  assert.equal((await call(`/api/planning-projects/${planningProjectId}`, { token: "tok_b" })).status, 404);
+  const archived = await call(`/api/planning-projects/${planningProjectId}/archive`, {
+    method: "POST", body: { expectedRevision: 1 },
+  });
+  assert.ok(archived.body.project.archivedAt);
+  const restored = await call(`/api/planning-projects/${planningProjectId}/restore`, {
+    method: "POST", body: { expectedRevision: 2 },
+  });
+  assert.equal(restored.body.project.archivedAt, null);
+});

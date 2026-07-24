@@ -7,7 +7,7 @@
 
 /** Human label for a linked item: "Issue" or "PR". */
 export function githubItemKindLabel(type) {
-  return type === "pr" ? "PR" : "Issue";
+  return type === "pr" ? "PR" : type === "local_issue" ? "Local Issue" : "Issue";
 }
 
 /** Lowercase, hyphenated, <=40-char slug from free text (empty -> "work"). */
@@ -37,7 +37,7 @@ export function worktreeAutoRunPrompt(item) {
   const title = String(item?.title ?? "").trim();
   const urlLine = item?.url ? `\n${item.url}` : "";
   return (
-    `Make progress on GitHub ${label} #${number}: ${title}.${urlLine}\n` +
+    `Make progress on ${item?.type === "local_issue" ? "" : "GitHub "}${label} #${number}: ${title}.${urlLine}\n` +
     "Review the latest state, do the next useful step, and summarize what changed."
   );
 }
@@ -167,5 +167,5 @@ export function roleAutoRunPrompt(item, { path = "develop", issueBody = null, ve
     verifyCommand && (path === "develop" || path === "prototype")
       ? `\n\nYour change will be verified by running: \`${String(verifyCommand).slice(0, 300)}\`. Make sure it passes before you finish.`
       : "";
-  return `GitHub ${label} #${number}: ${title}.${urlLine}${body}\n\n${instructions}${verifyLine}`;
+  return `${item?.type === "local_issue" ? "" : "GitHub "}${label} #${number}: ${title}.${urlLine}${body}\n\n${instructions}${verifyLine}`;
 }
