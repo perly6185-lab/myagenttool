@@ -14,6 +14,7 @@ const project = {
   capacityPoints: 34,
   startDate: "2026-07-01",
   targetDate: "2026-09-30",
+  status: "on_hold" as const,
   revision: 4,
   savedViews: [{ name: "Risks" }],
   automationRules: [{ priority: "p0" }],
@@ -50,6 +51,7 @@ describe("planning export", () => {
     expect(imported).toMatchObject({
       ownerId: "usr_release", capacityPoints: 34,
       startDate: "2026-07-01", targetDate: "2026-09-30",
+      status: "on_hold",
     });
     expect(imported.workItemCount).toBe(1);
     expect(() => parsePlanningProjectSnapshot('{"schemaVersion":2,"project":{}}')).toThrow(/Unsupported/);

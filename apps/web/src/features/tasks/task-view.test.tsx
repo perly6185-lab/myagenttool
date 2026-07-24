@@ -217,6 +217,7 @@ describe("TaskView local work items", () => {
       startDate: "2026-07-01", targetDate: "2026-07-31",
       daysRemaining: 7, projectOverdue: false,
       ownerId: "usr_release", unowned: false,
+      status: "active",
       itemCount: 2, openItemCount: 2, completedItemCount: 0,
       statusCounts: { backlog: 2, ready: 0, in_progress: 0, review: 0, blocked: 0, done: 0 },
       priorityCounts: { p0: 0, p1: 0, p2: 2, p3: 0 },
@@ -245,7 +246,7 @@ describe("TaskView local work items", () => {
     expect(screen.getByRole("option", { name: "Current month" })).toBeTruthy();
     expect(screen.getByRole("option", { name: "Current quarter" })).toBeTruthy();
     expect(screen.getByText("Project health")).toBeTruthy();
-    expect(screen.getByText("Owner: usr_release")).toBeTruthy();
+    expect(screen.getByText(/Owner: usr_release/)).toBeTruthy();
     expect(screen.getByRole("option", { name: "usr_release" })).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Insights" }));
     expect(await screen.findByText("Status distribution")).toBeTruthy();

@@ -89,6 +89,7 @@ type PlanningProject = {
   daysRemaining?: number | null;
   ownerId?: string | null;
   unowned?: boolean;
+  status?: "planned" | "active" | "on_hold" | "completed";
   health?: "healthy" | "active" | "attention";
   savedViews?: {
     id: string;
@@ -573,6 +574,7 @@ export function PlanningProjectsPanel({ onChanged = () => {} }: { onChanged?: ()
   const [projectStartDate, setProjectStartDate] = useState("");
   const [projectTargetDate, setProjectTargetDate] = useState("");
   const [projectOwnerId, setProjectOwnerId] = useState("");
+  const [projectStatus, setProjectStatus] = useState<"planned" | "active" | "on_hold" | "completed">("active");
   const [editing, setEditing] = useState(false);
   const storedPlanningView = useUiStore((state) => state.planningProjectView);
   const storePlanningView = useUiStore((state) => state.setPlanningProjectView);
@@ -593,6 +595,7 @@ export function PlanningProjectsPanel({ onChanged = () => {} }: { onChanged?: ()
   const [projectQuery, setProjectQuery] = useState("");
   const [projectScope, setProjectScope] = useState<"active" | "attention" | "archived">("active");
   const [ownerFilter, setOwnerFilter] = useState("all");
+  const [statusFilter, setStatusFilter] = useState("all");
   const [savedViewName, setSavedViewName] = useState("");
   const [savedViewId, setSavedViewId] = useState("");
   const [ruleStatus, setRuleStatus] = useState("");
@@ -679,6 +682,7 @@ export function PlanningProjectsPanel({ onChanged = () => {} }: { onChanged?: ()
         name, description, capacityPoints: Number(capacityPoints),
         startDate: projectStartDate || null, targetDate: projectTargetDate || null,
         ownerId: projectOwnerId.trim() || undefined,
+        status: projectStatus,
       }) as { project: PlanningProject };
       created = result.project;
       return result;
@@ -690,6 +694,7 @@ export function PlanningProjectsPanel({ onChanged = () => {} }: { onChanged?: ()
       setProjectStartDate("");
       setProjectTargetDate("");
       setProjectOwnerId("");
+      setProjectStatus("active");
       setSelectedId(created.id);
       setNonce((value) => value + 1);
       onChanged();
@@ -737,6 +742,7 @@ export function PlanningProjectsPanel({ onChanged = () => {} }: { onChanged?: ()
       startDate: projectStartDate || null,
       targetDate: projectTargetDate || null,
       ownerId: projectOwnerId.trim() || null,
+      status: projectStatus,
     })).then((ok) => {
       if (!ok) return;
       setEditing(false);
@@ -889,6 +895,7 @@ export function PlanningProjectsPanel({ onChanged = () => {} }: { onChanged?: ()
         startDate: snapshot.startDate,
         targetDate: snapshot.targetDate,
         ownerId: snapshot.ownerId,
+        status: snapshot.status,
         savedViews: snapshot.savedViews,
         automationRules: snapshot.automationRules,
       }) as { project: PlanningProject };
@@ -907,6 +914,7 @@ export function PlanningProjectsPanel({ onChanged = () => {} }: { onChanged?: ()
       || `${project.name} ${project.description} ${project.ownerId ?? ""}`.toLowerCase().includes(projectQuery.trim().toLowerCase()))
     .filter((project) => ownerFilter === "all"
       || (ownerFilter === "unowned" ? !project.ownerId : project.ownerId === ownerFilter))
+    .filter((project) => statusFilter === "all" || project.status === statusFilter)
     .filter((project) => projectScope === "archived"
       ? Boolean(project.archivedAt)
       : !project.archivedAt && (projectScope !== "attention" || project.health === "attention"))
@@ -922,6 +930,11 @@ export function PlanningProjectsPanel({ onChanged = () => {} }: { onChanged?: ()
         <Input value={description} onChange={(event) => setDescription(event.target.value)} placeholder={t("planningProjects.description")} />
         <Input value={projectOwnerId} onChange={(event) => setProjectOwnerId(event.target.value)}
           placeholder={t("planningOwnership.owner")} aria-label={t("planningOwnership.owner")} />
+        <Select value={projectStatus} aria-label={t("planningStatus.field")}
+          onChange={(event) => setProjectStatus(event.target.value as typeof projectStatus)}>
+          {(["planned", "active", "on_hold", "completed"] as const).map((status) =>
+            <option key={status} value={status}>{t(`planningStatus.${status}`)}</option>)}
+        </Select>
         <Input type="number" min="0" max="1000000" value={capacityPoints}
           onChange={(event) => setCapacityPoints(event.target.value)}
           placeholder={t("planningCapacity.capacity")} aria-label={t("planningCapacity.capacity")} />
@@ -961,12 +974,19 @@ export function PlanningProjectsPanel({ onChanged = () => {} }: { onChanged?: ()
           <option value="unowned">{t("planningOwnership.unowned")}</option>
           {projectOwners.map((owner) => <option key={owner} value={owner}>{owner}</option>)}
         </Select>
+        <Select value={statusFilter} aria-label={t("planningStatus.filter")}
+          onChange={(event) => setStatusFilter(event.target.value)}>
+          <option value="all">{t("planningStatus.all")}</option>
+          {(["planned", "active", "on_hold", "completed"] as const).map((status) =>
+            <option key={status} value={status}>{t(`planningStatus.${status}`)}</option>)}
+        </Select>
         <div className="space-y-1 border-t border-border pt-2">
           {visibleProjects.map((project) => (
             <button key={project.id} type="button" onClick={() => setSelectedId(project.id)}
               className={cn("flex w-full justify-between rounded-md px-2 py-1.5 text-left text-sm", selectedId === project.id ? "bg-muted font-medium" : "hover:bg-muted/60")}>
               <span className="min-w-0">
                 <span className="block truncate">{project.name}</span>
+                <span className="block text-[10px] text-muted-foreground">{t(`planningStatus.${project.status ?? "active"}`)}</span>
                 <span className="flex gap-1 text-[10px] text-muted-foreground">
                   {(project.blockedItemCount ?? 0) > 0 ? <span>{t("planningPortfolio.blocked", { count: project.blockedItemCount ?? 0 })}</span> : null}
                   {(project.overdueItemCount ?? 0) > 0 ? <span>{t("planningPortfolio.overdue", { count: project.overdueItemCount ?? 0 })}</span> : null}
@@ -993,6 +1013,11 @@ export function PlanningProjectsPanel({ onChanged = () => {} }: { onChanged?: ()
                   <Input value={description} onChange={(event) => setDescription(event.target.value)} aria-label={t("planningProjects.editDescription")} />
                   <Input value={projectOwnerId} onChange={(event) => setProjectOwnerId(event.target.value)}
                     aria-label={t("planningOwnership.owner")} />
+                  <Select value={projectStatus} aria-label={t("planningStatus.field")}
+                    onChange={(event) => setProjectStatus(event.target.value as typeof projectStatus)}>
+                    {(["planned", "active", "on_hold", "completed"] as const).map((status) =>
+                      <option key={status} value={status}>{t(`planningStatus.${status}`)}</option>)}
+                  </Select>
                   <Input type="number" min="0" max="1000000" value={capacityPoints}
                     onChange={(event) => setCapacityPoints(event.target.value)}
                     aria-label={t("planningCapacity.capacity")} />
@@ -1003,7 +1028,7 @@ export function PlanningProjectsPanel({ onChanged = () => {} }: { onChanged?: ()
                       onChange={(event) => setProjectTargetDate(event.target.value)} />
                   </div>
                 </div>
-              ) : <div><h3 className="font-semibold">{selected.name}</h3><p className="text-sm text-muted-foreground">{selected.description || t("planningProjects.noDescription")}</p><p className="text-xs text-muted-foreground">{t("planningOwnership.ownerValue", { owner: selected.ownerId || t("planningOwnership.unowned") })}</p></div>}
+              ) : <div><h3 className="font-semibold">{selected.name}</h3><p className="text-sm text-muted-foreground">{selected.description || t("planningProjects.noDescription")}</p><p className="text-xs text-muted-foreground">{t(`planningStatus.${selected.status ?? "active"}`)} · {t("planningOwnership.ownerValue", { owner: selected.ownerId || t("planningOwnership.unowned") })}</p></div>}
               <div className="flex gap-1">
                 {editing ? (
                   <Button size="sm" disabled={pending || !name.trim()} onClick={save}>{t("planningProjects.save")}</Button>
@@ -1015,6 +1040,7 @@ export function PlanningProjectsPanel({ onChanged = () => {} }: { onChanged?: ()
                     setProjectStartDate(selected.startDate ?? "");
                     setProjectTargetDate(selected.targetDate ?? "");
                     setProjectOwnerId(selected.ownerId ?? "");
+                    setProjectStatus(selected.status ?? "active");
                     setEditing(true);
                   }}>{t("planningProjects.edit")}</Button>
                 )}

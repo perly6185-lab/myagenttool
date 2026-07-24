@@ -9,6 +9,7 @@ const DUE_FILTERS = new Set(["all", "overdue", "upcoming", "month", "quarter", "
 const WORK_ITEM_STATUSES = new Set(["", "backlog", "ready", "in_progress", "review", "blocked", "done"]);
 const WORK_ITEM_PRIORITIES = new Set(["", "p0", "p1", "p2", "p3"]);
 const WORK_ITEM_TYPES = new Set(["", "task", "bug", "feature", "initiative"]);
+const PROJECT_STATUSES = new Set(["planned", "active", "on_hold", "completed"]);
 
 function validDateOnly(value) {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
@@ -140,14 +141,15 @@ export function createPlanningProjectService({
       .reduce((sum, item) => sum + (Number(item.estimatePoints) || 0), 0);
     const capacityPoints = Number(project.capacityPoints) || 0;
     const overCapacity = capacityPoints > 0 && plannedPoints > capacityPoints;
-    const projectOverdue = Boolean(project.targetDate && project.targetDate < today
+    const projectOverdue = Boolean(project.status !== "completed" && project.targetDate && project.targetDate < today
       && workItems.some((item) => item.status !== "done" && item.state !== "closed"));
     const daysRemaining = project.targetDate
       ? Math.ceil((Date.parse(`${project.targetDate}T00:00:00Z`) - Date.parse(`${today}T00:00:00Z`)) / 86_400_000)
       : null;
     const unowned = !project.ownerId;
-    const riskScore = blockedItemCount * 3 + overdueItemCount * 2 + failedRunCount * 3
+    const rawRiskScore = blockedItemCount * 3 + overdueItemCount * 2 + failedRunCount * 3
       + (overCapacity ? 3 : 0) + (projectOverdue ? 3 : 0) + (unowned ? 1 : 0);
+    const riskScore = project.status === "completed" ? 0 : rawRiskScore;
     return {
       ...project,
       itemCount: memberships.length,
@@ -167,7 +169,8 @@ export function createPlanningProjectService({
       projectOverdue,
       daysRemaining,
       unowned,
-      health: riskScore > 0 ? "attention" : activeRunCount > 0 ? "active" : "healthy",
+      health: project.status === "completed" ? "healthy"
+        : riskScore > 0 ? "attention" : activeRunCount > 0 ? "active" : "healthy",
       ...(includeItems ? {
         items: memberships.map((membership) => ({
           membership,
@@ -198,7 +201,7 @@ export function createPlanningProjectService({
   }
 
   function createProject({
-    name, description, color, capacityPoints, startDate, targetDate, ownerId,
+    name, description, color, capacityPoints, startDate, targetDate, ownerId, status,
     templateProjectId = null, savedViews, automationRules,
   } = {}, actor = null) {
     const template = templateProjectId ? findOwn(templateProjectId, actor) : null;
@@ -228,7 +231,9 @@ export function createPlanningProjectService({
     const normalizedOwnerId = normalizeProjectOwner(ownerId === undefined
       ? template?.ownerId ?? userOfActor(actor)
       : ownerId);
-    if (normalizedOwnerId === undefined || normalizedStartDate === undefined || normalizedTargetDate === undefined
+    const normalizedStatus = String(status ?? template?.status ?? "active");
+    if (!PROJECT_STATUSES.has(normalizedStatus) || normalizedOwnerId === undefined
+      || normalizedStartDate === undefined || normalizedTargetDate === undefined
       || (normalizedStartDate && normalizedTargetDate && normalizedStartDate > normalizedTargetDate)) {
       return { ok: false, status: 400, body: { error: "invalid_planning_project_schedule" } };
     }
@@ -243,6 +248,7 @@ export function createPlanningProjectService({
       startDate: normalizedStartDate,
       targetDate: normalizedTargetDate,
       ownerId: normalizedOwnerId,
+      status: normalizedStatus,
       savedViews: importedViews ?? (template?.savedViews ?? []).map((view) => ({ ...view, id: nextId("ppv") })),
       automationRules: importedRules ?? (template?.automationRules ?? []).map((rule) => ({ ...rule, id: nextId("par") })),
       activity: [],
@@ -292,6 +298,13 @@ export function createPlanningProjectService({
         return { ok: false, status: 400, body: { error: "invalid_planning_project_owner" } };
       }
       patch.ownerId = ownerId;
+    }
+    if (Object.hasOwn(changes, "status")) {
+      const status = String(changes.status ?? "");
+      if (!PROJECT_STATUSES.has(status)) {
+        return { ok: false, status: 400, body: { error: "invalid_planning_project_status" } };
+      }
+      patch.status = status;
     }
     if (Object.hasOwn(changes, "savedViews")) {
       const savedViews = normalizeSavedViews(changes.savedViews, nextId);

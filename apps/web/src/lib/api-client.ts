@@ -898,6 +898,7 @@ export const api = {
     startDate?: string | null;
     targetDate?: string | null;
     ownerId?: string | null;
+    status?: "planned" | "active" | "on_hold" | "completed";
     templateProjectId?: string;
     savedViews?: unknown[];
     automationRules?: unknown[];
