@@ -82,6 +82,7 @@ type PlanningProject = {
   activeRunCount?: number;
   failedRunCount?: number;
   riskScore?: number;
+  recommendedActions?: { code: string; count: number }[];
   plannedPoints?: number;
   capacityPoints?: number;
   overCapacity?: boolean;
@@ -1000,29 +1001,34 @@ export function PlanningProjectsPanel({ onChanged = () => {} }: { onChanged?: ()
   return (
     <div className="grid gap-4 sm:grid-cols-[14rem_1fr]">
       <div className="space-y-2">
-        <Input value={name} onChange={(event) => setName(event.target.value)} placeholder={t("planningProjects.name")} />
-        <Input value={description} onChange={(event) => setDescription(event.target.value)} placeholder={t("planningProjects.description")} />
-        <Input value={projectOwnerId} onChange={(event) => setProjectOwnerId(event.target.value)}
-          placeholder={t("planningOwnership.owner")} aria-label={t("planningOwnership.owner")} />
-        <Select value={projectStatus} aria-label={t("planningStatus.field")}
-          onChange={(event) => setProjectStatus(event.target.value as typeof projectStatus)}>
-          {(["planned", "active", "on_hold", "completed"] as const).map((status) =>
-            <option key={status} value={status}>{t(`planningStatus.${status}`)}</option>)}
-        </Select>
-        <Input value={projectTags} onChange={(event) => setProjectTags(event.target.value)}
-          placeholder={t("planningTags.hint")} aria-label={t("planningTags.field")} />
-        <Textarea value={projectStatusSummary} onChange={(event) => setProjectStatusSummary(event.target.value)}
-          placeholder={t("planningCheckIn.placeholder")} aria-label={t("planningCheckIn.summary")} />
-        <Input type="number" min="0" max="1000000" value={capacityPoints}
-          onChange={(event) => setCapacityPoints(event.target.value)}
-          placeholder={t("planningCapacity.capacity")} aria-label={t("planningCapacity.capacity")} />
-        <div className="grid grid-cols-2 gap-1">
-          <Input type="date" value={projectStartDate} aria-label={t("planningSchedule.startDate")}
-            onChange={(event) => setProjectStartDate(event.target.value)} />
-          <Input type="date" value={projectTargetDate} aria-label={t("planningSchedule.targetDate")}
-            onChange={(event) => setProjectTargetDate(event.target.value)} />
-        </div>
-        <Button size="sm" disabled={pending || !name.trim()} onClick={create}><Plus className="mr-1 size-4" />{t("planningProjects.create")}</Button>
+        <details className="rounded-md border border-border p-2">
+          <summary className="cursor-pointer text-sm font-medium">{t("planningDecision.createProject")}</summary>
+          <div className="mt-2 space-y-2">
+            <Input value={name} onChange={(event) => setName(event.target.value)} placeholder={t("planningProjects.name")} />
+            <Input value={description} onChange={(event) => setDescription(event.target.value)} placeholder={t("planningProjects.description")} />
+            <Input value={projectOwnerId} onChange={(event) => setProjectOwnerId(event.target.value)}
+              placeholder={t("planningOwnership.owner")} aria-label={t("planningOwnership.owner")} />
+            <Select value={projectStatus} aria-label={t("planningStatus.field")}
+              onChange={(event) => setProjectStatus(event.target.value as typeof projectStatus)}>
+              {(["planned", "active", "on_hold", "completed"] as const).map((status) =>
+                <option key={status} value={status}>{t(`planningStatus.${status}`)}</option>)}
+            </Select>
+            <Input value={projectTags} onChange={(event) => setProjectTags(event.target.value)}
+              placeholder={t("planningTags.hint")} aria-label={t("planningTags.field")} />
+            <Textarea value={projectStatusSummary} onChange={(event) => setProjectStatusSummary(event.target.value)}
+              placeholder={t("planningCheckIn.placeholder")} aria-label={t("planningCheckIn.summary")} />
+            <Input type="number" min="0" max="1000000" value={capacityPoints}
+              onChange={(event) => setCapacityPoints(event.target.value)}
+              placeholder={t("planningCapacity.capacity")} aria-label={t("planningCapacity.capacity")} />
+            <div className="grid grid-cols-2 gap-1">
+              <Input type="date" value={projectStartDate} aria-label={t("planningSchedule.startDate")}
+                onChange={(event) => setProjectStartDate(event.target.value)} />
+              <Input type="date" value={projectTargetDate} aria-label={t("planningSchedule.targetDate")}
+                onChange={(event) => setProjectTargetDate(event.target.value)} />
+            </div>
+            <Button size="sm" disabled={pending || !name.trim()} onClick={create}><Plus className="mr-1 size-4" />{t("planningProjects.create")}</Button>
+          </div>
+        </details>
         <label className="inline-flex h-8 cursor-pointer items-center justify-center rounded-md border border-border px-3 text-sm hover:bg-accent">
           {t("planningImport.button")}
           <input type="file" accept="application/json,.json" className="sr-only"
@@ -1184,6 +1190,17 @@ export function PlanningProjectsPanel({ onChanged = () => {} }: { onChanged?: ()
                 {t("planningExecution.health")}
               </div>
             </div>
+            <section className="rounded-md border border-border p-3">
+              <h4 className="mb-2 text-sm font-semibold">{t("planningDecision.nextActions")}</h4>
+              <div className="flex flex-wrap gap-2">
+                {(selected.recommendedActions ?? []).map((action) => (
+                  <Badge key={action.code} tone={action.code.includes("failed") || action.code.includes("blocked") ? "danger" : "neutral"}>
+                    {t(`planningDecision.actions.${action.code}` as never, { count: action.count })}
+                  </Badge>
+                ))}
+                {!selected.recommendedActions?.length ? <span className="text-xs text-muted-foreground">{t("planningDecision.noActions")}</span> : null}
+              </div>
+            </section>
             <div className="flex gap-1 rounded-md bg-muted p-0.5 text-xs">
               {(["items", "board", "roadmap", "executions", "insights"] as const).map((value) => (
                 <button key={value} type="button" onClick={() => setView(value)}

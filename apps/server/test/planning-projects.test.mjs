@@ -130,6 +130,9 @@ test("project portfolio summaries expose execution and schedule risk", () => {
   assert.equal(summary.plannedPoints, 5);
   assert.equal(summary.capacityUtilization, 167);
   assert.equal(summary.overCapacity, true);
+  assert.deepEqual(summary.recommendedActions.slice(0, 3).map((action) => action.code), [
+    "recover_failed_runs", "resolve_blocked_items", "rebalance_capacity",
+  ]);
 });
 
 test("projects persist validated named views with server-owned identities", () => {
@@ -292,6 +295,7 @@ test("project status is validated and completed projects suppress delivery risk"
   assert.equal(completed.projectOverdue, false);
   assert.equal(completed.riskScore, 0);
   assert.equal(completed.health, "healthy");
+  assert.deepEqual(completed.recommendedActions, []);
   assert.equal(service.updateProject({
     planningProjectId: project.id, expectedRevision: 2, status: "unknown",
   }, ACTOR_A).status, 400);

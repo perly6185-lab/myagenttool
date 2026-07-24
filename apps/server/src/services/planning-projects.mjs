@@ -171,6 +171,15 @@ export function createPlanningProjectService({
     const rawRiskScore = blockedItemCount * 3 + overdueItemCount * 2 + failedRunCount * 3
       + (overCapacity ? 3 : 0) + (projectOverdue ? 3 : 0) + (unowned ? 1 : 0) + (staleStatus ? 2 : 0);
     const riskScore = project.status === "completed" ? 0 : rawRiskScore;
+    const recommendedActions = project.status === "completed" ? [] : [
+      failedRunCount ? { code: "recover_failed_runs", count: failedRunCount } : null,
+      blockedItemCount ? { code: "resolve_blocked_items", count: blockedItemCount } : null,
+      projectOverdue ? { code: "recover_schedule", count: Math.abs(daysRemaining ?? 0) } : null,
+      overCapacity ? { code: "rebalance_capacity", count: Math.max(0, plannedPoints - capacityPoints) } : null,
+      staleStatus ? { code: "refresh_status", count: daysSinceStatusUpdate ?? 0 } : null,
+      unowned ? { code: "assign_owner", count: 1 } : null,
+      !project.targetDate && project.status === "active" ? { code: "set_target_date", count: 1 } : null,
+    ].filter(Boolean);
     return {
       ...publicProject,
       itemCount: memberships.length,
@@ -183,6 +192,7 @@ export function createPlanningProjectService({
       activeRunCount,
       failedRunCount,
       riskScore,
+      recommendedActions,
       plannedPoints,
       capacityPoints,
       overCapacity,
