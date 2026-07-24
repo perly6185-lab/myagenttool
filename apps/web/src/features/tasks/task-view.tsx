@@ -522,6 +522,7 @@ export function TaskView() {
 export function PlanningProjectsPanel({ onChanged = () => {} }: { onChanged?: () => void }) {
   const { t } = useAppTranslation();
   const { data: consoleState } = useConsoleState();
+  const setSection = useUiStore((state) => state.setSection);
   const { execute, pending, error } = useAsyncAction();
   const [projects, setProjects] = useState<PlanningProject[]>([]);
   const [workItems, setWorkItems] = useState<LocalWorkItem[]>([]);
@@ -869,9 +870,12 @@ export function PlanningProjectsPanel({ onChanged = () => {} }: { onChanged?: ()
                             <Badge tone="danger">{t("taskDependencies.blocked")}</Badge>
                           ) : null}
                           {executionStatus(workItem) ? (
-                            <Badge tone={statusTone(executionStatus(workItem) ?? "")}>
-                              {t(`autoRuns.status.${executionStatus(workItem)}` as never, { defaultValue: executionStatus(workItem) })}
-                            </Badge>
+                            <button type="button" title={t("planningExecution.openAutoRuns")}
+                              onClick={() => setSection("autoRuns")}>
+                              <Badge tone={statusTone(executionStatus(workItem) ?? "")}>
+                                {t(`autoRuns.status.${executionStatus(workItem)}` as never, { defaultValue: executionStatus(workItem) })}
+                              </Badge>
+                            </button>
                           ) : (
                             <div className="mt-2 flex gap-1">
                               <Button variant="ghost" size="sm" disabled={pending}
@@ -943,9 +947,12 @@ export function PlanningProjectsPanel({ onChanged = () => {} }: { onChanged?: ()
                                 ) : null}
                                 <Badge tone={statusTone(workItem.status)}>{t(`tasks.localStatus.${workItem.status}`)}</Badge>
                                 {executionStatus(workItem) ? (
-                                  <Badge tone={statusTone(executionStatus(workItem) ?? "")}>
-                                    {t(`autoRuns.status.${executionStatus(workItem)}` as never, { defaultValue: executionStatus(workItem) })}
-                                  </Badge>
+                                  <button type="button" title={t("planningExecution.openAutoRuns")}
+                                    onClick={() => setSection("autoRuns")}>
+                                    <Badge tone={statusTone(executionStatus(workItem) ?? "")}>
+                                      {t(`autoRuns.status.${executionStatus(workItem)}` as never, { defaultValue: executionStatus(workItem) })}
+                                    </Badge>
+                                  </button>
                                 ) : (
                                   <button type="button" disabled={pending} title={t("planningExecution.startAutoRun")}
                                     onClick={() => startPlanningExecution(workItem, "auto_run")}

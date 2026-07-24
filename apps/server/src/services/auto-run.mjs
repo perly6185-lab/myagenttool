@@ -57,6 +57,44 @@ export const autoRunStates = [
   "failed",
 ];
 
+export function syncBoundWorkItemsForAutoRun({ state, autoRun, status, now, nextId }) {
+  const targetStatus = ["pr_open", "report_posted", "plan_proposed"].includes(status)
+    ? "review"
+    : ["done", "decomposed"].includes(status)
+      ? "done"
+      : ["failed", "blocked"].includes(status)
+        ? "blocked"
+        : status === "cancelled"
+          ? "ready"
+          : ["materializing", "running", "awaiting_approval", "verifying", "publishing"].includes(status)
+            ? "in_progress"
+            : null;
+  if (!targetStatus) return [];
+  const changed = [];
+  for (const item of state.workItems ?? []) {
+    if (!(item.executionBindings ?? []).some((binding) =>
+      binding.kind === "auto_run" && binding.targetId === autoRun.id)) continue;
+    if (item.status === targetStatus) continue;
+    const previousStatus = item.status;
+    item.status = targetStatus;
+    if (targetStatus === "done") item.state = "closed";
+    item.revision = (Number(item.revision) || 0) + 1;
+    item.updatedAt = now();
+    (state.workItemActivities ??= []).unshift({
+      id: nextId("wia"),
+      workItemId: item.id,
+      ownerTeamId: item.ownerTeamId,
+      projectId: item.projectId,
+      action: "execution_status_synced",
+      actorId: "usr_autorun",
+      createdAt: item.updatedAt,
+      details: { autoRunId: autoRun.id, autoRunStatus: status, from: previousStatus, to: targetStatus },
+    });
+    changed.push(item);
+  }
+  return changed;
+}
+
 export function createAutoRunService({
   state,
   now,
@@ -348,6 +386,7 @@ export function createAutoRunService({
     autoRun.status = status;
     autoRun.updatedAt = now();
     if (extra) Object.assign(autoRun, extra);
+    syncBoundWorkItemsForAutoRun({ state, autoRun, status, now, nextId });
     // errorCode reflects only the CURRENT failure: a machine-readable reason a run
     // failed (e.g. "dispatch_timeout" / "orphaned" / "stuck" for an infrastructure
     // reclaim vs a null code for a genuine task failure). Cleared on any transition
