@@ -1049,6 +1049,8 @@ export function createServerRuntimeServices({
     fileRemediationIssue: async ({ repoPath, title, body, labels }) => runChildIssueCreate({ cwd: repoPath, title, body, labels }),
     store,
   });
+  const processPlanningRecommendedActions = () =>
+    planningProjectService.processQueuedRecommendedActions({ retryAutoRun });
   // Now that the reaction exists, let completion drive it.
   advanceAutoRunHook = advanceAutoRunForInvocation;
   approvalAutoRunHook = syncAutoRunOnApproval;
@@ -3268,6 +3270,7 @@ export function createServerRuntimeServices({
     ensureLocalOrigin,
     startAutoRun,
     retryAutoRun,
+    processPlanningRecommendedActions,
     cancelAutoRun,
     reapStuckAutoRuns,
     sweepExpiredClaims,

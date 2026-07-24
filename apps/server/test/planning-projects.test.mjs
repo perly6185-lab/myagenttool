@@ -405,13 +405,14 @@ test("recommended actions are confirmed, idempotent, and auditable", () => {
   assert.equal(replay.body.replayed, true);
 });
 
-test("high-risk recommended actions require a scoped approval grant", () => {
+test("high-risk recommended actions require approval and drain through the durable executor", async () => {
   const { service, state } = harness();
   state.workItems.push({
     id: "wi_dependency", localRef: "LOCAL-3", ownerTeamId: "team_a",
     title: "Dependency", status: "backlog", priority: "p2", state: "open",
   });
   state.workItems[0].dependencyIds = ["wi_dependency"];
+  state.workItems[0].status = "blocked";
   const project = service.createProject({ name: "Blocked work" }, ACTOR_A).body.project;
   service.addItem({ planningProjectId: project.id, workItemId: "wi_a" }, ACTOR_A);
   const current = service.getProject({ planningProjectId: project.id }, ACTOR_A).body.project;
@@ -440,4 +441,9 @@ test("high-risk recommended actions require a scoped approval grant", () => {
   }, ACTOR_A);
   assert.equal(resumed.body.execution.status, "queued");
   assert.equal(resumed.body.execution.approvalRequestId, pending.body.approvalRequest.id);
+  const drained = await service.processQueuedRecommendedActions();
+  assert.equal(drained.count, 1);
+  assert.equal(drained.processed[0].status, "completed");
+  assert.equal(drained.processed[0].result.stillBlocked[0].workItemId, "wi_a");
+  assert.equal(state.planningProjects[0].activity[0].action, "recommended_action_completed");
 });

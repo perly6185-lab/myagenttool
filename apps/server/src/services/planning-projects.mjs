@@ -696,8 +696,88 @@ export function createPlanningProjectService({
     return { ok: true, status: 200, body: { approvalRequest: request, execution, project: projectView(project, actor, { includeItems: true }) } };
   }
 
+  async function processQueuedRecommendedActions({ retryAutoRun = null } = {}) {
+    const processed = [];
+    for (const project of state.planningProjects ?? []) {
+      for (const execution of (project.recommendedActionExecutions ?? []).filter((candidate) =>
+        candidate.status === "queued"
+        || (candidate.status === "running" && Date.parse(candidate.leaseExpiresAt ?? "") <= Date.parse(now())))) {
+        const actor = { userId: "usr_planning_executor", teamId: project.ownerTeamId };
+        execution.status = "running";
+        execution.startedAt = now();
+        execution.leaseExpiresAt = new Date(Date.parse(now()) + 5 * 60_000).toISOString();
+        recordActivity(project, actor, "recommended_action_started", {
+          executionId: execution.id, code: execution.code,
+        });
+        persistStateSoon();
+        try {
+          let result;
+          const memberIds = new Set((state.planningProjectItems ?? [])
+            .filter((membership) => membership.planningProjectId === project.id
+              && membership.ownerTeamId === project.ownerTeamId)
+            .map((membership) => membership.workItemId));
+          const workItems = (state.workItems ?? []).filter((item) =>
+            item.ownerTeamId === project.ownerTeamId && memberIds.has(item.id));
+          if (execution.code === "recover_failed_runs") {
+            if (typeof retryAutoRun !== "function") throw new Error("auto_run_retry_unavailable");
+            const runIds = [...new Set(workItems.flatMap((item) => item.executionBindings ?? [])
+              .filter((binding) => binding.kind === "auto_run")
+              .map((binding) => binding.targetId)
+              .filter((id) => (state.autoRuns ?? []).some((run) => run.id === id && run.status === "failed")))];
+            const retried = [];
+            for (const runId of runIds) {
+              const retryResult = await retryAutoRun(runId, { actor });
+              retried.push(retryResult?.autoRun?.id ?? retryResult?.run?.id ?? runId);
+            }
+            result = { attempted: runIds.length, retried };
+          } else if (execution.code === "resolve_blocked_items") {
+            const completedIds = new Set(workItems.filter((item) => item.status === "done" || item.state === "closed").map((item) => item.id));
+            const recovered = [];
+            const stillBlocked = [];
+            for (const item of workItems.filter((candidate) => candidate.status === "blocked")) {
+              const blockers = (item.dependencyIds ?? []).filter((id) => !completedIds.has(id));
+              if (blockers.length) {
+                stillBlocked.push({ workItemId: item.id, blockers });
+                continue;
+              }
+              item.status = "ready";
+              item.revision += 1;
+              item.updatedAt = now();
+              item.lastModifiedBy = actor.userId;
+              recovered.push(item.id);
+            }
+            result = { attempted: recovered.length + stillBlocked.length, recovered, stillBlocked };
+          } else {
+            throw new Error(`unsupported_recommended_action:${execution.code}`);
+          }
+          execution.status = "completed";
+          execution.completedAt = now();
+          execution.leaseExpiresAt = null;
+          execution.result = result;
+          recordActivity(project, actor, "recommended_action_completed", {
+            executionId: execution.id, code: execution.code, result,
+          });
+        } catch (error) {
+          execution.status = "failed";
+          execution.completedAt = now();
+          execution.leaseExpiresAt = null;
+          execution.result = { error: error instanceof Error ? error.message : String(error) };
+          recordActivity(project, actor, "recommended_action_failed", {
+            executionId: execution.id, code: execution.code, error: execution.result.error,
+          });
+        }
+        project.revision += 1;
+        project.updatedAt = now();
+        persistStateSoon();
+        processed.push(execution);
+      }
+    }
+    return { processed, count: processed.length };
+  }
+
   return {
     listProjects, getProject, createProject, updateProject, setArchived,
     addItem, removeItem, reorderItems, updateItems, executeRecommendedAction, decideRecommendedAction,
+    processQueuedRecommendedActions,
   };
 }

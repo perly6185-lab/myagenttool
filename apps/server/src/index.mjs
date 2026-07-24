@@ -241,6 +241,17 @@ if (typeof httpDependencies.reapStuckAutoRuns === "function") {
   setInterval(() => httpDependencies.reapStuckAutoRuns().catch(() => {}), 60_000).unref?.();
 }
 
+// Resume approved Project actions after a restart and keep draining the durable
+// queue. Each execution is moved to running before awaiting external work, so a
+// concurrent tick cannot consume it twice.
+if (typeof httpDependencies.processPlanningRecommendedActions === "function") {
+  const processPlanningActions = () =>
+    httpDependencies.processPlanningRecommendedActions().catch((error) =>
+      console.error(`[planning-actions] ${error?.message ?? error}`));
+  processPlanningActions();
+  setInterval(processPlanningActions, 30_000).unref?.();
+}
+
 // #6: issue-claim leases expire lazily (only when an admission path looks at
 // them). A slow proactive sweep settles expired claims even when nobody re-claims
 // or lists that project — so the issue_claim_expired event/history fire promptly
