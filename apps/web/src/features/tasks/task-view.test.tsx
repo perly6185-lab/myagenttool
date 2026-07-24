@@ -220,6 +220,7 @@ describe("TaskView local work items", () => {
       status: "active",
       tags: ["release", "backend"],
       statusSummary: "Ready for rollout", daysSinceStatusUpdate: 2, staleStatus: false,
+      checkIns: [{ id: "ppc_1", summary: "Scope approved", authorId: "usr_release", createdAt: "2026-07-22T00:00:00.000Z" }],
       itemCount: 2, openItemCount: 2, completedItemCount: 0,
       statusCounts: { backlog: 2, ready: 0, in_progress: 0, review: 0, blocked: 0, done: 0 },
       priorityCounts: { p0: 0, p1: 0, p2: 2, p3: 0 },
@@ -254,6 +255,8 @@ describe("TaskView local work items", () => {
     expect(screen.getByRole("option", { name: "backend" })).toBeTruthy();
     expect(screen.getByText(/Ready for rollout/)).toBeTruthy();
     expect(screen.getByText(/Updated 2 days ago/)).toBeTruthy();
+    expect(screen.getByText("Status history (1)")).toBeTruthy();
+    expect(screen.getByText("Scope approved")).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Insights" }));
     expect(await screen.findByText("Status distribution")).toBeTruthy();
     expect(screen.getByText("Milestone progress")).toBeTruthy();

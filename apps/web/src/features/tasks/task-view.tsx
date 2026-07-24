@@ -95,6 +95,7 @@ type PlanningProject = {
   statusUpdatedAt?: string | null;
   daysSinceStatusUpdate?: number | null;
   staleStatus?: boolean;
+  checkIns?: { id: string; summary: string; authorId: string; createdAt: string }[];
   health?: "healthy" | "active" | "attention";
   savedViews?: {
     id: string;
@@ -1133,6 +1134,20 @@ export function PlanningProjectsPanel({ onChanged = () => {} }: { onChanged?: ()
                 {t("planningSavedViews.save")}
               </Button>
             </div>
+            <details className="rounded-md border border-border p-2">
+              <summary className="cursor-pointer text-sm font-medium">
+                {t("planningCheckIn.history", { count: selected.checkIns?.length ?? 0 })}
+              </summary>
+              <ol className="mt-2 max-h-48 space-y-2 overflow-y-auto">
+                {(selected.checkIns ?? []).map((checkIn) => (
+                  <li key={checkIn.id} className="border-l-2 border-border pl-2 text-xs">
+                    <p>{checkIn.summary}</p>
+                    <p className="text-muted-foreground">{checkIn.authorId} · {new Date(checkIn.createdAt).toLocaleString()}</p>
+                  </li>
+                ))}
+                {!selected.checkIns?.length ? <li className="text-xs text-muted-foreground">{t("planningCheckIn.noHistory")}</li> : null}
+              </ol>
+            </details>
             <details className="rounded-md border border-border p-2">
               <summary className="cursor-pointer text-sm font-medium">
                 {t("planningAutomation.title", { count: selected.automationRules?.length ?? 0 })}

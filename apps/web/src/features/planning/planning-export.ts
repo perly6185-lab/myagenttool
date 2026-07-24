@@ -27,6 +27,7 @@ export interface PlanningExportProject {
   status?: "planned" | "active" | "on_hold" | "completed";
   tags?: string[];
   statusSummary?: string;
+  checkIns?: { id: string; summary: string; authorId: string; createdAt: string }[];
   savedViews?: unknown[];
   automationRules?: unknown[];
   activity?: unknown[];
@@ -77,6 +78,7 @@ export function planningProjectJson(project: PlanningExportProject, exportedAt =
       status: project.status ?? "active",
       tags: project.tags ?? [],
       statusSummary: project.statusSummary ?? "",
+      checkIns: project.checkIns ?? [],
       savedViews: project.savedViews ?? [],
       automationRules: project.automationRules ?? [],
       activity: project.activity ?? [],

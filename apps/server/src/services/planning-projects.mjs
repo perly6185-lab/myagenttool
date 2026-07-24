@@ -278,6 +278,12 @@ export function createPlanningProjectService({
       tags: normalizedTags,
       statusSummary: normalizedStatusSummary,
       statusUpdatedAt: normalizedStatusSummary ? timestamp : null,
+      checkIns: normalizedStatusSummary ? [{
+        id: nextId("ppc"),
+        summary: normalizedStatusSummary,
+        authorId: userOfActor(actor),
+        createdAt: timestamp,
+      }] : [],
       savedViews: importedViews ?? (template?.savedViews ?? []).map((view) => ({ ...view, id: nextId("ppv") })),
       automationRules: importedRules ?? (template?.automationRules ?? []).map((rule) => ({ ...rule, id: nextId("par") })),
       activity: [],
@@ -345,8 +351,17 @@ export function createPlanningProjectService({
       if (statusSummary.length > 1_000) {
         return { ok: false, status: 400, body: { error: "planning_project_status_summary_too_large" } };
       }
+      const statusTimestamp = now();
       patch.statusSummary = statusSummary;
-      patch.statusUpdatedAt = now();
+      patch.statusUpdatedAt = statusTimestamp;
+      if (statusSummary && statusSummary !== project.statusSummary) {
+        patch.checkIns = [{
+          id: nextId("ppc"),
+          summary: statusSummary,
+          authorId: userOfActor(actor),
+          createdAt: statusTimestamp,
+        }, ...(project.checkIns ?? [])].slice(0, 50);
+      }
     }
     if (Object.hasOwn(changes, "savedViews")) {
       const savedViews = normalizeSavedViews(changes.savedViews, nextId);

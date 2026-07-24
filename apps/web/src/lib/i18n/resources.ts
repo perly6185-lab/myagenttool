@@ -19,7 +19,7 @@ export const resources = {
       planningOwnership: { owner: "Project owner", ownerValue: "Owner: {{owner}}", filter: "Filter by owner", all: "All owners", unowned: "Unowned" },
       planningStatus: { field: "Project status", filter: "Filter by project status", all: "All project statuses", planned: "Planned", active: "Active", on_hold: "On hold", completed: "Completed" },
       planningTags: { field: "Project tags", hint: "Comma-separated tags", filter: "Filter by project tag", all: "All tags" },
-      planningCheckIn: { summary: "Status summary", placeholder: "Share the latest delivery update", updated: "Updated {{days}} days ago", stale: "Status update overdue", empty: "No status update yet" },
+      planningCheckIn: { summary: "Status summary", placeholder: "Share the latest delivery update", updated: "Updated {{days}} days ago", stale: "Status update overdue", empty: "No status update yet", history: "Status history ({{count}})", noHistory: "No status history yet" },
       planningProjects: { title: "Planning projects", name: "Project name", description: "Description", create: "Create", empty: "No planning projects yet.", noDescription: "No description", archive: "Archive", restore: "Restore", edit: "Edit", save: "Save", editName: "Edit project name", editDescription: "Edit project description", filter: "Filter by planning project", all: "All planning projects", items: "Local issues", board: "Board", total: "Total", open: "Open", completed: "Completed", changeStatus: "Change status for {{ref}}", moveUp: "Move {{ref}} up", moveDown: "Move {{ref}} down", selectItem: "Select {{ref}}", selectedCount: "{{count}} selected", applyBulk: "Apply status", noItems: "Create a local issue to add it here.", select: "Select a planning project", selectHint: "Create or select a project to organize local issues." },
       sectionGroups: { work: "Work", run: "Run", oversee: "Oversee", configure: "Configure", ledgers: "Ledgers" },
       sections: {
@@ -150,7 +150,7 @@ export const resources = {
       planningOwnership: { owner: "项目负责人", ownerValue: "负责人：{{owner}}", filter: "按负责人筛选", all: "所有负责人", unowned: "未分配负责人" },
       planningStatus: { field: "项目状态", filter: "按项目状态筛选", all: "所有项目状态", planned: "计划中", active: "进行中", on_hold: "暂停", completed: "已完成" },
       planningTags: { field: "项目标签", hint: "使用逗号分隔标签", filter: "按项目标签筛选", all: "所有标签" },
-      planningCheckIn: { summary: "状态简报", placeholder: "填写最新交付进展", updated: "{{days}} 天前更新", stale: "状态简报已过期", empty: "暂无状态简报" },
+      planningCheckIn: { summary: "状态简报", placeholder: "填写最新交付进展", updated: "{{days}} 天前更新", stale: "状态简报已过期", empty: "暂无状态简报", history: "状态历史（{{count}}）", noHistory: "暂无状态历史" },
       planningProjects: { title: "规划项目", name: "项目名称", description: "描述", create: "创建", empty: "尚无规划项目。", noDescription: "暂无描述", archive: "归档", restore: "恢复", edit: "编辑", save: "保存", editName: "编辑项目名称", editDescription: "编辑项目描述", filter: "按规划项目筛选", all: "所有规划项目", items: "本地 Issue", board: "看板", total: "总数", open: "开放", completed: "已完成", changeStatus: "调整 {{ref}} 的状态", moveUp: "上移 {{ref}}", moveDown: "下移 {{ref}}", selectItem: "选择 {{ref}}", selectedCount: "已选择 {{count}} 项", applyBulk: "应用状态", noItems: "请先创建本地 Issue，再添加到此项目。", select: "选择规划项目", selectHint: "创建或选择项目以组织本地 Issue。" },
       sectionGroups: { work: "工作", run: "运行", oversee: "监督", configure: "配置", ledgers: "台账" },
       sections: {

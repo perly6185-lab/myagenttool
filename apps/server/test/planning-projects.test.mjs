@@ -316,6 +316,8 @@ test("project status summaries record check-ins and stale active projects raise 
   const project = service.createProject({ name: "Check-in", statusSummary: "On track" }, ACTOR_A).body.project;
   assert.equal(project.statusSummary, "On track");
   assert.equal(project.statusUpdatedAt, "2026-07-24T00:00:00.000Z");
+  assert.equal(project.checkIns[0].summary, "On track");
+  assert.equal(project.checkIns[0].authorId, "usr_a");
   state.planningProjects[0].statusUpdatedAt = "2026-07-01T00:00:00.000Z";
   const stale = service.getProject({ planningProjectId: project.id }, ACTOR_A).body.project;
   assert.equal(stale.daysSinceStatusUpdate, 23);
@@ -326,6 +328,7 @@ test("project status summaries record check-ins and stale active projects raise 
   }, ACTOR_A).body.project;
   assert.equal(refreshed.statusSummary, "Recovered");
   assert.equal(refreshed.staleStatus, false);
+  assert.deepEqual(refreshed.checkIns.map((entry) => entry.summary), ["Recovered", "On track"]);
   assert.equal(service.updateProject({
     planningProjectId: project.id, expectedRevision: 2, statusSummary: "x".repeat(1_001),
   }, ACTOR_A).status, 400);
