@@ -46,11 +46,32 @@ export function createM3Service({
   // #968: run a lifecycle-action transition as one durable unit of work — commit
   // synchronously through the Store when wired, else fall back to the debounce so
   // behavior is unchanged where no store is injected (many hermetic m3 tests).
+  let afterCommitQueue = null;
   const runTx = (fn) => {
-    if (typeof store?.transaction === "function") return store.transaction(fn);
-    const result = fn();
-    persistStateSoon();
-    return result;
+    const parentQueue = afterCommitQueue;
+    const queue = parentQueue ?? [];
+    afterCommitQueue = queue;
+    try {
+      const result = typeof store?.transaction === "function" ? store.transaction(fn) : fn();
+      if (!parentQueue && typeof store?.transaction !== "function") persistStateSoon();
+      if (!parentQueue) {
+        afterCommitQueue = null;
+        for (const callback of queue) {
+          try { callback(); } catch { /* committed state must not be reported as rolled back */ }
+        }
+      }
+      return result;
+    } catch (error) {
+      if (!parentQueue) queue.length = 0;
+      throw error;
+    } finally {
+      afterCommitQueue = parentQueue;
+    }
+  };
+  runTx.afterCommit = (callback) => {
+    if (typeof callback !== "function") return;
+    if (afterCommitQueue) afterCommitQueue.push(callback);
+    else callback();
   };
   function createPrivateCatalogEntry(body = {}) {
     const createdAt = now();
@@ -871,7 +892,9 @@ export function createM3Service({
     };
     appendEvent({ invocationId: usage.invocationId ?? null, type: "alert_triggered", level: "warn", message, data });
     // Alerting must never break or slow a run.
-    try { void dispatchAlert({ kind: "cost_anomaly", severity: "high", message, data }); } catch { /* best-effort */ }
+    runTx.afterCommit(() => {
+      try { void dispatchAlert({ kind: "cost_anomaly", severity: "high", message, data }); } catch { /* best-effort */ }
+    });
     return data;
   }
 
@@ -900,12 +923,17 @@ export function createM3Service({
       outputTokens: sum("outputTokens"),
     }, invocation.createdAt ?? createdAt);
 
+    const metadata = invocation.input?.metadata ?? {};
+    const projectId = metadata.projectId ?? invocation.projectId ?? state.currentProjectId ?? null;
+    const project = projectId ? (state.projects ?? []).find((item) => item.id === projectId) ?? null : null;
     const usageRecord = {
       id: nextId("aiu_demo"),
       userId: String(invocation.requestedBy ?? "usr_local"),
-      teamId: null,
+      teamId: metadata.teamId ?? (project ? teamOf(project) : null),
       agentId: invocation.agentId ?? null,
       invocationId: invocation.id,
+      autoRunId: metadata.autoRunId ?? null,
+      projectId,
       deviceId: invocation.delivery?.deviceId ?? null,
       quotaDecisionId: null,
       provider: named.provider ?? "unknown",
@@ -951,6 +979,9 @@ export function createM3Service({
           roundCount: rounds.length,
           inputTokens: usageRecord.inputTokens,
           outputTokens: usageRecord.outputTokens,
+          projectId: usageRecord.projectId,
+          teamId: usageRecord.teamId,
+          autoRunId: usageRecord.autoRunId,
           pricingVersion: usageRecord.pricingVersion,
           pricingModelPriceId: usageRecord.pricingModelPriceId,
         },
@@ -987,6 +1018,8 @@ export function createM3Service({
         teamId: entry.teamId,
         agentId: entry.agentId,
         invocationId: entry.invocationId,
+        autoRunId: entry.autoRunId ?? null,
+        projectId: entry.projectId ?? null,
         provider: entry.provider,
         model: state.aiUsageRecords.find((record) => record.ledgerEntryIds.includes(entry.id))?.model ?? null,
         costOwner: entry.costOwner,
@@ -1212,7 +1245,16 @@ export function createM3Service({
           : hasEstimate
             ? `Recorded estimated ${entry.currency} ${entry.amountUsd} for ${model} (${inputTokens}+${outputTokens} tokens).`
             : `Recorded unmetered token usage (${inputTokens}+${outputTokens} tokens) for ${model}.`,
-        data: { ledgerEntryId: entry.id, amountUsd: entry.amountUsd, amountSource: source, inputTokens, outputTokens, projectId },
+        data: {
+          ledgerEntryId: entry.id,
+          amountUsd: entry.amountUsd,
+          amountSource: source,
+          inputTokens,
+          outputTokens,
+          projectId,
+          teamId: entry.teamId,
+          autoRunId: entry.autoRunId,
+        },
       });
     });
     return entry;

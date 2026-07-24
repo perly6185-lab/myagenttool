@@ -420,12 +420,13 @@ export function createAutoRunService({
       if (threshold > 0 && breaker.consecutiveFailures >= threshold && !breaker.openUntil) {
         const cooldownMin = Number(state.autoRunSettings?.breakerCooldownMinutes ?? 15) || 15;
         breaker.openUntil = new Date(Date.parse(now()) + cooldownMin * 60_000).toISOString();
-        void sendAlert?.({
+        const alert = {
           kind: "circuit_breaker_open",
           severity: "high",
           message: `Auto-run circuit breaker opened after ${breaker.consecutiveFailures} consecutive failures; paused until ${breaker.openUntil}.`,
           data: { consecutiveFailures: breaker.consecutiveFailures, openUntil: breaker.openUntil },
-        });
+        };
+        runTx.afterCommit(() => { void sendAlert?.(alert); });
       }
     } else if (status === "pr_open" || status === "report_posted" || status === "done") {
       breaker.consecutiveFailures = 0;
@@ -1303,12 +1304,13 @@ export function createAutoRunService({
         message: `Auto-run ${autoRun.id} failed over from ${fromAgentId} to ${alternate.id} after "${reason}" (attempt ${autoRun.failoverAttempts}).`,
         data: { autoRunId: autoRun.id, fromAgentId, toAgentId: alternate.id, reason, failoverAttempts: autoRun.failoverAttempts, worktreeId: worktree.id, invocationId: invocation.id },
       });
-      void sendAlert?.({
+      const alert = {
         kind: "run_failed_over",
         severity: "medium",
         message: `Auto-run ${autoRun.id} failed over to ${alternate.id} after ${reason}.`,
         data: { autoRunId: autoRun.id, fromAgentId, toAgentId: alternate.id, reason, link: autoRun.link },
-      });
+      };
+      runTx.afterCommit(() => { void sendAlert?.(alert); });
       return true;
     });
   }
