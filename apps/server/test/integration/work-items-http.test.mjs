@@ -117,6 +117,30 @@ test("GitHub issue binding and sync are wired through HTTP", async () => {
   assert.equal(pulled.body.workItem.title, "Updated remotely");
 });
 
+test("structured verification gates completion over HTTP", async () => {
+  let item = (await call("/api/work-items", {
+    method: "POST",
+    body: { projectId: "prj_a", title: "Acceptance gated", acceptanceCriteria: ["Tests pass"] },
+  })).body.workItem;
+  assert.equal((await call(`/api/work-items/${item.id}`, {
+    method: "PATCH", body: { expectedRevision: item.revision, status: "done" },
+  })).status, 409);
+  const verified = await call(`/api/work-items/${item.id}/verifications`, {
+    method: "POST",
+    body: {
+      expectedRevision: item.revision, kind: "test", status: "passed", command: "pnpm test",
+      summary: "Passed", acceptanceResults: [{ criterion: "Tests pass", status: "passed" }],
+      evidence: [{ kind: "run", ref: "run:http-test", summary: "HTTP integration" }],
+    },
+  });
+  assert.equal(verified.status, 201);
+  item = verified.body.workItem;
+  assert.equal(item.completionGate.ready, true);
+  assert.equal((await call(`/api/work-items/${item.id}`, {
+    method: "PATCH", body: { expectedRevision: item.revision, status: "done" },
+  })).status, 200);
+});
+
 test("foreign work items and projects are existence-hidden", async () => {
   const created = await call("/api/work-items", {
     method: "POST",

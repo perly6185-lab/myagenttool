@@ -3321,6 +3321,7 @@ export function createServerRuntimeServices({
     releaseWorkItemClaim: workItemService.releaseWorkItemClaim,
     bindGithubIssue: workItemService.bindGithubIssue,
     syncGithubIssue: workItemService.syncGithubIssue,
+    recordWorkItemVerification: workItemService.recordVerification,
     fetchWorkItemGithubIssue: ({ projectId, issueNumber }) => {
       const project = (state.projects ?? []).find((candidate) => candidate.id === projectId);
       const target = (state.projectTargets ?? []).find((candidate) => candidate.projectId === projectId && candidate.state === "ready");

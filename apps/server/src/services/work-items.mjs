@@ -16,6 +16,8 @@ const MAX_LABELS = 50;
 const MAX_COMMENT = 100_000;
 const MAX_MILESTONE = 200;
 const GITHUB_SYNC_FIELDS = ["title", "body", "state", "labels"];
+const VERIFICATION_KINDS = new Set(["test", "lint", "typecheck", "manual", "review"]);
+const VERIFICATION_STATUSES = new Set(["passed", "failed"]);
 
 function strings(values, { limit = MAX_LABELS, maxLength = 100 } = {}) {
   if (!Array.isArray(values)) return null;
@@ -176,6 +178,16 @@ export function createWorkItemService({
     return claimActive ? "claimed" : "unclaimed";
   }
 
+  function completionGate(item) {
+    if (!(item.acceptanceCriteria ?? []).length) return { ready: true, missingCriteria: [], verificationRequired: false };
+    const passed = new Set((item.acceptanceResults ?? [])
+      .filter((result) => result.status === "passed")
+      .map((result) => result.criterion));
+    const missingCriteria = item.acceptanceCriteria.filter((criterion) => !passed.has(criterion));
+    const verificationRequired = !(item.verificationRecords ?? []).some((record) => record.status === "passed");
+    return { ready: missingCriteria.length === 0 && !verificationRequired, missingCriteria, verificationRequired };
+  }
+
   function workItemView(item, actor) {
     const { createIdempotencyKey: _createIdempotencyKey, ...publicItem } = item;
     const derivedExecutionState = executionState(item);
@@ -199,6 +211,7 @@ export function createWorkItemService({
         planning: item.status,
         execution: derivedExecutionState,
       },
+      completionGate: completionGate(item),
       parent: parent ? {
         id: parent.id, localRef: parent.localRef, title: parent.title,
         status: parent.status, state: parent.state,
@@ -484,6 +497,10 @@ export function createWorkItemService({
     }
     const validated = validateDraft(changes, { partial: true });
     if (validated.error) return { ok: false, status: 400, body: { error: validated.error } };
+    if (validated.value.status === "done") {
+      const gate = completionGate(item);
+      if (!gate.ready) return { ok: false, status: 409, body: { error: "work_item_acceptance_incomplete", ...gate } };
+    }
     if (Object.hasOwn(changes, "projectId")) {
       const projectId = String(changes.projectId ?? "");
       if (!projectId || !actorCanAccessProject(state, actor, projectId)) {
@@ -543,6 +560,10 @@ export function createWorkItemService({
         updatedAt: now(),
         lastModifiedBy: actorUser(actor),
       });
+      if (validated.value.acceptanceCriteria) {
+        item.acceptanceResults = (item.acceptanceResults ?? [])
+          .filter((result) => validated.value.acceptanceCriteria.includes(result.criterion));
+      }
       recordActivity(item, actor, "updated", {
         changes: Object.fromEntries(Object.entries(validated.value).map(([key, value]) => [
           key, { from: previous[key], to: value },
@@ -592,6 +613,13 @@ export function createWorkItemService({
       }
       targets.push(item);
     }
+    if (validated.value.status === "done") {
+      const blocked = targets.find((item) => !completionGate(item).ready);
+      if (blocked) return {
+        ok: false, status: 409,
+        body: { error: "work_item_acceptance_incomplete", workItemId: blocked.id, ...completionGate(blocked) },
+      };
+    }
     runTx(() => {
       for (const item of targets) {
         const previous = Object.fromEntries(Object.keys(validated.value).map((key) => [key, item[key]]));
@@ -625,6 +653,10 @@ export function createWorkItemService({
     if (!["close", "reopen", "archive", "restore"].includes(action)) {
       return { ok: false, status: 400, body: { error: "invalid_work_item_action" } };
     }
+    if (action === "close") {
+      const gate = completionGate(item);
+      if (!gate.ready) return { ok: false, status: 409, body: { error: "work_item_acceptance_incomplete", ...gate } };
+    }
     const pastTense = { close: "closed", reopen: "reopened", archive: "archived", restore: "restored" }[action];
     runTx(() => {
       if (action === "close") item.state = "closed";
@@ -644,6 +676,56 @@ export function createWorkItemService({
       });
     });
     return { ok: true, status: 200, body: { workItem: item } };
+  }
+
+  function recordVerification({
+    workItemId, expectedRevision, kind, status, command = null, summary = "", acceptanceResults = [], evidence = [],
+  } = {}, actor = null) {
+    const item = findOwn(workItemId, actor);
+    if (!item) return notFound();
+    if (expectedRevision !== item.revision) {
+      return { ok: false, status: 409, body: { error: "work_item_revision_conflict", currentRevision: item.revision } };
+    }
+    if (!VERIFICATION_KINDS.has(kind) || !VERIFICATION_STATUSES.has(status)
+      || typeof summary !== "string" || summary.length > 10_000
+      || (command != null && (typeof command !== "string" || command.length > 2_000))
+      || !Array.isArray(acceptanceResults) || !Array.isArray(evidence) || evidence.length > 100) {
+      return { ok: false, status: 400, body: { error: "invalid_work_item_verification" } };
+    }
+    const criteria = new Set(item.acceptanceCriteria ?? []);
+    const normalizedResults = acceptanceResults.map((result) => ({
+      criterion: String(result?.criterion ?? ""),
+      status: String(result?.status ?? ""),
+      note: String(result?.note ?? ""),
+    }));
+    if (normalizedResults.some((result) => !criteria.has(result.criterion)
+      || !["passed", "failed", "not_tested"].includes(result.status) || result.note.length > 5_000)) {
+      return { ok: false, status: 400, body: { error: "invalid_work_item_acceptance_result" } };
+    }
+    const normalizedEvidence = evidence.map((entry) => ({
+      kind: String(entry?.kind ?? ""),
+      ref: String(entry?.ref ?? ""),
+      summary: String(entry?.summary ?? ""),
+    }));
+    if (normalizedEvidence.some((entry) => !["url", "artifact", "commit", "log", "run"].includes(entry.kind)
+      || !entry.ref || entry.ref.length > 2_000 || entry.summary.length > 5_000)) {
+      return { ok: false, status: 400, body: { error: "invalid_work_item_evidence" } };
+    }
+    const record = {
+      id: nextId("wvr"), kind, status, command, summary,
+      evidence: normalizedEvidence, recordedAt: now(), recordedBy: actorUser(actor),
+    };
+    runTx(() => {
+      (item.verificationRecords ??= []).unshift(record);
+      const byCriterion = new Map((item.acceptanceResults ?? []).map((result) => [result.criterion, result]));
+      for (const result of normalizedResults) byCriterion.set(result.criterion, { ...result, verificationId: record.id, updatedAt: now() });
+      item.acceptanceResults = [...byCriterion.values()];
+      item.revision += 1;
+      item.updatedAt = now();
+      item.lastModifiedBy = actorUser(actor);
+      recordActivity(item, actor, "verification_recorded", { verificationId: record.id, kind, status });
+    });
+    return { ok: true, status: 201, body: { verification: record, workItem: workItemView(item, actor) } };
   }
 
   function listActivity({ workItemId } = {}, actor = null) {
@@ -834,5 +916,6 @@ export function createWorkItemService({
     listWorkItems, getWorkItem, createWorkItem, updateWorkItem, bulkUpdateWorkItems, transitionWorkItem,
     listActivity, listComments, createComment, updateComment, deleteComment,
     recordExecutionBinding, claimWorkItem, releaseWorkItemClaim, bindGithubIssue, syncGithubIssue,
+    recordVerification,
   };
 }

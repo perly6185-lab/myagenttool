@@ -61,6 +61,13 @@ type LocalWorkItem = {
   labels: string[];
   assigneeIds: string[];
   acceptanceCriteria: string[];
+  acceptanceResults?: { criterion: string; status: "passed" | "failed" | "not_tested"; note: string; verificationId: string }[];
+  verificationRecords?: {
+    id: string; kind: "test" | "lint" | "typecheck" | "manual" | "review";
+    status: "passed" | "failed"; command: string | null; summary: string;
+    evidence: { kind: string; ref: string; summary: string }[]; recordedAt: string; recordedBy: string;
+  }[];
+  completionGate?: { ready: boolean; missingCriteria: string[]; verificationRequired: boolean };
   dueDate: string | null;
   milestone: string;
   estimatePoints: number;
@@ -2054,6 +2061,39 @@ function LocalWorkItemDetail({
       <Field label={t("tasks.acceptanceCriteria")}>
         <textarea className="min-h-24 w-full rounded-md border border-border bg-background p-2 text-sm" value={acceptance} onChange={(event) => setAcceptance(event.target.value)} />
       </Field>
+      {(item.acceptanceCriteria.length || item.verificationRecords?.length) ? (
+        <section className="space-y-2 rounded-md border border-border p-3">
+          <div className="flex items-center justify-between">
+            <h3 className="text-sm font-semibold">{t("tasks.acceptanceCriteria")}</h3>
+            <Badge tone={item.completionGate?.ready ? "success" : "warning"}>
+              {t(item.completionGate?.ready ? "tasks.localStatus.done" : "tasks.localStatus.blocked")}
+            </Badge>
+          </div>
+          <ul className="space-y-1">
+            {item.acceptanceCriteria.map((criterion) => {
+              const result = item.acceptanceResults?.find((candidate) => candidate.criterion === criterion);
+              return (
+                <li key={criterion} className="flex items-start justify-between gap-2 text-xs">
+                  <span>{criterion}{result?.note ? ` · ${result.note}` : ""}</span>
+                  <Badge tone={result?.status === "passed" ? "success" : result?.status === "failed" ? "danger" : "neutral"}>
+                    {result?.status === "passed" ? t("approvals.testsPassed") : result?.status === "failed" ? t("approvals.testsFailed") : t("evidence.none")}
+                  </Badge>
+                </li>
+              );
+            })}
+          </ul>
+          {(item.verificationRecords ?? []).map((record) => (
+            <div key={record.id} className="rounded bg-muted p-2 text-xs">
+              <div className="flex justify-between gap-2">
+                <strong>{record.kind} · {record.summary}</strong>
+                <Badge tone={record.status === "passed" ? "success" : "danger"}>{t(record.status === "passed" ? "approvals.testsPassed" : "approvals.testsFailed")}</Badge>
+              </div>
+              {record.command ? <code className="mt-1 block">{record.command}</code> : null}
+              {record.evidence.map((entry) => <div key={`${entry.kind}:${entry.ref}`} className="mt-1 font-mono">{entry.kind}: {entry.ref}</div>)}
+            </div>
+          ))}
+        </section>
+      ) : null}
       {error ? <p className="text-xs text-destructive">{error}</p> : null}
       <div className="flex flex-wrap justify-end gap-2">
         <Button variant="secondary" disabled={pending || item.state !== "open"} onClick={createExecutionWorktree}>

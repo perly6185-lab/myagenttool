@@ -6,6 +6,7 @@ export async function handleWorkItemRoutes({
   claimWorkItem, releaseWorkItemClaim,
   bindGithubIssue, syncGithubIssue,
   fetchGithubIssue, pushGithubIssue,
+  recordVerification,
 }) {
   if (!url.pathname.startsWith("/api/work-items")) return false;
 
@@ -111,6 +112,15 @@ export async function handleWorkItemRoutes({
     } else {
       result = syncGithubIssue({ workItemId, ...body }, actor);
     }
+    sendJson(res, result.status, result.body);
+    return true;
+  }
+
+  const verificationMatch = url.pathname.match(/^\/api\/work-items\/([^/]+)\/verifications$/);
+  if (verificationMatch && req.method === "POST") {
+    const result = recordVerification({
+      workItemId: decodeURIComponent(verificationMatch[1]), ...(await readJson(req)),
+    }, actor);
     sendJson(res, result.status, result.body);
     return true;
   }

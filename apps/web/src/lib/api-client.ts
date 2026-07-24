@@ -876,6 +876,8 @@ export const api = {
     request("POST", `/api/work-items/${encodeURIComponent(id)}/github/link`, payload),
   syncWorkItemGithubIssue: (id: string, payload: Record<string, unknown>) =>
     request("POST", `/api/work-items/${encodeURIComponent(id)}/github/sync`, payload),
+  recordWorkItemVerification: (id: string, payload: Record<string, unknown>) =>
+    request("POST", `/api/work-items/${encodeURIComponent(id)}/verifications`, payload),
   bulkUpdateWorkItems: (payload: {
     items: { id: string; expectedRevision: number }[];
     changes: Record<string, unknown>;

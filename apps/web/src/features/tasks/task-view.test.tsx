@@ -310,7 +310,14 @@ describe("TaskView local work items", () => {
         lastSyncedAt: "2026-07-24T00:00:00.000Z",
         conflict: { fields: ["title"], local: { title: "Editable issue" }, remote: { title: "Remote issue" } },
       }],
-      acceptanceCriteria: [], revision: 1, archivedAt: null,
+      acceptanceCriteria: ["Tests pass"], revision: 1, archivedAt: null,
+      acceptanceResults: [{ criterion: "Tests pass", status: "passed", note: "321 tests", verificationId: "wvr_1" }],
+      verificationRecords: [{
+        id: "wvr_1", kind: "test", status: "passed", command: "pnpm test", summary: "All suites",
+        evidence: [{ kind: "run", ref: "run:test-1", summary: "Test output" }],
+        recordedAt: "2026-07-24T00:00:00.000Z", recordedBy: "usr_a",
+      }],
+      completionGate: { ready: true, missingCriteria: [], verificationRequired: false },
       parentId: null, parent: null, subIssues: [],
       subIssuesSummary: { total: 0, completed: 0, percentCompleted: 0 },
       updatedAt: "2026-07-24T00:00:00.000Z",
@@ -334,6 +341,9 @@ describe("TaskView local work items", () => {
     expect(screen.getByText("Execution: Claimed")).toBeTruthy();
     expect(screen.getByText("GitHub #42 · Conflict")).toBeTruthy();
     expect(screen.getByText("Conflicting fields: title")).toBeTruthy();
+    expect(screen.getByText("Tests pass · 321 tests")).toBeTruthy();
+    expect(screen.getByText("test · All suites")).toBeTruthy();
+    expect(screen.getByText("run: run:test-1")).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Keep local" }));
     await waitFor(() => expect(mocks.syncWorkItemGithubIssue).toHaveBeenCalledWith(
       "lwi_1", { expectedRevision: 1, direction: "resolve_local" },

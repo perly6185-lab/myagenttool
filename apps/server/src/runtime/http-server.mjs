@@ -54,6 +54,7 @@ export function createHttpServer({
   syncGithubIssue,
   fetchWorkItemGithubIssue,
   pushWorkItemGithubIssue,
+  recordWorkItemVerification,
   releaseIssueClaim,
   listIssueClaims,
   approveDesign,
@@ -394,6 +395,7 @@ export function createHttpServer({
         syncGithubIssue,
         fetchGithubIssue: fetchWorkItemGithubIssue,
         pushGithubIssue: pushWorkItemGithubIssue,
+        recordVerification: recordWorkItemVerification,
       })) {
         return;
       }

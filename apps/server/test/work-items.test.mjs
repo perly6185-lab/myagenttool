@@ -145,6 +145,55 @@ test("GitHub push uses a two-step payload and confirmation baseline", () => {
   assert.equal(confirmed.body.action, "pushed");
 });
 
+test("structured acceptance and verification gate completion", () => {
+  const { service } = harness();
+  let item = service.createWorkItem({
+    projectId: "prj_a", title: "Verified delivery",
+    acceptanceCriteria: ["Tests pass", "Docs updated"],
+  }, ACTOR_A).body.workItem;
+  const blocked = service.updateWorkItem({
+    workItemId: item.id, expectedRevision: item.revision, status: "done",
+  }, ACTOR_A);
+  assert.equal(blocked.status, 409);
+  assert.deepEqual(blocked.body.missingCriteria, ["Tests pass", "Docs updated"]);
+  assert.equal(blocked.body.verificationRequired, true);
+
+  const recorded = service.recordVerification({
+    workItemId: item.id, expectedRevision: item.revision,
+    kind: "test", status: "passed", command: "pnpm test", summary: "All suites passed.",
+    acceptanceResults: [
+      { criterion: "Tests pass", status: "passed", note: "321 tests" },
+      { criterion: "Docs updated", status: "passed", note: "README checked" },
+    ],
+    evidence: [
+      { kind: "commit", ref: "abc123", summary: "Implementation" },
+      { kind: "log", ref: "run:test-1", summary: "Test output" },
+    ],
+  }, ACTOR_A);
+  assert.equal(recorded.status, 201);
+  assert.equal(recorded.body.workItem.completionGate.ready, true);
+  assert.equal(recorded.body.workItem.verificationRecords[0].recordedBy, "usr_a");
+  item = recorded.body.workItem;
+  assert.equal(service.updateWorkItem({
+    workItemId: item.id, expectedRevision: item.revision, status: "done",
+  }, ACTOR_A).status, 200);
+});
+
+test("verification rejects unknown criteria and malformed evidence", () => {
+  const { service } = harness();
+  const item = service.createWorkItem({
+    projectId: "prj_a", title: "Evidence", acceptanceCriteria: ["Known"],
+  }, ACTOR_A).body.workItem;
+  assert.equal(service.recordVerification({
+    workItemId: item.id, expectedRevision: item.revision, kind: "test", status: "passed",
+    acceptanceResults: [{ criterion: "Unknown", status: "passed" }],
+  }, ACTOR_A).body.error, "invalid_work_item_acceptance_result");
+  assert.equal(service.recordVerification({
+    workItemId: item.id, expectedRevision: item.revision, kind: "test", status: "passed",
+    evidence: [{ kind: "secret", ref: "x" }],
+  }, ACTOR_A).body.error, "invalid_work_item_evidence");
+});
+
 test("team scoping hides foreign work items and foreign projects", () => {
   const { service } = harness();
   const item = service.createWorkItem({ projectId: "prj_a", title: "A" }, ACTOR_A).body.workItem;
