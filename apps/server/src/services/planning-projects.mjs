@@ -6,6 +6,9 @@ const MAX_DESCRIPTION = 20_000;
 const MAX_SAVED_VIEWS = 20;
 const PLANNING_VIEWS = new Set(["list", "board", "roadmap"]);
 const DUE_FILTERS = new Set(["all", "overdue", "upcoming", "month", "quarter", "unscheduled"]);
+const WORK_ITEM_STATUSES = new Set(["", "backlog", "ready", "in_progress", "review", "blocked", "done"]);
+const WORK_ITEM_PRIORITIES = new Set(["", "p0", "p1", "p2", "p3"]);
+const WORK_ITEM_TYPES = new Set(["", "task", "bug", "feature", "initiative"]);
 
 function normalizeSavedViews(value, nextId) {
   if (!Array.isArray(value) || value.length > MAX_SAVED_VIEWS) return null;
@@ -31,6 +34,25 @@ function normalizeSavedViews(value, nextId) {
         milestone: filters.milestone,
         due: filters.due,
       },
+    });
+  }
+  return result;
+}
+
+function normalizeAutomationRules(value, nextId) {
+  if (!Array.isArray(value) || value.length > 20) return null;
+  const result = [];
+  for (const candidate of value) {
+    const status = String(candidate?.status ?? "");
+    const priority = String(candidate?.priority ?? "");
+    const type = String(candidate?.type ?? "");
+    const label = String(candidate?.label ?? "").trim();
+    if (!WORK_ITEM_STATUSES.has(status) || !WORK_ITEM_PRIORITIES.has(priority)
+      || !WORK_ITEM_TYPES.has(type) || label.length > 100
+      || (!status && !priority && !type && !label)) return null;
+    result.push({
+      id: String(candidate.id ?? "").trim() || nextId("par"),
+      status, priority, type, label,
     });
   }
   return result;
@@ -148,6 +170,7 @@ export function createPlanningProjectService({
       description: normalizedDescription,
       color: String(color ?? template?.color ?? "indigo").slice(0, 40),
       savedViews: (template?.savedViews ?? []).map((view) => ({ ...view, id: nextId("ppv") })),
+      automationRules: (template?.automationRules ?? []).map((rule) => ({ ...rule, id: nextId("par") })),
       revision: 1,
       archivedAt: null,
       createdAt: timestamp,
@@ -191,6 +214,11 @@ export function createPlanningProjectService({
       const savedViews = normalizeSavedViews(changes.savedViews, nextId);
       if (!savedViews) return { ok: false, status: 400, body: { error: "invalid_planning_project_saved_views" } };
       patch.savedViews = savedViews;
+    }
+    if (Object.hasOwn(changes, "automationRules")) {
+      const automationRules = normalizeAutomationRules(changes.automationRules, nextId);
+      if (!automationRules) return { ok: false, status: 400, body: { error: "invalid_planning_project_automation_rules" } };
+      patch.automationRules = automationRules;
     }
     runTx(() => Object.assign(project, patch, {
       revision: project.revision + 1, updatedAt: now(), lastModifiedBy: userOfActor(actor),

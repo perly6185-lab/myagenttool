@@ -173,3 +173,20 @@ test("projects can be duplicated as reusable configuration templates", () => {
     name: "No access", templateProjectId: "missing",
   }, ACTOR_A).status, 404);
 });
+
+test("projects validate and persist automation rules", () => {
+  const { service } = harness();
+  const project = service.createProject({ name: "Triage" }, ACTOR_A).body.project;
+  const updated = service.updateProject({
+    planningProjectId: project.id,
+    expectedRevision: 1,
+    automationRules: [{ status: "ready", priority: "p1", type: "bug", label: "release" }],
+  }, ACTOR_A);
+  assert.equal(updated.status, 200);
+  assert.match(updated.body.project.automationRules[0].id, /^par_/);
+  assert.equal(service.updateProject({
+    planningProjectId: project.id,
+    expectedRevision: 2,
+    automationRules: [{ status: "", priority: "", type: "", label: "" }],
+  }, ACTOR_A).status, 400);
+});

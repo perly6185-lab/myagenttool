@@ -130,6 +130,26 @@ test("dependencies expose blocking state and reject cycles", () => {
   assert.equal(service.getWorkItem({ workItemId: delivery.id }, ACTOR_A).body.workItem.blockedBy[0].resolved, true);
 });
 
+test("planning automation adds matching work items once", () => {
+  const { service, state } = harness();
+  state.planningProjects = [{
+    id: "ppj_1", ownerTeamId: "team_a", name: "Urgent bugs", archivedAt: null,
+    automationRules: [{ id: "par_1", status: "", priority: "p0", type: "bug", label: "release" }],
+  }];
+  state.planningProjectItems = [];
+  const item = service.createWorkItem({
+    projectId: "prj_a", title: "Ship blocker", type: "bug", priority: "p0", labels: ["release"],
+  }, ACTOR_A).body.workItem;
+  assert.equal(state.planningProjectItems.length, 1);
+  assert.equal(state.planningProjectItems[0].workItemId, item.id);
+  service.updateWorkItem({
+    workItemId: item.id, expectedRevision: 1, status: "ready",
+  }, ACTOR_A);
+  assert.equal(state.planningProjectItems.length, 1);
+  assert.equal(service.listActivity({ workItemId: item.id }, ACTOR_A).body.activities
+    .some((row) => row.action === "planning_auto_added"), true);
+});
+
 test("close, reopen, archive and restore preserve the record", () => {
   const { service } = harness();
   const item = service.createWorkItem({ projectId: "prj_a", title: "A" }, ACTOR_A).body.workItem;

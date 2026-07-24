@@ -77,6 +77,7 @@ type PlanningProject = {
     view: "list" | "board" | "roadmap";
     filters: { status: string; priority: string; milestone: string; due: "all" | "overdue" | "upcoming" | "month" | "quarter" | "unscheduled" };
   }[];
+  automationRules?: { id: string; status: string; priority: string; type: string; label: string }[];
   items?: { membership: { position: number }; workItem: LocalWorkItem }[];
 };
 type WorkItemComment = {
@@ -569,6 +570,10 @@ export function PlanningProjectsPanel({ onChanged = () => {} }: { onChanged?: ()
   const [projectScope, setProjectScope] = useState<"active" | "attention" | "archived">("active");
   const [savedViewName, setSavedViewName] = useState("");
   const [savedViewId, setSavedViewId] = useState("");
+  const [ruleStatus, setRuleStatus] = useState("");
+  const [rulePriority, setRulePriority] = useState("");
+  const [ruleType, setRuleType] = useState("");
+  const [ruleLabel, setRuleLabel] = useState("");
   const [nonce, setNonce] = useState(0);
   const selected = projects.find((project) => project.id === selectedId);
   const displayWorkItems = selected?.items
@@ -794,6 +799,32 @@ export function PlanningProjectsPanel({ onChanged = () => {} }: { onChanged?: ()
       setNonce((value) => value + 1);
     });
   };
+  const saveAutomationRule = () => {
+    if (!selected || (!ruleStatus && !rulePriority && !ruleType && !ruleLabel.trim())) return;
+    void execute(() => api.updatePlanningProject(selected.id, {
+      expectedRevision: selected.revision,
+      automationRules: [
+        ...(selected.automationRules ?? []),
+        { status: ruleStatus, priority: rulePriority, type: ruleType, label: ruleLabel.trim() },
+      ],
+    })).then((ok) => {
+      if (!ok) return;
+      setRuleStatus("");
+      setRulePriority("");
+      setRuleType("");
+      setRuleLabel("");
+      setNonce((value) => value + 1);
+    });
+  };
+  const deleteAutomationRule = (id: string) => {
+    if (!selected) return;
+    void execute(() => api.updatePlanningProject(selected.id, {
+      expectedRevision: selected.revision,
+      automationRules: (selected.automationRules ?? []).filter((rule) => rule.id !== id),
+    })).then((ok) => {
+      if (ok) setNonce((value) => value + 1);
+    });
+  };
   const visibleProjects = projects
     .filter((project) => !projectQuery.trim()
       || `${project.name} ${project.description}`.toLowerCase().includes(projectQuery.trim().toLowerCase()))
@@ -902,6 +933,48 @@ export function PlanningProjectsPanel({ onChanged = () => {} }: { onChanged?: ()
                 {t("planningSavedViews.save")}
               </Button>
             </div>
+            <details className="rounded-md border border-border p-2">
+              <summary className="cursor-pointer text-sm font-medium">
+                {t("planningAutomation.title", { count: selected.automationRules?.length ?? 0 })}
+              </summary>
+              <div className="mt-2 grid gap-2 sm:grid-cols-4">
+                <Select value={ruleStatus} aria-label={t("planningAutomation.status")} onChange={(event) => setRuleStatus(event.target.value)}>
+                  <option value="">{t("planningAutomation.anyStatus")}</option>
+                  {(["backlog", "ready", "in_progress", "review", "blocked", "done"] as const).map((value) => (
+                    <option key={value} value={value}>{t(`tasks.localStatus.${value}`)}</option>
+                  ))}
+                </Select>
+                <Select value={rulePriority} aria-label={t("planningAutomation.priority")} onChange={(event) => setRulePriority(event.target.value)}>
+                  <option value="">{t("planningAutomation.anyPriority")}</option>
+                  {(["p0", "p1", "p2", "p3"] as const).map((value) => <option key={value} value={value}>{value.toUpperCase()}</option>)}
+                </Select>
+                <Select value={ruleType} aria-label={t("planningAutomation.type")} onChange={(event) => setRuleType(event.target.value)}>
+                  <option value="">{t("planningAutomation.anyType")}</option>
+                  {(["task", "bug", "feature", "initiative"] as const).map((value) => (
+                    <option key={value} value={value}>{t(`tasks.localType.${value}`)}</option>
+                  ))}
+                </Select>
+                <Input value={ruleLabel} aria-label={t("planningAutomation.label")} onChange={(event) => setRuleLabel(event.target.value)}
+                  placeholder={t("planningAutomation.label")} />
+              </div>
+              <div className="mt-2 flex justify-end">
+                <Button variant="secondary" size="sm" disabled={pending || (!ruleStatus && !rulePriority && !ruleType && !ruleLabel.trim())}
+                  onClick={saveAutomationRule}>{t("planningAutomation.add")}</Button>
+              </div>
+              <div className="mt-2 space-y-1">
+                {(selected.automationRules ?? []).map((rule) => (
+                  <div key={rule.id} className="flex items-center justify-between rounded bg-muted px-2 py-1 text-xs">
+                    <span>{[
+                      rule.status && t(`tasks.localStatus.${rule.status}` as never),
+                      rule.priority?.toUpperCase(),
+                      rule.type && t(`tasks.localType.${rule.type}` as never),
+                      rule.label,
+                    ].filter(Boolean).join(" · ")}</span>
+                    <Button variant="ghost" size="sm" onClick={() => deleteAutomationRule(rule.id)}>{t("planningAutomation.delete")}</Button>
+                  </div>
+                ))}
+              </div>
+            </details>
             <div className="grid gap-2 sm:grid-cols-4">
               <Select value={filters.status} aria-label={t("planningFilters.status")}
                 onChange={(event) => storeFilters({ ...filters, status: event.target.value })}>

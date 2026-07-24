@@ -9,6 +9,7 @@ export const resources = {
       planningSavedViews: { savedViews: "Saved views", select: "Select a saved view", name: "View name", save: "Save view", delete: "Delete" },
       planningLifecycle: { scope: "Project lifecycle", active: "Active projects", attention: "Needs attention", archived: "Archived projects", duplicate: "Duplicate", copyName: "{{name}} copy" },
       planningBulk: { field: "Bulk field", value: "Bulk value", status: "Status", priority: "Priority", milestone: "Milestone", dueDate: "Due date", remove: "Remove from project" },
+      planningAutomation: { title: "Automation rules ({{count}})", status: "Rule status", priority: "Rule priority", type: "Rule type", label: "Required label", anyStatus: "Any status", anyPriority: "Any priority", anyType: "Any type", add: "Add rule", delete: "Delete" },
       planningProjects: { title: "Planning projects", name: "Project name", description: "Description", create: "Create", empty: "No planning projects yet.", noDescription: "No description", archive: "Archive", restore: "Restore", edit: "Edit", save: "Save", editName: "Edit project name", editDescription: "Edit project description", filter: "Filter by planning project", all: "All planning projects", items: "Local issues", board: "Board", total: "Total", open: "Open", completed: "Completed", changeStatus: "Change status for {{ref}}", moveUp: "Move {{ref}} up", moveDown: "Move {{ref}} down", selectItem: "Select {{ref}}", selectedCount: "{{count}} selected", applyBulk: "Apply status", noItems: "Create a local issue to add it here.", select: "Select a planning project", selectHint: "Create or select a project to organize local issues." },
       sectionGroups: { work: "Work", run: "Run", oversee: "Oversee", configure: "Configure", ledgers: "Ledgers" },
       sections: {
@@ -129,6 +130,7 @@ export const resources = {
       planningSavedViews: { savedViews: "已保存视图", select: "选择已保存视图", name: "视图名称", save: "保存视图", delete: "删除" },
       planningLifecycle: { scope: "项目生命周期", active: "活跃项目", attention: "需关注项目", archived: "已归档项目", duplicate: "复制", copyName: "{{name}} 副本" },
       planningBulk: { field: "批量字段", value: "批量值", status: "状态", priority: "优先级", milestone: "里程碑", dueDate: "截止日期", remove: "从项目移除" },
+      planningAutomation: { title: "自动化规则（{{count}}）", status: "规则状态", priority: "规则优先级", type: "规则类型", label: "必需标签", anyStatus: "任意状态", anyPriority: "任意优先级", anyType: "任意类型", add: "添加规则", delete: "删除" },
       planningProjects: { title: "规划项目", name: "项目名称", description: "描述", create: "创建", empty: "尚无规划项目。", noDescription: "暂无描述", archive: "归档", restore: "恢复", edit: "编辑", save: "保存", editName: "编辑项目名称", editDescription: "编辑项目描述", filter: "按规划项目筛选", all: "所有规划项目", items: "本地 Issue", board: "看板", total: "总数", open: "开放", completed: "已完成", changeStatus: "调整 {{ref}} 的状态", moveUp: "上移 {{ref}}", moveDown: "下移 {{ref}}", selectItem: "选择 {{ref}}", selectedCount: "已选择 {{count}} 项", applyBulk: "应用状态", noItems: "请先创建本地 Issue，再添加到此项目。", select: "选择规划项目", selectHint: "创建或选择项目以组织本地 Issue。" },
       sectionGroups: { work: "工作", run: "运行", oversee: "监督", configure: "配置", ledgers: "台账" },
       sections: {

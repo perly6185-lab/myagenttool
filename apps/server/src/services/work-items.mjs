@@ -112,6 +112,36 @@ export function createWorkItemService({
     return item && item.ownerTeamId === actorTeam(actor) ? item : null;
   }
 
+  function applyPlanningAutomation(item, actor) {
+    const matchingProjects = (state.planningProjects ?? []).filter((project) =>
+      project.ownerTeamId === actorTeam(actor) && !project.archivedAt
+      && (project.automationRules ?? []).some((rule) =>
+        (!rule.status || rule.status === item.status)
+        && (!rule.priority || rule.priority === item.priority)
+        && (!rule.type || rule.type === item.type)
+        && (!rule.label || item.labels.includes(rule.label))));
+    for (const project of matchingProjects) {
+      const memberships = (state.planningProjectItems ?? []).filter((row) =>
+        row.ownerTeamId === actorTeam(actor) && row.planningProjectId === project.id);
+      if (memberships.some((row) => row.workItemId === item.id)) continue;
+      (state.planningProjectItems ??= []).push({
+        id: nextId("ppi"),
+        ownerTeamId: project.ownerTeamId,
+        planningProjectId: project.id,
+        workItemId: item.id,
+        position: Math.max(0, ...memberships.map((row) => Number(row.position) || 0)) + 1_000,
+        addedAt: now(),
+        addedBy: "usr_planning_automation",
+      });
+      recordActivity(item, actor, "planning_auto_added", { planningProjectId: project.id });
+      appendEvent({
+        invocationId: null, type: "planning_project_item_auto_added", level: "info",
+        message: `${item.localRef} automatically added to ${project.name}.`,
+        data: { planningProjectId: project.id, workItemId: item.id, actorTeamId: actorTeam(actor) },
+      });
+    }
+  }
+
   function workItemView(item, actor) {
     const memberships = (state.planningProjectItems ?? []).filter(
       (row) => row.workItemId === item.id && row.ownerTeamId === actorTeam(actor),
@@ -208,6 +238,7 @@ export function createWorkItemService({
       recordActivity(workItem, actor, "created", {
         title: workItem.title, type: workItem.type, status: workItem.status, priority: workItem.priority,
       });
+      applyPlanningAutomation(workItem, actor);
       appendEvent({
         invocationId: null,
         type: "work_item_created",
@@ -270,6 +301,7 @@ export function createWorkItemService({
           key, { from: previous[key], to: value },
         ])),
       });
+      applyPlanningAutomation(item, actor);
       appendEvent({
         invocationId: null,
         type: "work_item_updated",
