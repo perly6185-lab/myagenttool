@@ -287,3 +287,62 @@ test("project status is validated and completed projects suppress delivery risk"
   }, ACTOR_A).status, 400);
   assert.equal(service.createProject({ name: "Invalid", status: "unknown" }, ACTOR_A).status, 400);
 });
+
+test("project tags are normalized, searchable, inherited, and revision gated", () => {
+  const { service } = harness();
+  const project = service.createProject({
+    name: "Tagged", tags: ["release", "backend"],
+  }, ACTOR_A).body.project;
+  assert.deepEqual(project.tags, ["release", "backend"]);
+  assert.equal(service.listProjects({ q: "backend" }, ACTOR_A).body.count, 1);
+  const copy = service.createProject({
+    name: "Tagged copy", templateProjectId: project.id,
+  }, ACTOR_A).body.project;
+  assert.deepEqual(copy.tags, ["release", "backend"]);
+  const updated = service.updateProject({
+    planningProjectId: project.id, expectedRevision: 1, tags: ["frontend"],
+  }, ACTOR_A).body.project;
+  assert.deepEqual(updated.tags, ["frontend"]);
+  assert.equal(service.createProject({
+    name: "Duplicate tags", tags: ["Release", "release"],
+  }, ACTOR_A).status, 400);
+  assert.equal(service.updateProject({
+    planningProjectId: project.id, expectedRevision: 2, tags: ["x".repeat(51)],
+  }, ACTOR_A).status, 400);
+});
+
+test("project status summaries record check-ins and stale active projects raise risk", () => {
+  const { state, service } = harness();
+  const project = service.createProject({ name: "Check-in", statusSummary: "On track" }, ACTOR_A).body.project;
+  assert.equal(project.statusSummary, "On track");
+  assert.equal(project.statusUpdatedAt, "2026-07-24T00:00:00.000Z");
+  assert.equal(project.checkIns[0].summary, "On track");
+  assert.equal(project.checkIns[0].authorId, "usr_a");
+  state.planningProjects[0].statusUpdatedAt = "2026-07-01T00:00:00.000Z";
+  const stale = service.getProject({ planningProjectId: project.id }, ACTOR_A).body.project;
+  assert.equal(stale.daysSinceStatusUpdate, 23);
+  assert.equal(stale.staleStatus, true);
+  assert.equal(stale.riskScore, 2);
+  const refreshed = service.updateProject({
+    planningProjectId: project.id, expectedRevision: 1, statusSummary: "Recovered",
+  }, ACTOR_A).body.project;
+  assert.equal(refreshed.statusSummary, "Recovered");
+  assert.equal(refreshed.staleStatus, false);
+  assert.deepEqual(refreshed.checkIns.map((entry) => entry.summary), ["Recovered", "On track"]);
+  assert.equal(service.updateProject({
+    planningProjectId: project.id, expectedRevision: 2, statusSummary: "x".repeat(1_001),
+  }, ACTOR_A).status, 400);
+});
+
+test("projects can be pinned with revision gating", () => {
+  const { service } = harness();
+  const project = service.createProject({ name: "Pinned", pinned: true }, ACTOR_A).body.project;
+  assert.equal(project.pinned, true);
+  const updated = service.updateProject({
+    planningProjectId: project.id, expectedRevision: 1, pinned: false,
+  }, ACTOR_A).body.project;
+  assert.equal(updated.pinned, false);
+  assert.equal(service.updateProject({
+    planningProjectId: project.id, expectedRevision: 1, pinned: true,
+  }, ACTOR_A).status, 409);
+});

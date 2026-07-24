@@ -15,6 +15,10 @@ const project = {
   startDate: "2026-07-01",
   targetDate: "2026-09-30",
   status: "on_hold" as const,
+  tags: ["release", "backend"],
+  statusSummary: "Ready for rollout",
+  checkIns: [{ id: "ppc_1", summary: "Ready for rollout", authorId: "usr_a", createdAt: "2026-07-24T00:00:00.000Z" }],
+  pinned: true,
   revision: 4,
   savedViews: [{ name: "Risks" }],
   automationRules: [{ priority: "p0" }],
@@ -40,6 +44,8 @@ describe("planning export", () => {
     expect(json.schemaVersion).toBe(1);
     expect(json.project.savedViews[0].name).toBe("Risks");
     expect(json.project.ownerId).toBe("usr_release");
+    expect(json.project.checkIns[0].summary).toBe("Ready for rollout");
+    expect(json.project.pinned).toBe(true);
     expect(json.workItems[0].dependencyIds).toEqual(["lwi_0"]);
     expect(planningExportFilename(project.name, "json")).toBe("q3-release.json");
   });
@@ -52,6 +58,9 @@ describe("planning export", () => {
       ownerId: "usr_release", capacityPoints: 34,
       startDate: "2026-07-01", targetDate: "2026-09-30",
       status: "on_hold",
+      tags: ["release", "backend"],
+      statusSummary: "Ready for rollout",
+      pinned: true,
     });
     expect(imported.workItemCount).toBe(1);
     expect(() => parsePlanningProjectSnapshot('{"schemaVersion":2,"project":{}}')).toThrow(/Unsupported/);
