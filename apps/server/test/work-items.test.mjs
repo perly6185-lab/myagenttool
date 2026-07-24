@@ -76,6 +76,31 @@ test("updates are revision-gated and validate structured fields", () => {
   assert.deepEqual(updated.body.workItem.labels, ["local"]);
 });
 
+test("planning fields validate and bulk updates are atomic", () => {
+  const { service } = harness();
+  const first = service.createWorkItem({
+    projectId: "prj_a", title: "First", dueDate: "2026-08-01", milestone: "M3",
+  }, ACTOR_A).body.workItem;
+  const second = service.createWorkItem({ projectId: "prj_a", title: "Second" }, ACTOR_A).body.workItem;
+  assert.equal(first.dueDate, "2026-08-01");
+  assert.equal(first.milestone, "M3");
+  assert.equal(service.updateWorkItem({
+    workItemId: first.id, expectedRevision: 1, dueDate: "08/01/2026",
+  }, ACTOR_A).status, 400);
+  const conflict = service.bulkUpdateWorkItems({
+    items: [{ id: first.id, expectedRevision: 1 }, { id: second.id, expectedRevision: 9 }],
+    changes: { status: "ready" },
+  }, ACTOR_A);
+  assert.equal(conflict.status, 409);
+  assert.equal(service.getWorkItem({ workItemId: first.id }, ACTOR_A).body.workItem.status, "backlog");
+  const updated = service.bulkUpdateWorkItems({
+    items: [{ id: first.id, expectedRevision: 1 }, { id: second.id, expectedRevision: 1 }],
+    changes: { status: "ready", milestone: "M4" },
+  }, ACTOR_A);
+  assert.equal(updated.body.count, 2);
+  assert.equal(updated.body.workItems.every((item) => item.status === "ready" && item.milestone === "M4"), true);
+});
+
 test("close, reopen, archive and restore preserve the record", () => {
   const { service } = harness();
   const item = service.createWorkItem({ projectId: "prj_a", title: "A" }, ACTOR_A).body.workItem;
@@ -134,7 +159,8 @@ test("work items survive a persistent-state restart", () => {
       id: "lwi_1", localNumber: 1, localRef: "LOCAL-1",
       ownerTeamId: "team_local", projectId: first.defaultProject.id,
       title: "Persist me", body: "", type: "task", status: "backlog", priority: "p2",
-      labels: [], assigneeIds: [], acceptanceCriteria: [], revision: 1, state: "open",
+      labels: [], assigneeIds: [], acceptanceCriteria: [], dueDate: "2026-08-15", milestone: "M3",
+      revision: 1, state: "open",
       archivedAt: null, externalBindings: [], executionBindings: [], createdAt: now(), updatedAt: now(),
       createdBy: "usr_local", lastModifiedBy: "usr_local",
     });
@@ -149,6 +175,15 @@ test("work items survive a persistent-state restart", () => {
       projectId: first.defaultProject.id, action: "commented", actorId: "usr_local",
       createdAt: now(), details: { commentId: "wic_1" },
     });
+    first.state.planningProjects.push({
+      id: "ppj_1", ownerTeamId: "team_local", name: "Roadmap", description: "",
+      color: "indigo", revision: 1, archivedAt: null, createdAt: now(), updatedAt: now(),
+      createdBy: "usr_local", lastModifiedBy: "usr_local",
+    });
+    first.state.planningProjectItems.push({
+      id: "ppi_1", ownerTeamId: "team_local", planningProjectId: "ppj_1",
+      workItemId: "lwi_1", position: 2000, addedAt: now(), addedBy: "usr_local",
+    });
     createPersistenceRuntime({
       state: first.state, enabled: true, stateStorePath, schemaVersion: 1,
       now, defaultProject: first.defaultProject, sameProjectPath,
@@ -161,6 +196,9 @@ test("work items survive a persistent-state restart", () => {
     }).restorePersistentState();
     assert.equal(second.state.workItems.length, 1);
     assert.equal(second.state.workItems[0].localRef, "LOCAL-1");
+    assert.equal(second.state.workItems[0].dueDate, "2026-08-15");
+    assert.equal(second.state.workItems[0].milestone, "M3");
+    assert.equal(second.state.planningProjectItems[0].position, 2000);
     assert.equal(second.state.workItemComments[0].body, "Still here");
     assert.equal(second.state.workItemActivities[0].action, "commented");
   } finally {

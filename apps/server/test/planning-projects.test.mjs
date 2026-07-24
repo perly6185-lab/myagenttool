@@ -76,3 +76,31 @@ test("archive and restore preserve project membership", () => {
   assert.equal(restored.body.project.archivedAt, null);
   assert.equal(service.getProject({ planningProjectId: project.id }, ACTOR_A).body.project.itemCount, 1);
 });
+
+test("project members support deterministic reorder and batch membership updates", () => {
+  const { service, state } = harness();
+  state.workItems.push({
+    id: "wi_c", localRef: "LOCAL-3", ownerTeamId: "team_a", title: "C",
+    status: "ready", priority: "p1", state: "open",
+  });
+  const project = service.createProject({ name: "Release" }, ACTOR_A).body.project;
+  service.updateItems({ planningProjectId: project.id, addWorkItemIds: ["wi_a", "wi_c"] }, ACTOR_A);
+  let detail = service.getProject({ planningProjectId: project.id }, ACTOR_A).body.project;
+  assert.deepEqual(detail.items.map((row) => row.workItem.id), ["wi_a", "wi_c"]);
+  const reordered = service.reorderItems({
+    planningProjectId: project.id,
+    expectedRevision: 2,
+    workItemIds: ["wi_c", "wi_a"],
+  }, ACTOR_A);
+  assert.equal(reordered.status, 200);
+  assert.deepEqual(reordered.body.project.items.map((row) => row.workItem.id), ["wi_c", "wi_a"]);
+  assert.equal(service.reorderItems({
+    planningProjectId: project.id,
+    expectedRevision: 2,
+    workItemIds: ["wi_a", "wi_c"],
+  }, ACTOR_A).status, 409);
+  detail = service.updateItems({
+    planningProjectId: project.id, addWorkItemIds: [], removeWorkItemIds: ["wi_a"],
+  }, ACTOR_A).body.project;
+  assert.deepEqual(detail.items.map((row) => row.workItem.id), ["wi_c"]);
+});

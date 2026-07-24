@@ -217,6 +217,7 @@ export function createHttpServer({
   getWorkItem,
   createWorkItem,
   updateWorkItem,
+  bulkUpdateWorkItems,
   transitionWorkItem,
   listWorkItemActivity,
   listWorkItemComments,
@@ -231,6 +232,8 @@ export function createHttpServer({
   setPlanningProjectArchived,
   addPlanningProjectItem,
   removePlanningProjectItem,
+  reorderPlanningProjectItems,
+  updatePlanningProjectItems,
   registerChannel,
   listChannels,
   enableChannel,
@@ -370,7 +373,7 @@ export function createHttpServer({
 
       if (await handleWorkItemRoutes({
         req, res, url, sendJson, readJson, actor,
-        listWorkItems, getWorkItem, createWorkItem, updateWorkItem, transitionWorkItem,
+        listWorkItems, getWorkItem, createWorkItem, updateWorkItem, bulkUpdateWorkItems, transitionWorkItem,
         listActivity: listWorkItemActivity,
         listComments: listWorkItemComments,
         createComment: createWorkItemComment,
@@ -392,6 +395,8 @@ export function createHttpServer({
         setArchived: setPlanningProjectArchived,
         addItem: addPlanningProjectItem,
         removeItem: removePlanningProjectItem,
+        reorderItems: reorderPlanningProjectItems,
+        updateItems: updatePlanningProjectItems,
       })) {
         return;
       }

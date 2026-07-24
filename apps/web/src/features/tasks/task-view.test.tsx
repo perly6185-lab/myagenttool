@@ -8,6 +8,7 @@ const mocks = vi.hoisted(() => ({
   createWorkItem: vi.fn(),
   getWorkItem: vi.fn(),
   updateWorkItem: vi.fn(),
+  bulkUpdateWorkItems: vi.fn(),
   transitionWorkItem: vi.fn(),
   listWorkItemComments: vi.fn(),
   createWorkItemComment: vi.fn(),
@@ -23,6 +24,8 @@ const mocks = vi.hoisted(() => ({
   setPlanningProjectArchived: vi.fn(),
   addPlanningProjectItem: vi.fn(),
   removePlanningProjectItem: vi.fn(),
+  reorderPlanningProjectItems: vi.fn(),
+  updatePlanningProjectItems: vi.fn(),
   execute: vi.fn(async (fn: () => Promise<unknown>) => { await fn(); return true; }),
 }));
 
@@ -45,6 +48,7 @@ vi.mock("@/data/use-console-actions", () => ({
     createWorkItem: mocks.createWorkItem,
     getWorkItem: mocks.getWorkItem,
     updateWorkItem: mocks.updateWorkItem,
+    bulkUpdateWorkItems: mocks.bulkUpdateWorkItems,
     transitionWorkItem: mocks.transitionWorkItem,
     listWorkItemComments: mocks.listWorkItemComments,
     createWorkItemComment: mocks.createWorkItemComment,
@@ -60,6 +64,8 @@ vi.mock("@/data/use-console-actions", () => ({
     setPlanningProjectArchived: mocks.setPlanningProjectArchived,
     addPlanningProjectItem: mocks.addPlanningProjectItem,
     removePlanningProjectItem: mocks.removePlanningProjectItem,
+    reorderPlanningProjectItems: mocks.reorderPlanningProjectItems,
+    updatePlanningProjectItems: mocks.updatePlanningProjectItems,
   },
 }));
 vi.mock("@/store/ui-store", () => ({
@@ -102,12 +108,16 @@ describe("TaskView local work items", () => {
     render(<TaskView />);
     fireEvent.click(screen.getByRole("button", { name: /New local issue/i }));
     fireEvent.change(screen.getByLabelText("Title"), { target: { value: "Build local board" } });
+    fireEvent.change(screen.getByLabelText("Due date"), { target: { value: "2026-08-15" } });
+    fireEvent.change(screen.getByLabelText("Milestone"), { target: { value: "M3" } });
     fireEvent.click(screen.getByRole("button", { name: "Create issue" }));
     await waitFor(() => expect(mocks.createWorkItem).toHaveBeenCalledWith(expect.objectContaining({
       projectId: "prj_1",
       title: "Build local board",
       type: "task",
       priority: "p2",
+      dueDate: "2026-08-15",
+      milestone: "M3",
     })));
   });
 
@@ -152,6 +162,7 @@ describe("TaskView local work items", () => {
     mocks.listPlanningProjects.mockResolvedValue({ projects: [project] });
     mocks.getPlanningProject.mockResolvedValue({ project: { ...project, items: [{ workItem: item }] } });
     mocks.updateWorkItem.mockResolvedValue({ workItem: { ...item, status: "ready", revision: 2 } });
+    mocks.bulkUpdateWorkItems.mockResolvedValue({ workItems: [{ ...item, status: "ready", revision: 2 }], count: 1 });
     render(<TaskView />);
     fireEvent.click(await screen.findByRole("button", { name: /Planning projects/i }));
     fireEvent.click(await screen.findByRole("button", { name: "Board" }));
@@ -161,6 +172,42 @@ describe("TaskView local work items", () => {
       expectedRevision: 1,
       status: "ready",
     }));
+    fireEvent.click(screen.getByLabelText("Select LOCAL-1"));
+    fireEvent.click(screen.getByRole("button", { name: "Apply status" }));
+    await waitFor(() => expect(mocks.bulkUpdateWorkItems).toHaveBeenCalledWith({
+      items: [{ id: "lwi_1", expectedRevision: 1 }],
+      changes: { status: "ready" },
+    }));
+  });
+
+  it("reorders members inside a planning project", async () => {
+    const first = {
+      id: "lwi_1", localRef: "LOCAL-1", projectId: "prj_1", title: "First",
+      body: "", type: "task", status: "backlog", priority: "p2", state: "open",
+      labels: [], assigneeIds: [], acceptanceCriteria: [], revision: 1, archivedAt: null,
+      dueDate: null, milestone: "", updatedAt: "2026-07-24T00:00:00.000Z",
+    };
+    const second = { ...first, id: "lwi_2", localRef: "LOCAL-2", title: "Second" };
+    const project = {
+      id: "ppj_1", name: "Ordered", description: "", revision: 2, archivedAt: null,
+      itemCount: 2, openItemCount: 2, completedItemCount: 0,
+      statusCounts: { backlog: 2, ready: 0, in_progress: 0, review: 0, blocked: 0, done: 0 },
+      priorityCounts: { p0: 0, p1: 0, p2: 2, p3: 0 },
+      items: [
+        { membership: { position: 1000 }, workItem: first },
+        { membership: { position: 2000 }, workItem: second },
+      ],
+    };
+    mocks.listWorkItems.mockResolvedValue({ workItems: [first, second], count: 2 });
+    mocks.listPlanningProjects.mockResolvedValue({ projects: [project] });
+    mocks.getPlanningProject.mockResolvedValue({ project });
+    mocks.reorderPlanningProjectItems.mockResolvedValue({ project });
+    render(<TaskView />);
+    fireEvent.click(await screen.findByRole("button", { name: /Planning projects/i }));
+    fireEvent.click(await screen.findByRole("button", { name: "Move LOCAL-2 up" }));
+    await waitFor(() => expect(mocks.reorderPlanningProjectItems).toHaveBeenCalledWith(
+      "ppj_1", 2, ["lwi_2", "lwi_1"],
+    ));
   });
 
   it("opens details, saves fields, and posts a comment", async () => {
