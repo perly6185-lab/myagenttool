@@ -417,10 +417,17 @@ test("high-risk recommended actions require a scoped approval grant", () => {
   const current = service.getProject({ planningProjectId: project.id }, ACTOR_A).body.project;
   const action = current.recommendedActions.find((candidate) => candidate.code === "resolve_blocked_items");
   assert.equal(action.risk, "high");
-  const denied = service.executeRecommendedAction({
+  const pending = service.executeRecommendedAction({
     planningProjectId: project.id, expectedRevision: current.revision, code: action.code,
     idempotencyKey: "blocked-1", confirmed: true,
   }, ACTOR_A);
-  assert.equal(denied.status, 403);
-  assert.equal(denied.body.error, "recommended_action_approval_required");
+  assert.equal(pending.status, 202);
+  assert.equal(pending.body.approvalRequest.status, "pending");
+  const resumed = service.decideRecommendedAction({
+    planningProjectId: project.id,
+    approvalRequestId: pending.body.approvalRequest.id,
+    decision: "approved",
+  }, ACTOR_A);
+  assert.equal(resumed.body.execution.status, "queued");
+  assert.equal(resumed.body.execution.approvalRequestId, pending.body.approvalRequest.id);
 });

@@ -5,6 +5,7 @@ import { TaskView } from "@/features/tasks/task-view";
 const mocks = vi.hoisted(() => ({
   listWorkItems: vi.fn(),
   listWorkItemAttention: vi.fn(),
+  updateWorkItemAttention: vi.fn(),
   listGithubItems: vi.fn(),
   createWorkItem: vi.fn(),
   getWorkItem: vi.fn(),
@@ -49,6 +50,7 @@ vi.mock("@/data/use-console-actions", () => ({
   api: {
     listWorkItems: mocks.listWorkItems,
     listWorkItemAttention: mocks.listWorkItemAttention,
+    updateWorkItemAttention: mocks.updateWorkItemAttention,
     listGithubItems: mocks.listGithubItems,
     createWorkItem: mocks.createWorkItem,
     getWorkItem: mocks.getWorkItem,
@@ -107,6 +109,7 @@ describe("TaskView local work items", () => {
       workItemId: "lwi_1", localRef: "LOCAL-1", title: "Plan offline",
       createdAt: "2026-07-24T00:00:00.000Z", dueAt: "2026-07-24T04:00:00.000Z",
       slaStatus: "within_sla", history: [], details: { fields: ["title"] },
+      handling: null, resolution: null,
     }] });
     mocks.listWorkItems.mockResolvedValue({
       workItems: [{

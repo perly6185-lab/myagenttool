@@ -209,16 +209,65 @@ test("human attention queue aggregates conflicts, approvals, and failed evidence
   state.workItems[0].verificationRecords = [{
     id: "wvr_bad", status: "failed", summary: "Tests failed", recordedAt: "2026-07-24T00:45:00.000Z",
   }];
+  state.planningProjects = [{
+    id: "plan_1", name: "Release", ownerTeamId: "team_a",
+    recommendedActionApprovalRequests: [{
+      id: "par_1", code: "recover_schedule", status: "pending",
+      requestedAt: "2026-07-24T00:15:00.000Z",
+    }],
+  }];
   const attention = service.listAttention({}, ACTOR_A).body;
-  assert.equal(attention.count, 4);
-  assert.deepEqual(new Set(attention.items.slice(0, 3).map((row) => row.kind)), new Set([
-    "github_conflict", "verification_failed", "execution_approval",
+  assert.equal(attention.count, 5);
+  assert.deepEqual(new Set(attention.items.slice(0, 4).map((row) => row.kind)), new Set([
+    "github_conflict", "verification_failed", "execution_approval", "recommended_action_approval",
   ]));
-  assert.equal(attention.items[3].kind, "acceptance_blocked");
+  assert.equal(attention.items[4].kind, "acceptance_blocked");
   assert.equal(service.listAttention({}, ACTOR_B).body.count, 0);
-  assert.equal(attention.items.every((row) => row.workItemId === item.id), true);
+  assert.equal(attention.items.filter((row) => row.workItemId).every((row) => row.workItemId === item.id), true);
+  assert.equal(service.listAttention({ kind: "recommended_action_approval" }, ACTOR_A).body.items[0].planningProjectId, "plan_1");
   assert.equal(attention.items.every((row) => row.dueAt && row.slaStatus && Array.isArray(row.history)), true);
   assert.equal(service.listAttention({ kind: "github_conflict" }, ACTOR_A).body.count, 1);
+  const attentionId = attention.items[0].id;
+  assert.equal(service.updateAttention({
+    attentionIds: [attentionId], action: "claim",
+  }, ACTOR_A).body.updated[0].handling.actorId, "usr_a");
+  service.updateAttention({ attentionIds: [attentionId], action: "resolve", note: "Handled" }, ACTOR_A);
+  assert.equal(service.listAttention({}, ACTOR_A).body.items.some((row) => row.id === attentionId), false);
+  const resolved = service.listAttention({ includeResolved: "1" }, ACTOR_A).body.items.find((row) => row.id === attentionId);
+  assert.equal(resolved.resolution.note, "Handled");
+});
+
+test("GitHub webhook sync is idempotent and ignores stale deliveries", () => {
+  const { service } = harness();
+  const item = service.createWorkItem({ projectId: "prj_a", title: "Before" }, ACTOR_A).body.workItem;
+  service.bindGithubIssue({
+    workItemId: item.id, expectedRevision: item.revision,
+    remote: {
+      number: 8, title: "Before", body: "", state: "open", labels: [],
+      repository: "acme/repo", updatedAt: "2026-07-24T00:00:00.000Z",
+    },
+  }, ACTOR_A);
+  const payload = {
+    repository: { full_name: "acme/repo" },
+    issue: {
+      number: 8, title: "From webhook", body: "", state: "open", labels: [],
+      html_url: "https://github.test/acme/repo/issues/8", updated_at: "2026-07-24T01:00:00.000Z",
+    },
+  };
+  const first = service.ingestGithubWebhook({ deliveryId: "delivery-1", event: "issues", payload });
+  assert.equal(first.body.synced, 1);
+  assert.equal(service.getWorkItem({ workItemId: item.id }, ACTOR_A).body.workItem.title, "From webhook");
+  assert.equal(service.ingestGithubWebhook({
+    deliveryId: "delivery-1", event: "issues", payload,
+  }).body.replayed, true);
+  const stale = service.ingestGithubWebhook({
+    deliveryId: "delivery-2", event: "issues",
+    payload: { ...payload, issue: { ...payload.issue, title: "Stale", updated_at: "2026-07-23T00:00:00.000Z" } },
+  });
+  assert.equal(stale.body.stale, 1);
+  assert.equal(service.getWorkItem({ workItemId: item.id }, ACTOR_A).body.workItem.title, "From webhook");
+  assert.equal(service.githubSyncDiagnostics(ACTOR_A).body.boundIssues, 1);
+  assert.equal(service.githubSyncDiagnostics(ACTOR_A).body.recentDeliveries.length, 2);
 });
 
 test("team scoping hides foreign work items and foreign projects", () => {
