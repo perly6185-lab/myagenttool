@@ -101,6 +101,35 @@ test("planning fields validate and bulk updates are atomic", () => {
   assert.equal(updated.body.workItems.every((item) => item.status === "ready" && item.milestone === "M4"), true);
 });
 
+test("dependencies expose blocking state and reject cycles", () => {
+  const { service } = harness();
+  const foundation = service.createWorkItem({ projectId: "prj_a", title: "Foundation" }, ACTOR_A).body.workItem;
+  const delivery = service.createWorkItem({ projectId: "prj_a", title: "Delivery" }, ACTOR_A).body.workItem;
+  const linked = service.updateWorkItem({
+    workItemId: delivery.id,
+    expectedRevision: 1,
+    dependencyIds: [foundation.id],
+  }, ACTOR_A);
+  assert.equal(linked.status, 200);
+  assert.equal(linked.body.workItem.blockedBy[0].resolved, false);
+  assert.equal(service.getWorkItem({ workItemId: foundation.id }, ACTOR_A).body.workItem.blocks[0].id, delivery.id);
+
+  const cycle = service.updateWorkItem({
+    workItemId: foundation.id,
+    expectedRevision: 1,
+    dependencyIds: [delivery.id],
+  }, ACTOR_A);
+  assert.equal(cycle.status, 409);
+  assert.equal(cycle.body.error, "work_item_dependency_cycle");
+
+  service.updateWorkItem({
+    workItemId: foundation.id,
+    expectedRevision: 1,
+    status: "done",
+  }, ACTOR_A);
+  assert.equal(service.getWorkItem({ workItemId: delivery.id }, ACTOR_A).body.workItem.blockedBy[0].resolved, true);
+});
+
 test("close, reopen, archive and restore preserve the record", () => {
   const { service } = harness();
   const item = service.createWorkItem({ projectId: "prj_a", title: "A" }, ACTOR_A).body.workItem;

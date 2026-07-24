@@ -118,6 +118,25 @@ export function createWorkItemService({
     );
     return {
       ...item,
+      dependencyIds: item.dependencyIds ?? [],
+      blockedBy: (item.dependencyIds ?? []).map((dependencyId) => {
+        const dependency = findOwn(dependencyId, actor);
+        return dependency ? {
+          id: dependency.id,
+          localRef: dependency.localRef,
+          title: dependency.title,
+          status: dependency.status,
+          state: dependency.state,
+          resolved: dependency.status === "done" || dependency.state === "closed",
+        } : null;
+      }).filter(Boolean),
+      blocks: (state.workItems ?? [])
+        .filter((candidate) => candidate.ownerTeamId === actorTeam(actor)
+          && (candidate.dependencyIds ?? []).includes(item.id))
+        .map((candidate) => ({
+          id: candidate.id, localRef: candidate.localRef, title: candidate.title,
+          status: candidate.status, state: candidate.state,
+        })),
       planningProjects: memberships.map((membership) => {
         const project = (state.planningProjects ?? []).find(
           (row) => row.id === membership.planningProjectId && row.ownerTeamId === actorTeam(actor),
@@ -173,6 +192,7 @@ export function createWorkItemService({
       ownerTeamId: teamId,
       projectId,
       ...validated.value,
+      dependencyIds: [],
       revision: 1,
       state: "open",
       archivedAt: null,
@@ -217,6 +237,27 @@ export function createWorkItemService({
       }
       validated.value.projectId = projectId;
     }
+    if (Object.hasOwn(changes, "dependencyIds")) {
+      if (!Array.isArray(changes.dependencyIds)) {
+        return { ok: false, status: 400, body: { error: "invalid_work_item_dependencies" } };
+      }
+      const dependencyIds = [...new Set(changes.dependencyIds.map(String))];
+      if (dependencyIds.length > 50 || dependencyIds.includes(item.id)
+        || dependencyIds.some((id) => !findOwn(id, actor))) {
+        return { ok: false, status: 400, body: { error: "invalid_work_item_dependencies" } };
+      }
+      const reachesItem = (candidateId, visited = new Set()) => {
+        if (candidateId === item.id) return true;
+        if (visited.has(candidateId)) return false;
+        visited.add(candidateId);
+        const candidate = findOwn(candidateId, actor);
+        return (candidate?.dependencyIds ?? []).some((id) => reachesItem(id, visited));
+      };
+      if (dependencyIds.some((id) => reachesItem(id))) {
+        return { ok: false, status: 409, body: { error: "work_item_dependency_cycle" } };
+      }
+      validated.value.dependencyIds = dependencyIds;
+    }
     const previous = Object.fromEntries(Object.keys(validated.value).map((key) => [key, item[key]]));
     runTx(() => {
       Object.assign(item, validated.value, {
@@ -237,7 +278,7 @@ export function createWorkItemService({
         data: { workItemId: item.id, revision: item.revision, actorTeamId: actorTeam(actor) },
       });
     });
-    return { ok: true, status: 200, body: { workItem: item } };
+    return { ok: true, status: 200, body: { workItem: workItemView(item, actor) } };
   }
 
   function bulkUpdateWorkItems({ items, changes } = {}, actor = null) {

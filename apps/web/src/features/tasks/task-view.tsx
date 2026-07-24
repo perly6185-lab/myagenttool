@@ -47,6 +47,9 @@ type LocalWorkItem = {
   archivedAt: string | null;
   executionBindings?: { kind: "worktree" | "auto_run"; targetId: string; worktreeId: string | null; createdAt: string }[];
   planningProjects?: { id: string; name: string; archivedAt: string | null }[];
+  dependencyIds?: string[];
+  blockedBy?: { id: string; localRef: string; title: string; status: LocalWorkItem["status"]; state: "open" | "closed"; resolved: boolean }[];
+  blocks?: { id: string; localRef: string; title: string; status: LocalWorkItem["status"]; state: "open" | "closed" }[];
   updatedAt: string;
 };
 type LocalWorkItemResult = { workItems: LocalWorkItem[]; count: number };
@@ -825,6 +828,9 @@ export function PlanningProjectsPanel({ onChanged = () => {} }: { onChanged?: ()
                             {workItem.localRef}
                           </div>
                           <div className="mb-2 font-medium">{workItem.title}</div>
+                          {workItem.blockedBy?.some((dependency) => !dependency.resolved) ? (
+                            <Badge tone="danger">{t("taskDependencies.blocked")}</Badge>
+                          ) : null}
                           <Select value={workItem.status} disabled={pending}
                             aria-label={t("planningProjects.changeStatus", { ref: workItem.localRef })}
                             onChange={(event) => changeStatus(workItem, event.target.value as LocalWorkItem["status"])}
@@ -878,7 +884,12 @@ export function PlanningProjectsPanel({ onChanged = () => {} }: { onChanged?: ()
                                 className="truncate text-left font-medium hover:text-primary hover:underline">
                                 {workItem.localRef} · {workItem.title}
                               </button>
-                              <Badge tone={statusTone(workItem.status)}>{t(`tasks.localStatus.${workItem.status}`)}</Badge>
+                              <span className="flex gap-1">
+                                {workItem.blockedBy?.some((dependency) => !dependency.resolved) ? (
+                                  <Badge tone="danger">{t("taskDependencies.blocked")}</Badge>
+                                ) : null}
+                                <Badge tone={statusTone(workItem.status)}>{t(`tasks.localStatus.${workItem.status}`)}</Badge>
+                              </span>
                             </div>
                           ))}
                       </div>
@@ -996,13 +1007,16 @@ function LocalWorkItemDetail({
   const [comment, setComment] = useState("");
   const [editingCommentId, setEditingCommentId] = useState<string | null>(null);
   const [editingCommentBody, setEditingCommentBody] = useState("");
+  const [dependencyCandidates, setDependencyCandidates] = useState<LocalWorkItem[]>([]);
+  const [dependencyId, setDependencyId] = useState("");
 
   const load = async () => {
     try {
-      const [detail, commentResult, activityResult] = await Promise.all([
+      const [detail, commentResult, activityResult, workItemResult] = await Promise.all([
         api.getWorkItem(workItemId) as Promise<{ workItem: LocalWorkItem }>,
         api.listWorkItemComments(workItemId) as Promise<{ comments: WorkItemComment[] }>,
         api.listWorkItemActivity(workItemId) as Promise<{ activities: WorkItemActivity[] }>,
+        api.listWorkItems() as Promise<LocalWorkItemResult>,
       ]);
       const next = detail.workItem;
       setItem(next);
@@ -1017,6 +1031,7 @@ function LocalWorkItemDetail({
       setMilestone(next.milestone ?? "");
       setComments(commentResult.comments);
       setActivity(activityResult.activities);
+      setDependencyCandidates(workItemResult.workItems.filter((candidate) => candidate.id !== workItemId));
       setLoadError(null);
     } catch (caught) {
       setLoadError(caught instanceof Error ? caught.message : t("taskLocal.loadFailed"));
@@ -1051,6 +1066,17 @@ function LocalWorkItemDetail({
   };
   const transition = (action: "close" | "reopen") => {
     void execute(() => api.transitionWorkItem(item.id, action, item.revision)).then(() => {
+      onChanged();
+      void load();
+    });
+  };
+  const updateDependencies = (dependencyIds: string[]) => {
+    void execute(() => api.updateWorkItem(item.id, {
+      expectedRevision: item.revision,
+      dependencyIds,
+    })).then((ok) => {
+      if (!ok) return;
+      setDependencyId("");
       onChanged();
       void load();
     });
@@ -1113,6 +1139,36 @@ function LocalWorkItemDetail({
         <Field label={t("taskLocal.dueDate")}><Input type="date" value={dueDate} onChange={(event) => setDueDate(event.target.value)} /></Field>
         <Field label={t("taskLocal.milestone")}><Input value={milestone} onChange={(event) => setMilestone(event.target.value)} /></Field>
       </div>
+      <Field label={t("taskDependencies.blockedBy")}>
+        <div className="space-y-2">
+          <div className="flex gap-2">
+            <Select value={dependencyId} onChange={(event) => setDependencyId(event.target.value)}>
+              <option value="">{t("taskDependencies.select")}</option>
+              {dependencyCandidates
+                .filter((candidate) => !(item.dependencyIds ?? []).includes(candidate.id))
+                .map((candidate) => (
+                  <option key={candidate.id} value={candidate.id}>{candidate.localRef} · {candidate.title}</option>
+                ))}
+            </Select>
+            <Button variant="secondary" size="sm" disabled={!dependencyId || pending}
+              onClick={() => updateDependencies([...(item.dependencyIds ?? []), dependencyId])}>
+              {t("taskDependencies.add")}
+            </Button>
+          </div>
+          <div className="flex flex-wrap gap-1">
+            {item.blockedBy?.map((dependency) => (
+              <button key={dependency.id} type="button"
+                onClick={() => updateDependencies((item.dependencyIds ?? []).filter((id) => id !== dependency.id))}
+                title={t("taskDependencies.remove", { ref: dependency.localRef })}>
+                <Badge tone={dependency.resolved ? "success" : "danger"}>
+                  {dependency.localRef} · {dependency.resolved ? t("taskDependencies.resolved") : t("taskDependencies.blocking")} ×
+                </Badge>
+              </button>
+            ))}
+            {!item.blockedBy?.length ? <span className="text-xs text-muted-foreground">{t("taskDependencies.none")}</span> : null}
+          </div>
+        </div>
+      </Field>
       <Field label={t("tasks.localTitle")}><Input value={title} onChange={(event) => setTitle(event.target.value)} /></Field>
       <div className="grid gap-3 sm:grid-cols-3">
         <Field label={t("tasks.type")}>
