@@ -12,7 +12,11 @@ const ACTOR_A = { userId: "usr_a", teamId: "team_a" };
 const ACTOR_B = { userId: "usr_b", teamId: "team_b" };
 const ACTOR_C = { userId: "usr_c", teamId: "team_a" };
 
-function harness({ clock = () => "2026-07-24T00:00:00.000Z" } = {}) {
+function harness({
+  clock = () => "2026-07-24T00:00:00.000Z",
+  store,
+  persistStateSoon,
+} = {}) {
   let counter = 0;
   const events = [];
   const alerts = [];
@@ -34,6 +38,8 @@ function harness({ clock = () => "2026-07-24T00:00:00.000Z" } = {}) {
       alerts.push(alert);
       return Promise.resolve({ sent: true });
     },
+    store,
+    persistStateSoon,
   });
   return { state, events, alerts, service };
 }
@@ -422,6 +428,37 @@ test("SLA and Webhook failure alerts are dispatched once per health transition",
   assert.equal(service.sweepOperationalAlerts().changed, 2);
   assert.equal(events.filter((event) => event.type === "work_item_operational_recovered").length, 2);
   assert.equal(item.id, state.workItems[0].id);
+});
+
+test("webhook bookkeeping and alert transitions commit once without debounce writes", () => {
+  let commits = 0;
+  const { service } = harness({
+    store: { transaction: (fn) => { commits += 1; return fn(); } },
+    persistStateSoon: () => assert.fail("store-backed writes must not use the debounce"),
+  });
+
+  service.recordGithubWebhookFailure({
+    deliveryId: "failed-transaction", event: "issues", reason: "invalid_signature",
+  });
+  assert.equal(commits, 1);
+
+  service.ingestGithubWebhook({
+    deliveryId: "delivery-transaction",
+    event: "issues",
+    payload: {
+      repository: { full_name: "acme/repo" },
+      issue: {
+        number: 7, title: "No binding", state: "open", labels: [],
+        updated_at: "2026-07-24T00:00:00.000Z",
+      },
+    },
+  });
+  assert.equal(commits, 2);
+
+  assert.equal(service.sweepOperationalAlerts().changed, 1);
+  assert.equal(commits, 3);
+  assert.equal(service.sweepOperationalAlerts().changed, 0);
+  assert.equal(commits, 3);
 });
 
 test("team scoping hides foreign work items and foreign projects", () => {

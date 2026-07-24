@@ -6,7 +6,7 @@ const ACTOR_A = { userId: "usr_a", teamId: "team_a" };
 const ACTOR_B = { userId: "usr_b", teamId: "team_b" };
 const ACTOR_C = { userId: "usr_c", teamId: "team_a" };
 
-function harness() {
+function harness({ store, persistStateSoon } = {}) {
   let counter = 0;
   const state = {
     planningProjects: [],
@@ -20,6 +20,8 @@ function harness() {
     state,
     now: () => "2026-07-24T00:00:00.000Z",
     nextId: (prefix) => `${prefix}_${++counter}`,
+    store,
+    persistStateSoon,
   });
   return { state, service };
 }
@@ -462,4 +464,41 @@ test("high-risk recommended actions require approval and drain through the durab
   assert.equal(drained.processed[0].status, "completed");
   assert.equal(drained.processed[0].result.stillBlocked[0].workItemId, "wi_a");
   assert.equal(state.planningProjects[0].activity[0].action, "recommended_action_completed");
+});
+
+test("queued recommended actions commit their lease and terminal state exactly once each", async () => {
+  let commits = 0;
+  const { service, state } = harness({
+    store: { transaction: (fn) => { commits += 1; return fn(); } },
+    persistStateSoon: () => assert.fail("store-backed writes must not use the debounce"),
+  });
+  state.workItems.push({
+    id: "wi_dependency", localRef: "LOCAL-3", ownerTeamId: "team_a",
+    title: "Dependency", status: "backlog", priority: "p2", state: "open",
+  });
+  state.workItems[0].dependencyIds = ["wi_dependency"];
+  state.workItems[0].status = "blocked";
+  const project = service.createProject({ name: "Blocked work" }, ACTOR_A).body.project;
+  service.addItem({ planningProjectId: project.id, workItemId: "wi_a" }, ACTOR_A);
+  const current = service.getProject({ planningProjectId: project.id }, ACTOR_A).body.project;
+  const pending = service.executeRecommendedAction({
+    planningProjectId: project.id,
+    expectedRevision: current.revision,
+    code: "resolve_blocked_items",
+    idempotencyKey: "durable-action",
+    confirmed: true,
+  }, ACTOR_A);
+  service.decideRecommendedAction({
+    planningProjectId: project.id,
+    approvalRequestId: pending.body.approvalRequest.id,
+    decision: "approved",
+    confirmed: true,
+    note: "Commit the executor transitions.",
+  }, ACTOR_A);
+
+  commits = 0;
+  const drained = await service.processQueuedRecommendedActions();
+
+  assert.equal(drained.processed[0].status, "completed");
+  assert.equal(commits, 2);
 });

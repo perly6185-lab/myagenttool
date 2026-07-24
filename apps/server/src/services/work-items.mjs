@@ -587,13 +587,14 @@ export function createWorkItemService({
   }
 
   function recordGithubDelivery({ id, event, repository, issueNumber, matchingItems, replayOf, result, snapshot }) {
-    (state.githubWorkItemWebhookDeliveries ??= []).unshift({
-      id, event, receivedAt: now(), repository, issueNumber,
-      teamIds: [...new Set(matchingItems.map((item) => item.ownerTeamId))],
-      snapshot, replayOf, result,
+    runTx(() => {
+      (state.githubWorkItemWebhookDeliveries ??= []).unshift({
+        id, event, receivedAt: now(), repository, issueNumber,
+        teamIds: [...new Set(matchingItems.map((item) => item.ownerTeamId))],
+        snapshot, replayOf, result,
+      });
+      state.githubWorkItemWebhookDeliveries = state.githubWorkItemWebhookDeliveries.slice(0, 1_000);
     });
-    state.githubWorkItemWebhookDeliveries = state.githubWorkItemWebhookDeliveries.slice(0, 1_000);
-    persistStateSoon();
     return { ok: true, status: 202, body: result };
   }
 
@@ -656,12 +657,13 @@ export function createWorkItemService({
 
   function recordGithubWebhookFailure({ deliveryId, event, reason } = {}) {
     const id = String(deliveryId ?? "").trim().slice(0, 200) || nextId("ghf");
-    (state.githubWorkItemWebhookFailures ??= []).unshift({
-      id, event: String(event ?? "").slice(0, 100),
-      reason: String(reason ?? "unknown").slice(0, 100), receivedAt: now(),
+    runTx(() => {
+      (state.githubWorkItemWebhookFailures ??= []).unshift({
+        id, event: String(event ?? "").slice(0, 100),
+        reason: String(reason ?? "unknown").slice(0, 100), receivedAt: now(),
+      });
+      state.githubWorkItemWebhookFailures = state.githubWorkItemWebhookFailures.slice(0, 100);
     });
-    state.githubWorkItemWebhookFailures = state.githubWorkItemWebhookFailures.slice(0, 100);
-    persistStateSoon();
   }
 
   function sweepOperationalAlerts() {
@@ -698,29 +700,31 @@ export function createWorkItemService({
   }
 
   function updateOperationalAlert({ scope, signature, alert }) {
-    let row = (state.workItemOperationalAlerts ??= []).find((candidate) => candidate.scope === scope);
-    if (!row) {
-      row = { scope, signature: "", updatedAt: null };
-      state.workItemOperationalAlerts.push(row);
-    }
-    if (row.signature === signature) return false;
-    const previous = row.signature;
-    row.signature = signature;
-    row.updatedAt = now();
-    if (alert) {
-      void sendAlert(alert);
-      appendEvent({
-        invocationId: null, type: alert.kind,
-        level: alert.severity === "critical" ? "error" : "warn",
-        message: alert.message, data: alert.data,
-      });
-    } else if (previous) {
-      appendEvent({
-        invocationId: null, type: "work_item_operational_recovered", level: "info",
-        message: `${scope} operational alert recovered.`, data: { scope },
-      });
-    }
-    persistStateSoon();
+    const existing = (state.workItemOperationalAlerts ?? []).find((candidate) => candidate.scope === scope);
+    if (existing?.signature === signature) return false;
+    runTx(() => {
+      let row = existing;
+      if (!row) {
+        row = { scope, signature: "", updatedAt: null };
+        (state.workItemOperationalAlerts ??= []).push(row);
+      }
+      const previous = row.signature;
+      row.signature = signature;
+      row.updatedAt = now();
+      if (alert) {
+        void sendAlert(alert);
+        appendEvent({
+          invocationId: null, type: alert.kind,
+          level: alert.severity === "critical" ? "error" : "warn",
+          message: alert.message, data: alert.data,
+        });
+      } else if (previous) {
+        appendEvent({
+          invocationId: null, type: "work_item_operational_recovered", level: "info",
+          message: `${scope} operational alert recovered.`, data: { scope },
+        });
+      }
+    });
     return true;
   }
 
