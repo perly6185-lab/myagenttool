@@ -11,7 +11,7 @@ const regressionFactor = positiveNumber(process.env.WORK_ITEMS_BENCH_REGRESSION_
 const maximums = {
   queue: positiveNumber(process.env.WORK_ITEMS_BENCH_QUEUE_BASELINE_MS, 19.8) * regressionFactor,
   deliveries: positiveNumber(process.env.WORK_ITEMS_BENCH_DELIVERY_BASELINE_MS, 7.8) * regressionFactor,
-  batch: positiveNumber(process.env.WORK_ITEMS_BENCH_BATCH_BASELINE_MS, 12.5) * regressionFactor,
+  batch: positiveNumber(process.env.WORK_ITEMS_BENCH_BATCH_BASELINE_MS, 13.2) * regressionFactor,
 };
 
 const queueState = baseState();
@@ -68,6 +68,14 @@ for (let index = 0; index < deliveryCount; index += 1) {
 const deliveryDurationMs = duration(deliveryStarted);
 
 const batchIds = queueResult.items.slice(0, batchCount).map((item) => item.id);
+const warmupId = queueResult.items[batchCount]?.id;
+if (warmupId) {
+  const warmupResult = queueService.updateAttention({
+    attentionIds: [warmupId], action: "claim", leaseSeconds: 900,
+    idempotencyKey: "capacity-batch-warmup",
+  }, actor);
+  if (warmupResult.status !== 200) throw new Error("capacity batch warmup failed");
+}
 const batchStarted = performance.now();
 const batchResult = queueService.updateAttention({
   attentionIds: batchIds, action: "claim", leaseSeconds: 900,

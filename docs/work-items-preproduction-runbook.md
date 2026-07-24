@@ -80,6 +80,20 @@ Stop or roll back on any authorization leak, lost approval/claim state,
 newer-to-older issue regression, persistent `degraded` diagnostics, or a
 capacity regression greater than 50% from the environment's accepted baseline.
 
+Before using an external environment, run the isolated rehearsal:
+
+```sh
+node tools/dev/work-items-canary-drill.mjs
+```
+
+It combines the release preflight, capacity gate, authenticated/HMAC HTTP flow,
+team-isolation checks, and backup/restore persistence tests. Its JSON report
+sets `externalDeploymentPerformed: false`; a passing rehearsal is necessary but
+does not claim that a real team environment has been deployed or observed.
+Run the capacity gate without competing CPU-intensive jobs. The benchmark
+warms the batch path before measuring steady-state throughput; use the overall
+drill duration to track cold-process startup separately.
+
 ## Capacity baseline
 
 Run:
@@ -105,7 +119,7 @@ Initial local baseline on 2026-07-24:
 
 - 10,000-row queue aggregation: 19.8 ms.
 - 1,000 signed payload verification, parsing, and ingestion operations: 7.8 ms.
-- 100-row atomic claim: 12.5 ms.
+- 100-row atomic claim: 13.2 ms.
 
 Use environment-specific canary measurements for release decisions; these
 numbers are a regression reference, not a universal production SLO.

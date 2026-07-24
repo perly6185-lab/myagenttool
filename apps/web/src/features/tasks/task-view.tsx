@@ -629,7 +629,7 @@ export function TaskView() {
                     <Select value={attentionKind} onChange={(event) => setAttentionKind(event.target.value)} className="h-7 text-xs">
                       <option value="">{t("evidence.show")}</option>
                       <option value="github_conflict">{t("taskLocal.github.conflict")}</option>
-                      <option value="github_deleted">{t("taskLocal.github.conflict")}</option>
+                      <option value="github_deleted">{t("workItemGithub.deleted")}</option>
                       <option value="execution_approval">{t("approvals.kind.invocation_approval")}</option>
                       <option value="verification_failed">{t("approvals.testsFailed")}</option>
                       <option value="acceptance_blocked">{t("tasks.acceptanceCriteria")}</option>
@@ -690,7 +690,7 @@ export function TaskView() {
                         })} />
                       <Badge tone={attention.severity === "high" ? "danger" : attention.severity === "medium" ? "warning" : "neutral"}>
                         {attention.kind === "github_conflict" ? t("taskLocal.github.conflict")
-                          : attention.kind === "github_deleted" ? t("taskLocal.github.conflict")
+                          : attention.kind === "github_deleted" ? t("workItemGithub.deleted")
                           : attention.kind === "execution_approval" ? t("approvals.kind.invocation_approval")
                           : attention.kind === "verification_failed" ? t("approvals.testsFailed")
                           : attention.kind === "acceptance_blocked" ? t("tasks.acceptanceCriteria")
