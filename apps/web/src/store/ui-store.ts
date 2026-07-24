@@ -62,7 +62,7 @@ export interface PlanningProjectFilters {
   status: string;
   priority: string;
   milestone: string;
-  due: "all" | "overdue" | "upcoming" | "unscheduled";
+  due: "all" | "overdue" | "upcoming" | "month" | "quarter" | "unscheduled";
 }
 export const DEFAULT_PLANNING_PROJECT_FILTERS: PlanningProjectFilters = {
   status: "all",

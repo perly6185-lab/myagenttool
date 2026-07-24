@@ -193,7 +193,10 @@ describe("TaskView local work items", () => {
       labels: [], assigneeIds: [], acceptanceCriteria: [], revision: 1, archivedAt: null,
       dueDate: "2026-08-15", milestone: "M3", updatedAt: "2026-07-24T00:00:00.000Z",
     };
-    const second = { ...first, id: "lwi_2", localRef: "LOCAL-2", title: "Second" };
+    const second = {
+      ...first, id: "lwi_2", localRef: "LOCAL-2", title: "Second",
+      status: "done", dueDate: "2026-07-10",
+    };
     const project = {
       id: "ppj_1", name: "Ordered", description: "", revision: 2, archivedAt: null,
       itemCount: 2, openItemCount: 2, completedItemCount: 0,
@@ -217,6 +220,9 @@ describe("TaskView local work items", () => {
     fireEvent.click(screen.getByRole("button", { name: "Roadmap" }));
     expect((await screen.findAllByText("M3")).length).toBeGreaterThan(0);
     expect(screen.getAllByText("2026-08-15").length).toBeGreaterThan(0);
+    expect(screen.getByText("50% complete")).toBeTruthy();
+    expect(screen.getByRole("option", { name: "Current month" })).toBeTruthy();
+    expect(screen.getByRole("option", { name: "Current quarter" })).toBeTruthy();
   });
 
   it("opens details, saves fields, and posts a comment", async () => {

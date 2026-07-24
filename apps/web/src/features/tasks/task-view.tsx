@@ -517,6 +517,7 @@ export function TaskView() {
 
 export function PlanningProjectsPanel({ onChanged = () => {} }: { onChanged?: () => void }) {
   const { t } = useAppTranslation();
+  const { data: consoleState } = useConsoleState();
   const { execute, pending, error } = useAsyncAction();
   const [projects, setProjects] = useState<PlanningProject[]>([]);
   const [workItems, setWorkItems] = useState<LocalWorkItem[]>([]);
@@ -544,6 +545,7 @@ export function PlanningProjectsPanel({ onChanged = () => {} }: { onChanged?: ()
   const filters = storedFilters ?? { status: "all", priority: "all", milestone: "", due: "all" as const };
   const [selectedWorkItemIds, setSelectedWorkItemIds] = useState<string[]>([]);
   const [bulkStatus, setBulkStatus] = useState<LocalWorkItem["status"]>("ready");
+  const [detailWorkItemId, setDetailWorkItemId] = useState<string | null>(null);
   const [nonce, setNonce] = useState(0);
   const selected = projects.find((project) => project.id === selectedId);
   const displayWorkItems = selected?.items
@@ -554,6 +556,11 @@ export function PlanningProjectsPanel({ onChanged = () => {} }: { onChanged?: ()
     : workItems;
   const today = new Date().toISOString().slice(0, 10);
   const upcoming = new Date(Date.now() + 7 * 86_400_000).toISOString().slice(0, 10);
+  const currentMonth = today.slice(0, 7);
+  const currentQuarter = Math.floor((Number(today.slice(5, 7)) - 1) / 3);
+  const inCurrentQuarter = (date: string) =>
+    date.slice(0, 4) === today.slice(0, 4)
+    && Math.floor((Number(date.slice(5, 7)) - 1) / 3) === currentQuarter;
   const matchesFilters = (item: LocalWorkItem) =>
     (filters.status === "all" || item.status === filters.status)
     && (filters.priority === "all" || item.priority === filters.priority)
@@ -561,6 +568,8 @@ export function PlanningProjectsPanel({ onChanged = () => {} }: { onChanged?: ()
     && (filters.due === "all"
       || (filters.due === "overdue" && Boolean(item.dueDate && item.dueDate < today && item.status !== "done"))
       || (filters.due === "upcoming" && Boolean(item.dueDate && item.dueDate >= today && item.dueDate <= upcoming))
+      || (filters.due === "month" && Boolean(item.dueDate?.startsWith(currentMonth)))
+      || (filters.due === "quarter" && Boolean(item.dueDate && inCurrentQuarter(item.dueDate)))
       || (filters.due === "unscheduled" && !item.dueDate));
   const filteredDisplayWorkItems = displayWorkItems.filter(matchesFilters);
   const filteredProjectItems = (selected?.items ?? []).filter((row) => matchesFilters(row.workItem));
@@ -749,9 +758,18 @@ export function PlanningProjectsPanel({ onChanged = () => {} }: { onChanged?: ()
                 <option value="all">{t("planningFilters.allDates")}</option>
                 <option value="overdue">{t("planningFilters.overdue")}</option>
                 <option value="upcoming">{t("planningFilters.nextSevenDays")}</option>
+                <option value="month">{t("planningFilters.currentMonth")}</option>
+                <option value="quarter">{t("planningFilters.currentQuarter")}</option>
                 <option value="unscheduled">{t("planningFilters.unscheduled")}</option>
               </Select>
             </div>
+            {(filters.status !== "all" || filters.priority !== "all" || filters.milestone || filters.due !== "all") ? (
+              <div className="flex justify-end">
+                <Button variant="ghost" size="sm" onClick={() => storeFilters({
+                  status: "all", priority: "all", milestone: "", due: "all",
+                })}>{t("planningFilters.clear")}</Button>
+              </div>
+            ) : null}
             {view === "items" ? (
               <div className="max-h-72 space-y-1 overflow-y-auto">
                 {filteredDisplayWorkItems.map((item) => {
@@ -830,9 +848,22 @@ export function PlanningProjectsPanel({ onChanged = () => {} }: { onChanged?: ()
                     <section key={milestone} className="rounded-md border border-border p-3">
                       <h4 className="mb-2 flex items-center justify-between text-sm font-semibold">
                         <span>{milestone}</span>
-                        <Badge tone="neutral">
-                          {filteredProjectItems.filter((row) => (row.workItem.milestone || t("planningFilters.noMilestone")) === milestone).length}
-                        </Badge>
+                        {(() => {
+                          const rows = filteredProjectItems.filter(
+                            (row) => (row.workItem.milestone || t("planningFilters.noMilestone")) === milestone,
+                          );
+                          const done = rows.filter((row) => row.workItem.status === "done").length;
+                          const overdue = rows.filter((row) =>
+                            Boolean(row.workItem.dueDate && row.workItem.dueDate < today && row.workItem.status !== "done")).length;
+                          return (
+                            <span className="flex gap-1">
+                              <Badge tone="neutral">{t("planningFilters.progress", {
+                                percent: rows.length ? Math.round((done / rows.length) * 100) : 0,
+                              })}</Badge>
+                              {overdue ? <Badge tone="danger">{t("planningFilters.overdueCount", { count: overdue })}</Badge> : null}
+                            </span>
+                          );
+                        })()}
                       </h4>
                       <div className="space-y-1.5">
                         {filteredProjectItems
@@ -843,7 +874,10 @@ export function PlanningProjectsPanel({ onChanged = () => {} }: { onChanged?: ()
                               <span className={cn("font-mono", workItem.dueDate && workItem.dueDate < today && workItem.status !== "done" && "text-destructive")}>
                                 {workItem.dueDate ?? t("planningFilters.noDate")}
                               </span>
-                              <span className="truncate font-medium">{workItem.localRef} · {workItem.title}</span>
+                              <button type="button" onClick={() => setDetailWorkItemId(workItem.id)}
+                                className="truncate text-left font-medium hover:text-primary hover:underline">
+                                {workItem.localRef} · {workItem.title}
+                              </button>
                               <Badge tone={statusTone(workItem.status)}>{t(`tasks.localStatus.${workItem.status}`)}</Badge>
                             </div>
                           ))}
@@ -857,6 +891,15 @@ export function PlanningProjectsPanel({ onChanged = () => {} }: { onChanged?: ()
         ) : <EmptyState title={t("planningProjects.select")} hint={t("planningProjects.selectHint")} />}
         {error ? <p className="text-xs text-destructive">{error}</p> : null}
       </div>
+      <Modal open={Boolean(detailWorkItemId)} onClose={() => setDetailWorkItemId(null)} title={t("taskLocal.details")}>
+        {detailWorkItemId ? (
+          <LocalWorkItemDetail
+            workItemId={detailWorkItemId}
+            projects={consoleState?.projects ?? []}
+            onChanged={() => { setNonce((value) => value + 1); onChanged(); }}
+          />
+        ) : null}
+      </Modal>
     </div>
   );
 }
