@@ -50,6 +50,7 @@ type LocalWorkItem = {
   acceptanceCriteria: string[];
   dueDate: string | null;
   milestone: string;
+  estimatePoints: number;
   revision: number;
   archivedAt: string | null;
   executionBindings?: { kind: "worktree" | "auto_run"; targetId: string; worktreeId: string | null; createdAt: string }[];
@@ -572,7 +573,7 @@ export function PlanningProjectsPanel({ onChanged = () => {} }: { onChanged?: ()
   };
   const filters = storedFilters ?? { status: "all", priority: "all", milestone: "", due: "all" as const };
   const [selectedWorkItemIds, setSelectedWorkItemIds] = useState<string[]>([]);
-  const [bulkField, setBulkField] = useState<"status" | "priority" | "milestone" | "dueDate" | "remove">("status");
+  const [bulkField, setBulkField] = useState<"status" | "priority" | "milestone" | "dueDate" | "estimatePoints" | "remove">("status");
   const [bulkValue, setBulkValue] = useState("ready");
   const [detailWorkItemId, setDetailWorkItemId] = useState<string | null>(null);
   const [projectQuery, setProjectQuery] = useState("");
@@ -755,7 +756,11 @@ export function PlanningProjectsPanel({ onChanged = () => {} }: { onChanged?: ()
       .map((row) => row.workItem)
       .filter((item) => selectedWorkItemIds.includes(item.id))
       .map((item) => ({ id: item.id, expectedRevision: item.revision }));
-    const changes = { [bulkField]: bulkField === "dueDate" ? (bulkValue || null) : bulkValue };
+    const changes = {
+      [bulkField]: bulkField === "dueDate" ? (bulkValue || null)
+        : bulkField === "estimatePoints" ? Number(bulkValue)
+          : bulkValue,
+    };
     void execute(() => api.bulkUpdateWorkItems({ items, changes })).then((ok) => {
       if (!ok) return;
       setSelectedWorkItemIds([]);
@@ -1110,6 +1115,7 @@ export function PlanningProjectsPanel({ onChanged = () => {} }: { onChanged?: ()
                     <option value="priority">{t("planningBulk.priority")}</option>
                     <option value="milestone">{t("planningBulk.milestone")}</option>
                     <option value="dueDate">{t("planningBulk.dueDate")}</option>
+                    <option value="estimatePoints">{t("planningBulk.estimatePoints")}</option>
                     <option value="remove">{t("planningBulk.remove")}</option>
                   </Select>
                   {bulkField === "status" ? (
@@ -1128,6 +1134,9 @@ export function PlanningProjectsPanel({ onChanged = () => {} }: { onChanged?: ()
                   ) : bulkField === "dueDate" ? (
                     <Input type="date" value={bulkValue} aria-label={t("planningBulk.value")} onChange={(event) => setBulkValue(event.target.value)}
                       className="h-8 w-auto text-xs" />
+                  ) : bulkField === "estimatePoints" ? (
+                    <Input type="number" min="0" max="1000" value={bulkValue} aria-label={t("planningBulk.value")}
+                      onChange={(event) => setBulkValue(event.target.value)} className="h-8 w-24 text-xs" />
                   ) : null}
                   <Button size="sm" disabled={pending || selectedWorkItemIds.length === 0
                     || (bulkField !== "remove" && bulkField !== "dueDate" && !bulkValue.trim())}
@@ -1341,7 +1350,8 @@ function PlanningInsights({ items, today }: { items: LocalWorkItem[]; today: str
           {milestones.map((milestone) => {
             const rows = items.filter((item) => (item.milestone || t("planningFilters.noMilestone")) === milestone);
             const done = rows.filter((item) => item.status === "done").length;
-            return <div key={milestone} className="flex justify-between text-xs"><span>{milestone}</span><span>{done}/{rows.length} · {Math.round((done / rows.length) * 100)}%</span></div>;
+            const points = rows.reduce((sum, item) => sum + (item.estimatePoints ?? 0), 0);
+            return <div key={milestone} className="flex justify-between text-xs"><span>{milestone}</span><span>{done}/{rows.length} · {Math.round((done / rows.length) * 100)}% · {points} {t("planningInsights.points")}</span></div>;
           })}
         </div>
       </section>
@@ -1350,7 +1360,11 @@ function PlanningInsights({ items, today }: { items: LocalWorkItem[]; today: str
         <div className="space-y-1">
           {assignees.map((assignee) => (
             <div key={assignee} className="flex justify-between text-xs">
-              <span>{assignee}</span><span>{items.filter((item) => item.assigneeIds.includes(assignee) && item.status !== "done").length}</span>
+              <span>{assignee}</span>
+              <span>{(() => {
+                const assigned = items.filter((item) => item.assigneeIds.includes(assignee) && item.status !== "done");
+                return `${assigned.length} · ${assigned.reduce((sum, item) => sum + (item.estimatePoints ?? 0), 0)} ${t("planningInsights.points")}`;
+              })()}</span>
             </div>
           ))}
           {!assignees.length ? <p className="text-xs text-muted-foreground">{t("planningInsights.noAssignees")}</p> : null}
@@ -1449,6 +1463,7 @@ function LocalWorkItemDetail({
   const [acceptance, setAcceptance] = useState("");
   const [dueDate, setDueDate] = useState("");
   const [milestone, setMilestone] = useState("");
+  const [estimatePoints, setEstimatePoints] = useState("0");
   const [comment, setComment] = useState("");
   const [editingCommentId, setEditingCommentId] = useState<string | null>(null);
   const [editingCommentBody, setEditingCommentBody] = useState("");
@@ -1474,6 +1489,7 @@ function LocalWorkItemDetail({
       setAcceptance(next.acceptanceCriteria.join("\n"));
       setDueDate(next.dueDate ?? "");
       setMilestone(next.milestone ?? "");
+      setEstimatePoints(String(next.estimatePoints ?? 0));
       setComments(commentResult.comments);
       setActivity(activityResult.activities);
       setDependencyCandidates(workItemResult.workItems.filter((candidate) => candidate.id !== workItemId));
@@ -1504,6 +1520,7 @@ function LocalWorkItemDetail({
       acceptanceCriteria: acceptance.split("\n").map((value) => value.trim()).filter(Boolean),
       dueDate: dueDate || null,
       milestone,
+      estimatePoints: Number(estimatePoints),
     })).then(() => {
       onChanged();
       void load();
@@ -1580,9 +1597,10 @@ function LocalWorkItemDetail({
         <Badge tone={item.state === "open" ? "success" : "neutral"}>{t(`taskLocal.state.${item.state}`)}</Badge>
         <span>{t("taskLocal.revision", { revision: item.revision })}</span>
       </div>
-      <div className="grid gap-3 sm:grid-cols-2">
+      <div className="grid gap-3 sm:grid-cols-3">
         <Field label={t("taskLocal.dueDate")}><Input type="date" value={dueDate} onChange={(event) => setDueDate(event.target.value)} /></Field>
         <Field label={t("taskLocal.milestone")}><Input value={milestone} onChange={(event) => setMilestone(event.target.value)} /></Field>
+        <Field label={t("planningInsights.estimatePoints")}><Input type="number" min="0" max="1000" value={estimatePoints} onChange={(event) => setEstimatePoints(event.target.value)} /></Field>
       </div>
       <Field label={t("taskDependencies.blockedBy")}>
         <div className="space-y-2">
@@ -1741,6 +1759,7 @@ function CreateLocalWorkItemForm({
   const [acceptance, setAcceptance] = useState("");
   const [dueDate, setDueDate] = useState("");
   const [milestone, setMilestone] = useState("");
+  const [estimatePoints, setEstimatePoints] = useState("0");
   const submit = () => {
     void execute(() => api.createWorkItem({
       projectId,
@@ -1752,6 +1771,7 @@ function CreateLocalWorkItemForm({
       acceptanceCriteria: acceptance.split("\n").map((value) => value.trim()).filter(Boolean),
       dueDate: dueDate || null,
       milestone,
+      estimatePoints: Number(estimatePoints),
     })).then(onDone);
   };
   return (
@@ -1785,9 +1805,10 @@ function CreateLocalWorkItemForm({
       <Field label={t("tasks.acceptanceCriteria")}>
         <textarea className="min-h-20 w-full rounded-md border border-border bg-background p-2 text-sm" value={acceptance} onChange={(event) => setAcceptance(event.target.value)} placeholder={t("tasks.acceptancePlaceholder")} />
       </Field>
-      <div className="grid gap-3 sm:grid-cols-2">
+      <div className="grid gap-3 sm:grid-cols-3">
         <Field label={t("taskLocal.dueDate")}><Input type="date" value={dueDate} onChange={(event) => setDueDate(event.target.value)} /></Field>
         <Field label={t("taskLocal.milestone")}><Input value={milestone} onChange={(event) => setMilestone(event.target.value)} /></Field>
+        <Field label={t("planningInsights.estimatePoints")}><Input type="number" min="0" max="1000" value={estimatePoints} onChange={(event) => setEstimatePoints(event.target.value)} /></Field>
       </div>
       {error ? <p className="text-xs text-destructive">{error}</p> : null}
       <div className="flex justify-end gap-2">

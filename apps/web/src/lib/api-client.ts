@@ -861,6 +861,7 @@ export const api = {
     acceptanceCriteria?: string[];
     dueDate?: string | null;
     milestone?: string;
+    estimatePoints?: number;
   }) => request("POST", "/api/work-items", payload),
   getWorkItem: (id: string) => request("GET", `/api/work-items/${encodeURIComponent(id)}`),
   updateWorkItem: (id: string, payload: Record<string, unknown>) =>

@@ -11,6 +11,7 @@ export interface PlanningExportItem {
   labels: string[];
   assigneeIds: string[];
   dependencyIds?: string[];
+  estimatePoints?: number;
 }
 
 export interface PlanningExportProject {

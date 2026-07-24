@@ -79,11 +79,12 @@ test("updates are revision-gated and validate structured fields", () => {
 test("planning fields validate and bulk updates are atomic", () => {
   const { service } = harness();
   const first = service.createWorkItem({
-    projectId: "prj_a", title: "First", dueDate: "2026-08-01", milestone: "M3",
+    projectId: "prj_a", title: "First", dueDate: "2026-08-01", milestone: "M3", estimatePoints: 5,
   }, ACTOR_A).body.workItem;
   const second = service.createWorkItem({ projectId: "prj_a", title: "Second" }, ACTOR_A).body.workItem;
   assert.equal(first.dueDate, "2026-08-01");
   assert.equal(first.milestone, "M3");
+  assert.equal(first.estimatePoints, 5);
   assert.equal(service.updateWorkItem({
     workItemId: first.id, expectedRevision: 1, dueDate: "08/01/2026",
   }, ACTOR_A).status, 400);
@@ -95,10 +96,14 @@ test("planning fields validate and bulk updates are atomic", () => {
   assert.equal(service.getWorkItem({ workItemId: first.id }, ACTOR_A).body.workItem.status, "backlog");
   const updated = service.bulkUpdateWorkItems({
     items: [{ id: first.id, expectedRevision: 1 }, { id: second.id, expectedRevision: 1 }],
-    changes: { status: "ready", milestone: "M4" },
+    changes: { status: "ready", milestone: "M4", estimatePoints: 8 },
   }, ACTOR_A);
   assert.equal(updated.body.count, 2);
-  assert.equal(updated.body.workItems.every((item) => item.status === "ready" && item.milestone === "M4"), true);
+  assert.equal(updated.body.workItems.every((item) =>
+    item.status === "ready" && item.milestone === "M4" && item.estimatePoints === 8), true);
+  assert.equal(service.updateWorkItem({
+    workItemId: first.id, expectedRevision: 2, estimatePoints: -1,
+  }, ACTOR_A).status, 400);
 });
 
 test("dependencies expose blocking state and reject cycles", () => {

@@ -75,6 +75,13 @@ function validateDraft(input, { partial = false } = {}) {
     if (milestone.length > MAX_MILESTONE) return { error: "invalid_work_item_milestone" };
     value.milestone = milestone;
   }
+  if (!partial || Object.hasOwn(input, "estimatePoints")) {
+    const estimatePoints = input.estimatePoints == null || input.estimatePoints === "" ? 0 : Number(input.estimatePoints);
+    if (!Number.isInteger(estimatePoints) || estimatePoints < 0 || estimatePoints > 1_000) {
+      return { error: "invalid_work_item_estimate_points" };
+    }
+    value.estimatePoints = estimatePoints;
+  }
   return { value };
 }
 
@@ -333,7 +340,7 @@ export function createWorkItemService({
       unique.set(id, row.expectedRevision);
     }
     const allowedChanges = Object.fromEntries(
-      Object.entries(changes).filter(([key]) => ["status", "priority", "assigneeIds", "dueDate", "milestone"].includes(key)),
+      Object.entries(changes).filter(([key]) => ["status", "priority", "assigneeIds", "dueDate", "milestone", "estimatePoints"].includes(key)),
     );
     if (Object.keys(allowedChanges).length === 0 || Object.keys(allowedChanges).length !== Object.keys(changes).length) {
       return { ok: false, status: 400, body: { error: "invalid_work_item_bulk_changes" } };
