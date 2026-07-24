@@ -52,6 +52,8 @@ export function createHttpServer({
   releaseWorkItemClaim,
   bindGithubIssue,
   syncGithubIssue,
+  fetchWorkItemGithubIssue,
+  pushWorkItemGithubIssue,
   releaseIssueClaim,
   listIssueClaims,
   approveDesign,
@@ -390,6 +392,8 @@ export function createHttpServer({
         releaseWorkItemClaim,
         bindGithubIssue,
         syncGithubIssue,
+        fetchGithubIssue: fetchWorkItemGithubIssue,
+        pushGithubIssue: pushWorkItemGithubIssue,
       })) {
         return;
       }

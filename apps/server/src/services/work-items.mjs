@@ -349,7 +349,7 @@ export function createWorkItemService({
       if (binding.conflict) return { ok: false, status: 409, body: { error: "github_sync_conflict", conflict: binding.conflict } };
       const payload = Object.fromEntries(GITHUB_SYNC_FIELDS.map((field) => [field, item[field]]));
       if (!pushedRemoteUpdatedAt) {
-        return { ok: true, status: 200, body: { action: "push_required", issueNumber: binding.number, payload } };
+        return { ok: true, status: 200, body: { action: "push_required", issueNumber: binding.number, payload, workItem: workItemView(item, actor) } };
       }
       if (!Number.isFinite(Date.parse(String(pushedRemoteUpdatedAt)))) {
         return { ok: false, status: 400, body: { error: "invalid_github_sync_confirmation" } };

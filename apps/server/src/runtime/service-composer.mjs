@@ -57,7 +57,7 @@ import { createIssueClaimService } from "../services/issue-claims.mjs";
 import { createWorkItemService } from "../services/work-items.mjs";
 import { createPlanningProjectService } from "../services/planning-projects.mjs";
 import { resolveAutoRunVerifyCommand, resolveAutoRunVerifyCommandFor, runWorktreeVerification } from "../services/worktree-verify.mjs";
-import { resolveStatusWritebackConfig, runIssueAssigneeEdit, runIssueBodyFetch, runIssueClose, runIssueComment, runIssueStatusTransition, runPrChecks, runPrMerge, runPrStateFetch, runIssueStateFetch } from "../services/issue-status.mjs";
+import { resolveStatusWritebackConfig, runIssueAssigneeEdit, runIssueBodyFetch, runIssueClose, runIssueComment, runIssueStatusTransition, runPrChecks, runPrMerge, runPrStateFetch, runIssueStateFetch, runIssueSnapshotFetch, runIssueSnapshotWrite } from "../services/issue-status.mjs";
 import { deciderTimeoutMs, resolveDeciderCommand, runDeciderCommand } from "../services/decision-command.mjs";
 import { childIssueBody, childIssueTitle, extractProjectFieldsBlock, runChildIssueCreate, spawnIssuesConfig } from "../services/auto-run-spawn.mjs";
 import { refreshPrDispositions } from "../services/auto-run-eval.mjs";
@@ -3321,6 +3321,20 @@ export function createServerRuntimeServices({
     releaseWorkItemClaim: workItemService.releaseWorkItemClaim,
     bindGithubIssue: workItemService.bindGithubIssue,
     syncGithubIssue: workItemService.syncGithubIssue,
+    fetchWorkItemGithubIssue: ({ projectId, issueNumber }) => {
+      const project = (state.projects ?? []).find((candidate) => candidate.id === projectId);
+      const target = (state.projectTargets ?? []).find((candidate) => candidate.projectId === projectId && candidate.state === "ready");
+      const cwd = target?.rootPath ?? project?.path;
+      return cwd ? runIssueSnapshotFetch({ cwd, issueNumber }) : null;
+    },
+    pushWorkItemGithubIssue: ({ projectId, issueNumber, payload, remote }) => {
+      const project = (state.projects ?? []).find((candidate) => candidate.id === projectId);
+      const target = (state.projectTargets ?? []).find((candidate) => candidate.projectId === projectId && candidate.state === "ready");
+      const cwd = target?.rootPath ?? project?.path;
+      return cwd
+        ? runIssueSnapshotWrite({ cwd, issueNumber, payload, remote })
+        : { ok: false, error: "project_repository_not_ready" };
+    },
     listPlanningProjects: planningProjectService.listProjects,
     getPlanningProject: planningProjectService.getProject,
     createPlanningProject: planningProjectService.createProject,

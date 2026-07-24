@@ -36,6 +36,10 @@ type GithubItem = {
 };
 type GithubResult = { available: boolean; message: string; items: GithubItem[] };
 type WorkItemExecutionState = "unclaimed" | "claimed" | "running" | "awaiting_approval" | "verifying" | "failed" | "completed";
+type GithubWorkItemBinding = {
+  kind: "github_issue"; number: number; url: string | null; lastSyncedAt: string;
+  conflict: null | { fields: string[]; local: Record<string, unknown>; remote: Record<string, unknown> };
+};
 type LocalWorkItem = {
   id: string;
   localRef: string;
@@ -63,6 +67,7 @@ type LocalWorkItem = {
   revision: number;
   archivedAt: string | null;
   executionBindings?: { kind: "worktree" | "auto_run"; targetId: string; worktreeId: string | null; createdAt: string }[];
+  externalBindings?: GithubWorkItemBinding[];
   planningProjects?: { id: string; name: string; archivedAt: string | null }[];
   dependencyIds?: string[];
   parentId?: string | null;
@@ -1915,6 +1920,17 @@ function LocalWorkItemDetail({
       void load();
     });
   };
+  const githubBinding = item.externalBindings?.find((binding) => binding.kind === "github_issue");
+  const syncGithub = (direction: "pull" | "push" | "resolve_local" | "resolve_remote") => {
+    void execute(() => api.syncWorkItemGithubIssue(item.id, {
+      expectedRevision: item.revision, direction,
+    })).then((ok) => {
+      if (ok) {
+        onChanged();
+        void load();
+      }
+    });
+  };
 
   return (
     <div className="max-h-[75vh] space-y-4 overflow-y-auto pr-1">
@@ -1934,6 +1950,25 @@ function LocalWorkItemDetail({
         ) : null}
         <span>{t("taskLocal.revision", { revision: item.revision })}</span>
       </div>
+      {githubBinding ? (
+        <div className="space-y-2 rounded-md border border-border p-3 text-xs">
+          <div className="flex flex-wrap items-center gap-2">
+            <Badge tone={githubBinding.conflict ? "danger" : "success"}>
+              GitHub #{githubBinding.number} · {t(githubBinding.conflict ? "taskLocal.github.conflict" : "taskLocal.github.synced")}
+            </Badge>
+            {githubBinding.url ? <a className="text-primary hover:underline" href={githubBinding.url} target="_blank" rel="noreferrer">{t("taskLocal.github.open")}</a> : null}
+            <Button variant="secondary" disabled={pending} onClick={() => syncGithub("pull")}>{t("taskLocal.github.pull")}</Button>
+            <Button variant="secondary" disabled={pending || Boolean(githubBinding.conflict)} onClick={() => syncGithub("push")}>{t("taskLocal.github.push")}</Button>
+          </div>
+          {githubBinding.conflict ? (
+            <div className="flex flex-wrap items-center gap-2 rounded bg-danger/10 p-2">
+              <span>{t("taskLocal.github.conflictFields", { fields: githubBinding.conflict.fields.join(", ") })}</span>
+              <Button variant="secondary" disabled={pending} onClick={() => syncGithub("resolve_local")}>{t("taskLocal.github.keepLocal")}</Button>
+              <Button variant="secondary" disabled={pending} onClick={() => syncGithub("resolve_remote")}>{t("taskLocal.github.acceptRemote")}</Button>
+            </div>
+          ) : null}
+        </div>
+      ) : null}
       <div className="grid gap-3 sm:grid-cols-3">
         <Field label={t("taskLocal.dueDate")}><Input type="date" value={dueDate} onChange={(event) => setDueDate(event.target.value)} /></Field>
         <Field label={t("taskLocal.milestone")}><Input value={milestone} onChange={(event) => setMilestone(event.target.value)} /></Field>

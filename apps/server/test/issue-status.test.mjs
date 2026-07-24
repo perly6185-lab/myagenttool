@@ -11,10 +11,44 @@ import {
   runIssueAssigneeEdit,
   runIssueBodyFetch,
   runIssueComment,
+  runIssueSnapshotFetch,
+  runIssueSnapshotWrite,
   runIssueStatusTransition,
   runPrChecks,
   statusTransitionLabels,
 } from "../src/services/issue-status.mjs";
+
+test("GitHub issue snapshots normalize reads and write exact field deltas", async () => {
+  const calls = [];
+  const snapshot = await runIssueSnapshotFetch({
+    cwd: "/repo", issueNumber: 12,
+    gh: async (args, cwd) => {
+      calls.push({ args, cwd });
+      return { stdout: JSON.stringify({
+        number: 12, title: "Remote", body: "Body", state: "OPEN",
+        labels: [{ name: "bug" }], url: "https://github.test/issues/12",
+        updatedAt: "2026-07-24T00:00:00Z",
+      }) };
+    },
+  });
+  assert.equal(snapshot.state, "open");
+  assert.deepEqual(snapshot.labels, ["bug"]);
+  assert.equal(calls[0].cwd, "/repo");
+
+  calls.length = 0;
+  const written = await runIssueSnapshotWrite({
+    cwd: "/repo", issueNumber: 12,
+    payload: { title: "Local", body: "Changed", state: "closed", labels: ["feature"] },
+    remote: snapshot,
+    gh: async (args, cwd) => calls.push({ args, cwd }),
+  });
+  assert.equal(written.ok, true);
+  assert.deepEqual(calls[0].args, [
+    "issue", "edit", "12", "--title", "Local", "--body", "Changed",
+    "--add-label", "feature", "--remove-label", "bug",
+  ]);
+  assert.deepEqual(calls[1].args, ["issue", "close", "12"]);
+});
 
 const ghChecks = (rollup) => async (args) => {
   assert.deepEqual(args, ["pr", "view", "7", "--json", "statusCheckRollup"]);

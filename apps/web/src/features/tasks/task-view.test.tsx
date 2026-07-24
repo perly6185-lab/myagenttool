@@ -17,6 +17,7 @@ const mocks = vi.hoisted(() => ({
   listWorkItemActivity: vi.fn(),
   createWorkItemWorktree: vi.fn(),
   startWorkItemAutoRun: vi.fn(),
+  syncWorkItemGithubIssue: vi.fn(),
   listAutoRuns: vi.fn(),
   listPlanningProjects: vi.fn(),
   getPlanningProject: vi.fn(),
@@ -58,6 +59,7 @@ vi.mock("@/data/use-console-actions", () => ({
     listWorkItemActivity: mocks.listWorkItemActivity,
     createWorkItemWorktree: mocks.createWorkItemWorktree,
     startWorkItemAutoRun: mocks.startWorkItemAutoRun,
+    syncWorkItemGithubIssue: mocks.syncWorkItemGithubIssue,
     listAutoRuns: mocks.listAutoRuns,
     listPlanningProjects: mocks.listPlanningProjects,
     getPlanningProject: mocks.getPlanningProject,
@@ -303,6 +305,11 @@ describe("TaskView local work items", () => {
       title: "Editable issue", body: "Before", type: "task", status: "backlog",
       priority: "p2", state: "open", labels: [], assigneeIds: [],
       businessState: "open", planningStatus: "backlog", executionState: "claimed",
+      externalBindings: [{
+        kind: "github_issue", number: 42, url: "https://github.test/issues/42",
+        lastSyncedAt: "2026-07-24T00:00:00.000Z",
+        conflict: { fields: ["title"], local: { title: "Editable issue" }, remote: { title: "Remote issue" } },
+      }],
       acceptanceCriteria: [], revision: 1, archivedAt: null,
       parentId: null, parent: null, subIssues: [],
       subIssuesSummary: { total: 0, completed: 0, percentCompleted: 0 },
@@ -325,6 +332,12 @@ describe("TaskView local work items", () => {
     expect(screen.getByText("Business: Open")).toBeTruthy();
     expect(screen.getByText("Planning: Backlog")).toBeTruthy();
     expect(screen.getByText("Execution: Claimed")).toBeTruthy();
+    expect(screen.getByText("GitHub #42 · Conflict")).toBeTruthy();
+    expect(screen.getByText("Conflicting fields: title")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Keep local" }));
+    await waitFor(() => expect(mocks.syncWorkItemGithubIssue).toHaveBeenCalledWith(
+      "lwi_1", { expectedRevision: 1, direction: "resolve_local" },
+    ));
     expect(screen.getByText("No sub-issues")).toBeTruthy();
     expect(screen.getByLabelText("Parent issue")).toBeTruthy();
     fireEvent.change(title, { target: { value: "Edited issue" } });

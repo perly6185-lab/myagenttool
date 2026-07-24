@@ -5,6 +5,7 @@ export async function handleWorkItemRoutes({
   createWorktree, startAutoRun, recordExecutionBinding,
   claimWorkItem, releaseWorkItemClaim,
   bindGithubIssue, syncGithubIssue,
+  fetchGithubIssue, pushGithubIssue,
 }) {
   if (!url.pathname.startsWith("/api/work-items")) return false;
 
@@ -43,9 +44,73 @@ export async function handleWorkItemRoutes({
   if (githubMatch && req.method === "POST") {
     const workItemId = decodeURIComponent(githubMatch[1]);
     const body = await readJson(req);
-    const result = githubMatch[2] === "link"
-      ? bindGithubIssue({ workItemId, ...body }, actor)
-      : syncGithubIssue({ workItemId, ...body }, actor);
+    const detail = getWorkItem({ workItemId }, actor);
+    if (!detail.ok) {
+      sendJson(res, detail.status, detail.body);
+      return true;
+    }
+    const item = detail.body.workItem;
+    if (githubMatch[2] === "link") {
+      const issueNumber = Number(body?.issueNumber ?? body?.remote?.number);
+      const remote = body?.remote ?? await fetchGithubIssue({ projectId: item.projectId, issueNumber });
+      const result = remote
+        ? bindGithubIssue({ workItemId, expectedRevision: body?.expectedRevision, remote }, actor)
+        : { status: 502, body: { error: "github_issue_fetch_failed" } };
+      sendJson(res, result.status, result.body);
+      return true;
+    }
+    const binding = item.externalBindings?.find((candidate) => candidate.kind === "github_issue");
+    if (!binding) {
+      sendJson(res, 409, { error: "github_issue_not_bound" });
+      return true;
+    }
+    let result;
+    if (body?.direction === "pull") {
+      const remote = body?.remote ?? await fetchGithubIssue({ projectId: item.projectId, issueNumber: binding.number });
+      result = remote
+        ? syncGithubIssue({ workItemId, expectedRevision: body?.expectedRevision, direction: "pull", remote }, actor)
+        : { status: 502, body: { error: "github_issue_fetch_failed" } };
+    } else if (["push", "resolve_local"].includes(body?.direction)) {
+      const remote = body?.remote ?? await fetchGithubIssue({ projectId: item.projectId, issueNumber: binding.number });
+      if (!remote) {
+        result = { status: 502, body: { error: "github_issue_fetch_failed" } };
+      } else {
+        const reconciled = body.direction === "push"
+          ? syncGithubIssue({
+            workItemId, expectedRevision: body?.expectedRevision, direction: "pull", remote,
+          }, actor)
+          : null;
+        const prepared = reconciled && !reconciled.ok
+          ? reconciled
+          : syncGithubIssue({
+            workItemId,
+            expectedRevision: reconciled?.body.workItem?.revision ?? body?.expectedRevision,
+            direction: body.direction,
+          }, actor);
+        if (!prepared.ok || prepared.body.action !== "push_required") {
+          result = prepared;
+        } else {
+          const pushed = await pushGithubIssue({
+            projectId: item.projectId, issueNumber: binding.number, payload: prepared.body.payload, remote,
+          });
+          if (!pushed.ok) {
+            result = { status: 502, body: { error: "github_issue_push_failed", message: pushed.error } };
+          } else {
+            const confirmed = await fetchGithubIssue({ projectId: item.projectId, issueNumber: binding.number });
+            result = confirmed
+              ? syncGithubIssue({
+                workItemId,
+                expectedRevision: prepared.body.workItem?.revision ?? body?.expectedRevision,
+                direction: "push",
+                pushedRemoteUpdatedAt: confirmed.updatedAt,
+              }, actor)
+              : { status: 502, body: { error: "github_issue_confirmation_failed" } };
+          }
+        }
+      }
+    } else {
+      result = syncGithubIssue({ workItemId, ...body }, actor);
+    }
     sendJson(res, result.status, result.body);
     return true;
   }
