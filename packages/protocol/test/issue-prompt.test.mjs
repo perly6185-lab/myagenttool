@@ -6,7 +6,15 @@ import { branchFromIssue, githubItemKindLabel, roleAutoRunPrompt, slugifyIssueTi
 test("githubItemKindLabel labels PRs and issues", () => {
   assert.equal(githubItemKindLabel("pr"), "PR");
   assert.equal(githubItemKindLabel("issue"), "Issue");
+  assert.equal(githubItemKindLabel("local_issue"), "Local Issue");
   assert.equal(githubItemKindLabel(undefined), "Issue", "defaults to Issue");
+});
+
+test("local issue prompts do not claim a GitHub source", () => {
+  const item = { type: "local_issue", number: 4, title: "Offline work", url: null };
+  assert.match(worktreeAutoRunPrompt(item), /^Make progress on Local Issue #4/);
+  assert.match(roleAutoRunPrompt(item, { issueBody: "Local detail" }), /^Local Issue #4/);
+  assert.doesNotMatch(roleAutoRunPrompt(item), /GitHub/);
 });
 
 test("worktreeAutoRunPrompt builds the issue task prompt with the url line", () => {

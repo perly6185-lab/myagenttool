@@ -978,7 +978,7 @@ async function resolvePrBaseBranch(cwd, worktree) {
 
 export function normalizeWorktreeLink(value) {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
-  const type = value.type === "pr" ? "pr" : value.type === "issue" ? "issue" : null;
+  const type = value.type === "pr" ? "pr" : value.type === "issue" ? "issue" : value.type === "local_issue" ? "local_issue" : null;
   const number = Math.floor(Number(value.number));
   if (!type || !Number.isFinite(number) || number <= 0) return null;
   return {

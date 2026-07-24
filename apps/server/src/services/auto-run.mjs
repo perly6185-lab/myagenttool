@@ -379,7 +379,7 @@ export function createAutoRunService({
   // agent prompt from the issue, and start the invocation inside the worktree.
   // `name` is the branch name the caller already derives (shared branchFromIssue),
   // so the server does not re-implement issue branch naming.
-  async function startAutoRun({ projectId, link, agentId, name, baseBranch, actor } = {}) {
+  async function startAutoRun({ projectId, link, agentId, name, baseBranch, actor, issueBody: suppliedIssueBody } = {}) {
     const normalizedLink = normalizeWorktreeLink(link);
     if (!normalizedLink) {
       throw new Error("A GitHub issue or PR link is required to start an auto-run.");
@@ -492,7 +492,9 @@ export function createAutoRunService({
       // 0. Decision step: the injected decider (or the heuristic floor) triages the
       // issue into a path BEFORE any execution. The decision is data, not action.
       // Both the decider and the role prompt get the issue body when it's readable.
-      issueBody = await maybeFetchIssueBody(normalizedLink, projectId ?? state.currentProjectId);
+      issueBody = typeof suppliedIssueBody === "string"
+        ? suppliedIssueBody
+        : await maybeFetchIssueBody(normalizedLink, projectId ?? state.currentProjectId);
       // B1a: scan the untrusted issue body for prompt-injection markers. A hit
       // never blocks the run (avoids weaponizing false positives into a DoS), but
       // it is recorded, alerted, and — crucially — makes the run ineligible for

@@ -847,6 +847,52 @@ export const api = {
     request("POST", `/api/worktrees/${encodeURIComponent(id)}/pr`, payload),
   listGithubItems: (projectId: string) =>
     request("GET", `/api/projects/${encodeURIComponent(projectId)}/github`),
+  listWorkItems: (query: { projectId?: string; planningProjectId?: string; status?: string; type?: string; q?: string } = {}) => {
+    const params = new URLSearchParams(Object.entries(query).filter(([, value]) => Boolean(value)) as [string, string][]);
+    return request("GET", `/api/work-items${params.size ? `?${params}` : ""}`);
+  },
+  createWorkItem: (payload: {
+    projectId: string;
+    title: string;
+    body?: string;
+    type?: "task" | "bug" | "feature" | "initiative";
+    priority?: "p0" | "p1" | "p2" | "p3";
+    labels?: string[];
+    acceptanceCriteria?: string[];
+  }) => request("POST", "/api/work-items", payload),
+  getWorkItem: (id: string) => request("GET", `/api/work-items/${encodeURIComponent(id)}`),
+  updateWorkItem: (id: string, payload: Record<string, unknown>) =>
+    request("PATCH", `/api/work-items/${encodeURIComponent(id)}`, payload),
+  transitionWorkItem: (id: string, action: "close" | "reopen" | "archive" | "restore", expectedRevision: number) =>
+    request("POST", `/api/work-items/${encodeURIComponent(id)}/${action}`, { expectedRevision }),
+  listWorkItemComments: (id: string) =>
+    request("GET", `/api/work-items/${encodeURIComponent(id)}/comments`),
+  createWorkItemComment: (id: string, body: string) =>
+    request("POST", `/api/work-items/${encodeURIComponent(id)}/comments`, { body }),
+  updateWorkItemComment: (workItemId: string, commentId: string, payload: { expectedRevision: number; body: string }) =>
+    request("PATCH", `/api/work-items/${encodeURIComponent(workItemId)}/comments/${encodeURIComponent(commentId)}`, payload),
+  deleteWorkItemComment: (workItemId: string, commentId: string, expectedRevision: number) =>
+    request("DELETE", `/api/work-items/${encodeURIComponent(workItemId)}/comments/${encodeURIComponent(commentId)}`, { expectedRevision }),
+  listWorkItemActivity: (id: string) =>
+    request("GET", `/api/work-items/${encodeURIComponent(id)}/activity`),
+  createWorkItemWorktree: (id: string, payload: { agentId?: string; baseBranch?: string } = {}) =>
+    request("POST", `/api/work-items/${encodeURIComponent(id)}/worktrees`, payload),
+  startWorkItemAutoRun: (id: string, payload: { agentId?: string; baseBranch?: string } = {}) =>
+    request("POST", `/api/work-items/${encodeURIComponent(id)}/auto-runs`, payload),
+  listPlanningProjects: (includeArchived = false) =>
+    request("GET", `/api/planning-projects${includeArchived ? "?includeArchived=1" : ""}`),
+  getPlanningProject: (id: string) =>
+    request("GET", `/api/planning-projects/${encodeURIComponent(id)}`),
+  createPlanningProject: (payload: { name: string; description?: string; color?: string }) =>
+    request("POST", "/api/planning-projects", payload),
+  updatePlanningProject: (id: string, payload: Record<string, unknown>) =>
+    request("PATCH", `/api/planning-projects/${encodeURIComponent(id)}`, payload),
+  setPlanningProjectArchived: (id: string, expectedRevision: number, archived: boolean) =>
+    request("POST", `/api/planning-projects/${encodeURIComponent(id)}/${archived ? "archive" : "restore"}`, { expectedRevision }),
+  addPlanningProjectItem: (planningProjectId: string, workItemId: string) =>
+    request("PUT", `/api/planning-projects/${encodeURIComponent(planningProjectId)}/items/${encodeURIComponent(workItemId)}`),
+  removePlanningProjectItem: (planningProjectId: string, workItemId: string) =>
+    request("DELETE", `/api/planning-projects/${encodeURIComponent(planningProjectId)}/items/${encodeURIComponent(workItemId)}`),
   // #1143 issue claims: take/hand back an issue's develop lease. A foreign
   // active develop claim answers 409 with the blocking claim.
   claimIssue: (projectId: string, payload: { issueNumber: number; mode?: "develop" | "review" }) =>
