@@ -25,6 +25,7 @@ export type SectionKey =
   | "canvas"
   | "compare"
   | "projects"
+  | "planning"
   | "task"
   | "autoRuns"
   | "approvals"
@@ -56,12 +57,29 @@ export interface PendingLocalDocumentRegistration {
   documentName: string;
 }
 
+export type PlanningProjectView = "list" | "board" | "roadmap";
+export interface PlanningProjectFilters {
+  status: string;
+  priority: string;
+  milestone: string;
+  due: "all" | "overdue" | "upcoming" | "unscheduled";
+}
+export const DEFAULT_PLANNING_PROJECT_FILTERS: PlanningProjectFilters = {
+  status: "all",
+  priority: "all",
+  milestone: "",
+  due: "all",
+};
+
 interface UiState {
   section: SectionKey;
   selectedAgentId: string | null;
   selectedInvocationId: string | null;
   selectedArtifactId: string | null;
   selectedProjectId: string | null;
+  selectedPlanningProjectId: string | null;
+  planningProjectView: PlanningProjectView;
+  planningProjectFilters: PlanningProjectFilters;
   selectedWorktreeId: string | null;
   selectedAgentSkillId: string | null;
   selectedCanvasSceneId: string | null;
@@ -91,6 +109,9 @@ interface UiState {
   setSelectedInvocationId: (id: string | null) => void;
   setSelectedArtifactId: (id: string | null) => void;
   setSelectedProjectId: (id: string | null) => void;
+  setSelectedPlanningProjectId: (id: string | null) => void;
+  setPlanningProjectView: (view: PlanningProjectView) => void;
+  setPlanningProjectFilters: (filters: PlanningProjectFilters) => void;
   setSelectedWorktreeId: (id: string | null) => void;
   setSelectedAgentSkillId: (id: string | null) => void;
   setSelectedCanvasSceneId: (id: string | null) => void;
@@ -123,6 +144,7 @@ export const SECTION_KEYS: SectionKey[] = [
   "canvas",
   "compare",
   "projects",
+  "planning",
   "task",
   "autoRuns",
   "approvals",
@@ -152,9 +174,15 @@ export interface UrlNavigationState {
   selectedEvidenceId?: string | null;
   /** The schedule the operator is looking at — survives a deep link and a refresh (#849). */
   selectedAutomationId?: string | null;
+  selectedPlanningProjectId?: string | null;
+  planningProjectView?: PlanningProjectView;
+  planningProjectFilters?: PlanningProjectFilters;
 }
 
-const NAVIGATION_SEARCH_KEYS = ["section", "invocation", "application", "routine", "run", "evidence", "automation"] as const;
+const NAVIGATION_SEARCH_KEYS = [
+  "section", "invocation", "application", "routine", "run", "evidence", "automation",
+  "planningProject", "planningView", "planningStatus", "planningPriority", "planningMilestone", "planningDue",
+] as const;
 
 function stringParam(params: URLSearchParams, key: string): string | null {
   const value = params.get(key)?.trim();
@@ -177,6 +205,9 @@ export function navigationFromSearch(search: string): UrlNavigationState {
   const runInvocationId = stringParam(params, "run");
   const evidenceId = stringParam(params, "evidence");
   const automationId = stringParam(params, "automation");
+  const planningProjectId = stringParam(params, "planningProject");
+  const planningViewParam = stringParam(params, "planningView");
+  const planningDueParam = stringParam(params, "planningDue");
   const navigation: UrlNavigationState = {};
   if (section) navigation.section = section;
   navigation.selectedInvocationId = invocationId;
@@ -186,6 +217,18 @@ export function navigationFromSearch(search: string): UrlNavigationState {
     : null;
   navigation.selectedEvidenceId = evidenceId;
   navigation.selectedAutomationId = automationId;
+  if (section === "planning" || NAVIGATION_SEARCH_KEYS.some((key) => key.startsWith("planning") && params.has(key))) {
+    navigation.selectedPlanningProjectId = planningProjectId;
+    navigation.planningProjectView = planningViewParam === "board" || planningViewParam === "roadmap" ? planningViewParam : "list";
+    navigation.planningProjectFilters = {
+      status: stringParam(params, "planningStatus") ?? "all",
+      priority: stringParam(params, "planningPriority") ?? "all",
+      milestone: stringParam(params, "planningMilestone") ?? "",
+      due: planningDueParam === "overdue" || planningDueParam === "upcoming" || planningDueParam === "unscheduled"
+        ? planningDueParam
+        : "all",
+    };
+  }
   return navigation;
 }
 
@@ -200,6 +243,9 @@ function applyUrlNavigation<T extends Partial<UiState>>(state: T, navigation: Ur
   if (navigation.selectedApplicationRun !== undefined) state.selectedApplicationRun = navigation.selectedApplicationRun;
   if (navigation.selectedEvidenceId !== undefined) state.selectedEvidenceId = navigation.selectedEvidenceId;
   if (navigation.selectedAutomationId !== undefined) state.selectedAutomationId = navigation.selectedAutomationId;
+  if (navigation.selectedPlanningProjectId !== undefined) state.selectedPlanningProjectId = navigation.selectedPlanningProjectId;
+  if (navigation.planningProjectView !== undefined) state.planningProjectView = navigation.planningProjectView;
+  if (navigation.planningProjectFilters !== undefined) state.planningProjectFilters = navigation.planningProjectFilters;
   return state;
 }
 
@@ -214,7 +260,7 @@ export function searchFromNavigationState(search: string, state: Pick<UiState,
   | "selectedApplicationRun"
   | "selectedEvidenceId"
   | "selectedAutomationId"
->): string {
+> & Partial<Pick<UiState, "selectedPlanningProjectId" | "planningProjectView" | "planningProjectFilters">>): string {
   const params = new URLSearchParams(search);
   for (const key of NAVIGATION_SEARCH_KEYS) params.delete(key);
   params.set("section", state.section);
@@ -227,6 +273,15 @@ export function searchFromNavigationState(search: string, state: Pick<UiState,
   }
   if (state.selectedEvidenceId) params.set("evidence", state.selectedEvidenceId);
   if (state.selectedAutomationId) params.set("automation", state.selectedAutomationId);
+  if (state.section === "planning") {
+    if (state.selectedPlanningProjectId) params.set("planningProject", state.selectedPlanningProjectId);
+    params.set("planningView", state.planningProjectView ?? "list");
+    const filters = state.planningProjectFilters ?? DEFAULT_PLANNING_PROJECT_FILTERS;
+    if (filters.status !== "all") params.set("planningStatus", filters.status);
+    if (filters.priority !== "all") params.set("planningPriority", filters.priority);
+    if (filters.milestone) params.set("planningMilestone", filters.milestone);
+    if (filters.due !== "all") params.set("planningDue", filters.due);
+  }
   const next = params.toString();
   return next ? `?${next}` : "";
 }
@@ -247,6 +302,9 @@ export const useUiStore = create<UiState>()(
         selectedInvocationId: initialNavigation.selectedInvocationId ?? null,
         selectedArtifactId: null,
         selectedProjectId: null,
+        selectedPlanningProjectId: initialNavigation.selectedPlanningProjectId ?? null,
+        planningProjectView: initialNavigation.planningProjectView ?? "list",
+        planningProjectFilters: initialNavigation.planningProjectFilters ?? { ...DEFAULT_PLANNING_PROJECT_FILTERS },
         selectedWorktreeId: null,
         selectedAgentSkillId: null,
         selectedCanvasSceneId: null,
@@ -270,6 +328,9 @@ export const useUiStore = create<UiState>()(
         setSelectedInvocationId: (selectedInvocationId) => set({ selectedInvocationId }),
         setSelectedArtifactId: (selectedArtifactId) => set({ selectedArtifactId }),
         setSelectedProjectId: (selectedProjectId) => set({ selectedProjectId }),
+        setSelectedPlanningProjectId: (selectedPlanningProjectId) => set({ selectedPlanningProjectId }),
+        setPlanningProjectView: (planningProjectView) => set({ planningProjectView }),
+        setPlanningProjectFilters: (planningProjectFilters) => set({ planningProjectFilters }),
         setSelectedWorktreeId: (selectedWorktreeId) => set({ selectedWorktreeId }),
         setSelectedAgentSkillId: (selectedAgentSkillId) => set({ selectedAgentSkillId }),
         setSelectedCanvasSceneId: (selectedCanvasSceneId) => set({ selectedCanvasSceneId }),
@@ -300,6 +361,9 @@ export const useUiStore = create<UiState>()(
         selectedInvocationId: state.selectedInvocationId,
         selectedArtifactId: state.selectedArtifactId,
         selectedProjectId: state.selectedProjectId,
+        selectedPlanningProjectId: state.selectedPlanningProjectId,
+        planningProjectView: state.planningProjectView,
+        planningProjectFilters: state.planningProjectFilters,
         selectedWorktreeId: state.selectedWorktreeId,
         selectedAgentSkillId: state.selectedAgentSkillId,
         selectedCanvasSceneId: state.selectedCanvasSceneId,
@@ -329,6 +393,12 @@ export const useUiStore = create<UiState>()(
         // Old blobs have no locale and keep the system-detected current value;
         // stale/unsupported saved values never escape into i18next or the DOM.
         if (!isSupportedLocale(saved.locale)) merged.locale = current.locale;
+        if (!["list", "board", "roadmap"].includes(merged.planningProjectView)) {
+          merged.planningProjectView = "list";
+        }
+        if (!merged.planningProjectFilters || typeof merged.planningProjectFilters !== "object") {
+          merged.planningProjectFilters = { ...DEFAULT_PLANNING_PROJECT_FILTERS };
+        }
         // Explicit deep-link params override restored navigation selections.
         applyUrlNavigation(merged, navigationFromCurrentUrl());
         return merged;

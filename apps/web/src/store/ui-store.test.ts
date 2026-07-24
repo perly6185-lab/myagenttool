@@ -122,6 +122,34 @@ describe("URL navigation helpers", () => {
     expect(params.get("evidence")).toBe("ev_selected");
   });
 
+  it("round-trips a planning project and its active view", () => {
+    expect(navigationFromSearch("?section=planning&planningProject=ppj_1&planningView=roadmap&planningStatus=blocked&planningPriority=p1&planningMilestone=M3&planningDue=overdue")).toMatchObject({
+      section: "planning",
+      selectedPlanningProjectId: "ppj_1",
+      planningProjectView: "roadmap",
+      planningProjectFilters: { status: "blocked", priority: "p1", milestone: "M3", due: "overdue" },
+    });
+    const search = searchFromNavigationState("", {
+      section: "planning",
+      selectedInvocationId: null,
+      selectedApplicationId: null,
+      selectedApplicationRun: null,
+      selectedEvidenceId: null,
+      selectedAutomationId: null,
+      selectedPlanningProjectId: "ppj_1",
+      planningProjectView: "roadmap",
+      planningProjectFilters: { status: "blocked", priority: "p1", milestone: "M3", due: "overdue" },
+    });
+    const params = new URLSearchParams(search);
+    expect(params.get("section")).toBe("planning");
+    expect(params.get("planningProject")).toBe("ppj_1");
+    expect(params.get("planningView")).toBe("roadmap");
+    expect(params.get("planningStatus")).toBe("blocked");
+    expect(params.get("planningPriority")).toBe("p1");
+    expect(params.get("planningMilestone")).toBe("M3");
+    expect(params.get("planningDue")).toBe("overdue");
+  });
+
   it("clears stale evidence params when evidence is absent from navigation state", () => {
     const search = searchFromNavigationState("?keep=yes&section=audit&evidence=old_ev", {
       section: "audit",

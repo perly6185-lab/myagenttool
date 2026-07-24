@@ -1,9 +1,12 @@
 export const resources = {
   "en-US": {
     common: {
+      planningWorkspace: { title: "Planning Projects", description: "Organize local work into durable lists and status boards." },
+      planningFilters: { roadmap: "Roadmap", status: "Filter by status", priority: "Filter by priority", milestone: "Filter by milestone", due: "Filter by due date", allStatuses: "All statuses", allPriorities: "All priorities", allDates: "All due dates", overdue: "Overdue", nextSevenDays: "Next 7 days", unscheduled: "No due date", noMilestone: "No milestone", noDate: "No date", noMatches: "No matching work items", adjustFilters: "Adjust the planning filters to see more items." },
       planningProjects: { title: "Planning projects", name: "Project name", description: "Description", create: "Create", empty: "No planning projects yet.", noDescription: "No description", archive: "Archive", restore: "Restore", edit: "Edit", save: "Save", editName: "Edit project name", editDescription: "Edit project description", filter: "Filter by planning project", all: "All planning projects", items: "Local issues", board: "Board", total: "Total", open: "Open", completed: "Completed", changeStatus: "Change status for {{ref}}", moveUp: "Move {{ref}} up", moveDown: "Move {{ref}} down", selectItem: "Select {{ref}}", selectedCount: "{{count}} selected", applyBulk: "Apply status", noItems: "Create a local issue to add it here.", select: "Select a planning project", selectHint: "Create or select a project to organize local issues." },
       sectionGroups: { work: "Work", run: "Run", oversee: "Oversee", configure: "Configure", ledgers: "Ledgers" },
       sections: {
+        planning: { label: "Planning", blurb: "Local project lists and status boards" },
         dashboard: { label: "Overview", blurb: "Start a task and watch it run" }, workBoard: { label: "Status", blurb: "Every work item by state" },
         workspace: { label: "Workspace", blurb: "Project files, transcript, and history in one place" }, documents: { label: "Documents", blurb: "Browse Word, Excel, PowerPoint, and PDF files" }, canvas: { label: "Canvas", blurb: "Draw and edit diagrams and Excalidraw scenes" },
         autoRuns: { label: "Auto-runs", blurb: "Autonomous issue to worktree to PR runs" }, task: { label: "Task", blurb: "GitHub issues and PRs as work items" }, compare: { label: "Compare", blurb: "Run one task on multiple agents side by side" }, automation: { label: "Automation", blurb: "Rules that run agents on a trigger" }, routines: { label: "Routines", blurb: "Scheduled autonomous checks and findings" },
@@ -112,9 +115,12 @@ export const resources = {
   },
   "zh-CN": {
     common: {
+      planningWorkspace: { title: "规划项目", description: "使用持久化列表和状态看板组织本地工作。" },
+      planningFilters: { roadmap: "路线图", status: "按状态筛选", priority: "按优先级筛选", milestone: "按里程碑筛选", due: "按截止日期筛选", allStatuses: "所有状态", allPriorities: "所有优先级", allDates: "所有截止日期", overdue: "已逾期", nextSevenDays: "未来 7 天", unscheduled: "无截止日期", noMilestone: "无里程碑", noDate: "无日期", noMatches: "没有匹配的工作项", adjustFilters: "调整规划筛选条件以查看更多工作项。" },
       planningProjects: { title: "规划项目", name: "项目名称", description: "描述", create: "创建", empty: "尚无规划项目。", noDescription: "暂无描述", archive: "归档", restore: "恢复", edit: "编辑", save: "保存", editName: "编辑项目名称", editDescription: "编辑项目描述", filter: "按规划项目筛选", all: "所有规划项目", items: "本地 Issue", board: "看板", total: "总数", open: "开放", completed: "已完成", changeStatus: "调整 {{ref}} 的状态", moveUp: "上移 {{ref}}", moveDown: "下移 {{ref}}", selectItem: "选择 {{ref}}", selectedCount: "已选择 {{count}} 项", applyBulk: "应用状态", noItems: "请先创建本地 Issue，再添加到此项目。", select: "选择规划项目", selectHint: "创建或选择项目以组织本地 Issue。" },
       sectionGroups: { work: "工作", run: "运行", oversee: "监督", configure: "配置", ledgers: "台账" },
       sections: {
+        planning: { label: "规划", blurb: "本地项目列表与状态看板" },
         dashboard: { label: "概览", blurb: "启动任务并查看运行过程" }, workBoard: { label: "状态", blurb: "按状态查看所有工作项" },
         workspace: { label: "工作区", blurb: "集中查看项目文件、记录与历史" }, documents: { label: "文档", blurb: "浏览 Word、Excel、PowerPoint 和 PDF 文件" }, canvas: { label: "画布", blurb: "绘制和编辑图表及 Excalidraw 场景" },
         autoRuns: { label: "自动运行", blurb: "从 Issue 到工作树和 PR 的自主运行" }, task: { label: "任务", blurb: "将 GitHub Issue 和 PR 作为工作项" }, compare: { label: "对比", blurb: "让多个 Agent 并行执行同一任务" }, automation: { label: "自动化", blurb: "由触发器运行 Agent 的规则" }, routines: { label: "例行任务", blurb: "定时自主检查及其发现" },

@@ -72,6 +72,12 @@ vi.mock("@/store/ui-store", () => ({
   useUiStore: (selector: (state: Record<string, unknown>) => unknown) => selector({
     setSection: vi.fn(),
     setSelectedProjectId: vi.fn(),
+    selectedPlanningProjectId: null,
+    planningProjectView: "list",
+    planningProjectFilters: { status: "all", priority: "all", milestone: "", due: "all" },
+    setSelectedPlanningProjectId: vi.fn(),
+    setPlanningProjectView: vi.fn(),
+    setPlanningProjectFilters: vi.fn(),
     setSelectedWorktreeId: vi.fn(),
   }),
 }));
@@ -185,7 +191,7 @@ describe("TaskView local work items", () => {
       id: "lwi_1", localRef: "LOCAL-1", projectId: "prj_1", title: "First",
       body: "", type: "task", status: "backlog", priority: "p2", state: "open",
       labels: [], assigneeIds: [], acceptanceCriteria: [], revision: 1, archivedAt: null,
-      dueDate: null, milestone: "", updatedAt: "2026-07-24T00:00:00.000Z",
+      dueDate: "2026-08-15", milestone: "M3", updatedAt: "2026-07-24T00:00:00.000Z",
     };
     const second = { ...first, id: "lwi_2", localRef: "LOCAL-2", title: "Second" };
     const project = {
@@ -208,6 +214,9 @@ describe("TaskView local work items", () => {
     await waitFor(() => expect(mocks.reorderPlanningProjectItems).toHaveBeenCalledWith(
       "ppj_1", 2, ["lwi_2", "lwi_1"],
     ));
+    fireEvent.click(screen.getByRole("button", { name: "Roadmap" }));
+    expect((await screen.findAllByText("M3")).length).toBeGreaterThan(0);
+    expect(screen.getAllByText("2026-08-15").length).toBeGreaterThan(0);
   });
 
   it("opens details, saves fields, and posts a comment", async () => {

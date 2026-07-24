@@ -17,6 +17,9 @@ beforeEach(() => {
     selectedApplicationId: null,
     selectedApplicationRun: null,
     selectedEvidenceId: null,
+    selectedPlanningProjectId: null,
+    planningProjectView: "list",
+    planningProjectFilters: { status: "all", priority: "all", milestone: "", due: "all" },
   });
 });
 
@@ -67,5 +70,20 @@ describe("useUrlNavigationSync", () => {
     expect(useUiStore.getState().selectedApplicationId).toBe("app_other");
     expect(useUiStore.getState().selectedApplicationRun).toBeNull();
     expect(useUiStore.getState().selectedEvidenceId).toBeNull();
+  });
+
+  it("restores and writes planning workspace selection", async () => {
+    window.history.replaceState(null, "", "/?section=planning&planningProject=ppj_1&planningView=board");
+    render(<SyncHarness />);
+    expect(useUiStore.getState().selectedPlanningProjectId).toBe("ppj_1");
+    expect(useUiStore.getState().planningProjectView).toBe("board");
+
+    useUiStore.getState().setSelectedPlanningProjectId("ppj_2");
+    useUiStore.getState().setPlanningProjectView("list");
+    await waitFor(() => {
+      const params = new URLSearchParams(window.location.search);
+      expect(params.get("planningProject")).toBe("ppj_2");
+      expect(params.get("planningView")).toBe("list");
+    });
   });
 });

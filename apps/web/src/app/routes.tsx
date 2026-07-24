@@ -8,6 +8,7 @@ import { CanvasView } from "@/features/canvas/canvas-view";
 import { CompareView } from "@/features/compare/compare-view";
 import { ProjectsView } from "@/features/projects/projects-view";
 import { TaskView } from "@/features/tasks/task-view";
+import { PlanningProjectsView } from "@/features/planning/planning-projects-view";
 import { AutoRunsView } from "@/features/auto-runs/auto-runs-view";
 import { ApprovalsView } from "@/features/approvals/approvals-view";
 import { EvidenceView } from "@/features/evidence/evidence-view";
@@ -36,6 +37,7 @@ export const SECTION_VIEWS: Record<SectionKey, ComponentType> = {
   canvas: CanvasView,
   compare: CompareView,
   projects: ProjectsView,
+  planning: PlanningProjectsView,
   task: TaskView,
   autoRuns: AutoRunsView,
   approvals: ApprovalsView,

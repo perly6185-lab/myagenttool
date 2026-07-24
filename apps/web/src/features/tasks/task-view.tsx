@@ -482,6 +482,11 @@ export function TaskView() {
       </Modal>
 
       <Modal open={planningOpen} onClose={() => setPlanningOpen(false)} title={t("planningProjects.title")}>
+        <div className="mb-3 flex justify-end">
+          <Button variant="secondary" size="sm" onClick={() => { setPlanningOpen(false); setSection("planning"); }}>
+            <FolderKanban className="mr-1 size-4" />{t("planningWorkspace.title")}
+          </Button>
+        </div>
         <PlanningProjectsPanel onChanged={() => setNonce((value) => value + 1)} />
       </Modal>
 
@@ -510,16 +515,33 @@ export function TaskView() {
   );
 }
 
-function PlanningProjectsPanel({ onChanged }: { onChanged: () => void }) {
+export function PlanningProjectsPanel({ onChanged = () => {} }: { onChanged?: () => void }) {
   const { t } = useAppTranslation();
   const { execute, pending, error } = useAsyncAction();
   const [projects, setProjects] = useState<PlanningProject[]>([]);
   const [workItems, setWorkItems] = useState<LocalWorkItem[]>([]);
-  const [selectedId, setSelectedId] = useState("");
+  const storedSelectedId = useUiStore((state) => state.selectedPlanningProjectId) ?? "";
+  const storeSelectedId = useUiStore((state) => state.setSelectedPlanningProjectId);
+  const [selectedId, setSelectedIdLocal] = useState(storedSelectedId);
+  const setSelectedId = (value: string) => {
+    setSelectedIdLocal(value);
+    storeSelectedId(value || null);
+  };
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
   const [editing, setEditing] = useState(false);
-  const [view, setView] = useState<"items" | "board">("items");
+  const storedPlanningView = useUiStore((state) => state.planningProjectView);
+  const storePlanningView = useUiStore((state) => state.setPlanningProjectView);
+  const storedFilters = useUiStore((state) => state.planningProjectFilters);
+  const storeFilters = useUiStore((state) => state.setPlanningProjectFilters);
+  const [view, setViewLocal] = useState<"items" | "board" | "roadmap">(
+    storedPlanningView === "board" || storedPlanningView === "roadmap" ? storedPlanningView : "items",
+  );
+  const setView = (next: "items" | "board" | "roadmap") => {
+    setViewLocal(next);
+    storePlanningView(next === "items" ? "list" : next);
+  };
+  const filters = storedFilters ?? { status: "all", priority: "all", milestone: "", due: "all" as const };
   const [selectedWorkItemIds, setSelectedWorkItemIds] = useState<string[]>([]);
   const [bulkStatus, setBulkStatus] = useState<LocalWorkItem["status"]>("ready");
   const [nonce, setNonce] = useState(0);
@@ -530,6 +552,26 @@ function PlanningProjectsPanel({ onChanged }: { onChanged: () => void }) {
         ...workItems.filter((item) => !selected.items?.some((row) => row.workItem.id === item.id)),
       ]
     : workItems;
+  const today = new Date().toISOString().slice(0, 10);
+  const upcoming = new Date(Date.now() + 7 * 86_400_000).toISOString().slice(0, 10);
+  const matchesFilters = (item: LocalWorkItem) =>
+    (filters.status === "all" || item.status === filters.status)
+    && (filters.priority === "all" || item.priority === filters.priority)
+    && (!filters.milestone || item.milestone.toLowerCase().includes(filters.milestone.toLowerCase()))
+    && (filters.due === "all"
+      || (filters.due === "overdue" && Boolean(item.dueDate && item.dueDate < today && item.status !== "done"))
+      || (filters.due === "upcoming" && Boolean(item.dueDate && item.dueDate >= today && item.dueDate <= upcoming))
+      || (filters.due === "unscheduled" && !item.dueDate));
+  const filteredDisplayWorkItems = displayWorkItems.filter(matchesFilters);
+  const filteredProjectItems = (selected?.items ?? []).filter((row) => matchesFilters(row.workItem));
+
+  useEffect(() => {
+    setSelectedIdLocal(storedSelectedId);
+  }, [storedSelectedId]);
+
+  useEffect(() => {
+    setViewLocal(storedPlanningView === "board" || storedPlanningView === "roadmap" ? storedPlanningView : "items");
+  }, [storedPlanningView]);
 
   useEffect(() => {
     let cancelled = false;
@@ -539,7 +581,9 @@ function PlanningProjectsPanel({ onChanged }: { onChanged: () => void }) {
     ]).then(async ([result, workItemResult]) => {
       if (cancelled) return;
       setWorkItems(workItemResult.workItems);
-      const nextId = selectedId || result.projects[0]?.id || "";
+      const nextId = result.projects.some((project) => project.id === selectedId)
+        ? selectedId
+        : result.projects[0]?.id ?? "";
       if (!nextId) {
         setProjects(result.projects);
         return;
@@ -677,16 +721,40 @@ function PlanningProjectsPanel({ onChanged }: { onChanged: () => void }) {
               <div className="rounded-md bg-muted p-2"><strong className="block text-base">{selected.completedItemCount}</strong>{t("planningProjects.completed")}</div>
             </div>
             <div className="flex gap-1 rounded-md bg-muted p-0.5 text-xs">
-              {(["items", "board"] as const).map((value) => (
+              {(["items", "board", "roadmap"] as const).map((value) => (
                 <button key={value} type="button" onClick={() => setView(value)}
                   className={cn("rounded px-2 py-1", view === value && "bg-background shadow-sm")}>
-                  {t(`planningProjects.${value}`)}
+                  {value === "roadmap" ? t("planningFilters.roadmap") : t(`planningProjects.${value}`)}
                 </button>
               ))}
             </div>
+            <div className="grid gap-2 sm:grid-cols-4">
+              <Select value={filters.status} aria-label={t("planningFilters.status")}
+                onChange={(event) => storeFilters({ ...filters, status: event.target.value })}>
+                <option value="all">{t("planningFilters.allStatuses")}</option>
+                {(["backlog", "ready", "in_progress", "review", "blocked", "done"] as const).map((value) => (
+                  <option key={value} value={value}>{t(`tasks.localStatus.${value}`)}</option>
+                ))}
+              </Select>
+              <Select value={filters.priority} aria-label={t("planningFilters.priority")}
+                onChange={(event) => storeFilters({ ...filters, priority: event.target.value })}>
+                <option value="all">{t("planningFilters.allPriorities")}</option>
+                {(["p0", "p1", "p2", "p3"] as const).map((value) => <option key={value} value={value}>{value.toUpperCase()}</option>)}
+              </Select>
+              <Input value={filters.milestone} aria-label={t("planningFilters.milestone")}
+                placeholder={t("planningFilters.milestone")}
+                onChange={(event) => storeFilters({ ...filters, milestone: event.target.value })} />
+              <Select value={filters.due} aria-label={t("planningFilters.due")}
+                onChange={(event) => storeFilters({ ...filters, due: event.target.value as typeof filters.due })}>
+                <option value="all">{t("planningFilters.allDates")}</option>
+                <option value="overdue">{t("planningFilters.overdue")}</option>
+                <option value="upcoming">{t("planningFilters.nextSevenDays")}</option>
+                <option value="unscheduled">{t("planningFilters.unscheduled")}</option>
+              </Select>
+            </div>
             {view === "items" ? (
               <div className="max-h-72 space-y-1 overflow-y-auto">
-                {displayWorkItems.map((item) => {
+                {filteredDisplayWorkItems.map((item) => {
                   const included = selected.items?.some((row) => row.workItem.id === item.id);
                   const orderIndex = selected.items?.findIndex((row) => row.workItem.id === item.id) ?? -1;
                   return (
@@ -710,7 +778,7 @@ function PlanningProjectsPanel({ onChanged }: { onChanged: () => void }) {
                 })}
                 {!workItems.length ? <p className="text-xs text-muted-foreground">{t("planningProjects.noItems")}</p> : null}
               </div>
-            ) : (
+            ) : view === "board" ? (
               <div className="space-y-2">
                 <div className="flex flex-wrap items-center gap-2">
                   <span className="text-xs text-muted-foreground">{t("planningProjects.selectedCount", { count: selectedWorkItemIds.length })}</span>
@@ -728,7 +796,7 @@ function PlanningProjectsPanel({ onChanged }: { onChanged: () => void }) {
                       <span>{t(`tasks.localStatus.${status}`)}</span><Badge tone="neutral">{selected.statusCounts?.[status] ?? 0}</Badge>
                     </h4>
                     <div className="space-y-1.5">
-                      {selected.items?.filter((row) => row.workItem.status === status).map(({ workItem }) => (
+                      {filteredProjectItems.filter((row) => row.workItem.status === status).map(({ workItem }) => (
                         <div key={workItem.id} className="rounded border border-border bg-background p-2 text-xs">
                           <div className="flex items-center gap-1 font-mono text-muted-foreground">
                             <input type="checkbox" aria-label={t("planningProjects.selectItem", { ref: workItem.localRef })}
@@ -753,6 +821,36 @@ function PlanningProjectsPanel({ onChanged }: { onChanged: () => void }) {
                   </section>
                   ))}
                 </div>
+              </div>
+            ) : (
+              <div className="max-h-[28rem] space-y-4 overflow-y-auto">
+                {[...new Set(filteredProjectItems.map((row) => row.workItem.milestone || t("planningFilters.noMilestone")))]
+                  .sort()
+                  .map((milestone) => (
+                    <section key={milestone} className="rounded-md border border-border p-3">
+                      <h4 className="mb-2 flex items-center justify-between text-sm font-semibold">
+                        <span>{milestone}</span>
+                        <Badge tone="neutral">
+                          {filteredProjectItems.filter((row) => (row.workItem.milestone || t("planningFilters.noMilestone")) === milestone).length}
+                        </Badge>
+                      </h4>
+                      <div className="space-y-1.5">
+                        {filteredProjectItems
+                          .filter((row) => (row.workItem.milestone || t("planningFilters.noMilestone")) === milestone)
+                          .sort((a, b) => (a.workItem.dueDate ?? "9999-12-31").localeCompare(b.workItem.dueDate ?? "9999-12-31"))
+                          .map(({ workItem }) => (
+                            <div key={workItem.id} className="grid grid-cols-[6rem_1fr_auto] items-center gap-2 rounded bg-muted/50 px-2 py-1.5 text-xs">
+                              <span className={cn("font-mono", workItem.dueDate && workItem.dueDate < today && workItem.status !== "done" && "text-destructive")}>
+                                {workItem.dueDate ?? t("planningFilters.noDate")}
+                              </span>
+                              <span className="truncate font-medium">{workItem.localRef} · {workItem.title}</span>
+                              <Badge tone={statusTone(workItem.status)}>{t(`tasks.localStatus.${workItem.status}`)}</Badge>
+                            </div>
+                          ))}
+                      </div>
+                    </section>
+                  ))}
+                {!filteredProjectItems.length ? <EmptyState title={t("planningFilters.noMatches")} hint={t("planningFilters.adjustFilters")} /> : null}
               </div>
             )}
           </>
