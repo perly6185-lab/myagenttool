@@ -48,6 +48,8 @@ export function createHttpServer({
   setReportSchedule,
   postReportNow,
   claimIssue,
+  claimWorkItem,
+  releaseWorkItemClaim,
   releaseIssueClaim,
   listIssueClaims,
   approveDesign,
@@ -382,6 +384,8 @@ export function createHttpServer({
         createWorktree,
         startAutoRun,
         recordExecutionBinding: recordWorkItemExecutionBinding,
+        claimWorkItem,
+        releaseWorkItemClaim,
       })) {
         return;
       }

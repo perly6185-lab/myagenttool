@@ -77,6 +77,23 @@ test("local work item CRUD is wired through the real HTTP server", async () => {
   assert.equal(listed.body.count, 1);
 });
 
+test("local work item claim lease is wired through HTTP", async () => {
+  const item = (await call("/api/work-items", {
+    method: "POST", body: { projectId: "prj_a", title: "Agent owned" },
+  })).body.workItem;
+  const claimed = await call(`/api/work-items/${item.id}/claim`, {
+    method: "POST", body: { agentId: "agt_a", leaseMinutes: 45, idempotencyKey: "http-claim-1" },
+  });
+  assert.equal(claimed.status, 201);
+  assert.equal(claimed.body.claim.claimedBy, "usr_a");
+  assert.equal(claimed.body.claim.agentId, "agt_a");
+  const released = await call(`/api/work-items/${item.id}/release-claim`, {
+    method: "POST", body: { idempotencyKey: "http-release-1" },
+  });
+  assert.equal(released.status, 200);
+  assert.equal(released.body.released, true);
+});
+
 test("foreign work items and projects are existence-hidden", async () => {
   const created = await call("/api/work-items", {
     method: "POST",

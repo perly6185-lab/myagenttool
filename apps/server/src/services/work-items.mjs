@@ -157,6 +157,7 @@ export function createWorkItemService({
   }
 
   function workItemView(item, actor) {
+    const { createIdempotencyKey: _createIdempotencyKey, ...publicItem } = item;
     const memberships = (state.planningProjectItems ?? []).filter(
       (row) => row.workItemId === item.id && row.ownerTeamId === actorTeam(actor),
     );
@@ -168,7 +169,7 @@ export function createWorkItemService({
       (candidate) => candidate.status === "done" || candidate.state === "closed",
     ).length;
     return {
-      ...item,
+      ...publicItem,
       parent: parent ? {
         id: parent.id, localRef: parent.localRef, title: parent.title,
         status: parent.status, state: parent.state,
@@ -242,6 +243,16 @@ export function createWorkItemService({
     if (!projectId || !actorCanAccessProject(state, actor, projectId)) {
       return { ok: false, status: 404, body: { error: "project_not_found" } };
     }
+    const idempotencyKey = input.idempotencyKey == null ? null : String(input.idempotencyKey).trim();
+    if (idempotencyKey != null && (!idempotencyKey || idempotencyKey.length > 200)) {
+      return { ok: false, status: 400, body: { error: "invalid_work_item_idempotency_key" } };
+    }
+    const replay = idempotencyKey ? (state.workItems ?? []).find(
+      (item) => item.ownerTeamId === actorTeam(actor)
+        && item.createdBy === actorUser(actor)
+        && item.createIdempotencyKey === idempotencyKey,
+    ) : null;
+    if (replay) return { ok: true, status: 200, body: { workItem: workItemView(replay, actor), replayed: true } };
     const validated = validateDraft(input);
     if (validated.error) return { ok: false, status: 400, body: { error: validated.error } };
     const parentId = input.parentId == null || input.parentId === "" ? null : String(input.parentId);
@@ -263,6 +274,7 @@ export function createWorkItemService({
       ...validated.value,
       dependencyIds: [],
       parentId,
+      createIdempotencyKey: idempotencyKey,
       revision: 1,
       state: "open",
       archivedAt: null,
@@ -586,9 +598,70 @@ export function createWorkItemService({
     return { ok: true, status: 200, body: { workItem: item, binding } };
   }
 
+  function claimWorkItem({
+    workItemId, agentId = null, leaseMinutes = 30, idempotencyKey = null,
+  } = {}, actor = null) {
+    const item = findOwn(workItemId, actor);
+    if (!item) return notFound();
+    const minutes = Number(leaseMinutes);
+    const key = idempotencyKey == null ? null : String(idempotencyKey).trim();
+    if (!Number.isInteger(minutes) || minutes < 1 || minutes > 1_440 || (key != null && (!key || key.length > 200))) {
+      return { ok: false, status: 400, body: { error: "invalid_work_item_claim" } };
+    }
+    const holderId = actorUser(actor);
+    const timestamp = now();
+    const previousClaim = item.claim ?? null;
+    const active = item.claim?.status === "active" && Date.parse(item.claim.leaseExpiresAt) > Date.parse(timestamp);
+    if (active && item.claim.claimedBy !== holderId) {
+      return { ok: false, status: 409, body: { error: "work_item_already_claimed", claim: item.claim } };
+    }
+    const claim = {
+      id: active && item.claim.claimedBy === holderId ? item.claim.id : nextId("wcl"),
+      status: "active",
+      claimedBy: holderId,
+      agentId: agentId ? String(agentId) : null,
+      idempotencyKey: key,
+      claimedAt: active && item.claim.claimedBy === holderId ? item.claim.claimedAt : timestamp,
+      renewedAt: timestamp,
+      leaseExpiresAt: new Date(Date.parse(timestamp) + minutes * 60_000).toISOString(),
+    };
+    runTx(() => {
+      item.claim = claim;
+      item.revision += 1;
+      item.updatedAt = timestamp;
+      item.lastModifiedBy = holderId;
+      recordActivity(item, actor, active ? "claim_renewed" : previousClaim?.claimedBy ? "claim_taken_over" : "claimed", {
+        claimId: claim.id, agentId: claim.agentId, leaseExpiresAt: claim.leaseExpiresAt,
+      });
+    });
+    return { ok: true, status: active ? 200 : 201, body: { workItem: workItemView(item, actor), claim } };
+  }
+
+  function releaseWorkItemClaim({ workItemId, idempotencyKey = null } = {}, actor = null) {
+    const item = findOwn(workItemId, actor);
+    if (!item) return notFound();
+    if (!item.claim || item.claim.status !== "active") {
+      return { ok: true, status: 200, body: { workItem: workItemView(item, actor), released: false } };
+    }
+    if (item.claim.claimedBy !== actorUser(actor)) {
+      return { ok: false, status: 409, body: { error: "work_item_claim_owned_by_other", claim: item.claim } };
+    }
+    if (idempotencyKey != null && String(idempotencyKey).trim().length > 200) {
+      return { ok: false, status: 400, body: { error: "invalid_work_item_claim" } };
+    }
+    runTx(() => {
+      item.claim = { ...item.claim, status: "released", releasedAt: now(), releasedBy: actorUser(actor) };
+      item.revision += 1;
+      item.updatedAt = item.claim.releasedAt;
+      item.lastModifiedBy = actorUser(actor);
+      recordActivity(item, actor, "claim_released", { claimId: item.claim.id });
+    });
+    return { ok: true, status: 200, body: { workItem: workItemView(item, actor), released: true } };
+  }
+
   return {
     listWorkItems, getWorkItem, createWorkItem, updateWorkItem, bulkUpdateWorkItems, transitionWorkItem,
     listActivity, listComments, createComment, updateComment, deleteComment,
-    recordExecutionBinding,
+    recordExecutionBinding, claimWorkItem, releaseWorkItemClaim,
   };
 }

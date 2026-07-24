@@ -3,6 +3,7 @@ export async function handleWorkItemRoutes({
   listWorkItems, getWorkItem, createWorkItem, updateWorkItem, bulkUpdateWorkItems, transitionWorkItem,
   listActivity, listComments, createComment, updateComment, deleteComment,
   createWorktree, startAutoRun, recordExecutionBinding,
+  claimWorkItem, releaseWorkItemClaim,
 }) {
   if (!url.pathname.startsWith("/api/work-items")) return false;
 
@@ -24,6 +25,17 @@ export async function handleWorkItemRoutes({
       return true;
     }
     return false;
+  }
+
+  const claimMatch = url.pathname.match(/^\/api\/work-items\/([^/]+)\/(claim|release-claim)$/);
+  if (claimMatch && req.method === "POST") {
+    const workItemId = decodeURIComponent(claimMatch[1]);
+    const body = await readJson(req);
+    const result = claimMatch[2] === "claim"
+      ? claimWorkItem({ workItemId, ...body }, actor)
+      : releaseWorkItemClaim({ workItemId, ...body }, actor);
+    sendJson(res, result.status, result.body);
+    return true;
   }
 
   const executionMatch = url.pathname.match(/^\/api\/work-items\/([^/]+)\/(worktrees|auto-runs)$/);

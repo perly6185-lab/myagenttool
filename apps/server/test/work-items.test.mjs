@@ -10,6 +10,7 @@ import { createWorkItemService } from "../src/services/work-items.mjs";
 
 const ACTOR_A = { userId: "usr_a", teamId: "team_a" };
 const ACTOR_B = { userId: "usr_b", teamId: "team_b" };
+const ACTOR_C = { userId: "usr_c", teamId: "team_a" };
 
 function harness() {
   let counter = 0;
@@ -159,6 +160,48 @@ test("parent and sub-issues expose progress and reject hierarchy cycles", () => 
   assert.equal(service.createWorkItem({
     projectId: "prj_c", title: "Wrong project", parentId: parent.id,
   }, ACTOR_A).status, 400);
+});
+
+test("agent claims renew, conflict, expire, transfer, and release safely", () => {
+  const { service, state } = harness();
+  const item = service.createWorkItem({ projectId: "prj_a", title: "Claim me" }, ACTOR_A).body.workItem;
+  const claimed = service.claimWorkItem({
+    workItemId: item.id, agentId: "agt_a", leaseMinutes: 30, idempotencyKey: "claim-1",
+  }, ACTOR_A);
+  assert.equal(claimed.status, 201);
+  assert.equal(claimed.body.claim.claimedBy, "usr_a");
+  const renewed = service.claimWorkItem({
+    workItemId: item.id, agentId: "agt_a", leaseMinutes: 60, idempotencyKey: "claim-1",
+  }, ACTOR_A);
+  assert.equal(renewed.status, 200);
+  assert.equal(service.claimWorkItem({ workItemId: item.id }, ACTOR_C).status, 409);
+  state.workItems[0].claim.leaseExpiresAt = "2026-07-23T00:00:00.000Z";
+  const takeover = service.claimWorkItem({ workItemId: item.id, agentId: "agt_c" }, ACTOR_C);
+  assert.equal(takeover.status, 201);
+  assert.equal(takeover.body.claim.claimedBy, "usr_c");
+  assert.equal(service.releaseWorkItemClaim({ workItemId: item.id }, ACTOR_A).status, 409);
+  assert.equal(service.releaseWorkItemClaim({ workItemId: item.id }, ACTOR_C).body.released, true);
+  assert.equal(service.releaseWorkItemClaim({ workItemId: item.id }, ACTOR_C).body.released, false);
+});
+
+test("agent create idempotency prevents duplicate local issues", () => {
+  const { service, state } = harness();
+  const first = service.createWorkItem({
+    projectId: "prj_a", title: "Exactly once", idempotencyKey: "create-1",
+  }, ACTOR_A);
+  const replay = service.createWorkItem({
+    projectId: "prj_a", title: "Ignored replay body", idempotencyKey: "create-1",
+  }, ACTOR_A);
+  assert.equal(first.status, 201);
+  assert.equal(replay.status, 200);
+  assert.equal(replay.body.replayed, true);
+  assert.equal(replay.body.workItem.id, first.body.workItem.id);
+  assert.equal(state.workItems.length, 1);
+  const otherActor = service.createWorkItem({
+    projectId: "prj_a", title: "Separate actor", idempotencyKey: "create-1",
+  }, ACTOR_C);
+  assert.equal(otherActor.status, 201);
+  assert.equal(state.workItems.length, 2);
 });
 
 test("planning automation adds matching work items once", () => {

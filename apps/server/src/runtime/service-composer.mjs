@@ -3317,6 +3317,8 @@ export function createServerRuntimeServices({
     updateWorkItemComment: workItemService.updateComment,
     deleteWorkItemComment: workItemService.deleteComment,
     recordWorkItemExecutionBinding: workItemService.recordExecutionBinding,
+    claimWorkItem: workItemService.claimWorkItem,
+    releaseWorkItemClaim: workItemService.releaseWorkItemClaim,
     listPlanningProjects: planningProjectService.listProjects,
     getPlanningProject: planningProjectService.getProject,
     createPlanningProject: planningProjectService.createProject,

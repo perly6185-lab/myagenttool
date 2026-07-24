@@ -863,10 +863,15 @@ export const api = {
     milestone?: string;
     estimatePoints?: number;
     parentId?: string | null;
+    idempotencyKey?: string;
   }) => request("POST", "/api/work-items", payload),
   getWorkItem: (id: string) => request("GET", `/api/work-items/${encodeURIComponent(id)}`),
   updateWorkItem: (id: string, payload: Record<string, unknown>) =>
     request("PATCH", `/api/work-items/${encodeURIComponent(id)}`, payload),
+  claimWorkItem: (id: string, payload: { agentId?: string; leaseMinutes?: number; idempotencyKey?: string } = {}) =>
+    request("POST", `/api/work-items/${encodeURIComponent(id)}/claim`, payload),
+  releaseWorkItemClaim: (id: string, idempotencyKey?: string) =>
+    request("POST", `/api/work-items/${encodeURIComponent(id)}/release-claim`, { idempotencyKey }),
   bulkUpdateWorkItems: (payload: {
     items: { id: string; expectedRevision: number }[];
     changes: Record<string, unknown>;
