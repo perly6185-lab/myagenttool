@@ -6,6 +6,7 @@
 
 import { actorCanAccessProject, LOCAL_TEAM_ID, LOCAL_USER_ID } from "../runtime/auth.mjs";
 import { makeRunTx } from "../runtime/store/run-tx.mjs";
+import { normalizedUpdatedSince, paginateRows } from "./cursor-pagination.mjs";
 
 const TYPES = new Set(["task", "bug", "feature", "initiative"]);
 const STATUSES = new Set(["backlog", "ready", "in_progress", "review", "blocked", "done"]);
@@ -255,6 +256,8 @@ export function createWorkItemService({
 
   function listWorkItems(query = {}, actor = null) {
     const q = String(query.q ?? "").trim().toLowerCase();
+    const updatedSince = normalizedUpdatedSince(query.updatedSince);
+    if (updatedSince === undefined) return { ok: false, status: 400, body: { error: "invalid_updated_since" } };
     const planningProjectId = String(query.planningProjectId ?? "");
     const planningWorkItemIds = planningProjectId
       ? new Set((state.planningProjectItems ?? [])
@@ -269,10 +272,16 @@ export function createWorkItemService({
       .filter((item) => !query.type || item.type === query.type)
       .filter((item) => !query.assigneeId || item.assigneeIds.includes(query.assigneeId))
       .filter((item) => query.includeArchived === "1" || !item.archivedAt)
+      .filter((item) => !updatedSince || item.updatedAt > updatedSince)
       .filter((item) => !q || `${item.localRef} ${item.title} ${item.body} ${item.labels.join(" ")}`.toLowerCase().includes(q))
-      .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
+      .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt) || b.id.localeCompare(a.id))
       .map((item) => workItemView(item, actor));
-    return { ok: true, status: 200, body: { workItems: rows, count: rows.length } };
+    const page = paginateRows(rows, query);
+    if (!page.ok) return { ok: false, status: 400, body: { error: page.error } };
+    return {
+      ok: true, status: 200,
+      body: { workItems: page.rows, count: page.rows.length, nextCursor: page.nextCursor, hasMore: page.hasMore },
+    };
   }
 
   function listAttention(query = {}, actor = null) {
@@ -281,6 +290,8 @@ export function createWorkItemService({
     const severity = String(query.severity ?? "");
     const sla = String(query.sla ?? "");
     const handler = String(query.handler ?? "");
+    const updatedSince = normalizedUpdatedSince(query.updatedSince);
+    if (updatedSince === undefined) return { ok: false, status: 400, body: { error: "invalid_updated_since" } };
     const items = (state.workItems ?? []).filter((item) =>
       item.ownerTeamId === actorTeam(actor) && (!projectId || item.projectId === projectId));
     const rows = [];
@@ -343,7 +354,7 @@ export function createWorkItemService({
     }
     const at = Date.parse(now());
     const operations = state.workItemAttentionOperations ?? [];
-    const allDecorated = rows.map((row) => {
+    const derivedRows = rows.map((row) => {
       const operation = operations.find((candidate) =>
         candidate.ownerTeamId === actorTeam(actor) && candidate.attentionId === row.id);
       const handling = operation?.handling && Date.parse(operation.handling.expiresAt ?? operation.handling.claimedAt) > at
@@ -359,10 +370,12 @@ export function createWorkItemService({
         })) : [];
       return {
         ...row, dueAt, slaStatus: Date.parse(dueAt) < at ? "breached" : "within_sla", history,
+        updatedAt: operation?.history?.[0]?.createdAt ?? row.createdAt,
         handling,
         resolution: operation?.resolution ?? null,
       };
     });
+    const allDecorated = derivedRows.filter((row) => !updatedSince || row.updatedAt > updatedSince);
     const decorated = allDecorated.filter((row) => !kind || row.kind === kind)
       .filter((row) => !severity || row.severity === severity)
       .filter((row) => !sla || row.slaStatus === sla)
@@ -371,14 +384,19 @@ export function createWorkItemService({
         || (handler === "unclaimed" && !row.handling))
       .filter((row) => query.includeResolved === "1" || !row.resolution);
     const rank = { high: 3, medium: 2, low: 1 };
-    decorated.sort((a, b) => rank[b.severity] - rank[a.severity] || String(a.dueAt).localeCompare(String(b.dueAt)));
-    const openRows = allDecorated.filter((row) => !row.resolution);
+    decorated.sort((a, b) => rank[b.severity] - rank[a.severity]
+      || String(a.dueAt).localeCompare(String(b.dueAt)) || a.id.localeCompare(b.id));
+    const openRows = derivedRows.filter((row) => !row.resolution);
     const oldestCreatedAt = openRows.reduce((oldest, row) =>
       !oldest || row.createdAt < oldest ? row.createdAt : oldest, null);
+    const page = paginateRows(decorated, query);
+    if (!page.ok) return { ok: false, status: 400, body: { error: page.error } };
     return {
       ok: true, status: 200, body: {
-        items: decorated,
-        count: decorated.length,
+        items: page.rows,
+        count: page.rows.length,
+        nextCursor: page.nextCursor,
+        hasMore: page.hasMore,
         metrics: {
           backlog: openRows.length,
           breached: openRows.filter((row) => row.slaStatus === "breached").length,

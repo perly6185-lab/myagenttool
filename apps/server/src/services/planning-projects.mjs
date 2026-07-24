@@ -1,5 +1,6 @@
 import { LOCAL_TEAM_ID, LOCAL_USER_ID } from "../runtime/auth.mjs";
 import { makeRunTx } from "../runtime/store/run-tx.mjs";
+import { normalizedUpdatedSince, paginateRows } from "./cursor-pagination.mjs";
 
 const MAX_NAME = 200;
 const MAX_DESCRIPTION = 20_000;
@@ -228,14 +229,22 @@ export function createPlanningProjectService({
 
   function listProjects(query = {}, actor = null) {
     const q = String(query.q ?? "").trim().toLowerCase();
+    const updatedSince = normalizedUpdatedSince(query.updatedSince);
+    if (updatedSince === undefined) return { ok: false, status: 400, body: { error: "invalid_updated_since" } };
     const projects = (state.planningProjects ?? [])
       .filter((row) => row.ownerTeamId === teamOfActor(actor))
       .filter((row) => query.includeArchived === "1" || !row.archivedAt)
+      .filter((row) => !updatedSince || row.updatedAt > updatedSince)
       .filter((row) => !q || `${row.name} ${row.description} ${row.ownerId ?? ""} ${(row.tags ?? []).join(" ")}`
         .toLowerCase().includes(q))
-      .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
+      .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt) || b.id.localeCompare(a.id))
       .map((row) => projectView(row, actor));
-    return { ok: true, status: 200, body: { projects, count: projects.length } };
+    const page = paginateRows(projects, query);
+    if (!page.ok) return { ok: false, status: 400, body: { error: page.error } };
+    return {
+      ok: true, status: 200,
+      body: { projects: page.rows, count: page.rows.length, nextCursor: page.nextCursor, hasMore: page.hasMore },
+    };
   }
 
   function getProject({ planningProjectId } = {}, actor = null) {

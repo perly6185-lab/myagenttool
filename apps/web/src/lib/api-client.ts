@@ -847,13 +847,17 @@ export const api = {
     request("POST", `/api/worktrees/${encodeURIComponent(id)}/pr`, payload),
   listGithubItems: (projectId: string) =>
     request("GET", `/api/projects/${encodeURIComponent(projectId)}/github`),
-  listWorkItems: (query: { projectId?: string; planningProjectId?: string; status?: string; type?: string; q?: string } = {}) => {
+  listWorkItems: (query: {
+    projectId?: string; planningProjectId?: string; status?: string; type?: string; q?: string;
+    limit?: string; cursor?: string; updatedSince?: string;
+  } = {}) => {
     const params = new URLSearchParams(Object.entries(query).filter(([, value]) => Boolean(value)) as [string, string][]);
     return request("GET", `/api/work-items${params.size ? `?${params}` : ""}`);
   },
   listWorkItemAttention: (query: {
     projectId?: string; kind?: string; severity?: string; sla?: string;
     handler?: "mine" | "unclaimed"; includeResolved?: "1";
+    limit?: string; cursor?: string; updatedSince?: string;
   } = {}) => {
     const params = new URLSearchParams(Object.entries(query).filter(([, value]) => Boolean(value)) as [string, string][]);
     return request("GET", `/api/work-items/attention${params.size ? `?${params}` : ""}`);
@@ -915,8 +919,17 @@ export const api = {
     request("POST", `/api/work-items/${encodeURIComponent(id)}/worktrees`, payload),
   startWorkItemAutoRun: (id: string, payload: { agentId?: string; baseBranch?: string } = {}) =>
     request("POST", `/api/work-items/${encodeURIComponent(id)}/auto-runs`, payload),
-  listPlanningProjects: (includeArchived = false) =>
-    request("GET", `/api/planning-projects${includeArchived ? "?includeArchived=1" : ""}`),
+  listPlanningProjects: (
+    input: boolean | { includeArchived?: boolean; limit?: string; cursor?: string; updatedSince?: string } = false,
+  ) => {
+    const query = typeof input === "boolean" ? { includeArchived: input } : input;
+    const params = new URLSearchParams();
+    if (query.includeArchived) params.set("includeArchived", "1");
+    if (query.limit) params.set("limit", query.limit);
+    if (query.cursor) params.set("cursor", query.cursor);
+    if (query.updatedSince) params.set("updatedSince", query.updatedSince);
+    return request("GET", `/api/planning-projects${params.size ? `?${params}` : ""}`);
+  },
   getPlanningProject: (id: string) =>
     request("GET", `/api/planning-projects/${encodeURIComponent(id)}`),
   createPlanningProject: (payload: {

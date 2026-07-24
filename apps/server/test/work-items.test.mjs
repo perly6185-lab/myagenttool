@@ -576,6 +576,24 @@ test("list supports project, status, type, assignee and text filters", () => {
   assert.equal(service.listWorkItems({ status: "done" }, ACTOR_A).body.count, 0);
 });
 
+test("work item and attention lists support opaque cursors and incremental windows", () => {
+  const { service, state } = harness();
+  service.createWorkItem({ projectId: "prj_a", title: "First" }, ACTOR_A);
+  service.createWorkItem({ projectId: "prj_a", title: "Second" }, ACTOR_A);
+  state.workItems.find((item) => item.title === "First").updatedAt = "2026-07-24T00:01:00.000Z";
+  state.workItems.find((item) => item.title === "Second").updatedAt = "2026-07-24T00:02:00.000Z";
+  const firstPage = service.listWorkItems({ limit: "1" }, ACTOR_A).body;
+  assert.equal(firstPage.workItems[0].title, "Second");
+  assert.equal(firstPage.hasMore, true);
+  const secondPage = service.listWorkItems({ limit: "1", cursor: firstPage.nextCursor }, ACTOR_A).body;
+  assert.equal(secondPage.workItems[0].title, "First");
+  assert.equal(secondPage.hasMore, false);
+  assert.equal(service.listWorkItems({
+    updatedSince: "2026-07-24T00:01:30.000Z",
+  }, ACTOR_A).body.workItems[0].title, "Second");
+  assert.equal(service.listWorkItems({ cursor: "invalid" }, ACTOR_A).status, 400);
+});
+
 test("list filters by planning project and returns reverse memberships", () => {
   const { service, state } = harness();
   const first = service.createWorkItem({ projectId: "prj_a", title: "In roadmap" }, ACTOR_A).body.workItem;

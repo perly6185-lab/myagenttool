@@ -44,6 +44,22 @@ test("planning projects are team scoped and revision gated", () => {
   assert.equal(updated.body.project.name, "Release 1");
 });
 
+test("planning projects support cursor pagination and incremental refresh", () => {
+  const { service, state } = harness();
+  service.createProject({ name: "First" }, ACTOR_A);
+  service.createProject({ name: "Second" }, ACTOR_A);
+  state.planningProjects.find((project) => project.name === "First").updatedAt = "2026-07-24T00:01:00.000Z";
+  state.planningProjects.find((project) => project.name === "Second").updatedAt = "2026-07-24T00:02:00.000Z";
+  const firstPage = service.listProjects({ limit: "1" }, ACTOR_A).body;
+  assert.equal(firstPage.projects[0].name, "Second");
+  assert.equal(firstPage.hasMore, true);
+  const nextPage = service.listProjects({ limit: "1", cursor: firstPage.nextCursor }, ACTOR_A).body;
+  assert.equal(nextPage.projects[0].name, "First");
+  assert.equal(service.listProjects({
+    updatedSince: "2026-07-24T00:01:30.000Z",
+  }, ACTOR_A).body.projects[0].name, "Second");
+});
+
 test("work item membership is idempotent and rejects foreign items", () => {
   const { service } = harness();
   const project = service.createProject({ name: "Release" }, ACTOR_A).body.project;

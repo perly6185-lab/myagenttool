@@ -85,7 +85,12 @@ type LocalWorkItem = {
   blocks?: { id: string; localRef: string; title: string; status: LocalWorkItem["status"]; state: "open" | "closed" }[];
   updatedAt: string;
 };
-type LocalWorkItemResult = { workItems: LocalWorkItem[]; count: number };
+type LocalWorkItemResult = {
+  workItems: LocalWorkItem[];
+  count: number;
+  nextCursor?: string | null;
+  hasMore?: boolean;
+};
 type PlanningAutoRun = { id: string; status: string };
 type PlanningProject = {
   id: string;
@@ -161,6 +166,7 @@ type WorkItemAttention = {
   localRef: string | null;
   title: string;
   createdAt: string;
+  updatedAt?: string;
   dueAt: string;
   slaStatus: "within_sla" | "breached";
   history: { action: string; actorId: string; createdAt: string }[];
@@ -281,7 +287,9 @@ export function TaskView() {
   const [query, setQuery] = useState("");
   const [rows, setRows] = useState<Row[]>([]);
   const [localRows, setLocalRows] = useState<LocalWorkItem[]>([]);
+  const [localNextCursor, setLocalNextCursor] = useState<string | null>(null);
   const [attentionItems, setAttentionItems] = useState<WorkItemAttention[]>([]);
+  const [attentionNextCursor, setAttentionNextCursor] = useState<string | null>(null);
   const [attentionMetrics, setAttentionMetrics] = useState<WorkItemAttentionMetrics | null>(null);
   const [attentionKind, setAttentionKind] = useState("");
   const [attentionSla, setAttentionSla] = useState("");
@@ -323,6 +331,39 @@ export function TaskView() {
       }
     });
   };
+  const loadMoreLocal = () => {
+    if (!localNextCursor) return;
+    void (api.listWorkItems({
+      projectId: projectId === "all" ? undefined : projectId,
+      planningProjectId: planningProjectId === "all" ? undefined : planningProjectId,
+      limit: "100",
+      cursor: localNextCursor,
+    }) as Promise<LocalWorkItemResult>).then((result) => {
+      setLocalRows((current) => [...current, ...result.workItems.filter((item) =>
+        !current.some((existing) => existing.id === item.id))]);
+      setLocalNextCursor(result.nextCursor ?? null);
+    });
+  };
+  const loadMoreAttention = () => {
+    if (!attentionNextCursor) return;
+    void (api.listWorkItemAttention({
+      projectId: projectId === "all" ? undefined : projectId,
+      kind: attentionKind || undefined,
+      sla: attentionSla || undefined,
+      handler: attentionHandler === "mine" || attentionHandler === "unclaimed" ? attentionHandler : undefined,
+      includeResolved: showResolvedAttention ? "1" : undefined,
+      limit: "100",
+      cursor: attentionNextCursor,
+    }) as Promise<{
+      items: WorkItemAttention[]; metrics: WorkItemAttentionMetrics;
+      nextCursor?: string | null;
+    }>).then((result) => {
+      setAttentionItems((current) => [...current, ...result.items.filter((item) =>
+        !current.some((existing) => existing.id === item.id))]);
+      setAttentionMetrics(result.metrics);
+      setAttentionNextCursor(result.nextCursor ?? null);
+    });
+  };
   const decideRecommendedAction = (attention: WorkItemAttention, decision: "approve" | "deny") => {
     setApprovalNote("");
     setApprovalDecision({ attention, decision });
@@ -354,12 +395,19 @@ export function TaskView() {
     void (api.listWorkItems({
       projectId: selectedProjectId,
       planningProjectId: planningProjectId === "all" ? undefined : planningProjectId,
+      limit: "100",
     }) as Promise<LocalWorkItemResult>)
       .then((result) => {
-        if (!cancelled) setLocalRows(result.workItems);
+        if (!cancelled) {
+          setLocalRows(result.workItems);
+          setLocalNextCursor(result.nextCursor ?? null);
+        }
       })
       .catch(() => {
-        if (!cancelled) setLocalRows([]);
+        if (!cancelled) {
+          setLocalRows([]);
+          setLocalNextCursor(null);
+        }
       });
     return () => {
       cancelled = true;
@@ -373,14 +421,20 @@ export function TaskView() {
       sla: attentionSla || undefined,
       handler: attentionHandler === "mine" || attentionHandler === "unclaimed" ? attentionHandler : undefined,
       includeResolved: showResolvedAttention ? "1" : undefined,
-    }) as Promise<{ items: WorkItemAttention[]; metrics: WorkItemAttentionMetrics }>)
+      limit: "100",
+    }) as Promise<{
+      items: WorkItemAttention[]; metrics: WorkItemAttentionMetrics;
+      nextCursor?: string | null;
+    }>)
       .then((result) => {
         setAttentionItems(result.items);
         setAttentionMetrics(result.metrics);
+        setAttentionNextCursor(result.nextCursor ?? null);
       })
       .catch(() => {
         setAttentionItems([]);
         setAttentionMetrics(null);
+        setAttentionNextCursor(null);
       });
   }, [projectId, attentionKind, attentionSla, attentionHandler, showResolvedAttention, nonce]);
 
@@ -388,6 +442,47 @@ export function TaskView() {
     setSelectedAttentionIds((current) => new Set([...current].filter((id) =>
       attentionItems.some((item) => item.id === id))));
   }, [attentionItems]);
+
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      const latestWorkItemAt = localRows.reduce((latest, item) =>
+        !latest || item.updatedAt > latest ? item.updatedAt : latest, "");
+      if (latestWorkItemAt) {
+        void (api.listWorkItems({
+          projectId: projectId === "all" ? undefined : projectId,
+          planningProjectId: planningProjectId === "all" ? undefined : planningProjectId,
+          updatedSince: latestWorkItemAt,
+        }) as Promise<LocalWorkItemResult>).then((result) => {
+          setLocalRows((current) => {
+            const byId = new Map(current.map((item) => [item.id, item]));
+            for (const item of result.workItems) byId.set(item.id, item);
+            return [...byId.values()].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+          });
+        });
+      }
+      const latestAttentionAt = attentionItems.reduce((latest, item) => {
+        const candidate = item.updatedAt ?? item.createdAt;
+        return !latest || candidate > latest ? candidate : latest;
+      }, "");
+      if (latestAttentionAt && !attentionHandler) {
+        void (api.listWorkItemAttention({
+          projectId: projectId === "all" ? undefined : projectId,
+          kind: attentionKind || undefined,
+          sla: attentionSla || undefined,
+          includeResolved: "1",
+          updatedSince: latestAttentionAt,
+        }) as Promise<{ items: WorkItemAttention[]; metrics: WorkItemAttentionMetrics }>).then((result) => {
+          setAttentionItems((current) => {
+            const byId = new Map(current.map((item) => [item.id, item]));
+            for (const item of result.items) byId.set(item.id, item);
+            return [...byId.values()].filter((item) => showResolvedAttention || !item.resolution);
+          });
+          setAttentionMetrics(result.metrics);
+        });
+      }
+    }, 15_000);
+    return () => window.clearInterval(timer);
+  }, [attentionHandler, attentionItems, attentionKind, attentionSla, localRows, planningProjectId, projectId, showResolvedAttention]);
 
   useEffect(() => {
     void (api.listPlanningProjects() as Promise<{ projects: PlanningProject[] }>)
@@ -650,6 +745,9 @@ export function TaskView() {
                 {!attentionItems.length ? (
                   <p className="py-3 text-center text-xs text-muted-foreground">{t("approvals.empty")}</p>
                 ) : null}
+                {attentionNextCursor ? (
+                  <Button variant="secondary" size="sm" onClick={loadMoreAttention}>{t("applicationInspectorDeep.showAll", { count: 100 })}</Button>
+                ) : null}
             </section>
             <LocalWorkItemTable
               items={visibleLocal}
@@ -658,6 +756,9 @@ export function TaskView() {
               emptyHint={t("tasks.noLocalMatches")}
               onOpen={setSelectedLocalId}
             />
+            {localNextCursor ? (
+              <Button variant="secondary" size="sm" onClick={loadMoreLocal}>{t("applicationInspectorDeep.showAll", { count: 100 })}</Button>
+            ) : null}
           </>
         ) : visible.length === 0 ? (
           <EmptyState
