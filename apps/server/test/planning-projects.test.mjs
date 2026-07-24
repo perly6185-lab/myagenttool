@@ -57,8 +57,11 @@ test("work item membership is idempotent and rejects foreign items", () => {
   assert.equal(detail.statusCounts.backlog, 1);
   assert.equal(detail.priorityCounts.p2, 1);
   assert.equal(detail.items[0].workItem.id, "wi_a");
+  assert.deepEqual(detail.activity.slice(0, 2).map((entry) => entry.action), ["item_added", "created"]);
   assert.equal(service.removeItem({ planningProjectId: project.id, workItemId: "wi_a" }, ACTOR_A).status, 200);
-  assert.equal(service.getProject({ planningProjectId: project.id }, ACTOR_A).body.project.itemCount, 0);
+  const afterRemoval = service.getProject({ planningProjectId: project.id }, ACTOR_A).body.project;
+  assert.equal(afterRemoval.itemCount, 0);
+  assert.equal(afterRemoval.activity[0].action, "item_removed");
 });
 
 test("archive and restore preserve project membership", () => {

@@ -78,6 +78,7 @@ type PlanningProject = {
     filters: { status: string; priority: string; milestone: string; due: "all" | "overdue" | "upcoming" | "month" | "quarter" | "unscheduled" };
   }[];
   automationRules?: { id: string; status: string; priority: string; type: string; label: string }[];
+  activity?: { id: string; action: string; actorId: string; createdAt: string; details: Record<string, unknown> }[];
   items?: { membership: { position: number }; workItem: LocalWorkItem }[];
 };
 type WorkItemComment = {
@@ -1194,6 +1195,25 @@ export function PlanningProjectsPanel({ onChanged = () => {} }: { onChanged?: ()
                 {!filteredProjectItems.length ? <EmptyState title={t("planningFilters.noMatches")} hint={t("planningFilters.adjustFilters")} /> : null}
               </div>
             )}
+            <details className="rounded-md border border-border p-2">
+              <summary className="cursor-pointer text-sm font-medium">
+                {t("planningActivity.title", { count: selected.activity?.length ?? 0 })}
+              </summary>
+              <ol className="mt-2 max-h-56 space-y-2 overflow-y-auto">
+                {(selected.activity ?? []).map((entry) => (
+                  <li key={entry.id} className="border-l-2 border-border pl-2 text-xs">
+                    <div className="font-medium">
+                      {t(`planningActivity.actions.${entry.action}` as never, { defaultValue: entry.action })}
+                    </div>
+                    <div className="text-muted-foreground">
+                      {entry.actorId} · {new Date(entry.createdAt).toLocaleString()}
+                      {typeof entry.details.localRef === "string" ? ` · ${entry.details.localRef}` : ""}
+                    </div>
+                  </li>
+                ))}
+                {!selected.activity?.length ? <li className="text-xs text-muted-foreground">{t("planningActivity.empty")}</li> : null}
+              </ol>
+            </details>
           </>
         ) : <EmptyState title={t("planningProjects.select")} hint={t("planningProjects.selectHint")} />}
         {error ? <p className="text-xs text-destructive">{error}</p> : null}

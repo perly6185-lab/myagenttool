@@ -133,6 +133,13 @@ export function createWorkItemService({
         addedAt: now(),
         addedBy: "usr_planning_automation",
       });
+      project.activity = [{
+        id: nextId("ppa"),
+        action: "item_auto_added",
+        actorId: "usr_planning_automation",
+        createdAt: now(),
+        details: { workItemId: item.id, localRef: item.localRef },
+      }, ...(project.activity ?? [])].slice(0, 100);
       recordActivity(item, actor, "planning_auto_added", { planningProjectId: project.id });
       appendEvent({
         invocationId: null, type: "planning_project_item_auto_added", level: "info",

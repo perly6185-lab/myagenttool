@@ -65,6 +65,17 @@ export function createPlanningProjectService({
   const teamOfActor = (actor) => actor?.teamId ?? LOCAL_TEAM_ID;
   const userOfActor = (actor) => actor?.userId ?? LOCAL_USER_ID;
   const notFound = () => ({ ok: false, status: 404, body: { error: "planning_project_not_found" } });
+  const recordActivity = (project, actor, action, details = {}) => {
+    const entry = {
+      id: nextId("ppa"),
+      action,
+      actorId: userOfActor(actor),
+      createdAt: now(),
+      details,
+    };
+    project.activity = [entry, ...(project.activity ?? [])].slice(0, 100);
+    return entry;
+  };
 
   function findOwn(id, actor) {
     const project = (state.planningProjects ?? []).find((row) => row.id === String(id));
@@ -171,6 +182,7 @@ export function createPlanningProjectService({
       color: String(color ?? template?.color ?? "indigo").slice(0, 40),
       savedViews: (template?.savedViews ?? []).map((view) => ({ ...view, id: nextId("ppv") })),
       automationRules: (template?.automationRules ?? []).map((rule) => ({ ...rule, id: nextId("par") })),
+      activity: [],
       revision: 1,
       archivedAt: null,
       createdAt: timestamp,
@@ -180,6 +192,7 @@ export function createPlanningProjectService({
     };
     runTx(() => {
       (state.planningProjects ??= []).unshift(project);
+      recordActivity(project, actor, "created", { templateProjectId: template?.id ?? null });
       appendEvent({
         invocationId: null, type: "planning_project_created", level: "info",
         message: `Planning project ${project.name} created.`,
@@ -220,9 +233,12 @@ export function createPlanningProjectService({
       if (!automationRules) return { ok: false, status: 400, body: { error: "invalid_planning_project_automation_rules" } };
       patch.automationRules = automationRules;
     }
-    runTx(() => Object.assign(project, patch, {
-      revision: project.revision + 1, updatedAt: now(), lastModifiedBy: userOfActor(actor),
-    }));
+    runTx(() => {
+      Object.assign(project, patch, {
+        revision: project.revision + 1, updatedAt: now(), lastModifiedBy: userOfActor(actor),
+      });
+      recordActivity(project, actor, "updated", { fields: Object.keys(patch) });
+    });
     return { ok: true, status: 200, body: { project: projectView(project, actor) } };
   }
 
@@ -240,6 +256,7 @@ export function createPlanningProjectService({
       project.revision += 1;
       project.updatedAt = now();
       project.lastModifiedBy = userOfActor(actor);
+      recordActivity(project, actor, archived ? "archived" : "restored");
     });
     return { ok: true, status: 200, body: { project: projectView(project, actor) } };
   }
@@ -264,6 +281,7 @@ export function createPlanningProjectService({
     };
     runTx(() => {
       (state.planningProjectItems ??= []).push(membership);
+      recordActivity(project, actor, "item_added", { workItemId: workItem.id, localRef: workItem.localRef });
       appendEvent({
         invocationId: null, type: "planning_project_item_added", level: "info",
         message: `${workItem.localRef} added to ${project.name}.`,
@@ -283,6 +301,7 @@ export function createPlanningProjectService({
     let membership;
     runTx(() => {
       [membership] = state.planningProjectItems.splice(index, 1);
+      recordActivity(project, actor, "item_removed", { workItemId: membership.workItemId });
     });
     return { ok: true, status: 200, body: { membership } };
   }
@@ -309,6 +328,7 @@ export function createPlanningProjectService({
       project.revision += 1;
       project.updatedAt = now();
       project.lastModifiedBy = userOfActor(actor);
+      recordActivity(project, actor, "items_reordered", { workItemIds: ids });
     });
     return { ok: true, status: 200, body: { project: projectView(project, actor, { includeItems: true }) } };
   }
@@ -345,6 +365,7 @@ export function createPlanningProjectService({
       project.revision += 1;
       project.updatedAt = now();
       project.lastModifiedBy = userOfActor(actor);
+      recordActivity(project, actor, "items_updated", { addWorkItemIds: addIds, removeWorkItemIds: removeIds });
     });
     return { ok: true, status: 200, body: { project: projectView(project, actor, { includeItems: true }) } };
   }

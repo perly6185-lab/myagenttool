@@ -142,6 +142,7 @@ test("planning automation adds matching work items once", () => {
   }, ACTOR_A).body.workItem;
   assert.equal(state.planningProjectItems.length, 1);
   assert.equal(state.planningProjectItems[0].workItemId, item.id);
+  assert.equal(state.planningProjects[0].activity[0].action, "item_auto_added");
   service.updateWorkItem({
     workItemId: item.id, expectedRevision: 1, status: "ready",
   }, ACTOR_A);
