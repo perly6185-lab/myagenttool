@@ -71,6 +71,12 @@ type PlanningProject = {
   failedRunCount?: number;
   riskScore?: number;
   health?: "healthy" | "active" | "attention";
+  savedViews?: {
+    id: string;
+    name: string;
+    view: "list" | "board" | "roadmap";
+    filters: { status: string; priority: string; milestone: string; due: "all" | "overdue" | "upcoming" | "month" | "quarter" | "unscheduled" };
+  }[];
   items?: { membership: { position: number }; workItem: LocalWorkItem }[];
 };
 type WorkItemComment = {
@@ -560,6 +566,8 @@ export function PlanningProjectsPanel({ onChanged = () => {} }: { onChanged?: ()
   const [detailWorkItemId, setDetailWorkItemId] = useState<string | null>(null);
   const [projectQuery, setProjectQuery] = useState("");
   const [attentionOnly, setAttentionOnly] = useState(false);
+  const [savedViewName, setSavedViewName] = useState("");
+  const [savedViewId, setSavedViewId] = useState("");
   const [nonce, setNonce] = useState(0);
   const selected = projects.find((project) => project.id === selectedId);
   const displayWorkItems = selected?.items
@@ -726,6 +734,38 @@ export function PlanningProjectsPanel({ onChanged = () => {} }: { onChanged?: ()
     if (!binding) return null;
     return autoRuns.find((run) => run.id === binding.targetId)?.status ?? null;
   };
+  const saveCurrentView = () => {
+    if (!selected || !savedViewName.trim()) return;
+    void execute(() => api.updatePlanningProject(selected.id, {
+      expectedRevision: selected.revision,
+      savedViews: [
+        ...(selected.savedViews ?? []),
+        { name: savedViewName.trim(), view: view === "items" ? "list" : view, filters },
+      ],
+    })).then((ok) => {
+      if (!ok) return;
+      setSavedViewName("");
+      setNonce((value) => value + 1);
+    });
+  };
+  const applySavedView = (id: string) => {
+    setSavedViewId(id);
+    const saved = selected?.savedViews?.find((candidate) => candidate.id === id);
+    if (!saved) return;
+    setView(saved.view === "list" ? "items" : saved.view);
+    storeFilters(saved.filters);
+  };
+  const deleteSavedView = () => {
+    if (!selected || !savedViewId) return;
+    void execute(() => api.updatePlanningProject(selected.id, {
+      expectedRevision: selected.revision,
+      savedViews: (selected.savedViews ?? []).filter((candidate) => candidate.id !== savedViewId),
+    })).then((ok) => {
+      if (!ok) return;
+      setSavedViewId("");
+      setNonce((value) => value + 1);
+    });
+  };
   const visibleProjects = projects
     .filter((project) => !projectQuery.trim()
       || `${project.name} ${project.description}`.toLowerCase().includes(projectQuery.trim().toLowerCase()))
@@ -811,6 +851,21 @@ export function PlanningProjectsPanel({ onChanged = () => {} }: { onChanged?: ()
                   {value === "roadmap" ? t("planningFilters.roadmap") : t(`planningProjects.${value}`)}
                 </button>
               ))}
+            </div>
+            <div className="grid gap-2 sm:grid-cols-[1fr_auto_1fr_auto]">
+              <Select value={savedViewId} aria-label={t("planningSavedViews.savedViews")}
+                onChange={(event) => applySavedView(event.target.value)}>
+                <option value="">{t("planningSavedViews.select")}</option>
+                {(selected.savedViews ?? []).map((saved) => <option key={saved.id} value={saved.id}>{saved.name}</option>)}
+              </Select>
+              <Button variant="ghost" size="sm" disabled={!savedViewId || pending} onClick={deleteSavedView}>
+                {t("planningSavedViews.delete")}
+              </Button>
+              <Input value={savedViewName} onChange={(event) => setSavedViewName(event.target.value)}
+                placeholder={t("planningSavedViews.name")} aria-label={t("planningSavedViews.name")} />
+              <Button variant="secondary" size="sm" disabled={!savedViewName.trim() || pending} onClick={saveCurrentView}>
+                {t("planningSavedViews.save")}
+              </Button>
             </div>
             <div className="grid gap-2 sm:grid-cols-4">
               <Select value={filters.status} aria-label={t("planningFilters.status")}

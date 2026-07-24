@@ -214,6 +214,7 @@ describe("TaskView local work items", () => {
     mocks.getPlanningProject.mockResolvedValue({ project });
     mocks.reorderPlanningProjectItems.mockResolvedValue({ project });
     mocks.startWorkItemAutoRun.mockResolvedValue({ autoRun: { id: "aur_planning" } });
+    mocks.updatePlanningProject.mockResolvedValue({ project: { ...project, revision: 3 } });
     render(<TaskView />);
     fireEvent.click(await screen.findByRole("button", { name: /Planning projects/i }));
     fireEvent.click(await screen.findByRole("button", { name: "Move LOCAL-2 up" }));
@@ -227,6 +228,15 @@ describe("TaskView local work items", () => {
     expect(screen.getByRole("option", { name: "Current month" })).toBeTruthy();
     expect(screen.getByRole("option", { name: "Current quarter" })).toBeTruthy();
     expect(screen.getByText("Project health")).toBeTruthy();
+    fireEvent.change(screen.getByLabelText("View name"), { target: { value: "Quarter roadmap" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save view" }));
+    await waitFor(() => expect(mocks.updatePlanningProject).toHaveBeenCalledWith(
+      "ppj_1",
+      expect.objectContaining({
+        expectedRevision: 2,
+        savedViews: [expect.objectContaining({ name: "Quarter roadmap", view: "roadmap" })],
+      }),
+    ));
     fireEvent.click(screen.getAllByTitle("Start Auto-run")[0]);
     await waitFor(() => expect(mocks.startWorkItemAutoRun).toHaveBeenCalledWith("lwi_2"));
   });

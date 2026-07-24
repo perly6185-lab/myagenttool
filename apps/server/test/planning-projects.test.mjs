@@ -123,3 +123,25 @@ test("project portfolio summaries expose execution and schedule risk", () => {
   assert.equal(summary.riskScore, 8);
   assert.equal(summary.health, "attention");
 });
+
+test("projects persist validated named views with server-owned identities", () => {
+  const { service } = harness();
+  const project = service.createProject({ name: "Release" }, ACTOR_A).body.project;
+  const updated = service.updateProject({
+    planningProjectId: project.id,
+    expectedRevision: 1,
+    savedViews: [{
+      name: "Quarter risks",
+      view: "roadmap",
+      filters: { status: "blocked", priority: "all", milestone: "M3", due: "quarter" },
+    }],
+  }, ACTOR_A);
+  assert.equal(updated.status, 200);
+  assert.match(updated.body.project.savedViews[0].id, /^ppv_/);
+  assert.equal(updated.body.project.savedViews[0].filters.due, "quarter");
+  assert.equal(service.updateProject({
+    planningProjectId: project.id,
+    expectedRevision: 2,
+    savedViews: [{ name: "", view: "roadmap", filters: {} }],
+  }, ACTOR_A).status, 400);
+});

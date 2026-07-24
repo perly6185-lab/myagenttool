@@ -3,6 +3,38 @@ import { makeRunTx } from "../runtime/store/run-tx.mjs";
 
 const MAX_NAME = 200;
 const MAX_DESCRIPTION = 20_000;
+const MAX_SAVED_VIEWS = 20;
+const PLANNING_VIEWS = new Set(["list", "board", "roadmap"]);
+const DUE_FILTERS = new Set(["all", "overdue", "upcoming", "month", "quarter", "unscheduled"]);
+
+function normalizeSavedViews(value, nextId) {
+  if (!Array.isArray(value) || value.length > MAX_SAVED_VIEWS) return null;
+  const names = new Set();
+  const result = [];
+  for (const candidate of value) {
+    const name = String(candidate?.name ?? "").trim();
+    const view = String(candidate?.view ?? "");
+    const filters = candidate?.filters;
+    const normalizedName = name.toLowerCase();
+    if (!name || name.length > 100 || names.has(normalizedName) || !PLANNING_VIEWS.has(view)
+      || !filters || typeof filters !== "object" || !DUE_FILTERS.has(filters.due)
+      || typeof filters.status !== "string" || typeof filters.priority !== "string"
+      || typeof filters.milestone !== "string" || filters.milestone.length > 200) return null;
+    names.add(normalizedName);
+    result.push({
+      id: String(candidate.id ?? "").trim() || nextId("ppv"),
+      name,
+      view,
+      filters: {
+        status: filters.status.slice(0, 40),
+        priority: filters.priority.slice(0, 40),
+        milestone: filters.milestone,
+        due: filters.due,
+      },
+    });
+  }
+  return result;
+}
 
 export function createPlanningProjectService({
   state, now, nextId, appendEvent = () => {}, persistStateSoon = () => {}, store,
@@ -111,6 +143,7 @@ export function createPlanningProjectService({
       name: normalizedName,
       description: normalizedDescription,
       color: String(color ?? "indigo").slice(0, 40),
+      savedViews: [],
       revision: 1,
       archivedAt: null,
       createdAt: timestamp,
@@ -150,6 +183,11 @@ export function createPlanningProjectService({
       patch.description = description;
     }
     if (Object.hasOwn(changes, "color")) patch.color = String(changes.color ?? "indigo").slice(0, 40);
+    if (Object.hasOwn(changes, "savedViews")) {
+      const savedViews = normalizeSavedViews(changes.savedViews, nextId);
+      if (!savedViews) return { ok: false, status: 400, body: { error: "invalid_planning_project_saved_views" } };
+      patch.savedViews = savedViews;
+    }
     runTx(() => Object.assign(project, patch, {
       revision: project.revision + 1, updatedAt: now(), lastModifiedBy: userOfActor(actor),
     }));
