@@ -56,6 +56,10 @@ type LocalWorkItem = {
   executionBindings?: { kind: "worktree" | "auto_run"; targetId: string; worktreeId: string | null; createdAt: string }[];
   planningProjects?: { id: string; name: string; archivedAt: string | null }[];
   dependencyIds?: string[];
+  parentId?: string | null;
+  parent?: { id: string; localRef: string; title: string; status: LocalWorkItem["status"]; state: "open" | "closed" } | null;
+  subIssues?: { id: string; localRef: string; title: string; status: LocalWorkItem["status"]; state: "open" | "closed" }[];
+  subIssuesSummary?: { total: number; completed: number; percentCompleted: number };
   blockedBy?: { id: string; localRef: string; title: string; status: LocalWorkItem["status"]; state: "open" | "closed"; resolved: boolean }[];
   blocks?: { id: string; localRef: string; title: string; status: LocalWorkItem["status"]; state: "open" | "closed" }[];
   updatedAt: string;
@@ -1780,6 +1784,7 @@ function LocalWorkItemDetail({
   const [editingCommentBody, setEditingCommentBody] = useState("");
   const [dependencyCandidates, setDependencyCandidates] = useState<LocalWorkItem[]>([]);
   const [dependencyId, setDependencyId] = useState("");
+  const [parentId, setParentId] = useState("");
 
   const load = async () => {
     try {
@@ -1801,6 +1806,7 @@ function LocalWorkItemDetail({
       setDueDate(next.dueDate ?? "");
       setMilestone(next.milestone ?? "");
       setEstimatePoints(String(next.estimatePoints ?? 0));
+      setParentId(next.parentId ?? "");
       setComments(commentResult.comments);
       setActivity(activityResult.activities);
       setDependencyCandidates(workItemResult.workItems.filter((candidate) => candidate.id !== workItemId));
@@ -1832,6 +1838,7 @@ function LocalWorkItemDetail({
       dueDate: dueDate || null,
       milestone,
       estimatePoints: Number(estimatePoints),
+      parentId: parentId || null,
     })).then(() => {
       onChanged();
       void load();
@@ -1913,6 +1920,31 @@ function LocalWorkItemDetail({
         <Field label={t("taskLocal.milestone")}><Input value={milestone} onChange={(event) => setMilestone(event.target.value)} /></Field>
         <Field label={t("planningInsights.estimatePoints")}><Input type="number" min="0" max="1000" value={estimatePoints} onChange={(event) => setEstimatePoints(event.target.value)} /></Field>
       </div>
+      <Field label={t("taskHierarchy.title")}>
+        <div className="space-y-2">
+          <Select value={parentId} aria-label={t("taskHierarchy.parent")}
+            onChange={(event) => setParentId(event.target.value)}>
+            <option value="">{t("taskHierarchy.noParent")}</option>
+            {dependencyCandidates.filter((candidate) => candidate.projectId === item.projectId)
+              .map((candidate) => (
+                <option key={candidate.id} value={candidate.id}>{candidate.localRef} · {candidate.title}</option>
+              ))}
+          </Select>
+          <div className="rounded bg-muted p-2 text-xs">
+            <strong>{item.subIssuesSummary?.completed ?? 0}/{item.subIssuesSummary?.total ?? 0}</strong>
+            {" · "}{t("taskHierarchy.progress", { percent: item.subIssuesSummary?.percentCompleted ?? 0 })}
+          </div>
+          <div className="space-y-1">
+            {(item.subIssues ?? []).map((child) => (
+              <div key={child.id} className="flex justify-between rounded border border-border px-2 py-1 text-xs">
+                <span>{child.localRef} · {child.title}</span>
+                <Badge tone={statusTone(child.status)}>{t(`tasks.localStatus.${child.status}`)}</Badge>
+              </div>
+            ))}
+            {!item.subIssues?.length ? <span className="text-xs text-muted-foreground">{t("taskHierarchy.noChildren")}</span> : null}
+          </div>
+        </div>
+      </Field>
       <Field label={t("taskDependencies.blockedBy")}>
         <div className="space-y-2">
           <div className="flex gap-2">

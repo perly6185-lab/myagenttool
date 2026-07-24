@@ -160,8 +160,28 @@ export function createWorkItemService({
     const memberships = (state.planningProjectItems ?? []).filter(
       (row) => row.workItemId === item.id && row.ownerTeamId === actorTeam(actor),
     );
+    const parent = item.parentId ? findOwn(item.parentId, actor) : null;
+    const subIssues = (state.workItems ?? []).filter(
+      (candidate) => candidate.ownerTeamId === actorTeam(actor) && candidate.parentId === item.id,
+    );
+    const completedSubIssues = subIssues.filter(
+      (candidate) => candidate.status === "done" || candidate.state === "closed",
+    ).length;
     return {
       ...item,
+      parent: parent ? {
+        id: parent.id, localRef: parent.localRef, title: parent.title,
+        status: parent.status, state: parent.state,
+      } : null,
+      subIssues: subIssues.map((candidate) => ({
+        id: candidate.id, localRef: candidate.localRef, title: candidate.title,
+        status: candidate.status, state: candidate.state,
+      })),
+      subIssuesSummary: {
+        total: subIssues.length,
+        completed: completedSubIssues,
+        percentCompleted: subIssues.length ? Math.round((completedSubIssues / subIssues.length) * 100) : 0,
+      },
       dependencyIds: item.dependencyIds ?? [],
       blockedBy: (item.dependencyIds ?? []).map((dependencyId) => {
         const dependency = findOwn(dependencyId, actor);
@@ -224,6 +244,11 @@ export function createWorkItemService({
     }
     const validated = validateDraft(input);
     if (validated.error) return { ok: false, status: 400, body: { error: validated.error } };
+    const parentId = input.parentId == null || input.parentId === "" ? null : String(input.parentId);
+    const parent = parentId ? findOwn(parentId, actor) : null;
+    if (parentId && (!parent || parent.projectId !== projectId)) {
+      return { ok: false, status: 400, body: { error: "invalid_work_item_parent" } };
+    }
     const teamId = actorTeam(actor);
     const localNumber = 1 + Math.max(0, ...(state.workItems ?? [])
       .filter((item) => item.ownerTeamId === teamId)
@@ -237,6 +262,7 @@ export function createWorkItemService({
       projectId,
       ...validated.value,
       dependencyIds: [],
+      parentId,
       revision: 1,
       state: "open",
       archivedAt: null,
@@ -261,7 +287,7 @@ export function createWorkItemService({
         data: { workItemId: workItem.id, localRef: workItem.localRef, projectId, actorTeamId: teamId },
       });
     });
-    return { ok: true, status: 201, body: { workItem } };
+    return { ok: true, status: 201, body: { workItem: workItemView(workItem, actor) } };
   }
 
   function updateWorkItem({ workItemId, expectedRevision, ...changes } = {}, actor = null) {
@@ -279,6 +305,12 @@ export function createWorkItemService({
       const projectId = String(changes.projectId ?? "");
       if (!projectId || !actorCanAccessProject(state, actor, projectId)) {
         return { ok: false, status: 404, body: { error: "project_not_found" } };
+      }
+      const relatedIds = [item.parentId, ...(state.workItems ?? [])
+        .filter((candidate) => candidate.ownerTeamId === actorTeam(actor) && candidate.parentId === item.id)
+        .map((candidate) => candidate.id)].filter(Boolean);
+      if (relatedIds.some((id) => findOwn(id, actor)?.projectId !== projectId)) {
+        return { ok: false, status: 409, body: { error: "work_item_hierarchy_project_conflict" } };
       }
       validated.value.projectId = projectId;
     }
@@ -302,6 +334,24 @@ export function createWorkItemService({
         return { ok: false, status: 409, body: { error: "work_item_dependency_cycle" } };
       }
       validated.value.dependencyIds = dependencyIds;
+    }
+    if (Object.hasOwn(changes, "parentId")) {
+      const parentId = changes.parentId == null || changes.parentId === "" ? null : String(changes.parentId);
+      const parent = parentId ? findOwn(parentId, actor) : null;
+      if (parentId === item.id || (parentId && (!parent || parent.projectId !== (validated.value.projectId ?? item.projectId)))) {
+        return { ok: false, status: 400, body: { error: "invalid_work_item_parent" } };
+      }
+      let candidate = parent;
+      const visited = new Set();
+      while (candidate) {
+        if (candidate.id === item.id) {
+          return { ok: false, status: 409, body: { error: "work_item_parent_cycle" } };
+        }
+        if (visited.has(candidate.id)) break;
+        visited.add(candidate.id);
+        candidate = candidate.parentId ? findOwn(candidate.parentId, actor) : null;
+      }
+      validated.value.parentId = parentId;
     }
     const previous = Object.fromEntries(Object.keys(validated.value).map((key) => [key, item[key]]));
     runTx(() => {

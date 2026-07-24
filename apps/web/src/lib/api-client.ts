@@ -862,6 +862,7 @@ export const api = {
     dueDate?: string | null;
     milestone?: string;
     estimatePoints?: number;
+    parentId?: string | null;
   }) => request("POST", "/api/work-items", payload),
   getWorkItem: (id: string) => request("GET", `/api/work-items/${encodeURIComponent(id)}`),
   updateWorkItem: (id: string, payload: Record<string, unknown>) =>

@@ -135,6 +135,32 @@ test("dependencies expose blocking state and reject cycles", () => {
   assert.equal(service.getWorkItem({ workItemId: delivery.id }, ACTOR_A).body.workItem.blockedBy[0].resolved, true);
 });
 
+test("parent and sub-issues expose progress and reject hierarchy cycles", () => {
+  const { service, state } = harness();
+  state.projects.push({ id: "prj_c", ownerTeamId: "team_a" });
+  const parent = service.createWorkItem({
+    projectId: "prj_a", title: "Parent", type: "initiative",
+  }, ACTOR_A).body.workItem;
+  const first = service.createWorkItem({
+    projectId: "prj_a", title: "Child one", parentId: parent.id,
+  }, ACTOR_A).body.workItem;
+  const second = service.createWorkItem({
+    projectId: "prj_a", title: "Child two", parentId: parent.id, status: "done",
+  }, ACTOR_A).body.workItem;
+  assert.equal(first.parent.id, parent.id);
+  const detail = service.getWorkItem({ workItemId: parent.id }, ACTOR_A).body.workItem;
+  assert.equal(detail.subIssuesSummary.total, 2);
+  assert.equal(detail.subIssuesSummary.completed, 1);
+  assert.equal(detail.subIssuesSummary.percentCompleted, 50);
+  assert.deepEqual(detail.subIssues.map((item) => item.id).sort(), [first.id, second.id].sort());
+  assert.equal(service.updateWorkItem({
+    workItemId: parent.id, expectedRevision: 1, parentId: first.id,
+  }, ACTOR_A).status, 409);
+  assert.equal(service.createWorkItem({
+    projectId: "prj_c", title: "Wrong project", parentId: parent.id,
+  }, ACTOR_A).status, 400);
+});
+
 test("planning automation adds matching work items once", () => {
   const { service, state } = harness();
   state.planningProjects = [{

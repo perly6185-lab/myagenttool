@@ -303,6 +303,8 @@ describe("TaskView local work items", () => {
       title: "Editable issue", body: "Before", type: "task", status: "backlog",
       priority: "p2", state: "open", labels: [], assigneeIds: [],
       acceptanceCriteria: [], revision: 1, archivedAt: null,
+      parentId: null, parent: null, subIssues: [],
+      subIssuesSummary: { total: 0, completed: 0, percentCompleted: 0 },
       updatedAt: "2026-07-24T00:00:00.000Z",
     };
     mocks.listWorkItems.mockResolvedValue({ workItems: [item], count: 1 });
@@ -319,6 +321,8 @@ describe("TaskView local work items", () => {
     render(<TaskView />);
     fireEvent.click(await screen.findByText("Editable issue"));
     const title = await screen.findByDisplayValue("Editable issue");
+    expect(screen.getByText("No sub-issues")).toBeTruthy();
+    expect(screen.getByLabelText("Parent issue")).toBeTruthy();
     fireEvent.change(title, { target: { value: "Edited issue" } });
     fireEvent.click(screen.getByRole("button", { name: "Save" }));
     await waitFor(() => expect(mocks.updateWorkItem).toHaveBeenCalledWith("lwi_1", expect.objectContaining({
