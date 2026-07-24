@@ -16,7 +16,7 @@ const MAX_BODY = 200_000;
 const MAX_LABELS = 50;
 const MAX_COMMENT = 100_000;
 const MAX_MILESTONE = 200;
-const GITHUB_SYNC_FIELDS = ["title", "body", "state", "labels"];
+const GITHUB_SYNC_FIELDS = ["title", "body", "state", "labels", "milestone", "assigneeIds"];
 const VERIFICATION_KINDS = new Set(["test", "lint", "typecheck", "manual", "review"]);
 const VERIFICATION_STATUSES = new Set(["passed", "failed"]);
 
@@ -303,6 +303,12 @@ export function createWorkItemService({
         workItemId: item.id, localRef: item.localRef, projectId: item.projectId,
         title: item.title, createdAt: binding.conflict.detectedAt, details: { fields: binding.conflict.fields },
       });
+      if (binding?.remoteDeletedAt) rows.push({
+        id: `github_deleted:${item.id}`, kind: "github_deleted", severity: "high",
+        workItemId: item.id, localRef: item.localRef, projectId: item.projectId,
+        title: item.title, createdAt: binding.remoteDeletedAt,
+        details: { number: binding.number, repository: binding.repository },
+      });
       const runBinding = [...(item.executionBindings ?? [])].reverse().find((bindingRow) => bindingRow.kind === "auto_run");
       const run = runBinding ? (state.autoRuns ?? []).find((candidate) => candidate.id === runBinding.targetId) : null;
       if (run && ["awaiting_approval", "needs_input"].includes(run.status)) rows.push({
@@ -475,16 +481,79 @@ export function createWorkItemService({
 
   function ingestGithubWebhook({ deliveryId, event, payload, teamId = null, replayOf = null } = {}) {
     const id = String(deliveryId ?? "").trim();
-    if (!id || id.length > 200 || event !== "issues" || !payload?.issue) {
+    if (!id || id.length > 200 || !["issues", "issue_comment"].includes(event) || !payload?.issue) {
       return { ok: false, status: 400, body: { error: "invalid_github_work_item_webhook" } };
     }
     const prior = (state.githubWorkItemWebhookDeliveries ?? []).find((row) => row.id === id);
     if (prior) return { ok: true, status: 200, body: { ...prior.result, replayed: true } };
     const issue = payload.issue;
     const repository = String(payload.repository?.full_name ?? "");
+    const matchingItems = (state.workItems ?? []).filter((item) => {
+      if (teamId && item.ownerTeamId !== teamId) return false;
+      const binding = githubBinding(item);
+      return binding?.number === Number(issue.number)
+        && (!binding.repository || !repository || binding.repository === repository);
+    });
+    if (event === "issue_comment") {
+      const comment = payload.comment;
+      if (!comment?.id || !["created", "edited", "deleted"].includes(payload.action)) {
+        return { ok: false, status: 400, body: { error: "invalid_github_issue_comment_webhook" } };
+      }
+      let syncedComments = 0;
+      runTx(() => {
+        for (const item of matchingItems) {
+          let local = (state.workItemComments ??= []).find((candidate) =>
+            candidate.workItemId === item.id && candidate.externalBinding?.kind === "github_comment"
+            && candidate.externalBinding.id === String(comment.id));
+          if (!local) {
+            local = {
+              id: nextId("wic"), workItemId: item.id, ownerTeamId: item.ownerTeamId,
+              projectId: item.projectId, body: String(comment.body ?? "").slice(0, MAX_COMMENT),
+              revision: 1, createdAt: comment.created_at ?? now(), updatedAt: comment.updated_at ?? now(),
+              createdBy: `github:${comment.user?.login ?? "unknown"}`,
+              lastModifiedBy: `github:${comment.user?.login ?? "unknown"}`,
+              deletedAt: null,
+              externalBinding: { kind: "github_comment", id: String(comment.id), url: comment.html_url ?? null },
+            };
+            state.workItemComments.push(local);
+          } else if (payload.action !== "deleted") {
+            local.body = String(comment.body ?? "").slice(0, MAX_COMMENT);
+            local.revision += 1;
+            local.updatedAt = comment.updated_at ?? now();
+          }
+          if (payload.action === "deleted") local.deletedAt = comment.updated_at ?? now();
+          recordActivity(item, { userId: "usr_github_webhook", teamId: item.ownerTeamId },
+            `github_comment_${payload.action}`, { commentId: local.id, githubCommentId: String(comment.id) });
+          syncedComments += 1;
+        }
+      });
+      return recordGithubDelivery({
+        id, event, repository, issueNumber: Number(issue.number), matchingItems, replayOf,
+        result: { deliveryId: id, syncedComments, outcome: syncedComments ? "synced" : "no_match", replayOf },
+        snapshot: null,
+      });
+    }
+    if (payload.action === "deleted") {
+      runTx(() => {
+        for (const item of matchingItems) {
+          const binding = githubBinding(item);
+          binding.remoteDeletedAt = issue.updated_at ?? now();
+          binding.remoteUpdatedAt = issue.updated_at ?? binding.remoteUpdatedAt;
+          recordActivity(item, { userId: "usr_github_webhook", teamId: item.ownerTeamId },
+            "github_issue_deleted", { number: binding.number, repository });
+        }
+      });
+      return recordGithubDelivery({
+        id, event, repository, issueNumber: Number(issue.number), matchingItems, replayOf,
+        result: { deliveryId: id, deleted: matchingItems.length, outcome: matchingItems.length ? "deleted" : "no_match", replayOf },
+        snapshot: null,
+      });
+    }
     const snapshot = normalizeGithubSnapshot({
       number: issue.number, title: issue.title, body: issue.body ?? "",
       state: issue.state, labels: (issue.labels ?? []).map((label) => label?.name ?? label),
+      milestone: issue.milestone?.title ?? "",
+      assigneeIds: (issue.assignees ?? []).map((assignee) => assignee?.login ?? assignee),
       url: issue.html_url, repository, updatedAt: issue.updated_at,
     });
     if (!snapshot) return { ok: false, status: 400, body: { error: "invalid_github_issue_snapshot" } };
@@ -510,9 +579,18 @@ export function createWorkItemService({
     }
     const outcome = conflicts ? "conflict" : synced ? "synced" : stale ? "stale" : "no_match";
     const result = { deliveryId: id, synced, stale, conflicts, outcome, replayOf };
+    return recordGithubDelivery({
+      id, event, repository, issueNumber: snapshot.number,
+      matchingItems: [...matchedTeamIds].map((ownerTeamId) => ({ ownerTeamId })),
+      replayOf, result, snapshot,
+    });
+  }
+
+  function recordGithubDelivery({ id, event, repository, issueNumber, matchingItems, replayOf, result, snapshot }) {
     (state.githubWorkItemWebhookDeliveries ??= []).unshift({
-      id, event, receivedAt: now(), repository, issueNumber: snapshot.number,
-      teamIds: [...matchedTeamIds], snapshot, replayOf, result,
+      id, event, receivedAt: now(), repository, issueNumber,
+      teamIds: [...new Set(matchingItems.map((item) => item.ownerTeamId))],
+      snapshot, replayOf, result,
     });
     state.githubWorkItemWebhookDeliveries = state.githubWorkItemWebhookDeliveries.slice(0, 1_000);
     persistStateSoon();
@@ -661,12 +739,16 @@ export function createWorkItemService({
     const body = String(input.body ?? "");
     const remoteState = String(input.state ?? "").toLowerCase();
     const labels = strings(input.labels ?? []);
+    const assigneeIds = strings(input.assigneeIds ?? []);
+    const milestone = String(input.milestone ?? "").trim();
     const updatedAt = String(input.updatedAt ?? "");
     if (!Number.isInteger(number) || number < 1 || !title || title.length > MAX_TITLE
       || body.length > MAX_BODY || !["open", "closed"].includes(remoteState)
-      || !labels || !Number.isFinite(Date.parse(updatedAt))) return null;
+      || !labels || !assigneeIds || milestone.length > MAX_MILESTONE
+      || !Number.isFinite(Date.parse(updatedAt))) return null;
     return {
       number, title, body, state: remoteState, labels,
+      milestone, assigneeIds,
       url: input.url == null ? null : String(input.url),
       repository: input.repository == null ? null : String(input.repository),
       updatedAt,
@@ -788,6 +870,7 @@ export function createWorkItemService({
       binding.remoteUpdatedAt = snapshot.updatedAt;
       binding.lastSyncedAt = now();
       binding.conflict = null;
+      binding.remoteDeletedAt = null;
       recordActivity(item, actor, "github_pulled", { number: binding.number });
     });
     return { ok: true, status: 200, body: { action: "pulled", workItem: workItemView(item, actor) } };

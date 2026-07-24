@@ -313,12 +313,15 @@ test("GitHub webhook sync is idempotent and ignores stale deliveries", () => {
     repository: { full_name: "acme/repo" },
     issue: {
       number: 8, title: "From webhook", body: "", state: "open", labels: [],
+      milestone: { title: "M4" }, assignees: [{ login: "octocat" }],
       html_url: "https://github.test/acme/repo/issues/8", updated_at: "2026-07-24T01:00:00.000Z",
     },
   };
   const first = service.ingestGithubWebhook({ deliveryId: "delivery-1", event: "issues", payload });
   assert.equal(first.body.synced, 1);
   assert.equal(service.getWorkItem({ workItemId: item.id }, ACTOR_A).body.workItem.title, "From webhook");
+  assert.equal(service.getWorkItem({ workItemId: item.id }, ACTOR_A).body.workItem.milestone, "M4");
+  assert.deepEqual(service.getWorkItem({ workItemId: item.id }, ACTOR_A).body.workItem.assigneeIds, ["octocat"]);
   assert.equal(service.ingestGithubWebhook({
     deliveryId: "delivery-1", event: "issues", payload,
   }).body.replayed, true);
@@ -342,6 +345,27 @@ test("GitHub webhook sync is idempotent and ignores stale deliveries", () => {
   assert.notEqual(service.githubSyncDiagnostics(ACTOR_A).body.health, "healthy");
   assert.equal(service.githubSyncDiagnostics(ACTOR_A).body.recentFailures[0].reason, "invalid_signature");
   assert.equal(service.githubSyncDiagnostics(ACTOR_A).body.failureRate > 0, true);
+  const comment = service.ingestGithubWebhook({
+    deliveryId: "comment-1", event: "issue_comment",
+    payload: {
+      action: "created", repository: { full_name: "acme/repo" }, issue: { number: 8 },
+      comment: {
+        id: 55, body: "Remote note", user: { login: "reviewer" },
+        created_at: "2026-07-24T02:00:00.000Z", updated_at: "2026-07-24T02:00:00.000Z",
+      },
+    },
+  });
+  assert.equal(comment.body.syncedComments, 1);
+  assert.equal(service.listComments({ workItemId: item.id }, ACTOR_A).body.comments[0].body, "Remote note");
+  const deleted = service.ingestGithubWebhook({
+    deliveryId: "deleted-1", event: "issues",
+    payload: {
+      action: "deleted", repository: { full_name: "acme/repo" },
+      issue: { number: 8, updated_at: "2026-07-24T03:00:00.000Z" },
+    },
+  });
+  assert.equal(deleted.body.deleted, 1);
+  assert.equal(service.listAttention({ kind: "github_deleted" }, ACTOR_A).body.count, 1);
 });
 
 test("GitHub webhook event storms stay bounded and cannot regress newer state", () => {
