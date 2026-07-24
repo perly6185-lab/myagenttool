@@ -248,3 +248,23 @@ test("project schedule is validated and exposes delivery risk", () => {
     startDate: "not-a-date",
   }, ACTOR_A).status, 400);
 });
+
+test("project ownership defaults to the creator and can be reassigned or cleared", () => {
+  const { service } = harness();
+  const project = service.createProject({ name: "Owned" }, ACTOR_A).body.project;
+  assert.equal(project.ownerId, "usr_a");
+  assert.equal(project.unowned, false);
+  const reassigned = service.updateProject({
+    planningProjectId: project.id, expectedRevision: 1, ownerId: "usr_release",
+  }, ACTOR_A).body.project;
+  assert.equal(reassigned.ownerId, "usr_release");
+  const cleared = service.updateProject({
+    planningProjectId: project.id, expectedRevision: 2, ownerId: null,
+  }, ACTOR_A).body.project;
+  assert.equal(cleared.unowned, true);
+  assert.equal(cleared.riskScore, 1);
+  assert.equal(cleared.health, "attention");
+  assert.equal(service.updateProject({
+    planningProjectId: project.id, expectedRevision: 3, ownerId: "x".repeat(201),
+  }, ACTOR_A).status, 400);
+});

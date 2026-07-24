@@ -23,6 +23,7 @@ export interface PlanningExportProject {
   capacityPoints?: number;
   startDate?: string | null;
   targetDate?: string | null;
+  ownerId?: string | null;
   savedViews?: unknown[];
   automationRules?: unknown[];
   activity?: unknown[];
@@ -69,6 +70,7 @@ export function planningProjectJson(project: PlanningExportProject, exportedAt =
       capacityPoints: project.capacityPoints ?? 0,
       startDate: project.startDate ?? null,
       targetDate: project.targetDate ?? null,
+      ownerId: project.ownerId ?? null,
       savedViews: project.savedViews ?? [],
       automationRules: project.automationRules ?? [],
       activity: project.activity ?? [],
@@ -104,6 +106,7 @@ export function parsePlanningProjectSnapshot(text: string) {
     capacityPoints: Number.isInteger(project.capacityPoints) ? Number(project.capacityPoints) : 0,
     startDate: typeof project.startDate === "string" ? project.startDate : null,
     targetDate: typeof project.targetDate === "string" ? project.targetDate : null,
+    ownerId: typeof project.ownerId === "string" ? project.ownerId : null,
     savedViews,
     automationRules,
     workItemCount: Array.isArray(snapshot.workItems) ? snapshot.workItems.length : 0,

@@ -10,6 +10,10 @@ const project = {
   id: "ppj_1",
   name: "Q3 Release",
   description: "Ship",
+  ownerId: "usr_release",
+  capacityPoints: 34,
+  startDate: "2026-07-01",
+  targetDate: "2026-09-30",
   revision: 4,
   savedViews: [{ name: "Risks" }],
   automationRules: [{ priority: "p0" }],
@@ -34,6 +38,7 @@ describe("planning export", () => {
     const json = JSON.parse(planningProjectJson(project, "2026-07-24T00:00:00.000Z"));
     expect(json.schemaVersion).toBe(1);
     expect(json.project.savedViews[0].name).toBe("Risks");
+    expect(json.project.ownerId).toBe("usr_release");
     expect(json.workItems[0].dependencyIds).toEqual(["lwi_0"]);
     expect(planningExportFilename(project.name, "json")).toBe("q3-release.json");
   });
@@ -42,6 +47,10 @@ describe("planning export", () => {
     const imported = parsePlanningProjectSnapshot(planningProjectJson(project, "2026-07-24T00:00:00.000Z"));
     expect(imported.name).toBe("Q3 Release");
     expect(imported.savedViews).toHaveLength(1);
+    expect(imported).toMatchObject({
+      ownerId: "usr_release", capacityPoints: 34,
+      startDate: "2026-07-01", targetDate: "2026-09-30",
+    });
     expect(imported.workItemCount).toBe(1);
     expect(() => parsePlanningProjectSnapshot('{"schemaVersion":2,"project":{}}')).toThrow(/Unsupported/);
   });

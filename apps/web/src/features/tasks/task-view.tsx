@@ -87,6 +87,8 @@ type PlanningProject = {
   targetDate?: string | null;
   projectOverdue?: boolean;
   daysRemaining?: number | null;
+  ownerId?: string | null;
+  unowned?: boolean;
   health?: "healthy" | "active" | "attention";
   savedViews?: {
     id: string;
@@ -570,6 +572,7 @@ export function PlanningProjectsPanel({ onChanged = () => {} }: { onChanged?: ()
   const [capacityPoints, setCapacityPoints] = useState("0");
   const [projectStartDate, setProjectStartDate] = useState("");
   const [projectTargetDate, setProjectTargetDate] = useState("");
+  const [projectOwnerId, setProjectOwnerId] = useState("");
   const [editing, setEditing] = useState(false);
   const storedPlanningView = useUiStore((state) => state.planningProjectView);
   const storePlanningView = useUiStore((state) => state.setPlanningProjectView);
@@ -589,6 +592,7 @@ export function PlanningProjectsPanel({ onChanged = () => {} }: { onChanged?: ()
   const [detailWorkItemId, setDetailWorkItemId] = useState<string | null>(null);
   const [projectQuery, setProjectQuery] = useState("");
   const [projectScope, setProjectScope] = useState<"active" | "attention" | "archived">("active");
+  const [ownerFilter, setOwnerFilter] = useState("all");
   const [savedViewName, setSavedViewName] = useState("");
   const [savedViewId, setSavedViewId] = useState("");
   const [ruleStatus, setRuleStatus] = useState("");
@@ -674,6 +678,7 @@ export function PlanningProjectsPanel({ onChanged = () => {} }: { onChanged?: ()
       const result = await api.createPlanningProject({
         name, description, capacityPoints: Number(capacityPoints),
         startDate: projectStartDate || null, targetDate: projectTargetDate || null,
+        ownerId: projectOwnerId.trim() || undefined,
       }) as { project: PlanningProject };
       created = result.project;
       return result;
@@ -684,6 +689,7 @@ export function PlanningProjectsPanel({ onChanged = () => {} }: { onChanged?: ()
       setCapacityPoints("0");
       setProjectStartDate("");
       setProjectTargetDate("");
+      setProjectOwnerId("");
       setSelectedId(created.id);
       setNonce((value) => value + 1);
       onChanged();
@@ -730,6 +736,7 @@ export function PlanningProjectsPanel({ onChanged = () => {} }: { onChanged?: ()
       capacityPoints: Number(capacityPoints),
       startDate: projectStartDate || null,
       targetDate: projectTargetDate || null,
+      ownerId: projectOwnerId.trim() || null,
     })).then((ok) => {
       if (!ok) return;
       setEditing(false);
@@ -878,6 +885,10 @@ export function PlanningProjectsPanel({ onChanged = () => {} }: { onChanged?: ()
         name: t("planningImport.importedName", { name: snapshot.name }),
         description: snapshot.description,
         color: snapshot.color,
+        capacityPoints: snapshot.capacityPoints,
+        startDate: snapshot.startDate,
+        targetDate: snapshot.targetDate,
+        ownerId: snapshot.ownerId,
         savedViews: snapshot.savedViews,
         automationRules: snapshot.automationRules,
       }) as { project: PlanningProject };
@@ -893,19 +904,24 @@ export function PlanningProjectsPanel({ onChanged = () => {} }: { onChanged?: ()
   };
   const visibleProjects = projects
     .filter((project) => !projectQuery.trim()
-      || `${project.name} ${project.description}`.toLowerCase().includes(projectQuery.trim().toLowerCase()))
+      || `${project.name} ${project.description} ${project.ownerId ?? ""}`.toLowerCase().includes(projectQuery.trim().toLowerCase()))
+    .filter((project) => ownerFilter === "all"
+      || (ownerFilter === "unowned" ? !project.ownerId : project.ownerId === ownerFilter))
     .filter((project) => projectScope === "archived"
       ? Boolean(project.archivedAt)
       : !project.archivedAt && (projectScope !== "attention" || project.health === "attention"))
     .sort((a, b) => (b.riskScore ?? 0) - (a.riskScore ?? 0) || b.itemCount - a.itemCount);
   const portfolioAttention = projects.filter((project) => project.health === "attention").length;
   const portfolioActiveRuns = projects.reduce((sum, project) => sum + (project.activeRunCount ?? 0), 0);
+  const projectOwners = [...new Set(projects.map((project) => project.ownerId).filter(Boolean) as string[])].sort();
 
   return (
     <div className="grid gap-4 sm:grid-cols-[14rem_1fr]">
       <div className="space-y-2">
         <Input value={name} onChange={(event) => setName(event.target.value)} placeholder={t("planningProjects.name")} />
         <Input value={description} onChange={(event) => setDescription(event.target.value)} placeholder={t("planningProjects.description")} />
+        <Input value={projectOwnerId} onChange={(event) => setProjectOwnerId(event.target.value)}
+          placeholder={t("planningOwnership.owner")} aria-label={t("planningOwnership.owner")} />
         <Input type="number" min="0" max="1000000" value={capacityPoints}
           onChange={(event) => setCapacityPoints(event.target.value)}
           placeholder={t("planningCapacity.capacity")} aria-label={t("planningCapacity.capacity")} />
@@ -939,6 +955,12 @@ export function PlanningProjectsPanel({ onChanged = () => {} }: { onChanged?: ()
           <option value="attention">{t("planningLifecycle.attention")}</option>
           <option value="archived">{t("planningLifecycle.archived")}</option>
         </Select>
+        <Select value={ownerFilter} aria-label={t("planningOwnership.filter")}
+          onChange={(event) => setOwnerFilter(event.target.value)}>
+          <option value="all">{t("planningOwnership.all")}</option>
+          <option value="unowned">{t("planningOwnership.unowned")}</option>
+          {projectOwners.map((owner) => <option key={owner} value={owner}>{owner}</option>)}
+        </Select>
         <div className="space-y-1 border-t border-border pt-2">
           {visibleProjects.map((project) => (
             <button key={project.id} type="button" onClick={() => setSelectedId(project.id)}
@@ -950,6 +972,7 @@ export function PlanningProjectsPanel({ onChanged = () => {} }: { onChanged?: ()
                   {(project.overdueItemCount ?? 0) > 0 ? <span>{t("planningPortfolio.overdue", { count: project.overdueItemCount ?? 0 })}</span> : null}
                   {project.overCapacity ? <span>{t("planningCapacity.over")}</span> : null}
                   {project.projectOverdue ? <span>{t("planningSchedule.overdue")}</span> : null}
+                  {project.unowned ? <span>{t("planningOwnership.unowned")}</span> : null}
                 </span>
               </span>
               <Badge tone={project.health === "attention" ? "danger" : project.health === "active" ? "running" : "neutral"}>
@@ -968,6 +991,8 @@ export function PlanningProjectsPanel({ onChanged = () => {} }: { onChanged?: ()
                 <div className="flex-1 space-y-2">
                   <Input value={name} onChange={(event) => setName(event.target.value)} aria-label={t("planningProjects.editName")} />
                   <Input value={description} onChange={(event) => setDescription(event.target.value)} aria-label={t("planningProjects.editDescription")} />
+                  <Input value={projectOwnerId} onChange={(event) => setProjectOwnerId(event.target.value)}
+                    aria-label={t("planningOwnership.owner")} />
                   <Input type="number" min="0" max="1000000" value={capacityPoints}
                     onChange={(event) => setCapacityPoints(event.target.value)}
                     aria-label={t("planningCapacity.capacity")} />
@@ -978,7 +1003,7 @@ export function PlanningProjectsPanel({ onChanged = () => {} }: { onChanged?: ()
                       onChange={(event) => setProjectTargetDate(event.target.value)} />
                   </div>
                 </div>
-              ) : <div><h3 className="font-semibold">{selected.name}</h3><p className="text-sm text-muted-foreground">{selected.description || t("planningProjects.noDescription")}</p></div>}
+              ) : <div><h3 className="font-semibold">{selected.name}</h3><p className="text-sm text-muted-foreground">{selected.description || t("planningProjects.noDescription")}</p><p className="text-xs text-muted-foreground">{t("planningOwnership.ownerValue", { owner: selected.ownerId || t("planningOwnership.unowned") })}</p></div>}
               <div className="flex gap-1">
                 {editing ? (
                   <Button size="sm" disabled={pending || !name.trim()} onClick={save}>{t("planningProjects.save")}</Button>
@@ -989,6 +1014,7 @@ export function PlanningProjectsPanel({ onChanged = () => {} }: { onChanged?: ()
                     setCapacityPoints(String(selected.capacityPoints ?? 0));
                     setProjectStartDate(selected.startDate ?? "");
                     setProjectTargetDate(selected.targetDate ?? "");
+                    setProjectOwnerId(selected.ownerId ?? "");
                     setEditing(true);
                   }}>{t("planningProjects.edit")}</Button>
                 )}

@@ -23,6 +23,12 @@ function normalizeProjectDate(value) {
   return validDateOnly(date) ? date : undefined;
 }
 
+function normalizeProjectOwner(value) {
+  if (value == null || value === "") return null;
+  const ownerId = String(value).trim();
+  return ownerId && ownerId.length <= 200 ? ownerId : undefined;
+}
+
 function normalizeSavedViews(value, nextId) {
   if (!Array.isArray(value) || value.length > MAX_SAVED_VIEWS) return null;
   const names = new Set();
@@ -139,8 +145,9 @@ export function createPlanningProjectService({
     const daysRemaining = project.targetDate
       ? Math.ceil((Date.parse(`${project.targetDate}T00:00:00Z`) - Date.parse(`${today}T00:00:00Z`)) / 86_400_000)
       : null;
+    const unowned = !project.ownerId;
     const riskScore = blockedItemCount * 3 + overdueItemCount * 2 + failedRunCount * 3
-      + (overCapacity ? 3 : 0) + (projectOverdue ? 3 : 0);
+      + (overCapacity ? 3 : 0) + (projectOverdue ? 3 : 0) + (unowned ? 1 : 0);
     return {
       ...project,
       itemCount: memberships.length,
@@ -159,6 +166,7 @@ export function createPlanningProjectService({
       capacityUtilization: capacityPoints > 0 ? Math.round((plannedPoints / capacityPoints) * 100) : null,
       projectOverdue,
       daysRemaining,
+      unowned,
       health: riskScore > 0 ? "attention" : activeRunCount > 0 ? "active" : "healthy",
       ...(includeItems ? {
         items: memberships.map((membership) => ({
@@ -176,7 +184,7 @@ export function createPlanningProjectService({
     const projects = (state.planningProjects ?? [])
       .filter((row) => row.ownerTeamId === teamOfActor(actor))
       .filter((row) => query.includeArchived === "1" || !row.archivedAt)
-      .filter((row) => !q || `${row.name} ${row.description}`.toLowerCase().includes(q))
+      .filter((row) => !q || `${row.name} ${row.description} ${row.ownerId ?? ""}`.toLowerCase().includes(q))
       .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
       .map((row) => projectView(row, actor));
     return { ok: true, status: 200, body: { projects, count: projects.length } };
@@ -190,7 +198,7 @@ export function createPlanningProjectService({
   }
 
   function createProject({
-    name, description, color, capacityPoints, startDate, targetDate,
+    name, description, color, capacityPoints, startDate, targetDate, ownerId,
     templateProjectId = null, savedViews, automationRules,
   } = {}, actor = null) {
     const template = templateProjectId ? findOwn(templateProjectId, actor) : null;
@@ -217,7 +225,10 @@ export function createPlanningProjectService({
     }
     const normalizedStartDate = normalizeProjectDate(startDate === undefined ? template?.startDate : startDate);
     const normalizedTargetDate = normalizeProjectDate(targetDate === undefined ? template?.targetDate : targetDate);
-    if (normalizedStartDate === undefined || normalizedTargetDate === undefined
+    const normalizedOwnerId = normalizeProjectOwner(ownerId === undefined
+      ? template?.ownerId ?? userOfActor(actor)
+      : ownerId);
+    if (normalizedOwnerId === undefined || normalizedStartDate === undefined || normalizedTargetDate === undefined
       || (normalizedStartDate && normalizedTargetDate && normalizedStartDate > normalizedTargetDate)) {
       return { ok: false, status: 400, body: { error: "invalid_planning_project_schedule" } };
     }
@@ -231,6 +242,7 @@ export function createPlanningProjectService({
       capacityPoints: normalizedCapacity,
       startDate: normalizedStartDate,
       targetDate: normalizedTargetDate,
+      ownerId: normalizedOwnerId,
       savedViews: importedViews ?? (template?.savedViews ?? []).map((view) => ({ ...view, id: nextId("ppv") })),
       automationRules: importedRules ?? (template?.automationRules ?? []).map((rule) => ({ ...rule, id: nextId("par") })),
       activity: [],
@@ -274,6 +286,13 @@ export function createPlanningProjectService({
       patch.description = description;
     }
     if (Object.hasOwn(changes, "color")) patch.color = String(changes.color ?? "indigo").slice(0, 40);
+    if (Object.hasOwn(changes, "ownerId")) {
+      const ownerId = normalizeProjectOwner(changes.ownerId);
+      if (ownerId === undefined) {
+        return { ok: false, status: 400, body: { error: "invalid_planning_project_owner" } };
+      }
+      patch.ownerId = ownerId;
+    }
     if (Object.hasOwn(changes, "savedViews")) {
       const savedViews = normalizeSavedViews(changes.savedViews, nextId);
       if (!savedViews) return { ok: false, status: 400, body: { error: "invalid_planning_project_saved_views" } };
