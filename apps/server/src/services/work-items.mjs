@@ -156,8 +156,28 @@ export function createWorkItemService({
     }
   }
 
+  function executionState(item) {
+    const latestBinding = [...(item.executionBindings ?? [])]
+      .reverse()
+      .find((binding) => binding.kind === "auto_run");
+    const run = latestBinding
+      ? (state.autoRuns ?? []).find((candidate) => candidate.id === latestBinding.targetId)
+      : null;
+    if (run) {
+      if (["materializing", "running", "publishing"].includes(run.status)) return "running";
+      if (["awaiting_approval", "needs_input"].includes(run.status)) return "awaiting_approval";
+      if (["verifying", "pr_open", "report_posted", "plan_proposed"].includes(run.status)) return "verifying";
+      if (["blocked", "failed"].includes(run.status)) return "failed";
+      if (["done", "decomposed"].includes(run.status)) return "completed";
+    }
+    const claimActive = item.claim?.status === "active"
+      && Date.parse(item.claim.leaseExpiresAt) > Date.parse(now());
+    return claimActive ? "claimed" : "unclaimed";
+  }
+
   function workItemView(item, actor) {
     const { createIdempotencyKey: _createIdempotencyKey, ...publicItem } = item;
+    const derivedExecutionState = executionState(item);
     const memberships = (state.planningProjectItems ?? []).filter(
       (row) => row.workItemId === item.id && row.ownerTeamId === actorTeam(actor),
     );
@@ -170,6 +190,14 @@ export function createWorkItemService({
     ).length;
     return {
       ...publicItem,
+      businessState: item.state,
+      planningStatus: item.status,
+      executionState: derivedExecutionState,
+      statusModel: {
+        business: item.state,
+        planning: item.status,
+        execution: derivedExecutionState,
+      },
       parent: parent ? {
         id: parent.id, localRef: parent.localRef, title: parent.title,
         status: parent.status, state: parent.state,

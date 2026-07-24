@@ -49,6 +49,39 @@ test("creates a local work item with server-owned identity and defaults", () => 
   assert.equal(events[0].type, "work_item_created");
 });
 
+test("exposes independent business, planning, and fact-derived execution states", () => {
+  const { service, state } = harness();
+  const created = service.createWorkItem({
+    projectId: "prj_a", title: "Three state model", status: "ready",
+  }, ACTOR_A).body.workItem;
+  assert.deepEqual(created.statusModel, {
+    business: "open", planning: "ready", execution: "unclaimed",
+  });
+  assert.equal(created.businessState, created.state);
+  assert.equal(created.planningStatus, created.status);
+
+  service.claimWorkItem({ workItemId: created.id, agentId: "agt_a" }, ACTOR_A);
+  assert.equal(service.getWorkItem({ workItemId: created.id }, ACTOR_A).body.workItem.executionState, "claimed");
+
+  state.workItems[0].executionBindings = [{
+    kind: "auto_run", targetId: "ar_1", worktreeId: null, createdAt: "2026-07-24T00:00:00.000Z",
+  }];
+  state.autoRuns = [{ id: "ar_1", status: "running" }];
+  for (const [runStatus, expected] of [
+    ["running", "running"],
+    ["awaiting_approval", "awaiting_approval"],
+    ["verifying", "verifying"],
+    ["failed", "failed"],
+    ["done", "completed"],
+  ]) {
+    state.autoRuns[0].status = runStatus;
+    assert.equal(
+      service.getWorkItem({ workItemId: created.id }, ACTOR_A).body.workItem.executionState,
+      expected,
+    );
+  }
+});
+
 test("team scoping hides foreign work items and foreign projects", () => {
   const { service } = harness();
   const item = service.createWorkItem({ projectId: "prj_a", title: "A" }, ACTOR_A).body.workItem;

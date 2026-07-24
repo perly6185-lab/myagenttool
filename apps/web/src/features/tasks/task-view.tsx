@@ -35,6 +35,7 @@ type GithubItem = {
   state: string;
 };
 type GithubResult = { available: boolean; message: string; items: GithubItem[] };
+type WorkItemExecutionState = "unclaimed" | "claimed" | "running" | "awaiting_approval" | "verifying" | "failed" | "completed";
 type LocalWorkItem = {
   id: string;
   localRef: string;
@@ -45,6 +46,14 @@ type LocalWorkItem = {
   status: "backlog" | "ready" | "in_progress" | "review" | "blocked" | "done";
   priority: "p0" | "p1" | "p2" | "p3";
   state: "open" | "closed";
+  businessState?: "open" | "closed";
+  planningStatus?: LocalWorkItem["status"];
+  executionState?: WorkItemExecutionState;
+  statusModel?: {
+    business: "open" | "closed";
+    planning: LocalWorkItem["status"];
+    execution: WorkItemExecutionState;
+  };
   labels: string[];
   assigneeIds: string[];
   acceptanceCriteria: string[];
@@ -1912,7 +1921,17 @@ function LocalWorkItemDetail({
       <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
         <span className="font-mono">{item.localRef}</span>
         <span>{projects.find((project) => project.id === item.projectId)?.name ?? item.projectId}</span>
-        <Badge tone={item.state === "open" ? "success" : "neutral"}>{t(`taskLocal.state.${item.state}`)}</Badge>
+        <Badge tone={item.state === "open" ? "success" : "neutral"}>
+          {t("taskLocal.statusModel.business")}: {t(`taskLocal.state.${item.businessState ?? item.state}`)}
+        </Badge>
+        <Badge tone={statusTone(item.planningStatus ?? item.status)}>
+          {t("taskLocal.statusModel.planning")}: {t(`tasks.localStatus.${item.planningStatus ?? item.status}`)}
+        </Badge>
+        {item.executionState ? (
+          <Badge tone={item.executionState === "failed" ? "danger" : item.executionState === "completed" ? "success" : "neutral"}>
+            {t("taskLocal.statusModel.execution")}: {t(`taskLocal.executionState.${item.executionState}`)}
+          </Badge>
+        ) : null}
         <span>{t("taskLocal.revision", { revision: item.revision })}</span>
       </div>
       <div className="grid gap-3 sm:grid-cols-3">

@@ -302,6 +302,7 @@ describe("TaskView local work items", () => {
       id: "lwi_1", localRef: "LOCAL-1", projectId: "prj_1",
       title: "Editable issue", body: "Before", type: "task", status: "backlog",
       priority: "p2", state: "open", labels: [], assigneeIds: [],
+      businessState: "open", planningStatus: "backlog", executionState: "claimed",
       acceptanceCriteria: [], revision: 1, archivedAt: null,
       parentId: null, parent: null, subIssues: [],
       subIssuesSummary: { total: 0, completed: 0, percentCompleted: 0 },
@@ -321,6 +322,9 @@ describe("TaskView local work items", () => {
     render(<TaskView />);
     fireEvent.click(await screen.findByText("Editable issue"));
     const title = await screen.findByDisplayValue("Editable issue");
+    expect(screen.getByText("Business: Open")).toBeTruthy();
+    expect(screen.getByText("Planning: Backlog")).toBeTruthy();
+    expect(screen.getByText("Execution: Claimed")).toBeTruthy();
     expect(screen.getByText("No sub-issues")).toBeTruthy();
     expect(screen.getByLabelText("Parent issue")).toBeTruthy();
     fireEvent.change(title, { target: { value: "Edited issue" } });
