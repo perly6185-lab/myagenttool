@@ -35,6 +35,24 @@ export function createPlanningProjectService({
     const priorityCounts = Object.fromEntries(
       ["p0", "p1", "p2", "p3"].map((priority) => [priority, workItems.filter((item) => item.priority === priority).length]),
     );
+    const today = now().slice(0, 10);
+    const blockedItemCount = workItems.filter((item) => (item.dependencyIds ?? []).some((dependencyId) => {
+      const dependency = (state.workItems ?? []).find(
+        (row) => row.id === dependencyId && row.ownerTeamId === teamOfActor(actor),
+      );
+      return dependency && dependency.status !== "done" && dependency.state !== "closed";
+    })).length;
+    const overdueItemCount = workItems.filter(
+      (item) => item.dueDate && item.dueDate < today && item.status !== "done" && item.state !== "closed",
+    ).length;
+    const linkedRuns = workItems.flatMap((item) => item.executionBindings ?? [])
+      .filter((binding) => binding.kind === "auto_run")
+      .map((binding) => (state.autoRuns ?? []).find((run) => run.id === binding.targetId))
+      .filter(Boolean);
+    const activeRunCount = linkedRuns.filter((run) =>
+      ["materializing", "running", "awaiting_approval", "verifying", "publishing"].includes(run.status)).length;
+    const failedRunCount = linkedRuns.filter((run) => ["failed", "blocked"].includes(run.status)).length;
+    const riskScore = blockedItemCount * 3 + overdueItemCount * 2 + failedRunCount * 3;
     return {
       ...project,
       itemCount: memberships.length,
@@ -42,6 +60,12 @@ export function createPlanningProjectService({
       completedItemCount: workItems.filter((item) => item.status === "done" || item.state === "closed").length,
       statusCounts,
       priorityCounts,
+      blockedItemCount,
+      overdueItemCount,
+      activeRunCount,
+      failedRunCount,
+      riskScore,
+      health: riskScore > 0 ? "attention" : activeRunCount > 0 ? "active" : "healthy",
       ...(includeItems ? {
         items: memberships.map((membership) => ({
           membership,

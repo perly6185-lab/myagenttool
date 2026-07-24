@@ -65,6 +65,12 @@ type PlanningProject = {
   completedItemCount: number;
   statusCounts: Record<LocalWorkItem["status"], number>;
   priorityCounts: Record<LocalWorkItem["priority"], number>;
+  blockedItemCount?: number;
+  overdueItemCount?: number;
+  activeRunCount?: number;
+  failedRunCount?: number;
+  riskScore?: number;
+  health?: "healthy" | "active" | "attention";
   items?: { membership: { position: number }; workItem: LocalWorkItem }[];
 };
 type WorkItemComment = {
@@ -552,6 +558,8 @@ export function PlanningProjectsPanel({ onChanged = () => {} }: { onChanged?: ()
   const [selectedWorkItemIds, setSelectedWorkItemIds] = useState<string[]>([]);
   const [bulkStatus, setBulkStatus] = useState<LocalWorkItem["status"]>("ready");
   const [detailWorkItemId, setDetailWorkItemId] = useState<string | null>(null);
+  const [projectQuery, setProjectQuery] = useState("");
+  const [attentionOnly, setAttentionOnly] = useState(false);
   const [nonce, setNonce] = useState(0);
   const selected = projects.find((project) => project.id === selectedId);
   const displayWorkItems = selected?.items
@@ -718,6 +726,13 @@ export function PlanningProjectsPanel({ onChanged = () => {} }: { onChanged?: ()
     if (!binding) return null;
     return autoRuns.find((run) => run.id === binding.targetId)?.status ?? null;
   };
+  const visibleProjects = projects
+    .filter((project) => !projectQuery.trim()
+      || `${project.name} ${project.description}`.toLowerCase().includes(projectQuery.trim().toLowerCase()))
+    .filter((project) => !attentionOnly || project.health === "attention")
+    .sort((a, b) => (b.riskScore ?? 0) - (a.riskScore ?? 0) || b.itemCount - a.itemCount);
+  const portfolioAttention = projects.filter((project) => project.health === "attention").length;
+  const portfolioActiveRuns = projects.reduce((sum, project) => sum + (project.activeRunCount ?? 0), 0);
 
   return (
     <div className="grid gap-4 sm:grid-cols-[14rem_1fr]">
@@ -725,14 +740,33 @@ export function PlanningProjectsPanel({ onChanged = () => {} }: { onChanged?: ()
         <Input value={name} onChange={(event) => setName(event.target.value)} placeholder={t("planningProjects.name")} />
         <Input value={description} onChange={(event) => setDescription(event.target.value)} placeholder={t("planningProjects.description")} />
         <Button size="sm" disabled={pending || !name.trim()} onClick={create}><Plus className="mr-1 size-4" />{t("planningProjects.create")}</Button>
+        <div className="grid grid-cols-2 gap-1 text-center text-xs">
+          <div className="rounded-md bg-muted p-1.5"><strong className="block">{portfolioAttention}</strong>{t("planningPortfolio.attention")}</div>
+          <div className="rounded-md bg-muted p-1.5"><strong className="block">{portfolioActiveRuns}</strong>{t("planningPortfolio.activeRuns")}</div>
+        </div>
+        <Input value={projectQuery} onChange={(event) => setProjectQuery(event.target.value)}
+          placeholder={t("planningPortfolio.search")} aria-label={t("planningPortfolio.search")} />
+        <label className="flex items-center gap-2 text-xs text-muted-foreground">
+          <input type="checkbox" checked={attentionOnly} onChange={(event) => setAttentionOnly(event.target.checked)} />
+          {t("planningPortfolio.attentionOnly")}
+        </label>
         <div className="space-y-1 border-t border-border pt-2">
-          {projects.map((project) => (
+          {visibleProjects.map((project) => (
             <button key={project.id} type="button" onClick={() => setSelectedId(project.id)}
               className={cn("flex w-full justify-between rounded-md px-2 py-1.5 text-left text-sm", selectedId === project.id ? "bg-muted font-medium" : "hover:bg-muted/60")}>
-              <span className="truncate">{project.name}</span><Badge tone="neutral">{project.itemCount}</Badge>
+              <span className="min-w-0">
+                <span className="block truncate">{project.name}</span>
+                <span className="flex gap-1 text-[10px] text-muted-foreground">
+                  {(project.blockedItemCount ?? 0) > 0 ? <span>{t("planningPortfolio.blocked", { count: project.blockedItemCount ?? 0 })}</span> : null}
+                  {(project.overdueItemCount ?? 0) > 0 ? <span>{t("planningPortfolio.overdue", { count: project.overdueItemCount ?? 0 })}</span> : null}
+                </span>
+              </span>
+              <Badge tone={project.health === "attention" ? "danger" : project.health === "active" ? "running" : "neutral"}>
+                {project.itemCount}
+              </Badge>
             </button>
           ))}
-          {!projects.length ? <p className="text-xs text-muted-foreground">{t("planningProjects.empty")}</p> : null}
+          {!visibleProjects.length ? <p className="text-xs text-muted-foreground">{t("planningPortfolio.noMatches")}</p> : null}
         </div>
       </div>
       <div className="space-y-3">
@@ -818,7 +852,9 @@ export function PlanningProjectsPanel({ onChanged = () => {} }: { onChanged?: ()
                   const orderIndex = selected.items?.findIndex((row) => row.workItem.id === item.id) ?? -1;
                   return (
                     <label key={item.id} className="flex cursor-pointer items-center gap-2 rounded-md border border-border px-2 py-1.5 text-sm">
-                      <input type="checkbox" checked={Boolean(included)} disabled={pending} onChange={() => toggleItem(item)} />
+                      <input type="checkbox" checked={Boolean(included)} disabled={pending}
+                        aria-label={t("planningProjects.selectItem", { ref: item.localRef })}
+                        onChange={() => toggleItem(item)} />
                       <span className="font-mono text-xs text-muted-foreground">{item.localRef}</span><span className="truncate">{item.title}</span>
                       {included ? (
                         <span className="ml-auto flex gap-1">

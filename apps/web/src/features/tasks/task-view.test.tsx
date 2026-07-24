@@ -149,8 +149,7 @@ describe("TaskView local work items", () => {
       planningProjectId: "ppj_1",
     })));
     fireEvent.click(screen.getByRole("button", { name: /Planning projects/i }));
-    const checkbox = await screen.findByRole("checkbox");
-    fireEvent.click(checkbox);
+    fireEvent.click(await screen.findByRole("checkbox", { name: "Select LOCAL-1" }));
     await waitFor(() => expect(mocks.addPlanningProjectItem).toHaveBeenCalledWith("ppj_1", "lwi_1"));
   });
 

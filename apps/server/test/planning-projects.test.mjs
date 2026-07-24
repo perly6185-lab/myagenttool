@@ -104,3 +104,22 @@ test("project members support deterministic reorder and batch membership updates
   }, ACTOR_A).body.project;
   assert.deepEqual(detail.items.map((row) => row.workItem.id), ["wi_c"]);
 });
+
+test("project portfolio summaries expose execution and schedule risk", () => {
+  const { service, state } = harness();
+  state.workItems[0].dueDate = "2026-07-20";
+  state.workItems[0].dependencyIds = ["wi_dependency"];
+  state.workItems[0].executionBindings = [{ kind: "auto_run", targetId: "aur_1" }];
+  state.workItems.push({
+    id: "wi_dependency", ownerTeamId: "team_a", status: "ready", state: "open",
+  });
+  state.autoRuns = [{ id: "aur_1", status: "failed" }];
+  const project = service.createProject({ name: "At risk" }, ACTOR_A).body.project;
+  service.addItem({ planningProjectId: project.id, workItemId: "wi_a" }, ACTOR_A);
+  const summary = service.listProjects({}, ACTOR_A).body.projects[0];
+  assert.equal(summary.blockedItemCount, 1);
+  assert.equal(summary.overdueItemCount, 1);
+  assert.equal(summary.failedRunCount, 1);
+  assert.equal(summary.riskScore, 8);
+  assert.equal(summary.health, "attention");
+});
