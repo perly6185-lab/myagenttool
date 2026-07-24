@@ -3319,6 +3319,8 @@ export function createServerRuntimeServices({
     recordWorkItemExecutionBinding: workItemService.recordExecutionBinding,
     claimWorkItem: workItemService.claimWorkItem,
     releaseWorkItemClaim: workItemService.releaseWorkItemClaim,
+    bindGithubIssue: workItemService.bindGithubIssue,
+    syncGithubIssue: workItemService.syncGithubIssue,
     listPlanningProjects: planningProjectService.listProjects,
     getPlanningProject: planningProjectService.getProject,
     createPlanningProject: planningProjectService.createProject,

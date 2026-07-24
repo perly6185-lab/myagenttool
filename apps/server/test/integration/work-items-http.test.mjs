@@ -94,6 +94,29 @@ test("local work item claim lease is wired through HTTP", async () => {
   assert.equal(released.body.released, true);
 });
 
+test("GitHub issue binding and sync are wired through HTTP", async () => {
+  const item = (await call("/api/work-items", {
+    method: "POST", body: { projectId: "prj_a", title: "GitHub linked" },
+  })).body.workItem;
+  const remote = {
+    number: 99, title: "GitHub linked", body: "", state: "open", labels: [],
+    url: "https://github.com/acme/repo/issues/99", updatedAt: "2026-07-24T00:00:00.000Z",
+  };
+  const linked = await call(`/api/work-items/${item.id}/github/link`, {
+    method: "POST", body: { expectedRevision: item.revision, remote },
+  });
+  assert.equal(linked.status, 201);
+  const pulled = await call(`/api/work-items/${item.id}/github/sync`, {
+    method: "POST",
+    body: {
+      expectedRevision: item.revision, direction: "pull",
+      remote: { ...remote, title: "Updated remotely", updatedAt: "2026-07-24T01:00:00.000Z" },
+    },
+  });
+  assert.equal(pulled.status, 200);
+  assert.equal(pulled.body.workItem.title, "Updated remotely");
+});
+
 test("foreign work items and projects are existence-hidden", async () => {
   const created = await call("/api/work-items", {
     method: "POST",

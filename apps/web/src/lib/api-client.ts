@@ -872,6 +872,10 @@ export const api = {
     request("POST", `/api/work-items/${encodeURIComponent(id)}/claim`, payload),
   releaseWorkItemClaim: (id: string, idempotencyKey?: string) =>
     request("POST", `/api/work-items/${encodeURIComponent(id)}/release-claim`, { idempotencyKey }),
+  bindWorkItemGithubIssue: (id: string, payload: Record<string, unknown>) =>
+    request("POST", `/api/work-items/${encodeURIComponent(id)}/github/link`, payload),
+  syncWorkItemGithubIssue: (id: string, payload: Record<string, unknown>) =>
+    request("POST", `/api/work-items/${encodeURIComponent(id)}/github/sync`, payload),
   bulkUpdateWorkItems: (payload: {
     items: { id: string; expectedRevision: number }[];
     changes: Record<string, unknown>;

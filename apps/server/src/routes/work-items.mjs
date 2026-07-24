@@ -4,6 +4,7 @@ export async function handleWorkItemRoutes({
   listActivity, listComments, createComment, updateComment, deleteComment,
   createWorktree, startAutoRun, recordExecutionBinding,
   claimWorkItem, releaseWorkItemClaim,
+  bindGithubIssue, syncGithubIssue,
 }) {
   if (!url.pathname.startsWith("/api/work-items")) return false;
 
@@ -34,6 +35,17 @@ export async function handleWorkItemRoutes({
     const result = claimMatch[2] === "claim"
       ? claimWorkItem({ workItemId, ...body }, actor)
       : releaseWorkItemClaim({ workItemId, ...body }, actor);
+    sendJson(res, result.status, result.body);
+    return true;
+  }
+
+  const githubMatch = url.pathname.match(/^\/api\/work-items\/([^/]+)\/github\/(link|sync)$/);
+  if (githubMatch && req.method === "POST") {
+    const workItemId = decodeURIComponent(githubMatch[1]);
+    const body = await readJson(req);
+    const result = githubMatch[2] === "link"
+      ? bindGithubIssue({ workItemId, ...body }, actor)
+      : syncGithubIssue({ workItemId, ...body }, actor);
     sendJson(res, result.status, result.body);
     return true;
   }

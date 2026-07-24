@@ -15,6 +15,7 @@ const MAX_BODY = 200_000;
 const MAX_LABELS = 50;
 const MAX_COMMENT = 100_000;
 const MAX_MILESTONE = 200;
+const GITHUB_SYNC_FIELDS = ["title", "body", "state", "labels"];
 
 function strings(values, { limit = MAX_LABELS, maxLength = 100 } = {}) {
   if (!Array.isArray(values)) return null;
@@ -264,6 +265,148 @@ export function createWorkItemService({
   function getWorkItem({ workItemId }, actor = null) {
     const item = findOwn(workItemId, actor);
     return item ? { ok: true, status: 200, body: { workItem: workItemView(item, actor) } } : notFound();
+  }
+
+  function githubBinding(item) {
+    return (item.externalBindings ?? []).find((binding) => binding.kind === "github_issue") ?? null;
+  }
+
+  function normalizeGithubSnapshot(input = {}) {
+    const number = Number(input.number);
+    const title = String(input.title ?? "").trim();
+    const body = String(input.body ?? "");
+    const remoteState = String(input.state ?? "").toLowerCase();
+    const labels = strings(input.labels ?? []);
+    const updatedAt = String(input.updatedAt ?? "");
+    if (!Number.isInteger(number) || number < 1 || !title || title.length > MAX_TITLE
+      || body.length > MAX_BODY || !["open", "closed"].includes(remoteState)
+      || !labels || !Number.isFinite(Date.parse(updatedAt))) return null;
+    return {
+      number, title, body, state: remoteState, labels,
+      url: input.url == null ? null : String(input.url),
+      repository: input.repository == null ? null : String(input.repository),
+      updatedAt,
+    };
+  }
+
+  function bindGithubIssue({ workItemId, expectedRevision, remote } = {}, actor = null) {
+    const item = findOwn(workItemId, actor);
+    if (!item) return notFound();
+    if (expectedRevision !== item.revision) {
+      return { ok: false, status: 409, body: { error: "work_item_revision_conflict", currentRevision: item.revision } };
+    }
+    const snapshot = normalizeGithubSnapshot(remote);
+    if (!snapshot) return { ok: false, status: 400, body: { error: "invalid_github_issue_snapshot" } };
+    if (githubBinding(item)) return { ok: false, status: 409, body: { error: "github_issue_already_bound" } };
+    const duplicate = (state.workItems ?? []).find((candidate) =>
+      candidate.ownerTeamId === actorTeam(actor) && candidate.projectId === item.projectId
+      && (candidate.externalBindings ?? []).some((binding) =>
+        binding.kind === "github_issue" && binding.number === snapshot.number));
+    if (duplicate) return { ok: false, status: 409, body: { error: "github_issue_already_linked", workItemId: duplicate.id } };
+    const binding = {
+      kind: "github_issue", number: snapshot.number, url: snapshot.url, repository: snapshot.repository,
+      syncedLocalRevision: item.revision, remoteUpdatedAt: snapshot.updatedAt,
+      baseline: Object.fromEntries(GITHUB_SYNC_FIELDS.map((field) => [field, snapshot[field]])),
+      conflict: null, lastSyncedAt: now(),
+    };
+    runTx(() => {
+      item.externalBindings.push(binding);
+      recordActivity(item, actor, "github_linked", { number: snapshot.number, url: snapshot.url });
+    });
+    return { ok: true, status: 201, body: { workItem: workItemView(item, actor), binding } };
+  }
+
+  function syncGithubIssue({ workItemId, expectedRevision, direction, remote, pushedRemoteUpdatedAt } = {}, actor = null) {
+    const item = findOwn(workItemId, actor);
+    if (!item) return notFound();
+    const binding = githubBinding(item);
+    if (!binding) return { ok: false, status: 409, body: { error: "github_issue_not_bound" } };
+    if (expectedRevision !== item.revision) {
+      return { ok: false, status: 409, body: { error: "work_item_revision_conflict", currentRevision: item.revision } };
+    }
+    if (["resolve_local", "resolve_remote"].includes(direction)) {
+      if (!binding.conflict) return { ok: false, status: 409, body: { error: "github_sync_conflict_not_found" } };
+      const conflict = binding.conflict;
+      runTx(() => {
+        if (direction === "resolve_remote") {
+          Object.assign(item, conflict.remote, {
+            revision: item.revision + 1, updatedAt: now(), lastModifiedBy: actorUser(actor),
+          });
+        }
+        binding.conflict = null;
+        binding.syncedLocalRevision = item.revision;
+        recordActivity(item, actor, direction === "resolve_remote" ? "github_conflict_remote_selected" : "github_conflict_local_selected", {
+          number: binding.number, fields: conflict.fields,
+        });
+      });
+      const payload = Object.fromEntries(GITHUB_SYNC_FIELDS.map((field) => [field, item[field]]));
+      return {
+        ok: true, status: 200,
+        body: { action: direction === "resolve_remote" ? "resolved_remote" : "push_required", issueNumber: binding.number, payload, workItem: workItemView(item, actor) },
+      };
+    }
+    if (direction === "push") {
+      if (binding.conflict) return { ok: false, status: 409, body: { error: "github_sync_conflict", conflict: binding.conflict } };
+      const payload = Object.fromEntries(GITHUB_SYNC_FIELDS.map((field) => [field, item[field]]));
+      if (!pushedRemoteUpdatedAt) {
+        return { ok: true, status: 200, body: { action: "push_required", issueNumber: binding.number, payload } };
+      }
+      if (!Number.isFinite(Date.parse(String(pushedRemoteUpdatedAt)))) {
+        return { ok: false, status: 400, body: { error: "invalid_github_sync_confirmation" } };
+      }
+      runTx(() => {
+        binding.baseline = structuredClone(payload);
+        binding.syncedLocalRevision = item.revision;
+        binding.remoteUpdatedAt = String(pushedRemoteUpdatedAt);
+        binding.lastSyncedAt = now();
+        recordActivity(item, actor, "github_pushed", { number: binding.number });
+      });
+      return { ok: true, status: 200, body: { action: "pushed", workItem: workItemView(item, actor) } };
+    }
+    if (direction !== "pull") return { ok: false, status: 400, body: { error: "invalid_github_sync_direction" } };
+    const snapshot = normalizeGithubSnapshot({ ...remote, number: binding.number });
+    if (!snapshot) return { ok: false, status: 400, body: { error: "invalid_github_issue_snapshot" } };
+    const localChanged = item.revision !== binding.syncedLocalRevision;
+    const remoteChanged = snapshot.updatedAt !== binding.remoteUpdatedAt;
+    if (!remoteChanged) {
+      return { ok: true, status: 200, body: { action: "unchanged", workItem: workItemView(item, actor) } };
+    }
+    if (localChanged && remoteChanged) {
+      const fields = GITHUB_SYNC_FIELDS.filter((field) =>
+        JSON.stringify(item[field]) !== JSON.stringify(binding.baseline?.[field])
+        && JSON.stringify(snapshot[field]) !== JSON.stringify(binding.baseline?.[field])
+        && JSON.stringify(item[field]) !== JSON.stringify(snapshot[field]));
+      if (fields.length) {
+        const conflict = {
+          detectedAt: now(), fields,
+          local: Object.fromEntries(fields.map((field) => [field, item[field]])),
+          remote: Object.fromEntries(fields.map((field) => [field, snapshot[field]])),
+        };
+        runTx(() => {
+          binding.conflict = conflict;
+          recordActivity(item, actor, "github_conflict_detected", { number: binding.number, fields });
+        });
+        return { ok: false, status: 409, body: { error: "github_sync_conflict", conflict } };
+      }
+    }
+    const merged = Object.fromEntries(GITHUB_SYNC_FIELDS.map((field) => [
+      field,
+      localChanged && JSON.stringify(item[field]) !== JSON.stringify(binding.baseline?.[field])
+        ? item[field]
+        : snapshot[field],
+    ]));
+    runTx(() => {
+      Object.assign(item, merged, {
+        revision: item.revision + 1, updatedAt: now(), lastModifiedBy: actorUser(actor),
+      });
+      binding.baseline = Object.fromEntries(GITHUB_SYNC_FIELDS.map((field) => [field, snapshot[field]]));
+      binding.syncedLocalRevision = item.revision;
+      binding.remoteUpdatedAt = snapshot.updatedAt;
+      binding.lastSyncedAt = now();
+      binding.conflict = null;
+      recordActivity(item, actor, "github_pulled", { number: binding.number });
+    });
+    return { ok: true, status: 200, body: { action: "pulled", workItem: workItemView(item, actor) } };
   }
 
   function createWorkItem(input = {}, actor = null) {
@@ -690,6 +833,6 @@ export function createWorkItemService({
   return {
     listWorkItems, getWorkItem, createWorkItem, updateWorkItem, bulkUpdateWorkItems, transitionWorkItem,
     listActivity, listComments, createComment, updateComment, deleteComment,
-    recordExecutionBinding, claimWorkItem, releaseWorkItemClaim,
+    recordExecutionBinding, claimWorkItem, releaseWorkItemClaim, bindGithubIssue, syncGithubIssue,
   };
 }

@@ -50,6 +50,8 @@ export function createHttpServer({
   claimIssue,
   claimWorkItem,
   releaseWorkItemClaim,
+  bindGithubIssue,
+  syncGithubIssue,
   releaseIssueClaim,
   listIssueClaims,
   approveDesign,
@@ -386,6 +388,8 @@ export function createHttpServer({
         recordExecutionBinding: recordWorkItemExecutionBinding,
         claimWorkItem,
         releaseWorkItemClaim,
+        bindGithubIssue,
+        syncGithubIssue,
       })) {
         return;
       }

@@ -82,6 +82,69 @@ test("exposes independent business, planning, and fact-derived execution states"
   }
 });
 
+test("GitHub sync pulls one-sided changes and exposes two-sided conflicts", () => {
+  const { service } = harness();
+  let item = service.createWorkItem({ projectId: "prj_a", title: "Initial" }, ACTOR_A).body.workItem;
+  const remote = {
+    number: 42, title: "Initial", body: "", state: "open", labels: [],
+    url: "https://github.com/acme/repo/issues/42", repository: "acme/repo",
+    updatedAt: "2026-07-23T20:00:00.000Z",
+  };
+  assert.equal(service.bindGithubIssue({
+    workItemId: item.id, expectedRevision: item.revision, remote,
+  }, ACTOR_A).status, 201);
+  const pulled = service.syncGithubIssue({
+    workItemId: item.id, expectedRevision: item.revision, direction: "pull",
+    remote: { ...remote, title: "Remote title", updatedAt: "2026-07-24T01:00:00.000Z" },
+  }, ACTOR_A);
+  assert.equal(pulled.body.action, "pulled");
+  assert.equal(pulled.body.workItem.title, "Remote title");
+
+  item = service.updateWorkItem({
+    workItemId: item.id, expectedRevision: pulled.body.workItem.revision, title: "Local title",
+  }, ACTOR_A).body.workItem;
+  const conflict = service.syncGithubIssue({
+    workItemId: item.id, expectedRevision: item.revision, direction: "pull",
+    remote: { ...remote, title: "Other remote title", updatedAt: "2026-07-24T02:00:00.000Z" },
+  }, ACTOR_A);
+  assert.equal(conflict.status, 409);
+  assert.equal(conflict.body.error, "github_sync_conflict");
+  assert.deepEqual(conflict.body.conflict.fields, ["title"]);
+  assert.equal(service.syncGithubIssue({
+    workItemId: item.id, expectedRevision: item.revision, direction: "push",
+  }, ACTOR_A).status, 409);
+  const resolved = service.syncGithubIssue({
+    workItemId: item.id, expectedRevision: item.revision, direction: "resolve_local",
+  }, ACTOR_A);
+  assert.equal(resolved.body.action, "push_required");
+  assert.equal(resolved.body.payload.title, "Local title");
+});
+
+test("GitHub push uses a two-step payload and confirmation baseline", () => {
+  const { service } = harness();
+  let item = service.createWorkItem({ projectId: "prj_a", title: "Initial" }, ACTOR_A).body.workItem;
+  service.bindGithubIssue({
+    workItemId: item.id, expectedRevision: item.revision,
+    remote: {
+      number: 7, title: "Initial", body: "", state: "open", labels: [],
+      updatedAt: "2026-07-23T20:00:00.000Z",
+    },
+  }, ACTOR_A);
+  item = service.updateWorkItem({
+    workItemId: item.id, expectedRevision: item.revision, title: "Publish me",
+  }, ACTOR_A).body.workItem;
+  const required = service.syncGithubIssue({
+    workItemId: item.id, expectedRevision: item.revision, direction: "push",
+  }, ACTOR_A);
+  assert.equal(required.body.action, "push_required");
+  assert.equal(required.body.payload.title, "Publish me");
+  const confirmed = service.syncGithubIssue({
+    workItemId: item.id, expectedRevision: item.revision, direction: "push",
+    pushedRemoteUpdatedAt: "2026-07-24T03:00:00.000Z",
+  }, ACTOR_A);
+  assert.equal(confirmed.body.action, "pushed");
+});
+
 test("team scoping hides foreign work items and foreign projects", () => {
   const { service } = harness();
   const item = service.createWorkItem({ projectId: "prj_a", title: "A" }, ACTOR_A).body.workItem;
