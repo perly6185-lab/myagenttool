@@ -341,6 +341,9 @@ export function createWorkItemService({
     const decorated = rows.map((row) => {
       const operation = operations.find((candidate) =>
         candidate.ownerTeamId === actorTeam(actor) && candidate.attentionId === row.id);
+      const handling = operation?.handling && Date.parse(operation.handling.expiresAt ?? operation.handling.claimedAt) > at
+        ? operation.handling
+        : null;
       const hours = row.severity === "high" ? 4 : row.severity === "medium" ? 24 : 72;
       const dueAt = new Date(Date.parse(row.createdAt) + hours * 3_600_000).toISOString();
       const history = row.workItemId ? (state.workItemActivities ?? [])
@@ -351,7 +354,7 @@ export function createWorkItemService({
         })) : [];
       return {
         ...row, dueAt, slaStatus: Date.parse(dueAt) < at ? "breached" : "within_sla", history,
-        handling: operation?.handling ?? null,
+        handling,
         resolution: operation?.resolution ?? null,
       };
     }).filter((row) => !kind || row.kind === kind)
@@ -363,14 +366,43 @@ export function createWorkItemService({
     return { ok: true, status: 200, body: { items: decorated, count: decorated.length } };
   }
 
-  function updateAttention({ attentionIds, action, note = "" } = {}, actor = null) {
+  function updateAttention({
+    attentionIds, action, note = "", leaseSeconds = 900, idempotencyKey = null,
+  } = {}, actor = null) {
     const ids = [...new Set((Array.isArray(attentionIds) ? attentionIds : []).map(String))];
-    if (!ids.length || ids.length > 100 || !["claim", "release", "resolve", "reopen"].includes(action)
-      || typeof note !== "string" || note.length > 5_000) {
+    const lease = Number(leaseSeconds);
+    const key = idempotencyKey == null ? null : String(idempotencyKey).trim();
+    if (!ids.length || ids.length > 100 || !["claim", "renew", "release", "resolve", "reopen"].includes(action)
+      || typeof note !== "string" || note.length > 5_000
+      || !Number.isInteger(lease) || lease < 60 || lease > 86_400
+      || (key != null && (!key || key.length > 200))) {
       return { ok: false, status: 400, body: { error: "invalid_work_item_attention_update" } };
     }
     const visible = new Set(listAttention({ includeResolved: "1" }, actor).body.items.map((item) => item.id));
     if (ids.some((id) => !visible.has(id))) return { ok: false, status: 404, body: { error: "work_item_attention_not_found" } };
+    const timestamp = now();
+    const operations = state.workItemAttentionOperations ?? [];
+    const replayed = key && ids.every((attentionId) => operations.some((operation) =>
+      operation.ownerTeamId === actorTeam(actor) && operation.attentionId === attentionId
+      && operation.history?.some((entry) => entry.idempotencyKey === key)));
+    if (replayed) {
+      const updated = operations.filter((operation) =>
+        operation.ownerTeamId === actorTeam(actor) && ids.includes(operation.attentionId));
+      return { ok: true, status: 200, body: { updated, count: updated.length, replayed: true } };
+    }
+    for (const attentionId of ids) {
+      const operation = operations.find((candidate) =>
+        candidate.ownerTeamId === actorTeam(actor) && candidate.attentionId === attentionId);
+      const active = operation?.handling && Date.parse(operation.handling.expiresAt ?? operation.handling.claimedAt) > Date.parse(timestamp)
+        ? operation.handling
+        : null;
+      if (active && active.actorId !== actorUser(actor) && ["claim", "renew", "release", "resolve"].includes(action)) {
+        return { ok: false, status: 409, body: { error: "work_item_attention_claim_conflict", attentionId, handling: active } };
+      }
+      if (action === "renew" && (!active || active.actorId !== actorUser(actor))) {
+        return { ok: false, status: 409, body: { error: "work_item_attention_lease_not_owned", attentionId } };
+      }
+    }
     const updated = [];
     runTx(() => {
       for (const attentionId of ids) {
@@ -380,19 +412,25 @@ export function createWorkItemService({
           operation = { attentionId, ownerTeamId: actorTeam(actor), handling: null, resolution: null, history: [] };
           state.workItemAttentionOperations.unshift(operation);
         }
-        const timestamp = now();
-        if (action === "claim") operation.handling = { actorId: actorUser(actor), claimedAt: timestamp };
+        if (action === "claim") operation.handling = {
+          actorId: actorUser(actor), claimedAt: timestamp,
+          expiresAt: new Date(Date.parse(timestamp) + lease * 1_000).toISOString(),
+        };
+        if (action === "renew") operation.handling = {
+          ...operation.handling, renewedAt: timestamp,
+          expiresAt: new Date(Date.parse(timestamp) + lease * 1_000).toISOString(),
+        };
         if (action === "release") operation.handling = null;
         if (action === "resolve") operation.resolution = { actorId: actorUser(actor), resolvedAt: timestamp, note };
         if (action === "reopen") operation.resolution = null;
-        operation.history.unshift({ action, actorId: actorUser(actor), createdAt: timestamp, note });
+        operation.history.unshift({ action, actorId: actorUser(actor), createdAt: timestamp, note, idempotencyKey: key });
         updated.push(operation);
       }
     });
     return { ok: true, status: 200, body: { updated, count: updated.length } };
   }
 
-  function ingestGithubWebhook({ deliveryId, event, payload } = {}) {
+  function ingestGithubWebhook({ deliveryId, event, payload, teamId = null, replayOf = null } = {}) {
     const id = String(deliveryId ?? "").trim();
     if (!id || id.length > 200 || event !== "issues" || !payload?.issue) {
       return { ok: false, status: 400, body: { error: "invalid_github_work_item_webhook" } };
@@ -410,10 +448,13 @@ export function createWorkItemService({
     let synced = 0;
     let stale = 0;
     let conflicts = 0;
+    const matchedTeamIds = new Set();
     for (const item of state.workItems ?? []) {
+      if (teamId && item.ownerTeamId !== teamId) continue;
       const binding = githubBinding(item);
       if (!binding || binding.number !== snapshot.number
         || (binding.repository && repository && binding.repository !== repository)) continue;
+      matchedTeamIds.add(item.ownerTeamId);
       if (Date.parse(snapshot.updatedAt) <= Date.parse(binding.remoteUpdatedAt)) {
         stale += 1;
         continue;
@@ -424,9 +465,11 @@ export function createWorkItemService({
       if (result.ok) synced += 1;
       else if (result.body?.error === "github_sync_conflict") conflicts += 1;
     }
-    const result = { deliveryId: id, synced, stale, conflicts };
+    const outcome = conflicts ? "conflict" : synced ? "synced" : stale ? "stale" : "no_match";
+    const result = { deliveryId: id, synced, stale, conflicts, outcome, replayOf };
     (state.githubWorkItemWebhookDeliveries ??= []).unshift({
-      id, event, receivedAt: now(), repository, issueNumber: snapshot.number, result,
+      id, event, receivedAt: now(), repository, issueNumber: snapshot.number,
+      teamIds: [...matchedTeamIds], snapshot, replayOf, result,
     });
     state.githubWorkItemWebhookDeliveries = state.githubWorkItemWebhookDeliveries.slice(0, 1_000);
     persistStateSoon();
@@ -436,15 +479,65 @@ export function createWorkItemService({
   function githubSyncDiagnostics(actor = null) {
     const own = (state.workItems ?? []).filter((item) => item.ownerTeamId === actorTeam(actor));
     const bindings = own.flatMap((item) => item.externalBindings ?? []).filter((binding) => binding.kind === "github_issue");
-    const deliveries = state.githubWorkItemWebhookDeliveries ?? [];
+    const repositories = new Set(bindings.map((binding) => binding.repository).filter(Boolean));
+    const deliveries = (state.githubWorkItemWebhookDeliveries ?? []).filter((delivery) =>
+      delivery.teamIds?.includes(actorTeam(actor))
+      || (!delivery.teamIds && repositories.has(delivery.repository)));
+    const secretConfigured = Boolean(String(process.env.MYAGENTTOOL_GITHUB_WEBHOOK_SECRET ?? ""));
+    const recentConflicts = deliveries.slice(0, 20).filter((delivery) => delivery.result?.conflicts > 0).length;
+    const recentFailures = (state.githubWorkItemWebhookFailures ?? []).slice(0, 20);
+    const health = !secretConfigured && bindings.length
+      ? "misconfigured"
+      : recentFailures.length || recentConflicts || bindings.some((binding) => binding.conflict)
+        ? "degraded"
+        : "healthy";
     return {
       ok: true, status: 200, body: {
+        health,
+        secretConfigured,
         boundIssues: bindings.length,
         conflicts: bindings.filter((binding) => binding.conflict).length,
         lastWebhookAt: deliveries[0]?.receivedAt ?? null,
+        recentFailures,
         recentDeliveries: deliveries.slice(0, 20),
       },
     };
+  }
+
+  function replayGithubWebhook({ deliveryId } = {}, actor = null) {
+    const source = (state.githubWorkItemWebhookDeliveries ?? []).find((delivery) => delivery.id === deliveryId);
+    if (!source?.snapshot) return { ok: false, status: 404, body: { error: "github_webhook_delivery_not_found" } };
+    const ownsBinding = (state.workItems ?? []).some((item) => {
+      if (item.ownerTeamId !== actorTeam(actor)) return false;
+      const binding = githubBinding(item);
+      return binding?.number === source.issueNumber
+        && (!binding.repository || binding.repository === source.repository);
+    });
+    if (!ownsBinding) return { ok: false, status: 404, body: { error: "github_webhook_delivery_not_found" } };
+    return ingestGithubWebhook({
+      deliveryId: `${source.id}:replay:${nextId("ghr")}`,
+      event: "issues",
+      teamId: actorTeam(actor),
+      replayOf: source.id,
+      payload: {
+        repository: { full_name: source.repository },
+        issue: {
+          number: source.snapshot.number, title: source.snapshot.title, body: source.snapshot.body,
+          state: source.snapshot.state, labels: source.snapshot.labels,
+          html_url: source.snapshot.url, updated_at: source.snapshot.updatedAt,
+        },
+      },
+    });
+  }
+
+  function recordGithubWebhookFailure({ deliveryId, event, reason } = {}) {
+    const id = String(deliveryId ?? "").trim().slice(0, 200) || nextId("ghf");
+    (state.githubWorkItemWebhookFailures ??= []).unshift({
+      id, event: String(event ?? "").slice(0, 100),
+      reason: String(reason ?? "unknown").slice(0, 100), receivedAt: now(),
+    });
+    state.githubWorkItemWebhookFailures = state.githubWorkItemWebhookFailures.slice(0, 100);
+    persistStateSoon();
   }
 
   function getWorkItem({ workItemId }, actor = null) {
@@ -1088,6 +1181,7 @@ export function createWorkItemService({
     listWorkItems, listAttention, getWorkItem, createWorkItem, updateWorkItem, bulkUpdateWorkItems, transitionWorkItem,
     listActivity, listComments, createComment, updateComment, deleteComment,
     recordExecutionBinding, claimWorkItem, releaseWorkItemClaim, bindGithubIssue, syncGithubIssue,
-    recordVerification, ingestGithubWebhook, githubSyncDiagnostics, updateAttention,
+    recordVerification, ingestGithubWebhook, replayGithubWebhook, recordGithubWebhookFailure,
+    githubSyncDiagnostics, updateAttention,
   };
 }

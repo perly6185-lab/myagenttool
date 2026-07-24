@@ -855,8 +855,16 @@ export const api = {
     const params = new URLSearchParams(Object.entries(query).filter(([, value]) => Boolean(value)) as [string, string][]);
     return request("GET", `/api/work-items/attention${params.size ? `?${params}` : ""}`);
   },
-  updateWorkItemAttention: (attentionIds: string[], action: "claim" | "release" | "resolve" | "reopen", note = "") =>
-    request("POST", "/api/work-items/attention/actions", { attentionIds, action, note }),
+  updateWorkItemAttention: (
+    attentionIds: string[],
+    action: "claim" | "renew" | "release" | "resolve" | "reopen",
+    note = "",
+    options: { leaseSeconds?: number; idempotencyKey?: string } = {},
+  ) => request("POST", "/api/work-items/attention/actions", { attentionIds, action, note, ...options }),
+  getWorkItemGithubDiagnostics: () =>
+    request("GET", "/api/work-items/github/diagnostics"),
+  replayWorkItemGithubDelivery: (deliveryId: string) =>
+    request("POST", `/api/work-items/github/deliveries/${encodeURIComponent(deliveryId)}/replay`),
   createWorkItem: (payload: {
     projectId: string;
     title: string;

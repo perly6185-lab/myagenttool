@@ -11,8 +11,14 @@ events to `/api/webhooks/github/work-items`. The endpoint verifies
 updates, and retains the latest 1,000 delivery outcomes.
 
 Use `GET /api/work-items/github/diagnostics` to inspect binding count, conflicts,
-the last webhook time, and recent delivery outcomes. Manual Pull remains the
-recovery path when webhook delivery is unavailable.
+the last webhook time, secret configuration, team-scoped delivery outcomes, and
+the aggregate health state (`healthy`, `degraded`, or `misconfigured`).
+
+An authorized operator can replay a retained delivery with
+`POST /api/work-items/github/deliveries/:deliveryId/replay`. Replay is restricted
+to a delivery matching that operator's team bindings, receives a new delivery
+identity, and still applies stale-update and conflict protections. Manual Pull
+remains the recovery path when webhook delivery is unavailable.
 
 ## Human attention queue
 
@@ -21,8 +27,12 @@ and `includeResolved=1`. High-risk items have a four-hour SLA, medium-risk items
 24 hours, and low-risk items 72 hours.
 
 Use `POST /api/work-items/attention/actions` with up to 100 `attentionIds` and
-an action of `claim`, `release`, `resolve`, or `reopen`. Resolution hides the
-derived item without deleting its source evidence or operation history.
+an action of `claim`, `renew`, `release`, `resolve`, or `reopen`. Claims are
+atomic across the batch and use a 15-minute lease by default; `leaseSeconds`
+accepts 60–86,400 seconds. A different actor receives `409` while a lease is
+active. Agents should supply an `idempotencyKey` for retries, especially when
+resolving work. Resolution hides the derived item without deleting its source
+evidence or operation history.
 
 ## Completion and recovery
 

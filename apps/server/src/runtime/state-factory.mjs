@@ -128,6 +128,9 @@ export function createServerState({ defaultProjectPath, now }) {
     // may later carry one or more external bindings.
     workItems: [],
     workItemComments: [],
+    workItemAttentionOperations: [],
+    githubWorkItemWebhookDeliveries: [],
+    githubWorkItemWebhookFailures: [],
     workItemActivities: [],
     planningProjects: [],
     planningProjectItems: [],

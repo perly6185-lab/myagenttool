@@ -56,6 +56,8 @@ export function createHttpServer({
   pushWorkItemGithubIssue,
   recordWorkItemVerification,
   ingestGithubWorkItemWebhook,
+  replayGithubWorkItemWebhook,
+  recordGithubWorkItemWebhookFailure,
   updateWorkItemAttention,
   getWorkItemGithubSyncDiagnostics,
   releaseIssueClaim,
@@ -407,6 +409,8 @@ export function createHttpServer({
         pushGithubIssue: pushWorkItemGithubIssue,
         recordVerification: recordWorkItemVerification,
         ingestGithubWebhook: ingestGithubWorkItemWebhook,
+        replayGithubWebhook: replayGithubWorkItemWebhook,
+        recordGithubWebhookFailure: recordGithubWorkItemWebhookFailure,
         updateAttention: updateWorkItemAttention,
         githubSyncDiagnostics: getWorkItemGithubSyncDiagnostics,
       })) {

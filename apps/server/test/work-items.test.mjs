@@ -228,10 +228,25 @@ test("human attention queue aggregates conflicts, approvals, and failed evidence
   assert.equal(attention.items.every((row) => row.dueAt && row.slaStatus && Array.isArray(row.history)), true);
   assert.equal(service.listAttention({ kind: "github_conflict" }, ACTOR_A).body.count, 1);
   const attentionId = attention.items[0].id;
+  const claimed = service.updateAttention({
+    attentionIds: [attentionId], action: "claim", leaseSeconds: 600, idempotencyKey: "claim-1",
+  }, ACTOR_A);
+  assert.equal(claimed.body.updated[0].handling.actorId, "usr_a");
+  assert.equal(claimed.body.updated[0].handling.expiresAt, "2026-07-24T00:10:00.000Z");
   assert.equal(service.updateAttention({
     attentionIds: [attentionId], action: "claim",
-  }, ACTOR_A).body.updated[0].handling.actorId, "usr_a");
-  service.updateAttention({ attentionIds: [attentionId], action: "resolve", note: "Handled" }, ACTOR_A);
+  }, ACTOR_C).status, 409);
+  assert.equal(service.updateAttention({
+    attentionIds: [attentionId], action: "renew", leaseSeconds: 1_200,
+  }, ACTOR_A).body.updated[0].handling.expiresAt, "2026-07-24T00:20:00.000Z");
+  const resolvedOnce = service.updateAttention({
+    attentionIds: [attentionId], action: "resolve", note: "Handled", idempotencyKey: "resolve-1",
+  }, ACTOR_A);
+  const resolvedReplay = service.updateAttention({
+    attentionIds: [attentionId], action: "resolve", note: "Handled", idempotencyKey: "resolve-1",
+  }, ACTOR_A);
+  assert.equal(resolvedOnce.status, 200);
+  assert.equal(resolvedReplay.body.replayed, true);
   assert.equal(service.listAttention({}, ACTOR_A).body.items.some((row) => row.id === attentionId), false);
   const resolved = service.listAttention({ includeResolved: "1" }, ACTOR_A).body.items.find((row) => row.id === attentionId);
   assert.equal(resolved.resolution.note, "Handled");
@@ -268,6 +283,17 @@ test("GitHub webhook sync is idempotent and ignores stale deliveries", () => {
   assert.equal(service.getWorkItem({ workItemId: item.id }, ACTOR_A).body.workItem.title, "From webhook");
   assert.equal(service.githubSyncDiagnostics(ACTOR_A).body.boundIssues, 1);
   assert.equal(service.githubSyncDiagnostics(ACTOR_A).body.recentDeliveries.length, 2);
+  assert.equal(service.githubSyncDiagnostics(ACTOR_B).body.recentDeliveries.length, 0);
+  const replay = service.replayGithubWebhook({ deliveryId: "delivery-1" }, ACTOR_A);
+  assert.equal(replay.status, 202);
+  assert.equal(replay.body.outcome, "stale");
+  assert.equal(replay.body.replayOf, "delivery-1");
+  assert.equal(service.replayGithubWebhook({ deliveryId: "delivery-1" }, ACTOR_B).status, 404);
+  service.recordGithubWebhookFailure({
+    deliveryId: "bad-delivery", event: "issues", reason: "invalid_signature",
+  });
+  assert.notEqual(service.githubSyncDiagnostics(ACTOR_A).body.health, "healthy");
+  assert.equal(service.githubSyncDiagnostics(ACTOR_A).body.recentFailures[0].reason, "invalid_signature");
 });
 
 test("team scoping hides foreign work items and foreign projects", () => {

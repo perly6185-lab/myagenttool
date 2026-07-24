@@ -3324,6 +3324,8 @@ export function createServerRuntimeServices({
     syncGithubIssue: workItemService.syncGithubIssue,
     recordWorkItemVerification: workItemService.recordVerification,
     ingestGithubWorkItemWebhook: workItemService.ingestGithubWebhook,
+    replayGithubWorkItemWebhook: workItemService.replayGithubWebhook,
+    recordGithubWorkItemWebhookFailure: workItemService.recordGithubWebhookFailure,
     updateWorkItemAttention: workItemService.updateAttention,
     getWorkItemGithubSyncDiagnostics: workItemService.githubSyncDiagnostics,
     fetchWorkItemGithubIssue: ({ projectId, issueNumber }) => {

@@ -10,6 +10,8 @@ export async function handleWorkItemRoutes({
   fetchGithubIssue, pushGithubIssue,
   recordVerification,
   ingestGithubWebhook,
+  replayGithubWebhook,
+  recordGithubWebhookFailure,
   updateAttention,
   githubSyncDiagnostics,
 }) {
@@ -23,6 +25,11 @@ export async function handleWorkItemRoutes({
     const valid = secret && supplied.length === expected.length
       && timingSafeEqual(Buffer.from(supplied), Buffer.from(expected));
     if (!valid) {
+      recordGithubWebhookFailure({
+        deliveryId: req.headers["x-github-delivery"],
+        event: req.headers["x-github-event"],
+        reason: "invalid_signature",
+      });
       sendJson(res, 401, { error: "invalid_github_webhook_signature" });
       return true;
     }
@@ -30,6 +37,11 @@ export async function handleWorkItemRoutes({
     try {
       payload = JSON.parse(raw.toString("utf8"));
     } catch {
+      recordGithubWebhookFailure({
+        deliveryId: req.headers["x-github-delivery"],
+        event: req.headers["x-github-event"],
+        reason: "invalid_json",
+      });
       sendJson(res, 400, { error: "invalid_json" });
       return true;
     }
@@ -50,6 +62,12 @@ export async function handleWorkItemRoutes({
   }
   if (url.pathname === "/api/work-items/github/diagnostics" && req.method === "GET") {
     const result = githubSyncDiagnostics(actor);
+    sendJson(res, result.status, result.body);
+    return true;
+  }
+  const replayMatch = url.pathname.match(/^\/api\/work-items\/github\/deliveries\/([^/]+)\/replay$/);
+  if (replayMatch && req.method === "POST") {
+    const result = replayGithubWebhook({ deliveryId: decodeURIComponent(replayMatch[1]) }, actor);
     sendJson(res, result.status, result.body);
     return true;
   }
