@@ -55,3 +55,26 @@ signed delivery, approval, batch claim, lease expiry, and safe replay. Roll back
 the application when authorization isolation, persistence, or stale-event
 protection fails. Preserve the state store when rolling back; older binaries
 ignore the additive collections.
+
+## Capacity baseline
+
+Run:
+
+```sh
+node tools/dev/work-items-capacity-benchmark.mjs
+```
+
+The default workload aggregates 10,000 attention rows, processes 1,000 stale
+Webhook deliveries, and atomically claims 100 rows. The script emits one JSON
+report and exits non-zero if counts, retention, or batch atomicity are wrong.
+Override sizes with `WORK_ITEMS_BENCH_QUEUE`, `WORK_ITEMS_BENCH_DELIVERIES`, and
+`WORK_ITEMS_BENCH_BATCH` (batch size remains capped at the API maximum of 100).
+
+Initial local baseline on 2026-07-24:
+
+- 10,000-row queue aggregation: 19.8 ms.
+- 1,000 Webhook deliveries: 5.14 ms.
+- 100-row atomic claim: 12.5 ms.
+
+Use environment-specific canary measurements for release decisions; these
+numbers are a regression reference, not a universal production SLO.
