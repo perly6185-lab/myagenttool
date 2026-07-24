@@ -565,7 +565,7 @@ export function PlanningProjectsPanel({ onChanged = () => {} }: { onChanged?: ()
   const [bulkStatus, setBulkStatus] = useState<LocalWorkItem["status"]>("ready");
   const [detailWorkItemId, setDetailWorkItemId] = useState<string | null>(null);
   const [projectQuery, setProjectQuery] = useState("");
-  const [attentionOnly, setAttentionOnly] = useState(false);
+  const [projectScope, setProjectScope] = useState<"active" | "attention" | "archived">("active");
   const [savedViewName, setSavedViewName] = useState("");
   const [savedViewId, setSavedViewId] = useState("");
   const [nonce, setNonce] = useState(0);
@@ -649,6 +649,23 @@ export function PlanningProjectsPanel({ onChanged = () => {} }: { onChanged?: ()
       if (!ok || !created) return;
       setName("");
       setDescription("");
+      setSelectedId(created.id);
+      setNonce((value) => value + 1);
+      onChanged();
+    });
+  };
+  const duplicate = () => {
+    if (!selected) return;
+    let created: PlanningProject | null = null;
+    void execute(async () => {
+      const result = await api.createPlanningProject({
+        name: t("planningLifecycle.copyName", { name: selected.name }),
+        templateProjectId: selected.id,
+      }) as { project: PlanningProject };
+      created = result.project;
+      return result;
+    }).then((ok) => {
+      if (!ok || !created) return;
       setSelectedId(created.id);
       setNonce((value) => value + 1);
       onChanged();
@@ -769,7 +786,9 @@ export function PlanningProjectsPanel({ onChanged = () => {} }: { onChanged?: ()
   const visibleProjects = projects
     .filter((project) => !projectQuery.trim()
       || `${project.name} ${project.description}`.toLowerCase().includes(projectQuery.trim().toLowerCase()))
-    .filter((project) => !attentionOnly || project.health === "attention")
+    .filter((project) => projectScope === "archived"
+      ? Boolean(project.archivedAt)
+      : !project.archivedAt && (projectScope !== "attention" || project.health === "attention"))
     .sort((a, b) => (b.riskScore ?? 0) - (a.riskScore ?? 0) || b.itemCount - a.itemCount);
   const portfolioAttention = projects.filter((project) => project.health === "attention").length;
   const portfolioActiveRuns = projects.reduce((sum, project) => sum + (project.activeRunCount ?? 0), 0);
@@ -786,10 +805,12 @@ export function PlanningProjectsPanel({ onChanged = () => {} }: { onChanged?: ()
         </div>
         <Input value={projectQuery} onChange={(event) => setProjectQuery(event.target.value)}
           placeholder={t("planningPortfolio.search")} aria-label={t("planningPortfolio.search")} />
-        <label className="flex items-center gap-2 text-xs text-muted-foreground">
-          <input type="checkbox" checked={attentionOnly} onChange={(event) => setAttentionOnly(event.target.checked)} />
-          {t("planningPortfolio.attentionOnly")}
-        </label>
+        <Select value={projectScope} aria-label={t("planningLifecycle.scope")}
+          onChange={(event) => setProjectScope(event.target.value as typeof projectScope)}>
+          <option value="active">{t("planningLifecycle.active")}</option>
+          <option value="attention">{t("planningLifecycle.attention")}</option>
+          <option value="archived">{t("planningLifecycle.archived")}</option>
+        </Select>
         <div className="space-y-1 border-t border-border pt-2">
           {visibleProjects.map((project) => (
             <button key={project.id} type="button" onClick={() => setSelectedId(project.id)}
@@ -825,6 +846,9 @@ export function PlanningProjectsPanel({ onChanged = () => {} }: { onChanged?: ()
                 ) : (
                   <Button variant="secondary" size="sm" onClick={() => { setName(selected.name); setDescription(selected.description); setEditing(true); }}>{t("planningProjects.edit")}</Button>
                 )}
+                <Button variant="secondary" size="sm" disabled={pending} onClick={duplicate}>
+                  {t("planningLifecycle.duplicate")}
+                </Button>
                 <Button variant="ghost" size="sm" disabled={pending} onClick={archive}>
                   {t(selected.archivedAt ? "planningProjects.restore" : "planningProjects.archive")}
                 </Button>

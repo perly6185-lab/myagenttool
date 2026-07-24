@@ -145,3 +145,31 @@ test("projects persist validated named views with server-owned identities", () =
     savedViews: [{ name: "", view: "roadmap", filters: {} }],
   }, ACTOR_A).status, 400);
 });
+
+test("projects can be duplicated as reusable configuration templates", () => {
+  const { service } = harness();
+  const source = service.createProject({
+    name: "Source", description: "Release workflow", color: "violet",
+  }, ACTOR_A).body.project;
+  const configured = service.updateProject({
+    planningProjectId: source.id,
+    expectedRevision: 1,
+    savedViews: [{
+      name: "Risks", view: "board",
+      filters: { status: "blocked", priority: "all", milestone: "", due: "all" },
+    }],
+  }, ACTOR_A).body.project;
+  service.addItem({ planningProjectId: source.id, workItemId: "wi_a" }, ACTOR_A);
+  const copy = service.createProject({
+    name: "Source copy", templateProjectId: source.id,
+  }, ACTOR_A);
+  assert.equal(copy.status, 201);
+  assert.equal(copy.body.project.description, "Release workflow");
+  assert.equal(copy.body.project.color, "violet");
+  assert.equal(copy.body.project.savedViews[0].name, "Risks");
+  assert.notEqual(copy.body.project.savedViews[0].id, configured.savedViews[0].id);
+  assert.equal(copy.body.project.itemCount, 0);
+  assert.equal(service.createProject({
+    name: "No access", templateProjectId: "missing",
+  }, ACTOR_A).status, 404);
+});

@@ -215,6 +215,7 @@ describe("TaskView local work items", () => {
     mocks.reorderPlanningProjectItems.mockResolvedValue({ project });
     mocks.startWorkItemAutoRun.mockResolvedValue({ autoRun: { id: "aur_planning" } });
     mocks.updatePlanningProject.mockResolvedValue({ project: { ...project, revision: 3 } });
+    mocks.createPlanningProject.mockResolvedValue({ project: { ...project, id: "ppj_copy", name: "Ordered copy" } });
     render(<TaskView />);
     fireEvent.click(await screen.findByRole("button", { name: /Planning projects/i }));
     fireEvent.click(await screen.findByRole("button", { name: "Move LOCAL-2 up" }));
@@ -239,6 +240,11 @@ describe("TaskView local work items", () => {
     ));
     fireEvent.click(screen.getAllByTitle("Start Auto-run")[0]);
     await waitFor(() => expect(mocks.startWorkItemAutoRun).toHaveBeenCalledWith("lwi_2"));
+    fireEvent.click(screen.getByRole("button", { name: "Duplicate" }));
+    await waitFor(() => expect(mocks.createPlanningProject).toHaveBeenCalledWith({
+      name: "Ordered copy",
+      templateProjectId: "ppj_1",
+    }));
   });
 
   it("opens details, saves fields, and posts a comment", async () => {

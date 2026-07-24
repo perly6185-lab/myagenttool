@@ -127,9 +127,13 @@ export function createPlanningProjectService({
       : notFound();
   }
 
-  function createProject({ name, description = "", color = "indigo" } = {}, actor = null) {
+  function createProject({
+    name, description, color, templateProjectId = null,
+  } = {}, actor = null) {
+    const template = templateProjectId ? findOwn(templateProjectId, actor) : null;
+    if (templateProjectId && !template) return notFound();
     const normalizedName = String(name ?? "").trim();
-    const normalizedDescription = String(description ?? "");
+    const normalizedDescription = String(description ?? template?.description ?? "");
     if (!normalizedName || normalizedName.length > MAX_NAME) {
       return { ok: false, status: 400, body: { error: "invalid_planning_project_name" } };
     }
@@ -142,8 +146,8 @@ export function createPlanningProjectService({
       ownerTeamId: teamOfActor(actor),
       name: normalizedName,
       description: normalizedDescription,
-      color: String(color ?? "indigo").slice(0, 40),
-      savedViews: [],
+      color: String(color ?? template?.color ?? "indigo").slice(0, 40),
+      savedViews: (template?.savedViews ?? []).map((view) => ({ ...view, id: nextId("ppv") })),
       revision: 1,
       archivedAt: null,
       createdAt: timestamp,
@@ -156,7 +160,7 @@ export function createPlanningProjectService({
       appendEvent({
         invocationId: null, type: "planning_project_created", level: "info",
         message: `Planning project ${project.name} created.`,
-        data: { planningProjectId: project.id, actorTeamId: project.ownerTeamId },
+        data: { planningProjectId: project.id, templateProjectId: template?.id ?? null, actorTeamId: project.ownerTeamId },
       });
     });
     return { ok: true, status: 201, body: { project: projectView(project, actor) } };
