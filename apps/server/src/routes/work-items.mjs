@@ -1,6 +1,6 @@
 export async function handleWorkItemRoutes({
   req, res, url, sendJson, readJson, actor,
-  listWorkItems, getWorkItem, createWorkItem, updateWorkItem, bulkUpdateWorkItems, transitionWorkItem,
+  listWorkItems, listAttention, getWorkItem, createWorkItem, updateWorkItem, bulkUpdateWorkItems, transitionWorkItem,
   listActivity, listComments, createComment, updateComment, deleteComment,
   createWorktree, startAutoRun, recordExecutionBinding,
   claimWorkItem, releaseWorkItemClaim,
@@ -9,6 +9,12 @@ export async function handleWorkItemRoutes({
   recordVerification,
 }) {
   if (!url.pathname.startsWith("/api/work-items")) return false;
+
+  if (url.pathname === "/api/work-items/attention" && req.method === "GET") {
+    const result = listAttention(Object.fromEntries(url.searchParams), actor);
+    sendJson(res, result.status, result.body);
+    return true;
+  }
 
   if (url.pathname === "/api/work-items/bulk" && req.method === "PATCH") {
     const result = bulkUpdateWorkItems(await readJson(req), actor);

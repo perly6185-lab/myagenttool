@@ -4,6 +4,7 @@ import { TaskView } from "@/features/tasks/task-view";
 
 const mocks = vi.hoisted(() => ({
   listWorkItems: vi.fn(),
+  listWorkItemAttention: vi.fn(),
   listGithubItems: vi.fn(),
   createWorkItem: vi.fn(),
   getWorkItem: vi.fn(),
@@ -47,6 +48,7 @@ vi.mock("@/data/use-console-actions", () => ({
   useAsyncAction: () => ({ execute: mocks.execute, pending: false, error: null }),
   api: {
     listWorkItems: mocks.listWorkItems,
+    listWorkItemAttention: mocks.listWorkItemAttention,
     listGithubItems: mocks.listGithubItems,
     createWorkItem: mocks.createWorkItem,
     getWorkItem: mocks.getWorkItem,
@@ -97,8 +99,14 @@ describe("TaskView local work items", () => {
   beforeEach(() => {
     mocks.listPlanningProjects.mockResolvedValue({ projects: [] });
     mocks.listAutoRuns.mockResolvedValue({ runs: [] });
+    mocks.listWorkItemAttention.mockResolvedValue({ items: [] });
   });
   it("shows local work items as the default source", async () => {
+    mocks.listWorkItemAttention.mockResolvedValue({ items: [{
+      id: "github_conflict:lwi_1", kind: "github_conflict", severity: "high",
+      workItemId: "lwi_1", localRef: "LOCAL-1", title: "Plan offline",
+      createdAt: "2026-07-24T00:00:00.000Z", details: { fields: ["title"] },
+    }] });
     mocks.listWorkItems.mockResolvedValue({
       workItems: [{
         id: "lwi_1", localRef: "LOCAL-1", projectId: "prj_1",
@@ -109,10 +117,12 @@ describe("TaskView local work items", () => {
       count: 1,
     });
     render(<TaskView />);
-    expect(await screen.findByText("Plan offline")).toBeTruthy();
-    expect(screen.getByText("LOCAL-1")).toBeTruthy();
+    expect((await screen.findAllByText("Plan offline")).length).toBe(2);
+    expect(screen.getAllByText("LOCAL-1")).toHaveLength(2);
     expect(screen.getByText("Feature")).toBeTruthy();
     expect(screen.getByText("Ready")).toBeTruthy();
+    expect(screen.getByText("1 pending")).toBeTruthy();
+    expect(screen.getByText("Conflict")).toBeTruthy();
   });
 
   it("creates a local issue from the modal", async () => {

@@ -194,6 +194,30 @@ test("verification rejects unknown criteria and malformed evidence", () => {
   }, ACTOR_A).body.error, "invalid_work_item_evidence");
 });
 
+test("human attention queue aggregates conflicts, approvals, and failed evidence", () => {
+  const { service, state } = harness();
+  const item = service.createWorkItem({
+    projectId: "prj_a", title: "Needs a human", status: "review", acceptanceCriteria: ["Ship safely"],
+  }, ACTOR_A).body.workItem;
+  state.workItems[0].externalBindings = [{
+    kind: "github_issue", number: 3, conflict: { detectedAt: "2026-07-24T01:00:00.000Z", fields: ["title"] },
+  }];
+  state.workItems[0].executionBindings = [{ kind: "auto_run", targetId: "ar_3" }];
+  state.autoRuns = [{
+    id: "ar_3", status: "awaiting_approval", createdAt: "2026-07-24T00:30:00.000Z",
+  }];
+  state.workItems[0].verificationRecords = [{
+    id: "wvr_bad", status: "failed", summary: "Tests failed", recordedAt: "2026-07-24T00:45:00.000Z",
+  }];
+  const attention = service.listAttention({}, ACTOR_A).body;
+  assert.equal(attention.count, 4);
+  assert.deepEqual(attention.items.map((row) => row.kind), [
+    "github_conflict", "verification_failed", "execution_approval", "acceptance_blocked",
+  ]);
+  assert.equal(service.listAttention({}, ACTOR_B).body.count, 0);
+  assert.equal(attention.items.every((row) => row.workItemId === item.id), true);
+});
+
 test("team scoping hides foreign work items and foreign projects", () => {
   const { service } = harness();
   const item = service.createWorkItem({ projectId: "prj_a", title: "A" }, ACTOR_A).body.workItem;

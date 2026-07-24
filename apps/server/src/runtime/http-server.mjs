@@ -221,6 +221,7 @@ export function createHttpServer({
   updateCanvasScene,
   deleteCanvasScene,
   listWorkItems,
+  listWorkItemAttention,
   getWorkItem,
   createWorkItem,
   updateWorkItem,
@@ -381,7 +382,7 @@ export function createHttpServer({
 
       if (await handleWorkItemRoutes({
         req, res, url, sendJson, readJson, actor,
-        listWorkItems, getWorkItem, createWorkItem, updateWorkItem, bulkUpdateWorkItems, transitionWorkItem,
+        listWorkItems, listAttention: listWorkItemAttention, getWorkItem, createWorkItem, updateWorkItem, bulkUpdateWorkItems, transitionWorkItem,
         listActivity: listWorkItemActivity,
         listComments: listWorkItemComments,
         createComment: createWorkItemComment,

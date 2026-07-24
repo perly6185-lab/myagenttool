@@ -152,6 +152,16 @@ type WorkItemActivity = {
   createdAt: string;
   details: Record<string, unknown>;
 };
+type WorkItemAttention = {
+  id: string;
+  kind: "github_conflict" | "execution_approval" | "verification_failed" | "acceptance_blocked" | "governed_action";
+  severity: "low" | "medium" | "high";
+  workItemId: string | null;
+  localRef: string | null;
+  title: string;
+  createdAt: string;
+  details: Record<string, unknown>;
+};
 // Each row also carries which project it came from (for the "All projects" view).
 type Row = GithubItem & { projectId: string; projectName: string };
 
@@ -258,6 +268,7 @@ export function TaskView() {
   const [query, setQuery] = useState("");
   const [rows, setRows] = useState<Row[]>([]);
   const [localRows, setLocalRows] = useState<LocalWorkItem[]>([]);
+  const [attentionItems, setAttentionItems] = useState<WorkItemAttention[]>([]);
   const [planningProjects, setPlanningProjects] = useState<PlanningProject[]>([]);
   const [planningProjectId, setPlanningProjectId] = useState("all");
   const [createLocalOpen, setCreateLocalOpen] = useState(false);
@@ -286,6 +297,12 @@ export function TaskView() {
       cancelled = true;
     };
   }, [projectId, planningProjectId, nonce]);
+
+  useEffect(() => {
+    void (api.listWorkItemAttention(projectId === "all" ? undefined : projectId) as Promise<{ items: WorkItemAttention[] }>)
+      .then((result) => setAttentionItems(result.items))
+      .catch(() => setAttentionItems([]));
+  }, [projectId, nonce]);
 
   useEffect(() => {
     void (api.listPlanningProjects() as Promise<{ projects: PlanningProject[] }>)
@@ -416,13 +433,41 @@ export function TaskView() {
         {error ? <p className="text-xs text-destructive">{error}</p> : null}
 
         {tab === "local" ? (
-          <LocalWorkItemTable
-            items={visibleLocal}
-            projects={projects}
-            emptyTitle={t("tasks.noLocalIssues")}
-            emptyHint={t("tasks.noLocalMatches")}
-            onOpen={setSelectedLocalId}
-          />
+          <>
+            {attentionItems.length ? (
+              <section className="space-y-2 rounded-lg border border-warning/40 bg-warning/5 p-3">
+                <div className="flex items-center justify-between">
+                  <h3 className="text-sm font-semibold">{t("approvals.pending", { count: attentionItems.length })}</h3>
+                  <Badge tone="warning">{t("evidenceDetails.highCount", { count: attentionItems.filter((item) => item.severity === "high").length })}</Badge>
+                </div>
+                <div className="grid gap-2 lg:grid-cols-2">
+                  {attentionItems.map((attention) => (
+                    <button key={attention.id} type="button"
+                      disabled={!attention.workItemId}
+                      onClick={() => attention.workItemId && setSelectedLocalId(attention.workItemId)}
+                      className="flex items-center gap-2 rounded border border-border bg-background p-2 text-left text-xs disabled:opacity-70">
+                      <Badge tone={attention.severity === "high" ? "danger" : attention.severity === "medium" ? "warning" : "neutral"}>
+                        {attention.kind === "github_conflict" ? t("taskLocal.github.conflict")
+                          : attention.kind === "execution_approval" ? t("approvals.kind.invocation_approval")
+                          : attention.kind === "verification_failed" ? t("approvals.testsFailed")
+                          : attention.kind === "acceptance_blocked" ? t("tasks.acceptanceCriteria")
+                          : t("planningDecision.nextActions")}
+                      </Badge>
+                      <span className="font-mono">{attention.localRef ?? "—"}</span>
+                      <span className="truncate">{attention.title}</span>
+                    </button>
+                  ))}
+                </div>
+              </section>
+            ) : null}
+            <LocalWorkItemTable
+              items={visibleLocal}
+              projects={projects}
+              emptyTitle={t("tasks.noLocalIssues")}
+              emptyHint={t("tasks.noLocalMatches")}
+              onOpen={setSelectedLocalId}
+            />
+          </>
         ) : visible.length === 0 ? (
           <EmptyState
             title={loading ? t("tasks.loading") : t(tab === "pr" ? "tasks.noPrs" : "tasks.noIssues")}

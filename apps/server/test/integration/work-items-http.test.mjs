@@ -141,6 +141,21 @@ test("structured verification gates completion over HTTP", async () => {
   })).status, 200);
 });
 
+test("human attention queue is exposed over HTTP", async () => {
+  const item = (await call("/api/work-items", {
+    method: "POST",
+    body: {
+      projectId: "prj_a", title: "Needs acceptance",
+      status: "review", acceptanceCriteria: ["Human sign-off"],
+    },
+  })).body.workItem;
+  const attention = await call("/api/work-items/attention?projectId=prj_a");
+  assert.equal(attention.status, 200);
+  assert.equal(attention.body.items.some((row) =>
+    row.kind === "acceptance_blocked" && row.workItemId === item.id), true);
+  assert.equal((await call("/api/work-items/attention", { token: "tok_b" })).body.items.length, 0);
+});
+
 test("foreign work items and projects are existence-hidden", async () => {
   const created = await call("/api/work-items", {
     method: "POST",

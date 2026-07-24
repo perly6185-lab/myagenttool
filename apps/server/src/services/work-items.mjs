@@ -275,6 +275,55 @@ export function createWorkItemService({
     return { ok: true, status: 200, body: { workItems: rows, count: rows.length } };
   }
 
+  function listAttention(query = {}, actor = null) {
+    const projectId = String(query.projectId ?? "");
+    const items = (state.workItems ?? []).filter((item) =>
+      item.ownerTeamId === actorTeam(actor) && (!projectId || item.projectId === projectId));
+    const rows = [];
+    for (const item of items) {
+      const binding = githubBinding(item);
+      if (binding?.conflict) rows.push({
+        id: `github_conflict:${item.id}`, kind: "github_conflict", severity: "high",
+        workItemId: item.id, localRef: item.localRef, projectId: item.projectId,
+        title: item.title, createdAt: binding.conflict.detectedAt, details: { fields: binding.conflict.fields },
+      });
+      const runBinding = [...(item.executionBindings ?? [])].reverse().find((bindingRow) => bindingRow.kind === "auto_run");
+      const run = runBinding ? (state.autoRuns ?? []).find((candidate) => candidate.id === runBinding.targetId) : null;
+      if (run && ["awaiting_approval", "needs_input"].includes(run.status)) rows.push({
+        id: `execution_approval:${item.id}:${run.id}`, kind: "execution_approval", severity: "high",
+        workItemId: item.id, localRef: item.localRef, projectId: item.projectId,
+        title: item.title, createdAt: run.updatedAt ?? run.createdAt ?? item.updatedAt,
+        details: { autoRunId: run.id, status: run.status },
+      });
+      const failed = (item.verificationRecords ?? []).find((record) => record.status === "failed");
+      if (failed) rows.push({
+        id: `verification_failed:${item.id}:${failed.id}`, kind: "verification_failed", severity: "high",
+        workItemId: item.id, localRef: item.localRef, projectId: item.projectId,
+        title: item.title, createdAt: failed.recordedAt, details: { verificationId: failed.id, summary: failed.summary },
+      });
+      const gate = completionGate(item);
+      if (!gate.ready && ["review", "done"].includes(item.status)) rows.push({
+        id: `acceptance_blocked:${item.id}`, kind: "acceptance_blocked", severity: "medium",
+        workItemId: item.id, localRef: item.localRef, projectId: item.projectId,
+        title: item.title, createdAt: item.updatedAt,
+        details: { missingCriteria: gate.missingCriteria, verificationRequired: gate.verificationRequired },
+      });
+    }
+    for (const project of (state.planningProjects ?? []).filter((candidate) => candidate.ownerTeamId === actorTeam(actor))) {
+      for (const execution of (project.recommendedActionExecutions ?? []).filter((candidate) => candidate.status === "queued")) {
+        rows.push({
+          id: `governed_action:${project.id}:${execution.id}`, kind: "governed_action", severity: execution.risk,
+          workItemId: null, localRef: null, projectId: null, planningProjectId: project.id,
+          title: project.name, createdAt: execution.requestedAt,
+          details: { executionId: execution.id, code: execution.code, approvalRequired: execution.approvalRequired },
+        });
+      }
+    }
+    const rank = { high: 3, medium: 2, low: 1 };
+    rows.sort((a, b) => rank[b.severity] - rank[a.severity] || String(b.createdAt).localeCompare(String(a.createdAt)));
+    return { ok: true, status: 200, body: { items: rows, count: rows.length } };
+  }
+
   function getWorkItem({ workItemId }, actor = null) {
     const item = findOwn(workItemId, actor);
     return item ? { ok: true, status: 200, body: { workItem: workItemView(item, actor) } } : notFound();
@@ -913,7 +962,7 @@ export function createWorkItemService({
   }
 
   return {
-    listWorkItems, getWorkItem, createWorkItem, updateWorkItem, bulkUpdateWorkItems, transitionWorkItem,
+    listWorkItems, listAttention, getWorkItem, createWorkItem, updateWorkItem, bulkUpdateWorkItems, transitionWorkItem,
     listActivity, listComments, createComment, updateComment, deleteComment,
     recordExecutionBinding, claimWorkItem, releaseWorkItemClaim, bindGithubIssue, syncGithubIssue,
     recordVerification,
