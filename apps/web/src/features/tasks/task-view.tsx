@@ -280,6 +280,10 @@ export function TaskView() {
   const [attentionHandler, setAttentionHandler] = useState("");
   const [showResolvedAttention, setShowResolvedAttention] = useState(false);
   const [selectedAttentionIds, setSelectedAttentionIds] = useState<Set<string>>(new Set());
+  const [approvalDecision, setApprovalDecision] = useState<{
+    attention: WorkItemAttention; decision: "approve" | "deny";
+  } | null>(null);
+  const [approvalNote, setApprovalNote] = useState("");
   const [planningProjects, setPlanningProjects] = useState<PlanningProject[]>([]);
   const [planningProjectId, setPlanningProjectId] = useState("all");
   const [createLocalOpen, setCreateLocalOpen] = useState(false);
@@ -311,20 +315,27 @@ export function TaskView() {
     });
   };
   const decideRecommendedAction = (attention: WorkItemAttention, decision: "approve" | "deny") => {
+    setApprovalNote("");
+    setApprovalDecision({ attention, decision });
+  };
+  const submitRecommendedActionDecision = () => {
+    if (!approvalDecision || !approvalNote.trim()) return;
+    const { attention, decision } = approvalDecision;
     const approvalRequestId = typeof attention.details.approvalRequestId === "string"
       ? attention.details.approvalRequestId
       : "";
     if (!attention.planningProjectId || !approvalRequestId) return;
-    if (!window.confirm(`${decision === "approve" ? t("approvals.approve") : t("approvals.deny")}?`)) return;
-    const note = window.prompt(t("taskLocal.commentPlaceholder"))?.trim() ?? "";
-    if (!note) return;
     void execute(() => api.decidePlanningRecommendedAction(
       attention.planningProjectId!,
       approvalRequestId,
       decision,
-      { confirmed: true, note },
+      { confirmed: true, note: approvalNote.trim() },
     )).then((ok) => {
-      if (ok) setNonce((value) => value + 1);
+      if (ok) {
+        setApprovalDecision(null);
+        setApprovalNote("");
+        setNonce((value) => value + 1);
+      }
     });
   };
 
@@ -769,6 +780,37 @@ export function TaskView() {
             projects={projects}
             onChanged={() => setNonce((value) => value + 1)}
           />
+        ) : null}
+      </Modal>
+
+      <Modal open={Boolean(approvalDecision)} onClose={() => setApprovalDecision(null)}
+        title={approvalDecision?.decision === "approve" ? t("approvals.approve") : t("approvals.deny")}>
+        {approvalDecision ? (
+          <div className="space-y-3">
+            <div className="rounded border border-border bg-muted/30 p-3 text-xs">
+              <p className="font-medium">{approvalDecision.attention.title}</p>
+              <p className="mt-1 font-mono">{String(approvalDecision.attention.details.code ?? "")}</p>
+              <pre className="mt-2 max-h-48 overflow-auto whitespace-pre-wrap text-muted-foreground">
+                {JSON.stringify({
+                  context: approvalDecision.attention.details.context,
+                  parameters: approvalDecision.attention.details.parameters,
+                }, null, 2)}
+              </pre>
+            </div>
+            <Field label={t("taskLocal.comment")}>
+              <Textarea value={approvalNote} onChange={(event) => setApprovalNote(event.target.value)}
+                placeholder={t("taskLocal.commentPlaceholder")} />
+            </Field>
+            <div className="flex justify-end gap-2">
+              <Button variant="secondary" size="sm" onClick={() => setApprovalDecision(null)}>
+                {t("shared.cancel")}
+              </Button>
+              <Button size="sm" variant={approvalDecision.decision === "deny" ? "destructive" : "primary"}
+                disabled={!approvalNote.trim() || pending} onClick={submitRecommendedActionDecision}>
+                {approvalDecision.decision === "approve" ? t("approvals.approve") : t("approvals.deny")}
+              </Button>
+            </div>
+          </div>
         ) : null}
       </Modal>
 

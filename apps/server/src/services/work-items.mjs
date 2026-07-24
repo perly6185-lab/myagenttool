@@ -371,7 +371,21 @@ export function createWorkItemService({
       .filter((row) => query.includeResolved === "1" || !row.resolution);
     const rank = { high: 3, medium: 2, low: 1 };
     decorated.sort((a, b) => rank[b.severity] - rank[a.severity] || String(a.dueAt).localeCompare(String(b.dueAt)));
-    return { ok: true, status: 200, body: { items: decorated, count: decorated.length } };
+    const oldestCreatedAt = decorated.reduce((oldest, row) =>
+      !oldest || row.createdAt < oldest ? row.createdAt : oldest, null);
+    return {
+      ok: true, status: 200, body: {
+        items: decorated,
+        count: decorated.length,
+        metrics: {
+          backlog: decorated.filter((row) => !row.resolution).length,
+          breached: decorated.filter((row) => row.slaStatus === "breached" && !row.resolution).length,
+          claimed: decorated.filter((row) => row.handling && !row.resolution).length,
+          pendingApprovals: decorated.filter((row) => row.kind === "recommended_action_approval" && !row.resolution).length,
+          oldestAgeSeconds: oldestCreatedAt ? Math.max(0, Math.floor((at - Date.parse(oldestCreatedAt)) / 1_000)) : 0,
+        },
+      },
+    };
   }
 
   function updateAttention({
@@ -494,6 +508,8 @@ export function createWorkItemService({
     const secretConfigured = Boolean(String(process.env.MYAGENTTOOL_GITHUB_WEBHOOK_SECRET ?? ""));
     const recentConflicts = deliveries.slice(0, 20).filter((delivery) => delivery.result?.conflicts > 0).length;
     const recentFailures = (state.githubWorkItemWebhookFailures ?? []).slice(0, 20);
+    const deliveryWindow = deliveries.slice(0, 20);
+    const totalAttempts = deliveryWindow.length + recentFailures.length;
     const health = !secretConfigured && bindings.length
       ? "misconfigured"
       : recentFailures.length || recentConflicts || bindings.some((binding) => binding.conflict)
@@ -505,9 +521,10 @@ export function createWorkItemService({
         secretConfigured,
         boundIssues: bindings.length,
         conflicts: bindings.filter((binding) => binding.conflict).length,
+        failureRate: totalAttempts ? recentFailures.length / totalAttempts : 0,
         lastWebhookAt: deliveries[0]?.receivedAt ?? null,
         recentFailures,
-        recentDeliveries: deliveries.slice(0, 20),
+        recentDeliveries: deliveryWindow,
       },
     };
   }

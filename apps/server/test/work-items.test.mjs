@@ -12,7 +12,7 @@ const ACTOR_A = { userId: "usr_a", teamId: "team_a" };
 const ACTOR_B = { userId: "usr_b", teamId: "team_b" };
 const ACTOR_C = { userId: "usr_c", teamId: "team_a" };
 
-function harness() {
+function harness({ clock = () => "2026-07-24T00:00:00.000Z" } = {}) {
   let counter = 0;
   const events = [];
   const state = {
@@ -26,7 +26,7 @@ function harness() {
   };
   const service = createWorkItemService({
     state,
-    now: () => "2026-07-24T00:00:00.000Z",
+    now: clock,
     nextId: (prefix) => `${prefix}_${++counter}`,
     appendEvent: (event) => events.push(event),
   });
@@ -226,6 +226,8 @@ test("human attention queue aggregates conflicts, approvals, and failed evidence
   assert.equal(attention.items.filter((row) => row.workItemId).every((row) => row.workItemId === item.id), true);
   assert.equal(service.listAttention({ kind: "recommended_action_approval" }, ACTOR_A).body.items[0].planningProjectId, "plan_1");
   assert.equal(attention.items.every((row) => row.dueAt && row.slaStatus && Array.isArray(row.history)), true);
+  assert.equal(attention.metrics.backlog, 5);
+  assert.equal(attention.metrics.pendingApprovals, 1);
   assert.equal(service.listAttention({ kind: "github_conflict" }, ACTOR_A).body.count, 1);
   const attentionId = attention.items[0].id;
   const claimed = service.updateAttention({
@@ -252,6 +254,42 @@ test("human attention queue aggregates conflicts, approvals, and failed evidence
   assert.equal(service.listAttention({}, ACTOR_A).body.items.some((row) => row.id === attentionId), false);
   const resolved = service.listAttention({ includeResolved: "1" }, ACTOR_A).body.items.find((row) => row.id === attentionId);
   assert.equal(resolved.resolution.note, "Handled");
+});
+
+test("attention leases expire and batch claims fail atomically on contention", () => {
+  let currentTime = "2026-07-24T00:00:00.000Z";
+  const { service, state } = harness({ clock: () => currentTime });
+  const first = service.createWorkItem({ projectId: "prj_a", title: "First" }, ACTOR_A).body.workItem;
+  const second = service.createWorkItem({ projectId: "prj_a", title: "Second" }, ACTOR_A).body.workItem;
+  for (const item of state.workItems) {
+    item.externalBindings = [{
+      kind: "github_issue", number: item.localNumber,
+      conflict: { detectedAt: currentTime, fields: ["title"] },
+    }];
+  }
+  const [firstAttention, secondAttention] = service.listAttention({}, ACTOR_A).body.items;
+  service.updateAttention({
+    attentionIds: [secondAttention.id], action: "claim", leaseSeconds: 60,
+  }, ACTOR_C);
+  const contended = service.updateAttention({
+    attentionIds: [firstAttention.id, secondAttention.id], action: "claim",
+  }, ACTOR_A);
+  assert.equal(contended.status, 409);
+  assert.equal(service.listAttention({ handler: "unclaimed" }, ACTOR_A).body.items.some(
+    (row) => row.id === firstAttention.id,
+  ), true);
+  currentTime = "2026-07-24T00:01:01.000Z";
+  const claimedAfterExpiry = service.updateAttention({
+    attentionIds: [firstAttention.id, secondAttention.id], action: "claim",
+    idempotencyKey: "batch-claim-1",
+  }, ACTOR_A);
+  assert.equal(claimedAfterExpiry.status, 200);
+  assert.equal(claimedAfterExpiry.body.count, 2);
+  assert.equal(service.updateAttention({
+    attentionIds: [firstAttention.id, secondAttention.id], action: "claim",
+    idempotencyKey: "batch-claim-1",
+  }, ACTOR_A).body.replayed, true);
+  assert.equal(first.id !== second.id, true);
 });
 
 test("GitHub webhook sync is idempotent and ignores stale deliveries", () => {
@@ -296,6 +334,38 @@ test("GitHub webhook sync is idempotent and ignores stale deliveries", () => {
   });
   assert.notEqual(service.githubSyncDiagnostics(ACTOR_A).body.health, "healthy");
   assert.equal(service.githubSyncDiagnostics(ACTOR_A).body.recentFailures[0].reason, "invalid_signature");
+  assert.equal(service.githubSyncDiagnostics(ACTOR_A).body.failureRate > 0, true);
+});
+
+test("GitHub webhook event storms stay bounded and cannot regress newer state", () => {
+  const { service, state } = harness();
+  const item = service.createWorkItem({ projectId: "prj_a", title: "Initial" }, ACTOR_A).body.workItem;
+  service.bindGithubIssue({
+    workItemId: item.id, expectedRevision: item.revision,
+    remote: {
+      number: 9, title: "Initial", body: "", state: "open", labels: [],
+      repository: "acme/repo", updatedAt: "2026-07-24T00:00:00.000Z",
+    },
+  }, ACTOR_A);
+  const payload = (title, updatedAt) => ({
+    repository: { full_name: "acme/repo" },
+    issue: {
+      number: 9, title, body: "", state: "open", labels: [],
+      html_url: "https://github.test/acme/repo/issues/9", updated_at: updatedAt,
+    },
+  });
+  service.ingestGithubWebhook({
+    deliveryId: "newest", event: "issues", payload: payload("Newest", "2026-07-24T02:00:00.000Z"),
+  });
+  for (let index = 0; index < 1_005; index += 1) {
+    service.ingestGithubWebhook({
+      deliveryId: `storm-${index}`, event: "issues",
+      payload: payload(`Old ${index}`, "2026-07-24T01:00:00.000Z"),
+    });
+  }
+  assert.equal(state.githubWorkItemWebhookDeliveries.length, 1_000);
+  assert.equal(service.getWorkItem({ workItemId: item.id }, ACTOR_A).body.workItem.title, "Newest");
+  assert.equal(state.githubWorkItemWebhookDeliveries[0].result.outcome, "stale");
 });
 
 test("team scoping hides foreign work items and foreign projects", () => {
@@ -548,6 +618,19 @@ test("work items survive a persistent-state restart", () => {
       projectId: first.defaultProject.id, action: "commented", actorId: "usr_local",
       createdAt: now(), details: { commentId: "wic_1" },
     });
+    first.state.workItemAttentionOperations.push({
+      attentionId: "github_conflict:lwi_1", ownerTeamId: "team_local",
+      handling: { actorId: "usr_local", claimedAt: now(), expiresAt: "2026-07-24T00:15:00.000Z" },
+      resolution: null, history: [],
+    });
+    first.state.githubWorkItemWebhookDeliveries.push({
+      id: "delivery-persisted", event: "issues", receivedAt: now(),
+      repository: "acme/repo", issueNumber: 1, teamIds: ["team_local"],
+      result: { outcome: "synced" },
+    });
+    first.state.githubWorkItemWebhookFailures.push({
+      id: "delivery-failed", event: "issues", reason: "invalid_signature", receivedAt: now(),
+    });
     first.state.planningProjects.push({
       id: "ppj_1", ownerTeamId: "team_local", name: "Roadmap", description: "",
       color: "indigo", revision: 1, archivedAt: null, createdAt: now(), updatedAt: now(),
@@ -574,6 +657,9 @@ test("work items survive a persistent-state restart", () => {
     assert.equal(second.state.planningProjectItems[0].position, 2000);
     assert.equal(second.state.workItemComments[0].body, "Still here");
     assert.equal(second.state.workItemActivities[0].action, "commented");
+    assert.equal(second.state.workItemAttentionOperations[0].handling.actorId, "usr_local");
+    assert.equal(second.state.githubWorkItemWebhookDeliveries[0].id, "delivery-persisted");
+    assert.equal(second.state.githubWorkItemWebhookFailures[0].reason, "invalid_signature");
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
