@@ -55,6 +55,9 @@ export function createHttpServer({
   fetchWorkItemGithubIssue,
   pushWorkItemGithubIssue,
   recordWorkItemVerification,
+  ingestGithubWorkItemWebhook,
+  updateWorkItemAttention,
+  getWorkItemGithubSyncDiagnostics,
   releaseIssueClaim,
   listIssueClaims,
   approveDesign,
@@ -243,6 +246,7 @@ export function createHttpServer({
   reorderPlanningProjectItems,
   updatePlanningProjectItems,
   executePlanningRecommendedAction,
+  decidePlanningRecommendedAction,
   registerChannel,
   listChannels,
   enableChannel,
@@ -291,7 +295,11 @@ export function createHttpServer({
       // live token when MYAGENT_REQUIRE_AUTH is on. ---
       const actor = resolveActor(state, req);
       const bridgePath = url.pathname.startsWith("/api/bridge/");
-      const publicPath = url.pathname === "/api/session" || bridgePath;
+      // GitHub authenticates webhook deliveries with the endpoint-specific
+      // HMAC signature, so requiring a user bearer token here would make valid
+      // deliveries impossible when the regular API auth gate is enabled.
+      const githubWebhookPath = url.pathname === "/api/webhooks/github/work-items";
+      const publicPath = url.pathname === "/api/session" || bridgePath || githubWebhookPath;
       if (REQUIRE_AUTH && !publicPath && !actor.authenticated) {
         sendJson(res, 401, { error: "unauthenticated", message: "Valid session token required." });
         return;
@@ -398,6 +406,9 @@ export function createHttpServer({
         fetchGithubIssue: fetchWorkItemGithubIssue,
         pushGithubIssue: pushWorkItemGithubIssue,
         recordVerification: recordWorkItemVerification,
+        ingestGithubWebhook: ingestGithubWorkItemWebhook,
+        updateAttention: updateWorkItemAttention,
+        githubSyncDiagnostics: getWorkItemGithubSyncDiagnostics,
       })) {
         return;
       }
@@ -414,6 +425,7 @@ export function createHttpServer({
         reorderItems: reorderPlanningProjectItems,
         updateItems: updatePlanningProjectItems,
         executeRecommendedAction: executePlanningRecommendedAction,
+        decideRecommendedAction: decidePlanningRecommendedAction,
       })) {
         return;
       }

@@ -1,3 +1,5 @@
+import { createHmac, timingSafeEqual } from "node:crypto";
+
 export async function handleWorkItemRoutes({
   req, res, url, sendJson, readJson, actor,
   listWorkItems, listAttention, getWorkItem, createWorkItem, updateWorkItem, bulkUpdateWorkItems, transitionWorkItem,
@@ -7,11 +9,52 @@ export async function handleWorkItemRoutes({
   bindGithubIssue, syncGithubIssue,
   fetchGithubIssue, pushGithubIssue,
   recordVerification,
+  ingestGithubWebhook,
+  updateAttention,
+  githubSyncDiagnostics,
 }) {
+  if (url.pathname === "/api/webhooks/github/work-items" && req.method === "POST") {
+    const chunks = [];
+    for await (const chunk of req) chunks.push(chunk);
+    const raw = Buffer.concat(chunks);
+    const secret = String(process.env.MYAGENTTOOL_GITHUB_WEBHOOK_SECRET ?? "");
+    const supplied = String(req.headers["x-hub-signature-256"] ?? "");
+    const expected = secret ? `sha256=${createHmac("sha256", secret).update(raw).digest("hex")}` : "";
+    const valid = secret && supplied.length === expected.length
+      && timingSafeEqual(Buffer.from(supplied), Buffer.from(expected));
+    if (!valid) {
+      sendJson(res, 401, { error: "invalid_github_webhook_signature" });
+      return true;
+    }
+    let payload;
+    try {
+      payload = JSON.parse(raw.toString("utf8"));
+    } catch {
+      sendJson(res, 400, { error: "invalid_json" });
+      return true;
+    }
+    const result = ingestGithubWebhook({
+      deliveryId: req.headers["x-github-delivery"],
+      event: req.headers["x-github-event"],
+      payload,
+    });
+    sendJson(res, result.status, result.body);
+    return true;
+  }
   if (!url.pathname.startsWith("/api/work-items")) return false;
 
   if (url.pathname === "/api/work-items/attention" && req.method === "GET") {
     const result = listAttention(Object.fromEntries(url.searchParams), actor);
+    sendJson(res, result.status, result.body);
+    return true;
+  }
+  if (url.pathname === "/api/work-items/github/diagnostics" && req.method === "GET") {
+    const result = githubSyncDiagnostics(actor);
+    sendJson(res, result.status, result.body);
+    return true;
+  }
+  if (url.pathname === "/api/work-items/attention/actions" && req.method === "POST") {
+    const result = updateAttention(await readJson(req), actor);
     sendJson(res, result.status, result.body);
     return true;
   }

@@ -313,6 +313,20 @@ export function createWorkItemService({
       });
     }
     for (const project of (state.planningProjects ?? []).filter((candidate) => candidate.ownerTeamId === actorTeam(actor))) {
+      for (const request of (project.recommendedActionApprovalRequests ?? []).filter((candidate) => candidate.status === "pending")) {
+        rows.push({
+          id: `recommended_action_approval:${project.id}:${request.id}`,
+          kind: "recommended_action_approval",
+          severity: "high",
+          workItemId: null,
+          localRef: null,
+          projectId: null,
+          planningProjectId: project.id,
+          title: project.name,
+          createdAt: request.requestedAt,
+          details: { approvalRequestId: request.id, code: request.code },
+        });
+      }
       for (const execution of (project.recommendedActionExecutions ?? []).filter((candidate) => candidate.status === "queued")) {
         rows.push({
           id: `governed_action:${project.id}:${execution.id}`, kind: "governed_action", severity: execution.risk,
@@ -323,7 +337,10 @@ export function createWorkItemService({
       }
     }
     const at = Date.parse(now());
+    const operations = state.workItemAttentionOperations ?? [];
     const decorated = rows.map((row) => {
+      const operation = operations.find((candidate) =>
+        candidate.ownerTeamId === actorTeam(actor) && candidate.attentionId === row.id);
       const hours = row.severity === "high" ? 4 : row.severity === "medium" ? 24 : 72;
       const dueAt = new Date(Date.parse(row.createdAt) + hours * 3_600_000).toISOString();
       const history = row.workItemId ? (state.workItemActivities ?? [])
@@ -332,13 +349,102 @@ export function createWorkItemService({
         .map((activity) => ({
           action: activity.action, actorId: activity.actorId, createdAt: activity.createdAt,
         })) : [];
-      return { ...row, dueAt, slaStatus: Date.parse(dueAt) < at ? "breached" : "within_sla", history };
+      return {
+        ...row, dueAt, slaStatus: Date.parse(dueAt) < at ? "breached" : "within_sla", history,
+        handling: operation?.handling ?? null,
+        resolution: operation?.resolution ?? null,
+      };
     }).filter((row) => !kind || row.kind === kind)
       .filter((row) => !severity || row.severity === severity)
-      .filter((row) => !sla || row.slaStatus === sla);
+      .filter((row) => !sla || row.slaStatus === sla)
+      .filter((row) => query.includeResolved === "1" || !row.resolution);
     const rank = { high: 3, medium: 2, low: 1 };
     decorated.sort((a, b) => rank[b.severity] - rank[a.severity] || String(a.dueAt).localeCompare(String(b.dueAt)));
     return { ok: true, status: 200, body: { items: decorated, count: decorated.length } };
+  }
+
+  function updateAttention({ attentionIds, action, note = "" } = {}, actor = null) {
+    const ids = [...new Set((Array.isArray(attentionIds) ? attentionIds : []).map(String))];
+    if (!ids.length || ids.length > 100 || !["claim", "release", "resolve", "reopen"].includes(action)
+      || typeof note !== "string" || note.length > 5_000) {
+      return { ok: false, status: 400, body: { error: "invalid_work_item_attention_update" } };
+    }
+    const visible = new Set(listAttention({ includeResolved: "1" }, actor).body.items.map((item) => item.id));
+    if (ids.some((id) => !visible.has(id))) return { ok: false, status: 404, body: { error: "work_item_attention_not_found" } };
+    const updated = [];
+    runTx(() => {
+      for (const attentionId of ids) {
+        let operation = (state.workItemAttentionOperations ??= []).find((candidate) =>
+          candidate.ownerTeamId === actorTeam(actor) && candidate.attentionId === attentionId);
+        if (!operation) {
+          operation = { attentionId, ownerTeamId: actorTeam(actor), handling: null, resolution: null, history: [] };
+          state.workItemAttentionOperations.unshift(operation);
+        }
+        const timestamp = now();
+        if (action === "claim") operation.handling = { actorId: actorUser(actor), claimedAt: timestamp };
+        if (action === "release") operation.handling = null;
+        if (action === "resolve") operation.resolution = { actorId: actorUser(actor), resolvedAt: timestamp, note };
+        if (action === "reopen") operation.resolution = null;
+        operation.history.unshift({ action, actorId: actorUser(actor), createdAt: timestamp, note });
+        updated.push(operation);
+      }
+    });
+    return { ok: true, status: 200, body: { updated, count: updated.length } };
+  }
+
+  function ingestGithubWebhook({ deliveryId, event, payload } = {}) {
+    const id = String(deliveryId ?? "").trim();
+    if (!id || id.length > 200 || event !== "issues" || !payload?.issue) {
+      return { ok: false, status: 400, body: { error: "invalid_github_work_item_webhook" } };
+    }
+    const prior = (state.githubWorkItemWebhookDeliveries ?? []).find((row) => row.id === id);
+    if (prior) return { ok: true, status: 200, body: { ...prior.result, replayed: true } };
+    const issue = payload.issue;
+    const repository = String(payload.repository?.full_name ?? "");
+    const snapshot = normalizeGithubSnapshot({
+      number: issue.number, title: issue.title, body: issue.body ?? "",
+      state: issue.state, labels: (issue.labels ?? []).map((label) => label?.name ?? label),
+      url: issue.html_url, repository, updatedAt: issue.updated_at,
+    });
+    if (!snapshot) return { ok: false, status: 400, body: { error: "invalid_github_issue_snapshot" } };
+    let synced = 0;
+    let stale = 0;
+    let conflicts = 0;
+    for (const item of state.workItems ?? []) {
+      const binding = githubBinding(item);
+      if (!binding || binding.number !== snapshot.number
+        || (binding.repository && repository && binding.repository !== repository)) continue;
+      if (Date.parse(snapshot.updatedAt) <= Date.parse(binding.remoteUpdatedAt)) {
+        stale += 1;
+        continue;
+      }
+      const result = syncGithubIssue({
+        workItemId: item.id, expectedRevision: item.revision, direction: "pull", remote: snapshot,
+      }, { userId: "usr_github_webhook", teamId: item.ownerTeamId });
+      if (result.ok) synced += 1;
+      else if (result.body?.error === "github_sync_conflict") conflicts += 1;
+    }
+    const result = { deliveryId: id, synced, stale, conflicts };
+    (state.githubWorkItemWebhookDeliveries ??= []).unshift({
+      id, event, receivedAt: now(), repository, issueNumber: snapshot.number, result,
+    });
+    state.githubWorkItemWebhookDeliveries = state.githubWorkItemWebhookDeliveries.slice(0, 1_000);
+    persistStateSoon();
+    return { ok: true, status: 202, body: result };
+  }
+
+  function githubSyncDiagnostics(actor = null) {
+    const own = (state.workItems ?? []).filter((item) => item.ownerTeamId === actorTeam(actor));
+    const bindings = own.flatMap((item) => item.externalBindings ?? []).filter((binding) => binding.kind === "github_issue");
+    const deliveries = state.githubWorkItemWebhookDeliveries ?? [];
+    return {
+      ok: true, status: 200, body: {
+        boundIssues: bindings.length,
+        conflicts: bindings.filter((binding) => binding.conflict).length,
+        lastWebhookAt: deliveries[0]?.receivedAt ?? null,
+        recentDeliveries: deliveries.slice(0, 20),
+      },
+    };
   }
 
   function getWorkItem({ workItemId }, actor = null) {
@@ -982,6 +1088,6 @@ export function createWorkItemService({
     listWorkItems, listAttention, getWorkItem, createWorkItem, updateWorkItem, bulkUpdateWorkItems, transitionWorkItem,
     listActivity, listComments, createComment, updateComment, deleteComment,
     recordExecutionBinding, claimWorkItem, releaseWorkItemClaim, bindGithubIssue, syncGithubIssue,
-    recordVerification,
+    recordVerification, ingestGithubWebhook, githubSyncDiagnostics, updateAttention,
   };
 }

@@ -580,7 +580,21 @@ export function createPlanningProjectService({
         action: `planning:${code}`, targetId: project.id, actor, allowLegacy: false,
       });
       if (!approval.approved) {
-        return { ok: false, status: 403, body: { error: "recommended_action_approval_required", reason: approval.reason } };
+        const existing = (project.recommendedActionApprovalRequests ?? []).find((request) =>
+          request.idempotencyKey === key && request.status === "pending");
+        if (existing) return { ok: true, status: 200, body: { approvalRequest: existing, project: projectView(project, actor), replayed: true } };
+        const approvalRequest = {
+          id: nextId("par"), planningProjectId: project.id, code, idempotencyKey: key,
+          parameters: structuredClone(parameters), status: "pending",
+          requestedBy: userOfActor(actor), requestedAt: now(), decidedAt: null, decidedBy: null,
+        };
+        runTx(() => {
+          (project.recommendedActionApprovalRequests ??= []).unshift(approvalRequest);
+          recordActivity(project, actor, "recommended_action_approval_requested", {
+            approvalRequestId: approvalRequest.id, code, risk: policy.risk,
+          });
+        });
+        return { ok: true, status: 202, body: { approvalRequest, project: projectView(project, actor) } };
       }
     }
     const changes = {};
@@ -628,8 +642,41 @@ export function createPlanningProjectService({
     return { ok: true, status: 201, body: { execution, project: projectView(project, actor, { includeItems: true }) } };
   }
 
+  function decideRecommendedAction({ planningProjectId, approvalRequestId, decision } = {}, actor = null) {
+    const project = findOwn(planningProjectId, actor);
+    if (!project) return notFound();
+    const request = (project.recommendedActionApprovalRequests ?? []).find((candidate) => candidate.id === approvalRequestId);
+    if (!request) return { ok: false, status: 404, body: { error: "recommended_action_approval_not_found" } };
+    if (request.status !== "pending") return { ok: true, status: 200, body: { approvalRequest: request, replayed: true } };
+    if (!["approved", "denied"].includes(decision)) {
+      return { ok: false, status: 400, body: { error: "invalid_recommended_action_approval_decision" } };
+    }
+    let execution = null;
+    runTx(() => {
+      request.status = decision;
+      request.decidedAt = now();
+      request.decidedBy = userOfActor(actor);
+      if (decision === "approved") {
+        execution = {
+          id: nextId("pra"), code: request.code, risk: "high", approvalRequired: true,
+          approvalRequestId: request.id, idempotencyKey: request.idempotencyKey,
+          requestedBy: request.requestedBy, requestedAt: request.requestedAt,
+          status: "queued", parameters: request.parameters, result: { queuedFor: request.code },
+        };
+        (project.recommendedActionExecutions ??= []).unshift(execution);
+      }
+      project.revision += 1;
+      project.updatedAt = now();
+      recordActivity(project, actor, decision === "approved"
+        ? "recommended_action_approval_resumed" : "recommended_action_approval_denied", {
+        approvalRequestId: request.id, executionId: execution?.id ?? null, code: request.code,
+      });
+    });
+    return { ok: true, status: 200, body: { approvalRequest: request, execution, project: projectView(project, actor, { includeItems: true }) } };
+  }
+
   return {
     listProjects, getProject, createProject, updateProject, setArchived,
-    addItem, removeItem, reorderItems, updateItems, executeRecommendedAction,
+    addItem, removeItem, reorderItems, updateItems, executeRecommendedAction, decideRecommendedAction,
   };
 }

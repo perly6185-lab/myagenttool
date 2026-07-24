@@ -3323,6 +3323,9 @@ export function createServerRuntimeServices({
     bindGithubIssue: workItemService.bindGithubIssue,
     syncGithubIssue: workItemService.syncGithubIssue,
     recordWorkItemVerification: workItemService.recordVerification,
+    ingestGithubWorkItemWebhook: workItemService.ingestGithubWebhook,
+    updateWorkItemAttention: workItemService.updateAttention,
+    getWorkItemGithubSyncDiagnostics: workItemService.githubSyncDiagnostics,
     fetchWorkItemGithubIssue: ({ projectId, issueNumber }) => {
       const project = (state.projects ?? []).find((candidate) => candidate.id === projectId);
       const target = (state.projectTargets ?? []).find((candidate) => candidate.projectId === projectId && candidate.state === "ready");
@@ -3347,6 +3350,7 @@ export function createServerRuntimeServices({
     reorderPlanningProjectItems: planningProjectService.reorderItems,
     updatePlanningProjectItems: planningProjectService.updateItems,
     executePlanningRecommendedAction: planningProjectService.executeRecommendedAction,
+    decidePlanningRecommendedAction: planningProjectService.decideRecommendedAction,
     routeChannelTask,
     dismissChannelTask,
     retryChannelTask,
