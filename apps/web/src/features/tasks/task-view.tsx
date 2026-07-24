@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { Hand, History, RefreshCw, ExternalLink, GitBranch, Workflow, Zap, Plus, Save, MessageSquare, Trash2, Pencil, FolderKanban, ArrowUp, ArrowDown } from "lucide-react";
+import { Hand, History, RefreshCw, ExternalLink, GitBranch, Workflow, Zap, Plus, Save, MessageSquare, Trash2, Pencil, FolderKanban, ArrowUp, ArrowDown, Star } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -69,6 +69,8 @@ type PlanningProject = {
   color?: string;
   revision: number;
   archivedAt: string | null;
+  updatedAt?: string;
+  pinned?: boolean;
   itemCount: number;
   openItemCount: number;
   completedItemCount: number;
@@ -605,6 +607,7 @@ export function PlanningProjectsPanel({ onChanged = () => {} }: { onChanged?: ()
   const [ownerFilter, setOwnerFilter] = useState("all");
   const [statusFilter, setStatusFilter] = useState("all");
   const [tagFilter, setTagFilter] = useState("all");
+  const [projectSort, setProjectSort] = useState<"risk" | "target" | "updated" | "name">("risk");
   const [savedViewName, setSavedViewName] = useState("");
   const [savedViewId, setSavedViewId] = useState("");
   const [ruleStatus, setRuleStatus] = useState("");
@@ -913,6 +916,7 @@ export function PlanningProjectsPanel({ onChanged = () => {} }: { onChanged?: ()
         status: snapshot.status,
         tags: snapshot.tags,
         statusSummary: snapshot.statusSummary,
+        pinned: snapshot.pinned,
         savedViews: snapshot.savedViews,
         automationRules: snapshot.automationRules,
       }) as { project: PlanningProject };
@@ -937,11 +941,37 @@ export function PlanningProjectsPanel({ onChanged = () => {} }: { onChanged?: ()
     .filter((project) => projectScope === "archived"
       ? Boolean(project.archivedAt)
       : !project.archivedAt && (projectScope !== "attention" || project.health === "attention"))
-    .sort((a, b) => (b.riskScore ?? 0) - (a.riskScore ?? 0) || b.itemCount - a.itemCount);
+    .sort((a, b) => {
+      const pinned = Number(Boolean(b.pinned)) - Number(Boolean(a.pinned));
+      if (pinned) return pinned;
+      if (projectSort === "target") return (a.targetDate ?? "9999-12-31").localeCompare(b.targetDate ?? "9999-12-31");
+      if (projectSort === "updated") return (b.updatedAt ?? "").localeCompare(a.updatedAt ?? "");
+      if (projectSort === "name") return a.name.localeCompare(b.name);
+      return (b.riskScore ?? 0) - (a.riskScore ?? 0) || b.itemCount - a.itemCount;
+    });
   const portfolioAttention = projects.filter((project) => project.health === "attention").length;
   const portfolioActiveRuns = projects.reduce((sum, project) => sum + (project.activeRunCount ?? 0), 0);
   const projectOwners = [...new Set(projects.map((project) => project.ownerId).filter(Boolean) as string[])].sort();
   const projectTagsAvailable = [...new Set(projects.flatMap((project) => project.tags ?? []))].sort();
+  const overCapacityProjects = projects.filter((project) => project.overCapacity && !project.archivedAt).length;
+  const overdueProjects = projects.filter((project) => project.projectOverdue && !project.archivedAt).length;
+  const staleProjects = projects.filter((project) => project.staleStatus && !project.archivedAt).length;
+  const clearPortfolioFilters = () => {
+    setProjectQuery("");
+    setProjectScope("active");
+    setOwnerFilter("all");
+    setStatusFilter("all");
+    setTagFilter("all");
+  };
+  const togglePinned = () => {
+    if (!selected) return;
+    void execute(() => api.updatePlanningProject(selected.id, {
+      expectedRevision: selected.revision,
+      pinned: !selected.pinned,
+    })).then((ok) => {
+      if (ok) setNonce((value) => value + 1);
+    });
+  };
 
   return (
     <div className="grid gap-4 sm:grid-cols-[14rem_1fr]">
@@ -983,6 +1013,9 @@ export function PlanningProjectsPanel({ onChanged = () => {} }: { onChanged?: ()
         <div className="grid grid-cols-2 gap-1 text-center text-xs">
           <div className="rounded-md bg-muted p-1.5"><strong className="block">{portfolioAttention}</strong>{t("planningPortfolio.attention")}</div>
           <div className="rounded-md bg-muted p-1.5"><strong className="block">{portfolioActiveRuns}</strong>{t("planningPortfolio.activeRuns")}</div>
+          <div className="rounded-md bg-muted p-1.5"><strong className="block">{overCapacityProjects}</strong>{t("planningFinish.overCapacity")}</div>
+          <div className="rounded-md bg-muted p-1.5"><strong className="block">{overdueProjects}</strong>{t("planningFinish.overdue")}</div>
+          <div className="col-span-2 rounded-md bg-muted p-1.5"><strong className="block">{staleProjects}</strong>{t("planningFinish.stale")}</div>
         </div>
         <Input value={projectQuery} onChange={(event) => setProjectQuery(event.target.value)}
           placeholder={t("planningPortfolio.search")} aria-label={t("planningPortfolio.search")} />
@@ -1009,12 +1042,19 @@ export function PlanningProjectsPanel({ onChanged = () => {} }: { onChanged?: ()
           <option value="all">{t("planningTags.all")}</option>
           {projectTagsAvailable.map((tag) => <option key={tag} value={tag}>{tag}</option>)}
         </Select>
+        <Select value={projectSort} aria-label={t("planningFinish.sort")}
+          onChange={(event) => setProjectSort(event.target.value as typeof projectSort)}>
+          {(["risk", "target", "updated", "name"] as const).map((sort) =>
+            <option key={sort} value={sort}>{t(`planningFinish.${sort}`)}</option>)}
+        </Select>
+        <Button variant="ghost" size="sm" onClick={clearPortfolioFilters}>{t("planningFinish.clear")}</Button>
         <div className="space-y-1 border-t border-border pt-2">
           {visibleProjects.map((project) => (
             <button key={project.id} type="button" onClick={() => setSelectedId(project.id)}
               className={cn("flex w-full justify-between rounded-md px-2 py-1.5 text-left text-sm", selectedId === project.id ? "bg-muted font-medium" : "hover:bg-muted/60")}>
               <span className="min-w-0">
                 <span className="block truncate">{project.name}</span>
+                {project.pinned ? <Star className="inline size-3 fill-current" aria-label={t("planningFinish.pin")} /> : null}
                 <span className="block text-[10px] text-muted-foreground">{t(`planningStatus.${project.status ?? "active"}`)}</span>
                 {(project.tags ?? []).length ? <span className="block truncate text-[10px] text-muted-foreground">{project.tags?.join(" · ")}</span> : null}
                 <span className="flex gap-1 text-[10px] text-muted-foreground">
@@ -1065,6 +1105,8 @@ export function PlanningProjectsPanel({ onChanged = () => {} }: { onChanged?: ()
                 </div>
               ) : <div><h3 className="font-semibold">{selected.name}</h3><p className="text-sm text-muted-foreground">{selected.description || t("planningProjects.noDescription")}</p><p className="text-xs text-muted-foreground">{t(`planningStatus.${selected.status ?? "active"}`)} · {t("planningOwnership.ownerValue", { owner: selected.ownerId || t("planningOwnership.unowned") })}</p><p className={cn("mt-1 text-xs", selected.staleStatus ? "text-destructive" : "text-muted-foreground")}>{selected.statusSummary || t("planningCheckIn.empty")} · {selected.daysSinceStatusUpdate == null ? t("planningCheckIn.empty") : t("planningCheckIn.updated", { days: selected.daysSinceStatusUpdate })}</p></div>}
               <div className="flex gap-1">
+                <Button variant="ghost" size="sm" disabled={pending} title={t(selected.pinned ? "planningFinish.unpin" : "planningFinish.pin")}
+                  onClick={togglePinned}><Star className={cn("size-4", selected.pinned && "fill-current")} /></Button>
                 {editing ? (
                   <Button size="sm" disabled={pending || !name.trim()} onClick={save}>{t("planningProjects.save")}</Button>
                 ) : (

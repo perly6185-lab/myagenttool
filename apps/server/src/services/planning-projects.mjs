@@ -224,7 +224,7 @@ export function createPlanningProjectService({
   }
 
   function createProject({
-    name, description, color, capacityPoints, startDate, targetDate, ownerId, status, tags, statusSummary,
+    name, description, color, capacityPoints, startDate, targetDate, ownerId, status, tags, statusSummary, pinned,
     templateProjectId = null, savedViews, automationRules,
   } = {}, actor = null) {
     const template = templateProjectId ? findOwn(templateProjectId, actor) : null;
@@ -284,6 +284,7 @@ export function createPlanningProjectService({
         authorId: userOfActor(actor),
         createdAt: timestamp,
       }] : [],
+      pinned: Boolean(pinned),
       savedViews: importedViews ?? (template?.savedViews ?? []).map((view) => ({ ...view, id: nextId("ppv") })),
       automationRules: importedRules ?? (template?.automationRules ?? []).map((rule) => ({ ...rule, id: nextId("par") })),
       activity: [],
@@ -363,6 +364,7 @@ export function createPlanningProjectService({
         }, ...(project.checkIns ?? [])].slice(0, 50);
       }
     }
+    if (Object.hasOwn(changes, "pinned")) patch.pinned = Boolean(changes.pinned);
     if (Object.hasOwn(changes, "savedViews")) {
       const savedViews = normalizeSavedViews(changes.savedViews, nextId);
       if (!savedViews) return { ok: false, status: 400, body: { error: "invalid_planning_project_saved_views" } };

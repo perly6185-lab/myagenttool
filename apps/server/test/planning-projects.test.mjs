@@ -333,3 +333,16 @@ test("project status summaries record check-ins and stale active projects raise 
     planningProjectId: project.id, expectedRevision: 2, statusSummary: "x".repeat(1_001),
   }, ACTOR_A).status, 400);
 });
+
+test("projects can be pinned with revision gating", () => {
+  const { service } = harness();
+  const project = service.createProject({ name: "Pinned", pinned: true }, ACTOR_A).body.project;
+  assert.equal(project.pinned, true);
+  const updated = service.updateProject({
+    planningProjectId: project.id, expectedRevision: 1, pinned: false,
+  }, ACTOR_A).body.project;
+  assert.equal(updated.pinned, false);
+  assert.equal(service.updateProject({
+    planningProjectId: project.id, expectedRevision: 1, pinned: true,
+  }, ACTOR_A).status, 409);
+});

@@ -28,6 +28,7 @@ export interface PlanningExportProject {
   tags?: string[];
   statusSummary?: string;
   checkIns?: { id: string; summary: string; authorId: string; createdAt: string }[];
+  pinned?: boolean;
   savedViews?: unknown[];
   automationRules?: unknown[];
   activity?: unknown[];
@@ -79,6 +80,7 @@ export function planningProjectJson(project: PlanningExportProject, exportedAt =
       tags: project.tags ?? [],
       statusSummary: project.statusSummary ?? "",
       checkIns: project.checkIns ?? [],
+      pinned: project.pinned ?? false,
       savedViews: project.savedViews ?? [],
       automationRules: project.automationRules ?? [],
       activity: project.activity ?? [],
@@ -120,6 +122,7 @@ export function parsePlanningProjectSnapshot(text: string) {
       : "active",
     tags: Array.isArray(project.tags) ? project.tags.filter((tag): tag is string => typeof tag === "string") : [],
     statusSummary: typeof project.statusSummary === "string" ? project.statusSummary : "",
+    pinned: project.pinned === true,
     savedViews,
     automationRules,
     workItemCount: Array.isArray(snapshot.workItems) ? snapshot.workItems.length : 0,
