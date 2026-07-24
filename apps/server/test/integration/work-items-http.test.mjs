@@ -1,7 +1,9 @@
 process.env.MYAGENT_REQUIRE_AUTH = "1";
 process.env.MYAGENTTOOL_STATE_DISABLED = "1";
+process.env.MYAGENTTOOL_GITHUB_WEBHOOK_SECRET = "webhook-secret-a";
 
 import assert from "node:assert/strict";
+import { createHmac } from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -53,6 +55,22 @@ async function call(path, { token = "tok_a", method = "GET", body } = {}) {
     method,
     headers: { authorization: `Bearer ${token}`, ...(body ? { "content-type": "application/json" } : {}) },
     body: body ? JSON.stringify(body) : undefined,
+  });
+  return { status: response.status, body: await response.json() };
+}
+
+async function webhook(payload, { secret = process.env.MYAGENTTOOL_GITHUB_WEBHOOK_SECRET, deliveryId = "delivery-http" } = {}) {
+  const raw = JSON.stringify(payload);
+  const signature = `sha256=${createHmac("sha256", secret).update(raw).digest("hex")}`;
+  const response = await fetch(`${base}/api/webhooks/github/work-items`, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      "x-github-event": "issues",
+      "x-github-delivery": deliveryId,
+      "x-hub-signature-256": signature,
+    },
+    body: raw,
   });
   return { status: response.status, body: await response.json() };
 }
@@ -115,6 +133,47 @@ test("GitHub issue binding and sync are wired through HTTP", async () => {
   });
   assert.equal(pulled.status, 200);
   assert.equal(pulled.body.workItem.title, "Updated remotely");
+});
+
+test("GitHub webhook uses HMAC auth, supports rotation, and keeps replay team scoped", async () => {
+  const item = (await call("/api/work-items", {
+    method: "POST", body: { projectId: "prj_a", title: "Webhook linked" },
+  })).body.workItem;
+  await call(`/api/work-items/${item.id}/github/link`, {
+    method: "POST",
+    body: {
+      expectedRevision: item.revision,
+      remote: {
+        number: 199, title: "Webhook linked", body: "", state: "open", labels: [],
+        repository: "acme/repo", updatedAt: "2026-07-24T00:00:00.000Z",
+      },
+    },
+  });
+  const payload = {
+    repository: { full_name: "acme/repo" },
+    issue: {
+      number: 199, title: "Webhook updated", body: "", state: "open", labels: [],
+      html_url: "https://github.test/acme/repo/issues/199",
+      updated_at: "2026-07-24T01:00:00.000Z",
+    },
+  };
+  assert.equal((await webhook(payload, { secret: "wrong-secret", deliveryId: "bad-signature" })).status, 401);
+  const accepted = await webhook(payload, { deliveryId: "valid-signature" });
+  assert.equal(accepted.status, 202);
+  assert.equal(accepted.body.synced, 1);
+  assert.equal((await call(`/api/work-items/github/deliveries/valid-signature/replay`, {
+    token: "tok_b", method: "POST",
+  })).status, 404);
+  process.env.MYAGENTTOOL_GITHUB_WEBHOOK_SECRET = "webhook-secret-b";
+  assert.equal((await webhook(payload, {
+    secret: "webhook-secret-a", deliveryId: "old-secret",
+  })).status, 401);
+  assert.equal((await webhook(payload, {
+    secret: "webhook-secret-b", deliveryId: "new-secret",
+  })).status, 202);
+  const diagnostics = await call("/api/work-items/github/diagnostics");
+  assert.equal(diagnostics.body.secretConfigured, true);
+  assert.equal(diagnostics.body.recentFailures.length >= 2, true);
 });
 
 test("structured verification gates completion over HTTP", async () => {

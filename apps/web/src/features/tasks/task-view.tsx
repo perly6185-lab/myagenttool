@@ -164,9 +164,16 @@ type WorkItemAttention = {
   dueAt: string;
   slaStatus: "within_sla" | "breached";
   history: { action: string; actorId: string; createdAt: string }[];
-  handling: { actorId: string; claimedAt: string } | null;
+  handling: { actorId: string; claimedAt: string; expiresAt?: string } | null;
   resolution: { actorId: string; resolvedAt: string; note: string } | null;
   details: Record<string, unknown>;
+};
+type WorkItemAttentionMetrics = {
+  backlog: number;
+  breached: number;
+  claimed: number;
+  pendingApprovals: number;
+  oldestAgeSeconds: number;
 };
 // Each row also carries which project it came from (for the "All projects" view).
 type Row = GithubItem & { projectId: string; projectName: string };
@@ -275,6 +282,7 @@ export function TaskView() {
   const [rows, setRows] = useState<Row[]>([]);
   const [localRows, setLocalRows] = useState<LocalWorkItem[]>([]);
   const [attentionItems, setAttentionItems] = useState<WorkItemAttention[]>([]);
+  const [attentionMetrics, setAttentionMetrics] = useState<WorkItemAttentionMetrics | null>(null);
   const [attentionKind, setAttentionKind] = useState("");
   const [attentionSla, setAttentionSla] = useState("");
   const [attentionHandler, setAttentionHandler] = useState("");
@@ -310,6 +318,7 @@ export function TaskView() {
     )).then((ok) => {
       if (ok) {
         setSelectedAttentionIds(new Set());
+        setNotice(`${ids.length} · ${action === "claim" ? t("approvals.handle") : action === "reopen" ? t("taskLocal.reopen") : t("tasks.localStatus.done")}`);
         setNonce((value) => value + 1);
       }
     });
@@ -364,9 +373,15 @@ export function TaskView() {
       sla: attentionSla || undefined,
       handler: attentionHandler === "mine" || attentionHandler === "unclaimed" ? attentionHandler : undefined,
       includeResolved: showResolvedAttention ? "1" : undefined,
-    }) as Promise<{ items: WorkItemAttention[] }>)
-      .then((result) => setAttentionItems(result.items))
-      .catch(() => setAttentionItems([]));
+    }) as Promise<{ items: WorkItemAttention[]; metrics: WorkItemAttentionMetrics }>)
+      .then((result) => {
+        setAttentionItems(result.items);
+        setAttentionMetrics(result.metrics);
+      })
+      .catch(() => {
+        setAttentionItems([]);
+        setAttentionMetrics(null);
+      });
   }, [projectId, attentionKind, attentionSla, attentionHandler, showResolvedAttention, nonce]);
 
   useEffect(() => {
@@ -542,6 +557,14 @@ export function TaskView() {
                     <Badge tone="warning">{t("evidenceDetails.highCount", { count: attentionItems.filter((item) => item.severity === "high").length })}</Badge>
                   </div>
                 </div>
+                {attentionMetrics ? (
+                  <div className="grid grid-cols-2 gap-2 text-xs sm:grid-cols-4">
+                    <div className="rounded bg-background p-2"><strong>{attentionMetrics.backlog}</strong> {t("planningPortfolio.attention")}</div>
+                    <div className="rounded bg-background p-2"><strong>{attentionMetrics.breached}</strong> {t("planningSchedule.overdue")}</div>
+                    <div className="rounded bg-background p-2"><strong>{attentionMetrics.claimed}</strong> {t("approvals.handling")}</div>
+                    <div className="rounded bg-background p-2"><strong>{attentionMetrics.pendingApprovals}</strong> {t("approvals.kind.invocation_approval")}</div>
+                  </div>
+                ) : null}
                 {selectedAttentionIds.size ? (
                   <div className="flex items-center gap-3 rounded border border-border bg-background px-2 py-1 text-xs">
                     <Badge tone="neutral">{selectedAttentionIds.size}</Badge>
@@ -608,6 +631,9 @@ export function TaskView() {
                       <button type="button" className="text-primary hover:underline" onClick={() => updateAttention(attention.id, "claim")}>
                         {attention.handling ? attention.handling.actorId : t("approvals.handle")}
                       </button>
+                      {attention.handling?.expiresAt ? (
+                        <span className="text-muted-foreground">{new Date(attention.handling.expiresAt).toLocaleTimeString()}</span>
+                      ) : null}
                       {attention.resolution ? (
                         <button type="button" className="text-primary hover:underline"
                           onClick={() => updateAttention(attention.id, "reopen")}>
@@ -787,14 +813,22 @@ export function TaskView() {
         title={approvalDecision?.decision === "approve" ? t("approvals.approve") : t("approvals.deny")}>
         {approvalDecision ? (
           <div className="space-y-3">
-            <div className="rounded border border-border bg-muted/30 p-3 text-xs">
+            <div className="space-y-2 rounded border border-border bg-muted/30 p-3 text-xs">
               <p className="font-medium">{approvalDecision.attention.title}</p>
               <p className="mt-1 font-mono">{String(approvalDecision.attention.details.code ?? "")}</p>
-              <pre className="mt-2 max-h-48 overflow-auto whitespace-pre-wrap text-muted-foreground">
-                {JSON.stringify({
-                  context: approvalDecision.attention.details.context,
-                  parameters: approvalDecision.attention.details.parameters,
-                }, null, 2)}
+              {(() => {
+                const context = approvalDecision.attention.details.context as Record<string, unknown> | undefined;
+                return context ? (
+                  <div className="grid grid-cols-2 gap-2">
+                    <div><span className="text-muted-foreground">{t("applicationInspectorDeep.risk")}</span><strong className="block">{String(context.risk ?? "—")}</strong></div>
+                    <div><span className="text-muted-foreground">{t("applicationInspectorDeep.result")}</span><strong className="block">{String(context.impactScope ?? "—")}</strong></div>
+                    <div><span className="text-muted-foreground">{t("applicationInspectorDeep.actionCount", { count: Number(context.affectedCount ?? 0) })}</span><strong className="block">{String(context.affectedCount ?? 0)}</strong></div>
+                    <div><span className="text-muted-foreground">{t("evidenceDetails.evidence")}</span><strong className="block">{String(context.reasonCode ?? "—")}</strong></div>
+                  </div>
+                ) : null;
+              })()}
+              <pre className="max-h-32 overflow-auto whitespace-pre-wrap text-muted-foreground">
+                {JSON.stringify(approvalDecision.attention.details.parameters ?? {}, null, 2)}
               </pre>
             </div>
             <Field label={t("taskLocal.comment")}>
