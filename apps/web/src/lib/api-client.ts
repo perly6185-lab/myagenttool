@@ -900,6 +900,7 @@ export const api = {
     ownerId?: string | null;
     status?: "planned" | "active" | "on_hold" | "completed";
     tags?: string[];
+    statusSummary?: string;
     templateProjectId?: string;
     savedViews?: unknown[];
     automationRules?: unknown[];

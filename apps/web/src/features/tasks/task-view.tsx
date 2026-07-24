@@ -3,7 +3,7 @@ import { Hand, History, RefreshCw, ExternalLink, GitBranch, Workflow, Zap, Plus,
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Input, Select } from "@/components/ui/input";
+import { Input, Select, Textarea } from "@/components/ui/input";
 import { Field } from "@/components/common/field";
 import { Modal } from "@/components/ui/modal";
 import { EmptyState } from "@/components/common/empty-state";
@@ -91,6 +91,10 @@ type PlanningProject = {
   unowned?: boolean;
   status?: "planned" | "active" | "on_hold" | "completed";
   tags?: string[];
+  statusSummary?: string;
+  statusUpdatedAt?: string | null;
+  daysSinceStatusUpdate?: number | null;
+  staleStatus?: boolean;
   health?: "healthy" | "active" | "attention";
   savedViews?: {
     id: string;
@@ -577,6 +581,7 @@ export function PlanningProjectsPanel({ onChanged = () => {} }: { onChanged?: ()
   const [projectOwnerId, setProjectOwnerId] = useState("");
   const [projectStatus, setProjectStatus] = useState<"planned" | "active" | "on_hold" | "completed">("active");
   const [projectTags, setProjectTags] = useState("");
+  const [projectStatusSummary, setProjectStatusSummary] = useState("");
   const [editing, setEditing] = useState(false);
   const storedPlanningView = useUiStore((state) => state.planningProjectView);
   const storePlanningView = useUiStore((state) => state.setPlanningProjectView);
@@ -687,6 +692,7 @@ export function PlanningProjectsPanel({ onChanged = () => {} }: { onChanged?: ()
         ownerId: projectOwnerId.trim() || undefined,
         status: projectStatus,
         tags: projectTags.split(",").map((tag) => tag.trim()).filter(Boolean),
+        statusSummary: projectStatusSummary,
       }) as { project: PlanningProject };
       created = result.project;
       return result;
@@ -700,6 +706,7 @@ export function PlanningProjectsPanel({ onChanged = () => {} }: { onChanged?: ()
       setProjectOwnerId("");
       setProjectStatus("active");
       setProjectTags("");
+      setProjectStatusSummary("");
       setSelectedId(created.id);
       setNonce((value) => value + 1);
       onChanged();
@@ -749,6 +756,7 @@ export function PlanningProjectsPanel({ onChanged = () => {} }: { onChanged?: ()
       ownerId: projectOwnerId.trim() || null,
       status: projectStatus,
       tags: projectTags.split(",").map((tag) => tag.trim()).filter(Boolean),
+      statusSummary: projectStatusSummary,
     })).then((ok) => {
       if (!ok) return;
       setEditing(false);
@@ -903,6 +911,7 @@ export function PlanningProjectsPanel({ onChanged = () => {} }: { onChanged?: ()
         ownerId: snapshot.ownerId,
         status: snapshot.status,
         tags: snapshot.tags,
+        statusSummary: snapshot.statusSummary,
         savedViews: snapshot.savedViews,
         automationRules: snapshot.automationRules,
       }) as { project: PlanningProject };
@@ -947,6 +956,8 @@ export function PlanningProjectsPanel({ onChanged = () => {} }: { onChanged?: ()
         </Select>
         <Input value={projectTags} onChange={(event) => setProjectTags(event.target.value)}
           placeholder={t("planningTags.hint")} aria-label={t("planningTags.field")} />
+        <Textarea value={projectStatusSummary} onChange={(event) => setProjectStatusSummary(event.target.value)}
+          placeholder={t("planningCheckIn.placeholder")} aria-label={t("planningCheckIn.summary")} />
         <Input type="number" min="0" max="1000000" value={capacityPoints}
           onChange={(event) => setCapacityPoints(event.target.value)}
           placeholder={t("planningCapacity.capacity")} aria-label={t("planningCapacity.capacity")} />
@@ -1011,6 +1022,7 @@ export function PlanningProjectsPanel({ onChanged = () => {} }: { onChanged?: ()
                   {project.overCapacity ? <span>{t("planningCapacity.over")}</span> : null}
                   {project.projectOverdue ? <span>{t("planningSchedule.overdue")}</span> : null}
                   {project.unowned ? <span>{t("planningOwnership.unowned")}</span> : null}
+                  {project.staleStatus ? <span>{t("planningCheckIn.stale")}</span> : null}
                 </span>
               </span>
               <Badge tone={project.health === "attention" ? "danger" : project.health === "active" ? "running" : "neutral"}>
@@ -1038,6 +1050,8 @@ export function PlanningProjectsPanel({ onChanged = () => {} }: { onChanged?: ()
                   </Select>
                   <Input value={projectTags} onChange={(event) => setProjectTags(event.target.value)}
                     aria-label={t("planningTags.field")} />
+                  <Textarea value={projectStatusSummary} onChange={(event) => setProjectStatusSummary(event.target.value)}
+                    placeholder={t("planningCheckIn.placeholder")} aria-label={t("planningCheckIn.summary")} />
                   <Input type="number" min="0" max="1000000" value={capacityPoints}
                     onChange={(event) => setCapacityPoints(event.target.value)}
                     aria-label={t("planningCapacity.capacity")} />
@@ -1048,7 +1062,7 @@ export function PlanningProjectsPanel({ onChanged = () => {} }: { onChanged?: ()
                       onChange={(event) => setProjectTargetDate(event.target.value)} />
                   </div>
                 </div>
-              ) : <div><h3 className="font-semibold">{selected.name}</h3><p className="text-sm text-muted-foreground">{selected.description || t("planningProjects.noDescription")}</p><p className="text-xs text-muted-foreground">{t(`planningStatus.${selected.status ?? "active"}`)} · {t("planningOwnership.ownerValue", { owner: selected.ownerId || t("planningOwnership.unowned") })}</p></div>}
+              ) : <div><h3 className="font-semibold">{selected.name}</h3><p className="text-sm text-muted-foreground">{selected.description || t("planningProjects.noDescription")}</p><p className="text-xs text-muted-foreground">{t(`planningStatus.${selected.status ?? "active"}`)} · {t("planningOwnership.ownerValue", { owner: selected.ownerId || t("planningOwnership.unowned") })}</p><p className={cn("mt-1 text-xs", selected.staleStatus ? "text-destructive" : "text-muted-foreground")}>{selected.statusSummary || t("planningCheckIn.empty")} · {selected.daysSinceStatusUpdate == null ? t("planningCheckIn.empty") : t("planningCheckIn.updated", { days: selected.daysSinceStatusUpdate })}</p></div>}
               <div className="flex gap-1">
                 {editing ? (
                   <Button size="sm" disabled={pending || !name.trim()} onClick={save}>{t("planningProjects.save")}</Button>
@@ -1062,6 +1076,7 @@ export function PlanningProjectsPanel({ onChanged = () => {} }: { onChanged?: ()
                     setProjectOwnerId(selected.ownerId ?? "");
                     setProjectStatus(selected.status ?? "active");
                     setProjectTags((selected.tags ?? []).join(", "));
+                    setProjectStatusSummary(selected.statusSummary ?? "");
                     setEditing(true);
                   }}>{t("planningProjects.edit")}</Button>
                 )}

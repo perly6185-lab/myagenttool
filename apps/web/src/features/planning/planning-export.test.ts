@@ -16,6 +16,7 @@ const project = {
   targetDate: "2026-09-30",
   status: "on_hold" as const,
   tags: ["release", "backend"],
+  statusSummary: "Ready for rollout",
   revision: 4,
   savedViews: [{ name: "Risks" }],
   automationRules: [{ priority: "p0" }],
@@ -54,6 +55,7 @@ describe("planning export", () => {
       startDate: "2026-07-01", targetDate: "2026-09-30",
       status: "on_hold",
       tags: ["release", "backend"],
+      statusSummary: "Ready for rollout",
     });
     expect(imported.workItemCount).toBe(1);
     expect(() => parsePlanningProjectSnapshot('{"schemaVersion":2,"project":{}}')).toThrow(/Unsupported/);

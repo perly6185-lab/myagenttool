@@ -160,9 +160,15 @@ export function createPlanningProjectService({
     const daysRemaining = project.targetDate
       ? Math.ceil((Date.parse(`${project.targetDate}T00:00:00Z`) - Date.parse(`${today}T00:00:00Z`)) / 86_400_000)
       : null;
+    const statusReferenceAt = project.statusUpdatedAt ?? project.createdAt ?? project.updatedAt;
+    const daysSinceStatusUpdate = statusReferenceAt
+      ? Math.max(0, Math.floor((Date.parse(now()) - Date.parse(statusReferenceAt)) / 86_400_000))
+      : null;
+    const staleStatus = project.status === "active"
+      && daysSinceStatusUpdate != null && daysSinceStatusUpdate > 14;
     const unowned = !project.ownerId;
     const rawRiskScore = blockedItemCount * 3 + overdueItemCount * 2 + failedRunCount * 3
-      + (overCapacity ? 3 : 0) + (projectOverdue ? 3 : 0) + (unowned ? 1 : 0);
+      + (overCapacity ? 3 : 0) + (projectOverdue ? 3 : 0) + (unowned ? 1 : 0) + (staleStatus ? 2 : 0);
     const riskScore = project.status === "completed" ? 0 : rawRiskScore;
     return {
       ...project,
@@ -182,6 +188,8 @@ export function createPlanningProjectService({
       capacityUtilization: capacityPoints > 0 ? Math.round((plannedPoints / capacityPoints) * 100) : null,
       projectOverdue,
       daysRemaining,
+      daysSinceStatusUpdate,
+      staleStatus,
       unowned,
       health: project.status === "completed" ? "healthy"
         : riskScore > 0 ? "attention" : activeRunCount > 0 ? "active" : "healthy",
@@ -216,7 +224,7 @@ export function createPlanningProjectService({
   }
 
   function createProject({
-    name, description, color, capacityPoints, startDate, targetDate, ownerId, status, tags,
+    name, description, color, capacityPoints, startDate, targetDate, ownerId, status, tags, statusSummary,
     templateProjectId = null, savedViews, automationRules,
   } = {}, actor = null) {
     const template = templateProjectId ? findOwn(templateProjectId, actor) : null;
@@ -248,7 +256,9 @@ export function createPlanningProjectService({
       : ownerId);
     const normalizedStatus = String(status ?? template?.status ?? "active");
     const normalizedTags = normalizeProjectTags(tags === undefined ? template?.tags ?? [] : tags);
-    if (!PROJECT_STATUSES.has(normalizedStatus) || !normalizedTags || normalizedOwnerId === undefined
+    const normalizedStatusSummary = String(statusSummary ?? "").trim();
+    if (!PROJECT_STATUSES.has(normalizedStatus) || !normalizedTags || normalizedStatusSummary.length > 1_000
+      || normalizedOwnerId === undefined
       || normalizedStartDate === undefined || normalizedTargetDate === undefined
       || (normalizedStartDate && normalizedTargetDate && normalizedStartDate > normalizedTargetDate)) {
       return { ok: false, status: 400, body: { error: "invalid_planning_project_schedule" } };
@@ -266,6 +276,8 @@ export function createPlanningProjectService({
       ownerId: normalizedOwnerId,
       status: normalizedStatus,
       tags: normalizedTags,
+      statusSummary: normalizedStatusSummary,
+      statusUpdatedAt: normalizedStatusSummary ? timestamp : null,
       savedViews: importedViews ?? (template?.savedViews ?? []).map((view) => ({ ...view, id: nextId("ppv") })),
       automationRules: importedRules ?? (template?.automationRules ?? []).map((rule) => ({ ...rule, id: nextId("par") })),
       activity: [],
@@ -327,6 +339,14 @@ export function createPlanningProjectService({
       const tags = normalizeProjectTags(changes.tags);
       if (!tags) return { ok: false, status: 400, body: { error: "invalid_planning_project_tags" } };
       patch.tags = tags;
+    }
+    if (Object.hasOwn(changes, "statusSummary")) {
+      const statusSummary = String(changes.statusSummary ?? "").trim();
+      if (statusSummary.length > 1_000) {
+        return { ok: false, status: 400, body: { error: "planning_project_status_summary_too_large" } };
+      }
+      patch.statusSummary = statusSummary;
+      patch.statusUpdatedAt = now();
     }
     if (Object.hasOwn(changes, "savedViews")) {
       const savedViews = normalizeSavedViews(changes.savedViews, nextId);

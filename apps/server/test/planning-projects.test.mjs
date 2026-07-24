@@ -310,3 +310,23 @@ test("project tags are normalized, searchable, inherited, and revision gated", (
     planningProjectId: project.id, expectedRevision: 2, tags: ["x".repeat(51)],
   }, ACTOR_A).status, 400);
 });
+
+test("project status summaries record check-ins and stale active projects raise risk", () => {
+  const { state, service } = harness();
+  const project = service.createProject({ name: "Check-in", statusSummary: "On track" }, ACTOR_A).body.project;
+  assert.equal(project.statusSummary, "On track");
+  assert.equal(project.statusUpdatedAt, "2026-07-24T00:00:00.000Z");
+  state.planningProjects[0].statusUpdatedAt = "2026-07-01T00:00:00.000Z";
+  const stale = service.getProject({ planningProjectId: project.id }, ACTOR_A).body.project;
+  assert.equal(stale.daysSinceStatusUpdate, 23);
+  assert.equal(stale.staleStatus, true);
+  assert.equal(stale.riskScore, 2);
+  const refreshed = service.updateProject({
+    planningProjectId: project.id, expectedRevision: 1, statusSummary: "Recovered",
+  }, ACTOR_A).body.project;
+  assert.equal(refreshed.statusSummary, "Recovered");
+  assert.equal(refreshed.staleStatus, false);
+  assert.equal(service.updateProject({
+    planningProjectId: project.id, expectedRevision: 2, statusSummary: "x".repeat(1_001),
+  }, ACTOR_A).status, 400);
+});
