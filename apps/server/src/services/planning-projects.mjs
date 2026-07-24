@@ -30,6 +30,20 @@ function normalizeProjectOwner(value) {
   return ownerId && ownerId.length <= 200 ? ownerId : undefined;
 }
 
+function normalizeProjectTags(value) {
+  if (!Array.isArray(value) || value.length > 20) return null;
+  const seen = new Set();
+  const tags = [];
+  for (const candidate of value) {
+    const tag = String(candidate ?? "").trim();
+    const key = tag.toLowerCase();
+    if (!tag || tag.length > 50 || seen.has(key)) return null;
+    seen.add(key);
+    tags.push(tag);
+  }
+  return tags;
+}
+
 function normalizeSavedViews(value, nextId) {
   if (!Array.isArray(value) || value.length > MAX_SAVED_VIEWS) return null;
   const names = new Set();
@@ -187,7 +201,8 @@ export function createPlanningProjectService({
     const projects = (state.planningProjects ?? [])
       .filter((row) => row.ownerTeamId === teamOfActor(actor))
       .filter((row) => query.includeArchived === "1" || !row.archivedAt)
-      .filter((row) => !q || `${row.name} ${row.description} ${row.ownerId ?? ""}`.toLowerCase().includes(q))
+      .filter((row) => !q || `${row.name} ${row.description} ${row.ownerId ?? ""} ${(row.tags ?? []).join(" ")}`
+        .toLowerCase().includes(q))
       .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
       .map((row) => projectView(row, actor));
     return { ok: true, status: 200, body: { projects, count: projects.length } };
@@ -201,7 +216,7 @@ export function createPlanningProjectService({
   }
 
   function createProject({
-    name, description, color, capacityPoints, startDate, targetDate, ownerId, status,
+    name, description, color, capacityPoints, startDate, targetDate, ownerId, status, tags,
     templateProjectId = null, savedViews, automationRules,
   } = {}, actor = null) {
     const template = templateProjectId ? findOwn(templateProjectId, actor) : null;
@@ -232,7 +247,8 @@ export function createPlanningProjectService({
       ? template?.ownerId ?? userOfActor(actor)
       : ownerId);
     const normalizedStatus = String(status ?? template?.status ?? "active");
-    if (!PROJECT_STATUSES.has(normalizedStatus) || normalizedOwnerId === undefined
+    const normalizedTags = normalizeProjectTags(tags === undefined ? template?.tags ?? [] : tags);
+    if (!PROJECT_STATUSES.has(normalizedStatus) || !normalizedTags || normalizedOwnerId === undefined
       || normalizedStartDate === undefined || normalizedTargetDate === undefined
       || (normalizedStartDate && normalizedTargetDate && normalizedStartDate > normalizedTargetDate)) {
       return { ok: false, status: 400, body: { error: "invalid_planning_project_schedule" } };
@@ -249,6 +265,7 @@ export function createPlanningProjectService({
       targetDate: normalizedTargetDate,
       ownerId: normalizedOwnerId,
       status: normalizedStatus,
+      tags: normalizedTags,
       savedViews: importedViews ?? (template?.savedViews ?? []).map((view) => ({ ...view, id: nextId("ppv") })),
       automationRules: importedRules ?? (template?.automationRules ?? []).map((rule) => ({ ...rule, id: nextId("par") })),
       activity: [],
@@ -305,6 +322,11 @@ export function createPlanningProjectService({
         return { ok: false, status: 400, body: { error: "invalid_planning_project_status" } };
       }
       patch.status = status;
+    }
+    if (Object.hasOwn(changes, "tags")) {
+      const tags = normalizeProjectTags(changes.tags);
+      if (!tags) return { ok: false, status: 400, body: { error: "invalid_planning_project_tags" } };
+      patch.tags = tags;
     }
     if (Object.hasOwn(changes, "savedViews")) {
       const savedViews = normalizeSavedViews(changes.savedViews, nextId);

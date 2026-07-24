@@ -287,3 +287,26 @@ test("project status is validated and completed projects suppress delivery risk"
   }, ACTOR_A).status, 400);
   assert.equal(service.createProject({ name: "Invalid", status: "unknown" }, ACTOR_A).status, 400);
 });
+
+test("project tags are normalized, searchable, inherited, and revision gated", () => {
+  const { service } = harness();
+  const project = service.createProject({
+    name: "Tagged", tags: ["release", "backend"],
+  }, ACTOR_A).body.project;
+  assert.deepEqual(project.tags, ["release", "backend"]);
+  assert.equal(service.listProjects({ q: "backend" }, ACTOR_A).body.count, 1);
+  const copy = service.createProject({
+    name: "Tagged copy", templateProjectId: project.id,
+  }, ACTOR_A).body.project;
+  assert.deepEqual(copy.tags, ["release", "backend"]);
+  const updated = service.updateProject({
+    planningProjectId: project.id, expectedRevision: 1, tags: ["frontend"],
+  }, ACTOR_A).body.project;
+  assert.deepEqual(updated.tags, ["frontend"]);
+  assert.equal(service.createProject({
+    name: "Duplicate tags", tags: ["Release", "release"],
+  }, ACTOR_A).status, 400);
+  assert.equal(service.updateProject({
+    planningProjectId: project.id, expectedRevision: 2, tags: ["x".repeat(51)],
+  }, ACTOR_A).status, 400);
+});

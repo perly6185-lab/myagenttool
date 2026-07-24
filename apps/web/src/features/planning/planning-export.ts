@@ -25,6 +25,7 @@ export interface PlanningExportProject {
   targetDate?: string | null;
   ownerId?: string | null;
   status?: "planned" | "active" | "on_hold" | "completed";
+  tags?: string[];
   savedViews?: unknown[];
   automationRules?: unknown[];
   activity?: unknown[];
@@ -73,6 +74,7 @@ export function planningProjectJson(project: PlanningExportProject, exportedAt =
       targetDate: project.targetDate ?? null,
       ownerId: project.ownerId ?? null,
       status: project.status ?? "active",
+      tags: project.tags ?? [],
       savedViews: project.savedViews ?? [],
       automationRules: project.automationRules ?? [],
       activity: project.activity ?? [],
@@ -112,6 +114,7 @@ export function parsePlanningProjectSnapshot(text: string) {
     status: ["planned", "active", "on_hold", "completed"].includes(String(project.status))
       ? project.status as "planned" | "active" | "on_hold" | "completed"
       : "active",
+    tags: Array.isArray(project.tags) ? project.tags.filter((tag): tag is string => typeof tag === "string") : [],
     savedViews,
     automationRules,
     workItemCount: Array.isArray(snapshot.workItems) ? snapshot.workItems.length : 0,

@@ -90,6 +90,7 @@ type PlanningProject = {
   ownerId?: string | null;
   unowned?: boolean;
   status?: "planned" | "active" | "on_hold" | "completed";
+  tags?: string[];
   health?: "healthy" | "active" | "attention";
   savedViews?: {
     id: string;
@@ -575,6 +576,7 @@ export function PlanningProjectsPanel({ onChanged = () => {} }: { onChanged?: ()
   const [projectTargetDate, setProjectTargetDate] = useState("");
   const [projectOwnerId, setProjectOwnerId] = useState("");
   const [projectStatus, setProjectStatus] = useState<"planned" | "active" | "on_hold" | "completed">("active");
+  const [projectTags, setProjectTags] = useState("");
   const [editing, setEditing] = useState(false);
   const storedPlanningView = useUiStore((state) => state.planningProjectView);
   const storePlanningView = useUiStore((state) => state.setPlanningProjectView);
@@ -596,6 +598,7 @@ export function PlanningProjectsPanel({ onChanged = () => {} }: { onChanged?: ()
   const [projectScope, setProjectScope] = useState<"active" | "attention" | "archived">("active");
   const [ownerFilter, setOwnerFilter] = useState("all");
   const [statusFilter, setStatusFilter] = useState("all");
+  const [tagFilter, setTagFilter] = useState("all");
   const [savedViewName, setSavedViewName] = useState("");
   const [savedViewId, setSavedViewId] = useState("");
   const [ruleStatus, setRuleStatus] = useState("");
@@ -683,6 +686,7 @@ export function PlanningProjectsPanel({ onChanged = () => {} }: { onChanged?: ()
         startDate: projectStartDate || null, targetDate: projectTargetDate || null,
         ownerId: projectOwnerId.trim() || undefined,
         status: projectStatus,
+        tags: projectTags.split(",").map((tag) => tag.trim()).filter(Boolean),
       }) as { project: PlanningProject };
       created = result.project;
       return result;
@@ -695,6 +699,7 @@ export function PlanningProjectsPanel({ onChanged = () => {} }: { onChanged?: ()
       setProjectTargetDate("");
       setProjectOwnerId("");
       setProjectStatus("active");
+      setProjectTags("");
       setSelectedId(created.id);
       setNonce((value) => value + 1);
       onChanged();
@@ -743,6 +748,7 @@ export function PlanningProjectsPanel({ onChanged = () => {} }: { onChanged?: ()
       targetDate: projectTargetDate || null,
       ownerId: projectOwnerId.trim() || null,
       status: projectStatus,
+      tags: projectTags.split(",").map((tag) => tag.trim()).filter(Boolean),
     })).then((ok) => {
       if (!ok) return;
       setEditing(false);
@@ -896,6 +902,7 @@ export function PlanningProjectsPanel({ onChanged = () => {} }: { onChanged?: ()
         targetDate: snapshot.targetDate,
         ownerId: snapshot.ownerId,
         status: snapshot.status,
+        tags: snapshot.tags,
         savedViews: snapshot.savedViews,
         automationRules: snapshot.automationRules,
       }) as { project: PlanningProject };
@@ -911,10 +918,12 @@ export function PlanningProjectsPanel({ onChanged = () => {} }: { onChanged?: ()
   };
   const visibleProjects = projects
     .filter((project) => !projectQuery.trim()
-      || `${project.name} ${project.description} ${project.ownerId ?? ""}`.toLowerCase().includes(projectQuery.trim().toLowerCase()))
+      || `${project.name} ${project.description} ${project.ownerId ?? ""} ${(project.tags ?? []).join(" ")}`
+        .toLowerCase().includes(projectQuery.trim().toLowerCase()))
     .filter((project) => ownerFilter === "all"
       || (ownerFilter === "unowned" ? !project.ownerId : project.ownerId === ownerFilter))
     .filter((project) => statusFilter === "all" || project.status === statusFilter)
+    .filter((project) => tagFilter === "all" || project.tags?.includes(tagFilter))
     .filter((project) => projectScope === "archived"
       ? Boolean(project.archivedAt)
       : !project.archivedAt && (projectScope !== "attention" || project.health === "attention"))
@@ -922,6 +931,7 @@ export function PlanningProjectsPanel({ onChanged = () => {} }: { onChanged?: ()
   const portfolioAttention = projects.filter((project) => project.health === "attention").length;
   const portfolioActiveRuns = projects.reduce((sum, project) => sum + (project.activeRunCount ?? 0), 0);
   const projectOwners = [...new Set(projects.map((project) => project.ownerId).filter(Boolean) as string[])].sort();
+  const projectTagsAvailable = [...new Set(projects.flatMap((project) => project.tags ?? []))].sort();
 
   return (
     <div className="grid gap-4 sm:grid-cols-[14rem_1fr]">
@@ -935,6 +945,8 @@ export function PlanningProjectsPanel({ onChanged = () => {} }: { onChanged?: ()
           {(["planned", "active", "on_hold", "completed"] as const).map((status) =>
             <option key={status} value={status}>{t(`planningStatus.${status}`)}</option>)}
         </Select>
+        <Input value={projectTags} onChange={(event) => setProjectTags(event.target.value)}
+          placeholder={t("planningTags.hint")} aria-label={t("planningTags.field")} />
         <Input type="number" min="0" max="1000000" value={capacityPoints}
           onChange={(event) => setCapacityPoints(event.target.value)}
           placeholder={t("planningCapacity.capacity")} aria-label={t("planningCapacity.capacity")} />
@@ -980,6 +992,11 @@ export function PlanningProjectsPanel({ onChanged = () => {} }: { onChanged?: ()
           {(["planned", "active", "on_hold", "completed"] as const).map((status) =>
             <option key={status} value={status}>{t(`planningStatus.${status}`)}</option>)}
         </Select>
+        <Select value={tagFilter} aria-label={t("planningTags.filter")}
+          onChange={(event) => setTagFilter(event.target.value)}>
+          <option value="all">{t("planningTags.all")}</option>
+          {projectTagsAvailable.map((tag) => <option key={tag} value={tag}>{tag}</option>)}
+        </Select>
         <div className="space-y-1 border-t border-border pt-2">
           {visibleProjects.map((project) => (
             <button key={project.id} type="button" onClick={() => setSelectedId(project.id)}
@@ -987,6 +1004,7 @@ export function PlanningProjectsPanel({ onChanged = () => {} }: { onChanged?: ()
               <span className="min-w-0">
                 <span className="block truncate">{project.name}</span>
                 <span className="block text-[10px] text-muted-foreground">{t(`planningStatus.${project.status ?? "active"}`)}</span>
+                {(project.tags ?? []).length ? <span className="block truncate text-[10px] text-muted-foreground">{project.tags?.join(" · ")}</span> : null}
                 <span className="flex gap-1 text-[10px] text-muted-foreground">
                   {(project.blockedItemCount ?? 0) > 0 ? <span>{t("planningPortfolio.blocked", { count: project.blockedItemCount ?? 0 })}</span> : null}
                   {(project.overdueItemCount ?? 0) > 0 ? <span>{t("planningPortfolio.overdue", { count: project.overdueItemCount ?? 0 })}</span> : null}
@@ -1018,6 +1036,8 @@ export function PlanningProjectsPanel({ onChanged = () => {} }: { onChanged?: ()
                     {(["planned", "active", "on_hold", "completed"] as const).map((status) =>
                       <option key={status} value={status}>{t(`planningStatus.${status}`)}</option>)}
                   </Select>
+                  <Input value={projectTags} onChange={(event) => setProjectTags(event.target.value)}
+                    aria-label={t("planningTags.field")} />
                   <Input type="number" min="0" max="1000000" value={capacityPoints}
                     onChange={(event) => setCapacityPoints(event.target.value)}
                     aria-label={t("planningCapacity.capacity")} />
@@ -1041,6 +1061,7 @@ export function PlanningProjectsPanel({ onChanged = () => {} }: { onChanged?: ()
                     setProjectTargetDate(selected.targetDate ?? "");
                     setProjectOwnerId(selected.ownerId ?? "");
                     setProjectStatus(selected.status ?? "active");
+                    setProjectTags((selected.tags ?? []).join(", "));
                     setEditing(true);
                   }}>{t("planningProjects.edit")}</Button>
                 )}
