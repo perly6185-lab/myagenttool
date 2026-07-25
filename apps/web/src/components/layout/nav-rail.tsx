@@ -1,7 +1,13 @@
 import { useState } from "react";
 import { useQueries } from "@tanstack/react-query";
 import { ChevronRight, GitBranch, Hexagon, Plus, Settings } from "lucide-react";
-import { SECTIONS, SECTION_GROUPS } from "@/app/sections";
+import {
+  ENTRY_SECTIONS,
+  PAGE_REGISTRY,
+  SURFACE_GROUPS,
+  pageNavigationLabelKey,
+  pageRegistration,
+} from "@/app/sections";
 import { cn } from "@/lib/cn";
 import { useUiStore } from "@/store/ui-store";
 import { useConsoleState } from "@/data/use-console-state";
@@ -13,11 +19,12 @@ import { WorktreeCreator } from "@/features/projects/worktree-creator";
 import { WorktreeLinkPopover } from "@/features/projects/worktree-link-popover";
 import type { ProjectSnapshot } from "@/lib/console-state";
 import { useAppTranslation } from "@/lib/i18n/use-app-translation";
+import { usePageNavigation } from "@/hooks/use-page-navigation";
 
 export function NavRail() {
   const { t } = useAppTranslation();
   const section = useUiStore((s) => s.section);
-  const setSection = useUiStore((s) => s.setSection);
+  const navigate = usePageNavigation();
   const collapsedNavGroups = useUiStore((s) => s.collapsedNavGroups);
   const toggleNavGroup = useUiStore((s) => s.toggleNavGroup);
   const { data: state } = useConsoleState();
@@ -25,7 +32,7 @@ export function NavRail() {
   const attentionCount = state?.evidenceLedger?.filter((r) => r.attention).length ?? 0;
   const [showRegister, setShowRegister] = useState(false);
   // The active section's group is always shown, so a deep-link never lands in a collapsed group.
-  const activeGroup = SECTIONS.find((s) => s.key === section)?.group;
+  const activeGroup = pageRegistration(section).surface;
 
   return (
     <nav
@@ -43,7 +50,7 @@ export function NavRail() {
       </div>
 
       <ul className="flex flex-1 flex-col gap-0.5 overflow-y-auto px-3 py-2">
-        {SECTION_GROUPS.map((grp, gi) => {
+        {SURFACE_GROUPS.map((grp, gi) => {
           // Collapsed groups hide their items, but the group holding the active
           // section is force-open so navigation is never stranded behind a caret.
           const groupOpen = grp.key === activeGroup || !collapsedNavGroups.includes(grp.key);
@@ -63,7 +70,10 @@ export function NavRail() {
             </button>
             {groupOpen ? (
             <ul className="flex flex-col gap-0.5">
-              {SECTIONS.filter((s) => s.group === grp.key).map((item) => {
+              {(grp.key === "entry"
+                ? ENTRY_SECTIONS
+                : PAGE_REGISTRY.filter((item) => item.surface === grp.key && item.visibility !== "contextual")
+              ).map((item) => {
           const Icon = item.icon;
           const active = item.key === section;
           const isProjects = item.key === "projects";
@@ -81,11 +91,11 @@ export function NavRail() {
                   type="button"
                   aria-current={active ? "page" : undefined}
                   title={t(item.blurbKey)}
-                  onClick={() => setSection(item.key)}
+                  onClick={() => navigate(item.key)}
                   className="flex flex-1 items-center gap-3 px-3 py-2 text-left"
                 >
                   <Icon className="size-4 shrink-0" />
-                  {t(item.labelKey)}
+                  {t(pageNavigationLabelKey(item))}
                   {item.key === "approvals" && pendingCount > 0 ? (
                     <span
                       aria-label={t("shell.pending", { count: pendingCount })}

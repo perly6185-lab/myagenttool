@@ -115,7 +115,9 @@ test("keeps the primary mobile workflow usable without horizontal overflow", asy
   await page.reload();
   const section = page.getByLabel("Section", { exact: true });
   await expect(section).toBeVisible();
-  await section.selectOption("documents");
+  await expect(section).toHaveValue("");
+  await expect(page.getByRole("button", { name: "Open Settings" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Open Trace" })).toBeVisible();
   await expect(page.getByRole("button", { name: "New" })).toBeVisible();
   await expect.poll(() => page.evaluate(() => ({
     viewport: window.innerWidth,

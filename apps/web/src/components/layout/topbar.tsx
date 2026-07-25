@@ -1,5 +1,7 @@
 import { useSyncExternalStore } from "react";
-import { SECTIONS, SECTION_GROUPS } from "@/app/sections";
+import { History, Settings } from "lucide-react";
+import { ENTRY_SECTIONS, SECTIONS, pageNavigationLabelKey, pageRegistration } from "@/app/sections";
+import { usePageNavigation } from "@/hooks/use-page-navigation";
 import { LoginControl } from "@/components/layout/login-control";
 import { SkinPicker } from "@/components/layout/skin-picker";
 import { LanguagePicker } from "@/components/layout/language-picker";
@@ -49,22 +51,36 @@ function ProjectSwitcher() {
 function MobileSectionSwitcher() {
   const { t } = useAppTranslation();
   const section = useUiStore((s) => s.section);
-  const setSection = useUiStore((s) => s.setSection);
+  const navigate = usePageNavigation();
   return (
     <Select
       aria-label={t("shell.section")}
       className="h-8 w-32 md:hidden"
-      value={section}
-      onChange={(event) => setSection(event.target.value as typeof section)}
+      value={pageRegistration(section).surface === "entry" && pageRegistration(section).visibility === "primary" ? section : ""}
+      onChange={(event) => navigate(event.target.value as typeof section)}
     >
-      {SECTION_GROUPS.map((group) => (
-        <optgroup key={group.key} label={t(group.labelKey)}>
-          {SECTIONS.filter((item) => item.group === group.key).map((item) => (
-            <option key={item.key} value={item.key}>{t(item.labelKey)}</option>
-          ))}
-        </optgroup>
+      {pageRegistration(section).surface !== "entry" || pageRegistration(section).visibility !== "primary"
+        ? <option value="">{t(pageRegistration(section).labelKey)}</option>
+        : null}
+      {ENTRY_SECTIONS.map((item) => (
+        <option key={item.key} value={item.key}>{t(pageNavigationLabelKey(item))}</option>
       ))}
     </Select>
+  );
+}
+
+function MobileSurfaceShortcuts() {
+  const { t } = useAppTranslation();
+  const navigate = usePageNavigation();
+  return (
+    <div className="flex items-center md:hidden">
+      <button type="button" className="grid size-8 place-items-center rounded hover:bg-muted" aria-label={t("shell.navigation.openSettings")} onClick={() => navigate("applications")}>
+        <Settings className="size-4" />
+      </button>
+      <button type="button" className="grid size-8 place-items-center rounded hover:bg-muted" aria-label={t("shell.navigation.openTrace")} onClick={() => navigate("invocations")}>
+        <History className="size-4" />
+      </button>
+    </div>
   );
 }
 
@@ -99,6 +115,7 @@ export function Topbar() {
       </div>
       <div className="flex items-center gap-3">
         <MobileSectionSwitcher />
+        <MobileSurfaceShortcuts />
         <ProjectSwitcher />
         {state?.device ? (
           <span className="hidden text-xs text-muted-foreground sm:inline">

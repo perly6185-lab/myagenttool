@@ -57,17 +57,27 @@ describe("ui-store persistence", () => {
 });
 
 describe("nav group collapse (#928)", () => {
-  it("starts with the expert groups collapsed and persists toggles", () => {
-    expect(useUiStore.getState().collapsedNavGroups).toEqual(["run", "oversee", "configure", "ledgers"]);
+  it("starts with Settings and Trace collapsed and persists toggles", () => {
+    expect(useUiStore.getState().collapsedNavGroups).toEqual(["settings", "trace"]);
 
-    useUiStore.getState().toggleNavGroup("configure"); // expand
-    expect(useUiStore.getState().collapsedNavGroups).toEqual(["run", "oversee", "ledgers"]);
+    useUiStore.getState().toggleNavGroup("settings"); // expand
+    expect(useUiStore.getState().collapsedNavGroups).toEqual(["trace"]);
 
-    useUiStore.getState().toggleNavGroup("run"); // expand a default-collapsed group
-    expect(useUiStore.getState().collapsedNavGroups).toEqual(["oversee", "ledgers"]);
+    useUiStore.getState().toggleNavGroup("entry"); // collapse the primary surface
+    expect(useUiStore.getState().collapsedNavGroups).toEqual(["trace", "entry"]);
 
     const parsed = JSON.parse(localStorage.getItem("myagenttool-ui") as string);
-    expect(parsed.state.collapsedNavGroups).toEqual(["oversee", "ledgers"]);
+    expect(parsed.state.collapsedNavGroups).toEqual(["trace", "entry"]);
+  });
+
+  it("migrates stale workflow group keys to the new surface defaults", async () => {
+    localStorage.setItem("myagenttool-ui", JSON.stringify({
+      version: 1,
+      state: { section: "documents", collapsedNavGroups: ["run", "configure"] },
+    }));
+    await useUiStore.persist.rehydrate();
+    expect(useUiStore.getState().section).toBe("documents");
+    expect(useUiStore.getState().collapsedNavGroups).toEqual(["settings", "trace"]);
   });
 });
 

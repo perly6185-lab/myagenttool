@@ -73,6 +73,8 @@ export const DEFAULT_PLANNING_PROJECT_FILTERS: PlanningProjectFilters = {
 
 interface UiState {
   section: SectionKey;
+  /** Entry/context page to restore after a temporary Settings or Trace visit. */
+  surfaceReturnSection: SectionKey | null;
   selectedAgentId: string | null;
   selectedInvocationId: string | null;
   selectedArtifactId: string | null;
@@ -105,6 +107,7 @@ interface UiState {
   setMode: (mode: SkinMode) => void;
   setLocale: (locale: SupportedLocale) => void;
   setSection: (section: SectionKey) => void;
+  setSurfaceReturnSection: (section: SectionKey | null) => void;
   setSelectedAgentId: (id: string | null) => void;
   setSelectedInvocationId: (id: string | null) => void;
   setSelectedArtifactId: (id: string | null) => void;
@@ -126,8 +129,8 @@ interface UiState {
   toggleNavGroup: (group: string) => void;
 }
 
-/** Expert groups collapsed by default — Work/Run/Oversee stay open (#928). */
-export const DEFAULT_COLLAPSED_NAV_GROUPS = ["run", "oversee", "configure", "ledgers"];
+/** Ordinary Entry stays open; management and trace remain available on demand. */
+export const DEFAULT_COLLAPSED_NAV_GROUPS = ["settings", "trace"];
 
 /**
  * localStorage key for the persisted UI store. The index.html no-flash boot
@@ -300,6 +303,7 @@ export const useUiStore = create<UiState>()(
       const initialNavigation = navigationFromCurrentUrl();
       return {
         section: initialNavigation.section ?? "dashboard",
+        surfaceReturnSection: null,
         selectedAgentId: null,
         selectedInvocationId: initialNavigation.selectedInvocationId ?? null,
         selectedArtifactId: null,
@@ -326,6 +330,7 @@ export const useUiStore = create<UiState>()(
         setMode: (mode) => set({ mode }),
         setLocale: (locale) => set({ locale: normalizeLocale(locale) ?? DEFAULT_LOCALE }),
         setSection: (section) => set({ section }),
+        setSurfaceReturnSection: (surfaceReturnSection) => set({ surfaceReturnSection }),
         setSelectedAgentId: (selectedAgentId) => set({ selectedAgentId }),
         setSelectedInvocationId: (selectedInvocationId) => set({ selectedInvocationId }),
         setSelectedArtifactId: (selectedArtifactId) => set({ selectedArtifactId }),
@@ -381,8 +386,14 @@ export const useUiStore = create<UiState>()(
       merge: (persisted, current) => {
         const saved = (persisted ?? {}) as Partial<UiState>;
         const merged = { ...current, ...saved };
-        // A pre-#928 persisted blob has no collapsedNavGroups; fall back to the default.
-        if (!Array.isArray(merged.collapsedNavGroups)) {
+        // The information architecture changed from workflow groups to three
+        // stable user surfaces. Discard stale group keys without disturbing the
+        // user's current page or selections.
+        const validNavGroups = new Set(["entry", "settings", "trace"]);
+        if (
+          !Array.isArray(merged.collapsedNavGroups)
+          || merged.collapsedNavGroups.some((group) => !validNavGroups.has(group))
+        ) {
           merged.collapsedNavGroups = [...DEFAULT_COLLAPSED_NAV_GROUPS];
         }
         // Guard against a persisted section that no longer exists after a code change.

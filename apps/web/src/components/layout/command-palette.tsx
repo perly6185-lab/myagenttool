@@ -1,10 +1,13 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { Search, CornerDownLeft } from "lucide-react";
-import { SECTIONS, SECTION_GROUPS } from "@/app/sections";
-import { useUiStore } from "@/store/ui-store";
+import { PAGE_REGISTRY, SURFACE_GROUPS, pageNavigationLabelKey } from "@/app/sections";
 import { cn } from "@/lib/cn";
 import { useAppTranslation } from "@/lib/i18n/use-app-translation";
+import { usePageNavigation } from "@/hooks/use-page-navigation";
+
+const COMMAND_PAGES = SURFACE_GROUPS.flatMap((surface) =>
+  PAGE_REGISTRY.filter((page) => page.surface === surface.key));
 
 // ⌘K / Ctrl-K command palette: jump to any of the console's sections from
 // anywhere. Filters by label / blurb / group; arrow keys + Enter to navigate,
@@ -14,7 +17,7 @@ export function CommandPalette() {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
   const [active, setActive] = useState(0);
-  const setSection = useUiStore((s) => s.setSection);
+  const navigate = usePageNavigation();
   const inputRef = useRef<HTMLInputElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
   const restoreFocusRef = useRef<HTMLElement | null>(null);
@@ -22,8 +25,11 @@ export function CommandPalette() {
 
   const results = useMemo(() => {
     const q = query.trim().toLowerCase();
-    if (!q) return SECTIONS;
-    return SECTIONS.filter((s) => t(s.labelKey).toLowerCase().includes(q) || t(s.blurbKey).toLowerCase().includes(q) || t(`sectionGroups.${s.group}`).toLowerCase().includes(q));
+    if (!q) return COMMAND_PAGES;
+    return COMMAND_PAGES.filter((page) =>
+      t(pageNavigationLabelKey(page)).toLowerCase().includes(q)
+      || t(page.blurbKey).toLowerCase().includes(q)
+      || t(`shell.navigation.${page.surface}`).toLowerCase().includes(q));
   }, [i18n.resolvedLanguage, query, t]);
 
   // Mirror results/active into refs so the window key handler can read the
@@ -37,10 +43,10 @@ export function CommandPalette() {
     (i: number) => {
       const item = resultsRef.current[i];
       if (!item) return;
-      setSection(item.key);
+      navigate(item.key);
       setOpen(false);
     },
-    [setSection],
+    [navigate],
   );
 
   // Global toggle — Cmd/Ctrl-K only. Exclude Shift/Alt chords (e.g. Ctrl+Shift+K
@@ -138,8 +144,8 @@ export function CommandPalette() {
           {results.length === 0 ? (
             <p className="px-3 py-6 text-center text-sm text-muted-foreground">{t("shell.command.noMatch", { query })}</p>
           ) : (
-            SECTION_GROUPS.map((grp) => {
-              const items = results.filter((s) => s.group === grp.key);
+            SURFACE_GROUPS.map((grp) => {
+              const items = results.filter((page) => page.surface === grp.key);
               if (!items.length) return null;
               return (
                 <div key={grp.key}>
@@ -173,7 +179,7 @@ export function CommandPalette() {
                         )}
                       >
                         <Icon className="size-4 shrink-0 opacity-80" />
-                        <span className="font-medium text-foreground">{t(item.labelKey)}</span>
+                        <span className="font-medium text-foreground">{t(pageNavigationLabelKey(item))}</span>
                         <span className="truncate text-xs text-muted-foreground">{t(item.blurbKey)}</span>
                         {on ? <CornerDownLeft className="ml-auto size-3.5 shrink-0 text-muted-foreground" /> : null}
                       </button>
