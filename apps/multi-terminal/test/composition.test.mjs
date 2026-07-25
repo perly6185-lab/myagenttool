@@ -6,7 +6,7 @@ import { assertNoSchedulingOverride, assertPublicTerminalPath, ownerOperation, r
 const terminal = { id: "mac-studio", name: "工作室", apiUrl: "http://127.0.0.1:4310", consoleUrl: "http://127.0.0.1:4173" };
 
 test("snapshot preserves terminal ownership and independent queue counts", () => {
-  const row = projectTerminalSnapshot(terminal, { workItems: [
+  const row = projectTerminalSnapshot(terminal, { tasks: [
     { id: "wi_1", title: "文档", executionState: "running" },
     { id: "wi_2", title: "视频", executionState: "failed" },
   ] });
@@ -55,7 +55,7 @@ test("overview exposes no global scheduling capability", async () => {
   const service = createCompositionService({ terminals: [terminal], request: async (_terminal, operation) => ({
     ok: true,
     status: 200,
-    json: async () => operation.path.startsWith("/api/work-items") ? { workItems: [] } : {},
+    json: async () => ({ tasks: [] }),
   }) });
   const overview = await service.overview();
   assert.deepEqual(overview.scheduling, { supported: false, globalQueue: false, migration: false, failover: false });
@@ -65,10 +65,10 @@ test("overview reads only public summaries, never bridge, credentials, or files"
   const paths = [];
   const service = createCompositionService({ terminals: [terminal], request: async (_terminal, operation) => {
     paths.push(operation.path);
-    return { ok: true, status: 200, json: async () => operation.path.startsWith("/api/work-items") ? { workItems: [] } : {} };
+    return { ok: true, status: 200, json: async () => ({ tasks: [] }) };
   } });
   await service.overview();
-  assert.deepEqual(paths.sort(), ["/api/observability/operations", "/api/state", "/api/work-items?limit=100"]);
+  assert.deepEqual(paths, ["/api/terminal-observation/v1"]);
   assert.equal(paths.some((path) => path.startsWith("/api/bridge") || path.includes("credential") || path.includes("files")), false);
 });
 
@@ -80,14 +80,14 @@ test("end-to-end owner recovery keeps cross-asset trace and deep link on the sam
   ];
   const request = async (owner, operation) => {
     if (owner.id === "mac-studio" && !studioOnline) throw new Error("offline");
-    if (operation.path.startsWith("/api/work-items")) return {
-      ok: true, status: 200, json: async () => ({ workItems: owner.id === "mac-studio" ? [{
+    if (operation.path === "/api/terminal-observation/v1") return {
+      ok: true, status: 200, json: async () => ({ namespace: "local", protocolVersion: "1", capabilities: [], tasks: owner.id === "mac-studio" ? [{
         id: "wi_assets", title: "Excel 到 PPT 报告", executionState: "failed",
         inputAssets: [{ family: "spreadsheet" }], outputAssets: [{ family: "presentation" }, { family: "image" }],
         observability: { trace: { traceId: "trace_assets" } },
       }] : [] }),
     };
-    return { ok: true, status: 200, json: async () => operation.path === "/api/state" ? { namespace: "local", protocolVersion: "1", capabilities: [] } : {} };
+    return { ok: true, status: 200, json: async () => ({}) };
   };
   const service = createCompositionService({ terminals, request });
   const offline = await service.overview();

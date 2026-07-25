@@ -10,9 +10,9 @@ test("100-terminal composition stays within the local one-second baseline", asyn
   }));
   const request = async (_terminal, operation) => ({
     ok: true, status: 200,
-    json: async () => operation.path.startsWith("/api/work-items")
-      ? { workItems: Array.from({ length: 10 }, (_, index) => ({ id: `wi_${index}`, title: `Task ${index}`, executionState: "running" })) }
-      : {},
+    json: async () => ({
+      tasks: Array.from({ length: 10 }, (_, index) => ({ id: `wi_${index}`, title: `Task ${index}`, executionState: "running" })),
+    }),
   });
   const service = createCompositionService({ terminals, request });
   const started = performance.now();

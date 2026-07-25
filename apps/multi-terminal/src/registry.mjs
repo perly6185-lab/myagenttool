@@ -11,9 +11,11 @@ export function normalizeTerminal(input) {
   const apiUrl = safeEndpoint(input.apiUrl, "apiUrl");
   const consoleUrl = safeEndpoint(input.consoleUrl, "consoleUrl");
   const observerTokenEnv = String(input?.observerTokenEnv ?? "");
+  const operatorTokenEnv = String(input?.operatorTokenEnv ?? "");
   if (observerTokenEnv && !ENV_REF.test(observerTokenEnv)) throw new Error("invalid observer token environment reference");
-  if (Object.hasOwn(input ?? {}, "observerToken")) throw new Error("raw observer tokens cannot be stored in the registry");
-  return { id, name, apiUrl, consoleUrl, observerTokenEnv: observerTokenEnv || null };
+  if (operatorTokenEnv && !ENV_REF.test(operatorTokenEnv)) throw new Error("invalid operator token environment reference");
+  if (Object.hasOwn(input ?? {}, "observerToken") || Object.hasOwn(input ?? {}, "operatorToken")) throw new Error("raw tokens cannot be stored in the registry");
+  return { id, name, apiUrl, consoleUrl, observerTokenEnv: observerTokenEnv || null, operatorTokenEnv: operatorTokenEnv || null };
 }
 
 function safeEndpoint(value, field) {
@@ -26,7 +28,11 @@ function safeEndpoint(value, field) {
 }
 
 export function materializeTerminal(terminal, env = process.env) {
-  return { ...terminal, observerToken: terminal.observerTokenEnv ? String(env[terminal.observerTokenEnv] ?? "") : "" };
+  return {
+    ...terminal,
+    observerToken: terminal.observerTokenEnv ? String(env[terminal.observerTokenEnv] ?? "") : "",
+    operatorToken: terminal.operatorTokenEnv ? String(env[terminal.operatorTokenEnv] ?? "") : "",
+  };
 }
 
 export class TerminalRegistry {

@@ -30,7 +30,7 @@ function taskState(task) {
 }
 
 export function projectTerminalSnapshot(terminal, snapshot) {
-  const tasks = Array.isArray(snapshot?.workItems) ? snapshot.workItems : [];
+  const tasks = Array.isArray(snapshot?.tasks) ? snapshot.tasks : [];
   const counts = { running: 0, waiting: 0, failed: 0, attention: 0 };
   const projectedTasks = tasks.map((task) => {
     const state = taskState(task);
@@ -62,7 +62,7 @@ export function projectTerminalSnapshot(terminal, snapshot) {
     },
     counts,
     tasks: projectedTasks,
-    alerts: (snapshot?.operationalHealth?.alerts ?? []).map((alert) => ({
+    alerts: (snapshot?.alerts ?? []).map((alert) => ({
       ref: resourceRef(terminal.id, alert.id),
       terminalId: terminal.id,
       severity: alert.severity,
@@ -74,34 +74,29 @@ export function projectTerminalSnapshot(terminal, snapshot) {
   };
 }
 
-export function createCompositionService({ terminals, request }) {
-  const registry = new Map(terminals.map((terminal) => [terminal.id, Object.freeze({ ...terminal })]));
+export function createCompositionService({ terminals, request, operationRuntime = null }) {
+  const terminalRows = () => typeof terminals === "function" ? terminals() : terminals;
+  const registry = () => new Map(terminalRows().map((terminal) => [terminal.id, Object.freeze({ ...terminal })]));
+  const lastGood = new Map();
 
   async function readOne(terminal) {
     try {
-      const [stateResponse, tasksResponse, healthResponse] = await Promise.all([
-        request(terminal, { method: "GET", path: assertPublicTerminalPath("/api/state") }),
-        request(terminal, { method: "GET", path: assertPublicTerminalPath("/api/work-items?limit=100") }),
-        request(terminal, { method: "GET", path: assertPublicTerminalPath("/api/observability/operations") }),
-      ]);
-      if (!stateResponse.ok || !tasksResponse.ok || !healthResponse.ok) {
-        throw new Error(`terminal summary unavailable (${stateResponse.status}/${tasksResponse.status}/${healthResponse.status})`);
-      }
-      const [state, tasks, operationalHealth] = await Promise.all([
-        stateResponse.json(), tasksResponse.json(), healthResponse.json(),
-      ]);
-      return projectTerminalSnapshot(terminal, {
-        namespace: state.namespace,
-        protocolVersion: state.protocolVersion,
-        workItems: tasks.workItems,
-        capabilities: state.capabilities,
-        operationalHealth,
+      const response = await request(terminal, {
+        method: "GET", path: assertPublicTerminalPath("/api/terminal-observation/v1"), readOnly: true,
       });
+      if (!response.ok) throw new Error(`terminal summary unavailable (${response.status})`);
+      const projected = projectTerminalSnapshot(terminal, await response.json());
+      lastGood.set(terminal.id, projected);
+      return { ...projected, stale: false, observedAt: projected.lastSeenAt };
     } catch (error) {
+      const cached = lastGood.get(terminal.id);
       return {
         id: terminal.id, name: terminal.name, status: "offline", lastSeenAt: null,
         counts: { running: 0, waiting: 0, failed: 0, attention: 1 },
-        tasks: [], alerts: [], capabilities: [], recovery: recoveryTrend([]),
+        tasks: (cached?.tasks ?? []).map((task) => ({ ...task, stale: true })),
+        alerts: cached?.alerts ?? [], capabilities: cached?.capabilities ?? [], recovery: cached?.recovery ?? recoveryTrend([]),
+        configuration: cached?.configuration ?? { namespace: null, protocolVersion: null, capabilityIds: [] },
+        stale: Boolean(cached), observedAt: cached?.observedAt ?? null,
         unavailableReason: error instanceof Error ? error.message : "terminal unavailable",
       };
     }
@@ -109,8 +104,8 @@ export function createCompositionService({ terminals, request }) {
 
   return {
     async overview() {
-      const terminalRows = await Promise.all([...registry.values()].map(readOne));
-      const online = terminalRows.filter((row) => row.status === "online");
+      const rows = await Promise.all([...registry().values()].map(readOne));
+      const online = rows.filter((row) => row.status === "online");
       const baseline = online[0]?.configuration ?? null;
       const consistency = online.map((row) => ({
         terminalId: row.id,
@@ -123,16 +118,16 @@ export function createCompositionService({ terminals, request }) {
       return {
         generatedAt: new Date().toISOString(),
         scheduling: { supported: false, globalQueue: false, migration: false, failover: false },
-        terminals: terminalRows,
+        terminals: rows,
         configurationConsistency: { baselineTerminalId: online[0]?.id ?? null, terminals: consistency },
-        totals: terminalRows.reduce((total, row) => {
+        totals: rows.reduce((total, row) => {
           for (const key of Object.keys(total)) total[key] += row.counts[key];
           return total;
         }, { running: 0, waiting: 0, failed: 0, attention: 0 }),
       };
     },
-    async proxyAction({ terminalId, resourceType, localResourceId, action, body = {} }) {
-      const terminal = registry.get(terminalId);
+    async proxyAction({ terminalId, resourceType, localResourceId, action, body = {}, idempotencyKey = null }) {
+      const terminal = registry().get(terminalId);
       if (!terminal) return { ok: false, status: 404, code: "terminal_not_found" };
       if (!ALLOWED_ACTIONS.has(action)) return { ok: false, status: 400, code: "unsupported_action" };
       let operation;
@@ -141,6 +136,9 @@ export function createCompositionService({ terminals, request }) {
         operation.path = assertPublicTerminalPath(operation.path);
       } catch {
         return { ok: false, status: 400, code: "invalid_owner_operation" };
+      }
+      if (operationRuntime) {
+        return operationRuntime.execute({ terminal, operation, idempotencyKey, action, localResourceId, request });
       }
       try {
         const response = await request(terminal, operation);

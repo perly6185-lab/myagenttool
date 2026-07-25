@@ -5,14 +5,16 @@
   <title>终端运营台</title><link rel="stylesheet" href="/styles.css">
 </head>
 <body>
-  <header><div><strong>终端运营台</strong><span>只读组合视图</span></div><nav><a href="#overview">概览</a><a href="#terminals">终端</a><a href="#tasks">任务</a><a href="#alerts">告警</a><a href="#trace">追踪</a></nav></header>
+  <header><div><strong data-zh="终端运营台" data-en="Terminal operations">终端运营台</strong><span data-zh="只读组合视图" data-en="Observation-only composition">只读组合视图</span></div><nav aria-label="Primary"><a href="#overview" data-zh="概览" data-en="Overview">概览</a><a href="#terminals" data-zh="终端" data-en="Terminals">终端</a><a href="#tasks" data-zh="任务" data-en="Tasks">任务</a><a href="#alerts" data-zh="告警" data-en="Alerts">告警</a><a href="#trace" data-zh="追踪" data-en="Trace">追踪</a><button type="button" data-view="language">EN</button></nav></header>
   <main>
-    <section id="overview"><h1>我的终端</h1><p>查看独立终端的运行状态。任务始终在所属终端内执行，不会迁移或跨终端调度。</p><div class="metrics" data-view="totals"></div></section>
-    <section id="terminals"><h2>终端</h2><div class="grid" data-view="terminals"></div></section>
-    <section><h2>配置一致性</h2><div class="grid" data-view="consistency"></div></section>
-    <section id="tasks"><h2>需要关注的任务</h2><div data-view="tasks"></div></section>
-    <section id="alerts"><h2>告警</h2><div data-view="alerts"></div></section>
-    <section id="trace"><h2>跨终端追踪</h2><p>按任务名称、终端或本地资源 ID 搜索；完整证据仍由所属终端提供。</p><input data-view="trace-query" type="search" placeholder="搜索任务、终端或资源 ID"><div data-view="trace"></div></section>
-    <section id="recovery"><h2>恢复耗时趋势</h2><p>按所属终端独立统计；样本不足时不推断健康状态。</p><div class="grid" data-view="recovery"></div></section>
+    <p class="warning" data-view="connection" hidden data-zh="事件连接已断开，正在自动重连；当前数据可能陈旧。" data-en="Event connection lost; reconnecting. Current data may be stale.">事件连接已断开，正在自动重连；当前数据可能陈旧。</p>
+    <section id="overview"><h1 data-zh="我的终端" data-en="My terminals">我的终端</h1><p data-zh="查看独立终端的运行状态。任务始终在所属终端内执行，不会迁移或跨终端调度。" data-en="Observe independent terminals. Tasks always execute on their owner and are never migrated or scheduled across terminals.">查看独立终端的运行状态。任务始终在所属终端内执行，不会迁移或跨终端调度。</p><div class="metrics" data-view="totals"></div></section>
+    <section id="terminals"><div class="row"><h2 data-zh="终端" data-en="Terminals">终端</h2><label><span data-zh="筛选" data-en="Filter">筛选</span> <select data-view="terminal-filter"><option value="all" data-zh="全部" data-en="All">全部</option><option value="online" data-zh="在线" data-en="Online">在线</option><option value="offline" data-zh="不可用" data-en="Unavailable">不可用</option></select></label></div><div class="grid" data-view="terminals"></div></section>
+    <section><h2 data-zh="配置一致性" data-en="Configuration consistency">配置一致性</h2><div class="grid" data-view="consistency"></div></section>
+    <section id="tasks"><h2 data-zh="需要关注的任务" data-en="Tasks requiring attention">需要关注的任务</h2><div data-view="tasks"></div></section>
+    <section id="alerts"><h2 data-zh="告警" data-en="Alerts">告警</h2><div data-view="alerts"></div></section>
+    <section id="trace"><h2 data-zh="跨终端追踪" data-en="Cross-terminal trace">跨终端追踪</h2><p data-zh="按任务名称、终端或本地资源 ID 搜索；完整证据仍由所属终端提供。" data-en="Search by task, terminal, or local resource ID. Complete evidence remains on the owner.">按任务名称、终端或本地资源 ID 搜索；完整证据仍由所属终端提供。</p><input aria-label="Trace search" data-view="trace-query" type="search" data-placeholder-zh="搜索任务、终端或资源 ID" data-placeholder-en="Search task, terminal, or resource ID" placeholder="搜索任务、终端或资源 ID"><div data-view="trace"></div></section>
+    <section id="recovery"><h2 data-zh="恢复耗时趋势" data-en="Recovery time trend">恢复耗时趋势</h2><p data-zh="按所属终端独立统计；样本不足时不推断健康状态。" data-en="Measured independently per owner. Small samples do not imply health.">按所属终端独立统计；样本不足时不推断健康状态。</p><div class="grid" data-view="recovery"></div></section>
+    <details><summary data-zh="终端注册管理" data-en="Terminal registration">终端注册管理</summary><form data-view="registration"><label>ID<input name="id" required pattern="[A-Za-z0-9._-]+"></label><label data-zh="名称" data-en="Name">名称<input name="name" required></label><label>API URL<input name="apiUrl" type="url" required></label><label>Console URL<input name="consoleUrl" type="url" required></label><label>Observer token env<input name="observerTokenEnv" required></label><label>Operator token env<input name="operatorTokenEnv" required></label><label>Admin token<input name="adminToken" type="password" required autocomplete="off"></label><button type="submit" data-zh="保存注册" data-en="Save registration">保存注册</button><p role="status" data-view="registration-status"></p></form></details>
   </main><script type="module" src="/app.js"></script>
 </body></html>

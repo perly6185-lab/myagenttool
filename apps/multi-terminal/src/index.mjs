@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import { createCompositionService } from "./composition.mjs";
 import { materializeTerminal, TerminalRegistry } from "./registry.mjs";
 import { RecoveryHistory } from "./recovery-history.mjs";
+import { OwnerOperationRuntime } from "./owner-operation-runtime.mjs";
 
 const publicDir = fileURLToPath(new URL("../public/", import.meta.url));
 const port = Number(process.env.MULTI_TERMINAL_PORT ?? 4311);
@@ -13,19 +14,29 @@ const registry = new TerminalRegistry(process.env.MULTI_TERMINAL_REGISTRY_PATH ?
 await registry.load();
 const recoveryHistory = new RecoveryHistory(process.env.MULTI_TERMINAL_RECOVERY_PATH ?? ".myagenttool/multi-terminal-recovery.json");
 await recoveryHistory.load();
+const operationRuntime = new OwnerOperationRuntime(process.env.MULTI_TERMINAL_AUDIT_PATH ?? ".myagenttool/multi-terminal-operation-audit.json");
+await operationRuntime.load();
+const service = createCompositionService({
+  terminals: () => registry.list().map((row) => materializeTerminal(row)),
+  request: terminalRequest,
+  operationRuntime,
+});
+const streamClients = new Set();
 
 function terminalRequest(terminal, operation) {
   const url = new URL(operation.path, terminal.apiUrl);
   const headers = { accept: "application/json", "content-type": "application/json" };
-  if (terminal.observerToken) headers.authorization = `Bearer ${terminal.observerToken}`;
+  if (operation.readOnly && terminal.observerToken) headers.authorization = `Observer ${terminal.observerToken}`;
+  else if (terminal.operatorToken) headers.authorization = `Bearer ${terminal.operatorToken}`;
   return fetch(url, { method: operation.method, headers, body: operation.body ? JSON.stringify(operation.body) : undefined, signal: AbortSignal.timeout(5_000) });
 }
 
 const server = createServer(async (req, res) => {
   try {
     const requestUrl = new URL(req.url ?? "/", `http://127.0.0.1:${port}`);
-    const terminals = registry.list().map((row) => materializeTerminal(row));
-    const service = createCompositionService({ terminals, request: terminalRequest });
+    if (req.method === "GET" && requestUrl.pathname === "/health") {
+      return json(res, 200, { status: "ok", service: "myagenttool-multi-terminal", contract: "terminal-observation/v1" });
+    }
     if (req.method === "GET" && requestUrl.pathname === "/api/overview") {
       const overview = await service.overview();
       await recoveryHistory.observe(overview.terminals);
@@ -33,8 +44,34 @@ const server = createServer(async (req, res) => {
       overview.recoveryHistory = Object.fromEntries(overview.terminals.map((terminal) => [terminal.id, recoveryHistory.summary(terminal.id, windowDays)]));
       return json(res, 200, overview);
     }
+    if (req.method === "GET" && requestUrl.pathname === "/api/events") {
+      res.writeHead(200, {
+        "content-type": "text/event-stream", "cache-control": "no-cache, no-transform",
+        connection: "keep-alive", "x-accel-buffering": "no",
+      });
+      const client = { res, id: Number(req.headers["last-event-id"] ?? 0) || 0 };
+      streamClients.add(client);
+      res.write(`event: ready\ndata: ${JSON.stringify({ reconnect: client.id > 0 })}\n\n`);
+      req.on("close", () => streamClients.delete(client));
+      return;
+    }
+    if (req.method === "GET" && requestUrl.pathname === "/api/traces") {
+      const overview = await service.overview();
+      const query = String(requestUrl.searchParams.get("q") ?? "").trim().toLowerCase().slice(0, 200);
+      const limit = Math.min(100, Math.max(1, Number(requestUrl.searchParams.get("limit")) || 25));
+      const offset = decodeCursor(requestUrl.searchParams.get("cursor"));
+      const rows = overview.terminals.flatMap((terminal) => terminal.tasks)
+        .filter((task) => !query || `${task.title} ${task.terminalName} ${task.localResourceId} ${task.traceId ?? ""} ${task.assetFamilies.join(" ")}`.toLowerCase().includes(query))
+        .sort((a, b) => String(b.updatedAt ?? "").localeCompare(String(a.updatedAt ?? "")));
+      const page = rows.slice(offset, offset + limit);
+      return json(res, 200, { traces: page, nextCursor: offset + limit < rows.length ? encodeCursor(offset + limit) : null });
+    }
     if (req.method === "GET" && requestUrl.pathname === "/api/terminals") {
-      return json(res, 200, { terminals: registry.list().map(({ observerTokenEnv: _secretRef, ...row }) => row) });
+      return json(res, 200, { terminals: registry.list().map(({ observerTokenEnv: _observerRef, operatorTokenEnv: _operatorRef, ...row }) => row) });
+    }
+    if (req.method === "GET" && requestUrl.pathname === "/api/operation-audit") {
+      if (!adminAuthorized(req)) return json(res, 401, { error: "admin_token_required" });
+      return json(res, 200, { records: operationRuntime.records() });
     }
     if (req.method === "POST" && requestUrl.pathname === "/api/terminals") {
       if (!adminAuthorized(req)) return json(res, 401, { error: "admin_token_required" });
@@ -52,6 +89,7 @@ const server = createServer(async (req, res) => {
       const result = await service.proxyAction({
         terminalId: decodeURIComponent(action[1]), resourceType: action[2],
         localResourceId: decodeURIComponent(action[3]), action: action[4], body,
+        idempotencyKey: String(req.headers["idempotency-key"] ?? ""),
       });
       return json(res, result.status, result);
     }
@@ -85,6 +123,20 @@ function adminAuthorized(req) {
   return timingSafeEqual(Buffer.from(supplied), Buffer.from(expected));
 }
 
+function encodeCursor(offset) {
+  return Buffer.from(JSON.stringify({ offset }), "utf8").toString("base64url");
+}
+
+function decodeCursor(cursor) {
+  if (!cursor) return 0;
+  try {
+    const offset = JSON.parse(Buffer.from(cursor, "base64url").toString("utf8")).offset;
+    return Number.isInteger(offset) && offset >= 0 && offset <= 100_000 ? offset : 0;
+  } catch {
+    return 0;
+  }
+}
+
 async function readBody(req) {
   const chunks = [];
   for await (const chunk of req) chunks.push(chunk);
@@ -93,3 +145,16 @@ async function readBody(req) {
 }
 
 server.listen(port, "127.0.0.1", () => console.log(`Multi-terminal console: http://127.0.0.1:${port}`));
+
+let streamEventId = 0;
+setInterval(async () => {
+  if (!streamClients.size) return;
+  try {
+    const overview = await service.overview();
+    streamEventId += 1;
+    const payload = JSON.stringify({ generatedAt: overview.generatedAt, terminals: overview.terminals.map(({ id, status, stale, observedAt, counts }) => ({ id, status, stale, observedAt, counts })) });
+    for (const client of streamClients) client.res.write(`id: ${streamEventId}\nevent: overview\ndata: ${payload}\n\n`);
+  } catch {
+    for (const client of streamClients) client.res.write(": keepalive\n\n");
+  }
+}, 15_000).unref();
