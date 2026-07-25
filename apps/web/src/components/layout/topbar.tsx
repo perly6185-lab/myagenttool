@@ -1,4 +1,5 @@
-import { SECTIONS } from "@/app/sections";
+import { useSyncExternalStore } from "react";
+import { SECTIONS, SECTION_GROUPS } from "@/app/sections";
 import { LoginControl } from "@/components/layout/login-control";
 import { SkinPicker } from "@/components/layout/skin-picker";
 import { LanguagePicker } from "@/components/layout/language-picker";
@@ -9,6 +10,10 @@ import { useConsoleState } from "@/data/use-console-state";
 import { useAsyncAction, api } from "@/data/use-console-actions";
 import { useUiStore } from "@/store/ui-store";
 import { useAppTranslation } from "@/lib/i18n/use-app-translation";
+import {
+  isControlPlaneStreamConnected,
+  subscribeControlPlaneStream,
+} from "@/data/control-plane-stream";
 
 /** The server-persisted current project — survives refresh via /api/state. */
 function ProjectSwitcher() {
@@ -52,8 +57,12 @@ function MobileSectionSwitcher() {
       value={section}
       onChange={(event) => setSection(event.target.value as typeof section)}
     >
-      {SECTIONS.map((item) => (
-        <option key={item.key} value={item.key}>{t(item.labelKey)}</option>
+      {SECTION_GROUPS.map((group) => (
+        <optgroup key={group.key} label={t(group.labelKey)}>
+          {SECTIONS.filter((item) => item.group === group.key).map((item) => (
+            <option key={item.key} value={item.key}>{t(item.labelKey)}</option>
+          ))}
+        </optgroup>
       ))}
     </Select>
   );
@@ -65,6 +74,11 @@ export function Topbar() {
   const { data: state, isError, isLoading } = useConsoleState();
   const current = SECTIONS.find((item) => item.key === section);
   const wcoVisible = useWindowControlsOverlay();
+  const liveUpdates = useSyncExternalStore(
+    subscribeControlPlaneStream,
+    isControlPlaneStreamConnected,
+    () => false,
+  );
 
   const connection = isError
     ? { tone: "danger" as const, label: t("shell.offline") }
@@ -92,6 +106,13 @@ export function Topbar() {
           </span>
         ) : null}
         <StatusBadge tone={connection.tone}>{connection.label}</StatusBadge>
+        {!isLoading && !isError ? (
+          <span title={liveUpdates ? "Server events update this view in real time." : "Live events are unavailable; periodic polling remains active."}>
+            <StatusBadge tone={liveUpdates ? "success" : "warning"}>
+              {liveUpdates ? "Live" : "Polling fallback"}
+            </StatusBadge>
+          </span>
+        ) : null}
         <LanguagePicker />
         <SkinPicker />
         <LoginControl />

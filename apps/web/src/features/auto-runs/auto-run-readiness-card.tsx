@@ -5,6 +5,7 @@ import { Badge } from "@/components/ui/badge";
 import { api } from "@/data/use-console-actions";
 import { cn } from "@/lib/cn";
 import { useAppTranslation } from "@/lib/i18n/use-app-translation";
+import { useVisibleInterval } from "@/hooks/use-visible-interval";
 
 interface ReadinessCheck {
   key: string;
@@ -45,9 +46,8 @@ export function AutoRunReadinessCard({ projectId }: { projectId: string | null }
 
   useEffect(() => {
     void load();
-    const timer = setInterval(() => void load(), 15_000);
-    return () => clearInterval(timer);
   }, [load]);
+  useVisibleInterval(() => void load(), 15_000, Boolean(projectId));
 
   if (!projectId || !readiness) return null;
 

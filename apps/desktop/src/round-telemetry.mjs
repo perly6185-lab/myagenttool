@@ -28,6 +28,8 @@ export function newRoundState() {
     // accumulated from item events until the turn closes.
     pendingFiles: [],
     pendingMessage: null,
+    currentStartedAt: null,
+    touchedUserFiles: false,
   };
 }
 
@@ -95,12 +97,12 @@ function codexFilePath(event) {
 }
 
 // Build the round_started + round_completed pair for one turn and advance state.
-function emitRound(state, { now, provider, model, status, tokens, filesRead, responseDigest, errorCode }) {
+function emitRound(state, { now, startedAt: explicitStartedAt = null, provider, model, status, tokens, filesRead, responseDigest, errorCode }) {
   const roundIndex = state.nextIndex;
   state.nextIndex += 1;
-  const startedAt = state.lastEndedAt ?? now;
+  const startedAt = explicitStartedAt ?? state.lastEndedAt ?? now;
   const endedAt = now;
-  const durationMs = state.lastEndedAt
+  const durationMs = explicitStartedAt || state.lastEndedAt
     ? Math.max(0, Date.parse(endedAt) - Date.parse(startedAt))
     : null;
   state.lastEndedAt = endedAt;
@@ -211,12 +213,17 @@ export function claudeRequestContext(event) {
  */
 export function codexRoundEmits(state, event, now) {
   if (!event || typeof event !== "object") return [];
+  if (event.type === "turn.started") {
+    state.currentStartedAt = now;
+    return [];
+  }
   const itemType = event.item?.type ?? null;
   if (itemType === "agent_message" && event.item?.text) {
     state.pendingMessage = String(event.item.text);
     return [];
   }
   if (itemType === "file_change" || itemType === "file_changes") {
+    state.touchedUserFiles = true;
     const path = codexFilePath(event);
     if (path) state.pendingFiles.push(path);
     return [];
@@ -224,6 +231,7 @@ export function codexRoundEmits(state, event, now) {
   if (event.type === "turn.completed") {
     const emits = emitRound(state, {
       now,
+      startedAt: state.currentStartedAt,
       provider: "openai",
       model: event.model ?? "codex",
       status: "succeeded",
@@ -233,11 +241,13 @@ export function codexRoundEmits(state, event, now) {
     });
     state.pendingFiles = [];
     state.pendingMessage = null;
+    state.currentStartedAt = null;
     return emits;
   }
   if (event.type === "turn.failed" || event.type === "error") {
     const emits = emitRound(state, {
       now,
+      startedAt: state.currentStartedAt,
       provider: "openai",
       model: event.model ?? "codex",
       status: "failed",
@@ -248,6 +258,7 @@ export function codexRoundEmits(state, event, now) {
     });
     state.pendingFiles = [];
     state.pendingMessage = null;
+    state.currentStartedAt = null;
     return emits;
   }
   return [];

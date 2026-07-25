@@ -4,21 +4,24 @@ import { createPlanningProjectService } from "../src/services/planning-projects.
 
 const ACTOR_A = { userId: "usr_a", teamId: "team_a" };
 const ACTOR_B = { userId: "usr_b", teamId: "team_b" };
+const ACTOR_C = { userId: "usr_c", teamId: "team_a" };
 
-function harness() {
+function harness({ store, persistStateSoon } = {}) {
   let counter = 0;
   const state = {
     planningProjects: [],
     planningProjectItems: [],
     workItems: [
-      { id: "wi_a", localRef: "LOCAL-1", ownerTeamId: "team_a", title: "A", status: "backlog", priority: "p2", state: "open" },
-      { id: "wi_b", localRef: "LOCAL-2", ownerTeamId: "team_b", title: "B", status: "ready", priority: "p1", state: "open" },
+      { id: "wi_a", projectId: "prj_a", localRef: "LOCAL-1", ownerTeamId: "team_a", title: "A", status: "backlog", priority: "p2", state: "open" },
+      { id: "wi_b", projectId: "prj_b", localRef: "LOCAL-2", ownerTeamId: "team_b", title: "B", status: "ready", priority: "p1", state: "open" },
     ],
   };
   const service = createPlanningProjectService({
     state,
     now: () => "2026-07-24T00:00:00.000Z",
     nextId: (prefix) => `${prefix}_${++counter}`,
+    store,
+    persistStateSoon,
   });
   return { state, service };
 }
@@ -41,6 +44,61 @@ test("planning projects are team scoped and revision gated", () => {
   }, ACTOR_A);
   assert.equal(updated.body.project.revision, 2);
   assert.equal(updated.body.project.name, "Release 1");
+});
+
+test("AI planning is review-only and projects expose autonomy and health", () => {
+  const { service, state } = harness();
+  const project = service.createProject({ name: "Guided delivery", autonomyProfile: "cautious" }, ACTOR_A).body.project;
+  service.addItem({ planningProjectId: project.id, workItemId: "wi_a" }, ACTOR_A);
+  state.workItems.push({
+    id: "wi_dependency", localRef: "LOCAL-3", ownerTeamId: "team_a",
+    title: "Dependency", status: "backlog", priority: "p2", state: "open",
+  });
+  state.workItems[0].dependencyIds = ["wi_dependency"];
+  state.workItems[0].executionBindings = [{ kind: "auto_run", targetId: "aur_health" }];
+  state.autoRuns = [{
+    id: "aur_health", status: "done", executionChainId: "wi_a",
+    routingOverride: { recommendedPath: "develop", actualPath: "design" },
+  }];
+  state.ledgerEntries = [{ id: "led_health", autoRunId: "aur_health", amountUsd: 0.25 }];
+  state.alertOutbox = [{
+    id: "aob_health", status: "failed", alert: { data: { autoRunId: "aur_health" } },
+  }];
+  const detail = service.getProject({ planningProjectId: project.id }, ACTOR_A).body.project;
+  assert.equal(detail.autonomyProfile, "cautious");
+  assert.equal(detail.aiHealth.blocked, 1);
+  assert.equal(detail.aiHealth.needsAttention, true);
+  assert.equal(detail.aiHealth.successRate, 1);
+  assert.equal(detail.aiHealth.routingCorrectionRate, 1);
+  assert.equal(detail.aiHealth.knownCostUsd, 0.25);
+  assert.equal(detail.aiHealth.alertBacklog, 1);
+  assert.equal(detail.aiHealth.traceCoverage, 1);
+  assert.equal(detail.aiHealth.sloStatus, "insufficient_data");
+  const workItemCount = state.workItems.length;
+  const plan = service.suggestPlan({ planningProjectId: project.id }, ACTOR_A);
+  assert.equal(plan.status, 200);
+  assert.equal(plan.body.plan.requiresApproval, true);
+  assert.equal(plan.body.plan.autonomyProfile, "cautious");
+  assert.equal(plan.body.plan.targetProjectId, "prj_a");
+  assert.equal(plan.body.plan.drafts.length, 3);
+  assert.equal(state.workItems.length, workItemCount, "suggestion must not create work items");
+  assert.equal(service.suggestPlan({ planningProjectId: project.id }, ACTOR_B).status, 404);
+});
+
+test("planning projects support cursor pagination and incremental refresh", () => {
+  const { service, state } = harness();
+  service.createProject({ name: "First" }, ACTOR_A);
+  service.createProject({ name: "Second" }, ACTOR_A);
+  state.planningProjects.find((project) => project.name === "First").updatedAt = "2026-07-24T00:01:00.000Z";
+  state.planningProjects.find((project) => project.name === "Second").updatedAt = "2026-07-24T00:02:00.000Z";
+  const firstPage = service.listProjects({ limit: "1" }, ACTOR_A).body;
+  assert.equal(firstPage.projects[0].name, "Second");
+  assert.equal(firstPage.hasMore, true);
+  const nextPage = service.listProjects({ limit: "1", cursor: firstPage.nextCursor }, ACTOR_A).body;
+  assert.equal(nextPage.projects[0].name, "First");
+  assert.equal(service.listProjects({
+    updatedSince: "2026-07-24T00:01:30.000Z",
+  }, ACTOR_A).body.projects[0].name, "Second");
 });
 
 test("work item membership is idempotent and rejects foreign items", () => {
@@ -129,6 +187,9 @@ test("project portfolio summaries expose execution and schedule risk", () => {
   assert.equal(summary.plannedPoints, 5);
   assert.equal(summary.capacityUtilization, 167);
   assert.equal(summary.overCapacity, true);
+  assert.deepEqual(summary.recommendedActions.slice(0, 3).map((action) => action.code), [
+    "recover_failed_runs", "resolve_blocked_items", "rebalance_capacity",
+  ]);
 });
 
 test("projects persist validated named views with server-owned identities", () => {
@@ -151,6 +212,15 @@ test("projects persist validated named views with server-owned identities", () =
     expectedRevision: 2,
     savedViews: [{ name: "", view: "roadmap", filters: {} }],
   }, ACTOR_A).status, 400);
+  const executionView = service.updateProject({
+    planningProjectId: project.id,
+    expectedRevision: 2,
+    savedViews: [{
+      name: "Executions", view: "executions",
+      filters: { status: "all", priority: "all", milestone: "", due: "all" },
+    }],
+  }, ACTOR_A);
+  assert.equal(executionView.status, 200);
 });
 
 test("projects can be duplicated as reusable configuration templates", () => {
@@ -282,6 +352,7 @@ test("project status is validated and completed projects suppress delivery risk"
   assert.equal(completed.projectOverdue, false);
   assert.equal(completed.riskScore, 0);
   assert.equal(completed.health, "healthy");
+  assert.deepEqual(completed.recommendedActions, []);
   assert.equal(service.updateProject({
     planningProjectId: project.id, expectedRevision: 2, status: "unknown",
   }, ACTOR_A).status, 400);
@@ -345,4 +416,128 @@ test("projects can be pinned with revision gating", () => {
   assert.equal(service.updateProject({
     planningProjectId: project.id, expectedRevision: 1, pinned: true,
   }, ACTOR_A).status, 409);
+});
+
+test("project watches are actor-specific and revision gated", () => {
+  const { service } = harness();
+  const project = service.createProject({ name: "Watched", watching: true }, ACTOR_A).body.project;
+  assert.equal(project.watching, true);
+  assert.equal(project.watcherIds, undefined);
+  assert.equal(service.getProject({ planningProjectId: project.id }, ACTOR_C).body.project.watching, false);
+  const watchedBySecond = service.updateProject({
+    planningProjectId: project.id, expectedRevision: 1, watching: true,
+  }, ACTOR_C).body.project;
+  assert.equal(watchedBySecond.watching, true);
+  const unwatched = service.updateProject({
+    planningProjectId: project.id, expectedRevision: 2, watching: false,
+  }, ACTOR_A).body.project;
+  assert.equal(unwatched.watching, false);
+  assert.equal(service.getProject({ planningProjectId: project.id }, ACTOR_C).body.project.watching, true);
+});
+
+test("recommended actions are confirmed, idempotent, and auditable", () => {
+  const { service } = harness();
+  let project = service.createProject({ name: "Unowned" }, ACTOR_A).body.project;
+  project = service.updateProject({
+    planningProjectId: project.id, expectedRevision: 1, ownerId: null,
+  }, ACTOR_A).body.project;
+  const recommendation = project.recommendedActions.find((action) => action.code === "assign_owner");
+  assert.equal(recommendation.risk, "medium");
+  assert.equal(recommendation.approvalRequired, false);
+  assert.equal(service.executeRecommendedAction({
+    planningProjectId: project.id, expectedRevision: 2, code: "assign_owner",
+    idempotencyKey: "owner-1", parameters: { ownerId: "usr_a" },
+  }, ACTOR_A).body.error, "recommended_action_confirmation_required");
+  const executed = service.executeRecommendedAction({
+    planningProjectId: project.id, expectedRevision: 2, code: "assign_owner",
+    idempotencyKey: "owner-1", confirmed: true, parameters: { ownerId: "usr_a" },
+  }, ACTOR_A);
+  assert.equal(executed.status, 201);
+  assert.equal(executed.body.execution.status, "completed");
+  assert.equal(executed.body.project.ownerId, "usr_a");
+  const replay = service.executeRecommendedAction({
+    planningProjectId: project.id, expectedRevision: 3, code: "assign_owner",
+    idempotencyKey: "owner-1", confirmed: true, parameters: { ownerId: "usr_a" },
+  }, ACTOR_A);
+  assert.equal(replay.body.replayed, true);
+});
+
+test("high-risk recommended actions require approval and drain through the durable executor", async () => {
+  const { service, state } = harness();
+  state.workItems.push({
+    id: "wi_dependency", localRef: "LOCAL-3", ownerTeamId: "team_a",
+    title: "Dependency", status: "backlog", priority: "p2", state: "open",
+  });
+  state.workItems[0].dependencyIds = ["wi_dependency"];
+  state.workItems[0].status = "blocked";
+  const project = service.createProject({ name: "Blocked work" }, ACTOR_A).body.project;
+  service.addItem({ planningProjectId: project.id, workItemId: "wi_a" }, ACTOR_A);
+  const current = service.getProject({ planningProjectId: project.id }, ACTOR_A).body.project;
+  const action = current.recommendedActions.find((candidate) => candidate.code === "resolve_blocked_items");
+  assert.equal(action.risk, "high");
+  const pending = service.executeRecommendedAction({
+    planningProjectId: project.id, expectedRevision: current.revision, code: action.code,
+    idempotencyKey: "blocked-1", confirmed: true,
+  }, ACTOR_A);
+  assert.equal(pending.status, 202);
+  assert.equal(pending.body.approvalRequest.status, "pending");
+  assert.equal(pending.body.approvalRequest.context.risk, "high");
+  assert.equal(pending.body.approvalRequest.context.affectedCount, 1);
+  assert.equal(service.decideRecommendedAction({
+    planningProjectId: project.id,
+    approvalRequestId: pending.body.approvalRequest.id,
+    decision: "approved",
+    confirmed: true,
+  }, ACTOR_A).body.error, "recommended_action_decision_note_required");
+  const resumed = service.decideRecommendedAction({
+    planningProjectId: project.id,
+    approvalRequestId: pending.body.approvalRequest.id,
+    decision: "approved",
+    confirmed: true,
+    note: "Evidence reviewed; recover the blocked dependency.",
+  }, ACTOR_A);
+  assert.equal(resumed.body.execution.status, "queued");
+  assert.equal(resumed.body.execution.approvalRequestId, pending.body.approvalRequest.id);
+  const drained = await service.processQueuedRecommendedActions();
+  assert.equal(drained.count, 1);
+  assert.equal(drained.processed[0].status, "completed");
+  assert.equal(drained.processed[0].result.stillBlocked[0].workItemId, "wi_a");
+  assert.equal(state.planningProjects[0].activity[0].action, "recommended_action_completed");
+});
+
+test("queued recommended actions commit their lease and terminal state exactly once each", async () => {
+  let commits = 0;
+  const { service, state } = harness({
+    store: { transaction: (fn) => { commits += 1; return fn(); } },
+    persistStateSoon: () => assert.fail("store-backed writes must not use the debounce"),
+  });
+  state.workItems.push({
+    id: "wi_dependency", localRef: "LOCAL-3", ownerTeamId: "team_a",
+    title: "Dependency", status: "backlog", priority: "p2", state: "open",
+  });
+  state.workItems[0].dependencyIds = ["wi_dependency"];
+  state.workItems[0].status = "blocked";
+  const project = service.createProject({ name: "Blocked work" }, ACTOR_A).body.project;
+  service.addItem({ planningProjectId: project.id, workItemId: "wi_a" }, ACTOR_A);
+  const current = service.getProject({ planningProjectId: project.id }, ACTOR_A).body.project;
+  const pending = service.executeRecommendedAction({
+    planningProjectId: project.id,
+    expectedRevision: current.revision,
+    code: "resolve_blocked_items",
+    idempotencyKey: "durable-action",
+    confirmed: true,
+  }, ACTOR_A);
+  service.decideRecommendedAction({
+    planningProjectId: project.id,
+    approvalRequestId: pending.body.approvalRequest.id,
+    decision: "approved",
+    confirmed: true,
+    note: "Commit the executor transitions.",
+  }, ACTOR_A);
+
+  commits = 0;
+  const drained = await service.processQueuedRecommendedActions();
+
+  assert.equal(drained.processed[0].status, "completed");
+  assert.equal(commits, 2);
 });

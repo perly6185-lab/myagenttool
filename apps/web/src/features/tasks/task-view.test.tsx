@@ -1,9 +1,11 @@
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { TaskView } from "@/features/tasks/task-view";
+import { TaskView, shouldShowWorkItemCost } from "@/features/tasks/task-view";
 
 const mocks = vi.hoisted(() => ({
   listWorkItems: vi.fn(),
+  listWorkItemAttention: vi.fn(),
+  updateWorkItemAttention: vi.fn(),
   listGithubItems: vi.fn(),
   createWorkItem: vi.fn(),
   getWorkItem: vi.fn(),
@@ -17,6 +19,7 @@ const mocks = vi.hoisted(() => ({
   listWorkItemActivity: vi.fn(),
   createWorkItemWorktree: vi.fn(),
   startWorkItemAutoRun: vi.fn(),
+  syncWorkItemGithubIssue: vi.fn(),
   listAutoRuns: vi.fn(),
   listPlanningProjects: vi.fn(),
   getPlanningProject: vi.fn(),
@@ -27,6 +30,7 @@ const mocks = vi.hoisted(() => ({
   removePlanningProjectItem: vi.fn(),
   reorderPlanningProjectItems: vi.fn(),
   updatePlanningProjectItems: vi.fn(),
+  executePlanningRecommendedAction: vi.fn(),
   execute: vi.fn(async (fn: () => Promise<unknown>) => { await fn(); return true; }),
 }));
 
@@ -41,10 +45,41 @@ vi.mock("@/data/use-console-state", () => ({
     agents: [],
   } }),
 }));
+
+describe("work-item cost visibility", () => {
+  it("shows a reserved budget before the first ledger entry exists", () => {
+    expect(shouldShowWorkItemCost({
+      nextAction: "monitor_execution",
+      attention: [],
+      latestRun: null,
+      activeClaim: null,
+      cost: {
+        knownUsd: 0,
+        unknownEntries: 0,
+        entryCount: 0,
+        projectBudget: null,
+        teamBudget: {
+          budgetId: "bud_team",
+          limitUsd: 50,
+          spentUsd: 0,
+          reservedUsd: 20,
+          admissionUsd: 20,
+          remainingUsd: 30,
+          policy: "block",
+          over: false,
+          admissionOver: false,
+        },
+      },
+      alerts: { queued: 0, failed: 0, sent: 0, skipped: 0 },
+    })).toBe(true);
+  });
+});
 vi.mock("@/data/use-console-actions", () => ({
   useAsyncAction: () => ({ execute: mocks.execute, pending: false, error: null }),
   api: {
     listWorkItems: mocks.listWorkItems,
+    listWorkItemAttention: mocks.listWorkItemAttention,
+    updateWorkItemAttention: mocks.updateWorkItemAttention,
     listGithubItems: mocks.listGithubItems,
     createWorkItem: mocks.createWorkItem,
     getWorkItem: mocks.getWorkItem,
@@ -58,6 +93,7 @@ vi.mock("@/data/use-console-actions", () => ({
     listWorkItemActivity: mocks.listWorkItemActivity,
     createWorkItemWorktree: mocks.createWorkItemWorktree,
     startWorkItemAutoRun: mocks.startWorkItemAutoRun,
+    syncWorkItemGithubIssue: mocks.syncWorkItemGithubIssue,
     listAutoRuns: mocks.listAutoRuns,
     listPlanningProjects: mocks.listPlanningProjects,
     getPlanningProject: mocks.getPlanningProject,
@@ -68,6 +104,7 @@ vi.mock("@/data/use-console-actions", () => ({
     removePlanningProjectItem: mocks.removePlanningProjectItem,
     reorderPlanningProjectItems: mocks.reorderPlanningProjectItems,
     updatePlanningProjectItems: mocks.updatePlanningProjectItems,
+    executePlanningRecommendedAction: mocks.executePlanningRecommendedAction,
   },
 }));
 vi.mock("@/store/ui-store", () => ({
@@ -93,8 +130,16 @@ describe("TaskView local work items", () => {
   beforeEach(() => {
     mocks.listPlanningProjects.mockResolvedValue({ projects: [] });
     mocks.listAutoRuns.mockResolvedValue({ runs: [] });
+    mocks.listWorkItemAttention.mockResolvedValue({ items: [] });
   });
   it("shows local work items as the default source", async () => {
+    mocks.listWorkItemAttention.mockResolvedValue({ items: [{
+      id: "github_conflict:lwi_1", kind: "github_conflict", severity: "high",
+      workItemId: "lwi_1", localRef: "LOCAL-1", title: "Plan offline",
+      createdAt: "2026-07-24T00:00:00.000Z", dueAt: "2026-07-24T04:00:00.000Z",
+      slaStatus: "within_sla", history: [], details: { fields: ["title"] },
+      handling: null, resolution: null,
+    }] });
     mocks.listWorkItems.mockResolvedValue({
       workItems: [{
         id: "lwi_1", localRef: "LOCAL-1", projectId: "prj_1",
@@ -105,10 +150,12 @@ describe("TaskView local work items", () => {
       count: 1,
     });
     render(<TaskView />);
-    expect(await screen.findByText("Plan offline")).toBeTruthy();
-    expect(screen.getByText("LOCAL-1")).toBeTruthy();
+    expect((await screen.findAllByText("Plan offline")).length).toBe(2);
+    expect(screen.getAllByText("LOCAL-1")).toHaveLength(2);
     expect(screen.getByText("Feature")).toBeTruthy();
     expect(screen.getByText("Ready")).toBeTruthy();
+    expect(screen.getByText("1 pending")).toBeTruthy();
+    expect(screen.getAllByText("Conflict")).toHaveLength(2);
   });
 
   it("creates a local issue from the modal", async () => {
@@ -207,10 +254,11 @@ describe("TaskView local work items", () => {
       body: "", type: "task", status: "backlog", priority: "p2", state: "open",
       labels: [], assigneeIds: [], acceptanceCriteria: [], revision: 1, archivedAt: null,
       dueDate: "2026-08-15", milestone: "M3", updatedAt: "2026-07-24T00:00:00.000Z",
+      executionBindings: [{ kind: "auto_run", targetId: "aur_1", worktreeId: null, createdAt: "2026-07-24T00:00:00.000Z" }],
     };
     const second = {
       ...first, id: "lwi_2", localRef: "LOCAL-2", title: "Second",
-      status: "done", dueDate: "2026-07-10",
+      status: "done", dueDate: "2026-07-10", executionBindings: [],
     };
     const project = {
       id: "ppj_1", name: "Ordered", description: "", revision: 2, archivedAt: null,
@@ -222,6 +270,11 @@ describe("TaskView local work items", () => {
       statusSummary: "Ready for rollout", daysSinceStatusUpdate: 2, staleStatus: false,
       checkIns: [{ id: "ppc_1", summary: "Scope approved", authorId: "usr_release", createdAt: "2026-07-22T00:00:00.000Z" }],
       pinned: true, updatedAt: "2026-07-24T00:00:00.000Z",
+      watching: true,
+      recommendedActions: [
+        { code: "recover_schedule", count: 3, risk: "medium", approvalRequired: false },
+        { code: "refresh_status", count: 15, risk: "low", approvalRequired: false },
+      ],
       itemCount: 2, openItemCount: 2, completedItemCount: 0,
       statusCounts: { backlog: 2, ready: 0, in_progress: 0, review: 0, blocked: 0, done: 0 },
       priorityCounts: { p0: 0, p1: 0, p2: 2, p3: 0 },
@@ -231,6 +284,7 @@ describe("TaskView local work items", () => {
       ],
     };
     mocks.listWorkItems.mockResolvedValue({ workItems: [first, second], count: 2 });
+    mocks.listAutoRuns.mockResolvedValue({ runs: [{ id: "aur_1", status: "awaiting_approval" }] });
     mocks.listPlanningProjects.mockResolvedValue({ projects: [project] });
     mocks.getPlanningProject.mockResolvedValue({ project });
     mocks.reorderPlanningProjectItems.mockResolvedValue({ project });
@@ -259,8 +313,21 @@ describe("TaskView local work items", () => {
     expect(screen.getByText("Status history (1)")).toBeTruthy();
     expect(screen.getByText("Scope approved")).toBeTruthy();
     expect(screen.getByTitle("Unpin project")).toBeTruthy();
+    expect(screen.getByTitle("Unwatch project")).toBeTruthy();
+    expect(screen.getByRole("option", { name: "Watched projects" })).toBeTruthy();
+    expect(screen.getByText("Recover schedule (3 days)")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Automate" }));
+    await waitFor(() => expect(mocks.executePlanningRecommendedAction).toHaveBeenCalledWith(
+      "ppj_1", "refresh_status",
+      { expectedRevision: 2, idempotencyKey: "ppj_1:refresh_status:2", confirmed: true },
+    ));
+    expect(screen.getByText("Create project")).toBeTruthy();
     expect(screen.getByRole("option", { name: "Target date" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "Clear portfolio filters" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Executions" }));
+    expect(screen.getByText("Awaiting approval")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Open Review" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Open Evidence" })).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Insights" }));
     expect(await screen.findByText("Status distribution")).toBeTruthy();
     expect(screen.getByText("Milestone progress")).toBeTruthy();
@@ -290,7 +357,22 @@ describe("TaskView local work items", () => {
       id: "lwi_1", localRef: "LOCAL-1", projectId: "prj_1",
       title: "Editable issue", body: "Before", type: "task", status: "backlog",
       priority: "p2", state: "open", labels: [], assigneeIds: [],
-      acceptanceCriteria: [], revision: 1, archivedAt: null,
+      businessState: "open", planningStatus: "backlog", executionState: "claimed",
+      externalBindings: [{
+        kind: "github_issue", number: 42, url: "https://github.test/issues/42",
+        lastSyncedAt: "2026-07-24T00:00:00.000Z",
+        conflict: { fields: ["title"], local: { title: "Editable issue" }, remote: { title: "Remote issue" } },
+      }],
+      acceptanceCriteria: ["Tests pass"], revision: 1, archivedAt: null,
+      acceptanceResults: [{ criterion: "Tests pass", status: "passed", note: "321 tests", verificationId: "wvr_1" }],
+      verificationRecords: [{
+        id: "wvr_1", kind: "test", status: "passed", command: "pnpm test", summary: "All suites",
+        evidence: [{ kind: "run", ref: "run:test-1", summary: "Test output" }],
+        recordedAt: "2026-07-24T00:00:00.000Z", recordedBy: "usr_a",
+      }],
+      completionGate: { ready: true, missingCriteria: [], verificationRequired: false },
+      parentId: null, parent: null, subIssues: [],
+      subIssuesSummary: { total: 0, completed: 0, percentCompleted: 0 },
       updatedAt: "2026-07-24T00:00:00.000Z",
     };
     mocks.listWorkItems.mockResolvedValue({ workItems: [item], count: 1 });
@@ -307,17 +389,33 @@ describe("TaskView local work items", () => {
     render(<TaskView />);
     fireEvent.click(await screen.findByText("Editable issue"));
     const title = await screen.findByDisplayValue("Editable issue");
+    expect(screen.getByText("Business: Open")).toBeTruthy();
+    expect(screen.getByText("Planning: Backlog")).toBeTruthy();
+    expect(screen.getByText("Execution: Claimed")).toBeTruthy();
+    expect(screen.getByText("GitHub #42 · Conflict")).toBeTruthy();
+    expect(screen.getByText("Conflicting fields: title")).toBeTruthy();
+    expect(screen.getByText("Tests pass · 321 tests")).toBeTruthy();
+    expect(screen.getByText("test · All suites")).toBeTruthy();
+    expect(screen.getByText("run: run:test-1")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Keep local" }));
+    await waitFor(() => expect(mocks.syncWorkItemGithubIssue).toHaveBeenCalledWith(
+      "lwi_1", { expectedRevision: 1, direction: "resolve_local" },
+    ));
+    expect(screen.getByText("No sub-issues")).toBeTruthy();
+    expect(screen.getByLabelText("Parent issue")).toBeTruthy();
     fireEvent.change(title, { target: { value: "Edited issue" } });
-    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    fireEvent.click(screen.getByRole("button", { name: "Create worktree" }));
+    expect(mocks.createWorkItemWorktree).not.toHaveBeenCalled();
+    const safetyDialog = screen.getAllByRole("dialog").at(-1);
+    fireEvent.click(within(safetyDialog as HTMLElement).getByRole("button", { name: "Save" }));
     await waitFor(() => expect(mocks.updateWorkItem).toHaveBeenCalledWith("lwi_1", expect.objectContaining({
       expectedRevision: 1,
       title: "Edited issue",
     })));
+    await waitFor(() => expect(mocks.createWorkItemWorktree).toHaveBeenCalledWith("lwi_1"));
     fireEvent.change(screen.getByPlaceholderText("Add a comment…"), { target: { value: "Looks good" } });
     fireEvent.click(screen.getByRole("button", { name: "Comment" }));
     await waitFor(() => expect(mocks.createWorkItemComment).toHaveBeenCalledWith("lwi_1", "Looks good"));
-    fireEvent.click(screen.getByRole("button", { name: "Create worktree" }));
-    await waitFor(() => expect(mocks.createWorkItemWorktree).toHaveBeenCalledWith("lwi_1"));
     expect(screen.getByText("Created")).toBeTruthy();
   });
 });

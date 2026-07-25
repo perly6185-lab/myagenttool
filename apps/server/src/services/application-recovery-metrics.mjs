@@ -29,7 +29,7 @@ export function summarizeOrchestrationRecovery(invocations = []) {
     return typeof inv.completedAt === "string" && Number.isFinite(Date.parse(inv.completedAt));
   });
   if (!runs.length) {
-    return { total: 0, failed: 0, recoveryHours: { median: null, count: 0 } };
+    return { total: 0, failed: 0, recoveryHours: { median: null, count: 0 }, trend: [], alerting: false, thresholdHours: 24 };
   }
 
   // Stream = one routine of one application. A success in routine B never
@@ -44,6 +44,7 @@ export function summarizeOrchestrationRecovery(invocations = []) {
   }
 
   const recoveries = [];
+  const recoveryPoints = [];
   let failed = 0;
   for (const list of streams.values()) {
     const sorted = [...list].sort((a, b) => Date.parse(a.completedAt) - Date.parse(b.completedAt));
@@ -56,15 +57,21 @@ export function summarizeOrchestrationRecovery(invocations = []) {
         failed += 1;
         if (incidentStart === null) incidentStart = Date.parse(run.completedAt);
       } else if (run.status === "succeeded" && incidentStart !== null) {
-        recoveries.push((Date.parse(run.completedAt) - incidentStart) / 3_600_000); // hours
+        const hours = (Date.parse(run.completedAt) - incidentStart) / 3_600_000;
+        recoveries.push(hours);
+        recoveryPoints.push({ at: run.completedAt, hours: round(hours, 2) });
         incidentStart = null;
       }
     }
   }
 
+  const recoveryMedian = round(median(recoveries), 2);
   return {
     total: runs.length,
     failed,
-    recoveryHours: { median: round(median(recoveries), 2), count: recoveries.length },
+    recoveryHours: { median: recoveryMedian, count: recoveries.length },
+    trend: recoveryPoints.slice(-30),
+    thresholdHours: 24,
+    alerting: recoveryMedian != null && recoveryMedian > 24,
   };
 }

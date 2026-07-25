@@ -319,7 +319,12 @@ if (process.argv.includes("--check")) {
     throw new Error("Codex child local env injection is not configured.");
   }
   const commandJsonPlan = codexCommandPlan({ command: "codex" }, ["exec", "--json", "{{task}}"], "fixture-task");
-  if (commandJsonPlan.command !== process.execPath || !commandJsonPlan.args[0]?.toLowerCase().endsWith("\\node_modules\\@openai\\codex\\bin\\codex.js") || commandJsonPlan.args[1] !== "exec") {
+  const commandJsonPlanValid = process.platform === "win32"
+    ? commandJsonPlan.command === process.execPath
+      && commandJsonPlan.args[0]?.toLowerCase().endsWith("\\node_modules\\@openai\\codex\\bin\\codex.js")
+      && commandJsonPlan.args[1] === "exec"
+    : commandJsonPlan.command === "codex" && commandJsonPlan.args[0] === "exec";
+  if (!commandJsonPlanValid) {
     throw new Error("Codex command plan is not configured.");
   }
   const codexCommand = resolveCodexCommandPlan("codex", [], { PATH: `${resolve(process.env.APPDATA ?? "", "npm")}${delimiter}${process.env.PATH ?? ""}`, APPDATA: process.env.APPDATA });
@@ -2842,7 +2847,7 @@ async function handleCodexJsonLine(invocationId, line, roundState = null) {
     const usage = event.usage ?? null;
     return {
       summary: "Codex CLI completed.",
-      touchedUserFiles: false,
+      touchedUserFiles: Boolean(roundState?.touchedUserFiles),
       output: { usage },
       // Codex reports token usage but no billed USD. Carry the full token
       // breakdown so the server can estimate cost from configured per-token rates

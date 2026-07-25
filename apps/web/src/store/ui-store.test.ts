@@ -58,16 +58,16 @@ describe("ui-store persistence", () => {
 
 describe("nav group collapse (#928)", () => {
   it("starts with the expert groups collapsed and persists toggles", () => {
-    expect(useUiStore.getState().collapsedNavGroups).toEqual(["configure", "ledgers"]);
+    expect(useUiStore.getState().collapsedNavGroups).toEqual(["run", "oversee", "configure", "ledgers"]);
 
     useUiStore.getState().toggleNavGroup("configure"); // expand
-    expect(useUiStore.getState().collapsedNavGroups).toEqual(["ledgers"]);
+    expect(useUiStore.getState().collapsedNavGroups).toEqual(["run", "oversee", "ledgers"]);
 
-    useUiStore.getState().toggleNavGroup("run"); // collapse a default-open group
-    expect(useUiStore.getState().collapsedNavGroups).toEqual(["ledgers", "run"]);
+    useUiStore.getState().toggleNavGroup("run"); // expand a default-collapsed group
+    expect(useUiStore.getState().collapsedNavGroups).toEqual(["oversee", "ledgers"]);
 
     const parsed = JSON.parse(localStorage.getItem("myagenttool-ui") as string);
-    expect(parsed.state.collapsedNavGroups).toEqual(["ledgers", "run"]);
+    expect(parsed.state.collapsedNavGroups).toEqual(["oversee", "ledgers"]);
   });
 });
 

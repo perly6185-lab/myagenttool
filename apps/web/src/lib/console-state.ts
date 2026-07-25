@@ -221,6 +221,16 @@ export interface PendingDecision {
   /** Native section to deep-link to for the full context. */
   section: string;
   targetId?: string | null;
+  context?: {
+    command?: string | null;
+    arguments?: string[];
+    workingDirectory?: string | null;
+    pathPolicy?: string | null;
+    impactScope?: string[];
+    projectId?: string | null;
+    worktreeId?: string | null;
+    autoRunId?: string | null;
+  } | null;
   /** #1151: advisory "X is handling this" marker — display-only, never gates the decision. */
   softClaim?: { claimedBy: string | null; expiresAt: string | null };
   /** Ids the inline actions need (approvalId / autoRunId / compareRunId / requestId / invocationId …). */
@@ -665,6 +675,9 @@ export interface LedgerEntry {
   status?: string;
   costOwner?: string;
   projectId?: string;
+  autoRunId?: string | null;
+  localIssueId?: string | null;
+  budgetPoolId?: string | null;
   invocationStatus?: string;
   createdAt: string;
 }
@@ -1180,6 +1193,27 @@ export interface ConsoleSnapshot {
   issueClaims?: IssueClaim[];
   /** #1152 durable claim lifecycle history (claimed/released/expired), newest first. */
   issueClaimEvents?: IssueClaimEvent[];
+  /** Bounded Work Item totals; details remain on the cursor-paginated endpoint. */
+  workItemSummary?: {
+    total: number;
+    open: number;
+    blocked: number;
+    activeExecutions: number;
+    updatedAt: string | null;
+  };
+  workItemAlertSummary?: {
+    queued: number;
+    failed: number;
+    sent: number;
+    byLocalIssue: {
+      localIssueId: string;
+      status: "queued" | "failed" | "sent";
+      attempts: number;
+      lastError: string | null;
+      createdAt: string;
+      sentAt: string | null;
+    }[];
+  };
   agent: AgentSnapshot | null;
   agents: AgentSnapshot[];
   invocations: InvocationSnapshot[];
@@ -1233,7 +1267,7 @@ export interface ConsoleSnapshot {
   ledgerSummary?: LedgerSummary;
   budgetStatuses?: BudgetStatus[];
   teamBudgetStatuses?: TeamBudgetStatus[];
-  teams?: { id: string; name?: string }[];
+  teams?: { id: string; name?: string; alertWebhookConfigured?: boolean }[];
   users?: { id: string; name?: string; teamId?: string; role?: string }[];
   /** Channel subsystem (#1090): operational rollup per channel, team-scoped. */
   channelOperations?: ChannelOperations[];

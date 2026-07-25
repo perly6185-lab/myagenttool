@@ -23,6 +23,7 @@ import { handleTerminalRoutes } from "../routes/terminal.mjs";
 import { handleToolRoutes } from "../routes/tools.mjs";
 import { handleWorkItemRoutes } from "../routes/work-items.mjs";
 import { handlePlanningProjectRoutes } from "../routes/planning-projects.mjs";
+import { ensureEventStreamMetrics, eventsAfter } from "../services/event-stream-metrics.mjs";
 
 export function createHttpServer({
   host,
@@ -45,9 +46,32 @@ export function createHttpServer({
   startAutoRun,
   retryAutoRun,
   mergeAutoRunPr,
+  recordRoutingOverride,
   setReportSchedule,
   postReportNow,
   claimIssue,
+  claimWorkItem,
+  releaseWorkItemClaim,
+  bindGithubIssue,
+  syncGithubIssue,
+  bindExternalIssue,
+  syncExternalIssue,
+  listWorkItemExternalProviders,
+  fetchWorkItemExternalIssue,
+  pushWorkItemExternalIssue,
+  fetchWorkItemGithubIssue,
+  pushWorkItemGithubIssue,
+  recordWorkItemVerification,
+  ingestGithubWorkItemWebhook,
+  replayGithubWorkItemWebhook,
+  recordGithubWorkItemWebhookFailure,
+  ingestExternalWorkItemWebhook,
+  replayExternalWorkItemWebhook,
+  recordExternalWorkItemWebhookFailure,
+  updateWorkItemAttention,
+  getWorkItemGithubSyncDiagnostics,
+  suggestWorkItemDraft,
+  retryWorkItemAlert,
   releaseIssueClaim,
   listIssueClaims,
   approveDesign,
@@ -214,6 +238,7 @@ export function createHttpServer({
   updateCanvasScene,
   deleteCanvasScene,
   listWorkItems,
+  listWorkItemAttention,
   getWorkItem,
   createWorkItem,
   updateWorkItem,
@@ -234,6 +259,9 @@ export function createHttpServer({
   removePlanningProjectItem,
   reorderPlanningProjectItems,
   updatePlanningProjectItems,
+  suggestPlanningPlan,
+  executePlanningRecommendedAction,
+  decidePlanningRecommendedAction,
   registerChannel,
   listChannels,
   enableChannel,
@@ -282,7 +310,10 @@ export function createHttpServer({
       // live token when MYAGENT_REQUIRE_AUTH is on. ---
       const actor = resolveActor(state, req);
       const bridgePath = url.pathname.startsWith("/api/bridge/");
-      const publicPath = url.pathname === "/api/session" || bridgePath;
+      // External providers authenticate webhook deliveries with endpoint-specific
+      // signatures, so a user bearer token must not block those callbacks first.
+      const issueWebhookPath = /^\/api\/webhooks\/(github|gitlab|gitea)\/work-items$/.test(url.pathname);
+      const publicPath = url.pathname === "/api/session" || bridgePath || issueWebhookPath;
       if (REQUIRE_AUTH && !publicPath && !actor.authenticated) {
         sendJson(res, 401, { error: "unauthenticated", message: "Valid session token required." });
         return;
@@ -297,6 +328,49 @@ export function createHttpServer({
         // Application descriptors persisted before the dual-layer model (idempotent).
         backfillApplicationRuntimeMetadata(state.applications);
         sendJson(res, 200, publicState(actor));
+        return;
+      }
+
+      if (req.method === "GET" && url.pathname === "/api/events/stream") {
+        const streamMetrics = ensureEventStreamMetrics(state, actor?.teamId);
+        streamMetrics.activeConnections += 1;
+        streamMetrics.connections += 1;
+        persistStateSoon();
+        res.writeHead(200, {
+          "Content-Type": "text/event-stream",
+          "Cache-Control": "no-cache, no-transform",
+          Connection: "keep-alive",
+          "X-Accel-Buffering": "no",
+        });
+        let lastEventId = state.events?.[0]?.id ?? null;
+        res.write(`event: ready\ndata: ${JSON.stringify({ lastEventId })}\n\n`);
+        const requestedCursor = String(req.headers["last-event-id"] ?? "");
+        for (const event of eventsAfter(state.events ?? [], requestedCursor)) {
+          res.write(`id: ${event.id}\nevent: state\ndata: ${JSON.stringify({ eventId: event.id, type: event.type, replayed: true })}\n\n`);
+        }
+        const changes = setInterval(() => {
+          const nextEvent = state.events?.[0] ?? null;
+          if (nextEvent?.id && nextEvent.id !== lastEventId) {
+            lastEventId = nextEvent.id;
+            const latencyMs = Math.max(0, Date.now() - Date.parse(nextEvent.createdAt));
+            streamMetrics.eventsSent += 1;
+            streamMetrics.eventLatencyTotalMs += Number.isFinite(latencyMs) ? latencyMs : 0;
+            streamMetrics.eventLatencyMaxMs = Math.max(streamMetrics.eventLatencyMaxMs, Number.isFinite(latencyMs) ? latencyMs : 0);
+            res.write(`id: ${nextEvent.id}\nevent: state\ndata: ${JSON.stringify({ eventId: nextEvent.id, type: nextEvent.type })}\n\n`);
+          }
+        }, 500);
+        const heartbeat = setInterval(() => res.write(": heartbeat\n\n"), 15_000);
+        const close = () => {
+          clearInterval(changes);
+          clearInterval(heartbeat);
+          if (streamMetrics.activeConnections > 0) {
+            streamMetrics.activeConnections -= 1;
+            streamMetrics.disconnects += 1;
+            persistStateSoon();
+          }
+        };
+        req.once("close", close);
+        res.once("close", close);
         return;
       }
 
@@ -373,7 +447,7 @@ export function createHttpServer({
 
       if (await handleWorkItemRoutes({
         req, res, url, sendJson, readJson, actor,
-        listWorkItems, getWorkItem, createWorkItem, updateWorkItem, bulkUpdateWorkItems, transitionWorkItem,
+        listWorkItems, listAttention: listWorkItemAttention, getWorkItem, createWorkItem, updateWorkItem, bulkUpdateWorkItems, transitionWorkItem,
         listActivity: listWorkItemActivity,
         listComments: listWorkItemComments,
         createComment: createWorkItemComment,
@@ -382,6 +456,28 @@ export function createHttpServer({
         createWorktree,
         startAutoRun,
         recordExecutionBinding: recordWorkItemExecutionBinding,
+        claimWorkItem,
+        releaseWorkItemClaim,
+        bindGithubIssue,
+        syncGithubIssue,
+        bindExternalIssue,
+        syncExternalIssue,
+        listExternalProviders: listWorkItemExternalProviders,
+        fetchExternalIssue: fetchWorkItemExternalIssue,
+        pushExternalIssue: pushWorkItemExternalIssue,
+        fetchGithubIssue: fetchWorkItemGithubIssue,
+        pushGithubIssue: pushWorkItemGithubIssue,
+        recordVerification: recordWorkItemVerification,
+        ingestGithubWebhook: ingestGithubWorkItemWebhook,
+        replayGithubWebhook: replayGithubWorkItemWebhook,
+        recordGithubWebhookFailure: recordGithubWorkItemWebhookFailure,
+        ingestExternalWebhook: ingestExternalWorkItemWebhook,
+        replayExternalWebhook: replayExternalWorkItemWebhook,
+        recordExternalWebhookFailure: recordExternalWorkItemWebhookFailure,
+        updateAttention: updateWorkItemAttention,
+        githubSyncDiagnostics: getWorkItemGithubSyncDiagnostics,
+        suggestWorkItemDraft,
+        retryWorkItemAlert,
       })) {
         return;
       }
@@ -397,6 +493,9 @@ export function createHttpServer({
         removeItem: removePlanningProjectItem,
         reorderItems: reorderPlanningProjectItems,
         updateItems: updatePlanningProjectItems,
+        suggestPlan: suggestPlanningPlan,
+        executeRecommendedAction: executePlanningRecommendedAction,
+        decideRecommendedAction: decidePlanningRecommendedAction,
       })) {
         return;
       }
@@ -426,6 +525,7 @@ export function createHttpServer({
         startAutoRun,
         retryAutoRun,
         mergeAutoRunPr,
+        recordRoutingOverride,
         setReportSchedule,
         postReportNow,
         claimIssue,

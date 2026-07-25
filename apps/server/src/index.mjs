@@ -241,6 +241,17 @@ if (typeof httpDependencies.reapStuckAutoRuns === "function") {
   setInterval(() => httpDependencies.reapStuckAutoRuns().catch(() => {}), 60_000).unref?.();
 }
 
+// Resume approved Project actions after a restart and keep draining the durable
+// queue. Each execution is moved to running before awaiting external work, so a
+// concurrent tick cannot consume it twice.
+if (typeof httpDependencies.processPlanningRecommendedActions === "function") {
+  const processPlanningActions = () =>
+    httpDependencies.processPlanningRecommendedActions().catch((error) =>
+      console.error(`[planning-actions] ${error?.message ?? error}`));
+  processPlanningActions();
+  setInterval(processPlanningActions, 30_000).unref?.();
+}
+
 // #6: issue-claim leases expire lazily (only when an admission path looks at
 // them). A slow proactive sweep settles expired claims even when nobody re-claims
 // or lists that project — so the issue_claim_expired event/history fire promptly
@@ -269,6 +280,24 @@ if (typeof httpDependencies.sweepAutoRunSloAlerts === "function") {
       /* best-effort SLO alert sweep */
     }
   }, 60_000).unref?.();
+}
+
+if (typeof httpDependencies.sweepWorkItemOperationalAlerts === "function") {
+  const sweepWorkItemAlerts = () => {
+    try {
+      httpDependencies.sweepWorkItemOperationalAlerts();
+    } catch {
+      /* best-effort work item alert sweep */
+    }
+  };
+  sweepWorkItemAlerts();
+  setInterval(sweepWorkItemAlerts, 60_000).unref?.();
+}
+
+if (typeof httpDependencies.sweepAlertOutbox === "function") {
+  const sweepAlerts = () => httpDependencies.sweepAlertOutbox().catch(() => {});
+  sweepAlerts();
+  setInterval(sweepAlerts, 15_000).unref?.();
 }
 
 // ADR 0017: opt-in OTLP trace export. Flush completed spans to the operator-set

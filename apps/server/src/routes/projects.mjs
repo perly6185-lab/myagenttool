@@ -1,7 +1,7 @@
 import { randomBytes } from "node:crypto";
 import { constants as fsConstants, copyFileSync, existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } from "node:path";
-import { denyForeignProject, teamOf, LOCAL_TEAM_ID } from "../runtime/auth.mjs";
+import { canProvision, denyForeignProject, teamOf, LOCAL_TEAM_ID } from "../runtime/auth.mjs";
 import { computeDispatchEvaluation } from "../read-models/dispatch-evaluation.mjs";
 import { computeIssueOwnership } from "../read-models/issue-ownership.mjs";
 import { recordHttpGateRefusal } from "./refusal-http-gate.mjs";
@@ -54,6 +54,7 @@ export async function handleProjectRoutes({
   retryAutoRun,
   cancelAutoRun,
   mergeAutoRunPr,
+  recordRoutingOverride,
   setReportSchedule,
   postReportNow,
   claimIssue,
@@ -234,6 +235,10 @@ export async function handleProjectRoutes({
   // foreign actor (these routes take a global run id, not a project id). (audit)
   const denyForeignAutoRun = (autoRunId) => {
     const run = (state.autoRuns ?? []).find((r) => r.id === autoRunId);
+    if (run && !run.projectId && actor?.teamId != null && run.teamId !== actor.teamId) {
+      sendJson(res, 404, { error: "auto_run_not_found" });
+      return true;
+    }
     const projectId = run?.projectId ?? null;
     if (!projectId) return false; // unknown run → let the service return not-found
     return denyForeignProject({ res, sendJson, state, actor, projectId, notFound: { error: "auto_run_not_found" } });
@@ -259,6 +264,29 @@ export async function handleProjectRoutes({
       sendJson(res, 200, result);
     } catch (error) {
       sendJson(res, 400, { error: "auto_run_cancel_failed", message: errorMessage(error) });
+    }
+    return true;
+  }
+
+  const routingOverrideMatch = url.pathname.match(/^\/api\/auto-runs\/([^\/]+)\/routing-override$/);
+  if (routingOverrideMatch && req.method === "POST") {
+    if (denyForeignAutoRun(decodeURIComponent(routingOverrideMatch[1]))) return true;
+    try {
+      const body = await readJson(req);
+      const result = recordRoutingOverride(decodeURIComponent(routingOverrideMatch[1]), {
+        actor,
+        actualPath: body?.actualPath,
+        reason: body?.reason,
+        expectedRevision: body?.expectedRevision,
+        idempotencyKey: body?.idempotencyKey,
+      });
+      sendJson(res, 200, result);
+    } catch (error) {
+      sendJson(res, error?.status ?? 400, {
+        error: error?.code ?? "routing_override_failed",
+        message: errorMessage(error),
+        ...(error?.currentRevision == null ? {} : { currentRevision: error.currentRevision }),
+      });
     }
     return true;
   }
@@ -332,12 +360,19 @@ export async function handleProjectRoutes({
     // outcomes; the 10s poll stays cheap.
     if (url.searchParams.get("refresh") === "1" && typeof refreshAutoRunPrDispositions === "function") {
       try {
-        await refreshAutoRunPrDispositions();
+        await refreshAutoRunPrDispositions({ teamId: actor?.teamId ?? null });
       } catch {
         /* best-effort */
       }
     }
-    const autoRuns = state.autoRuns ?? [];
+    const visibleProjectIds = new Set(
+      (state.projects ?? [])
+        .filter((project) => actor?.teamId == null || teamOf(project) === actor.teamId)
+        .map((project) => project.id),
+    );
+    const autoRuns = (state.autoRuns ?? []).filter((run) =>
+      (run.projectId && visibleProjectIds.has(run.projectId))
+      || (!run.projectId && actor?.teamId != null && run.teamId === actor.teamId));
     // Surface the pending local-approval on awaiting_approval runs so the human
     // can Approve/Deny directly on the auto-run card (informed by the decision
     // already shown), instead of hunting for it in the Invocations view.
@@ -347,7 +382,8 @@ export async function handleProjectRoutes({
         .map((a) => [a.invocationId, a]),
     );
     const enriched = autoRuns.map((run) => {
-      let out = run;
+      const { idempotencyKey: _routingIdempotencyKey, ...routingOverride } = run.routingOverride ?? {};
+      let out = run.routingOverride ? { ...run, routingOverride } : run;
       // Derived terminal grade (clean / degraded / unverified success, or failed)
       // for a per-run quality badge; null while the run is still in flight.
       const finalStatus = deriveFinalStatus(run);
@@ -384,10 +420,15 @@ export async function handleProjectRoutes({
     });
     sendJson(res, 200, {
       autoRuns: enriched,
-      summary: summarizeAutoRuns(autoRuns, { sloTargets: state.autoRunSettings?.sloTargets ?? null }),
+      summary: summarizeAutoRuns(autoRuns, {
+        sloTargets: state.autoRunSettings?.sloTargets ?? null,
+        routingThresholds: state.autoRunSettings?.routingThresholds ?? null,
+      }),
       // D2 deploy metrics: change-failure rate + recovery + frequency over the
       // deploy stage's records (feeds the DORA panel and maturity L5 in D3).
-      deployments: summarizeDeployments(state.deployments ?? []),
+      deployments: summarizeDeployments(
+        (state.deployments ?? []).filter((deployment) => visibleProjectIds.has(deployment.projectId)),
+      ),
     });
     return true;
   }
@@ -476,6 +517,10 @@ export async function handleProjectRoutes({
   if (req.method === "PUT" && url.pathname === "/api/auto-run-settings") {
     // Edit the SAFE knobs only; command argv is never accepted here. A field set
     // to null clears the override (back to env). Applied on the next server start.
+    if (!canProvision(actor)) {
+      sendJson(res, 403, { error: "forbidden", message: "Only an owner or admin can update global Auto-run settings." });
+      return true;
+    }
     const body = await readJson(req);
     state.autoRunSettings = normalizeAutoRunSettings(body ?? {}, state.autoRunSettings ?? {});
     persistStateSoon?.();

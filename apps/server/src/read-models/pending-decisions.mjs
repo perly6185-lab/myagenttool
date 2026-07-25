@@ -74,6 +74,7 @@ export function pendingDecisions({
       createdAt: a.createdAt ?? null,
       section: "invocations",
       targetId: a.invocationId ?? null,
+      context: a.executionContext ?? null,
       // S6 (#1090): a channel-originated approval carries its conversation
       // context so the console row and the in-channel /approve are visibly the
       // SAME pending decision (one approval system, ADR 0012 rule 5).

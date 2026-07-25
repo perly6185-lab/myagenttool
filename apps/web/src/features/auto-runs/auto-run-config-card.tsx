@@ -7,6 +7,8 @@ import { Input } from "@/components/ui/input";
 import { api } from "@/data/use-console-actions";
 import { cn } from "@/lib/cn";
 import { useAppTranslation } from "@/lib/i18n/use-app-translation";
+import { getSessionUser } from "@/lib/api-client";
+import { useConsoleState } from "@/data/use-console-state";
 
 interface AutoRunConfig {
   autoTrigger: { enabled: boolean; label: string; maxConcurrent: number; requireProjectFields: boolean };
@@ -58,9 +60,19 @@ interface Draft {
   autoMergeMaxDiffLines: number;
   autoMergeSensitivePaths: string; // newline-separated globs; empty = use the default set
   sloTargets: { prSuccessRate: number; failureRate: number; attentionRate: number; timeToPrMedianSeconds: number };
+  routingThresholds: { minSamples: number; windowDays: number; fallbackRate: number; lowConfidenceRate: number; latencyP90Ms: number };
 }
 
 const SLO_DEFAULTS = { prSuccessRate: 0.7, failureRate: 0.2, attentionRate: 0.5, timeToPrMedianSeconds: 1800 };
+const ROUTING_DEFAULTS = { minSamples: 5, windowDays: 30, fallbackRate: 0.2, lowConfidenceRate: 0.25, latencyP90Ms: 5000 };
+
+export function canReplaceTeamWebhook(value: string) {
+  return value.trim().length > 0;
+}
+
+export function canManageAutoRunConfig(role: string | undefined) {
+  return role === "owner" || role === "admin";
+}
 
 function toDraft(c: AutoRunConfig): Draft {
   return {
@@ -88,6 +100,7 @@ function toDraft(c: AutoRunConfig): Draft {
     autoMergeMaxDiffLines: c.autoMergeMaxDiffLines,
     autoMergeSensitivePaths: ((c.settings?.autoMergeSensitivePaths as string[] | undefined) ?? []).join("\n"),
     sloTargets: { ...SLO_DEFAULTS, ...((c.settings?.sloTargets as Partial<typeof SLO_DEFAULTS>) ?? {}) },
+    routingThresholds: { ...ROUTING_DEFAULTS, ...((c.settings?.routingThresholds as Partial<typeof ROUTING_DEFAULTS>) ?? {}) },
   };
 }
 
@@ -156,12 +169,16 @@ function NumberField({ label, hint, value, step, min, max, onChange }: { label: 
 
 export function AutoRunConfigCard() {
   const { t } = useAppTranslation();
+  const { data: consoleState, refetch: refetchConsoleState } = useConsoleState();
   const [config, setConfig] = useState<AutoRunConfig | null>(null);
   const [draft, setDraft] = useState<Draft | null>(null);
   const [open, setOpen] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [savedAt, setSavedAt] = useState(false);
+  const [teamWebhookUrl, setTeamWebhookUrl] = useState("");
+  const [teamWebhookSaving, setTeamWebhookSaving] = useState(false);
+  const [teamWebhookSaved, setTeamWebhookSaved] = useState(false);
 
   const load = useCallback(async () => {
     try {
@@ -188,7 +205,7 @@ export function AutoRunConfigCard() {
   // Load a conservative starting posture into the draft (operator reviews + saves).
   const applyRecommended = () => {
     setSavedAt(false);
-    setDraft((d) => (d ? { ...d, ...RECOMMENDED_SAFE_DEFAULTS, sloTargets: { ...SLO_DEFAULTS } } : d));
+    setDraft((d) => (d ? { ...d, ...RECOMMENDED_SAFE_DEFAULTS, sloTargets: { ...SLO_DEFAULTS }, routingThresholds: { ...ROUTING_DEFAULTS } } : d));
   };
 
   const save = async () => {
@@ -197,7 +214,14 @@ export function AutoRunConfigCard() {
     try {
       // The sensitive-path list edits as newline text; send it as a glob array
       // (empty = clear the override → the server's default set).
-      const payload = { ...draft, autoMergeSensitivePaths: draft.autoMergeSensitivePaths.split("\n").map((s) => s.trim()).filter(Boolean) };
+      const { alertWebhookUrl, ...safeDraft } = draft;
+      const payload: Record<string, unknown> = {
+        ...safeDraft,
+        autoMergeSensitivePaths: draft.autoMergeSensitivePaths.split("\n").map((s) => s.trim()).filter(Boolean),
+      };
+      // A redacted configured target loads as blank. Omit blank so saving an
+      // unrelated setting cannot silently erase the secret.
+      if (alertWebhookUrl.trim()) payload.alertWebhookUrl = alertWebhookUrl.trim();
       const data = (await api.updateAutoRunSettings(payload as unknown as Record<string, unknown>)) as { config?: AutoRunConfig };
       if (data.config) {
         setConfig(data.config);
@@ -211,8 +235,49 @@ export function AutoRunConfigCard() {
       setSaving(false);
     }
   };
+  const saveTeamWebhook = async () => {
+    const teamId = getSessionUser()?.teamId;
+    if (!teamId) {
+      setError(t("autoRunConfig.webhookHint"));
+      return;
+    }
+    setTeamWebhookSaving(true);
+    try {
+      await api.updateTeamAlertWebhook(teamId, teamWebhookUrl.trim() || null);
+      setTeamWebhookUrl("");
+      setTeamWebhookSaved(true);
+      await refetchConsoleState();
+      setError(null);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setTeamWebhookSaving(false);
+    }
+  };
+  const clearTeamWebhook = async () => {
+    const teamId = getSessionUser()?.teamId;
+    if (!teamId) return;
+    const teamLabel = sessionTeam?.name ?? teamId;
+    if (!window.confirm(`${teamLabel} · ${t("documents.clear")} ${t("autoRunConfig.webhook")}?`)) return;
+    setTeamWebhookSaving(true);
+    try {
+      await api.updateTeamAlertWebhook(teamId, null);
+      setTeamWebhookUrl("");
+      setTeamWebhookSaved(true);
+      await refetchConsoleState();
+      setError(null);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setTeamWebhookSaving(false);
+    }
+  };
 
   if (!config || !draft) return null;
+  const sessionTeamId = getSessionUser()?.teamId;
+  const sessionTeam = consoleState?.teams?.find((team) => team.id === sessionTeamId);
+  const sessionRole = getSessionUser()?.role ?? "viewer";
+  const canManage = canManageAutoRunConfig(sessionRole);
 
   const cmdBadge = (on: boolean) => (
     <Badge tone={on ? "success" : "neutral"}>{t(on ? "autoRunConfig.configured" : "autoRunConfig.notConfigured")}</Badge>
@@ -234,6 +299,7 @@ export function AutoRunConfigCard() {
       </CardHeader>
       {open ? (
         <CardContent className="flex flex-col gap-4">
+          <fieldset disabled={!canManage} className="contents">
           {/* O0 kill switch — global emergency brake, applies immediately. */}
           <label className={cn("flex items-center justify-between gap-3 rounded-lg border px-3 py-2", draft.autonomyKillSwitch ? "border-red-500/60 bg-red-500/5" : "border-border")}>
             <span className="min-w-0">
@@ -352,11 +418,35 @@ export function AutoRunConfigCard() {
               <span className="text-xs text-muted-foreground">{t("autoRunConfig.webhookHint")}</span>
               <Input value={draft.alertWebhookUrl} onChange={(e) => set("alertWebhookUrl", e.target.value)} placeholder="https://hooks.example.com/..." className="mt-0.5 h-8" />
             </label>
+            <label className="flex flex-col gap-1 rounded-lg border border-border px-3 py-2">
+              <span className="flex items-center gap-2 text-sm font-medium">
+                {sessionTeam?.name ?? sessionTeamId ?? "Team"} · {t("autoRunConfig.webhook")}
+                {cmdBadge(Boolean(sessionTeam?.alertWebhookConfigured))}
+              </span>
+              <span className="text-xs text-muted-foreground">{t("autoRunConfig.webhookHint")}</span>
+              <div className="flex gap-2">
+                <Input value={teamWebhookUrl} onChange={(e) => { setTeamWebhookUrl(e.target.value); setTeamWebhookSaved(false); }} placeholder="https://hooks.example.com/team/..." className="mt-0.5 h-8" />
+                <Button type="button" size="sm" variant="secondary" disabled={teamWebhookSaving || !canReplaceTeamWebhook(teamWebhookUrl)} onClick={() => void saveTeamWebhook()}>
+                  {teamWebhookSaving ? <RefreshCw className="size-3.5 animate-spin" /> : t("autoRunConfig.save")}
+                </Button>
+                {sessionTeam?.alertWebhookConfigured ? (
+                  <Button type="button" size="sm" variant="ghost" disabled={teamWebhookSaving} onClick={() => void clearTeamWebhook()}>
+                    {t("documents.clear")}
+                  </Button>
+                ) : null}
+              </div>
+              {teamWebhookSaved ? <span className="text-xs text-emerald-600">{t("autoRunConfig.saved")}</span> : null}
+            </label>
             <div className="grid gap-2 md:grid-cols-2">
               <NumberField label={t("autoRunConfig.sloPr")} hint={t("autoRunConfig.ratioHint")} value={draft.sloTargets.prSuccessRate} step={0.05} min={0} max={1} onChange={(v) => set("sloTargets", { ...draft.sloTargets, prSuccessRate: v })} />
               <NumberField label={t("autoRunConfig.sloFailure")} hint={t("autoRunConfig.ratioHint")} value={draft.sloTargets.failureRate} step={0.05} min={0} max={1} onChange={(v) => set("sloTargets", { ...draft.sloTargets, failureRate: v })} />
               <NumberField label={t("autoRunConfig.sloAttention")} hint={t("autoRunConfig.ratioHint")} value={draft.sloTargets.attentionRate} step={0.05} min={0} max={1} onChange={(v) => set("sloTargets", { ...draft.sloTargets, attentionRate: v })} />
               <NumberField label={t("autoRunConfig.sloTime")} hint={t("autoRunConfig.secondsHint")} value={draft.sloTargets.timeToPrMedianSeconds} step={60} min={1} onChange={(v) => set("sloTargets", { ...draft.sloTargets, timeToPrMedianSeconds: v })} />
+              <NumberField label={t("routingThresholdConfig.samples")} value={draft.routingThresholds.minSamples} min={1} max={1000} onChange={(v) => set("routingThresholds", { ...draft.routingThresholds, minSamples: v })} />
+              <NumberField label={t("routingThresholdConfig.window")} value={draft.routingThresholds.windowDays} min={1} max={365} onChange={(v) => set("routingThresholds", { ...draft.routingThresholds, windowDays: v })} />
+              <NumberField label={t("routingThresholdConfig.fallback")} hint={t("autoRunConfig.ratioHint")} value={draft.routingThresholds.fallbackRate} step={0.05} min={0} max={1} onChange={(v) => set("routingThresholds", { ...draft.routingThresholds, fallbackRate: v })} />
+              <NumberField label={t("routingThresholdConfig.confidence")} hint={t("autoRunConfig.ratioHint")} value={draft.routingThresholds.lowConfidenceRate} step={0.05} min={0} max={1} onChange={(v) => set("routingThresholds", { ...draft.routingThresholds, lowConfidenceRate: v })} />
+              <NumberField label={t("routingThresholdConfig.latency")} value={draft.routingThresholds.latencyP90Ms} step={500} min={1} max={300000} onChange={(v) => set("routingThresholds", { ...draft.routingThresholds, latencyP90Ms: v })} />
             </div>
           </Section>
 
@@ -371,6 +461,7 @@ export function AutoRunConfigCard() {
             </Button>
             {savedAt ? <span className="text-xs text-muted-foreground">{t("autoRunConfig.saved")}</span> : null}
           </div>
+          </fieldset>
         </CardContent>
       ) : null}
     </Card>

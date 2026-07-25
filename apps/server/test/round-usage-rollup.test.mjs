@@ -49,6 +49,22 @@ test("recordInvocationRoundUsage sums this invocation's rounds into one authorit
   assert.equal(state.invocationRounds[2].usageRecordId, undefined);
 });
 
+test("round usage inherits project, team, and auto-run attribution from invocation metadata", () => {
+  const { state, m3 } = m3With([
+    { invocationId: "inv_1", provider: "openai", model: "codex", inputTokens: 10, outputTokens: 2, durationMs: 10 },
+  ]);
+  state.projects = [{ id: "prj_1", ownerTeamId: "team_1" }];
+  const rec = m3.recordInvocationRoundUsage({
+    invocation: {
+      ...succeeded,
+      input: { metadata: { projectId: "prj_1", autoRunId: "aur_1" } },
+    },
+  });
+  assert.equal(rec.projectId, "prj_1");
+  assert.equal(rec.teamId, "team_1");
+  assert.equal(rec.autoRunId, "aur_1");
+});
+
 test("an invocation with no rounds produces no usage record", () => {
   const { state, m3 } = m3With([]);
   const rec = m3.recordInvocationRoundUsage({ invocation: succeeded });

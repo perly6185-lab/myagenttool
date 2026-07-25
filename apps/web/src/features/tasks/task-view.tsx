@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { Hand, History, RefreshCw, ExternalLink, GitBranch, Workflow, Zap, Plus, Save, MessageSquare, Trash2, Pencil, FolderKanban, ArrowUp, ArrowDown, Star } from "lucide-react";
+import { Hand, History, RefreshCw, ExternalLink, GitBranch, Workflow, Zap, Plus, MessageSquare, Trash2, Pencil, FolderKanban, ArrowUp, ArrowDown, Star, Bell } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -7,6 +7,7 @@ import { Input, Select, Textarea } from "@/components/ui/input";
 import { Field } from "@/components/common/field";
 import { Modal } from "@/components/ui/modal";
 import { EmptyState } from "@/components/common/empty-state";
+import { ConfirmModal } from "@/components/common/confirm-modal";
 import { useConsoleState } from "@/data/use-console-state";
 import { useAsyncAction, api } from "@/data/use-console-actions";
 import { useUiStore } from "@/store/ui-store";
@@ -14,7 +15,6 @@ import { cn } from "@/lib/cn";
 import { statusTone } from "@/lib/readable-labels";
 import { invocationStatus } from "@/lib/i18n/readable-labels";
 import { useAppTranslation } from "@/lib/i18n/use-app-translation";
-import type { IssueClaimEvent } from "@/lib/console-state";
 import { branchFromIssue, worktreeLinkFor } from "@/features/projects/worktree-payload";
 import { githubItemKindLabel, worktreeAutoRunPrompt } from "@myagenttool/protocol/issue-prompt";
 import {
@@ -24,112 +24,32 @@ import {
   planningProjectCsv,
   planningProjectJson,
 } from "@/features/planning/planning-export";
+import {
+  TASK_TABS as TABS,
+  type GithubResult,
+  type LocalWorkItem,
+  type LocalWorkItemObservability,
+  type LocalWorkItemResult,
+  type PlanningAutoRun,
+  type PlanningProject,
+  type Row,
+  type TaskTab,
+  type WorkItemActivity,
+  type WorkItemAttention,
+  type WorkItemAttentionMetrics,
+  type WorkItemComment,
+} from "./task-view-types";
+import { WorkItemSectionNav } from "./work-item-section-nav";
+import { useSafeNavigation } from "@/hooks/use-safe-navigation";
+import { useVisibleInterval } from "@/hooks/use-visible-interval";
+import { ClaimHistoryList } from "./claim-history-list";
+import { WorktreeOptionsForm } from "./worktree-options-form";
+import { WorkItemExecutionActions } from "./work-item-execution-actions";
+import { WorkItemAcceptanceSection } from "./work-item-acceptance-section";
+import { WorkItemExternalSync } from "./work-item-external-sync";
+import { WorkItemAlertAndCostDetails, WorkItemTimeline } from "./work-item-observability";
 
-type GithubItem = {
-  type: "issue" | "pr";
-  number: number;
-  title: string;
-  headRefName: string | null;
-  author: string;
-  url: string | null;
-  state: string;
-};
-type GithubResult = { available: boolean; message: string; items: GithubItem[] };
-type LocalWorkItem = {
-  id: string;
-  localRef: string;
-  projectId: string;
-  title: string;
-  body: string;
-  type: "task" | "bug" | "feature" | "initiative";
-  status: "backlog" | "ready" | "in_progress" | "review" | "blocked" | "done";
-  priority: "p0" | "p1" | "p2" | "p3";
-  state: "open" | "closed";
-  labels: string[];
-  assigneeIds: string[];
-  acceptanceCriteria: string[];
-  dueDate: string | null;
-  milestone: string;
-  estimatePoints: number;
-  revision: number;
-  archivedAt: string | null;
-  executionBindings?: { kind: "worktree" | "auto_run"; targetId: string; worktreeId: string | null; createdAt: string }[];
-  planningProjects?: { id: string; name: string; archivedAt: string | null }[];
-  dependencyIds?: string[];
-  blockedBy?: { id: string; localRef: string; title: string; status: LocalWorkItem["status"]; state: "open" | "closed"; resolved: boolean }[];
-  blocks?: { id: string; localRef: string; title: string; status: LocalWorkItem["status"]; state: "open" | "closed" }[];
-  updatedAt: string;
-};
-type LocalWorkItemResult = { workItems: LocalWorkItem[]; count: number };
-type PlanningAutoRun = { id: string; status: string };
-type PlanningProject = {
-  id: string;
-  name: string;
-  description: string;
-  color?: string;
-  revision: number;
-  archivedAt: string | null;
-  updatedAt?: string;
-  pinned?: boolean;
-  itemCount: number;
-  openItemCount: number;
-  completedItemCount: number;
-  statusCounts: Record<LocalWorkItem["status"], number>;
-  priorityCounts: Record<LocalWorkItem["priority"], number>;
-  blockedItemCount?: number;
-  overdueItemCount?: number;
-  activeRunCount?: number;
-  failedRunCount?: number;
-  riskScore?: number;
-  plannedPoints?: number;
-  capacityPoints?: number;
-  overCapacity?: boolean;
-  capacityUtilization?: number | null;
-  startDate?: string | null;
-  targetDate?: string | null;
-  projectOverdue?: boolean;
-  daysRemaining?: number | null;
-  ownerId?: string | null;
-  unowned?: boolean;
-  status?: "planned" | "active" | "on_hold" | "completed";
-  tags?: string[];
-  statusSummary?: string;
-  statusUpdatedAt?: string | null;
-  daysSinceStatusUpdate?: number | null;
-  staleStatus?: boolean;
-  checkIns?: { id: string; summary: string; authorId: string; createdAt: string }[];
-  health?: "healthy" | "active" | "attention";
-  savedViews?: {
-    id: string;
-    name: string;
-    view: "list" | "board" | "roadmap" | "insights";
-    filters: { status: string; priority: string; milestone: string; due: "all" | "overdue" | "upcoming" | "month" | "quarter" | "unscheduled" };
-  }[];
-  automationRules?: { id: string; status: string; priority: string; type: string; label: string }[];
-  activity?: { id: string; action: string; actorId: string; createdAt: string; details: Record<string, unknown> }[];
-  items?: { membership: { position: number }; workItem: LocalWorkItem }[];
-};
-type WorkItemComment = {
-  id: string;
-  body: string | null;
-  revision: number;
-  createdAt: string;
-  updatedAt: string;
-  createdBy: string;
-  deletedAt: string | null;
-};
-type WorkItemActivity = {
-  id: string;
-  action: string;
-  actorId: string;
-  createdAt: string;
-  details: Record<string, unknown>;
-};
-// Each row also carries which project it came from (for the "All projects" view).
-type Row = GithubItem & { projectId: string; projectName: string };
-
-const TABS = ["local", "issue", "pr"] as const;
-type TaskTab = (typeof TABS)[number];
+export { shouldShowWorkItemCost } from "./task-view-types";
 
 // Task = GitHub issues/PRs across repo-backed projects, surfaced as work items.
 // Mirrors the project's existing per-worktree GitHub list, lifted to a top-level
@@ -231,16 +151,115 @@ export function TaskView() {
   const [query, setQuery] = useState("");
   const [rows, setRows] = useState<Row[]>([]);
   const [localRows, setLocalRows] = useState<LocalWorkItem[]>([]);
+  const [localNextCursor, setLocalNextCursor] = useState<string | null>(null);
+  const [attentionItems, setAttentionItems] = useState<WorkItemAttention[]>([]);
+  const [attentionNextCursor, setAttentionNextCursor] = useState<string | null>(null);
+  const [attentionMetrics, setAttentionMetrics] = useState<WorkItemAttentionMetrics | null>(null);
+  const [attentionKind, setAttentionKind] = useState("");
+  const [attentionSla, setAttentionSla] = useState("");
+  const [attentionHandler, setAttentionHandler] = useState("");
+  const [showResolvedAttention, setShowResolvedAttention] = useState(false);
+  const [selectedAttentionIds, setSelectedAttentionIds] = useState<Set<string>>(new Set());
+  const [approvalDecision, setApprovalDecision] = useState<{
+    attention: WorkItemAttention; decision: "approve" | "deny";
+  } | null>(null);
+  const [approvalNote, setApprovalNote] = useState("");
   const [planningProjects, setPlanningProjects] = useState<PlanningProject[]>([]);
   const [planningProjectId, setPlanningProjectId] = useState("all");
   const [createLocalOpen, setCreateLocalOpen] = useState(false);
   const [planningOpen, setPlanningOpen] = useState(false);
   const [selectedLocalId, setSelectedLocalId] = useState<string | null>(null);
+  const [selectedLocalDirty, setSelectedLocalDirty] = useState(false);
+  const [confirmSelectedLocalClose, setConfirmSelectedLocalClose] = useState(false);
   const [loading, setLoading] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
+  const [liveSyncError, setLiveSyncError] = useState<string | null>(null);
   const [nonce, setNonce] = useState(0);
+  useEffect(() => {
+    const refresh = () => setNonce((value) => value + 1);
+    window.addEventListener("myagenttool:state-change", refresh);
+    return () => window.removeEventListener("myagenttool:state-change", refresh);
+  }, []);
 
   const targetProjects = projectId === "all" ? repoProjects : repoProjects.filter((p) => p.id === projectId);
+  const updateAttention = (attentionId: string, action: "claim" | "resolve" | "reopen") => {
+    void execute(() => api.updateWorkItemAttention([attentionId], action)).then((ok) => {
+      if (ok) setNonce((value) => value + 1);
+    });
+  };
+  const updateSelectedAttention = (action: "claim" | "resolve" | "reopen") => {
+    const ids = [...selectedAttentionIds];
+    if (!ids.length) return;
+    void execute(() => api.updateWorkItemAttention(
+      ids,
+      action,
+      "",
+      { idempotencyKey: `${action}:${Date.now()}` },
+    )).then((ok) => {
+      if (ok) {
+        setSelectedAttentionIds(new Set());
+        setNotice(`${ids.length} · ${action === "claim" ? t("approvals.handle") : action === "reopen" ? t("taskLocal.reopen") : t("tasks.localStatus.done")}`);
+        setNonce((value) => value + 1);
+      }
+    });
+  };
+  const loadMoreLocal = () => {
+    if (!localNextCursor) return;
+    void (api.listWorkItems({
+      projectId: projectId === "all" ? undefined : projectId,
+      planningProjectId: planningProjectId === "all" ? undefined : planningProjectId,
+      limit: "100",
+      cursor: localNextCursor,
+    }) as Promise<LocalWorkItemResult>).then((result) => {
+      setLocalRows((current) => [...current, ...result.workItems.filter((item) =>
+        !current.some((existing) => existing.id === item.id))]);
+      setLocalNextCursor(result.nextCursor ?? null);
+    });
+  };
+  const loadMoreAttention = () => {
+    if (!attentionNextCursor) return;
+    void (api.listWorkItemAttention({
+      projectId: projectId === "all" ? undefined : projectId,
+      kind: attentionKind || undefined,
+      sla: attentionSla || undefined,
+      handler: attentionHandler === "mine" || attentionHandler === "unclaimed" ? attentionHandler : undefined,
+      includeResolved: showResolvedAttention ? "1" : undefined,
+      limit: "100",
+      cursor: attentionNextCursor,
+    }) as Promise<{
+      items: WorkItemAttention[]; metrics: WorkItemAttentionMetrics;
+      nextCursor?: string | null;
+    }>).then((result) => {
+      setAttentionItems((current) => [...current, ...result.items.filter((item) =>
+        !current.some((existing) => existing.id === item.id))]);
+      setAttentionMetrics(result.metrics);
+      setAttentionNextCursor(result.nextCursor ?? null);
+    });
+  };
+  const decideRecommendedAction = (attention: WorkItemAttention, decision: "approve" | "deny") => {
+    setApprovalNote("");
+    setApprovalDecision({ attention, decision });
+  };
+  const submitRecommendedActionDecision = () => {
+    if (!approvalDecision || !approvalNote.trim()) return;
+    const { attention, decision } = approvalDecision;
+    const approvalRequestId = typeof attention.details.approvalRequestId === "string"
+      ? attention.details.approvalRequestId
+      : "";
+    if (!attention.planningProjectId || !approvalRequestId) return;
+    void execute(() => api.decidePlanningRecommendedAction(
+      attention.planningProjectId!,
+      approvalRequestId,
+      decision,
+      { confirmed: true, note: approvalNote.trim() },
+    )).then((ok) => {
+      if (ok) {
+        setApprovalDecision(null);
+        setApprovalNote("");
+        setNonce((value) => value + 1);
+      }
+    });
+  };
 
   useEffect(() => {
     let cancelled = false;
@@ -248,17 +267,92 @@ export function TaskView() {
     void (api.listWorkItems({
       projectId: selectedProjectId,
       planningProjectId: planningProjectId === "all" ? undefined : planningProjectId,
+      limit: "100",
     }) as Promise<LocalWorkItemResult>)
       .then((result) => {
-        if (!cancelled) setLocalRows(result.workItems);
+        if (!cancelled) {
+          setLocalRows(result.workItems);
+          setLocalNextCursor(result.nextCursor ?? null);
+        }
       })
       .catch(() => {
-        if (!cancelled) setLocalRows([]);
+        if (!cancelled) {
+          setLocalRows([]);
+          setLocalNextCursor(null);
+        }
       });
     return () => {
       cancelled = true;
     };
   }, [projectId, planningProjectId, nonce]);
+
+  useEffect(() => {
+    void (api.listWorkItemAttention({
+      projectId: projectId === "all" ? undefined : projectId,
+      kind: attentionKind || undefined,
+      sla: attentionSla || undefined,
+      handler: attentionHandler === "mine" || attentionHandler === "unclaimed" ? attentionHandler : undefined,
+      includeResolved: showResolvedAttention ? "1" : undefined,
+      limit: "100",
+    }) as Promise<{
+      items: WorkItemAttention[]; metrics: WorkItemAttentionMetrics;
+      nextCursor?: string | null;
+    }>)
+      .then((result) => {
+        setAttentionItems(result.items);
+        setAttentionMetrics(result.metrics);
+        setAttentionNextCursor(result.nextCursor ?? null);
+      })
+      .catch(() => {
+        setAttentionItems([]);
+        setAttentionMetrics(null);
+        setAttentionNextCursor(null);
+      });
+  }, [projectId, attentionKind, attentionSla, attentionHandler, showResolvedAttention, nonce]);
+
+  useEffect(() => {
+    setSelectedAttentionIds((current) => new Set([...current].filter((id) =>
+      attentionItems.some((item) => item.id === id))));
+  }, [attentionItems]);
+
+  useVisibleInterval(() => {
+    setLiveSyncError(null);
+      const latestWorkItemAt = localRows.reduce((latest, item) =>
+        !latest || item.updatedAt > latest ? item.updatedAt : latest, "");
+      if (latestWorkItemAt) {
+        void (api.listWorkItems({
+          projectId: projectId === "all" ? undefined : projectId,
+          planningProjectId: planningProjectId === "all" ? undefined : planningProjectId,
+          updatedSince: latestWorkItemAt,
+        }) as Promise<LocalWorkItemResult>).then((result) => {
+          setLocalRows((current) => {
+            const byId = new Map(current.map((item) => [item.id, item]));
+            for (const item of result.workItems) byId.set(item.id, item);
+            return [...byId.values()].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+          });
+        }).catch(() => setLiveSyncError(t("aiOps.issueRefreshFailed")));
+      }
+      const latestAttentionAt = attentionItems.reduce((latest, item) => {
+        const candidate = item.updatedAt ?? item.createdAt;
+        return !latest || candidate > latest ? candidate : latest;
+      }, "");
+      if (latestAttentionAt && !attentionHandler) {
+        void (api.listWorkItemAttention({
+          projectId: projectId === "all" ? undefined : projectId,
+          kind: attentionKind || undefined,
+          sla: attentionSla || undefined,
+          includeResolved: "1",
+          updatedSince: latestAttentionAt,
+        }) as Promise<{ items: WorkItemAttention[]; metrics: WorkItemAttentionMetrics }>).then((result) => {
+          setAttentionItems((current) => {
+            const byId = new Map(current.map((item) => [item.id, item]));
+            for (const item of result.items) byId.set(item.id, item);
+            return [...byId.values()].filter((item) => showResolvedAttention || !item.resolution);
+          });
+          setAttentionMetrics(result.metrics);
+        }).catch(() => setLiveSyncError(t("aiOps.attentionRefreshFailed")));
+      }
+  }, 15_000);
 
   useEffect(() => {
     void (api.listPlanningProjects() as Promise<{ projects: PlanningProject[] }>)
@@ -386,16 +480,159 @@ export function TaskView() {
         </div>
 
         {tab !== "local" && notice ? <p className="text-xs text-muted-foreground">{notice}</p> : null}
+        {liveSyncError ? <p className="text-xs text-destructive">{liveSyncError}</p> : null}
         {error ? <p className="text-xs text-destructive">{error}</p> : null}
 
         {tab === "local" ? (
-          <LocalWorkItemTable
-            items={visibleLocal}
-            projects={projects}
-            emptyTitle={t("tasks.noLocalIssues")}
-            emptyHint={t("tasks.noLocalMatches")}
-            onOpen={setSelectedLocalId}
-          />
+          <>
+            <section className="space-y-2 rounded-lg border border-warning/40 bg-warning/5 p-3">
+                <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                  <h3 className="text-sm font-semibold">{t("approvals.pending", { count: attentionItems.length })}</h3>
+                  <div className="grid w-full grid-cols-2 items-center gap-2 sm:flex sm:w-auto sm:flex-wrap">
+                    <label className="flex items-center gap-1 text-xs">
+                      <input type="checkbox"
+                        checked={attentionItems.length > 0 && attentionItems.every((item) => selectedAttentionIds.has(item.id))}
+                        onChange={(event) => setSelectedAttentionIds(event.target.checked
+                          ? new Set(attentionItems.map((item) => item.id))
+                          : new Set())} />
+                      {t("evidence.show")}
+                    </label>
+                    <Select value={attentionKind} onChange={(event) => setAttentionKind(event.target.value)} className="h-7 w-full text-xs">
+                      <option value="">{t("evidence.show")}</option>
+                      <option value="github_conflict">{t("taskLocal.github.conflict")}</option>
+                      <option value="github_deleted">{t("workItemGithub.deleted")}</option>
+                      <option value="execution_approval">{t("approvals.kind.invocation_approval")}</option>
+                      <option value="verification_failed">{t("approvals.testsFailed")}</option>
+                      <option value="acceptance_blocked">{t("tasks.acceptanceCriteria")}</option>
+                      <option value="recommended_action_approval">{t("planningDecision.nextActions")}</option>
+                    </Select>
+                    <Select value={attentionSla} onChange={(event) => setAttentionSla(event.target.value)} className="h-7 w-full text-xs">
+                      <option value="">{t("planningFilters.allStatuses")}</option>
+                      <option value="breached">{t("planningSchedule.overdue")}</option>
+                      <option value="within_sla">{t("planningExecution.healthy")}</option>
+                    </Select>
+                    <Select value={attentionHandler} onChange={(event) => setAttentionHandler(event.target.value)} className="h-7 w-full text-xs">
+                      <option value="">{t("planningFilters.allStatuses")}</option>
+                      <option value="mine">{t("approvals.handling")}</option>
+                      <option value="unclaimed">{t("taskLocal.executionState.unclaimed")}</option>
+                    </Select>
+                    <label className="flex items-center gap-1 text-xs">
+                      <input type="checkbox" checked={showResolvedAttention}
+                        onChange={(event) => setShowResolvedAttention(event.target.checked)} />
+                      {t("tasks.localStatus.done")}
+                    </label>
+                    <Badge tone="warning">{t("evidenceDetails.highCount", { count: attentionItems.filter((item) => item.severity === "high").length })}</Badge>
+                  </div>
+                </div>
+                {attentionMetrics ? (
+                  <div className="grid grid-cols-2 gap-2 text-xs sm:grid-cols-4">
+                    <div className="rounded bg-background p-2"><strong>{attentionMetrics.backlog}</strong> {t("planningPortfolio.attention")}</div>
+                    <div className="rounded bg-background p-2"><strong>{attentionMetrics.breached}</strong> {t("planningSchedule.overdue")}</div>
+                    <div className="rounded bg-background p-2"><strong>{attentionMetrics.claimed}</strong> {t("approvals.handling")}</div>
+                    <div className="rounded bg-background p-2"><strong>{attentionMetrics.pendingApprovals}</strong> {t("approvals.kind.invocation_approval")}</div>
+                  </div>
+                ) : null}
+                {selectedAttentionIds.size ? (
+                  <div className="flex items-center gap-3 rounded border border-border bg-background px-2 py-1 text-xs">
+                    <Badge tone="neutral">{selectedAttentionIds.size}</Badge>
+                    <button type="button" className="text-primary hover:underline" onClick={() => updateSelectedAttention("claim")}>
+                      {t("approvals.handle")}
+                    </button>
+                    <button type="button" className="text-primary hover:underline" onClick={() => updateSelectedAttention("resolve")}>
+                      {t("tasks.localStatus.done")}
+                    </button>
+                    {showResolvedAttention ? (
+                      <button type="button" className="text-primary hover:underline" onClick={() => updateSelectedAttention("reopen")}>
+                        {t("taskLocal.reopen")}
+                      </button>
+                    ) : null}
+                  </div>
+                ) : null}
+                <div className="grid gap-2 lg:grid-cols-2">
+                  {attentionItems.map((attention) => (
+                    <div key={attention.id}
+                      className="flex items-center gap-2 rounded border border-border bg-background p-2 text-left text-xs">
+                      <input type="checkbox" checked={selectedAttentionIds.has(attention.id)}
+                        onChange={(event) => setSelectedAttentionIds((current) => {
+                          const next = new Set(current);
+                          if (event.target.checked) next.add(attention.id);
+                          else next.delete(attention.id);
+                          return next;
+                        })} />
+                      <Badge tone={attention.severity === "high" ? "danger" : attention.severity === "medium" ? "warning" : "neutral"}>
+                        {attention.kind === "github_conflict" ? t("taskLocal.github.conflict")
+                          : attention.kind === "github_deleted" ? t("workItemGithub.deleted")
+                          : attention.kind === "execution_approval" ? t("approvals.kind.invocation_approval")
+                          : attention.kind === "verification_failed" ? t("approvals.testsFailed")
+                          : attention.kind === "acceptance_blocked" ? t("tasks.acceptanceCriteria")
+                          : t("planningDecision.nextActions")}
+                      </Badge>
+                      <span className="font-mono">{attention.localRef ?? "—"}</span>
+                      <span className="truncate">{attention.title}</span>
+                      {attention.kind === "recommended_action_approval" ? (
+                        <span className="max-w-48 truncate text-muted-foreground"
+                          title={JSON.stringify({ parameters: attention.details.parameters, context: attention.details.context }, null, 2)}>
+                          {String(attention.details.code ?? "")}
+                          {typeof (attention.details.context as { affectedCount?: unknown } | undefined)?.affectedCount === "number"
+                            ? ` · ${(attention.details.context as { affectedCount: number }).affectedCount}`
+                            : ""}
+                        </span>
+                      ) : null}
+                      <span className={attention.slaStatus === "breached" ? "text-destructive" : "text-muted-foreground"}>
+                        {new Date(attention.dueAt).toLocaleString()}
+                      </span>
+                      {attention.workItemId ? (
+                        <button type="button" className="text-primary hover:underline" onClick={() => setSelectedLocalId(attention.workItemId)}>
+                          {t("approvals.open")}
+                        </button>
+                      ) : null}
+                      {attention.kind === "recommended_action_approval" ? (
+                        <>
+                          <button type="button" className="text-primary hover:underline" onClick={() => decideRecommendedAction(attention, "approve")}>
+                            {t("approvals.approve")}
+                          </button>
+                          <button type="button" className="text-destructive hover:underline" onClick={() => decideRecommendedAction(attention, "deny")}>
+                            {t("approvals.deny")}
+                          </button>
+                        </>
+                      ) : null}
+                      <button type="button" className="text-primary hover:underline" onClick={() => updateAttention(attention.id, "claim")}>
+                        {attention.handling ? attention.handling.actorId : t("approvals.handle")}
+                      </button>
+                      {attention.handling?.expiresAt ? (
+                        <span className="text-muted-foreground">{new Date(attention.handling.expiresAt).toLocaleTimeString()}</span>
+                      ) : null}
+                      {attention.resolution ? (
+                        <button type="button" className="text-primary hover:underline"
+                          onClick={() => updateAttention(attention.id, "reopen")}>
+                          {t("taskLocal.reopen")}
+                        </button>
+                      ) : (
+                        <button type="button" className="text-primary hover:underline" onClick={() => updateAttention(attention.id, "resolve")}>
+                          {t("tasks.localStatus.done")}
+                        </button>
+                      )}
+                    </div>
+                  ))}
+                </div>
+                {!attentionItems.length ? (
+                  <p className="py-3 text-center text-xs text-muted-foreground">{t("approvals.empty")}</p>
+                ) : null}
+                {attentionNextCursor ? (
+                  <Button variant="secondary" size="sm" onClick={loadMoreAttention}>{t("applicationInspectorDeep.showAll", { count: 100 })}</Button>
+                ) : null}
+            </section>
+            <LocalWorkItemTable
+              items={visibleLocal}
+              projects={projects}
+              emptyTitle={t("tasks.noLocalIssues")}
+              emptyHint={t("tasks.noLocalMatches")}
+              onOpen={setSelectedLocalId}
+            />
+            {localNextCursor ? (
+              <Button variant="secondary" size="sm" onClick={loadMoreLocal}>{t("applicationInspectorDeep.showAll", { count: 100 })}</Button>
+            ) : null}
+          </>
         ) : visible.length === 0 ? (
           <EmptyState
             title={loading ? t("tasks.loading") : t(tab === "pr" ? "tasks.noPrs" : "tasks.noIssues")}
@@ -536,13 +773,68 @@ export function TaskView() {
         <PlanningProjectsPanel onChanged={() => setNonce((value) => value + 1)} />
       </Modal>
 
-      <Modal open={Boolean(selectedLocalId)} onClose={() => setSelectedLocalId(null)} title={t("taskLocal.details")}>
+      <Modal open={Boolean(selectedLocalId)} onClose={() => {
+        if (selectedLocalDirty) setConfirmSelectedLocalClose(true);
+        else setSelectedLocalId(null);
+      }} title={t("taskLocal.details")}>
         {selectedLocalId ? (
           <LocalWorkItemDetail
             workItemId={selectedLocalId}
             projects={projects}
+            onDirtyChange={setSelectedLocalDirty}
             onChanged={() => setNonce((value) => value + 1)}
           />
+        ) : null}
+      </Modal>
+      <ConfirmModal
+        open={confirmSelectedLocalClose}
+        title={t("taskLocal.details")}
+        description={t("officeEditors.unsaved")}
+        destructive
+        onClose={() => setConfirmSelectedLocalClose(false)}
+        onConfirm={() => {
+          setConfirmSelectedLocalClose(false);
+          setSelectedLocalDirty(false);
+          setSelectedLocalId(null);
+        }}
+      />
+
+      <Modal open={Boolean(approvalDecision)} onClose={() => setApprovalDecision(null)}
+        title={approvalDecision?.decision === "approve" ? t("approvals.approve") : t("approvals.deny")}>
+        {approvalDecision ? (
+          <div className="space-y-3">
+            <div className="space-y-2 rounded border border-border bg-muted/30 p-3 text-xs">
+              <p className="font-medium">{approvalDecision.attention.title}</p>
+              <p className="mt-1 font-mono">{String(approvalDecision.attention.details.code ?? "")}</p>
+              {(() => {
+                const context = approvalDecision.attention.details.context as Record<string, unknown> | undefined;
+                return context ? (
+                  <div className="grid grid-cols-2 gap-2">
+                    <div><span className="text-muted-foreground">{t("applicationInspectorDeep.risk")}</span><strong className="block">{String(context.risk ?? "—")}</strong></div>
+                    <div><span className="text-muted-foreground">{t("applicationInspectorDeep.result")}</span><strong className="block">{String(context.impactScope ?? "—")}</strong></div>
+                    <div><span className="text-muted-foreground">{t("applicationInspectorDeep.actionCount", { count: Number(context.affectedCount ?? 0) })}</span><strong className="block">{String(context.affectedCount ?? 0)}</strong></div>
+                    <div><span className="text-muted-foreground">{t("evidenceDetails.evidence")}</span><strong className="block">{String(context.reasonCode ?? "—")}</strong></div>
+                  </div>
+                ) : null;
+              })()}
+              <pre className="max-h-32 overflow-auto whitespace-pre-wrap text-muted-foreground">
+                {JSON.stringify(approvalDecision.attention.details.parameters ?? {}, null, 2)}
+              </pre>
+            </div>
+            <Field label={t("taskLocal.comment")}>
+              <Textarea value={approvalNote} onChange={(event) => setApprovalNote(event.target.value)}
+                placeholder={t("taskLocal.commentPlaceholder")} />
+            </Field>
+            <div className="flex justify-end gap-2">
+              <Button variant="secondary" size="sm" onClick={() => setApprovalDecision(null)}>
+                {t("shared.cancel")}
+              </Button>
+              <Button size="sm" variant={approvalDecision.decision === "deny" ? "destructive" : "primary"}
+                disabled={!approvalNote.trim() || pending} onClick={submitRecommendedActionDecision}>
+                {approvalDecision.decision === "approve" ? t("approvals.approve") : t("approvals.deny")}
+              </Button>
+            </div>
+          </div>
         ) : null}
       </Modal>
 
@@ -583,6 +875,7 @@ export function PlanningProjectsPanel({ onChanged = () => {} }: { onChanged?: ()
   const [projectTargetDate, setProjectTargetDate] = useState("");
   const [projectOwnerId, setProjectOwnerId] = useState("");
   const [projectStatus, setProjectStatus] = useState<"planned" | "active" | "on_hold" | "completed">("active");
+  const [projectAutonomy, setProjectAutonomy] = useState<"cautious" | "standard" | "high">("standard");
   const [projectTags, setProjectTags] = useState("");
   const [projectStatusSummary, setProjectStatusSummary] = useState("");
   const [editing, setEditing] = useState(false);
@@ -590,10 +883,10 @@ export function PlanningProjectsPanel({ onChanged = () => {} }: { onChanged?: ()
   const storePlanningView = useUiStore((state) => state.setPlanningProjectView);
   const storedFilters = useUiStore((state) => state.planningProjectFilters);
   const storeFilters = useUiStore((state) => state.setPlanningProjectFilters);
-  const [view, setViewLocal] = useState<"items" | "board" | "roadmap" | "insights">(
-    ["board", "roadmap", "insights"].includes(storedPlanningView) ? storedPlanningView as "board" | "roadmap" | "insights" : "items",
+  const [view, setViewLocal] = useState<"items" | "board" | "roadmap" | "insights" | "executions">(
+    ["board", "roadmap", "insights", "executions"].includes(storedPlanningView) ? storedPlanningView as "board" | "roadmap" | "insights" | "executions" : "items",
   );
-  const setView = (next: "items" | "board" | "roadmap" | "insights") => {
+  const setView = (next: "items" | "board" | "roadmap" | "insights" | "executions") => {
     setViewLocal(next);
     storePlanningView(next === "items" ? "list" : next);
   };
@@ -602,18 +895,32 @@ export function PlanningProjectsPanel({ onChanged = () => {} }: { onChanged?: ()
   const [bulkField, setBulkField] = useState<"status" | "priority" | "milestone" | "dueDate" | "estimatePoints" | "remove">("status");
   const [bulkValue, setBulkValue] = useState("ready");
   const [detailWorkItemId, setDetailWorkItemId] = useState<string | null>(null);
+  const [detailDirty, setDetailDirty] = useState(false);
+  const [confirmDetailClose, setConfirmDetailClose] = useState(false);
   const [projectQuery, setProjectQuery] = useState("");
   const [projectScope, setProjectScope] = useState<"active" | "attention" | "archived">("active");
   const [ownerFilter, setOwnerFilter] = useState("all");
   const [statusFilter, setStatusFilter] = useState("all");
   const [tagFilter, setTagFilter] = useState("all");
   const [projectSort, setProjectSort] = useState<"risk" | "target" | "updated" | "name">("risk");
+  const [watchFilter, setWatchFilter] = useState<"all" | "watched">("all");
   const [savedViewName, setSavedViewName] = useState("");
   const [savedViewId, setSavedViewId] = useState("");
   const [ruleStatus, setRuleStatus] = useState("");
   const [rulePriority, setRulePriority] = useState("");
   const [ruleType, setRuleType] = useState("");
   const [ruleLabel, setRuleLabel] = useState("");
+  const [aiPlan, setAiPlan] = useState<{
+    autonomyProfile: string;
+    requiresApproval: boolean;
+    targetProjectId: string | null;
+    drafts: {
+      title: string; body: string; type: LocalWorkItem["type"]; priority: LocalWorkItem["priority"];
+      suggestedRoute: string; acceptanceCriteria: string[];
+    }[];
+    evidence: { generator: string; policyVersion: string; modelVersion: string | null; inputDigest: string; confidence: number };
+  } | null>(null);
+  const [planningLiveError, setPlanningLiveError] = useState<string | null>(null);
   const [nonce, setNonce] = useState(0);
   const selected = projects.find((project) => project.id === selectedId);
   const displayWorkItems = selected?.items
@@ -650,14 +957,23 @@ export function PlanningProjectsPanel({ onChanged = () => {} }: { onChanged?: ()
     const run = autoRuns.find((candidate) => candidate.id === binding.targetId);
     return run && activeExecutionStatuses.has(run.status);
   })).length;
+  const linkedExecutions = projectItems.flatMap((workItem) =>
+    (workItem.executionBindings ?? [])
+      .filter((binding) => binding.kind === "auto_run")
+      .map((binding) => ({
+        workItem,
+        binding,
+        run: autoRuns.find((candidate) => candidate.id === binding.targetId),
+      })))
+    .filter((row) => row.run);
 
   useEffect(() => {
     setSelectedIdLocal(storedSelectedId);
   }, [storedSelectedId]);
 
   useEffect(() => {
-    setViewLocal(["board", "roadmap", "insights"].includes(storedPlanningView)
-      ? storedPlanningView as "board" | "roadmap" | "insights"
+    setViewLocal(["board", "roadmap", "insights", "executions"].includes(storedPlanningView)
+      ? storedPlanningView as "board" | "roadmap" | "insights" | "executions"
       : "items");
   }, [storedPlanningView]);
 
@@ -687,6 +1003,19 @@ export function PlanningProjectsPanel({ onChanged = () => {} }: { onChanged?: ()
     return () => { cancelled = true; };
   }, [nonce, selectedId]);
 
+  useVisibleInterval(() => {
+    if (selectedId) {
+      void Promise.all([
+        api.getPlanningProject(selectedId) as Promise<{ project: PlanningProject }>,
+        api.listAutoRuns() as Promise<{ runs: PlanningAutoRun[] }>,
+      ]).then(([detail, runResult]) => {
+        setProjects((current) => current.map((project) => project.id === selectedId ? detail.project : project));
+        setAutoRuns(runResult.runs);
+        setPlanningLiveError(null);
+      }).catch(() => setPlanningLiveError(t("aiOps.projectRefreshFailed")));
+    }
+  }, 10_000, Boolean(selectedId));
+
   const create = () => {
     let created: PlanningProject | null = null;
     void execute(async () => {
@@ -695,6 +1024,7 @@ export function PlanningProjectsPanel({ onChanged = () => {} }: { onChanged?: ()
         startDate: projectStartDate || null, targetDate: projectTargetDate || null,
         ownerId: projectOwnerId.trim() || undefined,
         status: projectStatus,
+        autonomyProfile: projectAutonomy,
         tags: projectTags.split(",").map((tag) => tag.trim()).filter(Boolean),
         statusSummary: projectStatusSummary,
       }) as { project: PlanningProject };
@@ -709,6 +1039,7 @@ export function PlanningProjectsPanel({ onChanged = () => {} }: { onChanged?: ()
       setProjectTargetDate("");
       setProjectOwnerId("");
       setProjectStatus("active");
+      setProjectAutonomy("standard");
       setProjectTags("");
       setProjectStatusSummary("");
       setSelectedId(created.id);
@@ -729,6 +1060,59 @@ export function PlanningProjectsPanel({ onChanged = () => {} }: { onChanged?: ()
     }).then((ok) => {
       if (!ok || !created) return;
       setSelectedId(created.id);
+      setNonce((value) => value + 1);
+      onChanged();
+    });
+  };
+  const executeRecommendation = (code: string) => {
+    if (!selected) return;
+    void execute(() => api.executePlanningRecommendedAction(selected.id, code, {
+      expectedRevision: selected.revision,
+      idempotencyKey: `${selected.id}:${code}:${selected.revision}`,
+      confirmed: true,
+    })).then((ok) => {
+      if (ok) {
+        setNonce((value) => value + 1);
+        onChanged();
+      }
+    });
+  };
+  const draftAiPlan = () => {
+    if (!selected) return;
+    let plan: typeof aiPlan = null;
+    void execute(async () => {
+      const result = await api.suggestPlanningProjectPlan(selected.id) as { plan: NonNullable<typeof aiPlan> };
+      plan = result.plan;
+      return result;
+    }).then((ok) => {
+      if (ok) setAiPlan(plan);
+    });
+  };
+  const createAiPlanDraft = (draft: NonNullable<typeof aiPlan>["drafts"][number]) => {
+    if (!selected || !aiPlan?.targetProjectId) return;
+    const targetProjectId = aiPlan.targetProjectId;
+    const planEvidence = aiPlan.evidence;
+    let workItemId: string | null = null;
+    void execute(async () => {
+      const created = await api.createWorkItem({
+        projectId: targetProjectId,
+        title: draft.title,
+        body: draft.body,
+        type: draft.type,
+        priority: draft.priority,
+        acceptanceCriteria: draft.acceptanceCriteria,
+        labels: ["ai-plan-draft"],
+        idempotencyKey: `ai-plan:${selected.id}:${planEvidence.inputDigest}:${draft.title.slice(0, 80)}`,
+      }) as { workItem: LocalWorkItem };
+      workItemId = created.workItem.id;
+      await api.addPlanningProjectItem(selected.id, created.workItem.id);
+      return created;
+    }).then((ok) => {
+      if (!ok || !workItemId) return;
+      setAiPlan((current) => current ? {
+        ...current,
+        drafts: current.drafts.filter((candidate) => candidate.title !== draft.title),
+      } : null);
       setNonce((value) => value + 1);
       onChanged();
     });
@@ -759,6 +1143,7 @@ export function PlanningProjectsPanel({ onChanged = () => {} }: { onChanged?: ()
       targetDate: projectTargetDate || null,
       ownerId: projectOwnerId.trim() || null,
       status: projectStatus,
+      autonomyProfile: projectAutonomy,
       tags: projectTags.split(",").map((tag) => tag.trim()).filter(Boolean),
       statusSummary: projectStatusSummary,
     })).then((ok) => {
@@ -938,6 +1323,7 @@ export function PlanningProjectsPanel({ onChanged = () => {} }: { onChanged?: ()
       || (ownerFilter === "unowned" ? !project.ownerId : project.ownerId === ownerFilter))
     .filter((project) => statusFilter === "all" || project.status === statusFilter)
     .filter((project) => tagFilter === "all" || project.tags?.includes(tagFilter))
+    .filter((project) => watchFilter === "all" || project.watching)
     .filter((project) => projectScope === "archived"
       ? Boolean(project.archivedAt)
       : !project.archivedAt && (projectScope !== "attention" || project.health === "attention"))
@@ -956,12 +1342,15 @@ export function PlanningProjectsPanel({ onChanged = () => {} }: { onChanged?: ()
   const overCapacityProjects = projects.filter((project) => project.overCapacity && !project.archivedAt).length;
   const overdueProjects = projects.filter((project) => project.projectOverdue && !project.archivedAt).length;
   const staleProjects = projects.filter((project) => project.staleStatus && !project.archivedAt).length;
+  const watchedAlerts = projects.filter((project) => project.watching && !project.archivedAt
+    && (project.projectOverdue || project.overCapacity || project.staleStatus || project.health === "attention")).length;
   const clearPortfolioFilters = () => {
     setProjectQuery("");
     setProjectScope("active");
     setOwnerFilter("all");
     setStatusFilter("all");
     setTagFilter("all");
+    setWatchFilter("all");
   };
   const togglePinned = () => {
     if (!selected) return;
@@ -972,33 +1361,47 @@ export function PlanningProjectsPanel({ onChanged = () => {} }: { onChanged?: ()
       if (ok) setNonce((value) => value + 1);
     });
   };
+  const toggleWatching = () => {
+    if (!selected) return;
+    void execute(() => api.updatePlanningProject(selected.id, {
+      expectedRevision: selected.revision,
+      watching: !selected.watching,
+    })).then((ok) => {
+      if (ok) setNonce((value) => value + 1);
+    });
+  };
 
   return (
     <div className="grid gap-4 sm:grid-cols-[14rem_1fr]">
       <div className="space-y-2">
-        <Input value={name} onChange={(event) => setName(event.target.value)} placeholder={t("planningProjects.name")} />
-        <Input value={description} onChange={(event) => setDescription(event.target.value)} placeholder={t("planningProjects.description")} />
-        <Input value={projectOwnerId} onChange={(event) => setProjectOwnerId(event.target.value)}
-          placeholder={t("planningOwnership.owner")} aria-label={t("planningOwnership.owner")} />
-        <Select value={projectStatus} aria-label={t("planningStatus.field")}
-          onChange={(event) => setProjectStatus(event.target.value as typeof projectStatus)}>
-          {(["planned", "active", "on_hold", "completed"] as const).map((status) =>
-            <option key={status} value={status}>{t(`planningStatus.${status}`)}</option>)}
-        </Select>
-        <Input value={projectTags} onChange={(event) => setProjectTags(event.target.value)}
-          placeholder={t("planningTags.hint")} aria-label={t("planningTags.field")} />
-        <Textarea value={projectStatusSummary} onChange={(event) => setProjectStatusSummary(event.target.value)}
-          placeholder={t("planningCheckIn.placeholder")} aria-label={t("planningCheckIn.summary")} />
-        <Input type="number" min="0" max="1000000" value={capacityPoints}
-          onChange={(event) => setCapacityPoints(event.target.value)}
-          placeholder={t("planningCapacity.capacity")} aria-label={t("planningCapacity.capacity")} />
-        <div className="grid grid-cols-2 gap-1">
-          <Input type="date" value={projectStartDate} aria-label={t("planningSchedule.startDate")}
-            onChange={(event) => setProjectStartDate(event.target.value)} />
-          <Input type="date" value={projectTargetDate} aria-label={t("planningSchedule.targetDate")}
-            onChange={(event) => setProjectTargetDate(event.target.value)} />
-        </div>
-        <Button size="sm" disabled={pending || !name.trim()} onClick={create}><Plus className="mr-1 size-4" />{t("planningProjects.create")}</Button>
+        <details className="rounded-md border border-border p-2">
+          <summary className="cursor-pointer text-sm font-medium">{t("planningDecision.createProject")}</summary>
+          <div className="mt-2 space-y-2">
+            <Input value={name} onChange={(event) => setName(event.target.value)} placeholder={t("planningProjects.name")} />
+            <Input value={description} onChange={(event) => setDescription(event.target.value)} placeholder={t("planningProjects.description")} />
+            <Input value={projectOwnerId} onChange={(event) => setProjectOwnerId(event.target.value)}
+              placeholder={t("planningOwnership.owner")} aria-label={t("planningOwnership.owner")} />
+            <Select value={projectStatus} aria-label={t("planningStatus.field")}
+              onChange={(event) => setProjectStatus(event.target.value as typeof projectStatus)}>
+              {(["planned", "active", "on_hold", "completed"] as const).map((status) =>
+                <option key={status} value={status}>{t(`planningStatus.${status}`)}</option>)}
+            </Select>
+            <Input value={projectTags} onChange={(event) => setProjectTags(event.target.value)}
+              placeholder={t("planningTags.hint")} aria-label={t("planningTags.field")} />
+            <Textarea value={projectStatusSummary} onChange={(event) => setProjectStatusSummary(event.target.value)}
+              placeholder={t("planningCheckIn.placeholder")} aria-label={t("planningCheckIn.summary")} />
+            <Input type="number" min="0" max="1000000" value={capacityPoints}
+              onChange={(event) => setCapacityPoints(event.target.value)}
+              placeholder={t("planningCapacity.capacity")} aria-label={t("planningCapacity.capacity")} />
+            <div className="grid grid-cols-2 gap-1">
+              <Input type="date" value={projectStartDate} aria-label={t("planningSchedule.startDate")}
+                onChange={(event) => setProjectStartDate(event.target.value)} />
+              <Input type="date" value={projectTargetDate} aria-label={t("planningSchedule.targetDate")}
+                onChange={(event) => setProjectTargetDate(event.target.value)} />
+            </div>
+            <Button size="sm" disabled={pending || !name.trim()} onClick={create}><Plus className="mr-1 size-4" />{t("planningProjects.create")}</Button>
+          </div>
+        </details>
         <label className="inline-flex h-8 cursor-pointer items-center justify-center rounded-md border border-border px-3 text-sm hover:bg-accent">
           {t("planningImport.button")}
           <input type="file" accept="application/json,.json" className="sr-only"
@@ -1016,6 +1419,7 @@ export function PlanningProjectsPanel({ onChanged = () => {} }: { onChanged?: ()
           <div className="rounded-md bg-muted p-1.5"><strong className="block">{overCapacityProjects}</strong>{t("planningFinish.overCapacity")}</div>
           <div className="rounded-md bg-muted p-1.5"><strong className="block">{overdueProjects}</strong>{t("planningFinish.overdue")}</div>
           <div className="col-span-2 rounded-md bg-muted p-1.5"><strong className="block">{staleProjects}</strong>{t("planningFinish.stale")}</div>
+          <div className="col-span-2 rounded-md bg-muted p-1.5"><strong className="block">{watchedAlerts}</strong>{t("planningWatch.alerts")}</div>
         </div>
         <Input value={projectQuery} onChange={(event) => setProjectQuery(event.target.value)}
           placeholder={t("planningPortfolio.search")} aria-label={t("planningPortfolio.search")} />
@@ -1047,6 +1451,11 @@ export function PlanningProjectsPanel({ onChanged = () => {} }: { onChanged?: ()
           {(["risk", "target", "updated", "name"] as const).map((sort) =>
             <option key={sort} value={sort}>{t(`planningFinish.${sort}`)}</option>)}
         </Select>
+        <Select value={watchFilter} aria-label={t("planningWatch.filter")}
+          onChange={(event) => setWatchFilter(event.target.value as typeof watchFilter)}>
+          <option value="all">{t("planningWatch.all")}</option>
+          <option value="watched">{t("planningWatch.watched")}</option>
+        </Select>
         <Button variant="ghost" size="sm" onClick={clearPortfolioFilters}>{t("planningFinish.clear")}</Button>
         <div className="space-y-1 border-t border-border pt-2">
           {visibleProjects.map((project) => (
@@ -1055,6 +1464,7 @@ export function PlanningProjectsPanel({ onChanged = () => {} }: { onChanged?: ()
               <span className="min-w-0">
                 <span className="block truncate">{project.name}</span>
                 {project.pinned ? <Star className="inline size-3 fill-current" aria-label={t("planningFinish.pin")} /> : null}
+                {project.watching ? <Bell className="ml-1 inline size-3 fill-current" aria-label={t("planningWatch.watch")} /> : null}
                 <span className="block text-[10px] text-muted-foreground">{t(`planningStatus.${project.status ?? "active"}`)}</span>
                 {(project.tags ?? []).length ? <span className="block truncate text-[10px] text-muted-foreground">{project.tags?.join(" · ")}</span> : null}
                 <span className="flex gap-1 text-[10px] text-muted-foreground">
@@ -1089,6 +1499,12 @@ export function PlanningProjectsPanel({ onChanged = () => {} }: { onChanged?: ()
                     {(["planned", "active", "on_hold", "completed"] as const).map((status) =>
                       <option key={status} value={status}>{t(`planningStatus.${status}`)}</option>)}
                   </Select>
+                  <Select value={projectAutonomy} aria-label="AI autonomy"
+                    onChange={(event) => setProjectAutonomy(event.target.value as typeof projectAutonomy)}>
+                    <option value="cautious">AI autonomy · cautious</option>
+                    <option value="standard">AI autonomy · standard</option>
+                    <option value="high">AI autonomy · high</option>
+                  </Select>
                   <Input value={projectTags} onChange={(event) => setProjectTags(event.target.value)}
                     aria-label={t("planningTags.field")} />
                   <Textarea value={projectStatusSummary} onChange={(event) => setProjectStatusSummary(event.target.value)}
@@ -1105,6 +1521,11 @@ export function PlanningProjectsPanel({ onChanged = () => {} }: { onChanged?: ()
                 </div>
               ) : <div><h3 className="font-semibold">{selected.name}</h3><p className="text-sm text-muted-foreground">{selected.description || t("planningProjects.noDescription")}</p><p className="text-xs text-muted-foreground">{t(`planningStatus.${selected.status ?? "active"}`)} · {t("planningOwnership.ownerValue", { owner: selected.ownerId || t("planningOwnership.unowned") })}</p><p className={cn("mt-1 text-xs", selected.staleStatus ? "text-destructive" : "text-muted-foreground")}>{selected.statusSummary || t("planningCheckIn.empty")} · {selected.daysSinceStatusUpdate == null ? t("planningCheckIn.empty") : t("planningCheckIn.updated", { days: selected.daysSinceStatusUpdate })}</p></div>}
               <div className="flex gap-1">
+                <Button variant="secondary" size="sm" disabled={pending} onClick={draftAiPlan}>
+                  {t("aiOps.plan")}
+                </Button>
+                <Button variant="ghost" size="sm" disabled={pending} title={t(selected.watching ? "planningWatch.unwatch" : "planningWatch.watch")}
+                  onClick={toggleWatching}><Bell className={cn("size-4", selected.watching && "fill-current")} /></Button>
                 <Button variant="ghost" size="sm" disabled={pending} title={t(selected.pinned ? "planningFinish.unpin" : "planningFinish.pin")}
                   onClick={togglePinned}><Star className={cn("size-4", selected.pinned && "fill-current")} /></Button>
                 {editing ? (
@@ -1118,6 +1539,7 @@ export function PlanningProjectsPanel({ onChanged = () => {} }: { onChanged?: ()
                     setProjectTargetDate(selected.targetDate ?? "");
                     setProjectOwnerId(selected.ownerId ?? "");
                     setProjectStatus(selected.status ?? "active");
+                    setProjectAutonomy(selected.autonomyProfile ?? "standard");
                     setProjectTags((selected.tags ?? []).join(", "));
                     setProjectStatusSummary(selected.statusSummary ?? "");
                     setEditing(true);
@@ -1142,20 +1564,83 @@ export function PlanningProjectsPanel({ onChanged = () => {} }: { onChanged?: ()
               <div className="rounded-md bg-muted p-2"><strong className="block text-base">{selected.openItemCount}</strong>{t("planningProjects.open")}</div>
               <div className="rounded-md bg-muted p-2"><strong className="block text-base">{selected.completedItemCount}</strong>{t("planningProjects.completed")}</div>
             </div>
-            <div className="grid grid-cols-2 gap-2 text-center text-xs sm:grid-cols-4">
-              <div className="rounded-md border border-border p-2"><strong className="block text-base">{blockedCount}</strong>{t("planningExecution.blocked")}</div>
-              <div className="rounded-md border border-border p-2"><strong className="block text-base">{overdueCount}</strong>{t("planningExecution.overdue")}</div>
-              <div className="rounded-md border border-border p-2"><strong className="block text-base">{activeExecutionCount}</strong>{t("planningExecution.running")}</div>
+            {planningLiveError ? <p className="text-xs text-destructive">{planningLiveError}</p> : null}
+            <div className="grid grid-cols-2 gap-2 text-center text-xs sm:grid-cols-5">
+              <div className="rounded-md border border-border p-2"><strong className="block text-base">{selected.aiHealth?.blocked ?? blockedCount}</strong>{t("planningExecution.blocked")}</div>
+              <div className="rounded-md border border-border p-2"><strong className="block text-base">{selected.aiHealth?.overdue ?? overdueCount}</strong>{t("planningExecution.overdue")}</div>
+              <div className="rounded-md border border-border p-2"><strong className="block text-base">{selected.aiHealth?.active ?? activeExecutionCount}</strong>{t("planningExecution.running")}</div>
+              <div className="rounded-md border border-border p-2"><strong className="block text-base">{selected.aiHealth?.failed ?? 0}</strong>{t("aiOps.aiFailed")}</div>
               <div className="rounded-md border border-border p-2">
-                <strong className="block text-base">{blockedCount + overdueCount ? t("planningExecution.atRisk") : t("planningExecution.healthy")}</strong>
-                {t("planningExecution.health")}
+                <strong className="block text-base">{selected.aiHealth?.needsAttention ? t("planningExecution.atRisk") : t("planningExecution.healthy")}</strong>
+                <span>{t("planningExecution.health")}</span> · AI {selected.autonomyProfile ?? "standard"}
               </div>
             </div>
+            <div className="flex flex-wrap gap-x-4 gap-y-1 rounded-md bg-muted p-2 text-xs text-muted-foreground">
+              <span>{t("aiOps.success")}: {selected.aiHealth?.successRate == null ? "n/a" : `${Math.round(selected.aiHealth.successRate * 100)}%`}</span>
+              <span>{t("aiOps.routeCorrections")}: {selected.aiHealth?.routingCorrectionRate == null ? "n/a" : `${Math.round(selected.aiHealth.routingCorrectionRate * 100)}%`}</span>
+              <span>{t("aiOps.knownCost")}: ${(selected.aiHealth?.knownCostUsd ?? 0).toFixed(4)}</span>
+              <span>{t("aiOps.alertBacklog")}: {selected.aiHealth?.alertBacklog ?? 0}</span>
+              <span>{t("aiOps.settledRuns")}: {selected.aiHealth?.settled ?? 0}</span>
+              <span>Trace coverage: {selected.aiHealth?.traceCoverage == null ? "n/a" : `${Math.round(selected.aiHealth.traceCoverage * 100)}%`}</span>
+              <Badge tone={selected.aiHealth?.sloStatus === "at_risk" ? "danger" : selected.aiHealth?.sloStatus === "healthy" ? "success" : "neutral"}>
+                AI SLO · {selected.aiHealth?.sloStatus ?? "insufficient_data"}
+              </Badge>
+              {(selected.aiHealth?.signals ?? []).map((signal) => <span key={signal}>{signal.replaceAll("_", " ")}</span>)}
+            </div>
+            {aiPlan ? (
+              <section className="rounded-md border border-border p-3">
+                <div className="mb-2 flex items-center justify-between">
+                  <h4 className="text-sm font-semibold">{t("aiOps.planDraft")}</h4>
+                  <Badge tone="warning">{t("aiOps.reviewRequired")}</Badge>
+                </div>
+                <p className="mb-2 text-xs text-muted-foreground">
+                  Autonomy: {aiPlan.autonomyProfile}. Nothing is created until you review and act.
+                  {` · ${aiPlan.evidence.generator} ${Math.round(aiPlan.evidence.confidence * 100)}% · policy ${aiPlan.evidence.policyVersion}`}
+                </p>
+                <div className="space-y-2">
+                  {aiPlan.drafts.map((draft) => (
+                    <div key={draft.title} className="rounded border border-border p-2 text-xs">
+                      <strong>{draft.title}</strong>
+                      <p className="text-muted-foreground">{draft.priority} · route: {draft.suggestedRoute}</p>
+                      <p>{draft.acceptanceCriteria.join(" · ")}</p>
+                      <Button className="mt-2" size="sm" variant="secondary"
+                        disabled={pending || !aiPlan.targetProjectId}
+                        onClick={() => createAiPlanDraft(draft)}>
+                        Create reviewed draft
+                      </Button>
+                    </div>
+                  ))}
+                </div>
+                {!aiPlan.targetProjectId ? (
+                  <p className="mt-2 text-xs text-muted-foreground">Add one repository-backed issue before creating plan drafts.</p>
+                ) : null}
+              </section>
+            ) : null}
+            <section className="rounded-md border border-border p-3">
+              <h4 className="mb-2 text-sm font-semibold">{t("planningDecision.nextActions")}</h4>
+              <div className="flex flex-wrap gap-2">
+                {(selected.recommendedActions ?? []).map((action) => (
+                  <div key={action.code} className="flex items-center gap-1 rounded border border-border p-1">
+                    <Badge tone={action.risk === "high" ? "danger" : action.risk === "medium" ? "warning" : "neutral"}>
+                      {t(`planningDecision.actions.${action.code}` as never, { count: action.count })}
+                    </Badge>
+                    <span className="text-[10px] uppercase text-muted-foreground">{action.risk}</span>
+                    {action.code === "refresh_status" ? (
+                      <Button size="sm" variant="secondary" disabled={pending} onClick={() => executeRecommendation(action.code)}>
+                        {t("tasks.automate")}
+                      </Button>
+                    ) : null}
+                  </div>
+                ))}
+                {!selected.recommendedActions?.length ? <span className="text-xs text-muted-foreground">{t("planningDecision.noActions")}</span> : null}
+              </div>
+            </section>
             <div className="flex gap-1 rounded-md bg-muted p-0.5 text-xs">
-              {(["items", "board", "roadmap", "insights"] as const).map((value) => (
+              {(["items", "board", "roadmap", "executions", "insights"] as const).map((value) => (
                 <button key={value} type="button" onClick={() => setView(value)}
                   className={cn("rounded px-2 py-1", view === value && "bg-background shadow-sm")}>
                   {value === "roadmap" ? t("planningFilters.roadmap")
+                    : value === "executions" ? t("planningExecutions.title")
                     : value === "insights" ? t("planningInsights.title")
                       : t(`planningProjects.${value}`)}
                 </button>
@@ -1389,6 +1874,39 @@ export function PlanningProjectsPanel({ onChanged = () => {} }: { onChanged?: ()
                   ))}
                 </div>
               </div>
+            ) : view === "executions" ? (
+              <div className="space-y-3">
+                <div className="grid grid-cols-2 gap-2 text-center text-xs sm:grid-cols-4">
+                  {([
+                    ["running", linkedExecutions.filter(({ run }) => ["materializing", "running", "verifying", "publishing"].includes(run?.status ?? "")).length],
+                    ["approval", linkedExecutions.filter(({ run }) => run?.status === "awaiting_approval").length],
+                    ["failed", linkedExecutions.filter(({ run }) => ["failed", "blocked"].includes(run?.status ?? "")).length],
+                    ["review", linkedExecutions.filter(({ run }) => ["pr_open", "report_posted", "plan_proposed"].includes(run?.status ?? "")).length],
+                  ] as const).map(([label, count]) => (
+                    <div key={label} className="rounded-md border border-border p-2">
+                      <strong className="block text-base">{count}</strong>{t(`planningExecutions.${label}`)}
+                    </div>
+                  ))}
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  <Button variant="secondary" size="sm" onClick={() => setSection("autoRuns")}>{t("planningExecutions.openAutoRuns")}</Button>
+                  <Button variant="secondary" size="sm" onClick={() => setSection("review")}>{t("planningExecutions.openReview")}</Button>
+                  <Button variant="secondary" size="sm" onClick={() => setSection("evidence")}>{t("planningExecutions.openEvidence")}</Button>
+                </div>
+                <div className="max-h-80 space-y-2 overflow-y-auto">
+                  {linkedExecutions.map(({ workItem, binding, run }) => (
+                    <button key={`${workItem.id}:${binding.targetId}`} type="button"
+                      onClick={() => setSection("autoRuns")}
+                      className="flex w-full items-center justify-between rounded-md border border-border p-2 text-left text-xs hover:bg-muted">
+                      <span><strong>{workItem.localRef}</strong> · {workItem.title}</span>
+                      <Badge tone={statusTone(run?.status ?? "")}>
+                        {t(`autoRuns.status.${run?.status}` as never, { defaultValue: run?.status })}
+                      </Badge>
+                    </button>
+                  ))}
+                  {!linkedExecutions.length ? <EmptyState title={t("planningExecutions.none")} hint={t("planningExecutions.openAutoRuns")} /> : null}
+                </div>
+              </div>
             ) : view === "roadmap" ? (
               <div className="max-h-[28rem] space-y-4 overflow-y-auto">
                 {[...new Set(filteredProjectItems.map((row) => row.workItem.milestone || t("planningFilters.noMilestone")))]
@@ -1488,15 +2006,32 @@ export function PlanningProjectsPanel({ onChanged = () => {} }: { onChanged?: ()
         ) : <EmptyState title={t("planningProjects.select")} hint={t("planningProjects.selectHint")} />}
         {error ? <p className="text-xs text-destructive">{error}</p> : null}
       </div>
-      <Modal open={Boolean(detailWorkItemId)} onClose={() => setDetailWorkItemId(null)} title={t("taskLocal.details")}>
+      <Modal open={Boolean(detailWorkItemId)} onClose={() => {
+        if (detailDirty) setConfirmDetailClose(true);
+        else setDetailWorkItemId(null);
+      }} title={t("taskLocal.details")}>
         {detailWorkItemId ? (
           <LocalWorkItemDetail
             workItemId={detailWorkItemId}
             projects={consoleState?.projects ?? []}
+            onDirtyChange={setDetailDirty}
             onChanged={() => { setNonce((value) => value + 1); onChanged(); }}
           />
         ) : null}
       </Modal>
+      <ConfirmModal
+        open={confirmDetailClose}
+        title={t("taskLocal.details")}
+        description={t("officeEditors.unsaved")}
+        confirmLabel={t("shared.confirm")}
+        destructive
+        onClose={() => setConfirmDetailClose(false)}
+        onConfirm={() => {
+          setConfirmDetailClose(false);
+          setDetailDirty(false);
+          setDetailWorkItemId(null);
+        }}
+      />
     </div>
   );
 }
@@ -1667,10 +2202,12 @@ function LocalWorkItemDetail({
   workItemId,
   projects,
   onChanged,
+  onDirtyChange,
 }: {
   workItemId: string;
   projects: { id: string; name: string }[];
   onChanged: () => void;
+  onDirtyChange: (dirty: boolean) => void;
 }) {
   const { t } = useAppTranslation();
   const { execute, pending, error } = useAsyncAction();
@@ -1696,11 +2233,15 @@ function LocalWorkItemDetail({
   const [editingCommentBody, setEditingCommentBody] = useState("");
   const [dependencyCandidates, setDependencyCandidates] = useState<LocalWorkItem[]>([]);
   const [dependencyId, setDependencyId] = useState("");
+  const [parentId, setParentId] = useState("");
+  const [observability, setObservability] = useState<LocalWorkItemObservability | null>(null);
+  const [deleteCommentTarget, setDeleteCommentTarget] = useState<WorkItemComment | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
 
   const load = async () => {
     try {
       const [detail, commentResult, activityResult, workItemResult] = await Promise.all([
-        api.getWorkItem(workItemId) as Promise<{ workItem: LocalWorkItem }>,
+        api.getWorkItem(workItemId) as Promise<{ workItem: LocalWorkItem; observability: LocalWorkItemObservability }>,
         api.listWorkItemComments(workItemId) as Promise<{ comments: WorkItemComment[] }>,
         api.listWorkItemActivity(workItemId) as Promise<{ activities: WorkItemActivity[] }>,
         api.listWorkItems() as Promise<LocalWorkItemResult>,
@@ -1717,9 +2258,11 @@ function LocalWorkItemDetail({
       setDueDate(next.dueDate ?? "");
       setMilestone(next.milestone ?? "");
       setEstimatePoints(String(next.estimatePoints ?? 0));
+      setParentId(next.parentId ?? "");
       setComments(commentResult.comments);
       setActivity(activityResult.activities);
       setDependencyCandidates(workItemResult.workItems.filter((candidate) => candidate.id !== workItemId));
+      setObservability(detail.observability);
       setLoadError(null);
     } catch (caught) {
       setLoadError(caught instanceof Error ? caught.message : t("taskLocal.loadFailed"));
@@ -1730,12 +2273,42 @@ function LocalWorkItemDetail({
     void load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [workItemId]);
+  useVisibleInterval(() => {
+    void (api.getWorkItem(workItemId) as Promise<{ observability: LocalWorkItemObservability }>)
+      .then((detail) => setObservability(detail.observability))
+      .catch(() => {});
+  }, 5_000);
+
+  const dirty = item != null && (
+    title !== item.title
+    || body !== item.body
+    || type !== item.type
+    || status !== item.status
+    || priority !== item.priority
+    || labels !== item.labels.join(", ")
+    || acceptance !== item.acceptanceCriteria.join("\n")
+    || dueDate !== (item.dueDate ?? "")
+    || milestone !== (item.milestone ?? "")
+    || estimatePoints !== String(item.estimatePoints ?? 0)
+    || parentId !== (item.parentId ?? "")
+  );
+  const safeNavigation = useSafeNavigation(dirty);
+  useEffect(() => {
+    onDirtyChange(dirty);
+    return () => onDirtyChange(false);
+  }, [dirty, onDirtyChange]);
+  useEffect(() => {
+    if (!dirty) return;
+    const warn = (event: BeforeUnloadEvent) => event.preventDefault();
+    window.addEventListener("beforeunload", warn);
+    return () => window.removeEventListener("beforeunload", warn);
+  }, [dirty]);
 
   if (!item) {
     return <p className={cn("text-sm", loadError ? "text-destructive" : "text-muted-foreground")}>{loadError ?? t("tasks.loading")}</p>;
   }
 
-  const save = () => {
+  const save = (afterSave?: () => void) => {
     void execute(() => api.updateWorkItem(item.id, {
       expectedRevision: item.revision,
       title,
@@ -1748,13 +2321,18 @@ function LocalWorkItemDetail({
       dueDate: dueDate || null,
       milestone,
       estimatePoints: Number(estimatePoints),
-    })).then(() => {
+      parentId: parentId || null,
+    })).then((ok) => {
+      if (!ok) return;
+      setNotice(`${t("taskLocal.save")} ✓`);
       onChanged();
       void load();
+      afterSave?.();
     });
   };
   const transition = (action: "close" | "reopen") => {
-    void execute(() => api.transitionWorkItem(item.id, action, item.revision)).then(() => {
+    void execute(() => api.transitionWorkItem(item.id, action, item.revision)).then((ok) => {
+      if (!ok) return;
       onChanged();
       void load();
     });
@@ -1772,7 +2350,8 @@ function LocalWorkItemDetail({
   };
   const addComment = () => {
     if (!comment.trim()) return;
-    void execute(() => api.createWorkItemComment(item.id, comment)).then(() => {
+    void execute(() => api.createWorkItemComment(item.id, comment)).then((ok) => {
+      if (!ok) return;
       setComment("");
       void load();
     });
@@ -1781,26 +2360,39 @@ function LocalWorkItemDetail({
     void execute(() => api.updateWorkItemComment(item.id, row.id, {
       expectedRevision: row.revision,
       body: editingCommentBody,
-    })).then(() => {
+    })).then((ok) => {
+      if (!ok) return;
       setEditingCommentId(null);
       void load();
     });
   };
   const removeComment = (row: WorkItemComment) => {
-    void execute(() => api.deleteWorkItemComment(item.id, row.id, row.revision)).then(() => void load());
+    void execute(() => api.deleteWorkItemComment(item.id, row.id, row.revision)).then((ok) => {
+      if (ok) void load();
+    });
   };
+  const requestNavigation = safeNavigation.requestNavigation;
   const openWorktreeResult = (worktreeId: string | null | undefined) => {
     if (!worktreeId) return;
-    setSelectedProjectId(item.projectId);
-    setSelectedWorktreeId(worktreeId);
-    setSection("projects");
+    requestNavigation(() => {
+      setSelectedProjectId(item.projectId);
+      setSelectedWorktreeId(worktreeId);
+      setSection("projects");
+    });
   };
   const createExecutionWorktree = () => {
     void execute(async () => {
       const result = await api.createWorkItemWorktree(item.id) as { worktree?: { id: string } };
-      openWorktreeResult(result.worktree?.id);
+      const worktreeId = result.worktree?.id;
+      if (worktreeId) {
+        setSelectedProjectId(item.projectId);
+        setSelectedWorktreeId(worktreeId);
+        setSection("projects");
+      }
       return result;
-    }).then(() => {
+    }).then((ok) => {
+      if (!ok) return;
+      setNotice(`${t("taskLocal.createWorktree")} ✓`);
       onChanged();
       void load();
     });
@@ -1808,12 +2400,87 @@ function LocalWorkItemDetail({
   const startExecution = () => {
     void execute(async () => {
       const result = await api.startWorkItemAutoRun(item.id) as { worktree?: { id: string }; autoRun?: { worktreeId?: string } };
-      openWorktreeResult(result.worktree?.id ?? result.autoRun?.worktreeId);
+      const worktreeId = result.worktree?.id ?? result.autoRun?.worktreeId;
+      if (worktreeId) {
+        setSelectedProjectId(item.projectId);
+        setSelectedWorktreeId(worktreeId);
+        setSection("projects");
+      }
       return result;
-    }).then(() => {
+    }).then((ok) => {
+      if (!ok) return;
+      setNotice(`${t("taskLocal.startAutoRun")} ✓`);
       onChanged();
       void load();
     });
+  };
+  const externalIssueBinding = item.externalBindings?.find((binding) =>
+    binding.resourceType === "issue" || binding.kind.endsWith("_issue"));
+  const externalProvider = externalIssueBinding?.provider
+    ?? externalIssueBinding?.kind.replace(/_issue$/, "");
+  const externalProviderLabel = externalProvider === "gitlab"
+    ? "GitLab"
+    : externalProvider === "gitea"
+      ? "Gitea"
+      : "GitHub";
+  const nextActionKey = observability?.nextAction ?? "start_execution";
+  const nextAction = t(`taskNextAction.${nextActionKey}` as never);
+  const updatedAgeMinutes = Math.max(0, Math.floor((Date.now() - Date.parse(item.updatedAt)) / 60_000));
+  const boundRun = observability?.latestRun ?? null;
+  const itemAttention = observability?.attention ?? [];
+  const knownCostUsd = observability?.cost.knownUsd ?? 0;
+  const unknownCostEntries = observability?.cost.unknownEntries ?? 0;
+  const failedAlerts = observability?.alerts.failed ?? 0;
+  const queuedAlerts = observability?.alerts.queued ?? 0;
+  const syncGithub = (direction: "pull" | "push" | "resolve_local" | "resolve_remote") => {
+    void execute(() => api.syncWorkItemGithubIssue(item.id, {
+      expectedRevision: item.revision, direction,
+    })).then((ok) => {
+      if (ok) {
+        setNotice(`${externalProviderLabel} ${t("taskLocal.github.synced")} ✓`);
+        onChanged();
+        void load();
+      }
+    });
+  };
+  const syncExternal = (direction: "pull" | "push" | "resolve_local" | "resolve_remote") => {
+    if (!externalProvider) return;
+    if (externalProvider === "github") {
+      syncGithub(direction);
+      return;
+    }
+    void execute(() => api.syncWorkItemExternalIssue(item.id, externalProvider, {
+      expectedRevision: item.revision, direction,
+    })).then((ok) => {
+      if (ok) {
+        setNotice(`${externalProviderLabel} ${t("taskLocal.github.synced")} ✓`);
+        onChanged();
+        void load();
+      }
+    });
+  };
+  const openAutoRun = (autoRunId?: string | null) => {
+    requestNavigation(() => {
+      if (autoRunId) {
+        const url = new URL(window.location.href);
+        url.searchParams.set("autoRun", autoRunId);
+        window.history.replaceState(window.history.state, "", `${url.pathname}${url.search}${url.hash}`);
+      }
+      setSection("autoRuns");
+    });
+  };
+  const runNextAction = () => {
+    if (nextActionKey === "start_execution") {
+      requestNavigation(startExecution);
+      return;
+    }
+    if (nextActionKey === "resolve_sync_conflict") {
+      document.getElementById(`work-item-external-${item.id}`)?.scrollIntoView({ behavior: "smooth", block: "center" });
+      return;
+    }
+    if (["review_approval", "inspect_failure", "monitor_execution"].includes(nextActionKey)) {
+      openAutoRun(boundRun?.id);
+    }
   };
 
   return (
@@ -1821,14 +2488,225 @@ function LocalWorkItemDetail({
       <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
         <span className="font-mono">{item.localRef}</span>
         <span>{projects.find((project) => project.id === item.projectId)?.name ?? item.projectId}</span>
-        <Badge tone={item.state === "open" ? "success" : "neutral"}>{t(`taskLocal.state.${item.state}`)}</Badge>
+        <Badge tone={item.state === "open" ? "success" : "neutral"}>
+          {t("taskLocal.statusModel.business")}: {t(`taskLocal.state.${item.businessState ?? item.state}`)}
+        </Badge>
+        <Badge tone={statusTone(item.planningStatus ?? item.status)}>
+          {t("taskLocal.statusModel.planning")}: {t(`tasks.localStatus.${item.planningStatus ?? item.status}`)}
+        </Badge>
+        {item.executionState ? (
+          <Badge tone={item.executionState === "failed" ? "danger" : item.executionState === "completed" ? "success" : "neutral"}>
+            {t("taskLocal.statusModel.execution")}: {t(`taskLocal.executionState.${item.executionState}`)}
+          </Badge>
+        ) : null}
         <span>{t("taskLocal.revision", { revision: item.revision })}</span>
       </div>
+      <WorkItemSectionNav itemId={item.id} />
+      <div className="flex items-center gap-1 overflow-x-auto rounded-md border border-border bg-muted/40 p-2 text-xs" aria-label={t("aiOps.timeline")}>
+        {externalIssueBinding ? (
+          <>
+            <a href={externalIssueBinding.url ?? "#"} target={externalIssueBinding.url ? "_blank" : undefined}
+              rel={externalIssueBinding.url ? "noreferrer" : undefined}
+              className="whitespace-nowrap rounded bg-background px-2 py-1 font-medium hover:text-primary">
+              {externalProviderLabel} #{externalIssueBinding.number}
+            </a>
+            <span aria-hidden="true">→</span>
+          </>
+        ) : null}
+        <button type="button" className="whitespace-nowrap rounded bg-primary px-2 py-1 font-medium text-primary-foreground"
+          onClick={() => document.getElementById(`work-item-overview-${item.id}`)?.scrollIntoView({ behavior: "smooth" })}>
+          {item.localRef}
+        </button>
+        {(item.executionBindings ?? []).map((binding) => (
+          <div key={`chain:${binding.kind}:${binding.targetId}`} className="flex items-center gap-1">
+            <span aria-hidden="true">→</span>
+            <button type="button" className="whitespace-nowrap rounded bg-background px-2 py-1 font-mono hover:text-primary"
+              onClick={() => binding.kind === "auto_run" ? openAutoRun(binding.targetId) : openWorktreeResult(binding.worktreeId ?? binding.targetId)}>
+              {binding.kind === "auto_run" ? t("taskLocal.autoRun") : t("taskLocal.worktree")} · {binding.targetId}
+            </button>
+          </div>
+        ))}
+        {item.completionGate?.ready ? (
+          <>
+            <span aria-hidden="true">→</span>
+            <Badge tone="success">{t("tasks.localStatus.done")}</Badge>
+          </>
+        ) : null}
+      </div>
+      <section id={`work-item-overview-${item.id}`} className="scroll-mt-12 rounded-md border border-border p-3">
+        <div className="mb-2 flex items-center justify-between gap-2">
+          <div>
+            <h3 className="text-sm font-semibold">{t("taskCockpit.title")}</h3>
+            {observability?.activeClaim ? (
+              <p className="text-xs text-muted-foreground">
+                {t("taskNextAction.claimedBy", { actor: observability.activeClaim.actorId ?? "—" })}
+                {observability.activeClaim.expiresAt ? ` · ${new Date(observability.activeClaim.expiresAt).toLocaleString()}` : ""}
+              </p>
+            ) : null}
+          </div>
+          <Badge tone={itemAttention.length ? "danger" : "success"}>
+            {itemAttention.length
+              ? t("taskCockpit.attentionCount", { count: itemAttention.length })
+              : t("taskCockpit.healthy")}
+          </Badge>
+        </div>
+        <div className="grid grid-cols-2 gap-2 text-xs sm:grid-cols-3 lg:grid-cols-6">
+          <div className="rounded bg-muted p-2">
+            <span className="block text-muted-foreground">{t("taskCockpit.stage")}</span>
+            <strong>{item.executionState
+              ? t(`taskLocal.executionState.${item.executionState}`)
+              : t(`tasks.localStatus.${item.status}`)}</strong>
+          </div>
+          <div className="rounded bg-muted p-2">
+            <span className="block text-muted-foreground">{t("taskCockpit.nextAction")}</span>
+            <strong>{nextAction}</strong>
+            {nextActionKey !== "none" ? (
+              <button type="button" className="mt-1 block text-primary hover:underline" disabled={pending} onClick={runNextAction}>
+                {t("taskNextAction.go")}
+              </button>
+            ) : null}
+          </div>
+          <div className="rounded bg-muted p-2">
+            <span className="block text-muted-foreground">{t("taskCockpit.freshness")}</span>
+            <strong>{t("taskCockpit.minutesAgo", { count: updatedAgeMinutes })}</strong>
+          </div>
+          <div className="rounded bg-muted p-2">
+            <span className="block text-muted-foreground">{t("taskCockpit.deadline")}</span>
+            <strong>{item.dueDate || "—"}</strong>
+          </div>
+          <div className="rounded bg-muted p-2">
+            <span className="block text-muted-foreground">{t("taskCockpit.cost")}</span>
+            <strong>${knownCostUsd.toFixed(4)}</strong>
+            {unknownCostEntries ? <span className="ml-1 text-muted-foreground">+{unknownCostEntries}?</span> : null}
+          </div>
+          <div className="rounded bg-muted p-2">
+            <span className="block text-muted-foreground">{t("taskCockpit.alertDelivery")}</span>
+            <strong className={failedAlerts ? "text-destructive" : ""}>
+              {failedAlerts
+                ? t("taskCockpit.alertFailed", { count: failedAlerts })
+                : queuedAlerts
+                  ? t("taskCockpit.alertQueued", { count: queuedAlerts })
+                  : t("taskCockpit.alertClear")}
+            </strong>
+          </div>
+        </div>
+      </section>
+      <WorkItemAlertAndCostDetails
+        observability={observability}
+        pending={pending}
+        onRetryAlert={(alertId) => {
+          void execute(() => api.retryWorkItemAlert(item.id, alertId)).then((ok) => { if (ok) void load(); });
+        }}
+      />
+      {boundRun?.decision ? (
+        <section className="space-y-2 rounded-md border border-border p-3 text-xs">
+          <div className="flex flex-wrap items-center gap-2">
+            <h3 className="text-sm font-semibold">{t("taskCockpit.routingTitle")}</h3>
+            <Badge tone={boundRun.decision.confidence < 0.6 ? "warning" : "success"}>{boundRun.decision.path}</Badge>
+            <span>{Math.round(boundRun.decision.confidence * 100)}%</span>
+            <span className="text-muted-foreground">{boundRun.decision.via ?? boundRun.decision.decidedBy}</span>
+            {boundRun.decision.latencyMs != null
+              ? <span className="text-muted-foreground">{boundRun.decision.latencyMs} ms</span>
+              : null}
+          </div>
+          {boundRun.decision.rationale ? <p className="whitespace-pre-wrap">{boundRun.decision.rationale}</p> : null}
+          {boundRun.decision.evidence ? (
+            <p className="font-mono text-[10px] text-muted-foreground">
+              policy {boundRun.decision.evidence.policyVersion}
+              {boundRun.decision.evidence.modelVersion ? ` · model ${boundRun.decision.evidence.modelVersion}` : ""}
+              {` · input ${boundRun.decision.evidence.inputDigest.slice(0, 12)}`}
+            </p>
+          ) : null}
+          {(boundRun.decision.clarifyingQuestions ?? []).length ? (
+            <ul className="list-inside list-disc text-muted-foreground">
+              {boundRun.decision.clarifyingQuestions?.map((question) => <li key={question}>{question}</li>)}
+            </ul>
+          ) : null}
+          {observability?.routingExplanation ? (
+            <details>
+              <summary className="cursor-pointer font-semibold">{t("aiOps.whyRoute")}</summary>
+              <div className="mt-2 space-y-1">
+                {observability.routingExplanation.humanCorrection ? (
+                  <p className="rounded bg-muted p-2 font-semibold">
+                    Human correction → {observability.routingExplanation.humanCorrection.actualPath}: {observability.routingExplanation.humanCorrection.reason}
+                  </p>
+                ) : null}
+                {observability.routingExplanation.candidates.map((candidate) => (
+                  <p key={candidate.path} className={candidate.selected ? "font-semibold" : "text-muted-foreground"}>
+                    {candidate.path}{candidate.score != null ? ` ${Math.round(candidate.score * 100)}%` : ""}: {candidate.reason}
+                  </p>
+                ))}
+              </div>
+            </details>
+          ) : null}
+          {observability?.estimate ? (
+            <p className="text-muted-foreground">
+              {observability.estimate.remainingMs != null
+                ? `Estimated remaining ${Math.ceil(observability.estimate.remainingMs / 60_000)} min`
+                : t("aiOps.estimateUnavailable")}
+              {` · ${observability.estimate.confidence} confidence · ${observability.estimate.sampleCount} comparable runs`}
+              {observability.estimate.p90DurationMs != null
+                ? ` · p90 ${Math.ceil(observability.estimate.p90DurationMs / 60_000)} min`
+                : ""}
+              {observability.estimate.calibrationMaeMs != null
+                ? ` · historical MAE ${Math.ceil(observability.estimate.calibrationMaeMs / 60_000)} min`
+                : ""}
+            </p>
+          ) : null}
+          <div className="flex items-center gap-2">
+            <Badge tone={statusTone(boundRun.status)}>
+              {t(`autoRuns.status.${boundRun.status}` as never, { defaultValue: boundRun.status })}
+            </Badge>
+            {boundRun.terminalOutcome
+              ? <span>{boundRun.terminalOutcome.disposition} · {boundRun.terminalOutcome.source}</span>
+              : null}
+            <Button className="ml-auto" variant="secondary" size="sm" onClick={() => openAutoRun(boundRun.id)}>
+              {t("taskCockpit.openAutoRuns")}
+            </Button>
+          </div>
+        </section>
+      ) : null}
+      <WorkItemTimeline observability={observability} />
+      <WorkItemExternalSync
+        itemId={item.id}
+        binding={externalIssueBinding}
+        providerLabel={externalProviderLabel}
+        pending={pending}
+        onSync={syncExternal}
+      />
+      <details id={`work-item-details-${item.id}`} className="scroll-mt-12 rounded-md border border-border p-3">
+        <summary className="cursor-pointer text-sm font-semibold">{t("taskCockpit.details")}</summary>
+        <div className="mt-3 space-y-4">
       <div className="grid gap-3 sm:grid-cols-3">
         <Field label={t("taskLocal.dueDate")}><Input type="date" value={dueDate} onChange={(event) => setDueDate(event.target.value)} /></Field>
         <Field label={t("taskLocal.milestone")}><Input value={milestone} onChange={(event) => setMilestone(event.target.value)} /></Field>
         <Field label={t("planningInsights.estimatePoints")}><Input type="number" min="0" max="1000" value={estimatePoints} onChange={(event) => setEstimatePoints(event.target.value)} /></Field>
       </div>
+      <Field label={t("taskHierarchy.title")}>
+        <div className="space-y-2">
+          <Select value={parentId} aria-label={t("taskHierarchy.parent")}
+            onChange={(event) => setParentId(event.target.value)}>
+            <option value="">{t("taskHierarchy.noParent")}</option>
+            {dependencyCandidates.filter((candidate) => candidate.projectId === item.projectId)
+              .map((candidate) => (
+                <option key={candidate.id} value={candidate.id}>{candidate.localRef} · {candidate.title}</option>
+              ))}
+          </Select>
+          <div className="rounded bg-muted p-2 text-xs">
+            <strong>{item.subIssuesSummary?.completed ?? 0}/{item.subIssuesSummary?.total ?? 0}</strong>
+            {" · "}{t("taskHierarchy.progress", { percent: item.subIssuesSummary?.percentCompleted ?? 0 })}
+          </div>
+          <div className="space-y-1">
+            {(item.subIssues ?? []).map((child) => (
+              <div key={child.id} className="flex justify-between rounded border border-border px-2 py-1 text-xs">
+                <span>{child.localRef} · {child.title}</span>
+                <Badge tone={statusTone(child.status)}>{t(`tasks.localStatus.${child.status}`)}</Badge>
+              </div>
+            ))}
+            {!item.subIssues?.length ? <span className="text-xs text-muted-foreground">{t("taskHierarchy.noChildren")}</span> : null}
+          </div>
+        </div>
+      </Field>
       <Field label={t("taskDependencies.blockedBy")}>
         <div className="space-y-2">
           <div className="flex gap-2">
@@ -1884,19 +2762,23 @@ function LocalWorkItemDetail({
       <Field label={t("tasks.acceptanceCriteria")}>
         <textarea className="min-h-24 w-full rounded-md border border-border bg-background p-2 text-sm" value={acceptance} onChange={(event) => setAcceptance(event.target.value)} />
       </Field>
-      {error ? <p className="text-xs text-destructive">{error}</p> : null}
-      <div className="flex flex-wrap justify-end gap-2">
-        <Button variant="secondary" disabled={pending || item.state !== "open"} onClick={createExecutionWorktree}>
-          <GitBranch className="mr-1 size-4" />{t("taskLocal.createWorktree")}
-        </Button>
-        <Button disabled={pending || item.state !== "open"} onClick={startExecution}>
-          <Zap className="mr-1 size-4" />{t("taskLocal.startAutoRun")}
-        </Button>
-        <Button variant="secondary" disabled={pending} onClick={() => transition(item.state === "open" ? "close" : "reopen")}>
-          {t(item.state === "open" ? "taskLocal.close" : "taskLocal.reopen")}
-        </Button>
-        <Button disabled={pending || !title.trim()} onClick={save}><Save className="mr-1 size-4" />{t("taskLocal.save")}</Button>
+        </div>
+      </details>
+      <WorkItemAcceptanceSection item={item} />
+      <div aria-live="polite" aria-atomic="true">
+        {error ? <p className="text-xs text-destructive">{error}</p> : null}
+        {notice ? <p className="text-xs text-success">{notice}</p> : null}
       </div>
+      <WorkItemExecutionActions
+        itemId={item.id}
+        open={item.state === "open"}
+        pending={pending}
+        canSave={Boolean(title.trim())}
+        onCreateWorktree={() => requestNavigation(createExecutionWorktree)}
+        onStartAutoRun={() => requestNavigation(startExecution)}
+        onTransition={() => transition(item.state === "open" ? "close" : "reopen")}
+        onSave={() => save()}
+      />
       {(item.executionBindings?.length ?? 0) > 0 ? (
         <div className="rounded-md border border-border p-2">
           <p className="mb-1 text-xs font-medium text-muted-foreground">{t("taskLocal.executions")}</p>
@@ -1906,7 +2788,11 @@ function LocalWorkItemDetail({
                 <Badge tone={binding.kind === "auto_run" ? "warning" : "neutral"}>
                   {t(binding.kind === "auto_run" ? "taskLocal.autoRun" : "taskLocal.worktree")}
                 </Badge>
-                <span className="font-mono">{binding.targetId}</span>
+                {binding.kind === "auto_run" ? (
+                  <button type="button" className="font-mono text-primary hover:underline" onClick={() => openAutoRun(binding.targetId)}>
+                    {binding.targetId}
+                  </button>
+                ) : <span className="font-mono">{binding.targetId}</span>}
                 {binding.worktreeId ? (
                   <button type="button" className="ml-auto text-primary hover:underline" onClick={() => openWorktreeResult(binding.worktreeId)}>
                     {t("taskLocal.openWorktree")}
@@ -1918,7 +2804,7 @@ function LocalWorkItemDetail({
         </div>
       ) : null}
 
-      <section className="space-y-2 border-t border-border pt-4">
+      <section id={`work-item-collaboration-${item.id}`} className="scroll-mt-12 space-y-2 border-t border-border pt-4">
         <h3 className="text-sm font-semibold">{t("taskLocal.comments")}</h3>
         <div className="flex gap-2">
           <Input value={comment} onChange={(event) => setComment(event.target.value)} placeholder={t("taskLocal.commentPlaceholder")} />
@@ -1940,7 +2826,7 @@ function LocalWorkItemDetail({
                 {!row.deletedAt && editingCommentId !== row.id ? (
                   <span className="ml-auto flex gap-1">
                     <button type="button" aria-label={t("taskLocal.editComment")} onClick={() => { setEditingCommentId(row.id); setEditingCommentBody(row.body ?? ""); }}><Pencil className="size-3.5" /></button>
-                    <button type="button" aria-label={t("taskLocal.deleteComment")} onClick={() => removeComment(row)}><Trash2 className="size-3.5" /></button>
+                    <button type="button" aria-label={t("taskLocal.deleteComment")} onClick={() => setDeleteCommentTarget(row)}><Trash2 className="size-3.5" /></button>
                   </span>
                 ) : null}
               </div>
@@ -1962,6 +2848,30 @@ function LocalWorkItemDetail({
           ))}
         </ul>
       </section>
+      <ConfirmModal
+        open={Boolean(deleteCommentTarget)}
+        title={t("taskLocal.deleteComment")}
+        description={deleteCommentTarget?.body ?? undefined}
+        confirmLabel={t("taskLocal.deleteComment")}
+        destructive
+        onClose={() => setDeleteCommentTarget(null)}
+        onConfirm={() => {
+          if (deleteCommentTarget) removeComment(deleteCommentTarget);
+          setDeleteCommentTarget(null);
+        }}
+      />
+      <Modal
+        open={safeNavigation.pendingNavigation}
+        title={t("taskLocal.details")}
+        description={t("officeEditors.unsaved")}
+        onClose={safeNavigation.cancelNavigation}
+      >
+        <div className="flex flex-wrap justify-end gap-2">
+          <Button variant="secondary" onClick={safeNavigation.cancelNavigation}>{t("shared.cancel")}</Button>
+          <Button variant="destructive" onClick={safeNavigation.discardAndContinue}>{t("shared.confirm")}</Button>
+          <Button onClick={() => safeNavigation.saveAndContinue((action) => save(action))}>{t("taskLocal.save")}</Button>
+        </div>
+      </Modal>
     </div>
   );
 }
@@ -1987,6 +2897,28 @@ function CreateLocalWorkItemForm({
   const [dueDate, setDueDate] = useState("");
   const [milestone, setMilestone] = useState("");
   const [estimatePoints, setEstimatePoints] = useState("0");
+  const [assistNote, setAssistNote] = useState("");
+  const assist = () => {
+    let draft: {
+      body: string; type: LocalWorkItem["type"]; priority: LocalWorkItem["priority"];
+      acceptanceCriteria: string[]; suggestedRoute: string; risks: string[];
+      evidence: { generator: string; policyVersion: string; confidence: number };
+    } | null = null;
+    void execute(async () => {
+      const result = await api.suggestWorkItemDraft({ projectId, title, body }) as { draft: NonNullable<typeof draft> };
+      draft = result.draft;
+      return result;
+    }).then((ok) => {
+      if (!ok || !draft) return;
+      setBody(draft.body);
+      setType(draft.type);
+      setPriority(draft.priority);
+      setAcceptance(draft.acceptanceCriteria.join("\n"));
+      setAssistNote(
+        `Suggested route: ${draft.suggestedRoute}. ${draft.evidence.generator} ${Math.round(draft.evidence.confidence * 100)}%. ${draft.risks.join(" ")}`,
+      );
+    });
+  };
   const submit = () => {
     void execute(() => api.createWorkItem({
       projectId,
@@ -2011,6 +2943,12 @@ function CreateLocalWorkItemForm({
       <Field label={t("tasks.localTitle")}>
         <Input value={title} onChange={(event) => setTitle(event.target.value)} autoFocus />
       </Field>
+      <div className="flex items-center gap-2">
+        <Button variant="secondary" disabled={pending || !projectId || !title.trim()} onClick={assist}>
+          {t("aiOps.assist")}
+        </Button>
+        {assistNote ? <span className="text-xs text-muted-foreground">{assistNote}</span> : null}
+      </div>
       <div className="grid gap-3 sm:grid-cols-2">
         <Field label={t("tasks.type")}>
           <Select value={type} onChange={(event) => setType(event.target.value as LocalWorkItem["type"])}>
@@ -2041,115 +2979,6 @@ function CreateLocalWorkItemForm({
       <div className="flex justify-end gap-2">
         <Button disabled={pending || !projectId || !title.trim()} onClick={submit}>{t("tasks.createLocal")}</Button>
       </div>
-    </div>
-  );
-}
-
-// #1163: the durable claim trail for one issue — each row is a recorded
-// transition from issueClaimEvents (#1152), newest first. Read-only.
-const CLAIM_EVENT_TONE = { claimed: "warning", released: "neutral", expired: "danger" } as const;
-function ClaimHistoryList({ events }: { events: IssueClaimEvent[] }) {
-  const { t } = useAppTranslation();
-  if (!events.length) return <p className="text-sm text-muted-foreground">{t("tasks.noClaimHistory")}</p>;
-  return (
-    <ul className="flex max-h-80 flex-col gap-1.5 overflow-y-auto">
-      {events.map((e) => (
-        <li key={e.id} className="flex flex-wrap items-center gap-x-2 gap-y-1 rounded-md border border-border/60 px-2.5 py-1.5 text-xs">
-          <Badge tone={CLAIM_EVENT_TONE[e.type] ?? "neutral"}>{e.type}</Badge>
-          <span className="font-medium">{e.claimedBy}</span>
-          <span className="text-muted-foreground">{e.mode}</span>
-          {e.type === "released" && e.actorId && e.actorId !== e.claimedBy ? (
-            <span className="text-muted-foreground">{t("tasks.releasedBy", { actor: e.actorId })}</span>
-          ) : null}
-          {e.outcome && e.outcome !== "released" ? <span className="text-muted-foreground">{e.outcome.replaceAll("_", " ")}</span> : null}
-          {e.autoRunId ? <span className="font-mono text-muted-foreground">{e.autoRunId}</span> : null}
-          <span className="ml-auto text-muted-foreground">{e.at.replace("T", " ").slice(0, 16)}</span>
-        </li>
-      ))}
-    </ul>
-  );
-}
-
-// Worktree-creation options for a Task item: branch name (smart-suggested for an
-// issue), base branch, and agent. A PR checks out its own branch, so only the
-// agent is offered.
-function WorktreeOptionsForm({ row, onDone }: { row: Row; onDone: (wt: { id: string; projectId: string } | null) => void }) {
-  const { t } = useAppTranslation();
-  const { data: state } = useConsoleState();
-  const { execute, pending, error } = useAsyncAction();
-  const agents = state?.agents ?? [];
-  const isPr = row.type === "pr";
-
-  const [branch, setBranch] = useState(branchFromIssue(row));
-  const [base, setBase] = useState("main");
-  const [agentId, setAgentId] = useState(agents[0]?.id ?? "");
-  const [suggesting, setSuggesting] = useState(false);
-
-  async function suggest() {
-    setSuggesting(true);
-    try {
-      const r = (await api.suggestWorktreeName(row.title)) as { name?: string };
-      if (r.name) setBranch(r.name);
-    } catch {
-      /* keep the slug fallback */
-    }
-    setSuggesting(false);
-  }
-
-  function create() {
-    const link = worktreeLinkFor(row);
-    const payload = isPr
-      ? { prNumber: row.number, agentId: agentId || undefined, link }
-      : { name: branch.trim() || branchFromIssue(row), startPoint: base.trim() || undefined, agentId: agentId || undefined, link };
-    void execute(async () => {
-      const r = (await api.createWorktree(row.projectId, payload)) as { worktree?: { id: string; projectId: string } };
-      onDone(r.worktree ?? null);
-      return r;
-    });
-  }
-
-  return (
-    <div className="space-y-3">
-      <p className="text-sm text-muted-foreground">
-        {isPr ? (
-          <>{t("tasks.checkoutPr", { number: row.number })}{row.headRefName ? <> (<span className="font-mono">{row.headRefName}</span>)</> : null}.</>
-        ) : (
-          <>{t("tasks.createIssueBranch", { number: row.number })}</>
-        )}
-      </p>
-      {!isPr ? (
-        <>
-          <Field label={t("tasks.branchName")}>
-            <div className="flex gap-2">
-              <Input value={branch} onChange={(e) => setBranch(e.target.value)} className="font-mono" />
-              <Button variant="secondary" size="sm" disabled={suggesting} onClick={suggest} title={t("tasks.suggestName")}>
-                {t("tasks.suggest")}
-              </Button>
-            </div>
-          </Field>
-          <Field label={t("tasks.baseBranch")}>
-            <Input value={base} onChange={(e) => setBase(e.target.value)} className="font-mono" placeholder="main" />
-          </Field>
-        </>
-      ) : null}
-      <Field label={t("tasks.agent")}>
-        <Select value={agentId} onChange={(e) => setAgentId(e.target.value)}>
-          {agents.map((a) => (
-            <option key={a.id} value={a.id}>
-              {a.name}
-            </option>
-          ))}
-        </Select>
-      </Field>
-      <div className="flex justify-end gap-2 pt-1">
-        <Button variant="secondary" size="sm" disabled={pending} onClick={() => onDone(null)}>
-          {t("tasks.cancel")}
-        </Button>
-        <Button size="sm" disabled={pending} onClick={create}>
-          {t("tasks.createWorktree")}
-        </Button>
-      </div>
-      {error ? <p className="text-xs text-destructive">{error}</p> : null}
     </div>
   );
 }

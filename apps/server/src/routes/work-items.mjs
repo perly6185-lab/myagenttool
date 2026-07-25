@@ -1,10 +1,157 @@
+import { createHmac, timingSafeEqual } from "node:crypto";
+
 export async function handleWorkItemRoutes({
   req, res, url, sendJson, readJson, actor,
-  listWorkItems, getWorkItem, createWorkItem, updateWorkItem, bulkUpdateWorkItems, transitionWorkItem,
+  listWorkItems, listAttention, getWorkItem, createWorkItem, updateWorkItem, bulkUpdateWorkItems, transitionWorkItem,
   listActivity, listComments, createComment, updateComment, deleteComment,
   createWorktree, startAutoRun, recordExecutionBinding,
+  claimWorkItem, releaseWorkItemClaim,
+  bindGithubIssue, syncGithubIssue,
+  bindExternalIssue, syncExternalIssue, listExternalProviders,
+  fetchExternalIssue, pushExternalIssue,
+  fetchGithubIssue, pushGithubIssue,
+  recordVerification,
+  ingestGithubWebhook,
+  replayGithubWebhook,
+  recordGithubWebhookFailure,
+  ingestExternalWebhook, replayExternalWebhook, recordExternalWebhookFailure,
+  updateAttention,
+  githubSyncDiagnostics,
+  suggestWorkItemDraft,
+  retryWorkItemAlert,
 }) {
+  const externalWebhookMatch = url.pathname.match(/^\/api\/webhooks\/(gitlab|gitea)\/work-items$/);
+  if (externalWebhookMatch && req.method === "POST") {
+    const provider = externalWebhookMatch[1];
+    const chunks = [];
+    for await (const chunk of req) chunks.push(chunk);
+    const raw = Buffer.concat(chunks);
+    const secret = String(process.env[`MYAGENTTOOL_${provider.toUpperCase()}_WEBHOOK_SECRET`] ?? "");
+    const supplied = String(provider === "gitlab"
+      ? req.headers["x-gitlab-token"]
+      : req.headers["x-gitea-signature"] ?? "");
+    const expected = provider === "gitlab"
+      ? secret
+      : secret ? createHmac("sha256", secret).update(raw).digest("hex") : "";
+    const valid = secret && supplied.length === expected.length
+      && timingSafeEqual(Buffer.from(supplied), Buffer.from(expected));
+    const deliveryId = req.headers[provider === "gitlab" ? "x-gitlab-event-uuid" : "x-gitea-delivery"];
+    const event = req.headers[provider === "gitlab" ? "x-gitlab-event" : "x-gitea-event"];
+    if (!valid) {
+      recordExternalWebhookFailure({ provider, deliveryId, event, reason: "invalid_signature" });
+      sendJson(res, 401, { error: "invalid_external_webhook_signature", provider });
+      return true;
+    }
+    let payload;
+    try {
+      payload = JSON.parse(raw.toString("utf8"));
+    } catch {
+      recordExternalWebhookFailure({ provider, deliveryId, event, reason: "invalid_json" });
+      sendJson(res, 400, { error: "invalid_json" });
+      return true;
+    }
+    const issue = provider === "gitlab" ? payload.object_attributes : payload.issue;
+    const repository = provider === "gitlab"
+      ? payload.project?.path_with_namespace
+      : payload.repository?.full_name;
+    const snapshot = issue ? {
+      number: issue.iid ?? issue.number,
+      title: issue.title,
+      body: issue.description ?? issue.body ?? "",
+      state: issue.state === "closed" ? "closed" : "open",
+      labels: (issue.labels ?? payload.labels ?? []).map((label) => label?.title ?? label?.name ?? label),
+      milestone: issue.milestone?.title ?? "",
+      assigneeIds: (issue.assignees ?? (issue.assignee ? [issue.assignee] : []))
+        .map((assignee) => assignee?.username ?? assignee?.login).filter(Boolean),
+      url: issue.url ?? issue.web_url ?? issue.html_url,
+      repository,
+      updatedAt: issue.updated_at,
+    } : null;
+    const result = ingestExternalWebhook({ provider, deliveryId, event, snapshot });
+    sendJson(res, result.status, result.body);
+    return true;
+  }
+  if (url.pathname === "/api/webhooks/github/work-items" && req.method === "POST") {
+    const chunks = [];
+    for await (const chunk of req) chunks.push(chunk);
+    const raw = Buffer.concat(chunks);
+    const secret = String(process.env.MYAGENTTOOL_GITHUB_WEBHOOK_SECRET ?? "");
+    const supplied = String(req.headers["x-hub-signature-256"] ?? "");
+    const expected = secret ? `sha256=${createHmac("sha256", secret).update(raw).digest("hex")}` : "";
+    const valid = secret && supplied.length === expected.length
+      && timingSafeEqual(Buffer.from(supplied), Buffer.from(expected));
+    if (!valid) {
+      recordGithubWebhookFailure({
+        deliveryId: req.headers["x-github-delivery"],
+        event: req.headers["x-github-event"],
+        reason: "invalid_signature",
+      });
+      sendJson(res, 401, { error: "invalid_github_webhook_signature" });
+      return true;
+    }
+    let payload;
+    try {
+      payload = JSON.parse(raw.toString("utf8"));
+    } catch {
+      recordGithubWebhookFailure({
+        deliveryId: req.headers["x-github-delivery"],
+        event: req.headers["x-github-event"],
+        reason: "invalid_json",
+      });
+      sendJson(res, 400, { error: "invalid_json" });
+      return true;
+    }
+    const result = ingestGithubWebhook({
+      deliveryId: req.headers["x-github-delivery"],
+      event: req.headers["x-github-event"],
+      payload,
+    });
+    sendJson(res, result.status, result.body);
+    return true;
+  }
   if (!url.pathname.startsWith("/api/work-items")) return false;
+
+  if (url.pathname === "/api/work-items/providers" && req.method === "GET") {
+    const result = listExternalProviders(actor);
+    sendJson(res, result.status, result.body);
+    return true;
+  }
+
+  if (url.pathname === "/api/work-items/assist/draft" && req.method === "POST") {
+    const result = suggestWorkItemDraft(await readJson(req), actor);
+    sendJson(res, result.status, result.body);
+    return true;
+  }
+
+  if (url.pathname === "/api/work-items/attention" && req.method === "GET") {
+    const result = listAttention(Object.fromEntries(url.searchParams), actor);
+    sendJson(res, result.status, result.body);
+    return true;
+  }
+  if (url.pathname === "/api/work-items/github/diagnostics" && req.method === "GET") {
+    const result = githubSyncDiagnostics(actor);
+    sendJson(res, result.status, result.body);
+    return true;
+  }
+  const replayMatch = url.pathname.match(/^\/api\/work-items\/github\/deliveries\/([^/]+)\/replay$/);
+  if (replayMatch && req.method === "POST") {
+    const result = replayGithubWebhook({ deliveryId: decodeURIComponent(replayMatch[1]) }, actor);
+    sendJson(res, result.status, result.body);
+    return true;
+  }
+  const externalReplayMatch = url.pathname.match(/^\/api\/work-items\/(gitlab|gitea)\/deliveries\/([^/]+)\/replay$/);
+  if (externalReplayMatch && req.method === "POST") {
+    const result = replayExternalWebhook({
+      provider: externalReplayMatch[1], deliveryId: decodeURIComponent(externalReplayMatch[2]),
+    }, actor);
+    sendJson(res, result.status, result.body);
+    return true;
+  }
+  if (url.pathname === "/api/work-items/attention/actions" && req.method === "POST") {
+    const result = updateAttention(await readJson(req), actor);
+    sendJson(res, result.status, result.body);
+    return true;
+  }
 
   if (url.pathname === "/api/work-items/bulk" && req.method === "PATCH") {
     const result = bulkUpdateWorkItems(await readJson(req), actor);
@@ -24,6 +171,192 @@ export async function handleWorkItemRoutes({
       return true;
     }
     return false;
+  }
+
+  const claimMatch = url.pathname.match(/^\/api\/work-items\/([^/]+)\/(claim|release-claim)$/);
+  if (claimMatch && req.method === "POST") {
+    const workItemId = decodeURIComponent(claimMatch[1]);
+    const body = await readJson(req);
+    const result = claimMatch[2] === "claim"
+      ? claimWorkItem({ workItemId, ...body }, actor)
+      : releaseWorkItemClaim({ workItemId, ...body }, actor);
+    sendJson(res, result.status, result.body);
+    return true;
+  }
+
+  const alertRetryMatch = url.pathname.match(/^\/api\/work-items\/([^/]+)\/alerts\/([^/]+)\/retry$/);
+  if (alertRetryMatch && req.method === "POST") {
+    const result = retryWorkItemAlert({
+      workItemId: decodeURIComponent(alertRetryMatch[1]),
+      alertId: decodeURIComponent(alertRetryMatch[2]),
+    }, actor);
+    sendJson(res, result.status, result.body);
+    return true;
+  }
+
+  const externalBindingsMatch = url.pathname.match(/^\/api\/work-items\/([^/]+)\/external-bindings$/);
+  if (externalBindingsMatch && req.method === "POST") {
+    const body = await readJson(req);
+    const provider = String(body?.provider ?? "").toLowerCase();
+    const remote = body?.remote ?? (provider && body?.repository && body?.issueNumber
+      ? await fetchExternalIssue({ provider, repository: body.repository, issueNumber: body.issueNumber })
+      : null);
+    if (!remote || remote.ok === false) {
+      sendJson(res, remote?.error === "provider_credentials_not_configured" ? 503 : 502, {
+        error: remote?.error ?? "external_issue_fetch_failed", provider,
+      });
+      return true;
+    }
+    const result = bindExternalIssue({
+      workItemId: decodeURIComponent(externalBindingsMatch[1]),
+      ...body, remote,
+    }, actor);
+    sendJson(res, result.status, result.body);
+    return true;
+  }
+  const externalSyncMatch = url.pathname.match(/^\/api\/work-items\/([^/]+)\/external-bindings\/([^/]+)\/sync$/);
+  if (externalSyncMatch && req.method === "POST") {
+    const body = await readJson(req);
+    const provider = decodeURIComponent(externalSyncMatch[2]).toLowerCase();
+    const detail = getWorkItem({ workItemId: decodeURIComponent(externalSyncMatch[1]) }, actor);
+    if (!detail.ok) {
+      sendJson(res, detail.status, detail.body);
+      return true;
+    }
+    const binding = detail.body.workItem.externalBindings?.find((candidate) => candidate.provider === provider || candidate.kind === `${provider}_issue`);
+    let remote = body?.remote;
+    if (!remote && binding && ["pull", "push", "resolve_local"].includes(body?.direction)) {
+      const fetched = await fetchExternalIssue({ provider, repository: binding.repository, issueNumber: binding.number });
+      if (fetched?.ok === false) {
+        sendJson(res, fetched.error === "provider_credentials_not_configured" ? 503 : 502, { error: fetched.error, provider });
+        return true;
+      }
+      remote = fetched;
+    }
+    if (body?.direction === "pull" || body?.direction === "resolve_remote") {
+      const result = syncExternalIssue({
+        workItemId: decodeURIComponent(externalSyncMatch[1]), provider, ...body, remote,
+      }, actor);
+      sendJson(res, result.status, result.body);
+      return true;
+    }
+    const prepared = body?.direction === "resolve_local"
+      ? syncExternalIssue({
+        workItemId: decodeURIComponent(externalSyncMatch[1]), provider,
+        expectedRevision: body?.expectedRevision, direction: "resolve_local",
+      }, actor)
+      : (() => {
+        const reconciled = syncExternalIssue({
+          workItemId: decodeURIComponent(externalSyncMatch[1]), provider,
+          expectedRevision: body?.expectedRevision, direction: "pull", remote,
+        }, actor);
+        return reconciled.ok ? syncExternalIssue({
+        workItemId: decodeURIComponent(externalSyncMatch[1]), provider,
+        expectedRevision: reconciled.body.workItem.revision, direction: body?.direction,
+        }, actor) : reconciled;
+      })();
+    if (!prepared.ok || prepared.body.action !== "push_required") {
+      sendJson(res, prepared.status, prepared.body);
+      return true;
+    }
+    const pushed = await pushExternalIssue({
+      provider, repository: binding.repository, issueNumber: binding.number, payload: prepared.body.payload,
+    });
+    if (!pushed.ok) {
+      sendJson(res, pushed.error === "provider_credentials_not_configured" ? 503 : 502, { error: pushed.error, provider });
+      return true;
+    }
+    const result = syncExternalIssue({
+      workItemId: decodeURIComponent(externalSyncMatch[1]),
+      provider, expectedRevision: prepared.body.workItem.revision, direction: "push",
+      pushedRemoteUpdatedAt: pushed.issue.updatedAt,
+    }, actor);
+    sendJson(res, result.status, result.body);
+    return true;
+  }
+
+  const githubMatch = url.pathname.match(/^\/api\/work-items\/([^/]+)\/github\/(link|sync)$/);
+  if (githubMatch && req.method === "POST") {
+    const workItemId = decodeURIComponent(githubMatch[1]);
+    const body = await readJson(req);
+    const detail = getWorkItem({ workItemId }, actor);
+    if (!detail.ok) {
+      sendJson(res, detail.status, detail.body);
+      return true;
+    }
+    const item = detail.body.workItem;
+    if (githubMatch[2] === "link") {
+      const issueNumber = Number(body?.issueNumber ?? body?.remote?.number);
+      const remote = body?.remote ?? await fetchGithubIssue({ projectId: item.projectId, issueNumber });
+      const result = remote
+        ? bindGithubIssue({ workItemId, expectedRevision: body?.expectedRevision, remote }, actor)
+        : { status: 502, body: { error: "github_issue_fetch_failed" } };
+      sendJson(res, result.status, result.body);
+      return true;
+    }
+    const binding = item.externalBindings?.find((candidate) => candidate.kind === "github_issue");
+    if (!binding) {
+      sendJson(res, 409, { error: "github_issue_not_bound" });
+      return true;
+    }
+    let result;
+    if (body?.direction === "pull") {
+      const remote = body?.remote ?? await fetchGithubIssue({ projectId: item.projectId, issueNumber: binding.number });
+      result = remote
+        ? syncGithubIssue({ workItemId, expectedRevision: body?.expectedRevision, direction: "pull", remote }, actor)
+        : { status: 502, body: { error: "github_issue_fetch_failed" } };
+    } else if (["push", "resolve_local"].includes(body?.direction)) {
+      const remote = body?.remote ?? await fetchGithubIssue({ projectId: item.projectId, issueNumber: binding.number });
+      if (!remote) {
+        result = { status: 502, body: { error: "github_issue_fetch_failed" } };
+      } else {
+        const reconciled = body.direction === "push"
+          ? syncGithubIssue({
+            workItemId, expectedRevision: body?.expectedRevision, direction: "pull", remote,
+          }, actor)
+          : null;
+        const prepared = reconciled && !reconciled.ok
+          ? reconciled
+          : syncGithubIssue({
+            workItemId,
+            expectedRevision: reconciled?.body.workItem?.revision ?? body?.expectedRevision,
+            direction: body.direction,
+          }, actor);
+        if (!prepared.ok || prepared.body.action !== "push_required") {
+          result = prepared;
+        } else {
+          const pushed = await pushGithubIssue({
+            projectId: item.projectId, issueNumber: binding.number, payload: prepared.body.payload, remote,
+          });
+          if (!pushed.ok) {
+            result = { status: 502, body: { error: "github_issue_push_failed", message: pushed.error } };
+          } else {
+            const confirmed = await fetchGithubIssue({ projectId: item.projectId, issueNumber: binding.number });
+            result = confirmed
+              ? syncGithubIssue({
+                workItemId,
+                expectedRevision: prepared.body.workItem?.revision ?? body?.expectedRevision,
+                direction: "push",
+                pushedRemoteUpdatedAt: confirmed.updatedAt,
+              }, actor)
+              : { status: 502, body: { error: "github_issue_confirmation_failed" } };
+          }
+        }
+      }
+    } else {
+      result = syncGithubIssue({ workItemId, ...body }, actor);
+    }
+    sendJson(res, result.status, result.body);
+    return true;
+  }
+
+  const verificationMatch = url.pathname.match(/^\/api\/work-items\/([^/]+)\/verifications$/);
+  if (verificationMatch && req.method === "POST") {
+    const result = recordVerification({
+      workItemId: decodeURIComponent(verificationMatch[1]), ...(await readJson(req)),
+    }, actor);
+    sendJson(res, result.status, result.body);
+    return true;
   }
 
   const executionMatch = url.pathname.match(/^\/api\/work-items\/([^/]+)\/(worktrees|auto-runs)$/);
@@ -58,6 +391,12 @@ export async function handleWorkItemRoutes({
       const result = await startAutoRun({
         projectId: item.projectId, link, name, baseBranch: body?.baseBranch,
         agentId: body?.agentId, actor, issueBody,
+        executionChainId: item.id,
+        autonomyProfile: item.planningProjects?.some((project) => project.autonomyProfile === "cautious")
+          ? "cautious"
+          : item.planningProjects?.some((project) => project.autonomyProfile === "high")
+            ? "high"
+            : "standard",
       });
       recordExecutionBinding({
         workItemId, kind: "auto_run", targetId: result.autoRun.id, worktreeId: result.worktree?.id ?? result.autoRun.worktreeId,
