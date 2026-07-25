@@ -1431,6 +1431,16 @@ export function createServerRuntimeServices({
     }, { userId: principal.id, teamId: principal.teamId, role: "member", deviceId: terminalId });
     if (!created.ok) return { ok: false, reason: created.body?.error ?? "work_item_create_failed" };
     const workItem = created.body.workItem;
+    const storedWorkItem = (state.workItems ?? []).find((candidate) => candidate.id === workItem.id);
+    if (storedWorkItem) {
+      storedWorkItem.channelOrigin = {
+        channelId,
+        conversationId: channelTaskContext?.conversationId ?? null,
+        messageId: channelTaskContext?.messageId ?? null,
+        principalId: principal.id,
+        traceId: workItem.id,
+      };
+    }
     return {
       ok: true,
       number: workItem.localNumber,

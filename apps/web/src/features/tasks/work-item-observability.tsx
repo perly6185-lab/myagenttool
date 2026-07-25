@@ -107,6 +107,7 @@ export function WorkItemAssetChain({ item }: { item: LocalWorkItem }) {
     .filter((evidence) => evidence.kind === "asset" && evidence.assetId)
     .map((evidence) => evidence.assetId));
   const latestResolution = item.applicationResolutions?.at(-1) ?? null;
+  const latestApplicationInvocation = item.executionBindings?.filter((binding) => binding.kind === "application_invocation").at(-1);
   const readiness = item.queueReadiness ?? item.assetReadiness;
   async function startApplication(requestApproval = false) {
     const assetVerb = item.requiredCapabilities?.[0];
@@ -134,6 +135,20 @@ export function WorkItemAssetChain({ item }: { item: LocalWorkItem }) {
       setStarting(false);
     }
   }
+  async function cancelApplication() {
+    const invocationId = latestApplicationInvocation?.id;
+    if (!invocationId) return;
+    setStarting(true);
+    setStartResult(null);
+    try {
+      await api.cancelInvocation(invocationId);
+      setStartResult(`Cancelled · ${invocationId}`);
+    } catch (error) {
+      setStartResult(error instanceof Error ? error.message : "Could not cancel the application");
+    } finally {
+      setStarting(false);
+    }
+  }
   return (
     <section aria-label={t("assetChain.label")} className="rounded-md border border-border p-3 text-xs">
       <div className="flex flex-wrap items-center gap-2">
@@ -149,6 +164,8 @@ export function WorkItemAssetChain({ item }: { item: LocalWorkItem }) {
         {readiness?.state === "waiting_capability" ? <Button type="button" size="sm" variant="secondary" onClick={() => setSection("applications")}>Set up capability</Button> : null}
         {readiness?.state === "waiting_approval" && item.requiredCapabilities?.length ? <Button type="button" size="sm" onClick={() => void startApplication(true)} disabled={starting}>{starting ? "Approving…" : "Approve & start"}</Button> : null}
         {readiness?.state === "ready" && item.requiredCapabilities?.length ? <Button type="button" size="sm" onClick={() => void startApplication()} disabled={starting}>{starting ? "Starting…" : "Start application"}</Button> : null}
+        {latestApplicationInvocation?.id ? <Button type="button" size="sm" variant="secondary" onClick={() => void cancelApplication()} disabled={starting}>Cancel</Button> : null}
+        {latestApplicationInvocation?.id && item.requiredCapabilities?.length ? <Button type="button" size="sm" variant="secondary" onClick={() => void startApplication(readiness?.state === "waiting_approval")} disabled={starting}>Retry</Button> : null}
       </div>
       {readiness?.reason && readiness.state !== "ready" ? <p className="mt-2 text-muted-foreground">Why: {readiness.reason}</p> : null}
       {startResult ? <p role="status" className="mt-2 text-muted-foreground">{startResult}</p> : null}

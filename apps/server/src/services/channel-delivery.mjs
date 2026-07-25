@@ -252,8 +252,10 @@ export function createChannelDeliveryService({
     const summary = typeof invocation.result === "string"
       ? invocation.result
       : invocation.result?.summary ?? invocation.result?.output ?? null;
-    const lines = [`${invocation.id}: ${invocation.status}`];
+    const taskRef = channelContext.workItemId ? `Task ${channelContext.workItemId}` : `Invocation ${invocation.id}`;
+    const lines = [`${taskRef}: ${normalizedResultStatus(invocation.status)}`];
     if (summary) lines.push(String(summary).slice(0, 1500));
+    if (channelContext.traceId) lines.push(`Trace: ${String(channelContext.traceId).slice(0, 200)}`);
     return enqueueChannelDelivery({
       channelId: channelContext.channelId,
       conversationId: channelContext.conversationId,
@@ -261,6 +263,13 @@ export function createChannelDeliveryService({
       taskContext: channelContext.taskContext ?? channelContext,
       content: lines.join("\n"),
     });
+  }
+
+  function normalizedResultStatus(status) {
+    if (status === "succeeded") return "completed";
+    if (status === "cancelled") return "cancelled";
+    if (status === "timed_out") return "timed out";
+    return status === "failed" ? "failed — open the task trace for recovery" : String(status ?? "updated");
   }
 
   /**

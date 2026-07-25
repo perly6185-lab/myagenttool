@@ -280,13 +280,17 @@ test("notifyInvocationCompleted queues a result message only for channel-origina
     id: "inv_1",
     status: "succeeded",
     result: { summary: "clean tree" },
-    options: { metadata: { channel: { channelId: harness.channelId, conversationId: harness.conversationId, eventId: "chev_x" } } },
+    options: { metadata: { channel: {
+      channelId: harness.channelId, conversationId: harness.conversationId,
+      messageId: "chev_x", workItemId: "task-1", traceId: "task-1",
+    } } },
   });
   assert.equal(queued.ok, true);
   const delivery = harness.state.channelDeliveries.at(-1);
   assert.equal(delivery.invocationId, "inv_1");
-  assert.match(delivery.content, /inv_1: succeeded/);
+  assert.match(delivery.content, /Task task-1: completed/);
   assert.match(delivery.content, /clean tree/);
+  assert.match(delivery.content, /Trace: task-1/);
 });
 
 test("no secret or token material ever lands in state, events, or refusals", async () => {

@@ -1916,6 +1916,18 @@ export function createWorkItemService({
     invocation.options ??= {};
     invocation.options.metadata = {
       ...(invocation.options.metadata ?? {}),
+      ...(item.channelOrigin?.conversationId ? {
+        channel: {
+          channelId: item.channelOrigin.channelId,
+          conversationId: item.channelOrigin.conversationId,
+          messageId: item.channelOrigin.messageId,
+          principalId: item.channelOrigin.principalId,
+          terminalId: item.terminalId,
+          projectId: item.projectId,
+          workItemId: item.id,
+          traceId: item.id,
+        },
+      } : {}),
       applicationExecution: {
         taskId: contract.taskId, queueEntryId: contract.queueEntryId, traceId: contract.traceId,
         terminalId: contract.terminalId, projectId: contract.projectId, worktreeId: contract.worktreeId,
