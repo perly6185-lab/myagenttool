@@ -4,6 +4,7 @@ import { mkdtemp } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { OwnerOperationRuntime } from "../src/owner-operation-runtime.mjs";
+import { createCompositionService } from "../src/composition.mjs";
 
 const terminal = { id: "studio" };
 const operation = { method: "POST", path: "/api/invocations/inv_1/cancel", body: {} };
@@ -51,4 +52,33 @@ test("owner circuit opens after bounded terminal failures and never migrates", a
   const blocked = await runtime.execute({ ...base, idempotencyKey: "cancel:inv_1:0003" });
   assert.equal(blocked.code, "owner_circuit_open");
   assert.equal(blocked.migrated, false);
+});
+
+test("cancel, retry, replay, and maintenance drills execute only on the registered owner", async () => {
+  const file = join(await mkdtemp(join(tmpdir(), "owner-four-actions-")), "audit.json");
+  const runtime = new OwnerOperationRuntime(file, { retryLimit: 0 });
+  const paths = [];
+  const owner = { id: "studio", name: "Studio", apiUrl: "https://studio.example", consoleUrl: "https://console.example" };
+  const service = createCompositionService({
+    terminals: [owner], operationRuntime: runtime,
+    request: async (terminalRow, requestOperation) => {
+      assert.equal(terminalRow.id, "studio");
+      paths.push(requestOperation.path);
+      return { ok: true, status: 200, json: async () => ({ accepted: true }) };
+    },
+  });
+  const drills = [
+    { resourceType: "invocations", localResourceId: "inv_1", action: "cancel", body: {}, idempotencyKey: "pilot:cancel:0001" },
+    { resourceType: "application-runs", localResourceId: "inv_2", action: "retry", body: { applicationId: "app_1", routineId: "routine_1" }, idempotencyKey: "pilot:retry:0001" },
+    { resourceType: "deliveries", localResourceId: "delivery_1", action: "replay", body: { provider: "gitea" }, idempotencyKey: "pilot:replay:0001" },
+    { resourceType: "applications", localResourceId: "app_1", action: "maintenance", body: {}, idempotencyKey: "pilot:maintenance:0001" },
+  ];
+  for (const drill of drills) assert.equal((await service.proxyAction({ terminalId: "studio", ...drill })).ok, true);
+  assert.deepEqual(paths, [
+    "/api/invocations/inv_1/cancel",
+    "/api/applications/app_1/orchestrations/routine_1/runs/inv_2/recovery/actions",
+    "/api/work-items/gitea/deliveries/delivery_1/replay",
+    "/api/applications/app_1/refresh",
+  ]);
+  assert.equal(runtime.records().length, 4);
 });

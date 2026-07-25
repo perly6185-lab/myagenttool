@@ -28,6 +28,10 @@ Registration changes use `POST /api/terminals` and
 `DELETE /api/terminals/:id`, require the separate admin bearer token, and
 persist only environment-variable references in a mode-`0600` registry.
 
+The management section supports registration/editing, deletion, owner health
+diagnostics, and redacted operation audit. `/api/slo` and the SLO panel expose
+availability, freshness, recovery, and operation-success trends.
+
 ## Boundary
 
 - Every resource is addressed as `terminalId + localResourceId`.

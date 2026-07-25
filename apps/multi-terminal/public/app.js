@@ -1,8 +1,8 @@
 const view = (name) => document.querySelector(`[data-view="${name}"]`);
 const escapeHtml = (value) => String(value ?? "").replace(/[&<>"']/g, (char) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[char]);
 const copy = {
-  zh: { running: "运行中", waiting: "等待中", failed: "失败", attention: "需关注", online: "在线", offline: "不可用", noMigrate: "任务不会迁移", consistent: "与基准配置一致", different: "配置存在差异，请进入所属终端检查", noTerminal: "没有在线终端可供比较", task: "任务", owner: "所属终端", state: "状态", openOwner: "在所属终端打开", noTask: "暂无需要关注的任务", noAlert: "暂无告警", openTrace: "打开证据链", noMatch: "未找到匹配记录", hours: "小时", median: "中位恢复耗时", samples: "个样本", insufficient: "数据不足", healthy: "健康", loadFailed: "无法读取组合视图，请检查本地组合服务", stale: "缓存数据", saved: "终端注册已保存", saveFailed: "无法保存终端注册" },
-  en: { running: "Running", waiting: "Waiting", failed: "Failed", attention: "Attention", online: "Online", offline: "Unavailable", noMigrate: "Tasks are not migrated", consistent: "Matches baseline configuration", different: "Configuration differs; inspect the owning terminal", noTerminal: "No online terminal to compare", task: "Task", owner: "Owning terminal", state: "State", openOwner: "Open on owner", noTask: "No tasks need attention", noAlert: "No alerts", openTrace: "Open evidence chain", noMatch: "No matching records", hours: "hours", median: "Median recovery", samples: "samples", insufficient: "Insufficient data", healthy: "Healthy", loadFailed: "Could not load the composition view", stale: "Cached data", saved: "Terminal registration saved", saveFailed: "Could not save terminal registration" },
+  zh: { running: "运行中", waiting: "等待中", failed: "失败", attention: "需关注", online: "在线", offline: "不可用", noMigrate: "任务不会迁移", consistent: "与基准配置一致", different: "配置存在差异，请进入所属终端检查", noTerminal: "没有在线终端可供比较", task: "任务", owner: "所属终端", state: "状态", openOwner: "在所属终端打开", noTask: "暂无需要关注的任务", noAlert: "暂无告警", openTrace: "打开证据链", noMatch: "未找到匹配记录", hours: "小时", median: "中位恢复耗时", samples: "个样本", insufficient: "数据不足", healthy: "健康", loadFailed: "无法读取组合视图，请检查本地组合服务", stale: "缓存数据", saved: "终端注册已保存", saveFailed: "无法保存终端注册", diagnose: "诊断", edit: "编辑", remove: "删除", diagnostics: "诊断结果", audit: "操作审计", breached: "未达标" },
+  en: { running: "Running", waiting: "Waiting", failed: "Failed", attention: "Attention", online: "Online", offline: "Unavailable", noMigrate: "Tasks are not migrated", consistent: "Matches baseline configuration", different: "Configuration differs; inspect the owning terminal", noTerminal: "No online terminal to compare", task: "Task", owner: "Owning terminal", state: "State", openOwner: "Open on owner", noTask: "No tasks need attention", noAlert: "No alerts", openTrace: "Open evidence chain", noMatch: "No matching records", hours: "hours", median: "Median recovery", samples: "samples", insufficient: "Insufficient data", healthy: "Healthy", loadFailed: "Could not load the composition view", stale: "Cached data", saved: "Terminal registration saved", saveFailed: "Could not save terminal registration", diagnose: "Diagnose", edit: "Edit", remove: "Delete", diagnostics: "Diagnostics", audit: "Operation audit", breached: "Breached" },
 };
 let locale = localStorage.getItem("multi-terminal-locale") === "en" ? "en" : "zh";
 let currentData = null;
@@ -33,6 +33,7 @@ function render(data) {
     <p>${Object.entries(terminal.counts).map(([key, count]) => `${labels[key]} ${count}`).join(" · ")}</p>
     ${terminal.stale ? `<small class="warning">${t("stale")} · ${escapeHtml(terminal.observedAt ?? "—")}</small>` : ""}
     ${terminal.unavailableReason ? `<small>${escapeHtml(terminal.unavailableReason)}；${t("noMigrate")}。</small>` : ""}
+    <div class="actions"><button data-action="diagnose" data-terminal="${escapeHtml(terminal.id)}">${t("diagnose")}</button><button data-action="edit" data-terminal="${escapeHtml(terminal.id)}">${t("edit")}</button><button data-action="delete" data-terminal="${escapeHtml(terminal.id)}">${t("remove")}</button></div>
   </article>`).join("");
   view("consistency").innerHTML = data.configurationConsistency.terminals.length
     ? data.configurationConsistency.terminals.map((row) => `<article class="card"><b>${escapeHtml(row.terminalId)}</b><p>${row.status === "consistent" ? t("consistent") : t("different")}</p></article>`).join("")
@@ -43,6 +44,8 @@ function render(data) {
     <td><a href="${escapeHtml(task.deepLink)}">${t("openOwner")}</a></td></tr>`).join("")}</tbody></table>` : `<p class=empty>${t("noTask")}。</p>`;
   const alerts = terminals.flatMap((terminal) => terminal.alerts.map((alert) => ({ ...alert, terminalName: terminal.name })));
   view("alerts").innerHTML = alerts.length ? alerts.map((alert) => `<article class="card"><div class="row"><b>${escapeHtml(alert.message)}</b><span>${escapeHtml(alert.severity)}</span></div><small>${escapeHtml(alert.terminalName)} · ${escapeHtml(alert.status)}</small></article>`).join("") : `<p class=empty>${t("noAlert")}。</p>`;
+  const slo = data.slo;
+  view("slo").innerHTML = slo ? Object.entries(slo.metrics).map(([key, value]) => `<article class="card"><small>${escapeHtml(key)}</small><b>${value ?? "—"}</b></article>`).join("") + `<article class="card"><small>SLO</small><b>${slo.status === "healthy" ? t("healthy") : slo.status === "breached" ? t("breached") : t("insufficient")}</b><p>${slo.breaches.map(escapeHtml).join(" · ")}</p></article>` : `<p class=empty>${t("insufficient")}。</p>`;
   renderTrace(terminals.flatMap((terminal) => terminal.tasks));
   view("recovery").innerHTML = terminals.map((terminal) => `<article class="card"><h3>${escapeHtml(terminal.name)}</h3>
     <b>${terminal.recovery.medianHours == null ? "—" : `${terminal.recovery.medianHours} ${t("hours")}`}</b>
@@ -68,6 +71,34 @@ view("registration").addEventListener("submit", async (event) => {
   const response = await fetch("/api/terminals", { method: "POST", headers: { "content-type": "application/json", authorization: `Bearer ${adminToken}` }, body: JSON.stringify(fields) });
   view("registration-status").textContent = response.ok ? t("saved") : t("saveFailed");
   if (response.ok) await load();
+});
+view("terminals").addEventListener("click", async (event) => {
+  const button = event.target.closest("button[data-action]");
+  if (!button) return;
+  const terminal = currentData.terminals.find((row) => row.id === button.dataset.terminal);
+  if (!terminal) return;
+  if (button.dataset.action === "edit") {
+    const form = view("registration");
+    for (const key of ["id", "name", "apiUrl", "consoleUrl"]) if (form.elements[key]) form.elements[key].value = terminal[key] ?? "";
+    form.scrollIntoView({ behavior: "smooth" });
+    return;
+  }
+  const adminToken = view("registration").elements.adminToken.value;
+  if (!adminToken) return view("registration-status").textContent = "Admin token required";
+  if (button.dataset.action === "delete") {
+    const response = await fetch(`/api/terminals/${encodeURIComponent(terminal.id)}`, { method: "DELETE", headers: { authorization: `Bearer ${adminToken}` } });
+    if (response.ok) await load();
+    return;
+  }
+  const response = await fetch(`/api/terminals/${encodeURIComponent(terminal.id)}/diagnostics`, { headers: { authorization: `Bearer ${adminToken}` } });
+  const diagnostic = await response.json();
+  view("diagnostics").innerHTML = `<h3>${t("diagnostics")}</h3><pre>${escapeHtml(JSON.stringify(diagnostic, null, 2))}</pre>`;
+});
+view("load-audit").addEventListener("click", async () => {
+  const adminToken = view("registration").elements.adminToken.value;
+  const response = await fetch("/api/operation-audit", { headers: { authorization: `Bearer ${adminToken}` } });
+  const body = await response.json();
+  view("audit").innerHTML = `<h3>${t("audit")}</h3>${(body.records ?? []).map((row) => `<article class="trace-row"><b>${escapeHtml(row.action)}</b><small>${escapeHtml(row.terminalId)} · ${escapeHtml(row.localResourceId)} · ${escapeHtml(row.status)}</small></article>`).join("")}`;
 });
 const events = new EventSource("/api/events");
 events.addEventListener("overview", () => void load());
