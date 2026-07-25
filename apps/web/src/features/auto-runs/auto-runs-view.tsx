@@ -26,6 +26,7 @@ import { EventTimeline } from "@/features/invocations/event-timeline";
 import { RunTranscriptSection, isTerminalRunStatus } from "@/features/invocations/run-transcript";
 import type { InvocationEventSnapshot, DeploymentSnapshot } from "@/lib/console-state";
 import { useVisibleInterval } from "@/hooks/use-visible-interval";
+import { InvocationDispatchHealth } from "@/features/devices/invocation-dispatch-health";
 
 interface AutoRunLink {
   type: "issue" | "pr";
@@ -36,6 +37,7 @@ interface AutoRunLink {
 export interface AutoRunRecord {
   id: string;
   status: string;
+  terminalId?: string | null;
   projectId?: string | null;
   link?: AutoRunLink | null;
   intent?: string | null;
@@ -620,6 +622,14 @@ export function runLane(run: AutoRunRecord): LaneKey {
   if (run.status === "pr_open") return "pr_open";
   return "running"; // materializing / running / verifying / publishing + any other in-flight
 }
+
+export function localQueueSnapshot(runs: AutoRunRecord[]) {
+  const running = runs.filter((run) => ["running", "verifying", "publishing"].includes(run.status));
+  const next = runs.find((run) => run.status === "materializing") ?? null;
+  const waiting = runs.filter((run) =>
+    ["awaiting_approval", "needs_input", "blocked", "failed"].includes(run.status));
+  return { running, next, waiting, attentionCount: waiting.length };
+}
 function RunChip({ run }: { run: AutoRunRecord }) {
   const { t } = useAppTranslation();
   const label = run.link ? `#${run.link.number} ${run.link.title}` : run.id;
@@ -975,6 +985,7 @@ export function AutoRunsView() {
   }, [runs]);
 
   const rate = summary?.successRate;
+  const queue = useMemo(() => localQueueSnapshot(runs), [runs]);
 
   return (
     <div className="flex flex-col gap-4">
@@ -1011,6 +1022,19 @@ export function AutoRunsView() {
           </Button>
         </div>
       </div>
+
+      <section aria-label={t("devicesPage.dispatchQueue")} className="grid gap-3 sm:grid-cols-3">
+        <StatTile label={t("autoRuns.status.running")} value={String(queue.running.length)} hint={queue.running[0]?.link?.title ?? t("workBoard.none")} />
+        <StatTile label={t("workBoard.next")} value={queue.next ? "1" : "—"} hint={queue.next?.link?.title ?? t("devicesPage.queueClear")} />
+        <StatTile
+          label={t("devicesPage.whyWaiting")}
+          value={String(queue.attentionCount)}
+          hint={queue.waiting[0]
+            ? t(`runLabels.resultSummary.${queue.waiting[0].status === "awaiting_approval" ? "waiting_for_local_approval" : queue.waiting[0].status === "failed" ? "failed" : "default"}` as never)
+            : t("workBoard.none")}
+        />
+      </section>
+      <InvocationDispatchHealth />
 
       <AutoRunOnboardingCard projectId={consoleState?.currentProjectId ?? null} />
       <AutoRunReadinessCard projectId={consoleState?.currentProjectId ?? null} />

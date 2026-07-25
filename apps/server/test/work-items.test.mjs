@@ -6,7 +6,11 @@ import { test } from "node:test";
 import { createPersistenceRuntime } from "../src/runtime/persistence.mjs";
 import { createServerState } from "../src/runtime/state-factory.mjs";
 import { sameProjectPath } from "../src/services/projects.mjs";
-import { createWorkItemService, taskTraceStage } from "../src/services/work-items.mjs";
+import {
+  backfillWorkItemTerminalOwnership,
+  createWorkItemService,
+  taskTraceStage,
+} from "../src/services/work-items.mjs";
 
 const ACTOR_A = { userId: "usr_a", teamId: "team_a", role: "operator" };
 const ACTOR_B = { userId: "usr_b", teamId: "team_b" };
@@ -63,6 +67,7 @@ test("creates a local work item with server-owned identity and defaults", () => 
   assert.equal(result.body.workItem.ownerTeamId, "team_a");
   assert.equal(result.body.workItem.createdBy, "usr_a");
   assert.equal(result.body.workItem.status, "backlog");
+  assert.equal(result.body.workItem.terminalId, "dev_local");
   assert.equal(result.body.workItem.revision, 1);
   assert.equal(events[0].type, "work_item_created");
   assert.deepEqual(state.workItemActivities[0].details, {
@@ -73,9 +78,46 @@ test("creates a local work item with server-owned identity and defaults", () => 
     principalId: "usr_a",
     deviceId: "dev_local",
     effectiveAuthority: "operator",
+    terminalId: "dev_local",
     entryContext: "task",
     traceParent: result.body.workItem.id,
   });
+});
+
+test("backfills legacy work items and rejects terminal ownership changes", () => {
+  const state = {
+    devices: [{ id: "dev_local" }],
+    agents: [{ id: "agt", location: { type: "local_device", deviceId: "dev_agent" } }],
+    invocations: [{ id: "inv", agentId: "agt", delivery: { deviceId: "dev_agent" } }],
+    autoRuns: [{ id: "run", invocationId: "inv" }],
+    approvalRequests: [{ id: "approval", invocationId: "inv" }],
+    auditSummaries: [{ invocationId: "inv", deviceId: "dev_agent" }],
+    workItems: [
+      { id: "legacy", executionBindings: [{ kind: "auto_run", targetId: "run" }] },
+      { id: "owned", terminalId: "dev_existing" },
+    ],
+  };
+  assert.equal(backfillWorkItemTerminalOwnership(state), 6);
+  assert.equal(state.workItems[0].terminalId, "dev_local");
+  assert.equal(state.workItems[0].executionBindings[0].terminalId, "dev_local");
+  assert.equal(state.workItems[1].terminalId, "dev_existing");
+  assert.equal(state.invocations[0].terminalId, "dev_agent");
+  assert.equal(state.autoRuns[0].terminalId, "dev_agent");
+  assert.equal(state.approvalRequests[0].terminalId, "dev_agent");
+  assert.equal(state.auditSummaries[0].terminalId, "dev_agent");
+  assert.equal(backfillWorkItemTerminalOwnership(state), 0);
+
+  const { service } = harness();
+  const item = service.createWorkItem({ projectId: "prj_a", title: "Pinned task" }, ACTOR_A).body.workItem;
+  const result = service.updateWorkItem({
+    workItemId: item.id,
+    expectedRevision: item.revision,
+    terminalId: "dev_other",
+  }, ACTOR_A);
+  assert.equal(result.status, 409);
+  assert.equal(result.body.error, "work_item_terminal_immutable");
+  assert.equal(result.body.terminalId, "dev_local");
+  assert.equal(service.getWorkItem({ workItemId: item.id }, ACTOR_A).body.workItem.revision, 1);
 });
 
 test("normalizes task trace events into the user execution chain", () => {
@@ -980,6 +1022,7 @@ test("work items survive a persistent-state restart", () => {
     assert.equal(second.state.workItems[0].localRef, "LOCAL-1");
     assert.equal(second.state.workItems[0].dueDate, "2026-08-15");
     assert.equal(second.state.workItems[0].milestone, "M3");
+    assert.equal(second.state.workItems[0].terminalId, second.state.devices[0].id);
     assert.equal(second.state.planningProjectItems[0].position, 2000);
     assert.equal(second.state.workItemComments[0].body, "Still here");
     assert.equal(second.state.workItemActivities[0].action, "commented");
@@ -1035,10 +1078,12 @@ test("execution bindings attach worktrees and auto-runs to the local issue", () 
     workItemId: item.id, kind: "worktree", targetId: "wtr_1", worktreeId: "wtr_1",
   }, ACTOR_A);
   assert.equal(worktree.status, 200);
+  assert.equal(worktree.body.binding.terminalId, "dev_local");
   assert.equal(worktree.body.workItem.executionBindings.length, 1);
   const run = service.recordExecutionBinding({
     workItemId: item.id, kind: "auto_run", targetId: "aur_1", worktreeId: "wtr_2",
   }, ACTOR_A);
+  assert.equal(run.body.binding.terminalId, "dev_local");
   assert.equal(run.body.workItem.executionBindings.length, 2);
   assert.equal(service.listActivity({ workItemId: item.id }, ACTOR_A).body.activities[0].action, "auto_run_started");
   assert.equal(service.recordExecutionBinding({

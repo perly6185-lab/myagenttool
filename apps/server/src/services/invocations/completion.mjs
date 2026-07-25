@@ -282,6 +282,7 @@ export function createInvocationCompletionRuntime({
         : null,
       agentId: invocation.agentId,
       deviceId: invocation.delivery.deviceId,
+      terminalId: invocation.terminalId ?? invocation.delivery.deviceId,
       status: invocation.status,
       permissionDecision: invocation.status === "rejected" ? "denied" : "allowed",
       traceId: invocation.traceId ?? null,

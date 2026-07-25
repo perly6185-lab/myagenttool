@@ -8,7 +8,6 @@ import { FactList } from "@/components/common/fact-list";
 import { useConsoleState } from "@/data/use-console-state";
 import { useAsyncAction, api } from "@/data/use-console-actions";
 import { readableDeviceStatus, shortTime } from "@/lib/readable-labels";
-import { InvocationDispatchHealth } from "./invocation-dispatch-health";
 import { useAppTranslation } from "@/lib/i18n/use-app-translation";
 
 export function DevicesView() {
@@ -76,7 +75,6 @@ export function DevicesView() {
         )}
       </CardContent>
     </Card>
-    <InvocationDispatchHealth />
     </div>
   );
 }

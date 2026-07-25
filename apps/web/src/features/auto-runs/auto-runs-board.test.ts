@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { failoverSummary, runLane } from "./auto-runs-view";
+import { failoverSummary, localQueueSnapshot, runLane } from "./auto-runs-view";
 import type { AutoRunRecord } from "./auto-runs-view";
 
 const run = (over: Partial<AutoRunRecord>): AutoRunRecord => ({ id: "ar", status: "running", ...over });
@@ -31,6 +31,22 @@ describe("runLane — stage board grouping", () => {
     for (const status of ["materializing", "running", "verifying", "publishing"]) {
       expect(runLane(run({ status }))).toBe("running");
     }
+  });
+});
+
+describe("localQueueSnapshot (#1499)", () => {
+  it("separates running, next, and human-actionable work", () => {
+    const snapshot = localQueueSnapshot([
+      run({ id: "running", status: "running" }),
+      run({ id: "next", status: "materializing" }),
+      run({ id: "approval", status: "awaiting_approval" }),
+      run({ id: "failed", status: "failed" }),
+      run({ id: "done", status: "pr_open" }),
+    ]);
+    expect(snapshot.running.map((item) => item.id)).toEqual(["running"]);
+    expect(snapshot.next?.id).toBe("next");
+    expect(snapshot.waiting.map((item) => item.id)).toEqual(["approval", "failed"]);
+    expect(snapshot.attentionCount).toBe(2);
   });
 });
 
