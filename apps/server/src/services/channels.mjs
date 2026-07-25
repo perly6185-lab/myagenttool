@@ -19,6 +19,7 @@ import {
 } from "@myagenttool/protocol/channel";
 import { detectPromptInjection } from "@myagenttool/protocol/issue-prompt";
 import { LOCAL_TEAM_ID } from "../runtime/auth.mjs";
+import { listDevices } from "../runtime/device.mjs";
 import { makeRunTx } from "../runtime/store/run-tx.mjs";
 import { normalizeChannelAttachmentAssets } from "./channel-task-context.mjs";
 
@@ -422,7 +423,7 @@ export function createChannelService({
     if (target && (target.ownerTeamId ?? LOCAL_TEAM_ID) !== (channel.ownerTeamId ?? LOCAL_TEAM_ID)) {
       return { ok: false, status: 403, body: { error: "project_foreign_team" } };
     }
-    const devices = state.devices ?? (state.device ? [state.device] : []);
+    const devices = listDevices(state);
     const requestedTerminalId = terminalId == null ? null : String(terminalId);
     const terminal = target
       ? requestedTerminalId

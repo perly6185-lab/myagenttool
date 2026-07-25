@@ -229,6 +229,7 @@ export function createHttpServer({
   createCapabilityInvocation,
   getCapability,
   listCapabilities,
+  resolveCapability,
   createMailIssueFromImport,
   replyOnIssue,
   confirmReplyDraft,
