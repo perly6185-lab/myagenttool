@@ -11,6 +11,7 @@ export async function handleWorkItemRoutes({
   fetchExternalIssue, pushExternalIssue,
   fetchGithubIssue, pushGithubIssue,
   recordVerification,
+  recordAssetOperation,
   ingestGithubWebhook,
   replayGithubWebhook,
   recordGithubWebhookFailure,
@@ -354,6 +355,15 @@ export async function handleWorkItemRoutes({
   if (verificationMatch && req.method === "POST") {
     const result = recordVerification({
       workItemId: decodeURIComponent(verificationMatch[1]), ...(await readJson(req)),
+    }, actor);
+    sendJson(res, result.status, result.body);
+    return true;
+  }
+
+  const assetOperationMatch = url.pathname.match(/^\/api\/work-items\/([^/]+)\/asset-operations$/);
+  if (assetOperationMatch && req.method === "POST") {
+    const result = recordAssetOperation({
+      workItemId: decodeURIComponent(assetOperationMatch[1]), ...(await readJson(req)),
     }, actor);
     sendJson(res, result.status, result.body);
     return true;

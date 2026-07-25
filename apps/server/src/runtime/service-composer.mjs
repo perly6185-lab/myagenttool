@@ -3492,6 +3492,7 @@ export function createServerRuntimeServices({
     syncExternalIssue: workItemService.syncExternalIssue,
     listWorkItemExternalProviders: workItemService.listExternalProviders,
     recordWorkItemVerification: workItemService.recordVerification,
+    recordWorkItemAssetOperation: workItemService.recordAssetOperation,
     ingestGithubWorkItemWebhook: workItemService.ingestGithubWebhook,
     replayGithubWorkItemWebhook: workItemService.replayGithubWebhook,
     recordGithubWorkItemWebhookFailure: workItemService.recordGithubWebhookFailure,

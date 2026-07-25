@@ -973,6 +973,8 @@ export const api = {
     request("POST", `/api/work-items/${encodeURIComponent(id)}/github/sync`, payload),
   recordWorkItemVerification: (id: string, payload: Record<string, unknown>) =>
     request("POST", `/api/work-items/${encodeURIComponent(id)}/verifications`, payload),
+  recordWorkItemAssetOperation: (id: string, payload: Record<string, unknown>) =>
+    request("POST", `/api/work-items/${encodeURIComponent(id)}/asset-operations`, payload),
   bulkUpdateWorkItems: (payload: {
     items: { id: string; expectedRevision: number }[];
     changes: Record<string, unknown>;

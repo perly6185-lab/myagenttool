@@ -31,8 +31,8 @@ export function taskTraceStage(type, source = "issue") {
   if (value.includes("route") || value.includes("auto_run_started") || value.includes("worktree_created")) return "routing";
   if (value.includes("queue") || value.includes("claim")) return "queue";
   if (value.includes("approval")) return "approval";
-  if (value.includes("tool_invocation") || value.includes("round_")) return "tool";
-  if (value.includes("verif") || value.includes("review")) return "verification";
+  if (value.includes("tool_invocation") || value.includes("asset_operation") || value.includes("round_")) return "tool";
+  if (value.includes("verif") || value.includes("review") || value.includes("evidence")) return "verification";
   if (value.includes("retry") || value.includes("recover") || value.includes("repair")) return "retry";
   if (value.includes("complete") || value.includes("done") || value.includes("merged") || value.includes("closed")) return "completion";
   if (source === "execution" || value.includes("run") || value.includes("invocation")) return "execution";
@@ -1713,9 +1713,15 @@ export function createWorkItemService({
       kind: String(entry?.kind ?? ""),
       ref: String(entry?.ref ?? ""),
       summary: String(entry?.summary ?? ""),
+      assetId: entry?.assetId ? String(entry.assetId).slice(0, 100) : null,
+      hash: entry?.hash ? String(entry.hash).slice(0, 100) : null,
+      version: entry?.version ? String(entry.version).slice(0, 100) : null,
+      terminalId: entry?.terminalId ? String(entry.terminalId).slice(0, 200) : null,
     }));
-    if (normalizedEvidence.some((entry) => !["url", "artifact", "commit", "log", "run"].includes(entry.kind)
-      || !entry.ref || entry.ref.length > 2_000 || entry.summary.length > 5_000)) {
+    if (normalizedEvidence.some((entry) => !["url", "artifact", "commit", "log", "run", "asset"].includes(entry.kind)
+      || !entry.ref || entry.ref.length > 2_000 || entry.summary.length > 5_000
+      || (entry.kind === "asset" && (entry.terminalId !== item.terminalId
+        || !(item.outputAssets ?? []).some((asset) => asset.id === entry.assetId && asset.path === entry.ref))))) {
       return { ok: false, status: 400, body: { error: "invalid_work_item_evidence" } };
     }
     const record = {
@@ -1731,8 +1737,85 @@ export function createWorkItemService({
       item.updatedAt = now();
       item.lastModifiedBy = actorUser(actor);
       recordActivity(item, actor, "verification_recorded", { verificationId: record.id, kind, status });
+      for (const entry of normalizedEvidence.filter((candidate) => candidate.kind === "asset")) {
+        recordActivity(item, actor, "asset_evidence_attached", {
+          verificationId: record.id, assetId: entry.assetId, path: entry.ref,
+          hash: entry.hash, version: entry.version, terminalId: item.terminalId,
+        });
+      }
     });
     return { ok: true, status: 201, body: { verification: record, workItem: workItemView(item, actor) } };
+  }
+
+  function recordAssetOperation({
+    workItemId, expectedRevision, capability, inputAssetId, outputAsset = null,
+    invocationId = null, approvalId = null, summary = "",
+  } = {}, actor = null) {
+    const item = findOwn(workItemId, actor);
+    if (!item) return notFound();
+    if (expectedRevision !== item.revision) {
+      return { ok: false, status: 409, body: { error: "work_item_revision_conflict", currentRevision: item.revision } };
+    }
+    if (!ASSET_CAPABILITY_VERBS.includes(capability) || typeof summary !== "string" || summary.length > 5_000) {
+      return { ok: false, status: 400, body: { error: "invalid_work_item_asset_operation" } };
+    }
+    const source = [...(item.inputAssets ?? []), ...(item.outputAssets ?? [])]
+      .find((asset) => asset.id === String(inputAssetId));
+    if (!source || source.terminalId !== item.terminalId) {
+      return { ok: false, status: 409, body: { error: "asset_terminal_mismatch", terminalId: item.terminalId } };
+    }
+    if (!source.capabilities.includes(capability) || source.readiness?.state !== "ready") {
+      return { ok: false, status: 409, body: { error: "waiting_capability", capability, terminalId: item.terminalId } };
+    }
+    const normalizedOutput = outputAsset == null ? null : normalizeAssetRefs([outputAsset])?.[0] ?? null;
+    if (outputAsset != null && (!normalizedOutput || normalizedOutput.terminalId !== item.terminalId
+      || !normalizedOutput.id || !normalizedOutput.hash || !normalizedOutput.version)) {
+      return { ok: false, status: 400, body: { error: "invalid_work_item_output_asset" } };
+    }
+    const operation = {
+      id: nextId("wao"), capability, inputAssetId: source.id,
+      input: { id: source.id, path: source.path, hash: source.hash, version: source.version },
+      outputAssetId: normalizedOutput?.id ?? null,
+      invocationId: invocationId ? String(invocationId).slice(0, 200) : null,
+      approvalId: approvalId ? String(approvalId).slice(0, 200) : null,
+      terminalId: item.terminalId, traceId: item.id, summary,
+      recordedAt: now(), recordedBy: actorUser(actor),
+    };
+    runTx(() => {
+      if (normalizedOutput) {
+        const otherOutputs = (item.outputAssets ?? []).filter((asset) => asset.id !== normalizedOutput.id);
+        item.outputAssets = [normalizedOutput, ...otherOutputs].slice(0, 100);
+      }
+      (item.assetOperations ??= []).unshift(operation);
+      item.assetOperations = item.assetOperations.slice(0, 200);
+      item.revision += 1;
+      item.updatedAt = now();
+      item.lastModifiedBy = actorUser(actor);
+      recordActivity(item, actor, "asset_operation_recorded", {
+        operationId: operation.id, capability, inputAssetId: source.id,
+        outputAssetId: normalizedOutput?.id ?? null, invocationId: operation.invocationId,
+        approvalId: operation.approvalId, terminalId: item.terminalId,
+      });
+      appendEvent({
+        invocationId: operation.invocationId,
+        type: "work_item_asset_operation_recorded",
+        level: "info",
+        message: `${item.localRef} recorded an asset operation.`,
+        data: {
+          executionChainId: item.id, workItemId: item.id, traceId: item.id,
+          operationId: operation.id, capability, terminalId: item.terminalId,
+          input: operation.input,
+          output: normalizedOutput ? {
+            id: normalizedOutput.id, path: normalizedOutput.path,
+            hash: normalizedOutput.hash, version: normalizedOutput.version,
+          } : null,
+          approvalId: operation.approvalId,
+        },
+      });
+    });
+    return { ok: true, status: 201, body: {
+      operation, workItem: workItemView(item, actor),
+    } };
   }
 
   function listActivity({ workItemId } = {}, actor = null) {
@@ -1930,7 +2013,7 @@ export function createWorkItemService({
     listActivity, listComments, createComment, updateComment, deleteComment,
     recordExecutionBinding, claimWorkItem, releaseWorkItemClaim,
     bindGithubIssue, syncGithubIssue, bindExternalIssue, syncExternalIssue, listExternalProviders,
-    recordVerification, ingestGithubWebhook, replayGithubWebhook, recordGithubWebhookFailure,
+    recordVerification, recordAssetOperation, ingestGithubWebhook, replayGithubWebhook, recordGithubWebhookFailure,
     ingestExternalWebhook, replayExternalWebhook, recordExternalWebhookFailure,
     githubSyncDiagnostics, updateAttention, sweepOperationalAlerts, suggestWorkItemDraft, retryWorkItemAlert,
   };

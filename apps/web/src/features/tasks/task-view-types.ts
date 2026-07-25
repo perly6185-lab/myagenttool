@@ -43,7 +43,16 @@ export type LocalWorkItem = {
   verificationRecords?: {
     id: string; kind: "test" | "lint" | "typecheck" | "manual" | "review";
     status: "passed" | "failed"; command: string | null; summary: string;
-    evidence: { kind: string; ref: string; summary: string }[]; recordedAt: string; recordedBy: string;
+    evidence: { kind: string; ref: string; summary: string; assetId?: string | null; hash?: string | null; version?: string | null; terminalId?: string | null }[]; recordedAt: string; recordedBy: string;
+  }[];
+  inputAssets?: WorkItemAssetRef[];
+  outputAssets?: WorkItemAssetRef[];
+  requiredCapabilities?: string[];
+  assetReadiness?: { state: "ready" | "waiting_capability" | "refused"; reason: string; terminalId: string };
+  assetOperations?: {
+    id: string; capability: string; inputAssetId: string; outputAssetId: string | null;
+    invocationId: string | null; approvalId: string | null; terminalId: string; traceId: string;
+    summary: string; recordedAt: string;
   }[];
   completionGate?: { ready: boolean; missingCriteria: string[]; verificationRequired: boolean };
   dueDate: string | null;
@@ -62,6 +71,16 @@ export type LocalWorkItem = {
   blockedBy?: { id: string; localRef: string; title: string; status: LocalWorkItem["status"]; state: "open" | "closed"; resolved: boolean }[];
   blocks?: { id: string; localRef: string; title: string; status: LocalWorkItem["status"]; state: "open" | "closed" }[];
   updatedAt: string;
+};
+export type WorkItemAssetRef = {
+  id: string | null;
+  path: string;
+  family: string;
+  terminalId: string;
+  hash: string | null;
+  version: string | null;
+  capabilities: string[];
+  readiness: { state: "ready" | "waiting_capability"; reason: string };
 };
 export type LocalWorkItemResult = {
   workItems: LocalWorkItem[];

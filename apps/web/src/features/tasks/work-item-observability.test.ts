@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { taskTraceIdentity, taskTraceWaitingReason } from "./work-item-observability";
+import { taskTraceIdentity, taskTraceWaitingReason, workItemAssetChainLabels } from "./work-item-observability";
 
 describe("taskTraceIdentity (#1500)", () => {
   it("exposes only task attribution and explanation fields", () => {
@@ -47,5 +47,30 @@ describe("taskTraceWaitingReason (#1500)", () => {
         },
       ],
     } as never)).toBe("Waiting for local capacity");
+  });
+});
+
+describe("workItemAssetChainLabels (#1502)", () => {
+  it("connects inputs, ordered operations, outputs, and archived evidence", () => {
+    expect(workItemAssetChainLabels({
+      inputAssets: [{ id: "xlsx", path: "source.xlsx" }],
+      assetOperations: [
+        { id: "render", capability: "render" },
+        { id: "mutate", capability: "edit" },
+      ],
+      outputAssets: [
+        { id: "pptx", path: "review.pptx" },
+        { id: "png", path: "evidence/review.png" },
+      ],
+      verificationRecords: [{
+        evidence: [{ kind: "asset", assetId: "png", ref: "evidence/review.png" }],
+      }],
+    } as never)).toEqual([
+      "Input · source.xlsx",
+      "Operation · edit",
+      "Operation · render",
+      "Output · review.pptx",
+      "Evidence · evidence/review.png",
+    ]);
   });
 });

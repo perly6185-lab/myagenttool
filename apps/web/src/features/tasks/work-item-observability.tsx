@@ -62,6 +62,7 @@ export function WorkItemTraceSummary({
     0,
   );
   return (
+    <>
     <section aria-label={t("shell.taskTrace.summary")} className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
       <div className="rounded-md border border-border p-3 text-xs">
         <span className="text-muted-foreground">{t("shell.taskTrace.route")}</span>
@@ -84,7 +85,47 @@ export function WorkItemTraceSummary({
         <p className="mt-1 font-semibold">{t("shell.taskTrace.evidenceCount", { count: evidenceCount })}</p>
       </div>
     </section>
+    <WorkItemAssetChain item={item} />
+    </>
   );
+}
+
+export function WorkItemAssetChain({ item }: { item: LocalWorkItem }) {
+  const inputs = item.inputAssets ?? [];
+  const outputs = item.outputAssets ?? [];
+  if (!inputs.length && !outputs.length) return null;
+  const evidenceIds = new Set((item.verificationRecords ?? [])
+    .flatMap((record) => record.evidence)
+    .filter((evidence) => evidence.kind === "asset" && evidence.assetId)
+    .map((evidence) => evidence.assetId));
+  return (
+    <section aria-label="Asset execution chain" className="rounded-md border border-border p-3 text-xs">
+      <div className="flex flex-wrap items-center gap-2">
+        <strong>Assets</strong>
+        <Badge tone={item.assetReadiness?.state === "ready" ? "success" : "warning"}>
+          {item.assetReadiness?.state === "waiting_capability" ? "Waiting for a local capability" : "Ready on this computer"}
+        </Badge>
+      </div>
+      <ol className="mt-2 flex flex-wrap items-center gap-2" aria-label="Input, operation, output, and evidence">
+        {inputs.map((asset) => <li key={`input:${asset.id ?? asset.path}`} className="rounded bg-muted px-2 py-1"><span className="text-muted-foreground">Input · </span>{asset.path}</li>)}
+        {(item.assetOperations ?? []).slice().reverse().map((operation) => <li key={operation.id} className="contents"><span aria-hidden="true">→</span><span className="rounded bg-muted px-2 py-1">Operation · {operation.capability}</span></li>)}
+        {outputs.map((asset) => <li key={`output:${asset.id ?? asset.path}`} className="contents"><span aria-hidden="true">→</span><span className="rounded bg-muted px-2 py-1"><span className="text-muted-foreground">{evidenceIds.has(asset.id) ? "Evidence" : "Output"} · </span>{asset.path}</span></li>)}
+      </ol>
+      <p className="mt-2 text-muted-foreground">Terminal · {item.assetReadiness?.terminalId ?? inputs[0]?.terminalId ?? outputs[0]?.terminalId}</p>
+    </section>
+  );
+}
+
+export function workItemAssetChainLabels(item: LocalWorkItem): string[] {
+  const evidenceIds = new Set((item.verificationRecords ?? [])
+    .flatMap((record) => record.evidence)
+    .filter((evidence) => evidence.kind === "asset" && evidence.assetId)
+    .map((evidence) => evidence.assetId));
+  return [
+    ...(item.inputAssets ?? []).map((asset) => `Input · ${asset.path}`),
+    ...(item.assetOperations ?? []).slice().reverse().map((operation) => `Operation · ${operation.capability}`),
+    ...(item.outputAssets ?? []).map((asset) => `${evidenceIds.has(asset.id) ? "Evidence" : "Output"} · ${asset.path}`),
+  ];
 }
 
 export function WorkItemAlertAndCostDetails({

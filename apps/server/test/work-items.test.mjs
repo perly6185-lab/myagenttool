@@ -377,6 +377,94 @@ test("verification rejects unknown criteria and malformed evidence", () => {
   }, ACTOR_A).body.error, "invalid_work_item_evidence");
 });
 
+test("cross-asset task trace links Excel input through PowerPoint output to image evidence", () => {
+  const { service, events } = harness();
+  let item = service.createWorkItem({
+    projectId: "prj_a",
+    title: "Build a review deck from the workbook",
+    acceptanceCriteria: ["Rendered deck evidence is verified"],
+    inputAssets: [{
+      id: "asset-xlsx", path: "reports/source.xlsx", family: "excel",
+      terminalId: "dev_local", hash: "sha256:excel-v1", version: "excel-v1",
+      capabilities: ["preview", "inspect", "edit"],
+      readiness: { state: "ready", reason: "available_on_owning_terminal" },
+    }],
+    requiredCapabilities: ["edit"],
+  }, ACTOR_A).body.workItem;
+  assert.equal(item.assetReadiness.state, "ready");
+  const queued = service.claimWorkItem({
+    workItemId: item.id, agentId: "agt-office", idempotencyKey: "asset-e2e-queue",
+  }, ACTOR_A);
+  assert.equal(queued.status, 201);
+  item = service.getWorkItem({ workItemId: item.id }, ACTOR_A).body.workItem;
+  assert.equal(item.executionState, "claimed");
+  assert.equal(item.terminalId, "dev_local");
+
+  const deck = service.recordAssetOperation({
+    workItemId: item.id, expectedRevision: item.revision,
+    capability: "edit", inputAssetId: "asset-xlsx",
+    invocationId: "inv-office-1", approvalId: "apr-office-1",
+    summary: "Generated the quarterly review deck from workbook data.",
+    outputAsset: {
+      id: "asset-pptx", path: "outputs/review.pptx", family: "powerpoint",
+      terminalId: "dev_local", hash: "sha256:pptx-v1", version: "pptx-v1",
+      capabilities: ["preview", "inspect", "edit", "render", "attach_evidence"],
+      readiness: { state: "ready", reason: "available_on_owning_terminal" },
+    },
+  }, ACTOR_A);
+  assert.equal(deck.status, 201);
+  assert.equal(deck.body.operation.traceId, item.id);
+  assert.equal(deck.body.operation.approvalId, "apr-office-1");
+  item = deck.body.workItem;
+
+  const image = service.recordAssetOperation({
+    workItemId: item.id, expectedRevision: item.revision,
+    capability: "render", inputAssetId: "asset-pptx",
+    invocationId: "inv-render-1", summary: "Rendered a safe review image.",
+    outputAsset: {
+      id: "asset-image", path: "evidence/review.png", family: "image",
+      terminalId: "dev_local", hash: "sha256:image-v1", version: "image-v1",
+      capabilities: ["preview", "inspect", "compare", "attach_evidence"],
+      readiness: { state: "ready", reason: "available_on_owning_terminal" },
+    },
+  }, ACTOR_A);
+  assert.equal(image.status, 201);
+  item = image.body.workItem;
+
+  const previewed = service.recordAssetOperation({
+    workItemId: item.id, expectedRevision: item.revision,
+    capability: "preview", inputAssetId: "asset-image",
+    invocationId: "inv-preview-1", summary: "Previewed the bounded local image.",
+  }, ACTOR_A);
+  assert.equal(previewed.status, 201);
+  item = previewed.body.workItem;
+
+  const verified = service.recordVerification({
+    workItemId: item.id, expectedRevision: item.revision,
+    kind: "manual", status: "passed", summary: "Deck image reviewed.",
+    acceptanceResults: [{
+      criterion: "Rendered deck evidence is verified", status: "passed", note: "Image matches source totals.",
+    }],
+    evidence: [{
+      kind: "asset", assetId: "asset-image", ref: "evidence/review.png",
+      hash: "sha256:image-v1", version: "image-v1", terminalId: "dev_local",
+      summary: "Rendered PowerPoint evidence.",
+    }],
+  }, ACTOR_A);
+  assert.equal(verified.status, 201);
+  assert.equal(verified.body.workItem.completionGate.ready, true);
+  assert.equal(verified.body.workItem.outputAssets.length, 2);
+  assert.equal(verified.body.workItem.verificationRecords[0].evidence[0].assetId, "asset-image");
+
+  const detail = service.getWorkItem({ workItemId: item.id }, ACTOR_A);
+  assert.equal(detail.body.observability.executionChainId, item.id);
+  assert.ok(detail.body.observability.timeline.some((row) => row.type === "asset_operation_recorded" && row.stage === "tool"));
+  assert.ok(detail.body.observability.timeline.some((row) => row.type === "asset_evidence_attached" && row.stage === "verification"));
+  assert.equal(events.filter((event) => event.type === "work_item_asset_operation_recorded").length, 3);
+  assert.ok(events.every((event) => event.type !== "work_item_asset_operation_recorded"
+    || (event.data.traceId === item.id && event.data.terminalId === "dev_local")));
+});
+
 test("human attention queue aggregates conflicts, approvals, and failed evidence", () => {
   const { service, state } = harness();
   const item = service.createWorkItem({
