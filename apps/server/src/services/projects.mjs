@@ -1073,7 +1073,12 @@ export function readProjectTree(project, { relativePath = "", search = "" } = {}
   };
 }
 
-const DOCUMENT_EXTENSIONS = new Set([".docx", ".xlsx", ".pptx", ".pdf", ".dxf", ".dwg"]);
+const DOCUMENT_EXTENSIONS = new Set([
+  ".docx", ".xlsx", ".pptx", ".pdf", ".dxf", ".dwg",
+  ".md", ".mdx", ".png", ".jpg", ".jpeg", ".gif", ".webp", ".avif", ".svg",
+  ".mp4", ".webm", ".mov",
+]);
+const DOCUMENT_FILTERS = new Set(["all", ...[...DOCUMENT_EXTENSIONS].map((extension) => extension.slice(1)), "image", "video"]);
 const DOCUMENT_SCAN_IGNORES = new Set([".git", "node_modules", "dist", "build", ".next", ".cache"]);
 
 /** Bounded, read-only local document discovery for the Documents surface. */
@@ -1081,8 +1086,8 @@ export function readProjectDocuments(project, { type = "all", search = "", limit
   const root = resolve(project.path);
   const realRoot = realpathSync(root);
   const requestedType = String(type ?? "all").toLowerCase();
-  if (requestedType !== "all" && !DOCUMENT_EXTENSIONS.has(`.${requestedType}`)) {
-    throw new Error("Document type must be all, docx, xlsx, pptx, pdf, dxf, or dwg.");
+  if (!DOCUMENT_FILTERS.has(requestedType)) {
+    throw new Error("Asset type filter is not supported.");
   }
   const query = String(search ?? "").trim().toLowerCase().slice(0, 120);
   const maxResults = Math.min(500, Math.max(1, Number(limit) || 200));
@@ -1127,9 +1132,9 @@ export function readProjectDocuments(project, { type = "all", search = "", limit
       const extension = `.${entry.name.split(".").pop()?.toLowerCase() ?? ""}`;
       if (!DOCUMENT_EXTENSIONS.has(extension)) continue;
       const documentType = extension.slice(1);
-      if (requestedType !== "all" && requestedType !== documentType) continue;
-      if (query && !entry.name.toLowerCase().includes(query) && !relPath.toLowerCase().includes(query)) continue;
       const asset = resolveAssetCapabilities(relPath);
+      if (requestedType !== "all" && requestedType !== documentType && requestedType !== asset.family) continue;
+      if (query && !entry.name.toLowerCase().includes(query) && !relPath.toLowerCase().includes(query)) continue;
       documents.push({
         projectId: project.id,
         name: entry.name,

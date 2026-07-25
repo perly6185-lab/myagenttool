@@ -6,6 +6,7 @@ import { join } from "node:path";
 import {
   assetCapabilityMatrix, classifyAsset, describeProjectAsset,
   evaluateAssetRequirements, resolveAssetCapabilities,
+  summarizeAssetForRemote,
 } from "../src/services/asset-capabilities.mjs";
 
 test("publishes explicit support without promising CAD, image, or video editing", () => {
@@ -60,4 +61,17 @@ test("queue readiness stays on one terminal and waits for missing capabilities",
   assert.deepEqual(evaluateAssetRequirements([asset], ["preview"], "terminal-2"), {
     state: "refused", reason: "asset_terminal_mismatch", terminalId: "terminal-2",
   });
+});
+
+test("remote summary is bounded and explicitly read-only", () => {
+  const summary = summarizeAssetForRemote({
+    id: "asset-1", projectId: "project-1", worktreeId: null, terminalId: "terminal-1",
+    name: "review.png", path: "evidence/review.png", family: "image", size: 42,
+    version: "v1", hash: "must-not-cross", capabilities: ["preview"],
+    readiness: { state: "ready", reason: "available_on_owning_terminal" },
+    preview: { available: true },
+  });
+  assert.equal(summary.directOperationsAllowed, false);
+  assert.equal(summary.hash, undefined);
+  assert.match(summary.owningTerminalDeepLink, /section=documents/);
 });

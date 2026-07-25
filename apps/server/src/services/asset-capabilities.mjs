@@ -76,7 +76,11 @@ export function resolveAssetCapabilities(path, { runtimeReadiness = {} } = {}) {
   const readiness = runtimeReady
     ? { state: "ready", reason: "available_on_owning_terminal" }
     : { state: "waiting_capability", reason: classification.family === "cad_dwg" ? "dwg_preview_runtime_required" : "local_application_required" };
-  return { ...classification, capabilities: [...MATRIX[classification.family]], readiness };
+  const capabilities = [...MATRIX[classification.family]];
+  if (classification.mimeType === "image/svg+xml") {
+    capabilities.splice(capabilities.indexOf("preview"), 1);
+  }
+  return { ...classification, capabilities, readiness };
 }
 
 export function resolveConfinedAssetPath(projectRoot, relativePath) {
@@ -129,6 +133,25 @@ export function evaluateAssetRequirements(descriptors, requiredCapabilities, ter
     if (!supported) return { state: "waiting_capability", reason: `missing_local_capability:${capability}`, terminalId };
   }
   return { state: "ready", reason: "asset_requirements_satisfied", terminalId };
+}
+
+export function summarizeAssetForRemote(descriptor) {
+  return {
+    id: descriptor.id,
+    projectId: descriptor.projectId,
+    worktreeId: descriptor.worktreeId ?? null,
+    terminalId: descriptor.terminalId,
+    name: String(descriptor.name ?? "").slice(0, 200),
+    path: String(descriptor.path ?? "").slice(0, 1_000),
+    family: descriptor.family,
+    size: descriptor.size,
+    version: descriptor.version,
+    capabilities: [...(descriptor.capabilities ?? [])],
+    readiness: descriptor.readiness,
+    previewAvailable: Boolean(descriptor.preview?.available),
+    owningTerminalDeepLink: `/?section=documents&project=${encodeURIComponent(descriptor.projectId)}&document=${encodeURIComponent(descriptor.path)}`,
+    directOperationsAllowed: false,
+  };
 }
 
 function hashFile(path) {

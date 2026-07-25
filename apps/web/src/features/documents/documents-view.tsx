@@ -1,11 +1,12 @@
 import { useEffect, useMemo, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { Copy, DraftingCompass, FilePlus2, FileSpreadsheet, FileText, FolderOpen, Loader2, Move, Pencil, Pin, PinOff, Presentation, Search, Trash2, X } from "lucide-react";
+import { Copy, DraftingCompass, FileImage, FilePlus2, FileSpreadsheet, FileText, FileVideo, FolderOpen, Loader2, Move, Pencil, Pin, PinOff, Presentation, Search, Trash2, X } from "lucide-react";
 import { api } from "@/data/use-console-actions";
 import { useConsoleState, useRefreshConsoleState } from "@/data/use-console-state";
 import { Button } from "@/components/ui/button";
 import { Input, Select } from "@/components/ui/input";
 import { OfficeDocumentFrame } from "@/components/common/office-document-frame";
+import { MarkdownBlock } from "@/components/ui/markdown-block";
 import { Modal } from "@/components/ui/modal";
 import { cn } from "@/lib/cn";
 import type { ProjectDocumentEntry } from "@/lib/console-state";
@@ -19,7 +20,7 @@ import { CadDocumentViewer } from "@/features/documents/cad-document-viewer";
 import { useAppTranslation } from "@/lib/i18n/use-app-translation";
 
 type OfficeDocumentType = "docx" | "xlsx" | "pptx";
-type DocumentType = "all" | OfficeDocumentType | "pdf" | "dxf" | "dwg";
+type DocumentType = "all" | OfficeDocumentType | "pdf" | "dxf" | "dwg" | "md" | "image" | "video";
 const FILTERS: Array<{ value: DocumentType; label: string }> = [
   { value: "all", label: "All" },
   { value: "docx", label: "Word" },
@@ -28,6 +29,9 @@ const FILTERS: Array<{ value: DocumentType; label: string }> = [
   { value: "pdf", label: "PDF" },
   { value: "dxf", label: "DXF" },
   { value: "dwg", label: "DWG" },
+  { value: "md", label: "Markdown" },
+  { value: "image", label: "Images" },
+  { value: "video", label: "Video" },
 ];
 
 function DocumentIcon({ type }: { type: ProjectDocumentEntry["type"] }) {
@@ -35,6 +39,8 @@ function DocumentIcon({ type }: { type: ProjectDocumentEntry["type"] }) {
   if (type === "pptx") return <Presentation className="size-4 text-orange-600" />;
   if (type === "pdf") return <FileText className="size-4 text-red-600" />;
   if (type === "dxf" || type === "dwg") return <DraftingCompass className="size-4 text-cyan-600" />;
+  if (["png", "jpg", "jpeg", "gif", "webp", "avif", "svg"].includes(type)) return <FileImage className="size-4 text-violet-600" />;
+  if (["mp4", "webm", "mov"].includes(type)) return <FileVideo className="size-4 text-rose-600" />;
   return <FileText className="size-4 text-blue-600" />;
 }
 
@@ -242,9 +248,12 @@ function DocumentPreview({ projectId, document, worktrees, worktreeId, onWorktre
   const preview = useQuery({
     queryKey: ["office-document-preview", projectId, document?.path],
     queryFn: () => api.officecliPreview(projectId, document?.path ?? "", document?.worktreeId ?? undefined),
-    enabled: Boolean(projectId && document && !["pdf", "dxf", "dwg"].includes(document.type)),
+    enabled: Boolean(projectId && document && ["docx", "xlsx", "pptx"].includes(document.type)),
   });
   if (!document) return <section className="grid min-h-[24rem] place-items-center rounded-lg border border-dashed border-border bg-card text-sm text-muted-foreground">{t("documentsPreview.select")}</section>;
+  if (document.type === "md" || document.type === "mdx") return <MarkdownAssetPreview projectId={projectId} document={document} />;
+  if (["png", "jpg", "jpeg", "gif", "webp", "avif", "svg"].includes(document.type)) return <ImageAssetPreview projectId={projectId} document={document} />;
+  if (["mp4", "webm", "mov"].includes(document.type)) return <AssetPreviewNotice document={document} message="Safe local playback is available on the owning computer. Open externally to play this video." />;
   if (document.type === "pdf") return <section className="flex min-h-[24rem] min-w-0 flex-col overflow-hidden rounded-lg border border-border bg-card"><header className="flex items-center gap-2 border-b border-border px-3 py-2"><DocumentIcon type={document.type} /><div className="min-w-0"><p className="truncate text-sm font-medium">{document.name}</p><p className="truncate font-mono text-[10px] text-muted-foreground">{document.path}</p></div></header><PdfDocumentViewer projectId={projectId} path={document.path} worktreeId={document.worktreeId} /></section>;
   if (document.type === "dxf" || document.type === "dwg") return <section className="flex min-h-[24rem] min-w-0 flex-col overflow-hidden rounded-lg border border-border bg-card"><header className="flex items-center gap-2 border-b border-border px-3 py-2"><DocumentIcon type={document.type} /><div className="min-w-0 flex-1"><p className="truncate text-sm font-medium">{document.name}</p><p className="truncate font-mono text-[10px] text-muted-foreground">{document.path}</p></div><span className="rounded bg-muted px-2 py-1 text-xs text-muted-foreground">{t("documentsPreview.cadReadonly")}</span></header><CadDocumentViewer projectId={projectId} path={document.path} type={document.type} worktreeId={document.worktreeId} /></section>;
   const openWorkspace = () => { setOfficecliPreviewPath(document.path); setSection("workspace"); };
@@ -269,6 +278,46 @@ function DocumentPreview({ projectId, document, worktrees, worktreeId, onWorktre
         : preview.data ? <OfficeDocumentFrame title={document.path} content={preview.data.content} className="min-h-[32rem] flex-1" /> : null}
     </section>
   );
+}
+
+function MarkdownAssetPreview({ projectId, document }: { projectId: string; document: ProjectDocumentEntry }) {
+  const preview = useQuery({
+    queryKey: ["asset-preview", projectId, document.worktreeId, document.path],
+    queryFn: () => api.projectAssetPreview(projectId, document.path, document.worktreeId ?? undefined),
+  });
+  return <section className="min-h-[24rem] overflow-auto rounded-lg border border-border bg-card p-4">
+    <h2 className="mb-3 text-sm font-semibold">{document.name}</h2>
+    {preview.isLoading ? <p className="text-sm text-muted-foreground">Preparing preview…</p>
+      : preview.error ? <p role="alert" className="text-sm text-destructive">Preview is not available.</p>
+        : <MarkdownBlock text={preview.data?.text ?? ""} />}
+  </section>;
+}
+
+function ImageAssetPreview({ projectId, document }: { projectId: string; document: ProjectDocumentEntry }) {
+  const preview = useQuery({
+    queryKey: ["asset-preview-bytes", projectId, document.worktreeId, document.path],
+    queryFn: () => api.projectAssetPreviewBytes(projectId, document.path, document.worktreeId ?? undefined),
+    enabled: document.type !== "svg",
+  });
+  const [source, setSource] = useState<string | null>(null);
+  useEffect(() => {
+    if (!preview.data) { setSource(null); return; }
+    const url = URL.createObjectURL(new Blob([preview.data]));
+    setSource(url);
+    return () => URL.revokeObjectURL(url);
+  }, [preview.data]);
+  if (document.type === "svg") return <AssetPreviewNotice document={document} message="Preview is disabled because SVG can contain active content. Open externally if you trust this file." />;
+  return <section className="grid min-h-[24rem] place-items-center overflow-auto rounded-lg border border-border bg-card p-4">
+    {preview.isLoading ? <p className="text-sm text-muted-foreground">Preparing preview…</p>
+      : preview.error ? <p role="alert" className="text-sm text-destructive">Preview is not available.</p>
+        : source ? <img src={source} alt={document.name} className="max-h-full max-w-full object-contain" /> : null}
+  </section>;
+}
+
+function AssetPreviewNotice({ document, message }: { document: ProjectDocumentEntry; message: string }) {
+  return <section className="grid min-h-[24rem] place-items-center rounded-lg border border-border bg-card p-6 text-center">
+    <div><p className="font-medium">{document.name}</p><p className="mt-2 max-w-md text-sm text-muted-foreground">{message}</p></div>
+  </section>;
 }
 
 type Translate = ReturnType<typeof useAppTranslation>["t"];
