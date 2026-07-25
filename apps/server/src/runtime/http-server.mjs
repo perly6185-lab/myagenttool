@@ -740,6 +740,7 @@ export function createHttpServer({
         listCapabilities,
         getCapability,
         createCapabilityInvocation,
+        resolveCapability,
       })) {
         return;
       }

@@ -1,5 +1,6 @@
 import { teamOf } from "../runtime/auth.mjs";
 import { codingAgentInterfaceForTool, normalizeCapabilityInvocationResult } from "./coding-agent-interface.mjs";
+import { resolveLocalApplicationCapability } from "./application-resolver.mjs";
 
 export function createCapabilityService({
   state,
@@ -73,6 +74,25 @@ export function createCapabilityService({
 
   function getCapability(name, actor = null) {
     return listCapabilities(actor).find((capability) => capability.name === name) ?? null;
+  }
+
+  function resolveCapability(input = {}, actor = null) {
+    const terminalId = String(input?.terminalId ?? "");
+    const terminal = (state.devices ?? []).find((candidate) => candidate.id === terminalId);
+    if (!terminal) {
+      return { state: "refusal", reason: "terminal_not_found", terminalId: terminalId || null, capability: null };
+    }
+    const availableResourceClasses = Array.isArray(terminal.assetResourceClasses)
+      ? terminal.assetResourceClasses
+      : ["small", "medium"];
+    return resolveLocalApplicationCapability({
+      intent: input?.intent,
+      assetVerb: input?.assetVerb,
+      terminalId,
+      resourceClass: input?.resourceClass,
+      availableResourceClasses,
+      capabilities: listCapabilities(actor).map((capability) => ({ ...capability, terminalId })),
+    });
   }
 
   function createCapabilityInvocation(name, input = {}, actor = null) {
@@ -389,6 +409,7 @@ export function createCapabilityService({
     createCapabilityInvocation,
     getCapability,
     listCapabilities,
+    resolveCapability,
   };
 }
 

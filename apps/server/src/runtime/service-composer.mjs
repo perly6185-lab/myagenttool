@@ -1324,6 +1324,7 @@ export function createServerRuntimeServices({
     createCapabilityInvocation,
     getCapability,
     listCapabilities,
+    resolveCapability,
   } = createCapabilityService({
     state,
     refuse,
@@ -3269,6 +3270,7 @@ export function createServerRuntimeServices({
     getCapability,
     listApplicationCapabilities,
     listCapabilities,
+    resolveCapability,
     listApplications,
     listApplicationOrchestrationRunEvents,
     listApplicationOrchestrationRuns,
@@ -3583,6 +3585,7 @@ export function createServerRuntimeServices({
     getCapability,
     listApplicationCapabilities,
     listCapabilities,
+    resolveCapability,
     listApplications,
     listApplicationOrchestrationRunEvents,
     listApplicationOrchestrationRuns,

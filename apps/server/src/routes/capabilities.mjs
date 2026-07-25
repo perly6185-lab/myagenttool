@@ -11,9 +11,21 @@ export async function handleCapabilityRoutes({
   listCapabilities,
   getCapability,
   createCapabilityInvocation,
+  resolveCapability,
 }) {
   if (req.method === "GET" && url.pathname === "/api/capabilities") {
     sendJson(res, 200, { capabilities: filterCapabilities(listCapabilities(actor), url.searchParams) });
+    return true;
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/capability-resolutions") {
+    const body = await readJson(req);
+    if (!body || typeof body !== "object" || Array.isArray(body)) {
+      sendJson(res, 400, { error: "invalid_capability_resolution" });
+      return true;
+    }
+    const resolution = resolveCapability(body, actor);
+    sendJson(res, resolution.state === "refusal" ? 400 : 200, { resolution });
     return true;
   }
 
