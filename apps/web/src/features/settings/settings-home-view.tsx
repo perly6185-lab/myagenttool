@@ -4,6 +4,7 @@ import { pageRegistration } from "@/app/sections";
 import { SectionHeading } from "@/components/common/section-heading";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
+import { Select } from "@/components/ui/input";
 import { StatusBadge } from "@/components/ui/badge";
 import { useConsoleState } from "@/data/use-console-state";
 import { usePageNavigation } from "@/hooks/use-page-navigation";
@@ -16,6 +17,7 @@ export function SettingsHomeView() {
   const navigate = usePageNavigation();
   const { data: state } = useConsoleState();
   const [query, setQuery] = useState("");
+  const [applicationId, setApplicationId] = useState("");
   const normalized = query.trim().toLowerCase();
   const domains = useMemo(() => DOMAIN_KEYS.map((key) => pageRegistration(key))
     .filter((page) => !normalized || `${t(page.labelKey)} ${t(page.blurbKey)}`.toLowerCase().includes(normalized)), [normalized, t]);
@@ -30,11 +32,23 @@ export function SettingsHomeView() {
     { key: "channel", label: "settingsHome.checks.channel" as const, fix: "settingsHome.fixes.channel" as const, ready: readyChannels > 0, section: "channels" as const, optional: true },
   ];
   const needsFix = checks.filter((item) => !item.ready && !item.optional);
+  const applications = state?.applications ?? [];
+  const selectedApplication = applications.find((item) => item.id === applicationId) ?? applications[0] ?? null;
+  const relatedInvocations = (state?.invocations ?? []).filter((item) =>
+    item.options?.metadata?.applicationId === selectedApplication?.id
+    || (state?.applicationResults ?? []).some((result) => result.applicationId === selectedApplication?.id && result.invocationId === item.id));
+  const relatedAgentIds = new Set(relatedInvocations.map((item) => item.agentId).filter(Boolean));
+  const relatedAgents = (state?.agents ?? []).filter((item) => relatedAgentIds.has(item.id));
+  const applicationCapabilities = new Set((selectedApplication?.probe?.capabilities ?? []).map((item) => item.name));
+  const relatedInvocationIds = new Set(relatedInvocations.map((item) => item.id));
+  const relatedChannelIds = new Set((state?.channelDeliveries ?? [])
+    .filter((item) => item.invocationId && relatedInvocationIds.has(item.invocationId))
+    .map((item) => item.channelId));
   const setupStages = [
-    { key: "application", ready: readyApplications > 0, section: "applications" as const },
-    { key: "agent", ready: readyAgents > 0, section: "agents" as const },
-    { key: "tool", ready: (state?.agents ?? []).some((item) => (item.capabilities ?? []).length > 0), section: "tools" as const },
-    { key: "channel", ready: readyChannels > 0, section: "channels" as const, optional: true },
+    { key: "application", ready: selectedApplication?.status === "active" && selectedApplication.localReadiness?.state !== "repair_required", section: "applications" as const },
+    { key: "agent", ready: relatedAgents.some((item) => item.status !== "disabled" && item.health?.status !== "unhealthy"), section: "agents" as const },
+    { key: "tool", ready: relatedAgents.some((item) => (item.capabilities ?? []).some((capability) => capability.name && applicationCapabilities.has(capability.name))), section: "tools" as const },
+    { key: "channel", ready: (state?.channelOperations ?? []).some((item) => relatedChannelIds.has(item.id) && item.ready && item.health !== "attention"), section: "channels" as const, optional: true },
   ];
 
   return (
@@ -70,7 +84,12 @@ export function SettingsHomeView() {
       ) : null}
       <Card>
         <CardHeader><CardTitle>{t("settingsHome.setupGuide")}</CardTitle><p className="text-sm text-muted-foreground">{t("settingsHome.setupGuideHint")}</p></CardHeader>
-        <CardContent className="grid gap-2 sm:grid-cols-4">
+        <CardContent className="space-y-3">
+          <Select aria-label={t("settingsHome.applicationPicker")} value={selectedApplication?.id ?? ""} onChange={(event) => setApplicationId(event.target.value)}>
+            {!applications.length ? <option value="">{t("settingsHome.noApplication")}</option> : null}
+            {applications.map((application) => <option key={application.id} value={application.id}>{application.name}</option>)}
+          </Select>
+          <div className="grid gap-2 sm:grid-cols-4">
           {setupStages.map((stage, index) => (
             <button key={stage.key} type="button" onClick={() => navigate(stage.section)} className="rounded-lg border p-3 text-left hover:bg-muted">
               <span className="text-xs text-muted-foreground">{index + 1}</span>
@@ -78,6 +97,7 @@ export function SettingsHomeView() {
               <span className="text-xs text-muted-foreground">{t(stage.ready ? "settingsHome.ready" : stage.optional ? "settingsHome.optional" : "settingsHome.needsSetup")}</span>
             </button>
           ))}
+          </div>
         </CardContent>
       </Card>
       <div className="relative">

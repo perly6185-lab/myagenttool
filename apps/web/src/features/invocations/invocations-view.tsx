@@ -1,5 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
-import { useState, type ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { Clipboard, ExternalLink } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge, StatusBadge } from "@/components/ui/badge";
@@ -75,10 +75,30 @@ export function InvocationsView() {
   const setSelectedApplicationRun = useUiStore((s) => s.setSelectedApplicationRun);
 
   const [traceQuery, setTraceQuery] = useState("");
+  const [traceCursor, setTraceCursor] = useState<string | null>(null);
+  const [tracePage, setTracePage] = useState(1);
   const allInvocations = state?.invocations ?? [];
   const normalizedTraceQuery = traceQuery.trim().toLowerCase();
+  useEffect(() => {
+    setTraceCursor(null);
+    setTracePage(1);
+  }, [normalizedTraceQuery]);
+  const traceSearch = useQuery({
+    queryKey: ["trace-search", normalizedTraceQuery, traceCursor],
+    queryFn: () => api.searchTraces(normalizedTraceQuery, traceCursor),
+    enabled: Boolean(normalizedTraceQuery),
+  });
   const invocations = normalizedTraceQuery
-    ? allInvocations.filter((invocation) => matchesTraceQuery(invocation, state ?? null, normalizedTraceQuery))
+    ? (traceSearch.data?.records ?? []).map((record) => allInvocations.find((row) => row.id === record.invocationId) ?? ({
+        id: record.invocationId,
+        status: record.status,
+        agentId: record.agentId,
+        projectId: record.projectId,
+        worktreeId: record.worktreeId,
+        traceId: record.traceId,
+        createdAt: record.createdAt,
+        input: { task: record.task },
+      }))
     : allInvocations;
   const selected = resolveInvocation(state, selectedInvocationId);
   const events = selected
@@ -152,7 +172,7 @@ export function InvocationsView() {
               placeholder={t("traceSearch.placeholder")}
             />
             <div className="flex flex-wrap gap-2 text-xs text-muted-foreground">
-              <Badge tone="neutral">{t("traceSearch.runs", { count: invocations.length })}</Badge>
+              <Badge tone="neutral">{t("traceSearch.runs", { count: normalizedTraceQuery ? traceSearch.data?.total ?? 0 : invocations.length })}</Badge>
               <span>{t("traceSearch.scope")}</span>
             </div>
           </div>
@@ -202,6 +222,17 @@ export function InvocationsView() {
               </table>
             </div>
           )}
+          {normalizedTraceQuery && (tracePage > 1 || traceSearch.data?.nextCursor) ? (
+            <div className="mt-3 flex items-center justify-end gap-2">
+              <span className="text-xs text-muted-foreground">{t("traceSearch.page", { page: tracePage })}</span>
+              {traceSearch.data?.nextCursor ? (
+                <Button size="sm" variant="secondary" onClick={() => {
+                  setTraceCursor(traceSearch.data?.nextCursor ?? null);
+                  setTracePage((page) => page + 1);
+                }}>{t("traceSearch.next")}</Button>
+              ) : null}
+            </div>
+          ) : null}
         </CardContent>
       </Card>
 

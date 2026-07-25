@@ -83,11 +83,14 @@ jobs:
       - name: Enforce Web bundle budgets
         run: pnpm check:web-bundle
 
-      - name: Install Chromium for critical user journeys
-        run: pnpm exec playwright install --with-deps chromium
+      - name: Install browsers for critical user journeys
+        run: pnpm exec playwright install --with-deps chromium firefox webkit
 
       - name: Run critical browser user journeys
         run: pnpm test:user-journey:e2e
+
+      - name: Enforce cross-browser Entry, Settings, and Trace journeys
+        run: pnpm --filter @myagenttool/web test:e2e:cross-browser
 
   smoke-gates:
     if: vars.ENABLE_GITHUB_HOSTED_RUNNERS == 'true'
