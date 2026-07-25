@@ -22,6 +22,7 @@ import {
   type ScheduleFilter,
 } from "@/features/automation/schedule-health-ui";
 import type { AutomationSnapshot } from "@/lib/console-state";
+import { AutoRunConfigCard } from "@/features/auto-runs/auto-run-config-card";
 
 type ScheduleKind = "weekdays" | "daily" | "interval";
 
@@ -118,7 +119,9 @@ export function AutomationView() {
   }
 
   return (
-    <div className="grid gap-4 lg:grid-cols-[minmax(0,320px)_minmax(0,1fr)]">
+    <div className="space-y-4">
+      <AutoRunConfigCard />
+      <div className="grid gap-4 lg:grid-cols-[minmax(0,320px)_minmax(0,1fr)]">
       <Card>
         <CardHeader>
           <div className="flex items-center justify-between gap-2">
@@ -365,6 +368,7 @@ export function AutomationView() {
           />
         ) : null}
       </Modal>
+      </div>
     </div>
   );
 }

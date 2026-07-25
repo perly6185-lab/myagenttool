@@ -6,9 +6,9 @@ import { test } from "node:test";
 import { createPersistenceRuntime } from "../src/runtime/persistence.mjs";
 import { createServerState } from "../src/runtime/state-factory.mjs";
 import { sameProjectPath } from "../src/services/projects.mjs";
-import { createWorkItemService } from "../src/services/work-items.mjs";
+import { createWorkItemService, taskTraceStage } from "../src/services/work-items.mjs";
 
-const ACTOR_A = { userId: "usr_a", teamId: "team_a" };
+const ACTOR_A = { userId: "usr_a", teamId: "team_a", role: "operator" };
 const ACTOR_B = { userId: "usr_b", teamId: "team_b" };
 const ACTOR_C = { userId: "usr_c", teamId: "team_a" };
 
@@ -24,6 +24,7 @@ function harness({
   const events = [];
   const alerts = [];
   const state = {
+    devices: [{ id: "dev_local" }],
     workItems: [],
     workItemComments: [],
     workItemActivities: [],
@@ -51,7 +52,7 @@ function harness({
 }
 
 test("creates a local work item with server-owned identity and defaults", () => {
-  const { service, events } = harness();
+  const { service, events, state } = harness();
   const result = service.createWorkItem({
     projectId: "prj_a",
     title: "Local planning",
@@ -64,6 +65,28 @@ test("creates a local work item with server-owned identity and defaults", () => 
   assert.equal(result.body.workItem.status, "backlog");
   assert.equal(result.body.workItem.revision, 1);
   assert.equal(events[0].type, "work_item_created");
+  assert.deepEqual(state.workItemActivities[0].details, {
+    title: "Local planning",
+    type: "task",
+    status: "backlog",
+    priority: "p2",
+    principalId: "usr_a",
+    deviceId: "dev_local",
+    effectiveAuthority: "operator",
+    entryContext: "task",
+    traceParent: result.body.workItem.id,
+  });
+});
+
+test("normalizes task trace events into the user execution chain", () => {
+  assert.equal(taskTraceStage("created"), "creation");
+  assert.equal(taskTraceStage("auto_run_started"), "routing");
+  assert.equal(taskTraceStage("delivery_queued", "execution"), "queue");
+  assert.equal(taskTraceStage("local_approval_requested", "execution"), "approval");
+  assert.equal(taskTraceStage("tool_invocation_created", "execution"), "tool");
+  assert.equal(taskTraceStage("verification_recorded"), "verification");
+  assert.equal(taskTraceStage("auto_run_retry"), "retry");
+  assert.equal(taskTraceStage("invocation_completed", "execution"), "completion");
 });
 
 test("exposes independent business, planning, and fact-derived execution states", () => {
@@ -705,6 +728,7 @@ test("detail returns an authoritative per-item observability snapshot", () => {
   assert.ok(detail.observability.timeline.some((entry) => entry.source === "issue"));
   assert.ok(detail.observability.timeline.some((entry) => entry.source === "cost"));
   assert.ok(detail.observability.timeline.some((entry) => entry.source === "alert"));
+  assert.equal(detail.observability.timeline[0].stage, "creation");
   assert.equal(detail.observability.routingExplanation.selectedPath, "develop");
   assert.equal(detail.observability.routingExplanation.humanCorrection.actualPath, "design");
   assert.equal(detail.observability.nextAction, "review_approval");

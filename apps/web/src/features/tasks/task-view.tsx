@@ -47,7 +47,8 @@ import { WorktreeOptionsForm } from "./worktree-options-form";
 import { WorkItemExecutionActions } from "./work-item-execution-actions";
 import { WorkItemAcceptanceSection } from "./work-item-acceptance-section";
 import { WorkItemExternalSync } from "./work-item-external-sync";
-import { WorkItemAlertAndCostDetails, WorkItemTimeline } from "./work-item-observability";
+import { WorkItemAlertAndCostDetails, WorkItemTimeline, WorkItemTraceSummary } from "./work-item-observability";
+import { WorkItemTraceLinks } from "./work-item-trace-links";
 
 export { shouldShowWorkItemCost } from "./task-view-types";
 
@@ -168,7 +169,13 @@ export function TaskView() {
   const [planningProjectId, setPlanningProjectId] = useState("all");
   const [createLocalOpen, setCreateLocalOpen] = useState(false);
   const [planningOpen, setPlanningOpen] = useState(false);
-  const [selectedLocalId, setSelectedLocalId] = useState<string | null>(null);
+  const storedSelectedLocalId = useUiStore((state) => state.selectedWorkItemId);
+  const persistSelectedLocalId = useUiStore((state) => state.setSelectedWorkItemId);
+  const [selectedLocalId, setSelectedLocalIdState] = useState<string | null>(storedSelectedLocalId ?? null);
+  const setSelectedLocalId = (id: string | null) => {
+    setSelectedLocalIdState(id);
+    persistSelectedLocalId?.(id);
+  };
   const [selectedLocalDirty, setSelectedLocalDirty] = useState(false);
   const [confirmSelectedLocalClose, setConfirmSelectedLocalClose] = useState(false);
   const [loading, setLoading] = useState(false);
@@ -2214,6 +2221,7 @@ function LocalWorkItemDetail({
   const setSection = useUiStore((state) => state.setSection);
   const setSelectedProjectId = useUiStore((state) => state.setSelectedProjectId);
   const setSelectedWorktreeId = useUiStore((state) => state.setSelectedWorktreeId);
+  const selectedWorkItemSection = useUiStore((state) => state.selectedWorkItemSection) ?? "overview";
   const [item, setItem] = useState<LocalWorkItem | null>(null);
   const [comments, setComments] = useState<WorkItemComment[]>([]);
   const [activity, setActivity] = useState<WorkItemActivity[]>([]);
@@ -2273,6 +2281,21 @@ function LocalWorkItemDetail({
     void load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [workItemId]);
+  useEffect(() => {
+    if (!item) return;
+    const targets = {
+      overview: "work-item-overview",
+      process: "work-item-execution",
+      assets: "work-item-details",
+      verification: "work-item-acceptance",
+      trace: "work-item-observability",
+    } as const;
+    const frame = requestAnimationFrame(() => {
+      const target = document.getElementById(`${targets[selectedWorkItemSection]}-${workItemId}`);
+      target?.scrollIntoView?.({ block: "start" });
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [item, selectedWorkItemSection, workItemId]);
   useVisibleInterval(() => {
     void (api.getWorkItem(workItemId) as Promise<{ observability: LocalWorkItemObservability }>)
       .then((detail) => setObservability(detail.observability))
@@ -2591,6 +2614,7 @@ function LocalWorkItemDetail({
           </div>
         </div>
       </section>
+      <div id={`work-item-observability-${item.id}`} className="scroll-mt-12">
       <WorkItemAlertAndCostDetails
         observability={observability}
         pending={pending}
@@ -2598,8 +2622,9 @@ function LocalWorkItemDetail({
           void execute(() => api.retryWorkItemAlert(item.id, alertId)).then((ok) => { if (ok) void load(); });
         }}
       />
+      </div>
       {boundRun?.decision ? (
-        <section className="space-y-2 rounded-md border border-border p-3 text-xs">
+        <section id={`work-item-execution-${item.id}`} className="scroll-mt-12 space-y-2 rounded-md border border-border p-3 text-xs">
           <div className="flex flex-wrap items-center gap-2">
             <h3 className="text-sm font-semibold">{t("taskCockpit.routingTitle")}</h3>
             <Badge tone={boundRun.decision.confidence < 0.6 ? "warning" : "success"}>{boundRun.decision.path}</Badge>
@@ -2666,7 +2691,9 @@ function LocalWorkItemDetail({
           </div>
         </section>
       ) : null}
-      <WorkItemTimeline observability={observability} />
+      <WorkItemTraceLinks item={item} observability={observability} />
+      <WorkItemTraceSummary item={item} observability={observability} />
+      <WorkItemTimeline observability={observability} expanded={selectedWorkItemSection === "trace"} />
       <WorkItemExternalSync
         itemId={item.id}
         binding={externalIssueBinding}
@@ -2764,7 +2791,9 @@ function LocalWorkItemDetail({
       </Field>
         </div>
       </details>
-      <WorkItemAcceptanceSection item={item} />
+      <div id={`work-item-acceptance-${item.id}`} className="scroll-mt-12">
+        <WorkItemAcceptanceSection item={item} />
+      </div>
       <div aria-live="polite" aria-atomic="true">
         {error ? <p className="text-xs text-destructive">{error}</p> : null}
         {notice ? <p className="text-xs text-success">{notice}</p> : null}

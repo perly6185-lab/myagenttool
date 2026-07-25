@@ -180,6 +180,8 @@ export type LocalWorkItemAutoRun = {
   id: string;
   status: string;
   updatedAt: string;
+  invocationId?: string | null;
+  agentId?: string | null;
   decision?: {
     path: string; decidedBy: string; confidence: number; rationale?: string | null;
     via?: string | null; latencyMs?: number | null; clarifyingQuestions?: string[] | null;
@@ -211,6 +213,7 @@ export type LocalWorkItemObservability = {
   };
   timeline?: {
     id: string; at: string; source: "issue" | "execution" | "cost" | "alert"; type: string;
+    stage?: "creation" | "routing" | "queue" | "execution" | "approval" | "tool" | "verification" | "retry" | "completion" | "other";
     actorId: string | null; message: string; data: Record<string, unknown>;
   }[];
   estimate?: {

@@ -6,6 +6,7 @@
 
 import { createHash } from "node:crypto";
 import { actorCanAccessProject, LOCAL_TEAM_ID, LOCAL_USER_ID } from "../runtime/auth.mjs";
+import { listDevices } from "../runtime/device.mjs";
 import { makeRunTx } from "../runtime/store/run-tx.mjs";
 import { normalizedUpdatedSince, paginateRows } from "./cursor-pagination.mjs";
 import { externalIssueProviderReadiness } from "./external-issue-provider.mjs";
@@ -21,6 +22,20 @@ const MAX_MILESTONE = 200;
 const GITHUB_SYNC_FIELDS = ["title", "body", "state", "labels", "milestone", "assigneeIds"];
 const VERIFICATION_KINDS = new Set(["test", "lint", "typecheck", "manual", "review"]);
 const VERIFICATION_STATUSES = new Set(["passed", "failed"]);
+
+export function taskTraceStage(type, source = "issue") {
+  const value = String(type ?? "").toLowerCase();
+  if (value === "created" || value === "invocation_created") return "creation";
+  if (value.includes("route") || value.includes("auto_run_started") || value.includes("worktree_created")) return "routing";
+  if (value.includes("queue") || value.includes("claim")) return "queue";
+  if (value.includes("approval")) return "approval";
+  if (value.includes("tool_invocation") || value.includes("round_")) return "tool";
+  if (value.includes("verif") || value.includes("review")) return "verification";
+  if (value.includes("retry") || value.includes("recover") || value.includes("repair")) return "retry";
+  if (value.includes("complete") || value.includes("done") || value.includes("merged") || value.includes("closed")) return "completion";
+  if (source === "execution" || value.includes("run") || value.includes("invocation")) return "execution";
+  return "other";
+}
 
 function strings(values, { limit = MAX_LABELS, maxLength = 100 } = {}) {
   if (!Array.isArray(values)) return null;
@@ -109,6 +124,17 @@ export function createWorkItemService({
   const notFound = () => ({ ok: false, status: 404, body: { error: "work_item_not_found" } });
   const commentNotFound = () => ({ ok: false, status: 404, body: { error: "work_item_comment_not_found" } });
 
+  function activityAttribution(item, actor, details = {}) {
+    return {
+      ...details,
+      principalId: actorUser(actor),
+      deviceId: actor?.deviceId ?? listDevices(state)[0]?.id ?? null,
+      effectiveAuthority: actor?.role ?? "owner",
+      entryContext: details.entryContext ?? "task",
+      traceParent: details.traceParent ?? item.id,
+    };
+  }
+
   function recordActivity(item, actor, action, details = {}) {
     const activity = {
       id: nextId("wia"),
@@ -118,7 +144,7 @@ export function createWorkItemService({
       action,
       actorId: actorUser(actor),
       createdAt: now(),
-      details,
+      details: activityAttribution(item, actor, details),
     };
     (state.workItemActivities ??= []).unshift(activity);
     return activity;
@@ -858,12 +884,14 @@ export function createWorkItemService({
       .filter((row) => row.workItemId === item.id)
       .map((row) => ({
         id: row.id, at: row.createdAt, source: "issue", type: row.action,
+        stage: taskTraceStage(row.action, "issue"),
         actorId: row.actorId ?? null, message: row.action.replaceAll("_", " "), data: row.details ?? {},
       }));
     const executionTimeline = (state.invocationEvents ?? state.events ?? [])
       .filter((row) => invocationIds.has(row.invocationId) || row.data?.executionChainId === item.id)
       .map((row) => ({
         id: row.id, at: row.createdAt ?? row.at, source: "execution", type: row.type,
+        stage: taskTraceStage(row.type, "execution"),
         actorId: null, message: row.message ?? row.type, data: row.data ?? {},
       }));
     const costTimeline = ledgerEntries.map((row) => ({
@@ -871,6 +899,7 @@ export function createWorkItemService({
       at: row.createdAt ?? row.finalizedAt,
       source: "cost",
       type: "cost_recorded",
+      stage: "execution",
       actorId: row.userId ?? null,
       message: row.amountUsd == null
         ? `Unmetered cost recorded for ${row.model ?? row.provider ?? "unknown model"}`
@@ -882,13 +911,17 @@ export function createWorkItemService({
       at: row.sentAt ?? row.nextAttemptAt ?? row.createdAt,
       source: "alert",
       type: row.alert?.kind ?? "alert",
+      stage: taskTraceStage(row.alert?.kind ?? "alert", "alert"),
       actorId: null,
       message: `${row.alert?.kind ?? "alert"} · ${row.status}`,
       data: { status: row.status, attempts: row.attempts ?? 0, lastError: row.lastError ?? null },
     }));
+    const traceStageOrder = ["creation", "routing", "queue", "execution", "approval", "tool", "verification", "retry", "completion", "other"];
     const timeline = [...activityTimeline, ...executionTimeline, ...costTimeline, ...alertTimeline]
       .filter((row) => row.at)
-      .sort((left, right) => String(right.at).localeCompare(String(left.at)))
+      .sort((left, right) =>
+        String(left.at).localeCompare(String(right.at))
+        || traceStageOrder.indexOf(left.stage) - traceStageOrder.indexOf(right.stage))
       .slice(0, 200);
     const comparableDurations = (state.autoRuns ?? [])
       .filter((run) => run.projectId === item.projectId

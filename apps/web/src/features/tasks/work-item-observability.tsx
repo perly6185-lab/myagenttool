@@ -1,7 +1,91 @@
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/cn";
 import { useAppTranslation } from "@/lib/i18n/use-app-translation";
-import type { LocalWorkItemObservability } from "./task-view-types";
+import type { LocalWorkItem, LocalWorkItemObservability } from "./task-view-types";
+
+export type TaskTraceIdentity = {
+  principalId: string | null;
+  deviceId: string | null;
+  effectiveAuthority: string | null;
+  reason: string | null;
+};
+
+const TRACE_TEXT_LIMIT = 160;
+
+function safeTraceText(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  const normalized = value.trim();
+  if (!normalized) return null;
+  return normalized.length > TRACE_TEXT_LIMIT
+    ? `${normalized.slice(0, TRACE_TEXT_LIMIT)}…`
+    : normalized;
+}
+
+/**
+ * Trace uses an explicit allowlist instead of rendering event payloads. This
+ * keeps credentials, prompts, and arbitrarily large adapter data out of the UI.
+ */
+export function taskTraceIdentity(event: {
+  actorId: string | null;
+  data: Record<string, unknown>;
+}): TaskTraceIdentity {
+  return {
+    principalId: safeTraceText(event.data.principalId) ?? safeTraceText(event.actorId),
+    deviceId: safeTraceText(event.data.deviceId) ?? safeTraceText(event.data.terminalId),
+    effectiveAuthority: safeTraceText(event.data.effectiveAuthority),
+    reason: safeTraceText(event.data.waitingReason)
+      ?? safeTraceText(event.data.reason)
+      ?? safeTraceText(event.data.rationale),
+  };
+}
+
+export function taskTraceWaitingReason(observability: LocalWorkItemObservability | null): string | null {
+  const event = observability?.timeline?.find((candidate) =>
+    candidate.stage === "queue" && Boolean(taskTraceIdentity(candidate).reason));
+  return event ? taskTraceIdentity(event).reason : null;
+}
+
+export function WorkItemTraceSummary({
+  item,
+  observability,
+}: {
+  item: LocalWorkItem;
+  observability: LocalWorkItemObservability | null;
+}) {
+  const { t } = useAppTranslation();
+  if (!observability) return null;
+  const route = observability.routingExplanation;
+  const waitingReason = taskTraceWaitingReason(observability);
+  const retryCount = observability.timeline?.filter((event) => event.stage === "retry").length ?? 0;
+  const evidenceCount = (item.verificationRecords ?? []).reduce(
+    (count, record) => count + record.evidence.length,
+    0,
+  );
+  return (
+    <section aria-label={t("shell.taskTrace.summary")} className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
+      <div className="rounded-md border border-border p-3 text-xs">
+        <span className="text-muted-foreground">{t("shell.taskTrace.route")}</span>
+        <p className="mt-1 font-semibold">
+          {route?.selectedPath ?? t("shell.taskTrace.notSelected")}
+          {observability.latestRun?.agentId ? ` · ${observability.latestRun.agentId}` : ""}
+        </p>
+        {route?.rationale ? <p className="mt-1 text-muted-foreground">{safeTraceText(route.rationale)}</p> : null}
+      </div>
+      <div className="rounded-md border border-border p-3 text-xs">
+        <span className="text-muted-foreground">{t("shell.taskTrace.waiting")}</span>
+        <p className="mt-1 font-semibold">{waitingReason ?? t("shell.taskTrace.noWaiting")}</p>
+      </div>
+      <div className="rounded-md border border-border p-3 text-xs">
+        <span className="text-muted-foreground">{t("shell.taskTrace.retries")}</span>
+        <p className="mt-1 font-semibold">{t("shell.taskTrace.retryCount", { count: retryCount })}</p>
+      </div>
+      <div className="rounded-md border border-border p-3 text-xs">
+        <span className="text-muted-foreground">{t("shell.taskTrace.finalEvidence")}</span>
+        <p className="mt-1 font-semibold">{t("shell.taskTrace.evidenceCount", { count: evidenceCount })}</p>
+      </div>
+    </section>
+  );
+}
 
 export function WorkItemAlertAndCostDetails({
   observability,
@@ -81,20 +165,40 @@ export function WorkItemAlertAndCostDetails({
   );
 }
 
-export function WorkItemTimeline({ observability }: { observability: LocalWorkItemObservability | null }) {
+export function WorkItemTimeline({
+  observability,
+  expanded = false,
+}: {
+  observability: LocalWorkItemObservability | null;
+  expanded?: boolean;
+}) {
   const { t } = useAppTranslation();
   if (!observability?.timeline?.length) return null;
   return (
-    <details className="rounded-md border border-border p-3 text-xs">
+    <details open={expanded || undefined} className="rounded-md border border-border p-3 text-xs">
       <summary className="cursor-pointer text-sm font-semibold">{t("aiOps.timeline")} · {observability.executionChainId}</summary>
       <div className="mt-3 space-y-2">
-        {observability.timeline.map((event) => (
-          <div key={`${event.source}:${event.id}`} className="grid grid-cols-[9rem_5rem_1fr] gap-2 rounded bg-muted p-2">
-            <time>{new Date(event.at).toLocaleString()}</time>
-            <Badge tone={event.source === "alert" ? "danger" : event.source === "execution" ? "warning" : event.source === "cost" ? "running" : "neutral"}>{event.source}</Badge>
-            <span>{event.message}</span>
-          </div>
-        ))}
+        {observability.timeline.map((event) => {
+          const identity = taskTraceIdentity(event);
+          const stage = event.stage ?? "other";
+          return (
+            <div key={`${event.source}:${event.id}`} className="grid gap-2 rounded bg-muted p-2 sm:grid-cols-[9rem_5rem_1fr]">
+              <time>{new Date(event.at).toLocaleString()}</time>
+              <Badge tone={event.source === "alert" ? "danger" : stage === "completion" || stage === "verification" ? "success" : stage === "execution" || stage === "tool" ? "running" : "neutral"}>
+                {t(`shell.taskTraceStages.${stage}`)}
+              </Badge>
+              <div className="min-w-0">
+                <p>{event.message}</p>
+                <dl className="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-[10px] text-muted-foreground">
+                  {identity.principalId ? <div><dt className="inline">{t("shell.taskTrace.principal")}: </dt><dd className="inline font-mono">{identity.principalId}</dd></div> : null}
+                  {identity.deviceId ? <div><dt className="inline">{t("shell.taskTrace.terminal")}: </dt><dd className="inline font-mono">{identity.deviceId}</dd></div> : null}
+                  {identity.effectiveAuthority ? <div><dt className="inline">{t("shell.taskTrace.authority")}: </dt><dd className="inline">{identity.effectiveAuthority}</dd></div> : null}
+                </dl>
+                {identity.reason ? <p className="mt-1 text-xs text-muted-foreground">{t("shell.taskTrace.reason")}: {identity.reason}</p> : null}
+              </div>
+            </div>
+          );
+        })}
       </div>
     </details>
   );
