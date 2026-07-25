@@ -79,15 +79,16 @@ export function createCapabilityService({
   }
 
   function resolveCapability(input = {}, actor = null) {
+    const startedAt = performance.now();
     const terminalId = String(input?.terminalId ?? "");
     const terminal = (state.devices ?? []).find((candidate) => candidate.id === terminalId);
     if (!terminal) {
-      return { state: "refusal", reason: "terminal_not_found", terminalId: terminalId || null, capability: null };
+      return recordResolutionMetric({ state: "refusal", reason: "terminal_not_found", terminalId: terminalId || null, capability: null }, startedAt);
     }
     const availableResourceClasses = Array.isArray(terminal.assetResourceClasses)
       ? terminal.assetResourceClasses
       : ["small", "medium"];
-    return resolveLocalApplicationCapability({
+    return recordResolutionMetric(resolveLocalApplicationCapability({
       intent: input?.intent,
       assetVerb: input?.assetVerb,
       terminalId,
@@ -95,7 +96,20 @@ export function createCapabilityService({
       assetFamily: input?.assetFamily,
       availableResourceClasses,
       capabilities: listCapabilities(actor),
-    });
+    }), startedAt);
+  }
+
+  function recordResolutionMetric(resolution, startedAt) {
+    const metric = {
+      at: new Date().toISOString(),
+      durationMs: Math.max(0, Math.round((performance.now() - startedAt) * 100) / 100),
+      state: resolution.state,
+      reason: resolution.reason,
+      terminalId: resolution.terminalId,
+      applicationId: resolution.capability?.applicationId ?? null,
+    };
+    state.applicationResolutionTelemetry = [...(state.applicationResolutionTelemetry ?? []), metric].slice(-500);
+    return { ...resolution, telemetry: { durationMs: metric.durationMs } };
   }
 
   function createCapabilityInvocation(name, input = {}, actor = null) {

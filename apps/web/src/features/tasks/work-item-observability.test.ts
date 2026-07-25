@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { assetDeepLink, taskTraceIdentity, taskTraceWaitingReason, workItemAssetChainLabels } from "./work-item-observability";
+import { assetDeepLink, assetOperationLabel, taskTraceIdentity, taskTraceWaitingReason, workItemAssetChainLabels } from "./work-item-observability";
 
 describe("taskTraceIdentity (#1500)", () => {
   it("exposes only task attribution and explanation fields", () => {
@@ -67,11 +67,16 @@ describe("workItemAssetChainLabels (#1502)", () => {
       }],
     } as never)).toEqual([
       "Input · source.xlsx",
-      "Operation · edit",
-      "Operation · render",
+      "Operation · Update asset",
+      "Operation · Render preview",
       "Output · review.pptx",
       "Evidence · evidence/review.png",
     ]);
+  });
+
+  it("uses outcome labels and never leaks unknown internal capability ids", () => {
+    expect(assetOperationLabel("edit")).toBe("Update asset");
+    expect(assetOperationLabel("app.officecli.wrapper.apply")).toBe("Process asset");
   });
 
   it("deep-links to the owning project and worktree without exposing a host path", () => {

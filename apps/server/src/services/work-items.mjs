@@ -39,6 +39,22 @@ export function taskTraceStage(type, source = "issue") {
   return "other";
 }
 
+function normalizeApplicationResolution(value, terminalId) {
+  if (!value || typeof value !== "object" || value.terminalId !== terminalId) return null;
+  const state = ["ready", "waiting_capability", "waiting_approval", "waiting_capacity", "refusal"].includes(value.state)
+    ? value.state
+    : null;
+  if (!state) return null;
+  return {
+    state,
+    terminalId,
+    applicationId: value.capability?.applicationId ? String(value.capability.applicationId).slice(0, 200) : null,
+    label: value.capability?.displayName ? String(value.capability.displayName).replace(/[\r\n\t]/g, " ").slice(0, 120) : null,
+    reason: String(value.reason ?? "").replace(/[\r\n\t]/g, " ").slice(0, 200),
+    durationMs: Number.isFinite(value.telemetry?.durationMs) ? Math.max(0, Math.min(60_000, value.telemetry.durationMs)) : null,
+  };
+}
+
 export const backfillWorkItemTerminalOwnership = backfillTerminalOwnership;
 
 function strings(values, { limit = MAX_LABELS, maxLength = 100 } = {}) {
@@ -1760,7 +1776,7 @@ export function createWorkItemService({
 
   function recordAssetOperation({
     workItemId, expectedRevision, capability, inputAssetId, outputAsset = null,
-    invocationId = null, approvalId = null, summary = "",
+    invocationId = null, approvalId = null, summary = "", applicationResolution = null,
   } = {}, actor = null) {
     const item = findOwn(workItemId, actor);
     if (!item) return notFound();
@@ -1791,6 +1807,7 @@ export function createWorkItemService({
       approvalId: approvalId ? String(approvalId).slice(0, 200) : null,
       terminalId: item.terminalId, traceId: item.id, summary,
       recordedAt: now(), recordedBy: actorUser(actor),
+      applicationResolution: normalizeApplicationResolution(applicationResolution, item.terminalId),
     };
     runTx(() => {
       if (normalizedOutput) {
@@ -1805,7 +1822,10 @@ export function createWorkItemService({
       recordActivity(item, actor, "asset_operation_recorded", {
         operationId: operation.id, capability, inputAssetId: source.id,
         outputAssetId: normalizedOutput?.id ?? null, invocationId: operation.invocationId,
-        approvalId: operation.approvalId, terminalId: item.terminalId,
+          approvalId: operation.approvalId, terminalId: item.terminalId,
+          applicationId: operation.applicationResolution?.applicationId ?? null,
+          capabilityLabel: operation.applicationResolution?.label ?? null,
+          resolutionReason: operation.applicationResolution?.reason ?? null,
       });
       appendEvent({
         invocationId: operation.invocationId,

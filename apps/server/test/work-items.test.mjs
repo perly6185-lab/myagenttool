@@ -419,6 +419,11 @@ test("cross-asset task trace links Excel input through PowerPoint output to imag
     workItemId: item.id, expectedRevision: item.revision,
     capability: "edit", inputAssetId: "asset-xlsx",
     invocationId: "inv-office-1", approvalId: "apr-office-1",
+    applicationResolution: {
+      state: "ready", reason: "local_capability_selected", terminalId: "dev_local",
+      capability: { applicationId: "app_officecli", displayName: "Update workbook", name: "internal.must-not-render" },
+      telemetry: { durationMs: 2.5 },
+    },
     summary: "Generated the quarterly review deck from workbook data.",
     outputAsset: {
       id: "asset-pptx", path: "outputs/review.pptx", family: "powerpoint",
@@ -430,6 +435,10 @@ test("cross-asset task trace links Excel input through PowerPoint output to imag
   assert.equal(deck.status, 201);
   assert.equal(deck.body.operation.traceId, item.id);
   assert.equal(deck.body.operation.approvalId, "apr-office-1");
+  assert.deepEqual(deck.body.operation.applicationResolution, {
+    state: "ready", terminalId: "dev_local", applicationId: "app_officecli",
+    label: "Update workbook", reason: "local_capability_selected", durationMs: 2.5,
+  });
   item = deck.body.workItem;
 
   const image = service.recordAssetOperation({
