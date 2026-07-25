@@ -11,6 +11,7 @@
     "serve": "node ./src/index.mjs",
     "test": "node ./src/index.mjs --check && vitest run",
     "test:unit": "vitest run",
+    "test:e2e:cross-browser": "CROSS_BROWSER=true playwright test -c playwright.config.ts shell-navigation.spec.ts",
     "lint": "node ./src/index.mjs --check",
     "typecheck": "tsc --noEmit -p tsconfig.json"
   },
