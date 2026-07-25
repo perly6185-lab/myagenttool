@@ -1,7 +1,7 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { useRefreshConsoleState } from "@/data/use-console-state";
+import { useConsoleState, useRefreshConsoleState } from "@/data/use-console-state";
 import {
   getSessionUser,
   loginWithCredentials,
@@ -9,6 +9,9 @@ import {
   type SessionUser,
 } from "@/lib/api-client";
 import { useAppTranslation } from "@/lib/i18n/use-app-translation";
+import { pageRegistration } from "@/app/sections";
+import { useUiStore } from "@/store/ui-store";
+import { Badge } from "@/components/ui/badge";
 
 /**
  * Account control (9B). In default local dev the client auto-logs-in as the
@@ -20,12 +23,30 @@ import { useAppTranslation } from "@/lib/i18n/use-app-translation";
 export function LoginControl() {
   const { t } = useAppTranslation();
   const refresh = useRefreshConsoleState();
+  const { data: consoleState } = useConsoleState();
   const [user, setUser] = useState<SessionUser | null>(() => getSessionUser());
   const [open, setOpen] = useState(false);
   const [userId, setUserId] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const section = useUiStore((state) => state.section);
+  const authority = pageRegistration(section).authority;
+  const roleKey = {
+    owner: "identity.role.owner",
+    admin: "identity.role.admin",
+    operator: "identity.role.operator",
+    viewer: "identity.role.viewer",
+  } as const;
+  const authorityKey = {
+    ordinary: "identity.authority.ordinary",
+    manage: "identity.authority.manage",
+    audit: "identity.authority.audit",
+  } as const;
+  useEffect(() => {
+    const current = getSessionUser();
+    if (current?.id !== user?.id || current?.role !== user?.role) setUser(current);
+  }, [consoleState, user?.id, user?.role]);
 
   async function submit(event: React.FormEvent) {
     event.preventDefault();
@@ -57,10 +78,15 @@ export function LoginControl() {
     <div className="relative">
       <div className="flex items-center gap-2">
         {user ? (
-          <span className="hidden text-xs text-muted-foreground sm:inline">
+          <span className="hidden items-center gap-1 text-xs text-muted-foreground sm:flex">
             {user.name ?? user.id}
+            <Badge tone="neutral">{t(roleKey[user.role ?? "viewer"])}</Badge>
+            <Badge tone={authority === "ordinary" ? "success" : authority === "manage" ? "warning" : "neutral"}>
+              {t(authorityKey[authority])}
+            </Badge>
           </span>
         ) : null}
+        {user ? <Badge tone="neutral" className="sm:hidden">{t(authorityKey[authority])}</Badge> : null}
         {user ? (
           <Button variant="ghost" size="sm" onClick={signOut} disabled={busy}>
             {t("login.signOut")}

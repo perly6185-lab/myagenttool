@@ -27,4 +27,10 @@ describe("SettingsHomeView", () => {
     expect(screen.getByText("Channels")).toBeTruthy();
     expect(screen.queryByText("Agents")).toBeNull();
   });
+
+  it("connects Application, Agent, Tool, and optional Channel setup", () => {
+    render(<SettingsHomeView />);
+    expect(screen.getByText("Capability setup path")).toBeTruthy();
+    for (const label of ["Application", "Agent", "Tool", "Channel"]) expect(screen.getAllByText(label).length).toBeGreaterThan(0);
+  });
 });

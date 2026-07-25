@@ -30,6 +30,12 @@ export function SettingsHomeView() {
     { key: "channel", label: "settingsHome.checks.channel" as const, fix: "settingsHome.fixes.channel" as const, ready: readyChannels > 0, section: "channels" as const, optional: true },
   ];
   const needsFix = checks.filter((item) => !item.ready && !item.optional);
+  const setupStages = [
+    { key: "application", ready: readyApplications > 0, section: "applications" as const },
+    { key: "agent", ready: readyAgents > 0, section: "agents" as const },
+    { key: "tool", ready: (state?.agents ?? []).some((item) => (item.capabilities ?? []).length > 0), section: "tools" as const },
+    { key: "channel", ready: readyChannels > 0, section: "channels" as const, optional: true },
+  ];
 
   return (
     <div className="space-y-5">
@@ -62,6 +68,18 @@ export function SettingsHomeView() {
           </CardContent>
         </Card>
       ) : null}
+      <Card>
+        <CardHeader><CardTitle>{t("settingsHome.setupGuide")}</CardTitle><p className="text-sm text-muted-foreground">{t("settingsHome.setupGuideHint")}</p></CardHeader>
+        <CardContent className="grid gap-2 sm:grid-cols-4">
+          {setupStages.map((stage, index) => (
+            <button key={stage.key} type="button" onClick={() => navigate(stage.section)} className="rounded-lg border p-3 text-left hover:bg-muted">
+              <span className="text-xs text-muted-foreground">{index + 1}</span>
+              <strong className="block text-sm">{t(stage.key === "application" ? "settingsHome.guide.application" : stage.key === "agent" ? "settingsHome.guide.agent" : stage.key === "tool" ? "settingsHome.guide.tool" : "settingsHome.guide.channel")}</strong>
+              <span className="text-xs text-muted-foreground">{t(stage.ready ? "settingsHome.ready" : stage.optional ? "settingsHome.optional" : "settingsHome.needsSetup")}</span>
+            </button>
+          ))}
+        </CardContent>
+      </Card>
       <div className="relative">
         <Search className="pointer-events-none absolute left-3 top-3 size-4 text-muted-foreground" />
         <Input value={query} onChange={(event) => setQuery(event.target.value)} className="pl-9" aria-label={t("settingsHome.search")} placeholder={t("settingsHome.searchPlaceholder")} />

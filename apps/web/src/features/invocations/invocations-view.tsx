@@ -4,6 +4,7 @@ import { Clipboard, ExternalLink } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge, StatusBadge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { EmptyState } from "@/components/common/empty-state";
 import { FactList } from "@/components/common/fact-list";
 import { WebNavigationLinkActions } from "@/components/common/web-navigation-link-actions";
@@ -52,6 +53,18 @@ import type {
   WebNavigationLink,
 } from "@/lib/console-state";
 
+export function matchesTraceQuery(invocation: InvocationSnapshot, state: ConsoleSnapshot | null, query: string): boolean {
+  const normalized = query.trim().toLowerCase();
+  if (!normalized) return true;
+  const related = [
+    ...(state?.events ?? []).filter((row) => row.invocationId === invocation.id),
+    ...(state?.evidenceLedger ?? []).filter((row) => JSON.stringify(row).includes(invocation.id)),
+    ...(state?.applicationResults ?? []).filter((row) => JSON.stringify(row).includes(invocation.id)),
+    ...(state?.channelDeliveries ?? []).filter((row) => JSON.stringify(row).includes(invocation.id)),
+  ];
+  return `${JSON.stringify(invocation)} ${JSON.stringify(related)}`.toLowerCase().includes(normalized);
+}
+
 export function InvocationsView() {
   const { t } = useAppTranslation();
   const { data: state } = useConsoleState();
@@ -61,7 +74,12 @@ export function InvocationsView() {
   const setSelectedApplicationId = useUiStore((s) => s.setSelectedApplicationId);
   const setSelectedApplicationRun = useUiStore((s) => s.setSelectedApplicationRun);
 
-  const invocations = state?.invocations ?? [];
+  const [traceQuery, setTraceQuery] = useState("");
+  const allInvocations = state?.invocations ?? [];
+  const normalizedTraceQuery = traceQuery.trim().toLowerCase();
+  const invocations = normalizedTraceQuery
+    ? allInvocations.filter((invocation) => matchesTraceQuery(invocation, state ?? null, normalizedTraceQuery))
+    : allInvocations;
   const selected = resolveInvocation(state, selectedInvocationId);
   const events = selected
     ? (state?.events ?? []).filter((e) => e.invocationId === selected.id).slice(0, 40)
@@ -125,10 +143,23 @@ export function InvocationsView() {
           <CardTitle>{t("invocations.title")}</CardTitle>
         </CardHeader>
         <CardContent>
+          <div className="mb-3 space-y-2">
+            <Input
+              type="search"
+              value={traceQuery}
+              onChange={(event) => setTraceQuery(event.target.value)}
+              aria-label={t("traceSearch.label")}
+              placeholder={t("traceSearch.placeholder")}
+            />
+            <div className="flex flex-wrap gap-2 text-xs text-muted-foreground">
+              <Badge tone="neutral">{t("traceSearch.runs", { count: invocations.length })}</Badge>
+              <span>{t("traceSearch.scope")}</span>
+            </div>
+          </div>
           {invocations.length === 0 ? (
             <EmptyState
-              title={t("invocations.emptyTitle")}
-              hint={t("invocations.emptyHint")}
+              title={normalizedTraceQuery ? t("traceSearch.noMatch") : t("invocations.emptyTitle")}
+              hint={normalizedTraceQuery ? t("traceSearch.noMatchHint") : t("invocations.emptyHint")}
               action={<Button size="sm" onClick={() => setSection("dashboard")}>{t("invocations.startTask")}</Button>}
             />
           ) : (
