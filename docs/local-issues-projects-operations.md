@@ -3,6 +3,25 @@
 Local Issues are the planning source of truth. GitHub Issues are external
 bindings, while Auto-runs and worktrees are execution evidence.
 
+## GitLab and Gitea adapters
+
+GitLab uses `MYAGENTTOOL_GITLAB_BASE_URL`, `MYAGENTTOOL_GITLAB_TOKEN`, and
+`MYAGENTTOOL_GITLAB_WEBHOOK_SECRET`. Gitea uses the corresponding
+`MYAGENTTOOL_GITEA_*` variables. Tokens remain in process memory and are never
+written to application state or returned by readiness APIs.
+
+Configure issue webhooks at `/api/webhooks/gitlab/work-items` or
+`/api/webhooks/gitea/work-items`. GitLab validates `X-Gitlab-Token`; Gitea
+validates the SHA-256 HMAC in `X-Gitea-Signature`. Deliveries are deduplicated,
+stale updates are ignored, and conflicts enter the same manual-resolution flow
+as GitHub. Provider API calls retry network errors, HTTP 429, and transient 5xx
+responses up to three attempts.
+
+Use `GET /api/work-items/providers` to inspect boolean API and webhook
+readiness. A retained delivery can be replayed with
+`POST /api/work-items/:provider/deliveries/:deliveryId/replay`; access is
+restricted to teams with the matching binding.
+
 ## GitHub webhook
 
 Set `MYAGENTTOOL_GITHUB_WEBHOOK_SECRET` and configure GitHub to send `issues`

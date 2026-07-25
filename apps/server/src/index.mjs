@@ -294,6 +294,12 @@ if (typeof httpDependencies.sweepWorkItemOperationalAlerts === "function") {
   setInterval(sweepWorkItemAlerts, 60_000).unref?.();
 }
 
+if (typeof httpDependencies.sweepAlertOutbox === "function") {
+  const sweepAlerts = () => httpDependencies.sweepAlertOutbox().catch(() => {});
+  sweepAlerts();
+  setInterval(sweepAlerts, 15_000).unref?.();
+}
+
 // ADR 0017: opt-in OTLP trace export. Flush completed spans to the operator-set
 // OTLP endpoint on a slow tick. No-op unless OTEL_EXPORTER_OTLP_ENDPOINT is set.
 if (typeof httpDependencies.flushTraceExport === "function") {

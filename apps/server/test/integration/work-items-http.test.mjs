@@ -1,6 +1,8 @@
 process.env.MYAGENT_REQUIRE_AUTH = "1";
 process.env.MYAGENTTOOL_STATE_DISABLED = "1";
 process.env.MYAGENTTOOL_GITHUB_WEBHOOK_SECRET = "webhook-secret-a";
+process.env.MYAGENTTOOL_GITLAB_WEBHOOK_SECRET = "gitlab-webhook-secret";
+process.env.MYAGENTTOOL_GITEA_WEBHOOK_SECRET = "gitea-webhook-secret";
 
 import assert from "node:assert/strict";
 import { createHmac } from "node:crypto";
@@ -12,6 +14,7 @@ import { after, before, test } from "node:test";
 
 let server;
 let base;
+let runtimeState;
 const root = join(tmpdir(), `myagenttool-work-items-http-${process.pid}`);
 const projectAPath = join(root, "a");
 
@@ -28,6 +31,7 @@ before(async () => {
   execFileSync("git", ["-C", projectAPath, "add", "README.md"]);
   execFileSync("git", ["-C", projectAPath, "commit", "-m", "initial"]);
   const { defaultProject, state } = createServerState({ defaultProjectPath: projectAPath, now });
+  runtimeState = state;
   state.teams.push({ id: "team_a" }, { id: "team_b" });
   state.users.push({ id: "usr_a", teamId: "team_a" }, { id: "usr_b", teamId: "team_b" });
   const expiresAt = new Date(Date.now() + 3_600_000).toISOString();
@@ -75,6 +79,30 @@ async function webhook(payload, { secret = process.env.MYAGENTTOOL_GITHUB_WEBHOO
   return { status: response.status, body: await response.json() };
 }
 
+async function externalWebhook(provider, payload, {
+  secret = process.env[`MYAGENTTOOL_${provider.toUpperCase()}_WEBHOOK_SECRET`],
+  deliveryId = `${provider}-delivery-http`,
+} = {}) {
+  const raw = JSON.stringify(payload);
+  const headers = provider === "gitlab"
+    ? {
+        "x-gitlab-event": "Issue Hook",
+        "x-gitlab-event-uuid": deliveryId,
+        "x-gitlab-token": secret,
+      }
+    : {
+        "x-gitea-event": "issues",
+        "x-gitea-delivery": deliveryId,
+        "x-gitea-signature": createHmac("sha256", secret).update(raw).digest("hex"),
+      };
+  const response = await fetch(`${base}/api/webhooks/${provider}/work-items`, {
+    method: "POST",
+    headers: { "content-type": "application/json", ...headers },
+    body: raw,
+  });
+  return { status: response.status, body: await response.json() };
+}
+
 test("local work item CRUD is wired through the real HTTP server", async () => {
   const created = await call("/api/work-items", {
     method: "POST",
@@ -110,6 +138,122 @@ test("local work item claim lease is wired through HTTP", async () => {
   });
   assert.equal(released.status, 200);
   assert.equal(released.body.released, true);
+});
+
+test("routing feedback HTTP endpoint enforces tenancy, revision, and idempotency", async () => {
+  runtimeState.autoRuns.push({
+    id: "aur_feedback_http",
+    projectId: "prj_a",
+    teamId: "team_a",
+    invocationId: null,
+    decision: { path: "develop" },
+  });
+  const foreign = await call("/api/auto-runs/aur_feedback_http/routing-override", {
+    token: "tok_b",
+    method: "POST",
+    body: { actualPath: "design", reason: "Design output", expectedRevision: 0, idempotencyKey: "http-feedback-1" },
+  });
+  assert.equal(foreign.status, 404);
+
+  const recorded = await call("/api/auto-runs/aur_feedback_http/routing-override", {
+    method: "POST",
+    body: { actualPath: "design", reason: "Design output", expectedRevision: 0, idempotencyKey: "http-feedback-1" },
+  });
+  assert.equal(recorded.status, 200);
+  assert.equal(recorded.body.routingOverride.revision, 1);
+  assert.equal(recorded.body.routingOverride.idempotencyKey, undefined);
+
+  const replayed = await call("/api/auto-runs/aur_feedback_http/routing-override", {
+    method: "POST",
+    body: { actualPath: "design", reason: "Design output", expectedRevision: 0, idempotencyKey: "http-feedback-1" },
+  });
+  assert.equal(replayed.status, 200);
+  assert.equal(replayed.body.replayed, true);
+
+  const conflict = await call("/api/auto-runs/aur_feedback_http/routing-override", {
+    method: "POST",
+    body: { actualPath: "clarify", reason: "Requirements missing", expectedRevision: 0, idempotencyKey: "http-feedback-2" },
+  });
+  assert.equal(conflict.status, 409);
+  assert.equal(conflict.body.currentRevision, 1);
+});
+
+test("orphan Auto-run writes are still team scoped", async () => {
+  runtimeState.autoRuns.push({
+    id: "aur_orphan_b",
+    projectId: null,
+    teamId: "team_b",
+    status: "failed",
+    decision: { path: "develop" },
+  });
+  const foreign = await call("/api/auto-runs/aur_orphan_b/routing-override", {
+    token: "tok_a",
+    method: "POST",
+    body: { actualPath: "design", reason: "foreign", expectedRevision: 0, idempotencyKey: "orphan-foreign" },
+  });
+  assert.equal(foreign.status, 404);
+  assert.equal(runtimeState.autoRuns.find((run) => run.id === "aur_orphan_b").routingOverride, undefined);
+});
+
+test("team alert webhook is owner-scoped and its secret is never returned", async () => {
+  const saved = await call("/api/teams/team_a/alert-webhook", {
+    method: "PATCH",
+    body: { alertWebhookUrl: "https://hooks.example.test/team-a" },
+  });
+  assert.equal(saved.status, 200);
+  assert.equal(saved.body.team.alertWebhookConfigured, true);
+  assert.equal("alertWebhookUrl" in saved.body.team, false);
+  assert.equal(runtimeState.teams.find((team) => team.id === "team_a").alertWebhookUrl, "https://hooks.example.test/team-a");
+
+  const foreign = await call("/api/teams/team_a/alert-webhook", {
+    token: "tok_b",
+    method: "PATCH",
+    body: { alertWebhookUrl: "https://hooks.example.test/stolen" },
+  });
+  assert.equal(foreign.status, 404);
+
+  const snapshot = await call("/api/state");
+  const publicTeam = snapshot.body.teams.find((team) => team.id === "team_a");
+  assert.equal(publicTeam.alertWebhookConfigured, true);
+  assert.equal("alertWebhookUrl" in publicTeam, false);
+
+  const cleared = await call("/api/teams/team_a/alert-webhook", {
+    method: "PATCH",
+    body: { alertWebhookUrl: null },
+  });
+  assert.equal(cleared.status, 200);
+  assert.equal(cleared.body.team.alertWebhookConfigured, false);
+  assert.equal(runtimeState.teams.find((team) => team.id === "team_a").alertWebhookUrl, null);
+});
+
+test("Auto-run list, summary, and routing slices are team scoped", async () => {
+  runtimeState.autoRuns.push({
+    id: "aur_private_b",
+    projectId: "prj_b",
+    teamId: "team_b",
+    status: "failed",
+    decision: { path: "clarify", via: "agent", confidence: 0.4 },
+    routingOverride: { actualPath: "develop", idempotencyKey: "must-not-leak", revision: 1 },
+  });
+  runtimeState.deployments.push(
+    { id: "dep_a", projectId: "prj_a", autoRunId: "aur_feedback_http", status: "deployed", at: "2026-07-24T00:00:00.000Z" },
+    { id: "dep_b", projectId: "prj_b", autoRunId: "aur_private_b", status: "failed", at: "2026-07-24T00:00:00.000Z" },
+  );
+  const teamA = await call("/api/auto-runs", { token: "tok_a" });
+  assert.equal(teamA.status, 200);
+  assert.equal(teamA.body.autoRuns.some((run) => run.id === "aur_private_b"), false);
+  assert.equal(teamA.body.summary.total, teamA.body.autoRuns.length);
+  assert.equal(teamA.body.summary.routingHealth.byProject.some((row) => row.projectId === "prj_b"), false);
+  assert.equal(teamA.body.deployments.total, 1);
+  assert.equal(teamA.body.deployments.failed, 0);
+
+  const teamB = await call("/api/auto-runs", { token: "tok_b" });
+  assert.equal(teamB.status, 200);
+  assert.deepEqual(teamB.body.autoRuns.map((run) => run.id).sort(), ["aur_orphan_b", "aur_private_b"]);
+  assert.equal(teamB.body.summary.total, 2);
+  assert.equal(teamB.body.deployments.total, 1);
+  assert.equal(teamB.body.deployments.failed, 1);
+  assert.equal(teamB.body.autoRuns.find((run) => run.id === "aur_private_b").routingOverride.idempotencyKey, undefined);
 });
 
 test("GitHub issue binding and sync are wired through HTTP", async () => {
@@ -288,8 +432,122 @@ test("a local issue starts an auto-run with its local body and acceptance criter
   assert.equal(result.body.autoRun.link.type, "local_issue");
   assert.equal(result.body.autoRun.issueBody.includes("Implement the local workflow."), true);
   assert.equal(result.body.autoRun.issueBody.includes("The local path is tested"), true);
+  assert.equal(result.body.autoRun.executionChainId, item.id);
+  assert.equal(result.body.autoRun.autonomyProfile, "standard");
+  const invocation = runtimeState.invocations.find((row) => row.id === result.body.autoRun.invocationId);
+  assert.equal(invocation.options.metadata.executionChainId, item.id);
   const detail = await call(`/api/work-items/${item.id}`);
   assert.equal(detail.body.workItem.executionBindings.some((binding) => binding.kind === "auto_run"), true);
+});
+
+test("AI assistance and alert retry routes are scoped and governed", async () => {
+  const draft = await call("/api/work-items/assist/draft", {
+    method: "POST",
+    body: { projectId: "prj_a", title: "Fix checkout error", body: "Checkout fails for signed-in users." },
+  });
+  assert.equal(draft.status, 200);
+  assert.equal(draft.body.draft.type, "bug");
+  assert.equal((await call("/api/work-items/assist/draft", {
+    token: "tok_b", method: "POST", body: { projectId: "prj_a", title: "Foreign" },
+  })).status, 404);
+
+  const item = (await call("/api/work-items", {
+    method: "POST", body: { projectId: "prj_a", title: "Alert ownership" },
+  })).body.workItem;
+  runtimeState.alertOutbox.unshift({
+    id: "aob_http_retry",
+    alert: { kind: "run_failed", data: { localIssueId: item.id } },
+    status: "failed",
+    attempts: 8,
+    nextAttemptAt: null,
+    sentAt: null,
+    lastError: "offline",
+  });
+  const retried = await call(`/api/work-items/${item.id}/alerts/aob_http_retry/retry`, { method: "POST" });
+  assert.equal(retried.status, 200);
+  assert.equal(retried.body.alert.status, "queued");
+  runtimeState.alertOutbox[0].status = "sent";
+  assert.equal((await call(`/api/work-items/${item.id}/alerts/aob_http_retry/retry`, {
+    method: "POST",
+  })).status, 409);
+  assert.equal((await call(`/api/work-items/${item.id}/alerts/aob_http_retry/retry`, {
+    token: "tok_b", method: "POST",
+  })).status, 404);
+});
+
+test("external provider capability and manual issue sync contract are wired over HTTP", async () => {
+  const catalog = await call("/api/work-items/providers");
+  assert.equal(catalog.status, 200);
+  assert.equal(catalog.body.providers.find(({ id }) => id === "github").apiSync, true);
+  assert.equal(catalog.body.providers.find(({ id }) => id === "gitlab").apiSync, false);
+
+  const item = (await call("/api/work-items", {
+    method: "POST", body: { projectId: "prj_a", title: "GitLab portable" },
+  })).body.workItem;
+  const remote = {
+    number: 31, title: "GitLab portable", body: "", state: "open", labels: [],
+    repository: "acme/repo", url: "https://gitlab.example/acme/repo/-/issues/31",
+    updatedAt: "2026-07-24T01:00:00.000Z",
+  };
+  const linked = await call(`/api/work-items/${item.id}/external-bindings`, {
+    method: "POST", body: { expectedRevision: item.revision, provider: "gitlab", remote },
+  });
+  assert.equal(linked.status, 201);
+  assert.equal(linked.body.binding.provider, "gitlab");
+
+  const pulled = await call(`/api/work-items/${item.id}/external-bindings/gitlab/sync`, {
+    method: "POST",
+    body: {
+      expectedRevision: item.revision, direction: "pull",
+      remote: { ...remote, title: "Pulled from GitLab", updatedAt: "2026-07-24T02:00:00.000Z" },
+    },
+  });
+  assert.equal(pulled.status, 200);
+  assert.equal(pulled.body.workItem.title, "Pulled from GitLab");
+  assert.equal((await call(`/api/work-items/${item.id}/external-bindings/gitlab/sync`, {
+    token: "tok_b", method: "POST", body: { expectedRevision: 1, direction: "pull", remote },
+  })).status, 404);
+});
+
+test("GitLab and Gitea webhooks reject bad signatures and deduplicate deliveries", async () => {
+  for (const provider of ["gitlab", "gitea"]) {
+    const number = provider === "gitlab" ? 61 : 62;
+    const item = (await call("/api/work-items", {
+      method: "POST", body: { projectId: "prj_a", title: `${provider} webhook` },
+    })).body.workItem;
+    await call(`/api/work-items/${item.id}/external-bindings`, {
+      method: "POST",
+      body: {
+        expectedRevision: item.revision,
+        provider,
+        remote: {
+          number, title: `${provider} webhook`, body: "", state: "open", labels: [],
+          repository: "acme/repo", updatedAt: "2026-07-24T00:00:00.000Z",
+        },
+      },
+    });
+    const issue = {
+      number, iid: number, title: `${provider} accepted once`, description: "", body: "",
+      state: "opened", labels: [], updated_at: "2026-07-24T03:00:00.000Z",
+    };
+    const payload = provider === "gitlab"
+      ? { project: { path_with_namespace: "acme/repo" }, object_attributes: issue }
+      : { repository: { full_name: "acme/repo" }, issue: { ...issue, state: "open" } };
+    const deliveryId = `${provider}-dedupe-http`;
+
+    assert.equal((await externalWebhook(provider, payload, {
+      secret: "invalid-secret", deliveryId: `${deliveryId}-bad`,
+    })).status, 401);
+    const accepted = await externalWebhook(provider, payload, { deliveryId });
+    assert.equal(accepted.status, 202, JSON.stringify({ provider, accepted }));
+    assert.equal(accepted.body.synced, 1);
+    const replayed = await externalWebhook(provider, payload, { deliveryId });
+    assert.equal(replayed.status, 200);
+    assert.equal(replayed.body.replayed, true);
+
+    const refreshed = await call(`/api/work-items/${item.id}`);
+    assert.equal(refreshed.body.workItem.title, `${provider} accepted once`);
+  }
 });
 
 test("planning projects manage local issue membership over HTTP", async () => {
@@ -318,6 +576,25 @@ test("planning projects manage local issue membership over HTTP", async () => {
     method: "POST", body: { expectedRevision: 2 },
   });
   assert.equal(restored.body.project.archivedAt, null);
+});
+
+test("planning AI plans are review-only and autonomy reaches local executions", async () => {
+  const item = (await call("/api/work-items", {
+    method: "POST", body: { projectId: "prj_a", title: "Cautious planning work" },
+  })).body.workItem;
+  const project = (await call("/api/planning-projects", {
+    method: "POST", body: { name: "Governed plan", autonomyProfile: "cautious" },
+  })).body.project;
+  await call(`/api/planning-projects/${project.id}/items/${item.id}`, { method: "PUT" });
+  const suggestion = await call(`/api/planning-projects/${project.id}/assist/plan`, {
+    method: "POST", body: {},
+  });
+  assert.equal(suggestion.status, 200);
+  assert.equal(suggestion.body.plan.requiresApproval, true);
+  assert.equal(suggestion.body.plan.autonomyProfile, "cautious");
+  const execution = await call(`/api/work-items/${item.id}/auto-runs`, { method: "POST", body: {} });
+  assert.equal(execution.status, 201);
+  assert.equal(execution.body.autoRun.autonomyProfile, "cautious");
 });
 
 test("planning fields, bulk updates, and project ordering are wired over HTTP", async () => {

@@ -126,7 +126,50 @@ export function resolveApiBase(): string {
   return `${protocol}//${hostname}:${SERVER_PORT}`;
 }
 
+export async function openControlPlaneEventStream(
+  onEvent: (event: { id: string | null; event: string; data: Record<string, unknown> }) => void,
+  signal: AbortSignal,
+  lastEventId?: string | null,
+): Promise<void> {
+  await ensureSession();
+  const token = getToken();
+  const response = await fetch(`${apiBase}/api/events/stream`, {
+    headers: {
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      ...(lastEventId ? { "Last-Event-ID": lastEventId } : {}),
+    },
+    signal,
+  });
+  if (response.status === 401) {
+    setToken(null);
+    throw new ApiError("unauthenticated", "Session expired.", 401);
+  }
+  if (!response.ok || !response.body) throw new ApiError("stream_unavailable", "Live updates unavailable.", response.status);
+  const reader = response.body.pipeThrough(new TextDecoderStream()).getReader();
+  let buffer = "";
+  while (!signal.aborted) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buffer += value;
+    const frames = buffer.split("\n\n");
+    buffer = frames.pop() ?? "";
+    for (const frame of frames) {
+      if (!frame || frame.startsWith(":")) continue;
+      let event = "message";
+      let id: string | null = null;
+      let data = "{}";
+      for (const line of frame.split("\n")) {
+        if (line.startsWith("id:")) id = line.slice(3).trim();
+        if (line.startsWith("event:")) event = line.slice(6).trim();
+        if (line.startsWith("data:")) data = line.slice(5).trim();
+      }
+      onEvent({ id, event, data: JSON.parse(data) as Record<string, unknown> });
+    }
+  }
+}
+
 const apiBase = resolveApiBase();
+const REQUEST_TIMEOUT_MS = 15_000;
 
 // --- Identity Phase 2: bearer token (see docs/engineering/IDENTITY_PLAN.md) ---
 // The web client carries a token on every call. In local dev there is no
@@ -140,6 +183,7 @@ export interface SessionUser {
   id: string;
   name?: string;
   teamId?: string;
+  role?: "owner" | "admin" | "operator" | "viewer";
 }
 
 let memoryToken: string | null = null;
@@ -261,6 +305,7 @@ async function request<T = unknown>(
     method,
     headers: Object.keys(headers).length ? headers : undefined,
     body: body ? JSON.stringify(body) : undefined,
+    signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
   });
   // Token rejected/expired: drop it, re-login once, replay the request.
   if (response.status === 401 && retry) {
@@ -430,6 +475,21 @@ async function requestResult(
 
 export const api = {
   updateDevice: (payload: { maxConcurrency?: number }) => request("PATCH", "/api/device", payload),
+  reportWebPerformance: (payload: {
+    name: "CLS" | "FCP" | "INP" | "LCP";
+    value: number;
+    rating: "good" | "needs-improvement" | "poor";
+    path: string;
+    version: string;
+  }) => request("POST", "/api/observability/web-performance", payload),
+  webPerformanceTrend: (version?: string) =>
+    request("GET", `/api/observability/web-performance${version ? `?version=${encodeURIComponent(version)}` : ""}`),
+  reportEventStreamReconnect: () =>
+    request("POST", "/api/observability/event-stream/reconnect", {}),
+  operationalHealth: () =>
+    request("GET", "/api/observability/operations"),
+  actOnOperationalAlert: (alertId: string, action: "acknowledge" | "silence", silenceMinutes?: number) =>
+    request("POST", `/api/observability/operations/alerts/${encodeURIComponent(alertId)}/actions`, { action, silenceMinutes }),
   // ADR 0018: owner/admin-only per-subject observability data deletion. Throws
   // with the server's message on 403 (non-owner) / 400 (invalid request).
   deleteObservabilityData: (payload: { scope: string; subjectId: string; tier: string }) =>
@@ -887,6 +947,8 @@ export const api = {
     idempotencyKey?: string;
   }) => request("POST", "/api/work-items", payload),
   getWorkItem: (id: string) => request("GET", `/api/work-items/${encodeURIComponent(id)}`),
+  suggestWorkItemDraft: (payload: { projectId: string; title: string; body?: string }) =>
+    request("POST", "/api/work-items/assist/draft", payload),
   updateWorkItem: (id: string, payload: Record<string, unknown>) =>
     request("PATCH", `/api/work-items/${encodeURIComponent(id)}`, payload),
   claimWorkItem: (id: string, payload: { agentId?: string; leaseMinutes?: number; idempotencyKey?: string } = {}) =>
@@ -895,6 +957,12 @@ export const api = {
     request("POST", `/api/work-items/${encodeURIComponent(id)}/release-claim`, { idempotencyKey }),
   bindWorkItemGithubIssue: (id: string, payload: Record<string, unknown>) =>
     request("POST", `/api/work-items/${encodeURIComponent(id)}/github/link`, payload),
+  listWorkItemExternalProviders: () =>
+    request("GET", "/api/work-items/providers"),
+  bindWorkItemExternalIssue: (id: string, payload: Record<string, unknown>) =>
+    request("POST", `/api/work-items/${encodeURIComponent(id)}/external-bindings`, payload),
+  syncWorkItemExternalIssue: (id: string, provider: string, payload: Record<string, unknown>) =>
+    request("POST", `/api/work-items/${encodeURIComponent(id)}/external-bindings/${encodeURIComponent(provider)}/sync`, payload),
   syncWorkItemGithubIssue: (id: string, payload: Record<string, unknown>) =>
     request("POST", `/api/work-items/${encodeURIComponent(id)}/github/sync`, payload),
   recordWorkItemVerification: (id: string, payload: Record<string, unknown>) =>
@@ -919,6 +987,8 @@ export const api = {
     request("POST", `/api/work-items/${encodeURIComponent(id)}/worktrees`, payload),
   startWorkItemAutoRun: (id: string, payload: { agentId?: string; baseBranch?: string } = {}) =>
     request("POST", `/api/work-items/${encodeURIComponent(id)}/auto-runs`, payload),
+  retryWorkItemAlert: (workItemId: string, alertId: string) =>
+    request("POST", `/api/work-items/${encodeURIComponent(workItemId)}/alerts/${encodeURIComponent(alertId)}/retry`),
   listPlanningProjects: (
     input: boolean | { includeArchived?: boolean; limit?: string; cursor?: string; updatedSince?: string } = false,
   ) => {
@@ -948,6 +1018,7 @@ export const api = {
     templateProjectId?: string;
     savedViews?: unknown[];
     automationRules?: unknown[];
+    autonomyProfile?: "cautious" | "standard" | "high";
   }) =>
     request("POST", "/api/planning-projects", payload),
   updatePlanningProject: (id: string, payload: Record<string, unknown>) =>
@@ -962,6 +1033,8 @@ export const api = {
     request("PUT", `/api/planning-projects/${encodeURIComponent(planningProjectId)}/items`, { expectedRevision, workItemIds }),
   updatePlanningProjectItems: (planningProjectId: string, addWorkItemIds: string[], removeWorkItemIds: string[]) =>
     request("PATCH", `/api/planning-projects/${encodeURIComponent(planningProjectId)}/items`, { addWorkItemIds, removeWorkItemIds }),
+  suggestPlanningProjectPlan: (planningProjectId: string) =>
+    request("POST", `/api/planning-projects/${encodeURIComponent(planningProjectId)}/assist/plan`, {}),
   executePlanningRecommendedAction: (planningProjectId: string, code: string, payload: Record<string, unknown>) =>
     request("POST", `/api/planning-projects/${encodeURIComponent(planningProjectId)}/recommended-actions/${encodeURIComponent(code)}/execute`, payload),
   decidePlanningRecommendedAction: (
@@ -984,6 +1057,13 @@ export const api = {
   // Auto-run observability: the records plus an evaluation summary. refresh=true
   // also refreshes PR dispositions (bounded gh reads) for the routing evaluation.
   listAutoRuns: (refresh = false) => request("GET", `/api/auto-runs${refresh ? "?refresh=1" : ""}`),
+  recordAutoRunRoutingOverride: (id: string, actualPath: string, reason: string, expectedRevision = 0) =>
+    request("POST", `/api/auto-runs/${encodeURIComponent(id)}/routing-override`, {
+      actualPath,
+      reason,
+      expectedRevision,
+      idempotencyKey: globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random()}`,
+    }),
   // U1: can this project run an auto-run, and what's missing?
   autoRunReadiness: (projectId: string) => request("GET", `/api/projects/${encodeURIComponent(projectId)}/auto-run-readiness`),
   // Retry a failed/blocked auto-run on its existing worktree.
@@ -1017,6 +1097,8 @@ export const api = {
   // configured flags; never the argv). Edits apply on the next server start.
   getAutoRunConfig: () => request("GET", "/api/auto-run-config"),
   updateAutoRunSettings: (patch: Record<string, unknown>) => request("PUT", "/api/auto-run-settings", patch),
+  updateTeamAlertWebhook: (teamId: string, alertWebhookUrl: string | null) =>
+    request("PATCH", `/api/teams/${encodeURIComponent(teamId)}/alert-webhook`, { alertWebhookUrl }),
   listBranches: (projectId: string) =>
     request("GET", `/api/projects/${encodeURIComponent(projectId)}/branches`),
   gitSummary: (projectId: string) =>

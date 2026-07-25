@@ -46,11 +46,32 @@ export function createM3Service({
   // #968: run a lifecycle-action transition as one durable unit of work — commit
   // synchronously through the Store when wired, else fall back to the debounce so
   // behavior is unchanged where no store is injected (many hermetic m3 tests).
+  let afterCommitQueue = null;
   const runTx = (fn) => {
-    if (typeof store?.transaction === "function") return store.transaction(fn);
-    const result = fn();
-    persistStateSoon();
-    return result;
+    const parentQueue = afterCommitQueue;
+    const queue = parentQueue ?? [];
+    afterCommitQueue = queue;
+    try {
+      const result = typeof store?.transaction === "function" ? store.transaction(fn) : fn();
+      if (!parentQueue && typeof store?.transaction !== "function") persistStateSoon();
+      if (!parentQueue) {
+        afterCommitQueue = null;
+        for (const callback of queue) {
+          try { callback(); } catch { /* committed state must not be reported as rolled back */ }
+        }
+      }
+      return result;
+    } catch (error) {
+      if (!parentQueue) queue.length = 0;
+      throw error;
+    } finally {
+      afterCommitQueue = parentQueue;
+    }
+  };
+  runTx.afterCommit = (callback) => {
+    if (typeof callback !== "function") return;
+    if (afterCommitQueue) afterCommitQueue.push(callback);
+    else callback();
   };
   function createPrivateCatalogEntry(body = {}) {
     const createdAt = now();
@@ -900,12 +921,30 @@ export function createM3Service({
       outputTokens: sum("outputTokens"),
     }, invocation.createdAt ?? createdAt);
 
+    const metadata = invocation.input?.metadata ?? {};
+    const projectId = metadata.projectId ?? invocation.projectId ?? state.currentProjectId ?? null;
+    const project = projectId ? (state.projects ?? []).find((item) => item.id === projectId) ?? null : null;
+    const autoRunId = metadata.autoRunId ?? null;
+    const executionChainId = metadata.executionChainId
+      ?? (state.autoRuns ?? []).find((run) => run.id === autoRunId)?.executionChainId
+      ?? null;
+    const localIssueId = autoRunId
+      ? (state.workItems ?? []).find((item) => (item.executionBindings ?? []).some((binding) => binding.kind === "auto_run" && binding.targetId === autoRunId))?.id ?? null
+      : metadata.localIssueId ?? null;
+    const budgetPoolId = (state.budgets ?? []).find((budget) => budget.projectId === projectId)?.id
+      ?? (state.budgets ?? []).find((budget) => budget.teamId === (metadata.teamId ?? (project ? teamOf(project) : null)))?.id
+      ?? null;
     const usageRecord = {
       id: nextId("aiu_demo"),
       userId: String(invocation.requestedBy ?? "usr_local"),
-      teamId: null,
+      teamId: metadata.teamId ?? (project ? teamOf(project) : null),
       agentId: invocation.agentId ?? null,
       invocationId: invocation.id,
+      autoRunId,
+      localIssueId,
+      executionChainId: executionChainId ?? localIssueId,
+      projectId,
+      budgetPoolId,
       deviceId: invocation.delivery?.deviceId ?? null,
       quotaDecisionId: null,
       provider: named.provider ?? "unknown",
@@ -951,6 +990,9 @@ export function createM3Service({
           roundCount: rounds.length,
           inputTokens: usageRecord.inputTokens,
           outputTokens: usageRecord.outputTokens,
+          projectId: usageRecord.projectId,
+          teamId: usageRecord.teamId,
+          autoRunId: usageRecord.autoRunId,
           pricingVersion: usageRecord.pricingVersion,
           pricingModelPriceId: usageRecord.pricingModelPriceId,
         },
@@ -987,6 +1029,8 @@ export function createM3Service({
         teamId: entry.teamId,
         agentId: entry.agentId,
         invocationId: entry.invocationId,
+        autoRunId: entry.autoRunId ?? null,
+        projectId: entry.projectId ?? null,
         provider: entry.provider,
         model: state.aiUsageRecords.find((record) => record.ledgerEntryIds.includes(entry.id))?.model ?? null,
         costOwner: entry.costOwner,
@@ -1148,6 +1192,17 @@ export function createM3Service({
     // indexes on it. Derived from the row's project; null when there is no project.
     const ledgerProject = projectId ? state.projects.find((project) => project.id === projectId) : null;
     const ledgerTeamId = ledgerProject ? teamOf(ledgerProject) : null;
+    const autoRunId = meta.autoRunId ?? null;
+    const localIssueId = autoRunId
+      ? (state.workItems ?? []).find((item) => (item.executionBindings ?? []).some((binding) => binding.kind === "auto_run" && binding.targetId === autoRunId))?.id ?? null
+      : meta.localIssueId ?? null;
+    const executionChainId = meta.executionChainId
+      ?? (state.autoRuns ?? []).find((run) => run.id === autoRunId)?.executionChainId
+      ?? localIssueId;
+    const attributedBudgetPoolId = agent?.economics?.budgetPoolId
+      ?? (state.budgets ?? []).find((budget) => budget.projectId === projectId)?.id
+      ?? (state.budgets ?? []).find((budget) => budget.teamId === ledgerTeamId)?.id
+      ?? null;
     const createdAt = now();
     const model = String(cost.model ?? "unknown");
     const entry = {
@@ -1178,13 +1233,15 @@ export function createM3Service({
       amountDirection: cost.billable ? "payable" : "informational",
       costOwner: agent?.economics?.costOwner ?? invocation?.requestedBy ?? "usr_local",
       revenueOwner: null,
-      budgetPoolId: agent?.economics?.budgetPoolId ?? null,
+      budgetPoolId: attributedBudgetPoolId,
       projectId,
       // Per-run cost attribution (agent_run_cost_total). The develop/repair/retry
       // invocations of an auto-run all carry autoRunId in their input metadata;
       // stamping it here lets ledgerSummary roll a run's whole cost up in one line
       // without re-deriving it from telemetry. Null for manual/non-auto-run spend.
-      autoRunId: meta.autoRunId ?? null,
+      autoRunId,
+      localIssueId,
+      executionChainId,
       // Explicit model dimension for the byModel rollup, independent of
       // `counterparty` (whose meaning differs across ledger paths).
       model,
@@ -1212,7 +1269,16 @@ export function createM3Service({
           : hasEstimate
             ? `Recorded estimated ${entry.currency} ${entry.amountUsd} for ${model} (${inputTokens}+${outputTokens} tokens).`
             : `Recorded unmetered token usage (${inputTokens}+${outputTokens} tokens) for ${model}.`,
-        data: { ledgerEntryId: entry.id, amountUsd: entry.amountUsd, amountSource: source, inputTokens, outputTokens, projectId },
+        data: {
+          ledgerEntryId: entry.id,
+          amountUsd: entry.amountUsd,
+          amountSource: source,
+          inputTokens,
+          outputTokens,
+          projectId,
+          teamId: entry.teamId,
+          autoRunId: entry.autoRunId,
+        },
       });
     });
     return entry;
@@ -1478,6 +1544,8 @@ export function createM3Service({
     return [...rollup.values()].map((row) => {
       const pool = (state.budgets ?? []).find((item) => item.teamId === row.teamId);
       const limitUsd = pool ? Number(pool.limitUsd) : null;
+      const reservedUsd = activeReservedForTeam(row.teamId);
+      const admissionUsd = roundUsd(row.spentUsd + reservedUsd);
       return {
         ...row,
         exists: Boolean(pool),
@@ -1485,8 +1553,11 @@ export function createM3Service({
         limitUsd,
         policy: pool?.policy ?? "warn",
         currency: pool?.currency ?? "USD",
-        remainingUsd: pool && limitUsd !== null ? roundUsd(limitUsd - row.spentUsd) : null,
+        reservedUsd,
+        admissionUsd,
+        remainingUsd: pool && limitUsd !== null ? roundUsd(limitUsd - admissionUsd) : null,
         over: pool ? row.spentUsd > limitUsd : false,
+        admissionOver: pool ? admissionUsd > limitUsd : false,
       };
     });
   }

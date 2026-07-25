@@ -16,6 +16,7 @@ let server;
 let base;
 let state;
 let sweep;
+let sweepAlertOutbox;
 let appId;
 let appDir;
 let hookServer;
@@ -55,6 +56,7 @@ before(async () => {
     now,
   });
   sweep = httpDependencies.applicationHealthSweep;
+  sweepAlertOutbox = httpDependencies.sweepAlertOutbox;
   server = createHttpServer({ host: "127.0.0.1", port: 0, namespace: "test", protocolVersion: "0.0.0", ...httpDependencies });
   await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
   base = `http://127.0.0.1:${server.address().port}`;
@@ -149,6 +151,7 @@ test("source disappears: first failure keeps it active, second auto-offlines wit
 });
 
 test("the auto-offline pushes an operator alert to the configured webhook", async () => {
+  await sweepAlertOutbox();
   const alert = await waitForAlert("application_health_auto_offline");
   assert.ok(alert, "webhook received the auto-offline alert");
   assert.equal(alert.severity, "warning");

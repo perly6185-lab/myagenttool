@@ -1,6 +1,6 @@
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { TaskView } from "@/features/tasks/task-view";
+import { TaskView, shouldShowWorkItemCost } from "@/features/tasks/task-view";
 
 const mocks = vi.hoisted(() => ({
   listWorkItems: vi.fn(),
@@ -45,6 +45,35 @@ vi.mock("@/data/use-console-state", () => ({
     agents: [],
   } }),
 }));
+
+describe("work-item cost visibility", () => {
+  it("shows a reserved budget before the first ledger entry exists", () => {
+    expect(shouldShowWorkItemCost({
+      nextAction: "monitor_execution",
+      attention: [],
+      latestRun: null,
+      activeClaim: null,
+      cost: {
+        knownUsd: 0,
+        unknownEntries: 0,
+        entryCount: 0,
+        projectBudget: null,
+        teamBudget: {
+          budgetId: "bud_team",
+          limitUsd: 50,
+          spentUsd: 0,
+          reservedUsd: 20,
+          admissionUsd: 20,
+          remainingUsd: 30,
+          policy: "block",
+          over: false,
+          admissionOver: false,
+        },
+      },
+      alerts: { queued: 0, failed: 0, sent: 0, skipped: 0 },
+    })).toBe(true);
+  });
+});
 vi.mock("@/data/use-console-actions", () => ({
   useAsyncAction: () => ({ execute: mocks.execute, pending: false, error: null }),
   api: {
@@ -375,16 +404,18 @@ describe("TaskView local work items", () => {
     expect(screen.getByText("No sub-issues")).toBeTruthy();
     expect(screen.getByLabelText("Parent issue")).toBeTruthy();
     fireEvent.change(title, { target: { value: "Edited issue" } });
-    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    fireEvent.click(screen.getByRole("button", { name: "Create worktree" }));
+    expect(mocks.createWorkItemWorktree).not.toHaveBeenCalled();
+    const safetyDialog = screen.getAllByRole("dialog").at(-1);
+    fireEvent.click(within(safetyDialog as HTMLElement).getByRole("button", { name: "Save" }));
     await waitFor(() => expect(mocks.updateWorkItem).toHaveBeenCalledWith("lwi_1", expect.objectContaining({
       expectedRevision: 1,
       title: "Edited issue",
     })));
+    await waitFor(() => expect(mocks.createWorkItemWorktree).toHaveBeenCalledWith("lwi_1"));
     fireEvent.change(screen.getByPlaceholderText("Add a comment…"), { target: { value: "Looks good" } });
     fireEvent.click(screen.getByRole("button", { name: "Comment" }));
     await waitFor(() => expect(mocks.createWorkItemComment).toHaveBeenCalledWith("lwi_1", "Looks good"));
-    fireEvent.click(screen.getByRole("button", { name: "Create worktree" }));
-    await waitFor(() => expect(mocks.createWorkItemWorktree).toHaveBeenCalledWith("lwi_1"));
     expect(screen.getByText("Created")).toBeTruthy();
   });
 });

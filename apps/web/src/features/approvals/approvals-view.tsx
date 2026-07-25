@@ -158,6 +158,26 @@ export function ApprovalsView() {
                         {age ? <span className="shrink-0 text-xs text-muted-foreground">{age}</span> : null}
                       </div>
                       {d.subtitle ? <p className="truncate text-xs text-muted-foreground">{d.subtitle}</p> : null}
+                      {d.kind === "invocation_approval" && d.context ? (
+                        <div className="mt-2 grid gap-1 rounded-md border border-border bg-muted/30 p-2 text-xs md:grid-cols-2">
+                          <div>
+                            <span className="text-muted-foreground">{t("integrationsPage.command")}</span>
+                            <code className="block break-all">{[d.context.command, ...(d.context.arguments ?? [])].filter(Boolean).join(" ") || "—"}</code>
+                          </div>
+                          <div>
+                            <span className="text-muted-foreground">{t("integrationsPage.workingDirectory")}</span>
+                            <code className="block break-all">{d.context.workingDirectory ?? "—"}</code>
+                          </div>
+                          <div>
+                            <span className="text-muted-foreground">{t("capabilityRun.files")}</span>
+                            <span className="block">{d.context.pathPolicy ?? "—"}{d.context.worktreeId ? ` · ${d.context.worktreeId}` : ""}</span>
+                          </div>
+                          <div>
+                            <span className="text-muted-foreground">{t("applicationInspectorDeep.result")}</span>
+                            <span className="block break-words">{d.context.impactScope?.join(", ") || "—"}</span>
+                          </div>
+                        </div>
+                      ) : null}
                     </div>
                     <div className="flex shrink-0 items-center gap-1.5">
                       {/* #1151 soft-claim: advisory — marks the row, never gates the buttons. */}

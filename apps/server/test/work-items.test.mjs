@@ -12,7 +12,14 @@ const ACTOR_A = { userId: "usr_a", teamId: "team_a" };
 const ACTOR_B = { userId: "usr_b", teamId: "team_b" };
 const ACTOR_C = { userId: "usr_c", teamId: "team_a" };
 
-function harness({ clock = () => "2026-07-24T00:00:00.000Z" } = {}) {
+function harness({
+  clock = () => "2026-07-24T00:00:00.000Z",
+  store,
+  persistStateSoon,
+  budgetStatusFor = () => null,
+  teamBudgetStatusFor = () => null,
+  retryAlert = () => null,
+} = {}) {
   let counter = 0;
   const events = [];
   const alerts = [];
@@ -34,6 +41,11 @@ function harness({ clock = () => "2026-07-24T00:00:00.000Z" } = {}) {
       alerts.push(alert);
       return Promise.resolve({ sent: true });
     },
+    store,
+    persistStateSoon,
+    budgetStatusFor,
+    teamBudgetStatusFor,
+    retryAlert,
   });
   return { state, events, alerts, service };
 }
@@ -148,6 +160,73 @@ test("GitHub push uses a two-step payload and confirmation baseline", () => {
     pushedRemoteUpdatedAt: "2026-07-24T03:00:00.000Z",
   }, ACTOR_A);
   assert.equal(confirmed.body.action, "pushed");
+});
+
+test("external issue contract supports GitLab and Gitea without overstating adapter capabilities", () => {
+  const { service } = harness();
+  const providers = service.listExternalProviders().body.providers;
+  assert.deepEqual(providers.map(({ id }) => id), ["github", "gitlab", "gitea"]);
+  assert.equal(providers.find(({ id }) => id === "gitlab").apiSync, false);
+  assert.equal(providers.find(({ id }) => id === "gitea").webhook, false);
+
+  const item = service.createWorkItem({ projectId: "prj_a", title: "Portable issue" }, ACTOR_A).body.workItem;
+  const remote = {
+    number: 18, title: "Portable issue", body: "", state: "open", labels: ["portable"],
+    url: "https://gitlab.example/acme/repo/-/issues/18", repository: "acme/repo",
+    updatedAt: "2026-07-23T20:00:00.000Z",
+  };
+  const linked = service.bindExternalIssue({
+    workItemId: item.id, expectedRevision: item.revision, provider: "gitlab", remote,
+  }, ACTOR_A);
+  assert.equal(linked.status, 201);
+  assert.deepEqual({
+    kind: linked.body.binding.kind,
+    provider: linked.body.binding.provider,
+    resourceType: linked.body.binding.resourceType,
+    externalId: linked.body.binding.externalId,
+  }, {
+    kind: "gitlab_issue", provider: "gitlab", resourceType: "issue", externalId: "18",
+  });
+  assert.equal(linked.body.binding.bindingId, "gitlab:issue:acme/repo:18");
+
+  const pulled = service.syncExternalIssue({
+    workItemId: item.id, expectedRevision: item.revision, provider: "gitlab", direction: "pull",
+    remote: { ...remote, title: "Updated in GitLab", updatedAt: "2026-07-24T01:00:00.000Z" },
+  }, ACTOR_A);
+  assert.equal(pulled.body.action, "pulled");
+  assert.equal(pulled.body.workItem.title, "Updated in GitLab");
+  assert.equal(service.bindExternalIssue({
+    workItemId: item.id, expectedRevision: pulled.body.workItem.revision, provider: "bitbucket", remote,
+  }, ACTOR_A).body.error, "unsupported_external_provider");
+});
+
+test("GitLab and Gitea webhook ingestion is idempotent, tenant-aware, and replayable", () => {
+  const { service } = harness();
+  const item = service.createWorkItem({ projectId: "prj_a", title: "Webhook portable" }, ACTOR_A).body.workItem;
+  const remote = {
+    number: 28, title: "Webhook portable", body: "", state: "open", labels: [],
+    repository: "acme/repo", updatedAt: "2026-07-24T00:00:00.000Z",
+  };
+  service.bindExternalIssue({
+    workItemId: item.id, expectedRevision: item.revision, provider: "gitea", remote,
+  }, ACTOR_A);
+  const accepted = service.ingestExternalWebhook({
+    provider: "gitea", deliveryId: "delivery-28",
+    snapshot: { ...remote, title: "Webhook changed", updatedAt: "2026-07-24T01:00:00.000Z" },
+  });
+  assert.equal(accepted.status, 202);
+  assert.equal(accepted.body.synced, 1);
+  assert.equal(service.ingestExternalWebhook({
+    provider: "gitea", deliveryId: "delivery-28",
+    snapshot: { ...remote, title: "Ignored duplicate", updatedAt: "2026-07-24T02:00:00.000Z" },
+  }).body.replayed, true);
+  assert.equal(service.getWorkItem({ workItemId: item.id }, ACTOR_A).body.workItem.title, "Webhook changed");
+  assert.equal(service.replayExternalWebhook({
+    provider: "gitea", deliveryId: "delivery-28",
+  }, ACTOR_B).status, 404);
+  assert.equal(service.replayExternalWebhook({
+    provider: "gitea", deliveryId: "delivery-28",
+  }, ACTOR_A).status, 202);
 });
 
 test("structured acceptance and verification gate completion", () => {
@@ -424,6 +503,37 @@ test("SLA and Webhook failure alerts are dispatched once per health transition",
   assert.equal(item.id, state.workItems[0].id);
 });
 
+test("webhook bookkeeping and alert transitions commit once without debounce writes", () => {
+  let commits = 0;
+  const { service } = harness({
+    store: { transaction: (fn) => { commits += 1; return fn(); } },
+    persistStateSoon: () => assert.fail("store-backed writes must not use the debounce"),
+  });
+
+  service.recordGithubWebhookFailure({
+    deliveryId: "failed-transaction", event: "issues", reason: "invalid_signature",
+  });
+  assert.equal(commits, 1);
+
+  service.ingestGithubWebhook({
+    deliveryId: "delivery-transaction",
+    event: "issues",
+    payload: {
+      repository: { full_name: "acme/repo" },
+      issue: {
+        number: 7, title: "No binding", state: "open", labels: [],
+        updated_at: "2026-07-24T00:00:00.000Z",
+      },
+    },
+  });
+  assert.equal(commits, 2);
+
+  assert.equal(service.sweepOperationalAlerts().changed, 1);
+  assert.equal(commits, 3);
+  assert.equal(service.sweepOperationalAlerts().changed, 0);
+  assert.equal(commits, 3);
+});
+
 test("team scoping hides foreign work items and foreign projects", () => {
   const { service } = harness();
   const item = service.createWorkItem({ projectId: "prj_a", title: "A" }, ACTOR_A).body.workItem;
@@ -557,6 +667,124 @@ test("agent claims renew, conflict, expire, transfer, and release safely", () =>
   assert.equal(service.releaseWorkItemClaim({ workItemId: item.id }, ACTOR_A).status, 409);
   assert.equal(service.releaseWorkItemClaim({ workItemId: item.id }, ACTOR_C).body.released, true);
   assert.equal(service.releaseWorkItemClaim({ workItemId: item.id }, ACTOR_C).body.released, false);
+});
+
+test("detail returns an authoritative per-item observability snapshot", () => {
+  const { service, state } = harness({
+    budgetStatusFor: () => ({
+      exists: true, budgetId: "bud_a", limitUsd: 1, spentUsd: 0.25, finalizedUsd: 0.25,
+      estimatedUsd: 0, reservedUsd: 0.1, admissionUsd: 0.35, remainingUsd: 0.75,
+      policy: "block", currency: "USD", over: false, admissionOver: false,
+    }),
+  });
+  const item = service.createWorkItem({ projectId: "prj_a", title: "Observe me" }, ACTOR_A).body.workItem;
+  service.claimWorkItem({ workItemId: item.id, agentId: "agt_a", leaseMinutes: 30 }, ACTOR_A);
+  state.autoRuns = [{
+    id: "aur_1", projectId: "prj_a", status: "awaiting_approval",
+    updatedAt: "2026-07-24T00:01:00.000Z",
+    decision: { path: "develop", confidence: 0.8, via: "agent" },
+    routingOverride: {
+      recommendedPath: "develop", actualPath: "design", reason: "Needs a wireframe",
+      actorId: "usr_a", recordedAt: "2026-07-24T00:01:10.000Z", revision: 1,
+    },
+  }];
+  state.workItems[0].executionBindings = [{ kind: "auto_run", targetId: "aur_1", worktreeId: "wtr_1", createdAt: "2026-07-24T00:00:00.000Z" }];
+  state.ledgerEntries = [{
+    id: "led_1", localIssueId: item.id, projectId: "prj_a", autoRunId: "aur_1",
+    model: "gpt-test", budgetPoolId: "bud_a", amountUsd: 0.25, billable: true, status: "final",
+    createdAt: "2026-07-24T00:01:30.000Z",
+  }];
+  state.budgets = [{ id: "bud_a", projectId: "prj_a", limitUsd: 1, policy: "block" }];
+  state.alertOutbox = [{
+    id: "aob_1", alert: { data: { autoRunId: "aur_1" } }, status: "queued",
+    createdAt: "2026-07-24T00:01:40.000Z",
+  }];
+
+  const detail = service.getWorkItem({ workItemId: item.id }, ACTOR_A).body;
+  assert.equal(detail.observability.executionChainId, item.id);
+  assert.ok(detail.observability.timeline.some((entry) => entry.source === "issue"));
+  assert.ok(detail.observability.timeline.some((entry) => entry.source === "cost"));
+  assert.ok(detail.observability.timeline.some((entry) => entry.source === "alert"));
+  assert.equal(detail.observability.routingExplanation.selectedPath, "develop");
+  assert.equal(detail.observability.routingExplanation.humanCorrection.actualPath, "design");
+  assert.equal(detail.observability.nextAction, "review_approval");
+  assert.equal(detail.observability.latestRun.id, "aur_1");
+  assert.equal(detail.observability.activeClaim.actorId, "usr_a");
+  assert.deepEqual(detail.observability.cost, {
+    knownUsd: 0.25,
+    unknownEntries: 0,
+    entryCount: 1,
+    byAutoRun: [{ autoRunId: "aur_1", knownUsd: 0.25, unknownEntries: 0, entryCount: 1 }],
+    byModel: [{ model: "gpt-test", knownUsd: 0.25, unknownEntries: 0, entryCount: 1 }],
+    byBudgetPool: [{ budgetPoolId: "bud_a", knownUsd: 0.25, unknownEntries: 0, entryCount: 1 }],
+    projectBudget: {
+      exists: true, budgetId: "bud_a", limitUsd: 1, spentUsd: 0.25, finalizedUsd: 0.25,
+      estimatedUsd: 0, reservedUsd: 0.1, admissionUsd: 0.35, remainingUsd: 0.75,
+      policy: "block", currency: "USD", over: false, admissionOver: false,
+    },
+    teamBudget: null,
+  });
+  assert.deepEqual(detail.observability.alerts, {
+    queued: 1,
+    failed: 0,
+    sent: 0,
+    skipped: 0,
+    items: [{
+      id: "aob_1",
+      kind: "unknown",
+      status: "queued",
+      attempts: 0,
+      nextAttemptAt: null,
+      sentAt: null,
+      lastError: null,
+    }],
+  });
+});
+
+test("AI issue assistance returns an editable draft without creating work", () => {
+  const { service, state } = harness();
+  const result = service.suggestWorkItemDraft({
+    projectId: "prj_a",
+    title: "Fix login crash",
+    body: "Users cannot sign in after upgrading.",
+  }, ACTOR_A);
+  assert.equal(result.status, 200);
+  assert.equal(result.body.draft.type, "bug");
+  assert.equal(result.body.draft.suggestedRoute, "clarify");
+  assert.ok(result.body.draft.acceptanceCriteria.length >= 2);
+  assert.equal(state.workItems.length, 0);
+  assert.equal(service.suggestWorkItemDraft({
+    projectId: "prj_b", title: "Foreign", body: "",
+  }, ACTOR_A).status, 404);
+});
+
+test("linked alert retries are ownership checked", () => {
+  let retriedId = null;
+  const { service, state } = harness({
+    retryAlert: (id) => {
+      retriedId = id;
+      return { id, status: "queued" };
+    },
+  });
+  const item = service.createWorkItem({ projectId: "prj_a", title: "Retry delivery" }, ACTOR_A).body.workItem;
+  state.autoRuns = [{ id: "aur_retry", projectId: "prj_a", status: "failed" }];
+  state.workItems[0].executionBindings = [{
+    kind: "auto_run", targetId: "aur_retry", worktreeId: null, createdAt: "2026-07-24T00:00:00.000Z",
+  }];
+  state.alertOutbox = [{
+    id: "aob_retry", alert: { data: { autoRunId: "aur_retry" } }, status: "failed",
+  }];
+  assert.equal(service.retryWorkItemAlert({
+    workItemId: item.id, alertId: "aob_retry",
+  }, ACTOR_A).body.alert.status, "queued");
+  assert.equal(retriedId, "aob_retry");
+  state.alertOutbox[0].status = "sent";
+  assert.equal(service.retryWorkItemAlert({
+    workItemId: item.id, alertId: "aob_retry",
+  }, ACTOR_A).status, 409);
+  assert.equal(service.retryWorkItemAlert({
+    workItemId: item.id, alertId: "aob_retry",
+  }, ACTOR_B).status, 404);
 });
 
 test("agent create idempotency prevents duplicate local issues", () => {

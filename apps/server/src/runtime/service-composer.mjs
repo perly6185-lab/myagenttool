@@ -1,5 +1,6 @@
 import { UNTRUSTED_INPUT_LABEL, UNTRUSTED_INPUT_TAG } from "@myagenttool/protocol/issue-prompt";
-import { LOCAL_TEAM_ID } from "./auth.mjs";
+import { createOwnedAlertRuntime, enrichAlertOwnership } from "./alert-composition.mjs";
+import { teamOf } from "./auth.mjs";
 import { makeRunTx } from "./store/run-tx.mjs";
 import { createEventLogRuntime } from "./event-log.mjs";
 import { createRefusalRuntime } from "./refusal-log.mjs";
@@ -51,7 +52,7 @@ import { createInvocationService } from "../services/invocations.mjs";
 import { createCancellationSignal } from "../services/cancellation-signal.mjs";
 import { createM3Service } from "../services/m3.mjs";
 import { createProjectService, sameProjectPath } from "../services/projects.mjs";
-import { createAutoRunService } from "../services/auto-run.mjs";
+import { convergeAutoRunTerminalState, createAutoRunService } from "../services/auto-run.mjs";
 import { createDecisionSoftClaimService } from "../services/decision-soft-claims.mjs";
 import { createIssueClaimService } from "../services/issue-claims.mjs";
 import { createWorkItemService } from "../services/work-items.mjs";
@@ -68,12 +69,15 @@ import { resolveDesignRenderCommand, designRenderTimeoutMs, runDesignRender } fr
 import { resolveDeployCommand, deployTimeoutMs, runDeployCommand, resolveRollbackCommand, rollbackTimeoutMs } from "../services/auto-run-deploy.mjs";
 import { decisionConfig } from "../services/auto-run-decision.mjs";
 import { autoRunSettingsEnvOverlay } from "../services/auto-run-config.mjs";
-import { createAlertDispatcher } from "../services/auto-run-alerts.mjs";
 import { createOtlpTraceExporter } from "../services/otlp-export.mjs";
 import { canDeleteObservabilityData, deleteObservabilityData, deletionScopes } from "../services/observability-deletion.mjs";
 import { DEFAULT_SLO_TARGETS, evaluateSloAlert, summarizeAutoRunSlos } from "../services/auto-run-slo.mjs";
+import { summarizeAutoRuns } from "../services/auto-run-metrics.mjs";
 import { createTerminalService } from "../services/terminal.mjs";
 import { createToolService, failStrandedIssueFetches } from "../services/tools.mjs";
+import { createExternalIssueProviderClient } from "../services/external-issue-provider.mjs";
+
+export { enrichAlertOwnership };
 
 export function createServerRuntimeServices({
   namespace,
@@ -217,6 +221,13 @@ export function createServerRuntimeServices({
     ? (collection, scopeId, redactRow) => sqliteStore.redactHistory(collection, scopeId, redactRow)
     : null;
   const retentionArchive = createRetentionArchive({ stateStorePath, enabled: persistenceEnabled, now, appendHistory: historyAppend });
+  const { dispatcher: autoRunAlerts, outbox: alertOutbox } = createOwnedAlertRuntime({
+    state,
+    now,
+    nextId,
+    persistStateSoon,
+    store,
+  });
   const eventArchive = retentionArchive.prepareInvocationEventArchive();
   if (eventArchive.readError) {
     throw new Error(`Cannot establish invocation event id high-water: ${eventArchive.readError}`);
@@ -362,9 +373,14 @@ export function createServerRuntimeServices({
   const canvasSceneService = createCanvasSceneService({
     state, now, nextId, appendEvent, persistStateSoon, store,
   });
+  let resolveWorkItemProjectBudget = () => null;
+  let resolveWorkItemTeamBudget = () => null;
   const workItemService = createWorkItemService({
     state, now, nextId, appendEvent, persistStateSoon, store,
-    sendAlert: (alert) => autoRunAlerts.dispatch(alert),
+    sendAlert: alertOutbox.enqueue,
+    retryAlert: alertOutbox.retry,
+    budgetStatusFor: (projectId) => resolveWorkItemProjectBudget(projectId),
+    teamBudgetStatusFor: (teamId) => resolveWorkItemTeamBudget(teamId),
   });
   const planningProjectService = createPlanningProjectService({
     state, now, nextId, appendEvent, persistStateSoon, store, validateApprovalToken,
@@ -394,7 +410,7 @@ export function createServerRuntimeServices({
     defaultProjectPath,
     // Lazy: autoRunAlerts is composed further down; the thunk only runs at sweep
     // time (post-composition), so the late binding is safe.
-    sendAlert: (alert) => void autoRunAlerts.dispatch(alert),
+    sendAlert: alertOutbox.enqueue,
     validateApprovalToken,
     store,
     // Built-in Canvas capabilities (#1353) run in-process against the scene service.
@@ -485,6 +501,7 @@ export function createServerRuntimeServices({
     budgetStatusFor,
     budgetStatuses,
     budgetGateForProject,
+    teamBudgetStatusFor,
     reserveBudget,
     releaseReservationsForAutoRun,
     releaseReservationsForInvocation,
@@ -516,8 +533,10 @@ export function createServerRuntimeServices({
     store,
     // autoRunAlerts is created later in this factory; the closure is only invoked
     // at run-completion (well after init), so referencing it here is safe.
-    dispatchAlert: (alert) => autoRunAlerts.dispatch(alert),
+    dispatchAlert: alertOutbox.enqueue,
   });
+  resolveWorkItemProjectBudget = budgetStatusFor;
+  resolveWorkItemTeamBudget = teamBudgetStatusFor;
   // #1151 decision soft-claims: the Approvals queue's advisory "X is handling
   // this" markers. Independent of the decision paths themselves (which enforce
   // idempotency on their own records).
@@ -742,24 +761,123 @@ export function createServerRuntimeServices({
 
   // A1 real-time alerting: best-effort webhook, URL read live so a console edit
   // applies without a restart. No-op when unconfigured; never throws.
-  const autoRunAlerts = createAlertDispatcher({ getWebhookUrl: () => state.autoRunSettings?.alertWebhookUrl ?? null });
-
   // O5.2 follow-up: close the SLO → alert loop. Evaluate the loop's SLOs on a
   // slow tick (index.mjs) and dispatch when the below-target set CHANGES —
   // throttled so a persistently-below SLO isn't re-alerted every tick. Emits an
   // audit event alongside the (best-effort) webhook so the breach is provable
   // from the event log even when no webhook is configured.
   function sweepAutoRunSloAlerts() {
+    const projectScopes = new Map();
+    for (const run of state.autoRuns ?? []) {
+      const projectId = run.projectId ?? "unscoped";
+      const project = (state.projects ?? []).find((candidate) => candidate.id === run.projectId);
+      const teamId = project ? teamOf(project) : (run.teamId ?? "unscoped");
+      const key = `${teamId}:${projectId}`;
+      if (!projectScopes.has(key)) projectScopes.set(key, { teamId, projectId, runs: [] });
+      projectScopes.get(key).runs.push(run);
+    }
+    const previousRoutingSignatures = state.autoRunRoutingAlert?.signatures ?? {};
+    const previousRoutingLevels = state.autoRunRoutingAlert?.levels ?? {};
+    const nextRoutingSignatures = {};
+    const nextRoutingLevels = {};
+    let routingAlerted = false;
+    for (const [scopeKey, scope] of projectScopes) {
+      const routing = summarizeAutoRuns(scope.runs, {
+        routingThresholds: state.autoRunSettings?.routingThresholds ?? null,
+        routingNow: now(),
+      }).routingHealth;
+      const signature = routing.signals.map((signal) => signal.key).sort().join(",");
+      nextRoutingSignatures[scopeKey] = signature;
+      const levels = Object.fromEntries(routing.signals.map((signal) => {
+        const step = signal.threshold > 0 ? signal.threshold * 0.1 : signal.key === "latency" ? 1000 : 0.05;
+        return [signal.key, Math.floor(signal.value / step)];
+      }));
+      nextRoutingLevels[scopeKey] = levels;
+      const previousSignature = previousRoutingSignatures[scopeKey] ?? "";
+      const worsened = signature === previousSignature && Object.entries(levels)
+        .some(([key, level]) => level > Number(previousRoutingLevels[scopeKey]?.[key] ?? level));
+      if (signature === previousSignature && !worsened) continue;
+      if (signature) {
+        const alert = {
+          kind: "auto_run_routing_health",
+          severity: routing.signals.some((signal) => signal.severity === "danger") ? "high" : "warning",
+          message: `Auto-run routing health needs attention for project ${scope.projectId}: ${signature}.`,
+          data: {
+            teamId: scope.teamId,
+            projectId: scope.projectId,
+            signals: routing.signals,
+            total: routing.total,
+            confidenceTotal: routing.confidenceTotal,
+            worsened,
+          },
+        };
+        alertOutbox.enqueue(alert);
+        appendEvent({ invocationId: null, type: "auto_run_routing_alert", level: "warn", message: alert.message, data: alert.data });
+        routingAlerted = true;
+      } else if (previousSignature) {
+        const alert = {
+          kind: "auto_run_routing_health_recovered",
+          severity: "info",
+          message: `Auto-run routing health recovered for project ${scope.projectId}.`,
+          data: {
+            teamId: scope.teamId,
+            projectId: scope.projectId,
+            previousSignals: previousSignature.split(","),
+          },
+        };
+        alertOutbox.enqueue(alert);
+        appendEvent({ invocationId: null, type: "auto_run_routing_alert", level: "info", message: alert.message, data: alert.data });
+        routingAlerted = true;
+      }
+    }
+    for (const [scopeKey, previousSignature] of Object.entries(previousRoutingSignatures)) {
+      if (projectScopes.has(scopeKey) || !previousSignature) continue;
+      const separator = scopeKey.indexOf(":");
+      const teamId = separator >= 0 ? scopeKey.slice(0, separator) : "unscoped";
+      const projectId = separator >= 0 ? scopeKey.slice(separator + 1) : scopeKey;
+      const alert = {
+        kind: "auto_run_routing_health_recovered",
+        severity: "info",
+        message: `Auto-run routing health recovered for project ${projectId}.`,
+        data: { teamId, projectId, previousSignals: previousSignature.split(",") },
+      };
+      alertOutbox.enqueue(alert);
+      appendEvent({ invocationId: null, type: "auto_run_routing_alert", level: "info", message: alert.message, data: alert.data });
+      routingAlerted = true;
+    }
+    if (
+      JSON.stringify(nextRoutingSignatures) !== JSON.stringify(previousRoutingSignatures)
+      || JSON.stringify(nextRoutingLevels) !== JSON.stringify(previousRoutingLevels)
+    ) {
+      state.autoRunRoutingAlert = { signatures: nextRoutingSignatures, levels: nextRoutingLevels, at: now() };
+      persistStateSoon();
+    }
     const targets = state.autoRunSettings?.sloTargets
       ? { ...DEFAULT_SLO_TARGETS, ...state.autoRunSettings.sloTargets }
       : DEFAULT_SLO_TARGETS;
-    const summary = summarizeAutoRunSlos(state.autoRuns ?? [], targets);
-    const previous = state.autoRunSloAlert?.signature ?? "";
-    const { changed, signature, alert } = evaluateSloAlert(summary, previous);
-    if (!changed) return { alerted: false };
-    state.autoRunSloAlert = { signature, at: now() };
-    if (alert) {
-      void autoRunAlerts.dispatch(alert);
+    const previousSloSignatures = state.autoRunSloAlert?.signatures ?? {};
+    const nextSloSignatures = {};
+    let sloAlerted = false;
+    let lastSloKind = null;
+    const healthWindowDays = state.autoRunSettings?.routingThresholds?.windowDays ?? 30;
+    const healthCutoff = Date.parse(now()) - healthWindowDays * 86_400_000;
+    for (const [scopeKey, scope] of projectScopes) {
+      const windowRuns = scope.runs.filter((run) => {
+        // SLOs describe outcomes, so a recently completed long-running job
+        // belongs to the current window even when it was created earlier.
+        const at = Date.parse(run.updatedAt ?? run.createdAt ?? "");
+        return !Number.isFinite(at) || at >= healthCutoff;
+      });
+      const summary = summarizeAutoRunSlos(windowRuns, targets);
+      const result = evaluateSloAlert(summary, previousSloSignatures[scopeKey] ?? "");
+      nextSloSignatures[scopeKey] = result.signature;
+      if (!result.changed || !result.alert) continue;
+      const alert = {
+        ...result.alert,
+        message: `${result.alert.message} Project: ${scope.projectId}.`,
+        data: { ...(result.alert.data ?? {}), teamId: scope.teamId, projectId: scope.projectId },
+      };
+      alertOutbox.enqueue(alert);
       appendEvent({
         invocationId: null,
         type: "auto_run_slo_alert",
@@ -767,9 +885,39 @@ export function createServerRuntimeServices({
         message: alert.message,
         data: alert.data,
       });
+      sloAlerted = true;
+      lastSloKind = alert.kind;
     }
-    persistStateSoon();
-    return { alerted: Boolean(alert), kind: alert?.kind ?? null };
+    for (const [scopeKey, previousSignature] of Object.entries(previousSloSignatures)) {
+      if (projectScopes.has(scopeKey) || !previousSignature) continue;
+      const separator = scopeKey.indexOf(":");
+      const teamId = separator >= 0 ? scopeKey.slice(0, separator) : "unscoped";
+      const projectId = separator >= 0 ? scopeKey.slice(separator + 1) : scopeKey;
+      const alert = {
+        kind: "auto_run_slo_recovered",
+        severity: "info",
+        message: `Auto-run SLOs recovered for project ${projectId}.`,
+        data: { teamId, projectId, previousSignals: previousSignature.split(",") },
+      };
+      alertOutbox.enqueue(alert);
+      appendEvent({
+        invocationId: null,
+        type: "auto_run_slo_alert",
+        level: "info",
+        message: alert.message,
+        data: alert.data,
+      });
+      sloAlerted = true;
+      lastSloKind = alert.kind;
+    }
+    if (JSON.stringify(nextSloSignatures) !== JSON.stringify(previousSloSignatures)) {
+      state.autoRunSloAlert = { signatures: nextSloSignatures, at: now() };
+      persistStateSoon();
+    }
+    return {
+      alerted: routingAlerted || sloAlerted,
+      kind: lastSloKind ?? (routingAlerted ? "routing_health" : null),
+    };
   }
 
   // ADR 0017: opt-in, best-effort OTLP/HTTP JSON trace export. Reads the endpoint
@@ -821,7 +969,7 @@ export function createServerRuntimeServices({
     return { ok: true, ...result };
   }
 
-  const { startAutoRun, advanceAutoRunForInvocation, syncAutoRunOnApproval, syncAutoRunOnDenial, retryAutoRun, attemptFailover, cancelAutoRun, mergeAutoRunPr, reapStuckAutoRuns, autoMergeSweep, approveDesign, rejectDesign, answerClarify, approveDecomposition, rejectDecomposition } = createAutoRunService({
+  const { startAutoRun, advanceAutoRunForInvocation, syncAutoRunOnApproval, syncAutoRunOnDenial, retryAutoRun, attemptFailover, cancelAutoRun, mergeAutoRunPr, recordRoutingOverride, reapStuckAutoRuns, autoMergeSweep, approveDesign, rejectDesign, answerClarify, approveDecomposition, rejectDecomposition } = createAutoRunService({
     state,
     now,
     nextId,
@@ -838,7 +986,7 @@ export function createServerRuntimeServices({
     claimIssueForRun: claimIssue,
     releaseIssueClaimsForAutoRun,
     // A1 alerting: best-effort operational webhook (budget breach, stuck reap).
-    sendAlert: (alert) => autoRunAlerts.dispatch(alert),
+    sendAlert: alertOutbox.enqueue,
     // O1 reliability: find a run's invocation for stuck/crash reconcile.
     findInvocation,
     // Operator stop: cancel a run's in-flight agent invocation.
@@ -1060,11 +1208,22 @@ export function createServerRuntimeServices({
 
   // Routing-evaluation disposition refresh (slice 5): bounded, throttled,
   // read-only gh; persists only when something changed.
-  async function refreshAutoRunPrDispositions() {
+  async function refreshAutoRunPrDispositions({ teamId = null } = {}) {
+    const visibleProjectIds = teamId == null
+      ? null
+      : new Set((state.projects ?? []).filter((project) => teamOf(project) === teamId).map((project) => project.id));
+    const scopedState = visibleProjectIds == null ? state : {
+      ...state,
+      autoRuns: (state.autoRuns ?? []).filter((run) =>
+        (run.projectId && visibleProjectIds.has(run.projectId)) || (!run.projectId && run.teamId === teamId)),
+    };
     const result = await refreshPrDispositions({
-      state,
+      state: scopedState,
       now,
       fetchPrState: ({ prNumber, repoPath }) => runPrStateFetch({ cwd: repoPath, prNumber }),
+      onDispositionChanged: ({ run, prState }) => {
+        convergeAutoRunTerminalState({ state, autoRun: run, disposition: prState, now, nextId, source: "github_refresh" });
+      },
       // CI check posture for the merge decision (read-only gh; shown on the card).
       fetchPrChecks: ({ prNumber, repoPath }) => runPrChecks({ cwd: repoPath, prNumber }),
     });
@@ -1074,7 +1233,7 @@ export function createServerRuntimeServices({
     // Epic S4 reconcile: mark a decomposed epic's children done when their ISSUE
     // closes (however it merged — incl. a human-override PR outside the loop).
     const epic = await refreshEpicChildStates({
-      state,
+      state: scopedState,
       now,
       fetchIssueState: ({ issueNumber, repoPath }) => runIssueStateFetch({ cwd: repoPath, issueNumber }),
       projectPathFor: (projectId) => (state.projects ?? []).find((p) => p.id === projectId)?.path ?? null,
@@ -3276,6 +3435,7 @@ export function createServerRuntimeServices({
     reapStuckAutoRuns,
     sweepExpiredClaims,
     sweepAutoRunSloAlerts,
+    sweepAlertOutbox: alertOutbox.sweep,
     sweepWorkItemOperationalAlerts: workItemService.sweepOperationalAlerts,
     flushTraceExport,
     requestObservabilityDeletion,
@@ -3289,6 +3449,7 @@ export function createServerRuntimeServices({
     approveDecomposition,
     rejectDecomposition,
     mergeAutoRunPr,
+    recordRoutingOverride,
     refreshAutoRunPrDispositions,
     createMailIssueFromImport,
     replyOnIssue,
@@ -3327,12 +3488,20 @@ export function createServerRuntimeServices({
     releaseWorkItemClaim: workItemService.releaseWorkItemClaim,
     bindGithubIssue: workItemService.bindGithubIssue,
     syncGithubIssue: workItemService.syncGithubIssue,
+    bindExternalIssue: workItemService.bindExternalIssue,
+    syncExternalIssue: workItemService.syncExternalIssue,
+    listWorkItemExternalProviders: workItemService.listExternalProviders,
     recordWorkItemVerification: workItemService.recordVerification,
     ingestGithubWorkItemWebhook: workItemService.ingestGithubWebhook,
     replayGithubWorkItemWebhook: workItemService.replayGithubWebhook,
     recordGithubWorkItemWebhookFailure: workItemService.recordGithubWebhookFailure,
+    ingestExternalWorkItemWebhook: workItemService.ingestExternalWebhook,
+    replayExternalWorkItemWebhook: workItemService.replayExternalWebhook,
+    recordExternalWorkItemWebhookFailure: workItemService.recordExternalWebhookFailure,
     updateWorkItemAttention: workItemService.updateAttention,
     getWorkItemGithubSyncDiagnostics: workItemService.githubSyncDiagnostics,
+    suggestWorkItemDraft: workItemService.suggestWorkItemDraft,
+    retryWorkItemAlert: workItemService.retryWorkItemAlert,
     fetchWorkItemGithubIssue: ({ projectId, issueNumber }) => {
       const project = (state.projects ?? []).find((candidate) => candidate.id === projectId);
       const target = (state.projectTargets ?? []).find((candidate) => candidate.projectId === projectId && candidate.state === "ready");
@@ -3347,6 +3516,12 @@ export function createServerRuntimeServices({
         ? runIssueSnapshotWrite({ cwd, issueNumber, payload, remote })
         : { ok: false, error: "project_repository_not_ready" };
     },
+    fetchWorkItemExternalIssue: async ({ provider, repository, issueNumber }) => {
+      const result = await createExternalIssueProviderClient({ provider }).fetchIssue({ repository, issueNumber });
+      return result.ok ? result.issue : result;
+    },
+    pushWorkItemExternalIssue: ({ provider, repository, issueNumber, payload }) =>
+      createExternalIssueProviderClient({ provider }).updateIssue({ repository, issueNumber, payload }),
     listPlanningProjects: planningProjectService.listProjects,
     getPlanningProject: planningProjectService.getProject,
     createPlanningProject: planningProjectService.createProject,
@@ -3356,6 +3531,7 @@ export function createServerRuntimeServices({
     removePlanningProjectItem: planningProjectService.removeItem,
     reorderPlanningProjectItems: planningProjectService.reorderItems,
     updatePlanningProjectItems: planningProjectService.updateItems,
+    suggestPlanningPlan: planningProjectService.suggestPlan,
     executePlanningRecommendedAction: planningProjectService.executeRecommendedAction,
     decidePlanningRecommendedAction: planningProjectService.decideRecommendedAction,
     routeChannelTask,

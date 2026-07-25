@@ -4,9 +4,11 @@
  * work item is planning data that may later bind to GitHub or another tracker.
  */
 
+import { createHash } from "node:crypto";
 import { actorCanAccessProject, LOCAL_TEAM_ID, LOCAL_USER_ID } from "../runtime/auth.mjs";
 import { makeRunTx } from "../runtime/store/run-tx.mjs";
 import { normalizedUpdatedSince, paginateRows } from "./cursor-pagination.mjs";
+import { externalIssueProviderReadiness } from "./external-issue-provider.mjs";
 
 const TYPES = new Set(["task", "bug", "feature", "initiative"]);
 const STATUSES = new Set(["backlog", "ready", "in_progress", "review", "blocked", "done"]);
@@ -96,6 +98,9 @@ export function createWorkItemService({
   appendEvent = () => {},
   persistStateSoon = () => {},
   sendAlert = () => Promise.resolve({ sent: false }),
+  retryAlert = () => null,
+  budgetStatusFor = () => null,
+  teamBudgetStatusFor = () => null,
   store,
 }) {
   const runTx = makeRunTx({ store, persistStateSoon });
@@ -205,6 +210,7 @@ export function createWorkItemService({
     ).length;
     return {
       ...publicItem,
+      externalBindings: (item.externalBindings ?? []).map((binding) => externalBindingView(binding)),
       businessState: item.state,
       planningStatus: item.status,
       executionState: derivedExecutionState,
@@ -250,7 +256,12 @@ export function createWorkItemService({
         const project = (state.planningProjects ?? []).find(
           (row) => row.id === membership.planningProjectId && row.ownerTeamId === actorTeam(actor),
         );
-        return project ? { id: project.id, name: project.name, archivedAt: project.archivedAt } : null;
+        return project ? {
+          id: project.id,
+          name: project.name,
+          archivedAt: project.archivedAt,
+          autonomyProfile: project.autonomyProfile ?? "standard",
+        } : null;
       }).filter(Boolean),
     };
   }
@@ -287,6 +298,7 @@ export function createWorkItemService({
 
   function listAttention(query = {}, actor = null) {
     const projectId = String(query.projectId ?? "");
+    const workItemId = String(query.workItemId ?? "");
     const kind = String(query.kind ?? "");
     const severity = String(query.severity ?? "");
     const sla = String(query.sla ?? "");
@@ -294,7 +306,9 @@ export function createWorkItemService({
     const updatedSince = normalizedUpdatedSince(query.updatedSince);
     if (updatedSince === undefined) return { ok: false, status: 400, body: { error: "invalid_updated_since" } };
     const items = (state.workItems ?? []).filter((item) =>
-      item.ownerTeamId === actorTeam(actor) && (!projectId || item.projectId === projectId));
+      item.ownerTeamId === actorTeam(actor)
+      && (!projectId || item.projectId === projectId)
+      && (!workItemId || item.id === workItemId));
     const rows = [];
     for (const item of items) {
       const binding = githubBinding(item);
@@ -331,7 +345,7 @@ export function createWorkItemService({
         details: { missingCriteria: gate.missingCriteria, verificationRequired: gate.verificationRequired },
       });
     }
-    for (const project of (state.planningProjects ?? []).filter((candidate) => candidate.ownerTeamId === actorTeam(actor))) {
+    for (const project of workItemId ? [] : (state.planningProjects ?? []).filter((candidate) => candidate.ownerTeamId === actorTeam(actor))) {
       for (const request of (project.recommendedActionApprovalRequests ?? []).filter((candidate) => candidate.status === "pending")) {
         rows.push({
           id: `recommended_action_approval:${project.id}:${request.id}`,
@@ -587,13 +601,14 @@ export function createWorkItemService({
   }
 
   function recordGithubDelivery({ id, event, repository, issueNumber, matchingItems, replayOf, result, snapshot }) {
-    (state.githubWorkItemWebhookDeliveries ??= []).unshift({
-      id, event, receivedAt: now(), repository, issueNumber,
-      teamIds: [...new Set(matchingItems.map((item) => item.ownerTeamId))],
-      snapshot, replayOf, result,
+    runTx(() => {
+      (state.githubWorkItemWebhookDeliveries ??= []).unshift({
+        id, event, receivedAt: now(), repository, issueNumber,
+        teamIds: [...new Set(matchingItems.map((item) => item.ownerTeamId))],
+        snapshot, replayOf, result,
+      });
+      state.githubWorkItemWebhookDeliveries = state.githubWorkItemWebhookDeliveries.slice(0, 1_000);
     });
-    state.githubWorkItemWebhookDeliveries = state.githubWorkItemWebhookDeliveries.slice(0, 1_000);
-    persistStateSoon();
     return { ok: true, status: 202, body: result };
   }
 
@@ -656,12 +671,83 @@ export function createWorkItemService({
 
   function recordGithubWebhookFailure({ deliveryId, event, reason } = {}) {
     const id = String(deliveryId ?? "").trim().slice(0, 200) || nextId("ghf");
-    (state.githubWorkItemWebhookFailures ??= []).unshift({
-      id, event: String(event ?? "").slice(0, 100),
-      reason: String(reason ?? "unknown").slice(0, 100), receivedAt: now(),
+    runTx(() => {
+      (state.githubWorkItemWebhookFailures ??= []).unshift({
+        id, event: String(event ?? "").slice(0, 100),
+        reason: String(reason ?? "unknown").slice(0, 100), receivedAt: now(),
+      });
+      state.githubWorkItemWebhookFailures = state.githubWorkItemWebhookFailures.slice(0, 100);
     });
-    state.githubWorkItemWebhookFailures = state.githubWorkItemWebhookFailures.slice(0, 100);
-    persistStateSoon();
+  }
+
+  function ingestExternalWebhook({ provider, deliveryId, event = "issues", snapshot, replayOf = null } = {}) {
+    const normalizedProvider = String(provider ?? "").toLowerCase();
+    const id = String(deliveryId ?? "").trim();
+    if (!["gitlab", "gitea"].includes(normalizedProvider) || !id || id.length > 200 || !snapshot) {
+      return { ok: false, status: 400, body: { error: "invalid_external_work_item_webhook" } };
+    }
+    const normalized = normalizeGithubSnapshot(snapshot);
+    if (!normalized) return { ok: false, status: 400, body: { error: "invalid_external_issue_snapshot" } };
+    const deliveryKey = `${normalizedProvider}:${id}`;
+    const prior = (state.externalWorkItemWebhookDeliveries ?? []).find((row) => row.id === deliveryKey);
+    if (prior) return { ok: true, status: 200, body: { ...prior.result, replayed: true } };
+    let synced = 0;
+    let stale = 0;
+    let conflicts = 0;
+    const teamIds = new Set();
+    for (const item of state.workItems ?? []) {
+      const binding = externalIssueBinding(item, normalizedProvider);
+      if (!binding || binding.number !== normalized.number
+        || (binding.repository && normalized.repository && binding.repository !== normalized.repository)) continue;
+      teamIds.add(item.ownerTeamId);
+      if (Date.parse(normalized.updatedAt) <= Date.parse(binding.remoteUpdatedAt)) {
+        stale += 1;
+        continue;
+      }
+      const result = syncExternalIssue({
+        workItemId: item.id, expectedRevision: item.revision, provider: normalizedProvider,
+        direction: "pull", remote: normalized,
+      }, { userId: `usr_${normalizedProvider}_webhook`, teamId: item.ownerTeamId });
+      if (result.ok) synced += 1;
+      else if (result.body?.error?.endsWith("_sync_conflict")) conflicts += 1;
+    }
+    const result = {
+      deliveryId: id, provider: normalizedProvider, synced, stale, conflicts,
+      outcome: conflicts ? "conflict" : synced ? "synced" : stale ? "stale" : "no_match", replayOf,
+    };
+    runTx(() => {
+      (state.externalWorkItemWebhookDeliveries ??= []).unshift({
+        id: deliveryKey, provider: normalizedProvider, event, receivedAt: now(),
+        repository: normalized.repository, issueNumber: normalized.number,
+        teamIds: [...teamIds], snapshot: normalized, replayOf, result,
+      });
+      state.externalWorkItemWebhookDeliveries = state.externalWorkItemWebhookDeliveries.slice(0, 1_000);
+    });
+    return { ok: true, status: 202, body: result };
+  }
+
+  function recordExternalWebhookFailure({ provider, deliveryId, event, reason } = {}) {
+    runTx(() => {
+      (state.externalWorkItemWebhookFailures ??= []).unshift({
+        id: `${String(provider)}:${String(deliveryId ?? nextId("ewf")).slice(0, 200)}`,
+        provider: String(provider ?? "").slice(0, 20),
+        event: String(event ?? "").slice(0, 100),
+        reason: String(reason ?? "unknown").slice(0, 100), receivedAt: now(),
+      });
+      state.externalWorkItemWebhookFailures = state.externalWorkItemWebhookFailures.slice(0, 100);
+    });
+  }
+
+  function replayExternalWebhook({ provider, deliveryId } = {}, actor = null) {
+    const key = `${String(provider).toLowerCase()}:${String(deliveryId)}`;
+    const source = (state.externalWorkItemWebhookDeliveries ?? []).find((delivery) => delivery.id === key);
+    if (!source?.snapshot || !source.teamIds?.includes(actorTeam(actor))) {
+      return { ok: false, status: 404, body: { error: "external_webhook_delivery_not_found" } };
+    }
+    return ingestExternalWebhook({
+      provider: source.provider, deliveryId: `${deliveryId}:replay:${nextId("ewr")}`,
+      event: source.event, snapshot: source.snapshot, replayOf: deliveryId,
+    });
   }
 
   function sweepOperationalAlerts() {
@@ -698,39 +784,336 @@ export function createWorkItemService({
   }
 
   function updateOperationalAlert({ scope, signature, alert }) {
-    let row = (state.workItemOperationalAlerts ??= []).find((candidate) => candidate.scope === scope);
-    if (!row) {
-      row = { scope, signature: "", updatedAt: null };
-      state.workItemOperationalAlerts.push(row);
-    }
-    if (row.signature === signature) return false;
-    const previous = row.signature;
-    row.signature = signature;
-    row.updatedAt = now();
-    if (alert) {
-      void sendAlert(alert);
-      appendEvent({
-        invocationId: null, type: alert.kind,
-        level: alert.severity === "critical" ? "error" : "warn",
-        message: alert.message, data: alert.data,
-      });
-    } else if (previous) {
-      appendEvent({
-        invocationId: null, type: "work_item_operational_recovered", level: "info",
-        message: `${scope} operational alert recovered.`, data: { scope },
-      });
-    }
-    persistStateSoon();
+    const existing = (state.workItemOperationalAlerts ?? []).find((candidate) => candidate.scope === scope);
+    if (existing?.signature === signature) return false;
+    runTx(() => {
+      let row = existing;
+      if (!row) {
+        row = { scope, signature: "", updatedAt: null };
+        (state.workItemOperationalAlerts ??= []).push(row);
+      }
+      const previous = row.signature;
+      row.signature = signature;
+      row.updatedAt = now();
+      if (alert) {
+        void sendAlert(alert);
+        appendEvent({
+          invocationId: null, type: alert.kind,
+          level: alert.severity === "critical" ? "error" : "warn",
+          message: alert.message, data: alert.data,
+        });
+      } else if (previous) {
+        appendEvent({
+          invocationId: null, type: "work_item_operational_recovered", level: "info",
+          message: `${scope} operational alert recovered.`, data: { scope },
+        });
+      }
+    });
     return true;
   }
 
   function getWorkItem({ workItemId }, actor = null) {
     const item = findOwn(workItemId, actor);
-    return item ? { ok: true, status: 200, body: { workItem: workItemView(item, actor) } } : notFound();
+    if (!item) return notFound();
+    const attention = listAttention({ workItemId, limit: 100 }, actor).body.items ?? [];
+    const runIds = new Set((item.executionBindings ?? [])
+      .filter((binding) => binding.kind === "auto_run")
+      .map((binding) => binding.targetId));
+    const latestRun = (state.autoRuns ?? [])
+      .filter((run) => runIds.has(run.id))
+      .sort((left, right) => String(right.updatedAt ?? "").localeCompare(String(left.updatedAt ?? "")))[0] ?? null;
+    const invocationIds = new Set((state.autoRuns ?? [])
+      .filter((run) => runIds.has(run.id) && run.invocationId)
+      .map((run) => run.invocationId));
+    const activeClaim = item.claim?.status === "active" && Date.parse(item.claim.leaseExpiresAt) > Date.parse(now())
+      ? item.claim
+      : null;
+    const ledgerEntries = (state.ledgerEntries ?? []).filter(
+      (entry) => (entry.localIssueId === item.id || (entry.autoRunId && runIds.has(entry.autoRunId)))
+        && entry.billable !== false
+        && !["voided", "cancelled"].includes(entry.status),
+    );
+    const knownCostUsd = ledgerEntries.reduce(
+      (total, entry) => total + (entry.amountUsd != null && Number.isFinite(Number(entry.amountUsd)) ? Number(entry.amountUsd) : 0),
+      0,
+    );
+    const costGroup = (keyFor, keyName) => [...ledgerEntries.reduce((groups, entry) => {
+      const key = String(keyFor(entry) ?? "unattributed");
+      const current = groups.get(key) ?? { [keyName]: key, knownUsd: 0, unknownEntries: 0, entryCount: 0 };
+      current.entryCount += 1;
+      if (entry.amountUsd != null && Number.isFinite(Number(entry.amountUsd))) current.knownUsd += Number(entry.amountUsd);
+      else current.unknownEntries += 1;
+      groups.set(key, current);
+      return groups;
+    }, new Map()).values()]
+      .map((row) => ({ ...row, knownUsd: Number(row.knownUsd.toFixed(6)) }))
+      .sort((left, right) => right.knownUsd - left.knownUsd);
+    const projectBudget = budgetStatusFor(item.projectId);
+    const teamBudget = teamBudgetStatusFor(item.ownerTeamId);
+    const alertRows = (state.alertOutbox ?? []).filter((row) => {
+      const data = row.alert?.data ?? {};
+      return data.localIssueId === item.id || (data.autoRunId && runIds.has(data.autoRunId));
+    });
+    const activityTimeline = (state.workItemActivities ?? [])
+      .filter((row) => row.workItemId === item.id)
+      .map((row) => ({
+        id: row.id, at: row.createdAt, source: "issue", type: row.action,
+        actorId: row.actorId ?? null, message: row.action.replaceAll("_", " "), data: row.details ?? {},
+      }));
+    const executionTimeline = (state.invocationEvents ?? state.events ?? [])
+      .filter((row) => invocationIds.has(row.invocationId) || row.data?.executionChainId === item.id)
+      .map((row) => ({
+        id: row.id, at: row.createdAt ?? row.at, source: "execution", type: row.type,
+        actorId: null, message: row.message ?? row.type, data: row.data ?? {},
+      }));
+    const costTimeline = ledgerEntries.map((row) => ({
+      id: row.id,
+      at: row.createdAt ?? row.finalizedAt,
+      source: "cost",
+      type: "cost_recorded",
+      actorId: row.userId ?? null,
+      message: row.amountUsd == null
+        ? `Unmetered cost recorded for ${row.model ?? row.provider ?? "unknown model"}`
+        : `${row.currency ?? "USD"} ${Number(row.amountUsd).toFixed(4)} recorded for ${row.model ?? row.provider ?? "unknown model"}`,
+      data: { autoRunId: row.autoRunId ?? null, model: row.model ?? null, amountUsd: row.amountUsd ?? null },
+    }));
+    const alertTimeline = alertRows.map((row) => ({
+      id: row.id,
+      at: row.sentAt ?? row.nextAttemptAt ?? row.createdAt,
+      source: "alert",
+      type: row.alert?.kind ?? "alert",
+      actorId: null,
+      message: `${row.alert?.kind ?? "alert"} · ${row.status}`,
+      data: { status: row.status, attempts: row.attempts ?? 0, lastError: row.lastError ?? null },
+    }));
+    const timeline = [...activityTimeline, ...executionTimeline, ...costTimeline, ...alertTimeline]
+      .filter((row) => row.at)
+      .sort((left, right) => String(right.at).localeCompare(String(left.at)))
+      .slice(0, 200);
+    const comparableDurations = (state.autoRuns ?? [])
+      .filter((run) => run.projectId === item.projectId
+        && run.id !== latestRun?.id
+        && run.decision?.path === latestRun?.decision?.path
+        && ["pr_open", "report_posted", "done"].includes(run.status))
+      .map((run) => Date.parse(run.updatedAt ?? "") - Date.parse(run.createdAt ?? ""))
+      .filter((value) => Number.isFinite(value) && value > 0)
+      .sort((left, right) => left - right);
+    const typicalDurationMs = comparableDurations.length
+      ? comparableDurations[Math.floor(comparableDurations.length / 2)]
+      : null;
+    const p90DurationMs = comparableDurations.length
+      ? comparableDurations[Math.min(comparableDurations.length - 1, Math.ceil(comparableDurations.length * 0.9) - 1)]
+      : null;
+    const calibrationErrors = comparableDurations.flatMap((actual, index) => {
+      const training = comparableDurations.filter((_value, candidateIndex) => candidateIndex !== index);
+      if (!training.length) return [];
+      const predicted = training[Math.floor(training.length / 2)];
+      return [Math.abs(actual - predicted)];
+    });
+    const calibrationMaeMs = calibrationErrors.length
+      ? Math.round(calibrationErrors.reduce((sum, value) => sum + value, 0) / calibrationErrors.length)
+      : null;
+    const elapsedMs = latestRun ? Math.max(0, Date.parse(now()) - Date.parse(latestRun.createdAt ?? latestRun.updatedAt)) : null;
+    const terminal = latestRun && ["pr_open", "report_posted", "done", "failed", "blocked", "needs_input"].includes(latestRun.status);
+    const estimate = latestRun ? {
+      sampleCount: comparableDurations.length,
+      typicalDurationMs,
+      p90DurationMs,
+      calibrationSampleCount: calibrationErrors.length,
+      calibrationMaeMs,
+      elapsedMs,
+      remainingMs: terminal || typicalDurationMs == null || elapsedMs == null ? null : Math.max(0, typicalDurationMs - elapsedMs),
+      confidence: comparableDurations.length >= 5 ? "high" : comparableDurations.length >= 2 ? "medium" : "low",
+    } : null;
+    const selectedPath = latestRun?.decision?.path ?? null;
+    const routeSignals = {
+      develop: item.type === "bug" || item.type === "feature" ? "The issue requests a concrete product change." : "No stronger change signal.",
+      design: /design|ux|ui|mockup|wireframe/i.test(`${item.title} ${item.body}`) ? "Design/UI language is present." : "No design artifact signal.",
+      prototype: /prototype|spike|experiment|proof of concept/i.test(`${item.title} ${item.body}`) ? "Experiment language is present." : "No experiment signal.",
+      clarify: latestRun?.decision?.clarifyingQuestions?.length ? "The router identified unresolved questions." : "No unresolved questions were detected.",
+      decompose: item.type === "initiative" ? "The item is an initiative and may require decomposition." : "The item is not classified as an initiative.",
+    };
+    const routeCandidates = ["develop", "design", "prototype", "clarify", "decompose"].map((path, index) => ({
+      path,
+      selected: path === selectedPath,
+      score: path === selectedPath
+        ? latestRun?.decision?.confidence ?? null
+        : Math.max(0, Number(((latestRun?.decision?.confidence ?? 0.5) - 0.12 - index * 0.04).toFixed(2))),
+      reason: path === selectedPath
+        ? latestRun?.decision?.rationale ?? routeSignals[path]
+        : routeSignals[path],
+    }));
+    const nextAction = attention.some((row) => row.kind === "execution_approval")
+      ? "review_approval"
+      : attention.some((row) => row.kind === "github_conflict")
+        ? "resolve_sync_conflict"
+        : executionState(item) === "failed"
+          ? "inspect_failure"
+          : item.state === "closed"
+            ? "none"
+            : latestRun
+              ? "monitor_execution"
+              : "start_execution";
+    return {
+      ok: true,
+      status: 200,
+      body: {
+        workItem: workItemView(item, actor),
+        observability: {
+          executionChainId: item.id,
+          nextAction,
+          attention,
+          latestRun: latestRun ? {
+            id: latestRun.id,
+            status: latestRun.status,
+            updatedAt: latestRun.updatedAt,
+            decision: latestRun.decision ?? null,
+            routingOverride: latestRun.routingOverride ? {
+              recommendedPath: latestRun.routingOverride.recommendedPath ?? null,
+              actualPath: latestRun.routingOverride.actualPath,
+              reason: latestRun.routingOverride.reason,
+              actorId: latestRun.routingOverride.actorId,
+              recordedAt: latestRun.routingOverride.recordedAt,
+              revision: latestRun.routingOverride.revision,
+            } : null,
+            terminalOutcome: latestRun.terminalOutcome ?? null,
+            invocationId: latestRun.invocationId ?? null,
+            agentId: latestRun.agentId ?? null,
+          } : null,
+          activeClaim: activeClaim ? {
+            actorId: activeClaim.claimedBy ?? null,
+            claimedAt: activeClaim.claimedAt ?? null,
+            expiresAt: activeClaim.expiresAt ?? activeClaim.leaseExpiresAt ?? null,
+          } : null,
+          cost: {
+            knownUsd: Number(knownCostUsd.toFixed(6)),
+            unknownEntries: ledgerEntries.filter((entry) => entry.amountUsd == null || !Number.isFinite(Number(entry.amountUsd))).length,
+            entryCount: ledgerEntries.length,
+            byAutoRun: costGroup((entry) => entry.autoRunId, "autoRunId"),
+            byModel: costGroup((entry) => entry.model ?? entry.counterparty, "model"),
+            byBudgetPool: costGroup((entry) => entry.budgetPoolId, "budgetPoolId"),
+            projectBudget: projectBudget?.exists ? projectBudget : null,
+            teamBudget: teamBudget?.exists ? teamBudget : null,
+          },
+          alerts: {
+            queued: alertRows.filter((row) => row.status === "queued").length,
+            failed: alertRows.filter((row) => row.status === "failed").length,
+            sent: alertRows.filter((row) => row.status === "sent").length,
+            skipped: alertRows.filter((row) => row.status === "skipped").length,
+            items: alertRows.slice(0, 10).map((row) => ({
+              id: row.id,
+              kind: row.alert?.kind ?? "unknown",
+              status: row.status,
+              attempts: Number(row.attempts ?? 0),
+              nextAttemptAt: row.nextAttemptAt ?? null,
+              sentAt: row.sentAt ?? null,
+              lastError: row.lastError ?? null,
+            })),
+          },
+          timeline,
+          estimate,
+          routingExplanation: latestRun ? {
+            selectedPath,
+            via: latestRun.decision?.via ?? latestRun.decision?.decidedBy ?? "unknown",
+            confidence: latestRun.decision?.confidence ?? null,
+            rationale: latestRun.decision?.rationale ?? null,
+            humanCorrection: latestRun.routingOverride ? {
+              actualPath: latestRun.routingOverride.actualPath,
+              reason: latestRun.routingOverride.reason,
+              actorId: latestRun.routingOverride.actorId,
+              recordedAt: latestRun.routingOverride.recordedAt,
+            } : null,
+            candidates: routeCandidates,
+          } : null,
+        },
+      },
+    };
+  }
+
+  function suggestWorkItemDraft(input = {}, actor = null) {
+    const projectId = String(input.projectId ?? "");
+    if (!projectId || !actorCanAccessProject(state, actor, projectId)) return notFound();
+    const title = String(input.title ?? "").trim().slice(0, 300);
+    const body = String(input.body ?? "").trim().slice(0, 20_000);
+    if (!title) return { ok: false, status: 400, body: { error: "title_required" } };
+    const lower = `${title} ${body}`.toLowerCase();
+    const type = /bug|fix|error|fail|崩溃|错误|修复/.test(lower) ? "bug"
+      : /initiative|epic|项目|计划/.test(lower) ? "initiative"
+        : /feature|新增|支持|能力/.test(lower) ? "feature" : "task";
+    const acceptanceCriteria = [
+      `The requested outcome for “${title}” is demonstrably complete.`,
+      "Automated verification covers the primary success path.",
+      ...(type === "bug" ? ["A regression test reproduces the prior failure and passes after the fix."] : []),
+    ];
+    return {
+      ok: true, status: 200, body: {
+        draft: {
+          title, body: body || `Implement ${title} with a user-visible result and documented verification.`,
+          type, priority: /urgent|critical|p0|紧急|严重/.test(lower) ? "p0" : "p2",
+          acceptanceCriteria,
+          suggestedRoute: type === "initiative" ? "decompose" : body.length < 40 ? "clarify" : "develop",
+          risks: [
+            ...(!body ? ["The problem statement needs more context."] : []),
+            "Confirm affected users and rollback expectations before execution.",
+          ],
+          evidence: {
+            generator: "heuristic",
+            policyVersion: "local-work-item-draft-v1",
+            modelVersion: null,
+            inputDigest: createHash("sha256").update(JSON.stringify({ projectId, title, body })).digest("hex"),
+            confidence: body.length >= 120 ? 0.78 : body.length >= 40 ? 0.65 : 0.45,
+          },
+        },
+      },
+    };
+  }
+
+  function retryWorkItemAlert({ workItemId, alertId } = {}, actor = null) {
+    const item = findOwn(workItemId, actor);
+    if (!item) return notFound();
+    const runIds = new Set((item.executionBindings ?? []).filter((binding) => binding.kind === "auto_run").map((binding) => binding.targetId));
+    const row = (state.alertOutbox ?? []).find((candidate) => candidate.id === String(alertId));
+    const data = row?.alert?.data ?? {};
+    if (!row || (data.localIssueId !== item.id && !runIds.has(data.autoRunId))) return notFound();
+    if (!["failed", "skipped"].includes(row.status)) {
+      return { ok: false, status: 409, body: { error: "alert_not_retryable", status: row.status } };
+    }
+    const retried = retryAlert(row.id);
+    return retried
+      ? { ok: true, status: 200, body: { alert: { id: retried.id, status: retried.status, attempts: retried.attempts } } }
+      : notFound();
   }
 
   function githubBinding(item) {
-    return (item.externalBindings ?? []).find((binding) => binding.kind === "github_issue") ?? null;
+    return externalIssueBinding(item, "github");
+  }
+
+  function providerOfBinding(binding) {
+    if (["github", "gitlab", "gitea"].includes(binding?.provider)) return binding.provider;
+    if (binding?.kind === "github_issue") return "github";
+    if (binding?.kind === "gitlab_issue") return "gitlab";
+    if (binding?.kind === "gitea_issue") return "gitea";
+    return null;
+  }
+
+  function externalIssueBinding(item, provider) {
+    return (item.externalBindings ?? []).find((binding) =>
+      providerOfBinding(binding) === provider
+      && (binding.resourceType === "issue" || String(binding.kind).endsWith("_issue"))) ?? null;
+  }
+
+  function externalBindingView(binding) {
+    const provider = providerOfBinding(binding);
+    const resourceType = binding.resourceType ?? (String(binding.kind).endsWith("_issue") ? "issue" : "unknown");
+    const externalId = String(binding.externalId ?? binding.number ?? "");
+    return {
+      ...binding,
+      provider,
+      resourceType,
+      externalId,
+      bindingId: binding.bindingId
+        ?? [provider ?? "unknown", resourceType, binding.repository ?? "repository", externalId].join(":"),
+    };
   }
 
   function normalizeGithubSnapshot(input = {}) {
@@ -755,43 +1138,74 @@ export function createWorkItemService({
     };
   }
 
-  function bindGithubIssue({ workItemId, expectedRevision, remote } = {}, actor = null) {
+  function bindExternalIssue({ workItemId, expectedRevision, provider = "github", remote } = {}, actor = null) {
+    const normalizedProvider = String(provider).toLowerCase();
+    if (!["github", "gitlab", "gitea"].includes(normalizedProvider)) {
+      return { ok: false, status: 400, body: { error: "unsupported_external_provider" } };
+    }
     const item = findOwn(workItemId, actor);
     if (!item) return notFound();
     if (expectedRevision !== item.revision) {
       return { ok: false, status: 409, body: { error: "work_item_revision_conflict", currentRevision: item.revision } };
     }
     const snapshot = normalizeGithubSnapshot(remote);
-    if (!snapshot) return { ok: false, status: 400, body: { error: "invalid_github_issue_snapshot" } };
-    if (githubBinding(item)) return { ok: false, status: 409, body: { error: "github_issue_already_bound" } };
+    if (!snapshot) return { ok: false, status: 400, body: { error: "invalid_external_issue_snapshot", provider: normalizedProvider } };
+    if (externalIssueBinding(item, normalizedProvider)) {
+      return { ok: false, status: 409, body: { error: "external_issue_already_bound", provider: normalizedProvider } };
+    }
     const duplicate = (state.workItems ?? []).find((candidate) =>
       candidate.ownerTeamId === actorTeam(actor) && candidate.projectId === item.projectId
       && (candidate.externalBindings ?? []).some((binding) =>
-        binding.kind === "github_issue" && binding.number === snapshot.number));
-    if (duplicate) return { ok: false, status: 409, body: { error: "github_issue_already_linked", workItemId: duplicate.id } };
+        providerOfBinding(binding) === normalizedProvider
+        && binding.number === snapshot.number
+        && (binding.repository ?? null) === (snapshot.repository ?? null)));
+    if (duplicate) return { ok: false, status: 409, body: { error: "external_issue_already_linked", provider: normalizedProvider, workItemId: duplicate.id } };
     const binding = {
-      kind: "github_issue", number: snapshot.number, url: snapshot.url, repository: snapshot.repository,
+      kind: `${normalizedProvider}_issue`,
+      provider: normalizedProvider,
+      resourceType: "issue",
+      externalId: String(snapshot.number),
+      bindingId: [normalizedProvider, "issue", snapshot.repository ?? "repository", snapshot.number].join(":"),
+      number: snapshot.number, url: snapshot.url, repository: snapshot.repository,
       syncedLocalRevision: item.revision, remoteUpdatedAt: snapshot.updatedAt,
       baseline: Object.fromEntries(GITHUB_SYNC_FIELDS.map((field) => [field, snapshot[field]])),
       conflict: null, lastSyncedAt: now(),
     };
     runTx(() => {
       item.externalBindings.push(binding);
-      recordActivity(item, actor, "github_linked", { number: snapshot.number, url: snapshot.url });
+      recordActivity(item, actor, `${normalizedProvider}_linked`, { provider: normalizedProvider, number: snapshot.number, url: snapshot.url });
     });
-    return { ok: true, status: 201, body: { workItem: workItemView(item, actor), binding } };
+    return { ok: true, status: 201, body: { workItem: workItemView(item, actor), binding: externalBindingView(binding) } };
   }
 
-  function syncGithubIssue({ workItemId, expectedRevision, direction, remote, pushedRemoteUpdatedAt } = {}, actor = null) {
+  function bindGithubIssue(input = {}, actor = null) {
+    const result = bindExternalIssue({ ...input, provider: "github" }, actor);
+    if (result.body?.error === "invalid_external_issue_snapshot") result.body.error = "invalid_github_issue_snapshot";
+    if (result.body?.error === "external_issue_already_bound") result.body.error = "github_issue_already_bound";
+    if (result.body?.error === "external_issue_already_linked") result.body.error = "github_issue_already_linked";
+    return result;
+  }
+
+  function syncExternalIssue({
+    workItemId, expectedRevision, provider = "github", direction, remote, pushedRemoteUpdatedAt,
+  } = {}, actor = null) {
+    const normalizedProvider = String(provider).toLowerCase();
+    if (!["github", "gitlab", "gitea"].includes(normalizedProvider)) {
+      return { ok: false, status: 400, body: { error: "unsupported_external_provider" } };
+    }
     const item = findOwn(workItemId, actor);
     if (!item) return notFound();
-    const binding = githubBinding(item);
-    if (!binding) return { ok: false, status: 409, body: { error: "github_issue_not_bound" } };
+    const binding = externalIssueBinding(item, normalizedProvider);
+    const providerError = (suffix) => normalizedProvider === "github"
+      ? `github_${suffix}`
+      : `external_${suffix}`;
+    const providerActivity = (suffix) => `${normalizedProvider}_${suffix}`;
+    if (!binding) return { ok: false, status: 409, body: { error: "external_issue_not_bound", provider: normalizedProvider } };
     if (expectedRevision !== item.revision) {
       return { ok: false, status: 409, body: { error: "work_item_revision_conflict", currentRevision: item.revision } };
     }
     if (["resolve_local", "resolve_remote"].includes(direction)) {
-      if (!binding.conflict) return { ok: false, status: 409, body: { error: "github_sync_conflict_not_found" } };
+      if (!binding.conflict) return { ok: false, status: 409, body: { error: providerError("sync_conflict_not_found"), provider: normalizedProvider } };
       const conflict = binding.conflict;
       runTx(() => {
         if (direction === "resolve_remote") {
@@ -801,7 +1215,7 @@ export function createWorkItemService({
         }
         binding.conflict = null;
         binding.syncedLocalRevision = item.revision;
-        recordActivity(item, actor, direction === "resolve_remote" ? "github_conflict_remote_selected" : "github_conflict_local_selected", {
+        recordActivity(item, actor, providerActivity(direction === "resolve_remote" ? "conflict_remote_selected" : "conflict_local_selected"), {
           number: binding.number, fields: conflict.fields,
         });
       });
@@ -812,26 +1226,26 @@ export function createWorkItemService({
       };
     }
     if (direction === "push") {
-      if (binding.conflict) return { ok: false, status: 409, body: { error: "github_sync_conflict", conflict: binding.conflict } };
+      if (binding.conflict) return { ok: false, status: 409, body: { error: providerError("sync_conflict"), provider: normalizedProvider, conflict: binding.conflict } };
       const payload = Object.fromEntries(GITHUB_SYNC_FIELDS.map((field) => [field, item[field]]));
       if (!pushedRemoteUpdatedAt) {
         return { ok: true, status: 200, body: { action: "push_required", issueNumber: binding.number, payload, workItem: workItemView(item, actor) } };
       }
       if (!Number.isFinite(Date.parse(String(pushedRemoteUpdatedAt)))) {
-        return { ok: false, status: 400, body: { error: "invalid_github_sync_confirmation" } };
+        return { ok: false, status: 400, body: { error: providerError("invalid_sync_confirmation"), provider: normalizedProvider } };
       }
       runTx(() => {
         binding.baseline = structuredClone(payload);
         binding.syncedLocalRevision = item.revision;
         binding.remoteUpdatedAt = String(pushedRemoteUpdatedAt);
         binding.lastSyncedAt = now();
-        recordActivity(item, actor, "github_pushed", { number: binding.number });
+        recordActivity(item, actor, providerActivity("pushed"), { number: binding.number });
       });
       return { ok: true, status: 200, body: { action: "pushed", workItem: workItemView(item, actor) } };
     }
-    if (direction !== "pull") return { ok: false, status: 400, body: { error: "invalid_github_sync_direction" } };
+    if (direction !== "pull") return { ok: false, status: 400, body: { error: providerError("invalid_sync_direction"), provider: normalizedProvider } };
     const snapshot = normalizeGithubSnapshot({ ...remote, number: binding.number });
-    if (!snapshot) return { ok: false, status: 400, body: { error: "invalid_github_issue_snapshot" } };
+    if (!snapshot) return { ok: false, status: 400, body: { error: providerError("invalid_issue_snapshot"), provider: normalizedProvider } };
     const localChanged = item.revision !== binding.syncedLocalRevision;
     const remoteChanged = snapshot.updatedAt !== binding.remoteUpdatedAt;
     if (!remoteChanged) {
@@ -850,9 +1264,9 @@ export function createWorkItemService({
         };
         runTx(() => {
           binding.conflict = conflict;
-          recordActivity(item, actor, "github_conflict_detected", { number: binding.number, fields });
+          recordActivity(item, actor, providerActivity("conflict_detected"), { number: binding.number, fields });
         });
-        return { ok: false, status: 409, body: { error: "github_sync_conflict", conflict } };
+        return { ok: false, status: 409, body: { error: providerError("sync_conflict"), provider: normalizedProvider, conflict } };
       }
     }
     const merged = Object.fromEntries(GITHUB_SYNC_FIELDS.map((field) => [
@@ -871,9 +1285,37 @@ export function createWorkItemService({
       binding.lastSyncedAt = now();
       binding.conflict = null;
       binding.remoteDeletedAt = null;
-      recordActivity(item, actor, "github_pulled", { number: binding.number });
+      recordActivity(item, actor, providerActivity("pulled"), { number: binding.number });
     });
     return { ok: true, status: 200, body: { action: "pulled", workItem: workItemView(item, actor) } };
+  }
+
+  function syncGithubIssue(input = {}, actor = null) {
+    const result = syncExternalIssue({ ...input, provider: "github" }, actor);
+    if (result.body?.error === "external_issue_not_bound") result.body.error = "github_issue_not_bound";
+    return result;
+  }
+
+  function listExternalProviders() {
+    const gitlab = externalIssueProviderReadiness("gitlab");
+    const gitea = externalIssueProviderReadiness("gitea");
+    return {
+      ok: true,
+      status: 200,
+      body: {
+        providers: [
+          { id: "github", label: "GitHub", binding: true, manualPull: true, apiSync: true, webhook: true, changeRequest: "pull_request" },
+          { id: "gitlab", label: "GitLab", binding: true, manualPull: true, apiSync: gitlab.configured, webhook: gitlab.webhookConfigured, changeRequest: "merge_request" },
+          { id: "gitea", label: "Gitea", binding: true, manualPull: true, apiSync: gitea.configured, webhook: gitea.webhookConfigured, changeRequest: "pull_request" },
+        ],
+        authority: {
+          planning: "local",
+          sourceCode: "git",
+          externalCollaboration: "provider",
+          conflictPolicy: "manual_resolution",
+        },
+      },
+    };
   }
 
   function createWorkItem(input = {}, actor = null) {
@@ -1369,8 +1811,10 @@ export function createWorkItemService({
   return {
     listWorkItems, listAttention, getWorkItem, createWorkItem, updateWorkItem, bulkUpdateWorkItems, transitionWorkItem,
     listActivity, listComments, createComment, updateComment, deleteComment,
-    recordExecutionBinding, claimWorkItem, releaseWorkItemClaim, bindGithubIssue, syncGithubIssue,
+    recordExecutionBinding, claimWorkItem, releaseWorkItemClaim,
+    bindGithubIssue, syncGithubIssue, bindExternalIssue, syncExternalIssue, listExternalProviders,
     recordVerification, ingestGithubWebhook, replayGithubWebhook, recordGithubWebhookFailure,
-    githubSyncDiagnostics, updateAttention, sweepOperationalAlerts,
+    ingestExternalWebhook, replayExternalWebhook, recordExternalWebhookFailure,
+    githubSyncDiagnostics, updateAttention, sweepOperationalAlerts, suggestWorkItemDraft, retryWorkItemAlert,
   };
 }

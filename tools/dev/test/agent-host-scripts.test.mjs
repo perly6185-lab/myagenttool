@@ -321,9 +321,9 @@ hostScriptTest("migration supports a POSIX login shell and rolls back skip-home 
     "if [ \"$1\" = \"-lc\" ]; then",
     "  shift",
     "  export PATH=\"${MYAGENTTOOL_TEST_PATH:-$PATH}\"",
-    "  exec /usr/bin/bash --noprofile --norc -c \"$1\"",
+    "  exec /bin/bash --noprofile --norc -c \"$1\"",
     "fi",
-    "exec /usr/bin/bash \"$@\"",
+    "exec /bin/bash \"$@\"",
   ]);
   writeExecutable(join(state.mockBin, "uname"), [
     "#!/usr/bin/env bash",
@@ -357,6 +357,7 @@ hostScriptTest("migration supports a POSIX login shell and rolls back skip-home 
   }));
 
   assert.notEqual(result.status, 0, "forced verification failure unexpectedly passed\n" + diagnostic(result));
+  assert.ok(existsSync(sshLog), "migration did not invoke ssh:\n" + diagnostic(result));
   const calls = readFileSync(sshLog, "utf8");
   assert.ok(calls.includes("--install-only"), "migration did not reach wrapper refresh through dash:\n" + calls + "\n" + diagnostic(result));
   assert.ok(calls.includes("bashrc-referent-path"), "home rollback was not attempted:\n" + calls);

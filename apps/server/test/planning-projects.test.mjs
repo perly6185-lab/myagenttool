@@ -6,20 +6,22 @@ const ACTOR_A = { userId: "usr_a", teamId: "team_a" };
 const ACTOR_B = { userId: "usr_b", teamId: "team_b" };
 const ACTOR_C = { userId: "usr_c", teamId: "team_a" };
 
-function harness() {
+function harness({ store, persistStateSoon } = {}) {
   let counter = 0;
   const state = {
     planningProjects: [],
     planningProjectItems: [],
     workItems: [
-      { id: "wi_a", localRef: "LOCAL-1", ownerTeamId: "team_a", title: "A", status: "backlog", priority: "p2", state: "open" },
-      { id: "wi_b", localRef: "LOCAL-2", ownerTeamId: "team_b", title: "B", status: "ready", priority: "p1", state: "open" },
+      { id: "wi_a", projectId: "prj_a", localRef: "LOCAL-1", ownerTeamId: "team_a", title: "A", status: "backlog", priority: "p2", state: "open" },
+      { id: "wi_b", projectId: "prj_b", localRef: "LOCAL-2", ownerTeamId: "team_b", title: "B", status: "ready", priority: "p1", state: "open" },
     ],
   };
   const service = createPlanningProjectService({
     state,
     now: () => "2026-07-24T00:00:00.000Z",
     nextId: (prefix) => `${prefix}_${++counter}`,
+    store,
+    persistStateSoon,
   });
   return { state, service };
 }
@@ -42,6 +44,45 @@ test("planning projects are team scoped and revision gated", () => {
   }, ACTOR_A);
   assert.equal(updated.body.project.revision, 2);
   assert.equal(updated.body.project.name, "Release 1");
+});
+
+test("AI planning is review-only and projects expose autonomy and health", () => {
+  const { service, state } = harness();
+  const project = service.createProject({ name: "Guided delivery", autonomyProfile: "cautious" }, ACTOR_A).body.project;
+  service.addItem({ planningProjectId: project.id, workItemId: "wi_a" }, ACTOR_A);
+  state.workItems.push({
+    id: "wi_dependency", localRef: "LOCAL-3", ownerTeamId: "team_a",
+    title: "Dependency", status: "backlog", priority: "p2", state: "open",
+  });
+  state.workItems[0].dependencyIds = ["wi_dependency"];
+  state.workItems[0].executionBindings = [{ kind: "auto_run", targetId: "aur_health" }];
+  state.autoRuns = [{
+    id: "aur_health", status: "done", executionChainId: "wi_a",
+    routingOverride: { recommendedPath: "develop", actualPath: "design" },
+  }];
+  state.ledgerEntries = [{ id: "led_health", autoRunId: "aur_health", amountUsd: 0.25 }];
+  state.alertOutbox = [{
+    id: "aob_health", status: "failed", alert: { data: { autoRunId: "aur_health" } },
+  }];
+  const detail = service.getProject({ planningProjectId: project.id }, ACTOR_A).body.project;
+  assert.equal(detail.autonomyProfile, "cautious");
+  assert.equal(detail.aiHealth.blocked, 1);
+  assert.equal(detail.aiHealth.needsAttention, true);
+  assert.equal(detail.aiHealth.successRate, 1);
+  assert.equal(detail.aiHealth.routingCorrectionRate, 1);
+  assert.equal(detail.aiHealth.knownCostUsd, 0.25);
+  assert.equal(detail.aiHealth.alertBacklog, 1);
+  assert.equal(detail.aiHealth.traceCoverage, 1);
+  assert.equal(detail.aiHealth.sloStatus, "insufficient_data");
+  const workItemCount = state.workItems.length;
+  const plan = service.suggestPlan({ planningProjectId: project.id }, ACTOR_A);
+  assert.equal(plan.status, 200);
+  assert.equal(plan.body.plan.requiresApproval, true);
+  assert.equal(plan.body.plan.autonomyProfile, "cautious");
+  assert.equal(plan.body.plan.targetProjectId, "prj_a");
+  assert.equal(plan.body.plan.drafts.length, 3);
+  assert.equal(state.workItems.length, workItemCount, "suggestion must not create work items");
+  assert.equal(service.suggestPlan({ planningProjectId: project.id }, ACTOR_B).status, 404);
 });
 
 test("planning projects support cursor pagination and incremental refresh", () => {
@@ -462,4 +503,41 @@ test("high-risk recommended actions require approval and drain through the durab
   assert.equal(drained.processed[0].status, "completed");
   assert.equal(drained.processed[0].result.stillBlocked[0].workItemId, "wi_a");
   assert.equal(state.planningProjects[0].activity[0].action, "recommended_action_completed");
+});
+
+test("queued recommended actions commit their lease and terminal state exactly once each", async () => {
+  let commits = 0;
+  const { service, state } = harness({
+    store: { transaction: (fn) => { commits += 1; return fn(); } },
+    persistStateSoon: () => assert.fail("store-backed writes must not use the debounce"),
+  });
+  state.workItems.push({
+    id: "wi_dependency", localRef: "LOCAL-3", ownerTeamId: "team_a",
+    title: "Dependency", status: "backlog", priority: "p2", state: "open",
+  });
+  state.workItems[0].dependencyIds = ["wi_dependency"];
+  state.workItems[0].status = "blocked";
+  const project = service.createProject({ name: "Blocked work" }, ACTOR_A).body.project;
+  service.addItem({ planningProjectId: project.id, workItemId: "wi_a" }, ACTOR_A);
+  const current = service.getProject({ planningProjectId: project.id }, ACTOR_A).body.project;
+  const pending = service.executeRecommendedAction({
+    planningProjectId: project.id,
+    expectedRevision: current.revision,
+    code: "resolve_blocked_items",
+    idempotencyKey: "durable-action",
+    confirmed: true,
+  }, ACTOR_A);
+  service.decideRecommendedAction({
+    planningProjectId: project.id,
+    approvalRequestId: pending.body.approvalRequest.id,
+    decision: "approved",
+    confirmed: true,
+    note: "Commit the executor transitions.",
+  }, ACTOR_A);
+
+  commits = 0;
+  const drained = await service.processQueuedRecommendedActions();
+
+  assert.equal(drained.processed[0].status, "completed");
+  assert.equal(commits, 2);
 });

@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { LOCAL_TEAM_ID, LOCAL_USER_ID } from "../runtime/auth.mjs";
 import { makeRunTx } from "../runtime/store/run-tx.mjs";
 import { normalizedUpdatedSince, paginateRows } from "./cursor-pagination.mjs";
@@ -11,6 +12,7 @@ const WORK_ITEM_STATUSES = new Set(["", "backlog", "ready", "in_progress", "revi
 const WORK_ITEM_PRIORITIES = new Set(["", "p0", "p1", "p2", "p3"]);
 const WORK_ITEM_TYPES = new Set(["", "task", "bug", "feature", "initiative"]);
 const PROJECT_STATUSES = new Set(["planned", "active", "on_hold", "completed"]);
+const AUTONOMY_PROFILES = new Set(["cautious", "standard", "high"]);
 const RECOMMENDED_ACTION_POLICY = {
   recover_failed_runs: { risk: "high", approvalRequired: true },
   resolve_blocked_items: { risk: "high", approvalRequired: true },
@@ -163,6 +165,25 @@ export function createPlanningProjectService({
     const activeRunCount = linkedRuns.filter((run) =>
       ["materializing", "running", "awaiting_approval", "verifying", "publishing"].includes(run.status)).length;
     const failedRunCount = linkedRuns.filter((run) => ["failed", "blocked"].includes(run.status)).length;
+    const settledRuns = linkedRuns.filter((run) =>
+      ["pr_open", "report_posted", "done", "failed", "blocked", "cancelled", "needs_input"].includes(run.status));
+    const successfulRuns = settledRuns.filter((run) => ["pr_open", "report_posted", "done"].includes(run.status));
+    const correctedRoutes = linkedRuns.filter((run) =>
+      run.routingOverride?.actualPath && run.routingOverride.actualPath !== run.routingOverride.recommendedPath);
+    const linkedRunIds = new Set(linkedRuns.map((run) => run.id));
+    const knownCostUsd = (state.ledgerEntries ?? [])
+      .filter((entry) => linkedRunIds.has(entry.autoRunId) && Number.isFinite(Number(entry.amountUsd)))
+      .reduce((sum, entry) => sum + Number(entry.amountUsd), 0);
+    const alertBacklog = (state.alertOutbox ?? []).filter((row) =>
+      linkedRunIds.has(row.alert?.data?.autoRunId) && ["queued", "failed"].includes(row.status)).length;
+    const successRate = settledRuns.length ? successfulRuns.length / settledRuns.length : null;
+    const routingCorrectionRate = linkedRuns.length ? correctedRoutes.length / linkedRuns.length : null;
+    const aiHealthSignals = [
+      settledRuns.length >= 5 && successRate < 0.8 ? "success_rate_below_target" : null,
+      linkedRuns.length >= 5 && routingCorrectionRate > 0.25 ? "routing_correction_rate_high" : null,
+      failedRunCount > 0 ? "failed_runs" : null,
+      alertBacklog > 0 ? "alert_backlog" : null,
+    ].filter(Boolean);
     const plannedPoints = workItems.filter((item) => item.status !== "done" && item.state !== "closed")
       .reduce((sum, item) => sum + (Number(item.estimatePoints) || 0), 0);
     const capacityPoints = Number(project.capacityPoints) || 0;
@@ -216,6 +237,25 @@ export function createPlanningProjectService({
       unowned,
       health: project.status === "completed" ? "healthy"
         : riskScore > 0 ? "attention" : activeRunCount > 0 ? "active" : "healthy",
+      autonomyProfile: AUTONOMY_PROFILES.has(project.autonomyProfile) ? project.autonomyProfile : "standard",
+      aiHealth: {
+        active: activeRunCount,
+        failed: failedRunCount,
+        blocked: blockedItemCount,
+        overdue: overdueItemCount,
+        needsAttention: failedRunCount + blockedItemCount + overdueItemCount + alertBacklog > 0,
+        settled: settledRuns.length,
+        successRate,
+        routingCorrectionRate,
+        knownCostUsd: Number(knownCostUsd.toFixed(6)),
+        alertBacklog,
+        traceCoverage: linkedRuns.length
+          ? linkedRuns.filter((run) => Boolean(run.executionChainId)).length / linkedRuns.length
+          : null,
+        sloStatus: settledRuns.length < 5 ? "insufficient_data" : aiHealthSignals.length ? "at_risk" : "healthy",
+        signals: aiHealthSignals,
+        targets: { successRate: 0.8, maxRoutingCorrectionRate: 0.25, maxAlertBacklog: 0 },
+      },
       ...(includeItems ? {
         items: memberships.map((membership) => ({
           membership,
@@ -256,7 +296,7 @@ export function createPlanningProjectService({
 
   function createProject({
     name, description, color, capacityPoints, startDate, targetDate, ownerId, status, tags, statusSummary, pinned, watching,
-    templateProjectId = null, savedViews, automationRules,
+    templateProjectId = null, savedViews, automationRules, autonomyProfile,
   } = {}, actor = null) {
     const template = templateProjectId ? findOwn(templateProjectId, actor) : null;
     if (templateProjectId && !template) return notFound();
@@ -319,6 +359,8 @@ export function createPlanningProjectService({
       watcherIds: watching ? [userOfActor(actor)] : [],
       savedViews: importedViews ?? (template?.savedViews ?? []).map((view) => ({ ...view, id: nextId("ppv") })),
       automationRules: importedRules ?? (template?.automationRules ?? []).map((rule) => ({ ...rule, id: nextId("par") })),
+      autonomyProfile: AUTONOMY_PROFILES.has(autonomyProfile) ? autonomyProfile
+        : AUTONOMY_PROFILES.has(template?.autonomyProfile) ? template.autonomyProfile : "standard",
       activity: [],
       revision: 1,
       archivedAt: null,
@@ -412,6 +454,13 @@ export function createPlanningProjectService({
       const automationRules = normalizeAutomationRules(changes.automationRules, nextId);
       if (!automationRules) return { ok: false, status: 400, body: { error: "invalid_planning_project_automation_rules" } };
       patch.automationRules = automationRules;
+    }
+    if (Object.hasOwn(changes, "autonomyProfile")) {
+      const autonomyProfile = String(changes.autonomyProfile ?? "");
+      if (!AUTONOMY_PROFILES.has(autonomyProfile)) {
+        return { ok: false, status: 400, body: { error: "invalid_planning_project_autonomy_profile" } };
+      }
+      patch.autonomyProfile = autonomyProfile;
     }
     if (Object.hasOwn(changes, "capacityPoints")) {
       const capacityPoints = Number(changes.capacityPoints);
@@ -712,15 +761,18 @@ export function createPlanningProjectService({
         candidate.status === "queued"
         || (candidate.status === "running" && Date.parse(candidate.leaseExpiresAt ?? "") <= Date.parse(now())))) {
         const actor = { userId: "usr_planning_executor", teamId: project.ownerTeamId };
-        execution.status = "running";
-        execution.startedAt = now();
-        execution.leaseExpiresAt = new Date(Date.parse(now()) + 5 * 60_000).toISOString();
-        recordActivity(project, actor, "recommended_action_started", {
-          executionId: execution.id, code: execution.code,
+        runTx(() => {
+          execution.status = "running";
+          execution.startedAt = now();
+          execution.leaseExpiresAt = new Date(Date.parse(now()) + 5 * 60_000).toISOString();
+          recordActivity(project, actor, "recommended_action_started", {
+            executionId: execution.id, code: execution.code,
+          });
         });
-        persistStateSoon();
+        let result;
+        const recoveredItems = [];
+        let failure = null;
         try {
-          let result;
           const memberIds = new Set((state.planningProjectItems ?? [])
             .filter((membership) => membership.planningProjectId === project.id
               && membership.ownerTeamId === project.ownerTeamId)
@@ -741,7 +793,6 @@ export function createPlanningProjectService({
             result = { attempted: runIds.length, retried };
           } else if (execution.code === "resolve_blocked_items") {
             const completedIds = new Set(workItems.filter((item) => item.status === "done" || item.state === "closed").map((item) => item.id));
-            const recovered = [];
             const stillBlocked = [];
             for (const item of workItems.filter((candidate) => candidate.status === "blocked")) {
               const blockers = (item.dependencyIds ?? []).filter((id) => !completedIds.has(id));
@@ -749,44 +800,97 @@ export function createPlanningProjectService({
                 stillBlocked.push({ workItemId: item.id, blockers });
                 continue;
               }
-              item.status = "ready";
-              item.revision += 1;
-              item.updatedAt = now();
-              item.lastModifiedBy = actor.userId;
-              recovered.push(item.id);
+              recoveredItems.push(item);
             }
-            result = { attempted: recovered.length + stillBlocked.length, recovered, stillBlocked };
+            result = {
+              attempted: recoveredItems.length + stillBlocked.length,
+              recovered: recoveredItems.map((item) => item.id),
+              stillBlocked,
+            };
           } else {
             throw new Error(`unsupported_recommended_action:${execution.code}`);
           }
-          execution.status = "completed";
-          execution.completedAt = now();
-          execution.leaseExpiresAt = null;
-          execution.result = result;
-          recordActivity(project, actor, "recommended_action_completed", {
-            executionId: execution.id, code: execution.code, result,
-          });
         } catch (error) {
-          execution.status = "failed";
+          failure = error instanceof Error ? error.message : String(error);
+        }
+        runTx(() => {
+          for (const item of recoveredItems) {
+            item.status = "ready";
+            item.revision += 1;
+            item.updatedAt = now();
+            item.lastModifiedBy = actor.userId;
+          }
+          execution.status = failure ? "failed" : "completed";
           execution.completedAt = now();
           execution.leaseExpiresAt = null;
-          execution.result = { error: error instanceof Error ? error.message : String(error) };
-          recordActivity(project, actor, "recommended_action_failed", {
-            executionId: execution.id, code: execution.code, error: execution.result.error,
+          execution.result = failure ? { error: failure } : result;
+          recordActivity(project, actor, failure
+            ? "recommended_action_failed" : "recommended_action_completed", {
+            executionId: execution.id, code: execution.code,
+            ...(failure ? { error: failure } : { result }),
           });
-        }
-        project.revision += 1;
-        project.updatedAt = now();
-        persistStateSoon();
+          project.revision += 1;
+          project.updatedAt = now();
+        });
         processed.push(execution);
       }
     }
     return { processed, count: processed.length };
   }
 
+  function suggestPlan({ planningProjectId } = {}, actor = null) {
+    const project = findOwn(planningProjectId, actor);
+    if (!project) return notFound();
+    const existing = visibleMemberships(project.id, actor)
+      .map((membership) => (state.workItems ?? []).find((item) => item.id === membership.workItemId))
+      .filter(Boolean);
+    const context = project.description || project.name;
+    const drafts = [
+      {
+        title: `Clarify outcomes for ${project.name}`, type: "task", priority: "p1", suggestedRoute: "clarify",
+        body: `Turn the project goal into measurable user outcomes.\n\nContext: ${context}`,
+        acceptanceCriteria: ["Primary users and outcomes are documented.", "Success metrics and non-goals are explicit."],
+      },
+      {
+        title: `Deliver the first usable slice of ${project.name}`, type: "feature", priority: "p1", suggestedRoute: "develop",
+        body: `Implement the smallest end-to-end slice that demonstrates the project outcome.\n\nContext: ${context}`,
+        acceptanceCriteria: ["The end-to-end success path works.", "Automated verification covers the slice."],
+      },
+      {
+        title: `Validate and operationalize ${project.name}`, type: "task", priority: "p2", suggestedRoute: "prototype",
+        body: "Validate usability, monitoring, rollback, and operating guidance for the delivered slice.",
+        acceptanceCriteria: ["Operational signals and rollback steps are documented.", "Validation evidence is captured."],
+      },
+    ].filter((draft) => !existing.some((item) => item.title.toLowerCase() === draft.title.toLowerCase()));
+    return {
+      ok: true, status: 200, body: {
+        plan: {
+          planningProjectId: project.id,
+          targetProjectId: existing[0]?.projectId ?? null,
+          autonomyProfile: AUTONOMY_PROFILES.has(project.autonomyProfile) ? project.autonomyProfile : "standard",
+          generatedAt: now(),
+          drafts,
+          requiresApproval: true,
+          evidence: {
+            generator: "heuristic",
+            policyVersion: "planning-project-draft-v1",
+            modelVersion: null,
+            inputDigest: createHash("sha256").update(JSON.stringify({
+              planningProjectId: project.id,
+              revision: project.revision,
+              context,
+              existingIds: existing.map((item) => item.id),
+            })).digest("hex"),
+            confidence: existing.length >= 3 ? 0.72 : 0.55,
+          },
+        },
+      },
+    };
+  }
+
   return {
     listProjects, getProject, createProject, updateProject, setArchived,
     addItem, removeItem, reorderItems, updateItems, executeRecommendedAction, decideRecommendedAction,
-    processQueuedRecommendedActions,
+    processQueuedRecommendedActions, suggestPlan,
   };
 }

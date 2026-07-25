@@ -73,6 +73,11 @@ export function createInvocationApprovalRuntime({
   }
 
   function createApprovalRequest(invocation, agent, policy) {
+    const metadata = invocation.input?.metadata ?? {};
+    const worktree = metadata.worktreeId
+      ? (state.worktrees ?? []).find((item) => item.id === metadata.worktreeId) ?? null
+      : null;
+    const project = (state.projects ?? []).find((item) => item.id === (metadata.projectId ?? invocation.projectId)) ?? null;
     const approval = {
       id: nextId("apr_demo"),
       invocationId: invocation.id,
@@ -82,6 +87,19 @@ export function createInvocationApprovalRuntime({
       riskLevel: policy.riskLevel,
       riskTags: policy.riskTags,
       summary: policy.summary,
+      executionContext: {
+        command: agent.adapter?.command ?? null,
+        arguments: Array.isArray(agent.adapter?.args) ? [...agent.adapter.args] : [],
+        workingDirectory: worktree?.path ?? project?.path ?? agent.adapter?.workingDirectory ?? null,
+        pathPolicy: worktree?.path ? "isolated_worktree" : agent.adapter?.workingDirectoryPolicy ?? "project",
+        impactScope: uniqueStrings([
+          ...(agent.capabilities ?? []).flatMap((capability) => capability.riskTags ?? []),
+          ...(policy.riskTags ?? []),
+        ]),
+        projectId: metadata.projectId ?? invocation.projectId ?? null,
+        worktreeId: metadata.worktreeId ?? null,
+        autoRunId: metadata.autoRunId ?? null,
+      },
       createdAt: now(),
       decidedAt: null,
       decidedBy: null
