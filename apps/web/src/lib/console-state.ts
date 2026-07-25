@@ -675,6 +675,9 @@ export interface LedgerEntry {
   status?: string;
   costOwner?: string;
   projectId?: string;
+  autoRunId?: string | null;
+  localIssueId?: string | null;
+  budgetPoolId?: string | null;
   invocationStatus?: string;
   createdAt: string;
 }
@@ -1190,6 +1193,27 @@ export interface ConsoleSnapshot {
   issueClaims?: IssueClaim[];
   /** #1152 durable claim lifecycle history (claimed/released/expired), newest first. */
   issueClaimEvents?: IssueClaimEvent[];
+  /** Bounded Work Item totals; details remain on the cursor-paginated endpoint. */
+  workItemSummary?: {
+    total: number;
+    open: number;
+    blocked: number;
+    activeExecutions: number;
+    updatedAt: string | null;
+  };
+  workItemAlertSummary?: {
+    queued: number;
+    failed: number;
+    sent: number;
+    byLocalIssue: {
+      localIssueId: string;
+      status: "queued" | "failed" | "sent";
+      attempts: number;
+      lastError: string | null;
+      createdAt: string;
+      sentAt: string | null;
+    }[];
+  };
   agent: AgentSnapshot | null;
   agents: AgentSnapshot[];
   invocations: InvocationSnapshot[];

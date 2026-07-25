@@ -181,6 +181,16 @@ type WorkItemAttentionMetrics = {
   pendingApprovals: number;
   oldestAgeSeconds: number;
 };
+type LocalWorkItemAutoRun = {
+  id: string;
+  status: string;
+  updatedAt: string;
+  decision?: {
+    path: string; decidedBy: string; confidence: number; rationale?: string | null;
+    via?: string | null; latencyMs?: number | null; clarifyingQuestions?: string[] | null;
+  } | null;
+  terminalOutcome?: { disposition: "MERGED" | "CLOSED"; source: string; convergedAt: string } | null;
+};
 // Each row also carries which project it came from (for the "All projects" view).
 type Row = GithubItem & { projectId: string; projectName: string };
 
@@ -615,9 +625,9 @@ export function TaskView() {
         {tab === "local" ? (
           <>
             <section className="space-y-2 rounded-lg border border-warning/40 bg-warning/5 p-3">
-                <div className="flex items-center justify-between">
+                <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
                   <h3 className="text-sm font-semibold">{t("approvals.pending", { count: attentionItems.length })}</h3>
-                  <div className="flex flex-wrap items-center gap-2">
+                  <div className="grid w-full grid-cols-2 items-center gap-2 sm:flex sm:w-auto sm:flex-wrap">
                     <label className="flex items-center gap-1 text-xs">
                       <input type="checkbox"
                         checked={attentionItems.length > 0 && attentionItems.every((item) => selectedAttentionIds.has(item.id))}
@@ -626,7 +636,7 @@ export function TaskView() {
                           : new Set())} />
                       {t("evidence.show")}
                     </label>
-                    <Select value={attentionKind} onChange={(event) => setAttentionKind(event.target.value)} className="h-7 text-xs">
+                    <Select value={attentionKind} onChange={(event) => setAttentionKind(event.target.value)} className="h-7 w-full text-xs">
                       <option value="">{t("evidence.show")}</option>
                       <option value="github_conflict">{t("taskLocal.github.conflict")}</option>
                       <option value="github_deleted">{t("workItemGithub.deleted")}</option>
@@ -635,12 +645,12 @@ export function TaskView() {
                       <option value="acceptance_blocked">{t("tasks.acceptanceCriteria")}</option>
                       <option value="recommended_action_approval">{t("planningDecision.nextActions")}</option>
                     </Select>
-                    <Select value={attentionSla} onChange={(event) => setAttentionSla(event.target.value)} className="h-7 text-xs">
+                    <Select value={attentionSla} onChange={(event) => setAttentionSla(event.target.value)} className="h-7 w-full text-xs">
                       <option value="">{t("planningFilters.allStatuses")}</option>
                       <option value="breached">{t("planningSchedule.overdue")}</option>
                       <option value="within_sla">{t("planningExecution.healthy")}</option>
                     </Select>
-                    <Select value={attentionHandler} onChange={(event) => setAttentionHandler(event.target.value)} className="h-7 text-xs">
+                    <Select value={attentionHandler} onChange={(event) => setAttentionHandler(event.target.value)} className="h-7 w-full text-xs">
                       <option value="">{t("planningFilters.allStatuses")}</option>
                       <option value="mine">{t("approvals.handling")}</option>
                       <option value="unclaimed">{t("taskLocal.executionState.unclaimed")}</option>
@@ -2181,6 +2191,7 @@ function LocalWorkItemDetail({
   onChanged: () => void;
 }) {
   const { t } = useAppTranslation();
+  const { data: consoleState } = useConsoleState();
   const { execute, pending, error } = useAsyncAction();
   const setSection = useUiStore((state) => state.setSection);
   const setSelectedProjectId = useUiStore((state) => state.setSelectedProjectId);
@@ -2205,14 +2216,18 @@ function LocalWorkItemDetail({
   const [dependencyCandidates, setDependencyCandidates] = useState<LocalWorkItem[]>([]);
   const [dependencyId, setDependencyId] = useState("");
   const [parentId, setParentId] = useState("");
+  const [boundRun, setBoundRun] = useState<LocalWorkItemAutoRun | null>(null);
+  const [itemAttention, setItemAttention] = useState<WorkItemAttention[]>([]);
 
   const load = async () => {
     try {
-      const [detail, commentResult, activityResult, workItemResult] = await Promise.all([
+      const [detail, commentResult, activityResult, workItemResult, autoRunResult, attentionResult] = await Promise.all([
         api.getWorkItem(workItemId) as Promise<{ workItem: LocalWorkItem }>,
         api.listWorkItemComments(workItemId) as Promise<{ comments: WorkItemComment[] }>,
         api.listWorkItemActivity(workItemId) as Promise<{ activities: WorkItemActivity[] }>,
         api.listWorkItems() as Promise<LocalWorkItemResult>,
+        api.listAutoRuns() as Promise<{ autoRuns?: LocalWorkItemAutoRun[] }>,
+        api.listWorkItemAttention({}) as Promise<{ items?: WorkItemAttention[] }>,
       ]);
       const next = detail.workItem;
       setItem(next);
@@ -2230,6 +2245,15 @@ function LocalWorkItemDetail({
       setComments(commentResult.comments);
       setActivity(activityResult.activities);
       setDependencyCandidates(workItemResult.workItems.filter((candidate) => candidate.id !== workItemId));
+      const autoRunIds = new Set(
+        (next.executionBindings ?? []).filter((binding) => binding.kind === "auto_run").map((binding) => binding.targetId),
+      );
+      setBoundRun((autoRunResult.autoRuns ?? [])
+        .filter((run) => autoRunIds.has(run.id))
+        .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))[0] ?? null);
+      setItemAttention((attentionResult.items ?? []).filter(
+        (attention) => attention.workItemId === workItemId && !attention.resolution,
+      ));
       setLoadError(null);
     } catch (caught) {
       setLoadError(caught instanceof Error ? caught.message : t("taskLocal.loadFailed"));
@@ -2327,6 +2351,31 @@ function LocalWorkItemDetail({
     });
   };
   const githubBinding = item.externalBindings?.find((binding) => binding.kind === "github_issue");
+  const nextAction = itemAttention.some((attention) => attention.kind === "execution_approval")
+    ? t("taskCockpit.approve")
+    : githubBinding?.conflict
+      ? t("taskCockpit.resolveConflict")
+      : item.executionState === "failed"
+        ? t("taskCockpit.inspectFailure")
+        : item.state === "closed"
+          ? t("taskCockpit.none")
+          : boundRun
+            ? t("taskCockpit.monitor")
+            : t("taskCockpit.start");
+  const updatedAgeMinutes = Math.max(0, Math.floor((Date.now() - Date.parse(item.updatedAt)) / 60_000));
+  const issueLedgerEntries = (consoleState?.ledgerEntries ?? []).filter(
+    (entry) => entry.localIssueId === item.id && entry.billable !== false && entry.status !== "voided",
+  );
+  const knownCostUsd = issueLedgerEntries.reduce(
+    (total, entry) => total + (Number.isFinite(entry.amountUsd) ? Number(entry.amountUsd) : 0),
+    0,
+  );
+  const unknownCostEntries = issueLedgerEntries.filter((entry) => !Number.isFinite(entry.amountUsd)).length;
+  const issueAlertRows = (consoleState?.workItemAlertSummary?.byLocalIssue ?? []).filter(
+    (row) => row.localIssueId === item.id,
+  );
+  const failedAlerts = issueAlertRows.filter((row) => row.status === "failed").length;
+  const queuedAlerts = issueAlertRows.filter((row) => row.status === "queued").length;
   const syncGithub = (direction: "pull" | "push" | "resolve_local" | "resolve_remote") => {
     void execute(() => api.syncWorkItemGithubIssue(item.id, {
       expectedRevision: item.revision, direction,
@@ -2356,6 +2405,81 @@ function LocalWorkItemDetail({
         ) : null}
         <span>{t("taskLocal.revision", { revision: item.revision })}</span>
       </div>
+      <section className="rounded-md border border-border p-3">
+        <div className="mb-2 flex items-center justify-between gap-2">
+          <h3 className="text-sm font-semibold">{t("taskCockpit.title")}</h3>
+          <Badge tone={itemAttention.length ? "danger" : "success"}>
+            {itemAttention.length
+              ? t("taskCockpit.attentionCount", { count: itemAttention.length })
+              : t("taskCockpit.healthy")}
+          </Badge>
+        </div>
+        <div className="grid grid-cols-2 gap-2 text-xs sm:grid-cols-3 lg:grid-cols-6">
+          <div className="rounded bg-muted p-2">
+            <span className="block text-muted-foreground">{t("taskCockpit.stage")}</span>
+            <strong>{item.executionState
+              ? t(`taskLocal.executionState.${item.executionState}`)
+              : t(`tasks.localStatus.${item.status}`)}</strong>
+          </div>
+          <div className="rounded bg-muted p-2">
+            <span className="block text-muted-foreground">{t("taskCockpit.nextAction")}</span>
+            <strong>{nextAction}</strong>
+          </div>
+          <div className="rounded bg-muted p-2">
+            <span className="block text-muted-foreground">{t("taskCockpit.freshness")}</span>
+            <strong>{t("taskCockpit.minutesAgo", { count: updatedAgeMinutes })}</strong>
+          </div>
+          <div className="rounded bg-muted p-2">
+            <span className="block text-muted-foreground">{t("taskCockpit.deadline")}</span>
+            <strong>{item.dueDate || "—"}</strong>
+          </div>
+          <div className="rounded bg-muted p-2">
+            <span className="block text-muted-foreground">{t("taskCockpit.cost")}</span>
+            <strong>${knownCostUsd.toFixed(4)}</strong>
+            {unknownCostEntries ? <span className="ml-1 text-muted-foreground">+{unknownCostEntries}?</span> : null}
+          </div>
+          <div className="rounded bg-muted p-2">
+            <span className="block text-muted-foreground">{t("taskCockpit.alertDelivery")}</span>
+            <strong className={failedAlerts ? "text-destructive" : ""}>
+              {failedAlerts
+                ? t("taskCockpit.alertFailed", { count: failedAlerts })
+                : queuedAlerts
+                  ? t("taskCockpit.alertQueued", { count: queuedAlerts })
+                  : t("taskCockpit.alertClear")}
+            </strong>
+          </div>
+        </div>
+      </section>
+      {boundRun?.decision ? (
+        <section className="space-y-2 rounded-md border border-border p-3 text-xs">
+          <div className="flex flex-wrap items-center gap-2">
+            <h3 className="text-sm font-semibold">{t("taskCockpit.routingTitle")}</h3>
+            <Badge tone={boundRun.decision.confidence < 0.6 ? "warning" : "success"}>{boundRun.decision.path}</Badge>
+            <span>{Math.round(boundRun.decision.confidence * 100)}%</span>
+            <span className="text-muted-foreground">{boundRun.decision.via ?? boundRun.decision.decidedBy}</span>
+            {boundRun.decision.latencyMs != null
+              ? <span className="text-muted-foreground">{boundRun.decision.latencyMs} ms</span>
+              : null}
+          </div>
+          {boundRun.decision.rationale ? <p className="whitespace-pre-wrap">{boundRun.decision.rationale}</p> : null}
+          {(boundRun.decision.clarifyingQuestions ?? []).length ? (
+            <ul className="list-inside list-disc text-muted-foreground">
+              {boundRun.decision.clarifyingQuestions?.map((question) => <li key={question}>{question}</li>)}
+            </ul>
+          ) : null}
+          <div className="flex items-center gap-2">
+            <Badge tone={statusTone(boundRun.status)}>
+              {t(`autoRuns.status.${boundRun.status}` as never, { defaultValue: boundRun.status })}
+            </Badge>
+            {boundRun.terminalOutcome
+              ? <span>{boundRun.terminalOutcome.disposition} · {boundRun.terminalOutcome.source}</span>
+              : null}
+            <Button className="ml-auto" variant="secondary" size="sm" onClick={() => setSection("autoRuns")}>
+              {t("taskCockpit.openAutoRuns")}
+            </Button>
+          </div>
+        </section>
+      ) : null}
       {githubBinding ? (
         <div className="space-y-2 rounded-md border border-border p-3 text-xs">
           <div className="flex flex-wrap items-center gap-2">
@@ -2375,6 +2499,9 @@ function LocalWorkItemDetail({
           ) : null}
         </div>
       ) : null}
+      <details className="rounded-md border border-border p-3">
+        <summary className="cursor-pointer text-sm font-semibold">{t("taskCockpit.details")}</summary>
+        <div className="mt-3 space-y-4">
       <div className="grid gap-3 sm:grid-cols-3">
         <Field label={t("taskLocal.dueDate")}><Input type="date" value={dueDate} onChange={(event) => setDueDate(event.target.value)} /></Field>
         <Field label={t("taskLocal.milestone")}><Input value={milestone} onChange={(event) => setMilestone(event.target.value)} /></Field>
@@ -2460,6 +2587,8 @@ function LocalWorkItemDetail({
       <Field label={t("tasks.acceptanceCriteria")}>
         <textarea className="min-h-24 w-full rounded-md border border-border bg-background p-2 text-sm" value={acceptance} onChange={(event) => setAcceptance(event.target.value)} />
       </Field>
+        </div>
+      </details>
       {(item.acceptanceCriteria.length || item.verificationRecords?.length) ? (
         <section className="space-y-2 rounded-md border border-border p-3">
           <div className="flex items-center justify-between">
@@ -2494,17 +2623,17 @@ function LocalWorkItemDetail({
         </section>
       ) : null}
       {error ? <p className="text-xs text-destructive">{error}</p> : null}
-      <div className="flex flex-wrap justify-end gap-2">
-        <Button variant="secondary" disabled={pending || item.state !== "open"} onClick={createExecutionWorktree}>
+      <div className="sticky bottom-0 z-10 grid grid-cols-2 gap-2 border-t border-border bg-background/95 py-2 backdrop-blur sm:static sm:flex sm:flex-wrap sm:justify-end sm:border-0 sm:bg-transparent sm:py-0">
+        <Button className="w-full sm:w-auto" variant="secondary" disabled={pending || item.state !== "open"} onClick={createExecutionWorktree}>
           <GitBranch className="mr-1 size-4" />{t("taskLocal.createWorktree")}
         </Button>
-        <Button disabled={pending || item.state !== "open"} onClick={startExecution}>
+        <Button className="w-full sm:w-auto" disabled={pending || item.state !== "open"} onClick={startExecution}>
           <Zap className="mr-1 size-4" />{t("taskLocal.startAutoRun")}
         </Button>
-        <Button variant="secondary" disabled={pending} onClick={() => transition(item.state === "open" ? "close" : "reopen")}>
+        <Button className="w-full sm:w-auto" variant="secondary" disabled={pending} onClick={() => transition(item.state === "open" ? "close" : "reopen")}>
           {t(item.state === "open" ? "taskLocal.close" : "taskLocal.reopen")}
         </Button>
-        <Button disabled={pending || !title.trim()} onClick={save}><Save className="mr-1 size-4" />{t("taskLocal.save")}</Button>
+        <Button className="w-full sm:w-auto" disabled={pending || !title.trim()} onClick={save}><Save className="mr-1 size-4" />{t("taskLocal.save")}</Button>
       </div>
       {(item.executionBindings?.length ?? 0) > 0 ? (
         <div className="rounded-md border border-border p-2">

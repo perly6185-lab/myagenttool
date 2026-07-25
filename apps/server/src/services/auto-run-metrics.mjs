@@ -1,5 +1,5 @@
 import { autoRunStates } from "./auto-run.mjs";
-import { routingEvaluation } from "./auto-run-eval.mjs";
+import { alignmentFor, routingEvaluation } from "./auto-run-eval.mjs";
 import { DEFAULT_SLO_TARGETS, summarizeAutoRunSlos } from "./auto-run-slo.mjs";
 
 // Observability + evaluation for the autonomous auto-run loop. A pure summary of
@@ -49,6 +49,49 @@ function topReasons(counts, limit = 5) {
     .sort((a, b) => b[1] - a[1])
     .slice(0, limit)
     .map(([reason, count]) => ({ reason, count }));
+}
+
+function routingHealth(autoRuns) {
+  const decisions = autoRuns.filter((run) => run.decision?.path);
+  const latencies = decisions
+    .map((run) => Number(run.decision.latencyMs))
+    .filter((value) => Number.isFinite(value) && value >= 0)
+    .sort((a, b) => a - b);
+  const fallback = decisions.filter((run) => run.decision.via === "fallback").length;
+  const lowConfidence = decisions.filter((run) =>
+    Number.isFinite(Number(run.decision.confidence)) && Number(run.decision.confidence) < 0.6,
+  ).length;
+  const confidenceBuckets = [
+    { key: "low", min: 0, max: 0.6 },
+    { key: "medium", min: 0.6, max: 0.8 },
+    { key: "high", min: 0.8, max: 1.01 },
+  ].map(({ key, min, max }) => {
+    const rows = decisions.filter((run) => {
+      const confidence = Number(run.decision.confidence);
+      return Number.isFinite(confidence) && confidence >= min && confidence < max;
+    });
+    const conclusive = rows.filter((run) => alignmentFor(run.decision.path, run.status) !== "inconclusive");
+    const aligned = conclusive.filter((run) => alignmentFor(run.decision.path, run.status) === "aligned").length;
+    return {
+      key,
+      total: rows.length,
+      conclusive: conclusive.length,
+      alignmentRate: conclusive.length ? Number((aligned / conclusive.length).toFixed(4)) : null,
+    };
+  });
+  const total = decisions.length;
+  const fallbackRate = total ? Number((fallback / total).toFixed(4)) : null;
+  const lowConfidenceRate = total ? Number((lowConfidence / total).toFixed(4)) : null;
+  const latency = {
+    count: latencies.length,
+    medianMs: percentile(latencies, 0.5),
+    p90Ms: percentile(latencies, 0.9),
+  };
+  const signals = [];
+  if (total >= 5 && fallbackRate >= 0.2) signals.push({ key: "fallback_spike", severity: "danger", value: fallbackRate, threshold: 0.2 });
+  if (total >= 5 && lowConfidenceRate >= 0.25) signals.push({ key: "low_confidence", severity: "warning", value: lowConfidenceRate, threshold: 0.25 });
+  if (latency.count >= 5 && latency.p90Ms > 5000) signals.push({ key: "latency", severity: "warning", value: latency.p90Ms, threshold: 5000 });
+  return { total, fallback, fallbackRate, lowConfidence, lowConfidenceRate, latency, confidenceBuckets, signals };
 }
 
 /**
@@ -156,6 +199,7 @@ export function summarizeAutoRuns(autoRuns = [], { sloTargets = null } = {}) {
     decisions,
     // Was the routing right? Per-path alignment + PR dispositions (slice 5).
     routing: routingEvaluation(autoRuns),
+    routingHealth: routingHealth(autoRuns),
     blockedReasons: topReasons(blockedReasonCounts),
     timeToPr: {
       count: timeToPrSeconds.length,

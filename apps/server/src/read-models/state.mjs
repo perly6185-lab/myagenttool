@@ -194,6 +194,46 @@ export function buildPublicState({
   });
   // #1143 issue claims carry a projectId; project-team scoping is the boundary.
   const issueClaims = byProject(state.issueClaims);
+  // Work Items keep their own cursor-paginated endpoint. Publish only bounded,
+  // tenant-scoped totals here so /api/state consumers do not confuse an omitted
+  // large collection with an empty backlog.
+  const visibleWorkItems = (state.workItems ?? []).filter(
+    (item) => teamId == null || (item.ownerTeamId ?? LOCAL_TEAM_ID) === teamId,
+  );
+  const workItemSummary = {
+    total: visibleWorkItems.length,
+    open: visibleWorkItems.filter((item) => (item.businessState ?? item.state) === "open").length,
+    blocked: visibleWorkItems.filter((item) => (item.planningStatus ?? item.status) === "blocked").length,
+    activeExecutions: visibleWorkItems.filter((item) =>
+      ["claimed", "running", "awaiting_approval", "verifying"].includes(item.executionState),
+    ).length,
+    updatedAt: visibleWorkItems.reduce(
+      (latest, item) => item.updatedAt > latest ? item.updatedAt : latest,
+      "",
+    ) || null,
+  };
+  const workItemIds = new Set(visibleWorkItems.map((item) => item.id));
+  const workItemByAutoRunId = new Map();
+  for (const item of visibleWorkItems) {
+    for (const binding of item.executionBindings ?? []) {
+      if (binding.kind === "auto_run") workItemByAutoRunId.set(binding.targetId, item.id);
+    }
+  }
+  const visibleWorkItemAlerts = (state.alertOutbox ?? []).flatMap((row) => {
+    const data = row.alert?.data ?? {};
+    const localIssueId = workItemIds.has(data.localIssueId)
+      ? data.localIssueId
+      : workItemByAutoRunId.get(data.autoRunId) ?? null;
+    const teamAlert = teamId != null && data.teamId === teamId;
+    if (!localIssueId && !teamAlert) return [];
+    return [{ localIssueId, status: row.status, attempts: row.attempts, lastError: row.lastError, createdAt: row.createdAt, sentAt: row.sentAt }];
+  });
+  const workItemAlertSummary = {
+    queued: visibleWorkItemAlerts.filter((row) => row.status === "queued").length,
+    failed: visibleWorkItemAlerts.filter((row) => row.status === "failed").length,
+    sent: visibleWorkItemAlerts.filter((row) => row.status === "sent").length,
+    byLocalIssue: visibleWorkItemAlerts.filter((row) => row.localIssueId).slice(0, 100),
+  };
   // #1152: their durable lifecycle history, scoped the same way.
   const issueClaimEvents = byProject(state.issueClaimEvents ?? []);
   const autoRunsByInvocationId = groupRowsByKey(
@@ -431,6 +471,8 @@ export function buildPublicState({
     dispatchAssignments: byProject(state.dispatchAssignments ?? []),
     issueClaims,
     issueClaimEvents,
+    workItemSummary,
+    workItemAlertSummary,
     agent: defaultAgent(),
     agents: state.agents,
     invocations,

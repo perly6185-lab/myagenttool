@@ -14,7 +14,7 @@
 
 const PATHS = ["develop", "design", "prototype", "clarify"];
 
-function alignmentFor(path, status) {
+export function alignmentFor(path, status) {
   if (path === "develop") {
     if (status === "pr_open") return "aligned";
     if (status === "blocked") return "misaligned";

@@ -125,6 +125,16 @@ interface AutoRunSummary {
   successRate: number | null;
   verification: { passed: number; failed: number; unverified: number };
   routing?: { alignmentRate: number | null; conclusive: number } | null;
+  routingHealth?: {
+    total: number;
+    fallback: number;
+    fallbackRate: number | null;
+    lowConfidence: number;
+    lowConfidenceRate: number | null;
+    latency: { count: number; medianMs: number | null; p90Ms: number | null };
+    confidenceBuckets: { key: string; total: number; conclusive: number; alignmentRate: number | null }[];
+    signals: { key: string; severity: "warning" | "danger"; value: number; threshold: number }[];
+  } | null;
   blockedReasons: { reason: string; count: number }[];
   timeToPr: { count: number; medianSeconds: number | null; p90Seconds: number | null };
   slo?: {
@@ -971,6 +981,66 @@ export function AutoRunsView() {
               hint={t("autoRuns.selfRepairHint")}
             />
           </div>
+          {summary.routingHealth && summary.routingHealth.total > 0 ? (
+            <section className="space-y-3 rounded-lg border p-3">
+              <div className="flex flex-wrap items-center gap-2">
+                <h3 className="text-sm font-medium">{t("autoRunRoutingHealth.title")}</h3>
+                {summary.routingHealth.signals.length ? (
+                  <Badge tone="danger">{t("autoRunRoutingHealth.signalCount", { count: summary.routingHealth.signals.length })}</Badge>
+                ) : (
+                  <Badge tone="success">{t("autoRunRoutingHealth.healthy")}</Badge>
+                )}
+                <span className="text-xs text-muted-foreground">
+                  {t("autoRunRoutingHealth.sample", { count: summary.routingHealth.total })}
+                </span>
+              </div>
+              <div className="grid grid-cols-2 gap-2 md:grid-cols-4">
+                <StatTile
+                  label={t("autoRunRoutingHealth.fallback")}
+                  value={summary.routingHealth.fallbackRate == null ? "—" : `${Math.round(summary.routingHealth.fallbackRate * 100)}%`}
+                  hint={`${summary.routingHealth.fallback}/${summary.routingHealth.total}`}
+                />
+                <StatTile
+                  label={t("autoRunRoutingHealth.lowConfidence")}
+                  value={summary.routingHealth.lowConfidenceRate == null ? "—" : `${Math.round(summary.routingHealth.lowConfidenceRate * 100)}%`}
+                  hint={`${summary.routingHealth.lowConfidence}/${summary.routingHealth.total}`}
+                />
+                <StatTile
+                  label={t("autoRunRoutingHealth.medianLatency")}
+                  value={summary.routingHealth.latency.medianMs == null ? "—" : `${summary.routingHealth.latency.medianMs} ms`}
+                  hint={`n=${summary.routingHealth.latency.count}`}
+                />
+                <StatTile
+                  label={t("autoRunRoutingHealth.p90Latency")}
+                  value={summary.routingHealth.latency.p90Ms == null ? "—" : `${summary.routingHealth.latency.p90Ms} ms`}
+                  hint={t("autoRunRoutingHealth.threshold", { value: 5000 })}
+                />
+              </div>
+              <div className="grid gap-2 sm:grid-cols-3">
+                {summary.routingHealth.confidenceBuckets.map((bucket) => (
+                  <div key={bucket.key} className="rounded-md bg-muted p-2 text-xs">
+                    <div className="flex items-center justify-between">
+                      <strong>{t(`autoRunRoutingHealth.bucket.${bucket.key}` as never)}</strong>
+                      <span>{bucket.alignmentRate == null ? "—" : `${Math.round(bucket.alignmentRate * 100)}%`}</span>
+                    </div>
+                    <p className="text-muted-foreground">
+                      {t("autoRunRoutingHealth.conclusive", { conclusive: bucket.conclusive, total: bucket.total })}
+                    </p>
+                  </div>
+                ))}
+              </div>
+              {summary.routingHealth.signals.map((signal) => (
+                <div key={signal.key} className="rounded-md border border-red-500/40 bg-red-500/5 px-3 py-2 text-xs">
+                  <strong>{t(`autoRunRoutingHealth.signal.${signal.key}` as never)}</strong>
+                  <span className="ml-2 text-muted-foreground">
+                    {signal.key === "latency"
+                      ? `${Math.round(signal.value)} ms > ${signal.threshold} ms`
+                      : `${Math.round(signal.value * 100)}% ≥ ${Math.round(signal.threshold * 100)}%`}
+                  </span>
+                </div>
+              ))}
+            </section>
+          ) : null}
           {deployments && deployments.total > 0 ? (
             <div className="rounded-lg border p-3">
               <div className="mb-2 flex items-center gap-2 text-sm font-medium">
