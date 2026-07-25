@@ -82,6 +82,7 @@ export function createInvocationApprovalRuntime({
       id: nextId("apr_demo"),
       invocationId: invocation.id,
       agentId: agent.id,
+      terminalId: invocation.terminalId ?? invocation.delivery?.deviceId ?? null,
       requestedBy: invocation.requestedBy,
       status: "pending",
       riskLevel: policy.riskLevel,

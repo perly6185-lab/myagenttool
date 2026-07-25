@@ -3,6 +3,7 @@ import { dirname } from "node:path";
 
 import { LOCAL_TEAM_ID, teamOf } from "./auth.mjs";
 import { listDevices } from "./device.mjs";
+import { backfillTerminalOwnership } from "./terminal-ownership.mjs";
 
 // Durable atomic snapshot write. `writeFileSync` truncates the target in place
 // and does not fsync, so a crash mid-write left a torn file — and restore's
@@ -333,8 +334,9 @@ export function normalizeLoadedState(state, { seededDefaults, defaultProject, sa
     if (device) device.status = "offline";
   }
 
+  const terminalOwnershipBackfilled = backfillTerminalOwnership(state);
   const ownershipInconsistencies = detectOwnershipInconsistencies(state);
-  return { duplicateIdsRepaired, ownershipInconsistencies };
+  return { duplicateIdsRepaired, ownershipInconsistencies, terminalOwnershipBackfilled };
 }
 
 export function createPersistenceRuntime({

@@ -248,7 +248,8 @@ export async function handleProjectRoutes({
   if (autoRunRetryMatch && req.method === "POST") {
     if (denyForeignAutoRun(decodeURIComponent(autoRunRetryMatch[1]))) return true;
     try {
-      const result = await retryAutoRun(decodeURIComponent(autoRunRetryMatch[1]), { actor });
+      const body = await readJson(req);
+      const result = await retryAutoRun(decodeURIComponent(autoRunRetryMatch[1]), { actor, terminalId: body?.terminalId });
       sendJson(res, 200, result);
     } catch (error) {
       sendJson(res, 400, { error: "auto_run_retry_failed", message: errorMessage(error) });
@@ -260,7 +261,8 @@ export async function handleProjectRoutes({
   if (autoRunCancelMatch && req.method === "POST") {
     if (denyForeignAutoRun(decodeURIComponent(autoRunCancelMatch[1]))) return true;
     try {
-      const result = cancelAutoRun(decodeURIComponent(autoRunCancelMatch[1]), { actor });
+      const body = await readJson(req);
+      const result = cancelAutoRun(decodeURIComponent(autoRunCancelMatch[1]), { actor, terminalId: body?.terminalId });
       sendJson(res, 200, result);
     } catch (error) {
       sendJson(res, 400, { error: "auto_run_cancel_failed", message: errorMessage(error) });

@@ -434,8 +434,12 @@ test("a local issue starts an auto-run with its local body and acceptance criter
   assert.equal(result.body.autoRun.issueBody.includes("The local path is tested"), true);
   assert.equal(result.body.autoRun.executionChainId, item.id);
   assert.equal(result.body.autoRun.autonomyProfile, "standard");
+  assert.equal(result.body.autoRun.terminalId, item.terminalId);
   const invocation = runtimeState.invocations.find((row) => row.id === result.body.autoRun.invocationId);
+  assert.equal(invocation.terminalId, item.terminalId);
   assert.equal(invocation.options.metadata.executionChainId, item.id);
+  const approval = runtimeState.approvalRequests.find((row) => row.invocationId === invocation.id);
+  if (approval) assert.equal(approval.terminalId, item.terminalId);
   const detail = await call(`/api/work-items/${item.id}`);
   assert.equal(detail.body.workItem.executionBindings.some((binding) => binding.kind === "auto_run"), true);
 });

@@ -1,6 +1,7 @@
 import { detectPromptInjection, roleAutoRunPrompt } from "@myagenttool/protocol/issue-prompt";
 
 import { teamOf } from "../runtime/auth.mjs";
+import { findDevice, listDevices } from "../runtime/device.mjs";
 import { createRefusalRuntime } from "../runtime/refusal-log.mjs";
 import { isTerminal } from "./invocations.mjs";
 import { FAILOVER_INFRA_CODES, MAX_FAILOVERS, selectFailoverAgent } from "./invocations/agent-failover.mjs";
@@ -494,7 +495,7 @@ export function createAutoRunService({
   // so the server does not re-implement issue branch naming.
   async function startAutoRun({
     projectId, link, agentId, name, baseBranch, actor, issueBody: suppliedIssueBody,
-    executionChainId = null, autonomyProfile = "standard",
+    executionChainId = null, autonomyProfile = "standard", terminalId = null,
   } = {}) {
     const resolvedAutonomyProfile = ["cautious", "standard", "high"].includes(autonomyProfile)
       ? autonomyProfile
@@ -510,7 +511,13 @@ export function createAutoRunService({
     if (agent.status === "disabled") {
       throw new Error("The selected agent is disabled.");
     }
-    if (agent.location?.type === "local_device" && state.device?.unlinkState !== "linked") {
+    const agentTerminalId = agent.location?.type === "local_device" ? agent.location.deviceId ?? null : null;
+    const owningTerminalId = terminalId ? String(terminalId) : agentTerminalId;
+    if (owningTerminalId && agentTerminalId !== owningTerminalId) {
+      throw new Error("The selected agent does not belong to this task's terminal.");
+    }
+    const targetDevice = (agentTerminalId ? findDevice(state, agentTerminalId) : null) ?? listDevices(state)[0] ?? null;
+    if (targetDevice && targetDevice.unlinkState !== "linked") {
       throw new Error("The target device is unlinked; link it before starting an auto-run.");
     }
     // O0 cost brake — hard gates BEFORE any spend (worktree/agent). The kill
@@ -677,6 +684,7 @@ export function createAutoRunService({
       worktreeId: worktree.id,
       invocationId: null,
       agentId: agent.id,
+      terminalId: owningTerminalId,
       link: normalizedLink,
       executionChainId: executionChainId ? String(executionChainId) : null,
       autonomyProfile: resolvedAutonomyProfile,
@@ -779,6 +787,7 @@ export function createAutoRunService({
         invocationId: invocation.id,
         status: autoRun.status,
         executionChainId: autoRun.executionChainId,
+        terminalId: autoRun.terminalId,
         autonomyProfile: autoRun.autonomyProfile,
       },
     });
@@ -1178,14 +1187,20 @@ export function createAutoRunService({
   // settledStatuses, the invocation-terminal reaction (advanceAutoRunForInvocation)
   // then skips it instead of re-deriving `failed`. Non-destructive: the worktree is left
   // intact (a fresh run can reuse it), matching retry/teardown's non-destructive posture.
-  function cancelAutoRun(autoRunId, { actor } = {}) {
+  function cancelAutoRun(autoRunId, { actor, terminalId = null } = {}) {
     const autoRun = state.autoRuns.find((item) => item.id === autoRunId);
     if (!autoRun) throw new Error("Auto-run not found.");
+    if (terminalId && String(terminalId) !== autoRun.terminalId) {
+      throw new Error("This run belongs to a different terminal.");
+    }
     if (settledStatuses.has(autoRun.status)) {
       throw new Error("This run has already settled; only an in-flight run can be cancelled.");
     }
     if (autoRun.invocationId && typeof cancelInvocation === "function") {
       const invocation = findInvocation(autoRun.invocationId);
+      if (invocation?.terminalId && invocation.terminalId !== autoRun.terminalId) {
+        throw new Error("Invocation terminal ownership does not match its task.");
+      }
       if (invocation && !isTerminal(invocation.status)) {
         try {
           cancelInvocation(invocation, actor);
@@ -1201,9 +1216,12 @@ export function createAutoRunService({
     });
   }
 
-  async function retryAutoRun(autoRunId, { actor } = {}) {
+  async function retryAutoRun(autoRunId, { actor, terminalId = null } = {}) {
     const autoRun = state.autoRuns.find((item) => item.id === autoRunId);
     if (!autoRun) throw new Error("Auto-run not found.");
+    if (terminalId && String(terminalId) !== autoRun.terminalId) {
+      throw new Error("This run belongs to a different terminal.");
+    }
     if (!["failed", "blocked"].includes(autoRun.status)) {
       throw new Error("Only a failed or blocked auto-run can be retried.");
     }
@@ -1212,6 +1230,9 @@ export function createAutoRunService({
     const agent = (autoRun.agentId ? findAgent(autoRun.agentId) : null) ?? defaultAgent();
     if (!agent) throw new Error("No agent is registered to retry this run.");
     if (agent.status === "disabled") throw new Error("The selected agent is disabled.");
+    if (autoRun.terminalId && (agent.location?.type !== "local_device" || agent.location.deviceId !== autoRun.terminalId)) {
+      throw new Error("The selected agent does not belong to this task's terminal.");
+    }
     if (agent.location?.type === "local_device" && state.device?.unlinkState !== "linked") {
       throw new Error("The target device is unlinked; link it before retrying.");
     }

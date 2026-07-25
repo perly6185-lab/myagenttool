@@ -392,6 +392,7 @@ export async function handleWorkItemRoutes({
         projectId: item.projectId, link, name, baseBranch: body?.baseBranch,
         agentId: body?.agentId, actor, issueBody,
         executionChainId: item.id,
+        terminalId: item.terminalId,
         autonomyProfile: item.planningProjects?.some((project) => project.autonomyProfile === "cautious")
           ? "cautious"
           : item.planningProjects?.some((project) => project.autonomyProfile === "high")

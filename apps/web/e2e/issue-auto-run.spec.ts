@@ -43,6 +43,18 @@ async function mockApi(page: Page) {
     if (url.pathname === "/api/work-items/attention") {
       return route.fulfill({ json: { items: [], metrics: { backlog: 0, breached: 0 } } });
     }
+    if (url.pathname === "/api/invocation-dispatch-health") {
+      return route.fulfill({ json: {
+        capacity: { inFlight: 0, maxConcurrency: 3, atCapacity: false },
+        queue: { depth: 0, items: [] },
+        stats: { indeterminate: true, sampleSize: 0, medianMsToDispatch: null, redeliveryRate: null, exhaustedCount: 0 },
+        reliability: {
+          failover: { recovered: 0, attempts: 0 },
+          claims: { active: 0, expired: 0 },
+          intervention: { required: 0 },
+        },
+      } });
+    }
     if (url.pathname === "/api/planning-projects") return route.fulfill({ json: { projects: [] } });
     if (url.pathname === "/api/auto-runs" && method === "GET") return route.fulfill({ json: {
       autoRuns: autoRunStarted ? [{
@@ -143,6 +155,17 @@ test("creates an issue, routes AI execution, and reaches a pull request", async 
   await expect(page.getByText("PR open", { exact: true }).first()).toBeVisible();
   await expect(page.getByText("codex", { exact: true }).first()).toBeVisible();
   await expect(page.getByRole("link", { name: "Open on GitHub" })).toHaveAttribute("href", "https://github.test/pull/77");
+  const queue = page.getByRole("region", { name: "Dispatch queue" });
+  await expect(queue).toBeVisible();
+  await expect(queue.getByText(/Queue clear/)).toBeVisible();
+  await page.setViewportSize({ width: 390, height: 844 });
+  await expect(queue).toBeVisible();
+  const refresh = page.getByRole("button", { name: "Refresh" });
+  await expect(refresh).toBeVisible();
+  await refresh.focus();
+  await expect(refresh).toBeFocused();
+  await refresh.press("Enter");
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true);
 });
 
 test("restores a task-first Trace after visiting scheduling Settings", async ({ page }) => {

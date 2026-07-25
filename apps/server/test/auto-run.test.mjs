@@ -1069,6 +1069,11 @@ test("retryAutoRun restarts a failed run on its existing worktree (pilot #9)", a
   await svc.advanceAutoRunForInvocation({ ...invocation, status: "succeeded" });
   assert.equal(autoRun.status, "failed", "publish blew up -> failed");
   const worktreesBefore = state.worktrees.length;
+  await assert.rejects(
+    () => svc.retryAutoRun(autoRun.id, { actor: { userId: "usr_x" }, terminalId: "dev_other" }),
+    /different terminal/,
+  );
+  assert.equal(autoRun.status, "failed", "a cross-terminal retry cannot mutate the run");
 
   const { invocation: second } = await svc.retryAutoRun(autoRun.id, { actor: { userId: "usr_x" } });
 
@@ -1110,6 +1115,11 @@ test("cancelAutoRun stops an in-flight run: cancels its invocation and settles i
     name: "issue-140-cancel",
   });
   assert.ok(!["failed", "blocked", "pr_open"].includes(autoRun.status), "run is in-flight before cancel");
+  assert.throws(
+    () => svc.cancelAutoRun(autoRun.id, { actor: { userId: "usr_x" }, terminalId: "dev_other" }),
+    /different terminal/,
+  );
+  assert.notEqual(autoRun.status, "cancelled", "a cross-terminal cancel cannot mutate the run");
 
   const result = svc.cancelAutoRun(autoRun.id, { actor: { userId: "usr_x" } });
 

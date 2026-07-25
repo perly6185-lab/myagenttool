@@ -160,6 +160,7 @@ export function createInvocationCreationRuntime({
       ideaSessionId: null,
       compareRunId: null,
       agentId: agent.id,
+      terminalId: agent.location.type === "local_device" ? agent.location.deviceId : null,
       projectId: visibleProject?.id ?? project?.id ?? null,
       worktreeId: projectWorktree?.id ?? null,
       requestedBy,

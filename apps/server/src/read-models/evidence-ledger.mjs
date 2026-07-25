@@ -143,6 +143,7 @@ export function evidenceLedger({
       invocationId: id,
       task: truncate(inv.task ?? inv.input?.task ?? ""),
       agentId: inv.agentId ?? null,
+      terminalId: inv.terminalId ?? inv.delivery?.deviceId ?? audit?.terminalId ?? audit?.deviceId ?? null,
       projectId: inv.projectId ?? findings[0]?.projectId ?? null,
       status: inv.status ?? null,
       createdAt: inv.createdAt ?? null,

@@ -7,6 +7,7 @@
 import { createHash } from "node:crypto";
 import { actorCanAccessProject, LOCAL_TEAM_ID, LOCAL_USER_ID } from "../runtime/auth.mjs";
 import { listDevices } from "../runtime/device.mjs";
+import { backfillTerminalOwnership } from "../runtime/terminal-ownership.mjs";
 import { makeRunTx } from "../runtime/store/run-tx.mjs";
 import { normalizedUpdatedSince, paginateRows } from "./cursor-pagination.mjs";
 import { externalIssueProviderReadiness } from "./external-issue-provider.mjs";
@@ -36,6 +37,8 @@ export function taskTraceStage(type, source = "issue") {
   if (source === "execution" || value.includes("run") || value.includes("invocation")) return "execution";
   return "other";
 }
+
+export const backfillWorkItemTerminalOwnership = backfillTerminalOwnership;
 
 function strings(values, { limit = MAX_LABELS, maxLength = 100 } = {}) {
   if (!Array.isArray(values)) return null;
@@ -121,6 +124,7 @@ export function createWorkItemService({
   const runTx = makeRunTx({ store, persistStateSoon });
   const actorTeam = (actor) => actor?.teamId ?? LOCAL_TEAM_ID;
   const actorUser = (actor) => actor?.userId ?? LOCAL_USER_ID;
+  const localTerminalId = () => listDevices(state)[0]?.id ?? null;
   const notFound = () => ({ ok: false, status: 404, body: { error: "work_item_not_found" } });
   const commentNotFound = () => ({ ok: false, status: 404, body: { error: "work_item_comment_not_found" } });
 
@@ -128,7 +132,8 @@ export function createWorkItemService({
     return {
       ...details,
       principalId: actorUser(actor),
-      deviceId: actor?.deviceId ?? listDevices(state)[0]?.id ?? null,
+      deviceId: actor?.deviceId ?? item.terminalId ?? localTerminalId(),
+      terminalId: item.terminalId ?? localTerminalId(),
       effectiveAuthority: actor?.role ?? "owner",
       entryContext: details.entryContext ?? "task",
       traceParent: details.traceParent ?? item.id,
@@ -1384,6 +1389,7 @@ export function createWorkItemService({
       localRef: `LOCAL-${localNumber}`,
       ownerTeamId: teamId,
       projectId,
+      terminalId: localTerminalId(),
       ...validated.value,
       dependencyIds: [],
       parentId,
@@ -1409,7 +1415,10 @@ export function createWorkItemService({
         type: "work_item_created",
         level: "info",
         message: `${workItem.localRef} created.`,
-        data: { workItemId: workItem.id, localRef: workItem.localRef, projectId, actorTeamId: teamId },
+        data: {
+          workItemId: workItem.id, localRef: workItem.localRef, projectId,
+          terminalId: workItem.terminalId, actorTeamId: teamId,
+        },
       });
     });
     return { ok: true, status: 201, body: { workItem: workItemView(workItem, actor) } };
@@ -1418,6 +1427,13 @@ export function createWorkItemService({
   function updateWorkItem({ workItemId, expectedRevision, ...changes } = {}, actor = null) {
     const item = findOwn(workItemId, actor);
     if (!item) return notFound();
+    if (Object.hasOwn(changes, "terminalId")) {
+      return {
+        ok: false,
+        status: 409,
+        body: { error: "work_item_terminal_immutable", terminalId: item.terminalId },
+      };
+    }
     if (!Number.isInteger(expectedRevision)) {
       return { ok: false, status: 400, body: { error: "expected_revision_required" } };
     }
@@ -1769,7 +1785,13 @@ export function createWorkItemService({
     if (!["worktree", "auto_run"].includes(kind) || !targetId) {
       return { ok: false, status: 400, body: { error: "invalid_work_item_execution_binding" } };
     }
-    const binding = { kind, targetId: String(targetId), worktreeId: worktreeId ? String(worktreeId) : null, createdAt: now() };
+    const binding = {
+      kind,
+      targetId: String(targetId),
+      worktreeId: worktreeId ? String(worktreeId) : null,
+      terminalId: item.terminalId,
+      createdAt: now(),
+    };
     runTx(() => {
       item.executionBindings = [...(item.executionBindings ?? []), binding];
       item.revision += 1;
