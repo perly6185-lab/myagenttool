@@ -1,0 +1,15 @@
+{
+  "name": "@myagenttool/multi-terminal",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Observation-only multi-terminal console and composition service.",
+  "scripts": {
+    "dev": "node src/index.mjs",
+    "start": "node src/index.mjs",
+    "build": "node src/build.mjs",
+    "test": "node --test test/*.test.mjs",
+    "lint": "node src/build.mjs --check",
+    "typecheck": "node src/build.mjs --check"
+  }
+}
