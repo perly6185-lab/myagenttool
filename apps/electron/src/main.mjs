@@ -7,7 +7,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { bundledAgentEnv } from "./bundled-agent-runtime.mjs";
 import { overlayFromChrome, readSkinSettings, registerSkinChrome } from "./skin-chrome.mjs";
-import { registerContainedOfficeDocumentOpen, registerLocalOfficeDocumentPicker } from "./local-office-document-picker.mjs";
+import { registerContainedAssetOpen, registerContainedOfficeDocumentOpen, registerLocalOfficeDocumentPicker } from "./local-office-document-picker.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(__dirname, "../../..");
@@ -157,6 +157,7 @@ function createMainWindow(url, serverUrl) {
   const getState = async () => (await (await fetch(`${serverUrl}/api/state`)).json());
   registerLocalOfficeDocumentPicker({ ipcMain, dialog, getWindow: () => mainWindow, getWorktrees: async () => (await getState()).worktrees ?? [] });
   registerContainedOfficeDocumentOpen({ ipcMain, getState, openPath: (path) => shell.openPath(path) });
+  registerContainedAssetOpen({ ipcMain, getState, openPath: (path) => shell.openPath(path) });
   const chrome = readSkinSettings(skinStateDir());
   nativeTheme.themeSource = chrome.themeSource;
 

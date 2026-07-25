@@ -256,9 +256,9 @@ function DocumentPreview({ projectId, document, worktrees, worktreeId, onWorktre
   if (document.type === "md" || document.type === "mdx") return <MarkdownAssetPreview projectId={projectId} document={document} />;
   if (["png", "jpg", "jpeg", "gif", "webp", "avif", "svg"].includes(document.type)) return <ImageAssetPreview projectId={projectId} document={document} />;
   if (["mp4", "webm", "mov"].includes(document.type)) return <VideoAssetPreview projectId={projectId} document={document} />;
-  if (["canvas", "excalidraw"].includes(document.type)) return <AssetPreviewNotice document={document} message="Open Canvas to preview or edit this governed scene." />;
-  if (document.type === "pdf") return <section className="flex min-h-[24rem] min-w-0 flex-col overflow-hidden rounded-lg border border-border bg-card"><header className="flex items-center gap-2 border-b border-border px-3 py-2"><DocumentIcon type={document.type} /><div className="min-w-0"><p className="truncate text-sm font-medium">{document.name}</p><p className="truncate font-mono text-[10px] text-muted-foreground">{document.path}</p></div></header><PdfDocumentViewer projectId={projectId} path={document.path} worktreeId={document.worktreeId} /></section>;
-  if (document.type === "dxf" || document.type === "dwg") return <section className="flex min-h-[24rem] min-w-0 flex-col overflow-hidden rounded-lg border border-border bg-card"><header className="flex items-center gap-2 border-b border-border px-3 py-2"><DocumentIcon type={document.type} /><div className="min-w-0 flex-1"><p className="truncate text-sm font-medium">{document.name}</p><p className="truncate font-mono text-[10px] text-muted-foreground">{document.path}</p></div><span className="rounded bg-muted px-2 py-1 text-xs text-muted-foreground">{t("documentsPreview.cadReadonly")}</span></header><CadDocumentViewer projectId={projectId} path={document.path} type={document.type} worktreeId={document.worktreeId} /></section>;
+  if (["canvas", "excalidraw"].includes(document.type)) return <AssetPreviewNotice projectId={projectId} document={document} message="Open Canvas to preview or edit this governed scene." />;
+  if (document.type === "pdf") return <section className="flex min-h-[24rem] min-w-0 flex-col overflow-hidden rounded-lg border border-border bg-card"><header className="flex items-center gap-2 border-b border-border px-3 py-2"><DocumentIcon type={document.type} /><div className="min-w-0 flex-1"><p className="truncate text-sm font-medium">{document.name}</p><p className="truncate font-mono text-[10px] text-muted-foreground">{document.path}</p></div><ExternalAssetOpenButton projectId={projectId} document={document} /></header><PdfDocumentViewer projectId={projectId} path={document.path} worktreeId={document.worktreeId} /></section>;
+  if (document.type === "dxf" || document.type === "dwg") return <section className="flex min-h-[24rem] min-w-0 flex-col overflow-hidden rounded-lg border border-border bg-card"><header className="flex items-center gap-2 border-b border-border px-3 py-2"><DocumentIcon type={document.type} /><div className="min-w-0 flex-1"><p className="truncate text-sm font-medium">{document.name}</p><p className="truncate font-mono text-[10px] text-muted-foreground">{document.path}</p></div><span className="rounded bg-muted px-2 py-1 text-xs text-muted-foreground">{t("documentsPreview.cadReadonly")}</span><ExternalAssetOpenButton projectId={projectId} document={document} /></header><CadDocumentViewer projectId={projectId} path={document.path} type={document.type} worktreeId={document.worktreeId} /></section>;
   const openWorkspace = () => { setOfficecliPreviewPath(document.path); setSection("workspace"); };
   const openWorktree = () => {
     if (!worktreeId) return;
@@ -289,7 +289,7 @@ function MarkdownAssetPreview({ projectId, document }: { projectId: string; docu
     queryFn: () => api.projectAssetPreview(projectId, document.path, document.worktreeId ?? undefined),
   });
   return <section className="min-h-[24rem] overflow-auto rounded-lg border border-border bg-card p-4">
-    <h2 className="mb-3 text-sm font-semibold">{document.name}</h2>
+    <div className="mb-3 flex items-center justify-between gap-2"><h2 className="text-sm font-semibold">{document.name}</h2><ExternalAssetOpenButton projectId={projectId} document={document} /></div>
     {preview.isLoading ? <p className="text-sm text-muted-foreground">Preparing preview…</p>
       : preview.error ? <p role="alert" className="text-sm text-destructive">Preview is not available.</p>
         : <MarkdownBlock text={preview.data?.text ?? ""} />}
@@ -309,11 +309,14 @@ function ImageAssetPreview({ projectId, document }: { projectId: string; documen
     setSource(url);
     return () => URL.revokeObjectURL(url);
   }, [preview.data]);
-  if (document.type === "svg") return <AssetPreviewNotice document={document} message="Preview is disabled because SVG can contain active content. Open externally if you trust this file." />;
-  return <section className="grid min-h-[24rem] place-items-center overflow-auto rounded-lg border border-border bg-card p-4">
+  if (document.type === "svg") return <AssetPreviewNotice projectId={projectId} document={document} message="Preview is disabled because SVG can contain active content. Open externally if you trust this file." />;
+  return <section className="flex min-h-[24rem] flex-col overflow-auto rounded-lg border border-border bg-card p-4">
+    <div className="mb-3 flex justify-end"><ExternalAssetOpenButton projectId={projectId} document={document} /></div>
+    <div className="grid flex-1 place-items-center">
     {preview.isLoading ? <p className="text-sm text-muted-foreground">Preparing preview…</p>
       : preview.error ? <p role="alert" className="text-sm text-destructive">Preview is not available.</p>
         : source ? <img src={source} alt={document.name} className="max-h-full max-w-full object-contain" /> : null}
+    </div>
   </section>;
 }
 
@@ -358,16 +361,32 @@ function VideoAssetPreview({ projectId, document }: { projectId: string; documen
       URL.revokeObjectURL(url);
     };
   }, [projectId, document.path, document.type, document.worktreeId]);
-  if (error) return <AssetPreviewNotice document={document} message="Playback is not available in this browser. Open externally on the owning computer." />;
-  return <section className="grid min-h-[24rem] place-items-center rounded-lg border border-border bg-card p-4">
-    {source ? <video controls preload="metadata" src={source} className="max-h-full max-w-full" aria-label={`Video preview: ${document.name}`} /> : <p className="text-sm text-muted-foreground">Preparing playback…</p>}
+  if (error) return <AssetPreviewNotice projectId={projectId} document={document} message="Playback is not available in this browser. Open externally on the owning computer." />;
+  return <section className="flex min-h-[24rem] flex-col rounded-lg border border-border bg-card p-4">
+    <div className="mb-3 flex justify-end"><ExternalAssetOpenButton projectId={projectId} document={document} /></div>
+    <div className="grid flex-1 place-items-center">{source ? <video controls preload="metadata" src={source} className="max-h-full max-w-full" aria-label={`Video preview: ${document.name}`} /> : <p className="text-sm text-muted-foreground">Preparing playback…</p>}</div>
   </section>;
 }
 
-function AssetPreviewNotice({ document, message }: { document: ProjectDocumentEntry; message: string }) {
+function AssetPreviewNotice({ projectId, document, message }: { projectId?: string; document: ProjectDocumentEntry; message: string }) {
   return <section className="grid min-h-[24rem] place-items-center rounded-lg border border-border bg-card p-6 text-center">
-    <div><p className="font-medium">{document.name}</p><p className="mt-2 max-w-md text-sm text-muted-foreground">{message}</p></div>
+    <div><p className="font-medium">{document.name}</p><p className="mt-2 max-w-md text-sm text-muted-foreground">{message}</p>{projectId ? <div className="mt-4"><ExternalAssetOpenButton projectId={projectId} document={document} /></div> : null}</div>
   </section>;
+}
+
+function ExternalAssetOpenButton({ projectId, document }: { projectId: string; document: ProjectDocumentEntry }) {
+  const [error, setError] = useState(false);
+  const bridge = window.myagenttoolDesktop?.openContainedAsset;
+  if (!bridge || !document.capabilities?.includes("open_external")) return null;
+  const open = async () => {
+    setError(false);
+    try {
+      await bridge({ projectId, relativePath: document.path, ...(document.worktreeId ? { worktreeId: document.worktreeId } : {}) });
+    } catch {
+      setError(true);
+    }
+  };
+  return <div><Button type="button" size="sm" variant="secondary" onClick={() => void open()}><FolderOpen /> Open externally</Button>{error ? <p role="alert" className="mt-1 text-xs text-destructive">The system application could not open this asset.</p> : null}</div>;
 }
 
 type Translate = ReturnType<typeof useAppTranslation>["t"];

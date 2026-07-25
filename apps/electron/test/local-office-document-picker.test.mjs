@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, symlink
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { copySelectedOfficeDocument, describeLocalOfficeDocument, registerContainedOfficeDocumentOpen, registerLocalOfficeDocumentPicker, resolveContainedOfficeDocument } from "../src/local-office-document-picker.mjs";
+import { copySelectedOfficeDocument, describeLocalOfficeDocument, registerContainedAssetOpen, registerContainedOfficeDocumentOpen, registerLocalOfficeDocumentPicker, resolveContainedAsset, resolveContainedOfficeDocument } from "../src/local-office-document-picker.mjs";
 
 test("describes only a selected regular Office document", () => {
   const root = mkdtempSync(join(tmpdir(), "office-picker-"));
@@ -88,4 +88,23 @@ test("the contained-open IPC resolves identity in main and sanitizes system fail
   await assert.rejects(() => handlers.get("documents:open-contained-office")(null, { projectId: "project", relativePath: "missing.xlsx" }), (error) => error.message === "The requested Office document could not be opened safely." && !error.message.includes(root));
   registerContainedOfficeDocumentOpen({ ipcMain, getState: async () => ({ projects: [{ id: "project", path: root }] }), openPath: async () => "sensitive OS detail" });
   await assert.rejects(() => handlers.get("documents:open-contained-office")(null, { projectId: "project", relativePath: "report.xlsx" }), (error) => error.message === "The system application could not open this Office document." && !error.message.includes("sensitive"));
+});
+
+test("opens only supported regular assets contained by the selected project", async () => {
+  const root = mkdtempSync(join(tmpdir(), "asset-open-"));
+  const image = join(root, "diagram.png");
+  writeFileSync(image, "image");
+  writeFileSync(join(root, "secret.env"), "secret");
+  const state = { projects: [{ id: "project", path: root }], worktrees: [] };
+  assert.equal(resolveContainedAsset(state, { projectId: "project", relativePath: "diagram.png" }), realpathSync(image));
+  assert.throws(() => resolveContainedAsset(state, { projectId: "project", relativePath: "secret.env" }), /cannot be opened/);
+  assert.throws(() => resolveContainedAsset(state, { projectId: "project", relativePath: "../diagram.png" }), /contained/);
+
+  const handlers = new Map();
+  const ipcMain = { removeHandler: (name) => handlers.delete(name), handle: (name, handler) => handlers.set(name, handler) };
+  const opened = [];
+  registerContainedAssetOpen({ ipcMain, getState: async () => state, openPath: async (path) => { opened.push(path); return ""; } });
+  assert.deepEqual(await handlers.get("assets:open-contained")(null, { projectId: "project", relativePath: "diagram.png" }), { opened: true });
+  assert.deepEqual(opened, [realpathSync(image)]);
+  await assert.rejects(() => handlers.get("assets:open-contained")(null, { projectId: "project", relativePath: "secret.env" }), (error) => error.message === "The requested asset could not be opened safely." && !error.message.includes(root));
 });
