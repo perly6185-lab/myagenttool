@@ -15,6 +15,7 @@ export function resolveLocalApplicationCapability({
   terminalId,
   availableResourceClasses = ["small", "medium"],
   resourceClass = "small",
+  assetFamily = null,
 } = {}) {
   const normalizedIntent = typeof intent === "string" && Object.hasOwn(INTENT_TO_HINTS, intent) ? intent : null;
   const normalizedVerb = typeof assetVerb === "string" && ASSET_CAPABILITY_VERBS.includes(assetVerb) ? assetVerb : null;
@@ -26,6 +27,11 @@ export function resolveLocalApplicationCapability({
     candidate?.provider?.type === "application"
     && candidate.terminalId === terminalId
     && candidate.invokable !== false
+    && candidate.application?.status !== "archived"
+    && candidate.application?.status !== "disabled"
+    && candidate.status !== "disabled"
+    && candidate.metadata?.policy?.allowed !== false
+    && supportsAssetFamily(candidate, assetFamily)
     && matches(candidate, hints));
   if (local.length === 0) return waiting("waiting_capability", "no_local_application_capability", terminalId);
 
@@ -55,6 +61,7 @@ export function resolveLocalApplicationCapability({
     },
     approval,
     resource: { requiredClass: resourceClass, availableClasses: [...availableResourceClasses] },
+    readiness: readinessSnapshot(selected, readiness),
     explanation: {
       requested: normalizedVerb ? { kind: "asset_verb", value: normalizedVerb } : { kind: "intent", value: normalizedIntent },
       matchedHints: hints.filter((hint) => searchable(selected).includes(hint)),
@@ -84,6 +91,27 @@ function searchable(candidate) {
   ].filter((value) => typeof value === "string").join(" ").toLowerCase();
 }
 
+function supportsAssetFamily(candidate, assetFamily) {
+  if (!assetFamily) return true;
+  const supported = candidate.metadata?.assetFamilies;
+  return !Array.isArray(supported) || supported.includes(assetFamily);
+}
+
+function readinessSnapshot(candidate, readiness) {
+  const credential = candidate.metadata?.credentialReadiness ?? {};
+  return {
+    registration: candidate.application?.status === "active" ? "ready" : "registered",
+    runtime: readiness.state === "needs_setup" ? "missing" : "ready",
+    credential: {
+      configured: Boolean(credential.configured),
+      scopeMatch: credential.scopeMatch !== false,
+      expired: credential.expired === true,
+    },
+    health: candidate.metadata?.health?.status ?? "unknown",
+    policy: candidate.metadata?.policy?.allowed === false ? "denied" : "allowed",
+  };
+}
+
 function safeLabel(value) {
   return String(value).replace(/[\r\n\t]/g, " ").replace(/\s+/g, " ").slice(0, 120);
 }
@@ -98,6 +126,7 @@ function waiting(state, reason, terminalId, selected = null) {
       riskLevel: selected.riskLevel ?? "medium",
     } : null,
     approval: { required: selected?.requiresApproval === true, state: "not_evaluated" },
+    readiness: selected ? readinessSnapshot(selected, selected.metadata?.readiness ?? {}) : null,
     explanation: { candidateCount: selected ? 1 : 0, selectionRule: "same_terminal_only" },
   };
 }

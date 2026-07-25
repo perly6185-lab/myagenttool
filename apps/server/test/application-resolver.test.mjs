@@ -6,6 +6,7 @@ const capability = (overrides = {}) => ({
   name: "app.app_officecli.wrapper.apply",
   displayName: "Edit Office document",
   provider: { type: "application", id: "app_officecli" },
+  application: { status: "active" },
   terminalId: "terminal-1",
   invokable: true,
   requiresApproval: true,
@@ -62,8 +63,28 @@ test("does not fall back to another terminal or disabled/non-application candida
       capability({ terminalId: "terminal-2" }),
       capability({ provider: { type: "tool", id: "tool-edit" } }),
       capability({ invokable: false }),
+      capability({ application: { status: "disabled" } }),
     ],
   });
   assert.equal(result.state, "waiting_capability");
   assert.equal(result.reason, "no_local_application_capability");
+});
+
+test("matches declared asset families and exposes credential booleans without secret material", () => {
+  const result = resolveLocalApplicationCapability({
+    assetVerb: "preview", assetFamily: "pdf", terminalId: "terminal-1",
+    capabilities: [capability({
+      name: "app.app_pdf.preview",
+      requiresApproval: false,
+      metadata: {
+        readiness: { state: "ready", reason: "available" },
+        assetVerbs: ["preview"],
+        assetFamilies: ["pdf"],
+        credentialReadiness: { configured: true, scopeMatch: true, expired: false, token: "must-not-leak" },
+      },
+    })],
+  });
+  assert.equal(result.state, "ready");
+  assert.deepEqual(result.readiness.credential, { configured: true, scopeMatch: true, expired: false });
+  assert.equal(JSON.stringify(result).includes("must-not-leak"), false);
 });

@@ -28,7 +28,9 @@ export function createCapabilityService({
             name: application.name,
             status: application.status,
             projectId: application.projectId,
+            terminalId: application.terminalId ?? application.deviceId ?? (state.devices ?? [])[0]?.id ?? null,
           },
+          terminalId: application.terminalId ?? application.deviceId ?? (state.devices ?? [])[0]?.id ?? null,
         })),
       ),
     ];
@@ -90,8 +92,9 @@ export function createCapabilityService({
       assetVerb: input?.assetVerb,
       terminalId,
       resourceClass: input?.resourceClass,
+      assetFamily: input?.assetFamily,
       availableResourceClasses,
-      capabilities: listCapabilities(actor).map((capability) => ({ ...capability, terminalId })),
+      capabilities: listCapabilities(actor),
     });
   }
 
