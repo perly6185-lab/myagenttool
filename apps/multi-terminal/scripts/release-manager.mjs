@@ -1,4 +1,5 @@
 import { cp, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
 import { basename, join, resolve } from "node:path";
 
 const [command, sourceArg, rootArg, versionArg] = process.argv.slice(2);
@@ -18,9 +19,11 @@ if (command === "install") {
   const destination = join(releases, version);
   await rm(destination, { recursive: true, force: true });
   await cp(source, destination, { recursive: true, filter: (path) => !path.includes("node_modules") && !path.includes(`${basename(root)}/`) });
+  const packageBytes = await readFile(join(destination, "package.json"));
+  const integrity = `sha256-${createHash("sha256").update(packageBytes).digest("hex")}`;
   const prior = await state().catch(() => ({ current: null, previous: null }));
-  await persist({ current: version, previous: prior.current, updatedAt: new Date().toISOString() });
-  console.log(JSON.stringify({ installed: version, previous: prior.current, path: destination }));
+  await persist({ current: version, previous: prior.current, integrity, updatedAt: new Date().toISOString() });
+  console.log(JSON.stringify({ installed: version, previous: prior.current, integrity, path: destination }));
 } else {
   const current = await state();
   if (!current.previous) throw new Error("no previous release available");

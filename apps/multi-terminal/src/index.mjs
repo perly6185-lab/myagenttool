@@ -1,5 +1,5 @@
 import { createServer } from "node:http";
-import { timingSafeEqual } from "node:crypto";
+import { randomBytes } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { createCompositionService } from "./composition.mjs";
@@ -7,9 +7,13 @@ import { materializeTerminal, TerminalRegistry } from "./registry.mjs";
 import { RecoveryHistory } from "./recovery-history.mjs";
 import { OwnerOperationRuntime } from "./owner-operation-runtime.mjs";
 import { SloMonitor, webhookNotifier } from "./slo-monitor.mjs";
+import { AlertManager } from "./alert-manager.mjs";
+import { bearerAuthorized, requireSecureDeployment } from "./security.mjs";
+import { SafeRecovery } from "./safe-recovery.mjs";
 
 const publicDir = fileURLToPath(new URL("../public/", import.meta.url));
 const port = Number(process.env.MULTI_TERMINAL_PORT ?? 4311);
+const host = requireSecureDeployment();
 const seed = JSON.parse(process.env.MULTI_TERMINALS_JSON ?? "[]");
 const registry = new TerminalRegistry(process.env.MULTI_TERMINAL_REGISTRY_PATH ?? ".myagenttool/multi-terminals.json", { seed });
 await registry.load();
@@ -25,11 +29,17 @@ const sloMonitor = new SloMonitor(process.env.MULTI_TERMINAL_SLO_PATH ?? ".myage
   notify: webhookNotifier(process.env.MULTI_TERMINAL_ALERT_WEBHOOK_URL ?? ""),
 });
 await sloMonitor.load();
+const alertManager = new AlertManager(process.env.MULTI_TERMINAL_ALERT_PATH ?? ".myagenttool/multi-terminal-alerts.json", {
+  notify: webhookNotifier(process.env.MULTI_TERMINAL_ALERT_WEBHOOK_URL ?? ""),
+});
+await alertManager.load();
+const adminSessions = new Map();
 const service = createCompositionService({
   terminals: () => registry.list().map((row) => materializeTerminal(row)),
   request: terminalRequest,
   operationRuntime,
 });
+const safeRecovery = new SafeRecovery({ enabled: process.env.MULTI_TERMINAL_SAFE_AUTO_RECOVERY === "true", service });
 const streamClients = new Set();
 
 function terminalRequest(terminal, operation) {
@@ -50,12 +60,37 @@ const server = createServer(async (req, res) => {
       const overview = await service.overview();
       await recoveryHistory.observe(overview.terminals);
       overview.slo = await sloMonitor.evaluate(overview, operationRuntime.records());
+      for (const terminal of overview.terminals) {
+        for (const alert of terminal.alerts) {
+          const managed = await alertManager.ingest({ ...alert, code: alert.ref });
+          await safeRecovery.handle(managed);
+        }
+        if (terminal.status === "offline") await alertManager.ingest({ terminalId: terminal.id, code: "terminal_offline", severity: "critical", message: `${terminal.name} unavailable` });
+      }
+      overview.managedAlerts = alertManager.list().filter((row) => row.status !== "resolved");
       const windowDays = Number(requestUrl.searchParams.get("windowDays") ?? 30);
       overview.recoveryHistory = Object.fromEntries(overview.terminals.map((terminal) => [terminal.id, recoveryHistory.summary(terminal.id, windowDays)]));
       return json(res, 200, overview);
     }
     if (req.method === "GET" && requestUrl.pathname === "/api/slo") {
       return json(res, 200, sloMonitor.summary(requestUrl.searchParams.get("windowDays")));
+    }
+    if (req.method === "POST" && requestUrl.pathname === "/api/admin/session") {
+      if (!bearerAuthorized(req.headers.authorization, process.env.MULTI_TERMINAL_ADMIN_TOKEN)) return json(res, 401, { error: "admin_token_required" });
+      const token = randomBytes(32).toString("base64url");
+      const expiresAt = Date.now() + Math.min(60, Math.max(5, Number(process.env.MULTI_TERMINAL_ADMIN_SESSION_MINUTES) || 15)) * 60_000;
+      adminSessions.set(token, expiresAt);
+      return json(res, 201, { token, expiresAt: new Date(expiresAt).toISOString() });
+    }
+    if (req.method === "GET" && requestUrl.pathname === "/api/alerts") {
+      if (!adminAuthorized(req)) return json(res, 401, { error: "admin_token_required" });
+      return json(res, 200, { alerts: alertManager.list() });
+    }
+    const alertAction = requestUrl.pathname.match(/^\/api\/alerts\/([^/]+)\/(acknowledge|silence|resolve)$/);
+    if (req.method === "POST" && alertAction) {
+      if (!adminAuthorized(req)) return json(res, 401, { error: "admin_token_required" });
+      const row = await alertManager.update(decodeURIComponent(alertAction[1]), alertAction[2], await readBody(req));
+      return json(res, row ? 200 : 404, { alert: row });
     }
     if (req.method === "GET" && requestUrl.pathname === "/api/events") {
       res.writeHead(200, {
@@ -74,7 +109,7 @@ const server = createServer(async (req, res) => {
       const limit = Math.min(100, Math.max(1, Number(requestUrl.searchParams.get("limit")) || 25));
       const offset = decodeCursor(requestUrl.searchParams.get("cursor"));
       const rows = overview.terminals.flatMap((terminal) => terminal.tasks)
-        .filter((task) => !query || `${task.title} ${task.terminalName} ${task.localResourceId} ${task.traceId ?? ""} ${task.assetFamilies.join(" ")}`.toLowerCase().includes(query))
+        .filter((task) => !query || `${task.title} ${task.terminalName} ${task.localResourceId} ${task.traceId ?? ""} ${task.assetFamilies.join(" ")} ${task.applicationIds.join(" ")} ${task.channelIds.join(" ")} ${task.operationIds.join(" ")} ${task.evidenceIds.join(" ")}`.toLowerCase().includes(query))
         .sort((a, b) => String(b.updatedAt ?? "").localeCompare(String(a.updatedAt ?? "")));
       const page = rows.slice(offset, offset + limit);
       return json(res, 200, { traces: page, nextCursor: offset + limit < rows.length ? encodeCursor(offset + limit) : null });
@@ -146,10 +181,11 @@ function json(res, status, value) {
 }
 
 function adminAuthorized(req) {
-  const expected = String(process.env.MULTI_TERMINAL_ADMIN_TOKEN ?? "");
   const supplied = String(req.headers.authorization ?? "").replace(/^Bearer\s+/i, "");
-  if (expected.length < 24 || supplied.length !== expected.length) return false;
-  return timingSafeEqual(Buffer.from(supplied), Buffer.from(expected));
+  const expiry = adminSessions.get(supplied);
+  if (expiry && expiry > Date.now()) return true;
+  if (expiry) adminSessions.delete(supplied);
+  return bearerAuthorized(req.headers.authorization, process.env.MULTI_TERMINAL_ADMIN_TOKEN);
 }
 
 function encodeCursor(offset) {
@@ -173,7 +209,7 @@ async function readBody(req) {
   return JSON.parse(Buffer.concat(chunks).toString("utf8"));
 }
 
-server.listen(port, "127.0.0.1", () => console.log(`Multi-terminal console: http://127.0.0.1:${port}`));
+server.listen(port, host, () => console.log(`Multi-terminal console: http://${host}:${port}`));
 
 let streamEventId = 0;
 setInterval(async () => {

@@ -10,6 +10,8 @@
     "build": "node src/build.mjs",
     "release:install": "node scripts/release-manager.mjs install",
     "release:rollback": "node scripts/release-manager.mjs rollback",
+    "data:backup": "node scripts/data-manager.mjs backup",
+    "data:restore": "node scripts/data-manager.mjs restore",
     "test": "node --test test/*.test.mjs",
     "test:browser": "node e2e/browser.mjs",
     "lint": "node src/build.mjs --check",

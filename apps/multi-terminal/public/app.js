@@ -27,6 +27,9 @@ function render(data) {
   const labels = { running: t("running"), waiting: t("waiting"), failed: t("failed"), attention: t("attention") };
   const filter = view("terminal-filter").value;
   const terminals = data.terminals.filter((terminal) => filter === "all" || terminal.status === filter);
+  view("onboarding").textContent = data.terminals.length
+    ? (locale === "zh" ? "终端已配对；不可用时请先运行诊断，再进入所属终端恢复。" : "Terminals are paired. Diagnose an unavailable owner before recovering it locally.")
+    : (locale === "zh" ? "展开“终端注册与管理”，添加第一个终端。" : "Open Terminal registration and management to add the first terminal.");
   view("totals").innerHTML = Object.entries(data.totals).map(([key, count]) => `<article><b>${count}</b><span>${labels[key]}</span></article>`).join("");
   view("terminals").innerHTML = terminals.map((terminal) => `<article class="card">
     <div class="row"><h3>${escapeHtml(terminal.name)}</h3><span class="status ${terminal.status}">${terminal.status === "online" ? t("online") : t("offline")}</span></div>
@@ -42,7 +45,7 @@ function render(data) {
   view("tasks").innerHTML = tasks.length ? `<table><thead><tr><th>${t("task")}</th><th>${t("owner")}</th><th>${t("state")}</th><th></th></tr></thead><tbody>${tasks.map((task) => `<tr>
     <td>${escapeHtml(task.title)}${task.assetFamilies.length ? `<small>${task.assetFamilies.map(escapeHtml).join(" → ")}</small>` : ""}</td><td>${escapeHtml(task.terminalName)}</td><td>${labels[task.state] ?? escapeHtml(task.state)}</td>
     <td><a href="${escapeHtml(task.deepLink)}">${t("openOwner")}</a></td></tr>`).join("")}</tbody></table>` : `<p class=empty>${t("noTask")}。</p>`;
-  const alerts = terminals.flatMap((terminal) => terminal.alerts.map((alert) => ({ ...alert, terminalName: terminal.name })));
+  const alerts = data.managedAlerts ?? terminals.flatMap((terminal) => terminal.alerts.map((alert) => ({ ...alert, terminalName: terminal.name })));
   view("alerts").innerHTML = alerts.length ? alerts.map((alert) => `<article class="card"><div class="row"><b>${escapeHtml(alert.message)}</b><span>${escapeHtml(alert.severity)}</span></div><small>${escapeHtml(alert.terminalName)} · ${escapeHtml(alert.status)}</small></article>`).join("") : `<p class=empty>${t("noAlert")}。</p>`;
   const slo = data.slo;
   view("slo").innerHTML = slo ? Object.entries(slo.metrics).map(([key, value]) => `<article class="card"><small>${escapeHtml(key)}</small><b>${value ?? "—"}</b></article>`).join("") + `<article class="card"><small>SLO</small><b>${slo.status === "healthy" ? t("healthy") : slo.status === "breached" ? t("breached") : t("insufficient")}</b><p>${slo.breaches.map(escapeHtml).join(" · ")}</p></article>` : `<p class=empty>${t("insufficient")}。</p>`;
@@ -56,8 +59,8 @@ function render(data) {
 
 function renderTrace(tasks) {
   const query = view("trace-query").value.trim().toLowerCase();
-  const matches = tasks.filter((task) => !query || `${task.title} ${task.terminalName} ${task.localResourceId} ${task.traceId ?? ""} ${task.assetFamilies.join(" ")}`.toLowerCase().includes(query));
-  view("trace").innerHTML = matches.length ? matches.map((task) => `<article class="trace-row"><span><b>${escapeHtml(task.title)}</b><small>${escapeHtml(task.terminalName)} · ${escapeHtml(task.localResourceId)}${task.traceId ? ` · ${escapeHtml(task.traceId)}` : ""}${task.assetFamilies.length ? ` · ${task.assetFamilies.map(escapeHtml).join(" → ")}` : ""}</small></span><a href="${escapeHtml(task.deepLink)}">${t("openTrace")}</a></article>`).join("") : `<p class=empty>${t("noMatch")}。</p>`;
+  const matches = tasks.filter((task) => !query || `${task.title} ${task.terminalName} ${task.localResourceId} ${task.traceId ?? ""} ${task.assetFamilies.join(" ")} ${(task.applicationIds ?? []).join(" ")} ${(task.channelIds ?? []).join(" ")} ${(task.operationIds ?? []).join(" ")} ${(task.evidenceIds ?? []).join(" ")}`.toLowerCase().includes(query));
+  view("trace").innerHTML = matches.length ? matches.map((task) => `<article class="trace-row"><span><b>${escapeHtml(task.title)}</b><small>${escapeHtml(task.terminalName)} · ${escapeHtml(task.localResourceId)}${task.traceId ? ` · ${escapeHtml(task.traceId)}` : ""}${task.assetFamilies.length ? ` · ${task.assetFamilies.map(escapeHtml).join(" → ")}` : ""}${task.applicationIds?.length ? ` · App ${task.applicationIds.map(escapeHtml).join(",")}` : ""}${task.channelIds?.length ? ` · Channel ${task.channelIds.map(escapeHtml).join(",")}` : ""}${task.operationIds?.length ? ` · Op ${task.operationIds.map(escapeHtml).join(",")}` : ""}${task.evidenceIds?.length ? ` · Evidence ${task.evidenceIds.map(escapeHtml).join(",")}` : ""}</small></span><a href="${escapeHtml(task.deepLink)}">${t("openTrace")}</a></article>`).join("") : `<p class=empty>${t("noMatch")}。</p>`;
 }
 
 view("language").addEventListener("click", () => { locale = locale === "zh" ? "en" : "zh"; localStorage.setItem("multi-terminal-locale", locale); applyLocale(); });

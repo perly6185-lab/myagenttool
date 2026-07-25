@@ -1,4 +1,5 @@
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { signWebhook } from "./security.mjs";
 import { dirname } from "node:path";
 
 export class SloMonitor {
@@ -69,16 +70,19 @@ export class SloMonitor {
   }
 }
 
-export function webhookNotifier(url, fetchImpl = fetch) {
+export function webhookNotifier(url, fetchImpl = fetch, secret = process.env.MULTI_TERMINAL_ALERT_WEBHOOK_SECRET ?? "") {
   if (!url) return async () => {};
   const endpoint = new URL(url);
   const localHttp = endpoint.protocol === "http:" && ["127.0.0.1", "localhost", "::1"].includes(endpoint.hostname);
   if (endpoint.protocol !== "https:" && !localHttp) throw new Error("alert webhook must use HTTPS or loopback HTTP");
   if (endpoint.username || endpoint.password) throw new Error("alert webhook URL cannot contain credentials");
   return async (payload) => {
+    const body = JSON.stringify(payload);
+    const timestamp = String(Date.now());
+    const signature = secret ? signWebhook(secret, timestamp, body) : "";
     await fetchImpl(endpoint, {
-      method: "POST", headers: { "content-type": "application/json" },
-      body: JSON.stringify(payload), signal: AbortSignal.timeout(5_000),
+      method: "POST", headers: { "content-type": "application/json", "x-myagenttool-timestamp": timestamp, ...(signature ? { "x-myagenttool-signature": `sha256=${signature}` } : {}) },
+      body, signal: AbortSignal.timeout(5_000),
     }).catch(() => {});
   };
 }

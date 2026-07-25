@@ -45,6 +45,10 @@ export function projectTerminalSnapshot(terminal, snapshot) {
       updatedAt: task.updatedAt ?? null,
       traceId: task.observability?.trace?.traceId ?? task.traceId ?? null,
       assetFamilies: [...new Set([...(task.inputAssets ?? []), ...(task.outputAssets ?? [])].map((asset) => asset.family).filter(Boolean))],
+      applicationIds: [...new Set([task.applicationId, ...(task.applications ?? []).map((item) => item.id ?? item)].filter(Boolean))],
+      channelIds: [...new Set([task.channelId, ...(task.channels ?? []).map((item) => item.id ?? item)].filter(Boolean))],
+      operationIds: [...new Set((task.operations ?? []).map((item) => item.id ?? item).filter(Boolean))],
+      evidenceIds: [...new Set((task.evidence ?? []).map((item) => item.id ?? item).filter(Boolean))],
       deepLink: `${terminal.consoleUrl.replace(/\/$/, "")}/tasks/${encodeURIComponent(task.id)}`,
     };
   });
@@ -71,6 +75,11 @@ export function projectTerminalSnapshot(terminal, snapshot) {
       status: alert.status,
       message: alert.message,
       updatedAt: alert.updatedAt,
+      recommendedAction: alert.recommendedAction,
+      resourceType: alert.resourceType,
+      localResourceId: alert.localResourceId,
+      applicationId: alert.applicationId,
+      routineId: alert.routineId,
     })),
     recovery: recoveryTrend(recovery.trend),
   };

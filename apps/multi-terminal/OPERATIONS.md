@@ -95,3 +95,28 @@ pnpm --filter @myagenttool/multi-terminal release:rollback -- \
 
 The release state swaps only the active version metadata. Registry, audit, SLO,
 and recovery data remain outside versioned release directories.
+
+## Production hardening
+
+- Non-loopback binding fails closed unless `MULTI_TERMINAL_TRUST_PROXY=true`
+  and `MULTI_TERMINAL_TLS_TERMINATED=true`; `deploy/nginx.conf` is the TLS
+  reverse-proxy baseline.
+- Keep admin, observer, operator, and webhook secrets in the host keychain or
+  service credential manager. `POST /api/admin/session` exchanges the admin
+  secret for an expiring in-memory session.
+- Set `MULTI_TERMINAL_ALERT_WEBHOOK_SECRET` to sign webhook bodies with a
+  timestamped HMAC-SHA256 signature. Receivers should reject timestamps older
+  than five minutes.
+- Managed alerts are deduplicated and support acknowledge, silence, resolve,
+  and explicit recovery notification through admin-protected endpoints.
+- Automatic recovery is opt-in and allowlists only idempotent retry with an
+  immutable owner reference. Replay, migration, failover, and target selection
+  are never automatic.
+- Before an upgrade, stop the service and back up the persistent
+  `.myagenttool` directory. Install metadata records package SHA-256 integrity;
+  restore persistent data only while stopped.
+
+The production drill covers restart, network loss, timeout, disk failure,
+failed upgrade, and rollback. Record detection time and RTO for each fault and
+verify all retries remain on the registered owner. Scale acceptance runs at
+10, 50, and 100 terminals.

@@ -32,6 +32,12 @@ The management section supports registration/editing, deletion, owner health
 diagnostics, and redacted operation audit. `/api/slo` and the SLO panel expose
 availability, freshness, recovery, and operation-success trends.
 
+The ordinary overview includes first-run pairing guidance and owner-local
+remediation. Trace search links terminal, task, Application, Channel, asset,
+operation, and evidence identifiers while complete evidence remains on the
+owner. Production deployment and fault-drill controls are documented in
+`OPERATIONS.md`.
+
 ## Boundary
 
 - Every resource is addressed as `terminalId + localResourceId`.
