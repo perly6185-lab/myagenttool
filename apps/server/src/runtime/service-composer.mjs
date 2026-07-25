@@ -61,6 +61,7 @@ import { resolveAutoRunVerifyCommand, resolveAutoRunVerifyCommandFor, runWorktre
 import { resolveStatusWritebackConfig, runIssueAssigneeEdit, runIssueBodyFetch, runIssueClose, runIssueComment, runIssueStatusTransition, runPrChecks, runPrMerge, runPrStateFetch, runIssueStateFetch, runIssueSnapshotFetch, runIssueSnapshotWrite } from "../services/issue-status.mjs";
 import { deciderTimeoutMs, resolveDeciderCommand, runDeciderCommand } from "../services/decision-command.mjs";
 import { childIssueBody, childIssueTitle, extractProjectFieldsBlock, runChildIssueCreate, spawnIssuesConfig } from "../services/auto-run-spawn.mjs";
+import { ingestChannelAttachmentCandidates } from "../services/channel-attachment-ingestion.mjs";
 import { refreshPrDispositions } from "../services/auto-run-eval.mjs";
 import { refreshEpicChildStates } from "../services/auto-run-epic.mjs";
 import { judgeTimeoutMs, resolveJudgeCommand, runAcceptanceJudge } from "../services/auto-run-judge.mjs";
@@ -385,6 +386,7 @@ export function createServerRuntimeServices({
     teamBudgetStatusFor: (teamId) => resolveWorkItemTeamBudget(teamId),
     resolveApplicationCapability: (input, actor) => resolveWorkItemApplicationCapability(input, actor),
     invokeResolvedCapability: (name, input, actor) => invokeWorkItemApplicationCapability(name, input, actor),
+    issueApplicationApprovalGrant: (input, actor) => issueApprovalGrant(input, actor),
   });
   const planningProjectService = createPlanningProjectService({
     state, now, nextId, appendEvent, persistStateSoon, store, validateApprovalToken,
@@ -1648,7 +1650,23 @@ export function createServerRuntimeServices({
   });
 
   const receiveChannelEvent = async (payload) => {
-    const imported = channelService.importChannelEvent(payload);
+    let normalizedPayload = payload;
+    if (Array.isArray(payload?.attachmentCandidates) && payload.attachmentCandidates.length) {
+      const channel = (state.channels ?? []).find((row) => row.id === payload.channelId);
+      const project = (state.projects ?? []).find((row) => row.id === channel?.taskProjectId);
+      try {
+        const attachmentAssets = await ingestChannelAttachmentCandidates({
+          candidates: payload.attachmentCandidates,
+          projectPath: project?.path,
+          projectId: channel?.taskProjectId,
+          terminalId: channel?.taskTerminalId,
+        });
+        normalizedPayload = { ...payload, attachmentCandidates: undefined, attachmentAssets };
+      } catch (error) {
+        return { ok: false, refused: true, reason: error?.code ?? "channel_attachment_ingestion_failed" };
+      }
+    }
+    const imported = channelService.importChannelEvent(normalizedPayload);
     if (imported?.ok && !imported.duplicate) {
       const dispatched = await channelConversationService.dispatchImportedChannelEvent({ eventId: imported.eventId });
       // Staged command replies become durable outbound deliveries.
@@ -3548,6 +3566,7 @@ export function createServerRuntimeServices({
     recordWorkItemVerification: workItemService.recordVerification,
     recordWorkItemAssetOperation: workItemService.recordAssetOperation,
     startWorkItemApplicationExecution: workItemService.startApplicationExecution,
+    requestWorkItemApplicationApproval: workItemService.requestApplicationExecutionApproval,
     ingestGithubWorkItemWebhook: workItemService.ingestGithubWebhook,
     replayGithubWorkItemWebhook: workItemService.replayGithubWebhook,
     recordGithubWorkItemWebhookFailure: workItemService.recordGithubWebhookFailure,

@@ -197,6 +197,7 @@ export function createWorkItemService({
   teamBudgetStatusFor = () => null,
   resolveApplicationCapability = () => ({ state: "refusal", reason: "resolver_unavailable", capability: null }),
   invokeResolvedCapability = () => ({ status: 503, body: { error: "capability_gateway_unavailable" } }),
+  issueApplicationApprovalGrant = null,
   store,
 }) {
   const runTx = makeRunTx({ store, persistStateSoon });
@@ -1946,6 +1947,48 @@ export function createWorkItemService({
     };
   }
 
+  function requestApplicationExecutionApproval({
+    workItemId, expectedRevision, intent = null, assetVerb = null,
+    assetFamily = null, resourceClass = "small",
+  } = {}, actor = null) {
+    const item = findOwn(workItemId, actor);
+    if (!item) return notFound();
+    if (expectedRevision !== item.revision) {
+      return { ok: false, status: 409, body: { error: "work_item_revision_conflict", currentRevision: item.revision } };
+    }
+    const resolution = resolveApplicationCapability({
+      intent, assetVerb, assetFamily, resourceClass, terminalId: item.terminalId,
+    }, actor);
+    if (resolution?.state !== "waiting_approval" || !resolution.capability?.name || !resolution.capability?.applicationId) {
+      return { ok: false, status: 409, body: { error: resolution?.reason ?? "approval_not_required", resolution } };
+    }
+    if (typeof issueApplicationApprovalGrant !== "function") {
+      return { ok: false, status: 503, body: { error: "approval_service_unavailable" } };
+    }
+    const commandId = String(resolution.capability.name).split(".").at(-1);
+    const grant = issueApplicationApprovalGrant({
+      action: `wrapper:${commandId}`,
+      targetId: resolution.capability.applicationId,
+    }, actor);
+    if (!grant?.ok) return { ok: false, status: grant?.status ?? 409, body: grant?.body ?? { error: "approval_grant_failed" } };
+    runTx(() => {
+      recordActivity(item, actor, "application_approval_granted", {
+        applicationId: resolution.capability.applicationId,
+        capabilityLabel: resolution.capability.displayName,
+        terminalId: item.terminalId,
+        expiresAt: grant.body.expiresAt,
+      });
+    });
+    return {
+      ok: true, status: 201,
+      body: {
+        approvalToken: grant.body.token,
+        expiresAt: grant.body.expiresAt,
+        resolution: normalizeApplicationResolution(resolution, item.terminalId),
+      },
+    };
+  }
+
   function listActivity({ workItemId } = {}, actor = null) {
     const item = findOwn(workItemId, actor);
     if (!item) return notFound();
@@ -2144,6 +2187,6 @@ export function createWorkItemService({
     recordVerification, recordAssetOperation, ingestGithubWebhook, replayGithubWebhook, recordGithubWebhookFailure,
     ingestExternalWebhook, replayExternalWebhook, recordExternalWebhookFailure,
     githubSyncDiagnostics, updateAttention, sweepOperationalAlerts, suggestWorkItemDraft, retryWorkItemAlert,
-    startApplicationExecution,
+    startApplicationExecution, requestApplicationExecutionApproval,
   };
 }

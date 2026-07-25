@@ -81,6 +81,7 @@ function makeHarness({ capabilityResult, allowlist = ["git.status"], statusCapab
   const bindTaskProject = (projectId) => {
     const ch = state.channels.find((c) => c.id === channelId);
     ch.taskProjectId = projectId;
+    ch.taskTerminalId = "dev_local";
   };
   return { state, events, refusals, capabilityCalls, cancelCalls, channelId, channelService, receive, bindTaskProject };
 }
@@ -152,6 +153,20 @@ test("/task with no bound project is refused (no issue filed)", async () => {
   const settled = await dispatched;
   assert.equal(settled.status, "refused");
   assert.match(settled.reply, /bind a task project/i);
+  assert.equal(filed, 0);
+});
+
+test("/task refuses an incomplete project binding instead of falling back to a terminal", async () => {
+  let filed = 0;
+  const harness = makeHarness({
+    createChannelTaskIssue: async () => { filed += 1; return { ok: true, number: 1 }; },
+  });
+  harness.bindTaskProject("proj_a");
+  harness.state.channels.find((channel) => channel.id === harness.channelId).taskTerminalId = null;
+  const settled = await harness.receive("/task fix the login error").dispatched;
+  assert.equal(settled.status, "refused");
+  assert.equal(harness.events.at(-1).data.reason, "channel_task_binding_required");
+  assert.match(settled.reply, /binding.*not ready/i);
   assert.equal(filed, 0);
 });
 

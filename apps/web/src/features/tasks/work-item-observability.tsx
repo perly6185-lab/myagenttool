@@ -108,17 +108,24 @@ export function WorkItemAssetChain({ item }: { item: LocalWorkItem }) {
     .map((evidence) => evidence.assetId));
   const latestResolution = item.applicationResolutions?.at(-1) ?? null;
   const readiness = item.queueReadiness ?? item.assetReadiness;
-  async function startApplication() {
+  async function startApplication(requestApproval = false) {
     const assetVerb = item.requiredCapabilities?.[0];
     if (!assetVerb) return;
     setStarting(true);
     setStartResult(null);
     try {
-      const result = await api.startWorkItemApplication(item.id, {
+      const selection = {
         expectedRevision: item.revision,
         assetVerb,
         assetFamily: inputs.find((asset) => asset.capabilities.includes(assetVerb))?.family,
         resourceClass: inputs.find((asset) => asset.capabilities.includes(assetVerb))?.resourceClass,
+      };
+      const approval = requestApproval
+        ? await api.requestWorkItemApplicationApproval(item.id, selection)
+        : null;
+      const result = await api.startWorkItemApplication(item.id, {
+        ...selection,
+        ...(approval?.approvalToken ? { approvalToken: approval.approvalToken } : {}),
       }) as { invocation?: { id?: string } };
       setStartResult(result.invocation?.id ? `Started · ${result.invocation.id}` : "Started");
     } catch (error) {
@@ -140,6 +147,7 @@ export function WorkItemAssetChain({ item }: { item: LocalWorkItem }) {
         </Badge>
         {latestResolution?.label ? <span className="text-muted-foreground">{latestResolution.label}{latestResolution.durationMs != null ? ` · ${latestResolution.durationMs}ms` : ""}</span> : null}
         {readiness?.state === "waiting_capability" ? <Button type="button" size="sm" variant="secondary" onClick={() => setSection("applications")}>Set up capability</Button> : null}
+        {readiness?.state === "waiting_approval" && item.requiredCapabilities?.length ? <Button type="button" size="sm" onClick={() => void startApplication(true)} disabled={starting}>{starting ? "Approving…" : "Approve & start"}</Button> : null}
         {readiness?.state === "ready" && item.requiredCapabilities?.length ? <Button type="button" size="sm" onClick={() => void startApplication()} disabled={starting}>{starting ? "Starting…" : "Start application"}</Button> : null}
       </div>
       {readiness?.reason && readiness.state !== "ready" ? <p className="mt-2 text-muted-foreground">Why: {readiness.reason}</p> : null}

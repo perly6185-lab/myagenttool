@@ -143,7 +143,7 @@ export function createChannelConversationService({
     try {
       taskContext = createChannelTaskContext({
         channel, conversation, event, identity,
-        terminalId: channel.taskTerminalId ?? "dev_local",
+        terminalId: channel.taskTerminalId,
         projectId: channel.taskProjectId,
       });
     } catch (error) {
