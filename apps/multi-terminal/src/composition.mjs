@@ -1,4 +1,4 @@
-import { ALLOWED_ACTIONS, assertNoSchedulingOverride, assertPublicTerminalPath, resourceRef } from "./contract.mjs";
+import { ALLOWED_ACTIONS, assertPublicTerminalPath, ownerOperation, resourceRef } from "./contract.mjs";
 
 function percentile(values, fraction) {
   if (!values.length) return null;
@@ -43,6 +43,8 @@ export function projectTerminalSnapshot(terminal, snapshot) {
       title: task.title,
       state: state ?? task.status ?? "unknown",
       updatedAt: task.updatedAt ?? null,
+      traceId: task.observability?.trace?.traceId ?? task.traceId ?? null,
+      assetFamilies: [...new Set([...(task.inputAssets ?? []), ...(task.outputAssets ?? [])].map((asset) => asset.family).filter(Boolean))],
       deepLink: `${terminal.consoleUrl.replace(/\/$/, "")}/tasks/${encodeURIComponent(task.id)}`,
     };
   });
@@ -53,6 +55,11 @@ export function projectTerminalSnapshot(terminal, snapshot) {
     status: "online",
     lastSeenAt: new Date().toISOString(),
     capabilities: Array.isArray(snapshot?.capabilities) ? snapshot.capabilities.map((item) => item.id ?? item).filter(Boolean) : [],
+    configuration: {
+      namespace: snapshot?.namespace ?? null,
+      protocolVersion: snapshot?.protocolVersion ?? null,
+      capabilityIds: Array.isArray(snapshot?.capabilities) ? snapshot.capabilities.map((item) => item.id ?? item).filter(Boolean).sort() : [],
+    },
     counts,
     tasks: projectedTasks,
     alerts: (snapshot?.operationalHealth?.alerts ?? []).map((alert) => ({
@@ -84,6 +91,8 @@ export function createCompositionService({ terminals, request }) {
         stateResponse.json(), tasksResponse.json(), healthResponse.json(),
       ]);
       return projectTerminalSnapshot(terminal, {
+        namespace: state.namespace,
+        protocolVersion: state.protocolVersion,
         workItems: tasks.workItems,
         capabilities: state.capabilities,
         operationalHealth,
@@ -101,10 +110,21 @@ export function createCompositionService({ terminals, request }) {
   return {
     async overview() {
       const terminalRows = await Promise.all([...registry.values()].map(readOne));
+      const online = terminalRows.filter((row) => row.status === "online");
+      const baseline = online[0]?.configuration ?? null;
+      const consistency = online.map((row) => ({
+        terminalId: row.id,
+        status: !baseline ? "unknown"
+          : row.configuration.namespace === baseline.namespace
+            && row.configuration.protocolVersion === baseline.protocolVersion
+            && JSON.stringify(row.configuration.capabilityIds) === JSON.stringify(baseline.capabilityIds)
+            ? "consistent" : "different",
+      }));
       return {
         generatedAt: new Date().toISOString(),
         scheduling: { supported: false, globalQueue: false, migration: false, failover: false },
         terminals: terminalRows,
+        configurationConsistency: { baselineTerminalId: online[0]?.id ?? null, terminals: consistency },
         totals: terminalRows.reduce((total, row) => {
           for (const key of Object.keys(total)) total[key] += row.counts[key];
           return total;
@@ -115,11 +135,15 @@ export function createCompositionService({ terminals, request }) {
       const terminal = registry.get(terminalId);
       if (!terminal) return { ok: false, status: 404, code: "terminal_not_found" };
       if (!ALLOWED_ACTIONS.has(action)) return { ok: false, status: 400, code: "unsupported_action" };
-      assertNoSchedulingOverride(body);
-      if (!["work-items", "invocations"].includes(resourceType)) return { ok: false, status: 400, code: "unsupported_resource" };
-      const path = assertPublicTerminalPath(`/api/${resourceType}/${encodeURIComponent(localResourceId)}/${action}`);
+      let operation;
       try {
-        const response = await request(terminal, { method: "POST", path, body });
+        operation = ownerOperation({ resourceType, localResourceId, action, body });
+        operation.path = assertPublicTerminalPath(operation.path);
+      } catch {
+        return { ok: false, status: 400, code: "invalid_owner_operation" };
+      }
+      try {
+        const response = await request(terminal, operation);
         return { ok: response.ok, status: response.status, terminalId, localResourceId, result: await response.json() };
       } catch {
         return { ok: false, status: 503, code: "owning_terminal_unavailable", terminalId, localResourceId, migrated: false };

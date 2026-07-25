@@ -32,3 +32,32 @@ export function assertNoSchedulingOverride(body) {
     }
   }
 }
+
+export function ownerOperation({ resourceType, localResourceId, action, body = {} }) {
+  assertNoSchedulingOverride(body);
+  resourceRef("owner", localResourceId);
+  if (action === "cancel" && resourceType === "invocations") {
+    return { method: "POST", path: `/api/invocations/${encodeURIComponent(localResourceId)}/cancel`, body: {} };
+  }
+  if (action === "retry" && resourceType === "application-runs") {
+    const applicationId = String(body.applicationId ?? "");
+    const routineId = String(body.routineId ?? "");
+    resourceRef("owner", applicationId);
+    resourceRef("owner", routineId);
+    return {
+      method: "POST",
+      path: `/api/applications/${encodeURIComponent(applicationId)}/orchestrations/${encodeURIComponent(routineId)}/runs/${encodeURIComponent(localResourceId)}/recovery/actions`,
+      body: { actionType: "retry", reason: String(body.reason ?? "Retry requested from the multi-terminal console.").slice(0, 500) },
+    };
+  }
+  if (action === "replay" && resourceType === "deliveries") {
+    const provider = String(body.provider ?? "");
+    if (!["github", "gitlab", "gitea"].includes(provider)) throw new Error("unsupported delivery provider");
+    const prefix = provider === "github" ? "github" : provider;
+    return { method: "POST", path: `/api/work-items/${prefix}/deliveries/${encodeURIComponent(localResourceId)}/replay`, body: {} };
+  }
+  if (action === "maintenance" && resourceType === "applications") {
+    return { method: "POST", path: `/api/applications/${encodeURIComponent(localResourceId)}/refresh`, body: {} };
+  }
+  throw new Error(`unsupported owner operation: ${resourceType}.${action}`);
+}

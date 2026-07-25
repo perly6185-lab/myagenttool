@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createCompositionService, projectTerminalSnapshot, recoveryTrend } from "../src/composition.mjs";
-import { assertNoSchedulingOverride, assertPublicTerminalPath, resourceRef } from "../src/contract.mjs";
+import { assertNoSchedulingOverride, assertPublicTerminalPath, ownerOperation, resourceRef } from "../src/contract.mjs";
 
 const terminal = { id: "mac-studio", name: "工作室", apiUrl: "http://127.0.0.1:4310", consoleUrl: "http://127.0.0.1:4173" };
 
@@ -37,10 +37,18 @@ test("proxy action stays on owner and reports offline without migration", async 
     calls.push(operation);
     throw new Error("offline");
   } });
-  const result = await service.proxyAction({ terminalId: terminal.id, resourceType: "work-items", localResourceId: "wi_1", action: "retry" });
+  const result = await service.proxyAction({ terminalId: terminal.id, resourceType: "invocations", localResourceId: "inv_1", action: "cancel" });
   assert.equal(result.status, 503);
   assert.equal(result.migrated, false);
-  assert.deepEqual(calls.map((call) => call.path), ["/api/work-items/wi_1/retry"]);
+  assert.deepEqual(calls.map((call) => call.path), ["/api/invocations/inv_1/cancel"]);
+});
+
+test("owner operations map to existing single-terminal APIs", () => {
+  assert.equal(ownerOperation({ resourceType: "invocations", localResourceId: "inv_1", action: "cancel" }).path, "/api/invocations/inv_1/cancel");
+  assert.equal(ownerOperation({ resourceType: "application-runs", localResourceId: "inv_1", action: "retry", body: { applicationId: "app_1", routineId: "routine_1" } }).path, "/api/applications/app_1/orchestrations/routine_1/runs/inv_1/recovery/actions");
+  assert.equal(ownerOperation({ resourceType: "deliveries", localResourceId: "delivery_1", action: "replay", body: { provider: "gitea" } }).path, "/api/work-items/gitea/deliveries/delivery_1/replay");
+  assert.equal(ownerOperation({ resourceType: "applications", localResourceId: "app_1", action: "maintenance" }).path, "/api/applications/app_1/refresh");
+  assert.throws(() => ownerOperation({ resourceType: "invocations", localResourceId: "inv_1", action: "retry" }), /unsupported/);
 });
 
 test("overview exposes no global scheduling capability", async () => {
@@ -62,4 +70,34 @@ test("overview reads only public summaries, never bridge, credentials, or files"
   await service.overview();
   assert.deepEqual(paths.sort(), ["/api/observability/operations", "/api/state", "/api/work-items?limit=100"]);
   assert.equal(paths.some((path) => path.startsWith("/api/bridge") || path.includes("credential") || path.includes("files")), false);
+});
+
+test("end-to-end owner recovery keeps cross-asset trace and deep link on the same terminal", async () => {
+  let studioOnline = false;
+  const terminals = [
+    terminal,
+    { id: "laptop", name: "笔记本", apiUrl: "https://laptop.example/", consoleUrl: "https://laptop-console.example/" },
+  ];
+  const request = async (owner, operation) => {
+    if (owner.id === "mac-studio" && !studioOnline) throw new Error("offline");
+    if (operation.path.startsWith("/api/work-items")) return {
+      ok: true, status: 200, json: async () => ({ workItems: owner.id === "mac-studio" ? [{
+        id: "wi_assets", title: "Excel 到 PPT 报告", executionState: "failed",
+        inputAssets: [{ family: "spreadsheet" }], outputAssets: [{ family: "presentation" }, { family: "image" }],
+        observability: { trace: { traceId: "trace_assets" } },
+      }] : [] }),
+    };
+    return { ok: true, status: 200, json: async () => operation.path === "/api/state" ? { namespace: "local", protocolVersion: "1", capabilities: [] } : {} };
+  };
+  const service = createCompositionService({ terminals, request });
+  const offline = await service.overview();
+  assert.equal(offline.terminals.find((row) => row.id === "mac-studio").status, "offline");
+  assert.equal(offline.terminals.find((row) => row.id === "laptop").tasks.length, 0, "work is not failed over");
+  studioOnline = true;
+  const recovered = await service.overview();
+  const task = recovered.terminals.find((row) => row.id === "mac-studio").tasks[0];
+  assert.deepEqual(task.assetFamilies, ["spreadsheet", "presentation", "image"]);
+  assert.equal(task.traceId, "trace_assets");
+  assert.match(task.deepLink, /tasks\/wi_assets$/);
+  assert.equal(task.terminalId, "mac-studio");
 });
