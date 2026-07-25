@@ -15,7 +15,7 @@ import { channelCommands, parseChannelCommand } from "@myagenttool/protocol/chan
 import { UNTRUSTED_INPUT_TAG } from "@myagenttool/protocol/issue-prompt";
 import { actorForUser, LOCAL_TEAM_ID } from "../runtime/auth.mjs";
 import { makeRunTx } from "../runtime/store/run-tx.mjs";
-import { createChannelTaskContext } from "./channel-task-context.mjs";
+import { createChannelTaskContext, extendChannelTaskContext } from "./channel-task-context.mjs";
 
 const GENERIC_DENIED_REPLY = "Not authorized for this channel. Contact your team administrator.";
 const USAGE_REPLY = `Commands: ${channelCommands.join(" ")}`;
@@ -202,10 +202,17 @@ export function createChannelConversationService({
       filed = { ok: false, error: String(error?.message ?? error) };
     }
     if (!filed?.ok || !Number.isFinite(filed.number)) {
-      return settle(event, { status: "refused", reply: "Could not file the task right now — please try again.", data: { reason: filed?.reason ?? "issue_create_failed" } });
+      return settle(event, { status: "refused", reply: "Could not create the local task right now — please try again.", data: { reason: filed?.reason ?? "work_item_create_failed" } });
     }
+    const boundTaskContext = extendChannelTaskContext(taskContext, {
+      workItemId: filed.workItemId ?? null,
+      traceId: filed.workItemId ?? taskContext.traceId,
+    });
     runTx(() => {
-      conversation.taskIssues = [...(conversation.taskIssues ?? []), { number: filed.number, url: filed.url ?? null, at: now() }].slice(-50);
+      conversation.taskIssues = [...(conversation.taskIssues ?? []), {
+        number: filed.number, localRef: filed.localRef ?? null, workItemId: filed.workItemId ?? null,
+        url: filed.url ?? null, at: now(),
+      }].slice(-50);
       // Capture mode: record a request that shows up as a pending decision until a
       // human routes (→ auto-run) or dismisses it. Bounded newest-keeps.
       if (!autoRoute) {
@@ -215,12 +222,14 @@ export function createChannelConversationService({
           conversationId: conversation.id,
           projectId: channel.taskProjectId,
           issueNumber: filed.number,
+          localRef: filed.localRef ?? null,
+          workItemId: filed.workItemId ?? null,
           issueUrl: filed.url ?? null,
           title,
           externalUserId: event.externalUserId,
           terminalId: taskContext.terminalId,
           inputAssets: taskContext.attachmentAssets,
-          channelTaskContext: taskContext,
+          channelTaskContext: boundTaskContext,
           status: "pending",
           autoRunId: null,
           createdAt: now(),
@@ -232,9 +241,12 @@ export function createChannelConversationService({
     return settle(event, {
       status: "dispatched",
       reply: autoRoute
-        ? `Filed issue #${filed.number}${filed.url ? ` (${filed.url})` : ""} — auto-routing; it'll be assigned and tracked.`
-        : `Filed issue #${filed.number}${filed.url ? ` (${filed.url})` : ""} — awaiting a route/dismiss decision in the console.`,
-      data: { command: "/task", issueNumber: filed.number, projectId: channel.taskProjectId, autoRoute },
+        ? `Created ${filed.localRef ?? `LOCAL-${filed.number}`}${filed.url ? ` (${filed.url})` : ""} — queued on this terminal and tracked.`
+        : `Created ${filed.localRef ?? `LOCAL-${filed.number}`}${filed.url ? ` (${filed.url})` : ""} — awaiting a route/dismiss decision in the console.`,
+      data: {
+        command: "/task", issueNumber: filed.number, localRef: filed.localRef ?? null,
+        workItemId: filed.workItemId ?? null, projectId: channel.taskProjectId, autoRoute,
+      },
     });
   }
 

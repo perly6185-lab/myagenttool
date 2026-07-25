@@ -2,6 +2,8 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/cn";
 import { useAppTranslation } from "@/lib/i18n/use-app-translation";
+import { api } from "@/lib/api-client";
+import { useState } from "react";
 import type { LocalWorkItem, LocalWorkItemObservability } from "./task-view-types";
 import { useUiStore } from "@/store/ui-store";
 
@@ -95,6 +97,8 @@ export function WorkItemTraceSummary({
 export function WorkItemAssetChain({ item }: { item: LocalWorkItem }) {
   const { t } = useAppTranslation();
   const setSection = useUiStore((state) => state.setSection);
+  const [starting, setStarting] = useState(false);
+  const [startResult, setStartResult] = useState<string | null>(null);
   const inputs = item.inputAssets ?? [];
   const outputs = item.outputAssets ?? [];
   if (!inputs.length && !outputs.length) return null;
@@ -102,17 +106,44 @@ export function WorkItemAssetChain({ item }: { item: LocalWorkItem }) {
     .flatMap((record) => record.evidence)
     .filter((evidence) => evidence.kind === "asset" && evidence.assetId)
     .map((evidence) => evidence.assetId));
+  const latestResolution = item.applicationResolutions?.at(-1) ?? null;
+  const readiness = item.queueReadiness ?? item.assetReadiness;
+  async function startApplication() {
+    const assetVerb = item.requiredCapabilities?.[0];
+    if (!assetVerb) return;
+    setStarting(true);
+    setStartResult(null);
+    try {
+      const result = await api.startWorkItemApplication(item.id, {
+        expectedRevision: item.revision,
+        assetVerb,
+        assetFamily: inputs.find((asset) => asset.capabilities.includes(assetVerb))?.family,
+        resourceClass: inputs.find((asset) => asset.capabilities.includes(assetVerb))?.resourceClass,
+      }) as { invocation?: { id?: string } };
+      setStartResult(result.invocation?.id ? `Started · ${result.invocation.id}` : "Started");
+    } catch (error) {
+      setStartResult(error instanceof Error ? error.message : "Could not start the application");
+    } finally {
+      setStarting(false);
+    }
+  }
   return (
     <section aria-label={t("assetChain.label")} className="rounded-md border border-border p-3 text-xs">
       <div className="flex flex-wrap items-center gap-2">
         <strong>{t("assetChain.title")}</strong>
-        <Badge tone={item.assetReadiness?.state === "ready" ? "success" : "warning"}>
-          {item.assetReadiness?.state === "waiting_capability"
-            ? t(item.assetReadiness.reason === "local_resource_class_required:large" ? "assetChain.largeResource" : "assetChain.waiting")
-            : t("assetChain.ready")}
+        <Badge tone={readiness?.state === "ready" ? "success" : "warning"}>
+          {readiness?.state === "waiting_capability"
+            ? t(readiness.reason === "local_resource_class_required:large" ? "assetChain.largeResource" : "assetChain.waiting")
+            : readiness?.state === "waiting_approval" ? "Approval required"
+              : readiness?.state === "waiting_capacity" ? "Waiting for local capacity"
+                : readiness?.state === "refusal" ? "Unavailable" : t("assetChain.ready")}
         </Badge>
-        {item.assetReadiness?.state === "waiting_capability" ? <Button type="button" size="sm" variant="secondary" onClick={() => setSection("applications")}>Set up capability</Button> : null}
+        {latestResolution?.label ? <span className="text-muted-foreground">{latestResolution.label}{latestResolution.durationMs != null ? ` · ${latestResolution.durationMs}ms` : ""}</span> : null}
+        {readiness?.state === "waiting_capability" ? <Button type="button" size="sm" variant="secondary" onClick={() => setSection("applications")}>Set up capability</Button> : null}
+        {readiness?.state === "ready" && item.requiredCapabilities?.length ? <Button type="button" size="sm" onClick={() => void startApplication()} disabled={starting}>{starting ? "Starting…" : "Start application"}</Button> : null}
       </div>
+      {readiness?.reason && readiness.state !== "ready" ? <p className="mt-2 text-muted-foreground">Why: {readiness.reason}</p> : null}
+      {startResult ? <p role="status" className="mt-2 text-muted-foreground">{startResult}</p> : null}
       <ol className="mt-2 flex flex-wrap items-center gap-2" aria-label={t("assetChain.steps")}>
         {inputs.map((asset) => <li key={`input:${asset.id ?? asset.path}`}><a href={assetDeepLink(item, asset)} className="block rounded bg-muted px-2 py-1 hover:text-primary"><span className="text-muted-foreground">{t("assetChain.input")} · </span>{asset.path}</a></li>)}
         {(item.assetOperations ?? []).slice().reverse().map((operation) => <li key={operation.id} className="contents"><span aria-hidden="true">→</span><span className="rounded bg-muted px-2 py-1">{t("assetChain.operation")} · {assetOperationLabel(operation.capability)}</span></li>)}

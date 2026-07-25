@@ -19,6 +19,7 @@ type Health = {
   stream: { activeConnections: number; disconnectRate: number; averageEventLatencyMs: number | null };
   routing: { total: number; failureRate?: number | null; humanOverrideRate?: number | null };
   recovery: { recoveryHours: { median: number | null }; alerting: boolean };
+  applicationResolution: { sampleCount: number; p95Ms: number | null; waitingRate: number | null };
   alerts: Alert[];
 };
 
@@ -46,11 +47,12 @@ export function OperationalHealthCard() {
         </CardTitle>
       </CardHeader>
       <CardContent className="space-y-3">
-        <div className="grid grid-cols-2 gap-2 text-xs md:grid-cols-4">
+        <div className="grid grid-cols-2 gap-2 text-xs md:grid-cols-5">
           <Metric label="Web samples" value={String(health.web.sampleCount)} />
           <Metric label="SSE disconnects" value={`${health.stream.disconnectRate}%`} />
           <Metric label="Routing failures" value={health.routing.failureRate == null ? "—" : `${Math.round(health.routing.failureRate * 100)}%`} />
           <Metric label="Recovery median" value={health.recovery.recoveryHours.median == null ? "—" : `${health.recovery.recoveryHours.median}h`} />
+          <Metric label="Application route p95" value={health.applicationResolution?.p95Ms == null ? "—" : `${health.applicationResolution.p95Ms}ms`} />
         </div>
         {health.alerts.slice(0, 10).map((alert) => (
           <div key={alert.id} className="flex flex-wrap items-center gap-2 rounded-md border border-border p-2 text-xs">

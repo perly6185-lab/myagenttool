@@ -2,6 +2,7 @@ import { summarizeWebPerformance } from "./web-performance.mjs";
 import { ensureEventStreamMetrics, eventStreamSummary } from "./event-stream-metrics.mjs";
 import { summarizeAutoRuns } from "./auto-run-metrics.mjs";
 import { summarizeOrchestrationRecovery } from "./application-recovery-metrics.mjs";
+import { summarizeApplicationResolution } from "./application-resolution-metrics.mjs";
 
 export function reconcileOperationalHealth(state, { teamId, now }) {
   const teamProjectIds = new Set((state.projects ?? [])
@@ -11,6 +12,7 @@ export function reconcileOperationalHealth(state, { teamId, now }) {
   const stream = eventStreamSummary(ensureEventStreamMetrics(state, teamId));
   const routing = summarizeAutoRuns((state.autoRuns ?? []).filter((run) => !run.projectId || teamProjectIds.has(run.projectId))).routingHealth;
   const recovery = summarizeOrchestrationRecovery((state.invocations ?? []).filter((run) => !run.projectId || teamProjectIds.has(run.projectId)));
+  const applicationResolution = summarizeApplicationResolution(state.applicationResolutionTelemetry);
 
   const active = [];
   for (const [name, metric] of Object.entries(web.metrics)) {
@@ -20,6 +22,7 @@ export function reconcileOperationalHealth(state, { teamId, now }) {
   if (stream.averageEventLatencyMs != null && stream.averageEventLatencyMs > 2_000) active.push({ key: "stream_event_latency", source: "event_stream", severity: "warning", message: `Event delivery averages ${stream.averageEventLatencyMs} ms.` });
   for (const signal of routing?.signals ?? []) active.push({ key: `routing_${signal.key}`, source: "ai_routing", severity: signal.severity, message: `${signal.key} is ${signal.value} (threshold ${signal.threshold}).` });
   if (recovery.alerting) active.push({ key: "recovery_time", source: "recovery", severity: "danger", message: `Median recovery is ${recovery.recoveryHours.median}h (target ${recovery.thresholdHours}h).` });
+  if (applicationResolution.alerting) active.push({ key: "application_resolution_latency", source: "application_resolution", severity: "warning", message: `Application routing p95 is ${applicationResolution.p95Ms} ms (target ${applicationResolution.thresholdMs} ms).` });
 
   state.operationalAlerts ??= [];
   const at = now();
@@ -45,7 +48,7 @@ export function reconcileOperationalHealth(state, { teamId, now }) {
     }
   }
   return {
-    web, stream, routing, recovery,
+    web, stream, routing, recovery, applicationResolution,
     alerts: state.operationalAlerts.filter((alert) => alert.teamId === teamId).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt)),
     transitions: { triggered: triggeredAlerts, recovered: recoveredAlerts },
   };

@@ -988,6 +988,15 @@ export const api = {
     request("POST", `/api/work-items/${encodeURIComponent(id)}/verifications`, payload),
   recordWorkItemAssetOperation: (id: string, payload: Record<string, unknown>) =>
     request("POST", `/api/work-items/${encodeURIComponent(id)}/asset-operations`, payload),
+  startWorkItemApplication: (id: string, payload: {
+    expectedRevision: number;
+    intent?: string;
+    assetVerb?: string;
+    assetFamily?: string;
+    resourceClass?: "small" | "medium" | "large" | "unknown";
+    parameters?: Record<string, unknown>;
+    approvalToken?: string;
+  }) => request("POST", `/api/work-items/${encodeURIComponent(id)}/application-invocations`, payload),
   bulkUpdateWorkItems: (payload: {
     items: { id: string; expectedRevision: number }[];
     changes: Record<string, unknown>;

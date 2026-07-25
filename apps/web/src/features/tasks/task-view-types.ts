@@ -49,6 +49,15 @@ export type LocalWorkItem = {
   outputAssets?: WorkItemAssetRef[];
   requiredCapabilities?: string[];
   assetReadiness?: { state: "ready" | "waiting_capability" | "refused"; reason: string; terminalId: string };
+  queueReadiness?: {
+    state: "ready" | "waiting_capability" | "waiting_approval" | "waiting_capacity" | "refusal";
+    reason: string; terminalId: string | null;
+  };
+  applicationResolutions?: {
+    state: "ready" | "waiting_capability" | "waiting_approval" | "waiting_capacity" | "refusal";
+    terminalId: string; applicationId: string | null; label: string | null;
+    reason: string; durationMs: number | null;
+  }[];
   assetOperations?: {
     id: string; capability: string; inputAssetId: string; outputAssetId: string | null;
     invocationId: string | null; approvalId: string | null; terminalId: string; traceId: string;
@@ -60,7 +69,11 @@ export type LocalWorkItem = {
   estimatePoints: number;
   revision: number;
   archivedAt: string | null;
-  executionBindings?: { kind: "worktree" | "auto_run"; targetId: string; worktreeId: string | null; createdAt: string }[];
+  executionBindings?: {
+    kind: "worktree" | "auto_run" | "application_invocation";
+    targetId?: string; id?: string; worktreeId?: string | null; createdAt: string;
+    terminalId?: string; applicationId?: string; capabilityId?: string; traceId?: string;
+  }[];
   externalBindings?: ExternalWorkItemBinding[];
   planningProjects?: { id: string; name: string; archivedAt: string | null }[];
   dependencyIds?: string[];
