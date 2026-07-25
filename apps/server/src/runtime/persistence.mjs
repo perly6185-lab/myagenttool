@@ -99,6 +99,8 @@ export const persistedArrayKeys = [
   "githubWorkItemWebhookDeliveries",
   "githubWorkItemWebhookFailures",
   "workItemOperationalAlerts",
+  "webPerformanceMetrics",
+  "operationalAlerts",
   "alertOutbox",
   "planningProjects",
   "planningProjectItems",
@@ -146,6 +148,8 @@ export const persistedObjectKeys = [
   "autoRunSloAlert",
   // Routing-health alert dedupe cursor. Durable for the same reason as SLO.
   "autoRunRoutingAlert",
+  // Per-team reconnect/replay counters back the operational trend dashboard.
+  "eventStreamMetrics",
   "approvalTokenLegacyUses",
   "eventHistoryRetention",
   "privateDeploymentConfig",
