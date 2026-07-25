@@ -61,6 +61,7 @@ export function createServerState({ defaultProjectPath, now }) {
     // O5.2 follow-up: the last-emitted set of below-target SLO keys, so the
     // breach→alert sweep only fires when the breach set changes (not every tick).
     autoRunSloAlert: null,
+    autoRunRoutingAlert: null,
     // D1 deploy stage: one record per post-merge deploy attempt (feeds deploy
     // frequency + change-failure/recovery). Empty until deployOnMerge is used.
     deployments: [],
@@ -81,6 +82,10 @@ export function createServerState({ defaultProjectPath, now }) {
     spans: [],
     auditSummaries: [],
     healthChecks: [],
+    // Browser-side Core Web Vitals. Bounded in the route and team-scoped.
+    webPerformanceMetrics: [],
+    eventStreamMetrics: { byTeam: {} },
+    operationalAlerts: [],
     lifecycleAuditRecords: [],
     lifecycleRecipes: [],
     lifecyclePolicyDecisions: [],

@@ -9,6 +9,9 @@ import { useConsoleState } from "@/data/use-console-state";
 import type { DispatchAssignment } from "@/lib/console-state";
 import { cn } from "@/lib/cn";
 import { useAppTranslation } from "@/lib/i18n/use-app-translation";
+import { useVisibleInterval } from "@/hooks/use-visible-interval";
+import { WebPerformanceCard } from "./web-performance-card";
+import { OperationalHealthCard } from "./operational-health-card";
 
 interface MetricPoint {
   startedAt: string | null;
@@ -153,6 +156,46 @@ interface MaturityScorecard {
   currentLevel: number;
   nextGap?: { level: number; name: string; verdict: string; gate: string; measured?: string | null; detail?: string; action: string } | null;
   disclaimer: string;
+  inputs?: {
+    orchestration?: {
+      total: number;
+      failed: number;
+      recoveryHours: { median: number | null; count: number };
+      trend?: { at: string; hours: number }[];
+      alerting?: boolean;
+      thresholdHours?: number;
+    } | null;
+  };
+}
+
+function RecoveryTrendCard({ recovery }: { recovery: NonNullable<MaturityScorecard["inputs"]>["orchestration"] }) {
+  if (!recovery || (!recovery.total && !recovery.trend?.length)) return null;
+  return (
+    <Card>
+      <CardHeader className="py-3">
+        <CardTitle className="flex items-center justify-between gap-2">
+          <span>Recovery time trend</span>
+          {recovery.alerting ? <Badge tone="danger">Above {recovery.thresholdHours}h</Badge> : <Badge tone="success">Within target</Badge>}
+        </CardTitle>
+      </CardHeader>
+      <CardContent>
+        <div className="grid gap-3 sm:grid-cols-3">
+          <StatTile label="Median recovery" value={recovery.recoveryHours.median == null ? "—" : `${recovery.recoveryHours.median}h`} hint={`n=${recovery.recoveryHours.count}`} tone={recovery.alerting ? "danger" : undefined} />
+          <StatTile label="Failed runs" value={String(recovery.failed)} hint={`${recovery.total} measured runs`} />
+          <StatTile label="Latest recovery" value={recovery.trend?.at(-1) ? `${recovery.trend.at(-1)?.hours}h` : "—"} hint={recovery.trend?.at(-1)?.at ? fmtDate(recovery.trend.at(-1)?.at ?? null) : undefined} />
+        </div>
+        {recovery.trend?.length ? (
+          <div className="mt-3 flex h-16 items-end gap-1" aria-label="Recovery duration trend">
+            {recovery.trend.map((point) => (
+              <div key={point.at} className={cn("min-w-2 flex-1 rounded-t", point.hours > (recovery.thresholdHours ?? 24) ? "bg-destructive" : "bg-primary/70")}
+                style={{ height: `${Math.max(8, Math.min(100, (point.hours / Math.max(...recovery.trend!.map((item) => item.hours), 1)) * 100))}%` }}
+                title={`${fmtDate(point.at)} · ${point.hours}h`} />
+            ))}
+          </div>
+        ) : null}
+      </CardContent>
+    </Card>
+  );
 }
 
 interface DoraReport {
@@ -424,10 +467,9 @@ export function EvalTrendView() {
 
   useEffect(() => {
     void load();
-    // Poll gently — the trend only changes on the nightly/weekly schedule.
-    const timer = setInterval(() => void load(), 60_000);
-    return () => clearInterval(timer);
   }, [load]);
+  // Poll gently — the trend only changes on the nightly/weekly schedule.
+  useVisibleInterval(() => void load(), 60_000);
 
   const anyRegression = summary != null && (summary.subcap.regressed || summary.heldout.regressed);
 
@@ -450,10 +492,13 @@ export function EvalTrendView() {
       {error ? <p className="text-sm text-red-600 dark:text-red-400">{error}</p> : null}
 
       {maturity ? <MaturityScorecardCard scorecard={maturity} /> : null}
+      {maturity?.inputs?.orchestration ? <RecoveryTrendCard recovery={maturity.inputs.orchestration} /> : null}
 
       {dora ? <DoraCard dora={dora} /> : null}
 
       {dispatch && dispatch.total.assignments > 0 ? <DispatchEvaluationCard evaluation={dispatch} assignments={assignments} /> : null}
+      <WebPerformanceCard />
+      <OperationalHealthCard />
 
       {summary && summary.total > 0 ? (
         <>

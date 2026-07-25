@@ -2,6 +2,7 @@ export async function handlePlanningProjectRoutes({
   req, res, url, sendJson, readJson, actor,
   listProjects, getProject, createProject, updateProject, setArchived,
   addItem, removeItem, reorderItems, updateItems,
+  suggestPlan,
   executeRecommendedAction,
   decideRecommendedAction,
 }) {
@@ -40,6 +41,15 @@ export async function handlePlanningProjectRoutes({
       planningProjectId: decodeURIComponent(transitionMatch[1]),
       expectedRevision: body?.expectedRevision,
       archived: transitionMatch[2] === "archive",
+    }, actor);
+    sendJson(res, result.status, result.body);
+    return true;
+  }
+  const assistMatch = url.pathname.match(/^\/api\/planning-projects\/([^/]+)\/assist\/plan$/);
+  if (assistMatch && req.method === "POST") {
+    const result = suggestPlan({
+      planningProjectId: decodeURIComponent(assistMatch[1]),
+      ...(await readJson(req)),
     }, actor);
     sendJson(res, result.status, result.body);
     return true;

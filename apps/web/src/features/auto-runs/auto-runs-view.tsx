@@ -3,9 +3,11 @@ import { Bot, RefreshCw, GitPullRequest, GitMerge, GitBranch, ShieldCheck, Exter
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Input, Select } from "@/components/ui/input";
 import { Modal } from "@/components/ui/modal";
 import { EmptyState } from "@/components/common/empty-state";
 import { api, useAsyncAction } from "@/data/use-console-actions";
+import { ApiError } from "@/lib/api-client";
 import { reconcileFileLedger, displayPath } from "./file-ledger";
 import { cn } from "@/lib/cn";
 import { shortTime, type Tone } from "@/lib/readable-labels";
@@ -24,6 +26,7 @@ import { useUiStore } from "@/store/ui-store";
 import { EventTimeline } from "@/features/invocations/event-timeline";
 import { RunTranscriptSection, isTerminalRunStatus } from "@/features/invocations/run-transcript";
 import type { InvocationEventSnapshot, DeploymentSnapshot } from "@/lib/console-state";
+import { useVisibleInterval } from "@/hooks/use-visible-interval";
 
 interface AutoRunLink {
   type: "issue" | "pr";
@@ -37,7 +40,8 @@ export interface AutoRunRecord {
   projectId?: string | null;
   link?: AutoRunLink | null;
   intent?: string | null;
-  decision?: { path: string; decidedBy: string; confidence: number; rationale?: string | null; via?: string | null; clarifyingQuestions?: string[] | null } | null;
+  decision?: { path: string; decidedBy: string; confidence: number; rationale?: string | null; via?: string | null; clarifyingQuestions?: string[] | null; evidence?: { policyVersion: string; modelVersion: string | null; minConfidence: number; inputDigest: string } | null } | null;
+  routingOverride?: { recommendedPath: string | null; actualPath: string; reason: string; actorId: string; recordedAt: string; revision: number } | null;
   branchName?: string | null;
   worktreeId?: string | null;
   invocationId?: string | null;
@@ -127,13 +131,21 @@ interface AutoRunSummary {
   routing?: { alignmentRate: number | null; conclusive: number } | null;
   routingHealth?: {
     total: number;
+    confidenceTotal: number;
     fallback: number;
     fallbackRate: number | null;
     lowConfidence: number;
     lowConfidenceRate: number | null;
+    failed?: number;
+    failureRate?: number | null;
+    humanOverrides?: number;
+    humanOverrideRate?: number | null;
     latency: { count: number; medianMs: number | null; p90Ms: number | null };
     confidenceBuckets: { key: string; total: number; conclusive: number; alignmentRate: number | null }[];
     signals: { key: string; severity: "warning" | "danger"; value: number; threshold: number }[];
+    thresholds: { minSamples: number; fallbackRate: number; lowConfidenceRate: number; failureRate?: number; humanOverrideRate?: number; latencyP90Ms: number };
+    byProject: { projectId: string; total: number; fallbackRate: number | null; alignmentRate: number | null }[];
+    daily: { date: string; total: number; fallbackRate: number | null; alignmentRate: number | null }[];
   } | null;
   blockedReasons: { reason: string; count: number }[];
   timeToPr: { count: number; medianSeconds: number | null; p90Seconds: number | null };
@@ -147,6 +159,42 @@ interface AutoRunSummary {
 function fmtSloValue(v: number | null, unit: "ratio" | "seconds"): string {
   if (v == null) return "—";
   return unit === "ratio" ? `${Math.round(v * 100)}%` : fmtDuration(v);
+}
+
+function RoutingFeedback({ run, onSaved }: { run: AutoRunRecord; onSaved: () => void }) {
+  const { t } = useAppTranslation();
+  const [path, setPath] = useState(run.routingOverride?.actualPath ?? run.decision?.path ?? "develop");
+  const [reason, setReason] = useState(run.routingOverride?.reason ?? "");
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+  return (
+    <details className="text-xs">
+      <summary className="cursor-pointer text-primary">{t("routingFeedback.title")}</summary>
+      <div className="mt-2 flex flex-wrap gap-2 rounded bg-muted p-2">
+        <Select className="h-7 w-32 text-xs" value={path} onChange={(event) => setPath(event.target.value)}>
+          {["develop", "design", "prototype", "clarify", "decompose"].map((value) => <option key={value} value={value}>{value}</option>)}
+        </Select>
+        <Input className="h-7 min-w-48 flex-1 text-xs" value={reason} onChange={(event) => setReason(event.target.value)} placeholder={t("routingFeedback.reason")} />
+        <Button size="sm" disabled={saving || !reason.trim()} onClick={() => {
+          setSaving(true);
+          setError("");
+          void api.recordAutoRunRoutingOverride(run.id, path, reason, run.routingOverride?.revision ?? 0)
+            .then(() => onSaved())
+            .catch((caught: unknown) => {
+              if (caught instanceof ApiError && caught.status === 409) {
+                setError(t("routingFeedback.conflict"));
+                onSaved();
+                return;
+              }
+              setError(caught instanceof Error ? caught.message : t("routingFeedback.failed"));
+            })
+            .finally(() => setSaving(false));
+        }}>{t("routingFeedback.save")}</Button>
+      </div>
+      {error ? <p className="mt-1 text-red-600">{error}</p> : null}
+      {run.routingOverride ? <p className="mt-1 text-muted-foreground">{run.routingOverride.actorId} · {run.routingOverride.recordedAt}</p> : null}
+    </details>
+  );
 }
 
 function statusTone(status: string): Tone {
@@ -879,9 +927,10 @@ export function AutoRunsView() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [viewMode, setViewMode] = useState<"list" | "board">("list");
+  const [focusedRunId, setFocusedRunId] = useState<string | null>(null);
 
-  const load = useCallback(async (refresh = false) => {
-    setLoading(true);
+  const load = useCallback(async (refresh = false, quiet = false) => {
+    if (!quiet) setLoading(true);
     try {
       // Manual refresh also refreshes PR dispositions (bounded gh reads); the
       // 10s poll never does, so it stays cheap.
@@ -893,16 +942,38 @@ export function AutoRunsView() {
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
-      setLoading(false);
+      if (!quiet) setLoading(false);
     }
   }, []);
 
   useEffect(() => {
     void load();
-    // Poll so the loop is observable in near-real-time without a manual refresh.
-    const timer = setInterval(() => void load(), 10_000);
-    return () => clearInterval(timer);
   }, [load]);
+  // Poll so the loop is observable in near-real-time without wasting requests
+  // in a background tab; returning to it triggers an immediate catch-up.
+  useVisibleInterval(() => {
+    void load(false, true);
+  }, 10_000);
+  useEffect(() => {
+    const refresh = () => void load(false, true);
+    window.addEventListener("myagenttool:state-change", refresh);
+    return () => window.removeEventListener("myagenttool:state-change", refresh);
+  }, [load]);
+
+  useEffect(() => {
+    if (!runs.length) return;
+    const autoRunId = new URLSearchParams(window.location.search).get("autoRun");
+    if (!autoRunId) return;
+    setFocusedRunId(autoRunId);
+    requestAnimationFrame(() => {
+      document.getElementById(`auto-run-${autoRunId}`)?.scrollIntoView({ behavior: "smooth", block: "center" });
+    });
+    const url = new URL(window.location.href);
+    url.searchParams.delete("autoRun");
+    window.history.replaceState(window.history.state, "", `${url.pathname}${url.search}${url.hash}`);
+    const timer = window.setTimeout(() => setFocusedRunId(null), 4_000);
+    return () => window.clearTimeout(timer);
+  }, [runs]);
 
   const rate = summary?.successRate;
 
@@ -1003,7 +1074,7 @@ export function AutoRunsView() {
                 <StatTile
                   label={t("autoRunRoutingHealth.lowConfidence")}
                   value={summary.routingHealth.lowConfidenceRate == null ? "—" : `${Math.round(summary.routingHealth.lowConfidenceRate * 100)}%`}
-                  hint={`${summary.routingHealth.lowConfidence}/${summary.routingHealth.total}`}
+                  hint={`${summary.routingHealth.lowConfidence}/${summary.routingHealth.confidenceTotal} agent`}
                 />
                 <StatTile
                   label={t("autoRunRoutingHealth.medianLatency")}
@@ -1013,7 +1084,7 @@ export function AutoRunsView() {
                 <StatTile
                   label={t("autoRunRoutingHealth.p90Latency")}
                   value={summary.routingHealth.latency.p90Ms == null ? "—" : `${summary.routingHealth.latency.p90Ms} ms`}
-                  hint={t("autoRunRoutingHealth.threshold", { value: 5000 })}
+                  hint={t("autoRunRoutingHealth.threshold", { value: summary.routingHealth.thresholds.latencyP90Ms })}
                 />
               </div>
               <div className="grid gap-2 sm:grid-cols-3">
@@ -1039,6 +1110,33 @@ export function AutoRunsView() {
                   </span>
                 </div>
               ))}
+              {summary.routingHealth.daily.length > 1 ? (
+                <div className="space-y-1">
+                  <p className="text-xs font-medium text-muted-foreground">{t("routingTrend.title")}</p>
+                  <div className="flex gap-1 overflow-x-auto pb-1">
+                    {summary.routingHealth.daily.map((day) => (
+                      <div key={day.date} className="min-w-28 rounded bg-muted p-2 text-[10px]">
+                        <strong>{day.date.slice(5)}</strong>
+                        <p>{day.total} · {t("routingTrend.align")} {day.alignmentRate == null ? "—" : `${Math.round(day.alignmentRate * 100)}%`}</p>
+                        <p>{t("routingTrend.fallback")} {day.fallbackRate == null ? "—" : `${Math.round(day.fallbackRate * 100)}%`}</p>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ) : null}
+              {summary.routingHealth.byProject.length > 1 ? (
+                <div className="space-y-1">
+                  <p className="text-xs font-medium text-muted-foreground">{t("routingTrend.projects")}</p>
+                  <div className="flex flex-wrap gap-1">
+                    {summary.routingHealth.byProject.map((project) => (
+                      <Badge key={project.projectId} tone="neutral">
+                        {consoleState?.projects?.find((candidate) => candidate.id === project.projectId)?.name ?? project.projectId}
+                        {" · "}{project.total} · {project.alignmentRate == null ? "—" : `${Math.round(project.alignmentRate * 100)}%`}
+                      </Badge>
+                    ))}
+                  </div>
+                </div>
+              ) : null}
             </section>
           ) : null}
           {deployments && deployments.total > 0 ? (
@@ -1125,7 +1223,8 @@ export function AutoRunsView() {
       ) : (
         <div className="flex flex-col gap-2">
           {runs.map((run) => (
-            <Card key={run.id}>
+            <Card key={run.id} id={`auto-run-${run.id}`}
+              className={cn("scroll-mt-16 transition-shadow", focusedRunId === run.id && "ring-2 ring-primary shadow-lg")}>
               <CardContent className="flex flex-col gap-2 py-3">
                 <div className="flex items-center justify-between gap-3">
                   <div className="flex min-w-0 items-center gap-2">
@@ -1207,6 +1306,7 @@ export function AutoRunsView() {
                       {run.decision.via ? <span className="ml-1 font-normal text-muted-foreground">· {run.decision.via}</span> : null}
                     </span>
                   ) : null}
+                  {run.decision ? <RoutingFeedback run={run} onSaved={() => void load()} /> : null}
                   {run.branchName ? (
                     <span className="inline-flex items-center gap-1">
                       <GitBranch className="size-3" /> {run.branchName}

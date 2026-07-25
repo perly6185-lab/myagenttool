@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { classifyIntentFromText } from "./auto-run-intent.mjs";
 import { isSpawnedChildBody } from "./auto-run-spawn.mjs";
 
@@ -16,6 +17,7 @@ import { isSpawnedChildBody } from "./auto-run-spawn.mjs";
 //               not a diff). Opt-in (epicDecomposition); EPIC_DECOMPOSITION_PLAN.md.
 
 export const AUTO_RUN_PATHS = ["develop", "design", "prototype", "clarify", "decompose"];
+export const ROUTING_POLICY_VERSION = "2026-07-25.1";
 
 // Paths whose output is not a product diff. A low-confidence agent decision may
 // not send work down these (or spawn issues) — it degrades to clarify instead.
@@ -55,6 +57,7 @@ export function decisionConfig(env = process.env) {
     // Hybrid fast path (on by default): strong lexical signals skip the decider;
     // only ambiguous "change-shaped" titles pay the LLM hop.
     fastPath: env.MYAGENTTOOL_AUTORUN_DECIDER_FAST_PATH !== "0",
+    modelVersion: String(env.MYAGENTTOOL_AUTORUN_DECIDER_MODEL_VERSION ?? "").trim() || null,
   };
 }
 
@@ -107,16 +110,31 @@ export async function resolveDecision({
   decideIssuePath,
   minConfidence = decisionConfig().minConfidence,
   fastPath = decisionConfig().fastPath,
+  modelVersion = decisionConfig().modelVersion,
   epicDecomposition = false,
 } = {}) {
+  const finalize = (decision) => ({
+    ...decision,
+    evidence: {
+      policyVersion: ROUTING_POLICY_VERSION,
+      modelVersion,
+      minConfidence,
+      inputDigest: createHash("sha256").update(JSON.stringify({
+        type: link?.type ?? null,
+        number: link?.number ?? null,
+        title: link?.title ?? "",
+        body: issueBody ?? "",
+      })).digest("hex"),
+    },
+  });
   // Opt-in epic decomposition wins over every other route: an epic is never a
   // single develop/design run. Deterministic — no decider hop, no LLM variance.
   // GATED on a NON-child body: a spawned child (depth-1 marker) with an [Epic]-
   // shaped title must NOT re-decompose into grandchildren. (review: depth-1 gate)
-  if (epicDecomposition && !isSpawnedChildBody(issueBody) && isEpicIssue({ link, issueBody })) return epicDecision();
+  if (epicDecomposition && !isSpawnedChildBody(issueBody) && isEpicIssue({ link, issueBody })) return finalize(epicDecision());
   // The fallback floor reads the body too (best-effort when no agent is
   // configured); the change-title guard keeps a clear change from being flipped.
-  if (typeof decideIssuePath !== "function") return heuristicDecision(link, issueBody);
+  if (typeof decideIssuePath !== "function") return finalize(heuristicDecision(link, issueBody));
 
   // Hybrid fast path: question/investigation TITLES are strong lexical signals
   // the heuristic reads reliably — skip the decider hop. Deliberately title-only:
@@ -125,7 +143,7 @@ export async function resolveDecision({
   if (fastPath) {
     const quick = heuristicDecision(link);
     if (quick.path !== "develop") {
-      return { ...quick, via: "fast-path", rationale: `${quick.rationale} (Fast path: strong lexical signal, decider skipped.)` };
+      return finalize({ ...quick, via: "fast-path", rationale: `${quick.rationale} (Fast path: strong lexical signal, decider skipped.)` });
     }
   }
 
@@ -141,15 +159,15 @@ export async function resolveDecision({
   // here would make the SAME issue route differently on a transient decider hiccup
   // (develop→PR when it answers, design→no-code when it times out). The body-aware
   // heuristic is reserved for the no-decider deployment above, where it's stable.
-  if (!decision) return { ...heuristicDecision(link), via: "fallback", latencyMs };
+  if (!decision) return finalize({ ...heuristicDecision(link), via: "fallback", latencyMs });
   decision = { ...decision, via: "agent", latencyMs };
   if (decision.confidence < minConfidence && (HEAVY_PATHS.has(decision.path) || decision.spawnChildIssues)) {
-    return {
+    return finalize({
       ...decision,
       path: "clarify",
       spawnChildIssues: false,
       rationale: `${decision.rationale ? `${decision.rationale} ` : ""}(Degraded to clarify: confidence ${decision.confidence.toFixed(2)} below ${minConfidence} for a heavy path.)`,
-    };
+    });
   }
   // A low-confidence DEVELOP decision that the agent ITSELF flagged with open
   // questions degrades to clarify — cheaper to ask than to burn a run on a guess.
@@ -158,12 +176,12 @@ export async function resolveDecision({
   // raises questions — is never gated. Asking needlessly is friction, so we only
   // ask when the decider explicitly said it lacks what it needs.
   if (decision.path === "develop" && decision.confidence < minConfidence && decision.clarifyingQuestions.length > 0) {
-    return {
+    return finalize({
       ...decision,
       path: "clarify",
       spawnChildIssues: false,
       rationale: `${decision.rationale ? `${decision.rationale} ` : ""}(Degraded to clarify: develop confidence ${decision.confidence.toFixed(2)} below ${minConfidence} with open questions.)`,
-    };
+    });
   }
-  return decision;
+  return finalize(decision);
 }

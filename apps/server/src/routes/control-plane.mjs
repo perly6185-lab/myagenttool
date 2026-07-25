@@ -8,6 +8,10 @@ import {
   isCapabilityTarget,
   normalizeAutomationTarget,
 } from "../services/automation-target.mjs";
+import { normalizeExternalAlertWebhookUrl } from "../services/auto-run-alerts.mjs";
+import { normalizeWebPerformanceMetric, summarizeWebPerformance } from "../services/web-performance.mjs";
+import { ensureEventStreamMetrics, eventStreamSummary } from "../services/event-stream-metrics.mjs";
+import { actOnOperationalAlert, reconcileOperationalHealth } from "../services/operational-health.mjs";
 
 const TOKEN_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 
@@ -103,15 +107,50 @@ export async function handleControlPlaneRoutes({
       sendJson(res, 400, { error: "invalid_team", message: "A team name is required." });
       return true;
     }
+    const rawAlertWebhookUrl = body?.alertWebhookUrl;
+    const normalizedTeamWebhookUrl = rawAlertWebhookUrl == null || rawAlertWebhookUrl === ""
+      ? null
+      : normalizeExternalAlertWebhookUrl(rawAlertWebhookUrl);
+    if (rawAlertWebhookUrl && !normalizedTeamWebhookUrl) {
+      sendJson(res, 400, { error: "invalid_alert_webhook_url" });
+      return true;
+    }
     const team = {
       id: nextId("team"),
       name,
       slug: String(body?.slug ?? name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "")),
+      alertWebhookUrl: normalizedTeamWebhookUrl,
       createdAt: now(),
     };
     state.teams.unshift(team);
     persistStateSoon();
-    sendJson(res, 201, { team });
+    const { alertWebhookUrl, ...publicTeam } = team;
+    sendJson(res, 201, { team: { ...publicTeam, alertWebhookConfigured: Boolean(alertWebhookUrl) } });
+    return true;
+  }
+  const teamAlertMatch = url.pathname.match(/^\/api\/teams\/([^/]+)\/alert-webhook$/);
+  if (req.method === "PATCH" && teamAlertMatch) {
+    const teamId = decodeURIComponent(teamAlertMatch[1]);
+    if (!canProvision(actor) || actor?.teamId !== teamId) {
+      sendJson(res, 404, { error: "team_not_found" });
+      return true;
+    }
+    const team = state.teams.find((item) => item.id === teamId);
+    if (!team) {
+      sendJson(res, 404, { error: "team_not_found" });
+      return true;
+    }
+    const body = await readJson(req).catch(() => ({}));
+    const raw = body?.alertWebhookUrl;
+    const alertWebhookUrl = raw == null || raw === "" ? null : normalizeExternalAlertWebhookUrl(raw);
+    if (raw && !alertWebhookUrl) {
+      sendJson(res, 400, { error: "invalid_alert_webhook_url" });
+      return true;
+    }
+    team.alertWebhookUrl = alertWebhookUrl;
+    persistStateSoon();
+    const { alertWebhookUrl: storedWebhookUrl, ...publicTeam } = team;
+    sendJson(res, 200, { team: { ...publicTeam, alertWebhookConfigured: Boolean(storedWebhookUrl) } });
     return true;
   }
 
@@ -179,6 +218,85 @@ export async function handleControlPlaneRoutes({
       invocationCount: result.invocationCount,
       counts: result.counts,
     });
+    return true;
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/observability/web-performance") {
+    const body = await readJson(req).catch(() => ({}));
+    const metric = normalizeWebPerformanceMetric(body, {
+      id: nextId("wpm"),
+      userId: actor?.userId,
+      teamId: actor?.teamId,
+      recordedAt: now(),
+    });
+    if (!metric) {
+      sendJson(res, 400, { error: "invalid_web_performance_metric" });
+      return true;
+    }
+    state.webPerformanceMetrics ??= [];
+    state.webPerformanceMetrics.push(metric);
+    state.webPerformanceMetrics = state.webPerformanceMetrics.slice(-5_000);
+    persistStateSoon();
+    sendJson(res, 202, { accepted: true });
+    return true;
+  }
+
+  if (req.method === "GET" && url.pathname === "/api/observability/web-performance") {
+    const rows = (state.webPerformanceMetrics ?? []).filter((row) => row.teamId === actor?.teamId);
+    const summary = summarizeWebPerformance(rows, {
+      version: url.searchParams.get("version"),
+      limit: Number(url.searchParams.get("limit") ?? 200),
+    });
+    sendJson(res, 200, { ...summary, recent: rows.slice(-50).reverse() });
+    return true;
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/observability/event-stream/reconnect") {
+    const metrics = ensureEventStreamMetrics(state, actor?.teamId);
+    metrics.reconnects += 1;
+    persistStateSoon();
+    sendJson(res, 202, { accepted: true });
+    return true;
+  }
+
+  if (req.method === "GET" && url.pathname === "/api/observability/event-stream") {
+    const metrics = ensureEventStreamMetrics(state, actor?.teamId);
+    sendJson(res, 200, { metrics: eventStreamSummary(metrics) });
+    return true;
+  }
+
+  if (req.method === "GET" && url.pathname === "/api/observability/operations") {
+    const health = reconcileOperationalHealth(state, { teamId: actor?.teamId, now });
+    for (const alert of health.transitions.triggered) {
+      appendEvent({ invocationId: null, type: "operational_alert_triggered", level: alert.severity, message: alert.message, data: { alertId: alert.id, source: alert.source } });
+    }
+    for (const alert of health.transitions.recovered) {
+      appendEvent({ invocationId: null, type: "operational_alert_recovered", level: "info", message: `Recovered ${alert.key}.`, data: { alertId: alert.id, source: alert.source } });
+    }
+    persistStateSoon();
+    const { transitions: _transitions, ...publicHealth } = health;
+    sendJson(res, 200, publicHealth);
+    return true;
+  }
+
+  const operationalAlertMatch = url.pathname.match(/^\/api\/observability\/operations\/alerts\/([^/]+)\/actions$/);
+  if (req.method === "POST" && operationalAlertMatch) {
+    const body = await readJson(req).catch(() => ({}));
+    const alert = actOnOperationalAlert(state, {
+      teamId: actor?.teamId,
+      alertId: decodeURIComponent(operationalAlertMatch[1]),
+      action: body.action,
+      actorId: actor?.userId ?? "usr_local",
+      silenceMinutes: body.silenceMinutes,
+      now,
+    });
+    if (!alert) {
+      sendJson(res, 404, { error: "operational_alert_not_found" });
+      return true;
+    }
+    appendEvent({ invocationId: null, type: `operational_alert_${body.action}`, level: "info", message: `${body.action} ${alert.key}.`, data: { alertId: alert.id, source: alert.source } });
+    persistStateSoon();
+    sendJson(res, 200, { alert });
     return true;
   }
 

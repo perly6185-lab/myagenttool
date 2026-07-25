@@ -1267,7 +1267,7 @@ export interface ConsoleSnapshot {
   ledgerSummary?: LedgerSummary;
   budgetStatuses?: BudgetStatus[];
   teamBudgetStatuses?: TeamBudgetStatus[];
-  teams?: { id: string; name?: string }[];
+  teams?: { id: string; name?: string; alertWebhookConfigured?: boolean }[];
   users?: { id: string; name?: string; teamId?: string; role?: string }[];
   /** Channel subsystem (#1090): operational rollup per channel, team-scoped. */
   channelOperations?: ChannelOperations[];

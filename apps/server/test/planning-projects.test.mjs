@@ -12,8 +12,8 @@ function harness({ store, persistStateSoon } = {}) {
     planningProjects: [],
     planningProjectItems: [],
     workItems: [
-      { id: "wi_a", localRef: "LOCAL-1", ownerTeamId: "team_a", title: "A", status: "backlog", priority: "p2", state: "open" },
-      { id: "wi_b", localRef: "LOCAL-2", ownerTeamId: "team_b", title: "B", status: "ready", priority: "p1", state: "open" },
+      { id: "wi_a", projectId: "prj_a", localRef: "LOCAL-1", ownerTeamId: "team_a", title: "A", status: "backlog", priority: "p2", state: "open" },
+      { id: "wi_b", projectId: "prj_b", localRef: "LOCAL-2", ownerTeamId: "team_b", title: "B", status: "ready", priority: "p1", state: "open" },
     ],
   };
   const service = createPlanningProjectService({
@@ -44,6 +44,45 @@ test("planning projects are team scoped and revision gated", () => {
   }, ACTOR_A);
   assert.equal(updated.body.project.revision, 2);
   assert.equal(updated.body.project.name, "Release 1");
+});
+
+test("AI planning is review-only and projects expose autonomy and health", () => {
+  const { service, state } = harness();
+  const project = service.createProject({ name: "Guided delivery", autonomyProfile: "cautious" }, ACTOR_A).body.project;
+  service.addItem({ planningProjectId: project.id, workItemId: "wi_a" }, ACTOR_A);
+  state.workItems.push({
+    id: "wi_dependency", localRef: "LOCAL-3", ownerTeamId: "team_a",
+    title: "Dependency", status: "backlog", priority: "p2", state: "open",
+  });
+  state.workItems[0].dependencyIds = ["wi_dependency"];
+  state.workItems[0].executionBindings = [{ kind: "auto_run", targetId: "aur_health" }];
+  state.autoRuns = [{
+    id: "aur_health", status: "done", executionChainId: "wi_a",
+    routingOverride: { recommendedPath: "develop", actualPath: "design" },
+  }];
+  state.ledgerEntries = [{ id: "led_health", autoRunId: "aur_health", amountUsd: 0.25 }];
+  state.alertOutbox = [{
+    id: "aob_health", status: "failed", alert: { data: { autoRunId: "aur_health" } },
+  }];
+  const detail = service.getProject({ planningProjectId: project.id }, ACTOR_A).body.project;
+  assert.equal(detail.autonomyProfile, "cautious");
+  assert.equal(detail.aiHealth.blocked, 1);
+  assert.equal(detail.aiHealth.needsAttention, true);
+  assert.equal(detail.aiHealth.successRate, 1);
+  assert.equal(detail.aiHealth.routingCorrectionRate, 1);
+  assert.equal(detail.aiHealth.knownCostUsd, 0.25);
+  assert.equal(detail.aiHealth.alertBacklog, 1);
+  assert.equal(detail.aiHealth.traceCoverage, 1);
+  assert.equal(detail.aiHealth.sloStatus, "insufficient_data");
+  const workItemCount = state.workItems.length;
+  const plan = service.suggestPlan({ planningProjectId: project.id }, ACTOR_A);
+  assert.equal(plan.status, 200);
+  assert.equal(plan.body.plan.requiresApproval, true);
+  assert.equal(plan.body.plan.autonomyProfile, "cautious");
+  assert.equal(plan.body.plan.targetProjectId, "prj_a");
+  assert.equal(plan.body.plan.drafts.length, 3);
+  assert.equal(state.workItems.length, workItemCount, "suggestion must not create work items");
+  assert.equal(service.suggestPlan({ planningProjectId: project.id }, ACTOR_B).status, 404);
 });
 
 test("planning projects support cursor pagination and incremental refresh", () => {

@@ -67,6 +67,19 @@ function normalizeSloTargets(value) {
   return Object.keys(out).length ? out : null;
 }
 
+function normalizeRoutingThresholds(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const out = {};
+  const rate = (v) => { const n = Number(v); return Number.isFinite(n) && n >= 0 && n <= 1 ? n : undefined; };
+  const positive = (v) => { const n = Math.round(Number(v)); return Number.isFinite(n) && n > 0 ? n : undefined; };
+  const minSamples = positive(value.minSamples); if (minSamples !== undefined) out.minSamples = Math.min(1000, minSamples);
+  const windowDays = positive(value.windowDays); if (windowDays !== undefined) out.windowDays = Math.min(365, windowDays);
+  const fallbackRate = rate(value.fallbackRate); if (fallbackRate !== undefined) out.fallbackRate = fallbackRate;
+  const lowConfidenceRate = rate(value.lowConfidenceRate); if (lowConfidenceRate !== undefined) out.lowConfidenceRate = lowConfidenceRate;
+  const latencyP90Ms = positive(value.latencyP90Ms); if (latencyP90Ms !== undefined) out.latencyP90Ms = Math.min(300_000, latencyP90Ms);
+  return Object.keys(out).length ? out : null;
+}
+
 /**
  * Validate a settings patch into a clean flat object, carrying prior values for
  * fields not present in the patch. A field explicitly set to null clears the
@@ -125,6 +138,7 @@ export function normalizeAutoRunSettings(patch = {}, prev = {}) {
     // Tail: operator-tunable SLO targets (partial object; unset keys keep the
     // defaults). Each value validated to its range; empty → null (all defaults).
     sloTargets: keep("sloTargets", (v) => normalizeSloTargets(v)),
+    routingThresholds: keep("routingThresholds", (v) => normalizeRoutingThresholds(v)),
     // A3 reliability (UI-only). globalMaxConcurrent 0 = unlimited. Breaker
     // threshold 0 = disabled; cooldown in minutes.
     globalMaxConcurrent: keep("globalMaxConcurrent", (v) => clampInt(v, 0, 100)),
@@ -210,6 +224,7 @@ export function autoRunSettingsEnvOverlay(settings = {}, baseEnv = process.env) 
  */
 export function resolveAutoRunConfig(state = {}, baseEnv = process.env) {
   const settings = state?.autoRunSettings ?? {};
+  const { alertWebhookUrl: _alertWebhookUrl, ...publicSettings } = settings;
   const env = autoRunSettingsEnvOverlay(settings, baseEnv);
   const autoTrigger = resolveAutoTriggerConfig(env);
   const decision = decisionConfig(env);
@@ -272,8 +287,8 @@ export function resolveAutoRunConfig(state = {}, baseEnv = process.env) {
     // A4: named verify-command allowlist (keys only — never argv). A project
     // selects one of these by name; empty = only the global verify command (if any).
     verifyCommandNames: Object.keys(resolveVerifyCommandAllowlist(env)),
-    // The raw saved overrides, so the edit form can show what's explicitly set
-    // (null field = inheriting the env default).
-    settings,
+    // Saved safe overrides for the edit form. Webhook targets may contain
+    // credentials, so only alertWebhookConfigured above crosses this boundary.
+    settings: publicSettings,
   };
 }

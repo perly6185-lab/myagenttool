@@ -203,6 +203,8 @@ test("startAutoRun materializes the worktree and starts an issue-seeded invocati
     agentId: "agt_1",
     name: "issue-12-add-the-widget",
     actor: { userId: "usr_x" },
+    executionChainId: "wi_chain_12",
+    autonomyProfile: "high",
   });
 
   // Real worktree on the issue branch, carrying the link.
@@ -217,6 +219,8 @@ test("startAutoRun materializes the worktree and starts an issue-seeded invocati
   assert.match(created.task, /implement the change/, "develop role instructions seeded");
   assert.equal(created.options.metadata.worktreeId, worktree.id);
   assert.equal(created.options.metadata.role, "develop", "decided path seeded as role for skill selection");
+  assert.equal(created.options.metadata.executionChainId, "wi_chain_12");
+  assert.equal(created.options.metadata.autonomyProfile, "high");
   assert.equal(created.options.timeoutSeconds, 600, "invocation records the effective coding-agent timeout");
   assert.equal(created.agent.id, "agt_1");
   assert.equal(invocation.input.task, created.task, "invocation carries the seeded prompt");
@@ -229,8 +233,58 @@ test("startAutoRun materializes the worktree and starts an issue-seeded invocati
   assert.equal(autoRun.invocationId, "inv_fake_1");
   assert.equal(autoRun.projectId, sourceProjectId);
   assert.equal(autoRun.link.number, 12);
+  assert.equal(autoRun.executionChainId, "wi_chain_12");
+  assert.equal(autoRun.autonomyProfile, "high");
   // #1152: the owning team is stamped at creation, not re-derived per read.
   assert.equal(autoRun.teamId, "team_a");
+});
+
+test("routing feedback is role-gated, revision-safe, and idempotent", () => {
+  const { svc, calls } = makeAutoRun();
+  state.autoRuns.push({
+    id: "aur_feedback",
+    invocationId: "inv_feedback",
+    decision: { path: "develop" },
+  });
+  assert.throws(
+    () => svc.recordRoutingOverride("aur_feedback", {
+      actor: { userId: "viewer", role: "viewer" },
+      actualPath: "design",
+      reason: "Design deliverable",
+      expectedRevision: 0,
+    }),
+    (error) => error.status === 403 && error.code === "routing_override_forbidden",
+  );
+  const first = svc.recordRoutingOverride("aur_feedback", {
+    actor: { userId: "operator", role: "operator" },
+    actualPath: "design",
+    reason: "Design deliverable",
+    expectedRevision: 0,
+    idempotencyKey: "feedback-1",
+  });
+  assert.equal(first.routingOverride.revision, 1);
+  assert.equal(first.routingOverride.idempotencyKey, undefined);
+  assert.equal(first.replayed, false);
+  const replay = svc.recordRoutingOverride("aur_feedback", {
+    actor: { userId: "operator", role: "operator" },
+    actualPath: "design",
+    reason: "Design deliverable",
+    expectedRevision: 0,
+    idempotencyKey: "feedback-1",
+  });
+  assert.equal(replay.replayed, true);
+  assert.equal(calls.events.filter((event) => event.type === "auto_run_routing_overridden").length, 1);
+  assert.equal(calls.events.find((event) => event.type === "auto_run_routing_overridden").data.idempotencyKey, undefined);
+  assert.throws(
+    () => svc.recordRoutingOverride("aur_feedback", {
+      actor: { userId: "owner", role: "owner" },
+      actualPath: "clarify",
+      reason: "Needs input",
+      expectedRevision: 0,
+      idempotencyKey: "feedback-2",
+    }),
+    (error) => error.status === 409 && error.currentRevision === 1,
+  );
 });
 
 test("startAutoRun reflects the local-approval gate instead of bypassing it", async () => {
@@ -1256,6 +1310,22 @@ test("O0 budget gate: under-budget run proceeds normally", async () => {
   assert.equal(calls.createInvocation.length, 1);
 });
 
+test("cautious autonomy preserves a 20% budget safety margin", async () => {
+  const { svc, calls } = makeAutoRun({
+    budgetStatusFor: () => ({ over: false, admissionOver: false, spentUsd: 8.5, remainingUsd: 1.5, limitUsd: 10 }),
+  });
+  await assert.rejects(
+    () => svc.startAutoRun({
+      projectId: sourceProjectId,
+      link: { type: "issue", number: 31, title: "Cautious spend", url: null, state: "open" },
+      agentId: "agt_1",
+      autonomyProfile: "cautious",
+    }),
+    /Budget exceeded/,
+  );
+  assert.equal(calls.createInvocation.length, 0);
+});
+
 test("#890 budget reservation: a concurrent start near the limit is refused, then freed on settle", async () => {
   // Real m3 reservations against the harness state + a $10 block budget, with the
   // per-run hold armed. Two $6 runs can't both be in flight; settling the first
@@ -1483,6 +1553,23 @@ test("O2: a non-code path (design) is auto-approved when the operator opts in", 
   state.autoRunSettings = { autoApproveNonCodePaths: true };
   await svc.startAutoRun({ projectId: sourceProjectId, link: { type: "issue", number: 40, title: "Rework", url: null, state: "open" }, agentId: "agt_1", name: "issue-40" });
   assert.equal(calls.autoApprove.length, 1, "design run auto-approved by policy");
+});
+
+test("high autonomy auto-approves low-risk non-code work without the global toggle", async () => {
+  const { svc, calls } = makeAutoRun({
+    invocationStatus: "waiting_for_local_approval",
+    decideIssuePath: async () => ({ path: "design", confidence: 0.9, rationale: "design artifact" }),
+    autoApproveInvocation: () => true,
+  });
+  state.autoRunSettings = { autoApproveNonCodePaths: false };
+  await svc.startAutoRun({
+    projectId: sourceProjectId,
+    link: { type: "issue", number: 401, title: "Design flow", url: null, state: "open" },
+    agentId: "agt_1",
+    name: "issue-401",
+    autonomyProfile: "high",
+  });
+  assert.equal(calls.autoApprove.length, 1);
 });
 
 test("O2: develop is NEVER auto-approved (edits code — always human)", async () => {

@@ -13,7 +13,7 @@ export function useCanvasScenes() {
     queryKey: SCENES_KEY,
     queryFn: async () => (await api.listCanvasScenes()).scenes,
     refetchInterval: 4000,
-    refetchIntervalInBackground: true,
+    refetchIntervalInBackground: false,
     staleTime: 0,
   });
 }
@@ -28,7 +28,7 @@ export function useCanvasScene(sceneId: string | null) {
     enabled: Boolean(sceneId),
     queryFn: async () => (sceneId ? (await api.getCanvasScene(sceneId)).scene : null),
     refetchInterval: 4000,
-    refetchIntervalInBackground: true,
+    refetchIntervalInBackground: false,
     staleTime: 0,
   });
 }

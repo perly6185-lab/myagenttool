@@ -925,6 +925,9 @@ export function createM3Service({
     const projectId = metadata.projectId ?? invocation.projectId ?? state.currentProjectId ?? null;
     const project = projectId ? (state.projects ?? []).find((item) => item.id === projectId) ?? null : null;
     const autoRunId = metadata.autoRunId ?? null;
+    const executionChainId = metadata.executionChainId
+      ?? (state.autoRuns ?? []).find((run) => run.id === autoRunId)?.executionChainId
+      ?? null;
     const localIssueId = autoRunId
       ? (state.workItems ?? []).find((item) => (item.executionBindings ?? []).some((binding) => binding.kind === "auto_run" && binding.targetId === autoRunId))?.id ?? null
       : metadata.localIssueId ?? null;
@@ -939,6 +942,7 @@ export function createM3Service({
       invocationId: invocation.id,
       autoRunId,
       localIssueId,
+      executionChainId: executionChainId ?? localIssueId,
       projectId,
       budgetPoolId,
       deviceId: invocation.delivery?.deviceId ?? null,
@@ -1192,6 +1196,9 @@ export function createM3Service({
     const localIssueId = autoRunId
       ? (state.workItems ?? []).find((item) => (item.executionBindings ?? []).some((binding) => binding.kind === "auto_run" && binding.targetId === autoRunId))?.id ?? null
       : meta.localIssueId ?? null;
+    const executionChainId = meta.executionChainId
+      ?? (state.autoRuns ?? []).find((run) => run.id === autoRunId)?.executionChainId
+      ?? localIssueId;
     const attributedBudgetPoolId = agent?.economics?.budgetPoolId
       ?? (state.budgets ?? []).find((budget) => budget.projectId === projectId)?.id
       ?? (state.budgets ?? []).find((budget) => budget.teamId === ledgerTeamId)?.id
@@ -1234,6 +1241,7 @@ export function createM3Service({
       // without re-deriving it from telemetry. Null for manual/non-auto-run spend.
       autoRunId,
       localIssueId,
+      executionChainId,
       // Explicit model dimension for the byModel rollup, independent of
       // `counterparty` (whose meaning differs across ledger paths).
       model,
@@ -1536,6 +1544,8 @@ export function createM3Service({
     return [...rollup.values()].map((row) => {
       const pool = (state.budgets ?? []).find((item) => item.teamId === row.teamId);
       const limitUsd = pool ? Number(pool.limitUsd) : null;
+      const reservedUsd = activeReservedForTeam(row.teamId);
+      const admissionUsd = roundUsd(row.spentUsd + reservedUsd);
       return {
         ...row,
         exists: Boolean(pool),
@@ -1543,8 +1553,11 @@ export function createM3Service({
         limitUsd,
         policy: pool?.policy ?? "warn",
         currency: pool?.currency ?? "USD",
-        remainingUsd: pool && limitUsd !== null ? roundUsd(limitUsd - row.spentUsd) : null,
+        reservedUsd,
+        admissionUsd,
+        remainingUsd: pool && limitUsd !== null ? roundUsd(limitUsd - admissionUsd) : null,
         over: pool ? row.spentUsd > limitUsd : false,
+        admissionOver: pool ? admissionUsd > limitUsd : false,
       };
     });
   }

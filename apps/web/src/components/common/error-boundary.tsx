@@ -5,6 +5,8 @@ import { i18n } from "@/lib/i18n";
 interface Props {
   /** Changing this value (e.g. the active section) clears a caught error. */
   resetKey?: unknown;
+  /** Lazy chunk failures need a fresh module graph, so callers may reload. */
+  onRetry?: () => void;
   children: ReactNode;
 }
 interface State {
@@ -46,7 +48,14 @@ export class ErrorBoundary extends Component<Props, State> {
           <pre className="max-h-40 overflow-auto rounded bg-muted/60 p-2 font-mono text-xs text-muted-foreground">
             {this.state.error.message}
           </pre>
-          <Button variant="secondary" size="sm" onClick={() => this.setState({ error: null })}>
+          <Button
+            variant="secondary"
+            size="sm"
+            onClick={() => {
+              if (this.props.onRetry) this.props.onRetry();
+              else this.setState({ error: null });
+            }}
+          >
             {i18n.t("shared.tryAgain")}
           </Button>
         </div>

@@ -232,6 +232,7 @@ export function buildPublicState({
     queued: visibleWorkItemAlerts.filter((row) => row.status === "queued").length,
     failed: visibleWorkItemAlerts.filter((row) => row.status === "failed").length,
     sent: visibleWorkItemAlerts.filter((row) => row.status === "sent").length,
+    skipped: visibleWorkItemAlerts.filter((row) => row.status === "skipped").length,
     byLocalIssue: visibleWorkItemAlerts.filter((row) => row.localIssueId).slice(0, 100),
   };
   // #1152: their durable lifecycle history, scoped the same way.
@@ -442,7 +443,10 @@ export function buildPublicState({
     devices,
     // Never expose password hashes to any client.
     users: (state.users ?? []).map(({ passwordHash, ...user }) => user),
-    teams: state.teams ?? [],
+    teams: (state.teams ?? []).map(({ alertWebhookUrl, ...team }) => ({
+      ...team,
+      alertWebhookConfigured: Boolean(alertWebhookUrl),
+    })),
     projects,
     applications: applicationsWithSchedules,
     applicationRecoveryActions,

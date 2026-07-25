@@ -28,13 +28,20 @@ export function createEventLogRuntime({
         console.warn(`[refusal] ${message}`);
       }
     }
+    const invocation = event?.invocationId
+      ? (state.invocations ?? []).find((row) => row.id === event.invocationId) ?? null
+      : null;
+    const executionChainId = event?.data?.executionChainId
+      ?? invocation?.options?.metadata?.executionChainId
+      ?? invocation?.input?.metadata?.executionChainId
+      ?? null;
     const record = {
       id: nextId("evt_demo"),
       invocationId: event.invocationId,
       type: event.type,
       level: event.level,
       message: event.message,
-      data: event.data ?? null,
+      data: executionChainId ? { ...(event.data ?? {}), executionChainId } : event.data ?? null,
       createdAt: now()
     };
     state.events.unshift(record);

@@ -8,15 +8,17 @@ export function createAlertOutboxService({
   now,
   nextId,
   dispatch,
+  enrichAlert = (alert) => alert,
   persistStateSoon,
   store,
 } = {}) {
   const runTx = makeRunTx({ store, persistStateSoon });
 
   function enqueue(alert = {}) {
+    const attributedAlert = enrichAlert(alert) ?? alert;
     const row = {
       id: nextId("aob"),
-      alert,
+      alert: attributedAlert,
       status: "queued",
       attempts: 0,
       nextAttemptAt: now(),
@@ -33,18 +35,23 @@ export function createAlertOutboxService({
 
   async function sweep({ limit = 20 } = {}) {
     const due = (state.alertOutbox ?? [])
-      .filter((row) => row.status !== "sent" && row.attempts < MAX_ATTEMPTS && Date.parse(row.nextAttemptAt) <= Date.parse(now()))
+      .filter((row) => !["sent", "skipped"].includes(row.status) && row.attempts < MAX_ATTEMPTS && Date.parse(row.nextAttemptAt) <= Date.parse(now()))
       .slice(-limit);
     let sent = 0;
     for (const row of due) {
       const result = await dispatch(row.alert);
       runTx(() => {
         row.attempts += 1;
-        if (result?.sent) {
+        const delivery = result?.delivery ?? (result?.sent ? "sent" : "retryable");
+        if (delivery === "sent") {
           row.status = "sent";
           row.sentAt = now();
           row.lastError = null;
           sent += 1;
+        } else if (delivery === "skipped") {
+          row.status = "skipped";
+          row.lastError = String(result?.reason ?? `HTTP ${result?.status ?? "unknown"}`).slice(0, 500);
+          row.nextAttemptAt = null;
         } else {
           row.status = row.attempts >= MAX_ATTEMPTS ? "failed" : "queued";
           row.lastError = String(result?.reason ?? `HTTP ${result?.status ?? "unknown"}`).slice(0, 500);
@@ -55,5 +62,18 @@ export function createAlertOutboxService({
     return { attempted: due.length, sent };
   }
 
-  return { enqueue, sweep };
+  function retry(alertId) {
+    const row = (state.alertOutbox ?? []).find((candidate) => candidate.id === String(alertId));
+    if (!row || !["failed", "skipped"].includes(row.status)) return null;
+    runTx(() => {
+      row.status = "queued";
+      row.attempts = 0;
+      row.nextAttemptAt = now();
+      row.sentAt = null;
+      row.lastError = null;
+    });
+    return row;
+  }
+
+  return { enqueue, sweep, retry };
 }

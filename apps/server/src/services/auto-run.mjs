@@ -492,7 +492,13 @@ export function createAutoRunService({
   // agent prompt from the issue, and start the invocation inside the worktree.
   // `name` is the branch name the caller already derives (shared branchFromIssue),
   // so the server does not re-implement issue branch naming.
-  async function startAutoRun({ projectId, link, agentId, name, baseBranch, actor, issueBody: suppliedIssueBody } = {}) {
+  async function startAutoRun({
+    projectId, link, agentId, name, baseBranch, actor, issueBody: suppliedIssueBody,
+    executionChainId = null, autonomyProfile = "standard",
+  } = {}) {
+    const resolvedAutonomyProfile = ["cautious", "standard", "high"].includes(autonomyProfile)
+      ? autonomyProfile
+      : "standard";
     const normalizedLink = normalizeWorktreeLink(link);
     if (!normalizedLink) {
       throw new Error("A GitHub issue or PR link is required to start an auto-run.");
@@ -516,7 +522,10 @@ export function createAutoRunService({
     }
     if (typeof budgetStatusFor === "function" && projectId) {
       const budget = budgetStatusFor(projectId);
-      if (budget?.over) {
+      const cautiousBudgetBrake = resolvedAutonomyProfile === "cautious"
+        && (budget?.admissionOver || (Number.isFinite(budget?.limitUsd) && Number.isFinite(budget?.remainingUsd)
+          && budget.limitUsd > 0 && budget.remainingUsd / budget.limitUsd < 0.2));
+      if (budget?.over || cautiousBudgetBrake) {
         void sendAlert?.({
           kind: "budget_exceeded",
           severity: "high",
@@ -669,6 +678,8 @@ export function createAutoRunService({
       invocationId: null,
       agentId: agent.id,
       link: normalizedLink,
+      executionChainId: executionChainId ? String(executionChainId) : null,
+      autonomyProfile: resolvedAutonomyProfile,
       decision,
       // Legacy field, derived from the decision path for record continuity.
       intent: intentForPath(decision.path),
@@ -717,6 +728,8 @@ export function createAutoRunService({
           spawnChildIssues: decision.spawnChildIssues,
           rationale: decision.rationale,
           clarifyingQuestions: decision.clarifyingQuestions,
+          executionChainId: autoRun.executionChainId,
+          autonomyProfile: autoRun.autonomyProfile,
         },
       });
     });
@@ -735,7 +748,14 @@ export function createAutoRunService({
         timeoutSeconds: Number(agent.adapter?.timeoutSeconds ?? 600),
         // role carries the decided path so role-restricted agent-skills render
         // for this run (creation.mjs → renderAgentSkillsIntoWorktree).
-        metadata: { worktreeId: worktree.id, projectId: worktree.projectId, autoRunId, role: decision.path },
+        metadata: {
+          worktreeId: worktree.id,
+          projectId: worktree.projectId,
+          autoRunId,
+          role: decision.path,
+          executionChainId: autoRun.executionChainId,
+          autonomyProfile: autoRun.autonomyProfile,
+        },
       });
       startInvocationIfAllowed(invocation, agent);
     } catch (error) {
@@ -753,7 +773,14 @@ export function createAutoRunService({
       type: "auto_run_started",
       level: "info",
       message: `Auto-run started for ${normalizedLink.type} #${normalizedLink.number}.`,
-      data: { autoRunId, worktreeId: worktree.id, invocationId: invocation.id, status: autoRun.status },
+      data: {
+        autoRunId,
+        worktreeId: worktree.id,
+        invocationId: invocation.id,
+        status: autoRun.status,
+        executionChainId: autoRun.executionChainId,
+        autonomyProfile: autoRun.autonomyProfile,
+      },
     });
     // O2 graduated approval: auto-approve NON-CODE paths (design/clarify/
     // prototype — these produce a summary/spike, never a product-code PR) when
@@ -763,7 +790,8 @@ export function createAutoRunService({
     // audited; the approval hook flips the run to running. Default off = today.
     if (
       autoRun.status === "awaiting_approval" &&
-      state.autoRunSettings?.autoApproveNonCodePaths &&
+      (autoRun.autonomyProfile === "high"
+        || (autoRun.autonomyProfile === "standard" && state.autoRunSettings?.autoApproveNonCodePaths)) &&
       AUTO_APPROVABLE_PATHS.has(decision.path) &&
       !injection.suspicious && // B1a: a suspicious body always needs a human
       typeof autoApproveInvocation === "function"
@@ -2094,5 +2122,58 @@ export function createAutoRunService({
     return { reaped, readvanced, holdsReleased };
   }
 
-  return { startAutoRun, advanceAutoRunForInvocation, syncAutoRunOnApproval, syncAutoRunOnDenial, retryAutoRun, attemptFailover, cancelAutoRun, mergeAutoRunPr, maybeDeployAfterMerge, reapStuckAutoRuns, autoMergeSweep, approveDesign, rejectDesign, answerClarify, approveDecomposition, rejectDecomposition };
+  function recordRoutingOverride(autoRunId, {
+    actor = null, actualPath, reason, expectedRevision = 0, idempotencyKey = null,
+  } = {}) {
+    const autoRun = state.autoRuns.find((item) => item.id === autoRunId);
+    if (!autoRun) throw new Error("Auto-run not found.");
+    if (!["owner", "admin", "operator"].includes(actor?.role)) {
+      const error = new Error("Only an operator, admin, or owner may record routing truth.");
+      error.status = 403;
+      error.code = "routing_override_forbidden";
+      throw error;
+    }
+    const replayKey = String(idempotencyKey ?? "").trim();
+    const publicOverride = (value) => {
+      const { idempotencyKey: _idempotencyKey, ...visible } = value ?? {};
+      return visible;
+    };
+    if (replayKey && autoRun.routingOverride?.idempotencyKey === replayKey) {
+      return { ok: true, routingOverride: publicOverride(autoRun.routingOverride), replayed: true };
+    }
+    const currentRevision = Number(autoRun.routingOverride?.revision ?? 0);
+    if (!Number.isInteger(Number(expectedRevision)) || Number(expectedRevision) !== currentRevision) {
+      const error = new Error("Routing feedback changed; reload before saving.");
+      error.status = 409;
+      error.code = "routing_override_conflict";
+      error.currentRevision = currentRevision;
+      throw error;
+    }
+    if (!["develop", "design", "prototype", "clarify", "decompose"].includes(actualPath)) {
+      throw new Error("A valid actual routing path is required.");
+    }
+    const note = String(reason ?? "").trim();
+    if (!note) throw new Error("A routing override reason is required.");
+    runTx(() => {
+      autoRun.routingOverride = {
+        recommendedPath: autoRun.decision?.path ?? null,
+        actualPath,
+        reason: note.slice(0, 1000),
+        actorId: actor?.userId ?? "usr_local",
+        recordedAt: now(),
+        revision: currentRevision + 1,
+        idempotencyKey: replayKey || null,
+      };
+      appendEvent({
+        invocationId: autoRun.invocationId,
+        type: "auto_run_routing_overridden",
+        level: "info",
+        message: `Auto-run ${autoRun.id} routing feedback recorded: ${autoRun.decision?.path ?? "unknown"} → ${actualPath}.`,
+        data: { autoRunId: autoRun.id, ...publicOverride(autoRun.routingOverride) },
+      });
+    });
+    return { ok: true, routingOverride: publicOverride(autoRun.routingOverride), replayed: false };
+  }
+
+  return { startAutoRun, advanceAutoRunForInvocation, syncAutoRunOnApproval, syncAutoRunOnDenial, retryAutoRun, attemptFailover, cancelAutoRun, mergeAutoRunPr, recordRoutingOverride, maybeDeployAfterMerge, reapStuckAutoRuns, autoMergeSweep, approveDesign, rejectDesign, answerClarify, approveDecomposition, rejectDecomposition };
 }

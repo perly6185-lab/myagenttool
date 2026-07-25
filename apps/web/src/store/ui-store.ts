@@ -127,7 +127,7 @@ interface UiState {
 }
 
 /** Expert groups collapsed by default — Work/Run/Oversee stay open (#928). */
-export const DEFAULT_COLLAPSED_NAV_GROUPS = ["configure", "ledgers"];
+export const DEFAULT_COLLAPSED_NAV_GROUPS = ["run", "oversee", "configure", "ledgers"];
 
 /**
  * localStorage key for the persisted UI store. The index.html no-flash boot

@@ -319,7 +319,12 @@ if (process.argv.includes("--check")) {
     throw new Error("Codex child local env injection is not configured.");
   }
   const commandJsonPlan = codexCommandPlan({ command: "codex" }, ["exec", "--json", "{{task}}"], "fixture-task");
-  if (commandJsonPlan.command !== process.execPath || !commandJsonPlan.args[0]?.toLowerCase().endsWith("\\node_modules\\@openai\\codex\\bin\\codex.js") || commandJsonPlan.args[1] !== "exec") {
+  const commandJsonPlanValid = process.platform === "win32"
+    ? commandJsonPlan.command === process.execPath
+      && commandJsonPlan.args[0]?.toLowerCase().endsWith("\\node_modules\\@openai\\codex\\bin\\codex.js")
+      && commandJsonPlan.args[1] === "exec"
+    : commandJsonPlan.command === "codex" && commandJsonPlan.args[0] === "exec";
+  if (!commandJsonPlanValid) {
     throw new Error("Codex command plan is not configured.");
   }
   const codexCommand = resolveCodexCommandPlan("codex", [], { PATH: `${resolve(process.env.APPDATA ?? "", "npm")}${delimiter}${process.env.PATH ?? ""}`, APPDATA: process.env.APPDATA });

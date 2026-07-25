@@ -108,6 +108,7 @@ test("work item summary is bounded and scoped without publishing item details", 
     queued: 1,
     failed: 0,
     sent: 0,
+    skipped: 0,
     byLocalIssue: [{
       localIssueId: "wi_a_open",
       status: "queued",

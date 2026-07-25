@@ -81,6 +81,48 @@ test("creates an Excel document through the governed capability flow", async ({ 
   await expect(dialog).toBeHidden();
 });
 
+test("records real-user performance for the loaded workflow", async ({ page }) => {
+  const fcp = await expect.poll(
+    () => page.evaluate(() => window.__myagenttoolPerformance?.FCP?.value ?? null),
+  ).not.toBeNull();
+  void fcp;
+  const snapshot = await page.evaluate(() => window.__myagenttoolPerformance);
+  expect(snapshot?.FCP?.value).toBeLessThan(3_000);
+  expect(snapshot?.FCP?.path).toContain("section=documents");
+});
+
+test("supports keyboard-only navigation and restores focus after the command palette", async ({ page }) => {
+  const opener = page.getByRole("button", { name: "New" });
+  await opener.focus();
+  await page.keyboard.press("Control+K");
+  const palette = page.getByRole("dialog", { name: /command|section|navigation/i });
+  await expect(palette).toBeVisible();
+  const search = palette.getByRole("combobox");
+  await expect(search).toBeFocused();
+  await page.keyboard.press("Escape");
+  await expect(palette).toBeHidden();
+  await expect(opener).toBeFocused();
+
+  await page.keyboard.press("Control+K");
+  await search.fill("Canvas");
+  await expect(palette.getByRole("option", { name: /Canvas/ })).toHaveAttribute("aria-selected", "true");
+  await page.keyboard.press("Enter");
+  await expect(page).toHaveURL(/section=canvas/);
+});
+
+test("keeps the primary mobile workflow usable without horizontal overflow", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.reload();
+  const section = page.getByLabel("Section", { exact: true });
+  await expect(section).toBeVisible();
+  await section.selectOption("documents");
+  await expect(page.getByRole("button", { name: "New" })).toBeVisible();
+  await expect.poll(() => page.evaluate(() => ({
+    viewport: window.innerWidth,
+    content: document.documentElement.scrollWidth,
+  }))).toEqual({ viewport: 390, content: 390 });
+});
+
 test("loads and searches a multi-page PDF through authenticated byte ranges", async ({ page }) => {
   await page.getByRole("button", { name: "searchable.pdf" }).click();
   await expect(page.getByLabel("Page 1 of 2")).toBeVisible();

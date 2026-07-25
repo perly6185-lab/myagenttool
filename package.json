@@ -8,11 +8,15 @@
   "pnpm": {
     "onlyBuiltDependencies": [
       "electron"
-    ]
+    ],
+    "patchedDependencies": {
+      "node-pty@1.1.0": "patches/node-pty@1.1.0.patch"
+    }
   },
   "scripts": {
     "dev": "node tools/dev/run-local-demo.mjs",
     "test:documents:e2e": "playwright test -c apps/web/playwright.config.ts",
+    "test:user-journey:e2e": "playwright test -c apps/web/playwright.config.ts documents.spec.ts issue-auto-run.spec.ts recovery.spec.ts",
     "desktop:dev": "pnpm --filter @myagenttool/web build && electron .",
     "desktop:prepare-assets": "node apps/electron/scripts/prepare-portable-git.mjs",
     "desktop:pack": "pnpm desktop:prepare-assets && pnpm --filter @myagenttool/web build && electron-builder --dir -c apps/electron/electron-builder.yml",
@@ -31,6 +35,7 @@
     "lint": "pnpm -r --filter \"./apps/*\" --filter \"./packages/*\" --filter \"./tools/*\" --if-present lint",
     "typecheck": "pnpm -r --filter \"./apps/*\" --filter \"./packages/*\" --filter \"./tools/*\" --if-present typecheck",
     "build": "pnpm -r --filter \"./apps/*\" --filter \"./packages/*\" --filter \"./tools/*\" --if-present build",
+    "check:web-bundle": "node tools/dev/check-web-bundle-budget.mjs",
     "release:candidate:check": "node tools/release/src/candidate.mjs --check",
     "release:candidate": "node tools/release/src/candidate.mjs",
     "docs:check": "pwsh -NoProfile -ExecutionPolicy Bypass -File tools/docs/check-markdown-links.ps1",
@@ -214,10 +219,5 @@
     "@myagenttool/shared": "workspace:^",
     "@openai/codex": "0.144.6",
     "node-pty": "^1.1.0"
-  },
-  "pnpm": {
-    "patchedDependencies": {
-      "node-pty@1.1.0": "patches/node-pty@1.1.0.patch"
-    }
   }
 }

@@ -11,7 +11,7 @@ import { applicationRunDeepLink } from "@/app/deep-links";
 import { useConsoleState } from "@/data/use-console-state";
 import { useAsyncAction, api } from "@/data/use-console-actions";
 import { useUiStore } from "@/store/ui-store";
-import { sourceSummary } from "@/features/applications/applications-view";
+import { sourceSummary } from "@/features/applications/application-source-summary";
 import { CapabilityRunModal } from "@/features/applications/capability-run-modal";
 import { ApplicationSchedules } from "@/features/applications/application-schedules";
 import { capabilityRunContract } from "@/features/applications/capability-run";

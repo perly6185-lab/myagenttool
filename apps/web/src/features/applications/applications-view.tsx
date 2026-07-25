@@ -16,9 +16,10 @@ import {
   firstAttentionAutomationId,
 } from "@/features/automation/schedule-health-ui";
 import { durableSuccessRate } from "@/features/applications/application-executions";
-import type { ApplicationSnapshot, ApplicationSource } from "@/lib/console-state";
+import type { ApplicationSnapshot } from "@/lib/console-state";
 import type { Tone } from "@/lib/readable-labels";
 import { useAppTranslation } from "@/lib/i18n/use-app-translation";
+import { sourceSummary } from "@/features/applications/application-source-summary";
 
 function statusTone(status: string): Tone {
   if (status === "active") return "success";
@@ -40,23 +41,6 @@ function sweepAgo(iso: string): string {
   if (secs < 3600) return `${Math.round(secs / 60)}m ago`;
   if (secs < 86400) return `${Math.round(secs / 3600)}h ago`;
   return `${Math.round(secs / 86400)}d ago`;
-}
-
-export function sourceSummary(source: ApplicationSource): string {
-  switch (source.type) {
-    case "git":
-      return source.url;
-    case "local":
-      return source.path;
-    case "npm":
-      return `${source.package}${source.version ? `@${source.version}` : ""}`;
-    case "binary":
-      return `${source.binary} (system binary on the device)`;
-    case "builtin":
-      return "Built into MyAgentTool";
-    default:
-      return source.uri ?? "manual manifest";
-  }
 }
 
 /** Registered applications and their governed capabilities (read-only slice). */

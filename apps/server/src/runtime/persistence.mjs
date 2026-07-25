@@ -144,6 +144,8 @@ export const persistedObjectKeys = [
   // O5.2 follow-up: the last-emitted below-target SLO set. Durable so a restart
   // does not re-fire an alert for a breach that was already reported.
   "autoRunSloAlert",
+  // Routing-health alert dedupe cursor. Durable for the same reason as SLO.
+  "autoRunRoutingAlert",
   "approvalTokenLegacyUses",
   "eventHistoryRetention",
   "privateDeploymentConfig",

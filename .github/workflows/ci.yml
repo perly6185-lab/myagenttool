@@ -80,6 +80,15 @@ jobs:
       - name: Build
         run: pnpm build
 
+      - name: Enforce Web bundle budgets
+        run: pnpm check:web-bundle
+
+      - name: Install Chromium for critical user journeys
+        run: pnpm exec playwright install --with-deps chromium
+
+      - name: Run critical browser user journeys
+        run: pnpm test:user-journey:e2e
+
   smoke-gates:
     if: vars.ENABLE_GITHUB_HOSTED_RUNNERS == 'true'
     runs-on: ubuntu-latest
