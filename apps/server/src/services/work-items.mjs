@@ -12,6 +12,7 @@ import { makeRunTx } from "../runtime/store/run-tx.mjs";
 import { normalizedUpdatedSince, paginateRows } from "./cursor-pagination.mjs";
 import { externalIssueProviderReadiness } from "./external-issue-provider.mjs";
 import { ASSET_CAPABILITY_VERBS, evaluateAssetRequirements } from "./asset-capabilities.mjs";
+import { createApplicationExecutionContract } from "./application-execution-contract.mjs";
 
 const TYPES = new Set(["task", "bug", "feature", "initiative"]);
 const STATUSES = new Set(["backlog", "ready", "in_progress", "review", "blocked", "done"]);
@@ -53,6 +54,16 @@ function normalizeApplicationResolution(value, terminalId) {
     reason: String(value.reason ?? "").replace(/[\r\n\t]/g, " ").slice(0, 200),
     durationMs: Number.isFinite(value.telemetry?.durationMs) ? Math.max(0, Math.min(60_000, value.telemetry.durationMs)) : null,
   };
+}
+
+function aggregateApplicationReadiness(resolutions, assetReadiness) {
+  if (assetReadiness?.state !== "ready") return assetReadiness;
+  const rows = Array.isArray(resolutions) ? resolutions : [];
+  for (const state of ["refusal", "waiting_capability", "waiting_capacity", "waiting_approval"]) {
+    const match = rows.find((resolution) => resolution?.state === state);
+    if (match) return { state, reason: match.reason, terminalId: match.terminalId, capability: match.capability ?? null };
+  }
+  return { state: "ready", reason: rows.length ? "application_requirements_satisfied" : "no_application_required", terminalId: assetReadiness?.terminalId ?? null };
 }
 
 export const backfillWorkItemTerminalOwnership = backfillTerminalOwnership;
@@ -184,6 +195,8 @@ export function createWorkItemService({
   retryAlert = () => null,
   budgetStatusFor = () => null,
   teamBudgetStatusFor = () => null,
+  resolveApplicationCapability = () => ({ state: "refusal", reason: "resolver_unavailable", capability: null }),
+  invokeResolvedCapability = () => ({ status: 503, body: { error: "capability_gateway_unavailable" } }),
   store,
 }) {
   const runTx = makeRunTx({ store, persistStateSoon });
@@ -1488,6 +1501,15 @@ export function createWorkItemService({
     if (assetReadiness.state === "refused") {
       return { ok: false, status: 409, body: { error: assetReadiness.reason, terminalId: workItem.terminalId } };
     }
+    workItem.assetReadiness = assetReadiness;
+    workItem.applicationResolutions = (workItem.requiredCapabilities ?? []).map((assetVerb) =>
+      resolveApplicationCapability({
+        assetVerb,
+        assetFamily: workItem.inputAssets?.find((asset) => asset.capabilities?.includes(assetVerb))?.family ?? null,
+        terminalId: workItem.terminalId,
+        resourceClass: workItem.inputAssets?.find((asset) => asset.capabilities?.includes(assetVerb))?.resourceClass ?? "small",
+      }, actor));
+    workItem.queueReadiness = aggregateApplicationReadiness(workItem.applicationResolutions, assetReadiness);
     runTx(() => {
       (state.workItems ??= []).unshift(workItem);
       recordActivity(workItem, actor, "created", {
@@ -1849,6 +1871,81 @@ export function createWorkItemService({
     } };
   }
 
+  function startApplicationExecution({
+    workItemId, expectedRevision, intent = null, assetVerb = null,
+    assetFamily = null, resourceClass = "small", parameters = {}, approvalToken = null,
+  } = {}, actor = null) {
+    const item = findOwn(workItemId, actor);
+    if (!item) return notFound();
+    if (expectedRevision !== item.revision) {
+      return { ok: false, status: 409, body: { error: "work_item_revision_conflict", currentRevision: item.revision } };
+    }
+    if (!parameters || typeof parameters !== "object" || Array.isArray(parameters)
+      || Buffer.byteLength(JSON.stringify(parameters), "utf8") > 256 * 1024
+      || ["capability", "capabilityId", "applicationId", "toolName", "command", "argv", "terminalId", "projectId", "worktreeId", "requiresApproval"]
+        .some((field) => Object.hasOwn(parameters, field))) {
+      return { ok: false, status: 400, body: { error: "invalid_application_execution_parameters" } };
+    }
+    const resolution = resolveApplicationCapability({
+      intent, assetVerb, assetFamily, resourceClass, terminalId: item.terminalId,
+    }, actor);
+    if (!resolution?.capability || ["waiting_capability", "waiting_capacity", "refusal"].includes(resolution.state)) {
+      return { ok: false, status: 409, body: { error: resolution?.reason ?? "capability_not_available", resolution } };
+    }
+    if (resolution.state === "waiting_approval" && !approvalToken) {
+      return { ok: false, status: 409, body: { error: "approval_required", resolution } };
+    }
+    const invoked = invokeResolvedCapability(resolution.capability.name, {
+      ...parameters,
+      projectId: item.projectId,
+      ...(item.worktreeId ? { worktreeId: item.worktreeId } : {}),
+      ...(approvalToken ? { approvalToken } : {}),
+    }, actor);
+    const invocation = invoked?.body?.invocation ?? null;
+    if (!invocation) return { ok: false, status: invoked?.status ?? 409, body: invoked?.body ?? { error: "application_execution_failed" } };
+    const contract = createApplicationExecutionContract({
+      resolution,
+      workItem: item,
+      principalId: actorUser(actor),
+      approvalId: resolution.approval?.required ? "validated_grant" : null,
+      input: parameters,
+      inputAssets: (item.inputAssets ?? []).map((asset) => ({ ...asset, projectId: item.projectId })),
+      outputContract: resolution.capability.outputContract ?? null,
+    });
+    invocation.options ??= {};
+    invocation.options.metadata = {
+      ...(invocation.options.metadata ?? {}),
+      applicationExecution: {
+        taskId: contract.taskId, queueEntryId: contract.queueEntryId, traceId: contract.traceId,
+        terminalId: contract.terminalId, projectId: contract.projectId, worktreeId: contract.worktreeId,
+        principalId: contract.principalId, effectiveAuthority: contract.effectiveAuthority,
+        applicationId: contract.applicationId, capabilityId: contract.capabilityId,
+        approvalId: contract.approvalId, inputAssetIds: contract.inputAssets.map((asset) => asset.id),
+        contractFingerprint: contract.fingerprint,
+      },
+    };
+    runTx(() => {
+      item.applicationResolutions = [...(item.applicationResolutions ?? []), resolution].slice(-100);
+      item.executionBindings = [...(item.executionBindings ?? []), {
+        kind: "application_invocation", id: invocation.id, terminalId: item.terminalId,
+        applicationId: contract.applicationId, capabilityId: contract.capabilityId,
+        traceId: contract.traceId, createdAt: now(),
+      }].slice(-200);
+      item.queueReadiness = { state: "ready", reason: "application_invocation_created", terminalId: item.terminalId };
+      item.revision += 1;
+      item.updatedAt = now();
+      item.lastModifiedBy = actorUser(actor);
+      recordActivity(item, actor, "application_invocation_created", {
+        invocationId: invocation.id, applicationId: contract.applicationId,
+        capabilityLabel: resolution.capability.displayName, terminalId: item.terminalId,
+      });
+    });
+    return {
+      ok: true, status: invoked.status,
+      body: { invocation, resolution: normalizeApplicationResolution(resolution, item.terminalId), workItem: workItemView(item, actor) },
+    };
+  }
+
   function listActivity({ workItemId } = {}, actor = null) {
     const item = findOwn(workItemId, actor);
     if (!item) return notFound();
@@ -2047,5 +2144,6 @@ export function createWorkItemService({
     recordVerification, recordAssetOperation, ingestGithubWebhook, replayGithubWebhook, recordGithubWebhookFailure,
     ingestExternalWebhook, replayExternalWebhook, recordExternalWebhookFailure,
     githubSyncDiagnostics, updateAttention, sweepOperationalAlerts, suggestWorkItemDraft, retryWorkItemAlert,
+    startApplicationExecution,
   };
 }

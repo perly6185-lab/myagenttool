@@ -23,6 +23,8 @@ function harness({
   budgetStatusFor = () => null,
   teamBudgetStatusFor = () => null,
   retryAlert = () => null,
+  resolveApplicationCapability,
+  invokeResolvedCapability,
 } = {}) {
   let counter = 0;
   const events = [];
@@ -51,6 +53,8 @@ function harness({
     budgetStatusFor,
     teamBudgetStatusFor,
     retryAlert,
+    resolveApplicationCapability,
+    invokeResolvedCapability,
   });
   return { state, events, alerts, service };
 }
@@ -487,6 +491,64 @@ test("cross-asset task trace links Excel input through PowerPoint output to imag
   assert.equal(events.filter((event) => event.type === "work_item_asset_operation_recorded").length, 3);
   assert.ok(events.every((event) => event.type !== "work_item_asset_operation_recorded"
     || (event.data.traceId === item.id && event.data.terminalId === "dev_local")));
+});
+
+test("real task Application execution resolves server-side and stamps immutable task/terminal trace context", () => {
+  const invocations = [];
+  const resolution = {
+    state: "waiting_approval", reason: "capability_requires_approval", terminalId: "dev_local",
+    capability: { name: "app.office.apply", displayName: "Update workbook", applicationId: "app_office", riskLevel: "medium" },
+    approval: { required: true },
+    readiness: { runtime: "ready", credential: { configured: true, scopeMatch: true, expired: false } },
+  };
+  const { service } = harness({
+    resolveApplicationCapability: () => resolution,
+    invokeResolvedCapability: (name, input) => {
+      assert.equal(name, "app.office.apply");
+      assert.equal(input.projectId, "prj_a");
+      assert.equal(input.approvalToken, "grant-1");
+      const invocation = { id: "inv-app-1", status: "queued", options: { metadata: {} } };
+      invocations.push(invocation);
+      return { status: 202, body: { invocation } };
+    },
+  });
+  let item = service.createWorkItem({
+    projectId: "prj_a", title: "Update workbook",
+    inputAssets: [{
+      id: "asset-1", path: "input.xlsx", family: "excel", terminalId: "dev_local",
+      hash: "sha256:x", version: "v1", capabilities: ["edit"], readiness: { state: "ready" },
+    }],
+    requiredCapabilities: ["edit"],
+  }, ACTOR_A).body.workItem;
+  assert.equal(item.queueReadiness.state, "waiting_approval");
+  const blocked = service.startApplicationExecution({
+    workItemId: item.id, expectedRevision: item.revision, assetVerb: "edit", assetFamily: "excel",
+  }, ACTOR_A);
+  assert.equal(blocked.body.error, "approval_required");
+  const started = service.startApplicationExecution({
+    workItemId: item.id, expectedRevision: item.revision, assetVerb: "edit", assetFamily: "excel",
+    approvalToken: "grant-1", parameters: { operation: "update" },
+  }, ACTOR_A);
+  assert.equal(started.status, 202);
+  assert.equal(invocations[0].options.metadata.applicationExecution.taskId, item.id);
+  assert.equal(invocations[0].options.metadata.applicationExecution.terminalId, "dev_local");
+  assert.equal(invocations[0].options.metadata.applicationExecution.principalId, "usr_a");
+  assert.match(invocations[0].options.metadata.applicationExecution.contractFingerprint, /^sha256:/);
+  assert.equal(started.body.workItem.executionBindings.at(-1).id, "inv-app-1");
+});
+
+test("task Application execution rejects caller capability overrides before resolution", () => {
+  let resolved = false;
+  const { service } = harness({
+    resolveApplicationCapability: () => { resolved = true; return null; },
+  });
+  const item = service.createWorkItem({ projectId: "prj_a", title: "Unsafe" }, ACTOR_A).body.workItem;
+  const result = service.startApplicationExecution({
+    workItemId: item.id, expectedRevision: item.revision, intent: "edit",
+    parameters: { command: "rm", applicationId: "attacker-choice" },
+  }, ACTOR_A);
+  assert.equal(result.body.error, "invalid_application_execution_parameters");
+  assert.equal(resolved, false);
 });
 
 test("human attention queue aggregates conflicts, approvals, and failed evidence", () => {

@@ -375,12 +375,16 @@ export function createServerRuntimeServices({
   });
   let resolveWorkItemProjectBudget = () => null;
   let resolveWorkItemTeamBudget = () => null;
+  let resolveWorkItemApplicationCapability = () => ({ state: "refusal", reason: "resolver_unavailable", capability: null });
+  let invokeWorkItemApplicationCapability = () => ({ status: 503, body: { error: "capability_gateway_unavailable" } });
   const workItemService = createWorkItemService({
     state, now, nextId, appendEvent, persistStateSoon, store,
     sendAlert: alertOutbox.enqueue,
     retryAlert: alertOutbox.retry,
     budgetStatusFor: (projectId) => resolveWorkItemProjectBudget(projectId),
     teamBudgetStatusFor: (teamId) => resolveWorkItemTeamBudget(teamId),
+    resolveApplicationCapability: (input, actor) => resolveWorkItemApplicationCapability(input, actor),
+    invokeResolvedCapability: (name, input, actor) => invokeWorkItemApplicationCapability(name, input, actor),
   });
   const planningProjectService = createPlanningProjectService({
     state, now, nextId, appendEvent, persistStateSoon, store, validateApprovalToken,
@@ -1340,6 +1344,8 @@ export function createServerRuntimeServices({
     planAgentFacadeInvocation,
     planApplicationWrapperInvocation,
   });
+  resolveWorkItemApplicationCapability = resolveCapability;
+  invokeWorkItemApplicationCapability = createCapabilityInvocation;
 
   // Phase 3 (#979): the first governed GitHub write. Approval-gated, idempotent
   // by Message-ID, and transcribed from the server's imported record — reusing
@@ -3495,6 +3501,7 @@ export function createServerRuntimeServices({
     listWorkItemExternalProviders: workItemService.listExternalProviders,
     recordWorkItemVerification: workItemService.recordVerification,
     recordWorkItemAssetOperation: workItemService.recordAssetOperation,
+    startWorkItemApplicationExecution: workItemService.startApplicationExecution,
     ingestGithubWorkItemWebhook: workItemService.ingestGithubWebhook,
     replayGithubWorkItemWebhook: workItemService.replayGithubWebhook,
     recordGithubWorkItemWebhookFailure: workItemService.recordGithubWebhookFailure,
