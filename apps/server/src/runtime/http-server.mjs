@@ -1,4 +1,5 @@
 import http from "node:http";
+import { timingSafeEqual } from "node:crypto";
 import { REQUIRE_AUTH, resolveActor } from "./auth.mjs";
 import { handleAgentRoutes } from "../routes/agents.mjs";
 import { handleAgentSkillRoutes } from "../routes/agent-skills.mjs";
@@ -24,6 +25,7 @@ import { handleToolRoutes } from "../routes/tools.mjs";
 import { handleWorkItemRoutes } from "../routes/work-items.mjs";
 import { handlePlanningProjectRoutes } from "../routes/planning-projects.mjs";
 import { ensureEventStreamMetrics, eventsAfter } from "../services/event-stream-metrics.mjs";
+import { terminalObservationReadModel } from "../read-models/terminal-observation.mjs";
 
 export function createHttpServer({
   host,
@@ -313,6 +315,21 @@ export function createHttpServer({
       // public and handled downstream in control-plane; everything else needs a
       // live token when MYAGENT_REQUIRE_AUTH is on. ---
       const actor = resolveActor(state, req);
+      const observationPath = url.pathname === "/api/terminal-observation/v1";
+      if (observationPath) {
+        if (req.method !== "GET") {
+          sendJson(res, 405, { error: "observer_read_only" });
+          return;
+        }
+        if (!validObserverToken(req.headers.authorization)) {
+          sendJson(res, 401, { error: "invalid_observer_token" });
+          return;
+        }
+        const snapshot = publicState(actor);
+        const workItemsResult = listWorkItems({ limit: 100 }, actor);
+        sendJson(res, 200, terminalObservationReadModel(snapshot, workItemsResult.body?.workItems ?? [], { now }));
+        return;
+      }
       const bridgePath = url.pathname.startsWith("/api/bridge/");
       // External providers authenticate webhook deliveries with endpoint-specific
       // signatures, so a user bearer token must not block those callbacks first.
@@ -866,6 +883,13 @@ export function createHttpServer({
       });
     }
   });
+}
+
+function validObserverToken(authorization) {
+  const expected = String(process.env.MYAGENTTOOL_OBSERVER_TOKEN ?? "");
+  const supplied = String(authorization ?? "").match(/^Observer\s+(.+)$/i)?.[1] ?? "";
+  if (expected.length < 24 || supplied.length !== expected.length) return false;
+  return timingSafeEqual(Buffer.from(expected), Buffer.from(supplied));
 }
 
 function setCors(res) {

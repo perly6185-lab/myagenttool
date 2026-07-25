@@ -4,6 +4,7 @@ const required = [
   new URL("../public/index.html", import.meta.url),
   new URL("../public/app.js", import.meta.url),
   new URL("../public/styles.css", import.meta.url),
+  new URL("../Dockerfile", import.meta.url),
 ];
 await Promise.all(required.map((file) => access(file)));
 const html = await readFile(required[0], "utf8");
