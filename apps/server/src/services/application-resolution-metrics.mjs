@@ -12,12 +12,26 @@ export function summarizeApplicationResolution(rows = []) {
   const waiting = samples.filter((row) =>
     ["waiting_capability", "waiting_approval", "waiting_capacity", "refusal"].includes(row.state)).length;
   const p95Ms = percentile(durations, 0.95);
-  return {
+  const summary = {
     sampleCount: samples.length,
     p50Ms: percentile(durations, 0.5),
     p95Ms,
     waitingRate: samples.length ? Math.round((waiting / samples.length) * 10_000) / 100 : null,
     alerting: p95Ms != null && p95Ms > 500,
     thresholdMs: 500,
+  };
+  return { ...summary, budget: applicationResolutionBudgetGate(summary) };
+}
+
+export function applicationResolutionBudgetGate(summary, { minSamples = 20 } = {}) {
+  if (!summary || summary.sampleCount < minSamples || summary.p95Ms == null) {
+    return { status: "insufficient_data", minSamples, sampleCount: summary?.sampleCount ?? 0 };
+  }
+  return {
+    status: summary.p95Ms <= summary.thresholdMs ? "pass" : "fail",
+    minSamples,
+    sampleCount: summary.sampleCount,
+    p95Ms: summary.p95Ms,
+    thresholdMs: summary.thresholdMs,
   };
 }

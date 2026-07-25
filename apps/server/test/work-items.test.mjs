@@ -219,6 +219,24 @@ test("exposes independent business, planning, and fact-derived execution states"
   }
 });
 
+test("Entry execution state follows the bound Application invocation lifecycle", () => {
+  const { service, state } = harness();
+  const item = service.createWorkItem({ projectId: "prj_a", title: "Render evidence" }, ACTOR_A).body.workItem;
+  state.workItems[0].executionBindings.push({
+    kind: "application_invocation", id: "inv-app", terminalId: "dev_local",
+    applicationId: "app-image", capabilityId: "render", traceId: item.id,
+    createdAt: "2026-07-24T00:00:00.000Z",
+  });
+  state.invocations = [{ id: "inv-app", status: "running" }];
+  assert.equal(service.getWorkItem({ workItemId: item.id }, ACTOR_A).body.workItem.executionState, "running");
+  state.invocations[0].status = "waiting_for_local_approval";
+  assert.equal(service.getWorkItem({ workItemId: item.id }, ACTOR_A).body.workItem.executionState, "awaiting_approval");
+  state.invocations[0].status = "succeeded";
+  assert.equal(service.getWorkItem({ workItemId: item.id }, ACTOR_A).body.workItem.executionState, "completed");
+  state.invocations = [];
+  assert.equal(service.getWorkItem({ workItemId: item.id }, ACTOR_A).body.workItem.executionState, "failed");
+});
+
 test("GitHub sync pulls one-sided changes and exposes two-sided conflicts", () => {
   const { service } = harness();
   let item = service.createWorkItem({ projectId: "prj_a", title: "Initial" }, ACTOR_A).body.workItem;

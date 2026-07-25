@@ -281,6 +281,23 @@ export function createWorkItemService({
   }
 
   function executionState(item) {
+    const latestApplicationBinding = [...(item.executionBindings ?? [])]
+      .reverse()
+      .find((binding) => binding.kind === "application_invocation");
+    const applicationInvocation = latestApplicationBinding
+      ? (state.invocations ?? []).find((candidate) => candidate.id === latestApplicationBinding.id)
+      : null;
+    if (applicationInvocation) {
+      if (["queued", "dispatching", "running"].includes(applicationInvocation.status)) return "running";
+      if (["waiting_for_local_approval", "awaiting_approval"].includes(applicationInvocation.status)) return "awaiting_approval";
+      if (["verifying"].includes(applicationInvocation.status)) return "verifying";
+      if (["failed", "timed_out", "cancelled", "rejected"].includes(applicationInvocation.status)) return "failed";
+      if (applicationInvocation.status === "succeeded") return "completed";
+    }
+    // A durable task binding whose invocation disappeared across a crash/restart
+    // is recovery work, not an unclaimed task. Surface it to Entry attention so
+    // the user can retry on the same immutable terminal.
+    if (latestApplicationBinding) return "failed";
     const latestBinding = [...(item.executionBindings ?? [])]
       .reverse()
       .find((binding) => binding.kind === "auto_run");
