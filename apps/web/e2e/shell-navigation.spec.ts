@@ -60,6 +60,11 @@ test("offers short mobile Entry plus explicit Settings and Trace shortcuts", asy
   await expect(page.getByRole("button", { name: "Open Settings" })).toBeVisible();
   await expect(page.getByRole("button", { name: "Open Trace" })).toBeVisible();
 
+  await page.getByRole("button", { name: "Open Settings" }).click();
+  await expect(page).toHaveURL(/section=settings/);
+  await expect(page.getByRole("heading", { name: "Settings" })).toBeVisible();
+  await page.getByRole("button", { name: "Return to Home" }).click();
+
   await page.getByRole("button", { name: "Open Trace" }).click();
   await expect(page).toHaveURL(/section=invocations/);
   await page.getByRole("button", { name: "Return to Home" }).click();
