@@ -37,6 +37,7 @@ export const resources = {
       assetChain: { label: "Asset execution chain", title: "Assets", waiting: "Waiting for a local capability", approval: "Needs your approval", capacity: "Waiting for this computer", unavailable: "Unavailable", largeResource: "This large asset needs more local resources", ready: "Ready on this computer", setup: "Set up capability", approveStart: "Approve & start", approving: "Approving…", start: "Start application", starting: "Starting…", cancel: "Cancel", retry: "Retry", why: "Why", started: "Started", cancelled: "Cancelled", startFailed: "Could not start the application", cancelFailed: "Could not cancel the application", steps: "Input, operation, output, and evidence", input: "Input", operation: "Operation", output: "Output", evidence: "Evidence", terminal: "Terminal" },
       assetActions: { label: "Available actions", preview: "Preview", edit: "Edit", openExternal: "Open externally", unavailable: "Not available" },
       sections: {
+        settings: { label: "Settings overview", blurb: "Health, setup search, and recommended fixes" },
         planning: { label: "Planning", blurb: "Local project lists and status boards" },
         dashboard: { label: "Overview", blurb: "Start a task and watch it run" }, workBoard: { label: "Status", blurb: "Every work item by state" },
         workspace: { label: "Workspace", blurb: "Project files, transcript, and history in one place" }, documents: { label: "Assets", blurb: "Preview and manage project documents, drawings, images, and video" }, canvas: { label: "Canvas", blurb: "Draw and edit diagrams and Excalidraw scenes" },
@@ -45,6 +46,8 @@ export const resources = {
         projects: { label: "Projects", blurb: "Group work and own budgets" }, agents: { label: "Agents", blurb: "Registered agents and health" }, agentSkills: { label: "Agent Skills", blurb: "Instruction docs rendered into agent runs" }, devices: { label: "Devices", blurb: "Local bridges and platforms" }, discovery: { label: "Discovery", blurb: "Find local agents conservatively" }, integrations: { label: "Integrations", blurb: "Connect unsupported agents" }, tools: { label: "Tools", blurb: "Governed tools you can discover and run" }, applications: { label: "Applications", blurb: "Registered apps and governed capabilities" }, channels: { label: "Channels", blurb: "Messaging channels and their deliveries" },
         invocations: { label: "Invocations", blurb: "Every call, status, and result" }, economics: { label: "Economics", blurb: "Metered AI usage and cost ledger" },
       },
+      settingsHome: { eyebrow: "Manage this computer", title: "Settings", description: "Check readiness, find a configuration area, and follow the next safe fix.", health: "Readiness", ready: "Ready", optional: "Optional", needsSetup: "Needs setup", recommended: "Recommended next steps", search: "Search settings", searchPlaceholder: "Search agents, applications, channels…", noMatch: "No setting matches this search.", checks: { device: "Local device", agent: "Execution agent", application: "Application capability", channel: "Messaging channel" }, fixes: { device: "Start or repair the local Desktop Bridge", agent: "Register or repair an execution agent", application: "Activate an Application capability", channel: "Configure an optional messaging channel" } },
+      entryJourney: { label: "Task journey", create: "Create", createHint: "Describe the work", execute: "Execute", executeHint: "Runs on this computer", attention: "Attention", attentionHint: "Decide only when needed", result: "Result", resultHint: "Review output and evidence" },
       autoRunLinks: { pendingDecisionIssue: "Pending-decision child issue", openGithub: "Open on GitHub" },
       shell: {
         controlPlane: "Control plane", navLabel: "Control plane sections", footer: "Register agents, route calls, enforce permission, and record what happened.",
@@ -187,6 +190,7 @@ export const resources = {
       assetChain: { label: "资产执行链", title: "资产", waiting: "等待本机能力", approval: "需要你的审批", capacity: "等待此电脑释放资源", unavailable: "当前不可用", largeResource: "此大型资产需要更多本机资源", ready: "此电脑已就绪", setup: "设置能力", approveStart: "批准并启动", approving: "正在批准…", start: "启动应用", starting: "正在启动…", cancel: "取消", retry: "重试", why: "原因", started: "已启动", cancelled: "已取消", startFailed: "无法启动应用", cancelFailed: "无法取消应用", steps: "输入、操作、输出和证据", input: "输入", operation: "操作", output: "输出", evidence: "证据", terminal: "终端" },
       assetActions: { label: "可用操作", preview: "预览", edit: "编辑", openExternal: "外部打开", unavailable: "不可用" },
       sections: {
+        settings: { label: "设置概览", blurb: "健康状态、配置搜索和推荐修复" },
         planning: { label: "规划", blurb: "本地项目列表与状态看板" },
         dashboard: { label: "概览", blurb: "启动任务并查看运行过程" }, workBoard: { label: "状态", blurb: "按状态查看所有工作项" },
         workspace: { label: "工作区", blurb: "集中查看项目文件、记录与历史" }, documents: { label: "资产", blurb: "预览和管理项目文档、图纸、图片与视频" }, canvas: { label: "画布", blurb: "绘制和编辑图表及 Excalidraw 场景" },
@@ -195,6 +199,8 @@ export const resources = {
         projects: { label: "项目", blurb: "组织工作并管理预算" }, agents: { label: "Agent", blurb: "已注册 Agent 及其健康状态" }, agentSkills: { label: "Agent 技能", blurb: "用于 Agent 运行的指令文档" }, devices: { label: "设备", blurb: "本地桥接与平台" }, discovery: { label: "发现", blurb: "以保守方式发现本地 Agent" }, integrations: { label: "集成", blurb: "连接尚未支持的 Agent" }, tools: { label: "工具", blurb: "可发现和运行的受治理工具" }, applications: { label: "应用", blurb: "已注册应用及受治理能力" }, channels: { label: "渠道", blurb: "消息渠道及其投递" },
         invocations: { label: "调用", blurb: "每次调用、状态与结果" }, economics: { label: "成本", blurb: "AI 用量与成本台账" },
       },
+      settingsHome: { eyebrow: "管理此计算机", title: "设置", description: "检查就绪状态、查找配置区域，并执行下一项安全修复。", health: "就绪状态", ready: "就绪", optional: "可选", needsSetup: "需要配置", recommended: "推荐下一步", search: "搜索设置", searchPlaceholder: "搜索 Agent、Application、Channel…", noMatch: "没有匹配的设置。", checks: { device: "本地设备", agent: "执行 Agent", application: "Application 能力", channel: "消息 Channel" }, fixes: { device: "启动或修复本地 Desktop Bridge", agent: "注册或修复执行 Agent", application: "激活一项 Application 能力", channel: "配置可选消息 Channel" } },
+      entryJourney: { label: "任务流程", create: "创建", createHint: "描述要完成的工作", execute: "执行", executeHint: "在本机运行", attention: "需关注", attentionHint: "仅在必要时决策", result: "结果", resultHint: "查看输出和证据" },
       autoRunLinks: { pendingDecisionIssue: "待决策的子 Issue", openGithub: "在 GitHub 上打开" },
       shell: {
         controlPlane: "控制平面", navLabel: "控制平面栏目", footer: "注册 Agent、路由调用、执行权限并记录发生的一切。",

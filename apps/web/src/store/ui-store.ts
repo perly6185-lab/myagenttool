@@ -44,7 +44,8 @@ export type SectionKey =
   | "applications"
   | "channels"
   | "economics"
-  | "audit";
+  | "audit"
+  | "settings";
 
 export interface ApplicationRunSelection {
   applicationId: string;
@@ -145,6 +146,7 @@ export const DEFAULT_COLLAPSED_NAV_GROUPS = ["settings", "trace"];
 export const UI_STORE_PERSIST_KEY = LOCALE_STORAGE_KEY;
 
 export const SECTION_KEYS: SectionKey[] = [
+  "settings",
   "dashboard",
   "workBoard",
   "workspace",

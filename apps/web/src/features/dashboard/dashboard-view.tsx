@@ -10,6 +10,7 @@ import { Transcript } from "@/features/invocations/transcript";
 import { RunTranscriptSection } from "@/features/invocations/run-transcript";
 import { DecisionAction } from "@/features/invocations/decision-action";
 import { GettingStartedCard } from "@/features/dashboard/getting-started-card";
+import { EntryJourney } from "@/features/dashboard/entry-journey";
 import { useConsoleState } from "@/data/use-console-state";
 import { useAsyncAction, api } from "@/data/use-console-actions";
 import { resolveAgents, resolveInvocation } from "@/features/selection";
@@ -158,6 +159,7 @@ export function DashboardView({ surface = "overview" }: { surface?: DashboardSur
     <div className="flex min-h-full flex-col gap-4">
       {/* Onboarding is a home concern — Workspace embeds the composer without it (#927). */}
       {surface === "overview" ? <GettingStartedCard /> : null}
+      {surface === "overview" ? <EntryJourney /> : null}
       {/* Transcript — the scrolling conversation area. */}
       <Card className="flex min-h-48 flex-1 flex-col">
         <CardHeader>

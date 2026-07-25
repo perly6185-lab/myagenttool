@@ -74,7 +74,7 @@ function MobileSurfaceShortcuts() {
   const navigate = usePageNavigation();
   return (
     <div className="flex items-center md:hidden">
-      <button type="button" className="grid size-8 place-items-center rounded hover:bg-muted" aria-label={t("shell.navigation.openSettings")} onClick={() => navigate("applications")}>
+      <button type="button" className="grid size-8 place-items-center rounded hover:bg-muted" aria-label={t("shell.navigation.openSettings")} onClick={() => navigate("settings")}>
         <Settings className="size-4" />
       </button>
       <button type="button" className="grid size-8 place-items-center rounded hover:bg-muted" aria-label={t("shell.navigation.openTrace")} onClick={() => navigate("invocations")}>
