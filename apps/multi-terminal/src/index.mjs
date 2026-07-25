@@ -6,6 +6,7 @@ import { createCompositionService } from "./composition.mjs";
 import { materializeTerminal, TerminalRegistry } from "./registry.mjs";
 import { RecoveryHistory } from "./recovery-history.mjs";
 import { OwnerOperationRuntime } from "./owner-operation-runtime.mjs";
+import { SloMonitor, webhookNotifier } from "./slo-monitor.mjs";
 
 const publicDir = fileURLToPath(new URL("../public/", import.meta.url));
 const port = Number(process.env.MULTI_TERMINAL_PORT ?? 4311);
@@ -16,6 +17,14 @@ const recoveryHistory = new RecoveryHistory(process.env.MULTI_TERMINAL_RECOVERY_
 await recoveryHistory.load();
 const operationRuntime = new OwnerOperationRuntime(process.env.MULTI_TERMINAL_AUDIT_PATH ?? ".myagenttool/multi-terminal-operation-audit.json");
 await operationRuntime.load();
+const sloMonitor = new SloMonitor(process.env.MULTI_TERMINAL_SLO_PATH ?? ".myagenttool/multi-terminal-slo.json", {
+  availabilityTarget: Number(process.env.MULTI_TERMINAL_SLO_AVAILABILITY ?? 99),
+  staleTarget: Number(process.env.MULTI_TERMINAL_SLO_STALE ?? 0),
+  recoveryTargetHours: Number(process.env.MULTI_TERMINAL_SLO_RECOVERY_HOURS ?? 24),
+  operationSuccessTarget: Number(process.env.MULTI_TERMINAL_SLO_OPERATION_SUCCESS ?? 95),
+  notify: webhookNotifier(process.env.MULTI_TERMINAL_ALERT_WEBHOOK_URL ?? ""),
+});
+await sloMonitor.load();
 const service = createCompositionService({
   terminals: () => registry.list().map((row) => materializeTerminal(row)),
   request: terminalRequest,
@@ -40,9 +49,13 @@ const server = createServer(async (req, res) => {
     if (req.method === "GET" && requestUrl.pathname === "/api/overview") {
       const overview = await service.overview();
       await recoveryHistory.observe(overview.terminals);
+      overview.slo = await sloMonitor.evaluate(overview, operationRuntime.records());
       const windowDays = Number(requestUrl.searchParams.get("windowDays") ?? 30);
       overview.recoveryHistory = Object.fromEntries(overview.terminals.map((terminal) => [terminal.id, recoveryHistory.summary(terminal.id, windowDays)]));
       return json(res, 200, overview);
+    }
+    if (req.method === "GET" && requestUrl.pathname === "/api/slo") {
+      return json(res, 200, sloMonitor.summary(requestUrl.searchParams.get("windowDays")));
     }
     if (req.method === "GET" && requestUrl.pathname === "/api/events") {
       res.writeHead(200, {
@@ -68,6 +81,22 @@ const server = createServer(async (req, res) => {
     }
     if (req.method === "GET" && requestUrl.pathname === "/api/terminals") {
       return json(res, 200, { terminals: registry.list().map(({ observerTokenEnv: _observerRef, operatorTokenEnv: _operatorRef, ...row }) => row) });
+    }
+    const terminalDiagnostic = requestUrl.pathname.match(/^\/api\/terminals\/([^/]+)\/diagnostics$/);
+    if (req.method === "GET" && terminalDiagnostic) {
+      if (!adminAuthorized(req)) return json(res, 401, { error: "admin_token_required" });
+      const terminalId = decodeURIComponent(terminalDiagnostic[1]);
+      const terminal = registry.list().find((row) => row.id === terminalId);
+      if (!terminal) return json(res, 404, { error: "terminal_not_found" });
+      const started = performance.now();
+      const row = (await service.overview()).terminals.find((item) => item.id === terminalId);
+      return json(res, 200, {
+        terminalId, status: row?.status ?? "unknown", stale: Boolean(row?.stale),
+        observedAt: row?.observedAt ?? null, latencyMs: Math.round(performance.now() - started),
+        observerTokenConfigured: Boolean(terminal.observerTokenEnv && process.env[terminal.observerTokenEnv]),
+        operatorTokenConfigured: Boolean(terminal.operatorTokenEnv && process.env[terminal.operatorTokenEnv]),
+        unavailableReason: row?.unavailableReason ?? null,
+      });
     }
     if (req.method === "GET" && requestUrl.pathname === "/api/operation-audit") {
       if (!adminAuthorized(req)) return json(res, 401, { error: "admin_token_required" });

@@ -53,6 +53,21 @@ under one second on the local test runner. Each terminal request has a five
 second timeout and all terminals are fetched concurrently, so one offline
 terminal does not serialize the overview.
 
+## SLO and notifications
+
+The console evaluates availability, stale-terminal count, mean terminal recovery
+time, and the last 100 owner-operation outcomes. Defaults are 99%, 0 stale,
+24 hours, and 95% respectively. Override with:
+
+- `MULTI_TERMINAL_SLO_AVAILABILITY`
+- `MULTI_TERMINAL_SLO_STALE`
+- `MULTI_TERMINAL_SLO_RECOVERY_HOURS`
+- `MULTI_TERMINAL_SLO_OPERATION_SUCCESS`
+
+Set `MULTI_TERMINAL_ALERT_WEBHOOK_URL` to an HTTPS (or loopback HTTP) endpoint
+to receive only healthy/breached transitions. The UI and `/api/slo` expose
+7/30/90-day history without exposing notification credentials.
+
 ## Fault drill and upgrade
 
 1. Stop one owning terminal and verify cached rows are marked stale and no task
@@ -68,3 +83,15 @@ The container image is stateless except for `.myagenttool`; mount that directory
 as a persistent volume. Deploy a new image against the same directory, check
 `/health`, then switch traffic. Rollback uses the previous image without a data
 migration.
+
+For a filesystem release:
+
+```sh
+pnpm --filter @myagenttool/multi-terminal release:install -- \
+  /path/to/extracted-release /opt/myagenttool-multi 1.1.0
+pnpm --filter @myagenttool/multi-terminal release:rollback -- \
+  _ /opt/myagenttool-multi
+```
+
+The release state swaps only the active version metadata. Registry, audit, SLO,
+and recovery data remain outside versioned release directories.

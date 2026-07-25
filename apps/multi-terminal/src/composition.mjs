@@ -52,6 +52,8 @@ export function projectTerminalSnapshot(terminal, snapshot) {
   return {
     id: terminal.id,
     name: terminal.name,
+    apiUrl: terminal.apiUrl,
+    consoleUrl: terminal.consoleUrl,
     status: "online",
     lastSeenAt: new Date().toISOString(),
     capabilities: Array.isArray(snapshot?.capabilities) ? snapshot.capabilities.map((item) => item.id ?? item).filter(Boolean) : [],
