@@ -59,15 +59,22 @@ export function NavRail() {
           // header can't do this — each header is the first child of its own <li>,
           // so `:first-child` matched every header and the spacing never rendered.)
           <li key={grp.key} className={cn(gi > 0 && "mt-2")}>
-            <button
-              type="button"
-              onClick={() => toggleNavGroup(grp.key)}
-              aria-expanded={groupOpen}
-              className="flex w-full items-center gap-1 rounded px-2 pb-1 pt-1 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground/80 hover:text-sidebar-foreground"
-            >
-              <ChevronRight className={cn("size-3 shrink-0 transition-transform", groupOpen && "rotate-90")} />
-              {t(grp.labelKey)}
-            </button>
+            <div className="flex items-center">
+              <button
+                type="button"
+                onClick={() => toggleNavGroup(grp.key)}
+                aria-expanded={groupOpen}
+                className="flex flex-1 items-center gap-1 rounded px-2 pb-1 pt-1 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground/80 hover:text-sidebar-foreground"
+              >
+                <ChevronRight className={cn("size-3 shrink-0 transition-transform", groupOpen && "rotate-90")} />
+                {t(grp.labelKey)}
+              </button>
+              {grp.key === "settings" ? (
+                <button type="button" onClick={() => navigate("settings")} aria-label={t("shell.navigation.openSettings")} title={t("shell.navigation.openSettings")} className="grid size-6 place-items-center rounded text-muted-foreground hover:bg-sidebar-accent hover:text-sidebar-foreground">
+                  <Settings className="size-3.5" />
+                </button>
+              ) : null}
+            </div>
             {groupOpen ? (
             <ul className="flex flex-col gap-0.5">
               {(grp.key === "entry"

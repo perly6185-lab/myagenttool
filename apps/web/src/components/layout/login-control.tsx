@@ -26,6 +26,7 @@ export function LoginControl() {
   const { data: consoleState } = useConsoleState();
   const [user, setUser] = useState<SessionUser | null>(() => getSessionUser());
   const [open, setOpen] = useState(false);
+  const [authorityOpen, setAuthorityOpen] = useState(false);
   const [userId, setUserId] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -78,13 +79,13 @@ export function LoginControl() {
     <div className="relative">
       <div className="flex items-center gap-2">
         {user ? (
-          <span className="hidden items-center gap-1 text-xs text-muted-foreground sm:flex">
+          <button type="button" onClick={() => setAuthorityOpen((value) => !value)} aria-expanded={authorityOpen} className="hidden items-center gap-1 text-xs text-muted-foreground sm:flex">
             {user.name ?? user.id}
             <Badge tone="neutral">{t(roleKey[user.role ?? "viewer"])}</Badge>
             <Badge tone={authority === "ordinary" ? "success" : authority === "manage" ? "warning" : "neutral"}>
               {t(authorityKey[authority])}
             </Badge>
-          </span>
+          </button>
         ) : null}
         {user ? <Badge tone="neutral" className="sm:hidden">{t(authorityKey[authority])}</Badge> : null}
         {user ? (
@@ -97,6 +98,16 @@ export function LoginControl() {
           </Button>
         )}
       </div>
+
+      {authorityOpen && user ? (
+        <div className="absolute right-0 top-10 z-20 w-72 space-y-2 rounded-md border border-border bg-card p-3 text-xs shadow-lg">
+          <p className="font-medium">{t("identity.whyTitle")}</p>
+          <p>{t("identity.roleSource", { role: t(roleKey[user.role ?? "viewer"]) })}</p>
+          <p>{t("identity.teamSource", { team: user.teamId ?? t("identity.localTeam") })}</p>
+          <p>{t("identity.surfaceSource", { authority: t(authorityKey[authority]) })}</p>
+          <p className="text-muted-foreground">{t("identity.enforcement")}</p>
+        </div>
+      ) : null}
 
       {open && !user ? (
         <form
