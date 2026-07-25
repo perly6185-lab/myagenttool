@@ -72,6 +72,8 @@ importers:
 
   apps/electron: {}
 
+  apps/multi-terminal: {}
+
   apps/server:
     dependencies:
       '@myagenttool/adapters':

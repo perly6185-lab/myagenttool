@@ -997,6 +997,12 @@ export const api = {
     parameters?: Record<string, unknown>;
     approvalToken?: string;
   }) => request("POST", `/api/work-items/${encodeURIComponent(id)}/application-invocations`, payload),
+  requestWorkItemApplicationApproval: (id: string, payload: {
+    expectedRevision: number; intent?: string; assetVerb?: string; assetFamily?: string;
+    resourceClass?: "small" | "medium" | "large" | "unknown";
+  }) => request<{ approvalToken: string; expiresAt: string }>(
+    "POST", `/api/work-items/${encodeURIComponent(id)}/application-approval`, payload,
+  ),
   bulkUpdateWorkItems: (payload: {
     items: { id: string; expectedRevision: number }[];
     changes: Record<string, unknown>;

@@ -1,0 +1,18 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>终端运营台</title><link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+  <header><div><strong>终端运营台</strong><span>只读组合视图</span></div><nav><a href="#overview">概览</a><a href="#terminals">终端</a><a href="#tasks">任务</a><a href="#alerts">告警</a><a href="#trace">追踪</a></nav></header>
+  <main>
+    <section id="overview"><h1>我的终端</h1><p>查看独立终端的运行状态。任务始终在所属终端内执行，不会迁移或跨终端调度。</p><div class="metrics" data-view="totals"></div></section>
+    <section id="terminals"><h2>终端</h2><div class="grid" data-view="terminals"></div></section>
+    <section><h2>配置一致性</h2><div class="grid" data-view="consistency"></div></section>
+    <section id="tasks"><h2>需要关注的任务</h2><div data-view="tasks"></div></section>
+    <section id="alerts"><h2>告警</h2><div data-view="alerts"></div></section>
+    <section id="trace"><h2>跨终端追踪</h2><p>按任务名称、终端或本地资源 ID 搜索；完整证据仍由所属终端提供。</p><input data-view="trace-query" type="search" placeholder="搜索任务、终端或资源 ID"><div data-view="trace"></div></section>
+    <section id="recovery"><h2>恢复耗时趋势</h2><p>按所属终端独立统计；样本不足时不推断健康状态。</p><div class="grid" data-view="recovery"></div></section>
+  </main><script type="module" src="/app.js"></script>
+</body></html>

@@ -13,6 +13,7 @@ export async function handleWorkItemRoutes({
   recordVerification,
   recordAssetOperation,
   startApplicationExecution,
+  requestApplicationExecutionApproval,
   ingestGithubWebhook,
   replayGithubWebhook,
   recordGithubWebhookFailure,
@@ -374,6 +375,15 @@ export async function handleWorkItemRoutes({
   if (applicationExecutionMatch && req.method === "POST") {
     const result = startApplicationExecution({
       workItemId: decodeURIComponent(applicationExecutionMatch[1]), ...(await readJson(req)),
+    }, actor);
+    sendJson(res, result.status, result.body);
+    return true;
+  }
+
+  const applicationApprovalMatch = url.pathname.match(/^\/api\/work-items\/([^/]+)\/application-approval$/);
+  if (applicationApprovalMatch && req.method === "POST") {
+    const result = requestApplicationExecutionApproval({
+      workItemId: decodeURIComponent(applicationApprovalMatch[1]), ...(await readJson(req)),
     }, actor);
     sendJson(res, result.status, result.body);
     return true;

@@ -22,7 +22,7 @@ export function reconcileOperationalHealth(state, { teamId, now }) {
   if (stream.averageEventLatencyMs != null && stream.averageEventLatencyMs > 2_000) active.push({ key: "stream_event_latency", source: "event_stream", severity: "warning", message: `Event delivery averages ${stream.averageEventLatencyMs} ms.` });
   for (const signal of routing?.signals ?? []) active.push({ key: `routing_${signal.key}`, source: "ai_routing", severity: signal.severity, message: `${signal.key} is ${signal.value} (threshold ${signal.threshold}).` });
   if (recovery.alerting) active.push({ key: "recovery_time", source: "recovery", severity: "danger", message: `Median recovery is ${recovery.recoveryHours.median}h (target ${recovery.thresholdHours}h).` });
-  if (applicationResolution.alerting) active.push({ key: "application_resolution_latency", source: "application_resolution", severity: "warning", message: `Application routing p95 is ${applicationResolution.p95Ms} ms (target ${applicationResolution.thresholdMs} ms).` });
+  if (applicationResolution.budget.status === "fail") active.push({ key: "application_resolution_latency", source: "application_resolution", severity: "warning", message: `Application routing p95 is ${applicationResolution.p95Ms} ms (target ${applicationResolution.thresholdMs} ms).` });
 
   state.operationalAlerts ??= [];
   const at = now();

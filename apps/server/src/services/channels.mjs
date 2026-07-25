@@ -429,7 +429,7 @@ export function createChannelService({
       ? requestedTerminalId
         ? devices.find((candidate) => candidate.id === requestedTerminalId)
         : devices.length <= 1
-          ? devices[0] ?? { id: "dev_local" }
+          ? devices[0] ?? null
           : null
       : null;
     if (target && !terminal) {

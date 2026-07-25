@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { summarizeApplicationResolution } from "../src/services/application-resolution-metrics.mjs";
+import { applicationResolutionBudgetGate, summarizeApplicationResolution } from "../src/services/application-resolution-metrics.mjs";
 
 test("application resolution reports bounded latency and waiting rate", () => {
   const summary = summarizeApplicationResolution([
@@ -13,11 +13,18 @@ test("application resolution reports bounded latency and waiting rate", () => {
   assert.equal(summary.p95Ms, 900);
   assert.equal(summary.waitingRate, 66.67);
   assert.equal(summary.alerting, true);
+  assert.equal(summary.budget.status, "insufficient_data");
 });
 
 test("application resolution has honest nulls without samples", () => {
-  assert.deepEqual(summarizeApplicationResolution(), {
-    sampleCount: 0, p50Ms: null, p95Ms: null, waitingRate: null,
-    alerting: false, thresholdMs: 500,
-  });
+  const summary = summarizeApplicationResolution();
+  assert.equal(summary.sampleCount, 0);
+  assert.equal(summary.p50Ms, null);
+  assert.equal(summary.budget.status, "insufficient_data");
+});
+
+test("application resolution performance budget fails only with a representative sample", () => {
+  assert.equal(applicationResolutionBudgetGate({ sampleCount: 20, p95Ms: 501, thresholdMs: 500 }).status, "fail");
+  assert.equal(applicationResolutionBudgetGate({ sampleCount: 20, p95Ms: 500, thresholdMs: 500 }).status, "pass");
+  assert.equal(applicationResolutionBudgetGate({ sampleCount: 19, p95Ms: 900, thresholdMs: 500 }).status, "insufficient_data");
 });

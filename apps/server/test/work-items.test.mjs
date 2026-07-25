@@ -25,6 +25,7 @@ function harness({
   retryAlert = () => null,
   resolveApplicationCapability,
   invokeResolvedCapability,
+  issueApplicationApprovalGrant,
 } = {}) {
   let counter = 0;
   const events = [];
@@ -55,6 +56,7 @@ function harness({
     retryAlert,
     resolveApplicationCapability,
     invokeResolvedCapability,
+    issueApplicationApprovalGrant,
   });
   return { state, events, alerts, service };
 }
@@ -215,6 +217,24 @@ test("exposes independent business, planning, and fact-derived execution states"
       expected,
     );
   }
+});
+
+test("Entry execution state follows the bound Application invocation lifecycle", () => {
+  const { service, state } = harness();
+  const item = service.createWorkItem({ projectId: "prj_a", title: "Render evidence" }, ACTOR_A).body.workItem;
+  state.workItems[0].executionBindings.push({
+    kind: "application_invocation", id: "inv-app", terminalId: "dev_local",
+    applicationId: "app-image", capabilityId: "render", traceId: item.id,
+    createdAt: "2026-07-24T00:00:00.000Z",
+  });
+  state.invocations = [{ id: "inv-app", status: "running" }];
+  assert.equal(service.getWorkItem({ workItemId: item.id }, ACTOR_A).body.workItem.executionState, "running");
+  state.invocations[0].status = "waiting_for_local_approval";
+  assert.equal(service.getWorkItem({ workItemId: item.id }, ACTOR_A).body.workItem.executionState, "awaiting_approval");
+  state.invocations[0].status = "succeeded";
+  assert.equal(service.getWorkItem({ workItemId: item.id }, ACTOR_A).body.workItem.executionState, "completed");
+  state.invocations = [];
+  assert.equal(service.getWorkItem({ workItemId: item.id }, ACTOR_A).body.workItem.executionState, "failed");
 });
 
 test("GitHub sync pulls one-sided changes and exposes two-sided conflicts", () => {
@@ -503,6 +523,11 @@ test("real task Application execution resolves server-side and stamps immutable 
   };
   const { service } = harness({
     resolveApplicationCapability: () => resolution,
+    issueApplicationApprovalGrant: (input, actor) => {
+      assert.deepEqual(input, { action: "wrapper:apply", targetId: "app_office" });
+      assert.equal(actor.userId, "usr_a");
+      return { ok: true, status: 201, body: { token: "grant-1", expiresAt: "2026-07-24T00:05:00.000Z" } };
+    },
     invokeResolvedCapability: (name, input) => {
       assert.equal(name, "app.office.apply");
       assert.equal(input.projectId, "prj_a");
@@ -525,6 +550,11 @@ test("real task Application execution resolves server-side and stamps immutable 
     workItemId: item.id, expectedRevision: item.revision, assetVerb: "edit", assetFamily: "excel",
   }, ACTOR_A);
   assert.equal(blocked.body.error, "approval_required");
+  const approval = service.requestApplicationExecutionApproval({
+    workItemId: item.id, expectedRevision: item.revision, assetVerb: "edit", assetFamily: "excel",
+  }, ACTOR_A);
+  assert.equal(approval.status, 201);
+  assert.equal(approval.body.approvalToken, "grant-1");
   const started = service.startApplicationExecution({
     workItemId: item.id, expectedRevision: item.revision, assetVerb: "edit", assetFamily: "excel",
     approvalToken: "grant-1", parameters: { operation: "update" },

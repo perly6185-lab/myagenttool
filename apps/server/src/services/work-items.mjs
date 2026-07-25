@@ -197,6 +197,7 @@ export function createWorkItemService({
   teamBudgetStatusFor = () => null,
   resolveApplicationCapability = () => ({ state: "refusal", reason: "resolver_unavailable", capability: null }),
   invokeResolvedCapability = () => ({ status: 503, body: { error: "capability_gateway_unavailable" } }),
+  issueApplicationApprovalGrant = null,
   store,
 }) {
   const runTx = makeRunTx({ store, persistStateSoon });
@@ -280,6 +281,23 @@ export function createWorkItemService({
   }
 
   function executionState(item) {
+    const latestApplicationBinding = [...(item.executionBindings ?? [])]
+      .reverse()
+      .find((binding) => binding.kind === "application_invocation");
+    const applicationInvocation = latestApplicationBinding
+      ? (state.invocations ?? []).find((candidate) => candidate.id === latestApplicationBinding.id)
+      : null;
+    if (applicationInvocation) {
+      if (["queued", "dispatching", "running"].includes(applicationInvocation.status)) return "running";
+      if (["waiting_for_local_approval", "awaiting_approval"].includes(applicationInvocation.status)) return "awaiting_approval";
+      if (["verifying"].includes(applicationInvocation.status)) return "verifying";
+      if (["failed", "timed_out", "cancelled", "rejected"].includes(applicationInvocation.status)) return "failed";
+      if (applicationInvocation.status === "succeeded") return "completed";
+    }
+    // A durable task binding whose invocation disappeared across a crash/restart
+    // is recovery work, not an unclaimed task. Surface it to Entry attention so
+    // the user can retry on the same immutable terminal.
+    if (latestApplicationBinding) return "failed";
     const latestBinding = [...(item.executionBindings ?? [])]
       .reverse()
       .find((binding) => binding.kind === "auto_run");
@@ -1915,6 +1933,18 @@ export function createWorkItemService({
     invocation.options ??= {};
     invocation.options.metadata = {
       ...(invocation.options.metadata ?? {}),
+      ...(item.channelOrigin?.conversationId ? {
+        channel: {
+          channelId: item.channelOrigin.channelId,
+          conversationId: item.channelOrigin.conversationId,
+          messageId: item.channelOrigin.messageId,
+          principalId: item.channelOrigin.principalId,
+          terminalId: item.terminalId,
+          projectId: item.projectId,
+          workItemId: item.id,
+          traceId: item.id,
+        },
+      } : {}),
       applicationExecution: {
         taskId: contract.taskId, queueEntryId: contract.queueEntryId, traceId: contract.traceId,
         terminalId: contract.terminalId, projectId: contract.projectId, worktreeId: contract.worktreeId,
@@ -1943,6 +1973,48 @@ export function createWorkItemService({
     return {
       ok: true, status: invoked.status,
       body: { invocation, resolution: normalizeApplicationResolution(resolution, item.terminalId), workItem: workItemView(item, actor) },
+    };
+  }
+
+  function requestApplicationExecutionApproval({
+    workItemId, expectedRevision, intent = null, assetVerb = null,
+    assetFamily = null, resourceClass = "small",
+  } = {}, actor = null) {
+    const item = findOwn(workItemId, actor);
+    if (!item) return notFound();
+    if (expectedRevision !== item.revision) {
+      return { ok: false, status: 409, body: { error: "work_item_revision_conflict", currentRevision: item.revision } };
+    }
+    const resolution = resolveApplicationCapability({
+      intent, assetVerb, assetFamily, resourceClass, terminalId: item.terminalId,
+    }, actor);
+    if (resolution?.state !== "waiting_approval" || !resolution.capability?.name || !resolution.capability?.applicationId) {
+      return { ok: false, status: 409, body: { error: resolution?.reason ?? "approval_not_required", resolution } };
+    }
+    if (typeof issueApplicationApprovalGrant !== "function") {
+      return { ok: false, status: 503, body: { error: "approval_service_unavailable" } };
+    }
+    const commandId = String(resolution.capability.name).split(".").at(-1);
+    const grant = issueApplicationApprovalGrant({
+      action: `wrapper:${commandId}`,
+      targetId: resolution.capability.applicationId,
+    }, actor);
+    if (!grant?.ok) return { ok: false, status: grant?.status ?? 409, body: grant?.body ?? { error: "approval_grant_failed" } };
+    runTx(() => {
+      recordActivity(item, actor, "application_approval_granted", {
+        applicationId: resolution.capability.applicationId,
+        capabilityLabel: resolution.capability.displayName,
+        terminalId: item.terminalId,
+        expiresAt: grant.body.expiresAt,
+      });
+    });
+    return {
+      ok: true, status: 201,
+      body: {
+        approvalToken: grant.body.token,
+        expiresAt: grant.body.expiresAt,
+        resolution: normalizeApplicationResolution(resolution, item.terminalId),
+      },
     };
   }
 
@@ -2144,6 +2216,6 @@ export function createWorkItemService({
     recordVerification, recordAssetOperation, ingestGithubWebhook, replayGithubWebhook, recordGithubWebhookFailure,
     ingestExternalWebhook, replayExternalWebhook, recordExternalWebhookFailure,
     githubSyncDiagnostics, updateAttention, sweepOperationalAlerts, suggestWorkItemDraft, retryWorkItemAlert,
-    startApplicationExecution,
+    startApplicationExecution, requestApplicationExecutionApproval,
   };
 }

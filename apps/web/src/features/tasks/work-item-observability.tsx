@@ -3,7 +3,7 @@ import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/cn";
 import { useAppTranslation } from "@/lib/i18n/use-app-translation";
 import { api } from "@/lib/api-client";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import type { LocalWorkItem, LocalWorkItemObservability } from "./task-view-types";
 import { useUiStore } from "@/store/ui-store";
 
@@ -99,6 +99,8 @@ export function WorkItemAssetChain({ item }: { item: LocalWorkItem }) {
   const setSection = useUiStore((state) => state.setSection);
   const [starting, setStarting] = useState(false);
   const [startResult, setStartResult] = useState<string | null>(null);
+  const [currentRevision, setCurrentRevision] = useState(item.revision);
+  useEffect(() => setCurrentRevision(item.revision), [item.id, item.revision]);
   const inputs = item.inputAssets ?? [];
   const outputs = item.outputAssets ?? [];
   if (!inputs.length && !outputs.length) return null;
@@ -107,22 +109,45 @@ export function WorkItemAssetChain({ item }: { item: LocalWorkItem }) {
     .filter((evidence) => evidence.kind === "asset" && evidence.assetId)
     .map((evidence) => evidence.assetId));
   const latestResolution = item.applicationResolutions?.at(-1) ?? null;
+  const latestApplicationInvocation = item.executionBindings?.filter((binding) => binding.kind === "application_invocation").at(-1);
   const readiness = item.queueReadiness ?? item.assetReadiness;
-  async function startApplication() {
+  async function startApplication(requestApproval = false) {
     const assetVerb = item.requiredCapabilities?.[0];
     if (!assetVerb) return;
     setStarting(true);
     setStartResult(null);
     try {
-      const result = await api.startWorkItemApplication(item.id, {
-        expectedRevision: item.revision,
+      const selection = {
+        expectedRevision: currentRevision,
         assetVerb,
         assetFamily: inputs.find((asset) => asset.capabilities.includes(assetVerb))?.family,
         resourceClass: inputs.find((asset) => asset.capabilities.includes(assetVerb))?.resourceClass,
-      }) as { invocation?: { id?: string } };
-      setStartResult(result.invocation?.id ? `Started · ${result.invocation.id}` : "Started");
-    } catch (error) {
-      setStartResult(error instanceof Error ? error.message : "Could not start the application");
+      };
+      const approval = requestApproval
+        ? await api.requestWorkItemApplicationApproval(item.id, selection)
+        : null;
+      const result = await api.startWorkItemApplication(item.id, {
+        ...selection,
+        ...(approval?.approvalToken ? { approvalToken: approval.approvalToken } : {}),
+      }) as { invocation?: { id?: string }; workItem?: { revision?: number } };
+      if (Number.isInteger(result.workItem?.revision)) setCurrentRevision(result.workItem!.revision!);
+      setStartResult(result.invocation?.id ? `${t("assetChain.started")} · ${result.invocation.id}` : t("assetChain.started"));
+    } catch {
+      setStartResult(t("assetChain.startFailed"));
+    } finally {
+      setStarting(false);
+    }
+  }
+  async function cancelApplication() {
+    const invocationId = latestApplicationInvocation?.id;
+    if (!invocationId) return;
+    setStarting(true);
+    setStartResult(null);
+    try {
+      await api.cancelInvocation(invocationId);
+      setStartResult(`${t("assetChain.cancelled")} · ${invocationId}`);
+    } catch {
+      setStartResult(t("assetChain.cancelFailed"));
     } finally {
       setStarting(false);
     }
@@ -134,15 +159,18 @@ export function WorkItemAssetChain({ item }: { item: LocalWorkItem }) {
         <Badge tone={readiness?.state === "ready" ? "success" : "warning"}>
           {readiness?.state === "waiting_capability"
             ? t(readiness.reason === "local_resource_class_required:large" ? "assetChain.largeResource" : "assetChain.waiting")
-            : readiness?.state === "waiting_approval" ? "Approval required"
-              : readiness?.state === "waiting_capacity" ? "Waiting for local capacity"
-                : readiness?.state === "refusal" ? "Unavailable" : t("assetChain.ready")}
+            : readiness?.state === "waiting_approval" ? t("assetChain.approval")
+              : readiness?.state === "waiting_capacity" ? t("assetChain.capacity")
+                : readiness?.state === "refusal" ? t("assetChain.unavailable") : t("assetChain.ready")}
         </Badge>
         {latestResolution?.label ? <span className="text-muted-foreground">{latestResolution.label}{latestResolution.durationMs != null ? ` · ${latestResolution.durationMs}ms` : ""}</span> : null}
-        {readiness?.state === "waiting_capability" ? <Button type="button" size="sm" variant="secondary" onClick={() => setSection("applications")}>Set up capability</Button> : null}
-        {readiness?.state === "ready" && item.requiredCapabilities?.length ? <Button type="button" size="sm" onClick={() => void startApplication()} disabled={starting}>{starting ? "Starting…" : "Start application"}</Button> : null}
+        {readiness?.state === "waiting_capability" ? <Button type="button" size="sm" variant="secondary" onClick={() => setSection("applications")}>{t("assetChain.setup")}</Button> : null}
+        {readiness?.state === "waiting_approval" && item.requiredCapabilities?.length ? <Button type="button" size="sm" onClick={() => void startApplication(true)} disabled={starting}>{t(starting ? "assetChain.approving" : "assetChain.approveStart")}</Button> : null}
+        {readiness?.state === "ready" && item.requiredCapabilities?.length ? <Button type="button" size="sm" onClick={() => void startApplication()} disabled={starting}>{t(starting ? "assetChain.starting" : "assetChain.start")}</Button> : null}
+        {latestApplicationInvocation?.id ? <Button type="button" size="sm" variant="secondary" onClick={() => void cancelApplication()} disabled={starting}>{t("assetChain.cancel")}</Button> : null}
+        {latestApplicationInvocation?.id && item.requiredCapabilities?.length ? <Button type="button" size="sm" variant="secondary" onClick={() => void startApplication(readiness?.state === "waiting_approval")} disabled={starting}>{t("assetChain.retry")}</Button> : null}
       </div>
-      {readiness?.reason && readiness.state !== "ready" ? <p className="mt-2 text-muted-foreground">Why: {readiness.reason}</p> : null}
+      {readiness?.reason && readiness.state !== "ready" ? <p className="mt-2 text-muted-foreground">{t("assetChain.why")}: {readiness.reason}</p> : null}
       {startResult ? <p role="status" className="mt-2 text-muted-foreground">{startResult}</p> : null}
       <ol className="mt-2 flex flex-wrap items-center gap-2" aria-label={t("assetChain.steps")}>
         {inputs.map((asset) => <li key={`input:${asset.id ?? asset.path}`}><a href={assetDeepLink(item, asset)} className="block rounded bg-muted px-2 py-1 hover:text-primary"><span className="text-muted-foreground">{t("assetChain.input")} · </span>{asset.path}</a></li>)}
