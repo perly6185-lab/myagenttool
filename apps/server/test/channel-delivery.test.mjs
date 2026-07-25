@@ -157,6 +157,30 @@ test("a queued delivery sends, records the provider receipt, and leaves evidence
   assert.equal(harness.events.at(-1).type, "channel_delivery_recorded");
 });
 
+test("delivery preserves bounded task and trace correlation without attachment payloads", () => {
+  const harness = makeDeliveryHarness();
+  const queued = harness.service.enqueueChannelDelivery({
+    channelId: harness.channelId,
+    conversationId: harness.conversationId,
+    content: "done",
+    taskContext: {
+      channelId: harness.channelId,
+      conversationId: harness.conversationId,
+      messageId: "event-1",
+      principalId: "user-1",
+      terminalId: "terminal-1",
+      projectId: "project-1",
+      workItemId: "task-1",
+      traceId: "trace-1",
+      attachmentAssets: [{ secret: "must-not-copy" }],
+    },
+  });
+  const delivery = harness.state.channelDeliveries.find((candidate) => candidate.id === queued.deliveryId);
+  assert.equal(delivery.taskContext.traceId, "trace-1");
+  assert.equal(delivery.taskContext.terminalId, "terminal-1");
+  assert.equal(JSON.stringify(delivery).includes("must-not-copy"), false);
+});
+
 test("retryable failures back off and exhaust into failed_terminal with an undeliverable refusal", async () => {
   const harness = makeDeliveryHarness({
     sendMessage: async () => ({ ok: false, retryable: true, errcode: 45009 }),

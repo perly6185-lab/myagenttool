@@ -15,6 +15,7 @@ import { channelCommands, parseChannelCommand } from "@myagenttool/protocol/chan
 import { UNTRUSTED_INPUT_TAG } from "@myagenttool/protocol/issue-prompt";
 import { actorForUser, LOCAL_TEAM_ID } from "../runtime/auth.mjs";
 import { makeRunTx } from "../runtime/store/run-tx.mjs";
+import { createChannelTaskContext } from "./channel-task-context.mjs";
 
 const GENERIC_DENIED_REPLY = "Not authorized for this channel. Contact your team administrator.";
 const USAGE_REPLY = `Commands: ${channelCommands.join(" ")}`;
@@ -135,6 +136,23 @@ export function createChannelConversationService({
         data: { reason: "no_task_project" },
       });
     }
+    const identity = (state.channelIdentities ?? []).find(
+      (row) => row.channelId === channel.id && row.externalUserId === event.externalUserId,
+    );
+    let taskContext;
+    try {
+      taskContext = createChannelTaskContext({
+        channel, conversation, event, identity,
+        terminalId: channel.taskTerminalId ?? "dev_local",
+        projectId: channel.taskProjectId,
+      });
+    } catch (error) {
+      return settle(event, {
+        status: "refused",
+        reply: "The task attachments or local execution binding are not ready.",
+        data: { reason: error?.code ?? "channel_task_context_invalid" },
+      });
+    }
     const rate = runRateCheck(conversation);
     if (rate.limited) {
       return settle(event, { status: "refused", reply: `Too many requests — at most ${RUN_RATE_MAX} per minute. Try again shortly.`, data: { reason: "rate_limited" } });
@@ -175,6 +193,9 @@ export function createChannelConversationService({
         // Taint travels: a message the injection detector flagged files with the
         // untrusted marker so downstream governance sees it (parity with mail).
         injectionSuspicious: Boolean(event.injectionSuspicious),
+        inputAssets: taskContext.attachmentAssets,
+        terminalId: taskContext.terminalId,
+        channelTaskContext: taskContext,
         autoRoute,
       });
     } catch (error) {
@@ -197,6 +218,9 @@ export function createChannelConversationService({
           issueUrl: filed.url ?? null,
           title,
           externalUserId: event.externalUserId,
+          terminalId: taskContext.terminalId,
+          inputAssets: taskContext.attachmentAssets,
+          channelTaskContext: taskContext,
           status: "pending",
           autoRunId: null,
           createdAt: now(),

@@ -65,12 +65,13 @@ function makeHarness({ capabilityResult, allowlist = ["git.status"], statusCapab
   channelService.mapChannelIdentity({ channelId, externalUserId: "wx_alice", userId: "usr_local" }, owner);
 
   let msgSeq = 0;
-  function receive(content, { from = "wx_alice" } = {}) {
+  function receive(content, { from = "wx_alice", attachmentAssets = [] } = {}) {
     const imported = channelService.importChannelEvent({
       channelId,
       providerMessageId: `msg_${++msgSeq}`,
       externalUserId: from,
       content,
+      attachmentAssets,
     });
     if (!imported.ok) return { imported, dispatched: null };
     const dispatched = conversationService.dispatchImportedChannelEvent({ eventId: imported.eventId });
@@ -214,6 +215,27 @@ test("/task auto-route mode files with the dispatcher path and records NO pendin
   assert.equal(calls[0].autoRoute, true);
   assert.match(settled.reply, /auto-routing/i);
   assert.equal((harness.state.channelTaskRequests ?? []).length, 0, "no pending request in auto-route mode");
+});
+
+test("/task carries only governed same-terminal attachment assets into its immutable context", async () => {
+  const calls = [];
+  const harness = makeHarness({
+    createChannelTaskIssue: async (args) => { calls.push(args); return { ok: true, number: 44 }; },
+  });
+  harness.bindTaskProject("proj_a");
+  const channel = harness.state.channels.find((candidate) => candidate.id === harness.channelId);
+  channel.taskTerminalId = "dev_local";
+  const attachment = {
+    id: "asset-1", projectId: "proj_a", terminalId: "dev_local",
+    path: "inbox/input.xlsx", family: "excel", hash: "sha256:x", version: "v1",
+    readiness: { state: "ready" },
+  };
+  const settled = await harness.receive("/task update the workbook", { attachmentAssets: [attachment] }).dispatched;
+  assert.equal(settled.status, "dispatched");
+  assert.deepEqual(calls[0].inputAssets.map((asset) => asset.id), ["asset-1"]);
+  assert.equal(calls[0].channelTaskContext.principalId, "usr_local");
+  assert.equal(calls[0].channelTaskContext.terminalId, "dev_local");
+  assert.equal(harness.state.channelTaskRequests.at(-1).channelTaskContext.traceId.startsWith("chev_"), true);
 });
 
 test("/task reserves the rate slot BEFORE the async filing (closes the TOCTOU)", async () => {
