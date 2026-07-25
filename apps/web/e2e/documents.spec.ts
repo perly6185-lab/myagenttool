@@ -50,7 +50,7 @@ test.beforeEach(async ({ page }) => {
   });
   await mockApi(page);
   await page.goto("/?section=documents");
-  await expect(page.getByRole("heading", { name: "Documents" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Assets" })).toBeVisible();
   pdfRanges.length = 0;
 });
 

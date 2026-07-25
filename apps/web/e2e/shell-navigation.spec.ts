@@ -49,7 +49,7 @@ test("supports keyboard navigation and direct legacy section bookmarks", async (
 
   await page.goto("/?section=documents");
   await expect(page).toHaveURL(/section=documents/);
-  await expect(page.getByRole("heading", { name: "Documents" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Assets" })).toBeVisible();
 });
 
 test("offers short mobile Entry plus explicit Settings and Trace shortcuts", async ({ page }) => {
