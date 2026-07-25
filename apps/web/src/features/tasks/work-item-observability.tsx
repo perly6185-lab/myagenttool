@@ -91,6 +91,7 @@ export function WorkItemTraceSummary({
 }
 
 export function WorkItemAssetChain({ item }: { item: LocalWorkItem }) {
+  const { t } = useAppTranslation();
   const inputs = item.inputAssets ?? [];
   const outputs = item.outputAssets ?? [];
   if (!inputs.length && !outputs.length) return null;
@@ -99,21 +100,27 @@ export function WorkItemAssetChain({ item }: { item: LocalWorkItem }) {
     .filter((evidence) => evidence.kind === "asset" && evidence.assetId)
     .map((evidence) => evidence.assetId));
   return (
-    <section aria-label="Asset execution chain" className="rounded-md border border-border p-3 text-xs">
+    <section aria-label={t("assetChain.label")} className="rounded-md border border-border p-3 text-xs">
       <div className="flex flex-wrap items-center gap-2">
-        <strong>Assets</strong>
+        <strong>{t("assetChain.title")}</strong>
         <Badge tone={item.assetReadiness?.state === "ready" ? "success" : "warning"}>
-          {item.assetReadiness?.state === "waiting_capability" ? "Waiting for a local capability" : "Ready on this computer"}
+          {t(item.assetReadiness?.state === "waiting_capability" ? "assetChain.waiting" : "assetChain.ready")}
         </Badge>
       </div>
-      <ol className="mt-2 flex flex-wrap items-center gap-2" aria-label="Input, operation, output, and evidence">
-        {inputs.map((asset) => <li key={`input:${asset.id ?? asset.path}`} className="rounded bg-muted px-2 py-1"><span className="text-muted-foreground">Input · </span>{asset.path}</li>)}
-        {(item.assetOperations ?? []).slice().reverse().map((operation) => <li key={operation.id} className="contents"><span aria-hidden="true">→</span><span className="rounded bg-muted px-2 py-1">Operation · {operation.capability}</span></li>)}
-        {outputs.map((asset) => <li key={`output:${asset.id ?? asset.path}`} className="contents"><span aria-hidden="true">→</span><span className="rounded bg-muted px-2 py-1"><span className="text-muted-foreground">{evidenceIds.has(asset.id) ? "Evidence" : "Output"} · </span>{asset.path}</span></li>)}
+      <ol className="mt-2 flex flex-wrap items-center gap-2" aria-label={t("assetChain.steps")}>
+        {inputs.map((asset) => <li key={`input:${asset.id ?? asset.path}`}><a href={assetDeepLink(item, asset)} className="block rounded bg-muted px-2 py-1 hover:text-primary"><span className="text-muted-foreground">{t("assetChain.input")} · </span>{asset.path}</a></li>)}
+        {(item.assetOperations ?? []).slice().reverse().map((operation) => <li key={operation.id} className="contents"><span aria-hidden="true">→</span><span className="rounded bg-muted px-2 py-1">{t("assetChain.operation")} · {operation.capability}</span></li>)}
+        {outputs.map((asset) => <li key={`output:${asset.id ?? asset.path}`} className="contents"><span aria-hidden="true">→</span><a href={assetDeepLink(item, asset)} className="rounded bg-muted px-2 py-1 hover:text-primary"><span className="text-muted-foreground">{t(evidenceIds.has(asset.id) ? "assetChain.evidence" : "assetChain.output")} · </span>{asset.path}</a></li>)}
       </ol>
-      <p className="mt-2 text-muted-foreground">Terminal · {item.assetReadiness?.terminalId ?? inputs[0]?.terminalId ?? outputs[0]?.terminalId}</p>
+      <p className="mt-2 text-muted-foreground">{t("assetChain.terminal")} · {item.assetReadiness?.terminalId ?? inputs[0]?.terminalId ?? outputs[0]?.terminalId}</p>
     </section>
   );
+}
+
+export function assetDeepLink(item: LocalWorkItem, asset: { path: string; worktreeId?: string | null }): string {
+  const query = new URLSearchParams({ section: "documents", project: item.projectId, document: asset.path });
+  if (asset.worktreeId) query.set("worktree", asset.worktreeId);
+  return `/?${query}`;
 }
 
 export function workItemAssetChainLabels(item: LocalWorkItem): string[] {

@@ -144,6 +144,7 @@ function normalizeAssetRefs(input) {
       terminalId,
       hash: candidate.hash ? String(candidate.hash).slice(0, 100) : null,
       version: candidate.version ? String(candidate.version).slice(0, 100) : null,
+      worktreeId: candidate.worktreeId ? String(candidate.worktreeId).slice(0, 200) : null,
       capabilities,
       readiness: candidate.readiness?.state === "ready"
         ? { state: "ready", reason: String(candidate.readiness.reason ?? "available_on_owning_terminal").slice(0, 100) }

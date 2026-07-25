@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { taskTraceIdentity, taskTraceWaitingReason, workItemAssetChainLabels } from "./work-item-observability";
+import { assetDeepLink, taskTraceIdentity, taskTraceWaitingReason, workItemAssetChainLabels } from "./work-item-observability";
 
 describe("taskTraceIdentity (#1500)", () => {
   it("exposes only task attribution and explanation fields", () => {
@@ -72,5 +72,17 @@ describe("workItemAssetChainLabels (#1502)", () => {
       "Output · review.pptx",
       "Evidence · evidence/review.png",
     ]);
+  });
+
+  it("deep-links to the owning project and worktree without exposing a host path", () => {
+    const link = assetDeepLink(
+      { projectId: "project 1" } as never,
+      { path: "reports/Q3 review.xlsx", worktreeId: "worktree/1" },
+    );
+    expect(link).toContain("section=documents");
+    expect(link).toContain("project=project+1");
+    expect(link).toContain("document=reports%2FQ3+review.xlsx");
+    expect(link).toContain("worktree=worktree%2F1");
+    expect(link).not.toContain("/Users/");
   });
 });

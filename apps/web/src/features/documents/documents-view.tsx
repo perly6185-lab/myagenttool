@@ -225,7 +225,7 @@ function DocumentList({ loading, error, rows, selected, onSelect }: { loading: b
     <li key={row.path}>
       <button type="button" onClick={() => onSelect(row)} className={cn("flex w-full items-start gap-2 px-3 py-2.5 text-left hover:bg-muted/60", selected?.path === row.path && "bg-muted")}>
         <DocumentIcon type={row.type} />
-        <span className="min-w-0 flex-1"><span className="block truncate text-sm font-medium">{row.name}</span><span className="block truncate font-mono text-[11px] text-muted-foreground">{row.path}</span><span className="mt-1 flex flex-wrap gap-1" aria-label="Available actions">{assetActionLabels(row).map((label) => <span key={label} className="rounded bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">{label}</span>)}</span></span>
+        <span className="min-w-0 flex-1"><span className="block truncate text-sm font-medium">{row.name}</span><span className="block truncate font-mono text-[11px] text-muted-foreground">{row.path}</span><span className="mt-1 flex flex-wrap gap-1" aria-label={t("assetActions.label")}>{assetActionLabels(row).map((label) => <span key={label} className="rounded bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">{t(`assetActions.${label === "Preview" ? "preview" : label === "Edit" ? "edit" : label === "Open externally" ? "openExternal" : "unavailable"}` as never)}</span>)}</span></span>
         {row.gitStatus !== "clean" ? <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">{row.gitStatus}</span> : null}
       </button>
     </li>

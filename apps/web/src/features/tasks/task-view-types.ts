@@ -79,6 +79,7 @@ export type WorkItemAssetRef = {
   terminalId: string;
   hash: string | null;
   version: string | null;
+  worktreeId?: string | null;
   capabilities: string[];
   readiness: { state: "ready" | "waiting_capability"; reason: string };
 };
