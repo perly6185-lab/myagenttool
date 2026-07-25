@@ -109,6 +109,7 @@ export function describeProjectAsset({ projectId, projectRoot, relativePath, ter
     family: resolved.family,
     mimeType: resolved.mimeType,
     size: stat.size,
+    resourceClass: assetResourceClass(stat.size),
     hash: hashFile(confined.target),
     version: `${stat.size}-${Math.trunc(stat.mtimeMs)}`,
     capabilities: resolved.capabilities,
@@ -124,16 +125,30 @@ export function describeProjectAsset({ projectId, projectRoot, relativePath, ter
   };
 }
 
-export function evaluateAssetRequirements(descriptors, requiredCapabilities, terminalId) {
+export function evaluateAssetRequirements(descriptors, requiredCapabilities, terminalId, { availableResourceClasses = ["small", "medium"] } = {}) {
   const assets = Array.isArray(descriptors) ? descriptors : [];
   if (assets.some((asset) => asset.terminalId !== terminalId)) {
     return { state: "refused", reason: "asset_terminal_mismatch", terminalId };
+  }
+  const requiredResources = new Set(assets
+    .filter((asset) => (requiredCapabilities ?? []).some((capability) => asset.capabilities?.includes(capability)))
+    .map((asset) => asset.resourceClass ?? assetResourceClass(asset.size ?? 0)));
+  if (requiredResources.has("large") && !availableResourceClasses.includes("large")) {
+    return { state: "waiting_capability", reason: "local_resource_class_required:large", terminalId };
   }
   for (const capability of requiredCapabilities ?? []) {
     const supported = assets.some((asset) => asset.capabilities?.includes(capability) && asset.readiness?.state === "ready");
     if (!supported) return { state: "waiting_capability", reason: `missing_local_capability:${capability}`, terminalId };
   }
   return { state: "ready", reason: "asset_requirements_satisfied", terminalId };
+}
+
+export function assetResourceClass(size) {
+  const bytes = Number(size);
+  if (!Number.isFinite(bytes) || bytes < 0) return "unknown";
+  if (bytes <= 8 * 1024 * 1024) return "small";
+  if (bytes <= 100 * 1024 * 1024) return "medium";
+  return "large";
 }
 
 export function summarizeAssetForRemote(descriptor) {
@@ -146,6 +161,7 @@ export function summarizeAssetForRemote(descriptor) {
     path: String(descriptor.path ?? "").slice(0, 1_000),
     family: descriptor.family,
     size: descriptor.size,
+    resourceClass: descriptor.resourceClass,
     version: descriptor.version,
     capabilities: [...(descriptor.capabilities ?? [])],
     readiness: descriptor.readiness,

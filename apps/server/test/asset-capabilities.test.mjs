@@ -8,6 +8,7 @@ import {
   evaluateAssetRequirements, resolveAssetCapabilities,
   summarizeAssetForRemote,
   deriveAssetRuntimeReadiness,
+  assetResourceClass,
 } from "../src/services/asset-capabilities.mjs";
 
 test("publishes explicit support without promising CAD, image, or video editing", () => {
@@ -62,6 +63,24 @@ test("queue readiness stays on one terminal and waits for missing capabilities",
   assert.deepEqual(evaluateAssetRequirements([asset], ["preview"], "terminal-2"), {
     state: "refused", reason: "asset_terminal_mismatch", terminalId: "terminal-2",
   });
+});
+
+test("resource classes are bounded and large work waits on the owning terminal", () => {
+  assert.equal(assetResourceClass(8 * 1024 * 1024), "small");
+  assert.equal(assetResourceClass(8 * 1024 * 1024 + 1), "medium");
+  assert.equal(assetResourceClass(100 * 1024 * 1024 + 1), "large");
+  assert.deepEqual(evaluateAssetRequirements([{
+    terminalId: "terminal-1", size: 120 * 1024 * 1024, resourceClass: "large",
+    capabilities: ["transform"], readiness: { state: "ready" },
+  }], ["transform"], "terminal-1"), {
+    state: "waiting_capability",
+    reason: "local_resource_class_required:large",
+    terminalId: "terminal-1",
+  });
+  assert.equal(evaluateAssetRequirements([{
+    terminalId: "terminal-1", resourceClass: "large",
+    capabilities: ["compare"], readiness: { state: "ready" },
+  }], ["compare"], "terminal-1", { availableResourceClasses: ["small", "medium", "large"] }).state, "ready");
 });
 
 test("remote summary is bounded and explicitly read-only", () => {

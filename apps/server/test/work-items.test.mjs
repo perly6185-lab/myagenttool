@@ -116,6 +116,21 @@ test("links asset requirements to the owning terminal and exposes waiting capabi
   assert.equal(foreign.status, 409);
   assert.equal(foreign.body.error, "asset_terminal_mismatch");
   assert.equal(foreign.body.terminalId, "dev_local");
+
+  const large = service.createWorkItem({
+    projectId: "prj_a",
+    title: "Compare large local images",
+    inputAssets: [{
+      id: "asset-large", path: "media/source.png", family: "image",
+      terminalId: "dev_local", size: 120 * 1024 * 1024, resourceClass: "large",
+      capabilities: ["compare"], readiness: { state: "ready" },
+    }],
+    requiredCapabilities: ["compare"],
+  }, ACTOR_A);
+  assert.equal(large.status, 201);
+  assert.equal(large.body.workItem.assetReadiness.state, "waiting_capability");
+  assert.equal(large.body.workItem.assetReadiness.reason, "local_resource_class_required:large");
+  assert.equal(large.body.workItem.assetReadiness.terminalId, "dev_local");
 });
 
 test("backfills legacy work items and rejects terminal ownership changes", () => {

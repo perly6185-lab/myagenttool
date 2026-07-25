@@ -104,7 +104,9 @@ export function WorkItemAssetChain({ item }: { item: LocalWorkItem }) {
       <div className="flex flex-wrap items-center gap-2">
         <strong>{t("assetChain.title")}</strong>
         <Badge tone={item.assetReadiness?.state === "ready" ? "success" : "warning"}>
-          {t(item.assetReadiness?.state === "waiting_capability" ? "assetChain.waiting" : "assetChain.ready")}
+          {item.assetReadiness?.state === "waiting_capability"
+            ? t(item.assetReadiness.reason === "local_resource_class_required:large" ? "assetChain.largeResource" : "assetChain.waiting")
+            : t("assetChain.ready")}
         </Badge>
       </div>
       <ol className="mt-2 flex flex-wrap items-center gap-2" aria-label={t("assetChain.steps")}>

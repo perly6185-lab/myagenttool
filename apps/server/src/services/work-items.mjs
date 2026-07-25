@@ -142,6 +142,10 @@ function normalizeAssetRefs(input) {
       path,
       family: String(candidate.family ?? "unknown").slice(0, 40),
       terminalId,
+      size: Number.isSafeInteger(candidate.size) && candidate.size >= 0 ? candidate.size : null,
+      resourceClass: ["small", "medium", "large", "unknown"].includes(candidate.resourceClass)
+        ? candidate.resourceClass
+        : "unknown",
       hash: candidate.hash ? String(candidate.hash).slice(0, 100) : null,
       version: candidate.version ? String(candidate.version).slice(0, 100) : null,
       worktreeId: candidate.worktreeId ? String(candidate.worktreeId).slice(0, 200) : null,
@@ -170,6 +174,10 @@ export function createWorkItemService({
   const actorTeam = (actor) => actor?.teamId ?? LOCAL_TEAM_ID;
   const actorUser = (actor) => actor?.userId ?? LOCAL_USER_ID;
   const localTerminalId = () => listDevices(state)[0]?.id ?? null;
+  const localAssetResourceClasses = (terminalId) => {
+    const device = (state.devices ?? []).find((candidate) => candidate.id === terminalId);
+    return Array.isArray(device?.assetResourceClasses) ? device.assetResourceClasses : ["small", "medium"];
+  };
   const notFound = () => ({ ok: false, status: 404, body: { error: "work_item_not_found" } });
   const commentNotFound = () => ({ ok: false, status: 404, body: { error: "work_item_comment_not_found" } });
 
@@ -290,6 +298,7 @@ export function createWorkItemService({
         item.inputAssets ?? [],
         item.requiredCapabilities ?? [],
         item.terminalId,
+        { availableResourceClasses: localAssetResourceClasses(item.terminalId) },
       ),
       externalBindings: (item.externalBindings ?? []).map((binding) => externalBindingView(binding)),
       businessState: item.state,
@@ -1458,6 +1467,7 @@ export function createWorkItemService({
       workItem.inputAssets,
       workItem.requiredCapabilities,
       workItem.terminalId,
+      { availableResourceClasses: localAssetResourceClasses(workItem.terminalId) },
     );
     if (assetReadiness.state === "refused") {
       return { ok: false, status: 409, body: { error: assetReadiness.reason, terminalId: workItem.terminalId } };

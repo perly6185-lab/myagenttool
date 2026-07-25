@@ -77,6 +77,8 @@ export type WorkItemAssetRef = {
   path: string;
   family: string;
   terminalId: string;
+  size?: number | null;
+  resourceClass?: "small" | "medium" | "large" | "unknown";
   hash: string | null;
   version: string | null;
   worktreeId?: string | null;

@@ -14,6 +14,7 @@ export interface DeviceSnapshot {
   lastSeenAt: string | null;
   /** Max invocations this machine runs at once (across distinct worktrees). */
   maxConcurrency?: number;
+  assetResourceClasses?: Array<"small" | "medium" | "large">;
   runtimeReadiness?: DeviceRuntimeReadiness[];
   /** Compatibility alias for older servers. */
   applicationBinaryReadiness?: DeviceRuntimeReadiness[];
@@ -1720,6 +1721,7 @@ export interface AssetDescriptor {
   family: string;
   mimeType: string;
   size: number;
+  resourceClass: "small" | "medium" | "large" | "unknown";
   hash: string;
   version: string;
   capabilities: string[];
