@@ -90,3 +90,98 @@ export const SECTIONS: SectionDef[] = [
   { key: "invocations", labelKey: "sections.invocations.label", icon: ListChecks, blurbKey: "sections.invocations.blurb", group: "ledgers" },
   { key: "economics", labelKey: "sections.economics.label", icon: Receipt, blurbKey: "sections.economics.blurb", group: "ledgers" },
 ];
+
+export type PageSurface = "entry" | "settings" | "trace";
+export type PageOwnerContext = "global" | "task" | "project";
+export type PageVisibility = "primary" | "secondary" | "contextual";
+export type PageAuthority = "ordinary" | "manage" | "audit";
+export type NavigationLabelKey = `shell.navigation.${"home" | "tasks" | "projects" | "queue" | "attention"}`;
+export type SurfaceLabelKey = `shell.navigation.${PageSurface}`;
+export type SurfaceDescriptionKey = `shell.navigation.${PageSurface}Hint`;
+
+export interface PageRegistration extends SectionDef {
+  surface: PageSurface;
+  ownerContext: PageOwnerContext;
+  visibility: PageVisibility;
+  /** Presentation requirement only; APIs remain the authorization boundary. */
+  authority: PageAuthority;
+  /** Canonical bookmark contract retained by URL synchronization. */
+  deepLink: `?section=${SectionKey}`;
+  /** Optional navigation copy; the underlying page title remains unchanged. */
+  navigationLabelKey?: NavigationLabelKey;
+  /** Legacy section keys remain canonical until their feature pages migrate. */
+  legacyAliases: readonly string[];
+}
+
+const ENTRY_PRIMARY = new Set<SectionKey>(["dashboard", "task", "projects", "autoRuns", "approvals"]);
+const ENTRY_CONTEXTUAL = new Set<SectionKey>([
+  "workBoard", "planning", "workspace", "documents", "canvas",
+]);
+const TRACE_SECTIONS = new Set<SectionKey>([
+  "compare", "evidence", "review", "evalTrend", "invocations", "audit",
+]);
+
+const NAVIGATION_LABEL_KEYS: Partial<Record<SectionKey, NavigationLabelKey>> = {
+  dashboard: "shell.navigation.home",
+  task: "shell.navigation.tasks",
+  projects: "shell.navigation.projects",
+  autoRuns: "shell.navigation.queue",
+  approvals: "shell.navigation.attention",
+};
+
+/**
+ * One ownership registry for every existing page. Feature work may add a view,
+ * but it must declare where that view belongs instead of adding itself directly
+ * to the ordinary user's global navigation.
+ */
+export const PAGE_REGISTRY: PageRegistration[] = SECTIONS.map((section) => {
+  const surface: PageSurface = ENTRY_PRIMARY.has(section.key) || ENTRY_CONTEXTUAL.has(section.key)
+    ? "entry"
+    : TRACE_SECTIONS.has(section.key)
+      ? "trace"
+      : "settings";
+  const ownerContext: PageOwnerContext = ENTRY_CONTEXTUAL.has(section.key)
+    ? section.key === "planning" || section.key === "workspace" || section.key === "documents" || section.key === "canvas"
+      ? "project"
+      : "task"
+    : surface === "trace"
+      ? "task"
+      : "global";
+  return {
+    ...section,
+    surface,
+    ownerContext,
+    visibility: ENTRY_PRIMARY.has(section.key)
+      ? "primary"
+      : ENTRY_CONTEXTUAL.has(section.key)
+        ? "contextual"
+        : "secondary",
+    authority: surface === "settings" ? "manage" : surface === "trace" ? "audit" : "ordinary",
+    deepLink: `?section=${section.key}`,
+    navigationLabelKey: NAVIGATION_LABEL_KEYS[section.key],
+    legacyAliases: [],
+  };
+});
+
+const ENTRY_ORDER: SectionKey[] = ["dashboard", "task", "projects", "autoRuns", "approvals"];
+export const ENTRY_SECTIONS = ENTRY_ORDER.map((key) => pageRegistration(key));
+
+export const SURFACE_GROUPS: Array<{
+  key: PageSurface;
+  labelKey: SurfaceLabelKey;
+  descriptionKey: SurfaceDescriptionKey;
+}> = [
+  { key: "entry", labelKey: "shell.navigation.entry", descriptionKey: "shell.navigation.entryHint" },
+  { key: "settings", labelKey: "shell.navigation.settings", descriptionKey: "shell.navigation.settingsHint" },
+  { key: "trace", labelKey: "shell.navigation.trace", descriptionKey: "shell.navigation.traceHint" },
+];
+
+export function pageRegistration(section: SectionKey): PageRegistration {
+  const page = PAGE_REGISTRY.find((item) => item.key === section);
+  if (!page) throw new Error(`Unknown page registration: ${section}`);
+  return page;
+}
+
+export function pageNavigationLabelKey(page: PageRegistration): SectionDef["labelKey"] | NavigationLabelKey {
+  return page.navigationLabelKey ?? page.labelKey;
+}

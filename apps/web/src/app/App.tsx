@@ -10,6 +10,7 @@ import { useLocaleSync } from "@/app/use-locale-sync";
 import { useUiStore } from "@/store/ui-store";
 import { useAppTranslation } from "@/lib/i18n/use-app-translation";
 import { useControlPlaneEvents } from "@/app/use-control-plane-events";
+import { ContextNavigation } from "@/components/layout/context-navigation";
 
 /**
  * Three-pane control-plane shell: nav rail (domains) · main outlet (active
@@ -31,6 +32,7 @@ export function App() {
       <NavRail />
       <div className="flex min-w-0 flex-1 flex-col">
         <Topbar />
+        <ContextNavigation />
         <div className="flex min-h-0 flex-1">
           <main className="min-w-0 flex-1 overflow-y-auto px-3 py-3 sm:px-6 sm:py-6">
             <ErrorBoundary resetKey={section} onRetry={() => window.location.reload()}>

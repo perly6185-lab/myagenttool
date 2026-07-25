@@ -31,21 +31,25 @@ afterEach(async () => {
 });
 
 describe("NavRail collapsible groups (#928)", () => {
-  it("shows Work items but hides expert-group items by default", () => {
+  it("shows only the five ordinary Entry destinations by default", () => {
     mockEmptyState();
     useUiStore.setState({ section: "dashboard", collapsedNavGroups: [...DEFAULT_COLLAPSED_NAV_GROUPS] });
     renderNav();
-    expect(screen.getByText("Overview")).toBeTruthy(); // Work — open
-    expect(screen.getByText("Documents")).toBeTruthy();
-    expect(screen.queryByText("Agents")).toBeNull(); // Configure — collapsed
-    expect(screen.queryByText("Economics")).toBeNull(); // Ledgers — collapsed
+    expect(screen.getByText("Home")).toBeTruthy();
+    expect(screen.getByText("Tasks")).toBeTruthy();
+    expect(screen.getByText("Projects")).toBeTruthy();
+    expect(screen.getByText("Queue")).toBeTruthy();
+    expect(screen.getByText("Needs attention")).toBeTruthy();
+    expect(screen.queryByText("Documents")).toBeNull(); // contextual — deep-link only
+    expect(screen.queryByText("Agents")).toBeNull(); // Settings — collapsed
+    expect(screen.queryByText("Economics")).toBeNull();
   });
 
   it("force-opens the collapsed group that holds the active section (deep-link safety)", () => {
     mockEmptyState();
     useUiStore.setState({ section: "economics", collapsedNavGroups: [...DEFAULT_COLLAPSED_NAV_GROUPS] });
     renderNav();
-    // Ledgers is collapsed by default, but the active section lives there → shown anyway.
+    // Settings is collapsed by default, but the active section lives there → shown anyway.
     expect(screen.getByText("Economics")).toBeTruthy();
   });
 
@@ -54,7 +58,7 @@ describe("NavRail collapsible groups (#928)", () => {
     useUiStore.setState({ section: "dashboard", collapsedNavGroups: [...DEFAULT_COLLAPSED_NAV_GROUPS] });
     renderNav();
     expect(screen.queryByText("Agents")).toBeNull();
-    fireEvent.click(screen.getByText("Configure"));
+    fireEvent.click(screen.getByText("Settings"));
     expect(screen.getByText("Agents")).toBeTruthy();
   });
 
@@ -63,8 +67,9 @@ describe("NavRail collapsible groups (#928)", () => {
     useUiStore.setState({ section: "dashboard", locale: "zh-CN", collapsedNavGroups: [...DEFAULT_COLLAPSED_NAV_GROUPS] });
     await i18n.changeLanguage("zh-CN");
     renderNav();
-    expect(screen.getByText("概览")).toBeTruthy();
-    expect(screen.getByText("文档")).toBeTruthy();
+    expect(screen.getByText("首页")).toBeTruthy();
+    expect(screen.getByText("任务")).toBeTruthy();
+    expect(screen.queryByText("文档")).toBeNull();
     expect(screen.getByRole("navigation", { name: "控制平面栏目" })).toBeTruthy();
   });
 });
