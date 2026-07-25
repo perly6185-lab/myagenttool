@@ -3,6 +3,13 @@ import { closeSync, constants, copyFileSync, existsSync, lstatSync, mkdirSync, o
 import { dirname, extname, isAbsolute, join, relative, resolve, sep } from "node:path";
 
 const OFFICE_TYPES = new Map([[".docx", "docx"], [".xlsx", "xlsx"], [".pptx", "pptx"]]);
+const ASSET_TYPES = new Set([
+  ...OFFICE_TYPES.keys(),
+  ".pdf", ".md", ".mdx", ".canvas", ".excalidraw",
+  ".dxf", ".dwg",
+  ".png", ".jpg", ".jpeg", ".gif", ".webp", ".avif", ".svg",
+  ".mp4", ".webm", ".mov",
+]);
 
 export function registerLocalOfficeDocumentPicker({ ipcMain, dialog, getWindow, getWorktrees }) {
   const selections = new Map();
@@ -52,7 +59,33 @@ export function registerContainedOfficeDocumentOpen({ ipcMain, getState, openPat
   });
 }
 
+export function registerContainedAssetOpen({ ipcMain, getState, openPath }) {
+  ipcMain.removeHandler("assets:open-contained");
+  ipcMain.handle("assets:open-contained", async (_event, input) => {
+    let target;
+    try {
+      target = resolveContainedAsset(await getState(), input);
+    } catch {
+      throw new Error("The requested asset could not be opened safely.");
+    }
+    try {
+      const failure = await openPath(target);
+      if (failure) throw new Error("open failed");
+    } catch {
+      throw new Error("The system application could not open this asset.");
+    }
+    return { opened: true };
+  });
+}
+
 export function resolveContainedOfficeDocument(state, input) {
+  const requestedExtension = extname(String(input?.relativePath ?? "")).toLowerCase();
+  if (!OFFICE_TYPES.has(requestedExtension)) throw new Error("Only .docx, .xlsx, and .pptx documents can be opened.");
+  const target = resolveContainedAsset(state, input);
+  return target;
+}
+
+export function resolveContainedAsset(state, input) {
   const projectId = String(input?.projectId ?? "").trim();
   const worktreeId = String(input?.worktreeId ?? "").trim();
   const relativePath = String(input?.relativePath ?? "").trim().replaceAll("\\", "/");
@@ -74,7 +107,7 @@ export function resolveContainedOfficeDocument(state, input) {
   if (!realRel || realRel === ".." || realRel.startsWith(`..${sep}`) || isAbsolute(realRel)) throw new Error("Requested document escapes its project root.");
   const stat = statSync(target);
   if (!stat.isFile()) throw new Error("Requested document is not a regular file.");
-  if (!OFFICE_TYPES.has(extname(target).toLowerCase())) throw new Error("Only .docx, .xlsx, and .pptx documents can be opened.");
+  if (!ASSET_TYPES.has(extname(target).toLowerCase())) throw new Error("This asset type cannot be opened.");
   return target;
 }
 

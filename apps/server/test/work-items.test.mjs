@@ -23,6 +23,8 @@ function harness({
   budgetStatusFor = () => null,
   teamBudgetStatusFor = () => null,
   retryAlert = () => null,
+  resolveApplicationCapability,
+  invokeResolvedCapability,
 } = {}) {
   let counter = 0;
   const events = [];
@@ -51,6 +53,8 @@ function harness({
     budgetStatusFor,
     teamBudgetStatusFor,
     retryAlert,
+    resolveApplicationCapability,
+    invokeResolvedCapability,
   });
   return { state, events, alerts, service };
 }
@@ -82,6 +86,55 @@ test("creates a local work item with server-owned identity and defaults", () => 
     entryContext: "task",
     traceParent: result.body.workItem.id,
   });
+});
+
+test("links asset requirements to the owning terminal and exposes waiting capability", () => {
+  const { service } = harness();
+  const waiting = service.createWorkItem({
+    projectId: "prj_a",
+    title: "Update workbook",
+    inputAssets: [{
+      id: "asset-1", path: "reports/input.xlsx", family: "excel",
+      terminalId: "dev_local", capabilities: ["preview"],
+      readiness: { state: "ready", reason: "available_on_owning_terminal" },
+    }],
+    requiredCapabilities: ["edit"],
+  }, ACTOR_A);
+  assert.equal(waiting.status, 201);
+  assert.deepEqual(waiting.body.workItem.assetReadiness, {
+    state: "waiting_capability",
+    reason: "missing_local_capability:edit",
+    terminalId: "dev_local",
+  });
+  assert.equal(waiting.body.workItem.inputAssets[0].path, "reports/input.xlsx");
+
+  const foreign = service.createWorkItem({
+    projectId: "prj_a",
+    title: "Foreign asset",
+    inputAssets: [{
+      path: "reports/input.xlsx", terminalId: "dev_other",
+      capabilities: ["preview"], readiness: { state: "ready" },
+    }],
+    requiredCapabilities: ["preview"],
+  }, ACTOR_A);
+  assert.equal(foreign.status, 409);
+  assert.equal(foreign.body.error, "asset_terminal_mismatch");
+  assert.equal(foreign.body.terminalId, "dev_local");
+
+  const large = service.createWorkItem({
+    projectId: "prj_a",
+    title: "Compare large local images",
+    inputAssets: [{
+      id: "asset-large", path: "media/source.png", family: "image",
+      terminalId: "dev_local", size: 120 * 1024 * 1024, resourceClass: "large",
+      capabilities: ["compare"], readiness: { state: "ready" },
+    }],
+    requiredCapabilities: ["compare"],
+  }, ACTOR_A);
+  assert.equal(large.status, 201);
+  assert.equal(large.body.workItem.assetReadiness.state, "waiting_capability");
+  assert.equal(large.body.workItem.assetReadiness.reason, "local_resource_class_required:large");
+  assert.equal(large.body.workItem.assetReadiness.terminalId, "dev_local");
 });
 
 test("backfills legacy work items and rejects terminal ownership changes", () => {
@@ -341,6 +394,161 @@ test("verification rejects unknown criteria and malformed evidence", () => {
     workItemId: item.id, expectedRevision: item.revision, kind: "test", status: "passed",
     evidence: [{ kind: "secret", ref: "x" }],
   }, ACTOR_A).body.error, "invalid_work_item_evidence");
+});
+
+test("cross-asset task trace links Excel input through PowerPoint output to image evidence", () => {
+  const { service, events } = harness();
+  let item = service.createWorkItem({
+    projectId: "prj_a",
+    title: "Build a review deck from the workbook",
+    acceptanceCriteria: ["Rendered deck evidence is verified"],
+    inputAssets: [{
+      id: "asset-xlsx", path: "reports/source.xlsx", family: "excel",
+      terminalId: "dev_local", hash: "sha256:excel-v1", version: "excel-v1",
+      capabilities: ["preview", "inspect", "edit"],
+      readiness: { state: "ready", reason: "available_on_owning_terminal" },
+    }],
+    requiredCapabilities: ["edit"],
+  }, ACTOR_A).body.workItem;
+  assert.equal(item.assetReadiness.state, "ready");
+  const queued = service.claimWorkItem({
+    workItemId: item.id, agentId: "agt-office", idempotencyKey: "asset-e2e-queue",
+  }, ACTOR_A);
+  assert.equal(queued.status, 201);
+  item = service.getWorkItem({ workItemId: item.id }, ACTOR_A).body.workItem;
+  assert.equal(item.executionState, "claimed");
+  assert.equal(item.terminalId, "dev_local");
+
+  const deck = service.recordAssetOperation({
+    workItemId: item.id, expectedRevision: item.revision,
+    capability: "edit", inputAssetId: "asset-xlsx",
+    invocationId: "inv-office-1", approvalId: "apr-office-1",
+    applicationResolution: {
+      state: "ready", reason: "local_capability_selected", terminalId: "dev_local",
+      capability: { applicationId: "app_officecli", displayName: "Update workbook", name: "internal.must-not-render" },
+      telemetry: { durationMs: 2.5 },
+    },
+    summary: "Generated the quarterly review deck from workbook data.",
+    outputAsset: {
+      id: "asset-pptx", path: "outputs/review.pptx", family: "powerpoint",
+      terminalId: "dev_local", hash: "sha256:pptx-v1", version: "pptx-v1",
+      capabilities: ["preview", "inspect", "edit", "render", "attach_evidence"],
+      readiness: { state: "ready", reason: "available_on_owning_terminal" },
+    },
+  }, ACTOR_A);
+  assert.equal(deck.status, 201);
+  assert.equal(deck.body.operation.traceId, item.id);
+  assert.equal(deck.body.operation.approvalId, "apr-office-1");
+  assert.deepEqual(deck.body.operation.applicationResolution, {
+    state: "ready", terminalId: "dev_local", applicationId: "app_officecli",
+    label: "Update workbook", reason: "local_capability_selected", durationMs: 2.5,
+  });
+  item = deck.body.workItem;
+
+  const image = service.recordAssetOperation({
+    workItemId: item.id, expectedRevision: item.revision,
+    capability: "render", inputAssetId: "asset-pptx",
+    invocationId: "inv-render-1", summary: "Rendered a safe review image.",
+    outputAsset: {
+      id: "asset-image", path: "evidence/review.png", family: "image",
+      terminalId: "dev_local", hash: "sha256:image-v1", version: "image-v1",
+      capabilities: ["preview", "inspect", "compare", "attach_evidence"],
+      readiness: { state: "ready", reason: "available_on_owning_terminal" },
+    },
+  }, ACTOR_A);
+  assert.equal(image.status, 201);
+  item = image.body.workItem;
+
+  const previewed = service.recordAssetOperation({
+    workItemId: item.id, expectedRevision: item.revision,
+    capability: "preview", inputAssetId: "asset-image",
+    invocationId: "inv-preview-1", summary: "Previewed the bounded local image.",
+  }, ACTOR_A);
+  assert.equal(previewed.status, 201);
+  item = previewed.body.workItem;
+
+  const verified = service.recordVerification({
+    workItemId: item.id, expectedRevision: item.revision,
+    kind: "manual", status: "passed", summary: "Deck image reviewed.",
+    acceptanceResults: [{
+      criterion: "Rendered deck evidence is verified", status: "passed", note: "Image matches source totals.",
+    }],
+    evidence: [{
+      kind: "asset", assetId: "asset-image", ref: "evidence/review.png",
+      hash: "sha256:image-v1", version: "image-v1", terminalId: "dev_local",
+      summary: "Rendered PowerPoint evidence.",
+    }],
+  }, ACTOR_A);
+  assert.equal(verified.status, 201);
+  assert.equal(verified.body.workItem.completionGate.ready, true);
+  assert.equal(verified.body.workItem.outputAssets.length, 2);
+  assert.equal(verified.body.workItem.verificationRecords[0].evidence[0].assetId, "asset-image");
+
+  const detail = service.getWorkItem({ workItemId: item.id }, ACTOR_A);
+  assert.equal(detail.body.observability.executionChainId, item.id);
+  assert.ok(detail.body.observability.timeline.some((row) => row.type === "asset_operation_recorded" && row.stage === "tool"));
+  assert.ok(detail.body.observability.timeline.some((row) => row.type === "asset_evidence_attached" && row.stage === "verification"));
+  assert.equal(events.filter((event) => event.type === "work_item_asset_operation_recorded").length, 3);
+  assert.ok(events.every((event) => event.type !== "work_item_asset_operation_recorded"
+    || (event.data.traceId === item.id && event.data.terminalId === "dev_local")));
+});
+
+test("real task Application execution resolves server-side and stamps immutable task/terminal trace context", () => {
+  const invocations = [];
+  const resolution = {
+    state: "waiting_approval", reason: "capability_requires_approval", terminalId: "dev_local",
+    capability: { name: "app.office.apply", displayName: "Update workbook", applicationId: "app_office", riskLevel: "medium" },
+    approval: { required: true },
+    readiness: { runtime: "ready", credential: { configured: true, scopeMatch: true, expired: false } },
+  };
+  const { service } = harness({
+    resolveApplicationCapability: () => resolution,
+    invokeResolvedCapability: (name, input) => {
+      assert.equal(name, "app.office.apply");
+      assert.equal(input.projectId, "prj_a");
+      assert.equal(input.approvalToken, "grant-1");
+      const invocation = { id: "inv-app-1", status: "queued", options: { metadata: {} } };
+      invocations.push(invocation);
+      return { status: 202, body: { invocation } };
+    },
+  });
+  let item = service.createWorkItem({
+    projectId: "prj_a", title: "Update workbook",
+    inputAssets: [{
+      id: "asset-1", path: "input.xlsx", family: "excel", terminalId: "dev_local",
+      hash: "sha256:x", version: "v1", capabilities: ["edit"], readiness: { state: "ready" },
+    }],
+    requiredCapabilities: ["edit"],
+  }, ACTOR_A).body.workItem;
+  assert.equal(item.queueReadiness.state, "waiting_approval");
+  const blocked = service.startApplicationExecution({
+    workItemId: item.id, expectedRevision: item.revision, assetVerb: "edit", assetFamily: "excel",
+  }, ACTOR_A);
+  assert.equal(blocked.body.error, "approval_required");
+  const started = service.startApplicationExecution({
+    workItemId: item.id, expectedRevision: item.revision, assetVerb: "edit", assetFamily: "excel",
+    approvalToken: "grant-1", parameters: { operation: "update" },
+  }, ACTOR_A);
+  assert.equal(started.status, 202);
+  assert.equal(invocations[0].options.metadata.applicationExecution.taskId, item.id);
+  assert.equal(invocations[0].options.metadata.applicationExecution.terminalId, "dev_local");
+  assert.equal(invocations[0].options.metadata.applicationExecution.principalId, "usr_a");
+  assert.match(invocations[0].options.metadata.applicationExecution.contractFingerprint, /^sha256:/);
+  assert.equal(started.body.workItem.executionBindings.at(-1).id, "inv-app-1");
+});
+
+test("task Application execution rejects caller capability overrides before resolution", () => {
+  let resolved = false;
+  const { service } = harness({
+    resolveApplicationCapability: () => { resolved = true; return null; },
+  });
+  const item = service.createWorkItem({ projectId: "prj_a", title: "Unsafe" }, ACTOR_A).body.workItem;
+  const result = service.startApplicationExecution({
+    workItemId: item.id, expectedRevision: item.revision, intent: "edit",
+    parameters: { command: "rm", applicationId: "attacker-choice" },
+  }, ACTOR_A);
+  assert.equal(result.body.error, "invalid_application_execution_parameters");
+  assert.equal(resolved, false);
 });
 
 test("human attention queue aggregates conflicts, approvals, and failed evidence", () => {

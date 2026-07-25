@@ -11,6 +11,8 @@ import { backfillTerminalOwnership } from "../runtime/terminal-ownership.mjs";
 import { makeRunTx } from "../runtime/store/run-tx.mjs";
 import { normalizedUpdatedSince, paginateRows } from "./cursor-pagination.mjs";
 import { externalIssueProviderReadiness } from "./external-issue-provider.mjs";
+import { ASSET_CAPABILITY_VERBS, evaluateAssetRequirements } from "./asset-capabilities.mjs";
+import { createApplicationExecutionContract } from "./application-execution-contract.mjs";
 
 const TYPES = new Set(["task", "bug", "feature", "initiative"]);
 const STATUSES = new Set(["backlog", "ready", "in_progress", "review", "blocked", "done"]);
@@ -30,12 +32,38 @@ export function taskTraceStage(type, source = "issue") {
   if (value.includes("route") || value.includes("auto_run_started") || value.includes("worktree_created")) return "routing";
   if (value.includes("queue") || value.includes("claim")) return "queue";
   if (value.includes("approval")) return "approval";
-  if (value.includes("tool_invocation") || value.includes("round_")) return "tool";
-  if (value.includes("verif") || value.includes("review")) return "verification";
+  if (value.includes("tool_invocation") || value.includes("asset_operation") || value.includes("round_")) return "tool";
+  if (value.includes("verif") || value.includes("review") || value.includes("evidence")) return "verification";
   if (value.includes("retry") || value.includes("recover") || value.includes("repair")) return "retry";
   if (value.includes("complete") || value.includes("done") || value.includes("merged") || value.includes("closed")) return "completion";
   if (source === "execution" || value.includes("run") || value.includes("invocation")) return "execution";
   return "other";
+}
+
+function normalizeApplicationResolution(value, terminalId) {
+  if (!value || typeof value !== "object" || value.terminalId !== terminalId) return null;
+  const state = ["ready", "waiting_capability", "waiting_approval", "waiting_capacity", "refusal"].includes(value.state)
+    ? value.state
+    : null;
+  if (!state) return null;
+  return {
+    state,
+    terminalId,
+    applicationId: value.capability?.applicationId ? String(value.capability.applicationId).slice(0, 200) : null,
+    label: value.capability?.displayName ? String(value.capability.displayName).replace(/[\r\n\t]/g, " ").slice(0, 120) : null,
+    reason: String(value.reason ?? "").replace(/[\r\n\t]/g, " ").slice(0, 200),
+    durationMs: Number.isFinite(value.telemetry?.durationMs) ? Math.max(0, Math.min(60_000, value.telemetry.durationMs)) : null,
+  };
+}
+
+function aggregateApplicationReadiness(resolutions, assetReadiness) {
+  if (assetReadiness?.state !== "ready") return assetReadiness;
+  const rows = Array.isArray(resolutions) ? resolutions : [];
+  for (const state of ["refusal", "waiting_capability", "waiting_capacity", "waiting_approval"]) {
+    const match = rows.find((resolution) => resolution?.state === state);
+    if (match) return { state, reason: match.reason, terminalId: match.terminalId, capability: match.capability ?? null };
+  }
+  return { state: "ready", reason: rows.length ? "application_requirements_satisfied" : "no_application_required", terminalId: assetReadiness?.terminalId ?? null };
 }
 
 export const backfillWorkItemTerminalOwnership = backfillTerminalOwnership;
@@ -106,7 +134,55 @@ function validateDraft(input, { partial = false } = {}) {
     }
     value.estimatePoints = estimatePoints;
   }
+  if (!partial || Object.hasOwn(input, "inputAssets")) {
+    const assets = normalizeAssetRefs(input.inputAssets ?? []);
+    if (!assets) return { error: "invalid_work_item_input_assets" };
+    value.inputAssets = assets;
+  }
+  if (!partial || Object.hasOwn(input, "requiredCapabilities")) {
+    const capabilities = strings(input.requiredCapabilities ?? [], { limit: 20, maxLength: 40 });
+    if (!capabilities || capabilities.some((verb) => !ASSET_CAPABILITY_VERBS.includes(verb))) {
+      return { error: "invalid_work_item_required_capabilities" };
+    }
+    value.requiredCapabilities = capabilities;
+  }
+  if (!partial || Object.hasOwn(input, "outputAssets")) {
+    const assets = normalizeAssetRefs(input.outputAssets ?? []);
+    if (!assets) return { error: "invalid_work_item_output_assets" };
+    value.outputAssets = assets;
+  }
   return { value };
+}
+
+function normalizeAssetRefs(input) {
+  if (!Array.isArray(input) || input.length > 100) return null;
+  const assets = [];
+  for (const candidate of input) {
+    if (!candidate || typeof candidate !== "object") return null;
+    const path = String(candidate.path ?? "").replaceAll("\\", "/");
+    const terminalId = String(candidate.terminalId ?? "");
+    if (!path || path.startsWith("/") || path.split("/").includes("..") || path.length > 1_000 || !terminalId) return null;
+    const capabilities = strings(candidate.capabilities ?? [], { limit: 20, maxLength: 40 });
+    if (!capabilities || capabilities.some((verb) => !ASSET_CAPABILITY_VERBS.includes(verb))) return null;
+    assets.push({
+      id: String(candidate.id ?? "").slice(0, 100) || null,
+      path,
+      family: String(candidate.family ?? "unknown").slice(0, 40),
+      terminalId,
+      size: Number.isSafeInteger(candidate.size) && candidate.size >= 0 ? candidate.size : null,
+      resourceClass: ["small", "medium", "large", "unknown"].includes(candidate.resourceClass)
+        ? candidate.resourceClass
+        : "unknown",
+      hash: candidate.hash ? String(candidate.hash).slice(0, 100) : null,
+      version: candidate.version ? String(candidate.version).slice(0, 100) : null,
+      worktreeId: candidate.worktreeId ? String(candidate.worktreeId).slice(0, 200) : null,
+      capabilities,
+      readiness: candidate.readiness?.state === "ready"
+        ? { state: "ready", reason: String(candidate.readiness.reason ?? "available_on_owning_terminal").slice(0, 100) }
+        : { state: "waiting_capability", reason: String(candidate.readiness?.reason ?? "local_application_required").slice(0, 100) },
+    });
+  }
+  return assets;
 }
 
 export function createWorkItemService({
@@ -119,12 +195,18 @@ export function createWorkItemService({
   retryAlert = () => null,
   budgetStatusFor = () => null,
   teamBudgetStatusFor = () => null,
+  resolveApplicationCapability = () => ({ state: "refusal", reason: "resolver_unavailable", capability: null }),
+  invokeResolvedCapability = () => ({ status: 503, body: { error: "capability_gateway_unavailable" } }),
   store,
 }) {
   const runTx = makeRunTx({ store, persistStateSoon });
   const actorTeam = (actor) => actor?.teamId ?? LOCAL_TEAM_ID;
   const actorUser = (actor) => actor?.userId ?? LOCAL_USER_ID;
   const localTerminalId = () => listDevices(state)[0]?.id ?? null;
+  const localAssetResourceClasses = (terminalId) => {
+    const device = (state.devices ?? []).find((candidate) => candidate.id === terminalId);
+    return Array.isArray(device?.assetResourceClasses) ? device.assetResourceClasses : ["small", "medium"];
+  };
   const notFound = () => ({ ok: false, status: 404, body: { error: "work_item_not_found" } });
   const commentNotFound = () => ({ ok: false, status: 404, body: { error: "work_item_comment_not_found" } });
 
@@ -241,6 +323,12 @@ export function createWorkItemService({
     ).length;
     return {
       ...publicItem,
+      assetReadiness: evaluateAssetRequirements(
+        item.inputAssets ?? [],
+        item.requiredCapabilities ?? [],
+        item.terminalId,
+        { availableResourceClasses: localAssetResourceClasses(item.terminalId) },
+      ),
       externalBindings: (item.externalBindings ?? []).map((binding) => externalBindingView(binding)),
       businessState: item.state,
       planningStatus: item.status,
@@ -1404,6 +1492,24 @@ export function createWorkItemService({
       externalBindings: [],
       executionBindings: [],
     };
+    const assetReadiness = evaluateAssetRequirements(
+      workItem.inputAssets,
+      workItem.requiredCapabilities,
+      workItem.terminalId,
+      { availableResourceClasses: localAssetResourceClasses(workItem.terminalId) },
+    );
+    if (assetReadiness.state === "refused") {
+      return { ok: false, status: 409, body: { error: assetReadiness.reason, terminalId: workItem.terminalId } };
+    }
+    workItem.assetReadiness = assetReadiness;
+    workItem.applicationResolutions = (workItem.requiredCapabilities ?? []).map((assetVerb) =>
+      resolveApplicationCapability({
+        assetVerb,
+        assetFamily: workItem.inputAssets?.find((asset) => asset.capabilities?.includes(assetVerb))?.family ?? null,
+        terminalId: workItem.terminalId,
+        resourceClass: workItem.inputAssets?.find((asset) => asset.capabilities?.includes(assetVerb))?.resourceClass ?? "small",
+      }, actor));
+    workItem.queueReadiness = aggregateApplicationReadiness(workItem.applicationResolutions, assetReadiness);
     runTx(() => {
       (state.workItems ??= []).unshift(workItem);
       recordActivity(workItem, actor, "created", {
@@ -1442,6 +1548,11 @@ export function createWorkItemService({
     }
     const validated = validateDraft(changes, { partial: true });
     if (validated.error) return { ok: false, status: 400, body: { error: validated.error } };
+    const nextInputAssets = validated.value.inputAssets ?? item.inputAssets ?? [];
+    const nextOutputAssets = validated.value.outputAssets ?? item.outputAssets ?? [];
+    if ([...nextInputAssets, ...nextOutputAssets].some((asset) => asset.terminalId !== item.terminalId)) {
+      return { ok: false, status: 409, body: { error: "asset_terminal_mismatch", terminalId: item.terminalId } };
+    }
     if (validated.value.status === "done") {
       const gate = completionGate(item);
       if (!gate.ready) return { ok: false, status: 409, body: { error: "work_item_acceptance_incomplete", ...gate } };
@@ -1651,9 +1762,15 @@ export function createWorkItemService({
       kind: String(entry?.kind ?? ""),
       ref: String(entry?.ref ?? ""),
       summary: String(entry?.summary ?? ""),
+      assetId: entry?.assetId ? String(entry.assetId).slice(0, 100) : null,
+      hash: entry?.hash ? String(entry.hash).slice(0, 100) : null,
+      version: entry?.version ? String(entry.version).slice(0, 100) : null,
+      terminalId: entry?.terminalId ? String(entry.terminalId).slice(0, 200) : null,
     }));
-    if (normalizedEvidence.some((entry) => !["url", "artifact", "commit", "log", "run"].includes(entry.kind)
-      || !entry.ref || entry.ref.length > 2_000 || entry.summary.length > 5_000)) {
+    if (normalizedEvidence.some((entry) => !["url", "artifact", "commit", "log", "run", "asset"].includes(entry.kind)
+      || !entry.ref || entry.ref.length > 2_000 || entry.summary.length > 5_000
+      || (entry.kind === "asset" && (entry.terminalId !== item.terminalId
+        || !(item.outputAssets ?? []).some((asset) => asset.id === entry.assetId && asset.path === entry.ref))))) {
       return { ok: false, status: 400, body: { error: "invalid_work_item_evidence" } };
     }
     const record = {
@@ -1669,8 +1786,164 @@ export function createWorkItemService({
       item.updatedAt = now();
       item.lastModifiedBy = actorUser(actor);
       recordActivity(item, actor, "verification_recorded", { verificationId: record.id, kind, status });
+      for (const entry of normalizedEvidence.filter((candidate) => candidate.kind === "asset")) {
+        recordActivity(item, actor, "asset_evidence_attached", {
+          verificationId: record.id, assetId: entry.assetId, path: entry.ref,
+          hash: entry.hash, version: entry.version, terminalId: item.terminalId,
+        });
+      }
     });
     return { ok: true, status: 201, body: { verification: record, workItem: workItemView(item, actor) } };
+  }
+
+  function recordAssetOperation({
+    workItemId, expectedRevision, capability, inputAssetId, outputAsset = null,
+    invocationId = null, approvalId = null, summary = "", applicationResolution = null,
+  } = {}, actor = null) {
+    const item = findOwn(workItemId, actor);
+    if (!item) return notFound();
+    if (expectedRevision !== item.revision) {
+      return { ok: false, status: 409, body: { error: "work_item_revision_conflict", currentRevision: item.revision } };
+    }
+    if (!ASSET_CAPABILITY_VERBS.includes(capability) || typeof summary !== "string" || summary.length > 5_000) {
+      return { ok: false, status: 400, body: { error: "invalid_work_item_asset_operation" } };
+    }
+    const source = [...(item.inputAssets ?? []), ...(item.outputAssets ?? [])]
+      .find((asset) => asset.id === String(inputAssetId));
+    if (!source || source.terminalId !== item.terminalId) {
+      return { ok: false, status: 409, body: { error: "asset_terminal_mismatch", terminalId: item.terminalId } };
+    }
+    if (!source.capabilities.includes(capability) || source.readiness?.state !== "ready") {
+      return { ok: false, status: 409, body: { error: "waiting_capability", capability, terminalId: item.terminalId } };
+    }
+    const normalizedOutput = outputAsset == null ? null : normalizeAssetRefs([outputAsset])?.[0] ?? null;
+    if (outputAsset != null && (!normalizedOutput || normalizedOutput.terminalId !== item.terminalId
+      || !normalizedOutput.id || !normalizedOutput.hash || !normalizedOutput.version)) {
+      return { ok: false, status: 400, body: { error: "invalid_work_item_output_asset" } };
+    }
+    const operation = {
+      id: nextId("wao"), capability, inputAssetId: source.id,
+      input: { id: source.id, path: source.path, hash: source.hash, version: source.version },
+      outputAssetId: normalizedOutput?.id ?? null,
+      invocationId: invocationId ? String(invocationId).slice(0, 200) : null,
+      approvalId: approvalId ? String(approvalId).slice(0, 200) : null,
+      terminalId: item.terminalId, traceId: item.id, summary,
+      recordedAt: now(), recordedBy: actorUser(actor),
+      applicationResolution: normalizeApplicationResolution(applicationResolution, item.terminalId),
+    };
+    runTx(() => {
+      if (normalizedOutput) {
+        const otherOutputs = (item.outputAssets ?? []).filter((asset) => asset.id !== normalizedOutput.id);
+        item.outputAssets = [normalizedOutput, ...otherOutputs].slice(0, 100);
+      }
+      (item.assetOperations ??= []).unshift(operation);
+      item.assetOperations = item.assetOperations.slice(0, 200);
+      item.revision += 1;
+      item.updatedAt = now();
+      item.lastModifiedBy = actorUser(actor);
+      recordActivity(item, actor, "asset_operation_recorded", {
+        operationId: operation.id, capability, inputAssetId: source.id,
+        outputAssetId: normalizedOutput?.id ?? null, invocationId: operation.invocationId,
+          approvalId: operation.approvalId, terminalId: item.terminalId,
+          applicationId: operation.applicationResolution?.applicationId ?? null,
+          capabilityLabel: operation.applicationResolution?.label ?? null,
+          resolutionReason: operation.applicationResolution?.reason ?? null,
+      });
+      appendEvent({
+        invocationId: operation.invocationId,
+        type: "work_item_asset_operation_recorded",
+        level: "info",
+        message: `${item.localRef} recorded an asset operation.`,
+        data: {
+          executionChainId: item.id, workItemId: item.id, traceId: item.id,
+          operationId: operation.id, capability, terminalId: item.terminalId,
+          input: operation.input,
+          output: normalizedOutput ? {
+            id: normalizedOutput.id, path: normalizedOutput.path,
+            hash: normalizedOutput.hash, version: normalizedOutput.version,
+          } : null,
+          approvalId: operation.approvalId,
+        },
+      });
+    });
+    return { ok: true, status: 201, body: {
+      operation, workItem: workItemView(item, actor),
+    } };
+  }
+
+  function startApplicationExecution({
+    workItemId, expectedRevision, intent = null, assetVerb = null,
+    assetFamily = null, resourceClass = "small", parameters = {}, approvalToken = null,
+  } = {}, actor = null) {
+    const item = findOwn(workItemId, actor);
+    if (!item) return notFound();
+    if (expectedRevision !== item.revision) {
+      return { ok: false, status: 409, body: { error: "work_item_revision_conflict", currentRevision: item.revision } };
+    }
+    if (!parameters || typeof parameters !== "object" || Array.isArray(parameters)
+      || Buffer.byteLength(JSON.stringify(parameters), "utf8") > 256 * 1024
+      || ["capability", "capabilityId", "applicationId", "toolName", "command", "argv", "terminalId", "projectId", "worktreeId", "requiresApproval"]
+        .some((field) => Object.hasOwn(parameters, field))) {
+      return { ok: false, status: 400, body: { error: "invalid_application_execution_parameters" } };
+    }
+    const resolution = resolveApplicationCapability({
+      intent, assetVerb, assetFamily, resourceClass, terminalId: item.terminalId,
+    }, actor);
+    if (!resolution?.capability || ["waiting_capability", "waiting_capacity", "refusal"].includes(resolution.state)) {
+      return { ok: false, status: 409, body: { error: resolution?.reason ?? "capability_not_available", resolution } };
+    }
+    if (resolution.state === "waiting_approval" && !approvalToken) {
+      return { ok: false, status: 409, body: { error: "approval_required", resolution } };
+    }
+    const invoked = invokeResolvedCapability(resolution.capability.name, {
+      ...parameters,
+      projectId: item.projectId,
+      ...(item.worktreeId ? { worktreeId: item.worktreeId } : {}),
+      ...(approvalToken ? { approvalToken } : {}),
+    }, actor);
+    const invocation = invoked?.body?.invocation ?? null;
+    if (!invocation) return { ok: false, status: invoked?.status ?? 409, body: invoked?.body ?? { error: "application_execution_failed" } };
+    const contract = createApplicationExecutionContract({
+      resolution,
+      workItem: item,
+      principalId: actorUser(actor),
+      approvalId: resolution.approval?.required ? "validated_grant" : null,
+      input: parameters,
+      inputAssets: (item.inputAssets ?? []).map((asset) => ({ ...asset, projectId: item.projectId })),
+      outputContract: resolution.capability.outputContract ?? null,
+    });
+    invocation.options ??= {};
+    invocation.options.metadata = {
+      ...(invocation.options.metadata ?? {}),
+      applicationExecution: {
+        taskId: contract.taskId, queueEntryId: contract.queueEntryId, traceId: contract.traceId,
+        terminalId: contract.terminalId, projectId: contract.projectId, worktreeId: contract.worktreeId,
+        principalId: contract.principalId, effectiveAuthority: contract.effectiveAuthority,
+        applicationId: contract.applicationId, capabilityId: contract.capabilityId,
+        approvalId: contract.approvalId, inputAssetIds: contract.inputAssets.map((asset) => asset.id),
+        contractFingerprint: contract.fingerprint,
+      },
+    };
+    runTx(() => {
+      item.applicationResolutions = [...(item.applicationResolutions ?? []), resolution].slice(-100);
+      item.executionBindings = [...(item.executionBindings ?? []), {
+        kind: "application_invocation", id: invocation.id, terminalId: item.terminalId,
+        applicationId: contract.applicationId, capabilityId: contract.capabilityId,
+        traceId: contract.traceId, createdAt: now(),
+      }].slice(-200);
+      item.queueReadiness = { state: "ready", reason: "application_invocation_created", terminalId: item.terminalId };
+      item.revision += 1;
+      item.updatedAt = now();
+      item.lastModifiedBy = actorUser(actor);
+      recordActivity(item, actor, "application_invocation_created", {
+        invocationId: invocation.id, applicationId: contract.applicationId,
+        capabilityLabel: resolution.capability.displayName, terminalId: item.terminalId,
+      });
+    });
+    return {
+      ok: true, status: invoked.status,
+      body: { invocation, resolution: normalizeApplicationResolution(resolution, item.terminalId), workItem: workItemView(item, actor) },
+    };
   }
 
   function listActivity({ workItemId } = {}, actor = null) {
@@ -1868,8 +2141,9 @@ export function createWorkItemService({
     listActivity, listComments, createComment, updateComment, deleteComment,
     recordExecutionBinding, claimWorkItem, releaseWorkItemClaim,
     bindGithubIssue, syncGithubIssue, bindExternalIssue, syncExternalIssue, listExternalProviders,
-    recordVerification, ingestGithubWebhook, replayGithubWebhook, recordGithubWebhookFailure,
+    recordVerification, recordAssetOperation, ingestGithubWebhook, replayGithubWebhook, recordGithubWebhookFailure,
     ingestExternalWebhook, replayExternalWebhook, recordExternalWebhookFailure,
     githubSyncDiagnostics, updateAttention, sweepOperationalAlerts, suggestWorkItemDraft, retryWorkItemAlert,
+    startApplicationExecution,
   };
 }

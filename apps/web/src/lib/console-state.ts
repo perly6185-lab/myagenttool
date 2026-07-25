@@ -14,6 +14,7 @@ export interface DeviceSnapshot {
   lastSeenAt: string | null;
   /** Max invocations this machine runs at once (across distinct worktrees). */
   maxConcurrency?: number;
+  assetResourceClasses?: Array<"small" | "medium" | "large">;
   runtimeReadiness?: DeviceRuntimeReadiness[];
   /** Compatibility alias for older servers. */
   applicationBinaryReadiness?: DeviceRuntimeReadiness[];
@@ -1695,8 +1696,11 @@ export interface ProjectDocumentEntry {
   worktreeId?: string | null;
   name: string;
   path: string;
-  type: "docx" | "xlsx" | "pptx" | "pdf" | "dxf" | "dwg";
+  type: "docx" | "xlsx" | "pptx" | "pdf" | "dxf" | "dwg" | "md" | "mdx" | "png" | "jpg" | "jpeg" | "gif" | "webp" | "avif" | "svg" | "mp4" | "webm" | "mov" | "canvas" | "excalidraw";
   gitStatus: string;
+  assetFamily?: string;
+  capabilities?: string[];
+  readiness?: { state: "ready" | "waiting_capability"; reason: string };
 }
 
 export interface ProjectDocumentsResponse {
@@ -1705,6 +1709,31 @@ export interface ProjectDocumentsResponse {
   documents: ProjectDocumentEntry[];
   truncated: boolean;
   scanned: number;
+}
+
+export interface AssetDescriptor {
+  id: string;
+  projectId: string;
+  worktreeId?: string | null;
+  terminalId: string;
+  name: string;
+  path: string;
+  family: string;
+  mimeType: string;
+  size: number;
+  resourceClass: "small" | "medium" | "large" | "unknown";
+  hash: string;
+  version: string;
+  capabilities: string[];
+  readiness: { state: "ready" | "waiting_capability"; reason: string };
+  sensitivity: string;
+  preview: {
+    available: boolean;
+    sandboxed: boolean;
+    remoteResources: boolean;
+    maxInlineBytes: number;
+    delivery: "bounded" | "range_stream";
+  };
 }
 
 export interface ApplicationRegisterRequest {

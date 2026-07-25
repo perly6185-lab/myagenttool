@@ -65,7 +65,7 @@ export function createChannelDeliveryService({
     (state.channelConversations ?? []).find((row) => row.id === conversationId) ?? null;
 
   /** Queue one outbound message to a conversation. Durable before any send attempt. */
-  function enqueueChannelDelivery({ channelId, conversationId, invocationId = null, content } = {}) {
+  function enqueueChannelDelivery({ channelId, conversationId, invocationId = null, content, taskContext = null } = {}) {
     const channel = findChannel(String(channelId ?? ""));
     const conversation = findConversation(String(conversationId ?? ""));
     const text = String(content ?? "").trim();
@@ -78,6 +78,14 @@ export function createChannelDeliveryService({
       conversationId: conversation.id,
       ownerTeamId: channel.ownerTeamId ?? LOCAL_TEAM_ID,
       invocationId: invocationId ? String(invocationId) : null,
+      taskContext: taskContext?.channelId === channel.id && taskContext?.conversationId === conversation.id ? {
+        messageId: taskContext.messageId ?? null,
+        principalId: taskContext.principalId ?? null,
+        terminalId: taskContext.terminalId ?? null,
+        projectId: taskContext.projectId ?? null,
+        workItemId: taskContext.workItemId ?? null,
+        traceId: taskContext.traceId ?? null,
+      } : null,
       // Reply target: a provider whose reply address differs from the sender
       // identity (Teams, #1135) stamps `replyContext` on the conversation; the
       // sender receives it verbatim. Others reply to the sender's id as before.
@@ -250,6 +258,7 @@ export function createChannelDeliveryService({
       channelId: channelContext.channelId,
       conversationId: channelContext.conversationId,
       invocationId: invocation.id,
+      taskContext: channelContext.taskContext ?? channelContext,
       content: lines.join("\n"),
     });
   }

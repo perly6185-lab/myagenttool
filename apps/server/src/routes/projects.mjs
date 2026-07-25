@@ -21,6 +21,8 @@ import { summarizeEpicChildren } from "../services/auto-run-epic.mjs";
 import { resolveAutoRunVerifyCommandFor } from "../services/worktree-verify.mjs";
 import { PdfDocumentReadError, readProjectPdf } from "../services/pdf-document-read.mjs";
 import { CadPreviewError, inspectCadDocument, renderCadDocument } from "../services/cad-preview.mjs";
+import { assetCapabilityMatrix, deriveAssetRuntimeReadiness, describeProjectAsset, summarizeAssetForRemote } from "../services/asset-capabilities.mjs";
+import { AssetPreviewError, readAssetPreview } from "../services/asset-preview.mjs";
 
 const IMAGE_MIME = {
   ".png": "image/png",
@@ -696,10 +698,97 @@ export async function handleProjectRoutes({
       sendJson(res, 200, {
         ...result,
         worktreeId: worktree?.id ?? null,
-        documents: result.documents.map((document) => ({ ...document, worktreeId: worktree?.id ?? null })),
+        documents: result.documents.map((document) => {
+          const readiness = deriveAssetRuntimeReadiness(state)[document.assetFamily];
+          return {
+            ...document, worktreeId: worktree?.id ?? null,
+            readiness: readiness === undefined ? document.readiness
+              : readiness ? { state: "ready", reason: "available_on_owning_terminal" }
+                : { state: "waiting_capability", reason: "local_application_required" },
+          };
+        }),
       });
     } catch (error) {
       sendJson(res, 400, { error: "project_documents_unavailable", message: error instanceof Error ? error.message : String(error) });
+    }
+    return true;
+  }
+
+  const assetCapabilitiesMatch = url.pathname.match(/^\/api\/projects\/([^/]+)\/asset-capabilities$/);
+  if (assetCapabilitiesMatch && req.method === "GET") {
+    const project = state.projects.find((item) => item.id === decodeURIComponent(assetCapabilitiesMatch[1]));
+    if (!project) { sendJson(res, 404, { error: "project_not_found" }); return true; }
+    if (denyForeignProject({ res, sendJson, state, actor, projectId: project.id, notFound: { error: "project_not_found" } })) return true;
+    const worktreeId = url.searchParams.get("worktree");
+    const worktree = worktreeId ? (state.worktrees ?? []).find((item) => item.id === worktreeId && item.projectId === project.id) : null;
+    if (worktreeId && !worktree) { sendJson(res, 404, { error: "worktree_not_found" }); return true; }
+    try {
+      const root = worktree?.path ?? worktree?.worktreePath ?? project.path;
+      const descriptor = describeProjectAsset({
+        projectId: project.id,
+        projectRoot: root,
+        relativePath: url.searchParams.get("path") ?? "",
+        terminalId: actor?.deviceId ?? project.terminalId ?? state.devices?.[0]?.id ?? "local-terminal",
+        worktreeId: worktree?.id ?? null,
+        runtimeReadiness: deriveAssetRuntimeReadiness(state),
+      });
+      res.setHeader("Cache-Control", "private, no-store");
+      sendJson(res, 200, { descriptor, remoteSummary: summarizeAssetForRemote(descriptor), matrixVersion: 1 });
+    } catch (error) {
+      const code = error?.code ?? "asset_unavailable";
+      const status = code === "asset_path_outside_project" || code === "invalid_asset_path" ? 400 : code === "ENOENT" ? 404 : 400;
+      sendJson(res, status, { error: code, message: "This asset is not available inside the selected project." });
+    }
+    return true;
+  }
+
+  if (url.pathname === "/api/asset-capabilities" && req.method === "GET") {
+    sendJson(res, 200, { version: 1, verbs: [
+      "discover", "preview", "inspect", "create", "edit", "transform",
+      "render", "compare", "export", "open_external", "attach_evidence",
+    ], families: assetCapabilityMatrix() });
+    return true;
+  }
+
+  const assetPreviewMatch = url.pathname.match(/^\/api\/projects\/([^/]+)\/asset-preview$/);
+  if (assetPreviewMatch && req.method === "GET") {
+    const project = state.projects.find((item) => item.id === decodeURIComponent(assetPreviewMatch[1]));
+    if (!project) { sendJson(res, 404, { error: "project_not_found" }); return true; }
+    if (denyForeignProject({ res, sendJson, state, actor, projectId: project.id, notFound: { error: "project_not_found" } })) return true;
+    const worktreeId = url.searchParams.get("worktree");
+    const worktree = worktreeId ? (state.worktrees ?? []).find((item) => item.id === worktreeId && item.projectId === project.id) : null;
+    if (worktreeId && !worktree) { sendJson(res, 404, { error: "worktree_not_found" }); return true; }
+    try {
+      const root = worktree?.path ?? worktree?.worktreePath ?? project.path;
+      const preview = readAssetPreview({
+        projectPath: root, relativeFile: url.searchParams.get("path") ?? "", range: req.headers.range ?? null,
+      });
+      res.setHeader("Cache-Control", "private, no-store");
+      res.setHeader("X-Content-Type-Options", "nosniff");
+      res.setHeader("Content-Security-Policy", "default-src 'none'; sandbox");
+      if (preview.family === "markdown") {
+        sendJson(res, 200, {
+          path: preview.path, family: preview.family, text: preview.text,
+          size: preview.size, truncated: false,
+        });
+        return true;
+      }
+      res.statusCode = preview.family === "video" ? 206 : 200;
+      res.setHeader("Content-Type", preview.mimeType);
+      res.setHeader("Content-Length", String(preview.bytes.length));
+      res.setHeader("Content-Disposition", "inline");
+      if (preview.family === "video") {
+        res.setHeader("Accept-Ranges", "bytes");
+        res.setHeader("Content-Range", `bytes ${preview.start}-${preview.end}/${preview.size}`);
+      }
+      res.end(preview.bytes);
+    } catch (error) {
+      const code = error instanceof AssetPreviewError ? error.code : "asset_preview_failed";
+      const status = code === "asset_not_found" ? 404
+        : code === "asset_preview_too_large" ? 413
+          : code === "invalid_asset_range" ? 416
+            : code === "asset_preview_unsupported" ? 415 : 400;
+      sendJson(res, status, { error: code, message: error instanceof AssetPreviewError ? error.message : "Asset preview is unavailable." });
     }
     return true;
   }

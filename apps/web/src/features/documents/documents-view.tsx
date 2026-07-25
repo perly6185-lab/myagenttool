@@ -1,11 +1,12 @@
 import { useEffect, useMemo, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { Copy, DraftingCompass, FilePlus2, FileSpreadsheet, FileText, FolderOpen, Loader2, Move, Pencil, Pin, PinOff, Presentation, Search, Trash2, X } from "lucide-react";
+import { Copy, DraftingCompass, FileImage, FilePlus2, FileSpreadsheet, FileText, FileVideo, FolderOpen, Loader2, Move, Pencil, Pin, PinOff, Presentation, Search, Trash2, X } from "lucide-react";
 import { api } from "@/data/use-console-actions";
 import { useConsoleState, useRefreshConsoleState } from "@/data/use-console-state";
 import { Button } from "@/components/ui/button";
 import { Input, Select } from "@/components/ui/input";
 import { OfficeDocumentFrame } from "@/components/common/office-document-frame";
+import { MarkdownBlock } from "@/components/ui/markdown-block";
 import { Modal } from "@/components/ui/modal";
 import { cn } from "@/lib/cn";
 import type { ProjectDocumentEntry } from "@/lib/console-state";
@@ -19,7 +20,7 @@ import { CadDocumentViewer } from "@/features/documents/cad-document-viewer";
 import { useAppTranslation } from "@/lib/i18n/use-app-translation";
 
 type OfficeDocumentType = "docx" | "xlsx" | "pptx";
-type DocumentType = "all" | OfficeDocumentType | "pdf" | "dxf" | "dwg";
+type DocumentType = "all" | OfficeDocumentType | "pdf" | "dxf" | "dwg" | "md" | "canvas" | "image" | "video";
 const FILTERS: Array<{ value: DocumentType; label: string }> = [
   { value: "all", label: "All" },
   { value: "docx", label: "Word" },
@@ -28,6 +29,10 @@ const FILTERS: Array<{ value: DocumentType; label: string }> = [
   { value: "pdf", label: "PDF" },
   { value: "dxf", label: "DXF" },
   { value: "dwg", label: "DWG" },
+  { value: "md", label: "Markdown" },
+  { value: "canvas", label: "Canvas" },
+  { value: "image", label: "Images" },
+  { value: "video", label: "Video" },
 ];
 
 function DocumentIcon({ type }: { type: ProjectDocumentEntry["type"] }) {
@@ -35,6 +40,9 @@ function DocumentIcon({ type }: { type: ProjectDocumentEntry["type"] }) {
   if (type === "pptx") return <Presentation className="size-4 text-orange-600" />;
   if (type === "pdf") return <FileText className="size-4 text-red-600" />;
   if (type === "dxf" || type === "dwg") return <DraftingCompass className="size-4 text-cyan-600" />;
+  if (["png", "jpg", "jpeg", "gif", "webp", "avif", "svg"].includes(type)) return <FileImage className="size-4 text-violet-600" />;
+  if (["mp4", "webm", "mov"].includes(type)) return <FileVideo className="size-4 text-rose-600" />;
+  if (["canvas", "excalidraw"].includes(type)) return <DraftingCompass className="size-4 text-indigo-600" />;
   return <FileText className="size-4 text-blue-600" />;
 }
 
@@ -217,11 +225,20 @@ function DocumentList({ loading, error, rows, selected, onSelect }: { loading: b
     <li key={row.path}>
       <button type="button" onClick={() => onSelect(row)} className={cn("flex w-full items-start gap-2 px-3 py-2.5 text-left hover:bg-muted/60", selected?.path === row.path && "bg-muted")}>
         <DocumentIcon type={row.type} />
-        <span className="min-w-0 flex-1"><span className="block truncate text-sm font-medium">{row.name}</span><span className="block truncate font-mono text-[11px] text-muted-foreground">{row.path}</span></span>
+        <span className="min-w-0 flex-1"><span className="block truncate text-sm font-medium">{row.name}</span><span className="block truncate font-mono text-[11px] text-muted-foreground">{row.path}</span><span className="mt-1 flex flex-wrap gap-1" aria-label={t("assetActions.label")}>{assetActionLabels(row).map((label) => <span key={label} className="rounded bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">{t(`assetActions.${label === "Preview" ? "preview" : label === "Edit" ? "edit" : label === "Open externally" ? "openExternal" : "unavailable"}` as never)}</span>)}</span></span>
         {row.gitStatus !== "clean" ? <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">{row.gitStatus}</span> : null}
       </button>
     </li>
   ))}</ul>;
+}
+
+export function assetActionLabels(asset: Pick<ProjectDocumentEntry, "capabilities" | "readiness">): string[] {
+  if (asset.readiness?.state === "waiting_capability") return ["Not available"];
+  const labels = [];
+  if (asset.capabilities?.includes("preview")) labels.push("Preview");
+  if (asset.capabilities?.includes("edit")) labels.push("Edit");
+  if (asset.capabilities?.includes("open_external")) labels.push("Open externally");
+  return labels.length > 0 ? labels : ["Not available"];
 }
 
 function DocumentPreview({ projectId, document, worktrees, worktreeId, onWorktreeChange, onUseTemplate, onSaveTemplate, onManage }: { projectId: string; document: ProjectDocumentEntry | null; worktrees: Array<{ id: string; name?: string; branchName?: string; branch?: string }>; worktreeId: string; onWorktreeChange: (id: string) => void; onUseTemplate: () => void; onSaveTemplate: () => void; onManage: (operation: "rename" | "move" | "copy" | "delete") => void }) {
@@ -233,11 +250,15 @@ function DocumentPreview({ projectId, document, worktrees, worktreeId, onWorktre
   const preview = useQuery({
     queryKey: ["office-document-preview", projectId, document?.path],
     queryFn: () => api.officecliPreview(projectId, document?.path ?? "", document?.worktreeId ?? undefined),
-    enabled: Boolean(projectId && document && !["pdf", "dxf", "dwg"].includes(document.type)),
+    enabled: Boolean(projectId && document && ["docx", "xlsx", "pptx"].includes(document.type)),
   });
   if (!document) return <section className="grid min-h-[24rem] place-items-center rounded-lg border border-dashed border-border bg-card text-sm text-muted-foreground">{t("documentsPreview.select")}</section>;
-  if (document.type === "pdf") return <section className="flex min-h-[24rem] min-w-0 flex-col overflow-hidden rounded-lg border border-border bg-card"><header className="flex items-center gap-2 border-b border-border px-3 py-2"><DocumentIcon type={document.type} /><div className="min-w-0"><p className="truncate text-sm font-medium">{document.name}</p><p className="truncate font-mono text-[10px] text-muted-foreground">{document.path}</p></div></header><PdfDocumentViewer projectId={projectId} path={document.path} worktreeId={document.worktreeId} /></section>;
-  if (document.type === "dxf" || document.type === "dwg") return <section className="flex min-h-[24rem] min-w-0 flex-col overflow-hidden rounded-lg border border-border bg-card"><header className="flex items-center gap-2 border-b border-border px-3 py-2"><DocumentIcon type={document.type} /><div className="min-w-0 flex-1"><p className="truncate text-sm font-medium">{document.name}</p><p className="truncate font-mono text-[10px] text-muted-foreground">{document.path}</p></div><span className="rounded bg-muted px-2 py-1 text-xs text-muted-foreground">{t("documentsPreview.cadReadonly")}</span></header><CadDocumentViewer projectId={projectId} path={document.path} type={document.type} worktreeId={document.worktreeId} /></section>;
+  if (document.type === "md" || document.type === "mdx") return <MarkdownAssetPreview projectId={projectId} document={document} />;
+  if (["png", "jpg", "jpeg", "gif", "webp", "avif", "svg"].includes(document.type)) return <ImageAssetPreview projectId={projectId} document={document} />;
+  if (["mp4", "webm", "mov"].includes(document.type)) return <VideoAssetPreview projectId={projectId} document={document} />;
+  if (["canvas", "excalidraw"].includes(document.type)) return <AssetPreviewNotice projectId={projectId} document={document} message="Open Canvas to preview or edit this governed scene." />;
+  if (document.type === "pdf") return <section className="flex min-h-[24rem] min-w-0 flex-col overflow-hidden rounded-lg border border-border bg-card"><header className="flex items-center gap-2 border-b border-border px-3 py-2"><DocumentIcon type={document.type} /><div className="min-w-0 flex-1"><p className="truncate text-sm font-medium">{document.name}</p><p className="truncate font-mono text-[10px] text-muted-foreground">{document.path}</p></div><ExternalAssetOpenButton projectId={projectId} document={document} /></header><PdfDocumentViewer projectId={projectId} path={document.path} worktreeId={document.worktreeId} /></section>;
+  if (document.type === "dxf" || document.type === "dwg") return <section className="flex min-h-[24rem] min-w-0 flex-col overflow-hidden rounded-lg border border-border bg-card"><header className="flex items-center gap-2 border-b border-border px-3 py-2"><DocumentIcon type={document.type} /><div className="min-w-0 flex-1"><p className="truncate text-sm font-medium">{document.name}</p><p className="truncate font-mono text-[10px] text-muted-foreground">{document.path}</p></div><span className="rounded bg-muted px-2 py-1 text-xs text-muted-foreground">{t("documentsPreview.cadReadonly")}</span><ExternalAssetOpenButton projectId={projectId} document={document} /></header><CadDocumentViewer projectId={projectId} path={document.path} type={document.type} worktreeId={document.worktreeId} /></section>;
   const openWorkspace = () => { setOfficecliPreviewPath(document.path); setSection("workspace"); };
   const openWorktree = () => {
     if (!worktreeId) return;
@@ -260,6 +281,112 @@ function DocumentPreview({ projectId, document, worktrees, worktreeId, onWorktre
         : preview.data ? <OfficeDocumentFrame title={document.path} content={preview.data.content} className="min-h-[32rem] flex-1" /> : null}
     </section>
   );
+}
+
+function MarkdownAssetPreview({ projectId, document }: { projectId: string; document: ProjectDocumentEntry }) {
+  const preview = useQuery({
+    queryKey: ["asset-preview", projectId, document.worktreeId, document.path],
+    queryFn: () => api.projectAssetPreview(projectId, document.path, document.worktreeId ?? undefined),
+  });
+  return <section className="min-h-[24rem] overflow-auto rounded-lg border border-border bg-card p-4">
+    <div className="mb-3 flex items-center justify-between gap-2"><h2 className="text-sm font-semibold">{document.name}</h2><ExternalAssetOpenButton projectId={projectId} document={document} /></div>
+    {preview.isLoading ? <p className="text-sm text-muted-foreground">Preparing preview…</p>
+      : preview.error ? <p role="alert" className="text-sm text-destructive">Preview is not available.</p>
+        : <MarkdownBlock text={preview.data?.text ?? ""} />}
+  </section>;
+}
+
+function ImageAssetPreview({ projectId, document }: { projectId: string; document: ProjectDocumentEntry }) {
+  const preview = useQuery({
+    queryKey: ["asset-preview-bytes", projectId, document.worktreeId, document.path],
+    queryFn: () => api.projectAssetPreviewBytes(projectId, document.path, document.worktreeId ?? undefined),
+    enabled: document.type !== "svg",
+  });
+  const [source, setSource] = useState<string | null>(null);
+  useEffect(() => {
+    if (!preview.data) { setSource(null); return; }
+    const url = URL.createObjectURL(new Blob([preview.data]));
+    setSource(url);
+    return () => URL.revokeObjectURL(url);
+  }, [preview.data]);
+  if (document.type === "svg") return <AssetPreviewNotice projectId={projectId} document={document} message="Preview is disabled because SVG can contain active content. Open externally if you trust this file." />;
+  return <section className="flex min-h-[24rem] flex-col overflow-auto rounded-lg border border-border bg-card p-4">
+    <div className="mb-3 flex justify-end"><ExternalAssetOpenButton projectId={projectId} document={document} /></div>
+    <div className="grid flex-1 place-items-center">
+    {preview.isLoading ? <p className="text-sm text-muted-foreground">Preparing preview…</p>
+      : preview.error ? <p role="alert" className="text-sm text-destructive">Preview is not available.</p>
+        : source ? <img src={source} alt={document.name} className="max-h-full max-w-full object-contain" /> : null}
+    </div>
+  </section>;
+}
+
+function VideoAssetPreview({ projectId, document }: { projectId: string; document: ProjectDocumentEntry }) {
+  const [source, setSource] = useState<string | null>(null);
+  const [error, setError] = useState(false);
+  useEffect(() => {
+    const mime = document.type === "webm" ? "video/webm" : document.type === "mp4" ? "video/mp4" : "video/quicktime";
+    if (typeof MediaSource === "undefined" || !MediaSource.isTypeSupported(mime)) { setError(true); return; }
+    const mediaSource = new MediaSource();
+    const url = URL.createObjectURL(mediaSource);
+    let cancelled = false;
+    setSource(url);
+    setError(false);
+    const open = () => {
+      const buffer = mediaSource.addSourceBuffer(mime);
+      const chunkBytes = 4 * 1024 * 1024;
+      let offset = 0;
+      let total = Number.POSITIVE_INFINITY;
+      const appendNext = async () => {
+        if (cancelled || offset >= total) {
+          if (!cancelled && mediaSource.readyState === "open") mediaSource.endOfStream();
+          return;
+        }
+        try {
+          const result = await api.projectAssetVideoRange(projectId, document.path, offset, offset + chunkBytes, document.worktreeId ?? undefined);
+          if (cancelled) return;
+          total = result.total;
+          offset += result.data.byteLength;
+          buffer.appendBuffer(new Uint8Array(result.data));
+        } catch {
+          if (!cancelled) setError(true);
+          if (mediaSource.readyState === "open") mediaSource.endOfStream("network");
+        }
+      };
+      buffer.addEventListener("updateend", () => void appendNext());
+      void appendNext();
+    };
+    mediaSource.addEventListener("sourceopen", open, { once: true });
+    return () => {
+      cancelled = true;
+      URL.revokeObjectURL(url);
+    };
+  }, [projectId, document.path, document.type, document.worktreeId]);
+  if (error) return <AssetPreviewNotice projectId={projectId} document={document} message="Playback is not available in this browser. Open externally on the owning computer." />;
+  return <section className="flex min-h-[24rem] flex-col rounded-lg border border-border bg-card p-4">
+    <div className="mb-3 flex justify-end"><ExternalAssetOpenButton projectId={projectId} document={document} /></div>
+    <div className="grid flex-1 place-items-center">{source ? <video controls preload="metadata" src={source} className="max-h-full max-w-full" aria-label={`Video preview: ${document.name}`} /> : <p className="text-sm text-muted-foreground">Preparing playback…</p>}</div>
+  </section>;
+}
+
+function AssetPreviewNotice({ projectId, document, message }: { projectId?: string; document: ProjectDocumentEntry; message: string }) {
+  return <section className="grid min-h-[24rem] place-items-center rounded-lg border border-border bg-card p-6 text-center">
+    <div><p className="font-medium">{document.name}</p><p className="mt-2 max-w-md text-sm text-muted-foreground">{message}</p>{projectId ? <div className="mt-4"><ExternalAssetOpenButton projectId={projectId} document={document} /></div> : null}</div>
+  </section>;
+}
+
+function ExternalAssetOpenButton({ projectId, document }: { projectId: string; document: ProjectDocumentEntry }) {
+  const [error, setError] = useState(false);
+  const bridge = window.myagenttoolDesktop?.openContainedAsset;
+  if (!bridge || !document.capabilities?.includes("open_external")) return null;
+  const open = async () => {
+    setError(false);
+    try {
+      await bridge({ projectId, relativePath: document.path, ...(document.worktreeId ? { worktreeId: document.worktreeId } : {}) });
+    } catch {
+      setError(true);
+    }
+  };
+  return <div><Button type="button" size="sm" variant="secondary" onClick={() => void open()}><FolderOpen /> Open externally</Button>{error ? <p role="alert" className="mt-1 text-xs text-destructive">The system application could not open this asset.</p> : null}</div>;
 }
 
 type Translate = ReturnType<typeof useAppTranslation>["t"];

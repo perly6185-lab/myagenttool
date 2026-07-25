@@ -19,7 +19,9 @@ import {
 } from "@myagenttool/protocol/channel";
 import { detectPromptInjection } from "@myagenttool/protocol/issue-prompt";
 import { LOCAL_TEAM_ID } from "../runtime/auth.mjs";
+import { listDevices } from "../runtime/device.mjs";
 import { makeRunTx } from "../runtime/store/run-tx.mjs";
+import { normalizeChannelAttachmentAssets } from "./channel-task-context.mjs";
 
 export const CHANNEL_ENABLE_ACTION = "channel.enable";
 export const CHANNEL_ALLOWLIST_ACTION = "channel.allowlist";
@@ -411,7 +413,7 @@ export function createChannelService({
   // Bind (or clear, projectId=null) the project that /task files GitHub issues
   // into. Owner-scoped + approval-gated like the allowlist; the bound project
   // must belong to the channel's owning team (no cross-team task filing).
-  function setChannelTaskProject({ channelId, projectId, autoRoute, dailyLimit, approvalToken } = {}, actor = null) {
+  function setChannelTaskProject({ channelId, projectId, terminalId = null, autoRoute, dailyLimit, approvalToken } = {}, actor = null) {
     const channel = findOwnChannel(channelId, actor);
     if (!channel) return notFound();
     const target = projectId == null ? null : (state.projects ?? []).find((p) => p.id === String(projectId));
@@ -420,6 +422,18 @@ export function createChannelService({
     }
     if (target && (target.ownerTeamId ?? LOCAL_TEAM_ID) !== (channel.ownerTeamId ?? LOCAL_TEAM_ID)) {
       return { ok: false, status: 403, body: { error: "project_foreign_team" } };
+    }
+    const devices = listDevices(state);
+    const requestedTerminalId = terminalId == null ? null : String(terminalId);
+    const terminal = target
+      ? requestedTerminalId
+        ? devices.find((candidate) => candidate.id === requestedTerminalId)
+        : devices.length <= 1
+          ? devices[0] ?? { id: "dev_local" }
+          : null
+      : null;
+    if (target && !terminal) {
+      return { ok: false, status: 400, body: { error: requestedTerminalId ? "terminal_not_found" : "terminal_binding_required" } };
     }
     const approval = typeof validateApprovalToken === "function"
       ? validateApprovalToken(approvalToken, { action: CHANNEL_TASK_PROJECT_ACTION, targetId: channel.id, actor })
@@ -440,6 +454,7 @@ export function createChannelService({
     }
     runTx(() => {
       channel.taskProjectId = target ? target.id : null;
+      channel.taskTerminalId = terminal?.id ?? null;
       if (autoRoute != null) channel.taskAutoRoute = Boolean(autoRoute);
       if (dailyLimit != null) {
         const n = Number(dailyLimit);
@@ -451,7 +466,7 @@ export function createChannelService({
         type: "channel_task_project_set",
         level: "info",
         message: `Channel ${channel.id}: task project ${target ? `bound to ${target.id}` : "cleared"}${autoRoute != null ? `, auto-route ${channel.taskAutoRoute ? "on" : "off"}` : ""}.`,
-        data: { channelId: channel.id, projectId: target?.id ?? null, autoRoute: channel.taskAutoRoute },
+        data: { channelId: channel.id, projectId: target?.id ?? null, terminalId: channel.taskTerminalId, autoRoute: channel.taskAutoRoute },
       });
     });
     return { ok: true, status: 200, body: { channel: publicChannel(channel) } };
@@ -510,6 +525,7 @@ export function createChannelService({
     content = "",
     providerCreateTime = null,
     agentId = null,
+    attachmentAssets = [],
     // Optional per-provider reply target (#1135): providers whose reply address
     // differs from the sender identity (Teams: {serviceUrl, conversationId})
     // pass this; it is stored on the conversation and used by delivery. Other
@@ -550,6 +566,15 @@ export function createChannelService({
     if (duplicate) {
       return { ok: true, duplicate: true, eventId: duplicate.id, conversationId: duplicate.conversationId };
     }
+    let normalizedAttachments;
+    try {
+      normalizedAttachments = normalizeChannelAttachmentAssets(attachmentAssets, {
+        terminalId: channel.taskTerminalId,
+        projectId: channel.taskProjectId,
+      });
+    } catch (error) {
+      return { ok: false, refused: true, reason: error?.code ?? "invalid_channel_attachment" };
+    }
 
     // Preserved, not scrubbed (ADR 0011 rule 3): injection markers flag the
     // event for a human; the verbatim text stays data.
@@ -588,6 +613,7 @@ export function createChannelService({
         content: String(content ?? "").slice(0, MAX_EVENT_CONTENT_CHARS),
         providerCreateTime: providerCreateTime ? String(providerCreateTime) : null,
         agentId: agentId ? String(agentId) : null,
+        attachmentAssets: normalizedAttachments,
         status: "imported",
         injectionSuspicious: injection.suspicious,
         receivedAt: now(),

@@ -62,6 +62,8 @@ export function createHttpServer({
   fetchWorkItemGithubIssue,
   pushWorkItemGithubIssue,
   recordWorkItemVerification,
+  recordWorkItemAssetOperation,
+  startWorkItemApplicationExecution,
   ingestGithubWorkItemWebhook,
   replayGithubWorkItemWebhook,
   recordGithubWorkItemWebhookFailure,
@@ -228,6 +230,7 @@ export function createHttpServer({
   createCapabilityInvocation,
   getCapability,
   listCapabilities,
+  resolveCapability,
   createMailIssueFromImport,
   replyOnIssue,
   confirmReplyDraft,
@@ -468,6 +471,8 @@ export function createHttpServer({
         fetchGithubIssue: fetchWorkItemGithubIssue,
         pushGithubIssue: pushWorkItemGithubIssue,
         recordVerification: recordWorkItemVerification,
+        recordAssetOperation: recordWorkItemAssetOperation,
+        startApplicationExecution: startWorkItemApplicationExecution,
         ingestGithubWebhook: ingestGithubWorkItemWebhook,
         replayGithubWebhook: replayGithubWorkItemWebhook,
         recordGithubWebhookFailure: recordGithubWorkItemWebhookFailure,
@@ -738,6 +743,7 @@ export function createHttpServer({
         listCapabilities,
         getCapability,
         createCapabilityInvocation,
+        resolveCapability,
       })) {
         return;
       }

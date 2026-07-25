@@ -1,5 +1,6 @@
 import { teamOf } from "../runtime/auth.mjs";
 import { codingAgentInterfaceForTool, normalizeCapabilityInvocationResult } from "./coding-agent-interface.mjs";
+import { resolveLocalApplicationCapability } from "./application-resolver.mjs";
 
 export function createCapabilityService({
   state,
@@ -27,7 +28,9 @@ export function createCapabilityService({
             name: application.name,
             status: application.status,
             projectId: application.projectId,
+            terminalId: application.terminalId ?? application.deviceId ?? (state.devices ?? [])[0]?.id ?? null,
           },
+          terminalId: application.terminalId ?? application.deviceId ?? (state.devices ?? [])[0]?.id ?? null,
         })),
       ),
     ];
@@ -73,6 +76,40 @@ export function createCapabilityService({
 
   function getCapability(name, actor = null) {
     return listCapabilities(actor).find((capability) => capability.name === name) ?? null;
+  }
+
+  function resolveCapability(input = {}, actor = null) {
+    const startedAt = performance.now();
+    const terminalId = String(input?.terminalId ?? "");
+    const terminal = (state.devices ?? []).find((candidate) => candidate.id === terminalId);
+    if (!terminal) {
+      return recordResolutionMetric({ state: "refusal", reason: "terminal_not_found", terminalId: terminalId || null, capability: null }, startedAt);
+    }
+    const availableResourceClasses = Array.isArray(terminal.assetResourceClasses)
+      ? terminal.assetResourceClasses
+      : ["small", "medium"];
+    return recordResolutionMetric(resolveLocalApplicationCapability({
+      intent: input?.intent,
+      assetVerb: input?.assetVerb,
+      terminalId,
+      resourceClass: input?.resourceClass,
+      assetFamily: input?.assetFamily,
+      availableResourceClasses,
+      capabilities: listCapabilities(actor),
+    }), startedAt);
+  }
+
+  function recordResolutionMetric(resolution, startedAt) {
+    const metric = {
+      at: new Date().toISOString(),
+      durationMs: Math.max(0, Math.round((performance.now() - startedAt) * 100) / 100),
+      state: resolution.state,
+      reason: resolution.reason,
+      terminalId: resolution.terminalId,
+      applicationId: resolution.capability?.applicationId ?? null,
+    };
+    state.applicationResolutionTelemetry = [...(state.applicationResolutionTelemetry ?? []), metric].slice(-500);
+    return { ...resolution, telemetry: { durationMs: metric.durationMs } };
   }
 
   function createCapabilityInvocation(name, input = {}, actor = null) {
@@ -389,6 +426,7 @@ export function createCapabilityService({
     createCapabilityInvocation,
     getCapability,
     listCapabilities,
+    resolveCapability,
   };
 }
 
