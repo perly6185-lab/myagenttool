@@ -292,6 +292,7 @@ export function AutoRunConfigCard() {
             <Settings2 className="size-4" /> {t("autoRunConfig.title")}
           </span>
           <span className="flex items-center gap-1.5 text-xs font-normal text-muted-foreground">
+            <Badge tone={canManage ? "success" : "neutral"}>{sessionRole}</Badge>
             {config.autoTrigger.enabled ? <Badge tone="success">{t("autoRunConfig.autoTriggerOn")}</Badge> : <Badge tone="neutral">{t("autoRunConfig.autoTriggerOff")}</Badge>}
             {config.statusWriteback ? <Badge tone="running">{t("autoRunConfig.statusWriteback")}</Badge> : null}
           </span>

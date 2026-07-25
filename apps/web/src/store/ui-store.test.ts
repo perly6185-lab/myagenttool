@@ -82,6 +82,26 @@ describe("nav group collapse (#928)", () => {
 });
 
 describe("URL navigation helpers", () => {
+  it("round-trips a task detail and its task-first section", () => {
+    expect(navigationFromSearch("?section=task&task=wi_42&taskView=trace")).toMatchObject({
+      section: "task",
+      selectedWorkItemId: "wi_42",
+      selectedWorkItemSection: "trace",
+    });
+    const search = searchFromNavigationState("", {
+      section: "task",
+      selectedInvocationId: null,
+      selectedApplicationId: null,
+      selectedApplicationRun: null,
+      selectedEvidenceId: null,
+      selectedAutomationId: null,
+      selectedWorkItemId: "wi_42",
+      selectedWorkItemSection: "verification",
+    });
+    expect(new URLSearchParams(search).get("task")).toBe("wi_42");
+    expect(new URLSearchParams(search).get("taskView")).toBe("verification");
+  });
+
   it("parses valid navigation params and ignores unknown sections", () => {
     expect(navigationFromSearch("?section=applications&application=app_1&routine=routine_1&run=inv_1&evidence=ev_1")).toEqual({
       section: "applications",

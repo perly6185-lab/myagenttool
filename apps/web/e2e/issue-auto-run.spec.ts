@@ -14,7 +14,14 @@ async function mockApi(page: Page) {
       projects: [project],
       projectTargets: [],
       worktrees: autoRunStarted ? [{ id: "wt_1", projectId: project.id, branchName: "ai/e2e-route", path: "/tmp/e2e" }] : [],
-      invocations: [],
+      invocations: workItem ? [{
+        id: "inv_1",
+        status: "queued",
+        input: { task: "Explain local wait" },
+        agentId: "agt_1",
+        projectId: project.id,
+        createdAt: "2026-07-24T00:01:00.000Z",
+      }] : [],
       issueClaims: [],
       issueClaimEvents: [],
       agents: [{ id: "agt_1", name: "Codex", status: "ready" }],
@@ -62,13 +69,35 @@ async function mockApi(page: Page) {
       return route.fulfill({ json: { workItem, observability: {
         nextAction: "start_execution",
         attention: [],
-        latestRun: null,
+        latestRun: {
+          id: "aur_trace", status: "queued", updatedAt: "2026-07-24T00:01:00.000Z",
+          invocationId: "inv_1", agentId: "agt_1",
+        },
         activeClaim: null,
         cost: { knownUsd: 0, unknownEntries: 0, entryCount: 0, projectBudget: null, teamBudget: null },
         alerts: { queued: 0, failed: 0, sent: 0, skipped: 0, items: [] },
-        timeline: [],
+        timeline: [{
+          id: "evt_1",
+          at: "2026-07-24T00:01:00.000Z",
+          source: "issue",
+          type: "queued",
+          stage: "queue",
+          actorId: "usr_local",
+          message: "Waiting for local capacity",
+          data: {
+            principalId: "usr_local",
+            deviceId: "dev_local",
+            effectiveAuthority: "operator",
+            waitingReason: "Another local task is finishing",
+          },
+        }],
         estimate: null,
-        routingExplanation: null,
+        routingExplanation: {
+          selectedPath: "develop", via: "policy", confidence: 0.92,
+          rationale: "This task requests a repository change.",
+          humanCorrection: null,
+          candidates: [{ path: "develop", selected: true, score: 0.92, reason: "Repository change" }],
+        },
       } } });
     }
     if (url.pathname.endsWith("/comments")) return route.fulfill({ json: { comments: [] } });
@@ -114,4 +143,38 @@ test("creates an issue, routes AI execution, and reaches a pull request", async 
   await expect(page.getByText("PR open", { exact: true }).first()).toBeVisible();
   await expect(page.getByText("codex", { exact: true }).first()).toBeVisible();
   await expect(page.getByRole("link", { name: "Open on GitHub" })).toHaveAttribute("href", "https://github.test/pull/77");
+});
+
+test("restores a task-first Trace after visiting scheduling Settings", async ({ page }) => {
+  workItem = {
+    id: "lwi_1", localRef: "LOCAL-1", projectId: project.id,
+    title: "Explain local wait", body: "", type: "task", priority: "p1",
+    status: "ready", state: "open", labels: [], assigneeIds: [],
+    acceptanceCriteria: [], verificationRecords: [], revision: 1, archivedAt: null,
+    updatedAt: "2026-07-24T00:00:00.000Z",
+  };
+  await page.goto("/?section=task&task=lwi_1&taskView=trace");
+  const detail = page.getByRole("dialog", { name: "Local issue details" });
+  await expect(detail).toBeVisible();
+  await expect(detail.getByRole("button", { name: "Trace", exact: true })).toHaveAttribute("aria-current", "page");
+  await expect(detail.getByText("usr_local")).toBeVisible();
+  await expect(detail.getByText("dev_local")).toBeVisible();
+  await expect(detail.getByText("Queued", { exact: true })).toBeVisible();
+  const summary = detail.getByRole("region", { name: "Task chain summary" });
+  await expect(summary.getByText("Another local task is finishing", { exact: true })).toBeVisible();
+  await expect(summary.getByText("0 retries", { exact: true })).toBeVisible();
+
+  await detail.getByRole("button", { name: "Invocations" }).click();
+  await expect(page).toHaveURL(/section=invocations.*invocation=inv_1/);
+  await expect(page.getByRole("heading", { name: "Invocations" })).toBeVisible();
+  await page.getByRole("button", { name: "Return to Tasks" }).click();
+  await expect(page).toHaveURL(/section=task.*task=lwi_1.*taskView=trace/);
+  await expect(page.getByRole("dialog", { name: "Local issue details" })).toBeVisible();
+
+  await detail.getByRole("button", { name: "Scheduling settings" }).click();
+  await expect(page).toHaveURL(/section=automation/);
+  await page.getByRole("button", { name: "Return to Tasks" }).click();
+
+  await expect(page).toHaveURL(/section=task.*task=lwi_1.*taskView=trace/);
+  await expect(page.getByRole("dialog", { name: "Local issue details" })).toBeVisible();
 });

@@ -58,6 +58,7 @@ export interface PendingLocalDocumentRegistration {
 }
 
 export type PlanningProjectView = "list" | "board" | "roadmap" | "insights" | "executions";
+export type WorkItemSection = "overview" | "process" | "assets" | "verification" | "trace";
 export interface PlanningProjectFilters {
   status: string;
   priority: string;
@@ -79,6 +80,8 @@ interface UiState {
   selectedInvocationId: string | null;
   selectedArtifactId: string | null;
   selectedProjectId: string | null;
+  selectedWorkItemId: string | null;
+  selectedWorkItemSection: WorkItemSection;
   selectedPlanningProjectId: string | null;
   planningProjectView: PlanningProjectView;
   planningProjectFilters: PlanningProjectFilters;
@@ -112,6 +115,8 @@ interface UiState {
   setSelectedInvocationId: (id: string | null) => void;
   setSelectedArtifactId: (id: string | null) => void;
   setSelectedProjectId: (id: string | null) => void;
+  setSelectedWorkItemId: (id: string | null) => void;
+  setSelectedWorkItemSection: (section: WorkItemSection) => void;
   setSelectedPlanningProjectId: (id: string | null) => void;
   setPlanningProjectView: (view: PlanningProjectView) => void;
   setPlanningProjectFilters: (filters: PlanningProjectFilters) => void;
@@ -178,6 +183,8 @@ export interface UrlNavigationState {
   /** The schedule the operator is looking at — survives a deep link and a refresh (#849). */
   selectedAutomationId?: string | null;
   selectedPlanningProjectId?: string | null;
+  selectedWorkItemId?: string | null;
+  selectedWorkItemSection?: WorkItemSection;
   planningProjectView?: PlanningProjectView;
   planningProjectFilters?: PlanningProjectFilters;
 }
@@ -185,6 +192,7 @@ export interface UrlNavigationState {
 const NAVIGATION_SEARCH_KEYS = [
   "section", "invocation", "application", "routine", "run", "evidence", "automation",
   "planningProject", "planningView", "planningStatus", "planningPriority", "planningMilestone", "planningDue",
+  "task", "taskView",
 ] as const;
 
 function stringParam(params: URLSearchParams, key: string): string | null {
@@ -211,6 +219,8 @@ export function navigationFromSearch(search: string): UrlNavigationState {
   const planningProjectId = stringParam(params, "planningProject");
   const planningViewParam = stringParam(params, "planningView");
   const planningDueParam = stringParam(params, "planningDue");
+  const workItemId = stringParam(params, "task");
+  const workItemSectionParam = stringParam(params, "taskView");
   const navigation: UrlNavigationState = {};
   if (section) navigation.section = section;
   navigation.selectedInvocationId = invocationId;
@@ -220,6 +230,12 @@ export function navigationFromSearch(search: string): UrlNavigationState {
     : null;
   navigation.selectedEvidenceId = evidenceId;
   navigation.selectedAutomationId = automationId;
+  if (section === "task" || params.has("task") || params.has("taskView")) {
+    navigation.selectedWorkItemId = workItemId;
+    navigation.selectedWorkItemSection = ["process", "assets", "verification", "trace"].includes(workItemSectionParam ?? "")
+      ? workItemSectionParam as WorkItemSection
+      : "overview";
+  }
   if (section === "planning" || NAVIGATION_SEARCH_KEYS.some((key) => key.startsWith("planning") && params.has(key))) {
     navigation.selectedPlanningProjectId = planningProjectId;
     navigation.planningProjectView = ["board", "roadmap", "insights", "executions"].includes(planningViewParam ?? "")
@@ -248,6 +264,8 @@ function applyUrlNavigation<T extends Partial<UiState>>(state: T, navigation: Ur
   if (navigation.selectedApplicationRun !== undefined) state.selectedApplicationRun = navigation.selectedApplicationRun;
   if (navigation.selectedEvidenceId !== undefined) state.selectedEvidenceId = navigation.selectedEvidenceId;
   if (navigation.selectedAutomationId !== undefined) state.selectedAutomationId = navigation.selectedAutomationId;
+  if (navigation.selectedWorkItemId !== undefined) state.selectedWorkItemId = navigation.selectedWorkItemId;
+  if (navigation.selectedWorkItemSection !== undefined) state.selectedWorkItemSection = navigation.selectedWorkItemSection;
   if (navigation.selectedPlanningProjectId !== undefined) state.selectedPlanningProjectId = navigation.selectedPlanningProjectId;
   if (navigation.planningProjectView !== undefined) state.planningProjectView = navigation.planningProjectView;
   if (navigation.planningProjectFilters !== undefined) state.planningProjectFilters = navigation.planningProjectFilters;
@@ -265,7 +283,13 @@ export function searchFromNavigationState(search: string, state: Pick<UiState,
   | "selectedApplicationRun"
   | "selectedEvidenceId"
   | "selectedAutomationId"
-> & Partial<Pick<UiState, "selectedPlanningProjectId" | "planningProjectView" | "planningProjectFilters">>): string {
+> & Partial<Pick<UiState,
+  "selectedPlanningProjectId"
+  | "planningProjectView"
+  | "planningProjectFilters"
+  | "selectedWorkItemId"
+  | "selectedWorkItemSection"
+>>): string {
   const params = new URLSearchParams(search);
   for (const key of NAVIGATION_SEARCH_KEYS) params.delete(key);
   params.set("section", state.section);
@@ -278,6 +302,11 @@ export function searchFromNavigationState(search: string, state: Pick<UiState,
   }
   if (state.selectedEvidenceId) params.set("evidence", state.selectedEvidenceId);
   if (state.selectedAutomationId) params.set("automation", state.selectedAutomationId);
+  if (state.section === "task" && state.selectedWorkItemId) {
+    params.set("task", state.selectedWorkItemId);
+    const workItemSection = state.selectedWorkItemSection ?? "overview";
+    if (workItemSection !== "overview") params.set("taskView", workItemSection);
+  }
   if (state.section === "planning") {
     if (state.selectedPlanningProjectId) params.set("planningProject", state.selectedPlanningProjectId);
     params.set("planningView", state.planningProjectView ?? "list");
@@ -308,6 +337,8 @@ export const useUiStore = create<UiState>()(
         selectedInvocationId: initialNavigation.selectedInvocationId ?? null,
         selectedArtifactId: null,
         selectedProjectId: null,
+        selectedWorkItemId: initialNavigation.selectedWorkItemId ?? null,
+        selectedWorkItemSection: initialNavigation.selectedWorkItemSection ?? "overview",
         selectedPlanningProjectId: initialNavigation.selectedPlanningProjectId ?? null,
         planningProjectView: initialNavigation.planningProjectView ?? "list",
         planningProjectFilters: initialNavigation.planningProjectFilters ?? { ...DEFAULT_PLANNING_PROJECT_FILTERS },
@@ -335,6 +366,11 @@ export const useUiStore = create<UiState>()(
         setSelectedInvocationId: (selectedInvocationId) => set({ selectedInvocationId }),
         setSelectedArtifactId: (selectedArtifactId) => set({ selectedArtifactId }),
         setSelectedProjectId: (selectedProjectId) => set({ selectedProjectId }),
+        setSelectedWorkItemId: (selectedWorkItemId) => set({
+          selectedWorkItemId,
+          selectedWorkItemSection: "overview",
+        }),
+        setSelectedWorkItemSection: (selectedWorkItemSection) => set({ selectedWorkItemSection }),
         setSelectedPlanningProjectId: (selectedPlanningProjectId) => set({ selectedPlanningProjectId }),
         setPlanningProjectView: (planningProjectView) => set({ planningProjectView }),
         setPlanningProjectFilters: (planningProjectFilters) => set({ planningProjectFilters }),
@@ -368,6 +404,8 @@ export const useUiStore = create<UiState>()(
         selectedInvocationId: state.selectedInvocationId,
         selectedArtifactId: state.selectedArtifactId,
         selectedProjectId: state.selectedProjectId,
+        selectedWorkItemId: state.selectedWorkItemId,
+        selectedWorkItemSection: state.selectedWorkItemSection,
         selectedPlanningProjectId: state.selectedPlanningProjectId,
         planningProjectView: state.planningProjectView,
         planningProjectFilters: state.planningProjectFilters,
@@ -408,6 +446,9 @@ export const useUiStore = create<UiState>()(
         if (!isSupportedLocale(saved.locale)) merged.locale = current.locale;
         if (!["list", "board", "roadmap", "insights", "executions"].includes(merged.planningProjectView)) {
           merged.planningProjectView = "list";
+        }
+        if (!["overview", "process", "assets", "verification", "trace"].includes(merged.selectedWorkItemSection)) {
+          merged.selectedWorkItemSection = "overview";
         }
         if (!merged.planningProjectFilters || typeof merged.planningProjectFilters !== "object") {
           merged.planningProjectFilters = { ...DEFAULT_PLANNING_PROJECT_FILTERS };
