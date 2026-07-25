@@ -1,0 +1,63 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import { mkdtempSync, mkdirSync, symlinkSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import {
+  assetCapabilityMatrix, classifyAsset, describeProjectAsset,
+  evaluateAssetRequirements, resolveAssetCapabilities,
+} from "../src/services/asset-capabilities.mjs";
+
+test("publishes explicit support without promising CAD, image, or video editing", () => {
+  const matrix = assetCapabilityMatrix();
+  for (const family of ["canvas", "word", "excel", "powerpoint", "markdown", "cad_dxf", "cad_dwg", "image", "video", "unknown"]) {
+    assert.ok(matrix[family]);
+  }
+  assert.equal(matrix.cad_dxf.capabilities.includes("edit"), false);
+  assert.equal(matrix.cad_dwg.capabilities.includes("edit"), false);
+  assert.equal(matrix.video.capabilities.includes("transform"), false);
+  assert.equal(matrix.image.capabilities.includes("edit"), false);
+  assert.equal(matrix.word.mutationGovernance, "approval_and_audit");
+});
+
+test("classifies representative formats and gates DWG on its local runtime", () => {
+  assert.equal(classifyAsset("deck.PPTX").family, "powerpoint");
+  assert.equal(classifyAsset("clip.mp4").family, "video");
+  assert.equal(classifyAsset("thing.bin").family, "unknown");
+  assert.deepEqual(resolveAssetCapabilities("drawing.dwg").readiness, {
+    state: "waiting_capability", reason: "dwg_preview_runtime_required",
+  });
+  assert.equal(resolveAssetCapabilities("drawing.dwg", { runtimeReadiness: { cad_dwg: true } }).readiness.state, "ready");
+});
+
+test("describes only confined project-relative files with bounded preview policy", () => {
+  const root = mkdtempSync(join(tmpdir(), "asset-capability-"));
+  mkdirSync(join(root, "docs"));
+  writeFileSync(join(root, "docs", "notes.md"), "# Notes");
+  const descriptor = describeProjectAsset({
+    projectId: "project-1", projectRoot: root, relativePath: "docs/notes.md", terminalId: "terminal-1",
+  });
+  assert.equal(descriptor.path, "docs/notes.md");
+  assert.equal(descriptor.terminalId, "terminal-1");
+  assert.match(descriptor.hash, /^sha256:/);
+  assert.equal(descriptor.preview.remoteResources, false);
+  assert.equal(descriptor.preview.sandboxed, true);
+  assert.throws(() => describeProjectAsset({
+    projectId: "project-1", projectRoot: root, relativePath: "../outside.md", terminalId: "terminal-1",
+  }));
+  const outside = mkdtempSync(join(tmpdir(), "asset-outside-"));
+  writeFileSync(join(outside, "secret.md"), "secret");
+  symlinkSync(join(outside, "secret.md"), join(root, "docs", "linked.md"));
+  assert.throws(() => describeProjectAsset({
+    projectId: "project-1", projectRoot: root, relativePath: "docs/linked.md", terminalId: "terminal-1",
+  }), /asset_path_outside_project/);
+});
+
+test("queue readiness stays on one terminal and waits for missing capabilities", () => {
+  const asset = { terminalId: "terminal-1", capabilities: ["preview"], readiness: { state: "ready" } };
+  assert.equal(evaluateAssetRequirements([asset], ["edit"], "terminal-1").state, "waiting_capability");
+  assert.equal(evaluateAssetRequirements([asset], ["preview"], "terminal-1").state, "ready");
+  assert.deepEqual(evaluateAssetRequirements([asset], ["preview"], "terminal-2"), {
+    state: "refused", reason: "asset_terminal_mismatch", terminalId: "terminal-2",
+  });
+});

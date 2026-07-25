@@ -21,6 +21,7 @@ import { summarizeEpicChildren } from "../services/auto-run-epic.mjs";
 import { resolveAutoRunVerifyCommandFor } from "../services/worktree-verify.mjs";
 import { PdfDocumentReadError, readProjectPdf } from "../services/pdf-document-read.mjs";
 import { CadPreviewError, inspectCadDocument, renderCadDocument } from "../services/cad-preview.mjs";
+import { assetCapabilityMatrix, describeProjectAsset } from "../services/asset-capabilities.mjs";
 
 const IMAGE_MIME = {
   ".png": "image/png",
@@ -701,6 +702,41 @@ export async function handleProjectRoutes({
     } catch (error) {
       sendJson(res, 400, { error: "project_documents_unavailable", message: error instanceof Error ? error.message : String(error) });
     }
+    return true;
+  }
+
+  const assetCapabilitiesMatch = url.pathname.match(/^\/api\/projects\/([^/]+)\/asset-capabilities$/);
+  if (assetCapabilitiesMatch && req.method === "GET") {
+    const project = state.projects.find((item) => item.id === decodeURIComponent(assetCapabilitiesMatch[1]));
+    if (!project) { sendJson(res, 404, { error: "project_not_found" }); return true; }
+    if (denyForeignProject({ res, sendJson, state, actor, projectId: project.id, notFound: { error: "project_not_found" } })) return true;
+    const worktreeId = url.searchParams.get("worktree");
+    const worktree = worktreeId ? (state.worktrees ?? []).find((item) => item.id === worktreeId && item.projectId === project.id) : null;
+    if (worktreeId && !worktree) { sendJson(res, 404, { error: "worktree_not_found" }); return true; }
+    try {
+      const root = worktree?.path ?? worktree?.worktreePath ?? project.path;
+      const descriptor = describeProjectAsset({
+        projectId: project.id,
+        projectRoot: root,
+        relativePath: url.searchParams.get("path") ?? "",
+        terminalId: actor?.deviceId ?? project.terminalId ?? state.devices?.[0]?.id ?? "local-terminal",
+        worktreeId: worktree?.id ?? null,
+      });
+      res.setHeader("Cache-Control", "private, no-store");
+      sendJson(res, 200, { descriptor, matrixVersion: 1 });
+    } catch (error) {
+      const code = error?.code ?? "asset_unavailable";
+      const status = code === "asset_path_outside_project" || code === "invalid_asset_path" ? 400 : code === "ENOENT" ? 404 : 400;
+      sendJson(res, status, { error: code, message: "This asset is not available inside the selected project." });
+    }
+    return true;
+  }
+
+  if (url.pathname === "/api/asset-capabilities" && req.method === "GET") {
+    sendJson(res, 200, { version: 1, verbs: [
+      "discover", "preview", "inspect", "create", "edit", "transform",
+      "render", "compare", "export", "open_external", "attach_evidence",
+    ], families: assetCapabilityMatrix() });
     return true;
   }
 

@@ -84,6 +84,40 @@ test("creates a local work item with server-owned identity and defaults", () => 
   });
 });
 
+test("links asset requirements to the owning terminal and exposes waiting capability", () => {
+  const { service } = harness();
+  const waiting = service.createWorkItem({
+    projectId: "prj_a",
+    title: "Update workbook",
+    inputAssets: [{
+      id: "asset-1", path: "reports/input.xlsx", family: "excel",
+      terminalId: "dev_local", capabilities: ["preview"],
+      readiness: { state: "ready", reason: "available_on_owning_terminal" },
+    }],
+    requiredCapabilities: ["edit"],
+  }, ACTOR_A);
+  assert.equal(waiting.status, 201);
+  assert.deepEqual(waiting.body.workItem.assetReadiness, {
+    state: "waiting_capability",
+    reason: "missing_local_capability:edit",
+    terminalId: "dev_local",
+  });
+  assert.equal(waiting.body.workItem.inputAssets[0].path, "reports/input.xlsx");
+
+  const foreign = service.createWorkItem({
+    projectId: "prj_a",
+    title: "Foreign asset",
+    inputAssets: [{
+      path: "reports/input.xlsx", terminalId: "dev_other",
+      capabilities: ["preview"], readiness: { state: "ready" },
+    }],
+    requiredCapabilities: ["preview"],
+  }, ACTOR_A);
+  assert.equal(foreign.status, 409);
+  assert.equal(foreign.body.error, "asset_terminal_mismatch");
+  assert.equal(foreign.body.terminalId, "dev_local");
+});
+
 test("backfills legacy work items and rejects terminal ownership changes", () => {
   const state = {
     devices: [{ id: "dev_local" }],

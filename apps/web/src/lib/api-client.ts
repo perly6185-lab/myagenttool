@@ -5,6 +5,7 @@
  */
 
 import type {
+  AssetDescriptor,
   ApplicationCapability,
   ApplicationInstallPlan,
   ApplicationInstallRun,
@@ -758,6 +759,11 @@ export const api = {
     const suffix = query.toString() ? `?${query}` : "";
     return request<ProjectDocumentsResponse>("GET", `/api/projects/${encodeURIComponent(id)}/documents${suffix}`);
   },
+  projectAssetDescriptor: (id: string, path: string, worktreeId?: string) =>
+    request<{ descriptor: AssetDescriptor; matrixVersion: number }>(
+      "GET",
+      `/api/projects/${encodeURIComponent(id)}/asset-capabilities?path=${encodeURIComponent(path)}${worktreeId ? `&worktree=${encodeURIComponent(worktreeId)}` : ""}`,
+    ),
   projectPdfData: (id: string, path: string, worktreeId?: string) =>
     requestBytes(`/api/projects/${encodeURIComponent(id)}/pdf-document?path=${encodeURIComponent(path)}${worktreeId ? `&worktree=${encodeURIComponent(worktreeId)}` : ""}`),
   projectPdfSource: async (id: string, path: string, worktreeId?: string) => {

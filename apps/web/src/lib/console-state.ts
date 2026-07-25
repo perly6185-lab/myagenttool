@@ -1697,6 +1697,9 @@ export interface ProjectDocumentEntry {
   path: string;
   type: "docx" | "xlsx" | "pptx" | "pdf" | "dxf" | "dwg";
   gitStatus: string;
+  assetFamily?: string;
+  capabilities?: string[];
+  readiness?: { state: "ready" | "waiting_capability"; reason: string };
 }
 
 export interface ProjectDocumentsResponse {
@@ -1705,6 +1708,30 @@ export interface ProjectDocumentsResponse {
   documents: ProjectDocumentEntry[];
   truncated: boolean;
   scanned: number;
+}
+
+export interface AssetDescriptor {
+  id: string;
+  projectId: string;
+  worktreeId?: string | null;
+  terminalId: string;
+  name: string;
+  path: string;
+  family: string;
+  mimeType: string;
+  size: number;
+  hash: string;
+  version: string;
+  capabilities: string[];
+  readiness: { state: "ready" | "waiting_capability"; reason: string };
+  sensitivity: string;
+  preview: {
+    available: boolean;
+    sandboxed: boolean;
+    remoteResources: boolean;
+    maxInlineBytes: number;
+    delivery: "bounded" | "range_stream";
+  };
 }
 
 export interface ApplicationRegisterRequest {

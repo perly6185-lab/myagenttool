@@ -6,6 +6,7 @@ import { promisify } from "node:util";
 
 import { DEFAULT_DEVICE_ID } from "../runtime/device.mjs";
 import { makeRunTx } from "../runtime/store/run-tx.mjs";
+import { resolveAssetCapabilities } from "./asset-capabilities.mjs";
 
 const execFileAsync = promisify(execFile);
 
@@ -1128,12 +1129,16 @@ export function readProjectDocuments(project, { type = "all", search = "", limit
       const documentType = extension.slice(1);
       if (requestedType !== "all" && requestedType !== documentType) continue;
       if (query && !entry.name.toLowerCase().includes(query) && !relPath.toLowerCase().includes(query)) continue;
+      const asset = resolveAssetCapabilities(relPath);
       documents.push({
         projectId: project.id,
         name: entry.name,
         path: relPath,
         type: documentType,
         gitStatus: statuses.get(relPath) ?? "clean",
+        assetFamily: asset.family,
+        capabilities: asset.capabilities,
+        readiness: asset.readiness,
       });
       if (documents.length >= maxResults) {
         truncated = pending.length > 0 || entries.indexOf(entry) < entries.length - 1;

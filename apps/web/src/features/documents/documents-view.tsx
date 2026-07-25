@@ -217,11 +217,20 @@ function DocumentList({ loading, error, rows, selected, onSelect }: { loading: b
     <li key={row.path}>
       <button type="button" onClick={() => onSelect(row)} className={cn("flex w-full items-start gap-2 px-3 py-2.5 text-left hover:bg-muted/60", selected?.path === row.path && "bg-muted")}>
         <DocumentIcon type={row.type} />
-        <span className="min-w-0 flex-1"><span className="block truncate text-sm font-medium">{row.name}</span><span className="block truncate font-mono text-[11px] text-muted-foreground">{row.path}</span></span>
+        <span className="min-w-0 flex-1"><span className="block truncate text-sm font-medium">{row.name}</span><span className="block truncate font-mono text-[11px] text-muted-foreground">{row.path}</span><span className="mt-1 flex flex-wrap gap-1" aria-label="Available actions">{assetActionLabels(row).map((label) => <span key={label} className="rounded bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">{label}</span>)}</span></span>
         {row.gitStatus !== "clean" ? <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">{row.gitStatus}</span> : null}
       </button>
     </li>
   ))}</ul>;
+}
+
+export function assetActionLabels(asset: Pick<ProjectDocumentEntry, "capabilities" | "readiness">): string[] {
+  if (asset.readiness?.state === "waiting_capability") return ["Not available"];
+  const labels = [];
+  if (asset.capabilities?.includes("preview")) labels.push("Preview");
+  if (asset.capabilities?.includes("edit")) labels.push("Edit");
+  if (asset.capabilities?.includes("open_external")) labels.push("Open externally");
+  return labels.length > 0 ? labels : ["Not available"];
 }
 
 function DocumentPreview({ projectId, document, worktrees, worktreeId, onWorktreeChange, onUseTemplate, onSaveTemplate, onManage }: { projectId: string; document: ProjectDocumentEntry | null; worktrees: Array<{ id: string; name?: string; branchName?: string; branch?: string }>; worktreeId: string; onWorktreeChange: (id: string) => void; onUseTemplate: () => void; onSaveTemplate: () => void; onManage: (operation: "rename" | "move" | "copy" | "delete") => void }) {

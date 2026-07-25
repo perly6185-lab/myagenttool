@@ -11,6 +11,7 @@ import { backfillTerminalOwnership } from "../runtime/terminal-ownership.mjs";
 import { makeRunTx } from "../runtime/store/run-tx.mjs";
 import { normalizedUpdatedSince, paginateRows } from "./cursor-pagination.mjs";
 import { externalIssueProviderReadiness } from "./external-issue-provider.mjs";
+import { ASSET_CAPABILITY_VERBS, evaluateAssetRequirements } from "./asset-capabilities.mjs";
 
 const TYPES = new Set(["task", "bug", "feature", "initiative"]);
 const STATUSES = new Set(["backlog", "ready", "in_progress", "review", "blocked", "done"]);
@@ -106,7 +107,50 @@ function validateDraft(input, { partial = false } = {}) {
     }
     value.estimatePoints = estimatePoints;
   }
+  if (!partial || Object.hasOwn(input, "inputAssets")) {
+    const assets = normalizeAssetRefs(input.inputAssets ?? []);
+    if (!assets) return { error: "invalid_work_item_input_assets" };
+    value.inputAssets = assets;
+  }
+  if (!partial || Object.hasOwn(input, "requiredCapabilities")) {
+    const capabilities = strings(input.requiredCapabilities ?? [], { limit: 20, maxLength: 40 });
+    if (!capabilities || capabilities.some((verb) => !ASSET_CAPABILITY_VERBS.includes(verb))) {
+      return { error: "invalid_work_item_required_capabilities" };
+    }
+    value.requiredCapabilities = capabilities;
+  }
+  if (!partial || Object.hasOwn(input, "outputAssets")) {
+    const assets = normalizeAssetRefs(input.outputAssets ?? []);
+    if (!assets) return { error: "invalid_work_item_output_assets" };
+    value.outputAssets = assets;
+  }
   return { value };
+}
+
+function normalizeAssetRefs(input) {
+  if (!Array.isArray(input) || input.length > 100) return null;
+  const assets = [];
+  for (const candidate of input) {
+    if (!candidate || typeof candidate !== "object") return null;
+    const path = String(candidate.path ?? "").replaceAll("\\", "/");
+    const terminalId = String(candidate.terminalId ?? "");
+    if (!path || path.startsWith("/") || path.split("/").includes("..") || path.length > 1_000 || !terminalId) return null;
+    const capabilities = strings(candidate.capabilities ?? [], { limit: 20, maxLength: 40 });
+    if (!capabilities || capabilities.some((verb) => !ASSET_CAPABILITY_VERBS.includes(verb))) return null;
+    assets.push({
+      id: String(candidate.id ?? "").slice(0, 100) || null,
+      path,
+      family: String(candidate.family ?? "unknown").slice(0, 40),
+      terminalId,
+      hash: candidate.hash ? String(candidate.hash).slice(0, 100) : null,
+      version: candidate.version ? String(candidate.version).slice(0, 100) : null,
+      capabilities,
+      readiness: candidate.readiness?.state === "ready"
+        ? { state: "ready", reason: String(candidate.readiness.reason ?? "available_on_owning_terminal").slice(0, 100) }
+        : { state: "waiting_capability", reason: String(candidate.readiness?.reason ?? "local_application_required").slice(0, 100) },
+    });
+  }
+  return assets;
 }
 
 export function createWorkItemService({
@@ -241,6 +285,11 @@ export function createWorkItemService({
     ).length;
     return {
       ...publicItem,
+      assetReadiness: evaluateAssetRequirements(
+        item.inputAssets ?? [],
+        item.requiredCapabilities ?? [],
+        item.terminalId,
+      ),
       externalBindings: (item.externalBindings ?? []).map((binding) => externalBindingView(binding)),
       businessState: item.state,
       planningStatus: item.status,
@@ -1404,6 +1453,14 @@ export function createWorkItemService({
       externalBindings: [],
       executionBindings: [],
     };
+    const assetReadiness = evaluateAssetRequirements(
+      workItem.inputAssets,
+      workItem.requiredCapabilities,
+      workItem.terminalId,
+    );
+    if (assetReadiness.state === "refused") {
+      return { ok: false, status: 409, body: { error: assetReadiness.reason, terminalId: workItem.terminalId } };
+    }
     runTx(() => {
       (state.workItems ??= []).unshift(workItem);
       recordActivity(workItem, actor, "created", {
@@ -1442,6 +1499,11 @@ export function createWorkItemService({
     }
     const validated = validateDraft(changes, { partial: true });
     if (validated.error) return { ok: false, status: 400, body: { error: validated.error } };
+    const nextInputAssets = validated.value.inputAssets ?? item.inputAssets ?? [];
+    const nextOutputAssets = validated.value.outputAssets ?? item.outputAssets ?? [];
+    if ([...nextInputAssets, ...nextOutputAssets].some((asset) => asset.terminalId !== item.terminalId)) {
+      return { ok: false, status: 409, body: { error: "asset_terminal_mismatch", terminalId: item.terminalId } };
+    }
     if (validated.value.status === "done") {
       const gate = completionGate(item);
       if (!gate.ready) return { ok: false, status: 409, body: { error: "work_item_acceptance_incomplete", ...gate } };
