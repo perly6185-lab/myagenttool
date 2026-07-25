@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { closeSync, openSync, readSync, realpathSync, statSync } from "node:fs";
 import { basename, extname, isAbsolute, relative, resolve, sep } from "node:path";
+import { localApplicationReadiness } from "./application-readiness.mjs";
 
 export const ASSET_CAPABILITY_VERBS = Object.freeze([
   "discover", "preview", "inspect", "create", "edit", "transform",
@@ -151,6 +152,23 @@ export function summarizeAssetForRemote(descriptor) {
     previewAvailable: Boolean(descriptor.preview?.available),
     owningTerminalDeepLink: `/?section=documents&project=${encodeURIComponent(descriptor.projectId)}&document=${encodeURIComponent(descriptor.path)}`,
     directOperationsAllowed: false,
+  };
+}
+
+export function deriveAssetRuntimeReadiness({ applications = [], devices = [] } = {}) {
+  const device = devices.find((candidate) => candidate.status === "online") ?? devices[0] ?? null;
+  const ready = (id) => {
+    const application = applications.find((candidate) => candidate.id === id);
+    return Boolean(application && localApplicationReadiness(application, device).state === "ready");
+  };
+  const officeReady = ready("app_officecli");
+  return {
+    canvas: ready("app_canvas"),
+    word: officeReady,
+    excel: officeReady,
+    powerpoint: officeReady,
+    markdown: ready("app_markdown"),
+    cad_dwg: false,
   };
 }
 

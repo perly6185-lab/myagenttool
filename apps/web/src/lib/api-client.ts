@@ -750,7 +750,7 @@ export const api = {
     const suffix = query.toString() ? `?${query}` : "";
     return request<ProjectTreeResponse>("GET", `/api/projects/${encodeURIComponent(id)}/tree${suffix}`);
   },
-  projectDocuments: (id: string, opts: { type?: "all" | "docx" | "xlsx" | "pptx" | "pdf" | "dxf" | "dwg" | "md" | "image" | "video"; search?: string; limit?: number; worktreeId?: string } = {}) => {
+  projectDocuments: (id: string, opts: { type?: "all" | "docx" | "xlsx" | "pptx" | "pdf" | "dxf" | "dwg" | "md" | "canvas" | "image" | "video"; search?: string; limit?: number; worktreeId?: string } = {}) => {
     const query = new URLSearchParams();
     if (opts.type && opts.type !== "all") query.set("type", opts.type);
     if (opts.search) query.set("q", opts.search);
@@ -771,6 +771,12 @@ export const api = {
     ),
   projectAssetPreviewBytes: (id: string, path: string, worktreeId?: string) =>
     requestBytes(`/api/projects/${encodeURIComponent(id)}/asset-preview?path=${encodeURIComponent(path)}${worktreeId ? `&worktree=${encodeURIComponent(worktreeId)}` : ""}`),
+  projectAssetVideoRange: (id: string, path: string, start: number, end: number, worktreeId?: string) =>
+    requestByteRange(
+      `/api/projects/${encodeURIComponent(id)}/asset-preview?path=${encodeURIComponent(path)}${worktreeId ? `&worktree=${encodeURIComponent(worktreeId)}` : ""}`,
+      start,
+      end,
+    ),
   projectPdfData: (id: string, path: string, worktreeId?: string) =>
     requestBytes(`/api/projects/${encodeURIComponent(id)}/pdf-document?path=${encodeURIComponent(path)}${worktreeId ? `&worktree=${encodeURIComponent(worktreeId)}` : ""}`),
   projectPdfSource: async (id: string, path: string, worktreeId?: string) => {

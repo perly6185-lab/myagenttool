@@ -7,6 +7,7 @@ import {
   assetCapabilityMatrix, classifyAsset, describeProjectAsset,
   evaluateAssetRequirements, resolveAssetCapabilities,
   summarizeAssetForRemote,
+  deriveAssetRuntimeReadiness,
 } from "../src/services/asset-capabilities.mjs";
 
 test("publishes explicit support without promising CAD, image, or video editing", () => {
@@ -74,4 +75,29 @@ test("remote summary is bounded and explicitly read-only", () => {
   assert.equal(summary.directOperationsAllowed, false);
   assert.equal(summary.hash, undefined);
   assert.match(summary.owningTerminalDeepLink, /section=documents/);
+});
+
+test("derives Office and Canvas readiness from Applications on the owning terminal", () => {
+  const ready = deriveAssetRuntimeReadiness({
+    applications: [
+      { id: "app_officecli", status: "active", runtimeRequirements: [] },
+      { id: "app_canvas", status: "active", runtimeRequirements: [] },
+    ],
+    devices: [{ id: "terminal-1", status: "online" }],
+  });
+  assert.equal(ready.word, true);
+  assert.equal(ready.excel, true);
+  assert.equal(ready.powerpoint, true);
+  assert.equal(ready.canvas, true);
+  assert.equal(ready.markdown, false);
+  assert.equal(ready.cad_dwg, false);
+
+  const absentRuntime = deriveAssetRuntimeReadiness({
+    applications: [{
+      id: "app_officecli", status: "active",
+      runtimeRequirements: [{ runtimeId: "officecli", required: true }],
+    }],
+    devices: [{ id: "terminal-1", status: "online", runtimeReadiness: [] }],
+  });
+  assert.equal(absentRuntime.word, false);
 });

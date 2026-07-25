@@ -20,7 +20,7 @@ import { CadDocumentViewer } from "@/features/documents/cad-document-viewer";
 import { useAppTranslation } from "@/lib/i18n/use-app-translation";
 
 type OfficeDocumentType = "docx" | "xlsx" | "pptx";
-type DocumentType = "all" | OfficeDocumentType | "pdf" | "dxf" | "dwg" | "md" | "image" | "video";
+type DocumentType = "all" | OfficeDocumentType | "pdf" | "dxf" | "dwg" | "md" | "canvas" | "image" | "video";
 const FILTERS: Array<{ value: DocumentType; label: string }> = [
   { value: "all", label: "All" },
   { value: "docx", label: "Word" },
@@ -30,6 +30,7 @@ const FILTERS: Array<{ value: DocumentType; label: string }> = [
   { value: "dxf", label: "DXF" },
   { value: "dwg", label: "DWG" },
   { value: "md", label: "Markdown" },
+  { value: "canvas", label: "Canvas" },
   { value: "image", label: "Images" },
   { value: "video", label: "Video" },
 ];
@@ -41,6 +42,7 @@ function DocumentIcon({ type }: { type: ProjectDocumentEntry["type"] }) {
   if (type === "dxf" || type === "dwg") return <DraftingCompass className="size-4 text-cyan-600" />;
   if (["png", "jpg", "jpeg", "gif", "webp", "avif", "svg"].includes(type)) return <FileImage className="size-4 text-violet-600" />;
   if (["mp4", "webm", "mov"].includes(type)) return <FileVideo className="size-4 text-rose-600" />;
+  if (["canvas", "excalidraw"].includes(type)) return <DraftingCompass className="size-4 text-indigo-600" />;
   return <FileText className="size-4 text-blue-600" />;
 }
 
@@ -253,7 +255,8 @@ function DocumentPreview({ projectId, document, worktrees, worktreeId, onWorktre
   if (!document) return <section className="grid min-h-[24rem] place-items-center rounded-lg border border-dashed border-border bg-card text-sm text-muted-foreground">{t("documentsPreview.select")}</section>;
   if (document.type === "md" || document.type === "mdx") return <MarkdownAssetPreview projectId={projectId} document={document} />;
   if (["png", "jpg", "jpeg", "gif", "webp", "avif", "svg"].includes(document.type)) return <ImageAssetPreview projectId={projectId} document={document} />;
-  if (["mp4", "webm", "mov"].includes(document.type)) return <AssetPreviewNotice document={document} message="Safe local playback is available on the owning computer. Open externally to play this video." />;
+  if (["mp4", "webm", "mov"].includes(document.type)) return <VideoAssetPreview projectId={projectId} document={document} />;
+  if (["canvas", "excalidraw"].includes(document.type)) return <AssetPreviewNotice document={document} message="Open Canvas to preview or edit this governed scene." />;
   if (document.type === "pdf") return <section className="flex min-h-[24rem] min-w-0 flex-col overflow-hidden rounded-lg border border-border bg-card"><header className="flex items-center gap-2 border-b border-border px-3 py-2"><DocumentIcon type={document.type} /><div className="min-w-0"><p className="truncate text-sm font-medium">{document.name}</p><p className="truncate font-mono text-[10px] text-muted-foreground">{document.path}</p></div></header><PdfDocumentViewer projectId={projectId} path={document.path} worktreeId={document.worktreeId} /></section>;
   if (document.type === "dxf" || document.type === "dwg") return <section className="flex min-h-[24rem] min-w-0 flex-col overflow-hidden rounded-lg border border-border bg-card"><header className="flex items-center gap-2 border-b border-border px-3 py-2"><DocumentIcon type={document.type} /><div className="min-w-0 flex-1"><p className="truncate text-sm font-medium">{document.name}</p><p className="truncate font-mono text-[10px] text-muted-foreground">{document.path}</p></div><span className="rounded bg-muted px-2 py-1 text-xs text-muted-foreground">{t("documentsPreview.cadReadonly")}</span></header><CadDocumentViewer projectId={projectId} path={document.path} type={document.type} worktreeId={document.worktreeId} /></section>;
   const openWorkspace = () => { setOfficecliPreviewPath(document.path); setSection("workspace"); };
@@ -311,6 +314,53 @@ function ImageAssetPreview({ projectId, document }: { projectId: string; documen
     {preview.isLoading ? <p className="text-sm text-muted-foreground">Preparing preview…</p>
       : preview.error ? <p role="alert" className="text-sm text-destructive">Preview is not available.</p>
         : source ? <img src={source} alt={document.name} className="max-h-full max-w-full object-contain" /> : null}
+  </section>;
+}
+
+function VideoAssetPreview({ projectId, document }: { projectId: string; document: ProjectDocumentEntry }) {
+  const [source, setSource] = useState<string | null>(null);
+  const [error, setError] = useState(false);
+  useEffect(() => {
+    const mime = document.type === "webm" ? "video/webm" : document.type === "mp4" ? "video/mp4" : "video/quicktime";
+    if (typeof MediaSource === "undefined" || !MediaSource.isTypeSupported(mime)) { setError(true); return; }
+    const mediaSource = new MediaSource();
+    const url = URL.createObjectURL(mediaSource);
+    let cancelled = false;
+    setSource(url);
+    setError(false);
+    const open = () => {
+      const buffer = mediaSource.addSourceBuffer(mime);
+      const chunkBytes = 4 * 1024 * 1024;
+      let offset = 0;
+      let total = Number.POSITIVE_INFINITY;
+      const appendNext = async () => {
+        if (cancelled || offset >= total) {
+          if (!cancelled && mediaSource.readyState === "open") mediaSource.endOfStream();
+          return;
+        }
+        try {
+          const result = await api.projectAssetVideoRange(projectId, document.path, offset, offset + chunkBytes, document.worktreeId ?? undefined);
+          if (cancelled) return;
+          total = result.total;
+          offset += result.data.byteLength;
+          buffer.appendBuffer(new Uint8Array(result.data));
+        } catch {
+          if (!cancelled) setError(true);
+          if (mediaSource.readyState === "open") mediaSource.endOfStream("network");
+        }
+      };
+      buffer.addEventListener("updateend", () => void appendNext());
+      void appendNext();
+    };
+    mediaSource.addEventListener("sourceopen", open, { once: true });
+    return () => {
+      cancelled = true;
+      URL.revokeObjectURL(url);
+    };
+  }, [projectId, document.path, document.type, document.worktreeId]);
+  if (error) return <AssetPreviewNotice document={document} message="Playback is not available in this browser. Open externally on the owning computer." />;
+  return <section className="grid min-h-[24rem] place-items-center rounded-lg border border-border bg-card p-4">
+    {source ? <video controls preload="metadata" src={source} className="max-h-full max-w-full" aria-label={`Video preview: ${document.name}`} /> : <p className="text-sm text-muted-foreground">Preparing playback…</p>}
   </section>;
 }
 

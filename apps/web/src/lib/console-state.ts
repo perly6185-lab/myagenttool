@@ -1695,7 +1695,7 @@ export interface ProjectDocumentEntry {
   worktreeId?: string | null;
   name: string;
   path: string;
-  type: "docx" | "xlsx" | "pptx" | "pdf" | "dxf" | "dwg" | "md" | "mdx" | "png" | "jpg" | "jpeg" | "gif" | "webp" | "avif" | "svg" | "mp4" | "webm" | "mov";
+  type: "docx" | "xlsx" | "pptx" | "pdf" | "dxf" | "dwg" | "md" | "mdx" | "png" | "jpg" | "jpeg" | "gif" | "webp" | "avif" | "svg" | "mp4" | "webm" | "mov" | "canvas" | "excalidraw";
   gitStatus: string;
   assetFamily?: string;
   capabilities?: string[];

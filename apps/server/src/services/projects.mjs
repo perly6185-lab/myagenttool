@@ -1077,8 +1077,9 @@ const DOCUMENT_EXTENSIONS = new Set([
   ".docx", ".xlsx", ".pptx", ".pdf", ".dxf", ".dwg",
   ".md", ".mdx", ".png", ".jpg", ".jpeg", ".gif", ".webp", ".avif", ".svg",
   ".mp4", ".webm", ".mov",
+  ".canvas", ".excalidraw",
 ]);
-const DOCUMENT_FILTERS = new Set(["all", ...[...DOCUMENT_EXTENSIONS].map((extension) => extension.slice(1)), "image", "video"]);
+const DOCUMENT_FILTERS = new Set(["all", ...[...DOCUMENT_EXTENSIONS].map((extension) => extension.slice(1)), "canvas", "image", "video"]);
 const DOCUMENT_SCAN_IGNORES = new Set([".git", "node_modules", "dist", "build", ".next", ".cache"]);
 
 /** Bounded, read-only local document discovery for the Documents surface. */

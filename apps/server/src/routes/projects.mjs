@@ -21,7 +21,7 @@ import { summarizeEpicChildren } from "../services/auto-run-epic.mjs";
 import { resolveAutoRunVerifyCommandFor } from "../services/worktree-verify.mjs";
 import { PdfDocumentReadError, readProjectPdf } from "../services/pdf-document-read.mjs";
 import { CadPreviewError, inspectCadDocument, renderCadDocument } from "../services/cad-preview.mjs";
-import { assetCapabilityMatrix, describeProjectAsset, summarizeAssetForRemote } from "../services/asset-capabilities.mjs";
+import { assetCapabilityMatrix, deriveAssetRuntimeReadiness, describeProjectAsset, summarizeAssetForRemote } from "../services/asset-capabilities.mjs";
 import { AssetPreviewError, readAssetPreview } from "../services/asset-preview.mjs";
 
 const IMAGE_MIME = {
@@ -698,7 +698,15 @@ export async function handleProjectRoutes({
       sendJson(res, 200, {
         ...result,
         worktreeId: worktree?.id ?? null,
-        documents: result.documents.map((document) => ({ ...document, worktreeId: worktree?.id ?? null })),
+        documents: result.documents.map((document) => {
+          const readiness = deriveAssetRuntimeReadiness(state)[document.assetFamily];
+          return {
+            ...document, worktreeId: worktree?.id ?? null,
+            readiness: readiness === undefined ? document.readiness
+              : readiness ? { state: "ready", reason: "available_on_owning_terminal" }
+                : { state: "waiting_capability", reason: "local_application_required" },
+          };
+        }),
       });
     } catch (error) {
       sendJson(res, 400, { error: "project_documents_unavailable", message: error instanceof Error ? error.message : String(error) });
@@ -722,6 +730,7 @@ export async function handleProjectRoutes({
         relativePath: url.searchParams.get("path") ?? "",
         terminalId: actor?.deviceId ?? project.terminalId ?? state.devices?.[0]?.id ?? "local-terminal",
         worktreeId: worktree?.id ?? null,
+        runtimeReadiness: deriveAssetRuntimeReadiness(state),
       });
       res.setHeader("Cache-Control", "private, no-store");
       sendJson(res, 200, { descriptor, remoteSummary: summarizeAssetForRemote(descriptor), matrixVersion: 1 });

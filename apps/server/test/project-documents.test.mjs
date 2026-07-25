@@ -18,6 +18,7 @@ function fixture() {
   writeFileSync(join(root, "docs", "notes.md"), "markdown");
   writeFileSync(join(root, "docs", "preview.png"), Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]));
   writeFileSync(join(root, "docs", "demo.mp4"), Buffer.concat([Buffer.alloc(4), Buffer.from("ftyp")]));
+  writeFileSync(join(root, "docs", "flow.excalidraw"), "{}");
   writeFileSync(join(root, "node_modules", "pkg", "hidden.docx"), "ignored");
   return root;
 }
@@ -28,6 +29,7 @@ test("readProjectDocuments recursively returns supported project assets", () => 
   assert.deepEqual(result.documents.map((item) => item.path), [
     "docs/budget.xlsx",
     "docs/demo.mp4",
+    "docs/flow.excalidraw",
     "docs/manual.pdf",
     "docs/model.dwg",
     "docs/nested/roadmap.pptx",
@@ -57,6 +59,7 @@ test("readProjectDocuments filters by type and path/name search", () => {
   assert.deepEqual(readProjectDocuments({ id: "prj_1", path: root }, { type: "md" }).documents.map((item) => item.name), ["notes.md"]);
   assert.deepEqual(readProjectDocuments({ id: "prj_1", path: root }, { type: "image" }).documents.map((item) => item.name), ["preview.png"]);
   assert.deepEqual(readProjectDocuments({ id: "prj_1", path: root }, { type: "video" }).documents.map((item) => item.name), ["demo.mp4"]);
+  assert.deepEqual(readProjectDocuments({ id: "prj_1", path: root }, { type: "canvas" }).documents.map((item) => item.name), ["flow.excalidraw"]);
   assert.throws(() => readProjectDocuments({ id: "prj_1", path: root }, { type: "txt" }), /Asset type/);
 });
 
