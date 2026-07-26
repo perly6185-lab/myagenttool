@@ -87,9 +87,7 @@ export function DashboardView({ surface = "overview" }: { surface?: DashboardSur
     if (targetWorktree?.agentId) setSelectedAgentId(targetWorktree.agentId);
   }, [targetWorktree?.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const [task, setTask] = useState<string>(
-    t("dashboard.defaultTask"),
-  );
+  const [task, setTask] = useState("");
 
   const { agents, agent } = resolveAgents(state, selectedAgentId);
   const invocation = resolveInvocation(state, selectedInvocationId);
@@ -215,7 +213,13 @@ export function DashboardView({ surface = "overview" }: { surface?: DashboardSur
               </button>
             </div>
           ) : null}
-          <Textarea rows={3} value={task} onChange={(e) => setTask(e.target.value)} aria-label={t("dashboard.task")} />
+          <Textarea
+            rows={3}
+            value={task}
+            onChange={(e) => setTask(e.target.value)}
+            aria-label={t("dashboard.task")}
+            placeholder={t("dashboard.taskPlaceholder")}
+          />
           {!invocation ? (
             <div className="flex flex-wrap items-center gap-2" aria-label={t("dashboard.firstTaskTemplates")}>
               <span className="text-xs text-muted-foreground">{t("dashboard.nextStep")}</span>
@@ -296,20 +300,21 @@ export function DashboardView({ surface = "overview" }: { surface?: DashboardSur
             cause: t("actionError.cause"), impact: t("actionError.impact"), remedy: t("actionError.remedy"), retry: t("actionError.retry"),
           }} /> : null}
 
+          <div className="grid grid-cols-2 gap-3 rounded-lg border border-border bg-muted/30 p-3 text-sm sm:grid-cols-4" aria-label={t("dashboard.preRunReview")}>
+            <ReviewItem label={t("dashboard.safety")} value={agent?.registrationNotes?.risk ?? t("dashboard.reviewAgent")} />
+            <ReviewItem label={t("dashboard.data")} value={agent?.registrationNotes?.data ?? t("dashboard.recorded")} />
+            <ReviewItem label={t("dashboard.cost")} value={agent?.registrationNotes?.cost ?? costText(agent?.economics)} />
+            <ReviewItem
+              label={t("dashboard.cancellation")}
+              value={agent?.registrationNotes?.cancellation ?? cancellationText(agent?.adapter)}
+            />
+          </div>
+
           <details className="group rounded-lg border border-border px-3 py-2">
             <summary className="cursor-pointer list-none text-sm font-medium text-muted-foreground">
               {t("dashboard.details")}
             </summary>
             <div className="space-y-3 pt-3">
-              <div className="grid grid-cols-2 gap-3 rounded-lg border border-border bg-muted/30 p-3 text-sm sm:grid-cols-4">
-                <ReviewItem label={t("dashboard.safety")} value={agent?.registrationNotes?.risk ?? t("dashboard.reviewAgent")} />
-                <ReviewItem label={t("dashboard.data")} value={agent?.registrationNotes?.data ?? t("dashboard.recorded")} />
-                <ReviewItem label={t("dashboard.cost")} value={agent?.registrationNotes?.cost ?? costText(agent?.economics)} />
-                <ReviewItem
-                  label={t("dashboard.cancellation")}
-                  value={agent?.registrationNotes?.cancellation ?? cancellationText(agent?.adapter)}
-                />
-              </div>
               <FactList
                 facts={[
                   { term: t("dashboard.computer"), value: state?.device ? `${state.device.name} — ${readableAgentStatus(state.device.status)}` : "—" },

@@ -129,7 +129,7 @@ afterEach(() => {
 describe("TaskView local work items", () => {
   beforeEach(() => {
     mocks.listPlanningProjects.mockResolvedValue({ projects: [] });
-    mocks.listAutoRuns.mockResolvedValue({ runs: [] });
+    mocks.listAutoRuns.mockResolvedValue({ autoRuns: [] });
     mocks.listWorkItemAttention.mockResolvedValue({ items: [] });
   });
   it("shows local work items as the default source", async () => {
@@ -284,7 +284,7 @@ describe("TaskView local work items", () => {
       ],
     };
     mocks.listWorkItems.mockResolvedValue({ workItems: [first, second], count: 2 });
-    mocks.listAutoRuns.mockResolvedValue({ runs: [{ id: "aur_1", status: "awaiting_approval" }] });
+    mocks.listAutoRuns.mockResolvedValue({ autoRuns: [{ id: "aur_1", status: "awaiting_approval" }] });
     mocks.listPlanningProjects.mockResolvedValue({ projects: [project] });
     mocks.getPlanningProject.mockResolvedValue({ project });
     mocks.reorderPlanningProjectItems.mockResolvedValue({ project });
