@@ -20,6 +20,9 @@ vi.mock("@/lib/api-client", () => ({
     searchTraces: apiMock.searchTraces,
   },
 }));
+vi.mock("@/features/invocations/trace-api", () => ({
+  searchTraces: apiMock.searchTraces,
+}));
 
 afterEach(() => {
   cleanup();

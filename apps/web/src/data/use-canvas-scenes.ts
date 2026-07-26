@@ -1,5 +1,6 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, type CanvasScene, type CanvasSceneSummary } from "@/lib/api-client";
+import { QUERY_POLLING, visiblePolling } from "@/lib/query-polling";
 
 const SCENES_KEY = ["canvas-scenes"] as const;
 const sceneKey = (id: string | null) => ["canvas-scene", id] as const;
@@ -12,7 +13,7 @@ export function useCanvasScenes() {
   return useQuery<CanvasSceneSummary[]>({
     queryKey: SCENES_KEY,
     queryFn: async () => (await api.listCanvasScenes()).scenes,
-    refetchInterval: 4000,
+    refetchInterval: () => visiblePolling(QUERY_POLLING.sharedStateFallback),
     refetchIntervalInBackground: false,
     staleTime: 0,
   });
@@ -27,7 +28,7 @@ export function useCanvasScene(sceneId: string | null) {
     queryKey: sceneKey(sceneId),
     enabled: Boolean(sceneId),
     queryFn: async () => (sceneId ? (await api.getCanvasScene(sceneId)).scene : null),
-    refetchInterval: 4000,
+    refetchInterval: () => visiblePolling(QUERY_POLLING.sharedStateFallback),
     refetchIntervalInBackground: false,
     staleTime: 0,
   });

@@ -291,7 +291,7 @@ function ensureSession(): Promise<string | null> {
   return sessionPromise;
 }
 
-async function request<T = unknown>(
+export async function request<T = unknown>(
   method: string,
   path: string,
   body?: unknown,
@@ -475,11 +475,6 @@ async function requestResult(
 }
 
 export const api = {
-  searchTraces: (query: string, cursor?: string | null, limit = 25) => {
-    const params = new URLSearchParams({ q: query, limit: String(limit) });
-    if (cursor) params.set("cursor", cursor);
-    return request<import("./console-state").TraceSearchResponse>("GET", `/api/traces?${params}`);
-  },
   updateDevice: (payload: { maxConcurrency?: number }) => request("PATCH", "/api/device", payload),
   reportWebPerformance: (payload: {
     name: "CLS" | "FCP" | "INP" | "LCP";

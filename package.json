@@ -6,6 +6,9 @@
   "main": "apps/electron/src/main.mjs",
   "packageManager": "pnpm@9.15.0",
   "pnpm": {
+    "overrides": {
+      "lodash-es": "4.18.1"
+    },
     "onlyBuiltDependencies": [
       "electron",
       "node-pty"
@@ -37,6 +40,7 @@
     "typecheck": "pnpm -r --filter \"./apps/*\" --filter \"./packages/*\" --filter \"./tools/*\" --if-present typecheck",
     "build": "pnpm -r --filter \"./apps/*\" --filter \"./packages/*\" --filter \"./tools/*\" --if-present build",
     "check:web-bundle": "node tools/dev/check-web-bundle-budget.mjs",
+    "audit:prod": "pnpm audit --prod --audit-level high",
     "release:candidate:check": "node tools/release/src/candidate.mjs --check",
     "release:candidate": "node tools/release/src/candidate.mjs",
     "docs:check": "pwsh -NoProfile -ExecutionPolicy Bypass -File tools/docs/check-markdown-links.ps1",
@@ -169,6 +173,8 @@
     "smoke:channel-providers": "node tools/dev/channel-provider-contract-smoke.mjs",
     "smoke:coding-agent-interface": "node --test apps/server/test/coding-agent-interface.test.mjs apps/server/test/claude-application.test.mjs",
     "benchmark:runtime-health": "node tools/dev/runtime-health-benchmark.mjs",
+    "benchmark:trace-search": "node tools/dev/trace-search-benchmark.mjs",
+    "verify:real-providers": "node tools/dev/real-provider-nightly.mjs",
     "smoke:automation-scheduler": "node tools/dev/automation-scheduler-smoke.mjs",
     "smoke:claude-agent": "node tools/dev/claude-agent-smoke.mjs",
     "smoke:ccusage-agent": "node tools/dev/ccusage-agent-smoke.mjs",

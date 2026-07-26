@@ -18,6 +18,7 @@ import type {
   WorktreeSnapshot,
 } from "@/lib/console-state";
 import { useAppTranslation } from "@/lib/i18n/use-app-translation";
+import { QUERY_POLLING, visiblePolling } from "@/lib/query-polling";
 
 const TOOLS_KEY = ["tools"] as const;
 
@@ -37,7 +38,7 @@ export function ToolsView() {
   const { data, isLoading, error } = useQuery({
     queryKey: TOOLS_KEY,
     queryFn: () => api.listTools(),
-    refetchInterval: 2000,
+    refetchInterval: () => visiblePolling(QUERY_POLLING.activeOperation),
   });
 
   const tools = data?.tools ?? [];
