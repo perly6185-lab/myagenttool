@@ -87,7 +87,11 @@ export function LoginControl() {
             </Badge>
           </button>
         ) : null}
-        {user ? <Badge tone="neutral" className="sm:hidden">{t(authorityKey[authority])}</Badge> : null}
+        {user ? (
+          <button type="button" onClick={() => setAuthorityOpen((value) => !value)} aria-expanded={authorityOpen} aria-label={t("identity.whyTitle")} className="sm:hidden">
+            <Badge tone="neutral">{t(authorityKey[authority])}</Badge>
+          </button>
+        ) : null}
         {user ? (
           <Button variant="ghost" size="sm" onClick={signOut} disabled={busy}>
             {t("login.signOut")}

@@ -41,7 +41,9 @@ export function EntryJourney() {
   const selectedInvocationId = useUiStore((item) => item.selectedInvocationId);
   const selectedProjectId = useUiStore((item) => item.selectedProjectId);
   const setSection = useUiStore((item) => item.setSection);
+  const setSelectedInvocationId = useUiStore((item) => item.setSelectedInvocationId);
   const { invocation, pending, attention } = entryJourneyContext(state, selectedProjectId, selectedInvocationId);
+  const project = (state?.projects ?? []).find((item) => item.id === selectedProjectId);
   const running = ["queued", "dispatching", "waiting_for_local_approval", "running", "cancelling"].includes(invocation?.status ?? "");
   const finished = Boolean(invocation && !running);
   const steps = [
@@ -51,10 +53,17 @@ export function EntryJourney() {
     { key: "result", label: "entryJourney.result" as const, hint: "entryJourney.resultHint" as const, done: finished, active: finished },
   ];
   return (
+    <div className="space-y-2">
+    <p className="text-xs text-muted-foreground">{project
+      ? t("entryJourney.context", { project: project.name, invocation: invocation?.id ?? t("entryJourney.noRun") })
+      : t("entryJourney.noContext")}</p>
     <nav aria-label={t("entryJourney.label")} className="grid gap-2 sm:grid-cols-4">
       {steps.map((step, index) => (
         <button key={step.key} type="button" disabled={step.key === "create"} onClick={() => {
-          if (step.key === "execute" || step.key === "result") setSection("invocations");
+          if (step.key === "execute" || step.key === "result") {
+            if (invocation) setSelectedInvocationId(invocation.id);
+            setSection("invocations");
+          }
           if (step.key === "attention") setSection(pending ? "approvals" : "evidence");
         }} className="flex items-center gap-2 rounded-lg border bg-card px-3 py-2 text-left text-xs disabled:cursor-default">
           {step.active && running ? <LoaderCircle className="size-4 animate-spin text-primary" /> : step.done ? <CheckCircle2 className="size-4 text-success" /> : <Circle className="size-4 text-muted-foreground" />}
@@ -62,5 +71,6 @@ export function EntryJourney() {
         </button>
       ))}
     </nav>
+    </div>
   );
 }

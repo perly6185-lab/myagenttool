@@ -310,6 +310,19 @@ test("invocation event detail is readable by its team and existence-hidden from 
   assert.deepEqual(foreign.body, { error: "invocation_not_found" });
 });
 
+test("Trace search is paginated through the real HTTP route and team scoped", async () => {
+  const own = await call("/api/traces?q=inv_a&limit=1", { token: "tok_a" });
+  assert.equal(own.status, 200);
+  assert.equal(own.body.total, 1);
+  assert.deepEqual(own.body.records.map((record) => record.invocationId), ["inv_a"]);
+  assert.equal(own.body.nextCursor, null);
+
+  const foreign = await call("/api/traces?q=inv_a&limit=1", { token: "tok_b" });
+  assert.equal(foreign.status, 200);
+  assert.equal(foreign.body.total, 0);
+  assert.deepEqual(foreign.body.records, []);
+});
+
 test("issue-ownership is team-scoped; team B never sees team A's issue owner", async () => {
   const own = await call("/api/issue-ownership", { token: "tok_a" });
   assert.equal(own.status, 200);

@@ -76,11 +76,13 @@ export function InvocationsView() {
 
   const [traceQuery, setTraceQuery] = useState("");
   const [traceCursor, setTraceCursor] = useState<string | null>(null);
+  const [traceCursorHistory, setTraceCursorHistory] = useState<(string | null)[]>([]);
   const [tracePage, setTracePage] = useState(1);
   const allInvocations = state?.invocations ?? [];
   const normalizedTraceQuery = traceQuery.trim().toLowerCase();
   useEffect(() => {
     setTraceCursor(null);
+    setTraceCursorHistory([]);
     setTracePage(1);
   }, [normalizedTraceQuery]);
   const traceSearch = useQuery({
@@ -100,6 +102,7 @@ export function InvocationsView() {
         input: { task: record.task },
       }))
     : allInvocations;
+  const traceRecordById = new Map((traceSearch.data?.records ?? []).map((record) => [record.invocationId, record]));
   const selected = resolveInvocation(state, selectedInvocationId);
   const events = selected
     ? (state?.events ?? []).filter((e) => e.invocationId === selected.id).slice(0, 40)
@@ -176,7 +179,14 @@ export function InvocationsView() {
               <span>{t("traceSearch.scope")}</span>
             </div>
           </div>
-          {invocations.length === 0 ? (
+          {normalizedTraceQuery && traceSearch.isPending ? (
+            <p role="status" className="rounded-lg border p-4 text-sm text-muted-foreground">{t("traceSearch.loading")}</p>
+          ) : normalizedTraceQuery && traceSearch.isError ? (
+            <div role="alert" className="rounded-lg border border-destructive/40 p-4 text-sm">
+              <p>{t("traceSearch.failed")}</p>
+              <Button className="mt-2" size="sm" variant="secondary" onClick={() => traceSearch.refetch()}>{t("traceSearch.retry")}</Button>
+            </div>
+          ) : invocations.length === 0 ? (
             <EmptyState
               title={normalizedTraceQuery ? t("traceSearch.noMatch") : t("invocations.emptyTitle")}
               hint={normalizedTraceQuery ? t("traceSearch.noMatchHint") : t("invocations.emptyHint")}
@@ -196,6 +206,13 @@ export function InvocationsView() {
                 <tbody>
                   {invocations.map((invocation) => {
                     const active = invocation.id === selected?.id;
+                    const traceRecord = traceRecordById.get(invocation.id);
+                    const related = traceRecord ? [
+                      ...traceRecord.applicationIds.map((id) => `Application · ${id}`),
+                      ...traceRecord.channelIds.map((id) => `Channel · ${id}`),
+                      ...traceRecord.eventTypes.map((id) => `Event · ${id}`),
+                      ...traceRecord.evidenceIds.map((id) => `Evidence · ${id}`),
+                    ].slice(0, 3) : [];
                     return (
                       <tr
                         key={invocation.id}
@@ -205,7 +222,11 @@ export function InvocationsView() {
                           active && "bg-accent",
                         )}
                       >
-                        <td className="px-3 py-2 font-mono text-xs">{invocation.id}</td>
+                        <td className="px-3 py-2 text-xs">
+                          <span className="font-mono">{invocation.id}</span>
+                          {traceRecord?.task ? <span className="mt-0.5 block text-muted-foreground">{traceRecord.task}</span> : null}
+                          {related.length ? <span className="mt-1 flex flex-wrap gap-1">{related.map((label) => <Badge key={label} tone="neutral">{label}</Badge>)}</span> : null}
+                        </td>
                         <td className="px-3 py-2 text-muted-foreground">{invocation.agentId ?? "—"}</td>
                         <td className="px-3 py-2 text-muted-foreground">
                           {delivery(t, invocation.delivery?.state)}
@@ -225,8 +246,17 @@ export function InvocationsView() {
           {normalizedTraceQuery && (tracePage > 1 || traceSearch.data?.nextCursor) ? (
             <div className="mt-3 flex items-center justify-end gap-2">
               <span className="text-xs text-muted-foreground">{t("traceSearch.page", { page: tracePage })}</span>
+              {traceCursorHistory.length ? (
+                <Button size="sm" variant="ghost" onClick={() => {
+                  const previous = traceCursorHistory.at(-1) ?? null;
+                  setTraceCursorHistory((history) => history.slice(0, -1));
+                  setTraceCursor(previous);
+                  setTracePage((page) => Math.max(1, page - 1));
+                }}>{t("traceSearch.previous")}</Button>
+              ) : null}
               {traceSearch.data?.nextCursor ? (
                 <Button size="sm" variant="secondary" onClick={() => {
+                  setTraceCursorHistory((history) => [...history, traceCursor]);
                   setTraceCursor(traceSearch.data?.nextCursor ?? null);
                   setTracePage((page) => page + 1);
                 }}>{t("traceSearch.next")}</Button>
