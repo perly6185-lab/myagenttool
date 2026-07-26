@@ -238,6 +238,13 @@ pnpm install
 pnpm dev
 ```
 
+After pulling a newer revision, run `pnpm install --frozen-lockfile` again before
+starting the app so newly added workspace dependencies are available.
+
+The local demo automatically re-pairs its development-only Desktop Bridge once
+when a saved pairing credential has expired. Production pairing still requires
+an explicit user action.
+
 Then open:
 
 ```text
