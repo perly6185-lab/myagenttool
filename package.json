@@ -25,6 +25,8 @@
     "desktop:prepare-assets": "node apps/electron/scripts/prepare-portable-git.mjs",
     "desktop:pack": "pnpm desktop:prepare-assets && pnpm --filter @myagenttool/web build && electron-builder --dir -c apps/electron/electron-builder.yml",
     "desktop:dist": "pnpm desktop:prepare-assets && pnpm --filter @myagenttool/web build && electron-builder --win nsis --x64 -c apps/electron/electron-builder.yml",
+    "desktop:pack:mac": "pnpm --filter @myagenttool/web build && electron-builder --mac --arm64 --dir -c apps/electron/electron-builder.yml",
+    "desktop:dist:mac": "pnpm --filter @myagenttool/web build && electron-builder --mac dmg --arm64 -c apps/electron/electron-builder.yml",
     "dev:restart-changed": "node tools/dev/restart-changed-services.mjs",
     "ccusage:register-app": "node tools/dev/register-ccusage-application.mjs",
     "git:register-app": "node tools/dev/register-git-application.mjs",

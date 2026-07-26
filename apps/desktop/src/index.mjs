@@ -22,6 +22,7 @@ import { applicationWrapperArgs } from "./application-wrapper-args.mjs";
 import { collectApplicationBinaryReadiness } from "./application-binary-readiness.mjs";
 import { collectApplicationCredentialReadiness } from "./application-credential-readiness.mjs";
 import { managedRuntimeBinDirectory, runApprovedApplicationInstall } from "./application-installer.mjs";
+import { registerBridgeWithRetry } from "./bridge-registration-retry.mjs";
 import {
   createLocalExecutionPolicyManifest,
   localExecutionGate,
@@ -365,13 +366,15 @@ await waitForServer();
 let registration;
 try {
   const runtimeReadiness = await collectApplicationBinaryReadiness(localExecutionPolicyManifest);
-  registration = await request("POST", "/api/bridge/register", {
-    bridgeVersion: "0.0.0",
-    capabilities: ["demo_cli_agent", "managed_terminal_pty", "remote_ssh_relay"],
-    runtimeReadiness,
-    applicationBinaryReadiness: runtimeReadiness,
-    applicationCredentialReadiness: collectApplicationCredentialReadiness(credentialDir),
-  });
+  registration = await registerBridgeWithRetry(() => request("POST", "/api/bridge/register", {
+      bridgeVersion: "0.0.0",
+      capabilities: ["demo_cli_agent", "managed_terminal_pty", "remote_ssh_relay"],
+      runtimeReadiness,
+      applicationBinaryReadiness: runtimeReadiness,
+      applicationCredentialReadiness: collectApplicationCredentialReadiness(credentialDir),
+    }), {
+      onRetry: (_error, attempt) => console.warn(`[desktop] bridge registration network error; retrying (${attempt}/2).`),
+    });
 } catch (error) {
   const message = error instanceof Error ? error.message : String(error);
   // A credential rejection at register is a pairing problem, not a bug — tell the
