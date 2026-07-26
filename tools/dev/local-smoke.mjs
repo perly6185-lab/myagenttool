@@ -370,7 +370,8 @@ try {
   assert(codexResumeSession?.sessionMode === "continue_last", "managed Codex session should record continuation mode");
   assert(codexResumeSession.codexThreadId === "codex_fixture_thread_resumed", "managed Codex resumed session should record resumed thread id");
   assert(codexResumePreview?.data?.commandLine?.includes("resume"), "Codex continuation preview should use resume command");
-  assert(codexResumePreview.data.commandLine.includes("--last"), "Codex continuation preview should resume the most recent session");
+  assert(codexResumePreview.data.commandLine.includes("codex_fixture_thread"), "Codex continuation preview should resume the exact resolved session");
+  assert(!codexResumePreview.data.commandLine.includes("--last"), "Codex continuation preview should never use process-global session selection");
   assert(codexResumePreview.data.commandLine.includes("[task redacted]"), "Codex continuation preview should sanitize task argv");
   assert(codexResumePreview.data.sessionMode === "continue_last", "Codex continuation preview should mark continuation mode");
   assert(codexResumeState.events.some((item) => item.invocationId === codexResumeRun.invocation.id && item.message?.includes("resumed completed")), "Codex fixture continuation should run the resumed path");
