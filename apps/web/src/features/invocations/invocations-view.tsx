@@ -45,6 +45,7 @@ import { formatUsd } from "@/lib/money";
 import { statusTone } from "@/lib/readable-labels";
 import { useAppTranslation } from "@/lib/i18n/use-app-translation";
 import { delivery, invocationStatus } from "@/lib/i18n/readable-labels";
+import { searchTraces } from "@/features/invocations/trace-api";
 import type {
   ApplicationRecoveryActionRequest,
   ConsoleSnapshot,
@@ -87,7 +88,7 @@ export function InvocationsView() {
   }, [normalizedTraceQuery]);
   const traceSearch = useQuery({
     queryKey: ["trace-search", normalizedTraceQuery, traceCursor],
-    queryFn: () => api.searchTraces(normalizedTraceQuery, traceCursor),
+    queryFn: () => searchTraces(normalizedTraceQuery, traceCursor),
     enabled: Boolean(normalizedTraceQuery),
   });
   const invocations = normalizedTraceQuery

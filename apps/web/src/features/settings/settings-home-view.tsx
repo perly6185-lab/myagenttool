@@ -9,6 +9,7 @@ import { StatusBadge } from "@/components/ui/badge";
 import { useConsoleState } from "@/data/use-console-state";
 import { usePageNavigation } from "@/hooks/use-page-navigation";
 import { useAppTranslation } from "@/lib/i18n/use-app-translation";
+import { deriveApplicationDependencyState } from "./application-dependency-state";
 
 const DOMAIN_KEYS = ["projects", "agents", "agentSkills", "devices", "discovery", "integrations", "tools", "applications", "channels", "automation", "routines", "economics"] as const;
 
@@ -34,6 +35,7 @@ export function SettingsHomeView() {
   const needsFix = checks.filter((item) => !item.ready && !item.optional);
   const applications = state?.applications ?? [];
   const selectedApplication = applications.find((item) => item.id === applicationId) ?? applications[0] ?? null;
+  const dependencyState = deriveApplicationDependencyState(selectedApplication, state);
   const relatedInvocations = (state?.invocations ?? []).filter((item) =>
     item.options?.metadata?.applicationId === selectedApplication?.id
     || (state?.applicationResults ?? []).some((result) => result.applicationId === selectedApplication?.id && result.invocationId === item.id));
@@ -91,6 +93,7 @@ export function SettingsHomeView() {
             {!applications.length ? <option value="">{t("settingsHome.noApplication")}</option> : null}
             {applications.map((application) => <option key={application.id} value={application.id}>{application.name}</option>)}
           </Select>
+          <p className="text-xs text-muted-foreground">{t("dependencyLifecycle.summary", { state: t(`dependencyLifecycle.${dependencyState.lifecycle}`) })}</p>
           <div className="grid gap-2 sm:grid-cols-4">
           {setupStages.map((stage, index) => (
             <button key={stage.key} type="button" onClick={() => navigate(stage.section)} className="rounded-lg border p-3 text-left hover:bg-muted">
