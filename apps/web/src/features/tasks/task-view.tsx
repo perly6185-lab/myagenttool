@@ -989,11 +989,11 @@ export function PlanningProjectsPanel({ onChanged = () => {} }: { onChanged?: ()
     void Promise.all([
       api.listPlanningProjects(true) as Promise<{ projects: PlanningProject[] }>,
       api.listWorkItems() as Promise<LocalWorkItemResult>,
-      api.listAutoRuns() as Promise<{ runs: PlanningAutoRun[] }>,
+      api.listAutoRuns() as Promise<{ autoRuns?: PlanningAutoRun[] }>,
     ]).then(async ([result, workItemResult, autoRunResult]) => {
       if (cancelled) return;
       setWorkItems(workItemResult.workItems);
-      setAutoRuns(autoRunResult.runs);
+      setAutoRuns(autoRunResult.autoRuns ?? []);
       const nextId = result.projects.some((project) => project.id === selectedId)
         ? selectedId
         : result.projects[0]?.id ?? "";
@@ -1014,10 +1014,10 @@ export function PlanningProjectsPanel({ onChanged = () => {} }: { onChanged?: ()
     if (selectedId) {
       void Promise.all([
         api.getPlanningProject(selectedId) as Promise<{ project: PlanningProject }>,
-        api.listAutoRuns() as Promise<{ runs: PlanningAutoRun[] }>,
+        api.listAutoRuns() as Promise<{ autoRuns?: PlanningAutoRun[] }>,
       ]).then(([detail, runResult]) => {
         setProjects((current) => current.map((project) => project.id === selectedId ? detail.project : project));
-        setAutoRuns(runResult.runs);
+        setAutoRuns(runResult.autoRuns ?? []);
         setPlanningLiveError(null);
       }).catch(() => setPlanningLiveError(t("aiOps.projectRefreshFailed")));
     }

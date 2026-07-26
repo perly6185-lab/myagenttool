@@ -770,7 +770,17 @@ export async function handleBridgeRoutes({
     const reason = String(body.reason ?? "").trim() || "The bridge refused this delivery.";
     // errorCode steers recovery classification — only the known category
     // vocabulary is honored (mirrors the categorized map); unknown codes drop.
-    const knownErrorCodes = ["cancelled", "validation_failed", "agent_unavailable", "device_unlinked", "dispatch_timeout", "policy_blocked", "runtime_error"];
+    const knownErrorCodes = [
+      "cancelled",
+      "validation_failed",
+      "agent_unavailable",
+      "device_unlinked",
+      "dispatch_timeout",
+      "approval_timeout",
+      "execution_timeout",
+      "policy_blocked",
+      "runtime_error",
+    ];
     const errorCode = knownErrorCodes.includes(String(body.errorCode ?? "").trim()) ? String(body.errorCode).trim() : null;
     invocation.delivery.state = "refused";
     // The executor is a decider too: the bridge declined to deliver. Record it as

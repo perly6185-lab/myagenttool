@@ -252,6 +252,8 @@ export interface PendingDecision {
     channelTaskRequestId?: string;
     issueNumber?: number | null;
     issueUrl?: string | null;
+    timedOut?: boolean;
+    recoveryStatus?: string | null;
   };
 }
 
@@ -548,6 +550,23 @@ export interface CodexApprovalBrokerRequest {
   approvalMode?: string;
   timeoutAt?: string;
   decision?: string | null;
+  recoveredFromApprovalRequestId?: string;
+  continuationGrant?: {
+    targetInvocationId: string;
+    autoRunId: string;
+    worktreeId: string;
+    grantedAt?: string | null;
+  };
+  lateApprovalRecovery?: {
+    status: "requested" | "waiting_for_terminal" | "starting" | "resumed" | "failed" | "unavailable" | string;
+    autoRunId?: string | null;
+    sourceInvocationId?: string | null;
+    targetInvocationId?: string | null;
+    resumedInvocationId?: string | null;
+    requestedAt?: string | null;
+    resumedAt?: string | null;
+    error?: string | null;
+  };
 }
 
 export interface AuditSnapshot {

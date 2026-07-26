@@ -16,6 +16,12 @@ import { newRoundState, claudeRoundEmits, codexRoundEmits, claudeRequestContext 
 import { createAgentLineSink } from "./agent-line-sink.mjs";
 import { createInvocationPool, resolveBridgeConcurrency, refreshedConcurrency } from "./invocation-pool.mjs";
 import { createCancellationWatcher } from "./cancellation-watcher.mjs";
+import {
+  createCodexCommandWatchdog,
+  defaultCodexCommandTimeoutSeconds,
+  resolveCodexCommandTimeoutMs,
+} from "./codex-command-watchdog.mjs";
+import { withGitSafeDirectoryEnv, withSafeDiscoveryEnv } from "./safe-discovery.mjs";
 import { spawnCapture } from "./spawn-capture.mjs";
 import { isInactiveInvocationError } from "./bridge-events.mjs";
 import { applicationWrapperArgs } from "./application-wrapper-args.mjs";
@@ -30,6 +36,7 @@ import {
 } from "./local-execution-policy.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
+const safeRipgrepConfigPath = resolve(__dirname, "safe-ripgrep.conf");
 
 // B1b Tier 2 preflight (memoized across spawns). Before wrapping any real agent in
 // `sudo -n -u <user>`, probe `sudo -n -u <user> /usr/bin/true` ONCE. If it fails
@@ -131,8 +138,8 @@ if (process.argv.includes("--check")) {
     throw new Error("ccusage lifecycle install must reject unpinned package specs.");
   }
   const resumeArgs = codexArgsTemplate({ command: "codex", args: codexCliArgs() }, { options: { codexSessionMode: "continue_last" } });
-  if (!resumeArgs.includes("resume") || resumeArgs.includes("--ephemeral")) {
-    throw new Error("Codex continuation args are not configured.");
+  if (resumeArgs.includes("resume") || resumeArgs.includes("--last") || !resumeArgs.includes("{{task}}")) {
+    throw new Error("Codex continuation without an exact session id must start a fresh session.");
   }
   // True resume (#163): a resolved provider session id must be resumed BY ID,
   // not via the global `--last`.
@@ -144,13 +151,17 @@ if (process.argv.includes("--check")) {
     throw new Error("Codex resume-by-session-id args are not configured.");
   }
   // A malformed/hostile session id (e.g. a leading dash) must be rejected and
-  // fall back to `--last`, never injected as an argv flag.
+  // start a fresh session, never injected as an argv flag or resolved via the
+  // process-global `--last`.
   const unsafeResumeArgs = codexArgsTemplate(
     { command: "codex", args: codexCliArgs() },
     { options: { codexSessionMode: "continue_last", codexResumeSessionId: "--dangerously-bypass-approvals-and-sandbox" } },
   );
-  if (unsafeResumeArgs[2] !== "--last" || unsafeResumeArgs.includes("--dangerously-bypass-approvals-and-sandbox")) {
-    throw new Error("Codex resume must reject an unsafe session id and fall back to --last.");
+  if (unsafeResumeArgs.includes("resume")
+    || unsafeResumeArgs.includes("--last")
+    || unsafeResumeArgs.includes("--dangerously-bypass-approvals-and-sandbox")
+    || !unsafeResumeArgs.includes("{{task}}")) {
+    throw new Error("Codex resume must reject an unsafe session id and start a fresh session.");
   }
   const imageArgs = insertCodexImageArgs(["exec", "--json", "{{task}}"], [{ path: "composer-image.png" }]);
   const taskArgIndex = imageArgs.indexOf("{{task}}");
@@ -909,6 +920,8 @@ async function runInvocation(work) {
   let cancelled = false;
   let cancelResult = null;
   let timedOut = false;
+  let timeoutCause = null;
+  let commandTimeoutEvidence = null;
   let spawnError = null;
   // #1250: flipped true the instant the child closes and the main flow takes
   // over the terminal outcome. The detached cancel/timeout pollers check it
@@ -993,7 +1006,10 @@ async function runInvocation(work) {
       result: {
         touchedUserFiles: false,
         policyDecision: permissionDecision,
-        errorCode: permissionDecision === "timed_out" ? "dispatch_timeout" : "policy_blocked"
+        // Approval expiry is a human-decision timeout, not a bridge delivery
+        // failure. Keeping it distinct prevents infrastructure failover from
+        // dispatching the same unapproved task to another agent.
+        errorCode: permissionDecision === "timed_out" ? "approval_timeout" : "policy_blocked"
       }
     });
     return;
@@ -1058,12 +1074,51 @@ async function runInvocation(work) {
   }
 
   const timeoutMs = Number(adapter.timeoutSeconds ?? work.options?.timeoutSeconds ?? 30) * 1000;
+  const commandTimeoutMs = resolveCodexCommandTimeoutMs({
+    configuredSeconds:
+      work.options?.commandIdleTimeoutSeconds
+      ?? adapter.commandIdleTimeoutSeconds
+      ?? process.env.MYAGENTTOOL_CODEX_COMMAND_IDLE_TIMEOUT_SECONDS
+      ?? null,
+    totalTimeoutMs: timeoutMs,
+    defaultSeconds: defaultCodexCommandTimeoutSeconds(),
+  });
+  const commandWatchdog = createCodexCommandWatchdog({
+    timeoutMs: adapter.outputFormat === "codex_jsonl" ? commandTimeoutMs : 0,
+    onTimeout: async (evidence) => {
+      try {
+        if (settled || timedOut || cancelled || child.exitCode !== null || child.killed) {
+          return;
+        }
+        timedOut = true;
+        timeoutCause = "command_idle";
+        commandTimeoutEvidence = evidence;
+        await request("POST", "/api/bridge/events", {
+          invocationId,
+          type: "command_idle_timed_out",
+          level: "warn",
+          message: `${runtimeName} command produced no completion event within ${Math.round(commandTimeoutMs / 1000)} seconds.`,
+          data: {
+            commandSummary: evidence.commandSummary,
+            commandStartedAt: new Date(evidence.startedAt).toISOString(),
+            lastActivityAt: new Date(evidence.lastActivityAt).toISOString(),
+            timeoutSeconds: Math.round(commandTimeoutMs / 1000),
+          },
+        });
+        cancelResult = await terminateProcessTree(child);
+        await reportForcedKill(invocationId, runtimeName, cancelResult);
+      } catch (error) {
+        tolerateLateEvent("command-timeout", invocationId, error);
+      }
+    },
+  });
   const timeoutTimer = setTimeout(async () => {
     try {
-      if (settled || child.exitCode !== null || child.killed || cancelled) {
+      if (settled || timedOut || child.exitCode !== null || child.killed || cancelled) {
         return;
       }
       timedOut = true;
+      timeoutCause = "invocation_total";
       await request("POST", "/api/bridge/events", {
         invocationId,
         type: "invocation_timed_out",
@@ -1082,7 +1137,7 @@ async function runInvocation(work) {
   // and keeps the #1250 terminal-race guards: it does nothing once the run owns
   // its terminal outcome, and tolerates a late event post.
   const stopWatchingCancel = cancellationWatcher.watch(invocationId, async () => {
-    if (settled || cancelled) {
+    if (settled || timedOut || cancelled) {
       return;
     }
     cancelled = true;
@@ -1116,7 +1171,7 @@ async function runInvocation(work) {
   // usage/cost lost) and landing line events after invocation_completed.
   const stdoutSink = createAgentLineSink(
     async (line) => {
-      const result = await handleAgentLine(invocationId, line, adapter, roundState);
+      const result = await handleAgentLine(invocationId, line, adapter, roundState, commandWatchdog);
       if (result) {
         finalResult = result;
       }
@@ -1148,6 +1203,7 @@ async function runInvocation(work) {
   settled = true;
   stopWatchingCancel();
   clearTimeout(timeoutTimer);
+  commandWatchdog.dispose();
   // The temp patch file the apply runner read (materialized in governedApplyWrapperArgs)
   // is a per-run throwaway — delete it now that the child has exited so an authorized
   // diff does not linger in the shared temp directory.
@@ -1160,6 +1216,9 @@ async function runInvocation(work) {
 
   if (timedOut) {
     const forcedNote = cancelResult?.message ? ` ${cancelResult.message}` : "";
+    const timeoutSummary = timeoutCause === "command_idle"
+      ? `${runtimeName} command stopped after ${Math.round(commandTimeoutMs / 1000)} seconds without a completion event.`
+      : `${runtimeName} exceeded its configured timeout.`;
     await sendCodexHookEvent(invocationId, adapter, {
       eventName: "Stop",
       summary: "Codex run timed out."
@@ -1167,8 +1226,21 @@ async function runInvocation(work) {
     await request("POST", "/api/bridge/complete", {
       invocationId,
       status: "timed_out",
-      summary: `${runtimeName} exceeded its configured timeout.${forcedNote}`,
-      result: finalResult
+      summary: `${timeoutSummary}${forcedNote}`,
+      result: {
+        ...(finalResult && typeof finalResult === "object" ? finalResult : {}),
+        errorCode: "execution_timeout",
+        timeoutKind: timeoutCause ?? "invocation_total",
+        ...(commandTimeoutEvidence
+          ? {
+              continuationCheckpoint: {
+                lastCommand: commandTimeoutEvidence.commandSummary,
+                commandStartedAt: new Date(commandTimeoutEvidence.startedAt).toISOString(),
+                lastActivityAt: new Date(commandTimeoutEvidence.lastActivityAt).toISOString(),
+              },
+            }
+          : {}),
+      }
     });
     return;
   }
@@ -1619,10 +1691,16 @@ function createCliSpawnPlan(adapter, payload) {
       : isCodexCliCommand(adapter.command)
         ? codexCommandPlan(adapter, renderedArgs, payload.task).args
         : renderedArgs;
-  const env = buildEnv(withMinimizedAgentEnv(adapter));
   const cwd = adapter.workingDirectoryPolicy === "explicit" && adapter.workingDirectory
     ? String(adapter.workingDirectory)
     : projectCwd(payload);
+  const baseEnv = buildEnv(withMinimizedAgentEnv(adapter));
+  const gitSafeEnv = isAbsolute(cwd)
+    ? withGitSafeDirectoryEnv(baseEnv, { root: cwd })
+    : baseEnv;
+  const env = isCodexCliCommand(adapter.command)
+    ? withSafeDiscoveryEnv(gitSafeEnv, { root: cwd, configPath: safeRipgrepConfigPath })
+    : gitSafeEnv;
   const localPolicy = localPolicyForAdapter(adapter, payload);
   return {
     command,
@@ -1853,7 +1931,7 @@ function codexArgsTemplate(adapter, payload) {
     // True resume (#163): continue the specific provider session the server
     // resolved (resume by id), not whatever ran last globally. See codexResumeArgs
     // for the safe-token guard + `--last` fallback.
-    return codexResumeArgs(payload.options);
+    return codexResumeArgs(payload.options) ?? args;
   }
   return args;
 }
@@ -2544,12 +2622,12 @@ function tolerateLateEvent(label, invocationId, error) {
   console.error(`[desktop] ${invocationId} ${label} poller error (continuing): ${error instanceof Error ? error.message : String(error)}`);
 }
 
-async function handleAgentLine(invocationId, line, adapter = {}, roundState = null) {
+async function handleAgentLine(invocationId, line, adapter = {}, roundState = null, commandWatchdog = null) {
   if (!line) {
     return null;
   }
   if (adapter.outputFormat === "codex_jsonl") {
-    return handleCodexJsonLine(invocationId, line, roundState);
+    return handleCodexJsonLine(invocationId, line, roundState, commandWatchdog);
   }
   if (adapter.outputFormat === "claude_jsonl") {
     return handleClaudeJsonLine(invocationId, line, roundState);
@@ -2807,7 +2885,7 @@ function claudeMessageText(content) {
   return text.length > 240 ? `${text.slice(0, 237)}...` : text;
 }
 
-async function handleCodexJsonLine(invocationId, line, roundState = null) {
+async function handleCodexJsonLine(invocationId, line, roundState = null, commandWatchdog = null) {
   let event;
   try {
     event = JSON.parse(line);
@@ -2821,6 +2899,10 @@ async function handleCodexJsonLine(invocationId, line, roundState = null) {
     return null;
   }
 
+  // Observe command lifecycle before any network await below. Server event
+  // delivery latency must not postpone or accidentally refresh the local
+  // command watchdog.
+  commandWatchdog?.observe(event);
   await emitRoundEvents(invocationId, roundState, event, codexRoundEmits);
 
   const message = codexEventMessage(event);

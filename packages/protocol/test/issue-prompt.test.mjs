@@ -27,14 +27,15 @@ test("worktreeAutoRunPrompt builds the issue task prompt with the url line", () 
   assert.match(prompt, /^Make progress on GitHub Issue #42: Add the thing\./);
   assert.match(prompt, /https:\/\/github\.com\/o\/r\/issues\/42/);
   assert.match(prompt, /do the next useful step/);
+  assert.match(prompt, /git ls-files/);
+  assert.match(prompt, /Never run a recursive repository-root scan/);
 });
 
 test("worktreeAutoRunPrompt handles PRs and omits the url line when absent", () => {
   const prompt = worktreeAutoRunPrompt({ type: "pr", number: 7, title: "Fix bug", url: null });
   assert.match(prompt, /^Make progress on GitHub PR #7: Fix bug\./);
-  // No url → the title line is directly followed by the instruction line.
   assert.ok(!prompt.includes("null"), "a null url is never rendered");
-  assert.equal(prompt.split("\n").length, 2, "exactly title line + instruction line");
+  assert.match(prompt, /Review the latest state/);
 });
 
 test("slugifyIssueTitle lowercases, dashes unsafe runs, caps length, never empty", () => {
@@ -56,8 +57,20 @@ test("roleAutoRunPrompt includes the issue body and the develop role instruction
   assert.match(prompt, /^GitHub Issue #5: Add caching\./);
   assert.match(prompt, /Cache hits are served/, "the issue body reaches the agent");
   assert.match(prompt, /orient: locate the files relevant/, "pre-flight orient step");
+  assert.match(prompt, /Repository discovery safety/, "discovery is bounded");
+  assert.match(prompt, /node_modules.*apps\/electron\/release.*\.git/, "known large metadata trees are explicitly excluded");
   assert.match(prompt, /implement the change/, "develop role instructions");
   assert.match(prompt, /Commit your work/);
+});
+
+test("roleAutoRunPrompt gives every role the same bounded discovery contract", () => {
+  for (const path of ["develop", "design", "prototype", "clarify", "decompose"]) {
+    const prompt = roleAutoRunPrompt({ type: "local_issue", number: 9, title: "Bounded scan" }, { path });
+    assert.match(prompt, /git status --short --untracked-files=no/, `${path} uses the bounded status check`);
+    assert.match(prompt, /rg --files \./, `${path} names the forbidden broad scan`);
+    assert.match(prompt, /Get-ChildItem -Recurse/, `${path} forbids recursive PowerShell discovery`);
+    assert.match(prompt, /apps\/electron\/release/, `${path} excludes packaged output`);
+  }
 });
 
 test("roleAutoRunPrompt: a develop/prototype run gets the verify command; other paths don't", () => {

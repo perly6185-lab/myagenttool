@@ -11,11 +11,12 @@ export function safeCodexSessionId(value) {
   return /^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$/.test(text) ? text : null;
 }
 
-// Args for a `continue_last` resume: continue the SPECIFIC provider session the
-// server resolved (resume by id), not whatever ran last globally. Falls back to
-// `--last` when there is no safe resumable id (no prior session, or a malformed
-// / hostile id that failed the safe-token guard).
+// Args for an exact resume. A missing/unsafe provider id returns null so the
+// caller starts a fresh session; falling back to global `--last` can attach a
+// concurrent task to the wrong repository/session.
 export function codexResumeArgs(options) {
   const resumeId = safeCodexSessionId(options?.codexResumeSessionId);
-  return ["exec", "resume", resumeId ?? "--last", "--skip-git-repo-check", "--json", "{{task}}"];
+  return resumeId
+    ? ["exec", "resume", resumeId, "--skip-git-repo-check", "--json", "{{task}}"]
+    : null;
 }

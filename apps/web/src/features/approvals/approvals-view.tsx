@@ -239,6 +239,21 @@ function DecisionActions({
     // codex_broker rows — only the labeling and deep link differ.
     case "application_recovery":
     case "codex_broker":
+      if (d.kind === "codex_broker" && d.ref?.timedOut) {
+        const recoveryInProgress = ["requested", "waiting_for_terminal", "starting"].includes(d.ref.recoveryStatus ?? "");
+        return (
+          <>
+            {recoveryInProgress ? (
+              <Badge tone="warning">{t("approvals.resuming")}</Badge>
+            ) : (
+              <Button variant="primary" size="sm" className="h-7 px-2.5 text-xs" disabled={pending} onClick={() => d.ref?.requestId && act(() => api.approveCodexApproval(d.ref!.requestId!))}>
+                {spin}{t("approvals.approveAndResume")}
+              </Button>
+            )}
+            {openBtn}
+          </>
+        );
+      }
       return (
         <>
           <Button variant="primary" size="sm" className="h-7 px-2.5 text-xs" disabled={pending} onClick={() => d.ref?.requestId && act(() => api.approveCodexApproval(d.ref!.requestId!))}>

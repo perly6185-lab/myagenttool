@@ -284,19 +284,21 @@ function DocumentPreview({ projectId, document, worktrees, worktreeId, onWorktre
 }
 
 function MarkdownAssetPreview({ projectId, document }: { projectId: string; document: ProjectDocumentEntry }) {
+  const { t } = useAppTranslation();
   const preview = useQuery({
     queryKey: ["asset-preview", projectId, document.worktreeId, document.path],
     queryFn: () => api.projectAssetPreview(projectId, document.path, document.worktreeId ?? undefined),
   });
   return <section className="min-h-[24rem] overflow-auto rounded-lg border border-border bg-card p-4">
     <div className="mb-3 flex items-center justify-between gap-2"><h2 className="text-sm font-semibold">{document.name}</h2><ExternalAssetOpenButton projectId={projectId} document={document} /></div>
-    {preview.isLoading ? <p className="text-sm text-muted-foreground">Preparing preview…</p>
-      : preview.error ? <p role="alert" className="text-sm text-destructive">Preview is not available.</p>
+    {preview.isLoading ? <p className="text-sm text-muted-foreground">{t("documentsPreview.preparing")}</p>
+      : preview.error ? <p role="alert" className="text-sm text-destructive">{t("documentsPreview.unavailable")}</p>
         : <MarkdownBlock text={preview.data?.text ?? ""} />}
   </section>;
 }
 
 function ImageAssetPreview({ projectId, document }: { projectId: string; document: ProjectDocumentEntry }) {
+  const { t } = useAppTranslation();
   const preview = useQuery({
     queryKey: ["asset-preview-bytes", projectId, document.worktreeId, document.path],
     queryFn: () => api.projectAssetPreviewBytes(projectId, document.path, document.worktreeId ?? undefined),
@@ -309,18 +311,19 @@ function ImageAssetPreview({ projectId, document }: { projectId: string; documen
     setSource(url);
     return () => URL.revokeObjectURL(url);
   }, [preview.data]);
-  if (document.type === "svg") return <AssetPreviewNotice projectId={projectId} document={document} message="Preview is disabled because SVG can contain active content. Open externally if you trust this file." />;
+  if (document.type === "svg") return <AssetPreviewNotice projectId={projectId} document={document} message={t("documentsPreview.svgSafety")} />;
   return <section className="flex min-h-[24rem] flex-col overflow-auto rounded-lg border border-border bg-card p-4">
     <div className="mb-3 flex justify-end"><ExternalAssetOpenButton projectId={projectId} document={document} /></div>
     <div className="grid flex-1 place-items-center">
-    {preview.isLoading ? <p className="text-sm text-muted-foreground">Preparing preview…</p>
-      : preview.error ? <p role="alert" className="text-sm text-destructive">Preview is not available.</p>
+    {preview.isLoading ? <p className="text-sm text-muted-foreground">{t("documentsPreview.preparing")}</p>
+      : preview.error ? <p role="alert" className="text-sm text-destructive">{t("documentsPreview.unavailable")}</p>
         : source ? <img src={source} alt={document.name} className="max-h-full max-w-full object-contain" /> : null}
     </div>
   </section>;
 }
 
 function VideoAssetPreview({ projectId, document }: { projectId: string; document: ProjectDocumentEntry }) {
+  const { t } = useAppTranslation();
   const [source, setSource] = useState<string | null>(null);
   const [error, setError] = useState(false);
   useEffect(() => {
@@ -361,10 +364,10 @@ function VideoAssetPreview({ projectId, document }: { projectId: string; documen
       URL.revokeObjectURL(url);
     };
   }, [projectId, document.path, document.type, document.worktreeId]);
-  if (error) return <AssetPreviewNotice projectId={projectId} document={document} message="Playback is not available in this browser. Open externally on the owning computer." />;
+  if (error) return <AssetPreviewNotice projectId={projectId} document={document} message={t("documentsPreview.playbackUnavailable")} />;
   return <section className="flex min-h-[24rem] flex-col rounded-lg border border-border bg-card p-4">
     <div className="mb-3 flex justify-end"><ExternalAssetOpenButton projectId={projectId} document={document} /></div>
-    <div className="grid flex-1 place-items-center">{source ? <video controls preload="metadata" src={source} className="max-h-full max-w-full" aria-label={`Video preview: ${document.name}`} /> : <p className="text-sm text-muted-foreground">Preparing playback…</p>}</div>
+    <div className="grid flex-1 place-items-center">{source ? <video controls preload="metadata" src={source} className="max-h-full max-w-full" aria-label={t("documentsPreview.videoPreview", { name: document.name })} /> : <p className="text-sm text-muted-foreground">{t("documentsPreview.preparingPlayback")}</p>}</div>
   </section>;
 }
 
@@ -375,6 +378,7 @@ function AssetPreviewNotice({ projectId, document, message }: { projectId?: stri
 }
 
 function ExternalAssetOpenButton({ projectId, document }: { projectId: string; document: ProjectDocumentEntry }) {
+  const { t } = useAppTranslation();
   const [error, setError] = useState(false);
   const bridge = window.myagenttoolDesktop?.openContainedAsset;
   if (!bridge || !document.capabilities?.includes("open_external")) return null;
@@ -386,7 +390,7 @@ function ExternalAssetOpenButton({ projectId, document }: { projectId: string; d
       setError(true);
     }
   };
-  return <div><Button type="button" size="sm" variant="secondary" onClick={() => void open()}><FolderOpen /> Open externally</Button>{error ? <p role="alert" className="mt-1 text-xs text-destructive">The system application could not open this asset.</p> : null}</div>;
+  return <div><Button type="button" size="sm" variant="secondary" onClick={() => void open()}><FolderOpen /> {t("documentsPreview.openExternal")}</Button>{error ? <p role="alert" className="mt-1 text-xs text-destructive">{t("documentsPreview.externalOpenFailed")}</p> : null}</div>;
 }
 
 type Translate = ReturnType<typeof useAppTranslation>["t"];
