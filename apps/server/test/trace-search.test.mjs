@@ -30,5 +30,7 @@ describe("searchTraceRecords", () => {
     assert.equal(first.records[0].invocationId, "inv_a2");
     assert.equal(second.records[0].invocationId, "inv_a1");
     assert.equal(second.nextCursor, null);
+    const rebound = searchTraceRecords({ state, actor: { teamId: "team_a" }, query: "budget", limit: 1, cursor: first.nextCursor });
+    assert.equal(rebound.records[0].invocationId, "inv_a1");
   });
 });

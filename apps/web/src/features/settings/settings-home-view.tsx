@@ -44,11 +44,13 @@ export function SettingsHomeView() {
   const relatedChannelIds = new Set((state?.channelDeliveries ?? [])
     .filter((item) => item.invocationId && relatedInvocationIds.has(item.invocationId))
     .map((item) => item.channelId));
+  const matchedCapabilities = [...applicationCapabilities].filter((name) =>
+    relatedAgents.some((item) => (item.capabilities ?? []).some((capability) => capability.name === name)));
   const setupStages = [
-    { key: "application", ready: selectedApplication?.status === "active" && selectedApplication.localReadiness?.state !== "repair_required", section: "applications" as const },
-    { key: "agent", ready: relatedAgents.some((item) => item.status !== "disabled" && item.health?.status !== "unhealthy"), section: "agents" as const },
-    { key: "tool", ready: relatedAgents.some((item) => (item.capabilities ?? []).some((capability) => capability.name && applicationCapabilities.has(capability.name))), section: "tools" as const },
-    { key: "channel", ready: (state?.channelOperations ?? []).some((item) => relatedChannelIds.has(item.id) && item.ready && item.health !== "attention"), section: "channels" as const, optional: true },
+    { key: "application", ready: selectedApplication?.status === "active" && selectedApplication.localReadiness?.state !== "repair_required", reason: selectedApplication ? `${selectedApplication.name} · ${selectedApplication.localReadiness?.state ?? selectedApplication.status}` : t("settingsHome.noApplication"), section: "applications" as const },
+    { key: "agent", ready: relatedAgents.some((item) => item.status !== "disabled" && item.health?.status !== "unhealthy"), reason: relatedAgents.map((item) => item.name).join(", ") || t("settingsHome.noActualLink"), section: "agents" as const },
+    { key: "tool", ready: matchedCapabilities.length > 0, reason: matchedCapabilities.join(", ") || t("settingsHome.noActualLink"), section: "tools" as const },
+    { key: "channel", ready: (state?.channelOperations ?? []).some((item) => relatedChannelIds.has(item.id) && item.ready && item.health !== "attention"), reason: [...relatedChannelIds].join(", ") || t("settingsHome.noActualLink"), section: "channels" as const, optional: true },
   ];
 
   return (
@@ -95,6 +97,7 @@ export function SettingsHomeView() {
               <span className="text-xs text-muted-foreground">{index + 1}</span>
               <strong className="block text-sm">{t(stage.key === "application" ? "settingsHome.guide.application" : stage.key === "agent" ? "settingsHome.guide.agent" : stage.key === "tool" ? "settingsHome.guide.tool" : "settingsHome.guide.channel")}</strong>
               <span className="text-xs text-muted-foreground">{t(stage.ready ? "settingsHome.ready" : stage.optional ? "settingsHome.optional" : "settingsHome.needsSetup")}</span>
+              <span className="mt-1 block truncate text-[11px] text-muted-foreground" title={stage.reason}>{t("settingsHome.basis", { basis: stage.reason })}</span>
             </button>
           ))}
           </div>

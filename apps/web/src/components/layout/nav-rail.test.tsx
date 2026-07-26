@@ -62,6 +62,14 @@ describe("NavRail collapsible groups (#928)", () => {
     expect(screen.getByText("Agents")).toBeTruthy();
   });
 
+  it("opens Settings home directly while the Settings group remains collapsed", () => {
+    mockEmptyState();
+    useUiStore.setState({ section: "dashboard", collapsedNavGroups: [...DEFAULT_COLLAPSED_NAV_GROUPS] });
+    renderNav();
+    fireEvent.click(screen.getByRole("button", { name: "Open Settings" }));
+    expect(useUiStore.getState().section).toBe("settings");
+  });
+
   it("renders stable navigation keys in Simplified Chinese", async () => {
     mockEmptyState();
     useUiStore.setState({ section: "dashboard", locale: "zh-CN", collapsedNavGroups: [...DEFAULT_COLLAPSED_NAV_GROUPS] });

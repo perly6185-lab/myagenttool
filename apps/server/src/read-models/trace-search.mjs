@@ -60,24 +60,24 @@ export function buildTraceSearchRecord(state, invocation) {
   };
 }
 
-function decodeCursor(cursor) {
+function decodeCursor(cursor, query) {
   if (!cursor) return 0;
   try {
     const parsed = JSON.parse(Buffer.from(cursor, "base64url").toString("utf8"));
-    return Number.isSafeInteger(parsed?.offset) && parsed.offset >= 0 ? parsed.offset : 0;
+    return parsed?.query === lower(query) && Number.isSafeInteger(parsed?.offset) && parsed.offset >= 0 ? parsed.offset : 0;
   } catch {
     return 0;
   }
 }
 
-function encodeCursor(offset) {
-  return Buffer.from(JSON.stringify({ offset }), "utf8").toString("base64url");
+function encodeCursor(offset, query) {
+  return Buffer.from(JSON.stringify({ offset, query: lower(query) }), "utf8").toString("base64url");
 }
 
 export function searchTraceRecords({ state, actor, query = "", cursor = null, limit = DEFAULT_LIMIT }) {
   const terms = lower(query).split(/\s+/).filter(Boolean);
   const cap = Math.min(MAX_LIMIT, Math.max(1, Number.parseInt(limit, 10) || DEFAULT_LIMIT));
-  const offset = decodeCursor(cursor);
+  const offset = decodeCursor(cursor, query);
   const records = (state.invocations ?? [])
     .filter((invocation) => visibleToActor(state, actor, invocation))
     .map((invocation) => buildTraceSearchRecord(state, invocation))
@@ -86,7 +86,7 @@ export function searchTraceRecords({ state, actor, query = "", cursor = null, li
   const page = records.slice(offset, offset + cap).map(({ searchable: _searchable, ...record }) => record);
   return {
     records: page,
-    nextCursor: offset + cap < records.length ? encodeCursor(offset + cap) : null,
+    nextCursor: offset + cap < records.length ? encodeCursor(offset + cap, query) : null,
     total: records.length,
   };
 }
