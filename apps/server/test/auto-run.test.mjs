@@ -328,6 +328,28 @@ test("advanceAutoRunForInvocation publishes and opens a PR when the run succeeds
   assert.equal(autoRun.prUrl, "https://github.com/o/r/pull/77");
 });
 
+test("a successful local issue completes on its committed worktree without a remote PR", async () => {
+  const { svc, calls } = makeAutoRun();
+  const { autoRun, invocation, worktree } = await svc.startAutoRun({
+    projectId: sourceProjectId,
+    link: { type: "local_issue", number: 20, title: "Keep it local", url: null, state: "open" },
+    agentId: "agt_1",
+    name: "local-20-keep-it-local",
+  });
+
+  await svc.advanceAutoRunForInvocation({ ...invocation, status: "succeeded" });
+
+  assert.equal(autoRun.status, "done");
+  assert.deepEqual(autoRun.localDelivery, {
+    worktreeId: worktree.id,
+    branchName: worktree.branchName,
+  });
+  assert.equal(calls.commit.length, 1, "the local result is committed before completion");
+  assert.equal(calls.verify.length, 1, "the configured verification gate still runs");
+  assert.equal(calls.publish.length, 0, "local issue completion never pushes a branch");
+  assert.equal(calls.pr.length, 0, "local issue completion never opens a GitHub PR");
+});
+
 test("advanceAutoRunForInvocation marks the auto-run failed when the run fails", async () => {
   const { svc, calls } = makeAutoRun();
   const { autoRun, invocation } = await svc.startAutoRun({
@@ -789,6 +811,7 @@ test("self-repair: a failing check re-attempts (preApproved), then blocks after 
   assert.equal(autoRun.repairAttempts, 1);
   const repair = calls.createInvocation.at(-1);
   assert.equal(repair.options.preApproved, true, "repair skips the human gate (continuation of an approved run)");
+  assert.equal(repair.options.timeoutSeconds, 600, "repair records the same effective timeout as its adapter");
   assert.match(repair.task, /FAILED the verification check/);
   assert.equal(calls.pr.length, 0);
   // 2nd → attempt 2; 3rd → cap reached → block.
@@ -1083,6 +1106,85 @@ test("retryAutoRun restarts a failed run on its existing worktree (pilot #9)", a
   assert.equal(state.worktrees.length, worktreesBefore, "no new worktree — retry reuses the existing one");
   assert.equal(calls.createInvocation.length, 2);
   assert.match(calls.createInvocation[1].task, /implement the change/, "role prompt rebuilt from the decision");
+  assert.equal(calls.createInvocation[1].options.timeoutSeconds, 600, "stored retry budget matches the coding adapter runtime");
+});
+
+test("execution timeout gets one approved, bounded continuation on the same worktree", async () => {
+  const agent = fakeAgent({ adapter: { type: "cli", timeoutSeconds: 900 } });
+  const { svc, calls } = makeAutoRun({ agent });
+  const { autoRun, invocation } = await svc.startAutoRun({
+    projectId: sourceProjectId,
+    link: { type: "issue", number: 197, title: "Long implementation", url: null, state: "open" },
+    agentId: agent.id,
+    name: "issue-197-timeout-continuation",
+  });
+  state.codexApprovalBrokerRequests = [{
+    id: "cdx_appr_197",
+    invocationId: invocation.id,
+    toolName: "Bash",
+    status: "approved",
+  }];
+
+  await svc.advanceAutoRunForInvocation({
+    ...invocation,
+    status: "timed_out",
+    result: { errorCode: "execution_timeout" },
+  });
+
+  assert.equal(autoRun.status, "running");
+  assert.equal(autoRun.timeoutRecoveryAttempts, 1);
+  assert.equal(calls.createInvocation.length, 2);
+  const continuation = calls.createInvocation.at(-1);
+  assert.equal(continuation.options.timeoutSeconds, 900);
+  assert.equal(continuation.options.preApproved, true);
+  assert.equal(continuation.options.metadata.codexApprovalContinuationRequestId, "cdx_appr_197");
+  assert.match(continuation.task, /do not repeat broad repository discovery/i);
+  assert.equal(continuation.options.metadata.worktreeId, autoRun.worktreeId);
+
+  await svc.advanceAutoRunForInvocation({
+    id: autoRun.invocationId,
+    status: "timed_out",
+    result: { errorCode: "execution_timeout" },
+  });
+  assert.equal(autoRun.status, "failed", "the bounded continuation cannot loop forever");
+  assert.equal(calls.createInvocation.length, 2);
+});
+
+test("late approval recovery retries the exact stored task without a second approval gate", async () => {
+  let body = "APPROVED ORIGINAL BODY";
+  const { svc, calls } = makeAutoRun({ fetchIssueBody: async () => body });
+  const { autoRun } = await svc.startAutoRun({
+    projectId: sourceProjectId,
+    link: { type: "issue", number: 198, title: "Late approval", url: null, state: "open" },
+    agentId: "agt_1",
+    name: "issue-198-late-approval",
+  });
+  autoRun.status = "failed";
+  body = "EDITED AFTER APPROVAL";
+  const approval = {
+    id: "cdx_appr_198",
+    invocationId: autoRun.invocationId,
+    status: "timed_out",
+    lateApprovalRecovery: {
+      status: "starting",
+      autoRunId: autoRun.id,
+      claimToken: "claim_198",
+    },
+  };
+  state.codexApprovalBrokerRequests = [approval];
+
+  const { invocation } = await svc.retryAutoRun(autoRun.id, {
+    actor: { userId: "usr_owner" },
+    approvalRecoveryRequestId: approval.id,
+    approvalRecoveryClaimToken: "claim_198",
+  });
+  const retry = calls.createInvocation.at(-1);
+  assert.equal(retry.options.preApproved, true);
+  assert.equal(retry.options.timeoutSeconds, 600);
+  assert.equal(retry.options.metadata.codexApprovalContinuationRequestId, approval.id);
+  assert.equal(approval.lateApprovalRecovery.targetInvocationId, invocation.id);
+  assert.match(retry.task, /APPROVED ORIGINAL BODY/);
+  assert.doesNotMatch(retry.task, /EDITED AFTER APPROVAL/);
 });
 
 test("retryAutoRun refuses non-settled runs and missing worktrees", async () => {
@@ -1439,6 +1541,7 @@ test("3b: an infra reclaim fails over to a healthy same-device alternate agent",
     assert.equal(autoRun.failoverOutcome.reason, "dispatch_timeout");
     assert.notEqual(autoRun.status, "failed", "the run is live again");
     assert.equal(autoRun.errorCode, null, "the infra code is cleared on the restart");
+    assert.equal(calls.createInvocation.at(-1).options.timeoutSeconds, 600, "failover records the alternate adapter timeout");
     assert.ok(calls.events.some((e) => e.type === "auto_run_failed_over" && e.data.toAgentId === "agt_2"));
   } finally {
     state.agents = savedAgents;

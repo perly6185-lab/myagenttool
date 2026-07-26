@@ -26,6 +26,24 @@ export function branchFromIssue(item) {
   return `issue-${item?.number}-${slugifyIssueTitle(item?.title)}`;
 }
 
+// Repository discovery is a shared safety contract, not a role-specific hint.
+// Every issue-driven agent gets the same bounded orientation rules so design,
+// clarification and retry paths cannot accidentally fall back to an unbounded
+// root scan. The Desktop bridge additionally injects managed ripgrep excludes;
+// these instructions keep commands efficient even when another search tool is
+// chosen.
+export const SAFE_REPOSITORY_DISCOVERY_INSTRUCTIONS =
+  "Repository discovery safety: start with `git ls-files` (optionally with pathspecs) and then " +
+  "search only known relative source directories. For an initial cleanliness check use " +
+  "`git status --short --untracked-files=no`; inspect untracked files only in a relevant target " +
+  "directory. Never run a recursive repository-root scan such as `rg --files .`, " +
+  "`Get-ChildItem -Recurse`, `find .`, or `dir /s`. Never scan outside the current worktree, " +
+  "follow directory links/junctions, or use `..`/absolute paths for discovery. Exclude dependency, " +
+  "generated, build, cache, packaged-release and VCS trees, including node_modules, dist, coverage, " +
+  "build, out, .cache, .codex-run, apps/electron/release, and .git. Keep every discovery command " +
+  "narrow and bounded; if a search is slow, stop it and reduce its paths instead of retrying the " +
+  "same broad command.";
+
 /**
  * The task prompt an agent receives when it is pointed at a worktree created
  * from a GitHub issue/PR. `item` is the worktree link shape
@@ -38,7 +56,8 @@ export function worktreeAutoRunPrompt(item) {
   const urlLine = item?.url ? `\n${item.url}` : "";
   return (
     `Make progress on ${item?.type === "local_issue" ? "" : "GitHub "}${label} #${number}: ${title}.${urlLine}\n` +
-    "Review the latest state, do the next useful step, and summarize what changed."
+    "Review the latest state, do the next useful step, and summarize what changed.\n\n" +
+    SAFE_REPOSITORY_DISCOVERY_INSTRUCTIONS
   );
 }
 
@@ -167,5 +186,5 @@ export function roleAutoRunPrompt(item, { path = "develop", issueBody = null, ve
     verifyCommand && (path === "develop" || path === "prototype")
       ? `\n\nYour change will be verified by running: \`${String(verifyCommand).slice(0, 300)}\`. Make sure it passes before you finish.`
       : "";
-  return `${item?.type === "local_issue" ? "" : "GitHub "}${label} #${number}: ${title}.${urlLine}${body}\n\n${instructions}${verifyLine}`;
+  return `${item?.type === "local_issue" ? "" : "GitHub "}${label} #${number}: ${title}.${urlLine}${body}\n\n${instructions}\n\n${SAFE_REPOSITORY_DISCOVERY_INSTRUCTIONS}${verifyLine}`;
 }

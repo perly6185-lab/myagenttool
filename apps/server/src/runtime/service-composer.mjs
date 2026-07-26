@@ -44,6 +44,7 @@ import { createCodexReviewImportService } from "../services/codex-review-imports
 import { createCodexExecImportService } from "../services/codex-exec-imports.mjs";
 import { createRoundTelemetryRuntime } from "../services/round-telemetry.mjs";
 import { createCodexService } from "../services/codex.mjs";
+import { createCodexApprovalRecoveryService } from "../services/codex-approval-recovery.mjs";
 import { createIntegrationService } from "../services/integrations.mjs";
 import { createInvocationEventService } from "../services/invocation-events.mjs";
 import { createInvocationRefusalService } from "../services/invocation-refusals.mjs";
@@ -1204,13 +1205,31 @@ export function createServerRuntimeServices({
     fileRemediationIssue: async ({ repoPath, title, body, labels }) => runChildIssueCreate({ cwd: repoPath, title, body, labels }),
     store,
   });
+  const codexApprovalRecovery = createCodexApprovalRecoveryService({
+    state,
+    now,
+    appendEvent,
+    persistStateSoon,
+    findInvocation,
+    retryAutoRun,
+  });
   const processPlanningRecommendedActions = () =>
     planningProjectService.processQueuedRecommendedActions({ retryAutoRun });
   // Now that the reaction exists, let completion drive it.
-  advanceAutoRunHook = advanceAutoRunForInvocation;
+  advanceAutoRunHook = async (invocation) => {
+    const result = await advanceAutoRunForInvocation(invocation);
+    await codexApprovalRecovery.resumeForSettledInvocation(invocation);
+    return result;
+  };
   approvalAutoRunHook = syncAutoRunOnApproval;
   denialAutoRunHook = syncAutoRunOnDenial;
   orchestrationAutoRecoveryHook = maybeAutoRecoverOrchestrationRun; // hoisted function declaration (defined with the recovery machinery below)
+  // Explicit approvals survive a server restart. Reconcile any recovery that
+  // was waiting for terminal propagation or whose short `starting` claim was
+  // interrupted before the resumed invocation could be recorded.
+  queueMicrotask(() => {
+    void codexApprovalRecovery.reconcilePendingRecoveries().catch(() => {});
+  });
 
   // Routing-evaluation disposition refresh (slice 5): bounded, throttled,
   // read-only gh; persists only when something changed.
@@ -1928,11 +1947,12 @@ export function createServerRuntimeServices({
 
   // Orchestration auto-recovery (docs/design/ORCHESTRATION_AUTO_RECOVERY.md).
   // Approval policy: autonomy never crosses an approval gate — only the model's
-  // RECOMMENDED action, only `rerun`, only on runtime_error/dispatch_timeout
+  // RECOMMENDED action, only `rerun`, only on runtime_error/dispatch_timeout/
+  // execution_timeout
   // (cancelled would override human intent), capped per stream, opt-in per app.
   // Skip decisions are evented only for opted-in applications (quiet by default).
   const AUTO_RECOVERY_ACTOR_ID = "system_auto_recovery";
-  const AUTO_RECOVERY_CATEGORIES = new Set(["runtime_error", "dispatch_timeout"]);
+  const AUTO_RECOVERY_CATEGORIES = new Set(["runtime_error", "dispatch_timeout", "execution_timeout"]);
 
   function consecutiveAutoRecoveryAttempts(applicationId, routineId) {
     // Auto attempts on the stream since its last successful run; a success (or a
@@ -2029,7 +2049,7 @@ export function createServerRuntimeServices({
   }
 
   function maybeAutoRecoverOrchestrationRun(invocation) {
-    if (invocation?.status !== "failed") return;
+    if (!["failed", "timed_out"].includes(invocation?.status)) return;
     const meta = invocation?.options?.metadata;
     if (meta?.source !== "application_orchestration" || !meta.applicationId || !meta.routineId) return;
     const application = findApplication(meta.applicationId);
@@ -2999,6 +3019,13 @@ export function createServerRuntimeServices({
         action("rerun", "Re-run orchestration", "Retry the governed run after confirming the bridge is online.", false, { invocationId: invocation.id }),
         action("view_invocation", "Inspect delivery attempts", "Check dispatch attempts and bridge cursor details.", false, { invocationId: invocation.id }),
       ], recoveryActions),
+      approval_timeout: (confidence) => recovery("approval_timeout", confidence, false, "The approval window expired before the run was allowed to continue.", [
+        action("view_invocation", "Review expired approval", "Open the invocation to approve and resume the linked task when recovery is available.", false, { invocationId: invocation.id }),
+      ], recoveryActions),
+      execution_timeout: (confidence) => recovery("execution_timeout", confidence, true, invocation.result?.summary ?? "The executor exceeded its configured runtime.", [
+        action("rerun", "Continue the governed run", "Resume from the existing governed context after an execution timeout.", false, { invocationId: invocation.id }),
+        action("view_invocation", "Inspect timeout evidence", "Review the execution timeline and partial result before retrying.", false, { invocationId: invocation.id }),
+      ], recoveryActions),
       policy_blocked: (confidence) => recovery("policy_blocked", confidence, false, "The run appears blocked by policy or approval handling.", [
         action("view_invocation", "Review policy decision", "Inspect approval and policy events before retrying.", true, { invocationId: invocation.id }),
       ], recoveryActions),
@@ -3134,6 +3161,8 @@ export function createServerRuntimeServices({
       cancelled: "rerun",
       device_unlinked: "relink_device",
       dispatch_timeout: "rerun",
+      approval_timeout: "view_invocation",
+      execution_timeout: "rerun",
       none: "view_invocation",
       policy_blocked: "view_invocation",
       runtime_error: "rerun",
@@ -3162,6 +3191,8 @@ export function createServerRuntimeServices({
       cancelled: "The run was cancelled, so a fresh governed run is the safest recovery.",
       device_unlinked: "The local device bridge appears unlinked, so relinking must happen before local-device work can recover.",
       dispatch_timeout: "The run did not dispatch cleanly, so a fresh governed run is the most direct recovery.",
+      approval_timeout: "The approval window expired, so the recorded decision should be reviewed before resuming.",
+      execution_timeout: "The executor exceeded its runtime, so a bounded governed continuation is the most direct recovery.",
       none: "The run completed successfully; inspecting the audit trail is the only recovery action needed.",
       policy_blocked: "Policy or approval evidence should be reviewed before attempting another side-effecting action.",
       runtime_error: "The run failed during execution; a governed rerun is the lowest-risk automated recovery.",
@@ -3512,6 +3543,7 @@ export function createServerRuntimeServices({
     ensureLocalOrigin,
     startAutoRun,
     retryAutoRun,
+    recoverTimedOutCodexApproval: codexApprovalRecovery.recoverTimedOutApproval,
     processPlanningRecommendedActions,
     cancelAutoRun,
     reapStuckAutoRuns,

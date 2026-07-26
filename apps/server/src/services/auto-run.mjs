@@ -15,6 +15,7 @@ import { composeDesignIssueComment, designArtifactIndex, buildDesignImageUrls } 
 import { decompositionTree, issueTreeApplyFailures, humanApprovalRequiredReasons } from "../../../../tools/ai/src/issue-tree-core.mjs";
 import { scoreDecompositionOverlap } from "./auto-run-epic.mjs";
 import { makeRunTx } from "../runtime/store/run-tx.mjs";
+import { buildAutoRunCheckpoint, continuationCheckpointPrompt } from "./auto-run-checkpoint.mjs";
 
 // One-click "Auto" orchestrator. It closes the seam the console never had:
 // turning a linked GitHub issue into a worktree AND a started agent run seeded
@@ -824,6 +825,132 @@ export function createAutoRunService({
     });
   }
 
+  // A genuine execution timeout is recoverable on the existing worktree. Make
+  // one bounded continuation instead of immediately dead-ending the local
+  // issue. Dispatch/orphan timeouts keep their existing failover path.
+  async function continueTimedOutAutoRun(autoRun, invocation) {
+    const errorCode = invocation?.result?.errorCode ?? null;
+    if (invocation?.status !== "timed_out" || errorCode !== "execution_timeout") {
+      return false;
+    }
+    const maxAttempts = Math.max(0, Math.min(
+      1,
+      Number(state.autoRunSettings?.maxTimeoutRecoveryAttempts ?? 1),
+    ));
+    const attempts = Number(autoRun.timeoutRecoveryAttempts ?? 0);
+    if (attempts >= maxAttempts || autoRunSpendRefusal(autoRun.projectId)) {
+      return false;
+    }
+    const worktree = state.worktrees.find((item) => item.id === autoRun.worktreeId) ?? null;
+    const agent = (autoRun.agentId ? findAgent(autoRun.agentId) : null) ?? defaultAgent();
+    if (!worktree || !agent || agent.status === "disabled") {
+      return false;
+    }
+
+    // Reuse only the body captured when this run started. A continuation that
+    // inherits approval must never pick up a subsequently edited issue body.
+    const path = autoRun.decision?.path ?? "develop";
+    const checkpoint = buildAutoRunCheckpoint({
+      invocation,
+      events: [
+        ...(state.codexEvidenceRecords ?? []),
+        ...(state.invocationEvents ?? []),
+        ...(state.events ?? []),
+      ],
+      changedFiles: invocation?.result?.continuationCheckpoint?.changedFiles ?? [],
+    });
+    const task =
+      `${roleAutoRunPrompt(autoRun.link, { path, issueBody: autoRun.issueBody ?? null })}\n\n` +
+      continuationCheckpointPrompt(checkpoint);
+    const continuationApproval = (state.codexApprovalBrokerRequests ?? []).find((request) =>
+      request.invocationId === invocation.id
+      && request.status === "approved"
+      && !request.continuationGrant?.targetInvocationId) ?? null;
+
+    let continuation;
+    const attempt = attempts + 1;
+    const idempotencyKey = `auto-run:${autoRun.id}:execution-timeout:${invocation.id}:${attempt}`;
+    try {
+      continuation = createInvocation(task, agent, {
+        requestedBy: invocation.requestedBy ?? "usr_local",
+        idempotencyKey,
+        preApproved: Boolean(continuationApproval),
+        timeoutSeconds: Number(agent.adapter?.timeoutSeconds ?? 600),
+        codexSessionMode: "continue_last",
+        resumeFromInvocationId: invocation.id,
+        metadata: {
+          worktreeId: worktree.id,
+          projectId: worktree.projectId,
+          autoRunId: autoRun.id,
+          role: path,
+          timeoutRecoveryAttempt: attempt,
+          timeoutRecoverySourceInvocationId: invocation.id,
+          continuationCheckpoint: checkpoint,
+          ...(continuationApproval
+            ? { codexApprovalContinuationRequestId: continuationApproval.id }
+            : {}),
+        },
+      });
+      if (continuationApproval) {
+        runTx(() => {
+          continuationApproval.continuationGrant = {
+            targetInvocationId: continuation.id,
+            autoRunId: autoRun.id,
+            worktreeId: worktree.id,
+            grantedAt: now(),
+          };
+          continuationApproval.updatedAt = now();
+        });
+      }
+    } catch {
+      return false;
+    }
+
+    runTx(() => {
+      autoRun.invocationId = continuation.id;
+      autoRun.timeoutRecoveryAttempts = attempt;
+      autoRun.timeoutRecovery = {
+        status: "ready",
+        sourceInvocationId: invocation.id,
+        targetInvocationId: continuation.id,
+        attempt,
+        idempotencyKey,
+        checkpoint,
+        updatedAt: now(),
+      };
+      setAutoRunStatus(autoRun, autoRunStatusForInvocation(continuation), {
+        error: null,
+        errorCode: null,
+      });
+      appendEvent({
+        invocationId: continuation.id,
+        type: "auto_run_retried",
+        level: "info",
+        message: `Auto-run ${autoRun.id} continued after an execution timeout on its existing worktree.`,
+        data: {
+          autoRunId: autoRun.id,
+          worktreeId: worktree.id,
+          invocationId: continuation.id,
+          previousInvocationId: invocation.id,
+          reason: "execution_timeout",
+          attempt: autoRun.timeoutRecoveryAttempts,
+          approvalReused: Boolean(continuationApproval),
+        },
+      });
+    });
+    // Dispatch only after the durable run/approval/checkpoint binding exists.
+    // A restart can then reconcile the exact target instead of creating another
+    // continuation for the same timeout.
+    startInvocationIfAllowed(continuation, agent);
+    runTx(() => {
+      if (autoRun.timeoutRecovery?.targetInvocationId === continuation.id) {
+        autoRun.timeoutRecovery.status = "dispatched";
+        autoRun.timeoutRecovery.updatedAt = now();
+      }
+    });
+    return true;
+  }
+
   // Reaction: when an auto-run's invocation reaches a terminal state, advance the
   // state machine. On success, publish the branch and open the PR (Phase 2 will
   // front-run a verification gate here). On failure, mark the auto-run failed.
@@ -1021,6 +1148,7 @@ export function createAutoRunService({
               try {
                 repair = createInvocation(repairTask, agent, {
                   preApproved: true, // continuation of an already human-approved run on unchanged content — no re-gate
+                  timeoutSeconds: Number(agent.adapter?.timeoutSeconds ?? 600),
                   metadata: { worktreeId: autoRun.worktreeId, projectId: autoRun.projectId, autoRunId: autoRun.id, role: "develop", repairAttempt: autoRun.repairAttempts },
                 });
               } catch {
@@ -1081,6 +1209,21 @@ export function createAutoRunService({
             screenshots = [];
           }
         }
+        // A local issue is deliberately platform-local: its reviewable result is
+        // the committed worktree/branch, not a GitHub pull request. Requiring a
+        // remote PR here makes a successful local task fail when its source
+        // branch is local-only (or the project has no GitHub remote at all).
+        if (autoRun.link?.type === "local_issue") {
+          runTx(() => setAutoRunStatus(autoRun, "done", {
+            error: null,
+            localDelivery: {
+              worktreeId: autoRun.worktreeId,
+              branchName: worktree.branchName ?? worktree.branch ?? autoRun.branchName ?? null,
+            },
+            ...(screenshots.length ? { screenshots } : {}),
+          }));
+          return autoRun;
+        }
         setAutoRunStatus(autoRun, "publishing");
         try {
           await publishWorktreeBranch(autoRun.worktreeId);
@@ -1096,6 +1239,9 @@ export function createAutoRunService({
           runTx(() => setAutoRunStatus(autoRun, "failed", { error: String(error?.message ?? error) }));
         }
       } else {
+        if (await continueTimedOutAutoRun(autoRun, invocation)) {
+          return autoRun;
+        }
         // failed | timed_out | cancelled | rejected. Carry the invocation's
         // errorCode onto the run: an infrastructure reclaim (bridge offline →
         // "dispatch_timeout") is distinguishable from a genuine task failure
@@ -1216,7 +1362,12 @@ export function createAutoRunService({
     });
   }
 
-  async function retryAutoRun(autoRunId, { actor, terminalId = null } = {}) {
+  async function retryAutoRun(autoRunId, {
+    actor,
+    terminalId = null,
+    approvalRecoveryRequestId = null,
+    approvalRecoveryClaimToken = null,
+  } = {}) {
     const autoRun = state.autoRuns.find((item) => item.id === autoRunId);
     if (!autoRun) throw new Error("Auto-run not found.");
     if (terminalId && String(terminalId) !== autoRun.terminalId) {
@@ -1237,15 +1388,167 @@ export function createAutoRunService({
       throw new Error("The target device is unlinked; link it before retrying.");
     }
 
-    const issueBody = await maybeFetchIssueBody(autoRun.link, autoRun.projectId);
+    const retrySourceInvocationId = autoRun.invocationId ?? null;
+    const retrySourceInvocation = retrySourceInvocationId
+      ? (state.invocations ?? []).find((item) => item.id === retrySourceInvocationId) ?? null
+      : null;
+    // A retry attempt can itself expire at the approval gate before a new Codex
+    // thread starts. In that case the latest invocation is approval_timeout,
+    // but the useful breakpoint is still the newest execution_timeout in this
+    // exact Auto-run/worktree chain. Walk only this bounded chain; never borrow
+    // another task's session.
+    const timeoutResumeSource = [
+      retrySourceInvocation,
+      ...(state.invocations ?? []),
+    ].find((candidate, index, rows) =>
+      candidate
+      && rows.indexOf(candidate) === index
+      && candidate.status === "timed_out"
+      && candidate.result?.errorCode === "execution_timeout"
+      && candidate.options?.metadata?.autoRunId === autoRun.id
+      && (candidate.worktreeId ?? candidate.options?.metadata?.worktreeId) === autoRun.worktreeId) ?? null;
+    const resumesExecutionTimeout = Boolean(timeoutResumeSource);
+    const retryCheckpoint = resumesExecutionTimeout
+      ? buildAutoRunCheckpoint({
+          invocation: timeoutResumeSource,
+          events: [
+            ...(state.codexEvidenceRecords ?? []),
+            ...(state.invocationEvents ?? []),
+            ...(state.events ?? []),
+          ],
+          changedFiles: timeoutResumeSource?.result?.continuationCheckpoint?.changedFiles ?? [],
+        })
+      : null;
+    const approvalRecoveryRequest = approvalRecoveryRequestId
+      ? (state.codexApprovalBrokerRequests ?? []).find((request) => request.id === approvalRecoveryRequestId)
+      : null;
+    const timeoutResumeSessionId = String(
+      timeoutResumeSource?.options?.codexResumeSessionId
+      ?? timeoutResumeSource?.result?.providerSessionId
+      ?? "",
+    ).trim();
+    const timeoutContinuationApproval = !approvalRecoveryRequest && timeoutResumeSource
+      ? (state.codexApprovalBrokerRequests ?? []).find((request) =>
+          request.status === "approved"
+          && !request.continuationGrant?.targetInvocationId
+          && (() => {
+            const approvalInvocation = (state.invocations ?? []).find((item) => item.id === request.invocationId);
+            if (!approvalInvocation) {
+              // Preserve compatibility with the immediate timeout record while
+              // refusing to infer scope for any other missing invocation.
+              return request.invocationId === timeoutResumeSource.id;
+            }
+            const metadata = approvalInvocation.options?.metadata ?? {};
+            if (
+              metadata.autoRunId !== autoRun.id
+              || (approvalInvocation.worktreeId ?? metadata.worktreeId) !== autoRun.worktreeId
+            ) {
+              return false;
+            }
+            if (approvalInvocation.id === timeoutResumeSource.id) {
+              return true;
+            }
+            // A reused broker request is itself an auditable child capability.
+            // Carry that unconsumed child forward after a timed-out/cancelled
+            // continuation, but only inside the exact provider thread.
+            return Boolean(request.recoveredFromApprovalRequestId)
+              && Boolean(timeoutResumeSessionId)
+              && approvalInvocation.options?.codexResumeSessionId === timeoutResumeSessionId
+              && approvalInvocation.requestedBy === timeoutResumeSource.requestedBy;
+          })()) ?? null
+      : null;
+    if (approvalRecoveryRequestId && (
+      !approvalRecoveryRequest
+      || approvalRecoveryRequest.status !== "timed_out"
+      || approvalRecoveryRequest.lateApprovalRecovery?.status !== "starting"
+      || approvalRecoveryRequest.lateApprovalRecovery?.autoRunId !== autoRun.id
+      || approvalRecoveryRequest.lateApprovalRecovery?.claimToken !== approvalRecoveryClaimToken
+    )) {
+      throw new Error("The late approval recovery grant is invalid or no longer active.");
+    }
+    const issueBody = approvalRecoveryRequest
+      ? autoRun.issueBody ?? null
+      : (await maybeFetchIssueBody(autoRun.link, autoRun.projectId)) ?? autoRun.issueBody ?? null;
+    // A normal retry can yield while refreshing an issue body. Re-check the
+    // claim before creating an invocation so a simultaneous late-approval
+    // recovery (or a second retry click) cannot launch a duplicate run.
+    if (
+      !["failed", "blocked"].includes(autoRun.status)
+      || (autoRun.invocationId ?? null) !== retrySourceInvocationId
+    ) {
+      throw new Error("Another retry has already started for this auto-run.");
+    }
     const retryPath = autoRun.decision?.path ?? "develop";
-    const task = roleAutoRunPrompt(autoRun.link, { path: retryPath, issueBody });
+    const task = approvalRecoveryRequest
+      ? `${roleAutoRunPrompt(autoRun.link, { path: retryPath, issueBody })}\n\n` +
+        "The earlier launch expired while waiting for approval. That exact task has now been approved. " +
+        "Resume on this existing worktree without repeating broad repository discovery."
+      : resumesExecutionTimeout
+        ? `${roleAutoRunPrompt(autoRun.link, { path: retryPath, issueBody })}\n\n${continuationCheckpointPrompt(retryCheckpoint)}`
+        : roleAutoRunPrompt(autoRun.link, { path: retryPath, issueBody });
     let invocation;
     try {
       invocation = createInvocation(task, agent, {
         actor,
+        requestedBy: retrySourceInvocation?.requestedBy ?? actor?.userId ?? "usr_local",
+        preApproved: Boolean(approvalRecoveryRequest || timeoutContinuationApproval),
+        timeoutSeconds: Number(agent.adapter?.timeoutSeconds ?? 600),
+        ...(resumesExecutionTimeout
+          ? {
+              idempotencyKey: `auto-run:${autoRun.id}:manual-timeout-retry:${timeoutResumeSource.id}:from:${retrySourceInvocationId ?? "none"}`,
+              codexSessionMode: "continue_last",
+              resumeFromInvocationId: timeoutResumeSource.id,
+            }
+          : {}),
         // Same role seeding as the initial run so role-restricted skills render.
-        metadata: { worktreeId: worktree.id, projectId: worktree.projectId, autoRunId: autoRun.id, role: retryPath },
+        metadata: {
+          worktreeId: worktree.id,
+          projectId: worktree.projectId,
+          autoRunId: autoRun.id,
+          role: retryPath,
+          ...(resumesExecutionTimeout
+            ? {
+                timeoutRecoverySourceInvocationId: timeoutResumeSource.id,
+                continuationCheckpoint: retryCheckpoint,
+              }
+            : {}),
+          ...(approvalRecoveryRequest
+            ? { codexApprovalContinuationRequestId: approvalRecoveryRequest.id }
+            : timeoutContinuationApproval
+              ? { codexApprovalContinuationRequestId: timeoutContinuationApproval.id }
+            : {}),
+        },
+      });
+      runTx(() => {
+        if (approvalRecoveryRequest) {
+          approvalRecoveryRequest.lateApprovalRecovery.targetInvocationId = invocation.id;
+          approvalRecoveryRequest.updatedAt = now();
+        }
+        if (timeoutContinuationApproval) {
+          timeoutContinuationApproval.continuationGrant = {
+            targetInvocationId: invocation.id,
+            autoRunId: autoRun.id,
+            worktreeId: worktree.id,
+            grantedAt: now(),
+          };
+          timeoutContinuationApproval.updatedAt = now();
+        }
+        // Bind the new invocation before handing it to the executor. A process
+        // restart after dispatch can then reconcile the durable recovery claim
+        // instead of leaving the auto-run pointed at its expired invocation.
+        autoRun.invocationId = invocation.id;
+        // Fresh repair budget for the retry — otherwise a run that exhausted its
+        // repairs stays at the cap and the retried attempt gets zero self-repair.
+        autoRun.repairAttempts = 0;
+        autoRun.timeoutRecoveryAttempts = 0;
+        setAutoRunStatus(autoRun, autoRunStatusForInvocation(invocation), { error: null, prNumber: null, prUrl: null });
+        appendEvent({
+          invocationId: invocation.id,
+          type: "auto_run_retried",
+          level: "info",
+          message: `Auto-run ${autoRun.id} retried on its existing worktree.`,
+          data: { autoRunId: autoRun.id, worktreeId: worktree.id, invocationId: invocation.id, status: autoRun.status },
+        });
       });
       startInvocationIfAllowed(invocation, agent);
     } catch (error) {
@@ -1254,21 +1557,7 @@ export function createAutoRunService({
       });
       throw error;
     }
-    return runTx(() => {
-      autoRun.invocationId = invocation.id;
-      // Fresh repair budget for the retry — otherwise a run that exhausted its
-      // repairs stays at the cap and the retried attempt gets zero self-repair.
-      autoRun.repairAttempts = 0;
-      setAutoRunStatus(autoRun, autoRunStatusForInvocation(invocation), { error: null, prNumber: null, prUrl: null });
-      appendEvent({
-        invocationId: invocation.id,
-        type: "auto_run_retried",
-        level: "info",
-        message: `Auto-run ${autoRun.id} retried on its existing worktree.`,
-        data: { autoRunId: autoRun.id, worktreeId: worktree.id, invocationId: invocation.id, status: autoRun.status },
-      });
-      return { autoRun, invocation };
-    });
+    return { autoRun, invocation };
   }
 
   // #1268 (3b): after a run fails for an INFRASTRUCTURE reason (the executor died,
@@ -1339,6 +1628,7 @@ export function createAutoRunService({
     let invocation;
     try {
       invocation = createInvocation(task, alternate, {
+        timeoutSeconds: Number(alternate.adapter?.timeoutSeconds ?? 600),
         metadata: { worktreeId: worktree.id, projectId: worktree.projectId, autoRunId: autoRun.id, role: path },
       });
       startInvocationIfAllowed(invocation, alternate);

@@ -117,11 +117,11 @@ async function waitForAlert(kind, timeoutMs = 2000) {
 }
 
 // Run the routine and complete it via the bridge protocol with the given outcome.
-async function runAndComplete({ status, summary }) {
+async function runAndComplete({ status, summary, errorCode = undefined }) {
   const run = await call(`/api/applications/${appId}/orchestrations/${routineId}/run`, { method: "POST", body: {} });
   assert.equal(run.status, 201, JSON.stringify(run.body));
   const invocationId = run.body.invocation.id;
-  await completeViaBridge(invocationId, { status, summary });
+  await completeViaBridge(invocationId, { status, summary, errorCode });
   return invocationId;
 }
 
@@ -140,13 +140,13 @@ async function leaseForTarget(targetId) {
   }
 }
 
-async function completeViaBridge(invocationId, { status, summary }) {
+async function completeViaBridge(invocationId, { status, summary, errorCode = undefined }) {
   await leaseForTarget(invocationId);
   const ack = await call("/api/bridge/ack", { method: "POST", body: { invocationId }, token: bridgeToken });
   assert.equal(ack.status, 200, `ack ${invocationId}: ${JSON.stringify(ack.body)}`);
   const complete = await call("/api/bridge/complete", {
     method: "POST",
-    body: { invocationId, status, result: { summary } },
+    body: { invocationId, status, result: { summary, ...(errorCode ? { errorCode } : {}) } },
     token: bridgeToken,
   });
   assert.equal(complete.status, 200, `complete ${invocationId}: ${JSON.stringify(complete.body)}`);
@@ -292,6 +292,32 @@ test("a declared runtime_error beats validation-looking text (the live-drive mis
   assert.equal(autoRerunsOf(invocationId).length, 1, "declared runtime_error auto-reruns despite the validation-looking text");
   const recovery = await call(`/api/applications/${appId}/orchestrations/${routineId}/runs/${invocationId}/recovery`);
   assert.equal(recovery.body.recovery.category, "runtime_error");
+});
+
+test("approval_timeout stays human-handled while execution_timeout gets a bounded rerun", async () => {
+  await runAndComplete({ status: "succeeded", summary: "healthy again" });
+  const requestsBeforeApprovalTimeout = autoRequests().length;
+  const approvalTimeout = await runAndComplete({
+    status: "timed_out",
+    summary: "approval window expired",
+    errorCode: "approval_timeout",
+  });
+  assert.equal(autoRerunsOf(approvalTimeout).length, 0, "an expired approval never auto-runs");
+  assert.equal(autoRequests().length, requestsBeforeApprovalTimeout);
+  const approvalRecovery = await call(`/api/applications/${appId}/orchestrations/${routineId}/runs/${approvalTimeout}/recovery`);
+  assert.equal(approvalRecovery.body.recovery.category, "approval_timeout");
+  assert.equal(approvalRecovery.body.recovery.retryRecommended, false);
+
+  await runAndComplete({ status: "succeeded", summary: "healthy again" });
+  const executionTimeout = await runAndComplete({
+    status: "timed_out",
+    summary: "executor exceeded 600 seconds",
+    errorCode: "execution_timeout",
+  });
+  assert.equal(autoRerunsOf(executionTimeout).length, 1, "an execution timeout follows the bounded rerun policy");
+  const executionRecovery = await call(`/api/applications/${appId}/orchestrations/${routineId}/runs/${executionTimeout}/recovery`);
+  assert.equal(executionRecovery.body.recovery.category, "execution_timeout");
+  assert.equal(executionRecovery.body.recovery.retryRecommended, true);
 });
 
 test("an unknown errorCode falls back to haystack inference (never a fabricated category)", async () => {
