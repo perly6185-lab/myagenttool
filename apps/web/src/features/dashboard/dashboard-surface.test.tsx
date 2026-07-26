@@ -1,4 +1,4 @@
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { DashboardView } from "@/features/dashboard/dashboard-view";
 import { i18n } from "@/lib/i18n";
@@ -26,6 +26,10 @@ describe("DashboardView surfaces (#927)", () => {
     setup();
     render(<DashboardView surface="overview" />);
     expect(screen.getByText(/Getting started/i)).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Inspect this project" }));
+    expect((screen.getByRole("textbox", { name: "Task" }) as HTMLTextAreaElement).value).toBe(
+      "Inspect this project, explain its structure, and report risks without changing files.",
+    );
   });
 
   it("omits the onboarding checklist on the workspace surface but keeps the composer", () => {

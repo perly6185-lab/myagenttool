@@ -23,6 +23,12 @@ export function reconcileOperationalHealth(state, { teamId, now }) {
   for (const signal of routing?.signals ?? []) active.push({ key: `routing_${signal.key}`, source: "ai_routing", severity: signal.severity, message: `${signal.key} is ${signal.value} (threshold ${signal.threshold}).` });
   if (recovery.alerting) active.push({ key: "recovery_time", source: "recovery", severity: "danger", message: `Median recovery is ${recovery.recoveryHours.median}h (target ${recovery.thresholdHours}h).` });
   if (applicationResolution.budget.status === "fail") active.push({ key: "application_resolution_latency", source: "application_resolution", severity: "warning", message: `Application routing p95 is ${applicationResolution.p95Ms} ms (target ${applicationResolution.thresholdMs} ms).` });
+  const stuckRuns = (state.autoRuns ?? []).filter((run) => run.errorCode === "stuck" || run.status === "stuck");
+  if (stuckRuns.length) active.push({ key: "task_stuck", source: "task_execution", severity: "danger", message: `${stuckRuns.length} task run(s) stopped making progress. Open Auto-runs to inspect or retry.` });
+  const offlineProviders = (state.agents ?? []).filter((agent) => agent.status !== "disabled" && agent.health?.status === "unhealthy");
+  if (offlineProviders.length) active.push({ key: "provider_offline", source: "provider_readiness", severity: "warning", message: `${offlineProviders.length} execution provider(s) are offline or unhealthy. Open Agents to repair readiness.` });
+  const expiredCredentials = (state.applications ?? []).filter((application) => application.localReadiness?.state === "login_required");
+  if (expiredCredentials.length) active.push({ key: "credential_expired", source: "credential_readiness", severity: "danger", message: `${expiredCredentials.length} Application credential(s) require login. Open Settings or Applications to reconnect.` });
 
   state.operationalAlerts ??= [];
   const at = now();

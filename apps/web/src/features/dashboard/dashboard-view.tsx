@@ -11,6 +11,8 @@ import { RunTranscriptSection } from "@/features/invocations/run-transcript";
 import { DecisionAction } from "@/features/invocations/decision-action";
 import { GettingStartedCard } from "@/features/dashboard/getting-started-card";
 import { EntryJourney } from "@/features/dashboard/entry-journey";
+import { STARTER_TASK_TEMPLATES } from "@/features/dashboard/starter-task-templates";
+import { ActionErrorNotice } from "@/components/common/action-error-notice";
 import { useConsoleState } from "@/data/use-console-state";
 import { useAsyncAction, api } from "@/data/use-console-actions";
 import { resolveAgents, resolveInvocation } from "@/features/selection";
@@ -214,6 +216,16 @@ export function DashboardView({ surface = "overview" }: { surface?: DashboardSur
             </div>
           ) : null}
           <Textarea rows={3} value={task} onChange={(e) => setTask(e.target.value)} aria-label={t("dashboard.task")} />
+          {!invocation ? (
+            <div className="flex flex-wrap items-center gap-2" aria-label={t("dashboard.firstTaskTemplates")}>
+              <span className="text-xs text-muted-foreground">{t("dashboard.nextStep")}</span>
+              {STARTER_TASK_TEMPLATES.map((template) => (
+                <Button key={template.id} type="button" size="sm" variant="secondary" onClick={() => setTask(t(template.taskKey))}>
+                  {t(template.labelKey)}
+                </Button>
+              ))}
+            </div>
+          ) : null}
 
           <div className="grid gap-3 sm:grid-cols-2">
             <Field label={t("dashboard.project")}>
@@ -274,12 +286,15 @@ export function DashboardView({ surface = "overview" }: { surface?: DashboardSur
             >
               {t("dashboard.cancel")}
             </Button>
-            {blockReason || error ? (
+            {blockReason && !error ? (
               <span className="text-xs text-muted-foreground" aria-live="polite">
-                {error ?? blockReason}
+                {blockReason}
               </span>
             ) : null}
           </div>
+          {error ? <ActionErrorNotice error={error} onRetry={runTask} labels={{
+            cause: t("actionError.cause"), impact: t("actionError.impact"), remedy: t("actionError.remedy"), retry: t("actionError.retry"),
+          }} /> : null}
 
           <details className="group rounded-lg border border-border px-3 py-2">
             <summary className="cursor-pointer list-none text-sm font-medium text-muted-foreground">

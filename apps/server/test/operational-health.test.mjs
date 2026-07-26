@@ -41,3 +41,18 @@ test("operational alert actions cannot cross team boundaries", () => {
     teamId: "team_b", alertId: "a", action: "acknowledge", actorId: "usr_b", now: () => new Date().toISOString(),
   }), null);
 });
+
+test("operational health proactively reports stuck tasks, offline providers, and credentials", () => {
+  const state = {
+    projects: [], invocations: [], webPerformanceMetrics: [], operationalAlerts: [],
+    eventStreamMetrics: { byTeam: { team_a: {} } },
+    autoRuns: [{ id: "run_1", status: "failed", errorCode: "stuck" }],
+    agents: [{ id: "agent_1", status: "active", health: { status: "unhealthy" } }],
+    applications: [{ id: "app_1", localReadiness: { state: "login_required" } }],
+  };
+  const health = reconcileOperationalHealth(state, { teamId: "team_a", now: () => "2026-07-25T00:00:00.000Z" });
+  assert.deepEqual(
+    health.alerts.filter((row) => row.status === "open").map((row) => row.key).sort(),
+    ["credential_expired", "provider_offline", "task_stuck"],
+  );
+});
