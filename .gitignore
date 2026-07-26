@@ -30,6 +30,7 @@ pnpm-debug.log*
 .myagenttool/screenshots/
 .agents/runs/
 .agents/deploy-runs/
+.codex-run/
 
 # OS/editor noise
 .DS_Store
