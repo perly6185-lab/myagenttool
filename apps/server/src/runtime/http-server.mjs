@@ -1,6 +1,8 @@
 import http from "node:http";
 import { timingSafeEqual } from "node:crypto";
-import { REQUIRE_AUTH, resolveActor } from "./auth.mjs";
+import { resolveActor } from "./auth.mjs";
+import { identityPolicyFromEnv } from "./identity-policy.mjs";
+import { validSessionCsrf } from "../services/identity-security.mjs";
 import { handleAgentRoutes } from "../routes/agents.mjs";
 import { handleAgentSkillRoutes } from "../routes/agent-skills.mjs";
 import { handleApplicationRoutes } from "../routes/applications.mjs";
@@ -13,6 +15,8 @@ import { handleCanvasSceneRoutes } from "../routes/canvas-scenes.mjs";
 import { handleCodexRoutes } from "../routes/codex.mjs";
 import { handleControlPlaneRoutes } from "../routes/control-plane.mjs";
 import { handleIntegrationRoutes } from "../routes/integrations.mjs";
+import { handleIdentityRoutes } from "../routes/identity.mjs";
+import { handleGuidedSetupRoutes } from "../routes/guided-setup.mjs";
 import { handleInvocationRoutes } from "../routes/invocations.mjs";
 import { handleLoopRoutineRoutes } from "../routes/loop-routines.mjs";
 import { handleM3Routes } from "../routes/m3.mjs";
@@ -289,10 +293,13 @@ export function createHttpServer({
   retryChannelDelivery,
   nextId,
   persistStateSoon,
+  persistStateNow,
+  identityProviderCore = null,
 }) {
+  const identityPolicy = identityPolicyFromEnv();
   return http.createServer(async (req, res) => {
     try {
-      setCors(res);
+      setCors(req, res);
 
       if (req.method === "OPTIONS") {
         res.writeHead(204);
@@ -316,7 +323,7 @@ export function createHttpServer({
       // --- Identity: resolve the actor, then gate. `/api/session` (login) is
       // public and handled downstream in control-plane; everything else needs a
       // live token when MYAGENT_REQUIRE_AUTH is on. ---
-      const actor = resolveActor(state, req);
+      const actor = resolveActor(state, req, { now, persistStateSoon });
       const observationPath = url.pathname === "/api/terminal-observation/v1";
       if (observationPath) {
         if (req.method !== "GET") {
@@ -336,9 +343,35 @@ export function createHttpServer({
       // External providers authenticate webhook deliveries with endpoint-specific
       // signatures, so a user bearer token must not block those callbacks first.
       const issueWebhookPath = /^\/api\/webhooks\/(github|gitlab|gitea)\/work-items$/.test(url.pathname);
-      const publicPath = url.pathname === "/api/session" || bridgePath || issueWebhookPath;
-      if (REQUIRE_AUTH && !publicPath && !actor.authenticated) {
+      const publicIdentityPath =
+        (req.method === "POST" && url.pathname === "/api/session") ||
+        (req.method === "POST" && url.pathname === "/api/identity/recovery/complete") ||
+        url.pathname === "/api/identity/options" ||
+        url.pathname.startsWith("/api/identity/challenges");
+      const publicPath = publicIdentityPath || bridgePath || issueWebhookPath;
+      if (identityPolicy.requireAuth && !publicPath && !actor.authenticated) {
         sendJson(res, 401, { error: "unauthenticated", message: "Valid session token required." });
+        return;
+      }
+      const mutating = ["POST", "PUT", "PATCH", "DELETE"].includes(req.method);
+      if (mutating && !publicPath && actor.authMethod === "cookie" && !validSessionCsrf(req, actor)) {
+        sendJson(res, 403, { error: "csrf_invalid", message: "A valid CSRF token is required." });
+        return;
+      }
+
+      if (await handleIdentityRoutes({
+        req,
+        res,
+        url,
+        sendJson,
+        readJson,
+        state,
+        actor,
+        now,
+        persistStateSoon,
+        policy: identityPolicy,
+        providerCore: identityProviderCore,
+      })) {
         return;
       }
 
@@ -351,6 +384,23 @@ export function createHttpServer({
         // Application descriptors persisted before the dual-layer model (idempotent).
         backfillApplicationRuntimeMetadata(state.applications);
         sendJson(res, 200, publicState(actor));
+        return;
+      }
+
+      if (await handleGuidedSetupRoutes({
+        req,
+        res,
+        url,
+        sendJson,
+        readJson,
+        state,
+        actor,
+        now,
+        nextId,
+        persistStateSoon,
+        persistStateNow,
+        publicState,
+      })) {
         return;
       }
 
@@ -896,10 +946,31 @@ function validObserverToken(authorization) {
   return timingSafeEqual(Buffer.from(expected), Buffer.from(supplied));
 }
 
-function setCors(res) {
-  res.setHeader("Access-Control-Allow-Origin", "*");
+function setCors(req, res) {
+  const origin = String(req.headers?.origin ?? "");
+  const configured = new Set(String(process.env.MYAGENT_CORS_ORIGINS ?? "")
+    .split(",")
+    .map((value) => value.trim())
+    .filter(Boolean));
+  let allowed = configured.has(origin);
+  if (origin && !allowed) {
+    try {
+      const originUrl = new URL(origin);
+      const requestHost = new URL(`http://${req.headers?.host ?? "invalid"}`);
+      allowed =
+        ["localhost", "127.0.0.1", "::1"].includes(originUrl.hostname) ||
+        originUrl.hostname === requestHost.hostname;
+    } catch {
+      allowed = false;
+    }
+  }
+  if (allowed) {
+    res.setHeader("Access-Control-Allow-Origin", origin);
+    res.setHeader("Access-Control-Allow-Credentials", "true");
+    res.setHeader("Vary", "Origin");
+  }
   res.setHeader("Access-Control-Allow-Methods", "GET,POST,PUT,PATCH,DELETE,OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "Authorization,Content-Type,Range");
+  res.setHeader("Access-Control-Allow-Headers", "Authorization,Content-Type,Range,X-CSRF-Token");
   res.setHeader("Access-Control-Expose-Headers", "Accept-Ranges,Content-Length,Content-Range");
 }
 

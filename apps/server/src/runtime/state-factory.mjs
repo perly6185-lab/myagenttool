@@ -39,10 +39,23 @@ export function createServerState({ defaultProjectPath, now }) {
     users: createDefaultUsers(now),
     teams: createDefaultTeams(now),
     tokens: [],
+    // ADR 0021 I2-I4. Only hashes and bounded metadata are durable; raw
+    // session, CSRF, challenge binding, and authorization URI values are not.
+    identitySessions: [],
+    identityChallenges: [],
+    identityProviderCodeUses: [],
+    identityAuditEvents: [],
+    // ADR 0021 I6. Login attempt keys and recovery credentials are hashes;
+    // raw passwords and one-time recovery grants never enter durable state.
+    identityLoginAttempts: [],
+    identityRecoveryAttempts: [],
+    identityRecoveryGrants: [],
+    identitySecurityAlerts: [],
     projects: [defaultProject],
     applications: [],
     applicationInstallRuns: [],
     applicationRecoveryActions: [],
+    guidedSetupRuns: [],
     approvalGrants: [],
     approvalTokenLegacyUses: { count: 0, lastAt: null },
     applicationDailyStats: [],
@@ -227,6 +240,7 @@ export function resetStateForSelfCheck({ state, now }) {
   state.applications = [];
   state.applicationInstallRuns = [];
   state.applicationRecoveryActions = [];
+  state.guidedSetupRuns = [];
   state.events = [];
   state.eventHistoryRetention = createEventHistoryRetention();
   state.refusals = [];

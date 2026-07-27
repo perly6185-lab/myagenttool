@@ -12,6 +12,8 @@
  */
 
 import crypto from "node:crypto";
+import { identityPolicyFromEnv } from "./identity-policy.mjs";
+import { resolveServerSession } from "../services/identity-security.mjs";
 
 /** Turn the 401 gate on. Off by default so local dev needs no login. */
 export const REQUIRE_AUTH = process.env.MYAGENT_REQUIRE_AUTH === "1";
@@ -72,19 +74,51 @@ function tokenLive(record) {
  * dev still has an identity). `authenticated` distinguishes the two — the auth
  * gate rejects requests where it is false.
  */
-export function resolveActor(state, req) {
-  const token = bearer(req);
+export function resolveActor(state, req, { now = () => new Date().toISOString(), persistStateSoon = null } = {}) {
+  const cookieSession = resolveServerSession(state, req, new Date(now()));
+  if (cookieSession) {
+    if (cookieSession.touched) persistStateSoon?.();
+    return {
+      userId: cookieSession.user.id,
+      teamId: cookieSession.user.teamId,
+      role: cookieSession.user.role ?? "owner",
+      authenticated: true,
+      authMethod: "cookie",
+      sessionId: cookieSession.record.id,
+      sessionExpiresAt: cookieSession.record.absoluteExpiresAt,
+      csrfHash: cookieSession.record.csrfHash,
+    };
+  }
+
+  const policy = identityPolicyFromEnv();
+  const token = policy.legacyBearerRead ? bearer(req) : null;
   const record = token && (state.tokens ?? []).find((t) => t.token === token && tokenLive(t));
   const user =
     (record && findUser(state, record.userId)) ||
     findUser(state, LOCAL_USER_ID) ||
     (state.users ?? [])[0] ||
     null;
+  if (!record && policy.requireAuth) {
+    return {
+      userId: null,
+      teamId: null,
+      role: "anonymous",
+      authenticated: false,
+      authMethod: "none",
+      sessionId: null,
+      sessionExpiresAt: null,
+      csrfHash: null,
+    };
+  }
   return {
     userId: user?.id ?? LOCAL_USER_ID,
     teamId: user?.teamId ?? LOCAL_TEAM_ID,
     role: user?.role ?? "owner",
     authenticated: Boolean(record),
+    authMethod: record ? "bearer" : "none",
+    sessionId: null,
+    sessionExpiresAt: record?.expiresAt ?? null,
+    csrfHash: null,
   };
 }
 
