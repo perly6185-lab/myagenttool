@@ -59,8 +59,11 @@ test("refuses path traversal out of the project root", async () => {
 
 test("refuses a symlink that escapes the root", async () => {
   const root = projectWith();
+  const outsideRoot = mkdtempSync(join(tmpdir(), "officecli-preview-outside-"));
+  const outsideFile = join(outsideRoot, "outside.xlsx");
+  writeFileSync(outsideFile, Buffer.from("PK\x03\x04outside", "binary"));
   try {
-    symlinkSync("/etc/hosts", join(root, "link.xlsx"));
+    symlinkSync(outsideFile, join(root, "link.xlsx"), "file");
   } catch {
     return; // symlink not permitted in this environment — skip
   }

@@ -23,7 +23,25 @@ describe("WorkBoardView localization", () => {
 
     await i18n.changeLanguage("zh-CN");
     view.rerender(<WorkBoardView />);
-    expect(screen.getByText("尚无跟踪项")).toBeTruthy();
+    expect(screen.getByText("尚无待办事项")).toBeTruthy();
     expect(screen.getByText("状态")).toBeTruthy();
+  });
+
+  it("keeps user-authored work titles unchanged in zh-CN", async () => {
+    await i18n.changeLanguage("zh-CN");
+    mocks.state = {
+      workBoard: {
+        states: {
+          pending_decision: { count: 1, items: [{ id: "item-1", title: "Fix Codex PR #42", section: "approvals" }] },
+          follow_up: { count: 0, items: [] },
+          in_progress: { count: 0, items: [] },
+          waiting: { count: 0, items: [] },
+          failed: { count: 0, items: [] },
+          done: { count: 0, items: [] },
+        },
+      },
+    };
+    render(<WorkBoardView />);
+    expect(screen.getByText("Fix Codex PR #42")).toBeTruthy();
   });
 });

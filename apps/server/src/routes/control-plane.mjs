@@ -1,5 +1,4 @@
-import crypto from "node:crypto";
-import { canProvision, denyForeignProject, hashPassword, verifyPassword } from "../runtime/auth.mjs";
+import { canProvision, denyForeignProject, hashPassword } from "../runtime/auth.mjs";
 import { publicDeviceView } from "../runtime/bridge-auth.mjs";
 import { computeNextRun, normalizeSchedule } from "../services/automation-schedule.mjs";
 import {
@@ -12,8 +11,7 @@ import { normalizeExternalAlertWebhookUrl } from "../services/auto-run-alerts.mj
 import { normalizeWebPerformanceMetric, summarizeWebPerformance } from "../services/web-performance.mjs";
 import { ensureEventStreamMetrics, eventStreamSummary } from "../services/event-stream-metrics.mjs";
 import { actOnOperationalAlert, reconcileOperationalHealth } from "../services/operational-health.mjs";
-
-const TOKEN_TTL_MS = 30 * 24 * 60 * 60 * 1000;
+import { validateNewPassword } from "../services/password-recovery.mjs";
 
 export async function handleControlPlaneRoutes({
   req,
@@ -39,59 +37,6 @@ export async function handleControlPlaneRoutes({
   createCapabilityInvocation,
   requestObservabilityDeletion,
 }) {
-  if (req.method === "POST" && url.pathname === "/api/session") {
-    // Multi-user login: a body.userId logs in as that seeded user; with none we
-    // fall back to the local user so existing single-user dev is unchanged.
-    const body = await readJson(req).catch(() => ({}));
-    const requestedUserId = body?.userId ? String(body.userId) : null;
-    if (requestedUserId && !state.users.some((item) => item.id === requestedUserId)) {
-      sendJson(res, 404, { error: "user_not_found" });
-      return true;
-    }
-    const user =
-      (requestedUserId && state.users.find((item) => item.id === requestedUserId)) ||
-      state.users.find((item) => item.id === "usr_local") ||
-      state.users[0];
-    // Credential check: a user with a password must supply the correct one
-    // (closes login-as-anyone for credentialed users). A passwordless user —
-    // e.g. the seeded local dev user — still logs in without one.
-    if (user?.passwordHash && !verifyPassword(body?.password, user.passwordHash)) {
-      sendJson(res, 401, { error: "invalid_credentials" });
-      return true;
-    }
-    const createdAt = now();
-    const token = `tok_${crypto.randomBytes(24).toString("base64url")}`;
-    const record = {
-      id: nextId("tok_demo"),
-      token,
-      userId: user?.id ?? "usr_local",
-      teamId: user?.teamId ?? "team_local",
-      createdAt,
-      expiresAt: new Date(Date.now() + TOKEN_TTL_MS).toISOString(),
-      revokedAt: null,
-    };
-    state.tokens.unshift(record);
-    state.tokens = state.tokens.slice(0, 20);
-    persistStateSoon();
-    const { passwordHash: _pw, ...safeUser } = user ?? { id: "usr_local", name: "Local User", teamId: "team_local" };
-    sendJson(res, 200, {
-      token,
-      expiresAt: record.expiresAt,
-      user: safeUser,
-    });
-    return true;
-  }
-
-  if (req.method === "DELETE" && url.pathname === "/api/session") {
-    const token = String(req.headers?.authorization ?? "").replace(/^Bearer\s+/i, "");
-    if (token) {
-      state.tokens = state.tokens.filter((item) => item.token !== token);
-      persistStateSoon();
-    }
-    sendJson(res, 204, null);
-    return true;
-  }
-
   // Team + user provisioning. The seed ships one local team/user; these let a
   // second tenant exist so the ownership guards actually engage. Only an
   // owner/admin may provision (9C); the seeded local user is an owner, so
@@ -169,6 +114,16 @@ export async function handleControlPlaneRoutes({
     if (!state.teams.some((item) => item.id === teamId)) {
       sendJson(res, 400, { error: "invalid_user", message: "A known teamId is required." });
       return true;
+    }
+    if (body?.password && process.env.MYAGENT_LEGACY_LOCAL_LOGIN !== "1") {
+      const passwordPolicy = validateNewPassword(String(body.password), {
+        teamId,
+        userId: String(body?.id ?? name),
+      });
+      if (!passwordPolicy.ok) {
+        sendJson(res, 400, passwordPolicy);
+        return true;
+      }
     }
     const user = {
       id: nextId("usr"),

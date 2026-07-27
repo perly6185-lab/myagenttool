@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { Transcript } from "@/features/invocations/transcript";
+import { i18n } from "@/lib/i18n";
 
 afterEach(cleanup);
 
@@ -31,5 +32,15 @@ describe("Transcript rendering (P3)", () => {
     rerender(<Transcript events={[]} summary={{ text: "Cancelled.", status: "cancelled" }} />);
     expect(screen.queryByText("No runs yet")).toBeNull();
     expect(screen.getByText("Cancelled.")).toBeTruthy();
+  });
+
+  it("localizes operational summary status without changing result content", async () => {
+    await i18n.changeLanguage("zh-CN");
+    render(<Transcript events={[]} summary={{ text: "Provider result", status: "succeeded" }} />);
+    expect(screen.getByText("结果摘要")).toBeTruthy();
+    expect(screen.getByText("已完成")).toBeTruthy();
+    expect(screen.getByText("Provider result")).toBeTruthy();
+    expect(screen.queryByText("Done")).toBeNull();
+    await i18n.changeLanguage("en-US");
   });
 });

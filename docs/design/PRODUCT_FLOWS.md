@@ -26,6 +26,8 @@ putting every capability on the first screen.
 - Each role can complete its own job without learning every other role's tools.
 - Managed evidence and imported-after-the-fact evidence must stay visibly
   separate.
+- Local access, enterprise identity, message Channels, and Application
+  credentials must remain visibly separate security boundaries.
 - A feature is not accepted until role-specific task tests pass.
 
 ## Low-Fidelity IA
@@ -58,6 +60,91 @@ Right rail: context, history, and governance
 
 Do not place Evidence Center, Connect Agent, imported evidence, full session
 history, hook details, JSONL, or integration builders in the left task column.
+
+## Flow 0: Developer Chooses Local Or Enterprise Identity
+
+Primary user: ordinary developer or team administrator
+
+Frequency: first launch and session renewal
+
+User job: choose local access or a familiar enterprise sign-in path while
+understanding which team and computer will be linked.
+
+Entry point: identity entry; the signed-in state and logout live in Me.
+
+Happy paths:
+
+```text
+Open identity entry
+-> server policy permits local access
+-> choose "在这台电脑上使用"
+-> server creates a local-team session
+-> open Home
+```
+
+```text
+Open identity entry
+-> choose "登录团队"
+-> choose an enabled identity provider
+-> confirm the origin, computer, comparison code, and requested team on phone
+-> choose one verified team when more than one is available
+-> server maps the identity to an active membership and role
+-> open Home
+```
+
+Expiry and rejection:
+
+```text
+Login code expires
+-> old challenge becomes terminal
+-> show that no login occurred
+-> refresh the login code or choose another method
+
+User/provider rejects confirmation or membership is unavailable
+-> create no session and reveal no unverified team
+-> choose another method or contact a team administrator
+```
+
+Recovery:
+
+```text
+Choose account/password
+-> enter tenant-aware account and password
+-> generic failure with rate limiting
+-> if recovery is needed, request administrator help
+-> consume a short-lived one-time recovery grant
+-> revoke old sessions and sign in again
+```
+
+Logout:
+
+```text
+Open Me
+-> review active team, role, and current computer
+-> choose current-device or all-device logout
+-> confirm scope
+-> server revokes the selected MyAgentTool sessions
+-> return to a freshly policy-derived identity entry
+```
+
+Acceptance signals:
+
+- Local mode and team sign-in are separate choices and appear only when enabled
+  by server policy.
+- The user can identify the origin, computer, team, and consequence before
+  confirming.
+- Expiry, rejection, recovery, and logout each have one clear next action.
+- Tenant and role come from verified identity plus server membership, never
+  from an unverified display claim.
+- The shared-screen state reveals no personal or team details before
+  confirmation.
+- No client secret, raw OAuth payload, provider token, message-channel
+  credential, Application credential, or nonfunctional QR is shown.
+
+Design contract:
+
+- [ADR 0021](../engineering/ADR_0021_PROVIDER_NEUTRAL_ENTERPRISE_IDENTITY.md)
+- [Identity entry prototype](prototypes/china-identity-entry.html)
 
 ## Flow 1: Ordinary Developer Runs A Task
 

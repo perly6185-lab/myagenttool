@@ -30,6 +30,8 @@ test("public state exposes every team device and derives stale readiness", () =>
   assert.equal(published.devices[0].applicationBinaryReadiness[0].status, "absent");
   assert.equal(published.devices[1].applicationBinaryReadiness[0].status, "stale");
   assert.equal(published.devices[2].applicationBinaryReadiness[0].status, "stale");
+  assert.equal(published.guidedSetup.version, 1);
+  assert.equal(published.guidedSetup.currentStep, "workspace");
 });
 
 test("the singleton device alias never falls back to another team's primary device", () => {

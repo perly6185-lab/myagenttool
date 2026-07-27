@@ -18,7 +18,10 @@ test("recovers from a transient state 5xx while the event stream is unavailable"
   });
   await page.goto("/?section=task");
   await expect.poll(() => stateAttempts, { timeout: 8_000 }).toBeGreaterThan(1);
-  await expect(page.getByText("Connected", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: /Notifications:/ }).click();
+  await expect(
+    page.getByRole("dialog", { name: "Notifications" }).getByText("Connected", { exact: true }),
+  ).toBeVisible();
 });
 
 test("replays a failed webhook delivery through the authenticated browser client", async ({ page }) => {

@@ -31,4 +31,38 @@ describe("translation resources", () => {
       expect(variables(translated ?? ""), `${key} variables`).toEqual(variables(value));
     }
   });
+
+  it("uses the ordinary-user zh-CN glossary on the Epic entry surfaces", () => {
+    const zh = resources["zh-CN"].common;
+    expect(zh.dashboard.agent).toBe("任务助手");
+    expect(zh.dashboard.runningIn).toContain("隔离工作区");
+    expect(zh.dashboard.trace).toBe("追踪编号（Trace ID）");
+    expect(zh.me.trace).toBe("运行记录");
+    expect(zh.workBoard.channel).toBe("消息渠道");
+    expect(zh.notificationCenter.status.updates).toBe("更新方式");
+    expect(zh.shell.controlPlane).toBe("本地工作台");
+    expect(zh.sessionHistory.title).toBe("任务记录");
+
+    expect(zh.dashboard.cancel).toBe("取消任务");
+    expect(zh.guidedSetup.actions.failed).toBe("打开恢复指引");
+    expect(zh.notificationCenter.approvals).toBe("待审批");
+    expect(zh.actionError.retry).toBe("重试");
+  });
+
+  it("does not expose unexplained architecture nouns on ordinary zh-CN surfaces", () => {
+    const zh = resources["zh-CN"].common;
+    const roots = ["entryJourney", "todo", "me", "sessionHistory", "notificationCenter", "dashboard", "guidedSetup", "workBoard"] as const;
+    const allowedTechnicalDetails = new Set(["dashboard.trace"]);
+    const forbidden = /\b(?:Agent|Application|Channel|Desktop Bridge|Issue|PR|Worktree|Invocation)\b/;
+
+    for (const root of roots) {
+      for (const [key, value] of flatten(zh[root], root)) {
+        if (allowedTechnicalDetails.has(key)) continue;
+        expect(value, key).not.toMatch(forbidden);
+      }
+    }
+    for (const key of ["controlPlane", "navLabel", "footer"] as const) {
+      expect(zh.shell[key], `shell.${key}`).not.toMatch(forbidden);
+    }
+  });
 });

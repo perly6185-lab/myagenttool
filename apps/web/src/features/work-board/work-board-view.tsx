@@ -1,5 +1,5 @@
 import { useState, type ReactNode } from "react";
-import { AlertTriangle, CheckCircle2, ClipboardCopy, Inbox, KanbanSquare, Loader2, PauseCircle, Send, type LucideIcon } from "lucide-react";
+import { AlertTriangle, CheckCircle2, ClipboardCopy, Inbox, KanbanSquare, ListTodo, Loader2, PauseCircle, Send, UserCheck, type LucideIcon } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -10,6 +10,8 @@ import { api, useAsyncAction } from "@/data/use-console-actions";
 import { useUiStore, type SectionKey } from "@/store/ui-store";
 import type { ReportSchedule, WorkBoard, WorkItem, WorkPeriodKey, WorkReport, WorkState } from "@/lib/console-state";
 import { useAppTranslation } from "@/lib/i18n/use-app-translation";
+import { usePageNavigation } from "@/hooks/use-page-navigation";
+import { mobileTodoCounts } from "@/components/layout/mobile-navigation-model";
 
 // The Status board: six lenses over the same work (server read-model `workBoard`)
 // so a supervisor can see, on one screen, what is 待决策 / 在等待 / 正在做 / 已做完 /
@@ -63,10 +65,12 @@ export function WorkBoardView() {
   const setSection = useUiStore((s) => s.setSection);
   const setSelectedInvocationId = useUiStore((s) => s.setSelectedInvocationId);
   const setSelectedApplicationId = useUiStore((s) => s.setSelectedApplicationId);
+  const navigate = usePageNavigation();
 
   const board = state?.workBoard?.states ?? EMPTY_BOARD;
   const report = state?.workReport ?? null;
   const total = LENS_ORDER.reduce((n, key) => n + (board[key]?.count ?? 0), 0);
+  const todoCounts = mobileTodoCounts(state);
 
   // Land on the native surface for context/action. Follow-up refusal rows and
   // 待决策 rows carry an invocation/application target; select it so the user
@@ -81,9 +85,37 @@ export function WorkBoardView() {
     <div className="flex h-full flex-col gap-3">
       <div className="flex items-center gap-2">
         <KanbanSquare className="size-5 text-muted-foreground" />
-        <h1 className="text-lg font-semibold">{t("workBoard.title")}</h1>
+        <h1 className="shrink-0 whitespace-nowrap text-lg font-semibold">
+          <span className="md:hidden">{t("todo.title")}</span>
+          <span className="hidden md:inline">{t("workBoard.title")}</span>
+        </h1>
         <Badge tone="neutral">{t("workBoard.items", { count: total })}</Badge>
-        <span className="ml-auto text-xs text-muted-foreground">{t("workBoard.subtitle")}</span>
+        <span className="ml-auto hidden text-xs text-muted-foreground sm:inline">{t("workBoard.subtitle")}</span>
+      </div>
+
+      <div className="grid grid-cols-2 gap-2 md:hidden" aria-label={t("todo.summary")}>
+        <button
+          type="button"
+          onClick={() => navigate("autoRuns")}
+          className="flex min-h-16 min-w-0 items-center gap-2 rounded-lg border border-border bg-card px-3 py-2 text-left hover:bg-muted/50"
+        >
+          <ListTodo className="size-5 shrink-0 text-primary" aria-hidden="true" />
+          <span className="min-w-0">
+            <span className="block text-lg font-semibold tabular-nums">{todoCounts.active}</span>
+            <span className="block text-xs text-muted-foreground">{t("todo.active")}</span>
+          </span>
+        </button>
+        <button
+          type="button"
+          onClick={() => navigate("approvals")}
+          className="flex min-h-16 min-w-0 items-center gap-2 rounded-lg border border-border bg-card px-3 py-2 text-left hover:bg-muted/50"
+        >
+          <UserCheck className="size-5 shrink-0 text-warning" aria-hidden="true" />
+          <span className="min-w-0">
+            <span className="block text-lg font-semibold tabular-nums">{todoCounts.attention}</span>
+            <span className="block text-xs text-muted-foreground">{t("todo.attention")}</span>
+          </span>
+        </button>
       </div>
 
       {report ? <WorkReportStrip report={report} /> : null}

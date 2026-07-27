@@ -5,7 +5,9 @@ import { EmptyState } from "@/components/common/empty-state";
 import { useConsoleState } from "@/data/use-console-state";
 import { useUiStore } from "@/store/ui-store";
 import { cn } from "@/lib/cn";
-import { readableStatus, shortTime, statusTone } from "@/lib/readable-labels";
+import { shortTime, statusTone } from "@/lib/readable-labels";
+import { invocationStatus } from "@/lib/i18n/readable-labels";
+import { useAppTranslation } from "@/lib/i18n/use-app-translation";
 import type { InvocationSnapshot } from "@/lib/console-state";
 
 /**
@@ -30,6 +32,7 @@ export function selectSessions(
 
 /** Right-side Sessions panel — recent runs, selecting one reconstructs its transcript. */
 export function SessionHistory() {
+  const { t } = useAppTranslation();
   const { data: state } = useConsoleState();
   const selectedInvocationId = useUiStore((s) => s.selectedInvocationId);
   const setSelectedInvocationId = useUiStore((s) => s.setSelectedInvocationId);
@@ -75,26 +78,26 @@ export function SessionHistory() {
     <Card>
       <CardHeader>
         <div className="flex items-center justify-between gap-2">
-          <CardTitle>Sessions</CardTitle>
+          <CardTitle>{t("sessionHistory.title")}</CardTitle>
           <div className="flex gap-1">
             <Toggle active={scope === "project"} onClick={() => setScope("project")}>
-              Project
+              {t("sessionHistory.project")}
             </Toggle>
             <Toggle active={scope === "all"} onClick={() => setScope("all")}>
-              All
+              {t("sessionHistory.all")}
             </Toggle>
           </div>
         </div>
         {selectedWorktreeId ? (
           <label className="mt-1 flex items-center gap-1.5 text-xs text-muted-foreground">
             <input type="checkbox" checked={worktreeOnly} onChange={(e) => setWorktreeOnly(e.target.checked)} />
-            This worktree only
+            {t("sessionHistory.worktreeOnly")}
           </label>
         ) : null}
       </CardHeader>
       <CardContent className="space-y-1.5">
         {!sessions.length ? (
-          <EmptyState title="No runs yet" hint="Runs for this project appear here." />
+          <EmptyState title={t("sessionHistory.empty")} hint={t("sessionHistory.emptyHint")} />
         ) : (
           sessions.map((inv) => (
             <div
@@ -110,12 +113,12 @@ export function SessionHistory() {
                 className="flex w-full flex-col gap-1 px-2.5 py-1.5 text-left"
               >
                 <span className="truncate text-sm [overflow-wrap:anywhere]">
-                  {inv.input?.task || "Untitled run"}
+                  {inv.input?.task || t("sessionHistory.untitled")}
                 </span>
                 <span className="flex items-center gap-2 text-xs text-muted-foreground">
-                  <StatusBadge tone={statusTone(inv.status)}>{readableStatus(inv.status)}</StatusBadge>
+                  <StatusBadge tone={statusTone(inv.status)}>{invocationStatus(t, inv.status)}</StatusBadge>
                   {inv.createdAt ? <span className="font-mono tabular-nums">{shortTime(inv.createdAt)}</span> : null}
-                  {inv.worktreeId ? <Badge tone="neutral">worktree</Badge> : null}
+                  {inv.worktreeId ? <Badge tone="neutral">{t("sessionHistory.worktree")}</Badge> : null}
                 </span>
               </button>
               <div className="border-t border-border/60 px-2.5 py-1">
@@ -124,7 +127,7 @@ export function SessionHistory() {
                   onClick={() => resume(inv)}
                   className="text-xs font-medium text-primary hover:underline"
                 >
-                  Resume
+                  {t("sessionHistory.resume")}
                 </button>
               </div>
             </div>

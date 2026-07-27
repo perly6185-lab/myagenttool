@@ -54,4 +54,16 @@ describe("entryJourneyContext and navigation", () => {
     expect(useUiStore.getState().section).toBe("invocations");
     expect(useUiStore.getState().selectedInvocationId).toBe("mine");
   });
+
+  it("keeps Create keyboard-actionable and delegates focus to the composer", () => {
+    const onCreate = vi.fn();
+    stateMock.useConsoleState.mockReturnValue({
+      data: { projects: [], invocations: [], pendingDecisions: [], evidenceLedger: [] },
+    });
+    render(<EntryJourney onCreate={onCreate} />);
+    const create = screen.getByRole("button", { name: /1\. Create/ }) as HTMLButtonElement;
+    expect(create.disabled).toBe(false);
+    fireEvent.click(create);
+    expect(onCreate).toHaveBeenCalledOnce();
+  });
 });

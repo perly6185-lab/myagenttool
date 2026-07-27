@@ -31,6 +31,34 @@ export interface DeviceRuntimeReadiness {
     checkedAt: string;
 }
 
+export type GuidedSetupStatus =
+  | "checking"
+  | "action_required"
+  | "waiting_for_approval"
+  | "installing"
+  | "login_required"
+  | "ready"
+  | "failed"
+  | "cancelled";
+
+export interface GuidedSetupSnapshot {
+  version: 1;
+  status: GuidedSetupStatus;
+  currentStep: "computer" | "workspace" | "execution" | "complete";
+  reason: string;
+  action: { kind: "open_section"; section: string } | null;
+  runId: string | null;
+  operationRunId?: string | null;
+  startedAt?: string | null;
+  updatedAt?: string | null;
+  completedCount: number;
+  totalCount: number;
+  steps: Array<{
+    key: "computer" | "workspace" | "execution";
+    state: "complete" | "current" | "pending" | "failed" | "cancelled";
+  }>;
+}
+
 export interface AgentHealth {
   status?: string;
   message?: string;
@@ -1203,6 +1231,8 @@ export interface ConsoleSnapshot {
   agentSkills?: AgentSkillSnapshot[];
   device: DeviceSnapshot | null;
   devices?: DeviceSnapshot[];
+  /** Server-derived, restart-safe path to the first runnable local task. */
+  guidedSetup?: GuidedSetupSnapshot;
   projects?: ProjectSnapshot[];
   currentProjectId?: string | null;
   projectTargets?: ProjectTargetSnapshot[];

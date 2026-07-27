@@ -35,7 +35,7 @@ export function entryJourneyContext(
   };
 }
 
-export function EntryJourney() {
+export function EntryJourney({ onCreate }: { onCreate?: () => void } = {}) {
   const { t } = useAppTranslation();
   const { data: state } = useConsoleState();
   const selectedInvocationId = useUiStore((item) => item.selectedInvocationId);
@@ -59,13 +59,14 @@ export function EntryJourney() {
       : t("entryJourney.noContext")}</p>
     <nav aria-label={t("entryJourney.label")} className="grid gap-2 sm:grid-cols-4">
       {steps.map((step, index) => (
-        <button key={step.key} type="button" disabled={step.key === "create"} onClick={() => {
+        <button key={step.key} type="button" onClick={() => {
+          if (step.key === "create") onCreate?.();
           if (step.key === "execute" || step.key === "result") {
             if (invocation) setSelectedInvocationId(invocation.id);
             setSection("invocations");
           }
           if (step.key === "attention") setSection(pending ? "approvals" : "evidence");
-        }} className="flex items-center gap-2 rounded-lg border bg-card px-3 py-2 text-left text-xs disabled:cursor-default">
+        }} className="flex min-h-11 items-center gap-2 rounded-lg border bg-card px-3 py-2 text-left text-xs hover:bg-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
           {step.active && running ? <LoaderCircle className="size-4 animate-spin text-primary" /> : step.done ? <CheckCircle2 className="size-4 text-success" /> : <Circle className="size-4 text-muted-foreground" />}
           <span><b className="block">{index + 1}. {t(step.label)}</b><span className="text-muted-foreground">{t(step.hint)}</span></span>
         </button>

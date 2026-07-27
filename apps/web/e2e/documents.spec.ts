@@ -28,7 +28,8 @@ async function mockApi(page: Page) {
     if (url.pathname.endsWith("/pdf-document")) {
       const pdf = url.searchParams.get("path")?.endsWith("protected.pdf") ? protectedPdf : searchablePdf;
       const range = request.headers().range;
-      expect(request.headers().authorization).toBe("Bearer e2e-token");
+      expect(request.headers().authorization).toBeUndefined();
+      expect(request.headers().cookie).toContain("myagenttool_session=e2e-session");
       if (!range) return route.fulfill({ status: 200, body: pdf, headers: pdfHeaders(pdf.length) });
       pdfRanges.push(range);
       const match = /^bytes=(\d+)-(\d*)$/.exec(range);
@@ -44,6 +45,13 @@ async function mockApi(page: Page) {
 }
 
 test.beforeEach(async ({ page }) => {
+  await page.context().addCookies([{
+    name: "myagenttool_session",
+    value: "e2e-session",
+    url: "http://127.0.0.1:5001",
+    httpOnly: true,
+    sameSite: "Lax",
+  }]);
   await page.addInitScript(() => {
     window.localStorage.setItem("myagenttool.token", "e2e-token");
     window.myagenttoolDesktop = { pickLocalOfficeDocument: async () => ({ selectionId: "sel_1", absolutePath: "/projects/e2e/docs/report.docx", name: "report.docx", type: "docx", size: 100 }) };
@@ -113,12 +121,15 @@ test("supports keyboard-only navigation and restores focus after the command pal
 test("keeps the primary mobile workflow usable without horizontal overflow", async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await page.reload();
-  const section = page.getByLabel("Section", { exact: true });
-  await expect(section).toBeVisible();
-  await expect(section).toHaveValue("");
-  await expect(page.getByRole("button", { name: "Open Settings" })).toBeVisible();
-  await expect(page.getByRole("button", { name: "Open Trace" })).toBeVisible();
+  const navigation = page.getByRole("navigation", { name: "Primary navigation" });
+  for (const destination of ["Home", "Tasks", "Projects", "Me"]) {
+    await expect(navigation.getByRole("button", { name: destination, exact: true })).toBeVisible();
+  }
+  await expect(navigation.getByRole("button", { name: /^To-do:/ })).toBeVisible();
   await expect(page.getByRole("button", { name: "New" })).toBeVisible();
+  await navigation.getByRole("button", { name: "Me", exact: true }).click();
+  await expect(page.getByRole("button", { name: /Settings/ })).toBeVisible();
+  await expect(page.getByRole("button", { name: /Trace/ })).toBeVisible();
   await expect.poll(() => page.evaluate(() => ({
     viewport: window.innerWidth,
     content: document.documentElement.scrollWidth,

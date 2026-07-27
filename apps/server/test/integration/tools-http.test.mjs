@@ -2,7 +2,9 @@ process.env.MYAGENT_REQUIRE_AUTH = "1";
 process.env.MYAGENTTOOL_STATE_DISABLED = "1";
 
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { after, before, test } from "node:test";
 
 const TEAM_A = "team_a";
@@ -12,6 +14,9 @@ const now = () => new Date().toISOString();
 let server;
 let base;
 let ctx;
+let fixtureRoot;
+let teamAPath;
+let teamBPath;
 
 before(async () => {
   const { createServerState } = await import("../../src/runtime/state-factory.mjs");
@@ -22,10 +27,15 @@ before(async () => {
   const { createApplicationWrapperAgentRegistration } = await import("../../src/services/applications.mjs");
   const { createCcusageApplicationRegistration } = await import("../../src/services/ccusage-application.mjs");
 
-  const { defaultProject, state } = createServerState({ defaultProjectPath: "/tmp", now });
-  mkdirSync("/tmp/a", { recursive: true });
-  mkdirSync("/tmp/b", { recursive: true });
-  writeFileSync("/tmp/a/package.json", JSON.stringify({
+  fixtureRoot = mkdtempSync(join(tmpdir(), "myagenttool-tools-http-"));
+  teamAPath = join(fixtureRoot, "a");
+  teamBPath = join(fixtureRoot, "b");
+  const teamAWorktreePath = join(fixtureRoot, "a-wt");
+  const teamBWorktreePath = join(fixtureRoot, "b-wt");
+  const { defaultProject, state } = createServerState({ defaultProjectPath: fixtureRoot, now });
+  mkdirSync(teamAPath, { recursive: true });
+  mkdirSync(teamBPath, { recursive: true });
+  writeFileSync(join(teamAPath, "package.json"), JSON.stringify({
     name: "team-a-app",
     version: "1.2.3",
     description: "Team A fixture package.",
@@ -37,7 +47,7 @@ before(async () => {
     },
     exports: { ".": "./index.js" },
   }, null, 2), "utf8");
-  writeFileSync("/tmp/a/README.md", "# Team A App\n\nTeam A probe fixture.\n", "utf8");
+  writeFileSync(join(teamAPath, "README.md"), "# Team A App\n\nTeam A probe fixture.\n", "utf8");
   state.teams.push({ id: TEAM_A, name: "Team A" }, { id: TEAM_B, name: "Team B" });
   state.users.push(
     { id: "usr_a", name: "A", teamId: TEAM_A },
@@ -49,22 +59,22 @@ before(async () => {
     { token: "tok_b", userId: "usr_b", expiresAt },
   );
   state.projects.push(
-    { id: "projA", name: "Project A", ownerTeamId: TEAM_A, path: "/tmp/a", createdAt: now() },
-    { id: "projB", name: "Project B", ownerTeamId: TEAM_B, path: "/tmp/b", createdAt: now() },
+    { id: "projA", name: "Project A", ownerTeamId: TEAM_A, path: teamAPath, createdAt: now() },
+    { id: "projB", name: "Project B", ownerTeamId: TEAM_B, path: teamBPath, createdAt: now() },
   );
   state.worktrees.push(
-    { id: "wtA", projectId: "projA", workspaceProjectId: "projA", path: "/tmp/a-wt", worktreePath: "/tmp/a-wt", branchName: "feature/a", createdAt: now() },
-    { id: "wtB", projectId: "projB", workspaceProjectId: "projB", path: "/tmp/b-wt", worktreePath: "/tmp/b-wt", branchName: "feature/b", createdAt: now() },
+    { id: "wtA", projectId: "projA", workspaceProjectId: "projA", path: teamAWorktreePath, worktreePath: teamAWorktreePath, branchName: "feature/a", createdAt: now() },
+    { id: "wtB", projectId: "projB", workspaceProjectId: "projB", path: teamBWorktreePath, worktreePath: teamBWorktreePath, branchName: "feature/b", createdAt: now() },
   );
   state.applications.push({
     id: "app_team_a",
     name: "Team A App",
     kind: "repository",
-    source: { type: "local", path: "/tmp/a" },
+    source: { type: "local", path: teamAPath },
     status: "active",
     lifecycle: { state: "registered" },
     projectId: "projA",
-    path: "/tmp/a",
+    path: teamAPath,
     ownerTeamId: TEAM_A,
     capabilitiesVersion: 1,
     orchestrationIds: [],
@@ -90,9 +100,9 @@ before(async () => {
     protocolVersion: "0.0.0",
     state,
     defaultProject,
-    defaultProjectPath: "/tmp",
+    defaultProjectPath: fixtureRoot,
     persistenceEnabled: false,
-    stateStorePath: "/tmp/unused.json",
+    stateStorePath: join(fixtureRoot, "unused.json"),
     stateSchemaVersion: 1,
     dispatchLeaseMs: 30_000,
     now,
@@ -108,7 +118,12 @@ before(async () => {
   await call("/api/applications/register", { method: "POST", body: createCcusageApplicationRegistration(), token: "tok_a" });
 });
 
-after(() => server?.close());
+after(async () => {
+  if (server?.listening) {
+    await new Promise((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+  }
+  if (fixtureRoot) rmSync(fixtureRoot, { recursive: true, force: true });
+});
 
 async function call(path, options = {}) {
   const { token = "tok_a", method = "GET" } = options;
@@ -512,7 +527,7 @@ test("POST /api/applications/register rejects cross-team duplicate sources", asy
     method: "POST",
     body: {
       name: "Hijack Team A App",
-      source: { type: "local", path: "/tmp/a" },
+      source: { type: "local", path: teamAPath },
     },
     token: "tok_b",
   });
@@ -771,7 +786,7 @@ test("application routine validation blocks unsafe drafts before writing", async
   assert.ok(validation.errors.some((error) => error.includes("requiresApprovalFor must include push")));
   assert.ok(validation.errors.some((error) => error.includes("approvalRequirements must include push")));
 
-  const draft = writeApplicationRoutineDraft(application, "/tmp", { routineId, routine: unsafeRoutine });
+  const draft = writeApplicationRoutineDraft(application, fixtureRoot, { routineId, routine: unsafeRoutine });
   assert.equal(draft.ok, false);
   assert.equal(draft.status, "invalid");
   assert.equal(draft.validation.ok, false);
@@ -852,7 +867,7 @@ test("application orchestration run endpoint creates governed invocations with r
 
   const validDraft = application.orchestrations.find((item) => item.routineId === "app-app_team_a-maintenance");
   const originalPath = validDraft.path;
-  validDraft.path = "/tmp/a/package.json";
+  validDraft.path = join(teamAPath, "package.json");
   const outsidePath = await call("/api/applications/app_team_a/orchestrations/app-app_team_a-maintenance/run", {
     method: "POST",
     body: { agentId: "agt_platform_application_control" },
@@ -865,7 +880,7 @@ test("application orchestration run endpoint creates governed invocations with r
   const invalidDraft = {
     routineId: "app-app_team_a-invalid",
     status: "invalid",
-    path: "/tmp/not-written-invalid.json",
+    path: join(fixtureRoot, "not-written-invalid.json"),
     relativePath: ".myagenttool/applications/app_team_a/routines/app-app_team_a-invalid.json",
     validation: { ok: false, errors: ["fixture invalid"] },
   };

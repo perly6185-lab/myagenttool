@@ -337,8 +337,14 @@ async function assertVisualState(page, scenario) {
     return;
   }
   await page.locator('textarea[aria-label="Task"]:visible').waitFor({ timeout: 15_000 });
+  const primaryAction = page.getByRole("button", { name: /Run on this computer|Queue for this computer|Cancel task/ });
+  await primaryAction.waitFor();
+  const actionBox = await primaryAction.boundingBox();
+  if (!actionBox || actionBox.y + actionBox.height > page.viewportSize().height) {
+    throw new Error(`${scenario.name} hides the primary task action below the viewport`);
+  }
+  await page.locator("summary:visible", { hasText: "What to know before running" }).click();
   for (const label of ["Project", "Agent"]) await page.locator(`select[aria-label="${label}"]:visible`).waitFor();
-  await page.locator("summary:visible", { hasText: "Technical details" }).click();
   for (const text of ["Safety", "Data", "Cost", "Computer"]) {
     await page.locator("p:visible, dt:visible", { hasText: new RegExp(`^${text}$`) }).first().waitFor();
   }
