@@ -3823,6 +3823,7 @@ export function createServerRuntimeServices({
     rollbackClaudeApply,
     nextId,
     persistStateSoon,
+    persistStateNow,
     budgetStatusFor,
     upsertBudget,
   };

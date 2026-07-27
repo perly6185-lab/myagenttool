@@ -8,6 +8,7 @@ import { workReport, calendarPeriods } from "./work-report.mjs";
 import { evidenceLedger } from "./evidence-ledger.mjs";
 import { scheduleHealthReadModel } from "./schedule-health.mjs";
 import { withLocalApplicationReadiness } from "../services/application-readiness.mjs";
+import { deriveGuidedReadiness } from "../services/guided-readiness.mjs";
 
 export function buildPublicState({
   namespace,
@@ -432,6 +433,21 @@ export function buildPublicState({
     .filter(Boolean)
     .filter((device) => teamId == null || userTeam.get(device.ownerUserId) === teamId)
     .map((device) => publicDeviceReadinessView(device));
+  const visibleDevice = devices.find((device) => device.id === state.device?.id) ?? devices[0] ?? null;
+  const guidedSetupRun = (state.guidedSetupRuns ?? []).find((run) =>
+    (teamId == null || (run.ownerTeamId ?? LOCAL_TEAM_ID) === teamId)
+    && (!actor?.userId || run.ownerUserId === actor.userId)) ?? null;
+  const guidedSetup = deriveGuidedReadiness({
+    device: visibleDevice,
+    projects,
+    projectTargets: byProject(state.projectTargets),
+    agents: state.agents ?? [],
+    applications: applicationsWithSchedules,
+    applicationInstallRuns: (state.applicationInstallRuns ?? []).filter((run) =>
+      (teamId == null || (run.ownerTeamId ?? LOCAL_TEAM_ID) === teamId)
+      && (!run.projectId || projectVisible(run.projectId))),
+    run: guidedSetupRun,
+  });
 
   return {
     namespace,
@@ -439,8 +455,9 @@ export function buildPublicState({
     defaults: {
       cloneParentDir: defaultProjectPath,
     },
-    device: devices.find((device) => device.id === state.device?.id) ?? devices[0] ?? null,
+    device: visibleDevice,
     devices,
+    guidedSetup,
     // Never expose password hashes to any client.
     users: (state.users ?? []).map(({ passwordHash, ...user }) => user),
     teams: (state.teams ?? []).map(({ alertWebhookUrl, ...team }) => ({
