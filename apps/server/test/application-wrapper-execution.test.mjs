@@ -115,7 +115,7 @@ test("the wrapper runner agent script path is ABSOLUTE (found regardless of the 
   assert.equal(reg.command, "node");
   assert.equal(reg.args.length, 1);
   assert.ok(isAbsolute(reg.args[0]), `wrapper script must be absolute, got: ${reg.args[0]}`);
-  assert.ok(reg.args[0].endsWith("tools/agents/application-wrapper.mjs"));
+  assert.ok(reg.args[0].replaceAll("\\", "/").endsWith("tools/agents/application-wrapper.mjs"));
   // A relative override is resolved to absolute too (against the repo root).
   const overridden = createApplicationWrapperAgentRegistration({ wrapperScriptPath: "tools/agents/application-wrapper.mjs" });
   assert.ok(isAbsolute(overridden.args[0]));
