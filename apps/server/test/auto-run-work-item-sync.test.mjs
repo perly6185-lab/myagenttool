@@ -28,6 +28,57 @@ test("auto-run status transitions advance bound local work items", () => {
   assert.equal(state.workItemActivities.length, 3);
 });
 
+test("a completed local auto-run waits in review until its worktree is delivered", () => {
+  const item = {
+    id: "lwi_1", status: "in_progress", state: "open", revision: 1,
+    acceptanceCriteria: [],
+    executionBindings: [{ kind: "auto_run", targetId: "aur_local" }],
+  };
+  const state = { workItems: [item], workItemActivities: [] };
+  syncBoundWorkItemsForAutoRun({
+    state,
+    autoRun: {
+      id: "aur_local",
+      link: { type: "local_issue", number: 1 },
+      localDelivery: { worktreeId: "wtr_1", branchName: "local-1" },
+    },
+    status: "done",
+    now: () => "2026-07-24T00:00:00.000Z",
+    nextId: () => "wia_1",
+  });
+  assert.equal(item.status, "review");
+  assert.equal(item.state, "open");
+});
+
+test("a merged pull request settles a formerly local delivery", () => {
+  const item = {
+    id: "lwi_1", status: "review", state: "open", revision: 1,
+    acceptanceCriteria: [],
+    executionBindings: [{ kind: "auto_run", targetId: "aur_local_pr" }],
+  };
+  const autoRun = {
+    id: "aur_local_pr",
+    status: "pr_open",
+    prState: "OPEN",
+    link: { type: "local_issue", number: 1 },
+    localDelivery: {
+      worktreeId: "wtr_1", branchName: "local-1", mode: "pull_request",
+      prNumber: 7, prUrl: "https://github.test/o/r/pull/7",
+    },
+  };
+  const state = { workItems: [item], workItemActivities: [] };
+  convergeAutoRunTerminalState({
+    state,
+    autoRun,
+    disposition: "MERGED",
+    source: "poll",
+    now: () => "2026-07-24T00:00:00.000Z",
+    nextId: () => "wia_1",
+  });
+  assert.equal(item.status, "done");
+  assert.equal(item.state, "closed");
+});
+
 test("failed auto-runs block bound items without touching unrelated work", () => {
   const state = {
     workItems: [

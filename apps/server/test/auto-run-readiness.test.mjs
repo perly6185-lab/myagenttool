@@ -29,6 +29,15 @@ test("no default agent → blocked", () => {
   assert.equal(status(r, "agent"), "blocked");
 });
 
+test("an explicitly non-git project is blocked before execution", () => {
+  const r = computeAutoRunReadiness({
+    ...base,
+    project: { ...base.project, git: { isRepo: false } },
+  });
+  assert.equal(r.ready, false);
+  assert.equal(status(r, "git"), "blocked");
+});
+
 test("CLI agent but bridge not linked → blocked", () => {
   const r = computeAutoRunReadiness({ ...base, deviceLinked: false });
   assert.equal(r.ready, false);

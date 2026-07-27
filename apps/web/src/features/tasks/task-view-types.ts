@@ -223,6 +223,10 @@ export type LocalWorkItemAutoRun = {
     evidence?: { policyVersion: string; modelVersion: string | null; minConfidence: number; inputDigest: string } | null;
   } | null;
   terminalOutcome?: { disposition: "MERGED" | "CLOSED"; source: string; convergedAt: string } | null;
+  localDelivery?: {
+    worktreeId: string; branchName: string | null; mode?: "local_merge" | "pull_request";
+    deliveredAt?: string | null; promotedAt?: string | null; prNumber?: number | null; prUrl?: string | null;
+  } | null;
   routingOverride?: {
     recommendedPath: string | null; actualPath: string; reason: string;
     actorId: string; recordedAt: string; revision: number;
@@ -230,9 +234,22 @@ export type LocalWorkItemAutoRun = {
 };
 export type LocalWorkItemObservability = {
   executionChainId?: string;
-  nextAction: "review_approval" | "resolve_sync_conflict" | "inspect_failure" | "none" | "monitor_execution" | "start_execution";
+  nextAction: "review_approval" | "review_delivery" | "resolve_sync_conflict" | "inspect_failure" | "none" | "monitor_execution" | "start_execution";
   attention: WorkItemAttention[];
   latestRun: LocalWorkItemAutoRun | null;
+  delivery?: {
+    state: "awaiting_review";
+    mode: "local_merge" | "pull_request";
+    worktreeId: string;
+    branchName: string | null;
+    remoteUrl: string | null;
+    review: {
+      verdict: "approved" | "changes_requested";
+      reviewedCommit: string | null;
+      reviewedBy: string | null;
+      createdAt: string | null;
+    } | null;
+  } | null;
   activeClaim: { actorId: string | null; claimedAt: string | null; expiresAt: string | null } | null;
   cost: {
     knownUsd: number; unknownEntries: number; entryCount: number;

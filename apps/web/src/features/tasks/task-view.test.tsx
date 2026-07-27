@@ -19,6 +19,8 @@ const mocks = vi.hoisted(() => ({
   listWorkItemActivity: vi.fn(),
   createWorkItemWorktree: vi.fn(),
   startWorkItemAutoRun: vi.fn(),
+  deliverWorkItem: vi.fn(),
+  autoRunReadiness: vi.fn(),
   syncWorkItemGithubIssue: vi.fn(),
   listAutoRuns: vi.fn(),
   listPlanningProjects: vi.fn(),
@@ -93,6 +95,8 @@ vi.mock("@/data/use-console-actions", () => ({
     listWorkItemActivity: mocks.listWorkItemActivity,
     createWorkItemWorktree: mocks.createWorkItemWorktree,
     startWorkItemAutoRun: mocks.startWorkItemAutoRun,
+    deliverWorkItem: mocks.deliverWorkItem,
+    autoRunReadiness: mocks.autoRunReadiness,
     syncWorkItemGithubIssue: mocks.syncWorkItemGithubIssue,
     listAutoRuns: mocks.listAutoRuns,
     listPlanningProjects: mocks.listPlanningProjects,
@@ -131,6 +135,7 @@ describe("TaskView local work items", () => {
     mocks.listPlanningProjects.mockResolvedValue({ projects: [] });
     mocks.listAutoRuns.mockResolvedValue({ autoRuns: [] });
     mocks.listWorkItemAttention.mockResolvedValue({ items: [] });
+    mocks.autoRunReadiness.mockResolvedValue({ readiness: { ready: true, checks: [] } });
   });
   it("shows local work items as the default source", async () => {
     mocks.listWorkItemAttention.mockResolvedValue({ items: [{
@@ -417,5 +422,54 @@ describe("TaskView local work items", () => {
     fireEvent.click(screen.getByRole("button", { name: "Comment" }));
     await waitFor(() => expect(mocks.createWorkItemComment).toHaveBeenCalledWith("lwi_1", "Looks good"));
     expect(screen.getByText("Created")).toBeTruthy();
+  });
+
+  it("keeps a completed local run in review until an approved delivery is confirmed", async () => {
+    const item = {
+      id: "lwi_delivery", localRef: "LOCAL-9", projectId: "prj_1",
+      title: "Deliver approved work", body: "", type: "feature", status: "review",
+      priority: "p1", state: "open", labels: [], assigneeIds: [],
+      acceptanceCriteria: [], verificationRecords: [], completionGate: {
+        ready: true, missingCriteria: [], verificationRequired: false,
+      },
+      revision: 3, archivedAt: null, updatedAt: "2026-07-27T00:00:00.000Z",
+      executionBindings: [{
+        kind: "auto_run", targetId: "aur_9", worktreeId: "wtr_9",
+        createdAt: "2026-07-27T00:00:00.000Z",
+      }],
+    };
+    const observability = {
+      nextAction: "review_delivery",
+      attention: [],
+      latestRun: {
+        id: "aur_9", status: "done", updatedAt: "2026-07-27T00:00:00.000Z",
+        localDelivery: { worktreeId: "wtr_9", branchName: "local-9" },
+      },
+      delivery: {
+        state: "awaiting_review", mode: "local_merge", worktreeId: "wtr_9",
+        branchName: "local-9", remoteUrl: null,
+        review: {
+          verdict: "approved", reviewedCommit: "abc", reviewedBy: "usr_a",
+          createdAt: "2026-07-27T00:00:00.000Z",
+        },
+      },
+      activeClaim: null,
+      cost: { knownUsd: 0, unknownEntries: 0, entryCount: 0, projectBudget: null, teamBudget: null },
+      alerts: { queued: 0, failed: 0, sent: 0, skipped: 0, items: [] },
+    };
+    mocks.listWorkItems.mockResolvedValue({ workItems: [item], count: 1 });
+    mocks.getWorkItem.mockResolvedValue({ workItem: item, observability });
+    mocks.listWorkItemComments.mockResolvedValue({ comments: [] });
+    mocks.listWorkItemActivity.mockResolvedValue({ activities: [] });
+    mocks.deliverWorkItem.mockResolvedValue({ workItem: { ...item, status: "done", state: "closed" } });
+    render(<TaskView />);
+
+    fireEvent.click(await screen.findByText("Deliver approved work"));
+    expect(await screen.findByText("Ready for delivery")).toBeTruthy();
+    expect(screen.getByText("Approved")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Merge into base" }));
+    const dialog = screen.getAllByRole("dialog").at(-1);
+    fireEvent.click(within(dialog as HTMLElement).getByRole("button", { name: "Merge into base" }));
+    await waitFor(() => expect(mocks.deliverWorkItem).toHaveBeenCalledWith("lwi_delivery", "local_merge", 3));
   });
 });

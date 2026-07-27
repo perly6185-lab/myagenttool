@@ -5,6 +5,7 @@ export async function handleWorkItemRoutes({
   listWorkItems, listAttention, getWorkItem, createWorkItem, updateWorkItem, bulkUpdateWorkItems, transitionWorkItem,
   listActivity, listComments, createComment, updateComment, deleteComment,
   createWorktree, startAutoRun, recordExecutionBinding,
+  promoteWorktreeToBase, promoteWorktreeToPullRequest, completeDelivery,
   claimWorkItem, releaseWorkItemClaim,
   bindGithubIssue, syncGithubIssue,
   bindExternalIssue, syncExternalIssue, listExternalProviders,
@@ -386,6 +387,60 @@ export async function handleWorkItemRoutes({
       workItemId: decodeURIComponent(applicationApprovalMatch[1]), ...(await readJson(req)),
     }, actor);
     sendJson(res, result.status, result.body);
+    return true;
+  }
+
+  const deliveryMatch = url.pathname.match(/^\/api\/work-items\/([^/]+)\/delivery\/(local|pull-request)$/);
+  if (deliveryMatch && req.method === "POST") {
+    const workItemId = decodeURIComponent(deliveryMatch[1]);
+    const detail = getWorkItem({ workItemId }, actor);
+    if (!detail.ok) {
+      sendJson(res, detail.status, detail.body);
+      return true;
+    }
+    const body = await readJson(req);
+    const item = detail.body.workItem;
+    if (!Number.isInteger(body?.expectedRevision)) {
+      sendJson(res, 400, { error: "expected_revision_required" });
+      return true;
+    }
+    if (body.expectedRevision !== item.revision) {
+      sendJson(res, 409, { error: "work_item_revision_conflict", currentRevision: item.revision });
+      return true;
+    }
+    if (!item.completionGate?.ready) {
+      sendJson(res, 409, { error: "work_item_acceptance_incomplete", ...item.completionGate });
+      return true;
+    }
+    const autoRun = detail.body.observability?.latestRun ?? null;
+    const worktreeId = autoRun?.localDelivery?.worktreeId ?? null;
+    if (!worktreeId || autoRun?.status !== "done" || autoRun.localDelivery?.deliveredAt) {
+      sendJson(res, 409, { error: "work_item_delivery_not_ready" });
+      return true;
+    }
+    try {
+      const mode = deliveryMatch[2] === "local" ? "local_merge" : "pull_request";
+      const result = mode === "local_merge"
+        ? await promoteWorktreeToBase(worktreeId)
+        : await promoteWorktreeToPullRequest(worktreeId, {
+          title: item.title,
+          body: `Delivers ${item.localRef}.\n\n${item.body ?? ""}`.trim(),
+          base: body?.baseBranch,
+        });
+      const completed = completeDelivery({
+        workItemId,
+        expectedRevision: body.expectedRevision,
+        mode,
+        autoRunId: autoRun.id,
+        result,
+      }, actor);
+      sendJson(res, completed.status, completed.body);
+    } catch (error) {
+      sendJson(res, 409, {
+        error: "work_item_delivery_failed",
+        message: error instanceof Error ? error.message : String(error),
+      });
+    }
     return true;
   }
 

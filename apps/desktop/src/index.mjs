@@ -11,6 +11,8 @@ import { runAsUser, shouldRunAsUser, runAsSpawnPlan, runAsPreflightPlan, interpr
 import { callA2aAgent, probeA2aAgent } from "./a2a-client.mjs";
 import { probeContainerRuntime, runContainerAgent } from "./container-client.mjs";
 import { codexResumeArgs } from "./codex-resume.mjs";
+import { evaluateCodexHealth } from "./codex-health.mjs";
+import { applyCodexWorktreeContract } from "./codex-worktree-contract.mjs";
 import { extractClaudeFileAccesses } from "./claude-file-access.mjs";
 import { newRoundState, claudeRoundEmits, codexRoundEmits, claudeRequestContext } from "./round-telemetry.mjs";
 import { createAgentLineSink } from "./agent-line-sink.mjs";
@@ -1414,8 +1416,8 @@ async function checkCliAgentHealth(adapter) {
     const probe = await probeCodexCli(adapter);
     return {
       ok: probe.ok,
-      message: probe.ok ? "Codex CLI non-interactive surface is reachable." : probe.summary,
-      nextAction: probe.ok ? null : "Verify Codex CLI installation and authentication."
+      message: probe.summary,
+      nextAction: probe.nextAction
     };
   }
   if (isClaudeCliCommand(adapter.command)) {
@@ -1665,14 +1667,23 @@ function uniqueCandidates(candidates) {
 
 function createCliSpawnPlan(adapter, payload) {
   const payloadJson = JSON.stringify(payload);
+  const cwd = adapter.workingDirectoryPolicy === "explicit" && adapter.workingDirectory
+    ? String(adapter.workingDirectory)
+    : projectCwd(payload);
   const codexCommandOverride = isCodexCliCommand(adapter.command) ? process.env.MYAGENTTOOL_CODEX_COMMAND : null;
   const claudeCommandOverride = isClaudeCliCommand(adapter.command) ? process.env.MYAGENTTOOL_CLAUDE_COMMAND : null;
   const codexImageAttachments = isCodexCliCommand(adapter.command) ? prepareCodexImageAttachments(payload) : [];
   const argsTemplate = isCodexCliCommand(adapter.command)
     ? insertCodexImageArgs(codexArgsTemplate(adapter, payload), codexImageAttachments)
     : codexArgsTemplate(adapter, payload);
-  const renderedArgs = isCodexCliCommand(adapter.command)
-    ? applyCodexPermissionMode(renderArgs(argsTemplate, payloadJson, payload), payload)
+  const codexContract = isCodexCliCommand(adapter.command)
+    ? applyCodexWorktreeContract(
+        applyCodexPermissionMode(renderArgs(argsTemplate, payloadJson, payload), payload),
+        { cwd },
+      )
+    : null;
+  const renderedArgs = codexContract
+    ? codexContract.args
     : applicationWrapperArgs(
         governedApplyWrapperArgs(governedExecWrapperArgs(governedReviewWrapperArgs(renderArgs(argsTemplate, payloadJson, payload), payload), payload), payload),
         payload,
@@ -1691,15 +1702,15 @@ function createCliSpawnPlan(adapter, payload) {
       : isCodexCliCommand(adapter.command)
         ? codexCommandPlan(adapter, renderedArgs, payload.task).args
         : renderedArgs;
-  const cwd = adapter.workingDirectoryPolicy === "explicit" && adapter.workingDirectory
-    ? String(adapter.workingDirectory)
-    : projectCwd(payload);
   const baseEnv = buildEnv(withMinimizedAgentEnv(adapter));
   const gitSafeEnv = isAbsolute(cwd)
     ? withGitSafeDirectoryEnv(baseEnv, { root: cwd })
     : baseEnv;
   const env = isCodexCliCommand(adapter.command)
-    ? withSafeDiscoveryEnv(gitSafeEnv, { root: cwd, configPath: safeRipgrepConfigPath })
+    ? {
+        ...withSafeDiscoveryEnv(gitSafeEnv, { root: cwd, configPath: safeRipgrepConfigPath }),
+        GIT_OPTIONAL_LOCKS: "0",
+      }
     : gitSafeEnv;
   const localPolicy = localPolicyForAdapter(adapter, payload);
   return {
@@ -1708,6 +1719,7 @@ function createCliSpawnPlan(adapter, payload) {
     env,
     cwd,
     localPolicy,
+    codexAdditionalWritableRoots: codexContract?.additionalWritableRoots ?? [],
     sessionMode: payload.options?.codexSessionMode ?? "not_applicable",
     workspacePolicy: payload.options?.codexWorkspacePolicy ?? "current_repo",
     attachments: codexImageAttachments
@@ -2384,33 +2396,52 @@ function highRiskCliCommand(command) {
 async function probeCodexCli(adapter) {
   const codexCommandOverride = process.env.MYAGENTTOOL_CODEX_COMMAND;
   const helpArgs = ["exec", "--help"];
+  const fixture = codexCommandOverride === "fixture";
   const commandPlan = codexCommandPlan({ ...adapter, command: adapter.command ?? "codex" }, helpArgs, "");
-  const command = codexCommandOverride === "fixture"
+  const command = fixture
     ? process.execPath
     : codexCommandOverride || commandPlan.command;
-  const args = codexCommandOverride === "fixture"
+  const args = fixture
     ? [codexFixtureAgentPath, "exec", "--help"]
     : commandPlan.args;
-  const result = await spawnCapture(command, args, {
-    cwd: process.cwd(),
-    env: buildEnv({ ...adapter, environmentPolicy: "inherit_safe" }),
-    windowsHide: true,
-    encoding: "utf8",
-    shell: false,
-  });
-  const combined = `${result.stdout ?? ""}\n${result.stderr ?? ""}`;
-  const hasExecHelp = result.status === 0 && /Run Codex non-interactively|Usage:\s+codex exec/i.test(combined);
+  const env = buildEnv({ ...adapter, environmentPolicy: "inherit_safe" });
+  const authPlan = codexCommandPlan({ ...adapter, command: adapter.command ?? "codex" }, ["login", "status"], "");
+  const authCommand = codexCommandOverride || authPlan.command;
+  const authArgs = fixture ? [] : authPlan.args;
+  const [helpResult, authResult] = await Promise.all([
+    spawnCapture(command, args, {
+      cwd: process.cwd(),
+      env,
+      windowsHide: true,
+      encoding: "utf8",
+      shell: false,
+      timeout: 5000,
+    }),
+    fixture
+      ? Promise.resolve({ status: 0, stdout: "fixture authenticated", stderr: "" })
+      : spawnCapture(authCommand, authArgs, {
+          cwd: process.cwd(),
+          env,
+          windowsHide: true,
+          encoding: "utf8",
+          shell: false,
+          timeout: 5000,
+        }),
+  ]);
+  const evaluation = evaluateCodexHealth({ helpResult, authResult, fixture });
   return {
-    ok: hasExecHelp,
-    summary: hasExecHelp ? "Restricted Codex CLI probe passed." : "Restricted Codex CLI probe failed.",
+    ok: evaluation.ok,
+    summary: evaluation.summary,
+    nextAction: evaluation.nextAction,
     details: [
-      "Probe used codex exec --help only.",
+      "Probe used codex exec --help and codex login status.",
+      "Both probes ran as the Desktop Bridge OS account.",
       "No prompt was executed.",
       "No install scripts were run.",
       "No broad filesystem scan was performed.",
       `Configured output format: ${adapter.outputFormat ?? "unknown"}.`,
       `Configured sandbox: ${adapter.sandbox ?? "unset"}.`,
-      hasExecHelp ? "Codex exec surface is available." : `Codex exec help was not detected. Exit: ${result.status ?? "unknown"}.`
+      evaluation.authenticated ? "Codex authentication is ready." : "Codex authentication is unavailable.",
     ]
   };
 }
@@ -2484,7 +2515,7 @@ function agentRuntimeName(agentName, adapter) {
 }
 
 function codexCliArgs() {
-  return ["exec", "--skip-git-repo-check", "--json", "{{task}}"];
+  return ["exec", "--sandbox", "workspace-write", "--skip-git-repo-check", "--json", "{{task}}"];
 }
 
 function codexRiskTags() {

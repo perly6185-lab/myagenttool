@@ -33,6 +33,19 @@ import { buildAutoRunCheckpoint, continuationCheckpointPrompt } from "./auto-run
 // never `develop` (which edits product code and opens a PR).
 const AUTO_APPROVABLE_PATHS = new Set(["design", "clarify", "prototype", "decompose"]);
 
+function isCodexAgent(agent) {
+  const command = String(agent?.adapter?.command ?? "").trim().toLowerCase();
+  return ["codex", "codex.cmd", "codex.ps1", "codex.exe"].some((name) =>
+    command === name || command.endsWith(`/${name}`) || command.endsWith(`\\${name}`));
+}
+
+function codexAutoApprovalOptions(agent) {
+  // "auto" applies only to the in-run Codex approval broker: low-risk tool
+  // requests proceed without parking the run, while sensitive requests still
+  // require a human. Invocation admission and merge policy remain unchanged.
+  return isCodexAgent(agent) ? { approvalMode: "auto" } : {};
+}
+
 // Fallback Project Fields for a self-healing remediation issue (H2) when the
 // culprit issue carried none — so the fix PR still passes pr-governance.
 const DEFAULT_REMEDIATION_FIELDS = "## Project Fields\nMilestone: M2\nArea: server\nType: bug\nStatus: ready\nRisk: low\nAcceptance: verified\nPlatform: server\nPriority: p1\n";
@@ -60,17 +73,24 @@ export const autoRunStates = [
 ];
 
 export function syncBoundWorkItemsForAutoRun({ state, autoRun, status, now, nextId }) {
+  const awaitingLocalDelivery = status === "done"
+    && autoRun.link?.type === "local_issue"
+    && autoRun.localDelivery
+    && autoRun.localDelivery.mode !== "pull_request"
+    && !autoRun.localDelivery.deliveredAt;
   const targetStatus = ["pr_open", "report_posted", "plan_proposed"].includes(status)
     ? "review"
-    : ["done", "decomposed"].includes(status)
-      ? "done"
-      : ["failed", "blocked"].includes(status)
-        ? "blocked"
-        : status === "cancelled"
-          ? "ready"
-          : ["materializing", "running", "awaiting_approval", "verifying", "publishing"].includes(status)
-            ? "in_progress"
-            : null;
+    : awaitingLocalDelivery
+      ? "review"
+      : ["done", "decomposed"].includes(status)
+        ? "done"
+        : ["failed", "blocked"].includes(status)
+          ? "blocked"
+          : status === "cancelled"
+            ? "ready"
+            : ["materializing", "running", "awaiting_approval", "verifying", "publishing"].includes(status)
+              ? "in_progress"
+              : null;
   if (!targetStatus) return [];
   const changed = [];
   for (const item of state.workItems ?? []) {
@@ -512,6 +532,9 @@ export function createAutoRunService({
     if (agent.status === "disabled") {
       throw new Error("The selected agent is disabled.");
     }
+    if (agent.health?.status === "unhealthy") {
+      throw new Error(`The selected agent is unhealthy: ${agent.health.message ?? "run its health check and resolve the reported problem first."}`);
+    }
     const agentTerminalId = agent.location?.type === "local_device" ? agent.location.deviceId ?? null : null;
     const owningTerminalId = terminalId ? String(terminalId) : agentTerminalId;
     if (owningTerminalId && agentTerminalId !== owningTerminalId) {
@@ -754,6 +777,7 @@ export function createAutoRunService({
       const task = roleAutoRunPrompt(normalizedLink, { path: decision.path, issueBody, verifyCommand });
       invocation = createInvocation(task, agent, {
         actor,
+        ...codexAutoApprovalOptions(agent),
         timeoutSeconds: Number(agent.adapter?.timeoutSeconds ?? 600),
         // role carries the decided path so role-restricted agent-skills render
         // for this run (creation.mjs → renderAgentSkillsIntoWorktree).
@@ -873,6 +897,7 @@ export function createAutoRunService({
     try {
       continuation = createInvocation(task, agent, {
         requestedBy: invocation.requestedBy ?? "usr_local",
+        ...codexAutoApprovalOptions(agent),
         idempotencyKey,
         preApproved: Boolean(continuationApproval),
         timeoutSeconds: Number(agent.adapter?.timeoutSeconds ?? 600),
@@ -1148,6 +1173,7 @@ export function createAutoRunService({
               try {
                 repair = createInvocation(repairTask, agent, {
                   preApproved: true, // continuation of an already human-approved run on unchanged content — no re-gate
+                  ...codexAutoApprovalOptions(agent),
                   timeoutSeconds: Number(agent.adapter?.timeoutSeconds ?? 600),
                   metadata: { worktreeId: autoRun.worktreeId, projectId: autoRun.projectId, autoRunId: autoRun.id, role: "develop", repairAttempt: autoRun.repairAttempts },
                 });
@@ -1491,6 +1517,7 @@ export function createAutoRunService({
       invocation = createInvocation(task, agent, {
         actor,
         requestedBy: retrySourceInvocation?.requestedBy ?? actor?.userId ?? "usr_local",
+        ...codexAutoApprovalOptions(agent),
         preApproved: Boolean(approvalRecoveryRequest || timeoutContinuationApproval),
         timeoutSeconds: Number(agent.adapter?.timeoutSeconds ?? 600),
         ...(resumesExecutionTimeout
@@ -1628,6 +1655,7 @@ export function createAutoRunService({
     let invocation;
     try {
       invocation = createInvocation(task, alternate, {
+        ...codexAutoApprovalOptions(alternate),
         timeoutSeconds: Number(alternate.adapter?.timeoutSeconds ?? 600),
         metadata: { worktreeId: worktree.id, projectId: worktree.projectId, autoRunId: autoRun.id, role: path },
       });

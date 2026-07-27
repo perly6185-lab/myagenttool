@@ -516,6 +516,17 @@ export function localExecutionGate(work, adapter, spawnPlan, { permissionDecisio
   if (!commandKind) {
     return refused("Local execution gate refused a non-allowlisted command.", evidence);
   }
+  if (commandKind === "codex") {
+    const codexGate = codexWorkspaceArgumentGate(spawnPlan, permissionDecision);
+    evidence.codexWorkspace = codexGate.evidence;
+    if (!codexGate.allowed) {
+      return refused(
+        codexGate.reason,
+        { ...evidence, refusalCode: codexGate.refusalCode },
+        "policy_blocked",
+      );
+    }
+  }
   if (!policyAllowed(manifest, commandKind, localPolicy)) {
     // refusalCode (refusal model #758): which of file/network exceeded the local
     // allowlist for this command kind — the precise sub-code the server records.
@@ -561,6 +572,104 @@ export function localExecutionGate(work, adapter, spawnPlan, { permissionDecisio
     }
   }
   return { allowed: true, reason: "Local execution gate allowed the governed command.", evidence };
+}
+
+function optionValues(args, names) {
+  const values = [];
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = String(args[index] ?? "");
+    const matched = names.find((name) => arg === name);
+    if (matched) {
+      values.push(String(args[index + 1] ?? ""));
+      index += 1;
+      continue;
+    }
+    const assigned = names.find((name) => arg.startsWith(`${name}=`));
+    if (assigned) values.push(arg.slice(assigned.length + 1));
+  }
+  return values;
+}
+
+function normalizedPathSet(values) {
+  return new Set(values.map((value) => resolve(String(value))).map((value) =>
+    process.platform === "win32" ? value.toLowerCase() : value));
+}
+
+function codexWorkspaceArgumentGate(spawnPlan, permissionDecision) {
+  const args = spawnPlan.args.map(String);
+  const execIndex = args.indexOf("exec");
+  const resumed = execIndex >= 0 && args[execIndex + 1] === "resume";
+  const cdValues = optionValues(args, ["--cd", "-C"]);
+  const sandboxValues = optionValues(args, ["--sandbox", "-s"]);
+  const addDirValues = optionValues(args, ["--add-dir"]);
+  const expectedAddDirs = Array.isArray(spawnPlan.codexAdditionalWritableRoots)
+    ? spawnPlan.codexAdditionalWritableRoots.map(String)
+    : [];
+  const evidence = {
+    resumed,
+    sandbox: sandboxValues,
+    requestedCwd: cdValues,
+    additionalWritableRoots: addDirValues,
+    expectedAdditionalWritableRoots: expectedAddDirs,
+  };
+
+  if (args.includes("--dangerously-bypass-approvals-and-sandbox")) {
+    return permissionDecision === "approved"
+      ? { allowed: true, evidence }
+      : {
+          allowed: false,
+          reason: "Local execution gate refused full-access Codex execution without approval evidence.",
+          refusalCode: "full_access_unapproved",
+          evidence,
+        };
+  }
+  if (resumed) {
+    if (cdValues.length || sandboxValues.length || addDirValues.length) {
+      return {
+        allowed: false,
+        reason: "Local execution gate refused unsupported workspace flags on a resumed Codex session.",
+        refusalCode: "invalid_codex_resume_contract",
+        evidence,
+      };
+    }
+    return { allowed: true, evidence };
+  }
+  if (execIndex < 0 || sandboxValues.length !== 1 || sandboxValues[0] !== "workspace-write") {
+    return {
+      allowed: false,
+      reason: "Local execution gate requires fresh Codex runs to use the workspace-write sandbox.",
+      refusalCode: "invalid_codex_sandbox",
+      evidence,
+    };
+  }
+  const actualCwd = normalizedPathSet(cdValues);
+  const expectedCwd = normalizedPathSet([spawnPlan.cwd]);
+  if (cdValues.length !== 1 || ![...actualCwd].every((value) => expectedCwd.has(value))) {
+    return {
+      allowed: false,
+      reason: "Local execution gate refused a Codex --cd outside the invocation working directory.",
+      refusalCode: "codex_cwd_mismatch",
+      evidence,
+    };
+  }
+  const actualRoots = normalizedPathSet(addDirValues);
+  const expectedRoots = normalizedPathSet(expectedAddDirs);
+  const rootsMatch = actualRoots.size === expectedRoots.size
+    && [...actualRoots].every((value) => expectedRoots.has(value));
+  const rootsAreNarrow = expectedAddDirs.every((value) => {
+    const normalized = resolve(value);
+    return existsSync(normalized)
+      && normalized.toLowerCase().includes(`${sep}.git${sep}worktrees${sep}`.toLowerCase());
+  });
+  if (!rootsMatch || !rootsAreNarrow) {
+    return {
+      allowed: false,
+      reason: "Local execution gate refused an untrusted Codex --add-dir writable root.",
+      refusalCode: "codex_add_dir_mismatch",
+      evidence,
+    };
+  }
+  return { allowed: true, evidence };
 }
 
 function classifySpawn(adapter, spawnPlan, manifest = {}) {

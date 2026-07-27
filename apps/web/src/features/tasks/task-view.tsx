@@ -2243,11 +2243,17 @@ function LocalWorkItemDetail({
   const [dependencyId, setDependencyId] = useState("");
   const [parentId, setParentId] = useState("");
   const [observability, setObservability] = useState<LocalWorkItemObservability | null>(null);
+  const [autoRunReadiness, setAutoRunReadiness] = useState<{
+    ready: boolean;
+    checks: { key: string; label: string; status: "ok" | "warn" | "blocked"; detail: string }[];
+  } | null>(null);
   const [deleteCommentTarget, setDeleteCommentTarget] = useState<WorkItemComment | null>(null);
+  const [deliveryConfirmMode, setDeliveryConfirmMode] = useState<"local_merge" | "pull_request" | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
 
   const load = async () => {
     try {
+      setAutoRunReadiness(null);
       const [detail, commentResult, activityResult, workItemResult] = await Promise.all([
         api.getWorkItem(workItemId) as Promise<{ workItem: LocalWorkItem; observability: LocalWorkItemObservability }>,
         api.listWorkItemComments(workItemId) as Promise<{ comments: WorkItemComment[] }>,
@@ -2271,6 +2277,17 @@ function LocalWorkItemDetail({
       setActivity(activityResult.activities);
       setDependencyCandidates(workItemResult.workItems.filter((candidate) => candidate.id !== workItemId));
       setObservability(detail.observability);
+      void (api.autoRunReadiness(next.projectId) as Promise<{ readiness?: typeof autoRunReadiness }>)
+        .then((result) => setAutoRunReadiness(result.readiness ?? null))
+        .catch(() => setAutoRunReadiness({
+          ready: false,
+          checks: [{
+            key: "preflight",
+            label: t("taskReadiness.preflight"),
+            status: "blocked",
+            detail: t("taskReadiness.checkFailed"),
+          }],
+        }));
       setLoadError(null);
     } catch (caught) {
       setLoadError(caught instanceof Error ? caught.message : t("taskLocal.loadFailed"));
@@ -2437,6 +2454,15 @@ function LocalWorkItemDetail({
       void load();
     });
   };
+  const deliver = (mode: "local_merge" | "pull_request") => {
+    void execute(() => api.deliverWorkItem(item.id, mode, item.revision)).then((ok) => {
+      if (!ok) return;
+      setDeliveryConfirmMode(null);
+      setNotice(`${t(mode === "local_merge" ? "taskDelivery.localComplete" : "taskDelivery.prComplete")} ✓`);
+      onChanged();
+      void load();
+    });
+  };
   const externalIssueBinding = item.externalBindings?.find((binding) =>
     binding.resourceType === "issue" || binding.kind.endsWith("_issue"));
   const externalProvider = externalIssueBinding?.provider
@@ -2499,6 +2525,10 @@ function LocalWorkItemDetail({
     }
     if (nextActionKey === "resolve_sync_conflict") {
       document.getElementById(`work-item-external-${item.id}`)?.scrollIntoView({ behavior: "smooth", block: "center" });
+      return;
+    }
+    if (nextActionKey === "review_delivery") {
+      openWorktreeResult(observability?.delivery?.worktreeId);
       return;
     }
     if (["review_approval", "inspect_failure", "monitor_execution"].includes(nextActionKey)) {
@@ -2803,11 +2833,54 @@ function LocalWorkItemDetail({
         open={item.state === "open"}
         pending={pending}
         canSave={Boolean(title.trim())}
+        worktreeReady={Boolean(autoRunReadiness && !autoRunReadiness.checks.some((check) => check.key === "git" && check.status === "blocked"))}
+        autoRunReady={autoRunReadiness?.ready === true}
+        autoRunBlockedReason={autoRunReadiness?.checks.filter((check) => check.status === "blocked").map((check) => check.detail).join(" ")}
         onCreateWorktree={() => requestNavigation(createExecutionWorktree)}
         onStartAutoRun={() => requestNavigation(startExecution)}
         onTransition={() => transition(item.state === "open" ? "close" : "reopen")}
         onSave={() => save()}
       />
+      {autoRunReadiness?.ready === false ? (
+        <div className="rounded-md border border-destructive/40 bg-destructive/5 p-3 text-xs" role="alert">
+          <strong className="block text-destructive">{t("taskReadiness.blocked")}</strong>
+          <ul className="mt-1 list-disc space-y-1 pl-4 text-muted-foreground">
+            {autoRunReadiness.checks.filter((check) => check.status === "blocked").map((check) => (
+              <li key={check.key}>{check.label}: {check.detail}</li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
+      {observability?.delivery ? (
+        <section className="rounded-md border border-amber-500/40 bg-amber-500/5 p-3">
+          <div className="flex flex-wrap items-start justify-between gap-2">
+            <div>
+              <h3 className="text-sm font-semibold">{t("taskDelivery.title")}</h3>
+              <p className="text-xs text-muted-foreground">
+                {observability.delivery.branchName ?? observability.delivery.worktreeId}
+                {" · "}{t(observability.delivery.mode === "local_merge" ? "taskDelivery.localMode" : "taskDelivery.prMode")}
+              </p>
+            </div>
+            <Badge tone={observability.delivery.review?.verdict === "approved" ? "success" : "warning"}>
+              {observability.delivery.review?.verdict === "approved"
+                ? t("taskDelivery.approved")
+                : observability.delivery.review?.verdict === "changes_requested"
+                  ? t("taskDelivery.changesRequested")
+                  : t("taskDelivery.reviewRequired")}
+            </Badge>
+          </div>
+          <p className="mt-2 text-xs text-muted-foreground">{t("taskDelivery.hint")}</p>
+          <div className="mt-3 flex flex-wrap gap-2">
+            <Button variant="secondary" size="sm" onClick={() => openWorktreeResult(observability.delivery?.worktreeId)}>
+              {t("taskDelivery.review")}
+            </Button>
+            <Button size="sm" disabled={pending || observability.delivery.review?.verdict !== "approved"}
+              onClick={() => setDeliveryConfirmMode(observability.delivery?.mode ?? null)}>
+              {t(observability.delivery.mode === "local_merge" ? "taskDelivery.merge" : "taskDelivery.createPr")}
+            </Button>
+          </div>
+        </section>
+      ) : null}
       {(item.executionBindings?.length ?? 0) > 0 ? (
         <div className="rounded-md border border-border p-2">
           <p className="mb-1 text-xs font-medium text-muted-foreground">{t("taskLocal.executions")}</p>
@@ -2877,6 +2950,16 @@ function LocalWorkItemDetail({
           ))}
         </ul>
       </section>
+      <ConfirmModal
+        open={Boolean(deliveryConfirmMode)}
+        title={t(deliveryConfirmMode === "local_merge" ? "taskDelivery.merge" : "taskDelivery.createPr")}
+        description={t(deliveryConfirmMode === "local_merge" ? "taskDelivery.mergeConfirm" : "taskDelivery.prConfirm")}
+        confirmLabel={t(deliveryConfirmMode === "local_merge" ? "taskDelivery.merge" : "taskDelivery.createPr")}
+        onClose={() => setDeliveryConfirmMode(null)}
+        onConfirm={() => {
+          if (deliveryConfirmMode) deliver(deliveryConfirmMode);
+        }}
+      />
       <ConfirmModal
         open={Boolean(deleteCommentTarget)}
         title={t("taskLocal.deleteComment")}

@@ -114,6 +114,77 @@ test("requires approval evidence for full-access Codex execution", () => {
   assert.match(gate.reason, /without approval evidence/);
 });
 
+test("allows a fresh Codex run only with its exact workspace and linked-worktree Git directory", () => {
+  const root = mkdtempSync(join(tmpdir(), "codex-gate-"));
+  const gitAdmin = join(root, ".git", "worktrees", "issue-1");
+  mkdirSync(gitAdmin, { recursive: true });
+  try {
+    const gate = localExecutionGate(
+      { options: { metadata: { worktreePath: root } } },
+      { type: "cli", command: "codex" },
+      {
+        command: process.execPath,
+        args: [
+          codexFixtureAgentPath,
+          "exec",
+          "--sandbox", "workspace-write",
+          "--cd", root,
+          "--add-dir", gitAdmin,
+          "{{task}}",
+        ],
+        cwd: root,
+        codexAdditionalWritableRoots: [gitAdmin],
+        localPolicy: { filePolicy: "native_controls", networkPolicy: "native_controls", source: "test" },
+      },
+      { manifest },
+    );
+    assert.equal(gate.allowed, true);
+    assert.deepEqual(gate.evidence.codexWorkspace.expectedAdditionalWritableRoots, [gitAdmin]);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("refuses Codex cwd and add-dir values that exceed the bridge-created contract", () => {
+  const root = mkdtempSync(join(tmpdir(), "codex-gate-refuse-"));
+  const gitAdmin = join(root, ".git", "worktrees", "issue-1");
+  mkdirSync(gitAdmin, { recursive: true });
+  try {
+    const base = {
+      command: process.execPath,
+      cwd: root,
+      codexAdditionalWritableRoots: [gitAdmin],
+      localPolicy: { filePolicy: "native_controls", networkPolicy: "native_controls", source: "test" },
+    };
+    const wrongCwd = localExecutionGate(
+      { options: { metadata: { worktreePath: root } } },
+      { type: "cli", command: "codex" },
+      {
+        ...base,
+        args: [codexFixtureAgentPath, "exec", "--sandbox", "workspace-write", "--cd", tmpdir(), "--add-dir", gitAdmin],
+      },
+      { manifest },
+    );
+    assert.equal(wrongCwd.allowed, false);
+    assert.equal(wrongCwd.evidence.refusalCode, "codex_cwd_mismatch");
+
+    const broadRoot = resolve(root, "..");
+    const wrongAddDir = localExecutionGate(
+      { options: { metadata: { worktreePath: root } } },
+      { type: "cli", command: "codex" },
+      {
+        ...base,
+        args: [codexFixtureAgentPath, "exec", "--sandbox", "workspace-write", "--cd", root, "--add-dir", broadRoot],
+      },
+      { manifest },
+    );
+    assert.equal(wrongAddDir.allowed, false);
+    assert.equal(wrongAddDir.evidence.refusalCode, "codex_add_dir_mismatch");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("rejects wrapper execution when file or network policy exceeds the manifest", () => {
   const wrapperScript = resolve("tools/agents/application-wrapper.mjs");
   const gate = localExecutionGate(
@@ -152,7 +223,7 @@ test("derives applicationWrapper file/network policies for the bridge gate", () 
   });
 });
 
-import { closeSync, mkdirSync, mkdtempSync, openSync } from "node:fs";
+import { closeSync, mkdirSync, mkdtempSync, openSync, rmSync } from "node:fs";
 
 test("cwd confinement: allows a cwd inside the approved worktree root", () => {
   const root = mkdtempSync(join(tmpdir(), "wt-root-"));

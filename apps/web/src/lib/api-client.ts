@@ -1219,6 +1219,10 @@ export const api = {
     request("POST", `/api/work-items/${encodeURIComponent(id)}/worktrees`, payload),
   startWorkItemAutoRun: (id: string, payload: { agentId?: string; baseBranch?: string } = {}) =>
     request("POST", `/api/work-items/${encodeURIComponent(id)}/auto-runs`, payload),
+  deliverWorkItem: (id: string, mode: "local_merge" | "pull_request", expectedRevision: number) =>
+    request("POST", `/api/work-items/${encodeURIComponent(id)}/delivery/${mode === "local_merge" ? "local" : "pull-request"}`, {
+      expectedRevision,
+    }),
   retryWorkItemAlert: (workItemId: string, alertId: string) =>
     request("POST", `/api/work-items/${encodeURIComponent(workItemId)}/alerts/${encodeURIComponent(alertId)}/retry`),
   listPlanningProjects: (
