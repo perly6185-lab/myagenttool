@@ -311,6 +311,8 @@ export function createServerRuntimeServices({
     gitProjectSummary,
     projectBranches,
     publishWorktreeBranch,
+    promoteWorktreeToBase,
+    promoteWorktreeToPullRequest,
     ensureLocalOrigin,
     createWorktreePr,
     worktreeDiff,
@@ -1028,7 +1030,10 @@ export function createServerRuntimeServices({
       // A4: resolve the project's chosen allowlisted verify command by NAME
       // (operator-set argv), falling back to the global command.
       const project = (state.projects ?? []).find(
-        (p) => p.id === (worktree?.workspaceProjectId ?? worktree?.sourceProjectId ?? worktree?.projectId),
+        // The verify selection belongs to the source project. A derived
+        // workspace project intentionally carries only worktree-local runtime
+        // metadata and does not inherit verifyCommandName.
+        (p) => p.id === (worktree?.sourceProjectId ?? worktree?.projectId ?? worktree?.workspaceProjectId),
       ) ?? null;
       const command = resolveAutoRunVerifyCommandFor({ verifyCommandName: project?.verifyCommandName ?? null });
       if (!command || !worktree?.path) {
@@ -3540,6 +3545,8 @@ export function createServerRuntimeServices({
     createWorktree,
     createWorktreePr,
     publishWorktreeBranch,
+    promoteWorktreeToBase,
+    promoteWorktreeToPullRequest,
     ensureLocalOrigin,
     startAutoRun,
     retryAutoRun,
@@ -3592,6 +3599,7 @@ export function createServerRuntimeServices({
     updateWorkItem: workItemService.updateWorkItem,
     bulkUpdateWorkItems: workItemService.bulkUpdateWorkItems,
     transitionWorkItem: workItemService.transitionWorkItem,
+    completeWorkItemDelivery: workItemService.completeDelivery,
     listWorkItemActivity: workItemService.listActivity,
     listWorkItemComments: workItemService.listComments,
     createWorkItemComment: workItemService.createComment,

@@ -959,6 +959,21 @@ export function createWorkItemService({
     const latestRun = (state.autoRuns ?? [])
       .filter((run) => runIds.has(run.id))
       .sort((left, right) => String(right.updatedAt ?? "").localeCompare(String(left.updatedAt ?? "")))[0] ?? null;
+    const pendingLocalDelivery = latestRun?.status === "done"
+      && latestRun.link?.type === "local_issue"
+      && latestRun.localDelivery
+      && !latestRun.localDelivery.deliveredAt;
+    const deliveryWorktree = pendingLocalDelivery
+      ? (state.worktrees ?? []).find((worktree) => worktree.id === latestRun.localDelivery.worktreeId) ?? null
+      : null;
+    const deliveryReview = deliveryWorktree
+      ? (state.worktreeReviews ?? []).find((review) => review.worktreeId === deliveryWorktree.id) ?? null
+      : null;
+    const deliveryProject = (state.projects ?? []).find((project) => project.id === item.projectId) ?? null;
+    const deliveryRemoteUrl = deliveryProject?.git?.remoteUrl ?? null;
+    const deliveryMode = deliveryRemoteUrl && /github\.com[/:]/i.test(deliveryRemoteUrl)
+      ? "pull_request"
+      : "local_merge";
     const invocationIds = new Set((state.autoRuns ?? [])
       .filter((run) => runIds.has(run.id) && run.invocationId)
       .map((run) => run.invocationId));
@@ -1093,6 +1108,8 @@ export function createWorkItemService({
         ? "resolve_sync_conflict"
         : executionState(item) === "failed"
           ? "inspect_failure"
+          : pendingLocalDelivery
+            ? "review_delivery"
           : item.state === "closed"
             ? "none"
             : latestRun
@@ -1123,6 +1140,20 @@ export function createWorkItemService({
             terminalOutcome: latestRun.terminalOutcome ?? null,
             invocationId: latestRun.invocationId ?? null,
             agentId: latestRun.agentId ?? null,
+            localDelivery: latestRun.localDelivery ?? null,
+          } : null,
+          delivery: pendingLocalDelivery ? {
+            state: "awaiting_review",
+            mode: deliveryMode,
+            worktreeId: deliveryWorktree?.id ?? latestRun.localDelivery.worktreeId,
+            branchName: latestRun.localDelivery.branchName ?? deliveryWorktree?.branchName ?? null,
+            remoteUrl: deliveryRemoteUrl,
+            review: deliveryReview ? {
+              verdict: deliveryReview.verdict,
+              reviewedCommit: deliveryReview.reviewedCommit ?? null,
+              reviewedBy: deliveryReview.reviewedBy ?? null,
+              createdAt: deliveryReview.createdAt ?? null,
+            } : null,
           } : null,
           activeClaim: activeClaim ? {
             actorId: activeClaim.claimedBy ?? null,
@@ -2147,6 +2178,84 @@ export function createWorkItemService({
     return { ok: true, status: 200, body: { workItem: item, binding } };
   }
 
+  function completeDelivery({
+    workItemId, expectedRevision, mode, autoRunId, result = {},
+  } = {}, actor = null) {
+    const item = findOwn(workItemId, actor);
+    if (!item) return notFound();
+    if (!Number.isInteger(expectedRevision)) {
+      return { ok: false, status: 400, body: { error: "expected_revision_required" } };
+    }
+    if (item.revision !== expectedRevision) {
+      return { ok: false, status: 409, body: { error: "work_item_revision_conflict", currentRevision: item.revision } };
+    }
+    if (!["local_merge", "pull_request"].includes(mode)) {
+      return { ok: false, status: 400, body: { error: "invalid_work_item_delivery_mode" } };
+    }
+    const gate = completionGate(item);
+    if (!gate.ready) {
+      return { ok: false, status: 409, body: { error: "work_item_acceptance_incomplete", ...gate } };
+    }
+    const binding = [...(item.executionBindings ?? [])].reverse().find(
+      (candidate) => candidate.kind === "auto_run" && (!autoRunId || candidate.targetId === autoRunId),
+    );
+    const autoRun = binding
+      ? (state.autoRuns ?? []).find((candidate) => candidate.id === binding.targetId)
+      : null;
+    if (!autoRun?.localDelivery || autoRun.link?.type !== "local_issue") {
+      return { ok: false, status: 409, body: { error: "work_item_delivery_not_ready" } };
+    }
+    if (mode === "local_merge" && autoRun.localDelivery.deliveredAt) {
+      return { ok: false, status: 409, body: { error: "work_item_already_delivered" } };
+    }
+    const deliveredAt = result.deliveredAt ?? now();
+    runTx(() => {
+      autoRun.localDelivery = {
+        ...autoRun.localDelivery,
+        mode,
+        ...(mode === "local_merge"
+          ? { baseBranch: result.baseBranch ?? null, deliveredCommit: result.commit ?? null, deliveredAt }
+          : { prNumber: result.number ?? null, prUrl: result.url ?? null, promotedAt: deliveredAt }),
+      };
+      autoRun.updatedAt = deliveredAt;
+      if (mode === "pull_request") {
+        autoRun.status = "pr_open";
+        autoRun.prNumber = result.number ?? null;
+        autoRun.prUrl = result.url ?? null;
+        item.status = "review";
+        item.state = "open";
+      } else {
+        item.status = "done";
+        item.state = "closed";
+      }
+      item.revision += 1;
+      item.updatedAt = deliveredAt;
+      item.lastModifiedBy = actorUser(actor);
+      recordActivity(item, actor, mode === "pull_request" ? "delivery_pr_opened" : "delivery_completed", {
+        autoRunId: autoRun.id,
+        worktreeId: autoRun.localDelivery.worktreeId,
+        mode,
+        ...(mode === "pull_request" ? { prNumber: result.number ?? null, prUrl: result.url ?? null } : {
+          baseBranch: result.baseBranch ?? null, commit: result.commit ?? null,
+        }),
+      });
+      appendEvent({
+        invocationId: autoRun.invocationId ?? null,
+        type: mode === "pull_request" ? "work_item_delivery_pr_opened" : "work_item_delivery_completed",
+        level: "info",
+        message: mode === "pull_request"
+          ? `${item.localRef} opened pull request #${result.number ?? "?"}.`
+          : `${item.localRef} delivered to ${result.baseBranch ?? "base"}.`,
+        data: { workItemId: item.id, autoRunId: autoRun.id, mode, result },
+      });
+    });
+    return {
+      ok: true,
+      status: 200,
+      body: { workItem: workItemView(item, actor), autoRun, delivery: autoRun.localDelivery },
+    };
+  }
+
   function claimWorkItem({
     workItemId, agentId = null, leaseMinutes = 30, idempotencyKey = null,
   } = {}, actor = null) {
@@ -2211,7 +2320,7 @@ export function createWorkItemService({
   return {
     listWorkItems, listAttention, getWorkItem, createWorkItem, updateWorkItem, bulkUpdateWorkItems, transitionWorkItem,
     listActivity, listComments, createComment, updateComment, deleteComment,
-    recordExecutionBinding, claimWorkItem, releaseWorkItemClaim,
+    recordExecutionBinding, completeDelivery, claimWorkItem, releaseWorkItemClaim,
     bindGithubIssue, syncGithubIssue, bindExternalIssue, syncExternalIssue, listExternalProviders,
     recordVerification, recordAssetOperation, ingestGithubWebhook, replayGithubWebhook, recordGithubWebhookFailure,
     ingestExternalWebhook, replayExternalWebhook, recordExternalWebhookFailure,

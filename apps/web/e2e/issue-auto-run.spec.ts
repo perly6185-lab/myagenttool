@@ -58,33 +58,42 @@ async function mockApi(page: Page) {
     if (url.pathname === "/api/planning-projects") return route.fulfill({ json: { projects: [] } });
     if (url.pathname === "/api/auto-runs" && method === "GET") return route.fulfill({ json: {
       autoRuns: autoRunStarted ? [{
-        id: "aur_1", status: "pr_open", projectId: project.id, worktreeId: "wt_1",
+        id: "aur_1", status: "done", projectId: project.id, worktreeId: "wt_1",
         intent: "Implement browser chain",
         decision: { path: "codex", decidedBy: "router", confidence: 0.96, rationale: "Repository coding task" },
-        link: { type: "pr", number: 77, title: "Implement browser chain", url: "https://github.test/pull/77" },
+        link: { type: "local_issue", number: 1, title: "Implement browser chain", url: null },
+        localDelivery: { worktreeId: "wt_1", branchName: "ai/e2e-route" },
         branchName: "ai/e2e-route",
       }] : [],
       summary: {
         total: autoRunStarted ? 1 : 0,
         active: 0,
-        byStatus: autoRunStarted ? { pr_open: 1 } : {},
-        outcomes: { prOpen: autoRunStarted ? 1 : 0, blocked: 0, failed: 0, reportPosted: 0, needsInput: 0 },
+        byStatus: autoRunStarted ? { done: 1 } : {},
+        outcomes: { prOpen: 0, blocked: 0, failed: 0, reportPosted: 0, needsInput: 0 },
         successRate: autoRunStarted ? 1 : null,
         verification: { passed: 1, failed: 0, unverified: 0 },
         routing: { alignmentRate: 1, conclusive: 1 },
         blockedReasons: [],
-        timeToPr: { count: 1, medianSeconds: 30, p90Seconds: 30 },
+        timeToPr: { count: 0, medianSeconds: null, p90Seconds: null },
         rates: { humanEscalation: 0, selfRepair: 0 },
       },
     } });
     if (url.pathname === "/api/work-items/lwi_1" && method === "GET") {
       return route.fulfill({ json: { workItem, observability: {
-        nextAction: "start_execution",
+        nextAction: autoRunStarted ? "review_delivery" : "start_execution",
         attention: [],
-        latestRun: {
+        latestRun: autoRunStarted ? {
+          id: "aur_1", status: "done", updatedAt: "2026-07-24T00:02:00.000Z",
+          invocationId: "inv_1", agentId: "agt_1",
+          localDelivery: { worktreeId: "wt_1", branchName: "ai/e2e-route" },
+        } : {
           id: "aur_trace", status: "queued", updatedAt: "2026-07-24T00:01:00.000Z",
           invocationId: "inv_1", agentId: "agt_1",
         },
+        delivery: autoRunStarted ? {
+          state: "awaiting_review", mode: "local_merge", worktreeId: "wt_1",
+          branchName: "ai/e2e-route", remoteUrl: null, review: null,
+        } : null,
         activeClaim: null,
         cost: { knownUsd: 0, unknownEntries: 0, entryCount: 0, projectBudget: null, teamBudget: null },
         alerts: { queued: 0, failed: 0, sent: 0, skipped: 0, items: [] },
@@ -116,10 +125,19 @@ async function mockApi(page: Page) {
     if (url.pathname.endsWith("/activity")) return route.fulfill({ json: { activities: [] } });
     if (url.pathname === "/api/work-items/lwi_1/auto-runs" && method === "POST") {
       autoRunStarted = true;
+      workItem = {
+        ...workItem,
+        status: "review",
+        revision: 2,
+        executionBindings: [{ kind: "auto_run", targetId: "aur_1", worktreeId: "wt_1", createdAt: "2026-07-24T00:01:00.000Z" }],
+      };
       return route.fulfill({ status: 201, json: {
         worktree: { id: "wt_1", projectId: project.id },
         autoRun: { id: "aur_1", worktreeId: "wt_1", status: "queued" },
       } });
+    }
+    if (url.pathname === `/api/projects/${project.id}/auto-run-readiness`) {
+      return route.fulfill({ json: { readiness: { ready: true, checks: [] } } });
     }
     if (url.pathname.startsWith("/api/projects/") && url.pathname.endsWith("/github")) {
       return route.fulfill({ json: { issues: [], pullRequests: [] } });
@@ -138,7 +156,7 @@ test.beforeEach(async ({ page }) => {
   await mockApi(page);
 });
 
-test("creates an issue, routes AI execution, and reaches a pull request", async ({ page }) => {
+test("creates an issue, routes AI execution, and reaches reviewed local delivery", async ({ page }) => {
   await page.goto("/?section=task");
   await page.getByRole("button", { name: /New local issue/i }).click();
   await page.getByLabel("Title").fill("Implement browser chain");
@@ -150,11 +168,14 @@ test("creates an issue, routes AI execution, and reaches a pull request", async 
   await page.getByRole("button", { name: "Start Auto-run" }).click();
   await autoRunRequest;
 
+  await page.goto("/?section=task");
+  await page.getByText("Implement browser chain").first().click();
+  const detail = page.getByRole("dialog", { name: "Local issue details" });
+  await expect(detail.getByText("Ready for delivery")).toBeVisible();
+  await expect(detail.getByText("Review required")).toBeVisible();
+  await expect(detail.getByRole("button", { name: "Merge into base" })).toBeDisabled();
   await page.goto("/?section=autoRuns&autoRun=aur_1");
   await expect(page.getByText("Implement browser chain").first()).toBeVisible();
-  await expect(page.getByText("PR open", { exact: true }).first()).toBeVisible();
-  await expect(page.getByText("codex", { exact: true }).first()).toBeVisible();
-  await expect(page.getByRole("link", { name: "Open on GitHub" })).toHaveAttribute("href", "https://github.test/pull/77");
   const queue = page.getByRole("region", { name: "Dispatch queue" });
   await expect(queue).toBeVisible();
   await expect(queue.getByText(/Queue clear/)).toBeVisible();

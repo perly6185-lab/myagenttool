@@ -764,6 +764,91 @@ export function createProjectService({ state, now, nextId, appendEvent, persistS
     return (state.worktreeReviews ?? []).find((r) => r.worktreeId === worktreeId) ?? null;
   }
 
+  function approvedWorktreeForDelivery(worktreeId) {
+    const worktree = worktreeRecord(worktreeId);
+    if (!worktree) throw new Error("Worktree not found.");
+    const review = latestWorktreeReview(worktreeId);
+    if (review?.verdict !== "approved") {
+      throw new Error("Approve the current worktree diff before delivery.");
+    }
+    const headCommit = worktreeHeadCommit(worktreeId);
+    if (!headCommit || review.reviewedCommit !== headCommit) {
+      throw new Error("The worktree changed after approval. Review and approve the current diff again.");
+    }
+    return { worktree, review, headCommit };
+  }
+
+  // Human delivery for a platform-local issue. This deliberately permits only a
+  // clean fast-forward of the checked-out base branch: a concurrent base change
+  // must be reconciled in the worktree first, rather than leaving the user's main
+  // checkout in a conflicted merge state.
+  async function promoteWorktreeToBase(worktreeId) {
+    const { worktree, review, headCommit } = approvedWorktreeForDelivery(worktreeId);
+    const repoRoot = worktree.repoPath;
+    const worktreePath = worktree.worktreePath ?? worktree.path;
+    const branch = worktree.branchName ?? worktree.branch;
+    if (!repoRoot || !existsSync(repoRoot)) throw new Error("Source repository is missing.");
+    if (!worktreePath || !existsSync(worktreePath)) throw new Error("Worktree working directory is missing.");
+    if (!branch) throw new Error("Worktree has no branch to deliver.");
+
+    const worktreeStatus = await runGitCapture(worktreePath, ["status", "--porcelain"], { timeout: 10_000 });
+    if (!worktreeStatus.ok) throw new Error(`git status failed: ${worktreeStatus.stderr || `exit ${worktreeStatus.code}`}`);
+    if (worktreeStatus.stdout.trim()) throw new Error("The worktree has uncommitted changes. Commit and review them before delivery.");
+
+    const sourceStatus = await runGitCapture(repoRoot, ["status", "--porcelain"], { timeout: 10_000 });
+    if (!sourceStatus.ok) throw new Error(`git status failed: ${sourceStatus.stderr || `exit ${sourceStatus.code}`}`);
+    if (sourceStatus.stdout.trim()) throw new Error("The base checkout has uncommitted changes. Clean it before delivery.");
+
+    const current = await runGitCapture(repoRoot, ["rev-parse", "--abbrev-ref", "HEAD"], { timeout: 5_000 });
+    if (!current.ok || !current.stdout.trim() || current.stdout.trim() === "HEAD") {
+      throw new Error("The base checkout is detached. Check out the target branch before delivery.");
+    }
+    const currentBranch = current.stdout.trim();
+    const requestedBase = String(worktree.baseBranch ?? "HEAD").replace(/^origin\//, "");
+    const baseBranch = requestedBase === "HEAD" ? currentBranch : requestedBase;
+    if (currentBranch !== baseBranch) {
+      throw new Error(`The base checkout is on "${currentBranch}", but this worktree targets "${baseBranch}".`);
+    }
+
+    const ancestor = await runGitCapture(repoRoot, ["merge-base", "--is-ancestor", currentBranch, branch], { timeout: 10_000 });
+    if (!ancestor.ok) {
+      throw new Error(`The base branch "${currentBranch}" advanced. Rebase or merge it into "${branch}", then review again.`);
+    }
+    const merge = await runGitCapture(repoRoot, ["merge", "--ff-only", branch], { timeout: 20_000 });
+    if (!merge.ok) throw new Error(`Fast-forward delivery failed: ${merge.stderr || merge.stdout || `exit ${merge.code}`}`);
+    const deliveredCommit = (await runGitCapture(repoRoot, ["rev-parse", "HEAD"], { timeout: 5_000 })).stdout.trim();
+    const deliveredAt = now();
+    runTx(() => {
+      worktree.delivery = {
+        mode: "local_merge",
+        baseBranch,
+        branchName: branch,
+        reviewedCommit: review.reviewedCommit,
+        deliveredCommit: deliveredCommit || headCommit,
+        deliveredAt,
+      };
+      worktree.lastSeenAt = deliveredAt;
+      appendEvent({
+        invocationId: null,
+        type: "worktree_promoted_to_base",
+        level: "info",
+        message: `Delivered ${branch} to ${baseBranch}.`,
+        data: { worktreeId, branch, baseBranch, deliveredCommit: deliveredCommit || headCommit },
+      });
+    });
+    return { ok: true, worktreeId, mode: "local_merge", branch, baseBranch, commit: deliveredCommit || headCommit, deliveredAt };
+  }
+
+  async function promoteWorktreeToPullRequest(worktreeId, { title, body, base } = {}) {
+    const { worktree } = approvedWorktreeForDelivery(worktreeId);
+    const worktreePath = worktree.worktreePath ?? worktree.path;
+    if (!worktreePath || !existsSync(worktreePath)) throw new Error("Worktree working directory is missing.");
+    const status = await runGitCapture(worktreePath, ["status", "--porcelain"], { timeout: 10_000 });
+    if (!status.ok) throw new Error(`git status failed: ${status.stderr || `exit ${status.code}`}`);
+    if (status.stdout.trim()) throw new Error("The worktree has uncommitted changes. Commit and review them before delivery.");
+    return createWorktreePr(worktreeId, { title, body, base });
+  }
+
   return {
     addProject,
     cloneProject,
@@ -778,6 +863,8 @@ export function createProjectService({ state, now, nextId, appendEvent, persistS
     gitProjectSummary,
     projectBranches,
     publishWorktreeBranch,
+    promoteWorktreeToBase,
+    promoteWorktreeToPullRequest,
     ensureLocalOrigin,
     worktreeDiff: (worktree) => worktreeDiff(worktree, { projectTargets: state.projectTargets }),
     projectGithubItems: (project) => projectGithubItems(project, { projectTargets: state.projectTargets }),

@@ -239,6 +239,40 @@ test("startAutoRun materializes the worktree and starts an issue-seeded invocati
   assert.equal(autoRun.teamId, "team_a");
 });
 
+test("Codex auto-runs use broker auto mode while preserving the normal invocation gate", async () => {
+  const agent = fakeAgent({ adapter: { type: "cli", command: "codex", timeoutSeconds: 600 } });
+  const { svc, calls } = makeAutoRun({ agent });
+  await svc.startAutoRun({
+    projectId: sourceProjectId,
+    link: { type: "issue", number: 1201, title: "Codex task", url: null, state: "open" },
+    agentId: agent.id,
+    name: "issue-1201-codex-task",
+  });
+
+  assert.equal(calls.createInvocation[0].options.approvalMode, "auto");
+  assert.equal(calls.createInvocation[0].options.preApproved, undefined, "auto broker mode does not bypass invocation admission");
+});
+
+test("an explicitly unhealthy agent is blocked before a worktree or invocation is created", async () => {
+  const agent = fakeAgent({
+    adapter: { type: "cli", command: "codex" },
+    health: { status: "unhealthy", message: "Desktop Bridge account is not authenticated." },
+  });
+  const { svc, calls } = makeAutoRun({ agent });
+
+  await assert.rejects(
+    () => svc.startAutoRun({
+      projectId: sourceProjectId,
+      link: { type: "issue", number: 1202, title: "Blocked task", url: null, state: "open" },
+      agentId: agent.id,
+      name: "issue-1202-blocked-task",
+    }),
+    /not authenticated/,
+  );
+  assert.equal(state.worktrees.length, 0);
+  assert.equal(calls.createInvocation.length, 0);
+});
+
 test("routing feedback is role-gated, revision-safe, and idempotent", () => {
   const { svc, calls } = makeAutoRun();
   state.autoRuns.push({

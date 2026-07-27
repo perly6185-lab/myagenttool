@@ -417,6 +417,47 @@ test("a local issue creates a linked git worktree without a GitHub issue binding
   assert.equal(activity.body.activities.some((row) => row.action === "worktree_created"), true);
 });
 
+test("approved local delivery fast-forwards the base and only then closes the issue", async () => {
+  const item = (await call("/api/work-items", {
+    method: "POST", body: { projectId: "prj_a", title: "Deliver over HTTP" },
+  })).body.workItem;
+  const created = await call(`/api/work-items/${item.id}/worktrees`, { method: "POST", body: {} });
+  const worktree = created.body.worktree;
+  writeFileSync(join(worktree.worktreePath, `DELIVERY-${item.localNumber}.txt`), "delivered\n");
+  execFileSync("git", ["-C", worktree.worktreePath, "add", "."]);
+  execFileSync("git", ["-C", worktree.worktreePath, "commit", "-m", `deliver ${item.localRef}`]);
+  const stored = runtimeState.workItems.find((candidate) => candidate.id === item.id);
+  const autoRun = {
+    id: `aur_delivery_${item.localNumber}`,
+    status: "done",
+    projectId: item.projectId,
+    worktreeId: worktree.id,
+    link: { type: "local_issue", number: item.localNumber, title: item.title },
+    localDelivery: { worktreeId: worktree.id, branchName: worktree.branchName },
+    updatedAt: new Date().toISOString(),
+  };
+  runtimeState.autoRuns.unshift(autoRun);
+  stored.executionBindings.push({
+    kind: "auto_run", targetId: autoRun.id, worktreeId: worktree.id, createdAt: new Date().toISOString(),
+  });
+  stored.status = "review";
+  const review = await call(`/api/worktrees/${worktree.id}/review`, {
+    method: "POST", body: { verdict: "approved", summary: "Ready" },
+  });
+  assert.equal(review.status, 201);
+
+  const detail = await call(`/api/work-items/${item.id}`);
+  assert.equal(detail.body.observability.nextAction, "review_delivery");
+  assert.equal(detail.body.observability.delivery.mode, "local_merge");
+  const delivered = await call(`/api/work-items/${item.id}/delivery/local`, {
+    method: "POST", body: { expectedRevision: detail.body.workItem.revision },
+  });
+  assert.equal(delivered.status, 200);
+  assert.equal(delivered.body.workItem.status, "done");
+  assert.equal(delivered.body.workItem.state, "closed");
+  assert.equal(execFileSync("git", ["-C", projectAPath, "show", `HEAD:DELIVERY-${item.localNumber}.txt`], { encoding: "utf8" }).trim(), "delivered");
+});
+
 test("a local issue starts an auto-run with its local body and acceptance criteria", async () => {
   const item = (await call("/api/work-items", {
     method: "POST",

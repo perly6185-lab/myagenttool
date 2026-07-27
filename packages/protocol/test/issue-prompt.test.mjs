@@ -60,7 +60,8 @@ test("roleAutoRunPrompt includes the issue body and the develop role instruction
   assert.match(prompt, /Repository discovery safety/, "discovery is bounded");
   assert.match(prompt, /node_modules.*apps\/electron\/release.*\.git/, "known large metadata trees are explicitly excluded");
   assert.match(prompt, /implement the change/, "develop role instructions");
-  assert.match(prompt, /Commit your work/);
+  assert.doesNotMatch(prompt, /Commit your work/);
+  assert.match(prompt, /platform stages and commits the work/);
 });
 
 test("roleAutoRunPrompt gives every role the same bounded discovery contract", () => {

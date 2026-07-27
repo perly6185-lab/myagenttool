@@ -562,7 +562,7 @@ export function isCodexCliCommand(command) {
 }
 
 export function codexCliArgs() {
-  return ["exec", "--skip-git-repo-check", "--json", "{{task}}"];
+  return ["exec", "--sandbox", "workspace-write", "--skip-git-repo-check", "--json", "{{task}}"];
 }
 
 export function codexCliResumeArgs() {

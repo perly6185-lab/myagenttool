@@ -69,8 +69,9 @@ const ROLE_INSTRUCTIONS = {
     "First, orient: locate the files relevant to this issue and outline your approach before " +
     "editing — don't spend the whole run exploring. Then implement the change this issue asks " +
     "for. Honor the issue's acceptance criteria, keep the scope tied to the issue, follow the " +
-    "repository's existing style, and add or update tests where the change warrants them. Commit " +
-    "your work with a clear message, then summarize what changed and how you verified it.",
+    "repository's existing style, and add or update tests where the change warrants them. Do not " +
+    "create a Git commit; the platform stages and commits the work after your run succeeds. " +
+    "Summarize what changed and how you verified it.",
   design:
     "Do NOT implement a fix or feature. Explore the codebase and produce a detailed design: " +
     "the problem, two or three viable options with trade-offs, a recommended option with " +

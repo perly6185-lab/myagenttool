@@ -90,6 +90,45 @@ test("creates a local work item with server-owned identity and defaults", () => 
   });
 });
 
+test("local delivery closes only after base integration; pull-request delivery stays in review", () => {
+  const { service, state } = harness();
+  const created = service.createWorkItem({ projectId: "prj_a", title: "Deliver me" }, ACTOR_A).body.workItem;
+  state.autoRuns = [{
+    id: "aur_local", status: "done", link: { type: "local_issue", number: created.localNumber },
+    localDelivery: { worktreeId: "wtr_1", branchName: "local-1" },
+  }];
+  service.recordExecutionBinding({
+    workItemId: created.id, kind: "auto_run", targetId: "aur_local", worktreeId: "wtr_1",
+  }, ACTOR_A);
+  const item = state.workItems[0];
+  item.status = "review";
+
+  const promoted = service.completeDelivery({
+    workItemId: item.id,
+    expectedRevision: item.revision,
+    mode: "pull_request",
+    autoRunId: "aur_local",
+    result: { number: 14, url: "https://github.test/o/r/pull/14" },
+  }, ACTOR_A);
+  assert.equal(promoted.status, 200);
+  assert.equal(item.status, "review");
+  assert.equal(item.state, "open");
+  assert.equal(state.autoRuns[0].status, "pr_open");
+
+  state.autoRuns[0].status = "done";
+  const delivered = service.completeDelivery({
+    workItemId: item.id,
+    expectedRevision: item.revision,
+    mode: "local_merge",
+    autoRunId: "aur_local",
+    result: { baseBranch: "main", commit: "abc123" },
+  }, ACTOR_A);
+  assert.equal(delivered.status, 200);
+  assert.equal(item.status, "done");
+  assert.equal(item.state, "closed");
+  assert.equal(state.autoRuns[0].localDelivery.deliveredCommit, "abc123");
+});
+
 test("links asset requirements to the owning terminal and exposes waiting capability", () => {
   const { service } = harness();
   const waiting = service.createWorkItem({
