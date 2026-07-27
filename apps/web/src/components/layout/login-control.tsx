@@ -1,9 +1,7 @@
-import { useEffect, useState } from "react";
+import { lazy, Suspense, useEffect, useState } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { useRefreshConsoleState } from "@/data/use-console-state";
-import { IdentityAccountPanel } from "@/features/me/identity-account-panel";
-import { IdentityEntryPanel } from "@/features/me/identity-entry-panel";
 import {
   getCurrentSession,
   getSessionUser,
@@ -13,6 +11,11 @@ import {
 import { useAppTranslation } from "@/lib/i18n/use-app-translation";
 import { cn } from "@/lib/cn";
 import { useUiStore } from "@/store/ui-store";
+
+const IdentityAccountPanel = lazy(() => import("@/features/me/identity-account-panel")
+  .then((module) => ({ default: module.IdentityAccountPanel })));
+const IdentityEntryPanel = lazy(() => import("@/features/me/identity-entry-panel")
+  .then((module) => ({ default: module.IdentityEntryPanel })));
 
 function useSessionUser() {
   const [user, setUser] = useState<SessionUser | null>(() => getSessionUser());
@@ -45,9 +48,13 @@ export function LoginControl({ expanded = false }: { expanded?: boolean }) {
   }
 
   if (expanded) {
-    return user
-      ? <IdentityAccountPanel user={user} onSignedOut={signedOut} />
-      : <IdentityEntryPanel onSignedIn={signedIn} />;
+    return (
+      <Suspense fallback={<IdentityPanelFallback label={t("tasks.loading")} />}>
+        {user
+          ? <IdentityAccountPanel user={user} onSignedOut={signedOut} />
+          : <IdentityEntryPanel onSignedIn={signedIn} />}
+      </Suspense>
+    );
   }
 
   return (
@@ -70,9 +77,15 @@ export function LoginControl({ expanded = false }: { expanded?: boolean }) {
 
       {open && !user ? (
         <div className={cn("absolute right-0 top-10 z-30 w-[min(23rem,calc(100vw-1.5rem))] rounded-xl border border-border bg-card p-4 shadow-xl")}>
-          <IdentityEntryPanel compact onSignedIn={signedIn} />
+          <Suspense fallback={<IdentityPanelFallback label={t("tasks.loading")} />}>
+            <IdentityEntryPanel compact onSignedIn={signedIn} />
+          </Suspense>
         </div>
       ) : null}
     </div>
   );
+}
+
+function IdentityPanelFallback({ label }: { label: string }) {
+  return <div role="status" className="py-6 text-center text-sm text-muted-foreground">{label}</div>;
 }
