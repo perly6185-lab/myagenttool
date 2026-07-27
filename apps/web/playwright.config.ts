@@ -15,7 +15,7 @@ export default defineConfig({
         { name: "webkit", use: { ...devices["Desktop Safari"] } },
       ]
     : [{ name: "chromium", use: { ...devices["Desktop Chrome"] } }],
-  webServer: {
+  webServer: process.env.PLAYWRIGHT_EXTERNAL_SERVER === "true" ? undefined : {
     command: "pnpm --filter @myagenttool/web dev --host 127.0.0.1 --port 4174",
     url: "http://127.0.0.1:4174",
     reuseExistingServer: !process.env.CI,

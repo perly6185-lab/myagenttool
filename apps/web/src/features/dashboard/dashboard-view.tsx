@@ -9,8 +9,13 @@ import { SectionHeading } from "@/components/common/section-heading";
 import { Transcript } from "@/features/invocations/transcript";
 import { RunTranscriptSection } from "@/features/invocations/run-transcript";
 import { DecisionAction } from "@/features/invocations/decision-action";
-import { GettingStartedCard } from "@/features/dashboard/getting-started-card";
+import { GuidedSetupCard } from "@/features/dashboard/guided-setup-card";
 import { EntryJourney } from "@/features/dashboard/entry-journey";
+import {
+  deriveHomeNextAction,
+  hasPendingDecisionForInvocation,
+  type HomePrimaryAction,
+} from "@/features/dashboard/home-next-action";
 import { STARTER_TASK_TEMPLATES } from "@/features/dashboard/starter-task-templates";
 import { ActionErrorNotice } from "@/components/common/action-error-notice";
 import { useConsoleState } from "@/data/use-console-state";
@@ -18,16 +23,18 @@ import { useAsyncAction, api } from "@/data/use-console-actions";
 import { resolveAgents, resolveInvocation } from "@/features/selection";
 import { useUiStore } from "@/store/ui-store";
 import {
-  activityTitle,
   adapterText,
   cancellationText,
   costText,
   lifecycleText,
   readableAgentStatus,
   readableHealthLabel,
-  readableStatus,
   statusTone,
 } from "@/lib/readable-labels";
+import {
+  invocationStatus,
+  resultHeading,
+} from "@/lib/i18n/readable-labels";
 import type { AgentSnapshot, ConsoleSnapshot, InvocationSnapshot } from "@/lib/console-state";
 import { useAppTranslation } from "@/lib/i18n/use-app-translation";
 
@@ -88,12 +95,22 @@ export function DashboardView({ surface = "overview" }: { surface?: DashboardSur
   }, [targetWorktree?.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const [task, setTask] = useState("");
+  const taskInputRef = useRef<HTMLTextAreaElement>(null);
+  const activityRef = useRef<HTMLDivElement>(null);
 
   const { agents, agent } = resolveAgents(state, selectedAgentId);
   const invocation = resolveInvocation(state, selectedInvocationId);
 
   const hasTask = task.trim().length > 0;
   const isRunning = RUNNING_STATES.includes(invocation?.status ?? "");
+  const homeNextAction = deriveHomeNextAction({
+    invocation,
+    hasPendingDecision: hasPendingDecisionForInvocation(
+      state?.pendingDecisions,
+      invocation,
+      projectId,
+    ),
+  });
   const unhealthy = agent?.health?.status === "unhealthy";
   const disabledAgent = agent?.status === "disabled";
   const localOffline = agent?.location?.type === "local_device" && state?.device?.status !== "online";
@@ -147,6 +164,20 @@ export function DashboardView({ surface = "overview" }: { surface?: DashboardSur
     });
   }
 
+  function performPrimaryAction(action: HomePrimaryAction) {
+    if (action === "run") {
+      void runTask();
+      return;
+    }
+    if (action === "view_progress") {
+      activityRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+      activityRef.current?.focus({ preventScroll: true });
+      return;
+    }
+    if (invocation) setSelectedInvocationId(invocation.id);
+    setSection(action === "handle_approval" ? "approvals" : "invocations");
+  }
+
   const userTask = invocation?.input?.task;
   // Show a final summary block once the run reaches a terminal state.
   const terminalStatus =
@@ -157,16 +188,17 @@ export function DashboardView({ surface = "overview" }: { surface?: DashboardSur
 
   return (
     <div className="flex min-h-full flex-col gap-4">
-      {/* Onboarding is a home concern — Workspace embeds the composer without it (#927). */}
-      {surface === "overview" ? <GettingStartedCard /> : null}
-      {surface === "overview" ? <EntryJourney /> : null}
+      {/* Visual order is task-first on Home while Workspace retains its transcript-first layout. */}
+      {surface === "overview" ? <div className="order-2"><GuidedSetupCard /></div> : null}
+      {surface === "overview" ? <div className="order-3"><EntryJourney onCreate={() => taskInputRef.current?.focus()} /></div> : null}
       {/* Transcript — the scrolling conversation area. */}
-      <Card className="flex min-h-48 flex-1 flex-col">
+      {invocation ? <div ref={activityRef} tabIndex={-1} className="order-4 flex min-h-48 flex-1 flex-col outline-none focus-visible:ring-2 focus-visible:ring-ring">
+        <Card className="flex min-h-48 flex-1 flex-col">
         <CardHeader>
           <SectionHeading
             eyebrow={t("dashboard.activity")}
-            title={activityTitle(invocation?.status)}
-            actions={<StatusBadge tone={statusTone(invocation?.status)}>{readableStatus(invocation?.status)}</StatusBadge>}
+            title={resultHeading(t, invocation?.status)}
+            actions={<StatusBadge tone={statusTone(invocation?.status)}>{invocationStatus(t, invocation?.status)}</StatusBadge>}
           />
         </CardHeader>
         <div ref={scrollRef} onScroll={onTranscriptScroll} className="min-h-0 flex-1 space-y-3 overflow-y-auto px-5 pb-5">
@@ -188,10 +220,11 @@ export function DashboardView({ surface = "overview" }: { surface?: DashboardSur
             onOpenReview={() => setSection("review")}
           />
         </div>
-      </Card>
+        </Card>
+      </div> : null}
 
-      {/* Composer — pinned below the transcript. */}
-      <Card className="shrink-0">
+      {/* The ordinary Home action is first and stays above supporting status. */}
+      <Card className={surface === "overview" ? "order-1 shrink-0" : "order-4 shrink-0"}>
         <CardHeader className="pb-2">
           <CardTitle>{t("dashboard.composerTitle")}</CardTitle>
         </CardHeader>
@@ -214,6 +247,7 @@ export function DashboardView({ surface = "overview" }: { surface?: DashboardSur
             </div>
           ) : null}
           <Textarea
+            ref={taskInputRef}
             rows={3}
             value={task}
             onChange={(e) => setTask(e.target.value)}
@@ -231,90 +265,113 @@ export function DashboardView({ surface = "overview" }: { surface?: DashboardSur
             </div>
           ) : null}
 
-          <div className="grid gap-3 sm:grid-cols-2">
-            <Field label={t("dashboard.project")}>
-              <Select
-                value={projectId ?? ""}
-                onChange={(e) => setSelectedProjectId(e.target.value || null)}
-                aria-label={t("dashboard.project")}
-              >
-                {projects.length === 0 ? <option value="">{t("dashboard.noProject")}</option> : null}
-                {projects.map((p) => (
-                  <option key={p.id} value={p.id}>
-                    {p.name}
-                  </option>
-                ))}
-              </Select>
-            </Field>
-            <Field label={t("dashboard.agent")}>
-              <Select
-                value={agent?.id ?? ""}
-                onChange={(e) => setSelectedAgentId(e.target.value || null)}
-                aria-label={t("dashboard.agent")}
-                title={agent ? `${agent.name} — ${readableAgentStatus(agent.status)} — ${readableHealthLabel(agent.health)}` : undefined}
-              >
-                {agents.length === 0 ? <option value="">{t("dashboard.noAgent")}</option> : null}
-                {agents.map((item) => (
-                  <option key={item.id} value={item.id}>
-                    {item.name} — {readableAgentStatus(item.status)} — {readableHealthLabel(item.health)}
-                  </option>
-                ))}
-              </Select>
-            </Field>
-          </div>
-
-          {targetWorktree ? (
-            <div className="flex items-center justify-between gap-2 rounded-md border border-primary/40 bg-primary/5 px-3 py-2 text-xs">
-              <span className="min-w-0">
-                {t("dashboard.runningIn", { branch: targetWorktree.branch })}
-                <span className="block truncate font-mono text-[11px] text-muted-foreground">{targetWorktree.path}</span>
-              </span>
-              <button
-                type="button"
-                onClick={() => setSelectedWorktreeId(null)}
-                className="shrink-0 text-muted-foreground hover:text-foreground"
-              >
-                {t("dashboard.projectDefault")}
-              </button>
+          <section
+            aria-label={t("dashboard.nextAction.label")}
+            data-home-work-state={homeNextAction.state}
+            className="flex flex-wrap items-center gap-3 rounded-lg border border-border bg-muted/30 p-3"
+          >
+            <div className="min-w-0 flex-1">
+              <StatusBadge tone={homeStateTone(homeNextAction.state)}>
+                {t(`dashboard.nextAction.state.${homeNextAction.state}` as never)}
+              </StatusBadge>
+              <p className="mt-1 text-xs text-muted-foreground">
+                {t(`dashboard.nextAction.hint.${homeNextAction.state}` as never)}
+              </p>
             </div>
-          ) : null}
-
-          <div className="flex flex-wrap items-center gap-2">
-            <Button onClick={runTask} disabled={runDisabled}>
-              {localOffline ? t("dashboard.queue") : t("dashboard.run")}
-            </Button>
             <Button
-              variant="secondary"
-              disabled={cancelDisabled || pending}
-              onClick={() => invocation && execute(() => api.cancelInvocation(invocation.id))}
+              data-home-primary-action={homeNextAction.action}
+              className="min-h-11"
+              disabled={homeNextAction.action === "run" ? runDisabled : false}
+              onClick={() => performPrimaryAction(homeNextAction.action)}
             >
-              {t("dashboard.cancel")}
+              {homeNextAction.action === "run" && localOffline
+                ? t("dashboard.queue")
+                : t(`dashboard.nextAction.action.${homeNextAction.action}` as never)}
             </Button>
+            {homeNextAction.state === "running" ? (
+              <Button
+                className="min-h-11"
+                variant="secondary"
+                disabled={cancelDisabled || pending}
+                onClick={() => invocation && execute(() => api.cancelInvocation(invocation.id))}
+              >
+                {t("dashboard.cancel")}
+              </Button>
+            ) : null}
             {blockReason && !error ? (
-              <span className="text-xs text-muted-foreground" aria-live="polite">
+              <span className="basis-full text-xs text-muted-foreground" aria-live="polite">
                 {blockReason}
               </span>
             ) : null}
-          </div>
+          </section>
           {error ? <ActionErrorNotice error={error} onRetry={runTask} labels={{
             cause: t("actionError.cause"), impact: t("actionError.impact"), remedy: t("actionError.remedy"), retry: t("actionError.retry"),
           }} /> : null}
 
-          <div className="grid grid-cols-2 gap-3 rounded-lg border border-border bg-muted/30 p-3 text-sm sm:grid-cols-4" aria-label={t("dashboard.preRunReview")}>
-            <ReviewItem label={t("dashboard.safety")} value={agent?.registrationNotes?.risk ?? t("dashboard.reviewAgent")} />
-            <ReviewItem label={t("dashboard.data")} value={agent?.registrationNotes?.data ?? t("dashboard.recorded")} />
-            <ReviewItem label={t("dashboard.cost")} value={agent?.registrationNotes?.cost ?? costText(agent?.economics)} />
-            <ReviewItem
-              label={t("dashboard.cancellation")}
-              value={agent?.registrationNotes?.cancellation ?? cancellationText(agent?.adapter)}
-            />
-          </div>
-
           <details className="group rounded-lg border border-border px-3 py-2">
-            <summary className="cursor-pointer list-none text-sm font-medium text-muted-foreground">
-              {t("dashboard.details")}
+            <summary className="min-h-7 cursor-pointer list-none py-1 text-sm font-medium text-muted-foreground">
+              {t("dashboard.preRunReview")}
             </summary>
             <div className="space-y-3 pt-3">
+              <div className="grid gap-3 sm:grid-cols-2">
+                <Field label={t("dashboard.project")}>
+                  <Select
+                    value={projectId ?? ""}
+                    onChange={(e) => setSelectedProjectId(e.target.value || null)}
+                    aria-label={t("dashboard.project")}
+                  >
+                    {projects.length === 0 ? <option value="">{t("dashboard.noProject")}</option> : null}
+                    {projects.map((p) => (
+                      <option key={p.id} value={p.id}>
+                        {p.name}
+                      </option>
+                    ))}
+                  </Select>
+                </Field>
+                <Field label={t("dashboard.agent")}>
+                  <Select
+                    value={agent?.id ?? ""}
+                    onChange={(e) => setSelectedAgentId(e.target.value || null)}
+                    aria-label={t("dashboard.agent")}
+                    title={agent ? `${agent.name} — ${readableAgentStatus(agent.status)} — ${readableHealthLabel(agent.health)}` : undefined}
+                  >
+                    {agents.length === 0 ? <option value="">{t("dashboard.noAgent")}</option> : null}
+                    {agents.map((item) => (
+                      <option key={item.id} value={item.id}>
+                        {item.name} — {readableAgentStatus(item.status)} — {readableHealthLabel(item.health)}
+                      </option>
+                    ))}
+                  </Select>
+                </Field>
+              </div>
+
+              {targetWorktree ? (
+                <div className="flex items-center justify-between gap-2 rounded-md border border-primary/40 bg-primary/5 px-3 py-2 text-xs">
+                  <span className="min-w-0">
+                    {t("dashboard.runningIn", { branch: targetWorktree.branch })}
+                    <span className="block truncate font-mono text-[11px] text-muted-foreground">{targetWorktree.path}</span>
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => setSelectedWorktreeId(null)}
+                    className="shrink-0 text-muted-foreground hover:text-foreground"
+                  >
+                    {t("dashboard.projectDefault")}
+                  </button>
+                </div>
+              ) : null}
+
+              <div className="grid grid-cols-2 gap-3 rounded-lg bg-muted/30 p-3 text-sm sm:grid-cols-4" aria-label={t("dashboard.preRunReview")}>
+                <ReviewItem label={t("dashboard.safety")} value={agent?.registrationNotes?.risk ?? t("dashboard.reviewAgent")} />
+                <ReviewItem label={t("dashboard.data")} value={agent?.registrationNotes?.data ?? t("dashboard.recorded")} />
+                <ReviewItem label={t("dashboard.cost")} value={agent?.registrationNotes?.cost ?? costText(agent?.economics)} />
+                <ReviewItem
+                  label={t("dashboard.cancellation")}
+                  value={agent?.registrationNotes?.cancellation ?? cancellationText(agent?.adapter)}
+                />
+              </div>
+
+              <p className="text-xs font-medium text-muted-foreground">{t("dashboard.details")}</p>
               <FactList
                 facts={[
                   { term: t("dashboard.computer"), value: state?.device ? `${state.device.name} — ${readableAgentStatus(state.device.status)}` : "—" },
@@ -345,4 +402,12 @@ function ReviewItem({ label, value }: { label: string; value: string }) {
       <p className="text-sm [overflow-wrap:anywhere]">{value}</p>
     </div>
   );
+}
+
+function homeStateTone(state: ReturnType<typeof deriveHomeNextAction>["state"]) {
+  if (state === "running") return "running" as const;
+  if (state === "approval") return "warning" as const;
+  if (state === "failed") return "danger" as const;
+  if (state === "succeeded") return "success" as const;
+  return "neutral" as const;
 }
