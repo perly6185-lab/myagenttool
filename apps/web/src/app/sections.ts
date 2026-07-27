@@ -16,6 +16,7 @@ import {
   MessagesSquare,
   MonitorSmartphone,
   PanelsTopLeft,
+  UserRound,
   Puzzle,
   Radar,
   Repeat,
@@ -60,6 +61,7 @@ export interface SectionDef {
 export const SECTIONS: SectionDef[] = [
   // Work — the daily home: start a task, live in a project.
   { key: "dashboard", labelKey: "sections.dashboard.label", icon: LayoutDashboard, blurbKey: "sections.dashboard.blurb", group: "work" },
+  { key: "me", labelKey: "sections.me.label", icon: UserRound, blurbKey: "sections.me.blurb", group: "work" },
   { key: "workBoard", labelKey: "sections.workBoard.label", icon: KanbanSquare, blurbKey: "sections.workBoard.blurb", group: "work" },
   { key: "planning", labelKey: "sections.planning.label", icon: CalendarRange, blurbKey: "sections.planning.blurb", group: "work" },
   { key: "workspace", labelKey: "sections.workspace.label", icon: PanelsTopLeft, blurbKey: "sections.workspace.blurb", group: "work" },
@@ -117,7 +119,7 @@ export interface PageRegistration extends SectionDef {
 
 const ENTRY_PRIMARY = new Set<SectionKey>(["dashboard", "task", "projects", "autoRuns", "approvals"]);
 const ENTRY_CONTEXTUAL = new Set<SectionKey>([
-  "workBoard", "planning", "workspace", "documents", "canvas",
+  "me", "workBoard", "planning", "workspace", "documents", "canvas",
 ]);
 const TRACE_SECTIONS = new Set<SectionKey>([
   "compare", "evidence", "review", "evalTrend", "invocations", "audit",
@@ -143,7 +145,9 @@ export const PAGE_REGISTRY: PageRegistration[] = SECTIONS.map((section) => {
       ? "trace"
       : "settings";
   const ownerContext: PageOwnerContext = ENTRY_CONTEXTUAL.has(section.key)
-    ? section.key === "planning" || section.key === "workspace" || section.key === "documents" || section.key === "canvas"
+    ? section.key === "me"
+      ? "global"
+      : section.key === "planning" || section.key === "workspace" || section.key === "documents" || section.key === "canvas"
       ? "project"
       : "task"
     : surface === "trace"

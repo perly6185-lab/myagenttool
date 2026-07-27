@@ -1,21 +1,15 @@
-import { useSyncExternalStore } from "react";
-import { History, Settings } from "lucide-react";
-import { ENTRY_SECTIONS, SECTIONS, pageNavigationLabelKey, pageRegistration } from "@/app/sections";
-import { usePageNavigation } from "@/hooks/use-page-navigation";
+import { lazy, Suspense } from "react";
+import { SECTIONS } from "@/app/sections";
 import { LoginControl } from "@/components/layout/login-control";
-import { SkinPicker } from "@/components/layout/skin-picker";
-import { LanguagePicker } from "@/components/layout/language-picker";
 import { useWindowControlsOverlay } from "@/lib/window-controls-overlay";
-import { StatusBadge } from "@/components/ui/badge";
 import { Select } from "@/components/ui/input";
 import { useConsoleState } from "@/data/use-console-state";
 import { useAsyncAction, api } from "@/data/use-console-actions";
 import { useUiStore } from "@/store/ui-store";
 import { useAppTranslation } from "@/lib/i18n/use-app-translation";
-import {
-  isControlPlaneStreamConnected,
-  subscribeControlPlaneStream,
-} from "@/data/control-plane-stream";
+
+const NotificationCenter = lazy(() =>
+  import("@/components/layout/notification-center").then((module) => ({ default: module.NotificationCenter })));
 
 /** The server-persisted current project — survives refresh via /api/state. */
 function ProjectSwitcher() {
@@ -48,91 +42,27 @@ function ProjectSwitcher() {
   );
 }
 
-function MobileSectionSwitcher() {
-  const { t } = useAppTranslation();
-  const section = useUiStore((s) => s.section);
-  const navigate = usePageNavigation();
-  return (
-    <Select
-      aria-label={t("shell.section")}
-      className="h-8 w-32 md:hidden"
-      value={pageRegistration(section).surface === "entry" && pageRegistration(section).visibility === "primary" ? section : ""}
-      onChange={(event) => navigate(event.target.value as typeof section)}
-    >
-      {pageRegistration(section).surface !== "entry" || pageRegistration(section).visibility !== "primary"
-        ? <option value="">{t(pageRegistration(section).labelKey)}</option>
-        : null}
-      {ENTRY_SECTIONS.map((item) => (
-        <option key={item.key} value={item.key}>{t(pageNavigationLabelKey(item))}</option>
-      ))}
-    </Select>
-  );
-}
-
-function MobileSurfaceShortcuts() {
-  const { t } = useAppTranslation();
-  const navigate = usePageNavigation();
-  return (
-    <div className="flex items-center md:hidden">
-      <button type="button" className="grid size-8 place-items-center rounded hover:bg-muted" aria-label={t("shell.navigation.openSettings")} onClick={() => navigate("settings")}>
-        <Settings className="size-4" />
-      </button>
-      <button type="button" className="grid size-8 place-items-center rounded hover:bg-muted" aria-label={t("shell.navigation.openTrace")} onClick={() => navigate("invocations")}>
-        <History className="size-4" />
-      </button>
-    </div>
-  );
-}
-
 export function Topbar() {
   const { t } = useAppTranslation();
   const section = useUiStore((s) => s.section);
-  const { data: state, isError, isLoading } = useConsoleState();
   const current = SECTIONS.find((item) => item.key === section);
   const wcoVisible = useWindowControlsOverlay();
-  const liveUpdates = useSyncExternalStore(
-    subscribeControlPlaneStream,
-    isControlPlaneStreamConnected,
-    () => false,
-  );
-
-  const connection = isError
-    ? { tone: "danger" as const, label: t("shell.offline") }
-    : isLoading
-      ? { tone: "running" as const, label: t("shell.connecting") }
-      : { tone: "success" as const, label: t("shell.connected") };
-  const deviceStatus = state?.device?.status === "online"
-    ? t("shell.deviceOnline")
-    : state?.device?.status === "offline"
-      ? t("shell.deviceOffline")
-      : t("shell.deviceUnknown");
 
   return (
-    <header className="app-titlebar flex h-14 shrink-0 items-center justify-between gap-2 border-b border-border bg-background/80 px-3 backdrop-blur sm:gap-4 sm:px-6">
-      <div className="hidden min-w-0 sm:block">
-        <h1 className="truncate text-sm font-semibold">{current ? t(current.labelKey) : t("sections.dashboard.label")}</h1>
-        <p className="truncate text-xs text-muted-foreground">{current ? t(current.blurbKey) : null}</p>
+    <header className="app-titlebar relative z-40 flex h-14 shrink-0 items-center justify-between gap-2 border-b border-border bg-background/80 px-3 backdrop-blur sm:gap-4 sm:px-6">
+      <div className="min-w-0">
+        <h1 className="truncate text-sm font-semibold">
+          <span className="md:hidden">{section === "workBoard" ? t("shell.mobileNav.todo") : current ? t(current.labelKey) : t("sections.dashboard.label")}</span>
+          <span className="hidden md:inline">{current ? t(current.labelKey) : t("sections.dashboard.label")}</span>
+        </h1>
+        <p className="hidden truncate text-xs text-muted-foreground sm:block">{current ? t(current.blurbKey) : null}</p>
       </div>
-      <div className="flex items-center gap-3">
-        <MobileSectionSwitcher />
-        <MobileSurfaceShortcuts />
+      <div className="flex min-w-0 items-center gap-2 sm:gap-3">
         <ProjectSwitcher />
-        {state?.device ? (
-          <span className="hidden text-xs text-muted-foreground sm:inline">
-            {state.device.name} · {deviceStatus}
-          </span>
-        ) : null}
-        <StatusBadge tone={connection.tone}>{connection.label}</StatusBadge>
-        {!isLoading && !isError ? (
-          <span title={liveUpdates ? "Server events update this view in real time." : "Live events are unavailable; periodic polling remains active."}>
-            <StatusBadge tone={liveUpdates ? "success" : "warning"}>
-              {liveUpdates ? "Live" : "Polling fallback"}
-            </StatusBadge>
-          </span>
-        ) : null}
-        <LanguagePicker />
-        <SkinPicker />
-        <LoginControl />
+        <Suspense fallback={<span className="size-11" aria-hidden="true" />}>
+          <NotificationCenter />
+        </Suspense>
+        <span className="hidden md:inline"><LoginControl /></span>
         {wcoVisible ? <div className="app-wco-spacer" aria-hidden="true" /> : null}
       </div>
     </header>

@@ -13,6 +13,14 @@ function replaceUrlSearch(search: string) {
   }
 }
 
+function pushUrlSearch(search: string) {
+  const nextUrl = `${window.location.pathname}${search}${window.location.hash}`;
+  const currentUrl = `${window.location.pathname}${window.location.search}${window.location.hash}`;
+  if (nextUrl !== currentUrl) {
+    window.history.pushState(window.history.state, "", nextUrl);
+  }
+}
+
 export function useUrlNavigationSync() {
   const applyingUrlRef = useRef(false);
 
@@ -32,9 +40,11 @@ export function useUrlNavigationSync() {
     applyLocationToStore();
     writeStoreToLocation();
 
-    const unsubscribe = useUiStore.subscribe((state) => {
+    const unsubscribe = useUiStore.subscribe((state, previousState) => {
       if (applyingUrlRef.current) return;
-      replaceUrlSearch(searchFromNavigationState(window.location.search, state));
+      const search = searchFromNavigationState(window.location.search, state);
+      if (state.section !== previousState.section) pushUrlSearch(search);
+      else replaceUrlSearch(search);
     });
     window.addEventListener("popstate", applyLocationToStore);
 

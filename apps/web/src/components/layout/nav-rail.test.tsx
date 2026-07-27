@@ -78,6 +78,6 @@ describe("NavRail collapsible groups (#928)", () => {
     expect(screen.getByText("首页")).toBeTruthy();
     expect(screen.getByText("任务")).toBeTruthy();
     expect(screen.queryByText("文档")).toBeNull();
-    expect(screen.getByRole("navigation", { name: "控制平面栏目" })).toBeTruthy();
+    expect(screen.getByRole("navigation", { name: "工作台栏目" })).toBeTruthy();
   });
 });

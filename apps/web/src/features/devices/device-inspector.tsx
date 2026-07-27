@@ -2,7 +2,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { StatusBadge } from "@/components/ui/badge";
 import { FactList } from "@/components/common/fact-list";
 import { useConsoleState } from "@/data/use-console-state";
-import { readableDeviceStatus, shortTime } from "@/lib/readable-labels";
+import { shortTime } from "@/lib/readable-labels";
 import { useAppTranslation } from "@/lib/i18n/use-app-translation";
 
 export function DeviceInspector() {
@@ -12,11 +12,16 @@ export function DeviceInspector() {
   if (!device) return null;
 
   const tone = device.status === "online" ? "success" : "warning";
+  const status = device.status === "online"
+    ? t("shell.deviceOnline")
+    : device.status === "offline"
+      ? t("shell.deviceOffline")
+      : t("shell.deviceUnknown");
   return (
     <Card>
       <CardHeader className="flex-row items-center justify-between">
         <CardTitle>{device.name}</CardTitle>
-        <StatusBadge tone={tone}>{readableDeviceStatus(device.status)}</StatusBadge>
+        <StatusBadge tone={tone}>{status}</StatusBadge>
       </CardHeader>
       <CardContent>
         <FactList

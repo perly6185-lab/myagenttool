@@ -11,6 +11,7 @@ import { useUiStore } from "@/store/ui-store";
 import { useAppTranslation } from "@/lib/i18n/use-app-translation";
 import { useControlPlaneEvents } from "@/app/use-control-plane-events";
 import { ContextNavigation } from "@/components/layout/context-navigation";
+import { MobileBottomNavigation } from "@/components/layout/mobile-bottom-navigation";
 
 /**
  * Three-pane control-plane shell: nav rail (domains) · main outlet (active
@@ -45,6 +46,7 @@ export function App() {
             <Inspector />
           </ErrorBoundary>
         </div>
+        <MobileBottomNavigation />
       </div>
     </div>
   );
