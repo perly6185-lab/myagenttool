@@ -548,13 +548,16 @@ async function fetchPublicResource(value, {
 }) {
   let url = canonicalizeFetchUrl(value);
   for (let redirects = 0; redirects <= maxRedirects; redirects += 1) {
+    if (signal?.aborted) throw articleError("article_import_canceled");
     const safety = await validateExternalWebhookTarget(url, {
       resolveHostname: resolveHostname ?? ((hostname) => resolveArticleHostname(hostname)),
     });
     if (!safety.ok) throw articleError("article_url_refused");
+    if (signal?.aborted) throw articleError("article_import_canceled");
     const controller = new AbortController();
     const abort = () => controller.abort();
     signal?.addEventListener("abort", abort, { once: true });
+    if (signal?.aborted) controller.abort();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
     let response;
     try {

@@ -62,7 +62,8 @@ describe("Imported document classification", () => {
 
   it("filters imported Markdown by source and publication month", () => {
     expect(filterImportedDocuments(rows, { source: "wechat" }).map((item) => item.name)).toEqual(["a.md"]);
-    expect(filterImportedDocuments(rows, { month: "2026-06" }).map((item) => item.name)).toEqual(["b.md"]);
+    expect(filterImportedDocuments(rows, { year: "2026", month: "06" }).map((item) => item.name)).toEqual(["b.md"]);
+    expect(filterImportedDocuments(rows, { contentType: "note" }).map((item) => item.name)).toEqual(["b.md"]);
     expect(filterImportedDocuments(rows)).toHaveLength(3);
   });
 });

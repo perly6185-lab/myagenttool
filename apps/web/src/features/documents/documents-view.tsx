@@ -22,6 +22,7 @@ import { useAppTranslation } from "@/lib/i18n/use-app-translation";
 type OfficeDocumentType = "docx" | "xlsx" | "pptx";
 type DocumentType = "all" | OfficeDocumentType | "pdf" | "dxf" | "dwg" | "md" | "canvas" | "image" | "audio" | "video";
 type ImportedSource = "all" | "wechat" | "xiaohongshu" | "web";
+type ImportedContentType = "all" | "article" | "note";
 const FILTERS: Array<{ value: DocumentType; label: string }> = [
   { value: "all", label: "All" },
   { value: "docx", label: "Word" },
@@ -57,7 +58,9 @@ export function DocumentsView() {
   const projectId = state?.currentProjectId ?? "";
   const [type, setType] = useState<DocumentType>("all");
   const [importedSource, setImportedSource] = useState<ImportedSource>("all");
-  const [importedMonth, setImportedMonth] = useState("");
+  const [importedYear, setImportedYear] = useState("all");
+  const [importedMonth, setImportedMonth] = useState("all");
+  const [importedContentType, setImportedContentType] = useState<ImportedContentType>("all");
   const [search, setSearch] = useState("");
   const [debouncedSearch, setDebouncedSearch] = useState("");
   const [selected, setSelected] = useState<ProjectDocumentEntry | null>(null);
@@ -94,9 +97,18 @@ export function DocumentsView() {
     refetchInterval: pendingSelectionPath ? 1_000 : false,
   });
   const rows = documents.data?.documents ?? [];
+  const importedYears = useMemo(
+    () => [...new Set(rows.map((item) => importedTaxonomy(item.path)?.year).filter((value): value is string => Boolean(value)))].sort().reverse(),
+    [rows],
+  );
   const visibleRows = useMemo(
-    () => filterImportedDocuments(rows, { source: importedSource, month: importedMonth }),
-    [rows, importedSource, importedMonth],
+    () => filterImportedDocuments(rows, {
+      source: importedSource,
+      year: importedYear,
+      month: importedMonth,
+      contentType: importedContentType,
+    }),
+    [rows, importedSource, importedYear, importedMonth, importedContentType],
   );
 
   useEffect(() => {
@@ -197,13 +209,34 @@ export function DocumentsView() {
           <option value="xiaohongshu">{t("documents.sourceXiaohongshu")}</option>
           <option value="web">{t("documents.sourceWeb")}</option>
         </Select>
-        <Input
-          type="month"
+        <Select
+          aria-label={t("documents.importedYear")}
+          className="h-8 w-28"
+          value={importedYear}
+          onChange={(event) => setImportedYear(event.target.value)}
+        >
+          <option value="all">{t("documents.allYears")}</option>
+          {importedYears.map((year) => <option key={year} value={year}>{year}</option>)}
+        </Select>
+        <Select
           aria-label={t("documents.importedMonth")}
-          className="h-8 w-36"
+          className="h-8 w-28"
           value={importedMonth}
           onChange={(event) => setImportedMonth(event.target.value)}
-        />
+        >
+          <option value="all">{t("documents.allMonths")}</option>
+          {Array.from({ length: 12 }, (_, index) => String(index + 1).padStart(2, "0")).map((month) => <option key={month} value={month}>{month}</option>)}
+        </Select>
+        <Select
+          aria-label={t("documents.importedContent")}
+          className="h-8 w-32"
+          value={importedContentType}
+          onChange={(event) => setImportedContentType(event.target.value as ImportedContentType)}
+        >
+          <option value="all">{t("documents.allContent")}</option>
+          <option value="article">{t("documents.contentArticle")}</option>
+          <option value="note">{t("documents.contentNote")}</option>
+        </Select>
         <label className="relative ml-auto min-w-52 flex-1 sm:max-w-sm">
           <Search className="pointer-events-none absolute left-2.5 top-2 size-3.5 text-muted-foreground" />
           <Input value={search} onChange={(event) => setSearch(event.target.value)} placeholder={t("documents.search")} className="h-8 pl-8" />
@@ -234,16 +267,41 @@ export function DocumentsView() {
 
 export function filterImportedDocuments(
   rows: ProjectDocumentEntry[],
-  { source = "all", month = "" }: { source?: ImportedSource; month?: string } = {},
+  {
+    source = "all",
+    year = "all",
+    month = "all",
+    contentType = "all",
+  }: {
+    source?: ImportedSource;
+    year?: string;
+    month?: string;
+    contentType?: ImportedContentType;
+  } = {},
 ) {
-  const monthMatch = month.match(/^(\d{4})-(\d{2})$/);
+  const filteringImported = source !== "all" || year !== "all" || month !== "all" || contentType !== "all";
   return rows.filter((item) => {
-    const normalized = item.path.replaceAll("\\", "/");
-    const imported = normalized.match(/(?:^|\/)docs\/imported\/(wechat|xiaohongshu|web)\/(\d{4})\/(\d{2})\//);
-    if (source !== "all" && imported?.[1] !== source) return false;
-    if (monthMatch && (imported?.[2] !== monthMatch[1] || imported?.[3] !== monthMatch[2])) return false;
+    const taxonomy = importedTaxonomy(item.path);
+    if (!taxonomy) return !filteringImported;
+    if (source !== "all" && taxonomy.source !== source) return false;
+    if (year !== "all" && taxonomy.year !== year) return false;
+    if (month !== "all" && taxonomy.month !== month) return false;
+    if (contentType !== "all" && taxonomy.contentType !== contentType) return false;
     return true;
   });
+}
+
+function importedTaxonomy(path: string) {
+  const normalized = path.replaceAll("\\", "/");
+  const match = normalized.match(/(?:^|\/)docs\/imported\/(wechat|xiaohongshu|web)\/(\d{4})\/(\d{2})\//);
+  if (!match) return null;
+  const source = match[1] as Exclude<ImportedSource, "all">;
+  return {
+    source,
+    year: match[2],
+    month: match[3],
+    contentType: source === "xiaohongshu" ? "note" as const : "article" as const,
+  };
 }
 
 function RecentDocuments({ items, projects, worktrees, onOpen, onPin, onRemove, onClear }: { items: RecentDocument[]; projects: Array<{ id: string }>; worktrees: Array<{ id: string; projectId?: string }>; onOpen: (item: RecentDocument) => void; onPin: (item: RecentDocument) => void; onRemove: (item: RecentDocument) => void; onClear: () => void }) {

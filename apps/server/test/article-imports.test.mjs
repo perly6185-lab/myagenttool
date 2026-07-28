@@ -92,6 +92,53 @@ test("imports Markdown and media atomically under source/date directories", asyn
   assert.equal(replay.markdownPath, result.markdownPath);
 });
 
+test("falls back to the import date and keeps same-title URLs distinct", async (t) => {
+  const worktreePath = await mkdtemp(join(tmpdir(), "myagenttool-article-fallback-"));
+  t.after(() => rm(worktreePath, { recursive: true, force: true }));
+  const importOne = (url) => importArticleToWorktree({
+    url,
+    worktreePath,
+    workItemId: "lwi_fallback",
+    importedAt: "2026-07-28T03:00:00.000Z",
+    resolveHostname: PUBLIC_DNS,
+    fetchImpl: async () => htmlResponse("<title>Same title</title><article>Text</article>"),
+  });
+  const first = await importOne("https://example.com/one");
+  const second = await importOne("https://example.com/two");
+  const manifest = JSON.parse(await readFile(join(worktreePath, first.manifestPath), "utf8"));
+  assert.match(first.relativeDirectory, /\/2026\/07\/2026-07-28-/);
+  assert.equal(manifest.publishedAtSource, "imported");
+  assert.notEqual(first.relativeDirectory, second.relativeDirectory);
+});
+
+test("keeps usable Markdown and records a warning when one media download fails", async (t) => {
+  const worktreePath = await mkdtemp(join(tmpdir(), "myagenttool-article-partial-"));
+  t.after(() => rm(worktreePath, { recursive: true, force: true }));
+  const result = await importArticleToWorktree({
+    url: "https://example.com/partial",
+    worktreePath,
+    workItemId: "lwi_partial",
+    resolveHostname: PUBLIC_DNS,
+    fetchImpl: async (url) => {
+      if (String(url).endsWith("/partial")) {
+        return htmlResponse('<article>Before<img src="https://media.example/good.jpg" alt="good">After<img src="https://media.example/bad.jpg" alt="bad"></article>');
+      }
+      if (String(url).includes("bad.jpg")) return new Response("failed", { status: 503 });
+      return new Response(Buffer.from([0xff, 0xd8, 0xff, 0x01]), {
+        status: 200,
+        headers: { "content-type": "image/jpeg" },
+      });
+    },
+  });
+  const markdown = await readFile(join(worktreePath, result.markdownPath), "utf8");
+  const manifest = JSON.parse(await readFile(join(worktreePath, result.manifestPath), "utf8"));
+  assert.match(markdown, /Before[\s\S]+!\[good\]\(assets\//);
+  assert.match(markdown, /图片下载失败/);
+  assert.doesNotMatch(markdown, /media\.example/);
+  assert.equal(manifest.warnings.length, 1);
+  assert.equal(manifest.warnings[0].code, "article_download_http_503");
+});
+
 test("rejects a redirect that resolves to a private address", async () => {
   let calls = 0;
   await assert.rejects(
@@ -167,12 +214,14 @@ test("queues an Issue-bound import and attaches generated output assets", async 
     nextId: () => "article_import_1",
     workItemService,
     resolveHostname: PUBLIC_DNS,
-    fetchImpl: async (url) => String(url).includes("mp.weixin.qq.com")
-      ? htmlResponse(wechatFixture())
-      : new Response(Buffer.from([0xff, 0xd8, 0xff, Number(String(url).at(-1))]), {
+    fetchImpl: async (url) => {
+      if (String(url).includes("mp.weixin.qq.com")) return htmlResponse(wechatFixture());
+      if (String(url).endsWith("image-3")) return new Response("unavailable", { status: 503 });
+      return new Response(Buffer.from([0xff, 0xd8, 0xff, Number(String(url).at(-1))]), {
         status: 200,
         headers: { "content-type": "image/jpeg" },
-      }),
+      });
+    },
   });
   const started = service.start({
     workItemId: "lwi_1",
@@ -192,7 +241,121 @@ test("queues an Issue-bound import and attaches generated output assets", async 
   assert.equal(updates[0].outputAssets.length, 2);
   assert.match(updates[0].outputAssets[0].path, /article\.md$/);
   assert.equal(comments.length, 1);
+  assert.match(comments[0].body, /1 media item\(s\) could not be downloaded/);
 });
+
+test("caps one article to four concurrent media downloads", async (t) => {
+  const worktreePath = await mkdtemp(join(tmpdir(), "myagenttool-article-media-cap-"));
+  t.after(() => rm(worktreePath, { recursive: true, force: true }));
+  let active = 0;
+  let maximum = 0;
+  const html = `<article>${Array.from({ length: 7 }, (_, index) =>
+    `<img src="https://media.example/image-${index}.jpg" alt="${index}">`).join("")}</article>`;
+  await importArticleToWorktree({
+    url: "https://example.com/article",
+    worktreePath,
+    workItemId: "lwi_media",
+    resolveHostname: PUBLIC_DNS,
+    fetchImpl: async (url) => {
+      if (String(url) === "https://example.com/article") return htmlResponse(html);
+      active += 1;
+      maximum = Math.max(maximum, active);
+      await new Promise((resolve) => setTimeout(resolve, 10));
+      active -= 1;
+      const suffix = Number(String(url).match(/image-(\d+)/)?.[1] ?? 0);
+      return new Response(Buffer.from([0xff, 0xd8, 0xff, suffix]), {
+        status: 200,
+        headers: { "content-type": "image/jpeg" },
+      });
+    },
+  });
+  assert.equal(maximum, 4);
+});
+
+test("enforces the global queue, rejects duplicate Issue work, and cleans canceled output", async (t) => {
+  const firstRoot = await mkdtemp(join(tmpdir(), "myagenttool-article-cancel-"));
+  const secondRoot = await mkdtemp(join(tmpdir(), "myagenttool-article-next-"));
+  t.after(() => Promise.all([
+    rm(firstRoot, { recursive: true, force: true }),
+    rm(secondRoot, { recursive: true, force: true }),
+  ]));
+  const items = [
+    { id: "lwi_1", localNumber: 1, projectId: "prj_1", terminalId: "dev_1", revision: 1, labels: [], outputAssets: [] },
+    { id: "lwi_2", localNumber: 2, projectId: "prj_1", terminalId: "dev_1", revision: 1, labels: [], outputAssets: [] },
+  ];
+  const workItemService = {
+    getWorkItem: ({ workItemId }) => {
+      const item = items.find((candidate) => candidate.id === workItemId);
+      return item
+        ? { ok: true, status: 200, body: { workItem: item } }
+        : { ok: false, status: 404, body: { error: "work_item_not_found" } };
+    },
+    recordExecutionBinding: ({ workItemId }) => {
+      items.find((item) => item.id === workItemId).revision += 1;
+      return { ok: true, status: 200, body: {} };
+    },
+    updateWorkItem: ({ workItemId, ...changes }) => {
+      const item = items.find((candidate) => candidate.id === workItemId);
+      Object.assign(item, changes, { revision: item.revision + 1 });
+      return { ok: true, status: 200, body: { workItem: item } };
+    },
+    createComment: () => ({ ok: true, status: 201, body: {} }),
+  };
+  let id = 0;
+  const service = createArticleImportService({
+    state: {
+      workItems: items,
+      worktrees: [
+        { id: "wtr_1", sourceProjectId: "prj_1", path: firstRoot, link: { type: "local_issue", number: 1 } },
+        { id: "wtr_2", sourceProjectId: "prj_1", path: secondRoot, link: { type: "local_issue", number: 2 } },
+      ],
+    },
+    nextId: () => `article_import_${++id}`,
+    workItemService,
+    resolveHostname: PUBLIC_DNS,
+    maxConcurrent: 1,
+    fetchImpl: async (url, options) => {
+      if (String(url).includes("/first")) {
+        return htmlResponse('<article><img src="https://media.example/hold.jpg"></article>');
+      }
+      if (String(url).includes("/second")) return htmlResponse("<article>second</article>");
+      if (String(url).includes("hold.jpg")) {
+        return new Promise((resolve, reject) => {
+          options.signal.addEventListener("abort", () => {
+            const error = new Error("aborted");
+            error.name = "AbortError";
+            reject(error);
+          }, { once: true });
+        });
+      }
+      throw new Error(`unexpected URL: ${url}`);
+    },
+  });
+  const first = service.start({ workItemId: "lwi_1", worktreeId: "wtr_1", url: "https://example.com/first" });
+  const duplicate = service.start({ workItemId: "lwi_1", worktreeId: "wtr_1", url: "https://example.com/first" });
+  const second = service.start({ workItemId: "lwi_2", worktreeId: "wtr_2", url: "https://example.com/second" });
+  assert.equal(first.status, 202);
+  assert.equal(duplicate.status, 409);
+  assert.equal(second.body.job.state, "queued");
+  await waitForJobState(service, "lwi_1", first.body.job.id, "running");
+  assert.equal(service.get({ workItemId: "lwi_2", jobId: second.body.job.id }).body.job.state, "queued");
+  service.cancel({ workItemId: "lwi_1", jobId: first.body.job.id });
+  await waitForJobState(service, "lwi_1", first.body.job.id, "canceled");
+  await waitForJobState(service, "lwi_2", second.body.job.id, "completed");
+  const firstFiles = await readdir(firstRoot, { recursive: true });
+  assert.equal(firstFiles.some((entry) => String(entry).endsWith("article.md")), false);
+});
+
+async function waitForJobState(service, workItemId, jobId, expected) {
+  let lastState = "unknown";
+  for (let attempts = 0; attempts < 1_000; attempts += 1) {
+    const job = service.get({ workItemId, jobId }).body.job;
+    lastState = job.state;
+    if (job.state === expected) return job;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  assert.fail(`job ${jobId} did not reach ${expected}; last state: ${lastState}`);
+}
 
 function htmlResponse(html) {
   return new Response(html, {
