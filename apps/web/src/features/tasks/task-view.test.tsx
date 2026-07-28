@@ -294,6 +294,51 @@ describe("TaskView local work items", () => {
     expect(window.localStorage.getItem("myagenttool.article-import.active.v1")).toBeNull();
   });
 
+  it("offers a one-click retry when a persisted import was interrupted by restart", async () => {
+    mocks.execute.mockImplementationOnce(async (fn: () => Promise<unknown>) => {
+      try {
+        await fn();
+        return true;
+      } catch {
+        return false;
+      }
+    });
+    window.localStorage.setItem("myagenttool.article-import.active.v1", JSON.stringify({
+      projectId: "prj_1",
+      workItemId: "lwi_resume",
+      worktreeId: "wtr_resume",
+      jobId: "article_import_old",
+      sourceUrl: "https://example.com/resume",
+    }));
+    mocks.listWorkItems.mockResolvedValue({ workItems: [], count: 0 });
+    mocks.getArticleImport.mockResolvedValue({
+      job: {
+        id: "article_import_old",
+        state: "failed",
+        progress: { stage: "failed", completed: 0, total: 1 },
+        error: "article_import_interrupted",
+      },
+    });
+    mocks.startArticleImport.mockResolvedValue({
+      job: {
+        id: "article_import_retry",
+        state: "completed",
+        progress: { stage: "completed", completed: 1, total: 1 },
+        error: null,
+      },
+    });
+    render(<TaskView />);
+    fireEvent.click(screen.getByRole("button", { name: /New local issue/i }));
+    expect(await screen.findByText(/server restarted during import/i)).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Retry import" }));
+    await waitFor(() => expect(mocks.startArticleImport).toHaveBeenCalledWith("lwi_resume", {
+      url: "https://example.com/resume",
+      worktreeId: "wtr_resume",
+    }));
+    expect(mocks.createWorkItem).not.toHaveBeenCalled();
+    expect(mocks.createWorkItemWorktree).not.toHaveBeenCalled();
+  });
+
   it("keeps the creation dialog open while an article import is active", async () => {
     mocks.listWorkItems.mockResolvedValue({ workItems: [], count: 0 });
     mocks.inspectArticleImport.mockResolvedValue({

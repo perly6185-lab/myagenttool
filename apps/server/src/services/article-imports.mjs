@@ -1,7 +1,7 @@
 import { createHash, randomBytes } from "node:crypto";
 import { lookup } from "node:dns/promises";
 import { existsSync, lstatSync, realpathSync } from "node:fs";
-import { mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
 import { request as httpsRequest } from "node:https";
 import { isIP } from "node:net";
 import { basename, extname, join, relative, resolve, sep } from "node:path";
@@ -9,6 +9,7 @@ import { Readable } from "node:stream";
 import { parse } from "parse5";
 
 import { actorCanAccessProject } from "../runtime/auth.mjs";
+import { makeRunTx } from "../runtime/store/run-tx.mjs";
 import { validateExternalWebhookTarget } from "./auto-run-alerts.mjs";
 
 export const ARTICLE_IMPORT_LIMITS = Object.freeze({
@@ -46,7 +47,9 @@ const MEDIA_EXTENSIONS = new Map([
   ["video/quicktime", ".mov"],
 ]);
 
-const SKIPPED_TAGS = new Set(["script", "style", "noscript", "svg", "nav", "button", "form", "input"]);
+const ARTICLE_PROVIDERS = new Set(["wechat", "xiaohongshu", "zhihu", "juejin", "jianshu", "web"]);
+const SKIPPED_TAGS = new Set(["script", "style", "noscript", "svg", "nav", "button", "form", "input", "iframe"]);
+const BLOCK_TAGS = new Set(["p", "div", "section", "figure", "figcaption"]);
 const TRACKING_PARAMS = new Set(["from", "isappinstalled", "scene", "clicktime", "enterid"]);
 
 export function detectArticleSource(value) {
@@ -55,6 +58,9 @@ export function detectArticleSource(value) {
   if (hostname === "xiaohongshu.com" || hostname.endsWith(".xiaohongshu.com") || hostname === "xhslink.com") {
     return "xiaohongshu";
   }
+  if (hostname === "zhihu.com" || hostname.endsWith(".zhihu.com")) return "zhihu";
+  if (hostname === "juejin.cn" || hostname.endsWith(".juejin.cn")) return "juejin";
+  if (hostname === "jianshu.com" || hostname.endsWith(".jianshu.com")) return "jianshu";
   return "web";
 }
 
@@ -70,7 +76,7 @@ export function canonicalizeArticleUrl(value) {
 }
 
 export function buildArticleRelativeDirectory({ provider, date, title, canonicalUrl }) {
-  const safeProvider = ["wechat", "xiaohongshu", "web"].includes(provider) ? provider : "web";
+  const safeProvider = ARTICLE_PROVIDERS.has(provider) ? provider : "web";
   const safeDate = /^\d{4}-\d{2}-\d{2}$/.test(date) ? date : new Date().toISOString().slice(0, 10);
   const [year, month] = safeDate.split("-");
   const slug = safeArticleSlug(title);
@@ -143,6 +149,7 @@ export async function importArticleToWorktree({
   const finalDirectory = resolve(root, relativeDirectory);
   assertConfined(root, finalDirectory);
   await ensureSafeDirectory(root, relative(root, resolve(finalDirectory, "..")));
+  await cleanupInterruptedStaging(resolve(finalDirectory, ".."), basename(finalDirectory));
 
   if (existsSync(finalDirectory)) {
     if (lstatSync(finalDirectory).isSymbolicLink()) throw articleError("article_output_path_refused");
@@ -166,6 +173,7 @@ export async function importArticleToWorktree({
       limits,
     });
     const markdownBody = substituteMedia(inspection._document.markdown, downloaded);
+    const htmlBody = substituteHtmlMedia(inspection._document.html, downloaded);
     const frontMatter = renderFrontMatter({
       title: inspection.title,
       sourceProvider: inspection.provider,
@@ -179,8 +187,15 @@ export async function importArticleToWorktree({
       urlHash: createHash("sha256").update(inspection.canonicalUrl).digest("hex"),
     });
     const markdown = `${frontMatter}\n${markdownBody.trim()}\n`;
+    const cleanHtml = renderStandaloneHtml({
+      title: inspection.title,
+      author: inspection.author,
+      canonicalUrl: inspection.canonicalUrl,
+      publishedAt,
+      body: htmlBody,
+    });
     const manifest = {
-      schemaVersion: 1,
+      schemaVersion: 2,
       status: "complete",
       title: inspection.title,
       sourceProvider: inspection.provider,
@@ -193,6 +208,11 @@ export async function importArticleToWorktree({
       publishedAtSource: inspection.publishedAt ? "source" : "imported",
       importedAt,
       localIssueId: workItemId,
+      outputs: {
+        markdown: "article.md",
+        html: "article.html",
+        manifest: "manifest.json",
+      },
       media: downloaded.map(({ token, ...entry }) => entry),
       warnings: downloaded.filter((entry) => entry.status !== "downloaded").map((entry) => ({
         code: entry.error,
@@ -200,18 +220,22 @@ export async function importArticleToWorktree({
       })),
     };
     await writeFile(join(staging, "article.md"), markdown, { encoding: "utf8", flag: "wx" });
+    await writeFile(join(staging, "article.html"), cleanHtml, { encoding: "utf8", flag: "wx" });
     await writeFile(join(staging, "manifest.json"), `${JSON.stringify(manifest, null, 2)}\n`, { encoding: "utf8", flag: "wx" });
     if (signal?.aborted) throw articleError("article_import_canceled");
     await rename(staging, finalDirectory);
 
     const markdownPath = `${relativeDirectory}/article.md`;
+    const htmlPath = `${relativeDirectory}/article.html`;
     const manifestPath = `${relativeDirectory}/manifest.json`;
     return {
       replayed: false,
       relativeDirectory,
       markdownPath,
+      htmlPath,
       manifestPath,
       markdownSize: Buffer.byteLength(markdown),
+      htmlSize: Buffer.byteLength(cleanHtml),
       manifestSize: Buffer.byteLength(JSON.stringify(manifest)),
       mediaCounts: countMedia(downloaded.filter((entry) => entry.status === "downloaded")),
       warnings: manifest.warnings,
@@ -224,6 +248,14 @@ export async function importArticleToWorktree({
   }
 }
 
+async function cleanupInterruptedStaging(parent, finalName) {
+  const prefix = `.${finalName}.tmp-`;
+  for (const entry of await readdir(parent, { withFileTypes: true })) {
+    if (!entry.isDirectory() || !entry.name.startsWith(prefix) || !/^[a-f0-9]{12}$/.test(entry.name.slice(prefix.length))) continue;
+    await rm(join(parent, entry.name), { recursive: true, force: true });
+  }
+}
+
 export function createArticleImportService({
   state,
   now = () => new Date().toISOString(),
@@ -233,11 +265,37 @@ export function createArticleImportService({
   resolveHostname,
   maxConcurrent = 2,
   limits = ARTICLE_IMPORT_LIMITS,
+  persistStateSoon = () => {},
+  store,
 } = {}) {
   const jobs = new Map();
   const queue = [];
   const activeIssues = new Set();
   let activeCount = 0;
+  const runTx = makeRunTx({ store, persistStateSoon });
+  const persistJobs = () => runTx(syncPersistentJobs);
+  const storedJobs = Array.isArray(state.articleImportJobs) ? state.articleImportJobs : [];
+  let recoveredInterruptedJobs = storedJobs.length > 100;
+  for (const stored of storedJobs.slice(-100)) {
+    if (!stored?.id || !stored?.workItemId) continue;
+    const job = {
+      ...stored,
+      controller: new AbortController(),
+      actor: null,
+      worktreePath: null,
+    };
+    if (["queued", "running"].includes(job.state)) {
+      job.state = "failed";
+      job.error = "article_import_interrupted";
+      job.progress = { stage: "failed", completed: 0, total: 1 };
+      job.completedAt = now();
+      recoveredInterruptedJobs = true;
+    }
+    jobs.set(job.id, job);
+  }
+  if (recoveredInterruptedJobs) {
+    persistJobs();
+  }
 
   async function inspect(input = {}, actor = null) {
     const projectId = String(input.projectId ?? "");
@@ -305,6 +363,7 @@ export function createArticleImportService({
     jobs.set(job.id, job);
     queue.push(job.id);
     trimJobs();
+    persistJobs();
     queueMicrotask(pump);
     return { ok: true, status: 202, body: { job: jobView(job) } };
   }
@@ -330,6 +389,7 @@ export function createArticleImportService({
       job.progress = { stage: "canceled", completed: 0, total: 1 };
       job.completedAt = now();
     }
+    persistJobs();
     return { ok: true, status: 200, body: { job: jobView(job) } };
   }
 
@@ -351,6 +411,7 @@ export function createArticleImportService({
     job.state = "running";
     job.startedAt = now();
     job.progress = { stage: "downloading", completed: 0, total: 1 };
+    persistJobs();
     try {
       const result = await importArticleToWorktree({
         url: job.sourceUrl,
@@ -364,9 +425,11 @@ export function createArticleImportService({
       });
       const stored = (state.workItems ?? []).find((candidate) => candidate.id === job.workItemId);
       if (!stored) throw articleError("work_item_not_found");
+      const generatedPaths = [result.markdownPath, result.htmlPath, result.manifestPath].filter(Boolean);
       const outputAssets = [
-        ...(stored.outputAssets ?? []).filter((asset) => ![result.markdownPath, result.manifestPath].includes(asset.path)),
+        ...(stored.outputAssets ?? []).filter((asset) => !generatedPaths.includes(asset.path)),
         articleAsset(result.markdownPath, "markdown", result.markdownSize, stored, job.worktreeId),
+        ...(result.htmlPath ? [articleAsset(result.htmlPath, "unknown", result.htmlSize, stored, job.worktreeId)] : []),
         articleAsset(result.manifestPath, "unknown", result.manifestSize, stored, job.worktreeId),
       ];
       const providerLabel = `source:${result.inspection.provider}`;
@@ -392,6 +455,7 @@ export function createArticleImportService({
       job.progress = { stage: job.state, completed: 0, total: 1 };
     } finally {
       job.completedAt = now();
+      persistJobs();
     }
   }
 
@@ -403,23 +467,46 @@ export function createArticleImportService({
     }
   }
 
+  function syncPersistentJobs() {
+    state.articleImportJobs = [...jobs.values()].map((job) => ({
+      ...jobView(job),
+      sourceUrl: job.sourceUrl,
+    }));
+  }
+
   return { inspect, start, get, cancel };
 }
 
 function parseArticleDocument(html, pageUrl, provider, mediaCount = ARTICLE_IMPORT_LIMITS.mediaCount) {
   const document = parse(html);
-  const content = provider === "wechat"
-    ? findNode(document, (node) => attr(node, "id") === "js_content")
-      ?? findNode(document, (node) => hasClass(node, "rich_media_content"))
-    : findNode(document, (node) => node.tagName === "article")
-      ?? findNode(document, (node) => node.tagName === "main");
+  const structured = extractStructuredArticleData(document, provider, pageUrl);
+  const content = findProviderContent(document, provider);
   const root = content ?? findNode(document, (node) => node.tagName === "body") ?? document;
   const media = [];
-  const markdown = renderMarkdownNode(root, { pageUrl, media }).replace(/[ \t]+\n/g, "\n")
+  const context = { pageUrl, media };
+  let markdown = renderMarkdownNode(root, context).replace(/[ \t]+\n/g, "\n")
     .replace(/\n{3,}/g, "\n\n").trim();
+  let cleanHtml = renderCleanHtmlNode(root, context).trim();
+  if (!cleanText(textContent(root)) && structured.description) {
+    markdown = escapeMarkdown(structured.description);
+    cleanHtml = `<p>${escapeHtml(structured.description)}</p>`;
+  }
+  const structuredTokens = [];
+  for (const item of structured.media) {
+    const alreadyRendered = media.some((entry) => entry.type === item.type && entry.sourceUrl === item.sourceUrl);
+    const token = registerMedia(context, item.type, item.sourceUrl, item.alt);
+    if (token && !alreadyRendered) structuredTokens.push({ token, type: item.type });
+  }
+  if (structuredTokens.length) {
+    markdown = `${markdown}\n\n${structuredTokens.map((item) => item.token).join("\n\n")}`.trim();
+    cleanHtml = `${cleanHtml}\n${structuredTokens.map((item) => `<figure>${item.token}</figure>`).join("\n")}`.trim();
+  }
   const title = firstNonEmpty(
+    provider === "xiaohongshu" ? structured.title : "",
     metaContent(document, "property", "og:title"),
     metaContent(document, "name", "twitter:title"),
+    providerFieldText(document, provider, "title"),
+    structured.title,
     provider === "wechat" ? textContent(findNode(document, (node) => hasClass(node, "rich_media_title"))) : "",
     textContent(findNode(document, (node) => node.tagName === "title")),
     "Imported article",
@@ -428,17 +515,66 @@ function parseArticleDocument(html, pageUrl, provider, mediaCount = ARTICLE_IMPO
     metaContent(document, "name", "author"),
     metaContent(document, "property", "article:author"),
     metaContent(document, "property", "og:article:author"),
+    providerFieldText(document, provider, "author"),
+    structured.author,
     provider === "wechat" ? textContent(findNode(document, (node) => attr(node, "id") === "js_name")) : "",
   ) || null;
-  const publishedAt = extractPublishedAt(document, html, provider);
+  const publishedAt = structured.publishedAt ?? extractPublishedAt(document, html, provider);
   return {
     title: cleanText(title),
     author: author ? cleanText(author) : null,
     publishedAt,
     media: media.slice(0, mediaCount),
     markdown,
+    html: cleanHtml,
     plainText: cleanText(textContent(root)),
   };
+}
+
+function providerFieldText(document, provider, field) {
+  const classes = {
+    zhihu: field === "title" ? ["Post-Title"] : ["AuthorInfo-name"],
+    juejin: field === "title" ? ["article-title"] : ["author-name"],
+    jianshu: field === "title" ? ["_1RuRku"] : ["_22gUMi"],
+  }[provider] ?? [];
+  for (const className of classes) {
+    const value = textContent(findNode(document, (node) => hasClass(node, className)));
+    if (cleanText(value)) return value;
+  }
+  return "";
+}
+
+function findProviderContent(document, provider) {
+  const selectors = {
+    wechat: [
+      (node) => attr(node, "id") === "js_content",
+      (node) => hasClass(node, "rich_media_content"),
+    ],
+    xiaohongshu: [
+      (node) => attr(node, "id") === "detail-desc",
+      (node) => hasClass(node, "note-content"),
+      (node) => attr(node, "class").includes("note-content"),
+      (node) => attr(node, "class").includes("desc"),
+    ],
+    zhihu: [
+      (node) => hasClass(node, "Post-RichTextContainer"),
+      (node) => hasClass(node, "RichContent-inner"),
+    ],
+    juejin: [
+      (node) => hasClass(node, "article-content"),
+      (node) => attr(node, "id") === "article-root",
+    ],
+    jianshu: [
+      (node) => hasClass(node, "_2rhmJa"),
+      (node) => attr(node, "class").includes("article-content"),
+    ],
+  };
+  for (const predicate of selectors[provider] ?? []) {
+    const found = findNode(document, predicate);
+    if (found) return found;
+  }
+  return findNode(document, (node) => node.tagName === "article")
+    ?? findNode(document, (node) => node.tagName === "main");
 }
 
 function renderMarkdownNode(node, context) {
@@ -447,12 +583,21 @@ function renderMarkdownNode(node, context) {
   const tag = node.tagName;
   if (SKIPPED_TAGS.has(tag)) return "";
   if (tag === "img") return renderMedia(node, "image", context);
-  if (tag === "audio" || tag === "video") return renderMedia(node, tag, context);
+  if (tag === "audio" || tag === "video" || ["mpvoice", "mp-common-mpaudio", "mp-video"].includes(tag)) {
+    const type = tag.includes("audio") || tag === "mpvoice" ? "audio" : "video";
+    const poster = type === "video" ? registerMedia(
+      context,
+      "image",
+      resolveHttpUrl(firstNonEmpty(attr(node, "poster"), attr(node, "data-poster")), context.pageUrl),
+      `${attr(node, "title") || "video"} poster`,
+    ) : null;
+    return [poster, renderMedia(node, type, context)].filter(Boolean).join("\n\n");
+  }
   const children = () => (node.childNodes ?? []).map((child) => renderMarkdownNode(child, context)).join("");
   if (!tag || ["html", "body", "main", "article"].includes(tag)) return children();
   if (tag === "br") return "\n";
   if (/^h[1-6]$/.test(tag)) return `\n\n${"#".repeat(Number(tag[1]))} ${children().trim()}\n\n`;
-  if (tag === "p" || tag === "div" || tag === "section" || tag === "figure" || tag === "figcaption") {
+  if (BLOCK_TAGS.has(tag)) {
     const value = children().trim();
     return value ? `\n\n${value}\n\n` : "";
   }
@@ -484,19 +629,153 @@ function renderMedia(node, type, context) {
   const rawUrl = firstNonEmpty(
     attr(node, "data-src"),
     attr(node, "data-original"),
+    attr(node, "data-url"),
+    attr(node, type === "audio" ? "data-audio-url" : "data-video-url"),
     attr(node, "src"),
-    sourceNode ? attr(sourceNode, "src") : "",
+    sourceNode ? firstNonEmpty(attr(sourceNode, "data-src"), attr(sourceNode, "src")) : "",
   );
   const sourceUrl = resolveHttpUrl(rawUrl, context.pageUrl);
+  const token = registerMedia(context, type, sourceUrl, attr(node, "alt") || attr(node, "title") || type);
+  return token ? `\n\n${token}\n\n` : "";
+}
+
+function registerMedia(context, type, sourceUrl, alt) {
   if (!sourceUrl) return "";
+  const existing = context.media.find((item) => item.type === type && item.sourceUrl === sourceUrl);
+  if (existing) return existing.token;
   const token = `@@MYAGENTTOOL_MEDIA_${context.media.length}@@`;
-  context.media.push({
-    token,
-    type,
-    sourceUrl,
-    alt: cleanText(attr(node, "alt") || attr(node, "title") || type),
+  context.media.push({ token, type, sourceUrl, alt: cleanText(alt || type) });
+  return token;
+}
+
+function renderCleanHtmlNode(node, context) {
+  if (!node) return "";
+  if (node.nodeName === "#text") return escapeHtml(String(node.value ?? "").replace(/\s+/g, " "));
+  const tag = node.tagName;
+  if (SKIPPED_TAGS.has(tag)) return "";
+  if (tag === "img") {
+    const token = renderMedia(node, "image", context).trim();
+    return token ? `<figure>${token}</figure>` : "";
+  }
+  if (tag === "audio" || tag === "video" || ["mpvoice", "mp-common-mpaudio", "mp-video"].includes(tag)) {
+    const type = tag.includes("audio") || tag === "mpvoice" ? "audio" : "video";
+    const poster = type === "video" ? registerMedia(
+      context,
+      "image",
+      resolveHttpUrl(firstNonEmpty(attr(node, "poster"), attr(node, "data-poster")), context.pageUrl),
+      `${attr(node, "title") || "video"} poster`,
+    ) : "";
+    const media = renderMedia(node, type, context).trim();
+    return [poster, media].filter(Boolean).map((token) => `<figure>${token}</figure>`).join("");
+  }
+  const children = () => (node.childNodes ?? []).map((child) => renderCleanHtmlNode(child, context)).join("");
+  if (!tag || ["html", "body", "main"].includes(tag)) return children();
+  if (tag === "article") return `<article>${children()}</article>`;
+  if (tag === "br") return "<br>";
+  if (/^h[1-6]$/.test(tag)) return `<${tag}>${children()}</${tag}>`;
+  if (BLOCK_TAGS.has(tag)) return `<${tag}>${children()}</${tag}>`;
+  if (["strong", "b", "em", "i", "del", "s", "code", "pre", "blockquote", "ul", "ol", "li"].includes(tag)) {
+    return `<${tag}>${children()}</${tag}>`;
+  }
+  if (tag === "hr") return "<hr>";
+  if (tag === "a") {
+    const href = resolveHttpUrl(attr(node, "href"), context.pageUrl);
+    return href
+      ? `<a href="${escapeHtmlAttribute(href)}" rel="noreferrer noopener">${children()}</a>`
+      : children();
+  }
+  return children();
+}
+
+function extractStructuredArticleData(document, provider, pageUrl) {
+  const result = { title: "", author: "", description: "", publishedAt: null, media: [] };
+  if (provider !== "xiaohongshu") return result;
+  const values = [];
+  walkNodes(document, (node) => {
+    if (node.tagName !== "script") return;
+    const raw = textContent(node).trim();
+    if (!raw || raw.length > 2_000_000) return;
+    const candidates = [];
+    if (attr(node, "type").includes("json") && /^[\[{]/.test(raw)) candidates.push(raw);
+    const assignment = raw.match(/(?:window\.)?__INITIAL_STATE__\s*=\s*([\s\S]+?);?\s*$/)?.[1];
+    if (assignment) candidates.push(assignment);
+    for (const candidate of candidates) {
+      try {
+        values.push(JSON.parse(candidate.replace(/\bundefined\b/g, "null")));
+      } catch {
+        // Malformed hydration data is optional; the sanitized DOM remains usable.
+      }
+    }
   });
-  return `\n\n${token}\n\n`;
+  const candidates = values.map(findStructuredNoteCandidate).filter(Boolean)
+    .sort((left, right) => right.score - left.score);
+  if (candidates[0]) collectStructuredFields(candidates[0].value, result, pageUrl);
+  return result;
+}
+
+function findStructuredNoteCandidate(value, depth = 0) {
+  if (!value || depth > 12 || typeof value !== "object") return null;
+  let best = null;
+  if (!Array.isArray(value)) {
+    const keys = new Set(Object.keys(value).map((key) => key.toLowerCase()));
+    const score = (keys.has("title") || keys.has("notetitle") ? 4 : 0)
+      + (keys.has("desc") || keys.has("description") || keys.has("content") ? 3 : 0)
+      + (keys.has("imagelist") || keys.has("images") ? 2 : 0)
+      + (keys.has("video") ? 2 : 0)
+      + (keys.has("user") || keys.has("author") ? 1 : 0);
+    if (score >= 5) best = { value, score };
+  }
+  for (const entry of (Array.isArray(value) ? value : Object.values(value)).slice(0, 500)) {
+    const candidate = findStructuredNoteCandidate(entry, depth + 1);
+    if (candidate && (!best || candidate.score > best.score)) best = candidate;
+  }
+  return best;
+}
+
+function collectStructuredFields(value, result, pageUrl, depth = 0) {
+  if (!value || depth > 12) return;
+  if (Array.isArray(value)) {
+    for (const item of value.slice(0, 500)) collectStructuredFields(item, result, pageUrl, depth + 1);
+    return;
+  }
+  if (typeof value !== "object") return;
+  for (const [rawKey, entry] of Object.entries(value)) {
+    const key = rawKey.toLowerCase();
+    if (typeof entry === "string" || typeof entry === "number") {
+      const text = String(entry);
+      if (!result.title && ["title", "notetitle"].includes(key) && text.length < 500) result.title = text;
+      if (!result.description && ["desc", "description", "content"].includes(key) && text.length < 100_000) result.description = text;
+      if (!result.author && ["nickname", "author", "username"].includes(key) && text.length < 500) result.author = text;
+      if (["publishtime", "publish_time"].includes(key)) {
+        result.publishedAt = normalizeStructuredDate(entry) ?? result.publishedAt;
+      } else if (!result.publishedAt && ["time", "timestamp"].includes(key)) {
+        result.publishedAt = normalizeStructuredDate(entry);
+      }
+      if (/(?:url|src)/.test(key)) {
+        const sourceUrl = resolveHttpUrl(text, pageUrl);
+        const type = /video/.test(key) ? "video" : /audio/.test(key) ? "audio" : /image|img|cover|urldefault|urlpre/.test(key) ? "image" : null;
+        if (sourceUrl && type && !result.media.some((item) => item.sourceUrl === sourceUrl)) {
+          result.media.push({ type, sourceUrl, alt: type });
+        }
+      }
+    }
+    collectStructuredFields(entry, result, pageUrl, depth + 1);
+  }
+}
+
+function normalizeStructuredDate(value) {
+  const numeric = Number(value);
+  const parsed = Number.isFinite(numeric)
+    ? new Date(numeric < 10_000_000_000 ? numeric * 1000 : numeric)
+    : new Date(String(value));
+  if (Number.isNaN(parsed.getTime())) return null;
+  return dateInTimeZone(parsed, "Asia/Shanghai");
+}
+
+function walkNodes(node, visitor) {
+  if (!node) return;
+  visitor(node);
+  for (const child of node.childNodes ?? []) walkNodes(child, visitor);
 }
 
 async function downloadMedia(media, options) {
@@ -746,6 +1025,52 @@ function substituteMedia(markdown, downloaded) {
   return result.replace(/@@MYAGENTTOOL_MEDIA_\d+@@/g, "");
 }
 
+function substituteHtmlMedia(html, downloaded) {
+  let result = html;
+  for (const item of downloaded) {
+    let replacement;
+    if (item.status !== "downloaded") {
+      replacement = `<p data-media-status="failed">${escapeHtml(mediaLabel(item.type))}下载失败</p>`;
+    } else if (item.type === "image") {
+      replacement = `<img src="${escapeHtmlAttribute(item.path)}" alt="${escapeHtmlAttribute(item.alt || "image")}" loading="lazy">`;
+    } else if (item.type === "audio") {
+      replacement = `<audio controls preload="metadata" src="${escapeHtmlAttribute(item.path)}">${escapeHtml(item.alt || "audio")}</audio>`;
+    } else {
+      replacement = `<video controls preload="metadata" src="${escapeHtmlAttribute(item.path)}">${escapeHtml(item.alt || "video")}</video>`;
+    }
+    result = result.replaceAll(item.token, replacement);
+  }
+  return result.replace(/@@MYAGENTTOOL_MEDIA_\d+@@/g, "");
+}
+
+function renderStandaloneHtml({ title, author, canonicalUrl, publishedAt, body }) {
+  const byline = [author, publishedAt].filter(Boolean).map(escapeHtml).join(" · ");
+  return [
+    "<!doctype html>",
+    '<html lang="zh-CN">',
+    "<head>",
+    '<meta charset="utf-8">',
+    '<meta name="viewport" content="width=device-width,initial-scale=1">',
+    '<meta http-equiv="Content-Security-Policy" content="default-src \'none\'; img-src \'self\' data:; media-src \'self\'; style-src \'none\'; base-uri \'none\'; form-action \'none\'">',
+    `<title>${escapeHtml(title)}</title>`,
+    "</head>",
+    "<body>",
+    "<header>",
+    `<h1>${escapeHtml(title)}</h1>`,
+    byline ? `<p>${byline}</p>` : "",
+    `<p><a href="${escapeHtmlAttribute(canonicalUrl)}" rel="noreferrer noopener">原文链接</a></p>`,
+    "</header>",
+    `<main>${body}</main>`,
+    "</body>",
+    "</html>",
+    "",
+  ].filter((line) => line !== "").join("\n");
+}
+
+function mediaLabel(type) {
+  return type === "image" ? "图片" : type === "audio" ? "音频" : "视频";
+}
+
 function renderFrontMatter(values) {
   const rows = [
     "---",
@@ -769,14 +1094,17 @@ async function existingImport(directory, canonicalUrl) {
     const manifest = JSON.parse(await readFile(join(directory, "manifest.json"), "utf8"));
     if (manifest.status !== "complete" || manifest.canonicalUrl !== canonicalUrl) return null;
     const markdownInfo = await stat(join(directory, "article.md"));
+    const htmlInfo = await stat(join(directory, "article.html")).catch(() => null);
     const manifestInfo = await stat(join(directory, "manifest.json"));
     const relativeDirectory = directory.split(sep).join("/").match(/docs\/imported\/.+$/)?.[0];
     if (!relativeDirectory) return null;
     return {
       relativeDirectory,
       markdownPath: `${relativeDirectory}/article.md`,
+      htmlPath: htmlInfo ? `${relativeDirectory}/article.html` : null,
       manifestPath: `${relativeDirectory}/manifest.json`,
       markdownSize: markdownInfo.size,
+      htmlSize: htmlInfo?.size ?? 0,
       manifestSize: manifestInfo.size,
       mediaCounts: countMedia((manifest.media ?? []).filter((item) => item.status === "downloaded")),
       warnings: manifest.warnings ?? [],
@@ -902,6 +1230,7 @@ function extractPublishedAt(document, html, provider) {
     metaContent(document, "property", "article:published_time"),
     metaContent(document, "name", "publishdate"),
     metaContent(document, "name", "date"),
+    metaContent(document, "itemprop", "datepublished"),
   ];
   for (const value of candidates) {
     if (!value) continue;
@@ -956,6 +1285,18 @@ function safeArticleSlug(value) {
 
 function escapeMarkdown(value) {
   return String(value ?? "").replace(/([\\`*_[\]<>])/g, "\\$1");
+}
+
+function escapeHtml(value) {
+  return String(value ?? "").replace(/[&<>]/g, (character) => ({
+    "&": "&amp;",
+    "<": "&lt;",
+    ">": "&gt;",
+  })[character]);
+}
+
+function escapeHtmlAttribute(value) {
+  return escapeHtml(value).replace(/"/g, "&quot;");
 }
 
 function resolveHttpUrl(value, base) {

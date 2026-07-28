@@ -400,6 +400,8 @@ export function createServerRuntimeServices({
     workItemService,
     maxConcurrent: articleImportConfig.maxConcurrent,
     limits: articleImportConfig.limits,
+    persistStateSoon,
+    store,
   });
   const planningProjectService = createPlanningProjectService({
     state, now, nextId, appendEvent, persistStateSoon, store, validateApprovalToken,

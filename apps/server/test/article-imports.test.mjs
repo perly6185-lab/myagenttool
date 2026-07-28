@@ -19,6 +19,9 @@ const PUBLIC_DNS = async () => [{ address: "93.184.216.34" }];
 test("detects source providers and builds deterministic source/date paths", () => {
   assert.equal(detectArticleSource("https://mp.weixin.qq.com/s/example"), "wechat");
   assert.equal(detectArticleSource("https://www.xiaohongshu.com/explore/example"), "xiaohongshu");
+  assert.equal(detectArticleSource("https://zhuanlan.zhihu.com/p/123"), "zhihu");
+  assert.equal(detectArticleSource("https://juejin.cn/post/123"), "juejin");
+  assert.equal(detectArticleSource("https://www.jianshu.com/p/123"), "jianshu");
   assert.equal(detectArticleSource("https://example.com/post"), "web");
   assert.equal(
     canonicalizeArticleUrl("https://EXAMPLE.com/post?utm_source=test&id=1#part"),
@@ -60,6 +63,127 @@ test("inspects WeChat lazy images while preserving content order", async () => {
   assert.equal(result.publishedAt, "2026-07-27");
   assert.deepEqual(result.mediaCounts, { images: 3, audio: 0, video: 0 });
   assert.match(result.markdownPreview, /第一段[\s\S]+MYAGENTTOOL_MEDIA_0[\s\S]+第二段/);
+});
+
+test("recovers Xiaohongshu note metadata and direct media from hydration data", async () => {
+  const result = await inspectArticle({
+    url: "https://www.xiaohongshu.com/explore/note-1",
+    resolveHostname: PUBLIC_DNS,
+    fetchImpl: async () => htmlResponse(`<!doctype html><html><body>
+      <div class="note-content"><p>页面正文</p><img data-src="https://sns-img.example/note.jpg"></div>
+      <script>window.__INITIAL_STATE__ = ${JSON.stringify({
+        note: {
+          title: "结构化笔记",
+          desc: "结构化说明",
+          user: { nickname: "红薯作者" },
+          publishTime: Date.parse("2026-07-20T10:00:00+08:00"),
+          imageList: [{ urlDefault: "https://sns-img.example/note.jpg" }],
+          video: { videoUrl: "https://sns-video.example/note.mp4" },
+        },
+        recommendations: [{
+          title: "不应导入的推荐笔记",
+          desc: "推荐内容",
+          imageList: [{ urlDefault: "https://sns-img.example/unrelated.jpg" }],
+        }],
+      })};</script>
+    </body></html>`),
+  });
+  assert.equal(result.provider, "xiaohongshu");
+  assert.equal(result.contentType, "note");
+  assert.equal(result.title, "结构化笔记");
+  assert.equal(result.author, "红薯作者");
+  assert.equal(result.publishedAt, "2026-07-20");
+  assert.deepEqual(result.mediaCounts, { images: 1, audio: 0, video: 1 });
+});
+
+test("uses provider-specific article roots and metadata for Juejin", async () => {
+  const result = await inspectArticle({
+    url: "https://juejin.cn/post/123",
+    resolveHostname: PUBLIC_DNS,
+    fetchImpl: async () => htmlResponse(`
+      <title>long SEO description - 掘金</title>
+      <meta itemprop="datePublished" content="2026-06-18T10:30:00+08:00">
+      <h1 class="article-title">准确标题</h1>
+      <div class="author-name"><span>掘金作者</span></div>
+      <div class="article-content"><p>只保留正文</p></div>
+      <aside><p>推荐内容</p></aside>
+    `),
+  });
+  assert.equal(result.provider, "juejin");
+  assert.equal(result.title, "准确标题");
+  assert.equal(result.author, "掘金作者");
+  assert.equal(result.publishedAt, "2026-06-18");
+  assert.match(result.markdownPreview, /只保留正文/);
+  assert.doesNotMatch(result.markdownPreview, /推荐内容/);
+});
+
+test("writes sanitized standalone HTML with localized audio, video, and poster", async (t) => {
+  const worktreePath = await mkdtemp(join(tmpdir(), "myagenttool-article-html-"));
+  t.after(() => rm(worktreePath, { recursive: true, force: true }));
+  const result = await importArticleToWorktree({
+    url: "https://example.com/media",
+    worktreePath,
+    workItemId: "lwi_media_html",
+    importedAt: "2026-07-28T01:02:03.000Z",
+    resolveHostname: PUBLIC_DNS,
+    fetchImpl: async (url) => {
+      if (String(url).endsWith("/media")) return htmlResponse(`
+        <article>
+          <script>alert("no")</script><iframe src="https://evil.example"></iframe>
+          <p onclick="alert(1)">正文</p>
+          <audio data-audio-url="https://cdn.example/sound.mp3" title="讲解"></audio>
+          <video data-video-url="https://cdn.example/movie.mp4" poster="https://cdn.example/poster.jpg" onerror="bad()"></video>
+        </article>`);
+      if (String(url).endsWith(".jpg")) return new Response(Buffer.from([0xff, 0xd8, 0xff, 0x01]), { headers: { "content-type": "image/jpeg" } });
+      if (String(url).endsWith(".mp3")) return new Response(Buffer.from("ID3audio"), { headers: { "content-type": "audio/mpeg" } });
+      return new Response(Buffer.concat([Buffer.alloc(4), Buffer.from("ftyp"), Buffer.from("video")]), { headers: { "content-type": "video/mp4" } });
+    },
+  });
+  const html = await readFile(join(worktreePath, result.htmlPath), "utf8");
+  const markdown = await readFile(join(worktreePath, result.markdownPath), "utf8");
+  const manifest = JSON.parse(await readFile(join(worktreePath, result.manifestPath), "utf8"));
+  assert.equal(manifest.schemaVersion, 2);
+  assert.equal(manifest.outputs.html, "article.html");
+  assert.deepEqual(result.mediaCounts, { images: 1, audio: 1, video: 1 });
+  assert.match(html, /<audio controls[^>]+src="assets\//);
+  assert.match(html, /<video controls[^>]+src="assets\//);
+  assert.match(html, /<img src="assets\//);
+  assert.doesNotMatch(html, /<script|<iframe|onclick=|onerror=|https:\/\/cdn\.example/);
+  assert.match(markdown, /音频.*assets\/.*\.mp3/);
+  assert.match(markdown, /视频.*assets\/.*\.mp4/);
+});
+
+test("marks an in-flight durable job as interrupted after service restart", () => {
+  let persisted = 0;
+  const state = {
+    articleImportJobs: [{
+      id: "article_import_old",
+      workItemId: "lwi_1",
+      worktreeId: "wtr_1",
+      sourceUrl: "https://example.com/article",
+      canonicalUrl: "https://example.com/article",
+      state: "running",
+      progress: { stage: "downloading", completed: 0, total: 1 },
+      createdAt: "2026-07-28T00:00:00.000Z",
+      startedAt: "2026-07-28T00:00:01.000Z",
+      completedAt: null,
+      error: null,
+      result: null,
+    }],
+  };
+  const service = createArticleImportService({
+    state,
+    now: () => "2026-07-28T00:01:00.000Z",
+    persistStateSoon: () => { persisted += 1; },
+    workItemService: {
+      getWorkItem: () => ({ ok: true, status: 200, body: { workItem: { id: "lwi_1" } } }),
+    },
+  });
+  const recovered = service.get({ workItemId: "lwi_1", jobId: "article_import_old" });
+  assert.equal(recovered.body.job.state, "failed");
+  assert.equal(recovered.body.job.error, "article_import_interrupted");
+  assert.equal(state.articleImportJobs[0].state, "failed");
+  assert.equal(persisted, 1);
 });
 
 test("preserves the source calendar date instead of shifting it to UTC", async () => {
@@ -289,8 +413,9 @@ test("queues an Issue-bound import and attaches generated output assets", async 
   assert.equal(bindings[0].kind, "article_import");
   assert.equal(updates.length, 1);
   assert.deepEqual(updates[0].labels, ["source:wechat", "content:article"]);
-  assert.equal(updates[0].outputAssets.length, 2);
+  assert.equal(updates[0].outputAssets.length, 3);
   assert.match(updates[0].outputAssets[0].path, /article\.md$/);
+  assert.match(updates[0].outputAssets[1].path, /article\.html$/);
   assert.equal(comments.length, 1);
   assert.match(comments[0].body, /1 media item\(s\) could not be downloaded/);
 });

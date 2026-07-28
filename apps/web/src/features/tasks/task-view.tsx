@@ -3043,7 +3043,7 @@ function LocalWorkItemDetail({
 
 type ArticleInspection = {
   canonicalUrl: string;
-  provider: "wechat" | "xiaohongshu" | "web";
+  provider: "wechat" | "xiaohongshu" | "zhihu" | "juejin" | "jianshu" | "web";
   contentType: "article" | "note";
   title: string;
   author: string | null;
@@ -3058,7 +3058,7 @@ type ArticleImportJob = {
   state: "queued" | "running" | "completed" | "failed" | "canceled";
   progress: { stage: string; completed: number; total: number };
   error: string | null;
-  result?: { markdownPath?: string; warnings?: { code: string }[] } | null;
+  result?: { markdownPath?: string; htmlPath?: string; warnings?: { code: string }[] } | null;
 };
 
 function CreateLocalWorkItemForm({
@@ -3104,8 +3104,11 @@ function CreateLocalWorkItemForm({
       const job = await waitForArticleImport(workItemId, jobId, (next) => {
         setImportStatus(t(`tasks.articleImportState.${next.state}`));
       });
-      clearStoredArticleImport(workItemId, jobId);
-      if (job.state !== "completed") throw new Error(job.error || `article_import_${job.state}`);
+      if (job.state === "completed" || job.state === "canceled") clearStoredArticleImport(workItemId, jobId);
+      if (job.state !== "completed") {
+        if (job.error === "article_import_interrupted") setImportStatus(t("tasks.articleImportInterrupted"));
+        throw new Error(job.error || `article_import_${job.state}`);
+      }
       setImportStatus(t("tasks.articleImportState.completed"));
       return job;
     } finally {
@@ -3257,7 +3260,7 @@ function CreateLocalWorkItemForm({
                   setSourceUrl(event.target.value);
                   setInspection(null);
                 }}
-                placeholder="https://mp.weixin.qq.com/s/..."
+                placeholder="https://..."
                 autoFocus
               />
               <Button type="button" variant="secondary" disabled={pending || !projectId || !sourceUrl.trim()} onClick={inspectSource}>
@@ -3323,10 +3326,12 @@ function CreateLocalWorkItemForm({
       <div className="flex justify-end gap-2">
         {activeImport ? <Button variant="secondary" onClick={cancelImport}>{t("tasks.cancel")}</Button> : null}
         <Button
-          disabled={pending || !projectId || !title.trim() || (sourceMode === "url" && (!sourceUrl.trim() || !inspection))}
+          disabled={pending || !projectId || (!title.trim() && !createdWorkItemId) || (sourceMode === "url" && (!sourceUrl.trim() || (!inspection && !createdWorkItemId)))}
           onClick={submit}
         >
-          {sourceMode === "url" ? t("tasks.createAndImport") : t("tasks.createLocal")}
+          {sourceMode === "url"
+            ? t(createdWorkItemId ? "tasks.retryArticleImport" : "tasks.createAndImport")
+            : t("tasks.createLocal")}
         </Button>
       </div>
     </div>

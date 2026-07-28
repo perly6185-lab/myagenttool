@@ -21,7 +21,7 @@ import { useAppTranslation } from "@/lib/i18n/use-app-translation";
 
 type OfficeDocumentType = "docx" | "xlsx" | "pptx";
 type DocumentType = "all" | OfficeDocumentType | "pdf" | "dxf" | "dwg" | "md" | "canvas" | "image" | "audio" | "video";
-type ImportedSource = "all" | "wechat" | "xiaohongshu" | "web";
+type ImportedSource = "all" | "wechat" | "xiaohongshu" | "zhihu" | "juejin" | "jianshu" | "web";
 type ImportedContentType = "all" | "article" | "note";
 const FILTERS: Array<{ value: DocumentType; label: string }> = [
   { value: "all", label: "All" },
@@ -207,6 +207,9 @@ export function DocumentsView() {
           <option value="all">{t("documents.allSources")}</option>
           <option value="wechat">{t("documents.sourceWechat")}</option>
           <option value="xiaohongshu">{t("documents.sourceXiaohongshu")}</option>
+          <option value="zhihu">{t("documents.sourceZhihu")}</option>
+          <option value="juejin">{t("documents.sourceJuejin")}</option>
+          <option value="jianshu">{t("documents.sourceJianshu")}</option>
           <option value="web">{t("documents.sourceWeb")}</option>
         </Select>
         <Select
@@ -293,7 +296,7 @@ export function filterImportedDocuments(
 
 function importedTaxonomy(path: string) {
   const normalized = path.replaceAll("\\", "/");
-  const match = normalized.match(/(?:^|\/)docs\/imported\/(wechat|xiaohongshu|web)\/(\d{4})\/(\d{2})\//);
+  const match = normalized.match(/(?:^|\/)docs\/imported\/(wechat|xiaohongshu|zhihu|juejin|jianshu|web)\/(\d{4})\/(\d{2})\//);
   if (!match) return null;
   const source = match[1] as Exclude<ImportedSource, "all">;
   return {
