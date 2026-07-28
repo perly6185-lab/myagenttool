@@ -15,8 +15,13 @@ export interface DeviceSnapshot {
   /** Max invocations this machine runs at once (across distinct worktrees). */
   maxConcurrency?: number;
   assetResourceClasses?: Array<"small" | "medium" | "large">;
+  /** Canonical local Runtime readiness — the UI reads only this (Stage 7, #1342). */
   runtimeReadiness?: DeviceRuntimeReadiness[];
-  /** Compatibility alias for older servers. */
+  /**
+   * @deprecated Legacy alias the server still publishes for older non-UI clients;
+   * the server always populates `runtimeReadiness` (aliasing this on ingest), so the
+   * UI no longer reads this field.
+   */
   applicationBinaryReadiness?: DeviceRuntimeReadiness[];
 }
 

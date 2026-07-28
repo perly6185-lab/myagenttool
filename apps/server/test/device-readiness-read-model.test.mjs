@@ -30,6 +30,13 @@ test("public state exposes every team device and derives stale readiness", () =>
   assert.equal(published.devices[0].applicationBinaryReadiness[0].status, "absent");
   assert.equal(published.devices[1].applicationBinaryReadiness[0].status, "stale");
   assert.equal(published.devices[2].applicationBinaryReadiness[0].status, "stale");
+  // Stage 7 (#1342): a device that reported only the LEGACY field is published with
+  // the canonical `runtimeReadiness` populated too (aliased) — this is the guarantee
+  // that lets the UI read `runtimeReadiness` only and drop the legacy fallback.
+  for (const device of published.devices) {
+    assert.deepEqual(device.runtimeReadiness, device.applicationBinaryReadiness, "canonical mirrors legacy");
+    assert.ok(device.runtimeReadiness?.[0]?.status, "canonical readiness is always present");
+  }
   assert.equal(published.guidedSetup.version, 1);
   assert.equal(published.guidedSetup.currentStep, "workspace");
 });

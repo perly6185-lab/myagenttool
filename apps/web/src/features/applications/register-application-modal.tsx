@@ -67,8 +67,10 @@ export function RegisterApplicationModal({ open, onClose, initialApplication = "
     return (knownApplicationData?.applications ?? []).find((entry) => entry.aliases.includes(normalized)) ?? null;
   }, [knownApplication, knownApplicationData]);
   const selectedDevice = state?.device ?? null;
+  // Stage 7 (#1342): canonical `runtimeReadiness` only (the server aliases any
+  // legacy field on ingest, so it is always present).
   const readiness = knownEntry && selectedDevice
-    ? (selectedDevice.runtimeReadiness ?? selectedDevice.applicationBinaryReadiness)?.find((row) => row.command === knownEntry.command) ?? null
+    ? selectedDevice.runtimeReadiness?.find((row) => row.command === knownEntry.command) ?? null
     : null;
   // Server-owned local sign-in command (Stage 4-2), never hardcoded here.
   const authenticationLoginCommand = readiness?.authenticationStatus === "unauthenticated"

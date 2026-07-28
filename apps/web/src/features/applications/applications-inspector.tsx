@@ -1549,8 +1549,11 @@ export function ApplicationsInspector() {
   const orchestrations = application.orchestrations ?? [];
   const invocations = state?.invocations ?? [];
   const sourceBinary = application.source.type === "binary" ? application.source.binary : application.source.type === "npm" ? application.source.package : null;
+  // Stage 7 (#1342): read the canonical `runtimeReadiness` only — the server always
+  // publishes it (aliasing a legacy bridge's applicationBinaryReadiness on ingest),
+  // so the UI no longer depends on the legacy field name.
   const localRuntimeReadiness = sourceBinary
-    ? (state?.device?.runtimeReadiness ?? state?.device?.applicationBinaryReadiness)?.find((row) => row.command === sourceBinary) ?? null
+    ? state?.device?.runtimeReadiness?.find((row) => row.command === sourceBinary) ?? null
     : null;
   const binaryReadinessSummary = sourceBinary
     ? localRuntimeReadiness
