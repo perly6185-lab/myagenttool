@@ -1,6 +1,6 @@
 // Regression smoke for the first-class Claude Code agent (#188 + review fix #191):
 // detection, permission-mode normalization, args, output-format resolution, the
-// deterministic-id upsert, and that Codex behavior is untouched.
+// deterministic-id upserts for both supported coding agents.
 import assert from "node:assert/strict";
 import {
   claudeCliArgs,
@@ -37,7 +37,7 @@ assert.deepEqual(defaultRiskTags("cli", "claude"),
   ["read_local", "write_local", "shell_exec", "network_access", "repo_context", "code_change"]);
 ok("claudeCliArgs + output-format + risk tags");
 
-// createCliAgent via registerAgent: deterministic id + upsert + codex untouched.
+// createCliAgent via registerAgent: deterministic ids + upsert.
 {
   const state = { device: { id: "dev1", status: "online" }, agents: [] };
   let n = 0;
@@ -57,9 +57,11 @@ ok("claudeCliArgs + output-format + risk tags");
   assert.equal(state.agents.length, 2, "different mode is a distinct agent");
 
   const cdx = svc.registerAgent({ type: "cli", command: "codex" });
-  assert.ok(cdx.id.startsWith("agt_cli_"), "codex keeps its generated id");
+  assert.equal(cdx.id, "agt_codex_cli", "default Codex Ask mode reuses the seeded deterministic id");
   assert.equal(cdx.adapter.outputFormat, "codex_jsonl");
-  ok("createCliAgent: claude deterministic-id upsert, codex untouched");
+  assert.equal(cdx.adapter.permissionMode, "ask");
+  assert.equal(cdx.adapter.sandbox, "workspace-write");
+  ok("createCliAgent: deterministic-id upserts for Claude and Codex");
 }
 
 console.log(`\nclaude-agent-smoke: ${passed} checks passed`);
