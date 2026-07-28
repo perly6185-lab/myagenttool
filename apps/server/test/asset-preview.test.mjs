@@ -10,6 +10,7 @@ function fixture() {
   writeFileSync(join(root, "notes.md"), "# Safe notes\n\nNo HTML execution.");
   writeFileSync(join(root, "pixel.png"), Buffer.concat([Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]), Buffer.alloc(24)]));
   writeFileSync(join(root, "clip.mp4"), Buffer.concat([Buffer.alloc(4), Buffer.from("ftyp"), Buffer.alloc(32)]));
+  writeFileSync(join(root, "episode.mp3"), Buffer.concat([Buffer.from("ID3"), Buffer.alloc(29)]));
   writeFileSync(join(root, "active.svg"), "<svg><script>alert(1)</script></svg>");
   return root;
 }
@@ -29,6 +30,14 @@ test("video always uses a bounded byte range", () => {
   const video = readAssetPreview({ projectPath: root, relativeFile: "clip.mp4", range: "bytes=8-15" });
   assert.deepEqual({ start: video.start, end: video.end, partial: video.partial }, { start: 8, end: 15, partial: true });
   assert.equal(video.bytes.length, 8);
+});
+
+test("returns signature-validated audio bytes", () => {
+  const root = fixture();
+  const audio = readAssetPreview({ projectPath: root, relativeFile: "episode.mp3" });
+  assert.equal(audio.family, "audio");
+  assert.equal(audio.mimeType, "audio/mpeg");
+  assert.equal(audio.bytes.length, 32);
 });
 
 test("refuses active SVG, bad signatures, symlinks, and traversal", () => {

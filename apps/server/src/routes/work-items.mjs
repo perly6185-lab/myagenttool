@@ -23,6 +23,11 @@ export async function handleWorkItemRoutes({
   githubSyncDiagnostics,
   suggestWorkItemDraft,
   retryWorkItemAlert,
+  inspectArticleImport,
+  startArticleImport,
+  listArticleImports,
+  getArticleImport,
+  cancelArticleImport,
 }) {
   const externalWebhookMatch = url.pathname.match(/^\/api\/webhooks\/(gitlab|gitea)\/work-items$/);
   if (externalWebhookMatch && req.method === "POST") {
@@ -114,6 +119,32 @@ export async function handleWorkItemRoutes({
     return true;
   }
   if (!url.pathname.startsWith("/api/work-items")) return false;
+
+  if (url.pathname === "/api/work-items/article-imports/inspect" && req.method === "POST") {
+    const result = await inspectArticleImport(await readJson(req), actor);
+    sendJson(res, result.status, result.body);
+    return true;
+  }
+
+  const articleImportMatch = url.pathname.match(/^\/api\/work-items\/([^/]+)\/article-imports(?:\/([^/]+))?$/);
+  if (articleImportMatch) {
+    const workItemId = decodeURIComponent(articleImportMatch[1]);
+    const jobId = articleImportMatch[2] ? decodeURIComponent(articleImportMatch[2]) : null;
+    let result;
+    if (req.method === "POST" && !jobId) {
+      result = startArticleImport({ workItemId, ...(await readJson(req)) }, actor);
+    } else if (req.method === "GET" && !jobId) {
+      result = listArticleImports({ workItemId }, actor);
+    } else if (req.method === "GET" && jobId) {
+      result = getArticleImport({ workItemId, jobId }, actor);
+    } else if (req.method === "DELETE" && jobId) {
+      result = cancelArticleImport({ workItemId, jobId }, actor);
+    } else {
+      return false;
+    }
+    sendJson(res, result.status, result.body);
+    return true;
+  }
 
   if (url.pathname === "/api/work-items/providers" && req.method === "GET") {
     const result = listExternalProviders(actor);
