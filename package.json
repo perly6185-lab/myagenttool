@@ -226,7 +226,7 @@
     "@myagenttool/protocol": "workspace:^",
     "@myagenttool/server": "workspace:^",
     "@myagenttool/shared": "workspace:^",
-    "@openai/codex": "0.144.6",
+    "@openai/codex": "0.146.0-alpha.3",
     "node-pty": "^1.1.0"
   }
 }

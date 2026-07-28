@@ -93,10 +93,11 @@ export async function runProtocolSelfCheck(deps) {
   assert(defaultCodexAgent?.status === "unavailable", "default Codex CLI agent should be registered enabled but unavailable while bridge is offline");
   assert(defaultCodexAgent.lifecycle.state === "enabled", "default Codex CLI agent should use the local CLI's native authorization");
   assert(defaultCodexAgent.adapter.outputFormat === "codex_jsonl", "default Codex CLI agent should use JSONL output");
-  assert(defaultCodexAgent.adapter.sandbox === null, "default Codex CLI agent should not impose a Web Console sandbox");
+  assert(defaultCodexAgent.adapter.sandbox === "workspace-write", "default Codex CLI agent should use the ask-mode workspace sandbox");
+  assert(defaultCodexAgent.adapter.permissionMode === "ask", "default Codex CLI agent should expose the ask permission mode");
   assert(!defaultCodexAgent.adapter.args.includes("--ephemeral"), "default Codex CLI agent should persist sessions for optional resume");
   assert(codexCliResumeArgs().includes("resume"), "Codex CLI resume args should be available for continuation");
-  assert(!defaultCodexAgent.adapter.args.includes("read-only"), "default Codex CLI agent should defer sandboxing to Codex CLI");
+  assert(defaultCodexAgent.adapter.args.includes('approvals_reviewer="user"'), "default Codex CLI agent should route boundary approvals to the user");
   assert(defaultCodexAgent.capabilities[0].riskLevel === "high", "default Codex CLI agent should stay high risk");
   assert(defaultCodexAgent.registrationNotes.risk.includes("Codex CLI"), "default Codex CLI agent should expose Codex review notes");
   assert(state.terminalRuntimeCapability.localPty.available === true, "terminal runtime should report local PTY support");

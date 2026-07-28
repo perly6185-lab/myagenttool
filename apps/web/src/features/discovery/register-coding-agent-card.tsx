@@ -1,5 +1,9 @@
 import { useState } from "react";
 import { Check } from "lucide-react";
+import {
+  codexPermissionModeFromLegacySandbox,
+  type CodexPermissionMode,
+} from "@myagenttool/protocol/codex-permissions";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -22,7 +26,7 @@ interface CodingAgentConfig {
   command: string;
   title: string;
   blurb: React.ReactNode;
-  /** Payload key for the chosen mode: Codex sandbox vs Claude permission mode. */
+  /** Canonical payload key for the selected coding-agent permission mode. */
   modeField: "sandbox" | "permissionMode";
   modeLabel: string;
   /** The safe (non-writable) mode value. */
@@ -37,25 +41,25 @@ const CONFIGS: Record<"codex" | "claude", CodingAgentConfig> = {
     title: "Connect Codex CLI",
     blurb: (
       <>
-        Registers <code className="font-mono">codex exec --json</code> with the sandbox you choose.
+        Registers Codex with the permission mode you choose.
       </>
     ),
-    modeField: "sandbox",
-    modeLabel: "Sandbox",
-    safeMode: "read-only",
-    defaultMode: "workspace-write",
+    modeField: "permissionMode",
+    modeLabel: "Permissions",
+    safeMode: "ask",
+    defaultMode: "ask",
     modes: [
-      { value: "read-only", label: "Read-only", hint: "Reads the repo; cannot edit files. Safest.", tone: "neutral" },
+      { value: "ask", label: "Ask for approval", hint: "Works in the workspace and asks before crossing its boundary.", tone: "neutral" },
       {
-        value: "workspace-write",
-        label: "Workspace-write",
-        hint: "Can edit files in the working directory. Approval required on every run.",
+        value: "auto",
+        label: "Approve for me",
+        hint: "Keeps the workspace boundary and sends eligible requests to automatic review.",
         tone: "warning",
       },
       {
-        value: "danger-full-access",
+        value: "full",
         label: "Full access",
-        hint: "No sandbox — can edit anywhere and use the network. Highest risk.",
+        hint: "No sandbox or Codex approval prompts. MyAgentTool still requires explicit launch approval.",
         tone: "danger",
       },
     ],
@@ -100,17 +104,19 @@ export function RegisterCodingAgentCard({ kind }: { kind: "codex" | "claude" }) 
   const { execute, pending, error } = useAsyncAction();
 
   const [name, setName] = useState<string>(() => t(`codingAgent.${kind}.defaultName`));
-  const [mode, setMode] = useState(config.defaultMode);
+  const [mode, setMode] = useState<CodexPermissionMode | string>(config.defaultMode);
   const [costOwner, setCostOwner] = useState("usr_local");
 
   // Reflect live registration state so the button is honest across reloads.
   // Same command + mode upserts (an update); a new mode adds a distinct agent.
   const existing = (state?.agents ?? []).filter((agent) => agent.adapter?.command === config.command);
-  const registeredModes = existing.map((agent) => agent.adapter?.[config.modeField]);
+  const registeredModes = existing.map((agent) => kind === "codex"
+    ? agent.adapter?.permissionMode ?? codexPermissionModeFromLegacySandbox(agent.adapter?.sandbox)
+    : agent.adapter?.[config.modeField]);
   const alreadyRegistered = existing.length > 0;
   const modeAlreadyRegistered = registeredModes.includes(mode);
   const active = config.modes.find((m) => m.value === mode)!;
-  const writable = mode !== config.safeMode;
+  const writable = kind === "codex" || mode !== config.safeMode;
 
   async function register() {
     await execute(async () => {

@@ -1,5 +1,10 @@
 import { useEffect, useRef, useState, type ComponentType } from "react";
 import { ChevronDown, ChevronLeft, ChevronRight, File, FileText, Folder, GitBranch, GitCompare, Images, ListChecks, MessageSquare, Paperclip, X } from "lucide-react";
+import {
+  codexPermissionModeFromLegacySandbox,
+  normalizeCodexPermissionMode,
+  type CodexPermissionMode,
+} from "@myagenttool/protocol/codex-permissions";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -84,7 +89,7 @@ export function WorktreeView({ worktree }: { worktree: WorktreeSnapshot }) {
   const previousDefaultTask = useRef(defaultTask);
   const [task, setTask] = useState<string>(defaultTask);
   const [agentId, setAgentId] = useState(worktree.agentId ?? agents[0]?.id ?? "");
-  const [permissionLevel, setPermissionLevel] = useState<"ask" | "auto" | "full">("ask");
+  const [permissionLevel, setPermissionLevel] = useState<CodexPermissionMode>(() => permissionModeForAgent(agents.find((agent) => agent.id === (worktree.agentId ?? agents[0]?.id))));
   // Pasted/picked files to save into the worktree before the run (so the agent
   // can read them). Held as base64 until the run uploads them.
   const [attachments, setAttachments] = useState<{ name: string; dataBase64: string; size: number; type: string }[]>([]);
@@ -565,7 +570,15 @@ export function WorktreeView({ worktree }: { worktree: WorktreeSnapshot }) {
                   </div>
                   <div className="grid gap-3 sm:grid-cols-[1fr_1fr_auto] sm:items-end">
                     <Field label={t("officeEditors.agent")}>
-                      <Select value={agentId} onChange={(e) => setAgentId(e.target.value)} aria-label={t("officeEditors.agent")}>
+                      <Select
+                        value={agentId}
+                        onChange={(e) => {
+                          const nextAgentId = e.target.value;
+                          setAgentId(nextAgentId);
+                          setPermissionLevel(permissionModeForAgent(agents.find((agent) => agent.id === nextAgentId)));
+                        }}
+                        aria-label={t("officeEditors.agent")}
+                      >
                         {agents.length === 0 ? <option value="">{t("worktreeView.noAgent")}</option> : null}
                         {agents.map((a) => (
                           <option key={a.id} value={a.id}>
@@ -577,7 +590,7 @@ export function WorktreeView({ worktree }: { worktree: WorktreeSnapshot }) {
                     <Field label={t("worktreeView.permissions")}>
                       <Select
                         value={permissionLevel}
-                        onChange={(e) => setPermissionLevel(e.target.value as "ask" | "auto" | "full")}
+                        onChange={(e) => setPermissionLevel(normalizeCodexPermissionMode(e.target.value))}
                         aria-label={t("worktreeView.permissionLevel")}
                         title={t("worktreeView.permissionTitle")}
                       >
@@ -906,6 +919,18 @@ export function WorktreeView({ worktree }: { worktree: WorktreeSnapshot }) {
         </div>
       </Modal>
     </div>
+  );
+}
+
+function permissionModeForAgent(agent: { adapter?: { command?: string; permissionMode?: string; sandbox?: string } } | undefined): CodexPermissionMode {
+  const command = String(agent?.adapter?.command ?? "").trim().toLowerCase();
+  const isCodex = ["codex", "codex.cmd", "codex.ps1", "codex.exe"].some(
+    (name) => command === name || command.endsWith(`/${name}`) || command.endsWith(`\\${name}`),
+  );
+  if (!isCodex) return "ask";
+  return normalizeCodexPermissionMode(
+    agent?.adapter?.permissionMode
+    ?? codexPermissionModeFromLegacySandbox(agent?.adapter?.sandbox),
   );
 }
 

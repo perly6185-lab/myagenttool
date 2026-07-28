@@ -41,7 +41,7 @@ function runtime() {
     defaultAgent: () => agent,
     currentProject: () => state.projects[0],
     worktreeForProject: () => null,
-    normalizeCodexApprovalMode: () => null,
+    normalizeCodexApprovalMode: (value) => value ?? "ask",
     normalizeCodexSessionMode: () => null,
     normalizeCodexWorkspacePolicy: () => null,
     createManagedCodexWorkspace: () => null,
@@ -99,4 +99,21 @@ test("blank/whitespace key is treated as no key", () => {
   svc.createInvocation("task", agent, { idempotencyKey: "   ", actor: { userId: "u1" } });
   svc.createInvocation("task", agent, { idempotencyKey: "", actor: { userId: "u1" } });
   assert.equal(state.invocations.length, 2);
+});
+
+test("invocation inherits the registered Codex Agent permission mode unless the run overrides it", () => {
+  const { svc } = runtime();
+  const fullAgent = {
+    ...agent,
+    adapter: { ...agent.adapter, permissionMode: "full" },
+  };
+
+  const inherited = svc.createInvocation("trusted task", fullAgent, { actor: { userId: "u1" } });
+  const overridden = svc.createInvocation("reviewed task", fullAgent, {
+    actor: { userId: "u1" },
+    approvalMode: "ask",
+  });
+
+  assert.equal(inherited.options.approvalMode, "full");
+  assert.equal(overridden.options.approvalMode, "ask");
 });

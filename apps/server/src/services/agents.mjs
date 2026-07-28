@@ -1,6 +1,12 @@
 import { normalizeA2aAdapterConfig } from "@myagenttool/adapters/a2a";
 import { normalizeContainerAdapterConfig } from "@myagenttool/adapters/container";
 import { normalizeMcpAdapterConfig } from "@myagenttool/adapters/mcp";
+import {
+  codexExecPermissionArgs,
+  codexPermissionModeFromLegacySandbox,
+  codexPermissionProfile,
+  normalizeCodexPermissionMode,
+} from "@myagenttool/protocol/codex-permissions";
 
 import { makeRunTx } from "../runtime/store/run-tx.mjs";
 import { capLifecycleAuditRecords } from "./retention.mjs";
@@ -57,17 +63,31 @@ export function createAgentService({ state, now, nextId, appendEvent, persistSta
     const codexCommand = isCodexCliCommand(command);
     const claudeCommand = isClaudeCliCommand(command);
     const codingAgent = codexCommand || claudeCommand;
-    // Claude's permission mode is the analog of Codex's sandbox; accept either key.
+    const codexMode = codexCommand
+      ? normalizeCodexPermissionMode(
+          body.permissionMode
+          ?? body.adapter?.permissionMode
+          ?? codexPermissionModeFromLegacySandbox(body.sandbox ?? body.adapter?.sandbox),
+        )
+      : null;
+    const codexProfile = codexMode ? codexPermissionProfile(codexMode) : null;
+    // Keep accepting the legacy sandbox key while persisting the user-facing
+    // permission mode as the canonical setting for both coding agents.
     const claudeMode = claudeCommand
       ? normalizeClaudePermissionMode(body.permissionMode ?? body.adapter?.permissionMode ?? body.sandbox)
       : null;
-    // A registered Claude agent gets a deterministic id per permission mode so
+    // Registered coding agents get a deterministic id per permission mode so
     // re-registering the same mode upserts in place (the web card's Update state
-    // assumes this) while a different mode stays a distinct agent. Codex and
-    // other CLI agents keep their existing generated ids; an explicit body.id
-    // always wins.
-    const id = sanitizeAgentId(body.id ?? (claudeCommand ? `agt_claude_${claudeMode}` : nextId("agt_cli")));
-    const defaultCodingArgs = codexCommand ? codexCliArgs() : claudeCommand ? claudeCliArgs(claudeMode) : [];
+    // assumes this) while a different mode stays a distinct agent. The Codex
+    // ask profile reuses the seeded agent id so registration updates that agent
+    // instead of creating a duplicate. An explicit body.id always wins.
+    const id = sanitizeAgentId(body.id
+      ?? (codexCommand
+        ? (codexMode === "ask" ? "agt_codex_cli" : `agt_codex_${codexMode}`)
+        : claudeCommand
+          ? `agt_claude_${claudeMode}`
+          : nextId("agt_cli")));
+    const defaultCodingArgs = codexCommand ? codexCliArgs(codexMode) : claudeCommand ? claudeCliArgs(claudeMode) : [];
     const normalizedArgs = args.length > 0 ? args : defaultCodingArgs;
     return baseAgent({
       id,
@@ -88,8 +108,8 @@ export function createAgentService({ state, now, nextId, appendEvent, persistSta
         timeoutSeconds: Number(body.timeoutSeconds ?? (codingAgent ? 600 : 30)),
         cancellation: "supported",
         outputFormat: normalizeCliOutputFormat(body.outputFormat ?? body.adapter?.outputFormat, command),
-        sandbox: body.sandbox ?? body.adapter?.sandbox ?? null,
-        permissionMode: claudeCommand ? claudeMode : null,
+        sandbox: codexProfile?.sandboxMode ?? body.sandbox ?? body.adapter?.sandbox ?? null,
+        permissionMode: codexMode ?? (claudeCommand ? claudeMode : null),
       },
       capabilities: [
         {
@@ -561,8 +581,8 @@ export function isCodexCliCommand(command) {
   return ["codex", "codex.cmd", "codex.ps1", "codex.exe"].some((name) => normalized === name || normalized.endsWith(`/${name}`) || normalized.endsWith(`\\${name}`));
 }
 
-export function codexCliArgs() {
-  return ["exec", "--sandbox", "workspace-write", "--skip-git-repo-check", "--json", "{{task}}"];
+export function codexCliArgs(permissionMode = "ask") {
+  return ["exec", ...codexExecPermissionArgs(permissionMode), "--skip-git-repo-check", "--json", "{{task}}"];
 }
 
 export function codexCliResumeArgs() {
