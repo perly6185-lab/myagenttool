@@ -10,6 +10,7 @@ import { useAsyncAction, api } from "@/data/use-console-actions";
 import { cn } from "@/lib/cn";
 import { formatUsd as usd } from "@/lib/money";
 import type { TeamBudgetStatus } from "@/lib/console-state";
+import { useAppTranslation } from "@/lib/i18n/use-app-translation";
 
 const POLICY_LABEL: Record<string, string> = {
   warn: "Warn",
@@ -23,6 +24,7 @@ const POLICY_LABEL: Record<string, string> = {
  * projects are rejected server-side.
  */
 export function TeamBudgetsCard() {
+  const { t } = useAppTranslation();
   const { data: state } = useConsoleState();
   const { execute, pending, error } = useAsyncAction();
   const rows = state?.teamBudgetStatuses ?? [];
@@ -42,15 +44,14 @@ export function TeamBudgetsCard() {
   return (
     <Card>
       <CardHeader>
-        <CardTitle>Team budget pools</CardTitle>
+        <CardTitle>{t("economicsDetails.teamBudgets")}</CardTitle>
         <p className="text-sm text-muted-foreground">
-          A pool caps a team's summed spend across all of its projects. With a block policy, an
-          over-budget team's projects reject new runs.
+          {t("economicsDetails.teamBudgetsHint")}
         </p>
       </CardHeader>
       <CardContent className="space-y-4">
         {rows.length === 0 ? (
-          <EmptyState title="No team spend yet" hint="Team rollups appear once projects record spend." />
+          <EmptyState title={t("economicsDetails.noTeamSpend")} hint={t("economicsDetails.noTeamSpendHint")} />
         ) : (
           <div className="space-y-2">
             {rows.map((row) => (
@@ -60,7 +61,7 @@ export function TeamBudgetsCard() {
         )}
 
         <div className="grid gap-3 sm:grid-cols-[1fr_auto_auto_auto] sm:items-end">
-          <Field label="Team">
+          <Field label={t("economicsDetails.team")}>
             <Select value={targetTeamId} onChange={(e) => setTeamId(e.target.value)}>
               {teams.map((team) => (
                 <option key={team.id} value={team.id}>
@@ -69,17 +70,17 @@ export function TeamBudgetsCard() {
               ))}
             </Select>
           </Field>
-          <Field label="Limit (USD)">
+          <Field label={t("economicsBudget.limit")}>
             <Input className="w-28" value={limit} onChange={(e) => setLimit(e.target.value)} inputMode="decimal" />
           </Field>
-          <Field label="Policy">
+          <Field label={t("economicsBudget.policy")}>
             <Select value={policy} onChange={(e) => setPolicy(e.target.value)}>
-              <option value="warn">Warn</option>
-              <option value="block">Block</option>
+              <option value="warn">{t("economicsBudget.warn")}</option>
+              <option value="block">{t("economicsBudget.block")}</option>
             </Select>
           </Field>
           <Button onClick={save} disabled={pending || !targetTeamId}>
-            {pending ? "Saving…" : "Set pool"}
+            {pending ? t("economicsDetails.saving") : t("economicsDetails.setPool")}
           </Button>
         </div>
         {error ? <p className="text-xs text-destructive">{error}</p> : null}
@@ -89,6 +90,7 @@ export function TeamBudgetsCard() {
 }
 
 function TeamBudgetRow({ row }: { row: TeamBudgetStatus }) {
+  const { t } = useAppTranslation();
   const limit = row.limitUsd ?? 0;
   const pct = limit > 0 ? Math.min(100, (row.spentUsd / limit) * 100) : row.spentUsd > 0 ? 100 : 0;
   const tone = row.over ? "danger" : pct > 80 ? "warning" : "success";
@@ -97,13 +99,13 @@ function TeamBudgetRow({ row }: { row: TeamBudgetStatus }) {
       <div className="flex items-center justify-between gap-3 text-sm">
         <span className="font-medium">
           {row.teamName ?? row.teamId}
-          <span className="ml-2 text-xs text-muted-foreground">{row.projectCount} project{row.projectCount === 1 ? "" : "s"}</span>
+          <span className="ml-2 text-xs text-muted-foreground">{t("economicsDetails.projectCount", { count: row.projectCount })}</span>
         </span>
         <div className="flex items-center gap-2">
           {row.exists ? (
             <Badge tone={row.over ? "danger" : "neutral"}>{POLICY_LABEL[row.policy] ?? row.policy}</Badge>
           ) : (
-            <Badge tone="neutral">No pool</Badge>
+            <Badge tone="neutral">{t("economicsDetails.noPool")}</Badge>
           )}
           <span className="tabular-nums text-muted-foreground">
             {usd(row.spentUsd)}{row.exists ? ` / ${usd(limit)}` : ""}
@@ -123,7 +125,7 @@ function TeamBudgetRow({ row }: { row: TeamBudgetStatus }) {
       ) : null}
       {row.over ? (
         <p className="mt-1 text-xs text-destructive">
-          Over the team pool — new runs are {row.policy === "block" ? "blocked" : "allowed with a warning"}.
+          {t("economicsDetails.overTeamPool")} — {t(row.policy === "block" ? "economicsBudget.blocked" : "economicsBudget.allowedWarning")}.
         </p>
       ) : null}
     </div>

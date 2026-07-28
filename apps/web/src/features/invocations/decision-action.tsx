@@ -5,6 +5,7 @@ import { useAsyncAction, api } from "@/data/use-console-actions";
 import { useUiStore } from "@/store/ui-store";
 import { approvalFor } from "@/features/selection";
 import { cn } from "@/lib/cn";
+import { useAppTranslation } from "@/lib/i18n/use-app-translation";
 import type { InvocationEventSnapshot } from "@/lib/console-state";
 
 // The actionable "exit" for a decision event in an output stream, so every
@@ -17,8 +18,9 @@ import type { InvocationEventSnapshot } from "@/lib/console-state";
 //    decision lives on another surface; a deep-link that navigates there.
 // Returns null for ordinary events, so it is safe to pass for every event.
 export function DecisionAction({ event }: { event: InvocationEventSnapshot }) {
+  const { t } = useAppTranslation();
   const { data: state } = useConsoleState();
-  const { execute, pending } = useAsyncAction();
+  const { execute, pending, error } = useAsyncAction();
   const setSection = useUiStore((s) => s.setSection);
   const setSelectedArtifactId = useUiStore((s) => s.setSelectedArtifactId);
   const setSelectedInvocationId = useUiStore((s) => s.setSelectedInvocationId);
@@ -33,9 +35,38 @@ export function DecisionAction({ event }: { event: InvocationEventSnapshot }) {
     if (request.status !== "pending") {
       const ok = request.status === "approved";
       const timedOut = request.status === "timed_out";
+      const recovery = request.lateApprovalRecovery;
+      if (timedOut) {
+        if (recovery?.status === "resumed") {
+          return (
+            <p className="mt-1.5 text-xs font-medium text-success">
+              ✓ {t("approvals.lateApprovalResumed")}
+            </p>
+          );
+        }
+        if (["requested", "waiting_for_terminal", "starting"].includes(recovery?.status ?? "")) {
+          return (
+            <p className="mt-1.5 text-xs font-medium text-warning">
+              {t("approvals.lateApprovalWaiting")}
+            </p>
+          );
+        }
+        return (
+          <div className="mt-2 space-y-2 rounded-md border border-warning/50 bg-warning/5 p-3">
+            <p className="text-xs text-muted-foreground">
+              {t("approvals.lateApprovalExpired")}
+              {recovery?.error ? ` ${t("approvals.lastRecovery", { error: recovery.error })}` : ""}
+            </p>
+            <Button size="sm" disabled={pending} onClick={() => execute(() => api.approveCodexApproval(request.id))}>
+              {t("approvals.approveAndResume")}
+            </Button>
+            {error ? <p role="alert" className="text-xs text-destructive">{t("approvals.recoveryFailed", { error })}</p> : null}
+          </div>
+        );
+      }
       return (
         <p className={cn("mt-1.5 text-xs font-medium", ok ? "text-success" : "text-destructive")}>
-          {ok ? "✓ Approved — Codex may proceed." : timedOut ? "✕ Approval timed out — run blocked." : "✕ Denied — Codex blocked."}
+          {ok ? "✓ Approved — Codex may proceed." : "✕ Denied — Codex blocked."}
         </p>
       );
     }

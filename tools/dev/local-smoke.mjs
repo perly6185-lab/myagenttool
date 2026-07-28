@@ -53,7 +53,8 @@ try {
   assert(defaultCodexAgent.status === "available", "default Codex CLI should be available when Desktop Bridge is online");
   assert(defaultCodexAgent.lifecycle.state === "enabled", "default Codex CLI should rely on local Codex authorization");
   assert(defaultCodexAgent.adapter.outputFormat === "codex_jsonl", "default Codex CLI should preserve JSONL output config");
-  assert(defaultCodexAgent.adapter.sandbox === null, "default Codex CLI should not impose a Web Console sandbox");
+  assert(defaultCodexAgent.adapter.permissionMode === "ask", "default Codex CLI should expose the canonical Ask for approval mode");
+  assert(defaultCodexAgent.adapter.sandbox === "workspace-write", "default Codex CLI Ask mode should use the workspace-write boundary");
 
   const discoveryCreated = await request("POST", "/api/discovery", {
     scope: [
@@ -370,7 +371,8 @@ try {
   assert(codexResumeSession?.sessionMode === "continue_last", "managed Codex session should record continuation mode");
   assert(codexResumeSession.codexThreadId === "codex_fixture_thread_resumed", "managed Codex resumed session should record resumed thread id");
   assert(codexResumePreview?.data?.commandLine?.includes("resume"), "Codex continuation preview should use resume command");
-  assert(codexResumePreview.data.commandLine.includes("--last"), "Codex continuation preview should resume the most recent session");
+  assert(codexResumePreview.data.commandLine.includes("codex_fixture_thread"), "Codex continuation preview should resume the exact resolved session");
+  assert(!codexResumePreview.data.commandLine.includes("--last"), "Codex continuation preview should never use process-global session selection");
   assert(codexResumePreview.data.commandLine.includes("[task redacted]"), "Codex continuation preview should sanitize task argv");
   assert(codexResumePreview.data.sessionMode === "continue_last", "Codex continuation preview should mark continuation mode");
   assert(codexResumeState.events.some((item) => item.invocationId === codexResumeRun.invocation.id && item.message?.includes("resumed completed")), "Codex fixture continuation should run the resumed path");
@@ -426,7 +428,10 @@ try {
       return state;
     }
     if (["failed", "succeeded", "timed_out", "expired"].includes(invocation?.status)) {
-      throw new Error(`Codex fixture cancellation ended unexpectedly: ${invocation.status}`);
+      throw new Error(
+        `Codex fixture cancellation ended unexpectedly: ${invocation.status}`
+        + `${invocation.result ? ` (${JSON.stringify(invocation.result)})` : ""}`,
+      );
     }
     return false;
   }, "running Codex fixture cancellation");

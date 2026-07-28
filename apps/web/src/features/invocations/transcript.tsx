@@ -1,21 +1,23 @@
 import type { ReactNode } from "react";
 import { EmptyState } from "@/components/common/empty-state";
 import { Badge } from "@/components/ui/badge";
-import { readableEventType, readableStatus, shortTime, statusTone, type Tone } from "@/lib/readable-labels";
+import { readableEventType, shortTime, statusTone, type Tone } from "@/lib/readable-labels";
 import { cn } from "@/lib/cn";
 import type { InvocationEventSnapshot } from "@/lib/console-state";
+import { useAppTranslation } from "@/lib/i18n/use-app-translation";
+import { invocationStatus } from "@/lib/i18n/readable-labels";
 
 // Agent Workspace transcript (#162): classify the flat event stream into typed
 // blocks and render each distinctly — command output as monospace, warnings
 // separated from answer content, review findings linkable, and a final summary.
 export type TranscriptBlockKind = "status" | "command" | "approval" | "warning" | "diff";
 
-const KIND_META: Record<TranscriptBlockKind, { label: string; tone: Tone; accent: string }> = {
-  status: { label: "Status", tone: "neutral", accent: "border-border" },
-  command: { label: "Command", tone: "neutral", accent: "border-primary/40" },
-  approval: { label: "Approval", tone: "running", accent: "border-primary/60" },
-  warning: { label: "Warning", tone: "warning", accent: "border-warning/50" },
-  diff: { label: "Review", tone: "success", accent: "border-success/40" },
+const KIND_META: Record<TranscriptBlockKind, { labelKey: string; tone: Tone; accent: string }> = {
+  status: { labelKey: "status", tone: "neutral", accent: "border-border" },
+  command: { labelKey: "command", tone: "neutral", accent: "border-primary/40" },
+  approval: { labelKey: "approval", tone: "running", accent: "border-primary/60" },
+  warning: { labelKey: "warning", tone: "warning", accent: "border-warning/50" },
+  diff: { labelKey: "review", tone: "success", accent: "border-success/40" },
 };
 
 /**
@@ -52,8 +54,9 @@ export function Transcript({
   // When set, review (diff) blocks offer a jump to the Review section.
   onOpenReview?: () => void;
 }) {
+  const { t } = useAppTranslation();
   if (events.length === 0 && !summary?.text) {
-    return <EmptyState title="No runs yet" hint="Run a task to watch local progress here." />;
+    return <EmptyState title={t("transcript.empty")} hint={t("transcript.emptyHint")} />;
   }
 
   const summaryFailed = summary?.status === "failed" || summary?.status === "cancelled";
@@ -65,7 +68,7 @@ export function Transcript({
           {events.map((event) => {
             const kind = classifyEvent(event);
             const meta = KIND_META[kind];
-            const text = event.message ?? "Activity recorded.";
+            const text = event.message ?? t("transcript.activityRecorded");
             return (
               <li key={event.id} className="flex gap-3">
                 <time
@@ -76,7 +79,7 @@ export function Transcript({
                 </time>
                 <div className={cn("min-w-0 flex-1 border-l-2 pl-3", meta.accent)}>
                   <div className="flex items-center gap-2">
-                    <Badge tone={meta.tone}>{meta.label}</Badge>
+                    <Badge tone={meta.tone}>{t(`transcript.kind.${meta.labelKey}` as never)}</Badge>
                     <span className="truncate text-sm font-medium">{readableEventType(event.type)}</span>
                   </div>
                   {kind === "command" ? (
@@ -101,7 +104,7 @@ export function Transcript({
                       onClick={onOpenReview}
                       className="mt-1 text-xs font-medium text-primary hover:underline"
                     >
-                      View in Review →
+                      {t("transcript.viewReview")} →
                     </button>
                   ) : null}
                   {renderAction?.(event)}
@@ -115,9 +118,9 @@ export function Transcript({
       {summary?.text ? (
         <div className={cn("rounded-lg border-l-2 bg-muted/30 p-3", summaryFailed ? "border-destructive/50" : "border-success/50")}>
           <div className="flex items-center gap-2">
-            <Badge tone={statusTone(summary.status)}>Summary</Badge>
+            <Badge tone={statusTone(summary.status)}>{t("transcript.summary")}</Badge>
             {summary.status ? (
-              <span className="text-xs text-muted-foreground">{readableStatus(summary.status)}</span>
+              <span className="text-xs text-muted-foreground">{invocationStatus(t, summary.status)}</span>
             ) : null}
           </div>
           <p className="mt-1 text-sm [overflow-wrap:anywhere]">{summary.text}</p>

@@ -6,7 +6,12 @@ import { ErrorBoundary } from "@/components/common/error-boundary";
 import { SECTION_VIEWS } from "@/app/routes";
 import { useUrlNavigationSync } from "@/app/url-navigation-sync";
 import { useSkinSync } from "@/app/use-skin-sync";
+import { useLocaleSync } from "@/app/use-locale-sync";
 import { useUiStore } from "@/store/ui-store";
+import { useAppTranslation } from "@/lib/i18n/use-app-translation";
+import { useControlPlaneEvents } from "@/app/use-control-plane-events";
+import { ContextNavigation } from "@/components/layout/context-navigation";
+import { MobileBottomNavigation } from "@/components/layout/mobile-bottom-navigation";
 
 /**
  * Three-pane control-plane shell: nav rail (domains) · main outlet (active
@@ -14,8 +19,11 @@ import { useUiStore } from "@/store/ui-store";
  * stay fixed.
  */
 export function App() {
+  const { t } = useAppTranslation();
   useUrlNavigationSync();
   useSkinSync();
+  useLocaleSync();
+  useControlPlaneEvents();
   const section = useUiStore((s) => s.section);
   const View = SECTION_VIEWS[section];
 
@@ -25,17 +33,22 @@ export function App() {
       <NavRail />
       <div className="flex min-w-0 flex-1 flex-col">
         <Topbar />
+        <ContextNavigation />
         <div className="flex min-h-0 flex-1">
           <main className="min-w-0 flex-1 overflow-y-auto px-3 py-3 sm:px-6 sm:py-6">
-            <ErrorBoundary resetKey={section}>
-              <View />
+            <ErrorBoundary resetKey={section} onRetry={() => window.location.reload()}>
+              <Suspense fallback={<div role="status" className="py-8 text-center text-sm text-muted-foreground">{t("tasks.loading")}</div>}>
+                <View />
+              </Suspense>
             </ErrorBoundary>
           </main>
           <ErrorBoundary resetKey={section}>
             <Inspector />
           </ErrorBoundary>
         </div>
+        <MobileBottomNavigation />
       </div>
     </div>
   );
 }
+import { Suspense } from "react";

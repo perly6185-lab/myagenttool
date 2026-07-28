@@ -33,6 +33,23 @@ test("resolves the most recent prior session that captured a provider id (newest
   assert.equal(resolveResumeCodexSessionId({ repoPath: "/repo", userId: "u1" }), "sess-new");
 });
 
+test("uses Codex thread_id as the exact resume target when session_id is absent", () => {
+  const { resolveResumeCodexSessionId } = serviceWithSessions([
+    {
+      id: "s_thread",
+      invocationId: "inv_thread",
+      codexSessionId: null,
+      codexThreadId: "019f9d00-01b7-7380-81d5-2fb90ce17ebd",
+      userId: "u1",
+      repoPath: "/repo",
+    },
+  ]);
+  assert.equal(
+    resolveResumeCodexSessionId({ repoPath: "/repo", userId: "u1", invocationId: "inv_thread" }),
+    "019f9d00-01b7-7380-81d5-2fb90ce17ebd",
+  );
+});
+
 test("skips sessions that never captured a provider id", () => {
   const { resolveResumeCodexSessionId } = serviceWithSessions([
     { id: "s2", codexSessionId: null, userId: "u1", repoPath: "/repo" },
@@ -72,6 +89,16 @@ test("an explicit target belonging to another user is refused (tenancy)", () => 
     { id: "s1", invocationId: "inv_foreign", codexSessionId: "secret", userId: "u2", repoPath: "/repo" },
   ]);
   assert.equal(resolveResumeCodexSessionId({ userId: "u1", invocationId: "inv_foreign" }), null);
+});
+
+test("an explicit target from another repository is refused", () => {
+  const { resolveResumeCodexSessionId } = serviceWithSessions([
+    { id: "s1", invocationId: "inv_other_repo", codexThreadId: "thread-secret", userId: "u1", repoPath: "/elsewhere" },
+  ]);
+  assert.equal(
+    resolveResumeCodexSessionId({ userId: "u1", repoPath: "/repo", invocationId: "inv_other_repo" }),
+    null,
+  );
 });
 
 test("an explicit target that never captured a provider id returns null (no fallthrough to newest)", () => {

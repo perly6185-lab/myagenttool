@@ -7,6 +7,7 @@ import { useConsoleState } from "@/data/use-console-state";
 import { useAsyncAction, api } from "@/data/use-console-actions";
 import { cn } from "@/lib/cn";
 import { branchFromIssue, worktreeLinkFor } from "@/features/projects/worktree-payload";
+import { useAppTranslation } from "@/lib/i18n/use-app-translation";
 
 type GithubItem = {
   type: "pr" | "issue";
@@ -55,11 +56,11 @@ function rankIssues(description: string, items: GithubItem[]): GithubItem[] {
     .map((r) => r.it);
 }
 
-const TABS: [Tab, string, typeof Sparkles][] = [
-  ["smart", "Smart", Sparkles],
-  ["github", "GitHub", Github],
-  ["branch", "Branch", GitBranch],
-  ["name", "Name", Type],
+const TABS: [Tab, "smart" | "github" | "branch" | "name", typeof Sparkles][] = [
+  ["smart", "smart", Sparkles],
+  ["github", "github", Github],
+  ["branch", "branch", GitBranch],
+  ["name", "name", Type],
 ];
 
 // orca-style "Create worktree" dialog: pick a project, choose how to name/create
@@ -75,6 +76,7 @@ export function WorktreeCreator({
   onDone?: () => void;
   showProjectPicker?: boolean;
 }) {
+  const { t } = useAppTranslation();
   const { data: state } = useConsoleState();
   const { execute, pending } = useAsyncAction();
   const projects = (state?.projects ?? []).filter((p) => p.status !== "archived");
@@ -130,9 +132,9 @@ export function WorktreeCreator({
     setGhLoading(true);
     (api.listGithubItems(pid) as Promise<GithubState>)
       .then(setGh)
-      .catch((e) => setGh({ available: false, message: e instanceof Error ? e.message : "Failed to load.", items: [] }))
+      .catch((e) => setGh({ available: false, message: e instanceof Error ? e.message : t("worktreeCreator.loadFailed"), items: [] }))
       .finally(() => setGhLoading(false));
-  }, [tab, gh, pid]);
+  }, [tab, gh, pid, t]);
 
   // Switching tabs starts the new mode clean — otherwise a PR/branch selection
   // (and the name it backfilled) leaks into a name/smart create as a new branch.
@@ -221,7 +223,7 @@ export function WorktreeCreator({
   return (
     <div className="space-y-4" onKeyDown={(e) => { if ((e.metaKey || e.ctrlKey) && e.key === "Enter") create(); }}>
       {showProjectPicker ? (
-        <Field label="Project">
+        <Field label={t("worktreeCreator.project")}>
           <Select value={pid} onChange={(e) => setPid(e.target.value)}>
             {projects.map((p) => (
               <option key={p.id} value={p.id}>
@@ -233,7 +235,7 @@ export function WorktreeCreator({
       ) : null}
 
       <div>
-        <p className="mb-1.5 text-xs font-medium text-muted-foreground">Name or “create from” (optional)</p>
+        <p className="mb-1.5 text-xs font-medium text-muted-foreground">{t("worktreeCreator.nameOrCreate")}</p>
         <div className="flex gap-1 border-b border-border">
           {TABS.map(([key, label, Icon]) => (
             <button
@@ -248,7 +250,7 @@ export function WorktreeCreator({
               )}
             >
               <Icon className="size-3.5" />
-              {label}
+              {t(`worktreeCreator.tabs.${label}`)}
             </button>
           ))}
         </div>
@@ -259,7 +261,7 @@ export function WorktreeCreator({
               <div className="flex gap-2">
                 <Input
                   value={desc}
-                  placeholder="Describe the work (e.g. fix login crash)"
+                  placeholder={t("worktreeCreator.describe")}
                   onChange={(e) => {
                     setDesc(e.target.value);
                     setSmartRan(false);
@@ -269,13 +271,13 @@ export function WorktreeCreator({
                   }}
                 />
                 <Button variant="secondary" size="sm" disabled={suggesting || !desc.trim()} onClick={suggest}>
-                  {suggesting ? "…" : "Suggest"}
+                  {suggesting ? "…" : t("worktreeCreator.suggest")}
                 </Button>
               </div>
               {smartIssues.length > 0 ? (
                 <div className="space-y-1">
                   <p className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
-                    Related issues
+                    {t("worktreeCreator.relatedIssues")}
                   </p>
                   <ul className="max-h-44 overflow-y-auto rounded-md border border-border">
                     {smartIssues.map((it) => (
@@ -296,7 +298,7 @@ export function WorktreeCreator({
                               <span className="font-medium">#{it.number}</span> {it.title}
                             </span>
                             <span className="block text-[10px] text-muted-foreground">
-                              links issue → {branchFromIssue(it)}
+                              {t("worktreeCreator.linksIssue")} → {branchFromIssue(it)}
                               {it.author ? ` · @${it.author}` : ""}
                             </span>
                           </span>
@@ -308,7 +310,7 @@ export function WorktreeCreator({
               ) : null}
               {smartRan && smartIssues.length === 0 ? (
                 <p className="text-[10px] text-muted-foreground">
-                  {gh && !gh.available ? gh.message : "No related issues found."}
+                  {gh && !gh.available ? gh.message : t("worktreeCreator.noRelated")}
                 </p>
               ) : null}
             </div>
@@ -316,10 +318,10 @@ export function WorktreeCreator({
 
           {tab === "branch" ? (
             <div className="space-y-2">
-              <Input value={brQuery} placeholder="Search branches" onChange={(e) => setBrQuery(e.target.value)} />
+              <Input value={brQuery} placeholder={t("worktreeCreator.searchBranches")} onChange={(e) => setBrQuery(e.target.value)} />
               <ul className="max-h-44 overflow-y-auto rounded-md border border-border">
                 {filteredBranches.length === 0 ? (
-                  <li className="px-3 py-2 text-xs text-muted-foreground">No branches</li>
+                  <li className="px-3 py-2 text-xs text-muted-foreground">{t("worktreeCreator.noBranches")}</li>
                 ) : (
                   filteredBranches.map((b) => (
                     <li key={b.name}>
@@ -333,7 +335,7 @@ export function WorktreeCreator({
                       >
                         <GitBranch className="size-3 shrink-0 opacity-60" />
                         <span className="truncate">{b.name}</span>
-                        {b.remote ? <span className="ml-auto text-[10px] text-muted-foreground">remote</span> : null}
+                        {b.remote ? <span className="ml-auto text-[10px] text-muted-foreground">{t("worktreeCreator.remote")}</span> : null}
                       </button>
                     </li>
                   ))
@@ -344,18 +346,17 @@ export function WorktreeCreator({
 
           {tab === "github" ? (
             <div className="space-y-2">
-              {ghLoading ? <p className="text-xs text-muted-foreground">Loading PRs &amp; issues…</p> : null}
+              {ghLoading ? <p className="text-xs text-muted-foreground">{t("worktreeCreator.loadingGithub")}</p> : null}
               {!ghLoading && gh && !gh.available ? (
                 <div className="rounded-md border border-dashed border-border px-3 py-3 text-xs text-muted-foreground">
-                  {gh.message} Connect a GitHub remote and authenticate <span className="font-mono">gh</span> to create
-                  worktrees from PRs and issues.
+                  {gh.message} {t("worktreeCreator.githubUnavailableBefore")} <span className="font-mono">gh</span> {t("worktreeCreator.githubUnavailableAfter")}
                 </div>
               ) : null}
               {gh?.available ? (
                 <>
-                  <Input value={ghQuery} placeholder="Search GitHub PRs & issues" onChange={(e) => setGhQuery(e.target.value)} />
+                  <Input value={ghQuery} placeholder={t("worktreeCreator.searchGithub")} onChange={(e) => setGhQuery(e.target.value)} />
                   {filteredItems.length === 0 ? (
-                    <p className="text-xs text-muted-foreground">No matching PRs or issues.</p>
+                    <p className="text-xs text-muted-foreground">{t("worktreeCreator.noGithubMatches")}</p>
                   ) : (
                     <ul className="max-h-44 overflow-y-auto rounded-md border border-border">
                       {filteredItems.map((it) => (
@@ -380,7 +381,7 @@ export function WorktreeCreator({
                                 <span className="font-medium">#{it.number}</span> {it.title}
                               </span>
                               <span className="block text-[10px] text-muted-foreground">
-                                {it.type === "pr" ? it.headRefName : `issue → ${branchFromIssue(it)}`}
+                                {it.type === "pr" ? it.headRefName : `${t("projectsShared.issue")} → ${branchFromIssue(it)}`}
                                 {it.author ? ` · @${it.author}` : ""}
                               </span>
                             </span>
@@ -397,22 +398,22 @@ export function WorktreeCreator({
 
         {tab === "branch" && brSel ? (
           <p className="mt-2 text-xs text-muted-foreground">
-            Checks out existing branch <span className="font-mono">{brSel}</span>.
+            {t("worktreeCreator.checkoutBranch", { branch: brSel })}
           </p>
         ) : null}
         {tab === "github" && ghSel?.type === "pr" ? (
           <p className="mt-2 text-xs text-muted-foreground">
-            Checks out PR #{ghSel.number} (<span className="font-mono">{ghSel.headRefName}</span>).
+            {t("worktreeCreator.checkoutPr", { number: ghSel.number, branch: ghSel.headRefName ?? "" })}
           </p>
         ) : null}
         {tab === "smart" && ghSel?.type === "issue" ? (
           <p className="mt-2 text-xs text-muted-foreground">
-            Links issue #{ghSel.number} and creates a new branch.
+            {t("worktreeCreator.linkIssue", { number: ghSel.number })}
           </p>
         ) : null}
         {tab === "name" || tab === "smart" || (tab === "github" && ghSel?.type === "issue") ? (
           <div className="mt-2">
-            <Field label="Worktree branch name">
+            <Field label={t("worktreeCreator.branchName")}>
               <Input
                 value={wtName}
                 placeholder="new-branch-name"
@@ -424,9 +425,9 @@ export function WorktreeCreator({
         ) : null}
       </div>
 
-      <Field label="Agent">
+      <Field label={t("officeEditors.agent")}>
         <Select value={agentId} onChange={(e) => setAgentId(e.target.value)}>
-          {agents.length === 0 ? <option value="">No agent</option> : null}
+          {agents.length === 0 ? <option value="">{t("worktreeCreator.noAgent")}</option> : null}
           {agents.map((a) => (
             <option key={a.id} value={a.id}>
               {a.name}
@@ -442,13 +443,13 @@ export function WorktreeCreator({
           className="flex items-center gap-1 text-xs font-medium text-muted-foreground hover:text-foreground"
         >
           <ChevronDown className={cn("size-3.5 transition-transform", showAdv ? "" : "-rotate-90")} />
-          Advanced
+          {t("worktreeCreator.advanced")}
         </button>
         {showAdv ? (
           <div className="mt-2">
-            <Field label="Base branch (new branches only)">
+            <Field label={t("worktreeCreator.baseBranch")}>
               <Select value={baseBranch} onChange={(e) => setBaseBranch(e.target.value)}>
-                <option value="">Default branch</option>
+                <option value="">{t("worktreeCreator.defaultBranch")}</option>
                 {branches.map((b) => (
                   <option key={b.name} value={b.name}>
                     {b.name}
@@ -462,7 +463,7 @@ export function WorktreeCreator({
 
       <div className="flex items-center justify-end gap-2 border-t border-border pt-3">
         <Button onClick={create} disabled={pending || !canCreate}>
-          Create worktree
+          {t("worktreeCreator.create")}
           <kbd className="ml-2 rounded bg-primary-foreground/15 px-1 text-[10px]">⌘↵</kbd>
         </Button>
       </div>

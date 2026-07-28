@@ -1,5 +1,10 @@
 import { useEffect, useRef, useState, type ComponentType } from "react";
 import { ChevronDown, ChevronLeft, ChevronRight, File, FileText, Folder, GitBranch, GitCompare, Images, ListChecks, MessageSquare, Paperclip, X } from "lucide-react";
+import {
+  codexPermissionModeFromLegacySandbox,
+  normalizeCodexPermissionMode,
+  type CodexPermissionMode,
+} from "@myagenttool/protocol/codex-permissions";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -17,6 +22,7 @@ import { useAsyncAction, api } from "@/data/use-console-actions";
 import { useUiStore } from "@/store/ui-store";
 import { cn } from "@/lib/cn";
 import type { InvocationSnapshot, WorktreeSnapshot } from "@/lib/console-state";
+import { useAppTranslation } from "@/lib/i18n/use-app-translation";
 
 const RUNNING = ["queued", "dispatching", "waiting_for_local_approval", "running", "cancelling"];
 // `children` absent = this directory has not been read yet; `[]` = read, empty.
@@ -42,11 +48,11 @@ export function withChildren(nodes: TreeNode[], path: string, children: TreeNode
 }
 type SearchMatch = { path: string; line?: number; text?: string };
 type PaneTab = "project" | "sessions" | "changes" | "checks";
-const PANE_TABS: [PaneTab, string, ComponentType<{ className?: string }>][] = [
-  ["project", "Project", Folder],
-  ["sessions", "Sessions", MessageSquare],
-  ["changes", "Changes", GitBranch],
-  ["checks", "Checks", ListChecks],
+const PANE_TABS: [PaneTab, "project" | "sessions" | "changes" | "checks", ComponentType<{ className?: string }>][] = [
+  ["project", "project", Folder],
+  ["sessions", "sessions", MessageSquare],
+  ["changes", "changes", GitBranch],
+  ["checks", "checks", ListChecks],
 ];
 type GitStatus = {
   branch: string;
@@ -65,6 +71,7 @@ const DIFF_TAB = "__changes__";
 // Worktree session view: run an agent in this worktree's checkout, watch its
 // output, and browse its files — the focused workspace for one branch.
 export function WorktreeView({ worktree }: { worktree: WorktreeSnapshot }) {
+  const { t } = useAppTranslation();
   const { data: state } = useConsoleState();
   const { execute, pending, error } = useAsyncAction();
   // Outward git actions (publish / open PR) use their own async slot so they
@@ -78,9 +85,11 @@ export function WorktreeView({ worktree }: { worktree: WorktreeSnapshot }) {
 
   const agents = state?.agents ?? [];
   const project = (state?.projects ?? []).find((p) => p.id === worktree.projectId);
-  const [task, setTask] = useState("Summarize this repository and the open work.");
+  const defaultTask = t("worktreeView.defaultTask");
+  const previousDefaultTask = useRef(defaultTask);
+  const [task, setTask] = useState<string>(defaultTask);
   const [agentId, setAgentId] = useState(worktree.agentId ?? agents[0]?.id ?? "");
-  const [permissionLevel, setPermissionLevel] = useState<"ask" | "auto" | "full">("ask");
+  const [permissionLevel, setPermissionLevel] = useState<CodexPermissionMode>(() => permissionModeForAgent(agents.find((agent) => agent.id === (worktree.agentId ?? agents[0]?.id))));
   // Pasted/picked files to save into the worktree before the run (so the agent
   // can read them). Held as base64 until the run uploads them.
   const [attachments, setAttachments] = useState<{ name: string; dataBase64: string; size: number; type: string }[]>([]);
@@ -123,6 +132,11 @@ export function WorktreeView({ worktree }: { worktree: WorktreeSnapshot }) {
   // (worktree vs base) via the officecli preview route (#1349 polish).
   const activeIsOfficeDoc = isFileTab && /\.(docx|xlsx|pptx)$/i.test(activeTab);
 
+  useEffect(() => {
+    setTask((current) => current === previousDefaultTask.current ? defaultTask : current);
+    previousDefaultTask.current = defaultTask;
+  }, [defaultTask]);
+
   function updateTabs(fn: (t: { openFiles: { path: string; name: string }[]; activeTab: string }) => { openFiles: { path: string; name: string }[]; activeTab: string }) {
     setTabsByWt((prev) => ({ ...prev, [worktree.id]: fn(prev[worktree.id] ?? { openFiles: [], activeTab: "session" }) }));
   }
@@ -136,7 +150,7 @@ export function WorktreeView({ worktree }: { worktree: WorktreeSnapshot }) {
     if (!force && fileCache[key]) return;
     (api.readWorktreeFile(worktree.id, path) as Promise<{ content: string; truncated?: boolean; message?: string }>)
       .then((r) => setFileCache((c) => ({ ...c, [key]: { content: r.content ?? "", truncated: r.truncated, message: r.message } })))
-      .catch((e) => setFileCache((c) => ({ ...c, [key]: { content: "", message: e instanceof Error ? e.message : "Failed to load." } })));
+      .catch((e) => setFileCache((c) => ({ ...c, [key]: { content: "", message: e instanceof Error ? e.message : t("worktreeView.loadFailed") } })));
   }
   function openFile(path: string, name: string) {
     updateTabs((t) => ({
@@ -321,11 +335,11 @@ export function WorktreeView({ worktree }: { worktree: WorktreeSnapshot }) {
 
   // Checks tab: a readiness checklist for this worktree.
   const checks = [
-    { label: "Repository ready", ok: true },
-    { label: "Agent assigned", ok: Boolean(worktree.agentId) },
-    { label: "Branch published", ok: Boolean(git?.hasUpstream) },
-    { label: "Linked to issue/PR", ok: Boolean(worktree.link) },
-    { label: "Latest run succeeded", ok: latestInvocation?.status === "succeeded" },
+    { label: t("worktreeView.checks.repository"), ok: true },
+    { label: t("worktreeView.checks.agent"), ok: Boolean(worktree.agentId) },
+    { label: t("worktreeView.checks.published"), ok: Boolean(git?.hasUpstream) },
+    { label: t("worktreeView.checks.linked"), ok: Boolean(worktree.link) },
+    { label: t("worktreeView.checks.latest"), ok: latestInvocation?.status === "succeeded" },
   ];
   const createdInvocationAwaitingSnapshot = Boolean(
     createdInvocation
@@ -420,11 +434,11 @@ export function WorktreeView({ worktree }: { worktree: WorktreeSnapshot }) {
           className="flex items-center gap-1 text-sm text-muted-foreground hover:text-foreground"
         >
           <ChevronLeft className="size-4" />
-          {project?.name ?? "Project"}
+          {project?.name ?? t("worktreeView.project")}
         </button>
         <span className="text-muted-foreground">/</span>
         <span className="font-medium">{worktree.branch}</span>
-        {worktree.isMain ? <Badge tone="neutral">main</Badge> : <Badge tone="neutral">worktree</Badge>}
+        {worktree.isMain ? <Badge tone="neutral">{t("worktreeView.main")}</Badge> : <Badge tone="neutral">{t("worktreeView.worktree")}</Badge>}
         {worktree.link ? <WorktreeLinkPopover worktree={worktree} /> : null}
       </div>
 
@@ -439,7 +453,7 @@ export function WorktreeView({ worktree }: { worktree: WorktreeSnapshot }) {
                 activeTab === "session" ? "border-primary font-medium text-foreground" : "border-transparent text-muted-foreground hover:text-foreground",
               )}
             >
-              Session
+              {t("worktreeView.session")}
             </button>
             {openFiles.map((f) => (
               <div
@@ -452,15 +466,15 @@ export function WorktreeView({ worktree }: { worktree: WorktreeSnapshot }) {
                 <button type="button" onClick={() => selectTab(f.path)} className="py-1.5 hover:text-foreground" title={f.path}>
                   {f.name}
                 </button>
-                <button type="button" onClick={() => closeFile(f.path)} aria-label={`Close ${f.name}`} className="grid size-5 place-items-center rounded hover:bg-muted">
+                <button type="button" onClick={() => closeFile(f.path)} aria-label={t("worktreeView.closeFile", { name: f.name })} className="grid size-5 place-items-center rounded hover:bg-muted">
                   <X className="size-3" />
                 </button>
               </div>
             ))}
             {activeTab === DIFF_TAB ? (
               <div className="flex shrink-0 items-center gap-1 rounded-t-md border-b-2 border-primary pl-3 pr-1 text-sm text-foreground">
-                <span className="py-1.5">Changes</span>
-                <button type="button" onClick={() => selectTab("session")} aria-label="Close diff" className="grid size-5 place-items-center rounded hover:bg-muted">
+                <span className="py-1.5">{t("worktreeView.changes")}</span>
+                <button type="button" onClick={() => selectTab("session")} aria-label={t("worktreeView.closeDiff")} className="grid size-5 place-items-center rounded hover:bg-muted">
                   <X className="size-3" />
                 </button>
               </div>
@@ -471,10 +485,10 @@ export function WorktreeView({ worktree }: { worktree: WorktreeSnapshot }) {
               <div className="ml-auto flex shrink-0 items-center gap-0.5 self-center rounded-lg bg-muted p-0.5">
                 {(
                   [
-                    ["content", "File content", FileText],
-                    ["diff", "File changes", GitCompare],
+                    ["content", t("worktreeView.fileContent"), FileText],
+                    ["diff", t("worktreeView.fileChanges"), GitCompare],
                     // Rendered before/after — Office documents only.
-                    ...(activeIsOfficeDoc ? [["visual", "Visual diff (rendered)", Images]] : []),
+                    ...(activeIsOfficeDoc ? [["visual", t("worktreeView.visualDiff"), Images]] : []),
                   ] as ["content" | "diff" | "visual", string, ComponentType<{ className?: string }>][]
                 ).map(([key, label, Icon]) => (
                   <button
@@ -500,7 +514,7 @@ export function WorktreeView({ worktree }: { worktree: WorktreeSnapshot }) {
             <>
               <Card>
                 <CardHeader>
-                  <CardTitle>Run an agent in this worktree</CardTitle>
+                  <CardTitle>{t("worktreeView.runTitle")}</CardTitle>
                   <p className="select-all break-all font-mono text-[11px] text-muted-foreground">{worktree.path}</p>
                 </CardHeader>
                 <CardContent className="space-y-3">
@@ -514,7 +528,7 @@ export function WorktreeView({ worktree }: { worktree: WorktreeSnapshot }) {
                         addFiles(e.clipboardData.files);
                       }
                     }}
-                    aria-label="Task"
+                    aria-label={t("worktreeView.task")}
                   />
                   <div className="flex flex-wrap items-center gap-2">
                     <input
@@ -527,8 +541,8 @@ export function WorktreeView({ worktree }: { worktree: WorktreeSnapshot }) {
                         e.target.value = "";
                       }}
                     />
-                    <Button variant="secondary" size="sm" onClick={() => fileInputRef.current?.click()} title="Attach files (or paste an image)">
-                      <Paperclip className="mr-1 size-3.5" /> Attach
+                    <Button variant="secondary" size="sm" onClick={() => fileInputRef.current?.click()} title={t("worktreeView.attachTitle")}>
+                      <Paperclip className="mr-1 size-3.5" /> {t("worktreeView.attach")}
                     </Button>
                     {attachments.map((a, i) => (
                       <span key={i} className="inline-flex items-center gap-1.5 rounded-md border border-border bg-muted/40 py-1 pl-1.5 pr-2 text-xs">
@@ -546,7 +560,7 @@ export function WorktreeView({ worktree }: { worktree: WorktreeSnapshot }) {
                         <button
                           type="button"
                           onClick={() => setAttachments((prev) => prev.filter((_, j) => j !== i))}
-                          aria-label={`Remove ${a.name}`}
+                          aria-label={t("worktreeView.removeAttachment", { name: a.name })}
                           className="ml-0.5 grid size-4 place-items-center rounded hover:text-destructive"
                         >
                           <X className="size-3" />
@@ -555,9 +569,17 @@ export function WorktreeView({ worktree }: { worktree: WorktreeSnapshot }) {
                     ))}
                   </div>
                   <div className="grid gap-3 sm:grid-cols-[1fr_1fr_auto] sm:items-end">
-                    <Field label="Agent">
-                      <Select value={agentId} onChange={(e) => setAgentId(e.target.value)} aria-label="Agent">
-                        {agents.length === 0 ? <option value="">No agent</option> : null}
+                    <Field label={t("officeEditors.agent")}>
+                      <Select
+                        value={agentId}
+                        onChange={(e) => {
+                          const nextAgentId = e.target.value;
+                          setAgentId(nextAgentId);
+                          setPermissionLevel(permissionModeForAgent(agents.find((agent) => agent.id === nextAgentId)));
+                        }}
+                        aria-label={t("officeEditors.agent")}
+                      >
+                        {agents.length === 0 ? <option value="">{t("worktreeView.noAgent")}</option> : null}
                         {agents.map((a) => (
                           <option key={a.id} value={a.id}>
                             {a.name}
@@ -565,20 +587,20 @@ export function WorktreeView({ worktree }: { worktree: WorktreeSnapshot }) {
                         ))}
                       </Select>
                     </Field>
-                    <Field label="Permissions">
+                    <Field label={t("worktreeView.permissions")}>
                       <Select
                         value={permissionLevel}
-                        onChange={(e) => setPermissionLevel(e.target.value as "ask" | "auto" | "full")}
-                        aria-label="Permission level"
-                        title="How risky operations are gated for this run"
+                        onChange={(e) => setPermissionLevel(normalizeCodexPermissionMode(e.target.value))}
+                        aria-label={t("worktreeView.permissionLevel")}
+                        title={t("worktreeView.permissionTitle")}
                       >
-                        <option value="ask">Ask before edits</option>
-                        <option value="auto">Auto-approve</option>
-                        <option value="full">Full access</option>
+                        <option value="ask">{t("worktreeView.permission.ask")}</option>
+                        <option value="auto">{t("worktreeView.permission.auto")}</option>
+                        <option value="full">{t("worktreeView.permission.full")}</option>
                       </Select>
                     </Field>
                     <Button onClick={run} disabled={runDisabled}>
-                      {latestIsRunning ? "Running…" : "Run in this worktree"}
+                      {t(latestIsRunning ? "worktreeView.running" : "worktreeView.run")}
                     </Button>
                   </div>
                   {error ? <p className="text-xs text-destructive">{error}</p> : null}
@@ -587,7 +609,7 @@ export function WorktreeView({ worktree }: { worktree: WorktreeSnapshot }) {
 
               <Card>
                 <CardHeader>
-                  <CardTitle>Session output</CardTitle>
+                  <CardTitle>{t("worktreeView.sessionOutput")}</CardTitle>
                   {selectedInvocation ? (
                     <p className="text-sm text-muted-foreground">
                       {selectedInvocation.id} · {selectedInvocation.status}
@@ -605,7 +627,7 @@ export function WorktreeView({ worktree }: { worktree: WorktreeSnapshot }) {
                       <InvocationRefusalHistory invocationId={selectedInvocation.id} />
                     </>
                   ) : (
-                    <EmptyState title="No runs yet" hint="Run an agent above to start a session in this worktree." />
+                    <EmptyState title={t("worktreeView.noRuns")} hint={t("worktreeView.noRunsHint")} />
                   )}
                 </CardContent>
               </Card>
@@ -633,8 +655,8 @@ export function WorktreeView({ worktree }: { worktree: WorktreeSnapshot }) {
                 <button
                   key={key}
                   type="button"
-                  title={label}
-                  aria-label={label}
+                  title={t(`worktreeView.tabs.${label}`)}
+                  aria-label={t(`worktreeView.tabs.${label}`)}
                   onClick={() => setPaneTab(key)}
                   className={cn(
                     "flex flex-1 items-center justify-center rounded-md px-2 py-1.5 transition",
@@ -650,15 +672,15 @@ export function WorktreeView({ worktree }: { worktree: WorktreeSnapshot }) {
               <div className="space-y-2">
                 <Input
                   value={fileQuery}
-                  placeholder="Find files"
+                  placeholder={t("worktreeView.findFiles")}
                   className="h-7 text-xs"
                   onChange={(e) => setFileQuery(e.target.value)}
                 />
                 <div className="flex gap-1 rounded-lg bg-muted p-0.5 text-[11px]">
                   {(
                     [
-                      ["name", "Name"],
-                      ["content", "Content"],
+                      ["name", t("worktreeView.name")],
+                      ["content", t("worktreeView.content")],
                     ] as ["name" | "content", string][]
                   ).map(([k, l]) => (
                     <button
@@ -677,7 +699,7 @@ export function WorktreeView({ worktree }: { worktree: WorktreeSnapshot }) {
 
                 {fileQuery.trim() ? (
                   results.length === 0 ? (
-                    <p className="text-xs text-muted-foreground">No matches.</p>
+                    <p className="text-xs text-muted-foreground">{t("worktreeView.noMatches")}</p>
                   ) : (
                     <ul className="space-y-1 text-xs">
                       {results.map((m, i) => (
@@ -699,7 +721,7 @@ export function WorktreeView({ worktree }: { worktree: WorktreeSnapshot }) {
                     </ul>
                   )
                 ) : tree.length === 0 ? (
-                  <p className="text-xs text-muted-foreground">Empty or unavailable.</p>
+                  <p className="text-xs text-muted-foreground">{t("worktreeView.empty")}</p>
                 ) : (
                   <FileTree
                     nodes={tree}
@@ -716,7 +738,7 @@ export function WorktreeView({ worktree }: { worktree: WorktreeSnapshot }) {
 
             {paneTab === "changes" ? (
               !git ? (
-                <p className="text-xs text-muted-foreground">Loading…</p>
+                <p className="text-xs text-muted-foreground">{t("worktreeView.loading")}</p>
               ) : (
                 <div className="space-y-2 text-xs">
                   <div className="flex items-center gap-1.5">
@@ -726,25 +748,25 @@ export function WorktreeView({ worktree }: { worktree: WorktreeSnapshot }) {
                   {git.hasUpstream ? (
                     git.clean && git.ahead === 0 ? (
                       <div>
-                        <p className="font-medium text-foreground">No changes on this branch</p>
+                        <p className="font-medium text-foreground">{t("worktreeView.noChanges")}</p>
                         <p className="text-muted-foreground">
-                          Clean and up to date with <span className="font-mono">{git.upstream}</span>.
+                          {t("worktreeView.cleanWith", { upstream: git.upstream ?? "" })}
                         </p>
                       </div>
                     ) : (
                       <div className="space-y-1 text-muted-foreground">
-                        {git.changedFiles > 0 ? <p>{git.changedFiles} uncommitted change(s)</p> : null}
+                        {git.changedFiles > 0 ? <p>{t("worktreeView.uncommitted", { count: git.changedFiles })}</p> : null}
                         <p>
-                          {git.ahead} ahead · {git.behind} behind <span className="font-mono">{git.upstream}</span>
+                          {t("worktreeView.sync", { ahead: git.ahead, behind: git.behind, upstream: git.upstream ?? "" })}
                         </p>
                       </div>
                     )
                   ) : (
                     <div>
-                      <p className="font-medium text-foreground">Branch not published</p>
+                      <p className="font-medium text-foreground">{t("worktreeView.notPublished")}</p>
                       <p className="text-muted-foreground">
-                        Publish this branch before creating a pull request.
-                        {git.changedFiles > 0 ? ` ${git.changedFiles} uncommitted change(s).` : ""}
+                        {t("worktreeView.publishBeforePr")}
+                        {git.changedFiles > 0 ? ` ${t("worktreeView.uncommitted", { count: git.changedFiles })}` : ""}
                       </p>
                     </div>
                   )}
@@ -768,11 +790,11 @@ export function WorktreeView({ worktree }: { worktree: WorktreeSnapshot }) {
                   <div className="space-y-1.5 border-t border-border pt-2">
                     {!git.hasUpstream ? (
                       <Button onClick={publishBranch} disabled={gitPending} size="sm" className="w-full">
-                        {gitPending ? "Publishing…" : "Publish branch"}
+                        {t(gitPending ? "worktreeView.publishing" : "worktreeView.publish")}
                       </Button>
                     ) : git.ahead > 0 ? (
                       <Button onClick={publishBranch} disabled={gitPending} size="sm" className="w-full">
-                        {gitPending ? "Pushing…" : `Push ${git.ahead} commit(s)`}
+                        {gitPending ? t("worktreeView.pushing") : t("worktreeView.pushCommits", { count: git.ahead })}
                       </Button>
                     ) : null}
                     {worktree.link && worktree.link.type === "pr" ? (
@@ -786,7 +808,7 @@ export function WorktreeView({ worktree }: { worktree: WorktreeSnapshot }) {
                       </a>
                     ) : (
                       <Button onClick={openPrDialog} disabled={gitPending} variant="secondary" size="sm" className="w-full">
-                        Open pull request
+                        {t("worktreeView.openPr")}
                       </Button>
                     )}
                     {gitError ? <p className="text-[11px] text-destructive">{gitError}</p> : null}
@@ -798,12 +820,12 @@ export function WorktreeView({ worktree }: { worktree: WorktreeSnapshot }) {
             {paneTab === "sessions" ? (
               <div className="space-y-2">
                 <div className="flex items-center justify-between gap-2">
-                  <p className="text-[11px] text-muted-foreground">Showing {sessions.length} session(s)</p>
+                  <p className="text-[11px] text-muted-foreground">{t("worktreeView.showingSessions", { count: sessions.length })}</p>
                   <div className="flex gap-0.5 rounded-md bg-muted p-0.5 text-[10px]">
                     {(
                       [
-                        ["worktree", "Worktree"],
-                        ["all", "All"],
+                        ["worktree", t("worktreeView.worktree")],
+                        ["all", t("worktreeView.all")],
                       ] as ["worktree" | "all", string][]
                     ).map(([k, l]) => (
                       <button
@@ -822,12 +844,12 @@ export function WorktreeView({ worktree }: { worktree: WorktreeSnapshot }) {
                 </div>
                 <Input
                   value={sessionQuery}
-                  placeholder="Search sessions"
+                  placeholder={t("worktreeView.searchSessions")}
                   className="h-7 text-xs"
                   onChange={(e) => setSessionQuery(e.target.value)}
                 />
                 {sessions.length === 0 ? (
-                  <p className="text-xs text-muted-foreground">No agent sessions yet.</p>
+                  <p className="text-xs text-muted-foreground">{t("worktreeView.noSessions")}</p>
                 ) : (
                   <ul className="space-y-1 text-xs">
                     {sessions.slice(0, 30).map((inv) => (
@@ -875,28 +897,40 @@ export function WorktreeView({ worktree }: { worktree: WorktreeSnapshot }) {
       <Modal
         open={prOpen}
         onClose={() => setPrOpen(false)}
-        title="Open pull request"
-        description={`Pushes ${worktree.branch} to origin and opens a PR via gh.`}
+        title={t("worktreeView.openPr")}
+        description={t("worktreeView.prDescription", { branch: worktree.branch })}
       >
         <div className="space-y-3">
-          <Field label="Title">
-            <Input value={prTitle} onChange={(e) => setPrTitle(e.target.value)} placeholder="Pull request title" />
+          <Field label={t("worktreeView.prTitle")}>
+            <Input value={prTitle} onChange={(e) => setPrTitle(e.target.value)} placeholder={t("worktreeView.prTitlePlaceholder")} />
           </Field>
-          <Field label="Description">
-            <Textarea rows={5} value={prBody} onChange={(e) => setPrBody(e.target.value)} placeholder="Optional summary of the change" />
+          <Field label={t("worktreeView.prBody")}>
+            <Textarea rows={5} value={prBody} onChange={(e) => setPrBody(e.target.value)} placeholder={t("worktreeView.prBodyPlaceholder")} />
           </Field>
           {gitError ? <p className="text-xs text-destructive">{gitError}</p> : null}
           <div className="flex justify-end gap-2">
             <Button variant="secondary" size="sm" onClick={() => setPrOpen(false)} disabled={gitPending}>
-              Cancel
+              {t("documentsModal.cancel")}
             </Button>
             <Button size="sm" onClick={submitPr} disabled={gitPending || !prTitle.trim()}>
-              {gitPending ? "Creating…" : "Create pull request"}
+              {t(gitPending ? "worktreeView.creatingPr" : "worktreeView.createPr")}
             </Button>
           </div>
         </div>
       </Modal>
     </div>
+  );
+}
+
+function permissionModeForAgent(agent: { adapter?: { command?: string; permissionMode?: string; sandbox?: string } } | undefined): CodexPermissionMode {
+  const command = String(agent?.adapter?.command ?? "").trim().toLowerCase();
+  const isCodex = ["codex", "codex.cmd", "codex.ps1", "codex.exe"].some(
+    (name) => command === name || command.endsWith(`/${name}`) || command.endsWith(`\\${name}`),
+  );
+  if (!isCodex) return "ask";
+  return normalizeCodexPermissionMode(
+    agent?.adapter?.permissionMode
+    ?? codexPermissionModeFromLegacySandbox(agent?.adapter?.sandbox),
   );
 }
 
@@ -917,6 +951,7 @@ function FileTree({
   toggle: (path: string) => void;
   onOpen: (path: string, name: string) => void;
 }) {
+  const { t } = useAppTranslation();
   return (
     <ul className="text-xs">
       {nodes.map((n) => {
@@ -962,13 +997,13 @@ function FileTree({
                   />
                 ) : (
                   <p style={{ paddingLeft: (depth + 1) * 12 + 16 }} className="py-0.5 text-[11px] text-muted-foreground">
-                    Empty
+                    {t("worktreeViewExtra.treeEmpty")}
                   </p>
                 )
               ) : (
                 // Not read yet — say so, rather than render nothing and look broken.
                 <p style={{ paddingLeft: (depth + 1) * 12 + 16 }} className="py-0.5 text-[11px] text-muted-foreground">
-                  {loadingDirs.has(n.path) ? "Loading…" : "Could not load."}
+                  {t(loadingDirs.has(n.path) ? "worktreeView.loading" : "worktreeViewExtra.couldNotLoad")}
                 </p>
               )
             ) : null}
@@ -980,10 +1015,11 @@ function FileTree({
 }
 
 function FileCodeView({ path, data }: { path: string; data?: { content: string; truncated?: boolean; message?: string } }) {
+  const { t } = useAppTranslation();
   if (!data) {
     return (
       <Card>
-        <CardContent className="p-4 text-xs text-muted-foreground">Loading {path}…</CardContent>
+        <CardContent className="p-4 text-xs text-muted-foreground">{t("worktreeViewExtra.loadingFile", { path })}</CardContent>
       </Card>
     );
   }
@@ -1056,10 +1092,11 @@ function fileDiffText(full: string, path: string): string {
 // One file's changes (the "diff" toggle on a file tab), reusing the worktree
 // diff already fetched for the Changes tab.
 function FileDiffView({ path, diff }: { path: string; diff: WorktreeDiff | null }) {
+  const { t } = useAppTranslation();
   if (!diff) {
     return (
       <Card>
-        <CardContent className="p-4 text-xs text-muted-foreground">Loading changes…</CardContent>
+        <CardContent className="p-4 text-xs text-muted-foreground">{t("worktreeViewExtra.loadingChanges")}</CardContent>
       </Card>
     );
   }
@@ -1067,7 +1104,7 @@ function FileDiffView({ path, diff }: { path: string; diff: WorktreeDiff | null 
   if (!text) {
     return (
       <Card>
-        <CardContent className="p-4 text-xs text-muted-foreground">No changes for this file on this branch.</CardContent>
+        <CardContent className="p-4 text-xs text-muted-foreground">{t("worktreeViewExtra.noFileChanges")}</CardContent>
       </Card>
     );
   }
@@ -1075,7 +1112,7 @@ function FileDiffView({ path, diff }: { path: string; diff: WorktreeDiff | null 
   return (
     <Card>
       <CardHeader className="border-b border-border py-2">
-        <p className="select-all break-all font-mono text-[11px] text-muted-foreground">{path} · changes</p>
+        <p className="select-all break-all font-mono text-[11px] text-muted-foreground">{path} · {t("worktreeView.changes")}</p>
       </CardHeader>
       <CardContent className="p-0">
         <div className="max-h-[60vh] overflow-auto font-mono text-[12px] leading-[1.5]">
@@ -1112,17 +1149,18 @@ function statusColor(f: DiffFile): string {
 // Renders a unified diff with per-line +/- coloring. File headers ("diff --git")
 // are clickable to open that file in its own tab.
 function DiffView({ diff, onOpenFile }: { diff: WorktreeDiff | null; onOpenFile: (path: string, name: string) => void }) {
+  const { t } = useAppTranslation();
   if (!diff) {
     return (
       <Card>
-        <CardContent className="p-4 text-xs text-muted-foreground">Loading diff…</CardContent>
+        <CardContent className="p-4 text-xs text-muted-foreground">{t("worktreeViewExtra.loadingDiff")}</CardContent>
       </Card>
     );
   }
   if (!diff.diff.trim()) {
     return (
       <Card>
-        <CardContent className="p-4 text-xs text-muted-foreground">No changes to show on this branch.</CardContent>
+        <CardContent className="p-4 text-xs text-muted-foreground">{t("worktreeViewExtra.noDiff")}</CardContent>
       </Card>
     );
   }
@@ -1131,8 +1169,7 @@ function DiffView({ diff, onOpenFile }: { diff: WorktreeDiff | null; onOpenFile:
     <Card>
       <CardHeader className="border-b border-border py-2">
         <p className="text-[11px] text-muted-foreground">
-          Diff vs <span className="font-mono">{diff.base === "HEAD" ? "HEAD" : diff.base.slice(0, 12)}</span> · {diff.files.length} file(s)
-          {diff.truncated ? " · truncated" : ""}
+          {t("worktreeViewExtra.diffVs", { base: diff.base === "HEAD" ? "HEAD" : diff.base.slice(0, 12), count: diff.files.length, truncated: diff.truncated ? t("worktreeViewExtra.truncated") : "" })}
         </p>
       </CardHeader>
       <CardContent className="p-0">
@@ -1147,7 +1184,7 @@ function DiffView({ diff, onOpenFile }: { diff: WorktreeDiff | null; onOpenFile:
                   type="button"
                   onClick={() => onOpenFile(p, p.split("/").pop() ?? p)}
                   className="mt-1 flex w-full items-center gap-1 border-t border-border bg-muted px-3 py-1 text-left font-medium text-foreground hover:underline"
-                  title={`Open ${p}`}
+                  title={t("worktreeViewExtra.openFile", { path: p })}
                 >
                   <File className="size-3 shrink-0 opacity-60" />
                   <span className="truncate">{p}</span>
@@ -1161,7 +1198,7 @@ function DiffView({ diff, onOpenFile }: { diff: WorktreeDiff | null; onOpenFile:
             );
           })}
         </div>
-        {diff.truncated ? <p className="px-3 py-1 text-[11px] text-muted-foreground">Diff truncated at 1 MB.</p> : null}
+        {diff.truncated ? <p className="px-3 py-1 text-[11px] text-muted-foreground">{t("worktreeViewExtra.diffTruncated")}</p> : null}
       </CardContent>
     </Card>
   );

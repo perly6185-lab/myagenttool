@@ -3,9 +3,11 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-li
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { DocumentsView } from "@/features/documents/documents-view";
 import { ApiError } from "@/lib/api-client";
+import { i18n } from "@/lib/i18n";
 
 const mocks = vi.hoisted(() => ({
   projectDocuments: vi.fn(),
+  projectAssetPreview: vi.fn(),
   officecliPreview: vi.fn(),
   issueApprovalGrant: vi.fn(),
   invokeCapability: vi.fn(),
@@ -26,6 +28,7 @@ const mocks = vi.hoisted(() => ({
 vi.mock("@/data/use-console-actions", () => ({
   api: {
     projectDocuments: mocks.projectDocuments,
+    projectAssetPreview: mocks.projectAssetPreview,
     officecliPreview: mocks.officecliPreview,
     issueApprovalGrant: mocks.issueApprovalGrant,
     invokeCapability: mocks.invokeCapability,
@@ -56,13 +59,15 @@ vi.mock("@/store/ui-store", () => ({
   }),
 }));
 
-beforeEach(() => {
+beforeEach(async () => {
+  await i18n.changeLanguage("en-US");
   const values = new Map<string, string>();
   vi.stubGlobal("localStorage", { getItem: (key: string) => values.get(key) ?? null, setItem: (key: string, value: string) => values.set(key, value), removeItem: (key: string) => values.delete(key), clear: () => values.clear() });
   window.myagenttoolDesktop = undefined;
   window.history.replaceState({}, "", "/?section=documents");
   mocks.projectDocuments.mockResolvedValue({ projectId: "prj_1", worktreeId: null, truncated: false, scanned: 1, documents: [{ projectId: "prj_1", worktreeId: null, name: "report.docx", path: "docs/report.docx", type: "docx", gitStatus: "clean" }] });
   mocks.officecliPreview.mockResolvedValue({ path: "docs/report.docx", content: "<p>Report preview</p>" });
+  mocks.projectAssetPreview.mockResolvedValue({ text: "# Notes" });
   mocks.issueApprovalGrant.mockResolvedValue({ token: "grant_1" });
   mocks.invokeCapability.mockResolvedValue({ invocationId: "inv_1" });
   mocks.manageOfficeDocument.mockResolvedValue({ operation: "copy", source: "docs/report.docx", destination: "docs/copy-of-report.docx" });
@@ -80,6 +85,16 @@ function renderView() {
 }
 
 describe("DocumentsView interaction", () => {
+  it("opens a governed non-Office asset through the contained desktop bridge", async () => {
+    const openContainedAsset = vi.fn().mockResolvedValue({ opened: true });
+    window.myagenttoolDesktop = { openContainedAsset };
+    mocks.projectDocuments.mockResolvedValue({ projectId: "prj_1", worktreeId: null, truncated: false, scanned: 1, documents: [{ projectId: "prj_1", worktreeId: null, name: "notes.md", path: "docs/notes.md", type: "md", gitStatus: "clean", capabilities: ["preview", "edit", "open_external"] }] });
+    renderView();
+    fireEvent.click(await screen.findByText("notes.md"));
+    fireEvent.click(await screen.findByRole("button", { name: "Open externally" }));
+    await waitFor(() => expect(openContainedAsset).toHaveBeenCalledWith({ projectId: "prj_1", relativePath: "docs/notes.md" }));
+  });
+
   it("opens DXF drawings in the contained read-only viewer", async () => {
     mocks.projectDocuments.mockResolvedValue({ projectId: "prj_1", worktreeId: null, truncated: false, scanned: 1, documents: [{ projectId: "prj_1", worktreeId: null, name: "plan.dxf", path: "drawings/plan.dxf", type: "dxf", gitStatus: "clean" }] });
     renderView();
@@ -254,5 +269,15 @@ describe("DocumentsView interaction", () => {
     expect(screen.queryByText(/lost.docx/)).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Clear" }));
     expect(screen.queryByText("Recent")).toBeNull();
+  });
+
+  it("renders document chrome in Simplified Chinese while preserving file names and paths", async () => {
+    await i18n.changeLanguage("zh-CN");
+    renderView();
+    expect(screen.getByText("项目")).toBeTruthy();
+    expect(screen.getByPlaceholderText("搜索文档…")).toBeTruthy();
+    fireEvent.click(await screen.findByText("report.docx"));
+    expect(await screen.findByTitle("docs/report.docx")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "在工作树中编辑" })).toBeTruthy();
   });
 });

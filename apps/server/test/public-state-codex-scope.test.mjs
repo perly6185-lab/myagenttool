@@ -26,6 +26,15 @@ function scenarioState() {
       { id: "inv_a", projectId: "proj_a" },
       { id: "inv_b", projectId: "proj_b" },
     ],
+    workItems: [
+      { id: "wi_a_open", ownerTeamId: TEAM_A, state: "open", status: "in_progress", executionState: "running", updatedAt: "2026-07-24T10:00:00.000Z", executionBindings: [{ kind: "auto_run", targetId: "aur_a" }] },
+      { id: "wi_a_blocked", ownerTeamId: TEAM_A, state: "open", status: "blocked", executionState: "unclaimed", updatedAt: "2026-07-24T11:00:00.000Z" },
+      { id: "wi_b", ownerTeamId: TEAM_B, state: "closed", status: "done", executionState: "completed", updatedAt: "2026-07-24T12:00:00.000Z" },
+    ],
+    alertOutbox: [
+      { id: "aob_a", alert: { data: { autoRunId: "aur_a" } }, status: "queued", attempts: 1, lastError: "offline", createdAt: "2026-07-24T10:00:00.000Z", sentAt: null },
+      { id: "aob_b", alert: { data: { localIssueId: "wi_b" } }, status: "failed", attempts: 8, lastError: "denied", createdAt: "2026-07-24T11:00:00.000Z", sentAt: null },
+    ],
     codexImportedEvidenceRecords: [
       { id: "imp_a", teamId: TEAM_A, summary: "team a secret" },
       { id: "imp_b", teamId: TEAM_B, summary: "team b secret" },
@@ -83,6 +92,32 @@ test("the evidence center no longer leaks foreign imported or invocation evidenc
 test("the codex approval queue is scoped by the request's invocation", () => {
   const teamA = build({ teamId: TEAM_A });
   assert.deepEqual(ids(teamA.codexApprovalQueue), ["appr_a"]);
+});
+
+test("work item summary is bounded and scoped without publishing item details", () => {
+  const teamA = build({ teamId: TEAM_A });
+  assert.deepEqual(teamA.workItemSummary, {
+    total: 2,
+    open: 2,
+    blocked: 1,
+    activeExecutions: 1,
+    updatedAt: "2026-07-24T11:00:00.000Z",
+  });
+  assert.equal(teamA.workItems, undefined);
+  assert.deepEqual(teamA.workItemAlertSummary, {
+    queued: 1,
+    failed: 0,
+    sent: 0,
+    skipped: 0,
+    byLocalIssue: [{
+      localIssueId: "wi_a_open",
+      status: "queued",
+      attempts: 1,
+      lastError: "offline",
+      createdAt: "2026-07-24T10:00:00.000Z",
+      sentAt: null,
+    }],
+  });
 });
 
 test("unscoped (no actor / single-team) is a pass-through", () => {

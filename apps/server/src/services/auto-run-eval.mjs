@@ -12,9 +12,17 @@
 //   clarify   — aligned when it parked for input.
 // Everything still in flight (or failed for infra reasons) is inconclusive.
 
-const PATHS = ["develop", "design", "prototype", "clarify"];
+const PATHS = ["develop", "design", "prototype", "clarify", "decompose"];
 
-function alignmentFor(path, status) {
+export function routingPathFor(run = {}) {
+  return run.decision?.path;
+}
+
+export function actualRoutingPathFor(run = {}) {
+  return run.routingOverride?.actualPath ?? null;
+}
+
+export function alignmentFor(path, status) {
   if (path === "develop") {
     if (status === "pr_open") return "aligned";
     if (status === "blocked") return "misaligned";
@@ -30,7 +38,23 @@ function alignmentFor(path, status) {
     if (status === "pr_open") return "diverted";
     return "inconclusive";
   }
+  if (path === "decompose") {
+    if (status === "decomposed") return "aligned";
+    if (status === "pr_open" || status === "report_posted") return "diverted";
+    return "inconclusive";
+  }
   return "inconclusive";
+}
+
+export function routingVerdict(run = {}) {
+  const path = routingPathFor(run);
+  if (path === "develop" && run.status === "blocked") {
+    const reason = String(run.error ?? "").toLowerCase();
+    return reason.includes("no changes") || reason.includes("produced no changes")
+      ? "misaligned"
+      : "inconclusive";
+  }
+  return alignmentFor(path, run.status);
 }
 
 /**
@@ -45,13 +69,15 @@ export function routingEvaluation(autoRuns = []) {
   }
   let aligned = 0;
   let conclusive = 0;
+  let corrected = 0;
+  let recommendationMatched = 0;
 
   for (const run of autoRuns) {
-    const path = run.decision?.path;
+    const path = routingPathFor(run);
     if (!PATHS.includes(path)) continue;
     const bucket = byPath[path];
     bucket.total += 1;
-    const verdict = alignmentFor(path, run.status);
+    const verdict = routingVerdict(run);
     bucket[verdict] += 1;
     if (verdict !== "inconclusive") {
       conclusive += 1;
@@ -59,12 +85,22 @@ export function routingEvaluation(autoRuns = []) {
     }
     if (run.prState === "MERGED") bucket.prMerged += 1;
     else if (run.prState === "CLOSED") bucket.prClosed += 1;
+    const actualPath = actualRoutingPathFor(run);
+    if (actualPath) {
+      corrected += 1;
+      if (actualPath === path) recommendationMatched += 1;
+    }
   }
 
   return {
     byPath,
     conclusive,
     alignmentRate: conclusive > 0 ? aligned / conclusive : null,
+    humanTruth: {
+      total: corrected,
+      recommendationMatched,
+      accuracy: corrected > 0 ? recommendationMatched / corrected : null,
+    },
   };
 }
 
@@ -77,6 +113,7 @@ export async function refreshPrDispositions({
   state,
   fetchPrState,
   fetchPrChecks,
+  onDispositionChanged,
   now = () => new Date().toISOString(),
   maxChecks = 10,
   minIntervalMs = 10 * 60 * 1000,
@@ -100,6 +137,7 @@ export async function refreshPrDispositions({
       if (prState && ["OPEN", "MERGED", "CLOSED"].includes(prState) && prState !== run.prState) {
         run.prState = prState;
         updated += 1;
+        onDispositionChanged?.({ run, prState });
       }
       // CI check posture so the console can show it before a human merges.
       if (typeof fetchPrChecks === "function" && run.prState !== "MERGED" && run.prState !== "CLOSED") {

@@ -6,10 +6,10 @@ import { useAsyncAction, api } from "@/data/use-console-actions";
 import { useUiStore } from "@/store/ui-store";
 import {
   healthFor,
-  scheduleHealthLabel,
   scheduleHealthTone,
 } from "@/features/automation/schedule-health-ui";
 import type { ApplicationSnapshot } from "@/lib/console-state";
+import { useAppTranslation } from "@/lib/i18n/use-app-translation";
 
 /**
  * The schedules an application owns, in its Inspector (#849).
@@ -20,6 +20,7 @@ import type { ApplicationSnapshot } from "@/lib/console-state";
  * anything about it is most of the friction this slice exists to remove.
  */
 export function ApplicationSchedules({ application }: { application: ApplicationSnapshot }) {
+  const { t } = useAppTranslation();
   const { data: state } = useConsoleState();
   const { execute, pending } = useAsyncAction();
   const setSection = useUiStore((s) => s.setSection);
@@ -45,9 +46,9 @@ export function ApplicationSchedules({ application }: { application: Application
     <Card>
       <CardHeader>
         <div className="flex items-center justify-between gap-3">
-          <CardTitle>Schedules</CardTitle>
+          <CardTitle>{t("applicationSchedules.title")}</CardTitle>
           <Badge tone={application.scheduleHealth?.needsAttention ? "warning" : "neutral"}>
-            {rows.length} scheduled
+            {t("applicationSchedules.count", { count: rows.length })}
           </Badge>
         </div>
       </CardHeader>
@@ -72,7 +73,7 @@ export function ApplicationSchedules({ application }: { application: Application
                     {row.capability ? ` · ${row.capability}` : ""}
                   </p>
                 </div>
-                <Badge tone={scheduleHealthTone(health.state)}>{scheduleHealthLabel(health.state)}</Badge>
+                <Badge tone={scheduleHealthTone(health.state)}>{t(`automationHealth.${health.state}` as never)}</Badge>
               </div>
 
               {/* The reason, in words. A parked schedule has no error to show. */}
@@ -89,7 +90,7 @@ export function ApplicationSchedules({ application }: { application: Application
                   disabled={pending}
                   onClick={() => void execute(() => api.runAutomation(automation.id))}
                 >
-                  Run now
+                  {t("applicationSchedules.runNow")}
                 </Button>
                 <Button
                   size="sm"
@@ -97,7 +98,7 @@ export function ApplicationSchedules({ application }: { application: Application
                   disabled={pending}
                   onClick={() => void execute(() => api.updateAutomation(automation.id, { enabled: !automation.enabled }))}
                 >
-                  {automation.enabled ? "Pause" : "Resume"}
+                  {t(automation.enabled ? "applicationSchedules.pause" : "applicationSchedules.resume")}
                 </Button>
                 <Button
                   size="sm"
@@ -105,11 +106,11 @@ export function ApplicationSchedules({ application }: { application: Application
                   disabled={pending}
                   onClick={() => void execute(() => api.deleteAutomation(automation.id))}
                 >
-                  Delete
+                  {t("applicationSchedules.delete")}
                 </Button>
                 {health.latestInvocationId ? (
                   <Button size="sm" variant="secondary" onClick={() => openRun(health.latestInvocationId!)}>
-                    {health.state === "approval_pending" ? "Review approval" : "Latest run"}
+                    {t(health.state === "approval_pending" ? "applicationSchedules.reviewApproval" : "applicationSchedules.latestRun")}
                   </Button>
                 ) : null}
               </div>

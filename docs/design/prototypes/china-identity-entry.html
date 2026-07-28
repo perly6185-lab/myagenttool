@@ -1,0 +1,199 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>本地与企业登录入口原型</title>
+    <link rel="stylesheet" href="./china-identity-entry.css">
+  </head>
+  <body>
+    <main class="prototype-shell">
+      <header class="prototype-header">
+        <div>
+          <p class="eyebrow">安全设计原型 · 不连接真实身份服务</p>
+          <h1>选择使用方式</h1>
+          <p class="lede">本地使用与团队登录是两条独立路径。团队和权限始终由服务器确认。</p>
+        </div>
+        <span class="policy">服务器策略：允许本地与团队登录</span>
+      </header>
+
+      <nav class="state-tabs" aria-label="原型状态">
+        <button class="state-tab is-active" type="button" data-state="entry">入口</button>
+        <button class="state-tab" type="button" data-state="waiting_confirmation">等待确认</button>
+        <button class="state-tab" type="button" data-state="tenant_selection">选择团队</button>
+        <button class="state-tab" type="button" data-state="expired">已过期</button>
+        <button class="state-tab" type="button" data-state="rejected">已拒绝</button>
+        <button class="state-tab" type="button" data-state="recovery">找回账号</button>
+        <button class="state-tab" type="button" data-state="signed_in">已登录</button>
+        <button class="state-tab" type="button" data-state="logout">退出</button>
+      </nav>
+
+      <section class="stage" data-current-state="entry" aria-live="polite">
+        <section class="identity-panel" aria-labelledby="state-title">
+          <p class="eyebrow" data-step>首次进入</p>
+          <h2 id="state-title" data-title>选择本地使用或团队登录</h2>
+          <p class="state-description" data-description>
+            本地使用只访问这台电脑上的本地团队；团队登录会验证企业身份和成员关系。
+          </p>
+          <div data-state-body></div>
+        </section>
+
+        <aside class="safety-panel" aria-label="安全边界">
+          <h2>登录前请确认</h2>
+          <dl>
+            <div><dt>当前网站</dt><dd>myagenttool.example.cn</dd></div>
+            <div><dt>当前电脑</dt><dd>研发电脑 · Windows</dd></div>
+            <div><dt>权限来源</dt><dd>服务器中的团队成员与角色</dd></div>
+          </dl>
+          <div class="boundary">
+            <strong>身份信息相互隔离</strong>
+            <p>企业登录不会复用消息渠道、Codex、GitHub 或其他应用的凭据。</p>
+          </div>
+          <details>
+            <summary>本原型为什么不显示二维码？</summary>
+            <p>真实二维码必须由服务端创建一次性挑战后返回。本原型不生成、嵌入或模拟任何可扫描内容。</p>
+          </details>
+        </aside>
+      </section>
+
+      <footer>
+        <span>ADR 0021 评审原型</span>
+        <span>二维码有效期设计值：120 秒</span>
+      </footer>
+    </main>
+
+    <template id="state-entry">
+      <div class="choice-grid">
+        <article class="choice-card">
+          <span class="choice-icon" aria-hidden="true">⌂</span>
+          <h3>在这台电脑上使用</h3>
+          <p>以本地所有者身份使用本机项目。只有服务器允许时才显示此入口。</p>
+          <button type="button" class="primary" data-go="signed_in">进入本地工作台</button>
+        </article>
+        <article class="choice-card">
+          <span class="choice-icon" aria-hidden="true">◎</span>
+          <h3>登录团队</h3>
+          <p>使用已接入的企业身份服务。扫码或跳转方式由服务端配置决定。</p>
+          <div class="provider-row" aria-label="候选企业身份服务">
+            <button type="button" data-go="waiting_confirmation">企业微信</button>
+            <button type="button" data-go="waiting_confirmation">飞书</button>
+            <button type="button" data-go="waiting_confirmation">钉钉</button>
+          </div>
+          <button type="button" class="text-action" data-go="recovery">使用账号密码或找回账号</button>
+        </article>
+      </div>
+    </template>
+
+    <template id="state-waiting_confirmation">
+      <div class="flow-card">
+        <span class="status warning">等待手机确认 · 01:42</span>
+        <div class="no-qr">
+          <strong>安全二维码区域未在设计原型中生成</strong>
+          <p>实现后，此处只显示服务端签发且仍在有效期内的登录码。</p>
+        </div>
+        <div class="comparison">
+          <span>两端核对码</span>
+          <strong>8F4K</strong>
+        </div>
+        <p>请在手机上确认网站、研发电脑和要加入的团队一致。共享屏幕不会显示姓名或团队列表。</p>
+        <div class="actions">
+          <button type="button" class="primary" data-go="tenant_selection">模拟手机已确认</button>
+          <button type="button" data-go="entry">取消登录</button>
+        </div>
+      </div>
+    </template>
+
+    <template id="state-tenant_selection">
+      <form class="flow-card" data-demo-form>
+        <span class="status success">身份已验证</span>
+        <h3>选择这次要进入的团队</h3>
+        <label class="tenant-option">
+          <input type="radio" name="tenant" checked>
+          <span><strong>示例研发团队</strong><small>已验证成员 · 操作员</small></span>
+        </label>
+        <label class="tenant-option">
+          <input type="radio" name="tenant">
+          <span><strong>示例设计团队</strong><small>已验证成员 · 查看者</small></span>
+        </label>
+        <p class="muted">团队来自服务器中的有效成员关系，不根据邮箱后缀或显示名称推断。</p>
+        <div class="actions">
+          <button type="button" class="primary" data-go="signed_in">进入所选团队</button>
+          <button type="button" data-go="entry">取消</button>
+        </div>
+      </form>
+    </template>
+
+    <template id="state-expired">
+      <div class="flow-card">
+        <span class="status danger">登录码已过期</span>
+        <h3>尚未登录，旧登录码已失效</h3>
+        <p>为保护账号，登录码只在短时间内有效。刷新后会创建新的登录请求，旧请求不能再次使用。</p>
+        <div class="actions">
+          <button type="button" class="primary" data-go="waiting_confirmation">刷新登录码</button>
+          <button type="button" data-go="entry">换一种方式</button>
+        </div>
+      </div>
+    </template>
+
+    <template id="state-rejected">
+      <div class="flow-card">
+        <span class="status danger">登录未获确认</span>
+        <h3>没有创建登录会话</h3>
+        <p>你在手机上拒绝了登录，或团队尚未允许此账号。我们不会显示未验证的团队信息。</p>
+        <div class="actions">
+          <button type="button" class="primary" data-go="entry">换一种方式</button>
+          <button type="button" data-go="recovery">联系管理员</button>
+        </div>
+      </div>
+    </template>
+
+    <template id="state-recovery">
+      <form class="flow-card" data-demo-form>
+        <span class="status neutral">账号密码与恢复</span>
+        <label>团队账号<input type="text" autocomplete="username" placeholder="例如：姓名或工号"></label>
+        <label>密码<input type="password" autocomplete="current-password" placeholder="输入密码"></label>
+        <p class="muted">错误信息不会透露账号是否存在。多次失败会延迟后续尝试并通知管理员。</p>
+        <div class="actions">
+          <button type="button" class="primary" data-go="signed_in">登录</button>
+          <button type="button" data-go="rejected">向团队管理员申请找回</button>
+        </div>
+        <div class="boundary">
+          <strong>本地所有者找回</strong>
+          <p>必须在服务器所在电脑上执行管理命令，网页不会提供“直接成为所有者”的入口。</p>
+        </div>
+      </form>
+    </template>
+
+    <template id="state-signed_in">
+      <div class="flow-card">
+        <span class="status success">已安全登录</span>
+        <h3>示例研发团队</h3>
+        <dl class="session-facts">
+          <div><dt>账号</dt><dd>示例用户</dd></div>
+          <div><dt>角色</dt><dd>操作员</dd></div>
+          <div><dt>当前设备</dt><dd>研发电脑 · Windows</dd></div>
+          <div><dt>会话</dt><dd>30 分钟无操作后需重新确认</dd></div>
+        </dl>
+        <div class="actions">
+          <button type="button" class="primary">进入首页</button>
+          <button type="button" data-go="logout">退出登录</button>
+        </div>
+      </div>
+    </template>
+
+    <template id="state-logout">
+      <div class="flow-card">
+        <span class="status warning">确认退出范围</span>
+        <h3>要断开哪些设备？</h3>
+        <p>退出 MyAgentTool 不会让你退出企业微信、飞书或钉钉。</p>
+        <div class="logout-options">
+          <button type="button" class="primary" data-go="entry">仅退出这台电脑</button>
+          <button type="button" class="danger-button" data-go="entry">退出所有设备</button>
+          <button type="button" data-go="signed_in">返回</button>
+        </div>
+      </div>
+    </template>
+
+    <script src="./china-identity-entry.js"></script>
+  </body>
+</html>

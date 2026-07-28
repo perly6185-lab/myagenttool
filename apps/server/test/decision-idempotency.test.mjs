@@ -62,7 +62,7 @@ test("#1151 a settled lifecycle approval is immutable — the second decision ca
 
 // ── codex_broker / application_recovery: decidedBy was never recorded ────────
 
-function codexFor(state, now = makeClock()) {
+function codexFor(state, now = makeClock(), findInvocation = () => null) {
   return createCodexService({
     state,
     now,
@@ -70,7 +70,7 @@ function codexFor(state, now = makeClock()) {
     appendEvent: () => {},
     persistStateSoon: () => {},
     currentProject: () => null,
-    findInvocation: () => null,
+    findInvocation,
     uniqueStrings: (values) => [...new Set(values)],
     worktreeForProject: () => null,
   });
@@ -97,6 +97,183 @@ test("#1151 a broker timeout is attributed to the system, not a user", () => {
   const decided = codex.resolveCodexApprovalBrokerRequest(request, "timeout");
   assert.equal(decided.status, "timed_out");
   assert.equal(decided.decidedBy, "system:timeout");
+});
+
+test("Codex full access cannot bypass a missing outer launch approval", () => {
+  const invocation = {
+    id: "inv_full",
+    input: { task: "Run with unrestricted filesystem and network access." },
+    options: { approvalMode: "full", metadata: { worktreeId: "wtr_1" } },
+  };
+  const state = {
+    codexSessions: [],
+    codexHookEvents: [],
+    codexApprovalBrokerRequests: [],
+    events: [],
+    refusals: [],
+  };
+  const codex = codexFor(state, makeClock(), (id) => id === invocation.id ? invocation : null);
+  const hook = codex.recordCodexHookEvent({
+    invocationId: invocation.id,
+    eventName: "PermissionRequest",
+    toolName: "Bash",
+    summary: "Launch Codex with Full access.",
+  });
+
+  assert.equal(hook.brokerRequest.approvalMode, "full");
+  assert.equal(hook.brokerRequest.status, "pending");
+  assert.equal(hook.brokerRequest.decision, null);
+});
+
+test("Codex full access reuses the approved high-risk launch instead of prompting twice", () => {
+  const invocation = {
+    id: "inv_full_approved",
+    input: { task: "Run with explicitly approved Full access." },
+    options: { approvalMode: "full", metadata: { worktreeId: "wtr_1" } },
+  };
+  const state = {
+    approvalRequests: [{
+      id: "apr_full",
+      invocationId: invocation.id,
+      status: "approved",
+      decidedBy: "usr_local",
+    }],
+    codexSessions: [],
+    codexHookEvents: [],
+    codexApprovalBrokerRequests: [],
+    events: [],
+    refusals: [],
+  };
+  const codex = codexFor(state, makeClock(), (id) => id === invocation.id ? invocation : null);
+  const hook = codex.recordCodexHookEvent({
+    invocationId: invocation.id,
+    eventName: "PermissionRequest",
+    toolName: "Bash",
+    summary: "Launch the explicitly approved Full access run.",
+  });
+
+  assert.equal(hook.brokerRequest.approvalMode, "full");
+  assert.equal(hook.brokerRequest.status, "approved");
+  assert.equal(hook.brokerRequest.decision, "allow");
+});
+
+test("a bounded continuation reuses only an approved request from the same auto-run and worktree", () => {
+  const source = {
+    id: "inv_source",
+    options: { metadata: { autoRunId: "aur_1", worktreeId: "wtr_1" } },
+  };
+  const target = {
+    id: "inv_target",
+    input: { task: "Continue the same task." },
+    options: {
+      approvalMode: "ask",
+      metadata: {
+        autoRunId: "aur_1",
+        worktreeId: "wtr_1",
+        codexApprovalContinuationRequestId: "cdx_source",
+      },
+    },
+  };
+  const state = {
+    codexSessions: [],
+    codexHookEvents: [],
+    codexApprovalBrokerRequests: [{
+      id: "cdx_source",
+      invocationId: source.id,
+      toolName: "Bash",
+      status: "approved",
+      decidedBy: "usr_owner",
+      continuationGrant: {
+        targetInvocationId: target.id,
+        autoRunId: "aur_1",
+        worktreeId: "wtr_1",
+      },
+    }],
+    events: [],
+    refusals: [],
+  };
+  const invocations = [source, target];
+  const codex = codexFor(state, makeClock(), (id) => invocations.find((row) => row.id === id));
+
+  const hook = codex.recordCodexHookEvent({
+    invocationId: target.id,
+    eventName: "PermissionRequest",
+    toolName: "Bash",
+    summary: "Continue the same governed Codex task.",
+  });
+  assert.equal(hook.brokerRequest.status, "approved");
+  assert.equal(hook.brokerRequest.recoveredFromApprovalRequestId, "cdx_source");
+  assert.equal(hook.brokerRequest.decidedBy, "usr_owner");
+
+  target.options.metadata.worktreeId = "wtr_other";
+  const mismatched = codex.recordCodexHookEvent({
+    invocationId: target.id,
+    eventName: "PermissionRequest",
+    toolName: "Bash",
+    summary: "Try a different worktree.",
+  });
+  assert.equal(mismatched.brokerRequest.status, "pending", "approval cannot cross worktree scope");
+});
+
+test("a late approval is reusable only by the exact recovery invocation", () => {
+  const source = {
+    id: "inv_source",
+    options: { metadata: { autoRunId: "aur_1", worktreeId: "wtr_1" } },
+  };
+  const target = {
+    id: "inv_target",
+    input: { task: "Resume the expired task." },
+    options: {
+      approvalMode: "ask",
+      metadata: {
+        autoRunId: "aur_1",
+        worktreeId: "wtr_1",
+        codexApprovalContinuationRequestId: "cdx_source",
+      },
+    },
+  };
+  const state = {
+    codexSessions: [],
+    codexHookEvents: [],
+    codexApprovalBrokerRequests: [{
+      id: "cdx_source",
+      invocationId: source.id,
+      toolName: "Bash",
+      status: "timed_out",
+      lateApprovalRecovery: {
+        status: "starting",
+        autoRunId: "aur_1",
+        targetInvocationId: target.id,
+        requestedBy: "usr_owner",
+      },
+    }],
+    events: [],
+    refusals: [],
+  };
+  const invocations = [source, target];
+  const codex = codexFor(state, makeClock(), (id) => invocations.find((row) => row.id === id));
+
+  const recovered = codex.recordCodexHookEvent({
+    invocationId: target.id,
+    eventName: "PermissionRequest",
+    toolName: "Bash",
+    summary: "Resume exactly once.",
+  });
+  assert.equal(recovered.brokerRequest.status, "approved");
+  assert.equal(recovered.brokerRequest.recoveredFromApprovalRequestId, "cdx_source");
+
+  const other = {
+    ...target,
+    id: "inv_other",
+  };
+  invocations.push(other);
+  const replayed = codex.recordCodexHookEvent({
+    invocationId: other.id,
+    eventName: "PermissionRequest",
+    toolName: "Bash",
+    summary: "Attempt to replay the grant.",
+  });
+  assert.equal(replayed.brokerRequest.status, "pending", "a late approval cannot be replayed by another invocation");
 });
 
 // ── auto-run gates: reject/answer had no idempotency guard ───────────────────

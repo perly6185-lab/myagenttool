@@ -3,6 +3,7 @@ import { FactList } from "@/components/common/fact-list";
 import { useConsoleState } from "@/data/use-console-state";
 import { retentionSummary } from "@/lib/readable-labels";
 import type { IntegrationArtifact } from "@/lib/console-state";
+import { useAppTranslation } from "@/lib/i18n/use-app-translation";
 
 function builderSummary(artifacts: IntegrationArtifact[] = []): string {
   if (!artifacts.length) return "Integration Builder drafts plans only";
@@ -11,23 +12,24 @@ function builderSummary(artifacts: IntegrationArtifact[] = []): string {
 }
 
 export function GovernanceInspector() {
+  const { t } = useAppTranslation();
   const { data: state } = useConsoleState();
   const quota = state?.quotaDecisionRecords?.[0];
 
   return (
     <Card>
       <CardHeader>
-        <CardTitle>Integration controls</CardTitle>
+        <CardTitle>{t("integrationInspector.title")}</CardTitle>
       </CardHeader>
       <CardContent>
         <FactList
           facts={[
             {
-              term: "Quota",
-              value: quota ? `${quota.decision}: ${quota.reason}` : "No quota decision recorded yet",
+              term: t("integrationInspector.quota"),
+              value: quota ? `${quota.decision}: ${quota.reason}` : t("integrationInspector.noQuota"),
             },
-            { term: "Retention", value: retentionSummary(state?.retentionSettings) },
-            { term: "Builder", value: builderSummary(state?.integrationArtifacts) },
+            { term: t("integrationInspector.retention"), value: retentionSummary(state?.retentionSettings) },
+            { term: t("integrationInspector.builder"), value: builderSummary(state?.integrationArtifacts) },
           ]}
         />
       </CardContent>

@@ -214,17 +214,19 @@ try {
   assert(sensitiveHook.brokerRequest?.status === "pending", "even in auto mode a credential-shaped request must fall to manual review");
   ok("sensitive-pattern request forces manual review even under auto mode");
 
-  // approvalMode `full` is intentionally NOT offered for codex.exec — it would
-  // either duplicate `auto` or disable the sensitive-pattern guardrail. The
-  // validator rejects it with a message pointing at `auto`.
-  const fullReject = await fetch(`${serverUrl}/api/capabilities/${encodeURIComponent(CAPABILITY_NAME)}/invocations`, {
+  // Full access is a distinct, explicit mode. It is accepted by the contract,
+  // but the high-risk local approval gate must hold it before Desktop can launch
+  // the no-sandbox Codex process.
+  const fullResponse = await fetch(`${serverUrl}/api/capabilities/${encodeURIComponent(CAPABILITY_NAME)}/invocations`, {
     method: "POST", headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ projectId: worktreeCreated.project.id, worktreeId: worktreeCreated.worktree.id, task: "anything", approvalMode: "full" }),
   });
-  const fullBody = JSON.parse(await fullReject.text());
-  assert(fullReject.status === 400 && fullBody.error === "invalid_approval_mode", "approvalMode full must be rejected");
-  assert(String(fullBody.message ?? "").includes("auto"), "the rejection should point the caller at auto");
-  ok("approvalMode full is rejected with guidance toward auto");
+  const fullBody = JSON.parse(await fullResponse.text());
+  assert(fullResponse.status === 201 && fullBody.status === "waiting_for_local_approval", "approvalMode full must wait at the local approval gate");
+  const fullState = await request("GET", "/api/state");
+  const fullInvocation = fullState.invocations.find((item) => item.id === fullBody.invocationId);
+  assert(fullInvocation?.options?.approvalMode === "full", "full mode must survive the capability-to-invocation bridge");
+  ok("approvalMode full is accepted only behind the explicit local approval gate");
 
   console.log(`\ncodex-exec-caller-smoke: ${passed} checks passed`);
 } finally {

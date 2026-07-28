@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { ApiError } from "@/lib/api-client";
-import { normalizeDocumentDestination, previewFailureCopy } from "@/features/documents/documents-view";
+import { assetActionLabels, normalizeDocumentDestination, previewFailureCopy } from "@/features/documents/documents-view";
 
 describe("Documents preview failure guidance", () => {
   it("guides an unavailable OfficeCLI runtime to Applications", () => {
@@ -37,5 +37,18 @@ describe("Documents create destination", () => {
   it("normalizes separators and replaces an Office extension", () => {
     expect(normalizeDocumentDestination("docs\\report.xlsx", "docx")).toBe("docs/report.docx");
     expect(normalizeDocumentDestination("slides/q3", "pptx")).toBe("slides/q3.pptx");
+  });
+});
+
+describe("Asset actions for ordinary users", () => {
+  it("shows product actions rather than implementation names", () => {
+    expect(assetActionLabels({
+      capabilities: ["preview", "edit", "open_external"],
+      readiness: { state: "ready", reason: "available_on_owning_terminal" },
+    })).toEqual(["Preview", "Edit", "Open externally"]);
+    expect(assetActionLabels({
+      capabilities: ["preview"],
+      readiness: { state: "waiting_capability", reason: "local_application_required" },
+    })).toEqual(["Not available"]);
   });
 });

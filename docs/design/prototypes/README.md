@@ -72,6 +72,21 @@ Figma path:
 4. Preserve the Product Flow ownership and what-not-to-show rules when turning
    this into a high-fidelity design.
 
+## China-friendly Identity Entry
+
+Files:
+
+- [china-identity-entry.html](china-identity-entry.html)
+- [china-identity-entry.css](china-identity-entry.css)
+- [china-identity-entry.js](china-identity-entry.js)
+- [china-identity-entry.spec.json](china-identity-entry.spec.json)
+
+This is an offline security-flow prototype for local access, team sign-in,
+tenant selection, expiration, rejection, recovery, signed-in identity, and
+logout. It intentionally contains no QR image or scannable artifact. Production
+may render a QR only after the server and a reviewed provider adapter issue a
+live, browser-bound, single-use challenge.
+
 ## Agent Workspace IA Shell
 
 Files:

@@ -1,18 +1,23 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { Search, CornerDownLeft } from "lucide-react";
-import { SECTIONS, SECTION_GROUPS } from "@/app/sections";
-import { useUiStore } from "@/store/ui-store";
+import { PAGE_REGISTRY, SURFACE_GROUPS, pageNavigationLabelKey } from "@/app/sections";
 import { cn } from "@/lib/cn";
+import { useAppTranslation } from "@/lib/i18n/use-app-translation";
+import { usePageNavigation } from "@/hooks/use-page-navigation";
+
+const COMMAND_PAGES = SURFACE_GROUPS.flatMap((surface) =>
+  PAGE_REGISTRY.filter((page) => page.surface === surface.key));
 
 // ⌘K / Ctrl-K command palette: jump to any of the console's sections from
 // anywhere. Filters by label / blurb / group; arrow keys + Enter to navigate,
 // Esc or backdrop to close. Companion to the grouped nav — the fast path.
 export function CommandPalette() {
+  const { t, i18n } = useAppTranslation();
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
   const [active, setActive] = useState(0);
-  const setSection = useUiStore((s) => s.setSection);
+  const navigate = usePageNavigation();
   const inputRef = useRef<HTMLInputElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
   const restoreFocusRef = useRef<HTMLElement | null>(null);
@@ -20,9 +25,12 @@ export function CommandPalette() {
 
   const results = useMemo(() => {
     const q = query.trim().toLowerCase();
-    if (!q) return SECTIONS;
-    return SECTIONS.filter((s) => s.label.toLowerCase().includes(q) || s.blurb.toLowerCase().includes(q) || s.group.includes(q));
-  }, [query]);
+    if (!q) return COMMAND_PAGES;
+    return COMMAND_PAGES.filter((page) =>
+      t(pageNavigationLabelKey(page)).toLowerCase().includes(q)
+      || t(page.blurbKey).toLowerCase().includes(q)
+      || t(`shell.navigation.${page.surface}`).toLowerCase().includes(q));
+  }, [i18n.resolvedLanguage, query, t]);
 
   // Mirror results/active into refs so the window key handler can read the
   // latest without re-subscribing on every keystroke.
@@ -35,10 +43,10 @@ export function CommandPalette() {
     (i: number) => {
       const item = resultsRef.current[i];
       if (!item) return;
-      setSection(item.key);
+      navigate(item.key);
       setOpen(false);
     },
-    [setSection],
+    [navigate],
   );
 
   // Global toggle — Cmd/Ctrl-K only. Exclude Shift/Alt chords (e.g. Ctrl+Shift+K
@@ -113,7 +121,7 @@ export function CommandPalette() {
       <div
         role="dialog"
         aria-modal="true"
-        aria-label="Command palette"
+        aria-label={t("shell.command.label")}
         className="relative z-10 flex w-full max-w-lg flex-col overflow-hidden rounded-xl border border-border bg-card shadow-2xl"
       >
         <div className="flex items-center gap-2 border-b border-border px-3">
@@ -122,8 +130,8 @@ export function CommandPalette() {
             ref={inputRef}
             value={query}
             onChange={(e) => setQuery(e.target.value)}
-            placeholder="Jump to a section…"
-            aria-label="Search sections"
+            placeholder={t("shell.command.placeholder")}
+            aria-label={t("shell.command.search")}
             role="combobox"
             aria-expanded
             aria-controls="cmdk-list"
@@ -132,16 +140,16 @@ export function CommandPalette() {
           />
           <kbd className="shrink-0 rounded border border-border px-1.5 py-0.5 text-[10px] text-muted-foreground">esc</kbd>
         </div>
-        <div id="cmdk-list" ref={listRef} role="listbox" aria-label="Sections" className="max-h-[52vh] overflow-y-auto p-1.5">
+        <div id="cmdk-list" ref={listRef} role="listbox" aria-label={t("shell.command.sections")} className="max-h-[52vh] overflow-y-auto p-1.5">
           {results.length === 0 ? (
-            <p className="px-3 py-6 text-center text-sm text-muted-foreground">No section matches “{query}”.</p>
+            <p className="px-3 py-6 text-center text-sm text-muted-foreground">{t("shell.command.noMatch", { query })}</p>
           ) : (
-            SECTION_GROUPS.map((grp) => {
-              const items = results.filter((s) => s.group === grp.key);
+            SURFACE_GROUPS.map((grp) => {
+              const items = results.filter((page) => page.surface === grp.key);
               if (!items.length) return null;
               return (
                 <div key={grp.key}>
-                  <p className="px-2.5 pb-0.5 pt-2 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground/60">{grp.label}</p>
+                  <p className="px-2.5 pb-0.5 pt-2 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground/60">{t(grp.labelKey)}</p>
                   {items.map((item) => {
                     const idx = results.indexOf(item);
                     const on = idx === active;
@@ -171,8 +179,8 @@ export function CommandPalette() {
                         )}
                       >
                         <Icon className="size-4 shrink-0 opacity-80" />
-                        <span className="font-medium text-foreground">{item.label}</span>
-                        <span className="truncate text-xs text-muted-foreground">{item.blurb}</span>
+                        <span className="font-medium text-foreground">{t(pageNavigationLabelKey(item))}</span>
+                        <span className="truncate text-xs text-muted-foreground">{t(item.blurbKey)}</span>
                         {on ? <CornerDownLeft className="ml-auto size-3.5 shrink-0 text-muted-foreground" /> : null}
                       </button>
                     );
@@ -183,9 +191,9 @@ export function CommandPalette() {
           )}
         </div>
         <div className="flex items-center gap-3 border-t border-border px-3 py-1.5 text-[11px] text-muted-foreground">
-          <span><kbd className="rounded border border-border px-1">↑↓</kbd> navigate</span>
-          <span><kbd className="rounded border border-border px-1">↵</kbd> open</span>
-          <span className="ml-auto"><kbd className="rounded border border-border px-1">⌘K</kbd> toggle</span>
+          <span><kbd className="rounded border border-border px-1">↑↓</kbd> {t("shell.command.navigate")}</span>
+          <span><kbd className="rounded border border-border px-1">↵</kbd> {t("shell.command.open")}</span>
+          <span className="ml-auto"><kbd className="rounded border border-border px-1">⌘K</kbd> {t("shell.command.toggle")}</span>
         </div>
       </div>
     </div>,

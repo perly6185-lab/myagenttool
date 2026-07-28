@@ -1,11 +1,12 @@
 import { useEffect, useMemo, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { Copy, DraftingCompass, FilePlus2, FileSpreadsheet, FileText, FolderOpen, Loader2, Move, Pencil, Pin, PinOff, Presentation, Search, Trash2, X } from "lucide-react";
+import { Copy, DraftingCompass, FileImage, FilePlus2, FileSpreadsheet, FileText, FileVideo, FolderOpen, Loader2, Move, Pencil, Pin, PinOff, Presentation, Search, Trash2, X } from "lucide-react";
 import { api } from "@/data/use-console-actions";
 import { useConsoleState, useRefreshConsoleState } from "@/data/use-console-state";
 import { Button } from "@/components/ui/button";
 import { Input, Select } from "@/components/ui/input";
 import { OfficeDocumentFrame } from "@/components/common/office-document-frame";
+import { MarkdownBlock } from "@/components/ui/markdown-block";
 import { Modal } from "@/components/ui/modal";
 import { cn } from "@/lib/cn";
 import type { ProjectDocumentEntry } from "@/lib/console-state";
@@ -16,9 +17,10 @@ import { readDocumentTemplates, removeDocumentTemplate, saveDocumentTemplate, ty
 import { classifyLocalDocumentPath, directoryOfLocalPath, type LocalOfficeDocumentSelection } from "@/features/documents/local-document-location";
 import { PdfDocumentViewer } from "@/features/documents/pdf-document-viewer";
 import { CadDocumentViewer } from "@/features/documents/cad-document-viewer";
+import { useAppTranslation } from "@/lib/i18n/use-app-translation";
 
 type OfficeDocumentType = "docx" | "xlsx" | "pptx";
-type DocumentType = "all" | OfficeDocumentType | "pdf" | "dxf" | "dwg";
+type DocumentType = "all" | OfficeDocumentType | "pdf" | "dxf" | "dwg" | "md" | "canvas" | "image" | "video";
 const FILTERS: Array<{ value: DocumentType; label: string }> = [
   { value: "all", label: "All" },
   { value: "docx", label: "Word" },
@@ -27,6 +29,10 @@ const FILTERS: Array<{ value: DocumentType; label: string }> = [
   { value: "pdf", label: "PDF" },
   { value: "dxf", label: "DXF" },
   { value: "dwg", label: "DWG" },
+  { value: "md", label: "Markdown" },
+  { value: "canvas", label: "Canvas" },
+  { value: "image", label: "Images" },
+  { value: "video", label: "Video" },
 ];
 
 function DocumentIcon({ type }: { type: ProjectDocumentEntry["type"] }) {
@@ -34,10 +40,14 @@ function DocumentIcon({ type }: { type: ProjectDocumentEntry["type"] }) {
   if (type === "pptx") return <Presentation className="size-4 text-orange-600" />;
   if (type === "pdf") return <FileText className="size-4 text-red-600" />;
   if (type === "dxf" || type === "dwg") return <DraftingCompass className="size-4 text-cyan-600" />;
+  if (["png", "jpg", "jpeg", "gif", "webp", "avif", "svg"].includes(type)) return <FileImage className="size-4 text-violet-600" />;
+  if (["mp4", "webm", "mov"].includes(type)) return <FileVideo className="size-4 text-rose-600" />;
+  if (["canvas", "excalidraw"].includes(type)) return <DraftingCompass className="size-4 text-indigo-600" />;
   return <FileText className="size-4 text-blue-600" />;
 }
 
 export function DocumentsView() {
+  const { t } = useAppTranslation();
   const { data: state } = useConsoleState();
   const refresh = useRefreshConsoleState();
   const projects = state?.projects ?? [];
@@ -108,9 +118,9 @@ export function DocumentsView() {
 
   useEffect(() => {
     if (!pendingSelectionPath) return;
-    const timer = window.setTimeout(() => { setPendingSelectionError(`Could not locate ${pendingSelectionPath}. It may have moved or been deleted.`); setPendingSelectionPath(null); }, 5_000);
+    const timer = window.setTimeout(() => { setPendingSelectionError(t("documents.locateFailed", { path: pendingSelectionPath })); setPendingSelectionPath(null); }, 5_000);
     return () => window.clearTimeout(timer);
-  }, [pendingSelectionPath]);
+  }, [pendingSelectionPath, t]);
 
   useEffect(() => {
     if (projectWorktrees.some((worktree) => worktree.id === worktreeId)) return;
@@ -133,7 +143,7 @@ export function DocumentsView() {
   const openLocalDocument = async () => {
     setOpenLocalError(null);
     const picker = window.myagenttoolDesktop?.pickLocalOfficeDocument;
-    if (!picker) { setOpenLocalError("Opening a local path is available in the desktop app."); return; }
+    if (!picker) { setOpenLocalError(t("documents.desktopOnly")); return; }
     try {
       const selection = await picker();
       if (!selection) return;
@@ -143,7 +153,7 @@ export function DocumentsView() {
       if (location.scope === "worktree") setWorktreeId(location.worktreeId);
       setBrowseScope(location.scope === "worktree" ? "worktree" : "base");
       setPendingSelectionPath(location.relativePath);
-    } catch (caught) { setOpenLocalError(caught instanceof Error ? caught.message : "Could not open the local document."); }
+    } catch (caught) { setOpenLocalError(caught instanceof Error ? caught.message : t("documents.openFailed")); }
   };
 
   if (state && projects.length === 0) return <DocumentsEmptyProjects />;
@@ -152,37 +162,37 @@ export function DocumentsView() {
     <div className="flex h-full min-h-0 flex-col gap-3">
       <header className="flex flex-wrap items-center gap-3 rounded-lg border border-border bg-card p-3">
         <label className="flex items-center gap-2 text-sm">
-          <span className="text-muted-foreground">Project</span>
+          <span className="text-muted-foreground">{t("documents.project")}</span>
           <Select value={projectId} onChange={(event) => void switchProject(event.target.value)} className="h-8 min-w-44">
-            {!projectId ? <option value="">Select a project…</option> : null}
+            {!projectId ? <option value="">{t("documents.selectProject")}</option> : null}
             {projects.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}
           </Select>
         </label>
         <div className="flex overflow-hidden rounded-md border border-border text-xs">
           {FILTERS.map((filter) => (
-            <button key={filter.value} type="button" onClick={() => setType(filter.value)} className={cn("px-3 py-1.5", type === filter.value ? "bg-primary text-primary-foreground" : "bg-background text-muted-foreground hover:text-foreground")}>{filter.label}</button>
+            <button key={filter.value} type="button" onClick={() => setType(filter.value)} className={cn("px-3 py-1.5", type === filter.value ? "bg-primary text-primary-foreground" : "bg-background text-muted-foreground hover:text-foreground")}>{filter.value === "all" ? t("documents.all") : filter.label}</button>
           ))}
         </div>
-        <Select aria-label="Document source" className="h-8 w-40" value={browseScope} onChange={(event) => setBrowseScope(event.target.value as "base" | "worktree")}>
-          <option value="base">Base project</option>
-          <option value="worktree" disabled={!worktreeId}>Selected worktree</option>
+        <Select aria-label={t("documents.source")} className="h-8 w-40" value={browseScope} onChange={(event) => setBrowseScope(event.target.value as "base" | "worktree")}>
+          <option value="base">{t("documents.baseProject")}</option>
+          <option value="worktree" disabled={!worktreeId}>{t("documents.selectedWorktree")}</option>
         </Select>
         <label className="relative ml-auto min-w-52 flex-1 sm:max-w-sm">
           <Search className="pointer-events-none absolute left-2.5 top-2 size-3.5 text-muted-foreground" />
-          <Input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Search documents…" className="h-8 pl-8" />
+          <Input value={search} onChange={(event) => setSearch(event.target.value)} placeholder={t("documents.search")} className="h-8 pl-8" />
         </label>
-        <Button size="sm" variant="secondary" disabled={!projectId} onClick={() => void openLocalDocument()}><FolderOpen className="mr-1 size-3.5" /> Open local document</Button>
-        <Button size="sm" disabled={!projectId} onClick={() => setCreateOpen(true)}><FilePlus2 className="mr-1 size-3.5" /> New</Button>
+        <Button size="sm" variant="secondary" disabled={!projectId} onClick={() => void openLocalDocument()}><FolderOpen className="mr-1 size-3.5" /> {t("documents.openLocal")}</Button>
+        <Button size="sm" disabled={!projectId} onClick={() => setCreateOpen(true)}><FilePlus2 className="mr-1 size-3.5" /> {t("documents.new")}</Button>
       </header>
       {openLocalError ? <p className="rounded-md border border-warning/40 bg-warning/10 px-3 py-2 text-sm">{openLocalError}</p> : null}
-      {pendingSelectionError ? <div className="flex items-center justify-between gap-3 rounded-md border border-warning/40 bg-warning/10 px-3 py-2 text-sm"><span>{pendingSelectionError}</span><Button size="sm" variant="secondary" onClick={() => void openLocalDocument()}>Select again</Button></div> : null}
+      {pendingSelectionError ? <div className="flex items-center justify-between gap-3 rounded-md border border-warning/40 bg-warning/10 px-3 py-2 text-sm"><span>{pendingSelectionError}</span><Button size="sm" variant="secondary" onClick={() => void openLocalDocument()}>{t("documents.selectAgain")}</Button></div> : null}
 
       <div className="grid min-h-0 flex-1 grid-cols-1 gap-3 lg:grid-cols-[minmax(260px,360px)_minmax(0,1fr)]">
-        <section className="min-h-0 overflow-y-auto rounded-lg border border-border bg-card" aria-label="Documents">
-          {templates.length > 0 ? <div className="border-b border-border p-2"><p className="mb-1 px-1 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">Templates</p><div className="space-y-1">{templates.filter((item) => (type === "all" || item.type === type) && (!search.trim() || item.name.toLowerCase().includes(search.trim().toLowerCase()))).map((item) => <div key={item.id} className="flex items-center gap-1"><button type="button" className="min-w-0 flex-1 truncate rounded bg-muted px-2 py-1 text-left text-xs" onClick={() => { setTemplateSource(item); setTemplateOpen(true); }}>{item.name}</button><button type="button" className="px-1 text-xs text-muted-foreground hover:text-destructive" aria-label={`Remove template ${item.name}`} onClick={() => setTemplates(removeDocumentTemplate(item.id))}>×</button></div>)}</div></div> : null}
+        <section className="min-h-0 overflow-y-auto rounded-lg border border-border bg-card" aria-label={t("documents.label")}>
+          {templates.length > 0 ? <div className="border-b border-border p-2"><p className="mb-1 px-1 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">{t("documents.templates")}</p><div className="space-y-1">{templates.filter((item) => (type === "all" || item.type === type) && (!search.trim() || item.name.toLowerCase().includes(search.trim().toLowerCase()))).map((item) => <div key={item.id} className="flex items-center gap-1"><button type="button" className="min-w-0 flex-1 truncate rounded bg-muted px-2 py-1 text-left text-xs" onClick={() => { setTemplateSource(item); setTemplateOpen(true); }}>{item.name}</button><button type="button" className="px-1 text-xs text-muted-foreground hover:text-destructive" aria-label={t("documents.removeTemplate", { name: item.name })} onClick={() => setTemplates(removeDocumentTemplate(item.id))}>×</button></div>)}</div></div> : null}
           <RecentDocuments items={recent} projects={projects} worktrees={state?.worktrees ?? []} onOpen={(item) => openRecent(item, projects, projectId, setWorktreeId, setBrowseScope, setPendingSelectionPath, switchProject)} onPin={(item) => setRecent(toggleRecentDocumentPinned(item))} onRemove={(item) => setRecent(removeRecentDocument(item))} onClear={() => setRecent(clearRecentDocuments())} />
           <DocumentList loading={documents.isLoading} error={documents.error} rows={rows} selected={selected} onSelect={(row) => { setSelected(row); setRecent(recordRecentDocument(row)); writeDocumentUrl(projectId, row.path, row.worktreeId ?? undefined); }} />
-          {documents.data?.truncated ? <p className="border-t border-border px-3 py-2 text-xs text-muted-foreground">Showing the first 200 documents. Refine the search to narrow the list.</p> : null}
+          {documents.data?.truncated ? <p className="border-t border-border px-3 py-2 text-xs text-muted-foreground">{t("documents.truncated")}</p> : null}
         </section>
         <DocumentPreview projectId={projectId} document={selected} worktrees={projectWorktrees} worktreeId={worktreeId} onWorktreeChange={setWorktreeId} onUseTemplate={() => { setTemplateSource(null); setTemplateOpen(true); }} onSaveTemplate={() => setSaveTemplateOpen(true)} onManage={setManageOperation} />
       </div>
@@ -196,31 +206,43 @@ export function DocumentsView() {
 }
 
 function RecentDocuments({ items, projects, worktrees, onOpen, onPin, onRemove, onClear }: { items: RecentDocument[]; projects: Array<{ id: string }>; worktrees: Array<{ id: string; projectId?: string }>; onOpen: (item: RecentDocument) => void; onPin: (item: RecentDocument) => void; onRemove: (item: RecentDocument) => void; onClear: () => void }) {
+  const { t } = useAppTranslation();
   if (items.length === 0) return null;
-  return <div className="border-b border-border p-2"><div className="mb-1 flex items-center justify-between px-1"><p className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">Recent</p><button type="button" className="text-[10px] text-muted-foreground hover:text-foreground" onClick={onClear}>Clear</button></div><div className="space-y-1">{items.map((item) => {
+  return <div className="border-b border-border p-2"><div className="mb-1 flex items-center justify-between px-1"><p className="text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">{t("documents.recent")}</p><button type="button" className="text-[10px] text-muted-foreground hover:text-foreground" onClick={onClear}>{t("documents.clear")}</button></div><div className="space-y-1">{items.map((item) => {
     const projectMissing = !projects.some((project) => project.id === item.projectId);
     const worktreeMissing = Boolean(item.worktreeId && !worktrees.some((worktree) => worktree.id === item.worktreeId));
     const unavailable = projectMissing || worktreeMissing;
-    return <div key={`${item.projectId}:${item.worktreeId}:${item.path}`} className="flex items-center gap-1"><button type="button" disabled={unavailable} className={cn("min-w-0 flex-1 truncate rounded bg-muted px-2 py-1 text-left text-xs", unavailable && "line-through opacity-60")} title={unavailable ? (projectMissing ? "Project no longer exists" : "Worktree no longer exists") : item.path} onClick={() => onOpen(item)}>{item.name}{unavailable ? " · unavailable" : ""}</button><button type="button" className="p-1 text-muted-foreground hover:text-foreground" aria-label={`${item.pinned ? "Unpin" : "Pin"} ${item.name}`} onClick={() => onPin(item)}>{item.pinned ? <PinOff className="size-3" /> : <Pin className="size-3" />}</button><button type="button" className="p-1 text-muted-foreground hover:text-destructive" aria-label={`Remove recent ${item.name}`} onClick={() => onRemove(item)}><X className="size-3" /></button></div>;
+    return <div key={`${item.projectId}:${item.worktreeId}:${item.path}`} className="flex items-center gap-1"><button type="button" disabled={unavailable} className={cn("min-w-0 flex-1 truncate rounded bg-muted px-2 py-1 text-left text-xs", unavailable && "line-through opacity-60")} title={unavailable ? t(projectMissing ? "documents.projectMissing" : "documents.worktreeMissing") : item.path} onClick={() => onOpen(item)}>{item.name}{unavailable ? ` · ${t("documents.unavailable")}` : ""}</button><button type="button" className="p-1 text-muted-foreground hover:text-foreground" aria-label={t(item.pinned ? "documents.unpin" : "documents.pin", { name: item.name })} onClick={() => onPin(item)}>{item.pinned ? <PinOff className="size-3" /> : <Pin className="size-3" />}</button><button type="button" className="p-1 text-muted-foreground hover:text-destructive" aria-label={t("documents.removeRecent", { name: item.name })} onClick={() => onRemove(item)}><X className="size-3" /></button></div>;
   })}</div></div>;
 }
 
 function DocumentList({ loading, error, rows, selected, onSelect }: { loading: boolean; error: Error | null; rows: ProjectDocumentEntry[]; selected: ProjectDocumentEntry | null; onSelect: (row: ProjectDocumentEntry) => void }) {
-  if (loading) return <p className="flex items-center gap-1 p-4 text-sm text-muted-foreground"><Loader2 className="size-4 animate-spin" /> Loading documents…</p>;
-  if (error) return <p className="p-4 text-sm text-destructive">{error.message || "Could not load documents."}</p>;
-  if (rows.length === 0) return <p className="p-4 text-sm text-muted-foreground">No Word, Excel, PowerPoint, or PDF files found in this project.</p>;
+  const { t } = useAppTranslation();
+  if (loading) return <p className="flex items-center gap-1 p-4 text-sm text-muted-foreground"><Loader2 className="size-4 animate-spin" /> {t("documents.loading")}</p>;
+  if (error) return <p className="p-4 text-sm text-destructive">{error.message || t("documents.loadFailed")}</p>;
+  if (rows.length === 0) return <p className="p-4 text-sm text-muted-foreground">{t("documents.empty")}</p>;
   return <ul className="divide-y divide-border">{rows.map((row) => (
     <li key={row.path}>
       <button type="button" onClick={() => onSelect(row)} className={cn("flex w-full items-start gap-2 px-3 py-2.5 text-left hover:bg-muted/60", selected?.path === row.path && "bg-muted")}>
         <DocumentIcon type={row.type} />
-        <span className="min-w-0 flex-1"><span className="block truncate text-sm font-medium">{row.name}</span><span className="block truncate font-mono text-[11px] text-muted-foreground">{row.path}</span></span>
+        <span className="min-w-0 flex-1"><span className="block truncate text-sm font-medium">{row.name}</span><span className="block truncate font-mono text-[11px] text-muted-foreground">{row.path}</span><span className="mt-1 flex flex-wrap gap-1" aria-label={t("assetActions.label")}>{assetActionLabels(row).map((label) => <span key={label} className="rounded bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">{t(`assetActions.${label === "Preview" ? "preview" : label === "Edit" ? "edit" : label === "Open externally" ? "openExternal" : "unavailable"}` as never)}</span>)}</span></span>
         {row.gitStatus !== "clean" ? <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">{row.gitStatus}</span> : null}
       </button>
     </li>
   ))}</ul>;
 }
 
+export function assetActionLabels(asset: Pick<ProjectDocumentEntry, "capabilities" | "readiness">): string[] {
+  if (asset.readiness?.state === "waiting_capability") return ["Not available"];
+  const labels = [];
+  if (asset.capabilities?.includes("preview")) labels.push("Preview");
+  if (asset.capabilities?.includes("edit")) labels.push("Edit");
+  if (asset.capabilities?.includes("open_external")) labels.push("Open externally");
+  return labels.length > 0 ? labels : ["Not available"];
+}
+
 function DocumentPreview({ projectId, document, worktrees, worktreeId, onWorktreeChange, onUseTemplate, onSaveTemplate, onManage }: { projectId: string; document: ProjectDocumentEntry | null; worktrees: Array<{ id: string; name?: string; branchName?: string; branch?: string }>; worktreeId: string; onWorktreeChange: (id: string) => void; onUseTemplate: () => void; onSaveTemplate: () => void; onManage: (operation: "rename" | "move" | "copy" | "delete") => void }) {
+  const { t } = useAppTranslation();
   const setSection = useUiStore((state) => state.setSection);
   const setOfficecliPreviewPath = useUiStore((state) => state.setOfficecliPreviewPath);
   const setSelectedProjectId = useUiStore((state) => state.setSelectedProjectId);
@@ -228,11 +250,15 @@ function DocumentPreview({ projectId, document, worktrees, worktreeId, onWorktre
   const preview = useQuery({
     queryKey: ["office-document-preview", projectId, document?.path],
     queryFn: () => api.officecliPreview(projectId, document?.path ?? "", document?.worktreeId ?? undefined),
-    enabled: Boolean(projectId && document && !["pdf", "dxf", "dwg"].includes(document.type)),
+    enabled: Boolean(projectId && document && ["docx", "xlsx", "pptx"].includes(document.type)),
   });
-  if (!document) return <section className="grid min-h-[24rem] place-items-center rounded-lg border border-dashed border-border bg-card text-sm text-muted-foreground">Select a document to preview it.</section>;
-  if (document.type === "pdf") return <section className="flex min-h-[24rem] min-w-0 flex-col overflow-hidden rounded-lg border border-border bg-card"><header className="flex items-center gap-2 border-b border-border px-3 py-2"><DocumentIcon type={document.type} /><div className="min-w-0"><p className="truncate text-sm font-medium">{document.name}</p><p className="truncate font-mono text-[10px] text-muted-foreground">{document.path}</p></div></header><PdfDocumentViewer projectId={projectId} path={document.path} worktreeId={document.worktreeId} /></section>;
-  if (document.type === "dxf" || document.type === "dwg") return <section className="flex min-h-[24rem] min-w-0 flex-col overflow-hidden rounded-lg border border-border bg-card"><header className="flex items-center gap-2 border-b border-border px-3 py-2"><DocumentIcon type={document.type} /><div className="min-w-0 flex-1"><p className="truncate text-sm font-medium">{document.name}</p><p className="truncate font-mono text-[10px] text-muted-foreground">{document.path}</p></div><span className="rounded bg-muted px-2 py-1 text-xs text-muted-foreground">Read-only CAD preview</span></header><CadDocumentViewer projectId={projectId} path={document.path} type={document.type} worktreeId={document.worktreeId} /></section>;
+  if (!document) return <section className="grid min-h-[24rem] place-items-center rounded-lg border border-dashed border-border bg-card text-sm text-muted-foreground">{t("documentsPreview.select")}</section>;
+  if (document.type === "md" || document.type === "mdx") return <MarkdownAssetPreview projectId={projectId} document={document} />;
+  if (["png", "jpg", "jpeg", "gif", "webp", "avif", "svg"].includes(document.type)) return <ImageAssetPreview projectId={projectId} document={document} />;
+  if (["mp4", "webm", "mov"].includes(document.type)) return <VideoAssetPreview projectId={projectId} document={document} />;
+  if (["canvas", "excalidraw"].includes(document.type)) return <AssetPreviewNotice projectId={projectId} document={document} message="Open Canvas to preview or edit this governed scene." />;
+  if (document.type === "pdf") return <section className="flex min-h-[24rem] min-w-0 flex-col overflow-hidden rounded-lg border border-border bg-card"><header className="flex items-center gap-2 border-b border-border px-3 py-2"><DocumentIcon type={document.type} /><div className="min-w-0 flex-1"><p className="truncate text-sm font-medium">{document.name}</p><p className="truncate font-mono text-[10px] text-muted-foreground">{document.path}</p></div><ExternalAssetOpenButton projectId={projectId} document={document} /></header><PdfDocumentViewer projectId={projectId} path={document.path} worktreeId={document.worktreeId} /></section>;
+  if (document.type === "dxf" || document.type === "dwg") return <section className="flex min-h-[24rem] min-w-0 flex-col overflow-hidden rounded-lg border border-border bg-card"><header className="flex items-center gap-2 border-b border-border px-3 py-2"><DocumentIcon type={document.type} /><div className="min-w-0 flex-1"><p className="truncate text-sm font-medium">{document.name}</p><p className="truncate font-mono text-[10px] text-muted-foreground">{document.path}</p></div><span className="rounded bg-muted px-2 py-1 text-xs text-muted-foreground">{t("documentsPreview.cadReadonly")}</span><ExternalAssetOpenButton projectId={projectId} document={document} /></header><CadDocumentViewer projectId={projectId} path={document.path} type={document.type} worktreeId={document.worktreeId} /></section>;
   const openWorkspace = () => { setOfficecliPreviewPath(document.path); setSection("workspace"); };
   const openWorktree = () => {
     if (!worktreeId) return;
@@ -243,8 +269,8 @@ function DocumentPreview({ projectId, document, worktrees, worktreeId, onWorktre
   };
   return (
     <section className="flex min-h-[24rem] min-w-0 flex-col overflow-hidden rounded-lg border border-border bg-card">
-      <header className="flex flex-wrap items-center gap-2 border-b border-border px-3 py-2"><DocumentIcon type={document.type} /><div className="min-w-0 flex-1"><p className="truncate text-sm font-medium">{document.name}</p><p className="truncate font-mono text-[10px] text-muted-foreground">{document.path}</p></div><Button size="sm" variant="secondary" onClick={openWorkspace}>Open in Workspace</Button>{document.worktreeId ? <><Button size="sm" variant="secondary" onClick={onUseTemplate}>Use as template</Button><Button size="sm" variant="secondary" onClick={onSaveTemplate}>Add to templates</Button><Button size="icon" variant="ghost" aria-label="Rename document" onClick={() => onManage("rename")}><Pencil /></Button><Button size="icon" variant="ghost" aria-label="Move document" onClick={() => onManage("move")}><Move /></Button><Button size="icon" variant="ghost" aria-label="Copy document" onClick={() => onManage("copy")}><Copy /></Button><Button size="icon" variant="ghost" aria-label="Delete document" className="text-destructive" onClick={() => onManage("delete")}><Trash2 /></Button></> : null}{worktrees.length > 0 ? <><Select aria-label="Worktree" className="h-8 max-w-44" value={worktreeId} onChange={(event) => onWorktreeChange(event.target.value)}>{worktrees.map((worktree) => <option key={worktree.id} value={worktree.id}>{worktree.name ?? worktree.branchName ?? worktree.branch ?? worktree.id}</option>)}</Select><Button size="sm" onClick={openWorktree} disabled={!worktreeId}>Edit in worktree</Button></> : <Button size="sm" variant="secondary" onClick={() => { setSelectedProjectId(projectId); setSelectedWorktreeId(null); setSection("projects"); }}>Create a worktree to edit</Button>}</header>
-      {preview.isLoading ? <p className="flex items-center gap-1 p-4 text-sm text-muted-foreground"><Loader2 className="size-4 animate-spin" /> Rendering…</p>
+      <header className="flex flex-wrap items-center gap-2 border-b border-border px-3 py-2"><DocumentIcon type={document.type} /><div className="min-w-0 flex-1"><p className="truncate text-sm font-medium">{document.name}</p><p className="truncate font-mono text-[10px] text-muted-foreground">{document.path}</p></div><Button size="sm" variant="secondary" onClick={openWorkspace}>{t("documentsPreview.openWorkspace")}</Button>{document.worktreeId ? <><Button size="sm" variant="secondary" onClick={onUseTemplate}>{t("documentsPreview.useTemplate")}</Button><Button size="sm" variant="secondary" onClick={onSaveTemplate}>{t("documentsPreview.addTemplate")}</Button><Button size="icon" variant="ghost" aria-label={t("documentsPreview.rename")} onClick={() => onManage("rename")}><Pencil /></Button><Button size="icon" variant="ghost" aria-label={t("documentsPreview.move")} onClick={() => onManage("move")}><Move /></Button><Button size="icon" variant="ghost" aria-label={t("documentsPreview.copy")} onClick={() => onManage("copy")}><Copy /></Button><Button size="icon" variant="ghost" aria-label={t("documentsPreview.delete")} className="text-destructive" onClick={() => onManage("delete")}><Trash2 /></Button></> : null}{worktrees.length > 0 ? <><Select aria-label={t("documentsPreview.worktree")} className="h-8 max-w-44" value={worktreeId} onChange={(event) => onWorktreeChange(event.target.value)}>{worktrees.map((worktree) => <option key={worktree.id} value={worktree.id}>{worktree.name ?? worktree.branchName ?? worktree.branch ?? worktree.id}</option>)}</Select><Button size="sm" onClick={openWorktree} disabled={!worktreeId}>{t("documentsPreview.editWorktree")}</Button></> : <Button size="sm" variant="secondary" onClick={() => { setSelectedProjectId(projectId); setSelectedWorktreeId(null); setSection("projects"); }}>{t("documentsPreview.createWorktree")}</Button>}</header>
+      {preview.isLoading ? <p className="flex items-center gap-1 p-4 text-sm text-muted-foreground"><Loader2 className="size-4 animate-spin" /> {t("documentsPreview.rendering")}</p>
         : preview.error ? <PreviewFailure
           key={`${document.worktreeId ?? "base"}:${document.path}`}
           error={preview.error}
@@ -257,30 +283,144 @@ function DocumentPreview({ projectId, document, worktrees, worktreeId, onWorktre
   );
 }
 
-export function previewFailureCopy(error: Error): { title: string; detail: string; showApplications: boolean } {
+function MarkdownAssetPreview({ projectId, document }: { projectId: string; document: ProjectDocumentEntry }) {
+  const { t } = useAppTranslation();
+  const preview = useQuery({
+    queryKey: ["asset-preview", projectId, document.worktreeId, document.path],
+    queryFn: () => api.projectAssetPreview(projectId, document.path, document.worktreeId ?? undefined),
+  });
+  return <section className="min-h-[24rem] overflow-auto rounded-lg border border-border bg-card p-4">
+    <div className="mb-3 flex items-center justify-between gap-2"><h2 className="text-sm font-semibold">{document.name}</h2><ExternalAssetOpenButton projectId={projectId} document={document} /></div>
+    {preview.isLoading ? <p className="text-sm text-muted-foreground">{t("documentsPreview.preparing")}</p>
+      : preview.error ? <p role="alert" className="text-sm text-destructive">{t("documentsPreview.unavailable")}</p>
+        : <MarkdownBlock text={preview.data?.text ?? ""} />}
+  </section>;
+}
+
+function ImageAssetPreview({ projectId, document }: { projectId: string; document: ProjectDocumentEntry }) {
+  const { t } = useAppTranslation();
+  const preview = useQuery({
+    queryKey: ["asset-preview-bytes", projectId, document.worktreeId, document.path],
+    queryFn: () => api.projectAssetPreviewBytes(projectId, document.path, document.worktreeId ?? undefined),
+    enabled: document.type !== "svg",
+  });
+  const [source, setSource] = useState<string | null>(null);
+  useEffect(() => {
+    if (!preview.data) { setSource(null); return; }
+    const url = URL.createObjectURL(new Blob([preview.data]));
+    setSource(url);
+    return () => URL.revokeObjectURL(url);
+  }, [preview.data]);
+  if (document.type === "svg") return <AssetPreviewNotice projectId={projectId} document={document} message={t("documentsPreview.svgSafety")} />;
+  return <section className="flex min-h-[24rem] flex-col overflow-auto rounded-lg border border-border bg-card p-4">
+    <div className="mb-3 flex justify-end"><ExternalAssetOpenButton projectId={projectId} document={document} /></div>
+    <div className="grid flex-1 place-items-center">
+    {preview.isLoading ? <p className="text-sm text-muted-foreground">{t("documentsPreview.preparing")}</p>
+      : preview.error ? <p role="alert" className="text-sm text-destructive">{t("documentsPreview.unavailable")}</p>
+        : source ? <img src={source} alt={document.name} className="max-h-full max-w-full object-contain" /> : null}
+    </div>
+  </section>;
+}
+
+function VideoAssetPreview({ projectId, document }: { projectId: string; document: ProjectDocumentEntry }) {
+  const { t } = useAppTranslation();
+  const [source, setSource] = useState<string | null>(null);
+  const [error, setError] = useState(false);
+  useEffect(() => {
+    const mime = document.type === "webm" ? "video/webm" : document.type === "mp4" ? "video/mp4" : "video/quicktime";
+    if (typeof MediaSource === "undefined" || !MediaSource.isTypeSupported(mime)) { setError(true); return; }
+    const mediaSource = new MediaSource();
+    const url = URL.createObjectURL(mediaSource);
+    let cancelled = false;
+    setSource(url);
+    setError(false);
+    const open = () => {
+      const buffer = mediaSource.addSourceBuffer(mime);
+      const chunkBytes = 4 * 1024 * 1024;
+      let offset = 0;
+      let total = Number.POSITIVE_INFINITY;
+      const appendNext = async () => {
+        if (cancelled || offset >= total) {
+          if (!cancelled && mediaSource.readyState === "open") mediaSource.endOfStream();
+          return;
+        }
+        try {
+          const result = await api.projectAssetVideoRange(projectId, document.path, offset, offset + chunkBytes, document.worktreeId ?? undefined);
+          if (cancelled) return;
+          total = result.total;
+          offset += result.data.byteLength;
+          buffer.appendBuffer(new Uint8Array(result.data));
+        } catch {
+          if (!cancelled) setError(true);
+          if (mediaSource.readyState === "open") mediaSource.endOfStream("network");
+        }
+      };
+      buffer.addEventListener("updateend", () => void appendNext());
+      void appendNext();
+    };
+    mediaSource.addEventListener("sourceopen", open, { once: true });
+    return () => {
+      cancelled = true;
+      URL.revokeObjectURL(url);
+    };
+  }, [projectId, document.path, document.type, document.worktreeId]);
+  if (error) return <AssetPreviewNotice projectId={projectId} document={document} message={t("documentsPreview.playbackUnavailable")} />;
+  return <section className="flex min-h-[24rem] flex-col rounded-lg border border-border bg-card p-4">
+    <div className="mb-3 flex justify-end"><ExternalAssetOpenButton projectId={projectId} document={document} /></div>
+    <div className="grid flex-1 place-items-center">{source ? <video controls preload="metadata" src={source} className="max-h-full max-w-full" aria-label={t("documentsPreview.videoPreview", { name: document.name })} /> : <p className="text-sm text-muted-foreground">{t("documentsPreview.preparingPlayback")}</p>}</div>
+  </section>;
+}
+
+function AssetPreviewNotice({ projectId, document, message }: { projectId?: string; document: ProjectDocumentEntry; message: string }) {
+  return <section className="grid min-h-[24rem] place-items-center rounded-lg border border-border bg-card p-6 text-center">
+    <div><p className="font-medium">{document.name}</p><p className="mt-2 max-w-md text-sm text-muted-foreground">{message}</p>{projectId ? <div className="mt-4"><ExternalAssetOpenButton projectId={projectId} document={document} /></div> : null}</div>
+  </section>;
+}
+
+function ExternalAssetOpenButton({ projectId, document }: { projectId: string; document: ProjectDocumentEntry }) {
+  const { t } = useAppTranslation();
+  const [error, setError] = useState(false);
+  const bridge = window.myagenttoolDesktop?.openContainedAsset;
+  if (!bridge || !document.capabilities?.includes("open_external")) return null;
+  const open = async () => {
+    setError(false);
+    try {
+      await bridge({ projectId, relativePath: document.path, ...(document.worktreeId ? { worktreeId: document.worktreeId } : {}) });
+    } catch {
+      setError(true);
+    }
+  };
+  return <div><Button type="button" size="sm" variant="secondary" onClick={() => void open()}><FolderOpen /> {t("documentsPreview.openExternal")}</Button>{error ? <p role="alert" className="mt-1 text-xs text-destructive">{t("documentsPreview.externalOpenFailed")}</p> : null}</div>;
+}
+
+type Translate = ReturnType<typeof useAppTranslation>["t"];
+
+export function previewFailureCopy(error: Error, t?: Translate): { title: string; detail: string; showApplications: boolean } {
+  const copy = (key: "unavailableTitle" | "unavailableDetail" | "missingTitle" | "missingDetail" | "timeoutTitle" | "timeoutDetail" | "unsupportedTitle" | "unsupportedDetail" | "passwordTitle" | "passwordDetail" | "encryptionTitle" | "encryptionDetail" | "corruptTitle" | "corruptDetail" | "genericTitle" | "genericDetail", fallback: string) => t?.(`documentsFailure.${key}`) ?? fallback;
   const code = error instanceof ApiError ? error.code : "preview_failed";
   switch (code) {
     case "officecli_unavailable":
-      return { title: "OfficeCLI is not installed", detail: "Install OfficeCLI on this device, then register or retry the application.", showApplications: true };
+      return { title: copy("unavailableTitle", "OfficeCLI is not installed"), detail: copy("unavailableDetail", "Install OfficeCLI on this device, then register or retry the application."), showApplications: true };
     case "not_found":
-      return { title: "Document not found", detail: "The file may have moved or only exist in another worktree.", showApplications: false };
+      return { title: copy("missingTitle", "Document not found"), detail: copy("missingDetail", "The file may have moved or only exist in another worktree."), showApplications: false };
     case "render_timeout":
-      return { title: "Preview timed out", detail: "The document may be large or OfficeCLI may be busy. Try again.", showApplications: false };
+      return { title: copy("timeoutTitle", "Preview timed out"), detail: copy("timeoutDetail", "The document may be large or OfficeCLI may be busy. Try again."), showApplications: false };
     case "unsupported_type":
-      return { title: "Unsupported document type", detail: "Documents supports .docx, .xlsx, and .pptx files.", showApplications: false };
+      return { title: copy("unsupportedTitle", "Unsupported document type"), detail: copy("unsupportedDetail", "Documents supports .docx, .xlsx, and .pptx files."), showApplications: false };
     case "office_password_required":
-      return { title: "Password-protected Office document", detail: "This encrypted document cannot be previewed here yet. Open it with Word, Excel, or PowerPoint to enter its password.", showApplications: false };
+      return { title: copy("passwordTitle", "Password-protected Office document"), detail: copy("passwordDetail", "This encrypted document cannot be previewed here yet. Open it with Word, Excel, or PowerPoint to enter its password."), showApplications: false };
     case "office_encryption_unsupported":
-      return { title: "Unsupported Office encryption", detail: "Open this document with its system Office application.", showApplications: false };
+      return { title: copy("encryptionTitle", "Unsupported Office encryption"), detail: copy("encryptionDetail", "Open this document with its system Office application."), showApplications: false };
     case "office_file_corrupted":
-      return { title: "Invalid Office document", detail: "The file is damaged or is not a valid OOXML document.", showApplications: false };
+      return { title: copy("corruptTitle", "Invalid Office document"), detail: copy("corruptDetail", "The file is damaged or is not a valid OOXML document."), showApplications: false };
     default:
-      return { title: "Preview unavailable", detail: error.message || "OfficeCLI could not render this document.", showApplications: true };
+      return { title: copy("genericTitle", "Preview unavailable"), detail: error.message || copy("genericDetail", "OfficeCLI could not render this document."), showApplications: true };
   }
 }
 
 function PreviewFailure({ error, onOpenApplications, onRetry, onOpenSystem }: { error: Error; onOpenApplications: () => void; onRetry: () => void; onOpenSystem?: () => Promise<{ opened: true }> }) {
-  const copy = previewFailureCopy(error);
+  const { t } = useAppTranslation();
+  const copy = previewFailureCopy(error, t);
   const encrypted = error instanceof ApiError && (error.code === "office_password_required" || error.code === "office_encryption_unsupported");
   const [opening, setOpening] = useState(false);
   const [openError, setOpenError] = useState<string | null>(null);
@@ -288,10 +428,10 @@ function PreviewFailure({ error, onOpenApplications, onRetry, onOpenSystem }: { 
     if (!onOpenSystem) return;
     setOpening(true); setOpenError(null);
     try { await onOpenSystem(); }
-    catch { setOpenError("The system application could not open this document."); }
+    catch { setOpenError(t("documentsFailure.systemOpenFailed")); }
     finally { setOpening(false); }
   };
-  return <div className="space-y-3 p-4"><div><p className="text-sm font-medium text-destructive">{copy.title}</p><p className="mt-1 text-xs text-muted-foreground">{copy.detail}</p>{encrypted && !onOpenSystem ? <p className="mt-1 text-xs text-muted-foreground">System application access is available in the desktop app.</p> : null}{openError ? <p role="alert" className="mt-1 text-xs text-destructive">{openError}</p> : null}</div><div className="flex gap-2">{encrypted && onOpenSystem ? <Button size="sm" variant="secondary" onClick={() => void openSystem()} disabled={opening}>{opening ? "Opening…" : "Open in system application"}</Button> : <Button size="sm" variant="secondary" onClick={onRetry}>Retry</Button>}{copy.showApplications ? <Button size="sm" variant="secondary" onClick={onOpenApplications}>Open Applications</Button> : null}</div></div>;
+  return <div className="space-y-3 p-4"><div><p className="text-sm font-medium text-destructive">{copy.title}</p><p className="mt-1 text-xs text-muted-foreground">{copy.detail}</p>{encrypted && !onOpenSystem ? <p className="mt-1 text-xs text-muted-foreground">{t("documentsFailure.desktopHint")}</p> : null}{openError ? <p role="alert" className="mt-1 text-xs text-destructive">{openError}</p> : null}</div><div className="flex gap-2">{encrypted && onOpenSystem ? <Button size="sm" variant="secondary" onClick={() => void openSystem()} disabled={opening}>{t(opening ? "documentsFailure.opening" : "documentsFailure.openSystem")}</Button> : <Button size="sm" variant="secondary" onClick={onRetry}>{t("documentsFailure.retry")}</Button>}{copy.showApplications ? <Button size="sm" variant="secondary" onClick={onOpenApplications}>{t("documentsFailure.openApplications")}</Button> : null}</div></div>;
 }
 
 function urlParam(name: string): string {
@@ -327,8 +467,9 @@ async function openRecent(
 }
 
 function DocumentsEmptyProjects() {
+  const { t } = useAppTranslation();
   const setSection = useUiStore((state) => state.setSection);
-  return <div className="grid h-full place-items-center"><div className="space-y-3 text-center"><FileText className="mx-auto size-8 text-muted-foreground" /><div><p className="font-medium">No projects yet</p><p className="text-sm text-muted-foreground">Register a project before browsing local documents.</p></div><Button onClick={() => setSection("projects")}>Register a project</Button></div></div>;
+  return <div className="grid h-full place-items-center"><div className="space-y-3 text-center"><FileText className="mx-auto size-8 text-muted-foreground" /><div><p className="font-medium">{t("documentsModal.noProjects")}</p><p className="text-sm text-muted-foreground">{t("documentsModal.noProjectsHint")}</p></div><Button onClick={() => setSection("projects")}>{t("documentsModal.registerProject")}</Button></div></div>;
 }
 
 export function normalizeDocumentDestination(input: string, type: OfficeDocumentType): string {
@@ -339,6 +480,7 @@ export function normalizeDocumentDestination(input: string, type: OfficeDocument
 }
 
 function DocumentWriteModal({ mode, open, onClose, projectId, worktrees, defaultWorktreeId, onComplete, template, templateDefinition }: { mode: "create" | "template"; open: boolean; onClose: () => void; projectId: string; worktrees: Array<{ id: string; name?: string; branchName?: string; branch?: string }>; defaultWorktreeId: string; onComplete: (worktreeId: string, path: string) => void; template?: ProjectDocumentEntry; templateDefinition?: DocumentTemplate }) {
+  const { t } = useAppTranslation();
   const queryClient = useQueryClient();
   const [type, setType] = useState<OfficeDocumentType>("docx");
   const [destination, setDestination] = useState("untitled.docx");
@@ -359,9 +501,9 @@ function DocumentWriteModal({ mode, open, onClose, projectId, worktrees, default
   }, [open, mode, template, templateDefinition]);
 
   const submit = async () => {
-    if (!worktreeId) { setError("Create or select a worktree first."); return; }
+    if (!worktreeId) { setError(t("documentsModal.selectWorktreeFirst")); return; }
     const path = mode === "create" ? normalizeDocumentDestination(destination, type) : destination.trim().replaceAll("\\", "/");
-    if (!path || path.startsWith("/") || path.split("/").includes("..")) { setError("Destination must be a relative path inside the worktree."); return; }
+    if (!path || path.startsWith("/") || path.split("/").includes("..")) { setError(t("documentsModal.relativePath")); return; }
     setPending(true);
     setError(null);
     try {
@@ -369,9 +511,9 @@ function DocumentWriteModal({ mode, open, onClose, projectId, worktrees, default
         const grant = (await api.issueApprovalGrant("wrapper:create", "app_officecli")) as { token: string };
         await api.invokeCapability("app.app_officecli.apply.create", { projectId, worktreeId, file: path, approvalToken: grant.token });
       } else {
-        if (!template?.worktreeId || template.worktreeId !== worktreeId) throw new Error("Template and output must use the same worktree.");
+        if (!template?.worktreeId || template.worktreeId !== worktreeId) throw new Error(t("documentsModal.sameWorktree"));
         const data = templateDefinition?.fields.length ? templateValues : JSON.parse(templateData) as Record<string, unknown>;
-        if (!data || Array.isArray(data) || typeof data !== "object") throw new Error("Template data must be a JSON object.");
+        if (!data || Array.isArray(data) || typeof data !== "object") throw new Error(t("documentsModal.jsonObject"));
         const grant = (await api.issueApprovalGrant("wrapper:merge", "app_officecli")) as { token: string };
         await api.invokeCapability("app.app_officecli.apply.merge", { projectId, worktreeId, template: template.path, output: path, data, approvalToken: grant.token } as unknown as Record<string, string>);
       }
@@ -379,34 +521,36 @@ function DocumentWriteModal({ mode, open, onClose, projectId, worktrees, default
       onComplete(worktreeId, path);
       onClose();
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "Document write failed.");
+      setError(caught instanceof Error ? caught.message : t("documentsModal.writeFailed"));
     } finally {
       setPending(false);
     }
   };
 
   return (
-    <Modal open={open} onClose={pending ? () => undefined : onClose} title={mode === "create" ? "New Office document" : "Create from template"} description="Writes are confined to a worktree so changes remain reviewable before promotion.">
+    <Modal open={open} onClose={pending ? () => undefined : onClose} title={t(mode === "create" ? "documentsModal.newOffice" : "documentsModal.fromTemplate")} description={t("documentsModal.writeDescription")}>
       <div className="space-y-3">
-        {worktrees.length === 0 ? <p className="rounded-md border border-warning/40 bg-warning/10 p-3 text-sm">This project has no worktree. Create one from Projects before writing documents.</p> : <label className="block space-y-1 text-sm"><span>Worktree</span><Select value={worktreeId} onChange={(event) => setWorktreeId(event.target.value)}>{worktrees.map((worktree) => <option key={worktree.id} value={worktree.id}>{worktree.name ?? worktree.branchName ?? worktree.branch ?? worktree.id}</option>)}</Select></label>}
-        {mode === "create" ? <label className="block space-y-1 text-sm"><span>Document type</span><Select value={type} onChange={(event) => setType(event.target.value as OfficeDocumentType)}><option value="docx">Word (.docx)</option><option value="xlsx">Excel (.xlsx)</option><option value="pptx">PowerPoint (.pptx)</option></Select></label> : <><p className="rounded bg-muted p-2 font-mono text-xs">Template: {template?.path}</p>{templateDefinition?.fields.length ? templateDefinition.fields.map((field) => <label key={field.key} className="block space-y-1 text-sm"><span>{field.label}</span><Input aria-label={field.label} value={templateValues[field.key] ?? ""} onChange={(event) => setTemplateValues((values) => ({ ...values, [field.key]: event.target.value }))} /></label>) : <label className="block space-y-1 text-sm"><span>Template data (JSON)</span><textarea value={templateData} onChange={(event) => setTemplateData(event.target.value)} rows={5} className="w-full rounded-md border border-border bg-background p-2 font-mono text-xs" /></label>}</>}
-        <label className="block space-y-1 text-sm"><span>Destination in worktree</span><Input value={destination} onChange={(event) => setDestination(event.target.value)} placeholder="docs/report.docx" spellCheck={false} /></label>
+        {worktrees.length === 0 ? <p className="rounded-md border border-warning/40 bg-warning/10 p-3 text-sm">{t("documentsModal.noWorktree")}</p> : <label className="block space-y-1 text-sm"><span>{t("documentsModal.worktree")}</span><Select value={worktreeId} onChange={(event) => setWorktreeId(event.target.value)}>{worktrees.map((worktree) => <option key={worktree.id} value={worktree.id}>{worktree.name ?? worktree.branchName ?? worktree.branch ?? worktree.id}</option>)}</Select></label>}
+        {mode === "create" ? <label className="block space-y-1 text-sm"><span>{t("documentsModal.documentType")}</span><Select value={type} onChange={(event) => setType(event.target.value as OfficeDocumentType)}><option value="docx">Word (.docx)</option><option value="xlsx">Excel (.xlsx)</option><option value="pptx">PowerPoint (.pptx)</option></Select></label> : <><p className="rounded bg-muted p-2 font-mono text-xs">{t("documentsModal.template")}: {template?.path}</p>{templateDefinition?.fields.length ? templateDefinition.fields.map((field) => <label key={field.key} className="block space-y-1 text-sm"><span>{field.label}</span><Input aria-label={field.label} value={templateValues[field.key] ?? ""} onChange={(event) => setTemplateValues((values) => ({ ...values, [field.key]: event.target.value }))} /></label>) : <label className="block space-y-1 text-sm"><span>{t("documentsModal.templateData")}</span><textarea value={templateData} onChange={(event) => setTemplateData(event.target.value)} rows={5} className="w-full rounded-md border border-border bg-background p-2 font-mono text-xs" /></label>}</>}
+        <label className="block space-y-1 text-sm"><span>{t("documentsModal.destination")}</span><Input value={destination} onChange={(event) => setDestination(event.target.value)} placeholder="docs/report.docx" spellCheck={false} /></label>
         {error ? <p className="text-sm text-destructive">{error}</p> : null}
-        <div className="flex justify-end gap-2"><Button variant="secondary" onClick={onClose} disabled={pending}>Cancel</Button><Button onClick={() => void submit()} disabled={pending || worktrees.length === 0}>{pending ? "Working…" : mode === "create" ? "Create document" : "Create from template"}</Button></div>
+        <div className="flex justify-end gap-2"><Button variant="secondary" onClick={onClose} disabled={pending}>{t("documentsModal.cancel")}</Button><Button onClick={() => void submit()} disabled={pending || worktrees.length === 0}>{t(pending ? "documentsModal.working" : mode === "create" ? "documentsModal.createDocument" : "documentsModal.createFromTemplate")}</Button></div>
       </div>
     </Modal>
   );
 }
 
 function SaveTemplateModal({ open, document, onClose, onSave }: { open: boolean; document: ProjectDocumentEntry | null; onClose: () => void; onSave: (name: string, fields: string[]) => void }) {
+  const { t } = useAppTranslation();
   const [name, setName] = useState("");
   const [fields, setFields] = useState("");
   useEffect(() => { if (open && document) { setName(document.name.replace(/\.(docx|xlsx|pptx)$/i, "")); setFields(""); } }, [open, document]);
   if (!document?.worktreeId) return null;
-  return <Modal open={open} onClose={onClose} title="Add to templates" description="Define the fields users fill in when creating a document from this template."><div className="space-y-3"><label className="block space-y-1 text-sm"><span>Template name</span><Input aria-label="Template name" value={name} onChange={(event) => setName(event.target.value)} /></label><label className="block space-y-1 text-sm"><span>Field keys</span><Input aria-label="Template field keys" value={fields} onChange={(event) => setFields(event.target.value)} placeholder="title, owner, quarter" /><span className="block text-xs text-muted-foreground">Comma-separated keys matching placeholders in the template.</span></label><div className="flex justify-end gap-2"><Button variant="secondary" onClick={onClose}>Cancel</Button><Button onClick={() => onSave(name, fields.split(","))}>Save template</Button></div></div></Modal>;
+  return <Modal open={open} onClose={onClose} title={t("documentsActions.addTemplate")} description={t("documentsActions.templateDescription")}><div className="space-y-3"><label className="block space-y-1 text-sm"><span>{t("documentsActions.templateName")}</span><Input aria-label={t("documentsActions.templateName")} value={name} onChange={(event) => setName(event.target.value)} /></label><label className="block space-y-1 text-sm"><span>{t("documentsActions.fieldKeys")}</span><Input aria-label={t("documentsActions.templateFieldKeys")} value={fields} onChange={(event) => setFields(event.target.value)} placeholder="title, owner, quarter" /><span className="block text-xs text-muted-foreground">{t("documentsActions.fieldHint")}</span></label><div className="flex justify-end gap-2"><Button variant="secondary" onClick={onClose}>{t("documentsModal.cancel")}</Button><Button onClick={() => onSave(name, fields.split(","))}>{t("documentsActions.saveTemplate")}</Button></div></div></Modal>;
 }
 
 function ExternalDocumentModal({ selection, worktrees, defaultWorktreeId, onClose, onRegister, onCopied }: { selection: LocalOfficeDocumentSelection | null; worktrees: Array<{ id: string; name?: string; branchName?: string; branch?: string }>; defaultWorktreeId: string; onClose: () => void; onRegister: () => void; onCopied: (worktreeId: string, path: string) => void }) {
+  const { t } = useAppTranslation();
   const [targetWorktreeId, setTargetWorktreeId] = useState(defaultWorktreeId);
   const [destination, setDestination] = useState("");
   const [pending, setPending] = useState(false);
@@ -414,16 +558,17 @@ function ExternalDocumentModal({ selection, worktrees, defaultWorktreeId, onClos
   useEffect(() => { if (selection) { setTargetWorktreeId(defaultWorktreeId || worktrees[0]?.id || ""); setDestination(`docs/${selection.name}`); setError(null); } }, [selection, defaultWorktreeId, worktrees]);
   const copy = async (onConflict?: "rename") => {
     const bridge = window.myagenttoolDesktop?.copySelectedOfficeDocument;
-    if (!selection || !bridge) { setError("Copying local files requires the desktop app."); return; }
+    if (!selection || !bridge) { setError(t("documentsActions.copyDesktopOnly")); return; }
     setPending(true); setError(null);
     try { const result = await bridge({ selectionId: selection.selectionId, worktreeId: targetWorktreeId, destination, ...(onConflict ? { onConflict } : {}) }); onCopied(targetWorktreeId, result.path); }
-    catch (caught) { setError(caught instanceof Error ? caught.message : "Could not copy the document."); }
+    catch (caught) { setError(caught instanceof Error ? caught.message : t("documentsActions.copyFailed")); }
     finally { setPending(false); }
   };
-  return <Modal open={Boolean(selection)} onClose={pending ? () => undefined : onClose} closeDisabled={pending} title="Document is outside registered projects" description="MyAgentTool will not upload or silently copy this local file."><div className="space-y-3"><p className="rounded bg-muted p-2 font-mono text-xs break-all">{selection?.absolutePath}</p><p className="text-sm text-muted-foreground">Register its containing folder to open in place, or explicitly add one local copy to a Worktree.</p>{worktrees.length ? <><label className="block space-y-1 text-sm"><span>Target Worktree</span><Select value={targetWorktreeId} onChange={(event) => setTargetWorktreeId(event.target.value)}>{worktrees.map((item) => <option key={item.id} value={item.id}>{item.name ?? item.branchName ?? item.branch ?? item.id}</option>)}</Select></label><label className="block space-y-1 text-sm"><span>Destination in worktree</span><Input value={destination} onChange={(event) => setDestination(event.target.value)} /></label></> : null}{error ? <div className="space-y-2"><p className="text-sm text-destructive">{error}</p>{error.includes("already exists") ? <Button size="sm" variant="secondary" onClick={() => void copy("rename")}>Use available name</Button> : null}</div> : null}<div className="flex flex-wrap justify-end gap-2"><Button variant="secondary" onClick={onClose} disabled={pending}>Cancel</Button><Button variant="secondary" onClick={onRegister} disabled={pending}>Go to Projects</Button>{worktrees.length ? <Button onClick={() => void copy()} disabled={pending || !destination.trim()}>Add copy to Worktree</Button> : null}</div></div></Modal>;
+  return <Modal open={Boolean(selection)} onClose={pending ? () => undefined : onClose} closeDisabled={pending} title={t("documentsActions.externalTitle")} description={t("documentsActions.externalDescription")}><div className="space-y-3"><p className="rounded bg-muted p-2 font-mono text-xs break-all">{selection?.absolutePath}</p><p className="text-sm text-muted-foreground">{t("documentsActions.externalHint")}</p>{worktrees.length ? <><label className="block space-y-1 text-sm"><span>{t("documentsActions.targetWorktree")}</span><Select value={targetWorktreeId} onChange={(event) => setTargetWorktreeId(event.target.value)}>{worktrees.map((item) => <option key={item.id} value={item.id}>{item.name ?? item.branchName ?? item.branch ?? item.id}</option>)}</Select></label><label className="block space-y-1 text-sm"><span>{t("documentsModal.destination")}</span><Input value={destination} onChange={(event) => setDestination(event.target.value)} /></label></> : null}{error ? <div className="space-y-2"><p className="text-sm text-destructive">{error}</p>{error.includes("already exists") ? <Button size="sm" variant="secondary" onClick={() => void copy("rename")}>{t("documentsActions.availableName")}</Button> : null}</div> : null}<div className="flex flex-wrap justify-end gap-2"><Button variant="secondary" onClick={onClose} disabled={pending}>{t("documentsModal.cancel")}</Button><Button variant="secondary" onClick={onRegister} disabled={pending}>{t("documentsActions.goProjects")}</Button>{worktrees.length ? <Button onClick={() => void copy()} disabled={pending || !destination.trim()}>{t("documentsActions.addCopy")}</Button> : null}</div></div></Modal>;
 }
 
 function DocumentManageModal({ operation, document, onClose, onComplete }: { operation: "rename" | "move" | "copy" | "delete" | null; document: ProjectDocumentEntry | null; onClose: () => void; onComplete: (path: string | null) => void }) {
+  const { t } = useAppTranslation();
   const queryClient = useQueryClient();
   const [destination, setDestination] = useState("");
   const [pending, setPending] = useState(false);
@@ -436,7 +581,7 @@ function DocumentManageModal({ operation, document, onClose, onComplete }: { ope
     setError(null);
   }, [operation, document]);
   if (!operation || !document?.worktreeId) return null;
-  const labels = { rename: "Rename document", move: "Move document", copy: "Copy document", delete: "Delete document" } as const;
+  const labels = { rename: t("documentsPreview.rename"), move: t("documentsPreview.move"), copy: t("documentsPreview.copy"), delete: t("documentsPreview.delete") } as const;
   const submit = async () => {
     setPending(true);
     setError(null);
@@ -445,17 +590,17 @@ function DocumentManageModal({ operation, document, onClose, onComplete }: { ope
       await queryClient.invalidateQueries({ queryKey: ["project-documents", document.projectId] });
       onComplete(operation === "delete" ? null : result.destination ?? destination);
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "Document operation failed.");
+      setError(caught instanceof Error ? caught.message : t("documentsActions.operationFailed"));
     } finally {
       setPending(false);
     }
   };
-  return <Modal open onClose={pending ? () => undefined : onClose} closeDisabled={pending} title={labels[operation]} description="This change is confined to the selected worktree and will appear in its Git diff.">
+  return <Modal open onClose={pending ? () => undefined : onClose} closeDisabled={pending} title={labels[operation]} description={t("documentsActions.manageDescription")}>
     <div className="space-y-3">
       <p className="rounded bg-muted p-2 font-mono text-xs">{document.path}</p>
-      {operation === "delete" ? <p className="text-sm text-destructive">This permanently removes the document from this worktree. The change remains reviewable through Git.</p> : <label className="block space-y-1 text-sm"><span>Destination in worktree</span><Input aria-label="Destination in worktree" value={destination} onChange={(event) => setDestination(event.target.value)} spellCheck={false} /></label>}
+      {operation === "delete" ? <p className="text-sm text-destructive">{t("documentsActions.deleteWarning")}</p> : <label className="block space-y-1 text-sm"><span>{t("documentsModal.destination")}</span><Input aria-label={t("documentsModal.destination")} value={destination} onChange={(event) => setDestination(event.target.value)} spellCheck={false} /></label>}
       {error ? <p className="text-sm text-destructive">{error}</p> : null}
-      <div className="flex justify-end gap-2"><Button variant="secondary" onClick={onClose} disabled={pending}>Cancel</Button><Button variant={operation === "delete" ? "destructive" : "primary"} onClick={() => void submit()} disabled={pending || (operation !== "delete" && !destination.trim())}>{pending ? "Working…" : labels[operation]}</Button></div>
+      <div className="flex justify-end gap-2"><Button variant="secondary" onClick={onClose} disabled={pending}>{t("documentsModal.cancel")}</Button><Button variant={operation === "delete" ? "destructive" : "primary"} onClick={() => void submit()} disabled={pending || (operation !== "delete" && !destination.trim())}>{pending ? t("documentsModal.working") : labels[operation]}</Button></div>
     </div>
   </Modal>;
 }

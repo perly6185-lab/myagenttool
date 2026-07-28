@@ -1,6 +1,7 @@
 import { GitFork, GitMerge, CircleDot, CircleDashed, XCircle, Play, Loader2 } from "lucide-react";
 import { api, useAsyncAction } from "@/data/use-console-actions";
 import type { AutoRunRecord } from "./auto-runs-view";
+import { useAppTranslation } from "@/lib/i18n/use-app-translation";
 
 // Epic S4: live rollup of a decomposed epic's children. Each child rolls up from its
 // own auto-run once a human labels the child `auto`; until then it is "not started".
@@ -23,6 +24,7 @@ function childState(item: { status?: string | null; prState?: string | null; iss
 }
 
 export function EpicRollup({ run, onDone }: { run: AutoRunRecord; onDone?: () => Promise<void> | void }) {
+  const { t } = useAppTranslation();
   const { execute, pending } = useAsyncAction();
   const rollup = run.childRollup;
   const children = run.childIssues ?? [];
@@ -47,8 +49,8 @@ export function EpicRollup({ run, onDone }: { run: AutoRunRecord; onDone?: () =>
   return (
     <div className="flex flex-col gap-1 rounded-lg border border-border bg-muted/30 p-2">
       <span className="flex items-center gap-1 text-xs font-medium text-foreground/80">
-        <GitFork className="size-3.5" /> Epic children — {done}/{total} done · {started} started
-        {rollup?.redundant ? <span className="text-amber-600 dark:text-amber-400"> · {rollup.redundant} redundant</span> : null}
+        <GitFork className="size-3.5" /> {t("autoRunActions.epicChildren")} — {done}/{total} {t("autoRunActions.done")} · {started} {t("autoRunActions.started")}
+        {rollup?.redundant ? <span className="text-amber-600 dark:text-amber-400"> · {rollup.redundant} {t("autoRunActions.redundant")}</span> : null}
       </span>
       <ul className="flex flex-col gap-0.5">
         {(rollup?.items ?? children.map((c) => ({ number: c.number, title: c.title, status: null, prState: null, issueState: null, done: false, redundant: false }))).map((item) => {
@@ -64,19 +66,19 @@ export function EpicRollup({ run, onDone }: { run: AutoRunRecord; onDone?: () =>
               <Icon className="size-3 shrink-0" />
               <span className="shrink-0">#{item.number}</span>
               <span className="truncate" title={item.title ?? undefined}>{item.title ?? ""}</span>
-              {item.redundant ? <span className="shrink-0 rounded bg-amber-500/15 px-1 text-[10px] text-amber-700 dark:text-amber-300" title="the run was judge-blocked as already covered by another child (confirmed overlap)">redundant</span> : null}
+              {item.redundant ? <span className="shrink-0 rounded bg-amber-500/15 px-1 text-[10px] text-amber-700 dark:text-amber-300" title={t("autoRunActions.redundantHint")}>{t("autoRunActions.redundant")}</span> : null}
               {kind === "notStarted" && run.projectId ? (
                 <button
                   type="button"
                   disabled={pending}
                   onClick={() => void runChild(item)}
-                  title="Start this child's auto-run (spends agent quota). Run children in dependency order."
+                  title={t("autoRunActions.runChildHint")}
                   className="ml-auto flex shrink-0 items-center gap-0.5 rounded border border-border px-1 text-[10px] text-foreground/70 hover:text-foreground disabled:opacity-50"
                 >
-                  {pending ? <Loader2 className="size-2.5 animate-spin" /> : <Play className="size-2.5" />} Run
+                  {pending ? <Loader2 className="size-2.5 animate-spin" /> : <Play className="size-2.5" />} {t("autoRunActions.run")}
                 </button>
               ) : (
-                <span className="ml-auto shrink-0 text-muted-foreground">{item.done || item.issueState === "CLOSED" || item.prState === "MERGED" ? "done" : item.status ?? "not started"}</span>
+                <span className="ml-auto shrink-0 text-muted-foreground">{item.done || item.issueState === "CLOSED" || item.prState === "MERGED" ? t("autoRunActions.done") : item.status ?? t("autoRunActions.notStarted")}</span>
               )}
             </li>
           );

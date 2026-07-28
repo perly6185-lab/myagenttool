@@ -46,6 +46,9 @@ test("normalizeWorktreeLink: keeps well-formed pr/issue links, drops junk", () =
   const issue = normalizeWorktreeLink({ type: "issue", number: 7 });
   assert.equal(issue.type, "issue");
   assert.equal(issue.title, "ISSUE #7", "defaults a title");
+  assert.deepEqual(normalizeWorktreeLink({ type: "local_issue", number: 3, title: "Local" }), {
+    type: "local_issue", number: 3, title: "Local", url: null, state: "open",
+  });
   assert.equal(normalizeWorktreeLink(null), null);
   assert.equal(normalizeWorktreeLink({ type: "pr", number: 0 }), null, "number must be positive");
   assert.equal(normalizeWorktreeLink({ type: "nope", number: 1 }), null, "unknown type dropped");

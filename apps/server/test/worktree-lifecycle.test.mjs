@@ -222,3 +222,61 @@ test("worktreeForProject resolves from BOTH the source and the derived workspace
   assert.equal(svc.worktreeForProject(derivedProject.id)?.id, worktree.id, "reachable from the derived workspace project");
   assert.equal(svc.worktreeForProject("prj_ghost"), null);
 });
+
+test("promoteWorktreeToBase fast-forwards only an approved, unchanged worktree", async () => {
+  const deliveryRepo = mkdtempSync(join(tmpdir(), "wt-delivery-"));
+  execFileSync("git", ["init", "-b", "main", deliveryRepo], { encoding: "utf8" });
+  git(deliveryRepo, "config", "user.email", "t@example.com");
+  git(deliveryRepo, "config", "user.name", "T");
+  writeFileSync(join(deliveryRepo, "README.md"), "base\n");
+  git(deliveryRepo, "add", ".");
+  git(deliveryRepo, "commit", "-m", "base");
+  let counter = 0;
+  const deliveryState = { projects: [], worktrees: [], worktreeReviews: [], projectTargets: [], currentProjectId: null };
+  const deliveryService = createProjectService({
+    state: deliveryState,
+    now: () => "2026-07-27T12:00:00.000Z",
+    nextId: (prefix) => `${prefix}_${++counter}`,
+    appendEvent: () => {},
+    persistStateSoon: () => {},
+  });
+  const project = deliveryService.addProject({ name: "Delivery", path: deliveryRepo });
+  const { worktree } = deliveryService.createWorktree({
+    projectId: project.id, name: "deliver", branchName: "local/deliver", baseBranch: "main",
+  });
+  writeFileSync(join(worktree.worktreePath, "DELIVERED.txt"), "ready\n");
+  git(worktree.worktreePath, "add", ".");
+  git(worktree.worktreePath, "commit", "-m", "deliver");
+  const reviewedCommit = git(worktree.worktreePath, "rev-parse", "HEAD");
+  deliveryService.submitWorktreeReview({ worktreeId: worktree.id, verdict: "approved" });
+
+  const result = await deliveryService.promoteWorktreeToBase(worktree.id);
+
+  assert.equal(result.commit, reviewedCommit);
+  assert.equal(git(deliveryRepo, "rev-parse", "HEAD"), reviewedCommit);
+  assert.ok(existsSync(join(deliveryRepo, "DELIVERED.txt")));
+  assert.equal(worktree.delivery.mode, "local_merge");
+});
+
+test("delivery refuses a worktree that changed after approval", async () => {
+  const source = state.projects.find((p) => p.source !== "worktree");
+  const { worktree } = svc.createWorktree({ projectId: source.id, name: "stale review", branchName: "myagent/stale-review" });
+  writeFileSync(join(worktree.worktreePath, "STALE.txt"), "first\n");
+  git(worktree.worktreePath, "add", ".");
+  git(worktree.worktreePath, "commit", "-m", "first");
+  svc.submitWorktreeReview({ worktreeId: worktree.id, verdict: "approved" });
+  writeFileSync(join(worktree.worktreePath, "STALE.txt"), "second\n");
+  git(worktree.worktreePath, "add", ".");
+  git(worktree.worktreePath, "commit", "-m", "second");
+
+  await assert.rejects(() => svc.promoteWorktreeToBase(worktree.id), /changed after approval/i);
+});
+
+test("pull-request delivery refuses uncommitted changes after approval", async () => {
+  const source = state.projects.find((p) => p.source !== "worktree");
+  const { worktree } = svc.createWorktree({ projectId: source.id, name: "dirty PR", branchName: "myagent/dirty-pr" });
+  svc.submitWorktreeReview({ worktreeId: worktree.id, verdict: "approved" });
+  writeFileSync(join(worktree.worktreePath, "UNCOMMITTED.txt"), "not reviewed\n");
+
+  await assert.rejects(() => svc.promoteWorktreeToPullRequest(worktree.id), /uncommitted changes/i);
+});

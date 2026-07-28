@@ -5,6 +5,7 @@ import { CollapsiblePanel } from "@/components/ui/collapsible-panel";
 import { MarkdownBlock } from "@/components/ui/markdown-block";
 import { api, type RunTranscriptBlock, type RunTranscriptRecord } from "@/lib/api-client";
 import { cn } from "@/lib/cn";
+import { useAppTranslation } from "@/lib/i18n/use-app-translation";
 
 // #1074 (Epic #1070): render a persisted run transcript the way the Claude Code
 // IDE does — "Thought for Ns" blocks, tool-call rows with collapsible IN/OUT
@@ -203,11 +204,12 @@ export function RunTranscriptSection({
   defaultOpen?: boolean;
   className?: string;
 }) {
+  const { t } = useAppTranslation();
   if (!invocationId) return null;
   if (!terminal) {
     return (
       <p className="text-xs italic text-muted-foreground">
-        Agent transcript appears here once this run finishes (when the agent emits one).
+        {t("runTranscript.pending")}
       </p>
     );
   }
@@ -223,20 +225,21 @@ function LoadedRunTranscriptSection({
   defaultOpen?: boolean;
   className?: string;
 }) {
+  const { t } = useAppTranslation();
   const { data } = useRunTranscript(invocationId);
   if (!data) return null; // still loading — never claim absence before the answer
   const transcript = data.transcript ?? null;
   if (!transcript || (transcript.blocks ?? []).length === 0) {
     return (
       <p className="text-xs italic text-muted-foreground">
-        This run's agent did not emit a transcript.
+        {t("runTranscript.absent")}
       </p>
     );
   }
   return (
     <CollapsiblePanel
-      label={`Agent transcript (${transcript.blocks.length} steps)`}
-      meta={transcript.payloadReaped ? <span className="italic">payload expired</span> : undefined}
+      label={t("runTranscript.label", { count: transcript.blocks.length })}
+      meta={transcript.payloadReaped ? <span className="italic">{t("runTranscript.payloadExpired")}</span> : undefined}
       defaultOpen={defaultOpen}
       className={className}
       contentClassName="p-2"

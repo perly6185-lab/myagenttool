@@ -1,0 +1,29 @@
+name: Real provider nightly
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "17 7 * * *"
+
+permissions:
+  contents: read
+
+jobs:
+  real-provider-contract:
+    if: vars.ENABLE_REAL_PROVIDER_NIGHTLY == 'true'
+    runs-on: self-hosted
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9.15.0
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Verify real local provider CLIs
+        run: node tools/dev/real-provider-nightly.mjs
+      - name: Run deterministic capability contracts
+        run: pnpm ai:coding-adapter-contract

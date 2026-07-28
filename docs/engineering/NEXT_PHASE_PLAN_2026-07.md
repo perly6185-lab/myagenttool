@@ -2,6 +2,11 @@
 
 ## Decision
 
+> 2026-07 diagnostic refresh: durable SQLite, Bridge trust, Application runtime,
+> Entry/Settings/Trace, and Channel provider contracts are implemented. Active
+> work is now recorded in `DIAGNOSTIC_REMEDIATION_2026-07.md`; the workstreams
+> below are retained as the historical decision trail.
+
 Adopt the next-phase strategy: stop broadening the platform and make the
 already-built control-plane loops durable, locally enforceable, and closable.
 

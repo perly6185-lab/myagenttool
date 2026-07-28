@@ -19,6 +19,7 @@ export async function handleCodexRoutes({
   recordCodexHookEvent,
   expireCodexApprovalBrokerRequests,
   resolveCodexApprovalBrokerRequest,
+  recoverTimedOutCodexApproval,
   createCodexImportedEvidenceRecord,
   createCodexChangeReview,
   createCodexExecReview,
@@ -90,8 +91,30 @@ export async function handleCodexRoutes({
     if (denyForeignProject({ res, sendJson, state, actor, projectId: codexInvocationProjectId(state, request.invocationId), notFound: { error: "codex_approval_request_not_found" } })) {
       return true;
     }
-    // #1151: a settled broker request is immutable (the service already no-ops);
-    // tell the second operator who decided instead of silently echoing the row.
+    // A timed-out request remains immutable, but a later explicit approval is
+    // useful: resume its linked auto-run on the same worktree. The recovery
+    // service is idempotent and also handles the race where bridge completion
+    // has not reached the auto-run yet.
+    if (
+      request.status === "timed_out"
+      && approvalMatch[2] === "approve"
+      && typeof recoverTimedOutCodexApproval === "function"
+    ) {
+      try {
+        const recovery = await recoverTimedOutCodexApproval(request, actor);
+        sendJson(res, 200, { approvalRequest: request, recovery, recoveredAfterTimeout: true });
+      } catch (error) {
+        sendJson(res, 409, {
+          error: "codex_approval_recovery_failed",
+          message: error instanceof Error ? error.message : String(error),
+          approvalRequest: request,
+        });
+      }
+      return true;
+    }
+    // #1151: every other settled broker request is immutable (the service
+    // already no-ops); tell the second operator who decided instead of silently
+    // echoing the row.
     if (request.status !== "pending") {
       sendJson(res, 200, {
         approvalRequest: request,

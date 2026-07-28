@@ -1,104 +1,91 @@
-import { useState } from "react";
+import { lazy, Suspense, useEffect, useState } from "react";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
 import { useRefreshConsoleState } from "@/data/use-console-state";
 import {
+  getCurrentSession,
   getSessionUser,
-  loginWithCredentials,
-  logout,
+  SESSION_CHANGED_EVENT,
   type SessionUser,
 } from "@/lib/api-client";
+import { useAppTranslation } from "@/lib/i18n/use-app-translation";
+import { cn } from "@/lib/cn";
+import { useUiStore } from "@/store/ui-store";
 
-/**
- * Account control (9B). In default local dev the client auto-logs-in as the
- * seeded passwordless user, so this just shows who you are and offers sign-out.
- * When the server requires auth (or you want a specific tenant), open the form
- * and sign in with a user id + password — the token is stored and the next
- * state poll reflects the new identity.
- */
-export function LoginControl() {
-  const refresh = useRefreshConsoleState();
+const IdentityAccountPanel = lazy(() => import("@/features/me/identity-account-panel")
+  .then((module) => ({ default: module.IdentityAccountPanel })));
+const IdentityEntryPanel = lazy(() => import("@/features/me/identity-entry-panel")
+  .then((module) => ({ default: module.IdentityEntryPanel })));
+
+function useSessionUser() {
   const [user, setUser] = useState<SessionUser | null>(() => getSessionUser());
-  const [open, setOpen] = useState(false);
-  const [userId, setUserId] = useState("");
-  const [password, setPassword] = useState("");
-  const [error, setError] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
+  useEffect(() => {
+    const sync = () => setUser(getSessionUser());
+    window.addEventListener(SESSION_CHANGED_EVENT, sync);
+    void getCurrentSession().catch(() => undefined);
+    return () => window.removeEventListener(SESSION_CHANGED_EVENT, sync);
+  }, []);
+  return [user, setUser] as const;
+}
 
-  async function submit(event: React.FormEvent) {
-    event.preventDefault();
-    setBusy(true);
-    setError(null);
-    try {
-      const signedIn = await loginWithCredentials(userId.trim(), password);
-      setUser(signedIn);
-      setOpen(false);
-      setUserId("");
-      setPassword("");
-      await refresh();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Sign in failed.");
-    } finally {
-      setBusy(false);
-    }
+/** Identity entry in the top bar; the expanded form is the Me account surface. */
+export function LoginControl({ expanded = false }: { expanded?: boolean }) {
+  const { t } = useAppTranslation();
+  const [user, setUser] = useSessionUser();
+  const [open, setOpen] = useState(false);
+  const setSection = useUiStore((state) => state.setSection);
+  const refresh = useRefreshConsoleState();
+
+  function signedIn(next: SessionUser) {
+    setUser(next);
+    setOpen(false);
+    void refresh();
   }
 
-  async function signOut() {
-    setBusy(true);
-    await logout();
+  function signedOut() {
     setUser(null);
-    await refresh();
-    setBusy(false);
+    void refresh();
+  }
+
+  if (expanded) {
+    return (
+      <Suspense fallback={<IdentityPanelFallback label={t("tasks.loading")} />}>
+        {user
+          ? <IdentityAccountPanel user={user} onSignedOut={signedOut} />
+          : <IdentityEntryPanel onSignedIn={signedIn} />}
+      </Suspense>
+    );
   }
 
   return (
     <div className="relative">
-      <div className="flex items-center gap-2">
-        {user ? (
-          <span className="hidden text-xs text-muted-foreground sm:inline">
-            {user.name ?? user.id}
-          </span>
-        ) : null}
-        {user ? (
-          <Button variant="ghost" size="sm" onClick={signOut} disabled={busy}>
-            Sign out
-          </Button>
-        ) : (
-          <Button variant="secondary" size="sm" onClick={() => setOpen((v) => !v)}>
-            Sign in
-          </Button>
-        )}
-      </div>
+      {user ? (
+        <button
+          type="button"
+          onClick={() => setSection("me")}
+          className="hidden items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground sm:flex"
+          aria-label={t("identityAccount.open")}
+        >
+          <span className="max-w-28 truncate">{user.name ?? user.id}</span>
+          <Badge tone="neutral">{t(`identity.role.${user.role ?? "viewer"}`)}</Badge>
+        </button>
+      ) : (
+        <Button variant="secondary" size="sm" onClick={() => setOpen((value) => !value)} aria-expanded={open}>
+          {t("login.signIn")}
+        </Button>
+      )}
 
       {open && !user ? (
-        <form
-          onSubmit={submit}
-          className="absolute right-0 top-10 z-20 w-64 space-y-2 rounded-md border border-border bg-card p-3 shadow-lg"
-        >
-          <p className="text-xs font-medium text-foreground">Sign in</p>
-          <Input
-            placeholder="User id"
-            value={userId}
-            onChange={(e) => setUserId(e.target.value)}
-            autoFocus
-          />
-          <Input
-            type="password"
-            placeholder="Password"
-            value={password}
-            onChange={(e) => setPassword(e.target.value)}
-          />
-          {error ? <p className="text-xs text-destructive">{error}</p> : null}
-          <div className="flex justify-end gap-2">
-            <Button type="button" variant="ghost" size="sm" onClick={() => setOpen(false)}>
-              Cancel
-            </Button>
-            <Button type="submit" size="sm" disabled={busy || !userId.trim()}>
-              {busy ? "Signing in…" : "Sign in"}
-            </Button>
-          </div>
-        </form>
+        <div className={cn("absolute right-0 top-10 z-30 w-[min(23rem,calc(100vw-1.5rem))] rounded-xl border border-border bg-card p-4 shadow-xl")}>
+          <Suspense fallback={<IdentityPanelFallback label={t("tasks.loading")} />}>
+            <IdentityEntryPanel compact onSignedIn={signedIn} />
+          </Suspense>
+        </div>
       ) : null}
     </div>
   );
+}
+
+function IdentityPanelFallback({ label }: { label: string }) {
+  return <div role="status" className="py-6 text-center text-sm text-muted-foreground">{label}</div>;
 }

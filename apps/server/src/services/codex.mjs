@@ -1,3 +1,5 @@
+import { normalizeCodexPermissionMode as normalizeCodexApprovalMode } from "@myagenttool/protocol/codex-permissions";
+
 import { LOCAL_TEAM_ID, teamOf } from "../runtime/auth.mjs";
 import { createRefusalRuntime } from "../runtime/refusal-log.mjs";
 import { makeRunTx } from "../runtime/store/run-tx.mjs";
@@ -21,6 +23,18 @@ export function createCodexService({
   // #1001 Phase A: durable codex session/evidence/review writes commit through
   // the Store's unit of work (falls back to the debounce where no store injected).
   const runTx = makeRunTx({ store, persistStateSoon });
+  const providerSessionId = (session) => session?.codexSessionId ?? session?.codexThreadId ?? null;
+  const normalizedRepoPath = (value) => String(value ?? "").replaceAll("\\", "/").replace(/\/+$/, "").toLowerCase();
+  const effectiveSessionRepoPath = (session) => {
+    const workspace = session?.workspaceId
+      ? (state.codexWorkspaces ?? []).find((item) => item.id === session.workspaceId)
+      : null;
+    return workspace?.repoPath ?? workspace?.worktreePath ?? session?.repoPath ?? null;
+  };
+  const sameRepo = (left, right) => {
+    if (!left || !right) return true;
+    return normalizedRepoPath(left) === normalizedRepoPath(right);
+  };
   function normalizeCodexSessionMode(value, agent) {
     if (!isCodexCliCommand(agent?.adapter?.command)) {
       return "not_applicable";
@@ -35,18 +49,21 @@ export function createCodexService({
     return ["current_repo", "new_worktree", "existing_worktree"].includes(value) ? value : "current_repo";
   }
 
-  function createManagedCodexWorkspace({ invocationId, agent, workspacePolicy }) {
+  function createManagedCodexWorkspace({ invocationId, agent, workspacePolicy, project: requestedProject = null, worktree: requestedWorktree = null }) {
     if (!isCodexCliCommand(agent?.adapter?.command)) {
       return null;
     }
     const createdAt = now();
-    const project = currentProject();
-    const projectWorktree = worktreeForProject(project?.id);
+    const project = requestedProject ?? currentProject();
+    const projectWorktree = requestedWorktree ?? worktreeForProject(project?.id);
+    const repoPath = projectWorktree?.worktreePath
+      ?? project?.path
+      ?? (agent.adapter?.workingDirectoryPolicy === "bridge_default" ? "bridge_default" : agent.adapter?.workingDirectory ?? null);
     const workspace = {
       id: nextId("cdx_ws"),
       invocationId,
       policy: workspacePolicy,
-      repoPath: project?.path ?? (agent.adapter?.workingDirectoryPolicy === "bridge_default" ? "bridge_default" : agent.adapter?.workingDirectory ?? null),
+      repoPath,
       worktreePath: projectWorktree?.worktreePath ?? (workspacePolicy === "current_repo" ? null : "pending_explicit_worktree"),
       baseBranch: projectWorktree?.baseBranch ?? null,
       branchName: projectWorktree?.branchName ?? null,
@@ -63,20 +80,24 @@ export function createCodexService({
     return workspace;
   }
 
-  function createManagedCodexSession({ invocationId, agent, codexSessionMode, workspace, actor = null }) {
+  function createManagedCodexSession({ invocationId, agent, codexSessionMode, workspace, actor = null, project: requestedProject = null, worktree: requestedWorktree = null, requestedBy = null }) {
     if (!isCodexCliCommand(agent?.adapter?.command)) {
       return null;
     }
     const createdAt = now();
-    const project = currentProject();
+    const project = requestedProject ?? currentProject();
+    const repoPath = requestedWorktree?.worktreePath
+      ?? workspace?.repoPath
+      ?? project?.path
+      ?? (agent.adapter?.workingDirectoryPolicy === "bridge_default" ? "bridge_default" : null);
     const session = {
       id: nextId("cdx_sess"),
       codexSessionId: null,
       codexThreadId: null,
       invocationId,
-      userId: actor?.userId ?? "usr_local",
+      userId: requestedBy ?? actor?.userId ?? "usr_local",
       deviceId: agent.location?.deviceId ?? null,
-      repoPath: project?.path ?? (agent.adapter?.workingDirectoryPolicy === "bridge_default" ? "bridge_default" : null),
+      repoPath,
       workspaceId: workspace?.id ?? null,
       agentId: agent.id,
       sessionMode: codexSessionMode,
@@ -106,27 +127,28 @@ export function createCodexService({
   // True resume (#163): find the provider session id to continue for a new
   // "continue_last" run. codexSessions is newest-first (unshift), so the first
   // match is the most recent PRIOR session that actually captured a provider
-  // session id — scoped to the same repo + user so "continue" never crosses
-  // projects or tenants. Returns null when nothing resumable exists, letting
-  // the bridge fall back to `--last`.
+  // session/thread id — scoped to the same repo + user so "continue" never
+  // crosses projects or tenants. Current Codex JSONL reports thread_id rather
+  // than session_id, so either provider identifier is a valid exact target.
   function resolveResumeCodexSessionId({ repoPath = null, userId = null, excludeSessionId = null, invocationId = null } = {}) {
     // Specific target: the user clicked a particular session to continue. Resume
     // THAT session's captured provider id — but only if it belongs to the same
     // user (tenancy), so a resume can never continue another user's session.
     if (invocationId) {
       const target = state.codexSessions.find((session) => session.invocationId === invocationId);
-      if (!target?.codexSessionId) return null;
+      if (!target) return null;
       if (userId && target.userId !== userId) return null;
-      return target.codexSessionId;
+      if (!sameRepo(repoPath, effectiveSessionRepoPath(target))) return null;
+      return providerSessionId(target);
     }
     // Default: continue the newest prior session that captured a provider id,
     // scoped to the same repo + user.
     const match = state.codexSessions.find((session) =>
       session.id !== excludeSessionId
-      && session.codexSessionId
+      && providerSessionId(session)
       && (userId ? session.userId === userId : true)
-      && (repoPath ? session.repoPath === repoPath : true));
-    return match?.codexSessionId ?? null;
+      && sameRepo(repoPath, effectiveSessionRepoPath(session)));
+    return providerSessionId(match);
   }
 
   // #123: name a session for safe selection. The name is USER-authored — the
@@ -162,9 +184,9 @@ export function createCodexService({
   // metadata: no task content, no evidence bodies.
   function resumableCodexSessions({ repoPath = null, userId = null } = {}) {
     return state.codexSessions
-      .filter((session) => session.codexSessionId
+      .filter((session) => providerSessionId(session)
         && (userId ? session.userId === userId : true)
-        && (repoPath ? session.repoPath === repoPath : true))
+        && sameRepo(repoPath, effectiveSessionRepoPath(session)))
       .map((session) => ({
         id: session.id,
         name: session.name ?? null,
@@ -419,7 +441,22 @@ export function createCodexService({
   function createCodexApprovalBrokerRequest({ invocation, session, hookEvent, body, policy }) {
     const createdAt = now();
     const approvalMode = normalizeCodexApprovalMode(invocation.options?.approvalMode ?? invocation.options?.metadata?.permissionMode);
-    const autoApproved = policy.decision !== "blocked" && (approvalMode === "full" || (approvalMode === "auto" && !codexApprovalRequiresManualReview({ invocation, body, policy })));
+    const continuationApproval = codexContinuationApproval(invocation, body);
+    // Full access removes Codex's own per-action prompts, but only after the
+    // platform's high-risk launch approval has actually been granted. This
+    // avoids a second prompt for the same launch without allowing a caller to
+    // bypass the outer gate merely by setting approvalMode=full.
+    const fullAccessLaunchApproved = approvalMode === "full"
+      && state.approvalRequests?.some((request) => (
+        request.invocationId === invocation.id && request.status === "approved"
+      ));
+    const autoApproved = policy.decision !== "blocked" && (
+      fullAccessLaunchApproved
+      || (approvalMode !== "full" && (
+        Boolean(continuationApproval)
+        || (approvalMode === "auto" && !codexApprovalRequiresManualReview({ invocation, body, policy }))
+      ))
+    );
     const request = {
       id: nextId("cdx_appr"),
       invocationId: invocation.id,
@@ -434,6 +471,14 @@ export function createCodexService({
       decidedAt: policy.decision === "blocked" || autoApproved ? createdAt : null,
       notificationState: policy.decision === "blocked" || autoApproved ? "resolved" : "queued",
       approvalMode,
+      ...(continuationApproval
+        ? {
+            recoveredFromApprovalRequestId: continuationApproval.id,
+            decidedBy: continuationApproval.lateApprovalRecovery?.requestedBy
+              ?? continuationApproval.decidedBy
+              ?? "usr_local",
+          }
+        : {}),
       createdAt,
       updatedAt: createdAt,
     };
@@ -446,7 +491,9 @@ export function createCodexService({
         message: request.status === "pending"
           ? `Codex approval broker is waiting on ${request.toolName}.`
           : request.status === "approved"
-            ? `Codex approval broker approved ${request.toolName} by ${approvalMode} mode.`
+            ? continuationApproval
+              ? `Codex approval broker reused approval ${continuationApproval.id} for a bounded continuation.`
+              : `Codex approval broker approved ${request.toolName} by ${approvalMode} mode.`
             : `Codex approval broker denied ${request.toolName}.`,
         data: { approvalBrokerRequestId: request.id, status: request.status },
       });
@@ -455,17 +502,55 @@ export function createCodexService({
           invocationId: invocation.id,
           type: "codex_approval_granted",
           level: "info",
-          message: `Codex approval broker auto-approved the request in ${approvalMode} mode.`,
-          data: { approvalBrokerRequestId: request.id, decision: request.decision, approvalMode },
+          message: continuationApproval
+            ? `Codex approval broker reused explicit approval ${continuationApproval.id} for this continuation.`
+            : `Codex approval broker auto-approved the request in ${approvalMode} mode.`,
+          data: {
+            approvalBrokerRequestId: request.id,
+            decision: request.decision,
+            approvalMode,
+            recoveredFromApprovalRequestId: continuationApproval?.id ?? null,
+          },
         });
       }
     });
     return request;
   }
 
-  function normalizeCodexApprovalMode(value) {
-    const normalized = String(value ?? "ask").trim().toLowerCase();
-    return ["ask", "auto", "full"].includes(normalized) ? normalized : "ask";
+  function codexContinuationApproval(invocation, body) {
+    const sourceId = invocation?.options?.metadata?.codexApprovalContinuationRequestId;
+    if (!sourceId) return null;
+    const source = (state.codexApprovalBrokerRequests ?? []).find((request) => request.id === sourceId);
+    if (!source || source.toolName !== String(body.toolName ?? "unknown")) return null;
+    const sourceInvocation = findInvocation(source.invocationId);
+    const sourceMetadata = sourceInvocation?.options?.metadata ?? {};
+    const targetMetadata = invocation.options?.metadata ?? {};
+    if (
+      !sourceMetadata.autoRunId
+      || sourceMetadata.autoRunId !== targetMetadata.autoRunId
+      || sourceMetadata.worktreeId !== targetMetadata.worktreeId
+    ) {
+      return null;
+    }
+    const continuationGrant = source.continuationGrant;
+    if (
+      source.status === "approved"
+      && continuationGrant?.targetInvocationId === invocation.id
+      && continuationGrant?.autoRunId === targetMetadata.autoRunId
+      && continuationGrant?.worktreeId === targetMetadata.worktreeId
+    ) {
+      return source;
+    }
+    const recovery = source.lateApprovalRecovery;
+    if (
+      source.status === "timed_out"
+      && ["starting", "resumed"].includes(recovery?.status)
+      && recovery?.autoRunId === targetMetadata.autoRunId
+      && recovery?.targetInvocationId === invocation.id
+    ) {
+      return source;
+    }
+    return null;
   }
 
   function codexApprovalRequiresManualReview({ invocation, body, policy }) {

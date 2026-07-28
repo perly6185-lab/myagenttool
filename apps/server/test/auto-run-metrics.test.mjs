@@ -79,6 +79,54 @@ test("decision via (heuristic / fast-path / agent / fallback) is aggregated", ()
   assert.deepEqual(s.decisions.byVia, { heuristic: 2, "fast-path": 1, agent: 1, fallback: 1 });
 });
 
+test("routing health exposes fallback, confidence calibration, latency, and risk signals", () => {
+  const s = summarizeAutoRuns([
+    { status: "blocked", decision: { path: "develop", decidedBy: "heuristic", via: "fallback", confidence: 0.3, latencyMs: 9000 } },
+    { status: "pr_open", decision: { path: "develop", decidedBy: "heuristic", via: "fallback", confidence: 0.5, latencyMs: 8000 } },
+    { status: "blocked", error: "produced no changes", decision: { path: "develop", decidedBy: "agent", via: "agent", confidence: 0.3, latencyMs: 7500 } },
+    { status: "pr_open", decision: { path: "develop", decidedBy: "agent", via: "agent", confidence: 0.5, latencyMs: 7200 } },
+    { status: "pr_open", decision: { path: "develop", decidedBy: "agent", via: "agent", confidence: 0.7, latencyMs: 7000 } },
+    { status: "report_posted", decision: { path: "design", decidedBy: "agent", via: "agent", confidence: 0.9, latencyMs: 6000 } },
+    { status: "needs_input", decision: { path: "clarify", decidedBy: "agent", via: "agent", confidence: 0.95, latencyMs: 100 } },
+  ]);
+  assert.equal(s.routingHealth.total, 7);
+  assert.equal(s.routingHealth.confidenceTotal, 5);
+  assert.equal(s.routingHealth.fallbackRate, 0.2857);
+  assert.equal(s.routingHealth.lowConfidenceRate, 0.4);
+  assert.deepEqual(s.routingHealth.latency, { count: 7, medianMs: 7200, p90Ms: 9000 });
+  assert.equal(s.routingHealth.failureRate, 0.2857);
+  assert.equal(s.routingHealth.humanOverrideRate, 0);
+  assert.deepEqual(s.routingHealth.signals.map((signal) => signal.key), ["fallback_spike", "low_confidence", "latency", "routing_failure_rate"]);
+  assert.deepEqual(
+    s.routingHealth.confidenceBuckets.map((bucket) => [bucket.key, bucket.total, bucket.conclusive, bucket.alignmentRate]),
+    [["low", 2, 2, 0.5], ["medium", 1, 1, 1], ["high", 2, 2, 1]],
+  );
+});
+
+test("routing health is not made healthier by a human correction", () => {
+  const s = summarizeAutoRuns([{
+    status: "blocked",
+    error: "produced no changes",
+    decision: { path: "develop", via: "agent", confidence: 0.9, latencyMs: 10 },
+    routingOverride: { actualPath: "design" },
+  }]);
+  assert.equal(s.routingHealth.confidenceBuckets[2].alignmentRate, 0);
+  assert.equal(s.routing.humanTruth.accuracy, 0);
+});
+
+test("routing health excludes records outside the configured rolling window", () => {
+  const s = summarizeAutoRuns([
+    { createdAt: "2026-05-01T00:00:00.000Z", status: "blocked", error: "produced no changes", decision: { path: "develop", via: "fallback" } },
+    { createdAt: "2026-07-20T00:00:00.000Z", status: "pr_open", decision: { path: "develop", via: "agent", confidence: 0.9 } },
+  ], {
+    routingNow: "2026-07-24T00:00:00.000Z",
+    routingThresholds: { windowDays: 30 },
+  });
+  assert.equal(s.total, 2, "lifecycle totals retain history");
+  assert.equal(s.routingHealth.total, 1, "health posture only uses the rolling window");
+  assert.equal(s.routingHealth.fallback, 0);
+});
+
 test("non-diff outcomes (report_posted/needs_input) are counted apart from the change rate", () => {
   const s = summarizeAutoRuns([
     { status: "pr_open" },

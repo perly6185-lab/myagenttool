@@ -4,11 +4,13 @@ import { CircleDot, ExternalLink, GitPullRequest, Play, Clipboard } from "lucide
 import { Badge } from "@/components/ui/badge";
 import { useUiStore } from "@/store/ui-store";
 import type { WorktreeSnapshot } from "@/lib/console-state";
+import { useAppTranslation } from "@/lib/i18n/use-app-translation";
 
 // Click a worktree's issue/PR indicator to open a popover card with the linked
 // item plus actions: run an agent in this worktree, copy its path, open the
 // issue/PR on GitHub.
 export function WorktreeLinkPopover({ worktree }: { worktree: WorktreeSnapshot }) {
+  const { t } = useAppTranslation();
   const link = worktree.link!;
   const [open, setOpen] = useState(false);
   const [pos, setPos] = useState<{ top: number; left: number } | null>(null);
@@ -20,7 +22,7 @@ export function WorktreeLinkPopover({ worktree }: { worktree: WorktreeSnapshot }
 
   const Icon = link.type === "pr" ? GitPullRequest : CircleDot;
   const tone = link.type === "pr" ? "text-emerald-500" : "text-sky-500";
-  const label = link.type === "pr" ? "PR" : "Issue";
+  const label = link.type === "pr" ? "PR" : t("projectsShared.issue");
 
   useEffect(() => {
     if (!open) return;
@@ -84,14 +86,14 @@ export function WorktreeLinkPopover({ worktree }: { worktree: WorktreeSnapshot }
                   </span>
                 </span>
                 <span className="flex shrink-0 items-center gap-1.5 text-muted-foreground">
-                  <button type="button" onClick={runHere} title="Run an agent in this worktree" className="hover:text-foreground">
+                  <button type="button" onClick={runHere} title={t("projectsShared.runHere")} className="hover:text-foreground">
                     <Play className="size-3.5" />
                   </button>
-                  <button type="button" onClick={copyPath} title="Copy worktree path" className="hover:text-foreground">
+                  <button type="button" onClick={copyPath} title={t("projectsShared.copyPath")} className="hover:text-foreground">
                     <Clipboard className="size-3.5" />
                   </button>
                   {link.url ? (
-                    <a href={link.url} target="_blank" rel="noreferrer" title="Open on GitHub" className="hover:text-foreground">
+                    <a href={link.url} target="_blank" rel="noreferrer" title={t("projectsShared.openGithub")} className="hover:text-foreground">
                       <ExternalLink className="size-3.5" />
                     </a>
                   ) : null}
@@ -99,7 +101,7 @@ export function WorktreeLinkPopover({ worktree }: { worktree: WorktreeSnapshot }
               </div>
               <p className="mt-1.5 font-medium text-foreground">{link.title}</p>
               <div className="mt-1.5">
-                <Badge tone={link.state === "open" ? "success" : "neutral"}>State: {link.state}</Badge>
+                <Badge tone={link.state === "open" ? "success" : "neutral"}>{t("projectsShared.state")}: {t(`projectsShared.linkState.${link.state}` as "projectsShared.linkState.open", { defaultValue: link.state })}</Badge>
               </div>
             </div>,
             document.body,

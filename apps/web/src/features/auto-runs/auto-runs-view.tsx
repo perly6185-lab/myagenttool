@@ -3,13 +3,15 @@ import { Bot, RefreshCw, GitPullRequest, GitMerge, GitBranch, ShieldCheck, Exter
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Input, Select } from "@/components/ui/input";
 import { Modal } from "@/components/ui/modal";
 import { EmptyState } from "@/components/common/empty-state";
 import { api, useAsyncAction } from "@/data/use-console-actions";
+import { ApiError } from "@/lib/api-client";
 import { reconcileFileLedger, displayPath } from "./file-ledger";
 import { cn } from "@/lib/cn";
 import { shortTime, type Tone } from "@/lib/readable-labels";
-import { AutoRunConfigCard } from "./auto-run-config-card";
+import { useAppTranslation } from "@/lib/i18n/use-app-translation";
 import { AutoRunReadinessCard } from "./auto-run-readiness-card";
 import { AutoRunOnboardingCard } from "./auto-run-onboarding-card";
 import { ReportView } from "./report-view";
@@ -23,6 +25,8 @@ import { useUiStore } from "@/store/ui-store";
 import { EventTimeline } from "@/features/invocations/event-timeline";
 import { RunTranscriptSection, isTerminalRunStatus } from "@/features/invocations/run-transcript";
 import type { InvocationEventSnapshot, DeploymentSnapshot } from "@/lib/console-state";
+import { useVisibleInterval } from "@/hooks/use-visible-interval";
+import { InvocationDispatchHealth } from "@/features/devices/invocation-dispatch-health";
 
 interface AutoRunLink {
   type: "issue" | "pr";
@@ -33,10 +37,12 @@ interface AutoRunLink {
 export interface AutoRunRecord {
   id: string;
   status: string;
+  terminalId?: string | null;
   projectId?: string | null;
   link?: AutoRunLink | null;
   intent?: string | null;
-  decision?: { path: string; decidedBy: string; confidence: number; rationale?: string | null; via?: string | null; clarifyingQuestions?: string[] | null } | null;
+  decision?: { path: string; decidedBy: string; confidence: number; rationale?: string | null; via?: string | null; clarifyingQuestions?: string[] | null; evidence?: { policyVersion: string; modelVersion: string | null; minConfidence: number; inputDigest: string } | null } | null;
+  routingOverride?: { recommendedPath: string | null; actualPath: string; reason: string; actorId: string; recordedAt: string; revision: number } | null;
   branchName?: string | null;
   worktreeId?: string | null;
   invocationId?: string | null;
@@ -124,6 +130,24 @@ interface AutoRunSummary {
   successRate: number | null;
   verification: { passed: number; failed: number; unverified: number };
   routing?: { alignmentRate: number | null; conclusive: number } | null;
+  routingHealth?: {
+    total: number;
+    confidenceTotal: number;
+    fallback: number;
+    fallbackRate: number | null;
+    lowConfidence: number;
+    lowConfidenceRate: number | null;
+    failed?: number;
+    failureRate?: number | null;
+    humanOverrides?: number;
+    humanOverrideRate?: number | null;
+    latency: { count: number; medianMs: number | null; p90Ms: number | null };
+    confidenceBuckets: { key: string; total: number; conclusive: number; alignmentRate: number | null }[];
+    signals: { key: string; severity: "warning" | "danger"; value: number; threshold: number }[];
+    thresholds: { minSamples: number; fallbackRate: number; lowConfidenceRate: number; failureRate?: number; humanOverrideRate?: number; latencyP90Ms: number };
+    byProject: { projectId: string; total: number; fallbackRate: number | null; alignmentRate: number | null }[];
+    daily: { date: string; total: number; fallbackRate: number | null; alignmentRate: number | null }[];
+  } | null;
   blockedReasons: { reason: string; count: number }[];
   timeToPr: { count: number; medianSeconds: number | null; p90Seconds: number | null };
   slo?: {
@@ -138,19 +162,42 @@ function fmtSloValue(v: number | null, unit: "ratio" | "seconds"): string {
   return unit === "ratio" ? `${Math.round(v * 100)}%` : fmtDuration(v);
 }
 
-const STATUS_LABEL: Record<string, string> = {
-  materializing: "Creating worktree",
-  running: "Agent running",
-  awaiting_approval: "Needs approval",
-  verifying: "Verifying",
-  publishing: "Publishing",
-  pr_open: "PR open",
-  report_posted: "Report posted",
-  needs_input: "Needs input",
-  blocked: "Blocked",
-  failed: "Failed",
-  cancelled: "Cancelled",
-};
+function RoutingFeedback({ run, onSaved }: { run: AutoRunRecord; onSaved: () => void }) {
+  const { t } = useAppTranslation();
+  const [path, setPath] = useState(run.routingOverride?.actualPath ?? run.decision?.path ?? "develop");
+  const [reason, setReason] = useState(run.routingOverride?.reason ?? "");
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState("");
+  return (
+    <details className="text-xs">
+      <summary className="cursor-pointer text-primary">{t("routingFeedback.title")}</summary>
+      <div className="mt-2 flex flex-wrap gap-2 rounded bg-muted p-2">
+        <Select className="h-7 w-32 text-xs" value={path} onChange={(event) => setPath(event.target.value)}>
+          {["develop", "design", "prototype", "clarify", "decompose"].map((value) => <option key={value} value={value}>{value}</option>)}
+        </Select>
+        <Input className="h-7 min-w-48 flex-1 text-xs" value={reason} onChange={(event) => setReason(event.target.value)} placeholder={t("routingFeedback.reason")} />
+        <Button size="sm" disabled={saving || !reason.trim()} onClick={() => {
+          setSaving(true);
+          setError("");
+          void api.recordAutoRunRoutingOverride(run.id, path, reason, run.routingOverride?.revision ?? 0)
+            .then(() => onSaved())
+            .catch((caught: unknown) => {
+              if (caught instanceof ApiError && caught.status === 409) {
+                setError(t("routingFeedback.conflict"));
+                onSaved();
+                return;
+              }
+              setError(caught instanceof Error ? caught.message : t("routingFeedback.failed"));
+            })
+            .finally(() => setSaving(false));
+        }}>{t("routingFeedback.save")}</Button>
+      </div>
+      {error ? <p className="mt-1 text-red-600">{error}</p> : null}
+      {run.routingOverride ? <p className="mt-1 text-muted-foreground">{run.routingOverride.actorId} · {run.routingOverride.recordedAt}</p> : null}
+    </details>
+  );
+}
+
 function statusTone(status: string): Tone {
   if (status === "pr_open" || status === "report_posted") return "success";
   if (status === "failed") return "danger";
@@ -206,9 +253,10 @@ function StatTile({ label, value, hint }: { label: string; value: string; hint?:
 const RISK_TONE: Record<"low" | "medium" | "high", Tone> = { low: "success", medium: "warning", high: "danger" };
 
 function RiskBadge({ level, reasons }: { level: "low" | "medium" | "high"; reasons?: string[] }) {
+  const { t } = useAppTranslation();
   return (
-    <Badge tone={RISK_TONE[level]} title={reasons && reasons.length ? reasons.join("; ") : `merge risk: ${level}`}>
-      risk: {level}
+    <Badge tone={RISK_TONE[level]} title={reasons && reasons.length ? reasons.join("; ") : t("autoRuns.mergeRisk", { level: t(`labels.risk.${level}`) })}>
+      {t("autoRuns.risk")}: {t(`labels.risk.${level}`)}
     </Badge>
   );
 }
@@ -317,6 +365,7 @@ function DiffLines({ diff }: { diff: string }) {
 // worktree is preserved and GET /api/worktrees/:id/diff still serves it, so this
 // keeps "what did this run change?" answerable AFTER merge too (browsability G1).
 function WorktreeDiffPeek({ worktreeId }: { worktreeId: string }) {
+  const { t } = useAppTranslation();
   const [show, setShow] = useState(false);
   const [diff, setDiff] = useState<WorktreeDiff | null>(null);
   const [state, setState] = useState<"idle" | "loading" | "error" | "done">("idle");
@@ -342,18 +391,18 @@ function WorktreeDiffPeek({ worktreeId }: { worktreeId: string }) {
         onClick={() => void toggle()}
         className="flex items-center gap-1 self-start text-xs text-muted-foreground hover:text-foreground"
       >
-        <GitBranch className="size-3" /> {show ? "Hide changes" : "Show changes"}
+        <GitBranch className="size-3" /> {t(show ? "autoRunDetail.hideChanges" : "autoRunDetail.showChanges")}
         {diff ? ` (${diff.files.length} file${diff.files.length === 1 ? "" : "s"}${diff.truncated ? ", truncated" : ""})` : ""}
       </button>
       {show ? (
         state === "loading" ? (
-          <span className="flex items-center gap-1 text-xs text-muted-foreground"><Loader2 className="size-3 animate-spin" /> loading diff…</span>
+          <span className="flex items-center gap-1 text-xs text-muted-foreground"><Loader2 className="size-3 animate-spin" /> {t("autoRunDetail.loadingDiff")}</span>
         ) : state === "error" ? (
-          <span className="text-xs text-red-600 dark:text-red-400">Diff unavailable — the worktree may have been torn down.</span>
+          <span className="text-xs text-red-600 dark:text-red-400">{t("autoRunDetail.diffUnavailable")}</span>
         ) : diff && diff.diff ? (
           <DiffLines diff={diff.diff} />
         ) : (
-          <span className="text-xs text-muted-foreground">No changes in the worktree.</span>
+          <span className="text-xs text-muted-foreground">{t("autoRunDetail.noChanges")}</span>
         )
       ) : null}
     </div>
@@ -366,6 +415,7 @@ function WorktreeDiffPeek({ worktreeId }: { worktreeId: string }) {
 // to cross-check writes: a write not in the diff was a no-op edit; a changed file with
 // no tracked write came from outside the explicit file tools (e.g. a Bash command).
 function RunFilesPeek({ invocationId, worktreeId }: { invocationId: string; worktreeId?: string | null }) {
+  const { t } = useAppTranslation();
   const { data: state } = useConsoleState();
   const [show, setShow] = useState(false);
   const [changed, setChanged] = useState<string[] | null>(null);
@@ -395,20 +445,20 @@ function RunFilesPeek({ invocationId, worktreeId }: { invocationId: string; work
         onClick={() => void toggle()}
         className="flex items-center gap-1 self-start text-xs text-muted-foreground hover:text-foreground"
       >
-        <FileText className="size-3" /> {show ? "Hide files" : "Files"} ({view.writeCount} written · {view.readCount} read
+        <FileText className="size-3" /> {t(show ? "autoRunDetail.hideFiles" : "autoRunDetail.files")} ({t("autoRunDetail.fileCounts", { written: view.writeCount, read: view.readCount })}
         {view.truncated ? "+" : ""})
       </button>
       {show ? (
         <div className="flex flex-col gap-2 rounded-md border border-border/60 bg-muted/30 p-2">
           {view.writeCount > 0 ? (
             <div className="flex flex-col gap-0.5">
-              <span className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">Wrote</span>
+              <span className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">{t("autoRunDetail.wrote")}</span>
               <ul className="flex flex-col gap-0.5">
                 {view.writes.map((w) => (
                   <li key={w.path} className="flex items-center gap-1.5 font-mono text-xs" title={w.path}>
                     <FilePen className="size-3 shrink-0 text-emerald-600 dark:text-emerald-400" />
                     <span className="truncate">{displayPath(w.path)}</span>
-                    {w.inDiff === false ? <span className="shrink-0 text-[10px] text-muted-foreground">(no change)</span> : null}
+                    {w.inDiff === false ? <span className="shrink-0 text-[10px] text-muted-foreground">({t("autoRunDetail.noChange")})</span> : null}
                   </li>
                 ))}
               </ul>
@@ -416,7 +466,7 @@ function RunFilesPeek({ invocationId, worktreeId }: { invocationId: string; work
           ) : null}
           {view.readCount > 0 ? (
             <div className="flex flex-col gap-0.5">
-              <span className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">Read</span>
+              <span className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">{t("autoRunDetail.read")}</span>
               <ul className="flex flex-col gap-0.5">
                 {view.reads.map((p) => (
                   <li key={p} className="flex items-center gap-1.5 font-mono text-xs text-muted-foreground" title={p}>
@@ -429,10 +479,10 @@ function RunFilesPeek({ invocationId, worktreeId }: { invocationId: string; work
           ) : null}
           {view.diffOnly.length > 0 ? (
             <span className="text-[11px] text-muted-foreground">
-              +{view.diffOnly.length} changed outside the tracked tools (e.g. a Bash command)
+              {t("autoRunDetail.outsideTools", { count: view.diffOnly.length })}
             </span>
           ) : null}
-          {view.truncated ? <span className="text-[11px] text-muted-foreground">List truncated at the capture cap.</span> : null}
+          {view.truncated ? <span className="text-[11px] text-muted-foreground">{t("autoRunDetail.listTruncated")}</span> : null}
         </div>
       ) : null}
     </div>
@@ -443,6 +493,7 @@ function RunFilesPeek({ invocationId, worktreeId }: { invocationId: string; work
 // its worktree in the workspace (files + full diff). The IDs are already on the
 // record + wire; the console previously only linked OUTWARD to GitHub.
 function RunTraceLinks({ run }: { run: AutoRunRecord }) {
+  const { t } = useAppTranslation();
   const setSection = useUiStore((s) => s.setSection);
   const setSelectedInvocationId = useUiStore((s) => s.setSelectedInvocationId);
   const setSelectedWorktreeId = useUiStore((s) => s.setSelectedWorktreeId);
@@ -458,9 +509,9 @@ function RunTraceLinks({ run }: { run: AutoRunRecord }) {
             setSection("invocations");
           }}
           className="inline-flex items-center gap-1 hover:text-foreground"
-          title="Open this run's agent transcript"
+          title={t("autoRunDetail.transcriptHint")}
         >
-          <ScrollText className="size-3" /> Transcript
+          <ScrollText className="size-3" /> {t("autoRunDetail.transcript")}
         </button>
       ) : null}
       {run.worktreeId ? (
@@ -472,9 +523,9 @@ function RunTraceLinks({ run }: { run: AutoRunRecord }) {
             setSection("projects");
           }}
           className="inline-flex items-center gap-1 hover:text-foreground"
-          title="Open this run's worktree in the workspace (files + full diff)"
+          title={t("autoRunDetail.workspaceHint")}
         >
-          <FolderGit2 className="size-3" /> Workspace
+          <FolderGit2 className="size-3" /> {t("autoRunDetail.workspace")}
         </button>
       ) : null}
     </>
@@ -571,12 +622,21 @@ export function runLane(run: AutoRunRecord): LaneKey {
   if (run.status === "pr_open") return "pr_open";
   return "running"; // materializing / running / verifying / publishing + any other in-flight
 }
+
+export function localQueueSnapshot(runs: AutoRunRecord[]) {
+  const running = runs.filter((run) => ["running", "verifying", "publishing"].includes(run.status));
+  const next = runs.find((run) => run.status === "materializing") ?? null;
+  const waiting = runs.filter((run) =>
+    ["awaiting_approval", "needs_input", "blocked", "failed"].includes(run.status));
+  return { running, next, waiting, attentionCount: waiting.length };
+}
 function RunChip({ run }: { run: AutoRunRecord }) {
+  const { t } = useAppTranslation();
   const label = run.link ? `#${run.link.number} ${run.link.title}` : run.id;
   return (
     <div className="flex flex-col gap-1 rounded-md border border-border bg-card p-2 text-xs">
       <div className="flex items-center gap-1.5">
-        <Badge tone={statusTone(run.status)}>{STATUS_LABEL[run.status] ?? run.status}</Badge>
+        <Badge tone={statusTone(run.status)}>{t(`autoRuns.status.${run.status}` as never, { defaultValue: run.status })}</Badge>
         {(run.failoverAttempts ?? 0) > 0 ? <Badge tone="warning">failover {run.failoverAttempts}</Badge> : null}
         {run.prUrl ? (
           <a href={run.prUrl} target="_blank" rel="noreferrer" className="inline-flex items-center gap-0.5 text-primary hover:underline">
@@ -683,6 +743,7 @@ function DeployList({ deployments, runs }: { deployments: DeploymentSnapshot[]; 
 // the diff, disables while the merge runs, and surfaces the REAL failure reason
 // instead of swallowing it. Merge stays a human click.
 function MergeControl({ run, onDone }: { run: AutoRunRecord; onDone: (refresh?: boolean) => Promise<void> | void }) {
+  const { t } = useAppTranslation();
   const [open, setOpen] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [showDiff, setShowDiff] = useState(false);
@@ -745,28 +806,28 @@ function MergeControl({ run, onDone }: { run: AutoRunRecord; onDone: (refresh?: 
   return (
     <>
       {run.mergeRisk ? <RiskBadge level={run.mergeRisk.level} reasons={run.mergeRisk.reasons} /> : null}
-      <Badge tone={chip.tone} title="PR CI checks — open Merge to refresh">{chip.label}</Badge>
+      <Badge tone={chip.tone} title={t("autoRunDetail.checksHint")}>{chip.label}</Badge>
       <Button
         variant={primaryVariant}
         size="sm"
         className="h-6 px-2 text-xs"
-        title={risk.warn ? "Merge — this run is not fully verified (review in the dialog)" : "Merge this PR — verified and checks green"}
+        title={t(risk.warn ? "autoRunDetail.mergeReviewHint" : "autoRunDetail.mergeGreenHint")}
         onClick={() => void openDialog()}
       >
-        <GitMerge className={cn("mr-1 size-3", risk.warn && "text-amber-600 dark:text-amber-400")} /> Merge
+        <GitMerge className={cn("mr-1 size-3", risk.warn && "text-amber-600 dark:text-amber-400")} /> {t("autoRunDetail.merge")}
       </Button>
       <Modal
         open={open}
         onClose={() => setOpen(false)}
-        title={`Merge PR #${run.prNumber}`}
-        description="The human merge gate — review the run's posture, then merge in-tool (squash)."
+        title={t("autoRunDetail.mergePr", { number: run.prNumber ?? "—" })}
+        description={t("autoRunDetail.mergeDescription")}
         closeDisabled={pending}
       >
         <div className="flex flex-col gap-3">
           <div className="flex items-center justify-between text-xs text-muted-foreground">
             <span className="truncate">{run.link ? `#${run.link.number} ${run.link.title}` : ""}</span>
             {refreshing ? (
-              <span className="flex shrink-0 items-center gap-1"><Loader2 className="size-3 animate-spin" /> refreshing checks…</span>
+              <span className="flex shrink-0 items-center gap-1"><Loader2 className="size-3 animate-spin" /> {t("autoRunDetail.refreshingChecks")}</span>
             ) : null}
           </div>
           {run.mergeRisk ? (
@@ -790,43 +851,43 @@ function MergeControl({ run, onDone }: { run: AutoRunRecord; onDone: (refresh?: 
                 onClick={() => void toggleDiff()}
                 className="flex items-center gap-1 self-start text-xs text-muted-foreground hover:text-foreground"
               >
-                <GitBranch className="size-3" /> {showDiff ? "Hide changes" : "Show changes"}
+                <GitBranch className="size-3" /> {t(showDiff ? "autoRunDetail.hideChanges" : "autoRunDetail.showChanges")}
                 {diff ? ` (${diff.files.length} file${diff.files.length === 1 ? "" : "s"}${diff.truncated ? ", truncated" : ""})` : ""}
               </button>
               {showDiff ? (
                 diffState === "loading" ? (
-                  <span className="flex items-center gap-1 text-xs text-muted-foreground"><Loader2 className="size-3 animate-spin" /> loading diff…</span>
+                  <span className="flex items-center gap-1 text-xs text-muted-foreground"><Loader2 className="size-3 animate-spin" /> {t("autoRunDetail.loadingDiff")}</span>
                 ) : diffState === "error" ? (
-                  <span className="text-xs text-red-600 dark:text-red-400">Diff unavailable — hide and show again to retry, or the worktree may have been torn down.</span>
+                  <span className="text-xs text-red-600 dark:text-red-400">{t("autoRunDetail.diffRetry")}</span>
                 ) : diff && diff.diff ? (
                   <DiffLines diff={diff.diff} />
                 ) : (
-                  <span className="text-xs text-muted-foreground">No changes in the worktree.</span>
+                  <span className="text-xs text-muted-foreground">{t("autoRunDetail.noChanges")}</span>
                 )
               ) : null}
             </div>
           ) : null}
           {risk.warn ? (
             <p className="rounded-md border border-amber-500/40 bg-amber-500/5 px-3 py-2 text-xs text-amber-700 dark:text-amber-300">
-              This PR is not fully verified — merging is still your call.
+              {t("autoRunDetail.notVerified")}
             </p>
           ) : (
             <p className="rounded-md border border-emerald-500/40 bg-emerald-500/5 px-3 py-2 text-xs text-emerald-700 dark:text-emerald-400">
-              Verified and checks are green.
+              {t("autoRunDetail.verifiedGreen")}
             </p>
           )}
           {error ? (
             <p className="rounded-md border border-red-500/40 bg-red-500/5 px-3 py-2 text-xs text-red-600 dark:text-red-400">
-              Merge failed: {error}
+              {t("autoRunDetail.mergeFailed")}: {error}
             </p>
           ) : null}
           <div className="flex justify-end gap-2 pt-1">
-            <Button variant="ghost" size="sm" onClick={() => setOpen(false)} disabled={pending}>Cancel</Button>
+            <Button variant="ghost" size="sm" onClick={() => setOpen(false)} disabled={pending}>{t("autoRunDetail.cancel")}</Button>
             <Button variant={primaryVariant} size="sm" onClick={() => void doMerge()} disabled={pending || refreshing}>
               {pending ? (
-                <><Loader2 className="mr-1 size-3.5 animate-spin" /> Merging…</>
+                <><Loader2 className="mr-1 size-3.5 animate-spin" /> {t("autoRunDetail.merging")}</>
               ) : (
-                <><GitMerge className="mr-1 size-3.5" /> {risk.warn ? "Merge anyway (squash)" : "Merge (squash)"}</>
+                <><GitMerge className="mr-1 size-3.5" /> {t(risk.warn ? "autoRunDetail.mergeAnyway" : "autoRunDetail.mergeSquash")}</>
               )}
             </Button>
           </div>
@@ -837,6 +898,7 @@ function MergeControl({ run, onDone }: { run: AutoRunRecord; onDone: (refresh?: 
 }
 
 function Stepper({ status }: { status: string }) {
+  const { t } = useAppTranslation();
   const reached = STAGE_INDEX[status] ?? -1;
   const failedHere = status === "failed" || status === "blocked";
   return (
@@ -855,7 +917,7 @@ function Stepper({ status }: { status: string }) {
                 !done && !current && "bg-muted text-muted-foreground",
               )}
             >
-              {stage.label}
+              {t(`autoRuns.stage.${stage.key}` as never)}
             </span>
             {i < STAGES.length - 1 ? <span className="text-muted-foreground/40">›</span> : null}
           </div>
@@ -866,6 +928,7 @@ function Stepper({ status }: { status: string }) {
 }
 
 export function AutoRunsView() {
+  const { t } = useAppTranslation();
   const { data: consoleState } = useConsoleState();
   const [runs, setRuns] = useState<AutoRunRecord[]>([]);
   const [summary, setSummary] = useState<AutoRunSummary | null>(null);
@@ -873,9 +936,10 @@ export function AutoRunsView() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [viewMode, setViewMode] = useState<"list" | "board">("list");
+  const [focusedRunId, setFocusedRunId] = useState<string | null>(null);
 
-  const load = useCallback(async (refresh = false) => {
-    setLoading(true);
+  const load = useCallback(async (refresh = false, quiet = false) => {
+    if (!quiet) setLoading(true);
     try {
       // Manual refresh also refreshes PR dispositions (bounded gh reads); the
       // 10s poll never does, so it stays cheap.
@@ -887,115 +951,236 @@ export function AutoRunsView() {
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
-      setLoading(false);
+      if (!quiet) setLoading(false);
     }
   }, []);
 
   useEffect(() => {
     void load();
-    // Poll so the loop is observable in near-real-time without a manual refresh.
-    const timer = setInterval(() => void load(), 10_000);
-    return () => clearInterval(timer);
+  }, [load]);
+  // Poll so the loop is observable in near-real-time without wasting requests
+  // in a background tab; returning to it triggers an immediate catch-up.
+  useVisibleInterval(() => {
+    void load(false, true);
+  }, 10_000);
+  useEffect(() => {
+    const refresh = () => void load(false, true);
+    window.addEventListener("myagenttool:state-change", refresh);
+    return () => window.removeEventListener("myagenttool:state-change", refresh);
   }, [load]);
 
+  useEffect(() => {
+    if (!runs.length) return;
+    const autoRunId = new URLSearchParams(window.location.search).get("autoRun");
+    if (!autoRunId) return;
+    setFocusedRunId(autoRunId);
+    requestAnimationFrame(() => {
+      document.getElementById(`auto-run-${autoRunId}`)?.scrollIntoView({ behavior: "smooth", block: "center" });
+    });
+    const url = new URL(window.location.href);
+    url.searchParams.delete("autoRun");
+    window.history.replaceState(window.history.state, "", `${url.pathname}${url.search}${url.hash}`);
+    const timer = window.setTimeout(() => setFocusedRunId(null), 4_000);
+    return () => window.clearTimeout(timer);
+  }, [runs]);
+
   const rate = summary?.successRate;
+  const queue = useMemo(() => localQueueSnapshot(runs), [runs]);
 
   return (
     <div className="flex flex-col gap-4">
       <div className="flex items-center justify-between">
         <div>
           <h1 className="flex items-center gap-2 text-lg font-semibold">
-            <Bot className="size-5" /> Auto-runs
+            <Bot className="size-5" /> {t("autoRuns.title")}
           </h1>
-          <p className="text-sm text-muted-foreground">Autonomous issue → worktree → agent → PR runs, and how the loop is performing.</p>
+          <p className="text-sm text-muted-foreground">{t("autoRuns.description")}</p>
         </div>
         <div className="flex items-center gap-2">
-          <div className="flex items-center gap-0.5 rounded-md border border-border p-0.5" role="group" aria-label="Auto-runs view">
+          <div className="flex items-center gap-0.5 rounded-md border border-border p-0.5" role="group" aria-label={t("autoRuns.view")}>
             <button
               type="button"
               aria-pressed={viewMode === "list"}
               onClick={() => setViewMode("list")}
-              title="List — full detail per run"
+              title={t("autoRuns.listHint")}
               className={cn("flex items-center gap-1 rounded px-2 py-1 text-xs", viewMode === "list" ? "bg-muted font-medium text-foreground" : "text-muted-foreground hover:text-foreground")}
             >
-              <LayoutList className="size-3.5" /> List
+              <LayoutList className="size-3.5" /> {t("autoRuns.list")}
             </button>
             <button
               type="button"
               aria-pressed={viewMode === "board"}
               onClick={() => setViewMode("board")}
-              title="Board — runs grouped by pipeline stage"
+              title={t("autoRuns.boardHint")}
               className={cn("flex items-center gap-1 rounded px-2 py-1 text-xs", viewMode === "board" ? "bg-muted font-medium text-foreground" : "text-muted-foreground hover:text-foreground")}
             >
-              <Columns3 className="size-3.5" /> Board
+              <Columns3 className="size-3.5" /> {t("autoRuns.board")}
             </button>
           </div>
           <Button variant="secondary" size="sm" onClick={() => void load(true)} disabled={loading}>
-            <RefreshCw className={cn("mr-1 size-3.5", loading && "animate-spin")} /> Refresh
+            <RefreshCw className={cn("mr-1 size-3.5", loading && "animate-spin")} /> {t("autoRuns.refresh")}
           </Button>
         </div>
       </div>
 
+      <section aria-label={t("devicesPage.dispatchQueue")} className="grid gap-3 sm:grid-cols-3">
+        <StatTile label={t("autoRuns.status.running")} value={String(queue.running.length)} hint={queue.running[0]?.link?.title ?? t("workBoard.none")} />
+        <StatTile label={t("workBoard.next")} value={queue.next ? "1" : "—"} hint={queue.next?.link?.title ?? t("devicesPage.queueClear")} />
+        <StatTile
+          label={t("devicesPage.whyWaiting")}
+          value={String(queue.attentionCount)}
+          hint={queue.waiting[0]
+            ? t(`runLabels.resultSummary.${queue.waiting[0].status === "awaiting_approval" ? "waiting_for_local_approval" : queue.waiting[0].status === "failed" ? "failed" : "default"}` as never)
+            : t("workBoard.none")}
+        />
+      </section>
+      <InvocationDispatchHealth />
+
       <AutoRunOnboardingCard projectId={consoleState?.currentProjectId ?? null} />
       <AutoRunReadinessCard projectId={consoleState?.currentProjectId ?? null} />
-      <AutoRunConfigCard />
-
       {summary ? (
         <>
           <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
-            <StatTile label="Total runs" value={String(summary.total)} hint={`${summary.active} in flight`} />
+            <StatTile label={t("autoRuns.totalRuns")} value={String(summary.total)} hint={t("autoRuns.inFlight", { count: summary.active })} />
             <StatTile
-              label="PR success rate"
+              label={t("autoRuns.prSuccess")}
               value={rate == null ? "—" : `${Math.round(rate * 100)}%`}
-              hint={`${summary.outcomes.prOpen} PR · ${summary.outcomes.blocked} blocked · ${summary.outcomes.failed} failed`}
+              hint={t("autoRuns.outcomeSummary", { pr: summary.outcomes.prOpen, blocked: summary.outcomes.blocked, failed: summary.outcomes.failed })}
             />
             <StatTile
-              label="Verification"
+              label={t("autoRuns.verification")}
               value={`${summary.verification.passed}✓`}
-              hint={`${summary.verification.failed} failed · ${summary.verification.unverified} unverified`}
+              hint={t("autoRuns.verificationSummary", { failed: summary.verification.failed, unverified: summary.verification.unverified })}
             />
             <StatTile
-              label="Time to PR (median)"
+              label={t("autoRuns.timeToPr")}
               value={fmtDuration(summary.timeToPr.medianSeconds)}
               hint={`p90 ${fmtDuration(summary.timeToPr.p90Seconds)} · n=${summary.timeToPr.count}`}
             />
             <StatTile
-              label="Routing alignment"
+              label={t("autoRuns.routing")}
               value={summary.routing?.alignmentRate == null ? "—" : `${Math.round(summary.routing.alignmentRate * 100)}%`}
-              hint={`over ${summary.routing?.conclusive ?? 0} conclusive run(s)`}
+              hint={t("autoRuns.conclusive", { count: summary.routing?.conclusive ?? 0 })}
             />
             <StatTile
-              label="Human escalation"
+              label={t("autoRuns.humanEscalation")}
               value={summary.rates?.humanEscalation == null ? "—" : `${Math.round(summary.rates.humanEscalation * 100)}%`}
-              hint="runs that handed control to a human"
+              hint={t("autoRuns.humanEscalationHint")}
             />
             <StatTile
-              label="Self-repair rate"
+              label={t("autoRuns.selfRepair")}
               value={summary.rates?.selfRepair == null ? "—" : `${Math.round(summary.rates.selfRepair * 100)}%`}
-              hint="develop runs that needed a repair round"
+              hint={t("autoRuns.selfRepairHint")}
             />
           </div>
+          {summary.routingHealth && summary.routingHealth.total > 0 ? (
+            <section className="space-y-3 rounded-lg border p-3">
+              <div className="flex flex-wrap items-center gap-2">
+                <h3 className="text-sm font-medium">{t("autoRunRoutingHealth.title")}</h3>
+                {summary.routingHealth.signals.length ? (
+                  <Badge tone="danger">{t("autoRunRoutingHealth.signalCount", { count: summary.routingHealth.signals.length })}</Badge>
+                ) : (
+                  <Badge tone="success">{t("autoRunRoutingHealth.healthy")}</Badge>
+                )}
+                <span className="text-xs text-muted-foreground">
+                  {t("autoRunRoutingHealth.sample", { count: summary.routingHealth.total })}
+                </span>
+              </div>
+              <div className="grid grid-cols-2 gap-2 md:grid-cols-4">
+                <StatTile
+                  label={t("autoRunRoutingHealth.fallback")}
+                  value={summary.routingHealth.fallbackRate == null ? "—" : `${Math.round(summary.routingHealth.fallbackRate * 100)}%`}
+                  hint={`${summary.routingHealth.fallback}/${summary.routingHealth.total}`}
+                />
+                <StatTile
+                  label={t("autoRunRoutingHealth.lowConfidence")}
+                  value={summary.routingHealth.lowConfidenceRate == null ? "—" : `${Math.round(summary.routingHealth.lowConfidenceRate * 100)}%`}
+                  hint={`${summary.routingHealth.lowConfidence}/${summary.routingHealth.confidenceTotal} agent`}
+                />
+                <StatTile
+                  label={t("autoRunRoutingHealth.medianLatency")}
+                  value={summary.routingHealth.latency.medianMs == null ? "—" : `${summary.routingHealth.latency.medianMs} ms`}
+                  hint={`n=${summary.routingHealth.latency.count}`}
+                />
+                <StatTile
+                  label={t("autoRunRoutingHealth.p90Latency")}
+                  value={summary.routingHealth.latency.p90Ms == null ? "—" : `${summary.routingHealth.latency.p90Ms} ms`}
+                  hint={t("autoRunRoutingHealth.threshold", { value: summary.routingHealth.thresholds.latencyP90Ms })}
+                />
+              </div>
+              <div className="grid gap-2 sm:grid-cols-3">
+                {summary.routingHealth.confidenceBuckets.map((bucket) => (
+                  <div key={bucket.key} className="rounded-md bg-muted p-2 text-xs">
+                    <div className="flex items-center justify-between">
+                      <strong>{t(`autoRunRoutingHealth.bucket.${bucket.key}` as never)}</strong>
+                      <span>{bucket.alignmentRate == null ? "—" : `${Math.round(bucket.alignmentRate * 100)}%`}</span>
+                    </div>
+                    <p className="text-muted-foreground">
+                      {t("autoRunRoutingHealth.conclusive", { conclusive: bucket.conclusive, total: bucket.total })}
+                    </p>
+                  </div>
+                ))}
+              </div>
+              {summary.routingHealth.signals.map((signal) => (
+                <div key={signal.key} className="rounded-md border border-red-500/40 bg-red-500/5 px-3 py-2 text-xs">
+                  <strong>{t(`autoRunRoutingHealth.signal.${signal.key}` as never)}</strong>
+                  <span className="ml-2 text-muted-foreground">
+                    {signal.key === "latency"
+                      ? `${Math.round(signal.value)} ms > ${signal.threshold} ms`
+                      : `${Math.round(signal.value * 100)}% ≥ ${Math.round(signal.threshold * 100)}%`}
+                  </span>
+                </div>
+              ))}
+              {summary.routingHealth.daily.length > 1 ? (
+                <div className="space-y-1">
+                  <p className="text-xs font-medium text-muted-foreground">{t("routingTrend.title")}</p>
+                  <div className="flex gap-1 overflow-x-auto pb-1">
+                    {summary.routingHealth.daily.map((day) => (
+                      <div key={day.date} className="min-w-28 rounded bg-muted p-2 text-[10px]">
+                        <strong>{day.date.slice(5)}</strong>
+                        <p>{day.total} · {t("routingTrend.align")} {day.alignmentRate == null ? "—" : `${Math.round(day.alignmentRate * 100)}%`}</p>
+                        <p>{t("routingTrend.fallback")} {day.fallbackRate == null ? "—" : `${Math.round(day.fallbackRate * 100)}%`}</p>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ) : null}
+              {summary.routingHealth.byProject.length > 1 ? (
+                <div className="space-y-1">
+                  <p className="text-xs font-medium text-muted-foreground">{t("routingTrend.projects")}</p>
+                  <div className="flex flex-wrap gap-1">
+                    {summary.routingHealth.byProject.map((project) => (
+                      <Badge key={project.projectId} tone="neutral">
+                        {consoleState?.projects?.find((candidate) => candidate.id === project.projectId)?.name ?? project.projectId}
+                        {" · "}{project.total} · {project.alignmentRate == null ? "—" : `${Math.round(project.alignmentRate * 100)}%`}
+                      </Badge>
+                    ))}
+                  </div>
+                </div>
+              ) : null}
+            </section>
+          ) : null}
           {deployments && deployments.total > 0 ? (
             <div className="rounded-lg border p-3">
               <div className="mb-2 flex items-center gap-2 text-sm font-medium">
-                <Rocket className="size-4" /> Deploys
+                <Rocket className="size-4" /> {t("autoRuns.deploys")}
                 <span className="text-xs font-normal text-muted-foreground">
-                  delivery past merge — {deployments.deployed} shipped · {deployments.failed} failed
+                  {t("autoRuns.deploySummary", { deployed: deployments.deployed, failed: deployments.failed })}
                 </span>
               </div>
               <div className="grid grid-cols-2 gap-3 md:grid-cols-3">
                 <StatTile
-                  label="Deploy frequency"
+                  label={t("autoRuns.deployFrequency")}
                   value={deployments.deployFrequencyPerWeek == null ? "—" : `${deployments.deployFrequencyPerWeek}/wk`}
-                  hint={`${deployments.total} total deploy(s)`}
+                  hint={t("autoRuns.deployTotal", { count: deployments.total })}
                 />
                 <StatTile
-                  label="Change-failure rate"
+                  label={t("autoRuns.changeFailure")}
                   value={deployments.changeFailureRate == null ? "—" : `${Math.round(deployments.changeFailureRate * 100)}%`}
-                  hint="failed / all deploys (DORA)"
+                  hint={t("autoRuns.changeFailureHint")}
                 />
                 <StatTile
-                  label="Recovery (median)"
+                  label={t("autoRuns.recoveryMedian")}
                   value={deployments.recoveryHours.median == null ? "—" : `${deployments.recoveryHours.median}h`}
                   hint={`over ${deployments.recoveryHours.count} recovery(ies)`}
                 />
@@ -1005,14 +1190,14 @@ export function AutoRunsView() {
           ) : null}
           {summary.outcomes.reportPosted + summary.outcomes.needsInput > 0 ? (
             <p className="text-xs text-muted-foreground">
-              Non-diff outcomes: {summary.outcomes.reportPosted} investigation report(s), {summary.outcomes.needsInput} needing input.
+              {t("autoRuns.nonDiff", { reports: summary.outcomes.reportPosted, input: summary.outcomes.needsInput })}
             </p>
           ) : null}
           {summary.slo ? (
             <div className="flex flex-col gap-1.5">
               <div className="flex items-center gap-2 text-xs font-medium text-muted-foreground">
-                SLOs
-                {summary.slo.anyBelow ? <Badge tone="danger">below target</Badge> : <Badge tone="success">on target</Badge>}
+                {t("autoRuns.slos")}
+                {summary.slo.anyBelow ? <Badge tone="danger">{t("autoRuns.belowTarget")}</Badge> : <Badge tone="success">{t("autoRuns.onTarget")}</Badge>}
               </div>
               <div className="grid grid-cols-2 gap-2 md:grid-cols-4">
                 {summary.slo.slos.map((s) => (
@@ -1020,7 +1205,7 @@ export function AutoRunsView() {
                     <p className="text-xs text-muted-foreground">{s.label}</p>
                     <p className={cn("mt-0.5 text-lg font-semibold tabular-nums", s.meets === false && "text-red-600 dark:text-red-400")}>{fmtSloValue(s.value, s.unit)}</p>
                     <p className="text-[10px] text-muted-foreground">
-                      {s.meets == null ? "no data" : s.meets ? "meets" : "below"} · target {s.direction === "gte" ? "≥" : "≤"} {fmtSloValue(s.target, s.unit)}
+                      {t(s.meets == null ? "autoRuns.noData" : s.meets ? "autoRuns.meets" : "autoRuns.below")} · {t("autoRuns.target")} {s.direction === "gte" ? "≥" : "≤"} {fmtSloValue(s.target, s.unit)}
                     </p>
                   </div>
                 ))}
@@ -1031,7 +1216,7 @@ export function AutoRunsView() {
             <Card>
               <CardHeader>
                 <CardTitle className="flex items-center gap-2 text-sm">
-                  <CircleAlert className="size-4" /> Top blocked reasons
+                  <CircleAlert className="size-4" /> {t("autoRuns.blockedReasons")}
                 </CardTitle>
               </CardHeader>
               <CardContent className="flex flex-col gap-1">
@@ -1051,21 +1236,22 @@ export function AutoRunsView() {
 
       {runs.length === 0 && !loading ? (
         <EmptyState
-          title="No auto-runs yet"
-          hint="Click Auto on a Task issue, or enable label-based auto-triggering, to start an autonomous run."
+          title={t("autoRuns.empty")}
+          hint={t("autoRuns.emptyHint")}
         />
       ) : viewMode === "board" ? (
         <RunBoard runs={runs} />
       ) : (
         <div className="flex flex-col gap-2">
           {runs.map((run) => (
-            <Card key={run.id}>
+            <Card key={run.id} id={`auto-run-${run.id}`}
+              className={cn("scroll-mt-16 transition-shadow", focusedRunId === run.id && "ring-2 ring-primary shadow-lg")}>
               <CardContent className="flex flex-col gap-2 py-3">
                 <div className="flex items-center justify-between gap-3">
                   <div className="flex min-w-0 items-center gap-2">
-                    <Badge tone={statusTone(run.status)}>{STATUS_LABEL[run.status] ?? run.status}</Badge>
+                    <Badge tone={statusTone(run.status)}>{t(`autoRuns.status.${run.status}` as never, { defaultValue: run.status })}</Badge>
                     {run.promptInjection?.suspicious ? (
-                      <Badge tone="danger" title={`Possible prompt injection in the issue body: ${run.promptInjection.markers.join(", ")}. Human review required.`}>⚠ injection?</Badge>
+                      <Badge tone="danger" title={t("autoRuns.injectionHint", { markers: run.promptInjection.markers.join(", ") })}>{t("autoRuns.injection")}</Badge>
                     ) : null}
                     {run.link ? (
                       <span className="truncate text-sm font-medium">
@@ -1081,13 +1267,13 @@ export function AutoRunsView() {
                         <GitPullRequest className="size-3.5" /> PR #{run.prNumber}
                       </a>
                     ) : null}
-                    {run.prState === "MERGED" ? <Badge tone="success">merged</Badge> : null}
+                    {run.prState === "MERGED" ? <Badge tone="success">{t("autoRuns.merged")}</Badge> : null}
                     {run.deployment ? (
                       <Badge
                         tone={run.deployment.status === "deployed" ? "success" : run.deployment.status === "rolled_back" ? "warning" : "danger"}
                         title={[run.deployment.summary, run.deployment.at].filter(Boolean).join(" · ") || undefined}
                       >
-                        {run.deployment.status === "deployed" ? "deployed" : run.deployment.status === "rolled_back" ? "rolled back" : "deploy failed"}
+                        {t(`autoRuns.deployment.${run.deployment.status}` as never)}
                       </Badge>
                     ) : null}
                     {run.remediationIssue ? (
@@ -1110,13 +1296,13 @@ export function AutoRunsView() {
                         </Badge>
                       )
                     ) : null}
-                    {run.prState === "CLOSED" ? <Badge tone="warning">closed</Badge> : null}
+                    {run.prState === "CLOSED" ? <Badge tone="warning">{t("autoRuns.closed")}</Badge> : null}
                     {run.prNumber && run.status === "pr_open" && run.prState !== "MERGED" && run.prState !== "CLOSED" ? (
                       <MergeControl run={run} onDone={load} />
                     ) : null}
                     {(run.childIssues ?? []).map((child) =>
                       child.url ? (
-                        <a key={child.number} href={child.url} target="_blank" rel="noreferrer" className="text-xs text-primary hover:underline" title="Pending-decision child issue">
+                        <a key={child.number} href={child.url} target="_blank" rel="noreferrer" className="text-xs text-primary hover:underline" title={t("autoRunLinks.pendingDecisionIssue")}>
                           → #{child.number}
                         </a>
                       ) : (
@@ -1124,7 +1310,7 @@ export function AutoRunsView() {
                       ),
                     )}
                     {run.link?.url ? (
-                      <a href={run.link.url} target="_blank" rel="noreferrer" className="text-muted-foreground hover:text-foreground" title="Open on GitHub">
+                      <a href={run.link.url} target="_blank" rel="noreferrer" className="text-muted-foreground hover:text-foreground" title={t("autoRunLinks.openGithub")}>
                         <ExternalLink className="size-4" />
                       </a>
                     ) : null}
@@ -1141,6 +1327,7 @@ export function AutoRunsView() {
                       {run.decision.via ? <span className="ml-1 font-normal text-muted-foreground">· {run.decision.via}</span> : null}
                     </span>
                   ) : null}
+                  {run.decision ? <RoutingFeedback run={run} onSaved={() => void load()} /> : null}
                   {run.branchName ? (
                     <span className="inline-flex items-center gap-1">
                       <GitBranch className="size-3" /> {run.branchName}
@@ -1183,9 +1370,9 @@ export function AutoRunsView() {
                       onClick={() => {
                         void api.retryAutoRun(run.id).then(() => load()).catch(() => load());
                       }}
-                      title="Retry this run on its existing worktree"
+                      title={t("autoRuns.retryHint")}
                     >
-                      <RefreshCw className="mr-1 size-3" /> Retry
+                      <RefreshCw className="mr-1 size-3" /> {t("autoRuns.retry")}
                     </Button>
                   </div>
                 ) : null}
@@ -1198,9 +1385,9 @@ export function AutoRunsView() {
                         if (!window.confirm("Cancel this run? The running agent is stopped and the run is marked cancelled (its worktree is kept).")) return;
                         void api.cancelAutoRun(run.id).then(() => load()).catch(() => load());
                       }}
-                      title="Stop the running agent and cancel this run"
+                      title={t("autoRuns.cancelHint")}
                     >
-                      <X className="mr-1 size-3" /> Cancel
+                      <X className="mr-1 size-3" /> {t("autoRuns.cancel")}
                     </Button>
                   </div>
                 ) : null}
@@ -1209,7 +1396,7 @@ export function AutoRunsView() {
                   return (
                     <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-amber-500/40 bg-amber-500/5 px-3 py-2">
                       <span className="text-xs text-muted-foreground">
-                        Needs your approval to run the agent
+                        {t("autoRuns.needsApproval")}
                         {appr.riskLevel ? ` · risk: ${appr.riskLevel}` : ""}
                         {(appr.riskTags ?? []).length ? ` (${appr.riskTags.join(", ")})` : ""}. The {run.decision?.path ?? "develop"} agent will edit code for this issue.
                       </span>
@@ -1219,9 +1406,9 @@ export function AutoRunsView() {
                           variant="primary"
                           className="h-6 px-2 text-xs"
                           onClick={() => void api.approveApproval(appr.id).then(() => load()).catch(() => load())}
-                          title="Approve — release the agent to run"
+                          title={t("autoRuns.approveHint")}
                         >
-                          Approve
+                          {t("autoRuns.approve")}
                         </Button>
                         <Button
                           size="sm"
@@ -1231,9 +1418,9 @@ export function AutoRunsView() {
                             if (!window.confirm("Deny this run? The agent will be blocked.")) return;
                             void api.denyApproval(appr.id).then(() => load()).catch(() => load());
                           }}
-                          title="Deny — block this run"
+                          title={t("autoRuns.denyHint")}
                         >
-                          Deny
+                          {t("autoRuns.deny")}
                         </Button>
                       </div>
                     </div>
@@ -1246,7 +1433,7 @@ export function AutoRunsView() {
                   <DesignPanel worktreeId={run.worktreeId} artifacts={run.designArtifacts} />
                 ) : null}
                 {run.screenshots?.length && run.worktreeId ? (
-                  <DesignPanel worktreeId={run.worktreeId} artifacts={run.screenshots} title="Screenshots (visual acceptance)" />
+                  <DesignPanel worktreeId={run.worktreeId} artifacts={run.screenshots} title={t("autoRuns.screenshots")} />
                 ) : null}
                 {run.status === "report_posted" && run.decision?.path === "design" ? (
                   <DesignApproval run={run} onDone={load} />

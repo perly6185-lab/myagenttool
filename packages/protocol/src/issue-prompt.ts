@@ -4,14 +4,14 @@
 
 /** The linked issue/PR shape a worktree carries; extra fields are ignored. */
 export interface WorktreeLinkItem {
-  type: "issue" | "pr";
+  type: "issue" | "pr" | "local_issue";
   number: number;
   title: string;
   url?: string | null;
 }
 
 /** Human label for a linked item: "Issue" or "PR". */
-export declare function githubItemKindLabel(type: "issue" | "pr"): "Issue" | "PR";
+export declare function githubItemKindLabel(type: "issue" | "pr" | "local_issue"): "Issue" | "PR" | "Local Issue";
 
 /** Lowercase, hyphenated, <=40-char slug from free text (empty -> "work"). */
 export declare function slugifyIssueTitle(text: string): string;

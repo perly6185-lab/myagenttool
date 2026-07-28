@@ -1,11 +1,13 @@
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { api } from "@/data/use-console-actions";
+import { useAppTranslation } from "@/lib/i18n/use-app-translation";
 
 // The read half of the retention archive (server: retention-archive.mjs): recovery
 // actions the 200-row cap evicted from the live window, fetched on demand so an
 // audit survives past the cap. Collapsed by default; only queries when opened.
 export function ArchivedRecoveryActions({ applicationId }: { applicationId: string }) {
+  const { t } = useAppTranslation();
   const [open, setOpen] = useState(false);
   const { data, isLoading, error } = useQuery({
     queryKey: ["application-recovery-archive", applicationId],
@@ -18,12 +20,12 @@ export function ArchivedRecoveryActions({ applicationId }: { applicationId: stri
       className="rounded-md border border-border bg-muted/40 p-2"
       onToggle={(e) => setOpen((e.currentTarget as HTMLDetailsElement).open)}
     >
-      <summary className="cursor-pointer text-xs font-medium">Archived recovery actions</summary>
-      {isLoading ? <p className="mt-2 text-xs text-muted-foreground">Loading archive…</p> : null}
-      {error ? <p className="mt-2 text-xs text-destructive">Could not read the recovery archive.</p> : null}
+      <summary className="cursor-pointer text-xs font-medium">{t("applicationArchive.title")}</summary>
+      {isLoading ? <p className="mt-2 text-xs text-muted-foreground">{t("applicationArchive.loading")}</p> : null}
+      {error ? <p className="mt-2 text-xs text-destructive">{t("applicationArchive.failed")}</p> : null}
       {open && !isLoading && !error && !entries.length ? (
         <p className="mt-2 text-xs text-muted-foreground">
-          Nothing evicted yet — every recovery action is still in the live window.
+          {t("applicationArchive.empty")}
         </p>
       ) : null}
       {entries.length ? (
@@ -42,7 +44,7 @@ export function ArchivedRecoveryActions({ applicationId }: { applicationId: stri
                 {row.status ? <span className="text-muted-foreground">{String(row.status).replaceAll("_", " ")}</span> : null}
                 {row.invocationId ? <span className="font-mono text-muted-foreground">{row.invocationId}</span> : null}
                 {entry.archivedAt ? (
-                  <span className="ml-auto font-mono text-muted-foreground">archived {String(entry.archivedAt).slice(0, 10)}</span>
+                  <span className="ml-auto font-mono text-muted-foreground">{t("applicationArchive.archived")} {String(entry.archivedAt).slice(0, 10)}</span>
                 ) : null}
               </li>
             );

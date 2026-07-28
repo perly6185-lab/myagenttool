@@ -1,5 +1,6 @@
 import { Modal } from "@/components/ui/modal";
 import { Button } from "@/components/ui/button";
+import { useAppTranslation } from "@/lib/i18n/use-app-translation";
 
 /**
  * Explicit-intent confirmation for a side-effecting action. The confirm is the
@@ -10,7 +11,7 @@ export function ConfirmModal({
   open,
   title,
   description,
-  confirmLabel = "Confirm",
+  confirmLabel,
   destructive = false,
   pending = false,
   error = null,
@@ -27,16 +28,18 @@ export function ConfirmModal({
   onConfirm: () => void;
   onClose: () => void;
 }) {
+  const { t } = useAppTranslation();
+  const resolvedConfirmLabel = confirmLabel ?? t("shared.confirm");
   return (
     <Modal open={open} onClose={onClose} title={title} description={description} closeDisabled={pending}>
       <div className="space-y-3">
         <p className="text-xs text-muted-foreground">
-          This action is governed and requires explicit confirmation.
+          {t("shared.governedConfirmation")}
         </p>
         {error ? <p className="text-xs text-destructive">{error}</p> : null}
         <div className="flex justify-end gap-2">
           <Button type="button" variant="secondary" size="sm" disabled={pending} onClick={onClose}>
-            Cancel
+            {t("shared.cancel")}
           </Button>
           <Button
             type="button"
@@ -45,7 +48,7 @@ export function ConfirmModal({
             disabled={pending}
             onClick={onConfirm}
           >
-            {pending ? "Working…" : confirmLabel}
+            {pending ? t("shared.working") : resolvedConfirmLabel}
           </Button>
         </div>
       </div>

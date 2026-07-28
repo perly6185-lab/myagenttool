@@ -9,6 +9,7 @@ import { useAsyncAction, api } from "@/data/use-console-actions";
 import { useUiStore } from "@/store/ui-store";
 import { cn } from "@/lib/cn";
 import type { AgentSkillPath, AgentSkillSnapshot, AgentSkillTarget } from "@/lib/console-state";
+import { useAppTranslation } from "@/lib/i18n/use-app-translation";
 
 const ALL_TARGETS: AgentSkillTarget[] = ["claude", "codex"];
 const ALL_PATHS: AgentSkillPath[] = ["develop", "design", "prototype", "clarify"];
@@ -38,6 +39,7 @@ function toDraft(skill: AgentSkillSnapshot | null): Draft {
 }
 
 export function AgentSkillsView() {
+  const { t } = useAppTranslation();
   const { data: state } = useConsoleState();
   const selectedSkillId = useUiStore((s) => s.selectedAgentSkillId);
   const setSelectedSkillId = useUiStore((s) => s.setSelectedAgentSkillId);
@@ -99,14 +101,14 @@ export function AgentSkillsView() {
     <div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.4fr)]">
       <Card>
         <CardHeader className="flex-row items-center justify-between">
-          <CardTitle>Agent Skills</CardTitle>
+          <CardTitle>{t("agentSkillsPage.title")}</CardTitle>
           <Button size="sm" variant="primary" onClick={() => setSelectedSkillId("__new__")}>
-            New skill
+            {t("agentSkillsPage.newSkill")}
           </Button>
         </CardHeader>
         <CardContent className="space-y-2">
           {skills.length === 0 ? (
-            <EmptyState title="No skills yet" hint="Create a skill and target it at Claude and/or Codex." />
+            <EmptyState title={t("agentSkillsPage.empty")} hint={t("agentSkillsPage.emptyHint")} />
           ) : (
             skills.map((item) => {
               const active = item.id === selectedSkillId;
@@ -123,7 +125,7 @@ export function AgentSkillsView() {
                   <span className="min-w-0">
                     <span className="block truncate text-sm font-medium">
                       {item.name}
-                      {!item.enabled && <span className="ml-2 text-xs text-muted-foreground">(disabled)</span>}
+                      {!item.enabled && <span className="ml-2 text-xs text-muted-foreground">({t("agentSkillsPage.disabled")})</span>}
                     </span>
                     <span className="block truncate text-xs text-muted-foreground">{item.description || item.slug}</span>
                   </span>
@@ -144,23 +146,23 @@ export function AgentSkillsView() {
       {creating || skill ? (
         <Card>
           <CardHeader>
-            <CardTitle>{creating ? "New skill" : skill?.name}</CardTitle>
+            <CardTitle>{creating ? t("agentSkillsPage.newSkill") : skill?.name}</CardTitle>
           </CardHeader>
           <CardContent className="space-y-4">
-            <Field label="Name">
+            <Field label={t("agentSkillsPage.name")}>
               <Input value={draft.name} onChange={(e) => setDraft({ ...draft, name: e.target.value })} placeholder="Image Edit" />
             </Field>
-            <Field label="Slug" hint="Used for .claude/skills/<slug>/. Defaults from name.">
+            <Field label={t("agentSkillsPage.slug")} hint={t("agentSkillsPage.slugHint")}>
               <Input value={draft.slug} onChange={(e) => setDraft({ ...draft, slug: e.target.value })} placeholder="image-edit" />
             </Field>
-            <Field label="Description" hint="One line — used in SKILL.md frontmatter and the Codex trigger.">
+            <Field label={t("agentSkillsPage.description")} hint={t("agentSkillsPage.descriptionHint")}>
               <Input
                 value={draft.description}
                 onChange={(e) => setDraft({ ...draft, description: e.target.value })}
-                placeholder="Edit or generate images from a prompt."
+                placeholder={t("agentSkillsPage.descriptionPlaceholder")}
               />
             </Field>
-            <Field label="Applies to" hint="Only matching agents get this skill rendered into their run.">
+            <Field label={t("agentSkillsPage.appliesTo")} hint={t("agentSkillsPage.appliesHint")}>
               <div className="flex gap-2">
                 {ALL_TARGETS.map((t) => (
                   <button
@@ -179,7 +181,7 @@ export function AgentSkillsView() {
                 ))}
               </div>
             </Field>
-            <Field label="Auto-run roles" hint="None selected = every run. Otherwise only these decided roles render it.">
+            <Field label={t("agentSkillsPage.roles")} hint={t("agentSkillsPage.rolesHint")}>
               <div className="flex flex-wrap gap-2">
                 {ALL_PATHS.map((p) => (
                   <button
@@ -198,14 +200,14 @@ export function AgentSkillsView() {
                 ))}
               </div>
             </Field>
-            <Field label="Body" hint="Markdown instructions — when and how the agent should use this skill.">
+            <Field label={t("agentSkillsPage.body")} hint={t("agentSkillsPage.bodyHint")}>
               <Textarea
                 className="min-h-40 font-mono text-xs"
                 value={draft.body}
                 onChange={(e) => setDraft({ ...draft, body: e.target.value })}
               />
             </Field>
-            <Field label="Tool CLI" hint="Optional command Codex runs for this skill's capability.">
+            <Field label={t("agentSkillsPage.toolCli")} hint={t("agentSkillsPage.toolHint")}>
               <Input
                 value={draft.cli}
                 onChange={(e) => setDraft({ ...draft, cli: e.target.value })}
@@ -214,32 +216,32 @@ export function AgentSkillsView() {
             </Field>
             <label className="flex items-center gap-2 text-sm">
               <input type="checkbox" checked={draft.enabled} onChange={(e) => setDraft({ ...draft, enabled: e.target.checked })} />
-              Enabled
+              {t("agentSkillsPage.enabled")}
             </label>
             {skill?.tool?.mcp && (
               <p className="text-xs text-muted-foreground">
-                MCP server: <span className="font-mono">{skill.tool.mcp.name}</span> →{" "}
+                {t("agentSkillsPage.mcpServer")}: <span className="font-mono">{skill.tool.mcp.name}</span> →{" "}
                 <span className="font-mono">
                   {skill.tool.mcp.command} {(skill.tool.mcp.args ?? []).join(" ")}
                 </span>{" "}
-                (rendered into <span className="font-mono">.mcp.json</span> for Claude)
+                ({t("agentSkillsPage.mcpHint")} <span className="font-mono">.mcp.json</span>)
               </p>
             )}
 
             <div className="flex flex-wrap gap-2 pt-2">
               <Button size="sm" variant="primary" disabled={pending || !draft.name.trim() || draft.targets.length === 0} onClick={save}>
-                {creating ? "Create skill" : "Save changes"}
+                {creating ? t("agentSkillsPage.create") : t("agentSkillsPage.save")}
               </Button>
               {skill && (
                 <Button size="sm" variant="secondary" disabled={pending} onClick={remove}>
-                  Delete
+                  {t("agentSkillsPage.delete")}
                 </Button>
               )}
             </div>
           </CardContent>
         </Card>
       ) : (
-        <EmptyState title="Select a skill" hint="Pick a skill on the left, or create a new one." />
+        <EmptyState title={t("agentSkillsPage.select")} hint={t("agentSkillsPage.selectHint")} />
       )}
     </div>
   );

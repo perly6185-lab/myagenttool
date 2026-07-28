@@ -1,6 +1,7 @@
 # MyAgentTool Electron Desktop
 
-This workspace packages the existing local stack into a Windows desktop app:
+This workspace packages the existing local stack into Windows and Apple Silicon
+macOS desktop apps:
 
 - `apps/server` runs the local API.
 - `apps/desktop` runs the Local Agent Bridge.
@@ -28,10 +29,18 @@ launch after Windows enables it.
 pnpm desktop:dev
 pnpm desktop:pack
 pnpm desktop:dist
+pnpm desktop:pack:mac
+pnpm desktop:dist:mac
 ```
 
 `desktop:pack` creates an unpacked Windows app for smoke checks. `desktop:dist`
 creates the NSIS installer under `apps/electron/release/`.
+
+The `:mac` commands intentionally skip `desktop:prepare-assets`: PortableGit is
+a Windows-only fallback and its self-extractor cannot run on macOS. The macOS
+package uses system Git and emits an ARM64 app/DMG under
+`apps/electron/release/`. Local development builds are unsigned; signing,
+notarization, and the branded icon are release prerequisites.
 
 ## Smoke Check
 

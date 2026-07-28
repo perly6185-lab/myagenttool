@@ -93,10 +93,11 @@ export async function runProtocolSelfCheck(deps) {
   assert(defaultCodexAgent?.status === "unavailable", "default Codex CLI agent should be registered enabled but unavailable while bridge is offline");
   assert(defaultCodexAgent.lifecycle.state === "enabled", "default Codex CLI agent should use the local CLI's native authorization");
   assert(defaultCodexAgent.adapter.outputFormat === "codex_jsonl", "default Codex CLI agent should use JSONL output");
-  assert(defaultCodexAgent.adapter.sandbox === null, "default Codex CLI agent should not impose a Web Console sandbox");
+  assert(defaultCodexAgent.adapter.sandbox === "workspace-write", "default Codex CLI agent should use the ask-mode workspace sandbox");
+  assert(defaultCodexAgent.adapter.permissionMode === "ask", "default Codex CLI agent should expose the ask permission mode");
   assert(!defaultCodexAgent.adapter.args.includes("--ephemeral"), "default Codex CLI agent should persist sessions for optional resume");
   assert(codexCliResumeArgs().includes("resume"), "Codex CLI resume args should be available for continuation");
-  assert(!defaultCodexAgent.adapter.args.includes("read-only"), "default Codex CLI agent should defer sandboxing to Codex CLI");
+  assert(defaultCodexAgent.adapter.args.includes('approvals_reviewer="user"'), "default Codex CLI agent should route boundary approvals to the user");
   assert(defaultCodexAgent.capabilities[0].riskLevel === "high", "default Codex CLI agent should stay high risk");
   assert(defaultCodexAgent.registrationNotes.risk.includes("Codex CLI"), "default Codex CLI agent should expose Codex review notes");
   assert(state.terminalRuntimeCapability.localPty.available === true, "terminal runtime should report local PTY support");
@@ -239,8 +240,8 @@ export async function runProtocolSelfCheck(deps) {
   const managedCodexInvocation = createInvocation("self-check managed Codex session", codexAgent, { codexSessionMode: "continue_last" });
   const managedCodexSession = codexSessionForInvocation(managedCodexInvocation.id);
   assert(managedCodexInvocation.options.metadata.managedCodexSessionId === managedCodexSession?.id, "Codex invocation should link to managed session registry");
-  assert(managedCodexSession.sessionMode === "continue_last", "managed Codex registry should record session mode");
-  assert("codexResumeSessionId" in managedCodexInvocation.options, "continue_last invocation should thread a codexResumeSessionId for true resume (#163)");
+  assert(managedCodexSession.sessionMode === "new", "a continuation without an exact provider id should safely start a new managed session");
+  assert(managedCodexInvocation.options.codexResumeSessionId === null, "an unresolved continuation must never fall back to global --last");
   assert(managedCodexSession.workspaceId, "managed Codex registry should link a workspace registry record");
   const managedCodexWorkspace = state.codexWorkspaces.find((item) => item.id === managedCodexSession.workspaceId);
   assert(managedCodexWorkspace?.policy === "current_repo", "managed Codex workspace should default to current repo policy");

@@ -7,6 +7,7 @@ import { EmptyState } from "@/components/common/empty-state";
 import { cn } from "@/lib/cn";
 import { api } from "@/data/use-console-actions";
 import type { Tone } from "@/lib/readable-labels";
+import { useVisibleInterval } from "@/hooks/use-visible-interval";
 
 // The Routines section: scheduled autonomous checks (the ai:loop-routine engine).
 // The server read-model is fully built (GET /api/loop-routines + /:id/findings) but
@@ -75,9 +76,8 @@ export function RoutinesView() {
 
   useEffect(() => {
     void load();
-    const timer = setInterval(() => void load(), 30_000);
-    return () => clearInterval(timer);
   }, [load]);
+  useVisibleInterval(() => void load(), 30_000);
 
   const toggle = async (runId: string) => {
     const next = expanded === runId ? null : runId;

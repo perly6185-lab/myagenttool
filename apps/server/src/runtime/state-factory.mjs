@@ -39,10 +39,23 @@ export function createServerState({ defaultProjectPath, now }) {
     users: createDefaultUsers(now),
     teams: createDefaultTeams(now),
     tokens: [],
+    // ADR 0021 I2-I4. Only hashes and bounded metadata are durable; raw
+    // session, CSRF, challenge binding, and authorization URI values are not.
+    identitySessions: [],
+    identityChallenges: [],
+    identityProviderCodeUses: [],
+    identityAuditEvents: [],
+    // ADR 0021 I6. Login attempt keys and recovery credentials are hashes;
+    // raw passwords and one-time recovery grants never enter durable state.
+    identityLoginAttempts: [],
+    identityRecoveryAttempts: [],
+    identityRecoveryGrants: [],
+    identitySecurityAlerts: [],
     projects: [defaultProject],
     applications: [],
     applicationInstallRuns: [],
     applicationRecoveryActions: [],
+    guidedSetupRuns: [],
     approvalGrants: [],
     approvalTokenLegacyUses: { count: 0, lastAt: null },
     applicationDailyStats: [],
@@ -61,6 +74,7 @@ export function createServerState({ defaultProjectPath, now }) {
     // O5.2 follow-up: the last-emitted set of below-target SLO keys, so the
     // breach→alert sweep only fires when the breach set changes (not every tick).
     autoRunSloAlert: null,
+    autoRunRoutingAlert: null,
     // D1 deploy stage: one record per post-merge deploy attempt (feeds deploy
     // frequency + change-failure/recovery). Empty until deployOnMerge is used.
     deployments: [],
@@ -81,6 +95,10 @@ export function createServerState({ defaultProjectPath, now }) {
     spans: [],
     auditSummaries: [],
     healthChecks: [],
+    // Browser-side Core Web Vitals. Bounded in the route and team-scoped.
+    webPerformanceMetrics: [],
+    eventStreamMetrics: { byTeam: {} },
+    operationalAlerts: [],
     lifecycleAuditRecords: [],
     lifecycleRecipes: [],
     lifecyclePolicyDecisions: [],
@@ -124,6 +142,17 @@ export function createServerState({ defaultProjectPath, now }) {
     // #1152: durable claim lifecycle history (claimed/released/expired), kept
     // outside the 500-row event ring buffer so it survives churn + restart.
     issueClaimEvents: [],
+    // Local-first planning records. These are independent of GitHub Issues and
+    // may later carry one or more external bindings.
+    workItems: [],
+    workItemComments: [],
+    workItemAttentionOperations: [],
+    githubWorkItemWebhookDeliveries: [],
+    githubWorkItemWebhookFailures: [],
+    workItemOperationalAlerts: [],
+    workItemActivities: [],
+    planningProjects: [],
+    planningProjectItems: [],
     // #1165: dispatcher-mode bookkeeping — one row per issue assignment written
     // by THIS server acting as the dispatcher (single writer; the staleness clock).
     dispatchAssignments: [],
@@ -133,6 +162,7 @@ export function createServerState({ defaultProjectPath, now }) {
     // knob inherits its env default (today's behavior). Operators edit the safe
     // knobs via the console; applied at server start.
     autoRunSettings: {},
+    alertOutbox: [],
     privateDeploymentConfig: createDefaultPrivateDeploymentConfig(now),
     auditExportRequests: [],
     retentionSettings: createDefaultRetentionSettings(now),
@@ -210,6 +240,7 @@ export function resetStateForSelfCheck({ state, now }) {
   state.applications = [];
   state.applicationInstallRuns = [];
   state.applicationRecoveryActions = [];
+  state.guidedSetupRuns = [];
   state.events = [];
   state.eventHistoryRetention = createEventHistoryRetention();
   state.refusals = [];
@@ -548,7 +579,8 @@ function createDefaultAgents(now) {
         timeoutSeconds: 600,
         cancellation: "supported",
         outputFormat: "codex_jsonl",
-        sandbox: null
+        sandbox: "workspace-write",
+        permissionMode: "ask"
       },
       lifecycle: {
         state: "enabled",

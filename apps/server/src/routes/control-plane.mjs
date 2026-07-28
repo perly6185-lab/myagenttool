@@ -1,5 +1,4 @@
-import crypto from "node:crypto";
-import { canProvision, denyForeignProject, hashPassword, verifyPassword } from "../runtime/auth.mjs";
+import { canProvision, denyForeignProject, hashPassword } from "../runtime/auth.mjs";
 import { publicDeviceView } from "../runtime/bridge-auth.mjs";
 import { computeNextRun, normalizeSchedule } from "../services/automation-schedule.mjs";
 import {
@@ -8,8 +7,11 @@ import {
   isCapabilityTarget,
   normalizeAutomationTarget,
 } from "../services/automation-target.mjs";
-
-const TOKEN_TTL_MS = 30 * 24 * 60 * 60 * 1000;
+import { normalizeExternalAlertWebhookUrl } from "../services/auto-run-alerts.mjs";
+import { normalizeWebPerformanceMetric, summarizeWebPerformance } from "../services/web-performance.mjs";
+import { ensureEventStreamMetrics, eventStreamSummary } from "../services/event-stream-metrics.mjs";
+import { actOnOperationalAlert, reconcileOperationalHealth } from "../services/operational-health.mjs";
+import { validateNewPassword } from "../services/password-recovery.mjs";
 
 export async function handleControlPlaneRoutes({
   req,
@@ -35,59 +37,6 @@ export async function handleControlPlaneRoutes({
   createCapabilityInvocation,
   requestObservabilityDeletion,
 }) {
-  if (req.method === "POST" && url.pathname === "/api/session") {
-    // Multi-user login: a body.userId logs in as that seeded user; with none we
-    // fall back to the local user so existing single-user dev is unchanged.
-    const body = await readJson(req).catch(() => ({}));
-    const requestedUserId = body?.userId ? String(body.userId) : null;
-    if (requestedUserId && !state.users.some((item) => item.id === requestedUserId)) {
-      sendJson(res, 404, { error: "user_not_found" });
-      return true;
-    }
-    const user =
-      (requestedUserId && state.users.find((item) => item.id === requestedUserId)) ||
-      state.users.find((item) => item.id === "usr_local") ||
-      state.users[0];
-    // Credential check: a user with a password must supply the correct one
-    // (closes login-as-anyone for credentialed users). A passwordless user —
-    // e.g. the seeded local dev user — still logs in without one.
-    if (user?.passwordHash && !verifyPassword(body?.password, user.passwordHash)) {
-      sendJson(res, 401, { error: "invalid_credentials" });
-      return true;
-    }
-    const createdAt = now();
-    const token = `tok_${crypto.randomBytes(24).toString("base64url")}`;
-    const record = {
-      id: nextId("tok_demo"),
-      token,
-      userId: user?.id ?? "usr_local",
-      teamId: user?.teamId ?? "team_local",
-      createdAt,
-      expiresAt: new Date(Date.now() + TOKEN_TTL_MS).toISOString(),
-      revokedAt: null,
-    };
-    state.tokens.unshift(record);
-    state.tokens = state.tokens.slice(0, 20);
-    persistStateSoon();
-    const { passwordHash: _pw, ...safeUser } = user ?? { id: "usr_local", name: "Local User", teamId: "team_local" };
-    sendJson(res, 200, {
-      token,
-      expiresAt: record.expiresAt,
-      user: safeUser,
-    });
-    return true;
-  }
-
-  if (req.method === "DELETE" && url.pathname === "/api/session") {
-    const token = String(req.headers?.authorization ?? "").replace(/^Bearer\s+/i, "");
-    if (token) {
-      state.tokens = state.tokens.filter((item) => item.token !== token);
-      persistStateSoon();
-    }
-    sendJson(res, 204, null);
-    return true;
-  }
-
   // Team + user provisioning. The seed ships one local team/user; these let a
   // second tenant exist so the ownership guards actually engage. Only an
   // owner/admin may provision (9C); the seeded local user is an owner, so
@@ -103,15 +52,50 @@ export async function handleControlPlaneRoutes({
       sendJson(res, 400, { error: "invalid_team", message: "A team name is required." });
       return true;
     }
+    const rawAlertWebhookUrl = body?.alertWebhookUrl;
+    const normalizedTeamWebhookUrl = rawAlertWebhookUrl == null || rawAlertWebhookUrl === ""
+      ? null
+      : normalizeExternalAlertWebhookUrl(rawAlertWebhookUrl);
+    if (rawAlertWebhookUrl && !normalizedTeamWebhookUrl) {
+      sendJson(res, 400, { error: "invalid_alert_webhook_url" });
+      return true;
+    }
     const team = {
       id: nextId("team"),
       name,
       slug: String(body?.slug ?? name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "")),
+      alertWebhookUrl: normalizedTeamWebhookUrl,
       createdAt: now(),
     };
     state.teams.unshift(team);
     persistStateSoon();
-    sendJson(res, 201, { team });
+    const { alertWebhookUrl, ...publicTeam } = team;
+    sendJson(res, 201, { team: { ...publicTeam, alertWebhookConfigured: Boolean(alertWebhookUrl) } });
+    return true;
+  }
+  const teamAlertMatch = url.pathname.match(/^\/api\/teams\/([^/]+)\/alert-webhook$/);
+  if (req.method === "PATCH" && teamAlertMatch) {
+    const teamId = decodeURIComponent(teamAlertMatch[1]);
+    if (!canProvision(actor) || actor?.teamId !== teamId) {
+      sendJson(res, 404, { error: "team_not_found" });
+      return true;
+    }
+    const team = state.teams.find((item) => item.id === teamId);
+    if (!team) {
+      sendJson(res, 404, { error: "team_not_found" });
+      return true;
+    }
+    const body = await readJson(req).catch(() => ({}));
+    const raw = body?.alertWebhookUrl;
+    const alertWebhookUrl = raw == null || raw === "" ? null : normalizeExternalAlertWebhookUrl(raw);
+    if (raw && !alertWebhookUrl) {
+      sendJson(res, 400, { error: "invalid_alert_webhook_url" });
+      return true;
+    }
+    team.alertWebhookUrl = alertWebhookUrl;
+    persistStateSoon();
+    const { alertWebhookUrl: storedWebhookUrl, ...publicTeam } = team;
+    sendJson(res, 200, { team: { ...publicTeam, alertWebhookConfigured: Boolean(storedWebhookUrl) } });
     return true;
   }
 
@@ -130,6 +114,16 @@ export async function handleControlPlaneRoutes({
     if (!state.teams.some((item) => item.id === teamId)) {
       sendJson(res, 400, { error: "invalid_user", message: "A known teamId is required." });
       return true;
+    }
+    if (body?.password && process.env.MYAGENT_LEGACY_LOCAL_LOGIN !== "1") {
+      const passwordPolicy = validateNewPassword(String(body.password), {
+        teamId,
+        userId: String(body?.id ?? name),
+      });
+      if (!passwordPolicy.ok) {
+        sendJson(res, 400, passwordPolicy);
+        return true;
+      }
     }
     const user = {
       id: nextId("usr"),
@@ -179,6 +173,85 @@ export async function handleControlPlaneRoutes({
       invocationCount: result.invocationCount,
       counts: result.counts,
     });
+    return true;
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/observability/web-performance") {
+    const body = await readJson(req).catch(() => ({}));
+    const metric = normalizeWebPerformanceMetric(body, {
+      id: nextId("wpm"),
+      userId: actor?.userId,
+      teamId: actor?.teamId,
+      recordedAt: now(),
+    });
+    if (!metric) {
+      sendJson(res, 400, { error: "invalid_web_performance_metric" });
+      return true;
+    }
+    state.webPerformanceMetrics ??= [];
+    state.webPerformanceMetrics.push(metric);
+    state.webPerformanceMetrics = state.webPerformanceMetrics.slice(-5_000);
+    persistStateSoon();
+    sendJson(res, 202, { accepted: true });
+    return true;
+  }
+
+  if (req.method === "GET" && url.pathname === "/api/observability/web-performance") {
+    const rows = (state.webPerformanceMetrics ?? []).filter((row) => row.teamId === actor?.teamId);
+    const summary = summarizeWebPerformance(rows, {
+      version: url.searchParams.get("version"),
+      limit: Number(url.searchParams.get("limit") ?? 200),
+    });
+    sendJson(res, 200, { ...summary, recent: rows.slice(-50).reverse() });
+    return true;
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/observability/event-stream/reconnect") {
+    const metrics = ensureEventStreamMetrics(state, actor?.teamId);
+    metrics.reconnects += 1;
+    persistStateSoon();
+    sendJson(res, 202, { accepted: true });
+    return true;
+  }
+
+  if (req.method === "GET" && url.pathname === "/api/observability/event-stream") {
+    const metrics = ensureEventStreamMetrics(state, actor?.teamId);
+    sendJson(res, 200, { metrics: eventStreamSummary(metrics) });
+    return true;
+  }
+
+  if (req.method === "GET" && url.pathname === "/api/observability/operations") {
+    const health = reconcileOperationalHealth(state, { teamId: actor?.teamId, now });
+    for (const alert of health.transitions.triggered) {
+      appendEvent({ invocationId: null, type: "operational_alert_triggered", level: alert.severity, message: alert.message, data: { alertId: alert.id, source: alert.source } });
+    }
+    for (const alert of health.transitions.recovered) {
+      appendEvent({ invocationId: null, type: "operational_alert_recovered", level: "info", message: `Recovered ${alert.key}.`, data: { alertId: alert.id, source: alert.source } });
+    }
+    persistStateSoon();
+    const { transitions: _transitions, ...publicHealth } = health;
+    sendJson(res, 200, publicHealth);
+    return true;
+  }
+
+  const operationalAlertMatch = url.pathname.match(/^\/api\/observability\/operations\/alerts\/([^/]+)\/actions$/);
+  if (req.method === "POST" && operationalAlertMatch) {
+    const body = await readJson(req).catch(() => ({}));
+    const alert = actOnOperationalAlert(state, {
+      teamId: actor?.teamId,
+      alertId: decodeURIComponent(operationalAlertMatch[1]),
+      action: body.action,
+      actorId: actor?.userId ?? "usr_local",
+      silenceMinutes: body.silenceMinutes,
+      now,
+    });
+    if (!alert) {
+      sendJson(res, 404, { error: "operational_alert_not_found" });
+      return true;
+    }
+    appendEvent({ invocationId: null, type: `operational_alert_${body.action}`, level: "info", message: `${body.action} ${alert.key}.`, data: { alertId: alert.id, source: alert.source } });
+    persistStateSoon();
+    sendJson(res, 200, { alert });
     return true;
   }
 

@@ -1,7 +1,7 @@
 import { randomBytes } from "node:crypto";
 import { constants as fsConstants, copyFileSync, existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } from "node:path";
-import { denyForeignProject, teamOf, LOCAL_TEAM_ID } from "../runtime/auth.mjs";
+import { canProvision, denyForeignProject, teamOf, LOCAL_TEAM_ID } from "../runtime/auth.mjs";
 import { computeDispatchEvaluation } from "../read-models/dispatch-evaluation.mjs";
 import { computeIssueOwnership } from "../read-models/issue-ownership.mjs";
 import { recordHttpGateRefusal } from "./refusal-http-gate.mjs";
@@ -21,6 +21,8 @@ import { summarizeEpicChildren } from "../services/auto-run-epic.mjs";
 import { resolveAutoRunVerifyCommandFor } from "../services/worktree-verify.mjs";
 import { PdfDocumentReadError, readProjectPdf } from "../services/pdf-document-read.mjs";
 import { CadPreviewError, inspectCadDocument, renderCadDocument } from "../services/cad-preview.mjs";
+import { assetCapabilityMatrix, deriveAssetRuntimeReadiness, describeProjectAsset, summarizeAssetForRemote } from "../services/asset-capabilities.mjs";
+import { AssetPreviewError, readAssetPreview } from "../services/asset-preview.mjs";
 
 const IMAGE_MIME = {
   ".png": "image/png",
@@ -54,6 +56,7 @@ export async function handleProjectRoutes({
   retryAutoRun,
   cancelAutoRun,
   mergeAutoRunPr,
+  recordRoutingOverride,
   setReportSchedule,
   postReportNow,
   claimIssue,
@@ -234,6 +237,10 @@ export async function handleProjectRoutes({
   // foreign actor (these routes take a global run id, not a project id). (audit)
   const denyForeignAutoRun = (autoRunId) => {
     const run = (state.autoRuns ?? []).find((r) => r.id === autoRunId);
+    if (run && !run.projectId && actor?.teamId != null && run.teamId !== actor.teamId) {
+      sendJson(res, 404, { error: "auto_run_not_found" });
+      return true;
+    }
     const projectId = run?.projectId ?? null;
     if (!projectId) return false; // unknown run → let the service return not-found
     return denyForeignProject({ res, sendJson, state, actor, projectId, notFound: { error: "auto_run_not_found" } });
@@ -243,7 +250,8 @@ export async function handleProjectRoutes({
   if (autoRunRetryMatch && req.method === "POST") {
     if (denyForeignAutoRun(decodeURIComponent(autoRunRetryMatch[1]))) return true;
     try {
-      const result = await retryAutoRun(decodeURIComponent(autoRunRetryMatch[1]), { actor });
+      const body = await readJson(req);
+      const result = await retryAutoRun(decodeURIComponent(autoRunRetryMatch[1]), { actor, terminalId: body?.terminalId });
       sendJson(res, 200, result);
     } catch (error) {
       sendJson(res, 400, { error: "auto_run_retry_failed", message: errorMessage(error) });
@@ -255,10 +263,34 @@ export async function handleProjectRoutes({
   if (autoRunCancelMatch && req.method === "POST") {
     if (denyForeignAutoRun(decodeURIComponent(autoRunCancelMatch[1]))) return true;
     try {
-      const result = cancelAutoRun(decodeURIComponent(autoRunCancelMatch[1]), { actor });
+      const body = await readJson(req);
+      const result = cancelAutoRun(decodeURIComponent(autoRunCancelMatch[1]), { actor, terminalId: body?.terminalId });
       sendJson(res, 200, result);
     } catch (error) {
       sendJson(res, 400, { error: "auto_run_cancel_failed", message: errorMessage(error) });
+    }
+    return true;
+  }
+
+  const routingOverrideMatch = url.pathname.match(/^\/api\/auto-runs\/([^\/]+)\/routing-override$/);
+  if (routingOverrideMatch && req.method === "POST") {
+    if (denyForeignAutoRun(decodeURIComponent(routingOverrideMatch[1]))) return true;
+    try {
+      const body = await readJson(req);
+      const result = recordRoutingOverride(decodeURIComponent(routingOverrideMatch[1]), {
+        actor,
+        actualPath: body?.actualPath,
+        reason: body?.reason,
+        expectedRevision: body?.expectedRevision,
+        idempotencyKey: body?.idempotencyKey,
+      });
+      sendJson(res, 200, result);
+    } catch (error) {
+      sendJson(res, error?.status ?? 400, {
+        error: error?.code ?? "routing_override_failed",
+        message: errorMessage(error),
+        ...(error?.currentRevision == null ? {} : { currentRevision: error.currentRevision }),
+      });
     }
     return true;
   }
@@ -332,12 +364,19 @@ export async function handleProjectRoutes({
     // outcomes; the 10s poll stays cheap.
     if (url.searchParams.get("refresh") === "1" && typeof refreshAutoRunPrDispositions === "function") {
       try {
-        await refreshAutoRunPrDispositions();
+        await refreshAutoRunPrDispositions({ teamId: actor?.teamId ?? null });
       } catch {
         /* best-effort */
       }
     }
-    const autoRuns = state.autoRuns ?? [];
+    const visibleProjectIds = new Set(
+      (state.projects ?? [])
+        .filter((project) => actor?.teamId == null || teamOf(project) === actor.teamId)
+        .map((project) => project.id),
+    );
+    const autoRuns = (state.autoRuns ?? []).filter((run) =>
+      (run.projectId && visibleProjectIds.has(run.projectId))
+      || (!run.projectId && actor?.teamId != null && run.teamId === actor.teamId));
     // Surface the pending local-approval on awaiting_approval runs so the human
     // can Approve/Deny directly on the auto-run card (informed by the decision
     // already shown), instead of hunting for it in the Invocations view.
@@ -347,7 +386,8 @@ export async function handleProjectRoutes({
         .map((a) => [a.invocationId, a]),
     );
     const enriched = autoRuns.map((run) => {
-      let out = run;
+      const { idempotencyKey: _routingIdempotencyKey, ...routingOverride } = run.routingOverride ?? {};
+      let out = run.routingOverride ? { ...run, routingOverride } : run;
       // Derived terminal grade (clean / degraded / unverified success, or failed)
       // for a per-run quality badge; null while the run is still in flight.
       const finalStatus = deriveFinalStatus(run);
@@ -384,10 +424,15 @@ export async function handleProjectRoutes({
     });
     sendJson(res, 200, {
       autoRuns: enriched,
-      summary: summarizeAutoRuns(autoRuns, { sloTargets: state.autoRunSettings?.sloTargets ?? null }),
+      summary: summarizeAutoRuns(autoRuns, {
+        sloTargets: state.autoRunSettings?.sloTargets ?? null,
+        routingThresholds: state.autoRunSettings?.routingThresholds ?? null,
+      }),
       // D2 deploy metrics: change-failure rate + recovery + frequency over the
       // deploy stage's records (feeds the DORA panel and maturity L5 in D3).
-      deployments: summarizeDeployments(state.deployments ?? []),
+      deployments: summarizeDeployments(
+        (state.deployments ?? []).filter((deployment) => visibleProjectIds.has(deployment.projectId)),
+      ),
     });
     return true;
   }
@@ -476,6 +521,10 @@ export async function handleProjectRoutes({
   if (req.method === "PUT" && url.pathname === "/api/auto-run-settings") {
     // Edit the SAFE knobs only; command argv is never accepted here. A field set
     // to null clears the override (back to env). Applied on the next server start.
+    if (!canProvision(actor)) {
+      sendJson(res, 403, { error: "forbidden", message: "Only an owner or admin can update global Auto-run settings." });
+      return true;
+    }
     const body = await readJson(req);
     state.autoRunSettings = normalizeAutoRunSettings(body ?? {}, state.autoRunSettings ?? {});
     persistStateSoon?.();
@@ -649,10 +698,97 @@ export async function handleProjectRoutes({
       sendJson(res, 200, {
         ...result,
         worktreeId: worktree?.id ?? null,
-        documents: result.documents.map((document) => ({ ...document, worktreeId: worktree?.id ?? null })),
+        documents: result.documents.map((document) => {
+          const readiness = deriveAssetRuntimeReadiness(state)[document.assetFamily];
+          return {
+            ...document, worktreeId: worktree?.id ?? null,
+            readiness: readiness === undefined ? document.readiness
+              : readiness ? { state: "ready", reason: "available_on_owning_terminal" }
+                : { state: "waiting_capability", reason: "local_application_required" },
+          };
+        }),
       });
     } catch (error) {
       sendJson(res, 400, { error: "project_documents_unavailable", message: error instanceof Error ? error.message : String(error) });
+    }
+    return true;
+  }
+
+  const assetCapabilitiesMatch = url.pathname.match(/^\/api\/projects\/([^/]+)\/asset-capabilities$/);
+  if (assetCapabilitiesMatch && req.method === "GET") {
+    const project = state.projects.find((item) => item.id === decodeURIComponent(assetCapabilitiesMatch[1]));
+    if (!project) { sendJson(res, 404, { error: "project_not_found" }); return true; }
+    if (denyForeignProject({ res, sendJson, state, actor, projectId: project.id, notFound: { error: "project_not_found" } })) return true;
+    const worktreeId = url.searchParams.get("worktree");
+    const worktree = worktreeId ? (state.worktrees ?? []).find((item) => item.id === worktreeId && item.projectId === project.id) : null;
+    if (worktreeId && !worktree) { sendJson(res, 404, { error: "worktree_not_found" }); return true; }
+    try {
+      const root = worktree?.path ?? worktree?.worktreePath ?? project.path;
+      const descriptor = describeProjectAsset({
+        projectId: project.id,
+        projectRoot: root,
+        relativePath: url.searchParams.get("path") ?? "",
+        terminalId: actor?.deviceId ?? project.terminalId ?? state.devices?.[0]?.id ?? "local-terminal",
+        worktreeId: worktree?.id ?? null,
+        runtimeReadiness: deriveAssetRuntimeReadiness(state),
+      });
+      res.setHeader("Cache-Control", "private, no-store");
+      sendJson(res, 200, { descriptor, remoteSummary: summarizeAssetForRemote(descriptor), matrixVersion: 1 });
+    } catch (error) {
+      const code = error?.code ?? "asset_unavailable";
+      const status = code === "asset_path_outside_project" || code === "invalid_asset_path" ? 400 : code === "ENOENT" ? 404 : 400;
+      sendJson(res, status, { error: code, message: "This asset is not available inside the selected project." });
+    }
+    return true;
+  }
+
+  if (url.pathname === "/api/asset-capabilities" && req.method === "GET") {
+    sendJson(res, 200, { version: 1, verbs: [
+      "discover", "preview", "inspect", "create", "edit", "transform",
+      "render", "compare", "export", "open_external", "attach_evidence",
+    ], families: assetCapabilityMatrix() });
+    return true;
+  }
+
+  const assetPreviewMatch = url.pathname.match(/^\/api\/projects\/([^/]+)\/asset-preview$/);
+  if (assetPreviewMatch && req.method === "GET") {
+    const project = state.projects.find((item) => item.id === decodeURIComponent(assetPreviewMatch[1]));
+    if (!project) { sendJson(res, 404, { error: "project_not_found" }); return true; }
+    if (denyForeignProject({ res, sendJson, state, actor, projectId: project.id, notFound: { error: "project_not_found" } })) return true;
+    const worktreeId = url.searchParams.get("worktree");
+    const worktree = worktreeId ? (state.worktrees ?? []).find((item) => item.id === worktreeId && item.projectId === project.id) : null;
+    if (worktreeId && !worktree) { sendJson(res, 404, { error: "worktree_not_found" }); return true; }
+    try {
+      const root = worktree?.path ?? worktree?.worktreePath ?? project.path;
+      const preview = readAssetPreview({
+        projectPath: root, relativeFile: url.searchParams.get("path") ?? "", range: req.headers.range ?? null,
+      });
+      res.setHeader("Cache-Control", "private, no-store");
+      res.setHeader("X-Content-Type-Options", "nosniff");
+      res.setHeader("Content-Security-Policy", "default-src 'none'; sandbox");
+      if (preview.family === "markdown") {
+        sendJson(res, 200, {
+          path: preview.path, family: preview.family, text: preview.text,
+          size: preview.size, truncated: false,
+        });
+        return true;
+      }
+      res.statusCode = preview.family === "video" ? 206 : 200;
+      res.setHeader("Content-Type", preview.mimeType);
+      res.setHeader("Content-Length", String(preview.bytes.length));
+      res.setHeader("Content-Disposition", "inline");
+      if (preview.family === "video") {
+        res.setHeader("Accept-Ranges", "bytes");
+        res.setHeader("Content-Range", `bytes ${preview.start}-${preview.end}/${preview.size}`);
+      }
+      res.end(preview.bytes);
+    } catch (error) {
+      const code = error instanceof AssetPreviewError ? error.code : "asset_preview_failed";
+      const status = code === "asset_not_found" ? 404
+        : code === "asset_preview_too_large" ? 413
+          : code === "invalid_asset_range" ? 416
+            : code === "asset_preview_unsupported" ? 415 : 400;
+      sendJson(res, status, { error: code, message: error instanceof AssetPreviewError ? error.message : "Asset preview is unavailable." });
     }
     return true;
   }

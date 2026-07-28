@@ -24,6 +24,7 @@ export async function handleApplicationRoutes({
   listApplications,
   listApplicationOrchestrationRunEvents,
   probeApplication,
+  repairApplication,
   queueApplicationInstall,
   registerApplication,
   requestApplicationOrchestrationRecoveryAction,
@@ -361,7 +362,7 @@ export async function handleApplicationRoutes({
     return true;
   }
 
-  const actionMatch = url.pathname.match(/^\/api\/applications\/([^/]+)\/(probe|online|offline|archive|refresh)$/);
+  const actionMatch = url.pathname.match(/^\/api\/applications\/([^/]+)\/(probe|repair|online|offline|archive|refresh)$/);
   if (actionMatch && req.method === "POST") {
     const applicationId = decodeURIComponent(actionMatch[1]);
     if (denyForeignApplication({ res, sendJson, state, actor, applicationId, findApplication })) return true;
@@ -381,7 +382,9 @@ export async function handleApplicationRoutes({
     try {
       const application = actionMatch[2] === "probe"
         ? probeApplication(applicationId, actor)
-        : transitionApplication(applicationId, actionMatch[2], actor);
+        : actionMatch[2] === "repair"
+          ? repairApplication(applicationId, actor)
+          : transitionApplication(applicationId, actionMatch[2], actor);
       if (!application) {
         sendJson(res, 404, { error: "application_not_found" });
         return true;

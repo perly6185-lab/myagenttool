@@ -105,15 +105,11 @@ no default review prompt), `worktreeId` is required and `current_repo` is refuse
   approval broker. `codexApprovalRequiresManualReview` already forces manual review
   when the task/tool/summary mentions secrets, `rm -rf`, credentials, etc.
 - `approvalMode` (default `ask`): `ask` pauses at the broker on every permission
-  request; `auto` auto-approves non-sensitive requests but still forces manual on
-  the sensitive-pattern list. **Decision (§11.1): `ask` + `auto` only; `full` is
-  intentionally NOT offered for codex.exec.** For exec, `auto` already is the
-  safe-permissive mode (auto-approve non-sensitive, manual on sensitive), so a
-  `full` that kept the fallback would be identical to `auto`, and a `full` that
-  bypassed it would auto-approve `rm -rf` / secret access on an autonomous
-  code-writer. Bypassing the guardrail must be a separate explicit danger flag,
-  never a routine approvalMode. The validator rejects `full` with a message
-  pointing to `auto`.
+  request; `auto` uses Codex auto-review for ordinary actions while the
+  MyAgentTool broker still forces manual review for sensitive requests; `full`
+  maps to Codex's explicit sandbox/approval bypass. Full access is accepted only
+  as a high-risk invocation that remains at MyAgentTool's outer local approval
+  gate before it can be dispatched (§11.1).
 - Promotion of the produced changeset is gated on `createCodexChangeReview`
   returning `approved` before any promote/PR step runs.
 
@@ -186,7 +182,7 @@ exercises; only the output collection and the follow-up (review/promote) differ.
 
 - **Phase 1 — contract + read-back, default OFF (decision §11.2).** Register the
   exec agent default-disabled behind a feature flag (pattern: tier-2 sandbox
-  shipped default-OFF). `approvalMode` supports `ask` + `auto` (not `full`; §11.1).
+  shipped default-OFF). `approvalMode` supports `ask`, `auto`, and `full` (§11.1).
   Wrapper computes the authoritative diff; a fixture drives CI without a live
   model. Ship a `codex-exec-caller-smoke` analogous to the read-only one.
 - **Phase 2 — governance wiring.** ✅ Change-review gate (2b) + Evidence Center lens
@@ -196,9 +192,8 @@ exercises; only the output collection and the follow-up (review/promote) differ.
   invocation (no managed session required), so exec runs auto-approve low-risk
   requests and force manual review on the sensitive-pattern list. Locked by
   `codex-exec-caller-smoke`. **Residual:** the Desktop Bridge does not yet forward
-  real Codex `PermissionRequest` hooks (with the exec `invocationId`) to
-  `/api/codex/hooks` — that integration needs a live Codex to validate and is the
-  one remaining piece of end-to-end unattended approval.
+  Codex app-server command, file-change, and permission requests are forwarded
+  through the Desktop Bridge to `/api/codex/hooks` with the invocation id.
 - **Phase 3 — promote path.** ✅ Changeset → worktree-PR reuse, gated on
   `execRunPromotionGate` (every change approved). Human-gated.
 - **Phase 4 — policy.** `approvalMode` authority (who may `auto`/`full`), budget pool.
@@ -211,13 +206,12 @@ pr-governance blocks it. Run `pnpm pr:evidence` before pushing each slice.
 
 ## 11. Decisions
 
-1. **`approvalMode` authority — RESOLVED (2026-07-14).** `ask` + `auto` only.
-   `full` is **intentionally not offered** for codex.exec: with the sensitive-pattern
-   fallback kept (the safe choice for an autonomous code-writer), `full` would be
-   behaviourally identical to `auto`; without it, `full` would auto-approve
-   `rm -rf` / secret access. `auto` is the safe-permissive mode; a guardrail bypass,
-   if ever needed for fully-trusted internal orchestration, must be a separate
-   explicit danger flag — not a routine approvalMode. Validator rejects `full`.
+1. **`approvalMode` authority — SUPERSEDED (2026-07-28).** The original
+   2026-07-14 decision exposed only `ask` + `auto`. MyAgentTool now aligns with
+   Codex's three official permission profiles: `ask`, `auto`, and explicit
+   `full`. `full` bypasses Codex sandbox approval but does not bypass
+   MyAgentTool's outer high-risk/local launch gate, so it cannot start
+   unattended merely because the mode was selected.
 2. **Default enablement — RESOLVED (2026-07-14).** Ship Phase 1 **default-OFF
    behind a feature flag**, matching the tier-2 sandbox rollout. Enablement is an
    explicit opt-in, not on-by-default even for owner-team projects.

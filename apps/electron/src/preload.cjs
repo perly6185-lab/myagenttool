@@ -11,4 +11,5 @@ contextBridge.exposeInMainWorld("myagenttoolDesktop", {
   pickLocalOfficeDocument: () => ipcRenderer.invoke("documents:pick-local-office"),
   copySelectedOfficeDocument: (input) => ipcRenderer.invoke("documents:copy-selected-office", input),
   openContainedOfficeDocument: (input) => ipcRenderer.invoke("documents:open-contained-office", input),
+  openContainedAsset: (input) => ipcRenderer.invoke("assets:open-contained", input),
 });

@@ -19,9 +19,9 @@ export function readableRecoveryCategory(category: string): string {
 
 export function recoveryTone(category: string): RecoveryTone {
   if (category === "none") return "success";
-  if (["validation_failed", "policy_blocked", "device_unlinked"].includes(category)) return "warning";
+  if (["validation_failed", "policy_blocked", "approval_timeout", "device_unlinked"].includes(category)) return "warning";
   if (["runtime_error", "unknown_failure"].includes(category)) return "danger";
-  if (["dispatch_timeout", "agent_unavailable", "cancelled"].includes(category)) return "running";
+  if (["dispatch_timeout", "execution_timeout", "agent_unavailable", "cancelled"].includes(category)) return "running";
   return "neutral";
 }
 

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { LayoutTemplate, Loader2, Monitor, Tablet, Smartphone } from "lucide-react";
 import { api } from "@/data/use-console-actions";
 import { cn } from "@/lib/cn";
+import { useAppTranslation } from "@/lib/i18n/use-app-translation";
 
 // D3 (issue→UI-design plan): render a design run's mockup artifacts (design/*) in
 // the console as a resizable CANVAS. HTML mockups render inside a FULLY sandboxed
@@ -25,7 +26,8 @@ const VIEWPORTS: { key: Viewport; label: string; width: string; icon: typeof Mon
   { key: "mobile", label: "Mobile", width: "375px", icon: Smartphone },
 ];
 
-export function DesignPanel({ worktreeId, artifacts, title = "Design artifacts" }: { worktreeId: string; artifacts: string[]; title?: string }) {
+export function DesignPanel({ worktreeId, artifacts, title }: { worktreeId: string; artifacts: string[]; title?: string }) {
+  const { t } = useAppTranslation();
   const [selected, setSelected] = useState(() => artifacts.find((p) => /\.html?$/i.test(p)) ?? artifacts.find((p) => /\.(png|jpe?g|gif|webp|avif|svg)$/i.test(p)) ?? artifacts[0]);
   const [viewport, setViewport] = useState<Viewport>("desktop");
   const [file, setFile] = useState<FileResponse | null>(null);
@@ -59,7 +61,7 @@ export function DesignPanel({ worktreeId, artifacts, title = "Design artifacts" 
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div className="flex flex-wrap items-center gap-1.5">
           <span className="flex items-center gap-1 text-xs font-medium text-foreground/80">
-            <LayoutTemplate className="size-3.5" /> {title}
+            <LayoutTemplate className="size-3.5" /> {title ?? t("autoRunActions.designArtifacts")}
           </span>
           {artifacts.map((p) => (
             <button
@@ -77,7 +79,7 @@ export function DesignPanel({ worktreeId, artifacts, title = "Design artifacts" 
           ))}
         </div>
         {isHtml ? (
-          <div className="flex items-center gap-0.5 rounded-md border border-border bg-background p-0.5" role="group" aria-label="Preview viewport">
+          <div className="flex items-center gap-0.5 rounded-md border border-border bg-background p-0.5" role="group" aria-label={t("autoRunActions.previewViewport")}>
             {VIEWPORTS.map((v) => {
               const Ico = v.icon;
               const on = viewport === v.key;
@@ -87,11 +89,11 @@ export function DesignPanel({ worktreeId, artifacts, title = "Design artifacts" 
                   type="button"
                   aria-pressed={on}
                   onClick={() => setViewport(v.key)}
-                  title={v.label}
+                  title={t(`autoRunActions.viewport.${v.key}` as never)}
                   className={cn("flex items-center gap-1 rounded px-2 py-1 text-[11px]", on ? "bg-muted font-medium text-foreground" : "text-muted-foreground hover:text-foreground")}
                 >
                   <Ico className="size-3.5" />
-                  <span className="hidden sm:inline">{v.label}</span>
+                  <span className="hidden sm:inline">{t(`autoRunActions.viewport.${v.key}` as never)}</span>
                 </button>
               );
             })}
@@ -99,9 +101,9 @@ export function DesignPanel({ worktreeId, artifacts, title = "Design artifacts" 
         ) : null}
       </div>
       {state === "loading" ? (
-        <span className="flex items-center gap-1 px-1 py-6 text-xs text-muted-foreground"><Loader2 className="size-3 animate-spin" /> loading mockup…</span>
+        <span className="flex items-center gap-1 px-1 py-6 text-xs text-muted-foreground"><Loader2 className="size-3 animate-spin" /> {t("autoRunActions.loadingMockup")}</span>
       ) : state === "error" ? (
-        <span className="px-1 py-2 text-xs text-red-600 dark:text-red-400">Artifact unavailable — the worktree may have been torn down.</span>
+        <span className="px-1 py-2 text-xs text-red-600 dark:text-red-400">{t("autoRunActions.artifactUnavailable")}</span>
       ) : file ? (
         <>
           {/* A stage so the artboard reads as an artboard; the device frame resizes to the viewport. */}
@@ -137,7 +139,7 @@ export function DesignPanel({ worktreeId, artifacts, title = "Design artifacts" 
               )}
             </div>
           </div>
-          {file.truncated ? <span className="text-[11px] text-muted-foreground">Artifact truncated at 512KB.</span> : null}
+          {file.truncated ? <span className="text-[11px] text-muted-foreground">{t("autoRunActions.artifactTruncated")}</span> : null}
         </>
       ) : null}
     </div>

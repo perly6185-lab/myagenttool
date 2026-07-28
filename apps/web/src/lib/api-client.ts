@@ -5,6 +5,7 @@
  */
 
 import type {
+  AssetDescriptor,
   ApplicationCapability,
   ApplicationInstallPlan,
   ApplicationInstallRun,
@@ -126,88 +127,237 @@ export function resolveApiBase(): string {
   return `${protocol}//${hostname}:${SERVER_PORT}`;
 }
 
-const apiBase = resolveApiBase();
+export async function openControlPlaneEventStream(
+  onEvent: (event: { id: string | null; event: string; data: Record<string, unknown> }) => void,
+  signal: AbortSignal,
+  lastEventId?: string | null,
+): Promise<void> {
+  await ensureSession();
+  const response = await fetch(`${apiBase}/api/events/stream`, {
+    headers: {
+      ...(lastEventId ? { "Last-Event-ID": lastEventId } : {}),
+    },
+    credentials: "include",
+    signal,
+  });
+  if (response.status === 401) {
+    sessionReady = false;
+    throw new ApiError("unauthenticated", "Session expired.", 401);
+  }
+  if (!response.ok || !response.body) throw new ApiError("stream_unavailable", "Live updates unavailable.", response.status);
+  const reader = response.body.pipeThrough(new TextDecoderStream()).getReader();
+  let buffer = "";
+  while (!signal.aborted) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buffer += value;
+    const frames = buffer.split("\n\n");
+    buffer = frames.pop() ?? "";
+    for (const frame of frames) {
+      if (!frame || frame.startsWith(":")) continue;
+      let event = "message";
+      let id: string | null = null;
+      let data = "{}";
+      for (const line of frame.split("\n")) {
+        if (line.startsWith("id:")) id = line.slice(3).trim();
+        if (line.startsWith("event:")) event = line.slice(6).trim();
+        if (line.startsWith("data:")) data = line.slice(5).trim();
+      }
+      onEvent({ id, event, data: JSON.parse(data) as Record<string, unknown> });
+    }
+  }
+}
 
-// --- Identity Phase 2: bearer token (see docs/engineering/IDENTITY_PLAN.md) ---
-// The web client carries a token on every call. In local dev there is no
-// password yet, so the first request transparently logs in as the seeded user
-// (POST /api/session) and stores the token. This is a no-op when the server has
-// MYAGENT_REQUIRE_AUTH off, and satisfies the 401 gate when it is on.
-const TOKEN_KEY = "myagenttool.token";
-const USER_KEY = "myagenttool.user";
+const apiBase = resolveApiBase();
+const REQUEST_TIMEOUT_MS = 15_000;
+
+// --- ADR 0021 I2: server-side session cookie + CSRF -----------------------
+// The browser never receives or persists the session secret in JavaScript.
+export const SESSION_CHANGED_EVENT = "myagenttool:session-changed";
 
 export interface SessionUser {
   id: string;
   name?: string;
   teamId?: string;
+  role?: "owner" | "admin" | "operator" | "viewer";
 }
 
-let memoryToken: string | null = null;
 let memoryUser: SessionUser | null = null;
-let sessionPromise: Promise<string | null> | null = null;
-
-function getToken(): string | null {
-  try {
-    return window.localStorage.getItem(TOKEN_KEY) ?? memoryToken;
-  } catch {
-    return memoryToken;
-  }
-}
-
-function setToken(token: string | null): void {
-  memoryToken = token;
-  try {
-    if (token) window.localStorage.setItem(TOKEN_KEY, token);
-    else window.localStorage.removeItem(TOKEN_KEY);
-  } catch {
-    /* private mode / storage disabled — memoryToken still holds it this session */
-  }
-}
+let sessionReady = false;
+let sessionPromise: Promise<boolean> | null = null;
 
 function setUser(user: SessionUser | null): void {
   memoryUser = user;
   try {
-    if (user) window.localStorage.setItem(USER_KEY, JSON.stringify(user));
-    else window.localStorage.removeItem(USER_KEY);
+    window.localStorage.removeItem("myagenttool.token");
+    window.localStorage.removeItem("myagenttool.user");
   } catch {
-    /* storage disabled — memoryUser still holds it */
+    /* legacy storage may be unavailable; it is never read */
   }
+  if (typeof window !== "undefined") window.dispatchEvent(new CustomEvent(SESSION_CHANGED_EVENT));
 }
 
 /** The signed-in user (for display), or null if not logged in yet. */
 export function getSessionUser(): SessionUser | null {
-  if (memoryUser) return memoryUser;
-  try {
-    const raw = window.localStorage.getItem(USER_KEY);
-    return raw ? (JSON.parse(raw) as SessionUser) : null;
-  } catch {
-    return null;
-  }
+  return memoryUser;
 }
 
-interface SessionResponse {
-  token?: string;
+export interface SessionInfo {
+  id: string;
+  mode: "local" | "password" | "enterprise";
+  createdAt: string;
+  lastSeenAt: string;
+  idleExpiresAt: string;
+  absoluteExpiresAt: string;
+  currentDevice: boolean;
+}
+
+export interface SessionResponse {
   user?: SessionUser;
+  expiresAt?: string;
+  session?: SessionInfo | null;
+}
+
+export interface IdentityProviderCapability {
+  provider: "wecom" | "feishu" | "dingtalk";
+  label: string;
+  authorization: "redirect" | "device_code";
+}
+
+export interface IdentityOptions {
+  protocolVersion: 1;
+  localMode: boolean;
+  passwordMode: boolean;
+  providers: IdentityProviderCapability[];
+}
+
+export interface IdentityChallenge {
+  id: string;
+  provider: IdentityProviderCapability["provider"];
+  state: "pending" | "authorized" | "consumed" | "expired" | "cancelled" | "rejected" | "failed";
+  createdAt: string;
+  expiresAt: string;
+}
+
+export interface IdentityChallengeResponse {
+  challenge: IdentityChallenge;
+  authorizationUri?: string;
+}
+
+export interface PasswordRecoveryGrant {
+  id: string;
+  purpose: "password_reset";
+  teamId: string;
+  userId: string | null;
+  createdAt: string;
+  expiresAt: string;
+}
+
+export interface PasswordRecoveryGrantResponse {
+  recoveryToken: string;
+  grant: PasswordRecoveryGrant;
+}
+
+export interface IdentitySecurityAlert {
+  id: string;
+  type: "password_login_throttled" | "recovery_token_rejected";
+  severity: "warning" | "high";
+  status: "open" | "recovered";
+  teamId: string;
+  userId: string;
+  failureCount: number;
+  updatedAt: string;
 }
 
 async function postSession(credentials: Record<string, unknown>): Promise<SessionResponse | null> {
   const response = await fetch(`${apiBase}/api/session`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
+    credentials: "include",
     body: JSON.stringify(credentials),
   });
   if (!response.ok) return null;
   return (await response.json().catch(() => ({}))) as SessionResponse;
 }
 
-async function login(): Promise<string | null> {
-  const data = await postSession({});
-  const token = data?.token ?? null;
-  if (token) {
-    setToken(token);
-    setUser(data?.user ?? null);
+function csrfToken(): string | null {
+  if (typeof document === "undefined") return null;
+  const prefix = "myagenttool_csrf=";
+  const value = document.cookie.split(";").map((part) => part.trim()).find((part) => part.startsWith(prefix));
+  return value ? decodeURIComponent(value.slice(prefix.length)) : null;
+}
+
+function csrfHeaders(method: string): Record<string, string> {
+  if (!["POST", "PUT", "PATCH", "DELETE"].includes(method.toUpperCase())) return {};
+  const token = csrfToken();
+  return token ? { "X-CSRF-Token": token } : {};
+}
+
+async function discoverSession(): Promise<boolean> {
+  try {
+    // One-way migration cleanup: legacy bearer/display records are never used.
+    window.localStorage.removeItem("myagenttool.token");
+    window.localStorage.removeItem("myagenttool.user");
+  } catch {
+    /* storage may be unavailable; no browser credential is read either way */
   }
-  return token;
+  const current = await fetch(`${apiBase}/api/session`, { credentials: "include" }).catch(() => null);
+  if (current?.ok) {
+    const data = (await current.json().catch(() => ({}))) as SessionResponse;
+    setUser(data.user ?? null);
+    sessionReady = true;
+    return true;
+  }
+  setUser(null);
+  sessionReady = false;
+  return false;
+}
+
+export async function getIdentityOptions(): Promise<IdentityOptions> {
+  const response = await fetch(`${apiBase}/api/identity/options`, { credentials: "include" });
+  if (!response.ok) throw new ApiError("identity_options_unavailable", "Sign-in options are unavailable.", response.status);
+  const data = await response.json().catch(() => null) as Partial<IdentityOptions> | null;
+  const providers = data?.providers;
+  const validProviders = Array.isArray(providers) && providers.every((provider) =>
+    provider
+    && ["wecom", "feishu", "dingtalk"].includes(provider.provider)
+    && typeof provider.label === "string"
+    && ["redirect", "device_code"].includes(provider.authorization));
+  if (
+    data?.protocolVersion !== 1
+    || typeof data.localMode !== "boolean"
+    || typeof data.passwordMode !== "boolean"
+    || !validProviders
+  ) {
+    throw new ApiError(
+      "identity_options_invalid",
+      "Sign-in options returned an invalid response.",
+      response.status,
+    );
+  }
+  return data as IdentityOptions;
+}
+
+export async function getCurrentSession(): Promise<SessionResponse | null> {
+  const response = await fetch(`${apiBase}/api/session`, { credentials: "include" });
+  if (response.status === 401) {
+    sessionReady = false;
+    setUser(null);
+    return null;
+  }
+  if (!response.ok) throw new ApiError("session_unavailable", "Session details are unavailable.", response.status);
+  const data = await response.json() as SessionResponse;
+  sessionReady = Boolean(data.user);
+  setUser(data.user ?? null);
+  return data;
+}
+
+export async function loginLocal(): Promise<SessionUser> {
+  const data = await postSession({ mode: "local" });
+  if (!data?.user) throw new ApiError("local_sign_in_failed", "Local sign-in failed.", 401);
+  sessionReady = true;
+  setUser(data.user);
+  return data.user;
 }
 
 /**
@@ -215,56 +365,143 @@ async function login(): Promise<string | null> {
  * the login form can surface it. On success the token + user are stored and the
  * next state poll reflects the new identity.
  */
-export async function loginWithCredentials(userId: string, password: string): Promise<SessionUser | null> {
-  const data = await postSession({ userId, password });
-  if (!data?.token) {
+export async function loginWithCredentials(teamId: string, userId: string, password: string): Promise<SessionUser | null> {
+  const data = await postSession({ mode: "password", teamId, userId, password });
+  if (!data?.user) {
     throw new Error("Sign in failed — check the user id and password.");
   }
-  setToken(data.token);
+  sessionReady = true;
   setUser(data.user ?? { id: userId });
   return data.user ?? { id: userId };
 }
 
-/** Sign out: revoke the token server-side (best effort) and clear local state. */
-export async function logout(): Promise<void> {
-  const token = getToken();
-  if (token) {
-    await fetch(`${apiBase}/api/session`, {
-      method: "DELETE",
-      headers: { Authorization: `Bearer ${token}` },
-    }).catch(() => undefined);
+export async function issuePasswordRecovery(userId: string): Promise<PasswordRecoveryGrantResponse> {
+  const response = await fetch(`${apiBase}/api/identity/recovery-grants`, {
+    method: "POST",
+    credentials: "include",
+    headers: {
+      "Content-Type": "application/json",
+      ...csrfHeaders("POST"),
+    },
+    body: JSON.stringify({ userId, purpose: "password_reset" }),
+  });
+  const data = await response.json().catch(() => ({})) as Partial<PasswordRecoveryGrantResponse> & { error?: string };
+  if (!response.ok || !data.recoveryToken || !data.grant) {
+    throw new ApiError(data.error ?? "recovery_forbidden", "Recovery could not be authorized.", response.status);
   }
-  setToken(null);
+  return data as PasswordRecoveryGrantResponse;
+}
+
+export async function completePasswordRecovery(input: {
+  teamId: string;
+  userId: string;
+  recoveryToken: string;
+  newPassword: string;
+}): Promise<void> {
+  const response = await fetch(`${apiBase}/api/identity/recovery/complete`, {
+    method: "POST",
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ ...input, purpose: "password_reset" }),
+  });
+  if (!response.ok) {
+    const data = await response.json().catch(() => ({})) as { error?: string };
+    throw new ApiError(data.error ?? "recovery_failed", "Recovery could not be completed.", response.status);
+  }
+}
+
+export async function getIdentitySecurityAlerts(): Promise<IdentitySecurityAlert[]> {
+  const response = await fetch(`${apiBase}/api/identity/security-alerts`, {
+    credentials: "include",
+  });
+  if (!response.ok) {
+    throw new ApiError("security_alerts_unavailable", "Security alerts are unavailable.", response.status);
+  }
+  const data = await response.json() as { alerts?: IdentitySecurityAlert[] };
+  return data.alerts ?? [];
+}
+
+/** Sign out: revoke the server-side session and clear display-only local state. */
+export async function logout(): Promise<void> {
+  const response = await fetch(`${apiBase}/api/session`, {
+    method: "DELETE",
+    credentials: "include",
+    headers: csrfHeaders("DELETE"),
+  });
+  if (!response.ok && response.status !== 204) {
+    throw new ApiError("logout_failed", "Could not revoke this session.", response.status);
+  }
+  sessionReady = false;
   setUser(null);
 }
 
-/** Guarantee a token exists, de-duping concurrent first-call logins. */
-function ensureSession(): Promise<string | null> {
-  const existing = getToken();
-  if (existing) return Promise.resolve(existing);
-  if (!sessionPromise) sessionPromise = login().finally(() => (sessionPromise = null));
+export async function logoutAllSessions(): Promise<void> {
+  await fetch(`${apiBase}/api/sessions`, {
+    method: "DELETE",
+    credentials: "include",
+    headers: csrfHeaders("DELETE"),
+  }).then((response) => {
+    if (!response.ok && response.status !== 204) {
+      throw new ApiError("logout_all_failed", "Could not sign out all devices.", response.status);
+    }
+  });
+  sessionReady = false;
+  setUser(null);
+}
+
+export async function beginIdentityChallenge(provider: IdentityProviderCapability["provider"]): Promise<IdentityChallengeResponse> {
+  const response = await fetch(`${apiBase}/api/identity/challenges`, {
+    method: "POST",
+    credentials: "include",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ provider }),
+  });
+  if (!response.ok) throw new ApiError("identity_provider_unavailable", "This sign-in provider is unavailable.", response.status);
+  return response.json() as Promise<IdentityChallengeResponse>;
+}
+
+export async function getIdentityChallenge(challengeId: string): Promise<IdentityChallengeResponse> {
+  const response = await fetch(`${apiBase}/api/identity/challenges/${encodeURIComponent(challengeId)}`, {
+    credentials: "include",
+  });
+  if (!response.ok) throw new ApiError("identity_challenge_unavailable", "This sign-in request is no longer available.", response.status);
+  return response.json() as Promise<IdentityChallengeResponse>;
+}
+
+export async function cancelIdentityChallenge(challengeId: string): Promise<void> {
+  const response = await fetch(`${apiBase}/api/identity/challenges/${encodeURIComponent(challengeId)}`, {
+    method: "DELETE",
+    credentials: "include",
+  });
+  if (!response.ok) throw new ApiError("identity_challenge_cancel_failed", "Could not cancel this sign-in request.", response.status);
+}
+
+/** Discover or explicitly enter local mode, de-duping concurrent first calls. */
+function ensureSession(): Promise<boolean> {
+  if (sessionReady) return Promise.resolve(true);
+  if (!sessionPromise) sessionPromise = discoverSession().finally(() => (sessionPromise = null));
   return sessionPromise;
 }
 
-async function request<T = unknown>(
+export async function request<T = unknown>(
   method: string,
   path: string,
   body?: unknown,
   retry = true,
 ): Promise<T> {
   await ensureSession();
-  const token = getToken();
-  const headers: Record<string, string> = {};
+  const headers: Record<string, string> = { ...csrfHeaders(method) };
   if (body) headers["Content-Type"] = "application/json";
-  if (token) headers.Authorization = `Bearer ${token}`;
   const response = await fetch(`${apiBase}${path}`, {
     method,
     headers: Object.keys(headers).length ? headers : undefined,
+    credentials: "include",
     body: body ? JSON.stringify(body) : undefined,
+    signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
   });
-  // Token rejected/expired: drop it, re-login once, replay the request.
+  // Cookie rejected/expired: rediscover once, then replay the request.
   if (response.status === 401 && retry) {
-    setToken(null);
+    sessionReady = false;
     await ensureSession();
     return request<T>(method, path, body, false);
   }
@@ -279,13 +516,12 @@ async function request<T = unknown>(
 
 async function requestBytes(path: string, retry = true): Promise<ArrayBuffer> {
   await ensureSession();
-  const token = getToken();
   const response = await fetch(`${apiBase}${path}`, {
     method: "GET",
-    headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+    credentials: "include",
   });
   if (response.status === 401 && retry) {
-    setToken(null);
+    sessionReady = false;
     await ensureSession();
     return requestBytes(path, false);
   }
@@ -298,9 +534,8 @@ async function requestBytes(path: string, retry = true): Promise<ArrayBuffer> {
 
 async function requestByteRange(path: string, start: number, end: number, retry = true): Promise<{ data: ArrayBuffer; total: number }> {
   await ensureSession();
-  const token = getToken();
-  const response = await fetch(`${apiBase}${path}`, { method: "GET", headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}), Range: `bytes=${start}-${end - 1}` } });
-  if (response.status === 401 && retry) { setToken(null); await ensureSession(); return requestByteRange(path, start, end, false); }
+  const response = await fetch(`${apiBase}${path}`, { method: "GET", credentials: "include", headers: { Range: `bytes=${start}-${end - 1}` } });
+  if (response.status === 401 && retry) { sessionReady = false; await ensureSession(); return requestByteRange(path, start, end, false); }
   if (response.status !== 206) {
     const detail = await response.json().catch(() => ({})) as { message?: string; error?: string };
     throw new ApiError(detail.error ?? "pdf_range_failed", detail.message ?? "PDF server did not honor the byte-range request.", response.status);
@@ -312,6 +547,15 @@ async function requestByteRange(path: string, start: number, end: number, retry 
 
 export function fetchState(): Promise<ConsoleSnapshot> {
   return request<ConsoleSnapshot>("GET", "/api/state");
+}
+
+export type GuidedSetupCommand = "start" | "resume" | "recheck" | "cancel";
+
+export function commandGuidedSetup(
+  command: GuidedSetupCommand,
+  runId?: string | null,
+): Promise<{ guidedSetup: NonNullable<ConsoleSnapshot["guidedSetup"]> }> {
+  return request("POST", `/api/guided-setup/${command}`, runId ? { runId } : {});
 }
 
 export interface DiscoveryPayload {
@@ -410,17 +654,16 @@ async function requestResult(
   retry = true,
 ): Promise<{ status: number; ok: boolean; data: Record<string, unknown> }> {
   await ensureSession();
-  const token = getToken();
-  const headers: Record<string, string> = {};
+  const headers: Record<string, string> = { ...csrfHeaders(method) };
   if (body) headers["Content-Type"] = "application/json";
-  if (token) headers.Authorization = `Bearer ${token}`;
   const response = await fetch(`${apiBase}${path}`, {
     method,
     headers: Object.keys(headers).length ? headers : undefined,
+    credentials: "include",
     body: body ? JSON.stringify(body) : undefined,
   });
   if (response.status === 401 && retry) {
-    setToken(null);
+    sessionReady = false;
     await ensureSession();
     return requestResult(method, path, body, false);
   }
@@ -430,6 +673,21 @@ async function requestResult(
 
 export const api = {
   updateDevice: (payload: { maxConcurrency?: number }) => request("PATCH", "/api/device", payload),
+  reportWebPerformance: (payload: {
+    name: "CLS" | "FCP" | "INP" | "LCP";
+    value: number;
+    rating: "good" | "needs-improvement" | "poor";
+    path: string;
+    version: string;
+  }) => request("POST", "/api/observability/web-performance", payload),
+  webPerformanceTrend: (version?: string) =>
+    request("GET", `/api/observability/web-performance${version ? `?version=${encodeURIComponent(version)}` : ""}`),
+  reportEventStreamReconnect: () =>
+    request("POST", "/api/observability/event-stream/reconnect", {}),
+  operationalHealth: () =>
+    request("GET", "/api/observability/operations"),
+  actOnOperationalAlert: (alertId: string, action: "acknowledge" | "silence", silenceMinutes?: number) =>
+    request("POST", `/api/observability/operations/alerts/${encodeURIComponent(alertId)}/actions`, { action, silenceMinutes }),
   // ADR 0018: owner/admin-only per-subject observability data deletion. Throws
   // with the server's message on 403 (non-owner) / 400 (invalid request).
   deleteObservabilityData: (payload: { scope: string; subjectId: string; tier: string }) =>
@@ -689,7 +947,7 @@ export const api = {
     const suffix = query.toString() ? `?${query}` : "";
     return request<ProjectTreeResponse>("GET", `/api/projects/${encodeURIComponent(id)}/tree${suffix}`);
   },
-  projectDocuments: (id: string, opts: { type?: "all" | "docx" | "xlsx" | "pptx" | "pdf" | "dxf" | "dwg"; search?: string; limit?: number; worktreeId?: string } = {}) => {
+  projectDocuments: (id: string, opts: { type?: "all" | "docx" | "xlsx" | "pptx" | "pdf" | "dxf" | "dwg" | "md" | "canvas" | "image" | "video"; search?: string; limit?: number; worktreeId?: string } = {}) => {
     const query = new URLSearchParams();
     if (opts.type && opts.type !== "all") query.set("type", opts.type);
     if (opts.search) query.set("q", opts.search);
@@ -698,13 +956,30 @@ export const api = {
     const suffix = query.toString() ? `?${query}` : "";
     return request<ProjectDocumentsResponse>("GET", `/api/projects/${encodeURIComponent(id)}/documents${suffix}`);
   },
+  projectAssetDescriptor: (id: string, path: string, worktreeId?: string) =>
+    request<{ descriptor: AssetDescriptor; matrixVersion: number }>(
+      "GET",
+      `/api/projects/${encodeURIComponent(id)}/asset-capabilities?path=${encodeURIComponent(path)}${worktreeId ? `&worktree=${encodeURIComponent(worktreeId)}` : ""}`,
+    ),
+  projectAssetPreview: (id: string, path: string, worktreeId?: string) =>
+    request<{ path: string; family: "markdown"; text: string; size: number; truncated: boolean }>(
+      "GET",
+      `/api/projects/${encodeURIComponent(id)}/asset-preview?path=${encodeURIComponent(path)}${worktreeId ? `&worktree=${encodeURIComponent(worktreeId)}` : ""}`,
+    ),
+  projectAssetPreviewBytes: (id: string, path: string, worktreeId?: string) =>
+    requestBytes(`/api/projects/${encodeURIComponent(id)}/asset-preview?path=${encodeURIComponent(path)}${worktreeId ? `&worktree=${encodeURIComponent(worktreeId)}` : ""}`),
+  projectAssetVideoRange: (id: string, path: string, start: number, end: number, worktreeId?: string) =>
+    requestByteRange(
+      `/api/projects/${encodeURIComponent(id)}/asset-preview?path=${encodeURIComponent(path)}${worktreeId ? `&worktree=${encodeURIComponent(worktreeId)}` : ""}`,
+      start,
+      end,
+    ),
   projectPdfData: (id: string, path: string, worktreeId?: string) =>
     requestBytes(`/api/projects/${encodeURIComponent(id)}/pdf-document?path=${encodeURIComponent(path)}${worktreeId ? `&worktree=${encodeURIComponent(worktreeId)}` : ""}`),
   projectPdfSource: async (id: string, path: string, worktreeId?: string) => {
     await ensureSession();
-    const token = getToken();
     const resource = `/api/projects/${encodeURIComponent(id)}/pdf-document?path=${encodeURIComponent(path)}${worktreeId ? `&worktree=${encodeURIComponent(worktreeId)}` : ""}`;
-    return { url: `${apiBase}${resource}`, httpHeaders: token ? { Authorization: `Bearer ${token}` } : undefined };
+    return { url: `${apiBase}${resource}`, withCredentials: true };
   },
   projectPdfRange: (id: string, path: string, start: number, end: number, worktreeId?: string) =>
     requestByteRange(`/api/projects/${encodeURIComponent(id)}/pdf-document?path=${encodeURIComponent(path)}${worktreeId ? `&worktree=${encodeURIComponent(worktreeId)}` : ""}`, start, end),
@@ -847,6 +1122,163 @@ export const api = {
     request("POST", `/api/worktrees/${encodeURIComponent(id)}/pr`, payload),
   listGithubItems: (projectId: string) =>
     request("GET", `/api/projects/${encodeURIComponent(projectId)}/github`),
+  listWorkItems: (query: {
+    projectId?: string; planningProjectId?: string; status?: string; type?: string; q?: string;
+    limit?: string; cursor?: string; updatedSince?: string;
+  } = {}) => {
+    const params = new URLSearchParams(Object.entries(query).filter(([, value]) => Boolean(value)) as [string, string][]);
+    return request("GET", `/api/work-items${params.size ? `?${params}` : ""}`);
+  },
+  listWorkItemAttention: (query: {
+    projectId?: string; kind?: string; severity?: string; sla?: string;
+    handler?: "mine" | "unclaimed"; includeResolved?: "1";
+    limit?: string; cursor?: string; updatedSince?: string;
+  } = {}) => {
+    const params = new URLSearchParams(Object.entries(query).filter(([, value]) => Boolean(value)) as [string, string][]);
+    return request("GET", `/api/work-items/attention${params.size ? `?${params}` : ""}`);
+  },
+  updateWorkItemAttention: (
+    attentionIds: string[],
+    action: "claim" | "renew" | "release" | "resolve" | "reopen",
+    note = "",
+    options: { leaseSeconds?: number; idempotencyKey?: string } = {},
+  ) => request("POST", "/api/work-items/attention/actions", { attentionIds, action, note, ...options }),
+  getWorkItemGithubDiagnostics: () =>
+    request("GET", "/api/work-items/github/diagnostics"),
+  replayWorkItemGithubDelivery: (deliveryId: string) =>
+    request("POST", `/api/work-items/github/deliveries/${encodeURIComponent(deliveryId)}/replay`),
+  createWorkItem: (payload: {
+    projectId: string;
+    title: string;
+    body?: string;
+    type?: "task" | "bug" | "feature" | "initiative";
+    priority?: "p0" | "p1" | "p2" | "p3";
+    labels?: string[];
+    acceptanceCriteria?: string[];
+    dueDate?: string | null;
+    milestone?: string;
+    estimatePoints?: number;
+    parentId?: string | null;
+    idempotencyKey?: string;
+  }) => request("POST", "/api/work-items", payload),
+  getWorkItem: (id: string) => request("GET", `/api/work-items/${encodeURIComponent(id)}`),
+  suggestWorkItemDraft: (payload: { projectId: string; title: string; body?: string }) =>
+    request("POST", "/api/work-items/assist/draft", payload),
+  updateWorkItem: (id: string, payload: Record<string, unknown>) =>
+    request("PATCH", `/api/work-items/${encodeURIComponent(id)}`, payload),
+  claimWorkItem: (id: string, payload: { agentId?: string; leaseMinutes?: number; idempotencyKey?: string } = {}) =>
+    request("POST", `/api/work-items/${encodeURIComponent(id)}/claim`, payload),
+  releaseWorkItemClaim: (id: string, idempotencyKey?: string) =>
+    request("POST", `/api/work-items/${encodeURIComponent(id)}/release-claim`, { idempotencyKey }),
+  bindWorkItemGithubIssue: (id: string, payload: Record<string, unknown>) =>
+    request("POST", `/api/work-items/${encodeURIComponent(id)}/github/link`, payload),
+  listWorkItemExternalProviders: () =>
+    request("GET", "/api/work-items/providers"),
+  bindWorkItemExternalIssue: (id: string, payload: Record<string, unknown>) =>
+    request("POST", `/api/work-items/${encodeURIComponent(id)}/external-bindings`, payload),
+  syncWorkItemExternalIssue: (id: string, provider: string, payload: Record<string, unknown>) =>
+    request("POST", `/api/work-items/${encodeURIComponent(id)}/external-bindings/${encodeURIComponent(provider)}/sync`, payload),
+  syncWorkItemGithubIssue: (id: string, payload: Record<string, unknown>) =>
+    request("POST", `/api/work-items/${encodeURIComponent(id)}/github/sync`, payload),
+  recordWorkItemVerification: (id: string, payload: Record<string, unknown>) =>
+    request("POST", `/api/work-items/${encodeURIComponent(id)}/verifications`, payload),
+  recordWorkItemAssetOperation: (id: string, payload: Record<string, unknown>) =>
+    request("POST", `/api/work-items/${encodeURIComponent(id)}/asset-operations`, payload),
+  startWorkItemApplication: (id: string, payload: {
+    expectedRevision: number;
+    intent?: string;
+    assetVerb?: string;
+    assetFamily?: string;
+    resourceClass?: "small" | "medium" | "large" | "unknown";
+    parameters?: Record<string, unknown>;
+    approvalToken?: string;
+  }) => request("POST", `/api/work-items/${encodeURIComponent(id)}/application-invocations`, payload),
+  requestWorkItemApplicationApproval: (id: string, payload: {
+    expectedRevision: number; intent?: string; assetVerb?: string; assetFamily?: string;
+    resourceClass?: "small" | "medium" | "large" | "unknown";
+  }) => request<{ approvalToken: string; expiresAt: string }>(
+    "POST", `/api/work-items/${encodeURIComponent(id)}/application-approval`, payload,
+  ),
+  bulkUpdateWorkItems: (payload: {
+    items: { id: string; expectedRevision: number }[];
+    changes: Record<string, unknown>;
+  }) => request("PATCH", "/api/work-items/bulk", payload),
+  transitionWorkItem: (id: string, action: "close" | "reopen" | "archive" | "restore", expectedRevision: number) =>
+    request("POST", `/api/work-items/${encodeURIComponent(id)}/${action}`, { expectedRevision }),
+  listWorkItemComments: (id: string) =>
+    request("GET", `/api/work-items/${encodeURIComponent(id)}/comments`),
+  createWorkItemComment: (id: string, body: string) =>
+    request("POST", `/api/work-items/${encodeURIComponent(id)}/comments`, { body }),
+  updateWorkItemComment: (workItemId: string, commentId: string, payload: { expectedRevision: number; body: string }) =>
+    request("PATCH", `/api/work-items/${encodeURIComponent(workItemId)}/comments/${encodeURIComponent(commentId)}`, payload),
+  deleteWorkItemComment: (workItemId: string, commentId: string, expectedRevision: number) =>
+    request("DELETE", `/api/work-items/${encodeURIComponent(workItemId)}/comments/${encodeURIComponent(commentId)}`, { expectedRevision }),
+  listWorkItemActivity: (id: string) =>
+    request("GET", `/api/work-items/${encodeURIComponent(id)}/activity`),
+  createWorkItemWorktree: (id: string, payload: { agentId?: string; baseBranch?: string } = {}) =>
+    request("POST", `/api/work-items/${encodeURIComponent(id)}/worktrees`, payload),
+  startWorkItemAutoRun: (id: string, payload: { agentId?: string; baseBranch?: string } = {}) =>
+    request("POST", `/api/work-items/${encodeURIComponent(id)}/auto-runs`, payload),
+  deliverWorkItem: (id: string, mode: "local_merge" | "pull_request", expectedRevision: number) =>
+    request("POST", `/api/work-items/${encodeURIComponent(id)}/delivery/${mode === "local_merge" ? "local" : "pull-request"}`, {
+      expectedRevision,
+    }),
+  retryWorkItemAlert: (workItemId: string, alertId: string) =>
+    request("POST", `/api/work-items/${encodeURIComponent(workItemId)}/alerts/${encodeURIComponent(alertId)}/retry`),
+  listPlanningProjects: (
+    input: boolean | { includeArchived?: boolean; limit?: string; cursor?: string; updatedSince?: string } = false,
+  ) => {
+    const query = typeof input === "boolean" ? { includeArchived: input } : input;
+    const params = new URLSearchParams();
+    if (query.includeArchived) params.set("includeArchived", "1");
+    if (query.limit) params.set("limit", query.limit);
+    if (query.cursor) params.set("cursor", query.cursor);
+    if (query.updatedSince) params.set("updatedSince", query.updatedSince);
+    return request("GET", `/api/planning-projects${params.size ? `?${params}` : ""}`);
+  },
+  getPlanningProject: (id: string) =>
+    request("GET", `/api/planning-projects/${encodeURIComponent(id)}`),
+  createPlanningProject: (payload: {
+    name: string;
+    description?: string;
+    color?: string;
+    capacityPoints?: number;
+    startDate?: string | null;
+    targetDate?: string | null;
+    ownerId?: string | null;
+    status?: "planned" | "active" | "on_hold" | "completed";
+    tags?: string[];
+    statusSummary?: string;
+    pinned?: boolean;
+    watching?: boolean;
+    templateProjectId?: string;
+    savedViews?: unknown[];
+    automationRules?: unknown[];
+    autonomyProfile?: "cautious" | "standard" | "high";
+  }) =>
+    request("POST", "/api/planning-projects", payload),
+  updatePlanningProject: (id: string, payload: Record<string, unknown>) =>
+    request("PATCH", `/api/planning-projects/${encodeURIComponent(id)}`, payload),
+  setPlanningProjectArchived: (id: string, expectedRevision: number, archived: boolean) =>
+    request("POST", `/api/planning-projects/${encodeURIComponent(id)}/${archived ? "archive" : "restore"}`, { expectedRevision }),
+  addPlanningProjectItem: (planningProjectId: string, workItemId: string) =>
+    request("PUT", `/api/planning-projects/${encodeURIComponent(planningProjectId)}/items/${encodeURIComponent(workItemId)}`),
+  removePlanningProjectItem: (planningProjectId: string, workItemId: string) =>
+    request("DELETE", `/api/planning-projects/${encodeURIComponent(planningProjectId)}/items/${encodeURIComponent(workItemId)}`),
+  reorderPlanningProjectItems: (planningProjectId: string, expectedRevision: number, workItemIds: string[]) =>
+    request("PUT", `/api/planning-projects/${encodeURIComponent(planningProjectId)}/items`, { expectedRevision, workItemIds }),
+  updatePlanningProjectItems: (planningProjectId: string, addWorkItemIds: string[], removeWorkItemIds: string[]) =>
+    request("PATCH", `/api/planning-projects/${encodeURIComponent(planningProjectId)}/items`, { addWorkItemIds, removeWorkItemIds }),
+  suggestPlanningProjectPlan: (planningProjectId: string) =>
+    request("POST", `/api/planning-projects/${encodeURIComponent(planningProjectId)}/assist/plan`, {}),
+  executePlanningRecommendedAction: (planningProjectId: string, code: string, payload: Record<string, unknown>) =>
+    request("POST", `/api/planning-projects/${encodeURIComponent(planningProjectId)}/recommended-actions/${encodeURIComponent(code)}/execute`, payload),
+  decidePlanningRecommendedAction: (
+    planningProjectId: string,
+    approvalRequestId: string,
+    decision: "approve" | "deny",
+    payload: { confirmed: boolean; note: string },
+  ) => request("POST", `/api/planning-projects/${encodeURIComponent(planningProjectId)}/recommended-action-approvals/${encodeURIComponent(approvalRequestId)}/${decision}`, payload),
   // #1143 issue claims: take/hand back an issue's develop lease. A foreign
   // active develop claim answers 409 with the blocking claim.
   claimIssue: (projectId: string, payload: { issueNumber: number; mode?: "develop" | "review" }) =>
@@ -861,6 +1293,13 @@ export const api = {
   // Auto-run observability: the records plus an evaluation summary. refresh=true
   // also refreshes PR dispositions (bounded gh reads) for the routing evaluation.
   listAutoRuns: (refresh = false) => request("GET", `/api/auto-runs${refresh ? "?refresh=1" : ""}`),
+  recordAutoRunRoutingOverride: (id: string, actualPath: string, reason: string, expectedRevision = 0) =>
+    request("POST", `/api/auto-runs/${encodeURIComponent(id)}/routing-override`, {
+      actualPath,
+      reason,
+      expectedRevision,
+      idempotencyKey: globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random()}`,
+    }),
   // U1: can this project run an auto-run, and what's missing?
   autoRunReadiness: (projectId: string) => request("GET", `/api/projects/${encodeURIComponent(projectId)}/auto-run-readiness`),
   // Retry a failed/blocked auto-run on its existing worktree.
@@ -894,6 +1333,8 @@ export const api = {
   // configured flags; never the argv). Edits apply on the next server start.
   getAutoRunConfig: () => request("GET", "/api/auto-run-config"),
   updateAutoRunSettings: (patch: Record<string, unknown>) => request("PUT", "/api/auto-run-settings", patch),
+  updateTeamAlertWebhook: (teamId: string, alertWebhookUrl: string | null) =>
+    request("PATCH", `/api/teams/${encodeURIComponent(teamId)}/alert-webhook`, { alertWebhookUrl }),
   listBranches: (projectId: string) =>
     request("GET", `/api/projects/${encodeURIComponent(projectId)}/branches`),
   gitSummary: (projectId: string) =>

@@ -82,24 +82,8 @@ export function createInvocationCreationRuntime({
       enforcePlatformAiQuota,
     });
     const directRun = runsWithoutBridge(agent);
-    const codexSessionMode = normalizeCodexSessionMode(options.codexSessionMode, agent);
+    let codexSessionMode = normalizeCodexSessionMode(options.codexSessionMode, agent);
     const codexWorkspacePolicy = normalizeCodexWorkspacePolicy(options.codexWorkspacePolicy, agent);
-    const managedCodexWorkspace = createManagedCodexWorkspace({ invocationId: id, agent, workspacePolicy: codexWorkspacePolicy });
-    const managedCodexSession = createManagedCodexSession({ invocationId: id, agent, codexSessionMode, workspace: managedCodexWorkspace, actor: options.actor });
-    // True resume (#163): resolve the specific provider session to continue so
-    // the bridge resumes it by id instead of the fragile global `--last`. Scoped
-    // to this run's repo + user; null (no prior session) falls back to `--last`.
-    const codexResumeSessionId =
-      codexSessionMode === "continue_last" && managedCodexSession && typeof resolveResumeCodexSessionId === "function"
-        ? resolveResumeCodexSessionId({
-            repoPath: managedCodexSession.repoPath,
-            userId: managedCodexSession.userId,
-            excludeSessionId: managedCodexSession.id,
-            // When the UI resumes a specific session, continue THAT one; else
-            // fall back to the newest prior session for this repo + user.
-            invocationId: typeof options.resumeFromInvocationId === "string" ? options.resumeFromInvocationId : null,
-          })
-        : null;
     const requestedMetadata = options.metadata && typeof options.metadata === "object" && !Array.isArray(options.metadata) ? options.metadata : {};
     const requestedWorktree = requestedMetadata.worktreeId
       ? state.worktrees.find((item) => item.id === requestedMetadata.worktreeId)
@@ -126,6 +110,43 @@ export function createInvocationCreationRuntime({
       ? state.projects.find((item) => item.id === requestedWorktree.workspaceProjectId) ?? visibleProject
       : visibleProject;
     const projectWorktree = requestedWorktree ?? worktreeForProject(project?.id);
+    // Register the managed workspace/session only after resolving the invocation's
+    // requested worktree. Previously these records used currentProject(), so an
+    // Auto-run continuation could resolve a provider session from the selected
+    // console project instead of the worktree it was actually about to execute.
+    const managedCodexWorkspace = createManagedCodexWorkspace({
+      invocationId: id,
+      agent,
+      workspacePolicy: codexWorkspacePolicy,
+      project,
+      worktree: projectWorktree,
+    });
+    const managedCodexSession = createManagedCodexSession({
+      invocationId: id,
+      agent,
+      codexSessionMode,
+      workspace: managedCodexWorkspace,
+      actor: options.actor,
+      requestedBy,
+      project,
+      worktree: projectWorktree,
+    });
+    // Exact resume only. A requested continuation without a provider session /
+    // thread id becomes a fresh session; it must never degrade to global --last,
+    // which can cross concurrent tasks on the same machine.
+    const codexResumeSessionId =
+      codexSessionMode === "continue_last" && managedCodexSession && typeof resolveResumeCodexSessionId === "function"
+        ? resolveResumeCodexSessionId({
+            repoPath: managedCodexSession.repoPath,
+            userId: managedCodexSession.userId,
+            excludeSessionId: managedCodexSession.id,
+            invocationId: typeof options.resumeFromInvocationId === "string" ? options.resumeFromInvocationId : null,
+          })
+        : null;
+    if (codexSessionMode === "continue_last" && !codexResumeSessionId) {
+      codexSessionMode = "new";
+      if (managedCodexSession) managedCodexSession.sessionMode = "new";
+    }
     // Budget gate: a project (or team pool) over its limit with a block policy
     // rejects the run up front, same shape as the platform AI quota gate.
     const targetProjectId = visibleProject?.id ?? project?.id ?? null;
@@ -160,6 +181,7 @@ export function createInvocationCreationRuntime({
       ideaSessionId: null,
       compareRunId: null,
       agentId: agent.id,
+      terminalId: agent.location.type === "local_device" ? agent.location.deviceId : null,
       projectId: visibleProject?.id ?? project?.id ?? null,
       worktreeId: projectWorktree?.id ?? null,
       requestedBy,
@@ -199,7 +221,14 @@ export function createInvocationCreationRuntime({
         codexSessionMode,
         codexResumeSessionId,
         codexWorkspacePolicy,
-        approvalMode: normalizeCodexApprovalMode(options.approvalMode ?? options.metadata?.permissionMode),
+        // A per-run selection wins; otherwise inherit the registered Agent's
+        // canonical permission mode. This keeps API/scheduler callers aligned
+        // with the Web composer instead of silently falling back to "ask".
+        approvalMode: normalizeCodexApprovalMode(
+          options.approvalMode
+          ?? requestedMetadata.permissionMode
+          ?? agent.adapter?.permissionMode,
+        ),
         metadata: {
           demo: true,
           ...(options.metadata && typeof options.metadata === "object" && !Array.isArray(options.metadata) ? options.metadata : {}),

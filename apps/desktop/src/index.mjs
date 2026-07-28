@@ -5,23 +5,39 @@ import { fileURLToPath } from "node:url";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { delimiter } from "node:path";
 import * as pty from "node-pty";
+import {
+  codexExecPermissionArgs,
+  codexPermissionModeFromLegacySandbox,
+  codexPermissionProfile,
+  normalizeCodexPermissionMode,
+} from "@myagenttool/protocol/codex-permissions";
 import { callMcpTool, probeMcpServer } from "./mcp-client.mjs";
 import { agentMinimalBaseEnv, minimizeAgentEnvEnabled, shouldMinimizeAgentEnv } from "./agent-env.mjs";
 import { runAsUser, shouldRunAsUser, runAsSpawnPlan, runAsPreflightPlan, interpretPreflightResult } from "./agent-runas.mjs";
 import { callA2aAgent, probeA2aAgent } from "./a2a-client.mjs";
 import { probeContainerRuntime, runContainerAgent } from "./container-client.mjs";
 import { codexResumeArgs } from "./codex-resume.mjs";
+import { evaluateCodexHealth } from "./codex-health.mjs";
+import { applyCodexWorktreeContract } from "./codex-worktree-contract.mjs";
 import { extractClaudeFileAccesses } from "./claude-file-access.mjs";
 import { newRoundState, claudeRoundEmits, codexRoundEmits, claudeRequestContext } from "./round-telemetry.mjs";
 import { createAgentLineSink } from "./agent-line-sink.mjs";
+import { createCodexAppServerClient } from "./codex-app-server-client.mjs";
 import { createInvocationPool, resolveBridgeConcurrency, refreshedConcurrency } from "./invocation-pool.mjs";
 import { createCancellationWatcher } from "./cancellation-watcher.mjs";
+import {
+  createCodexCommandWatchdog,
+  defaultCodexCommandTimeoutSeconds,
+  resolveCodexCommandTimeoutMs,
+} from "./codex-command-watchdog.mjs";
+import { withGitSafeDirectoryEnv, withSafeDiscoveryEnv } from "./safe-discovery.mjs";
 import { spawnCapture } from "./spawn-capture.mjs";
 import { isInactiveInvocationError } from "./bridge-events.mjs";
 import { applicationWrapperArgs } from "./application-wrapper-args.mjs";
 import { collectApplicationBinaryReadiness } from "./application-binary-readiness.mjs";
 import { collectApplicationCredentialReadiness } from "./application-credential-readiness.mjs";
 import { managedRuntimeBinDirectory, runApprovedApplicationInstall } from "./application-installer.mjs";
+import { registerBridgeWithRetry } from "./bridge-registration-retry.mjs";
 import {
   createLocalExecutionPolicyManifest,
   localExecutionGate,
@@ -29,6 +45,8 @@ import {
 } from "./local-execution-policy.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
+const safeRipgrepConfigPath = resolve(__dirname, "safe-ripgrep.conf");
+const workspaceCodexScript = resolve(__dirname, "../../../node_modules/@openai/codex/bin/codex.js");
 
 // B1b Tier 2 preflight (memoized across spawns). Before wrapping any real agent in
 // `sudo -n -u <user>`, probe `sudo -n -u <user> /usr/bin/true` ONCE. If it fails
@@ -84,6 +102,8 @@ const localExecutionPolicyManifest = withBundledAgentProbes(
 );
 const bridgeTokenPath = resolve(process.env.MYAGENTTOOL_BRIDGE_TOKEN_PATH ?? ".myagenttool/bridge-token.json");
 let bridgeToken = String(process.env.MYAGENTTOOL_BRIDGE_TOKEN ?? "").trim() || loadBridgeToken();
+let codexAppServerClient = null;
+let codexAppServerClientKey = null;
 
 if (process.argv.includes("--check")) {
   if (!existsSync(demoAgentPath) || !existsSync(codexFixtureAgentPath) || !existsSync(remoteRelayPath)) {
@@ -130,8 +150,8 @@ if (process.argv.includes("--check")) {
     throw new Error("ccusage lifecycle install must reject unpinned package specs.");
   }
   const resumeArgs = codexArgsTemplate({ command: "codex", args: codexCliArgs() }, { options: { codexSessionMode: "continue_last" } });
-  if (!resumeArgs.includes("resume") || resumeArgs.includes("--ephemeral")) {
-    throw new Error("Codex continuation args are not configured.");
+  if (resumeArgs.includes("resume") || resumeArgs.includes("--last") || !resumeArgs.includes("{{task}}")) {
+    throw new Error("Codex continuation without an exact session id must start a fresh session.");
   }
   // True resume (#163): a resolved provider session id must be resumed BY ID,
   // not via the global `--last`.
@@ -143,18 +163,30 @@ if (process.argv.includes("--check")) {
     throw new Error("Codex resume-by-session-id args are not configured.");
   }
   // A malformed/hostile session id (e.g. a leading dash) must be rejected and
-  // fall back to `--last`, never injected as an argv flag.
+  // start a fresh session, never injected as an argv flag or resolved via the
+  // process-global `--last`.
   const unsafeResumeArgs = codexArgsTemplate(
     { command: "codex", args: codexCliArgs() },
     { options: { codexSessionMode: "continue_last", codexResumeSessionId: "--dangerously-bypass-approvals-and-sandbox" } },
   );
-  if (unsafeResumeArgs[2] !== "--last" || unsafeResumeArgs.includes("--dangerously-bypass-approvals-and-sandbox")) {
-    throw new Error("Codex resume must reject an unsafe session id and fall back to --last.");
+  if (unsafeResumeArgs.includes("resume")
+    || unsafeResumeArgs.includes("--last")
+    || unsafeResumeArgs.includes("--dangerously-bypass-approvals-and-sandbox")
+    || !unsafeResumeArgs.includes("{{task}}")) {
+    throw new Error("Codex resume must reject an unsafe session id and start a fresh session.");
   }
   const imageArgs = insertCodexImageArgs(["exec", "--json", "{{task}}"], [{ path: "composer-image.png" }]);
   const taskArgIndex = imageArgs.indexOf("{{task}}");
   if (!imageArgs.includes("--image") || imageArgs[taskArgIndex - 1] !== "--") {
     throw new Error("Codex image attachment args are not configured.");
+  }
+  const askArgs = applyCodexPermissionMode(["exec", "--json", "{{task}}"], { options: { approvalMode: "ask" } });
+  if (!askArgs.includes('approvals_reviewer="user"') || !askArgs.includes('approval_policy="on-request"')) {
+    throw new Error("Codex ask permission mode is not configured.");
+  }
+  const autoArgs = applyCodexPermissionMode(["exec", "--json", "{{task}}"], { options: { approvalMode: "auto" } });
+  if (!autoArgs.includes('approvals_reviewer="auto_review"') || !autoArgs.includes('approval_policy="on-request"')) {
+    throw new Error("Codex auto-review permission mode is not configured.");
   }
   const fullAccessArgs = applyCodexPermissionMode(["exec", "--json", "{{task}}"], { options: { approvalMode: "full" } });
   if (fullAccessArgs[1] !== "--dangerously-bypass-approvals-and-sandbox") {
@@ -319,12 +351,17 @@ if (process.argv.includes("--check")) {
     throw new Error("Codex child local env injection is not configured.");
   }
   const commandJsonPlan = codexCommandPlan({ command: "codex" }, ["exec", "--json", "{{task}}"], "fixture-task");
-  if (commandJsonPlan.command !== process.execPath || !commandJsonPlan.args[0]?.toLowerCase().endsWith("\\node_modules\\@openai\\codex\\bin\\codex.js") || commandJsonPlan.args[1] !== "exec") {
+  const commandJsonPlanValid = process.platform === "win32"
+    ? commandJsonPlan.command === process.execPath
+      && commandJsonPlan.args[0]?.toLowerCase().endsWith("\\node_modules\\@openai\\codex\\bin\\codex.js")
+      && commandJsonPlan.args[1] === "exec"
+    : commandJsonPlan.command === "codex" && commandJsonPlan.args[0] === "exec";
+  if (!commandJsonPlanValid) {
     throw new Error("Codex command plan is not configured.");
   }
   const codexCommand = resolveCodexCommandPlan("codex", [], { PATH: `${resolve(process.env.APPDATA ?? "", "npm")}${delimiter}${process.env.PATH ?? ""}`, APPDATA: process.env.APPDATA });
   if (process.platform === "win32" && !codexCommand.args[0]?.toLowerCase().endsWith("\\node_modules\\@openai\\codex\\bin\\codex.js")) {
-    throw new Error("Codex command resolution should prefer the user npm shim on Windows.");
+    throw new Error("Codex command resolution should prefer a pinned npm package on Windows.");
   }
   const shellPlan = resolveTerminalShell(process.platform === "win32" ? "powershell" : "bash");
   if (!shellPlan.file) {
@@ -360,13 +397,15 @@ await waitForServer();
 let registration;
 try {
   const runtimeReadiness = await collectApplicationBinaryReadiness(localExecutionPolicyManifest);
-  registration = await request("POST", "/api/bridge/register", {
-    bridgeVersion: "0.0.0",
-    capabilities: ["demo_cli_agent", "managed_terminal_pty", "remote_ssh_relay"],
-    runtimeReadiness,
-    applicationBinaryReadiness: runtimeReadiness,
-    applicationCredentialReadiness: collectApplicationCredentialReadiness(credentialDir),
-  });
+  registration = await registerBridgeWithRetry(() => request("POST", "/api/bridge/register", {
+      bridgeVersion: "0.0.0",
+      capabilities: ["demo_cli_agent", "managed_terminal_pty", "remote_ssh_relay"],
+      runtimeReadiness,
+      applicationBinaryReadiness: runtimeReadiness,
+      applicationCredentialReadiness: collectApplicationCredentialReadiness(credentialDir),
+    }), {
+      onRetry: (_error, attempt) => console.warn(`[desktop] bridge registration network error; retrying (${attempt}/2).`),
+    });
 } catch (error) {
   const message = error instanceof Error ? error.message : String(error);
   // A credential rejection at register is a pairing problem, not a bug — tell the
@@ -901,6 +940,8 @@ async function runInvocation(work) {
   let cancelled = false;
   let cancelResult = null;
   let timedOut = false;
+  let timeoutCause = null;
+  let commandTimeoutEvidence = null;
   let spawnError = null;
   // #1250: flipped true the instant the child closes and the main flow takes
   // over the terminal outcome. The detached cancel/timeout pollers check it
@@ -971,7 +1012,11 @@ async function runInvocation(work) {
   const permissionHook = await sendCodexHookEvent(invocationId, adapter, {
     eventName: "PermissionRequest",
     toolName: "Bash",
-    summary: "Codex requested permission for a sandbox-bound command preview.",
+    summary: normalizeCodexPermissionMode(
+      work.options?.approvalMode ?? work.options?.metadata?.permissionMode ?? adapter.permissionMode,
+    ) === "full"
+      ? "Codex Full access launch was explicitly approved by the MyAgentTool local gate."
+      : "Codex requested permission for a sandbox-bound command preview.",
     timeoutSeconds: process.env.MYAGENTTOOL_CODEX_APPROVAL_TIMEOUT_SECONDS
   });
   const permissionDecision = await waitForCodexApprovalDecision(permissionHook);
@@ -985,7 +1030,10 @@ async function runInvocation(work) {
       result: {
         touchedUserFiles: false,
         policyDecision: permissionDecision,
-        errorCode: permissionDecision === "timed_out" ? "dispatch_timeout" : "policy_blocked"
+        // Approval expiry is a human-decision timeout, not a bridge delivery
+        // failure. Keeping it distinct prevents infrastructure failover from
+        // dispatching the same unapproved task to another agent.
+        errorCode: permissionDecision === "timed_out" ? "approval_timeout" : "policy_blocked"
       }
     });
     return;
@@ -1015,6 +1063,16 @@ async function runInvocation(work) {
         // post-ack local refusal classifies honestly instead of as a generic run.
         errorCode: gate.code ?? "policy_blocked"
       }
+    });
+    return;
+  }
+
+  if (codexAppServerTransportEnabled(adapter)) {
+    await runCodexAppServerInvocation(work, {
+      adapter,
+      spawnPlan,
+      runtimeName,
+      roundState,
     });
     return;
   }
@@ -1050,12 +1108,51 @@ async function runInvocation(work) {
   }
 
   const timeoutMs = Number(adapter.timeoutSeconds ?? work.options?.timeoutSeconds ?? 30) * 1000;
+  const commandTimeoutMs = resolveCodexCommandTimeoutMs({
+    configuredSeconds:
+      work.options?.commandIdleTimeoutSeconds
+      ?? adapter.commandIdleTimeoutSeconds
+      ?? process.env.MYAGENTTOOL_CODEX_COMMAND_IDLE_TIMEOUT_SECONDS
+      ?? null,
+    totalTimeoutMs: timeoutMs,
+    defaultSeconds: defaultCodexCommandTimeoutSeconds(),
+  });
+  const commandWatchdog = createCodexCommandWatchdog({
+    timeoutMs: adapter.outputFormat === "codex_jsonl" ? commandTimeoutMs : 0,
+    onTimeout: async (evidence) => {
+      try {
+        if (settled || timedOut || cancelled || child.exitCode !== null || child.killed) {
+          return;
+        }
+        timedOut = true;
+        timeoutCause = "command_idle";
+        commandTimeoutEvidence = evidence;
+        await request("POST", "/api/bridge/events", {
+          invocationId,
+          type: "command_idle_timed_out",
+          level: "warn",
+          message: `${runtimeName} command produced no completion event within ${Math.round(commandTimeoutMs / 1000)} seconds.`,
+          data: {
+            commandSummary: evidence.commandSummary,
+            commandStartedAt: new Date(evidence.startedAt).toISOString(),
+            lastActivityAt: new Date(evidence.lastActivityAt).toISOString(),
+            timeoutSeconds: Math.round(commandTimeoutMs / 1000),
+          },
+        });
+        cancelResult = await terminateProcessTree(child);
+        await reportForcedKill(invocationId, runtimeName, cancelResult);
+      } catch (error) {
+        tolerateLateEvent("command-timeout", invocationId, error);
+      }
+    },
+  });
   const timeoutTimer = setTimeout(async () => {
     try {
-      if (settled || child.exitCode !== null || child.killed || cancelled) {
+      if (settled || timedOut || child.exitCode !== null || child.killed || cancelled) {
         return;
       }
       timedOut = true;
+      timeoutCause = "invocation_total";
       await request("POST", "/api/bridge/events", {
         invocationId,
         type: "invocation_timed_out",
@@ -1074,7 +1171,7 @@ async function runInvocation(work) {
   // and keeps the #1250 terminal-race guards: it does nothing once the run owns
   // its terminal outcome, and tolerates a late event post.
   const stopWatchingCancel = cancellationWatcher.watch(invocationId, async () => {
-    if (settled || cancelled) {
+    if (settled || timedOut || cancelled) {
       return;
     }
     cancelled = true;
@@ -1108,7 +1205,7 @@ async function runInvocation(work) {
   // usage/cost lost) and landing line events after invocation_completed.
   const stdoutSink = createAgentLineSink(
     async (line) => {
-      const result = await handleAgentLine(invocationId, line, adapter, roundState);
+      const result = await handleAgentLine(invocationId, line, adapter, roundState, commandWatchdog);
       if (result) {
         finalResult = result;
       }
@@ -1140,6 +1237,7 @@ async function runInvocation(work) {
   settled = true;
   stopWatchingCancel();
   clearTimeout(timeoutTimer);
+  commandWatchdog.dispose();
   // The temp patch file the apply runner read (materialized in governedApplyWrapperArgs)
   // is a per-run throwaway — delete it now that the child has exited so an authorized
   // diff does not linger in the shared temp directory.
@@ -1152,6 +1250,9 @@ async function runInvocation(work) {
 
   if (timedOut) {
     const forcedNote = cancelResult?.message ? ` ${cancelResult.message}` : "";
+    const timeoutSummary = timeoutCause === "command_idle"
+      ? `${runtimeName} command stopped after ${Math.round(commandTimeoutMs / 1000)} seconds without a completion event.`
+      : `${runtimeName} exceeded its configured timeout.`;
     await sendCodexHookEvent(invocationId, adapter, {
       eventName: "Stop",
       summary: "Codex run timed out."
@@ -1159,8 +1260,21 @@ async function runInvocation(work) {
     await request("POST", "/api/bridge/complete", {
       invocationId,
       status: "timed_out",
-      summary: `${runtimeName} exceeded its configured timeout.${forcedNote}`,
-      result: finalResult
+      summary: `${timeoutSummary}${forcedNote}`,
+      result: {
+        ...(finalResult && typeof finalResult === "object" ? finalResult : {}),
+        errorCode: "execution_timeout",
+        timeoutKind: timeoutCause ?? "invocation_total",
+        ...(commandTimeoutEvidence
+          ? {
+              continuationCheckpoint: {
+                lastCommand: commandTimeoutEvidence.commandSummary,
+                commandStartedAt: new Date(commandTimeoutEvidence.startedAt).toISOString(),
+                lastActivityAt: new Date(commandTimeoutEvidence.lastActivityAt).toISOString(),
+              },
+            }
+          : {}),
+      }
     });
     return;
   }
@@ -1235,6 +1349,127 @@ async function runA2aInvocation(work) {
 
 async function runContainerInvocation(work) {
   await runClientInvocation(work, runContainerAgent, "container");
+}
+
+async function runCodexAppServerInvocation(work, {
+  adapter,
+  spawnPlan,
+  runtimeName,
+  roundState,
+}) {
+  const invocationId = work.invocationId;
+  const timeoutMs = Number(adapter.timeoutSeconds ?? work.options?.timeoutSeconds ?? 30) * 1000;
+  const commandTimeoutMs = resolveCodexCommandTimeoutMs({
+    configuredSeconds:
+      work.options?.commandIdleTimeoutSeconds
+      ?? adapter.commandIdleTimeoutSeconds
+      ?? process.env.MYAGENTTOOL_CODEX_COMMAND_IDLE_TIMEOUT_SECONDS
+      ?? null,
+    totalTimeoutMs: timeoutMs,
+    defaultSeconds: defaultCodexCommandTimeoutSeconds(),
+  });
+  const effectiveAdapter = process.env.MYAGENTTOOL_CODEX_COMMAND
+    ? { ...adapter, command: process.env.MYAGENTTOOL_CODEX_COMMAND }
+    : adapter;
+  const appServerPlan = codexCommandPlan(effectiveAdapter, ["app-server", "--stdio"], "");
+  const permissionProfile = codexPermissionProfile(
+    work.options?.approvalMode
+    ?? work.options?.metadata?.permissionMode
+    ?? adapter.permissionMode
+    ?? codexPermissionModeFromLegacySandbox(adapter.sandbox),
+  );
+  const client = sharedCodexAppServerClient({
+    ...appServerPlan,
+    cwd: process.cwd(),
+    env: spawnPlan.env,
+  });
+
+  let cancelRequested = false;
+  let finalResult = null;
+  let settled = false;
+  const stopWatchingCancel = cancellationWatcher.watch(invocationId, async () => {
+    if (settled || cancelRequested) return;
+    cancelRequested = true;
+    try {
+      await request("POST", "/api/bridge/events", {
+        invocationId,
+        type: "cancel_dispatched",
+        level: "info",
+        message: "Desktop Bridge sent turn/interrupt to Codex app-server.",
+      });
+    } catch (error) {
+      tolerateLateEvent("app-server-cancel", invocationId, error);
+    }
+  });
+
+  await request("POST", "/api/bridge/events", {
+    invocationId,
+    type: "codex_transport_selected",
+    level: "info",
+    message: "Codex app-server transport selected; turn/completed is authoritative.",
+    data: {
+      transport: "app-server",
+      command: appServerPlan.command,
+      cwd: spawnPlan.cwd,
+    },
+  });
+
+  let outcome;
+  try {
+    outcome = await client.runTurn({
+      task: String(work.input?.task ?? ""),
+      cwd: spawnPlan.cwd,
+      writableRoots: spawnPlan.codexAdditionalWritableRoots,
+      sandbox: permissionProfile.sandboxMode,
+      approvalPolicy: permissionProfile.approvalPolicy,
+      approvalsReviewer: permissionProfile.approvalsReviewer,
+      threadId: work.options?.codexSessionMode === "continue_last"
+        ? work.options?.codexResumeSessionId ?? null
+        : null,
+      timeoutMs,
+      commandIdleTimeoutMs: commandTimeoutMs,
+      shouldCancel: () => cancelRequested,
+      onApprovalRequest: (approvalRequest) => resolveCodexAppServerApproval(
+        invocationId,
+        adapter,
+        approvalRequest,
+      ),
+      onTurnStderr: (line) => {
+        emitAgentStderrLine(invocationId, adapter, line).catch(() => undefined);
+      },
+      onEvent: async (event) => {
+        const parsed = await handleAgentLine(
+          invocationId,
+          JSON.stringify(event),
+          adapter,
+          roundState,
+          null,
+        );
+        if (parsed) finalResult = parsed;
+      },
+    });
+  } finally {
+    settled = true;
+    stopWatchingCancel();
+  }
+
+  finalResult = mergeCodexAppServerResult(finalResult, outcome.result);
+  const succeeded = outcome.status === "succeeded";
+  await sendCodexHookEvent(invocationId, adapter, {
+    eventName: "PostToolUse",
+    toolName: "Bash",
+    summary: succeeded ? "Codex app-server turn completed." : `Codex app-server turn ${outcome.status}.`,
+  });
+  await sendCodexHookEvent(invocationId, adapter, {
+    eventName: "Stop",
+    summary: succeeded ? "Codex run stopped after completion." : `Codex run stopped with ${outcome.status}.`,
+  });
+  await request("POST", "/api/bridge/complete", {
+    invocationId,
+    status: outcome.status,
+    summary: outcome.summary || finalResult?.summary || `${runtimeName} ${outcome.status}.`,
+    result: finalResult,
+  });
 }
 
 async function runClientInvocation(work, clientFn, runtimeLabel) {
@@ -1334,8 +1569,8 @@ async function checkCliAgentHealth(adapter) {
     const probe = await probeCodexCli(adapter);
     return {
       ok: probe.ok,
-      message: probe.ok ? "Codex CLI non-interactive surface is reachable." : probe.summary,
-      nextAction: probe.ok ? null : "Verify Codex CLI installation and authentication."
+      message: probe.summary,
+      nextAction: probe.nextAction
     };
   }
   if (isClaudeCliCommand(adapter.command)) {
@@ -1585,36 +1820,54 @@ function uniqueCandidates(candidates) {
 
 function createCliSpawnPlan(adapter, payload) {
   const payloadJson = JSON.stringify(payload);
+  const cwd = adapter.workingDirectoryPolicy === "explicit" && adapter.workingDirectory
+    ? String(adapter.workingDirectory)
+    : projectCwd(payload);
   const codexCommandOverride = isCodexCliCommand(adapter.command) ? process.env.MYAGENTTOOL_CODEX_COMMAND : null;
   const claudeCommandOverride = isClaudeCliCommand(adapter.command) ? process.env.MYAGENTTOOL_CLAUDE_COMMAND : null;
   const codexImageAttachments = isCodexCliCommand(adapter.command) ? prepareCodexImageAttachments(payload) : [];
   const argsTemplate = isCodexCliCommand(adapter.command)
     ? insertCodexImageArgs(codexArgsTemplate(adapter, payload), codexImageAttachments)
     : codexArgsTemplate(adapter, payload);
-  const renderedArgs = isCodexCliCommand(adapter.command)
-    ? applyCodexPermissionMode(renderArgs(argsTemplate, payloadJson, payload), payload)
+  const codexContract = isCodexCliCommand(adapter.command)
+    ? applyCodexWorktreeContract(
+        applyCodexPermissionMode(renderArgs(argsTemplate, payloadJson, payload), payload),
+        { cwd },
+      )
+    : null;
+  const renderedArgs = codexContract
+    ? codexContract.args
     : applicationWrapperArgs(
         governedApplyWrapperArgs(governedExecWrapperArgs(governedReviewWrapperArgs(renderArgs(argsTemplate, payloadJson, payload), payload), payload), payload),
         payload,
         { resolveCwd: (spec, metadata) => normalizedExistingPath(spec.cwd) ?? normalizedExistingPath(metadata?.worktreePath) ?? normalizedExistingPath(metadata?.projectPath) },
       );
+  const effectiveCodexAdapter = codexCommandOverride && codexCommandOverride !== "fixture"
+    ? { ...adapter, command: codexCommandOverride }
+    : adapter;
   const baseCommand = codexCommandOverride || claudeCommandOverride || String(adapter.command);
   const command = adapter.command === "demo-agent" || codexCommandOverride === "fixture"
     ? process.execPath
     : isCodexCliCommand(adapter.command)
-      ? codexCommandPlan(adapter, renderedArgs, payload.task).command
+      ? codexCommandPlan(effectiveCodexAdapter, renderedArgs, payload.task).command
       : baseCommand;
   const args = adapter.command === "demo-agent"
     ? [demoAgentPath, ...renderArgs(argsTemplate, payloadJson, payload)]
     : codexCommandOverride === "fixture"
       ? [codexFixtureAgentPath, ...renderedArgs]
       : isCodexCliCommand(adapter.command)
-        ? codexCommandPlan(adapter, renderedArgs, payload.task).args
+        ? codexCommandPlan(effectiveCodexAdapter, renderedArgs, payload.task).args
         : renderedArgs;
-  const env = buildEnv(withMinimizedAgentEnv(adapter));
-  const cwd = adapter.workingDirectoryPolicy === "explicit" && adapter.workingDirectory
-    ? String(adapter.workingDirectory)
-    : projectCwd(payload);
+  const baseEnv = buildEnv(withMinimizedAgentEnv(adapter));
+  const gitSafeEnv = isAbsolute(cwd)
+    ? withGitSafeDirectoryEnv(baseEnv, { root: cwd })
+    : baseEnv;
+  const env = isCodexCliCommand(adapter.command)
+    ? {
+        ...withSafeDiscoveryEnv(gitSafeEnv, { root: cwd, configPath: safeRipgrepConfigPath }),
+        GIT_OPTIONAL_LOCKS: "0",
+      }
+    : gitSafeEnv;
   const localPolicy = localPolicyForAdapter(adapter, payload);
   return {
     command,
@@ -1622,6 +1875,7 @@ function createCliSpawnPlan(adapter, payload) {
     env,
     cwd,
     localPolicy,
+    codexAdditionalWritableRoots: codexContract?.additionalWritableRoots ?? [],
     sessionMode: payload.options?.codexSessionMode ?? "not_applicable",
     workspacePolicy: payload.options?.codexWorkspacePolicy ?? "current_repo",
     attachments: codexImageAttachments
@@ -1845,29 +2099,76 @@ function codexArgsTemplate(adapter, payload) {
     // True resume (#163): continue the specific provider session the server
     // resolved (resume by id), not whatever ran last globally. See codexResumeArgs
     // for the safe-token guard + `--last` fallback.
-    return codexResumeArgs(payload.options);
+    return codexResumeArgs(payload.options) ?? args;
   }
   return args;
 }
 
 function applyCodexPermissionMode(args, payload) {
-  if (normalizeCodexApprovalMode(payload.options?.approvalMode ?? payload.options?.metadata?.permissionMode) !== "full") {
-    return args;
+  const input = Array.isArray(args) ? args.map(String) : [];
+  if (input[0] === "exec" && input[1] === "resume") {
+    // `codex exec resume` retains the originating thread's permission contract.
+    // App-server resume can override it through thread/resume.
+    return input;
   }
-  if (args.includes("--dangerously-bypass-approvals-and-sandbox")) {
-    return args;
-  }
-  const insertionIndex = args[0] === "exec" ? 1 : 0;
+  const mode = normalizeCodexPermissionMode(
+    payload.options?.approvalMode ?? payload.options?.metadata?.permissionMode,
+  );
+  const cleaned = stripCodexPermissionArgs(input);
+  const insertionIndex = cleaned[0] === "exec" ? 1 : 0;
   return [
-    ...args.slice(0, insertionIndex),
-    "--dangerously-bypass-approvals-and-sandbox",
-    ...args.slice(insertionIndex)
+    ...cleaned.slice(0, insertionIndex),
+    ...codexExecPermissionArgs(mode),
+    ...cleaned.slice(insertionIndex),
   ];
 }
 
-function normalizeCodexApprovalMode(value) {
-  const normalized = String(value ?? "ask").trim().toLowerCase();
-  return ["ask", "auto", "full"].includes(normalized) ? normalized : "ask";
+function stripCodexPermissionArgs(args) {
+  const cleaned = [];
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = String(args[index]);
+    if (arg === "--dangerously-bypass-approvals-and-sandbox") {
+      continue;
+    }
+    if (["--sandbox", "-s", "--ask-for-approval", "-a"].includes(arg)) {
+      index += 1;
+      continue;
+    }
+    if (["--config", "-c"].includes(arg)) {
+      const value = String(args[index + 1] ?? "");
+      if (/^(approval_policy|approvals_reviewer)=/.test(value)) {
+        index += 1;
+        continue;
+      }
+    }
+    cleaned.push(arg);
+  }
+  return cleaned;
+}
+
+async function resolveCodexAppServerApproval(invocationId, adapter, approvalRequest) {
+  const method = String(approvalRequest?.method ?? "");
+  const params = approvalRequest?.params ?? {};
+  const summary = method === "item/commandExecution/requestApproval"
+    ? `Codex requests command approval: ${String(params.command ?? params.reason ?? "unknown command").slice(0, 1000)}`
+    : method === "item/fileChange/requestApproval"
+      ? `Codex requests file-change approval: ${String(params.grantRoot ?? params.reason ?? "workspace change").slice(0, 1000)}`
+      : `Codex requests additional permissions: ${JSON.stringify(params.permissions ?? {}).slice(0, 1000)}`;
+  const hook = await sendCodexHookEvent(invocationId, adapter, {
+    eventName: "PermissionRequest",
+    toolName: method === "item/fileChange/requestApproval"
+      ? "Edit"
+      : method === "item/permissions/requestApproval"
+        ? "request_permissions"
+        : "Bash",
+    summary,
+    timeoutSeconds: process.env.MYAGENTTOOL_CODEX_APPROVAL_TIMEOUT_SECONDS,
+  });
+  const decision = await waitForCodexApprovalDecision(hook);
+  return {
+    approved: decision === "approved" || decision === "not_required",
+    decision,
+  };
 }
 
 function codexCommandPlan(adapter, renderedArgs, task) {
@@ -1891,6 +2192,10 @@ function resolveCodexCommandPlan(command, args, env = process.env) {
   if (process.platform !== "win32") {
     return { command: rawCommand, args };
   }
+  const workspacePlan = codexScriptPlan(workspaceCodexScript, args);
+  if (workspacePlan) {
+    return workspacePlan;
+  }
   const appDataNpm = env.APPDATA ? resolve(String(env.APPDATA), "npm") : null;
   const appDataPlan = appDataNpm ? codexNpmShimPlan(appDataNpm, args) : null;
   if (appDataPlan) {
@@ -1911,12 +2216,68 @@ function resolveCodexCommandPlan(command, args, env = process.env) {
 function codexNpmShimPlan(directory, args) {
   const commandShim = resolve(directory, "codex.cmd");
   const script = resolve(directory, "node_modules", "@openai", "codex", "bin", "codex.js");
-  if (!existsSync(commandShim) || !existsSync(script)) {
+  if (!existsSync(commandShim)) {
+    return null;
+  }
+  return codexScriptPlan(script, args);
+}
+
+function codexScriptPlan(script, args) {
+  if (!existsSync(script)) {
     return null;
   }
   return {
     command: process.execPath,
     args: [script, ...args]
+  };
+}
+
+function codexAppServerTransportEnabled(adapter) {
+  if (!isCodexCliCommand(adapter?.command)) return false;
+  // The deterministic CI/local smoke fixture implements the legacy JSONL
+  // command contract, not the persistent app-server protocol.
+  if (String(process.env.MYAGENTTOOL_CODEX_COMMAND ?? "").trim().toLowerCase() === "fixture") return false;
+  return String(process.env.MYAGENTTOOL_CODEX_TRANSPORT ?? "app-server").trim().toLowerCase() === "app-server";
+}
+
+function sharedCodexAppServerClient(plan) {
+  const key = JSON.stringify([
+    plan.command,
+    plan.args,
+    plan.env?.CODEX_HOME ?? null,
+    plan.env?.OPENAI_BASE_URL ?? null,
+    plan.env?.OPENAI_ORGANIZATION ?? null,
+    plan.env?.OPENAI_PROJECT ?? null,
+  ]);
+  if (codexAppServerClient && codexAppServerClientKey !== key) {
+    codexAppServerClient.close();
+    codexAppServerClient = null;
+    codexAppServerClientKey = null;
+  }
+  if (!codexAppServerClient) {
+    codexAppServerClient = createCodexAppServerClient(plan);
+    codexAppServerClientKey = key;
+  }
+  return codexAppServerClient;
+}
+
+function mergeCodexAppServerResult(parsed, appServerResult) {
+  const usage = appServerResult?.output?.usage ?? null;
+  return {
+    ...(parsed && typeof parsed === "object" ? parsed : {}),
+    ...(appServerResult && typeof appServerResult === "object" ? appServerResult : {}),
+    touchedUserFiles: Boolean(parsed?.touchedUserFiles || appServerResult?.touchedUserFiles),
+    output: {
+      ...(parsed?.output ?? {}),
+      ...(appServerResult?.output ?? {}),
+    },
+    cost: {
+      ...(parsed?.cost ?? { model: "codex", billable: true, unknown: true, currency: "USD" }),
+      inputTokens: Number(usage?.input_tokens ?? parsed?.cost?.inputTokens ?? 0) || 0,
+      cachedInputTokens: Number(usage?.cached_input_tokens ?? parsed?.cost?.cachedInputTokens ?? 0) || 0,
+      outputTokens: Number(usage?.output_tokens ?? parsed?.cost?.outputTokens ?? 0) || 0,
+      reasoningOutputTokens: Number(usage?.reasoning_output_tokens ?? parsed?.cost?.reasoningOutputTokens ?? 0) || 0,
+    },
   };
 }
 
@@ -2298,33 +2659,55 @@ function highRiskCliCommand(command) {
 async function probeCodexCli(adapter) {
   const codexCommandOverride = process.env.MYAGENTTOOL_CODEX_COMMAND;
   const helpArgs = ["exec", "--help"];
-  const commandPlan = codexCommandPlan({ ...adapter, command: adapter.command ?? "codex" }, helpArgs, "");
-  const command = codexCommandOverride === "fixture"
+  const fixture = codexCommandOverride === "fixture";
+  const effectiveAdapter = codexCommandOverride && !fixture
+    ? { ...adapter, command: codexCommandOverride }
+    : { ...adapter, command: adapter.command ?? "codex" };
+  const commandPlan = codexCommandPlan(effectiveAdapter, helpArgs, "");
+  const command = fixture
     ? process.execPath
-    : codexCommandOverride || commandPlan.command;
-  const args = codexCommandOverride === "fixture"
+    : commandPlan.command;
+  const args = fixture
     ? [codexFixtureAgentPath, "exec", "--help"]
     : commandPlan.args;
-  const result = await spawnCapture(command, args, {
-    cwd: process.cwd(),
-    env: buildEnv({ ...adapter, environmentPolicy: "inherit_safe" }),
-    windowsHide: true,
-    encoding: "utf8",
-    shell: false,
-  });
-  const combined = `${result.stdout ?? ""}\n${result.stderr ?? ""}`;
-  const hasExecHelp = result.status === 0 && /Run Codex non-interactively|Usage:\s+codex exec/i.test(combined);
+  const env = buildEnv({ ...adapter, environmentPolicy: "inherit_safe" });
+  const authPlan = codexCommandPlan(effectiveAdapter, ["login", "status"], "");
+  const authCommand = authPlan.command;
+  const authArgs = fixture ? [] : authPlan.args;
+  const [helpResult, authResult] = await Promise.all([
+    spawnCapture(command, args, {
+      cwd: process.cwd(),
+      env,
+      windowsHide: true,
+      encoding: "utf8",
+      shell: false,
+      timeout: 5000,
+    }),
+    fixture
+      ? Promise.resolve({ status: 0, stdout: "fixture authenticated", stderr: "" })
+      : spawnCapture(authCommand, authArgs, {
+          cwd: process.cwd(),
+          env,
+          windowsHide: true,
+          encoding: "utf8",
+          shell: false,
+          timeout: 5000,
+        }),
+  ]);
+  const evaluation = evaluateCodexHealth({ helpResult, authResult, fixture });
   return {
-    ok: hasExecHelp,
-    summary: hasExecHelp ? "Restricted Codex CLI probe passed." : "Restricted Codex CLI probe failed.",
+    ok: evaluation.ok,
+    summary: evaluation.summary,
+    nextAction: evaluation.nextAction,
     details: [
-      "Probe used codex exec --help only.",
+      "Probe used codex exec --help and codex login status.",
+      "Both probes ran as the Desktop Bridge OS account.",
       "No prompt was executed.",
       "No install scripts were run.",
       "No broad filesystem scan was performed.",
       `Configured output format: ${adapter.outputFormat ?? "unknown"}.`,
       `Configured sandbox: ${adapter.sandbox ?? "unset"}.`,
-      hasExecHelp ? "Codex exec surface is available." : `Codex exec help was not detected. Exit: ${result.status ?? "unknown"}.`
+      evaluation.authenticated ? "Codex authentication is ready." : "Codex authentication is unavailable.",
     ]
   };
 }
@@ -2397,8 +2780,8 @@ function agentRuntimeName(agentName, adapter) {
   return "Demo CLI Agent";
 }
 
-function codexCliArgs() {
-  return ["exec", "--skip-git-repo-check", "--json", "{{task}}"];
+function codexCliArgs(permissionMode = "ask") {
+  return ["exec", ...codexExecPermissionArgs(permissionMode), "--skip-git-repo-check", "--json", "{{task}}"];
 }
 
 function codexRiskTags() {
@@ -2536,12 +2919,12 @@ function tolerateLateEvent(label, invocationId, error) {
   console.error(`[desktop] ${invocationId} ${label} poller error (continuing): ${error instanceof Error ? error.message : String(error)}`);
 }
 
-async function handleAgentLine(invocationId, line, adapter = {}, roundState = null) {
+async function handleAgentLine(invocationId, line, adapter = {}, roundState = null, commandWatchdog = null) {
   if (!line) {
     return null;
   }
   if (adapter.outputFormat === "codex_jsonl") {
-    return handleCodexJsonLine(invocationId, line, roundState);
+    return handleCodexJsonLine(invocationId, line, roundState, commandWatchdog);
   }
   if (adapter.outputFormat === "claude_jsonl") {
     return handleClaudeJsonLine(invocationId, line, roundState);
@@ -2799,7 +3182,7 @@ function claudeMessageText(content) {
   return text.length > 240 ? `${text.slice(0, 237)}...` : text;
 }
 
-async function handleCodexJsonLine(invocationId, line, roundState = null) {
+async function handleCodexJsonLine(invocationId, line, roundState = null, commandWatchdog = null) {
   let event;
   try {
     event = JSON.parse(line);
@@ -2813,6 +3196,10 @@ async function handleCodexJsonLine(invocationId, line, roundState = null) {
     return null;
   }
 
+  // Observe command lifecycle before any network await below. Server event
+  // delivery latency must not postpone or accidentally refresh the local
+  // command watchdog.
+  commandWatchdog?.observe(event);
   await emitRoundEvents(invocationId, roundState, event, codexRoundEmits);
 
   const message = codexEventMessage(event);
@@ -2842,7 +3229,7 @@ async function handleCodexJsonLine(invocationId, line, roundState = null) {
     const usage = event.usage ?? null;
     return {
       summary: "Codex CLI completed.",
-      touchedUserFiles: false,
+      touchedUserFiles: Boolean(roundState?.touchedUserFiles),
       output: { usage },
       // Codex reports token usage but no billed USD. Carry the full token
       // breakdown so the server can estimate cost from configured per-token rates
@@ -3011,5 +3398,6 @@ function stop() {
   clearInterval(terminalTimer);
   clearInterval(binaryReadinessTimer);
   cancellationWatcher.stop();
+  codexAppServerClient?.close();
   process.exit(0);
 }

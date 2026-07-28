@@ -9,6 +9,7 @@ import { api } from "@/data/use-console-actions";
 import { useUiStore } from "@/store/ui-store";
 import { cn } from "@/lib/cn";
 import type { Tone } from "@/lib/readable-labels";
+import { useAppTranslation } from "@/lib/i18n/use-app-translation";
 
 // Clicking one of these opens it in the workspace Office preview (#1347).
 const OFFICE_DOC = /\.(docx|xlsx|pptx)$/i;
@@ -33,6 +34,7 @@ export function gitStatusMarker(status: string): { label: string; tone: Tone } |
 
 /** Read-only file browser for the current project, scoped to its registered root. */
 export function ProjectTree() {
+  const { t } = useAppTranslation();
   const { data: state } = useConsoleState();
   const queryClient = useQueryClient();
   const projectId = state?.currentProjectId ?? null;
@@ -50,10 +52,10 @@ export function ProjectTree() {
     return (
       <Card>
         <CardHeader>
-          <CardTitle>Files</CardTitle>
+          <CardTitle>{t("projectTree.files")}</CardTitle>
         </CardHeader>
         <CardContent>
-          <p className="text-sm text-muted-foreground">Select a current project to browse its files.</p>
+          <p className="text-sm text-muted-foreground">{t("projectTree.selectProject")}</p>
         </CardContent>
       </Card>
     );
@@ -63,11 +65,11 @@ export function ProjectTree() {
     <Card>
       <CardHeader>
         <div className="flex items-center justify-between gap-2">
-          <CardTitle>Files</CardTitle>
+          <CardTitle>{t("projectTree.files")}</CardTitle>
           <Button
             size="icon"
             variant="ghost"
-            aria-label="Refresh file tree"
+            aria-label={t("projectTree.refresh")}
             onClick={() => queryClient.invalidateQueries({ queryKey: ["project-tree", projectId] })}
           >
             <RefreshCw />
@@ -77,7 +79,7 @@ export function ProjectTree() {
           <Input
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            placeholder={mode === "content" ? "Search file contents…" : "Search file names…"}
+            placeholder={t(mode === "content" ? "projectTree.searchContents" : "projectTree.searchNames")}
             className="h-8"
           />
           <div className="flex shrink-0 overflow-hidden rounded-md border border-border text-[11px]">
@@ -87,9 +89,9 @@ export function ProjectTree() {
                 type="button"
                 onClick={() => setMode(m)}
                 className={cn("px-2 py-1", mode === m ? "bg-primary/10 font-medium text-foreground" : "text-muted-foreground hover:text-foreground")}
-                title={m === "content" ? "Search inside files" : "Search file/folder names"}
+                title={t(m === "content" ? "projectTree.searchInside" : "projectTree.searchFileNames")}
               >
-                {m}
+                {t(m === "content" ? "projectTree.content" : "projectTree.name")}
               </button>
             ))}
           </div>
@@ -109,17 +111,18 @@ export function ProjectTree() {
 // Content search within the registered root (#161): a flat list of file+line
 // matches. Read-only; needs ≥2 chars (the server's minimum).
 function ContentSearch({ projectId, query }: { projectId: string; query: string }) {
+  const { t } = useAppTranslation();
   const enabled = query.length >= 2;
   const { data, isLoading, error } = useQuery({
     queryKey: ["project-search", projectId, query],
     queryFn: () => api.projectSearch(projectId, query),
     enabled,
   });
-  if (!enabled) return <p className="px-1 py-0.5 text-xs text-muted-foreground">Type at least 2 characters to search file contents.</p>;
-  if (isLoading) return <p className="px-1 py-0.5 text-xs text-muted-foreground">Searching…</p>;
-  if (error) return <p className="px-1 py-0.5 text-xs text-destructive">{error instanceof Error ? error.message : "Search failed."}</p>;
+  if (!enabled) return <p className="px-1 py-0.5 text-xs text-muted-foreground">{t("projectTree.minChars")}</p>;
+  if (isLoading) return <p className="px-1 py-0.5 text-xs text-muted-foreground">{t("projectTree.searching")}</p>;
+  if (error) return <p className="px-1 py-0.5 text-xs text-destructive">{error instanceof Error ? error.message : t("projectTree.searchFailed")}</p>;
   const results = data?.results ?? [];
-  if (!results.length) return <p className="px-1 py-0.5 text-xs text-muted-foreground">No content matches.</p>;
+  if (!results.length) return <p className="px-1 py-0.5 text-xs text-muted-foreground">{t("projectTree.noContent")}</p>;
   return (
     <ul className="space-y-1">
       {results.map((r, i) => (
@@ -143,6 +146,7 @@ function TreeLevel({
   search: string;
   depth: number;
 }) {
+  const { t } = useAppTranslation();
   // Search only applies at the root level (the API filters per-directory).
   const effectiveSearch = depth === 0 ? search : "";
   const { data, isLoading, error } = useQuery({
@@ -150,13 +154,13 @@ function TreeLevel({
     queryFn: () => api.projectTree(projectId, { path, search: effectiveSearch }),
   });
 
-  if (isLoading) return <p className="px-1 py-0.5 text-xs text-muted-foreground">Loading…</p>;
+  if (isLoading) return <p className="px-1 py-0.5 text-xs text-muted-foreground">{t("projectTree.loading")}</p>;
   if (error) {
-    return <p className="px-1 py-0.5 text-xs text-destructive">{error instanceof Error ? error.message : "Failed to load."}</p>;
+    return <p className="px-1 py-0.5 text-xs text-destructive">{error instanceof Error ? error.message : t("projectTree.loadFailed")}</p>;
   }
   const entries = data?.entries ?? [];
   if (!entries.length) {
-    return <p className="px-1 py-0.5 text-xs text-muted-foreground">{effectiveSearch ? "No matches." : "Empty."}</p>;
+    return <p className="px-1 py-0.5 text-xs text-muted-foreground">{t(effectiveSearch ? "projectTree.noMatches" : "projectTree.empty")}</p>;
   }
 
   return (
@@ -172,7 +176,7 @@ function TreeLevel({
       )}
       {data?.truncated ? (
         <li className="px-1 py-0.5 text-xs text-muted-foreground" style={{ paddingLeft: depth * 12 + 4 }}>
-          Showing the first 200 entries.
+          {t("projectTree.truncated")}
         </li>
       ) : null}
     </ul>
@@ -208,6 +212,7 @@ function TreeNode({
 }
 
 function TreeRow({ entry, depth }: { entry: { name: string; path: string; gitStatus: string }; depth: number }) {
+  const { t } = useAppTranslation();
   const setPreviewPath = useUiStore((s) => s.setOfficecliPreviewPath);
   const activePath = useUiStore((s) => s.officecliPreviewPath);
   const isOffice = OFFICE_DOC.test(entry.name);
@@ -221,7 +226,7 @@ function TreeRow({ entry, depth }: { entry: { name: string; path: string; gitSta
       <button
         type="button"
         onClick={() => setPreviewPath(entry.path)}
-        title="Open in Office preview"
+        title={t("projectTree.openOffice")}
         className={cn(
           "flex w-full items-center gap-1 rounded px-1 py-0.5 text-left text-sm hover:bg-accent",
           active && "bg-accent font-medium",

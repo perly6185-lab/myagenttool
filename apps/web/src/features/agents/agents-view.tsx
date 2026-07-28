@@ -8,20 +8,22 @@ import { useAsyncAction, api } from "@/data/use-console-actions";
 import { resolveAgents, usageFor } from "@/features/selection";
 import { useUiStore } from "@/store/ui-store";
 import { cn } from "@/lib/cn";
+import { useAppTranslation } from "@/lib/i18n/use-app-translation";
 import {
-  adapterText,
-  agentNextAction,
-  costOwnerText,
-  costText,
-  healthTone,
-  lifecycleText,
-  readableAgentStatus,
-  readableHealth,
-  readableHealthLabel,
-  usageText,
-} from "@/lib/readable-labels";
+  adapter,
+  agentStatus,
+  cost,
+  costOwner,
+  healthLabel,
+  healthText,
+  lifecycle,
+  nextAction,
+  usage as usageLabel,
+} from "@/lib/i18n/readable-labels";
+import { healthTone } from "@/lib/readable-labels";
 
 export function AgentsView() {
+  const { t } = useAppTranslation();
   const { data: state } = useConsoleState();
   const selectedAgentId = useUiStore((s) => s.selectedAgentId);
   const setSelectedAgentId = useUiStore((s) => s.setSelectedAgentId);
@@ -34,9 +36,9 @@ export function AgentsView() {
   if (agents.length === 0) {
     return (
       <EmptyState
-        title="No agents registered"
-        hint="An agent executes your tasks. Find local agents automatically, or connect one."
-        action={<Button size="sm" onClick={() => setSection("discovery")}>Discover agents</Button>}
+        title={t("agents.emptyTitle")}
+        hint={t("agents.emptyHint")}
+        action={<Button size="sm" onClick={() => setSection("discovery")}>{t("agents.discover")}</Button>}
       />
     );
   }
@@ -45,7 +47,7 @@ export function AgentsView() {
     <div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
       <Card>
         <CardHeader>
-          <CardTitle>Registered agents</CardTitle>
+          <CardTitle>{t("agents.registered")}</CardTitle>
         </CardHeader>
         <CardContent className="space-y-2">
           {agents.map((item) => {
@@ -63,10 +65,10 @@ export function AgentsView() {
                 <span className="min-w-0">
                   <span className="block truncate text-sm font-medium">{item.name}</span>
                   <span className="block truncate text-xs text-muted-foreground">
-                    {readableAgentStatus(item.status)} · {readableHealthLabel(item.health)}
+                    {agentStatus(t, item.status)} · {healthLabel(t, item.health)}
                   </span>
                 </span>
-                <StatusBadge tone={healthTone(item.health)}>{readableHealthLabel(item.health)}</StatusBadge>
+                <StatusBadge tone={healthTone(item.health)}>{healthLabel(t, item.health)}</StatusBadge>
               </button>
             );
           })}
@@ -77,20 +79,20 @@ export function AgentsView() {
         <Card>
           <CardHeader className="flex-row items-center justify-between">
             <CardTitle>{agent.name}</CardTitle>
-            <StatusBadge tone={healthTone(agent.health)}>{readableHealthLabel(agent.health)}</StatusBadge>
+            <StatusBadge tone={healthTone(agent.health)}>{healthLabel(t, agent.health)}</StatusBadge>
           </CardHeader>
           <CardContent className="space-y-4">
             <FactList
               facts={[
-                { term: "Status", value: readableAgentStatus(agent.status) },
-                { term: "Health", value: readableHealth(agent.health) },
-                { term: "Adapter", value: adapterText(agent.adapter) },
-                { term: "Lifecycle", value: lifecycleText(agent) },
-                { term: "Capability", value: agent.capabilities?.[0]?.description ?? "No capability selected" },
-                { term: "Cost", value: costText(agent.economics) },
-                { term: "Cost owner", value: costOwnerText(agent.economics, usage) },
-                { term: "Usage", value: usageText(usage) },
-                { term: "Next action", value: agent.health?.nextAction ?? agentNextAction(agent, state) },
+                { term: t("agents.status"), value: agentStatus(t, agent.status) },
+                { term: t("agents.health"), value: healthText(t, agent.health) },
+                { term: t("agents.adapter"), value: adapter(t, agent.adapter) },
+                { term: t("agents.lifecycle"), value: lifecycle(t, agent) },
+                { term: t("agents.capability"), value: agent.capabilities?.[0]?.description ?? t("agents.noCapability") },
+                { term: t("agents.cost"), value: cost(t, agent.economics) },
+                { term: t("agents.costOwner"), value: costOwner(t, agent.economics, usage) },
+                { term: t("agents.usage"), value: usageLabel(t, usage) },
+                { term: t("agents.nextAction"), value: agent.health?.nextAction ?? nextAction(t, agent, state) },
               ]}
             />
             <div className="flex flex-wrap gap-2">
@@ -100,7 +102,7 @@ export function AgentsView() {
                 disabled={pending || agent.health?.status === "checking"}
                 onClick={() => execute(() => api.healthCheckAgent(agent.id))}
               >
-                Check health
+                {t("agents.checkHealth")}
               </Button>
               <Button
                 size="sm"
@@ -108,7 +110,7 @@ export function AgentsView() {
                 disabled={pending}
                 onClick={() => execute(() => api.setAgentEnabled(agent.id, agent.status === "disabled"))}
               >
-                {agent.status === "disabled" ? "Enable agent" : "Disable agent"}
+                {t(agent.status === "disabled" ? "agents.enable" : "agents.disable")}
               </Button>
             </div>
           </CardContent>

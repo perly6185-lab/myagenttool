@@ -37,6 +37,8 @@ test("public state exposes every team device and derives stale readiness", () =>
     assert.deepEqual(device.runtimeReadiness, device.applicationBinaryReadiness, "canonical mirrors legacy");
     assert.ok(device.runtimeReadiness?.[0]?.status, "canonical readiness is always present");
   }
+  assert.equal(published.guidedSetup.version, 1);
+  assert.equal(published.guidedSetup.currentStep, "workspace");
 });
 
 test("the singleton device alias never falls back to another team's primary device", () => {

@@ -1,6 +1,7 @@
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { PdfDocumentViewer } from "@/features/documents/pdf-document-viewer";
+import { i18n } from "@/lib/i18n";
 
 const mocks = vi.hoisted(() => ({
   projectPdfData: vi.fn(),
@@ -43,7 +44,7 @@ vi.mock("pdfjs-dist", () => ({
   }),
 }));
 
-beforeEach(() => { mocks.projectPdfSource.mockResolvedValue({ url: "http://localhost/report.pdf", httpHeaders: { Authorization: "Bearer test" } }); mocks.projectPdfRange.mockResolvedValue({ data: new ArrayBuffer(8), total: 2048 }); });
+beforeEach(async () => { await i18n.changeLanguage("en-US"); mocks.projectPdfSource.mockResolvedValue({ url: "http://localhost/report.pdf", httpHeaders: { Authorization: "Bearer test" } }); mocks.projectPdfRange.mockResolvedValue({ data: new ArrayBuffer(8), total: 2048 }); });
 afterEach(() => { cleanup(); vi.clearAllMocks(); mocks.passwordHandler = undefined; window.history.replaceState({}, "", "/"); });
 
 it("loads an authenticated project PDF and renders its first page", async () => {
@@ -54,7 +55,7 @@ it("loads an authenticated project PDF and renders its first page", async () => 
   expect(screen.getByText("Loading PDF…")).toBeTruthy();
   expect(await screen.findByText("/ 3")).toBeTruthy();
   expect(mocks.projectPdfRange).toHaveBeenCalledWith("prj_1", "docs/report.pdf", 0, 65536, "wt_1");
-  expect(mocks.render).toHaveBeenCalledOnce();
+  await waitFor(() => expect(mocks.render).toHaveBeenCalledOnce());
   await waitFor(() => expect(screen.getByLabelText("Page 1 of 3")).toBeTruthy());
 });
 
@@ -162,4 +163,18 @@ it("shows a contained error instead of replacing the Documents page", async () =
   mocks.projectPdfRange.mockRejectedValue(Object.assign(new Error("parse failed"), { code: "invalid_pdf" }));
   render(<PdfDocumentViewer projectId="prj_1" path="missing.pdf" />);
   expect((await screen.findByRole("alert")).textContent).toContain("malformed or is not a supported PDF");
+});
+
+it("renders viewer chrome in Simplified Chinese while preserving document metadata", async () => {
+  await i18n.changeLanguage("zh-CN");
+  mocks.projectPdfData.mockResolvedValue(new ArrayBuffer(2048));
+  mocks.render.mockReturnValue({ promise: Promise.resolve(), cancel: mocks.cancel });
+  vi.spyOn(HTMLCanvasElement.prototype, "getContext").mockReturnValue({} as CanvasRenderingContext2D);
+  render(<PdfDocumentViewer projectId="prj_1" path="docs/report.pdf" />);
+  await screen.findByText("/ 3");
+  expect(screen.getByLabelText("下一页")).toBeTruthy();
+  expect(screen.getByPlaceholderText("搜索 PDF…")).toBeTruthy();
+  fireEvent.click(screen.getByLabelText("显示 PDF 详情"));
+  expect(await screen.findByText("本地 PDF")).toBeTruthy();
+  expect(screen.getByText("Report")).toBeTruthy();
 });
