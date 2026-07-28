@@ -1,3 +1,5 @@
+import { normalizeCodexPermissionMode as normalizeCodexApprovalMode } from "@myagenttool/protocol/codex-permissions";
+
 import { LOCAL_TEAM_ID, teamOf } from "../runtime/auth.mjs";
 import { createRefusalRuntime } from "../runtime/refusal-log.mjs";
 import { makeRunTx } from "../runtime/store/run-tx.mjs";
@@ -440,10 +442,20 @@ export function createCodexService({
     const createdAt = now();
     const approvalMode = normalizeCodexApprovalMode(invocation.options?.approvalMode ?? invocation.options?.metadata?.permissionMode);
     const continuationApproval = codexContinuationApproval(invocation, body);
+    // Full access removes Codex's own per-action prompts, but only after the
+    // platform's high-risk launch approval has actually been granted. This
+    // avoids a second prompt for the same launch without allowing a caller to
+    // bypass the outer gate merely by setting approvalMode=full.
+    const fullAccessLaunchApproved = approvalMode === "full"
+      && state.approvalRequests?.some((request) => (
+        request.invocationId === invocation.id && request.status === "approved"
+      ));
     const autoApproved = policy.decision !== "blocked" && (
-      Boolean(continuationApproval)
-      || approvalMode === "full"
-      || (approvalMode === "auto" && !codexApprovalRequiresManualReview({ invocation, body, policy }))
+      fullAccessLaunchApproved
+      || (approvalMode !== "full" && (
+        Boolean(continuationApproval)
+        || (approvalMode === "auto" && !codexApprovalRequiresManualReview({ invocation, body, policy }))
+      ))
     );
     const request = {
       id: nextId("cdx_appr"),
@@ -539,11 +551,6 @@ export function createCodexService({
       return source;
     }
     return null;
-  }
-
-  function normalizeCodexApprovalMode(value) {
-    const normalized = String(value ?? "ask").trim().toLowerCase();
-    return ["ask", "auto", "full"].includes(normalized) ? normalized : "ask";
   }
 
   function codexApprovalRequiresManualReview({ invocation, body, policy }) {

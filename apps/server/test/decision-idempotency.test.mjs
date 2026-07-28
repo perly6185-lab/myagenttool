@@ -99,6 +99,64 @@ test("#1151 a broker timeout is attributed to the system, not a user", () => {
   assert.equal(decided.decidedBy, "system:timeout");
 });
 
+test("Codex full access cannot bypass a missing outer launch approval", () => {
+  const invocation = {
+    id: "inv_full",
+    input: { task: "Run with unrestricted filesystem and network access." },
+    options: { approvalMode: "full", metadata: { worktreeId: "wtr_1" } },
+  };
+  const state = {
+    codexSessions: [],
+    codexHookEvents: [],
+    codexApprovalBrokerRequests: [],
+    events: [],
+    refusals: [],
+  };
+  const codex = codexFor(state, makeClock(), (id) => id === invocation.id ? invocation : null);
+  const hook = codex.recordCodexHookEvent({
+    invocationId: invocation.id,
+    eventName: "PermissionRequest",
+    toolName: "Bash",
+    summary: "Launch Codex with Full access.",
+  });
+
+  assert.equal(hook.brokerRequest.approvalMode, "full");
+  assert.equal(hook.brokerRequest.status, "pending");
+  assert.equal(hook.brokerRequest.decision, null);
+});
+
+test("Codex full access reuses the approved high-risk launch instead of prompting twice", () => {
+  const invocation = {
+    id: "inv_full_approved",
+    input: { task: "Run with explicitly approved Full access." },
+    options: { approvalMode: "full", metadata: { worktreeId: "wtr_1" } },
+  };
+  const state = {
+    approvalRequests: [{
+      id: "apr_full",
+      invocationId: invocation.id,
+      status: "approved",
+      decidedBy: "usr_local",
+    }],
+    codexSessions: [],
+    codexHookEvents: [],
+    codexApprovalBrokerRequests: [],
+    events: [],
+    refusals: [],
+  };
+  const codex = codexFor(state, makeClock(), (id) => id === invocation.id ? invocation : null);
+  const hook = codex.recordCodexHookEvent({
+    invocationId: invocation.id,
+    eventName: "PermissionRequest",
+    toolName: "Bash",
+    summary: "Launch the explicitly approved Full access run.",
+  });
+
+  assert.equal(hook.brokerRequest.approvalMode, "full");
+  assert.equal(hook.brokerRequest.status, "approved");
+  assert.equal(hook.brokerRequest.decision, "allow");
+});
+
 test("a bounded continuation reuses only an approved request from the same auto-run and worktree", () => {
   const source = {
     id: "inv_source",

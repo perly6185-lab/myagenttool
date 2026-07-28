@@ -579,7 +579,8 @@ function createDefaultAgents(now) {
         timeoutSeconds: 600,
         cancellation: "supported",
         outputFormat: "codex_jsonl",
-        sandbox: null
+        sandbox: "workspace-write",
+        permissionMode: "ask"
       },
       lifecycle: {
         state: "enabled",

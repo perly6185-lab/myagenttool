@@ -221,7 +221,14 @@ export function createInvocationCreationRuntime({
         codexSessionMode,
         codexResumeSessionId,
         codexWorkspacePolicy,
-        approvalMode: normalizeCodexApprovalMode(options.approvalMode ?? options.metadata?.permissionMode),
+        // A per-run selection wins; otherwise inherit the registered Agent's
+        // canonical permission mode. This keeps API/scheduler callers aligned
+        // with the Web composer instead of silently falling back to "ask".
+        approvalMode: normalizeCodexApprovalMode(
+          options.approvalMode
+          ?? requestedMetadata.permissionMode
+          ?? agent.adapter?.permissionMode,
+        ),
         metadata: {
           demo: true,
           ...(options.metadata && typeof options.metadata === "object" && !Array.isArray(options.metadata) ? options.metadata : {}),
