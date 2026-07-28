@@ -8,6 +8,10 @@ const mocks = vi.hoisted(() => ({
   updateWorkItemAttention: vi.fn(),
   listGithubItems: vi.fn(),
   createWorkItem: vi.fn(),
+  inspectArticleImport: vi.fn(),
+  startArticleImport: vi.fn(),
+  getArticleImport: vi.fn(),
+  cancelArticleImport: vi.fn(),
   getWorkItem: vi.fn(),
   updateWorkItem: vi.fn(),
   bulkUpdateWorkItems: vi.fn(),
@@ -84,6 +88,10 @@ vi.mock("@/data/use-console-actions", () => ({
     updateWorkItemAttention: mocks.updateWorkItemAttention,
     listGithubItems: mocks.listGithubItems,
     createWorkItem: mocks.createWorkItem,
+    inspectArticleImport: mocks.inspectArticleImport,
+    startArticleImport: mocks.startArticleImport,
+    getArticleImport: mocks.getArticleImport,
+    cancelArticleImport: mocks.cancelArticleImport,
     getWorkItem: mocks.getWorkItem,
     updateWorkItem: mocks.updateWorkItem,
     bulkUpdateWorkItems: mocks.bulkUpdateWorkItems,
@@ -180,6 +188,53 @@ describe("TaskView local work items", () => {
       dueDate: "2026-08-15",
       milestone: "M3",
     })));
+  });
+
+  it("inspects and imports a public article into an issue worktree", async () => {
+    mocks.listWorkItems.mockResolvedValue({ workItems: [], count: 0 });
+    mocks.inspectArticleImport.mockResolvedValue({
+      inspection: {
+        canonicalUrl: "https://mp.weixin.qq.com/s/example",
+        provider: "wechat",
+        contentType: "article",
+        title: "Imported WeChat article",
+        author: "Author",
+        publishedAt: "2026-07-27",
+        publishedAtSource: "source",
+        textLength: 962,
+        mediaCounts: { images: 3, audio: 0, video: 0 },
+      },
+    });
+    mocks.createWorkItem.mockResolvedValue({ workItem: { id: "lwi_article" } });
+    mocks.createWorkItemWorktree.mockResolvedValue({ worktree: { id: "wtr_article" } });
+    mocks.startArticleImport.mockResolvedValue({
+      job: {
+        id: "article_import_1",
+        state: "completed",
+        progress: { stage: "completed", completed: 1, total: 1 },
+        error: null,
+      },
+    });
+    render(<TaskView />);
+    fireEvent.click(screen.getByRole("button", { name: /New local issue/i }));
+    fireEvent.click(screen.getByRole("button", { name: "Import link" }));
+    fireEvent.change(screen.getByLabelText("Public article URL"), {
+      target: { value: "https://mp.weixin.qq.com/s/example" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Inspect" }));
+    expect(await screen.findByText("Imported WeChat article")).toBeTruthy();
+    expect(screen.getByText(/3 images/)).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Create and import" }));
+    await waitFor(() => expect(mocks.createWorkItem).toHaveBeenCalledWith(expect.objectContaining({
+      projectId: "prj_1",
+      title: "Imported WeChat article",
+      labels: expect.arrayContaining(["source:wechat", "content:article"]),
+    })));
+    expect(mocks.createWorkItemWorktree).toHaveBeenCalledWith("lwi_article");
+    expect(mocks.startArticleImport).toHaveBeenCalledWith("lwi_article", {
+      url: "https://mp.weixin.qq.com/s/example",
+      worktreeId: "wtr_article",
+    });
   });
 
   it("filters local issues by planning project and manages membership", async () => {

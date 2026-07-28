@@ -947,7 +947,7 @@ export const api = {
     const suffix = query.toString() ? `?${query}` : "";
     return request<ProjectTreeResponse>("GET", `/api/projects/${encodeURIComponent(id)}/tree${suffix}`);
   },
-  projectDocuments: (id: string, opts: { type?: "all" | "docx" | "xlsx" | "pptx" | "pdf" | "dxf" | "dwg" | "md" | "canvas" | "image" | "video"; search?: string; limit?: number; worktreeId?: string } = {}) => {
+  projectDocuments: (id: string, opts: { type?: "all" | "docx" | "xlsx" | "pptx" | "pdf" | "dxf" | "dwg" | "md" | "canvas" | "image" | "audio" | "video"; search?: string; limit?: number; worktreeId?: string } = {}) => {
     const query = new URLSearchParams();
     if (opts.type && opts.type !== "all") query.set("type", opts.type);
     if (opts.search) query.set("q", opts.search);
@@ -1164,6 +1164,14 @@ export const api = {
   getWorkItem: (id: string) => request("GET", `/api/work-items/${encodeURIComponent(id)}`),
   suggestWorkItemDraft: (payload: { projectId: string; title: string; body?: string }) =>
     request("POST", "/api/work-items/assist/draft", payload),
+  inspectArticleImport: (payload: { projectId: string; url: string }) =>
+    request("POST", "/api/work-items/article-imports/inspect", payload),
+  startArticleImport: (id: string, payload: { url: string; worktreeId: string }) =>
+    request("POST", `/api/work-items/${encodeURIComponent(id)}/article-imports`, payload),
+  getArticleImport: (id: string, jobId: string) =>
+    request("GET", `/api/work-items/${encodeURIComponent(id)}/article-imports/${encodeURIComponent(jobId)}`),
+  cancelArticleImport: (id: string, jobId: string) =>
+    request("DELETE", `/api/work-items/${encodeURIComponent(id)}/article-imports/${encodeURIComponent(jobId)}`),
   updateWorkItem: (id: string, payload: Record<string, unknown>) =>
     request("PATCH", `/api/work-items/${encodeURIComponent(id)}`, payload),
   claimWorkItem: (id: string, payload: { agentId?: string; leaseMinutes?: number; idempotencyKey?: string } = {}) =>

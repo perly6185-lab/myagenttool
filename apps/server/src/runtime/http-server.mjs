@@ -84,6 +84,10 @@ export function createHttpServer({
   getWorkItemGithubSyncDiagnostics,
   suggestWorkItemDraft,
   retryWorkItemAlert,
+  inspectArticleImport,
+  startArticleImport,
+  getArticleImport,
+  cancelArticleImport,
   releaseIssueClaim,
   listIssueClaims,
   approveDesign,
@@ -561,6 +565,10 @@ export function createHttpServer({
         githubSyncDiagnostics: getWorkItemGithubSyncDiagnostics,
         suggestWorkItemDraft,
         retryWorkItemAlert,
+        inspectArticleImport,
+        startArticleImport,
+        getArticleImport,
+        cancelArticleImport,
       })) {
         return;
       }

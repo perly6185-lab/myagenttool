@@ -2988,6 +2988,26 @@ function LocalWorkItemDetail({
   );
 }
 
+type ArticleInspection = {
+  canonicalUrl: string;
+  provider: "wechat" | "xiaohongshu" | "web";
+  contentType: "article" | "note";
+  title: string;
+  author: string | null;
+  publishedAt: string | null;
+  publishedAtSource: "source" | "imported";
+  textLength: number;
+  mediaCounts: { images: number; audio: number; video: number };
+};
+
+type ArticleImportJob = {
+  id: string;
+  state: "queued" | "running" | "completed" | "failed" | "canceled";
+  progress: { stage: string; completed: number; total: number };
+  error: string | null;
+  result?: { markdownPath?: string; warnings?: { code: string }[] } | null;
+};
+
 function CreateLocalWorkItemForm({
   projects,
   initialProjectId,
@@ -3010,6 +3030,13 @@ function CreateLocalWorkItemForm({
   const [milestone, setMilestone] = useState("");
   const [estimatePoints, setEstimatePoints] = useState("0");
   const [assistNote, setAssistNote] = useState("");
+  const [sourceMode, setSourceMode] = useState<"manual" | "url">("manual");
+  const [sourceUrl, setSourceUrl] = useState("");
+  const [inspection, setInspection] = useState<ArticleInspection | null>(null);
+  const [activeImport, setActiveImport] = useState<{ workItemId: string; jobId: string } | null>(null);
+  const [importStatus, setImportStatus] = useState("");
+  const [createdWorkItemId, setCreatedWorkItemId] = useState<string | null>(null);
+  const [createdWorktreeId, setCreatedWorktreeId] = useState<string | null>(null);
   const assist = () => {
     let draft: {
       body: string; type: LocalWorkItem["type"]; priority: LocalWorkItem["priority"];
@@ -3031,19 +3058,82 @@ function CreateLocalWorkItemForm({
       );
     });
   };
+  const inspectSource = () => {
+    let nextInspection: ArticleInspection | null = null;
+    void execute(async () => {
+      const result = await api.inspectArticleImport({ projectId, url: sourceUrl }) as { inspection: ArticleInspection };
+      nextInspection = result.inspection;
+      return result;
+    }).then((ok) => {
+      if (!ok || !nextInspection) return;
+      setInspection(nextInspection);
+      if (!title.trim()) setTitle(nextInspection.title);
+      setLabels((current) => mergeCommaLabels(current, [
+        `source:${nextInspection?.provider}`,
+        `content:${nextInspection?.contentType}`,
+      ]));
+    });
+  };
   const submit = () => {
-    void execute(() => api.createWorkItem({
-      projectId,
-      title,
-      body,
-      type,
-      priority,
-      labels: labels.split(",").map((value) => value.trim()).filter(Boolean),
-      acceptanceCriteria: acceptance.split("\n").map((value) => value.trim()).filter(Boolean),
-      dueDate: dueDate || null,
-      milestone,
-      estimatePoints: Number(estimatePoints),
-    })).then(onDone);
+    void execute(async () => {
+      let workItemId = createdWorkItemId;
+      if (!workItemId) {
+        const created = await api.createWorkItem({
+          projectId,
+          title,
+          body: sourceMode === "url" && inspection
+            ? [
+              body,
+              `Source: ${inspection.canonicalUrl}`,
+              `Detected as ${inspection.provider} / ${inspection.contentType}.`,
+            ].filter(Boolean).join("\n\n")
+            : body,
+          type,
+          priority,
+          labels: labels.split(",").map((value) => value.trim()).filter(Boolean),
+          acceptanceCriteria: acceptance.split("\n").map((value) => value.trim()).filter(Boolean),
+          dueDate: dueDate || null,
+          milestone,
+          estimatePoints: Number(estimatePoints),
+        }) as { workItem: { id: string } };
+        workItemId = created.workItem.id;
+        setCreatedWorkItemId(workItemId);
+      }
+      if (sourceMode === "manual") return { completed: true };
+      let worktreeId = createdWorktreeId;
+      if (!worktreeId) {
+        setImportStatus(t("tasks.articleImportCreatingWorktree"));
+        const createdWorktree = await api.createWorkItemWorktree(workItemId) as { worktree: { id: string } };
+        worktreeId = createdWorktree.worktree.id;
+        setCreatedWorktreeId(worktreeId);
+      }
+      setImportStatus(t("tasks.articleImportQueued"));
+      const started = await api.startArticleImport(workItemId, {
+        url: sourceUrl,
+        worktreeId,
+      }) as { job: ArticleImportJob };
+      setActiveImport({ workItemId, jobId: started.job.id });
+      let job = started.job;
+      while (job.state === "queued" || job.state === "running") {
+        setImportStatus(t(`tasks.articleImportState.${job.state}`));
+        await new Promise((resolve) => setTimeout(resolve, 750));
+        const next = await api.getArticleImport(workItemId, job.id) as { job: ArticleImportJob };
+        job = next.job;
+      }
+      setActiveImport(null);
+      if (job.state !== "completed") throw new Error(job.error || `article_import_${job.state}`);
+      setImportStatus(t("tasks.articleImportState.completed"));
+      return { completed: true };
+    }).then((ok) => {
+      if (ok) onDone();
+    });
+  };
+  const cancelImport = () => {
+    if (!activeImport) return;
+    void api.cancelArticleImport(activeImport.workItemId, activeImport.jobId).finally(() => {
+      setImportStatus(t("tasks.articleImportState.canceled"));
+      setActiveImport(null);
+    });
   };
   return (
     <div className="space-y-3">
@@ -3052,8 +3142,55 @@ function CreateLocalWorkItemForm({
           {projects.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}
         </Select>
       </Field>
+      <Field label={t("tasks.issueSource")}>
+        <div className="flex gap-2">
+          <Button type="button" variant={sourceMode === "manual" ? "primary" : "secondary"} onClick={() => setSourceMode("manual")}>
+            {t("tasks.issueSourceManual")}
+          </Button>
+          <Button type="button" variant={sourceMode === "url" ? "primary" : "secondary"} onClick={() => setSourceMode("url")}>
+            {t("tasks.issueSourceUrl")}
+          </Button>
+        </div>
+      </Field>
+      {sourceMode === "url" ? (
+        <div className="space-y-2 rounded-md border border-border p-3">
+          <Field label={t("tasks.articleUrl")}>
+            <div className="flex flex-col gap-2 sm:flex-row">
+              <Input
+                type="url"
+                value={sourceUrl}
+                onChange={(event) => {
+                  setSourceUrl(event.target.value);
+                  setInspection(null);
+                }}
+                placeholder="https://mp.weixin.qq.com/s/..."
+                autoFocus
+              />
+              <Button type="button" variant="secondary" disabled={pending || !projectId || !sourceUrl.trim()} onClick={inspectSource}>
+                {t("tasks.inspectArticle")}
+              </Button>
+            </div>
+          </Field>
+          {inspection ? (
+            <div className="rounded-md bg-muted/50 p-3 text-sm" data-testid="article-import-inspection">
+              <div className="flex flex-wrap items-center gap-2">
+                <Badge>{t(`tasks.articleProvider.${inspection.provider}`)}</Badge>
+                <span className="font-medium">{inspection.title}</span>
+              </div>
+              <p className="mt-1 text-xs text-muted-foreground">
+                {inspection.author || t("tasks.articleUnknown")} · {inspection.publishedAt || t("tasks.articleImportDateFallback")} ·
+                {" "}{inspection.textLength} {t("tasks.articleCharacters")} ·
+                {" "}{inspection.mediaCounts.images} {t("tasks.articleImages")} ·
+                {" "}{inspection.mediaCounts.audio} {t("tasks.articleAudio")} ·
+                {" "}{inspection.mediaCounts.video} {t("tasks.articleVideo")}
+              </p>
+            </div>
+          ) : null}
+          <p className="text-xs text-muted-foreground">{t("tasks.articleImportPublicOnly")}</p>
+        </div>
+      ) : null}
       <Field label={t("tasks.localTitle")}>
-        <Input value={title} onChange={(event) => setTitle(event.target.value)} autoFocus />
+        <Input value={title} onChange={(event) => setTitle(event.target.value)} autoFocus={sourceMode === "manual"} />
       </Field>
       <div className="flex items-center gap-2">
         <Button variant="secondary" disabled={pending || !projectId || !title.trim()} onClick={assist}>
@@ -3088,9 +3225,23 @@ function CreateLocalWorkItemForm({
         <Field label={t("planningInsights.estimatePoints")}><Input type="number" min="0" max="1000" value={estimatePoints} onChange={(event) => setEstimatePoints(event.target.value)} /></Field>
       </div>
       {error ? <p className="text-xs text-destructive">{error}</p> : null}
+      {importStatus ? <p className="text-xs text-muted-foreground">{importStatus}</p> : null}
       <div className="flex justify-end gap-2">
-        <Button disabled={pending || !projectId || !title.trim()} onClick={submit}>{t("tasks.createLocal")}</Button>
+        {activeImport ? <Button variant="secondary" onClick={cancelImport}>{t("tasks.cancel")}</Button> : null}
+        <Button
+          disabled={pending || !projectId || !title.trim() || (sourceMode === "url" && (!sourceUrl.trim() || !inspection))}
+          onClick={submit}
+        >
+          {sourceMode === "url" ? t("tasks.createAndImport") : t("tasks.createLocal")}
+        </Button>
       </div>
     </div>
   );
+}
+
+function mergeCommaLabels(current: string, additions: string[]) {
+  return [...new Set([
+    ...current.split(",").map((value) => value.trim()).filter(Boolean),
+    ...additions.filter(Boolean),
+  ])].join(", ");
 }

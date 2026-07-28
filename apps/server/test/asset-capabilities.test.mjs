@@ -11,14 +11,15 @@ import {
   assetResourceClass,
 } from "../src/services/asset-capabilities.mjs";
 
-test("publishes explicit support without promising CAD, image, or video editing", () => {
+test("publishes explicit support without promising CAD, media editing", () => {
   const matrix = assetCapabilityMatrix();
-  for (const family of ["canvas", "word", "excel", "powerpoint", "markdown", "cad_dxf", "cad_dwg", "image", "video", "unknown"]) {
+  for (const family of ["canvas", "word", "excel", "powerpoint", "markdown", "cad_dxf", "cad_dwg", "image", "audio", "video", "unknown"]) {
     assert.ok(matrix[family]);
   }
   assert.equal(matrix.cad_dxf.capabilities.includes("edit"), false);
   assert.equal(matrix.cad_dwg.capabilities.includes("edit"), false);
   assert.equal(matrix.video.capabilities.includes("transform"), false);
+  assert.equal(matrix.audio.capabilities.includes("transform"), false);
   assert.equal(matrix.image.capabilities.includes("edit"), false);
   assert.equal(matrix.word.mutationGovernance, "approval_and_audit");
 });
@@ -26,6 +27,7 @@ test("publishes explicit support without promising CAD, image, or video editing"
 test("classifies representative formats and gates DWG on its local runtime", () => {
   assert.equal(classifyAsset("deck.PPTX").family, "powerpoint");
   assert.equal(classifyAsset("clip.mp4").family, "video");
+  assert.equal(classifyAsset("episode.mp3").family, "audio");
   assert.equal(classifyAsset("thing.bin").family, "unknown");
   assert.deepEqual(resolveAssetCapabilities("drawing.dwg").readiness, {
     state: "waiting_capability", reason: "dwg_preview_runtime_required",

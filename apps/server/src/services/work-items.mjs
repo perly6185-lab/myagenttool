@@ -2158,7 +2158,7 @@ export function createWorkItemService({
   function recordExecutionBinding({ workItemId, kind, targetId, worktreeId = null } = {}, actor = null) {
     const item = findOwn(workItemId, actor);
     if (!item) return notFound();
-    if (!["worktree", "auto_run"].includes(kind) || !targetId) {
+    if (!["worktree", "auto_run", "article_import"].includes(kind) || !targetId) {
       return { ok: false, status: 400, body: { error: "invalid_work_item_execution_binding" } };
     }
     const binding = {
@@ -2173,7 +2173,10 @@ export function createWorkItemService({
       item.revision += 1;
       item.updatedAt = now();
       item.lastModifiedBy = actorUser(actor);
-      recordActivity(item, actor, kind === "worktree" ? "worktree_created" : "auto_run_started", binding);
+      const activityType = kind === "worktree" ? "worktree_created"
+        : kind === "article_import" ? "article_import_started"
+          : "auto_run_started";
+      recordActivity(item, actor, activityType, binding);
     });
     return { ok: true, status: 200, body: { workItem: item, binding } };
   }

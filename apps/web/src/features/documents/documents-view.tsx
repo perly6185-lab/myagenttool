@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { Copy, DraftingCompass, FileImage, FilePlus2, FileSpreadsheet, FileText, FileVideo, FolderOpen, Loader2, Move, Pencil, Pin, PinOff, Presentation, Search, Trash2, X } from "lucide-react";
+import { Copy, DraftingCompass, FileAudio, FileImage, FilePlus2, FileSpreadsheet, FileText, FileVideo, FolderOpen, Loader2, Move, Pencil, Pin, PinOff, Presentation, Search, Trash2, X } from "lucide-react";
 import { api } from "@/data/use-console-actions";
 import { useConsoleState, useRefreshConsoleState } from "@/data/use-console-state";
 import { Button } from "@/components/ui/button";
@@ -20,7 +20,8 @@ import { CadDocumentViewer } from "@/features/documents/cad-document-viewer";
 import { useAppTranslation } from "@/lib/i18n/use-app-translation";
 
 type OfficeDocumentType = "docx" | "xlsx" | "pptx";
-type DocumentType = "all" | OfficeDocumentType | "pdf" | "dxf" | "dwg" | "md" | "canvas" | "image" | "video";
+type DocumentType = "all" | OfficeDocumentType | "pdf" | "dxf" | "dwg" | "md" | "canvas" | "image" | "audio" | "video";
+type ImportedSource = "all" | "wechat" | "xiaohongshu" | "web";
 const FILTERS: Array<{ value: DocumentType; label: string }> = [
   { value: "all", label: "All" },
   { value: "docx", label: "Word" },
@@ -32,6 +33,7 @@ const FILTERS: Array<{ value: DocumentType; label: string }> = [
   { value: "md", label: "Markdown" },
   { value: "canvas", label: "Canvas" },
   { value: "image", label: "Images" },
+  { value: "audio", label: "Audio" },
   { value: "video", label: "Video" },
 ];
 
@@ -41,6 +43,7 @@ function DocumentIcon({ type }: { type: ProjectDocumentEntry["type"] }) {
   if (type === "pdf") return <FileText className="size-4 text-red-600" />;
   if (type === "dxf" || type === "dwg") return <DraftingCompass className="size-4 text-cyan-600" />;
   if (["png", "jpg", "jpeg", "gif", "webp", "avif", "svg"].includes(type)) return <FileImage className="size-4 text-violet-600" />;
+  if (["mp3", "m4a", "ogg", "wav"].includes(type)) return <FileAudio className="size-4 text-amber-600" />;
   if (["mp4", "webm", "mov"].includes(type)) return <FileVideo className="size-4 text-rose-600" />;
   if (["canvas", "excalidraw"].includes(type)) return <DraftingCompass className="size-4 text-indigo-600" />;
   return <FileText className="size-4 text-blue-600" />;
@@ -53,6 +56,8 @@ export function DocumentsView() {
   const projects = state?.projects ?? [];
   const projectId = state?.currentProjectId ?? "";
   const [type, setType] = useState<DocumentType>("all");
+  const [importedSource, setImportedSource] = useState<ImportedSource>("all");
+  const [importedMonth, setImportedMonth] = useState("");
   const [search, setSearch] = useState("");
   const [debouncedSearch, setDebouncedSearch] = useState("");
   const [selected, setSelected] = useState<ProjectDocumentEntry | null>(null);
@@ -89,10 +94,14 @@ export function DocumentsView() {
     refetchInterval: pendingSelectionPath ? 1_000 : false,
   });
   const rows = documents.data?.documents ?? [];
+  const visibleRows = useMemo(
+    () => filterImportedDocuments(rows, { source: importedSource, month: importedMonth }),
+    [rows, importedSource, importedMonth],
+  );
 
   useEffect(() => {
-    if (selected && !rows.some((item) => item.path === selected.path)) setSelected(null);
-  }, [rows, selected]);
+    if (selected && !visibleRows.some((item) => item.path === selected.path)) setSelected(null);
+  }, [visibleRows, selected]);
 
   useEffect(() => {
     if (!state || !requestedProjectId || requestedProjectId === projectId) return;
@@ -102,19 +111,19 @@ export function DocumentsView() {
 
   useEffect(() => {
     if (!requestedDocumentPath || selected?.path === requestedDocumentPath) return;
-    const match = rows.find((item) => item.path === requestedDocumentPath);
+    const match = visibleRows.find((item) => item.path === requestedDocumentPath);
     if (match) setSelected(match);
-  }, [requestedDocumentPath, rows, selected]);
+  }, [requestedDocumentPath, visibleRows, selected]);
 
   useEffect(() => {
     if (!pendingSelectionPath) return;
-    const match = rows.find((item) => item.path === pendingSelectionPath);
+    const match = visibleRows.find((item) => item.path === pendingSelectionPath);
     if (!match) return;
     setSelected(match);
     writeDocumentUrl(projectId, match.path, match.worktreeId ?? undefined);
     setPendingSelectionPath(null);
     setPendingSelectionError(null);
-  }, [pendingSelectionPath, rows, projectId]);
+  }, [pendingSelectionPath, visibleRows, projectId]);
 
   useEffect(() => {
     if (!pendingSelectionPath) return;
@@ -177,6 +186,24 @@ export function DocumentsView() {
           <option value="base">{t("documents.baseProject")}</option>
           <option value="worktree" disabled={!worktreeId}>{t("documents.selectedWorktree")}</option>
         </Select>
+        <Select
+          aria-label={t("documents.importedSource")}
+          className="h-8 w-36"
+          value={importedSource}
+          onChange={(event) => setImportedSource(event.target.value as ImportedSource)}
+        >
+          <option value="all">{t("documents.allSources")}</option>
+          <option value="wechat">{t("documents.sourceWechat")}</option>
+          <option value="xiaohongshu">{t("documents.sourceXiaohongshu")}</option>
+          <option value="web">{t("documents.sourceWeb")}</option>
+        </Select>
+        <Input
+          type="month"
+          aria-label={t("documents.importedMonth")}
+          className="h-8 w-36"
+          value={importedMonth}
+          onChange={(event) => setImportedMonth(event.target.value)}
+        />
         <label className="relative ml-auto min-w-52 flex-1 sm:max-w-sm">
           <Search className="pointer-events-none absolute left-2.5 top-2 size-3.5 text-muted-foreground" />
           <Input value={search} onChange={(event) => setSearch(event.target.value)} placeholder={t("documents.search")} className="h-8 pl-8" />
@@ -191,7 +218,7 @@ export function DocumentsView() {
         <section className="min-h-0 overflow-y-auto rounded-lg border border-border bg-card" aria-label={t("documents.label")}>
           {templates.length > 0 ? <div className="border-b border-border p-2"><p className="mb-1 px-1 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">{t("documents.templates")}</p><div className="space-y-1">{templates.filter((item) => (type === "all" || item.type === type) && (!search.trim() || item.name.toLowerCase().includes(search.trim().toLowerCase()))).map((item) => <div key={item.id} className="flex items-center gap-1"><button type="button" className="min-w-0 flex-1 truncate rounded bg-muted px-2 py-1 text-left text-xs" onClick={() => { setTemplateSource(item); setTemplateOpen(true); }}>{item.name}</button><button type="button" className="px-1 text-xs text-muted-foreground hover:text-destructive" aria-label={t("documents.removeTemplate", { name: item.name })} onClick={() => setTemplates(removeDocumentTemplate(item.id))}>×</button></div>)}</div></div> : null}
           <RecentDocuments items={recent} projects={projects} worktrees={state?.worktrees ?? []} onOpen={(item) => openRecent(item, projects, projectId, setWorktreeId, setBrowseScope, setPendingSelectionPath, switchProject)} onPin={(item) => setRecent(toggleRecentDocumentPinned(item))} onRemove={(item) => setRecent(removeRecentDocument(item))} onClear={() => setRecent(clearRecentDocuments())} />
-          <DocumentList loading={documents.isLoading} error={documents.error} rows={rows} selected={selected} onSelect={(row) => { setSelected(row); setRecent(recordRecentDocument(row)); writeDocumentUrl(projectId, row.path, row.worktreeId ?? undefined); }} />
+          <DocumentList loading={documents.isLoading} error={documents.error} rows={visibleRows} selected={selected} onSelect={(row) => { setSelected(row); setRecent(recordRecentDocument(row)); writeDocumentUrl(projectId, row.path, row.worktreeId ?? undefined); }} />
           {documents.data?.truncated ? <p className="border-t border-border px-3 py-2 text-xs text-muted-foreground">{t("documents.truncated")}</p> : null}
         </section>
         <DocumentPreview projectId={projectId} document={selected} worktrees={projectWorktrees} worktreeId={worktreeId} onWorktreeChange={setWorktreeId} onUseTemplate={() => { setTemplateSource(null); setTemplateOpen(true); }} onSaveTemplate={() => setSaveTemplateOpen(true)} onManage={setManageOperation} />
@@ -203,6 +230,20 @@ export function DocumentsView() {
       <DocumentManageModal operation={manageOperation} document={selected} onClose={() => setManageOperation(null)} onComplete={(path) => { setManageOperation(null); if (path) setPendingSelectionPath(path); else setSelected(null); }} />
     </div>
   );
+}
+
+export function filterImportedDocuments(
+  rows: ProjectDocumentEntry[],
+  { source = "all", month = "" }: { source?: ImportedSource; month?: string } = {},
+) {
+  const monthMatch = month.match(/^(\d{4})-(\d{2})$/);
+  return rows.filter((item) => {
+    const normalized = item.path.replaceAll("\\", "/");
+    const imported = normalized.match(/(?:^|\/)docs\/imported\/(wechat|xiaohongshu|web)\/(\d{4})\/(\d{2})\//);
+    if (source !== "all" && imported?.[1] !== source) return false;
+    if (monthMatch && (imported?.[2] !== monthMatch[1] || imported?.[3] !== monthMatch[2])) return false;
+    return true;
+  });
 }
 
 function RecentDocuments({ items, projects, worktrees, onOpen, onPin, onRemove, onClear }: { items: RecentDocument[]; projects: Array<{ id: string }>; worktrees: Array<{ id: string; projectId?: string }>; onOpen: (item: RecentDocument) => void; onPin: (item: RecentDocument) => void; onRemove: (item: RecentDocument) => void; onClear: () => void }) {
@@ -255,6 +296,7 @@ function DocumentPreview({ projectId, document, worktrees, worktreeId, onWorktre
   if (!document) return <section className="grid min-h-[24rem] place-items-center rounded-lg border border-dashed border-border bg-card text-sm text-muted-foreground">{t("documentsPreview.select")}</section>;
   if (document.type === "md" || document.type === "mdx") return <MarkdownAssetPreview projectId={projectId} document={document} />;
   if (["png", "jpg", "jpeg", "gif", "webp", "avif", "svg"].includes(document.type)) return <ImageAssetPreview projectId={projectId} document={document} />;
+  if (["mp3", "m4a", "ogg", "wav"].includes(document.type)) return <AudioAssetPreview projectId={projectId} document={document} />;
   if (["mp4", "webm", "mov"].includes(document.type)) return <VideoAssetPreview projectId={projectId} document={document} />;
   if (["canvas", "excalidraw"].includes(document.type)) return <AssetPreviewNotice projectId={projectId} document={document} message="Open Canvas to preview or edit this governed scene." />;
   if (document.type === "pdf") return <section className="flex min-h-[24rem] min-w-0 flex-col overflow-hidden rounded-lg border border-border bg-card"><header className="flex items-center gap-2 border-b border-border px-3 py-2"><DocumentIcon type={document.type} /><div className="min-w-0 flex-1"><p className="truncate text-sm font-medium">{document.name}</p><p className="truncate font-mono text-[10px] text-muted-foreground">{document.path}</p></div><ExternalAssetOpenButton projectId={projectId} document={document} /></header><PdfDocumentViewer projectId={projectId} path={document.path} worktreeId={document.worktreeId} /></section>;
@@ -318,6 +360,32 @@ function ImageAssetPreview({ projectId, document }: { projectId: string; documen
     {preview.isLoading ? <p className="text-sm text-muted-foreground">{t("documentsPreview.preparing")}</p>
       : preview.error ? <p role="alert" className="text-sm text-destructive">{t("documentsPreview.unavailable")}</p>
         : source ? <img src={source} alt={document.name} className="max-h-full max-w-full object-contain" /> : null}
+    </div>
+  </section>;
+}
+
+function AudioAssetPreview({ projectId, document }: { projectId: string; document: ProjectDocumentEntry }) {
+  const { t } = useAppTranslation();
+  const preview = useQuery({
+    queryKey: ["asset-preview-audio", projectId, document.worktreeId, document.path],
+    queryFn: () => api.projectAssetPreviewBytes(projectId, document.path, document.worktreeId ?? undefined),
+  });
+  const [source, setSource] = useState<string | null>(null);
+  useEffect(() => {
+    if (!preview.data) { setSource(null); return; }
+    const mime = document.type === "mp3" ? "audio/mpeg"
+      : document.type === "m4a" ? "audio/mp4"
+        : document.type === "ogg" ? "audio/ogg" : "audio/wav";
+    const url = URL.createObjectURL(new Blob([preview.data], { type: mime }));
+    setSource(url);
+    return () => URL.revokeObjectURL(url);
+  }, [preview.data, document.type]);
+  return <section className="flex min-h-[24rem] flex-col rounded-lg border border-border bg-card p-4">
+    <div className="mb-3 flex items-center justify-between gap-2"><h2 className="text-sm font-semibold">{document.name}</h2><ExternalAssetOpenButton projectId={projectId} document={document} /></div>
+    <div className="grid flex-1 place-items-center">
+      {preview.isLoading ? <p className="text-sm text-muted-foreground">{t("documentsPreview.preparing")}</p>
+        : preview.error ? <p role="alert" className="text-sm text-destructive">{t("documentsPreview.unavailable")}</p>
+          : source ? <audio controls preload="metadata" src={source} className="w-full max-w-xl" aria-label={document.name} /> : null}
     </div>
   </section>;
 }
