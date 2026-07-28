@@ -365,6 +365,50 @@ export function createApplicationService({
     });
   }
 
+  // Stage 5 (#1342): a governed local REPAIR — re-verify an Application in place.
+  // It re-probes the descriptor and re-enables the app, but NEVER uninstalls or
+  // replaces the backing Runtime: uninstall is not supported anywhere, and a
+  // genuinely broken Runtime is re-installed only through governed setup, never
+  // silently here. Runtime requirements and source identity are left untouched.
+  function repairApplication(applicationId, actor = null) {
+    const app = findApplication(applicationId);
+    if (!app) return null;
+    const repairedAt = now();
+    const probe = buildApplicationProbe(app);
+    return runTx(() => {
+      app.probe = {
+        status: "completed",
+        checkedAt: repairedAt,
+        summary: probe.summary,
+        source: probe.source,
+        package: probe.package,
+        readme: probe.readme,
+        capabilities: probe.capabilities,
+        capabilityNames: probe.capabilities.map((capability) => capability.name),
+        warnings: probe.warnings,
+      };
+      // Re-enable (unless the operator archived it); readiness will re-surface any
+      // remaining runtime problem as its own state. Never touch runtimeRequirements.
+      if (app.status !== "archived") app.status = "active";
+      app.lifecycle = {
+        ...app.lifecycle,
+        state: app.status,
+        lastOperation: "repair",
+        lastOperationAt: repairedAt,
+        lastActorId: actor?.userId ?? null,
+      };
+      app.updatedAt = repairedAt;
+      appendEvent({
+        invocationId: null,
+        type: "application_repair",
+        level: "info",
+        message: `${app.name} application repaired (re-verified in place; Runtime untouched).`,
+        data: { applicationId: app.id, status: app.status },
+      });
+      return app;
+    });
+  }
+
   function listApplicationCapabilities(applicationId) {
     const app = findApplication(applicationId);
     return app ? projectApplicationCapabilities(app, { credential: credentialStatusForApplication(app) }) : null;
@@ -805,6 +849,7 @@ export function createApplicationService({
     planAgentFacadeInvocation,
     planApplicationWrapperInvocation,
     probeApplication,
+    repairApplication,
     registerApplication,
     setApplicationAutoRecovery,
     setApplicationHealthProbe,
