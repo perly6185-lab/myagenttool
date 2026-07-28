@@ -5,6 +5,8 @@ import { useConsoleState } from "@/data/use-console-state";
 import { DocxBlockEditor } from "@/features/projects/docx-block-editor";
 import { XlsxGridEditor } from "@/features/projects/xlsx-grid-editor";
 import { PptxSlideEditor } from "@/features/projects/pptx-slide-editor";
+import { OfficeDocumentFrame } from "@/components/common/office-document-frame";
+import { useAppTranslation } from "@/lib/i18n/use-app-translation";
 
 // Visual before/after review for an OfficeCLI write in a worktree (#1349 polish):
 // render the document as it is in the project BASE (before) and in the WORKTREE
@@ -22,10 +24,6 @@ interface PreviewResponse {
 
 type Side = { state: "loading" | "done" | "error" | "absent"; html: string | null };
 
-// The console injects the CSP itself — never trust the rendered document to. sandbox=""
-// blocks scripts/same-origin/forms/navigation; default-src 'none' blocks subresources.
-const CSP = `<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; img-src data:; font-src data:">`;
-
 // Single-pane rendered view of ONE Office document (the worktree version) — the
 // content view for a .docx/.xlsx/.pptx, so clicking it browses the rendered
 // document instead of raw OOXML bytes (which read as garbage in a code view).
@@ -33,6 +31,7 @@ const CSP = `<meta http-equiv="Content-Security-Policy" content="default-src 'no
 // (mint approval grant → invoke → re-render). The document render is a sandboxed
 // static iframe, so editing is a small path+value form, not click-in-the-doc.
 export function OfficecliFilePreview({ projectId, worktreeId, path, editable = false }: { projectId: string; worktreeId: string; path: string; editable?: boolean }) {
+  const { t } = useAppTranslation();
   const [side, setSide] = useState<Side>({ state: "loading", html: null });
   const [editing, setEditing] = useState(false);
   const load = useCallback(async () => {
@@ -50,7 +49,7 @@ export function OfficecliFilePreview({ projectId, worktreeId, path, editable = f
   return (
     <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-md border border-border bg-card">
       <div className="flex shrink-0 items-center gap-2 border-b border-border px-2.5 py-1.5">
-        <span className="min-w-0 flex-1 truncate font-mono text-[11px] text-muted-foreground">{path} · rendered</span>
+        <span className="min-w-0 flex-1 truncate font-mono text-[11px] text-muted-foreground">{path} · {t("officeEditors.rendered")}</span>
         {editable ? (
           <button
             type="button"
@@ -58,7 +57,7 @@ export function OfficecliFilePreview({ projectId, worktreeId, path, editable = f
             className="flex shrink-0 items-center gap-1 rounded border border-border px-2 py-0.5 text-[11px] hover:bg-accent"
           >
             {editing ? <X className="size-3" /> : <Pencil className="size-3" />}
-            {editing ? "Close" : "Edit"}
+            {t(editing ? "officeEditors.close" : "officeEditors.edit")}
           </button>
         ) : null}
       </div>
@@ -82,11 +81,11 @@ export function OfficecliFilePreview({ projectId, worktreeId, path, editable = f
             <OfficecliInlineEdit projectId={projectId} worktreeId={worktreeId} file={path} onApplied={load} />
           ) : null}
           {side.state === "loading" ? (
-            <span className="flex items-center gap-1 px-2 py-6 text-xs text-muted-foreground"><Loader2 className="size-3 animate-spin" /> rendering…</span>
+            <span className="flex items-center gap-1 px-2 py-6 text-xs text-muted-foreground"><Loader2 className="size-3 animate-spin" /> {t("officeEditors.rendering")}</span>
           ) : side.state === "error" ? (
-            <span className="px-2 py-6 text-xs text-red-600 dark:text-red-400">Preview unavailable — the document may not render, or officecli is not installed.</span>
+            <span className="px-2 py-6 text-xs text-red-600 dark:text-red-400">{t("officeEditors.previewUnavailable")}</span>
           ) : (
-            <iframe title={path} sandbox="" srcDoc={`${CSP}${side.html ?? ""}`} className="h-full min-h-[24rem] w-full bg-white" />
+            <OfficeDocumentFrame title={path} content={side.html ?? ""} />
           )}
         </>
       )}
@@ -98,6 +97,7 @@ export function OfficecliFilePreview({ projectId, worktreeId, path, editable = f
 // single-use approval grant → invoke the write → watch the invocation → re-render
 // on success). No raw bytes, no argv — a path + property + value.
 function OfficecliInlineEdit({ projectId, worktreeId, file, onApplied }: { projectId: string; worktreeId: string; file: string; onApplied: () => void }) {
+  const { t } = useAppTranslation();
   const { data: state } = useConsoleState();
   const [form, setForm] = useState({ elementPath: "", property: "value", value: "" });
   const [status, setStatus] = useState<"idle" | "applying" | "error">("idle");
@@ -122,12 +122,12 @@ function OfficecliInlineEdit({ projectId, worktreeId, file, onApplied }: { proje
       };
       const res = (await api.invokeCapability("app.app_officecli.apply.set", body as Record<string, string>)) as { invocationId?: string };
       if (res?.invocationId) setInvId(res.invocationId);
-      else throw new Error("The write was not accepted.");
+      else throw new Error(t("officeEditors.writeRejected"));
     } catch (e) {
       setStatus("error");
       setError(e instanceof Error ? e.message : String(e));
     }
-  }, [projectId, worktreeId, file, form]);
+  }, [projectId, worktreeId, file, form, t]);
 
   // Watch the invocation to completion (console state polls it), then re-render.
   useEffect(() => {
@@ -142,9 +142,9 @@ function OfficecliInlineEdit({ projectId, worktreeId, file, onApplied }: { proje
     } else if (inv.status === "failed" || inv.status === "rejected") {
       setStatus("error");
       setInvId(null);
-      setError("The write was refused (approval, worktree, or an invalid path/value).");
+      setError(t("officeEditors.writeRefused"));
     }
-  }, [state?.invocations, invId, status, onApplied]);
+  }, [state?.invocations, invId, status, onApplied, t]);
 
   return (
     <div className="shrink-0 space-y-2 border-b border-border bg-muted/30 p-2.5">
@@ -152,21 +152,21 @@ function OfficecliInlineEdit({ projectId, worktreeId, file, onApplied }: { proje
         <input
           value={form.elementPath}
           onChange={(e) => setForm((f) => ({ ...f, elementPath: e.target.value }))}
-          placeholder="element path, e.g. /Sheet1/A1"
+          placeholder={t("officeEditors.elementPath")}
           className="min-w-0 rounded-md border border-border bg-background px-2 py-1 font-mono text-xs"
           spellCheck={false}
         />
         <input
           value={form.property}
           onChange={(e) => setForm((f) => ({ ...f, property: e.target.value }))}
-          placeholder="property (value / text / bold)"
+          placeholder={t("officeEditors.property")}
           className="min-w-0 rounded-md border border-border bg-background px-2 py-1 font-mono text-xs"
           spellCheck={false}
         />
         <input
           value={form.value}
           onChange={(e) => setForm((f) => ({ ...f, value: e.target.value }))}
-          placeholder="new value"
+          placeholder={t("officeEditors.newValue")}
           className="min-w-0 rounded-md border border-border bg-background px-2 py-1 text-xs"
         />
       </div>
@@ -177,10 +177,10 @@ function OfficecliInlineEdit({ projectId, worktreeId, file, onApplied }: { proje
           onClick={() => void apply()}
           className="rounded-md border border-border bg-background px-2.5 py-1 text-xs font-medium disabled:opacity-50"
         >
-          {status === "applying" ? "Applying…" : "Apply (governed write)"}
+          {t(status === "applying" ? "officeEditors.applying" : "officeEditors.apply")}
         </button>
         <span className="text-[11px] text-muted-foreground">
-          {status === "error" ? <span className="text-red-600 dark:text-red-400">{error}</span> : "Approval-gated · lands in this worktree · review before promote."}
+          {status === "error" ? <span className="text-red-600 dark:text-red-400">{error}</span> : t("officeEditors.approvalHint")}
         </span>
       </div>
     </div>
@@ -188,6 +188,7 @@ function OfficecliInlineEdit({ projectId, worktreeId, file, onApplied }: { proje
 }
 
 export function OfficecliVisualDiff({ projectId, worktreeId, path }: { projectId: string; worktreeId: string; path: string }) {
+  const { t } = useAppTranslation();
   const [before, setBefore] = useState<Side>({ state: "loading", html: null });
   const [after, setAfter] = useState<Side>({ state: "loading", html: null });
 
@@ -217,31 +218,27 @@ export function OfficecliVisualDiff({ projectId, worktreeId, path }: { projectId
 
   return (
     <div className="grid min-h-0 flex-1 grid-cols-1 gap-3 lg:grid-cols-2">
-      <Pane title="Before · base" side={before} path={path} absentLabel="New document — no prior version to compare." />
-      <Pane title="After · worktree" side={after} path={path} />
+      <Pane title={t("officeEditors.before")} side={before} path={path} absentLabel={t("officeEditors.newDocument")} />
+      <Pane title={t("officeEditors.after")} side={after} path={path} />
     </div>
   );
 }
 
 function Pane({ title, side, path, absentLabel }: { title: string; side: Side; path: string; absentLabel?: string }) {
+  const { t } = useAppTranslation();
   return (
     <div className="flex min-h-0 flex-col overflow-hidden rounded-md border border-border bg-card">
       <div className="shrink-0 border-b border-border px-2.5 py-1.5 text-[11px] font-medium text-muted-foreground">{title}</div>
       {side.state === "loading" ? (
         <span className="flex items-center gap-1 px-2 py-6 text-xs text-muted-foreground">
-          <Loader2 className="size-3 animate-spin" /> rendering…
+          <Loader2 className="size-3 animate-spin" /> {t("officeEditors.rendering")}
         </span>
       ) : side.state === "absent" ? (
-        <span className="px-2 py-6 text-xs text-muted-foreground">{absentLabel ?? "No version."}</span>
+        <span className="px-2 py-6 text-xs text-muted-foreground">{absentLabel ?? t("officeEditors.noVersion")}</span>
       ) : side.state === "error" ? (
-        <span className="px-2 py-6 text-xs text-red-600 dark:text-red-400">Preview unavailable — the document may not render, or officecli is not installed.</span>
+        <span className="px-2 py-6 text-xs text-red-600 dark:text-red-400">{t("officeEditors.previewUnavailable")}</span>
       ) : (
-        <iframe
-          title={`${title}: ${path}`}
-          sandbox=""
-          srcDoc={`${CSP}${side.html ?? ""}`}
-          className="h-full min-h-[24rem] w-full bg-white"
-        />
+        <OfficeDocumentFrame title={`${title}: ${path}`} content={side.html ?? ""} />
       )}
     </div>
   );

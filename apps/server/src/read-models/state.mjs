@@ -8,6 +8,7 @@ import { workReport, calendarPeriods } from "./work-report.mjs";
 import { evidenceLedger } from "./evidence-ledger.mjs";
 import { scheduleHealthReadModel } from "./schedule-health.mjs";
 import { withLocalApplicationReadiness } from "../services/application-readiness.mjs";
+import { deriveGuidedReadiness } from "../services/guided-readiness.mjs";
 
 export function buildPublicState({
   namespace,
@@ -194,6 +195,47 @@ export function buildPublicState({
   });
   // #1143 issue claims carry a projectId; project-team scoping is the boundary.
   const issueClaims = byProject(state.issueClaims);
+  // Work Items keep their own cursor-paginated endpoint. Publish only bounded,
+  // tenant-scoped totals here so /api/state consumers do not confuse an omitted
+  // large collection with an empty backlog.
+  const visibleWorkItems = (state.workItems ?? []).filter(
+    (item) => teamId == null || (item.ownerTeamId ?? LOCAL_TEAM_ID) === teamId,
+  );
+  const workItemSummary = {
+    total: visibleWorkItems.length,
+    open: visibleWorkItems.filter((item) => (item.businessState ?? item.state) === "open").length,
+    blocked: visibleWorkItems.filter((item) => (item.planningStatus ?? item.status) === "blocked").length,
+    activeExecutions: visibleWorkItems.filter((item) =>
+      ["claimed", "running", "awaiting_approval", "verifying"].includes(item.executionState),
+    ).length,
+    updatedAt: visibleWorkItems.reduce(
+      (latest, item) => item.updatedAt > latest ? item.updatedAt : latest,
+      "",
+    ) || null,
+  };
+  const workItemIds = new Set(visibleWorkItems.map((item) => item.id));
+  const workItemByAutoRunId = new Map();
+  for (const item of visibleWorkItems) {
+    for (const binding of item.executionBindings ?? []) {
+      if (binding.kind === "auto_run") workItemByAutoRunId.set(binding.targetId, item.id);
+    }
+  }
+  const visibleWorkItemAlerts = (state.alertOutbox ?? []).flatMap((row) => {
+    const data = row.alert?.data ?? {};
+    const localIssueId = workItemIds.has(data.localIssueId)
+      ? data.localIssueId
+      : workItemByAutoRunId.get(data.autoRunId) ?? null;
+    const teamAlert = teamId != null && data.teamId === teamId;
+    if (!localIssueId && !teamAlert) return [];
+    return [{ localIssueId, status: row.status, attempts: row.attempts, lastError: row.lastError, createdAt: row.createdAt, sentAt: row.sentAt }];
+  });
+  const workItemAlertSummary = {
+    queued: visibleWorkItemAlerts.filter((row) => row.status === "queued").length,
+    failed: visibleWorkItemAlerts.filter((row) => row.status === "failed").length,
+    sent: visibleWorkItemAlerts.filter((row) => row.status === "sent").length,
+    skipped: visibleWorkItemAlerts.filter((row) => row.status === "skipped").length,
+    byLocalIssue: visibleWorkItemAlerts.filter((row) => row.localIssueId).slice(0, 100),
+  };
   // #1152: their durable lifecycle history, scoped the same way.
   const issueClaimEvents = byProject(state.issueClaimEvents ?? []);
   const autoRunsByInvocationId = groupRowsByKey(
@@ -391,6 +433,21 @@ export function buildPublicState({
     .filter(Boolean)
     .filter((device) => teamId == null || userTeam.get(device.ownerUserId) === teamId)
     .map((device) => publicDeviceReadinessView(device));
+  const visibleDevice = devices.find((device) => device.id === state.device?.id) ?? devices[0] ?? null;
+  const guidedSetupRun = (state.guidedSetupRuns ?? []).find((run) =>
+    (teamId == null || (run.ownerTeamId ?? LOCAL_TEAM_ID) === teamId)
+    && (!actor?.userId || run.ownerUserId === actor.userId)) ?? null;
+  const guidedSetup = deriveGuidedReadiness({
+    device: visibleDevice,
+    projects,
+    projectTargets: byProject(state.projectTargets),
+    agents: state.agents ?? [],
+    applications: applicationsWithSchedules,
+    applicationInstallRuns: (state.applicationInstallRuns ?? []).filter((run) =>
+      (teamId == null || (run.ownerTeamId ?? LOCAL_TEAM_ID) === teamId)
+      && (!run.projectId || projectVisible(run.projectId))),
+    run: guidedSetupRun,
+  });
 
   return {
     namespace,
@@ -398,11 +455,15 @@ export function buildPublicState({
     defaults: {
       cloneParentDir: defaultProjectPath,
     },
-    device: devices.find((device) => device.id === state.device?.id) ?? devices[0] ?? null,
+    device: visibleDevice,
     devices,
+    guidedSetup,
     // Never expose password hashes to any client.
     users: (state.users ?? []).map(({ passwordHash, ...user }) => user),
-    teams: state.teams ?? [],
+    teams: (state.teams ?? []).map(({ alertWebhookUrl, ...team }) => ({
+      ...team,
+      alertWebhookConfigured: Boolean(alertWebhookUrl),
+    })),
     projects,
     applications: applicationsWithSchedules,
     applicationRecoveryActions,
@@ -431,6 +492,8 @@ export function buildPublicState({
     dispatchAssignments: byProject(state.dispatchAssignments ?? []),
     issueClaims,
     issueClaimEvents,
+    workItemSummary,
+    workItemAlertSummary,
     agent: defaultAgent(),
     agents: state.agents,
     invocations,

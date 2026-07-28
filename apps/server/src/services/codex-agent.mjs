@@ -103,7 +103,7 @@ export const CODEX_EXEC_TOOL_CONTRACT = {
       // worktree id is required, not optional as it is for review.
       worktreeId: { type: "string" },
       task: { type: "string", maxLength: 4000 },
-      approvalMode: { enum: ["ask", "auto"] },
+      approvalMode: { enum: ["ask", "auto", "full"] },
     },
   },
   outputSchema: {

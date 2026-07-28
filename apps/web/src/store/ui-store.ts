@@ -8,14 +8,25 @@ import {
   type SkinId,
   type SkinMode,
 } from "@/lib/skins";
+import {
+  DEFAULT_LOCALE,
+  detectLocale,
+  isSupportedLocale,
+  LOCALE_STORAGE_KEY,
+  normalizeLocale,
+  type SupportedLocale,
+} from "@/lib/i18n/locale";
 
 export type SectionKey =
   | "dashboard"
+  | "me"
   | "workBoard"
   | "workspace"
+  | "documents"
   | "canvas"
   | "compare"
   | "projects"
+  | "planning"
   | "task"
   | "autoRuns"
   | "approvals"
@@ -34,7 +45,8 @@ export type SectionKey =
   | "applications"
   | "channels"
   | "economics"
-  | "audit";
+  | "audit"
+  | "settings";
 
 export interface ApplicationRunSelection {
   applicationId: string;
@@ -42,12 +54,39 @@ export interface ApplicationRunSelection {
   invocationId: string;
 }
 
+export interface PendingLocalDocumentRegistration {
+  directory: string;
+  documentName: string;
+}
+
+export type PlanningProjectView = "list" | "board" | "roadmap" | "insights" | "executions";
+export type WorkItemSection = "overview" | "process" | "assets" | "verification" | "trace";
+export interface PlanningProjectFilters {
+  status: string;
+  priority: string;
+  milestone: string;
+  due: "all" | "overdue" | "upcoming" | "month" | "quarter" | "unscheduled";
+}
+export const DEFAULT_PLANNING_PROJECT_FILTERS: PlanningProjectFilters = {
+  status: "all",
+  priority: "all",
+  milestone: "",
+  due: "all",
+};
+
 interface UiState {
   section: SectionKey;
+  /** Entry/context page to restore after a temporary Settings or Trace visit. */
+  surfaceReturnSection: SectionKey | null;
   selectedAgentId: string | null;
   selectedInvocationId: string | null;
   selectedArtifactId: string | null;
   selectedProjectId: string | null;
+  selectedWorkItemId: string | null;
+  selectedWorkItemSection: WorkItemSection;
+  selectedPlanningProjectId: string | null;
+  planningProjectView: PlanningProjectView;
+  planningProjectFilters: PlanningProjectFilters;
   selectedWorktreeId: string | null;
   selectedAgentSkillId: string | null;
   selectedCanvasSceneId: string | null;
@@ -60,18 +99,29 @@ interface UiState {
   resumeFromInvocationId: string | null;
   /** Transient: the project-relative Office document the workspace preview is showing (#1347). */
   officecliPreviewPath: string | null;
+  /** Transient handoff from Documents to local project registration. */
+  pendingLocalDocumentRegistration: PendingLocalDocumentRegistration | null;
   /** Nav groups the operator has collapsed; expert groups start here so the rail isn't a wall of 22 (#928). */
   collapsedNavGroups: string[];
   /** Active visual skin + light/dark mode; applied to <html> by useSkinSync. */
   skin: SkinId;
   mode: SkinMode;
+  /** Product presentation language; protocol values and user content stay unchanged. */
+  locale: SupportedLocale;
   setSkin: (skin: SkinId) => void;
   setMode: (mode: SkinMode) => void;
+  setLocale: (locale: SupportedLocale) => void;
   setSection: (section: SectionKey) => void;
+  setSurfaceReturnSection: (section: SectionKey | null) => void;
   setSelectedAgentId: (id: string | null) => void;
   setSelectedInvocationId: (id: string | null) => void;
   setSelectedArtifactId: (id: string | null) => void;
   setSelectedProjectId: (id: string | null) => void;
+  setSelectedWorkItemId: (id: string | null) => void;
+  setSelectedWorkItemSection: (section: WorkItemSection) => void;
+  setSelectedPlanningProjectId: (id: string | null) => void;
+  setPlanningProjectView: (view: PlanningProjectView) => void;
+  setPlanningProjectFilters: (filters: PlanningProjectFilters) => void;
   setSelectedWorktreeId: (id: string | null) => void;
   setSelectedAgentSkillId: (id: string | null) => void;
   setSelectedCanvasSceneId: (id: string | null) => void;
@@ -82,26 +132,31 @@ interface UiState {
   setSelectedAutomationId: (id: string | null) => void;
   setResumeFromInvocationId: (id: string | null) => void;
   setOfficecliPreviewPath: (path: string | null) => void;
+  setPendingLocalDocumentRegistration: (value: PendingLocalDocumentRegistration | null) => void;
   toggleNavGroup: (group: string) => void;
 }
 
-/** Expert groups collapsed by default — Work/Run/Oversee stay open (#928). */
-export const DEFAULT_COLLAPSED_NAV_GROUPS = ["configure", "ledgers"];
+/** Ordinary Entry stays open; management and trace remain available on demand. */
+export const DEFAULT_COLLAPSED_NAV_GROUPS = ["settings", "trace"];
 
 /**
  * localStorage key for the persisted UI store. The index.html no-flash boot
  * script reads the same key before React mounts; boot-skin-script.test.mjs pins
  * them together so the two can't drift (#1360).
  */
-export const UI_STORE_PERSIST_KEY = "myagenttool-ui";
+export const UI_STORE_PERSIST_KEY = LOCALE_STORAGE_KEY;
 
 export const SECTION_KEYS: SectionKey[] = [
+  "settings",
   "dashboard",
+  "me",
   "workBoard",
   "workspace",
+  "documents",
   "canvas",
   "compare",
   "projects",
+  "planning",
   "task",
   "autoRuns",
   "approvals",
@@ -131,9 +186,18 @@ export interface UrlNavigationState {
   selectedEvidenceId?: string | null;
   /** The schedule the operator is looking at — survives a deep link and a refresh (#849). */
   selectedAutomationId?: string | null;
+  selectedPlanningProjectId?: string | null;
+  selectedWorkItemId?: string | null;
+  selectedWorkItemSection?: WorkItemSection;
+  planningProjectView?: PlanningProjectView;
+  planningProjectFilters?: PlanningProjectFilters;
 }
 
-const NAVIGATION_SEARCH_KEYS = ["section", "invocation", "application", "routine", "run", "evidence", "automation"] as const;
+const NAVIGATION_SEARCH_KEYS = [
+  "section", "invocation", "application", "routine", "run", "evidence", "automation",
+  "planningProject", "planningView", "planningStatus", "planningPriority", "planningMilestone", "planningDue",
+  "task", "taskView",
+] as const;
 
 function stringParam(params: URLSearchParams, key: string): string | null {
   const value = params.get(key)?.trim();
@@ -156,6 +220,11 @@ export function navigationFromSearch(search: string): UrlNavigationState {
   const runInvocationId = stringParam(params, "run");
   const evidenceId = stringParam(params, "evidence");
   const automationId = stringParam(params, "automation");
+  const planningProjectId = stringParam(params, "planningProject");
+  const planningViewParam = stringParam(params, "planningView");
+  const planningDueParam = stringParam(params, "planningDue");
+  const workItemId = stringParam(params, "task");
+  const workItemSectionParam = stringParam(params, "taskView");
   const navigation: UrlNavigationState = {};
   if (section) navigation.section = section;
   navigation.selectedInvocationId = invocationId;
@@ -165,6 +234,26 @@ export function navigationFromSearch(search: string): UrlNavigationState {
     : null;
   navigation.selectedEvidenceId = evidenceId;
   navigation.selectedAutomationId = automationId;
+  if (section === "task" || params.has("task") || params.has("taskView")) {
+    navigation.selectedWorkItemId = workItemId;
+    navigation.selectedWorkItemSection = ["process", "assets", "verification", "trace"].includes(workItemSectionParam ?? "")
+      ? workItemSectionParam as WorkItemSection
+      : "overview";
+  }
+  if (section === "planning" || NAVIGATION_SEARCH_KEYS.some((key) => key.startsWith("planning") && params.has(key))) {
+    navigation.selectedPlanningProjectId = planningProjectId;
+    navigation.planningProjectView = ["board", "roadmap", "insights", "executions"].includes(planningViewParam ?? "")
+      ? planningViewParam as PlanningProjectView
+      : "list";
+    navigation.planningProjectFilters = {
+      status: stringParam(params, "planningStatus") ?? "all",
+      priority: stringParam(params, "planningPriority") ?? "all",
+      milestone: stringParam(params, "planningMilestone") ?? "",
+      due: planningDueParam === "overdue" || planningDueParam === "upcoming" || planningDueParam === "unscheduled"
+        ? planningDueParam
+        : "all",
+    };
+  }
   return navigation;
 }
 
@@ -179,6 +268,11 @@ function applyUrlNavigation<T extends Partial<UiState>>(state: T, navigation: Ur
   if (navigation.selectedApplicationRun !== undefined) state.selectedApplicationRun = navigation.selectedApplicationRun;
   if (navigation.selectedEvidenceId !== undefined) state.selectedEvidenceId = navigation.selectedEvidenceId;
   if (navigation.selectedAutomationId !== undefined) state.selectedAutomationId = navigation.selectedAutomationId;
+  if (navigation.selectedWorkItemId !== undefined) state.selectedWorkItemId = navigation.selectedWorkItemId;
+  if (navigation.selectedWorkItemSection !== undefined) state.selectedWorkItemSection = navigation.selectedWorkItemSection;
+  if (navigation.selectedPlanningProjectId !== undefined) state.selectedPlanningProjectId = navigation.selectedPlanningProjectId;
+  if (navigation.planningProjectView !== undefined) state.planningProjectView = navigation.planningProjectView;
+  if (navigation.planningProjectFilters !== undefined) state.planningProjectFilters = navigation.planningProjectFilters;
   return state;
 }
 
@@ -193,7 +287,13 @@ export function searchFromNavigationState(search: string, state: Pick<UiState,
   | "selectedApplicationRun"
   | "selectedEvidenceId"
   | "selectedAutomationId"
->): string {
+> & Partial<Pick<UiState,
+  "selectedPlanningProjectId"
+  | "planningProjectView"
+  | "planningProjectFilters"
+  | "selectedWorkItemId"
+  | "selectedWorkItemSection"
+>>): string {
   const params = new URLSearchParams(search);
   for (const key of NAVIGATION_SEARCH_KEYS) params.delete(key);
   params.set("section", state.section);
@@ -206,6 +306,20 @@ export function searchFromNavigationState(search: string, state: Pick<UiState,
   }
   if (state.selectedEvidenceId) params.set("evidence", state.selectedEvidenceId);
   if (state.selectedAutomationId) params.set("automation", state.selectedAutomationId);
+  if (state.section === "task" && state.selectedWorkItemId) {
+    params.set("task", state.selectedWorkItemId);
+    const workItemSection = state.selectedWorkItemSection ?? "overview";
+    if (workItemSection !== "overview") params.set("taskView", workItemSection);
+  }
+  if (state.section === "planning") {
+    if (state.selectedPlanningProjectId) params.set("planningProject", state.selectedPlanningProjectId);
+    params.set("planningView", state.planningProjectView ?? "list");
+    const filters = state.planningProjectFilters ?? DEFAULT_PLANNING_PROJECT_FILTERS;
+    if (filters.status !== "all") params.set("planningStatus", filters.status);
+    if (filters.priority !== "all") params.set("planningPriority", filters.priority);
+    if (filters.milestone) params.set("planningMilestone", filters.milestone);
+    if (filters.due !== "all") params.set("planningDue", filters.due);
+  }
   const next = params.toString();
   return next ? `?${next}` : "";
 }
@@ -222,10 +336,16 @@ export const useUiStore = create<UiState>()(
       const initialNavigation = navigationFromCurrentUrl();
       return {
         section: initialNavigation.section ?? "dashboard",
+        surfaceReturnSection: null,
         selectedAgentId: null,
         selectedInvocationId: initialNavigation.selectedInvocationId ?? null,
         selectedArtifactId: null,
         selectedProjectId: null,
+        selectedWorkItemId: initialNavigation.selectedWorkItemId ?? null,
+        selectedWorkItemSection: initialNavigation.selectedWorkItemSection ?? "overview",
+        selectedPlanningProjectId: initialNavigation.selectedPlanningProjectId ?? null,
+        planningProjectView: initialNavigation.planningProjectView ?? "list",
+        planningProjectFilters: initialNavigation.planningProjectFilters ?? { ...DEFAULT_PLANNING_PROJECT_FILTERS },
         selectedWorktreeId: null,
         selectedAgentSkillId: null,
         selectedCanvasSceneId: null,
@@ -236,16 +356,28 @@ export const useUiStore = create<UiState>()(
         selectedAutomationId: initialNavigation.selectedAutomationId ?? null,
         resumeFromInvocationId: null,
         officecliPreviewPath: null,
+        pendingLocalDocumentRegistration: null,
         collapsedNavGroups: [...DEFAULT_COLLAPSED_NAV_GROUPS],
         skin: DEFAULT_SKIN,
         mode: DEFAULT_MODE,
+        locale: detectLocale(),
         setSkin: (skin) => set({ skin }),
         setMode: (mode) => set({ mode }),
+        setLocale: (locale) => set({ locale: normalizeLocale(locale) ?? DEFAULT_LOCALE }),
         setSection: (section) => set({ section }),
+        setSurfaceReturnSection: (surfaceReturnSection) => set({ surfaceReturnSection }),
         setSelectedAgentId: (selectedAgentId) => set({ selectedAgentId }),
         setSelectedInvocationId: (selectedInvocationId) => set({ selectedInvocationId }),
         setSelectedArtifactId: (selectedArtifactId) => set({ selectedArtifactId }),
         setSelectedProjectId: (selectedProjectId) => set({ selectedProjectId }),
+        setSelectedWorkItemId: (selectedWorkItemId) => set({
+          selectedWorkItemId,
+          selectedWorkItemSection: "overview",
+        }),
+        setSelectedWorkItemSection: (selectedWorkItemSection) => set({ selectedWorkItemSection }),
+        setSelectedPlanningProjectId: (selectedPlanningProjectId) => set({ selectedPlanningProjectId }),
+        setPlanningProjectView: (planningProjectView) => set({ planningProjectView }),
+        setPlanningProjectFilters: (planningProjectFilters) => set({ planningProjectFilters }),
         setSelectedWorktreeId: (selectedWorktreeId) => set({ selectedWorktreeId }),
         setSelectedAgentSkillId: (selectedAgentSkillId) => set({ selectedAgentSkillId }),
         setSelectedCanvasSceneId: (selectedCanvasSceneId) => set({ selectedCanvasSceneId }),
@@ -256,6 +388,7 @@ export const useUiStore = create<UiState>()(
         setSelectedAutomationId: (selectedAutomationId) => set({ selectedAutomationId }),
         setResumeFromInvocationId: (resumeFromInvocationId) => set({ resumeFromInvocationId }),
         setOfficecliPreviewPath: (officecliPreviewPath) => set({ officecliPreviewPath }),
+        setPendingLocalDocumentRegistration: (pendingLocalDocumentRegistration) => set({ pendingLocalDocumentRegistration }),
         toggleNavGroup: (group) =>
           set((state) => ({
             collapsedNavGroups: state.collapsedNavGroups.includes(group)
@@ -275,6 +408,11 @@ export const useUiStore = create<UiState>()(
         selectedInvocationId: state.selectedInvocationId,
         selectedArtifactId: state.selectedArtifactId,
         selectedProjectId: state.selectedProjectId,
+        selectedWorkItemId: state.selectedWorkItemId,
+        selectedWorkItemSection: state.selectedWorkItemSection,
+        selectedPlanningProjectId: state.selectedPlanningProjectId,
+        planningProjectView: state.planningProjectView,
+        planningProjectFilters: state.planningProjectFilters,
         selectedWorktreeId: state.selectedWorktreeId,
         selectedAgentSkillId: state.selectedAgentSkillId,
         selectedCanvasSceneId: state.selectedCanvasSceneId,
@@ -285,12 +423,19 @@ export const useUiStore = create<UiState>()(
         collapsedNavGroups: state.collapsedNavGroups,
         skin: state.skin,
         mode: state.mode,
+        locale: state.locale,
       }),
       merge: (persisted, current) => {
         const saved = (persisted ?? {}) as Partial<UiState>;
         const merged = { ...current, ...saved };
-        // A pre-#928 persisted blob has no collapsedNavGroups; fall back to the default.
-        if (!Array.isArray(merged.collapsedNavGroups)) {
+        // The information architecture changed from workflow groups to three
+        // stable user surfaces. Discard stale group keys without disturbing the
+        // user's current page or selections.
+        const validNavGroups = new Set(["entry", "settings", "trace"]);
+        if (
+          !Array.isArray(merged.collapsedNavGroups)
+          || merged.collapsedNavGroups.some((group) => !validNavGroups.has(group))
+        ) {
           merged.collapsedNavGroups = [...DEFAULT_COLLAPSED_NAV_GROUPS];
         }
         // Guard against a persisted section that no longer exists after a code change.
@@ -300,6 +445,18 @@ export const useUiStore = create<UiState>()(
         // A skin/mode removed in a later release falls back to the default.
         if (!isSkinId(merged.skin)) merged.skin = DEFAULT_SKIN;
         if (!isSkinMode(merged.mode)) merged.mode = DEFAULT_MODE;
+        // Old blobs have no locale and keep the system-detected current value;
+        // stale/unsupported saved values never escape into i18next or the DOM.
+        if (!isSupportedLocale(saved.locale)) merged.locale = current.locale;
+        if (!["list", "board", "roadmap", "insights", "executions"].includes(merged.planningProjectView)) {
+          merged.planningProjectView = "list";
+        }
+        if (!["overview", "process", "assets", "verification", "trace"].includes(merged.selectedWorkItemSection)) {
+          merged.selectedWorkItemSection = "overview";
+        }
+        if (!merged.planningProjectFilters || typeof merged.planningProjectFilters !== "object") {
+          merged.planningProjectFilters = { ...DEFAULT_PLANNING_PROJECT_FILTERS };
+        }
         // Explicit deep-link params override restored navigation selections.
         applyUrlNavigation(merged, navigationFromCurrentUrl());
         return merged;

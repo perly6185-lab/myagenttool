@@ -22,13 +22,12 @@ test("codexResumeArgs resumes the resolved session BY ID, not --last", () => {
   assert.ok(!args.includes("--last"));
 });
 
-test("codexResumeArgs falls back to --last when there is no resumable id", () => {
-  assert.equal(codexResumeArgs({}).at(2), "--last");
-  assert.equal(codexResumeArgs({ codexResumeSessionId: null }).at(2), "--last");
+test("codexResumeArgs refuses an implicit global resume when there is no exact id", () => {
+  assert.equal(codexResumeArgs({}), null);
+  assert.equal(codexResumeArgs({ codexResumeSessionId: null }), null);
 });
 
-test("codexResumeArgs rejects a hostile id and falls back to --last (no flag injection)", () => {
+test("codexResumeArgs rejects a hostile id without falling back to --last", () => {
   const args = codexResumeArgs({ codexResumeSessionId: "--dangerously-bypass-approvals-and-sandbox" });
-  assert.equal(args.at(2), "--last");
-  assert.ok(!args.includes("--dangerously-bypass-approvals-and-sandbox"));
+  assert.equal(args, null);
 });

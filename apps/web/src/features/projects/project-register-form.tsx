@@ -6,6 +6,7 @@ import { useAsyncAction, api } from "@/data/use-console-actions";
 import { useConsoleState } from "@/data/use-console-state";
 import { useUiStore } from "@/store/ui-store";
 import { cn } from "@/lib/cn";
+import { useAppTranslation } from "@/lib/i18n/use-app-translation";
 
 export const SWATCHES = ["#6366f1", "#f59e0b", "#10b981", "#ef4444", "#0ea5e9", "#a855f7"];
 type Mode = "clone" | "local" | "empty";
@@ -14,9 +15,13 @@ type Mode = "clone" | "local" | "empty";
 // the Projects page card and the "+" modal in the nav rail. Calls onDone after
 // a successful create (used to close the modal).
 export function ProjectRegisterForm({ onDone }: { onDone?: () => void }) {
+  const { t } = useAppTranslation();
   const { execute, pending, error } = useAsyncAction();
   const { data: state } = useConsoleState();
   const setSelectedProjectId = useUiStore((s) => s.setSelectedProjectId);
+  const setSection = useUiStore((s) => s.setSection);
+  const pendingLocalDocumentRegistration = useUiStore((s) => s.pendingLocalDocumentRegistration);
+  const setPendingLocalDocumentRegistration = useUiStore((s) => s.setPendingLocalDocumentRegistration);
   const defaultCloneParent = state?.defaults?.cloneParentDir ?? "";
 
   const [mode, setMode] = useState<Mode>("clone");
@@ -33,11 +38,22 @@ export function ProjectRegisterForm({ onDone }: { onDone?: () => void }) {
     if (defaultCloneParent) setParentDir((cur) => cur || defaultCloneParent);
   }, [defaultCloneParent]);
 
+  useEffect(() => {
+    if (!pendingLocalDocumentRegistration) return;
+    setMode("local");
+    setRepoPath(pendingLocalDocumentRegistration.directory);
+  }, [pendingLocalDocumentRegistration]);
+
   function afterCreate(created: { project?: { id: string } }) {
     if (created.project?.id) setSelectedProjectId(created.project.id);
     setName("");
     setRepoUrl("");
     setRepoPath("");
+    if (created.project?.id && pendingLocalDocumentRegistration) {
+      window.history.replaceState(window.history.state, "", localDocumentReturnUrl(window.location.href, created.project.id, pendingLocalDocumentRegistration.documentName));
+      setPendingLocalDocumentRegistration(null);
+      setSection("documents");
+    }
     onDone?.();
   }
 
@@ -80,9 +96,9 @@ export function ProjectRegisterForm({ onDone }: { onDone?: () => void }) {
       <div className="flex gap-1 rounded-lg bg-muted p-1">
         {(
           [
-            ["clone", "Clone URL"],
-            ["local", "Local path"],
-            ["empty", "Empty"],
+            ["clone", t("projectsRegister.cloneUrl")],
+            ["local", t("projectsRegister.localPath")],
+            ["empty", t("projectsRegister.empty")],
           ] as [Mode, string][]
         ).map(([key, label]) => (
           <button
@@ -101,25 +117,25 @@ export function ProjectRegisterForm({ onDone }: { onDone?: () => void }) {
 
       {mode === "clone" ? (
         <>
-          <Field label="Git URL">
+          <Field label={t("projectsRegister.gitUrl")}>
             <Input value={repoUrl} placeholder="https://github.com/owner/repo.git" onChange={(e) => setRepoUrl(e.target.value)} />
           </Field>
-          <Field label="Parent folder">
+          <Field label={t("projectsRegister.parentFolder")}>
             <Input value={parentDir} placeholder={defaultCloneParent || "/Users/you/projects"} onChange={(e) => setParentDir(e.target.value)} />
           </Field>
         </>
       ) : null}
 
       {mode === "local" ? (
-        <Field label="Repository path">
+        <Field label={t("projectsRegister.repositoryPath")}>
           <Input value={repoPath} placeholder="/Users/you/projects/repo" onChange={(e) => setRepoPath(e.target.value)} />
         </Field>
       ) : null}
 
-      <Field label={mode === "empty" ? "Name" : "Name (optional — derived from repo)"}>
+      <Field label={t(mode === "empty" ? "projectsRegister.name" : "projectsRegister.optionalName")}>
         <Input
           value={name}
-          placeholder="e.g. Migrations"
+          placeholder={t("projectsRegister.namePlaceholder")}
           onChange={(e) => setName(e.target.value)}
           onKeyDown={(e) => {
             if (e.key === "Enter") submit();
@@ -127,13 +143,13 @@ export function ProjectRegisterForm({ onDone }: { onDone?: () => void }) {
         />
       </Field>
 
-      <Field label="Color">
+      <Field label={t("projectsRegister.color")}>
         <div className="flex flex-wrap gap-2">
           {SWATCHES.map((c) => (
             <button
               key={c}
               type="button"
-              aria-label={`Color ${c}`}
+              aria-label={t("projectsRegister.colorValue", { color: c })}
               onClick={() => setColor(c)}
               className="h-7 w-7 rounded-full border-2 transition"
               style={{ backgroundColor: c, borderColor: color === c ? "var(--foreground)" : "transparent" }}
@@ -143,9 +159,18 @@ export function ProjectRegisterForm({ onDone }: { onDone?: () => void }) {
       </Field>
 
       <Button onClick={submit} disabled={pending}>
-        {mode === "clone" ? "Clone…" : mode === "local" ? "Link repository" : "Create project"}
+        {t(mode === "clone" ? "projectsRegister.clone" : mode === "local" ? "projectsRegister.link" : "projectsRegister.create")}
       </Button>
       {error ? <p className="text-xs text-destructive">{error}</p> : null}
     </div>
   );
+}
+
+export function localDocumentReturnUrl(currentUrl: string, projectId: string, documentName: string): string {
+  const url = new URL(currentUrl);
+  url.searchParams.set("section", "documents");
+  url.searchParams.set("project", projectId);
+  url.searchParams.set("document", documentName);
+  url.searchParams.delete("worktree");
+  return `${url.pathname}${url.search}${url.hash}`;
 }

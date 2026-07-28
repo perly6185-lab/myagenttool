@@ -10,6 +10,11 @@
 
 process.env.MYAGENT_REQUIRE_AUTH = "1";
 process.env.MYAGENTTOOL_STATE_DISABLED = "1";
+// This suite exercises the pre-ADR bearer compatibility lane. New browser
+// sessions use HttpOnly cookies; the legacy lane must be opted into explicitly.
+process.env.MYAGENT_LOCAL_MODE = "1";
+process.env.MYAGENT_LEGACY_LOCAL_LOGIN = "1";
+process.env.MYAGENT_LEGACY_BEARER_AUTH = "1";
 
 import assert from "node:assert/strict";
 import { mkdtempSync } from "node:fs";
@@ -73,6 +78,14 @@ test("provision two tenants through the real APIs (team, user, multi-user login)
   const local = await call("/api/session", { method: "POST", body: {} });
   assert.equal(local.status, 200);
 
+  const invalidWebhookTeam = await call("/api/teams", {
+    token: local.body.token,
+    method: "POST",
+    body: { name: "Invalid target", alertWebhookUrl: "file:///tmp/not-a-webhook" },
+  });
+  assert.equal(invalidWebhookTeam.status, 400);
+  assert.equal(invalidWebhookTeam.body.error, "invalid_alert_webhook_url");
+
   const teamA = await call("/api/teams", { token: local.body.token, method: "POST", body: { name: "Team A" } });
   const teamB = await call("/api/teams", { token: local.body.token, method: "POST", body: { name: "Team B" } });
   assert.equal(teamA.status, 201);
@@ -93,9 +106,9 @@ test("provision two tenants through the real APIs (team, user, multi-user login)
   ctx.tokB = loginB.body.token;
 });
 
-test("login with an unknown user is rejected (404)", async () => {
+test("login with an unknown user is rejected without confirming existence", async () => {
   const r = await call("/api/session", { method: "POST", body: { userId: "usr_nope" } });
-  assert.equal(r.status, 404);
+  assert.equal(r.status, 401);
 });
 
 test("credentialed login: a password-protected user needs the right password", async () => {
@@ -172,8 +185,23 @@ test("provisioning RBAC: a non-admin (operator) cannot create teams or users", a
   assert.equal(team.status, 403, "operator cannot create a team");
   const user = await call("/api/users", { token: opTok, method: "POST", body: { name: "X", teamId: ctx.teamAId } });
   assert.equal(user.status, 403, "operator cannot create a user");
+  const globalConfig = await call("/api/auto-run-settings", {
+    token: opTok,
+    method: "PUT",
+    body: { autonomyKillSwitch: true, alertWebhookUrl: "https://user:secret@hooks.example.test/global" },
+  });
+  assert.equal(globalConfig.status, 403, "operator cannot mutate global Auto-run safety settings");
 
   // The seeded local owner still can (bootstrap path).
   const ok = await call("/api/teams", { token: local.body.token, method: "POST", body: { name: "Owned" } });
   assert.equal(ok.status, 201);
+  const ownerConfig = await call("/api/auto-run-settings", {
+    token: local.body.token,
+    method: "PUT",
+    body: { alertWebhookUrl: "https://user:secret@hooks.example.test/global" },
+  });
+  assert.equal(ownerConfig.status, 200);
+  assert.equal(ownerConfig.body.config.alertWebhookConfigured, true);
+  assert.equal("alertWebhookUrl" in ownerConfig.body.config.settings, false);
+  assert.equal(JSON.stringify(ownerConfig.body).includes("user:secret@hooks.example.test"), false);
 });

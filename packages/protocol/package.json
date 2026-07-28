@@ -19,9 +19,17 @@
       "types": "./src/channel.ts",
       "default": "./src/channel.mjs"
     },
+    "./identity": {
+      "types": "./src/identity.ts",
+      "default": "./src/identity.mjs"
+    },
     "./canvas": {
       "types": "./src/canvas.ts",
       "default": "./src/canvas.mjs"
+    },
+    "./codex-permissions": {
+      "types": "./src/codex-permissions.ts",
+      "default": "./src/codex-permissions.mjs"
     }
   },
   "scripts": {

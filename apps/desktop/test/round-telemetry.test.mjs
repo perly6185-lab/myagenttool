@@ -92,6 +92,7 @@ test("non-turn Claude events produce no rounds", () => {
 
 test("Codex accumulates item content, then turn.completed emits one round", () => {
   const state = newRoundState();
+  assert.deepEqual(codexRoundEmits(state, { type: "turn.started" }, T0), []);
   assert.deepEqual(
     codexRoundEmits(state, { item: { type: "agent_message", text: "made the change" } }, T0),
     [],
@@ -103,7 +104,7 @@ test("Codex accumulates item content, then turn.completed emits one round", () =
   const emits = codexRoundEmits(
     state,
     { type: "turn.completed", usage: { input_tokens: 30, cached_input_tokens: 4, output_tokens: 12, reasoning_output_tokens: 7 } },
-    T0,
+    T5,
   );
   const done = completed(emits).data;
   assert.equal(done.roundIndex, 0);
@@ -115,9 +116,13 @@ test("Codex accumulates item content, then turn.completed emits one round", () =
   );
   assert.deepEqual(done.filesRead, ["/wt/x.ts"]);
   assert.equal(done.responseDigest, "made the change");
+  assert.equal(done.startedAt, T0);
+  assert.equal(done.durationMs, 5000);
+  assert.equal(state.touchedUserFiles, true);
   // Pending state is cleared for the next turn.
   assert.deepEqual(state.pendingFiles, []);
   assert.equal(state.pendingMessage, null);
+  assert.equal(state.currentStartedAt, null);
 });
 
 test("Codex turn.failed ends a failed round", () => {

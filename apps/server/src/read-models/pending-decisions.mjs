@@ -56,6 +56,7 @@ export function pendingDecisions({
   const out = [];
   const invOf = (id) => (id != null ? invocationsById.get(id) ?? null : null);
   const recoveryActionsById = new Map(applicationRecoveryActions.map((request) => [request?.id, request]));
+  const autoRunsById = new Map(autoRuns.map((run) => [run?.id, run]));
 
   // 1. Invocation approvals — a high/critical-risk (or explicitly gated) run parked
   // for approve/deny. Binary; actionable inline.
@@ -74,6 +75,7 @@ export function pendingDecisions({
       createdAt: a.createdAt ?? null,
       section: "invocations",
       targetId: a.invocationId ?? null,
+      context: a.executionContext ?? null,
       // S6 (#1090): a channel-originated approval carries its conversation
       // context so the console row and the in-channel /approve are visibly the
       // SAME pending decision (one approval system, ADR 0012 rule 5).
@@ -133,8 +135,20 @@ export function pendingDecisions({
   // inspector — so they get their own kind, context, and deep link, not the generic
   // "Codex tool permission" row.
   for (const q of codexApprovalBrokerRequests) {
-    if (q?.status !== "pending") continue;
     const inv = invOf(q.invocationId);
+    const linkedAutoRunId = inv?.options?.metadata?.autoRunId ?? null;
+    const linkedAutoRun = (
+      (linkedAutoRunId ? autoRunsById.get(linkedAutoRunId) : null)
+      ?? autoRuns.find((run) => run?.invocationId === q?.invocationId)
+      ?? null
+    );
+    const lateRecoveryStatus = q?.lateApprovalRecovery?.status ?? null;
+    const recoverableTimedOut = q?.status === "timed_out"
+      && q?.source !== "application_recovery_action"
+      && linkedAutoRun?.invocationId === q?.invocationId
+      && ["running", "awaiting_approval", "failed", "blocked"].includes(linkedAutoRun?.status)
+      && !["resumed", "unavailable"].includes(lateRecoveryStatus);
+    if (q?.status !== "pending" && !recoverableTimedOut) continue;
     if (q.source === "application_recovery_action") {
       const action = recoveryActionsById.get(q.applicationRecoveryActionRequestId) ?? null;
       const app = action?.applicationId ? applicationsById.get(action.applicationId) ?? null : null;
@@ -165,13 +179,25 @@ export function pendingDecisions({
     out.push({
       id: `codex:${q.id}`,
       kind: "codex_broker",
-      title: "Codex tool permission",
-      subtitle: truncate((typeof q.summary === "string" ? q.summary : null) ?? q.toolName ?? q.command ?? inv?.task ?? "Approve or deny a tool call"),
+      title: recoverableTimedOut ? "Codex approval expired — resume available" : "Codex tool permission",
+      subtitle: truncate(
+        (typeof q.summary === "string" ? q.summary : null)
+        ?? q.toolName
+        ?? q.command
+        ?? inv?.task
+        ?? (recoverableTimedOut ? "Approve to resume the linked task" : "Approve or deny a tool call"),
+      ),
       projectId: inv?.projectId ?? null,
       createdAt: q.createdAt ?? null,
       section: "invocations",
       targetId: q.invocationId ?? null,
-      ref: { requestId: q.id, invocationId: q.invocationId ?? null },
+      ref: {
+        requestId: q.id,
+        invocationId: q.invocationId ?? null,
+        autoRunId: linkedAutoRun?.id ?? undefined,
+        timedOut: recoverableTimedOut,
+        recoveryStatus: lateRecoveryStatus,
+      },
     });
   }
 

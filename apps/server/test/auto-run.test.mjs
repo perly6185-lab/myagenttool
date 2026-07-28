@@ -203,6 +203,8 @@ test("startAutoRun materializes the worktree and starts an issue-seeded invocati
     agentId: "agt_1",
     name: "issue-12-add-the-widget",
     actor: { userId: "usr_x" },
+    executionChainId: "wi_chain_12",
+    autonomyProfile: "high",
   });
 
   // Real worktree on the issue branch, carrying the link.
@@ -217,6 +219,9 @@ test("startAutoRun materializes the worktree and starts an issue-seeded invocati
   assert.match(created.task, /implement the change/, "develop role instructions seeded");
   assert.equal(created.options.metadata.worktreeId, worktree.id);
   assert.equal(created.options.metadata.role, "develop", "decided path seeded as role for skill selection");
+  assert.equal(created.options.metadata.executionChainId, "wi_chain_12");
+  assert.equal(created.options.metadata.autonomyProfile, "high");
+  assert.equal(created.options.timeoutSeconds, 600, "invocation records the effective coding-agent timeout");
   assert.equal(created.agent.id, "agt_1");
   assert.equal(invocation.input.task, created.task, "invocation carries the seeded prompt");
   assert.equal(calls.startInvocationIfAllowed.length, 1, "the run is actually kicked off");
@@ -228,8 +233,92 @@ test("startAutoRun materializes the worktree and starts an issue-seeded invocati
   assert.equal(autoRun.invocationId, "inv_fake_1");
   assert.equal(autoRun.projectId, sourceProjectId);
   assert.equal(autoRun.link.number, 12);
+  assert.equal(autoRun.executionChainId, "wi_chain_12");
+  assert.equal(autoRun.autonomyProfile, "high");
   // #1152: the owning team is stamped at creation, not re-derived per read.
   assert.equal(autoRun.teamId, "team_a");
+});
+
+test("Codex auto-runs use broker auto mode while preserving the normal invocation gate", async () => {
+  const agent = fakeAgent({ adapter: { type: "cli", command: "codex", timeoutSeconds: 600 } });
+  const { svc, calls } = makeAutoRun({ agent });
+  await svc.startAutoRun({
+    projectId: sourceProjectId,
+    link: { type: "issue", number: 1201, title: "Codex task", url: null, state: "open" },
+    agentId: agent.id,
+    name: "issue-1201-codex-task",
+  });
+
+  assert.equal(calls.createInvocation[0].options.approvalMode, "auto");
+  assert.equal(calls.createInvocation[0].options.preApproved, undefined, "auto broker mode does not bypass invocation admission");
+});
+
+test("an explicitly unhealthy agent is blocked before a worktree or invocation is created", async () => {
+  const agent = fakeAgent({
+    adapter: { type: "cli", command: "codex" },
+    health: { status: "unhealthy", message: "Desktop Bridge account is not authenticated." },
+  });
+  const { svc, calls } = makeAutoRun({ agent });
+
+  await assert.rejects(
+    () => svc.startAutoRun({
+      projectId: sourceProjectId,
+      link: { type: "issue", number: 1202, title: "Blocked task", url: null, state: "open" },
+      agentId: agent.id,
+      name: "issue-1202-blocked-task",
+    }),
+    /not authenticated/,
+  );
+  assert.equal(state.worktrees.length, 0);
+  assert.equal(calls.createInvocation.length, 0);
+});
+
+test("routing feedback is role-gated, revision-safe, and idempotent", () => {
+  const { svc, calls } = makeAutoRun();
+  state.autoRuns.push({
+    id: "aur_feedback",
+    invocationId: "inv_feedback",
+    decision: { path: "develop" },
+  });
+  assert.throws(
+    () => svc.recordRoutingOverride("aur_feedback", {
+      actor: { userId: "viewer", role: "viewer" },
+      actualPath: "design",
+      reason: "Design deliverable",
+      expectedRevision: 0,
+    }),
+    (error) => error.status === 403 && error.code === "routing_override_forbidden",
+  );
+  const first = svc.recordRoutingOverride("aur_feedback", {
+    actor: { userId: "operator", role: "operator" },
+    actualPath: "design",
+    reason: "Design deliverable",
+    expectedRevision: 0,
+    idempotencyKey: "feedback-1",
+  });
+  assert.equal(first.routingOverride.revision, 1);
+  assert.equal(first.routingOverride.idempotencyKey, undefined);
+  assert.equal(first.replayed, false);
+  const replay = svc.recordRoutingOverride("aur_feedback", {
+    actor: { userId: "operator", role: "operator" },
+    actualPath: "design",
+    reason: "Design deliverable",
+    expectedRevision: 0,
+    idempotencyKey: "feedback-1",
+  });
+  assert.equal(replay.replayed, true);
+  assert.equal(calls.events.filter((event) => event.type === "auto_run_routing_overridden").length, 1);
+  assert.equal(calls.events.find((event) => event.type === "auto_run_routing_overridden").data.idempotencyKey, undefined);
+  assert.throws(
+    () => svc.recordRoutingOverride("aur_feedback", {
+      actor: { userId: "owner", role: "owner" },
+      actualPath: "clarify",
+      reason: "Needs input",
+      expectedRevision: 0,
+      idempotencyKey: "feedback-2",
+    }),
+    (error) => error.status === 409 && error.currentRevision === 1,
+  );
 });
 
 test("startAutoRun reflects the local-approval gate instead of bypassing it", async () => {
@@ -271,6 +360,28 @@ test("advanceAutoRunForInvocation publishes and opens a PR when the run succeeds
   assert.equal(autoRun.status, "pr_open");
   assert.equal(autoRun.prNumber, 77);
   assert.equal(autoRun.prUrl, "https://github.com/o/r/pull/77");
+});
+
+test("a successful local issue completes on its committed worktree without a remote PR", async () => {
+  const { svc, calls } = makeAutoRun();
+  const { autoRun, invocation, worktree } = await svc.startAutoRun({
+    projectId: sourceProjectId,
+    link: { type: "local_issue", number: 20, title: "Keep it local", url: null, state: "open" },
+    agentId: "agt_1",
+    name: "local-20-keep-it-local",
+  });
+
+  await svc.advanceAutoRunForInvocation({ ...invocation, status: "succeeded" });
+
+  assert.equal(autoRun.status, "done");
+  assert.deepEqual(autoRun.localDelivery, {
+    worktreeId: worktree.id,
+    branchName: worktree.branchName,
+  });
+  assert.equal(calls.commit.length, 1, "the local result is committed before completion");
+  assert.equal(calls.verify.length, 1, "the configured verification gate still runs");
+  assert.equal(calls.publish.length, 0, "local issue completion never pushes a branch");
+  assert.equal(calls.pr.length, 0, "local issue completion never opens a GitHub PR");
 });
 
 test("advanceAutoRunForInvocation marks the auto-run failed when the run fails", async () => {
@@ -734,6 +845,7 @@ test("self-repair: a failing check re-attempts (preApproved), then blocks after 
   assert.equal(autoRun.repairAttempts, 1);
   const repair = calls.createInvocation.at(-1);
   assert.equal(repair.options.preApproved, true, "repair skips the human gate (continuation of an approved run)");
+  assert.equal(repair.options.timeoutSeconds, 600, "repair records the same effective timeout as its adapter");
   assert.match(repair.task, /FAILED the verification check/);
   assert.equal(calls.pr.length, 0);
   // 2nd → attempt 2; 3rd → cap reached → block.
@@ -886,6 +998,25 @@ test("verification gate: an unconfigured gate opens the PR but labels it unverif
   assert.match(calls.pr[0].payload.body, /not run/);
 });
 
+test("verification gate: required verification fails closed when no command is configured", async () => {
+  const { svc, calls } = makeAutoRun();
+  state.autoRunSettings.requireVerification = true;
+  const { autoRun, invocation } = await svc.startAutoRun({
+    projectId: sourceProjectId,
+    link: { type: "issue", number: 321, title: "Required gate", url: null, state: "open" },
+    agentId: "agt_1",
+    name: "issue-321-required-gate",
+  });
+
+  await svc.advanceAutoRunForInvocation({ ...invocation, status: "succeeded" });
+
+  assert.equal(autoRun.status, "blocked");
+  assert.equal(autoRun.verification.verified, false);
+  assert.equal(autoRun.verification.passed, false);
+  assert.match(autoRun.error, /Verification is required/);
+  assert.equal(calls.pr.length, 0);
+});
+
 test("verification gate: a throwing verifier blocks the PR (never fabricates a pass)", async () => {
   const { svc, calls } = makeAutoRun({
     verify: () => {
@@ -995,6 +1126,11 @@ test("retryAutoRun restarts a failed run on its existing worktree (pilot #9)", a
   await svc.advanceAutoRunForInvocation({ ...invocation, status: "succeeded" });
   assert.equal(autoRun.status, "failed", "publish blew up -> failed");
   const worktreesBefore = state.worktrees.length;
+  await assert.rejects(
+    () => svc.retryAutoRun(autoRun.id, { actor: { userId: "usr_x" }, terminalId: "dev_other" }),
+    /different terminal/,
+  );
+  assert.equal(autoRun.status, "failed", "a cross-terminal retry cannot mutate the run");
 
   const { invocation: second } = await svc.retryAutoRun(autoRun.id, { actor: { userId: "usr_x" } });
 
@@ -1004,6 +1140,85 @@ test("retryAutoRun restarts a failed run on its existing worktree (pilot #9)", a
   assert.equal(state.worktrees.length, worktreesBefore, "no new worktree — retry reuses the existing one");
   assert.equal(calls.createInvocation.length, 2);
   assert.match(calls.createInvocation[1].task, /implement the change/, "role prompt rebuilt from the decision");
+  assert.equal(calls.createInvocation[1].options.timeoutSeconds, 600, "stored retry budget matches the coding adapter runtime");
+});
+
+test("execution timeout gets one approved, bounded continuation on the same worktree", async () => {
+  const agent = fakeAgent({ adapter: { type: "cli", timeoutSeconds: 900 } });
+  const { svc, calls } = makeAutoRun({ agent });
+  const { autoRun, invocation } = await svc.startAutoRun({
+    projectId: sourceProjectId,
+    link: { type: "issue", number: 197, title: "Long implementation", url: null, state: "open" },
+    agentId: agent.id,
+    name: "issue-197-timeout-continuation",
+  });
+  state.codexApprovalBrokerRequests = [{
+    id: "cdx_appr_197",
+    invocationId: invocation.id,
+    toolName: "Bash",
+    status: "approved",
+  }];
+
+  await svc.advanceAutoRunForInvocation({
+    ...invocation,
+    status: "timed_out",
+    result: { errorCode: "execution_timeout" },
+  });
+
+  assert.equal(autoRun.status, "running");
+  assert.equal(autoRun.timeoutRecoveryAttempts, 1);
+  assert.equal(calls.createInvocation.length, 2);
+  const continuation = calls.createInvocation.at(-1);
+  assert.equal(continuation.options.timeoutSeconds, 900);
+  assert.equal(continuation.options.preApproved, true);
+  assert.equal(continuation.options.metadata.codexApprovalContinuationRequestId, "cdx_appr_197");
+  assert.match(continuation.task, /do not repeat broad repository discovery/i);
+  assert.equal(continuation.options.metadata.worktreeId, autoRun.worktreeId);
+
+  await svc.advanceAutoRunForInvocation({
+    id: autoRun.invocationId,
+    status: "timed_out",
+    result: { errorCode: "execution_timeout" },
+  });
+  assert.equal(autoRun.status, "failed", "the bounded continuation cannot loop forever");
+  assert.equal(calls.createInvocation.length, 2);
+});
+
+test("late approval recovery retries the exact stored task without a second approval gate", async () => {
+  let body = "APPROVED ORIGINAL BODY";
+  const { svc, calls } = makeAutoRun({ fetchIssueBody: async () => body });
+  const { autoRun } = await svc.startAutoRun({
+    projectId: sourceProjectId,
+    link: { type: "issue", number: 198, title: "Late approval", url: null, state: "open" },
+    agentId: "agt_1",
+    name: "issue-198-late-approval",
+  });
+  autoRun.status = "failed";
+  body = "EDITED AFTER APPROVAL";
+  const approval = {
+    id: "cdx_appr_198",
+    invocationId: autoRun.invocationId,
+    status: "timed_out",
+    lateApprovalRecovery: {
+      status: "starting",
+      autoRunId: autoRun.id,
+      claimToken: "claim_198",
+    },
+  };
+  state.codexApprovalBrokerRequests = [approval];
+
+  const { invocation } = await svc.retryAutoRun(autoRun.id, {
+    actor: { userId: "usr_owner" },
+    approvalRecoveryRequestId: approval.id,
+    approvalRecoveryClaimToken: "claim_198",
+  });
+  const retry = calls.createInvocation.at(-1);
+  assert.equal(retry.options.preApproved, true);
+  assert.equal(retry.options.timeoutSeconds, 600);
+  assert.equal(retry.options.metadata.codexApprovalContinuationRequestId, approval.id);
+  assert.equal(approval.lateApprovalRecovery.targetInvocationId, invocation.id);
+  assert.match(retry.task, /APPROVED ORIGINAL BODY/);
+  assert.doesNotMatch(retry.task, /EDITED AFTER APPROVAL/);
 });
 
 test("retryAutoRun refuses non-settled runs and missing worktrees", async () => {
@@ -1036,6 +1251,11 @@ test("cancelAutoRun stops an in-flight run: cancels its invocation and settles i
     name: "issue-140-cancel",
   });
   assert.ok(!["failed", "blocked", "pr_open"].includes(autoRun.status), "run is in-flight before cancel");
+  assert.throws(
+    () => svc.cancelAutoRun(autoRun.id, { actor: { userId: "usr_x" }, terminalId: "dev_other" }),
+    /different terminal/,
+  );
+  assert.notEqual(autoRun.status, "cancelled", "a cross-terminal cancel cannot mutate the run");
 
   const result = svc.cancelAutoRun(autoRun.id, { actor: { userId: "usr_x" } });
 
@@ -1236,6 +1456,22 @@ test("O0 budget gate: under-budget run proceeds normally", async () => {
   assert.equal(calls.createInvocation.length, 1);
 });
 
+test("cautious autonomy preserves a 20% budget safety margin", async () => {
+  const { svc, calls } = makeAutoRun({
+    budgetStatusFor: () => ({ over: false, admissionOver: false, spentUsd: 8.5, remainingUsd: 1.5, limitUsd: 10 }),
+  });
+  await assert.rejects(
+    () => svc.startAutoRun({
+      projectId: sourceProjectId,
+      link: { type: "issue", number: 31, title: "Cautious spend", url: null, state: "open" },
+      agentId: "agt_1",
+      autonomyProfile: "cautious",
+    }),
+    /Budget exceeded/,
+  );
+  assert.equal(calls.createInvocation.length, 0);
+});
+
 test("#890 budget reservation: a concurrent start near the limit is refused, then freed on settle", async () => {
   // Real m3 reservations against the harness state + a $10 block budget, with the
   // per-run hold armed. Two $6 runs can't both be in flight; settling the first
@@ -1339,6 +1575,7 @@ test("3b: an infra reclaim fails over to a healthy same-device alternate agent",
     assert.equal(autoRun.failoverOutcome.reason, "dispatch_timeout");
     assert.notEqual(autoRun.status, "failed", "the run is live again");
     assert.equal(autoRun.errorCode, null, "the infra code is cleared on the restart");
+    assert.equal(calls.createInvocation.at(-1).options.timeoutSeconds, 600, "failover records the alternate adapter timeout");
     assert.ok(calls.events.some((e) => e.type === "auto_run_failed_over" && e.data.toAgentId === "agt_2"));
   } finally {
     state.agents = savedAgents;
@@ -1463,6 +1700,23 @@ test("O2: a non-code path (design) is auto-approved when the operator opts in", 
   state.autoRunSettings = { autoApproveNonCodePaths: true };
   await svc.startAutoRun({ projectId: sourceProjectId, link: { type: "issue", number: 40, title: "Rework", url: null, state: "open" }, agentId: "agt_1", name: "issue-40" });
   assert.equal(calls.autoApprove.length, 1, "design run auto-approved by policy");
+});
+
+test("high autonomy auto-approves low-risk non-code work without the global toggle", async () => {
+  const { svc, calls } = makeAutoRun({
+    invocationStatus: "waiting_for_local_approval",
+    decideIssuePath: async () => ({ path: "design", confidence: 0.9, rationale: "design artifact" }),
+    autoApproveInvocation: () => true,
+  });
+  state.autoRunSettings = { autoApproveNonCodePaths: false };
+  await svc.startAutoRun({
+    projectId: sourceProjectId,
+    link: { type: "issue", number: 401, title: "Design flow", url: null, state: "open" },
+    agentId: "agt_1",
+    name: "issue-401",
+    autonomyProfile: "high",
+  });
+  assert.equal(calls.autoApprove.length, 1);
 });
 
 test("O2: develop is NEVER auto-approved (edits code — always human)", async () => {

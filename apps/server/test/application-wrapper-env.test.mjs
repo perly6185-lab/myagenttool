@@ -9,7 +9,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { mkdtempSync, writeFileSync, chmodSync } from "node:fs";
+import { copyFileSync, mkdtempSync, writeFileSync, chmodSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -32,9 +32,15 @@ test("resolveWrapperChildEnv sets flush for officecli only", () => {
   assert.equal(base.OFFICECLI_RESIDENT_FLUSH, undefined);
 });
 
-function runRunner(execCommand) {
+function runRunner(execCommand, execArgs = []) {
   return new Promise((resolve) => {
-    const child = spawn(process.execPath, [RUNNER, "--exec-command", execCommand], { stdio: ["ignore", "pipe", "pipe"] });
+    const args = [
+      RUNNER,
+      "--exec-command",
+      execCommand,
+      ...execArgs.flatMap((arg) => ["--exec-arg", arg]),
+    ];
+    const child = spawn(process.execPath, args, { stdio: ["ignore", "pipe", "pipe"] });
     let stdout = "";
     child.stdout.on("data", (c) => { stdout += c; });
     child.on("close", () => resolve(stdout));
@@ -47,13 +53,31 @@ function runRunner(execCommand) {
 test("runner forwards flush=each to an officecli-named child only", async () => {
   const dir = mkdtempSync(join(tmpdir(), "wrapenv-"));
   const script = '#!/usr/bin/env node\nprocess.stdout.write("FLUSH=" + (process.env.OFFICECLI_RESIDENT_FLUSH ?? "unset"));\n';
-  const officecli = join(dir, "officecli");
-  const other = join(dir, "gitlike");
-  writeFileSync(officecli, script);
-  writeFileSync(other, script);
-  chmodSync(officecli, 0o755);
-  chmodSync(other, 0o755);
+  try {
+    if (process.platform === "win32") {
+      // Windows cannot execute a shebang-only extensionless file. Use copies of
+      // the current Node executable so the command basename remains the behavior
+      // under test, and pass the shared script as its first argument.
+      const scriptPath = join(dir, "echo-env.mjs");
+      const officecli = join(dir, "officecli.exe");
+      const other = join(dir, "gitlike.exe");
+      writeFileSync(scriptPath, script);
+      copyFileSync(process.execPath, officecli);
+      copyFileSync(process.execPath, other);
+      assert.match(await runRunner(officecli, [scriptPath]), /FLUSH=each/);
+      assert.match(await runRunner(other, [scriptPath]), /FLUSH=unset/);
+      return;
+    }
 
-  assert.match(await runRunner(officecli), /FLUSH=each/);
-  assert.match(await runRunner(other), /FLUSH=unset/);
+    const officecli = join(dir, "officecli");
+    const other = join(dir, "gitlike");
+    writeFileSync(officecli, script);
+    writeFileSync(other, script);
+    chmodSync(officecli, 0o755);
+    chmodSync(other, 0o755);
+    assert.match(await runRunner(officecli), /FLUSH=each/);
+    assert.match(await runRunner(other), /FLUSH=unset/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });

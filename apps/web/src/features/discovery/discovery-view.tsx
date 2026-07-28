@@ -9,10 +9,11 @@ import { EmptyState } from "@/components/common/empty-state";
 import { useConsoleState } from "@/data/use-console-state";
 import { useAsyncAction, api } from "@/data/use-console-actions";
 import { useUiStore } from "@/store/ui-store";
-import { readableAdapterType, readableDiscoverySource } from "@/lib/readable-labels";
+import { adapterType, discoverySource } from "@/lib/i18n/readable-labels";
+import { useAppTranslation } from "@/lib/i18n/use-app-translation";
 import { RegisterCodingAgentCard } from "@/features/discovery/register-coding-agent-card";
 import { ConnectMcpServerCard } from "@/features/discovery/connect-mcp-server-card";
-import type { DiscoveryCandidate, DiscoveryRunSnapshot } from "@/lib/console-state";
+import type { DiscoveryCandidate } from "@/lib/console-state";
 
 const FULL_SCOPE = [
   "known_command_allowlist",
@@ -39,15 +40,8 @@ function isCodex(candidate: DiscoveryCandidate): boolean {
   );
 }
 
-function discoverySummaryText(run: DiscoveryRunSnapshot | undefined): string {
-  if (!run) return "Discovery is conservative and only checks known or user-provided sources.";
-  if (run.status === "queued") return "Discovery is queued for Desktop Bridge.";
-  if (run.status === "running") return "Desktop Bridge is checking conservative discovery sources.";
-  if (run.status === "failed") return run.message ?? "Discovery failed.";
-  return `${run.message ?? "Discovery finished."} Candidates are not auto-enabled.`;
-}
-
 export function DiscoveryView() {
+  const { t } = useAppTranslation();
   const { data: state } = useConsoleState();
   const setSelectedAgentId = useUiStore((s) => s.setSelectedAgentId);
   const { execute, pending } = useAsyncAction();
@@ -59,6 +53,16 @@ export function DiscoveryView() {
   const offline = state?.device?.status !== "online";
   const busy = pending || run?.status === "queued" || run?.status === "running";
   const blocked = !state || offline || busy;
+  const summaryKey =
+    run?.status === "queued"
+      ? "discovery.summary.queued"
+      : run?.status === "running"
+        ? "discovery.summary.running"
+        : run?.status === "failed"
+          ? "discovery.summary.failed"
+          : run
+            ? "discovery.summary.succeeded"
+            : "discovery.summary.idle";
 
   function discover() {
     void execute(() =>
@@ -97,34 +101,38 @@ export function DiscoveryView() {
 
       <Card>
         <CardHeader>
-          <CardTitle>Find local agents</CardTitle>
+          <CardTitle>{t("discovery.title")}</CardTitle>
         </CardHeader>
         <CardContent className="space-y-4">
           <div className="grid gap-3 sm:grid-cols-2">
-            <Field label="CLI commands or paths">
+            <Field label={t("discovery.paths")}>
               <Input value={paths} onChange={(e) => setPaths(e.target.value)} />
             </Field>
-            <Field label="HTTP endpoints">
+            <Field label={t("discovery.endpoints")}>
               <Input value={endpoints} onChange={(e) => setEndpoints(e.target.value)} />
             </Field>
           </div>
           <div className="flex flex-wrap gap-2">
             <Button variant="secondary" disabled={blocked} onClick={discover}>
-              Discover agents
+              {t("discovery.discover")}
             </Button>
             <Button variant="secondary" disabled={blocked} onClick={addCodex}>
-              Add Codex CLI
+              {t("discovery.addCodex")}
             </Button>
           </div>
-          <p className="text-xs text-muted-foreground">{discoverySummaryText(run)}</p>
+          <p className="text-xs text-muted-foreground">
+            {run?.status === "failed" && run.message
+              ? run.message
+              : t(summaryKey)}
+          </p>
           {offline ? (
-            <p className="text-xs text-warning">Discovery needs Desktop Bridge online.</p>
+            <p className="text-xs text-warning">{t("discovery.bridgeRequired")}</p>
           ) : null}
         </CardContent>
       </Card>
 
       {!run?.candidates?.length ? (
-        <EmptyState title="No candidates yet" hint="Run discovery while Desktop Bridge is online." />
+        <EmptyState title={t("discovery.emptyTitle")} hint={t("discovery.emptyHint")} />
       ) : (
         <div className="grid gap-4 md:grid-cols-2">
           {run.candidates.map((candidate) => (
@@ -135,36 +143,44 @@ export function DiscoveryView() {
               </CardHeader>
               <CardContent className="space-y-3">
                 <div className="flex flex-wrap gap-1.5">
-                  <Badge>Adapter: {readableAdapterType(candidate.adapter?.type)}</Badge>
-                  <Badge>Source: {readableDiscoverySource(candidate.source)}</Badge>
-                  <Badge>Confidence: {candidate.confidence}</Badge>
+                  <Badge>{t("discovery.adapter")}: {adapterType(t, candidate.adapter?.type)}</Badge>
+                  <Badge>{t("discovery.source")}: {discoverySource(t, candidate.source)}</Badge>
+                  <Badge>{t("discovery.confidence")}: {candidate.confidence}</Badge>
                   <Badge tone={candidate.riskLevel === "high" ? "danger" : "neutral"}>
-                    Risk: {candidate.riskLevel}
+                    {t("discovery.risk")}: {
+                      candidate.riskLevel === "high"
+                        ? t("labels.risk.high")
+                        : candidate.riskLevel === "medium"
+                          ? t("labels.risk.medium")
+                          : candidate.riskLevel === "low"
+                            ? t("labels.risk.low")
+                            : candidate.riskLevel
+                    }
                   </Badge>
-                  <Badge>{candidate.healthProbeAvailable ? "Health probe" : "No health probe"}</Badge>
+                  <Badge>{t(candidate.healthProbeAvailable ? "discovery.healthProbe" : "discovery.noHealthProbe")}</Badge>
                 </div>
                 <p className="text-sm text-muted-foreground">
-                  {candidate.riskHints?.join(" ") ?? "Review this candidate before registering."}
+                  {candidate.riskHints?.join(" ") ?? t("discovery.review")}
                 </p>
                 {isCodex(candidate) ? (
                   <div className="rounded-lg border border-warning/40 bg-warning/10 p-3">
                     <FactList
                       facts={[
                         {
-                          term: "Command",
+                          term: t("discovery.command"),
                           value: [candidate.adapter?.command, ...(candidate.adapter?.args ?? [])]
                             .filter(Boolean)
                             .join(" "),
                         },
                         {
-                          term: "Evidence",
+                          term: t("discovery.evidence"),
                           value:
                             candidate.adapter?.outputFormat === "codex_jsonl"
-                              ? "Codex JSONL events"
-                              : "Review output format",
+                              ? t("discovery.codexEvents")
+                              : t("discovery.reviewOutput"),
                         },
-                        { term: "Sandbox", value: candidate.adapter?.sandbox ?? "unset" },
-                        { term: "Approval", value: "Required before high-risk local invocation" },
+                        { term: t("discovery.sandbox"), value: candidate.adapter?.sandbox ?? t("discovery.unset") },
+                        { term: t("discovery.approval"), value: t("discovery.approvalRequired") },
                       ]}
                     />
                   </div>
@@ -175,7 +191,7 @@ export function DiscoveryView() {
                   disabled={pending || candidate.registration?.status === "registered"}
                   onClick={() => register(candidate)}
                 >
-                  {candidate.registration?.status === "registered" ? "Registered disabled" : "Register disabled"}
+                  {t(candidate.registration?.status === "registered" ? "discovery.registeredDisabled" : "discovery.registerDisabled")}
                 </Button>
               </CardContent>
             </Card>

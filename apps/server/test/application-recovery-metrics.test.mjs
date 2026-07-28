@@ -18,7 +18,9 @@ test("failure recovered by the first later success on the same stream (median ho
     run("succeeded", 1_800_000), // +0.5h — the recovery
     run("succeeded", 7_200_000), // later success is NOT the recovery
   ]);
-  assert.deepEqual(summary, { total: 3, failed: 1, recoveryHours: { median: 0.5, count: 1 } });
+  assert.equal(summary.recoveryHours.median, 0.5);
+  assert.equal(summary.trend.length, 1);
+  assert.equal(summary.alerting, false);
 });
 
 test("streams are isolated — a success in routine B never recovers routine A", () => {
@@ -52,7 +54,10 @@ test("non-orchestration, non-terminal, and timestamp-less runs are ignored", () 
 });
 
 test("empty / missing input → honest nulls, no throw", () => {
-  assert.deepEqual(summarizeOrchestrationRecovery(), { total: 0, failed: 0, recoveryHours: { median: null, count: 0 } });
+  assert.deepEqual(summarizeOrchestrationRecovery(), {
+    total: 0, failed: 0, recoveryHours: { median: null, count: 0 },
+    trend: [], alerting: false, thresholdHours: 24,
+  });
   assert.deepEqual(summarizeOrchestrationRecovery([]).recoveryHours, { median: null, count: 0 });
 });
 
@@ -64,4 +69,15 @@ test("consecutive failures on a stream are ONE incident recovered once (no doubl
   ]);
   assert.equal(summary.recoveryHours.count, 1);
   assert.equal(summary.recoveryHours.median, 1.1, "success − the incident's FIRST failure, not once per failed run");
+});
+
+test("recovery median above the 24h objective raises an alert", () => {
+  const summary = summarizeOrchestrationRecovery([
+    run("failed", 0),
+    run("succeeded", 30 * 3_600_000),
+  ]);
+  assert.equal(summary.recoveryHours.median, 30);
+  assert.equal(summary.thresholdHours, 24);
+  assert.equal(summary.alerting, true);
+  assert.deepEqual(summary.trend.map(({ hours }) => hours), [30]);
 });

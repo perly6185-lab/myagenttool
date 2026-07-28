@@ -6,6 +6,7 @@ import { createMarkdownApplicationRegistration } from "./markdown-application.mj
 import { createCanvasApplicationRegistration } from "./canvas-application.mjs";
 import { createOfficecliApplicationRegistration } from "./officecli-application.mjs";
 import { createExcalidrawCliApplicationRegistration } from "./excalidraw-cli-application.mjs";
+import { createPdfcpuApplicationRegistration, PDFCPU_DEFAULT_VERSION } from "./pdfcpu-application.mjs";
 import { findKnownRuntime } from "./runtime-catalog.mjs";
 
 const KNOWN_APPLICATIONS = [
@@ -65,6 +66,15 @@ const KNOWN_APPLICATIONS = [
     runtimeRequirements: [{ runtimeId: "runtime_officecli", required: true }],
     installHint: "Install with npm install -g @officecli/officecli, then re-run setup.",
     createRegistration: createOfficecliApplicationRegistration,
+  },
+  {
+    name: "pdfcpu",
+    displayName: "pdfcpu",
+    aliases: ["pdfcpu", "pdf cpu"],
+    command: "pdfcpu",
+    runtimeRequirements: [{ runtimeId: "runtime_pdfcpu", required: true }],
+    installHint: `Install the verified pdfcpu v${PDFCPU_DEFAULT_VERSION} runtime, then re-run setup.`,
+    createRegistration: createPdfcpuApplicationRegistration,
   },
   {
     // Canvas is a built-in, in-process Application — no external runtime (like

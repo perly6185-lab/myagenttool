@@ -6,16 +6,27 @@
   "main": "apps/electron/src/main.mjs",
   "packageManager": "pnpm@9.15.0",
   "pnpm": {
+    "overrides": {
+      "lodash-es": "4.18.1"
+    },
     "onlyBuiltDependencies": [
-      "electron"
-    ]
+      "electron",
+      "node-pty"
+    ],
+    "patchedDependencies": {
+      "node-pty@1.1.0": "patches/node-pty@1.1.0.patch"
+    }
   },
   "scripts": {
     "dev": "node tools/dev/run-local-demo.mjs",
+    "test:documents:e2e": "playwright test -c apps/web/playwright.config.ts",
+    "test:user-journey:e2e": "playwright test -c apps/web/playwright.config.ts documents.spec.ts issue-auto-run.spec.ts recovery.spec.ts shell-navigation.spec.ts",
     "desktop:dev": "pnpm --filter @myagenttool/web build && electron .",
     "desktop:prepare-assets": "node apps/electron/scripts/prepare-portable-git.mjs",
     "desktop:pack": "pnpm desktop:prepare-assets && pnpm --filter @myagenttool/web build && electron-builder --dir -c apps/electron/electron-builder.yml",
     "desktop:dist": "pnpm desktop:prepare-assets && pnpm --filter @myagenttool/web build && electron-builder --win nsis --x64 -c apps/electron/electron-builder.yml",
+    "desktop:pack:mac": "pnpm --filter @myagenttool/web build && electron-builder --mac --arm64 --dir -c apps/electron/electron-builder.yml",
+    "desktop:dist:mac": "pnpm --filter @myagenttool/web build && electron-builder --mac dmg --arm64 -c apps/electron/electron-builder.yml",
     "dev:restart-changed": "node tools/dev/restart-changed-services.mjs",
     "ccusage:register-app": "node tools/dev/register-ccusage-application.mjs",
     "git:register-app": "node tools/dev/register-git-application.mjs",
@@ -30,6 +41,8 @@
     "lint": "pnpm -r --filter \"./apps/*\" --filter \"./packages/*\" --filter \"./tools/*\" --if-present lint",
     "typecheck": "pnpm -r --filter \"./apps/*\" --filter \"./packages/*\" --filter \"./tools/*\" --if-present typecheck",
     "build": "pnpm -r --filter \"./apps/*\" --filter \"./packages/*\" --filter \"./tools/*\" --if-present build",
+    "check:web-bundle": "node tools/dev/check-web-bundle-budget.mjs",
+    "audit:prod": "pnpm audit --prod --audit-level high",
     "release:candidate:check": "node tools/release/src/candidate.mjs --check",
     "release:candidate": "node tools/release/src/candidate.mjs",
     "docs:check": "pwsh -NoProfile -ExecutionPolicy Bypass -File tools/docs/check-markdown-links.ps1",
@@ -162,6 +175,8 @@
     "smoke:channel-providers": "node tools/dev/channel-provider-contract-smoke.mjs",
     "smoke:coding-agent-interface": "node --test apps/server/test/coding-agent-interface.test.mjs apps/server/test/claude-application.test.mjs",
     "benchmark:runtime-health": "node tools/dev/runtime-health-benchmark.mjs",
+    "benchmark:trace-search": "node tools/dev/trace-search-benchmark.mjs",
+    "verify:real-providers": "node tools/dev/real-provider-nightly.mjs",
     "smoke:automation-scheduler": "node tools/dev/automation-scheduler-smoke.mjs",
     "smoke:claude-agent": "node tools/dev/claude-agent-smoke.mjs",
     "smoke:ccusage-agent": "node tools/dev/ccusage-agent-smoke.mjs",
@@ -211,12 +226,7 @@
     "@myagenttool/protocol": "workspace:^",
     "@myagenttool/server": "workspace:^",
     "@myagenttool/shared": "workspace:^",
-    "@openai/codex": "0.144.6",
+    "@openai/codex": "0.146.0-alpha.3",
     "node-pty": "^1.1.0"
-  },
-  "pnpm": {
-    "patchedDependencies": {
-      "node-pty@1.1.0": "patches/node-pty@1.1.0.patch"
-    }
   }
 }

@@ -1,6 +1,7 @@
 import { detectPromptInjection, roleAutoRunPrompt } from "@myagenttool/protocol/issue-prompt";
 
 import { teamOf } from "../runtime/auth.mjs";
+import { findDevice, listDevices } from "../runtime/device.mjs";
 import { createRefusalRuntime } from "../runtime/refusal-log.mjs";
 import { isTerminal } from "./invocations.mjs";
 import { FAILOVER_INFRA_CODES, MAX_FAILOVERS, selectFailoverAgent } from "./invocations/agent-failover.mjs";
@@ -14,6 +15,7 @@ import { composeDesignIssueComment, designArtifactIndex, buildDesignImageUrls } 
 import { decompositionTree, issueTreeApplyFailures, humanApprovalRequiredReasons } from "../../../../tools/ai/src/issue-tree-core.mjs";
 import { scoreDecompositionOverlap } from "./auto-run-epic.mjs";
 import { makeRunTx } from "../runtime/store/run-tx.mjs";
+import { buildAutoRunCheckpoint, continuationCheckpointPrompt } from "./auto-run-checkpoint.mjs";
 
 // One-click "Auto" orchestrator. It closes the seam the console never had:
 // turning a linked GitHub issue into a worktree AND a started agent run seeded
@@ -30,6 +32,19 @@ import { makeRunTx } from "../runtime/store/run-tx.mjs";
 // non-code paths (a design brief / a clarify question / a throwaway spike),
 // never `develop` (which edits product code and opens a PR).
 const AUTO_APPROVABLE_PATHS = new Set(["design", "clarify", "prototype", "decompose"]);
+
+function isCodexAgent(agent) {
+  const command = String(agent?.adapter?.command ?? "").trim().toLowerCase();
+  return ["codex", "codex.cmd", "codex.ps1", "codex.exe"].some((name) =>
+    command === name || command.endsWith(`/${name}`) || command.endsWith(`\\${name}`));
+}
+
+function codexAutoApprovalOptions(agent) {
+  // "auto" applies only to the in-run Codex approval broker: low-risk tool
+  // requests proceed without parking the run, while sensitive requests still
+  // require a human. Invocation admission and merge policy remain unchanged.
+  return isCodexAgent(agent) ? { approvalMode: "auto" } : {};
+}
 
 // Fallback Project Fields for a self-healing remediation issue (H2) when the
 // culprit issue carried none — so the fix PR still passes pr-governance.
@@ -56,6 +71,124 @@ export const autoRunStates = [
   "done",
   "failed",
 ];
+
+export function syncBoundWorkItemsForAutoRun({ state, autoRun, status, now, nextId }) {
+  const awaitingLocalDelivery = status === "done"
+    && autoRun.link?.type === "local_issue"
+    && autoRun.localDelivery
+    && autoRun.localDelivery.mode !== "pull_request"
+    && !autoRun.localDelivery.deliveredAt;
+  const targetStatus = ["pr_open", "report_posted", "plan_proposed"].includes(status)
+    ? "review"
+    : awaitingLocalDelivery
+      ? "review"
+      : ["done", "decomposed"].includes(status)
+        ? "done"
+        : ["failed", "blocked"].includes(status)
+          ? "blocked"
+          : status === "cancelled"
+            ? "ready"
+            : ["materializing", "running", "awaiting_approval", "verifying", "publishing"].includes(status)
+              ? "in_progress"
+              : null;
+  if (!targetStatus) return [];
+  const changed = [];
+  for (const item of state.workItems ?? []) {
+    if (!(item.executionBindings ?? []).some((binding) =>
+      binding.kind === "auto_run" && binding.targetId === autoRun.id)) continue;
+    let verificationRecorded = false;
+    if (["pr_open", "report_posted", "done", "blocked"].includes(status)
+      && autoRun.verification?.verified
+      && !(item.verificationRecords ?? []).some((record) => record.sourceAutoRunId === autoRun.id)) {
+      const recordedAt = now();
+      const record = {
+        id: nextId("wvr"),
+        kind: "test",
+        status: autoRun.verification.passed ? "passed" : "failed",
+        command: null,
+        summary: autoRun.verification.summary ?? "Auto-run verification",
+        evidence: [
+          { kind: "run", ref: autoRun.id, summary: "Auto-run" },
+          ...(autoRun.prUrl ? [{ kind: "url", ref: autoRun.prUrl, summary: "Pull request" }] : []),
+          ...(autoRun.worktreeId ? [{ kind: "artifact", ref: autoRun.worktreeId, summary: "Worktree" }] : []),
+        ],
+        sourceAutoRunId: autoRun.id,
+        recordedAt,
+        recordedBy: "usr_autorun",
+      };
+      (item.verificationRecords ??= []).unshift(record);
+      verificationRecorded = true;
+      if ((item.acceptanceCriteria ?? []).length && autoRun.judgment?.solved != null) {
+        item.acceptanceResults = item.acceptanceCriteria.map((criterion) => ({
+          criterion,
+          status: autoRun.judgment.solved ? "passed" : "failed",
+          note: autoRun.judgment.summary ?? (autoRun.judgment.solved ? "Auto-run acceptance passed." : "Auto-run acceptance failed."),
+          verificationId: record.id,
+          updatedAt: recordedAt,
+        }));
+      }
+    }
+    const completionReady = !(item.acceptanceCriteria ?? []).length
+      || ((item.acceptanceCriteria ?? []).every((criterion) =>
+        (item.acceptanceResults ?? []).some((result) => result.criterion === criterion && result.status === "passed"))
+        && (item.verificationRecords ?? []).some((record) => record.status === "passed"));
+    const effectiveTargetStatus = targetStatus === "done" && !completionReady ? "review" : targetStatus;
+    if (item.status === effectiveTargetStatus) {
+      if (verificationRecorded) {
+        item.revision = (Number(item.revision) || 0) + 1;
+        item.updatedAt = now();
+        (state.workItemActivities ??= []).unshift({
+          id: nextId("wia"), workItemId: item.id, ownerTeamId: item.ownerTeamId, projectId: item.projectId,
+          action: "verification_recorded", actorId: "usr_autorun", createdAt: item.updatedAt,
+          details: { autoRunId: autoRun.id, verificationId: item.verificationRecords[0].id },
+        });
+      }
+      continue;
+    }
+    const previousStatus = item.status;
+    item.status = effectiveTargetStatus;
+    if (effectiveTargetStatus === "done") item.state = "closed";
+    item.revision = (Number(item.revision) || 0) + 1;
+    item.updatedAt = now();
+    (state.workItemActivities ??= []).unshift({
+      id: nextId("wia"),
+      workItemId: item.id,
+      ownerTeamId: item.ownerTeamId,
+      projectId: item.projectId,
+      action: "execution_status_synced",
+      actorId: "usr_autorun",
+      createdAt: item.updatedAt,
+      details: {
+        autoRunId: autoRun.id, autoRunStatus: status, from: previousStatus, to: effectiveTargetStatus,
+        ...(targetStatus === "done" && !completionReady ? { completionBlocked: true } : {}),
+      },
+    });
+    changed.push(item);
+  }
+  return changed;
+}
+
+export function convergeAutoRunTerminalState({ state, autoRun, disposition, now, nextId, source = "unknown" }) {
+  if (!autoRun || !["MERGED", "CLOSED"].includes(disposition)) return { changed: false };
+  const at = now();
+  const changed = autoRun.prState !== disposition || autoRun.terminalOutcome?.disposition !== disposition;
+  autoRun.prState = disposition;
+  autoRun.prStateCheckedAt = at;
+  if (disposition === "MERGED") autoRun.prMergedAt ??= at;
+  autoRun.terminalOutcome = {
+    disposition,
+    source,
+    convergedAt: at,
+  };
+  syncBoundWorkItemsForAutoRun({
+    state,
+    autoRun,
+    status: disposition === "MERGED" ? "done" : "blocked",
+    now,
+    nextId,
+  });
+  return { changed, disposition };
+}
 
 export function createAutoRunService({
   state,
@@ -331,12 +464,13 @@ export function createAutoRunService({
       if (threshold > 0 && breaker.consecutiveFailures >= threshold && !breaker.openUntil) {
         const cooldownMin = Number(state.autoRunSettings?.breakerCooldownMinutes ?? 15) || 15;
         breaker.openUntil = new Date(Date.parse(now()) + cooldownMin * 60_000).toISOString();
-        void sendAlert?.({
+        const alert = {
           kind: "circuit_breaker_open",
           severity: "high",
           message: `Auto-run circuit breaker opened after ${breaker.consecutiveFailures} consecutive failures; paused until ${breaker.openUntil}.`,
           data: { consecutiveFailures: breaker.consecutiveFailures, openUntil: breaker.openUntil },
-        });
+        };
+        sendAlert?.(alert);
       }
     } else if (status === "pr_open" || status === "report_posted" || status === "done") {
       breaker.consecutiveFailures = 0;
@@ -348,6 +482,7 @@ export function createAutoRunService({
     autoRun.status = status;
     autoRun.updatedAt = now();
     if (extra) Object.assign(autoRun, extra);
+    syncBoundWorkItemsForAutoRun({ state, autoRun, status, now, nextId });
     // errorCode reflects only the CURRENT failure: a machine-readable reason a run
     // failed (e.g. "dispatch_timeout" / "orphaned" / "stuck" for an infrastructure
     // reclaim vs a null code for a genuine task failure). Cleared on any transition
@@ -379,7 +514,13 @@ export function createAutoRunService({
   // agent prompt from the issue, and start the invocation inside the worktree.
   // `name` is the branch name the caller already derives (shared branchFromIssue),
   // so the server does not re-implement issue branch naming.
-  async function startAutoRun({ projectId, link, agentId, name, baseBranch, actor } = {}) {
+  async function startAutoRun({
+    projectId, link, agentId, name, baseBranch, actor, issueBody: suppliedIssueBody,
+    executionChainId = null, autonomyProfile = "standard", terminalId = null,
+  } = {}) {
+    const resolvedAutonomyProfile = ["cautious", "standard", "high"].includes(autonomyProfile)
+      ? autonomyProfile
+      : "standard";
     const normalizedLink = normalizeWorktreeLink(link);
     if (!normalizedLink) {
       throw new Error("A GitHub issue or PR link is required to start an auto-run.");
@@ -391,7 +532,16 @@ export function createAutoRunService({
     if (agent.status === "disabled") {
       throw new Error("The selected agent is disabled.");
     }
-    if (agent.location?.type === "local_device" && state.device?.unlinkState !== "linked") {
+    if (agent.health?.status === "unhealthy") {
+      throw new Error(`The selected agent is unhealthy: ${agent.health.message ?? "run its health check and resolve the reported problem first."}`);
+    }
+    const agentTerminalId = agent.location?.type === "local_device" ? agent.location.deviceId ?? null : null;
+    const owningTerminalId = terminalId ? String(terminalId) : agentTerminalId;
+    if (owningTerminalId && agentTerminalId !== owningTerminalId) {
+      throw new Error("The selected agent does not belong to this task's terminal.");
+    }
+    const targetDevice = (agentTerminalId ? findDevice(state, agentTerminalId) : null) ?? listDevices(state)[0] ?? null;
+    if (targetDevice && targetDevice.unlinkState !== "linked") {
       throw new Error("The target device is unlinked; link it before starting an auto-run.");
     }
     // O0 cost brake — hard gates BEFORE any spend (worktree/agent). The kill
@@ -403,7 +553,10 @@ export function createAutoRunService({
     }
     if (typeof budgetStatusFor === "function" && projectId) {
       const budget = budgetStatusFor(projectId);
-      if (budget?.over) {
+      const cautiousBudgetBrake = resolvedAutonomyProfile === "cautious"
+        && (budget?.admissionOver || (Number.isFinite(budget?.limitUsd) && Number.isFinite(budget?.remainingUsd)
+          && budget.limitUsd > 0 && budget.remainingUsd / budget.limitUsd < 0.2));
+      if (budget?.over || cautiousBudgetBrake) {
         void sendAlert?.({
           kind: "budget_exceeded",
           severity: "high",
@@ -492,7 +645,9 @@ export function createAutoRunService({
       // 0. Decision step: the injected decider (or the heuristic floor) triages the
       // issue into a path BEFORE any execution. The decision is data, not action.
       // Both the decider and the role prompt get the issue body when it's readable.
-      issueBody = await maybeFetchIssueBody(normalizedLink, projectId ?? state.currentProjectId);
+      issueBody = typeof suppliedIssueBody === "string"
+        ? suppliedIssueBody
+        : await maybeFetchIssueBody(normalizedLink, projectId ?? state.currentProjectId);
       // B1a: scan the untrusted issue body for prompt-injection markers. A hit
       // never blocks the run (avoids weaponizing false positives into a DoS), but
       // it is recorded, alerted, and — crucially — makes the run ineligible for
@@ -553,7 +708,10 @@ export function createAutoRunService({
       worktreeId: worktree.id,
       invocationId: null,
       agentId: agent.id,
+      terminalId: owningTerminalId,
       link: normalizedLink,
+      executionChainId: executionChainId ? String(executionChainId) : null,
+      autonomyProfile: resolvedAutonomyProfile,
       decision,
       // Legacy field, derived from the decision path for record continuity.
       intent: intentForPath(decision.path),
@@ -602,6 +760,8 @@ export function createAutoRunService({
           spawnChildIssues: decision.spawnChildIssues,
           rationale: decision.rationale,
           clarifyingQuestions: decision.clarifyingQuestions,
+          executionChainId: autoRun.executionChainId,
+          autonomyProfile: autoRun.autonomyProfile,
         },
       });
     });
@@ -617,9 +777,18 @@ export function createAutoRunService({
       const task = roleAutoRunPrompt(normalizedLink, { path: decision.path, issueBody, verifyCommand });
       invocation = createInvocation(task, agent, {
         actor,
+        ...codexAutoApprovalOptions(agent),
+        timeoutSeconds: Number(agent.adapter?.timeoutSeconds ?? 600),
         // role carries the decided path so role-restricted agent-skills render
         // for this run (creation.mjs → renderAgentSkillsIntoWorktree).
-        metadata: { worktreeId: worktree.id, projectId: worktree.projectId, autoRunId, role: decision.path },
+        metadata: {
+          worktreeId: worktree.id,
+          projectId: worktree.projectId,
+          autoRunId,
+          role: decision.path,
+          executionChainId: autoRun.executionChainId,
+          autonomyProfile: autoRun.autonomyProfile,
+        },
       });
       startInvocationIfAllowed(invocation, agent);
     } catch (error) {
@@ -637,7 +806,15 @@ export function createAutoRunService({
       type: "auto_run_started",
       level: "info",
       message: `Auto-run started for ${normalizedLink.type} #${normalizedLink.number}.`,
-      data: { autoRunId, worktreeId: worktree.id, invocationId: invocation.id, status: autoRun.status },
+      data: {
+        autoRunId,
+        worktreeId: worktree.id,
+        invocationId: invocation.id,
+        status: autoRun.status,
+        executionChainId: autoRun.executionChainId,
+        terminalId: autoRun.terminalId,
+        autonomyProfile: autoRun.autonomyProfile,
+      },
     });
     // O2 graduated approval: auto-approve NON-CODE paths (design/clarify/
     // prototype — these produce a summary/spike, never a product-code PR) when
@@ -647,7 +824,8 @@ export function createAutoRunService({
     // audited; the approval hook flips the run to running. Default off = today.
     if (
       autoRun.status === "awaiting_approval" &&
-      state.autoRunSettings?.autoApproveNonCodePaths &&
+      (autoRun.autonomyProfile === "high"
+        || (autoRun.autonomyProfile === "standard" && state.autoRunSettings?.autoApproveNonCodePaths)) &&
       AUTO_APPROVABLE_PATHS.has(decision.path) &&
       !injection.suspicious && // B1a: a suspicious body always needs a human
       typeof autoApproveInvocation === "function"
@@ -669,6 +847,133 @@ export function createAutoRunService({
     }
     return { autoRun, worktree, invocation };
     });
+  }
+
+  // A genuine execution timeout is recoverable on the existing worktree. Make
+  // one bounded continuation instead of immediately dead-ending the local
+  // issue. Dispatch/orphan timeouts keep their existing failover path.
+  async function continueTimedOutAutoRun(autoRun, invocation) {
+    const errorCode = invocation?.result?.errorCode ?? null;
+    if (invocation?.status !== "timed_out" || errorCode !== "execution_timeout") {
+      return false;
+    }
+    const maxAttempts = Math.max(0, Math.min(
+      1,
+      Number(state.autoRunSettings?.maxTimeoutRecoveryAttempts ?? 1),
+    ));
+    const attempts = Number(autoRun.timeoutRecoveryAttempts ?? 0);
+    if (attempts >= maxAttempts || autoRunSpendRefusal(autoRun.projectId)) {
+      return false;
+    }
+    const worktree = state.worktrees.find((item) => item.id === autoRun.worktreeId) ?? null;
+    const agent = (autoRun.agentId ? findAgent(autoRun.agentId) : null) ?? defaultAgent();
+    if (!worktree || !agent || agent.status === "disabled") {
+      return false;
+    }
+
+    // Reuse only the body captured when this run started. A continuation that
+    // inherits approval must never pick up a subsequently edited issue body.
+    const path = autoRun.decision?.path ?? "develop";
+    const checkpoint = buildAutoRunCheckpoint({
+      invocation,
+      events: [
+        ...(state.codexEvidenceRecords ?? []),
+        ...(state.invocationEvents ?? []),
+        ...(state.events ?? []),
+      ],
+      changedFiles: invocation?.result?.continuationCheckpoint?.changedFiles ?? [],
+    });
+    const task =
+      `${roleAutoRunPrompt(autoRun.link, { path, issueBody: autoRun.issueBody ?? null })}\n\n` +
+      continuationCheckpointPrompt(checkpoint);
+    const continuationApproval = (state.codexApprovalBrokerRequests ?? []).find((request) =>
+      request.invocationId === invocation.id
+      && request.status === "approved"
+      && !request.continuationGrant?.targetInvocationId) ?? null;
+
+    let continuation;
+    const attempt = attempts + 1;
+    const idempotencyKey = `auto-run:${autoRun.id}:execution-timeout:${invocation.id}:${attempt}`;
+    try {
+      continuation = createInvocation(task, agent, {
+        requestedBy: invocation.requestedBy ?? "usr_local",
+        ...codexAutoApprovalOptions(agent),
+        idempotencyKey,
+        preApproved: Boolean(continuationApproval),
+        timeoutSeconds: Number(agent.adapter?.timeoutSeconds ?? 600),
+        codexSessionMode: "continue_last",
+        resumeFromInvocationId: invocation.id,
+        metadata: {
+          worktreeId: worktree.id,
+          projectId: worktree.projectId,
+          autoRunId: autoRun.id,
+          role: path,
+          timeoutRecoveryAttempt: attempt,
+          timeoutRecoverySourceInvocationId: invocation.id,
+          continuationCheckpoint: checkpoint,
+          ...(continuationApproval
+            ? { codexApprovalContinuationRequestId: continuationApproval.id }
+            : {}),
+        },
+      });
+      if (continuationApproval) {
+        runTx(() => {
+          continuationApproval.continuationGrant = {
+            targetInvocationId: continuation.id,
+            autoRunId: autoRun.id,
+            worktreeId: worktree.id,
+            grantedAt: now(),
+          };
+          continuationApproval.updatedAt = now();
+        });
+      }
+    } catch {
+      return false;
+    }
+
+    runTx(() => {
+      autoRun.invocationId = continuation.id;
+      autoRun.timeoutRecoveryAttempts = attempt;
+      autoRun.timeoutRecovery = {
+        status: "ready",
+        sourceInvocationId: invocation.id,
+        targetInvocationId: continuation.id,
+        attempt,
+        idempotencyKey,
+        checkpoint,
+        updatedAt: now(),
+      };
+      setAutoRunStatus(autoRun, autoRunStatusForInvocation(continuation), {
+        error: null,
+        errorCode: null,
+      });
+      appendEvent({
+        invocationId: continuation.id,
+        type: "auto_run_retried",
+        level: "info",
+        message: `Auto-run ${autoRun.id} continued after an execution timeout on its existing worktree.`,
+        data: {
+          autoRunId: autoRun.id,
+          worktreeId: worktree.id,
+          invocationId: continuation.id,
+          previousInvocationId: invocation.id,
+          reason: "execution_timeout",
+          attempt: autoRun.timeoutRecoveryAttempts,
+          approvalReused: Boolean(continuationApproval),
+        },
+      });
+    });
+    // Dispatch only after the durable run/approval/checkpoint binding exists.
+    // A restart can then reconcile the exact target instead of creating another
+    // continuation for the same timeout.
+    startInvocationIfAllowed(continuation, agent);
+    runTx(() => {
+      if (autoRun.timeoutRecovery?.targetInvocationId === continuation.id) {
+        autoRun.timeoutRecovery.status = "dispatched";
+        autoRun.timeoutRecovery.updatedAt = now();
+      }
+    });
+    return true;
   }
 
   // Reaction: when an auto-run's invocation reaches a terminal state, advance the
@@ -816,7 +1121,9 @@ export function createAutoRunService({
         // check that fails BLOCKS the PR; an unconfigured gate opens the PR but
         // labels it unverified (never fabricates a pass).
         setAutoRunStatus(autoRun, "verifying");
-        let verification = { passed: true, verified: false, summary: "No verification command configured." };
+        let verification = state.autoRunSettings?.requireVerification
+          ? { passed: false, verified: false, summary: "Verification is required, but no verification command is configured." }
+          : { passed: true, verified: false, summary: "No verification command configured." };
         try {
           if (typeof verifyWorktree === "function") {
             verification = await verifyWorktree({ worktree, autoRun });
@@ -824,15 +1131,25 @@ export function createAutoRunService({
         } catch (error) {
           verification = { passed: false, verified: true, summary: `Verification error: ${String(error?.message ?? error)}` };
         }
+        if (state.autoRunSettings?.requireVerification && !verification.verified) {
+          verification = {
+            passed: false,
+            verified: false,
+            summary: "Verification is required, but no verification command is configured.",
+          };
+        }
         autoRun.verification = { passed: verification.passed, verified: verification.verified, summary: verification.summary ?? null };
-        if (verification.verified && !verification.passed) {
+        if (!verification.passed) {
           // Self-repair: feed the failing check back to the agent for another attempt
           // in the SAME worktree, rather than blocking on the first failure. Bounded
           // by the attempt cap. Only develop runs repair — design/clarify/etc. produce
           // no code to re-verify.
           const maxRepairs = state.autoRunSettings?.maxRepairAttempts ?? 2;
           const attempts = autoRun.repairAttempts ?? 0;
-          const repairEligible = maxRepairs > 0 && attempts < maxRepairs && (autoRun.decision?.path ?? "develop") === "develop";
+          const repairEligible = verification.verified
+            && maxRepairs > 0
+            && attempts < maxRepairs
+            && (autoRun.decision?.path ?? "develop") === "develop";
           // A repair spawns a NEW agent run, so it must clear the same spend/safety
           // gates a fresh run does — otherwise it spends past the budget, ignores the
           // kill switch, and defeats the breaker (worst case: the original run's spend
@@ -856,6 +1173,8 @@ export function createAutoRunService({
               try {
                 repair = createInvocation(repairTask, agent, {
                   preApproved: true, // continuation of an already human-approved run on unchanged content — no re-gate
+                  ...codexAutoApprovalOptions(agent),
+                  timeoutSeconds: Number(agent.adapter?.timeoutSeconds ?? 600),
                   metadata: { worktreeId: autoRun.worktreeId, projectId: autoRun.projectId, autoRunId: autoRun.id, role: "develop", repairAttempt: autoRun.repairAttempts },
                 });
               } catch {
@@ -916,6 +1235,21 @@ export function createAutoRunService({
             screenshots = [];
           }
         }
+        // A local issue is deliberately platform-local: its reviewable result is
+        // the committed worktree/branch, not a GitHub pull request. Requiring a
+        // remote PR here makes a successful local task fail when its source
+        // branch is local-only (or the project has no GitHub remote at all).
+        if (autoRun.link?.type === "local_issue") {
+          runTx(() => setAutoRunStatus(autoRun, "done", {
+            error: null,
+            localDelivery: {
+              worktreeId: autoRun.worktreeId,
+              branchName: worktree.branchName ?? worktree.branch ?? autoRun.branchName ?? null,
+            },
+            ...(screenshots.length ? { screenshots } : {}),
+          }));
+          return autoRun;
+        }
         setAutoRunStatus(autoRun, "publishing");
         try {
           await publishWorktreeBranch(autoRun.worktreeId);
@@ -931,6 +1265,9 @@ export function createAutoRunService({
           runTx(() => setAutoRunStatus(autoRun, "failed", { error: String(error?.message ?? error) }));
         }
       } else {
+        if (await continueTimedOutAutoRun(autoRun, invocation)) {
+          return autoRun;
+        }
         // failed | timed_out | cancelled | rejected. Carry the invocation's
         // errorCode onto the run: an infrastructure reclaim (bridge offline →
         // "dispatch_timeout") is distinguishable from a genuine task failure
@@ -1022,14 +1359,20 @@ export function createAutoRunService({
   // settledStatuses, the invocation-terminal reaction (advanceAutoRunForInvocation)
   // then skips it instead of re-deriving `failed`. Non-destructive: the worktree is left
   // intact (a fresh run can reuse it), matching retry/teardown's non-destructive posture.
-  function cancelAutoRun(autoRunId, { actor } = {}) {
+  function cancelAutoRun(autoRunId, { actor, terminalId = null } = {}) {
     const autoRun = state.autoRuns.find((item) => item.id === autoRunId);
     if (!autoRun) throw new Error("Auto-run not found.");
+    if (terminalId && String(terminalId) !== autoRun.terminalId) {
+      throw new Error("This run belongs to a different terminal.");
+    }
     if (settledStatuses.has(autoRun.status)) {
       throw new Error("This run has already settled; only an in-flight run can be cancelled.");
     }
     if (autoRun.invocationId && typeof cancelInvocation === "function") {
       const invocation = findInvocation(autoRun.invocationId);
+      if (invocation?.terminalId && invocation.terminalId !== autoRun.terminalId) {
+        throw new Error("Invocation terminal ownership does not match its task.");
+      }
       if (invocation && !isTerminal(invocation.status)) {
         try {
           cancelInvocation(invocation, actor);
@@ -1045,9 +1388,17 @@ export function createAutoRunService({
     });
   }
 
-  async function retryAutoRun(autoRunId, { actor } = {}) {
+  async function retryAutoRun(autoRunId, {
+    actor,
+    terminalId = null,
+    approvalRecoveryRequestId = null,
+    approvalRecoveryClaimToken = null,
+  } = {}) {
     const autoRun = state.autoRuns.find((item) => item.id === autoRunId);
     if (!autoRun) throw new Error("Auto-run not found.");
+    if (terminalId && String(terminalId) !== autoRun.terminalId) {
+      throw new Error("This run belongs to a different terminal.");
+    }
     if (!["failed", "blocked"].includes(autoRun.status)) {
       throw new Error("Only a failed or blocked auto-run can be retried.");
     }
@@ -1056,19 +1407,175 @@ export function createAutoRunService({
     const agent = (autoRun.agentId ? findAgent(autoRun.agentId) : null) ?? defaultAgent();
     if (!agent) throw new Error("No agent is registered to retry this run.");
     if (agent.status === "disabled") throw new Error("The selected agent is disabled.");
+    if (autoRun.terminalId && (agent.location?.type !== "local_device" || agent.location.deviceId !== autoRun.terminalId)) {
+      throw new Error("The selected agent does not belong to this task's terminal.");
+    }
     if (agent.location?.type === "local_device" && state.device?.unlinkState !== "linked") {
       throw new Error("The target device is unlinked; link it before retrying.");
     }
 
-    const issueBody = await maybeFetchIssueBody(autoRun.link, autoRun.projectId);
+    const retrySourceInvocationId = autoRun.invocationId ?? null;
+    const retrySourceInvocation = retrySourceInvocationId
+      ? (state.invocations ?? []).find((item) => item.id === retrySourceInvocationId) ?? null
+      : null;
+    // A retry attempt can itself expire at the approval gate before a new Codex
+    // thread starts. In that case the latest invocation is approval_timeout,
+    // but the useful breakpoint is still the newest execution_timeout in this
+    // exact Auto-run/worktree chain. Walk only this bounded chain; never borrow
+    // another task's session.
+    const timeoutResumeSource = [
+      retrySourceInvocation,
+      ...(state.invocations ?? []),
+    ].find((candidate, index, rows) =>
+      candidate
+      && rows.indexOf(candidate) === index
+      && candidate.status === "timed_out"
+      && candidate.result?.errorCode === "execution_timeout"
+      && candidate.options?.metadata?.autoRunId === autoRun.id
+      && (candidate.worktreeId ?? candidate.options?.metadata?.worktreeId) === autoRun.worktreeId) ?? null;
+    const resumesExecutionTimeout = Boolean(timeoutResumeSource);
+    const retryCheckpoint = resumesExecutionTimeout
+      ? buildAutoRunCheckpoint({
+          invocation: timeoutResumeSource,
+          events: [
+            ...(state.codexEvidenceRecords ?? []),
+            ...(state.invocationEvents ?? []),
+            ...(state.events ?? []),
+          ],
+          changedFiles: timeoutResumeSource?.result?.continuationCheckpoint?.changedFiles ?? [],
+        })
+      : null;
+    const approvalRecoveryRequest = approvalRecoveryRequestId
+      ? (state.codexApprovalBrokerRequests ?? []).find((request) => request.id === approvalRecoveryRequestId)
+      : null;
+    const timeoutResumeSessionId = String(
+      timeoutResumeSource?.options?.codexResumeSessionId
+      ?? timeoutResumeSource?.result?.providerSessionId
+      ?? "",
+    ).trim();
+    const timeoutContinuationApproval = !approvalRecoveryRequest && timeoutResumeSource
+      ? (state.codexApprovalBrokerRequests ?? []).find((request) =>
+          request.status === "approved"
+          && !request.continuationGrant?.targetInvocationId
+          && (() => {
+            const approvalInvocation = (state.invocations ?? []).find((item) => item.id === request.invocationId);
+            if (!approvalInvocation) {
+              // Preserve compatibility with the immediate timeout record while
+              // refusing to infer scope for any other missing invocation.
+              return request.invocationId === timeoutResumeSource.id;
+            }
+            const metadata = approvalInvocation.options?.metadata ?? {};
+            if (
+              metadata.autoRunId !== autoRun.id
+              || (approvalInvocation.worktreeId ?? metadata.worktreeId) !== autoRun.worktreeId
+            ) {
+              return false;
+            }
+            if (approvalInvocation.id === timeoutResumeSource.id) {
+              return true;
+            }
+            // A reused broker request is itself an auditable child capability.
+            // Carry that unconsumed child forward after a timed-out/cancelled
+            // continuation, but only inside the exact provider thread.
+            return Boolean(request.recoveredFromApprovalRequestId)
+              && Boolean(timeoutResumeSessionId)
+              && approvalInvocation.options?.codexResumeSessionId === timeoutResumeSessionId
+              && approvalInvocation.requestedBy === timeoutResumeSource.requestedBy;
+          })()) ?? null
+      : null;
+    if (approvalRecoveryRequestId && (
+      !approvalRecoveryRequest
+      || approvalRecoveryRequest.status !== "timed_out"
+      || approvalRecoveryRequest.lateApprovalRecovery?.status !== "starting"
+      || approvalRecoveryRequest.lateApprovalRecovery?.autoRunId !== autoRun.id
+      || approvalRecoveryRequest.lateApprovalRecovery?.claimToken !== approvalRecoveryClaimToken
+    )) {
+      throw new Error("The late approval recovery grant is invalid or no longer active.");
+    }
+    const issueBody = approvalRecoveryRequest
+      ? autoRun.issueBody ?? null
+      : (await maybeFetchIssueBody(autoRun.link, autoRun.projectId)) ?? autoRun.issueBody ?? null;
+    // A normal retry can yield while refreshing an issue body. Re-check the
+    // claim before creating an invocation so a simultaneous late-approval
+    // recovery (or a second retry click) cannot launch a duplicate run.
+    if (
+      !["failed", "blocked"].includes(autoRun.status)
+      || (autoRun.invocationId ?? null) !== retrySourceInvocationId
+    ) {
+      throw new Error("Another retry has already started for this auto-run.");
+    }
     const retryPath = autoRun.decision?.path ?? "develop";
-    const task = roleAutoRunPrompt(autoRun.link, { path: retryPath, issueBody });
+    const task = approvalRecoveryRequest
+      ? `${roleAutoRunPrompt(autoRun.link, { path: retryPath, issueBody })}\n\n` +
+        "The earlier launch expired while waiting for approval. That exact task has now been approved. " +
+        "Resume on this existing worktree without repeating broad repository discovery."
+      : resumesExecutionTimeout
+        ? `${roleAutoRunPrompt(autoRun.link, { path: retryPath, issueBody })}\n\n${continuationCheckpointPrompt(retryCheckpoint)}`
+        : roleAutoRunPrompt(autoRun.link, { path: retryPath, issueBody });
     let invocation;
     try {
       invocation = createInvocation(task, agent, {
         actor,
+        requestedBy: retrySourceInvocation?.requestedBy ?? actor?.userId ?? "usr_local",
+        ...codexAutoApprovalOptions(agent),
+        preApproved: Boolean(approvalRecoveryRequest || timeoutContinuationApproval),
+        timeoutSeconds: Number(agent.adapter?.timeoutSeconds ?? 600),
+        ...(resumesExecutionTimeout
+          ? {
+              idempotencyKey: `auto-run:${autoRun.id}:manual-timeout-retry:${timeoutResumeSource.id}:from:${retrySourceInvocationId ?? "none"}`,
+              codexSessionMode: "continue_last",
+              resumeFromInvocationId: timeoutResumeSource.id,
+            }
+          : {}),
         // Same role seeding as the initial run so role-restricted skills render.
-        metadata: { worktreeId: worktree.id, projectId: worktree.projectId, autoRunId: autoRun.id, role: retryPath },
+        metadata: {
+          worktreeId: worktree.id,
+          projectId: worktree.projectId,
+          autoRunId: autoRun.id,
+          role: retryPath,
+          ...(resumesExecutionTimeout
+            ? {
+                timeoutRecoverySourceInvocationId: timeoutResumeSource.id,
+                continuationCheckpoint: retryCheckpoint,
+              }
+            : {}),
+          ...(approvalRecoveryRequest
+            ? { codexApprovalContinuationRequestId: approvalRecoveryRequest.id }
+            : timeoutContinuationApproval
+              ? { codexApprovalContinuationRequestId: timeoutContinuationApproval.id }
+            : {}),
+        },
+      });
+      runTx(() => {
+        if (approvalRecoveryRequest) {
+          approvalRecoveryRequest.lateApprovalRecovery.targetInvocationId = invocation.id;
+          approvalRecoveryRequest.updatedAt = now();
+        }
+        if (timeoutContinuationApproval) {
+          timeoutContinuationApproval.continuationGrant = {
+            targetInvocationId: invocation.id,
+            autoRunId: autoRun.id,
+            worktreeId: worktree.id,
+            grantedAt: now(),
+          };
+          timeoutContinuationApproval.updatedAt = now();
+        }
+        // Bind the new invocation before handing it to the executor. A process
+        // restart after dispatch can then reconcile the durable recovery claim
+        // instead of leaving the auto-run pointed at its expired invocation.
+        autoRun.invocationId = invocation.id;
+        // Fresh repair budget for the retry — otherwise a run that exhausted its
+        // repairs stays at the cap and the retried attempt gets zero self-repair.
+        autoRun.repairAttempts = 0;
+        autoRun.timeoutRecoveryAttempts = 0;
+        setAutoRunStatus(autoRun, autoRunStatusForInvocation(invocation), { error: null, prNumber: null, prUrl: null });
+        appendEvent({
+          invocationId: invocation.id,
+          type: "auto_run_retried",
+          level: "info",
+          message: `Auto-run ${autoRun.id} retried on its existing worktree.`,
+          data: { autoRunId: autoRun.id, worktreeId: worktree.id, invocationId: invocation.id, status: autoRun.status },
+        });
       });
       startInvocationIfAllowed(invocation, agent);
     } catch (error) {
@@ -1077,21 +1584,7 @@ export function createAutoRunService({
       });
       throw error;
     }
-    return runTx(() => {
-      autoRun.invocationId = invocation.id;
-      // Fresh repair budget for the retry — otherwise a run that exhausted its
-      // repairs stays at the cap and the retried attempt gets zero self-repair.
-      autoRun.repairAttempts = 0;
-      setAutoRunStatus(autoRun, autoRunStatusForInvocation(invocation), { error: null, prNumber: null, prUrl: null });
-      appendEvent({
-        invocationId: invocation.id,
-        type: "auto_run_retried",
-        level: "info",
-        message: `Auto-run ${autoRun.id} retried on its existing worktree.`,
-        data: { autoRunId: autoRun.id, worktreeId: worktree.id, invocationId: invocation.id, status: autoRun.status },
-      });
-      return { autoRun, invocation };
-    });
+    return { autoRun, invocation };
   }
 
   // #1268 (3b): after a run fails for an INFRASTRUCTURE reason (the executor died,
@@ -1162,6 +1655,8 @@ export function createAutoRunService({
     let invocation;
     try {
       invocation = createInvocation(task, alternate, {
+        ...codexAutoApprovalOptions(alternate),
+        timeoutSeconds: Number(alternate.adapter?.timeoutSeconds ?? 600),
         metadata: { worktreeId: worktree.id, projectId: worktree.projectId, autoRunId: autoRun.id, role: path },
       });
       startInvocationIfAllowed(invocation, alternate);
@@ -1198,12 +1693,13 @@ export function createAutoRunService({
         message: `Auto-run ${autoRun.id} failed over from ${fromAgentId} to ${alternate.id} after "${reason}" (attempt ${autoRun.failoverAttempts}).`,
         data: { autoRunId: autoRun.id, fromAgentId, toAgentId: alternate.id, reason, failoverAttempts: autoRun.failoverAttempts, worktreeId: worktree.id, invocationId: invocation.id },
       });
-      void sendAlert?.({
+      const alert = {
         kind: "run_failed_over",
         severity: "medium",
         message: `Auto-run ${autoRun.id} failed over to ${alternate.id} after ${reason}.`,
         data: { autoRunId: autoRun.id, fromAgentId, toAgentId: alternate.id, reason, link: autoRun.link },
-      });
+      };
+      sendAlert?.(alert);
       return true;
     });
   }
@@ -1266,12 +1762,11 @@ export function createAutoRunService({
       throw new Error(result?.error || "gh pr merge failed.");
     }
     runTx(() => {
-      autoRun.prState = "MERGED";
-      autoRun.prStateCheckedAt = now();
+      convergeAutoRunTerminalState({ state, autoRun, disposition: "MERGED", now, nextId, source: "in_tool_merge" });
       // #1151: merge was the one autoRun gate whose settle recorded WHO only in
       // the event log (500-row ring buffer) — stamp it on the record.
       autoRun.prMergedBy = actor?.userId ?? "usr_local";
-      autoRun.prMergedAt = now();
+      autoRun.prMergedAt ??= now();
       appendEvent({
         invocationId: autoRun.invocationId,
         type: "auto_run_pr_merged",
@@ -1966,5 +2461,58 @@ export function createAutoRunService({
     return { reaped, readvanced, holdsReleased };
   }
 
-  return { startAutoRun, advanceAutoRunForInvocation, syncAutoRunOnApproval, syncAutoRunOnDenial, retryAutoRun, attemptFailover, cancelAutoRun, mergeAutoRunPr, maybeDeployAfterMerge, reapStuckAutoRuns, autoMergeSweep, approveDesign, rejectDesign, answerClarify, approveDecomposition, rejectDecomposition };
+  function recordRoutingOverride(autoRunId, {
+    actor = null, actualPath, reason, expectedRevision = 0, idempotencyKey = null,
+  } = {}) {
+    const autoRun = state.autoRuns.find((item) => item.id === autoRunId);
+    if (!autoRun) throw new Error("Auto-run not found.");
+    if (!["owner", "admin", "operator"].includes(actor?.role)) {
+      const error = new Error("Only an operator, admin, or owner may record routing truth.");
+      error.status = 403;
+      error.code = "routing_override_forbidden";
+      throw error;
+    }
+    const replayKey = String(idempotencyKey ?? "").trim();
+    const publicOverride = (value) => {
+      const { idempotencyKey: _idempotencyKey, ...visible } = value ?? {};
+      return visible;
+    };
+    if (replayKey && autoRun.routingOverride?.idempotencyKey === replayKey) {
+      return { ok: true, routingOverride: publicOverride(autoRun.routingOverride), replayed: true };
+    }
+    const currentRevision = Number(autoRun.routingOverride?.revision ?? 0);
+    if (!Number.isInteger(Number(expectedRevision)) || Number(expectedRevision) !== currentRevision) {
+      const error = new Error("Routing feedback changed; reload before saving.");
+      error.status = 409;
+      error.code = "routing_override_conflict";
+      error.currentRevision = currentRevision;
+      throw error;
+    }
+    if (!["develop", "design", "prototype", "clarify", "decompose"].includes(actualPath)) {
+      throw new Error("A valid actual routing path is required.");
+    }
+    const note = String(reason ?? "").trim();
+    if (!note) throw new Error("A routing override reason is required.");
+    runTx(() => {
+      autoRun.routingOverride = {
+        recommendedPath: autoRun.decision?.path ?? null,
+        actualPath,
+        reason: note.slice(0, 1000),
+        actorId: actor?.userId ?? "usr_local",
+        recordedAt: now(),
+        revision: currentRevision + 1,
+        idempotencyKey: replayKey || null,
+      };
+      appendEvent({
+        invocationId: autoRun.invocationId,
+        type: "auto_run_routing_overridden",
+        level: "info",
+        message: `Auto-run ${autoRun.id} routing feedback recorded: ${autoRun.decision?.path ?? "unknown"} → ${actualPath}.`,
+        data: { autoRunId: autoRun.id, ...publicOverride(autoRun.routingOverride) },
+      });
+    });
+    return { ok: true, routingOverride: publicOverride(autoRun.routingOverride), replayed: false };
+  }
+
+  return { startAutoRun, advanceAutoRunForInvocation, syncAutoRunOnApproval, syncAutoRunOnDenial, retryAutoRun, attemptFailover, cancelAutoRun, mergeAutoRunPr, recordRoutingOverride, maybeDeployAfterMerge, reapStuckAutoRuns, autoMergeSweep, approveDesign, rejectDesign, answerClarify, approveDecomposition, rejectDecomposition };
 }

@@ -1,4 +1,5 @@
 import { computeInvocationDispatchHealth } from "../read-models/invocation-dispatch-health.mjs";
+import { searchTraceRecords } from "../read-models/trace-search.mjs";
 import { denyForeignProject } from "../runtime/auth.mjs";
 
 export async function handleInvocationRoutes({
@@ -29,6 +30,17 @@ export async function handleInvocationRoutes({
   claimDecision,
   releaseDecisionClaim,
 }) {
+  if (req.method === "GET" && url.pathname === "/api/traces") {
+    sendJson(res, 200, searchTraceRecords({
+      state,
+      actor,
+      query: url.searchParams.get("q") ?? "",
+      cursor: url.searchParams.get("cursor"),
+      limit: url.searchParams.get("limit"),
+    }));
+    return true;
+  }
+
   // #1151 decision soft-claims: mark a pending-decision row "I'm handling this".
   // Advisory — a 409 tells the caller who holds the marker, but the decision
   // endpoints themselves are never gated by it. `:id` is the pendingDecisions

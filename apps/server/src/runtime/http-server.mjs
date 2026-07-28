@@ -1,5 +1,8 @@
 import http from "node:http";
-import { REQUIRE_AUTH, resolveActor } from "./auth.mjs";
+import { timingSafeEqual } from "node:crypto";
+import { resolveActor } from "./auth.mjs";
+import { identityPolicyFromEnv } from "./identity-policy.mjs";
+import { validSessionCsrf } from "../services/identity-security.mjs";
 import { handleAgentRoutes } from "../routes/agents.mjs";
 import { handleAgentSkillRoutes } from "../routes/agent-skills.mjs";
 import { handleApplicationRoutes } from "../routes/applications.mjs";
@@ -12,6 +15,8 @@ import { handleCanvasSceneRoutes } from "../routes/canvas-scenes.mjs";
 import { handleCodexRoutes } from "../routes/codex.mjs";
 import { handleControlPlaneRoutes } from "../routes/control-plane.mjs";
 import { handleIntegrationRoutes } from "../routes/integrations.mjs";
+import { handleIdentityRoutes } from "../routes/identity.mjs";
+import { handleGuidedSetupRoutes } from "../routes/guided-setup.mjs";
 import { handleInvocationRoutes } from "../routes/invocations.mjs";
 import { handleLoopRoutineRoutes } from "../routes/loop-routines.mjs";
 import { handleM3Routes } from "../routes/m3.mjs";
@@ -21,6 +26,10 @@ import { backfillApplicationRuntimeMetadata } from "../services/applications.mjs
 import { handleReviewFindingRoutes } from "../routes/review-findings.mjs";
 import { handleTerminalRoutes } from "../routes/terminal.mjs";
 import { handleToolRoutes } from "../routes/tools.mjs";
+import { handleWorkItemRoutes } from "../routes/work-items.mjs";
+import { handlePlanningProjectRoutes } from "../routes/planning-projects.mjs";
+import { ensureEventStreamMetrics, eventsAfter } from "../services/event-stream-metrics.mjs";
+import { terminalObservationReadModel } from "../read-models/terminal-observation.mjs";
 
 export function createHttpServer({
   host,
@@ -39,13 +48,42 @@ export function createHttpServer({
   createWorktree,
   createWorktreePr,
   publishWorktreeBranch,
+  promoteWorktreeToBase,
+  promoteWorktreeToPullRequest,
   ensureLocalOrigin,
   startAutoRun,
   retryAutoRun,
+  cancelAutoRun,
   mergeAutoRunPr,
+  recordRoutingOverride,
   setReportSchedule,
   postReportNow,
   claimIssue,
+  claimWorkItem,
+  releaseWorkItemClaim,
+  bindGithubIssue,
+  syncGithubIssue,
+  bindExternalIssue,
+  syncExternalIssue,
+  listWorkItemExternalProviders,
+  fetchWorkItemExternalIssue,
+  pushWorkItemExternalIssue,
+  fetchWorkItemGithubIssue,
+  pushWorkItemGithubIssue,
+  recordWorkItemVerification,
+  recordWorkItemAssetOperation,
+  startWorkItemApplicationExecution,
+  requestWorkItemApplicationApproval,
+  ingestGithubWorkItemWebhook,
+  replayGithubWorkItemWebhook,
+  recordGithubWorkItemWebhookFailure,
+  ingestExternalWorkItemWebhook,
+  replayExternalWorkItemWebhook,
+  recordExternalWorkItemWebhookFailure,
+  updateWorkItemAttention,
+  getWorkItemGithubSyncDiagnostics,
+  suggestWorkItemDraft,
+  retryWorkItemAlert,
   releaseIssueClaim,
   listIssueClaims,
   approveDesign,
@@ -58,6 +96,7 @@ export function createHttpServer({
   removeProject,
   removeWorktree,
   updateProject,
+  readProjectDocuments,
   readProjectTree,
   searchProjectContent,
   gitProjectSummary,
@@ -120,6 +159,7 @@ export function createHttpServer({
   recordCodexHookEvent,
   expireCodexApprovalBrokerRequests,
   resolveCodexApprovalBrokerRequest,
+  recoverTimedOutCodexApproval,
   createCodexImportedEvidenceRecord,
   createCodexChangeReview,
   createCodexExecReview,
@@ -202,6 +242,7 @@ export function createHttpServer({
   createCapabilityInvocation,
   getCapability,
   listCapabilities,
+  resolveCapability,
   createMailIssueFromImport,
   replyOnIssue,
   confirmReplyDraft,
@@ -211,6 +252,32 @@ export function createHttpServer({
   createCanvasScene,
   updateCanvasScene,
   deleteCanvasScene,
+  listWorkItems,
+  listWorkItemAttention,
+  getWorkItem,
+  createWorkItem,
+  updateWorkItem,
+  bulkUpdateWorkItems,
+  transitionWorkItem,
+  completeWorkItemDelivery,
+  listWorkItemActivity,
+  listWorkItemComments,
+  createWorkItemComment,
+  updateWorkItemComment,
+  deleteWorkItemComment,
+  recordWorkItemExecutionBinding,
+  listPlanningProjects,
+  getPlanningProject,
+  createPlanningProject,
+  updatePlanningProject,
+  setPlanningProjectArchived,
+  addPlanningProjectItem,
+  removePlanningProjectItem,
+  reorderPlanningProjectItems,
+  updatePlanningProjectItems,
+  suggestPlanningPlan,
+  executePlanningRecommendedAction,
+  decidePlanningRecommendedAction,
   registerChannel,
   listChannels,
   enableChannel,
@@ -230,10 +297,13 @@ export function createHttpServer({
   retryChannelDelivery,
   nextId,
   persistStateSoon,
+  persistStateNow,
+  identityProviderCore = null,
 }) {
+  const identityPolicy = identityPolicyFromEnv();
   return http.createServer(async (req, res) => {
     try {
-      setCors(res);
+      setCors(req, res);
 
       if (req.method === "OPTIONS") {
         res.writeHead(204);
@@ -257,11 +327,55 @@ export function createHttpServer({
       // --- Identity: resolve the actor, then gate. `/api/session` (login) is
       // public and handled downstream in control-plane; everything else needs a
       // live token when MYAGENT_REQUIRE_AUTH is on. ---
-      const actor = resolveActor(state, req);
+      const actor = resolveActor(state, req, { now, persistStateSoon });
+      const observationPath = url.pathname === "/api/terminal-observation/v1";
+      if (observationPath) {
+        if (req.method !== "GET") {
+          sendJson(res, 405, { error: "observer_read_only" });
+          return;
+        }
+        if (!validObserverToken(req.headers.authorization)) {
+          sendJson(res, 401, { error: "invalid_observer_token" });
+          return;
+        }
+        const snapshot = publicState(actor);
+        const workItemsResult = listWorkItems({ limit: 100 }, actor);
+        sendJson(res, 200, terminalObservationReadModel(snapshot, workItemsResult.body?.workItems ?? [], { now }));
+        return;
+      }
       const bridgePath = url.pathname.startsWith("/api/bridge/");
-      const publicPath = url.pathname === "/api/session" || bridgePath;
-      if (REQUIRE_AUTH && !publicPath && !actor.authenticated) {
+      // External providers authenticate webhook deliveries with endpoint-specific
+      // signatures, so a user bearer token must not block those callbacks first.
+      const issueWebhookPath = /^\/api\/webhooks\/(github|gitlab|gitea)\/work-items$/.test(url.pathname);
+      const publicIdentityPath =
+        (req.method === "POST" && url.pathname === "/api/session") ||
+        (req.method === "POST" && url.pathname === "/api/identity/recovery/complete") ||
+        url.pathname === "/api/identity/options" ||
+        url.pathname.startsWith("/api/identity/challenges");
+      const publicPath = publicIdentityPath || bridgePath || issueWebhookPath;
+      if (identityPolicy.requireAuth && !publicPath && !actor.authenticated) {
         sendJson(res, 401, { error: "unauthenticated", message: "Valid session token required." });
+        return;
+      }
+      const mutating = ["POST", "PUT", "PATCH", "DELETE"].includes(req.method);
+      if (mutating && !publicPath && actor.authMethod === "cookie" && !validSessionCsrf(req, actor)) {
+        sendJson(res, 403, { error: "csrf_invalid", message: "A valid CSRF token is required." });
+        return;
+      }
+
+      if (await handleIdentityRoutes({
+        req,
+        res,
+        url,
+        sendJson,
+        readJson,
+        state,
+        actor,
+        now,
+        persistStateSoon,
+        policy: identityPolicy,
+        providerCore: identityProviderCore,
+      })) {
         return;
       }
 
@@ -274,6 +388,66 @@ export function createHttpServer({
         // Application descriptors persisted before the dual-layer model (idempotent).
         backfillApplicationRuntimeMetadata(state.applications);
         sendJson(res, 200, publicState(actor));
+        return;
+      }
+
+      if (await handleGuidedSetupRoutes({
+        req,
+        res,
+        url,
+        sendJson,
+        readJson,
+        state,
+        actor,
+        now,
+        nextId,
+        persistStateSoon,
+        persistStateNow,
+        publicState,
+      })) {
+        return;
+      }
+
+      if (req.method === "GET" && url.pathname === "/api/events/stream") {
+        const streamMetrics = ensureEventStreamMetrics(state, actor?.teamId);
+        streamMetrics.activeConnections += 1;
+        streamMetrics.connections += 1;
+        persistStateSoon();
+        res.writeHead(200, {
+          "Content-Type": "text/event-stream",
+          "Cache-Control": "no-cache, no-transform",
+          Connection: "keep-alive",
+          "X-Accel-Buffering": "no",
+        });
+        let lastEventId = state.events?.[0]?.id ?? null;
+        res.write(`event: ready\ndata: ${JSON.stringify({ lastEventId })}\n\n`);
+        const requestedCursor = String(req.headers["last-event-id"] ?? "");
+        for (const event of eventsAfter(state.events ?? [], requestedCursor)) {
+          res.write(`id: ${event.id}\nevent: state\ndata: ${JSON.stringify({ eventId: event.id, type: event.type, replayed: true })}\n\n`);
+        }
+        const changes = setInterval(() => {
+          const nextEvent = state.events?.[0] ?? null;
+          if (nextEvent?.id && nextEvent.id !== lastEventId) {
+            lastEventId = nextEvent.id;
+            const latencyMs = Math.max(0, Date.now() - Date.parse(nextEvent.createdAt));
+            streamMetrics.eventsSent += 1;
+            streamMetrics.eventLatencyTotalMs += Number.isFinite(latencyMs) ? latencyMs : 0;
+            streamMetrics.eventLatencyMaxMs = Math.max(streamMetrics.eventLatencyMaxMs, Number.isFinite(latencyMs) ? latencyMs : 0);
+            res.write(`id: ${nextEvent.id}\nevent: state\ndata: ${JSON.stringify({ eventId: nextEvent.id, type: nextEvent.type })}\n\n`);
+          }
+        }, 500);
+        const heartbeat = setInterval(() => res.write(": heartbeat\n\n"), 15_000);
+        const close = () => {
+          clearInterval(changes);
+          clearInterval(heartbeat);
+          if (streamMetrics.activeConnections > 0) {
+            streamMetrics.activeConnections -= 1;
+            streamMetrics.disconnects += 1;
+            persistStateSoon();
+          }
+        };
+        req.once("close", close);
+        res.once("close", close);
         return;
       }
 
@@ -348,6 +522,67 @@ export function createHttpServer({
         return;
       }
 
+      if (await handleWorkItemRoutes({
+        req, res, url, sendJson, readJson, actor,
+        listWorkItems, listAttention: listWorkItemAttention, getWorkItem, createWorkItem, updateWorkItem, bulkUpdateWorkItems, transitionWorkItem,
+        listActivity: listWorkItemActivity,
+        listComments: listWorkItemComments,
+        createComment: createWorkItemComment,
+        updateComment: updateWorkItemComment,
+        deleteComment: deleteWorkItemComment,
+        createWorktree,
+        startAutoRun,
+        recordExecutionBinding: recordWorkItemExecutionBinding,
+        promoteWorktreeToBase,
+        promoteWorktreeToPullRequest,
+        completeDelivery: completeWorkItemDelivery,
+        claimWorkItem,
+        releaseWorkItemClaim,
+        bindGithubIssue,
+        syncGithubIssue,
+        bindExternalIssue,
+        syncExternalIssue,
+        listExternalProviders: listWorkItemExternalProviders,
+        fetchExternalIssue: fetchWorkItemExternalIssue,
+        pushExternalIssue: pushWorkItemExternalIssue,
+        fetchGithubIssue: fetchWorkItemGithubIssue,
+        pushGithubIssue: pushWorkItemGithubIssue,
+        recordVerification: recordWorkItemVerification,
+        recordAssetOperation: recordWorkItemAssetOperation,
+        startApplicationExecution: startWorkItemApplicationExecution,
+        requestApplicationExecutionApproval: requestWorkItemApplicationApproval,
+        ingestGithubWebhook: ingestGithubWorkItemWebhook,
+        replayGithubWebhook: replayGithubWorkItemWebhook,
+        recordGithubWebhookFailure: recordGithubWorkItemWebhookFailure,
+        ingestExternalWebhook: ingestExternalWorkItemWebhook,
+        replayExternalWebhook: replayExternalWorkItemWebhook,
+        recordExternalWebhookFailure: recordExternalWorkItemWebhookFailure,
+        updateAttention: updateWorkItemAttention,
+        githubSyncDiagnostics: getWorkItemGithubSyncDiagnostics,
+        suggestWorkItemDraft,
+        retryWorkItemAlert,
+      })) {
+        return;
+      }
+
+      if (await handlePlanningProjectRoutes({
+        req, res, url, sendJson, readJson, actor,
+        listProjects: listPlanningProjects,
+        getProject: getPlanningProject,
+        createProject: createPlanningProject,
+        updateProject: updatePlanningProject,
+        setArchived: setPlanningProjectArchived,
+        addItem: addPlanningProjectItem,
+        removeItem: removePlanningProjectItem,
+        reorderItems: reorderPlanningProjectItems,
+        updateItems: updatePlanningProjectItems,
+        suggestPlan: suggestPlanningPlan,
+        executeRecommendedAction: executePlanningRecommendedAction,
+        decideRecommendedAction: decidePlanningRecommendedAction,
+      })) {
+        return;
+      }
+
       if (handleLoopRoutineRoutes({ req, res, url, sendJson, currentLoopRoutineProjectContext })) {
         return;
       }
@@ -372,7 +607,9 @@ export function createHttpServer({
         ensureLocalOrigin,
         startAutoRun,
         retryAutoRun,
+        cancelAutoRun,
         mergeAutoRunPr,
+        recordRoutingOverride,
         setReportSchedule,
         postReportNow,
         claimIssue,
@@ -389,6 +626,7 @@ export function createHttpServer({
         removeProject,
         removeWorktree,
         updateProject,
+        readProjectDocuments,
         readProjectTree,
         searchProjectContent,
         gitProjectSummary,
@@ -511,6 +749,7 @@ export function createHttpServer({
         recordCodexHookEvent,
         expireCodexApprovalBrokerRequests,
         resolveCodexApprovalBrokerRequest,
+        recoverTimedOutCodexApproval,
         createCodexImportedEvidenceRecord,
         createCodexChangeReview,
         createCodexExecReview,
@@ -585,6 +824,7 @@ export function createHttpServer({
         listCapabilities,
         getCapability,
         createCapabilityInvocation,
+        resolveCapability,
       })) {
         return;
       }
@@ -707,10 +947,39 @@ export function createHttpServer({
   });
 }
 
-function setCors(res) {
-  res.setHeader("Access-Control-Allow-Origin", "*");
+function validObserverToken(authorization) {
+  const expected = String(process.env.MYAGENTTOOL_OBSERVER_TOKEN ?? "");
+  const supplied = String(authorization ?? "").match(/^Observer\s+(.+)$/i)?.[1] ?? "";
+  if (expected.length < 24 || supplied.length !== expected.length) return false;
+  return timingSafeEqual(Buffer.from(expected), Buffer.from(supplied));
+}
+
+function setCors(req, res) {
+  const origin = String(req.headers?.origin ?? "");
+  const configured = new Set(String(process.env.MYAGENT_CORS_ORIGINS ?? "")
+    .split(",")
+    .map((value) => value.trim())
+    .filter(Boolean));
+  let allowed = configured.has(origin);
+  if (origin && !allowed) {
+    try {
+      const originUrl = new URL(origin);
+      const requestHost = new URL(`http://${req.headers?.host ?? "invalid"}`);
+      allowed =
+        ["localhost", "127.0.0.1", "::1"].includes(originUrl.hostname) ||
+        originUrl.hostname === requestHost.hostname;
+    } catch {
+      allowed = false;
+    }
+  }
+  if (allowed) {
+    res.setHeader("Access-Control-Allow-Origin", origin);
+    res.setHeader("Access-Control-Allow-Credentials", "true");
+    res.setHeader("Vary", "Origin");
+  }
   res.setHeader("Access-Control-Allow-Methods", "GET,POST,PUT,PATCH,DELETE,OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "Authorization,Content-Type");
+  res.setHeader("Access-Control-Allow-Headers", "Authorization,Content-Type,Range,X-CSRF-Token");
+  res.setHeader("Access-Control-Expose-Headers", "Accept-Ranges,Content-Length,Content-Range");
 }
 
 async function readJson(req) {

@@ -10,13 +10,18 @@ import type { ConsoleSnapshot } from "@/lib/console-state";
 const apiMock = vi.hoisted(() => ({
   fetchState: vi.fn(),
   getApplicationOrchestrationRunRecovery: vi.fn(),
+  searchTraces: vi.fn(),
 }));
 
 vi.mock("@/lib/api-client", () => ({
   fetchState: apiMock.fetchState,
   api: {
     getApplicationOrchestrationRunRecovery: apiMock.getApplicationOrchestrationRunRecovery,
+    searchTraces: apiMock.searchTraces,
   },
+}));
+vi.mock("@/features/invocations/trace-api", () => ({
+  searchTraces: apiMock.searchTraces,
 }));
 
 afterEach(() => {
@@ -41,6 +46,36 @@ function mockClipboard() {
 }
 
 describe("InvocationsView operator explanation", () => {
+  it("shows server Trace matches with bounded relation evidence", async () => {
+    apiMock.fetchState.mockResolvedValue({ invocations: [], events: [], evidenceLedger: [] });
+    apiMock.searchTraces.mockResolvedValue({
+      total: 1,
+      nextCursor: null,
+      records: [{
+        invocationId: "inv_trace",
+        task: "Prepare review deck",
+        agentId: "agt_docs",
+        projectId: "p1",
+        worktreeId: "",
+        traceId: "trace_1",
+        status: "succeeded",
+        eventTypes: ["application.completed"],
+        eventIds: ["evt_1"],
+        evidenceIds: ["ev_1"],
+        applicationIds: ["app_powerpoint"],
+        channelIds: ["channel_ops"],
+        createdAt: "2026-07-25T00:00:00Z",
+      }],
+    });
+    useUiStore.setState({ section: "invocations" });
+    renderWithClient(createElement(NavigationSyncedInvocationsView));
+    fireEvent.change(await screen.findByRole("searchbox", { name: "Search Trace" }), { target: { value: "deck" } });
+    expect(await screen.findByText("Prepare review deck")).toBeTruthy();
+    expect(screen.getByText("Application · app_powerpoint")).toBeTruthy();
+    expect(screen.getByText("Channel · channel_ops")).toBeTruthy();
+    expect(screen.getByText("Event · application.completed")).toBeTruthy();
+    expect(screen.queryByText("Evidence · ev_1")).toBeNull();
+  });
   it("routes server explanation actions to approval, result, and recovery timeline targets", async () => {
     apiMock.fetchState.mockResolvedValue(actionExplanationState());
     apiMock.getApplicationOrchestrationRunRecovery.mockResolvedValue({

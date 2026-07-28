@@ -11,16 +11,18 @@ import { useConsoleState } from "@/data/use-console-state";
 import { useAsyncAction, api } from "@/data/use-console-actions";
 import { useUiStore } from "@/store/ui-store";
 import { cn } from "@/lib/cn";
-import { readableStatus, statusTone } from "@/lib/readable-labels";
+import { statusTone } from "@/lib/readable-labels";
+import { invocationStatus } from "@/lib/i18n/readable-labels";
+import { useAppTranslation } from "@/lib/i18n/use-app-translation";
 import {
   healthFor,
   matchesScheduleFilter,
-  scheduleHealthLabel,
   scheduleHealthTone,
   SCHEDULE_FILTERS,
   type ScheduleFilter,
 } from "@/features/automation/schedule-health-ui";
 import type { AutomationSnapshot } from "@/lib/console-state";
+import { AutoRunConfigCard } from "@/features/auto-runs/auto-run-config-card";
 
 type ScheduleKind = "weekdays" | "daily" | "interval";
 
@@ -72,6 +74,7 @@ const TEMPLATES: AutomationTemplate[] = [
 // scheduler that fires it is a follow-up; "Run now" already creates a real
 // invocation. List on the left, the selected rule's detail on the right.
 export function AutomationView() {
+  const { t } = useAppTranslation();
   const { data: state } = useConsoleState();
   const { execute, pending } = useAsyncAction();
   const automations = state?.automations ?? [];
@@ -116,15 +119,17 @@ export function AutomationView() {
   }
 
   return (
-    <div className="grid gap-4 lg:grid-cols-[minmax(0,320px)_minmax(0,1fr)]">
+    <div className="space-y-4">
+      <AutoRunConfigCard />
+      <div className="grid gap-4 lg:grid-cols-[minmax(0,320px)_minmax(0,1fr)]">
       <Card>
         <CardHeader>
           <div className="flex items-center justify-between gap-2">
             <div>
-              <CardTitle>Automation</CardTitle>
-              <p className="text-sm text-muted-foreground">Rules that run an agent on a schedule.</p>
+              <CardTitle>{t("automationPage.title")}</CardTitle>
+              <p className="text-sm text-muted-foreground">{t("automationPage.description")}</p>
             </div>
-            <Button variant="secondary" size="sm" onClick={() => setCreating(true)} title="New automation" aria-label="New automation">
+            <Button variant="secondary" size="sm" onClick={() => setCreating(true)} title={t("automationPage.new")} aria-label={t("automationPage.new")}>
               <Plus className="size-4" />
             </Button>
           </div>
@@ -148,16 +153,16 @@ export function AutomationView() {
                       : "border-border text-muted-foreground hover:bg-muted/40",
                   )}
                 >
-                  {option.label} ({count})
+                  {t(`automationHealth.${option.key}` as never)} ({count})
                 </button>
               );
             })}
           </div>
 
           {automations.length === 0 ? (
-            <EmptyState title="No automations" hint="Scheduled agent runs will appear here." />
+            <EmptyState title={t("automationPage.empty")} hint={t("automationPage.emptyHint")} />
           ) : visible.length === 0 ? (
-            <EmptyState title="Nothing matches this filter" hint="Loosen the filter to see the rest." />
+            <EmptyState title={t("automationPage.noMatches")} hint={t("automationPage.noMatchesHint")} />
           ) : (
             visible.map((a) => {
               const health = healthFor(a.id, scheduleHealth);
@@ -177,7 +182,7 @@ export function AutomationView() {
                       <span className="truncate text-sm font-medium">{a.name}</span>
                     </span>
                     {health ? (
-                      <Badge tone={scheduleHealthTone(health.state)}>{scheduleHealthLabel(health.state)}</Badge>
+                      <Badge tone={scheduleHealthTone(health.state)}>{t(`automationHealth.${health.state}` as never)}</Badge>
                     ) : (
                       <Clock className="size-3.5 shrink-0 text-muted-foreground" />
                     )}
@@ -203,10 +208,10 @@ export function AutomationView() {
               <div className="min-w-0">
                 <div className="flex flex-wrap items-center gap-2">
                   <CardTitle>{selected.name}</CardTitle>
-                  <Badge tone={selected.enabled ? "success" : "neutral"}>{selected.enabled ? "Enabled" : "Paused"}</Badge>
+                  <Badge tone={selected.enabled ? "success" : "neutral"}>{t(selected.enabled ? "automationPage.enabled" : "automationPage.paused")}</Badge>
                   {selectedHealth ? (
                     <Badge tone={scheduleHealthTone(selectedHealth.state)}>
-                      {scheduleHealthLabel(selectedHealth.state)}
+                      {t(`automationHealth.${selectedHealth.state}` as never)}
                     </Badge>
                   ) : null}
                 </div>
@@ -232,15 +237,15 @@ export function AutomationView() {
               </div>
               <div className="flex items-center gap-1.5">
                 <Button size="sm" disabled={pending} onClick={() => runNow(selected)}>
-                  <Play className="mr-1 size-3.5" /> Run now
+                  <Play className="mr-1 size-3.5" /> {t("automationPage.runNow")}
                 </Button>
-                <Button variant="secondary" size="sm" disabled={pending} onClick={() => setEditing(selected)} title="Edit" aria-label="Edit automation">
+                <Button variant="secondary" size="sm" disabled={pending} onClick={() => setEditing(selected)} title={t("automationPage.edit")} aria-label={t("automationPage.edit")}>
                   <Pencil className="size-3.5" />
                 </Button>
-                <Button variant="secondary" size="sm" disabled={pending} onClick={() => toggle(selected)} title={selected.enabled ? "Pause" : "Enable"}>
+                <Button variant="secondary" size="sm" disabled={pending} onClick={() => toggle(selected)} title={t(selected.enabled ? "automationPage.pause" : "automationPage.enable")}>
                   <Pause className="size-3.5" />
                 </Button>
-                <Button variant="secondary" size="sm" disabled={pending} onClick={() => remove(selected)} title="Delete">
+                <Button variant="secondary" size="sm" disabled={pending} onClick={() => remove(selected)} title={t("automationPage.delete")}>
                   <Trash2 className="size-3.5 text-destructive" />
                 </Button>
               </div>
@@ -248,24 +253,24 @@ export function AutomationView() {
           </CardHeader>
           <CardContent className="space-y-4">
             <div className="flex gap-4 border-b border-border text-sm">
-              {(["overview", "runs"] as const).map((t) => (
+              {(["overview", "runs"] as const).map((tab) => (
                 <button
-                  key={t}
+                  key={tab}
                   type="button"
-                  onClick={() => setDetailTab(t)}
+                  onClick={() => setDetailTab(tab)}
                   className={cn(
                     "-mb-px border-b-2 pb-2 capitalize transition",
-                    detailTab === t ? "border-primary font-medium text-foreground" : "border-transparent text-muted-foreground hover:text-foreground",
+                    detailTab === tab ? "border-primary font-medium text-foreground" : "border-transparent text-muted-foreground hover:text-foreground",
                   )}
                 >
-                  {t === "runs" ? `Runs ${runs.length}` : "Overview"}
+                  {tab === "runs" ? `${t("automationPage.runs")} ${runs.length}` : t("automationPage.overview")}
                 </button>
               ))}
             </div>
 
             {detailTab === "runs" ? (
               runs.length === 0 ? (
-                <EmptyState title="No runs yet" hint="“Run now” or the schedule will create runs here." />
+                <EmptyState title={t("automationPage.noRuns")} hint={t("automationPage.noRunsHint")} />
               ) : (
                 <div className="overflow-hidden rounded-lg border border-border">
                   <table className="w-full text-sm">
@@ -275,17 +280,17 @@ export function AutomationView() {
                           <td className="px-3 py-2 font-mono text-xs text-muted-foreground">{r.id}</td>
                           <td className="px-3 py-2">
                             {r.options?.metadata?.scheduled ? (
-                              <Badge tone="neutral">scheduled</Badge>
+                              <Badge tone="neutral">{t("automationPage.scheduled")}</Badge>
                             ) : (
-                              <Badge tone="neutral">manual</Badge>
+                              <Badge tone="neutral">{t("automationPage.manual")}</Badge>
                             )}
                           </td>
                           <td className="px-3 py-2">
-                            <Badge tone={statusTone(r.status)}>{readableStatus(r.status)}</Badge>
+                            <Badge tone={statusTone(r.status)}>{invocationStatus(t, r.status)}</Badge>
                           </td>
                           <td className="px-3 py-2 text-right">
                             <button type="button" onClick={() => openRun(r.id)} className="text-xs text-primary hover:underline">
-                              View →
+                              {t("automationPage.view")} →
                             </button>
                           </td>
                         </tr>
@@ -300,14 +305,14 @@ export function AutomationView() {
               <FactGrid
                 cols="grid-cols-2 sm:grid-cols-3 lg:grid-cols-4"
                 items={[
-                  { term: "Schedule", value: selected.schedule.label },
-                  { term: "Next run", value: selected.nextRunAt ? new Date(selected.nextRunAt).toLocaleString() : selected.enabled ? "—" : "Paused" },
-                  { term: "Run location", value: selected.branch ?? "—" },
-                  { term: "Session", value: selected.sessionMode === "fresh" ? "Fresh each run" : selected.sessionMode ?? "—" },
-                  { term: "Source", value: `${projectName(selected.projectId)}${selected.branch ? ` · ${selected.branch}` : ""}` },
-                  { term: "Grace", value: selected.graceHours != null ? `${selected.graceHours} hours` : "—" },
-                  { term: "Pre-check", value: selected.precheck ?? "None" },
-                  { term: "Agent", value: agentName(selected.agentId) },
+                  { term: t("automationPage.schedule"), value: selected.schedule.label },
+                  { term: t("automationPage.nextRun"), value: selected.nextRunAt ? new Date(selected.nextRunAt).toLocaleString() : selected.enabled ? "—" : t("automationPage.paused") },
+                  { term: t("automationPage.runLocation"), value: selected.branch ?? "—" },
+                  { term: t("automationPage.session"), value: selected.sessionMode === "fresh" ? t("automationPage.freshEach") : selected.sessionMode ?? "—" },
+                  { term: t("automationPage.source"), value: `${projectName(selected.projectId)}${selected.branch ? ` · ${selected.branch}` : ""}` },
+                  { term: t("automationPage.grace"), value: selected.graceHours != null ? t("automationPage.hours", { count: selected.graceHours }) : "—" },
+                  { term: t("automationPage.precheck"), value: selected.precheck ?? t("automationPage.none") },
+                  { term: t("automationPage.agent"), value: agentName(selected.agentId) },
                 ]}
               />
             </div>
@@ -315,21 +320,21 @@ export function AutomationView() {
               <FactGrid
                 cols="grid-cols-2 sm:grid-cols-4"
                 items={[
-                  { term: "Last run", value: selected.lastRunAt ? new Date(selected.lastRunAt).toLocaleString() : "Never" },
-                  { term: "Runs", value: String(selected.runCount ?? 0) },
-                  { term: "Tokens", value: String(selected.tokens ?? 0) },
-                  { term: "Usage", value: (selected.runCount ?? 0) > 0 ? `${selected.runCount} run(s)` : "No runs" },
+                  { term: t("automationPage.lastRun"), value: selected.lastRunAt ? new Date(selected.lastRunAt).toLocaleString() : t("automationPage.never") },
+                  { term: t("automationPage.runs"), value: String(selected.runCount ?? 0) },
+                  { term: t("automationPage.tokens"), value: String(selected.tokens ?? 0) },
+                  { term: t("automationPage.usage"), value: (selected.runCount ?? 0) > 0 ? t("automationPage.runCount", { count: selected.runCount }) : t("automationPage.noRunsShort") },
                 ]}
               />
             </div>
             <div>
-              <p className="mb-1 text-xs font-medium uppercase tracking-wide text-muted-foreground">Prompt</p>
+              <p className="mb-1 text-xs font-medium uppercase tracking-wide text-muted-foreground">{t("automationPage.prompt")}</p>
               <p className="rounded-lg border border-border bg-muted/30 p-3 text-sm leading-relaxed text-foreground [overflow-wrap:anywhere]">
                 {selected.prompt}
               </p>
             </div>
             <p className="text-xs text-muted-foreground">
-              Enabled rules fire automatically on their schedule (checked every 30s). “Run now” triggers an extra run immediately.
+              {t("automationPage.enabledHint")}
             </p>
               </>
             )}
@@ -338,12 +343,12 @@ export function AutomationView() {
       ) : (
         <Card>
           <CardContent className="p-6">
-            <EmptyState title="No automation selected" hint="Pick a rule on the left to see its schedule and prompt." />
+            <EmptyState title={t("automationPage.noneSelected")} hint={t("automationPage.noneSelectedHint")} />
           </CardContent>
         </Card>
       )}
 
-      <Modal open={creating} onClose={() => setCreating(false)} title="New automation">
+      <Modal open={creating} onClose={() => setCreating(false)} title={t("automationPage.new")}>
         <AutomationForm
           onDone={(id) => {
             setCreating(false);
@@ -352,7 +357,7 @@ export function AutomationView() {
         />
       </Modal>
 
-      <Modal open={Boolean(editing)} onClose={() => setEditing(null)} title="Edit automation">
+      <Modal open={Boolean(editing)} onClose={() => setEditing(null)} title={t("automationPage.edit")}>
         {editing ? (
           <AutomationForm
             automation={editing}
@@ -363,6 +368,7 @@ export function AutomationView() {
           />
         ) : null}
       </Modal>
+      </div>
     </div>
   );
 }
@@ -371,6 +377,7 @@ export function AutomationView() {
 // without, it POSTs a new one. Fields: name, target project/branch, agent,
 // schedule, and the prompt the agent runs each time.
 function AutomationForm({ automation, onDone }: { automation?: AutomationSnapshot; onDone: (id: string | null) => void }) {
+  const { t } = useAppTranslation();
   const { data: state } = useConsoleState();
   const { execute, pending, error } = useAsyncAction();
   const projects = (state?.projects ?? []).filter((p) => p.status !== "archived");
@@ -425,7 +432,7 @@ function AutomationForm({ automation, onDone }: { automation?: AutomationSnapsho
     <div className="space-y-3">
       <div className="relative flex justify-end">
         <Button variant="secondary" size="sm" onClick={() => setShowTemplates((v) => !v)}>
-          <Sparkles className="mr-1 size-3.5" /> Use template
+          <Sparkles className="mr-1 size-3.5" /> {t("automationPage.useTemplate")}
         </Button>
         {showTemplates ? (
           <>
@@ -447,11 +454,11 @@ function AutomationForm({ automation, onDone }: { automation?: AutomationSnapsho
           </>
         ) : null}
       </div>
-      <Field label="Name">
-        <Input value={name} placeholder="e.g. Nightly test run" onChange={(e) => setName(e.target.value)} />
+      <Field label={t("automationPage.name")}>
+        <Input value={name} placeholder={t("automationPage.namePlaceholder")} onChange={(e) => setName(e.target.value)} />
       </Field>
       <div className="grid grid-cols-2 gap-3">
-        <Field label="Project">
+        <Field label={t("automationPage.project")}>
           <Select value={projectId} onChange={(e) => setProjectId(e.target.value)}>
             {projects.map((p) => (
               <option key={p.id} value={p.id}>
@@ -460,11 +467,11 @@ function AutomationForm({ automation, onDone }: { automation?: AutomationSnapsho
             ))}
           </Select>
         </Field>
-        <Field label="Branch">
+        <Field label={t("automationPage.branch")}>
           <Input value={branch} onChange={(e) => setBranch(e.target.value)} />
         </Field>
       </div>
-      <Field label="Agent">
+      <Field label={t("automationPage.agent")}>
         <Select value={agentId} onChange={(e) => setAgentId(e.target.value)}>
           {agents.map((a) => (
             <option key={a.id} value={a.id}>
@@ -474,15 +481,15 @@ function AutomationForm({ automation, onDone }: { automation?: AutomationSnapsho
         </Select>
       </Field>
       <div className="grid grid-cols-2 gap-3">
-        <Field label="Schedule">
+        <Field label={t("automationPage.schedule")}>
           <Select value={kind} onChange={(e) => setKind(e.target.value as ScheduleKind)}>
-            <option value="weekdays">Weekdays</option>
-            <option value="daily">Daily</option>
-            <option value="interval">Every N minutes</option>
+            <option value="weekdays">{t("automationPage.weekdays")}</option>
+            <option value="daily">{t("automationPage.daily")}</option>
+            <option value="interval">{t("automationPage.interval")}</option>
           </Select>
         </Field>
         {kind === "interval" ? (
-          <Field label="Every (minutes)">
+          <Field label={t("automationPage.everyMinutes")}>
             <Input
               type="number"
               min={1}
@@ -491,24 +498,24 @@ function AutomationForm({ automation, onDone }: { automation?: AutomationSnapsho
             />
           </Field>
         ) : (
-          <Field label="Time">
+          <Field label={t("automationPage.time")}>
             <Input type="time" value={time} onChange={(e) => setTime(e.target.value)} />
           </Field>
         )}
       </div>
-      <Field label="Prompt">
-        <Textarea rows={4} value={prompt} placeholder="What should the agent do each run?" onChange={(e) => setPrompt(e.target.value)} />
+      <Field label={t("automationPage.prompt")}>
+        <Textarea rows={4} value={prompt} placeholder={t("automationPage.promptPlaceholder")} onChange={(e) => setPrompt(e.target.value)} />
       </Field>
-      <Field label="Pre-check (optional command)">
+      <Field label={t("automationPage.precheckOptional")}>
         <Input value={precheck} placeholder="e.g. gh pr list --json number -q '.[0].number'" onChange={(e) => setPrecheck(e.target.value)} />
       </Field>
       <div className="grid grid-cols-2 gap-3">
-        <Field label="Session">
+        <Field label={t("automationPage.session")}>
           <div className="flex gap-1 rounded-lg bg-muted p-0.5 text-xs">
             {(
               [
-                ["fresh", "Fresh each run"],
-                ["reuse", "Reuse"],
+                ["fresh", t("automationPage.freshEach")],
+                ["reuse", t("automationPage.reuse")],
               ] as ["fresh" | "reuse", string][]
             ).map(([key, label]) => (
               <button
@@ -525,11 +532,11 @@ function AutomationForm({ automation, onDone }: { automation?: AutomationSnapsho
             ))}
           </div>
         </Field>
-        <Field label="Grace">
+        <Field label={t("automationPage.grace")}>
           <Select value={String(graceHours)} onChange={(e) => setGraceHours(Number(e.target.value))}>
             {[1, 6, 12, 24, 48].map((h) => (
               <option key={h} value={h}>
-                {h} hour{h === 1 ? "" : "s"}
+                {t("automationPage.hours", { count: h })}
               </option>
             ))}
           </Select>
@@ -537,10 +544,10 @@ function AutomationForm({ automation, onDone }: { automation?: AutomationSnapsho
       </div>
       <div className="flex justify-end gap-2 pt-1">
         <Button variant="secondary" size="sm" disabled={pending} onClick={() => onDone(null)}>
-          Cancel
+          {t("automationPage.cancel")}
         </Button>
         <Button size="sm" disabled={pending || !name.trim() || !projectId || !prompt.trim()} onClick={submit}>
-          {automation ? "Save changes" : "Create automation"}
+          {t(automation ? "automationPage.save" : "automationPage.create")}
         </Button>
       </div>
       {error ? <p className="text-xs text-destructive">{error}</p> : null}

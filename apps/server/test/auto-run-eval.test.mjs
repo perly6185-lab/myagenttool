@@ -15,11 +15,12 @@ function run(path, status, extra = {}) {
 test("routingEvaluation: alignment per path and the overall rate", () => {
   const evaluation = routingEvaluation([
     run("develop", "pr_open"),      // aligned
-    run("develop", "blocked"),      // misaligned (change produced nothing)
+    run("develop", "blocked", { error: "The agent run produced no changes to open a pull request with." }),
     run("develop", "running"),      // inconclusive
     run("design", "report_posted"), // aligned
     run("design", "pr_open"),       // diverted (made a real diff)
     run("clarify", "needs_input"),  // aligned
+    run("decompose", "decomposed"), // aligned
     { status: "pr_open" },           // no decision -> ignored
   ]);
   assert.equal(evaluation.byPath.develop.aligned, 1);
@@ -28,10 +29,24 @@ test("routingEvaluation: alignment per path and the overall rate", () => {
   assert.equal(evaluation.byPath.design.aligned, 1);
   assert.equal(evaluation.byPath.design.diverted, 1);
   assert.equal(evaluation.byPath.clarify.aligned, 1);
-  // Conclusive = 5 (two inconclusive-ish excluded: running + the ignored one);
-  // aligned = 3 -> 0.6.
-  assert.equal(evaluation.conclusive, 5);
-  assert.equal(evaluation.alignmentRate, 0.6);
+  assert.equal(evaluation.byPath.decompose.aligned, 1);
+  // Conclusive = 6; aligned = 4.
+  assert.equal(evaluation.conclusive, 6);
+  assert.equal(evaluation.alignmentRate, 4 / 6);
+});
+
+test("routingEvaluation keeps recommendation quality separate from human truth", () => {
+  const evaluation = routingEvaluation([
+    run("develop", "report_posted", {
+      routingOverride: { actualPath: "design", reason: "The requested output was a design." },
+    }),
+    run("clarify", "needs_input", {
+      routingOverride: { actualPath: "clarify", reason: "Requirements were incomplete." },
+    }),
+  ]);
+  assert.equal(evaluation.byPath.develop.total, 1, "the recommendation stays in its original bucket");
+  assert.equal(evaluation.byPath.design.total, 0, "human truth never rewrites historical model output");
+  assert.deepEqual(evaluation.humanTruth, { total: 2, recommendationMatched: 1, accuracy: 0.5 });
 });
 
 test("routingEvaluation: no data -> null rate; PR dispositions counted per path", () => {
@@ -58,6 +73,7 @@ test("refreshPrDispositions updates open PRs, skips terminal/throttled/capped", 
     ],
   };
   const fetched = [];
+  const changes = [];
   const result = await refreshPrDispositions({
     state,
     now,
@@ -65,12 +81,14 @@ test("refreshPrDispositions updates open PRs, skips terminal/throttled/capped", 
       fetched.push({ prNumber, repoPath });
       return "MERGED";
     },
+    onDispositionChanged: ({ run: changedRun, prState }) => changes.push({ changedRun, prState }),
   });
   assert.deepEqual(fetched, [{ prNumber: 1, repoPath: "/repo" }]);
   assert.equal(result.checked, 1);
   assert.equal(result.updated, 1);
   assert.equal(state.autoRuns[0].prState, "MERGED");
   assert.equal(state.autoRuns[0].prStateCheckedAt, now());
+  assert.deepEqual(changes, [{ changedRun: state.autoRuns[0], prState: "MERGED" }]);
 });
 
 test("refreshPrDispositions: fetch failure stamps the check time and moves on", async () => {

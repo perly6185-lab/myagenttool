@@ -11,10 +11,32 @@
  * the prior `mutate + persistStateSoon`, so each migration lands as a no-op.
  */
 export function makeRunTx({ store, persistStateSoon } = {}) {
-  return (fn) => {
-    if (typeof store?.transaction === "function") return store.transaction(fn);
-    const result = fn();
-    if (typeof persistStateSoon === "function") persistStateSoon();
-    return result;
+  let afterCommitQueue = null;
+  const runTx = (fn) => {
+    const parentQueue = afterCommitQueue;
+    const queue = parentQueue ?? [];
+    afterCommitQueue = queue;
+    try {
+      const result = typeof store?.transaction === "function" ? store.transaction(fn) : fn();
+      if (!parentQueue && typeof store?.transaction !== "function" && typeof persistStateSoon === "function") persistStateSoon();
+      if (!parentQueue) {
+        afterCommitQueue = null;
+        for (const callback of queue) {
+          try { callback(); } catch { /* committed state must not be reported as rolled back */ }
+        }
+      }
+      return result;
+    } catch (error) {
+      if (!parentQueue) queue.length = 0;
+      throw error;
+    } finally {
+      afterCommitQueue = parentQueue;
+    }
   };
+  runTx.afterCommit = (callback) => {
+    if (typeof callback !== "function") return;
+    if (afterCommitQueue) afterCommitQueue.push(callback);
+    else callback();
+  };
+  return runTx;
 }

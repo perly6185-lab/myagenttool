@@ -14,6 +14,7 @@ export interface DeviceSnapshot {
   lastSeenAt: string | null;
   /** Max invocations this machine runs at once (across distinct worktrees). */
   maxConcurrency?: number;
+  assetResourceClasses?: Array<"small" | "medium" | "large">;
   runtimeReadiness?: DeviceRuntimeReadiness[];
   /** Compatibility alias for older servers. */
   applicationBinaryReadiness?: DeviceRuntimeReadiness[];
@@ -28,6 +29,34 @@ export interface DeviceRuntimeReadiness {
     authenticationStatus?: "authenticated" | "unauthenticated" | "unknown";
     authenticationMethod?: string | null;
     checkedAt: string;
+}
+
+export type GuidedSetupStatus =
+  | "checking"
+  | "action_required"
+  | "waiting_for_approval"
+  | "installing"
+  | "login_required"
+  | "ready"
+  | "failed"
+  | "cancelled";
+
+export interface GuidedSetupSnapshot {
+  version: 1;
+  status: GuidedSetupStatus;
+  currentStep: "computer" | "workspace" | "execution" | "complete";
+  reason: string;
+  action: { kind: "open_section"; section: string } | null;
+  runId: string | null;
+  operationRunId?: string | null;
+  startedAt?: string | null;
+  updatedAt?: string | null;
+  completedCount: number;
+  totalCount: number;
+  steps: Array<{
+    key: "computer" | "workspace" | "execution";
+    state: "complete" | "current" | "pending" | "failed" | "cancelled";
+  }>;
 }
 
 export interface AgentHealth {
@@ -221,6 +250,16 @@ export interface PendingDecision {
   /** Native section to deep-link to for the full context. */
   section: string;
   targetId?: string | null;
+  context?: {
+    command?: string | null;
+    arguments?: string[];
+    workingDirectory?: string | null;
+    pathPolicy?: string | null;
+    impactScope?: string[];
+    projectId?: string | null;
+    worktreeId?: string | null;
+    autoRunId?: string | null;
+  } | null;
   /** #1151: advisory "X is handling this" marker — display-only, never gates the decision. */
   softClaim?: { claimedBy: string | null; expiresAt: string | null };
   /** Ids the inline actions need (approvalId / autoRunId / compareRunId / requestId / invocationId …). */
@@ -241,6 +280,8 @@ export interface PendingDecision {
     channelTaskRequestId?: string;
     issueNumber?: number | null;
     issueUrl?: string | null;
+    timedOut?: boolean;
+    recoveryStatus?: string | null;
   };
 }
 
@@ -537,6 +578,23 @@ export interface CodexApprovalBrokerRequest {
   approvalMode?: string;
   timeoutAt?: string;
   decision?: string | null;
+  recoveredFromApprovalRequestId?: string;
+  continuationGrant?: {
+    targetInvocationId: string;
+    autoRunId: string;
+    worktreeId: string;
+    grantedAt?: string | null;
+  };
+  lateApprovalRecovery?: {
+    status: "requested" | "waiting_for_terminal" | "starting" | "resumed" | "failed" | "unavailable" | string;
+    autoRunId?: string | null;
+    sourceInvocationId?: string | null;
+    targetInvocationId?: string | null;
+    resumedInvocationId?: string | null;
+    requestedAt?: string | null;
+    resumedAt?: string | null;
+    error?: string | null;
+  };
 }
 
 export interface AuditSnapshot {
@@ -665,6 +723,9 @@ export interface LedgerEntry {
   status?: string;
   costOwner?: string;
   projectId?: string;
+  autoRunId?: string | null;
+  localIssueId?: string | null;
+  budgetPoolId?: string | null;
   invocationStatus?: string;
   createdAt: string;
 }
@@ -1170,6 +1231,8 @@ export interface ConsoleSnapshot {
   agentSkills?: AgentSkillSnapshot[];
   device: DeviceSnapshot | null;
   devices?: DeviceSnapshot[];
+  /** Server-derived, restart-safe path to the first runnable local task. */
+  guidedSetup?: GuidedSetupSnapshot;
   projects?: ProjectSnapshot[];
   currentProjectId?: string | null;
   projectTargets?: ProjectTargetSnapshot[];
@@ -1180,6 +1243,27 @@ export interface ConsoleSnapshot {
   issueClaims?: IssueClaim[];
   /** #1152 durable claim lifecycle history (claimed/released/expired), newest first. */
   issueClaimEvents?: IssueClaimEvent[];
+  /** Bounded Work Item totals; details remain on the cursor-paginated endpoint. */
+  workItemSummary?: {
+    total: number;
+    open: number;
+    blocked: number;
+    activeExecutions: number;
+    updatedAt: string | null;
+  };
+  workItemAlertSummary?: {
+    queued: number;
+    failed: number;
+    sent: number;
+    byLocalIssue: {
+      localIssueId: string;
+      status: "queued" | "failed" | "sent";
+      attempts: number;
+      lastError: string | null;
+      createdAt: string;
+      sentAt: string | null;
+    }[];
+  };
   agent: AgentSnapshot | null;
   agents: AgentSnapshot[];
   invocations: InvocationSnapshot[];
@@ -1233,7 +1317,7 @@ export interface ConsoleSnapshot {
   ledgerSummary?: LedgerSummary;
   budgetStatuses?: BudgetStatus[];
   teamBudgetStatuses?: TeamBudgetStatus[];
-  teams?: { id: string; name?: string }[];
+  teams?: { id: string; name?: string; alertWebhookConfigured?: boolean }[];
   users?: { id: string; name?: string; teamId?: string; role?: string }[];
   /** Channel subsystem (#1090): operational rollup per channel, team-scoped. */
   channelOperations?: ChannelOperations[];
@@ -1654,6 +1738,51 @@ export interface ProjectTreeResponse {
   entries: ProjectTreeEntry[];
   truncated: boolean;
   gitSummary?: { modified?: number; added?: number; deleted?: number };
+}
+
+export interface ProjectDocumentEntry {
+  projectId: string;
+  worktreeId?: string | null;
+  name: string;
+  path: string;
+  type: "docx" | "xlsx" | "pptx" | "pdf" | "dxf" | "dwg" | "md" | "mdx" | "png" | "jpg" | "jpeg" | "gif" | "webp" | "avif" | "svg" | "mp4" | "webm" | "mov" | "canvas" | "excalidraw";
+  gitStatus: string;
+  assetFamily?: string;
+  capabilities?: string[];
+  readiness?: { state: "ready" | "waiting_capability"; reason: string };
+}
+
+export interface ProjectDocumentsResponse {
+  projectId: string;
+  worktreeId?: string | null;
+  documents: ProjectDocumentEntry[];
+  truncated: boolean;
+  scanned: number;
+}
+
+export interface AssetDescriptor {
+  id: string;
+  projectId: string;
+  worktreeId?: string | null;
+  terminalId: string;
+  name: string;
+  path: string;
+  family: string;
+  mimeType: string;
+  size: number;
+  resourceClass: "small" | "medium" | "large" | "unknown";
+  hash: string;
+  version: string;
+  capabilities: string[];
+  readiness: { state: "ready" | "waiting_capability"; reason: string };
+  sensitivity: string;
+  preview: {
+    available: boolean;
+    sandboxed: boolean;
+    remoteResources: boolean;
+    maxInlineBytes: number;
+    delivery: "bounded" | "range_stream";
+  };
 }
 
 export interface ApplicationRegisterRequest {

@@ -58,6 +58,18 @@ test("persistence restores active control-plane records across runtime restart",
     first.state.terminalSessions.push({ id: "term_1", status: "running" });
     first.state.terminalEvidenceRecords.push({ id: "tev_1", terminalSessionId: "term_1" });
     first.state.terminalBridgeActions.push({ id: "tba_1", status: "queued" });
+    first.state.guidedSetupRuns.push({
+      id: "gsr_1",
+      ownerTeamId: "team_local",
+      ownerUserId: "usr_local",
+      status: "active",
+      lastCommand: "recheck",
+      checkCount: 2,
+      createdAt: now(),
+      updatedAt: now(),
+      cancelledAt: null,
+      lastResultStatus: "action_required",
+    });
     first.state.sshTargets.push({ id: "ssh_1", name: "Persisted SSH target" });
     first.state.sshConnectionTests.push({ id: "ssh_test_1", targetId: "ssh_1", status: "succeeded" });
     first.state.ledgerEntries.push({ id: "led_1", amount: "1.00", sourceRecordId: "usage_1" });
@@ -96,6 +108,7 @@ test("persistence restores active control-plane records across runtime restart",
     assert(second.state.terminalSessions.some((item) => item.id === "term_1"), "terminal sessions should restore");
     assert(second.state.terminalEvidenceRecords.some((item) => item.id === "tev_1"), "terminal evidence should restore");
     assert(second.state.terminalBridgeActions.some((item) => item.id === "tba_1"), "terminal bridge actions should restore");
+    assert.equal(second.state.guidedSetupRuns.find((item) => item.id === "gsr_1")?.checkCount, 2, "guided setup should resume after restart");
     assert(second.state.sshTargets.some((item) => item.id === "ssh_1"), "SSH targets should restore");
     assert(second.state.sshConnectionTests.some((item) => item.id === "ssh_test_1"), "SSH connection tests should restore");
     assert(second.state.ledgerEntries.some((item) => item.id === "led_1"), "ledger entries should restore");

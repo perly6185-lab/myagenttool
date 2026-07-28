@@ -157,6 +157,30 @@ test("a queued delivery sends, records the provider receipt, and leaves evidence
   assert.equal(harness.events.at(-1).type, "channel_delivery_recorded");
 });
 
+test("delivery preserves bounded task and trace correlation without attachment payloads", () => {
+  const harness = makeDeliveryHarness();
+  const queued = harness.service.enqueueChannelDelivery({
+    channelId: harness.channelId,
+    conversationId: harness.conversationId,
+    content: "done",
+    taskContext: {
+      channelId: harness.channelId,
+      conversationId: harness.conversationId,
+      messageId: "event-1",
+      principalId: "user-1",
+      terminalId: "terminal-1",
+      projectId: "project-1",
+      workItemId: "task-1",
+      traceId: "trace-1",
+      attachmentAssets: [{ secret: "must-not-copy" }],
+    },
+  });
+  const delivery = harness.state.channelDeliveries.find((candidate) => candidate.id === queued.deliveryId);
+  assert.equal(delivery.taskContext.traceId, "trace-1");
+  assert.equal(delivery.taskContext.terminalId, "terminal-1");
+  assert.equal(JSON.stringify(delivery).includes("must-not-copy"), false);
+});
+
 test("retryable failures back off and exhaust into failed_terminal with an undeliverable refusal", async () => {
   const harness = makeDeliveryHarness({
     sendMessage: async () => ({ ok: false, retryable: true, errcode: 45009 }),
@@ -256,13 +280,17 @@ test("notifyInvocationCompleted queues a result message only for channel-origina
     id: "inv_1",
     status: "succeeded",
     result: { summary: "clean tree" },
-    options: { metadata: { channel: { channelId: harness.channelId, conversationId: harness.conversationId, eventId: "chev_x" } } },
+    options: { metadata: { channel: {
+      channelId: harness.channelId, conversationId: harness.conversationId,
+      messageId: "chev_x", workItemId: "task-1", traceId: "task-1",
+    } } },
   });
   assert.equal(queued.ok, true);
   const delivery = harness.state.channelDeliveries.at(-1);
   assert.equal(delivery.invocationId, "inv_1");
-  assert.match(delivery.content, /inv_1: succeeded/);
+  assert.match(delivery.content, /Task task-1: completed/);
   assert.match(delivery.content, /clean tree/);
+  assert.match(delivery.content, /Trace: task-1/);
 });
 
 test("no secret or token material ever lands in state, events, or refusals", async () => {

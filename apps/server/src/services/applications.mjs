@@ -912,7 +912,7 @@ export function createApplicationWrapperAgentRegistration({
 // anything else returns null. This is the single source of truth for WHAT may
 // execute — the bridge only ever runs a command that came through here, so an
 // unapproved or unregistered command can never reach execution.
-const WRAPPER_ARG_INPUT_TYPES = new Set(["date", "token", "enum", "string", "office_file", "csv_file", "excalidraw_file", "png_file", "boolean-flag", "git-rev", "count", "props", "json_commands", "json_data"]);
+const WRAPPER_ARG_INPUT_TYPES = new Set(["date", "token", "enum", "string", "office_file", "pdf_file", "csv_file", "excalidraw_file", "png_file", "boolean-flag", "git-rev", "count", "props", "json_commands", "json_data"]);
 const RESERVED_WRAPPER_ARG_INPUT_KEYS = new Set([
   "approvalToken",
   "idempotencyKey",
@@ -1069,6 +1069,8 @@ function isValidWrapperArgValue(spec, value) {
     // two allowlists reject a `../` or absolute file INDEPENDENTLY.
     case "office_file":
       return isSafeRelFilePath(value) && /\.(docx|xlsx|pptx)$/i.test(value);
+    case "pdf_file":
+      return isSafeRelFilePath(value) && /\.pdf$/i.test(value);
     // A CSV/TSV SOURCE file (officecli import). Same worktree-safe relative-path
     // rule as office_file, but a data extension — it is read, never opened as a
     // document.
@@ -1128,6 +1130,10 @@ const OFFICECLI_CONTENT_PROP_KEYS = new Set([
 // network-forbidden.
 function isSafeMediaSource(value) {
   if (typeof value !== "string" || value.length > 500 || /[\r\n\0]/.test(value)) return false;
+  // officecli trims surrounding whitespace before resolving a path (notably the
+  // path AFTER an `image:` prefix — `image: /etc/x` reads /etc/x), so validate the
+  // trimmed form or a `image: /abs` value would slip past the path checks.
+  value = value.trim();
   // officecli's `image:<path>` fill form (e.g. a slide `background`) reads the
   // referenced file — validate the path, not the literal `image:…` string.
   const img = /^image:(.*)$/i.exec(value);
@@ -1141,7 +1147,7 @@ function isSafeMediaSource(value) {
 // or containing a `..` traversal segment. NOT schemes/URLs (those aren't a local
 // file read and are handled per-key by isSafeMediaSource).
 function isEscapingLocalPath(value) {
-  const v = String(value ?? "");
+  const v = String(value ?? "").trim();
   return /^[/~\\]/.test(v) || /^[A-Za-z]:/.test(v) || v.split(/[/\\]/).includes("..");
 }
 
@@ -1542,7 +1548,7 @@ function wrapperInputSchema(command) {
 function wrapperArgInputJsonType(type) {
   if (type === "props" || type === "json_data") return "object";
   if (type === "json_commands") return "array";
-  if (type === "office_file" || type === "csv_file") return "string";
+  if (type === "office_file" || type === "pdf_file" || type === "csv_file") return "string";
   return type;
 }
 

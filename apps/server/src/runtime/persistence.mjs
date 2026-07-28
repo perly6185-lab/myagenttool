@@ -3,6 +3,7 @@ import { dirname } from "node:path";
 
 import { LOCAL_TEAM_ID, teamOf } from "./auth.mjs";
 import { listDevices } from "./device.mjs";
+import { backfillTerminalOwnership } from "./terminal-ownership.mjs";
 
 // Durable atomic snapshot write. `writeFileSync` truncates the target in place
 // and does not fsync, so a crash mid-write left a torn file — and restore's
@@ -42,10 +43,19 @@ export const persistedArrayKeys = [
   "users",
   "teams",
   "tokens",
+  "identitySessions",
+  "identityChallenges",
+  "identityProviderCodeUses",
+  "identityAuditEvents",
+  "identityLoginAttempts",
+  "identityRecoveryAttempts",
+  "identityRecoveryGrants",
+  "identitySecurityAlerts",
   "agents",
   "applications",
   "applicationInstallRuns",
   "applicationRecoveryActions",
+  "guidedSetupRuns",
   "approvalGrants",
   "applicationDailyStats",
   "refusalDailyStats",
@@ -92,6 +102,18 @@ export const persistedArrayKeys = [
   "decisionSoftClaims",
   "issueClaims",
   "issueClaimEvents",
+  "workItems",
+  "workItemComments",
+  "workItemActivities",
+  "workItemAttentionOperations",
+  "githubWorkItemWebhookDeliveries",
+  "githubWorkItemWebhookFailures",
+  "workItemOperationalAlerts",
+  "webPerformanceMetrics",
+  "operationalAlerts",
+  "alertOutbox",
+  "planningProjects",
+  "planningProjectItems",
   "dispatchAssignments",
   "automations",
   "agentSkills",
@@ -134,6 +156,10 @@ export const persistedObjectKeys = [
   // O5.2 follow-up: the last-emitted below-target SLO set. Durable so a restart
   // does not re-fire an alert for a breach that was already reported.
   "autoRunSloAlert",
+  // Routing-health alert dedupe cursor. Durable for the same reason as SLO.
+  "autoRunRoutingAlert",
+  // Per-team reconnect/replay counters back the operational trend dashboard.
+  "eventStreamMetrics",
   "approvalTokenLegacyUses",
   "eventHistoryRetention",
   "privateDeploymentConfig",
@@ -317,8 +343,9 @@ export function normalizeLoadedState(state, { seededDefaults, defaultProject, sa
     if (device) device.status = "offline";
   }
 
+  const terminalOwnershipBackfilled = backfillTerminalOwnership(state);
   const ownershipInconsistencies = detectOwnershipInconsistencies(state);
-  return { duplicateIdsRepaired, ownershipInconsistencies };
+  return { duplicateIdsRepaired, ownershipInconsistencies, terminalOwnershipBackfilled };
 }
 
 export function createPersistenceRuntime({

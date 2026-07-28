@@ -11,6 +11,28 @@ import { createServerState } from "../src/runtime/state-factory.mjs";
 import { createInvocationEventService } from "../src/services/invocation-events.mjs";
 import { createRetentionArchive } from "../src/services/retention-archive.mjs";
 
+test("event writer propagates an invocation execution chain onto every event", () => {
+  const state = {
+    events: [],
+    invocations: [{ id: "inv_chain", options: { metadata: { executionChainId: "wi_chain" } } }],
+  };
+  const runtime = createEventLogRuntime({
+    state,
+    now: () => "2026-07-24T00:00:00.000Z",
+    nextId: () => "evt_chain",
+    persistStateSoon: () => {},
+    getCodexEventHandlers: () => ({
+      updateCodexSessionFromEvent: () => {},
+      createCodexEvidenceRecord: () => {},
+    }),
+  });
+  const event = runtime.appendEvent({
+    invocationId: "inv_chain", type: "log", level: "info", message: "step", data: { step: 1 },
+  });
+  assert.equal(event.data.executionChainId, "wi_chain");
+  assert.equal(event.data.step, 1);
+});
+
 test("invocation event pages walk newest to oldest without duplicate or missing rows", () => {
   const invocation = invocationFixture("inv_page");
   const all = Array.from({ length: 250 }, (_, index) => eventFixture(invocation.id, index + 1));

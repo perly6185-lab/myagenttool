@@ -1,9 +1,12 @@
 import { Component, type ErrorInfo, type ReactNode } from "react";
 import { Button } from "@/components/ui/button";
+import { i18n } from "@/lib/i18n";
 
 interface Props {
   /** Changing this value (e.g. the active section) clears a caught error. */
   resetKey?: unknown;
+  /** Lazy chunk failures need a fresh module graph, so callers may reload. */
+  onRetry?: () => void;
   children: ReactNode;
 }
 interface State {
@@ -38,15 +41,22 @@ export class ErrorBoundary extends Component<Props, State> {
     if (this.state.error) {
       return (
         <div className="mx-auto max-w-md space-y-3 rounded-lg border border-destructive/40 bg-destructive/5 px-5 py-6 text-sm">
-          <h2 className="text-base font-semibold text-foreground">This view hit an error</h2>
+          <h2 className="text-base font-semibold text-foreground">{i18n.t("shared.errorTitle")}</h2>
           <p className="text-muted-foreground">
-            The rest of the console still works — switch sections from the sidebar, or try again.
+            {i18n.t("shared.errorBody")}
           </p>
           <pre className="max-h-40 overflow-auto rounded bg-muted/60 p-2 font-mono text-xs text-muted-foreground">
             {this.state.error.message}
           </pre>
-          <Button variant="secondary" size="sm" onClick={() => this.setState({ error: null })}>
-            Try again
+          <Button
+            variant="secondary"
+            size="sm"
+            onClick={() => {
+              if (this.props.onRetry) this.props.onRetry();
+              else this.setState({ error: null });
+            }}
+          >
+            {i18n.t("shared.tryAgain")}
           </Button>
         </div>
       );

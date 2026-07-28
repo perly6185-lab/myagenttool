@@ -15,3 +15,4 @@ export * from "./deployment.js";
 export * from "./agent-skills.js";
 export * from "./refusal.js";
 export * from "./canvas.js";
+export * from "./identity.js";

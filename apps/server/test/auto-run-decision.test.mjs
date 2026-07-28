@@ -57,6 +57,17 @@ test("resolveDecision: no decider -> heuristic; broken/invalid decider -> heuris
   assert.equal((await resolveDecision({ link, decideIssuePath: async () => ({ path: "nope" }) })).decidedBy, "heuristic");
 });
 
+test("resolveDecision: records stable, versioned routing evidence", async () => {
+  const input = { link: { title: "Implement retries" }, issueBody: "Add bounded retry handling." };
+  const first = await resolveDecision(input);
+  const second = await resolveDecision(input);
+  const changed = await resolveDecision({ ...input, issueBody: "Add cancellation handling." });
+  assert.match(first.evidence.policyVersion, /^2026-/);
+  assert.equal(first.evidence.inputDigest, second.evidence.inputDigest);
+  assert.notEqual(first.evidence.inputDigest, changed.evidence.inputDigest);
+  assert.equal(first.evidence.inputDigest.length, 64);
+});
+
 test("resolveDecision: confidence gate degrades heavy paths, not develop/clarify", async () => {
   const low = (path, extra = {}) => ({ path, confidence: 0.2, rationale: "r", ...extra });
   const design = await resolveDecision({ link: {}, decideIssuePath: async () => low("design"), minConfidence: 0.6 });

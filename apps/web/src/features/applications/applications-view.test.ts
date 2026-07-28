@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { sourceSummary } from "@/features/applications/applications-view";
+import { sourceSummary } from "@/features/applications/application-source-summary";
 
 describe("sourceSummary", () => {
   it("summarizes each application source type", () => {

@@ -81,6 +81,54 @@ export async function runIssueBodyFetch({ cwd, issueNumber, gh = defaultGh }) {
   }
 }
 
+export async function runIssueSnapshotFetch({ cwd, issueNumber, gh = defaultGh }) {
+  try {
+    const result = await gh([
+      "issue", "view", String(issueNumber),
+      "--json", "number,title,body,state,labels,assignees,milestone,url,updatedAt",
+    ], cwd);
+    const value = JSON.parse(String(result?.stdout ?? "{}"));
+    return {
+      number: Number(value.number),
+      title: String(value.title ?? ""),
+      body: String(value.body ?? ""),
+      state: String(value.state ?? "").toLowerCase(),
+      labels: (value.labels ?? []).map((label) => String(label.name ?? label)).filter(Boolean),
+      assigneeIds: (value.assignees ?? []).map((assignee) => String(assignee.login ?? assignee)).filter(Boolean),
+      milestone: String(value.milestone?.title ?? ""),
+      url: value.url == null ? null : String(value.url),
+      updatedAt: String(value.updatedAt ?? ""),
+    };
+  } catch {
+    return null;
+  }
+}
+
+export async function runIssueSnapshotWrite({ cwd, issueNumber, payload, remote, gh = defaultGh }) {
+  try {
+    const args = ["issue", "edit", String(issueNumber), "--title", payload.title, "--body", payload.body];
+    const desired = new Set(payload.labels ?? []);
+    const existing = new Set(remote?.labels ?? []);
+    for (const label of desired) if (!existing.has(label)) args.push("--add-label", label);
+    for (const label of existing) if (!desired.has(label)) args.push("--remove-label", label);
+    const desiredAssignees = new Set(payload.assigneeIds ?? []);
+    const existingAssignees = new Set(remote?.assigneeIds ?? []);
+    for (const assignee of desiredAssignees) if (!existingAssignees.has(assignee)) args.push("--add-assignee", assignee);
+    for (const assignee of existingAssignees) if (!desiredAssignees.has(assignee)) args.push("--remove-assignee", assignee);
+    if ((payload.milestone ?? "") !== (remote?.milestone ?? "")) {
+      if (payload.milestone) args.push("--milestone", payload.milestone);
+      else args.push("--remove-milestone");
+    }
+    await gh(args, cwd);
+    if (payload.state !== remote?.state) {
+      await gh(["issue", payload.state === "closed" ? "close" : "reopen", String(issueNumber)], cwd);
+    }
+    return { ok: true };
+  } catch (error) {
+    return { ok: false, error: String(error?.stderr ?? error?.message ?? error).trim() };
+  }
+}
+
 // Read a PR's state (OPEN | MERGED | CLOSED) for the routing evaluation's
 // disposition signal. Read-only; null on any failure.
 export async function runPrStateFetch({ cwd, prNumber, gh = defaultGh }) {

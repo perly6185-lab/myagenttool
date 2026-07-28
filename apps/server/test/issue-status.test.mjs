@@ -11,10 +11,51 @@ import {
   runIssueAssigneeEdit,
   runIssueBodyFetch,
   runIssueComment,
+  runIssueSnapshotFetch,
+  runIssueSnapshotWrite,
   runIssueStatusTransition,
   runPrChecks,
   statusTransitionLabels,
 } from "../src/services/issue-status.mjs";
+
+test("GitHub issue snapshots normalize reads and write exact field deltas", async () => {
+  const calls = [];
+  const snapshot = await runIssueSnapshotFetch({
+    cwd: "/repo", issueNumber: 12,
+    gh: async (args, cwd) => {
+      calls.push({ args, cwd });
+      return { stdout: JSON.stringify({
+        number: 12, title: "Remote", body: "Body", state: "OPEN",
+        labels: [{ name: "bug" }], assignees: [{ login: "octocat" }],
+        milestone: { title: "M3" }, url: "https://github.test/issues/12",
+        updatedAt: "2026-07-24T00:00:00Z",
+      }) };
+    },
+  });
+  assert.equal(snapshot.state, "open");
+  assert.deepEqual(snapshot.labels, ["bug"]);
+  assert.deepEqual(snapshot.assigneeIds, ["octocat"]);
+  assert.equal(snapshot.milestone, "M3");
+  assert.equal(calls[0].cwd, "/repo");
+
+  calls.length = 0;
+  const written = await runIssueSnapshotWrite({
+    cwd: "/repo", issueNumber: 12,
+    payload: {
+      title: "Local", body: "Changed", state: "closed", labels: ["feature"],
+      assigneeIds: ["hubot"], milestone: "M4",
+    },
+    remote: snapshot,
+    gh: async (args, cwd) => calls.push({ args, cwd }),
+  });
+  assert.equal(written.ok, true);
+  assert.deepEqual(calls[0].args, [
+    "issue", "edit", "12", "--title", "Local", "--body", "Changed",
+    "--add-label", "feature", "--remove-label", "bug",
+    "--add-assignee", "hubot", "--remove-assignee", "octocat", "--milestone", "M4",
+  ]);
+  assert.deepEqual(calls[1].args, ["issue", "close", "12"]);
+});
 
 const ghChecks = (rollup) => async (args) => {
   assert.deepEqual(args, ["pr", "view", "7", "--json", "statusCheckRollup"]);

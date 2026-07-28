@@ -1,0 +1,54 @@
+{
+  "name": "China-friendly Local and Enterprise Identity Entry",
+  "source": "docs/engineering/ADR_0021_PROVIDER_NEUTRAL_ENTERPRISE_IDENTITY.md",
+  "roleFlow": "ordinary developer or team administrator",
+  "scenario": "Choose local access or team sign-in, confirm identity and tenant, recover failures, and sign out.",
+  "frequency": "first launch and session renewal",
+  "ownerSurface": "Identity entry and Me",
+  "viewports": [
+    { "name": "desktop", "width": 1366, "height": 768 },
+    { "name": "mobile", "width": 390, "height": 844 }
+  ],
+  "states": [
+    "entry",
+    "waiting_confirmation",
+    "tenant_selection",
+    "expired",
+    "rejected",
+    "recovery",
+    "signed_in",
+    "logout"
+  ],
+  "identityModes": {
+    "local": "在这台电脑上使用",
+    "team": "登录团队",
+    "passwordFallback": "使用账号密码"
+  },
+  "providersAreCandidatesOnly": ["wecom", "feishu", "dingtalk"],
+  "qrContract": {
+    "rendersScannableCode": false,
+    "reason": "The prototype must not present a fake or nonfunctional QR. Production renders only a live server-issued challenge.",
+    "defaultLifetimeSeconds": 120,
+    "comparisonCode": true,
+    "browserAndDeviceBound": true,
+    "singleUse": true
+  },
+  "whatNotToShow": [
+    "client secrets",
+    "authorization codes",
+    "access or refresh tokens",
+    "raw OAuth payloads",
+    "message-channel credentials",
+    "application credentials",
+    "unverified tenant claims",
+    "personal details before confirmation"
+  ],
+  "visualQaTasks": [
+    "Confirm local and team choices are visually separate.",
+    "Confirm no QR image, SVG, canvas, or scannable artifact exists.",
+    "Confirm waiting state shows origin, computer, expiry, and comparison code.",
+    "Confirm expiry, rejection, recovery, and logout each offer one clear next action.",
+    "Confirm tenant selection names only verified teams and requires explicit confirmation.",
+    "Confirm mobile content has no horizontal overflow or obscured primary action."
+  ]
+}

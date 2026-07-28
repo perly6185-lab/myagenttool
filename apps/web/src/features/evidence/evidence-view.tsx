@@ -7,6 +7,7 @@ import { Field } from "@/components/common/field";
 import { EmptyState } from "@/components/common/empty-state";
 import { SectionHeading } from "@/components/common/section-heading";
 import { cn } from "@/lib/cn";
+import { useAppTranslation } from "@/lib/i18n/use-app-translation";
 import { useConsoleState } from "@/data/use-console-state";
 import { api } from "@/lib/api-client";
 import { useUiStore } from "@/store/ui-store";
@@ -53,6 +54,7 @@ function since(iso?: string | null): string | null {
 }
 
 export function EvidenceView() {
+  const { t } = useAppTranslation();
   const { data: state } = useConsoleState();
   const [lens, setLens] = useState<"evidence" | "refusals">("evidence");
   const [filter, setFilter] = useState<"all" | "attention">("all");
@@ -62,14 +64,14 @@ export function EvidenceView() {
   const refusals = state?.refusals ?? [];
   const attentionCount = useMemo(() => ledger.filter((r) => r.attention).length, [ledger]);
   const rows = useMemo(() => (filter === "attention" ? ledger.filter((r) => r.attention) : ledger), [ledger, filter]);
-  const agentName = (id?: string | null) => state?.agents?.find((a) => a.id === id)?.name ?? id ?? "agent";
+  const agentName = (id?: string | null) => state?.agents?.find((a) => a.id === id)?.name ?? id ?? t("evidenceDetails.agent");
 
   return (
     <div className="space-y-5">
       <SectionHeading
-        eyebrow="Trust"
-        title="Evidence"
-        description="Per-run rollup of the evidence that a change is sound — review findings, the audit record, troubleshooting, and Codex/terminal runtime evidence — joined on the run that produced it."
+        eyebrow={t("evidence.trust")}
+        title={t("evidence.title")}
+        description={t("evidence.description")}
       />
 
       {/* Two lenses over the same trust surface: the per-run evidence ledger, and
@@ -80,14 +82,14 @@ export function EvidenceView() {
           onClick={() => setLens("evidence")}
           className={cn("rounded-md px-3 py-1.5 font-medium transition", lens === "evidence" ? "bg-background shadow-sm" : "text-muted-foreground")}
         >
-          Trust ledger
+          {t("evidence.ledger")}
         </button>
         <button
           type="button"
           onClick={() => setLens("refusals")}
           className={cn("flex items-center gap-1.5 rounded-md px-3 py-1.5 font-medium transition", lens === "refusals" ? "bg-background shadow-sm" : "text-muted-foreground")}
         >
-          <Ban className="size-3.5" /> Refusals{refusals.length ? ` · ${refusals.length}` : ""}
+          <Ban className="size-3.5" /> {t("evidence.refusals")}{refusals.length ? ` · ${refusals.length}` : ""}
         </button>
       </div>
 
@@ -96,24 +98,24 @@ export function EvidenceView() {
       ) : (
       <>
       <div className="flex flex-wrap items-end gap-3">
-        <Field label="Show" className="w-44">
+        <Field label={t("evidence.show")} className="w-44">
           <Select value={filter} onChange={(e) => setFilter(e.target.value as typeof filter)}>
-            <option value="all">All runs with evidence</option>
-            <option value="attention">Needs attention</option>
+            <option value="all">{t("evidence.all")}</option>
+            <option value="attention">{t("evidence.attention")}</option>
           </Select>
         </Field>
         <span className="pb-2 text-xs text-muted-foreground">
-          {rows.length} run(s){attentionCount > 0 ? ` · ${attentionCount} need attention` : ""}
+          {t("evidence.runCount", { count: rows.length })}{attentionCount > 0 ? ` · ${t("evidence.attentionCount", { count: attentionCount })}` : ""}
         </span>
       </div>
 
       {!rows.length ? (
         <EmptyState
-          title={ledger.length ? "No runs need attention" : "No evidence yet"}
+          title={t(ledger.length ? "evidence.noAttention" : "evidence.empty")}
           hint={
             ledger.length
-              ? "Every run with evidence is clean. Switch to “All runs with evidence” to browse them."
-              : "Evidence appears here once runs accumulate review findings, audit records, troubleshooting, or Codex/terminal runtime evidence."
+              ? t("evidence.cleanHint")
+              : t("evidence.emptyHint")
           }
         />
       ) : (
@@ -140,6 +142,7 @@ export function EvidenceView() {
 // incident. Every refusal shows a remedy (a refusal with no next action is a dead
 // end, and dead ends are what push operators to disable the guardrail).
 function RefusalsLens({ refusals }: { refusals: RefusalRow[] }) {
+  const { t } = useAppTranslation();
   // Loop promotion refusals live in tools/ai (not server state), so fetch them
   // lazily when this lens opens and merge — one lens over both sources (refusal
   // model #758). Best-effort: a fetch failure just shows the server refusals.
@@ -159,8 +162,8 @@ function RefusalsLens({ refusals }: { refusals: RefusalRow[] }) {
   if (!groups.length) {
     return (
       <EmptyState
-        title="Nothing refused"
-        hint="When this device declines a request — an ungranted capability, a policy rule, a budget, a human veto — it appears here with the reason and what would make it succeed. Refusals are normal replies, not failures."
+        title={t("evidence.nothingRefused")}
+        hint={t("evidence.refusalEmptyHint")}
       />
     );
   }
@@ -169,12 +172,12 @@ function RefusalsLens({ refusals }: { refusals: RefusalRow[] }) {
       <p className="flex items-start gap-2 rounded-md border border-border bg-muted/30 px-3 py-2 text-xs text-muted-foreground">
         <ShieldCheck className="mt-0.5 size-3.5 shrink-0" />
         <span>
-          A refusal is the device declining to try — a normal, auditable reply, not a failure. Each is grouped by the authority that decided it and shows what would make the request succeed. Includes agent-loop promotion refusals.
+          {t("evidence.refusalHint")}
         </span>
       </p>
       <RefusalSummaryStrip summary={summary} />
       {loopTruncated ? (
-        <p className="text-xs text-muted-foreground/70">Older loop runs were not scanned — only recent promotion refusals are shown.</p>
+        <p className="text-xs text-muted-foreground/70">{t("evidence.truncated")}</p>
       ) : null}
       {groups.map((group) => (
         <RefusalCategorySection key={group.category} group={group} />
@@ -187,6 +190,7 @@ function RefusalsLens({ refusals }: { refusals: RefusalRow[] }) {
 // device is refusing, the dominant reasons, and a short daily trend. Calm — this
 // is audit context, not an incident dashboard.
 function RefusalSummaryStrip({ summary }: { summary: RefusalSummary }) {
+  const { t } = useAppTranslation();
   if (!summary.total) return null;
   const categories = (["not_granted", "policy", "state", "human"] as const).filter((c) => summary.byCategory[c] > 0);
   const maxDay = Math.max(1, ...summary.daily.map((d) => d.count));
@@ -194,7 +198,7 @@ function RefusalSummaryStrip({ summary }: { summary: RefusalSummary }) {
     <div className="flex flex-wrap items-center gap-x-5 gap-y-3 rounded-lg border border-border bg-card px-4 py-3">
       <div>
         <div className="text-2xl font-semibold tabular-nums">{summary.total}</div>
-        <div className="text-xs text-muted-foreground">refusals (recent)</div>
+        <div className="text-xs text-muted-foreground">{t("evidence.recentRefusals")}</div>
       </div>
       {categories.length ? (
         <div className="flex flex-wrap items-center gap-1.5">
@@ -205,13 +209,13 @@ function RefusalSummaryStrip({ summary }: { summary: RefusalSummary }) {
       ) : null}
       {summary.topCodes.length ? (
         <div className="min-w-0 text-xs text-muted-foreground">
-          <span className="text-muted-foreground/70">Top reasons: </span>
+          <span className="text-muted-foreground/70">{t("evidence.topReasons")}: </span>
           {summary.topCodes.map((t, i) => (
             <span key={t.code}>{i ? " · " : ""}{t.label} <span className="tabular-nums">({t.count})</span></span>
           ))}
         </div>
       ) : null}
-      <div className="ml-auto flex items-end gap-0.5" title="Refusals per day, last 7 days" aria-label="Refusals per day, last 7 days">
+      <div className="ml-auto flex items-end gap-0.5" title={t("evidence.refusalTrend")} aria-label={t("evidence.refusalTrend")}>
         {summary.daily.map((d) => (
           <span
             key={d.date}
@@ -226,6 +230,7 @@ function RefusalSummaryStrip({ summary }: { summary: RefusalSummary }) {
 }
 
 function RefusalCategorySection({ group }: { group: RefusalCategoryGroup }) {
+  const { t } = useAppTranslation();
   return (
     <div className="space-y-2">
       <div className="flex items-baseline gap-2">
@@ -242,7 +247,7 @@ function RefusalCategorySection({ group }: { group: RefusalCategoryGroup }) {
                   <Ban className="size-3" /> {codeGroup.label}
                 </Badge>
                 <span className="text-xs text-muted-foreground">
-                  {codeGroup.refusals.length} refusal{codeGroup.refusals.length === 1 ? "" : "s"}
+                  {t("evidenceDetails.refusalCount", { count: codeGroup.refusals.length })}
                 </span>
               </div>
               <div className="space-y-2">
@@ -259,6 +264,7 @@ function RefusalCategorySection({ group }: { group: RefusalCategoryGroup }) {
 }
 
 function RefusalItem({ refusal }: { refusal: RefusalRow }) {
+  const { t } = useAppTranslation();
   const [showEvidence, setShowEvidence] = useState(false);
   const appeal = readableAppealTo(refusal.appealTo);
   const age = since(refusal.at);
@@ -268,7 +274,7 @@ function RefusalItem({ refusal }: { refusal: RefusalRow }) {
       <div className="flex items-start justify-between gap-3">
         <p className="min-w-0 flex-1 font-medium">{refusal.summary || readableRefusalCode(refusal.code)}</p>
         <div className="flex shrink-0 items-center gap-2">
-          {refusal.source === "loop" ? <Badge tone="neutral">agent loop</Badge> : null}
+          {refusal.source === "loop" ? <Badge tone="neutral">{t("evidenceDetails.agentLoop")}</Badge> : null}
           {age ? <span className="text-xs text-muted-foreground">{age}</span> : null}
         </div>
       </div>
@@ -286,12 +292,12 @@ function RefusalItem({ refusal }: { refusal: RefusalRow }) {
         ) : null}
         {refusal.retryAfter ? (
           <span className="inline-flex items-center gap-1">
-            <Clock className="size-3" /> retry after {refusal.retryAfter}
+            <Clock className="size-3" /> {t("evidenceDetails.retryAfter", { time: refusal.retryAfter })}
           </span>
         ) : (
-          <span className="text-muted-foreground/70">retry won’t help on its own</span>
+          <span className="text-muted-foreground/70">{t("evidenceDetails.retryNoHelp")}</span>
         )}
-        {appeal ? <span>appeal to {appeal}</span> : <span className="text-muted-foreground/70">final — no appeal</span>}
+        {appeal ? <span>{t("evidenceDetails.appealTo", { target: appeal })}</span> : <span className="text-muted-foreground/70">{t("evidenceDetails.noAppeal")}</span>}
       </div>
       {hasEvidence ? (
         <div className="mt-2">
@@ -300,7 +306,7 @@ function RefusalItem({ refusal }: { refusal: RefusalRow }) {
             onClick={() => setShowEvidence((v) => !v)}
             className="inline-flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground"
           >
-            {showEvidence ? <ChevronDown className="size-3" /> : <ChevronRight className="size-3" />} Evidence
+            {showEvidence ? <ChevronDown className="size-3" /> : <ChevronRight className="size-3" />} {t("evidenceDetails.evidence")}
           </button>
           {showEvidence ? (
             <pre className="mt-1 max-h-56 overflow-auto rounded bg-muted/50 p-2 text-[11px] leading-relaxed">
@@ -353,13 +359,14 @@ function LedgerRow({
 }
 
 function VerdictChips({ row }: { row: EvidenceLedgerRow }) {
+  const { t } = useAppTranslation();
   return (
     <>
       {row.review.total > 0 ? (
         <span className="inline-flex items-center gap-1 text-xs">
-          {row.review.high > 0 ? <StatusBadge tone="danger">{row.review.high} high</StatusBadge> : null}
-          {row.review.medium > 0 ? <StatusBadge tone="warning">{row.review.medium} med</StatusBadge> : null}
-          {row.review.low > 0 ? <StatusBadge tone="neutral">{row.review.low} low</StatusBadge> : null}
+          {row.review.high > 0 ? <StatusBadge tone="danger">{t("evidenceDetails.highCount", { count: row.review.high })}</StatusBadge> : null}
+          {row.review.medium > 0 ? <StatusBadge tone="warning">{t("evidenceDetails.mediumCount", { count: row.review.medium })}</StatusBadge> : null}
+          {row.review.low > 0 ? <StatusBadge tone="neutral">{t("evidenceDetails.lowCount", { count: row.review.low })}</StatusBadge> : null}
         </span>
       ) : null}
       {row.audit?.permissionDecision ? (
@@ -367,8 +374,8 @@ function VerdictChips({ row }: { row: EvidenceLedgerRow }) {
           {row.audit.permissionDecision}
         </StatusBadge>
       ) : null}
-      {row.troubleshooting.present ? <Badge tone="warning">troubleshooting</Badge> : null}
-      {row.runtimeEvidence > 0 ? <Badge tone="neutral">{row.runtimeEvidence} evidence</Badge> : null}
+      {row.troubleshooting.present ? <Badge tone="warning">{t("evidenceDetails.troubleshooting")}</Badge> : null}
+      {row.runtimeEvidence > 0 ? <Badge tone="neutral">{t("evidenceDetails.evidenceCount", { count: row.runtimeEvidence })}</Badge> : null}
       {row.application?.name || row.application?.id ? (
         <Badge tone="neutral" className="inline-flex items-center gap-1">
           <AppWindow className="size-3" />
@@ -377,10 +384,10 @@ function VerdictChips({ row }: { row: EvidenceLedgerRow }) {
       ) : null}
       {row.recovery?.latestStatus ? (
         <StatusBadge tone={recoveryActionRequestTone(row.recovery.latestStatus)}>
-          recovery {readableRecoveryActionRequestStatus(row.recovery.latestStatus).toLowerCase()}
+          {t("evidenceDetails.recoveryStatus", { status: readableRecoveryActionRequestStatus(row.recovery.latestStatus).toLowerCase() })}
         </StatusBadge>
       ) : null}
-      {row.recoveryResultOf ? <Badge tone="success">recovery result</Badge> : null}
+      {row.recoveryResultOf ? <Badge tone="success">{t("evidenceDetails.recoveryResult")}</Badge> : null}
     </>
   );
 }
@@ -388,6 +395,7 @@ function VerdictChips({ row }: { row: EvidenceLedgerRow }) {
 // The expanded dossier composes the full evidence from data already in the
 // snapshot, joined on this run's invocation id.
 function Dossier({ invocationId }: { invocationId: string }) {
+  const { t } = useAppTranslation();
   const { data: state } = useConsoleState();
   const setSelectedInvocationId = useUiStore((s) => s.setSelectedInvocationId);
   const setSection = useUiStore((s) => s.setSection);
@@ -402,7 +410,7 @@ function Dossier({ invocationId }: { invocationId: string }) {
 
   return (
     <div className="space-y-3 border-t border-border px-4 py-3">
-      <DossierBlock icon={ShieldCheck} title={`Review findings (${findings.length})`} empty={!findings.length}>
+      <DossierBlock icon={ShieldCheck} title={t("evidence.reviewFindings", { count: findings.length })} empty={!findings.length}>
         {findings.map((f) => (
           <div key={f.id} className="space-y-1 rounded-md border border-border p-2">
             <div className="flex flex-wrap items-center gap-2">
@@ -413,12 +421,12 @@ function Dossier({ invocationId }: { invocationId: string }) {
               </span>
             </div>
             <p className="text-sm">{f.message}</p>
-            {f.suggestion ? <p className="text-xs text-muted-foreground"><span className="font-medium text-foreground">Suggestion: </span>{f.suggestion}</p> : null}
+            {f.suggestion ? <p className="text-xs text-muted-foreground"><span className="font-medium text-foreground">{t("evidence.suggestion")}: </span>{f.suggestion}</p> : null}
           </div>
         ))}
       </DossierBlock>
 
-      <DossierBlock icon={ClipboardCheck} title="Audit" empty={!audit}>
+      <DossierBlock icon={ClipboardCheck} title={t("evidence.audit")} empty={!audit}>
         {audit ? (
           <div className="flex flex-wrap items-center gap-2 text-xs">
             {audit.permissionDecision ? <StatusBadge tone={audit.permissionDecision === "denied" ? "danger" : "neutral"}>{audit.permissionDecision}</StatusBadge> : null}
@@ -440,7 +448,7 @@ function Dossier({ invocationId }: { invocationId: string }) {
         defaultOpen={false}
       />
 
-      <DossierBlock icon={Wrench} title="Troubleshooting" empty={!troubleshooting}>
+      <DossierBlock icon={Wrench} title={t("evidence.troubleshooting")} empty={!troubleshooting}>
         {troubleshooting ? (
           <div className="space-y-1">
             <p className="text-sm">{troubleshooting.summary}</p>
@@ -453,11 +461,11 @@ function Dossier({ invocationId }: { invocationId: string }) {
         ) : null}
       </DossierBlock>
 
-      <DossierBlock icon={LifeBuoy} title={`Recovery (${recoveryRequests.length})`} empty={!recoveryRequests.length && !recoveryProvenance}>
+      <DossierBlock icon={LifeBuoy} title={t("evidence.recovery", { count: recoveryRequests.length })} empty={!recoveryRequests.length && !recoveryProvenance}>
         <div className="space-y-1">
           {recoveryProvenance ? (
             <p className="text-xs text-muted-foreground">
-              Produced by <span className="font-medium text-foreground">{readableRecoveryActionType(recoveryProvenance.actionType)}</span> recovery for{" "}
+              {t("evidence.producedBy")} <span className="font-medium text-foreground">{readableRecoveryActionType(recoveryProvenance.actionType)}</span> {t("evidence.recoveryFor")}{" "}
               <span className="font-mono">{recoveryProvenance.invocationId}</span>
             </p>
           ) : null}
@@ -472,14 +480,14 @@ function Dossier({ invocationId }: { invocationId: string }) {
         </div>
       </DossierBlock>
 
-      <DossierBlock icon={FileText} title={`Runtime evidence (${runtime.length})`} empty={!runtime.length}>
+      <DossierBlock icon={FileText} title={t("evidence.runtime", { count: runtime.length })} empty={!runtime.length}>
         <ul className="space-y-1">
           {runtime.slice(0, 30).map((e) => (
             <li key={e.id} className="text-xs">
               <span className="font-mono text-muted-foreground">{e.type}</span> · {e.summary}
             </li>
           ))}
-          {runtime.length > 30 ? <li className="text-xs text-muted-foreground">… {runtime.length - 30} more</li> : null}
+          {runtime.length > 30 ? <li className="text-xs text-muted-foreground">{t("evidence.more", { count: runtime.length - 30 })}</li> : null}
         </ul>
       </DossierBlock>
 
@@ -489,23 +497,24 @@ function Dossier({ invocationId }: { invocationId: string }) {
           className="text-xs font-medium text-primary hover:underline"
           onClick={() => { setSelectedInvocationId(invocationId); setSection("invocations"); }}
         >
-          Open run →
+          {t("evidence.openRun")} →
         </button>
       ) : (
-        <span className="text-xs text-muted-foreground">Run not in the current window</span>
+        <span className="text-xs text-muted-foreground">{t("evidence.notCurrent")}</span>
       )}
     </div>
   );
 }
 
 function DossierBlock({ icon: Icon, title, empty, children }: { icon: typeof ShieldCheck; title: string; empty: boolean; children: ReactNode }) {
+  const { t } = useAppTranslation();
   return (
     <div>
       <div className="mb-1 flex items-center gap-1.5 text-xs font-semibold text-muted-foreground">
         <Icon className="size-3.5" />
         {title}
       </div>
-      {empty ? <p className="pl-5 text-xs text-muted-foreground">None.</p> : <div className="space-y-1.5">{children}</div>}
+      {empty ? <p className="pl-5 text-xs text-muted-foreground">{t("evidence.none")}</p> : <div className="space-y-1.5">{children}</div>}
     </div>
   );
 }

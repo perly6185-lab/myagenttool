@@ -189,6 +189,24 @@ test("teamBudgetStatuses: the pool contributes limit/remaining/over", () => {
   assert.equal(row.over, true);
 });
 
+test("teamBudgetStatuses: active project reservations reduce team headroom", () => {
+  const state = twoTeamMoneyState();
+  state.ledgerEntries = [];
+  state.budgetReservations = [
+    { id: "r1", projectId: "a1", amountUsd: 30, status: "active" },
+    { id: "r2", projectId: "a2", amountUsd: 25, status: "active" },
+    { id: "r3", projectId: "a2", amountUsd: 100, status: "released" },
+  ];
+  const m3 = createM3Service({ state, ...stub });
+  m3.upsertBudget({ teamId: "team_a", limitUsd: 50, policy: "block" });
+  const row = m3.teamBudgetStatusFor("team_a");
+  assert.equal(row.spentUsd, 0);
+  assert.equal(row.reservedUsd, 55);
+  assert.equal(row.admissionUsd, 55);
+  assert.equal(row.remainingUsd, -5);
+  assert.equal(row.admissionOver, true);
+});
+
 test("budgetGateForProject: blocks when the team pool is over with a block policy", () => {
   const state = twoTeamMoneyState();
   const m3 = createM3Service({ state, ...stub });

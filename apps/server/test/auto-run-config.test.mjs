@@ -114,7 +114,10 @@ test("autoApproveNonCodePaths: normalized bool + exposed", () => {
 test("alertWebhookUrl: validated http(s) in normalize; exposed as configured boolean", () => {
   assert.equal(normalizeAutoRunSettings({ alertWebhookUrl: "https://h.co/x" }).alertWebhookUrl, "https://h.co/x");
   assert.equal(normalizeAutoRunSettings({ alertWebhookUrl: "nope" }).alertWebhookUrl, null);
-  assert.equal(resolveAutoRunConfig({ autoRunSettings: { alertWebhookUrl: "https://h.co/x" } }, {}).alertWebhookConfigured, true);
+  const resolved = resolveAutoRunConfig({ autoRunSettings: { alertWebhookUrl: "https://user:secret@h.co/x" } }, {});
+  assert.equal(resolved.alertWebhookConfigured, true);
+  assert.equal("alertWebhookUrl" in resolved.settings, false);
+  assert.equal(JSON.stringify(resolved).includes("user:secret@h.co"), false);
   assert.equal(resolveAutoRunConfig({}, {}).alertWebhookConfigured, false);
 });
 
@@ -139,4 +142,17 @@ test("tunable SLO targets: normalize validates + drops out-of-range; empty → n
   assert.deepEqual(s.sloTargets, { prSuccessRate: 0.9, timeToPrMedianSeconds: 600 }, "failureRate 5 dropped, junk dropped");
   assert.equal(normalizeAutoRunSettings({ sloTargets: {} }).sloTargets, null);
   assert.equal(normalizeAutoRunSettings({ sloTargets: "x" }).sloTargets, null);
+});
+
+test("routing health thresholds are configurable and bounded", () => {
+  const settings = normalizeAutoRunSettings({
+    routingThresholds: { minSamples: 10, windowDays: 45, fallbackRate: 0.15, lowConfidenceRate: 2, latencyP90Ms: 8000 },
+  });
+  assert.deepEqual(settings.routingThresholds, {
+    minSamples: 10,
+    windowDays: 45,
+    fallbackRate: 0.15,
+    latencyP90Ms: 8000,
+  });
+  assert.equal(normalizeAutoRunSettings({ routingThresholds: {} }).routingThresholds, null);
 });

@@ -111,6 +111,13 @@ export const OFFICECLI_BATCH_VERBS = ["add", "set", "remove", "move", "swap"];
 
 const OFFICECLI_WRITE_COMMANDS = [
   {
+    id: "create",
+    displayName: "OfficeCLI create",
+    description: "Create a blank .docx, .xlsx, or .pptx inside the invocation worktree.",
+    args: ["create"],
+    argInputs: [{ key: "file", positional: true, type: "office_file" }],
+  },
+  {
     id: "remove",
     displayName: "OfficeCLI remove",
     description: "Remove an element from a document by OpenXML path. Writes in place — runs in the invocation's worktree so the change is reviewable before promotion.",

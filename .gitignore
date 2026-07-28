@@ -6,6 +6,8 @@ node_modules/
 dist/
 build/
 coverage/
+apps/web/test-results/
+apps/web/playwright-report/
 apps/electron/release/
 apps/electron/.cache/
 apps/electron/vendor/
@@ -28,6 +30,7 @@ pnpm-debug.log*
 .myagenttool/screenshots/
 .agents/runs/
 .agents/deploy-runs/
+.codex-run/
 
 # OS/editor noise
 .DS_Store

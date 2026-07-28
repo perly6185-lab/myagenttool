@@ -1,5 +1,6 @@
 import { formatUsd as usd } from "@/lib/money";
 import type { ImportedUsageEstimate } from "@/lib/console-state";
+import { useAppTranslation } from "@/lib/i18n/use-app-translation";
 
 export function importedUsagePeriod(row: ImportedUsageEstimate): string {
   return row.date ?? row.month ?? row.week ?? row.periodStart ?? "—";
@@ -11,17 +12,14 @@ export function importedUsagePeriod(row: ImportedUsageEstimate): string {
  * external-billed figures — callers own that framing; this renders the data.
  */
 export function ImportedUsageTable({ rows, limit = 50 }: { rows: ImportedUsageEstimate[]; limit?: number }) {
+  const { t } = useAppTranslation();
   return (
     <>
       <div className="overflow-hidden rounded-lg border border-border">
         <table className="w-full text-sm">
           <thead className="bg-muted/40 text-xs uppercase tracking-wide text-muted-foreground">
             <tr>
-              <th className="px-3 py-2 text-left font-medium">Provider</th>
-              <th className="px-3 py-2 text-left font-medium">Model</th>
-              <th className="px-3 py-2 text-left font-medium">Period</th>
-              <th className="px-3 py-2 text-right font-medium">Tokens</th>
-              <th className="px-3 py-2 text-right font-medium">Est. cost</th>
+              {["provider","model","period","tokens","cost"].map((key, index) => <th key={key} className={`px-3 py-2 ${index > 2 ? "text-right" : "text-left"} font-medium`}>{t(`economicsImport.${key}` as never)}</th>)}
             </tr>
           </thead>
           <tbody>
@@ -42,7 +40,7 @@ export function ImportedUsageTable({ rows, limit = 50 }: { rows: ImportedUsageEs
         </table>
       </div>
       {rows.length > limit ? (
-        <p className="text-xs text-muted-foreground">Showing the first {limit} of {rows.length} rows.</p>
+        <p className="text-xs text-muted-foreground">{t("economicsImport.showing", { limit, total: rows.length })}</p>
       ) : null}
     </>
   );

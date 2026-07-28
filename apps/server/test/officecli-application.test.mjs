@@ -114,6 +114,16 @@ test("`merge` emits template+output positionals + a compacted --data JSON (+ --f
   assert.ok(plan.args.includes("--force"));
 });
 
+test("`create` emits one confined Office file positional under the apply segment", () => {
+  const app = register();
+  const plan = applicationWrapperExecutionPlan(app, "create", { file: "docs/report.docx" });
+  assert.equal(plan.capability, "app.app_officecli.apply.create");
+  assert.equal(plan.filePolicy, "workspace_write");
+  assert.deepEqual(plan.args, ["create", "docs/report.docx"]);
+  const escaped = applicationWrapperExecutionPlan(app, "create", { file: "../report.docx" });
+  assert.deepEqual(escaped.args, ["create"]);
+});
+
 test("`merge` drops a traversal template/output and a non-object --data", () => {
   const app = register();
   // template/output are office_file → traversal is dropped
@@ -231,6 +241,10 @@ test("the officecli `image:<path>` fill form is validated (slide background read
   assert.equal(kept({ background: "image:/etc/passwd" }), false);
   assert.equal(kept({ background: "image:../secret.png" }), false);
   assert.equal(kept({ background: "image:http://attacker/x.png" }), false);
+  // officecli trims the path after `image:`, so whitespace can't smuggle an
+  // absolute/traversal path past the check.
+  assert.equal(kept({ background: "image: /etc/passwd" }), false);
+  assert.equal(kept({ background: "image:\t../secret.png" }), false);
   // a worktree-relative image fill and a plain colour stay allowed.
   assert.equal(kept({ background: "image:assets/bg.png" }), true);
   assert.equal(kept({ background: "#FF0000" }), true);

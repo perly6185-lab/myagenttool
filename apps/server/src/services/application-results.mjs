@@ -18,6 +18,7 @@
 import { makeRunTx } from "../runtime/store/run-tx.mjs";
 import { gitCommandIdOf, parseGitApplicationResult } from "./git-result.mjs";
 import { parseMailApplicationResult } from "./mail-result.mjs";
+import { parsePdfcpuApplicationResult } from "./pdfcpu-result.mjs";
 
 const MAX_APPLICATION_RESULTS = 500;
 // The wrapper runner's non-JSON fallback: `{ text: stdout.trim().slice(0, 20000) }`.
@@ -33,6 +34,7 @@ const MAX_STORED_TEXT = 20000;
 const RESULT_PARSERS = {
   git: ({ capability, text }) => parseGitApplicationResult({ commandId: gitCommandIdOf(capability), text }),
   mail_headers: ({ text }) => parseMailApplicationResult({ text }),
+  pdfcpu: ({ capability, text }) => parsePdfcpuApplicationResult({ capability, text }),
 };
 
 export function createApplicationResultImportService({

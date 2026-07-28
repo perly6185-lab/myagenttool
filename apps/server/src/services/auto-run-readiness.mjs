@@ -41,7 +41,15 @@ export function computeAutoRunReadiness({
     checks.push(check("agent", "Coding agent", "ok", `${agent.name} is healthy.`));
   }
 
-  // 2. The bridge/device that executes a CLI agent is linked.
+  // 2. Execution must have a git repository to materialize an isolated worktree.
+  // Older records may not carry isRepo yet; only an explicit false blocks.
+  if (project?.git?.isRepo === false) {
+    checks.push(check("git", "Git repository", "blocked", "The project path is not a Git repository. Initialize or register a repository before starting."));
+  } else if (project) {
+    checks.push(check("git", "Git repository", "ok", "Git worktree execution is available."));
+  }
+
+  // 3. The bridge/device that executes a CLI agent is linked.
   const cliAgent = agent?.location?.type === "local_device";
   if (cliAgent && !deviceLinked) {
     checks.push(check("bridge", "Bridge / device", "blocked", "No bridge is linked — a CLI agent can't run until the desktop bridge is connected."));
@@ -49,14 +57,14 @@ export function computeAutoRunReadiness({
     checks.push(check("bridge", "Bridge / device", "ok", "Bridge linked."));
   }
 
-  // 3. A verification command (so the PR isn't opened unverified).
+  // 4. A verification command (so the PR isn't opened unverified).
   if (verifyCommand) {
     checks.push(check("verify", "Verification", "ok", "A verify command is configured."));
   } else {
     checks.push(check("verify", "Verification", "warn", "No verify command — PRs open unverified. Configure one (env allowlist + project verify name)."));
   }
 
-  // 4. A budget (so the cost brake can engage).
+  // 5. A budget (so the cost brake can engage).
   if (budget?.over) {
     checks.push(check("budget", "Budget", "blocked", `Over budget ($${budget.spentUsd} of $${budget.limitUsd}) — runs are blocked until reset.`));
   } else if (budget?.exists) {
@@ -65,7 +73,7 @@ export function computeAutoRunReadiness({
     checks.push(check("budget", "Budget", "warn", "No budget set — the cost brake can't engage. Set a project budget before unattended volume."));
   }
 
-  // 5. Autonomy brakes that would refuse a start right now.
+  // 6. Autonomy brakes that would refuse a start right now.
   if (settings?.autonomyKillSwitch) {
     checks.push(check("killSwitch", "Kill switch", "blocked", "The global kill switch is ON — all autonomous runs are halted."));
   }

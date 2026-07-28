@@ -33,6 +33,8 @@ const processes = [
 
 const children = new Map();
 let stopping = false;
+let desktopRelinkAttempted = false;
+let desktopNeedsRelink = false;
 
 console.log("[demo] starting M0 Local Invocation Loop");
 console.log(`[demo] Web Console: ${webUrl}`);
@@ -81,7 +83,12 @@ function startProcess(proc) {
   });
   children.set(proc.name, { proc, child });
   child.stdout.on("data", (chunk) => writePrefixed(proc.name, chunk));
-  child.stderr.on("data", (chunk) => writePrefixed(proc.name, chunk));
+  child.stderr.on("data", (chunk) => {
+    if (proc.name === "desktop" && chunk.toString("utf8").includes("re-pair the device")) {
+      desktopNeedsRelink = true;
+    }
+    writePrefixed(proc.name, chunk);
+  });
   child.on("exit", (code) => {
     const current = children.get(proc.name);
     if (current?.child === child) {
@@ -90,11 +97,29 @@ function startProcess(proc) {
     if (stopping) {
       return;
     }
+    if (proc.name === "desktop" && code && desktopNeedsRelink && !desktopRelinkAttempted) {
+      desktopRelinkAttempted = true;
+      desktopNeedsRelink = false;
+      recoverDesktopPairing().catch((error) => {
+        console.error(`[demo] automatic device re-pair failed: ${error.message}`);
+        stop(code);
+      });
+      return;
+    }
     if (code && code !== 0) {
       console.error(`[demo] ${proc.name} exited with code ${code}`);
       stop(code);
     }
   });
+}
+
+async function recoverDesktopPairing() {
+  console.log("[demo] the local bridge credential expired; re-pairing this development device once.");
+  const response = await fetch(`${serverUrl}/api/device/relink`, { method: "POST" });
+  if (!response.ok) {
+    throw new Error(`server returned HTTP ${response.status}`);
+  }
+  await restartProcess("desktop");
 }
 
 process.on("SIGINT", () => stop(0));

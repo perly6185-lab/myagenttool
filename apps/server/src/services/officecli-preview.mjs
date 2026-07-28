@@ -25,6 +25,7 @@ import { promisify } from "node:util";
 
 import { parseAddr } from "./officecli-sheet-ops.mjs";
 import { shapeIsEditable } from "./officecli-deck-ops.mjs";
+import { inspectOfficeDocumentContainer } from "./office-document-inspection.mjs";
 
 const execFileAsync = promisify(execFile);
 
@@ -64,6 +65,23 @@ function resolveDocument(projectPath, relativeFile) {
   const realRel = relative(realpathSync(root), realpathSync(target));
   if (realRel === ".." || realRel.startsWith(`..${sep}`)) {
     throw new OfficecliPreviewError("path_escape", "Requested file escapes the project root (symlink).");
+  }
+  let inspection;
+  try {
+    inspection = inspectOfficeDocumentContainer(target);
+  } catch {
+    // Native filesystem/parser errors may contain absolute paths. Keep the
+    // renderer-facing contract stable and sanitized.
+    throw new OfficecliPreviewError("office_file_corrupted", "This file could not be inspected as an OOXML package.");
+  }
+  if (inspection.kind === "encrypted_ooxml") {
+    throw new OfficecliPreviewError("office_password_required", "This Office document is password protected.");
+  }
+  if (inspection.kind === "unsupported_encryption") {
+    throw new OfficecliPreviewError("office_encryption_unsupported", "This Office document uses an unsupported encrypted container.");
+  }
+  if (inspection.kind === "corrupted") {
+    throw new OfficecliPreviewError("office_file_corrupted", "This file is not a valid OOXML package.");
   }
   return { root, relPath: relPath.replaceAll("\\", "/") };
 }

@@ -69,6 +69,20 @@
   --sidebar-ring: oklch(0.54 0.16 262);
 }
 
+.pdf-selectable-text {
+  user-select: text;
+  cursor: text;
+}
+.pdf-selectable-text mark[data-pdf-search] {
+  color: transparent;
+  background: color-mix(in srgb, #fde047 65%, transparent);
+  border-radius: 2px;
+}
+.pdf-selectable-text mark[data-pdf-search][data-active="true"] {
+  background: color-mix(in srgb, #fb923c 82%, transparent);
+  outline: 1px solid #ea580c;
+}
+
 .dark {
   --background: oklch(0.17 0.008 264);
   --foreground: oklch(0.93 0.005 250);

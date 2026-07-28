@@ -114,6 +114,77 @@ test("requires approval evidence for full-access Codex execution", () => {
   assert.match(gate.reason, /without approval evidence/);
 });
 
+test("allows a fresh Codex run only with its exact workspace and linked-worktree Git directory", () => {
+  const root = mkdtempSync(join(tmpdir(), "codex-gate-"));
+  const gitAdmin = join(root, ".git", "worktrees", "issue-1");
+  mkdirSync(gitAdmin, { recursive: true });
+  try {
+    const gate = localExecutionGate(
+      { options: { metadata: { worktreePath: root } } },
+      { type: "cli", command: "codex" },
+      {
+        command: process.execPath,
+        args: [
+          codexFixtureAgentPath,
+          "exec",
+          "--sandbox", "workspace-write",
+          "--cd", root,
+          "--add-dir", gitAdmin,
+          "{{task}}",
+        ],
+        cwd: root,
+        codexAdditionalWritableRoots: [gitAdmin],
+        localPolicy: { filePolicy: "native_controls", networkPolicy: "native_controls", source: "test" },
+      },
+      { manifest },
+    );
+    assert.equal(gate.allowed, true);
+    assert.deepEqual(gate.evidence.codexWorkspace.expectedAdditionalWritableRoots, [gitAdmin]);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("refuses Codex cwd and add-dir values that exceed the bridge-created contract", () => {
+  const root = mkdtempSync(join(tmpdir(), "codex-gate-refuse-"));
+  const gitAdmin = join(root, ".git", "worktrees", "issue-1");
+  mkdirSync(gitAdmin, { recursive: true });
+  try {
+    const base = {
+      command: process.execPath,
+      cwd: root,
+      codexAdditionalWritableRoots: [gitAdmin],
+      localPolicy: { filePolicy: "native_controls", networkPolicy: "native_controls", source: "test" },
+    };
+    const wrongCwd = localExecutionGate(
+      { options: { metadata: { worktreePath: root } } },
+      { type: "cli", command: "codex" },
+      {
+        ...base,
+        args: [codexFixtureAgentPath, "exec", "--sandbox", "workspace-write", "--cd", tmpdir(), "--add-dir", gitAdmin],
+      },
+      { manifest },
+    );
+    assert.equal(wrongCwd.allowed, false);
+    assert.equal(wrongCwd.evidence.refusalCode, "codex_cwd_mismatch");
+
+    const broadRoot = resolve(root, "..");
+    const wrongAddDir = localExecutionGate(
+      { options: { metadata: { worktreePath: root } } },
+      { type: "cli", command: "codex" },
+      {
+        ...base,
+        args: [codexFixtureAgentPath, "exec", "--sandbox", "workspace-write", "--cd", root, "--add-dir", broadRoot],
+      },
+      { manifest },
+    );
+    assert.equal(wrongAddDir.allowed, false);
+    assert.equal(wrongAddDir.evidence.refusalCode, "codex_add_dir_mismatch");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("rejects wrapper execution when file or network policy exceeds the manifest", () => {
   const wrapperScript = resolve("tools/agents/application-wrapper.mjs");
   const gate = localExecutionGate(
@@ -152,7 +223,7 @@ test("derives applicationWrapper file/network policies for the bridge gate", () 
   });
 });
 
-import { closeSync, mkdirSync, mkdtempSync, openSync } from "node:fs";
+import { closeSync, mkdirSync, mkdtempSync, openSync, rmSync } from "node:fs";
 
 test("cwd confinement: allows a cwd inside the approved worktree root", () => {
   const root = mkdtempSync(join(tmpdir(), "wt-root-"));
@@ -589,6 +660,46 @@ function officecliGate({ execArgs, capability, root = gitRoot, cwd = gitRoot, re
   );
 }
 
+function pdfcpuGate({ execArgs, capability, root = gitRoot, cwd = gitRoot, resolveBinary = () => true }) {
+  const spec = { execCommand: "pdfcpu", execArgs, capability, filePolicy: "read_only", networkPolicy: "forbidden" };
+  const work = { project: { path: root }, options: { metadata: { applicationWrapper: spec, worktreePath: root } } };
+  return localExecutionGate(
+    work,
+    { type: "cli", command: "node" },
+    {
+      command: process.execPath,
+      args: wrapperArgs(spec, { cwd }),
+      cwd,
+      localPolicy: { filePolicy: "read_only", networkPolicy: "forbidden", source: "application_wrapper" },
+    },
+    { manifest, resolveBinary },
+  );
+}
+
+test("pdfcpu wrapper: fixed validate and info commands are allowed for safe PDF paths", () => {
+  assert.equal(pdfcpuGate({
+    capability: "app.app_pdfcpu.wrapper.validate",
+    execArgs: ["validate", "--offline", "--conf", "disable", "--mode", "strict", "docs/report.pdf"],
+  }).allowed, true);
+  assert.equal(pdfcpuGate({
+    capability: "app.app_pdfcpu.wrapper.info",
+    execArgs: ["info", "--offline", "--conf", "disable", "--json", "report.PDF"],
+  }).allowed, true);
+});
+
+test("pdfcpu wrapper: mutations, unsafe paths, extra flags, and missing files are refused", () => {
+  const cases = [
+    ["app.app_pdfcpu.wrapper.merge", ["merge", "out.pdf", "a.pdf"]],
+    ["app.app_pdfcpu.wrapper.validate", ["validate", "--offline", "--conf", "disable", "--mode", "strict", "../secret.pdf"]],
+    ["app.app_pdfcpu.wrapper.info", ["info", "--offline", "--conf", "disable", "--json", "report.pdf", "--pages", "1"]],
+    ["app.app_pdfcpu.wrapper.info", ["info", "--offline", "--conf", "disable", "--json"]],
+    ["app.app_pdfcpu.wrapper.info", ["info", "--offline", "--conf", "disable", "--json", "report.docx"]],
+  ];
+  for (const [capability, execArgs] of cases) {
+    assert.equal(pdfcpuGate({ capability, execArgs }).allowed, false, `${capability}: ${execArgs.join(" ")}`);
+  }
+});
+
 test("officecli wrapper: get with file + path positionals is allowed", () => {
   const gate = officecliGate({
     capability: "app.app_officecli.wrapper.get",
@@ -789,6 +900,19 @@ test("officecliApply: a workspace_write remove with file+path positionals is all
   });
   assert.equal(gate.allowed, true, gate.reason);
   assert.equal(gate.evidence.commandKind, "officecliApply", "a write is classified into its own bucket, never read-only wrapper");
+});
+
+test("officecliApply: create allows one confined Office file and refuses traversal", () => {
+  const allowed = officecliApplyGate({
+    capability: "app.app_officecli.apply.create",
+    execArgs: ["create", "docs/report.docx"],
+  });
+  assert.equal(allowed.allowed, true, allowed.reason);
+  const escaped = officecliApplyGate({
+    capability: "app.app_officecli.apply.create",
+    execArgs: ["create", "../report.docx"],
+  });
+  assert.equal(escaped.allowed, false);
 });
 
 test("officecliApply: the read-only wrapper bucket does NOT permit an officecli write", () => {

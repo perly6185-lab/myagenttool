@@ -8,6 +8,7 @@ import { useConsoleState } from "@/data/use-console-state";
 import { api, useAsyncAction } from "@/data/use-console-actions";
 import type { ChannelDelivery, ChannelOperations, ChannelTaskRequest, ProjectSnapshot } from "@/lib/console-state";
 import type { Tone } from "@/lib/readable-labels";
+import { useAppTranslation } from "@/lib/i18n/use-app-translation";
 
 function healthTone(health: string): Tone {
   if (health === "attention") return "danger";
@@ -27,20 +28,21 @@ function statusTone(status: string): Tone {
  * approval-gated: the client mints a single-use grant, then calls the action.
  */
 export function ChannelsView() {
+  const { t } = useAppTranslation();
   const { data: state } = useConsoleState();
   const channels = state?.channelOperations ?? [];
 
   return (
     <div className="space-y-5">
       <SectionHeading
-        eyebrow="Messaging"
-        title="Channels"
-        description="Bidirectional messaging channels (WeCom). Credentials live in the gateway — the console shows readiness, health, and delivery state, never secret values."
+        eyebrow={t("channelsPage.messaging")}
+        title={t("channelsPage.title")}
+        description={t("channelsPage.description")}
       />
       {channels.length === 0 ? (
         <EmptyState
-          title="No channels registered"
-          hint="Register a WeCom channel via the API, then map operator identities and enable intake here."
+          title={t("channelsPage.empty")}
+          hint={t("channelsPage.emptyHint")}
         />
       ) : (
         <div className="space-y-4">
@@ -60,6 +62,7 @@ export function ChannelsView() {
 }
 
 function ChannelCard({ channel, deliveries, projects, tasks }: { channel: ChannelOperations; deliveries: ChannelDelivery[]; projects: ProjectSnapshot[]; tasks: ChannelTaskRequest[] }) {
+  const { t } = useAppTranslation();
   const { execute, pending, error } = useAsyncAction();
   const [taskProject, setTaskProject] = useState(channel.taskProjectId ?? "");
   const [autoRoute, setAutoRoute] = useState(Boolean(channel.taskAutoRoute));
@@ -115,17 +118,17 @@ function ChannelCard({ channel, deliveries, projects, tasks }: { channel: Channe
             </p>
           </div>
           <div className="flex items-center gap-3">
-            <label className="flex items-center gap-1 text-xs text-muted-foreground" title="Allow /approve from inside this channel (default off — risky runs are approved in the console by a separate operator)">
+            <label className="flex items-center gap-1 text-xs text-muted-foreground" title={t("channelsPage.approveHint")}>
               <input type="checkbox" checked={Boolean(channel.allowSelfApprove)} onChange={(e) => toggleSelfApprove(e.target.checked)} disabled={pending} />
-              in-channel /approve
+              {t("channelsPage.inChannelApprove")}
             </label>
             {channel.status === "enabled" ? (
               <Button variant="secondary" size="sm" onClick={disable} disabled={pending}>
-                Disable
+                {t("channelsPage.disable")}
               </Button>
             ) : (
               <Button size="sm" onClick={enable} disabled={pending}>
-                Enable
+                {t("channelsPage.enable")}
               </Button>
             )}
           </div>
@@ -134,7 +137,7 @@ function ChannelCard({ channel, deliveries, projects, tasks }: { channel: Channe
         <div className="grid gap-2 sm:grid-cols-3">
           {Object.entries(channel.readiness).map(([scope, ok]) => (
             <div key={scope} className="flex items-center gap-2 text-xs">
-              <Badge tone={ok ? "success" : "danger"}>{ok ? "ready" : "missing"}</Badge>
+              <Badge tone={ok ? "success" : "danger"}>{ok ? t("channelsPage.ready") : t("channelsPage.missing")}</Badge>
               <span className="text-muted-foreground">{scope}</span>
             </div>
           ))}
@@ -150,21 +153,21 @@ function ChannelCard({ channel, deliveries, projects, tasks }: { channel: Channe
         {/* /task target: the project inbound tasks are filed into as tracked
             GitHub issues. Approval-gated (mints a grant), same as enable. */}
         <div className="flex flex-wrap items-center gap-2 text-xs">
-          <span className="text-muted-foreground">Task project (/task →)</span>
+          <span className="text-muted-foreground">{t("channelsPage.taskProject")} (/task →)</span>
           <select
             className="h-7 rounded-md border border-border bg-background px-1.5"
             value={taskProject}
             onChange={(e) => setTaskProject(e.target.value)}
             disabled={pending}
           >
-            <option value="">— none (/task disabled) —</option>
+            <option value="">— {t("channelsPage.noneDisabled")} —</option>
             {projects.map((p) => (
               <option key={p.id} value={p.id}>{p.name}</option>
             ))}
           </select>
           <label className="flex items-center gap-1 text-muted-foreground">
             <input type="checkbox" checked={autoRoute} onChange={(e) => setAutoRoute(e.target.checked)} disabled={pending || !taskProject} />
-            auto-route
+            {t("channelsPage.autoRoute")}
           </label>
           <label className="flex items-center gap-1 text-muted-foreground">
             <input
@@ -174,27 +177,27 @@ function ChannelCard({ channel, deliveries, projects, tasks }: { channel: Channe
               onChange={(e) => setDailyLimit(Math.max(0, Math.floor(Number(e.target.value) || 0)))}
               disabled={pending || !taskProject}
             />
-            /day
+            /{t("channelsPage.day")}
           </label>
-          {taskProject ? <span className="text-muted-foreground">{usedToday}/{channel.taskDailyLimit ?? 50} today</span> : null}
+          {taskProject ? <span className="text-muted-foreground">{usedToday}/{channel.taskDailyLimit ?? 50} {t("channelsPage.today")}</span> : null}
           <Button
             variant="secondary"
             size="sm"
             onClick={saveTaskProject}
             disabled={pending || ((channel.taskProjectId ?? "") === taskProject && Boolean(channel.taskAutoRoute) === autoRoute && (channel.taskDailyLimit ?? 50) === dailyLimit)}
           >
-            Save
+            {t("channelsPage.save")}
           </Button>
           {channel.taskProjectId ? (
-            <Badge tone="success">{channel.taskAutoRoute ? "auto-route" : "capture"}</Badge>
+            <Badge tone="success">{channel.taskAutoRoute ? t("channelsPage.autoRoute") : t("channelsPage.capture")}</Badge>
           ) : (
-            <span className="text-muted-foreground">unbound — /task refused</span>
+            <span className="text-muted-foreground">{t("channelsPage.unbound")}</span>
           )}
         </div>
 
         {tasks.length > 0 && (
           <div className="space-y-2 border-t border-border pt-3" data-testid="channel-task-operations">
-            <p className="text-xs font-medium">Channel tasks</p>
+            <p className="text-xs font-medium">{t("channelsPage.tasks")}</p>
             {tasks.slice().reverse().slice(0, 10).map((task) => (
               <div key={task.id} className="grid gap-2 rounded-md border border-border p-3 text-xs sm:grid-cols-[minmax(0,1fr)_auto]">
                 <div className="min-w-0 space-y-1">
@@ -208,10 +211,10 @@ function ChannelCard({ channel, deliveries, projects, tasks }: { channel: Channe
                   {task.resultSummary ? <p className="line-clamp-2 text-muted-foreground">{task.resultSummary}</p> : null}
                 </div>
                 <div className="flex flex-wrap items-start gap-1.5">
-                  {task.status === "pending" ? <><Button size="sm" onClick={() => taskAction(task, "route")} disabled={pending}>Route</Button><Button variant="ghost" size="sm" onClick={() => taskAction(task, "dismiss")} disabled={pending}>Dismiss</Button></> : null}
-                  {task.actions.retry ? <Button variant="secondary" size="sm" onClick={() => taskAction(task, "retry")} disabled={pending}>Retry</Button> : null}
-                  {task.actions.reroute ? <Button variant="secondary" size="sm" onClick={() => taskAction(task, "reroute")} disabled={pending}>Reroute</Button> : null}
-                  {task.actions.takeover ? <Button variant="ghost" size="sm" onClick={() => taskAction(task, "takeover")} disabled={pending}>Take over</Button> : null}
+                  {task.status === "pending" ? <><Button size="sm" onClick={() => taskAction(task, "route")} disabled={pending}>{t("channelsPage.route")}</Button><Button variant="ghost" size="sm" onClick={() => taskAction(task, "dismiss")} disabled={pending}>{t("channelsPage.dismiss")}</Button></> : null}
+                  {task.actions.retry ? <Button variant="secondary" size="sm" onClick={() => taskAction(task, "retry")} disabled={pending}>{t("channelsPage.retry")}</Button> : null}
+                  {task.actions.reroute ? <Button variant="secondary" size="sm" onClick={() => taskAction(task, "reroute")} disabled={pending}>{t("channelsPage.reroute")}</Button> : null}
+                  {task.actions.takeover ? <Button variant="ghost" size="sm" onClick={() => taskAction(task, "takeover")} disabled={pending}>{t("channelsPage.takeover")}</Button> : null}
                 </div>
               </div>
             ))}

@@ -5,6 +5,7 @@ import { Badge } from "@/components/ui/badge";
 import { useConsoleState } from "@/data/use-console-state";
 import { useRefreshConsoleState } from "@/data/use-console-state";
 import { api } from "@/data/use-console-actions";
+import { useAppTranslation } from "@/lib/i18n/use-app-translation";
 
 interface Readiness {
   ready: boolean;
@@ -16,6 +17,7 @@ interface Readiness {
 // existing project-update endpoint + the U1 readiness signal; autonomy toggles
 // live in the Configuration card below.
 export function AutoRunOnboardingCard({ projectId }: { projectId: string | null }) {
+  const { t } = useAppTranslation();
   const { data: consoleState } = useConsoleState();
   const refresh = useRefreshConsoleState();
   const [verifyNames, setVerifyNames] = useState<string[]>([]);
@@ -69,23 +71,23 @@ export function AutoRunOnboardingCard({ projectId }: { projectId: string | null 
       <CardHeader className="pb-2">
         <CardTitle className="flex items-center justify-between gap-2 text-sm">
           <span className="flex items-center gap-2">
-            <Wand2 className="size-4" /> Set up auto-run — {project.name}
+            <Wand2 className="size-4" /> {t("autoRunActions.setup")} — {project.name}
           </span>
-          {readiness ? (readiness.ready ? <Badge tone="success">ready to run</Badge> : <Badge tone="warning">setup needed</Badge>) : null}
+          {readiness ? (readiness.ready ? <Badge tone="success">{t("autoRunActions.readyToRun")}</Badge> : <Badge tone="warning">{t("autoRunActions.setupNeeded")}</Badge>) : null}
         </CardTitle>
       </CardHeader>
       <CardContent className="flex flex-col gap-3">
         <div className="grid gap-3 md:grid-cols-2">
           <label className="flex flex-col gap-1 rounded-lg border border-border px-3 py-2">
-            <span className="text-sm font-medium">Coding agent</span>
-            <span className="text-xs text-muted-foreground">Which agent edits the code for this project.</span>
+            <span className="text-sm font-medium">{t("autoRunActions.codingAgent")}</span>
+            <span className="text-xs text-muted-foreground">{t("autoRunActions.codingAgentHint")}</span>
             <select
               className="mt-0.5 h-8 rounded-md border border-border bg-background px-2 text-sm"
               value={project.defaultAgentId ?? ""}
               disabled={busy}
               onChange={(e) => void patch({ defaultAgentId: e.target.value || null })}
             >
-              <option value="">— none —</option>
+              <option value="">{t("autoRunActions.none")}</option>
               {agents.map((a) => (
                 <option key={a.id} value={a.id}>
                   {a.name}
@@ -96,9 +98,9 @@ export function AutoRunOnboardingCard({ projectId }: { projectId: string | null 
           </label>
 
           <label className="flex flex-col gap-1 rounded-lg border border-border px-3 py-2">
-            <span className="text-sm font-medium">Verify command</span>
+            <span className="text-sm font-medium">{t("autoRunActions.verifyCommand")}</span>
             <span className="text-xs text-muted-foreground">
-              {verifyNames.length ? "Runs in the worktree before a PR opens." : "No named verify commands configured (env allowlist)."}
+              {t(verifyNames.length ? "autoRunActions.verifyHint" : "autoRunActions.noVerifyCommands")}
             </span>
             <select
               className="mt-0.5 h-8 rounded-md border border-border bg-background px-2 text-sm"
@@ -106,7 +108,7 @@ export function AutoRunOnboardingCard({ projectId }: { projectId: string | null 
               disabled={busy || verifyNames.length === 0}
               onChange={(e) => void patch({ verifyCommandName: e.target.value || null })}
             >
-              <option value="">— none (unverified) —</option>
+              <option value="">{t("autoRunActions.noneUnverified")}</option>
               {verifyNames.map((n) => (
                 <option key={n} value={n}>
                   {n}
@@ -118,15 +120,15 @@ export function AutoRunOnboardingCard({ projectId }: { projectId: string | null 
 
         {readiness && !readiness.ready ? (
           <div className="rounded-lg border border-amber-500/40 bg-amber-500/5 px-3 py-2 text-xs text-muted-foreground">
-            Still needed:{" "}
+            {t("autoRunActions.stillNeeded")}:{" "}
             {readiness.checks
               .filter((c) => c.status === "blocked")
               .map((c) => c.label)
               .join(", ")}
-            . See the Readiness card for details.
+            . {t("autoRunActions.seeReadiness")}
           </div>
         ) : readiness?.ready ? (
-          <p className="text-xs text-muted-foreground">Ready — trigger a run from the Task board [Auto] button, or enable auto-trigger in Configuration below.</p>
+          <p className="text-xs text-muted-foreground">{t("autoRunActions.readyHint")}</p>
         ) : null}
       </CardContent>
     </Card>

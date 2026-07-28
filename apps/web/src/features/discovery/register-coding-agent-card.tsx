@@ -1,5 +1,9 @@
 import { useState } from "react";
 import { Check } from "lucide-react";
+import {
+  codexPermissionModeFromLegacySandbox,
+  type CodexPermissionMode,
+} from "@myagenttool/protocol/codex-permissions";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -8,6 +12,7 @@ import { Field } from "@/components/common/field";
 import { useAsyncAction, api } from "@/data/use-console-actions";
 import { useConsoleState } from "@/data/use-console-state";
 import { useUiStore } from "@/store/ui-store";
+import { useAppTranslation } from "@/lib/i18n/use-app-translation";
 
 type Tone = "neutral" | "warning" | "danger";
 interface Mode {
@@ -21,7 +26,7 @@ interface CodingAgentConfig {
   command: string;
   title: string;
   blurb: React.ReactNode;
-  /** Payload key for the chosen mode: Codex sandbox vs Claude permission mode. */
+  /** Canonical payload key for the selected coding-agent permission mode. */
   modeField: "sandbox" | "permissionMode";
   modeLabel: string;
   /** The safe (non-writable) mode value. */
@@ -36,25 +41,25 @@ const CONFIGS: Record<"codex" | "claude", CodingAgentConfig> = {
     title: "Connect Codex CLI",
     blurb: (
       <>
-        Registers <code className="font-mono">codex exec --json</code> with the sandbox you choose.
+        Registers Codex with the permission mode you choose.
       </>
     ),
-    modeField: "sandbox",
-    modeLabel: "Sandbox",
-    safeMode: "read-only",
-    defaultMode: "workspace-write",
+    modeField: "permissionMode",
+    modeLabel: "Permissions",
+    safeMode: "ask",
+    defaultMode: "ask",
     modes: [
-      { value: "read-only", label: "Read-only", hint: "Reads the repo; cannot edit files. Safest.", tone: "neutral" },
+      { value: "ask", label: "Ask for approval", hint: "Works in the workspace and asks before crossing its boundary.", tone: "neutral" },
       {
-        value: "workspace-write",
-        label: "Workspace-write",
-        hint: "Can edit files in the working directory. Approval required on every run.",
+        value: "auto",
+        label: "Approve for me",
+        hint: "Keeps the workspace boundary and sends eligible requests to automatic review.",
         tone: "warning",
       },
       {
-        value: "danger-full-access",
+        value: "full",
         label: "Full access",
-        hint: "No sandbox — can edit anywhere and use the network. Highest risk.",
+        hint: "No sandbox or Codex approval prompts. MyAgentTool still requires explicit launch approval.",
         tone: "danger",
       },
     ],
@@ -90,6 +95,7 @@ const CONFIGS: Record<"codex" | "claude", CodingAgentConfig> = {
 };
 
 export function RegisterCodingAgentCard({ kind }: { kind: "codex" | "claude" }) {
+  const { t } = useAppTranslation();
   const config = CONFIGS[kind];
   const kindLabel = kind === "codex" ? "Codex" : "Claude";
   const setSelectedAgentId = useUiStore((s) => s.setSelectedAgentId);
@@ -97,18 +103,20 @@ export function RegisterCodingAgentCard({ kind }: { kind: "codex" | "claude" }) 
   const { data: state } = useConsoleState();
   const { execute, pending, error } = useAsyncAction();
 
-  const [name, setName] = useState(config.title.replace("Connect ", ""));
-  const [mode, setMode] = useState(config.defaultMode);
+  const [name, setName] = useState<string>(() => t(`codingAgent.${kind}.defaultName`));
+  const [mode, setMode] = useState<CodexPermissionMode | string>(config.defaultMode);
   const [costOwner, setCostOwner] = useState("usr_local");
 
   // Reflect live registration state so the button is honest across reloads.
   // Same command + mode upserts (an update); a new mode adds a distinct agent.
   const existing = (state?.agents ?? []).filter((agent) => agent.adapter?.command === config.command);
-  const registeredModes = existing.map((agent) => agent.adapter?.[config.modeField]);
+  const registeredModes = existing.map((agent) => kind === "codex"
+    ? agent.adapter?.permissionMode ?? codexPermissionModeFromLegacySandbox(agent.adapter?.sandbox)
+    : agent.adapter?.[config.modeField]);
   const alreadyRegistered = existing.length > 0;
   const modeAlreadyRegistered = registeredModes.includes(mode);
   const active = config.modes.find((m) => m.value === mode)!;
-  const writable = mode !== config.safeMode;
+  const writable = kind === "codex" || mode !== config.safeMode;
 
   async function register() {
     await execute(async () => {
@@ -130,38 +138,37 @@ export function RegisterCodingAgentCard({ kind }: { kind: "codex" | "claude" }) 
   return (
     <Card>
       <CardHeader>
-        <CardTitle>{config.title}</CardTitle>
+        <CardTitle>{t(`codingAgent.${kind}.title`)}</CardTitle>
         <p className="text-sm text-muted-foreground">
-          {config.blurb} This coding agent is always high-risk, so every run requires local approval.
+          {t(`codingAgent.${kind}.description`)} {t("codingAgent.highRisk")}
         </p>
       </CardHeader>
       <CardContent className="space-y-4">
         <div className="grid gap-3 sm:grid-cols-2">
-          <Field label="Name">
+          <Field label={t("codingAgent.name")}>
             <Input value={name} onChange={(e) => setName(e.target.value)} />
           </Field>
-          <Field label={config.modeLabel}>
+          <Field label={t(`codingAgent.${kind}.modeLabel`)}>
             <Select value={mode} onChange={(e) => setMode(e.target.value)}>
               {config.modes.map((m) => (
                 <option key={m.value} value={m.value}>
-                  {m.label}
+                  {t(`codingAgent.${kind}.modes.${m.value}.label` as never)}
                 </option>
               ))}
             </Select>
           </Field>
-          <Field label="Cost owner">
+          <Field label={t("codingAgent.costOwner")}>
             <Input value={costOwner} onChange={(e) => setCostOwner(e.target.value)} />
           </Field>
         </div>
 
         <div className="flex items-start gap-2 rounded-lg border border-border bg-muted/30 p-3 text-sm">
-          <Badge tone={active.tone}>{active.label}</Badge>
-          <p className="text-muted-foreground">{active.hint}</p>
+          <Badge tone={active.tone}>{t(`codingAgent.${kind}.modes.${active.value}.label` as never)}</Badge>
+          <p className="text-muted-foreground">{t(`codingAgent.${kind}.modes.${active.value}.hint` as never)}</p>
         </div>
         {writable ? (
           <p className="text-xs text-warning">
-            Writable mode lets this agent modify files in its working directory. The approval gate keeps it safe —
-            review each run before approving.
+            {t("codingAgent.writableWarning")}
           </p>
         ) : null}
 
@@ -172,12 +179,12 @@ export function RegisterCodingAgentCard({ kind }: { kind: "codex" | "claude" }) 
             onClick={register}
           >
             {pending
-              ? "Registering…"
+              ? t("codingAgent.registering")
               : modeAlreadyRegistered
-                ? `Update ${kindLabel} (${mode})`
+                ? t("codingAgent.update", { kind: kindLabel, mode })
                 : alreadyRegistered
-                  ? `Register another ${kindLabel}`
-                  : `Register ${kindLabel}`}
+                  ? t("codingAgent.registerAnother", { kind: kindLabel })
+                  : t("codingAgent.register", { kind: kindLabel })}
           </Button>
           {alreadyRegistered ? (
             <button
@@ -186,7 +193,7 @@ export function RegisterCodingAgentCard({ kind }: { kind: "codex" | "claude" }) 
               onClick={() => setSection("agents")}
             >
               <Check className="size-3.5" />
-              {existing.length} {kindLabel} agent{existing.length > 1 ? "s" : ""} registered — open in Agents →
+              {t("codingAgent.registered", { count: existing.length, kind: kindLabel })}
             </button>
           ) : null}
         </div>

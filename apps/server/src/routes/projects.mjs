@@ -1,7 +1,7 @@
 import { randomBytes } from "node:crypto";
-import { existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
-import { basename, dirname, extname, join, relative, resolve, sep } from "node:path";
-import { denyForeignProject, teamOf, LOCAL_TEAM_ID } from "../runtime/auth.mjs";
+import { constants as fsConstants, copyFileSync, existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
+import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { canProvision, denyForeignProject, teamOf, LOCAL_TEAM_ID } from "../runtime/auth.mjs";
 import { computeDispatchEvaluation } from "../read-models/dispatch-evaluation.mjs";
 import { computeIssueOwnership } from "../read-models/issue-ownership.mjs";
 import { recordHttpGateRefusal } from "./refusal-http-gate.mjs";
@@ -19,6 +19,10 @@ import { computeAutoRunReadiness } from "../services/auto-run-readiness.mjs";
 import { computeMergeRisk, sensitivePathHit, DEFAULT_SENSITIVE_PATHS } from "../services/auto-run-risk.mjs";
 import { summarizeEpicChildren } from "../services/auto-run-epic.mjs";
 import { resolveAutoRunVerifyCommandFor } from "../services/worktree-verify.mjs";
+import { PdfDocumentReadError, readProjectPdf } from "../services/pdf-document-read.mjs";
+import { CadPreviewError, inspectCadDocument, renderCadDocument } from "../services/cad-preview.mjs";
+import { assetCapabilityMatrix, deriveAssetRuntimeReadiness, describeProjectAsset, summarizeAssetForRemote } from "../services/asset-capabilities.mjs";
+import { AssetPreviewError, readAssetPreview } from "../services/asset-preview.mjs";
 
 const IMAGE_MIME = {
   ".png": "image/png",
@@ -52,6 +56,7 @@ export async function handleProjectRoutes({
   retryAutoRun,
   cancelAutoRun,
   mergeAutoRunPr,
+  recordRoutingOverride,
   setReportSchedule,
   postReportNow,
   claimIssue,
@@ -68,6 +73,7 @@ export async function handleProjectRoutes({
   removeProject,
   removeWorktree,
   updateProject,
+  readProjectDocuments,
   readProjectTree,
   searchProjectContent,
   gitProjectSummary,
@@ -231,6 +237,10 @@ export async function handleProjectRoutes({
   // foreign actor (these routes take a global run id, not a project id). (audit)
   const denyForeignAutoRun = (autoRunId) => {
     const run = (state.autoRuns ?? []).find((r) => r.id === autoRunId);
+    if (run && !run.projectId && actor?.teamId != null && run.teamId !== actor.teamId) {
+      sendJson(res, 404, { error: "auto_run_not_found" });
+      return true;
+    }
     const projectId = run?.projectId ?? null;
     if (!projectId) return false; // unknown run → let the service return not-found
     return denyForeignProject({ res, sendJson, state, actor, projectId, notFound: { error: "auto_run_not_found" } });
@@ -240,7 +250,8 @@ export async function handleProjectRoutes({
   if (autoRunRetryMatch && req.method === "POST") {
     if (denyForeignAutoRun(decodeURIComponent(autoRunRetryMatch[1]))) return true;
     try {
-      const result = await retryAutoRun(decodeURIComponent(autoRunRetryMatch[1]), { actor });
+      const body = await readJson(req);
+      const result = await retryAutoRun(decodeURIComponent(autoRunRetryMatch[1]), { actor, terminalId: body?.terminalId });
       sendJson(res, 200, result);
     } catch (error) {
       sendJson(res, 400, { error: "auto_run_retry_failed", message: errorMessage(error) });
@@ -252,10 +263,34 @@ export async function handleProjectRoutes({
   if (autoRunCancelMatch && req.method === "POST") {
     if (denyForeignAutoRun(decodeURIComponent(autoRunCancelMatch[1]))) return true;
     try {
-      const result = cancelAutoRun(decodeURIComponent(autoRunCancelMatch[1]), { actor });
+      const body = await readJson(req);
+      const result = cancelAutoRun(decodeURIComponent(autoRunCancelMatch[1]), { actor, terminalId: body?.terminalId });
       sendJson(res, 200, result);
     } catch (error) {
       sendJson(res, 400, { error: "auto_run_cancel_failed", message: errorMessage(error) });
+    }
+    return true;
+  }
+
+  const routingOverrideMatch = url.pathname.match(/^\/api\/auto-runs\/([^\/]+)\/routing-override$/);
+  if (routingOverrideMatch && req.method === "POST") {
+    if (denyForeignAutoRun(decodeURIComponent(routingOverrideMatch[1]))) return true;
+    try {
+      const body = await readJson(req);
+      const result = recordRoutingOverride(decodeURIComponent(routingOverrideMatch[1]), {
+        actor,
+        actualPath: body?.actualPath,
+        reason: body?.reason,
+        expectedRevision: body?.expectedRevision,
+        idempotencyKey: body?.idempotencyKey,
+      });
+      sendJson(res, 200, result);
+    } catch (error) {
+      sendJson(res, error?.status ?? 400, {
+        error: error?.code ?? "routing_override_failed",
+        message: errorMessage(error),
+        ...(error?.currentRevision == null ? {} : { currentRevision: error.currentRevision }),
+      });
     }
     return true;
   }
@@ -329,12 +364,19 @@ export async function handleProjectRoutes({
     // outcomes; the 10s poll stays cheap.
     if (url.searchParams.get("refresh") === "1" && typeof refreshAutoRunPrDispositions === "function") {
       try {
-        await refreshAutoRunPrDispositions();
+        await refreshAutoRunPrDispositions({ teamId: actor?.teamId ?? null });
       } catch {
         /* best-effort */
       }
     }
-    const autoRuns = state.autoRuns ?? [];
+    const visibleProjectIds = new Set(
+      (state.projects ?? [])
+        .filter((project) => actor?.teamId == null || teamOf(project) === actor.teamId)
+        .map((project) => project.id),
+    );
+    const autoRuns = (state.autoRuns ?? []).filter((run) =>
+      (run.projectId && visibleProjectIds.has(run.projectId))
+      || (!run.projectId && actor?.teamId != null && run.teamId === actor.teamId));
     // Surface the pending local-approval on awaiting_approval runs so the human
     // can Approve/Deny directly on the auto-run card (informed by the decision
     // already shown), instead of hunting for it in the Invocations view.
@@ -344,7 +386,8 @@ export async function handleProjectRoutes({
         .map((a) => [a.invocationId, a]),
     );
     const enriched = autoRuns.map((run) => {
-      let out = run;
+      const { idempotencyKey: _routingIdempotencyKey, ...routingOverride } = run.routingOverride ?? {};
+      let out = run.routingOverride ? { ...run, routingOverride } : run;
       // Derived terminal grade (clean / degraded / unverified success, or failed)
       // for a per-run quality badge; null while the run is still in flight.
       const finalStatus = deriveFinalStatus(run);
@@ -381,10 +424,15 @@ export async function handleProjectRoutes({
     });
     sendJson(res, 200, {
       autoRuns: enriched,
-      summary: summarizeAutoRuns(autoRuns, { sloTargets: state.autoRunSettings?.sloTargets ?? null }),
+      summary: summarizeAutoRuns(autoRuns, {
+        sloTargets: state.autoRunSettings?.sloTargets ?? null,
+        routingThresholds: state.autoRunSettings?.routingThresholds ?? null,
+      }),
       // D2 deploy metrics: change-failure rate + recovery + frequency over the
       // deploy stage's records (feeds the DORA panel and maturity L5 in D3).
-      deployments: summarizeDeployments(state.deployments ?? []),
+      deployments: summarizeDeployments(
+        (state.deployments ?? []).filter((deployment) => visibleProjectIds.has(deployment.projectId)),
+      ),
     });
     return true;
   }
@@ -473,6 +521,10 @@ export async function handleProjectRoutes({
   if (req.method === "PUT" && url.pathname === "/api/auto-run-settings") {
     // Edit the SAFE knobs only; command argv is never accepted here. A field set
     // to null clears the override (back to env). Applied on the next server start.
+    if (!canProvision(actor)) {
+      sendJson(res, 403, { error: "forbidden", message: "Only an owner or admin can update global Auto-run settings." });
+      return true;
+    }
     const body = await readJson(req);
     state.autoRunSettings = normalizeAutoRunSettings(body ?? {}, state.autoRunSettings ?? {});
     persistStateSoon?.();
@@ -618,6 +670,179 @@ export async function handleProjectRoutes({
         error: "project_tree_unavailable",
         message: error instanceof Error ? error.message : String(error),
       });
+    }
+    return true;
+  }
+
+  const projectDocumentsMatch = url.pathname.match(/^\/api\/projects\/([^/]+)\/documents$/);
+  if (projectDocumentsMatch && req.method === "GET") {
+    const project = state.projects.find((item) => item.id === decodeURIComponent(projectDocumentsMatch[1]));
+    if (!project) {
+      sendJson(res, 404, { error: "project_not_found" });
+      return true;
+    }
+    if (denyForeignProject({ res, sendJson, state, actor, projectId: project.id, notFound: { error: "project_not_found" } })) return true;
+    try {
+      const worktreeId = url.searchParams.get("worktree");
+      const worktree = worktreeId ? (state.worktrees ?? []).find((item) => item.id === worktreeId && item.projectId === project.id) : null;
+      if (worktreeId && !worktree) {
+        sendJson(res, 404, { error: "worktree_not_found" });
+        return true;
+      }
+      const root = worktree?.path ?? worktree?.worktreePath ?? project.path;
+      const result = readProjectDocuments({ ...project, path: root }, {
+        type: url.searchParams.get("type") ?? "all",
+        search: url.searchParams.get("q") ?? "",
+        limit: url.searchParams.get("limit") ?? 200,
+      });
+      sendJson(res, 200, {
+        ...result,
+        worktreeId: worktree?.id ?? null,
+        documents: result.documents.map((document) => {
+          const readiness = deriveAssetRuntimeReadiness(state)[document.assetFamily];
+          return {
+            ...document, worktreeId: worktree?.id ?? null,
+            readiness: readiness === undefined ? document.readiness
+              : readiness ? { state: "ready", reason: "available_on_owning_terminal" }
+                : { state: "waiting_capability", reason: "local_application_required" },
+          };
+        }),
+      });
+    } catch (error) {
+      sendJson(res, 400, { error: "project_documents_unavailable", message: error instanceof Error ? error.message : String(error) });
+    }
+    return true;
+  }
+
+  const assetCapabilitiesMatch = url.pathname.match(/^\/api\/projects\/([^/]+)\/asset-capabilities$/);
+  if (assetCapabilitiesMatch && req.method === "GET") {
+    const project = state.projects.find((item) => item.id === decodeURIComponent(assetCapabilitiesMatch[1]));
+    if (!project) { sendJson(res, 404, { error: "project_not_found" }); return true; }
+    if (denyForeignProject({ res, sendJson, state, actor, projectId: project.id, notFound: { error: "project_not_found" } })) return true;
+    const worktreeId = url.searchParams.get("worktree");
+    const worktree = worktreeId ? (state.worktrees ?? []).find((item) => item.id === worktreeId && item.projectId === project.id) : null;
+    if (worktreeId && !worktree) { sendJson(res, 404, { error: "worktree_not_found" }); return true; }
+    try {
+      const root = worktree?.path ?? worktree?.worktreePath ?? project.path;
+      const descriptor = describeProjectAsset({
+        projectId: project.id,
+        projectRoot: root,
+        relativePath: url.searchParams.get("path") ?? "",
+        terminalId: actor?.deviceId ?? project.terminalId ?? state.devices?.[0]?.id ?? "local-terminal",
+        worktreeId: worktree?.id ?? null,
+        runtimeReadiness: deriveAssetRuntimeReadiness(state),
+      });
+      res.setHeader("Cache-Control", "private, no-store");
+      sendJson(res, 200, { descriptor, remoteSummary: summarizeAssetForRemote(descriptor), matrixVersion: 1 });
+    } catch (error) {
+      const code = error?.code ?? "asset_unavailable";
+      const status = code === "asset_path_outside_project" || code === "invalid_asset_path" ? 400 : code === "ENOENT" ? 404 : 400;
+      sendJson(res, status, { error: code, message: "This asset is not available inside the selected project." });
+    }
+    return true;
+  }
+
+  if (url.pathname === "/api/asset-capabilities" && req.method === "GET") {
+    sendJson(res, 200, { version: 1, verbs: [
+      "discover", "preview", "inspect", "create", "edit", "transform",
+      "render", "compare", "export", "open_external", "attach_evidence",
+    ], families: assetCapabilityMatrix() });
+    return true;
+  }
+
+  const assetPreviewMatch = url.pathname.match(/^\/api\/projects\/([^/]+)\/asset-preview$/);
+  if (assetPreviewMatch && req.method === "GET") {
+    const project = state.projects.find((item) => item.id === decodeURIComponent(assetPreviewMatch[1]));
+    if (!project) { sendJson(res, 404, { error: "project_not_found" }); return true; }
+    if (denyForeignProject({ res, sendJson, state, actor, projectId: project.id, notFound: { error: "project_not_found" } })) return true;
+    const worktreeId = url.searchParams.get("worktree");
+    const worktree = worktreeId ? (state.worktrees ?? []).find((item) => item.id === worktreeId && item.projectId === project.id) : null;
+    if (worktreeId && !worktree) { sendJson(res, 404, { error: "worktree_not_found" }); return true; }
+    try {
+      const root = worktree?.path ?? worktree?.worktreePath ?? project.path;
+      const preview = readAssetPreview({
+        projectPath: root, relativeFile: url.searchParams.get("path") ?? "", range: req.headers.range ?? null,
+      });
+      res.setHeader("Cache-Control", "private, no-store");
+      res.setHeader("X-Content-Type-Options", "nosniff");
+      res.setHeader("Content-Security-Policy", "default-src 'none'; sandbox");
+      if (preview.family === "markdown") {
+        sendJson(res, 200, {
+          path: preview.path, family: preview.family, text: preview.text,
+          size: preview.size, truncated: false,
+        });
+        return true;
+      }
+      res.statusCode = preview.family === "video" ? 206 : 200;
+      res.setHeader("Content-Type", preview.mimeType);
+      res.setHeader("Content-Length", String(preview.bytes.length));
+      res.setHeader("Content-Disposition", "inline");
+      if (preview.family === "video") {
+        res.setHeader("Accept-Ranges", "bytes");
+        res.setHeader("Content-Range", `bytes ${preview.start}-${preview.end}/${preview.size}`);
+      }
+      res.end(preview.bytes);
+    } catch (error) {
+      const code = error instanceof AssetPreviewError ? error.code : "asset_preview_failed";
+      const status = code === "asset_not_found" ? 404
+        : code === "asset_preview_too_large" ? 413
+          : code === "invalid_asset_range" ? 416
+            : code === "asset_preview_unsupported" ? 415 : 400;
+      sendJson(res, status, { error: code, message: error instanceof AssetPreviewError ? error.message : "Asset preview is unavailable." });
+    }
+    return true;
+  }
+
+  const pdfDocumentMatch = url.pathname.match(/^\/api\/projects\/([^/]+)\/pdf-document$/);
+  if (pdfDocumentMatch && req.method === "GET") {
+    const project = state.projects.find((item) => item.id === decodeURIComponent(pdfDocumentMatch[1]));
+    if (!project) { sendJson(res, 404, { error: "project_not_found" }); return true; }
+    if (denyForeignProject({ res, sendJson, state, actor, projectId: project.id, notFound: { error: "project_not_found" } })) return true;
+    const worktreeId = url.searchParams.get("worktree");
+    const worktree = worktreeId ? (state.worktrees ?? []).find((item) => item.id === worktreeId && item.projectId === project.id) : null;
+    if (worktreeId && !worktree) { sendJson(res, 404, { error: "worktree_not_found" }); return true; }
+    try {
+      const root = worktree?.path ?? worktree?.worktreePath ?? project.path;
+      const pdf = readProjectPdf({ projectPath: root, relativeFile: url.searchParams.get("path") ?? "", range: req.headers.range ?? null });
+      res.statusCode = req.headers.range ? 206 : 200;
+      res.setHeader("Content-Type", "application/pdf");
+      res.setHeader("Content-Length", String(pdf.bytes.length));
+      res.setHeader("Accept-Ranges", "bytes");
+      if (req.headers.range) res.setHeader("Content-Range", `bytes ${pdf.start}-${pdf.end}/${pdf.size}`);
+      res.setHeader("Content-Disposition", "inline");
+      res.setHeader("Cache-Control", "private, no-store");
+      res.setHeader("X-Content-Type-Options", "nosniff");
+      res.end(pdf.bytes);
+    } catch (error) {
+      const code = error instanceof PdfDocumentReadError ? error.code : "pdf_read_failed";
+      const status = code === "not_found" ? 404 : code === "pdf_too_large" ? 413 : code === "range_not_satisfiable" || code === "invalid_range" ? 416 : 400;
+      if (status === 416) res.setHeader("Content-Range", "bytes */*");
+      sendJson(res, status, { error: code, message: error instanceof Error ? error.message : String(error) });
+    }
+    return true;
+  }
+
+  const cadDocumentMatch = url.pathname.match(/^\/api\/projects\/([^/]+)\/cad-document(\/layout)?$/);
+  if (cadDocumentMatch && req.method === "GET") {
+    const project = state.projects.find((item) => item.id === decodeURIComponent(cadDocumentMatch[1]));
+    if (!project) { sendJson(res, 404, { error: "project_not_found" }); return true; }
+    if (denyForeignProject({ res, sendJson, state, actor, projectId: project.id, notFound: { error: "project_not_found" } })) return true;
+    const worktreeId = url.searchParams.get("worktree");
+    const worktree = worktreeId ? (state.worktrees ?? []).find((item) => item.id === worktreeId && item.projectId === project.id) : null;
+    if (worktreeId && !worktree) { sendJson(res, 404, { error: "worktree_not_found" }); return true; }
+    const rootPath = worktree?.path ?? worktree?.worktreePath ?? project.path;
+    const args = { projectPath: rootPath, relativeFile: url.searchParams.get("path") ?? "" };
+    try {
+      const result = cadDocumentMatch[2]
+        ? await renderCadDocument({ ...args, layout: url.searchParams.get("layout") ?? "Model", visibleLayers: url.searchParams.get("layersMode") === "selected" ? url.searchParams.getAll("layers") : undefined })
+        : await inspectCadDocument(args);
+      res.setHeader("Cache-Control", "private, no-store");
+      res.setHeader("Content-Security-Policy", "default-src 'none'; style-src 'unsafe-inline'; img-src 'none'; font-src 'none'; connect-src 'none'; frame-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'");
+      sendJson(res, 200, result);
+    } catch (error) {
+      const code = error instanceof CadPreviewError ? error.code : "cad_processing_failed";
+      const status = code === "cad_not_found" ? 404 : code === "cad_file_too_large" || code === "cad_output_too_large" || code.endsWith("_limit_exceeded") ? 413 : code === "ezdxf_unavailable" || code === "oda_unavailable" ? 503 : 400;
+      sendJson(res, status, { error: code, message: error instanceof CadPreviewError ? error.message : "CAD preview could not be produced." });
     }
     return true;
   }
@@ -1024,6 +1249,15 @@ export async function handleProjectRoutes({
       }
       return true;
     }
+    if (action === "office-document-manage" && req.method === "POST") {
+      try {
+        const body = await readJson(req);
+        sendJson(res, 200, manageOfficeDocument(worktree, body));
+      } catch (error) {
+        sendJson(res, 400, { error: "office_document_manage_failed", message: errorMessage(error) });
+      }
+      return true;
+    }
     if (action === "push" && req.method === "POST") {
       try {
         const result = await publishWorktreeBranch(worktree.id);
@@ -1130,6 +1364,48 @@ function gitSummaryForWorktree(summary) {
 // contained .gitignore so attachments never show up as untracked clutter in the
 // worktree diff or get swept into a commit by ephemeral cleanup.
 const MAX_ATTACHMENT_BYTES = 5 * 1024 * 1024;
+const OFFICE_IMPORT_EXTENSIONS = new Set([".docx", ".xlsx", ".pptx"]);
+
+export function manageOfficeDocument(worktree, body) {
+  const operation = String(body?.operation ?? "");
+  if (!["rename", "move", "copy", "delete"].includes(operation)) throw new Error("Unsupported document operation.");
+  const root = resolve(worktree.path);
+  const source = resolveOfficeDocumentPath(root, body?.source, { mustExist: true });
+  if (lstatSync(source.absolute).isSymbolicLink() || !lstatSync(source.absolute).isFile()) throw new Error("Source must be a regular Office document.");
+  if (operation === "delete") {
+    unlinkSync(source.absolute);
+    return { operation, source: source.relative };
+  }
+  const destination = resolveOfficeDocumentPath(root, body?.destination, { mustExist: false, createParent: true });
+  if (extname(source.relative).toLowerCase() !== extname(destination.relative).toLowerCase()) {
+    throw new Error("Destination must keep the source document type.");
+  }
+  if (existsSync(destination.absolute)) throw new Error("A document already exists at the destination.");
+  if (operation === "copy") copyFileSync(source.absolute, destination.absolute, fsConstants.COPYFILE_EXCL);
+  else renameSync(source.absolute, destination.absolute);
+  return { operation, source: source.relative, destination: destination.relative };
+}
+
+function resolveOfficeDocumentPath(root, input, { mustExist, createParent = false }) {
+  const value = String(input ?? "").trim().replaceAll("\\", "/");
+  if (!value || value.startsWith("/") || value.startsWith("~") || value.split("/").includes("..")) throw new Error("Document path must be relative to the worktree.");
+  if (!OFFICE_IMPORT_EXTENSIONS.has(extname(value).toLowerCase())) throw new Error("Document path must end in .docx, .xlsx, or .pptx.");
+  const absolute = resolve(root, value);
+  const rel = relative(root, absolute);
+  if (!rel || rel === ".." || rel.startsWith(`..${sep}`) || isAbsolute(rel)) throw new Error("Document path escapes the worktree.");
+  const parent = dirname(absolute);
+  let cursor = root;
+  for (const part of relative(root, parent).split(sep).filter(Boolean)) {
+    cursor = join(cursor, part);
+    if (existsSync(cursor) && lstatSync(cursor).isSymbolicLink()) throw new Error("Document path escapes the worktree through a symlink.");
+  }
+  if (createParent) mkdirSync(parent, { recursive: true });
+  const realRoot = realpathSync(root);
+  const realParent = realpathSync(parent);
+  if (realParent !== realRoot && !realParent.startsWith(realRoot + sep)) throw new Error("Document path escapes the worktree.");
+  if (mustExist && !existsSync(absolute)) throw new Error("Source document does not exist.");
+  return { absolute, relative: value };
+}
 
 function saveAttachments(worktree, files) {
   const list = Array.isArray(files) ? files.slice(0, 6) : [];

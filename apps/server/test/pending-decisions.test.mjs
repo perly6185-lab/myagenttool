@@ -123,6 +123,46 @@ test("codex approval-broker: pending only, project resolved from the invocation"
   assert.equal(rows[0].ref.requestId, "cx_1");
 });
 
+test("a timed-out Codex approval returns to the queue only while its linked auto-run is recoverable", () => {
+  const invocation = {
+    id: "inv_timeout",
+    projectId: "projB",
+    task: "Continue the local task",
+    options: { metadata: { autoRunId: "aur_1" } },
+  };
+  const request = {
+    id: "cx_timeout",
+    invocationId: invocation.id,
+    status: "timed_out",
+    toolName: "shell",
+  };
+  const run = {
+    id: "aur_1",
+    invocationId: invocation.id,
+    status: "failed",
+  };
+  const rows = pendingDecisions({
+    codexApprovalBrokerRequests: [request],
+    autoRuns: [run],
+    invocationsById: new Map([[invocation.id, invocation]]),
+  });
+  assert.equal(rows.length, 1);
+  assert.equal(rows[0].title, "Codex approval expired — resume available");
+  assert.equal(rows[0].ref.timedOut, true);
+  assert.equal(rows[0].ref.autoRunId, run.id);
+
+  run.invocationId = "inv_newer";
+  assert.equal(
+    pendingDecisions({
+      codexApprovalBrokerRequests: [request],
+      autoRuns: [run],
+      invocationsById: new Map([[invocation.id, invocation]]),
+    }).length,
+    0,
+    "a stale approval cannot reappear after the auto-run advanced",
+  );
+});
+
 test("application recovery approvals become their own kind with application context and deep link", () => {
   const rows = pendingDecisions({
     codexApprovalBrokerRequests: [

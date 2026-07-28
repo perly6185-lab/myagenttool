@@ -65,12 +65,13 @@ function makeHarness({ capabilityResult, allowlist = ["git.status"], statusCapab
   channelService.mapChannelIdentity({ channelId, externalUserId: "wx_alice", userId: "usr_local" }, owner);
 
   let msgSeq = 0;
-  function receive(content, { from = "wx_alice" } = {}) {
+  function receive(content, { from = "wx_alice", attachmentAssets = [] } = {}) {
     const imported = channelService.importChannelEvent({
       channelId,
       providerMessageId: `msg_${++msgSeq}`,
       externalUserId: from,
       content,
+      attachmentAssets,
     });
     if (!imported.ok) return { imported, dispatched: null };
     const dispatched = conversationService.dispatchImportedChannelEvent({ eventId: imported.eventId });
@@ -80,6 +81,7 @@ function makeHarness({ capabilityResult, allowlist = ["git.status"], statusCapab
   const bindTaskProject = (projectId) => {
     const ch = state.channels.find((c) => c.id === channelId);
     ch.taskProjectId = projectId;
+    ch.taskTerminalId = "dev_local";
   };
   return { state, events, refusals, capabilityCalls, cancelCalls, channelId, channelService, receive, bindTaskProject };
 }
@@ -154,16 +156,33 @@ test("/task with no bound project is refused (no issue filed)", async () => {
   assert.equal(filed, 0);
 });
 
-test("/task files a GitHub issue in the bound project and replies with the tracked issue number", async () => {
+test("/task refuses an incomplete project binding instead of falling back to a terminal", async () => {
+  let filed = 0;
+  const harness = makeHarness({
+    createChannelTaskIssue: async () => { filed += 1; return { ok: true, number: 1 }; },
+  });
+  harness.bindTaskProject("proj_a");
+  harness.state.channels.find((channel) => channel.id === harness.channelId).taskTerminalId = null;
+  const settled = await harness.receive("/task fix the login error").dispatched;
+  assert.equal(settled.status, "refused");
+  assert.equal(harness.events.at(-1).data.reason, "channel_task_binding_required");
+  assert.match(settled.reply, /binding.*not ready/i);
+  assert.equal(filed, 0);
+});
+
+test("/task creates a local work item in the bound project and replies with its local reference", async () => {
   const calls = [];
   const harness = makeHarness({
-    createChannelTaskIssue: async (args) => { calls.push(args); return { ok: true, number: 42, url: "https://github.com/x/y/issues/42" }; },
+    createChannelTaskIssue: async (args) => {
+      calls.push(args);
+      return { ok: true, number: 42, localRef: "LOCAL-42", workItemId: "wi_42", url: "/?section=tasks&workItem=wi_42" };
+    },
   });
   harness.bindTaskProject("proj_a");
   const { dispatched } = harness.receive("/task   fix the login   error  ");
   const settled = await dispatched;
   assert.equal(settled.status, "dispatched");
-  assert.match(settled.reply, /#42/);
+  assert.match(settled.reply, /LOCAL-42/);
   // Default is CAPTURE — awaits a human route/dismiss, not auto-routed.
   assert.match(settled.reply, /route\/dismiss/i);
   assert.equal(calls[0].autoRoute, false);
@@ -171,6 +190,7 @@ test("/task files a GitHub issue in the bound project and replies with the track
   assert.equal(harness.state.channelTaskRequests.length, 1);
   assert.equal(harness.state.channelTaskRequests[0].status, "pending");
   assert.equal(harness.state.channelTaskRequests[0].issueNumber, 42);
+  assert.equal(harness.state.channelTaskRequests[0].workItemId, "wi_42");
   // The filer got the bound project + normalized description + provenance + team.
   assert.equal(calls.length, 1);
   assert.equal(calls[0].projectId, "proj_a");
@@ -212,8 +232,32 @@ test("/task auto-route mode files with the dispatcher path and records NO pendin
   const settled = await harness.receive("/task ship it").dispatched;
   assert.equal(settled.status, "dispatched");
   assert.equal(calls[0].autoRoute, true);
-  assert.match(settled.reply, /auto-routing/i);
+  assert.match(settled.reply, /queued on this terminal/i);
   assert.equal((harness.state.channelTaskRequests ?? []).length, 0, "no pending request in auto-route mode");
+});
+
+test("/task carries only governed same-terminal attachment assets into its immutable context", async () => {
+  const calls = [];
+  const harness = makeHarness({
+    createChannelTaskIssue: async (args) => {
+      calls.push(args);
+      return { ok: true, number: 44, localRef: "LOCAL-44", workItemId: "wi_44" };
+    },
+  });
+  harness.bindTaskProject("proj_a");
+  const channel = harness.state.channels.find((candidate) => candidate.id === harness.channelId);
+  channel.taskTerminalId = "dev_local";
+  const attachment = {
+    id: "asset-1", projectId: "proj_a", terminalId: "dev_local",
+    path: "inbox/input.xlsx", family: "excel", hash: "sha256:x", version: "v1",
+    readiness: { state: "ready" },
+  };
+  const settled = await harness.receive("/task update the workbook", { attachmentAssets: [attachment] }).dispatched;
+  assert.equal(settled.status, "dispatched");
+  assert.deepEqual(calls[0].inputAssets.map((asset) => asset.id), ["asset-1"]);
+  assert.equal(calls[0].channelTaskContext.principalId, "usr_local");
+  assert.equal(calls[0].channelTaskContext.terminalId, "dev_local");
+  assert.equal(harness.state.channelTaskRequests.at(-1).channelTaskContext.traceId, "wi_44");
 });
 
 test("/task reserves the rate slot BEFORE the async filing (closes the TOCTOU)", async () => {
@@ -234,7 +278,7 @@ test("/task counts against the per-conversation rate limit and fails gracefully 
   harness.bindTaskProject("proj_a");
   const settled = await harness.receive("/task do a thing").dispatched;
   assert.equal(settled.status, "refused");
-  assert.match(settled.reply, /Could not file the task/i);
+  assert.match(settled.reply, /Could not create the local task/i);
 });
 
 test("two independent gates: channel allowlist refuses BEFORE the gateway; the gateway's own refusal stays opaque", () => {

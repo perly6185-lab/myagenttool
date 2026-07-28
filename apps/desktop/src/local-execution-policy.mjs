@@ -1,5 +1,6 @@
 import { existsSync } from "node:fs";
 import { delimiter, extname, isAbsolute, join, resolve, sep } from "node:path";
+import { homedir } from "node:os";
 
 // Per-device binary availability (#802). git is a per-device property; a wrapper
 // command whose binary PATH cannot resolve would spawn-fail with an opaque exit
@@ -9,7 +10,8 @@ import { delimiter, extname, isAbsolute, join, resolve, sep } from "node:path";
 export function binaryAvailableOnPath(command, env = process.env) {
   if (!command || typeof command !== "string") return false;
   if (command.includes("/") || command.includes(sep) || isAbsolute(command)) return existsSync(command);
-  const dirs = String(env.PATH ?? "").split(delimiter).filter(Boolean);
+  const managedBin = String(env.MYAGENTTOOL_RUNTIME_BIN ?? "").trim() || join(homedir(), ".myagenttool", "bin");
+  const dirs = [managedBin, ...String(env.PATH ?? "").split(delimiter)].filter(Boolean);
   const names = process.platform === "win32" && !extname(command)
     ? String(env.PATHEXT ?? ".COM;.EXE;.BAT;.CMD").split(";").filter(Boolean).map((extension) => `${command}${extension}`)
     : [command];
@@ -76,6 +78,7 @@ const isSafeRelPath = (value) =>
   && !/^[A-Za-z]:/.test(value)
   && !value.split(/[/\\]/).includes("..");
 const isOfficeFile = (value) => isSafeRelPath(value) && /\.(docx|xlsx|pptx)$/i.test(value);
+const isPdfFile = (value) => isSafeRelPath(value) && /\.pdf$/i.test(value);
 // A CSV/TSV source file (officecli import) — same worktree-safe rule, data ext.
 const isOfficeCsvFile = (value) => isSafeRelPath(value) && /\.(csv|tsv)$/i.test(value);
 // Inline merge --data: a JSON object/array within a byte bound. Independent mirror
@@ -97,6 +100,20 @@ const OFFICECLI_WRAPPER_ARGS = {
   view: { base: ["view"], flags: {}, positionals: [isOfficeFile, isOfficeViewMode] },
   validate: { base: ["validate", "--json"], flags: {}, positionals: [isOfficeFile] },
   dump: { base: ["dump"], flags: {}, positionals: [isOfficeFile, isOfficeArg] },
+};
+
+// pdfcpu phase 1: only two fixed, offline, read-only invocations. `--conf
+// disable` prevents configuration-directory writes, while the device independently
+// requires one worktree-safe PDF positional.
+const PDFCPU_WRAPPER_ARGS = {
+  validate: {
+    base: ["validate", "--offline", "--conf", "disable", "--mode", "strict"],
+    flags: {}, positionals: [isPdfFile], minPositionals: 1,
+  },
+  info: {
+    base: ["info", "--offline", "--conf", "disable", "--json"],
+    flags: {}, positionals: [isPdfFile], minPositionals: 1,
+  },
 };
 
 // The bridge's OWN copy of the OfficeCLI WRITE argv spec (P3.1, #1349). Same
@@ -125,6 +142,8 @@ const OFFICE_CONTENT_PROP_KEYS = new Set([
 ]);
 const isOfficeSafeMediaSource = (value) => {
   if (typeof value !== "string" || value.length > 500 || /[\r\n\0]/.test(value)) return false;
+  // officecli trims whitespace before resolving (incl. the path after `image:`).
+  value = value.trim();
   // officecli `image:<path>` fill form (e.g. slide background) reads the file.
   const img = /^image:(.*)$/i.exec(value);
   if (img) return isOfficeSafeMediaSource(img[1]);
@@ -133,7 +152,7 @@ const isOfficeSafeMediaSource = (value) => {
   return isSafeRelPath(value);
 };
 const isOfficeEscapingLocalPath = (value) => {
-  const v = String(value ?? "");
+  const v = String(value ?? "").trim();
   return /^[/~\\]/.test(v) || /^[A-Za-z]:/.test(v) || v.split(/[/\\]/).includes("..");
 };
 // Fail-closed: content keys exempt; source keys must be a safe media source; any
@@ -186,6 +205,7 @@ const officeItemPropsSafe = (props) => {
 };
 
 const OFFICECLI_APPLY_WRAPPER_ARGS = {
+  create: { base: ["create"], flags: {}, positionals: [isOfficeFile] },
   remove: { base: ["remove"], flags: {}, positionals: [isOfficeFile, isOfficeArg] },
   // set <file> <path> --prop key=value ... — repeatable --prop (each value is a
   // key=value pair). The matcher handles repeated flags + ordered positionals.
@@ -332,6 +352,13 @@ export function createLocalExecutionPolicyManifest({
         capabilityPrefix: "app.app_officecli.wrapper.",
         filePolicy: "read_only",
         networkPolicy: "forbidden",
+      },
+      {
+        command: "pdfcpu",
+        capabilityPrefix: "app.app_pdfcpu.wrapper.",
+        filePolicy: "read_only",
+        networkPolicy: "forbidden",
+        probe: { executable: "pdfcpu", args: ["version", "--conf", "disable"] },
       },
       {
         // OfficeCLI WRITE verbs (P3.1). A distinct capability prefix + filePolicy
@@ -489,6 +516,17 @@ export function localExecutionGate(work, adapter, spawnPlan, { permissionDecisio
   if (!commandKind) {
     return refused("Local execution gate refused a non-allowlisted command.", evidence);
   }
+  if (commandKind === "codex") {
+    const codexGate = codexWorkspaceArgumentGate(spawnPlan, permissionDecision);
+    evidence.codexWorkspace = codexGate.evidence;
+    if (!codexGate.allowed) {
+      return refused(
+        codexGate.reason,
+        { ...evidence, refusalCode: codexGate.refusalCode },
+        "policy_blocked",
+      );
+    }
+  }
   if (!policyAllowed(manifest, commandKind, localPolicy)) {
     // refusalCode (refusal model #758): which of file/network exceeded the local
     // allowlist for this command kind — the precise sub-code the server records.
@@ -534,6 +572,104 @@ export function localExecutionGate(work, adapter, spawnPlan, { permissionDecisio
     }
   }
   return { allowed: true, reason: "Local execution gate allowed the governed command.", evidence };
+}
+
+function optionValues(args, names) {
+  const values = [];
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = String(args[index] ?? "");
+    const matched = names.find((name) => arg === name);
+    if (matched) {
+      values.push(String(args[index + 1] ?? ""));
+      index += 1;
+      continue;
+    }
+    const assigned = names.find((name) => arg.startsWith(`${name}=`));
+    if (assigned) values.push(arg.slice(assigned.length + 1));
+  }
+  return values;
+}
+
+function normalizedPathSet(values) {
+  return new Set(values.map((value) => resolve(String(value))).map((value) =>
+    process.platform === "win32" ? value.toLowerCase() : value));
+}
+
+function codexWorkspaceArgumentGate(spawnPlan, permissionDecision) {
+  const args = spawnPlan.args.map(String);
+  const execIndex = args.indexOf("exec");
+  const resumed = execIndex >= 0 && args[execIndex + 1] === "resume";
+  const cdValues = optionValues(args, ["--cd", "-C"]);
+  const sandboxValues = optionValues(args, ["--sandbox", "-s"]);
+  const addDirValues = optionValues(args, ["--add-dir"]);
+  const expectedAddDirs = Array.isArray(spawnPlan.codexAdditionalWritableRoots)
+    ? spawnPlan.codexAdditionalWritableRoots.map(String)
+    : [];
+  const evidence = {
+    resumed,
+    sandbox: sandboxValues,
+    requestedCwd: cdValues,
+    additionalWritableRoots: addDirValues,
+    expectedAdditionalWritableRoots: expectedAddDirs,
+  };
+
+  if (args.includes("--dangerously-bypass-approvals-and-sandbox")) {
+    return permissionDecision === "approved"
+      ? { allowed: true, evidence }
+      : {
+          allowed: false,
+          reason: "Local execution gate refused full-access Codex execution without approval evidence.",
+          refusalCode: "full_access_unapproved",
+          evidence,
+        };
+  }
+  if (resumed) {
+    if (cdValues.length || sandboxValues.length || addDirValues.length) {
+      return {
+        allowed: false,
+        reason: "Local execution gate refused unsupported workspace flags on a resumed Codex session.",
+        refusalCode: "invalid_codex_resume_contract",
+        evidence,
+      };
+    }
+    return { allowed: true, evidence };
+  }
+  if (execIndex < 0 || sandboxValues.length !== 1 || sandboxValues[0] !== "workspace-write") {
+    return {
+      allowed: false,
+      reason: "Local execution gate requires fresh Codex runs to use the workspace-write sandbox.",
+      refusalCode: "invalid_codex_sandbox",
+      evidence,
+    };
+  }
+  const actualCwd = normalizedPathSet(cdValues);
+  const expectedCwd = normalizedPathSet([spawnPlan.cwd]);
+  if (cdValues.length !== 1 || ![...actualCwd].every((value) => expectedCwd.has(value))) {
+    return {
+      allowed: false,
+      reason: "Local execution gate refused a Codex --cd outside the invocation working directory.",
+      refusalCode: "codex_cwd_mismatch",
+      evidence,
+    };
+  }
+  const actualRoots = normalizedPathSet(addDirValues);
+  const expectedRoots = normalizedPathSet(expectedAddDirs);
+  const rootsMatch = actualRoots.size === expectedRoots.size
+    && [...actualRoots].every((value) => expectedRoots.has(value));
+  const rootsAreNarrow = expectedAddDirs.every((value) => {
+    const normalized = resolve(value);
+    return existsSync(normalized)
+      && normalized.toLowerCase().includes(`${sep}.git${sep}worktrees${sep}`.toLowerCase());
+  });
+  if (!rootsMatch || !rootsAreNarrow) {
+    return {
+      allowed: false,
+      reason: "Local execution gate refused an untrusted Codex --add-dir writable root.",
+      refusalCode: "codex_add_dir_mismatch",
+      evidence,
+    };
+  }
+  return { allowed: true, evidence };
 }
 
 function classifySpawn(adapter, spawnPlan, manifest = {}) {
@@ -769,11 +905,17 @@ function wrapperArgsAllowed(capability, args) {
   if (cap.startsWith("app.app_ccusage.wrapper.")) return ccusageArgsAllowed(cap, args);
   if (cap.startsWith("app.app_git.wrapper.")) return gitArgsAllowed(cap, args);
   if (cap.startsWith("app.app_officecli.wrapper.")) return officecliArgsAllowed(cap, args);
+  if (cap.startsWith("app.app_pdfcpu.wrapper.")) return pdfcpuArgsAllowed(cap, args);
   if (cap.startsWith("app.app_officecli.apply.")) return officecliApplyArgsAllowed(cap, args);
   // #1356 PR2: the excalidraw-cli export WRITE verb. The presence-only read prefix
   // (app.app_excalidraw_cli.wrapper.) still has NO branch — it stays default-denied.
   if (cap.startsWith("app.app_excalidraw_cli.apply.")) return excalidrawCliApplyArgsAllowed(cap, args);
   return false;
+}
+
+function pdfcpuArgsAllowed(capability, args) {
+  const cmd = String(capability ?? "").match(/^app\.app_pdfcpu\.wrapper\.([a-z0-9_]+)$/)?.[1] ?? null;
+  return officecliArgvMatches(cmd ? PDFCPU_WRAPPER_ARGS[cmd] : null, args);
 }
 
 function excalidrawCliApplyArgsAllowed(capability, args) {

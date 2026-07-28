@@ -4,7 +4,7 @@ import { createKnownApplicationRegistration, listKnownApplications } from "../sr
 import { listKnownRuntimes } from "../src/services/runtime-catalog.mjs";
 
 test("known application catalog exposes only user-facing applications", () => {
-  assert.deepEqual(listKnownApplications().map((entry) => entry.name), ["markdown", "git", "ccusage", "claude", "codex", "officecli", "canvas", "excalidraw-cli"]);
+  assert.deepEqual(listKnownApplications().map((entry) => entry.name), ["markdown", "git", "ccusage", "claude", "codex", "officecli", "pdfcpu", "canvas", "excalidraw-cli"]);
   assert.deepEqual(listKnownApplications().find((entry) => entry.name === "codex").runtimeRequirements, [
     { runtimeId: "runtime_codex", required: true },
   ]);
@@ -18,9 +18,22 @@ test("known application catalog exposes only user-facing applications", () => {
 
 test("runtime catalog keeps shell infrastructure separate from Applications", () => {
   assert.deepEqual(listKnownRuntimes().map((entry) => entry.id), [
-    "runtime_git", "runtime_ccusage", "runtime_officecli", "runtime_excalidraw_cli", "runtime_claude", "runtime_codex", "runtime_git_bash", "runtime_wsl",
+    "runtime_git", "runtime_ccusage", "runtime_officecli", "runtime_pdfcpu", "runtime_excalidraw_cli", "runtime_claude", "runtime_codex", "runtime_git_bash", "runtime_wsl",
   ]);
   assert.deepEqual(listKnownRuntimes().filter((entry) => entry.kind === "shell").map((entry) => entry.applicationIds), [[], []]);
+});
+
+test("known pdfcpu registration exposes only fixed read-only phase-one commands", () => {
+  const resolved = createKnownApplicationRegistration("pdf cpu");
+  assert.equal(resolved.registration.id, "app_pdfcpu");
+  assert.equal(resolved.entry.command, "pdfcpu");
+  assert.deepEqual(resolved.entry.runtimeRequirements, [{ runtimeId: "runtime_pdfcpu", required: true }]);
+  const commands = resolved.registration.source.wrapper.commands;
+  assert.deepEqual(commands.map((command) => command.id), ["validate", "info"]);
+  assert.ok(commands.every((command) =>
+    command.filePolicy === "read_only"
+    && command.networkPolicy === "forbidden"
+    && command.requiresApproval === false));
 });
 
 test("known canvas registration is a built-in, runtime-less manual Application", () => {

@@ -15,6 +15,7 @@ import { channelCommands, parseChannelCommand } from "@myagenttool/protocol/chan
 import { UNTRUSTED_INPUT_TAG } from "@myagenttool/protocol/issue-prompt";
 import { actorForUser, LOCAL_TEAM_ID } from "../runtime/auth.mjs";
 import { makeRunTx } from "../runtime/store/run-tx.mjs";
+import { createChannelTaskContext, extendChannelTaskContext } from "./channel-task-context.mjs";
 
 const GENERIC_DENIED_REPLY = "Not authorized for this channel. Contact your team administrator.";
 const USAGE_REPLY = `Commands: ${channelCommands.join(" ")}`;
@@ -135,6 +136,23 @@ export function createChannelConversationService({
         data: { reason: "no_task_project" },
       });
     }
+    const identity = (state.channelIdentities ?? []).find(
+      (row) => row.channelId === channel.id && row.externalUserId === event.externalUserId,
+    );
+    let taskContext;
+    try {
+      taskContext = createChannelTaskContext({
+        channel, conversation, event, identity,
+        terminalId: channel.taskTerminalId,
+        projectId: channel.taskProjectId,
+      });
+    } catch (error) {
+      return settle(event, {
+        status: "refused",
+        reply: "The task attachments or local execution binding are not ready.",
+        data: { reason: error?.code ?? "channel_task_context_invalid" },
+      });
+    }
     const rate = runRateCheck(conversation);
     if (rate.limited) {
       return settle(event, { status: "refused", reply: `Too many requests — at most ${RUN_RATE_MAX} per minute. Try again shortly.`, data: { reason: "rate_limited" } });
@@ -175,16 +193,26 @@ export function createChannelConversationService({
         // Taint travels: a message the injection detector flagged files with the
         // untrusted marker so downstream governance sees it (parity with mail).
         injectionSuspicious: Boolean(event.injectionSuspicious),
+        inputAssets: taskContext.attachmentAssets,
+        terminalId: taskContext.terminalId,
+        channelTaskContext: taskContext,
         autoRoute,
       });
     } catch (error) {
       filed = { ok: false, error: String(error?.message ?? error) };
     }
     if (!filed?.ok || !Number.isFinite(filed.number)) {
-      return settle(event, { status: "refused", reply: "Could not file the task right now — please try again.", data: { reason: filed?.reason ?? "issue_create_failed" } });
+      return settle(event, { status: "refused", reply: "Could not create the local task right now — please try again.", data: { reason: filed?.reason ?? "work_item_create_failed" } });
     }
+    const boundTaskContext = extendChannelTaskContext(taskContext, {
+      workItemId: filed.workItemId ?? null,
+      traceId: filed.workItemId ?? taskContext.traceId,
+    });
     runTx(() => {
-      conversation.taskIssues = [...(conversation.taskIssues ?? []), { number: filed.number, url: filed.url ?? null, at: now() }].slice(-50);
+      conversation.taskIssues = [...(conversation.taskIssues ?? []), {
+        number: filed.number, localRef: filed.localRef ?? null, workItemId: filed.workItemId ?? null,
+        url: filed.url ?? null, at: now(),
+      }].slice(-50);
       // Capture mode: record a request that shows up as a pending decision until a
       // human routes (→ auto-run) or dismisses it. Bounded newest-keeps.
       if (!autoRoute) {
@@ -194,9 +222,14 @@ export function createChannelConversationService({
           conversationId: conversation.id,
           projectId: channel.taskProjectId,
           issueNumber: filed.number,
+          localRef: filed.localRef ?? null,
+          workItemId: filed.workItemId ?? null,
           issueUrl: filed.url ?? null,
           title,
           externalUserId: event.externalUserId,
+          terminalId: taskContext.terminalId,
+          inputAssets: taskContext.attachmentAssets,
+          channelTaskContext: boundTaskContext,
           status: "pending",
           autoRunId: null,
           createdAt: now(),
@@ -208,9 +241,12 @@ export function createChannelConversationService({
     return settle(event, {
       status: "dispatched",
       reply: autoRoute
-        ? `Filed issue #${filed.number}${filed.url ? ` (${filed.url})` : ""} — auto-routing; it'll be assigned and tracked.`
-        : `Filed issue #${filed.number}${filed.url ? ` (${filed.url})` : ""} — awaiting a route/dismiss decision in the console.`,
-      data: { command: "/task", issueNumber: filed.number, projectId: channel.taskProjectId, autoRoute },
+        ? `Created ${filed.localRef ?? `LOCAL-${filed.number}`}${filed.url ? ` (${filed.url})` : ""} — queued on this terminal and tracked.`
+        : `Created ${filed.localRef ?? `LOCAL-${filed.number}`}${filed.url ? ` (${filed.url})` : ""} — awaiting a route/dismiss decision in the console.`,
+      data: {
+        command: "/task", issueNumber: filed.number, localRef: filed.localRef ?? null,
+        workItemId: filed.workItemId ?? null, projectId: channel.taskProjectId, autoRoute,
+      },
     });
   }
 
