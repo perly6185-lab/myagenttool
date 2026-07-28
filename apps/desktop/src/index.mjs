@@ -2234,6 +2234,9 @@ function codexScriptPlan(script, args) {
 
 function codexAppServerTransportEnabled(adapter) {
   if (!isCodexCliCommand(adapter?.command)) return false;
+  // The deterministic CI/local smoke fixture implements the legacy JSONL
+  // command contract, not the persistent app-server protocol.
+  if (String(process.env.MYAGENTTOOL_CODEX_COMMAND ?? "").trim().toLowerCase() === "fixture") return false;
   return String(process.env.MYAGENTTOOL_CODEX_TRANSPORT ?? "app-server").trim().toLowerCase() === "app-server";
 }
 
