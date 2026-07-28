@@ -2,8 +2,10 @@ import { createHash, randomBytes } from "node:crypto";
 import { lookup } from "node:dns/promises";
 import { existsSync, lstatSync, realpathSync } from "node:fs";
 import { mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
+import { request as httpsRequest } from "node:https";
 import { isIP } from "node:net";
 import { basename, extname, join, relative, resolve, sep } from "node:path";
+import { Readable } from "node:stream";
 import { parse } from "parse5";
 
 import { actorCanAccessProject } from "../runtime/auth.mjs";
@@ -18,6 +20,16 @@ export const ARTICLE_IMPORT_LIMITS = Object.freeze({
   redirects: 5,
   timeoutMs: 20_000,
 });
+
+export function resolveArticleImportConfig(env = process.env) {
+  return Object.freeze({
+    maxConcurrent: boundedInteger(env.MYAGENTTOOL_ARTICLE_IMPORT_MAX_CONCURRENT, 2, 1, 10),
+    limits: Object.freeze({
+      ...ARTICLE_IMPORT_LIMITS,
+      mediaConcurrency: boundedInteger(env.MYAGENTTOOL_ARTICLE_MEDIA_CONCURRENCY, ARTICLE_IMPORT_LIMITS.mediaConcurrency, 1, 16),
+    }),
+  });
+}
 
 const MEDIA_EXTENSIONS = new Map([
   ["image/jpeg", ".jpg"],
@@ -68,7 +80,7 @@ export function buildArticleRelativeDirectory({ provider, date, title, canonical
 
 export async function inspectArticle({
   url,
-  fetchImpl = globalThis.fetch,
+  fetchImpl,
   resolveHostname,
   signal,
   limits = ARTICLE_IMPORT_LIMITS,
@@ -89,7 +101,7 @@ export async function inspectArticle({
   }
   const html = page.bytes.toString("utf8");
   const provider = detectArticleSource(page.url);
-  const parsed = parseArticleDocument(html, page.url, provider);
+  const parsed = parseArticleDocument(html, page.url, provider, limits.mediaCount);
   return {
     sourceUrl: String(url),
     canonicalUrl,
@@ -114,7 +126,7 @@ export async function importArticleToWorktree({
   worktreePath,
   workItemId,
   importedAt = new Date().toISOString(),
-  fetchImpl = globalThis.fetch,
+  fetchImpl,
   resolveHostname,
   signal,
   limits = ARTICLE_IMPORT_LIMITS,
@@ -217,9 +229,10 @@ export function createArticleImportService({
   now = () => new Date().toISOString(),
   nextId = (prefix) => `${prefix}_${Date.now().toString(36)}`,
   workItemService,
-  fetchImpl = globalThis.fetch,
+  fetchImpl,
   resolveHostname,
   maxConcurrent = 2,
+  limits = ARTICLE_IMPORT_LIMITS,
 } = {}) {
   const jobs = new Map();
   const queue = [];
@@ -347,6 +360,7 @@ export function createArticleImportService({
         fetchImpl,
         resolveHostname,
         signal: job.controller.signal,
+        limits,
       });
       const stored = (state.workItems ?? []).find((candidate) => candidate.id === job.workItemId);
       if (!stored) throw articleError("work_item_not_found");
@@ -392,7 +406,7 @@ export function createArticleImportService({
   return { inspect, start, get, cancel };
 }
 
-function parseArticleDocument(html, pageUrl, provider) {
+function parseArticleDocument(html, pageUrl, provider, mediaCount = ARTICLE_IMPORT_LIMITS.mediaCount) {
   const document = parse(html);
   const content = provider === "wechat"
     ? findNode(document, (node) => attr(node, "id") === "js_content")
@@ -416,12 +430,12 @@ function parseArticleDocument(html, pageUrl, provider) {
     metaContent(document, "property", "og:article:author"),
     provider === "wechat" ? textContent(findNode(document, (node) => attr(node, "id") === "js_name")) : "",
   ) || null;
-  const publishedAt = extractPublishedAt(document, html);
+  const publishedAt = extractPublishedAt(document, html, provider);
   return {
     title: cleanText(title),
     author: author ? cleanText(author) : null,
     publishedAt,
-    media: media.slice(0, ARTICLE_IMPORT_LIMITS.mediaCount),
+    media: media.slice(0, mediaCount),
     markdown,
     plainText: cleanText(textContent(root)),
   };
@@ -561,7 +575,8 @@ async function fetchPublicResource(value, {
     const timer = setTimeout(() => controller.abort(), timeoutMs);
     let response;
     try {
-      response = await fetchImpl(url, {
+      const requestFetch = typeof fetchImpl === "function" ? fetchImpl : fetchPinnedHttps;
+      response = await requestFetch(url, {
         method: "GET",
         redirect: "manual",
         signal: controller.signal,
@@ -570,27 +585,86 @@ async function fetchPublicResource(value, {
           "user-agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 Chrome/126 Safari/537.36",
           ...(referer ? { referer } : {}),
         },
-      });
+      }, safety.addresses);
+      if (response.status >= 300 && response.status < 400) {
+        const location = response.headers.get("location");
+        await response.body?.cancel?.().catch(() => {});
+        if (!location || redirects >= maxRedirects) throw articleError("article_redirect_refused");
+        url = canonicalizeFetchUrl(new URL(location, url).toString());
+        continue;
+      }
+      if (!response.ok) {
+        await response.body?.cancel?.().catch(() => {});
+        throw articleError(`article_download_http_${response.status}`);
+      }
+      const declared = Number(response.headers.get("content-length"));
+      if (Number.isFinite(declared) && declared > maxBytes) {
+        await response.body?.cancel?.().catch(() => {});
+        throw articleError("article_download_too_large");
+      }
+      const bytes = await readBoundedBody(response.body, maxBytes, controller.signal);
+      return { url, bytes, contentType: response.headers.get("content-type") };
     } catch (error) {
       if (signal?.aborted) throw articleError("article_import_canceled");
-      throw articleError(error?.name === "AbortError" ? "article_download_timeout" : "article_download_failed");
+      if (controller.signal.aborted || error?.name === "AbortError") throw articleError("article_download_timeout");
+      if (error?.code) throw error;
+      throw articleError("article_download_failed");
     } finally {
       clearTimeout(timer);
       signal?.removeEventListener("abort", abort);
     }
-    if (response.status >= 300 && response.status < 400) {
-      const location = response.headers.get("location");
-      if (!location || redirects >= maxRedirects) throw articleError("article_redirect_refused");
-      url = canonicalizeFetchUrl(new URL(location, url).toString());
-      continue;
-    }
-    if (!response.ok) throw articleError(`article_download_http_${response.status}`);
-    const declared = Number(response.headers.get("content-length"));
-    if (Number.isFinite(declared) && declared > maxBytes) throw articleError("article_download_too_large");
-    const bytes = await readBoundedBody(response.body, maxBytes, signal);
-    return { url, bytes, contentType: response.headers.get("content-type") };
   }
   throw articleError("article_redirect_refused");
+}
+
+function fetchPinnedHttps(url, options = {}, addresses = []) {
+  return new Promise((resolvePromise, rejectPromise) => {
+    let request;
+    try {
+      request = httpsRequest(url, {
+        method: "GET",
+        headers: options.headers,
+        signal: options.signal,
+        lookup: createPinnedLookup(addresses),
+      }, (incoming) => {
+        const headers = new Headers();
+        for (const [name, value] of Object.entries(incoming.headers)) {
+          for (const entry of Array.isArray(value) ? value : [value]) {
+            if (entry != null) headers.append(name, String(entry));
+          }
+        }
+        const status = Number(incoming.statusCode ?? 0);
+        const body = [204, 205, 304].includes(status) ? null : Readable.toWeb(incoming);
+        resolvePromise(new Response(body, {
+          status,
+          statusText: incoming.statusMessage,
+          headers,
+        }));
+      });
+    } catch (error) {
+      rejectPromise(error);
+      return;
+    }
+    request.once("error", rejectPromise);
+    request.end();
+  });
+}
+
+function createPinnedLookup(addresses) {
+  const allowed = (Array.isArray(addresses) ? addresses : [])
+    .map((item) => ({ address: String(item?.address ?? ""), family: Number(item?.family ?? isIP(item?.address ?? "")) }))
+    .filter((item) => item.address && [4, 6].includes(item.family));
+  return (_hostname, options, callback) => {
+    const requestedFamily = Number(typeof options === "number" ? options : options?.family ?? 0);
+    const candidates = requestedFamily ? allowed.filter((item) => item.family === requestedFamily) : allowed;
+    if (!candidates.length) {
+      const error = Object.assign(new Error("validated address unavailable"), { code: "ENOTFOUND" });
+      callback(error);
+      return;
+    }
+    if (typeof options === "object" && options?.all) callback(null, candidates);
+    else callback(null, candidates[0].address, candidates[0].family);
+  };
 }
 
 async function resolveArticleHostname(hostname) {
@@ -615,9 +689,9 @@ async function resolveArticleHostname(hostname) {
         }
       }
     }
-    return answers.length ? answers : systemResults;
+    return answers;
   } catch {
-    return systemResults;
+    return [];
   } finally {
     clearTimeout(timer);
   }
@@ -635,19 +709,25 @@ async function readBoundedBody(body, maxBytes, signal) {
   const reader = body.getReader();
   const chunks = [];
   let total = 0;
-  while (true) {
-    if (signal?.aborted) {
-      await reader.cancel().catch(() => {});
-      throw articleError("article_import_canceled");
+  const abort = () => {
+    void reader.cancel().catch(() => {});
+  };
+  signal?.addEventListener("abort", abort, { once: true });
+  try {
+    while (true) {
+      if (signal?.aborted) throw articleError("article_import_canceled");
+      const { done, value } = await reader.read();
+      if (signal?.aborted) throw articleError("article_import_canceled");
+      if (done) break;
+      total += value.byteLength;
+      if (total > maxBytes) {
+        await reader.cancel().catch(() => {});
+        throw articleError("article_download_too_large");
+      }
+      chunks.push(Buffer.from(value));
     }
-    const { done, value } = await reader.read();
-    if (done) break;
-    total += value.byteLength;
-    if (total > maxBytes) {
-      await reader.cancel().catch(() => {});
-      throw articleError("article_download_too_large");
-    }
-    chunks.push(Buffer.from(value));
+  } finally {
+    signal?.removeEventListener("abort", abort);
   }
   if (!total) throw articleError("article_download_empty");
   return Buffer.concat(chunks, total);
@@ -817,22 +897,43 @@ function metaContent(document, attribute, value) {
   return attr(findNode(document, (node) => node.tagName === "meta" && attr(node, attribute).toLowerCase() === value), "content");
 }
 
-function extractPublishedAt(document, html) {
+function extractPublishedAt(document, html, provider) {
   const candidates = [
     metaContent(document, "property", "article:published_time"),
     metaContent(document, "name", "publishdate"),
     metaContent(document, "name", "date"),
   ];
-  const epoch = html.match(/(?:publish_time|\bct\b|["']ct["'])\s*[:=]\s*["']?(\d{10})/)?.[1];
-  if (epoch) candidates.push(new Date(Number(epoch) * 1000).toISOString());
   for (const value of candidates) {
     if (!value) continue;
+    const dateOnly = String(value).match(/\d{4}-\d{2}-\d{2}/)?.[0];
+    if (dateOnly && isValidDateOnly(dateOnly)) return dateOnly;
     const parsed = new Date(value);
     if (!Number.isNaN(parsed.getTime())) return parsed.toISOString().slice(0, 10);
-    const dateOnly = String(value).match(/\d{4}-\d{2}-\d{2}/)?.[0];
-    if (dateOnly) return dateOnly;
   }
+  const epoch = html.match(/(?:publish_time|\bct\b|["']ct["'])\s*[:=]\s*["']?(\d{10})/)?.[1];
+  if (epoch) return dateInTimeZone(new Date(Number(epoch) * 1000), ["wechat", "xiaohongshu"].includes(provider) ? "Asia/Shanghai" : "UTC");
   return null;
+}
+
+function isValidDateOnly(value) {
+  const parsed = new Date(`${value}T00:00:00.000Z`);
+  return !Number.isNaN(parsed.getTime()) && parsed.toISOString().slice(0, 10) === value;
+}
+
+function dateInTimeZone(value, timeZone) {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone,
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(value);
+  const field = (type) => parts.find((item) => item.type === type)?.value;
+  return `${field("year")}-${field("month")}-${field("day")}`;
+}
+
+function boundedInteger(value, fallback, minimum, maximum) {
+  const parsed = Number(value);
+  return Number.isInteger(parsed) && parsed >= minimum && parsed <= maximum ? parsed : fallback;
 }
 
 function firstNonEmpty(...values) {

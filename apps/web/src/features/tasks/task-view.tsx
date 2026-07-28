@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Hand, History, RefreshCw, ExternalLink, GitBranch, Workflow, Zap, Plus, MessageSquare, Trash2, Pencil, FolderKanban, ArrowUp, ArrowDown, Star, Bell } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -168,6 +168,7 @@ export function TaskView() {
   const [planningProjects, setPlanningProjects] = useState<PlanningProject[]>([]);
   const [planningProjectId, setPlanningProjectId] = useState("all");
   const [createLocalOpen, setCreateLocalOpen] = useState(false);
+  const [createArticleImportActive, setCreateArticleImportActive] = useState(false);
   const [planningOpen, setPlanningOpen] = useState(false);
   const storedSelectedLocalId = useUiStore((state) => state.selectedWorkItemId);
   const persistSelectedLocalId = useUiStore((state) => state.setSelectedWorkItemId);
@@ -759,11 +760,20 @@ export function TaskView() {
         {historyRow ? <ClaimHistoryList events={claimHistory(historyRow)} /> : null}
       </Modal>
 
-      <Modal open={createLocalOpen} onClose={() => setCreateLocalOpen(false)} title={t("tasks.newLocal")}>
+      <Modal
+        open={createLocalOpen}
+        onClose={() => {
+          if (!createArticleImportActive) setCreateLocalOpen(false);
+        }}
+        title={t("tasks.newLocal")}
+        closeDisabled={createArticleImportActive}
+      >
         <CreateLocalWorkItemForm
           projects={projects}
           initialProjectId={projectId === "all" ? projects[0]?.id ?? "" : projectId}
+          onImportActivityChange={setCreateArticleImportActive}
           onDone={() => {
+            setCreateArticleImportActive(false);
             setCreateLocalOpen(false);
             setTab("local");
             setNonce((value) => value + 1);
@@ -2420,6 +2430,22 @@ function LocalWorkItemDetail({
       setSection("projects");
     });
   };
+  const openOutputAsset = (asset: NonNullable<LocalWorkItem["outputAssets"]>[number]) => {
+    requestNavigation(() => {
+      const url = new URL(window.location.href);
+      url.searchParams.set("section", "documents");
+      url.searchParams.set("project", item.projectId);
+      url.searchParams.set("document", asset.path);
+      if (asset.worktreeId) url.searchParams.set("worktree", asset.worktreeId);
+      else url.searchParams.delete("worktree");
+      window.history.replaceState(window.history.state, "", `${url.pathname}${url.search}${url.hash}`);
+      setSelectedProjectId(item.projectId);
+      setSelectedWorktreeId(asset.worktreeId ?? null);
+      setSection("documents");
+    });
+  };
+  const markdownAssetFor = (worktreeId?: string | null) => [...(item.outputAssets ?? [])].reverse()
+    .find((asset) => asset.family === "markdown" && (!worktreeId || asset.worktreeId === worktreeId));
   const createExecutionWorktree = () => {
     void execute(async () => {
       const result = await api.createWorkItemWorktree(item.id) as { worktree?: { id: string } };
@@ -2518,6 +2544,20 @@ function LocalWorkItemDetail({
       setSection("autoRuns");
     });
   };
+  const openExecutionBinding = (binding: NonNullable<LocalWorkItem["executionBindings"]>[number]) => {
+    if (binding.kind === "auto_run") {
+      openAutoRun(binding.targetId);
+      return;
+    }
+    if (binding.kind === "article_import") {
+      const markdown = markdownAssetFor(binding.worktreeId);
+      if (markdown) {
+        openOutputAsset(markdown);
+        return;
+      }
+    }
+    openWorktreeResult(binding.worktreeId ?? binding.targetId);
+  };
   const runNextAction = () => {
     if (nextActionKey === "start_execution") {
       requestNavigation(startExecution);
@@ -2574,8 +2614,12 @@ function LocalWorkItemDetail({
           <div key={`chain:${binding.kind}:${binding.targetId}`} className="flex items-center gap-1">
             <span aria-hidden="true">→</span>
             <button type="button" className="whitespace-nowrap rounded bg-background px-2 py-1 font-mono hover:text-primary"
-              onClick={() => binding.kind === "auto_run" ? openAutoRun(binding.targetId) : openWorktreeResult(binding.worktreeId ?? binding.targetId)}>
-              {binding.kind === "auto_run" ? t("taskLocal.autoRun") : t("taskLocal.worktree")} · {binding.targetId}
+              onClick={() => openExecutionBinding(binding)}>
+              {binding.kind === "auto_run"
+                ? t("taskLocal.autoRun")
+                : binding.kind === "article_import"
+                  ? t("taskLocal.articleImport")
+                  : t("taskLocal.worktree")} · {binding.targetId}
             </button>
           </div>
         ))}
@@ -2888,14 +2932,23 @@ function LocalWorkItemDetail({
             {item.executionBindings?.map((binding) => (
               <li key={`${binding.kind}:${binding.targetId}`} className="flex items-center gap-2 text-xs">
                 <Badge tone={binding.kind === "auto_run" ? "warning" : "neutral"}>
-                  {t(binding.kind === "auto_run" ? "taskLocal.autoRun" : "taskLocal.worktree")}
+                  {t(binding.kind === "auto_run"
+                    ? "taskLocal.autoRun"
+                    : binding.kind === "article_import"
+                      ? "taskLocal.articleImport"
+                      : "taskLocal.worktree")}
                 </Badge>
-                {binding.kind === "auto_run" ? (
-                  <button type="button" className="font-mono text-primary hover:underline" onClick={() => openAutoRun(binding.targetId)}>
+                {binding.kind === "auto_run" || binding.kind === "article_import" ? (
+                  <button type="button" className="font-mono text-primary hover:underline" onClick={() => openExecutionBinding(binding)}>
                     {binding.targetId}
                   </button>
                 ) : <span className="font-mono">{binding.targetId}</span>}
-                {binding.worktreeId ? (
+                {binding.kind === "article_import" && markdownAssetFor(binding.worktreeId) ? (
+                  <button type="button" className="ml-auto text-primary hover:underline"
+                    onClick={() => openOutputAsset(markdownAssetFor(binding.worktreeId)!)}>
+                    {t("taskLocal.openMarkdown")}
+                  </button>
+                ) : binding.worktreeId ? (
                   <button type="button" className="ml-auto text-primary hover:underline" onClick={() => openWorktreeResult(binding.worktreeId)}>
                     {t("taskLocal.openWorktree")}
                   </button>
@@ -3012,10 +3065,12 @@ function CreateLocalWorkItemForm({
   projects,
   initialProjectId,
   onDone,
+  onImportActivityChange,
 }: {
   projects: { id: string; name: string }[];
   initialProjectId: string;
   onDone: () => void;
+  onImportActivityChange: (active: boolean) => void;
 }) {
   const { t } = useAppTranslation();
   const { execute, pending, error } = useAsyncAction();
@@ -3037,6 +3092,42 @@ function CreateLocalWorkItemForm({
   const [importStatus, setImportStatus] = useState("");
   const [createdWorkItemId, setCreatedWorkItemId] = useState<string | null>(null);
   const [createdWorktreeId, setCreatedWorktreeId] = useState<string | null>(null);
+  const inspectionRequest = useRef(0);
+  const resumeAttempted = useRef(false);
+  useEffect(() => {
+    onImportActivityChange(Boolean(activeImport));
+    return () => onImportActivityChange(false);
+  }, [activeImport, onImportActivityChange]);
+  const trackImport = async (workItemId: string, jobId: string) => {
+    setActiveImport({ workItemId, jobId });
+    try {
+      const job = await waitForArticleImport(workItemId, jobId, (next) => {
+        setImportStatus(t(`tasks.articleImportState.${next.state}`));
+      });
+      clearStoredArticleImport(workItemId, jobId);
+      if (job.state !== "completed") throw new Error(job.error || `article_import_${job.state}`);
+      setImportStatus(t("tasks.articleImportState.completed"));
+      return job;
+    } finally {
+      setActiveImport(null);
+    }
+  };
+  useEffect(() => {
+    if (resumeAttempted.current) return;
+    resumeAttempted.current = true;
+    const stored = readStoredArticleImport();
+    if (!stored || !projects.some((project) => project.id === stored.projectId)) return;
+    setProjectId(stored.projectId);
+    setCreatedWorkItemId(stored.workItemId);
+    setCreatedWorktreeId(stored.worktreeId);
+    setSourceMode("url");
+    setSourceUrl(stored.sourceUrl);
+    void execute(() => trackImport(stored.workItemId, stored.jobId)).then((ok) => {
+      if (ok) onDone();
+    });
+    // Resume exactly once from the browser hand-off.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
   const assist = () => {
     let draft: {
       body: string; type: LocalWorkItem["type"]; priority: LocalWorkItem["priority"];
@@ -3059,13 +3150,16 @@ function CreateLocalWorkItemForm({
     });
   };
   const inspectSource = () => {
+    const requestId = ++inspectionRequest.current;
+    const requestedUrl = sourceUrl.trim();
     let nextInspection: ArticleInspection | null = null;
+    setInspection(null);
     void execute(async () => {
-      const result = await api.inspectArticleImport({ projectId, url: sourceUrl }) as { inspection: ArticleInspection };
+      const result = await api.inspectArticleImport({ projectId, url: requestedUrl }) as { inspection: ArticleInspection };
       nextInspection = result.inspection;
       return result;
     }).then((ok) => {
-      if (!ok || !nextInspection) return;
+      if (!ok || !nextInspection || inspectionRequest.current !== requestId) return;
       setInspection(nextInspection);
       if (!title.trim()) setTitle(nextInspection.title);
       setLabels((current) => mergeCommaLabels(current, [
@@ -3112,17 +3206,13 @@ function CreateLocalWorkItemForm({
         url: sourceUrl,
         worktreeId,
       }) as { job: ArticleImportJob };
-      setActiveImport({ workItemId, jobId: started.job.id });
-      let job = started.job;
-      while (job.state === "queued" || job.state === "running") {
-        setImportStatus(t(`tasks.articleImportState.${job.state}`));
-        await new Promise((resolve) => setTimeout(resolve, 750));
-        const next = await api.getArticleImport(workItemId, job.id) as { job: ArticleImportJob };
-        job = next.job;
+      storeArticleImport({ projectId, workItemId, worktreeId, jobId: started.job.id, sourceUrl });
+      if (started.job.state === "completed") {
+        clearStoredArticleImport(workItemId, started.job.id);
+        setImportStatus(t("tasks.articleImportState.completed"));
+      } else {
+        await trackImport(workItemId, started.job.id);
       }
-      setActiveImport(null);
-      if (job.state !== "completed") throw new Error(job.error || `article_import_${job.state}`);
-      setImportStatus(t("tasks.articleImportState.completed"));
       return { completed: true };
     }).then((ok) => {
       if (ok) onDone();
@@ -3130,15 +3220,18 @@ function CreateLocalWorkItemForm({
   };
   const cancelImport = () => {
     if (!activeImport) return;
-    void api.cancelArticleImport(activeImport.workItemId, activeImport.jobId).finally(() => {
-      setImportStatus(t("tasks.articleImportState.canceled"));
-      setActiveImport(null);
-    });
+    void api.cancelArticleImport(activeImport.workItemId, activeImport.jobId)
+      .then(() => setImportStatus(t("tasks.articleImportState.canceled")))
+      .catch(() => setImportStatus(t("tasks.articleImportState.failed")));
   };
   return (
     <div className="space-y-3">
       <Field label={t("tasks.project")}>
-        <Select value={projectId} onChange={(event) => setProjectId(event.target.value)}>
+        <Select value={projectId} onChange={(event) => {
+          inspectionRequest.current += 1;
+          setInspection(null);
+          setProjectId(event.target.value);
+        }}>
           {projects.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}
         </Select>
       </Field>
@@ -3160,6 +3253,7 @@ function CreateLocalWorkItemForm({
                 type="url"
                 value={sourceUrl}
                 onChange={(event) => {
+                  inspectionRequest.current += 1;
                   setSourceUrl(event.target.value);
                   setInspection(null);
                 }}
@@ -3244,4 +3338,61 @@ function mergeCommaLabels(current: string, additions: string[]) {
     ...current.split(",").map((value) => value.trim()).filter(Boolean),
     ...additions.filter(Boolean),
   ])].join(", ");
+}
+
+const ARTICLE_IMPORT_STORAGE_KEY = "myagenttool.article-import.active.v1";
+
+type StoredArticleImport = {
+  projectId: string;
+  workItemId: string;
+  worktreeId: string;
+  jobId: string;
+  sourceUrl: string;
+};
+
+async function waitForArticleImport(
+  workItemId: string,
+  jobId: string,
+  onProgress: (job: ArticleImportJob) => void,
+) {
+  let job: ArticleImportJob;
+  while (true) {
+    const next = await api.getArticleImport(workItemId, jobId) as { job: ArticleImportJob };
+    job = next.job;
+    onProgress(job);
+    if (!["queued", "running"].includes(job.state)) return job;
+    await new Promise((resolve) => setTimeout(resolve, 750));
+  }
+}
+
+function storeArticleImport(value: StoredArticleImport) {
+  try {
+    window.localStorage.setItem(ARTICLE_IMPORT_STORAGE_KEY, JSON.stringify(value));
+  } catch {
+    // The modal remains locked while the in-memory job is active.
+  }
+}
+
+function readStoredArticleImport(): StoredArticleImport | null {
+  try {
+    const value = JSON.parse(window.localStorage.getItem(ARTICLE_IMPORT_STORAGE_KEY) ?? "null");
+    if (!value || typeof value !== "object") return null;
+    if (!["projectId", "workItemId", "worktreeId", "jobId", "sourceUrl"].every((key) => typeof value[key] === "string" && value[key])) {
+      return null;
+    }
+    return value as StoredArticleImport;
+  } catch {
+    return null;
+  }
+}
+
+function clearStoredArticleImport(workItemId: string, jobId: string) {
+  const current = readStoredArticleImport();
+  if (!current || (current.workItemId === workItemId && current.jobId === jobId)) {
+    try {
+      window.localStorage.removeItem(ARTICLE_IMPORT_STORAGE_KEY);
+    } catch {
+      // Ignore unavailable storage.
+    }
+  }
 }

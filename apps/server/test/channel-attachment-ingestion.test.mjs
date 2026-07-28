@@ -5,7 +5,7 @@ import { join } from "node:path";
 import test from "node:test";
 import { ingestChannelAttachmentCandidates } from "../src/services/channel-attachment-ingestion.mjs";
 
-const publicDns = async () => [{ address: "203.0.113.10", family: 4 }];
+const publicDns = async () => [{ address: "93.184.216.34", family: 4 }];
 
 test("downloads, validates, confines, hashes, and governs a Channel attachment", async () => {
   const root = mkdtempSync(join(tmpdir(), "channel-attachment-"));

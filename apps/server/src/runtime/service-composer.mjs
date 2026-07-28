@@ -57,7 +57,7 @@ import { convergeAutoRunTerminalState, createAutoRunService } from "../services/
 import { createDecisionSoftClaimService } from "../services/decision-soft-claims.mjs";
 import { createIssueClaimService } from "../services/issue-claims.mjs";
 import { createWorkItemService } from "../services/work-items.mjs";
-import { createArticleImportService } from "../services/article-imports.mjs";
+import { createArticleImportService, resolveArticleImportConfig } from "../services/article-imports.mjs";
 import { createPlanningProjectService } from "../services/planning-projects.mjs";
 import { resolveAutoRunVerifyCommand, resolveAutoRunVerifyCommandFor, runWorktreeVerification } from "../services/worktree-verify.mjs";
 import { resolveStatusWritebackConfig, runIssueAssigneeEdit, runIssueBodyFetch, runIssueClose, runIssueComment, runIssueStatusTransition, runPrChecks, runPrMerge, runPrStateFetch, runIssueStateFetch, runIssueSnapshotFetch, runIssueSnapshotWrite } from "../services/issue-status.mjs";
@@ -392,11 +392,14 @@ export function createServerRuntimeServices({
     invokeResolvedCapability: (name, input, actor) => invokeWorkItemApplicationCapability(name, input, actor),
     issueApplicationApprovalGrant: (input, actor) => issueApprovalGrant(input, actor),
   });
+  const articleImportConfig = resolveArticleImportConfig();
   const articleImportService = createArticleImportService({
     state,
     now,
     nextId,
     workItemService,
+    maxConcurrent: articleImportConfig.maxConcurrent,
+    limits: articleImportConfig.limits,
   });
   const planningProjectService = createPlanningProjectService({
     state, now, nextId, appendEvent, persistStateSoon, store, validateApprovalToken,

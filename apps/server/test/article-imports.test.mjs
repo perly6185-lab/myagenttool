@@ -11,6 +11,7 @@ import {
   detectArticleSource,
   importArticleToWorktree,
   inspectArticle,
+  resolveArticleImportConfig,
 } from "../src/services/article-imports.mjs";
 
 const PUBLIC_DNS = async () => [{ address: "93.184.216.34" }];
@@ -34,6 +35,19 @@ test("detects source providers and builds deterministic source/date paths", () =
   );
 });
 
+test("resolves bounded runtime concurrency settings", () => {
+  const configured = resolveArticleImportConfig({
+    MYAGENTTOOL_ARTICLE_IMPORT_MAX_CONCURRENT: "6",
+    MYAGENTTOOL_ARTICLE_MEDIA_CONCURRENCY: "12",
+  });
+  assert.equal(configured.maxConcurrent, 6);
+  assert.equal(configured.limits.mediaConcurrency, 12);
+  assert.equal(resolveArticleImportConfig({
+    MYAGENTTOOL_ARTICLE_IMPORT_MAX_CONCURRENT: "0",
+    MYAGENTTOOL_ARTICLE_MEDIA_CONCURRENCY: "99",
+  }).maxConcurrent, 2);
+});
+
 test("inspects WeChat lazy images while preserving content order", async () => {
   const result = await inspectArticle({
     url: "https://mp.weixin.qq.com/s/example",
@@ -46,6 +60,43 @@ test("inspects WeChat lazy images while preserving content order", async () => {
   assert.equal(result.publishedAt, "2026-07-27");
   assert.deepEqual(result.mediaCounts, { images: 3, audio: 0, video: 0 });
   assert.match(result.markdownPreview, /第一段[\s\S]+MYAGENTTOOL_MEDIA_0[\s\S]+第二段/);
+});
+
+test("preserves the source calendar date instead of shifting it to UTC", async () => {
+  const offsetResult = await inspectArticle({
+    url: "https://mp.weixin.qq.com/s/offset",
+    resolveHostname: PUBLIC_DNS,
+    fetchImpl: async () => htmlResponse(`
+      <meta property="article:published_time" content="2026-07-27T00:30:00+08:00">
+      <article>offset</article>
+    `),
+  });
+  assert.equal(offsetResult.publishedAt, "2026-07-27");
+
+  const epoch = Math.floor(Date.parse("2026-07-27T00:30:00+08:00") / 1000);
+  const epochResult = await inspectArticle({
+    url: "https://mp.weixin.qq.com/s/epoch",
+    resolveHostname: PUBLIC_DNS,
+    fetchImpl: async () => htmlResponse(`<article>epoch</article><script>var publish_time = "${epoch}";</script>`),
+  });
+  assert.equal(epochResult.publishedAt, "2026-07-27");
+});
+
+test("applies the download timeout while the response body is streaming", async () => {
+  const stream = new ReadableStream({
+    start(controller) {
+      controller.enqueue(new TextEncoder().encode("<article>partial"));
+    },
+  });
+  await assert.rejects(
+    inspectArticle({
+      url: "https://example.com/slow",
+      resolveHostname: PUBLIC_DNS,
+      fetchImpl: async () => new Response(stream, { headers: { "content-type": "text/html" } }),
+      limits: { ...resolveArticleImportConfig().limits, timeoutMs: 20 },
+    }),
+    (error) => error.code === "article_download_timeout",
+  );
 });
 
 test("imports Markdown and media atomically under source/date directories", async (t) => {

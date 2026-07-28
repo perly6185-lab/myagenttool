@@ -140,6 +140,23 @@ test("validateExternalWebhookTarget rejects mixed public/private DNS answers", a
   assert.deepEqual(result, { ok: false, reason: "webhook target resolved to a non-public address" });
 });
 
+test("validateExternalWebhookTarget returns the exact validated addresses for a pinned connection", async () => {
+  const result = await validateExternalWebhookTarget("https://public.example/hook", {
+    resolveHostname: async () => [
+      { address: "93.184.216.34", family: 4 },
+      { address: "2606:2800:220:1:248:1893:25c8:1946", family: 6 },
+    ],
+  });
+  assert.deepEqual(result, {
+    ok: true,
+    url: "https://public.example/hook",
+    addresses: [
+      { address: "93.184.216.34", family: 4 },
+      { address: "2606:2800:220:1:248:1893:25c8:1946", family: 6 },
+    ],
+  });
+});
+
 test("dispatch validates a relative redirect before following it", async () => {
   const calls = [];
   const dispatcher = createAlertDispatcher({

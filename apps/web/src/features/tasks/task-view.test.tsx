@@ -37,6 +37,9 @@ const mocks = vi.hoisted(() => ({
   reorderPlanningProjectItems: vi.fn(),
   updatePlanningProjectItems: vi.fn(),
   executePlanningRecommendedAction: vi.fn(),
+  setSection: vi.fn(),
+  setSelectedProjectId: vi.fn(),
+  setSelectedWorktreeId: vi.fn(),
   execute: vi.fn(async (fn: () => Promise<unknown>) => { await fn(); return true; }),
 }));
 
@@ -121,25 +124,27 @@ vi.mock("@/data/use-console-actions", () => ({
 }));
 vi.mock("@/store/ui-store", () => ({
   useUiStore: (selector: (state: Record<string, unknown>) => unknown) => selector({
-    setSection: vi.fn(),
-    setSelectedProjectId: vi.fn(),
+    setSection: mocks.setSection,
+    setSelectedProjectId: mocks.setSelectedProjectId,
     selectedPlanningProjectId: null,
     planningProjectView: "list",
     planningProjectFilters: { status: "all", priority: "all", milestone: "", due: "all" },
     setSelectedPlanningProjectId: vi.fn(),
     setPlanningProjectView: vi.fn(),
     setPlanningProjectFilters: vi.fn(),
-    setSelectedWorktreeId: vi.fn(),
+    setSelectedWorktreeId: mocks.setSelectedWorktreeId,
   }),
 }));
 
 afterEach(() => {
   cleanup();
+  window.localStorage.clear();
   vi.clearAllMocks();
 });
 
 describe("TaskView local work items", () => {
   beforeEach(() => {
+    window.localStorage.clear();
     mocks.listPlanningProjects.mockResolvedValue({ projects: [] });
     mocks.listAutoRuns.mockResolvedValue({ autoRuns: [] });
     mocks.listWorkItemAttention.mockResolvedValue({ items: [] });
@@ -235,6 +240,96 @@ describe("TaskView local work items", () => {
       url: "https://mp.weixin.qq.com/s/example",
       worktreeId: "wtr_article",
     });
+  });
+
+  it("ignores a stale inspection response after the URL changes", async () => {
+    mocks.listWorkItems.mockResolvedValue({ workItems: [], count: 0 });
+    let resolveInspection!: (value: unknown) => void;
+    mocks.inspectArticleImport.mockReturnValue(new Promise((resolve) => { resolveInspection = resolve; }));
+    render(<TaskView />);
+    fireEvent.click(screen.getByRole("button", { name: /New local issue/i }));
+    fireEvent.click(screen.getByRole("button", { name: "Import link" }));
+    const input = screen.getByLabelText("Public article URL");
+    fireEvent.change(input, { target: { value: "https://example.com/a" } });
+    fireEvent.click(screen.getByRole("button", { name: "Inspect" }));
+    fireEvent.change(input, { target: { value: "https://example.com/b" } });
+    resolveInspection({
+      inspection: {
+        canonicalUrl: "https://example.com/a",
+        provider: "web",
+        contentType: "article",
+        title: "Stale article A",
+        author: null,
+        publishedAt: null,
+        publishedAtSource: "imported",
+        textLength: 10,
+        mediaCounts: { images: 0, audio: 0, video: 0 },
+      },
+    });
+    await waitFor(() => expect(mocks.inspectArticleImport).toHaveBeenCalled());
+    expect(screen.queryByText("Stale article A")).toBeNull();
+    expect((screen.getByRole("button", { name: "Create and import" }) as HTMLButtonElement).disabled).toBe(true);
+  });
+
+  it("resumes a stored article import when the creation dialog is reopened", async () => {
+    window.localStorage.setItem("myagenttool.article-import.active.v1", JSON.stringify({
+      projectId: "prj_1",
+      workItemId: "lwi_resume",
+      worktreeId: "wtr_resume",
+      jobId: "article_import_resume",
+      sourceUrl: "https://example.com/resume",
+    }));
+    mocks.listWorkItems.mockResolvedValue({ workItems: [], count: 0 });
+    mocks.getArticleImport.mockResolvedValue({
+      job: {
+        id: "article_import_resume",
+        state: "completed",
+        progress: { stage: "completed", completed: 1, total: 1 },
+        error: null,
+      },
+    });
+    render(<TaskView />);
+    fireEvent.click(screen.getByRole("button", { name: /New local issue/i }));
+    await waitFor(() => expect(mocks.getArticleImport).toHaveBeenCalledWith("lwi_resume", "article_import_resume"));
+    expect(window.localStorage.getItem("myagenttool.article-import.active.v1")).toBeNull();
+  });
+
+  it("keeps the creation dialog open while an article import is active", async () => {
+    mocks.listWorkItems.mockResolvedValue({ workItems: [], count: 0 });
+    mocks.inspectArticleImport.mockResolvedValue({
+      inspection: {
+        canonicalUrl: "https://example.com/slow",
+        provider: "web",
+        contentType: "article",
+        title: "Slow article",
+        author: null,
+        publishedAt: null,
+        publishedAtSource: "imported",
+        textLength: 20,
+        mediaCounts: { images: 1, audio: 0, video: 0 },
+      },
+    });
+    mocks.createWorkItem.mockResolvedValue({ workItem: { id: "lwi_slow" } });
+    mocks.createWorkItemWorktree.mockResolvedValue({ worktree: { id: "wtr_slow" } });
+    mocks.startArticleImport.mockResolvedValue({
+      job: {
+        id: "article_import_slow",
+        state: "queued",
+        progress: { stage: "queued", completed: 0, total: 1 },
+        error: null,
+      },
+    });
+    mocks.getArticleImport.mockReturnValue(new Promise(() => {}));
+    render(<TaskView />);
+    fireEvent.click(screen.getByRole("button", { name: /New local issue/i }));
+    fireEvent.click(screen.getByRole("button", { name: "Import link" }));
+    fireEvent.change(screen.getByLabelText("Public article URL"), { target: { value: "https://example.com/slow" } });
+    fireEvent.click(screen.getByRole("button", { name: "Inspect" }));
+    await screen.findByText("Slow article");
+    fireEvent.click(screen.getByRole("button", { name: "Create and import" }));
+    await screen.findByRole("button", { name: "Cancel" });
+    await waitFor(() => expect((screen.getByRole("button", { name: "Close" }) as HTMLButtonElement).disabled).toBe(true));
+    expect(window.localStorage.getItem("myagenttool.article-import.active.v1")).toContain("article_import_slow");
   });
 
   it("filters local issues by planning project and manages membership", async () => {
@@ -477,6 +572,44 @@ describe("TaskView local work items", () => {
     fireEvent.click(screen.getByRole("button", { name: "Comment" }));
     await waitFor(() => expect(mocks.createWorkItemComment).toHaveBeenCalledWith("lwi_1", "Looks good"));
     expect(screen.getByText("Created")).toBeTruthy();
+  });
+
+  it("opens an imported Markdown output directly from its local Issue", async () => {
+    const item = {
+      id: "lwi_article", localRef: "LOCAL-12", projectId: "prj_1",
+      title: "Imported article", body: "", type: "task", status: "review",
+      priority: "p2", state: "open", labels: ["source:wechat"], assigneeIds: [],
+      acceptanceCriteria: [], revision: 2, archivedAt: null,
+      executionBindings: [{
+        kind: "article_import", targetId: "article_import_12", worktreeId: "wtr_article",
+        createdAt: "2026-07-28T00:00:00.000Z",
+      }],
+      outputAssets: [{
+        id: "asset_md",
+        path: "docs/imported/wechat/2026/07/article/article.md",
+        family: "markdown",
+        terminalId: "dev_1",
+        hash: null,
+        version: "v1",
+        worktreeId: "wtr_article",
+        capabilities: [],
+        readiness: { state: "ready", reason: "available_on_owning_terminal" },
+      }],
+      updatedAt: "2026-07-28T00:00:00.000Z",
+    };
+    mocks.listWorkItems.mockResolvedValue({ workItems: [item], count: 1 });
+    mocks.getWorkItem.mockResolvedValue({ workItem: item, observability: null });
+    mocks.listWorkItemComments.mockResolvedValue({ comments: [] });
+    mocks.listWorkItemActivity.mockResolvedValue({ activities: [] });
+    render(<TaskView />);
+    fireEvent.click(await screen.findByText("Imported article"));
+    fireEvent.click(await screen.findByRole("button", { name: "Open Markdown" }));
+    expect(mocks.setSelectedProjectId).toHaveBeenCalledWith("prj_1");
+    expect(mocks.setSelectedWorktreeId).toHaveBeenCalledWith("wtr_article");
+    expect(mocks.setSection).toHaveBeenCalledWith("documents");
+    expect(new URL(window.location.href).searchParams.get("document")).toBe(
+      "docs/imported/wechat/2026/07/article/article.md",
+    );
   });
 
   it("keeps a completed local run in review until an approved delivery is confirmed", async () => {
