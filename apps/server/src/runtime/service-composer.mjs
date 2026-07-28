@@ -399,6 +399,7 @@ export function createServerRuntimeServices({
     nextId,
     workItemService,
     maxConcurrent: articleImportConfig.maxConcurrent,
+    maxPending: articleImportConfig.maxPending,
     limits: articleImportConfig.limits,
     persistStateSoon,
     store,
@@ -3643,6 +3644,7 @@ export function createServerRuntimeServices({
     retryWorkItemAlert: workItemService.retryWorkItemAlert,
     inspectArticleImport: articleImportService.inspect,
     startArticleImport: articleImportService.start,
+    listArticleImports: articleImportService.list,
     getArticleImport: articleImportService.get,
     cancelArticleImport: articleImportService.cancel,
     fetchWorkItemGithubIssue: ({ projectId, issueNumber }) => {

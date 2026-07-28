@@ -10,6 +10,7 @@ const mocks = vi.hoisted(() => ({
   createWorkItem: vi.fn(),
   inspectArticleImport: vi.fn(),
   startArticleImport: vi.fn(),
+  listArticleImports: vi.fn(),
   getArticleImport: vi.fn(),
   cancelArticleImport: vi.fn(),
   getWorkItem: vi.fn(),
@@ -93,6 +94,7 @@ vi.mock("@/data/use-console-actions", () => ({
     createWorkItem: mocks.createWorkItem,
     inspectArticleImport: mocks.inspectArticleImport,
     startArticleImport: mocks.startArticleImport,
+    listArticleImports: mocks.listArticleImports,
     getArticleImport: mocks.getArticleImport,
     cancelArticleImport: mocks.cancelArticleImport,
     getWorkItem: mocks.getWorkItem,
@@ -149,6 +151,7 @@ describe("TaskView local work items", () => {
     mocks.listAutoRuns.mockResolvedValue({ autoRuns: [] });
     mocks.listWorkItemAttention.mockResolvedValue({ items: [] });
     mocks.autoRunReadiness.mockResolvedValue({ readiness: { ready: true, checks: [] } });
+    mocks.listArticleImports.mockResolvedValue({ jobs: [], latest: null });
   });
   it("shows local work items as the default source", async () => {
     mocks.listWorkItemAttention.mockResolvedValue({ items: [{
@@ -639,6 +642,16 @@ describe("TaskView local work items", () => {
         worktreeId: "wtr_article",
         capabilities: [],
         readiness: { state: "ready", reason: "available_on_owning_terminal" },
+      }, {
+        id: "asset_html",
+        path: "docs/imported/wechat/2026/07/article/article.html",
+        family: "unknown",
+        terminalId: "dev_1",
+        hash: null,
+        version: "v2",
+        worktreeId: "wtr_article",
+        capabilities: [],
+        readiness: { state: "ready", reason: "available_on_owning_terminal" },
       }],
       updatedAt: "2026-07-28T00:00:00.000Z",
     };
@@ -646,14 +659,33 @@ describe("TaskView local work items", () => {
     mocks.getWorkItem.mockResolvedValue({ workItem: item, observability: null });
     mocks.listWorkItemComments.mockResolvedValue({ comments: [] });
     mocks.listWorkItemActivity.mockResolvedValue({ activities: [] });
+    mocks.listArticleImports.mockResolvedValue({ jobs: [{
+      id: "article_import_12",
+      worktreeId: "wtr_article",
+      canonicalUrl: "https://mp.weixin.qq.com/s/example",
+      state: "failed",
+      progress: { stage: "failed", completed: 0, total: 1 },
+      error: "article_import_interrupted",
+    }], latest: null });
+    mocks.startArticleImport.mockResolvedValue({ job: { id: "article_import_retry", state: "queued" } });
     render(<TaskView />);
     fireEvent.click(await screen.findByText("Imported article"));
+    expect(await screen.findByText(/server restarted during import/i)).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Retry import" }));
+    await waitFor(() => expect(mocks.startArticleImport).toHaveBeenCalledWith("lwi_article", {
+      url: "https://mp.weixin.qq.com/s/example",
+      worktreeId: "wtr_article",
+    }));
     fireEvent.click(await screen.findByRole("button", { name: "Open Markdown" }));
     expect(mocks.setSelectedProjectId).toHaveBeenCalledWith("prj_1");
     expect(mocks.setSelectedWorktreeId).toHaveBeenCalledWith("wtr_article");
     expect(mocks.setSection).toHaveBeenCalledWith("documents");
     expect(new URL(window.location.href).searchParams.get("document")).toBe(
       "docs/imported/wechat/2026/07/article/article.md",
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Open HTML" }));
+    expect(new URL(window.location.href).searchParams.get("document")).toBe(
+      "docs/imported/wechat/2026/07/article/article.html",
     );
   });
 

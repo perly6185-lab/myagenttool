@@ -16,6 +16,7 @@ function fixture() {
   writeFileSync(join(root, "docs", "plan.dxf"), "0\nSECTION\n");
   writeFileSync(join(root, "docs", "model.dwg"), "AC1032");
   writeFileSync(join(root, "docs", "notes.md"), "markdown");
+  writeFileSync(join(root, "docs", "article.html"), "<article>safe</article>");
   writeFileSync(join(root, "docs", "preview.png"), Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]));
   writeFileSync(join(root, "docs", "demo.mp4"), Buffer.concat([Buffer.alloc(4), Buffer.from("ftyp")]));
   writeFileSync(join(root, "docs", "episode.mp3"), Buffer.concat([Buffer.from("ID3"), Buffer.alloc(8)]));
@@ -28,6 +29,7 @@ test("readProjectDocuments recursively returns supported project assets", () => 
   const root = fixture();
   const result = readProjectDocuments({ id: "prj_1", path: root });
   assert.deepEqual(result.documents.map((item) => item.path), [
+    "docs/article.html",
     "docs/budget.xlsx",
     "docs/demo.mp4",
     "docs/episode.mp3",
@@ -59,6 +61,7 @@ test("readProjectDocuments filters by type and path/name search", () => {
   );
   assert.deepEqual(readProjectDocuments({ id: "prj_1", path: root }, { type: "dxf" }).documents.map((item) => item.name), ["plan.dxf"]);
   assert.deepEqual(readProjectDocuments({ id: "prj_1", path: root }, { type: "md" }).documents.map((item) => item.name), ["notes.md"]);
+  assert.deepEqual(readProjectDocuments({ id: "prj_1", path: root }, { type: "html" }).documents.map((item) => item.name), ["article.html"]);
   assert.deepEqual(readProjectDocuments({ id: "prj_1", path: root }, { type: "image" }).documents.map((item) => item.name), ["preview.png"]);
   assert.deepEqual(readProjectDocuments({ id: "prj_1", path: root }, { type: "video" }).documents.map((item) => item.name), ["demo.mp4"]);
   assert.deepEqual(readProjectDocuments({ id: "prj_1", path: root }, { type: "audio" }).documents.map((item) => item.name), ["episode.mp3"]);

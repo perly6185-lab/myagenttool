@@ -2260,6 +2260,7 @@ function LocalWorkItemDetail({
   const [deleteCommentTarget, setDeleteCommentTarget] = useState<WorkItemComment | null>(null);
   const [deliveryConfirmMode, setDeliveryConfirmMode] = useState<"local_merge" | "pull_request" | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  const [articleImportJobs, setArticleImportJobs] = useState<Record<string, ArticleImportJob>>({});
 
   const load = async () => {
     try {
@@ -2328,6 +2329,25 @@ function LocalWorkItemDetail({
       .then((detail) => setObservability(detail.observability))
       .catch(() => {});
   }, 5_000);
+  const refreshArticleImports = async () => {
+    if (!item?.executionBindings?.some((binding) => binding.kind === "article_import")) return;
+    try {
+      const result = await api.listArticleImports(workItemId) as { jobs?: ArticleImportJob[] };
+      setArticleImportJobs(Object.fromEntries((result.jobs ?? []).map((job) => [job.id, job])));
+    } catch {
+      // The Issue remains usable when import history cannot be refreshed.
+    }
+  };
+  useEffect(() => {
+    void refreshArticleImports();
+    // Refresh when the server adds a new execution binding.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [workItemId, item?.executionBindings?.length]);
+  useVisibleInterval(() => {
+    if (Object.values(articleImportJobs).some((job) => ["queued", "running"].includes(job.state))) {
+      void refreshArticleImports();
+    }
+  }, 1_500);
 
   const dirty = item != null && (
     title !== item.title
@@ -2446,6 +2466,20 @@ function LocalWorkItemDetail({
   };
   const markdownAssetFor = (worktreeId?: string | null) => [...(item.outputAssets ?? [])].reverse()
     .find((asset) => asset.family === "markdown" && (!worktreeId || asset.worktreeId === worktreeId));
+  const htmlAssetFor = (worktreeId?: string | null) => [...(item.outputAssets ?? [])].reverse()
+    .find((asset) => asset.path.toLowerCase().endsWith(".html") && (!worktreeId || asset.worktreeId === worktreeId));
+  const retryArticleImport = (job: ArticleImportJob) => {
+    if (!job.canonicalUrl || !job.worktreeId) return;
+    void execute(() => api.startArticleImport(item.id, {
+      url: job.canonicalUrl!,
+      worktreeId: job.worktreeId!,
+    })).then((ok) => {
+      if (!ok) return;
+      onChanged();
+      void load();
+      void refreshArticleImports();
+    });
+  };
   const createExecutionWorktree = () => {
     void execute(async () => {
       const result = await api.createWorkItemWorktree(item.id) as { worktree?: { id: string } };
@@ -2550,9 +2584,9 @@ function LocalWorkItemDetail({
       return;
     }
     if (binding.kind === "article_import") {
-      const markdown = markdownAssetFor(binding.worktreeId);
-      if (markdown) {
-        openOutputAsset(markdown);
+      const output = markdownAssetFor(binding.worktreeId) ?? htmlAssetFor(binding.worktreeId);
+      if (output) {
+        openOutputAsset(output);
         return;
       }
     }
@@ -2929,7 +2963,9 @@ function LocalWorkItemDetail({
         <div className="rounded-md border border-border p-2">
           <p className="mb-1 text-xs font-medium text-muted-foreground">{t("taskLocal.executions")}</p>
           <ul className="space-y-1">
-            {item.executionBindings?.map((binding) => (
+            {item.executionBindings?.map((binding) => {
+              const importJob = binding.targetId ? articleImportJobs[binding.targetId] : undefined;
+              return (
               <li key={`${binding.kind}:${binding.targetId}`} className="flex items-center gap-2 text-xs">
                 <Badge tone={binding.kind === "auto_run" ? "warning" : "neutral"}>
                   {t(binding.kind === "auto_run"
@@ -2943,18 +2979,43 @@ function LocalWorkItemDetail({
                     {binding.targetId}
                   </button>
                 ) : <span className="font-mono">{binding.targetId}</span>}
-                {binding.kind === "article_import" && markdownAssetFor(binding.worktreeId) ? (
-                  <button type="button" className="ml-auto text-primary hover:underline"
-                    onClick={() => openOutputAsset(markdownAssetFor(binding.worktreeId)!)}>
-                    {t("taskLocal.openMarkdown")}
-                  </button>
+                {binding.kind === "article_import" ? (
+                  <span className="ml-auto flex items-center gap-2">
+                    {importJob ? (
+                      <span className={importJob.state === "failed" ? "text-destructive" : "text-muted-foreground"}>
+                        {importJob.error === "article_import_interrupted"
+                          ? t("tasks.articleImportInterrupted")
+                          : t(`tasks.articleImportState.${importJob.state}`)}
+                      </span>
+                    ) : null}
+                    {["failed", "canceled"].includes(importJob?.state ?? "")
+                      && importJob?.canonicalUrl ? (
+                        <button type="button" className="text-primary hover:underline"
+                          onClick={() => retryArticleImport(importJob)}>
+                          {t("tasks.retryArticleImport")}
+                        </button>
+                      ) : null}
+                    {markdownAssetFor(binding.worktreeId) ? (
+                      <button type="button" className="text-primary hover:underline"
+                        onClick={() => openOutputAsset(markdownAssetFor(binding.worktreeId)!)}>
+                        {t("taskLocal.openMarkdown")}
+                      </button>
+                    ) : null}
+                    {htmlAssetFor(binding.worktreeId) ? (
+                      <button type="button" className="text-primary hover:underline"
+                        onClick={() => openOutputAsset(htmlAssetFor(binding.worktreeId)!)}>
+                        {t("taskLocal.openHtml")}
+                      </button>
+                    ) : null}
+                  </span>
                 ) : binding.worktreeId ? (
                   <button type="button" className="ml-auto text-primary hover:underline" onClick={() => openWorktreeResult(binding.worktreeId)}>
                     {t("taskLocal.openWorktree")}
                   </button>
                 ) : null}
               </li>
-            ))}
+              );
+            })}
           </ul>
         </div>
       ) : null}
@@ -3055,6 +3116,8 @@ type ArticleInspection = {
 
 type ArticleImportJob = {
   id: string;
+  worktreeId?: string;
+  canonicalUrl?: string;
   state: "queued" | "running" | "completed" | "failed" | "canceled";
   progress: { stage: string; completed: number; total: number };
   error: string | null;
@@ -3106,8 +3169,11 @@ function CreateLocalWorkItemForm({
       });
       if (job.state === "completed" || job.state === "canceled") clearStoredArticleImport(workItemId, jobId);
       if (job.state !== "completed") {
-        if (job.error === "article_import_interrupted") setImportStatus(t("tasks.articleImportInterrupted"));
-        throw new Error(job.error || `article_import_${job.state}`);
+        const message = job.error === "article_import_interrupted"
+          ? t("tasks.articleImportInterrupted")
+          : t(`tasks.articleImportState.${job.state}`);
+        setImportStatus(message);
+        throw new Error(message);
       }
       setImportStatus(t("tasks.articleImportState.completed"));
       return job;

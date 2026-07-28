@@ -25,6 +25,7 @@ export const ARTICLE_IMPORT_LIMITS = Object.freeze({
 export function resolveArticleImportConfig(env = process.env) {
   return Object.freeze({
     maxConcurrent: boundedInteger(env.MYAGENTTOOL_ARTICLE_IMPORT_MAX_CONCURRENT, 2, 1, 10),
+    maxPending: boundedInteger(env.MYAGENTTOOL_ARTICLE_IMPORT_MAX_PENDING, 100, 1, 500),
     limits: Object.freeze({
       ...ARTICLE_IMPORT_LIMITS,
       mediaConcurrency: boundedInteger(env.MYAGENTTOOL_ARTICLE_MEDIA_CONCURRENCY, ARTICLE_IMPORT_LIMITS.mediaConcurrency, 1, 16),
@@ -264,6 +265,7 @@ export function createArticleImportService({
   fetchImpl,
   resolveHostname,
   maxConcurrent = 2,
+  maxPending = 100,
   limits = ARTICLE_IMPORT_LIMITS,
   persistStateSoon = () => {},
   store,
@@ -336,6 +338,11 @@ export function createArticleImportService({
     if (!worktree.path && !worktree.worktreePath) {
       return { ok: false, status: 400, body: { error: "article_import_worktree_not_ready" } };
     }
+    const pendingCount = [...jobs.values()]
+      .filter((candidate) => ["queued", "running"].includes(candidate.state)).length;
+    if (pendingCount >= maxPending) {
+      return { ok: false, status: 429, body: { error: "article_import_queue_full" } };
+    }
     const job = {
       id: nextId("article_import"),
       workItemId: item.id,
@@ -376,6 +383,17 @@ export function createArticleImportService({
       return { ok: false, status: 404, body: { error: "article_import_not_found" } };
     }
     return { ok: true, status: 200, body: { job: jobView(job) } };
+  }
+
+  function list({ workItemId } = {}, actor = null) {
+    const itemResult = workItemService.getWorkItem({ workItemId: String(workItemId ?? "") }, actor);
+    if (!itemResult.ok) return itemResult;
+    const matches = [...jobs.values()]
+      .filter((job) => job.workItemId === itemResult.body.workItem.id)
+      .sort((left, right) => String(right.createdAt).localeCompare(String(left.createdAt)))
+      .slice(0, 20)
+      .map(jobView);
+    return { ok: true, status: 200, body: { jobs: matches, latest: matches[0] ?? null } };
   }
 
   function cancel({ workItemId, jobId } = {}, actor = null) {
@@ -474,7 +492,7 @@ export function createArticleImportService({
     }));
   }
 
-  return { inspect, start, get, cancel };
+  return { inspect, start, list, get, cancel };
 }
 
 function parseArticleDocument(html, pageUrl, provider, mediaCount = ARTICLE_IMPORT_LIMITS.mediaCount) {
@@ -487,9 +505,11 @@ function parseArticleDocument(html, pageUrl, provider, mediaCount = ARTICLE_IMPO
   let markdown = renderMarkdownNode(root, context).replace(/[ \t]+\n/g, "\n")
     .replace(/\n{3,}/g, "\n\n").trim();
   let cleanHtml = renderCleanHtmlNode(root, context).trim();
-  if (!cleanText(textContent(root)) && structured.description) {
+  let plainText = cleanText(visibleTextContent(root));
+  if (!plainText && structured.description) {
     markdown = escapeMarkdown(structured.description);
     cleanHtml = `<p>${escapeHtml(structured.description)}</p>`;
+    plainText = cleanText(structured.description);
   }
   const structuredTokens = [];
   for (const item of structured.media) {
@@ -527,7 +547,7 @@ function parseArticleDocument(html, pageUrl, provider, mediaCount = ARTICLE_IMPO
     media: media.slice(0, mediaCount),
     markdown,
     html: cleanHtml,
-    plainText: cleanText(textContent(root)),
+    plainText,
   };
 }
 
@@ -674,7 +694,11 @@ function renderCleanHtmlNode(node, context) {
   if (tag === "br") return "<br>";
   if (/^h[1-6]$/.test(tag)) return `<${tag}>${children()}</${tag}>`;
   if (BLOCK_TAGS.has(tag)) return `<${tag}>${children()}</${tag}>`;
-  if (["strong", "b", "em", "i", "del", "s", "code", "pre", "blockquote", "ul", "ol", "li"].includes(tag)) {
+  if ([
+    "strong", "b", "em", "i", "del", "s", "code", "pre", "blockquote",
+    "ul", "ol", "li", "table", "thead", "tbody", "tfoot", "tr", "th", "td",
+    "caption", "colgroup", "dl", "dt", "dd",
+  ].includes(tag)) {
     return `<${tag}>${children()}</${tag}>`;
   }
   if (tag === "hr") return "<hr>";
@@ -1219,6 +1243,13 @@ function textContent(node) {
   if (!node) return "";
   if (node.nodeName === "#text") return String(node.value ?? "");
   return (node.childNodes ?? []).map(textContent).join("");
+}
+
+function visibleTextContent(node) {
+  if (!node) return "";
+  if (node.nodeName === "#text") return String(node.value ?? "");
+  if (SKIPPED_TAGS.has(node.tagName)) return "";
+  return (node.childNodes ?? []).map(visibleTextContent).join("");
 }
 
 function metaContent(document, attribute, value) {

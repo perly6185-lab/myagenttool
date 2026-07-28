@@ -1162,7 +1162,7 @@ export function readProjectTree(project, { relativePath = "", search = "" } = {}
 
 const DOCUMENT_EXTENSIONS = new Set([
   ".docx", ".xlsx", ".pptx", ".pdf", ".dxf", ".dwg",
-  ".md", ".mdx", ".png", ".jpg", ".jpeg", ".gif", ".webp", ".avif", ".svg",
+  ".md", ".mdx", ".html", ".png", ".jpg", ".jpeg", ".gif", ".webp", ".avif", ".svg",
   ".mp3", ".m4a", ".ogg", ".wav",
   ".mp4", ".webm", ".mov",
   ".canvas", ".excalidraw",

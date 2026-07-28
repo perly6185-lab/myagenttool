@@ -20,7 +20,7 @@ import { CadDocumentViewer } from "@/features/documents/cad-document-viewer";
 import { useAppTranslation } from "@/lib/i18n/use-app-translation";
 
 type OfficeDocumentType = "docx" | "xlsx" | "pptx";
-type DocumentType = "all" | OfficeDocumentType | "pdf" | "dxf" | "dwg" | "md" | "canvas" | "image" | "audio" | "video";
+type DocumentType = "all" | OfficeDocumentType | "pdf" | "dxf" | "dwg" | "md" | "html" | "canvas" | "image" | "audio" | "video";
 type ImportedSource = "all" | "wechat" | "xiaohongshu" | "zhihu" | "juejin" | "jianshu" | "web";
 type ImportedContentType = "all" | "article" | "note";
 const FILTERS: Array<{ value: DocumentType; label: string }> = [
@@ -32,6 +32,7 @@ const FILTERS: Array<{ value: DocumentType; label: string }> = [
   { value: "dxf", label: "DXF" },
   { value: "dwg", label: "DWG" },
   { value: "md", label: "Markdown" },
+  { value: "html", label: "HTML" },
   { value: "canvas", label: "Canvas" },
   { value: "image", label: "Images" },
   { value: "audio", label: "Audio" },
@@ -356,6 +357,7 @@ function DocumentPreview({ projectId, document, worktrees, worktreeId, onWorktre
   });
   if (!document) return <section className="grid min-h-[24rem] place-items-center rounded-lg border border-dashed border-border bg-card text-sm text-muted-foreground">{t("documentsPreview.select")}</section>;
   if (document.type === "md" || document.type === "mdx") return <MarkdownAssetPreview projectId={projectId} document={document} />;
+  if (document.type === "html") return <AssetPreviewNotice projectId={projectId} document={document} message={t("documentsPreview.htmlSafety")} />;
   if (["png", "jpg", "jpeg", "gif", "webp", "avif", "svg"].includes(document.type)) return <ImageAssetPreview projectId={projectId} document={document} />;
   if (["mp3", "m4a", "ogg", "wav"].includes(document.type)) return <AudioAssetPreview projectId={projectId} document={document} />;
   if (["mp4", "webm", "mov"].includes(document.type)) return <VideoAssetPreview projectId={projectId} document={document} />;

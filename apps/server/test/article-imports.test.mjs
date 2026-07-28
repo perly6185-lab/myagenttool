@@ -41,14 +41,19 @@ test("detects source providers and builds deterministic source/date paths", () =
 test("resolves bounded runtime concurrency settings", () => {
   const configured = resolveArticleImportConfig({
     MYAGENTTOOL_ARTICLE_IMPORT_MAX_CONCURRENT: "6",
+    MYAGENTTOOL_ARTICLE_IMPORT_MAX_PENDING: "42",
     MYAGENTTOOL_ARTICLE_MEDIA_CONCURRENCY: "12",
   });
   assert.equal(configured.maxConcurrent, 6);
+  assert.equal(configured.maxPending, 42);
   assert.equal(configured.limits.mediaConcurrency, 12);
   assert.equal(resolveArticleImportConfig({
     MYAGENTTOOL_ARTICLE_IMPORT_MAX_CONCURRENT: "0",
     MYAGENTTOOL_ARTICLE_MEDIA_CONCURRENCY: "99",
   }).maxConcurrent, 2);
+  assert.equal(resolveArticleImportConfig({
+    MYAGENTTOOL_ARTICLE_IMPORT_MAX_PENDING: "999",
+  }).maxPending, 100);
 });
 
 test("inspects WeChat lazy images while preserving content order", async () => {
@@ -96,6 +101,19 @@ test("recovers Xiaohongshu note metadata and direct media from hydration data", 
   assert.deepEqual(result.mediaCounts, { images: 1, audio: 0, video: 1 });
 });
 
+test("uses Xiaohongshu hydration description when the page has no visible article body", async () => {
+  const result = await inspectArticle({
+    url: "https://www.xiaohongshu.com/explore/note-hydrated",
+    resolveHostname: PUBLIC_DNS,
+    fetchImpl: async () => htmlResponse(`<html><body><script>window.__INITIAL_STATE__ = ${JSON.stringify({
+      note: { title: "仅结构化笔记", desc: "这是结构化正文", user: { nickname: "作者" } },
+    })};</script></body></html>`),
+  });
+  assert.equal(result.title, "仅结构化笔记");
+  assert.equal(result.textLength, "这是结构化正文".length);
+  assert.match(result.markdownPreview, /这是结构化正文/);
+});
+
 test("uses provider-specific article roots and metadata for Juejin", async () => {
   const result = await inspectArticle({
     url: "https://juejin.cn/post/123",
@@ -131,6 +149,7 @@ test("writes sanitized standalone HTML with localized audio, video, and poster",
         <article>
           <script>alert("no")</script><iframe src="https://evil.example"></iframe>
           <p onclick="alert(1)">正文</p>
+          <table><caption>数据</caption><thead><tr><th>名称</th></tr></thead><tbody><tr><td>示例</td></tr></tbody></table>
           <audio data-audio-url="https://cdn.example/sound.mp3" title="讲解"></audio>
           <video data-video-url="https://cdn.example/movie.mp4" poster="https://cdn.example/poster.jpg" onerror="bad()"></video>
         </article>`);
@@ -148,6 +167,7 @@ test("writes sanitized standalone HTML with localized audio, video, and poster",
   assert.match(html, /<audio controls[^>]+src="assets\//);
   assert.match(html, /<video controls[^>]+src="assets\//);
   assert.match(html, /<img src="assets\//);
+  assert.match(html, /<table><caption>数据<\/caption><thead><tr><th>名称<\/th><\/tr><\/thead><tbody><tr><td>示例<\/td><\/tr><\/tbody><\/table>/);
   assert.doesNotMatch(html, /<script|<iframe|onclick=|onerror=|https:\/\/cdn\.example/);
   assert.match(markdown, /音频.*assets\/.*\.mp3/);
   assert.match(markdown, /视频.*assets\/.*\.mp4/);
@@ -184,6 +204,47 @@ test("marks an in-flight durable job as interrupted after service restart", () =
   assert.equal(recovered.body.job.error, "article_import_interrupted");
   assert.equal(state.articleImportJobs[0].state, "failed");
   assert.equal(persisted, 1);
+  const listed = service.list({ workItemId: "lwi_1" });
+  assert.equal(listed.body.latest.id, "article_import_old");
+  assert.equal(listed.body.jobs.length, 1);
+});
+
+test("rejects new work before the durable article-import queue grows without bound", () => {
+  const items = [
+    { id: "lwi_1", localNumber: 1, projectId: "prj_1" },
+    { id: "lwi_2", localNumber: 2, projectId: "prj_1" },
+  ];
+  const state = {
+    workItems: items,
+    worktrees: items.map((item, index) => ({
+      id: `wtr_${index + 1}`,
+      sourceProjectId: "prj_1",
+      path: `/tmp/article-import-${index + 1}`,
+      link: { type: "local_issue", number: item.localNumber },
+    })),
+  };
+  const service = createArticleImportService({
+    state,
+    maxConcurrent: 1,
+    maxPending: 1,
+    nextId: (prefix) => `${prefix}_${state.articleImportJobs?.length ?? 0}`,
+    workItemService: {
+      getWorkItem: ({ workItemId }) => {
+        const item = items.find((candidate) => candidate.id === workItemId);
+        return item
+          ? { ok: true, status: 200, body: { workItem: item } }
+          : { ok: false, status: 404, body: { error: "work_item_not_found" } };
+      },
+      recordExecutionBinding: () => ({ ok: true, status: 200, body: {} }),
+    },
+    fetchImpl: async () => htmlResponse("<article>queued</article>"),
+  });
+  const first = service.start({ workItemId: "lwi_1", worktreeId: "wtr_1", url: "https://example.com/one" });
+  const second = service.start({ workItemId: "lwi_2", worktreeId: "wtr_2", url: "https://example.com/two" });
+  assert.equal(first.status, 202);
+  assert.equal(second.status, 429);
+  assert.equal(second.body.error, "article_import_queue_full");
+  assert.equal(state.articleImportJobs.length, 1);
 });
 
 test("preserves the source calendar date instead of shifting it to UTC", async () => {

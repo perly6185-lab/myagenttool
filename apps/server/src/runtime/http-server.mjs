@@ -86,6 +86,7 @@ export function createHttpServer({
   retryWorkItemAlert,
   inspectArticleImport,
   startArticleImport,
+  listArticleImports,
   getArticleImport,
   cancelArticleImport,
   releaseIssueClaim,
@@ -567,6 +568,7 @@ export function createHttpServer({
         retryWorkItemAlert,
         inspectArticleImport,
         startArticleImport,
+        listArticleImports,
         getArticleImport,
         cancelArticleImport,
       })) {

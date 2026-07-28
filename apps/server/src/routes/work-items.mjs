@@ -25,6 +25,7 @@ export async function handleWorkItemRoutes({
   retryWorkItemAlert,
   inspectArticleImport,
   startArticleImport,
+  listArticleImports,
   getArticleImport,
   cancelArticleImport,
 }) {
@@ -132,6 +133,8 @@ export async function handleWorkItemRoutes({
     let result;
     if (req.method === "POST" && !jobId) {
       result = startArticleImport({ workItemId, ...(await readJson(req)) }, actor);
+    } else if (req.method === "GET" && !jobId) {
+      result = listArticleImports({ workItemId }, actor);
     } else if (req.method === "GET" && jobId) {
       result = getArticleImport({ workItemId, jobId }, actor);
     } else if (req.method === "DELETE" && jobId) {
