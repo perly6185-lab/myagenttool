@@ -107,6 +107,7 @@
     "ai:coding-adapter-contract": "node tools/ai/src/index.mjs coding-adapter-contract",
     "ai:eval-heldout": "node tools/ai/src/index.mjs eval-heldout",
     "ai:eval-subcap": "node tools/ai/src/index.mjs eval-subcap",
+    "eval:profile-privacy": "node tools/ai/src/evals/profile-privacy-cli.mjs",
     "github:check": "node tools/github/src/index.mjs --check",
     "github:check:issues": "node tools/github/src/index.mjs check-issues",
     "github:check:pr": "node tools/github/src/index.mjs check-pr",

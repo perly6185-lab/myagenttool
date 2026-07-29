@@ -1,0 +1,49 @@
+{
+  "id": "ppq-001-procurement",
+  "scenario": "procurement",
+  "document": {
+    "filename": "采购询价与审批样例.xlsx",
+    "format": "xlsx",
+    "records": [
+      {
+        "location": "询价对比!A1:F4",
+        "text": "物料A；供应商甲；单价88；交期7天；质保12月；建议综合单价、交期和质保选择"
+      },
+      {
+        "location": "审批记录!A1:D3",
+        "text": "询价人复核三家报价；采购负责人=林采购；超过预算需财务复核；流程状态=待审批"
+      },
+      {
+        "location": "供应商通讯录!B2:C2",
+        "text": "联系人电话=SYNTH_PHONE_PROC_001；收款账号=SYNTH_BANK_PROC_001"
+      }
+    ]
+  },
+  "oracle": {
+    "expectedTraits": [
+      "work.procurement.supplier_comparison",
+      "work.procurement.total_cost_delivery_tradeoff",
+      "work.procurement.approval_traceability"
+    ],
+    "falsePositiveTraits": [
+      "work.management.people_manager",
+      "personal.risk.preference_conservative"
+    ],
+    "sensitiveTraitIds": [
+      "personal.contact.phone",
+      "personal.finance.bank_account"
+    ],
+    "sensitiveFields": [
+      {
+        "id": "supplier_contact_phone",
+        "value": "SYNTH_PHONE_PROC_001",
+        "synthetic": true
+      },
+      {
+        "id": "supplier_bank_account",
+        "value": "SYNTH_BANK_PROC_001",
+        "synthetic": true
+      }
+    ]
+  }
+}
