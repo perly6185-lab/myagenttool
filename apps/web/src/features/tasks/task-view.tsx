@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
 import { Hand, History, RefreshCw, ExternalLink, GitBranch, Workflow, Zap, Plus, MessageSquare, Trash2, Pencil, FolderKanban, ArrowUp, ArrowDown, Star, Bell } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -49,8 +49,22 @@ import { WorkItemAcceptanceSection } from "./work-item-acceptance-section";
 import { WorkItemExternalSync } from "./work-item-external-sync";
 import { WorkItemAlertAndCostDetails, WorkItemTimeline, WorkItemTraceSummary } from "./work-item-observability";
 import { WorkItemTraceLinks } from "./work-item-trace-links";
+import type {
+  ArticleAnalysis,
+  ArticleDerivative,
+  ArticleDerivativeRequest,
+  ArticleImportJob,
+  ArticleInspection,
+  ArticleSimilarityMatch,
+  ArticleSimilaritySearch,
+} from "./article-workflow-types";
+import { articleApi } from "./article-workflow-api";
+import { useArticleTaskLabels } from "./article-task-labels";
 
 export { shouldShowWorkItemCost } from "./task-view-types";
+
+const ArticleWorkflowDialogs = lazy(() => import("./article-workflow-dialogs"));
+const ArticleImportFields = lazy(() => import("./article-import-fields"));
 
 // Task = GitHub issues/PRs across repo-backed projects, surfaced as work items.
 // Mirrors the project's existing per-worktree GitHub list, lifted to a top-level
@@ -2227,6 +2241,7 @@ function LocalWorkItemDetail({
   onDirtyChange: (dirty: boolean) => void;
 }) {
   const { t } = useAppTranslation();
+  const articleText = useArticleTaskLabels();
   const { execute, pending, error } = useAsyncAction();
   const setSection = useUiStore((state) => state.setSection);
   const setSelectedProjectId = useUiStore((state) => state.setSelectedProjectId);
@@ -2269,17 +2284,6 @@ function LocalWorkItemDetail({
     worktreeId: string;
   } | null>(null);
   const [articleDerivative, setArticleDerivative] = useState<ArticleDerivative | null>(null);
-  const [derivativeKind, setDerivativeKind] = useState<ArticleDerivative["kind"]>("article_rewrite");
-  const [derivativeTone, setDerivativeTone] = useState<ArticleDerivative["tone"]>("insightful");
-  const [derivativeLength, setDerivativeLength] = useState<ArticleDerivative["length"]>("medium");
-  const [derivativeAudiencePreset, setDerivativeAudiencePreset] =
-    useState<ArticleDerivative["audiencePreset"]>("general");
-  const [derivativeAudience, setDerivativeAudience] = useState("");
-  const [derivativeAgePreset, setDerivativeAgePreset] =
-    useState<ArticleDerivative["agePreset"]>("all");
-  const [derivativeAgeDetails, setDerivativeAgeDetails] = useState("");
-  const [derivativeAngle, setDerivativeAngle] = useState("");
-  const [derivativeRequestKey, setDerivativeRequestKey] = useState("");
 
   const load = async () => {
     try {
@@ -2351,13 +2355,13 @@ function LocalWorkItemDetail({
   const refreshArticleImports = async () => {
     if (!item?.executionBindings?.some((binding) => binding.kind === "article_import")) return;
     try {
-      const result = await api.listArticleImports(workItemId) as { jobs?: ArticleImportJob[] };
+      const result = await articleApi.listImports(workItemId) as { jobs?: ArticleImportJob[] };
       const jobs = result.jobs ?? [];
       setArticleImportJobs(Object.fromEntries(jobs.map((job) => [job.id, job])));
       if (item.executionBindings?.some((binding) => binding.kind === "article_derivative")) {
         const derivativeResults = await Promise.all(jobs
           .filter((job) => job.state === "completed")
-          .map((job) => api.listArticleDerivatives(workItemId, job.id)
+          .map((job) => articleApi.listDerivatives(workItemId, job.id)
             .catch(() => ({ derivatives: [] })) as Promise<{ derivatives?: ArticleDerivative[] }>));
         setArticleDerivatives(Object.fromEntries(
           derivativeResults.flatMap((entry) => entry.derivatives ?? [])
@@ -2381,7 +2385,7 @@ function LocalWorkItemDetail({
   useVisibleInterval(() => {
     if (!articleDerivativeDialog || !articleDerivative
       || ["completed", "failed", "canceled"].includes(articleDerivative.state)) return;
-    void (api.getArticleDerivative(
+    void (articleApi.getDerivative(
       workItemId,
       articleDerivativeDialog.sourceJobId,
       articleDerivative.id,
@@ -2522,7 +2526,7 @@ function LocalWorkItemDetail({
     .find((asset) => asset.path.toLowerCase().endsWith(".html") && (!worktreeId || asset.worktreeId === worktreeId));
   const retryArticleImport = (job: ArticleImportJob) => {
     if (!job.canonicalUrl || !job.worktreeId) return;
-    void execute(() => api.startArticleImport(item.id, {
+    void execute(() => articleApi.startImport(item.id, {
       url: job.canonicalUrl!,
       worktreeId: job.worktreeId!,
     })).then((ok) => {
@@ -2534,7 +2538,7 @@ function LocalWorkItemDetail({
   };
   const viewArticleAnalysis = (jobId: string) => {
     void execute(async () => {
-      const result = await api.analyzeArticleImport(item.id, jobId) as {
+      const result = await articleApi.analyze(item.id, jobId) as {
         analysis: ArticleAnalysis;
         analysisPath: string;
       };
@@ -2549,23 +2553,13 @@ function LocalWorkItemDetail({
   };
   const findSimilarArticles = (jobId: string) => {
     void execute(async () => {
-      const result = await api.findSimilarArticleImports(item.id, jobId) as ArticleSimilaritySearch;
+      const result = await articleApi.findSimilar(item.id, jobId) as ArticleSimilaritySearch;
       setSimilarArticles(result);
       return result;
     });
   };
   const openArticleDerivative = (sourceJobId: string, worktreeId: string) => {
     setArticleDerivative(null);
-    setDerivativeKind("article_rewrite");
-    setDerivativeTone("insightful");
-    setDerivativeLength("medium");
-    setDerivativeAudiencePreset("general");
-    setDerivativeAudience("");
-    setDerivativeAgePreset("all");
-    setDerivativeAgeDetails("");
-    setDerivativeAngle("");
-    setDerivativeRequestKey(globalThis.crypto?.randomUUID?.()
-      ?? `article-derivative-${Date.now()}-${Math.random().toString(36).slice(2)}`);
     setArticleDerivativeDialog({ sourceJobId, worktreeId });
   };
   const openArticleDerivativeStatus = (derivative: ArticleDerivative) => {
@@ -2575,23 +2569,13 @@ function LocalWorkItemDetail({
       worktreeId: derivative.worktreeId,
     });
   };
-  const createArticleDerivative = () => {
+  const createArticleDerivative = (request: ArticleDerivativeRequest) => {
     if (!articleDerivativeDialog) return;
     void execute(async () => {
-      const result = await api.createArticleDerivative(
+      const result = await articleApi.createDerivative(
         item.id,
         articleDerivativeDialog.sourceJobId,
-        {
-          kind: derivativeKind,
-          tone: derivativeTone,
-          length: derivativeLength,
-          audiencePreset: derivativeAudiencePreset,
-          audience: derivativeAudience.trim(),
-          agePreset: derivativeAgePreset,
-          ageDetails: derivativeAgeDetails.trim(),
-          angle: derivativeAngle.trim(),
-          idempotencyKey: derivativeRequestKey,
-        },
+        request,
       ) as { derivative: ArticleDerivative };
       setArticleDerivative(result.derivative);
       setArticleDerivatives((current) => ({ ...current, [result.derivative.id]: result.derivative }));
@@ -2788,8 +2772,10 @@ function LocalWorkItemDetail({
               {binding.kind === "auto_run"
                 ? t("taskLocal.autoRun")
                 : binding.kind === "article_import"
-                  ? t("taskLocal.articleImport")
-                  : t("taskLocal.worktree")} · {binding.targetId}
+                  ? articleText.importBinding
+                  : binding.kind === "article_derivative"
+                    ? articleText.derivativeBinding
+                    : t("taskLocal.worktree")} · {binding.targetId}
             </button>
           </div>
         ))}
@@ -3105,13 +3091,11 @@ function LocalWorkItemDetail({
               return (
               <li key={`${binding.kind}:${binding.targetId}`} className="flex flex-wrap items-center gap-2 text-xs">
                 <Badge tone={binding.kind === "auto_run" ? "warning" : "neutral"}>
-                  {t(binding.kind === "auto_run"
-                    ? "taskLocal.autoRun"
-                    : binding.kind === "article_import"
-                      ? "taskLocal.articleImport"
-                      : binding.kind === "article_derivative"
-                        ? "taskLocal.articleDerivative"
-                      : "taskLocal.worktree")}
+                  {binding.kind === "article_import"
+                    ? articleText.importBinding
+                    : binding.kind === "article_derivative"
+                      ? articleText.derivativeBinding
+                      : t(binding.kind === "auto_run" ? "taskLocal.autoRun" : "taskLocal.worktree")}
                 </Badge>
                 {binding.kind === "auto_run" || binding.kind === "article_import" || binding.kind === "article_derivative" ? (
                   <button type="button" className="font-mono text-primary hover:underline"
@@ -3127,15 +3111,15 @@ function LocalWorkItemDetail({
                     {importJob ? (
                       <span className={importJob.state === "failed" ? "text-destructive" : "text-muted-foreground"}>
                         {importJob.error === "article_import_interrupted"
-                          ? t("tasks.articleImportInterrupted")
-                          : t(`tasks.articleImportState.${importJob.state}`)}
+                          ? articleText.interrupted
+                          : articleText.importState[importJob.state]}
                       </span>
                     ) : null}
                     {["failed", "canceled"].includes(importJob?.state ?? "")
                       && importJob?.canonicalUrl ? (
                         <button type="button" className="text-primary hover:underline"
                           onClick={() => retryArticleImport(importJob)}>
-                          {t("tasks.retryArticleImport")}
+                          {articleText.retryImport}
                         </button>
                       ) : null}
                     {markdownAssetFor(binding.worktreeId) ? (
@@ -3154,16 +3138,16 @@ function LocalWorkItemDetail({
                       <>
                         <button type="button" className="text-primary hover:underline" disabled={pending}
                           onClick={() => viewArticleAnalysis(binding.targetId!)}>
-                          {t("articleAnalysis.view")}
+                          {articleText.viewAnalysis}
                         </button>
                         <button type="button" className="text-primary hover:underline" disabled={pending}
                           onClick={() => findSimilarArticles(binding.targetId!)}>
-                          {t("articleSimilarity.find")}
+                          {articleText.findSimilar}
                         </button>
                         {binding.worktreeId ? (
                           <button type="button" className="text-primary hover:underline" disabled={pending}
                             onClick={() => openArticleDerivative(binding.targetId!, binding.worktreeId!)}>
-                            {t("articleDerivative.create")}
+                            {articleText.createDerivative}
                           </button>
                         ) : null}
                       </>
@@ -3171,7 +3155,7 @@ function LocalWorkItemDetail({
                     {analysisAssetFor(binding.worktreeId) ? (
                       <button type="button" className="text-primary hover:underline"
                         onClick={() => openOutputAsset(analysisAssetFor(binding.worktreeId)!)}>
-                        {t("articleAnalysis.openMarkdown")}
+                        {articleText.openAnalysis}
                       </button>
                     ) : null}
                   </span>
@@ -3182,7 +3166,7 @@ function LocalWorkItemDetail({
                         <Badge tone={derivative.state === "completed"
                           ? "success"
                           : derivative.state === "failed" ? "danger" : "warning"}>
-                          {t(`articleDerivative.state.${derivative.state}`)}
+                          {articleText.derivativeState[derivative.state]}
                         </Badge>
                         {derivative.state === "completed" ? (
                           <button type="button" className="text-primary hover:underline"
@@ -3190,7 +3174,7 @@ function LocalWorkItemDetail({
                               path: derivative.outputPath,
                               worktreeId: derivative.worktreeId,
                             })}>
-                            {t("articleDerivative.openOutput")}
+                            {articleText.openDerivative}
                           </button>
                         ) : null}
                       </>
@@ -3245,7 +3229,13 @@ function LocalWorkItemDetail({
         <ul className="space-y-1">
           {activity.map((row) => (
             <li key={row.id} className="flex gap-2 text-xs">
-              <Badge tone="neutral">{t(`taskLocal.activityAction.${row.action}`, { defaultValue: row.action })}</Badge>
+              <Badge tone="neutral">
+                {row.action === "article_import_started"
+                  ? articleText.importStarted
+                  : row.action === "article_derivative_started"
+                    ? articleText.derivativeStarted
+                    : t(`taskLocal.activityAction.${row.action}`, { defaultValue: row.action })}
+              </Badge>
               <span>{row.actorId}</span>
               <span className="ml-auto text-muted-foreground">{row.createdAt.replace("T", " ").slice(0, 16)}</span>
             </li>
@@ -3274,265 +3264,26 @@ function LocalWorkItemDetail({
           setDeleteCommentTarget(null);
         }}
       />
-      <Modal
-        open={Boolean(articleAnalysis)}
-        title={articleAnalysis?.title ?? t("articleAnalysis.title")}
-        description={t("articleAnalysis.localMethod")}
-        onClose={() => setArticleAnalysis(null)}
-      >
-        {articleAnalysis ? (
-          <div className="max-h-[65vh] space-y-5 overflow-y-auto pr-1 text-sm">
-            <section>
-              <h4 className="mb-2 font-semibold">{t("articleAnalysis.coreIdeas")}</h4>
-              <ul className="list-disc space-y-2 pl-5">
-                {articleAnalysis.coreIdeas.map((idea) => <li key={idea}>{idea}</li>)}
-              </ul>
-            </section>
-            <section>
-              <h4 className="mb-2 font-semibold">{t("articleAnalysis.framework")}</h4>
-              <ol className="space-y-2">
-                {articleAnalysis.framework.map((section) => (
-                  <li key={`${section.order}:${section.heading}`} className="rounded-md border border-border p-3">
-                    <div className="flex flex-wrap items-center gap-2">
-                      <strong>{section.order}. {section.heading}</strong>
-                      <Badge tone="neutral">{t(`articleAnalysis.role.${section.role}`)}</Badge>
-                    </div>
-                    <p className="mt-1 text-muted-foreground">{section.summary}</p>
-                  </li>
-                ))}
-              </ol>
-            </section>
-            {articleAnalysis.keyConcepts.length ? (
-              <section>
-                <h4 className="mb-2 font-semibold">{t("articleAnalysis.keyConcepts")}</h4>
-                <div className="flex flex-wrap gap-1">
-                  {articleAnalysis.keyConcepts.map((concept) => <Badge key={concept} tone="neutral">{concept}</Badge>)}
-                </div>
-              </section>
-            ) : null}
-          </div>
-        ) : null}
-      </Modal>
-      <Modal
-        open={Boolean(similarArticles)}
-        title={t("articleSimilarity.title")}
-        description={similarArticles
-          ? t("articleSimilarity.summary", {
-            indexed: similarArticles.indexedCount,
-            matches: similarArticles.matches.length,
-          })
-          : t("articleSimilarity.localMethod")}
-        onClose={() => setSimilarArticles(null)}
-      >
-        {similarArticles?.matches.length ? (
-          <div className="max-h-[65vh] space-y-2 overflow-y-auto pr-1">
-            {similarArticles.skippedCount ? (
-              <p className="text-xs text-muted-foreground">
-                {t("articleSimilarity.skipped", { count: similarArticles.skippedCount })}
-              </p>
-            ) : null}
-            {similarArticles.matches.map((match) => (
-              <article key={match.articleId} className="rounded-md border border-border p-3 text-sm">
-                <div className="flex items-start justify-between gap-3">
-                  <div>
-                    <button type="button" className="text-left font-semibold text-primary hover:underline"
-                      onClick={() => openSimilarArticle(match)}>
-                      {match.title}
-                    </button>
-                    <p className="mt-1 text-xs text-muted-foreground">
-                      {match.localRef}
-                      {" · "}{t(`tasks.articleProvider.${match.provider ?? "web"}`)}
-                      {match.author ? ` · ${match.author}` : ""}
-                      {match.publishedAt ? ` · ${match.publishedAt}` : ""}
-                    </p>
-                  </div>
-                  <Badge tone={match.score >= 0.5 ? "success" : "neutral"}>
-                    {Math.round(match.score * 100)}%
-                  </Badge>
-                </div>
-                <div className="mt-2 flex flex-wrap gap-1">
-                  {match.reasons.map((reason) => (
-                    <Badge key={reason} tone="neutral">{t(`articleSimilarity.reason.${reason}`)}</Badge>
-                  ))}
-                </div>
-                {match.sharedConcepts.length ? (
-                  <p className="mt-2 text-xs text-muted-foreground">
-                    {t("articleSimilarity.sharedConcepts", { concepts: match.sharedConcepts.join("、") })}
-                  </p>
-                ) : null}
-              </article>
-            ))}
-          </div>
-        ) : similarArticles ? (
-          <div className="space-y-2 text-sm text-muted-foreground">
-            <p>{t("articleSimilarity.empty")}</p>
-            {similarArticles.skippedCount ? (
-              <p>{t("articleSimilarity.skipped", { count: similarArticles.skippedCount })}</p>
-            ) : null}
-          </div>
-        ) : null}
-      </Modal>
-      <Modal
-        open={Boolean(articleDerivativeDialog)}
-        title={articleDerivative ? t("articleDerivative.statusTitle") : t("articleDerivative.title")}
-        description={articleDerivative ? undefined : t("articleDerivative.description")}
-        onClose={() => {
-          setArticleDerivativeDialog(null);
-          setArticleDerivative(null);
-        }}
-        size="lg"
-      >
-        {articleDerivative ? (
-          <div className="space-y-4 text-sm">
-            <div className="flex flex-wrap items-center gap-2">
-              <Badge tone={articleDerivative.state === "completed"
-                ? "success"
-                : articleDerivative.state === "failed" ? "danger" : "warning"}>
-                {t(`articleDerivative.state.${articleDerivative.state}`)}
-              </Badge>
-              <Badge tone="neutral">{t(`articleDerivative.kinds.${articleDerivative.kind}`)}</Badge>
-              <Badge tone="neutral">{t(`articleDerivative.tones.${articleDerivative.tone}`)}</Badge>
-              <Badge tone="neutral">{t(`articleDerivative.audiences.${articleDerivative.audiencePreset}`)}</Badge>
-              <Badge tone="neutral">{t(`articleDerivative.ages.${articleDerivative.agePreset}`)}</Badge>
-            </div>
-            <dl className="space-y-2 rounded-md border border-border p-3 text-xs">
-              <div>
-                <dt className="text-muted-foreground">{t("articleDerivative.invocation")}</dt>
-                <dd className="break-all font-mono">{articleDerivative.invocationId}</dd>
-              </div>
-              <div>
-                <dt className="text-muted-foreground">{t("articleDerivative.targetAudience")}</dt>
-                <dd className="break-words">{articleDerivative.audience}</dd>
-              </div>
-              <div>
-                <dt className="text-muted-foreground">{t("articleDerivative.targetAge")}</dt>
-                <dd className="break-words">{articleDerivative.targetAge}</dd>
-              </div>
-              <div>
-                <dt className="text-muted-foreground">{t("articleDerivative.output")}</dt>
-                <dd className="break-all font-mono">{articleDerivative.outputPath}</dd>
-              </div>
-            </dl>
-            {articleDerivative.state === "completed" ? (
-              <>
-                <p className="text-muted-foreground">{t("articleDerivative.completedHint")}</p>
-                <div className="flex justify-end">
-                  <Button onClick={() => openOutputAsset({
-                    path: articleDerivative.outputPath,
-                    worktreeId: articleDerivative.worktreeId,
-                  })}>
-                    {t("articleDerivative.openOutput")}
-                  </Button>
-                </div>
-              </>
-            ) : articleDerivative.state === "failed" || articleDerivative.state === "canceled" ? (
-              <div className="space-y-1 text-destructive">
-                <p>{t("articleDerivative.failedHint")}</p>
-                {articleDerivative.error ? <p className="font-mono text-xs">{articleDerivative.error}</p> : null}
-              </div>
-            ) : (
-              <p className="text-muted-foreground">{t("articleDerivative.pendingHint")}</p>
-            )}
-          </div>
-        ) : (
-          <div className="space-y-4">
-            <div className="grid gap-3 sm:grid-cols-2">
-              <Field label={t("articleDerivative.kind")}>
-                <Select value={derivativeKind}
-                  onChange={(event) => setDerivativeKind(event.target.value as ArticleDerivative["kind"])}>
-                  <option value="article_rewrite">{t("articleDerivative.kinds.article_rewrite")}</option>
-                  <option value="video_script">{t("articleDerivative.kinds.video_script")}</option>
-                </Select>
-              </Field>
-              <Field label={t("articleDerivative.tone")}>
-                <Select value={derivativeTone}
-                  onChange={(event) => setDerivativeTone(event.target.value as ArticleDerivative["tone"])}>
-                  <option value="insightful">{t("articleDerivative.tones.insightful")}</option>
-                  <option value="practical">{t("articleDerivative.tones.practical")}</option>
-                  <option value="conversational">{t("articleDerivative.tones.conversational")}</option>
-                </Select>
-              </Field>
-            </div>
-            <Field label={t("articleDerivative.length")}>
-              <Select value={derivativeLength}
-                onChange={(event) => setDerivativeLength(event.target.value as ArticleDerivative["length"])}>
-                <option value="short">{t("articleDerivative.lengths.short")}</option>
-                <option value="medium">{t("articleDerivative.lengths.medium")}</option>
-                <option value="long">{t("articleDerivative.lengths.long")}</option>
-              </Select>
-            </Field>
-            <Field label={t("articleDerivative.audiencePreset")}>
-              <Select value={derivativeAudiencePreset}
-                onChange={(event) => {
-                  setDerivativeAudiencePreset(event.target.value as ArticleDerivative["audiencePreset"]);
-                  setDerivativeAudience("");
-                }}>
-                <option value="general">{t("articleDerivative.audiences.general")}</option>
-                <option value="creator">{t("articleDerivative.audiences.creator")}</option>
-                <option value="product_manager">{t("articleDerivative.audiences.product_manager")}</option>
-                <option value="entrepreneur_investor">{t("articleDerivative.audiences.entrepreneur_investor")}</option>
-                <option value="technical">{t("articleDerivative.audiences.technical")}</option>
-                <option value="custom">{t("articleDerivative.audiences.custom")}</option>
-              </Select>
-            </Field>
-            <p className="rounded-md bg-muted/50 p-2 text-xs text-muted-foreground">
-              {t(`articleDerivative.audienceHints.${derivativeAudiencePreset}`)}
-            </p>
-            <Field label={t(derivativeAudiencePreset === "custom"
-              ? "articleDerivative.audience"
-              : "articleDerivative.audienceDetails")}>
-              <Input value={derivativeAudience} maxLength={200}
-                placeholder={t(derivativeAudiencePreset === "custom"
-                  ? "articleDerivative.audiencePlaceholder"
-                  : "articleDerivative.audienceDetailsPlaceholder")}
-                onChange={(event) => setDerivativeAudience(event.target.value)} />
-            </Field>
-            <Field label={t("articleDerivative.agePreset")}>
-              <Select value={derivativeAgePreset}
-                onChange={(event) => {
-                  setDerivativeAgePreset(event.target.value as ArticleDerivative["agePreset"]);
-                  setDerivativeAgeDetails("");
-                }}>
-                <option value="all">{t("articleDerivative.ages.all")}</option>
-                <option value="teen">{t("articleDerivative.ages.teen")}</option>
-                <option value="18_24">{t("articleDerivative.ages.18_24")}</option>
-                <option value="25_34">{t("articleDerivative.ages.25_34")}</option>
-                <option value="35_49">{t("articleDerivative.ages.35_49")}</option>
-                <option value="50_plus">{t("articleDerivative.ages.50_plus")}</option>
-                <option value="custom">{t("articleDerivative.ages.custom")}</option>
-              </Select>
-            </Field>
-            <p className="rounded-md bg-muted/50 p-2 text-xs text-muted-foreground">
-              {t(`articleDerivative.ageHints.${derivativeAgePreset}`)}
-            </p>
-            <Field label={t(derivativeAgePreset === "custom"
-              ? "articleDerivative.customAge"
-              : "articleDerivative.ageDetails")}>
-              <Input value={derivativeAgeDetails} maxLength={100}
-                placeholder={t(derivativeAgePreset === "custom"
-                  ? "articleDerivative.customAgePlaceholder"
-                  : "articleDerivative.ageDetailsPlaceholder")}
-                onChange={(event) => setDerivativeAgeDetails(event.target.value)} />
-            </Field>
-            <Field label={t("articleDerivative.angle")}>
-              <Textarea value={derivativeAngle} maxLength={500}
-                placeholder={t("articleDerivative.anglePlaceholder")}
-                onChange={(event) => setDerivativeAngle(event.target.value)} />
-            </Field>
-            <p className="rounded-md bg-muted/50 p-2 text-xs text-muted-foreground">
-              {t("articleDerivative.sourceSafety")}
-            </p>
-            <div className="flex justify-end">
-              <Button disabled={pending
-                || (derivativeAudiencePreset === "custom" && !derivativeAudience.trim())
-                || (derivativeAgePreset === "custom" && !derivativeAgeDetails.trim())}
-                onClick={createArticleDerivative}>
-                {t("articleDerivative.submit")}
-              </Button>
-            </div>
-          </div>
-        )}
-      </Modal>
+      {articleAnalysis || similarArticles || articleDerivativeDialog ? (
+        <Suspense fallback={null}>
+          <ArticleWorkflowDialogs
+            analysis={articleAnalysis}
+            similarArticles={similarArticles}
+            derivativeContext={articleDerivativeDialog}
+            derivative={articleDerivative}
+            pending={pending}
+            onCloseAnalysis={() => setArticleAnalysis(null)}
+            onCloseSimilarity={() => setSimilarArticles(null)}
+            onCloseDerivative={() => {
+              setArticleDerivativeDialog(null);
+              setArticleDerivative(null);
+            }}
+            onOpenSimilar={openSimilarArticle}
+            onOpenOutput={openOutputAsset}
+            onCreateDerivative={createArticleDerivative}
+          />
+        </Suspense>
+      ) : null}
       <Modal
         open={safeNavigation.pendingNavigation}
         title={t("taskLocal.details")}
@@ -3549,100 +3300,6 @@ function LocalWorkItemDetail({
   );
 }
 
-type ArticleInspection = {
-  canonicalUrl: string;
-  provider: "wechat" | "xiaohongshu" | "zhihu" | "juejin" | "jianshu" | "web";
-  contentType: "article" | "note";
-  title: string;
-  author: string | null;
-  publishedAt: string | null;
-  publishedAtSource: "source" | "imported";
-  textLength: number;
-  mediaCounts: { images: number; audio: number; video: number };
-};
-
-type ArticleImportJob = {
-  id: string;
-  worktreeId?: string;
-  canonicalUrl?: string;
-  state: "queued" | "running" | "completed" | "failed" | "canceled";
-  progress: { stage: string; completed: number; total: number };
-  error: string | null;
-  result?: { markdownPath?: string; htmlPath?: string; warnings?: { code: string }[] } | null;
-};
-
-type ArticleAnalysis = {
-  schemaVersion: 1;
-  title: string;
-  generatedAt: string;
-  method: "local-extractive-v1";
-  coreIdeas: string[];
-  framework: {
-    order: number;
-    heading: string;
-    role: "introduction" | "development" | "evidence" | "boundary" | "conclusion";
-    summary: string;
-  }[];
-  argumentPath: {
-    role: "introduction" | "development" | "evidence" | "boundary" | "conclusion";
-    statement: string;
-  }[];
-  keyConcepts: string[];
-};
-
-type ArticleSimilarityMatch = {
-  articleId: string;
-  workItemId: string;
-  localRef: string;
-  worktreeId: string;
-  markdownPath: string;
-  canonicalUrl: string | null;
-  title: string;
-  author: string | null;
-  provider: ArticleInspection["provider"] | null;
-  publishedAt: string | null;
-  score: number;
-  reasons: ("core_ideas" | "structure" | "body" | "same_author" | "same_provider")[];
-  sharedConcepts: string[];
-  signals: {
-    coreIdeas: number;
-    titleStructure: number;
-    body: number;
-    metadata: number;
-  };
-};
-
-type ArticleSimilaritySearch = {
-  method: "local-lexical-v1";
-  matches: ArticleSimilarityMatch[];
-  indexedCount: number;
-  skippedCount: number;
-  duplicateCount: number;
-};
-
-type ArticleDerivative = {
-  id: string;
-  invocationId: string;
-  sourceJobId: string;
-  workItemId: string;
-  worktreeId: string;
-  kind: "article_rewrite" | "video_script";
-  tone: "insightful" | "practical" | "conversational";
-  length: "short" | "medium" | "long";
-  audiencePreset: "general" | "creator" | "product_manager" | "entrepreneur_investor" | "technical" | "custom";
-  agePreset: "all" | "teen" | "18_24" | "25_34" | "35_49" | "50_plus" | "custom";
-  ageDetails: string;
-  targetAge: string;
-  angle: string;
-  audience: string;
-  outputPath: string;
-  state: "awaiting_approval" | "queued" | "running" | "completed" | "failed" | "canceled";
-  error: string | null;
-  agentId: string;
-  createdAt: string;
-  completedAt: string | null;
-};
-
 function CreateLocalWorkItemForm({
   projects,
   initialProjectId,
@@ -3655,6 +3312,7 @@ function CreateLocalWorkItemForm({
   onImportActivityChange: (active: boolean) => void;
 }) {
   const { t } = useAppTranslation();
+  const articleText = useArticleTaskLabels();
   const { execute, pending, error } = useAsyncAction();
   const [projectId, setProjectId] = useState(initialProjectId);
   const [title, setTitle] = useState("");
@@ -3684,17 +3342,17 @@ function CreateLocalWorkItemForm({
     setActiveImport({ workItemId, jobId });
     try {
       const job = await waitForArticleImport(workItemId, jobId, (next) => {
-        setImportStatus(t(`tasks.articleImportState.${next.state}`));
+        setImportStatus(articleText.importState[next.state]);
       });
       if (job.state === "completed" || job.state === "canceled") clearStoredArticleImport(workItemId, jobId);
       if (job.state !== "completed") {
         const message = job.error === "article_import_interrupted"
-          ? t("tasks.articleImportInterrupted")
-          : t(`tasks.articleImportState.${job.state}`);
+          ? articleText.interrupted
+          : articleText.importState[job.state];
         setImportStatus(message);
         throw new Error(message);
       }
-      setImportStatus(t("tasks.articleImportState.completed"));
+      setImportStatus(articleText.importState.completed);
       return job;
     } finally {
       setActiveImport(null);
@@ -3743,7 +3401,7 @@ function CreateLocalWorkItemForm({
     let nextInspection: ArticleInspection | null = null;
     setInspection(null);
     void execute(async () => {
-      const result = await api.inspectArticleImport({ projectId, url: requestedUrl }) as { inspection: ArticleInspection };
+      const result = await articleApi.inspect({ projectId, url: requestedUrl }) as { inspection: ArticleInspection };
       nextInspection = result.inspection;
       return result;
     }).then((ok) => {
@@ -3784,20 +3442,20 @@ function CreateLocalWorkItemForm({
       if (sourceMode === "manual") return { completed: true };
       let worktreeId = createdWorktreeId;
       if (!worktreeId) {
-        setImportStatus(t("tasks.articleImportCreatingWorktree"));
+        setImportStatus(articleText.creatingWorktree);
         const createdWorktree = await api.createWorkItemWorktree(workItemId) as { worktree: { id: string } };
         worktreeId = createdWorktree.worktree.id;
         setCreatedWorktreeId(worktreeId);
       }
-      setImportStatus(t("tasks.articleImportQueued"));
-      const started = await api.startArticleImport(workItemId, {
+      setImportStatus(articleText.importQueued);
+      const started = await articleApi.startImport(workItemId, {
         url: sourceUrl,
         worktreeId,
       }) as { job: ArticleImportJob };
       storeArticleImport({ projectId, workItemId, worktreeId, jobId: started.job.id, sourceUrl });
       if (started.job.state === "completed") {
         clearStoredArticleImport(workItemId, started.job.id);
-        setImportStatus(t("tasks.articleImportState.completed"));
+        setImportStatus(articleText.importState.completed);
       } else {
         await trackImport(workItemId, started.job.id);
       }
@@ -3808,9 +3466,9 @@ function CreateLocalWorkItemForm({
   };
   const cancelImport = () => {
     if (!activeImport) return;
-    void api.cancelArticleImport(activeImport.workItemId, activeImport.jobId)
-      .then(() => setImportStatus(t("tasks.articleImportState.canceled")))
-      .catch(() => setImportStatus(t("tasks.articleImportState.failed")));
+    void articleApi.cancelImport(activeImport.workItemId, activeImport.jobId)
+      .then(() => setImportStatus(articleText.importState.canceled))
+      .catch(() => setImportStatus(articleText.importState.failed));
   };
   return (
     <div className="space-y-3">
@@ -3823,54 +3481,22 @@ function CreateLocalWorkItemForm({
           {projects.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}
         </Select>
       </Field>
-      <Field label={t("tasks.issueSource")}>
-        <div className="flex gap-2">
-          <Button type="button" variant={sourceMode === "manual" ? "primary" : "secondary"} onClick={() => setSourceMode("manual")}>
-            {t("tasks.issueSourceManual")}
-          </Button>
-          <Button type="button" variant={sourceMode === "url" ? "primary" : "secondary"} onClick={() => setSourceMode("url")}>
-            {t("tasks.issueSourceUrl")}
-          </Button>
-        </div>
-      </Field>
-      {sourceMode === "url" ? (
-        <div className="space-y-2 rounded-md border border-border p-3">
-          <Field label={t("tasks.articleUrl")}>
-            <div className="flex flex-col gap-2 sm:flex-row">
-              <Input
-                type="url"
-                value={sourceUrl}
-                onChange={(event) => {
-                  inspectionRequest.current += 1;
-                  setSourceUrl(event.target.value);
-                  setInspection(null);
-                }}
-                placeholder="https://..."
-                autoFocus
-              />
-              <Button type="button" variant="secondary" disabled={pending || !projectId || !sourceUrl.trim()} onClick={inspectSource}>
-                {t("tasks.inspectArticle")}
-              </Button>
-            </div>
-          </Field>
-          {inspection ? (
-            <div className="rounded-md bg-muted/50 p-3 text-sm" data-testid="article-import-inspection">
-              <div className="flex flex-wrap items-center gap-2">
-                <Badge>{t(`tasks.articleProvider.${inspection.provider}`)}</Badge>
-                <span className="font-medium">{inspection.title}</span>
-              </div>
-              <p className="mt-1 text-xs text-muted-foreground">
-                {inspection.author || t("tasks.articleUnknown")} · {inspection.publishedAt || t("tasks.articleImportDateFallback")} ·
-                {" "}{inspection.textLength} {t("tasks.articleCharacters")} ·
-                {" "}{inspection.mediaCounts.images} {t("tasks.articleImages")} ·
-                {" "}{inspection.mediaCounts.audio} {t("tasks.articleAudio")} ·
-                {" "}{inspection.mediaCounts.video} {t("tasks.articleVideo")}
-              </p>
-            </div>
-          ) : null}
-          <p className="text-xs text-muted-foreground">{t("tasks.articleImportPublicOnly")}</p>
-        </div>
-      ) : null}
+      <Suspense fallback={null}>
+        <ArticleImportFields
+          mode={sourceMode}
+          sourceUrl={sourceUrl}
+          projectId={projectId}
+          inspection={inspection}
+          pending={pending}
+          onModeChange={setSourceMode}
+          onUrlChange={(value) => {
+            inspectionRequest.current += 1;
+            setSourceUrl(value);
+            setInspection(null);
+          }}
+          onInspect={inspectSource}
+        />
+      </Suspense>
       <Field label={t("tasks.localTitle")}>
         <Input value={title} onChange={(event) => setTitle(event.target.value)} autoFocus={sourceMode === "manual"} />
       </Field>
@@ -3915,7 +3541,7 @@ function CreateLocalWorkItemForm({
           onClick={submit}
         >
           {sourceMode === "url"
-            ? t(createdWorkItemId ? "tasks.retryArticleImport" : "tasks.createAndImport")
+            ? (createdWorkItemId ? articleText.retryImport : articleText.createAndImport)
             : t("tasks.createLocal")}
         </Button>
       </div>
@@ -3947,7 +3573,7 @@ async function waitForArticleImport(
 ) {
   let job: ArticleImportJob;
   while (true) {
-    const next = await api.getArticleImport(workItemId, jobId) as { job: ArticleImportJob };
+    const next = await articleApi.getImport(workItemId, jobId) as { job: ArticleImportJob };
     job = next.job;
     onProgress(job);
     if (!["queued", "running"].includes(job.state)) return job;

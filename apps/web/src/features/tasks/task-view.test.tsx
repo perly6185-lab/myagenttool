@@ -134,6 +134,21 @@ vi.mock("@/data/use-console-actions", () => ({
     executePlanningRecommendedAction: mocks.executePlanningRecommendedAction,
   },
 }));
+
+vi.mock("@/features/tasks/article-workflow-api", () => ({
+  articleApi: {
+    inspect: mocks.inspectArticleImport,
+    startImport: mocks.startArticleImport,
+    listImports: mocks.listArticleImports,
+    getImport: mocks.getArticleImport,
+    cancelImport: mocks.cancelArticleImport,
+    analyze: mocks.analyzeArticleImport,
+    findSimilar: mocks.findSimilarArticleImports,
+    createDerivative: mocks.createArticleDerivative,
+    listDerivatives: mocks.listArticleDerivatives,
+    getDerivative: mocks.getArticleDerivative,
+  },
+}));
 vi.mock("@/store/ui-store", () => ({
   useUiStore: (selector: (state: Record<string, unknown>) => unknown) => selector({
     setSection: mocks.setSection,
@@ -236,7 +251,7 @@ describe("TaskView local work items", () => {
     });
     render(<TaskView />);
     fireEvent.click(screen.getByRole("button", { name: /New local issue/i }));
-    fireEvent.click(screen.getByRole("button", { name: "Import link" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Import link" }));
     fireEvent.change(screen.getByLabelText("Public article URL"), {
       target: { value: "https://mp.weixin.qq.com/s/example" },
     });
@@ -262,7 +277,7 @@ describe("TaskView local work items", () => {
     mocks.inspectArticleImport.mockReturnValue(new Promise((resolve) => { resolveInspection = resolve; }));
     render(<TaskView />);
     fireEvent.click(screen.getByRole("button", { name: /New local issue/i }));
-    fireEvent.click(screen.getByRole("button", { name: "Import link" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Import link" }));
     const input = screen.getByLabelText("Public article URL");
     fireEvent.change(input, { target: { value: "https://example.com/a" } });
     fireEvent.click(screen.getByRole("button", { name: "Inspect" }));
@@ -381,7 +396,7 @@ describe("TaskView local work items", () => {
     mocks.getArticleImport.mockReturnValue(new Promise(() => {}));
     render(<TaskView />);
     fireEvent.click(screen.getByRole("button", { name: /New local issue/i }));
-    fireEvent.click(screen.getByRole("button", { name: "Import link" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Import link" }));
     fireEvent.change(screen.getByLabelText("Public article URL"), { target: { value: "https://example.com/slow" } });
     fireEvent.click(screen.getByRole("button", { name: "Inspect" }));
     await screen.findByText("Slow article");

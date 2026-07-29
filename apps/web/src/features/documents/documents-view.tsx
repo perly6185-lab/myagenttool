@@ -23,6 +23,20 @@ type OfficeDocumentType = "docx" | "xlsx" | "pptx";
 type DocumentType = "all" | OfficeDocumentType | "pdf" | "dxf" | "dwg" | "md" | "html" | "canvas" | "image" | "audio" | "video";
 type ImportedSource = "all" | "wechat" | "xiaohongshu" | "zhihu" | "juejin" | "jianshu" | "web";
 type ImportedContentType = "all" | "article" | "note";
+const IMPORT_FILTER_LABELS = {
+  en: {
+    source: "Imported source", allSources: "All sources", wechat: "WeChat", xiaohongshu: "Xiaohongshu",
+    zhihu: "Zhihu", juejin: "Juejin", jianshu: "Jianshu", web: "Other web",
+    year: "Publication year", allYears: "All years", month: "Publication month", allMonths: "All months",
+    content: "Content type", allContent: "All content", article: "Article", note: "Note",
+  },
+  zh: {
+    source: "导入来源", allSources: "所有来源", wechat: "公众号", xiaohongshu: "小红书",
+    zhihu: "知乎", juejin: "掘金", jianshu: "简书", web: "其他网页",
+    year: "原文发布年份", allYears: "所有年份", month: "原文发布月份", allMonths: "所有月份",
+    content: "内容类型", allContent: "所有内容", article: "文章", note: "笔记",
+  },
+} as const;
 const FILTERS: Array<{ value: DocumentType; label: string }> = [
   { value: "all", label: "All" },
   { value: "docx", label: "Word" },
@@ -52,7 +66,8 @@ function DocumentIcon({ type }: { type: ProjectDocumentEntry["type"] }) {
 }
 
 export function DocumentsView() {
-  const { t } = useAppTranslation();
+  const { t, i18n } = useAppTranslation();
+  const importText = IMPORT_FILTER_LABELS[i18n.resolvedLanguage?.startsWith("zh") ? "zh" : "en"];
   const { data: state } = useConsoleState();
   const refresh = useRefreshConsoleState();
   const projects = state?.projects ?? [];
@@ -200,46 +215,46 @@ export function DocumentsView() {
           <option value="worktree" disabled={!worktreeId}>{t("documents.selectedWorktree")}</option>
         </Select>
         <Select
-          aria-label={t("documents.importedSource")}
+          aria-label={importText.source}
           className="h-8 w-36"
           value={importedSource}
           onChange={(event) => setImportedSource(event.target.value as ImportedSource)}
         >
-          <option value="all">{t("documents.allSources")}</option>
-          <option value="wechat">{t("documents.sourceWechat")}</option>
-          <option value="xiaohongshu">{t("documents.sourceXiaohongshu")}</option>
-          <option value="zhihu">{t("documents.sourceZhihu")}</option>
-          <option value="juejin">{t("documents.sourceJuejin")}</option>
-          <option value="jianshu">{t("documents.sourceJianshu")}</option>
-          <option value="web">{t("documents.sourceWeb")}</option>
+          <option value="all">{importText.allSources}</option>
+          <option value="wechat">{importText.wechat}</option>
+          <option value="xiaohongshu">{importText.xiaohongshu}</option>
+          <option value="zhihu">{importText.zhihu}</option>
+          <option value="juejin">{importText.juejin}</option>
+          <option value="jianshu">{importText.jianshu}</option>
+          <option value="web">{importText.web}</option>
         </Select>
         <Select
-          aria-label={t("documents.importedYear")}
+          aria-label={importText.year}
           className="h-8 w-28"
           value={importedYear}
           onChange={(event) => setImportedYear(event.target.value)}
         >
-          <option value="all">{t("documents.allYears")}</option>
+          <option value="all">{importText.allYears}</option>
           {importedYears.map((year) => <option key={year} value={year}>{year}</option>)}
         </Select>
         <Select
-          aria-label={t("documents.importedMonth")}
+          aria-label={importText.month}
           className="h-8 w-28"
           value={importedMonth}
           onChange={(event) => setImportedMonth(event.target.value)}
         >
-          <option value="all">{t("documents.allMonths")}</option>
+          <option value="all">{importText.allMonths}</option>
           {Array.from({ length: 12 }, (_, index) => String(index + 1).padStart(2, "0")).map((month) => <option key={month} value={month}>{month}</option>)}
         </Select>
         <Select
-          aria-label={t("documents.importedContent")}
+          aria-label={importText.content}
           className="h-8 w-32"
           value={importedContentType}
           onChange={(event) => setImportedContentType(event.target.value as ImportedContentType)}
         >
-          <option value="all">{t("documents.allContent")}</option>
-          <option value="article">{t("documents.contentArticle")}</option>
-          <option value="note">{t("documents.contentNote")}</option>
+          <option value="all">{importText.allContent}</option>
+          <option value="article">{importText.article}</option>
+          <option value="note">{importText.note}</option>
         </Select>
         <label className="relative ml-auto min-w-52 flex-1 sm:max-w-sm">
           <Search className="pointer-events-none absolute left-2.5 top-2 size-3.5 text-muted-foreground" />
