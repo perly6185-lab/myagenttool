@@ -3,6 +3,8 @@ import test from "node:test";
 
 import {
   businessDocumentTypes,
+  businessCaseCandidateStates,
+  businessCaseRelationshipKinds,
   businessRoutineSchemaVersion,
   normalizeBusinessFieldProposals,
   normalizeBusinessDocumentClassification,
@@ -10,6 +12,7 @@ import {
   normalizeRoutineEvidenceRefs,
   normalizeRoutineSteps,
   routineArtifactRoles,
+  routineStepRequirements,
   routineStepKinds,
 } from "@myagenttool/protocol/business-routine";
 
@@ -17,6 +20,9 @@ test("business routine vocabulary keeps document type separate from contextual r
   assert.equal(businessRoutineSchemaVersion, 1);
   assert.ok(businessDocumentTypes.includes("quotation"));
   assert.deepEqual(routineArtifactRoles, ["trigger", "input", "output", "reference"]);
+  assert.deepEqual(businessCaseCandidateStates, ["proposed", "confirmed", "rejected", "superseded"]);
+  assert.deepEqual(businessCaseRelationshipKinds, ["precedes", "uses_reference", "registers", "handoff"]);
+  assert.deepEqual(routineStepRequirements, ["mandatory", "conditional"]);
   assert.deepEqual(routineStepKinds, [
     "extract",
     "retrieve",

@@ -32,6 +32,18 @@ before(async () => {
     join(root, "history", "新需求-200.md"),
     "# 需求说明\n\n业务目标：生成新方案。\n\n## 验收标准\n内容完整。",
   );
+  mkdirSync(join(root, "history", "business"), { recursive: true });
+  writeFileSync(
+    join(root, "history", "business", "询价单-RFQ-HTTP-001.md"),
+    [
+      "# 询价单",
+      "询价编号：RFQ-HTTP-001",
+      "客户名称：星海科技",
+      "产品名称：控制器",
+      "数量：20",
+      "币种：CNY",
+    ].join("\n"),
+  );
   execFileSync("git", ["init", "-b", "main", root]);
   execFileSync("git", ["-C", root, "config", "user.email", "test@example.test"]);
   execFileSync("git", ["-C", root, "config", "user.name", "Test"]);
@@ -107,13 +119,13 @@ test("workflow memory routes authorize, scan, classify, and enforce tenancy over
 
   const scan = await call(`/api/workflow-memory/sources/${source.id}/scan`, { method: "POST" });
   assert.equal(scan.status, 200);
-  assert.equal(scan.body.scan.discovered, 3);
+  assert.equal(scan.body.scan.discovered, 4);
 
   const artifacts = await call(`/api/workflow-memory/artifacts?sourceId=${source.id}`);
   assert.equal(artifacts.status, 200);
   assert.deepEqual(
     artifacts.body.artifacts.map((artifact) => artifact.roleInference.role).sort(),
-    ["delivery", "requirement", "requirement"],
+    ["delivery", "requirement", "requirement", "requirement"],
   );
 
   const requirement = artifacts.body.artifacts.find((artifact) =>
@@ -122,6 +134,79 @@ test("workflow memory routes authorize, scan, classify, and enforce tenancy over
     artifact.name === "最终交付-100.md");
   const newRequirement = artifacts.body.artifacts.find((artifact) =>
     artifact.name === "新需求-200.md");
+  const inquiry = artifacts.body.artifacts.find((artifact) =>
+    artifact.name === "询价单-RFQ-HTTP-001.md");
+  const businessAnalysis = await call(
+    `/api/workflow-memory/artifacts/${inquiry.id}/analyze-business-document`,
+    { method: "POST" },
+  );
+  assert.equal(businessAnalysis.status, 201, JSON.stringify(businessAnalysis.body));
+  assert.equal(businessAnalysis.body.classification.documentType, "inquiry");
+  assert.equal(
+    businessAnalysis.body.classification.fieldProposals.find((field) =>
+      field.key === "inquiry_number").normalizedValue,
+    "RFQ-HTTP-001",
+  );
+  const classifications = await call(
+    `/api/workflow-memory/business-document-classifications?sourceId=${source.id}`,
+  );
+  assert.equal(classifications.status, 200);
+  assert.equal(classifications.body.count, 1);
+  assert.equal((await call(
+    `/api/workflow-memory/business-document-classifications?sourceId=${source.id}`,
+    { token: "tok_b" },
+  )).status, 404);
+  const confirmedBusiness = await call(
+    `/api/workflow-memory/business-document-classifications/${businessAnalysis.body.classification.id}/confirm`,
+    {
+      method: "POST",
+      body: {
+        expectedRevision: businessAnalysis.body.classification.revision,
+        fieldCorrections: { customer: "星海科技有限公司" },
+      },
+    },
+  );
+  assert.equal(confirmedBusiness.status, 200, JSON.stringify(confirmedBusiness.body));
+  assert.equal(confirmedBusiness.body.entity.businessKey, "RFQ-HTTP-001");
+  const discoveredBusinessCases = await call(
+    `/api/workflow-memory/sources/${source.id}/discover-business-cases`,
+    { method: "POST" },
+  );
+  assert.equal(discoveredBusinessCases.status, 200);
+  assert.equal(discoveredBusinessCases.body.count, 0);
+  const businessCaseCandidates = await call(
+    `/api/workflow-memory/business-case-candidates?sourceId=${source.id}`,
+  );
+  assert.equal(businessCaseCandidates.status, 200);
+  assert.equal(businessCaseCandidates.body.count, 0);
+  assert.equal((await call(
+    `/api/workflow-memory/business-case-candidates?sourceId=${source.id}`,
+    { token: "tok_b" },
+  )).status, 404);
+  const insufficientRoutine = await call(
+    `/api/workflow-memory/sources/${source.id}/discover-business-routine`,
+    { method: "POST" },
+  );
+  assert.equal(insufficientRoutine.status, 409);
+  assert.equal(insufficientRoutine.body.error, "insufficient_confirmed_business_cases");
+  assert.equal(insufficientRoutine.body.minimumCaseCount, 3);
+  const routineCandidates = await call(
+    `/api/workflow-memory/business-routine-candidates?sourceId=${source.id}`,
+  );
+  assert.equal(routineCandidates.status, 200);
+  assert.equal(routineCandidates.body.count, 0);
+  const analyzedSource = await call(
+    `/api/workflow-memory/sources/${source.id}/analyze-business-documents`,
+    { method: "POST" },
+  );
+  assert.equal(analyzedSource.status, 200);
+  assert.equal(analyzedSource.body.job.total, 4);
+  assert.equal(analyzedSource.body.job.replayed, 1);
+  const analysisJobs = await call(
+    `/api/workflow-memory/business-document-analysis-jobs?sourceId=${source.id}`,
+  );
+  assert.equal(analysisJobs.status, 200);
+  assert.equal(analysisJobs.body.jobs[0].status, "succeeded");
   const deliveryCase = await call("/api/workflow-memory/cases", {
     method: "POST",
     body: {

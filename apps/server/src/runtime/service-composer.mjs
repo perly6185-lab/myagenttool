@@ -67,6 +67,7 @@ import { createIssueClaimService } from "../services/issue-claims.mjs";
 import { createWorkItemService } from "../services/work-items.mjs";
 import { createBusinessRoutineService } from "../services/business-routines.mjs";
 import { createBusinessDocumentIntelligenceService } from "../services/business-document-intelligence.mjs";
+import { createBusinessCaseDiscoveryService } from "../services/business-case-discovery.mjs";
 import { createArticleImportService, resolveArticleImportConfig } from "../services/article-imports.mjs";
 import { createWorkflowMemoryService } from "../services/workflow-memory.mjs";
 import { createPlanningProjectService } from "../services/planning-projects.mjs";
@@ -529,6 +530,15 @@ export function createServerRuntimeServices({
     getArtifactAnalysisInput: workflowMemoryService.getArtifactAnalysisInput,
     recordClassification: businessRoutineService.recordDocumentClassification,
     createBusinessEntity: businessRoutineService.createBusinessEntity,
+    store,
+  });
+  const businessCaseDiscoveryService = createBusinessCaseDiscoveryService({
+    state,
+    now,
+    nextId,
+    appendEvent,
+    persistStateSoon,
+    createBusinessCase: businessRoutineService.createBusinessCase,
     store,
   });
   const planningProjectService = createPlanningProjectService({
@@ -3786,6 +3796,11 @@ export function createServerRuntimeServices({
     listWorkflowBusinessDocumentClassifications: businessDocumentIntelligenceService.listClassifications,
     listWorkflowBusinessDocumentAnalysisJobs: businessDocumentIntelligenceService.listAnalysisJobs,
     confirmWorkflowBusinessDocumentClassification: businessDocumentIntelligenceService.confirmClassification,
+    discoverWorkflowBusinessCases: businessCaseDiscoveryService.discoverBusinessCases,
+    listWorkflowBusinessCaseCandidates: businessCaseDiscoveryService.listBusinessCaseCandidates,
+    reviewWorkflowBusinessCaseCandidate: businessCaseDiscoveryService.reviewBusinessCaseCandidate,
+    discoverWorkflowBusinessRoutine: businessCaseDiscoveryService.discoverRoutine,
+    listWorkflowBusinessRoutineCandidates: businessCaseDiscoveryService.listRoutineDiscoveryCandidates,
     inspectArticleImport: articleImportService.inspect,
     startArticleImport: articleImportService.start,
     listArticleImports: articleImportService.list,

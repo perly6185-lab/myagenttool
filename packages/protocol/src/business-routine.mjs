@@ -51,6 +51,10 @@ export const routineDefinitionStates = [
 ];
 
 export const businessCaseStates = ["proposed", "confirmed", "active", "completed", "archived"];
+export const businessCaseCandidateStates = ["proposed", "confirmed", "rejected", "superseded"];
+export const businessCaseRelationshipKinds = ["precedes", "uses_reference", "registers", "handoff"];
+export const routineDiscoveryCandidateStates = ["candidate", "superseded"];
+export const routineStepRequirements = ["mandatory", "conditional"];
 export const ledgerDefinitionStates = ["draft", "active", "disabled"];
 export const routineRunStates = ["planned", "running", "awaiting_approval", "succeeded", "failed", "cancelled"];
 export const routineStepRunStates = [

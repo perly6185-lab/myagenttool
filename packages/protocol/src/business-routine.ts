@@ -37,6 +37,14 @@ export declare const routineDefinitionStates: readonly ["candidate", "draft", "p
 export type RoutineDefinitionState = (typeof routineDefinitionStates)[number];
 export declare const businessCaseStates: readonly ["proposed", "confirmed", "active", "completed", "archived"];
 export type BusinessCaseState = (typeof businessCaseStates)[number];
+export declare const businessCaseCandidateStates: readonly ["proposed", "confirmed", "rejected", "superseded"];
+export type BusinessCaseCandidateState = (typeof businessCaseCandidateStates)[number];
+export declare const businessCaseRelationshipKinds: readonly ["precedes", "uses_reference", "registers", "handoff"];
+export type BusinessCaseRelationshipKind = (typeof businessCaseRelationshipKinds)[number];
+export declare const routineDiscoveryCandidateStates: readonly ["candidate", "superseded"];
+export type RoutineDiscoveryCandidateState = (typeof routineDiscoveryCandidateStates)[number];
+export declare const routineStepRequirements: readonly ["mandatory", "conditional"];
+export type RoutineStepRequirement = (typeof routineStepRequirements)[number];
 export declare const ledgerDefinitionStates: readonly ["draft", "active", "disabled"];
 export type LedgerDefinitionState = (typeof ledgerDefinitionStates)[number];
 export declare const routineRunStates: readonly ["planned", "running", "awaiting_approval", "succeeded", "failed", "cancelled"];
@@ -144,8 +152,83 @@ export type BusinessCase = {
   state: BusinessCaseState;
   entityIds: string[];
   artifactBindings: BusinessCaseArtifactBinding[];
+  /** Fingerprints captured when the case was confirmed; used to invalidate stale evidence. */
+  artifactFingerprints: Record<string, string>;
   evidenceRefs: RoutineEvidenceRef[];
   confidence: number;
+  revision: number;
+  createdAt: IsoDateTime;
+  updatedAt: IsoDateTime;
+};
+
+export type BusinessCaseLinkAlternative = {
+  artifactId: string;
+  score: number;
+  reasons: string[];
+};
+
+export type BusinessCaseCandidateLink = {
+  fromArtifactId: string;
+  toArtifactId: string;
+  relationship: BusinessCaseRelationshipKind;
+  score: number;
+  reasons: string[];
+  evidenceRefs: RoutineEvidenceRef[];
+  alternatives: BusinessCaseLinkAlternative[];
+};
+
+export type BusinessCaseCandidate = {
+  id: string;
+  familyId: string;
+  schemaVersion: 1;
+  ownerTeamId: string;
+  projectId: string;
+  sourceId: string;
+  businessKey: string;
+  version: number;
+  state: BusinessCaseCandidateState;
+  anchorArtifactId: string;
+  artifactBindings: BusinessCaseArtifactBinding[];
+  links: BusinessCaseCandidateLink[];
+  evidenceRefs: RoutineEvidenceRef[];
+  artifactFingerprints: Record<string, string>;
+  confidence: number;
+  correctionReason: string | null;
+  supersedesId: string | null;
+  supersededById: string | null;
+  businessCaseId: string | null;
+  revision: number;
+  createdAt: IsoDateTime;
+  updatedAt: IsoDateTime;
+};
+
+export type RoutineDiscoveryStep = RoutineStep & {
+  requirement: RoutineStepRequirement;
+  coverage: number;
+  supportCaseIds: string[];
+  exceptionCaseIds: string[];
+  explanation: string;
+};
+
+export type RoutineDiscoveryCandidate = {
+  id: string;
+  familyId: string;
+  schemaVersion: 1;
+  ownerTeamId: string;
+  projectId: string;
+  sourceId: string;
+  name: string;
+  version: number;
+  state: RoutineDiscoveryCandidateState;
+  triggerDocumentTypes: BusinessDocumentType[];
+  confirmedCaseIds: string[];
+  minimumCaseCount: number;
+  mandatoryCoverageThreshold: number;
+  steps: RoutineDiscoveryStep[];
+  evidenceRefs: RoutineEvidenceRef[];
+  confidence: number;
+  supersedesId: string | null;
+  supersededById: string | null;
   revision: number;
   createdAt: IsoDateTime;
   updatedAt: IsoDateTime;

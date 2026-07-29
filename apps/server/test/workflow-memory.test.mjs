@@ -772,8 +772,11 @@ test("scans a contained source, confirms cases, derives a profile, and exposes a
 
     for (const [key, id] of [
       ["businessDocumentClassifications", "bdc_delete"],
+      ["businessDocumentAnalysisJobs", "bdj_delete"],
       ["businessEntities", "bent_delete"],
+      ["businessCaseCandidates", "bcc_delete"],
       ["businessCases", "bcs_delete"],
+      ["routineDiscoveryCandidates", "rdc_delete"],
       ["routineDefinitions", "rtd_delete"],
       ["routineRuns", "rtr_delete"],
       ["ledgerDefinitions", "ldg_delete"],
@@ -805,15 +808,21 @@ test("scans a contained source, confirms cases, derives a profile, and exposes a
     assert.equal(state.workflowProfiles.length, 0);
     assert.equal(state.workflowRuns.length, 0);
     assert.equal(deleted.body.counts.businessDocumentClassifications, 1);
+    assert.equal(deleted.body.counts.businessDocumentAnalysisJobs, 1);
     assert.equal(deleted.body.counts.businessEntities, 1);
+    assert.equal(deleted.body.counts.businessCaseCandidates, 1);
     assert.equal(deleted.body.counts.businessCases, 1);
+    assert.equal(deleted.body.counts.routineDiscoveryCandidates, 1);
     assert.equal(deleted.body.counts.routineDefinitions, 1);
     assert.equal(deleted.body.counts.routineRuns, 1);
     assert.equal(deleted.body.counts.ledgerDefinitions, 1);
     for (const key of [
       "businessDocumentClassifications",
+      "businessDocumentAnalysisJobs",
       "businessEntities",
+      "businessCaseCandidates",
       "businessCases",
+      "routineDiscoveryCandidates",
       "routineDefinitions",
       "routineRuns",
       "ledgerDefinitions",

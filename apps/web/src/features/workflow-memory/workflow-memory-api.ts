@@ -1,5 +1,11 @@
 import {
   request,
+  type BusinessDocumentAnalysisJob,
+  type BusinessDocumentClassification,
+  type BusinessDocumentType,
+  type BusinessFieldProposal,
+  type BusinessCaseCandidate,
+  type BusinessRoutineDiscoveryCandidate,
   type DeliveryCase,
   type SimilarWorkflowCase,
   type WorkflowArtifact,
@@ -63,8 +69,11 @@ export const workflowMemoryApi = {
         profileDrafts: number;
         runs: number;
         businessDocumentClassifications: number;
+        businessDocumentAnalysisJobs: number;
         businessEntities: number;
+        businessCaseCandidates: number;
         businessCases: number;
+        routineDiscoveryCandidates: number;
         routineDefinitions: number;
         routineRuns: number;
         ledgerDefinitions: number;
@@ -112,6 +121,108 @@ export const workflowMemoryApi = {
     `/api/workflow-memory/artifacts/${encodeURIComponent(artifactId)}/${body.excluded ? "exclude" : "include"}`,
     { expectedRevision: body.expectedRevision, reason: body.reason },
   ),
+  analyzeBusinessDocuments: (sourceId: string) =>
+    request<{ job: BusinessDocumentAnalysisJob }>(
+      "POST",
+      `/api/workflow-memory/sources/${encodeURIComponent(sourceId)}/analyze-business-documents`,
+      {},
+    ),
+  cancelBusinessDocumentAnalysis: (sourceId: string) =>
+    request<{ sourceId: string; jobId: string; cancellationRequested: true }>(
+      "POST",
+      `/api/workflow-memory/sources/${encodeURIComponent(sourceId)}/cancel-business-analysis`,
+      {},
+    ),
+  analyzeBusinessDocument: (artifactId: string) =>
+    request<{ classification: BusinessDocumentClassification; replayed: boolean }>(
+      "POST",
+      `/api/workflow-memory/artifacts/${encodeURIComponent(artifactId)}/analyze-business-document`,
+      {},
+    ),
+  listBusinessDocumentClassifications: (filters: {
+    sourceId?: string;
+    confirmationState?: BusinessDocumentClassification["confirmationState"];
+  } = {}) => {
+    const query = new URLSearchParams();
+    if (filters.sourceId) query.set("sourceId", filters.sourceId);
+    if (filters.confirmationState) query.set("confirmationState", filters.confirmationState);
+    const suffix = query.toString() ? `?${query}` : "";
+    return request<{ classifications: BusinessDocumentClassification[]; count: number }>(
+      "GET",
+      `/api/workflow-memory/business-document-classifications${suffix}`,
+    );
+  },
+  listBusinessDocumentAnalysisJobs: (sourceId?: string) =>
+    request<{ jobs: BusinessDocumentAnalysisJob[]; count: number }>(
+      "GET",
+      `/api/workflow-memory/business-document-analysis-jobs${sourceId ? `?sourceId=${encodeURIComponent(sourceId)}` : ""}`,
+    ),
+  confirmBusinessDocumentClassification: (
+    classificationId: string,
+    body: {
+      expectedRevision: number;
+      documentType?: BusinessDocumentType;
+      fieldCorrections?: Partial<Record<BusinessFieldProposal["key"], string>>;
+      excludedFieldKeys?: BusinessFieldProposal["key"][];
+    },
+  ) => request<{
+    classification: BusinessDocumentClassification;
+    entity: Record<string, unknown> | null;
+    entityReason: string | null;
+  }>(
+    "POST",
+    `/api/workflow-memory/business-document-classifications/${encodeURIComponent(classificationId)}/confirm`,
+    body,
+  ),
+  discoverBusinessCases: (sourceId: string) =>
+    request<{
+      sourceId: string;
+      candidates: Array<BusinessCaseCandidate & { replayed: boolean }>;
+      count: number;
+      analyzedClassificationCount: number;
+      truncated: boolean;
+    }>(
+      "POST",
+      `/api/workflow-memory/sources/${encodeURIComponent(sourceId)}/discover-business-cases`,
+      {},
+    ),
+  listBusinessCaseCandidates: (filters: {
+    sourceId?: string;
+    state?: BusinessCaseCandidate["state"];
+  } = {}) => {
+    const query = new URLSearchParams();
+    if (filters.sourceId) query.set("sourceId", filters.sourceId);
+    if (filters.state) query.set("state", filters.state);
+    const suffix = query.toString() ? `?${query}` : "";
+    return request<{ candidates: BusinessCaseCandidate[]; count: number }>(
+      "GET",
+      `/api/workflow-memory/business-case-candidates${suffix}`,
+    );
+  },
+  reviewBusinessCaseCandidate: (
+    candidateId: string,
+    body: {
+      expectedRevision: number;
+      action: "confirm" | "reject" | "correct";
+      artifactIds?: string[];
+      correctionReason?: string;
+    },
+  ) => request<{ candidate: BusinessCaseCandidate; businessCase?: Record<string, unknown> }>(
+    "POST",
+    `/api/workflow-memory/business-case-candidates/${encodeURIComponent(candidateId)}/review`,
+    body,
+  ),
+  discoverBusinessRoutine: (sourceId: string) =>
+    request<{ candidate: BusinessRoutineDiscoveryCandidate; replayed: boolean }>(
+      "POST",
+      `/api/workflow-memory/sources/${encodeURIComponent(sourceId)}/discover-business-routine`,
+      {},
+    ),
+  listBusinessRoutineCandidates: (sourceId?: string) =>
+    request<{ candidates: BusinessRoutineDiscoveryCandidate[]; count: number }>(
+      "GET",
+      `/api/workflow-memory/business-routine-candidates${sourceId ? `?sourceId=${encodeURIComponent(sourceId)}` : ""}`,
+    ),
   workflowPairProposals: (sourceId: string) =>
     request<{ sourceId: string; proposals: import("@/lib/api-client").WorkflowPairProposal[] }>(
       "GET",

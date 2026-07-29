@@ -180,6 +180,167 @@ export interface WorkflowArtifact {
   revision: number;
 }
 
+export type BusinessDocumentType =
+  | "inquiry"
+  | "quotation"
+  | "order"
+  | "inquiry_ledger"
+  | "quotation_ledger"
+  | "order_ledger"
+  | "price_list"
+  | "customer_reference"
+  | "other_reference"
+  | "unknown";
+
+export interface BusinessFieldProposal {
+  key:
+    | "customer"
+    | "product"
+    | "quantity"
+    | "currency"
+    | "amount"
+    | "document_date"
+    | "inquiry_number"
+    | "quotation_number"
+    | "order_number";
+  value: string;
+  normalizedValue: string | null;
+  confidence: number;
+  evidenceRefs: Array<{
+    artifactId: string;
+    kind: string;
+    field: string | null;
+    location: string | null;
+  }>;
+  confirmationState: "proposed" | "confirmed" | "corrected";
+}
+
+export interface BusinessDocumentClassification {
+  id: string;
+  projectId: string;
+  sourceId: string;
+  artifactId: string;
+  artifactFingerprint: string;
+  documentType: BusinessDocumentType;
+  confidence: number;
+  reasons: string[];
+  evidenceRefs: Array<{
+    artifactId: string;
+    kind: string;
+    field: string | null;
+    location: string | null;
+  }>;
+  fieldProposals: BusinessFieldProposal[];
+  riskSignals: string[];
+  confirmationState: "proposed" | "confirmed" | "corrected";
+  analysisState: "deterministic" | "hybrid" | "degraded";
+  degradedReason: string | null;
+  classifierVersion: number;
+  extractorVersion: number;
+  provider: string | null;
+  model: string | null;
+  revision: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface BusinessDocumentAnalysisJob {
+  id: string;
+  projectId: string;
+  sourceId: string;
+  status: "running" | "recoverable" | "succeeded" | "cancelled";
+  attempt: number;
+  total: number;
+  processed: number;
+  classified: number;
+  replayed: number;
+  failed: number;
+  failures: Array<{ artifactId: string; error: string }>;
+  lastError: string | null;
+  revision: number;
+  createdAt: string;
+  updatedAt: string;
+  completedAt?: string;
+}
+
+export interface BusinessCaseCandidateLink {
+  fromArtifactId: string;
+  toArtifactId: string;
+  relationship: "precedes" | "uses_reference" | "registers" | "handoff";
+  score: number;
+  reasons: string[];
+  evidenceRefs: BusinessDocumentClassification["evidenceRefs"];
+  alternatives: Array<{ artifactId: string; score: number; reasons: string[] }>;
+}
+
+export interface BusinessCaseCandidate {
+  id: string;
+  familyId: string;
+  projectId: string;
+  sourceId: string;
+  businessKey: string;
+  version: number;
+  state: "proposed" | "confirmed" | "rejected" | "superseded";
+  anchorArtifactId: string;
+  artifactBindings: Array<{
+    artifactId: string;
+    documentType: BusinessDocumentType;
+    roles: Array<"trigger" | "input" | "output" | "reference">;
+  }>;
+  links: BusinessCaseCandidateLink[];
+  confidence: number;
+  correctionReason: string | null;
+  supersedesId: string | null;
+  supersededById: string | null;
+  businessCaseId: string | null;
+  evidenceHealth: {
+    state: "valid" | "downgraded" | "blocked";
+    issues: string[];
+  };
+  revision: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface BusinessRoutineDiscoveryStep {
+  key: string;
+  kind: "extract" | "retrieve" | "generate" | "ledger_upsert" | "human_approval" | "condition" | "create_issue";
+  label: string;
+  required: boolean;
+  requirement: "mandatory" | "conditional";
+  coverage: number;
+  supportCaseIds: string[];
+  exceptionCaseIds: string[];
+  explanation: string;
+  dependsOn: string[];
+  evidenceRefs: BusinessDocumentClassification["evidenceRefs"];
+  configuration: Record<string, unknown>;
+}
+
+export interface BusinessRoutineDiscoveryCandidate {
+  id: string;
+  familyId: string;
+  projectId: string;
+  sourceId: string;
+  name: string;
+  version: number;
+  state: "candidate" | "superseded";
+  triggerDocumentTypes: BusinessDocumentType[];
+  confirmedCaseIds: string[];
+  minimumCaseCount: number;
+  mandatoryCoverageThreshold: number;
+  steps: BusinessRoutineDiscoveryStep[];
+  confidence: number;
+  evidenceHealth: {
+    state: "valid" | "downgraded" | "blocked";
+    issues: string[];
+    healthyCaseCount: number;
+  };
+  revision: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface WorkflowPairProposal {
   requirement: WorkflowArtifact;
   candidates: Array<{
