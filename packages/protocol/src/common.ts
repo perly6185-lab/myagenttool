@@ -35,6 +35,9 @@ export type QuotaDecisionId = `qtd_${string}`;
 export type QuotaPolicyId = `qtp_${string}`;
 export type AuditExportId = `aex_${string}`;
 export type DeploymentConfigId = `dep_${string}`;
+export type WorkProfileId = `wpf_${string}`;
+export type WorkProfileVersionId = `wpv_${string}`;
+export type WorkProfileInferenceId = `wpi_${string}`;
 
 export type RiskLevel = "low" | "medium" | "high" | "critical";
 

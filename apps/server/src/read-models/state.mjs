@@ -1,4 +1,4 @@
-import { LOCAL_TEAM_ID, teamOf } from "../runtime/auth.mjs";
+import { LOCAL_TEAM_ID, LOCAL_USER_ID, teamOf } from "../runtime/auth.mjs";
 import { publicDeviceView } from "../runtime/bridge-auth.mjs";
 import { primaryDevice } from "../runtime/device.mjs";
 import { channelOperations, channelTaskOperations } from "./channels.mjs";
@@ -53,6 +53,18 @@ export function buildPublicState({
     return sshTargetIdVisible(event?.data?.targetId);
   };
   const projects = (state.projects ?? []).filter((p) => projectVisible(p.id));
+  const profileVisible = (row) => {
+    if (teamId != null && (row?.ownerTeamId ?? LOCAL_TEAM_ID) !== teamId) return false;
+    return !actor?.userId || (row?.userId ?? LOCAL_USER_ID) === actor.userId;
+  };
+  const workProfileInferences = (state.workProfileInferences ?? [])
+    .filter(profileVisible)
+    .map((row) => ({
+      ...row,
+      evidence: (row.evidence ?? []).filter((item) => projectVisible(item?.projectId)),
+    }));
+  const workProfileAuditEvents = (state.workProfileAuditEvents ?? [])
+    .filter(profileVisible);
   const visibleInvocations = (state.invocations ?? []).filter((inv) => projectVisible(inv.projectId));
   const visibleInvIds = new Set(visibleInvocations.map((inv) => inv.id));
   const visibleInvocationsById = new Map(visibleInvocations.map((invocation) => [invocation.id, invocation]));
@@ -483,6 +495,8 @@ export function buildPublicState({
       alertWebhookConfigured: Boolean(alertWebhookUrl),
     })),
     projects,
+    workProfileInferences,
+    workProfileAuditEvents,
     applications: applicationsWithSchedules,
     applicationRecoveryActions,
     // Sweep self-observability (admin-plane, like healthChecks): when the probe

@@ -52,6 +52,10 @@ export function createServerState({ defaultProjectPath, now }) {
     identityRecoveryGrants: [],
     identitySecurityAlerts: [],
     projects: [defaultProject],
+    // User-reviewable system understanding. Evidence paths are only drawn from
+    // directories the user explicitly registered as projects.
+    workProfileInferences: [createInitialWorkProfileInference(defaultProject, now)],
+    workProfileAuditEvents: [],
     applications: [],
     applicationInstallRuns: [],
     applicationRecoveryActions: [],
@@ -63,6 +67,7 @@ export function createServerState({ defaultProjectPath, now }) {
     // Channel /task requests awaiting a human "route or dismiss" decision (the
     // capture-then-promote trust model). A routed request becomes an auto-run.
     channelTaskRequests: [],
+    articleImportJobs: [],
     // When this deployment began recording refusals — the honesty anchor so a
     // genuinely-zero window after this date reads as a trustworthy 0, not "unknown".
     refusalStatsMeta: { since: now().slice(0, 10) },
@@ -239,6 +244,8 @@ export function resetStateForSelfCheck({ state, now }) {
     claudeAgent.updatedAt = now();
   }
   state.invocations = [];
+  state.workProfileInferences = [createInitialWorkProfileInference(state.projects[0], now)];
+  state.workProfileAuditEvents = [];
   state.worktreeReviews = [];
   state.deployments = [];
   state.applications = [];
@@ -393,6 +400,28 @@ function createProjectTargetRecord(project, now) {
     state: "ready",
     progress: 100,
     message: "Local checkout is ready.",
+    createdAt,
+    updatedAt: createdAt,
+  };
+}
+
+function createInitialWorkProfileInference(project, now) {
+  const createdAt = now();
+  return {
+    id: "wpi_primary_work",
+    userId: "usr_local",
+    ownerTeamId: "team_local",
+    category: "work_type",
+    value: "software_development",
+    confidence: 0.86,
+    status: "pending",
+    summary: "Inferred from repeated work in a registered software project.",
+    evidence: project ? [{
+      projectId: project.id,
+      projectName: project.name,
+      authorizedDirectory: project.path,
+      signal: "registered_project",
+    }] : [],
     createdAt,
     updatedAt: createdAt,
   };

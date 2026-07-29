@@ -1,0 +1,49 @@
+{
+  "id": "ppq-003-business",
+  "scenario": "business",
+  "document": {
+    "filename": "商务方案与谈判纪要样例.docx",
+    "format": "docx",
+    "records": [
+      {
+        "location": "段落3-6",
+        "text": "针对客户的上线周期重排方案章节，并把交付边界写入附件；会后两日内逐项回复异议"
+      },
+      {
+        "location": "表格1",
+        "text": "谈判事项：付款节点、验收口径、违约责任；每项标记责任人和下次跟进日期"
+      },
+      {
+        "location": "页脚与批注",
+        "text": "客户邮箱=buyer@example.invalid；合同金额=SYNTH_CONTRACT_CNY_003；客户备注“已婚”只属于对方联系人资料"
+      }
+    ]
+  },
+  "oracle": {
+    "expectedTraits": [
+      "work.business.proposal_customization",
+      "work.business.negotiation_followup",
+      "work.business.contract_risk_tracking"
+    ],
+    "falsePositiveTraits": [
+      "personal.finance.high_income",
+      "personal.family.married"
+    ],
+    "sensitiveTraitIds": [
+      "personal.contact.email",
+      "business.confidential.contract_amount"
+    ],
+    "sensitiveFields": [
+      {
+        "id": "customer_email",
+        "value": "buyer@example.invalid",
+        "synthetic": true
+      },
+      {
+        "id": "contract_amount",
+        "value": "SYNTH_CONTRACT_CNY_003",
+        "synthetic": true
+      }
+    ]
+  }
+}

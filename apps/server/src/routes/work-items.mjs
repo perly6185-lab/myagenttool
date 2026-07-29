@@ -24,6 +24,16 @@ export async function handleWorkItemRoutes({
   githubSyncDiagnostics,
   suggestWorkItemDraft,
   retryWorkItemAlert,
+  inspectArticleImport,
+  startArticleImport,
+  listArticleImports,
+  getArticleImport,
+  cancelArticleImport,
+  analyzeArticleImport,
+  findSimilarArticleImports,
+  createArticleDerivative,
+  listArticleDerivatives,
+  getArticleDerivative,
 }) {
   if (url.pathname === "/api/work-item-auto-run-batches") {
     if (req.method === "GET") {
@@ -133,6 +143,79 @@ export async function handleWorkItemRoutes({
     return true;
   }
   if (!url.pathname.startsWith("/api/work-items")) return false;
+
+  if (url.pathname === "/api/work-items/article-imports/inspect" && req.method === "POST") {
+    const result = await inspectArticleImport(await readJson(req), actor);
+    sendJson(res, result.status, result.body);
+    return true;
+  }
+
+  const articleAnalysisMatch = url.pathname.match(/^\/api\/work-items\/([^/]+)\/article-imports\/([^/]+)\/analysis$/);
+  if (articleAnalysisMatch && req.method === "POST") {
+    const result = await analyzeArticleImport({
+      workItemId: decodeURIComponent(articleAnalysisMatch[1]),
+      jobId: decodeURIComponent(articleAnalysisMatch[2]),
+    }, actor);
+    sendJson(res, result.status, result.body);
+    return true;
+  }
+
+  const similarArticlesMatch = url.pathname.match(/^\/api\/work-items\/([^/]+)\/article-imports\/([^/]+)\/similar$/);
+  if (similarArticlesMatch && req.method === "GET") {
+    const result = await findSimilarArticleImports({
+      workItemId: decodeURIComponent(similarArticlesMatch[1]),
+      jobId: decodeURIComponent(similarArticlesMatch[2]),
+    }, actor);
+    sendJson(res, result.status, result.body);
+    return true;
+  }
+
+  const articleDerivativesMatch = url.pathname.match(
+    /^\/api\/work-items\/([^/]+)\/article-imports\/([^/]+)\/derivatives(?:\/([^/]+))?$/,
+  );
+  if (articleDerivativesMatch) {
+    const workItemId = decodeURIComponent(articleDerivativesMatch[1]);
+    const jobId = decodeURIComponent(articleDerivativesMatch[2]);
+    const derivativeId = articleDerivativesMatch[3]
+      ? decodeURIComponent(articleDerivativesMatch[3])
+      : null;
+    let result;
+    if (req.method === "POST" && !derivativeId) {
+      result = await createArticleDerivative({
+        workItemId,
+        jobId,
+        ...(await readJson(req)),
+      }, actor);
+    } else if (req.method === "GET" && !derivativeId) {
+      result = await listArticleDerivatives({ workItemId, jobId }, actor);
+    } else if (req.method === "GET" && derivativeId) {
+      result = await getArticleDerivative({ workItemId, jobId, derivativeId }, actor);
+    } else {
+      return false;
+    }
+    sendJson(res, result.status, result.body);
+    return true;
+  }
+
+  const articleImportMatch = url.pathname.match(/^\/api\/work-items\/([^/]+)\/article-imports(?:\/([^/]+))?$/);
+  if (articleImportMatch) {
+    const workItemId = decodeURIComponent(articleImportMatch[1]);
+    const jobId = articleImportMatch[2] ? decodeURIComponent(articleImportMatch[2]) : null;
+    let result;
+    if (req.method === "POST" && !jobId) {
+      result = startArticleImport({ workItemId, ...(await readJson(req)) }, actor);
+    } else if (req.method === "GET" && !jobId) {
+      result = listArticleImports({ workItemId }, actor);
+    } else if (req.method === "GET" && jobId) {
+      result = getArticleImport({ workItemId, jobId }, actor);
+    } else if (req.method === "DELETE" && jobId) {
+      result = cancelArticleImport({ workItemId, jobId }, actor);
+    } else {
+      return false;
+    }
+    sendJson(res, result.status, result.body);
+    return true;
+  }
 
   if (url.pathname === "/api/work-items/providers" && req.method === "GET") {
     const result = listExternalProviders(actor);

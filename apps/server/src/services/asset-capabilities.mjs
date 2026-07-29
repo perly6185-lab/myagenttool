@@ -16,6 +16,7 @@ const FAMILY_BY_EXTENSION = Object.freeze({
   ".dxf": "cad_dxf", ".dwg": "cad_dwg",
   ".png": "image", ".jpg": "image", ".jpeg": "image", ".gif": "image",
   ".webp": "image", ".avif": "image", ".svg": "image",
+  ".mp3": "audio", ".m4a": "audio", ".ogg": "audio", ".wav": "audio",
   ".mp4": "video", ".webm": "video", ".mov": "video",
 });
 
@@ -30,7 +31,9 @@ const MIME_BY_EXTENSION = Object.freeze({
   ".dxf": "image/vnd.dxf", ".dwg": "image/vnd.dwg",
   ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
   ".gif": "image/gif", ".webp": "image/webp", ".avif": "image/avif",
-  ".svg": "image/svg+xml", ".mp4": "video/mp4", ".webm": "video/webm",
+  ".svg": "image/svg+xml",
+  ".mp3": "audio/mpeg", ".m4a": "audio/mp4", ".ogg": "audio/ogg", ".wav": "audio/wav",
+  ".mp4": "video/mp4", ".webm": "video/webm",
   ".mov": "video/quicktime",
 });
 
@@ -44,13 +47,14 @@ const MATRIX = Object.freeze({
   cad_dxf: ["discover", "preview", "inspect", "render", "open_external", "attach_evidence"],
   cad_dwg: ["discover", "preview", "inspect", "render", "open_external", "attach_evidence"],
   image: ["discover", "preview", "inspect", "compare", "open_external", "attach_evidence"],
+  audio: ["discover", "preview", "inspect", "open_external", "attach_evidence"],
   video: ["discover", "preview", "inspect", "open_external", "attach_evidence"],
   unknown: ["discover", "inspect", "open_external"],
 });
 
 const DEFAULT_RUNTIME_READINESS = Object.freeze({
   canvas: true, word: true, excel: true, powerpoint: true, pdf: true, markdown: true,
-  cad_dxf: true, cad_dwg: false, image: true, video: true, unknown: true,
+  cad_dxf: true, cad_dwg: false, image: true, audio: true, video: true, unknown: true,
 });
 
 export function assetCapabilityMatrix() {
@@ -58,7 +62,7 @@ export function assetCapabilityMatrix() {
     family,
     capabilities: [...verbs],
     mutationGovernance: ["canvas", "word", "excel", "powerpoint"].includes(family) ? "approval_and_audit" : "capability_gated",
-    nativeEditing: !["cad_dxf", "cad_dwg", "image", "video", "unknown"].includes(family),
+    nativeEditing: !["cad_dxf", "cad_dwg", "image", "audio", "video", "unknown"].includes(family),
   }]));
 }
 

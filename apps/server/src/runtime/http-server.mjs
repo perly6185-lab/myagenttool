@@ -28,6 +28,7 @@ import { handleTerminalRoutes } from "../routes/terminal.mjs";
 import { handleToolRoutes } from "../routes/tools.mjs";
 import { handleWorkItemRoutes } from "../routes/work-items.mjs";
 import { handlePlanningProjectRoutes } from "../routes/planning-projects.mjs";
+import { handleWorkProfileRoutes } from "../routes/work-profile.mjs";
 import { ensureEventStreamMetrics, eventsAfter } from "../services/event-stream-metrics.mjs";
 import { terminalObservationReadModel } from "../read-models/terminal-observation.mjs";
 
@@ -89,6 +90,16 @@ export function createHttpServer({
   getWorkItemGithubSyncDiagnostics,
   suggestWorkItemDraft,
   retryWorkItemAlert,
+  inspectArticleImport,
+  startArticleImport,
+  listArticleImports,
+  getArticleImport,
+  cancelArticleImport,
+  analyzeArticleImport,
+  findSimilarArticleImports,
+  createArticleDerivative,
+  listArticleDerivatives,
+  getArticleDerivative,
   releaseIssueClaim,
   listIssueClaims,
   approveDesign,
@@ -488,6 +499,21 @@ export function createHttpServer({
         return;
       }
 
+      if (await handleWorkProfileRoutes({
+        req,
+        res,
+        url,
+        sendJson,
+        readJson,
+        state,
+        actor,
+        now,
+        nextId,
+        persistStateSoon,
+      })) {
+        return;
+      }
+
       if (await handleMailRoutes({ req, res, url, sendJson, readJson, actor, createMailIssueFromImport, replyOnIssue, confirmReplyDraft, sendConfirmedDraft })) {
         return;
       }
@@ -576,6 +602,16 @@ export function createHttpServer({
         githubSyncDiagnostics: getWorkItemGithubSyncDiagnostics,
         suggestWorkItemDraft,
         retryWorkItemAlert,
+        inspectArticleImport,
+        startArticleImport,
+        listArticleImports,
+        getArticleImport,
+        cancelArticleImport,
+        analyzeArticleImport,
+        findSimilarArticleImports,
+        createArticleDerivative,
+        listArticleDerivatives,
+        getArticleDerivative,
       })) {
         return;
       }

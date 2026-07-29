@@ -672,6 +672,25 @@ async function requestResult(
 }
 
 export const api = {
+  inferWorkProfile: (payload: {
+    projectId: string;
+    input: {
+      schema: "local-sanitized-profile-features/v1";
+      sanitized: true;
+      features: { key: string; score: number; observations: number }[];
+    };
+    maxCandidates?: number;
+  }) => request("POST", "/api/work-profile/infer", payload),
+  confirmWorkProfileInference: (id: string) =>
+    request("POST", `/api/work-profile/inferences/${encodeURIComponent(id)}/confirm`, {}),
+  updateWorkProfileInference: (
+    id: string,
+    payload: { category: string; value: string; reason?: string },
+  ) => request("PATCH", `/api/work-profile/inferences/${encodeURIComponent(id)}`, payload),
+  rejectWorkProfileInference: (id: string, reason?: string) =>
+    request("POST", `/api/work-profile/inferences/${encodeURIComponent(id)}/reject`, { reason }),
+  deleteWorkProfileInference: (id: string, reason?: string) =>
+    request("DELETE", `/api/work-profile/inferences/${encodeURIComponent(id)}`, { reason }),
   updateDevice: (payload: { maxConcurrency?: number }) => request("PATCH", "/api/device", payload),
   reportWebPerformance: (payload: {
     name: "CLS" | "FCP" | "INP" | "LCP";
@@ -947,7 +966,7 @@ export const api = {
     const suffix = query.toString() ? `?${query}` : "";
     return request<ProjectTreeResponse>("GET", `/api/projects/${encodeURIComponent(id)}/tree${suffix}`);
   },
-  projectDocuments: (id: string, opts: { type?: "all" | "docx" | "xlsx" | "pptx" | "pdf" | "dxf" | "dwg" | "md" | "canvas" | "image" | "video"; search?: string; limit?: number; worktreeId?: string } = {}) => {
+  projectDocuments: (id: string, opts: { type?: "all" | "docx" | "xlsx" | "pptx" | "pdf" | "dxf" | "dwg" | "md" | "html" | "canvas" | "image" | "audio" | "video"; search?: string; limit?: number; worktreeId?: string } = {}) => {
     const query = new URLSearchParams();
     if (opts.type && opts.type !== "all") query.set("type", opts.type);
     if (opts.search) query.set("q", opts.search);
