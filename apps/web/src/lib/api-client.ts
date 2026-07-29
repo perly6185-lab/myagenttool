@@ -1174,6 +1174,33 @@ export const api = {
     request("GET", `/api/work-items/${encodeURIComponent(id)}/article-imports/${encodeURIComponent(jobId)}`),
   cancelArticleImport: (id: string, jobId: string) =>
     request("DELETE", `/api/work-items/${encodeURIComponent(id)}/article-imports/${encodeURIComponent(jobId)}`),
+  analyzeArticleImport: (id: string, jobId: string) =>
+    request("POST", `/api/work-items/${encodeURIComponent(id)}/article-imports/${encodeURIComponent(jobId)}/analysis`, {}),
+  findSimilarArticleImports: (id: string, jobId: string) =>
+    request("GET", `/api/work-items/${encodeURIComponent(id)}/article-imports/${encodeURIComponent(jobId)}/similar`),
+  createArticleDerivative: (id: string, jobId: string, payload: {
+    kind: "article_rewrite" | "video_script";
+    tone: "insightful" | "practical" | "conversational";
+    length: "short" | "medium" | "long";
+    audiencePreset?: "general" | "creator" | "product_manager" | "entrepreneur_investor" | "technical" | "custom";
+    agePreset?: "all" | "teen" | "18_24" | "25_34" | "35_49" | "50_plus" | "custom";
+    ageDetails?: string;
+    angle?: string;
+    audience?: string;
+    agentId?: string;
+    idempotencyKey?: string;
+  }) => request(
+    "POST",
+    `/api/work-items/${encodeURIComponent(id)}/article-imports/${encodeURIComponent(jobId)}/derivatives`,
+    payload,
+  ),
+  listArticleDerivatives: (id: string, jobId: string) =>
+    request("GET", `/api/work-items/${encodeURIComponent(id)}/article-imports/${encodeURIComponent(jobId)}/derivatives`),
+  getArticleDerivative: (id: string, jobId: string, derivativeId: string) =>
+    request(
+      "GET",
+      `/api/work-items/${encodeURIComponent(id)}/article-imports/${encodeURIComponent(jobId)}/derivatives/${encodeURIComponent(derivativeId)}`,
+    ),
   updateWorkItem: (id: string, payload: Record<string, unknown>) =>
     request("PATCH", `/api/work-items/${encodeURIComponent(id)}`, payload),
   claimWorkItem: (id: string, payload: { agentId?: string; leaseMinutes?: number; idempotencyKey?: string } = {}) =>

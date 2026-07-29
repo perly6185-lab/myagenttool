@@ -13,6 +13,11 @@ const mocks = vi.hoisted(() => ({
   listArticleImports: vi.fn(),
   getArticleImport: vi.fn(),
   cancelArticleImport: vi.fn(),
+  analyzeArticleImport: vi.fn(),
+  findSimilarArticleImports: vi.fn(),
+  createArticleDerivative: vi.fn(),
+  listArticleDerivatives: vi.fn(),
+  getArticleDerivative: vi.fn(),
   getWorkItem: vi.fn(),
   updateWorkItem: vi.fn(),
   bulkUpdateWorkItems: vi.fn(),
@@ -97,6 +102,11 @@ vi.mock("@/data/use-console-actions", () => ({
     listArticleImports: mocks.listArticleImports,
     getArticleImport: mocks.getArticleImport,
     cancelArticleImport: mocks.cancelArticleImport,
+    analyzeArticleImport: mocks.analyzeArticleImport,
+    findSimilarArticleImports: mocks.findSimilarArticleImports,
+    createArticleDerivative: mocks.createArticleDerivative,
+    listArticleDerivatives: mocks.listArticleDerivatives,
+    getArticleDerivative: mocks.getArticleDerivative,
     getWorkItem: mocks.getWorkItem,
     updateWorkItem: mocks.updateWorkItem,
     bulkUpdateWorkItems: mocks.bulkUpdateWorkItems,
@@ -152,6 +162,7 @@ describe("TaskView local work items", () => {
     mocks.listWorkItemAttention.mockResolvedValue({ items: [] });
     mocks.autoRunReadiness.mockResolvedValue({ readiness: { ready: true, checks: [] } });
     mocks.listArticleImports.mockResolvedValue({ jobs: [], latest: null });
+    mocks.listArticleDerivatives.mockResolvedValue({ derivatives: [] });
   });
   it("shows local work items as the default source", async () => {
     mocks.listWorkItemAttention.mockResolvedValue({ items: [{
@@ -659,15 +670,90 @@ describe("TaskView local work items", () => {
     mocks.getWorkItem.mockResolvedValue({ workItem: item, observability: null });
     mocks.listWorkItemComments.mockResolvedValue({ comments: [] });
     mocks.listWorkItemActivity.mockResolvedValue({ activities: [] });
-    mocks.listArticleImports.mockResolvedValue({ jobs: [{
+    mocks.listArticleImports.mockResolvedValueOnce({ jobs: [{
       id: "article_import_12",
       worktreeId: "wtr_article",
       canonicalUrl: "https://mp.weixin.qq.com/s/example",
       state: "failed",
       progress: { stage: "failed", completed: 0, total: 1 },
       error: "article_import_interrupted",
+    }], latest: null }).mockResolvedValue({ jobs: [{
+      id: "article_import_12",
+      worktreeId: "wtr_article",
+      canonicalUrl: "https://mp.weixin.qq.com/s/example",
+      state: "completed",
+      progress: { stage: "completed", completed: 1, total: 1 },
+      error: null,
     }], latest: null });
     mocks.startArticleImport.mockResolvedValue({ job: { id: "article_import_retry", state: "queued" } });
+    mocks.analyzeArticleImport.mockResolvedValue({
+      analysisPath: "docs/imported/wechat/2026/07/article/analysis.md",
+      analysis: {
+        schemaVersion: 1,
+        title: "一个链接进去，播客、故事书、视频都出来了",
+        generatedAt: "2026-07-28T00:00:00.000Z",
+        method: "local-extractive-v1",
+        coreIdeas: ["把任何内容变成任何格式。", "平台把内容生产方法打包进流程。"],
+        framework: [{
+          order: 1,
+          heading: "一个输入，多种产出",
+          role: "development",
+          summary: "文章先展开产品支持的输入和输出。",
+        }, {
+          order: 2,
+          heading: "没解决的",
+          role: "boundary",
+          summary: "文章最后说明模板感和中文质量等局限。",
+        }],
+        argumentPath: [],
+        keyConcepts: ["播客", "Storybook"],
+      },
+    });
+    mocks.findSimilarArticleImports.mockResolvedValue({
+      method: "local-lexical-v1",
+      indexedCount: 2,
+      skippedCount: 0,
+      matches: [{
+        articleId: "article_import_related",
+        workItemId: "lwi_related",
+        localRef: "LOCAL-13",
+        worktreeId: "wtr_related",
+        markdownPath: "docs/imported/wechat/2026/07/related/article.md",
+        canonicalUrl: "https://mp.weixin.qq.com/s/related",
+        title: "Related article",
+        author: "Author B",
+        provider: "wechat",
+        publishedAt: "2026-07-20",
+        score: 0.63,
+        reasons: ["core_ideas", "body", "same_provider"],
+        sharedConcepts: ["播客", "内容工作流"],
+        signals: { coreIdeas: 0.7, titleStructure: 0.4, body: 0.6, metadata: 0.5 },
+      }],
+    });
+    mocks.createArticleDerivative.mockResolvedValue({
+      derivative: {
+        id: "article_derivative_1",
+        invocationId: "inv_derivative_1",
+        sourceJobId: "article_import_12",
+        workItemId: "lwi_article",
+        worktreeId: "wtr_article",
+        kind: "video_script",
+        tone: "conversational",
+        length: "short",
+        audiencePreset: "custom",
+        agePreset: "50_plus",
+        ageDetails: "正在尝试 AI 内容工具",
+        targetAge: "50 岁以上；补充说明：正在尝试 AI 内容工具",
+        angle: "平台替普通用户做了多少内容生产决策",
+        audience: "内容创作者",
+        outputPath: "docs/imported/wechat/2026/07/article/derivatives/video-script-001.md",
+        state: "queued",
+        error: null,
+        agentId: "agt_codex_cli",
+        createdAt: "2026-07-28T00:05:00.000Z",
+        completedAt: null,
+      },
+    });
     render(<TaskView />);
     fireEvent.click(await screen.findByText("Imported article"));
     expect(await screen.findByText(/server restarted during import/i)).toBeTruthy();
@@ -687,6 +773,62 @@ describe("TaskView local work items", () => {
     expect(new URL(window.location.href).searchParams.get("document")).toBe(
       "docs/imported/wechat/2026/07/article/article.html",
     );
+    fireEvent.click(await screen.findByRole("button", { name: "Find similar articles" }));
+    await waitFor(() => expect(mocks.findSimilarArticleImports).toHaveBeenCalledWith(
+      "lwi_article", "article_import_12",
+    ));
+    expect(await screen.findByText("Searched 2 local article(s) and found 1 match(es).")).toBeTruthy();
+    expect(screen.getByText("Similar core ideas")).toBeTruthy();
+    expect(screen.getByText("Shared concepts: 播客、内容工作流")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Related article" }));
+    expect(mocks.setSelectedWorktreeId).toHaveBeenCalledWith("wtr_related");
+    expect(new URL(window.location.href).searchParams.get("document")).toBe(
+      "docs/imported/wechat/2026/07/related/article.md",
+    );
+    fireEvent.click(await screen.findByRole("button", { name: "Create derivative" }));
+    const derivativeDialog = screen.getAllByRole("dialog").at(-1) as HTMLElement;
+    fireEvent.change(within(derivativeDialog).getByLabelText("Format"), { target: { value: "video_script" } });
+    fireEvent.change(within(derivativeDialog).getByLabelText("Tone"), { target: { value: "conversational" } });
+    fireEvent.change(within(derivativeDialog).getByLabelText("Length"), { target: { value: "short" } });
+    fireEvent.change(within(derivativeDialog).getByLabelText("Audience group"), { target: { value: "custom" } });
+    fireEvent.change(within(derivativeDialog).getByLabelText("Custom audience"), { target: { value: "内容创作者" } });
+    fireEvent.change(within(derivativeDialog).getByLabelText("Age range"), { target: { value: "50_plus" } });
+    fireEvent.change(within(derivativeDialog).getByLabelText("Age context (optional)"), {
+      target: { value: "正在尝试 AI 内容工具" },
+    });
+    fireEvent.change(within(derivativeDialog).getByLabelText("Creative angle (optional)"), {
+      target: { value: "平台替普通用户做了多少内容生产决策" },
+    });
+    fireEvent.click(within(derivativeDialog).getByRole("button", { name: "Start creation" }));
+    await waitFor(() => expect(mocks.createArticleDerivative).toHaveBeenCalledWith(
+      "lwi_article",
+      "article_import_12",
+      {
+        kind: "video_script",
+        tone: "conversational",
+        length: "short",
+        audiencePreset: "custom",
+        audience: "内容创作者",
+        agePreset: "50_plus",
+        ageDetails: "正在尝试 AI 内容工具",
+        angle: "平台替普通用户做了多少内容生产决策",
+        idempotencyKey: expect.any(String),
+      },
+    ));
+    expect(await screen.findByText("Queued")).toBeTruthy();
+    expect(screen.getByText("Target audience")).toBeTruthy();
+    expect(screen.getByText("Target age")).toBeTruthy();
+    expect(screen.getByText("50 岁以上；补充说明：正在尝试 AI 内容工具")).toBeTruthy();
+    fireEvent.click(within(screen.getAllByRole("dialog").at(-1) as HTMLElement)
+      .getByRole("button", { name: "Close" }));
+    fireEvent.click(await screen.findByRole("button", { name: "View analysis" }));
+    await waitFor(() => expect(mocks.analyzeArticleImport).toHaveBeenCalledWith(
+      "lwi_article", "article_import_12",
+    ));
+    expect(await screen.findByText("Core ideas")).toBeTruthy();
+    expect(screen.getByText("把任何内容变成任何格式。")).toBeTruthy();
+    expect(screen.getByText("Article framework")).toBeTruthy();
+    expect(screen.getByText("Limits")).toBeTruthy();
   });
 
   it("keeps a completed local run in review until an approved delivery is confirmed", async () => {

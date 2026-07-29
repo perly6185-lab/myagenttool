@@ -89,6 +89,11 @@ export function createHttpServer({
   listArticleImports,
   getArticleImport,
   cancelArticleImport,
+  analyzeArticleImport,
+  findSimilarArticleImports,
+  createArticleDerivative,
+  listArticleDerivatives,
+  getArticleDerivative,
   releaseIssueClaim,
   listIssueClaims,
   approveDesign,
@@ -571,6 +576,11 @@ export function createHttpServer({
         listArticleImports,
         getArticleImport,
         cancelArticleImport,
+        analyzeArticleImport,
+        findSimilarArticleImports,
+        createArticleDerivative,
+        listArticleDerivatives,
+        getArticleDerivative,
       })) {
         return;
       }

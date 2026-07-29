@@ -1,16 +1,22 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, readdir, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
+import { handleWorkItemRoutes } from "../src/routes/work-items.mjs";
 import {
+  analyzeArticleMarkdown,
+  buildArticleDerivativePrompt,
+  buildArticleSimilarityDocument,
   buildArticleRelativeDirectory,
   canonicalizeArticleUrl,
   createArticleImportService,
   detectArticleSource,
   importArticleToWorktree,
   inspectArticle,
+  compareArticleSimilarity,
+  normalizeArticleDerivativeRequest,
   resolveArticleImportConfig,
 } from "../src/services/article-imports.mjs";
 
@@ -54,6 +60,135 @@ test("resolves bounded runtime concurrency settings", () => {
   assert.equal(resolveArticleImportConfig({
     MYAGENTTOOL_ARTICLE_IMPORT_MAX_PENDING: "999",
   }).maxPending, 100);
+});
+
+test("extracts an article framework, core ideas, and concepts from imported Markdown", () => {
+  const analysis = analyzeArticleMarkdown(`---
+title: "一个链接进去"
+---
+作者先从一次真实体验切入，说明产品不是简单朗读，而是围绕观点组织内容。
+
+## 01 一个输入，多种产出
+
+ListenHub 的定位是：把任何内容变成任何格式。它支持文章、PDF 和视频等输入，并产出播客、故事书和解说视频。
+
+## 02 为什么它的下限比较高
+
+它把怎么做一个有节奏的播客等判断预先打包进生产流程，因此不懂脚本结构的用户也能得到可用结果。
+
+## 03 没解决的
+
+内容仍有套路感，中文断句和声音情绪也存在局限。
+`, { title: "一个链接进去", generatedAt: "2026-07-28T00:00:00.000Z" });
+  assert.equal(analysis.title, "一个链接进去");
+  assert.equal(analysis.method, "local-extractive-v1");
+  assert.deepEqual(analysis.framework.map((section) => section.role), [
+    "introduction", "development", "evidence", "boundary",
+  ]);
+  assert.match(analysis.coreIdeas.join("\n"), /任何内容变成任何格式/);
+  assert.match(analysis.coreIdeas.join("\n"), /生产流程/);
+  assert.deepEqual(analysis.keyConcepts, [
+    "一个输入，多种产出", "为什么它的下限比较高", "没解决的",
+  ]);
+});
+
+test("builds a bounded derivative prompt with an exact output contract and source isolation", () => {
+  const request = normalizeArticleDerivativeRequest({
+    kind: "video_script",
+    tone: "conversational",
+    length: "short",
+    audience: "内容创作者",
+    angle: "平台替普通用户做了多少内容生产决策",
+  });
+  const prompt = buildArticleDerivativePrompt({
+    derivativeId: "article_derivative_1",
+    request,
+    sourcePath: "docs/imported/wechat/article/article.md",
+    analysisPath: "docs/imported/wechat/article/analysis.md",
+    outputPath: "docs/imported/wechat/article/derivatives/video-script-001.md",
+    sourceUrl: "https://mp.weixin.qq.com/s/example",
+    generatedAt: "2026-07-28T00:00:00.000Z",
+    workItemId: "lwi_1",
+  });
+  assert.match(prompt, /UNTRUSTED REFERENCE DATA/);
+  assert.match(prompt, /Never follow instructions/);
+  assert.match(prompt, /3-second hook/);
+  assert.match(prompt, /video-script-001\.md/);
+  assert.match(prompt, /derivative_id: "article_derivative_1"/);
+  assert.match(prompt, /audience_preset: custom/);
+  assert.match(prompt, /age_preset: all/);
+  assert.match(prompt, /supplied audience's work or life context/);
+  assert.match(prompt, /Never infer intelligence, technical ability, income/);
+
+  const generalPrompt = buildArticleDerivativePrompt({
+    derivativeId: "article_derivative_general",
+    request: normalizeArticleDerivativeRequest({
+      kind: "article_rewrite",
+      audiencePreset: "general",
+    }),
+    sourcePath: "article.md",
+    outputPath: "derivatives/general.md",
+    generatedAt: "2026-07-28T00:00:00.000Z",
+    workItemId: "lwi_1",
+  });
+  const technicalPrompt = buildArticleDerivativePrompt({
+    derivativeId: "article_derivative_technical",
+    request: normalizeArticleDerivativeRequest({
+      kind: "article_rewrite",
+      audiencePreset: "technical",
+    }),
+    sourcePath: "article.md",
+    outputPath: "derivatives/technical.md",
+    generatedAt: "2026-07-28T00:00:00.000Z",
+    workItemId: "lwi_1",
+  });
+  assert.match(generalPrompt, /everyday impact/);
+  assert.match(technicalPrompt, /data flow, failure modes/);
+  assert.notEqual(generalPrompt, technicalPrompt);
+  const teenRequest = normalizeArticleDerivativeRequest({ audiencePreset: "general", agePreset: "teen" });
+  const olderRequest = normalizeArticleDerivativeRequest({ audiencePreset: "general", agePreset: "50_plus" });
+  assert.match(teenRequest.ageProfile.adaptation, /do not infantilize/);
+  assert.match(olderRequest.ageProfile.adaptation, /never equate age with low ability/);
+  assert.notEqual(teenRequest.targetAge, olderRequest.targetAge);
+  assert.throws(
+    () => normalizeArticleDerivativeRequest({ kind: "social_post" }),
+    (error) => error.code === "invalid_article_derivative_request",
+  );
+  assert.throws(
+    () => normalizeArticleDerivativeRequest({ audiencePreset: "custom" }),
+    (error) => error.code === "invalid_article_derivative_request",
+  );
+  assert.throws(
+    () => normalizeArticleDerivativeRequest({ agePreset: "custom" }),
+    (error) => error.code === "invalid_article_derivative_request",
+  );
+});
+
+test("ranks related local articles above unrelated content with explainable signals", () => {
+  const source = buildArticleSimilarityDocument(`
+# 一个输入，多种产出
+ListenHub 把文章、PDF 和视频转成播客、故事书和解说视频。
+# 为什么下限高
+平台把脚本结构和内容生产方法预先封装进工作流，普通用户也能稳定产出。
+`, { title: "AI 内容生产工作流", provider: "wechat", author: "作者甲" });
+  const related = buildArticleSimilarityDocument(`
+# AI 内容复用
+把一篇文章转换成播客、短视频和幻灯片，关键是将脚本、配音和剪辑封装成标准流程。
+# 使用门槛
+内容创作者无需学习复杂提示词，也能获得稳定的多媒体结果。
+`, { title: "一篇文章生成多种内容", provider: "wechat", author: "作者乙" });
+  const unrelated = buildArticleSimilarityDocument(`
+# 准备材料
+低筋面粉、黄油和鸡蛋需要提前回温。
+# 烘焙
+将面团放入烤箱，控制温度并观察表面颜色。
+`, { title: "家庭饼干烘焙指南", provider: "wechat", author: "厨师", publishedAt: "2026-07-21" });
+  const relatedScore = compareArticleSimilarity(source, related);
+  const unrelatedScore = compareArticleSimilarity(source, unrelated);
+  assert.ok(relatedScore.score > unrelatedScore.score);
+  assert.ok(relatedScore.score >= 0.12);
+  assert.ok(unrelatedScore.score < 0.12);
+  assert.ok(relatedScore.reasons.includes("body") || relatedScore.reasons.includes("core_ideas"));
 });
 
 test("inspects WeChat lazy images while preserving content order", async () => {
@@ -207,6 +342,371 @@ test("marks an in-flight durable job as interrupted after service restart", () =
   const listed = service.list({ workItemId: "lwi_1" });
   assert.equal(listed.body.latest.id, "article_import_old");
   assert.equal(listed.body.jobs.length, 1);
+});
+
+test("finds similar completed imports only within the current project", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "myagenttool-article-similar-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const records = [
+    {
+      item: { id: "lwi_target", localRef: "LOCAL-1", projectId: "prj_1" },
+      jobId: "article_import_target",
+      worktreeId: "wtr_target",
+      slug: "target",
+      markdown: `---
+title: "AI 内容生产工作流"
+source_provider: wechat
+author: "作者甲"
+published_at: 2026-07-20
+---
+# 多种产出
+把文章和 PDF 转换成播客、故事书和视频。
+# 工作流
+平台把脚本结构与内容生产方法预先封装，降低普通用户的使用门槛。`,
+    },
+    {
+      item: { id: "lwi_related", localRef: "LOCAL-2", projectId: "prj_1" },
+      jobId: "article_import_related",
+      worktreeId: "wtr_related",
+      slug: "related",
+      markdown: `---
+title: "一篇文章生成多种内容"
+source_provider: wechat
+author: "作者乙"
+published_at: 2026-07-22
+---
+# 内容复用
+一篇文章可以生成播客、短视频和幻灯片。
+# 标准流程
+将脚本、配音和剪辑封装进工作流，让创作者稳定产出。`,
+    },
+    {
+      item: { id: "lwi_foreign", localRef: "LOCAL-9", projectId: "prj_2" },
+      jobId: "article_import_foreign",
+      worktreeId: "wtr_foreign",
+      slug: "foreign",
+      markdown: `---
+title: "完全相同但属于其他项目"
+source_provider: wechat
+---
+# 工作流
+把文章转换成播客、故事书和视频，并封装内容生产方法。`,
+    },
+  ];
+  const state = {
+    workItems: records.map((record) => record.item),
+    worktrees: [],
+    articleImportJobs: [],
+  };
+  for (const record of records) {
+    const worktreePath = join(root, record.worktreeId);
+    const relativeDirectory = `docs/imported/wechat/2026/07/${record.slug}`;
+    await mkdir(join(worktreePath, relativeDirectory), { recursive: true });
+    await writeFile(join(worktreePath, relativeDirectory, "article.md"), record.markdown);
+    record.item.outputAssets = [{
+      id: `asset_${record.slug}`,
+      path: `${relativeDirectory}/article.md`,
+      family: "markdown",
+      worktreeId: record.worktreeId,
+    }];
+    state.worktrees.push({
+      id: record.worktreeId,
+      sourceProjectId: record.item.projectId,
+      path: worktreePath,
+    });
+    state.articleImportJobs.push({
+      id: record.jobId,
+      workItemId: record.item.id,
+      worktreeId: record.worktreeId,
+      canonicalUrl: `https://example.com/${record.slug}`,
+      state: "completed",
+      progress: { stage: "completed", completed: 1, total: 1 },
+      createdAt: "2026-07-28T00:00:00.000Z",
+      completedAt: "2026-07-28T00:01:00.000Z",
+      error: null,
+      result: {
+        relativeDirectory,
+        markdownPath: `${relativeDirectory}/article.md`,
+      },
+    });
+  }
+  const service = createArticleImportService({
+    state,
+    workItemService: {
+      getWorkItem: ({ workItemId }) => {
+        const item = state.workItems.find((candidate) => candidate.id === workItemId);
+        return item
+          ? { ok: true, status: 200, body: { workItem: item } }
+          : { ok: false, status: 404, body: { error: "work_item_not_found" } };
+      },
+    },
+  });
+  const result = await service.findSimilar({
+    workItemId: "lwi_target",
+    jobId: "article_import_target",
+  });
+  assert.equal(result.status, 200);
+  assert.equal(result.body.indexedCount, 1);
+  assert.equal(result.body.matches.length, 1);
+  assert.equal(result.body.matches[0].workItemId, "lwi_related");
+  assert.equal(result.body.matches[0].worktreeId, "wtr_related");
+  assert.ok(result.body.matches[0].score >= 0.12);
+});
+
+test("creates a governed derivative invocation and attaches only its validated Markdown output", async (t) => {
+  const root = await mkdtemp(join(tmpdir(), "myagenttool-article-derivative-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const relativeDirectory = "docs/imported/wechat/2026/07/source";
+  await mkdir(join(root, relativeDirectory), { recursive: true });
+  await writeFile(join(root, relativeDirectory, "article.md"), "# 原文\n\n平台把内容生产方法打包进流程。\n");
+  await writeFile(join(root, relativeDirectory, "analysis.md"), "# 核心思想\n\n降低普通用户门槛。\n");
+  const item = {
+    id: "lwi_1",
+    localNumber: 1,
+    localRef: "LOCAL-1",
+    projectId: "prj_1",
+    ownerTeamId: "team_1",
+    terminalId: "dev_1",
+    revision: 1,
+    outputAssets: [],
+  };
+  const state = {
+    projects: [{ id: "prj_1", defaultAgentId: "agt_codex_cli" }],
+    agents: [{
+      id: "agt_codex_cli",
+      status: "available",
+      health: { status: "healthy" },
+      location: { type: "local_device", deviceId: "dev_1" },
+      adapter: { type: "cli", command: "codex", timeoutSeconds: 600 },
+    }],
+    devices: [{ id: "dev_1", unlinkState: "linked" }],
+    workItems: [item],
+    worktrees: [{ id: "wtr_1", sourceProjectId: "prj_1", path: root }],
+    invocations: [],
+    articleImportJobs: [{
+      id: "article_import_1",
+      workItemId: "lwi_1",
+      worktreeId: "wtr_1",
+      canonicalUrl: "https://mp.weixin.qq.com/s/example",
+      state: "completed",
+      progress: { stage: "completed", completed: 1, total: 1 },
+      createdAt: "2026-07-28T00:00:00.000Z",
+      completedAt: "2026-07-28T00:01:00.000Z",
+      error: null,
+      result: {
+        markdownPath: `${relativeDirectory}/article.md`,
+        analysisPath: `${relativeDirectory}/analysis.md`,
+      },
+    }],
+  };
+  const bindings = [];
+  const comments = [];
+  let capturedPrompt = "";
+  let capturedOptions;
+  const workItemService = {
+    getWorkItem: ({ workItemId }) => workItemId === item.id
+      ? { ok: true, status: 200, body: { workItem: item } }
+      : { ok: false, status: 404, body: { error: "work_item_not_found" } },
+    recordExecutionBinding: (binding) => {
+      bindings.push(binding);
+      item.revision += 1;
+      return { ok: true, status: 200, body: { binding } };
+    },
+    updateWorkItem: ({ expectedRevision, outputAssets }) => {
+      assert.equal(expectedRevision, item.revision);
+      item.outputAssets = outputAssets;
+      item.revision += 1;
+      return { ok: true, status: 200, body: { workItem: item } };
+    },
+    createComment: (input) => {
+      comments.push(input);
+      return { ok: true, status: 201, body: {} };
+    },
+  };
+  const service = createArticleImportService({
+    state,
+    now: () => "2026-07-28T00:05:00.000Z",
+    nextId: () => "article_derivative_1",
+    workItemService,
+    createInvocation: (prompt, agent, options) => {
+      capturedPrompt = prompt;
+      capturedOptions = options;
+      const invocation = {
+        id: "inv_1",
+        idempotencyKey: options.idempotencyKey,
+        requestedBy: "usr_1",
+        agentId: agent.id,
+        worktreeId: options.metadata.worktreeId,
+        status: "queued",
+        createdAt: "2026-07-28T00:05:00.000Z",
+        options,
+      };
+      state.invocations.push(invocation);
+      return invocation;
+    },
+    startInvocationIfAllowed: () => {},
+  });
+  const derivativeRequest = {
+    workItemId: "lwi_1",
+    jobId: "article_import_1",
+    kind: "article_rewrite",
+    tone: "insightful",
+    length: "medium",
+    angle: "真正的竞争是平台替用户做了多少决策",
+    audience: "普通读者",
+    idempotencyKey: "idem-article-derivative-1",
+  };
+  const actor = { userId: "usr_1", teamId: "team_1" };
+  const created = await service.createDerivative(derivativeRequest, actor);
+  assert.equal(created.status, 202);
+  assert.equal(created.body.derivative.state, "queued");
+  assert.equal(created.body.derivative.outputPath, `${relativeDirectory}/derivatives/article-rewrite-001.md`);
+  assert.equal(bindings[0].kind, "article_derivative");
+  assert.equal(capturedOptions.metadata.projectId, "prj_1");
+  assert.match(capturedPrompt, /modify any file except the exact output path/);
+  assert.match(capturedPrompt, /article-rewrite-001\.md/);
+
+  const replayed = await service.createDerivative(derivativeRequest, actor);
+  assert.equal(replayed.status, 200);
+  assert.equal(replayed.body.derivative.id, created.body.derivative.id);
+  assert.equal(state.invocations.length, 1);
+  assert.equal(bindings.length, 1);
+  const conflict = await service.createDerivative({
+    ...derivativeRequest,
+    agePreset: "teen",
+  }, actor);
+  assert.equal(conflict.status, 409);
+  assert.equal(conflict.body.error, "article_derivative_idempotency_conflict");
+
+  await writeFile(join(root, created.body.derivative.outputPath), [
+    "---",
+    'derivative_id: "article_derivative_1"',
+    "derivative_type: article_rewrite",
+    "audience_preset: custom",
+    'target_audience: "普通读者"',
+    "age_preset: all",
+    'target_age: "错误年龄"',
+    `source_article: "${relativeDirectory}/article.md"`,
+    'local_issue_id: "lwi_1"',
+    "---",
+    "",
+    "# 新文章",
+    "",
+    "完整正文。",
+    "",
+  ].join("\n"));
+  state.invocations[0].status = "succeeded";
+  state.invocations[0].completedAt = "2026-07-28T00:06:00.000Z";
+  const invalid = await service.getDerivative({
+    workItemId: "lwi_1",
+    jobId: "article_import_1",
+    derivativeId: "article_derivative_1",
+  }, actor);
+  assert.equal(invalid.body.derivative.state, "failed");
+  assert.equal(invalid.body.derivative.error, "article_derivative_output_invalid");
+  assert.equal(item.outputAssets.length, 0);
+  assert.equal(comments.length, 0);
+
+  await writeFile(join(root, created.body.derivative.outputPath), [
+    "---",
+    'derivative_id: "article_derivative_1"',
+    "derivative_type: article_rewrite",
+    "audience_preset: custom",
+    'target_audience: "普通读者"',
+    "age_preset: all",
+    'target_age: "不限年龄"',
+    `source_article: "${relativeDirectory}/article.md"`,
+    'local_issue_id: "lwi_1"',
+    "---",
+    "",
+    "# 新文章",
+    "",
+    "完整正文。",
+    "",
+  ].join("\n"));
+  const [completed, concurrent] = await Promise.all([
+    service.getDerivative({
+      workItemId: "lwi_1",
+      jobId: "article_import_1",
+      derivativeId: "article_derivative_1",
+    }, actor),
+    service.getDerivative({
+      workItemId: "lwi_1",
+      jobId: "article_import_1",
+      derivativeId: "article_derivative_1",
+    }, actor),
+  ]);
+  assert.equal(completed.body.derivative.state, "completed");
+  assert.equal(concurrent.body.derivative.state, "completed");
+  assert.equal(item.outputAssets.length, 1);
+  assert.equal(item.outputAssets[0].path, created.body.derivative.outputPath);
+  assert.equal(item.outputAssets[0].family, "markdown");
+  assert.equal(comments.length, 1);
+});
+
+test("routes a scoped similar-article request to the local search service", async () => {
+  const actor = { userId: "usr_1", teamId: "team_1" };
+  let sent;
+  let received;
+  const handled = await handleWorkItemRoutes({
+    req: { method: "GET" },
+    res: {},
+    url: new URL("http://localhost/api/work-items/lwi%201/article-imports/job%201/similar"),
+    sendJson: (_res, status, body) => { sent = { status, body }; },
+    actor,
+    findSimilarArticleImports: (input, requestActor) => {
+      received = { input, requestActor };
+      return { status: 200, body: { method: "local-lexical-v1", matches: [] } };
+    },
+  });
+  assert.equal(handled, true);
+  assert.deepEqual(received, {
+    input: { workItemId: "lwi 1", jobId: "job 1" },
+    requestActor: actor,
+  });
+  assert.deepEqual(sent, {
+    status: 200,
+    body: { method: "local-lexical-v1", matches: [] },
+  });
+});
+
+test("routes a scoped derivative request with decoded ids and creation preferences", async () => {
+  const actor = { userId: "usr_1", teamId: "team_1" };
+  let sent;
+  let received;
+  const handled = await handleWorkItemRoutes({
+    req: { method: "POST" },
+    res: {},
+    url: new URL("http://localhost/api/work-items/lwi%201/article-imports/job%201/derivatives"),
+    readJson: async () => ({
+      kind: "video_script",
+      tone: "conversational",
+      length: "short",
+      audience: "内容创作者",
+    }),
+    sendJson: (_res, status, body) => { sent = { status, body }; },
+    actor,
+    createArticleDerivative: (input, requestActor) => {
+      received = { input, requestActor };
+      return { status: 202, body: { derivative: { id: "article_derivative_1" } } };
+    },
+  });
+  assert.equal(handled, true);
+  assert.deepEqual(received, {
+    input: {
+      workItemId: "lwi 1",
+      jobId: "job 1",
+      kind: "video_script",
+      tone: "conversational",
+      length: "short",
+      audience: "内容创作者",
+    },
+    requestActor: actor,
+  });
+  assert.deepEqual(sent, {
+    status: 202,
+    body: { derivative: { id: "article_derivative_1" } },
+  });
 });
 
 test("rejects new work before the durable article-import queue grows without bound", () => {
@@ -479,6 +979,15 @@ test("queues an Issue-bound import and attaches generated output assets", async 
   assert.match(updates[0].outputAssets[1].path, /article\.html$/);
   assert.equal(comments.length, 1);
   assert.match(comments[0].body, /1 media item\(s\) could not be downloaded/);
+  const analyzed = await service.analyze({ workItemId: "lwi_1", jobId: job.id });
+  assert.equal(analyzed.status, 200);
+  assert.equal(analyzed.body.analysis.method, "local-extractive-v1");
+  assert.match(analyzed.body.analysisPath, /analysis\.md$/);
+  assert.equal(updates.length, 2);
+  assert.equal(updates[1].outputAssets.length, 4);
+  const analysisMarkdown = await readFile(join(worktreePath, analyzed.body.analysisPath), "utf8");
+  assert.match(analysisMarkdown, /# 核心思想/);
+  assert.match(analysisMarkdown, /# 框架体系/);
 });
 
 test("caps one article to four concurrent media downloads", async (t) => {

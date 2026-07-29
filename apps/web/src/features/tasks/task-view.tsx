@@ -2261,6 +2261,25 @@ function LocalWorkItemDetail({
   const [deliveryConfirmMode, setDeliveryConfirmMode] = useState<"local_merge" | "pull_request" | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [articleImportJobs, setArticleImportJobs] = useState<Record<string, ArticleImportJob>>({});
+  const [articleAnalysis, setArticleAnalysis] = useState<ArticleAnalysis | null>(null);
+  const [similarArticles, setSimilarArticles] = useState<ArticleSimilaritySearch | null>(null);
+  const [articleDerivatives, setArticleDerivatives] = useState<Record<string, ArticleDerivative>>({});
+  const [articleDerivativeDialog, setArticleDerivativeDialog] = useState<{
+    sourceJobId: string;
+    worktreeId: string;
+  } | null>(null);
+  const [articleDerivative, setArticleDerivative] = useState<ArticleDerivative | null>(null);
+  const [derivativeKind, setDerivativeKind] = useState<ArticleDerivative["kind"]>("article_rewrite");
+  const [derivativeTone, setDerivativeTone] = useState<ArticleDerivative["tone"]>("insightful");
+  const [derivativeLength, setDerivativeLength] = useState<ArticleDerivative["length"]>("medium");
+  const [derivativeAudiencePreset, setDerivativeAudiencePreset] =
+    useState<ArticleDerivative["audiencePreset"]>("general");
+  const [derivativeAudience, setDerivativeAudience] = useState("");
+  const [derivativeAgePreset, setDerivativeAgePreset] =
+    useState<ArticleDerivative["agePreset"]>("all");
+  const [derivativeAgeDetails, setDerivativeAgeDetails] = useState("");
+  const [derivativeAngle, setDerivativeAngle] = useState("");
+  const [derivativeRequestKey, setDerivativeRequestKey] = useState("");
 
   const load = async () => {
     try {
@@ -2333,7 +2352,18 @@ function LocalWorkItemDetail({
     if (!item?.executionBindings?.some((binding) => binding.kind === "article_import")) return;
     try {
       const result = await api.listArticleImports(workItemId) as { jobs?: ArticleImportJob[] };
-      setArticleImportJobs(Object.fromEntries((result.jobs ?? []).map((job) => [job.id, job])));
+      const jobs = result.jobs ?? [];
+      setArticleImportJobs(Object.fromEntries(jobs.map((job) => [job.id, job])));
+      if (item.executionBindings?.some((binding) => binding.kind === "article_derivative")) {
+        const derivativeResults = await Promise.all(jobs
+          .filter((job) => job.state === "completed")
+          .map((job) => api.listArticleDerivatives(workItemId, job.id)
+            .catch(() => ({ derivatives: [] })) as Promise<{ derivatives?: ArticleDerivative[] }>));
+        setArticleDerivatives(Object.fromEntries(
+          derivativeResults.flatMap((entry) => entry.derivatives ?? [])
+            .map((derivative) => [derivative.id, derivative]),
+        ));
+      }
     } catch {
       // The Issue remains usable when import history cannot be refreshed.
     }
@@ -2348,6 +2378,22 @@ function LocalWorkItemDetail({
       void refreshArticleImports();
     }
   }, 1_500);
+  useVisibleInterval(() => {
+    if (!articleDerivativeDialog || !articleDerivative
+      || ["completed", "failed", "canceled"].includes(articleDerivative.state)) return;
+    void (api.getArticleDerivative(
+      workItemId,
+      articleDerivativeDialog.sourceJobId,
+      articleDerivative.id,
+    ) as Promise<{ derivative: ArticleDerivative }>).then((result) => {
+      setArticleDerivative(result.derivative);
+      setArticleDerivatives((current) => ({ ...current, [result.derivative.id]: result.derivative }));
+      if (result.derivative.state === "completed") {
+        onChanged();
+        void load();
+      }
+    }).catch(() => {});
+  }, 1_500, Boolean(articleDerivativeDialog && articleDerivative));
 
   const dirty = item != null && (
     title !== item.title
@@ -2450,7 +2496,7 @@ function LocalWorkItemDetail({
       setSection("projects");
     });
   };
-  const openOutputAsset = (asset: NonNullable<LocalWorkItem["outputAssets"]>[number]) => {
+  const openOutputAsset = (asset: Pick<NonNullable<LocalWorkItem["outputAssets"]>[number], "path" | "worktreeId">) => {
     requestNavigation(() => {
       const url = new URL(window.location.href);
       url.searchParams.set("section", "documents");
@@ -2465,7 +2511,13 @@ function LocalWorkItemDetail({
     });
   };
   const markdownAssetFor = (worktreeId?: string | null) => [...(item.outputAssets ?? [])].reverse()
-    .find((asset) => asset.family === "markdown" && (!worktreeId || asset.worktreeId === worktreeId));
+    .find((asset) => asset.family === "markdown"
+      && asset.path.toLowerCase().endsWith("/article.md")
+      && (!worktreeId || asset.worktreeId === worktreeId));
+  const analysisAssetFor = (worktreeId?: string | null) => [...(item.outputAssets ?? [])].reverse()
+    .find((asset) => asset.family === "markdown"
+      && asset.path.toLowerCase().endsWith("/analysis.md")
+      && (!worktreeId || asset.worktreeId === worktreeId));
   const htmlAssetFor = (worktreeId?: string | null) => [...(item.outputAssets ?? [])].reverse()
     .find((asset) => asset.path.toLowerCase().endsWith(".html") && (!worktreeId || asset.worktreeId === worktreeId));
   const retryArticleImport = (job: ArticleImportJob) => {
@@ -2478,6 +2530,90 @@ function LocalWorkItemDetail({
       onChanged();
       void load();
       void refreshArticleImports();
+    });
+  };
+  const viewArticleAnalysis = (jobId: string) => {
+    void execute(async () => {
+      const result = await api.analyzeArticleImport(item.id, jobId) as {
+        analysis: ArticleAnalysis;
+        analysisPath: string;
+      };
+      setArticleAnalysis(result.analysis);
+      return result;
+    }).then((ok) => {
+      if (!ok) return;
+      onChanged();
+      void load();
+      void refreshArticleImports();
+    });
+  };
+  const findSimilarArticles = (jobId: string) => {
+    void execute(async () => {
+      const result = await api.findSimilarArticleImports(item.id, jobId) as ArticleSimilaritySearch;
+      setSimilarArticles(result);
+      return result;
+    });
+  };
+  const openArticleDerivative = (sourceJobId: string, worktreeId: string) => {
+    setArticleDerivative(null);
+    setDerivativeKind("article_rewrite");
+    setDerivativeTone("insightful");
+    setDerivativeLength("medium");
+    setDerivativeAudiencePreset("general");
+    setDerivativeAudience("");
+    setDerivativeAgePreset("all");
+    setDerivativeAgeDetails("");
+    setDerivativeAngle("");
+    setDerivativeRequestKey(globalThis.crypto?.randomUUID?.()
+      ?? `article-derivative-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+    setArticleDerivativeDialog({ sourceJobId, worktreeId });
+  };
+  const openArticleDerivativeStatus = (derivative: ArticleDerivative) => {
+    setArticleDerivative(derivative);
+    setArticleDerivativeDialog({
+      sourceJobId: derivative.sourceJobId,
+      worktreeId: derivative.worktreeId,
+    });
+  };
+  const createArticleDerivative = () => {
+    if (!articleDerivativeDialog) return;
+    void execute(async () => {
+      const result = await api.createArticleDerivative(
+        item.id,
+        articleDerivativeDialog.sourceJobId,
+        {
+          kind: derivativeKind,
+          tone: derivativeTone,
+          length: derivativeLength,
+          audiencePreset: derivativeAudiencePreset,
+          audience: derivativeAudience.trim(),
+          agePreset: derivativeAgePreset,
+          ageDetails: derivativeAgeDetails.trim(),
+          angle: derivativeAngle.trim(),
+          idempotencyKey: derivativeRequestKey,
+        },
+      ) as { derivative: ArticleDerivative };
+      setArticleDerivative(result.derivative);
+      setArticleDerivatives((current) => ({ ...current, [result.derivative.id]: result.derivative }));
+      return result;
+    }).then((ok) => {
+      if (!ok) return;
+      onChanged();
+      void load();
+    });
+  };
+  const openSimilarArticle = (match: ArticleSimilarityMatch) => {
+    requestNavigation(() => {
+      const url = new URL(window.location.href);
+      url.searchParams.set("section", "documents");
+      url.searchParams.set("project", item.projectId);
+      url.searchParams.set("document", match.markdownPath);
+      url.searchParams.set("worktree", match.worktreeId);
+      window.history.replaceState(window.history.state, "", `${url.pathname}${url.search}${url.hash}`);
+      setSelectedProjectId(item.projectId);
+      setSelectedWorktreeId(match.worktreeId);
+      setSection("documents");
+      setSimilarArticles(null);
     });
   };
   const createExecutionWorktree = () => {
@@ -2965,22 +3101,29 @@ function LocalWorkItemDetail({
           <ul className="space-y-1">
             {item.executionBindings?.map((binding) => {
               const importJob = binding.targetId ? articleImportJobs[binding.targetId] : undefined;
+              const derivative = binding.targetId ? articleDerivatives[binding.targetId] : undefined;
               return (
-              <li key={`${binding.kind}:${binding.targetId}`} className="flex items-center gap-2 text-xs">
+              <li key={`${binding.kind}:${binding.targetId}`} className="flex flex-wrap items-center gap-2 text-xs">
                 <Badge tone={binding.kind === "auto_run" ? "warning" : "neutral"}>
                   {t(binding.kind === "auto_run"
                     ? "taskLocal.autoRun"
                     : binding.kind === "article_import"
                       ? "taskLocal.articleImport"
+                      : binding.kind === "article_derivative"
+                        ? "taskLocal.articleDerivative"
                       : "taskLocal.worktree")}
                 </Badge>
-                {binding.kind === "auto_run" || binding.kind === "article_import" ? (
-                  <button type="button" className="font-mono text-primary hover:underline" onClick={() => openExecutionBinding(binding)}>
+                {binding.kind === "auto_run" || binding.kind === "article_import" || binding.kind === "article_derivative" ? (
+                  <button type="button" className="font-mono text-primary hover:underline"
+                    disabled={binding.kind === "article_derivative" && !derivative}
+                    onClick={() => binding.kind === "article_derivative" && derivative
+                      ? openArticleDerivativeStatus(derivative)
+                      : openExecutionBinding(binding)}>
                     {binding.targetId}
                   </button>
                 ) : <span className="font-mono">{binding.targetId}</span>}
                 {binding.kind === "article_import" ? (
-                  <span className="ml-auto flex items-center gap-2">
+                  <span className="ml-auto flex flex-wrap items-center justify-end gap-2">
                     {importJob ? (
                       <span className={importJob.state === "failed" ? "text-destructive" : "text-muted-foreground"}>
                         {importJob.error === "article_import_interrupted"
@@ -3007,6 +3150,51 @@ function LocalWorkItemDetail({
                         {t("taskLocal.openHtml")}
                       </button>
                     ) : null}
+                    {importJob?.state === "completed" && binding.targetId ? (
+                      <>
+                        <button type="button" className="text-primary hover:underline" disabled={pending}
+                          onClick={() => viewArticleAnalysis(binding.targetId!)}>
+                          {t("articleAnalysis.view")}
+                        </button>
+                        <button type="button" className="text-primary hover:underline" disabled={pending}
+                          onClick={() => findSimilarArticles(binding.targetId!)}>
+                          {t("articleSimilarity.find")}
+                        </button>
+                        {binding.worktreeId ? (
+                          <button type="button" className="text-primary hover:underline" disabled={pending}
+                            onClick={() => openArticleDerivative(binding.targetId!, binding.worktreeId!)}>
+                            {t("articleDerivative.create")}
+                          </button>
+                        ) : null}
+                      </>
+                    ) : null}
+                    {analysisAssetFor(binding.worktreeId) ? (
+                      <button type="button" className="text-primary hover:underline"
+                        onClick={() => openOutputAsset(analysisAssetFor(binding.worktreeId)!)}>
+                        {t("articleAnalysis.openMarkdown")}
+                      </button>
+                    ) : null}
+                  </span>
+                ) : binding.kind === "article_derivative" ? (
+                  <span className="ml-auto flex flex-wrap items-center justify-end gap-2">
+                    {derivative ? (
+                      <>
+                        <Badge tone={derivative.state === "completed"
+                          ? "success"
+                          : derivative.state === "failed" ? "danger" : "warning"}>
+                          {t(`articleDerivative.state.${derivative.state}`)}
+                        </Badge>
+                        {derivative.state === "completed" ? (
+                          <button type="button" className="text-primary hover:underline"
+                            onClick={() => openOutputAsset({
+                              path: derivative.outputPath,
+                              worktreeId: derivative.worktreeId,
+                            })}>
+                            {t("articleDerivative.openOutput")}
+                          </button>
+                        ) : null}
+                      </>
+                    ) : <span className="text-muted-foreground">{t("tasks.loading")}</span>}
                   </span>
                 ) : binding.worktreeId ? (
                   <button type="button" className="ml-auto text-primary hover:underline" onClick={() => openWorktreeResult(binding.worktreeId)}>
@@ -3087,6 +3275,265 @@ function LocalWorkItemDetail({
         }}
       />
       <Modal
+        open={Boolean(articleAnalysis)}
+        title={articleAnalysis?.title ?? t("articleAnalysis.title")}
+        description={t("articleAnalysis.localMethod")}
+        onClose={() => setArticleAnalysis(null)}
+      >
+        {articleAnalysis ? (
+          <div className="max-h-[65vh] space-y-5 overflow-y-auto pr-1 text-sm">
+            <section>
+              <h4 className="mb-2 font-semibold">{t("articleAnalysis.coreIdeas")}</h4>
+              <ul className="list-disc space-y-2 pl-5">
+                {articleAnalysis.coreIdeas.map((idea) => <li key={idea}>{idea}</li>)}
+              </ul>
+            </section>
+            <section>
+              <h4 className="mb-2 font-semibold">{t("articleAnalysis.framework")}</h4>
+              <ol className="space-y-2">
+                {articleAnalysis.framework.map((section) => (
+                  <li key={`${section.order}:${section.heading}`} className="rounded-md border border-border p-3">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <strong>{section.order}. {section.heading}</strong>
+                      <Badge tone="neutral">{t(`articleAnalysis.role.${section.role}`)}</Badge>
+                    </div>
+                    <p className="mt-1 text-muted-foreground">{section.summary}</p>
+                  </li>
+                ))}
+              </ol>
+            </section>
+            {articleAnalysis.keyConcepts.length ? (
+              <section>
+                <h4 className="mb-2 font-semibold">{t("articleAnalysis.keyConcepts")}</h4>
+                <div className="flex flex-wrap gap-1">
+                  {articleAnalysis.keyConcepts.map((concept) => <Badge key={concept} tone="neutral">{concept}</Badge>)}
+                </div>
+              </section>
+            ) : null}
+          </div>
+        ) : null}
+      </Modal>
+      <Modal
+        open={Boolean(similarArticles)}
+        title={t("articleSimilarity.title")}
+        description={similarArticles
+          ? t("articleSimilarity.summary", {
+            indexed: similarArticles.indexedCount,
+            matches: similarArticles.matches.length,
+          })
+          : t("articleSimilarity.localMethod")}
+        onClose={() => setSimilarArticles(null)}
+      >
+        {similarArticles?.matches.length ? (
+          <div className="max-h-[65vh] space-y-2 overflow-y-auto pr-1">
+            {similarArticles.skippedCount ? (
+              <p className="text-xs text-muted-foreground">
+                {t("articleSimilarity.skipped", { count: similarArticles.skippedCount })}
+              </p>
+            ) : null}
+            {similarArticles.matches.map((match) => (
+              <article key={match.articleId} className="rounded-md border border-border p-3 text-sm">
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <button type="button" className="text-left font-semibold text-primary hover:underline"
+                      onClick={() => openSimilarArticle(match)}>
+                      {match.title}
+                    </button>
+                    <p className="mt-1 text-xs text-muted-foreground">
+                      {match.localRef}
+                      {" · "}{t(`tasks.articleProvider.${match.provider ?? "web"}`)}
+                      {match.author ? ` · ${match.author}` : ""}
+                      {match.publishedAt ? ` · ${match.publishedAt}` : ""}
+                    </p>
+                  </div>
+                  <Badge tone={match.score >= 0.5 ? "success" : "neutral"}>
+                    {Math.round(match.score * 100)}%
+                  </Badge>
+                </div>
+                <div className="mt-2 flex flex-wrap gap-1">
+                  {match.reasons.map((reason) => (
+                    <Badge key={reason} tone="neutral">{t(`articleSimilarity.reason.${reason}`)}</Badge>
+                  ))}
+                </div>
+                {match.sharedConcepts.length ? (
+                  <p className="mt-2 text-xs text-muted-foreground">
+                    {t("articleSimilarity.sharedConcepts", { concepts: match.sharedConcepts.join("、") })}
+                  </p>
+                ) : null}
+              </article>
+            ))}
+          </div>
+        ) : similarArticles ? (
+          <div className="space-y-2 text-sm text-muted-foreground">
+            <p>{t("articleSimilarity.empty")}</p>
+            {similarArticles.skippedCount ? (
+              <p>{t("articleSimilarity.skipped", { count: similarArticles.skippedCount })}</p>
+            ) : null}
+          </div>
+        ) : null}
+      </Modal>
+      <Modal
+        open={Boolean(articleDerivativeDialog)}
+        title={articleDerivative ? t("articleDerivative.statusTitle") : t("articleDerivative.title")}
+        description={articleDerivative ? undefined : t("articleDerivative.description")}
+        onClose={() => {
+          setArticleDerivativeDialog(null);
+          setArticleDerivative(null);
+        }}
+        size="lg"
+      >
+        {articleDerivative ? (
+          <div className="space-y-4 text-sm">
+            <div className="flex flex-wrap items-center gap-2">
+              <Badge tone={articleDerivative.state === "completed"
+                ? "success"
+                : articleDerivative.state === "failed" ? "danger" : "warning"}>
+                {t(`articleDerivative.state.${articleDerivative.state}`)}
+              </Badge>
+              <Badge tone="neutral">{t(`articleDerivative.kinds.${articleDerivative.kind}`)}</Badge>
+              <Badge tone="neutral">{t(`articleDerivative.tones.${articleDerivative.tone}`)}</Badge>
+              <Badge tone="neutral">{t(`articleDerivative.audiences.${articleDerivative.audiencePreset}`)}</Badge>
+              <Badge tone="neutral">{t(`articleDerivative.ages.${articleDerivative.agePreset}`)}</Badge>
+            </div>
+            <dl className="space-y-2 rounded-md border border-border p-3 text-xs">
+              <div>
+                <dt className="text-muted-foreground">{t("articleDerivative.invocation")}</dt>
+                <dd className="break-all font-mono">{articleDerivative.invocationId}</dd>
+              </div>
+              <div>
+                <dt className="text-muted-foreground">{t("articleDerivative.targetAudience")}</dt>
+                <dd className="break-words">{articleDerivative.audience}</dd>
+              </div>
+              <div>
+                <dt className="text-muted-foreground">{t("articleDerivative.targetAge")}</dt>
+                <dd className="break-words">{articleDerivative.targetAge}</dd>
+              </div>
+              <div>
+                <dt className="text-muted-foreground">{t("articleDerivative.output")}</dt>
+                <dd className="break-all font-mono">{articleDerivative.outputPath}</dd>
+              </div>
+            </dl>
+            {articleDerivative.state === "completed" ? (
+              <>
+                <p className="text-muted-foreground">{t("articleDerivative.completedHint")}</p>
+                <div className="flex justify-end">
+                  <Button onClick={() => openOutputAsset({
+                    path: articleDerivative.outputPath,
+                    worktreeId: articleDerivative.worktreeId,
+                  })}>
+                    {t("articleDerivative.openOutput")}
+                  </Button>
+                </div>
+              </>
+            ) : articleDerivative.state === "failed" || articleDerivative.state === "canceled" ? (
+              <div className="space-y-1 text-destructive">
+                <p>{t("articleDerivative.failedHint")}</p>
+                {articleDerivative.error ? <p className="font-mono text-xs">{articleDerivative.error}</p> : null}
+              </div>
+            ) : (
+              <p className="text-muted-foreground">{t("articleDerivative.pendingHint")}</p>
+            )}
+          </div>
+        ) : (
+          <div className="space-y-4">
+            <div className="grid gap-3 sm:grid-cols-2">
+              <Field label={t("articleDerivative.kind")}>
+                <Select value={derivativeKind}
+                  onChange={(event) => setDerivativeKind(event.target.value as ArticleDerivative["kind"])}>
+                  <option value="article_rewrite">{t("articleDerivative.kinds.article_rewrite")}</option>
+                  <option value="video_script">{t("articleDerivative.kinds.video_script")}</option>
+                </Select>
+              </Field>
+              <Field label={t("articleDerivative.tone")}>
+                <Select value={derivativeTone}
+                  onChange={(event) => setDerivativeTone(event.target.value as ArticleDerivative["tone"])}>
+                  <option value="insightful">{t("articleDerivative.tones.insightful")}</option>
+                  <option value="practical">{t("articleDerivative.tones.practical")}</option>
+                  <option value="conversational">{t("articleDerivative.tones.conversational")}</option>
+                </Select>
+              </Field>
+            </div>
+            <Field label={t("articleDerivative.length")}>
+              <Select value={derivativeLength}
+                onChange={(event) => setDerivativeLength(event.target.value as ArticleDerivative["length"])}>
+                <option value="short">{t("articleDerivative.lengths.short")}</option>
+                <option value="medium">{t("articleDerivative.lengths.medium")}</option>
+                <option value="long">{t("articleDerivative.lengths.long")}</option>
+              </Select>
+            </Field>
+            <Field label={t("articleDerivative.audiencePreset")}>
+              <Select value={derivativeAudiencePreset}
+                onChange={(event) => {
+                  setDerivativeAudiencePreset(event.target.value as ArticleDerivative["audiencePreset"]);
+                  setDerivativeAudience("");
+                }}>
+                <option value="general">{t("articleDerivative.audiences.general")}</option>
+                <option value="creator">{t("articleDerivative.audiences.creator")}</option>
+                <option value="product_manager">{t("articleDerivative.audiences.product_manager")}</option>
+                <option value="entrepreneur_investor">{t("articleDerivative.audiences.entrepreneur_investor")}</option>
+                <option value="technical">{t("articleDerivative.audiences.technical")}</option>
+                <option value="custom">{t("articleDerivative.audiences.custom")}</option>
+              </Select>
+            </Field>
+            <p className="rounded-md bg-muted/50 p-2 text-xs text-muted-foreground">
+              {t(`articleDerivative.audienceHints.${derivativeAudiencePreset}`)}
+            </p>
+            <Field label={t(derivativeAudiencePreset === "custom"
+              ? "articleDerivative.audience"
+              : "articleDerivative.audienceDetails")}>
+              <Input value={derivativeAudience} maxLength={200}
+                placeholder={t(derivativeAudiencePreset === "custom"
+                  ? "articleDerivative.audiencePlaceholder"
+                  : "articleDerivative.audienceDetailsPlaceholder")}
+                onChange={(event) => setDerivativeAudience(event.target.value)} />
+            </Field>
+            <Field label={t("articleDerivative.agePreset")}>
+              <Select value={derivativeAgePreset}
+                onChange={(event) => {
+                  setDerivativeAgePreset(event.target.value as ArticleDerivative["agePreset"]);
+                  setDerivativeAgeDetails("");
+                }}>
+                <option value="all">{t("articleDerivative.ages.all")}</option>
+                <option value="teen">{t("articleDerivative.ages.teen")}</option>
+                <option value="18_24">{t("articleDerivative.ages.18_24")}</option>
+                <option value="25_34">{t("articleDerivative.ages.25_34")}</option>
+                <option value="35_49">{t("articleDerivative.ages.35_49")}</option>
+                <option value="50_plus">{t("articleDerivative.ages.50_plus")}</option>
+                <option value="custom">{t("articleDerivative.ages.custom")}</option>
+              </Select>
+            </Field>
+            <p className="rounded-md bg-muted/50 p-2 text-xs text-muted-foreground">
+              {t(`articleDerivative.ageHints.${derivativeAgePreset}`)}
+            </p>
+            <Field label={t(derivativeAgePreset === "custom"
+              ? "articleDerivative.customAge"
+              : "articleDerivative.ageDetails")}>
+              <Input value={derivativeAgeDetails} maxLength={100}
+                placeholder={t(derivativeAgePreset === "custom"
+                  ? "articleDerivative.customAgePlaceholder"
+                  : "articleDerivative.ageDetailsPlaceholder")}
+                onChange={(event) => setDerivativeAgeDetails(event.target.value)} />
+            </Field>
+            <Field label={t("articleDerivative.angle")}>
+              <Textarea value={derivativeAngle} maxLength={500}
+                placeholder={t("articleDerivative.anglePlaceholder")}
+                onChange={(event) => setDerivativeAngle(event.target.value)} />
+            </Field>
+            <p className="rounded-md bg-muted/50 p-2 text-xs text-muted-foreground">
+              {t("articleDerivative.sourceSafety")}
+            </p>
+            <div className="flex justify-end">
+              <Button disabled={pending
+                || (derivativeAudiencePreset === "custom" && !derivativeAudience.trim())
+                || (derivativeAgePreset === "custom" && !derivativeAgeDetails.trim())}
+                onClick={createArticleDerivative}>
+                {t("articleDerivative.submit")}
+              </Button>
+            </div>
+          </div>
+        )}
+      </Modal>
+      <Modal
         open={safeNavigation.pendingNavigation}
         title={t("taskLocal.details")}
         description={t("officeEditors.unsaved")}
@@ -3122,6 +3569,78 @@ type ArticleImportJob = {
   progress: { stage: string; completed: number; total: number };
   error: string | null;
   result?: { markdownPath?: string; htmlPath?: string; warnings?: { code: string }[] } | null;
+};
+
+type ArticleAnalysis = {
+  schemaVersion: 1;
+  title: string;
+  generatedAt: string;
+  method: "local-extractive-v1";
+  coreIdeas: string[];
+  framework: {
+    order: number;
+    heading: string;
+    role: "introduction" | "development" | "evidence" | "boundary" | "conclusion";
+    summary: string;
+  }[];
+  argumentPath: {
+    role: "introduction" | "development" | "evidence" | "boundary" | "conclusion";
+    statement: string;
+  }[];
+  keyConcepts: string[];
+};
+
+type ArticleSimilarityMatch = {
+  articleId: string;
+  workItemId: string;
+  localRef: string;
+  worktreeId: string;
+  markdownPath: string;
+  canonicalUrl: string | null;
+  title: string;
+  author: string | null;
+  provider: ArticleInspection["provider"] | null;
+  publishedAt: string | null;
+  score: number;
+  reasons: ("core_ideas" | "structure" | "body" | "same_author" | "same_provider")[];
+  sharedConcepts: string[];
+  signals: {
+    coreIdeas: number;
+    titleStructure: number;
+    body: number;
+    metadata: number;
+  };
+};
+
+type ArticleSimilaritySearch = {
+  method: "local-lexical-v1";
+  matches: ArticleSimilarityMatch[];
+  indexedCount: number;
+  skippedCount: number;
+  duplicateCount: number;
+};
+
+type ArticleDerivative = {
+  id: string;
+  invocationId: string;
+  sourceJobId: string;
+  workItemId: string;
+  worktreeId: string;
+  kind: "article_rewrite" | "video_script";
+  tone: "insightful" | "practical" | "conversational";
+  length: "short" | "medium" | "long";
+  audiencePreset: "general" | "creator" | "product_manager" | "entrepreneur_investor" | "technical" | "custom";
+  agePreset: "all" | "teen" | "18_24" | "25_34" | "35_49" | "50_plus" | "custom";
+  ageDetails: string;
+  targetAge: string;
+  angle: string;
+  audience: string;
+  outputPath: string;
+  state: "awaiting_approval" | "queued" | "running" | "completed" | "failed" | "canceled";
+  error: string | null;
+  agentId: string;
+  createdAt: string;
+  completedAt: string | null;
 };
 
 function CreateLocalWorkItemForm({
