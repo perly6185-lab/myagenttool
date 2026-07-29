@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { resources } from "@/lib/i18n/resources";
+import { executionUiTranslations } from "@/lib/i18n/execution-ui-resources";
+import { workProfileTranslations } from "@/lib/i18n/work-profile-resources";
 
 function flatten(value: unknown, prefix = ""): Map<string, string> {
   const result = new Map<string, string>();
@@ -20,6 +22,21 @@ function variables(value: string): string[] {
 }
 
 describe("translation resources", () => {
+  it.each([
+    ["executionUi", executionUiTranslations],
+    ["workProfile", workProfileTranslations],
+  ])("keeps lazy %s resources complete and interpolation-compatible", (_name, translations) => {
+    const english = flatten(translations["en-US"]);
+    const chinese = flatten(translations["zh-CN"]);
+    expect([...chinese.keys()].sort()).toEqual([...english.keys()].sort());
+    for (const [key, value] of english) {
+      const translated = chinese.get(key);
+      expect(value.trim(), `${key} English`).not.toBe("");
+      expect(translated?.trim(), `${key} Chinese`).not.toBe("");
+      expect(variables(translated ?? ""), `${key} variables`).toEqual(variables(value));
+    }
+  });
+
   it("keeps both locales complete, non-empty, and interpolation-compatible", () => {
     const english = flatten(resources["en-US"].common);
     const chinese = flatten(resources["zh-CN"].common);

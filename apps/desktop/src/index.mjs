@@ -3093,7 +3093,13 @@ async function terminateProcessTree(child, { graceMs = 2000 } = {}) {
       if (exited) return { ok: true, message: "Windows process tree terminated." };
     }
     const forced = await taskkillTree(child.pid, true);
-    const alreadyExited = child.exitCode !== null || child.killed;
+    // Windows can reject taskkill for a process that is already in its exit
+    // path (notably a Node child under a constrained runner). Give that child a
+    // final bounded close window before declaring cancellation failed.
+    if (!forced.ok && child.exitCode === null) {
+      await awaitChildExit(child, graceMs);
+    }
+    const alreadyExited = child.exitCode !== null;
     return {
       ok: forced.ok || alreadyExited,
       forced: true,

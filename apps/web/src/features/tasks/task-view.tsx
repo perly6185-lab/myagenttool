@@ -1,4 +1,4 @@
-import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
+import { lazy, Suspense, useEffect, useMemo, useState } from "react";
 import { Hand, History, RefreshCw, ExternalLink, GitBranch, Workflow, Zap, Plus, MessageSquare, Trash2, Pencil, FolderKanban, ArrowUp, ArrowDown, Star, Bell } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -15,6 +15,7 @@ import { cn } from "@/lib/cn";
 import { statusTone } from "@/lib/readable-labels";
 import { invocationStatus } from "@/lib/i18n/readable-labels";
 import { useAppTranslation } from "@/lib/i18n/use-app-translation";
+import { installExecutionUiTranslations } from "@/lib/i18n/execution-ui-resources";
 import { branchFromIssue, worktreeLinkFor } from "@/features/projects/worktree-payload";
 import { githubItemKindLabel, worktreeAutoRunPrompt } from "@myagenttool/protocol/issue-prompt";
 import {
@@ -55,7 +56,6 @@ import type {
   ArticleDerivative,
   ArticleDerivativeRequest,
   ArticleImportJob,
-  ArticleInspection,
   ArticleSimilarityMatch,
   ArticleSimilaritySearch,
 } from "./article-workflow-types";
@@ -65,7 +65,9 @@ import { useArticleTaskLabels } from "./article-task-labels";
 export { shouldShowWorkItemCost } from "./task-view-types";
 
 const ArticleWorkflowDialogs = lazy(() => import("./article-workflow-dialogs"));
-const ArticleImportFields = lazy(() => import("./article-import-fields"));
+const CreateLocalWorkItemForm = lazy(() => import("./create-local-work-item-form"));
+
+installExecutionUiTranslations();
 
 // Task = GitHub issues/PRs across repo-backed projects, surfaced as work items.
 // Mirrors the project's existing per-worktree GitHub list, lifted to a top-level
@@ -783,17 +785,21 @@ export function TaskView() {
         title={t("tasks.newLocal")}
         closeDisabled={createArticleImportActive}
       >
-        <CreateLocalWorkItemForm
-          projects={projects}
-          initialProjectId={projectId === "all" ? projects[0]?.id ?? "" : projectId}
-          onImportActivityChange={setCreateArticleImportActive}
-          onDone={() => {
-            setCreateArticleImportActive(false);
-            setCreateLocalOpen(false);
-            setTab("local");
-            setNonce((value) => value + 1);
-          }}
-        />
+        {createLocalOpen ? (
+          <Suspense fallback={null}>
+            <CreateLocalWorkItemForm
+              projects={projects}
+              initialProjectId={projectId === "all" ? projects[0]?.id ?? "" : projectId}
+              onImportActivityChange={setCreateArticleImportActive}
+              onDone={() => {
+                setCreateArticleImportActive(false);
+                setCreateLocalOpen(false);
+                setTab("local");
+                setNonce((value) => value + 1);
+              }}
+            />
+          </Suspense>
+        ) : null}
       </Modal>
 
       <Modal open={planningOpen} onClose={() => setPlanningOpen(false)} title={t("planningProjects.title")}>
@@ -3444,317 +3450,4 @@ function LocalWorkItemDetail({
       </Modal>
     </div>
   );
-}
-
-function CreateLocalWorkItemForm({
-  projects,
-  initialProjectId,
-  onDone,
-  onImportActivityChange,
-}: {
-  projects: { id: string; name: string }[];
-  initialProjectId: string;
-  onDone: () => void;
-  onImportActivityChange: (active: boolean) => void;
-}) {
-  const { t } = useAppTranslation();
-  const articleText = useArticleTaskLabels();
-  const { execute, pending, error } = useAsyncAction();
-  const [projectId, setProjectId] = useState(initialProjectId);
-  const [title, setTitle] = useState("");
-  const [body, setBody] = useState("");
-  const [type, setType] = useState<LocalWorkItem["type"]>("task");
-  const [priority, setPriority] = useState<LocalWorkItem["priority"]>("p2");
-  const [labels, setLabels] = useState("");
-  const [acceptance, setAcceptance] = useState("");
-  const [dueDate, setDueDate] = useState("");
-  const [milestone, setMilestone] = useState("");
-  const [estimatePoints, setEstimatePoints] = useState("0");
-  const [assistNote, setAssistNote] = useState("");
-  const [sourceMode, setSourceMode] = useState<"manual" | "url">("manual");
-  const [sourceUrl, setSourceUrl] = useState("");
-  const [inspection, setInspection] = useState<ArticleInspection | null>(null);
-  const [activeImport, setActiveImport] = useState<{ workItemId: string; jobId: string } | null>(null);
-  const [importStatus, setImportStatus] = useState("");
-  const [createdWorkItemId, setCreatedWorkItemId] = useState<string | null>(null);
-  const [createdWorktreeId, setCreatedWorktreeId] = useState<string | null>(null);
-  const inspectionRequest = useRef(0);
-  const resumeAttempted = useRef(false);
-  useEffect(() => {
-    onImportActivityChange(Boolean(activeImport));
-    return () => onImportActivityChange(false);
-  }, [activeImport, onImportActivityChange]);
-  const trackImport = async (workItemId: string, jobId: string) => {
-    setActiveImport({ workItemId, jobId });
-    try {
-      const job = await waitForArticleImport(workItemId, jobId, (next) => {
-        setImportStatus(articleText.importState[next.state]);
-      });
-      if (job.state === "completed" || job.state === "canceled") clearStoredArticleImport(workItemId, jobId);
-      if (job.state !== "completed") {
-        const message = job.error === "article_import_interrupted"
-          ? articleText.interrupted
-          : articleText.importState[job.state];
-        setImportStatus(message);
-        throw new Error(message);
-      }
-      setImportStatus(articleText.importState.completed);
-      return job;
-    } finally {
-      setActiveImport(null);
-    }
-  };
-  useEffect(() => {
-    if (resumeAttempted.current) return;
-    resumeAttempted.current = true;
-    const stored = readStoredArticleImport();
-    if (!stored || !projects.some((project) => project.id === stored.projectId)) return;
-    setProjectId(stored.projectId);
-    setCreatedWorkItemId(stored.workItemId);
-    setCreatedWorktreeId(stored.worktreeId);
-    setSourceMode("url");
-    setSourceUrl(stored.sourceUrl);
-    void execute(() => trackImport(stored.workItemId, stored.jobId)).then((ok) => {
-      if (ok) onDone();
-    });
-    // Resume exactly once from the browser hand-off.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-  const assist = () => {
-    let draft: {
-      body: string; type: LocalWorkItem["type"]; priority: LocalWorkItem["priority"];
-      acceptanceCriteria: string[]; suggestedRoute: string; risks: string[];
-      evidence: { generator: string; policyVersion: string; confidence: number };
-    } | null = null;
-    void execute(async () => {
-      const result = await api.suggestWorkItemDraft({ projectId, title, body }) as { draft: NonNullable<typeof draft> };
-      draft = result.draft;
-      return result;
-    }).then((ok) => {
-      if (!ok || !draft) return;
-      setBody(draft.body);
-      setType(draft.type);
-      setPriority(draft.priority);
-      setAcceptance(draft.acceptanceCriteria.join("\n"));
-      setAssistNote(
-        `Suggested route: ${draft.suggestedRoute}. ${draft.evidence.generator} ${Math.round(draft.evidence.confidence * 100)}%. ${draft.risks.join(" ")}`,
-      );
-    });
-  };
-  const inspectSource = () => {
-    const requestId = ++inspectionRequest.current;
-    const requestedUrl = sourceUrl.trim();
-    let nextInspection: ArticleInspection | null = null;
-    setInspection(null);
-    void execute(async () => {
-      const result = await articleApi.inspect({ projectId, url: requestedUrl }) as { inspection: ArticleInspection };
-      nextInspection = result.inspection;
-      return result;
-    }).then((ok) => {
-      if (!ok || !nextInspection || inspectionRequest.current !== requestId) return;
-      setInspection(nextInspection);
-      if (!title.trim()) setTitle(nextInspection.title);
-      setLabels((current) => mergeCommaLabels(current, [
-        `source:${nextInspection?.provider}`,
-        `content:${nextInspection?.contentType}`,
-      ]));
-    });
-  };
-  const submit = () => {
-    void execute(async () => {
-      let workItemId = createdWorkItemId;
-      if (!workItemId) {
-        const created = await api.createWorkItem({
-          projectId,
-          title,
-          body: sourceMode === "url" && inspection
-            ? [
-              body,
-              `Source: ${inspection.canonicalUrl}`,
-              `Detected as ${inspection.provider} / ${inspection.contentType}.`,
-            ].filter(Boolean).join("\n\n")
-            : body,
-          type,
-          priority,
-          labels: labels.split(",").map((value) => value.trim()).filter(Boolean),
-          acceptanceCriteria: acceptance.split("\n").map((value) => value.trim()).filter(Boolean),
-          dueDate: dueDate || null,
-          milestone,
-          estimatePoints: Number(estimatePoints),
-        }) as { workItem: { id: string } };
-        workItemId = created.workItem.id;
-        setCreatedWorkItemId(workItemId);
-      }
-      if (sourceMode === "manual") return { completed: true };
-      let worktreeId = createdWorktreeId;
-      if (!worktreeId) {
-        setImportStatus(articleText.creatingWorktree);
-        const createdWorktree = await api.createWorkItemWorktree(workItemId) as { worktree: { id: string } };
-        worktreeId = createdWorktree.worktree.id;
-        setCreatedWorktreeId(worktreeId);
-      }
-      setImportStatus(articleText.importQueued);
-      const started = await articleApi.startImport(workItemId, {
-        url: sourceUrl,
-        worktreeId,
-      }) as { job: ArticleImportJob };
-      storeArticleImport({ projectId, workItemId, worktreeId, jobId: started.job.id, sourceUrl });
-      if (started.job.state === "completed") {
-        clearStoredArticleImport(workItemId, started.job.id);
-        setImportStatus(articleText.importState.completed);
-      } else {
-        await trackImport(workItemId, started.job.id);
-      }
-      return { completed: true };
-    }).then((ok) => {
-      if (ok) onDone();
-    });
-  };
-  const cancelImport = () => {
-    if (!activeImport) return;
-    void articleApi.cancelImport(activeImport.workItemId, activeImport.jobId)
-      .then(() => setImportStatus(articleText.importState.canceled))
-      .catch(() => setImportStatus(articleText.importState.failed));
-  };
-  return (
-    <div className="space-y-3">
-      <Field label={t("tasks.project")}>
-        <Select value={projectId} onChange={(event) => {
-          inspectionRequest.current += 1;
-          setInspection(null);
-          setProjectId(event.target.value);
-        }}>
-          {projects.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}
-        </Select>
-      </Field>
-      <Suspense fallback={null}>
-        <ArticleImportFields
-          mode={sourceMode}
-          sourceUrl={sourceUrl}
-          projectId={projectId}
-          inspection={inspection}
-          pending={pending}
-          onModeChange={setSourceMode}
-          onUrlChange={(value) => {
-            inspectionRequest.current += 1;
-            setSourceUrl(value);
-            setInspection(null);
-          }}
-          onInspect={inspectSource}
-        />
-      </Suspense>
-      <Field label={t("tasks.localTitle")}>
-        <Input value={title} onChange={(event) => setTitle(event.target.value)} autoFocus={sourceMode === "manual"} />
-      </Field>
-      <div className="flex items-center gap-2">
-        <Button variant="secondary" disabled={pending || !projectId || !title.trim()} onClick={assist}>
-          {t("aiOps.assist")}
-        </Button>
-        {assistNote ? <span className="text-xs text-muted-foreground">{assistNote}</span> : null}
-      </div>
-      <div className="grid gap-3 sm:grid-cols-2">
-        <Field label={t("tasks.type")}>
-          <Select value={type} onChange={(event) => setType(event.target.value as LocalWorkItem["type"])}>
-            {(["task", "bug", "feature", "initiative"] as const).map((value) => <option key={value} value={value}>{t(`tasks.localType.${value}`)}</option>)}
-          </Select>
-        </Field>
-        <Field label={t("tasks.priority")}>
-          <Select value={priority} onChange={(event) => setPriority(event.target.value as LocalWorkItem["priority"])}>
-            {(["p0", "p1", "p2", "p3"] as const).map((value) => <option key={value} value={value}>{value.toUpperCase()}</option>)}
-          </Select>
-        </Field>
-      </div>
-      <Field label={t("tasks.descriptionField")}>
-        <textarea className="min-h-24 w-full rounded-md border border-border bg-background p-2 text-sm" value={body} onChange={(event) => setBody(event.target.value)} />
-      </Field>
-      <Field label={t("tasks.labels")}>
-        <Input value={labels} onChange={(event) => setLabels(event.target.value)} placeholder={t("tasks.labelsPlaceholder")} />
-      </Field>
-      <Field label={t("tasks.acceptanceCriteria")}>
-        <textarea className="min-h-20 w-full rounded-md border border-border bg-background p-2 text-sm" value={acceptance} onChange={(event) => setAcceptance(event.target.value)} placeholder={t("tasks.acceptancePlaceholder")} />
-      </Field>
-      <div className="grid gap-3 sm:grid-cols-3">
-        <Field label={t("taskLocal.dueDate")}><Input type="date" value={dueDate} onChange={(event) => setDueDate(event.target.value)} /></Field>
-        <Field label={t("taskLocal.milestone")}><Input value={milestone} onChange={(event) => setMilestone(event.target.value)} /></Field>
-        <Field label={t("planningInsights.estimatePoints")}><Input type="number" min="0" max="1000" value={estimatePoints} onChange={(event) => setEstimatePoints(event.target.value)} /></Field>
-      </div>
-      {error ? <p className="text-xs text-destructive">{error}</p> : null}
-      {importStatus ? <p className="text-xs text-muted-foreground">{importStatus}</p> : null}
-      <div className="flex justify-end gap-2">
-        {activeImport ? <Button variant="secondary" onClick={cancelImport}>{t("tasks.cancel")}</Button> : null}
-        <Button
-          disabled={pending || !projectId || (!title.trim() && !createdWorkItemId) || (sourceMode === "url" && (!sourceUrl.trim() || (!inspection && !createdWorkItemId)))}
-          onClick={submit}
-        >
-          {sourceMode === "url"
-            ? (createdWorkItemId ? articleText.retryImport : articleText.createAndImport)
-            : t("tasks.createLocal")}
-        </Button>
-      </div>
-    </div>
-  );
-}
-
-function mergeCommaLabels(current: string, additions: string[]) {
-  return [...new Set([
-    ...current.split(",").map((value) => value.trim()).filter(Boolean),
-    ...additions.filter(Boolean),
-  ])].join(", ");
-}
-
-const ARTICLE_IMPORT_STORAGE_KEY = "myagenttool.article-import.active.v1";
-
-type StoredArticleImport = {
-  projectId: string;
-  workItemId: string;
-  worktreeId: string;
-  jobId: string;
-  sourceUrl: string;
-};
-
-async function waitForArticleImport(
-  workItemId: string,
-  jobId: string,
-  onProgress: (job: ArticleImportJob) => void,
-) {
-  let job: ArticleImportJob;
-  while (true) {
-    const next = await articleApi.getImport(workItemId, jobId) as { job: ArticleImportJob };
-    job = next.job;
-    onProgress(job);
-    if (!["queued", "running"].includes(job.state)) return job;
-    await new Promise((resolve) => setTimeout(resolve, 750));
-  }
-}
-
-function storeArticleImport(value: StoredArticleImport) {
-  try {
-    window.localStorage.setItem(ARTICLE_IMPORT_STORAGE_KEY, JSON.stringify(value));
-  } catch {
-    // The modal remains locked while the in-memory job is active.
-  }
-}
-
-function readStoredArticleImport(): StoredArticleImport | null {
-  try {
-    const value = JSON.parse(window.localStorage.getItem(ARTICLE_IMPORT_STORAGE_KEY) ?? "null");
-    if (!value || typeof value !== "object") return null;
-    if (!["projectId", "workItemId", "worktreeId", "jobId", "sourceUrl"].every((key) => typeof value[key] === "string" && value[key])) {
-      return null;
-    }
-    return value as StoredArticleImport;
-  } catch {
-    return null;
-  }
-}
-
-function clearStoredArticleImport(workItemId: string, jobId: string) {
-  const current = readStoredArticleImport();
-  if (!current || (current.workItemId === workItemId && current.jobId === jobId)) {
-    try {
-      window.localStorage.removeItem(ARTICLE_IMPORT_STORAGE_KEY);
-    } catch {
-      // Ignore unavailable storage.
-    }
-  }
 }

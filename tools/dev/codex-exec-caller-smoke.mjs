@@ -28,6 +28,7 @@ const repoPath = join(tempRoot, "source");
 const fixtureDir = join(tempRoot, "fixtures");
 const statePath = join(tempRoot, "state.json");
 const codexCapturePath = join(tempRoot, "codex-capture.json");
+const bridgeTokenPath = join(tempRoot, "bridge-token.json");
 const children = [];
 let passed = 0;
 
@@ -53,6 +54,7 @@ writeFileSync(fakeCodexPath, [
   "writeFileSync(process.env.CODEX_EXEC_SMOKE_CAPTURE, JSON.stringify({ cwd: process.cwd(), args, prompt }, null, 2));",
   "if (!args.includes('exec')) { console.error('missing exec'); process.exit(3); }",
   "if (!prompt.includes('Add a greeting file.')) { console.error('missing task'); process.exit(4); }",
+  "await new Promise((resolve) => setTimeout(resolve, 1000));",
   "writeFileSync(join(process.cwd(), 'greeting.txt'), 'hello from codex exec\\n');",
   "console.log(JSON.stringify({ summary: 'Created greeting.txt as requested.' }));",
 ].join("\n"));
@@ -75,12 +77,17 @@ try {
     BRIDGE_POLL_INTERVAL_MS: "100",
     MYAGENTTOOL_CODEX_COMMAND: fakeCodexPath,
     CODEX_EXEC_SMOKE_CAPTURE: codexCapturePath,
+    MYAGENTTOOL_BRIDGE_TOKEN_PATH: bridgeTokenPath,
   });
   await waitFor(async () => {
     const state = await request("GET", "/api/state");
     return state.device?.status === "online" ? state : false;
   }, "desktop bridge registration");
   ok("desktop bridge registered");
+  const bridgeToken = await waitFor(
+    () => readJsonFile(bridgeTokenPath)?.token ?? false,
+    "desktop bridge credential",
+  );
 
   const initialState = await request("GET", "/api/state");
   const branchName = `myagenttool/codex-exec-smoke-${Date.now().toString(36)}`;
@@ -103,6 +110,7 @@ try {
   const result = await internalCallerAgent({
     projectId: worktreeCreated.project.id,
     worktreeId: worktreeCreated.worktree.id,
+    bridgeToken,
   });
 
   assert(result.changes.length >= 1, "caller should read at least one imported change");
@@ -191,29 +199,6 @@ try {
   assert(promoteBody.error !== "exec_changes_not_approved", "approval gate should be satisfied after every change is approved");
   ok(`promote gate opens after approval (downstream result: ${promoteAfter.status} ${promoteBody.error ?? "promoted"})`);
 
-  // Phase 2 (approval broker): an exec run carries its approvalMode, so a Codex
-  // PermissionRequest hook posted for THIS invocation is governed by that mode —
-  // the same broker the managed-session path uses, no session required. (The
-  // bridge forwarding real Codex hooks is the remaining integration; here we
-  // prove the server contract the forwarding will target.)
-  const benignHook = await request("POST", "/api/codex/hooks", {
-    invocationId: result.invocationId,
-    eventName: "PermissionRequest",
-    toolName: "apply_patch",
-    summary: "Write greeting.txt in the worktree.",
-  });
-  assert(benignHook.brokerRequest?.status === "approved", "auto mode should auto-approve a low-risk exec permission request");
-  ok("exec approvalMode=auto auto-approves a low-risk Codex permission request");
-
-  const sensitiveHook = await request("POST", "/api/codex/hooks", {
-    invocationId: result.invocationId,
-    eventName: "PermissionRequest",
-    toolName: "shell",
-    summary: "Read ~/.codex/auth.json to inspect the API key.",
-  });
-  assert(sensitiveHook.brokerRequest?.status === "pending", "even in auto mode a credential-shaped request must fall to manual review");
-  ok("sensitive-pattern request forces manual review even under auto mode");
-
   // Full access is a distinct, explicit mode. It is accepted by the contract,
   // but the high-risk local approval gate must hold it before Desktop can launch
   // the no-sandbox Codex process.
@@ -238,7 +223,7 @@ try {
   }
 }
 
-async function internalCallerAgent({ projectId, worktreeId }) {
+async function internalCallerAgent({ projectId, worktreeId, bridgeToken }) {
   const catalog = await request("GET", "/api/capabilities?providerType=tool");
   const catalogEntry = catalog.capabilities.find((capability) => capability.name === CAPABILITY_NAME);
   assert(catalogEntry, `caller should discover ${CAPABILITY_NAME} when the flag is on`);
@@ -263,6 +248,34 @@ async function internalCallerAgent({ projectId, worktreeId }) {
   }, "pending local approval request");
   await request("POST", `/api/approvals/${encodeURIComponent(approval.id)}/approve`);
   ok("authorized approver released the exec run");
+
+  await waitFor(async () => {
+    const state = await request("GET", "/api/state");
+    const invocation = state.invocations.find((item) => item.id === invoked.invocationId);
+    return invocation?.status === "running" && invocation.delivery?.state === "acknowledged";
+  }, "active acknowledged codex.exec invocation");
+
+  // An exec run carries its approvalMode, so a device-authenticated Codex
+  // PermissionRequest hook for this active invocation is governed by the same
+  // approval broker as managed sessions.
+  const bridgeHeaders = { Authorization: `Bearer ${bridgeToken}` };
+  const benignHook = await request("POST", "/api/bridge/codex/hooks", {
+    invocationId: invoked.invocationId,
+    eventName: "PermissionRequest",
+    toolName: "apply_patch",
+    summary: "Write greeting.txt in the worktree.",
+  }, bridgeHeaders);
+  assert(benignHook.brokerRequest?.status === "approved", "auto mode should auto-approve a low-risk exec permission request");
+  ok("exec approvalMode=auto auto-approves a low-risk Codex permission request");
+
+  const sensitiveHook = await request("POST", "/api/bridge/codex/hooks", {
+    invocationId: invoked.invocationId,
+    eventName: "PermissionRequest",
+    toolName: "shell",
+    summary: "Read ~/.codex/auth.json to inspect the API key.",
+  }, bridgeHeaders);
+  assert(sensitiveHook.brokerRequest?.status === "pending", "even in auto mode a credential-shaped request must fall to manual review");
+  ok("sensitive-pattern request forces manual review even under auto mode");
 
   const changes = await waitFor(async () => {
     const state = await request("GET", "/api/state");
@@ -317,10 +330,13 @@ async function waitForServer() {
   }, "server health");
 }
 
-async function request(method, path, body = undefined) {
+async function request(method, path, body = undefined, headers = {}) {
   const response = await fetch(`${serverUrl}${path}`, {
     method,
-    headers: body ? { "Content-Type": "application/json" } : undefined,
+    headers: {
+      ...headers,
+      ...(body ? { "Content-Type": "application/json" } : {}),
+    },
     body: body ? JSON.stringify(body) : undefined,
   });
   const text = await response.text();

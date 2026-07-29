@@ -215,7 +215,7 @@ describe("TaskView local work items", () => {
     mocks.createWorkItem.mockResolvedValue({ workItem: { id: "lwi_2" } });
     render(<TaskView />);
     fireEvent.click(screen.getByRole("button", { name: /New local issue/i }));
-    fireEvent.change(screen.getByLabelText("Title"), { target: { value: "Build local board" } });
+    fireEvent.change(await screen.findByLabelText("Title"), { target: { value: "Build local board" } });
     fireEvent.change(screen.getByLabelText("Due date"), { target: { value: "2026-08-15" } });
     fireEvent.change(screen.getByLabelText("Milestone"), { target: { value: "M3" } });
     fireEvent.click(screen.getByRole("button", { name: "Create issue" }));

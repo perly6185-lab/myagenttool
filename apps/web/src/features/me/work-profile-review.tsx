@@ -17,6 +17,7 @@ import { useConsoleState, useRefreshConsoleState } from "@/data/use-console-stat
 import { api } from "@/lib/api-client";
 import { i18n } from "@/lib/i18n";
 import { useAppTranslation } from "@/lib/i18n/use-app-translation";
+import { installWorkProfileTranslations } from "@/lib/i18n/work-profile-resources";
 import type {
   WorkProfileAuditEvent,
   WorkProfileCategory,
@@ -25,6 +26,8 @@ import type {
 } from "@/lib/console-state";
 
 const CATEGORIES: WorkProfileCategory[] = ["role", "domain", "work_type", "skill", "preference"];
+
+installWorkProfileTranslations();
 
 export function WorkProfileReview() {
   const { t } = useAppTranslation();
