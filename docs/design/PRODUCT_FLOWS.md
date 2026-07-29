@@ -218,6 +218,51 @@ Acceptance signals:
 - Understands whether a task may change files.
 - Can reach diff review without seeing raw governance internals first.
 
+## Flow 1A: Workspace Owner Reviews A Discovered Daily Work Type
+
+Primary user: workspace owner during occasional setup
+
+Frequency: low; repeated only when historical work changes
+
+User job: confirm “this is how I work” before the system exposes a reusable
+business task button.
+
+Happy path:
+
+```text
+Open Delivery memory
+-> choose an authorized source
+-> review the discovered daily work and its confirmed examples
+-> inspect always/conditional steps and plain-language evidence
+-> create an editable review draft
+-> adjust trigger, order, references, outputs, ledgers, conditions, and approvals
+-> save the review
+-> explicitly confirm and enable the immutable version
+```
+
+Version and recovery:
+
+```text
+Need to change an enabled work type
+-> create a new draft version
+-> edit and explicitly enable it
+-> old version remains pinned to existing local Issues
+
+Evidence changed or source access was revoked
+-> enabling is blocked with one recovery action
+-> refresh and reconfirm affected cases
+-> create a fresh draft
+```
+
+Acceptance signals:
+
+- The owner sees a business label such as “Commercial inquiry and quotation,”
+  not schema names or execution controls.
+- Enabling is impossible until the explicit review checkbox is selected.
+- Published versions cannot be edited in place.
+- Disabling stops new task creation without erasing history.
+- Keyboard and screen-reader users can identify every editable step and action.
+
 ## Flow 2: Advanced Developer Manages Codex Session
 
 Primary user: advanced developer

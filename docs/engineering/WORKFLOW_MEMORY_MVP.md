@@ -379,7 +379,31 @@ pnpm --filter @myagenttool/server typecheck
 pnpm --filter @myagenttool/web typecheck
 ```
 
-后续阶段由 #1552–#1556 负责任务类型发布、一键执行、CSV/XLSX 台账更新、普通用户界面和发布评测门禁。
+### 阶段 4：可复用任务类型审核、发布与版本治理
+
+关联 Issue：[#1552](https://github.com/perly6185-lab/myagenttool/issues/1552)。
+
+- 证据健康且包含至少 3 个已确认案例的工作流候选可以生成可编辑草稿；候选版本、历史案例、触发文档、步骤、置信度和证据指纹一并固定到草稿。
+- 审核界面使用“日常工作类型”“每次都做”“符合条件时做”“启用”等业务语言，展示推断说明、案例数、覆盖率和恢复建议，不展示原始 JSON、Prompt、Embedding、绝对路径或执行引擎术语。
+- 草稿允许修改工作类型名称、业务说明、触发文档，增加、删除、排序步骤，切换步骤用途及必做/条件属性，并填写参考资料、输出、台账、条件和人工确认要求。
+- 所有草稿写入均使用修订号。过期页面不会覆盖新修改；非法步骤依赖、循环、无效条件和越权证据会返回可恢复错误。页面存在未保存修改或缺少业务条件时，发布确认不可勾选。
+- 发布必须提交严格布尔值 `true` 的显式确认，并重新检查来源、候选是否仍为当前版本、至少 3 个历史案例是否仍处于可信状态，以及案例文件的可用性和证据指纹。证据变化、来源撤销或案例不足会阻断发布。
+- 已发布版本不可编辑。修改必须从当前已发布或停用版本创建新的草稿版本；新版本发布后，旧版本进入 `superseded`，但已有本地 Issue 和运行继续固定原版本。
+- 停用只阻止创建新任务，不删除历史 Issue、运行、案例或证据；停用版本仍可作为新版本草稿的基础。
+- HTTP 支持候选转草稿、任务类型列表、草稿更新、显式发布、新版本和停用；列表及所有动作保持租户和授权来源边界。
+
+阶段 4 重点回归：
+
+```bash
+node --test apps/server/test/business-routines.test.mjs
+node --test apps/server/test/integration/workflow-memory-http.test.mjs
+pnpm --filter @myagenttool/web exec vitest run src/features/workflow-memory/workflow-memory-view.test.tsx
+pnpm --filter @myagenttool/protocol typecheck
+pnpm --filter @myagenttool/server typecheck
+pnpm --filter @myagenttool/web typecheck
+```
+
+后续阶段由 #1553–#1556 负责一键执行、CSV/XLSX 台账更新、普通用户入口优化和发布评测门禁。
 
 ## MVP 之后
 

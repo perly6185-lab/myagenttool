@@ -195,6 +195,100 @@ test("workflow memory routes authorize, scan, classify, and enforce tenancy over
   );
   assert.equal(routineCandidates.status, 200);
   assert.equal(routineCandidates.body.count, 0);
+  const inquiryArtifact = runtimeState.workflowArtifacts.find((artifact) => artifact.id === inquiry.id);
+  for (const index of [1, 2, 3]) {
+    runtimeState.businessCases.push({
+      id: `bcs_http_${index}`,
+      ownerTeamId: "team_a",
+      projectId: source.projectId,
+      sourceId: source.id,
+      businessKey: `RFQ-HTTP-${index}`,
+      state: "confirmed",
+      artifactBindings: [{
+        artifactId: inquiry.id,
+        documentType: "inquiry",
+        roles: ["trigger", "input"],
+      }],
+      artifactFingerprints: { [inquiry.id]: inquiryArtifact.fingerprint },
+      revision: 1,
+    });
+  }
+  runtimeState.routineDiscoveryCandidates.push({
+    id: "rdc_http",
+    ownerTeamId: "team_a",
+    projectId: source.projectId,
+    sourceId: source.id,
+    state: "candidate",
+    triggerDocumentTypes: ["inquiry"],
+    confirmedCaseIds: ["bcs_http_1", "bcs_http_2", "bcs_http_3"],
+    steps: [{
+      key: "register",
+      kind: "ledger_upsert",
+      label: "Register inquiry",
+      required: true,
+      requirement: "mandatory",
+      coverage: 1,
+      dependsOn: [],
+      evidenceRefs: [{ artifactId: inquiry.id, kind: "coverage", field: null, location: null }],
+      configuration: {},
+    }],
+    evidenceRefs: [{ artifactId: inquiry.id, kind: "routine", field: null, location: null }],
+    confidence: 0.9,
+  });
+  const routineDraft = await call(
+    "/api/workflow-memory/business-routine-candidates/rdc_http/create-draft",
+    { method: "POST" },
+  );
+  assert.equal(routineDraft.status, 201, JSON.stringify(routineDraft.body));
+  assert.equal(routineDraft.body.routineDefinition.state, "draft");
+  const routineDefinitionId = routineDraft.body.routineDefinition.id;
+  const updatedRoutine = await call(
+    `/api/workflow-memory/business-routine-definitions/${routineDefinitionId}/update`,
+    {
+      method: "POST",
+      body: {
+        expectedRevision: routineDraft.body.routineDefinition.revision,
+        name: "Commercial inquiry and quotation",
+        description: "A reviewed commercial workflow.",
+        steps: routineDraft.body.routineDefinition.steps,
+      },
+    },
+  );
+  assert.equal(updatedRoutine.status, 200, JSON.stringify(updatedRoutine.body));
+  assert.equal((await call(
+    `/api/workflow-memory/business-routine-definitions/${routineDefinitionId}/publish`,
+    {
+      method: "POST",
+      body: { expectedRevision: updatedRoutine.body.routineDefinition.revision, confirmed: false },
+    },
+  )).status, 400);
+  const publishedRoutine = await call(
+    `/api/workflow-memory/business-routine-definitions/${routineDefinitionId}/publish`,
+    {
+      method: "POST",
+      body: { expectedRevision: updatedRoutine.body.routineDefinition.revision, confirmed: true },
+    },
+  );
+  assert.equal(publishedRoutine.status, 200, JSON.stringify(publishedRoutine.body));
+  assert.equal(publishedRoutine.body.routineDefinition.state, "published");
+  const nextRoutineVersion = await call(
+    `/api/workflow-memory/business-routine-definitions/${routineDefinitionId}/new-version`,
+    {
+      method: "POST",
+      body: { expectedRevision: publishedRoutine.body.routineDefinition.revision },
+    },
+  );
+  assert.equal(nextRoutineVersion.status, 201);
+  assert.equal(nextRoutineVersion.body.routineDefinition.version, 2);
+  const listedRoutineDefinitions = await call(
+    `/api/workflow-memory/business-routine-definitions?sourceId=${source.id}`,
+  );
+  assert.equal(listedRoutineDefinitions.status, 200);
+  assert.equal(listedRoutineDefinitions.body.count, 2);
+  assert.equal((await call(
+    `/api/workflow-memory/business-routine-definitions?sourceId=${source.id}`,
+    { token: "tok_b" },
+  )).status, 404);
   const analyzedSource = await call(
     `/api/workflow-memory/sources/${source.id}/analyze-business-documents`,
     { method: "POST" },

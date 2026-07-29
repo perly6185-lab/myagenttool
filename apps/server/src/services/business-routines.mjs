@@ -32,7 +32,7 @@ const DEFINITION_TRANSITIONS = {
   candidate: { review: "draft" },
   draft: { publish: "published" },
   published: { disable: "disabled", supersede: "superseded" },
-  disabled: { enable: "published", supersede: "superseded" },
+  disabled: { supersede: "superseded" },
   superseded: {},
 };
 
@@ -64,6 +64,12 @@ function stringList(values, { maxItems = 100, maxLength = 200 } = {}) {
 function confidence(value) {
   const number = Number(value);
   return Number.isFinite(number) && number >= 0 && number <= 1 ? number : null;
+}
+
+function routineStepConfigurationError(steps) {
+  const invalidCondition = steps.find((step) =>
+    step.kind === "condition" && !text(step.configuration?.condition, 1_000));
+  return invalidCondition ? "routine_step_condition_required" : null;
 }
 
 function relativePath(value) {
@@ -155,6 +161,21 @@ export function migrateBusinessRoutineState(state) {
         artifactById.get(binding.artifactId)?.fingerprint ?? "",
       ]),
     );
+  }
+  for (const definition of state.routineDefinitions) {
+    definition.description ??= "";
+    definition.discoveryCandidateId ??= null;
+    if (!Array.isArray(definition.historicalCaseIds)) definition.historicalCaseIds = [];
+    if (!definition.evidenceFingerprints
+      || typeof definition.evidenceFingerprints !== "object"
+      || Array.isArray(definition.evidenceFingerprints)) {
+      definition.evidenceFingerprints = Object.fromEntries(
+        [...new Set((definition.evidenceRefs ?? []).map((ref) => ref.artifactId))].map((artifactId) => [
+          artifactId,
+          artifactById.get(artifactId)?.fingerprint ?? "",
+        ]),
+      );
+    }
   }
   return state;
 }
@@ -445,22 +466,37 @@ export function createBusinessRoutineService({
     const context = activeContext(input, actor);
     if (context.error) return { status: 404, body: { error: context.error } };
     const name = text(input.name, 200);
+    const description = input.description == null ? "" : String(input.description).trim().slice(0, 1_000);
+    const discoveryCandidateId = input.discoveryCandidateId == null ? null : text(input.discoveryCandidateId);
+    const historicalCaseIds = stringList(input.historicalCaseIds ?? []);
     const triggerDocumentTypes = stringList(input.triggerDocumentTypes ?? [], { maxItems: 20, maxLength: 50 });
     const steps = normalizeRoutineSteps(input.steps);
     const evidenceRefs = normalizeRoutineEvidenceRefs(input.evidenceRefs ?? []);
     const score = confidence(input.confidence ?? 1);
     const requestedState = ["candidate", "draft"].includes(input.state) ? input.state : "candidate";
-    if (!name || !triggerDocumentTypes?.length
+    const configurationError = steps.ok ? routineStepConfigurationError(steps.value) : null;
+    if (!name || !historicalCaseIds || !triggerDocumentTypes?.length
       || triggerDocumentTypes.some((type) => !businessDocumentTypes.includes(type))
-      || !steps.ok || !evidenceRefs || score == null) {
-      return { status: 400, body: { error: steps.error ?? "invalid_routine_definition" } };
+      || !steps.ok || configurationError || !evidenceRefs || score == null) {
+      return {
+        status: 400,
+        body: {
+          error: steps.error ?? configurationError ?? "invalid_routine_definition",
+          recovery: configurationError ? "Describe when the conditional step should run." : undefined,
+        },
+      };
     }
     if (!evidenceBelongsTo(evidenceRefs, context, actor)
       || steps.value.some((step) => !evidenceBelongsTo(step.evidenceRefs, context, actor))) {
       return { status: 404, body: { error: "routine_definition_evidence_not_found" } };
     }
     const idempotencyKey = `routine-definition:v1:${hashKey([
-      actorTeam(actor), context.sourceId, name, evidenceRefs.map((ref) => ref.artifactId).sort(),
+      actorTeam(actor),
+      context.sourceId,
+      name,
+      discoveryCandidateId ?? "",
+      historicalCaseIds.slice().sort(),
+      evidenceRefs.map((ref) => ref.artifactId).sort(),
     ])}`;
     const replay = state.routineDefinitions.find((row) =>
       visible(row, actor) && row.idempotencyKey === idempotencyKey);
@@ -475,11 +511,20 @@ export function createBusinessRoutineService({
       projectId: context.projectId,
       sourceId: context.sourceId,
       name,
+      description,
       version: 1,
       state: requestedState,
+      discoveryCandidateId,
+      historicalCaseIds,
       triggerDocumentTypes,
       steps: steps.value,
       evidenceRefs,
+      evidenceFingerprints: Object.fromEntries(
+        [...new Set([
+          ...evidenceRefs.map((ref) => ref.artifactId),
+          ...steps.value.flatMap((step) => step.evidenceRefs.map((ref) => ref.artifactId)),
+        ])].map((artifactId) => [artifactId, artifactFor(artifactId, actor)?.fingerprint ?? ""]),
+      ),
       confidence: score,
       supersedesId: null,
       supersededById: null,
@@ -506,6 +551,7 @@ export function createBusinessRoutineService({
     expectedRevision,
     action,
     supersededById = null,
+    confirmed = false,
   } = {}, actor = null) {
     const definition = state.routineDefinitions.find((row) =>
       row.id === routineDefinitionId && visible(row, actor));
@@ -513,11 +559,22 @@ export function createBusinessRoutineService({
     if (expectedRevision !== definition.revision) {
       return {
         status: 409,
-        body: { error: "routine_definition_revision_conflict", currentRevision: definition.revision },
+        body: {
+          error: "routine_definition_revision_conflict",
+          currentRevision: definition.revision,
+          recovery: "Refresh the work type and reapply the intended change.",
+        },
       };
     }
     if (!sourceFor(definition.sourceId, actor, { active: action !== "disable" && action !== "supersede" })) {
       return { status: 409, body: { error: "routine_definition_source_revoked" } };
+    }
+    if (action === "publish") {
+      return publishRoutineDefinition({
+        routineDefinitionId,
+        expectedRevision,
+        confirmed,
+      }, actor);
     }
     const nextState = DEFINITION_TRANSITIONS[definition.state]?.[action] ?? null;
     if (!nextState) {
@@ -544,6 +601,342 @@ export function createBusinessRoutineService({
       });
     });
     return { status: 200, body: { routineDefinition: definition } };
+  }
+
+  function routineDefinitionHealth(definition, actor) {
+    const source = sourceFor(definition.sourceId, actor, { active: true });
+    if (!source) {
+      return { state: "blocked", issues: ["Source access was revoked."], recovery: "Restore source access." };
+    }
+    const issues = [];
+    if (definition.discoveryCandidateId) {
+      const candidate = state.routineDiscoveryCandidates.find((row) =>
+        row.id === definition.discoveryCandidateId
+        && visible(row, actor)
+        && row.projectId === definition.projectId
+        && row.sourceId === definition.sourceId);
+      if (!candidate || candidate.state !== "candidate") {
+        issues.push("The discovered work pattern is no longer current.");
+      }
+    }
+    for (const [artifactId, fingerprint] of Object.entries(definition.evidenceFingerprints ?? {})) {
+      const artifact = artifactFor(artifactId, actor);
+      if (!artifact || artifact.availability === "missing" || artifact.exclusion) {
+        issues.push("Historical evidence is missing or excluded.");
+      } else if (artifact.fingerprint !== fingerprint) {
+        issues.push("Historical evidence changed after this draft was created.");
+      }
+    }
+    if (definition.discoveryCandidateId || definition.historicalCaseIds.length) {
+      const historicalCases = definition.historicalCaseIds.map((caseId) =>
+        state.businessCases.find((row) =>
+          row.id === caseId
+          && visible(row, actor)
+          && row.projectId === definition.projectId
+          && row.sourceId === definition.sourceId));
+      const healthyCaseCount = historicalCases.filter((businessCase) =>
+        businessCase
+        && ["confirmed", "active", "completed"].includes(businessCase.state)
+        && Array.isArray(businessCase.artifactBindings)
+        && businessCase.artifactBindings.every((binding) => {
+          const artifact = artifactFor(binding.artifactId, actor);
+          return artifact
+            && artifact.projectId === definition.projectId
+            && artifact.sourceId === definition.sourceId
+            && artifact.availability !== "missing"
+            && !artifact.exclusion
+            && businessCase.artifactFingerprints?.[artifact.id] === artifact.fingerprint;
+        })).length;
+      if (historicalCases.some((businessCase) => !businessCase)) {
+        issues.push("A historical business case is no longer available.");
+      }
+      if (healthyCaseCount !== historicalCases.filter(Boolean).length) {
+        issues.push("A historical business case is no longer confirmed or its evidence changed.");
+      }
+      if (healthyCaseCount < 3) {
+        issues.push("At least three healthy confirmed historical cases are required.");
+      }
+    }
+    const configurationError = routineStepConfigurationError(definition.steps);
+    if (configurationError) {
+      issues.push("A conditional step is missing its business condition.");
+    }
+    return issues.length
+      ? { state: "blocked", issues: [...new Set(issues)], recovery: "Review changed evidence and create a fresh draft." }
+      : { state: "valid", issues: [], recovery: null };
+  }
+
+  function listRoutineDefinitions({ sourceId = null } = {}, actor = null) {
+    if (sourceId && !sourceFor(sourceId, actor)) {
+      return { status: 404, body: { error: "workflow_source_not_found" } };
+    }
+    const routineDefinitions = state.routineDefinitions
+      .filter((row) => visible(row, actor) && (!sourceId || row.sourceId === sourceId))
+      .map((row) => ({ ...row, evidenceHealth: routineDefinitionHealth(row, actor) }));
+    return { status: 200, body: { routineDefinitions, count: routineDefinitions.length } };
+  }
+
+  function createRoutineDraftFromDiscovery({ discoveryCandidateId } = {}, actor = null) {
+    const candidate = state.routineDiscoveryCandidates.find((row) =>
+      row.id === discoveryCandidateId && visible(row, actor));
+    if (!candidate) return { status: 404, body: { error: "routine_discovery_candidate_not_found" } };
+    if (candidate.state !== "candidate") {
+      return { status: 409, body: { error: "routine_discovery_candidate_not_current" } };
+    }
+    if (candidate.confirmedCaseIds.length < 3) {
+      return {
+        status: 409,
+        body: {
+          error: "insufficient_confirmed_business_cases",
+          recovery: "Confirm at least three comparable business cases, then discover again.",
+        },
+      };
+    }
+    const cases = candidate.confirmedCaseIds.map((caseId) =>
+      state.businessCases.find((row) => row.id === caseId && visible(row, actor)));
+    const evidenceChanged = cases.some((businessCase) =>
+      !businessCase
+      || !["confirmed", "active", "completed"].includes(businessCase.state)
+      || businessCase.artifactBindings.some((binding) => {
+        const artifact = artifactFor(binding.artifactId, actor);
+        return !artifact
+          || artifact.availability === "missing"
+          || artifact.exclusion
+          || businessCase.artifactFingerprints?.[artifact.id] !== artifact.fingerprint;
+      }));
+    if (evidenceChanged) {
+      return {
+        status: 409,
+        body: {
+          error: "routine_discovery_evidence_changed",
+          recovery: "Re-analyze changed files and confirm the affected business cases.",
+        },
+      };
+    }
+    return createRoutineDefinition({
+      projectId: candidate.projectId,
+      sourceId: candidate.sourceId,
+      name: "Commercial inquiry and quotation",
+      description: "Register an inquiry, retrieve references, prepare and approve a quotation, then hand off a confirmed order.",
+      state: "draft",
+      discoveryCandidateId: candidate.id,
+      historicalCaseIds: candidate.confirmedCaseIds,
+      triggerDocumentTypes: candidate.triggerDocumentTypes,
+      steps: candidate.steps.map((step) => ({
+        key: step.key,
+        kind: step.kind,
+        label: step.label,
+        required: step.required,
+        dependsOn: step.dependsOn,
+        evidenceRefs: step.evidenceRefs,
+        configuration: {
+          ...step.configuration,
+          requirement: step.requirement,
+          coverage: step.coverage,
+          ...(step.kind === "condition" && !text(step.configuration?.condition, 1_000)
+            ? { condition: step.label }
+            : {}),
+        },
+      })),
+      evidenceRefs: candidate.evidenceRefs,
+      confidence: candidate.confidence,
+    }, actor);
+  }
+
+  function updateRoutineDefinition({
+    routineDefinitionId,
+    expectedRevision,
+    name,
+    description,
+    triggerDocumentTypes,
+    steps,
+  } = {}, actor = null) {
+    const definition = state.routineDefinitions.find((row) =>
+      row.id === routineDefinitionId && visible(row, actor));
+    if (!definition) return { status: 404, body: { error: "routine_definition_not_found" } };
+    if (expectedRevision !== definition.revision) {
+      return {
+        status: 409,
+        body: {
+          error: "routine_definition_revision_conflict",
+          currentRevision: definition.revision,
+          recovery: "Refresh the work type and reapply the intended change.",
+        },
+      };
+    }
+    if (!["candidate", "draft"].includes(definition.state)) {
+      return { status: 409, body: { error: "published_routine_definition_is_immutable" } };
+    }
+    const nextName = name == null ? definition.name : text(name, 200);
+    const nextDescription = description == null
+      ? definition.description
+      : text(description, 1_000);
+    const nextTriggers = triggerDocumentTypes == null
+      ? definition.triggerDocumentTypes
+      : stringList(triggerDocumentTypes, { maxItems: 20, maxLength: 50 });
+    const nextSteps = steps == null ? { ok: true, value: definition.steps } : normalizeRoutineSteps(steps);
+    const configurationError = nextSteps.ok ? routineStepConfigurationError(nextSteps.value) : null;
+    if (!nextName || !nextDescription || !nextTriggers?.length
+      || nextTriggers.some((type) => !businessDocumentTypes.includes(type))
+      || !nextSteps.ok
+      || configurationError
+      || nextSteps.value.some((step) => !evidenceBelongsTo(step.evidenceRefs, definition, actor))) {
+      return {
+        status: 400,
+        body: {
+          error: nextSteps.error ?? configurationError ?? "invalid_routine_definition_update",
+          recovery: configurationError
+            ? "Describe when the conditional step should run."
+            : "Review the trigger, step order, conditions, and evidence.",
+        },
+      };
+    }
+    runTx(() => {
+      Object.assign(definition, {
+        name: nextName,
+        description: nextDescription,
+        triggerDocumentTypes: nextTriggers,
+        steps: nextSteps.value,
+        evidenceFingerprints: Object.fromEntries(
+          [...new Set([
+            ...definition.evidenceRefs.map((ref) => ref.artifactId),
+            ...nextSteps.value.flatMap((step) => step.evidenceRefs.map((ref) => ref.artifactId)),
+          ])].map((artifactId) => [artifactId, artifactFor(artifactId, actor)?.fingerprint ?? ""]),
+        ),
+        revision: definition.revision + 1,
+        updatedAt: now(),
+        updatedBy: actorUser(actor),
+      });
+      event("routine_definition_updated", "Business routine draft updated.", definition, actor, {
+        routineDefinitionId: definition.id,
+        version: definition.version,
+        stepCount: definition.steps.length,
+      });
+    });
+    return { status: 200, body: { routineDefinition: definition } };
+  }
+
+  function createRoutineDefinitionVersion({
+    routineDefinitionId,
+    expectedRevision,
+  } = {}, actor = null) {
+    const base = state.routineDefinitions.find((row) =>
+      row.id === routineDefinitionId && visible(row, actor));
+    if (!base) return { status: 404, body: { error: "routine_definition_not_found" } };
+    if (expectedRevision !== base.revision) {
+      return {
+        status: 409,
+        body: {
+          error: "routine_definition_revision_conflict",
+          currentRevision: base.revision,
+          recovery: "Refresh the work type before creating a new version.",
+        },
+      };
+    }
+    if (!["published", "disabled"].includes(base.state)) {
+      return { status: 409, body: { error: "routine_definition_version_requires_published_base" } };
+    }
+    const existingDraft = state.routineDefinitions.find((row) =>
+      visible(row, actor) && row.familyId === base.familyId && row.state === "draft");
+    if (existingDraft) return { status: 200, body: { routineDefinition: existingDraft, replayed: true } };
+    const timestamp = now();
+    const id = nextId("rtd");
+    const version = Math.max(...state.routineDefinitions
+      .filter((row) => visible(row, actor) && row.familyId === base.familyId)
+      .map((row) => row.version)) + 1;
+    const draft = {
+      ...base,
+      id,
+      familyId: base.familyId,
+      version,
+      state: "draft",
+      supersedesId: base.id,
+      supersededById: null,
+      idempotencyKey: `routine-definition-version:v1:${hashKey([base.familyId, version])}`,
+      revision: 1,
+      createdAt: timestamp,
+      updatedAt: timestamp,
+      createdBy: actorUser(actor),
+      updatedBy: actorUser(actor),
+    };
+    runTx(() => {
+      state.routineDefinitions.push(draft);
+      event("routine_definition_version_created", "New business routine draft created.", draft, actor, {
+        routineDefinitionId: draft.id,
+        familyId: draft.familyId,
+        version,
+        supersedesId: base.id,
+      });
+    });
+    return { status: 201, body: { routineDefinition: draft, replayed: false } };
+  }
+
+  function publishRoutineDefinition({
+    routineDefinitionId,
+    expectedRevision,
+    confirmed = false,
+  } = {}, actor = null) {
+    const definition = state.routineDefinitions.find((row) =>
+      row.id === routineDefinitionId && visible(row, actor));
+    if (!definition) return { status: 404, body: { error: "routine_definition_not_found" } };
+    if (expectedRevision !== definition.revision) {
+      return {
+        status: 409,
+        body: {
+          error: "routine_definition_revision_conflict",
+          currentRevision: definition.revision,
+          recovery: "Refresh the work type before enabling it.",
+        },
+      };
+    }
+    if (definition.state !== "draft") {
+      return { status: 409, body: { error: "routine_definition_not_publishable" } };
+    }
+    if (confirmed !== true) {
+      return { status: 400, body: { error: "routine_definition_publication_confirmation_required" } };
+    }
+    const health = routineDefinitionHealth(definition, actor);
+    if (health.state !== "valid") {
+      return { status: 409, body: { error: "routine_definition_evidence_not_valid", evidenceHealth: health } };
+    }
+    const previous = definition.supersedesId
+      ? state.routineDefinitions.find((row) => row.id === definition.supersedesId && visible(row, actor))
+      : null;
+    if (definition.supersedesId && (!previous
+      || previous.familyId !== definition.familyId
+      || previous.version >= definition.version
+      || !["published", "disabled"].includes(previous.state))) {
+      return { status: 409, body: { error: "routine_definition_replacement_not_current" } };
+    }
+    const otherPublished = state.routineDefinitions.find((row) =>
+      visible(row, actor)
+      && row.familyId === definition.familyId
+      && row.id !== definition.id
+      && row.state === "published"
+      && row.id !== previous?.id);
+    if (otherPublished) {
+      return { status: 409, body: { error: "routine_definition_family_already_published" } };
+    }
+    runTx(() => {
+      definition.state = "published";
+      definition.revision += 1;
+      definition.updatedAt = now();
+      definition.updatedBy = actorUser(actor);
+      if (previous) {
+        previous.state = "superseded";
+        previous.supersededById = definition.id;
+        previous.revision += 1;
+        previous.updatedAt = definition.updatedAt;
+        previous.updatedBy = actorUser(actor);
+      }
+      event("routine_definition_published", "Business routine version published.", definition, actor, {
+        routineDefinitionId: definition.id,
+        familyId: definition.familyId,
+        version: definition.version,
+        supersedesId: previous?.id ?? null,
+      });
+    });
+    return { status: 200, body: { routineDefinition: definition, superseded: previous } };
   }
 
   function createLedgerDefinition(input = {}, actor = null) {
@@ -781,6 +1174,11 @@ export function createBusinessRoutineService({
     createBusinessEntity,
     createBusinessCase,
     createRoutineDefinition,
+    createRoutineDraftFromDiscovery,
+    listRoutineDefinitions,
+    updateRoutineDefinition,
+    createRoutineDefinitionVersion,
+    publishRoutineDefinition,
     transitionRoutineDefinition,
     createLedgerDefinition,
     createRoutineRun,

@@ -26,7 +26,11 @@ import { Input, Select } from "@/components/ui/input";
 import { api } from "@/data/use-console-actions";
 import { useConsoleState, useRefreshConsoleState } from "@/data/use-console-state";
 import { workflowMemoryApi } from "@/features/workflow-memory/workflow-memory-api";
+import { ApiError } from "@/lib/api-client";
 import type {
+  BusinessRoutineDefinition,
+  BusinessRoutineDiscoveryCandidate,
+  BusinessRoutineStep,
   WorkflowArtifact,
   WorkflowArtifactRole,
   WorkflowFeedbackReason,
@@ -121,6 +125,74 @@ const COPY = {
     draftImpact: "Impact preview",
     noProfileChanges: "No structural change detected.",
     noProfiles: "No workflow profile yet.",
+    routineLibrary: "Daily work types",
+    routineLibraryHint: "Review what was learned from past work, adjust the steps, then explicitly enable it as a reusable task.",
+    routineCandidate: "Suggested daily work",
+    routineDefinitionCandidate: "Needs review",
+    routineDraft: "Awaiting your review",
+    routinePublished: "Enabled",
+    routineDisabled: "Disabled",
+    routineSuperseded: "Replaced by a newer version",
+    noRoutineCandidates: "No stable daily work has been discovered yet. Confirm at least three comparable cases first.",
+    createRoutineDraft: "Review this work type",
+    routineName: "Work type name",
+    routineDescription: "What this work produces",
+    routineTrigger: "Starts when this arrives",
+    routineSteps: "Work steps",
+    routineStepKind: "Step purpose",
+    routineStepDetails: "Reference, output, ledger, condition, or approval details",
+    routineSaveBeforePublish: "Save the latest changes before enabling this work type.",
+    routineConditionRequired: "Describe when this conditional step should run.",
+    mandatoryStep: "Always",
+    conditionalStep: "When applicable",
+    historicalCases: "confirmed examples",
+    saveRoutineDraft: "Save review",
+    addRoutineStep: "Add a step",
+    removeRoutineStep: "Remove",
+    moveEarlier: "Move earlier",
+    moveLater: "Move later",
+    publishRoutineConfirm: "I reviewed the trigger, steps, outputs, ledgers, and approval points.",
+    publishRoutine: "Enable this work type",
+    newRoutineVersion: "Create a new version",
+    disableRoutine: "Disable for new tasks",
+    routineEvidenceChanged: "Historical evidence changed. Refresh the cases before enabling this work type.",
+    routineSourceRevoked: "Source access was removed. Restore access before enabling this work type.",
+    routinePatternChanged: "A newer work pattern is available. Review a fresh suggestion before enabling it.",
+    routineRecoveryRefresh: "Refresh this source and reconfirm the affected examples.",
+    routineEvidenceSupport: (support: number, total: number) =>
+      `${support} of ${total} confirmed examples include this step.`,
+    routineErrors: {
+      insufficient_confirmed_business_cases: "Confirm at least three comparable cases, then try again.",
+      routine_discovery_evidence_changed: "Refresh and reconfirm the changed historical cases, then review the work type again.",
+      routine_definition_revision_conflict: "This work type changed in another view. Refresh it before editing again.",
+      routine_step_condition_required: "Describe when the conditional step should run, then save again.",
+      routine_definition_evidence_not_valid: "Refresh and reconfirm the affected historical cases before enabling this work type.",
+      routine_definition_source_revoked: "Restore access to the source before changing this work type.",
+      routine_definition_publication_confirmation_required: "Review the work type and select the confirmation before enabling it.",
+    },
+    routineStepKinds: {
+      extract: "Read the inquiry",
+      retrieve: "Retrieve references",
+      generate: "Prepare an output",
+      ledger_upsert: "Update a ledger",
+      human_approval: "Human review",
+      condition: "Check a condition",
+      create_issue: "Hand off follow-up work",
+    },
+    routineTriggerTypes: {
+      inquiry: "Inquiry",
+      quotation: "Quotation",
+      order: "Order",
+    },
+    routineStepConfiguration: {
+      extract: "Fields to read",
+      retrieve: "Reference sources",
+      generate: "Output to prepare",
+      ledger_upsert: "Ledger and field mapping",
+      human_approval: "Approval requirement",
+      condition: "Business condition",
+      create_issue: "Handoff destination",
+    },
     trial: "Trial",
     established: "Established",
     evidenceCases: "evidence cases",
@@ -340,6 +412,74 @@ const COPY = {
     draftImpact: "影响预览",
     noProfileChanges: "未发现结构变化。",
     noProfiles: "还没有工作流画像。",
+    routineLibrary: "日常工作类型",
+    routineLibraryHint: "查看系统从历史工作中学到的流程，调整步骤后，再明确启用为可复用任务。",
+    routineCandidate: "发现的日常工作",
+    routineDefinitionCandidate: "需要审核",
+    routineDraft: "待你审核",
+    routinePublished: "已启用",
+    routineDisabled: "已停用",
+    routineSuperseded: "已被新版本替代",
+    noRoutineCandidates: "尚未发现稳定的日常工作，请先确认至少三个可比较案例。",
+    createRoutineDraft: "审核这个工作类型",
+    routineName: "工作类型名称",
+    routineDescription: "这项工作要产出什么",
+    routineTrigger: "收到什么后开始",
+    routineSteps: "工作步骤",
+    routineStepKind: "步骤用途",
+    routineStepDetails: "参考资料、输出、台账、条件或确认要求",
+    routineSaveBeforePublish: "请先保存最新修改，再启用这个工作类型。",
+    routineConditionRequired: "请说明符合什么业务条件时执行此步骤。",
+    mandatoryStep: "每次都做",
+    conditionalStep: "符合条件时做",
+    historicalCases: "个已确认案例",
+    saveRoutineDraft: "保存审核结果",
+    addRoutineStep: "增加步骤",
+    removeRoutineStep: "删除",
+    moveEarlier: "上移",
+    moveLater: "下移",
+    publishRoutineConfirm: "我已检查触发条件、步骤、输出、台账和人工确认点。",
+    publishRoutine: "启用这个工作类型",
+    newRoutineVersion: "创建新版本",
+    disableRoutine: "不再创建新任务",
+    routineEvidenceChanged: "历史证据已变化，请刷新相关案例后再启用。",
+    routineSourceRevoked: "来源目录访问权限已失效，请恢复权限后再启用。",
+    routinePatternChanged: "系统已发现更新的工作模式，请审核新的建议后再启用。",
+    routineRecoveryRefresh: "请刷新来源目录，并重新确认受影响的案例。",
+    routineEvidenceSupport: (support: number, total: number) =>
+      `${total} 个已确认案例中有 ${support} 个包含此步骤。`,
+    routineErrors: {
+      insufficient_confirmed_business_cases: "请先确认至少三个可比较案例，再重试。",
+      routine_discovery_evidence_changed: "请刷新并重新确认发生变化的历史案例，再审核这个工作类型。",
+      routine_definition_revision_conflict: "这个工作类型已在其他页面被修改，请刷新后再编辑。",
+      routine_step_condition_required: "请补充条件步骤的业务判断条件，然后重新保存。",
+      routine_definition_evidence_not_valid: "请刷新并重新确认受影响的历史案例，再启用这个工作类型。",
+      routine_definition_source_revoked: "请先恢复来源目录的访问权限，再修改这个工作类型。",
+      routine_definition_publication_confirmation_required: "请审核工作类型并勾选确认后再启用。",
+    },
+    routineStepKinds: {
+      extract: "读取询价信息",
+      retrieve: "检索参考资料",
+      generate: "准备输出文件",
+      ledger_upsert: "更新台账",
+      human_approval: "人工确认",
+      condition: "判断业务条件",
+      create_issue: "移交后续工作",
+    },
+    routineTriggerTypes: {
+      inquiry: "询价单",
+      quotation: "报价单",
+      order: "订单",
+    },
+    routineStepConfiguration: {
+      extract: "需要读取的字段",
+      retrieve: "参考资料来源",
+      generate: "需要生成的输出",
+      ledger_upsert: "台账及字段对应关系",
+      human_approval: "人工确认要求",
+      condition: "业务判断条件",
+      create_issue: "后续工作移交对象",
+    },
     trial: "试用",
     established: "正式",
     evidenceCases: "个证据案例",
@@ -539,6 +679,7 @@ export function WorkflowMemoryView() {
     note: string;
   } | null>(null);
   const [publicationConfirmations, setPublicationConfirmations] = useState<Record<string, boolean>>({});
+  const [routinePublishConfirmations, setRoutinePublishConfirmations] = useState<Record<string, boolean>>({});
   const [pendingAction, setPendingAction] = useState("");
   const [error, setError] = useState<string | null>(null);
 
@@ -569,6 +710,16 @@ export function WorkflowMemoryView() {
   const profileDraftsQuery = useQuery({
     queryKey: ["workflow-memory", "profile-drafts"],
     queryFn: () => workflowApi.listWorkflowProfileDrafts(),
+  });
+  const routineCandidatesQuery = useQuery({
+    queryKey: ["workflow-memory", "business-routine-candidates", activeSourceId],
+    queryFn: () => workflowApi.listBusinessRoutineCandidates(activeSourceId),
+    enabled: Boolean(activeSourceId),
+  });
+  const routineDefinitionsQuery = useQuery({
+    queryKey: ["workflow-memory", "business-routine-definitions", activeSourceId],
+    queryFn: () => workflowApi.listBusinessRoutineDefinitions(activeSourceId),
+    enabled: Boolean(activeSourceId),
   });
   const inboxQuery = useQuery({
     queryKey: ["workflow-memory", "inbox", activeSourceId],
@@ -603,6 +754,11 @@ export function WorkflowMemoryView() {
     profile.sourceId === activeSourceId && !profile.supersededByProfileId && profile.state !== "archived");
   const profileDrafts = (profileDraftsQuery.data?.drafts ?? []).filter((draft) =>
     draft.sourceId === activeSourceId && draft.state === "draft");
+  const routineDefinitions = routineDefinitionsQuery.data?.routineDefinitions ?? [];
+  const routineCandidates = (routineCandidatesQuery.data?.candidates ?? []).filter((candidate) =>
+    candidate.state === "candidate"
+    && !routineDefinitions.some((definition) =>
+      definition.discoveryCandidateId === candidate.id && definition.state !== "superseded"));
   const availableAgents = (consoleState?.agents ?? []).filter((agent) =>
     agent.status !== "disabled"
     && agent.status !== "unavailable"
@@ -639,6 +795,8 @@ export function WorkflowMemoryView() {
       queryClient.invalidateQueries({ queryKey: ["workflow-memory", "profiles"] }),
       queryClient.invalidateQueries({ queryKey: ["workflow-memory", "retrieval-evaluation"] }),
       queryClient.invalidateQueries({ queryKey: ["workflow-memory", "profile-drafts"] }),
+      queryClient.invalidateQueries({ queryKey: ["workflow-memory", "business-routine-candidates"] }),
+      queryClient.invalidateQueries({ queryKey: ["workflow-memory", "business-routine-definitions"] }),
       queryClient.invalidateQueries({ queryKey: ["workflow-memory", "inbox"] }),
       queryClient.invalidateQueries({ queryKey: ["workflow-memory", "matches"] }),
       queryClient.invalidateQueries({ queryKey: ["workflow-memory", "inspection"] }),
@@ -653,7 +811,10 @@ export function WorkflowMemoryView() {
       await action();
       await refreshSourceData();
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : copy.error);
+      const routineError = caught instanceof ApiError
+        ? copy.routineErrors[caught.code as keyof typeof copy.routineErrors]
+        : null;
+      setError(routineError ?? (caught instanceof Error ? caught.message : copy.error));
     } finally {
       setPendingAction("");
     }
@@ -1198,6 +1359,74 @@ export function WorkflowMemoryView() {
                   </div>
                 ) : (
                   <Empty text={copy.retrievalInsufficient} />
+                )}
+              </SectionCard>
+
+              <SectionCard title={copy.routineLibrary} hint={copy.routineLibraryHint} icon={Sparkles}>
+                {routineCandidatesQuery.isLoading || routineDefinitionsQuery.isLoading ? (
+                  <Loader2 className="animate-spin text-muted-foreground" />
+                ) : routineCandidates.length === 0 && routineDefinitions.length === 0 ? (
+                  <Empty text={copy.noRoutineCandidates} />
+                ) : (
+                  <div className="space-y-3">
+                    {routineCandidates.map((candidate) => (
+                      <RoutineCandidateCard
+                        key={candidate.id}
+                        candidate={candidate}
+                        copy={copy}
+                        pending={pendingAction === `routine-candidate-${candidate.id}`}
+                        onCreateDraft={() => void runAction(
+                          `routine-candidate-${candidate.id}`,
+                          () => workflowApi.createBusinessRoutineDraft(candidate.id),
+                        )}
+                      />
+                    ))}
+                    {routineDefinitions
+                      .slice()
+                      .sort((left, right) => right.version - left.version)
+                      .map((definition) => (
+                        <RoutineDefinitionCard
+                          key={`${definition.id}:${definition.revision}`}
+                          definition={definition}
+                          copy={copy}
+                          pending={pendingAction === `routine-definition-${definition.id}`}
+                          publishConfirmed={routinePublishConfirmations[definition.id] === true}
+                          onPublishConfirmed={(confirmed) => setRoutinePublishConfirmations((current) => ({
+                            ...current,
+                            [definition.id]: confirmed,
+                          }))}
+                          onSave={(draft) => void runAction(
+                            `routine-definition-${definition.id}`,
+                            () => workflowApi.updateBusinessRoutineDefinition(definition.id, {
+                              expectedRevision: definition.revision,
+                              ...draft,
+                            }),
+                          )}
+                          onPublish={() => void runAction(
+                            `routine-definition-${definition.id}`,
+                            () => workflowApi.publishBusinessRoutineDefinition(
+                              definition.id,
+                              definition.revision,
+                              routinePublishConfirmations[definition.id] === true,
+                            ),
+                          )}
+                          onNewVersion={() => void runAction(
+                            `routine-definition-${definition.id}`,
+                            () => workflowApi.createBusinessRoutineDefinitionVersion(
+                              definition.id,
+                              definition.revision,
+                            ),
+                          )}
+                          onDisable={() => void runAction(
+                            `routine-definition-${definition.id}`,
+                            () => workflowApi.disableBusinessRoutineDefinition(
+                              definition.id,
+                              definition.revision,
+                            ),
+                          )}
+                        />
+                      ))}
+                  </div>
                 )}
               </SectionCard>
 
@@ -2017,6 +2246,397 @@ function QualityBadge({
     >
       {copy.learningQuality} {Math.round(quality.score * 100)}% · {qualityStatusLabel(quality, copy)}
     </Badge>
+  );
+}
+
+function RoutineCandidateCard({
+  candidate,
+  copy,
+  pending,
+  onCreateDraft,
+}: {
+  candidate: BusinessRoutineDiscoveryCandidate;
+  copy: typeof COPY.en | typeof COPY.zh;
+  pending: boolean;
+  onCreateDraft: () => void;
+}) {
+  return (
+    <div className="rounded-md border border-primary/30 bg-primary/5 p-3">
+      <div className="flex flex-wrap items-center gap-2">
+        <div className="min-w-0 flex-1">
+          <p className="text-xs text-muted-foreground">{copy.routineCandidate}</p>
+          <p className="text-sm font-semibold">{candidate.name}</p>
+        </div>
+        <Badge tone={candidate.evidenceHealth.state === "valid" ? "success" : "danger"}>
+          {Math.round(candidate.confidence * 100)}%
+        </Badge>
+      </div>
+      <p className="mt-1 text-xs text-muted-foreground">
+        {candidate.confirmedCaseIds.length} {copy.historicalCases}
+      </p>
+      <ol className="mt-3 space-y-2">
+        {candidate.steps.map((step, index) => (
+          <li key={step.key} className="flex items-start gap-2 text-sm">
+            <span className="flex size-5 shrink-0 items-center justify-center rounded-full bg-muted text-[10px]">
+              {index + 1}
+            </span>
+            <span className="min-w-0 flex-1">
+              <span className="font-medium">{step.label}</span>
+              <span className="ml-2 text-xs text-muted-foreground">
+                {step.requirement === "mandatory" ? copy.mandatoryStep : copy.conditionalStep}
+                {" · "}{Math.round(step.coverage * 100)}%
+              </span>
+              <span className="mt-0.5 block text-xs text-muted-foreground">
+                {copy.routineEvidenceSupport(step.supportCaseIds.length, candidate.confirmedCaseIds.length)}
+              </span>
+            </span>
+          </li>
+        ))}
+      </ol>
+      {candidate.evidenceHealth.state !== "valid" ? (
+        <p role="alert" className="mt-3 text-xs text-destructive">
+          {copy.routineEvidenceChanged}
+        </p>
+      ) : null}
+      <Button
+        className="mt-3"
+        size="sm"
+        disabled={pending || candidate.evidenceHealth.state !== "valid"}
+        onClick={onCreateDraft}
+      >
+        {pending ? <Loader2 className="animate-spin" /> : <Eye />}
+        {copy.createRoutineDraft}
+      </Button>
+    </div>
+  );
+}
+
+function resequenceRoutineSteps(steps: BusinessRoutineStep[]) {
+  return steps.map((step, index) => ({
+    ...step,
+    dependsOn: index === 0 ? [] : [steps[index - 1].key],
+  }));
+}
+
+const ROUTINE_CONFIGURATION_KEYS: Record<BusinessRoutineStep["kind"], string> = {
+  extract: "fields",
+  retrieve: "referenceSources",
+  generate: "output",
+  ledger_upsert: "ledgerMapping",
+  human_approval: "approvalGate",
+  condition: "condition",
+  create_issue: "handoff",
+};
+
+function routineConfigurationValue(step: BusinessRoutineStep) {
+  const value = step.configuration[ROUTINE_CONFIGURATION_KEYS[step.kind]]
+    ?? step.configuration.note
+    ?? "";
+  return typeof value === "string" ? value : "";
+}
+
+function routineHealthIssueText(
+  definition: BusinessRoutineDefinition,
+  copy: typeof COPY.en | typeof COPY.zh,
+) {
+  if (definition.evidenceHealth.issues.some((issue) => issue.includes("Source access"))) {
+    return copy.routineSourceRevoked;
+  }
+  if (definition.evidenceHealth.issues.some((issue) => issue.includes("work pattern"))) {
+    return copy.routinePatternChanged;
+  }
+  if (definition.evidenceHealth.issues.some((issue) => issue.includes("business condition"))) {
+    return copy.routineConditionRequired;
+  }
+  return copy.routineEvidenceChanged;
+}
+
+function RoutineDefinitionCard({
+  definition,
+  copy,
+  pending,
+  publishConfirmed,
+  onPublishConfirmed,
+  onSave,
+  onPublish,
+  onNewVersion,
+  onDisable,
+}: {
+  definition: BusinessRoutineDefinition;
+  copy: typeof COPY.en | typeof COPY.zh;
+  pending: boolean;
+  publishConfirmed: boolean;
+  onPublishConfirmed: (confirmed: boolean) => void;
+  onSave: (draft: {
+    name: string;
+    description: string;
+    triggerDocumentTypes: BusinessRoutineDefinition["triggerDocumentTypes"];
+    steps: BusinessRoutineStep[];
+  }) => void;
+  onPublish: () => void;
+  onNewVersion: () => void;
+  onDisable: () => void;
+}) {
+  const editable = ["candidate", "draft"].includes(definition.state);
+  const [name, setName] = useState(definition.name);
+  const [description, setDescription] = useState(definition.description);
+  const [trigger, setTrigger] = useState(definition.triggerDocumentTypes[0] ?? "inquiry");
+  const [steps, setSteps] = useState(definition.steps);
+  const stateLabel = definition.state === "candidate"
+    ? copy.routineDefinitionCandidate
+    : definition.state === "draft"
+      ? copy.routineDraft
+      : definition.state === "published"
+        ? copy.routinePublished
+        : definition.state === "disabled"
+          ? copy.routineDisabled
+          : copy.routineSuperseded;
+  const dirty = JSON.stringify({
+    name,
+    description,
+    trigger,
+    steps,
+  }) !== JSON.stringify({
+    name: definition.name,
+    description: definition.description,
+    trigger: definition.triggerDocumentTypes[0] ?? "inquiry",
+    steps: definition.steps,
+  });
+  const invalidCondition = steps.some((step) =>
+    step.kind === "condition" && !routineConfigurationValue(step).trim());
+  const markChanged = () => {
+    if (publishConfirmed) onPublishConfirmed(false);
+  };
+  const updateStep = (index: number, patch: Partial<BusinessRoutineStep>) => {
+    markChanged();
+    setSteps((current) => current.map((step, stepIndex) =>
+      stepIndex === index ? { ...step, ...patch } : step));
+  };
+  const moveStep = (index: number, offset: number) => {
+    markChanged();
+    setSteps((current) => {
+      const target = index + offset;
+      if (target < 0 || target >= current.length) return current;
+      const next = [...current];
+      [next[index], next[target]] = [next[target], next[index]];
+      return resequenceRoutineSteps(next);
+    });
+  };
+  const removeStep = (index: number) => {
+    markChanged();
+    setSteps((current) => resequenceRoutineSteps(current.filter((_, stepIndex) => stepIndex !== index)));
+  };
+  const addStep = () => {
+    markChanged();
+    const key = `custom_${Date.now()}`;
+    setSteps((current) => resequenceRoutineSteps([...current, {
+      key,
+      kind: "human_approval",
+      label: copy.routineStepKinds.human_approval,
+      required: true,
+      dependsOn: [],
+      evidenceRefs: [],
+      configuration: { note: "" },
+    }]));
+  };
+  return (
+    <div className="rounded-md border p-3">
+      <div className="flex flex-wrap items-center gap-2">
+        <p className="min-w-0 flex-1 text-sm font-semibold">{definition.name}</p>
+        <Badge tone={definition.state === "published" ? "success" : definition.state === "draft" ? "warning" : "neutral"}>
+          {stateLabel} · v{definition.version}
+        </Badge>
+      </div>
+      <p className="mt-1 text-xs text-muted-foreground">
+        {definition.historicalCaseIds.length} {copy.historicalCases}
+      </p>
+      {definition.evidenceHealth.state !== "valid" ? (
+        <div role="alert" className="mt-2 rounded border border-destructive/30 bg-destructive/5 p-2 text-xs text-destructive">
+          <p>{routineHealthIssueText(definition, copy)}</p>
+          <p className="mt-1">{copy.routineRecoveryRefresh}</p>
+        </div>
+      ) : null}
+      {editable ? (
+        <div className="mt-3 space-y-3">
+          <label className="block text-xs font-medium">
+            {copy.routineName}
+            <Input
+              className="mt-1"
+              value={name}
+              onChange={(event) => {
+                markChanged();
+                setName(event.target.value);
+              }}
+            />
+          </label>
+          <label className="block text-xs font-medium">
+            {copy.routineDescription}
+            <textarea
+              className="mt-1 min-h-20 w-full rounded-md border bg-background px-3 py-2 text-sm"
+              value={description}
+              onChange={(event) => {
+                markChanged();
+                setDescription(event.target.value);
+              }}
+            />
+          </label>
+          <label className="block text-xs font-medium">
+            {copy.routineTrigger}
+            <Select
+              className="mt-1"
+              value={trigger}
+              onChange={(event) => {
+                markChanged();
+                setTrigger(event.target.value as "inquiry" | "quotation" | "order");
+              }}
+            >
+              {Object.entries(copy.routineTriggerTypes).map(([value, label]) => (
+                <option key={value} value={value}>{label}</option>
+              ))}
+            </Select>
+          </label>
+          <div>
+            <p className="text-xs font-medium">{copy.routineSteps}</p>
+            <div className="mt-1 space-y-2">
+              {steps.map((step, index) => (
+                <div key={step.key} className="rounded-md border bg-muted/20 p-2">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="text-xs text-muted-foreground">{index + 1}</span>
+                    <Input
+                      aria-label={`${copy.routineSteps} ${index + 1}`}
+                      className="min-w-44 flex-1"
+                      value={step.label}
+                      onChange={(event) => updateStep(index, { label: event.target.value })}
+                    />
+                    <Select
+                      aria-label={`${step.label} ${copy.routineStepKind}`}
+                      value={step.kind}
+                      onChange={(event) => updateStep(index, {
+                        kind: event.target.value as BusinessRoutineStep["kind"],
+                      })}
+                    >
+                      {Object.entries(copy.routineStepKinds).map(([kind, label]) => (
+                        <option key={kind} value={kind}>{label}</option>
+                      ))}
+                    </Select>
+                    <label className="flex items-center gap-1 text-xs">
+                      <input
+                        type="checkbox"
+                        checked={step.required}
+                        onChange={(event) => updateStep(index, { required: event.target.checked })}
+                      />
+                      {step.required ? copy.mandatoryStep : copy.conditionalStep}
+                    </label>
+                  </div>
+                  <Input
+                    aria-label={`${step.label} ${copy.routineStepConfiguration[step.kind]}`}
+                    className="mt-2"
+                    value={routineConfigurationValue(step)}
+                    placeholder={copy.routineStepConfiguration[step.kind]}
+                    onChange={(event) => updateStep(index, {
+                      configuration: {
+                        ...step.configuration,
+                        [ROUTINE_CONFIGURATION_KEYS[step.kind]]: event.target.value,
+                      },
+                    })}
+                  />
+                  {step.kind === "condition" && !routineConfigurationValue(step).trim() ? (
+                    <p role="alert" className="mt-1 text-xs text-destructive">
+                      {copy.routineConditionRequired}
+                    </p>
+                  ) : null}
+                  <div className="mt-2 flex flex-wrap gap-1">
+                    <Button size="sm" variant="ghost" disabled={index === 0} onClick={() => moveStep(index, -1)}>
+                      {copy.moveEarlier}
+                    </Button>
+                    <Button size="sm" variant="ghost" disabled={index === steps.length - 1} onClick={() => moveStep(index, 1)}>
+                      {copy.moveLater}
+                    </Button>
+                    <Button size="sm" variant="ghost" disabled={steps.length === 1} onClick={() => removeStep(index)}>
+                      {copy.removeRoutineStep}
+                    </Button>
+                  </div>
+                </div>
+              ))}
+            </div>
+            <Button className="mt-2" size="sm" variant="secondary" onClick={addStep}>
+              {copy.addRoutineStep}
+            </Button>
+          </div>
+          <Button
+            size="sm"
+            disabled={pending || !dirty || invalidCondition || !name.trim() || !description.trim()
+              || steps.some((step) => !step.label.trim())}
+            onClick={() => {
+              onPublishConfirmed(false);
+              onSave({
+                name: name.trim(),
+                description: description.trim(),
+                triggerDocumentTypes: [trigger],
+                steps,
+              });
+            }}
+          >
+            {pending ? <Loader2 className="animate-spin" /> : <Check />}
+            {copy.saveRoutineDraft}
+          </Button>
+          {definition.state === "draft" ? (
+            <div className="rounded-md border border-primary/30 bg-primary/5 p-3">
+              {dirty ? (
+                <p role="status" className="mb-2 text-xs text-amber-700 dark:text-amber-300">
+                  {copy.routineSaveBeforePublish}
+                </p>
+              ) : null}
+              <label className="flex items-start gap-2 text-xs">
+                <input
+                  className="mt-0.5"
+                  type="checkbox"
+                  checked={publishConfirmed}
+                  disabled={dirty || invalidCondition}
+                  onChange={(event) => onPublishConfirmed(event.target.checked)}
+                />
+                {copy.publishRoutineConfirm}
+              </label>
+              <Button
+                className="mt-2"
+                size="sm"
+                disabled={pending || dirty || invalidCondition || !publishConfirmed
+                  || definition.evidenceHealth.state !== "valid"}
+                onClick={onPublish}
+              >
+                <ShieldCheck /> {copy.publishRoutine}
+              </Button>
+            </div>
+          ) : null}
+        </div>
+      ) : (
+        <>
+          <p className="mt-3 text-sm text-muted-foreground">{definition.description}</p>
+          <ol className="mt-3 space-y-1 text-sm">
+            {definition.steps.map((step, index) => (
+              <li key={step.key}>
+                {index + 1}. {step.label}
+                <span className="ml-2 text-xs text-muted-foreground">
+                  {step.required ? copy.mandatoryStep : copy.conditionalStep}
+                </span>
+              </li>
+            ))}
+          </ol>
+          {definition.state === "published" || definition.state === "disabled" ? (
+            <div className="mt-3 flex flex-wrap gap-2">
+              <Button size="sm" variant="secondary" disabled={pending} onClick={onNewVersion}>
+                <RefreshCw /> {copy.newRoutineVersion}
+              </Button>
+              {definition.state === "published" ? (
+                <Button size="sm" variant="ghost" disabled={pending} onClick={onDisable}>
+                  {copy.disableRoutine}
+                </Button>
+              ) : null}
+            </div>
+          ) : null}
+        </>
+      )}
+    </div>
   );
 }
 

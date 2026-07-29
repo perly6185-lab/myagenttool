@@ -34,6 +34,12 @@ export async function handleWorkflowMemoryRoutes({
   reviewBusinessCaseCandidate,
   discoverBusinessRoutine,
   listBusinessRoutineCandidates,
+  createRoutineDraft,
+  listBusinessRoutineDefinitions,
+  updateBusinessRoutineDefinition,
+  createBusinessRoutineDefinitionVersion,
+  publishBusinessRoutineDefinition,
+  transitionBusinessRoutineDefinition,
   pairProposals,
   listCases,
   createCase,
@@ -160,6 +166,15 @@ export async function handleWorkflowMemoryRoutes({
     return true;
   }
 
+  if (url.pathname === "/api/workflow-memory/business-routine-definitions"
+    && req.method === "GET") {
+    const result = listBusinessRoutineDefinitions({
+      sourceId: url.searchParams.get("sourceId"),
+    }, actor);
+    sendJson(res, result.status, result.body);
+    return true;
+  }
+
   const artifactBusinessAnalysis = url.pathname.match(
     /^\/api\/workflow-memory\/artifacts\/([^/]+)\/analyze-business-document$/,
   );
@@ -199,6 +214,56 @@ export async function handleWorkflowMemoryRoutes({
       artifactIds: body?.artifactIds,
       correctionReason: body?.correctionReason,
     }, actor);
+    sendJson(res, result.status, result.body);
+    return true;
+  }
+
+  const routineCandidateDraft = url.pathname.match(
+    /^\/api\/workflow-memory\/business-routine-candidates\/([^/]+)\/create-draft$/,
+  );
+  if (routineCandidateDraft && req.method === "POST") {
+    const result = createRoutineDraft({
+      discoveryCandidateId: decodeURIComponent(routineCandidateDraft[1]),
+    }, actor);
+    sendJson(res, result.status, result.body);
+    return true;
+  }
+
+  const routineDefinitionAction = url.pathname.match(
+    /^\/api\/workflow-memory\/business-routine-definitions\/([^/]+)\/(update|publish|new-version|disable)$/,
+  );
+  if (routineDefinitionAction && req.method === "POST") {
+    const body = await readJson(req);
+    const routineDefinitionId = decodeURIComponent(routineDefinitionAction[1]);
+    const action = routineDefinitionAction[2];
+    let result;
+    if (action === "update") {
+      result = updateBusinessRoutineDefinition({
+        routineDefinitionId,
+        expectedRevision: body?.expectedRevision,
+        name: body?.name,
+        description: body?.description,
+        triggerDocumentTypes: body?.triggerDocumentTypes,
+        steps: body?.steps,
+      }, actor);
+    } else if (action === "publish") {
+      result = publishBusinessRoutineDefinition({
+        routineDefinitionId,
+        expectedRevision: body?.expectedRevision,
+        confirmed: body?.confirmed,
+      }, actor);
+    } else if (action === "new-version") {
+      result = createBusinessRoutineDefinitionVersion({
+        routineDefinitionId,
+        expectedRevision: body?.expectedRevision,
+      }, actor);
+    } else {
+      result = transitionBusinessRoutineDefinition({
+        routineDefinitionId,
+        expectedRevision: body?.expectedRevision,
+        action: "disable",
+      }, actor);
+    }
     sendJson(res, result.status, result.body);
     return true;
   }

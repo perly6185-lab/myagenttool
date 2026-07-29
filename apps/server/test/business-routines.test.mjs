@@ -103,6 +103,7 @@ function createCaseAndDefinition(service) {
     routineDefinitionId: definition.id,
     expectedRevision: definition.revision,
     action: "publish",
+    confirmed: true,
   }, ACTOR_A).body.routineDefinition;
   return { entity, businessCase, definition };
 }
@@ -171,7 +172,151 @@ test("routine definition transitions reject stale revisions and foreign tenants"
   assert.equal(service.transitionRoutineDefinition({
     routineDefinitionId: created.id,
     expectedRevision: reviewed.body.routineDefinition.revision,
+    action: "publish",
+  }, ACTOR_A).body.error, "routine_definition_publication_confirmation_required");
+  assert.equal(service.transitionRoutineDefinition({
+    routineDefinitionId: created.id,
+    expectedRevision: reviewed.body.routineDefinition.revision,
     action: "review",
+  }, ACTOR_A).body.error, "invalid_routine_definition_transition");
+});
+
+test("discovered task types are editable drafts, explicitly published, immutable, and version pinned", () => {
+  const { service, state } = harness();
+  for (const index of [1, 2, 3]) {
+    state.businessCases.push({
+      id: `bcs_history_${index}`,
+      ownerTeamId: ACTOR_A.teamId,
+      projectId: "prj_a",
+      sourceId: "wfs_a",
+      businessKey: `RFQ-${index}`,
+      state: "confirmed",
+      artifactBindings: [
+        { artifactId: "wfa_inquiry", documentType: "inquiry", roles: ["trigger"] },
+        { artifactId: "wfa_quote", documentType: "quotation", roles: ["output"] },
+      ],
+      artifactFingerprints: {
+        wfa_inquiry: "a".repeat(64),
+        wfa_quote: "b".repeat(64),
+      },
+      revision: 1,
+    });
+  }
+  state.routineDiscoveryCandidates.push({
+    id: "rdc_1",
+    ownerTeamId: ACTOR_A.teamId,
+    projectId: "prj_a",
+    sourceId: "wfs_a",
+    state: "candidate",
+    triggerDocumentTypes: ["inquiry"],
+    confirmedCaseIds: ["bcs_history_1", "bcs_history_2", "bcs_history_3"],
+    steps: [
+      {
+        key: "register",
+        kind: "ledger_upsert",
+        label: "Register the inquiry",
+        required: true,
+        requirement: "mandatory",
+        coverage: 1,
+        dependsOn: [],
+        evidenceRefs: [{ artifactId: "wfa_inquiry", kind: "coverage" }],
+        configuration: {},
+      },
+      {
+        key: "quote",
+        kind: "generate",
+        label: "Prepare the quotation",
+        required: true,
+        requirement: "mandatory",
+        coverage: 1,
+        dependsOn: ["register"],
+        evidenceRefs: [{ artifactId: "wfa_quote", kind: "coverage" }],
+        configuration: {},
+      },
+    ],
+    evidenceRefs: [
+      { artifactId: "wfa_inquiry", kind: "routine" },
+      { artifactId: "wfa_quote", kind: "routine" },
+    ],
+    confidence: 0.92,
+  });
+
+  const created = service.createRoutineDraftFromDiscovery({
+    discoveryCandidateId: "rdc_1",
+  }, ACTOR_A);
+  assert.equal(created.status, 201);
+  assert.equal(created.body.routineDefinition.state, "draft");
+  assert.equal(created.body.routineDefinition.historicalCaseIds.length, 3);
+
+  const updated = service.updateRoutineDefinition({
+    routineDefinitionId: created.body.routineDefinition.id,
+    expectedRevision: created.body.routineDefinition.revision,
+    name: "Commercial inquiry and quotation",
+    description: "Prepare a reviewed quote from a confirmed inquiry.",
+    steps: created.body.routineDefinition.steps,
+  }, ACTOR_A);
+  assert.equal(updated.status, 200);
+  const invalidCondition = service.updateRoutineDefinition({
+    routineDefinitionId: updated.body.routineDefinition.id,
+    expectedRevision: updated.body.routineDefinition.revision,
+    steps: updated.body.routineDefinition.steps.map((step, index) => index === 0
+      ? { ...step, kind: "condition", configuration: {} }
+      : step),
+  }, ACTOR_A);
+  assert.equal(invalidCondition.status, 400);
+  assert.equal(invalidCondition.body.error, "routine_step_condition_required");
+  assert.equal(service.publishRoutineDefinition({
+    routineDefinitionId: updated.body.routineDefinition.id,
+    expectedRevision: updated.body.routineDefinition.revision,
+    confirmed: false,
+  }, ACTOR_A).status, 400);
+  state.businessCases.find((row) => row.id === "bcs_history_1").state = "archived";
+  const staleHistory = service.publishRoutineDefinition({
+    routineDefinitionId: updated.body.routineDefinition.id,
+    expectedRevision: updated.body.routineDefinition.revision,
+    confirmed: true,
+  }, ACTOR_A);
+  assert.equal(staleHistory.status, 409);
+  assert.equal(staleHistory.body.error, "routine_definition_evidence_not_valid");
+  state.businessCases.find((row) => row.id === "bcs_history_1").state = "confirmed";
+  const published = service.publishRoutineDefinition({
+    routineDefinitionId: updated.body.routineDefinition.id,
+    expectedRevision: updated.body.routineDefinition.revision,
+    confirmed: true,
+  }, ACTOR_A);
+  assert.equal(published.status, 200);
+  assert.equal(published.body.routineDefinition.state, "published");
+  assert.equal(service.updateRoutineDefinition({
+    routineDefinitionId: published.body.routineDefinition.id,
+    expectedRevision: published.body.routineDefinition.revision,
+    name: "Mutated published version",
+  }, ACTOR_A).body.error, "published_routine_definition_is_immutable");
+
+  const next = service.createRoutineDefinitionVersion({
+    routineDefinitionId: published.body.routineDefinition.id,
+    expectedRevision: published.body.routineDefinition.revision,
+  }, ACTOR_A);
+  assert.equal(next.status, 201);
+  assert.equal(next.body.routineDefinition.version, 2);
+  const publishedNext = service.publishRoutineDefinition({
+    routineDefinitionId: next.body.routineDefinition.id,
+    expectedRevision: next.body.routineDefinition.revision,
+    confirmed: true,
+  }, ACTOR_A);
+  assert.equal(publishedNext.status, 200);
+  assert.equal(published.body.routineDefinition.state, "superseded");
+  assert.equal(published.body.routineDefinition.supersededById, publishedNext.body.routineDefinition.id);
+  const disabled = service.transitionRoutineDefinition({
+    routineDefinitionId: publishedNext.body.routineDefinition.id,
+    expectedRevision: publishedNext.body.routineDefinition.revision,
+    action: "disable",
+  }, ACTOR_A);
+  assert.equal(disabled.status, 200);
+  assert.equal(disabled.body.routineDefinition.state, "disabled");
+  assert.equal(service.transitionRoutineDefinition({
+    routineDefinitionId: disabled.body.routineDefinition.id,
+    expectedRevision: disabled.body.routineDefinition.revision,
+    action: "enable",
   }, ACTOR_A).body.error, "invalid_routine_definition_transition");
 });
 

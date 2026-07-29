@@ -6,6 +6,8 @@ import {
   type BusinessFieldProposal,
   type BusinessCaseCandidate,
   type BusinessRoutineDiscoveryCandidate,
+  type BusinessRoutineDefinition,
+  type BusinessRoutineStep,
   type DeliveryCase,
   type SimilarWorkflowCase,
   type WorkflowArtifact,
@@ -223,6 +225,56 @@ export const workflowMemoryApi = {
       "GET",
       `/api/workflow-memory/business-routine-candidates${sourceId ? `?sourceId=${encodeURIComponent(sourceId)}` : ""}`,
     ),
+  createBusinessRoutineDraft: (candidateId: string) =>
+    request<{ routineDefinition: BusinessRoutineDefinition; replayed: boolean }>(
+      "POST",
+      `/api/workflow-memory/business-routine-candidates/${encodeURIComponent(candidateId)}/create-draft`,
+      {},
+    ),
+  listBusinessRoutineDefinitions: (sourceId?: string) =>
+    request<{ routineDefinitions: BusinessRoutineDefinition[]; count: number }>(
+      "GET",
+      `/api/workflow-memory/business-routine-definitions${sourceId ? `?sourceId=${encodeURIComponent(sourceId)}` : ""}`,
+    ),
+  updateBusinessRoutineDefinition: (
+    routineDefinitionId: string,
+    body: {
+      expectedRevision: number;
+      name?: string;
+      description?: string;
+      triggerDocumentTypes?: BusinessDocumentType[];
+      steps?: BusinessRoutineStep[];
+    },
+  ) => request<{ routineDefinition: BusinessRoutineDefinition }>(
+    "POST",
+    `/api/workflow-memory/business-routine-definitions/${encodeURIComponent(routineDefinitionId)}/update`,
+    body,
+  ),
+  publishBusinessRoutineDefinition: (
+    routineDefinitionId: string,
+    expectedRevision: number,
+    confirmed: boolean,
+  ) => request<{ routineDefinition: BusinessRoutineDefinition; superseded?: BusinessRoutineDefinition }>(
+    "POST",
+    `/api/workflow-memory/business-routine-definitions/${encodeURIComponent(routineDefinitionId)}/publish`,
+    { expectedRevision, confirmed },
+  ),
+  createBusinessRoutineDefinitionVersion: (
+    routineDefinitionId: string,
+    expectedRevision: number,
+  ) => request<{ routineDefinition: BusinessRoutineDefinition; replayed: boolean }>(
+    "POST",
+    `/api/workflow-memory/business-routine-definitions/${encodeURIComponent(routineDefinitionId)}/new-version`,
+    { expectedRevision },
+  ),
+  disableBusinessRoutineDefinition: (
+    routineDefinitionId: string,
+    expectedRevision: number,
+  ) => request<{ routineDefinition: BusinessRoutineDefinition }>(
+    "POST",
+    `/api/workflow-memory/business-routine-definitions/${encodeURIComponent(routineDefinitionId)}/disable`,
+    { expectedRevision },
+  ),
   workflowPairProposals: (sourceId: string) =>
     request<{ sourceId: string; proposals: import("@/lib/api-client").WorkflowPairProposal[] }>(
       "GET",

@@ -341,6 +341,42 @@ export interface BusinessRoutineDiscoveryCandidate {
   updatedAt: string;
 }
 
+export interface BusinessRoutineStep {
+  key: string;
+  kind: "extract" | "retrieve" | "generate" | "ledger_upsert" | "human_approval" | "condition" | "create_issue";
+  label: string;
+  required: boolean;
+  dependsOn: string[];
+  evidenceRefs: BusinessDocumentClassification["evidenceRefs"];
+  configuration: Record<string, unknown>;
+}
+
+export interface BusinessRoutineDefinition {
+  id: string;
+  familyId: string;
+  projectId: string;
+  sourceId: string;
+  name: string;
+  description: string;
+  version: number;
+  state: "candidate" | "draft" | "published" | "disabled" | "superseded";
+  discoveryCandidateId: string | null;
+  historicalCaseIds: string[];
+  triggerDocumentTypes: BusinessDocumentType[];
+  steps: BusinessRoutineStep[];
+  confidence: number;
+  supersedesId: string | null;
+  supersededById: string | null;
+  evidenceHealth: {
+    state: "valid" | "blocked";
+    issues: string[];
+    recovery: string | null;
+  };
+  revision: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
 export interface WorkflowPairProposal {
   requirement: WorkflowArtifact;
   candidates: Array<{

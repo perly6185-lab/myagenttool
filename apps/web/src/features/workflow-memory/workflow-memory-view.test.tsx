@@ -17,6 +17,13 @@ const mocks = vi.hoisted(() => ({
     confirmWorkflowArtifact: vi.fn(),
     retryWorkflowArtifactExtraction: vi.fn(),
     setWorkflowArtifactExclusion: vi.fn(),
+    listBusinessRoutineCandidates: vi.fn(),
+    listBusinessRoutineDefinitions: vi.fn(),
+    createBusinessRoutineDraft: vi.fn(),
+    updateBusinessRoutineDefinition: vi.fn(),
+    publishBusinessRoutineDefinition: vi.fn(),
+    createBusinessRoutineDefinitionVersion: vi.fn(),
+    disableBusinessRoutineDefinition: vi.fn(),
     workflowPairProposals: vi.fn(),
     listDeliveryCases: vi.fn(),
     createDeliveryCase: vi.fn(),
@@ -165,6 +172,8 @@ beforeEach(async () => {
   mocks.api.listDeliveryCases.mockResolvedValue({ cases: [] });
   mocks.api.listWorkflowProfiles.mockResolvedValue({ profiles: [profile] });
   mocks.api.listWorkflowProfileDrafts.mockResolvedValue({ drafts: [] });
+  mocks.api.listBusinessRoutineCandidates.mockResolvedValue({ candidates: [], count: 0 });
+  mocks.api.listBusinessRoutineDefinitions.mockResolvedValue({ routineDefinitions: [], count: 0 });
   mocks.api.listWorkflowInbox.mockResolvedValue({ artifacts: [requirement] });
   mocks.api.listWorkflowRuns.mockResolvedValue({ runs: [] });
   mocks.api.evaluateWorkflowRetrieval.mockResolvedValue({
@@ -215,6 +224,124 @@ afterEach(() => {
 });
 
 describe("WorkflowMemoryView", () => {
+  it("reviews a discovered work type and requires explicit confirmation before enabling it", async () => {
+    const discoveryCandidate = {
+      id: "rdc-1",
+      sourceId: source.id,
+      name: "Commercial inquiry and quotation",
+      state: "candidate",
+      confidence: 0.92,
+      confirmedCaseIds: ["case-1", "case-2", "case-3"],
+      steps: [{
+        key: "quote",
+        kind: "generate",
+        label: "Prepare the quotation",
+        required: true,
+        requirement: "mandatory",
+        coverage: 1,
+        supportCaseIds: ["case-1", "case-2", "case-3"],
+        exceptionCaseIds: [],
+        explanation: "3 of 3 confirmed cases include this step.",
+      }],
+      evidenceHealth: { state: "valid", issues: [], healthyCaseCount: 3 },
+    };
+    const draft = {
+      id: "routine-1",
+      familyId: "routine-1",
+      sourceId: source.id,
+      name: "Commercial inquiry and quotation",
+      description: "Prepare a reviewed quotation.",
+      version: 1,
+      state: "draft",
+      discoveryCandidateId: discoveryCandidate.id,
+      historicalCaseIds: ["case-1", "case-2", "case-3"],
+      triggerDocumentTypes: ["inquiry"],
+      steps: [{
+        key: "quote",
+        kind: "generate",
+        label: "Prepare the quotation",
+        required: true,
+        dependsOn: [],
+        evidenceRefs: [],
+        configuration: {},
+      }],
+      confidence: 0.92,
+      supersedesId: null,
+      supersededById: null,
+      evidenceHealth: { state: "valid", issues: [], recovery: null },
+      revision: 2,
+    };
+    mocks.api.listBusinessRoutineCandidates.mockResolvedValue({
+      candidates: [discoveryCandidate],
+      count: 1,
+    });
+    mocks.api.createBusinessRoutineDraft.mockResolvedValue({ routineDefinition: draft, replayed: false });
+
+    const first = renderView();
+    fireEvent.click(await screen.findByRole("button", { name: "Review this work type" }));
+    await waitFor(() => expect(mocks.api.createBusinessRoutineDraft).toHaveBeenCalledWith("rdc-1"));
+    first.unmount();
+
+    mocks.api.listBusinessRoutineCandidates.mockResolvedValue({ candidates: [], count: 0 });
+    mocks.api.listBusinessRoutineDefinitions.mockResolvedValue({ routineDefinitions: [draft], count: 1 });
+    mocks.api.updateBusinessRoutineDefinition.mockResolvedValue({
+      routineDefinition: {
+        ...draft,
+        steps: [{
+          ...draft.steps[0],
+          configuration: { output: "Reviewed quotation document" },
+        }],
+        revision: 3,
+      },
+    });
+    mocks.api.publishBusinessRoutineDefinition.mockResolvedValue({
+      routineDefinition: { ...draft, state: "published", revision: 3 },
+    });
+    const draftView = renderView();
+    const publish = await screen.findByRole("button", { name: "Enable this work type" });
+    expect((publish as HTMLButtonElement).disabled).toBe(true);
+    const output = screen.getByLabelText("Prepare the quotation Output to prepare");
+    fireEvent.change(output, { target: { value: "Reviewed quotation document" } });
+    const confirmation = screen.getByLabelText(
+      "I reviewed the trigger, steps, outputs, ledgers, and approval points.",
+    );
+    expect((confirmation as HTMLInputElement).disabled).toBe(true);
+    expect(screen.getByText("Save the latest changes before enabling this work type.")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Save review" }));
+    await waitFor(() => expect(mocks.api.updateBusinessRoutineDefinition).toHaveBeenCalledWith(
+      "routine-1",
+      expect.objectContaining({
+        expectedRevision: 2,
+        steps: [expect.objectContaining({
+          configuration: { output: "Reviewed quotation document" },
+        })],
+      }),
+    ));
+    draftView.unmount();
+
+    const savedDraft = {
+      ...draft,
+      steps: [{
+        ...draft.steps[0],
+        configuration: { output: "Reviewed quotation document" },
+      }],
+      revision: 3,
+    };
+    mocks.api.listBusinessRoutineDefinitions.mockResolvedValue({
+      routineDefinitions: [savedDraft],
+      count: 1,
+    });
+    renderView();
+    const savedPublish = await screen.findByRole("button", { name: "Enable this work type" });
+    fireEvent.click(screen.getByLabelText(
+      "I reviewed the trigger, steps, outputs, ledgers, and approval points.",
+    ));
+    expect((savedPublish as HTMLButtonElement).disabled).toBe(false);
+    fireEvent.click(savedPublish);
+    await waitFor(() => expect(mocks.api.publishBusinessRoutineDefinition)
+      .toHaveBeenCalledWith("routine-1", 3, true));
+  });
+
   it("keeps execution blocked until a missing requirement is supplied, then creates a pinned task", async () => {
     renderView();
 

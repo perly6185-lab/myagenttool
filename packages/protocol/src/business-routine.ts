@@ -252,11 +252,15 @@ export type RoutineDefinition = {
   projectId: string;
   sourceId: string;
   name: string;
+  description: string;
   version: number;
   state: RoutineDefinitionState;
+  discoveryCandidateId: string | null;
+  historicalCaseIds: string[];
   triggerDocumentTypes: BusinessDocumentType[];
   steps: RoutineStep[];
   evidenceRefs: RoutineEvidenceRef[];
+  evidenceFingerprints: Record<string, string>;
   confidence: number;
   supersedesId: string | null;
   supersededById: string | null;
