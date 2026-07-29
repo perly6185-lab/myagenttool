@@ -215,6 +215,7 @@ export type InvocationEventType =
   | "ccusage_imported_estimates_recorded"
   | "codex_review_findings_recorded"
   | "claude_review_findings_recorded"
+  | "claude_transport_selected"
   | "run_transcript_recorded"
   | "run_transcript_superseded"
   | "run_transcript_payloads_reaped"

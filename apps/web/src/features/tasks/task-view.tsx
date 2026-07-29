@@ -38,6 +38,7 @@ import {
   type WorkItemAttention,
   type WorkItemAttentionMetrics,
   type WorkItemComment,
+  type WorkItemAutoRunBatch,
 } from "./task-view-types";
 import { WorkItemSectionNav } from "./work-item-section-nav";
 import { useSafeNavigation } from "@/hooks/use-safe-navigation";
@@ -868,6 +869,9 @@ export function PlanningProjectsPanel({ onChanged = () => {} }: { onChanged?: ()
   const [projects, setProjects] = useState<PlanningProject[]>([]);
   const [workItems, setWorkItems] = useState<LocalWorkItem[]>([]);
   const [autoRuns, setAutoRuns] = useState<PlanningAutoRun[]>([]);
+  const [autoRunBatches, setAutoRunBatches] = useState<WorkItemAutoRunBatch[]>([]);
+  const [batchConcurrency, setBatchConcurrency] = useState("2");
+  const [batchAgentId, setBatchAgentId] = useState("");
   const storedSelectedId = useUiStore((state) => state.selectedPlanningProjectId) ?? "";
   const storeSelectedId = useUiStore((state) => state.setSelectedPlanningProjectId);
   const [selectedId, setSelectedIdLocal] = useState(storedSelectedId);
@@ -958,7 +962,7 @@ export function PlanningProjectsPanel({ onChanged = () => {} }: { onChanged?: ()
   const projectItems = selected?.items?.map((row) => row.workItem) ?? [];
   const blockedCount = projectItems.filter((item) => item.blockedBy?.some((dependency) => !dependency.resolved)).length;
   const overdueCount = projectItems.filter((item) => item.dueDate && item.dueDate < today && item.status !== "done").length;
-  const activeExecutionStatuses = new Set(["materializing", "running", "awaiting_approval", "verifying", "publishing"]);
+  const activeExecutionStatuses = new Set(["materializing", "running", "waiting_capacity", "awaiting_approval", "verifying", "publishing"]);
   const activeExecutionCount = projectItems.filter((item) => item.executionBindings?.some((binding) => {
     if (binding.kind !== "auto_run") return false;
     const run = autoRuns.find((candidate) => candidate.id === binding.targetId);
@@ -973,6 +977,9 @@ export function PlanningProjectsPanel({ onChanged = () => {} }: { onChanged?: ()
         run: autoRuns.find((candidate) => candidate.id === binding.targetId),
       })))
     .filter((row) => row.run);
+  const projectWorkItemIds = new Set(projectItems.map((item) => item.id));
+  const projectBatches = autoRunBatches.filter((batch) =>
+    batch.items.some((item) => projectWorkItemIds.has(item.workItemId)));
 
   useEffect(() => {
     setSelectedIdLocal(storedSelectedId);
@@ -990,10 +997,12 @@ export function PlanningProjectsPanel({ onChanged = () => {} }: { onChanged?: ()
       api.listPlanningProjects(true) as Promise<{ projects: PlanningProject[] }>,
       api.listWorkItems() as Promise<LocalWorkItemResult>,
       api.listAutoRuns() as Promise<{ autoRuns?: PlanningAutoRun[] }>,
-    ]).then(async ([result, workItemResult, autoRunResult]) => {
+      api.listWorkItemAutoRunBatches() as Promise<{ batches?: WorkItemAutoRunBatch[] }>,
+    ]).then(async ([result, workItemResult, autoRunResult, batchResult]) => {
       if (cancelled) return;
       setWorkItems(workItemResult.workItems);
       setAutoRuns(autoRunResult.autoRuns ?? []);
+      setAutoRunBatches(batchResult.batches ?? []);
       const nextId = result.projects.some((project) => project.id === selectedId)
         ? selectedId
         : result.projects[0]?.id ?? "";
@@ -1015,9 +1024,11 @@ export function PlanningProjectsPanel({ onChanged = () => {} }: { onChanged?: ()
       void Promise.all([
         api.getPlanningProject(selectedId) as Promise<{ project: PlanningProject }>,
         api.listAutoRuns() as Promise<{ autoRuns?: PlanningAutoRun[] }>,
-      ]).then(([detail, runResult]) => {
+        api.listWorkItemAutoRunBatches() as Promise<{ batches?: WorkItemAutoRunBatch[] }>,
+      ]).then(([detail, runResult, batchResult]) => {
         setProjects((current) => current.map((project) => project.id === selectedId ? detail.project : project));
         setAutoRuns(runResult.autoRuns ?? []);
+        setAutoRunBatches(batchResult.batches ?? []);
         setPlanningLiveError(null);
       }).catch(() => setPlanningLiveError(t("aiOps.projectRefreshFailed")));
     }
@@ -1207,6 +1218,20 @@ export function PlanningProjectsPanel({ onChanged = () => {} }: { onChanged?: ()
     void execute(() => api.bulkUpdateWorkItems({ items, changes })).then((ok) => {
       if (!ok) return;
       setSelectedWorkItemIds([]);
+      setNonce((value) => value + 1);
+      onChanged();
+    });
+  };
+  const startSelectedBatch = () => {
+    if (!selectedWorkItemIds.length) return;
+    void execute(() => api.createWorkItemAutoRunBatch({
+      workItemIds: selectedWorkItemIds,
+      maxConcurrent: Number(batchConcurrency),
+      ...(batchAgentId ? { agentId: batchAgentId } : {}),
+    })).then((ok) => {
+      if (!ok) return;
+      setSelectedWorkItemIds([]);
+      setView("executions");
       setNonce((value) => value + 1);
       onChanged();
     });
@@ -1787,6 +1812,28 @@ export function PlanningProjectsPanel({ onChanged = () => {} }: { onChanged?: ()
               </div>
             ) : view === "board" ? (
               <div className="space-y-2">
+                <section className="flex flex-wrap items-center gap-2 rounded-md border border-primary/30 bg-primary/5 p-2">
+                  <strong className="text-xs">{t("executionUi.batchTitle")}</strong>
+                  <span className="text-xs text-muted-foreground">
+                    {t("planningProjects.selectedCount", { count: selectedWorkItemIds.length })}
+                  </span>
+                  <label className="flex items-center gap-1 text-xs">
+                    {t("executionUi.concurrency")}
+                    <Select value={batchConcurrency} onChange={(event) => setBatchConcurrency(event.target.value)} className="h-8 w-16 text-xs">
+                      {[1, 2, 3, 4].map((value) => <option key={value} value={value}>{value}</option>)}
+                    </Select>
+                  </label>
+                  <Select value={batchAgentId} onChange={(event) => setBatchAgentId(event.target.value)} className="h-8 min-w-44 text-xs">
+                    <option value="">{t("executionUi.executionAgentAuto")}</option>
+                    {(consoleState?.agents ?? []).filter((agent) => agent.status !== "disabled").map((agent) => (
+                      <option key={agent.id} value={agent.id}>{agent.name}</option>
+                    ))}
+                  </Select>
+                  <Button size="sm" disabled={pending || selectedWorkItemIds.length === 0} onClick={startSelectedBatch}>
+                    <Zap className="mr-1 size-3.5" />{t("executionUi.startBatch")}
+                  </Button>
+                  <span className="text-[10px] text-muted-foreground">{t("executionUi.batchDurableHint")}</span>
+                </section>
                 <div className="flex flex-wrap items-center gap-2">
                   <span className="text-xs text-muted-foreground">{t("planningProjects.selectedCount", { count: selectedWorkItemIds.length })}</span>
                   <Select value={bulkField} aria-label={t("planningBulk.field")}
@@ -1883,9 +1930,43 @@ export function PlanningProjectsPanel({ onChanged = () => {} }: { onChanged?: ()
               </div>
             ) : view === "executions" ? (
               <div className="space-y-3">
+                {projectBatches.map((batch) => (
+                  <section key={batch.id} className="rounded-md border border-border p-3 text-xs">
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <div>
+                        <strong>{t("executionUi.batchTitle")} · {batch.id}</strong>
+                        <p className="mt-1 text-muted-foreground">
+                          {t("executionUi.batchProgress", {
+                            completed: batch.completed,
+                            total: batch.total,
+                            running: batch.active,
+                            queued: batch.counts.queued ?? 0,
+                            concurrency: batch.maxConcurrent,
+                          })}
+                        </p>
+                      </div>
+                      <Badge tone={batch.status === "completed" ? "success" : batch.status === "completed_with_failures" ? "warning" : "running"}>
+                        {t(`executionUi.batchStatus.${batch.status}` as never)}
+                      </Badge>
+                    </div>
+                    <div className="mt-2 grid gap-1 sm:grid-cols-2">
+                      {batch.items.map((item) => (
+                        <button key={item.workItemId} type="button" disabled={!item.autoRunId}
+                          onClick={() => setSection("autoRuns")}
+                          title={item.error ?? undefined}
+                          className="flex items-center justify-between rounded bg-muted px-2 py-1 text-left disabled:cursor-default">
+                          <span className="truncate">{item.localRef} · {item.title}</span>
+                          <Badge tone={["materializing", "running", "waiting_capacity", "awaiting_approval", "verifying", "publishing"].includes(item.status) ? "running" : ["done", "pr_open", "report_posted", "decomposed"].includes(item.status) ? "success" : item.status === "queued" ? "neutral" : "warning"}>
+                            {t(`executionUi.batchItemStatus.${item.status}` as never, { defaultValue: item.status })}
+                          </Badge>
+                        </button>
+                      ))}
+                    </div>
+                  </section>
+                ))}
                 <div className="grid grid-cols-2 gap-2 text-center text-xs sm:grid-cols-4">
                   {([
-                    ["running", linkedExecutions.filter(({ run }) => ["materializing", "running", "verifying", "publishing"].includes(run?.status ?? "")).length],
+                    ["running", linkedExecutions.filter(({ run }) => ["materializing", "running", "waiting_capacity", "verifying", "publishing"].includes(run?.status ?? "")).length],
                     ["approval", linkedExecutions.filter(({ run }) => run?.status === "awaiting_approval").length],
                     ["failed", linkedExecutions.filter(({ run }) => ["failed", "blocked"].includes(run?.status ?? "")).length],
                     ["review", linkedExecutions.filter(({ run }) => ["pr_open", "report_posted", "plan_proposed"].includes(run?.status ?? "")).length],
@@ -2217,6 +2298,7 @@ function LocalWorkItemDetail({
   onDirtyChange: (dirty: boolean) => void;
 }) {
   const { t } = useAppTranslation();
+  const { data: consoleState } = useConsoleState();
   const { execute, pending, error } = useAsyncAction();
   const setSection = useUiStore((state) => state.setSection);
   const setSelectedProjectId = useUiStore((state) => state.setSelectedProjectId);
@@ -2250,7 +2332,35 @@ function LocalWorkItemDetail({
   const [deleteCommentTarget, setDeleteCommentTarget] = useState<WorkItemComment | null>(null);
   const [deliveryConfirmMode, setDeliveryConfirmMode] = useState<"local_merge" | "pull_request" | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  const [selectedExecutionAgentId, setSelectedExecutionAgentId] = useState("");
 
+  const dirty = item != null && (
+    title !== item.title
+    || body !== item.body
+    || type !== item.type
+    || status !== item.status
+    || priority !== item.priority
+    || labels !== item.labels.join(", ")
+    || acceptance !== item.acceptanceCriteria.join("\n")
+    || dueDate !== (item.dueDate ?? "")
+    || milestone !== (item.milestone ?? "")
+    || estimatePoints !== String(item.estimatePoints ?? 0)
+    || parentId !== (item.parentId ?? "")
+  );
+  const syncDraft = (next: LocalWorkItem) => {
+    setItem(next);
+    setTitle(next.title);
+    setBody(next.body);
+    setType(next.type);
+    setStatus(next.status);
+    setPriority(next.priority);
+    setLabels(next.labels.join(", "));
+    setAcceptance(next.acceptanceCriteria.join("\n"));
+    setDueDate(next.dueDate ?? "");
+    setMilestone(next.milestone ?? "");
+    setEstimatePoints(String(next.estimatePoints ?? 0));
+    setParentId(next.parentId ?? "");
+  };
   const load = async () => {
     try {
       setAutoRunReadiness(null);
@@ -2261,18 +2371,7 @@ function LocalWorkItemDetail({
         api.listWorkItems() as Promise<LocalWorkItemResult>,
       ]);
       const next = detail.workItem;
-      setItem(next);
-      setTitle(next.title);
-      setBody(next.body);
-      setType(next.type);
-      setStatus(next.status);
-      setPriority(next.priority);
-      setLabels(next.labels.join(", "));
-      setAcceptance(next.acceptanceCriteria.join("\n"));
-      setDueDate(next.dueDate ?? "");
-      setMilestone(next.milestone ?? "");
-      setEstimatePoints(String(next.estimatePoints ?? 0));
-      setParentId(next.parentId ?? "");
+      syncDraft(next);
       setComments(commentResult.comments);
       setActivity(activityResult.activities);
       setDependencyCandidates(workItemResult.workItems.filter((candidate) => candidate.id !== workItemId));
@@ -2314,24 +2413,16 @@ function LocalWorkItemDetail({
     return () => cancelAnimationFrame(frame);
   }, [item, selectedWorkItemSection, workItemId]);
   useVisibleInterval(() => {
-    void (api.getWorkItem(workItemId) as Promise<{ observability: LocalWorkItemObservability }>)
-      .then((detail) => setObservability(detail.observability))
+    void (api.getWorkItem(workItemId) as Promise<{ workItem: LocalWorkItem; observability: LocalWorkItemObservability }>)
+      .then((detail) => {
+        setObservability(detail.observability);
+        // Preserve an in-progress local edit. With no local draft, refresh the
+        // whole record so delivery and save actions use the latest revision.
+        if (!dirty) syncDraft(detail.workItem);
+      })
       .catch(() => {});
   }, 5_000);
 
-  const dirty = item != null && (
-    title !== item.title
-    || body !== item.body
-    || type !== item.type
-    || status !== item.status
-    || priority !== item.priority
-    || labels !== item.labels.join(", ")
-    || acceptance !== item.acceptanceCriteria.join("\n")
-    || dueDate !== (item.dueDate ?? "")
-    || milestone !== (item.milestone ?? "")
-    || estimatePoints !== String(item.estimatePoints ?? 0)
-    || parentId !== (item.parentId ?? "")
-  );
   const safeNavigation = useSafeNavigation(dirty);
   useEffect(() => {
     onDirtyChange(dirty);
@@ -2438,20 +2529,24 @@ function LocalWorkItemDetail({
     });
   };
   const startExecution = () => {
+    let startedAutoRunId: string | null = null;
     void execute(async () => {
-      const result = await api.startWorkItemAutoRun(item.id) as { worktree?: { id: string }; autoRun?: { worktreeId?: string } };
-      const worktreeId = result.worktree?.id ?? result.autoRun?.worktreeId;
-      if (worktreeId) {
-        setSelectedProjectId(item.projectId);
-        setSelectedWorktreeId(worktreeId);
-        setSection("projects");
-      }
+      const result = await api.startWorkItemAutoRun(item.id, selectedExecutionAgentId
+        ? { agentId: selectedExecutionAgentId }
+        : {}) as { autoRun?: { id?: string } };
+      startedAutoRunId = result.autoRun?.id ?? null;
       return result;
     }).then((ok) => {
       if (!ok) return;
       setNotice(`${t("taskLocal.startAutoRun")} ✓`);
       onChanged();
       void load();
+      if (startedAutoRunId) {
+        const url = new URL(window.location.href);
+        url.searchParams.set("autoRun", startedAutoRunId);
+        window.history.replaceState(window.history.state, "", `${url.pathname}${url.search}${url.hash}`);
+      }
+      setSection("autoRuns");
     });
   };
   const deliver = (mode: "local_merge" | "pull_request") => {
@@ -2474,8 +2569,22 @@ function LocalWorkItemDetail({
       : "GitHub";
   const nextActionKey = observability?.nextAction ?? "start_execution";
   const nextAction = t(`taskNextAction.${nextActionKey}` as never);
-  const updatedAgeMinutes = Math.max(0, Math.floor((Date.now() - Date.parse(item.updatedAt)) / 60_000));
   const boundRun = observability?.latestRun ?? null;
+  const activeAutoRunStatuses = new Set(["materializing", "running", "waiting_capacity", "awaiting_approval", "verifying", "publishing"]);
+  const activeAutoRunId = boundRun && activeAutoRunStatuses.has(boundRun.status) ? boundRun.id : null;
+  const latestTimelineAt = (observability?.timeline ?? []).reduce(
+    (latest, event) => !latest || Date.parse(event.at) > Date.parse(latest) ? event.at : latest,
+    "",
+  );
+  const freshestAt = [item.updatedAt, boundRun?.updatedAt, latestTimelineAt]
+    .filter((value): value is string => Boolean(value) && Number.isFinite(Date.parse(value!)))
+    .sort((a, b) => Date.parse(b) - Date.parse(a))[0] ?? item.updatedAt;
+  const updatedAgeSeconds = Math.max(0, Math.floor((Date.now() - Date.parse(freshestAt)) / 1_000));
+  const updatedAgeMinutes = Math.floor(updatedAgeSeconds / 60);
+  const staleExecution = Boolean(activeAutoRunId && updatedAgeSeconds > 120);
+  const latestActivity = (observability?.timeline ?? [])
+    .slice()
+    .sort((a, b) => Date.parse(b.at) - Date.parse(a.at))[0] ?? null;
   const itemAttention = observability?.attention ?? [];
   const knownCostUsd = observability?.cost.knownUsd ?? 0;
   const unknownCostEntries = observability?.cost.unknownEntries ?? 0;
@@ -2597,10 +2706,14 @@ function LocalWorkItemDetail({
               </p>
             ) : null}
           </div>
-          <Badge tone={itemAttention.length ? "danger" : "success"}>
+          <Badge tone={itemAttention.length ? "danger" : staleExecution ? "warning" : "success"}>
             {itemAttention.length
               ? t("taskCockpit.attentionCount", { count: itemAttention.length })
-              : t("taskCockpit.healthy")}
+              : staleExecution
+                ? t("executionUi.stale")
+                : activeAutoRunId
+                  ? t("executionUi.live")
+                  : t("taskCockpit.healthy")}
           </Badge>
         </div>
         <div className="grid grid-cols-2 gap-2 text-xs sm:grid-cols-3 lg:grid-cols-6">
@@ -2621,7 +2734,10 @@ function LocalWorkItemDetail({
           </div>
           <div className="rounded bg-muted p-2">
             <span className="block text-muted-foreground">{t("taskCockpit.freshness")}</span>
-            <strong>{t("taskCockpit.minutesAgo", { count: updatedAgeMinutes })}</strong>
+            <strong>{updatedAgeSeconds < 60
+              ? t("executionUi.secondsAgo", { count: updatedAgeSeconds })
+              : t("taskCockpit.minutesAgo", { count: updatedAgeMinutes })}</strong>
+            {latestActivity?.message ? <span className="mt-1 block truncate text-[10px] text-muted-foreground" title={latestActivity.message}>{latestActivity.message}</span> : null}
           </div>
           <div className="rounded bg-muted p-2">
             <span className="block text-muted-foreground">{t("taskCockpit.deadline")}</span>
@@ -2828,16 +2944,46 @@ function LocalWorkItemDetail({
         {error ? <p className="text-xs text-destructive">{error}</p> : null}
         {notice ? <p className="text-xs text-success">{notice}</p> : null}
       </div>
+      {!activeAutoRunId ? (
+        <section className="rounded-md border border-border bg-muted/20 p-3 text-xs">
+          <label className="grid gap-1 sm:max-w-sm">
+            <span className="font-medium">{t("executionUi.executionAgent")}</span>
+            <Select
+              value={selectedExecutionAgentId}
+              onChange={(event) => setSelectedExecutionAgentId(event.target.value)}
+              disabled={pending}
+            >
+              <option value="">{t("executionUi.executionAgentAuto")}</option>
+              {(consoleState?.agents ?? [])
+                .filter((agent) => agent.status !== "disabled")
+                .map((agent) => (
+                  <option key={agent.id} value={agent.id}>
+                    {agent.name} · {agent.id}
+                  </option>
+                ))}
+            </Select>
+          </label>
+          {selectedExecutionAgentId && (consoleState?.agents ?? []).find((agent) => agent.id === selectedExecutionAgentId)?.name.toLowerCase().includes("demo") ? (
+            <p className="mt-2 text-amber-700 dark:text-amber-300">{t("executionUi.demoAgentWarning")}</p>
+          ) : (
+            <p className="mt-2 text-muted-foreground">{t("executionUi.executionAgentHint")}</p>
+          )}
+        </section>
+      ) : null}
       <WorkItemExecutionActions
         itemId={item.id}
         open={item.state === "open"}
         pending={pending}
         canSave={Boolean(title.trim())}
         worktreeReady={Boolean(autoRunReadiness && !autoRunReadiness.checks.some((check) => check.key === "git" && check.status === "blocked"))}
-        autoRunReady={autoRunReadiness?.ready === true}
-        autoRunBlockedReason={autoRunReadiness?.checks.filter((check) => check.status === "blocked").map((check) => check.detail).join(" ")}
+        autoRunReady={autoRunReadiness?.ready === true && !activeAutoRunId}
+        autoRunBlockedReason={activeAutoRunId
+          ? t("executionUi.activeAutoRunBlocked")
+          : autoRunReadiness?.checks.filter((check) => check.status === "blocked").map((check) => check.detail).join(" ")}
+        activeAutoRunId={activeAutoRunId}
         onCreateWorktree={() => requestNavigation(createExecutionWorktree)}
         onStartAutoRun={() => requestNavigation(startExecution)}
+        onOpenAutoRun={() => openAutoRun(activeAutoRunId)}
         onTransition={() => transition(item.state === "open" ? "close" : "reopen")}
         onSave={() => save()}
       />

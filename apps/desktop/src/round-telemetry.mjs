@@ -86,14 +86,17 @@ function claudeText(content) {
     .join(" ");
 }
 
-function codexFilePath(event) {
+function codexFilePaths(event) {
   const item = event?.item;
-  if (!item) return null;
-  if (typeof item.path === "string") return item.path;
-  if (Array.isArray(item.changes) && typeof item.changes[0]?.path === "string") {
-    return item.changes[0].path;
-  }
-  return null;
+  if (!item) return [];
+  const rows = Array.isArray(item.files)
+    ? item.files
+    : Array.isArray(item.changes)
+      ? item.changes
+      : [];
+  const paths = rows.map((entry) => entry?.path).filter((path) => typeof path === "string" && path.trim());
+  if (typeof item.path === "string" && item.path.trim()) paths.unshift(item.path);
+  return [...new Set(paths)];
 }
 
 // Build the round_started + round_completed pair for one turn and advance state.
@@ -224,8 +227,7 @@ export function codexRoundEmits(state, event, now) {
   }
   if (itemType === "file_change" || itemType === "file_changes") {
     state.touchedUserFiles = true;
-    const path = codexFilePath(event);
-    if (path) state.pendingFiles.push(path);
+    state.pendingFiles.push(...codexFilePaths(event));
     return [];
   }
   if (event.type === "turn.completed") {

@@ -24,9 +24,12 @@ export function createInvocationCreationRuntime({
   normalizeCodexApprovalMode,
   normalizeCodexSessionMode,
   normalizeCodexWorkspacePolicy,
+  normalizeClaudeSessionMode,
   createManagedCodexWorkspace,
   createManagedCodexSession,
+  createManagedClaudeSession,
   resolveResumeCodexSessionId,
+  resolveResumeClaudeSessionId,
   evaluateInvocationPolicy,
   enforcePlatformAiQuota,
   createPolicyDecisionRecord,
@@ -83,6 +86,9 @@ export function createInvocationCreationRuntime({
     });
     const directRun = runsWithoutBridge(agent);
     let codexSessionMode = normalizeCodexSessionMode(options.codexSessionMode, agent);
+    let claudeSessionMode = typeof normalizeClaudeSessionMode === "function"
+      ? normalizeClaudeSessionMode(options.claudeSessionMode, agent)
+      : "not_applicable";
     const codexWorkspacePolicy = normalizeCodexWorkspacePolicy(options.codexWorkspacePolicy, agent);
     const requestedMetadata = options.metadata && typeof options.metadata === "object" && !Array.isArray(options.metadata) ? options.metadata : {};
     const requestedWorktree = requestedMetadata.worktreeId
@@ -131,6 +137,17 @@ export function createInvocationCreationRuntime({
       project,
       worktree: projectWorktree,
     });
+    const managedClaudeSession = typeof createManagedClaudeSession === "function"
+      ? createManagedClaudeSession({
+          invocationId: id,
+          agent,
+          claudeSessionMode,
+          actor: options.actor,
+          requestedBy,
+          project,
+          worktree: projectWorktree,
+        })
+      : null;
     // Exact resume only. A requested continuation without a provider session /
     // thread id becomes a fresh session; it must never degrade to global --last,
     // which can cross concurrent tasks on the same machine.
@@ -146,6 +163,26 @@ export function createInvocationCreationRuntime({
     if (codexSessionMode === "continue_last" && !codexResumeSessionId) {
       codexSessionMode = "new";
       if (managedCodexSession) managedCodexSession.sessionMode = "new";
+    }
+    const claudeResumeSessionId =
+      claudeSessionMode === "continue_last"
+      && managedClaudeSession
+      && typeof resolveResumeClaudeSessionId === "function"
+        ? resolveResumeClaudeSessionId({
+            repoPath: managedClaudeSession.repoPath,
+            userId: managedClaudeSession.userId,
+            excludeSessionId: managedClaudeSession.id,
+            invocationId: typeof options.resumeFromInvocationId === "string"
+              ? options.resumeFromInvocationId
+              : null,
+          })
+        : null;
+    if (claudeSessionMode === "continue_last" && !claudeResumeSessionId) {
+      claudeSessionMode = "new";
+      if (managedClaudeSession) managedClaudeSession.sessionMode = "new";
+    }
+    if (managedClaudeSession && claudeResumeSessionId) {
+      managedClaudeSession.resumedFromSessionId = claudeResumeSessionId;
     }
     // Budget gate: a project (or team pool) over its limit with a block policy
     // rejects the run up front, same shape as the platform AI quota gate.
@@ -221,6 +258,8 @@ export function createInvocationCreationRuntime({
         codexSessionMode,
         codexResumeSessionId,
         codexWorkspacePolicy,
+        claudeSessionMode,
+        claudeResumeSessionId,
         // A per-run selection wins; otherwise inherit the registered Agent's
         // canonical permission mode. This keeps API/scheduler callers aligned
         // with the Web composer instead of silently falling back to "ask".
@@ -245,6 +284,10 @@ export function createInvocationCreationRuntime({
             managedCodexSessionId: managedCodexSession.id,
             managedCodexWorkspaceId: managedCodexWorkspace?.id ?? null,
             managedLaunch: true
+          } : {}),
+          ...(managedClaudeSession ? {
+            managedClaudeSessionId: managedClaudeSession.id,
+            managedLaunch: true,
           } : {})
         }
       },
@@ -265,6 +308,19 @@ export function createInvocationCreationRuntime({
         level: "info",
         message: "Managed Codex session registered for a MyAgentTool-launched invocation.",
         data: { codexSessionId: managedCodexSession.id, workspaceId: managedCodexWorkspace?.id ?? null, sessionMode: codexSessionMode, workspacePolicy: codexWorkspacePolicy }
+      });
+    }
+    if (managedClaudeSession) {
+      appendEvent({
+        invocationId: invocation.id,
+        type: "claude_session_registered",
+        level: "info",
+        message: "Managed Claude SDK session registered for a MyAgentTool-launched invocation.",
+        data: {
+          claudeSessionRegistryId: managedClaudeSession.id,
+          sessionMode: claudeSessionMode,
+          resumedFromSessionId: claudeResumeSessionId,
+        },
       });
     }
     const policyRecord = createPolicyDecisionRecord(invocation, agent, policy);

@@ -7,9 +7,14 @@ export function bundledAgentEnv({ appRoot, resourcesRoot = appRoot, execPath, en
     const script = join(appRoot, "node_modules", "@openai", "codex", "bin", "codex.js");
     if (exists(script)) patch.MYAGENTTOOL_CODEX_COMMAND_JSON = JSON.stringify([execPath, script]);
   }
-  if (!binaryAvailable("claude", { env, platform, exists })) {
-    const executable = join(appRoot, "node_modules", "@anthropic-ai", "claude-code", "bin", platform === "win32" ? "claude.exe" : "claude");
-    if (exists(executable)) patch.MYAGENTTOOL_CLAUDE_COMMAND = executable;
+  const packagedClaude = join(appRoot, "node_modules", "@anthropic-ai", "claude-code", "bin", platform === "win32" ? "claude.exe" : "claude");
+  if (exists(packagedClaude)) {
+    // The SDK and CLI packages are version-aligned and share this one packaged
+    // binary. This avoids shipping a second ~250 MB SDK-native executable.
+    patch.MYAGENTTOOL_CLAUDE_SDK_EXECUTABLE = packagedClaude;
+    if (!binaryAvailable("claude", { env, platform, exists })) {
+      patch.MYAGENTTOOL_CLAUDE_COMMAND = packagedClaude;
+    }
   }
   if (platform === "win32") {
     const portableRoot = join(resourcesRoot, "portable-git");

@@ -122,6 +122,38 @@ export function continuationCheckpointPrompt(checkpoint = {}) {
   ].join("\n");
 }
 
+/**
+ * A timeout continuation is useful only while the work is still advancing.
+ * Commands alone are deliberately excluded: repeatedly starting the same broad
+ * command is activity, not progress. A new changed path or a new completed
+ * agent checkpoint resets the no-progress streak.
+ */
+export function autoRunCheckpointMadeProgress(current = {}, previous = null) {
+  if (!previous) return true;
+  const next = normalizeCheckpoint(current);
+  const prior = normalizeCheckpoint(previous);
+  if (
+    next.lastCompletedMessage
+    && next.lastCompletedMessage !== prior.lastCompletedMessage
+  ) {
+    return true;
+  }
+  const priorFiles = new Set(prior.changedFiles);
+  return next.changedFiles.some((file) => !priorFiles.has(file));
+}
+
+export function autoRunStageFromCheckpoint(checkpoint = {}) {
+  const normalized = normalizeCheckpoint(checkpoint);
+  if (
+    normalized.lastCommand
+    && /\b(?:test|typecheck|lint|check|verify|vitest|jest|playwright)\b/i.test(normalized.lastCommand)
+  ) {
+    return "verification";
+  }
+  if (normalized.changedFiles.length > 0) return "implementation";
+  return "analysis";
+}
+
 function normalizeCheckpoint(checkpoint) {
   const sourceInvocationId = boundedText(
     checkpoint?.sourceInvocationId,

@@ -25,6 +25,11 @@ const MAX_MILESTONE = 200;
 const GITHUB_SYNC_FIELDS = ["title", "body", "state", "labels", "milestone", "assigneeIds"];
 const VERIFICATION_KINDS = new Set(["test", "lint", "typecheck", "manual", "review"]);
 const VERIFICATION_STATUSES = new Set(["passed", "failed"]);
+const EXECUTION_OPERATION_TTL_MS = 30 * 60_000;
+const ACTIVE_AUTO_RUN_STATUSES = new Set([
+  "materializing", "running", "waiting_capacity", "awaiting_approval", "verifying", "publishing",
+  "pr_open", "report_posted", "needs_input", "plan_proposed",
+]);
 
 export function taskTraceStage(type, source = "issue") {
   const value = String(type ?? "").toLowerCase();
@@ -305,7 +310,7 @@ export function createWorkItemService({
       ? (state.autoRuns ?? []).find((candidate) => candidate.id === latestBinding.targetId)
       : null;
     if (run) {
-      if (["materializing", "running", "publishing"].includes(run.status)) return "running";
+      if (["materializing", "running", "waiting_capacity", "publishing"].includes(run.status)) return "running";
       if (["awaiting_approval", "needs_input"].includes(run.status)) return "awaiting_approval";
       if (["verifying", "pr_open", "report_posted", "plan_proposed"].includes(run.status)) return "verifying";
       if (["blocked", "failed"].includes(run.status)) return "failed";
@@ -1582,6 +1587,14 @@ export function createWorkItemService({
   function updateWorkItem({ workItemId, expectedRevision, ...changes } = {}, actor = null) {
     const item = findOwn(workItemId, actor);
     if (!item) return notFound();
+    if (item.deliveryOperation?.status === "in_progress"
+      && Date.parse(item.deliveryOperation.expiresAt) > Date.parse(now())) {
+      return {
+        ok: false,
+        status: 409,
+        body: { error: "work_item_delivery_in_progress", operationId: item.deliveryOperation.id },
+      };
+    }
     if (Object.hasOwn(changes, "terminalId")) {
       return {
         ok: false,
@@ -1603,7 +1616,7 @@ export function createWorkItemService({
       return { ok: false, status: 409, body: { error: "asset_terminal_mismatch", terminalId: item.terminalId } };
     }
     if (validated.value.status === "done") {
-      const gate = completionGate(item);
+      const gate = completionGate({ ...item, ...validated.value });
       if (!gate.ready) return { ok: false, status: 409, body: { error: "work_item_acceptance_incomplete", ...gate } };
     }
     if (Object.hasOwn(changes, "projectId")) {
@@ -1710,6 +1723,13 @@ export function createWorkItemService({
     for (const [id, expectedRevision] of unique) {
       const item = findOwn(id, actor);
       if (!item) return notFound();
+      if (item.deliveryOperation?.status === "in_progress"
+        && Date.parse(item.deliveryOperation.expiresAt) > Date.parse(now())) {
+        return {
+          ok: false, status: 409,
+          body: { error: "work_item_delivery_in_progress", workItemId: item.id, operationId: item.deliveryOperation.id },
+        };
+      }
       if (item.revision !== expectedRevision) {
         return {
           ok: false, status: 409,
@@ -1749,6 +1769,14 @@ export function createWorkItemService({
   function transitionWorkItem({ workItemId, expectedRevision, action } = {}, actor = null) {
     const item = findOwn(workItemId, actor);
     if (!item) return notFound();
+    if (item.deliveryOperation?.status === "in_progress"
+      && Date.parse(item.deliveryOperation.expiresAt) > Date.parse(now())) {
+      return {
+        ok: false,
+        status: 409,
+        body: { error: "work_item_delivery_in_progress", operationId: item.deliveryOperation.id },
+      };
+    }
     if (!Number.isInteger(expectedRevision)) {
       return { ok: false, status: 400, body: { error: "expected_revision_required" } };
     }
@@ -1780,7 +1808,7 @@ export function createWorkItemService({
         data: { workItemId: item.id, revision: item.revision, actorTeamId: actorTeam(actor) },
       });
     });
-    return { ok: true, status: 200, body: { workItem: item } };
+    return { ok: true, status: 200, body: { workItem: workItemView(item, actor) } };
   }
 
   function recordVerification({
@@ -1788,6 +1816,14 @@ export function createWorkItemService({
   } = {}, actor = null) {
     const item = findOwn(workItemId, actor);
     if (!item) return notFound();
+    if (item.deliveryOperation?.status === "in_progress"
+      && Date.parse(item.deliveryOperation.expiresAt) > Date.parse(now())) {
+      return {
+        ok: false,
+        status: 409,
+        body: { error: "work_item_delivery_in_progress", operationId: item.deliveryOperation.id },
+      };
+    }
     if (expectedRevision !== item.revision) {
       return { ok: false, status: 409, body: { error: "work_item_revision_conflict", currentRevision: item.revision } };
     }
@@ -2155,11 +2191,143 @@ export function createWorkItemService({
     return { ok: true, status: 200, body: { comment } };
   }
 
-  function recordExecutionBinding({ workItemId, kind, targetId, worktreeId = null } = {}, actor = null) {
+  function activeExecutionOperation(item, timestamp = now()) {
+    const operation = item.executionOperation;
+    if (!operation || operation.status !== "starting") return null;
+    return Date.parse(operation.expiresAt) > Date.parse(timestamp) ? operation : null;
+  }
+
+  function activeBoundAutoRun(item) {
+    for (const binding of [...(item.executionBindings ?? [])].reverse()) {
+      if (binding.kind !== "auto_run") continue;
+      const autoRun = (state.autoRuns ?? []).find((candidate) => candidate.id === binding.targetId);
+      if (!autoRun) continue;
+      if (ACTIVE_AUTO_RUN_STATUSES.has(autoRun.status)) return autoRun;
+      if (autoRun.status === "done" && autoRun.link?.type === "local_issue"
+        && autoRun.localDelivery && !autoRun.localDelivery.deliveredAt && !autoRun.localDelivery.promotedAt) {
+        return autoRun;
+      }
+    }
+    return null;
+  }
+
+  function beginExecution({
+    workItemId, kind, agentId = null,
+  } = {}, actor = null) {
+    const item = findOwn(workItemId, actor);
+    if (!item) return notFound();
+    if (!["worktree", "auto_run"].includes(kind)) {
+      return { ok: false, status: 400, body: { error: "invalid_work_item_execution_kind" } };
+    }
+    if (item.state !== "open" || item.archivedAt) {
+      return { ok: false, status: 409, body: { error: "work_item_execution_not_open" } };
+    }
+    const timestamp = now();
+    const currentOperation = activeExecutionOperation(item, timestamp);
+    if (currentOperation) {
+      return {
+        ok: false,
+        status: 409,
+        body: { error: "work_item_execution_in_progress", operationId: currentOperation.id },
+      };
+    }
+    if (kind === "auto_run") {
+      const activeRun = activeBoundAutoRun(item);
+      if (activeRun) {
+        return {
+          ok: false,
+          status: 409,
+          body: { error: "work_item_auto_run_active", autoRunId: activeRun.id, autoRunStatus: activeRun.status },
+        };
+      }
+    }
+    const holderId = actorUser(actor);
+    const claimActive = item.claim?.status === "active"
+      && Date.parse(item.claim.leaseExpiresAt) > Date.parse(timestamp);
+    if (claimActive && item.claim.claimedBy !== holderId) {
+      return { ok: false, status: 409, body: { error: "work_item_already_claimed", claim: item.claim } };
+    }
+    const operation = {
+      id: nextId("weo"),
+      kind,
+      status: "starting",
+      startedBy: holderId,
+      agentId: agentId ? String(agentId) : null,
+      startedAt: timestamp,
+      expiresAt: new Date(Date.parse(timestamp) + EXECUTION_OPERATION_TTL_MS).toISOString(),
+    };
+    runTx(() => {
+      if (!claimActive) {
+        item.claim = {
+          id: nextId("wcl"),
+          status: "active",
+          claimedBy: holderId,
+          agentId: operation.agentId,
+          idempotencyKey: null,
+          claimedAt: timestamp,
+          renewedAt: timestamp,
+          leaseExpiresAt: operation.expiresAt,
+          executionOperationId: operation.id,
+        };
+        recordActivity(item, actor, "claimed", {
+          claimId: item.claim.id, agentId: item.claim.agentId, leaseExpiresAt: item.claim.leaseExpiresAt,
+          source: "execution_admission",
+        });
+      }
+      item.executionOperation = operation;
+      item.revision += 1;
+      item.updatedAt = timestamp;
+      item.lastModifiedBy = holderId;
+      recordActivity(item, actor, "execution_admitted", {
+        operationId: operation.id, kind, agentId: operation.agentId,
+      });
+    });
+    return {
+      ok: true,
+      status: 201,
+      body: { operation, workItem: workItemView(item, actor), claim: item.claim ?? null },
+    };
+  }
+
+  function abortExecution({ workItemId, operationId, reason = "execution_start_failed" } = {}, actor = null) {
+    const item = findOwn(workItemId, actor);
+    if (!item) return notFound();
+    if (!item.executionOperation || item.executionOperation.id !== String(operationId)) {
+      return { ok: true, status: 200, body: { aborted: false, workItem: workItemView(item, actor) } };
+    }
+    runTx(() => {
+      const operation = item.executionOperation;
+      item.executionOperation = null;
+      if (item.claim?.status === "active" && item.claim.executionOperationId === operation.id) {
+        item.claim = {
+          ...item.claim,
+          status: "released",
+          releasedAt: now(),
+          releasedBy: actorUser(actor),
+          releaseReason: reason,
+        };
+      }
+      item.revision += 1;
+      item.updatedAt = now();
+      item.lastModifiedBy = actorUser(actor);
+      recordActivity(item, actor, "execution_admission_aborted", {
+        operationId: operation.id, kind: operation.kind, reason: String(reason).slice(0, 500),
+      });
+    });
+    return { ok: true, status: 200, body: { aborted: true, workItem: workItemView(item, actor) } };
+  }
+
+  function recordExecutionBinding({
+    workItemId, kind, targetId, worktreeId = null, operationId = null,
+  } = {}, actor = null) {
     const item = findOwn(workItemId, actor);
     if (!item) return notFound();
     if (!["worktree", "auto_run"].includes(kind) || !targetId) {
       return { ok: false, status: 400, body: { error: "invalid_work_item_execution_binding" } };
+    }
+    if (operationId != null
+      && (item.executionOperation?.id !== String(operationId) || item.executionOperation.kind !== kind)) {
+      return { ok: false, status: 409, body: { error: "work_item_execution_operation_conflict" } };
     }
     const binding = {
       kind,
@@ -2170,16 +2338,46 @@ export function createWorkItemService({
     };
     runTx(() => {
       item.executionBindings = [...(item.executionBindings ?? []), binding];
+      if (operationId != null) {
+        item.executionOperation = null;
+        if (item.claim?.status === "active" && item.claim.executionOperationId === String(operationId)) {
+          item.claim = {
+            ...item.claim,
+            executionOperationId: null,
+            ...(kind === "auto_run" ? { autoRunId: binding.targetId } : {}),
+          };
+        }
+      }
       item.revision += 1;
       item.updatedAt = now();
       item.lastModifiedBy = actorUser(actor);
       recordActivity(item, actor, kind === "worktree" ? "worktree_created" : "auto_run_started", binding);
     });
-    return { ok: true, status: 200, body: { workItem: item, binding } };
+    return { ok: true, status: 200, body: { workItem: workItemView(item, actor), binding } };
   }
 
-  function completeDelivery({
-    workItemId, expectedRevision, mode, autoRunId, result = {},
+  function deliveryContext(item, { mode, autoRunId = null, requireReady = true } = {}) {
+    if (!["local_merge", "pull_request"].includes(mode)) {
+      return { error: { ok: false, status: 400, body: { error: "invalid_work_item_delivery_mode" } } };
+    }
+    const binding = [...(item.executionBindings ?? [])].reverse().find(
+      (candidate) => candidate.kind === "auto_run" && (!autoRunId || candidate.targetId === autoRunId),
+    );
+    const autoRun = binding
+      ? (state.autoRuns ?? []).find((candidate) => candidate.id === binding.targetId)
+      : null;
+    if (!autoRun?.localDelivery || autoRun.link?.type !== "local_issue"
+      || (requireReady && autoRun.status !== "done")) {
+      return { error: { ok: false, status: 409, body: { error: "work_item_delivery_not_ready" } } };
+    }
+    if (autoRun.localDelivery.deliveredAt || autoRun.localDelivery.promotedAt) {
+      return { error: { ok: false, status: 409, body: { error: "work_item_already_delivered" } } };
+    }
+    return { binding, autoRun };
+  }
+
+  function beginDelivery({
+    workItemId, expectedRevision, mode, autoRunId = null,
   } = {}, actor = null) {
     const item = findOwn(workItemId, actor);
     if (!item) return notFound();
@@ -2189,30 +2387,122 @@ export function createWorkItemService({
     if (item.revision !== expectedRevision) {
       return { ok: false, status: 409, body: { error: "work_item_revision_conflict", currentRevision: item.revision } };
     }
-    if (!["local_merge", "pull_request"].includes(mode)) {
-      return { ok: false, status: 400, body: { error: "invalid_work_item_delivery_mode" } };
+    const gate = completionGate(item);
+    if (!gate.ready) {
+      return { ok: false, status: 409, body: { error: "work_item_acceptance_incomplete", ...gate } };
+    }
+    const context = deliveryContext(item, { mode, autoRunId });
+    if (context.error) return context.error;
+    const timestamp = now();
+    if (item.deliveryOperation?.status === "in_progress"
+      && Date.parse(item.deliveryOperation.expiresAt) > Date.parse(timestamp)) {
+      return {
+        ok: false,
+        status: 409,
+        body: { error: "work_item_delivery_in_progress", operationId: item.deliveryOperation.id },
+      };
+    }
+    const operation = {
+      id: nextId("wdo"),
+      status: "in_progress",
+      mode,
+      autoRunId: context.autoRun.id,
+      startedBy: actorUser(actor),
+      startedAt: timestamp,
+      expiresAt: new Date(Date.parse(timestamp) + EXECUTION_OPERATION_TTL_MS).toISOString(),
+    };
+    runTx(() => {
+      item.deliveryOperation = operation;
+      item.revision += 1;
+      item.updatedAt = timestamp;
+      item.lastModifiedBy = actorUser(actor);
+      recordActivity(item, actor, "delivery_started", {
+        operationId: operation.id, autoRunId: context.autoRun.id, mode,
+      });
+    });
+    return {
+      ok: true,
+      status: 201,
+      body: {
+        operation,
+        workItem: workItemView(item, actor),
+        autoRun: context.autoRun,
+        delivery: context.autoRun.localDelivery,
+      },
+    };
+  }
+
+  function failDelivery({
+    workItemId, operationId, error = "delivery_failed",
+  } = {}, actor = null) {
+    const item = findOwn(workItemId, actor);
+    if (!item) return notFound();
+    if (!item.deliveryOperation || item.deliveryOperation.id !== String(operationId)) {
+      return { ok: true, status: 200, body: { failed: false, workItem: workItemView(item, actor) } };
+    }
+    const operation = item.deliveryOperation;
+    const binding = [...(item.executionBindings ?? [])].reverse().find(
+      (candidate) => candidate.kind === "auto_run" && candidate.targetId === operation.autoRunId,
+    );
+    const autoRun = binding
+      ? (state.autoRuns ?? []).find((candidate) => candidate.id === binding.targetId)
+      : null;
+    runTx(() => {
+      item.deliveryOperation = null;
+      item.revision += 1;
+      item.updatedAt = now();
+      item.lastModifiedBy = actorUser(actor);
+      if (autoRun?.localDelivery) {
+        autoRun.localDelivery = {
+          ...autoRun.localDelivery,
+          lastDeliveryError: String(error).slice(0, 2_000),
+          lastDeliveryFailedAt: item.updatedAt,
+        };
+        autoRun.updatedAt = item.updatedAt;
+      }
+      recordActivity(item, actor, "delivery_failed", {
+        operationId: operation.id, autoRunId: operation.autoRunId, mode: operation.mode,
+        error: String(error).slice(0, 500),
+      });
+    });
+    return { ok: true, status: 200, body: { failed: true, workItem: workItemView(item, actor) } };
+  }
+
+  function completeDelivery({
+    workItemId, expectedRevision, mode, autoRunId, operationId = null, result = {},
+  } = {}, actor = null) {
+    const item = findOwn(workItemId, actor);
+    if (!item) return notFound();
+    if (operationId == null) {
+      if (!Number.isInteger(expectedRevision)) {
+        return { ok: false, status: 400, body: { error: "expected_revision_required" } };
+      }
+      if (item.revision !== expectedRevision) {
+        return { ok: false, status: 409, body: { error: "work_item_revision_conflict", currentRevision: item.revision } };
+      }
+    } else if (item.deliveryOperation?.id !== String(operationId)
+      || item.deliveryOperation.status !== "in_progress"
+      || item.deliveryOperation.mode !== mode) {
+      return { ok: false, status: 409, body: { error: "work_item_delivery_operation_conflict" } };
     }
     const gate = completionGate(item);
     if (!gate.ready) {
       return { ok: false, status: 409, body: { error: "work_item_acceptance_incomplete", ...gate } };
     }
-    const binding = [...(item.executionBindings ?? [])].reverse().find(
-      (candidate) => candidate.kind === "auto_run" && (!autoRunId || candidate.targetId === autoRunId),
-    );
-    const autoRun = binding
-      ? (state.autoRuns ?? []).find((candidate) => candidate.id === binding.targetId)
-      : null;
-    if (!autoRun?.localDelivery || autoRun.link?.type !== "local_issue") {
-      return { ok: false, status: 409, body: { error: "work_item_delivery_not_ready" } };
-    }
-    if (mode === "local_merge" && autoRun.localDelivery.deliveredAt) {
-      return { ok: false, status: 409, body: { error: "work_item_already_delivered" } };
-    }
+    const context = deliveryContext(item, {
+      mode,
+      autoRunId: operationId == null ? autoRunId : item.deliveryOperation.autoRunId,
+      requireReady: operationId == null,
+    });
+    if (context.error) return context.error;
+    const { autoRun } = context;
     const deliveredAt = result.deliveredAt ?? now();
     runTx(() => {
+      item.deliveryOperation = null;
       autoRun.localDelivery = {
         ...autoRun.localDelivery,
         mode,
+        lastDeliveryError: null,
         ...(mode === "local_merge"
           ? { baseBranch: result.baseBranch ?? null, deliveredCommit: result.commit ?? null, deliveredAt }
           : { prNumber: result.number ?? null, prUrl: result.url ?? null, promotedAt: deliveredAt }),
@@ -2320,7 +2610,9 @@ export function createWorkItemService({
   return {
     listWorkItems, listAttention, getWorkItem, createWorkItem, updateWorkItem, bulkUpdateWorkItems, transitionWorkItem,
     listActivity, listComments, createComment, updateComment, deleteComment,
-    recordExecutionBinding, completeDelivery, claimWorkItem, releaseWorkItemClaim,
+    beginExecution, abortExecution, recordExecutionBinding,
+    beginDelivery, failDelivery, completeDelivery,
+    claimWorkItem, releaseWorkItemClaim,
     bindGithubIssue, syncGithubIssue, bindExternalIssue, syncExternalIssue, listExternalProviders,
     recordVerification, recordAssetOperation, ingestGithubWebhook, replayGithubWebhook, recordGithubWebhookFailure,
     ingestExternalWebhook, replayExternalWebhook, recordExternalWebhookFailure,

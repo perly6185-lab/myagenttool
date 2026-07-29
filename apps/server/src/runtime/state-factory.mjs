@@ -145,6 +145,9 @@ export function createServerState({ defaultProjectPath, now }) {
     // Local-first planning records. These are independent of GitHub Issues and
     // may later carry one or more external bindings.
     workItems: [],
+    // Durable manual batches for "run these local tasks with concurrency N".
+    // Pending rows survive a server restart and are resumed by the batch sweep.
+    workItemAutoRunBatches: [],
     workItemComments: [],
     workItemAttentionOperations: [],
     githubWorkItemWebhookDeliveries: [],
@@ -171,6 +174,7 @@ export function createServerState({ defaultProjectPath, now }) {
     troubleshootingReports: [],
     agentUsageSummaries: [],
     codexSessions: [],
+    claudeSessions: [],
     codexWorkspaces: [],
     codexEvidenceRecords: [],
     codexChangeReviews: [],
@@ -295,6 +299,7 @@ export function resetStateForSelfCheck({ state, now }) {
   state.troubleshootingReports = [];
   state.agentUsageSummaries = [];
   state.codexSessions = [];
+  state.claudeSessions = [];
   state.codexWorkspaces = [];
   state.codexEvidenceRecords = [];
   state.codexChangeReviews = [];
@@ -621,7 +626,7 @@ function createDefaultAgents(now) {
     {
       id: "agt_claude_acceptEdits",
       name: "Claude Code CLI",
-      description: "Runs Claude Code non-interactively (claude -p) through a reviewed local adapter config.",
+      description: "Runs Claude through the Agent SDK by default, with governed local tools and a CLI rollback path.",
       ownerUserId: "usr_local",
       location: { type: "local_device", deviceId: DEFAULT_DEVICE_ID },
       adapter: {

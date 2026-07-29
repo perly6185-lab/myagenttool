@@ -14,6 +14,22 @@ function defaultNow() {
   return new Date().toISOString();
 }
 
+// Managed worktrees may be created by the host account and then operated by the
+// restricted local server account. Trust only the exact governed repository for
+// each child Git process; do not mutate the user's global safe.directory list.
+function gitSafeDirectoryEnv(root, source = process.env) {
+  const rawCount = String(source.GIT_CONFIG_COUNT ?? "");
+  const count = /^\d+$/.test(rawCount) && Number(rawCount) <= 1_024
+    ? Number(rawCount)
+    : 0;
+  return {
+    ...source,
+    GIT_CONFIG_COUNT: String(count + 1),
+    [`GIT_CONFIG_KEY_${count}`]: "safe.directory",
+    [`GIT_CONFIG_VALUE_${count}`]: resolve(String(root)),
+  };
+}
+
 export function createProjectRecord(
   {
     id,
@@ -69,7 +85,12 @@ export function createProjectRecord(
 export function readGitFacts(cwd) {
   const g = (args) => {
     try {
-      return execFileSync("git", ["-C", cwd, ...args], { encoding: "utf8", timeout: 5_000, stdio: ["ignore", "pipe", "ignore"] }).trim();
+      return execFileSync("git", ["-C", cwd, ...args], {
+        encoding: "utf8",
+        timeout: 5_000,
+        stdio: ["ignore", "pipe", "ignore"],
+        env: gitSafeDirectoryEnv(cwd),
+      }).trim();
     } catch {
       return "";
     }
@@ -293,7 +314,11 @@ export function createProjectService({ state, now, nextId, appendEvent, persistS
       const base = baseBranch || readGitFacts(repoRoot).defaultBranch;
       const tryGit = (args) => {
         try {
-          execFileSync("git", ["-C", repoRoot, ...args], { timeout: 30_000, stdio: ["ignore", "ignore", "ignore"] });
+          execFileSync("git", ["-C", repoRoot, ...args], {
+            timeout: 30_000,
+            stdio: ["ignore", "ignore", "ignore"],
+            env: gitSafeDirectoryEnv(repoRoot),
+          });
           return true;
         } catch {
           return false;
@@ -311,7 +336,14 @@ export function createProjectService({ state, now, nextId, appendEvent, persistS
       encoding: "utf8",
       stdio: ["ignore", "pipe", "pipe"],
       timeout: 20_000,
+      env: gitSafeDirectoryEnv(repoRoot),
     });
+    const baseCommit = execFileSync("git", ["-C", targetPath, "rev-parse", "HEAD"], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+      timeout: 5_000,
+      env: gitSafeDirectoryEnv(targetPath),
+    }).trim() || null;
 
     const createdAt = now();
     const worktree = {
@@ -326,6 +358,10 @@ export function createProjectService({ state, now, nextId, appendEvent, persistS
       branchName,
       branch: branchName,
       baseBranch: baseBranch ?? "HEAD",
+      // Immutable fork point for reproducible verification. A branch name such
+      // as `main` moves over time and can make later reverification include
+      // unrelated commits or omit the task's own changes.
+      baseCommit,
       isMain: false,
       ephemeral: Boolean(body.ephemeral),
       agentId: body.agentId ? String(body.agentId) : null,
@@ -461,7 +497,11 @@ export function createProjectService({ state, now, nextId, appendEvent, persistS
     const branch = worktree.branchName ?? worktree.branch ?? null;
     const runGit = (args) => {
       try {
-        execFileSync("git", ["-C", repoRoot, ...args], { timeout: 20_000, stdio: ["ignore", "pipe", "pipe"] });
+        execFileSync("git", ["-C", repoRoot, ...args], {
+          timeout: 20_000,
+          stdio: ["ignore", "pipe", "pipe"],
+          env: gitSafeDirectoryEnv(repoRoot),
+        });
         return true;
       } catch {
         return false;
@@ -495,7 +535,12 @@ export function createProjectService({ state, now, nextId, appendEvent, persistS
     const cwd = wt?.worktreePath ?? wt?.path;
     if (!cwd) return null;
     try {
-      return execFileSync("git", ["-C", cwd, "rev-parse", "HEAD"], { encoding: "utf8", timeout: 5_000, stdio: ["ignore", "pipe", "ignore"] }).trim() || null;
+      return execFileSync("git", ["-C", cwd, "rev-parse", "HEAD"], {
+        encoding: "utf8",
+        timeout: 5_000,
+        stdio: ["ignore", "pipe", "ignore"],
+        env: gitSafeDirectoryEnv(cwd),
+      }).trim() || null;
     } catch {
       return null;
     }
@@ -948,6 +993,7 @@ function gitRepoRoot(projectPath) {
     encoding: "utf8",
     stdio: ["ignore", "pipe", "pipe"],
     timeout: 5_000,
+    env: gitSafeDirectoryEnv(projectPath),
   }).trim();
   if (!output) {
     throw new Error("Source project is not a Git repository.");
@@ -988,7 +1034,11 @@ function normalizeProjectColor(value, fallback = "#3b82f6") {
 
 async function runGitCapture(cwd, args, { timeout = 30_000 } = {}) {
   try {
-    const { stdout } = await execFileAsync("git", ["-C", cwd, ...args], { encoding: "utf8", timeout });
+    const { stdout } = await execFileAsync("git", ["-C", cwd, ...args], {
+      encoding: "utf8",
+      timeout,
+      env: gitSafeDirectoryEnv(cwd),
+    });
     return { ok: true, stdout: String(stdout).trim(), stderr: "", code: 0 };
   } catch (error) {
     return {

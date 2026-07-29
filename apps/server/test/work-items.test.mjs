@@ -92,7 +92,7 @@ test("creates a local work item with server-owned identity and defaults", () => 
 
 test("local delivery closes only after base integration; pull-request delivery stays in review", () => {
   const { service, state } = harness();
-  const created = service.createWorkItem({ projectId: "prj_a", title: "Deliver me" }, ACTOR_A).body.workItem;
+  const created = service.createWorkItem({ projectId: "prj_a", title: "Deliver by PR" }, ACTOR_A).body.workItem;
   state.autoRuns = [{
     id: "aur_local", status: "done", link: { type: "local_issue", number: created.localNumber },
     localDelivery: { worktreeId: "wtr_1", branchName: "local-1" },
@@ -115,17 +115,26 @@ test("local delivery closes only after base integration; pull-request delivery s
   assert.equal(item.state, "open");
   assert.equal(state.autoRuns[0].status, "pr_open");
 
-  state.autoRuns[0].status = "done";
+  const localCreated = service.createWorkItem({ projectId: "prj_a", title: "Deliver locally" }, ACTOR_A).body.workItem;
+  state.autoRuns.unshift({
+    id: "aur_local_merge", status: "done", link: { type: "local_issue", number: localCreated.localNumber },
+    localDelivery: { worktreeId: "wtr_2", branchName: "local-2" },
+  });
+  service.recordExecutionBinding({
+    workItemId: localCreated.id, kind: "auto_run", targetId: "aur_local_merge", worktreeId: "wtr_2",
+  }, ACTOR_A);
+  const localItem = state.workItems.find((candidate) => candidate.id === localCreated.id);
+  localItem.status = "review";
   const delivered = service.completeDelivery({
-    workItemId: item.id,
-    expectedRevision: item.revision,
+    workItemId: localItem.id,
+    expectedRevision: localItem.revision,
     mode: "local_merge",
-    autoRunId: "aur_local",
+    autoRunId: "aur_local_merge",
     result: { baseBranch: "main", commit: "abc123" },
   }, ACTOR_A);
   assert.equal(delivered.status, 200);
-  assert.equal(item.status, "done");
-  assert.equal(item.state, "closed");
+  assert.equal(localItem.status, "done");
+  assert.equal(localItem.state, "closed");
   assert.equal(state.autoRuns[0].localDelivery.deliveredCommit, "abc123");
 });
 
@@ -438,6 +447,36 @@ test("structured acceptance and verification gate completion", () => {
   assert.equal(service.updateWorkItem({
     workItemId: item.id, expectedRevision: item.revision, status: "done",
   }, ACTOR_A).status, 200);
+});
+
+test("a combined status and acceptance edit evaluates the candidate completion gate", () => {
+  const { service } = harness();
+  const item = service.createWorkItem({
+    projectId: "prj_a",
+    title: "Do not bypass acceptance",
+    idempotencyKey: "candidate-gate",
+  }, ACTOR_A).body.workItem;
+
+  const blocked = service.updateWorkItem({
+    workItemId: item.id,
+    expectedRevision: item.revision,
+    status: "done",
+    acceptanceCriteria: ["Must pass"],
+  }, ACTOR_A);
+  assert.equal(blocked.status, 409);
+  assert.equal(blocked.body.error, "work_item_acceptance_incomplete");
+
+  const current = service.getWorkItem({ workItemId: item.id }, ACTOR_A).body.workItem;
+  assert.equal(current.status, "backlog");
+  assert.deepEqual(current.acceptanceCriteria, []);
+  assert.equal(Object.hasOwn(current, "createIdempotencyKey"), false);
+
+  const closed = service.transitionWorkItem({
+    workItemId: item.id,
+    expectedRevision: current.revision,
+    action: "close",
+  }, ACTOR_A);
+  assert.equal(Object.hasOwn(closed.body.workItem, "createIdempotencyKey"), false);
 });
 
 test("verification rejects unknown criteria and malformed evidence", () => {
@@ -987,6 +1026,89 @@ test("parent and sub-issues expose progress and reject hierarchy cycles", () => 
   assert.equal(service.createWorkItem({
     projectId: "prj_c", title: "Wrong project", parentId: parent.id,
   }, ACTOR_A).status, 400);
+});
+
+test("execution admission claims the item and rejects duplicate auto-runs", () => {
+  const { service, state } = harness();
+  const item = service.createWorkItem({ projectId: "prj_a", title: "Run once" }, ACTOR_A).body.workItem;
+
+  const admitted = service.beginExecution({
+    workItemId: item.id,
+    kind: "auto_run",
+    agentId: "agt_a",
+  }, ACTOR_A);
+  assert.equal(admitted.status, 201);
+  assert.equal(admitted.body.claim.claimedBy, "usr_a");
+  assert.equal(service.beginExecution({
+    workItemId: item.id,
+    kind: "auto_run",
+  }, ACTOR_A).body.error, "work_item_execution_in_progress");
+  assert.equal(service.beginExecution({
+    workItemId: item.id,
+    kind: "auto_run",
+  }, ACTOR_C).body.error, "work_item_execution_in_progress");
+
+  state.autoRuns = [{ id: "aur_once", status: "running" }];
+  const recorded = service.recordExecutionBinding({
+    workItemId: item.id,
+    kind: "auto_run",
+    targetId: "aur_once",
+    worktreeId: "wtr_once",
+    operationId: admitted.body.operation.id,
+  }, ACTOR_A);
+  assert.equal(recorded.status, 200);
+  assert.equal(recorded.body.workItem.executionOperation, null);
+  assert.equal(service.beginExecution({
+    workItemId: item.id,
+    kind: "auto_run",
+  }, ACTOR_A).body.error, "work_item_auto_run_active");
+});
+
+test("delivery admission serializes side effects and completes by operation id", () => {
+  const { service, state } = harness();
+  const created = service.createWorkItem({ projectId: "prj_a", title: "Serialize delivery" }, ACTOR_A).body.workItem;
+  state.autoRuns = [{
+    id: "aur_delivery_lock",
+    status: "done",
+    link: { type: "local_issue", number: created.localNumber },
+    localDelivery: { worktreeId: "wtr_lock", branchName: "local-lock" },
+  }];
+  service.recordExecutionBinding({
+    workItemId: created.id,
+    kind: "auto_run",
+    targetId: "aur_delivery_lock",
+    worktreeId: "wtr_lock",
+  }, ACTOR_A);
+  const item = service.getWorkItem({ workItemId: created.id }, ACTOR_A).body.workItem;
+  const admitted = service.beginDelivery({
+    workItemId: item.id,
+    expectedRevision: item.revision,
+    mode: "local_merge",
+    autoRunId: "aur_delivery_lock",
+  }, ACTOR_A);
+  assert.equal(admitted.status, 201);
+  assert.equal(service.updateWorkItem({
+    workItemId: item.id,
+    expectedRevision: admitted.body.workItem.revision,
+    title: "Must wait",
+  }, ACTOR_A).body.error, "work_item_delivery_in_progress");
+  assert.equal(service.beginDelivery({
+    workItemId: item.id,
+    expectedRevision: admitted.body.workItem.revision,
+    mode: "local_merge",
+    autoRunId: "aur_delivery_lock",
+  }, ACTOR_A).body.error, "work_item_delivery_in_progress");
+
+  const completed = service.completeDelivery({
+    workItemId: item.id,
+    mode: "local_merge",
+    autoRunId: "aur_delivery_lock",
+    operationId: admitted.body.operation.id,
+    result: { baseBranch: "main", commit: "locked123" },
+  }, ACTOR_A);
+  assert.equal(completed.status, 200);
+  assert.equal(completed.body.workItem.state, "closed");
+  assert.equal(completed.body.delivery.deliveredCommit, "locked123");
 });
 
 test("agent claims renew, conflict, expire, transfer, and release safely", () => {

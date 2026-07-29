@@ -29,7 +29,24 @@ export async function handleCodexRoutes({
   appendEvent,
   setCodexSessionName,
   resumableCodexSessions,
+  setClaudeSessionName,
+  resumableClaudeSessions,
 }) {
+  const claudeNameMatch = url.pathname.match(/^\/api\/claude\/sessions\/([^/]+)\/name$/);
+  if (req.method === "POST" && claudeNameMatch && typeof setClaudeSessionName === "function") {
+    const body = await readJson(req);
+    const result = setClaudeSessionName(decodeURIComponent(claudeNameMatch[1]), body?.name, actor);
+    sendJson(res, result.status, result.body);
+    return true;
+  }
+  if (req.method === "GET" && url.pathname === "/api/claude/sessions/resumable" && typeof resumableClaudeSessions === "function") {
+    const sessions = resumableClaudeSessions({
+      repoPath: url.searchParams.get("repoPath") || null,
+      userId: actor?.userId ?? null,
+    });
+    sendJson(res, 200, { sessions });
+    return true;
+  }
   // #123: name a session (user-authored label; tenancy inside the service).
   const nameMatch = url.pathname.match(/^\/api\/codex\/sessions\/([^/]+)\/name$/);
   if (req.method === "POST" && nameMatch && typeof setCodexSessionName === "function") {
@@ -47,23 +64,15 @@ export async function handleCodexRoutes({
     sendJson(res, 200, { sessions });
     return true;
   }
-  if (req.method === "POST" && url.pathname === "/api/codex/hooks") {
-    const body = await readJson(req);
-    let result;
-    try {
-      result = recordCodexHookEvent(body);
-    } catch (error) {
-      sendJson(res, 400, {
-        error: "invalid_codex_hook_event",
-        message: error instanceof Error ? error.message : String(error),
-      });
-      return true;
-    }
-    sendJson(res, 202, result);
+  if (req.method === "POST" && ["/api/codex/hooks", "/api/agent/hooks"].includes(url.pathname)) {
+    sendJson(res, 410, {
+      error: "bridge_hook_endpoint_moved",
+      message: "Agent hook events must use the device-authenticated /api/bridge/* endpoint.",
+    });
     return true;
   }
 
-  const approvalReadMatch = url.pathname.match(/^\/api\/codex\/approval-broker\/([^/]+)$/);
+  const approvalReadMatch = url.pathname.match(/^\/api\/(?:codex|agent)\/approval-broker\/([^/]+)$/);
   if (req.method === "GET" && approvalReadMatch) {
     expireCodexApprovalBrokerRequests();
     const requestId = decodeURIComponent(approvalReadMatch[1]);
@@ -79,7 +88,7 @@ export async function handleCodexRoutes({
     return true;
   }
 
-  const approvalMatch = url.pathname.match(/^\/api\/codex\/approval-broker\/([^/]+)\/(approve|deny)$/);
+  const approvalMatch = url.pathname.match(/^\/api\/(?:codex|agent)\/approval-broker\/([^/]+)\/(approve|deny)$/);
   if (req.method === "POST" && approvalMatch) {
     expireCodexApprovalBrokerRequests();
     const requestId = decodeURIComponent(approvalMatch[1]);

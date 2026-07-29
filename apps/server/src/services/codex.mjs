@@ -4,6 +4,7 @@ import { LOCAL_TEAM_ID, teamOf } from "../runtime/auth.mjs";
 import { createRefusalRuntime } from "../runtime/refusal-log.mjs";
 import { makeRunTx } from "../runtime/store/run-tx.mjs";
 import { isCodexCliCommand } from "./agents.mjs";
+import { scrubPii } from "./round-telemetry.mjs";
 
 export function createCodexService({
   state,
@@ -32,8 +33,13 @@ export function createCodexService({
     return workspace?.repoPath ?? workspace?.worktreePath ?? session?.repoPath ?? null;
   };
   const sameRepo = (left, right) => {
-    if (!left || !right) return true;
+    if (!left) return true;
+    if (!right) return false;
     return normalizedRepoPath(left) === normalizedRepoPath(right);
+  };
+  const redactedSummary = (value, maxLength = 1000) => {
+    const safe = scrubPii(String(value ?? ""));
+    return safe.length > maxLength ? `${safe.slice(0, maxLength - 3)}...` : safe;
   };
   function normalizeCodexSessionMode(value, agent) {
     if (!isCodexCliCommand(agent?.adapter?.command)) {
@@ -262,12 +268,15 @@ export function createCodexService({
       itemType: record.data.itemType ?? null,
       threadId: record.data.threadId ?? null,
       sessionId: record.data.sessionId ?? null,
-      summary: record.message,
-      commandSummary: record.data.commandSummary ?? null,
+      summary: redactedSummary(record.message, 500),
+      commandSummary: record.data.commandSummary ? redactedSummary(record.data.commandSummary, 500) : null,
       fileChangeSummary: record.data.fileChangeSummary ?? null,
       fileChangePath: record.data.fileChangePath ?? null,
+      fileChangePaths: Array.isArray(record.data.fileChangePaths)
+        ? record.data.fileChangePaths.map((item) => String(item)).filter(Boolean).slice(0, 200)
+        : [],
       fileChangeAction: record.data.fileChangeAction ?? null,
-      diffPreview: record.data.diffPreview ?? null,
+      diffPreview: record.data.diffPreview ? redactedSummary(record.data.diffPreview, 4000) : null,
       changeRisk: record.data.changeRisk ?? null,
       redactionState: "summary_only",
       createdAt: record.createdAt,
@@ -395,18 +404,22 @@ export function createCodexService({
       throw new Error("invocation was not found.");
     }
     const eventName = normalizeCodexHookEventName(body.eventName);
+    const provider = String(body.provider ?? "codex").trim().toLowerCase() === "claude"
+      ? "claude"
+      : "codex";
     const policy = evaluateCodexHookPolicy(eventName, body);
     const session = codexSessionForInvocation(invocationId);
     return runTx(() => {
       const record = {
         id: nextId("cdx_hook"),
         invocationId,
+        provider,
         codexSessionRegistryId: session?.id ?? null,
         eventName,
         toolName: body.toolName ? String(body.toolName) : null,
         policyDecision: policy.decision,
         policyReason: policy.reason,
-        summary: String(body.summary ?? policy.summary),
+        summary: redactedSummary(body.summary ?? policy.summary),
         redactionState: "summary_only",
         createdAt: now(),
       };
@@ -419,11 +432,12 @@ export function createCodexService({
         : null;
       appendEvent({
         invocationId,
-        type: "codex_hook_event",
+        type: provider === "claude" ? "claude_sdk_hook_event" : "codex_hook_event",
         level: policy.decision === "blocked" ? "warn" : "info",
-        message: `${eventName}: ${policy.reason}`,
+        message: `${provider === "claude" ? "Claude" : "Codex"} ${eventName}: ${policy.reason}`,
         data: {
           hookEventId: record.id,
+          provider,
           brokerRequestId: brokerRequest?.id ?? null,
           eventName,
           toolName: record.toolName,
@@ -440,8 +454,19 @@ export function createCodexService({
 
   function createCodexApprovalBrokerRequest({ invocation, session, hookEvent, body, policy }) {
     const createdAt = now();
-    const approvalMode = normalizeCodexApprovalMode(invocation.options?.approvalMode ?? invocation.options?.metadata?.permissionMode);
-    const continuationApproval = codexContinuationApproval(invocation, body);
+    const provider = hookEvent?.provider === "claude" ? "claude" : "codex";
+    const agent = (state.agents ?? []).find((item) => item.id === invocation.agentId) ?? null;
+    const claudeMode = String(
+      invocation.options?.metadata?.permissionMode
+      ?? agent?.adapter?.permissionMode
+      ?? "",
+    );
+    const approvalMode = provider === "claude"
+      ? claudeApprovalMode(claudeMode)
+      : normalizeCodexApprovalMode(invocation.options?.approvalMode ?? invocation.options?.metadata?.permissionMode);
+    const continuationApproval = provider === "codex"
+      ? codexContinuationApproval(invocation, body)
+      : null;
     // Full access removes Codex's own per-action prompts, but only after the
     // platform's high-risk launch approval has actually been granted. This
     // avoids a second prompt for the same launch without allowing a caller to
@@ -450,20 +475,26 @@ export function createCodexService({
       && state.approvalRequests?.some((request) => (
         request.invocationId === invocation.id && request.status === "approved"
       ));
+    const automaticToolApproved = approvalMode === "auto"
+      && (
+        provider !== "claude"
+        || ["Edit", "Write", "NotebookEdit"].includes(String(body.toolName ?? ""))
+      );
     const autoApproved = policy.decision !== "blocked" && (
       fullAccessLaunchApproved
       || (approvalMode !== "full" && (
         Boolean(continuationApproval)
-        || (approvalMode === "auto" && !codexApprovalRequiresManualReview({ invocation, body, policy }))
+        || (automaticToolApproved && !codexApprovalRequiresManualReview({ invocation, body, policy }))
       ))
     );
     const request = {
       id: nextId("cdx_appr"),
       invocationId: invocation.id,
+      provider,
       codexSessionRegistryId: session?.id ?? null,
       hookEventId: hookEvent.id,
       toolName: body.toolName ? String(body.toolName) : "unknown",
-      summary: String(body.summary ?? "Codex permission request"),
+      summary: hookEvent.summary,
       riskLevel: "high",
       status: policy.decision === "blocked" ? "denied" : autoApproved ? "approved" : "pending",
       timeoutAt: new Date(Date.now() + codexApprovalTimeoutMs(body)).toISOString(),
@@ -486,25 +517,25 @@ export function createCodexService({
       state.codexApprovalBrokerRequests.unshift(request);
       appendEvent({
         invocationId: invocation.id,
-        type: "codex_approval_requested",
+        type: provider === "claude" ? "claude_approval_requested" : "codex_approval_requested",
         level: request.status === "pending" ? "warn" : "info",
         message: request.status === "pending"
-          ? `Codex approval broker is waiting on ${request.toolName}.`
+          ? `${provider === "claude" ? "Claude" : "Codex"} approval broker is waiting on ${request.toolName}.`
           : request.status === "approved"
             ? continuationApproval
-              ? `Codex approval broker reused approval ${continuationApproval.id} for a bounded continuation.`
-              : `Codex approval broker approved ${request.toolName} by ${approvalMode} mode.`
-            : `Codex approval broker denied ${request.toolName}.`,
+              ? `${provider === "claude" ? "Claude" : "Codex"} approval broker reused approval ${continuationApproval.id} for a bounded continuation.`
+              : `${provider === "claude" ? "Claude" : "Codex"} approval broker approved ${request.toolName} by ${approvalMode} mode.`
+            : `${provider === "claude" ? "Claude" : "Codex"} approval broker denied ${request.toolName}.`,
         data: { approvalBrokerRequestId: request.id, status: request.status },
       });
       if (autoApproved) {
         appendEvent({
           invocationId: invocation.id,
-          type: "codex_approval_granted",
+          type: provider === "claude" ? "claude_approval_granted" : "codex_approval_granted",
           level: "info",
           message: continuationApproval
-            ? `Codex approval broker reused explicit approval ${continuationApproval.id} for this continuation.`
-            : `Codex approval broker auto-approved the request in ${approvalMode} mode.`,
+            ? `${provider === "claude" ? "Claude" : "Codex"} approval broker reused explicit approval ${continuationApproval.id} for this continuation.`
+            : `${provider === "claude" ? "Claude" : "Codex"} approval broker auto-approved the request in ${approvalMode} mode.`,
           data: {
             approvalBrokerRequestId: request.id,
             decision: request.decision,
@@ -554,8 +585,16 @@ export function createCodexService({
   }
 
   function codexApprovalRequiresManualReview({ invocation, body, policy }) {
+    const linkedAutoRun = (state.autoRuns ?? []).find(
+      (autoRun) => autoRun.invocationId === invocation?.id,
+    );
     const text = [
-      invocation?.input?.task,
+      // Auto-run prompts wrap the issue with a fixed untrusted-input warning
+      // containing words such as "secrets" and "credentials". Reviewing that
+      // wrapper made every otherwise-low-risk Auto-run pause at the broker.
+      // Use the original issue specification when it is available; direct
+      // invocations still review their submitted task.
+      linkedAutoRun?.issueBody ?? invocation?.input?.task,
       body?.summary,
       body?.toolName,
       policy?.reason,
@@ -575,6 +614,157 @@ export function createCodexService({
       "full access",
       "dangerously",
     ].some((pattern) => text.includes(pattern));
+  }
+
+  function isClaudeSdkAgent(agent) {
+    const command = String(agent?.adapter?.command ?? "").trim().toLowerCase();
+    const claude = ["claude", "claude.cmd", "claude.ps1", "claude.exe"].some(
+      (name) => command === name || command.endsWith(`/${name}`) || command.endsWith(`\\${name}`),
+    );
+    return claude && agent?.adapter?.claudeRuntime !== "cli";
+  }
+
+  function normalizeClaudeSessionMode(value, agent) {
+    if (!isClaudeSdkAgent(agent)) return "not_applicable";
+    return value === "continue_last" ? "continue_last" : "new";
+  }
+
+  function createManagedClaudeSession({
+    invocationId,
+    agent,
+    claudeSessionMode,
+    actor = null,
+    project = null,
+    worktree = null,
+    requestedBy = null,
+  }) {
+    if (!isClaudeSdkAgent(agent)) return null;
+    const createdAt = now();
+    const session = {
+      id: nextId("cld_sess"),
+      claudeSessionId: null,
+      invocationId,
+      userId: requestedBy ?? actor?.userId ?? "usr_local",
+      deviceId: agent.location?.deviceId ?? null,
+      projectId: project?.id ?? null,
+      worktreeId: worktree?.id ?? null,
+      repoPath: worktree?.worktreePath ?? project?.path ?? null,
+      agentId: agent.id,
+      sessionMode: claudeSessionMode,
+      resumedFromSessionId: null,
+      name: null,
+      startedAt: createdAt,
+      lastSeenAt: createdAt,
+      status: "registered",
+      runtime: "agent_sdk",
+      policyProfile: "claude_sdk_native_controls",
+      retentionProfile: "local_demo_retention",
+    };
+    runTx(() => state.claudeSessions.unshift(session));
+    return session;
+  }
+
+  function resolveResumeClaudeSessionId({
+    repoPath = null,
+    userId = null,
+    excludeSessionId = null,
+    invocationId = null,
+  } = {}) {
+    const matchesScope = (session) => (
+      session.id !== excludeSessionId
+      && session.claudeSessionId
+      && (!userId || session.userId === userId)
+      && sameRepo(repoPath, session.repoPath)
+    );
+    if (invocationId) {
+      const exact = state.claudeSessions.find((session) => session.invocationId === invocationId);
+      return exact && matchesScope(exact) ? exact.claudeSessionId : null;
+    }
+    return state.claudeSessions.find(matchesScope)?.claudeSessionId ?? null;
+  }
+
+  function updateClaudeSessionFromEvent(record) {
+    const session = state.claudeSessions.find((item) => item.invocationId === record.invocationId);
+    if (!session) return;
+    if (record.type === "claude_transport_selected") {
+      const runtime = record.data?.runtime === "cli" ? "cli" : "agent_sdk";
+      runTx(() => {
+        session.lastSeenAt = record.createdAt;
+        session.status = "running";
+        session.runtime = runtime;
+        session.policyProfile = runtime === "cli"
+          ? "claude_cli_rollback_controls"
+          : "claude_sdk_native_controls";
+      });
+      return;
+    }
+    if (
+      record.type !== "agent_output"
+      || !["claude_sdk", "claude_jsonl"].includes(record.data?.source)
+    ) return;
+    runTx(() => {
+      session.lastSeenAt = record.createdAt;
+      session.status = "observing";
+      if (record.data.sessionId) session.claudeSessionId = String(record.data.sessionId);
+    });
+  }
+
+  function closeClaudeSession(invocation, status, { claudeSessionId = null } = {}) {
+    const session = state.claudeSessions.find((item) => item.invocationId === invocation.id);
+    if (!session) return;
+    runTx(() => {
+      session.claudeSessionId = claudeSessionId ?? session.claudeSessionId;
+      session.lastSeenAt = now();
+      session.status = status === "succeeded"
+        ? "completed"
+        : status === "cancelled"
+          ? "cancelled"
+          : "failed";
+    });
+  }
+
+  function resumableClaudeSessions({ repoPath = null, userId = null } = {}) {
+    return state.claudeSessions
+      .filter((session) => session.claudeSessionId
+        && (!userId || session.userId === userId)
+        && sameRepo(repoPath, session.repoPath))
+      .map((session) => ({
+        id: session.id,
+        name: session.name ?? null,
+        invocationId: session.invocationId,
+        repoPath: session.repoPath,
+        sessionMode: session.sessionMode,
+        startedAt: session.startedAt,
+        lastSeenAt: session.lastSeenAt,
+        status: session.status,
+      }));
+  }
+
+  function setClaudeSessionName(sessionRegistryId, name, actor = null) {
+    const session = state.claudeSessions.find((item) => item.id === String(sessionRegistryId ?? ""));
+    if (!session || (actor?.userId && session.userId !== actor.userId)) {
+      return { ok: false, status: 404, body: { error: "claude_session_not_found" } };
+    }
+    const trimmed = String(name ?? "").trim();
+    if (trimmed.length > 80) {
+      return { ok: false, status: 400, body: { error: "claude_session_name_too_long", maxLength: 80 } };
+    }
+    return runTx(() => {
+      session.name = trimmed || null;
+      session.lastSeenAt = now();
+      return {
+        ok: true,
+        status: 200,
+        body: { session: { id: session.id, name: session.name, invocationId: session.invocationId } },
+      };
+    });
+  }
+
+  function claudeApprovalMode(value) {
+    const mode = String(value ?? "").trim();
+    if (["acceptEdits", "auto", "approveForMe", "approve_for_me"].includes(mode)) return "auto";
+    if (["bypassPermissions", "full"].includes(mode)) return "full";
+    return "ask";
   }
 
   function codexApprovalTimeoutMs(body) {
@@ -612,27 +802,30 @@ export function createCodexService({
     request.decidedBy = timedOut ? "system:timeout" : (actor?.userId ?? "usr_local");
     request.updatedAt = request.decidedAt;
     request.notificationState = "resolved";
+    const provider = request.provider === "claude" ? "claude" : "codex";
+    const providerLabel = provider === "claude" ? "Claude" : "Codex";
+    const eventPrefix = provider === "claude" ? "claude" : "codex";
     const event = {
       invocationId: request.invocationId,
-      type: action === "approve" ? "codex_approval_granted" : timedOut ? "codex_approval_timed_out" : "codex_approval_denied",
+      type: action === "approve" ? `${eventPrefix}_approval_granted` : timedOut ? `${eventPrefix}_approval_timed_out` : `${eventPrefix}_approval_denied`,
       level: action === "approve" ? "info" : "warn",
       message: action === "approve"
-        ? "Codex approval broker approved the request."
-        : timedOut ? "Codex approval broker timed out and denied the request." : "Codex approval broker denied the request.",
+        ? `${providerLabel} approval broker approved the request.`
+        : timedOut ? `${providerLabel} approval broker timed out and denied the request.` : `${providerLabel} approval broker denied the request.`,
       data: { approvalBrokerRequestId: request.id, decision: request.decision },
     };
     // An explicit deny is a human refusal; approve and timeout are not routed
     // through the refusal writer (timeout is its own signal, not a decision).
-    if (event.type === "codex_approval_denied") {
+    if (event.type === `${eventPrefix}_approval_denied`) {
       refuse({
         subject: { kind: "capability_call", id: request.invocationId },
         requester: { kind: "local_user", id: "usr_local" },
         category: "human",
         code: "approval_denied",
         decidedBy: { kind: "arbiter", id: request.id },
-        summary: "Codex approval broker denied the request.",
+        summary: `${providerLabel} approval broker denied the request.`,
         evidence: { approvalBrokerRequestId: request.id, decision: request.decision },
-        remedy: "Re-request the permission and approve it at the Codex approval broker.",
+        remedy: `Re-request the permission and approve it at the ${providerLabel} approval broker.`,
         retryAfter: null,
         appealTo: "device_owner",
         event,
@@ -763,6 +956,7 @@ export function createCodexService({
   }
 
   return {
+    closeClaudeSession,
     closeCodexSession,
     codexApprovalQueue,
     codexSessionForInvocation,
@@ -771,17 +965,23 @@ export function createCodexService({
     createCodexEvidenceRecord,
     createCodexImportedEvidenceRecord,
     createManagedCodexSession,
+    createManagedClaudeSession,
     createManagedCodexWorkspace,
     expireCodexApprovalBrokerRequests,
     normalizeCodexApprovalMode,
     normalizeCodexSessionMode,
     normalizeCodexWorkspacePolicy,
+    normalizeClaudeSessionMode,
     recordCodexHookEvent,
     repoPathForEvidence,
     resolveCodexApprovalBrokerRequest,
     resolveResumeCodexSessionId,
+    resolveResumeClaudeSessionId,
+    resumableClaudeSessions,
     setCodexSessionName,
+    setClaudeSessionName,
     resumableCodexSessions,
     updateCodexSessionFromEvent,
+    updateClaudeSessionFromEvent,
   };
 }

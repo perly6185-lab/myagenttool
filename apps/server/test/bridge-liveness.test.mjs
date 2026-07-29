@@ -159,14 +159,33 @@ test("running watchdog reaps a run stranded on a dead bridge — and only past t
   assert.equal(state.device.status, "online");
 });
 
-test("a running run on a LIVE bridge is never reaped regardless of age", async () => {
+test("a running run on a LIVE bridge is left alone while it is inside its runtime budget", async () => {
   const invocationId = await startRun();
   await leaseNext(invocationId);
   await call("/api/bridge/ack", { method: "POST", body: { invocationId }, token: bridgeToken });
-  invocation(invocationId).delivery.acknowledgedAt = minutesAgo(120); // ancient, but the bridge is alive
   deps.bridgeLivenessSweep();
-  assert.equal(invocation(invocationId).status, "running", "a live bridge owns its own timeouts");
+  assert.equal(invocation(invocationId).status, "running");
   await call("/api/bridge/complete", { method: "POST", body: { invocationId, status: "succeeded", result: { summary: "ok" } }, token: bridgeToken });
+});
+
+test("a LIVE bridge cannot keep a dead child invocation running past its hard deadline", async () => {
+  const invocationId = await startRun();
+  await leaseNext(invocationId);
+  await call("/api/bridge/ack", { method: "POST", body: { invocationId }, token: bridgeToken });
+  invocation(invocationId).options.timeoutSeconds = 30;
+  invocation(invocationId).delivery.acknowledgedAt = minutesAgo(2);
+
+  deps.bridgeLivenessSweep();
+  assert.equal(invocation(invocationId).status, "cancelling");
+  assert.equal(invocation(invocationId).cancellation.state, "requested");
+  assert.ok(events("invocation_deadline_exceeded").some((event) => event.invocationId === invocationId));
+
+  invocation(invocationId).deadlineEnforcement.requestedAt = minutesAgo(1);
+  deps.bridgeLivenessSweep();
+  assert.equal(invocation(invocationId).status, "timed_out");
+  assert.equal(invocation(invocationId).result.errorCode, "execution_timeout");
+  assert.equal(invocation(invocationId).result.timeoutKind, "server_hard_deadline");
+  assert.ok(events("invocation_deadline_reclaimed").some((event) => event.invocationId === invocationId));
 });
 
 test("redelivery is bounded: after 5 leased-and-lapsed attempts the delivery is exhausted", async () => {

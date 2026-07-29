@@ -143,7 +143,7 @@ export function DashboardView({ surface = "overview" }: { surface?: DashboardSur
   }, [events.length, invocation?.id, invocation?.input?.task]);
 
   // Resume mode (#163): when a session was picked to continue, the next send
-  // creates a `continue_last` run targeting that specific Codex session.
+  // creates a provider-specific exact continuation targeting that invocation.
   const resumeSource = useMemo(
     () => (resumeFromInvocationId ? (state?.invocations ?? []).find((inv) => inv.id === resumeFromInvocationId) ?? null : null),
     [state?.invocations, resumeFromInvocationId],
@@ -152,7 +152,18 @@ export function DashboardView({ surface = "overview" }: { surface?: DashboardSur
   async function runTask() {
     const submitted = task.trim();
     const resumeId = resumeFromInvocationId;
-    const options = resumeId ? { codexSessionMode: "continue_last", resumeFromInvocationId: resumeId } : undefined;
+    const command = String(agent?.adapter?.command ?? "").toLowerCase();
+    const claude = ["claude", "claude.exe", "claude.cmd", "claude.ps1"].some(
+      (name) => command === name || command.endsWith(`/${name}`) || command.endsWith(`\\${name}`),
+    );
+    const options = resumeId
+      ? {
+          ...(claude
+            ? { claudeSessionMode: "continue_last" }
+            : { codexSessionMode: "continue_last" }),
+          resumeFromInvocationId: resumeId,
+        }
+      : undefined;
     await execute(async () => {
       const created = (await api.createInvocation(submitted, agent?.id ?? null, projectId, targetWorktree?.id ?? null, options)) as {
         invocation: { id: string };

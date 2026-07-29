@@ -9,6 +9,7 @@ import { evidenceLedger } from "./evidence-ledger.mjs";
 import { scheduleHealthReadModel } from "./schedule-health.mjs";
 import { withLocalApplicationReadiness } from "../services/application-readiness.mjs";
 import { deriveGuidedReadiness } from "../services/guided-readiness.mjs";
+import { publicInvocationEvent } from "../services/invocation-events.mjs";
 
 export function buildPublicState({
   namespace,
@@ -58,6 +59,15 @@ export function buildPublicState({
   const invVisible = (invocationId) =>
     teamId == null || !invocationId || visibleInvIds.has(invocationId);
   const byInvocation = (rows) => (rows ?? []).filter((r) => invVisible(r?.invocationId));
+  const publicClaudeSessions = byInvocation(state.claudeSessions).map(
+    ({ claudeSessionId: _claudeSessionId, ...session }) => session,
+  );
+  const publicCodexSessions = byInvocation(state.codexSessions).map(
+    ({ codexSessionId: _codexSessionId, codexThreadId: _codexThreadId, ...session }) => session,
+  );
+  const publicCodexEvidenceRecords = byInvocation(state.codexEvidenceRecords).map(
+    ({ sessionId: _sessionId, threadId: _threadId, ...record }) => record,
+  );
   const byProject = (rows) => (rows ?? []).filter((r) => projectVisible(r?.projectId));
   // #969: ledger rows carry an explicit owning `teamId` (stamped at write time).
   // Scope by the SAME project gate as before, then ADD the team check — this can
@@ -72,7 +82,7 @@ export function buildPublicState({
     const stamped = entry?.teamId ?? null;
     return stamped == null || stamped === teamId;
   };
-  const visibleEvents = byInvocation(state.events).filter(eventVisible);
+  const visibleEvents = byInvocation(state.events).filter(eventVisible).map(publicInvocationEvent);
   const eventsByInvocationId = groupRowsByKey(visibleEvents, (event) => event?.invocationId);
   const recoveryEventsByRequestId = groupRecoveryEventsByRequestId(visibleEvents);
   const applications = (state.applications ?? []).filter((application) => {
@@ -293,16 +303,24 @@ export function buildPublicState({
   };
   const sanitizeInvocationResult = (invocation) => {
     const result = invocation.result;
-    if (invocation.options?.metadata?.tool !== "claude.propose.patch" || !result?.output) {
-      return result;
+    if (!result || typeof result !== "object" || Array.isArray(result)) return result;
+    const {
+      claudeSessionId: _claudeSessionId,
+      sessionId: _sessionId,
+      threadId: _threadId,
+      turnId: _turnId,
+      ...safeResult
+    } = result;
+    if (invocation.options?.metadata?.tool !== "claude.propose.patch" || !safeResult.output) {
+      return safeResult;
     }
-    const output = { ...result.output };
+    const output = { ...safeResult.output };
     if (typeof output.patch === "string" && output.patch.length > PROPOSAL_PATCH_PREVIEW) {
       output.patch = `${output.patch.slice(0, PROPOSAL_PATCH_PREVIEW)}\n... (patch truncated; ${output.patch.length} chars — apply does not need the full patch)`;
       output.patchTruncated = true;
     }
     output.applyValidity = proposalApplyValidity(invocation);
-    return { ...result, output };
+    return { ...safeResult, output };
   };
   const invocations = visibleInvocations.map((invocation) => ({
     ...invocation,
@@ -558,9 +576,10 @@ export function buildPublicState({
     policyDecisionRecords,
     troubleshootingReports,
     agentUsageSummaries: state.agentUsageSummaries,
-    codexSessions: byInvocation(state.codexSessions),
+    codexSessions: publicCodexSessions,
+    claudeSessions: publicClaudeSessions,
     codexWorkspaces: byInvocation(state.codexWorkspaces),
-    codexEvidenceRecords: byInvocation(state.codexEvidenceRecords),
+    codexEvidenceRecords: publicCodexEvidenceRecords,
     codexChangeReviews: byInvocation(state.codexChangeReviews),
     codexExecChangeReviews: byInvocation(state.codexExecChangeReviews),
     codexHookEvents: byInvocation(state.codexHookEvents),

@@ -29,7 +29,7 @@
 // NOT here — they are parked states resolved below by the pending-decision
 // cross-reference (a live gate → pending_decision) or fall through to `waiting`.
 const IN_PROGRESS_STATES = new Set(["materializing", "running", "verifying", "publishing", "decomposed"]);
-const WAITING_STATES = new Set(["blocked", "needs_input", "awaiting_approval", "plan_proposed", "report_posted"]);
+const WAITING_STATES = new Set(["waiting_capacity", "blocked", "needs_input", "awaiting_approval", "plan_proposed", "report_posted"]);
 
 const FOLLOW_UP_REFUSAL_WINDOW_MS = 48 * 60 * 60 * 1000;
 

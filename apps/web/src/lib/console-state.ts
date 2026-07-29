@@ -80,6 +80,7 @@ export interface AgentAdapter {
   outputFormat?: string;
   sandbox?: string;
   permissionMode?: string;
+  claudeRuntime?: "cli" | "agent_sdk";
   args?: string[];
   // MCP transport (stdio spawns `command`; http calls `url`).
   transport?: string;
@@ -240,6 +241,7 @@ export type PendingDecisionKind =
   | "merge"
   | "compare_promote"
   | "codex_broker"
+  | "agent_broker"
   | "application_recovery"
   | "lifecycle_approval"
   | "lifecycle_rollback"
@@ -571,10 +573,11 @@ export interface InvocationEventSnapshot {
   } | null;
 }
 
-// A Codex tool-permission request held by the approval broker. When `status` is
+// A coding-agent tool-permission request held by the shared approval broker. When `status` is
 // "pending" the run is blocked until someone approves/denies it (or it times out).
 export interface CodexApprovalBrokerRequest {
   id: string;
+  provider?: "codex" | "claude";
   invocationId?: string;
   toolName?: string;
   summary?: string;
@@ -600,6 +603,17 @@ export interface CodexApprovalBrokerRequest {
     resumedAt?: string | null;
     error?: string | null;
   };
+}
+
+export interface ClaudeSessionSnapshot {
+  id: string;
+  invocationId: string;
+  name?: string | null;
+  repoPath?: string | null;
+  sessionMode?: "new" | "continue_last" | string;
+  startedAt?: string;
+  lastSeenAt?: string;
+  status?: string;
 }
 
 export interface AuditSnapshot {
@@ -1301,6 +1315,7 @@ export interface ConsoleSnapshot {
   discoveryRuns?: DiscoveryRunSnapshot[];
   approvalRequests?: ApprovalSnapshot[];
   codexApprovalBrokerRequests?: CodexApprovalBrokerRequest[];
+  claudeSessions?: ClaudeSessionSnapshot[];
   policyDecisionRecords?: PolicyDecisionSnapshot[];
   troubleshootingReports?: TroubleshootingReport[];
   agentUsageSummaries?: AgentUsageSummary[];

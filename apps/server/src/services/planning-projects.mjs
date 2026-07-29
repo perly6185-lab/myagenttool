@@ -163,7 +163,7 @@ export function createPlanningProjectService({
       .map((binding) => (state.autoRuns ?? []).find((run) => run.id === binding.targetId))
       .filter(Boolean);
     const activeRunCount = linkedRuns.filter((run) =>
-      ["materializing", "running", "awaiting_approval", "verifying", "publishing"].includes(run.status)).length;
+      ["materializing", "running", "waiting_capacity", "awaiting_approval", "verifying", "publishing"].includes(run.status)).length;
     const failedRunCount = linkedRuns.filter((run) => ["failed", "blocked"].includes(run.status)).length;
     const settledRuns = linkedRuns.filter((run) =>
       ["pr_open", "report_posted", "done", "failed", "blocked", "cancelled", "needs_input"].includes(run.status));

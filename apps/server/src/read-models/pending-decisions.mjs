@@ -176,10 +176,11 @@ export function pendingDecisions({
       });
       continue;
     }
+    const provider = q.provider === "claude" ? "Claude" : "Codex";
     out.push({
-      id: `codex:${q.id}`,
-      kind: "codex_broker",
-      title: recoverableTimedOut ? "Codex approval expired — resume available" : "Codex tool permission",
+      id: `${q.provider === "claude" ? "agent" : "codex"}:${q.id}`,
+      kind: q.provider === "claude" ? "agent_broker" : "codex_broker",
+      title: recoverableTimedOut ? `${provider} approval expired — resume available` : `${provider} tool permission`,
       subtitle: truncate(
         (typeof q.summary === "string" ? q.summary : null)
         ?? q.toolName

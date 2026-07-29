@@ -65,6 +65,46 @@ test("invocation event pages walk newest to oldest without duplicate or missing 
   assert.deepEqual(new Set(recovered), new Set(all.map((event) => event.id)), "no event is skipped across cursors");
 });
 
+test("public invocation event pages omit Claude provider session identifiers", () => {
+  const invocation = invocationFixture("inv_claude_session");
+  const row = eventFixture(invocation.id, 1);
+  row.type = "agent_output";
+  row.data = {
+    source: "claude_sdk",
+    sessionId: "123e4567-e89b-42d3-a456-426614174001",
+    model: "claude",
+  };
+  const service = createInvocationEventService({
+    state: { events: [row], eventHistoryRetention: retentionFixture() },
+    readArchiveWithMetadata: () => ({ entries: [], malformedLines: 0, readError: null }),
+  });
+  const [published] = service.listInvocationEvents(invocation).events;
+  assert.equal(published.data.sessionId, undefined);
+  assert.equal(published.data.model, "claude");
+});
+
+test("public invocation event pages omit Codex provider thread identifiers", () => {
+  const invocation = invocationFixture("inv_codex_session");
+  const row = eventFixture(invocation.id, 1);
+  row.type = "agent_output";
+  row.message = "Codex thread started: thread-secret.";
+  row.data = {
+    source: "codex_jsonl",
+    threadId: "thread-secret",
+    turnId: "turn-secret",
+    eventType: "thread.started",
+  };
+  const service = createInvocationEventService({
+    state: { events: [row], eventHistoryRetention: retentionFixture() },
+    readArchiveWithMetadata: () => ({ entries: [], malformedLines: 0, readError: null }),
+  });
+  const [published] = service.listInvocationEvents(invocation).events;
+  assert.equal(published.message, "Codex thread started.");
+  assert.equal(published.data.threadId, undefined);
+  assert.equal(published.data.turnId, undefined);
+  assert.equal(published.data.eventType, "thread.started");
+});
+
 test("invocation event cursor is opaque, invocation-bound, and invalid cursors are rejected", () => {
   const invocation = invocationFixture("inv_cursor");
   const rows = [eventFixture(invocation.id, 1), eventFixture(invocation.id, 2)];

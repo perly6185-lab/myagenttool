@@ -8,7 +8,7 @@ import { DEFAULT_SLO_TARGETS, summarizeAutoRunSlos } from "./auto-run-slo.mjs";
 // long a run takes to reach a PR). Pure so it is trivially testable and can back
 // both the API and any eval harness.
 
-const ACTIVE_STATUSES = new Set(["materializing", "running", "awaiting_approval", "verifying", "publishing"]);
+const ACTIVE_STATUSES = new Set(["materializing", "running", "waiting_capacity", "awaiting_approval", "verifying", "publishing"]);
 // Quality rates (article dimension 8: don't only watch success rate). A run in
 // one of these states handed control back to a human.
 const ESCALATION_STATUSES = new Set(["needs_input", "awaiting_approval", "blocked"]);

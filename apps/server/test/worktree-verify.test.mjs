@@ -8,7 +8,13 @@ import assert from "node:assert/strict";
 import { tmpdir } from "node:os";
 import { after, test } from "node:test";
 
-import { resolveAutoRunVerifyCommand, runWorktreeVerification } from "../src/services/worktree-verify.mjs";
+import {
+  resolveAutoRunVerificationPlan,
+  resolveAutoRunVerifyCommand,
+  resolveVerificationInvocation,
+  runWorktreeVerification,
+  runWorktreeVerificationPlan,
+} from "../src/services/worktree-verify.mjs";
 
 const saved = process.env.MYAGENTTOOL_AUTORUN_VERIFY_COMMAND_JSON;
 after(() => {
@@ -47,4 +53,69 @@ test("runWorktreeVerification reports a failing command as verified+not-passed (
   assert.equal(result.passed, false);
   assert.equal(result.exitCode, 3);
   assert.match(result.summary, /failed \(exit 3\)/);
+});
+
+test("verification resolves the pnpm JavaScript CLI on Windows without invoking a command shell", () => {
+  assert.deepEqual(resolveVerificationInvocation("pnpm", ["test"], {
+    platform: "win32",
+    env: { npm_execpath: "C:\\tools\\pnpm.cjs" },
+    fileExists: () => true,
+    nodePath: "C:\\node.exe",
+  }), {
+    executable: "C:\\node.exe",
+    args: ["C:\\tools\\pnpm.cjs", "test"],
+  });
+  assert.deepEqual(resolveVerificationInvocation("node", ["--test"], { platform: "win32" }), {
+    executable: "node",
+    args: ["--test"],
+  });
+  assert.deepEqual(resolveVerificationInvocation("pnpm", ["test"], { platform: "linux" }), {
+    executable: "pnpm",
+    args: ["test"],
+  });
+});
+
+test("automatic verification derives targeted tests and typechecks from safe changed paths", () => {
+  const plan = resolveAutoRunVerificationPlan({
+    changedPaths: [
+      "apps/server/src/services/example.mjs",
+      "apps/server/test/example.test.mjs",
+      "apps/web/src/example.tsx",
+      "apps/web/src/example.test.tsx",
+      "../outside.test.mjs",
+    ],
+    env: { MYAGENTTOOL_AUTORUN_VERIFY_AUTO: "1" },
+  });
+  assert.deepEqual(plan, [
+    ["node", "--test", "apps/server/test/example.test.mjs"],
+    ["pnpm", "--filter", "@myagenttool/web", "test:unit", "--", "src/example.test.tsx"],
+    ["pnpm", "--filter", "@myagenttool/server", "typecheck"],
+    ["pnpm", "--filter", "@myagenttool/web", "typecheck"],
+  ]);
+});
+
+test("automatic verification falls back to the repository CI suite when no targeted check is discoverable", () => {
+  assert.deepEqual(resolveAutoRunVerificationPlan({
+    changedPaths: ["README.md"],
+    env: { MYAGENTTOOL_AUTORUN_VERIFY_AUTO: "1" },
+  }), [["pnpm", "test:ci"]]);
+  assert.deepEqual(resolveAutoRunVerificationPlan({
+    changedPaths: ["README.md"],
+    env: {},
+  }), []);
+});
+
+test("verification plan stops on failure and preserves platform-owned command evidence", async () => {
+  const result = await runWorktreeVerificationPlan({
+    cwd: tmpdir(),
+    commands: [
+      ["node", "-e", "process.exit(0)"],
+      ["node", "-e", "process.exit(4)"],
+      ["node", "-e", "process.exit(0)"],
+    ],
+  });
+  assert.equal(result.verified, true);
+  assert.equal(result.passed, false);
+  assert.equal(result.exitCode, 4);
+  assert.equal(result.commands.length, 2);
 });

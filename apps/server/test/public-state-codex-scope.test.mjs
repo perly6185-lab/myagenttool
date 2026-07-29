@@ -23,8 +23,37 @@ function scenarioState() {
       { id: "proj_b", ownerTeamId: TEAM_B },
     ],
     invocations: [
-      { id: "inv_a", projectId: "proj_a" },
+      { id: "inv_a", projectId: "proj_a", result: { claudeSessionId: "provider-result-secret-a", threadId: "codex-result-thread-a", turnId: "codex-result-turn-a", summary: "done" } },
       { id: "inv_b", projectId: "proj_b" },
+    ],
+    events: [
+      {
+        id: "evt_1",
+        invocationId: "inv_a",
+        type: "agent_output",
+        data: { source: "claude_sdk", sessionId: "provider-event-secret-a", model: "claude" },
+        createdAt: "2026-07-24T12:00:00.000Z",
+      },
+      {
+        id: "evt_2",
+        invocationId: "inv_a",
+        type: "agent_output",
+        message: "Codex thread started: codex-event-thread-a.",
+        data: { source: "codex_jsonl", threadId: "codex-event-thread-a", eventType: "thread.started" },
+        createdAt: "2026-07-24T12:00:01.000Z",
+      },
+    ],
+    codexSessions: [
+      { id: "cdx_a", invocationId: "inv_a", codexSessionId: "codex-provider-session-a", codexThreadId: "codex-provider-thread-a", status: "completed" },
+      { id: "cdx_b", invocationId: "inv_b", codexSessionId: "codex-provider-session-b", codexThreadId: "codex-provider-thread-b", status: "completed" },
+    ],
+    codexEvidenceRecords: [
+      { id: "cdx_ev_a", invocationId: "inv_a", sessionId: "codex-evidence-session-a", threadId: "codex-evidence-thread-a", summary: "done" },
+      { id: "cdx_ev_b", invocationId: "inv_b", sessionId: "codex-evidence-session-b", threadId: "codex-evidence-thread-b", summary: "done" },
+    ],
+    claudeSessions: [
+      { id: "cld_a", invocationId: "inv_a", claudeSessionId: "provider-secret-a", status: "completed" },
+      { id: "cld_b", invocationId: "inv_b", claudeSessionId: "provider-secret-b", status: "completed" },
     ],
     workItems: [
       { id: "wi_a_open", ownerTeamId: TEAM_A, state: "open", status: "in_progress", executionState: "running", updatedAt: "2026-07-24T10:00:00.000Z", executionBindings: [{ kind: "auto_run", targetId: "aur_a" }] },
@@ -92,6 +121,33 @@ test("the evidence center no longer leaks foreign imported or invocation evidenc
 test("the codex approval queue is scoped by the request's invocation", () => {
   const teamA = build({ teamId: TEAM_A });
   assert.deepEqual(ids(teamA.codexApprovalQueue), ["appr_a"]);
+});
+
+test("public Claude sessions are invocation-scoped and omit provider session ids", () => {
+  const teamA = build({ teamId: TEAM_A });
+  assert.deepEqual(ids(teamA.claudeSessions), ["cld_a"]);
+  assert.equal("claudeSessionId" in teamA.claudeSessions[0], false);
+  assert.equal(JSON.stringify(teamA).includes("provider-secret-a"), false);
+  assert.equal(JSON.stringify(teamA).includes("provider-result-secret-a"), false);
+  assert.equal(JSON.stringify(teamA).includes("provider-event-secret-a"), false);
+});
+
+test("public Codex state omits provider thread/session identifiers", () => {
+  const teamA = build({ teamId: TEAM_A });
+  assert.deepEqual(ids(teamA.codexSessions), ["cdx_a"]);
+  assert.deepEqual(ids(teamA.codexEvidenceRecords), ["cdx_ev_a"]);
+  const serialized = JSON.stringify(teamA);
+  for (const secret of [
+    "codex-provider-session-a",
+    "codex-provider-thread-a",
+    "codex-evidence-session-a",
+    "codex-evidence-thread-a",
+    "codex-event-thread-a",
+    "codex-result-thread-a",
+    "codex-result-turn-a",
+  ]) {
+    assert.equal(serialized.includes(secret), false, `${secret} must not be published`);
+  }
 });
 
 test("work item summary is bounded and scoped without publishing item details", () => {

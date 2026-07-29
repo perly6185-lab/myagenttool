@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import {
+  autoRunCheckpointMadeProgress,
+  autoRunStageFromCheckpoint,
   buildAutoRunCheckpoint,
   continuationCheckpointPrompt,
 } from "../src/services/auto-run-checkpoint.mjs";
@@ -220,4 +222,33 @@ test("buildAutoRunCheckpoint is total for absent and malformed optional inputs",
       lastCompletedMessage: { unexpected: true },
       changedFiles: [null, {}, 42],
     }));
+});
+
+test("checkpoint progress ignores repeated commands but detects completed work", () => {
+  const previous = {
+    lastCompletedMessage: "Mapped the current flow.",
+    lastCommand: "rg --files",
+    changedFiles: ["src/existing.mjs"],
+  };
+  assert.equal(autoRunCheckpointMadeProgress({
+    ...previous,
+    lastCommand: "rg --files --hidden",
+  }, previous), false);
+  assert.equal(autoRunCheckpointMadeProgress({
+    ...previous,
+    lastCompletedMessage: "Implemented the bounded retry.",
+  }, previous), true);
+  assert.equal(autoRunCheckpointMadeProgress({
+    ...previous,
+    changedFiles: ["src/existing.mjs", "test/retry.test.mjs"],
+  }, previous), true);
+});
+
+test("checkpoint stage distinguishes analysis, implementation, and verification", () => {
+  assert.equal(autoRunStageFromCheckpoint({}), "analysis");
+  assert.equal(autoRunStageFromCheckpoint({ changedFiles: ["src/change.mjs"] }), "implementation");
+  assert.equal(autoRunStageFromCheckpoint({
+    changedFiles: ["src/change.mjs"],
+    lastCommand: "pnpm typecheck",
+  }), "verification");
 });

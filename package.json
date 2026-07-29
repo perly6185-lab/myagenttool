@@ -220,13 +220,17 @@
     "typescript": "^5.7.2"
   },
   "dependencies": {
-    "@anthropic-ai/claude-code": "2.1.215",
+    "@anthropic-ai/claude-agent-sdk": "0.3.220",
+    "@anthropic-ai/claude-code": "2.1.220",
+    "@anthropic-ai/sdk": "0.115.0",
+    "@modelcontextprotocol/sdk": "1.30.0",
     "@myagenttool/adapters": "workspace:^",
     "@myagenttool/desktop": "workspace:^",
     "@myagenttool/protocol": "workspace:^",
     "@myagenttool/server": "workspace:^",
     "@myagenttool/shared": "workspace:^",
     "@openai/codex": "0.146.0-alpha.3",
-    "node-pty": "^1.1.0"
+    "node-pty": "^1.1.0",
+    "zod": "4.4.3"
   }
 }

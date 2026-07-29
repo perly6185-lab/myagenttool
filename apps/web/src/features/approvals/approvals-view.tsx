@@ -25,6 +25,7 @@ const KIND_META: Record<PendingDecisionKind, { icon: LucideIcon; label: string }
   merge: { icon: GitMerge, label: "Merge" },
   compare_promote: { icon: Trophy, label: "Promote" },
   codex_broker: { icon: Bot, label: "Codex" },
+  agent_broker: { icon: Bot, label: "Agent" },
   application_recovery: { icon: AppWindow, label: "Recovery" },
   lifecycle_approval: { icon: Wrench, label: "Lifecycle" },
   lifecycle_rollback: { icon: RotateCcw, label: "Rollback" },
@@ -239,6 +240,7 @@ function DecisionActions({
     // codex_broker rows — only the labeling and deep link differ.
     case "application_recovery":
     case "codex_broker":
+    case "agent_broker":
       if (d.kind === "codex_broker" && d.ref?.timedOut) {
         const recoveryInProgress = ["requested", "waiting_for_terminal", "starting"].includes(d.ref.recoveryStatus ?? "");
         return (
@@ -246,7 +248,7 @@ function DecisionActions({
             {recoveryInProgress ? (
               <Badge tone="warning">{t("approvals.resuming")}</Badge>
             ) : (
-              <Button variant="primary" size="sm" className="h-7 px-2.5 text-xs" disabled={pending} onClick={() => d.ref?.requestId && act(() => api.approveCodexApproval(d.ref!.requestId!))}>
+              <Button variant="primary" size="sm" className="h-7 px-2.5 text-xs" disabled={pending} onClick={() => d.ref?.requestId && act(() => api.approveAgentApproval(d.ref!.requestId!))}>
                 {spin}{t("approvals.approveAndResume")}
               </Button>
             )}
@@ -256,10 +258,10 @@ function DecisionActions({
       }
       return (
         <>
-          <Button variant="primary" size="sm" className="h-7 px-2.5 text-xs" disabled={pending} onClick={() => d.ref?.requestId && act(() => api.approveCodexApproval(d.ref!.requestId!))}>
+          <Button variant="primary" size="sm" className="h-7 px-2.5 text-xs" disabled={pending} onClick={() => d.ref?.requestId && act(() => api.approveAgentApproval(d.ref!.requestId!))}>
             {spin}{t("approvals.approve")}
           </Button>
-          <Button variant="ghost" size="sm" className="h-7 px-2 text-xs" disabled={pending} onClick={() => d.ref?.requestId && act(() => api.denyCodexApproval(d.ref!.requestId!))}>
+          <Button variant="ghost" size="sm" className="h-7 px-2 text-xs" disabled={pending} onClick={() => d.ref?.requestId && act(() => api.denyAgentApproval(d.ref!.requestId!))}>
             {t("approvals.deny")}
           </Button>
           {openBtn}

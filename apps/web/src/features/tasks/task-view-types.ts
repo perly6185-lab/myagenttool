@@ -105,6 +105,27 @@ export type LocalWorkItemResult = {
   hasMore?: boolean;
 };
 export type PlanningAutoRun = { id: string; status: string };
+export type WorkItemAutoRunBatch = {
+  id: string;
+  status: "queued" | "running" | "completed" | "completed_with_failures" | "cancelled";
+  maxConcurrent: number;
+  agentId: string | null;
+  total: number;
+  completed: number;
+  active: number;
+  counts: Record<string, number>;
+  items: {
+    workItemId: string;
+    localRef: string;
+    title: string;
+    status: string;
+    autoRunId: string | null;
+    error: string | null;
+  }[];
+  createdAt: string;
+  updatedAt: string;
+  finishedAt: string | null;
+};
 export type PlanningProject = {
   id: string;
   name: string;

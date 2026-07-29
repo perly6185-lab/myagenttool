@@ -15,7 +15,14 @@ const processes = [
     name: "server",
     command: process.execPath,
     args: ["apps/server/src/index.mjs"],
-    env: { SERVER_PORT: String(serverPort) }
+    env: {
+      SERVER_PORT: String(serverPort),
+      // Local Auto-runs must produce platform-owned verification evidence.
+      // An explicit operator command still wins; otherwise the server derives
+      // targeted tests/typechecks from the committed worktree diff.
+      MYAGENTTOOL_AUTORUN_VERIFY_AUTO: process.env.MYAGENTTOOL_AUTORUN_VERIFY_AUTO ?? "1",
+      MYAGENTTOOL_AUTORUN_VERIFY_TIMEOUT_MS: process.env.MYAGENTTOOL_AUTORUN_VERIFY_TIMEOUT_MS ?? "900000",
+    }
   },
   {
     name: "desktop",

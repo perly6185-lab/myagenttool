@@ -365,6 +365,11 @@ test("foreign work items and projects are existence-hidden", async () => {
     body: { projectId: "prj_a", title: "Private" },
   });
   assert.equal((await call(`/api/work-items/${created.body.workItem.id}`, { token: "tok_b" })).status, 404);
+  assert.equal((await call(`/api/work-items/${created.body.workItem.id}/external-bindings`, {
+    token: "tok_b",
+    method: "POST",
+    body: { provider: "gitlab", repository: "private/repo", issueNumber: 1, expectedRevision: 1 },
+  })).status, 404);
   const foreignProject = await call("/api/work-items", {
     token: "tok_a", method: "POST", body: { projectId: "prj_b", title: "Denied" },
   });
@@ -483,6 +488,31 @@ test("a local issue starts an auto-run with its local body and acceptance criter
   if (approval) assert.equal(approval.terminalId, item.terminalId);
   const detail = await call(`/api/work-items/${item.id}`);
   assert.equal(detail.body.workItem.executionBindings.some((binding) => binding.kind === "auto_run"), true);
+});
+
+test("local issues can be queued as a durable concurrency-limited Auto-run batch", async () => {
+  const first = (await call("/api/work-items", {
+    method: "POST",
+    body: { projectId: "prj_a", title: "Batch task one" },
+  })).body.workItem;
+  const second = (await call("/api/work-items", {
+    method: "POST",
+    body: { projectId: "prj_a", title: "Batch task two" },
+  })).body.workItem;
+
+  const created = await call("/api/work-item-auto-run-batches", {
+    method: "POST",
+    body: { workItemIds: [first.id, second.id], maxConcurrent: 1 },
+  });
+  assert.equal(created.status, 201);
+  assert.equal(created.body.batch.total, 2);
+  assert.equal(created.body.batch.maxConcurrent, 1);
+  assert.equal(created.body.batch.counts.running, 1);
+  assert.equal(created.body.batch.counts.queued, 1);
+
+  const listed = await call("/api/work-item-auto-run-batches");
+  assert.equal(listed.status, 200);
+  assert.equal(listed.body.batches.some((batch) => batch.id === created.body.batch.id), true);
 });
 
 test("AI assistance and alert retry routes are scoped and governed", async () => {

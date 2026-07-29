@@ -4,8 +4,9 @@ export async function handleWorkItemRoutes({
   req, res, url, sendJson, readJson, actor,
   listWorkItems, listAttention, getWorkItem, createWorkItem, updateWorkItem, bulkUpdateWorkItems, transitionWorkItem,
   listActivity, listComments, createComment, updateComment, deleteComment,
-  createWorktree, startAutoRun, recordExecutionBinding,
-  promoteWorktreeToBase, promoteWorktreeToPullRequest, completeDelivery,
+  createWorktree, startAutoRun, beginExecution, abortExecution, recordExecutionBinding,
+  createAutoRunBatch, listAutoRunBatches,
+  promoteWorktreeToBase, promoteWorktreeToPullRequest, beginDelivery, failDelivery, completeDelivery,
   claimWorkItem, releaseWorkItemClaim,
   bindGithubIssue, syncGithubIssue,
   bindExternalIssue, syncExternalIssue, listExternalProviders,
@@ -24,6 +25,24 @@ export async function handleWorkItemRoutes({
   suggestWorkItemDraft,
   retryWorkItemAlert,
 }) {
+  if (url.pathname === "/api/work-item-auto-run-batches") {
+    if (req.method === "GET") {
+      const result = listAutoRunBatches({}, actor);
+      sendJson(res, result.status, result.body);
+      return true;
+    }
+    if (req.method === "POST") {
+      const body = await readJson(req);
+      const result = await createAutoRunBatch({
+        workItemIds: body?.workItemIds,
+        maxConcurrent: body?.maxConcurrent,
+        agentId: body?.agentId,
+      }, actor);
+      sendJson(res, result.status, result.body);
+      return true;
+    }
+  }
+
   const externalWebhookMatch = url.pathname.match(/^\/api\/webhooks\/(gitlab|gitea)\/work-items$/);
   if (externalWebhookMatch && req.method === "POST") {
     const provider = externalWebhookMatch[1];
@@ -200,6 +219,12 @@ export async function handleWorkItemRoutes({
 
   const externalBindingsMatch = url.pathname.match(/^\/api\/work-items\/([^/]+)\/external-bindings$/);
   if (externalBindingsMatch && req.method === "POST") {
+    const workItemId = decodeURIComponent(externalBindingsMatch[1]);
+    const detail = getWorkItem({ workItemId }, actor);
+    if (!detail.ok) {
+      sendJson(res, detail.status, detail.body);
+      return true;
+    }
     const body = await readJson(req);
     const provider = String(body?.provider ?? "").toLowerCase();
     const remote = body?.remote ?? (provider && body?.repository && body?.issueNumber
@@ -212,7 +237,7 @@ export async function handleWorkItemRoutes({
       return true;
     }
     const result = bindExternalIssue({
-      workItemId: decodeURIComponent(externalBindingsMatch[1]),
+      workItemId,
       ...body, remote,
     }, actor);
     sendJson(res, result.status, result.body);
@@ -418,8 +443,19 @@ export async function handleWorkItemRoutes({
       sendJson(res, 409, { error: "work_item_delivery_not_ready" });
       return true;
     }
+    const mode = deliveryMatch[2] === "local" ? "local_merge" : "pull_request";
+    const admission = beginDelivery({
+      workItemId,
+      expectedRevision: body.expectedRevision,
+      mode,
+      autoRunId: autoRun.id,
+    }, actor);
+    if (!admission.ok) {
+      sendJson(res, admission.status, admission.body);
+      return true;
+    }
+    const operationId = admission.body.operation.id;
     try {
-      const mode = deliveryMatch[2] === "local" ? "local_merge" : "pull_request";
       const result = mode === "local_merge"
         ? await promoteWorktreeToBase(worktreeId)
         : await promoteWorktreeToPullRequest(worktreeId, {
@@ -429,13 +465,21 @@ export async function handleWorkItemRoutes({
         });
       const completed = completeDelivery({
         workItemId,
-        expectedRevision: body.expectedRevision,
         mode,
         autoRunId: autoRun.id,
+        operationId,
         result,
       }, actor);
+      if (!completed.ok) {
+        failDelivery({ workItemId, operationId, error: completed.body?.error ?? "delivery_commit_failed" }, actor);
+      }
       sendJson(res, completed.status, completed.body);
     } catch (error) {
+      failDelivery({
+        workItemId,
+        operationId,
+        error: error instanceof Error ? error.message : String(error),
+      }, actor);
       sendJson(res, 409, {
         error: "work_item_delivery_failed",
         message: error instanceof Error ? error.message : String(error),
@@ -454,6 +498,17 @@ export async function handleWorkItemRoutes({
     }
     const item = detail.body.workItem;
     const body = await readJson(req);
+    const kind = executionMatch[2] === "worktrees" ? "worktree" : "auto_run";
+    const admission = beginExecution({
+      workItemId,
+      kind,
+      agentId: body?.agentId,
+    }, actor);
+    if (!admission.ok) {
+      sendJson(res, admission.status, admission.body);
+      return true;
+    }
+    const operationId = admission.body.operation.id;
     const slug = String(item.title ?? "work").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 40) || "work";
     const name = body?.name ?? `local-${item.localNumber}-${slug}`;
     const link = { type: "local_issue", number: item.localNumber, title: item.title, url: null, state: item.state };
@@ -463,9 +518,11 @@ export async function handleWorkItemRoutes({
           projectId: item.projectId, name, branchName: body?.branchName ?? name,
           baseBranch: body?.baseBranch, agentId: body?.agentId, link,
         });
-        recordExecutionBinding({
+        const recorded = recordExecutionBinding({
           workItemId, kind: "worktree", targetId: result.worktree.id, worktreeId: result.worktree.id,
+          operationId,
         }, actor);
+        if (!recorded.ok) throw new Error(recorded.body?.error ?? "work_item_execution_binding_failed");
         sendJson(res, 201, result);
         return true;
       }
@@ -484,11 +541,18 @@ export async function handleWorkItemRoutes({
             ? "high"
             : "standard",
       });
-      recordExecutionBinding({
+      const recorded = recordExecutionBinding({
         workItemId, kind: "auto_run", targetId: result.autoRun.id, worktreeId: result.worktree?.id ?? result.autoRun.worktreeId,
+        operationId,
       }, actor);
+      if (!recorded.ok) throw new Error(recorded.body?.error ?? "work_item_execution_binding_failed");
       sendJson(res, 201, result);
     } catch (error) {
+      abortExecution({
+        workItemId,
+        operationId,
+        reason: error instanceof Error ? error.message : String(error),
+      }, actor);
       sendJson(res, 400, { error: "work_item_execution_failed", message: error instanceof Error ? error.message : String(error) });
     }
     return true;

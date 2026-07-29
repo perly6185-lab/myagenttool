@@ -23,6 +23,8 @@ const mocks = vi.hoisted(() => ({
   autoRunReadiness: vi.fn(),
   syncWorkItemGithubIssue: vi.fn(),
   listAutoRuns: vi.fn(),
+  listWorkItemAutoRunBatches: vi.fn(),
+  createWorkItemAutoRunBatch: vi.fn(),
   listPlanningProjects: vi.fn(),
   getPlanningProject: vi.fn(),
   createPlanningProject: vi.fn(),
@@ -99,6 +101,8 @@ vi.mock("@/data/use-console-actions", () => ({
     autoRunReadiness: mocks.autoRunReadiness,
     syncWorkItemGithubIssue: mocks.syncWorkItemGithubIssue,
     listAutoRuns: mocks.listAutoRuns,
+    listWorkItemAutoRunBatches: mocks.listWorkItemAutoRunBatches,
+    createWorkItemAutoRunBatch: mocks.createWorkItemAutoRunBatch,
     listPlanningProjects: mocks.listPlanningProjects,
     getPlanningProject: mocks.getPlanningProject,
     createPlanningProject: mocks.createPlanningProject,
@@ -134,6 +138,7 @@ describe("TaskView local work items", () => {
   beforeEach(() => {
     mocks.listPlanningProjects.mockResolvedValue({ projects: [] });
     mocks.listAutoRuns.mockResolvedValue({ autoRuns: [] });
+    mocks.listWorkItemAutoRunBatches.mockResolvedValue({ batches: [] });
     mocks.listWorkItemAttention.mockResolvedValue({ items: [] });
     mocks.autoRunReadiness.mockResolvedValue({ readiness: { ready: true, checks: [] } });
   });
@@ -467,9 +472,15 @@ describe("TaskView local work items", () => {
     fireEvent.click(await screen.findByText("Deliver approved work"));
     expect(await screen.findByText("Ready for delivery")).toBeTruthy();
     expect(screen.getByText("Approved")).toBeTruthy();
+    mocks.getWorkItem.mockResolvedValue({
+      workItem: { ...item, revision: 4, updatedAt: "2026-07-27T00:01:00.000Z" },
+      observability,
+    });
+    document.dispatchEvent(new Event("visibilitychange"));
+    await waitFor(() => expect(mocks.getWorkItem).toHaveBeenCalledTimes(2));
     fireEvent.click(screen.getByRole("button", { name: "Merge into base" }));
     const dialog = screen.getAllByRole("dialog").at(-1);
     fireEvent.click(within(dialog as HTMLElement).getByRole("button", { name: "Merge into base" }));
-    await waitFor(() => expect(mocks.deliverWorkItem).toHaveBeenCalledWith("lwi_delivery", "local_merge", 3));
+    await waitFor(() => expect(mocks.deliverWorkItem).toHaveBeenCalledWith("lwi_delivery", "local_merge", 4));
   });
 });

@@ -7,7 +7,13 @@ function fixture({
   status = "running",
   linkType = "local_issue",
   fetchIssueBody,
+  maxCapacityRetryAttempts = 3,
+  maxTimeoutRecoveryAttempts = 1,
+  maxNoProgressTimeouts = 2,
+  turnTimeoutSeconds = 900,
+  totalExecutionBudgetSeconds = 2700,
 } = {}) {
+  let currentTimeMs = Date.parse("2026-07-26T00:00:00.000Z");
   const agent = {
     id: "agt_1",
     name: "Coder",
@@ -57,14 +63,22 @@ function fixture({
       status: "approved",
       decidedBy: "usr_owner",
     }],
-    autoRunSettings: { maxRepairAttempts: 0, maxTimeoutRecoveryAttempts: 1 },
+    autoRunSettings: {
+      maxRepairAttempts: 0,
+      maxTimeoutRecoveryAttempts,
+      maxNoProgressTimeouts,
+      turnTimeoutSeconds,
+      totalExecutionBudgetSeconds,
+      maxCapacityRetryAttempts,
+      globalMaxConcurrent: 1,
+    },
     device: { unlinkState: "linked" },
   };
   const invocations = [];
   const events = [];
   const service = createAutoRunService({
     state,
-    now: () => "2026-07-26T00:00:00.000Z",
+    now: () => new Date(currentTimeMs).toISOString(),
     nextId: (prefix) => `${prefix}_next`,
     appendEvent: (event) => events.push(event),
     persistStateSoon: () => {},
@@ -92,6 +106,9 @@ function fixture({
     workItem: state.workItems[0],
     invocations,
     events,
+    advanceTime: (milliseconds) => {
+      currentTimeMs += milliseconds;
+    },
   };
 }
 
@@ -125,9 +142,118 @@ test("a genuine execution timeout gets one bounded approved continuation", async
     status: "timed_out",
     result: { errorCode: "execution_timeout" },
   });
-  assert.equal(autoRun.status, "failed");
+  assert.equal(autoRun.status, "blocked");
+  assert.equal(autoRun.errorCode, "timeout_retries_exhausted");
   assert.equal(workItem.status, "blocked");
   assert.equal(invocations.length, 1, "timeout recovery is capped and cannot loop");
+});
+
+test("a lost app-server transport resumes on the same approved worktree", async () => {
+  const { service, autoRun, worktree, invocations, events } = fixture();
+  await service.advanceAutoRunForInvocation({
+    id: "inv_1",
+    status: "failed",
+    result: { errorCode: "transport_closed" },
+  });
+
+  assert.equal(autoRun.status, "running");
+  assert.equal(autoRun.worktreeId, worktree.id);
+  assert.equal(autoRun.invocationId, "inv_2");
+  assert.equal(invocations.length, 1);
+  assert.equal(invocations[0].options.resumeFromInvocationId, "inv_1");
+  assert.equal(invocations[0].options.preApproved, true);
+  assert.equal(invocations[0].options.metadata.timeoutRecoveryReason, "transport_closed");
+  assert.match(invocations[0].options.idempotencyKey, /transport-closed:inv_1:1$/);
+  assert.ok(events.some((event) =>
+    event.type === "auto_run_retried" && event.data?.reason === "transport_closed"));
+});
+
+test("a progressing long task can use three bounded timeout continuations", async () => {
+  const { service, autoRun, invocations } = fixture({
+    maxTimeoutRecoveryAttempts: 3,
+    turnTimeoutSeconds: 1200,
+    totalExecutionBudgetSeconds: 7200,
+  });
+
+  for (let index = 0; index < 3; index += 1) {
+    const sourceId = index === 0 ? "inv_1" : `inv_${index + 1}`;
+    const source = index === 0 ? {} : invocations[index - 1];
+    await service.advanceAutoRunForInvocation({
+      ...source,
+      id: sourceId,
+      status: "timed_out",
+      result: {
+        errorCode: "execution_timeout",
+        output: { latestMessage: `Completed checkpoint ${index + 1}.` },
+        continuationCheckpoint: { changedFiles: [`src/step-${index + 1}.mjs`] },
+      },
+    });
+    assert.equal(autoRun.status, "running");
+    assert.equal(autoRun.timeoutRecoveryAttempts, index + 1);
+  }
+
+  assert.equal(invocations.length, 3);
+  assert.ok(invocations.every((invocation) => invocation.options.timeoutSeconds === 1200));
+  assert.equal(invocations[1].options.preApproved, true, "approval authority follows the exact continuation chain");
+  assert.equal(autoRun.executionBudget.noProgressStreak, 0);
+  assert.equal(autoRun.executionStage, "implementation");
+});
+
+test("two consecutive timeout checkpoints without progress stop the continuation loop", async () => {
+  const { service, autoRun, invocations } = fixture({
+    maxTimeoutRecoveryAttempts: 3,
+    totalExecutionBudgetSeconds: 7200,
+  });
+  const timeout = (id, source = {}) => service.advanceAutoRunForInvocation({
+    ...source,
+    id,
+    status: "timed_out",
+    result: {
+      errorCode: "execution_timeout",
+      output: { latestMessage: "Still inspecting the same area." },
+      continuationCheckpoint: { changedFiles: [] },
+    },
+  });
+
+  await timeout("inv_1");
+  await timeout("inv_2", invocations[0]);
+  assert.equal(autoRun.status, "running");
+  assert.equal(autoRun.executionBudget.noProgressStreak, 1);
+  await timeout("inv_3", invocations[1]);
+
+  assert.equal(autoRun.status, "blocked");
+  assert.equal(autoRun.errorCode, "timeout_no_progress");
+  assert.equal(autoRun.executionBudget.noProgressStreak, 2);
+  assert.equal(invocations.length, 2);
+});
+
+test("the total task budget stops an otherwise progressing continuation", async () => {
+  const { service, autoRun, invocations, advanceTime } = fixture({
+    maxTimeoutRecoveryAttempts: 3,
+    totalExecutionBudgetSeconds: 600,
+  });
+  await service.advanceAutoRunForInvocation({
+    id: "inv_1",
+    status: "timed_out",
+    result: {
+      errorCode: "execution_timeout",
+      output: { latestMessage: "First checkpoint." },
+    },
+  });
+  advanceTime(600_000);
+  await service.advanceAutoRunForInvocation({
+    ...invocations[0],
+    id: "inv_2",
+    status: "timed_out",
+    result: {
+      errorCode: "execution_timeout",
+      output: { latestMessage: "Second checkpoint." },
+    },
+  });
+
+  assert.equal(autoRun.status, "blocked");
+  assert.equal(autoRun.errorCode, "timeout_budget_exhausted");
+  assert.equal(invocations.length, 1);
 });
 
 test("a historical timed_out record without execution_timeout is not auto-resumed", async () => {
@@ -153,6 +279,69 @@ test("an approval timeout blocks for a human decision and never fails over or au
   assert.equal(autoRun.errorCode, "approval_timeout");
   assert.equal(workItem.status, "blocked");
   assert.equal(invocations.length, 0);
+});
+
+test("model capacity waits durably, releases its slot, and resumes the same worktree", async () => {
+  const { service, autoRun, workItem, invocations, events, advanceTime } = fixture();
+  await service.advanceAutoRunForInvocation({
+    id: "inv_1",
+    status: "failed",
+    requestedBy: "usr_owner",
+    summary: "Selected model is at capacity. Please try a different model.",
+    result: { errorCode: "provider_capacity" },
+  });
+
+  assert.equal(autoRun.status, "waiting_capacity");
+  assert.equal(autoRun.errorCode, "provider_capacity");
+  assert.equal(autoRun.capacityRetry.attempt, 1);
+  assert.equal(autoRun.capacityRetry.delayMs, 30_000);
+  assert.equal(workItem.status, "in_progress");
+  assert.equal(invocations.length, 0);
+
+  const early = await service.reapStuckAutoRuns();
+  assert.equal(early.capacityRetried, 0);
+  advanceTime(30_000);
+  const due = await service.reapStuckAutoRuns();
+
+  assert.equal(due.capacityRetried, 1);
+  assert.equal(autoRun.status, "running");
+  assert.equal(autoRun.invocationId, "inv_2");
+  assert.equal(autoRun.capacityRetry.status, "dispatched");
+  assert.equal(invocations.length, 1);
+  assert.equal(invocations[0].options.preApproved, true);
+  assert.equal(invocations[0].options.codexSessionMode, "continue_last");
+  assert.equal(invocations[0].options.resumeFromInvocationId, "inv_1");
+  assert.equal(invocations[0].options.metadata.worktreeId, "wtr_1");
+  assert.equal(invocations[0].options.metadata.capacityRetryAttempt, 1);
+  assert.match(invocations[0].input.task, /existing worktree/i);
+  assert.ok(events.some((event) => event.type === "auto_run_capacity_waiting"));
+  assert.ok(events.some((event) => event.type === "auto_run_capacity_retried"));
+});
+
+test("model-capacity retries are bounded and become blocked instead of looping forever", async () => {
+  const { service, autoRun, workItem, invocations, advanceTime } = fixture({
+    maxCapacityRetryAttempts: 1,
+  });
+  await service.advanceAutoRunForInvocation({
+    id: "inv_1",
+    status: "failed",
+    result: { errorCode: "provider_capacity" },
+  });
+  advanceTime(30_000);
+  await service.reapStuckAutoRuns();
+  assert.equal(invocations.length, 1);
+
+  await service.advanceAutoRunForInvocation({
+    id: "inv_2",
+    status: "failed",
+    result: { errorCode: "provider_capacity" },
+  });
+
+  assert.equal(autoRun.status, "blocked");
+  assert.equal(autoRun.errorCode, "provider_capacity");
+  assert.equal(autoRun.capacityRetry.status, "exhausted");
+  assert.equal(workItem.status, "blocked");
+  assert.equal(invocations.length, 1);
 });
 
 test("late approval retry uses the stored body and carries an exact continuation grant", async () => {

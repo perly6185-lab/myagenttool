@@ -180,8 +180,9 @@ are folded into that plan (slices 2 and 5).
 
 ## Cross-cutting dependencies
 
-- **Durable state.** Worktree and auto-run records are in-memory snapshots
-  today; the autonomous flow needs the P1 persistence work to be reliable.
+- **Durable state.** Worktree and auto-run records are part of the persisted
+  state surface (including the SQLite backing). Admission and delivery use
+  durable operation markers so restart recovery can identify incomplete work.
 - **Bridge trust boundary.** Auto-dispatch must carry the device-bound bridge
   credential and honor local execution consent — Auto must not silently enable
   local execution.

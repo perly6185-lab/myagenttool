@@ -54,6 +54,7 @@ export async function handleProjectRoutes({
   ensureLocalOrigin,
   startAutoRun,
   retryAutoRun,
+  reverifyAutoRun,
   cancelAutoRun,
   mergeAutoRunPr,
   recordRoutingOverride,
@@ -268,6 +269,22 @@ export async function handleProjectRoutes({
       sendJson(res, 200, result);
     } catch (error) {
       sendJson(res, 400, { error: "auto_run_cancel_failed", message: errorMessage(error) });
+    }
+    return true;
+  }
+
+  const autoRunReverifyMatch = url.pathname.match(/^\/api\/auto-runs\/([^\/]+)\/reverify$/);
+  if (autoRunReverifyMatch && req.method === "POST") {
+    if (denyForeignAutoRun(decodeURIComponent(autoRunReverifyMatch[1]))) return true;
+    try {
+      const body = await readJson(req);
+      const result = await reverifyAutoRun(decodeURIComponent(autoRunReverifyMatch[1]), {
+        actor,
+        terminalId: body?.terminalId,
+      });
+      sendJson(res, 200, result);
+    } catch (error) {
+      sendJson(res, 400, { error: "auto_run_reverify_failed", message: errorMessage(error) });
     }
     return true;
   }
@@ -495,7 +512,9 @@ export async function handleProjectRoutes({
     const projectId = decodeURIComponent(readinessMatch[1]);
     const project = (state.projects ?? []).find((p) => p.id === projectId) ?? null;
     const agent = project?.defaultAgentId ? (state.agents ?? []).find((a) => a.id === project.defaultAgentId) ?? null : null;
-    const settledSet = new Set(["pr_open", "report_posted", "needs_input", "blocked", "done", "failed"]);
+    // Capacity waits remain in-flight for the operator but deliberately release
+    // an execution slot until their durable retry becomes due.
+    const settledSet = new Set(["waiting_capacity", "pr_open", "report_posted", "needs_input", "plan_proposed", "decomposed", "blocked", "done", "failed", "cancelled"]);
     const readiness = computeAutoRunReadiness({
       project,
       agent,

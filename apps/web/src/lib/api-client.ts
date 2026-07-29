@@ -1219,6 +1219,10 @@ export const api = {
     request("POST", `/api/work-items/${encodeURIComponent(id)}/worktrees`, payload),
   startWorkItemAutoRun: (id: string, payload: { agentId?: string; baseBranch?: string } = {}) =>
     request("POST", `/api/work-items/${encodeURIComponent(id)}/auto-runs`, payload),
+  createWorkItemAutoRunBatch: (payload: { workItemIds: string[]; maxConcurrent: number; agentId?: string }) =>
+    request("POST", "/api/work-item-auto-run-batches", payload),
+  listWorkItemAutoRunBatches: () =>
+    request("GET", "/api/work-item-auto-run-batches"),
   deliverWorkItem: (id: string, mode: "local_merge" | "pull_request", expectedRevision: number) =>
     request("POST", `/api/work-items/${encodeURIComponent(id)}/delivery/${mode === "local_merge" ? "local" : "pull-request"}`, {
       expectedRevision,
@@ -1304,6 +1308,8 @@ export const api = {
   autoRunReadiness: (projectId: string) => request("GET", `/api/projects/${encodeURIComponent(projectId)}/auto-run-readiness`),
   // Retry a failed/blocked auto-run on its existing worktree.
   retryAutoRun: (id: string) => request("POST", `/api/auto-runs/${encodeURIComponent(id)}/retry`),
+  // Re-run the platform-owned verification gate without re-running the agent.
+  reverifyAutoRun: (id: string) => request("POST", `/api/auto-runs/${encodeURIComponent(id)}/reverify`),
   cancelAutoRun: (id: string) => request("POST", `/api/auto-runs/${encodeURIComponent(id)}/cancel`),
   // Human-triggered PR merge for a pr_open auto-run (merge stays human — a person
   // clicks Merge in the console; runs `gh pr merge` server-side).
@@ -1363,9 +1369,17 @@ export const api = {
   queueLifecycleRollback: (id: string) =>
     request("POST", `/api/m3/lifecycle-rollbacks/${encodeURIComponent(id)}/queue`),
   approveCodexApproval: (id: string) =>
-    request("POST", `/api/codex/approval-broker/${encodeURIComponent(id)}/approve`),
+    request("POST", `/api/agent/approval-broker/${encodeURIComponent(id)}/approve`),
   denyCodexApproval: (id: string) =>
-    request("POST", `/api/codex/approval-broker/${encodeURIComponent(id)}/deny`),
+    request("POST", `/api/agent/approval-broker/${encodeURIComponent(id)}/deny`),
+  approveAgentApproval: (id: string) =>
+    request("POST", `/api/agent/approval-broker/${encodeURIComponent(id)}/approve`),
+  denyAgentApproval: (id: string) =>
+    request("POST", `/api/agent/approval-broker/${encodeURIComponent(id)}/deny`),
+  resumableClaudeSessions: (repoPath?: string) =>
+    request("GET", `/api/claude/sessions/resumable${repoPath ? `?repoPath=${encodeURIComponent(repoPath)}` : ""}`),
+  setClaudeSessionName: (id: string, name: string) =>
+    request("POST", `/api/claude/sessions/${encodeURIComponent(id)}/name`, { name }),
   /** Channel lifecycle (#1090). Enable/allowlist/delivery-retry are approval-gated. */
   enableChannel: (id: string, approvalToken: string) =>
     request("POST", `/api/channels/${encodeURIComponent(id)}/enable`, { approvalToken }),

@@ -57,8 +57,13 @@ import { convergeAutoRunTerminalState, createAutoRunService } from "../services/
 import { createDecisionSoftClaimService } from "../services/decision-soft-claims.mjs";
 import { createIssueClaimService } from "../services/issue-claims.mjs";
 import { createWorkItemService } from "../services/work-items.mjs";
+import { createWorkItemAutoRunBatchService } from "../services/work-item-auto-run-batches.mjs";
 import { createPlanningProjectService } from "../services/planning-projects.mjs";
-import { resolveAutoRunVerifyCommand, resolveAutoRunVerifyCommandFor, runWorktreeVerification } from "../services/worktree-verify.mjs";
+import {
+  autoRunVerificationTimeoutMs,
+  resolveAutoRunVerificationPlan,
+  runWorktreeVerificationPlan,
+} from "../services/worktree-verify.mjs";
 import { resolveStatusWritebackConfig, runIssueAssigneeEdit, runIssueBodyFetch, runIssueClose, runIssueComment, runIssueStatusTransition, runPrChecks, runPrMerge, runPrStateFetch, runIssueStateFetch, runIssueSnapshotFetch, runIssueSnapshotWrite } from "../services/issue-status.mjs";
 import { deciderTimeoutMs, resolveDeciderCommand, runDeciderCommand } from "../services/decision-command.mjs";
 import { childIssueBody, childIssueTitle, extractProjectFieldsBlock, runChildIssueCreate, spawnIssuesConfig } from "../services/auto-run-spawn.mjs";
@@ -102,6 +107,7 @@ export function createServerRuntimeServices({
   let codexEventHandlers = {
     createCodexEvidenceRecord: () => null,
     updateCodexSessionFromEvent: () => null,
+    updateClaudeSessionFromEvent: () => null,
   };
 
   // #1041: every durable flush (persistStateNow AND the debounced persistStateSoon,
@@ -439,6 +445,7 @@ export function createServerRuntimeServices({
   } = createAgentService({ state, now, nextId, appendEvent, persistStateSoon, store });
 
   const {
+    closeClaudeSession,
     closeCodexSession,
     codexApprovalQueue,
     codexSessionForInvocation,
@@ -446,18 +453,24 @@ export function createServerRuntimeServices({
     createCodexEvidenceRecord,
     createCodexImportedEvidenceRecord,
     createManagedCodexSession,
+    createManagedClaudeSession,
     createManagedCodexWorkspace,
     expireCodexApprovalBrokerRequests: expireCodexApprovalBrokerRequestsBase,
     normalizeCodexApprovalMode,
     normalizeCodexSessionMode,
     normalizeCodexWorkspacePolicy,
+    normalizeClaudeSessionMode,
     recordCodexHookEvent,
     repoPathForEvidence,
     resolveCodexApprovalBrokerRequest: resolveCodexApprovalBrokerRequestBase,
     resolveResumeCodexSessionId,
+    resolveResumeClaudeSessionId,
+    resumableClaudeSessions,
     resumableCodexSessions,
+    setClaudeSessionName,
     setCodexSessionName,
     updateCodexSessionFromEvent,
+    updateClaudeSessionFromEvent,
   } = createCodexService({
     state,
     now,
@@ -474,6 +487,7 @@ export function createServerRuntimeServices({
   codexEventHandlers = {
     createCodexEvidenceRecord,
     updateCodexSessionFromEvent,
+    updateClaudeSessionFromEvent,
   };
 
   const {
@@ -702,10 +716,14 @@ export function createServerRuntimeServices({
     normalizeCodexApprovalMode,
     normalizeCodexSessionMode,
     normalizeCodexWorkspacePolicy,
+    normalizeClaudeSessionMode,
     createManagedCodexWorkspace,
     createManagedCodexSession,
+    createManagedClaudeSession,
     resolveResumeCodexSessionId,
+    resolveResumeClaudeSessionId,
     closeCodexSession,
+    closeClaudeSession,
     budgetGateForProject,
     // #890.1 tail: hold budget at manual/API accept, release on completion.
     reserveBudget,
@@ -979,7 +997,7 @@ export function createServerRuntimeServices({
     return { ok: true, ...result };
   }
 
-  const { startAutoRun, advanceAutoRunForInvocation, syncAutoRunOnApproval, syncAutoRunOnDenial, retryAutoRun, attemptFailover, cancelAutoRun, mergeAutoRunPr, recordRoutingOverride, reapStuckAutoRuns, autoMergeSweep, approveDesign, rejectDesign, answerClarify, approveDecomposition, rejectDecomposition } = createAutoRunService({
+  const { startAutoRun, advanceAutoRunForInvocation, syncAutoRunOnApproval, syncAutoRunOnDenial, retryAutoRun, reverifyAutoRun, attemptFailover, cancelAutoRun, mergeAutoRunPr, recordRoutingOverride, reapStuckAutoRuns, autoMergeSweep, approveDesign, rejectDesign, answerClarify, approveDecomposition, rejectDecomposition } = createAutoRunService({
     state,
     now,
     nextId,
@@ -1036,11 +1054,36 @@ export function createServerRuntimeServices({
         // metadata and does not inherit verifyCommandName.
         (p) => p.id === (worktree?.sourceProjectId ?? worktree?.projectId ?? worktree?.workspaceProjectId),
       ) ?? null;
-      const command = resolveAutoRunVerifyCommandFor({ verifyCommandName: project?.verifyCommandName ?? null });
-      if (!command || !worktree?.path) {
+      let changedPaths = [];
+      if (worktree?.path) {
+        try {
+          const diffArgs = worktree.baseCommit
+            ? ["-C", worktree.path, "diff", "--name-only", worktree.baseCommit, "HEAD", "--"]
+            // Legacy worktrees did not persist their fork SHA. Auto-run commits
+            // are atomic, so the latest commit is the narrowest safe historical
+            // fallback and avoids comparing against a moving local main branch.
+            : ["-C", worktree.path, "diff-tree", "--no-commit-id", "--name-only", "-r", "HEAD", "--"];
+          changedPaths = execFileSync("git", diffArgs, {
+            encoding: "utf8",
+            timeout: 5_000,
+            stdio: ["ignore", "pipe", "ignore"],
+          }).split(/\r?\n/).map((item) => item.trim()).filter(Boolean);
+        } catch {
+          changedPaths = [];
+        }
+      }
+      const commands = resolveAutoRunVerificationPlan({
+        verifyCommandName: project?.verifyCommandName ?? null,
+        changedPaths,
+      });
+      if (!commands.length || !worktree?.path) {
         return { passed: true, verified: false, summary: "No verification command configured — PR opened unverified." };
       }
-      return runWorktreeVerification({ cwd: worktree.path, command });
+      return runWorktreeVerificationPlan({
+        cwd: worktree.path,
+        commands,
+        timeoutMs: autoRunVerificationTimeoutMs(),
+      });
     },
     // Issue status writeback (ready -> in-progress -> review). Undefined when
     // disabled so the orchestrator skips it entirely — no GitHub writes by default.
@@ -1209,6 +1252,19 @@ export function createServerRuntimeServices({
     // Self-healing (H2): file the auto-labeled remediation issue after a failed
     // deploy (gh issue create; gated at call-time on remediateOnDeployFailure).
     fileRemediationIssue: async ({ repoPath, title, body, labels }) => runChildIssueCreate({ cwd: repoPath, title, body, labels }),
+    store,
+  });
+  const workItemAutoRunBatchService = createWorkItemAutoRunBatchService({
+    state,
+    now,
+    nextId,
+    persistStateSoon,
+    appendEvent,
+    getWorkItem: workItemService.getWorkItem,
+    beginExecution: workItemService.beginExecution,
+    abortExecution: workItemService.abortExecution,
+    recordExecutionBinding: workItemService.recordExecutionBinding,
+    startAutoRun,
     store,
   });
   const codexApprovalRecovery = createCodexApprovalRecoveryService({
@@ -1634,7 +1690,7 @@ export function createServerRuntimeServices({
     const req = findOwnChannelTask(id, actor);
     const autoRun = req?.autoRunId ? (state.autoRuns ?? []).find((item) => item.id === req.autoRunId) : null;
     if (!req || req.status !== "routed" || !autoRun) return { status: 404, body: { error: "channel_task_not_found" } };
-    const activeStatuses = ["materializing", "running", "verifying", "publishing", "awaiting_approval"];
+    const activeStatuses = ["materializing", "running", "waiting_capacity", "verifying", "publishing", "awaiting_approval"];
     if (![...activeStatuses, "failed", "blocked"].includes(autoRun.status)) {
       return { status: 409, body: { error: "channel_task_takeover_unavailable", reason: `run_${autoRun.status}` } };
     }
@@ -1992,15 +2048,20 @@ export function createServerRuntimeServices({
     });
   }
 
-  // Bridge liveness (docs/design/BRIDGE_LIVENESS_AND_REFUSAL.md): the device's
+  // Bridge liveness + invocation deadlines
+  // (docs/design/BRIDGE_LIVENESS_AND_REFUSAL.md): the device's
   // lastSeenAt is refreshed on every authenticated bridge request but nothing
   // watched it — a dead bridge stayed "online" forever and runs it had
-  // acknowledged stayed "running" forever. This sweep (index.mjs slow tick)
-  // flips a stale device offline (evented + alerted, restore is symmetric in
-  // requireBridgeCredential) and reaps runs stranded on a provably-gone bridge.
-  // A LIVE bridge enforces its own timeoutSeconds — the server only reaps when
-  // the bridge is offline, so long-running work is never guillotined.
+  // acknowledged stayed "running" forever. A live Bridge is not proof that its
+  // child executor still exists, so this sweep also enforces a server-side hard
+  // deadline. It requests interruption first, then terminalizes after a short
+  // grace; completion normalizes that path to execution_timeout so auto-runs can
+  // resume on their existing worktree.
   const BRIDGE_STALENESS_MS = Number(process.env.MYAGENTTOOL_BRIDGE_STALENESS_MS) || 90_000;
+  const INVOCATION_DEADLINE_GRACE_MS =
+    Number(process.env.MYAGENTTOOL_INVOCATION_DEADLINE_GRACE_MS) || 30_000;
+  const INVOCATION_INTERRUPT_GRACE_MS =
+    Number(process.env.MYAGENTTOOL_INVOCATION_INTERRUPT_GRACE_MS) || 30_000;
   function bridgeLivenessSweep() {
     const device = state.device;
     if (!device) return;
@@ -2025,6 +2086,71 @@ export function createServerRuntimeServices({
           message: "Desktop Bridge stopped responding; the device is offline and queued runs will wait until it returns.",
           data: { deviceId: device.id, lastSeenAt: device.lastSeenAt },
         });
+      }
+    }
+    if (device.status === "online") {
+      for (const invocation of state.invocations) {
+        if (!["running", "cancelling"].includes(invocation.status)) continue;
+        if ((invocation.delivery?.deviceId ?? null) !== device.id) continue;
+
+        const timeoutSeconds = Number(invocation.options?.timeoutSeconds);
+        const acknowledgedAtMs = Date.parse(invocation.delivery?.acknowledgedAt ?? "");
+        if (!Number.isFinite(timeoutSeconds) || timeoutSeconds <= 0 || !Number.isFinite(acknowledgedAtMs)) {
+          continue;
+        }
+        const deadlineAtMs = acknowledgedAtMs + timeoutSeconds * 1000 + INVOCATION_DEADLINE_GRACE_MS;
+        if (nowMs < deadlineAtMs) continue;
+
+        if (!invocation.deadlineEnforcement && invocation.status === "running") {
+          const requestedAt = now();
+          invocation.deadlineEnforcement = {
+            state: "interrupt_requested",
+            requestedAt,
+            deadlineAt: new Date(deadlineAtMs).toISOString(),
+          };
+          cancelInvocation(invocation, { userId: "usr_runtime_deadline" });
+          invocation.cancellation.reason =
+            "The server runtime deadline expired; executor interruption was requested.";
+          appendEvent({
+            invocationId: invocation.id,
+            type: "invocation_deadline_exceeded",
+            level: "warn",
+            message: "Invocation exceeded its runtime deadline; the server requested executor interruption.",
+            data: {
+              timeoutSeconds,
+              graceMs: INVOCATION_DEADLINE_GRACE_MS,
+              deadlineAt: invocation.deadlineEnforcement.deadlineAt,
+            },
+          });
+          persistStateSoon();
+          continue;
+        }
+
+        const interruptRequestedAtMs = Date.parse(invocation.deadlineEnforcement?.requestedAt ?? "");
+        if (
+          invocation.deadlineEnforcement?.state === "interrupt_requested"
+          && Number.isFinite(interruptRequestedAtMs)
+          && nowMs - interruptRequestedAtMs >= INVOCATION_INTERRUPT_GRACE_MS
+        ) {
+          appendEvent({
+            invocationId: invocation.id,
+            type: "invocation_deadline_reclaimed",
+            level: "warn",
+            message: "Executor did not report a terminal result after deadline interruption; the server reclaimed the invocation.",
+            data: {
+              interruptGraceMs: INVOCATION_INTERRUPT_GRACE_MS,
+              requestedAt: invocation.deadlineEnforcement.requestedAt,
+            },
+          });
+          completeInvocation(invocation, {
+            status: "timed_out",
+            result: {
+              summary: "The executor exceeded its configured runtime and stopped reporting progress.",
+              errorCode: "execution_timeout",
+              timeoutKind: "server_hard_deadline",
+            },
+          });
+        }
       }
     }
     if (device.status !== "offline") return;
@@ -3408,6 +3534,8 @@ export function createServerRuntimeServices({
     createCodexChangeReview,
     createCodexExecReview,
     setCodexSessionName,
+    setClaudeSessionName,
+    resumableClaudeSessions,
     resumableCodexSessions,
     isExecChangeApproved,
     execRunPromotionGate,
@@ -3552,10 +3680,12 @@ export function createServerRuntimeServices({
     ensureLocalOrigin,
     startAutoRun,
     retryAutoRun,
+    reverifyAutoRun,
     recoverTimedOutCodexApproval: codexApprovalRecovery.recoverTimedOutApproval,
     processPlanningRecommendedActions,
     cancelAutoRun,
     reapStuckAutoRuns,
+    sweepWorkItemAutoRunBatches: workItemAutoRunBatchService.sweepBatches,
     sweepExpiredClaims,
     sweepAutoRunSloAlerts,
     sweepAlertOutbox: alertOutbox.sweep,
@@ -3601,6 +3731,10 @@ export function createServerRuntimeServices({
     updateWorkItem: workItemService.updateWorkItem,
     bulkUpdateWorkItems: workItemService.bulkUpdateWorkItems,
     transitionWorkItem: workItemService.transitionWorkItem,
+    beginWorkItemExecution: workItemService.beginExecution,
+    abortWorkItemExecution: workItemService.abortExecution,
+    beginWorkItemDelivery: workItemService.beginDelivery,
+    failWorkItemDelivery: workItemService.failDelivery,
     completeWorkItemDelivery: workItemService.completeDelivery,
     listWorkItemActivity: workItemService.listActivity,
     listWorkItemComments: workItemService.listComments,
@@ -3608,6 +3742,8 @@ export function createServerRuntimeServices({
     updateWorkItemComment: workItemService.updateComment,
     deleteWorkItemComment: workItemService.deleteComment,
     recordWorkItemExecutionBinding: workItemService.recordExecutionBinding,
+    createWorkItemAutoRunBatch: workItemAutoRunBatchService.createBatch,
+    listWorkItemAutoRunBatches: workItemAutoRunBatchService.listBatches,
     claimWorkItem: workItemService.claimWorkItem,
     releaseWorkItemClaim: workItemService.releaseWorkItemClaim,
     bindGithubIssue: workItemService.bindGithubIssue,
