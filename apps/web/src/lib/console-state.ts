@@ -1030,6 +1030,8 @@ export interface WorkProfileEvidence {
   /** Root of a project the user explicitly registered/authorized. */
   authorizedDirectory: string;
   signal?: string;
+  score?: number | null;
+  observations?: number;
 }
 
 export interface WorkProfileInference {
@@ -1038,9 +1040,20 @@ export interface WorkProfileInference {
   ownerTeamId: string;
   category: WorkProfileCategory;
   value: string;
+  protocolKind?: "category" | "recurring_activity" | "document_pattern" | "preferred_output";
   confidence: number;
+  confidenceLevel?: "low" | "medium" | "high";
   status: WorkProfileStatus;
   summary?: string;
+  sourceProjectId?: string;
+  sourceSummary?: {
+    summary: string;
+    sources: { kind: string; reference: string; observedAt: string }[];
+    observationCount: number;
+    observedFrom: string;
+    observedTo: string;
+  };
+  autoApplyEligible?: boolean;
   evidence: WorkProfileEvidence[];
   createdAt: string;
   updatedAt: string;

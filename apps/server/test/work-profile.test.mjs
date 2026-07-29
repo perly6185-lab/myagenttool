@@ -190,3 +190,89 @@ test("the public state exposes only the current user's profile and audit history
   );
   assert.deepEqual(snapshot.workProfileAuditEvents.map((row) => row.id), ["wpa_local"]);
 });
+
+test("sanitized inference persists protocol-aligned rows for human review", async () => {
+  const state = {
+    projects: [{
+      id: "prj_a",
+      name: "Alpha",
+      path: "C:\\work\\alpha",
+      ownerTeamId: "team_a",
+    }],
+    workProfileInferences: [],
+    workProfileAuditEvents: [],
+  };
+  const result = await call({
+    method: "POST",
+    path: "/api/work-profile/infer",
+    actor: { userId: "usr_a", teamId: "team_a" },
+    body: {
+      projectId: "prj_a",
+      input: {
+        schema: "local-sanitized-profile-features/v1",
+        sanitized: true,
+        features: [
+          { key: "technical_activity", score: 0.9, observations: 8 },
+          { key: "detailed_response_preference", score: 0.7, observations: 5 },
+        ],
+      },
+    },
+    state,
+  });
+
+  assert.equal(result.calls.at(-1).status, 201);
+  assert.equal(result.persisted, 1);
+  assert.equal(result.state.workProfileInferences.length, 2);
+  const technical = result.state.workProfileInferences.find(
+    (row) => row.value === "interest.technology",
+  );
+  assert.equal(technical.category, "domain");
+  assert.equal(technical.protocolKind, "category");
+  assert.equal(technical.status, "pending");
+  assert.equal(technical.sourceSummary.sources[0].kind, "project");
+  assert.equal(technical.evidence[0].authorizedDirectory, "C:\\work\\alpha");
+  assert.equal(technical.sourceSummary.observationCount, 8);
+});
+
+test("profile inference hides foreign projects and rejects raw input fields", async () => {
+  const state = {
+    projects: [{
+      id: "prj_a",
+      name: "Alpha",
+      path: "C:\\work\\alpha",
+      ownerTeamId: "team_a",
+    }],
+    workProfileInferences: [],
+    workProfileAuditEvents: [],
+  };
+  const foreign = await call({
+    method: "POST",
+    path: "/api/work-profile/infer",
+    actor: { userId: "usr_b", teamId: "team_b" },
+    body: {
+      projectId: "prj_a",
+      input: { schema: "local-sanitized-profile-features/v1", sanitized: true, features: [] },
+    },
+    state,
+  });
+  assert.equal(foreign.calls.at(-1).status, 404);
+
+  const raw = await call({
+    method: "POST",
+    path: "/api/work-profile/infer",
+    actor: { userId: "usr_a", teamId: "team_a" },
+    body: {
+      projectId: "prj_a",
+      input: {
+        schema: "local-sanitized-profile-features/v1",
+        sanitized: true,
+        features: [],
+        rawText: "must not be accepted",
+      },
+    },
+    state,
+  });
+  assert.equal(raw.calls.at(-1).status, 400);
+  assert.equal(raw.calls.at(-1).payload.error, "unauthorized_input_field");
+  assert.equal(state.workProfileInferences.length, 0);
+});

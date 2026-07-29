@@ -54,6 +54,15 @@ const FEATURE_RULES = Object.freeze({
 const ALLOWED_INPUT_FIELDS = new Set(["schema", "sanitized", "features"]);
 const ALLOWED_FEATURE_FIELDS = new Set(["key", "score", "observations"]);
 const VOCABULARY = new Set(PROFILE_CLASSIFICATION_VOCABULARY);
+const REVIEW_PROJECTION = Object.freeze({
+  "interest.technology": Object.freeze({ category: "domain", protocolKind: "category" }),
+  "interest.product": Object.freeze({ category: "domain", protocolKind: "category" }),
+  "interest.content_creation": Object.freeze({ category: "domain", protocolKind: "category" }),
+  "work_style.planning": Object.freeze({ category: "work_type", protocolKind: "recurring_activity" }),
+  "work_style.collaboration": Object.freeze({ category: "work_type", protocolKind: "recurring_activity" }),
+  "communication.concise": Object.freeze({ category: "preference", protocolKind: "preferred_output" }),
+  "communication.detailed": Object.freeze({ category: "preference", protocolKind: "preferred_output" }),
+});
 
 export class ProfileInferenceInputError extends Error {
   constructor(code, message) {
@@ -137,6 +146,75 @@ export function autoApplicableProfileCandidates(inference) {
     candidate.autoApplyEligible === true
     && candidate.confidence >= threshold
     && VOCABULARY.has(candidate.classification)));
+}
+
+/**
+ * Project an inference candidate into the durable, user-reviewable shape.
+ *
+ * The protocol model remains the canonical semantic vocabulary
+ * (`protocolKind`, confidence level and source summary), while the flatter
+ * category/value fields are an explicit UI projection. Even high-confidence
+ * candidates begin as pending so a review screen never silently converts a
+ * model suggestion into user truth.
+ */
+export function reviewableWorkProfileInference(candidate, {
+  id,
+  userId,
+  ownerTeamId,
+  project,
+  createdAt,
+} = {}) {
+  const projection = REVIEW_PROJECTION[candidate?.classification];
+  if (!projection || !VOCABULARY.has(candidate.classification)) {
+    throw new ProfileInferenceInputError(
+      "invalid_candidate",
+      `unsupported profile candidate: ${String(candidate?.classification)}`,
+    );
+  }
+  if (!id || !userId || !ownerTeamId || !project?.id || !project?.path || !createdAt) {
+    throw new ProfileInferenceInputError(
+      "invalid_review_context",
+      "a durable id, owner, authorized project, and timestamp are required",
+    );
+  }
+  const observationCount = candidate.evidence?.observations ?? 0;
+  const sourceSummary = Object.freeze({
+    summary: candidate.reason,
+    sources: Object.freeze([Object.freeze({
+      kind: "project",
+      reference: project.id,
+      observedAt: createdAt,
+    })]),
+    observationCount,
+    observedFrom: createdAt,
+    observedTo: createdAt,
+  });
+  return {
+    id,
+    schema: "work-profile-review-inference/v1",
+    userId,
+    ownerTeamId,
+    sourceProjectId: project.id,
+    category: projection.category,
+    value: candidate.classification,
+    protocolKind: projection.protocolKind,
+    confidence: candidate.confidence,
+    confidenceLevel: candidate.confidenceLevel,
+    status: "pending",
+    summary: candidate.reason,
+    sourceSummary,
+    evidence: [{
+      projectId: project.id,
+      projectName: project.name,
+      authorizedDirectory: project.path,
+      signal: candidate.evidence?.feature ?? "sanitized_aggregate",
+      score: candidate.evidence?.score ?? null,
+      observations: observationCount,
+    }],
+    autoApplyEligible: candidate.autoApplyEligible === true,
+    createdAt,
+    updatedAt: createdAt,
+  };
 }
 
 function normalizeFeature(feature) {

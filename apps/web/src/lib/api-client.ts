@@ -672,6 +672,15 @@ async function requestResult(
 }
 
 export const api = {
+  inferWorkProfile: (payload: {
+    projectId: string;
+    input: {
+      schema: "local-sanitized-profile-features/v1";
+      sanitized: true;
+      features: { key: string; score: number; observations: number }[];
+    };
+    maxCandidates?: number;
+  }) => request("POST", "/api/work-profile/infer", payload),
   confirmWorkProfileInference: (id: string) =>
     request("POST", `/api/work-profile/inferences/${encodeURIComponent(id)}/confirm`, {}),
   updateWorkProfileInference: (

@@ -1,3 +1,9 @@
+import {
+  ProfileInferenceInputError,
+  inferProfileCandidates,
+  reviewableWorkProfileInference,
+} from "../services/profile-inference.mjs";
+
 const CATEGORIES = new Set(["role", "domain", "work_type", "skill", "preference"]);
 const MAX_VALUE_LENGTH = 120;
 const MAX_REASON_LENGTH = 500;
@@ -16,6 +22,61 @@ export async function handleWorkProfileRoutes({
   nextId,
   persistStateSoon,
 }) {
+  if (url.pathname === "/api/work-profile/infer") {
+    if (req.method !== "POST") {
+      sendJson(res, 405, { error: "method_not_allowed" });
+      return true;
+    }
+    const body = await readJson(req).catch(() => ({}));
+    const projectId = String(body?.projectId ?? "").trim();
+    const teamId = actor?.teamId ?? LOCAL_TEAM_ID;
+    const project = (state.projects ?? []).find(
+      (row) => row.id === projectId && (row.ownerTeamId ?? LOCAL_TEAM_ID) === teamId,
+    );
+    if (!project) {
+      sendJson(res, 404, { error: "work_profile_project_not_found" });
+      return true;
+    }
+    try {
+      const result = inferProfileCandidates(body?.input, {
+        maxCandidates: body?.maxCandidates,
+      });
+      const createdAt = now();
+      const inferences = state.workProfileInferences ?? (state.workProfileInferences = []);
+      const projected = result.candidates.map((candidate) =>
+        reviewableWorkProfileInference(candidate, {
+          id: nextId("wpi"),
+          userId: actor?.userId ?? LOCAL_USER_ID,
+          ownerTeamId: teamId,
+          project,
+          createdAt,
+        }));
+      for (const inference of projected) {
+        const existingIndex = inferences.findIndex((row) =>
+          visibleToActor(row, actor)
+          && row.sourceProjectId === inference.sourceProjectId
+          && row.value === inference.value
+          && row.status === "pending");
+        if (existingIndex >= 0) {
+          inference.id = inferences[existingIndex].id;
+          inference.createdAt = inferences[existingIndex].createdAt;
+          inferences[existingIndex] = inference;
+        } else {
+          inferences.unshift(inference);
+        }
+      }
+      persistStateSoon();
+      sendJson(res, 201, { inference: result, reviewInferences: projected });
+    } catch (error) {
+      if (error instanceof ProfileInferenceInputError) {
+        sendJson(res, 400, { error: error.code, message: error.message });
+      } else {
+        throw error;
+      }
+    }
+    return true;
+  }
+
   const match = url.pathname.match(/^\/api\/work-profile\/inferences\/([^/]+)(?:\/(confirm|reject))?$/);
   if (!match) return false;
 
