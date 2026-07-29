@@ -154,6 +154,17 @@ export function createServerState({ defaultProjectPath, now }) {
     workItemActivities: [],
     planningProjects: [],
     planningProjectItems: [],
+    // Epic #1547: local-first, evidence-backed requirement-to-delivery memory.
+    // These records store derived metadata, relationships, and versioned
+    // profiles; raw local file contents remain outside durable state by default.
+    workflowSources: [],
+    workflowScanJobs: [],
+    workflowEmbeddingIndex: [],
+    workflowArtifacts: [],
+    deliveryCases: [],
+    workflowProfiles: [],
+    workflowProfileDrafts: [],
+    workflowRuns: [],
     // #1165: dispatcher-mode bookkeeping — one row per issue assignment written
     // by THIS server acting as the dispatcher (single writer; the staleness clock).
     dispatchAssignments: [],

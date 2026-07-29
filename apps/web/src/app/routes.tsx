@@ -5,6 +5,7 @@ const DashboardView = lazy(() => import("@/features/dashboard/dashboard-view").t
 const WorkBoardView = lazy(() => import("@/features/work-board/work-board-view").then((m) => ({ default: m.WorkBoardView })));
 const WorkspaceView = lazy(() => import("@/features/workspace/workspace-view").then((m) => ({ default: m.WorkspaceView })));
 const DocumentsView = lazy(() => import("@/features/documents/documents-view").then((m) => ({ default: m.DocumentsView })));
+const WorkflowMemoryView = lazy(() => import("@/features/workflow-memory/workflow-memory-view").then((m) => ({ default: m.WorkflowMemoryView })));
 const CanvasView = lazy(() => import("@/features/canvas/canvas-view").then((m) => ({ default: m.CanvasView })));
 const CompareView = lazy(() => import("@/features/compare/compare-view").then((m) => ({ default: m.CompareView })));
 const ProjectsView = lazy(() => import("@/features/projects/projects-view").then((m) => ({ default: m.ProjectsView })));
@@ -39,6 +40,7 @@ export const SECTION_VIEWS: Record<SectionKey, ComponentType> = {
   workBoard: WorkBoardView,
   workspace: WorkspaceView,
   documents: DocumentsView,
+  workflowMemory: WorkflowMemoryView,
   canvas: CanvasView,
   compare: CompareView,
   projects: ProjectsView,

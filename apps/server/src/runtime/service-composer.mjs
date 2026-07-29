@@ -43,6 +43,10 @@ import { isGovernedClaudeApplyAgent } from "../services/claude-apply-agent.mjs";
 import { createCodexReviewImportService } from "../services/codex-review-imports.mjs";
 import { createCodexExecImportService } from "../services/codex-exec-imports.mjs";
 import { createRoundTelemetryRuntime } from "../services/round-telemetry.mjs";
+import {
+  createLocalWorkflowEmbeddingAdapter,
+  resolveWorkflowEmbeddingConfig,
+} from "../services/workflow-embedding-adapter.mjs";
 import { createCodexService } from "../services/codex.mjs";
 import { createCodexApprovalRecoveryService } from "../services/codex-approval-recovery.mjs";
 import { createIntegrationService } from "../services/integrations.mjs";
@@ -58,6 +62,7 @@ import { createDecisionSoftClaimService } from "../services/decision-soft-claims
 import { createIssueClaimService } from "../services/issue-claims.mjs";
 import { createWorkItemService } from "../services/work-items.mjs";
 import { createArticleImportService, resolveArticleImportConfig } from "../services/article-imports.mjs";
+import { createWorkflowMemoryService } from "../services/workflow-memory.mjs";
 import { createPlanningProjectService } from "../services/planning-projects.mjs";
 import { resolveAutoRunVerifyCommand, resolveAutoRunVerifyCommandFor, runWorktreeVerification } from "../services/worktree-verify.mjs";
 import { resolveStatusWritebackConfig, runIssueAssigneeEdit, runIssueBodyFetch, runIssueClose, runIssueComment, runIssueStatusTransition, runPrChecks, runPrMerge, runPrStateFetch, runIssueStateFetch, runIssueSnapshotFetch, runIssueSnapshotWrite } from "../services/issue-status.mjs";
@@ -408,6 +413,92 @@ export function createServerRuntimeServices({
     },
     startInvocationIfAllowed: (invocation, agent) =>
       invocationService?.startInvocationIfAllowed(invocation, agent),
+    store,
+  });
+  const workflowMemoryService = createWorkflowMemoryService({
+    state,
+    now,
+    nextId,
+    appendEvent,
+    persistStateSoon,
+    embeddingAdapter: createLocalWorkflowEmbeddingAdapter({
+      config: resolveWorkflowEmbeddingConfig(),
+    }),
+    createWorkItem: workItemService.createWorkItem,
+    recordWorkItemVerification: workItemService.recordVerification,
+    // Lazy execution bridge: Auto-run is composed below, but this callback is
+    // only invoked after service composition has completed.
+    startWorkItemRun: async ({
+      workItemId,
+      agentId,
+      baseBranch,
+      executionAttempt = 1,
+    }, actor) => {
+      const detail = workItemService.getWorkItem({ workItemId }, actor);
+      if (!detail.ok) {
+        const error = new Error(detail.body?.message ?? detail.body?.error ?? "Work item not found.");
+        error.code = detail.body?.error ?? "workflow_work_item_not_found";
+        error.status = detail.status;
+        throw error;
+      }
+      const item = detail.body.workItem;
+      const slug = String(item.title ?? "work")
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, "-")
+        .replace(/^-+|-+$/g, "")
+        .slice(0, 40) || "work";
+      const link = {
+        type: "local_issue",
+        number: item.localNumber,
+        title: item.title,
+        url: null,
+        state: item.state,
+      };
+      const issueBody = [
+        item.body,
+        item.acceptanceCriteria?.length
+          ? `Acceptance criteria:\n${item.acceptanceCriteria.map((value) => `- ${value}`).join("\n")}`
+          : "",
+      ].filter(Boolean).join("\n\n");
+      const attemptSuffix = Number(executionAttempt) > 1
+        ? `-attempt-${Math.trunc(Number(executionAttempt))}`
+        : "";
+      const result = await startAutoRun({
+        projectId: item.projectId,
+        link,
+        name: `local-${item.localNumber}-${slug}${attemptSuffix}`,
+        baseBranch,
+        agentId,
+        actor,
+        issueBody,
+        executionChainId: item.id,
+        terminalId: item.terminalId,
+        autonomyProfile: item.planningProjects?.some((project) => project.autonomyProfile === "cautious")
+          ? "cautious"
+          : item.planningProjects?.some((project) => project.autonomyProfile === "high")
+            ? "high"
+            : "standard",
+      });
+      const binding = workItemService.recordExecutionBinding({
+        workItemId,
+        kind: "auto_run",
+        targetId: result.autoRun.id,
+        worktreeId: result.worktree?.id ?? result.autoRun.worktreeId,
+      }, actor);
+      if (!binding.ok) {
+        const error = new Error(binding.body?.message ?? binding.body?.error ?? "Execution binding failed.");
+        error.code = binding.body?.error ?? "workflow_execution_binding_failed";
+        error.status = binding.status;
+        throw error;
+      }
+      return { ...result, workItem: binding.body.workItem };
+    },
+    cancelWorkItemRun: ({ autoRunId, terminalId }, actor) =>
+      cancelAutoRun(autoRunId, { actor, terminalId }),
+    retryWorkItemRun: ({ autoRunId, terminalId }, actor) =>
+      retryAutoRun(autoRunId, { actor, terminalId }),
+    cleanupWorkItemWorktree: ({ worktreeId }) =>
+      destroyWorktree(worktreeId, { deleteBranch: true }),
     store,
   });
   const planningProjectService = createPlanningProjectService({
@@ -3661,6 +3752,43 @@ export function createServerRuntimeServices({
     createArticleDerivative: articleImportService.createDerivative,
     listArticleDerivatives: articleImportService.listDerivatives,
     getArticleDerivative: articleImportService.getDerivative,
+    listWorkflowSources: workflowMemoryService.listSources,
+    createWorkflowSource: workflowMemoryService.createSource,
+    scanWorkflowSource: workflowMemoryService.scanSource,
+    cancelWorkflowSourceScan: workflowMemoryService.cancelScan,
+    revokeWorkflowSource: workflowMemoryService.revokeSource,
+    deleteWorkflowSourceLearning: workflowMemoryService.deleteSourceLearning,
+    listWorkflowArtifacts: workflowMemoryService.listArtifacts,
+    confirmWorkflowArtifact: workflowMemoryService.confirmArtifact,
+    retryWorkflowArtifactExtraction: workflowMemoryService.retryArtifactExtraction,
+    setWorkflowArtifactExclusion: workflowMemoryService.setArtifactExclusion,
+    indexWorkflowSourceEmbeddings: workflowMemoryService.indexSourceEmbeddings,
+    proposeWorkflowPairs: workflowMemoryService.pairProposals,
+    listDeliveryCases: workflowMemoryService.listCases,
+    createDeliveryCase: workflowMemoryService.createCase,
+    changeDeliveryCaseState: workflowMemoryService.changeCaseState,
+    deriveWorkflowProfile: workflowMemoryService.deriveProfile,
+    reviseWorkflowProfile: workflowMemoryService.reviseProfile,
+    listWorkflowProfiles: workflowMemoryService.listProfiles,
+    listWorkflowProfileDrafts: workflowMemoryService.listProfileDrafts,
+    createWorkflowProfileDraft: workflowMemoryService.createProfileDraft,
+    publishWorkflowProfileDraft: workflowMemoryService.publishProfileDraft,
+    listWorkflowInbox: workflowMemoryService.listInbox,
+    matchWorkflowProfiles: workflowMemoryService.matchProfiles,
+    findSimilarWorkflowCases: workflowMemoryService.findSimilarCases,
+    evaluateWorkflowRetrieval: workflowMemoryService.evaluateRetrieval,
+    inspectWorkflowRequirement: workflowMemoryService.inspectRequirement,
+    listWorkflowRuns: workflowMemoryService.listRuns,
+    createWorkflowRun: workflowMemoryService.createRun,
+    executeWorkflowRun: workflowMemoryService.executeRun,
+    cancelWorkflowRunExecution: workflowMemoryService.cancelRunExecution,
+    retryWorkflowRunExecution: workflowMemoryService.retryRunExecution,
+    cleanupWorkflowRunAttemptWorktree: workflowMemoryService.cleanupRunAttemptWorktree,
+    selectWorkflowRunAttempt: workflowMemoryService.selectRunAttempt,
+    validateWorkflowRun: workflowMemoryService.validateRun,
+    recordWorkflowRunFeedback: workflowMemoryService.recordRunFeedback,
+    previewWorkflowRunPublication: workflowMemoryService.previewRunPublication,
+    publishWorkflowRunOutputs: workflowMemoryService.publishRunOutputs,
     fetchWorkItemGithubIssue: ({ projectId, issueNumber }) => {
       const project = (state.projects ?? []).find((candidate) => candidate.id === projectId);
       const target = (state.projectTargets ?? []).find((candidate) => candidate.projectId === projectId && candidate.state === "ready");
