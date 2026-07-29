@@ -57,6 +57,7 @@ import { convergeAutoRunTerminalState, createAutoRunService } from "../services/
 import { createDecisionSoftClaimService } from "../services/decision-soft-claims.mjs";
 import { createIssueClaimService } from "../services/issue-claims.mjs";
 import { createWorkItemService } from "../services/work-items.mjs";
+import { createArticleImportService, resolveArticleImportConfig } from "../services/article-imports.mjs";
 import { createPlanningProjectService } from "../services/planning-projects.mjs";
 import { resolveAutoRunVerifyCommand, resolveAutoRunVerifyCommandFor, runWorktreeVerification } from "../services/worktree-verify.mjs";
 import { resolveStatusWritebackConfig, runIssueAssigneeEdit, runIssueBodyFetch, runIssueClose, runIssueComment, runIssueStatusTransition, runPrChecks, runPrMerge, runPrStateFetch, runIssueStateFetch, runIssueSnapshotFetch, runIssueSnapshotWrite } from "../services/issue-status.mjs";
@@ -390,6 +391,24 @@ export function createServerRuntimeServices({
     resolveApplicationCapability: (input, actor) => resolveWorkItemApplicationCapability(input, actor),
     invokeResolvedCapability: (name, input, actor) => invokeWorkItemApplicationCapability(name, input, actor),
     issueApplicationApprovalGrant: (input, actor) => issueApprovalGrant(input, actor),
+  });
+  const articleImportConfig = resolveArticleImportConfig();
+  const articleImportService = createArticleImportService({
+    state,
+    now,
+    nextId,
+    workItemService,
+    maxConcurrent: articleImportConfig.maxConcurrent,
+    maxPending: articleImportConfig.maxPending,
+    limits: articleImportConfig.limits,
+    persistStateSoon,
+    createInvocation: (task, agent, options) => {
+      if (!invocationService) throw new Error("article_derivative_agent_unavailable");
+      return invocationService.createInvocation(task, agent, options);
+    },
+    startInvocationIfAllowed: (invocation, agent) =>
+      invocationService?.startInvocationIfAllowed(invocation, agent),
+    store,
   });
   const planningProjectService = createPlanningProjectService({
     state, now, nextId, appendEvent, persistStateSoon, store, validateApprovalToken,
@@ -732,6 +751,9 @@ export function createServerRuntimeServices({
       } catch {
         /* channel notification is best-effort; completion must never fail because of it */
       }
+      void articleImportService.reconcileDerivative(invocation).catch(() => {
+        /* derivative reconciliation is retried by its status endpoint */
+      });
     },
     onInvocationApproved: (invocation) => approvalAutoRunHook?.(invocation),
     onInvocationDenied: (invocation) => {
@@ -3629,6 +3651,16 @@ export function createServerRuntimeServices({
     getWorkItemGithubSyncDiagnostics: workItemService.githubSyncDiagnostics,
     suggestWorkItemDraft: workItemService.suggestWorkItemDraft,
     retryWorkItemAlert: workItemService.retryWorkItemAlert,
+    inspectArticleImport: articleImportService.inspect,
+    startArticleImport: articleImportService.start,
+    listArticleImports: articleImportService.list,
+    getArticleImport: articleImportService.get,
+    cancelArticleImport: articleImportService.cancel,
+    analyzeArticleImport: articleImportService.analyze,
+    findSimilarArticleImports: articleImportService.findSimilar,
+    createArticleDerivative: articleImportService.createDerivative,
+    listArticleDerivatives: articleImportService.listDerivatives,
+    getArticleDerivative: articleImportService.getDerivative,
     fetchWorkItemGithubIssue: ({ projectId, issueNumber }) => {
       const project = (state.projects ?? []).find((candidate) => candidate.id === projectId);
       const target = (state.projectTargets ?? []).find((candidate) => candidate.projectId === projectId && candidate.state === "ready");

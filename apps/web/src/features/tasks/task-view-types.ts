@@ -70,7 +70,7 @@ export type LocalWorkItem = {
   revision: number;
   archivedAt: string | null;
   executionBindings?: {
-    kind: "worktree" | "auto_run" | "application_invocation";
+    kind: "worktree" | "auto_run" | "application_invocation" | "article_import" | "article_derivative";
     targetId?: string; id?: string; worktreeId?: string | null; createdAt: string;
     terminalId?: string; applicationId?: string; capabilityId?: string; traceId?: string;
   }[];

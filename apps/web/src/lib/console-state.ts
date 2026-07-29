@@ -1750,7 +1750,7 @@ export interface ProjectDocumentEntry {
   worktreeId?: string | null;
   name: string;
   path: string;
-  type: "docx" | "xlsx" | "pptx" | "pdf" | "dxf" | "dwg" | "md" | "mdx" | "png" | "jpg" | "jpeg" | "gif" | "webp" | "avif" | "svg" | "mp4" | "webm" | "mov" | "canvas" | "excalidraw";
+  type: "docx" | "xlsx" | "pptx" | "pdf" | "dxf" | "dwg" | "md" | "mdx" | "html" | "png" | "jpg" | "jpeg" | "gif" | "webp" | "avif" | "svg" | "mp3" | "m4a" | "ogg" | "wav" | "mp4" | "webm" | "mov" | "canvas" | "excalidraw";
   gitStatus: string;
   assetFamily?: string;
   capabilities?: string[];

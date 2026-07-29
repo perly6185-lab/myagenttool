@@ -106,6 +106,7 @@ export const persistedArrayKeys = [
   "workItemComments",
   "workItemActivities",
   "workItemAttentionOperations",
+  "articleImportJobs",
   "githubWorkItemWebhookDeliveries",
   "githubWorkItemWebhookFailures",
   "workItemOperationalAlerts",

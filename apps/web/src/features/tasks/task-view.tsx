@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
 import { Hand, History, RefreshCw, ExternalLink, GitBranch, Workflow, Zap, Plus, MessageSquare, Trash2, Pencil, FolderKanban, ArrowUp, ArrowDown, Star, Bell } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -49,8 +49,22 @@ import { WorkItemAcceptanceSection } from "./work-item-acceptance-section";
 import { WorkItemExternalSync } from "./work-item-external-sync";
 import { WorkItemAlertAndCostDetails, WorkItemTimeline, WorkItemTraceSummary } from "./work-item-observability";
 import { WorkItemTraceLinks } from "./work-item-trace-links";
+import type {
+  ArticleAnalysis,
+  ArticleDerivative,
+  ArticleDerivativeRequest,
+  ArticleImportJob,
+  ArticleInspection,
+  ArticleSimilarityMatch,
+  ArticleSimilaritySearch,
+} from "./article-workflow-types";
+import { articleApi } from "./article-workflow-api";
+import { useArticleTaskLabels } from "./article-task-labels";
 
 export { shouldShowWorkItemCost } from "./task-view-types";
+
+const ArticleWorkflowDialogs = lazy(() => import("./article-workflow-dialogs"));
+const ArticleImportFields = lazy(() => import("./article-import-fields"));
 
 // Task = GitHub issues/PRs across repo-backed projects, surfaced as work items.
 // Mirrors the project's existing per-worktree GitHub list, lifted to a top-level
@@ -168,6 +182,7 @@ export function TaskView() {
   const [planningProjects, setPlanningProjects] = useState<PlanningProject[]>([]);
   const [planningProjectId, setPlanningProjectId] = useState("all");
   const [createLocalOpen, setCreateLocalOpen] = useState(false);
+  const [createArticleImportActive, setCreateArticleImportActive] = useState(false);
   const [planningOpen, setPlanningOpen] = useState(false);
   const storedSelectedLocalId = useUiStore((state) => state.selectedWorkItemId);
   const persistSelectedLocalId = useUiStore((state) => state.setSelectedWorkItemId);
@@ -759,11 +774,20 @@ export function TaskView() {
         {historyRow ? <ClaimHistoryList events={claimHistory(historyRow)} /> : null}
       </Modal>
 
-      <Modal open={createLocalOpen} onClose={() => setCreateLocalOpen(false)} title={t("tasks.newLocal")}>
+      <Modal
+        open={createLocalOpen}
+        onClose={() => {
+          if (!createArticleImportActive) setCreateLocalOpen(false);
+        }}
+        title={t("tasks.newLocal")}
+        closeDisabled={createArticleImportActive}
+      >
         <CreateLocalWorkItemForm
           projects={projects}
           initialProjectId={projectId === "all" ? projects[0]?.id ?? "" : projectId}
+          onImportActivityChange={setCreateArticleImportActive}
           onDone={() => {
+            setCreateArticleImportActive(false);
             setCreateLocalOpen(false);
             setTab("local");
             setNonce((value) => value + 1);
@@ -2217,6 +2241,7 @@ function LocalWorkItemDetail({
   onDirtyChange: (dirty: boolean) => void;
 }) {
   const { t } = useAppTranslation();
+  const articleText = useArticleTaskLabels();
   const { execute, pending, error } = useAsyncAction();
   const setSection = useUiStore((state) => state.setSection);
   const setSelectedProjectId = useUiStore((state) => state.setSelectedProjectId);
@@ -2250,6 +2275,15 @@ function LocalWorkItemDetail({
   const [deleteCommentTarget, setDeleteCommentTarget] = useState<WorkItemComment | null>(null);
   const [deliveryConfirmMode, setDeliveryConfirmMode] = useState<"local_merge" | "pull_request" | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  const [articleImportJobs, setArticleImportJobs] = useState<Record<string, ArticleImportJob>>({});
+  const [articleAnalysis, setArticleAnalysis] = useState<ArticleAnalysis | null>(null);
+  const [similarArticles, setSimilarArticles] = useState<ArticleSimilaritySearch | null>(null);
+  const [articleDerivatives, setArticleDerivatives] = useState<Record<string, ArticleDerivative>>({});
+  const [articleDerivativeDialog, setArticleDerivativeDialog] = useState<{
+    sourceJobId: string;
+    worktreeId: string;
+  } | null>(null);
+  const [articleDerivative, setArticleDerivative] = useState<ArticleDerivative | null>(null);
 
   const load = async () => {
     try {
@@ -2318,6 +2352,52 @@ function LocalWorkItemDetail({
       .then((detail) => setObservability(detail.observability))
       .catch(() => {});
   }, 5_000);
+  const refreshArticleImports = async () => {
+    if (!item?.executionBindings?.some((binding) => binding.kind === "article_import")) return;
+    try {
+      const result = await articleApi.listImports(workItemId) as { jobs?: ArticleImportJob[] };
+      const jobs = result.jobs ?? [];
+      setArticleImportJobs(Object.fromEntries(jobs.map((job) => [job.id, job])));
+      if (item.executionBindings?.some((binding) => binding.kind === "article_derivative")) {
+        const derivativeResults = await Promise.all(jobs
+          .filter((job) => job.state === "completed")
+          .map((job) => articleApi.listDerivatives(workItemId, job.id)
+            .catch(() => ({ derivatives: [] })) as Promise<{ derivatives?: ArticleDerivative[] }>));
+        setArticleDerivatives(Object.fromEntries(
+          derivativeResults.flatMap((entry) => entry.derivatives ?? [])
+            .map((derivative) => [derivative.id, derivative]),
+        ));
+      }
+    } catch {
+      // The Issue remains usable when import history cannot be refreshed.
+    }
+  };
+  useEffect(() => {
+    void refreshArticleImports();
+    // Refresh when the server adds a new execution binding.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [workItemId, item?.executionBindings?.length]);
+  useVisibleInterval(() => {
+    if (Object.values(articleImportJobs).some((job) => ["queued", "running"].includes(job.state))) {
+      void refreshArticleImports();
+    }
+  }, 1_500);
+  useVisibleInterval(() => {
+    if (!articleDerivativeDialog || !articleDerivative
+      || ["completed", "failed", "canceled"].includes(articleDerivative.state)) return;
+    void (articleApi.getDerivative(
+      workItemId,
+      articleDerivativeDialog.sourceJobId,
+      articleDerivative.id,
+    ) as Promise<{ derivative: ArticleDerivative }>).then((result) => {
+      setArticleDerivative(result.derivative);
+      setArticleDerivatives((current) => ({ ...current, [result.derivative.id]: result.derivative }));
+      if (result.derivative.state === "completed") {
+        onChanged();
+        void load();
+      }
+    }).catch(() => {});
+  }, 1_500, Boolean(articleDerivativeDialog && articleDerivative));
 
   const dirty = item != null && (
     title !== item.title
@@ -2420,6 +2500,106 @@ function LocalWorkItemDetail({
       setSection("projects");
     });
   };
+  const openOutputAsset = (asset: Pick<NonNullable<LocalWorkItem["outputAssets"]>[number], "path" | "worktreeId">) => {
+    requestNavigation(() => {
+      const url = new URL(window.location.href);
+      url.searchParams.set("section", "documents");
+      url.searchParams.set("project", item.projectId);
+      url.searchParams.set("document", asset.path);
+      if (asset.worktreeId) url.searchParams.set("worktree", asset.worktreeId);
+      else url.searchParams.delete("worktree");
+      window.history.replaceState(window.history.state, "", `${url.pathname}${url.search}${url.hash}`);
+      setSelectedProjectId(item.projectId);
+      setSelectedWorktreeId(asset.worktreeId ?? null);
+      setSection("documents");
+    });
+  };
+  const markdownAssetFor = (worktreeId?: string | null) => [...(item.outputAssets ?? [])].reverse()
+    .find((asset) => asset.family === "markdown"
+      && asset.path.toLowerCase().endsWith("/article.md")
+      && (!worktreeId || asset.worktreeId === worktreeId));
+  const analysisAssetFor = (worktreeId?: string | null) => [...(item.outputAssets ?? [])].reverse()
+    .find((asset) => asset.family === "markdown"
+      && asset.path.toLowerCase().endsWith("/analysis.md")
+      && (!worktreeId || asset.worktreeId === worktreeId));
+  const htmlAssetFor = (worktreeId?: string | null) => [...(item.outputAssets ?? [])].reverse()
+    .find((asset) => asset.path.toLowerCase().endsWith(".html") && (!worktreeId || asset.worktreeId === worktreeId));
+  const retryArticleImport = (job: ArticleImportJob) => {
+    if (!job.canonicalUrl || !job.worktreeId) return;
+    void execute(() => articleApi.startImport(item.id, {
+      url: job.canonicalUrl!,
+      worktreeId: job.worktreeId!,
+    })).then((ok) => {
+      if (!ok) return;
+      onChanged();
+      void load();
+      void refreshArticleImports();
+    });
+  };
+  const viewArticleAnalysis = (jobId: string) => {
+    void execute(async () => {
+      const result = await articleApi.analyze(item.id, jobId) as {
+        analysis: ArticleAnalysis;
+        analysisPath: string;
+      };
+      setArticleAnalysis(result.analysis);
+      return result;
+    }).then((ok) => {
+      if (!ok) return;
+      onChanged();
+      void load();
+      void refreshArticleImports();
+    });
+  };
+  const findSimilarArticles = (jobId: string) => {
+    void execute(async () => {
+      const result = await articleApi.findSimilar(item.id, jobId) as ArticleSimilaritySearch;
+      setSimilarArticles(result);
+      return result;
+    });
+  };
+  const openArticleDerivative = (sourceJobId: string, worktreeId: string) => {
+    setArticleDerivative(null);
+    setArticleDerivativeDialog({ sourceJobId, worktreeId });
+  };
+  const openArticleDerivativeStatus = (derivative: ArticleDerivative) => {
+    setArticleDerivative(derivative);
+    setArticleDerivativeDialog({
+      sourceJobId: derivative.sourceJobId,
+      worktreeId: derivative.worktreeId,
+    });
+  };
+  const createArticleDerivative = (request: ArticleDerivativeRequest) => {
+    if (!articleDerivativeDialog) return;
+    void execute(async () => {
+      const result = await articleApi.createDerivative(
+        item.id,
+        articleDerivativeDialog.sourceJobId,
+        request,
+      ) as { derivative: ArticleDerivative };
+      setArticleDerivative(result.derivative);
+      setArticleDerivatives((current) => ({ ...current, [result.derivative.id]: result.derivative }));
+      return result;
+    }).then((ok) => {
+      if (!ok) return;
+      onChanged();
+      void load();
+    });
+  };
+  const openSimilarArticle = (match: ArticleSimilarityMatch) => {
+    requestNavigation(() => {
+      const url = new URL(window.location.href);
+      url.searchParams.set("section", "documents");
+      url.searchParams.set("project", item.projectId);
+      url.searchParams.set("document", match.markdownPath);
+      url.searchParams.set("worktree", match.worktreeId);
+      window.history.replaceState(window.history.state, "", `${url.pathname}${url.search}${url.hash}`);
+      setSelectedProjectId(item.projectId);
+      setSelectedWorktreeId(match.worktreeId);
+      setSection("documents");
+      setSimilarArticles(null);
+    });
+  };
   const createExecutionWorktree = () => {
     void execute(async () => {
       const result = await api.createWorkItemWorktree(item.id) as { worktree?: { id: string } };
@@ -2518,6 +2698,20 @@ function LocalWorkItemDetail({
       setSection("autoRuns");
     });
   };
+  const openExecutionBinding = (binding: NonNullable<LocalWorkItem["executionBindings"]>[number]) => {
+    if (binding.kind === "auto_run") {
+      openAutoRun(binding.targetId);
+      return;
+    }
+    if (binding.kind === "article_import") {
+      const output = markdownAssetFor(binding.worktreeId) ?? htmlAssetFor(binding.worktreeId);
+      if (output) {
+        openOutputAsset(output);
+        return;
+      }
+    }
+    openWorktreeResult(binding.worktreeId ?? binding.targetId);
+  };
   const runNextAction = () => {
     if (nextActionKey === "start_execution") {
       requestNavigation(startExecution);
@@ -2574,8 +2768,14 @@ function LocalWorkItemDetail({
           <div key={`chain:${binding.kind}:${binding.targetId}`} className="flex items-center gap-1">
             <span aria-hidden="true">→</span>
             <button type="button" className="whitespace-nowrap rounded bg-background px-2 py-1 font-mono hover:text-primary"
-              onClick={() => binding.kind === "auto_run" ? openAutoRun(binding.targetId) : openWorktreeResult(binding.worktreeId ?? binding.targetId)}>
-              {binding.kind === "auto_run" ? t("taskLocal.autoRun") : t("taskLocal.worktree")} · {binding.targetId}
+              onClick={() => openExecutionBinding(binding)}>
+              {binding.kind === "auto_run"
+                ? t("taskLocal.autoRun")
+                : binding.kind === "article_import"
+                  ? articleText.importBinding
+                  : binding.kind === "article_derivative"
+                    ? articleText.derivativeBinding
+                    : t("taskLocal.worktree")} · {binding.targetId}
             </button>
           </div>
         ))}
@@ -2885,23 +3085,109 @@ function LocalWorkItemDetail({
         <div className="rounded-md border border-border p-2">
           <p className="mb-1 text-xs font-medium text-muted-foreground">{t("taskLocal.executions")}</p>
           <ul className="space-y-1">
-            {item.executionBindings?.map((binding) => (
-              <li key={`${binding.kind}:${binding.targetId}`} className="flex items-center gap-2 text-xs">
+            {item.executionBindings?.map((binding) => {
+              const importJob = binding.targetId ? articleImportJobs[binding.targetId] : undefined;
+              const derivative = binding.targetId ? articleDerivatives[binding.targetId] : undefined;
+              return (
+              <li key={`${binding.kind}:${binding.targetId}`} className="flex flex-wrap items-center gap-2 text-xs">
                 <Badge tone={binding.kind === "auto_run" ? "warning" : "neutral"}>
-                  {t(binding.kind === "auto_run" ? "taskLocal.autoRun" : "taskLocal.worktree")}
+                  {binding.kind === "article_import"
+                    ? articleText.importBinding
+                    : binding.kind === "article_derivative"
+                      ? articleText.derivativeBinding
+                      : t(binding.kind === "auto_run" ? "taskLocal.autoRun" : "taskLocal.worktree")}
                 </Badge>
-                {binding.kind === "auto_run" ? (
-                  <button type="button" className="font-mono text-primary hover:underline" onClick={() => openAutoRun(binding.targetId)}>
+                {binding.kind === "auto_run" || binding.kind === "article_import" || binding.kind === "article_derivative" ? (
+                  <button type="button" className="font-mono text-primary hover:underline"
+                    disabled={binding.kind === "article_derivative" && !derivative}
+                    onClick={() => binding.kind === "article_derivative" && derivative
+                      ? openArticleDerivativeStatus(derivative)
+                      : openExecutionBinding(binding)}>
                     {binding.targetId}
                   </button>
                 ) : <span className="font-mono">{binding.targetId}</span>}
-                {binding.worktreeId ? (
+                {binding.kind === "article_import" ? (
+                  <span className="ml-auto flex flex-wrap items-center justify-end gap-2">
+                    {importJob ? (
+                      <span className={importJob.state === "failed" ? "text-destructive" : "text-muted-foreground"}>
+                        {importJob.error === "article_import_interrupted"
+                          ? articleText.interrupted
+                          : articleText.importState[importJob.state]}
+                      </span>
+                    ) : null}
+                    {["failed", "canceled"].includes(importJob?.state ?? "")
+                      && importJob?.canonicalUrl ? (
+                        <button type="button" className="text-primary hover:underline"
+                          onClick={() => retryArticleImport(importJob)}>
+                          {articleText.retryImport}
+                        </button>
+                      ) : null}
+                    {markdownAssetFor(binding.worktreeId) ? (
+                      <button type="button" className="text-primary hover:underline"
+                        onClick={() => openOutputAsset(markdownAssetFor(binding.worktreeId)!)}>
+                        {t("taskLocal.openMarkdown")}
+                      </button>
+                    ) : null}
+                    {htmlAssetFor(binding.worktreeId) ? (
+                      <button type="button" className="text-primary hover:underline"
+                        onClick={() => openOutputAsset(htmlAssetFor(binding.worktreeId)!)}>
+                        {t("taskLocal.openHtml")}
+                      </button>
+                    ) : null}
+                    {importJob?.state === "completed" && binding.targetId ? (
+                      <>
+                        <button type="button" className="text-primary hover:underline" disabled={pending}
+                          onClick={() => viewArticleAnalysis(binding.targetId!)}>
+                          {articleText.viewAnalysis}
+                        </button>
+                        <button type="button" className="text-primary hover:underline" disabled={pending}
+                          onClick={() => findSimilarArticles(binding.targetId!)}>
+                          {articleText.findSimilar}
+                        </button>
+                        {binding.worktreeId ? (
+                          <button type="button" className="text-primary hover:underline" disabled={pending}
+                            onClick={() => openArticleDerivative(binding.targetId!, binding.worktreeId!)}>
+                            {articleText.createDerivative}
+                          </button>
+                        ) : null}
+                      </>
+                    ) : null}
+                    {analysisAssetFor(binding.worktreeId) ? (
+                      <button type="button" className="text-primary hover:underline"
+                        onClick={() => openOutputAsset(analysisAssetFor(binding.worktreeId)!)}>
+                        {articleText.openAnalysis}
+                      </button>
+                    ) : null}
+                  </span>
+                ) : binding.kind === "article_derivative" ? (
+                  <span className="ml-auto flex flex-wrap items-center justify-end gap-2">
+                    {derivative ? (
+                      <>
+                        <Badge tone={derivative.state === "completed"
+                          ? "success"
+                          : derivative.state === "failed" ? "danger" : "warning"}>
+                          {articleText.derivativeState[derivative.state]}
+                        </Badge>
+                        {derivative.state === "completed" ? (
+                          <button type="button" className="text-primary hover:underline"
+                            onClick={() => openOutputAsset({
+                              path: derivative.outputPath,
+                              worktreeId: derivative.worktreeId,
+                            })}>
+                            {articleText.openDerivative}
+                          </button>
+                        ) : null}
+                      </>
+                    ) : <span className="text-muted-foreground">{t("tasks.loading")}</span>}
+                  </span>
+                ) : binding.worktreeId ? (
                   <button type="button" className="ml-auto text-primary hover:underline" onClick={() => openWorktreeResult(binding.worktreeId)}>
                     {t("taskLocal.openWorktree")}
                   </button>
                 ) : null}
               </li>
-            ))}
+              );
+            })}
           </ul>
         </div>
       ) : null}
@@ -2943,7 +3229,13 @@ function LocalWorkItemDetail({
         <ul className="space-y-1">
           {activity.map((row) => (
             <li key={row.id} className="flex gap-2 text-xs">
-              <Badge tone="neutral">{t(`taskLocal.activityAction.${row.action}`, { defaultValue: row.action })}</Badge>
+              <Badge tone="neutral">
+                {row.action === "article_import_started"
+                  ? articleText.importStarted
+                  : row.action === "article_derivative_started"
+                    ? articleText.derivativeStarted
+                    : t(`taskLocal.activityAction.${row.action}`, { defaultValue: row.action })}
+              </Badge>
               <span>{row.actorId}</span>
               <span className="ml-auto text-muted-foreground">{row.createdAt.replace("T", " ").slice(0, 16)}</span>
             </li>
@@ -2972,6 +3264,26 @@ function LocalWorkItemDetail({
           setDeleteCommentTarget(null);
         }}
       />
+      {articleAnalysis || similarArticles || articleDerivativeDialog ? (
+        <Suspense fallback={null}>
+          <ArticleWorkflowDialogs
+            analysis={articleAnalysis}
+            similarArticles={similarArticles}
+            derivativeContext={articleDerivativeDialog}
+            derivative={articleDerivative}
+            pending={pending}
+            onCloseAnalysis={() => setArticleAnalysis(null)}
+            onCloseSimilarity={() => setSimilarArticles(null)}
+            onCloseDerivative={() => {
+              setArticleDerivativeDialog(null);
+              setArticleDerivative(null);
+            }}
+            onOpenSimilar={openSimilarArticle}
+            onOpenOutput={openOutputAsset}
+            onCreateDerivative={createArticleDerivative}
+          />
+        </Suspense>
+      ) : null}
       <Modal
         open={safeNavigation.pendingNavigation}
         title={t("taskLocal.details")}
@@ -2992,12 +3304,15 @@ function CreateLocalWorkItemForm({
   projects,
   initialProjectId,
   onDone,
+  onImportActivityChange,
 }: {
   projects: { id: string; name: string }[];
   initialProjectId: string;
   onDone: () => void;
+  onImportActivityChange: (active: boolean) => void;
 }) {
   const { t } = useAppTranslation();
+  const articleText = useArticleTaskLabels();
   const { execute, pending, error } = useAsyncAction();
   const [projectId, setProjectId] = useState(initialProjectId);
   const [title, setTitle] = useState("");
@@ -3010,6 +3325,55 @@ function CreateLocalWorkItemForm({
   const [milestone, setMilestone] = useState("");
   const [estimatePoints, setEstimatePoints] = useState("0");
   const [assistNote, setAssistNote] = useState("");
+  const [sourceMode, setSourceMode] = useState<"manual" | "url">("manual");
+  const [sourceUrl, setSourceUrl] = useState("");
+  const [inspection, setInspection] = useState<ArticleInspection | null>(null);
+  const [activeImport, setActiveImport] = useState<{ workItemId: string; jobId: string } | null>(null);
+  const [importStatus, setImportStatus] = useState("");
+  const [createdWorkItemId, setCreatedWorkItemId] = useState<string | null>(null);
+  const [createdWorktreeId, setCreatedWorktreeId] = useState<string | null>(null);
+  const inspectionRequest = useRef(0);
+  const resumeAttempted = useRef(false);
+  useEffect(() => {
+    onImportActivityChange(Boolean(activeImport));
+    return () => onImportActivityChange(false);
+  }, [activeImport, onImportActivityChange]);
+  const trackImport = async (workItemId: string, jobId: string) => {
+    setActiveImport({ workItemId, jobId });
+    try {
+      const job = await waitForArticleImport(workItemId, jobId, (next) => {
+        setImportStatus(articleText.importState[next.state]);
+      });
+      if (job.state === "completed" || job.state === "canceled") clearStoredArticleImport(workItemId, jobId);
+      if (job.state !== "completed") {
+        const message = job.error === "article_import_interrupted"
+          ? articleText.interrupted
+          : articleText.importState[job.state];
+        setImportStatus(message);
+        throw new Error(message);
+      }
+      setImportStatus(articleText.importState.completed);
+      return job;
+    } finally {
+      setActiveImport(null);
+    }
+  };
+  useEffect(() => {
+    if (resumeAttempted.current) return;
+    resumeAttempted.current = true;
+    const stored = readStoredArticleImport();
+    if (!stored || !projects.some((project) => project.id === stored.projectId)) return;
+    setProjectId(stored.projectId);
+    setCreatedWorkItemId(stored.workItemId);
+    setCreatedWorktreeId(stored.worktreeId);
+    setSourceMode("url");
+    setSourceUrl(stored.sourceUrl);
+    void execute(() => trackImport(stored.workItemId, stored.jobId)).then((ok) => {
+      if (ok) onDone();
+    });
+    // Resume exactly once from the browser hand-off.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
   const assist = () => {
     let draft: {
       body: string; type: LocalWorkItem["type"]; priority: LocalWorkItem["priority"];
@@ -3031,29 +3395,110 @@ function CreateLocalWorkItemForm({
       );
     });
   };
+  const inspectSource = () => {
+    const requestId = ++inspectionRequest.current;
+    const requestedUrl = sourceUrl.trim();
+    let nextInspection: ArticleInspection | null = null;
+    setInspection(null);
+    void execute(async () => {
+      const result = await articleApi.inspect({ projectId, url: requestedUrl }) as { inspection: ArticleInspection };
+      nextInspection = result.inspection;
+      return result;
+    }).then((ok) => {
+      if (!ok || !nextInspection || inspectionRequest.current !== requestId) return;
+      setInspection(nextInspection);
+      if (!title.trim()) setTitle(nextInspection.title);
+      setLabels((current) => mergeCommaLabels(current, [
+        `source:${nextInspection?.provider}`,
+        `content:${nextInspection?.contentType}`,
+      ]));
+    });
+  };
   const submit = () => {
-    void execute(() => api.createWorkItem({
-      projectId,
-      title,
-      body,
-      type,
-      priority,
-      labels: labels.split(",").map((value) => value.trim()).filter(Boolean),
-      acceptanceCriteria: acceptance.split("\n").map((value) => value.trim()).filter(Boolean),
-      dueDate: dueDate || null,
-      milestone,
-      estimatePoints: Number(estimatePoints),
-    })).then(onDone);
+    void execute(async () => {
+      let workItemId = createdWorkItemId;
+      if (!workItemId) {
+        const created = await api.createWorkItem({
+          projectId,
+          title,
+          body: sourceMode === "url" && inspection
+            ? [
+              body,
+              `Source: ${inspection.canonicalUrl}`,
+              `Detected as ${inspection.provider} / ${inspection.contentType}.`,
+            ].filter(Boolean).join("\n\n")
+            : body,
+          type,
+          priority,
+          labels: labels.split(",").map((value) => value.trim()).filter(Boolean),
+          acceptanceCriteria: acceptance.split("\n").map((value) => value.trim()).filter(Boolean),
+          dueDate: dueDate || null,
+          milestone,
+          estimatePoints: Number(estimatePoints),
+        }) as { workItem: { id: string } };
+        workItemId = created.workItem.id;
+        setCreatedWorkItemId(workItemId);
+      }
+      if (sourceMode === "manual") return { completed: true };
+      let worktreeId = createdWorktreeId;
+      if (!worktreeId) {
+        setImportStatus(articleText.creatingWorktree);
+        const createdWorktree = await api.createWorkItemWorktree(workItemId) as { worktree: { id: string } };
+        worktreeId = createdWorktree.worktree.id;
+        setCreatedWorktreeId(worktreeId);
+      }
+      setImportStatus(articleText.importQueued);
+      const started = await articleApi.startImport(workItemId, {
+        url: sourceUrl,
+        worktreeId,
+      }) as { job: ArticleImportJob };
+      storeArticleImport({ projectId, workItemId, worktreeId, jobId: started.job.id, sourceUrl });
+      if (started.job.state === "completed") {
+        clearStoredArticleImport(workItemId, started.job.id);
+        setImportStatus(articleText.importState.completed);
+      } else {
+        await trackImport(workItemId, started.job.id);
+      }
+      return { completed: true };
+    }).then((ok) => {
+      if (ok) onDone();
+    });
+  };
+  const cancelImport = () => {
+    if (!activeImport) return;
+    void articleApi.cancelImport(activeImport.workItemId, activeImport.jobId)
+      .then(() => setImportStatus(articleText.importState.canceled))
+      .catch(() => setImportStatus(articleText.importState.failed));
   };
   return (
     <div className="space-y-3">
       <Field label={t("tasks.project")}>
-        <Select value={projectId} onChange={(event) => setProjectId(event.target.value)}>
+        <Select value={projectId} onChange={(event) => {
+          inspectionRequest.current += 1;
+          setInspection(null);
+          setProjectId(event.target.value);
+        }}>
           {projects.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}
         </Select>
       </Field>
+      <Suspense fallback={null}>
+        <ArticleImportFields
+          mode={sourceMode}
+          sourceUrl={sourceUrl}
+          projectId={projectId}
+          inspection={inspection}
+          pending={pending}
+          onModeChange={setSourceMode}
+          onUrlChange={(value) => {
+            inspectionRequest.current += 1;
+            setSourceUrl(value);
+            setInspection(null);
+          }}
+          onInspect={inspectSource}
+        />
+      </Suspense>
       <Field label={t("tasks.localTitle")}>
-        <Input value={title} onChange={(event) => setTitle(event.target.value)} autoFocus />
+        <Input value={title} onChange={(event) => setTitle(event.target.value)} autoFocus={sourceMode === "manual"} />
       </Field>
       <div className="flex items-center gap-2">
         <Button variant="secondary" disabled={pending || !projectId || !title.trim()} onClick={assist}>
@@ -3088,9 +3533,82 @@ function CreateLocalWorkItemForm({
         <Field label={t("planningInsights.estimatePoints")}><Input type="number" min="0" max="1000" value={estimatePoints} onChange={(event) => setEstimatePoints(event.target.value)} /></Field>
       </div>
       {error ? <p className="text-xs text-destructive">{error}</p> : null}
+      {importStatus ? <p className="text-xs text-muted-foreground">{importStatus}</p> : null}
       <div className="flex justify-end gap-2">
-        <Button disabled={pending || !projectId || !title.trim()} onClick={submit}>{t("tasks.createLocal")}</Button>
+        {activeImport ? <Button variant="secondary" onClick={cancelImport}>{t("tasks.cancel")}</Button> : null}
+        <Button
+          disabled={pending || !projectId || (!title.trim() && !createdWorkItemId) || (sourceMode === "url" && (!sourceUrl.trim() || (!inspection && !createdWorkItemId)))}
+          onClick={submit}
+        >
+          {sourceMode === "url"
+            ? (createdWorkItemId ? articleText.retryImport : articleText.createAndImport)
+            : t("tasks.createLocal")}
+        </Button>
       </div>
     </div>
   );
+}
+
+function mergeCommaLabels(current: string, additions: string[]) {
+  return [...new Set([
+    ...current.split(",").map((value) => value.trim()).filter(Boolean),
+    ...additions.filter(Boolean),
+  ])].join(", ");
+}
+
+const ARTICLE_IMPORT_STORAGE_KEY = "myagenttool.article-import.active.v1";
+
+type StoredArticleImport = {
+  projectId: string;
+  workItemId: string;
+  worktreeId: string;
+  jobId: string;
+  sourceUrl: string;
+};
+
+async function waitForArticleImport(
+  workItemId: string,
+  jobId: string,
+  onProgress: (job: ArticleImportJob) => void,
+) {
+  let job: ArticleImportJob;
+  while (true) {
+    const next = await articleApi.getImport(workItemId, jobId) as { job: ArticleImportJob };
+    job = next.job;
+    onProgress(job);
+    if (!["queued", "running"].includes(job.state)) return job;
+    await new Promise((resolve) => setTimeout(resolve, 750));
+  }
+}
+
+function storeArticleImport(value: StoredArticleImport) {
+  try {
+    window.localStorage.setItem(ARTICLE_IMPORT_STORAGE_KEY, JSON.stringify(value));
+  } catch {
+    // The modal remains locked while the in-memory job is active.
+  }
+}
+
+function readStoredArticleImport(): StoredArticleImport | null {
+  try {
+    const value = JSON.parse(window.localStorage.getItem(ARTICLE_IMPORT_STORAGE_KEY) ?? "null");
+    if (!value || typeof value !== "object") return null;
+    if (!["projectId", "workItemId", "worktreeId", "jobId", "sourceUrl"].every((key) => typeof value[key] === "string" && value[key])) {
+      return null;
+    }
+    return value as StoredArticleImport;
+  } catch {
+    return null;
+  }
+}
+
+function clearStoredArticleImport(workItemId: string, jobId: string) {
+  const current = readStoredArticleImport();
+  if (!current || (current.workItemId === workItemId && current.jobId === jobId)) {
+    try {
+      window.localStorage.removeItem(ARTICLE_IMPORT_STORAGE_KEY);
+    } catch {
+      // Ignore unavailable storage.
+    }
+  }
 }

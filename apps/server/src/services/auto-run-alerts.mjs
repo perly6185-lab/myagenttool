@@ -133,7 +133,12 @@ export function isPublicWebhookAddress(address) {
     const parts = address.split(".").map(Number);
     return !isPrivateIpv4(address)
       && parts[0] < 224
-      && !(parts[0] === 100 && parts[1] >= 64 && parts[1] <= 127);
+      && !(parts[0] === 100 && parts[1] >= 64 && parts[1] <= 127)
+      && !(parts[0] === 192 && parts[1] === 0 && parts[2] === 0)
+      && !(parts[0] === 192 && parts[1] === 0 && parts[2] === 2)
+      && !(parts[0] === 198 && (parts[1] === 18 || parts[1] === 19))
+      && !(parts[0] === 198 && parts[1] === 51 && parts[2] === 100)
+      && !(parts[0] === 203 && parts[1] === 0 && parts[2] === 113);
   }
   if (version === 6) {
     const value = address.toLowerCase();
@@ -156,7 +161,14 @@ export async function validateExternalWebhookTarget(value, { resolveHostname = (
     if (resolved.some((item) => !isPublicWebhookAddress(item?.address ?? ""))) {
       return { ok: false, reason: "webhook target resolved to a non-public address" };
     }
-    return { ok: true };
+    return {
+      ok: true,
+      url: normalized,
+      addresses: resolved.map((item) => ({
+        address: item.address,
+        family: item.family ?? isIP(item.address),
+      })),
+    };
   } catch {
     return { ok: false, reason: "webhook target could not be resolved" };
   }

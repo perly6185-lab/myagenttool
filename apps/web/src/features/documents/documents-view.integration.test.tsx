@@ -95,6 +95,25 @@ describe("DocumentsView interaction", () => {
     await waitFor(() => expect(openContainedAsset).toHaveBeenCalledWith({ projectId: "prj_1", relativePath: "docs/notes.md" }));
   });
 
+  it("lists imported HTML but requires a trusted external open", async () => {
+    const openContainedAsset = vi.fn().mockResolvedValue({ opened: true });
+    window.myagenttoolDesktop = { openContainedAsset };
+    mocks.projectDocuments.mockResolvedValue({ projectId: "prj_1", worktreeId: "wt_1", truncated: false, scanned: 1, documents: [{
+      projectId: "prj_1", worktreeId: "wt_1", name: "article.html",
+      path: "docs/imported/wechat/2026/07/article/article.html", type: "html",
+      gitStatus: "clean", capabilities: ["open_external"],
+    }] });
+    renderView();
+    fireEvent.click(await screen.findByText("article.html"));
+    expect(await screen.findByText(/HTML can run active content/i)).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Open externally" }));
+    await waitFor(() => expect(openContainedAsset).toHaveBeenCalledWith({
+      projectId: "prj_1",
+      relativePath: "docs/imported/wechat/2026/07/article/article.html",
+      worktreeId: "wt_1",
+    }));
+  });
+
   it("opens DXF drawings in the contained read-only viewer", async () => {
     mocks.projectDocuments.mockResolvedValue({ projectId: "prj_1", worktreeId: null, truncated: false, scanned: 1, documents: [{ projectId: "prj_1", worktreeId: null, name: "plan.dxf", path: "drawings/plan.dxf", type: "dxf", gitStatus: "clean" }] });
     renderView();

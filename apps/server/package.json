@@ -14,9 +14,10 @@
     "typecheck": "tsc --noEmit -p tsconfig.json"
   },
   "dependencies": {
+    "@myagenttool/adapters": "workspace:*",
     "@myagenttool/protocol": "workspace:*",
     "@myagenttool/shared": "workspace:*",
-    "@myagenttool/adapters": "workspace:*"
+    "parse5": "^7.3.0"
   },
   "devDependencies": {
     "typescript": "^5.7.2"
