@@ -4,7 +4,7 @@ import { existsSync, lstatSync, realpathSync } from "node:fs";
 import { lstat, mkdir, readFile, readdir, realpath, rename, rm, stat, writeFile } from "node:fs/promises";
 import { request as httpsRequest } from "node:https";
 import { isIP } from "node:net";
-import { basename, extname, join, relative, resolve, sep } from "node:path";
+import { basename, dirname, extname, join, relative, resolve, sep } from "node:path";
 import { Readable } from "node:stream";
 import { parse } from "parse5";
 
@@ -49,6 +49,8 @@ const MEDIA_EXTENSIONS = new Map([
 ]);
 
 const ARTICLE_PROVIDERS = new Set(["wechat", "xiaohongshu", "zhihu", "juejin", "jianshu", "web"]);
+const ARTICLE_SIMILARITY_INDEX_SCHEMA_VERSION = 1;
+const ARTICLE_SIMILARITY_INDEX_MAX_BYTES = 64 * 1024 * 1024;
 const ARTICLE_DERIVATIVE_KINDS = new Set(["article_rewrite", "video_script"]);
 const ARTICLE_DERIVATIVE_TONES = new Set(["insightful", "practical", "conversational"]);
 const ARTICLE_DERIVATIVE_LENGTHS = new Set(["short", "medium", "long"]);
@@ -443,6 +445,184 @@ export function compareArticleSimilarity(source, candidate) {
   };
 }
 
+function articleSimilarityEntryKey(entry) {
+  return JSON.stringify([String(entry.worktreeId ?? ""), String(entry.markdownPath ?? "")]);
+}
+
+function articleFileSignature(info) {
+  return `${info.size}:${info.mtimeMs}:${info.ctimeMs}`;
+}
+
+function articleSimilarityMetadataFingerprint(metadata) {
+  const values = [
+    metadata.title ?? null,
+    metadata.author ?? null,
+    metadata.provider ?? null,
+    metadata.publishedAt ?? null,
+    metadata.sourceUrl ?? null,
+  ];
+  return `sha256:${createHash("sha256").update(JSON.stringify(values)).digest("hex")}`;
+}
+
+function emptyArticleSimilarityIndex(projectId, {
+  path = null,
+  rebuilt = false,
+  dirty = false,
+} = {}) {
+  return {
+    projectId,
+    path,
+    entries: new Map(),
+    rebuilt,
+    dirty,
+    writePromise: Promise.resolve(),
+  };
+}
+
+async function readArticleSimilarityIndex({ project, projectId }) {
+  const indexPath = await resolveArticleSimilarityIndexPath(project);
+  if (!indexPath) return emptyArticleSimilarityIndex(projectId);
+  if (!existsSync(indexPath)) return emptyArticleSimilarityIndex(projectId, { path: indexPath });
+  try {
+    const info = await lstat(indexPath);
+    if (info.isSymbolicLink()) return emptyArticleSimilarityIndex(projectId);
+    if (!info.isFile() || info.size > ARTICLE_SIMILARITY_INDEX_MAX_BYTES) {
+      return emptyArticleSimilarityIndex(projectId, { path: indexPath, rebuilt: true, dirty: true });
+    }
+    const parsed = JSON.parse(await readFile(indexPath, "utf8"));
+    if (!validArticleSimilarityIndex(parsed, projectId)) {
+      return emptyArticleSimilarityIndex(projectId, { path: indexPath, rebuilt: true, dirty: true });
+    }
+    const index = emptyArticleSimilarityIndex(projectId, { path: indexPath });
+    for (const entry of parsed.entries) {
+      index.entries.set(entry.key, {
+        worktreeId: entry.worktreeId,
+        markdownPath: entry.markdownPath,
+        fingerprint: entry.fingerprint,
+        fileSignature: entry.fileSignature,
+        metadataFingerprint: entry.metadataFingerprint,
+        analyzedAt: entry.analyzedAt,
+        document: entry.document,
+      });
+    }
+    return index;
+  } catch {
+    return emptyArticleSimilarityIndex(projectId, { path: indexPath, rebuilt: true, dirty: true });
+  }
+}
+
+async function resolveArticleSimilarityIndexPath(project) {
+  if (!project?.path) return null;
+  let root;
+  try {
+    root = await realpath(resolve(project.path));
+  } catch {
+    return null;
+  }
+  const managedDirectory = join(root, ".myagenttool");
+  const indexDirectory = join(managedDirectory, "indexes");
+  assertConfined(root, managedDirectory);
+  assertConfined(root, indexDirectory);
+  for (const directory of [managedDirectory, indexDirectory]) {
+    if (existsSync(directory)) {
+      const info = await lstat(directory);
+      if (info.isSymbolicLink() || !info.isDirectory()) return null;
+    } else {
+      await mkdir(directory);
+    }
+  }
+  const indexPath = join(indexDirectory, "article-similarity-v1.json");
+  assertConfined(root, indexPath);
+  return indexPath;
+}
+
+function validArticleSimilarityIndex(index, projectId) {
+  if (!index || typeof index !== "object" || Array.isArray(index)
+    || index.schemaVersion !== ARTICLE_SIMILARITY_INDEX_SCHEMA_VERSION
+    || index.projectId !== projectId
+    || !Array.isArray(index.entries)
+    || index.entries.length > 500) return false;
+  const keys = new Set();
+  return index.entries.every((entry) => {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)
+      || typeof entry.key !== "string" || keys.has(entry.key)
+      || typeof entry.worktreeId !== "string"
+      || typeof entry.markdownPath !== "string"
+      || entry.key !== articleSimilarityEntryKey(entry)
+      || !/^sha256:[a-f0-9]{64}$/.test(entry.fingerprint)
+      || typeof entry.fileSignature !== "string" || !entry.fileSignature
+      || !/^sha256:[a-f0-9]{64}$/.test(entry.metadataFingerprint)
+      || typeof entry.analyzedAt !== "string" || !Number.isFinite(Date.parse(entry.analyzedAt))
+      || !validArticleSimilarityDocument(entry.document)) return false;
+    keys.add(entry.key);
+    return true;
+  });
+}
+
+function validArticleSimilarityDocument(document) {
+  return Boolean(document
+    && typeof document === "object"
+    && !Array.isArray(document)
+    && typeof document.title === "string"
+    && ["author", "provider", "publishedAt", "sourceUrl"]
+      .every((key) => document[key] == null || typeof document[key] === "string")
+    && document.analysis
+    && typeof document.analysis === "object"
+    && !Array.isArray(document.analysis)
+    && document.analysis.schemaVersion === 1
+    && Array.isArray(document.analysis.keyConcepts)
+    && document.analysis.keyConcepts.every((concept) => typeof concept === "string")
+    && ["titleTokens", "structureTokens", "conceptTokens", "bodyTokens"]
+      .every((key) => validArticleTokenFrequency(document[key])));
+}
+
+function validArticleTokenFrequency(frequency) {
+  return Boolean(frequency
+    && typeof frequency === "object"
+    && !Array.isArray(frequency)
+    && Object.entries(frequency).every(([token, count]) =>
+      token.length <= 200 && Number.isFinite(count) && count > 0));
+}
+
+async function persistSimilarityIndex(index) {
+  if (!index?.dirty) return;
+  if (!index.path) {
+    index.dirty = false;
+    index.rebuilt = false;
+    return;
+  }
+  index.writePromise = index.writePromise.then(async () => {
+    if (!index.dirty) return;
+    const targetInfo = existsSync(index.path) ? await lstat(index.path) : null;
+    if (targetInfo?.isSymbolicLink()) {
+      index.path = null;
+      index.dirty = false;
+      return;
+    }
+    const payload = {
+      schemaVersion: ARTICLE_SIMILARITY_INDEX_SCHEMA_VERSION,
+      projectId: index.projectId,
+      updatedAt: new Date().toISOString(),
+      entries: [...index.entries.entries()].map(([key, entry]) => ({ key, ...entry })),
+    };
+    const temporaryPath = join(
+      dirname(index.path),
+      `.article-similarity-v1.json.tmp-${randomBytes(6).toString("hex")}`,
+    );
+    index.dirty = false;
+    try {
+      await writeFile(temporaryPath, `${JSON.stringify(payload, null, 2)}\n`, { encoding: "utf8", flag: "wx" });
+      await rename(temporaryPath, index.path);
+      index.rebuilt = false;
+    } catch (error) {
+      index.dirty = true;
+      await rm(temporaryPath, { force: true }).catch(() => {});
+      throw error;
+    }
+  });
+  return index.writePromise;
+}
+
 export function normalizeArticleDerivativeRequest(input = {}) {
   const kind = String(input.kind ?? "article_rewrite");
   const tone = String(input.tone ?? "insightful");
@@ -805,7 +985,7 @@ export function createArticleImportService({
   const jobs = new Map();
   const queue = [];
   const activeIssues = new Set();
-  const similarityCache = new Map();
+  const similarityIndexes = new Map();
   const derivativeReconciliations = new Map();
   let activeCount = 0;
   const runTx = makeRunTx({ store, persistStateSoon });
@@ -1020,14 +1200,22 @@ export function createArticleImportService({
     }
     const targetItem = (state.workItems ?? []).find((candidate) => candidate.id === targetJob.workItemId);
     if (!targetItem) return { ok: false, status: 404, body: { error: "work_item_not_found" } };
+    let similarityIndex = null;
     try {
-      const target = await similarityDocumentFor({
+      similarityIndex = await similarityIndexFor(targetItem.projectId);
+      const indexStats = {
+        reindexedCount: 0,
+        reusedCount: 0,
+        removedCount: 0,
+        rebuilt: similarityIndex.rebuilt,
+      };
+      const targetEntry = {
         item: targetItem,
         worktreeId: targetJob.worktreeId,
         markdownPath: targetJob.result.markdownPath,
         inspection: targetJob.result.inspection,
         canonicalUrl: targetJob.canonicalUrl,
-      }, targetItem.projectId);
+      };
       const candidateEntries = (state.workItems ?? [])
         .filter((item) => item.projectId === targetItem.projectId)
         .flatMap((item) => (item.outputAssets ?? [])
@@ -1051,12 +1239,33 @@ export function createArticleImportService({
           }))
         .sort((left, right) => String(right.item.updatedAt ?? "").localeCompare(String(left.item.updatedAt ?? "")))
         .slice(0, 200);
+      const currentKeys = new Set([
+        articleSimilarityEntryKey(targetEntry),
+        ...candidateEntries.map(articleSimilarityEntryKey),
+      ]);
+      for (const key of similarityIndex.entries.keys()) {
+        if (currentKeys.has(key)) continue;
+        similarityIndex.entries.delete(key);
+        similarityIndex.dirty = true;
+        indexStats.removedCount += 1;
+      }
+      const target = await similarityDocumentFor(
+        targetEntry,
+        targetItem.projectId,
+        similarityIndex,
+        indexStats,
+      );
       let skippedCount = 0;
       let duplicateCount = 0;
       let indexedCount = 0;
       const scored = await mapWithConcurrency(candidateEntries, 4, async (entry) => {
         try {
-          const candidate = await similarityDocumentFor(entry, targetItem.projectId);
+          const candidate = await similarityDocumentFor(
+            entry,
+            targetItem.projectId,
+            similarityIndex,
+            indexStats,
+          );
           if (target.document.sourceUrl && candidate.document.sourceUrl
             && target.document.sourceUrl === candidate.document.sourceUrl) {
             duplicateCount += 1;
@@ -1086,6 +1295,7 @@ export function createArticleImportService({
         .filter((candidate) => candidate && candidate.score >= 0.12)
         .sort((left, right) => right.score - left.score)
         .slice(0, 10);
+      await persistSimilarityIndex(similarityIndex);
       return {
         ok: true,
         status: 200,
@@ -1095,9 +1305,14 @@ export function createArticleImportService({
           indexedCount,
           skippedCount,
           duplicateCount,
+          reindexedCount: indexStats.reindexedCount,
+          reusedCount: indexStats.reusedCount,
+          removedCount: indexStats.removedCount,
+          indexRebuilt: indexStats.rebuilt,
         },
       };
     } catch (error) {
+      if (similarityIndex?.dirty) await persistSimilarityIndex(similarityIndex).catch(() => {});
       return articleFailure(error);
     }
   }
@@ -1351,7 +1566,18 @@ export function createArticleImportService({
     }
   }
 
-  async function similarityDocumentFor(entry, projectId) {
+  async function similarityIndexFor(projectId) {
+    if (similarityIndexes.has(projectId)) return similarityIndexes.get(projectId);
+    const project = (state.projects ?? []).find((candidate) => candidate.id === projectId);
+    const loading = readArticleSimilarityIndex({ project, projectId }).catch(() =>
+      emptyArticleSimilarityIndex(projectId));
+    similarityIndexes.set(projectId, loading);
+    const index = await loading;
+    similarityIndexes.set(projectId, index);
+    return index;
+  }
+
+  async function similarityDocumentFor(entry, projectId, index, indexStats) {
     if (!entry.item || entry.item.projectId !== projectId) throw articleError("article_similarity_scope_refused");
     const worktree = (state.worktrees ?? []).find((candidate) =>
       candidate.id === entry.worktreeId && candidate.sourceProjectId === projectId);
@@ -1360,23 +1586,60 @@ export function createArticleImportService({
     const root = await realpath(resolve(worktreePath));
     const markdownPath = resolve(root, entry.markdownPath);
     assertConfined(root, markdownPath);
-    if ((await lstat(markdownPath)).isSymbolicLink()) throw articleError("article_output_path_refused");
-    const markdownInfo = await stat(markdownPath);
-    if (!markdownInfo.isFile() || markdownInfo.size > limits.htmlBytes) throw articleError("article_analysis_too_large");
-    const cacheKey = `${markdownPath}:${markdownInfo.size}:${markdownInfo.mtimeMs}`;
-    let document = similarityCache.get(cacheKey);
-    if (!document) {
-      const markdown = await readFile(markdownPath, "utf8");
-      document = buildArticleSimilarityDocument(markdown, {
-        title: entry.inspection?.title,
-        author: entry.inspection?.author,
-        provider: entry.inspection?.provider,
-        publishedAt: entry.inspection?.publishedAt,
-        sourceUrl: entry.inspection?.sourceUrl ?? entry.canonicalUrl,
-      });
-      similarityCache.set(cacheKey, document);
-      while (similarityCache.size > 200) similarityCache.delete(similarityCache.keys().next().value);
+    const entryKey = articleSimilarityEntryKey(entry);
+    const removeStaleEntry = () => {
+      if (!index.entries.delete(entryKey)) return;
+      index.dirty = true;
+      indexStats.removedCount += 1;
+    };
+    let markdownInfo;
+    try {
+      if ((await lstat(markdownPath)).isSymbolicLink()) throw articleError("article_output_path_refused");
+      markdownInfo = await stat(markdownPath);
+    } catch (error) {
+      removeStaleEntry();
+      throw error;
     }
+    if (!markdownInfo.isFile() || markdownInfo.size > limits.htmlBytes) {
+      removeStaleEntry();
+      throw articleError("article_analysis_too_large");
+    }
+    const fileSignature = articleFileSignature(markdownInfo);
+    const metadata = {
+      title: entry.inspection?.title,
+      author: entry.inspection?.author,
+      provider: entry.inspection?.provider,
+      publishedAt: entry.inspection?.publishedAt,
+      sourceUrl: entry.inspection?.sourceUrl ?? entry.canonicalUrl,
+    };
+    const metadataFingerprint = articleSimilarityMetadataFingerprint(metadata);
+    const existing = index.entries.get(entryKey);
+    if (existing?.fileSignature === fileSignature
+      && existing.metadataFingerprint === metadataFingerprint) {
+      indexStats.reusedCount += 1;
+      return { document: existing.document };
+    }
+    const markdown = await readFile(markdownPath, "utf8");
+    const fingerprint = `sha256:${createHash("sha256").update(markdown).digest("hex")}`;
+    if (existing?.fingerprint === fingerprint
+      && existing.metadataFingerprint === metadataFingerprint) {
+      existing.fileSignature = fileSignature;
+      index.dirty = true;
+      indexStats.reusedCount += 1;
+      return { document: existing.document };
+    }
+    const document = buildArticleSimilarityDocument(markdown, metadata);
+    index.entries.set(entryKey, {
+      worktreeId: entry.worktreeId,
+      markdownPath: entry.markdownPath,
+      fingerprint,
+      fileSignature,
+      metadataFingerprint,
+      analyzedAt: now(),
+      document,
+    });
+    index.dirty = true;
+    indexStats.reindexedCount += 1;
     return { document };
   }
 
