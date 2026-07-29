@@ -18,6 +18,7 @@ import { makeRunTx } from "../runtime/store/run-tx.mjs";
 
 export const businessRoutineCollectionKeys = [
   "businessDocumentClassifications",
+  "businessDocumentAnalysisJobs",
   "businessEntities",
   "businessCases",
   "routineDefinitions",
@@ -132,6 +133,27 @@ export function migrateBusinessRoutineState(state) {
   for (const key of businessRoutineCollectionKeys) {
     if (!Array.isArray(state[key])) state[key] = [];
   }
+  const artifactById = new Map((state.workflowArtifacts ?? []).map((artifact) => [artifact.id, artifact]));
+  for (const classification of state.businessDocumentClassifications) {
+    const artifactFingerprint = classification.artifactFingerprint
+      ?? artifactById.get(classification.artifactId)?.fingerprint
+      ?? null;
+    classification.fieldProposals ??= [];
+    classification.riskSignals ??= [];
+    classification.extractorVersion ??= 1;
+    classification.analysisState ??= "deterministic";
+    classification.degradedReason ??= null;
+    classification.artifactFingerprint = artifactFingerprint;
+    classification.analysisKey ??= artifactFingerprint;
+  }
+  for (const businessCase of state.businessCases) {
+    businessCase.artifactFingerprints ??= Object.fromEntries(
+      (businessCase.artifactBindings ?? []).map((binding) => [
+        binding.artifactId,
+        artifactById.get(binding.artifactId)?.fingerprint ?? "",
+      ]),
+    );
+  }
   return state;
 }
 
@@ -201,7 +223,17 @@ export function createBusinessRoutineService({
     if (!artifact || artifact.projectId !== context.projectId || artifact.sourceId !== context.sourceId) {
       return { status: 404, body: { error: "business_document_artifact_not_found" } };
     }
-    if (!evidenceBelongsTo(normalized.value.evidenceRefs, context, actor)) {
+    if (artifact.availability === "missing" || artifact.exclusion) {
+      return { status: 409, body: { error: "business_document_artifact_unavailable" } };
+    }
+    if (artifact.fingerprint !== normalized.value.artifactFingerprint) {
+      return { status: 409, body: { error: "business_document_artifact_changed" } };
+    }
+    const allEvidence = [
+      ...normalized.value.evidenceRefs,
+      ...normalized.value.fieldProposals.flatMap((field) => field.evidenceRefs),
+    ];
+    if (!evidenceBelongsTo(allEvidence, context, actor)) {
       return { status: 404, body: { error: "business_document_evidence_not_found" } };
     }
     const existing = state.businessDocumentClassifications.find((row) =>
@@ -224,6 +256,9 @@ export function createBusinessRoutineService({
           classificationId: existing.id,
           artifactId: artifact.id,
           documentType: existing.documentType,
+          confirmationState: existing.confirmationState,
+          fieldCount: existing.fieldProposals.length,
+          riskSignalCount: existing.riskSignals.length,
           revision: existing.revision,
         });
       });
@@ -247,6 +282,9 @@ export function createBusinessRoutineService({
         classificationId: classification.id,
         artifactId: artifact.id,
         documentType: classification.documentType,
+        confirmationState: classification.confirmationState,
+        fieldCount: classification.fieldProposals.length,
+        riskSignalCount: classification.riskSignals.length,
       });
     });
     return { status: 201, body: { classification } };
@@ -271,7 +309,34 @@ export function createBusinessRoutineService({
     ])}`;
     const replay = state.businessEntities.find((row) =>
       visible(row, actor) && row.idempotencyKey === idempotencyKey);
-    if (replay) return { status: 200, body: { entity: replay, replayed: true } };
+    if (replay) {
+      if (input.expectedRevision == null) {
+        return { status: 200, body: { entity: replay, replayed: true } };
+      }
+      if (input.expectedRevision !== replay.revision) {
+        return {
+          status: 409,
+          body: { error: "business_entity_revision_conflict", currentRevision: replay.revision },
+        };
+      }
+      const timestamp = now();
+      runTx(() => {
+        Object.assign(replay, {
+          fields,
+          evidenceRefs,
+          confidence: score,
+          revision: replay.revision + 1,
+          updatedAt: timestamp,
+          updatedBy: actorUser(actor),
+        });
+        event("business_entity_updated", "Business entity updated.", replay, actor, {
+          businessEntityId: replay.id,
+          entityType,
+          revision: replay.revision,
+        });
+      });
+      return { status: 200, body: { entity: replay, replayed: false, updated: true } };
+    }
     const timestamp = now();
     const entity = {
       id: nextId("bent"),

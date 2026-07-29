@@ -47,6 +47,10 @@ import {
   createLocalWorkflowEmbeddingAdapter,
   resolveWorkflowEmbeddingConfig,
 } from "../services/workflow-embedding-adapter.mjs";
+import {
+  createLocalWorkflowBusinessSemanticAdapter,
+  resolveWorkflowBusinessSemanticConfig,
+} from "../services/workflow-business-semantic-adapter.mjs";
 import { createCodexService } from "../services/codex.mjs";
 import { createCodexApprovalRecoveryService } from "../services/codex-approval-recovery.mjs";
 import { createIntegrationService } from "../services/integrations.mjs";
@@ -62,6 +66,7 @@ import { createDecisionSoftClaimService } from "../services/decision-soft-claims
 import { createIssueClaimService } from "../services/issue-claims.mjs";
 import { createWorkItemService } from "../services/work-items.mjs";
 import { createBusinessRoutineService } from "../services/business-routines.mjs";
+import { createBusinessDocumentIntelligenceService } from "../services/business-document-intelligence.mjs";
 import { createArticleImportService, resolveArticleImportConfig } from "../services/article-imports.mjs";
 import { createWorkflowMemoryService } from "../services/workflow-memory.mjs";
 import { createPlanningProjectService } from "../services/planning-projects.mjs";
@@ -508,6 +513,22 @@ export function createServerRuntimeServices({
       retryAutoRun(autoRunId, { actor, terminalId }),
     cleanupWorkItemWorktree: ({ worktreeId }) =>
       destroyWorktree(worktreeId, { deleteBranch: true }),
+    store,
+  });
+  const businessDocumentIntelligenceService = createBusinessDocumentIntelligenceService({
+    state,
+    now,
+    nextId,
+    appendEvent,
+    persistStateSoon,
+    semanticAdapter: createLocalWorkflowBusinessSemanticAdapter({
+      config: resolveWorkflowBusinessSemanticConfig(),
+    }),
+    listSources: workflowMemoryService.listSources,
+    listArtifacts: workflowMemoryService.listArtifacts,
+    getArtifactAnalysisInput: workflowMemoryService.getArtifactAnalysisInput,
+    recordClassification: businessRoutineService.recordDocumentClassification,
+    createBusinessEntity: businessRoutineService.createBusinessEntity,
     store,
   });
   const planningProjectService = createPlanningProjectService({
@@ -3759,6 +3780,12 @@ export function createServerRuntimeServices({
     createLedgerDefinition: businessRoutineService.createLedgerDefinition,
     createRoutineRun: businessRoutineService.createRoutineRun,
     transitionRoutineStep: businessRoutineService.transitionRoutineStep,
+    analyzeWorkflowBusinessDocuments: businessDocumentIntelligenceService.analyzeSource,
+    cancelWorkflowBusinessDocumentAnalysis: businessDocumentIntelligenceService.cancelAnalysis,
+    analyzeWorkflowBusinessDocument: businessDocumentIntelligenceService.analyzeArtifact,
+    listWorkflowBusinessDocumentClassifications: businessDocumentIntelligenceService.listClassifications,
+    listWorkflowBusinessDocumentAnalysisJobs: businessDocumentIntelligenceService.listAnalysisJobs,
+    confirmWorkflowBusinessDocumentClassification: businessDocumentIntelligenceService.confirmClassification,
     inspectArticleImport: articleImportService.inspect,
     startArticleImport: articleImportService.start,
     listArticleImports: articleImportService.list,

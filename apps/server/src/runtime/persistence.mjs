@@ -124,6 +124,7 @@ export const persistedArrayKeys = [
   "workflowProfileDrafts",
   "workflowRuns",
   "businessDocumentClassifications",
+  "businessDocumentAnalysisJobs",
   "businessEntities",
   "businessCases",
   "routineDefinitions",
@@ -201,6 +202,7 @@ const OWNER_STAMPED_PROJECT_COLLECTIONS = [
   // no `teamId` and are skipped by the scan (no stamp → nothing to cross-check).
   { key: "autoRuns", owner: "teamId" },
   { key: "businessDocumentClassifications", owner: "ownerTeamId" },
+  { key: "businessDocumentAnalysisJobs", owner: "ownerTeamId" },
   { key: "businessEntities", owner: "ownerTeamId" },
   { key: "businessCases", owner: "ownerTeamId" },
   { key: "routineDefinitions", owner: "ownerTeamId" },

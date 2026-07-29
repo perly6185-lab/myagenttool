@@ -23,6 +23,17 @@ export async function handleWorkflowMemoryRoutes({
   retryArtifactExtraction,
   setArtifactExclusion,
   indexSourceEmbeddings,
+  analyzeBusinessDocuments,
+  cancelBusinessAnalysis,
+  analyzeBusinessDocument,
+  listBusinessDocumentClassifications,
+  listBusinessDocumentAnalysisJobs,
+  confirmBusinessDocumentClassification,
+  discoverBusinessCases,
+  listBusinessCaseCandidates,
+  reviewBusinessCaseCandidate,
+  discoverBusinessRoutine,
+  listBusinessRoutineCandidates,
   pairProposals,
   listCases,
   createCase,
@@ -62,7 +73,7 @@ export async function handleWorkflowMemoryRoutes({
   }
 
   const sourceAction = url.pathname.match(
-    /^\/api\/workflow-memory\/sources\/([^/]+)\/(scan|cancel-scan|revoke|delete-learning-data|pair-proposals|index-embeddings)$/,
+    /^\/api\/workflow-memory\/sources\/([^/]+)\/(scan|cancel-scan|revoke|delete-learning-data|pair-proposals|index-embeddings|analyze-business-documents|cancel-business-analysis|discover-business-cases|discover-business-routine)$/,
   );
   if (sourceAction) {
     const sourceId = decodeURIComponent(sourceAction[1]);
@@ -86,6 +97,14 @@ export async function handleWorkflowMemoryRoutes({
       result = pairProposals({ sourceId }, actor);
     } else if (action === "index-embeddings" && req.method === "POST") {
       result = await indexSourceEmbeddings({ sourceId }, actor);
+    } else if (action === "analyze-business-documents" && req.method === "POST") {
+      result = await analyzeBusinessDocuments({ sourceId }, actor);
+    } else if (action === "cancel-business-analysis" && req.method === "POST") {
+      result = cancelBusinessAnalysis({ sourceId }, actor);
+    } else if (action === "discover-business-cases" && req.method === "POST") {
+      result = discoverBusinessCases({ sourceId }, actor);
+    } else if (action === "discover-business-routine" && req.method === "POST") {
+      result = discoverBusinessRoutine({ sourceId }, actor);
     } else {
       return false;
     }
@@ -98,6 +117,87 @@ export async function handleWorkflowMemoryRoutes({
       sourceId: url.searchParams.get("sourceId"),
       role: url.searchParams.get("role"),
       availability: url.searchParams.get("availability"),
+    }, actor);
+    sendJson(res, result.status, result.body);
+    return true;
+  }
+
+  if (url.pathname === "/api/workflow-memory/business-document-classifications"
+    && req.method === "GET") {
+    const result = listBusinessDocumentClassifications({
+      sourceId: url.searchParams.get("sourceId"),
+      confirmationState: url.searchParams.get("confirmationState"),
+    }, actor);
+    sendJson(res, result.status, result.body);
+    return true;
+  }
+
+  if (url.pathname === "/api/workflow-memory/business-document-analysis-jobs"
+    && req.method === "GET") {
+    const result = listBusinessDocumentAnalysisJobs({
+      sourceId: url.searchParams.get("sourceId"),
+    }, actor);
+    sendJson(res, result.status, result.body);
+    return true;
+  }
+
+  if (url.pathname === "/api/workflow-memory/business-case-candidates"
+    && req.method === "GET") {
+    const result = listBusinessCaseCandidates({
+      sourceId: url.searchParams.get("sourceId"),
+      state: url.searchParams.get("state"),
+    }, actor);
+    sendJson(res, result.status, result.body);
+    return true;
+  }
+
+  if (url.pathname === "/api/workflow-memory/business-routine-candidates"
+    && req.method === "GET") {
+    const result = listBusinessRoutineCandidates({
+      sourceId: url.searchParams.get("sourceId"),
+    }, actor);
+    sendJson(res, result.status, result.body);
+    return true;
+  }
+
+  const artifactBusinessAnalysis = url.pathname.match(
+    /^\/api\/workflow-memory\/artifacts\/([^/]+)\/analyze-business-document$/,
+  );
+  if (artifactBusinessAnalysis && req.method === "POST") {
+    const result = await analyzeBusinessDocument({
+      artifactId: decodeURIComponent(artifactBusinessAnalysis[1]),
+    }, actor);
+    sendJson(res, result.status, result.body);
+    return true;
+  }
+
+  const businessClassificationConfirm = url.pathname.match(
+    /^\/api\/workflow-memory\/business-document-classifications\/([^/]+)\/confirm$/,
+  );
+  if (businessClassificationConfirm && req.method === "POST") {
+    const body = await readJson(req);
+    const result = confirmBusinessDocumentClassification({
+      classificationId: decodeURIComponent(businessClassificationConfirm[1]),
+      expectedRevision: body?.expectedRevision,
+      documentType: body?.documentType,
+      fieldCorrections: body?.fieldCorrections,
+      excludedFieldKeys: body?.excludedFieldKeys,
+    }, actor);
+    sendJson(res, result.status, result.body);
+    return true;
+  }
+
+  const businessCaseCandidateReview = url.pathname.match(
+    /^\/api\/workflow-memory\/business-case-candidates\/([^/]+)\/review$/,
+  );
+  if (businessCaseCandidateReview && req.method === "POST") {
+    const body = await readJson(req);
+    const result = reviewBusinessCaseCandidate({
+      candidateId: decodeURIComponent(businessCaseCandidateReview[1]),
+      expectedRevision: body?.expectedRevision,
+      action: body?.action,
+      artifactIds: body?.artifactIds,
+      correctionReason: body?.correctionReason,
     }, actor);
     sendJson(res, result.status, result.body);
     return true;

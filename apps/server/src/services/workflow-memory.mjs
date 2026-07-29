@@ -1117,6 +1117,7 @@ export function createWorkflowMemoryService({
     "workflowProfileDrafts",
     "workflowRuns",
     "businessDocumentClassifications",
+    "businessDocumentAnalysisJobs",
     "businessEntities",
     "businessCases",
     "routineDefinitions",
@@ -1692,6 +1693,7 @@ export function createWorkflowMemoryService({
       profileDrafts: state.workflowProfileDrafts.filter(sourceIdMatches).length,
       runs: state.workflowRuns.filter(sourceIdMatches).length,
       businessDocumentClassifications: state.businessDocumentClassifications.filter(sourceIdMatches).length,
+      businessDocumentAnalysisJobs: state.businessDocumentAnalysisJobs.filter(sourceIdMatches).length,
       businessEntities: state.businessEntities.filter(sourceIdMatches).length,
       businessCases: state.businessCases.filter(sourceIdMatches).length,
       routineDefinitions: state.routineDefinitions.filter(sourceIdMatches).length,
@@ -1736,6 +1738,7 @@ export function createWorkflowMemoryService({
       );
       for (const key of [
         "businessDocumentClassifications",
+        "businessDocumentAnalysisJobs",
         "businessEntities",
         "businessCases",
         "routineDefinitions",
@@ -1780,6 +1783,44 @@ export function createWorkflowMemoryService({
       && (!role || effectiveRole(item) === role)
       && (!availability || item.availability === availability));
     return { status: 200, body: { artifacts, count: artifacts.length } };
+  }
+
+  function getArtifactAnalysisInput({ artifactId } = {}, actor = null) {
+    const artifact = findArtifact(artifactId, actor);
+    if (!artifact) return { status: 404, body: { error: "workflow_artifact_not_found" } };
+    if (artifact.exclusion) {
+      return { status: 409, body: { error: "workflow_artifact_excluded" } };
+    }
+    if (artifact.availability !== "available") {
+      return { status: 409, body: { error: "workflow_artifact_not_available" } };
+    }
+    const source = findSource(artifact.sourceId, actor);
+    if (!source || source.state !== "active") {
+      return { status: 409, body: { error: "workflow_source_revoked" } };
+    }
+    if (source.readMode !== "supported_text") {
+      return { status: 409, body: { error: "workflow_business_analysis_requires_text_access" } };
+    }
+    const content = readArtifactText(state, source, artifact);
+    if (!content) {
+      return {
+        status: 422,
+        body: {
+          error: artifact.extraction?.state === "needs_ocr"
+            ? "workflow_business_analysis_needs_ocr"
+            : "workflow_business_analysis_content_unavailable",
+        },
+      };
+    }
+    return {
+      status: 200,
+      body: {
+        source,
+        artifact,
+        content,
+        blocks: artifact.extraction?.blocks ?? [],
+      },
+    };
   }
 
   function confirmArtifact({ artifactId, role, expectedRevision } = {}, actor = null) {
@@ -5080,6 +5121,7 @@ export function createWorkflowMemoryService({
     revokeSource,
     deleteSourceLearning,
     listArtifacts,
+    getArtifactAnalysisInput,
     confirmArtifact,
     retryArtifactExtraction,
     setArtifactExclusion,

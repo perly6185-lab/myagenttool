@@ -4,6 +4,7 @@ import test from "node:test";
 import {
   businessDocumentTypes,
   businessRoutineSchemaVersion,
+  normalizeBusinessFieldProposals,
   normalizeBusinessDocumentClassification,
   normalizeLocalIssueRoutineBinding,
   normalizeRoutineEvidenceRefs,
@@ -95,10 +96,23 @@ test("contracts strip raw evidence and reject absolute local paths", () => {
 test("business classification is bounded, versioned, and evidence-backed", () => {
   const result = normalizeBusinessDocumentClassification({
     artifactId: "wfa_1",
+    artifactFingerprint: "a".repeat(64),
     documentType: "quotation",
     confidence: 0.92,
     reasons: ["Contains a quotation number"],
     evidenceRefs: [{ artifactId: "wfa_1", kind: "field", field: "quotation_number" }],
+    fieldProposals: [{
+      key: "quotation_number",
+      value: "QT-001",
+      confidence: 0.97,
+      evidenceRefs: [{
+        artifactId: "wfa_1",
+        kind: "field",
+        field: "quotation_number",
+        location: "page/1",
+      }],
+    }],
+    riskSignals: [],
     confirmationState: "confirmed",
     classifierVersion: 2,
   });
@@ -106,11 +120,42 @@ test("business classification is bounded, versioned, and evidence-backed", () =>
   assert.equal(result.value.schemaVersion, 1);
   assert.equal(result.value.documentType, "quotation");
   assert.equal(result.value.confidence, 0.92);
+  assert.equal(result.value.fieldProposals[0].key, "quotation_number");
+  assert.equal(result.value.analysisState, "deterministic");
   assert.equal(normalizeBusinessDocumentClassification({
     artifactId: "wfa_1",
+    artifactFingerprint: "b".repeat(64),
     documentType: "quotation",
     confidence: 1.2,
   }).ok, false);
+});
+
+test("business field proposals reject unsupported, duplicate, and evidence-free values", () => {
+  const evidenceRefs = [{ artifactId: "wfa_1", kind: "field", field: "amount", location: "row/2" }];
+  assert.equal(normalizeBusinessFieldProposals([{
+    key: "amount",
+    value: "1200.00",
+    normalizedValue: "1200.00",
+    confidence: 0.9,
+    evidenceRefs,
+  }])[0].key, "amount");
+  assert.equal(normalizeBusinessFieldProposals([{
+    key: "api_token",
+    value: "secret",
+    confidence: 0.9,
+    evidenceRefs,
+  }]), null);
+  assert.equal(normalizeBusinessFieldProposals([{
+    key: "amount",
+    value: "1200",
+    confidence: 0.9,
+    evidenceRefs,
+  }, {
+    key: "amount",
+    value: "1300",
+    confidence: 0.9,
+    evidenceRefs,
+  }]), null);
 });
 
 test("local Issue routine binding requires a complete immutable pin", () => {

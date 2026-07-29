@@ -168,6 +168,7 @@ export function createServerState({ defaultProjectPath, now }) {
     // Epic #1548 / Issue #1549: business semantics and reusable local-Issue
     // routine contracts layered above V1.3 requirement/delivery memory.
     businessDocumentClassifications: [],
+    businessDocumentAnalysisJobs: [],
     businessEntities: [],
     businessCases: [],
     routineDefinitions: [],

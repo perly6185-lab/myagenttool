@@ -31,15 +31,15 @@ function harness() {
     workflowArtifacts: [
       {
         id: "wfa_inquiry", ownerTeamId: "team_a", projectId: "prj_a", sourceId: "wfs_a",
-        availability: "available",
+        availability: "available", fingerprint: "a".repeat(64),
       },
       {
         id: "wfa_quote", ownerTeamId: "team_a", projectId: "prj_a", sourceId: "wfs_a",
-        availability: "available",
+        availability: "available", fingerprint: "b".repeat(64),
       },
       {
         id: "wfa_foreign", ownerTeamId: "team_b", projectId: "prj_b", sourceId: "wfs_b",
-        availability: "available",
+        availability: "available", fingerprint: "c".repeat(64),
       },
     ],
   };
@@ -113,6 +113,7 @@ test("records bounded document semantics independently from contextual roles", (
     projectId: "prj_a",
     sourceId: "wfs_a",
     artifactId: "wfa_quote",
+    artifactFingerprint: "b".repeat(64),
     documentType: "quotation",
     confidence: 0.91,
     reasons: ["Quotation number found"],

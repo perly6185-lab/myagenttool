@@ -64,10 +64,24 @@ export const routineStepRunStates = [
 ];
 
 export const businessDocumentConfirmationStates = ["proposed", "confirmed", "corrected"];
+export const businessDocumentAnalysisStates = ["deterministic", "hybrid", "degraded"];
+export const businessFieldKeys = [
+  "customer",
+  "product",
+  "quantity",
+  "currency",
+  "amount",
+  "document_date",
+  "inquiry_number",
+  "quotation_number",
+  "order_number",
+];
+export const businessFieldConfirmationStates = ["proposed", "confirmed", "corrected"];
 
 const SAFE_ID_RE = /^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,199}$/;
 const WINDOWS_ABSOLUTE_RE = /^[a-zA-Z]:[\\/]/;
 const SENSITIVE_CONTRACT_KEYS = /(?:content|prompt|secret|token|password|credential)/i;
+const SHA256_RE = /^[a-f0-9]{64}$/;
 
 function isAbsoluteLocalPath(value) {
   const normalized = value.replaceAll("\\", "/");
@@ -147,6 +161,41 @@ export function normalizeRoutineEvidenceRefs(values) {
   return refs;
 }
 
+export function normalizeBusinessFieldProposals(values) {
+  if (!Array.isArray(values) || values.length > 100) return null;
+  const proposals = [];
+  const keys = new Set();
+  for (const value of values) {
+    if (!value || typeof value !== "object") return null;
+    const key = businessFieldKeys.includes(value.key) ? value.key : null;
+    const fieldValue = boundedText(value.value, 1_000);
+    const normalizedValue = value.normalizedValue == null
+      ? null
+      : boundedText(value.normalizedValue, 1_000);
+    const confidence = Number(value.confidence);
+    const evidenceRefs = normalizeRoutineEvidenceRefs(value.evidenceRefs ?? []);
+    const confirmationState = businessFieldConfirmationStates.includes(value.confirmationState)
+      ? value.confirmationState
+      : "proposed";
+    if (!key || keys.has(key) || !fieldValue
+      || (value.normalizedValue != null && !normalizedValue)
+      || !Number.isFinite(confidence) || confidence < 0 || confidence > 1
+      || !evidenceRefs?.length) {
+      return null;
+    }
+    keys.add(key);
+    proposals.push({
+      key,
+      value: fieldValue,
+      normalizedValue,
+      confidence,
+      evidenceRefs,
+      confirmationState,
+    });
+  }
+  return proposals;
+}
+
 export function normalizeBusinessDocumentClassification(input) {
   if (!input || typeof input !== "object") return { ok: false, error: "invalid_business_document_classification" };
   const artifactId = safeId(input.artifactId);
@@ -157,8 +206,26 @@ export function normalizeBusinessDocumentClassification(input) {
   const confirmationState = businessDocumentConfirmationStates.includes(input.confirmationState)
     ? input.confirmationState
     : "proposed";
+  const fieldProposals = normalizeBusinessFieldProposals(input.fieldProposals ?? []);
+  const riskSignals = uniqueStrings(input.riskSignals ?? [], { limit: 20, maxLength: 100 });
+  const analysisState = businessDocumentAnalysisStates.includes(input.analysisState)
+    ? input.analysisState
+    : "deterministic";
+  const artifactFingerprint = boundedText(input.artifactFingerprint, 64);
+  const analysisKey = input.analysisKey == null
+    ? artifactFingerprint
+    : boundedText(input.analysisKey, 64);
+  const degradedReason = input.degradedReason == null
+    ? null
+    : safeId(input.degradedReason);
+  const provider = input.provider == null ? null : boundedText(input.provider, 100);
+  const model = input.model == null ? null : boundedText(input.model, 200);
   if (!artifactId || !documentType || !Number.isFinite(confidence) || confidence < 0 || confidence > 1
-    || !reasons || !evidenceRefs) {
+    || !reasons || !evidenceRefs || !fieldProposals || !riskSignals
+    || !artifactFingerprint || !SHA256_RE.test(artifactFingerprint)
+    || !analysisKey || !SHA256_RE.test(analysisKey)
+    || (input.degradedReason != null && !degradedReason)
+    || (input.provider != null && !provider) || (input.model != null && !model)) {
     return { ok: false, error: "invalid_business_document_classification" };
   }
   return {
@@ -170,10 +237,17 @@ export function normalizeBusinessDocumentClassification(input) {
       confidence,
       reasons,
       evidenceRefs,
+      fieldProposals,
+      riskSignals,
       confirmationState,
       classifierVersion: Math.max(1, Number.parseInt(input.classifierVersion ?? 1, 10) || 1),
-      provider: input.provider == null ? null : boundedText(input.provider, 100),
-      model: input.model == null ? null : boundedText(input.model, 200),
+      extractorVersion: Math.max(1, Number.parseInt(input.extractorVersion ?? 1, 10) || 1),
+      analysisState,
+      artifactFingerprint,
+      analysisKey,
+      degradedReason,
+      provider,
+      model,
     },
   };
 }

@@ -51,6 +51,22 @@ export declare const routineStepRunStates: readonly [
   "cancelled",
 ];
 export type RoutineStepRunState = (typeof routineStepRunStates)[number];
+export declare const businessDocumentAnalysisStates: readonly ["deterministic", "hybrid", "degraded"];
+export type BusinessDocumentAnalysisState = (typeof businessDocumentAnalysisStates)[number];
+export declare const businessFieldKeys: readonly [
+  "customer",
+  "product",
+  "quantity",
+  "currency",
+  "amount",
+  "document_date",
+  "inquiry_number",
+  "quotation_number",
+  "order_number",
+];
+export type BusinessFieldKey = (typeof businessFieldKeys)[number];
+export declare const businessFieldConfirmationStates: readonly ["proposed", "confirmed", "corrected"];
+export type BusinessFieldConfirmationState = (typeof businessFieldConfirmationStates)[number];
 
 export type RoutineEvidenceRef = {
   artifactId: string;
@@ -58,6 +74,15 @@ export type RoutineEvidenceRef = {
   field: string | null;
   /** Source-relative structural location, never an absolute local path or raw content. */
   location: string | null;
+};
+
+export type BusinessFieldProposal = {
+  key: BusinessFieldKey;
+  value: string;
+  normalizedValue: string | null;
+  confidence: number;
+  evidenceRefs: RoutineEvidenceRef[];
+  confirmationState: BusinessFieldConfirmationState;
 };
 
 export type BusinessDocumentClassification = {
@@ -71,8 +96,15 @@ export type BusinessDocumentClassification = {
   confidence: number;
   reasons: string[];
   evidenceRefs: RoutineEvidenceRef[];
+  fieldProposals: BusinessFieldProposal[];
+  riskSignals: string[];
   confirmationState: "proposed" | "confirmed" | "corrected";
   classifierVersion: number;
+  extractorVersion: number;
+  analysisState: BusinessDocumentAnalysisState;
+  artifactFingerprint: string;
+  analysisKey: string;
+  degradedReason: string | null;
   provider: string | null;
   model: string | null;
   revision: number;
@@ -209,6 +241,7 @@ export type LocalIssueRoutineBinding = {
 };
 
 export declare function normalizeRoutineEvidenceRefs(values: unknown): RoutineEvidenceRef[] | null;
+export declare function normalizeBusinessFieldProposals(values: unknown): BusinessFieldProposal[] | null;
 export declare function normalizeBusinessDocumentClassification(input: unknown):
   | { ok: true; value: Omit<BusinessDocumentClassification, "id" | "ownerTeamId" | "projectId" | "sourceId" | "revision" | "createdAt" | "updatedAt"> }
   | { ok: false; error: string };
