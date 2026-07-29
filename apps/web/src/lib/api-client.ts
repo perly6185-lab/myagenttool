@@ -672,6 +672,16 @@ async function requestResult(
 }
 
 export const api = {
+  confirmWorkProfileInference: (id: string) =>
+    request("POST", `/api/work-profile/inferences/${encodeURIComponent(id)}/confirm`, {}),
+  updateWorkProfileInference: (
+    id: string,
+    payload: { category: string; value: string; reason?: string },
+  ) => request("PATCH", `/api/work-profile/inferences/${encodeURIComponent(id)}`, payload),
+  rejectWorkProfileInference: (id: string, reason?: string) =>
+    request("POST", `/api/work-profile/inferences/${encodeURIComponent(id)}/reject`, { reason }),
+  deleteWorkProfileInference: (id: string, reason?: string) =>
+    request("DELETE", `/api/work-profile/inferences/${encodeURIComponent(id)}`, { reason }),
   updateDevice: (payload: { maxConcurrency?: number }) => request("PATCH", "/api/device", payload),
   reportWebPerformance: (payload: {
     name: "CLS" | "FCP" | "INP" | "LCP";

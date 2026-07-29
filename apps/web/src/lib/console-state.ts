@@ -1021,6 +1021,49 @@ export interface ProjectTargetSnapshot {
   updatedAt?: string;
 }
 
+export type WorkProfileCategory = "role" | "domain" | "work_type" | "skill" | "preference";
+export type WorkProfileStatus = "pending" | "confirmed" | "rejected";
+
+export interface WorkProfileEvidence {
+  projectId: string;
+  projectName?: string;
+  /** Root of a project the user explicitly registered/authorized. */
+  authorizedDirectory: string;
+  signal?: string;
+}
+
+export interface WorkProfileInference {
+  id: string;
+  userId: string;
+  ownerTeamId: string;
+  category: WorkProfileCategory;
+  value: string;
+  confidence: number;
+  status: WorkProfileStatus;
+  summary?: string;
+  evidence: WorkProfileEvidence[];
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface WorkProfileSnapshot {
+  category: WorkProfileCategory;
+  value: string;
+  status: WorkProfileStatus;
+  evidence: WorkProfileEvidence[];
+}
+
+export interface WorkProfileAuditEvent {
+  id: string;
+  inferenceId: string;
+  actorId: string;
+  action: "confirmed" | "modified" | "rejected" | "deleted";
+  before: WorkProfileSnapshot;
+  after: WorkProfileSnapshot | null;
+  reason?: string | null;
+  at: string;
+}
+
 export interface WorktreeLink {
   type: "issue" | "pr";
   number: number;
@@ -1239,6 +1282,10 @@ export interface ConsoleSnapshot {
   /** Server-derived, restart-safe path to the first runnable local task. */
   guidedSetup?: GuidedSetupSnapshot;
   projects?: ProjectSnapshot[];
+  /** Reviewable system understanding of the current user's work. */
+  workProfileInferences?: WorkProfileInference[];
+  /** Durable history; delete events retain their pre-delete snapshot. */
+  workProfileAuditEvents?: WorkProfileAuditEvent[];
   currentProjectId?: string | null;
   projectTargets?: ProjectTargetSnapshot[];
   worktrees?: WorktreeSnapshot[];

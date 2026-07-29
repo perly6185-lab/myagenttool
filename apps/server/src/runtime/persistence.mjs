@@ -51,6 +51,8 @@ export const persistedArrayKeys = [
   "identityRecoveryAttempts",
   "identityRecoveryGrants",
   "identitySecurityAlerts",
+  "workProfileInferences",
+  "workProfileAuditEvents",
   "agents",
   "applications",
   "applicationInstallRuns",
