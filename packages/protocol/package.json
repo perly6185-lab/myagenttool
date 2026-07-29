@@ -30,6 +30,10 @@
     "./codex-permissions": {
       "types": "./src/codex-permissions.ts",
       "default": "./src/codex-permissions.mjs"
+    },
+    "./business-routine": {
+      "types": "./src/business-routine.ts",
+      "default": "./src/business-routine.mjs"
     }
   },
   "scripts": {

@@ -1116,6 +1116,12 @@ export function createWorkflowMemoryService({
     "workflowProfiles",
     "workflowProfileDrafts",
     "workflowRuns",
+    "businessDocumentClassifications",
+    "businessEntities",
+    "businessCases",
+    "routineDefinitions",
+    "routineRuns",
+    "ledgerDefinitions",
   ]) {
     if (!Array.isArray(state[key])) state[key] = [];
   }
@@ -1685,6 +1691,12 @@ export function createWorkflowMemoryService({
       profiles: state.workflowProfiles.filter(sourceIdMatches).length,
       profileDrafts: state.workflowProfileDrafts.filter(sourceIdMatches).length,
       runs: state.workflowRuns.filter(sourceIdMatches).length,
+      businessDocumentClassifications: state.businessDocumentClassifications.filter(sourceIdMatches).length,
+      businessEntities: state.businessEntities.filter(sourceIdMatches).length,
+      businessCases: state.businessCases.filter(sourceIdMatches).length,
+      routineDefinitions: state.routineDefinitions.filter(sourceIdMatches).length,
+      routineRuns: state.routineRuns.filter(sourceIdMatches).length,
+      ledgerDefinitions: state.ledgerDefinitions.filter(sourceIdMatches).length,
     };
     runTx(() => {
       state.workflowScanJobs.splice(
@@ -1722,6 +1734,20 @@ export function createWorkflowMemoryService({
         state.workflowRuns.length,
         ...state.workflowRuns.filter((item) => !sourceIdMatches(item)),
       );
+      for (const key of [
+        "businessDocumentClassifications",
+        "businessEntities",
+        "businessCases",
+        "routineDefinitions",
+        "routineRuns",
+        "ledgerDefinitions",
+      ]) {
+        state[key].splice(
+          0,
+          state[key].length,
+          ...state[key].filter((item) => !sourceIdMatches(item)),
+        );
+      }
       state.workflowSources.splice(
         0,
         state.workflowSources.length,

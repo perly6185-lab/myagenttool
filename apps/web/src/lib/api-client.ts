@@ -1700,6 +1700,11 @@ export const api = {
     estimatePoints?: number;
     parentId?: string | null;
     idempotencyKey?: string;
+    routineDefinitionId?: string;
+    routineVersion?: number;
+    businessCaseId?: string;
+    businessKey?: string;
+    triggerArtifactIds?: string[];
   }) => request("POST", "/api/work-items", payload),
   getWorkItem: (id: string) => request("GET", `/api/work-items/${encodeURIComponent(id)}`),
   suggestWorkItemDraft: (payload: { projectId: string; title: string; body?: string }) =>

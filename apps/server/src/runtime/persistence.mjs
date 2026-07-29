@@ -123,6 +123,12 @@ export const persistedArrayKeys = [
   "workflowProfiles",
   "workflowProfileDrafts",
   "workflowRuns",
+  "businessDocumentClassifications",
+  "businessEntities",
+  "businessCases",
+  "routineDefinitions",
+  "routineRuns",
+  "ledgerDefinitions",
   "dispatchAssignments",
   "automations",
   "agentSkills",
@@ -194,6 +200,12 @@ const OWNER_STAMPED_PROJECT_COLLECTIONS = [
   // #1152: auto-runs stamp their owning team at creation. Pre-stamp rows have
   // no `teamId` and are skipped by the scan (no stamp → nothing to cross-check).
   { key: "autoRuns", owner: "teamId" },
+  { key: "businessDocumentClassifications", owner: "ownerTeamId" },
+  { key: "businessEntities", owner: "ownerTeamId" },
+  { key: "businessCases", owner: "ownerTeamId" },
+  { key: "routineDefinitions", owner: "ownerTeamId" },
+  { key: "routineRuns", owner: "ownerTeamId" },
+  { key: "ledgerDefinitions", owner: "ownerTeamId" },
 ];
 
 /**

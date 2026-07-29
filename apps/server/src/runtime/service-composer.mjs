@@ -61,6 +61,7 @@ import { convergeAutoRunTerminalState, createAutoRunService } from "../services/
 import { createDecisionSoftClaimService } from "../services/decision-soft-claims.mjs";
 import { createIssueClaimService } from "../services/issue-claims.mjs";
 import { createWorkItemService } from "../services/work-items.mjs";
+import { createBusinessRoutineService } from "../services/business-routines.mjs";
 import { createArticleImportService, resolveArticleImportConfig } from "../services/article-imports.mjs";
 import { createWorkflowMemoryService } from "../services/workflow-memory.mjs";
 import { createPlanningProjectService } from "../services/planning-projects.mjs";
@@ -396,6 +397,14 @@ export function createServerRuntimeServices({
     resolveApplicationCapability: (input, actor) => resolveWorkItemApplicationCapability(input, actor),
     invokeResolvedCapability: (name, input, actor) => invokeWorkItemApplicationCapability(name, input, actor),
     issueApplicationApprovalGrant: (input, actor) => issueApprovalGrant(input, actor),
+  });
+  const businessRoutineService = createBusinessRoutineService({
+    state,
+    now,
+    nextId,
+    appendEvent,
+    persistStateSoon,
+    store,
   });
   const articleImportConfig = resolveArticleImportConfig();
   const articleImportService = createArticleImportService({
@@ -3742,6 +3751,14 @@ export function createServerRuntimeServices({
     getWorkItemGithubSyncDiagnostics: workItemService.githubSyncDiagnostics,
     suggestWorkItemDraft: workItemService.suggestWorkItemDraft,
     retryWorkItemAlert: workItemService.retryWorkItemAlert,
+    recordBusinessDocumentClassification: businessRoutineService.recordDocumentClassification,
+    createBusinessEntity: businessRoutineService.createBusinessEntity,
+    createBusinessCase: businessRoutineService.createBusinessCase,
+    createRoutineDefinition: businessRoutineService.createRoutineDefinition,
+    transitionRoutineDefinition: businessRoutineService.transitionRoutineDefinition,
+    createLedgerDefinition: businessRoutineService.createLedgerDefinition,
+    createRoutineRun: businessRoutineService.createRoutineRun,
+    transitionRoutineStep: businessRoutineService.transitionRoutineStep,
     inspectArticleImport: articleImportService.inspect,
     startArticleImport: articleImportService.start,
     listArticleImports: articleImportService.list,

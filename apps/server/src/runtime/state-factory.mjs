@@ -165,6 +165,14 @@ export function createServerState({ defaultProjectPath, now }) {
     workflowProfiles: [],
     workflowProfileDrafts: [],
     workflowRuns: [],
+    // Epic #1548 / Issue #1549: business semantics and reusable local-Issue
+    // routine contracts layered above V1.3 requirement/delivery memory.
+    businessDocumentClassifications: [],
+    businessEntities: [],
+    businessCases: [],
+    routineDefinitions: [],
+    routineRuns: [],
+    ledgerDefinitions: [],
     // #1165: dispatcher-mode bookkeeping — one row per issue assignment written
     // by THIS server acting as the dispatcher (single writer; the staleness clock).
     dispatchAssignments: [],

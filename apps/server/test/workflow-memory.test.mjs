@@ -770,6 +770,21 @@ test("scans a contained source, confirms cases, derives a profile, and exposes a
       false,
     );
 
+    for (const [key, id] of [
+      ["businessDocumentClassifications", "bdc_delete"],
+      ["businessEntities", "bent_delete"],
+      ["businessCases", "bcs_delete"],
+      ["routineDefinitions", "rtd_delete"],
+      ["routineRuns", "rtr_delete"],
+      ["ledgerDefinitions", "ldg_delete"],
+    ]) {
+      state[key].push({
+        id,
+        ownerTeamId: actor.teamId,
+        projectId: source.projectId,
+        sourceId: source.id,
+      });
+    }
     const revoked = service.revokeSource({
       sourceId: source.id,
       expectedRevision: source.revision,
@@ -789,6 +804,22 @@ test("scans a contained source, confirms cases, derives a profile, and exposes a
     assert.equal(state.deliveryCases.length, 0);
     assert.equal(state.workflowProfiles.length, 0);
     assert.equal(state.workflowRuns.length, 0);
+    assert.equal(deleted.body.counts.businessDocumentClassifications, 1);
+    assert.equal(deleted.body.counts.businessEntities, 1);
+    assert.equal(deleted.body.counts.businessCases, 1);
+    assert.equal(deleted.body.counts.routineDefinitions, 1);
+    assert.equal(deleted.body.counts.routineRuns, 1);
+    assert.equal(deleted.body.counts.ledgerDefinitions, 1);
+    for (const key of [
+      "businessDocumentClassifications",
+      "businessEntities",
+      "businessCases",
+      "routineDefinitions",
+      "routineRuns",
+      "ledgerDefinitions",
+    ]) {
+      assert.equal(state[key].length, 0, `${key} is deleted with its revoked source`);
+    }
     assert.equal(existsSync(join(root, "case-001/客户需求-001.md")), true);
   } finally {
     rmSync(root, { recursive: true, force: true });

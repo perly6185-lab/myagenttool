@@ -62,6 +62,12 @@ export const workflowMemoryApi = {
         profiles: number;
         profileDrafts: number;
         runs: number;
+        businessDocumentClassifications: number;
+        businessEntities: number;
+        businessCases: number;
+        routineDefinitions: number;
+        routineRuns: number;
+        ledgerDefinitions: number;
       };
       originalFilesDeleted: false;
     }>(

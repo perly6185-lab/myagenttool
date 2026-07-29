@@ -322,6 +322,27 @@ pnpm --filter @myagenttool/web typecheck
 - Workflow Memory 的 API 实现跟随功能路由懒加载，不计入所有用户的首屏成本；发布 bundle 预算门禁通过。
 - 生产依赖审计无 high/critical 漏洞。当前两个 moderate 告警均来自既有 Excalidraw 的传递依赖 `nanoid`，与本功能新增的 PDF/YAML 解析依赖无关。
 
+## V1.4：岗位工作发现与 Issue 任务类型化
+
+关联 Epic：[#1548](https://github.com/perly6185-lab/myagenttool/issues/1548)。
+
+V1.4 不再把岗位工作限制为一个固定的“需求文件 → 交付文件”配对。它在 V1.3 证据、画像和受治理执行能力之上增加业务文档、业务案例和可发布的日常工作类型。同一份报价单可以是询价流程的输出，也可以是订单流程的输入；文件业务类型与其在特定工作流中的角色必须独立。
+
+### 阶段 1：领域契约与本地 Issue 绑定
+
+关联 Issue：[#1549](https://github.com/perly6185-lab/myagenttool/issues/1549)。
+
+- 新增版本化业务契约：`BusinessDocumentClassification`、`BusinessEntity`、`BusinessCase`、`RoutineDefinition`、`RoutineStep`、`RoutineRun` 和 `LedgerDefinition`。
+- 首版步骤类型为：提取、检索、生成、台账更新、人工确认、条件判断和创建后续 Issue。
+- Routine 定义、运行和步骤均保存租户、项目、授权来源、证据、版本、修订和审计信息；证据引用只保存文件 ID 与来源内结构位置，不保存额外原文或绝对路径。
+- 新增业务 Routine 持久化集合，并纳入 JSON/SQLite 状态镜像、重复 ID 修复、所有权一致性检查和授权来源删除。
+- 本地 Issue 保持现有 `task`、`bug`、`feature`、`initiative` 类型不变，通过 `routineDefinitionId`、`routineVersion`、`businessCaseId`、`businessKey` 和 `triggerArtifactIds` 固定业务任务类型。
+- Routine 绑定只允许在 Issue 创建时写入；必须引用同租户、同项目、已发布的 Routine 版本、业务案例和可用触发文件，创建后不可改绑。
+- Routine Issue、步骤、结果发布和台账更新使用带版本的 SHA-256 幂等键；键值不暴露业务编号。
+- 授权来源撤销后禁止创建新的业务对象、Routine 或运行；删除派生学习数据时同步删除该来源的 V1.4 业务集合，不删除用户原始文件。
+
+后续阶段由 #1550–#1556 负责 AI 业务文档提取、历史业务关系图、任务类型发布、一键执行、CSV/XLSX 台账更新、普通用户界面和发布评测门禁。
+
 ## MVP 之后
 
 后续增强不阻塞本次 MVP：

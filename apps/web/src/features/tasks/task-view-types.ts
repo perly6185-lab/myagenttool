@@ -77,6 +77,12 @@ export type LocalWorkItem = {
   externalBindings?: ExternalWorkItemBinding[];
   planningProjects?: { id: string; name: string; archivedAt: string | null }[];
   dependencyIds?: string[];
+  routineDefinitionId?: string;
+  routineVersion?: number;
+  routineBindingSchemaVersion?: number;
+  businessCaseId?: string;
+  businessKey?: string;
+  triggerArtifactIds?: string[];
   parentId?: string | null;
   parent?: { id: string; localRef: string; title: string; status: LocalWorkItem["status"]; state: "open" | "closed" } | null;
   subIssues?: { id: string; localRef: string; title: string; status: LocalWorkItem["status"]; state: "open" | "closed" }[];

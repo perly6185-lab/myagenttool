@@ -5,6 +5,7 @@
  */
 
 import { createHash } from "node:crypto";
+import { normalizeLocalIssueRoutineBinding } from "@myagenttool/protocol/business-routine";
 import { actorCanAccessProject, LOCAL_TEAM_ID, LOCAL_USER_ID } from "../runtime/auth.mjs";
 import { listDevices } from "../runtime/device.mjs";
 import { backfillTerminalOwnership } from "../runtime/terminal-ownership.mjs";
@@ -13,6 +14,7 @@ import { normalizedUpdatedSince, paginateRows } from "./cursor-pagination.mjs";
 import { externalIssueProviderReadiness } from "./external-issue-provider.mjs";
 import { ASSET_CAPABILITY_VERBS, evaluateAssetRequirements } from "./asset-capabilities.mjs";
 import { createApplicationExecutionContract } from "./application-execution-contract.mjs";
+import { routineIdempotencyKeys } from "./business-routines.mjs";
 
 const TYPES = new Set(["task", "bug", "feature", "initiative"]);
 const STATUSES = new Set(["backlog", "ready", "in_progress", "review", "blocked", "done"]);
@@ -22,6 +24,13 @@ const MAX_BODY = 200_000;
 const MAX_LABELS = 50;
 const MAX_COMMENT = 100_000;
 const MAX_MILESTONE = 200;
+const ROUTINE_BINDING_FIELDS = [
+  "routineDefinitionId",
+  "routineVersion",
+  "businessCaseId",
+  "businessKey",
+  "triggerArtifactIds",
+];
 const GITHUB_SYNC_FIELDS = ["title", "body", "state", "labels", "milestone", "assigneeIds"];
 const VERIFICATION_KINDS = new Set(["test", "lint", "typecheck", "manual", "review"]);
 const VERIFICATION_STATUSES = new Set(["passed", "failed"]);
@@ -151,6 +160,20 @@ function validateDraft(input, { partial = false } = {}) {
     if (!assets) return { error: "invalid_work_item_output_assets" };
     value.outputAssets = assets;
   }
+  const hasRoutineBinding = Object.hasOwn(input, "routineBinding")
+    || ROUTINE_BINDING_FIELDS.some((field) => Object.hasOwn(input, field));
+  if (hasRoutineBinding) {
+    if (partial) return { error: "work_item_routine_binding_immutable" };
+    const candidate = input.routineBinding ?? Object.fromEntries(
+      ROUTINE_BINDING_FIELDS.map((field) => [field, input[field]]),
+    );
+    const normalized = normalizeLocalIssueRoutineBinding(candidate);
+    if (!normalized.ok || !normalized.value) {
+      return { error: normalized.error ?? "invalid_work_item_routine_binding" };
+    }
+    const { schemaVersion, ...binding } = normalized.value;
+    Object.assign(value, binding, { routineBindingSchemaVersion: schemaVersion });
+  }
   return { value };
 }
 
@@ -207,6 +230,49 @@ export function createWorkItemService({
   const localAssetResourceClasses = (terminalId) => {
     const device = (state.devices ?? []).find((candidate) => candidate.id === terminalId);
     return Array.isArray(device?.assetResourceClasses) ? device.assetResourceClasses : ["small", "medium"];
+  };
+  const validateRoutineBindingContext = (binding, projectId, actor) => {
+    if (!binding?.routineDefinitionId) return null;
+    const teamId = actorTeam(actor);
+    const definition = (state.routineDefinitions ?? []).find((row) =>
+      row.id === binding.routineDefinitionId
+      && row.ownerTeamId === teamId
+      && row.projectId === projectId);
+    if (!definition) return { status: 404, error: "work_item_routine_definition_not_found" };
+    if (definition.version !== binding.routineVersion || definition.state !== "published") {
+      return { status: 409, error: "work_item_routine_definition_not_published_or_version_mismatch" };
+    }
+    const businessCase = (state.businessCases ?? []).find((row) =>
+      row.id === binding.businessCaseId
+      && row.ownerTeamId === teamId
+      && row.projectId === projectId
+      && row.sourceId === definition.sourceId);
+    if (!businessCase) return { status: 404, error: "work_item_business_case_not_found" };
+    if (businessCase.businessKey !== binding.businessKey) {
+      return { status: 409, error: "work_item_business_key_mismatch" };
+    }
+    if (!["confirmed", "active"].includes(businessCase.state)) {
+      return { status: 409, error: "work_item_business_case_not_confirmed" };
+    }
+    const source = (state.workflowSources ?? []).find((row) =>
+      row.id === definition.sourceId
+      && row.ownerTeamId === teamId
+      && row.projectId === projectId);
+    if (!source || source.state !== "active") {
+      return { status: 409, error: "work_item_routine_source_revoked" };
+    }
+    const artifacts = binding.triggerArtifactIds.map((artifactId) =>
+      (state.workflowArtifacts ?? []).find((row) =>
+        row.id === artifactId
+        && row.ownerTeamId === teamId
+        && row.projectId === projectId
+        && row.sourceId === definition.sourceId
+        && row.availability !== "missing"
+        && !row.exclusion));
+    if (artifacts.some((artifact) => !artifact)) {
+      return { status: 404, error: "work_item_routine_trigger_artifact_not_found" };
+    }
+    return null;
   };
   const notFound = () => ({ ok: false, status: 404, body: { error: "work_item_not_found" } });
   const commentNotFound = () => ({ ok: false, status: 404, body: { error: "work_item_comment_not_found" } });
@@ -1498,18 +1564,50 @@ export function createWorkItemService({
     if (!projectId || !actorCanAccessProject(state, actor, projectId)) {
       return { ok: false, status: 404, body: { error: "project_not_found" } };
     }
-    const idempotencyKey = input.idempotencyKey == null ? null : String(input.idempotencyKey).trim();
+    let idempotencyKey = input.idempotencyKey == null ? null : String(input.idempotencyKey).trim();
     if (idempotencyKey != null && (!idempotencyKey || idempotencyKey.length > 200)) {
       return { ok: false, status: 400, body: { error: "invalid_work_item_idempotency_key" } };
     }
+    const hasRoutineInput = Object.hasOwn(input, "routineBinding")
+      || ROUTINE_BINDING_FIELDS.some((field) => Object.hasOwn(input, field));
+    if (idempotencyKey && !hasRoutineInput) {
+      const replay = (state.workItems ?? []).find(
+        (item) => item.ownerTeamId === actorTeam(actor)
+          && item.createdBy === actorUser(actor)
+          && item.createIdempotencyKey === idempotencyKey,
+      );
+      if (replay) {
+        return { ok: true, status: 200, body: { workItem: workItemView(replay, actor), replayed: true } };
+      }
+    }
+    const validated = validateDraft(input);
+    if (validated.error) return { ok: false, status: 400, body: { error: validated.error } };
+    if (!idempotencyKey && validated.value.routineDefinitionId) {
+      idempotencyKey = routineIdempotencyKeys({
+        ownerTeamId: actorTeam(actor),
+        routineDefinitionId: validated.value.routineDefinitionId,
+        routineVersion: validated.value.routineVersion,
+        businessKey: validated.value.businessKey,
+      }).issue;
+    }
     const replay = idempotencyKey ? (state.workItems ?? []).find(
       (item) => item.ownerTeamId === actorTeam(actor)
-        && item.createdBy === actorUser(actor)
+        && (validated.value.routineDefinitionId
+          ? item.routineDefinitionId === validated.value.routineDefinitionId
+            && item.routineVersion === validated.value.routineVersion
+            && item.businessCaseId === validated.value.businessCaseId
+          : item.createdBy === actorUser(actor))
         && item.createIdempotencyKey === idempotencyKey,
     ) : null;
     if (replay) return { ok: true, status: 200, body: { workItem: workItemView(replay, actor), replayed: true } };
-    const validated = validateDraft(input);
-    if (validated.error) return { ok: false, status: 400, body: { error: validated.error } };
+    const routineContextError = validateRoutineBindingContext(validated.value, projectId, actor);
+    if (routineContextError) {
+      return {
+        ok: false,
+        status: routineContextError.status,
+        body: { error: routineContextError.error },
+      };
+    }
     const parentId = input.parentId == null || input.parentId === "" ? null : String(input.parentId);
     const parent = parentId ? findOwn(parentId, actor) : null;
     if (parentId && (!parent || parent.projectId !== projectId)) {
@@ -1563,6 +1661,11 @@ export function createWorkItemService({
       (state.workItems ??= []).unshift(workItem);
       recordActivity(workItem, actor, "created", {
         title: workItem.title, type: workItem.type, status: workItem.status, priority: workItem.priority,
+        ...(workItem.routineDefinitionId ? {
+          routineDefinitionId: workItem.routineDefinitionId,
+          routineVersion: workItem.routineVersion,
+          businessCaseId: workItem.businessCaseId,
+        } : {}),
       });
       applyPlanningAutomation(workItem, actor);
       appendEvent({
@@ -1573,6 +1676,11 @@ export function createWorkItemService({
         data: {
           workItemId: workItem.id, localRef: workItem.localRef, projectId,
           terminalId: workItem.terminalId, actorTeamId: teamId,
+          ...(workItem.routineDefinitionId ? {
+            routineDefinitionId: workItem.routineDefinitionId,
+            routineVersion: workItem.routineVersion,
+            businessCaseId: workItem.businessCaseId,
+          } : {}),
         },
       });
     });
@@ -1582,6 +1690,10 @@ export function createWorkItemService({
   function updateWorkItem({ workItemId, expectedRevision, ...changes } = {}, actor = null) {
     const item = findOwn(workItemId, actor);
     if (!item) return notFound();
+    if (Object.hasOwn(changes, "routineBinding")
+      || ROUTINE_BINDING_FIELDS.some((field) => Object.hasOwn(changes, field))) {
+      return { ok: false, status: 409, body: { error: "work_item_routine_binding_immutable" } };
+    }
     if (Object.hasOwn(changes, "terminalId")) {
       return {
         ok: false,
