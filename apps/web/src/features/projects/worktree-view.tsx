@@ -25,6 +25,12 @@ import type { InvocationSnapshot, WorktreeSnapshot } from "@/lib/console-state";
 import { useAppTranslation } from "@/lib/i18n/use-app-translation";
 
 const RUNNING = ["queued", "dispatching", "waiting_for_local_approval", "running", "cancelling"];
+
+function createRunIdempotencyKey() {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function")
+    return crypto.randomUUID();
+  return `worktree-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+}
 // `children` absent = this directory has not been read yet; `[]` = read, empty.
 // The distinction is the whole fix in #1200: the two were conflated, so an
 // unfetched directory and an empty one both rendered as nothing.
@@ -87,6 +93,8 @@ export function WorktreeView({ worktree }: { worktree: WorktreeSnapshot }) {
   const project = (state?.projects ?? []).find((p) => p.id === worktree.projectId);
   const defaultTask = t("worktreeView.defaultTask");
   const previousDefaultTask = useRef(defaultTask);
+  const runInFlightRef = useRef(false);
+  const runIdempotencyKeyRef = useRef<string | null>(null);
   const [task, setTask] = useState<string>(defaultTask);
   const [agentId, setAgentId] = useState(worktree.agentId ?? agents[0]?.id ?? "");
   const [permissionLevel, setPermissionLevel] = useState<CodexPermissionMode>(() => permissionModeForAgent(agents.find((agent) => agent.id === (worktree.agentId ?? agents[0]?.id))));
@@ -136,6 +144,9 @@ export function WorktreeView({ worktree }: { worktree: WorktreeSnapshot }) {
     setTask((current) => current === previousDefaultTask.current ? defaultTask : current);
     previousDefaultTask.current = defaultTask;
   }, [defaultTask]);
+  useEffect(() => {
+    runIdempotencyKeyRef.current = null;
+  }, [agentId, permissionLevel, worktree.id]);
 
   function updateTabs(fn: (t: { openFiles: { path: string; name: string }[]; activeTab: string }) => { openFiles: { path: string; name: string }[]; activeTab: string }) {
     setTabsByWt((prev) => ({ ...prev, [worktree.id]: fn(prev[worktree.id] ?? { openFiles: [], activeTab: "session" }) }));
@@ -370,11 +381,17 @@ export function WorktreeView({ worktree }: { worktree: WorktreeSnapshot }) {
         ),
     );
     const valid = read.filter((a): a is NonNullable<typeof a> => Boolean(a?.dataBase64));
-    if (valid.length > 0) setAttachments((prev) => [...prev, ...valid].slice(0, 6));
+    if (valid.length > 0) {
+      runIdempotencyKeyRef.current = null;
+      setAttachments((prev) => [...prev, ...valid].slice(0, 6));
+    }
   }
 
   function run() {
-    if (runDisabled) return;
+    if (runDisabled || runInFlightRef.current) return;
+    const idempotencyKey = runIdempotencyKeyRef.current ?? createRunIdempotencyKey();
+    runIdempotencyKeyRef.current = idempotencyKey;
+    runInFlightRef.current = true;
     void execute(async () => {
       let finalTask = task.trim();
       // Save attachments into the worktree, then reference their paths in the task.
@@ -388,7 +405,14 @@ export function WorktreeView({ worktree }: { worktree: WorktreeSnapshot }) {
           finalTask += `\n\nAttached files (in the worktree):\n${saved.map((a) => `- ${a.path}`).join("\n")}`;
         }
       }
-      const created = (await api.createInvocation(finalTask, agentId || null, worktree.projectId, worktree.id, { permissionLevel })) as {
+      const created = (await api.createInvocation(
+        finalTask,
+        agentId || null,
+        worktree.projectId,
+        worktree.id,
+        { permissionLevel },
+        idempotencyKey,
+      )) as {
         invocation?: InvocationSnapshot;
       };
       if (created.invocation?.id) {
@@ -399,7 +423,10 @@ export function WorktreeView({ worktree }: { worktree: WorktreeSnapshot }) {
       // Clear only after the run is created, so a failed create keeps the staged
       // files for a retry instead of silently dropping them.
       setAttachments([]);
+      runIdempotencyKeyRef.current = null;
       return created;
+    }).finally(() => {
+      runInFlightRef.current = false;
     });
   }
 
@@ -521,7 +548,10 @@ export function WorktreeView({ worktree }: { worktree: WorktreeSnapshot }) {
                   <Textarea
                     rows={4}
                     value={task}
-                    onChange={(e) => setTask(e.target.value)}
+                    onChange={(e) => {
+                      setTask(e.target.value);
+                      runIdempotencyKeyRef.current = null;
+                    }}
                     onPaste={(e) => {
                       if (e.clipboardData.files.length > 0) {
                         e.preventDefault();
@@ -559,7 +589,10 @@ export function WorktreeView({ worktree }: { worktree: WorktreeSnapshot }) {
                         <span className="text-muted-foreground">{(a.size / 1024).toFixed(0)}KB</span>
                         <button
                           type="button"
-                          onClick={() => setAttachments((prev) => prev.filter((_, j) => j !== i))}
+                          onClick={() => {
+                            runIdempotencyKeyRef.current = null;
+                            setAttachments((prev) => prev.filter((_, j) => j !== i));
+                          }}
                           aria-label={t("worktreeView.removeAttachment", { name: a.name })}
                           className="ml-0.5 grid size-4 place-items-center rounded hover:text-destructive"
                         >
