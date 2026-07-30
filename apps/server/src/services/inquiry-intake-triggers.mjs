@@ -162,10 +162,13 @@ function historicalOutputError(primaryArtifact, context) {
 function ocrEvidenceView(artifact) {
   if (!artifact?.extraction?.ocr?.providerId) return [];
   return (artifact.extraction.blocks ?? [])
-    .filter((block) => block?.location?.kind === "page")
+    .filter((block) => ["page", "image"].includes(block?.location?.kind))
     .slice(0, 300)
     .map((block) => ({
       page: block.location.index,
+      kind: block.location.kind,
+      width: Number.isInteger(block.location.width) ? block.location.width : null,
+      height: Number.isInteger(block.location.height) ? block.location.height : null,
       confidence: Number.isFinite(block.confidence) ? block.confidence : null,
       lineCount: Array.isArray(block.evidence) ? block.evidence.length : 0,
       preview: String(block.text ?? "").replace(/\s+/g, " ").trim().slice(0, 240),

@@ -146,3 +146,23 @@ test("extracts text PDF pages and marks image-only PDFs for OCR", async () => {
   assert.equal(scanned.state, "needs_ocr");
   assert.equal(scanned.needsOcr, true);
 });
+
+test("marks supported raster images for local OCR without decoding them in the parser", async () => {
+  const result = await parseWorkflowDocument({
+    path: "/not/read/by/metadata-marker.png",
+    extension: ".png",
+    readMode: "supported_text",
+    size: 8,
+  });
+  assert.deepEqual(result, {
+    state: "needs_ocr",
+    parserVersion: WORKFLOW_DOCUMENT_PARSER_VERSION,
+    blocks: [],
+    characterCount: 0,
+    truncated: false,
+    pageCount: 1,
+    cellCount: null,
+    needsOcr: true,
+    truncatedPages: false,
+  });
+});

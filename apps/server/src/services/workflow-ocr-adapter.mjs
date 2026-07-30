@@ -8,6 +8,7 @@ const MAX_OUTPUT_BYTES = 12 * 1024 * 1024;
 const MAX_PAGES = 300;
 const MAX_PAGE_CHARS = 80_000;
 const MAX_EVIDENCE_PER_PAGE = 2_000;
+const SUPPORTED_EXTENSIONS = new Set([".pdf", ".png", ".jpg", ".jpeg", ".webp"]);
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const DEFAULT_SCRIPT = resolve(__dirname, "../../scripts/macos-vision-pdf-ocr.swift");
 
@@ -36,6 +37,8 @@ function normalizeResult(value) {
       index: page.index,
       text: boundedText(page.text, MAX_PAGE_CHARS),
       confidence: Math.max(0, Math.min(1, Number(page.confidence) || 0)),
+      width: Number.isInteger(page.width) && page.width > 0 ? page.width : null,
+      height: Number.isInteger(page.height) && page.height > 0 ? page.height : null,
       evidence: page.evidence.slice(0, MAX_EVIDENCE_PER_PAGE).map((entry) => ({
         text: boundedText(entry?.text, 2_000),
         confidence: Math.max(0, Math.min(1, Number(entry?.confidence) || 0)),
@@ -51,12 +54,13 @@ function normalizeResult(value) {
   return {
     providerId: value.providerId,
     providerVersion: boundedText(value.providerVersion, 200),
+    inputKind: value.inputKind === "image" ? "image" : "pdf",
     pageCount: value.pageCount,
     pages,
   };
 }
 
-function runProcess(command, args, {
+export function runWorkflowOcrProcess(command, args, {
   timeoutMs = DEFAULT_TIMEOUT_MS,
   signal,
   onProgress = () => {},
@@ -191,8 +195,35 @@ export function resolveWorkflowOcrConfig({
 
 export function createLocalWorkflowOcrAdapter({
   config = resolveWorkflowOcrConfig(),
-  run = runProcess,
+  run = runWorkflowOcrProcess,
 } = {}) {
+  const recognize = async ({ path, signal, onProgress } = {}) => {
+    if (!config.enabled || !config.command) {
+      throw Object.assign(new Error("No local OCR provider is available."), {
+        code: config.reason ?? "workflow_ocr_provider_unavailable",
+      });
+    }
+    const extension = typeof path === "string" ? extname(path).toLowerCase() : "";
+    if (typeof path !== "string" || !isAbsolute(path) || !SUPPORTED_EXTENSIONS.has(extension)) {
+      throw Object.assign(new Error("Local OCR requires an absolute PDF or image path."), {
+        code: "workflow_ocr_invalid_input",
+      });
+    }
+    const output = await run(
+      config.command,
+      [config.scriptPath, resolve(path)],
+      { signal, onProgress },
+    );
+    let parsed;
+    try {
+      parsed = JSON.parse(output);
+    } catch {
+      throw Object.assign(new Error("Local OCR returned malformed JSON."), {
+        code: "workflow_ocr_invalid_result",
+      });
+    }
+    return normalizeResult(parsed);
+  };
   return {
     providerId: config.providerId,
     readiness() {
@@ -200,33 +231,17 @@ export function createLocalWorkflowOcrAdapter({
         state: config.enabled ? "ready" : "unavailable",
         providerId: config.providerId,
         reason: config.reason,
+        supportedExtensions: [...SUPPORTED_EXTENSIONS],
       };
     },
-    async recognizePdf({ path, signal, onProgress } = {}) {
-      if (!config.enabled || !config.command) {
-        throw Object.assign(new Error("No local OCR provider is available."), {
-          code: config.reason ?? "workflow_ocr_provider_unavailable",
-        });
-      }
-      if (typeof path !== "string" || !isAbsolute(path) || extname(path).toLowerCase() !== ".pdf") {
+    recognize,
+    async recognizePdf(input = {}) {
+      if (extname(String(input.path ?? "")).toLowerCase() !== ".pdf") {
         throw Object.assign(new Error("Local OCR requires an absolute PDF path."), {
           code: "workflow_ocr_invalid_input",
         });
       }
-      const output = await run(
-        config.command,
-        [config.scriptPath, resolve(path)],
-        { signal, onProgress },
-      );
-      let parsed;
-      try {
-        parsed = JSON.parse(output);
-      } catch {
-        throw Object.assign(new Error("Local OCR returned malformed JSON."), {
-          code: "workflow_ocr_invalid_result",
-        });
-      }
-      return normalizeResult(parsed);
+      return recognize(input);
     },
   };
 }

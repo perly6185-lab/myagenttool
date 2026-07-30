@@ -260,6 +260,77 @@ test("runs confirmed local OCR once, preserves page evidence, and replays safely
   }
 });
 
+test("runs raster-image OCR through the generic adapter and keeps image-region evidence", async () => {
+  const root = fixture();
+  try {
+    writeFileSync(join(root, "photo-inquiry.png"), Buffer.from([
+      0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
+    ]));
+    let calls = 0;
+    const ocrAdapter = {
+      readiness: () => ({
+        state: "ready",
+        providerId: "test-local",
+        reason: null,
+        supportedExtensions: [".pdf", ".png", ".jpg", ".jpeg", ".webp"],
+      }),
+      recognize: async ({ path }) => {
+        calls += 1;
+        assert.match(path, /photo-inquiry\.png$/);
+        return {
+          providerId: "test-local",
+          providerVersion: "1",
+          inputKind: "image",
+          pageCount: 1,
+          pages: [{
+            index: 1,
+            width: 1600,
+            height: 1200,
+            text: "询价编号：IMAGE-101\n产品：动态热机械分析仪",
+            confidence: 0.92,
+            evidence: [{
+              text: "询价编号：IMAGE-101",
+              confidence: 0.95,
+              box: { x: 0.1, y: 0.8, width: 0.4, height: 0.05 },
+            }],
+          }],
+        };
+      },
+    };
+    const { service, actor } = setup(root, { ocrAdapter });
+    const source = service.createSource({
+      projectId: "project",
+      relativePath: ".",
+      readMode: "supported_text",
+      name: "Image OCR fixtures",
+    }, actor).body.source;
+    await service.scanSource({ sourceId: source.id }, actor);
+    const artifact = service.listArtifacts({ sourceId: source.id }, actor).body.artifacts
+      .find((row) => row.relativePath === "photo-inquiry.png");
+    assert.equal(artifact.extraction.state, "needs_ocr");
+    assert.deepEqual(service.getOcrReadiness().body.supportedExtensions, [
+      ".pdf", ".png", ".jpg", ".jpeg", ".webp",
+    ]);
+
+    const result = await service.ocrArtifact({
+      artifactId: artifact.id,
+      expectedRevision: artifact.revision,
+      confirmed: true,
+    }, actor);
+    assert.equal(result.status, 200);
+    assert.equal(calls, 1);
+    assert.equal(artifact.extraction.ocr.inputKind, "image");
+    assert.deepEqual(artifact.extraction.blocks[0].location, {
+      kind: "image",
+      index: 1,
+      width: 1600,
+      height: 1200,
+    });
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("local OCR requires current evidence and cancellation never commits partial text", async () => {
   const root = fixture();
   try {

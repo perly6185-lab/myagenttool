@@ -95,6 +95,9 @@ export interface InquiryIntakeInspection {
     revision: number;
     ocrEvidence: Array<{
       page: number;
+      kind: "page" | "image";
+      width: number | null;
+      height: number | null;
       confidence: number | null;
       lineCount: number;
       preview: string;

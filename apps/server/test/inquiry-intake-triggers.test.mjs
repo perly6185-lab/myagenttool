@@ -297,6 +297,9 @@ test("an explicitly identified historical workbook is paired as the inquiry ledg
   assert.equal(inspection.status, 200);
   assert.deepEqual(inspection.body.observation.ocrEvidence, [{
     page: 1,
+    kind: "page",
+    width: null,
+    height: null,
     confidence: 0.91,
     lineCount: 1,
     preview: "动态热机械分析仪技术协议 设备型号 DMA850",
