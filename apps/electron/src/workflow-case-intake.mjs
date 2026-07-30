@@ -185,6 +185,11 @@ export function registerWorkflowCaseIntake({
         !allowedPrimaryKeys.has(key) || key === primaryKey || !SUPPORTING_ROLES.has(role))) {
       throw new Error("Choose a valid role for each supporting file.");
     }
+    if (Object.entries(supportingRoles).some(([key, role]) =>
+      role === "historical_output"
+      && (!key.startsWith("file:") || files[Number(key.slice(5))]?.extension !== "xlsx"))) {
+      throw new Error("A historical inquiry ledger must be an XLSX workbook.");
+    }
     const primaryFile = primaryKey.startsWith("file:")
       ? files[Number(primaryKey.slice(5))]
       : null;

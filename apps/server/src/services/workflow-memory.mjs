@@ -2669,6 +2669,14 @@ export function createWorkflowMemoryService({
     if (active) return active.promise;
 
     const controller = new AbortController();
+    const action = {
+      controller,
+      promise: null,
+      progress: {
+        completedPages: 0,
+        totalPages: artifact.extraction?.pageCount ?? null,
+      },
+    };
     const operation = (async () => {
       const beforeFingerprint = currentArtifactFingerprint(state, source, artifact);
       if (!beforeFingerprint || beforeFingerprint !== artifact.fingerprint) {
@@ -2686,7 +2694,16 @@ export function createWorkflowMemoryService({
         if (confined === ".." || confined.startsWith(`..${sep}`) || isAbsolute(confined)) {
           return { status: 409, body: { error: "workflow_artifact_changed_rescan_required" } };
         }
-        const result = await ocrAdapter.recognizePdf({ path: target, signal: controller.signal });
+        const result = await ocrAdapter.recognizePdf({
+          path: target,
+          signal: controller.signal,
+          onProgress: (progress) => {
+            action.progress = {
+              completedPages: progress.completedPages,
+              totalPages: progress.totalPages,
+            };
+          },
+        });
         if (controller.signal.aborted) {
           return { status: 409, body: { error: "workflow_ocr_cancelled" } };
         }
@@ -2772,12 +2789,43 @@ export function createWorkflowMemoryService({
         }));
       }
     })();
-    activeOcrActions.set(artifact.id, { promise: operation, controller });
+    action.promise = operation;
+    activeOcrActions.set(artifact.id, action);
     try {
       return await operation;
     } finally {
       activeOcrActions.delete(artifact.id);
     }
+  }
+
+  function getOcrStatus({ artifactId } = {}, actor = null) {
+    const artifact = findArtifact(artifactId, actor);
+    if (!artifact) return { status: 404, body: { error: "workflow_artifact_not_found" } };
+    const action = activeOcrActions.get(artifact.id);
+    if (action) {
+      return {
+        status: 200,
+        body: { state: "running", ...action.progress },
+      };
+    }
+    if (artifact.extraction?.state === "ready" && artifact.extraction?.ocr?.providerId) {
+      return {
+        status: 200,
+        body: {
+          state: "completed",
+          completedPages: artifact.extraction.pageCount ?? 0,
+          totalPages: artifact.extraction.pageCount ?? 0,
+        },
+      };
+    }
+    return {
+      status: 200,
+      body: {
+        state: "idle",
+        completedPages: 0,
+        totalPages: artifact.extraction?.pageCount ?? null,
+      },
+    };
   }
 
   function cancelOcrArtifact({ artifactId } = {}, actor = null) {
@@ -5982,6 +6030,7 @@ export function createWorkflowMemoryService({
     retryArtifactExtraction,
     getOcrReadiness,
     ocrArtifact,
+    getOcrStatus,
     cancelOcrArtifact,
     setArtifactExclusion,
     indexSourceEmbeddings,

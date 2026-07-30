@@ -82,11 +82,17 @@ const COPY = {
     ocrDescription: "OCR runs on this Mac. The PDF and recognized text are not uploaded.",
     ocrProvider: "Local provider",
     ocrPages: "PDF pages",
+    ocrProgress: "Progress",
+    ocrEvidence: "OCR page evidence",
+    ocrLines: "lines",
     ocrConfirm: "I confirm that this local PDF may be processed by OCR.",
     ocrUnavailable: "Local OCR is not available on this device.",
     ocrRunning: "Reading PDF…",
     ocrSubmit: "Read and continue",
     ocrFailed: "Local OCR could not read this PDF.",
+    historicalOutputInvalid: "Choose a readable XLSX workbook as the historical output.",
+    historicalOutputUnpaired: "The historical workbook does not reference this inquiry.",
+    replaySupportConflict: "This inquiry was already created with a different set of supporting files.",
     genericError: "The inquiry could not be processed.",
   },
   zh: {
@@ -131,11 +137,17 @@ const COPY = {
     ocrDescription: "OCR 仅在这台 Mac 上运行，PDF 和识别文字不会上传。",
     ocrProvider: "本地识别组件",
     ocrPages: "PDF 页数",
+    ocrProgress: "识别进度",
+    ocrEvidence: "OCR 分页证据",
+    ocrLines: "行",
     ocrConfirm: "我确认允许在本机对这份 PDF 进行 OCR。",
     ocrUnavailable: "当前设备没有可用的本地 OCR。",
     ocrRunning: "正在读取 PDF……",
     ocrSubmit: "读取并继续",
     ocrFailed: "本地 OCR 无法读取这份 PDF。",
+    historicalOutputInvalid: "请选择可读取的 XLSX 文件作为历史交付物。",
+    historicalOutputUnpaired: "该历史交付表与当前询价之间没有可验证的关联。",
+    replaySupportConflict: "该询价已使用另一组关联资料创建，请检查原案例。",
     genericError: "询价处理失败。",
   },
 } as const;
@@ -207,6 +219,12 @@ export function InquiryIntakePanel({
     queryFn: () => workflowMemoryApi.getWorkflowOcrReadiness(),
     enabled: Boolean(ocrTarget),
   });
+  const ocrStatusQuery = useQuery({
+    queryKey: ["workflow-memory", "ocr-status", ocrTarget?.artifactId],
+    queryFn: () => workflowMemoryApi.getWorkflowOcrStatus(ocrTarget!.artifactId!),
+    enabled: pending === "ocr" && Boolean(ocrTarget?.artifactId),
+    refetchInterval: pending === "ocr" ? 500 : false,
+  });
 
   const refresh = () => Promise.all([
     queryClient.invalidateQueries({ queryKey: ["workflow-memory", "intake-observations", source.id] }),
@@ -222,6 +240,13 @@ export function InquiryIntakePanel({
     if (caught.code === "workflow_business_analysis_needs_ocr"
       || caught.code === "workflow_business_analysis_content_unavailable") return copy.needsOcr;
     if (caught.code?.startsWith("workflow_ocr_")) return caught.message || copy.ocrFailed;
+    if (caught.code === "workflow_intake_historical_output_not_supported") {
+      return copy.historicalOutputInvalid;
+    }
+    if (caught.code === "workflow_intake_historical_output_unpaired") {
+      return copy.historicalOutputUnpaired;
+    }
+    if (caught.code === "workflow_intake_replay_support_conflict") return copy.replaySupportConflict;
     if (caught.code === "workflow_intake_business_identity_conflict") return copy.identityConflict;
     return caught.message || copy.genericError;
   };
@@ -270,7 +295,18 @@ export function InquiryIntakePanel({
       ])));
       setIdempotencyKey(newRequestKey(observation.id));
     } catch (caught) {
-      setError(errorText(caught));
+      if (caught instanceof ApiError
+        && observation.extraction?.state === "needs_ocr"
+        && [
+          "workflow_business_analysis_needs_ocr",
+          "workflow_business_analysis_content_unavailable",
+        ].includes(caught.code)) {
+        setOcrTarget(observation);
+        setOcrConfirmed(false);
+        setError(null);
+      } else {
+        setError(errorText(caught));
+      }
     } finally {
       setPending(null);
     }
@@ -472,6 +508,14 @@ export function InquiryIntakePanel({
             <dd>{ocrTarget?.extraction?.pageCount ?? "—"}</dd>
             <dt className="text-muted-foreground">{copy.ocrProvider}</dt>
             <dd>{ocrReadinessQuery.data?.providerId ?? "—"}</dd>
+            <dt className="text-muted-foreground">{copy.ocrProgress}</dt>
+            <dd>
+              {pending === "ocr"
+                ? `${ocrStatusQuery.data?.completedPages ?? 0}/${ocrStatusQuery.data?.totalPages
+                  ?? ocrTarget?.extraction?.pageCount
+                  ?? "—"}`
+                : "—"}
+            </dd>
           </dl>
           {ocrReadinessQuery.data?.state === "unavailable" ? (
             <p role="alert" className="flex items-start gap-2 rounded-md border border-warning/40 bg-warning/10 p-3 text-sm">
@@ -536,6 +580,25 @@ export function InquiryIntakePanel({
               <dd>{copy.inquiry}</dd>
             </dl>
             <p className="text-xs text-muted-foreground">{copy.evidence}</p>
+            {inspection.observation.ocrEvidence?.length ? (
+              <div className="rounded-md border p-3">
+                <p className="text-xs font-medium">{copy.ocrEvidence}</p>
+                <ul className="mt-2 space-y-2 text-xs text-muted-foreground">
+                  {inspection.observation.ocrEvidence.map((evidence) => (
+                    <li key={evidence.page}>
+                      <span className="font-medium text-foreground">
+                        {copy.ocrPages} {evidence.page}
+                      </span>
+                      {" · "}{evidence.lineCount} {copy.ocrLines}
+                      {evidence.confidence == null
+                        ? ""
+                        : ` · ${Math.round(evidence.confidence * 100)}%`}
+                      {evidence.preview ? <p className="mt-0.5 line-clamp-2">{evidence.preview}</p> : null}
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            ) : null}
             {(inspection.observation.supportingObservations ?? []).length ? (
               <div className="rounded-md border p-3">
                 <p className="text-xs font-medium">{copy.supportingFiles}</p>

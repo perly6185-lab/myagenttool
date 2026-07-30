@@ -266,7 +266,8 @@ test("local OCR requires current evidence and cancellation never commits partial
     writeFileSync(join(root, "cancelled.pdf"), "%PDF-1.3\nscanned fixture");
     const ocrAdapter = {
       readiness: () => ({ state: "ready", providerId: "test-local", reason: null }),
-      recognizePdf: ({ signal }) => new Promise((_resolve, reject) => {
+      recognizePdf: ({ signal, onProgress }) => new Promise((_resolve, reject) => {
+        onProgress({ completedPages: 1, totalPages: 2 });
         signal.addEventListener("abort", () => reject(Object.assign(
           new Error("Local OCR was cancelled."),
           { code: "workflow_ocr_cancelled" },
@@ -302,12 +303,17 @@ test("local OCR requires current evidence and cancellation never commits partial
       confirmed: true,
     }, actor);
     await Promise.resolve();
+    assert.deepEqual(service.getOcrStatus({ artifactId: artifact.id }, actor), {
+      status: 200,
+      body: { state: "running", completedPages: 1, totalPages: 2 },
+    });
     const cancellation = service.cancelOcrArtifact({ artifactId: artifact.id }, actor);
     assert.equal(cancellation.status, 202);
     const cancelled = await running;
     assert.equal(cancelled.status, 409);
     assert.equal(cancelled.body.error, "workflow_ocr_cancelled");
     assert.equal(artifact.extraction.state, "needs_ocr");
+    assert.equal(service.getOcrStatus({ artifactId: artifact.id }, actor).body.state, "idle");
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

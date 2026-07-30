@@ -177,6 +177,9 @@ test("workflow memory routes authorize, scan, classify, and enforce tenancy over
   )).body.error, "workflow_ocr_confirmation_required");
   assert.equal((await call(
     `/api/workflow-memory/artifacts/${requirement.id}/ocr`,
+  )).body.state, "idle");
+  assert.equal((await call(
+    `/api/workflow-memory/artifacts/${requirement.id}/ocr`,
     { method: "DELETE" },
   )).body.error, "workflow_ocr_not_running");
   const businessAnalysis = await call(

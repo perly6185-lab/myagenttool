@@ -3898,6 +3898,7 @@ export function createServerRuntimeServices({
     retryWorkflowArtifactExtraction: workflowMemoryService.retryArtifactExtraction,
     getWorkflowOcrReadiness: workflowMemoryService.getOcrReadiness,
     ocrWorkflowArtifact: workflowMemoryService.ocrArtifact,
+    getWorkflowOcrStatus: workflowMemoryService.getOcrStatus,
     cancelWorkflowOcrArtifact: workflowMemoryService.cancelOcrArtifact,
     setWorkflowArtifactExclusion: workflowMemoryService.setArtifactExclusion,
     indexWorkflowSourceEmbeddings: workflowMemoryService.indexSourceEmbeddings,

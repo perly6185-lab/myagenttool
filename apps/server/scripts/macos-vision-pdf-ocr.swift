@@ -93,6 +93,9 @@ for pageOffset in 0..<document.pageCount {
         "confidence": confidence,
         "evidence": evidence,
     ])
+    FileHandle.standardError.write(
+        Data("MYAGENTTOOL_OCR_PROGRESS \(pageOffset + 1)/\(document.pageCount)\n".utf8)
+    )
 }
 
 let result: [String: Any] = [

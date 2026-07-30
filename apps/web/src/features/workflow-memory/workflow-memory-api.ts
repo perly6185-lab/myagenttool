@@ -93,6 +93,12 @@ export interface InquiryIntakeInspection {
     artifactId: string;
     relativePath: string;
     revision: number;
+    ocrEvidence: Array<{
+      page: number;
+      confidence: number | null;
+      lineCount: number;
+      preview: string;
+    }>;
     supportingObservations: Array<{
       id: string;
       artifactId: string;
@@ -103,6 +109,11 @@ export interface InquiryIntakeInspection {
       role: "reference" | "historical_output";
       documentType: "other_reference" | "inquiry_ledger";
       pairingEvidence: Array<{ kind: string; value: string }>;
+      classification?: Pick<
+        BusinessDocumentClassification,
+        "id" | "artifactId" | "documentType" | "confidence" | "confirmationState"
+        | "analysisState" | "riskSignals" | "fieldProposals" | "revision"
+      >;
     }>;
   };
   classification: Pick<
@@ -183,6 +194,15 @@ export const workflowMemoryApi = {
   cancelWorkflowOcrArtifact: (artifactId: string) =>
     request<{ artifactId: string; cancellationRequested: true }>(
       "DELETE",
+      `/api/workflow-memory/artifacts/${encodeURIComponent(artifactId)}/ocr`,
+    ),
+  getWorkflowOcrStatus: (artifactId: string) =>
+    request<{
+      state: "idle" | "running" | "completed";
+      completedPages: number;
+      totalPages: number | null;
+    }>(
+      "GET",
       `/api/workflow-memory/artifacts/${encodeURIComponent(artifactId)}/ocr`,
     ),
   inspectWorkflowInquiryIntake: (

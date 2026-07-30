@@ -3,6 +3,7 @@ import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/re
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { InquiryIntakePanel } from "@/features/workflow-memory/inquiry-intake-panel";
+import { ApiError } from "@/lib/api-client";
 import { i18n } from "@/lib/i18n";
 
 const mocks = vi.hoisted(() => ({
@@ -14,6 +15,7 @@ const mocks = vi.hoisted(() => ({
   ocrReadiness: vi.fn(),
   ocr: vi.fn(),
   cancelOcr: vi.fn(),
+  ocrStatus: vi.fn(),
 }));
 
 vi.mock("@/features/workflow-memory/workflow-memory-api", () => ({
@@ -26,6 +28,7 @@ vi.mock("@/features/workflow-memory/workflow-memory-api", () => ({
     getWorkflowOcrReadiness: mocks.ocrReadiness,
     ocrWorkflowArtifact: mocks.ocr,
     cancelWorkflowOcrArtifact: mocks.cancelOcr,
+    getWorkflowOcrStatus: mocks.ocrStatus,
   },
 }));
 
@@ -160,6 +163,11 @@ beforeEach(async () => {
   });
   mocks.ocr.mockResolvedValue({ artifact: {}, replayed: false });
   mocks.cancelOcr.mockResolvedValue({ artifactId: "wfa_scanned", cancellationRequested: true });
+  mocks.ocrStatus.mockResolvedValue({
+    state: "running",
+    completedPages: 3,
+    totalPages: 6,
+  });
 });
 
 afterEach(cleanup);
@@ -197,22 +205,22 @@ describe("InquiryIntakePanel", () => {
     const primary = {
       ...readyObservation,
       id: "wio_new",
-      relativePath: "incoming/case/inquiry.xlsx",
-      name: "inquiry.xlsx",
+      relativePath: "incoming/case/inquiry.txt",
+      name: "inquiry.txt",
     };
     const supporting = {
       ...readyObservation,
-      id: "wio_image",
-      artifactId: "wfa_image",
-      canonicalArtifactId: "wfa_image",
-      relativePath: "incoming/case/photo.png",
-      name: "photo.png",
+      id: "wio_output",
+      artifactId: "wfa_output",
+      canonicalArtifactId: "wfa_output",
+      relativePath: "incoming/case/case-summary.xlsx",
+      name: "case-summary.xlsx",
     };
     const pickWorkflowCaseFiles = vi.fn().mockResolvedValue({
       selectionId: "selection-1",
       files: [
-        { name: "inquiry.xlsx", extension: "xlsx", size: 100, readiness: "ready" },
-        { name: "photo.png", extension: "png", size: 20, readiness: "needs_ocr" },
+        { name: "inquiry.txt", extension: "txt", size: 100, readiness: "ready" },
+        { name: "case-summary.xlsx", extension: "xlsx", size: 200, readiness: "ready" },
       ],
     });
     const stageWorkflowCase = vi.fn().mockResolvedValue({
@@ -253,11 +261,11 @@ describe("InquiryIntakePanel", () => {
         revision: 3,
         supportingObservations: [{
           id: supporting.id,
-          artifactId: "wfa_image",
+          artifactId: "wfa_output",
           relativePath: supporting.relativePath,
           name: supporting.name,
-          family: "image",
-          extractionState: "skipped",
+          family: "spreadsheet",
+          extractionState: "ready",
           role: "historical_output",
           documentType: "inquiry_ledger",
           pairingEvidence: [{ kind: "shared_filename_case_key", value: "case" }],
@@ -291,11 +299,11 @@ describe("InquiryIntakePanel", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Add real case" }));
     const addDialog = await screen.findByRole("dialog", { name: "Add one real business case" });
     fireEvent.click(screen.getByRole("button", { name: "Choose files" }));
-    expect(await screen.findByText("inquiry.xlsx")).toBeTruthy();
-    expect(screen.getByText("Needs OCR")).toBeTruthy();
-    fireEvent.change(screen.getByLabelText("photo.png role"), {
-      target: { value: "historical_output" },
-    });
+    expect(await screen.findByText("inquiry.txt")).toBeTruthy();
+    expect(screen.getByLabelText("case-summary.xlsx role")).toHaveProperty(
+      "value",
+      "historical_output",
+    );
     fireEvent.click(screen.getByLabelText("I confirm I may use these files in this local workflow."));
     fireEvent.click(screen.getByRole("button", { name: "Add and review" }));
 
@@ -309,12 +317,93 @@ describe("InquiryIntakePanel", () => {
     })));
     await waitFor(() => expect(mocks.inspect).toHaveBeenCalledWith(
       "wio_new",
-      ["wio_image"],
-      { wio_image: "historical_output" },
+      ["wio_output"],
+      { wio_output: "historical_output" },
     ));
     expect(await screen.findByRole("dialog", { name: "Confirm the new inquiry" })).toBeTruthy();
-    expect(screen.getByText(/photo\.png · Historical output · skipped/)).toBeTruthy();
+    expect(screen.getByText(/case-summary\.xlsx · Historical output · ready/)).toBeTruthy();
     expect(addDialog.isConnected).toBe(false);
+  });
+
+  it("continues a newly added scanned PDF directly into local OCR", async () => {
+    const scanned = {
+      ...readyObservation,
+      id: "wio_added_scan",
+      artifactId: "wfa_added_scan",
+      canonicalArtifactId: "wfa_added_scan",
+      artifactRevision: 4,
+      relativePath: "incoming/dma/97-DMA.pdf",
+      name: "97-DMA.pdf",
+      extraction: {
+        state: "needs_ocr" as const,
+        pageCount: 6,
+        characterCount: 0,
+        providerId: null,
+        localOnly: null,
+      },
+    };
+    const output = {
+      ...readyObservation,
+      id: "wio_added_output",
+      artifactId: "wfa_added_output",
+      canonicalArtifactId: "wfa_added_output",
+      relativePath: "incoming/dma/97-DMA-summary.xlsx",
+      name: "97-DMA-summary.xlsx",
+    };
+    const pickWorkflowCaseFiles = vi.fn().mockResolvedValue({
+      selectionId: "selection-scanned",
+      files: [
+        { name: scanned.name, extension: "pdf", size: 1_000, readiness: "inspect" },
+        { name: output.name, extension: "xlsx", size: 200, readiness: "ready" },
+      ],
+    });
+    const stageWorkflowCase = vi.fn().mockResolvedValue({
+      requestId: "request-scanned",
+      caseDirectory: "incoming/dma",
+      primaryRelativePath: scanned.relativePath,
+      supportingRelativePaths: [output.relativePath],
+      supportingFileRoles: { [output.relativePath]: "historical_output" },
+      files: [],
+      authorizationMode: "deidentified",
+      recordedAt: "2026-07-30T12:00:00.000Z",
+    });
+    window.myagenttoolDesktop = { pickWorkflowCaseFiles, stageWorkflowCase };
+    mocks.scan.mockResolvedValue({
+      source,
+      intake: {
+        scanRevision: 2,
+        scannedEntries: 2,
+        skipped: 0,
+        truncated: false,
+        observed: 2,
+        waitingStable: 0,
+        ready: 2,
+        duplicate: 0,
+        blocked: 0,
+        unchanged: 0,
+      },
+      observations: [scanned, output],
+    });
+    mocks.list.mockResolvedValue({ observations: [scanned, output], count: 2 });
+    mocks.inspect.mockRejectedValue(new ApiError(
+      "workflow_business_analysis_needs_ocr",
+      "OCR required",
+      409,
+    ));
+
+    renderPanel();
+    fireEvent.click(await screen.findByRole("button", { name: "Add real case" }));
+    fireEvent.click(screen.getByRole("button", { name: "Choose files" }));
+    expect((await screen.findAllByText(scanned.name)).length).toBeGreaterThan(0);
+    fireEvent.click(screen.getByLabelText("I confirm I may use these files in this local workflow."));
+    fireEvent.click(screen.getByRole("button", { name: "Add and review" }));
+
+    expect(await screen.findByRole("dialog", { name: "Read this scanned PDF locally" })).toBeTruthy();
+    expect(mocks.inspect).toHaveBeenCalledWith(
+      scanned.id,
+      [output.id],
+      { [output.id]: "historical_output" },
+    );
   });
 
   it("retries review without copying an already staged case again", async () => {
@@ -373,6 +462,10 @@ describe("InquiryIntakePanel", () => {
   });
 
   it("requires explicit confirmation before local OCR and resumes inquiry review", async () => {
+    let finishOcr!: (value: { artifact: object; replayed: boolean }) => void;
+    mocks.ocr.mockImplementation(() => new Promise((resolve) => {
+      finishOcr = resolve;
+    }));
     const scanned = {
       ...readyObservation,
       id: "wio_scanned",
@@ -419,6 +512,8 @@ describe("InquiryIntakePanel", () => {
       expectedRevision: 7,
       confirmed: true,
     }));
+    expect(await screen.findByText("3/6")).toBeTruthy();
+    finishOcr({ artifact: {}, replayed: false });
     await waitFor(() => expect(mocks.inspect).toHaveBeenCalledWith("wio_scanned", [], {}));
   });
 

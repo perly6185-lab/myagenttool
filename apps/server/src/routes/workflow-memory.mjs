@@ -27,6 +27,7 @@ export async function handleWorkflowMemoryRoutes({
   retryArtifactExtraction,
   getOcrReadiness,
   ocrArtifact,
+  getOcrStatus,
   cancelOcrArtifact,
   setArtifactExclusion,
   indexSourceEmbeddings,
@@ -570,6 +571,13 @@ export async function handleWorkflowMemoryRoutes({
       artifactId: decodeURIComponent(artifactOcr[1]),
       expectedRevision: body?.expectedRevision,
       confirmed: body?.confirmed,
+    }, actor);
+    sendJson(res, result.status, result.body);
+    return true;
+  }
+  if (artifactOcr && req.method === "GET") {
+    const result = getOcrStatus({
+      artifactId: decodeURIComponent(artifactOcr[1]),
     }, actor);
     sendJson(res, result.status, result.body);
     return true;

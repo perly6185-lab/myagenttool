@@ -56,7 +56,11 @@ function normalizeResult(value) {
   };
 }
 
-function runProcess(command, args, { timeoutMs = DEFAULT_TIMEOUT_MS, signal } = {}) {
+function runProcess(command, args, {
+  timeoutMs = DEFAULT_TIMEOUT_MS,
+  signal,
+  onProgress = () => {},
+} = {}) {
   return new Promise((resolvePromise, reject) => {
     if (signal?.aborted) {
       reject(Object.assign(new Error("Local OCR was cancelled."), {
@@ -79,6 +83,7 @@ function runProcess(command, args, { timeoutMs = DEFAULT_TIMEOUT_MS, signal } = 
     const stderr = [];
     let stdoutBytes = 0;
     let stderrBytes = 0;
+    let stderrPending = "";
     let settled = false;
     const abort = () => {
       child.kill("SIGKILL");
@@ -114,7 +119,26 @@ function runProcess(command, args, { timeoutMs = DEFAULT_TIMEOUT_MS, signal } = 
     });
     child.stderr.on("data", (chunk) => {
       stderrBytes += chunk.length;
-      if (stderrBytes <= 64 * 1024) stderr.push(chunk);
+      if (stderrBytes > 64 * 1024) return;
+      stderrPending += chunk.toString("utf8");
+      const lines = stderrPending.split(/\r?\n/);
+      stderrPending = lines.pop() ?? "";
+      for (const line of lines) {
+        const progress = line.match(/^MYAGENTTOOL_OCR_PROGRESS (\d+)\/(\d+)$/);
+        if (progress) {
+          const completedPages = Number(progress[1]);
+          const totalPages = Number(progress[2]);
+          if (completedPages >= 1 && totalPages >= completedPages && totalPages <= MAX_PAGES) {
+            try {
+              onProgress({ completedPages, totalPages });
+            } catch {
+              // Progress reporting must not interrupt the OCR process.
+            }
+          }
+        } else if (line) {
+          stderr.push(Buffer.from(`${line}\n`));
+        }
+      }
     });
     child.once("error", (error) => {
       finish(Object.assign(new Error("Local OCR could not start."), {
@@ -125,6 +149,9 @@ function runProcess(command, args, { timeoutMs = DEFAULT_TIMEOUT_MS, signal } = 
     });
     child.once("close", (code) => {
       if (settled) return;
+      if (stderrPending && stderrBytes <= 64 * 1024) {
+        stderr.push(Buffer.from(stderrPending));
+      }
       if (code !== 0) {
         finish(Object.assign(new Error(
           boundedText(Buffer.concat(stderr).toString("utf8").trim(), 500)
@@ -175,7 +202,7 @@ export function createLocalWorkflowOcrAdapter({
         reason: config.reason,
       };
     },
-    async recognizePdf({ path, signal } = {}) {
+    async recognizePdf({ path, signal, onProgress } = {}) {
       if (!config.enabled || !config.command) {
         throw Object.assign(new Error("No local OCR provider is available."), {
           code: config.reason ?? "workflow_ocr_provider_unavailable",
@@ -186,7 +213,11 @@ export function createLocalWorkflowOcrAdapter({
           code: "workflow_ocr_invalid_input",
         });
       }
-      const output = await run(config.command, [config.scriptPath, resolve(path)], { signal });
+      const output = await run(
+        config.command,
+        [config.scriptPath, resolve(path)],
+        { signal, onProgress },
+      );
       let parsed;
       try {
         parsed = JSON.parse(output);
