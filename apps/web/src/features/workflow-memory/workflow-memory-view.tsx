@@ -26,6 +26,7 @@ import { Input, Select } from "@/components/ui/input";
 import { api } from "@/data/use-console-actions";
 import { useConsoleState, useRefreshConsoleState } from "@/data/use-console-state";
 import { workflowMemoryApi } from "@/features/workflow-memory/workflow-memory-api";
+import { InquiryIntakePanel } from "@/features/workflow-memory/inquiry-intake-panel";
 import { RoutineSetupGuide } from "@/features/workflow-memory/routine-setup-guide";
 import { ApiError } from "@/lib/api-client";
 import type {
@@ -1038,6 +1039,14 @@ export function WorkflowMemoryView() {
                   if (!window.confirm(copy.deleteConfirm)) return;
                   void runAction("delete-source", () =>
                     workflowApi.deleteWorkflowSourceLearning(selectedSource.id, selectedSource.revision));
+                }}
+              />
+
+              <InquiryIntakePanel
+                source={selectedSource}
+                onOpenTask={(workItemId) => {
+                  setSelectedWorkItemId(workItemId);
+                  setSection("task");
                 }}
               />
 

@@ -71,6 +71,7 @@ import { createBusinessDocumentIntelligenceService } from "../services/business-
 import { createBusinessCaseDiscoveryService } from "../services/business-case-discovery.mjs";
 import { createArticleImportService, resolveArticleImportConfig } from "../services/article-imports.mjs";
 import { createWorkflowMemoryService } from "../services/workflow-memory.mjs";
+import { createInquiryIntakeTriggerService } from "../services/inquiry-intake-triggers.mjs";
 import { createPlanningProjectService } from "../services/planning-projects.mjs";
 import { resolveAutoRunVerifyCommand, resolveAutoRunVerifyCommandFor, runWorktreeVerification } from "../services/worktree-verify.mjs";
 import { resolveStatusWritebackConfig, runIssueAssigneeEdit, runIssueBodyFetch, runIssueClose, runIssueComment, runIssueStatusTransition, runPrChecks, runPrMerge, runPrStateFetch, runIssueStateFetch, runIssueSnapshotFetch, runIssueSnapshotWrite } from "../services/issue-status.mjs";
@@ -552,6 +553,20 @@ export function createServerRuntimeServices({
     appendEvent,
     persistStateSoon,
     createBusinessCase: businessRoutineService.createBusinessCase,
+    store,
+  });
+  const inquiryIntakeTriggerService = createInquiryIntakeTriggerService({
+    state,
+    now,
+    nextId,
+    appendEvent,
+    persistStateSoon,
+    analyzeArtifact: businessDocumentIntelligenceService.analyzeArtifact,
+    confirmClassification: businessDocumentIntelligenceService.confirmClassification,
+    createBusinessCase: businessRoutineService.createBusinessCase,
+    listRoutineDefinitions: businessRoutineService.listRoutineDefinitions,
+    materializeRoutineIssue: businessRoutineService.materializeRoutineIssue,
+    verifyEvidence: workflowMemoryService.verifyIntakeEvidence,
     store,
   });
   const planningProjectService = createPlanningProjectService({
@@ -3850,6 +3865,8 @@ export function createServerRuntimeServices({
     scanWorkflowSource: workflowMemoryService.scanSource,
     scanWorkflowIncrementalIntake: workflowMemoryService.scanIncrementalIntake,
     listWorkflowIntakeObservations: workflowMemoryService.listIntakeObservations,
+    inspectWorkflowInquiryIntake: inquiryIntakeTriggerService.inspect,
+    acceptWorkflowInquiryIntake: inquiryIntakeTriggerService.accept,
     cancelWorkflowSourceScan: workflowMemoryService.cancelScan,
     revokeWorkflowSource: workflowMemoryService.revokeSource,
     deleteWorkflowSourceLearning: workflowMemoryService.deleteSourceLearning,

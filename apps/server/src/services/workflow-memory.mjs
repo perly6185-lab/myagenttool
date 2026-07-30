@@ -1353,7 +1353,25 @@ export function createWorkflowMemoryService({
       contentIdentity: _contentIdentity,
       ...view
     } = observation;
-    return view;
+    const receipt = observation.receiptId
+      ? state.workflowIntakeReceipts.find((row) =>
+        row.id === observation.receiptId && row.ownerTeamId === observation.ownerTeamId)
+      : null;
+    return {
+      ...view,
+      receipt: receipt ? {
+        id: receipt.id,
+        businessKey: receipt.businessKey,
+        routineDefinitionId: receipt.routineDefinitionId,
+        routineVersion: receipt.routineVersion,
+        businessCaseId: receipt.businessCaseId,
+        workItemId: receipt.workItemId,
+        workItemLocalRef: receipt.workItemLocalRef,
+        routineRunId: receipt.routineRunId,
+        state: receipt.state,
+        triggeredAt: receipt.triggeredAt,
+      } : null,
+    };
   }
 
   function listIntakeObservations({ sourceId = null, state: observationState = null } = {}, actor = null) {
@@ -1374,6 +1392,60 @@ export function createWorkflowMemoryService({
         || left.relativePath.localeCompare(right.relativePath))
       .map(intakeObservationView);
     return { status: 200, body: { observations, count: observations.length } };
+  }
+
+  function verifyIntakeEvidence({ observationId } = {}, actor = null) {
+    const observation = state.workflowIntakeObservations.find((row) =>
+      row.id === observationId && visible(row, actor));
+    if (!observation) {
+      return { status: 404, body: { error: "workflow_intake_observation_not_found" } };
+    }
+    const source = findSource(observation.sourceId, actor);
+    const artifact = findArtifact(observation.canonicalArtifactId ?? observation.artifactId, actor);
+    const project = state.projects.find((row) => row.id === observation.projectId);
+    if (!source || source.state !== "active" || !artifact || !project) {
+      return { status: 409, body: { error: "workflow_intake_evidence_not_current" } };
+    }
+    let candidate;
+    try {
+      candidate = collectIntakeCandidates(source, project).candidates.find((row) =>
+        row.relativePath === observation.relativePath);
+    } catch {
+      candidate = null;
+    }
+    if (!candidate) {
+      return { status: 409, body: { error: "workflow_intake_evidence_not_current" } };
+    }
+    try {
+      const beforeSignature = candidate.signature;
+      const identity = intakeFileIdentity(candidate.fullPath, source, candidate.stat);
+      const after = statSync(candidate.fullPath);
+      const afterSignature = `${after.size}:${Math.trunc(after.mtimeMs)}:${Math.trunc(after.ctimeMs)}`;
+      if (beforeSignature !== afterSignature
+        || observation.signature !== afterSignature
+        || identity.contentIdentity !== observation.contentIdentity
+        || artifact.contentIdentity !== observation.contentIdentity) {
+        runTx(() => {
+          observation.state = "waiting_stable";
+          observation.reason = "workflow_intake_evidence_changed";
+          observation.signature = afterSignature;
+          observation.contentIdentity = null;
+          observation.stableSince = now();
+          observation.revision = Number(observation.revision ?? 0) + 1;
+          observation.updatedAt = now();
+        });
+        return {
+          status: 409,
+          body: {
+            error: "workflow_intake_evidence_changed",
+            recovery: "Check for new inquiries again after the file stops changing.",
+          },
+        };
+      }
+      return { status: 200, body: { current: true } };
+    } catch {
+      return { status: 409, body: { error: "workflow_intake_evidence_not_current" } };
+    }
   }
 
   async function scanIncrementalIntake({ sourceId } = {}, actor = null) {
@@ -5702,6 +5774,7 @@ export function createWorkflowMemoryService({
     scanSource,
     scanIncrementalIntake,
     listIntakeObservations,
+    verifyIntakeEvidence,
     cancelScan,
     revokeSource,
     deleteSourceLearning,

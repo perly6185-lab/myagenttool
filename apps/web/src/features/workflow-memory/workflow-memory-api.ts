@@ -21,6 +21,70 @@ import {
   type WorkflowSource,
 } from "@/lib/api-client";
 
+export interface WorkflowIntakeObservation {
+  id: string;
+  projectId: string;
+  sourceId: string;
+  relativePath: string;
+  name: string;
+  state: "observing" | "waiting_stable" | "needs_review" | "duplicate" | "ready" | "triggered" | "blocked";
+  reason: string | null;
+  artifactId: string | null;
+  canonicalArtifactId: string | null;
+  receiptId?: string | null;
+  receipt?: Pick<
+    InquiryIntakeReceipt,
+    "id" | "businessKey" | "routineDefinitionId" | "routineVersion" | "businessCaseId"
+    | "workItemId" | "workItemLocalRef" | "routineRunId" | "state" | "triggeredAt"
+  > | null;
+  triggeredAt?: string | null;
+  revision: number;
+  updatedAt: string;
+}
+
+export interface InquiryIntakeRoutine {
+  id: string;
+  name: string;
+  description: string;
+  version: number;
+  triggerDocumentTypes: string[];
+}
+
+export interface InquiryIntakeReceipt {
+  id: string;
+  projectId: string;
+  sourceId: string;
+  observationId: string;
+  artifactId: string;
+  businessKey: string;
+  routineDefinitionId: string;
+  routineVersion: number;
+  businessCaseId: string;
+  workItemId: string;
+  workItemLocalRef: string;
+  routineRunId: string;
+  state: "triggered";
+  triggeredAt: string;
+  revision: number;
+}
+
+export interface InquiryIntakeInspection {
+  state: "needs_confirmation";
+  observation: {
+    id: string;
+    sourceId: string;
+    artifactId: string;
+    relativePath: string;
+    revision: number;
+  };
+  classification: Pick<
+    BusinessDocumentClassification,
+    "id" | "artifactId" | "documentType" | "confidence" | "confirmationState"
+    | "analysisState" | "riskSignals" | "fieldProposals" | "revision"
+  >;
+  routines: InquiryIntakeRoutine[];
+}
+
 /**
  * Workflow Memory is route-lazy, so keep its sizeable API surface in the same
  * lazy chunk instead of charging every user for it during application boot.
@@ -48,6 +112,57 @@ export const workflowMemoryApi = {
         cancelled: boolean;
       };
     }>("POST", `/api/workflow-memory/sources/${encodeURIComponent(sourceId)}/scan`, {}),
+  scanWorkflowIncrementalIntake: (sourceId: string) =>
+    request<{
+      source: WorkflowSource;
+      intake: {
+        scanRevision: number;
+        scannedEntries: number;
+        skipped: number;
+        truncated: boolean;
+        observed: number;
+        waitingStable: number;
+        ready: number;
+        duplicate: number;
+        blocked: number;
+        unchanged: number;
+      };
+      observations: WorkflowIntakeObservation[];
+    }>("POST", `/api/workflow-memory/sources/${encodeURIComponent(sourceId)}/scan-intake`, {}),
+  listWorkflowIntakeObservations: (sourceId: string) =>
+    request<{ observations: WorkflowIntakeObservation[]; count: number }>(
+      "GET",
+      `/api/workflow-memory/intake-observations?sourceId=${encodeURIComponent(sourceId)}`,
+    ),
+  inspectWorkflowInquiryIntake: (observationId: string) =>
+    request<InquiryIntakeInspection | {
+      state: "triggered";
+      receipt: InquiryIntakeReceipt;
+      replayed: true;
+    }>(
+      "POST",
+      `/api/workflow-memory/intake-observations/${encodeURIComponent(observationId)}/inspect`,
+      {},
+    ),
+  acceptWorkflowInquiryIntake: (
+    observationId: string,
+    body: {
+      expectedRevision: number;
+      idempotencyKey: string;
+      routineDefinitionId: string;
+      confirmed: true;
+      fieldCorrections?: Partial<Record<BusinessFieldProposal["key"], string>>;
+      excludedFieldKeys?: BusinessFieldProposal["key"][];
+    },
+  ) => request<{
+    state: "triggered";
+    receipt: InquiryIntakeReceipt;
+    replayed: boolean;
+  }>(
+    "POST",
+    `/api/workflow-memory/intake-observations/${encodeURIComponent(observationId)}/accept`,
+    body,
+  ),
   cancelWorkflowSourceScan: (sourceId: string) =>
     request<{ sourceId: string; cancellationRequested: true }>(
       "POST",

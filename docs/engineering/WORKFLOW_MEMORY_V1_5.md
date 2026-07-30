@@ -62,6 +62,25 @@ GET  /api/workflow-memory/intake-observations?sourceId={sourceId}
 - 相同内容副本指向原 Artifact；原路径消失后的同内容新路径被视为移动并沿用 Artifact 身份。
 - 超大文件、文件消失、来源撤销、符号链接、目录逃逸和跨租户访问失败关闭，且不会删除或改写用户文件。
 
+## 阶段 3B：确认后生成询价任务
+
+“新询价接收”把稳定观察接到已发布的商务 Routine，但不会自动执行文件推断。普通用户在已授权来源上点击一次“检查新询价”，界面会完成稳定窗口复查；只有打开确认框、核对关键字段、选择工作流并显式确认后，系统才创建本地任务。
+
+```text
+POST /api/workflow-memory/intake-observations/{observationId}/inspect
+POST /api/workflow-memory/intake-observations/{observationId}/accept
+```
+
+- 检查只展示当前文件的识别类型、字段证据和可用的已发布询价 Routine，不创建 Business Case 或 Issue。
+- 接受请求必须携带观察修订、用户确认、Routine 标识和调用方幂等键；询价编号缺失时保持在确认框中补充，不自动猜测业务身份。
+- 确认时再次校验磁盘文件的内部签名和内容身份；文件在稳定扫描后又发生变化时退回等待稳定，不使用过期证据。
+- metadata 来源不能确认询价正文；需改为受控文本读取后再处理。
+- 相同业务编号指向不同证据时进入人工核对，不静默合并，也不创建第二个任务。
+- 确认后依次形成已确认 Business Entity、Business Case、固定 Routine 版本的本地 Issue 和触发收据。
+- 请求重放、服务在创建 Issue 后但写收据前中断、文件移动或改名，都会通过下游幂等身份和内容收据收敛到原任务。
+- 公开观察和收据只返回相对路径、业务编号、Routine 版本及本地任务引用；不暴露绝对路径、内容哈希或请求哈希。
+- 来源撤销、证据排除/消失、Routine 停用、跨租户访问和过期修订均在创建任务前失败关闭。
+
 ## 本地输出边界
 
 - v1 基线生成器继续兼容已有已发布 Routine；v2 只从用户确认的 Markdown 模板生成草稿。
@@ -83,5 +102,5 @@ GET  /api/workflow-memory/intake-observations?sourceId={sourceId}
 
 - Markdown 模板已进入受治理试运行，但 DOCX/XLSX 保存性生成仍未启用。
 - 关键事实由已确认记录、当前文档证据和用户补充组成；不会自动推测缺失价格或商业条款。
-- 稳定接入基础已定义持久化观察和去重身份；自动形成 Routine Issue 仍须通过阶段 3B 的显式业务确认和触发收据门禁。
-- V1.5 扩大灰度前，仍须完成 #1564 的触发/UI 切片及 #1565–#1566，并通过真实或脱敏案例门禁。
+- 稳定接入与显式确认触发已形成端到端闭环，但当前只面向 `inquiry` 文档和已发布的询价 Routine。
+- V1.5 扩大灰度前，仍须完成 #1565–#1566 的多询价并发、真实或脱敏案例和发布门禁。

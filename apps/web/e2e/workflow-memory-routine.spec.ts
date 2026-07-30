@@ -80,6 +80,19 @@ const candidate = {
 
 async function mockApi(page: Page) {
   const routineDefinitions: Record<string, unknown>[] = [];
+  let intakeObservation: Record<string, unknown> = {
+    id: "wio_1",
+    projectId: "prj_1",
+    sourceId: "src_1",
+    relativePath: "2026/07/RFQ-1002.md",
+    name: "RFQ-1002.md",
+    state: "ready",
+    reason: null,
+    artifactId: "art_intake_1",
+    canonicalArtifactId: "art_intake_1",
+    revision: 2,
+    updatedAt: "2026-07-29T10:02:00.000Z",
+  };
   const workItem = {
     id: "wi_routine_1",
     localRef: "LOCAL-ROUTINE-1",
@@ -228,6 +241,102 @@ async function mockApi(page: Page) {
     }
     if (url.pathname === "/api/workflow-memory/artifacts") {
       return route.fulfill({ json: { artifacts: [artifact], count: 1 } });
+    }
+    if (url.pathname === "/api/workflow-memory/intake-observations"
+      && request.method() === "GET") {
+      return route.fulfill({ json: { observations: [intakeObservation], count: 1 } });
+    }
+    if (url.pathname.endsWith("/scan-intake") && request.method() === "POST") {
+      return route.fulfill({ json: {
+        source,
+        intake: {
+          scanRevision: 2,
+          scannedEntries: 1,
+          skipped: 0,
+          truncated: false,
+          observed: 0,
+          waitingStable: 0,
+          ready: 1,
+          duplicate: 0,
+          blocked: 0,
+          unchanged: 0,
+        },
+        observations: [intakeObservation],
+      } });
+    }
+    if (url.pathname.endsWith("/intake-observations/wio_1/inspect")
+      && request.method() === "POST") {
+      return route.fulfill({ json: {
+        state: "needs_confirmation",
+        observation: {
+          id: "wio_1",
+          sourceId: "src_1",
+          artifactId: "art_intake_1",
+          relativePath: "2026/07/RFQ-1002.md",
+          revision: 2,
+        },
+        classification: {
+          id: "bdc_intake_1",
+          revision: 1,
+          documentType: "inquiry",
+          confirmationState: "proposed",
+          confidence: 0.95,
+          fieldProposals: [{
+            key: "inquiry_number",
+            value: "RFQ-1002",
+            normalizedValue: "RFQ-1002",
+            confidence: 0.98,
+            confirmationState: "proposed",
+            evidenceRefs: [],
+          }, {
+            key: "customer",
+            value: "Acme",
+            normalizedValue: "Acme",
+            confidence: 0.91,
+            confirmationState: "proposed",
+            evidenceRefs: [],
+          }],
+        },
+        routines: [{
+          id: "rtn_1",
+          name: "Inquiry to quotation",
+          description: "Prepare and register a reviewed quotation.",
+          version: 1,
+          triggerDocumentTypes: ["inquiry"],
+        }],
+      } });
+    }
+    if (url.pathname.endsWith("/intake-observations/wio_1/accept")
+      && request.method() === "POST") {
+      const body = request.postDataJSON();
+      if (body.confirmed !== true) {
+        return route.fulfill({
+          status: 400,
+          json: { error: "workflow_intake_confirmation_required" },
+        });
+      }
+      intakeObservation = {
+        ...intakeObservation,
+        state: "triggered",
+        revision: 3,
+        receipt: {
+          id: "wir_1",
+          businessKey: "RFQ-1002",
+          routineDefinitionId: "rtn_1",
+          routineVersion: 1,
+          businessCaseId: "case_intake_1",
+          workItemId: workItem.id,
+          workItemLocalRef: workItem.localRef,
+          routineRunId: "run_1",
+          state: "triggered",
+          triggeredAt: "2026-07-29T10:03:00.000Z",
+        },
+      };
+      return route.fulfill({ status: 201, json: {
+        state: "triggered",
+        replayed: false,
+        receipt: intakeObservation.receipt,
+      } });
     }
     if (url.pathname.endsWith("/pair-proposals")) {
       return route.fulfill({ json: { sourceId: source.id, proposals: [] } });
@@ -542,6 +651,26 @@ test("guides an ordinary user from discovered work to task-type review", async (
   await createDraft;
 });
 
+test("lets an ordinary user confirm one new inquiry before a task is created", async ({ page }) => {
+  await expect(page.getByText("RFQ-1002.md", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "Review inquiry" }).click();
+  const dialog = page.getByRole("dialog", { name: "Confirm the new inquiry" });
+  await expect(dialog.getByText("2026/07/RFQ-1002.md")).toBeVisible();
+  await expect(dialog.getByLabel("Routine")).toHaveValue("rtn_1");
+  const accepted = page.waitForRequest((request) =>
+    request.method() === "POST"
+    && request.url().endsWith("/intake-observations/wio_1/accept"));
+  await dialog.getByRole("button", { name: "Confirm and create inquiry task" }).click();
+  expect((await accepted).postDataJSON()).toMatchObject({
+    expectedRevision: 2,
+    routineDefinitionId: "rtn_1",
+    confirmed: true,
+  });
+  await expect(page.getByText("Task created")).toBeVisible();
+  await expect(page.getByRole("button", { name: "Review inquiry" })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Open task" })).toBeVisible();
+});
+
 test("requires explicit review before enabling a discovered work type", async ({ page }) => {
   const setup = page.getByRole("region", { name: "Set up your daily work" });
   await setup.getByRole("button", { name: "Review this task type" }).click();
@@ -594,6 +723,14 @@ test("processes a routine Issue through ledger review, quotation approval, and o
 test("keeps the guided setup usable on a narrow screen and by keyboard", async ({ page }) => {
   await page.setViewportSize({ width: 320, height: 844 });
   await page.reload();
+  const intakeButton = page.getByRole("button", { name: "Review inquiry" });
+  await intakeButton.focus();
+  await expect(intakeButton).toBeFocused();
+  await intakeButton.press("Enter");
+  const intakeDialog = page.getByRole("dialog", { name: "Confirm the new inquiry" });
+  await expect(intakeDialog).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(intakeDialog).toHaveCount(0);
   const setup = page.getByRole("region", { name: "Set up your daily work" });
   const button = setup.getByRole("button", { name: "Review this task type" });
   await button.focus();
