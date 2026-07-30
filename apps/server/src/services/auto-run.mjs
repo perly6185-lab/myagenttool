@@ -225,6 +225,8 @@ export function createAutoRunService({
   commitWorktreeChanges,
   publishWorktreeBranch,
   createWorktreePr,
+  acquireWorktreeReactionLease = () => true,
+  releaseWorktreeReactionLease = () => undefined,
   verifyWorktree,
   writeIssueStatus,
   decideIssuePath,
@@ -445,6 +447,29 @@ export function createAutoRunService({
   // `blocked` (verification failed) is terminal here; a human retries/fixes.
   const settledStatuses = new Set(["pr_open", "report_posted", "needs_input", "plan_proposed", "decomposed", "blocked", "done", "failed", "cancelled"]);
   const CAPACITY_RETRY_DELAYS_MS = [30_000, 90_000, 180_000];
+  const activeReactionControllers = new Map();
+
+  function autoRunReactionSuperseded(autoRun, invocation, phase) {
+    if (
+      autoRun?.invocationId === invocation?.id
+      && !settledStatuses.has(autoRun.status)
+    ) {
+      return false;
+    }
+    appendEvent({
+      invocationId: invocation?.id ?? null,
+      type: "auto_run_reaction_superseded",
+      level: "info",
+      message: `Ignored a stale Auto-run reaction after ${phase}.`,
+      data: {
+        autoRunId: autoRun?.id ?? null,
+        staleInvocationId: invocation?.id ?? null,
+        currentInvocationId: autoRun?.invocationId ?? null,
+        phase,
+      },
+    });
+    return true;
+  }
 
   function occupiesExecutionSlot(run) {
     return !settledStatuses.has(run.status) && run.status !== "waiting_capacity";
@@ -1371,12 +1396,41 @@ export function createAutoRunService({
   // Called fire-and-forget from completion, so it never throws.
   async function advanceAutoRunForInvocation(invocation) {
     let autoRun = null;
+    let reactionController = null;
+    let reactionEntry = null;
+    let reactionLeaseHeld = false;
     try {
       autoRun = state.autoRuns.find((item) => item.invocationId === invocation?.id) ?? null;
       if (!autoRun || settledStatuses.has(autoRun.status)) return null;
+      const activeReaction = activeReactionControllers.get(autoRun.id);
+      if (
+        activeReaction?.invocationId === invocation.id
+        && activeReaction?.status === invocation.status
+      ) {
+        return null;
+      }
+      activeReaction?.controller.abort(new Error("Auto-run reaction superseded."));
+      reactionController = new AbortController();
+      reactionEntry = {
+        controller: reactionController,
+        invocationId: invocation.id,
+        status: invocation.status,
+      };
+      activeReactionControllers.set(autoRun.id, reactionEntry);
 
       if (invocation.status === "succeeded") {
         const worktree = state.worktrees.find((item) => item.id === autoRun.worktreeId) ?? null;
+        reactionLeaseHeld = acquireWorktreeReactionLease(autoRun.worktreeId, invocation.id);
+        if (!reactionLeaseHeld) {
+          appendEvent({
+            invocationId: invocation.id,
+            type: "auto_run_reaction_lease_refused",
+            level: "warn",
+            message: "Auto-run post-processing refused to overlap another reaction on this worktree.",
+            data: { autoRunId: autoRun.id, worktreeId: autoRun.worktreeId },
+          });
+          return null;
+        }
 
         // Epic decomposition (opt-in): the deliverable is a PROPOSED plan of child
         // issues, not a diff. Read the agent's decomposition/PLAN.json, build +
@@ -1396,11 +1450,16 @@ export function createAutoRunService({
         if (typeof commitWorktreeChanges === "function") {
           let commitResult;
           try {
-            commitResult = await commitWorktreeChanges(autoRun.worktreeId, { message: commitMessageFor(autoRun) });
+            commitResult = await commitWorktreeChanges(autoRun.worktreeId, {
+              message: commitMessageFor(autoRun),
+              signal: reactionController.signal,
+            });
           } catch (error) {
+            if (autoRunReactionSuperseded(autoRun, invocation, "commit failure")) return null;
             runTx(() => setAutoRunStatus(autoRun, "failed", { error: `Commit failed: ${String(error?.message ?? error)}` }));
             return autoRun;
           }
+          if (autoRunReactionSuperseded(autoRun, invocation, "commit")) return null;
           if (!commitResult.hasCommits) {
             // No diff — route by the decided path instead of treating it as a
             // dead end. A design/prototype run's deliverable IS the findings; a
@@ -1413,6 +1472,7 @@ export function createAutoRunService({
               const summary = extractRunSummary(invocation) ?? "Investigation complete — no code change was needed.";
               maybePostIssueReport(autoRun, worktree, summary);
               const spawn = await maybeSpawnChildIssue(autoRun, worktree, summary);
+              if (autoRunReactionSuperseded(autoRun, invocation, "child issue creation")) return null;
               runTx(() => setAutoRunStatus(autoRun, "report_posted", {
                 report: summary,
                 error: null,
@@ -1460,6 +1520,7 @@ export function createAutoRunService({
             } catch {
               changed = [];
             }
+            if (autoRunReactionSuperseded(autoRun, invocation, "design artifact inspection")) return null;
             const designOnly = changed.length > 0 && changed.every((p) => String(p).startsWith("design/"));
             if (designOnly) {
               // E1: prefer the FULL written brief (design/BRIEF.md) over the thin
@@ -1469,11 +1530,13 @@ export function createAutoRunService({
               // Layer B (opt-in): render + push the mockups so real pixels render
               // inline on the issue; {} when off/unavailable.
               const imageUrls = await maybeHostDesignImages(autoRun, worktree);
+              if (autoRunReactionSuperseded(autoRun, invocation, "design image hosting")) return null;
               // Layer A: the brief IS what a human sees on the issue; index the
               // mockups beneath it so the reader knows a richer visual exists and
               // where to open it. Layer B's URLs embed the previews inline.
               maybePostIssueReport(autoRun, worktree, composeDesignIssueComment({ brief: summary, artifacts: changed, imageUrls }));
               const spawn = await maybeSpawnChildIssue(autoRun, worktree, summary);
+              if (autoRunReactionSuperseded(autoRun, invocation, "child issue creation")) return null;
               runTx(() => setAutoRunStatus(autoRun, "report_posted", {
                 report: summary,
                 designArtifacts: changed,
@@ -1495,6 +1558,7 @@ export function createAutoRunService({
             const summary = brief || extractRunSummary(invocation) || "Prototype spike complete — see the findings.";
             maybePostIssueReport(autoRun, worktree, summary);
             const spawn = await maybeSpawnChildIssue(autoRun, worktree, summary);
+            if (autoRunReactionSuperseded(autoRun, invocation, "child issue creation")) return null;
             runTx(() => setAutoRunStatus(autoRun, "report_posted", {
               report: summary,
               error: null,
@@ -1515,11 +1579,16 @@ export function createAutoRunService({
           : { passed: true, verified: false, summary: "No verification command configured." };
         try {
           if (typeof verifyWorktree === "function") {
-            verification = await verifyWorktree({ worktree, autoRun });
+            verification = await verifyWorktree({
+              worktree,
+              autoRun,
+              signal: reactionController.signal,
+            });
           }
         } catch (error) {
           verification = { passed: false, verified: true, summary: `Verification error: ${String(error?.message ?? error)}` };
         }
+        if (autoRunReactionSuperseded(autoRun, invocation, "verification")) return null;
         if (state.autoRunSettings?.requireVerification && !verification.verified) {
           verification = {
             passed: false,
@@ -1602,6 +1671,7 @@ export function createAutoRunService({
           } catch {
             judgment = null;
           }
+          if (autoRunReactionSuperseded(autoRun, invocation, "acceptance judgment")) return null;
           autoRun.judgment = judgment
             ? { solved: judgment.solved, confidence: judgment.confidence, summary: judgment.summary ?? null, gaps: judgment.gaps ?? [] }
             : { solved: null, confidence: null, summary: "Judge errored — verdict unavailable.", gaps: [] };
@@ -1623,6 +1693,7 @@ export function createAutoRunService({
           } catch {
             screenshots = [];
           }
+          if (autoRunReactionSuperseded(autoRun, invocation, "visual artifact inspection")) return null;
         }
         // A local issue is deliberately platform-local: its reviewable result is
         // the committed worktree/branch, not a GitHub pull request. Requiring a
@@ -1641,16 +1712,24 @@ export function createAutoRunService({
         }
         setAutoRunStatus(autoRun, "publishing");
         try {
-          await publishWorktreeBranch(autoRun.worktreeId);
+          if (autoRunReactionSuperseded(autoRun, invocation, "before branch publication")) return null;
+          await publishWorktreeBranch(autoRun.worktreeId, { signal: reactionController.signal });
+          if (autoRunReactionSuperseded(autoRun, invocation, "branch publication")) return null;
           // H2: if this run remediates a failed deploy, its issue body carries a
           // `Change-failure: #N` marker — propagate it onto the PR body so DORA's
           // change-failure rate + recovery see the remediation (fix-forward).
           const changeFailureRef = extractChangeFailureRef(autoRun.issueBody);
           const prBody = verificationEvidenceBody(verification, judgment) + (changeFailureRef ? `\n\nChange-failure: #${changeFailureRef}\n` : "");
-          const pr = await createWorktreePr(autoRun.worktreeId, { body: prBody });
+          if (autoRunReactionSuperseded(autoRun, invocation, "before pull request creation")) return null;
+          const pr = await createWorktreePr(autoRun.worktreeId, {
+            body: prBody,
+            signal: reactionController.signal,
+          });
+          if (autoRunReactionSuperseded(autoRun, invocation, "pull request creation")) return null;
           runTx(() => setAutoRunStatus(autoRun, "pr_open", { prNumber: pr?.number ?? null, prUrl: pr?.url ?? null, error: null, ...(screenshots.length ? { screenshots } : {}) }));
           maybeWriteIssueStatus(autoRun, worktree, "review");
         } catch (error) {
+          if (autoRunReactionSuperseded(autoRun, invocation, "publication failure")) return null;
           runTx(() => setAutoRunStatus(autoRun, "failed", { error: String(error?.message ?? error) }));
         }
       } else {
@@ -1660,6 +1739,7 @@ export function createAutoRunService({
         if (await continueTimedOutAutoRun(autoRun, invocation)) {
           return autoRun;
         }
+        if (autoRunReactionSuperseded(autoRun, invocation, "timeout recovery")) return null;
         // failed | timed_out | cancelled | rejected. Carry the invocation's
         // errorCode onto the run: an infrastructure reclaim (bridge offline →
         // "dispatch_timeout") is distinguishable from a genuine task failure
@@ -1674,11 +1754,22 @@ export function createAutoRunService({
     } catch (error) {
       // Never let a reaction error escape the fire-and-forget caller, but do not
       // leave the operator-facing run stuck in "running" with no explanation.
-      if (autoRun && !settledStatuses.has(autoRun.status)) {
+      if (
+        autoRun
+        && autoRun.invocationId === invocation?.id
+        && !settledStatuses.has(autoRun.status)
+      ) {
         runTx(() => setAutoRunStatus(autoRun, "failed", { error: `Auto-run reaction failed: ${String(error?.message ?? error)}` }));
         return autoRun;
       }
       return null;
+    } finally {
+      if (reactionLeaseHeld) {
+        releaseWorktreeReactionLease(autoRun?.worktreeId, invocation?.id);
+      }
+      if (autoRun && activeReactionControllers.get(autoRun.id) === reactionEntry) {
+        activeReactionControllers.delete(autoRun.id);
+      }
     }
   }
 

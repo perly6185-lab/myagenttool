@@ -172,6 +172,7 @@ export function createHttpServer({
   deviceForToken,
   issueBridgeCredential,
   requireBridgeCredential,
+  supersedeBridgeSession,
   recordCodexHookEvent,
   expireCodexApprovalBrokerRequests,
   resolveCodexApprovalBrokerRequest,
@@ -786,6 +787,7 @@ export function createHttpServer({
         deviceForToken,
         issueBridgeCredential,
         requireBridgeCredential,
+        supersedeBridgeSession,
       })) {
         return;
       }

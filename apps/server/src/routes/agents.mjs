@@ -1,7 +1,12 @@
 import { normalizeMcpAdapterConfig } from "@myagenttool/adapters/mcp";
 
 import { isClaudeCliCommand, isCodexCliCommand } from "../services/agents.mjs";
-import { bearerToken, publicDeviceView } from "../runtime/bridge-auth.mjs";
+import {
+  bearerToken,
+  bridgeSessionIdFromRequest,
+  normalizeBridgeSessionId,
+  publicDeviceView,
+} from "../runtime/bridge-auth.mjs";
 import { listDevices, primaryDevice } from "../runtime/device.mjs";
 import { runtimeIdForCommand } from "../services/runtime-catalog.mjs";
 
@@ -29,6 +34,7 @@ export async function handleAgentRoutes({
   deviceForToken,
   issueBridgeCredential,
   requireBridgeCredential,
+  supersedeBridgeSession,
 }) {
   if (req.method === "POST" && url.pathname === "/api/bridge/readiness") {
     const device = requireBridgeCredential({ req, res, sendJson });
@@ -45,6 +51,25 @@ export async function handleAgentRoutes({
 
   if (req.method === "POST" && url.pathname === "/api/bridge/register") {
     const body = await readJson(req);
+    const bodyBridgeSessionId = body.bridgeSessionId == null
+      ? null
+      : normalizeBridgeSessionId(body.bridgeSessionId);
+    const headerBridgeSessionId = bridgeSessionIdFromRequest(req);
+    if (
+      body.bridgeSessionId != null
+      && bodyBridgeSessionId
+      && headerBridgeSessionId
+      && bodyBridgeSessionId !== headerBridgeSessionId
+    ) {
+      sendJson(res, 400, { error: "bridge_session_mismatch" });
+      return true;
+    }
+    const rawBridgeSessionId = body.bridgeSessionId ?? headerBridgeSessionId;
+    const bridgeSessionId = normalizeBridgeSessionId(rawBridgeSessionId);
+    if (rawBridgeSessionId != null && !bridgeSessionId) {
+      sendJson(res, 400, { error: "invalid_bridge_session_id" });
+      return true;
+    }
     // Which machine is registering?
     //
     // Pairing is PER DEVICE, not per fleet. A token that matches a credential
@@ -68,7 +93,7 @@ export async function handleAgentRoutes({
     let issuedCredential = null;
     if (authenticated) {
       // Re-run the full gate (revoked / idle-expired), which answers on its own.
-      device = requireBridgeCredential({ req, res, sendJson });
+      device = requireBridgeCredential({ req, res, sendJson, allowSessionMismatch: true });
       if (!device) return true;
       if (body.rotateCredential === true) {
         issuedCredential = issueBridgeCredential({ deviceId: device.id, rotate: true });
@@ -87,6 +112,31 @@ export async function handleAgentRoutes({
     } else {
       sendJson(res, 409, { error: "ambiguous_device_claim", claimableDeviceCount: claimable.length });
       return true;
+    }
+    if (!bridgeSessionId && device.bridgeSessionId) {
+      // A sessionless (older/rolled-back) Bridge can safely take over only when
+      // this device has no leased executor work. Returning an explicit conflict
+      // during activity avoids the old false-success registration followed by
+      // permanent 409s, while still allowing a quiescent rollback.
+      const active = (state.invocations ?? []).some((invocation) =>
+        invocation.delivery?.deviceId === device.id
+        && ["dispatching", "running", "cancelling"].includes(invocation.status));
+      if (active) {
+        sendJson(res, 409, { error: "bridge_session_required", retryableWhenIdle: true });
+        return true;
+      }
+      const previousSessionId = device.bridgeSessionId;
+      device.bridgeSessionId = null;
+      device.bridgeSessionStartedAt = null;
+      appendEvent({
+        invocationId: null,
+        type: "bridge_session_legacy_mode",
+        level: "warn",
+        message: "A sessionless Desktop Bridge registered while the device was idle; process fencing is in legacy mode.",
+        data: { deviceId: device.id, previousSessionId },
+      });
+    } else if (bridgeSessionId) {
+      supersedeBridgeSession(device, bridgeSessionId);
     }
     device.status = "online";
     // Clearing livenessLostAt on the REGISTERING device, not the primary alias:

@@ -49,6 +49,7 @@ export function createInvocationService({
   reserveBudget,
   releaseReservationsForInvocation,
   checkUsageQuota,
+  isWorktreeReactionBusy,
   closeCodexSession,
   closeClaudeSession,
   store,
@@ -175,6 +176,7 @@ export function createInvocationService({
     findAgent,
     completeInvocation,
     store,
+    isWorktreeReactionBusy,
   });
   const { createCompareRun, setCompareRunPreferred, promoteCompareRun } = createInvocationCompareRuntime({
     state,

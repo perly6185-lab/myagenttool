@@ -697,6 +697,10 @@ export function createServerRuntimeServices({
   // action machinery defined further down. Exception-isolated at the call site —
   // completion never fails because auto-recovery did.
   let orchestrationAutoRecoveryHook = null;
+  // Runtime-only lease: a succeeded invocation keeps its worktree fenced while
+  // commit/verification/publication are in flight. It is intentionally not
+  // persisted — a process crash cannot strand a durable worktree lock.
+  const activeWorktreeReactionLeases = new Map();
 
   // #1302 long-poll: one per-device wakeup shared by the cancellation service
   // (notify when a run is asked to cancel) and the bridge cancellations route
@@ -750,6 +754,11 @@ export function createServerRuntimeServices({
     // #968: the Store seam — dispatch claim/ack commit through its unit of work.
     store,
     checkUsageQuota,
+    isWorktreeReactionBusy: (invocation) => {
+      const worktreeId = invocation?.options?.metadata?.worktreeId ?? null;
+      const owner = worktreeId ? activeWorktreeReactionLeases.get(worktreeId) : null;
+      return Boolean(owner && owner !== invocation.id);
+    },
     // #1084: transcript count-cap evictions spill to the retention archive.
     capWithArchive: retentionArchive.capWithArchive,
     onInvocationCompleted: (invocation) => {
@@ -803,6 +812,74 @@ export function createServerRuntimeServices({
     redeliverExpiredDispatches,
     startInvocationIfAllowed,
   } = invocationService;
+
+  // A bridge credential survives process restarts; a bridge session does not.
+  // Registering a new process generation fences work owned by the previous
+  // generation without waiting for the device-level liveness grace. Unacked
+  // leases are safe to requeue immediately. Acked/running work keeps occupying
+  // its worktree through a short executor-drain window, then converges through
+  // dispatch.mjs to transport_closed (or cancelled when cancellation was active).
+  function supersedeBridgeSession(device, bridgeSessionId) {
+    if (!device || !bridgeSessionId || device.bridgeSessionId === bridgeSessionId) {
+      return { changed: false, requeued: 0, reclaimed: 0 };
+    }
+    const previousSessionId = device.bridgeSessionId ?? null;
+    device.bridgeSessionId = bridgeSessionId;
+    device.bridgeSessionStartedAt = now();
+    device.updatedAt = now();
+    let requeued = 0;
+    let reclaimed = 0;
+    for (const invocation of state.invocations ?? []) {
+      const delivery = invocation.delivery ?? {};
+      if (delivery.deviceId !== device.id || delivery.bridgeSessionId === bridgeSessionId) continue;
+      if (invocation.status === "dispatching") {
+        invocation.status = "queued";
+        delivery.state = "redelivering";
+        delivery.leaseExpiresAt = null;
+        invocation.updatedAt = now();
+        requeued += 1;
+        appendEvent({
+          invocationId: invocation.id,
+          type: "delivery_session_requeued",
+          level: "warn",
+          message: "Invocation lease returned to the queue after the Desktop Bridge process restarted.",
+          data: { deviceId: device.id, previousSessionId, bridgeSessionId },
+        });
+        continue;
+      }
+      if (!["running", "cancelling"].includes(invocation.status)) continue;
+      reclaimed += 1;
+      const cancelling = invocation.status === "cancelling";
+      const configuredGraceMs = Number(process.env.MYAGENTTOOL_BRIDGE_SESSION_HANDOFF_GRACE_MS ?? 5_000);
+      const handoffGraceMs = Number.isFinite(configuredGraceMs)
+        ? Math.max(0, Math.min(30_000, configuredGraceMs))
+        : 5_000;
+      delivery.sessionSupersession = {
+        previousSessionId,
+        bridgeSessionId,
+        completeAfter: new Date(Date.now() + handoffGraceMs).toISOString(),
+        terminalStatus: cancelling ? "cancelled" : "failed",
+        errorCode: cancelling ? null : "transport_closed",
+      };
+      invocation.updatedAt = now();
+      appendEvent({
+        invocationId: invocation.id,
+        type: "bridge_session_superseded",
+        level: "warn",
+        message: "Invocation fenced because its Desktop Bridge process was superseded; awaiting bounded executor-tree drain.",
+        data: { deviceId: device.id, previousSessionId, bridgeSessionId, handoffGraceMs, cancelling },
+      });
+    }
+    persistStateSoon();
+    appendEvent({
+      invocationId: null,
+      type: "bridge_session_started",
+      level: "info",
+      message: "Desktop Bridge process session registered.",
+      data: { deviceId: device.id, previousSessionId, bridgeSessionId, requeued, reclaimed },
+    });
+    return { changed: true, requeued, reclaimed };
+  }
 
   // Persisted safe-knob overrides (state.autoRunSettings) overlaid on the env
   // defaults. Empty settings => the env values unchanged. Applied here at
@@ -1064,10 +1141,21 @@ export function createServerRuntimeServices({
     commitWorktreeChanges,
     publishWorktreeBranch,
     createWorktreePr,
+    acquireWorktreeReactionLease: (worktreeId, invocationId) => {
+      const owner = activeWorktreeReactionLeases.get(worktreeId);
+      if (owner && owner !== invocationId) return false;
+      activeWorktreeReactionLeases.set(worktreeId, invocationId);
+      return true;
+    },
+    releaseWorktreeReactionLease: (worktreeId, invocationId) => {
+      if (activeWorktreeReactionLeases.get(worktreeId) === invocationId) {
+        activeWorktreeReactionLeases.delete(worktreeId);
+      }
+    },
     // Verification gate: run the project-configured command in the worktree.
     // No command configured -> unverified pass-through (PR labeled unverified);
     // a configured command that fails blocks the PR.
-    verifyWorktree: async ({ worktree }) => {
+    verifyWorktree: async ({ worktree, signal = null }) => {
       // A4: resolve the project's chosen allowlisted verify command by NAME
       // (operator-set argv), falling back to the global command.
       const project = (state.projects ?? []).find(
@@ -1105,6 +1193,7 @@ export function createServerRuntimeServices({
         cwd: worktree.path,
         commands,
         timeoutMs: autoRunVerificationTimeoutMs(),
+        signal,
       });
     },
     // Issue status writeback (ready -> in-progress -> review). Undefined when
@@ -3953,6 +4042,7 @@ export function createServerRuntimeServices({
     deviceForToken,
     issueBridgeCredential,
     requireBridgeCredential,
+    supersedeBridgeSession,
     createIntegrationProbeRun,
     registerIntegrationArtifact,
     transitionIntegrationArtifact,

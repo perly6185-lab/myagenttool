@@ -1,9 +1,8 @@
-import { execFile } from "node:child_process";
+import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
-import { promisify } from "node:util";
 
-const execFileAsync = promisify(execFile);
+import { startVerificationProcessGuardian } from "../runtime/verification-process-guardian.mjs";
 
 // The auto-run verification gate runs a project-owner-configured command in the
 // worktree before a PR is opened. The command is resolved from an env var (not
@@ -91,6 +90,26 @@ export function resolveAutoRunVerificationPlan({
     && /\.(?:test|spec)\.(?:tsx?|jsx?)$/.test(path));
   const commands = [];
 
+  // Documentation-only changes should not fan out the repository's entire test
+  // matrix. Besides being disproportionate, two concurrent Auto-runs can make
+  // unrelated integration suites contend for the same local ports and produce
+  // false failures. The repository-owned docs check is deterministic, exercises
+  // every Markdown relative link, and does not start application services.
+  const docsOnly = paths.length > 0 && paths.every((path) =>
+    path === "README.md"
+    || path.startsWith("docs/")
+    || path.endsWith(".md"));
+  if (docsOnly) {
+    commands.push([
+      "pwsh",
+      "-NoProfile",
+      "-ExecutionPolicy",
+      "Bypass",
+      "-File",
+      "tools/docs/check-markdown-links.ps1",
+    ]);
+  }
+
   if (nodeTests.length) commands.push(["node", "--test", ...nodeTests]);
   if (webTests.length) {
     // `pnpm --filter` runs the script with apps/web as cwd, so Vitest needs
@@ -147,35 +166,104 @@ export function resolveVerificationInvocation(command, args = [], {
 // Run the verification command in the worktree. Returns a structured result:
 // `verified` = a real check ran; `passed` = it exited 0. Never throws — a spawn
 // failure is reported as a failed (but verified) check so the gate blocks.
-export async function runWorktreeVerification({ cwd, command, timeoutMs = 300_000 }) {
+export async function runWorktreeVerification({
+  cwd,
+  command,
+  timeoutMs = 300_000,
+  signal = null,
+  startGuardian = startVerificationProcessGuardian,
+}) {
   const [cmd, ...args] = command;
   const label = command.join(" ");
-  try {
-    const invocation = resolveVerificationInvocation(cmd, args);
-    await execFileAsync(invocation.executable, invocation.args, { cwd, encoding: "utf8", timeout: timeoutMs, maxBuffer: 8 * 1024 * 1024 });
-    return { passed: true, verified: true, exitCode: 0, command: label, summary: `\`${label}\` passed.` };
-  } catch (error) {
-    const exitCode = typeof error?.code === "number" ? error.code : 1;
-    const diagnostic = [error?.stdout, error?.stderr, error?.message]
-      .map((item) => String(item ?? "").trim())
-      .filter(Boolean)
-      .join("\n");
-    const tail = diagnostic
-      .split("\n")
-      .slice(-8)
-      .join("\n")
-      .trim();
-    return {
-      passed: false,
-      verified: true,
-      exitCode,
-      command: label,
-      summary: `\`${label}\` failed (exit ${exitCode}).${tail ? ` Output:\n${tail}` : ""}`,
+  if (signal?.aborted) return abortedVerification(label);
+  const invocation = resolveVerificationInvocation(cmd, args);
+  return new Promise((resolveResult) => {
+    let child;
+    let stdout = "";
+    let stderr = "";
+    let settled = false;
+    let timedOut = false;
+    let aborted = false;
+    let spawnError = null;
+    let terminationPromise = null;
+    const appendBounded = (current, chunk) =>
+      `${current}${String(chunk)}`.slice(-(8 * 1024 * 1024));
+    const finish = async (exitCode) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", onAbort);
+      if ((aborted || timedOut) && terminationPromise) {
+        await terminationPromise;
+      }
+      if (aborted) {
+        resolveResult(abortedVerification(label));
+        return;
+      }
+      const code = typeof exitCode === "number"
+        ? exitCode
+        : typeof spawnError?.code === "number"
+          ? spawnError.code
+          : 1;
+      if (code === 0 && !spawnError && !timedOut) {
+        resolveResult({ passed: true, verified: true, exitCode: 0, command: label, summary: `\`${label}\` passed.` });
+        return;
+      }
+      const diagnostic = [stdout, stderr, spawnError?.message, timedOut ? `Timed out after ${timeoutMs}ms.` : null]
+        .map((item) => String(item ?? "").trim())
+        .filter(Boolean)
+        .join("\n");
+      const tail = diagnostic.split("\n").slice(-8).join("\n").trim();
+      resolveResult({
+        passed: false,
+        verified: true,
+        exitCode: code,
+        command: label,
+        summary: `\`${label}\` failed (exit ${code}).${tail ? ` Output:\n${tail}` : ""}`,
+      });
     };
-  }
+    const stopTree = () => {
+      if (!child || child.exitCode !== null) return terminationPromise ?? Promise.resolve();
+      terminationPromise ??= terminateVerificationProcessTree(child);
+      return terminationPromise;
+    };
+    const onAbort = () => {
+      aborted = true;
+      stopTree();
+    };
+    const timer = setTimeout(() => {
+      timedOut = true;
+      stopTree();
+    }, timeoutMs);
+    signal?.addEventListener("abort", onAbort, { once: true });
+    try {
+      child = spawn(invocation.executable, invocation.args, {
+        cwd,
+        windowsHide: true,
+        detached: process.platform !== "win32",
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+      startGuardian?.(child);
+      child.stdout?.on("data", (chunk) => {
+        stdout = appendBounded(stdout, chunk);
+      });
+      child.stderr?.on("data", (chunk) => {
+        stderr = appendBounded(stderr, chunk);
+      });
+      child.once("error", (error) => {
+        spawnError = error;
+        void finish(typeof error?.code === "number" ? error.code : 1);
+      });
+      child.once("close", (code) => void finish(code));
+      if (signal?.aborted) onAbort();
+    } catch (error) {
+      spawnError = error;
+      void finish(typeof error?.code === "number" ? error.code : 1);
+    }
+  });
 }
 
-export async function runWorktreeVerificationPlan({ cwd, commands, timeoutMs = 900_000 }) {
+export async function runWorktreeVerificationPlan({ cwd, commands, timeoutMs = 900_000, signal = null }) {
   if (!Array.isArray(commands) || commands.length === 0) {
     return { passed: true, verified: false, commands: [], summary: "No verification command configured." };
   }
@@ -191,8 +279,20 @@ export async function runWorktreeVerificationPlan({ cwd, commands, timeoutMs = 9
   }
   const results = [];
   for (const command of executionCommands) {
-    const result = await runWorktreeVerification({ cwd, command, timeoutMs });
+    if (signal?.aborted) {
+      return { passed: false, verified: false, aborted: true, commands: results.map((item) => item.command), summary: "Verification aborted because its Auto-run reaction was superseded." };
+    }
+    const result = await runWorktreeVerification({ cwd, command, timeoutMs, signal });
     results.push(result);
+    if (result.aborted) {
+      return {
+        passed: false,
+        verified: false,
+        aborted: true,
+        commands: results.map((item) => item.command),
+        summary: result.summary,
+      };
+    }
     if (!result.passed) {
       return {
         passed: false,
@@ -210,4 +310,55 @@ export async function runWorktreeVerificationPlan({ cwd, commands, timeoutMs = 9
     exitCode: 0,
     summary: results.map((item) => item.summary).join("\n"),
   };
+}
+
+function abortedVerification(label) {
+  return {
+    passed: false,
+    verified: false,
+    aborted: true,
+    exitCode: null,
+    command: label,
+    summary: `\`${label}\` aborted because its Auto-run reaction was superseded.`,
+  };
+}
+
+function terminateVerificationProcessTree(child) {
+  if (!child?.pid || child.exitCode !== null) return Promise.resolve();
+  if (process.platform === "win32") {
+    return new Promise((resolveKill) => {
+      const killer = spawn("taskkill", ["/pid", String(child.pid), "/t", "/f"], {
+        windowsHide: true,
+        stdio: "ignore",
+      });
+      killer.once("error", () => {
+        try {
+          child.kill("SIGKILL");
+        } catch {
+          // The verification process already exited.
+        }
+        resolveKill();
+      });
+      killer.once("close", (code) => {
+        if (code !== 0 && child.exitCode === null) {
+          try {
+            child.kill("SIGKILL");
+          } catch {
+            // The verification process already exited.
+          }
+        }
+        resolveKill();
+      });
+    });
+  }
+  try {
+    process.kill(-child.pid, "SIGKILL");
+  } catch {
+    try {
+      child.kill("SIGKILL");
+    } catch {
+      // The verification process already exited.
+    }
+  }
+  return Promise.resolve();
 }

@@ -550,7 +550,8 @@ export function createProjectService({ state, now, nextId, appendEvent, persistS
   // the PR — publish only ships commits. No-op (committed:false) when the tree is
   // already clean. hasCommits reports whether the branch has any commit ahead of
   // its base, so the caller can avoid opening an empty PR.
-  async function commitWorktreeChanges(worktreeId, { message, pathspec = null } = {}) {
+  async function commitWorktreeChanges(worktreeId, { message, pathspec = null, signal = null } = {}) {
+    signal?.throwIfAborted?.();
     const worktree = worktreeRecord(worktreeId);
     if (!worktree) throw new Error("Worktree not found.");
     const cwd = worktree.path ?? worktree.worktreePath;
@@ -560,21 +561,24 @@ export function createProjectService({ state, now, nextId, appendEvent, persistS
     // only `design/`, so a stray file from the operator's renderer can't ride the
     // push). Default: the whole tree (`-A`), the develop path's behavior.
     const scope = Array.isArray(pathspec) && pathspec.length ? ["--", ...pathspec] : [];
-    const status = await runGitCapture(cwd, ["status", "--porcelain", ...scope], { timeout: 10_000 });
+    const status = await runGitCapture(cwd, ["status", "--porcelain", ...scope], { timeout: 10_000, signal });
     if (!status.ok) throw new Error(`git status failed: ${status.stderr || `exit ${status.code}`}`);
     let committed = false;
     if (status.stdout.trim()) {
-      const add = await runGitCapture(cwd, scope.length ? ["add", ...scope] : ["add", "-A"], { timeout: 20_000 });
+      signal?.throwIfAborted?.();
+      const add = await runGitCapture(cwd, scope.length ? ["add", ...scope] : ["add", "-A"], { timeout: 20_000, signal });
       if (!add.ok) throw new Error(`git add failed: ${add.stderr || `exit ${add.code}`}`);
-      const commit = await runGitCapture(cwd, ["commit", "-m", message || "Auto-run changes"], { timeout: 20_000 });
+      signal?.throwIfAborted?.();
+      const commit = await runGitCapture(cwd, ["commit", "-m", message || "Auto-run changes"], { timeout: 20_000, signal });
       if (!commit.ok) throw new Error(`git commit failed: ${commit.stderr || commit.stdout || `exit ${commit.code}`}`);
       committed = true;
     }
 
     // Does the branch have anything to open a PR with? Compare to the base ref
     // (an explicit base branch, else origin's default, else main).
-    const base = await resolvePrBaseBranch(cwd, worktree);
-    const ahead = await runGitCapture(cwd, ["rev-list", "--count", `${base}..HEAD`], { timeout: 10_000 });
+    signal?.throwIfAborted?.();
+    const base = await resolvePrBaseBranch(cwd, worktree, { signal });
+    const ahead = await runGitCapture(cwd, ["rev-list", "--count", `${base}..HEAD`], { timeout: 10_000, signal });
     const hasCommits = ahead.ok ? Number(ahead.stdout) > 0 : committed;
     return { committed, hasCommits, base };
   }
@@ -663,24 +667,27 @@ export function createProjectService({ state, now, nextId, appendEvent, persistS
   // Push the worktree's branch to origin and record its upstream. Real git push
   // (no --force unless asked), so an unreachable/missing origin surfaces as an
   // error rather than the old silent skipped:true stub.
-  async function publishWorktreeBranch(worktreeId, { force = false } = {}) {
+  async function publishWorktreeBranch(worktreeId, { force = false, signal = null } = {}) {
+    signal?.throwIfAborted?.();
     const worktree = worktreeRecord(worktreeId);
     if (!worktree) throw new Error("Worktree not found.");
     const cwd = worktree.path ?? worktree.worktreePath;
     const branch = worktree.branchName ?? worktree.branch;
     if (!cwd || !existsSync(cwd)) throw new Error("Worktree working directory is missing.");
     if (!branch) throw new Error("Worktree has no branch to publish.");
-    const remoteUrl = await originRemoteUrl(cwd);
+    const remoteUrl = await originRemoteUrl(cwd, { signal });
     if (!remoteUrl) throw new Error("No 'origin' remote to publish to. Add a remote first.");
 
     const pushArgs = ["push", "--set-upstream", "origin", branch];
     if (force) pushArgs.splice(1, 0, "--force-with-lease");
-    const push = await runGitCapture(cwd, pushArgs);
+    signal?.throwIfAborted?.();
+    const push = await runGitCapture(cwd, pushArgs, { signal });
     if (!push.ok) {
       throw new Error(`git push failed: ${push.stderr || push.stdout || `exit ${push.code}`}`);
     }
 
-    const upstreamProbe = await runGitCapture(cwd, ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"], { timeout: 5_000 });
+    signal?.throwIfAborted?.();
+    const upstreamProbe = await runGitCapture(cwd, ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"], { timeout: 5_000, signal });
     runTx(() => {
       worktree.published = true;
       worktree.upstream = upstreamProbe.ok && upstreamProbe.stdout ? upstreamProbe.stdout : `origin/${branch}`;
@@ -699,23 +706,25 @@ export function createProjectService({ state, now, nextId, appendEvent, persistS
   // Open a pull request for the worktree's branch, publishing first if needed.
   // Title/body default from the linked issue/PR so an issue-derived worktree
   // opens a PR that references it (the "Closes #N" line).
-  async function createWorktreePr(worktreeId, { title, body, base } = {}) {
+  async function createWorktreePr(worktreeId, { title, body, base, signal = null } = {}) {
+    signal?.throwIfAborted?.();
     const worktree = worktreeRecord(worktreeId);
     if (!worktree) throw new Error("Worktree not found.");
     const cwd = worktree.path ?? worktree.worktreePath;
     const branch = worktree.branchName ?? worktree.branch;
     if (!cwd || !existsSync(cwd)) throw new Error("Worktree working directory is missing.");
     if (!branch) throw new Error("Worktree has no branch for a pull request.");
-    const remoteUrl = await originRemoteUrl(cwd);
+    const remoteUrl = await originRemoteUrl(cwd, { signal });
     if (!remoteUrl) throw new Error("No 'origin' remote for a pull request. Add a GitHub remote first.");
 
     // gh needs the head branch on the remote; publish if there's no upstream yet.
-    const upstreamProbe = await runGitCapture(cwd, ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"], { timeout: 5_000 });
+    const upstreamProbe = await runGitCapture(cwd, ["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"], { timeout: 5_000, signal });
     if (!upstreamProbe.ok) {
-      await publishWorktreeBranch(worktreeId);
+      await publishWorktreeBranch(worktreeId, { signal });
     }
 
-    const baseBranch = normalizeWorktreeBase(base) ?? (await resolvePrBaseBranch(cwd, worktree));
+    signal?.throwIfAborted?.();
+    const baseBranch = normalizeWorktreeBase(base) ?? (await resolvePrBaseBranch(cwd, worktree, { signal }));
     const link = worktree.link ?? null;
     const prTitle = String(title || link?.title || `Worktree ${branch}`).slice(0, 240);
     const linkedRef =
@@ -733,6 +742,7 @@ export function createProjectService({ state, now, nextId, appendEvent, persistS
         encoding: "utf8",
         timeout: 30_000,
         env: { ...process.env, GH_PROMPT_DISABLED: "1" },
+        ...(signal ? { signal } : {}),
       });
       stdout = result.stdout;
     } catch (error) {
@@ -1032,12 +1042,13 @@ function normalizeProjectColor(value, fallback = "#3b82f6") {
 // (and locked-down installs) can inject a stand-in, mirroring the loop
 // promotion pipeline's MYAGENTTOOL_GH_COMMAND(_JSON) contract.
 
-async function runGitCapture(cwd, args, { timeout = 30_000 } = {}) {
+async function runGitCapture(cwd, args, { timeout = 30_000, signal = null } = {}) {
   try {
     const { stdout } = await execFileAsync("git", ["-C", cwd, ...args], {
       encoding: "utf8",
       timeout,
       env: gitSafeDirectoryEnv(cwd),
+      ...(signal ? { signal } : {}),
     });
     return { ok: true, stdout: String(stdout).trim(), stderr: "", code: 0 };
   } catch (error) {
@@ -1061,8 +1072,8 @@ function sanitizeLocalOriginSegment(projectId) {
   return safe.slice(0, 64);
 }
 
-async function originRemoteUrl(cwd) {
-  const result = await runGitCapture(cwd, ["remote", "get-url", "origin"], { timeout: 5_000 });
+async function originRemoteUrl(cwd, { signal = null } = {}) {
+  const result = await runGitCapture(cwd, ["remote", "get-url", "origin"], { timeout: 5_000, signal });
   return result.ok ? result.stdout : "";
 }
 
@@ -1101,7 +1112,7 @@ function parseGhPrCreateOutput(stdout) {
 
 // The PR base: an explicit worktree base branch when one was chosen, otherwise
 // origin's default branch, otherwise "main".
-async function resolvePrBaseBranch(cwd, worktree) {
+async function resolvePrBaseBranch(cwd, worktree, { signal = null } = {}) {
   if (worktree.baseBranch && worktree.baseBranch !== "HEAD") {
     try {
       return normalizeWorktreeBase(worktree.baseBranch) ?? "main";
@@ -1109,7 +1120,7 @@ async function resolvePrBaseBranch(cwd, worktree) {
       /* fall through to remote default */
     }
   }
-  const head = await runGitCapture(cwd, ["symbolic-ref", "--short", "refs/remotes/origin/HEAD"], { timeout: 5_000 });
+  const head = await runGitCapture(cwd, ["symbolic-ref", "--short", "refs/remotes/origin/HEAD"], { timeout: 5_000, signal });
   if (head.ok && head.stdout) return head.stdout.replace(/^origin\//, "");
   return "main";
 }

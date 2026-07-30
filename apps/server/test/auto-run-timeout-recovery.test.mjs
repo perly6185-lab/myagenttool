@@ -12,6 +12,10 @@ function fixture({
   maxNoProgressTimeouts = 2,
   turnTimeoutSeconds = 900,
   totalExecutionBudgetSeconds = 2700,
+  commitWorktreeChanges,
+  verifyWorktree,
+  acquireWorktreeReactionLease,
+  releaseWorktreeReactionLease,
 } = {}) {
   let currentTimeMs = Date.parse("2026-07-26T00:00:00.000Z");
   const agent = {
@@ -97,6 +101,10 @@ function fixture({
     },
     startInvocationIfAllowed: () => {},
     fetchIssueBody,
+    commitWorktreeChanges,
+    verifyWorktree,
+    acquireWorktreeReactionLease,
+    releaseWorktreeReactionLease,
   });
   return {
     service,
@@ -166,6 +174,111 @@ test("a lost app-server transport resumes on the same approved worktree", async 
   assert.match(invocations[0].options.idempotencyKey, /transport-closed:inv_1:1$/);
   assert.ok(events.some((event) =>
     event.type === "auto_run_retried" && event.data?.reason === "transport_closed"));
+});
+
+test("a stale success reaction cannot settle a newer timeout continuation", async () => {
+  let releaseVerification;
+  let markVerificationStarted;
+  let verificationSignal;
+  const leases = [];
+  const verificationStarted = new Promise((resolve) => {
+    markVerificationStarted = resolve;
+  });
+  const verificationResult = new Promise((resolve) => {
+    releaseVerification = resolve;
+  });
+  const { service, autoRun, invocations, events } = fixture({
+    commitWorktreeChanges: async () => ({ hasCommits: true }),
+    verifyWorktree: async ({ signal }) => {
+      verificationSignal = signal;
+      markVerificationStarted();
+      return verificationResult;
+    },
+    acquireWorktreeReactionLease: (worktreeId, invocationId) => {
+      leases.push(`acquire:${worktreeId}:${invocationId}`);
+      return true;
+    },
+    releaseWorktreeReactionLease: (worktreeId, invocationId) => {
+      leases.push(`release:${worktreeId}:${invocationId}`);
+    },
+  });
+
+  const staleSuccessReaction = service.advanceAutoRunForInvocation({
+    id: "inv_1",
+    status: "succeeded",
+    result: { summary: "old process reported success" },
+  });
+  await verificationStarted;
+
+  await service.advanceAutoRunForInvocation({
+    id: "inv_1",
+    status: "failed",
+    result: { errorCode: "transport_closed" },
+  });
+  assert.equal(autoRun.invocationId, "inv_2");
+  assert.equal(autoRun.status, "running");
+  assert.equal(invocations.length, 1);
+  assert.equal(verificationSignal.aborted, true, "the stale verifier receives a real abort signal");
+
+  releaseVerification({ passed: true, verified: true, summary: "checks passed" });
+  assert.equal(await staleSuccessReaction, null);
+  assert.equal(autoRun.invocationId, "inv_2");
+  assert.equal(autoRun.status, "running", "the old completion cannot mark the continuation done");
+  assert.equal(autoRun.localDelivery, undefined);
+  assert.deepEqual(leases, [
+    `acquire:${autoRun.worktreeId}:inv_1`,
+    `release:${autoRun.worktreeId}:inv_1`,
+  ]);
+  assert.ok(events.some((event) =>
+    event.type === "auto_run_reaction_superseded"
+    && event.data?.staleInvocationId === "inv_1"
+    && event.data?.currentInvocationId === "inv_2"));
+});
+
+test("a duplicate terminal notification does not abort its active success reaction", async () => {
+  let releaseVerification;
+  let markVerificationStarted;
+  let verificationSignal;
+  let commitCalls = 0;
+  let verificationCalls = 0;
+  const verificationStarted = new Promise((resolve) => {
+    markVerificationStarted = resolve;
+  });
+  const verificationResult = new Promise((resolve) => {
+    releaseVerification = resolve;
+  });
+  const { service, autoRun } = fixture({
+    commitWorktreeChanges: async () => {
+      commitCalls += 1;
+      return { hasCommits: true };
+    },
+    verifyWorktree: async ({ signal }) => {
+      verificationCalls += 1;
+      verificationSignal = signal;
+      markVerificationStarted();
+      return verificationResult;
+    },
+    acquireWorktreeReactionLease: () => true,
+    releaseWorktreeReactionLease: () => {},
+  });
+  const invocation = {
+    id: "inv_1",
+    status: "succeeded",
+    result: { summary: "completed" },
+  };
+
+  const activeReaction = service.advanceAutoRunForInvocation(invocation);
+  await verificationStarted;
+  const duplicateResult = await service.advanceAutoRunForInvocation(invocation);
+
+  assert.equal(duplicateResult, null);
+  assert.equal(verificationSignal.aborted, false);
+  assert.equal(commitCalls, 1);
+  assert.equal(verificationCalls, 1);
+
+  releaseVerification({ passed: true, verified: true, summary: "checks passed" });
+  await activeReaction;
+  assert.equal(autoRun.status, "done");
 });
 
 test("a progressing long task can use three bounded timeout continuations", async () => {
