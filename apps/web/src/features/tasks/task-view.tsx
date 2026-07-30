@@ -59,6 +59,7 @@ import type {
 } from "./article-workflow-types";
 import { articleApi } from "./article-workflow-api";
 import { useArticleTaskLabels } from "./article-task-labels";
+import { RoutineBatchQueue } from "./routine-batch-queue";
 
 export { shouldShowWorkItemCost } from "./task-view-types";
 
@@ -509,6 +510,10 @@ export function TaskView() {
 
         {tab === "local" ? (
           <>
+            <RoutineBatchQueue
+              projectId={projectId === "all" ? undefined : projectId}
+              onOpen={setSelectedLocalId}
+            />
             <section className="space-y-2 rounded-lg border border-warning/40 bg-warning/5 p-3">
                 <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
                   <h3 className="text-sm font-semibold">{t("approvals.pending", { count: attentionItems.length })}</h3>

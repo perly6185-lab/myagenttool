@@ -406,6 +406,7 @@ export function createServerRuntimeServices({
     invokeResolvedCapability: (name, input, actor) => invokeWorkItemApplicationCapability(name, input, actor),
     issueApplicationApprovalGrant: (input, actor) => issueApprovalGrant(input, actor),
   });
+  let releaseRoutineLedgerReservations = () => {};
   const businessRoutineService = createBusinessRoutineService({
     state,
     now,
@@ -414,6 +415,8 @@ export function createServerRuntimeServices({
     persistStateSoon,
     createWorkItem: workItemService.createWorkItem,
     recordWorkItemVerification: workItemService.recordVerification,
+    releaseRoutineLedgerReservations: (input, actor) =>
+      releaseRoutineLedgerReservations(input, actor),
     store,
   });
   const ledgerUpsertService = createLedgerUpsertService({
@@ -426,6 +429,7 @@ export function createServerRuntimeServices({
     validateRoutineLedgerStep: businessRoutineService.validateRoutineLedgerStep,
     completeRoutineLedgerStep: businessRoutineService.completeRoutineLedgerStep,
   });
+  releaseRoutineLedgerReservations = ledgerUpsertService.cancelRoutineReservations;
   const articleImportConfig = resolveArticleImportConfig();
   const articleImportService = createArticleImportService({
     state,
@@ -3826,10 +3830,12 @@ export function createServerRuntimeServices({
     disableLedgerDefinition: ledgerUpsertService.disableDefinition,
     previewLedgerUpsert: ledgerUpsertService.previewUpsert,
     commitLedgerUpsertPreview: ledgerUpsertService.commitPreview,
+    listLedgerUpsertPreviews: ledgerUpsertService.listPreviews,
     listLedgerMutations: ledgerUpsertService.listMutations,
     materializeRoutineIssue: businessRoutineService.materializeRoutineIssue,
     createRoutineRun: businessRoutineService.createRoutineRun,
     getRoutineWorkItemExecution: businessRoutineService.getRoutineWorkItemExecution,
+    listRoutineWorkQueue: businessRoutineService.listRoutineWorkQueue,
     startRoutineWorkItem: businessRoutineService.startRoutineWorkItem,
     executeRoutineStep: businessRoutineService.executeRoutineStep,
     confirmQuotationInputs: businessRoutineService.confirmQuotationInputs,

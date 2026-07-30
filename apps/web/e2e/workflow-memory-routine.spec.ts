@@ -214,11 +214,19 @@ async function mockApi(page: Page) {
       revision: 1,
       waitingReason: null,
       cancellationRequestedAt: null,
+      capacity: {
+        limit: 2,
+        active: 0,
+        state: "ready",
+        position: null,
+        waitingSince: null,
+      },
     },
     availableOrderTriggers: [{ artifactId: "order_4", label: "PO-004.pdf" }],
     steps: baseSteps.map((row) => step(row, "pending")),
   };
   let quotationInputsConfirmed = false;
+  let activeLedgerPreview: Record<string, unknown> | null = null;
   await page.route("**/api/**", async (route) => {
     const request = route.request();
     const url = new URL(request.url());
@@ -382,6 +390,39 @@ async function mockApi(page: Page) {
     if (url.pathname === "/api/work-items" && request.method() === "GET") {
       return route.fulfill({ json: { workItems: [workItem], count: 1 } });
     }
+    if (url.pathname === "/api/workflow-memory/routine-work-queue") {
+      return route.fulfill({ json: {
+        items: [{
+          workItemId: workItem.id,
+          localRef: workItem.localRef,
+          title: workItem.title,
+          projectId: workItem.projectId,
+          sourceId: "src_1",
+          businessKey: workItem.businessKey,
+          definitionName: "Inquiry to quotation",
+          routineVersion: 1,
+          status: routineExecution.run.status,
+          revision: routineExecution.run.revision,
+          waitingReason: routineExecution.run.waitingReason,
+          ledgerQueuePosition: null,
+          capacity: routineExecution.run.capacity,
+          progress: {
+            completed: routineExecution.steps.filter((candidate) =>
+              ["succeeded", "skipped"].includes(candidate.run.state)).length,
+            total: routineExecution.steps.length,
+          },
+          currentStep: null,
+          nextAction: routineExecution.run.status === "planned" ? "start" : "continue_step",
+          updatedAt: "2026-07-29T10:00:00.000Z",
+        }],
+        summary: {
+          total: 1,
+          running: routineExecution.run.status === "running" ? 1 : 0,
+          waiting: 0,
+          needsAction: 1,
+        },
+      } });
+    }
     if (url.pathname === "/api/work-items/attention") {
       return route.fulfill({ json: { items: [], metrics: { backlog: 0, breached: 0 } } });
     }
@@ -474,31 +515,42 @@ async function mockApi(page: Page) {
     }
     if (url.pathname.endsWith("/ledger-definitions/ledger_inquiry/preview-upsert")
       && request.method() === "POST") {
+      activeLedgerPreview = {
+        id: "preview_1",
+        ledgerDefinitionId: "ledger_inquiry",
+        routineRunId: "run_1",
+        routineStepKey: "register_inquiry",
+        businessKey: "INQ-004",
+        action: "insert",
+        rowNumber: 5,
+        changedCells: [{
+          field: "inquiry_number",
+          column: "Inquiry No",
+          before: null,
+          after: "INQ-004",
+        }],
+        warnings: [],
+        approvalRequired: true,
+        state: "pending",
+        waitingReason: null,
+        waitingSince: null,
+        queue: { state: "ready", position: null, waitingSince: null },
+        expiresAt: "2026-07-29T10:15:00.000Z",
+        revision: 1,
+      };
       return route.fulfill({ status: 201, json: {
-        preview: {
-          id: "preview_1",
-          ledgerDefinitionId: "ledger_inquiry",
-          routineRunId: "run_1",
-          routineStepKey: "register_inquiry",
-          businessKey: "INQ-004",
-          action: "insert",
-          rowNumber: 5,
-          changedCells: [{
-            field: "inquiry_number",
-            column: "Inquiry No",
-            before: null,
-            after: "INQ-004",
-          }],
-          warnings: [],
-          approvalRequired: true,
-          state: "pending",
-          expiresAt: "2026-07-29T10:15:00.000Z",
-          revision: 1,
-        },
+        preview: activeLedgerPreview,
+      } });
+    }
+    if (url.pathname === "/api/workflow-memory/ledger-upsert-previews"
+      && request.method() === "GET") {
+      return route.fulfill({ json: {
+        previews: activeLedgerPreview ? [activeLedgerPreview] : [],
       } });
     }
     if (url.pathname.endsWith("/ledger-upsert-previews/preview_1/commit")
       && request.method() === "POST") {
+      activeLedgerPreview = null;
       routineExecution = {
         ...routineExecution,
         run: { ...routineExecution.run, status: "awaiting_approval", revision: 3 },
@@ -718,6 +770,20 @@ test("processes a routine Issue through ledger review, quotation approval, and o
   await dailyWork.getByRole("button", { name: "Confirmed order received" }).click();
   await expect(dailyWork.getByRole("progressbar")).toHaveAttribute("aria-valuenow", "100");
   await expect(dailyWork.getByText("Completed", { exact: true }).first()).toBeVisible();
+});
+
+test("opens the next inquiry from a keyboard-accessible narrow batch view", async ({ page }) => {
+  await page.setViewportSize({ width: 320, height: 844 });
+  await page.goto("/?section=task");
+  const batch = page.getByRole("region", { name: "Inquiry batch" });
+  const next = batch.getByRole("button", { name: "Open next action" });
+  await expect(next).toBeVisible();
+  await next.focus();
+  await expect(next).toBeFocused();
+  await next.press("Enter");
+  await expect(page.getByRole("dialog", { name: "Local issue details" })).toBeVisible();
+  expect(await page.evaluate(() =>
+    document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true);
 });
 
 test("keeps the guided setup usable on a narrow screen and by keyboard", async ({ page }) => {

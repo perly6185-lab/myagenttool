@@ -15,6 +15,13 @@ function execution(overrides: Partial<RoutineWorkExecution["run"]> = {}): Routin
       revision: 1,
       waitingReason: null,
       cancellationRequestedAt: null,
+      capacity: {
+        limit: 2,
+        active: 0,
+        state: "ready",
+        position: null,
+        waitingSince: null,
+      },
       ...overrides,
     },
     availableOrderTriggers: [{ artifactId: "order_1", label: "PO-1001.pdf" }],
@@ -158,6 +165,9 @@ describe("RoutineWorkPanel", () => {
       warnings: [],
       approvalRequired: true,
       state: "pending" as const,
+      waitingReason: null,
+      waitingSince: null,
+      queue: { state: "ready" as const, position: null, waitingSince: null },
       expiresAt: "2026-07-29T00:15:00.000Z",
       revision: 1,
     };

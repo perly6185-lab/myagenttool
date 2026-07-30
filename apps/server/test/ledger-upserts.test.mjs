@@ -205,6 +205,155 @@ test("CSV ledger previews and commits insert, no-op, and update idempotently", a
   }
 });
 
+test("same-ledger previews serialize durably while independent ledgers remain available", async () => {
+  const h = harness();
+  try {
+    const inquiryPath = join(h.root, "ledgers/inquiries.csv");
+    const quotationPath = join(h.root, "ledgers/quotations.csv");
+    mkdirSync(dirname(inquiryPath), { recursive: true });
+    writeFileSync(inquiryPath, "Inquiry No,Customer,Amount\n");
+    writeFileSync(quotationPath, "Inquiry No,Customer,Amount\n");
+    const inquiryDefinition = await activate(h, createCsvDefinition(h));
+    const quotationDefinition = await activate(h, createCsvDefinition(h, {
+      relativePath: "ledgers/quotations.csv",
+    }));
+
+    const first = await h.ledgerService.previewUpsert({
+      ledgerDefinitionId: inquiryDefinition.id,
+      fields: { inquiry_number: "RFQ-Q-1", customer: "First" },
+      sourceEvidence: [{ artifactId: "wfa_inquiry" }],
+    }, ACTOR);
+    const second = await h.ledgerService.previewUpsert({
+      ledgerDefinitionId: inquiryDefinition.id,
+      fields: { inquiry_number: "RFQ-Q-2", customer: "Second" },
+      sourceEvidence: [{ artifactId: "wfa_inquiry" }],
+    }, ACTOR);
+    const independent = await h.ledgerService.previewUpsert({
+      ledgerDefinitionId: quotationDefinition.id,
+      fields: { inquiry_number: "RFQ-I-1", customer: "Independent" },
+      sourceEvidence: [{ artifactId: "wfa_inquiry" }],
+    }, ACTOR);
+
+    assert.equal(first.status, 201);
+    assert.equal(second.status, 202);
+    assert.equal(second.body.preview.state, "waiting");
+    assert.equal(second.body.preview.queue.position, 1);
+    assert.equal(independent.status, 201);
+    assert.equal(independent.body.preview.state, "pending");
+    const repeatedSecond = await h.ledgerService.previewUpsert({
+      ledgerDefinitionId: inquiryDefinition.id,
+      fields: { inquiry_number: "RFQ-Q-2", customer: "Second" },
+      sourceEvidence: [{ artifactId: "wfa_inquiry" }],
+    }, ACTOR);
+    assert.equal(repeatedSecond.status, 200);
+    assert.equal(repeatedSecond.body.replayed, true);
+    assert.equal(repeatedSecond.body.preview.id, second.body.preview.id);
+    assert.equal((await h.ledgerService.commitPreview({
+      previewId: second.body.preview.id,
+      expectedRevision: second.body.preview.revision,
+      approved: true,
+    }, ACTOR)).status, 423);
+
+    const committedFirst = await h.ledgerService.commitPreview({
+      previewId: first.body.preview.id,
+      expectedRevision: first.body.preview.revision,
+      approved: true,
+    }, ACTOR);
+    assert.equal(committedFirst.body.promotedPreview.id, second.body.preview.id);
+    assert.equal(committedFirst.body.promotedPreview.state, "pending");
+    assert.equal(committedFirst.body.promotedPreview.rowNumber, 3);
+
+    const listed = await h.ledgerService.listPreviews({
+      ledgerDefinitionId: inquiryDefinition.id,
+      states: ["pending", "waiting"],
+    }, ACTOR);
+    assert.equal(listed.body.previews.length, 1);
+    assert.equal(listed.body.previews[0].revision, 2);
+    const committedSecond = await h.ledgerService.commitPreview({
+      previewId: second.body.preview.id,
+      expectedRevision: listed.body.previews[0].revision,
+      approved: true,
+    }, ACTOR);
+    assert.equal(committedSecond.status, 200);
+    assert.equal(readFileSync(inquiryPath, "utf8").match(/RFQ-Q-/g).length, 2);
+  } finally {
+    h.cleanup();
+  }
+});
+
+test("cancelled routine ownership releases a waiting ledger preview without losing it", async () => {
+  const h = harness();
+  try {
+    const path = join(h.root, "ledgers/inquiries.csv");
+    mkdirSync(dirname(path), { recursive: true });
+    writeFileSync(path, "Inquiry No,Customer,Amount\n");
+    const definition = await activate(h, createCsvDefinition(h));
+    const active = await h.ledgerService.previewUpsert({
+      ledgerDefinitionId: definition.id,
+      routineRunId: "run_cancelled",
+      routineStepKey: "register",
+      fields: { inquiry_number: "RFQ-CANCEL", customer: "Cancelled" },
+      sourceEvidence: [{ artifactId: "wfa_inquiry" }],
+    }, ACTOR);
+    const waiting = await h.ledgerService.previewUpsert({
+      ledgerDefinitionId: definition.id,
+      fields: { inquiry_number: "RFQ-AFTER", customer: "After" },
+      sourceEvidence: [{ artifactId: "wfa_inquiry" }],
+    }, ACTOR);
+    assert.equal(active.body.preview.state, "pending");
+    assert.equal(waiting.body.preview.state, "waiting");
+
+    const released = h.ledgerService.cancelRoutineReservations({
+      routineRunId: "run_cancelled",
+    }, ACTOR);
+    assert.equal(released.body.released, 1);
+    const listed = await h.ledgerService.listPreviews({
+      ledgerDefinitionId: definition.id,
+      states: ["pending", "waiting", "invalidated"],
+    }, ACTOR);
+    const cancelledPreview = listed.body.previews.find((preview) => preview.id === active.body.preview.id);
+    const promotedPreview = listed.body.previews.find((preview) => preview.id === waiting.body.preview.id);
+    assert.equal(cancelledPreview.state, "invalidated");
+    assert.equal(promotedPreview.state, "pending");
+    assert.equal(promotedPreview.revision, 2);
+  } finally {
+    h.cleanup();
+  }
+});
+
+test("concurrent recovery checks promote one waiting preview exactly once", async () => {
+  const h = harness();
+  try {
+    const path = join(h.root, "ledgers/inquiries.csv");
+    mkdirSync(dirname(path), { recursive: true });
+    writeFileSync(path, "Inquiry No,Customer,Amount\n");
+    const definition = await activate(h, createCsvDefinition(h));
+    const active = await h.ledgerService.previewUpsert({
+      ledgerDefinitionId: definition.id,
+      fields: { inquiry_number: "RFQ-EXPIRE", customer: "Expired" },
+      sourceEvidence: [{ artifactId: "wfa_inquiry" }],
+    }, ACTOR);
+    const waiting = await h.ledgerService.previewUpsert({
+      ledgerDefinitionId: definition.id,
+      fields: { inquiry_number: "RFQ-PROMOTE", customer: "Promoted" },
+      sourceEvidence: [{ artifactId: "wfa_inquiry" }],
+    }, ACTOR);
+    h.advance(15 * 60 * 1_000 + 1);
+
+    await Promise.all([
+      h.ledgerService.listPreviews({ ledgerDefinitionId: definition.id }, ACTOR),
+      h.ledgerService.listPreviews({ ledgerDefinitionId: definition.id }, ACTOR),
+    ]);
+    const expired = h.state.ledgerUpsertPreviews.find((preview) => preview.id === active.body.preview.id);
+    const promoted = h.state.ledgerUpsertPreviews.find((preview) => preview.id === waiting.body.preview.id);
+    assert.equal(expired.state, "expired");
+    assert.equal(promoted.state, "pending");
+    assert.equal(promoted.revision, 2);
+  } finally {
+    h.cleanup();
+  }
+});
+
 test("stale previews, active locks, unsafe formulas, and escaping links are refused", async () => {
   const h = harness();
   try {
