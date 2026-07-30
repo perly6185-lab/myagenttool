@@ -2,6 +2,12 @@ name: Batch resilience
 
 on:
   pull_request:
+    types:
+      - opened
+      - synchronize
+      - reopened
+      - ready_for_review
+      - labeled
   workflow_dispatch:
     inputs:
       rounds:
@@ -38,7 +44,10 @@ jobs:
     runs-on: ${{ github.event_name == 'workflow_dispatch' && inputs.runner || github.event_name == 'schedule' && 'windows-latest' || 'ubuntu-latest' }}
     timeout-minutes: 35
     env:
-      RESILIENCE_ROUNDS: ${{ github.event_name == 'pull_request' && '3' || github.event_name == 'schedule' && '20' || inputs.rounds }}
+      # Every PR gets a fast 3-round gate. Applying resilience-5x promotes the
+      # same immutable PR head to the required pre-merge 5-round penetration;
+      # synchronize events keep it at 5 rounds after later commits.
+      RESILIENCE_ROUNDS: ${{ github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'resilience-5x') && '5' || github.event_name == 'pull_request' && '3' || github.event_name == 'schedule' && '20' || inputs.rounds }}
       RESILIENCE_REPORT: .myagenttool/reports/batch-resilience.json
     steps:
       - name: Checkout
