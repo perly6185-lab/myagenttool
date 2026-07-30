@@ -52,6 +52,7 @@ export async function handleWorkflowMemoryRoutes({
   commitLedgerUpsertPreview,
   listLedgerUpsertPreviews,
   listLedgerMutations,
+  collectBusinessPilotEvidence,
   materializeRoutineIssue,
   getRoutineWorkItemExecution,
   listRoutineWorkQueue,
@@ -91,6 +92,13 @@ export async function handleWorkflowMemoryRoutes({
   publishRunOutputs,
 }) {
   if (!url.pathname.startsWith("/api/workflow-memory")) return false;
+
+  if (url.pathname === "/api/workflow-memory/commercial-pilot/evidence"
+    && req.method === "POST") {
+    const result = collectBusinessPilotEvidence(await readJson(req), actor);
+    sendJson(res, result.status, result.body);
+    return true;
+  }
 
   if (url.pathname === "/api/workflow-memory/sources") {
     let result;
