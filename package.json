@@ -22,7 +22,8 @@
   "scripts": {
     "dev": "node tools/dev/run-local-demo.mjs",
     "test:documents:e2e": "playwright test -c apps/web/playwright.config.ts",
-    "test:user-journey:e2e": "playwright test -c apps/web/playwright.config.ts documents.spec.ts issue-auto-run.spec.ts recovery.spec.ts shell-navigation.spec.ts",
+    "test:user-journey:e2e": "playwright test -c apps/web/playwright.config.ts documents.spec.ts issue-auto-run.spec.ts recovery.spec.ts shell-navigation.spec.ts workflow-memory-routine.spec.ts",
+    "test:commercial-routine-release": "node --test apps/server/test/business-routine-evaluation.test.mjs apps/server/test/business-document-intelligence.test.mjs apps/server/test/business-case-discovery.test.mjs apps/server/test/business-routines.test.mjs apps/server/test/ledger-upserts.test.mjs apps/server/test/integration/workflow-memory-http.test.mjs",
     "desktop:dev": "pnpm --filter @myagenttool/web build && electron .",
     "desktop:prepare-assets": "node apps/electron/scripts/prepare-portable-git.mjs",
     "desktop:pack": "pnpm desktop:prepare-assets && pnpm --filter @myagenttool/web build && electron-builder --dir -c apps/electron/electron-builder.yml",
@@ -211,6 +212,7 @@
     "pr:merge": "node tools/dev/pr-merge.mjs",
     "eval:real": "node tools/dev/eval-real-run.mjs",
     "eval:trend": "node tools/dev/eval-real-run.mjs --trend",
+    "eval:commercial-routine": "node tools/dev/commercial-routine-eval.mjs",
     "ai:feedback-triage": "node tools/ai/src/index.mjs feedback-triage",
     "ai:impact": "node tools/ai/src/index.mjs impact",
     "eval:install-cron": "sh tools/dev/install-eval-launchagent.sh"

@@ -156,6 +156,29 @@ test("deterministic analysis extracts explainable business fields and flags cont
   }).riskSignals.includes("instruction_like_content"));
 });
 
+test("document heading distinguishes a quotation that references its inquiry", () => {
+  const quotation = analyzeBusinessDocumentDeterministically({
+    artifactId: "wfa_quote_with_inquiry",
+    artifactFingerprint: "d".repeat(64),
+    relativePath: "cases/quotation.md",
+    content: [
+      "Quotation",
+      "Inquiry number: INQ-001",
+      "Quotation number: QUO-001",
+      "Customer: ACME",
+    ].join("\n"),
+  });
+  assert.equal(quotation.documentType, "quotation");
+  assert.equal(
+    quotation.fieldProposals.find((field) => field.key === "inquiry_number").normalizedValue,
+    "INQ-001",
+  );
+  assert.equal(
+    quotation.fieldProposals.find((field) => field.key === "quotation_number").normalizedValue,
+    "QUO-001",
+  );
+});
+
 test("supported business formats produce proposals without persisting secret or formula fields", () => {
   const fixtures = [
     ["inquiry.md", "询价单\n询价编号：RFQ-001", "inquiry"],

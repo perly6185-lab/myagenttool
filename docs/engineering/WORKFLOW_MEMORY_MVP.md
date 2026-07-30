@@ -451,7 +451,31 @@ pnpm --filter @myagenttool/server typecheck
 pnpm --filter @myagenttool/web typecheck
 ```
 
-后续阶段由 #1555–#1556 负责普通用户入口优化和发布评测门禁。
+### 阶段 7：普通用户入口与 V1.4 发布评测门禁
+
+关联 Issue：[#1555](https://github.com/perly6185-lab/myagenttool/issues/1555)、
+[#1556](https://github.com/perly6185-lab/myagenttool/issues/1556)。
+
+- 普通用户通过“选择工作目录 → 检查识别结果 → 确认任务类型”三步入口建立日常工作；Routine Issue 首屏只保留“处理询价”主操作。
+- 版本化商务夹具覆盖至少 3 组询价—报价历史、订单/无订单、三类台账、重复导入、未知文件、安全拒绝、并发和中断恢复。
+- 确定性评测输出业务文档准确率、关系 Top-1/Top-5、Routine 步骤精确率/召回率、必做/条件准确率和未知保留率；任何指标低于门槛都会使命令非零退出。
+- 专用发布回归与评测加入 CI `eval-gates`；关键浏览器旅程加入 `test:user-journey:e2e`。
+- 用户指南和发布审核记录见
+  [WORKFLOW_MEMORY_V1_4_RELEASE.md](WORKFLOW_MEMORY_V1_4_RELEASE.md)。
+
+阶段 7 重点回归：
+
+```bash
+pnpm test:commercial-routine-release
+pnpm eval:commercial-routine
+pnpm exec playwright test -c apps/web/playwright.config.ts workflow-memory-routine.spec.ts
+```
+
+### V1.4 整体发布审核
+
+- 七个阶段已形成从受控目录证据到可复用本地 Issue 和可恢复台账写入的闭环。
+- 发布门禁使用固定本地夹具，不调用外部 Provider，也不会因未知样本而强行猜测。
+- 评测数字只代表回归夹具；任何新目录仍需用户检查归类、案例和工作类型后显式启用。
 
 ## MVP 之后
 
