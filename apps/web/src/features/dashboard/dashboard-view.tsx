@@ -47,7 +47,6 @@ function runBlockReason(
   state: ConsoleSnapshot | undefined,
   agent: AgentSnapshot | null,
   hasTask: boolean,
-  invocation: InvocationSnapshot | null,
   t: Translate,
 ): string {
   if (!state) return t("dashboard.block.offline");
@@ -57,9 +56,26 @@ function runBlockReason(
     return t("dashboard.block.disabled", { name: agent.name });
   if (agent.health?.status === "unhealthy")
     return t("dashboard.block.unhealthy", { name: agent.name });
-  if (RUNNING_STATES.includes(invocation?.status ?? ""))
-    return t("dashboard.block.running");
   return "";
+}
+
+export function eventsForInvocation(
+  state: ConsoleSnapshot | undefined,
+  invocation: InvocationSnapshot | null,
+) {
+  if (!state) return [];
+  const filtered = invocation
+    ? state.events.filter((event) => event.invocationId === invocation.id)
+    : state.events;
+  return [...filtered]
+    .sort((a, b) => a.createdAt.localeCompare(b.createdAt))
+    .slice(-50);
+}
+
+function createClientIdempotencyKey() {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function")
+    return crypto.randomUUID();
+  return `web-${Date.now()}-${Math.random().toString(36).slice(2)}`;
 }
 
 /**
@@ -83,7 +99,10 @@ export function DashboardView({ surface = "overview" }: { surface?: DashboardSur
   const setSection = useUiStore((s) => s.setSection);
   const resumeFromInvocationId = useUiStore((s) => s.resumeFromInvocationId);
   const setResumeFromInvocationId = useUiStore((s) => s.setResumeFromInvocationId);
-  const { execute, pending, error } = useAsyncAction();
+  const runAction = useAsyncAction();
+  const cancelAction = useAsyncAction();
+  const runInFlightRef = useRef(false);
+  const runIdempotencyKeyRef = useRef<string | null>(null);
 
   const projects = state?.projects ?? [];
   const projectId = selectedProjectId ?? projects[0]?.id ?? null;
@@ -100,9 +119,22 @@ export function DashboardView({ surface = "overview" }: { surface?: DashboardSur
 
   const { agents, agent } = resolveAgents(state, selectedAgentId);
   const invocation = resolveInvocation(state, selectedInvocationId);
+  useEffect(() => {
+    runIdempotencyKeyRef.current = null;
+  }, [agent?.id, projectId, targetWorktree?.id, resumeFromInvocationId]);
+  const activeInvocations = useMemo(
+    () => (state?.invocations ?? []).filter((item) => RUNNING_STATES.includes(item.status ?? "")),
+    [state?.invocations],
+  );
+  const localInFlightCount = useMemo(
+    () => activeInvocations.filter((item) => {
+      if (["queued", "waiting_for_local_approval"].includes(item.status ?? "")) return false;
+      return (state?.agents ?? []).find((candidate) => candidate.id === item.agentId)?.location?.type === "local_device";
+    }).length,
+    [activeInvocations, state?.agents],
+  );
 
   const hasTask = task.trim().length > 0;
-  const isRunning = RUNNING_STATES.includes(invocation?.status ?? "");
   const homeNextAction = deriveHomeNextAction({
     invocation,
     hasPendingDecision: hasPendingDecisionForInvocation(
@@ -114,20 +146,21 @@ export function DashboardView({ surface = "overview" }: { surface?: DashboardSur
   const unhealthy = agent?.health?.status === "unhealthy";
   const disabledAgent = agent?.status === "disabled";
   const localOffline = agent?.location?.type === "local_device" && state?.device?.status !== "online";
+  const maxLocalConcurrency = state?.device?.maxConcurrency || 1;
+  const selectedWorktreeBusy = Boolean(targetWorktree?.id) && activeInvocations.some(
+    (item) => item.worktreeId === targetWorktree?.id && item.status !== "queued",
+  );
+  const willQueue =
+    localOffline ||
+    (agent?.location?.type === "local_device" && (localInFlightCount >= maxLocalConcurrency || selectedWorktreeBusy));
 
-  const runDisabled = !state || !hasTask || !agent || isRunning || disabledAgent || unhealthy || pending;
+  const runDisabled = !state || !hasTask || !agent || disabledAgent || unhealthy || runAction.pending;
   const cancelDisabled = !invocation || !CANCELLABLE_STATES.includes(invocation.status ?? "");
-  const blockReason = runBlockReason(state, agent, hasTask, invocation, t);
+  const blockReason = runBlockReason(state, agent, hasTask, t);
 
   // Ascending (oldest → newest) so the transcript reads as a conversation and
   // new blocks append at the bottom.
-  const events = useMemo(() => {
-    if (!state) return [];
-    const filtered = invocation
-      ? state.events.filter((e) => e.invocationId === invocation.id || e.data?.agentId === agent?.id)
-      : state.events;
-    return [...filtered].sort((a, b) => a.createdAt.localeCompare(b.createdAt)).slice(-50);
-  }, [state, invocation, agent?.id]);
+  const events = useMemo(() => eventsForInvocation(state, invocation), [state, invocation]);
 
   // Auto-scroll to the newest block only when the user is already at the bottom,
   // so reading back through history isn't yanked away by streaming updates.
@@ -150,7 +183,9 @@ export function DashboardView({ surface = "overview" }: { surface?: DashboardSur
   );
 
   async function runTask() {
+    if (runInFlightRef.current) return;
     const submitted = task.trim();
+    if (!submitted || !agent) return;
     const resumeId = resumeFromInvocationId;
     const command = String(agent?.adapter?.command ?? "").toLowerCase();
     const claude = ["claude", "claude.exe", "claude.cmd", "claude.ps1"].some(
@@ -164,15 +199,33 @@ export function DashboardView({ surface = "overview" }: { surface?: DashboardSur
           resumeFromInvocationId: resumeId,
         }
       : undefined;
-    await execute(async () => {
-      const created = (await api.createInvocation(submitted, agent?.id ?? null, projectId, targetWorktree?.id ?? null, options)) as {
-        invocation: { id: string };
-      };
-      setSelectedInvocationId(created.invocation.id);
-      setTask(""); // clear the composer on send; the task shows as the user bubble
-      setResumeFromInvocationId(null); // one-shot: consume the resume intent
-      return created;
-    });
+    const idempotencyKey = runIdempotencyKeyRef.current ?? createClientIdempotencyKey();
+    runIdempotencyKeyRef.current = idempotencyKey;
+    runInFlightRef.current = true;
+    try {
+      await runAction.execute(async () => {
+        const created = (await api.createInvocation(
+          submitted,
+          agent.id,
+          projectId,
+          targetWorktree?.id ?? null,
+          options,
+          idempotencyKey,
+        )) as { invocation: { id: string } };
+        setSelectedInvocationId(created.invocation.id);
+        setTask(""); // clear the composer on send; the task shows as the user bubble
+        setResumeFromInvocationId(null); // one-shot: consume the resume intent
+        runIdempotencyKeyRef.current = null;
+        return created;
+      });
+    } finally {
+      runInFlightRef.current = false;
+    }
+  }
+
+  async function cancelTask() {
+    if (!invocation) return;
+    await cancelAction.execute(() => api.cancelInvocation(invocation.id));
   }
 
   function performPrimaryAction(action: HomePrimaryAction) {
@@ -193,6 +246,7 @@ export function DashboardView({ surface = "overview" }: { surface?: DashboardSur
   // Show a final summary block once the run reaches a terminal state.
   const terminalStatus =
     invocation && invocation.status && !RUNNING_STATES.includes(invocation.status) ? invocation.status : null;
+  const retryableFailure = Boolean(terminalStatus && ["failed", "timed_out", "rejected"].includes(terminalStatus));
   const transcriptSummary = terminalStatus
     ? { text: invocation?.result?.summary, status: terminalStatus }
     : undefined;
@@ -200,10 +254,46 @@ export function DashboardView({ surface = "overview" }: { surface?: DashboardSur
   return (
     <div className="flex min-h-full flex-col gap-4">
       {/* Visual order is task-first on Home while Workspace retains its transcript-first layout. */}
-      {surface === "overview" ? <div className="order-2"><GuidedSetupCard /></div> : null}
-      {surface === "overview" ? <div className="order-3"><EntryJourney onCreate={() => taskInputRef.current?.focus()} /></div> : null}
+      {surface === "overview" && activeInvocations.length > 0 ? (
+        <div className="order-2">
+          <Card>
+            <CardHeader className="flex-row items-center justify-between gap-3 pb-2">
+              <div>
+                <CardTitle>{t("dashboard.activeTasks")}</CardTitle>
+                <p className="mt-1 text-xs text-muted-foreground">{t("dashboard.parallelHint")}</p>
+              </div>
+              <StatusBadge tone={localInFlightCount >= maxLocalConcurrency ? "warning" : "neutral"}>
+                {t("dashboard.capacity", { count: localInFlightCount, total: maxLocalConcurrency })}
+              </StatusBadge>
+            </CardHeader>
+            <CardContent className="grid gap-2 sm:grid-cols-2">
+              {activeInvocations.slice(0, 6).map((item) => {
+                const itemAgent = (state?.agents ?? []).find((candidate) => candidate.id === item.agentId);
+                return (
+                  <button
+                    key={item.id}
+                    type="button"
+                    onClick={() => setSelectedInvocationId(item.id)}
+                    className="flex min-w-0 items-center justify-between gap-3 rounded-md border border-border px-3 py-2 text-left hover:bg-muted/50"
+                  >
+                    <span className="min-w-0">
+                      <span className="block truncate text-sm font-medium">{item.input?.task || t("dashboard.untitledTask")}</span>
+                      <span className="block truncate text-xs text-muted-foreground">
+                        {itemAgent?.name ?? item.agentId ?? "—"}
+                      </span>
+                    </span>
+                    <StatusBadge tone={statusTone(item.status)}>{invocationStatus(t, item.status)}</StatusBadge>
+                  </button>
+                );
+              })}
+            </CardContent>
+          </Card>
+        </div>
+      ) : null}
+      {surface === "overview" ? <div className="order-3"><GuidedSetupCard /></div> : null}
+      {surface === "overview" ? <div className="order-4"><EntryJourney onCreate={() => taskInputRef.current?.focus()} /></div> : null}
       {/* Transcript — the scrolling conversation area. */}
-      {invocation ? <div ref={activityRef} tabIndex={-1} className="order-4 flex min-h-48 flex-1 flex-col outline-none focus-visible:ring-2 focus-visible:ring-ring">
+      {invocation ? <div ref={activityRef} tabIndex={-1} className="order-5 flex min-h-48 flex-1 flex-col outline-none focus-visible:ring-2 focus-visible:ring-ring">
         <Card className="flex min-h-48 flex-1 flex-col">
         <CardHeader>
           <SectionHeading
@@ -261,7 +351,10 @@ export function DashboardView({ surface = "overview" }: { surface?: DashboardSur
             ref={taskInputRef}
             rows={3}
             value={task}
-            onChange={(e) => setTask(e.target.value)}
+            onChange={(e) => {
+              setTask(e.target.value);
+              runIdempotencyKeyRef.current = null;
+            }}
             aria-label={t("dashboard.task")}
             placeholder={t("dashboard.taskPlaceholder")}
           />
@@ -269,12 +362,31 @@ export function DashboardView({ surface = "overview" }: { surface?: DashboardSur
             <div className="flex flex-wrap items-center gap-2" aria-label={t("dashboard.firstTaskTemplates")}>
               <span className="text-xs text-muted-foreground">{t("dashboard.nextStep")}</span>
               {STARTER_TASK_TEMPLATES.map((template) => (
-                <Button key={template.id} type="button" size="sm" variant="secondary" onClick={() => setTask(t(template.taskKey))}>
+                <Button
+                  key={template.id}
+                  type="button"
+                  size="sm"
+                  variant="secondary"
+                  onClick={() => {
+                    setTask(t(template.taskKey));
+                    runIdempotencyKeyRef.current = null;
+                  }}
+                >
                   {t(template.labelKey)}
                 </Button>
               ))}
             </div>
           ) : null}
+
+          <div className="grid grid-cols-2 gap-3 rounded-lg border border-border bg-muted/30 p-3 text-sm sm:grid-cols-4">
+            <ReviewItem label={t("dashboard.safety")} value={agent?.registrationNotes?.risk ?? t("dashboard.reviewAgent")} />
+            <ReviewItem label={t("dashboard.data")} value={agent?.registrationNotes?.data ?? t("dashboard.recorded")} />
+            <ReviewItem label={t("dashboard.cost")} value={agent?.registrationNotes?.cost ?? costText(agent?.economics)} />
+            <ReviewItem
+              label={t("dashboard.cancellation")}
+              value={agent?.registrationNotes?.cancellation ?? cancellationText(agent?.adapter)}
+            />
+          </div>
 
           <section
             aria-label={t("dashboard.nextAction.label")}
@@ -295,27 +407,56 @@ export function DashboardView({ surface = "overview" }: { surface?: DashboardSur
               disabled={homeNextAction.action === "run" ? runDisabled : false}
               onClick={() => performPrimaryAction(homeNextAction.action)}
             >
-              {homeNextAction.action === "run" && localOffline
+              {homeNextAction.action === "run" && willQueue
                 ? t("dashboard.queue")
                 : t(`dashboard.nextAction.action.${homeNextAction.action}` as never)}
             </Button>
+            {homeNextAction.state === "running" && hasTask ? (
+              <Button
+                className="min-h-11"
+                variant="secondary"
+                disabled={runDisabled}
+                onClick={() => void runTask()}
+              >
+                {willQueue ? t("dashboard.queue") : t("dashboard.run")}
+              </Button>
+            ) : null}
             {homeNextAction.state === "running" ? (
               <Button
                 className="min-h-11"
                 variant="secondary"
-                disabled={cancelDisabled || pending}
-                onClick={() => invocation && execute(() => api.cancelInvocation(invocation.id))}
+                disabled={cancelDisabled || cancelAction.pending}
+                onClick={() => void cancelTask()}
               >
                 {t("dashboard.cancel")}
               </Button>
             ) : null}
-            {blockReason && !error ? (
+            {retryableFailure && invocation?.input?.task ? (
+              <Button
+                className="min-h-11"
+                variant="secondary"
+                onClick={() => {
+                  setTask(invocation.input?.task ?? "");
+                  runIdempotencyKeyRef.current = null;
+                  taskInputRef.current?.focus();
+                }}
+              >
+                {t("dashboard.retryTask")}
+              </Button>
+            ) : null}
+            {blockReason && !runAction.error ? (
               <span className="basis-full text-xs text-muted-foreground" aria-live="polite">
                 {blockReason}
               </span>
             ) : null}
           </section>
-          {error ? <ActionErrorNotice error={error} onRetry={runTask} labels={{
+          {retryableFailure ? (
+            <p className="text-xs text-muted-foreground">{t("dashboard.retryHint")}</p>
+          ) : null}
+          {runAction.error ? <ActionErrorNotice error={runAction.error} onRetry={runTask} labels={{
+            cause: t("actionError.cause"), impact: t("actionError.impact"), remedy: t("actionError.remedy"), retry: t("actionError.retry"),
+          }} /> : null}
+          {cancelAction.error ? <ActionErrorNotice error={cancelAction.error} onRetry={cancelTask} labels={{
             cause: t("actionError.cause"), impact: t("actionError.impact"), remedy: t("actionError.remedy"), retry: t("actionError.retry"),
           }} /> : null}
 
@@ -371,18 +512,6 @@ export function DashboardView({ surface = "overview" }: { surface?: DashboardSur
                   </button>
                 </div>
               ) : null}
-
-              <div className="grid grid-cols-2 gap-3 rounded-lg bg-muted/30 p-3 text-sm sm:grid-cols-4" aria-label={t("dashboard.preRunReview")}>
-                <ReviewItem label={t("dashboard.safety")} value={agent?.registrationNotes?.risk ?? t("dashboard.reviewAgent")} />
-                <ReviewItem label={t("dashboard.data")} value={agent?.registrationNotes?.data ?? t("dashboard.recorded")} />
-                <ReviewItem label={t("dashboard.cost")} value={agent?.registrationNotes?.cost ?? costText(agent?.economics)} />
-                <ReviewItem
-                  label={t("dashboard.cancellation")}
-                  value={agent?.registrationNotes?.cancellation ?? cancellationText(agent?.adapter)}
-                />
-              </div>
-
-              <p className="text-xs font-medium text-muted-foreground">{t("dashboard.details")}</p>
               <FactList
                 facts={[
                   { term: t("dashboard.computer"), value: state?.device ? `${state.device.name} — ${readableAgentStatus(state.device.status)}` : "—" },

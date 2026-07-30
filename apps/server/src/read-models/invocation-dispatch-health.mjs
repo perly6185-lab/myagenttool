@@ -51,6 +51,10 @@ export function computeInvocationDispatchHealth(state, { findAgent, now, visible
     if (invocation.status !== "queued") continue;
     if (!visibleInvocation(invocation)) continue;
     const agent = findAgent(invocation.agentId);
+    // Remote HTTP work has its own bounded server-side queue; this read model is
+    // specifically the local Bridge queue. Keep local work assigned to another
+    // device visible so it can still explain `wrong_device`.
+    if (agent?.adapter?.type === "platform" || (agent?.adapter?.type === "http" && agent?.location?.type === "remote_http")) continue;
     let reason = classifyDispatchEligibility(invocation, {
       agent,
       dirBusy: busyDirs.has(invocationDirKey(invocation)),
@@ -65,6 +69,9 @@ export function computeInvocationDispatchHealth(state, { findAgent, now, visible
     byReason[reason] = (byReason[reason] ?? 0) + 1;
     items.push({
       invocationId: invocation.id,
+      task: invocation.input?.task ?? "",
+      projectId: invocation.projectId ?? invocation.options?.metadata?.projectId ?? null,
+      worktreeId: invocation.worktreeId ?? invocation.options?.metadata?.worktreeId ?? null,
       agentId: invocation.agentId ?? null,
       agentName: agent?.name ?? null,
       deliveryState: invocation.delivery?.state ?? null,

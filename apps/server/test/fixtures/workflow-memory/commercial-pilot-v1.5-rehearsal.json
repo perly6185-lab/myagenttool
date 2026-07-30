@@ -1,0 +1,303 @@
+{
+  "schemaVersion": 1,
+  "pilotId": "commercial-pilot-v1.5-synthetic-rehearsal",
+  "description": "Synthetic ten-case rehearsal for the V1.5 pilot harness. It is not formal accuracy evidence.",
+  "dataClassification": "synthetic",
+  "consent": {
+    "confirmed": false,
+    "scope": "Generated regression data only; not eligible for a formal release decision."
+  },
+  "releaseReview": {
+    "confirmed": true,
+    "recordedAt": "2026-07-30T00:00:00.000Z",
+    "reviewerRole": "Synthetic rehearsal reviewer",
+    "performance": true,
+    "security": true,
+    "privacy": true,
+    "accessibility": true,
+    "localization": true,
+    "migration": true,
+    "rollback": true
+  },
+  "thresholds": {
+    "minimumFormalCases": 10,
+    "documentRoleTop1": 0.8,
+    "relationshipTop1": 0.75
+  },
+  "cases": [
+    {
+      "id": "rehearsal-01",
+      "templateId": "markdown-a",
+      "traits": ["baseline"],
+      "expectedDocumentRole": "inquiry",
+      "relationshipExpected": true,
+      "expectedOutcome": "ordered",
+      "observed": {
+        "documentRole": "inquiry",
+        "relationshipRank": 1,
+        "correctionCount": 0,
+        "completed": true,
+        "evidenceComplete": true,
+        "outcome": "ordered",
+        "duplicateIssueCount": 0,
+        "duplicateBusinessCaseCount": 0,
+        "duplicateQuotationCount": 0,
+        "duplicateLedgerRowCount": 0,
+        "quotationMutationCount": 1,
+        "ledgerMutationCount": 3,
+        "approvalCount": 4,
+        "approvalComplete": true,
+        "recoveries": []
+      }
+    },
+    {
+      "id": "rehearsal-02",
+      "templateId": "markdown-a",
+      "traits": ["missing_fact"],
+      "expectedDocumentRole": "inquiry",
+      "relationshipExpected": true,
+      "expectedOutcome": "no_order",
+      "observed": {
+        "documentRole": "inquiry",
+        "relationshipRank": 1,
+        "correctionCount": 1,
+        "completed": true,
+        "evidenceComplete": true,
+        "outcome": "no_order",
+        "duplicateIssueCount": 0,
+        "duplicateBusinessCaseCount": 0,
+        "duplicateQuotationCount": 0,
+        "duplicateLedgerRowCount": 0,
+        "quotationMutationCount": 1,
+        "ledgerMutationCount": 2,
+        "approvalCount": 3,
+        "approvalComplete": true,
+        "recoveries": []
+      }
+    },
+    {
+      "id": "rehearsal-03",
+      "templateId": "markdown-b",
+      "traits": ["conflicting_fact"],
+      "expectedDocumentRole": "inquiry",
+      "relationshipExpected": true,
+      "expectedOutcome": "no_order",
+      "observed": {
+        "documentRole": "inquiry",
+        "relationshipRank": 1,
+        "correctionCount": 1,
+        "completed": true,
+        "evidenceComplete": true,
+        "outcome": "no_order",
+        "duplicateIssueCount": 0,
+        "duplicateBusinessCaseCount": 0,
+        "duplicateQuotationCount": 0,
+        "duplicateLedgerRowCount": 0,
+        "quotationMutationCount": 1,
+        "ledgerMutationCount": 2,
+        "approvalCount": 3,
+        "approvalComplete": true,
+        "recoveries": []
+      }
+    },
+    {
+      "id": "rehearsal-04",
+      "templateId": "markdown-b",
+      "traits": ["duplicate"],
+      "expectedDocumentRole": "inquiry",
+      "relationshipExpected": true,
+      "expectedOutcome": "ordered",
+      "observed": {
+        "documentRole": "inquiry",
+        "relationshipRank": 1,
+        "correctionCount": 0,
+        "completed": true,
+        "evidenceComplete": true,
+        "outcome": "ordered",
+        "duplicateIssueCount": 0,
+        "duplicateBusinessCaseCount": 0,
+        "duplicateQuotationCount": 0,
+        "duplicateLedgerRowCount": 0,
+        "quotationMutationCount": 1,
+        "ledgerMutationCount": 3,
+        "approvalCount": 4,
+        "approvalComplete": true,
+        "recoveries": [
+          { "id": "duplicate-intake", "passed": true }
+        ]
+      }
+    },
+    {
+      "id": "rehearsal-05",
+      "templateId": "markdown-c",
+      "traits": ["restart"],
+      "expectedDocumentRole": "inquiry",
+      "relationshipExpected": true,
+      "expectedOutcome": "no_order",
+      "observed": {
+        "documentRole": "inquiry",
+        "relationshipRank": 1,
+        "correctionCount": 0,
+        "completed": true,
+        "evidenceComplete": true,
+        "outcome": "no_order",
+        "duplicateIssueCount": 0,
+        "duplicateBusinessCaseCount": 0,
+        "duplicateQuotationCount": 0,
+        "duplicateLedgerRowCount": 0,
+        "quotationMutationCount": 1,
+        "ledgerMutationCount": 2,
+        "approvalCount": 3,
+        "approvalComplete": true,
+        "recoveries": [
+          { "id": "service-restart", "passed": true }
+        ]
+      }
+    },
+    {
+      "id": "rehearsal-06",
+      "templateId": "markdown-c",
+      "traits": ["concurrency"],
+      "expectedDocumentRole": "inquiry",
+      "relationshipExpected": true,
+      "expectedOutcome": "ordered",
+      "observed": {
+        "documentRole": "inquiry",
+        "relationshipRank": 1,
+        "correctionCount": 0,
+        "completed": true,
+        "evidenceComplete": true,
+        "outcome": "ordered",
+        "duplicateIssueCount": 0,
+        "duplicateBusinessCaseCount": 0,
+        "duplicateQuotationCount": 0,
+        "duplicateLedgerRowCount": 0,
+        "quotationMutationCount": 1,
+        "ledgerMutationCount": 3,
+        "approvalCount": 4,
+        "approvalComplete": true,
+        "recoveries": [
+          { "id": "capacity-and-ledger-queue", "passed": true }
+        ]
+      }
+    },
+    {
+      "id": "rehearsal-07",
+      "templateId": "markdown-a",
+      "traits": ["move_rename"],
+      "expectedDocumentRole": "inquiry",
+      "relationshipExpected": true,
+      "expectedOutcome": "no_order",
+      "observed": {
+        "documentRole": "inquiry",
+        "relationshipRank": 1,
+        "correctionCount": 0,
+        "completed": true,
+        "evidenceComplete": true,
+        "outcome": "no_order",
+        "duplicateIssueCount": 0,
+        "duplicateBusinessCaseCount": 0,
+        "duplicateQuotationCount": 0,
+        "duplicateLedgerRowCount": 0,
+        "quotationMutationCount": 1,
+        "ledgerMutationCount": 2,
+        "approvalCount": 3,
+        "approvalComplete": true,
+        "recoveries": [
+          { "id": "move-and-rename", "passed": true }
+        ]
+      }
+    },
+    {
+      "id": "rehearsal-08",
+      "templateId": "markdown-b",
+      "traits": ["cancellation"],
+      "expectedDocumentRole": "inquiry",
+      "relationshipExpected": true,
+      "expectedOutcome": "ordered",
+      "observed": {
+        "documentRole": "inquiry",
+        "relationshipRank": 1,
+        "correctionCount": 0,
+        "completed": true,
+        "evidenceComplete": true,
+        "outcome": "ordered",
+        "duplicateIssueCount": 0,
+        "duplicateBusinessCaseCount": 0,
+        "duplicateQuotationCount": 0,
+        "duplicateLedgerRowCount": 0,
+        "quotationMutationCount": 1,
+        "ledgerMutationCount": 3,
+        "approvalCount": 4,
+        "approvalComplete": true,
+        "recoveries": [
+          { "id": "cancel-and-retry", "passed": true }
+        ]
+      }
+    },
+    {
+      "id": "rehearsal-09",
+      "templateId": "markdown-c",
+      "traits": ["stale_approval"],
+      "expectedDocumentRole": "inquiry",
+      "relationshipExpected": true,
+      "expectedOutcome": "no_order",
+      "observed": {
+        "documentRole": "inquiry",
+        "relationshipRank": 1,
+        "correctionCount": 1,
+        "completed": true,
+        "evidenceComplete": true,
+        "outcome": "no_order",
+        "duplicateIssueCount": 0,
+        "duplicateBusinessCaseCount": 0,
+        "duplicateQuotationCount": 0,
+        "duplicateLedgerRowCount": 0,
+        "quotationMutationCount": 1,
+        "ledgerMutationCount": 2,
+        "approvalCount": 3,
+        "approvalComplete": true,
+        "recoveries": [
+          { "id": "stale-preview-refresh", "passed": true }
+        ]
+      }
+    },
+    {
+      "id": "rehearsal-10",
+      "templateId": "not-applicable",
+      "traits": ["unknown_document"],
+      "expectedDocumentRole": "unknown",
+      "relationshipExpected": false,
+      "expectedOutcome": "rejected",
+      "observed": {
+        "documentRole": "unknown",
+        "relationshipRank": null,
+        "correctionCount": 0,
+        "completed": true,
+        "evidenceComplete": true,
+        "outcome": "rejected",
+        "duplicateIssueCount": 0,
+        "duplicateBusinessCaseCount": 0,
+        "duplicateQuotationCount": 0,
+        "duplicateLedgerRowCount": 0,
+        "quotationMutationCount": 0,
+        "ledgerMutationCount": 0,
+        "approvalCount": 0,
+        "approvalComplete": true,
+        "recoveries": []
+      }
+    }
+  ],
+  "safetyScenarios": [
+    { "id": "unauthorized_path_read", "passed": true },
+    { "id": "path_traversal", "passed": true },
+    { "id": "escaping_symlink", "passed": true },
+    { "id": "prompt_injection", "passed": true },
+    { "id": "formula_injection", "passed": true },
+    { "id": "stale_approval", "passed": true },
+    { "id": "silent_overwrite", "passed": true },
+    { "id": "automatic_delivery", "passed": true },
+    { "id": "approval_bypass", "passed": true },
+    { "id": "cross_tenant", "passed": true }
+  ]
+}

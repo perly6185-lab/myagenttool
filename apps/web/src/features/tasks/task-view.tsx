@@ -47,7 +47,6 @@ import { useVisibleInterval } from "@/hooks/use-visible-interval";
 import { ClaimHistoryList } from "./claim-history-list";
 import { WorktreeOptionsForm } from "./worktree-options-form";
 import { WorkItemExecutionActions } from "./work-item-execution-actions";
-import { WorkItemAcceptanceSection } from "./work-item-acceptance-section";
 import { WorkItemExternalSync } from "./work-item-external-sync";
 import { WorkItemAlertAndCostDetails, WorkItemTimeline, WorkItemTraceSummary } from "./work-item-observability";
 import { WorkItemTraceLinks } from "./work-item-trace-links";
@@ -68,6 +67,11 @@ const ArticleWorkflowDialogs = lazy(() => import("./article-workflow-dialogs"));
 const CreateLocalWorkItemForm = lazy(() => import("./create-local-work-item-form"));
 
 installExecutionUiTranslations();
+const RoutineBatchQueue = lazy(() => import("./routine-batch-queue")
+  .then((module) => ({ default: module.RoutineBatchQueue })));
+const RoutineWorkController = lazy(() => import("./routine-work-controller"));
+const WorkItemAcceptanceSection = lazy(() => import("./work-item-acceptance-section")
+  .then((module) => ({ default: module.WorkItemAcceptanceSection })));
 
 // Task = GitHub issues/PRs across repo-backed projects, surfaced as work items.
 // Mirrors the project's existing per-worktree GitHub list, lifted to a top-level
@@ -510,6 +514,12 @@ export function TaskView() {
 
         {tab === "local" ? (
           <>
+            <Suspense fallback={null}>
+              <RoutineBatchQueue
+                projectId={projectId === "all" ? undefined : projectId}
+                onOpen={setSelectedLocalId}
+              />
+            </Suspense>
             <section className="space-y-2 rounded-lg border border-warning/40 bg-warning/5 p-3">
                 <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
                   <h3 className="text-sm font-semibold">{t("approvals.pending", { count: attentionItems.length })}</h3>
@@ -2416,17 +2426,19 @@ function LocalWorkItemDetail({
       setActivity(activityResult.activities);
       setDependencyCandidates(workItemResult.workItems.filter((candidate) => candidate.id !== workItemId));
       setObservability(detail.observability);
-      void (api.autoRunReadiness(next.projectId) as Promise<{ readiness?: typeof autoRunReadiness }>)
-        .then((result) => setAutoRunReadiness(result.readiness ?? null))
-        .catch(() => setAutoRunReadiness({
-          ready: false,
-          checks: [{
-            key: "preflight",
-            label: t("taskReadiness.preflight"),
-            status: "blocked",
-            detail: t("taskReadiness.checkFailed"),
-          }],
-        }));
+      if (!next.routineDefinitionId) {
+        void (api.autoRunReadiness(next.projectId) as Promise<{ readiness?: typeof autoRunReadiness }>)
+          .then((result) => setAutoRunReadiness(result.readiness ?? null))
+          .catch(() => setAutoRunReadiness({
+            ready: false,
+            checks: [{
+              key: "preflight",
+              label: t("taskReadiness.preflight"),
+              status: "blocked",
+              detail: t("taskReadiness.checkFailed"),
+            }],
+          }));
+      }
       setLoadError(null);
     } catch (caught) {
       setLoadError(caught instanceof Error ? caught.message : t("taskLocal.loadFailed"));
@@ -2864,6 +2876,14 @@ function LocalWorkItemDetail({
         <span>{t("taskLocal.revision", { revision: item.revision })}</span>
       </div>
       <WorkItemSectionNav itemId={item.id} />
+      {item.routineDefinitionId ? (
+        <Suspense fallback={<p className="text-xs text-muted-foreground">{t("tasks.loading")}</p>}>
+          <RoutineWorkController workItemId={item.id} onChanged={() => {
+            onChanged();
+            void load();
+          }} />
+        </Suspense>
+      ) : null}
       <div className="flex items-center gap-1 overflow-x-auto rounded-md border border-border bg-muted/40 p-2 text-xs" aria-label={t("aiOps.timeline")}>
         {externalIssueBinding ? (
           <>
@@ -3144,56 +3164,70 @@ function LocalWorkItemDetail({
         </div>
       </details>
       <div id={`work-item-acceptance-${item.id}`} className="scroll-mt-12">
-        <WorkItemAcceptanceSection item={item} />
+        <Suspense fallback={null}><WorkItemAcceptanceSection item={item} /></Suspense>
       </div>
       <div aria-live="polite" aria-atomic="true">
         {error ? <p className="text-xs text-destructive">{error}</p> : null}
         {notice ? <p className="text-xs text-success">{notice}</p> : null}
       </div>
-      {!activeAutoRunId ? (
-        <section className="rounded-md border border-border bg-muted/20 p-3 text-xs">
-          <label className="grid gap-1 sm:max-w-sm">
-            <span className="font-medium">{t("executionUi.executionAgent")}</span>
-            <Select
-              value={selectedExecutionAgentId}
-              onChange={(event) => setSelectedExecutionAgentId(event.target.value)}
-              disabled={pending}
-            >
-              <option value="">{t("executionUi.executionAgentAuto")}</option>
-              {(consoleState?.agents ?? [])
-                .filter((agent) => agent.status !== "disabled")
-                .map((agent) => (
-                  <option key={agent.id} value={agent.id}>
-                    {agent.name} · {agent.id}
-                  </option>
-                ))}
-            </Select>
-          </label>
-          {selectedExecutionAgentId && (consoleState?.agents ?? []).find((agent) => agent.id === selectedExecutionAgentId)?.name.toLowerCase().includes("demo") ? (
-            <p className="mt-2 text-amber-700 dark:text-amber-300">{t("executionUi.demoAgentWarning")}</p>
-          ) : (
-            <p className="mt-2 text-muted-foreground">{t("executionUi.executionAgentHint")}</p>
-          )}
-        </section>
-      ) : null}
-      <WorkItemExecutionActions
-        itemId={item.id}
-        open={item.state === "open"}
-        pending={pending}
-        canSave={Boolean(title.trim())}
-        worktreeReady={Boolean(autoRunReadiness && !autoRunReadiness.checks.some((check) => check.key === "git" && check.status === "blocked"))}
-        autoRunReady={autoRunReadiness?.ready === true && !activeAutoRunId}
-        autoRunBlockedReason={activeAutoRunId
-          ? t("executionUi.activeAutoRunBlocked")
-          : autoRunReadiness?.checks.filter((check) => check.status === "blocked").map((check) => check.detail).join(" ")}
-        activeAutoRunId={activeAutoRunId}
-        onCreateWorktree={() => requestNavigation(createExecutionWorktree)}
-        onStartAutoRun={() => requestNavigation(startExecution)}
-        onOpenAutoRun={() => openAutoRun(activeAutoRunId)}
-        onTransition={() => transition(item.state === "open" ? "close" : "reopen")}
-        onSave={() => save()}
-      />
-      {autoRunReadiness?.ready === false ? (
+      {item.routineDefinitionId ? (
+        <div className="sticky bottom-0 z-10 flex flex-wrap justify-end gap-2 border-t border-border bg-background/95 py-2 backdrop-blur">
+          <Button variant="secondary" disabled={pending}
+            onClick={() => transition(item.state === "open" ? "close" : "reopen")}>
+            {t(item.state === "open" ? "taskLocal.close" : "taskLocal.reopen")}
+          </Button>
+          <Button variant="secondary" disabled={pending || !title.trim()} onClick={() => save()}>
+            {t("taskLocal.save")}
+          </Button>
+        </div>
+      ) : (
+        <>
+          {!activeAutoRunId ? (
+            <section className="rounded-md border border-border bg-muted/20 p-3 text-xs">
+              <label className="grid gap-1 sm:max-w-sm">
+                <span className="font-medium">{t("executionUi.executionAgent")}</span>
+                <Select
+                  value={selectedExecutionAgentId}
+                  onChange={(event) => setSelectedExecutionAgentId(event.target.value)}
+                  disabled={pending}
+                >
+                  <option value="">{t("executionUi.executionAgentAuto")}</option>
+                  {(consoleState?.agents ?? [])
+                    .filter((agent) => agent.status !== "disabled")
+                    .map((agent) => (
+                      <option key={agent.id} value={agent.id}>
+                        {agent.name} · {agent.id}
+                      </option>
+                    ))}
+                </Select>
+              </label>
+              {selectedExecutionAgentId && (consoleState?.agents ?? []).find((agent) => agent.id === selectedExecutionAgentId)?.name.toLowerCase().includes("demo") ? (
+                <p className="mt-2 text-amber-700 dark:text-amber-300">{t("executionUi.demoAgentWarning")}</p>
+              ) : (
+                <p className="mt-2 text-muted-foreground">{t("executionUi.executionAgentHint")}</p>
+              )}
+            </section>
+          ) : null}
+          <WorkItemExecutionActions
+            itemId={item.id}
+            open={item.state === "open"}
+            pending={pending}
+            canSave={Boolean(title.trim())}
+            worktreeReady={Boolean(autoRunReadiness && !autoRunReadiness.checks.some((check) => check.key === "git" && check.status === "blocked"))}
+            autoRunReady={autoRunReadiness?.ready === true && !activeAutoRunId}
+            autoRunBlockedReason={activeAutoRunId
+              ? t("executionUi.activeAutoRunBlocked")
+              : autoRunReadiness?.checks.filter((check) => check.status === "blocked").map((check) => check.detail).join(" ")}
+            activeAutoRunId={activeAutoRunId}
+            onCreateWorktree={() => requestNavigation(createExecutionWorktree)}
+            onStartAutoRun={() => requestNavigation(startExecution)}
+            onOpenAutoRun={() => openAutoRun(activeAutoRunId)}
+            onTransition={() => transition(item.state === "open" ? "close" : "reopen")}
+            onSave={() => save()}
+          />
+        </>
+      )}
+      {!item.routineDefinitionId && autoRunReadiness?.ready === false ? (
         <div className="rounded-md border border-destructive/40 bg-destructive/5 p-3 text-xs" role="alert">
           <strong className="block text-destructive">{t("taskReadiness.blocked")}</strong>
           <ul className="mt-1 list-disc space-y-1 pl-4 text-muted-foreground">

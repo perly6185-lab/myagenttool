@@ -61,6 +61,9 @@ export interface InvocationRefusalsResponse {
 
 export interface DispatchQueueItem {
   invocationId: string;
+  task: string;
+  projectId: string | null;
+  worktreeId: string | null;
   agentId: string | null;
   agentName: string | null;
   deliveryState: string | null;
@@ -93,6 +96,741 @@ export interface InvocationDispatchHealthResponse {
     claims: { active: number; expired: number; nextExpiryAt: string | null };
     intervention: { required: number; items: Array<{ autoRunId: string; invocationId: string | null; reason: string; state: string }> };
   };
+}
+
+export type WorkflowArtifactRole = "requirement" | "delivery" | "reference" | "draft" | "unknown";
+
+export interface WorkflowSource {
+  id: string;
+  projectId: string;
+  name: string;
+  relativePath: string;
+  readMode: "metadata" | "supported_text";
+  state: "active" | "revoked";
+  scanState: "idle" | "scanning" | "ready" | "failed";
+  scanProgress?: {
+    scannedEntries: number;
+    discovered: number;
+    skipped: number;
+    parsed: number;
+    parseFailed: number;
+    reused: number;
+  } | null;
+  scanRevision: number;
+  revision: number;
+  fileCount: number;
+  skippedCount: number;
+  parsedCount?: number;
+  parseFailedCount?: number;
+  reusedCount?: number;
+  truncated: boolean;
+  lastScanAt: string | null;
+  lastError: string | null;
+  currentScanJobId?: string;
+  recoveryAvailable?: boolean;
+  embeddingEvaluation?: {
+    providerId: string;
+    model: string;
+    modelVersion: string;
+    gate: WorkflowRetrievalEvaluation["gate"];
+    evaluatedAt: string;
+  };
+}
+
+export interface WorkflowArtifact {
+  id: string;
+  projectId: string;
+  sourceId: string;
+  relativePath: string;
+  name: string;
+  extension: string;
+  family: string;
+  size: number;
+  modifiedAt: string;
+  fingerprint: string;
+  role: WorkflowArtifactRole;
+  roleInference: {
+    role: WorkflowArtifactRole;
+    confidence: number;
+    reasons: string[];
+    evidenceRefs: Array<{ kind: string; value: string }>;
+    riskSignals: string[];
+    classifierVersion: number;
+  };
+  confirmationState: "proposed" | "confirmed" | "changed";
+  availability: "available" | "missing" | "checkpointed";
+  exclusion?: { reason: string; at: string; by: string };
+  extraction?: {
+    state: "ready" | "needs_ocr" | "failed" | "limited" | "skipped";
+    parserVersion: number;
+    characterCount?: number;
+    pageCount?: number | null;
+    cellCount?: number | null;
+    truncated?: boolean;
+    needsOcr?: boolean;
+    errorCode?: string;
+    error?: string;
+    reason?: string;
+    blocks?: Array<{
+      kind: string;
+      text: string;
+      location: Record<string, unknown> | null;
+    }>;
+  };
+  revision: number;
+}
+
+export type BusinessDocumentType =
+  | "inquiry"
+  | "quotation"
+  | "order"
+  | "inquiry_ledger"
+  | "quotation_ledger"
+  | "order_ledger"
+  | "price_list"
+  | "customer_reference"
+  | "other_reference"
+  | "unknown";
+
+export interface BusinessFieldProposal {
+  key:
+    | "customer"
+    | "product"
+    | "quantity"
+    | "unit_price"
+    | "currency"
+    | "tax_rate"
+    | "delivery_terms"
+    | "amount"
+    | "document_date"
+    | "inquiry_number"
+    | "quotation_number"
+    | "order_number";
+  value: string;
+  normalizedValue: string | null;
+  confidence: number;
+  evidenceRefs: Array<{
+    artifactId: string;
+    kind: string;
+    field: string | null;
+    location: string | null;
+  }>;
+  confirmationState: "proposed" | "confirmed" | "corrected";
+}
+
+export interface BusinessDocumentClassification {
+  id: string;
+  projectId: string;
+  sourceId: string;
+  artifactId: string;
+  artifactFingerprint: string;
+  documentType: BusinessDocumentType;
+  confidence: number;
+  reasons: string[];
+  evidenceRefs: Array<{
+    artifactId: string;
+    kind: string;
+    field: string | null;
+    location: string | null;
+  }>;
+  fieldProposals: BusinessFieldProposal[];
+  riskSignals: string[];
+  confirmationState: "proposed" | "confirmed" | "corrected";
+  analysisState: "deterministic" | "hybrid" | "degraded";
+  degradedReason: string | null;
+  classifierVersion: number;
+  extractorVersion: number;
+  provider: string | null;
+  model: string | null;
+  revision: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface BusinessDocumentAnalysisJob {
+  id: string;
+  projectId: string;
+  sourceId: string;
+  status: "running" | "recoverable" | "succeeded" | "cancelled";
+  attempt: number;
+  total: number;
+  processed: number;
+  classified: number;
+  replayed: number;
+  failed: number;
+  failures: Array<{ artifactId: string; error: string }>;
+  lastError: string | null;
+  revision: number;
+  createdAt: string;
+  updatedAt: string;
+  completedAt?: string;
+}
+
+export interface BusinessCaseCandidateLink {
+  fromArtifactId: string;
+  toArtifactId: string;
+  relationship: "precedes" | "uses_reference" | "registers" | "handoff";
+  score: number;
+  reasons: string[];
+  evidenceRefs: BusinessDocumentClassification["evidenceRefs"];
+  alternatives: Array<{ artifactId: string; score: number; reasons: string[] }>;
+}
+
+export interface BusinessCaseCandidate {
+  id: string;
+  familyId: string;
+  projectId: string;
+  sourceId: string;
+  businessKey: string;
+  version: number;
+  state: "proposed" | "confirmed" | "rejected" | "superseded";
+  anchorArtifactId: string;
+  artifactBindings: Array<{
+    artifactId: string;
+    documentType: BusinessDocumentType;
+    roles: Array<"trigger" | "input" | "output" | "reference">;
+  }>;
+  links: BusinessCaseCandidateLink[];
+  confidence: number;
+  correctionReason: string | null;
+  supersedesId: string | null;
+  supersededById: string | null;
+  businessCaseId: string | null;
+  evidenceHealth: {
+    state: "valid" | "downgraded" | "blocked";
+    issues: string[];
+  };
+  revision: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface BusinessRoutineDiscoveryStep {
+  key: string;
+  kind: "extract" | "retrieve" | "generate" | "ledger_upsert" | "human_approval" | "condition" | "create_issue";
+  label: string;
+  required: boolean;
+  requirement: "mandatory" | "conditional";
+  coverage: number;
+  supportCaseIds: string[];
+  exceptionCaseIds: string[];
+  explanation: string;
+  dependsOn: string[];
+  evidenceRefs: BusinessDocumentClassification["evidenceRefs"];
+  configuration: Record<string, unknown>;
+}
+
+export interface BusinessRoutineDiscoveryCandidate {
+  id: string;
+  familyId: string;
+  projectId: string;
+  sourceId: string;
+  name: string;
+  version: number;
+  state: "candidate" | "superseded";
+  triggerDocumentTypes: BusinessDocumentType[];
+  confirmedCaseIds: string[];
+  minimumCaseCount: number;
+  mandatoryCoverageThreshold: number;
+  steps: BusinessRoutineDiscoveryStep[];
+  confidence: number;
+  evidenceHealth: {
+    state: "valid" | "downgraded" | "blocked";
+    issues: string[];
+    healthyCaseCount: number;
+  };
+  revision: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface BusinessRoutineStep {
+  key: string;
+  kind: "extract" | "retrieve" | "generate" | "ledger_upsert" | "human_approval" | "condition" | "create_issue";
+  label: string;
+  required: boolean;
+  dependsOn: string[];
+  evidenceRefs: BusinessDocumentClassification["evidenceRefs"];
+  configuration: Record<string, unknown>;
+}
+
+export interface BusinessRoutineDefinition {
+  id: string;
+  familyId: string;
+  projectId: string;
+  sourceId: string;
+  name: string;
+  description: string;
+  version: number;
+  state: "candidate" | "draft" | "published" | "disabled" | "superseded";
+  discoveryCandidateId: string | null;
+  historicalCaseIds: string[];
+  triggerDocumentTypes: BusinessDocumentType[];
+  steps: BusinessRoutineStep[];
+  confidence: number;
+  supersedesId: string | null;
+  supersededById: string | null;
+  evidenceHealth: {
+    state: "valid" | "blocked";
+    issues: string[];
+    recovery: string | null;
+  };
+  revision: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface WorkflowPairProposal {
+  requirement: WorkflowArtifact;
+  candidates: Array<{
+    delivery: WorkflowArtifact;
+    score: number;
+    reasons: string[];
+  }>;
+}
+
+export interface WorkflowLearningQuality {
+  version: number;
+  score: number;
+  status: "trusted" | "review" | "blocked";
+  metrics?: {
+    evidenceIntegrity: number;
+    pairingConfidence: number;
+    parsingCoverage: number;
+    roleConfidence: number;
+  };
+  totalCaseCount?: number;
+  trustedCaseCount?: number;
+  reviewCaseCount?: number;
+  blockedCaseCount?: number;
+  blockers: string[];
+  warnings: string[];
+}
+
+export interface DeliveryCase {
+  id: string;
+  sourceId: string;
+  projectId: string;
+  requirementArtifactIds: string[];
+  deliveryArtifactIds: string[];
+  referenceArtifactIds: string[];
+  draftArtifactIds: string[];
+  note: string;
+  satisfaction: "accepted";
+  state: "confirmed" | "archived";
+  archiveReason?: string;
+  correctionHistory?: Array<{
+    action: "archive" | "restore";
+    reason: string;
+    recordedAt: string;
+    recordedBy: string;
+  }>;
+  evidenceSnapshots: Array<{
+    artifactId: string;
+    role: WorkflowArtifactRole;
+    relativePath: string;
+    fingerprint: string;
+    modifiedAt: string;
+    size: number;
+  }>;
+  workflowProfileId: string | null;
+  workflowProfileVersion: number | null;
+  qualityAssessment?: WorkflowLearningQuality;
+  revision: number;
+}
+
+export interface WorkflowProfile {
+  id: string;
+  familyId: string;
+  sourceId: string;
+  projectId: string;
+  name: string;
+  profileVersion: number;
+  revision: number;
+  state: "trial" | "established" | "disabled" | "archived";
+  evidenceCaseIds: string[];
+  learningQuality?: WorkflowLearningQuality;
+  requirementSpec: {
+    acceptedExtensions: string[];
+    fields: Array<Record<string, unknown>>;
+    unresolved: string[];
+  };
+  outcomeSpec: {
+    outputs: Array<{
+      role: string;
+      family: string;
+      extension: string;
+      examples: string[];
+      minimumCount: number;
+    }>;
+    observedDirectories: string[];
+    pathTemplate: string;
+    overwritePolicy: "never";
+    requiredSections?: Array<{
+      key: string;
+      label: string;
+      required: boolean;
+      coverage: number;
+      evidenceArtifactIds: string[];
+    }>;
+    requiredFields?: Array<{
+      key: string;
+      label: string;
+      required: boolean;
+      coverage: number;
+      evidenceArtifactIds: string[];
+    }>;
+  };
+  transformationMap: {
+    mappings: Array<Record<string, unknown>>;
+    unresolved: string[];
+  };
+  taskRecipe: {
+    steps: string[];
+    requiresPlanConfirmation: boolean;
+    requiresHumanAcceptance: boolean;
+  };
+  supersedesProfileId?: string | null;
+  supersededByProfileId?: string | null;
+}
+
+export interface WorkflowProfileDraft {
+  id: string;
+  sourceId: string;
+  projectId: string;
+  familyId: string;
+  baseProfileId: string;
+  baseProfileVersion: number;
+  baseProfileRevision: number;
+  state: "draft" | "published";
+  proposedProfile: Pick<
+    WorkflowProfile,
+    "name" | "state" | "evidenceCaseIds" | "learningQuality" | "requirementSpec" | "outcomeSpec" | "transformationMap" | "taskRecipe"
+  >;
+  changes: {
+    requirementFields: { added: string[]; removed: string[] };
+    requiredSections: { added: string[]; removed: string[] };
+    requiredOutcomeFields?: { added: string[]; removed: string[] };
+    outputs: { added: string[]; removed: string[] };
+    pathTemplate: { before: string | null; after: string | null; changed: boolean };
+    evidenceCases: { added: string[]; removed: string[] };
+  };
+  impact: {
+    activeCaseCount: number;
+    archivedCaseCount: number;
+    pendingRequirementCount: number;
+  };
+  feedbackTriggers?: Array<{
+    version: number;
+    workflowRunId: string;
+    feedback: "accepted_with_edits";
+    reasonCode: WorkflowFeedbackReason;
+    note: string;
+    outputDiff: WorkflowFeedbackOutputDiff;
+    recordedAt: string;
+    recordedBy: string;
+  }>;
+  publishedProfileId?: string;
+  revision: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface SimilarWorkflowCase {
+  deliveryCase: DeliveryCase;
+  profileFamilyId: string | null;
+  score: number;
+  reasons: string[];
+  scoreBreakdown: {
+    lexical: number;
+    structuredFields: number;
+    format: number;
+    learningQuality: number;
+    source: number;
+    feedback: number;
+    vector: number;
+    vectorCandidate: number;
+    baselineTotal: number;
+    noVectorTotal: number;
+    total: number;
+    experimentalTotal: number;
+  };
+  evidence: {
+    lexicalSimilarity: number;
+    sharedFieldCount: number;
+    sameFormat: boolean;
+    sameSource: boolean;
+  };
+}
+
+export interface WorkflowRetrievalEvaluation {
+  sourceId: string;
+  retrieval: {
+    version: number;
+    mode: "structured_lexical";
+    vector: {
+      state: "not_configured" | "index_required" | "indexed_gated" | "evaluated" | "rollout_active";
+      used: boolean;
+      providerId?: string | null;
+      model?: string | null;
+      modelVersion?: string | null;
+      rolloutPercent?: number;
+      coverage?: number;
+    };
+    deterministicFallback: true;
+  };
+  current: {
+    sampleCount: number;
+    top1: number | null;
+    top5: number | null;
+    mrr: number | null;
+    noResultRate: number | null;
+  };
+  baseline: {
+    sampleCount: number;
+    top1: number | null;
+    top5: number | null;
+    mrr: number | null;
+    noResultRate: number | null;
+  };
+  gate: {
+    status: "insufficient_samples" | "passed" | "regressed";
+    minimumSamples: number;
+    embeddingEligible: boolean;
+  };
+  samples: Array<{
+    artifactId: string;
+    expectedFamilyId: string;
+    currentRank: number | null;
+    baselineRank: number | null;
+  }>;
+}
+
+export interface WorkflowRequirementInspection {
+  artifact: WorkflowArtifact;
+  profile: WorkflowProfile;
+  fields: Array<{
+    key: string;
+    label: string;
+    required: boolean;
+    value: string | null;
+    status: "found" | "missing";
+    evidenceArtifactId: string | null;
+  }>;
+  missingFields: Array<{
+    key: string;
+    label: string;
+    required: true;
+    value: null;
+    status: "missing";
+    evidenceArtifactId: null;
+  }>;
+  blockers: string[];
+  executionReady: boolean;
+  plannedOutputs: WorkflowProfile["outcomeSpec"]["outputs"];
+  pathTemplate: string | null;
+}
+
+export interface WorkflowRun {
+  id: string;
+  projectId: string;
+  sourceId: string;
+  artifactId: string;
+  requirementEvidence: {
+    relativePath: string;
+    fingerprint: string;
+    modifiedAt: string;
+    size: number;
+  };
+  profileId: string;
+  profileFamilyId: string;
+  profileVersion: number;
+  workItemId: string;
+  status:
+    | "planned"
+    | "executing"
+    | "ready_for_validation"
+    | "execution_failed"
+    | "execution_attention"
+    | "execution_cancelled"
+    | "validation_failed"
+    | "awaiting_acceptance"
+    | "accepted"
+    | "rejected";
+  execution?: {
+    autoRunId: string;
+    status: string;
+    error: string | null;
+    errorCode: string | null;
+    agentId: string | null;
+    worktreeId: string | null;
+    invocationId: string | null;
+    createdAt: string | null;
+    updatedAt: string | null;
+  } | null;
+  executionAttempts?: Array<{
+    number: number;
+    autoRunId: string;
+    status: string;
+    agentId: string | null;
+    worktreeId: string | null;
+    invocationId: string | null;
+    invocationIds: string[];
+    trigger: "initial" | "restart_after_cancel" | "legacy" | string;
+    retryCount: number;
+    startedAt: string | null;
+    completedAt: string | null;
+    error: string | null;
+    errorCode: string | null;
+    cleanup: {
+      state: "cleaned";
+      cleanedAt: string | null;
+      cleanedBy: string | null;
+    } | null;
+  }>;
+  facts: WorkflowRequirementInspection["fields"];
+  plannedOutputs: Array<{
+    role: string;
+    family: string;
+    extension: string;
+    relativePath: string;
+    minimumCount: number;
+    existedAtPlanning: false;
+  }>;
+  acceptanceCriteria: string[];
+  validationResults: Array<{
+    id?: string;
+    validatorVersion?: number;
+    rule?: string;
+    criterion: string;
+    severity?: "blocker" | "warning" | "info";
+    status: "passed" | "failed" | "warning";
+    file?: string | null;
+    expected?: Record<string, unknown>;
+    actual?: Record<string, unknown>;
+    note: string;
+  }>;
+  validationSummary?: {
+    validatorVersion: number;
+    passed: boolean;
+    blockerCount: number;
+    warningCount: number;
+    checkedAt: string;
+  };
+  validationSnapshot?: {
+    version: number;
+    attemptNumber: number | null;
+    capturedAt: string;
+    outputs: Array<{
+      relativePath: string;
+      extension: string;
+      bytes: number;
+      sha256: string;
+      modifiedAt: string;
+      headings: string[];
+      fields: string[];
+    }>;
+  };
+  feedback: {
+    version?: number;
+    state: "accepted" | "accepted_with_edits" | "rejected";
+    note: string;
+    reasonCode?: WorkflowFeedbackReason | null;
+    deliveryCaseId: string | null;
+    selectedAttemptNumber?: number | null;
+    profileRevisionRecommended: boolean;
+    outputDiff?: WorkflowFeedbackOutputDiff;
+    validationFindings?: Array<{
+      rule: string | null;
+      severity: "blocker" | "warning" | "info" | null;
+      status: "failed" | "warning";
+      file: string | null;
+      criterion: string;
+      note: string;
+    }>;
+    learning?: {
+      status: "incorporated" | "review_required" | "pending_publication" | "pending_source_scan" | "blocked" | "excluded";
+      deliveryCaseId: string | null;
+      profileDraftId: string | null;
+      reason: string;
+    };
+  } | null;
+  publication?: {
+    version: number;
+    id: string;
+    state: "previewed" | "publishing" | "blocked" | "published";
+    previewDigest: string;
+    attemptNumber: number | null;
+    worktreeId: string | null;
+    targetProjectId: string;
+    files: Array<{
+      relativePath: string;
+      extension: string;
+      bytes: number;
+      sha256: string;
+      sourceModifiedAt: string;
+      targetState: "available" | "conflict";
+      conflictType: "file" | "directory" | "symlink" | null;
+    }>;
+    conflictCount: number;
+    previewedAt: string;
+    previewedBy: string;
+    publishedAt?: string;
+    publishedBy?: string;
+    confirmation?: {
+      publicationId: string;
+      previewDigest: string;
+      confirmedAt: string;
+      confirmedBy: string;
+    };
+    publishedFiles?: Array<{
+      relativePath: string;
+      bytes: number;
+      sha256: string;
+    }>;
+  };
+  selectedAttemptNumber?: number | null;
+  validationAttemptNumber?: number | null;
+  revision: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export type WorkflowFeedbackReason =
+  | "content_corrected"
+  | "structure_adjusted"
+  | "format_adjusted"
+  | "missing_information"
+  | "quality_issue"
+  | "wrong_workflow"
+  | "other";
+
+export interface WorkflowFeedbackOutputDiff {
+  comparisonAvailable: boolean;
+  changedFileCount: number;
+  unchangedFileCount: number;
+  files: Array<{
+    relativePath: string;
+    changed: boolean;
+    before: { bytes: number; sha256: string } | null;
+    after: { bytes: number; sha256: string };
+    headingsAdded: string[];
+    headingsRemoved: string[];
+    fieldsAdded: string[];
+    fieldsRemoved: string[];
+  }>;
+}
+
+export interface WorktreeDiffSnapshot {
+  files: Array<{
+    path: string;
+    index: string;
+    work: string;
+    untracked: boolean;
+  }>;
+  base: string;
+  diff: string;
+  truncated: boolean;
 }
 
 // The dev server's default port (tools/dev/run-local-demo.mjs SERVER_PORT).
@@ -874,7 +1612,8 @@ export const api = {
     projectId?: string | null,
     worktreeId?: string | null,
     options?: Record<string, unknown>,
-  ) => request("POST", "/api/invocations", { task, agentId, projectId, worktreeId, options }),
+    idempotencyKey?: string,
+  ) => request("POST", "/api/invocations", { task, agentId, projectId, worktreeId, options, idempotencyKey }),
   listInvocationEvents: (
     id: string,
     options: { limit?: number; before?: string } = {},
@@ -1133,7 +1872,8 @@ export const api = {
       payload,
     ),
   worktreeGit: (id: string) => request("GET", `/api/worktrees/${encodeURIComponent(id)}/git`),
-  worktreeDiff: (id: string) => request("GET", `/api/worktrees/${encodeURIComponent(id)}/diff`),
+  worktreeDiff: (id: string) =>
+    request<WorktreeDiffSnapshot>("GET", `/api/worktrees/${encodeURIComponent(id)}/diff`),
   reviewWorktree: (id: string, payload: { verdict: "approved" | "changes_requested"; summary?: string; comments?: { path: string | null; body: string }[] }) =>
     request("POST", `/api/worktrees/${encodeURIComponent(id)}/review`, payload),
   publishWorktreeBranch: (id: string) => request("POST", `/api/worktrees/${encodeURIComponent(id)}/push`),
@@ -1179,6 +1919,11 @@ export const api = {
     estimatePoints?: number;
     parentId?: string | null;
     idempotencyKey?: string;
+    routineDefinitionId?: string;
+    routineVersion?: number;
+    businessCaseId?: string;
+    businessKey?: string;
+    triggerArtifactIds?: string[];
   }) => request("POST", "/api/work-items", payload),
   getWorkItem: (id: string) => request("GET", `/api/work-items/${encodeURIComponent(id)}`),
   suggestWorkItemDraft: (payload: { projectId: string; title: string; body?: string }) =>

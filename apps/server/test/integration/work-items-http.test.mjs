@@ -376,6 +376,54 @@ test("foreign work items and projects are existence-hidden", async () => {
   assert.equal(foreignProject.status, 404);
 });
 
+test("HTTP local Issue creation pins and preserves a published business routine binding", async () => {
+  runtimeState.workflowSources.push({
+    id: "wfs_http_routine", ownerTeamId: "team_a", projectId: "prj_a", state: "active",
+  });
+  runtimeState.workflowArtifacts.push({
+    id: "wfa_http_inquiry", ownerTeamId: "team_a", projectId: "prj_a",
+    sourceId: "wfs_http_routine", availability: "available",
+  });
+  runtimeState.routineDefinitions.push({
+    id: "rtd_http_inquiry", ownerTeamId: "team_a", projectId: "prj_a",
+    sourceId: "wfs_http_routine", version: 1, state: "published",
+  });
+  runtimeState.businessCases.push({
+    id: "bcs_http_inquiry", ownerTeamId: "team_a", projectId: "prj_a",
+    sourceId: "wfs_http_routine", businessKey: "RFQ-HTTP-001", state: "proposed",
+  });
+  const payload = {
+    projectId: "prj_a",
+    title: "Process RFQ-HTTP-001",
+    routineDefinitionId: "rtd_http_inquiry",
+    routineVersion: 1,
+    businessCaseId: "bcs_http_inquiry",
+    businessKey: "RFQ-HTTP-001",
+    triggerArtifactIds: ["wfa_http_inquiry"],
+  };
+  const unconfirmed = await call("/api/work-items", { method: "POST", body: payload });
+  assert.equal(unconfirmed.status, 409);
+  assert.equal(unconfirmed.body.error, "work_item_business_case_not_confirmed");
+  runtimeState.businessCases.at(-1).state = "confirmed";
+  const created = await call("/api/work-items", { method: "POST", body: payload });
+  assert.equal(created.status, 201);
+  assert.equal(created.body.workItem.type, "task");
+  assert.equal(created.body.workItem.routineDefinitionId, "rtd_http_inquiry");
+  const replay = await call("/api/work-items", {
+    method: "POST",
+    body: { ...payload, title: "Duplicate request" },
+  });
+  assert.equal(replay.status, 200);
+  assert.equal(replay.body.replayed, true);
+  assert.equal(replay.body.workItem.id, created.body.workItem.id);
+  const rebind = await call(`/api/work-items/${created.body.workItem.id}`, {
+    method: "PATCH",
+    body: { expectedRevision: created.body.workItem.revision, businessKey: "RFQ-HTTP-OTHER" },
+  });
+  assert.equal(rebind.status, 409);
+  assert.equal(rebind.body.error, "work_item_routine_binding_immutable");
+});
+
 test("close and archive transitions are revision gated", async () => {
   const item = (await call("/api/work-items", {
     method: "POST", body: { projectId: "prj_a", title: "Lifecycle" },

@@ -996,6 +996,8 @@ export interface LedgerSummary {
 export interface ProjectSnapshot {
   id: string;
   name: string;
+  /** Local-only path; present in the desktop/local control-plane projection. */
+  path?: string;
   color: string;
   ownerTeamId: string;
   budgetPoolId: string | null;

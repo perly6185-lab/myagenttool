@@ -146,7 +146,11 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Sub-capability gates (mock provider, issue-gate must pass 100%)
-        run: pnpm ai:eval-subcap
+        run: |
+          pnpm ai:eval-subcap
+          pnpm test:commercial-routine-release
+          pnpm eval:commercial-routine
+          pnpm eval:commercial-pilot:rehearsal
 
   desktop-smoke:
     if: vars.ENABLE_GITHUB_HOSTED_RUNNERS == 'true'

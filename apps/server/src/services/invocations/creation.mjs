@@ -89,6 +89,7 @@ export function createInvocationCreationRuntime({
     let claudeSessionMode = typeof normalizeClaudeSessionMode === "function"
       ? normalizeClaudeSessionMode(options.claudeSessionMode, agent)
       : "not_applicable";
+    const remoteHttpRun = agent.adapter.type === "http" && agent.location.type === "remote_http";
     const codexWorkspacePolicy = normalizeCodexWorkspacePolicy(options.codexWorkspacePolicy, agent);
     const requestedMetadata = options.metadata && typeof options.metadata === "object" && !Array.isArray(options.metadata) ? options.metadata : {};
     const requestedWorktree = requestedMetadata.worktreeId
@@ -414,9 +415,21 @@ export function createInvocationCreationRuntime({
     }
     appendEvent({
       invocationId: invocation.id,
-      type: policy.decision === "requires_local_approval" ? "local_approval_requested" : directRun ? "invocation_started" : "delivery_queued",
+      type: policy.decision === "requires_local_approval"
+        ? "local_approval_requested"
+        : remoteHttpRun
+          ? "remote_http_accepted"
+          : directRun
+            ? "invocation_started"
+            : "delivery_queued",
       level: "info",
-      message: policy.decision === "requires_local_approval" ? "Local approval is required before this high-risk invocation can run." : directRun ? `${agent.name} invocation started.` : "Invocation queued for Desktop Bridge."
+      message: policy.decision === "requires_local_approval"
+        ? "Local approval is required before this high-risk invocation can run."
+        : remoteHttpRun
+          ? `${agent.name} invocation accepted for remote execution.`
+          : directRun
+            ? `${agent.name} invocation started.`
+            : "Invocation queued for Desktop Bridge."
     });
     if (policy.decision === "requires_local_approval") {
       const approval = createApprovalRequest(invocation, agent, policy);

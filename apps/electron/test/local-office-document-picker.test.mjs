@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, symlink
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { copySelectedOfficeDocument, describeLocalOfficeDocument, registerContainedAssetOpen, registerContainedOfficeDocumentOpen, registerLocalOfficeDocumentPicker, resolveContainedAsset, resolveContainedOfficeDocument } from "../src/local-office-document-picker.mjs";
+import { copySelectedOfficeDocument, describeLocalOfficeDocument, registerContainedAssetOpen, registerContainedOfficeDocumentOpen, registerLocalOfficeDocumentPicker, registerWorkflowSourceFolderPicker, resolveContainedAsset, resolveContainedOfficeDocument } from "../src/local-office-document-picker.mjs";
 
 test("describes only a selected regular Office document", () => {
   const root = mkdtempSync(join(tmpdir(), "office-picker-"));
@@ -31,6 +31,25 @@ test("the picker grant is single-use and cancellation creates no selection", asy
   await assert.rejects(() => handlers.get("documents:copy-selected-office")(null, { selectionId: selection.selectionId, worktreeId: "wt", destination: "again.xlsx" }), /expired/);
   canceled = true;
   assert.equal(await handlers.get("documents:pick-local-office")(), null);
+});
+
+test("workflow memory folder picker returns only an explicitly selected real directory", async () => {
+  const root = mkdtempSync(join(tmpdir(), "workflow-source-picker-"));
+  const handlers = new Map();
+  const ipcMain = { removeHandler: (name) => handlers.delete(name), handle: (name, handler) => handlers.set(name, handler) };
+  let canceled = false;
+  const dialog = {
+    showOpenDialog: async () => canceled
+      ? { canceled: true, filePaths: [] }
+      : { canceled: false, filePaths: [root] },
+  };
+  registerWorkflowSourceFolderPicker({ ipcMain, dialog, getWindow: () => null });
+  assert.deepEqual(await handlers.get("workflow-memory:pick-source-folder")(), {
+    absolutePath: realpathSync(root),
+    name: root.split(/[\\/]/).at(-1),
+  });
+  canceled = true;
+  assert.equal(await handlers.get("workflow-memory:pick-source-folder")(), null);
 });
 
 test("copies a selected Office document only into a confined Worktree destination", () => {

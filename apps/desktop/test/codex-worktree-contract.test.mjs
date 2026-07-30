@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, test } from "node:test";
@@ -18,15 +18,16 @@ test("fresh exec gets workspace-write, explicit cwd, and only the linked-worktre
   mkdirSync(worktree, { recursive: true });
   mkdirSync(gitAdmin, { recursive: true });
   writeFileSync(join(worktree, ".git"), `gitdir: ${gitAdmin}\n`);
+  const canonicalGitAdmin = realpathSync(gitAdmin);
 
-  assert.equal(linkedWorktreeGitAdminDir(worktree), gitAdmin);
+  assert.equal(linkedWorktreeGitAdminDir(worktree), canonicalGitAdmin);
   const contract = applyCodexWorktreeContract(
     ["exec", "--skip-git-repo-check", "--json", "task"],
     { cwd: worktree },
   );
-  assert.deepEqual(contract.additionalWritableRoots, [gitAdmin]);
+  assert.deepEqual(contract.additionalWritableRoots, [canonicalGitAdmin]);
   assert.deepEqual(contract.args.slice(0, 7), [
-    "exec", "--sandbox", "workspace-write", "--cd", worktree, "--add-dir", gitAdmin,
+    "exec", "--sandbox", "workspace-write", "--cd", worktree, "--add-dir", canonicalGitAdmin,
   ]);
   assert.equal(contract.args.at(-1), "task");
 });

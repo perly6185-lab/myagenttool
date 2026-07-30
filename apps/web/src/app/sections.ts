@@ -66,6 +66,7 @@ export const SECTIONS: SectionDef[] = [
   { key: "planning", labelKey: "sections.planning.label", icon: CalendarRange, blurbKey: "sections.planning.blurb", group: "work" },
   { key: "workspace", labelKey: "sections.workspace.label", icon: PanelsTopLeft, blurbKey: "sections.workspace.blurb", group: "work" },
   { key: "documents", labelKey: "sections.documents.label", icon: Files, blurbKey: "sections.documents.blurb", group: "work" },
+  { key: "workflowMemory", labelKey: "sections.workflowMemory.label", icon: Workflow, blurbKey: "sections.workflowMemory.blurb", group: "work" },
   { key: "canvas", labelKey: "sections.canvas.label", icon: Shapes, blurbKey: "sections.canvas.blurb", group: "work" },
   // Run — the ways work executes.
   { key: "autoRuns", labelKey: "sections.autoRuns.label", icon: Bot, blurbKey: "sections.autoRuns.blurb", group: "run" },
@@ -119,7 +120,7 @@ export interface PageRegistration extends SectionDef {
 
 const ENTRY_PRIMARY = new Set<SectionKey>(["dashboard", "task", "projects", "autoRuns", "approvals"]);
 const ENTRY_CONTEXTUAL = new Set<SectionKey>([
-  "me", "workBoard", "planning", "workspace", "documents", "canvas",
+  "me", "workBoard", "planning", "workspace", "documents", "workflowMemory", "canvas",
 ]);
 const TRACE_SECTIONS = new Set<SectionKey>([
   "compare", "evidence", "review", "evalTrend", "invocations", "audit",
@@ -147,7 +148,7 @@ export const PAGE_REGISTRY: PageRegistration[] = SECTIONS.map((section) => {
   const ownerContext: PageOwnerContext = ENTRY_CONTEXTUAL.has(section.key)
     ? section.key === "me"
       ? "global"
-      : section.key === "planning" || section.key === "workspace" || section.key === "documents" || section.key === "canvas"
+      : section.key === "planning" || section.key === "workspace" || section.key === "documents" || section.key === "workflowMemory" || section.key === "canvas"
       ? "project"
       : "task"
     : surface === "trace"

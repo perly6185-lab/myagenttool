@@ -1,6 +1,6 @@
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { DashboardView } from "@/features/dashboard/dashboard-view";
+import { DashboardView, eventsForInvocation } from "@/features/dashboard/dashboard-view";
 import { i18n } from "@/lib/i18n";
 
 const mocks = vi.hoisted(() => ({ useConsoleState: vi.fn(), useAsyncAction: vi.fn() }));
@@ -36,6 +36,17 @@ describe("DashboardView surfaces (#927)", () => {
     fireEvent.click(screen.getByRole("button", { name: /1\. Create/ }));
     expect(document.activeElement).toBe(taskInput);
     expect((screen.getByText("What to know before running").closest("details") as HTMLDetailsElement).open).toBe(false);
+  });
+
+  it("keeps concurrent task events isolated even when both tasks use the same Agent", () => {
+    const state = {
+      events: [
+        { id: "one", invocationId: "run-one", createdAt: "2026-01-01T00:00:00.000Z", data: { agentId: "agent-a" } },
+        { id: "two", invocationId: "run-two", createdAt: "2026-01-01T00:00:01.000Z", data: { agentId: "agent-a" } },
+      ],
+    };
+
+    expect(eventsForInvocation(state as never, { id: "run-one" } as never).map((event) => event.id)).toEqual(["one"]);
   });
 
   it("omits the onboarding checklist on the workspace surface but keeps the composer", () => {
