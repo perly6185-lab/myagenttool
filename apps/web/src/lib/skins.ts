@@ -122,12 +122,14 @@ declare global {
         primaryKey: string;
         caseName?: string;
         authorizationMode: "authorized" | "deidentified";
+        supportingRoles?: Record<string, "reference" | "historical_output">;
         confirmed: true;
       }) => Promise<{
         requestId: string;
         caseDirectory: string;
         primaryRelativePath: string;
         supportingRelativePaths: string[];
+        supportingFileRoles: Record<string, "reference" | "historical_output">;
         files: Array<{
           key: string;
           name: string;

@@ -25,13 +25,16 @@ type PickedCase = {
 type StagedCase = {
   primaryRelativePath: string;
   supportingRelativePaths: string[];
+  supportingFileRoles: Record<string, SupportingRole>;
 };
+
+export type SupportingRole = "reference" | "historical_output";
 
 const COPY = {
   en: {
     add: "Add real case",
     title: "Add one real business case",
-    description: "Choose related files or paste text. Select one primary inquiry; the rest stay attached as references.",
+    description: "Choose related files or paste text. Select one primary inquiry, then identify references and historical outputs.",
     choose: "Choose files",
     chooseAgain: "Choose again",
     paste: "Or paste inquiry text",
@@ -40,6 +43,7 @@ const COPY = {
     caseNamePlaceholder: "e.g. RFQ 2026-101",
     primary: "Primary inquiry",
     reference: "Reference",
+    historicalOutput: "Historical output",
     ready: "Ready",
     inspect: "Check PDF text",
     needsOcr: "Needs OCR",
@@ -60,7 +64,7 @@ const COPY = {
   zh: {
     add: "添加真实案例",
     title: "添加一个真实业务案例",
-    description: "选择相关文件或粘贴文字。指定一份主询价，其余资料会作为参考文件绑定在同一个案例中。",
+    description: "选择相关文件或粘贴文字。指定一份主询价，再标记其余资料是参考文件还是历史交付物。",
     choose: "选择文件",
     chooseAgain: "重新选择",
     paste: "或者粘贴询价文字",
@@ -69,6 +73,7 @@ const COPY = {
     caseNamePlaceholder: "例如：RFQ 2026-101",
     primary: "主询价",
     reference: "参考资料",
+    historicalOutput: "历史交付物",
     ready: "可以处理",
     inspect: "需检查 PDF 文字",
     needsOcr: "需要 OCR",
@@ -98,7 +103,10 @@ export function RealCaseIntakeDialog({
   onPrepared,
 }: {
   source: WorkflowSource;
-  onPrepared: (primaryObservationId: string, supportingObservationIds: string[]) => Promise<void>;
+  onPrepared: (
+    primaryObservationId: string,
+    supporting: Array<{ observationId: string; role: SupportingRole }>,
+  ) => Promise<void>;
 }) {
   const { i18n } = useAppTranslation();
   const copy = COPY[i18n.resolvedLanguage?.startsWith("zh") ? "zh" : "en"];
@@ -107,6 +115,7 @@ export function RealCaseIntakeDialog({
   const [selection, setSelection] = useState<PickedCase | null>(null);
   const [pastedText, setPastedText] = useState("");
   const [primaryKey, setPrimaryKey] = useState("");
+  const [supportingRoles, setSupportingRoles] = useState<Record<string, SupportingRole>>({});
   const [caseName, setCaseName] = useState("");
   const [authorizationMode, setAuthorizationMode] = useState<"authorized" | "deidentified">("deidentified");
   const [confirmed, setConfirmed] = useState(false);
@@ -128,6 +137,7 @@ export function RealCaseIntakeDialog({
     setSelection(null);
     setPastedText("");
     setPrimaryKey("");
+    setSupportingRoles({});
     setCaseName("");
     setAuthorizationMode("deidentified");
     setConfirmed(false);
@@ -144,6 +154,12 @@ export function RealCaseIntakeDialog({
       setSelection(result);
       const firstReadable = result.files.findIndex((file) => file.readiness !== "needs_ocr");
       if (firstReadable >= 0) setPrimaryKey(`file:${firstReadable}`);
+      setSupportingRoles(Object.fromEntries(result.files.map((file, index) => [
+        `file:${index}`,
+        file.extension === "xlsx" && /(?:汇总|台账|结果|交付|output|summary|ledger)/i.test(file.name)
+          ? "historical_output"
+          : "reference",
+      ])));
     } catch (caught) {
       setError(caught instanceof Error ? caught.message : copy.genericError);
     }
@@ -172,6 +188,9 @@ export function RealCaseIntakeDialog({
         primaryKey,
         caseName: caseName.trim() || undefined,
         authorizationMode,
+        supportingRoles: Object.fromEntries(items
+          .filter((item) => item.key !== primaryKey)
+          .map((item) => [item.key, supportingRoles[item.key] ?? "reference"])),
         confirmed: true,
       });
       setStagedCase(staged);
@@ -192,7 +211,10 @@ export function RealCaseIntakeDialog({
       if (!primaryObservation || !["ready", "needs_review"].includes(primaryObservation.state)) {
         throw new Error(primaryObservation?.reason || copy.genericError);
       }
-      await onPrepared(primaryObservation.id, supporting.map((observation) => observation.id));
+      await onPrepared(primaryObservation.id, supporting.map((observation) => ({
+        observationId: observation.id,
+        role: staged.supportingFileRoles?.[observation.relativePath] ?? "reference",
+      })));
       setOpen(false);
       reset();
     } catch (caught) {
@@ -260,9 +282,9 @@ export function RealCaseIntakeDialog({
             <fieldset className="space-y-2">
               <legend className="text-sm font-medium">{copy.primary}</legend>
               {items.map((item) => (
-                <label
+                <div
                   key={item.key}
-                  className="grid cursor-pointer grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-2 rounded-md border p-3"
+                  className="grid grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-2 rounded-md border p-3"
                 >
                   <input
                     type="radio"
@@ -270,23 +292,44 @@ export function RealCaseIntakeDialog({
                     value={item.key}
                     checked={primaryKey === item.key}
                     disabled={pending || Boolean(stagedCase) || item.readiness === "needs_ocr"}
+                    aria-label={`${copy.primary}: ${item.name}`}
                     onChange={() => setPrimaryKey(item.key)}
                   />
                   <span className="min-w-0">
                     <span className="block truncate text-sm font-medium">{item.name}</span>
                     <span className="text-xs text-muted-foreground">
-                      {primaryKey === item.key ? copy.primary : copy.reference}
+                      {primaryKey === item.key
+                        ? copy.primary
+                        : supportingRoles[item.key] === "historical_output"
+                          ? copy.historicalOutput
+                          : copy.reference}
                       {" · "}{item.extension.toUpperCase()}
                     </span>
                   </span>
-                  <Badge tone={item.readiness === "ready" ? "success" : "warning"}>
-                    {item.readiness === "ready"
-                      ? copy.ready
-                      : item.readiness === "inspect"
-                        ? copy.inspect
-                        : copy.needsOcr}
-                  </Badge>
-                </label>
+                  <div className="flex items-center gap-2">
+                    {primaryKey !== item.key ? (
+                      <Select
+                        aria-label={`${item.name} role`}
+                        value={supportingRoles[item.key] ?? "reference"}
+                        disabled={pending || Boolean(stagedCase)}
+                        onChange={(event) => setSupportingRoles((current) => ({
+                          ...current,
+                          [item.key]: event.target.value as SupportingRole,
+                        }))}
+                      >
+                        <option value="reference">{copy.reference}</option>
+                        <option value="historical_output">{copy.historicalOutput}</option>
+                      </Select>
+                    ) : null}
+                    <Badge tone={item.readiness === "ready" ? "success" : "warning"}>
+                      {item.readiness === "ready"
+                        ? copy.ready
+                        : item.readiness === "inspect"
+                          ? copy.inspect
+                          : copy.needsOcr}
+                    </Badge>
+                  </div>
+                </div>
               ))}
             </fieldset>
           ) : null}

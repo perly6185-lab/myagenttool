@@ -5,6 +5,20 @@ import { makeRunTx } from "../runtime/store/run-tx.mjs";
 
 const ACCEPTABLE_OBSERVATION_STATES = new Set(["ready", "needs_review"]);
 const SAFE_IDEMPOTENCY_KEY_RE = /^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,199}$/;
+const SUPPORTING_ROLES = new Set(["reference", "historical_output"]);
+
+function validSupportingRequest(observationIds, primaryObservationId, roles = {}) {
+  return Array.isArray(observationIds)
+    && observationIds.length <= 11
+    && observationIds.every((id) =>
+      typeof id === "string" && id && id !== primaryObservationId)
+    && new Set(observationIds).size === observationIds.length
+    && roles
+    && typeof roles === "object"
+    && !Array.isArray(roles)
+    && Object.entries(roles).every(([id, role]) =>
+      observationIds.includes(id) && SUPPORTING_ROLES.has(role));
+}
 
 function stableValue(value) {
   if (Array.isArray(value)) return value.map(stableValue);
@@ -34,6 +48,7 @@ function receiptView(receipt) {
     artifactId: receipt.artifactId,
     supportingArtifactIds: receipt.supportingArtifactIds ?? [],
     supportingObservationIds: receipt.supportingObservationIds ?? [],
+    supportingBindings: receipt.supportingBindings ?? [],
     businessKey: receipt.businessKey,
     routineDefinitionId: receipt.routineDefinitionId,
     routineVersion: receipt.routineVersion,
@@ -71,6 +86,92 @@ function routineView(definition) {
   };
 }
 
+function artifactText(artifact) {
+  return [
+    artifact?.extraction?.content,
+    ...(artifact?.extraction?.blocks ?? []).map((block) => block?.text),
+  ].filter(Boolean).join("\n").slice(0, 512 * 1024);
+}
+
+function pairingEvidence(primaryArtifact, supportingArtifact) {
+  const evidence = [];
+  const primaryStem = String(primaryArtifact?.name ?? "").replace(/\.[^.]+$/, "");
+  const supportingStem = String(supportingArtifact?.name ?? "").replace(/\.[^.]+$/, "");
+  const primaryKey = primaryStem.match(/^[\p{L}\p{N}]{1,40}/u)?.[0] ?? null;
+  const supportingKey = supportingStem.match(/^[\p{L}\p{N}]{1,40}/u)?.[0] ?? null;
+  if (primaryKey && supportingKey && /\d/u.test(primaryKey)
+    && primaryKey.toLocaleLowerCase() === supportingKey.toLocaleLowerCase()) {
+    evidence.push({ kind: "shared_filename_case_key", value: primaryKey });
+  }
+  const text = artifactText(supportingArtifact).toLocaleLowerCase();
+  const referencedName = [primaryArtifact?.name, primaryStem]
+    .filter((value) => String(value ?? "").length >= 3)
+    .find((value) => text.includes(String(value).toLocaleLowerCase()));
+  if (referencedName) {
+    evidence.push({ kind: "output_references_input", value: String(referencedName).slice(0, 240) });
+  }
+  return evidence;
+}
+
+function requestedSupportingBindings(observationIds, roles = {}) {
+  return observationIds.map((observationId) => ({
+    observationId,
+    role: roles[observationId] ?? "reference",
+  })).sort((left, right) => left.observationId.localeCompare(right.observationId));
+}
+
+function receiptMatchesSupporting(receipt, observationIds, roles) {
+  const recorded = (receipt.supportingBindings?.length
+    ? receipt.supportingBindings.map((binding) => ({
+      observationId: binding.observationId,
+      role: binding.role,
+    }))
+    : (receipt.supportingObservationIds ?? []).map((observationId) => ({
+      observationId,
+      role: "reference",
+    })))
+    .sort((left, right) => left.observationId.localeCompare(right.observationId));
+  return JSON.stringify(recorded) === JSON.stringify(requestedSupportingBindings(observationIds, roles));
+}
+
+function historicalOutputError(primaryArtifact, context) {
+  if (context.workflowRole !== "historical_output") return null;
+  if (context.artifact.family !== "spreadsheet"
+    || context.artifact.extension !== "xlsx"
+    || context.artifact.extraction?.state !== "ready") {
+    return {
+      status: 409,
+      body: {
+        error: "workflow_intake_historical_output_not_supported",
+        recovery: "Choose a readable XLSX workbook as the historical inquiry ledger.",
+      },
+    };
+  }
+  if (!pairingEvidence(primaryArtifact, context.artifact).length) {
+    return {
+      status: 409,
+      body: {
+        error: "workflow_intake_historical_output_unpaired",
+        recovery: "Use an output workbook whose filename or cells reference this inquiry.",
+      },
+    };
+  }
+  return null;
+}
+
+function ocrEvidenceView(artifact) {
+  if (!artifact?.extraction?.ocr?.providerId) return [];
+  return (artifact.extraction.blocks ?? [])
+    .filter((block) => block?.location?.kind === "page")
+    .slice(0, 300)
+    .map((block) => ({
+      page: block.location.index,
+      confidence: Number.isFinite(block.confidence) ? block.confidence : null,
+      lineCount: Array.isArray(block.evidence) ? block.evidence.length : 0,
+      preview: String(block.text ?? "").replace(/\s+/g, " ").trim().slice(0, 240),
+    }));
+}
+
 export function createInquiryIntakeTriggerService({
   state,
   now = () => new Date().toISOString(),
@@ -97,10 +198,18 @@ export function createInquiryIntakeTriggerService({
   const artifactFor = (artifactId, actor) =>
     state.workflowArtifacts?.find((row) => row.id === artifactId && visible(row, actor)) ?? null;
 
-  function supportingContextsFor(observationIds, primaryObservationId, primarySourceId, actor) {
-    if (!Array.isArray(observationIds) || observationIds.length > 11
-      || observationIds.some((id) => typeof id !== "string" || !id || id === primaryObservationId)
-      || new Set(observationIds).size !== observationIds.length) {
+  function supportingContextsFor(
+    observationIds,
+    primaryObservationId,
+    primarySourceId,
+    actor,
+    supportingObservationRoles = {},
+  ) {
+    if (!validSupportingRequest(
+      observationIds,
+      primaryObservationId,
+      supportingObservationRoles,
+    )) {
       return { error: { status: 400, body: { error: "invalid_workflow_intake_supporting_observations" } } };
     }
     const contexts = [];
@@ -113,7 +222,10 @@ export function createInquiryIntakeTriggerService({
       }
       const context = contextFor(observationId, actor);
       if (context.error) return context;
-      contexts.push(context);
+      contexts.push({
+        ...context,
+        workflowRole: supportingObservationRoles[observationId] ?? "reference",
+      });
     }
     return { contexts };
   }
@@ -192,13 +304,34 @@ export function createInquiryIntakeTriggerService({
     return { observation, source, artifact };
   }
 
-  async function inspect({ observationId, supportingObservationIds = [] } = {}, actor = null) {
+  async function inspect({
+    observationId,
+    supportingObservationIds = [],
+    supportingObservationRoles = {},
+  } = {}, actor = null) {
     const initial = observationFor(observationId, actor);
     if (!initial) {
       return { status: 404, body: { error: "workflow_intake_observation_not_found" } };
     }
+    if (!validSupportingRequest(
+      supportingObservationIds,
+      observationId,
+      supportingObservationRoles,
+    )) {
+      return { status: 400, body: { error: "invalid_workflow_intake_supporting_observations" } };
+    }
     const priorReceipt = replayReceipt(initial, null, actor);
     if (priorReceipt) {
+      if (!receiptMatchesSupporting(
+        priorReceipt,
+        supportingObservationIds,
+        supportingObservationRoles,
+      )) {
+        return {
+          status: 409,
+          body: { error: "workflow_intake_replay_support_conflict" },
+        };
+      }
       return {
         status: 200,
         body: { state: "triggered", receipt: receiptView(priorReceipt), replayed: true },
@@ -226,8 +359,18 @@ export function createInquiryIntakeTriggerService({
       observationId,
       context.observation.sourceId,
       actor,
+      supportingObservationRoles,
     );
     if (supporting.error) return supporting.error;
+    const historicalClassifications = new Map();
+    for (const row of supporting.contexts) {
+      const validationError = historicalOutputError(context.artifact, row);
+      if (validationError) return validationError;
+      if (row.workflowRole !== "historical_output") continue;
+      const historicalAnalysis = await analyzeArtifact({ artifactId: row.artifact.id }, actor);
+      if (![200, 201].includes(historicalAnalysis.status)) return historicalAnalysis;
+      historicalClassifications.set(row.artifact.id, historicalAnalysis.body.classification);
+    }
     const analysis = await analyzeArtifact({ artifactId: context.artifact.id }, actor);
     if (![200, 201].includes(analysis.status)) return analysis;
     const definitions = listRoutineDefinitions({ sourceId: context.source.id }, actor);
@@ -257,6 +400,7 @@ export function createInquiryIntakeTriggerService({
           artifactId: context.artifact.id,
           relativePath: context.observation.relativePath,
           revision: context.observation.revision,
+          ocrEvidence: ocrEvidenceView(context.artifact),
           supportingObservations: supporting.contexts.map((row) => ({
             id: row.observation.id,
             artifactId: row.artifact.id,
@@ -264,6 +408,14 @@ export function createInquiryIntakeTriggerService({
             name: row.artifact.name,
             family: row.artifact.family,
             extractionState: row.artifact.extraction?.state ?? "skipped",
+            role: row.workflowRole,
+            documentType: row.workflowRole === "historical_output" ? "inquiry_ledger" : "other_reference",
+            pairingEvidence: row.workflowRole === "historical_output"
+              ? pairingEvidence(context.artifact, row.artifact)
+              : [],
+            ...(row.workflowRole === "historical_output" ? {
+              classification: classificationView(historicalClassifications.get(row.artifact.id)),
+            } : {}),
           })),
         },
         classification: classificationView(analysis.body.classification),
@@ -281,6 +433,7 @@ export function createInquiryIntakeTriggerService({
     fieldCorrections = {},
     excludedFieldKeys = [],
     supportingObservationIds = [],
+    supportingObservationRoles = {},
   } = {}, actor = null) {
     if (confirmed !== true) {
       return { status: 400, body: { error: "workflow_intake_confirmation_required" } };
@@ -291,7 +444,11 @@ export function createInquiryIntakeTriggerService({
       || typeof fieldCorrections !== "object"
       || Array.isArray(fieldCorrections)
       || !Array.isArray(excludedFieldKeys)
-      || !Array.isArray(supportingObservationIds)) {
+      || !validSupportingRequest(
+        supportingObservationIds,
+        observationId,
+        supportingObservationRoles,
+      )) {
       return { status: 400, body: { error: "invalid_workflow_intake_acceptance" } };
     }
     const requestKey = `${actorTeam(actor)}:${idempotencyKey}`;
@@ -302,6 +459,7 @@ export function createInquiryIntakeTriggerService({
       fieldCorrections,
       excludedFieldKeys,
       supportingObservationIds,
+      supportingObservationRoles,
     });
     const requestReplay = state.workflowIntakeReceipts.find((row) =>
       visible(row, actor) && row.requestKey === requestKey);
@@ -323,6 +481,16 @@ export function createInquiryIntakeTriggerService({
     }
     const contentReplay = replayReceipt(initial, routineDefinitionId, actor);
     if (contentReplay) {
+      if (!receiptMatchesSupporting(
+        contentReplay,
+        supportingObservationIds,
+        supportingObservationRoles,
+      )) {
+        return {
+          status: 409,
+          body: { error: "workflow_intake_replay_support_conflict" },
+        };
+      }
       return {
         status: 200,
         body: { state: "triggered", receipt: receiptView(contentReplay), replayed: true },
@@ -351,8 +519,18 @@ export function createInquiryIntakeTriggerService({
       observationId,
       context.observation.sourceId,
       actor,
+      supportingObservationRoles,
     );
     if (supporting.error) return supporting.error;
+    const historicalClassifications = new Map();
+    for (const row of supporting.contexts) {
+      const validationError = historicalOutputError(context.artifact, row);
+      if (validationError) return validationError;
+      if (row.workflowRole !== "historical_output") continue;
+      const historicalAnalysis = await analyzeArtifact({ artifactId: row.artifact.id }, actor);
+      if (![200, 201].includes(historicalAnalysis.status)) return historicalAnalysis;
+      historicalClassifications.set(row.artifact.id, historicalAnalysis.body.classification);
+    }
     const definitions = listRoutineDefinitions({ sourceId: context.source.id }, actor);
     if (definitions.status !== 200) return definitions;
     const definition = definitions.body.routineDefinitions.find((row) =>
@@ -389,7 +567,6 @@ export function createInquiryIntakeTriggerService({
         },
       };
     }
-
     const existingCase = state.businessCases.find((row) =>
       visible(row, actor)
       && row.sourceId === context.source.id
@@ -413,9 +590,11 @@ export function createInquiryIntakeTriggerService({
         },
       };
     }
-    if (existingCase && supporting.contexts.some((row) =>
-      !existingCase.artifactBindings?.some((binding) =>
-        binding.artifactId === row.artifact.id && binding.roles?.includes("reference")))) {
+    if (existingCase && supporting.contexts.some((row) => {
+      const expectedRole = row.workflowRole === "historical_output" ? "output" : "reference";
+      return !existingCase.artifactBindings?.some((binding) =>
+        binding.artifactId === row.artifact.id && binding.roles?.includes(expectedRole));
+    })) {
       return {
         status: 409,
         body: {
@@ -425,7 +604,32 @@ export function createInquiryIntakeTriggerService({
       };
     }
 
+    for (const row of supporting.contexts) {
+      if (row.workflowRole !== "historical_output") continue;
+      const historicalClassification = historicalClassifications.get(row.artifact.id);
+      if (historicalClassification.documentType === "inquiry_ledger"
+        && ["confirmed", "corrected"].includes(historicalClassification.confirmationState)) {
+        continue;
+      }
+      const confirmedHistorical = confirmClassification({
+        classificationId: historicalClassification.id,
+        expectedRevision: historicalClassification.revision,
+        documentType: "inquiry_ledger",
+        fieldCorrections: {},
+        excludedFieldKeys: [],
+      }, actor);
+      if (confirmedHistorical.status !== 200) return confirmedHistorical;
+    }
+
     const evidenceRefs = classification.fieldProposals.flatMap((field) => field.evidenceRefs ?? []);
+    const pairingEvidenceRefs = supporting.contexts
+      .filter((row) => row.workflowRole === "historical_output")
+      .flatMap((row) => pairingEvidence(context.artifact, row.artifact).map((evidence) => ({
+        artifactId: row.artifact.id,
+        kind: evidence.kind,
+        field: null,
+        location: null,
+      })));
     const businessCaseResult = existingCase
       ? { status: 200, body: { businessCase: existingCase, replayed: true } }
       : createBusinessCase({
@@ -440,11 +644,11 @@ export function createInquiryIntakeTriggerService({
           roles: ["trigger", "input"],
         }, ...supporting.contexts.map((row) => ({
           artifactId: row.artifact.id,
-          documentType: "other_reference",
-          roles: ["reference"],
+          documentType: row.workflowRole === "historical_output" ? "inquiry_ledger" : "other_reference",
+          roles: [row.workflowRole === "historical_output" ? "output" : "reference"],
         }))],
-        evidenceRefs: evidenceRefs.length
-          ? evidenceRefs
+        evidenceRefs: evidenceRefs.length || pairingEvidenceRefs.length
+          ? [...evidenceRefs, ...pairingEvidenceRefs].slice(0, 100)
           : [{ artifactId: context.artifact.id, kind: "business_key", field: "inquiry_number" }],
         confidence: classification.confidence,
       }, actor);
@@ -480,6 +684,15 @@ export function createInquiryIntakeTriggerService({
       artifactId: context.artifact.id,
       supportingArtifactIds: supporting.contexts.map((row) => row.artifact.id),
       supportingObservationIds: supporting.contexts.map((row) => row.observation.id),
+      supportingBindings: supporting.contexts.map((row) => ({
+        observationId: row.observation.id,
+        artifactId: row.artifact.id,
+        role: row.workflowRole,
+        documentType: row.workflowRole === "historical_output" ? "inquiry_ledger" : "other_reference",
+        pairingEvidence: row.workflowRole === "historical_output"
+          ? pairingEvidence(context.artifact, row.artifact)
+          : [],
+      })),
       contentIdentity: context.observation.contentIdentity,
       businessKey: entity.businessKey,
       routineDefinitionId: definition.id,

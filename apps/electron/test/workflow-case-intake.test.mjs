@@ -64,6 +64,7 @@ test("stages several explicitly selected formats as one case with one primary fi
     sourceId: "wfs_a",
     selectionId: selection.selectionId,
     primaryKey: "file:0",
+    supportingRoles: { "file:1": "reference", "file:2": "reference" },
     caseName: "RFQ 1001",
     authorizationMode: "deidentified",
     confirmed: true,
@@ -75,12 +76,16 @@ test("stages several explicitly selected formats as one case with one primary fi
   assert.equal(existsSync(join(sourceRoot, result.primaryRelativePath)), true);
   const manifest = JSON.parse(readFileSync(join(sourceRoot, result.caseDirectory, ".case.json"), "utf8"));
   assert.deepEqual(manifest, {
-    schemaVersion: 1,
+    schemaVersion: 2,
     authorizationMode: "deidentified",
     recordedAt: "2026-07-30T12:00:00.000Z",
     primaryFile: "inquiry.xlsx",
-    supportingFiles: ["spec.docx", "photo.png"],
+    supportingFiles: [
+      { name: "spec.docx", role: "reference" },
+      { name: "photo.png", role: "reference" },
+    ],
   });
+  assert.deepEqual(Object.values(result.supportingFileRoles), ["reference", "reference"]);
   await assert.rejects(() => handlers.get("workflow-memory:stage-case")(null, {
     requestId: "request-2",
     sourceId: "wfs_a",
@@ -139,6 +144,25 @@ test("images cannot be the primary inquiry before OCR", async () => {
     authorizationMode: "authorized",
     confirmed: true,
   }), /needs OCR/);
+});
+
+test("only an XLSX supporting file can be declared as a historical inquiry ledger", async () => {
+  const external = mkdtempSync(join(tmpdir(), "workflow-case-role-"));
+  const inquiry = join(external, "inquiry.txt");
+  const image = join(external, "output.png");
+  writeFileSync(inquiry, "RFQ");
+  writeFileSync(image, "image");
+  const { handlers } = harness({ filePaths: [inquiry, image] });
+  const selection = await handlers.get("workflow-memory:pick-case-files")();
+  await assert.rejects(() => handlers.get("workflow-memory:stage-case")(null, {
+    requestId: "invalid-historical-output",
+    sourceId: "wfs_a",
+    selectionId: selection.selectionId,
+    primaryKey: "file:0",
+    supportingRoles: { "file:1": "historical_output" },
+    authorizationMode: "authorized",
+    confirmed: true,
+  }), /must be an XLSX/);
 });
 
 test("a file changed after selection is rejected without a partial case", async () => {
