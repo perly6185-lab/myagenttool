@@ -159,6 +159,8 @@ export function createServerState({ defaultProjectPath, now }) {
     // profiles; raw local file contents remain outside durable state by default.
     workflowSources: [],
     workflowScanJobs: [],
+    workflowIntakeObservations: [],
+    workflowIntakeReceipts: [],
     workflowEmbeddingIndex: [],
     workflowArtifacts: [],
     deliveryCases: [],

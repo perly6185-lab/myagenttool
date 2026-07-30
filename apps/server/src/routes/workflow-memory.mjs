@@ -15,6 +15,8 @@ export async function handleWorkflowMemoryRoutes({
   listSources,
   createSource,
   scanSource,
+  scanIncrementalIntake,
+  listIntakeObservations,
   cancelScan,
   revokeSource,
   deleteSourceLearning,
@@ -96,7 +98,7 @@ export async function handleWorkflowMemoryRoutes({
   }
 
   const sourceAction = url.pathname.match(
-    /^\/api\/workflow-memory\/sources\/([^/]+)\/(scan|cancel-scan|revoke|delete-learning-data|pair-proposals|index-embeddings|analyze-business-documents|cancel-business-analysis|discover-business-cases|discover-business-routine)$/,
+    /^\/api\/workflow-memory\/sources\/([^/]+)\/(scan|scan-intake|cancel-scan|revoke|delete-learning-data|pair-proposals|index-embeddings|analyze-business-documents|cancel-business-analysis|discover-business-cases|discover-business-routine)$/,
   );
   if (sourceAction) {
     const sourceId = decodeURIComponent(sourceAction[1]);
@@ -104,6 +106,8 @@ export async function handleWorkflowMemoryRoutes({
     let result;
     if (action === "scan" && req.method === "POST") {
       result = await scanSource({ sourceId }, actor);
+    } else if (action === "scan-intake" && req.method === "POST") {
+      result = await scanIncrementalIntake({ sourceId }, actor);
     } else if (action === "cancel-scan" && req.method === "POST") {
       result = cancelScan({ sourceId }, actor);
     } else if (action === "revoke" && req.method === "POST") {
@@ -131,6 +135,15 @@ export async function handleWorkflowMemoryRoutes({
     } else {
       return false;
     }
+    sendJson(res, result.status, result.body);
+    return true;
+  }
+
+  if (url.pathname === "/api/workflow-memory/intake-observations" && req.method === "GET") {
+    const result = listIntakeObservations({
+      sourceId: url.searchParams.get("sourceId"),
+      state: url.searchParams.get("state"),
+    }, actor);
     sendJson(res, result.status, result.body);
     return true;
   }

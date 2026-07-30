@@ -54,10 +54,21 @@ export const WORKFLOW_MEMORY_ROLES = [
 
 const ROLE_SET = new Set(WORKFLOW_MEMORY_ROLES);
 const READ_MODES = new Set(["metadata", "supported_text"]);
+const INTAKE_OBSERVATION_STATES = new Set([
+  "observing",
+  "waiting_stable",
+  "needs_review",
+  "duplicate",
+  "ready",
+  "triggered",
+  "blocked",
+]);
 const PROFILE_STATES = new Set(["trial", "established", "disabled", "archived"]);
 const MAX_SCAN_FILES = 20_000;
 const MAX_SCAN_DEPTH = 32;
 const MAX_TEXT_BYTES = 256 * 1024;
+const MAX_INTAKE_IDENTITY_BYTES = 32 * 1024 * 1024;
+const DEFAULT_INTAKE_STABILITY_WINDOW_MS = 2_000;
 const MAX_PROFILE_CASES = 100;
 const MAX_CASE_ASSETS = 100;
 const MAX_EXECUTION_ATTEMPTS = 20;
@@ -266,6 +277,21 @@ function safeTextContent(path, extension, readMode, size) {
   } catch {
     return "";
   }
+}
+
+function intakeFileIdentity(path, source, stat) {
+  if (source.readMode === "supported_text" && stat.size <= MAX_INTAKE_IDENTITY_BYTES) {
+    return {
+      contentIdentity: createHash("sha256").update(readFileSync(path)).digest("hex"),
+      identityMode: "content",
+    };
+  }
+  return {
+    contentIdentity: createHash("sha256")
+      .update(`metadata\0${stat.dev}\0${stat.ino}\0${stat.size}`)
+      .digest("hex"),
+    identityMode: "file_metadata",
+  };
 }
 
 function readArtifactText(state, source, artifact) {
@@ -701,6 +727,7 @@ async function scanDirectory(
       }
       const learningText = extractionText(extraction) || content;
       const inference = classifyWorkflowFile({ relativePath, content: learningText });
+      const identity = intakeFileIdentity(fullPath, source, stat);
       const artifact = {
         relativePath,
         name: entry.name,
@@ -709,6 +736,7 @@ async function scanDirectory(
         size: stat.size,
         modifiedAt: stat.mtime.toISOString(),
         fingerprint,
+        ...identity,
         inference,
         extraction,
       };
@@ -741,6 +769,88 @@ async function scanDirectory(
     reused,
     truncated,
     cancelled: false,
+  };
+}
+
+function collectIntakeCandidates(source, project) {
+  const { actual } = containedRealDirectory(project.path, source.relativePath);
+  const candidates = [];
+  const pending = [{ directory: actual, depth: 0 }];
+  let scannedEntries = 0;
+  let skipped = 0;
+  let truncated = false;
+
+  while (pending.length && candidates.length < MAX_SCAN_FILES) {
+    const { directory, depth } = pending.pop();
+    let entries;
+    try {
+      entries = readdirSync(directory, { withFileTypes: true })
+        .sort((left, right) => left.name.localeCompare(right.name));
+    } catch {
+      skipped += 1;
+      continue;
+    }
+    for (const entry of entries) {
+      scannedEntries += 1;
+      if (candidates.length >= MAX_SCAN_FILES) {
+        truncated = true;
+        break;
+      }
+      if (entry.isSymbolicLink() || shouldIgnore(entry.name, entry.isDirectory())) {
+        skipped += 1;
+        continue;
+      }
+      const fullPath = resolve(directory, entry.name);
+      const relativePath = relative(actual, fullPath).replaceAll("\\", "/");
+      if (entry.isDirectory()) {
+        if (depth >= MAX_SCAN_DEPTH) {
+          skipped += 1;
+          truncated = true;
+        } else {
+          pending.push({ directory: fullPath, depth: depth + 1 });
+        }
+        continue;
+      }
+      if (!entry.isFile()) {
+        skipped += 1;
+        continue;
+      }
+      const extension = extname(entry.name).toLowerCase();
+      if (!SUPPORTED_EXTENSIONS.has(extension)) {
+        skipped += 1;
+        continue;
+      }
+      try {
+        const real = realpathSync(fullPath);
+        const confined = relative(actual, real);
+        if (confined === ".." || confined.startsWith(`..${sep}`) || isAbsolute(confined)) {
+          skipped += 1;
+          continue;
+        }
+        const stat = statSync(real);
+        if (!stat.isFile()) {
+          skipped += 1;
+          continue;
+        }
+        candidates.push({
+          fullPath: real,
+          relativePath,
+          name: entry.name,
+          extension,
+          stat,
+          signature: `${stat.size}:${Math.trunc(stat.mtimeMs)}:${Math.trunc(stat.ctimeMs)}`,
+        });
+      } catch {
+        skipped += 1;
+      }
+    }
+  }
+  return {
+    actual,
+    candidates,
+    scannedEntries,
+    skipped,
+    truncated,
   };
 }
 
@@ -1110,6 +1220,8 @@ export function createWorkflowMemoryService({
   for (const key of [
     "workflowSources",
     "workflowScanJobs",
+    "workflowIntakeObservations",
+    "workflowIntakeReceipts",
     "workflowEmbeddingIndex",
     "workflowArtifacts",
     "deliveryCases",
@@ -1136,6 +1248,9 @@ export function createWorkflowMemoryService({
     job.revision = Number(job.revision ?? 0) + 1;
   }
   for (const source of state.workflowSources) {
+    source.intakeScanRevision ??= 0;
+    source.intakeCursor ??= null;
+    source.intakeStabilityWindowMs ??= DEFAULT_INTAKE_STABILITY_WINDOW_MS;
     if (source.scanState !== "scanning") continue;
     source.scanState = "failed";
     source.recoveryAvailable = state.workflowScanJobs.some(
@@ -1145,7 +1260,18 @@ export function createWorkflowMemoryService({
     source.updatedAt = now();
     source.revision = Number(source.revision ?? 0) + 1;
   }
+  for (const artifact of state.workflowArtifacts) {
+    artifact.contentIdentity ??= null;
+    artifact.identityMode ??= null;
+  }
+  for (const observation of state.workflowIntakeObservations) {
+    observation.revision ??= 1;
+    observation.artifactId ??= null;
+    observation.canonicalArtifactId ??= observation.artifactId;
+    observation.reason ??= null;
+  }
   const activeScans = new Map();
+  const activeIntakeScans = new Map();
   const cancelledScans = new Set();
   const activeExecutionActions = new Set();
   const activeFeedbackActions = new Set();
@@ -1221,6 +1347,428 @@ export function createWorkflowMemoryService({
     };
   }
 
+  function intakeObservationView(observation) {
+    const {
+      signature: _signature,
+      contentIdentity: _contentIdentity,
+      ...view
+    } = observation;
+    return view;
+  }
+
+  function listIntakeObservations({ sourceId = null, state: observationState = null } = {}, actor = null) {
+    const source = sourceId ? findSource(sourceId, actor) : null;
+    if (sourceId && !source) {
+      return { status: 404, body: { error: "workflow_source_not_found" } };
+    }
+    if (observationState && !INTAKE_OBSERVATION_STATES.has(observationState)) {
+      return { status: 400, body: { error: "invalid_workflow_intake_state" } };
+    }
+    const observations = state.workflowIntakeObservations
+      .filter((observation) =>
+        visible(observation, actor)
+        && (!sourceId || observation.sourceId === sourceId)
+        && (!observationState || observation.state === observationState))
+      .sort((left, right) =>
+        String(right.updatedAt).localeCompare(String(left.updatedAt))
+        || left.relativePath.localeCompare(right.relativePath))
+      .map(intakeObservationView);
+    return { status: 200, body: { observations, count: observations.length } };
+  }
+
+  async function scanIncrementalIntake({ sourceId } = {}, actor = null) {
+    const source = findSource(sourceId, actor);
+    if (!source) return { status: 404, body: { error: "workflow_source_not_found" } };
+    if (source.state !== "active") {
+      return { status: 409, body: { error: "workflow_source_revoked" } };
+    }
+    if (source.scanRevision < 1) {
+      return {
+        status: 409,
+        body: {
+          error: "workflow_intake_baseline_required",
+          recovery: "Scan the authorized source once before checking for new inquiries.",
+        },
+      };
+    }
+    const project = state.projects.find((item) => item.id === source.projectId);
+    if (!project || !actorCanAccessProject(state, actor, source.projectId)) {
+      return { status: 404, body: { error: "workflow_source_not_found" } };
+    }
+    if (activeIntakeScans.has(source.id)) return activeIntakeScans.get(source.id);
+    if (activeScans.has(source.id)) {
+      return {
+        status: 409,
+        body: { error: "workflow_source_scan_active", retryable: true },
+      };
+    }
+    if (activeIntakeScans.size + activeScans.size >= 2) {
+      return {
+        status: 429,
+        body: { error: "workflow_intake_capacity_reached", retryable: true },
+      };
+    }
+
+    const operation = (async () => {
+      const observedAt = now();
+      const targetRevision = Number(source.intakeScanRevision ?? 0) + 1;
+      const snapshot = collectIntakeCandidates(source, project);
+      const seenPaths = new Set();
+      const touchedObservationIds = new Set();
+      const observationsByPath = new Map(
+        state.workflowIntakeObservations
+          .filter((observation) => observation.sourceId === source.id)
+          .map((observation) => [observation.relativePath, observation]),
+      );
+      const artifactsByPath = new Map(
+        state.workflowArtifacts
+          .filter((artifact) => artifact.sourceId === source.id)
+          .map((artifact) => [artifact.relativePath, artifact]),
+      );
+      const counts = {
+        observed: 0,
+        waitingStable: 0,
+        ready: 0,
+        duplicate: 0,
+        blocked: 0,
+        unchanged: 0,
+      };
+      const saveObservation = (candidate, patch) => {
+        let observation = observationsByPath.get(candidate.relativePath);
+        runTx(() => {
+          if (!observation) {
+            observation = {
+              id: nextId("wio"),
+              ownerTeamId: source.ownerTeamId,
+              projectId: source.projectId,
+              sourceId: source.id,
+              relativePath: candidate.relativePath,
+              name: candidate.name,
+              state: "observing",
+              signature: candidate.signature,
+              contentIdentity: null,
+              identityMode: null,
+              artifactId: null,
+              canonicalArtifactId: null,
+              reason: null,
+              stableSince: observedAt,
+              firstObservedAt: observedAt,
+              lastObservedAt: observedAt,
+              scanRevision: targetRevision,
+              revision: 1,
+              createdAt: observedAt,
+              updatedAt: observedAt,
+              ...patch,
+            };
+            state.workflowIntakeObservations.push(observation);
+            observationsByPath.set(candidate.relativePath, observation);
+          } else {
+            Object.assign(observation, {
+              name: candidate.name,
+              lastObservedAt: observedAt,
+              scanRevision: targetRevision,
+              updatedAt: observedAt,
+              revision: Number(observation.revision ?? 0) + 1,
+              ...patch,
+            });
+          }
+        });
+        touchedObservationIds.add(observation.id);
+        return observation;
+      };
+
+      for (const candidate of snapshot.candidates) {
+        if (source.state !== "active") break;
+        seenPaths.add(candidate.relativePath);
+        const knownArtifact = artifactsByPath.get(candidate.relativePath);
+        const previous = observationsByPath.get(candidate.relativePath);
+        if (knownArtifact
+          && knownArtifact.availability !== "missing"
+          && knownArtifact.size === candidate.stat.size
+          && knownArtifact.modifiedAt === candidate.stat.mtime.toISOString()) {
+          if (previous && ["observing", "waiting_stable"].includes(previous.state)) {
+            saveObservation(candidate, {
+              state: "ready",
+              signature: candidate.signature,
+              contentIdentity: knownArtifact.contentIdentity,
+              identityMode: knownArtifact.identityMode,
+              artifactId: knownArtifact.id,
+              canonicalArtifactId: knownArtifact.id,
+              reason: null,
+              stableAt: observedAt,
+            });
+            counts.ready += 1;
+          } else {
+            counts.unchanged += 1;
+          }
+          continue;
+        }
+        counts.observed += 1;
+        if (!previous || previous.signature !== candidate.signature) {
+          saveObservation(candidate, {
+            state: "waiting_stable",
+            signature: candidate.signature,
+            contentIdentity: null,
+            identityMode: null,
+            artifactId: null,
+            canonicalArtifactId: null,
+            reason: "workflow_intake_waiting_for_stability",
+            stableSince: observedAt,
+          });
+          counts.waitingStable += 1;
+          continue;
+        }
+        if (previous.state === "duplicate") {
+          saveObservation(candidate, {});
+          counts.duplicate += 1;
+          continue;
+        }
+        if (previous.state === "blocked" && previous.reason !== "workflow_intake_file_missing") {
+          saveObservation(candidate, {});
+          counts.blocked += 1;
+          continue;
+        }
+        const stableForMs = Date.parse(observedAt) - Date.parse(previous.stableSince);
+        if (!Number.isFinite(stableForMs)
+          || stableForMs < Number(source.intakeStabilityWindowMs ?? DEFAULT_INTAKE_STABILITY_WINDOW_MS)) {
+          saveObservation(candidate, {
+            state: "waiting_stable",
+            reason: "workflow_intake_waiting_for_stability",
+          });
+          counts.waitingStable += 1;
+          continue;
+        }
+        if (source.readMode === "supported_text"
+          && candidate.stat.size > MAX_INTAKE_IDENTITY_BYTES) {
+          saveObservation(candidate, {
+            state: "blocked",
+            reason: "workflow_intake_file_too_large",
+          });
+          counts.blocked += 1;
+          continue;
+        }
+
+        let before;
+        let after;
+        let content;
+        let extraction;
+        let identity;
+        try {
+          before = statSync(candidate.fullPath);
+          const beforeSignature =
+            `${before.size}:${Math.trunc(before.mtimeMs)}:${Math.trunc(before.ctimeMs)}`;
+          if (beforeSignature !== candidate.signature) {
+            saveObservation(candidate, {
+              state: "waiting_stable",
+              signature: beforeSignature,
+              reason: "workflow_intake_waiting_for_stability",
+              stableSince: observedAt,
+            });
+            counts.waitingStable += 1;
+            continue;
+          }
+          content = safeTextContent(
+            candidate.fullPath,
+            candidate.extension,
+            source.readMode,
+            before.size,
+          );
+          extraction = await parseWorkflowDocument({
+            path: candidate.fullPath,
+            extension: candidate.extension,
+            readMode: source.readMode,
+            size: before.size,
+          });
+          identity = intakeFileIdentity(candidate.fullPath, source, before);
+          after = statSync(candidate.fullPath);
+        } catch {
+          saveObservation(candidate, {
+            state: "waiting_stable",
+            reason: "workflow_intake_file_unavailable",
+            stableSince: observedAt,
+          });
+          counts.waitingStable += 1;
+          continue;
+        }
+        const afterSignature =
+          `${after.size}:${Math.trunc(after.mtimeMs)}:${Math.trunc(after.ctimeMs)}`;
+        if (candidate.signature !== afterSignature) {
+          saveObservation(candidate, {
+            state: "waiting_stable",
+            signature: afterSignature,
+            reason: "workflow_intake_waiting_for_stability",
+            stableSince: observedAt,
+          });
+          counts.waitingStable += 1;
+          continue;
+        }
+        if (source.state !== "active") break;
+
+        const fingerprint = createHash("sha256")
+          .update(`${candidate.relativePath}\0${after.size}\0${Math.trunc(after.mtimeMs)}\0`)
+          .update(content)
+          .digest("hex");
+        const learningText = extractionText(extraction) || content;
+        const inference = classifyWorkflowFile({
+          relativePath: candidate.relativePath,
+          content: learningText,
+        });
+        const matchingArtifact = state.workflowArtifacts.find((artifact) =>
+          artifact.sourceId === source.id
+          && artifact.relativePath !== candidate.relativePath
+          && artifact.availability !== "missing"
+          && artifact.contentIdentity === identity.contentIdentity
+          && artifact.identityMode === identity.identityMode);
+        const originalStillExists = matchingArtifact
+          ? existsSync(resolve(snapshot.actual, matchingArtifact.relativePath))
+          : false;
+        if (matchingArtifact && originalStillExists) {
+          saveObservation(candidate, {
+            state: "duplicate",
+            signature: candidate.signature,
+            contentIdentity: identity.contentIdentity,
+            identityMode: identity.identityMode,
+            artifactId: null,
+            canonicalArtifactId: matchingArtifact.id,
+            reason: "workflow_intake_duplicate_content",
+          });
+          counts.duplicate += 1;
+          continue;
+        }
+
+        const existingArtifact = knownArtifact ?? matchingArtifact ?? null;
+        let artifact = existingArtifact;
+        runTx(() => {
+          if (artifact) {
+            const contentChanged = artifact.contentIdentity
+              && artifact.contentIdentity !== identity.contentIdentity;
+            const previousPath = artifact.relativePath;
+            Object.assign(artifact, {
+              relativePath: candidate.relativePath,
+              name: candidate.name,
+              extension: candidate.extension.slice(1),
+              family: fileFamily(candidate.extension),
+              size: after.size,
+              modifiedAt: after.mtime.toISOString(),
+              fingerprint,
+              contentIdentity: identity.contentIdentity,
+              identityMode: identity.identityMode,
+              roleInference: inference,
+              extraction,
+              availability: "available",
+              scanRevision: source.scanRevision,
+              updatedAt: observedAt,
+              revision: Number(artifact.revision ?? 0) + 1,
+            });
+            if (contentChanged && artifact.confirmationState === "confirmed") {
+              artifact.confirmationState = "changed";
+            }
+            if (artifact.confirmationState !== "confirmed") artifact.role = inference.role;
+            if (previousPath !== candidate.relativePath) artifactsByPath.delete(previousPath);
+          } else {
+            artifact = {
+              id: nextId("wfa"),
+              ownerTeamId: source.ownerTeamId,
+              projectId: source.projectId,
+              sourceId: source.id,
+              relativePath: candidate.relativePath,
+              name: candidate.name,
+              extension: candidate.extension.slice(1),
+              family: fileFamily(candidate.extension),
+              size: after.size,
+              modifiedAt: after.mtime.toISOString(),
+              fingerprint,
+              contentIdentity: identity.contentIdentity,
+              identityMode: identity.identityMode,
+              role: inference.role,
+              roleInference: inference,
+              extraction,
+              confirmationState: "proposed",
+              availability: "available",
+              scanRevision: source.scanRevision,
+              revision: 1,
+              createdAt: observedAt,
+              updatedAt: observedAt,
+            };
+            state.workflowArtifacts.push(artifact);
+          }
+          artifactsByPath.set(candidate.relativePath, artifact);
+        });
+        saveObservation(candidate, {
+          state: "ready",
+          signature: candidate.signature,
+          contentIdentity: identity.contentIdentity,
+          identityMode: identity.identityMode,
+          artifactId: artifact.id,
+          canonicalArtifactId: artifact.id,
+          reason: null,
+          stableAt: observedAt,
+        });
+        counts.ready += 1;
+      }
+
+      runTx(() => {
+        for (const observation of state.workflowIntakeObservations.filter((row) =>
+          row.sourceId === source.id
+          && ["observing", "waiting_stable"].includes(row.state)
+          && !seenPaths.has(row.relativePath))) {
+          observation.state = "blocked";
+          observation.reason = "workflow_intake_file_missing";
+          observation.scanRevision = targetRevision;
+          observation.updatedAt = observedAt;
+          observation.revision = Number(observation.revision ?? 0) + 1;
+          touchedObservationIds.add(observation.id);
+          counts.blocked += 1;
+        }
+        source.intakeScanRevision = targetRevision;
+        source.intakeCursor = {
+          revision: targetRevision,
+          lastCompletedAt: observedAt,
+          scannedEntries: snapshot.scannedEntries,
+          candidateCount: snapshot.candidates.length,
+          truncated: snapshot.truncated,
+        };
+        source.revision += 1;
+        source.updatedAt = observedAt;
+        appendEvent({
+          invocationId: null,
+          type: "workflow_incremental_intake_scanned",
+          level: "info",
+          message: "Authorized source checked for stable new work.",
+          data: {
+            sourceId: source.id,
+            projectId: source.projectId,
+            intakeScanRevision: targetRevision,
+            ...counts,
+            truncated: snapshot.truncated,
+          },
+        });
+      });
+      return {
+        status: 200,
+        body: {
+          source,
+          intake: {
+            scanRevision: targetRevision,
+            scannedEntries: snapshot.scannedEntries,
+            skipped: snapshot.skipped,
+            truncated: snapshot.truncated,
+            ...counts,
+          },
+          observations: state.workflowIntakeObservations
+            .filter((observation) => touchedObservationIds.has(observation.id))
+            .map(intakeObservationView),
+        },
+      };
+    })();
+    activeIntakeScans.set(source.id, operation);
+    try {
+      return await operation;
+    } finally {
+      activeIntakeScans.delete(source.id);
+    }
+  }
+
   function createSource(input = {}, actor = null) {
     try {
       const projectId = String(input.projectId ?? "").trim();
@@ -1255,6 +1803,9 @@ export function createWorkflowMemoryService({
         state: "active",
         scanState: "idle",
         scanRevision: 0,
+        intakeScanRevision: 0,
+        intakeCursor: null,
+        intakeStabilityWindowMs: DEFAULT_INTAKE_STABILITY_WINDOW_MS,
         revision: 1,
         fileCount: 0,
         skippedCount: 0,
@@ -1294,7 +1845,13 @@ export function createWorkflowMemoryService({
     if (activeScans.has(source.id)) {
       return activeScans.get(source.id);
     }
-    if (activeScans.size >= 2) {
+    if (activeIntakeScans.has(source.id)) {
+      return {
+        status: 409,
+        body: { error: "workflow_source_scan_active", retryable: true },
+      };
+    }
+    if (activeScans.size + activeIntakeScans.size >= 2) {
       return {
         status: 429,
         body: { error: "workflow_scan_capacity_reached", retryable: true },
@@ -1378,6 +1935,8 @@ export function createWorkflowMemoryService({
                 size: result.size,
                 modifiedAt: result.modifiedAt,
                 fingerprint: result.fingerprint,
+                contentIdentity: result.contentIdentity,
+                identityMode: result.identityMode,
                 roleInference: result.inference,
                 extraction: result.extraction,
                 availability: existing.availability === "checkpointed" ? "checkpointed" : "available",
@@ -1402,6 +1961,8 @@ export function createWorkflowMemoryService({
                 size: result.size,
                 modifiedAt: result.modifiedAt,
                 fingerprint: result.fingerprint,
+                contentIdentity: result.contentIdentity,
+                identityMode: result.identityMode,
                 role: result.inference.role,
                 roleInference: result.inference,
                 extraction: result.extraction,
@@ -1502,6 +2063,8 @@ export function createWorkflowMemoryService({
                 size: result.size,
                 modifiedAt: result.modifiedAt,
                 fingerprint: result.fingerprint,
+                contentIdentity: result.contentIdentity,
+                identityMode: result.identityMode,
                 roleInference: result.inference,
                 extraction: result.extraction,
                 availability: "available",
@@ -1526,6 +2089,8 @@ export function createWorkflowMemoryService({
                 size: result.size,
                 modifiedAt: result.modifiedAt,
                 fingerprint: result.fingerprint,
+                contentIdentity: result.contentIdentity,
+                identityMode: result.identityMode,
                 role: result.inference.role,
                 roleInference: result.inference,
                 extraction: result.extraction,
@@ -1688,6 +2253,8 @@ export function createWorkflowMemoryService({
     const sourceIdMatches = (item) => item.sourceId === source.id;
     const counts = {
       scanJobs: state.workflowScanJobs.filter(sourceIdMatches).length,
+      intakeObservations: state.workflowIntakeObservations.filter(sourceIdMatches).length,
+      intakeReceipts: state.workflowIntakeReceipts.filter(sourceIdMatches).length,
       embeddingRecords: state.workflowEmbeddingIndex.filter(sourceIdMatches).length,
       artifacts: state.workflowArtifacts.filter(sourceIdMatches).length,
       cases: state.deliveryCases.filter(sourceIdMatches).length,
@@ -1709,6 +2276,16 @@ export function createWorkflowMemoryService({
         0,
         state.workflowScanJobs.length,
         ...state.workflowScanJobs.filter((item) => !sourceIdMatches(item)),
+      );
+      state.workflowIntakeObservations.splice(
+        0,
+        state.workflowIntakeObservations.length,
+        ...state.workflowIntakeObservations.filter((item) => !sourceIdMatches(item)),
+      );
+      state.workflowIntakeReceipts.splice(
+        0,
+        state.workflowIntakeReceipts.length,
+        ...state.workflowIntakeReceipts.filter((item) => !sourceIdMatches(item)),
       );
       state.workflowEmbeddingIndex.splice(
         0,
@@ -5123,6 +5700,8 @@ export function createWorkflowMemoryService({
     listSources,
     createSource,
     scanSource,
+    scanIncrementalIntake,
+    listIntakeObservations,
     cancelScan,
     revokeSource,
     deleteSourceLearning,

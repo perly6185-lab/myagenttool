@@ -121,11 +121,40 @@ test("workflow memory routes authorize, scan, classify, and enforce tenancy over
   assert.equal(scan.status, 200);
   assert.equal(scan.body.scan.discovered, 4);
 
+  writeFileSync(
+    join(root, "history", "business", "询价单-RFQ-HTTP-INTAKE.md"),
+    "# 询价单\n询价编号：RFQ-HTTP-INTAKE\n客户名称：新客户\n产品名称：控制器\n数量：5",
+  );
+  const observedIntake = await call(
+    `/api/workflow-memory/sources/${source.id}/scan-intake`,
+    { method: "POST" },
+  );
+  assert.equal(observedIntake.status, 200);
+  assert.equal(observedIntake.body.intake.waitingStable, 1);
+  const pendingObservation = runtimeState.workflowIntakeObservations.find((row) =>
+    row.relativePath === "business/询价单-RFQ-HTTP-INTAKE.md");
+  pendingObservation.stableSince = new Date(Date.now() - 3_000).toISOString();
+  const stableIntake = await call(
+    `/api/workflow-memory/sources/${source.id}/scan-intake`,
+    { method: "POST" },
+  );
+  assert.equal(stableIntake.status, 200);
+  assert.equal(stableIntake.body.intake.ready, 1);
+  const intakeObservations = await call(
+    `/api/workflow-memory/intake-observations?sourceId=${source.id}`,
+  );
+  assert.equal(intakeObservations.status, 200);
+  assert.equal(intakeObservations.body.observations.some((row) =>
+    row.relativePath === "business/询价单-RFQ-HTTP-INTAKE.md"
+    && row.state === "ready"
+    && row.signature == null
+    && row.contentIdentity == null), true);
+
   const artifacts = await call(`/api/workflow-memory/artifacts?sourceId=${source.id}`);
   assert.equal(artifacts.status, 200);
   assert.deepEqual(
     artifacts.body.artifacts.map((artifact) => artifact.roleInference.role).sort(),
-    ["delivery", "requirement", "requirement", "requirement"],
+    ["delivery", "requirement", "requirement", "requirement", "requirement"],
   );
 
   const requirement = artifacts.body.artifacts.find((artifact) =>
@@ -561,7 +590,7 @@ test("workflow memory routes authorize, scan, classify, and enforce tenancy over
     { method: "POST" },
   );
   assert.equal(analyzedSource.status, 200);
-  assert.equal(analyzedSource.body.job.total, 5);
+  assert.equal(analyzedSource.body.job.total, 6);
   assert.equal(analyzedSource.body.job.replayed, 1);
   const analysisJobs = await call(
     `/api/workflow-memory/business-document-analysis-jobs?sourceId=${source.id}`,
