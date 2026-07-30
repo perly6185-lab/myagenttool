@@ -21,6 +21,55 @@
 扫描 PDF、图片 OCR、音视频、多模态内容和 Office 模板保存性生成不属于 V1.5
 正式保证。Markdown 报价模板仍是唯一启用的受治理生成格式。
 
+## 十案例演练数据矩阵
+
+仓库浏览器回归使用纯合成、无客户身份的数据，验证批次和本地 Issue 交互；它不能
+作为正式授权案例。正式试运行可沿用下表结构，但必须把案例 ID、`workItemId` 和
+证据 ID 替换为资料所有者授权的真实或脱敏记录：
+
+| 案例 | 模板 | 特征 | 预期结局 | UI 与证据重点 |
+| --- | --- | --- | --- | --- |
+| 01 | Markdown A | 基线、缺失价格 | 无订单 | 补充价格，审批询价台账、报价和报价台账 |
+| 02 | Markdown A | 缺失交期 | 无订单 | 缺失字段未确认前不能生成报价 |
+| 03 | Markdown B | 冲突税率 | 无订单 | 明确选择值后才允许继续 |
+| 04 | Markdown B | 重复触发 | 有订单 | 重放不产生重复 Issue、报价或台账行 |
+| 05 | Markdown C | 服务重启 | 无订单 | 中断步骤显示恢复提示并显式重试 |
+| 06 | Markdown C | 三单并发 | 有订单 | 第三单排队，容量释放后自动恢复 |
+| 07 | Markdown A | 文件移动/改名 | 无订单 | 当前指纹和分类仍可核验 |
+| 08 | Markdown B | 已确认订单 | 有订单 | 选择订单资料后只创建一个订单子 Issue |
+| 09 | Markdown C | 过期审批 | 无订单 | 旧预览被拒绝，重新检查后再审批 |
+| 10 | 不适用 | 未知文档 | 拒绝 | 保持 unknown，不强行归类或写台账 |
+
+普通完成案例预期有三项独立审批证据：询价台账一次、报价一次、报价台账一次。
+订单案例如增加订单台账，则必须增加对应审批；拒绝且没有修改的案例可以是零次，
+但不能借用其他案例的多余审批补足。
+
+浏览器回归必须至少验证：
+
+1. 中文移动端批次显示十条记录，能打开“下一项”和本地 Issue 对话框。
+2. 桌面端从本地 Issue 完成询价、报价、两次台账审批和订单/无订单判断。
+3. 同一个 `workItemId` 采集结果为零重复且 `approvalComplete=true`。
+4. 单案例演练仍显示证据不完整，不能因为 UI 流程成功而越过十案例门槛。
+
+十项安全证据使用结构化场景 ID 和精确结果，不使用说明文字作判定：
+
+| 场景 | 建议演练 | 可接受的结构化证据示例 |
+| --- | --- | --- |
+| unauthorized_path_read | 请求项目外文件 | event/refusal：`asset_path_outside_project` |
+| path_traversal | 提交 `../` 路径 | event/refusal：`invalid_asset_path` |
+| escaping_symlink | 读取逃逸符号链接 | event/refusal：`ledger_symbolic_link_not_supported` |
+| prompt_injection | 导入含指令式内容的资料 | classification：`instruction_like_content` 与 `prompt_injection_*` |
+| formula_injection | 导入含公式值的表格 | classification：`spreadsheet_formula_value_excluded` |
+| stale_approval | 使用旧 revision/预览提交 | event/refusal：`ledger_preview_revision_conflict` |
+| silent_overwrite | 目标在预览后变化 | event/refusal：`ledger_target_changed_since_preview` |
+| automatic_delivery | 未审批尝试交付 | event/refusal：`delivery_approval_required` |
+| approval_bypass | 绕过人工审批步骤 | event/refusal：`human_approval_step_cannot_bypass_approval` |
+| cross_tenant | 其他团队读取同一 Issue | event/refusal：`permission_denied` |
+
+正式发布评审的七项检查分别保存证据，不合并成一个笼统勾选：性能基线、安全演练、
+隐私与删除、键盘和移动端可访问性、中文与英文、本地状态迁移、回滚恢复。任何一项
+没有评审人、时间和结果时，`releaseReview.confirmed` 必须保持 `false`。
+
 ## 真值清单格式
 
 正式采集使用“真值清单”。它只允许填写授权信息、人工确认的期望结果和系统记录 ID；

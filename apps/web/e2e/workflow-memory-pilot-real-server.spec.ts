@@ -14,7 +14,8 @@ import { expect, test } from "playwright/test";
 let apiBase = "";
 let root = "";
 let server: Server | null = null;
-let workItemTitle = "";
+let primaryWorkItemTitle = "";
+let primaryWorkItemId = "";
 
 async function call(path: string, options: { method?: string; body?: unknown } = {}) {
   const response = await fetch(`${apiBase}${path}`, {
@@ -36,31 +37,73 @@ test.beforeAll(async () => {
   const ledgers = join(history, "ledgers");
   mkdirSync(templates, { recursive: true });
   mkdirSync(ledgers, { recursive: true });
-  writeFileSync(
-    join(history, "inquiry-RFQ-PILOT-001.md"),
-    [
-      "# Request for quotation",
-      "Inquiry number: RFQ-PILOT-001",
-      "Customer: Pilot Customer",
-      "Product: Controller",
-      "Quantity: 5",
-      "Currency: USD",
-    ].join("\n"),
-  );
-  writeFileSync(
-    join(templates, "quotation.md"),
-    [
-      "# Quotation",
-      "",
-      "Customer: {{customer}}",
-      "Product: {{product}}",
-      "Quantity: {{quantity}}",
-      "Unit price: {{unit_price}}",
-      "Currency: {{currency}}",
-      "Tax rate: {{tax_rate}}",
-      "Delivery: {{delivery_terms}}",
-    ].join("\n"),
-  );
+  const inquiryFixtures = Array.from({ length: 10 }, (_, index) => {
+    const sequence = String(index + 1).padStart(3, "0");
+    return {
+      businessKey: `RFQ-PILOT-${sequence}`,
+      customer: `Synthetic Customer ${sequence}`,
+      product: index % 2 === 0 ? "Controller" : "Sensor",
+      quantity: 5 + index,
+      currency: index % 3 === 0 ? "EUR" : "USD",
+    };
+  });
+  for (const fixture of inquiryFixtures) {
+    writeFileSync(
+      join(history, `inquiry-${fixture.businessKey}.md`),
+      [
+        "# Request for quotation",
+        `Inquiry number: ${fixture.businessKey}`,
+        `Customer: ${fixture.customer}`,
+        `Product: ${fixture.product}`,
+        `Quantity: ${fixture.quantity}`,
+        `Currency: ${fixture.currency}`,
+      ].join("\n"),
+    );
+  }
+  const quotationTemplateFixtures = [
+    {
+      name: "quotation-a.md",
+      lines: [
+        "# Quotation",
+        "Customer: {{customer}}",
+        "Product: {{product}}",
+        "Quantity: {{quantity}}",
+        "Unit price: {{unit_price}}",
+        "Currency: {{currency}}",
+        "Tax rate: {{tax_rate}}",
+        "Delivery: {{delivery_terms}}",
+      ],
+    },
+    {
+      name: "quotation-b.md",
+      lines: [
+        "# Commercial offer",
+        "Customer: {{customer}}",
+        "## Item",
+        "{{product}} × {{quantity}}",
+        "## Price",
+        "{{unit_price}} {{currency}} · Tax {{tax_rate}}",
+        "## Delivery",
+        "{{delivery_terms}}",
+      ],
+    },
+    {
+      name: "quotation-c.md",
+      lines: [
+        "# Quotation summary",
+        "| Customer | Product | Quantity |",
+        "| --- | --- | --- |",
+        "| {{customer}} | {{product}} | {{quantity}} |",
+        "",
+        "Unit price: {{unit_price}} {{currency}}",
+        "Tax: {{tax_rate}}",
+        "Delivery: {{delivery_terms}}",
+      ],
+    },
+  ];
+  for (const fixture of quotationTemplateFixtures) {
+    writeFileSync(join(templates, fixture.name), fixture.lines.join("\n"));
+  }
   writeFileSync(join(ledgers, "inquiries.csv"), "Inquiry No,Customer,Quantity\n");
   writeFileSync(join(ledgers, "quotations.csv"), "Inquiry No,Customer,Amount\n");
   execFileSync("git", ["init", "-b", "main", root]);
@@ -114,42 +157,53 @@ test.beforeAll(async () => {
   const artifacts = (await call(
     `/api/workflow-memory/artifacts?sourceId=${source.id}`,
   )).artifacts;
-  const inquiry = artifacts.find((artifact: { name: string }) =>
-    artifact.name === "inquiry-RFQ-PILOT-001.md");
-  const template = artifacts.find((artifact: { name: string }) =>
-    artifact.name === "quotation.md");
-  const analyzed = await call(
-    `/api/workflow-memory/artifacts/${inquiry.id}/analyze-business-document`,
-    { method: "POST" },
-  );
-  const confirmed = await call(
-    `/api/workflow-memory/business-document-classifications/${analyzed.classification.id}/confirm`,
-    {
-      method: "POST",
-      body: {
-        expectedRevision: analyzed.classification.revision,
-        fieldCorrections: {},
+  const inquiries = inquiryFixtures.map((fixture) => ({
+    fixture,
+    artifact: artifacts.find((artifact: { name: string }) =>
+      artifact.name === `inquiry-${fixture.businessKey}.md`),
+  }));
+  expect(inquiries.every((row) => row.artifact)).toBe(true);
+  const inquiry = inquiries[0].artifact;
+  const quotationTemplates = quotationTemplateFixtures.map((fixture) =>
+    artifacts.find((artifact: { name: string }) => artifact.name === fixture.name));
+  expect(quotationTemplates.every(Boolean)).toBe(true);
+  const confirmedInquiries = [];
+  for (const row of inquiries) {
+    const analyzed = await call(
+      `/api/workflow-memory/artifacts/${row.artifact.id}/analyze-business-document`,
+      { method: "POST" },
+    );
+    const confirmed = await call(
+      `/api/workflow-memory/business-document-classifications/${analyzed.classification.id}/confirm`,
+      {
+        method: "POST",
+        body: {
+          expectedRevision: analyzed.classification.revision,
+          fieldCorrections: {},
+        },
       },
-    },
-  );
-  const stateInquiry = state.workflowArtifacts.find((row: { id: string }) =>
-    row.id === inquiry.id);
-  const caseIds = [1, 2, 3].map((index) => `bcs_pilot_${index}`);
+    );
+    confirmedInquiries.push({ ...row, confirmed });
+  }
+  const caseIds = Array.from({ length: 10 }, (_, index) => `bcs_pilot_${index + 1}`);
   for (const [index, caseId] of caseIds.entries()) {
+    const row = confirmedInquiries[index];
+    const stateInquiry = state.workflowArtifacts.find((artifact: { id: string }) =>
+      artifact.id === row.artifact.id);
     state.businessCases.push({
       id: caseId,
       ownerTeamId: defaultProject.ownerTeamId,
       projectId: defaultProject.id,
       sourceId: source.id,
-      businessKey: index === 0 ? "RFQ-PILOT-001" : `RFQ-PILOT-HISTORY-${index + 1}`,
+      businessKey: row.fixture.businessKey,
       state: "confirmed",
-      entityIds: index === 0 ? [confirmed.entity.id] : [],
+      entityIds: [row.confirmed.entity.id],
       artifactBindings: [{
-        artifactId: inquiry.id,
+        artifactId: row.artifact.id,
         documentType: "inquiry",
         roles: ["trigger", "input"],
       }],
-      artifactFingerprints: { [inquiry.id]: stateInquiry.fingerprint },
+      artifactFingerprints: { [row.artifact.id]: stateInquiry.fingerprint },
       revision: 1,
     });
   }
@@ -179,7 +233,9 @@ test.beforeAll(async () => {
       required: true,
       requirement: "mandatory",
       dependsOn: ["retrieve_references"],
-      configuration: { templateArtifactIds: [template.id] },
+      configuration: {
+        templateArtifactIds: quotationTemplates.map((template) => template.id),
+      },
     },
     {
       key: "approve_quotation",
@@ -323,17 +379,22 @@ test.beforeAll(async () => {
       body: { expectedRevision: updated.routineDefinition.revision, confirmed: true },
     },
   );
-  const materialized = await call(
-    `/api/workflow-memory/business-cases/${caseIds[0]}/materialize-routine`,
-    {
-      method: "POST",
-      body: {
-        routineDefinitionId: draft.routineDefinition.id,
-        triggerArtifactIds: [inquiry.id],
+  const materialized = [];
+  for (const [index, caseId] of caseIds.entries()) {
+    materialized.push(await call(
+      `/api/workflow-memory/business-cases/${caseId}/materialize-routine`,
+      {
+        method: "POST",
+        body: {
+          routineDefinitionId: draft.routineDefinition.id,
+          triggerArtifactIds: [confirmedInquiries[index].artifact.id],
+        },
       },
-    },
-  );
-  workItemTitle = materialized.workItem.title;
+    ));
+  }
+  expect(materialized.map((row) => row.workItem.id)).toHaveLength(10);
+  primaryWorkItemTitle = materialized[0].workItem.title;
+  primaryWorkItemId = materialized[0].workItem.id;
 });
 
 test.afterAll(async () => {
@@ -343,9 +404,36 @@ test.afterAll(async () => {
   rmSync(root, { recursive: true, force: true });
 });
 
-test("completes the governed no-order journey against real business APIs", async ({ page }, testInfo) => {
+test("shows all ten synthetic cases in the Chinese mobile batch UI", async ({ page }, testInfo) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.addInitScript(() => {
+    window.localStorage.setItem("myagenttool-ui", JSON.stringify({
+      version: 1,
+      state: { locale: "zh-CN", section: "task" },
+    }));
+  });
   await page.goto(`/?section=task&api=${encodeURIComponent(apiBase)}`);
-  await page.getByText(workItemTitle).first().click();
+  const batch = page.getByRole("region", { name: "询价批次" });
+  await expect(batch.getByRole("listitem")).toHaveCount(10);
+  await expect(batch.getByRole("button", { name: "打开下一项" })).toBeVisible();
+  await batch.getByRole("button", { name: "打开下一项" }).click();
+  await expect(page.getByRole("dialog", { name: "本地 Issue 详情" })).toBeVisible();
+  await page.keyboard.press("Escape");
+  await testInfo.attach("v1.5-ten-case-mobile-zh", {
+    body: await page.screenshot({ fullPage: true }),
+    contentType: "image/png",
+  });
+});
+
+test("shows the ten-case batch and binds one completed UI journey to pilot evidence", async ({ page }, testInfo) => {
+  await page.goto(`/?section=task&api=${encodeURIComponent(apiBase)}`);
+  const batch = page.getByRole("region", { name: "Inquiry batch" });
+  await expect(batch.getByRole("listitem")).toHaveCount(10);
+  await batch.getByRole("button", { name: "Open next action" }).click();
+  await expect(page.getByRole("dialog", { name: "Local issue details" })).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(page.getByRole("dialog", { name: "Local issue details" })).toBeHidden();
+  await page.getByText(primaryWorkItemTitle).first().click();
   const detail = page.getByRole("dialog", { name: "Local issue details" });
   const dailyWork = detail.getByRole("region", { name: "Daily work" });
   await dailyWork.getByRole("button", { name: "Process inquiry" }).click();
@@ -359,7 +447,13 @@ test("completes the governed no-order journey against real business APIs", async
   await dailyWork.getByRole("button", { name: "Run this step" }).click();
   await dailyWork.getByRole("button", { name: "Review quotation details" }).click();
   const inputs = page.getByRole("dialog", { name: "Confirm quotation details" });
-  await inputs.getByLabel("Quotation template").selectOption({ label: "templates/quotation.md" });
+  const templateSelect = inputs.getByLabel("Quotation template");
+  for (const name of ["quotation-a.md", "quotation-b.md", "quotation-c.md"]) {
+    await expect(
+      templateSelect.getByRole("option", { name: `templates/${name}` }),
+    ).toHaveCount(1);
+  }
+  await inputs.getByLabel("Quotation template").selectOption({ label: "templates/quotation-a.md" });
   const answers: Record<string, string> = {
     "Unit price": "25.00",
     "Tax rate": "10%",
@@ -387,6 +481,66 @@ test("completes the governed no-order journey against real business APIs", async
     .toContain("RFQ-PILOT-001");
   expect(readFileSync(join(root, "history", "ledgers", "quotations.csv"), "utf8"))
     .toContain("RFQ-PILOT-001");
+  const pilotEvidence = await call(
+    "/api/workflow-memory/commercial-pilot/evidence",
+    {
+      method: "POST",
+      body: {
+        schemaVersion: 1,
+        pilotId: "ui-ten-case-synthetic-regression",
+        description: "Synthetic UI regression; never formal release evidence.",
+        dataClassification: "synthetic",
+        consent: { confirmed: false },
+        releaseReview: {
+          confirmed: false,
+          recordedAt: "2026-07-30T00:00:00.000Z",
+          reviewerRole: "test operator",
+          performance: false,
+          security: false,
+          privacy: false,
+          accessibility: false,
+          localization: false,
+          migration: false,
+          rollback: false,
+        },
+        thresholds: {
+          minimumFormalCases: 10,
+          documentRoleTop1: 0.8,
+          relationshipTop1: 0.75,
+        },
+        cases: [{
+          id: "ui-case-01",
+          workItemId: primaryWorkItemId,
+          templateId: "markdown-a",
+          traits: ["missing_fact"],
+          expectedDocumentRole: "inquiry",
+          relationshipExpected: false,
+          expectedOutcome: "no_order",
+        }],
+        safetyScenarios: [],
+      },
+    },
+  );
+  expect(pilotEvidence.evidence.state).toBe("incomplete");
+  expect(pilotEvidence.evidence.missing).toContain("minimum_formal_cases");
+  expect(pilotEvidence.manifest.cases[0].observed).toMatchObject({
+    documentRole: "inquiry",
+    completed: true,
+    evidenceComplete: true,
+    outcome: "no_order",
+    duplicateIssueCount: 0,
+    duplicateBusinessCaseCount: 0,
+    duplicateQuotationCount: 0,
+    duplicateLedgerRowCount: 0,
+    quotationMutationCount: 1,
+    ledgerMutationCount: 2,
+    approvalCount: 3,
+    approvalComplete: true,
+  });
+  expect((await call(
+    "/api/workflow-memory/commercial-pilot/evidence/verify",
+    { method: "POST", body: { manifest: pilotEvidence.manifest } },
+  )).verified).toBe(true);
   await testInfo.attach("v1.5-real-server-no-order", {
     body: await page.screenshot({ fullPage: true }),
     contentType: "image/png",
