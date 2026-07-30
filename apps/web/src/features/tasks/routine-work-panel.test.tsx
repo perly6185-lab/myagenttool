@@ -42,6 +42,7 @@ function handlers() {
   return {
     onStart: vi.fn(),
     onCancel: vi.fn(),
+    onExecute: vi.fn(),
     onComplete: vi.fn(),
     onPreviewLedger: vi.fn(),
     onCommitLedger: vi.fn(),
@@ -175,5 +176,32 @@ describe("RoutineWorkPanel", () => {
     expect(within(ledgerDialog).getByText("Acme Ltd")).toBeTruthy();
     fireEvent.click(within(ledgerDialog).getByRole("button", { name: "Approve ledger change" }));
     expect(actions.onCommitLedger).toHaveBeenCalledWith("register_inquiry", preview);
+  });
+
+  it("runs governed business executors instead of offering a manual success bypass", () => {
+    const actions = handlers();
+    const current = execution({ status: "running", revision: 4 });
+    current.steps = [{
+      key: "quotation",
+      label: "Prepare quotation",
+      kind: "generate",
+      required: true,
+      dependsOn: [],
+      configuration: {},
+      run: {
+        state: "running",
+        attempts: 1,
+        errorCode: null,
+        conditionOutcome: null,
+        outputRefs: [],
+      },
+    }];
+
+    render(<RoutineWorkPanel execution={current} pending={false} ledgerPreviews={{}} {...actions} />);
+
+    expect(screen.queryByRole("button", { name: "Mark step complete" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Run this step" }));
+    expect(actions.onExecute).toHaveBeenCalledWith("quotation");
+    expect(actions.onComplete).not.toHaveBeenCalled();
   });
 });

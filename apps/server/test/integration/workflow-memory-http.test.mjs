@@ -222,17 +222,41 @@ test("workflow memory routes authorize, scan, classify, and enforce tenancy over
     state: "candidate",
     triggerDocumentTypes: ["inquiry"],
     confirmedCaseIds: ["bcs_http_1", "bcs_http_2", "bcs_http_3"],
-    steps: [{
-      key: "register",
-      kind: "ledger_upsert",
-      label: "Register inquiry",
-      required: true,
-      requirement: "mandatory",
-      coverage: 1,
-      dependsOn: [],
-      evidenceRefs: [{ artifactId: inquiry.id, kind: "coverage", field: null, location: null }],
-      configuration: {},
-    }],
+    steps: [
+      {
+        key: "register",
+        kind: "ledger_upsert",
+        label: "Register inquiry",
+        required: true,
+        requirement: "mandatory",
+        coverage: 1,
+        dependsOn: [],
+        evidenceRefs: [{ artifactId: inquiry.id, kind: "coverage", field: null, location: null }],
+        configuration: {},
+      },
+      {
+        key: "references",
+        kind: "retrieve",
+        label: "Retrieve inquiry evidence",
+        required: true,
+        requirement: "mandatory",
+        coverage: 1,
+        dependsOn: ["register"],
+        evidenceRefs: [{ artifactId: inquiry.id, kind: "coverage", field: null, location: null }],
+        configuration: { documentTypes: ["inquiry"] },
+      },
+      {
+        key: "quotation",
+        kind: "generate",
+        label: "Prepare quotation",
+        required: true,
+        requirement: "mandatory",
+        coverage: 1,
+        dependsOn: ["references"],
+        evidenceRefs: [{ artifactId: inquiry.id, kind: "coverage", field: null, location: null }],
+        configuration: {},
+      },
+    ],
     evidenceRefs: [{ artifactId: inquiry.id, kind: "routine", field: null, location: null }],
     confidence: 0.9,
   });
@@ -384,8 +408,54 @@ test("workflow memory routes authorize, scan, classify, and enforce tenancy over
     },
   );
   assert.equal(completedRoutine.status, 200, JSON.stringify(completedRoutine.body));
-  assert.equal(completedRoutine.body.execution.run.status, "succeeded");
+  assert.equal(completedRoutine.body.execution.run.status, "running");
   assert.match(readFileSync(inquiryLedgerPath, "utf8"), /RFQ-HTTP-001,星海科技有限公司,20/);
+  const retrievedRoutine = await call(
+    `/api/workflow-memory/routine-work-items/${routineWorkItemId}/steps/references/execute`,
+    {
+      method: "POST",
+      body: {
+        expectedRevision: completedRoutine.body.execution.run.revision,
+        idempotencyKey: "http-execute-references",
+      },
+    },
+  );
+  assert.equal(retrievedRoutine.status, 200, JSON.stringify(retrievedRoutine.body));
+  assert.equal(
+    retrievedRoutine.body.execution.steps.find((step) => step.key === "references")
+      .run.outputRefs[0].artifactId,
+    inquiry.id,
+  );
+  const bypassedQuotation = await call(
+    `/api/workflow-memory/routine-work-items/${routineWorkItemId}/steps/quotation/complete`,
+    {
+      method: "POST",
+      body: {
+        expectedRevision: retrievedRoutine.body.execution.run.revision,
+        idempotencyKey: "http-bypass-quotation-executor",
+        succeeded: true,
+        outputRefs: [],
+      },
+    },
+  );
+  assert.equal(bypassedQuotation.status, 409);
+  assert.equal(bypassedQuotation.body.error, "routine_step_requires_governed_executor");
+  const generatedRoutine = await call(
+    `/api/workflow-memory/routine-work-items/${routineWorkItemId}/steps/quotation/execute`,
+    {
+      method: "POST",
+      body: {
+        expectedRevision: retrievedRoutine.body.execution.run.revision,
+        idempotencyKey: "http-execute-quotation",
+      },
+    },
+  );
+  assert.equal(generatedRoutine.status, 200, JSON.stringify(generatedRoutine.body));
+  assert.equal(generatedRoutine.body.execution.run.status, "succeeded");
+  const quotationOutput = generatedRoutine.body.execution.steps
+    .find((step) => step.key === "quotation").run.outputRefs[0];
+  assert.match(quotationOutput.relativePath, /^history\/outputs\/quotations\/quotation-RFQ-HTTP-001-r1-[a-f0-9]{8}\.md$/);
+  assert.equal(existsSync(join(root, quotationOutput.relativePath)), true);
   const completedRoutineIssue = await call(`/api/work-items/${routineWorkItemId}`);
   assert.equal(completedRoutineIssue.status, 200, JSON.stringify(completedRoutineIssue.body));
   assert.equal(completedRoutineIssue.body.workItem.completionGate.ready, true,
@@ -395,7 +465,7 @@ test("workflow memory routes authorize, scan, classify, and enforce tenancy over
         event.type.startsWith("routine_") || event.type.startsWith("work_item_")).slice(-10),
     }));
   assert.equal(completedRoutineIssue.body.workItem.verificationRecords[0].evidence[0].ref,
-    completedRoutine.body.execution.run.id);
+    generatedRoutine.body.execution.run.id);
   assert.equal((await call(
     `/api/workflow-memory/routine-work-items/${routineWorkItemId}`,
     { token: "tok_b" },

@@ -16,6 +16,7 @@ import {
 import { actorCanAccessProject, LOCAL_TEAM_ID, LOCAL_USER_ID } from "../runtime/auth.mjs";
 import { makeRunTx } from "../runtime/store/run-tx.mjs";
 import { assetResourceClass, resolveAssetCapabilities } from "./asset-capabilities.mjs";
+import { writeLocalQuotationDraft } from "./business-routine-executors.mjs";
 
 export const businessRoutineCollectionKeys = [
   "businessDocumentClassifications",
@@ -49,6 +50,17 @@ const STEP_TRANSITIONS = {
   cancelled: {},
 };
 const READ_ONLY_STEP_KINDS = new Set(["extract", "retrieve"]);
+const EXECUTABLE_STEP_KINDS = new Set(["retrieve", "generate", "create_issue"]);
+const EXECUTOR_IDS = {
+  retrieve: "local.reference-retrieval.v1",
+  generate: "local.markdown-quotation-draft.v1",
+  create_issue: "local.confirmed-order-issue.v1",
+};
+const REFERENCE_DOCUMENT_TYPES = new Set([
+  "price_list",
+  "customer_reference",
+  "other_reference",
+]);
 
 const SAFE_FIELD_RE = /^[a-zA-Z][a-zA-Z0-9_.-]{0,119}$/;
 const SENSITIVE_FIELD_RE = /(?:password|secret|token|credential|raw_?content|prompt)/i;
@@ -71,6 +83,10 @@ function confidence(value) {
 }
 
 function routineStepConfigurationError(steps) {
+  for (const step of steps) {
+    const executableError = executableStepConfigurationError(step);
+    if (executableError) return executableError;
+  }
   const invalidCondition = steps.find((step) =>
     step.kind === "condition" && !text(step.configuration?.condition, 1_000));
   if (invalidCondition) return "routine_step_condition_required";
@@ -96,6 +112,38 @@ function relativePath(value) {
   const path = text(value, 1_000)?.replaceAll("\\", "/");
   if (!path || path.startsWith("/") || WINDOWS_ABSOLUTE_RE.test(path) || path.split("/").includes("..")) return null;
   return path;
+}
+
+function executorIdFor(step) {
+  const configured = text(step?.configuration?.executorId, 200);
+  return configured ?? EXECUTOR_IDS[step?.kind] ?? null;
+}
+
+function executableStepConfigurationError(step) {
+  if (!EXECUTABLE_STEP_KINDS.has(step.kind)) return null;
+  const executorId = executorIdFor(step);
+  if (executorId !== EXECUTOR_IDS[step.kind]) return "routine_step_executor_not_allowed";
+  if (step.kind === "generate"
+    && !/(?:quotation|quote|报价)/i.test(`${step.key} ${step.label}`)) {
+    return "routine_generate_executor_not_configured";
+  }
+  if (step.kind === "create_issue"
+    && !/(?:order|订单)/i.test(`${step.key} ${step.label}`)) {
+    return "routine_issue_executor_not_configured";
+  }
+  const outputDirectory = step.configuration?.outputDirectory;
+  if (outputDirectory != null && !relativePath(outputDirectory)) {
+    return "routine_output_directory_invalid";
+  }
+  const documentTypes = step.configuration?.documentTypes;
+  if (documentTypes != null && (
+    !Array.isArray(documentTypes)
+    || documentTypes.length > 20
+    || documentTypes.some((value) => !businessDocumentTypes.includes(value))
+  )) {
+    return "routine_retrieval_document_types_invalid";
+  }
+  return null;
 }
 
 function normalizeFields(value) {
@@ -322,6 +370,219 @@ export function createBusinessRoutineService({
       row.id === workItemId
       && row.ownerTeamId === actorTeam(actor)
       && actorCanAccessProject(state, actor, row.projectId)) ?? null;
+
+  function currentClassification(artifact, actor, documentType = null) {
+    return [...state.businessDocumentClassifications]
+      .reverse()
+      .find((row) =>
+        row.artifactId === artifact.id
+        && visible(row, actor)
+        && row.projectId === artifact.projectId
+        && row.sourceId === artifact.sourceId
+        && (!documentType || row.documentType === documentType)
+        && ["confirmed", "corrected"].includes(row.confirmationState)
+        && row.artifactFingerprint === artifact.fingerprint) ?? null;
+  }
+
+  function currentCaseFor(context, actor) {
+    const businessCase = state.businessCases.find((row) =>
+      row.id === context.run.businessCaseId
+      && visible(row, actor)
+      && row.projectId === context.run.projectId
+      && row.sourceId === context.run.sourceId);
+    if (!businessCase || !["confirmed", "active", "completed"].includes(businessCase.state)) {
+      return null;
+    }
+    return businessCase;
+  }
+
+  function retrieveRoutineReferences(context, step, actor) {
+    const businessCase = currentCaseFor(context, actor);
+    if (!businessCase) {
+      return { ok: false, error: "routine_business_case_not_current" };
+    }
+    const configuredTypes = step.configuration?.documentTypes;
+    const acceptedTypes = new Set(
+      Array.isArray(configuredTypes) && configuredTypes.length
+        ? configuredTypes
+        : REFERENCE_DOCUMENT_TYPES,
+    );
+    const candidates = [];
+    for (const artifact of state.workflowArtifacts) {
+      if (
+        !visible(artifact, actor)
+        || artifact.projectId !== context.run.projectId
+        || artifact.sourceId !== context.run.sourceId
+        || artifact.availability === "missing"
+        || artifact.exclusion
+      ) {
+        continue;
+      }
+      const binding = businessCase.artifactBindings.find((row) => row.artifactId === artifact.id);
+      const classification = currentClassification(artifact, actor);
+      const documentType = binding?.documentType ?? classification?.documentType ?? null;
+      if (!acceptedTypes.has(documentType)) continue;
+      if (binding && businessCase.artifactFingerprints?.[artifact.id] !== artifact.fingerprint) {
+        return { ok: false, error: "routine_reference_evidence_changed" };
+      }
+      if (!classification && !binding) continue;
+      candidates.push({
+        artifact,
+        documentType,
+        caseBound: Boolean(binding),
+      });
+    }
+    candidates.sort((left, right) =>
+      Number(right.caseBound) - Number(left.caseBound)
+      || String(left.artifact.relativePath ?? left.artifact.id)
+        .localeCompare(String(right.artifact.relativePath ?? right.artifact.id)));
+    const selected = candidates.slice(0, 20);
+    if (!selected.length) {
+      return { ok: false, error: "routine_references_not_found" };
+    }
+    return {
+      ok: true,
+      outputRefs: selected.map(({ artifact, documentType }) => ({
+        kind: "artifact",
+        artifactId: artifact.id,
+        summary: `${documentType}: ${artifact.relativePath ?? artifact.name ?? "reference"}`,
+      })),
+    };
+  }
+
+  function routineQuotationFields(context, actor) {
+    const businessCase = currentCaseFor(context, actor);
+    if (!businessCase) return null;
+    const fields = {};
+    for (const entityId of businessCase.entityIds ?? []) {
+      const entity = state.businessEntities.find((row) =>
+        row.id === entityId
+        && visible(row, actor)
+        && row.projectId === context.run.projectId
+        && row.sourceId === context.run.sourceId);
+      for (const [key, value] of Object.entries(entity?.fields ?? {})) {
+        if (SAFE_FIELD_RE.test(key) && !SENSITIVE_FIELD_RE.test(key) && fields[key] == null) {
+          fields[key] = value;
+        }
+      }
+    }
+    for (const binding of businessCase.artifactBindings ?? []) {
+      const artifact = artifactFor(binding.artifactId, actor);
+      if (!artifact
+        || artifact.availability === "missing"
+        || artifact.exclusion
+        || businessCase.artifactFingerprints?.[artifact.id] !== artifact.fingerprint) {
+        continue;
+      }
+      const classification = currentClassification(artifact, actor);
+      for (const proposal of classification?.fieldProposals ?? []) {
+        if (fields[proposal.key] == null) {
+          fields[proposal.key] = proposal.normalizedValue ?? proposal.value;
+        }
+      }
+    }
+    fields.inquiry_number ??= context.run.businessKey;
+    return { businessCase, fields };
+  }
+
+  function generateQuotationDraft(context, step, actor) {
+    const source = sourceFor(context.run.sourceId, actor, { active: true });
+    const project = projectFor(context.run.projectId, actor);
+    const collected = routineQuotationFields(context, actor);
+    if (!source || !project || !collected) {
+      return { ok: false, error: "routine_generate_context_not_found" };
+    }
+    if (!text(project.path, 4_000)) {
+      return { ok: false, error: "routine_output_root_unavailable" };
+    }
+    const evidencePaths = collected.businessCase.artifactBindings
+      .map((binding) => artifactFor(binding.artifactId, actor))
+      .filter((artifact) =>
+        artifact
+        && artifact.availability !== "missing"
+        && !artifact.exclusion
+        && collected.businessCase.artifactFingerprints?.[artifact.id] === artifact.fingerprint)
+      .map((artifact) => artifact.relativePath ?? artifact.name ?? "source document");
+    const written = writeLocalQuotationDraft({
+      projectPath: project.path,
+      sourceRelativePath: source.relativePath,
+      outputDirectory: step.configuration?.outputDirectory,
+      businessKey: context.run.businessKey,
+      routineVersion: context.run.routineVersion,
+      executionSuffix: hashKey([
+        context.run.id,
+        context.run.routineDefinitionId,
+        context.run.routineVersion,
+        step.key,
+      ]).slice(0, 8),
+      fields: collected.fields,
+      evidencePaths,
+    });
+    return written.ok
+      ? {
+          ok: true,
+          outputRefs: [{
+            kind: "file",
+            relativePath: written.relativePath,
+            summary: `Quotation draft for ${context.run.businessKey}.`,
+          }],
+        }
+      : written;
+  }
+
+  function confirmedOrderArtifacts(context, actor) {
+    const businessCase = currentCaseFor(context, actor);
+    if (!businessCase) return [];
+    return businessCase.artifactBindings
+      .filter((binding) => binding.documentType === "order")
+      .map((binding) => artifactFor(binding.artifactId, actor))
+      .filter((artifact) =>
+        artifact
+        && artifact.availability !== "missing"
+        && !artifact.exclusion
+        && businessCase.artifactFingerprints?.[artifact.id] === artifact.fingerprint
+        && currentClassification(artifact, actor, "order"));
+  }
+
+  function ensureOrderChildIssue(context, orderArtifacts, actor) {
+    if (typeof createWorkItem !== "function") {
+      return { ok: false, status: 503, error: "routine_issue_materializer_unavailable" };
+    }
+    if (!orderArtifacts.length) {
+      return { ok: false, status: 409, error: "confirmed_order_trigger_required" };
+    }
+    const orderKey = `business-routine:order-issue:v1:${hashKey([
+      actorTeam(actor),
+      context.workItem.id,
+      context.run.businessCaseId,
+      ...orderArtifacts.map((artifact) => artifact.fingerprint).sort(),
+    ])}`;
+    const created = createWorkItem({
+      projectId: context.run.projectId,
+      title: `Order Processing — ${context.run.businessKey}`,
+      body: `Follow-up from ${context.workItem.localRef}. Process the confirmed order for ${context.run.businessKey}.`,
+      type: "task",
+      status: "ready",
+      priority: "p1",
+      labels: ["routine-work", "order-processing"],
+      acceptanceCriteria: ["Register the confirmed order"],
+      parentId: context.workItem.id,
+      idempotencyKey: orderKey,
+      routineDefinitionId: context.run.routineDefinitionId,
+      routineVersion: context.run.routineVersion,
+      businessCaseId: context.run.businessCaseId,
+      businessKey: context.run.businessKey,
+      triggerArtifactIds: orderArtifacts.map((artifact) => artifact.id),
+    }, actor, { allowPinnedRoutineChild: true });
+    if (!created?.ok) {
+      return {
+        ok: false,
+        status: created?.status ?? 500,
+        error: created?.body?.error ?? "order_issue_create_failed",
+      };
+    }
+    return { ok: true, workItem: created.body.workItem, replayed: Boolean(created.body.replayed) };
+  }
 
   function publicRoutineWorkItem(workItem) {
     const { createIdempotencyKey: _createIdempotencyKey, ...publicWorkItem } = workItem;
@@ -1491,6 +1752,11 @@ export function createBusinessRoutineService({
       })
       .filter(Boolean)
       .slice(0, 20);
+    const publicStepRun = (stepRun) => {
+      if (!stepRun) return null;
+      const { idempotencyKey: _idempotencyKey, ...visibleStepRun } = stepRun;
+      return visibleStepRun;
+    };
     return {
       workItemId: context.workItem.id,
       definition: {
@@ -1506,15 +1772,18 @@ export function createBusinessRoutineService({
         cancellationRequestedAt: context.run.cancellationRequestedAt,
       },
       availableOrderTriggers,
-      steps: context.definition.steps.map((step) => ({
-        key: step.key,
-        label: step.label,
-        kind: step.kind,
-        required: step.required,
-        dependsOn: step.dependsOn,
-        configuration: step.configuration,
-        run: runByKey.get(step.key),
-      })),
+      steps: context.definition.steps.map((step) => {
+        const { executorId: _executorId, ...publicConfiguration } = step.configuration ?? {};
+        return {
+          key: step.key,
+          label: step.label,
+          kind: step.kind,
+          required: step.required,
+          dependsOn: step.dependsOn,
+          configuration: publicConfiguration,
+          run: publicStepRun(runByKey.get(step.key)),
+        };
+      }),
     };
   }
 
@@ -1759,6 +2028,7 @@ export function createBusinessRoutineService({
     errorCode = null,
     outputRefs = [],
     ledgerMutationId = null,
+    executorId = null,
   } = {}, actor = null) {
     const context = routineExecutionContext(workItemId, actor);
     if (context.error) return { status: context.status, body: { error: context.error } };
@@ -1767,6 +2037,9 @@ export function createBusinessRoutineService({
     const step = context.definition.steps.find((row) => row.key === stepKey);
     const stepRun = context.run.stepRuns.find((row) => row.stepKey === stepKey);
     if (!step || !stepRun) return { status: 404, body: { error: "routine_step_not_found" } };
+    if (EXECUTABLE_STEP_KINDS.has(step.kind) && executorId !== executorIdFor(step)) {
+      return { status: 409, body: { error: "routine_step_requires_governed_executor" } };
+    }
     if (step.kind === "ledger_upsert") {
       const mutation = state.ledgerMutationAudits.find((row) =>
         row.id === ledgerMutationId
@@ -1821,6 +2094,81 @@ export function createBusinessRoutineService({
     return {
       status: 200,
       body: { execution: routineExecutionView(context), startedStepKeys, replayed: false },
+    };
+  }
+
+  function executeRoutineStep({
+    workItemId,
+    stepKey,
+    expectedRevision,
+    idempotencyKey,
+  } = {}, actor = null) {
+    const context = routineExecutionContext(workItemId, actor);
+    if (context.error) return { status: context.status, body: { error: context.error } };
+    const blocked = validateRoutineAction(
+      context,
+      expectedRevision,
+      idempotencyKey,
+      "complete",
+      stepKey,
+    );
+    if (blocked) return blocked;
+    const step = context.definition.steps.find((row) => row.key === stepKey);
+    const stepRun = context.run.stepRuns.find((row) => row.stepKey === stepKey);
+    if (!step || !stepRun) return { status: 404, body: { error: "routine_step_not_found" } };
+    if (!EXECUTABLE_STEP_KINDS.has(step.kind)) {
+      return { status: 409, body: { error: "routine_step_has_no_executor" } };
+    }
+    if (stepRun.state !== "running") {
+      return {
+        status: 409,
+        body: { error: "routine_step_not_executable", currentState: stepRun.state },
+      };
+    }
+    if (executorIdFor(step) !== EXECUTOR_IDS[step.kind]) {
+      return { status: 409, body: { error: "routine_step_executor_not_allowed" } };
+    }
+    if (!sourceFor(context.run.sourceId, actor, { active: true })) {
+      return { status: 409, body: { error: "routine_run_source_revoked" } };
+    }
+
+    let result;
+    let childWorkItem = null;
+    if (step.kind === "retrieve") {
+      result = retrieveRoutineReferences(context, step, actor);
+    } else if (step.kind === "generate") {
+      result = generateQuotationDraft(context, step, actor);
+    } else {
+      const created = ensureOrderChildIssue(context, confirmedOrderArtifacts(context, actor), actor);
+      result = created.ok
+        ? {
+            ok: true,
+            outputRefs: [{
+              kind: "note",
+              summary: `Created or reused order work ${created.workItem.localRef}.`,
+            }],
+          }
+        : { ok: false, error: created.error, status: created.status };
+      childWorkItem = created.ok ? created.workItem : null;
+    }
+
+    const completed = completeRoutineStep({
+      workItemId,
+      stepKey,
+      expectedRevision,
+      idempotencyKey,
+      succeeded: result.ok,
+      errorCode: result.ok ? null : result.error,
+      outputRefs: result.outputRefs ?? [],
+      executorId: executorIdFor(step),
+    }, actor);
+    if (completed.status >= 400) return completed;
+    return {
+      status: completed.status,
+      body: {
+        ...completed.body,
+        ...(childWorkItem ? { childWorkItem: publicRoutineWorkItem(childWorkItem) } : {}),
+      },
     };
   }
 
@@ -1987,34 +2335,11 @@ export function createBusinessRoutineService({
         businessCase.updatedAt = timestamp;
         businessCase.updatedBy = actorUser(actor);
       });
-      if (typeof createWorkItem !== "function") {
-        return { status: 503, body: { error: "routine_issue_materializer_unavailable" } };
+      const created = ensureOrderChildIssue(context, orderArtifacts, actor);
+      if (!created.ok) {
+        return { status: created.status, body: { error: created.error } };
       }
-      const orderKey = `business-routine:order-issue:v1:${hashKey([
-        actorTeam(actor),
-        context.workItem.id,
-        context.run.businessCaseId,
-        ...orderArtifacts.map((artifact) => artifact.fingerprint).sort(),
-      ])}`;
-      const created = createWorkItem({
-        projectId: context.run.projectId,
-        title: `Order Processing — ${context.run.businessKey}`,
-        body: `Follow-up from ${context.workItem.localRef}. Process the confirmed order for ${context.run.businessKey}.`,
-        type: "task",
-        status: "ready",
-        priority: "p1",
-        labels: ["routine-work", "order-processing"],
-        acceptanceCriteria: ["Register the confirmed order"],
-        parentId: context.workItem.id,
-        idempotencyKey: orderKey,
-        routineDefinitionId: context.run.routineDefinitionId,
-        routineVersion: context.run.routineVersion,
-        businessCaseId: context.run.businessCaseId,
-        businessKey: context.run.businessKey,
-        triggerArtifactIds: orderArtifacts.map((artifact) => artifact.id),
-      }, actor, { allowPinnedRoutineChild: true });
-      if (!created?.ok) return { status: created?.status ?? 500, body: created?.body ?? { error: "order_issue_create_failed" } };
-      childWorkItem = created.body.workItem;
+      childWorkItem = created.workItem;
     }
     let startedStepKeys = [];
     runTx(() => {
@@ -2262,6 +2587,7 @@ export function createBusinessRoutineService({
     createRoutineRun,
     getRoutineWorkItemExecution,
     startRoutineWorkItem,
+    executeRoutineStep,
     completeRoutineStep,
     retryRoutineStep,
     decideRoutineApproval,

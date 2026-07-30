@@ -50,6 +50,7 @@ export async function handleWorkflowMemoryRoutes({
   materializeRoutineIssue,
   getRoutineWorkItemExecution,
   startRoutineWorkItem,
+  executeRoutineStep,
   completeRoutineStep,
   retryRoutineStep,
   decideRoutineApproval,
@@ -369,7 +370,7 @@ export async function handleWorkflowMemoryRoutes({
   }
 
   const routineStepAction = url.pathname.match(
-    /^\/api\/workflow-memory\/routine-work-items\/([^/]+)\/steps\/([^/]+)\/(complete|retry|approval|condition)$/,
+    /^\/api\/workflow-memory\/routine-work-items\/([^/]+)\/steps\/([^/]+)\/(execute|complete|retry|approval|condition)$/,
   );
   if (routineStepAction && req.method === "POST") {
     const body = await readJson(req);
@@ -380,7 +381,9 @@ export async function handleWorkflowMemoryRoutes({
       idempotencyKey: body?.idempotencyKey,
     };
     let result;
-    if (routineStepAction[3] === "complete") {
+    if (routineStepAction[3] === "execute") {
+      result = executeRoutineStep(input, actor);
+    } else if (routineStepAction[3] === "complete") {
       result = completeRoutineStep({
         ...input,
         succeeded: body?.succeeded,

@@ -477,6 +477,16 @@ pnpm exec playwright test -c apps/web/playwright.config.ts workflow-memory-routi
 - 发布门禁使用固定本地夹具，不调用外部 Provider，也不会因未知样本而强行猜测。
 - 评测数字只代表回归夹具；任何新目录仍需用户检查归类、案例和工作类型后显式启用。
 
+## V1.5：真实商务闭环试运行
+
+V1.5 由 [#1561](https://github.com/perly6185-lab/myagenttool/issues/1561)
+跟踪，不再把 `retrieve`、`generate` 和 `create_issue` 留给调用方手工报告完成。
+第一阶段增加受治理本地执行器、独占报价草稿写入和确认订单子 Issue 幂等复用；
+后续阶段依次补齐模板/缺失字段、增量接入、多询价并发和真实试运行门禁。
+
+开发范围、执行器契约和本地数据边界见
+[WORKFLOW_MEMORY_V1_5.md](WORKFLOW_MEMORY_V1_5.md)。
+
 ## MVP 之后
 
 后续增强不阻塞本次 MVP：

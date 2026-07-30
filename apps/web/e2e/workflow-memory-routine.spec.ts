@@ -111,11 +111,18 @@ async function mockApi(page: Page) {
     dependsOn: [],
     configuration: { ledgerDefinitionId: "ledger_inquiry" },
   }, {
+    key: "generate_quote",
+    label: "Prepare the quotation",
+    kind: "generate",
+    required: true,
+    dependsOn: ["register_inquiry"],
+    configuration: {},
+  }, {
     key: "approve_quote",
     label: "Review and approve the quotation",
     kind: "human_approval",
     required: true,
-    dependsOn: ["register_inquiry"],
+    dependsOn: ["generate_quote"],
     configuration: {},
   }, {
     key: "order_signal",
@@ -135,7 +142,7 @@ async function mockApi(page: Page) {
       attempts: state === "pending" ? 0 : 1,
       errorCode: null,
       conditionOutcome: state === "skipped" ? false : null,
-      outputRefs: row.key === "approve_quote" && state === "awaiting_approval"
+      outputRefs: row.key === "generate_quote" && state === "succeeded"
         ? [{ kind: "file", summary: "quotation-INQ-004.md" }]
         : [],
     },
@@ -305,6 +312,7 @@ async function mockApi(page: Page) {
           step(baseSteps[0], "running"),
           step(baseSteps[1], "pending"),
           step(baseSteps[2], "pending"),
+          step(baseSteps[3], "pending"),
         ],
       };
       return route.fulfill({ json: { execution: routineExecution } });
@@ -341,8 +349,9 @@ async function mockApi(page: Page) {
         run: { ...routineExecution.run, status: "awaiting_approval", revision: 3 },
         steps: [
           step(baseSteps[0], "succeeded"),
-          step(baseSteps[1], "awaiting_approval"),
+          step(baseSteps[1], "running"),
           step(baseSteps[2], "pending"),
+          step(baseSteps[3], "pending"),
         ],
       };
       return route.fulfill({ json: {
@@ -351,15 +360,30 @@ async function mockApi(page: Page) {
         mutation: { id: "mutation_1", action: "insert" },
       } });
     }
+    if (url.pathname.endsWith(`/routine-work-items/${workItem.id}/steps/generate_quote/execute`)
+      && request.method() === "POST") {
+      routineExecution = {
+        ...routineExecution,
+        run: { ...routineExecution.run, status: "awaiting_approval", revision: 4 },
+        steps: [
+          step(baseSteps[0], "succeeded"),
+          step(baseSteps[1], "succeeded"),
+          step(baseSteps[2], "awaiting_approval"),
+          step(baseSteps[3], "pending"),
+        ],
+      };
+      return route.fulfill({ json: { execution: routineExecution } });
+    }
     if (url.pathname.endsWith(`/routine-work-items/${workItem.id}/steps/approve_quote/approval`)
       && request.method() === "POST") {
       routineExecution = {
         ...routineExecution,
-        run: { ...routineExecution.run, status: "awaiting_condition", revision: 4 },
+        run: { ...routineExecution.run, status: "awaiting_condition", revision: 5 },
         steps: [
           step(baseSteps[0], "succeeded"),
           step(baseSteps[1], "succeeded"),
-          step(baseSteps[2], "awaiting_condition"),
+          step(baseSteps[2], "succeeded"),
+          step(baseSteps[3], "awaiting_condition"),
         ],
       };
       return route.fulfill({ json: { execution: routineExecution } });
@@ -368,11 +392,12 @@ async function mockApi(page: Page) {
       && request.method() === "POST") {
       routineExecution = {
         ...routineExecution,
-        run: { ...routineExecution.run, status: "succeeded", revision: 5 },
+        run: { ...routineExecution.run, status: "succeeded", revision: 6 },
         steps: [
           step(baseSteps[0], "succeeded"),
           step(baseSteps[1], "succeeded"),
           step(baseSteps[2], "succeeded"),
+          step(baseSteps[3], "succeeded"),
         ],
       };
       return route.fulfill({ json: {
@@ -458,6 +483,7 @@ test("processes a routine Issue through ledger review, quotation approval, and o
   await expect(ledgerDialog.getByText("INQ-004")).toBeVisible();
   await ledgerDialog.getByRole("button", { name: "Approve ledger change" }).click();
 
+  await dailyWork.getByRole("button", { name: "Run this step" }).click();
   await dailyWork.getByRole("button", { name: "Approve and continue" }).click();
   const approvalDialog = page.getByRole("dialog", { name: "Review the quotation" });
   await expect(approvalDialog.getByText("quotation-INQ-004.md")).toBeVisible();
