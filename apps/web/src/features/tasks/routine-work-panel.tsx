@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Select } from "@/components/ui/input";
+import { Modal } from "@/components/ui/modal";
 import { cn } from "@/lib/cn";
 import {
   useRoutineWorkLabels,
@@ -54,6 +55,10 @@ export function RoutineWorkPanel({
 }) {
   const text = useRoutineWorkLabels();
   const [selectedOrderArtifactId, setSelectedOrderArtifactId] = useState("");
+  const [confirmation, setConfirmation] = useState<{
+    type: "ledger" | "approval";
+    stepKey: string;
+  } | null>(null);
   const active = !terminalRunStates.has(execution.run.status);
   const conditionStep = execution.steps.find((step) => step.run.state === "awaiting_condition");
   const orderRequired = conditionStep ? needsConfirmedOrder(conditionStep) : false;
@@ -96,7 +101,7 @@ export function RoutineWorkPanel({
 
       <div className="mt-3 h-2 overflow-hidden rounded-full bg-muted" role="progressbar"
         aria-valuemin={0} aria-valuemax={100} aria-valuenow={progress}>
-        <div className="h-full bg-primary transition-[width]" style={{ width: `${progress}%` }} />
+        <div className="h-full bg-primary transition-[width] motion-reduce:transition-none" style={{ width: `${progress}%` }} />
       </div>
       <p className="mt-1 text-xs text-muted-foreground">{completedCount}/{execution.steps.length} · {progress}%</p>
       {execution.run.waitingReason ? (
@@ -157,7 +162,10 @@ export function RoutineWorkPanel({
                   </p>
                 ) : !ledgerPreview ? (
                   <Button size="sm" disabled={pending}
-                    onClick={() => onPreviewLedger(step.key, ledgerDefinitionId)}>
+                    onClick={() => {
+                      setConfirmation({ type: "ledger", stepKey: step.key });
+                      onPreviewLedger(step.key, ledgerDefinitionId);
+                    }}>
                     {text.reviewLedger}
                   </Button>
                 ) : (
@@ -170,27 +178,9 @@ export function RoutineWorkPanel({
                           : text.ledgerNoOp}
                       {ledgerPreview.rowNumber ? ` · ${text.row} ${ledgerPreview.rowNumber}` : ""}
                     </p>
-                    {ledgerPreview.changedCells.length ? (
-                      <ul className="mt-2 space-y-1 text-xs">
-                        {ledgerPreview.changedCells.map((cell) => (
-                          <li key={`${step.key}:${cell.field}`}>
-                            <span className="font-medium">{cell.column}</span>
-                            {" · "}
-                            <span className="text-muted-foreground">{String(cell.before ?? "—")}</span>
-                            {" → "}
-                            <span>{String(cell.after ?? "—")}</span>
-                          </li>
-                        ))}
-                      </ul>
-                    ) : null}
-                    {ledgerPreview.warnings.map((warning) => (
-                      <p key={warning} className="mt-2 text-xs text-warning">{warning}</p>
-                    ))}
                     <Button className="mt-3" size="sm" disabled={pending}
-                      onClick={() => onCommitLedger(step.key, ledgerPreview)}>
-                      {ledgerPreview.action === "no_op"
-                        ? text.confirmNoLedgerChange
-                        : text.commitLedger}
+                      onClick={() => setConfirmation({ type: "ledger", stepKey: step.key })}>
+                      {text.reviewAndConfirm}
                     </Button>
                   </div>
                 )}
@@ -203,7 +193,10 @@ export function RoutineWorkPanel({
             ) : null}
             {step.run.state === "awaiting_approval" ? (
               <div className="mt-2 flex flex-wrap gap-2">
-                <Button size="sm" disabled={pending} onClick={() => onApproval(step.key, true)}>{text.approve}</Button>
+                <Button size="sm" disabled={pending}
+                  onClick={() => setConfirmation({ type: "approval", stepKey: step.key })}>
+                  {text.approve}
+                </Button>
                 <Button size="sm" variant="secondary" disabled={pending}
                   onClick={() => onApproval(step.key, false)}>{text.reject}</Button>
               </div>
@@ -242,6 +235,98 @@ export function RoutineWorkPanel({
           );
         })}
       </ol>
+      {confirmation?.type === "ledger" ? (() => {
+        const step = execution.steps.find((candidate) => candidate.key === confirmation.stepKey);
+        const preview = ledgerPreviews[confirmation.stepKey];
+        if (!step || !preview) return null;
+        return (
+          <Modal
+            open
+            onClose={() => setConfirmation(null)}
+            title={text.ledgerDialogTitle}
+            description={text.ledgerDialogDescription}
+            closeDisabled={pending}
+          >
+            <div className="space-y-3">
+              <div className="rounded-md border bg-muted/20 p-3">
+                <p className="text-sm font-medium">
+                  {preview.action === "insert"
+                    ? text.ledgerInsert
+                    : preview.action === "update"
+                      ? text.ledgerUpdate
+                      : text.ledgerNoOp}
+                  {preview.rowNumber ? ` · ${text.row} ${preview.rowNumber}` : ""}
+                </p>
+                {preview.changedCells.length ? (
+                  <ul className="mt-2 space-y-1 text-xs">
+                    {preview.changedCells.map((cell) => (
+                      <li key={`${step.key}:${cell.field}`}>
+                        <span className="font-medium">{cell.column}</span>
+                        {" · "}
+                        <span className="text-muted-foreground">{String(cell.before ?? "—")}</span>
+                        {" → "}
+                        <span>{String(cell.after ?? "—")}</span>
+                      </li>
+                    ))}
+                  </ul>
+                ) : <p className="mt-2 text-xs text-muted-foreground">{text.noLedgerChanges}</p>}
+                {preview.warnings.map((warning) => (
+                  <p key={warning} className="mt-2 text-xs text-warning">{warning}</p>
+                ))}
+              </div>
+              <p className="text-xs text-muted-foreground">{text.ledgerNextAction}</p>
+              <div className="flex justify-end gap-2">
+                <Button size="sm" variant="secondary" disabled={pending}
+                  onClick={() => setConfirmation(null)}>{text.back}</Button>
+                <Button size="sm" disabled={pending} onClick={() => {
+                  onCommitLedger(step.key, preview);
+                  setConfirmation(null);
+                }}>
+                  {preview.action === "no_op" ? text.confirmNoLedgerChange : text.commitLedger}
+                </Button>
+              </div>
+            </div>
+          </Modal>
+        );
+      })() : null}
+      {confirmation?.type === "approval" ? (() => {
+        const step = execution.steps.find((candidate) => candidate.key === confirmation.stepKey);
+        if (!step) return null;
+        const outputs = execution.steps
+          .flatMap((candidate) => candidate.run.outputRefs)
+          .filter((output) => output.summary);
+        return (
+          <Modal
+            open
+            onClose={() => setConfirmation(null)}
+            title={text.approvalDialogTitle}
+            description={text.approvalDialogDescription}
+            closeDisabled={pending}
+          >
+            <div className="space-y-3">
+              <div className="rounded-md border bg-muted/20 p-3">
+                <p className="text-sm font-medium">{step.label}</p>
+                {outputs.length ? (
+                  <ul className="mt-2 list-inside list-disc text-xs text-muted-foreground">
+                    {outputs.map((output, index) => (
+                      <li key={`${step.key}:approval-output:${index}`}>{output.summary}</li>
+                    ))}
+                  </ul>
+                ) : <p className="mt-2 text-xs text-muted-foreground">{text.noApprovalOutputs}</p>}
+              </div>
+              <p className="text-xs text-muted-foreground">{text.approvalNextAction}</p>
+              <div className="flex justify-end gap-2">
+                <Button size="sm" variant="secondary" disabled={pending}
+                  onClick={() => setConfirmation(null)}>{text.back}</Button>
+                <Button size="sm" disabled={pending} onClick={() => {
+                  onApproval(step.key, true);
+                  setConfirmation(null);
+                }}>{text.approve}</Button>
+              </div>
+            </div>
+          </Modal>
+        );
+      })() : null}
     </section>
   );
 }

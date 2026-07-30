@@ -1,9 +1,12 @@
 import { useEffect, useState } from "react";
+import { Button } from "@/components/ui/button";
 import { useAsyncAction } from "@/data/use-console-actions";
 import { useVisibleInterval } from "@/hooks/use-visible-interval";
 import { RoutineWorkPanel } from "./routine-work-panel";
 import {
   routineWorkApi,
+  routineRecoveryMessage,
+  useRoutineWorkLabels,
   type LedgerUpsertPreview,
   type RoutineWorkExecution,
 } from "./routine-workflow";
@@ -16,6 +19,7 @@ export default function RoutineWorkController({
   onChanged: () => void;
 }) {
   const { execute, pending, error } = useAsyncAction();
+  const text = useRoutineWorkLabels();
   const [execution, setExecution] = useState<RoutineWorkExecution | null>(null);
   const [ledgerPreviews, setLedgerPreviews] = useState<Record<string, LedgerUpsertPreview>>({});
 
@@ -103,7 +107,18 @@ export default function RoutineWorkController({
             triggerArtifactIds,
           ))}
       />
-      {error ? <p className="text-xs text-destructive">{error}</p> : null}
+      {error ? (
+        <div className="mt-2 rounded-md border border-destructive/40 bg-destructive/5 p-3" role="alert">
+          <p className="text-sm text-destructive">{routineRecoveryMessage(error, text)}</p>
+          <details className="mt-2 text-xs text-muted-foreground">
+            <summary className="cursor-pointer">{error}</summary>
+          </details>
+          <Button className="mt-2" size="sm" variant="secondary" disabled={pending}
+            onClick={() => void refresh().catch(() => {})}>
+            {text.refreshAction}
+          </Button>
+        </div>
+      ) : null}
     </>
   );
 }

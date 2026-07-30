@@ -26,6 +26,7 @@ import { Input, Select } from "@/components/ui/input";
 import { api } from "@/data/use-console-actions";
 import { useConsoleState, useRefreshConsoleState } from "@/data/use-console-state";
 import { workflowMemoryApi } from "@/features/workflow-memory/workflow-memory-api";
+import { RoutineSetupGuide } from "@/features/workflow-memory/routine-setup-guide";
 import { ApiError } from "@/lib/api-client";
 import type {
   BusinessRoutineDefinition,
@@ -155,6 +156,7 @@ const COPY = {
     publishRoutine: "Enable this work type",
     newRoutineVersion: "Create a new version",
     disableRoutine: "Disable for new tasks",
+    manageRoutine: "Version and availability",
     routineEvidenceChanged: "Historical evidence changed. Refresh the cases before enabling this work type.",
     routineSourceRevoked: "Source access was removed. Restore access before enabling this work type.",
     routinePatternChanged: "A newer work pattern is available. Review a fresh suggestion before enabling it.",
@@ -442,6 +444,7 @@ const COPY = {
     publishRoutine: "启用这个工作类型",
     newRoutineVersion: "创建新版本",
     disableRoutine: "不再创建新任务",
+    manageRoutine: "版本与启用状态",
     routineEvidenceChanged: "历史证据已变化，请刷新相关案例后再启用。",
     routineSourceRevoked: "来源目录访问权限已失效，请恢复权限后再启用。",
     routinePatternChanged: "系统已发现更新的工作模式，请审核新的建议后再启用。",
@@ -755,6 +758,12 @@ export function WorkflowMemoryView() {
   const profileDrafts = (profileDraftsQuery.data?.drafts ?? []).filter((draft) =>
     draft.sourceId === activeSourceId && draft.state === "draft");
   const routineDefinitions = routineDefinitionsQuery.data?.routineDefinitions ?? [];
+  const primaryRoutineDefinition = routineDefinitions
+    .slice()
+    .sort((left, right) => {
+      const priority = { draft: 5, candidate: 4, published: 3, disabled: 2, superseded: 1 };
+      return priority[right.state] - priority[left.state] || right.version - left.version;
+    })[0] ?? null;
   const routineCandidates = (routineCandidatesQuery.data?.candidates ?? []).filter((candidate) =>
     candidate.state === "candidate"
     && !routineDefinitions.some((definition) =>
@@ -1032,6 +1041,23 @@ export function WorkflowMemoryView() {
                 }}
               />
 
+              <RoutineSetupGuide
+                source={selectedSource}
+                candidate={routineCandidates[0] ?? null}
+                definition={primaryRoutineDefinition}
+                artifacts={artifacts}
+                pending={pendingAction === "scan"
+                  || pendingAction.startsWith("routine-candidate-")}
+                onScan={() => void runAction(
+                  "scan",
+                  () => workflowApi.scanWorkflowSource(selectedSource.id),
+                )}
+                onCreateDraft={(candidateId) => void runAction(
+                  `routine-candidate-${candidateId}`,
+                  () => workflowApi.createBusinessRoutineDraft(candidateId),
+                )}
+              />
+
               <SectionCard title={copy.inbox} hint={copy.inboxHint} icon={FileQuestion}>
                 {(inboxQuery.data?.artifacts ?? []).length === 0
                   ? <Empty text={copy.inboxEmpty} />
@@ -1069,7 +1095,7 @@ export function WorkflowMemoryView() {
                 ) : null}
               </SectionCard>
 
-              <SectionCard title={copy.review} hint={copy.reviewHint} icon={FileCheck2}>
+              <SectionCard id="workflow-file-review" title={copy.review} hint={copy.reviewHint} icon={FileCheck2}>
                 {artifacts.length === 0 ? <Empty text={copy.noArtifacts} /> : (
                   <>
                     <div className="mb-3 flex justify-end">
@@ -1362,7 +1388,7 @@ export function WorkflowMemoryView() {
                 )}
               </SectionCard>
 
-              <SectionCard title={copy.routineLibrary} hint={copy.routineLibraryHint} icon={Sparkles}>
+              <SectionCard id="workflow-routine-library" title={copy.routineLibrary} hint={copy.routineLibraryHint} icon={Sparkles}>
                 {routineCandidatesQuery.isLoading || routineDefinitionsQuery.isLoading ? (
                   <Loader2 className="animate-spin text-muted-foreground" />
                 ) : routineCandidates.length === 0 && routineDefinitions.length === 0 ? (
@@ -2087,18 +2113,20 @@ function SourceSummary({
 }
 
 function SectionCard({
+  id,
   title,
   hint,
   icon: Icon,
   children,
 }: {
+  id?: string;
   title: string;
   hint: string;
   icon: typeof BrainCircuit;
   children: React.ReactNode;
 }) {
   return (
-    <Card>
+    <Card id={id} className="scroll-mt-4">
       <CardHeader>
         <CardTitle className="flex items-center gap-2 text-base"><Icon className="size-4 text-primary" /> {title}</CardTitle>
         <p className="text-xs text-muted-foreground">{hint}</p>
@@ -2623,16 +2651,21 @@ function RoutineDefinitionCard({
             ))}
           </ol>
           {definition.state === "published" || definition.state === "disabled" ? (
-            <div className="mt-3 flex flex-wrap gap-2">
-              <Button size="sm" variant="secondary" disabled={pending} onClick={onNewVersion}>
-                <RefreshCw /> {copy.newRoutineVersion}
-              </Button>
-              {definition.state === "published" ? (
-                <Button size="sm" variant="ghost" disabled={pending} onClick={onDisable}>
-                  {copy.disableRoutine}
+            <details className="mt-3 rounded-md border bg-muted/20 p-2">
+              <summary className="cursor-pointer text-xs font-medium text-muted-foreground">
+                {copy.manageRoutine}
+              </summary>
+              <div className="mt-2 flex flex-wrap gap-2">
+                <Button size="sm" variant="secondary" disabled={pending} onClick={onNewVersion}>
+                  <RefreshCw /> {copy.newRoutineVersion}
                 </Button>
-              ) : null}
-            </div>
+                {definition.state === "published" ? (
+                  <Button size="sm" variant="ghost" disabled={pending} onClick={onDisable}>
+                    {copy.disableRoutine}
+                  </Button>
+                ) : null}
+              </div>
+            </details>
           ) : null}
         </>
       )}

@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { RoutineWorkPanel } from "./routine-work-panel";
 import type { RoutineWorkExecution } from "./routine-workflow";
@@ -102,6 +102,11 @@ describe("RoutineWorkPanel", () => {
 
     render(<RoutineWorkPanel execution={current} pending={false} ledgerPreviews={{}} {...actions} />);
     fireEvent.click(screen.getByRole("button", { name: "Approve and continue" }));
+    const approvalDialog = screen.getByRole("dialog", { name: "Review the quotation" });
+    expect(within(approvalDialog).getByText(
+      "After approval, the task will register the quotation and wait for a confirmed order before creating order work.",
+    )).toBeTruthy();
+    fireEvent.click(within(approvalDialog).getByRole("button", { name: "Approve and continue" }));
     expect(actions.onApproval).toHaveBeenCalledWith("approve", true);
 
     const received = screen.getByRole("button", { name: "Confirmed order received" });
@@ -166,8 +171,9 @@ describe("RoutineWorkPanel", () => {
       <RoutineWorkPanel execution={current} pending={false}
         ledgerPreviews={{ register_inquiry: preview }} {...actions} />,
     );
-    expect(screen.getByText("Acme Ltd")).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: "Approve ledger change" }));
+    const ledgerDialog = screen.getByRole("dialog", { name: "Confirm the ledger update" });
+    expect(within(ledgerDialog).getByText("Acme Ltd")).toBeTruthy();
+    fireEvent.click(within(ledgerDialog).getByRole("button", { name: "Approve ledger change" }));
     expect(actions.onCommitLedger).toHaveBeenCalledWith("register_inquiry", preview);
   });
 });

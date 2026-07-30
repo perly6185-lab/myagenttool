@@ -231,6 +231,7 @@ describe("WorkflowMemoryView", () => {
       name: "Commercial inquiry and quotation",
       state: "candidate",
       confidence: 0.92,
+      triggerDocumentTypes: ["inquiry"],
       confirmedCaseIds: ["case-1", "case-2", "case-3"],
       steps: [{
         key: "quote",
@@ -242,6 +243,8 @@ describe("WorkflowMemoryView", () => {
         supportCaseIds: ["case-1", "case-2", "case-3"],
         exceptionCaseIds: [],
         explanation: "3 of 3 confirmed cases include this step.",
+        evidenceRefs: [{ artifactId: requirement.id, kind: "artifact", field: null, location: null }],
+        configuration: { output: "Reviewed quotation" },
       }],
       evidenceHealth: { state: "valid", issues: [], healthyCaseCount: 3 },
     };
@@ -278,7 +281,12 @@ describe("WorkflowMemoryView", () => {
     mocks.api.createBusinessRoutineDraft.mockResolvedValue({ routineDefinition: draft, replayed: false });
 
     const first = renderView();
-    fireEvent.click(await screen.findByRole("button", { name: "Review this work type" }));
+    expect(await screen.findByRole("heading", { name: "Set up your daily work" })).toBeTruthy();
+    expect(await screen.findByText("an inquiry arrives")).toBeTruthy();
+    fireEvent.click(screen.getByText("Why did we identify this?"));
+    expect(screen.getByText("3 of 3 confirmed cases include this step.")).toBeTruthy();
+    expect(screen.getAllByText("new-requirement.md").length).toBeGreaterThan(0);
+    fireEvent.click(screen.getByRole("button", { name: "Review this task type" }));
     await waitFor(() => expect(mocks.api.createBusinessRoutineDraft).toHaveBeenCalledWith("rdc-1"));
     first.unmount();
 
