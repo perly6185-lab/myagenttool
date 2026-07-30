@@ -282,6 +282,7 @@ Open the local Issue created for the inquiry
 -> preview the exact inquiry-ledger row and changed cells
 -> explicitly approve the governed ledger write
 -> review and approve the quotation when asked
+-> preview and approve the quotation-ledger change
 -> record that no confirmed order has arrived
 -> finish without an order follow-up Issue
 ```
@@ -293,6 +294,7 @@ Reach "Was an order received?"
 -> select a currently confirmed order document
 -> confirm the condition
 -> create exactly one linked order-processing child Issue
+-> review the order-ledger change
 -> continue the remaining visible steps
 ```
 
@@ -330,6 +332,7 @@ Acceptance signals:
 - Required, conditional, waiting, completed, failed, and skipped steps are distinguishable.
 - Approval and order decisions explain their consequence before proceeding.
 - Duplicate clicks, rescans, retries, and restarts do not duplicate the parent or order child Issue.
+- Unknown or conflicting evidence remains reviewable instead of being guessed.
 
 ## Flow 2: Advanced Developer Manages Codex Session
 

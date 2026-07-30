@@ -96,8 +96,11 @@ function contentEntries({ content = "", blocks = [] } = {}) {
 function scoreLabels(text, labels) {
   const lower = String(text ?? "").toLowerCase();
   const matches = labels.filter((label) => lower.includes(label.toLowerCase()));
+  const heading = lower.split(/\r?\n/, 1)[0].trim().replace(/[:：]\s*$/, "");
+  const headingMatches = labels.filter((label) => heading === label.toLowerCase());
   const score = matches.reduce((total, label) =>
-    total + (/(?:台账|登记表|ledger|register)/i.test(label) ? 3 : 1), 0);
+    total + (/(?:台账|登记表|ledger|register)/i.test(label) ? 3 : 1), 0)
+    + (headingMatches.length * 4);
   return { score, matches };
 }
 

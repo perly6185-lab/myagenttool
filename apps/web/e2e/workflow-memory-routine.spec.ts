@@ -79,6 +79,80 @@ const candidate = {
 };
 
 async function mockApi(page: Page) {
+  const routineDefinitions: Record<string, unknown>[] = [];
+  const workItem = {
+    id: "wi_routine_1",
+    localRef: "LOCAL-ROUTINE-1",
+    projectId: "prj_1",
+    title: "Process INQ-004",
+    body: "Prepare and register a reviewed quotation.",
+    type: "task",
+    priority: "p1",
+    status: "ready",
+    state: "open",
+    labels: ["routine-work", "commercial-inquiry"],
+    assigneeIds: [],
+    acceptanceCriteria: ["Inquiry and quotation ledgers are reviewed."],
+    verificationRecords: [],
+    revision: 1,
+    archivedAt: null,
+    updatedAt: "2026-07-29T10:00:00.000Z",
+    routineDefinitionId: "rtn_1",
+    routineVersion: 1,
+    businessCaseId: "case_4",
+    businessKey: "INQ-004",
+    triggerArtifactIds: ["art_1"],
+  };
+  const baseSteps = [{
+    key: "register_inquiry",
+    label: "Register the inquiry",
+    kind: "ledger_upsert",
+    required: true,
+    dependsOn: [],
+    configuration: { ledgerDefinitionId: "ledger_inquiry" },
+  }, {
+    key: "approve_quote",
+    label: "Review and approve the quotation",
+    kind: "human_approval",
+    required: true,
+    dependsOn: ["register_inquiry"],
+    configuration: {},
+  }, {
+    key: "order_signal",
+    label: "Check whether an order was received",
+    kind: "condition",
+    required: false,
+    dependsOn: ["approve_quote"],
+    configuration: { condition: "A confirmed order was received." },
+  }] as const;
+  const step = (
+    row: typeof baseSteps[number],
+    state: "pending" | "running" | "awaiting_approval" | "awaiting_condition" | "succeeded" | "skipped",
+  ) => ({
+    ...row,
+    run: {
+      state,
+      attempts: state === "pending" ? 0 : 1,
+      errorCode: null,
+      conditionOutcome: state === "skipped" ? false : null,
+      outputRefs: row.key === "approve_quote" && state === "awaiting_approval"
+        ? [{ kind: "file", summary: "quotation-INQ-004.md" }]
+        : [],
+    },
+  });
+  let routineExecution = {
+    workItemId: workItem.id,
+    definition: { id: "rtn_1", name: "Inquiry to quotation", version: 1 },
+    run: {
+      id: "run_1",
+      status: "planned",
+      revision: 1,
+      waitingReason: null,
+      cancellationRequestedAt: null,
+    },
+    availableOrderTriggers: [{ artifactId: "order_4", label: "PO-004.pdf" }],
+    steps: baseSteps.map((row) => step(row, "pending")),
+  };
   await page.route("**/api/**", async (route) => {
     const request = route.request();
     const url = new URL(request.url());
@@ -91,6 +165,9 @@ async function mockApi(page: Page) {
         invocations: [],
         pendingDecisions: [],
         evidenceLedger: [],
+        issueClaims: [],
+        issueClaimEvents: [],
+        projectTargets: [],
       } });
     }
     if (url.pathname === "/api/workflow-memory/sources") {
@@ -106,10 +183,12 @@ async function mockApi(page: Page) {
       return route.fulfill({ json: { candidates: [candidate], count: 1 } });
     }
     if (url.pathname === "/api/workflow-memory/business-routine-definitions") {
-      return route.fulfill({ json: { routineDefinitions: [], count: 0 } });
+      return route.fulfill({
+        json: { routineDefinitions, count: routineDefinitions.length },
+      });
     }
     if (url.pathname.endsWith("/create-draft") && request.method() === "POST") {
-      return route.fulfill({ json: { routineDefinition: {
+      const routineDefinition = {
         ...candidate,
         id: "rtn_1",
         description: "Prepare and register a reviewed quotation.",
@@ -121,7 +200,185 @@ async function mockApi(page: Page) {
         supersedesId: null,
         supersededById: null,
         evidenceHealth: { state: "valid", issues: [], recovery: null },
-      }, replayed: false } });
+      };
+      routineDefinitions.splice(0, routineDefinitions.length, routineDefinition);
+      return route.fulfill({ json: { routineDefinition, replayed: false } });
+    }
+    if (url.pathname.endsWith("/publish") && request.method() === "POST") {
+      const body = request.postDataJSON();
+      if (body.confirmed !== true) {
+        return route.fulfill({ status: 400, json: { error: "routine_publish_confirmation_required" } });
+      }
+      const routineDefinition = {
+        ...routineDefinitions[0],
+        state: "published",
+        revision: Number(routineDefinitions[0]?.revision ?? 1) + 1,
+      };
+      routineDefinitions.splice(0, routineDefinitions.length, routineDefinition);
+      return route.fulfill({ json: { routineDefinition, replayed: false } });
+    }
+    if (url.pathname === "/api/work-items" && request.method() === "GET") {
+      return route.fulfill({ json: { workItems: [workItem], count: 1 } });
+    }
+    if (url.pathname === "/api/work-items/attention") {
+      return route.fulfill({ json: { items: [], metrics: { backlog: 0, breached: 0 } } });
+    }
+    if (url.pathname === "/api/invocation-dispatch-health") {
+      return route.fulfill({ json: {
+        capacity: { inFlight: 0, maxConcurrency: 2, atCapacity: false },
+        queue: { depth: 0, items: [] },
+        stats: {
+          indeterminate: true,
+          sampleSize: 0,
+          medianMsToDispatch: null,
+          redeliveryRate: null,
+          exhaustedCount: 0,
+        },
+        reliability: {
+          failover: { recovered: 0, attempts: 0 },
+          claims: { active: 0, expired: 0 },
+          intervention: { required: 0 },
+        },
+      } });
+    }
+    if (url.pathname === "/api/planning-projects") {
+      return route.fulfill({ json: { projects: [] } });
+    }
+    if (url.pathname === "/api/auto-runs" && request.method() === "GET") {
+      return route.fulfill({ json: {
+        autoRuns: [],
+        summary: {
+          total: 0,
+          active: 0,
+          byStatus: {},
+          outcomes: {},
+          successRate: null,
+          verification: { passed: 0, failed: 0, unverified: 0 },
+          routing: { alignmentRate: null, conclusive: 0 },
+          blockedReasons: [],
+          timeToPr: { count: 0, medianSeconds: null, p90Seconds: null },
+          rates: { humanEscalation: null, selfRepair: null },
+        },
+      } });
+    }
+    if (url.pathname === `/api/work-items/${workItem.id}` && request.method() === "GET") {
+      return route.fulfill({ json: {
+        workItem,
+        observability: {
+          nextAction: "continue_routine",
+          attention: [],
+          latestRun: null,
+          delivery: null,
+          activeClaim: null,
+          cost: {
+            knownUsd: 0,
+            unknownEntries: 0,
+            entryCount: 0,
+            projectBudget: null,
+            teamBudget: null,
+          },
+          alerts: { queued: 0, failed: 0, sent: 0, skipped: 0, items: [] },
+          timeline: [],
+          estimate: null,
+          routingExplanation: null,
+        },
+      } });
+    }
+    if (url.pathname.endsWith("/comments")) return route.fulfill({ json: { comments: [] } });
+    if (url.pathname.endsWith("/activity")) return route.fulfill({ json: { activities: [] } });
+    if (url.pathname === `/api/projects/${workItem.projectId}/auto-run-readiness`) {
+      return route.fulfill({ json: { readiness: { ready: true, checks: [] } } });
+    }
+    if (url.pathname.startsWith("/api/projects/") && url.pathname.endsWith("/github")) {
+      return route.fulfill({ json: { issues: [], pullRequests: [] } });
+    }
+    if (url.pathname === `/api/workflow-memory/routine-work-items/${workItem.id}`
+      && request.method() === "GET") {
+      return route.fulfill({ json: { execution: routineExecution } });
+    }
+    if (url.pathname.endsWith(`/routine-work-items/${workItem.id}/start`)
+      && request.method() === "POST") {
+      routineExecution = {
+        ...routineExecution,
+        run: { ...routineExecution.run, status: "running", revision: 2 },
+        steps: [
+          step(baseSteps[0], "running"),
+          step(baseSteps[1], "pending"),
+          step(baseSteps[2], "pending"),
+        ],
+      };
+      return route.fulfill({ json: { execution: routineExecution } });
+    }
+    if (url.pathname.endsWith("/ledger-definitions/ledger_inquiry/preview-upsert")
+      && request.method() === "POST") {
+      return route.fulfill({ status: 201, json: {
+        preview: {
+          id: "preview_1",
+          ledgerDefinitionId: "ledger_inquiry",
+          routineRunId: "run_1",
+          routineStepKey: "register_inquiry",
+          businessKey: "INQ-004",
+          action: "insert",
+          rowNumber: 5,
+          changedCells: [{
+            field: "inquiry_number",
+            column: "Inquiry No",
+            before: null,
+            after: "INQ-004",
+          }],
+          warnings: [],
+          approvalRequired: true,
+          state: "pending",
+          expiresAt: "2026-07-29T10:15:00.000Z",
+          revision: 1,
+        },
+      } });
+    }
+    if (url.pathname.endsWith("/ledger-upsert-previews/preview_1/commit")
+      && request.method() === "POST") {
+      routineExecution = {
+        ...routineExecution,
+        run: { ...routineExecution.run, status: "awaiting_approval", revision: 3 },
+        steps: [
+          step(baseSteps[0], "succeeded"),
+          step(baseSteps[1], "awaiting_approval"),
+          step(baseSteps[2], "pending"),
+        ],
+      };
+      return route.fulfill({ json: {
+        preview: { id: "preview_1", state: "committed" },
+        execution: routineExecution,
+        mutation: { id: "mutation_1", action: "insert" },
+      } });
+    }
+    if (url.pathname.endsWith(`/routine-work-items/${workItem.id}/steps/approve_quote/approval`)
+      && request.method() === "POST") {
+      routineExecution = {
+        ...routineExecution,
+        run: { ...routineExecution.run, status: "awaiting_condition", revision: 4 },
+        steps: [
+          step(baseSteps[0], "succeeded"),
+          step(baseSteps[1], "succeeded"),
+          step(baseSteps[2], "awaiting_condition"),
+        ],
+      };
+      return route.fulfill({ json: { execution: routineExecution } });
+    }
+    if (url.pathname.endsWith(`/routine-work-items/${workItem.id}/steps/order_signal/condition`)
+      && request.method() === "POST") {
+      routineExecution = {
+        ...routineExecution,
+        run: { ...routineExecution.run, status: "succeeded", revision: 5 },
+        steps: [
+          step(baseSteps[0], "succeeded"),
+          step(baseSteps[1], "succeeded"),
+          step(baseSteps[2], "succeeded"),
+        ],
+      };
+      return route.fulfill({ json: {
+        execution: routineExecution,
+        childWorkItem: { id: "wi_order_1" },
+      } });
     }
     if (url.pathname === "/api/workflow-memory/cases") return route.fulfill({ json: { cases: [], count: 0 } });
     if (url.pathname === "/api/workflow-memory/profiles") return route.fulfill({ json: { profiles: [], count: 0 } });
@@ -143,6 +400,13 @@ async function mockApi(page: Page) {
 }
 
 test.beforeEach(async ({ page }) => {
+  await page.addInitScript(() => {
+    window.localStorage.setItem("myagenttool.token", "e2e-token");
+    window.localStorage.setItem(
+      "myagenttool-ui",
+      JSON.stringify({ version: 1, state: { locale: "en" } }),
+    );
+  });
   await mockApi(page);
   await page.goto("/?section=workflowMemory");
   await expect(page.getByRole("heading", { name: "Delivery memory" })).toBeVisible();
@@ -162,6 +426,47 @@ test("guides an ordinary user from discovered work to task-type review", async (
     request.method() === "POST" && request.url().endsWith("/business-routine-candidates/rdc_1/create-draft"));
   await setup.getByRole("button", { name: "Review this task type" }).click();
   await createDraft;
+});
+
+test("requires explicit review before enabling a discovered work type", async ({ page }) => {
+  const setup = page.getByRole("region", { name: "Set up your daily work" });
+  await setup.getByRole("button", { name: "Review this task type" }).click();
+  const enable = await page.getByRole("button", { name: "Enable this work type" });
+  await expect(enable).toBeDisabled();
+  await page.getByLabel(
+    "I reviewed the trigger, steps, outputs, ledgers, and approval points.",
+  ).check();
+  await expect(enable).toBeEnabled();
+  const publish = page.waitForRequest((request) =>
+    request.method() === "POST"
+    && request.url().endsWith("/business-routine-definitions/rtn_1/publish"));
+  await enable.click();
+  expect((await publish).postDataJSON()).toMatchObject({ confirmed: true });
+  await expect(setup.getByText("Ready to use")).toBeVisible();
+});
+
+test("processes a routine Issue through ledger review, quotation approval, and order handoff", async ({ page }) => {
+  await page.goto("/?section=task");
+  await page.getByText("Process INQ-004").first().click();
+  const detail = page.getByRole("dialog", { name: "Local issue details" });
+  const dailyWork = detail.getByRole("region", { name: "Daily work" });
+  await expect(dailyWork.getByRole("button", { name: "Process inquiry" })).toBeVisible();
+  await dailyWork.getByRole("button", { name: "Process inquiry" }).click();
+
+  await dailyWork.getByRole("button", { name: "Review ledger change" }).click();
+  const ledgerDialog = page.getByRole("dialog", { name: "Confirm the ledger update" });
+  await expect(ledgerDialog.getByText("INQ-004")).toBeVisible();
+  await ledgerDialog.getByRole("button", { name: "Approve ledger change" }).click();
+
+  await dailyWork.getByRole("button", { name: "Approve and continue" }).click();
+  const approvalDialog = page.getByRole("dialog", { name: "Review the quotation" });
+  await expect(approvalDialog.getByText("quotation-INQ-004.md")).toBeVisible();
+  await approvalDialog.getByRole("button", { name: "Approve and continue" }).click();
+
+  await dailyWork.getByLabel("Confirmed order document").selectOption("order_4");
+  await dailyWork.getByRole("button", { name: "Confirmed order received" }).click();
+  await expect(dailyWork.getByRole("progressbar")).toHaveAttribute("aria-valuenow", "100");
+  await expect(dailyWork.getByText("Completed", { exact: true }).first()).toBeVisible();
 });
 
 test("keeps the guided setup usable on a narrow screen and by keyboard", async ({ page }) => {
