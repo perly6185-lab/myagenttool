@@ -14,7 +14,10 @@ import { test } from "node:test";
 import ExcelJS from "exceljs";
 
 import { createBusinessRoutineService } from "../src/services/business-routines.mjs";
-import { createLedgerUpsertService } from "../src/services/ledger-upserts.mjs";
+import {
+  createLedgerUpsertService,
+  ledgerContentRevision,
+} from "../src/services/ledger-upserts.mjs";
 
 const ACTOR = { userId: "usr_commercial", teamId: "team_commercial" };
 
@@ -362,6 +365,33 @@ test("XLSX updates preserve unrelated sheets, formulas, and cell formatting", as
   } finally {
     h.cleanup();
   }
+});
+
+test("XLSX revisions ignore volatile ZIP entry timestamps", async () => {
+  const workbook = new ExcelJS.Workbook();
+  workbook.addWorksheet("Quotes").addRow(["Quote No", "Customer"]);
+  const first = Buffer.from(await workbook.xlsx.writeBuffer());
+  const second = Buffer.from(first);
+  const eocd = second.lastIndexOf(Buffer.from([0x50, 0x4b, 0x05, 0x06]));
+  assert.notEqual(eocd, -1);
+  const entryCount = second.readUInt16LE(eocd + 10);
+  let centralOffset = second.readUInt32LE(eocd + 16);
+  for (let entry = 0; entry < entryCount; entry += 1) {
+    const localOffset = second.readUInt32LE(centralOffset + 42);
+    second.writeUInt16LE(0x7bef, centralOffset + 12);
+    second.writeUInt16LE(0x579d, centralOffset + 14);
+    second.writeUInt16LE(0x7bef, localOffset + 10);
+    second.writeUInt16LE(0x579d, localOffset + 12);
+    centralOffset += 46
+      + second.readUInt16LE(centralOffset + 28)
+      + second.readUInt16LE(centralOffset + 30)
+      + second.readUInt16LE(centralOffset + 32);
+  }
+  assert.notDeepEqual(second, first);
+  assert.equal(
+    ledgerContentRevision(second, "xlsx"),
+    ledgerContentRevision(first, "xlsx"),
+  );
 });
 
 test("XLSX named tables validate their location and expand on insert", async () => {

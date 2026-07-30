@@ -35,6 +35,54 @@ function sha256(value) {
   return createHash("sha256").update(value).digest("hex");
 }
 
+export function ledgerContentRevision(value, format) {
+  if (format !== "xlsx") return sha256(value);
+
+  // XLSX files are ZIP archives. JSZip gives every entry the current DOS
+  // timestamp when ExcelJS serializes a workbook, so two byte-for-byte
+  // equivalent preview/commit renders can otherwise have different hashes
+  // when they straddle a two-second DOS clock boundary.
+  const buffer = Buffer.from(value);
+  const minimumEocdSize = 22;
+  const maximumCommentSize = 0xffff;
+  if (buffer.length < minimumEocdSize) return sha256(buffer);
+  const searchStart = Math.max(0, buffer.length - minimumEocdSize - maximumCommentSize);
+  let eocdOffset = -1;
+  for (let offset = buffer.length - minimumEocdSize; offset >= searchStart; offset -= 1) {
+    if (buffer.readUInt32LE(offset) === 0x06054b50) {
+      eocdOffset = offset;
+      break;
+    }
+  }
+  if (eocdOffset < 0) return sha256(buffer);
+
+  const entryCount = buffer.readUInt16LE(eocdOffset + 10);
+  let centralOffset = buffer.readUInt32LE(eocdOffset + 16);
+  for (let entry = 0; entry < entryCount; entry += 1) {
+    if (centralOffset + 46 > buffer.length
+      || buffer.readUInt32LE(centralOffset) !== 0x02014b50) {
+      return sha256(value);
+    }
+    const localOffset = buffer.readUInt32LE(centralOffset + 42);
+    if (localOffset + 30 > buffer.length
+      || buffer.readUInt32LE(localOffset) !== 0x04034b50) {
+      return sha256(value);
+    }
+
+    // Normalize only metadata; compressed content and CRCs remain untouched.
+    buffer.writeUInt16LE(0, centralOffset + 12);
+    buffer.writeUInt16LE(0x21, centralOffset + 14);
+    buffer.writeUInt16LE(0, localOffset + 10);
+    buffer.writeUInt16LE(0x21, localOffset + 12);
+
+    const nameLength = buffer.readUInt16LE(centralOffset + 28);
+    const extraLength = buffer.readUInt16LE(centralOffset + 30);
+    const commentLength = buffer.readUInt16LE(centralOffset + 32);
+    centralOffset += 46 + nameLength + extraLength + commentLength;
+  }
+  return sha256(buffer);
+}
+
 function within(root, candidate) {
   return candidate === root || candidate.startsWith(`${root}${sep}`);
 }
@@ -623,7 +671,7 @@ export function createLedgerUpsertService({
         definition.updatedBy = actorUser(actor);
         event("ledger_definition_activated", "Ledger definition activated.", definition, actor, {
           ledgerDefinitionId: definition.id,
-          targetRevision: sha256(buffer),
+          targetRevision: ledgerContentRevision(buffer, definition.format),
         });
       });
       return { status: 200, body: { ledgerDefinition: definition, replayed: false } };
@@ -759,7 +807,7 @@ export function createLedgerUpsertService({
     try {
       const { target } = await targetFor(definition, context);
       const buffer = await readFile(target);
-      const targetRevision = sha256(buffer);
+      const targetRevision = ledgerContentRevision(buffer, definition.format);
       const plan = await inspectLedger(buffer, definition, fields, businessKey);
       const proposedBuffer = await renderMutation(buffer, definition, {
         action: plan.action,
@@ -767,7 +815,7 @@ export function createLedgerUpsertService({
         fieldValues: fields,
         businessKey,
       });
-      const proposedTargetRevision = sha256(proposedBuffer);
+      const proposedTargetRevision = ledgerContentRevision(proposedBuffer, definition.format);
       const approvalRequired = plan.action !== "no_op"
         && (definition.writePolicy.approval === "always"
           || (definition.writePolicy.approval === "updates_only" && plan.action === "update"));
@@ -894,7 +942,7 @@ export function createLedgerUpsertService({
       }
       lockPath = await acquireLock(target, Date.parse(now()));
       const before = await readFile(target);
-      const beforeHash = sha256(before);
+      const beforeHash = ledgerContentRevision(before, definition.format);
       const recoveredAfterRename = beforeHash === preview.proposedTargetRevision
         && beforeHash !== preview.targetRevision;
       if (beforeHash !== preview.targetRevision && !recoveredAfterRename) {
@@ -910,7 +958,7 @@ export function createLedgerUpsertService({
       const after = recoveredAfterRename
         ? before
         : await renderMutation(before, definition, preview);
-      const afterHash = sha256(after);
+      const afterHash = ledgerContentRevision(after, definition.format);
       if (preview.action !== "no_op" && !recoveredAfterRename) {
         await atomicReplace(target, after, preview.id, metadata.mode);
       }
