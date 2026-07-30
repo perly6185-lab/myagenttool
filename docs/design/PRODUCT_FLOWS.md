@@ -281,7 +281,10 @@ Open the local Issue created for the inquiry
 -> watch independent reading/reference steps run within computer capacity
 -> preview the exact inquiry-ledger row and changed cells
 -> explicitly approve the governed ledger write
--> run the allowlisted local quotation step and inspect its versioned draft
+-> run the allowlisted local quotation step
+-> resolve missing or conflicting price, currency, tax, and delivery facts
+-> confirm one supported, current local Markdown template and preview the output path
+-> generate and inspect the versioned draft, field provenance, and source summary
 -> review and approve the quotation when asked
 -> preview and approve the quotation-ledger change
 -> record that no confirmed order has arrived

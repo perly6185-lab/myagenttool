@@ -3,6 +3,7 @@ import test from "node:test";
 
 import {
   businessDocumentTypes,
+  businessFieldKeys,
   businessCaseCandidateStates,
   businessCaseRelationshipKinds,
   businessRoutineSchemaVersion,
@@ -19,6 +20,9 @@ import {
 test("business routine vocabulary keeps document type separate from contextual role", () => {
   assert.equal(businessRoutineSchemaVersion, 1);
   assert.ok(businessDocumentTypes.includes("quotation"));
+  assert.ok(businessFieldKeys.includes("unit_price"));
+  assert.ok(businessFieldKeys.includes("tax_rate"));
+  assert.ok(businessFieldKeys.includes("delivery_terms"));
   assert.deepEqual(routineArtifactRoles, ["trigger", "input", "output", "reference"]);
   assert.deepEqual(businessCaseCandidateStates, ["proposed", "confirmed", "rejected", "superseded"]);
   assert.deepEqual(businessCaseRelationshipKinds, ["precedes", "uses_reference", "registers", "handoff"]);

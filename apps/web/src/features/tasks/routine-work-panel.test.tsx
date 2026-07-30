@@ -43,6 +43,7 @@ function handlers() {
     onStart: vi.fn(),
     onCancel: vi.fn(),
     onExecute: vi.fn(),
+    onQuotationInputs: vi.fn(),
     onComplete: vi.fn(),
     onPreviewLedger: vi.fn(),
     onCommitLedger: vi.fn(),
@@ -203,5 +204,96 @@ describe("RoutineWorkPanel", () => {
     fireEvent.click(screen.getByRole("button", { name: "Run this step" }));
     expect(actions.onExecute).toHaveBeenCalledWith("quotation");
     expect(actions.onComplete).not.toHaveBeenCalled();
+  });
+
+  it("collects missing quotation facts and an approved template in plain language", () => {
+    const actions = handlers();
+    const current = execution({
+      status: "running",
+      revision: 5,
+      waitingReason: "routine_quotation_facts_required",
+    });
+    current.steps = [{
+      key: "quotation",
+      label: "Prepare quotation",
+      kind: "generate",
+      required: true,
+      dependsOn: [],
+      configuration: {},
+      run: {
+        state: "running",
+        attempts: 1,
+        errorCode: null,
+        conditionOutcome: null,
+        outputRefs: [],
+        quotationReview: {
+          status: "needs_input",
+          fields: [
+            {
+              key: "customer",
+              label: "Customer",
+              state: "confirmed",
+              value: "Acme",
+              conflictingValues: [],
+              sourceSummaries: ["inquiries/RFQ-1.md"],
+              evidenceArtifactIds: ["artifact_1"],
+            },
+            {
+              key: "unit_price",
+              label: "Unit price",
+              state: "missing",
+              value: null,
+              conflictingValues: [],
+              sourceSummaries: [],
+              evidenceArtifactIds: [],
+            },
+          ],
+          templateOptions: [
+            {
+              artifactId: "template_md",
+              label: "templates/quotation.md",
+              format: "markdown",
+              supported: true,
+              reason: null,
+              placeholderKeys: ["customer", "unit_price", "sales_contact"],
+            },
+            {
+              artifactId: "template_docx",
+              label: "templates/quotation.docx",
+              format: "docx",
+              supported: false,
+              reason: "routine_template_preservation_unavailable",
+              placeholderKeys: [],
+            },
+          ],
+          selectedTemplate: null,
+          plannedOutputPath: "commercial/outputs/quotations/quotation-RFQ-1-r1-d1-abcd1234.md",
+          draftRevision: 1,
+          draftPreview: null,
+        },
+      },
+    }];
+
+    render(<RoutineWorkPanel execution={current} pending={false} ledgerPreviews={{}} {...actions} />);
+    fireEvent.click(screen.getByRole("button", { name: "Review quotation details" }));
+    const dialog = screen.getByRole("dialog", { name: "Confirm quotation details" });
+    expect(within(dialog).getByText("Acme")).toBeTruthy();
+    expect(within(dialog).getByText(/quotation-RFQ-1-r1-d1-abcd1234\.md/)).toBeTruthy();
+    fireEvent.change(within(dialog).getByLabelText("Quotation template"), {
+      target: { value: "template_md" },
+    });
+    fireEvent.change(within(dialog).getByLabelText("Unit price"), {
+      target: { value: "25.00" },
+    });
+    fireEvent.change(within(dialog).getByLabelText("sales contact"), {
+      target: { value: "Alex" },
+    });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Confirm details" }));
+    expect(actions.onQuotationInputs).toHaveBeenCalledWith(
+      "quotation",
+      "template_md",
+      { unit_price: "25.00", sales_contact: "Alex" },
+    );
+    expect(actions.onExecute).not.toHaveBeenCalled();
   });
 });

@@ -16,7 +16,11 @@ import {
 import { actorCanAccessProject, LOCAL_TEAM_ID, LOCAL_USER_ID } from "../runtime/auth.mjs";
 import { makeRunTx } from "../runtime/store/run-tx.mjs";
 import { assetResourceClass, resolveAssetCapabilities } from "./asset-capabilities.mjs";
-import { writeLocalQuotationDraft } from "./business-routine-executors.mjs";
+import {
+  inspectLocalQuotationTemplate,
+  quotationDraftRelativePath,
+  writeLocalQuotationDraft,
+} from "./business-routine-executors.mjs";
 
 export const businessRoutineCollectionKeys = [
   "businessDocumentClassifications",
@@ -55,6 +59,32 @@ const EXECUTOR_IDS = {
   retrieve: "local.reference-retrieval.v1",
   generate: "local.markdown-quotation-draft.v1",
   create_issue: "local.confirmed-order-issue.v1",
+};
+const CONFIRMED_TEMPLATE_QUOTATION_EXECUTOR_ID = "local.confirmed-template-quotation.v2";
+const ALLOWED_EXECUTOR_IDS = {
+  retrieve: new Set([EXECUTOR_IDS.retrieve]),
+  generate: new Set([EXECUTOR_IDS.generate, CONFIRMED_TEMPLATE_QUOTATION_EXECUTOR_ID]),
+  create_issue: new Set([EXECUTOR_IDS.create_issue]),
+};
+const DEFAULT_QUOTATION_REQUIRED_FIELDS = [
+  "customer",
+  "product",
+  "quantity",
+  "unit_price",
+  "currency",
+  "tax_rate",
+  "delivery_terms",
+];
+const QUOTATION_FIELD_LABELS = {
+  customer: "Customer",
+  product: "Product or service",
+  quantity: "Quantity",
+  unit_price: "Unit price",
+  currency: "Currency",
+  tax_rate: "Tax rate",
+  delivery_terms: "Delivery date or terms",
+  amount: "Total amount",
+  inquiry_number: "Inquiry number",
 };
 const REFERENCE_DOCUMENT_TYPES = new Set([
   "price_list",
@@ -122,7 +152,7 @@ function executorIdFor(step) {
 function executableStepConfigurationError(step) {
   if (!EXECUTABLE_STEP_KINDS.has(step.kind)) return null;
   const executorId = executorIdFor(step);
-  if (executorId !== EXECUTOR_IDS[step.kind]) return "routine_step_executor_not_allowed";
+  if (!ALLOWED_EXECUTOR_IDS[step.kind]?.has(executorId)) return "routine_step_executor_not_allowed";
   if (step.kind === "generate"
     && !/(?:quotation|quote|报价)/i.test(`${step.key} ${step.label}`)) {
     return "routine_generate_executor_not_configured";
@@ -142,6 +172,26 @@ function executableStepConfigurationError(step) {
     || documentTypes.some((value) => !businessDocumentTypes.includes(value))
   )) {
     return "routine_retrieval_document_types_invalid";
+  }
+  if (executorId === CONFIRMED_TEMPLATE_QUOTATION_EXECUTOR_ID) {
+    const requiredFields = step.configuration?.requiredFields;
+    if (requiredFields != null && (
+      !Array.isArray(requiredFields)
+      || !requiredFields.length
+      || requiredFields.length > 20
+      || requiredFields.some((value) =>
+        !text(value, 120) || !SAFE_FIELD_RE.test(value) || SENSITIVE_FIELD_RE.test(value))
+    )) {
+      return "routine_quotation_required_fields_invalid";
+    }
+    const templateArtifactIds = step.configuration?.templateArtifactIds;
+    if (templateArtifactIds != null && (
+      !Array.isArray(templateArtifactIds)
+      || templateArtifactIds.length > 20
+      || templateArtifactIds.some((value) => !text(value, 200))
+    )) {
+      return "routine_quotation_template_artifacts_invalid";
+    }
   }
   return null;
 }
@@ -274,6 +324,8 @@ export function migrateBusinessRoutineState(state) {
       stepRun.outputRefs ??= [];
       stepRun.approval ??= null;
       stepRun.conditionOutcome ??= null;
+      stepRun.quotationInputs ??= null;
+      stepRun.quotationReview ??= null;
       if (stepRun.state === "running") {
         stepRun.state = "failed";
         stepRun.errorCode = "routine_step_interrupted";
@@ -485,6 +537,202 @@ export function createBusinessRoutineService({
     return { businessCase, fields };
   }
 
+  function quotationRequiredFields(step) {
+    const configured = stringList(step.configuration?.requiredFields, {
+      maxItems: 20,
+      maxLength: 120,
+    });
+    return configured?.length ? configured : DEFAULT_QUOTATION_REQUIRED_FIELDS;
+  }
+
+  function quotationExecutionSuffix(context, step) {
+    return hashKey([
+      context.run.id,
+      context.run.routineDefinitionId,
+      context.run.routineVersion,
+      step.key,
+    ]).slice(0, 8);
+  }
+
+  function normalizedFactValue(value) {
+    return text(value, 1_000)?.normalize("NFKC").replace(/\s+/g, " ").toLocaleLowerCase() ?? null;
+  }
+
+  function quotationTemplateOptions(context, step, actor) {
+    const source = sourceFor(context.run.sourceId, actor, { active: true });
+    const project = projectFor(context.run.projectId, actor);
+    if (!source || !project || !text(project.path, 4_000)) return [];
+    const configuredIds = new Set(step.configuration?.templateArtifactIds ?? []);
+    const explicitlyConfigured = configuredIds.size > 0;
+    return state.workflowArtifacts
+      .filter((artifact) => {
+        if (!visible(artifact, actor)
+          || artifact.projectId !== context.run.projectId
+          || artifact.sourceId !== context.run.sourceId
+          || artifact.availability === "missing"
+          || artifact.exclusion) {
+          return false;
+        }
+        if (explicitlyConfigured) return configuredIds.has(artifact.id);
+        return /\.(?:md|docx|xlsx)$/i.test(artifact.relativePath ?? "")
+          && /(?:template|模板|quotation|quote|报价)/i.test(artifact.relativePath ?? artifact.name ?? "");
+      })
+      .sort((left, right) =>
+        String(left.relativePath ?? left.id).localeCompare(String(right.relativePath ?? right.id)))
+      .slice(0, 20)
+      .map((artifact) => {
+        const inspection = inspectLocalQuotationTemplate({
+          projectPath: project.path,
+          sourceRelativePath: source.relativePath,
+          templateRelativePath: artifact.relativePath,
+          expectedFingerprint: artifact.fingerprint,
+          sourceReadMode: source.readMode,
+        });
+        return {
+          artifactId: artifact.id,
+          label: artifact.relativePath ?? artifact.name ?? artifact.id,
+          format: inspection.format ?? String(artifact.extension ?? "").toLowerCase(),
+          supported: inspection.ok === true,
+          reason: inspection.ok ? null : inspection.error,
+          fingerprint: artifact.fingerprint,
+          placeholderKeys: inspection.ok ? inspection.placeholderKeys : [],
+        };
+      });
+  }
+
+  function buildQuotationReview(context, step, stepRun, actor) {
+    const businessCase = currentCaseFor(context, actor);
+    const source = sourceFor(context.run.sourceId, actor, { active: true });
+    if (!businessCase || !source) return null;
+    const candidates = new Map();
+    const addCandidate = (key, value, sourceSummary, evidenceArtifactIds = []) => {
+      if (!SAFE_FIELD_RE.test(key) || SENSITIVE_FIELD_RE.test(key)) return;
+      const normalized = normalizedFactValue(value);
+      const visibleValue = text(value, 1_000);
+      if (!normalized || !visibleValue) return;
+      const rows = candidates.get(key) ?? [];
+      rows.push({
+        value: visibleValue,
+        normalized,
+        sourceSummary,
+        evidenceArtifactIds: [...new Set(evidenceArtifactIds)].slice(0, 20),
+      });
+      candidates.set(key, rows);
+    };
+    for (const entityId of businessCase.entityIds ?? []) {
+      const entity = state.businessEntities.find((row) =>
+        row.id === entityId
+        && visible(row, actor)
+        && row.projectId === context.run.projectId
+        && row.sourceId === context.run.sourceId);
+      if (!entity) continue;
+      for (const [key, value] of Object.entries(entity.fields ?? {})) {
+        const matchingEvidenceArtifactIds = (entity.evidenceRefs ?? [])
+          .filter((ref) => !ref.field || ref.field === key)
+          .map((ref) => ref.artifactId);
+        const evidenceArtifactIds = matchingEvidenceArtifactIds.length
+          ? matchingEvidenceArtifactIds
+          : (entity.evidenceRefs ?? []).map((ref) => ref.artifactId);
+        addCandidate(key, value, "Confirmed business record", evidenceArtifactIds);
+      }
+    }
+    for (const binding of businessCase.artifactBindings ?? []) {
+      const artifact = artifactFor(binding.artifactId, actor);
+      if (!artifact
+        || artifact.availability === "missing"
+        || artifact.exclusion
+        || businessCase.artifactFingerprints?.[artifact.id] !== artifact.fingerprint) {
+        continue;
+      }
+      const classification = currentClassification(artifact, actor);
+      for (const proposal of classification?.fieldProposals ?? []) {
+        addCandidate(
+          proposal.key,
+          proposal.normalizedValue ?? proposal.value,
+          artifact.relativePath ?? artifact.name ?? "Confirmed document",
+          [artifact.id],
+        );
+      }
+    }
+    addCandidate("inquiry_number", context.run.businessKey, "Routine business key");
+
+    const answers = stepRun.quotationInputs?.answers ?? {};
+    for (const [key, answer] of Object.entries(answers)) {
+      if (answer?.value != null) {
+        candidates.set(key, [{
+          value: answer.value,
+          normalized: normalizedFactValue(answer.value),
+          sourceSummary: "Confirmed by user",
+          evidenceArtifactIds: [],
+        }]);
+      }
+    }
+
+    const templateOptions = quotationTemplateOptions(context, step, actor);
+    const selectedTemplate = templateOptions.find((option) =>
+      option.artifactId === stepRun.quotationInputs?.templateArtifactId
+      && option.fingerprint === stepRun.quotationInputs?.templateFingerprint
+      && option.supported) ?? null;
+    const requiredFactKeys = [...new Set([
+      ...quotationRequiredFields(step),
+      ...(selectedTemplate?.placeholderKeys ?? []),
+    ])];
+    const fields = requiredFactKeys.map((key) => {
+      const rows = candidates.get(key) ?? [];
+      const byValue = new Map();
+      for (const row of rows) {
+        if (!row.normalized) continue;
+        const existing = byValue.get(row.normalized);
+        if (existing) {
+          existing.sourceSummaries.push(row.sourceSummary);
+          existing.evidenceArtifactIds.push(...row.evidenceArtifactIds);
+        } else {
+          byValue.set(row.normalized, {
+            value: row.value,
+            sourceSummaries: [row.sourceSummary],
+            evidenceArtifactIds: [...row.evidenceArtifactIds],
+          });
+        }
+      }
+      const values = [...byValue.values()];
+      const state = values.length === 0 ? "missing" : values.length === 1 ? "confirmed" : "conflict";
+      return {
+        key,
+        label: QUOTATION_FIELD_LABELS[key] ?? key.replaceAll("_", " "),
+        state,
+        value: state === "confirmed" ? values[0].value : null,
+        conflictingValues: state === "conflict" ? values.map((row) => row.value).slice(0, 5) : [],
+        sourceSummaries: [...new Set(values.flatMap((row) => row.sourceSummaries))].slice(0, 10),
+        evidenceArtifactIds: [...new Set(values.flatMap((row) => row.evidenceArtifactIds))].slice(0, 20),
+      };
+    });
+    const draftRevision = Math.max(1, Number(stepRun.quotationInputs?.draftRevision) || 1);
+    const plannedOutputPath = quotationDraftRelativePath({
+      sourceRelativePath: source.relativePath,
+      outputDirectory: step.configuration?.outputDirectory,
+      businessKey: context.run.businessKey,
+      routineVersion: context.run.routineVersion,
+      executionSuffix: quotationExecutionSuffix(context, step),
+      draftRevision,
+    });
+    const ready = fields.every((field) => field.state === "confirmed") && Boolean(selectedTemplate);
+    return {
+      status: stepRun.outputRefs?.some((output) => output.kind === "file")
+        ? "generated"
+        : ready ? "ready" : "needs_input",
+      fields,
+      templateOptions: templateOptions.map(({ fingerprint: _fingerprint, ...option }) => option),
+      selectedTemplate: selectedTemplate ? {
+        artifactId: selectedTemplate.artifactId,
+        label: selectedTemplate.label,
+        format: selectedTemplate.format,
+      } : null,
+      plannedOutputPath,
+      draftRevision,
+      draftPreview: null,
+    };
+  }
+
   function generateQuotationDraft(context, step, actor) {
     const source = sourceFor(context.run.sourceId, actor, { active: true });
     const project = projectFor(context.run.projectId, actor);
@@ -503,29 +751,74 @@ export function createBusinessRoutineService({
         && !artifact.exclusion
         && collected.businessCase.artifactFingerprints?.[artifact.id] === artifact.fingerprint)
       .map((artifact) => artifact.relativePath ?? artifact.name ?? "source document");
+    const stepRun = context.run.stepRuns.find((row) => row.stepKey === step.key);
+    const confirmedTemplateMode = executorIdFor(step) === CONFIRMED_TEMPLATE_QUOTATION_EXECUTOR_ID;
+    const review = confirmedTemplateMode
+      ? buildQuotationReview(context, step, stepRun, actor)
+      : null;
+    if (confirmedTemplateMode && (!review || review.status !== "ready")) {
+      return {
+        ok: false,
+        needsInput: true,
+        error: "routine_quotation_facts_required",
+        quotationReview: review,
+      };
+    }
+    const selectedTemplateArtifact = confirmedTemplateMode
+      ? artifactFor(stepRun.quotationInputs.templateArtifactId, actor)
+      : null;
+    if (confirmedTemplateMode && (
+      !selectedTemplateArtifact
+      || selectedTemplateArtifact.projectId !== context.run.projectId
+      || selectedTemplateArtifact.sourceId !== context.run.sourceId
+      || selectedTemplateArtifact.availability === "missing"
+      || selectedTemplateArtifact.exclusion
+      || selectedTemplateArtifact.fingerprint !== stepRun.quotationInputs.templateFingerprint
+    )) {
+      return { ok: false, error: "routine_template_drifted" };
+    }
+    const fields = confirmedTemplateMode
+      ? Object.fromEntries(review.fields.map((field) => [field.key, field.value]))
+      : collected.fields;
     const written = writeLocalQuotationDraft({
       projectPath: project.path,
       sourceRelativePath: source.relativePath,
       outputDirectory: step.configuration?.outputDirectory,
       businessKey: context.run.businessKey,
       routineVersion: context.run.routineVersion,
-      executionSuffix: hashKey([
-        context.run.id,
-        context.run.routineDefinitionId,
-        context.run.routineVersion,
-        step.key,
-      ]).slice(0, 8),
-      fields: collected.fields,
+      executionSuffix: quotationExecutionSuffix(context, step),
+      draftRevision: confirmedTemplateMode ? review.draftRevision : null,
+      fields,
       evidencePaths,
+      templateRelativePath: selectedTemplateArtifact?.relativePath,
+      templateFingerprint: selectedTemplateArtifact?.fingerprint,
+      sourceReadMode: source.readMode,
     });
     return written.ok
       ? {
           ok: true,
-          outputRefs: [{
-            kind: "file",
-            relativePath: written.relativePath,
-            summary: `Quotation draft for ${context.run.businessKey}.`,
-          }],
+          quotationReview: confirmedTemplateMode
+            ? {
+                ...review,
+                status: "generated",
+                plannedOutputPath: written.relativePath,
+                draftPreview: written.preview,
+              }
+            : null,
+          outputRefs: [
+            {
+              kind: "file",
+              relativePath: written.relativePath,
+              summary: `Quotation draft for ${context.run.businessKey}.`,
+            },
+            ...(confirmedTemplateMode ? [{
+              kind: "note",
+              summary: `Confirmed template: ${review.selectedTemplate.label}.`,
+            }, ...review.fields.map((field) => ({
+              kind: "note",
+              summary: `${field.label}: ${field.value} · ${field.sourceSummaries.join(", ")}`,
+            }))] : []),
+          ],
         }
       : written;
   }
@@ -679,10 +972,10 @@ export function createBusinessRoutineService({
     return key ? run.actionReceipts.find((row) => row.key === key) ?? null : null;
   }
 
-  function recordReceipt(run, idempotencyKey, action, stepKey = null) {
+  function recordReceipt(run, idempotencyKey, action, stepKey = null, payloadHash = null) {
     const key = text(idempotencyKey, 200);
     if (!key) return;
-    run.actionReceipts.push({ key, action, stepKey, revision: run.revision });
+    run.actionReceipts.push({ key, action, stepKey, payloadHash, revision: run.revision });
     if (run.actionReceipts.length > 100) run.actionReceipts.splice(0, run.actionReceipts.length - 100);
   }
 
@@ -1262,6 +1555,12 @@ export function createBusinessRoutineService({
           ...(step.kind === "condition" && !text(step.configuration?.condition, 1_000)
             ? { condition: step.label }
             : {}),
+          ...(step.kind === "generate" && /(?:quotation|quote|报价)/i.test(`${step.key} ${step.label}`)
+            ? {
+                executorId: CONFIRMED_TEMPLATE_QUOTATION_EXECUTOR_ID,
+                requiredFields: DEFAULT_QUOTATION_REQUIRED_FIELDS,
+              }
+            : {}),
         },
       })),
       evidenceRefs: candidate.evidenceRefs,
@@ -1691,6 +1990,8 @@ export function createBusinessRoutineService({
         outputRefs: [],
         approval: null,
         conditionOutcome: null,
+        quotationInputs: null,
+        quotationReview: null,
       })),
       actionReceipts: [],
       waitingReason: null,
@@ -1754,7 +2055,11 @@ export function createBusinessRoutineService({
       .slice(0, 20);
     const publicStepRun = (stepRun) => {
       if (!stepRun) return null;
-      const { idempotencyKey: _idempotencyKey, ...visibleStepRun } = stepRun;
+      const {
+        idempotencyKey: _idempotencyKey,
+        quotationInputs: _quotationInputs,
+        ...visibleStepRun
+      } = stepRun;
       return visibleStepRun;
     };
     return {
@@ -1950,10 +2255,19 @@ export function createBusinessRoutineService({
     };
   }
 
-  function validateRoutineAction(context, expectedRevision, idempotencyKey, action, stepKey = null) {
+  function validateRoutineAction(
+    context,
+    expectedRevision,
+    idempotencyKey,
+    action,
+    stepKey = null,
+    payloadHash = null,
+  ) {
     const replay = receiptFor(context.run, idempotencyKey);
     if (replay) {
-      if (replay.action !== action || replay.stepKey !== stepKey) {
+      if (replay.action !== action
+        || replay.stepKey !== stepKey
+        || (payloadHash && replay.payloadHash !== payloadHash)) {
         return { status: 409, body: { error: "routine_action_idempotency_conflict" } };
       }
       return {
@@ -2029,6 +2343,7 @@ export function createBusinessRoutineService({
     outputRefs = [],
     ledgerMutationId = null,
     executorId = null,
+    quotationReview = null,
   } = {}, actor = null) {
     const context = routineExecutionContext(workItemId, actor);
     if (context.error) return { status: context.status, body: { error: context.error } };
@@ -2073,6 +2388,7 @@ export function createBusinessRoutineService({
       stepRun.completedAt = timestamp;
       stepRun.errorCode = succeeded === true ? null : text(errorCode, 200) ?? "routine_step_failed";
       stepRun.outputRefs = normalizedOutputs;
+      if (quotationReview) stepRun.quotationReview = quotationReview;
       if (succeeded === true) startedStepKeys = scheduleRoutineRun(context.run, context.definition, timestamp);
       else recomputeRoutineRunStatus(context.run);
       context.run.revision += 1;
@@ -2125,7 +2441,7 @@ export function createBusinessRoutineService({
         body: { error: "routine_step_not_executable", currentState: stepRun.state },
       };
     }
-    if (executorIdFor(step) !== EXECUTOR_IDS[step.kind]) {
+    if (!ALLOWED_EXECUTOR_IDS[step.kind]?.has(executorIdFor(step))) {
       return { status: 409, body: { error: "routine_step_executor_not_allowed" } };
     }
     if (!sourceFor(context.run.sourceId, actor, { active: true })) {
@@ -2152,6 +2468,34 @@ export function createBusinessRoutineService({
       childWorkItem = created.ok ? created.workItem : null;
     }
 
+    if (result.needsInput) {
+      runTx(() => {
+        const timestamp = now();
+        stepRun.quotationReview = result.quotationReview;
+        stepRun.errorCode = null;
+        context.run.waitingReason = "routine_quotation_facts_required";
+        context.run.revision += 1;
+        context.run.updatedAt = timestamp;
+        context.run.updatedBy = actorUser(actor);
+        recordReceipt(context.run, idempotencyKey, "complete", stepKey);
+        event("routine_quotation_input_requested",
+          "Quotation generation is waiting for confirmed facts and a template.",
+          context.run, actor, {
+            routineRunId: context.run.id,
+            workItemId: context.workItem.id,
+            stepKey,
+            missingFieldCount: result.quotationReview?.fields
+              ?.filter((field) => field.state === "missing").length ?? 0,
+            conflictFieldCount: result.quotationReview?.fields
+              ?.filter((field) => field.state === "conflict").length ?? 0,
+          });
+      });
+      return {
+        status: 200,
+        body: { execution: routineExecutionView(context), startedStepKeys: [], replayed: false },
+      };
+    }
+
     const completed = completeRoutineStep({
       workItemId,
       stepKey,
@@ -2161,6 +2505,7 @@ export function createBusinessRoutineService({
       errorCode: result.ok ? null : result.error,
       outputRefs: result.outputRefs ?? [],
       executorId: executorIdFor(step),
+      quotationReview: result.quotationReview,
     }, actor);
     if (completed.status >= 400) return completed;
     return {
@@ -2169,6 +2514,125 @@ export function createBusinessRoutineService({
         ...completed.body,
         ...(childWorkItem ? { childWorkItem: publicRoutineWorkItem(childWorkItem) } : {}),
       },
+    };
+  }
+
+  function confirmQuotationInputs({
+    workItemId,
+    stepKey,
+    expectedRevision,
+    idempotencyKey,
+    templateArtifactId,
+    answers,
+    confirmed,
+  } = {}, actor = null) {
+    const context = routineExecutionContext(workItemId, actor);
+    if (context.error) return { status: context.status, body: { error: context.error } };
+    const inputPayloadHash = hashKey([
+      templateArtifactId,
+      confirmed,
+      JSON.stringify(
+        answers && typeof answers === "object" && !Array.isArray(answers)
+          ? Object.entries(answers).sort(([left], [right]) => left.localeCompare(right))
+          : answers,
+      ),
+    ]);
+    const blocked = validateRoutineAction(
+      context,
+      expectedRevision,
+      idempotencyKey,
+      "quotation_inputs",
+      stepKey,
+      inputPayloadHash,
+    );
+    if (blocked) return blocked;
+    const step = context.definition.steps.find((row) => row.key === stepKey);
+    const stepRun = context.run.stepRuns.find((row) => row.stepKey === stepKey);
+    if (!step || !stepRun) return { status: 404, body: { error: "routine_step_not_found" } };
+    if (step.kind !== "generate"
+      || executorIdFor(step) !== CONFIRMED_TEMPLATE_QUOTATION_EXECUTOR_ID
+      || stepRun.state !== "running") {
+      return {
+        status: 409,
+        body: { error: "routine_quotation_inputs_not_accepted", currentState: stepRun.state },
+      };
+    }
+    if (confirmed !== true) {
+      return { status: 400, body: { error: "routine_quotation_input_confirmation_required" } };
+    }
+    const currentReview = buildQuotationReview(context, step, stepRun, actor);
+    const selectedTemplate = currentReview?.templateOptions.find((option) =>
+      option.artifactId === templateArtifactId && option.supported);
+    const templateArtifact = selectedTemplate ? artifactFor(selectedTemplate.artifactId, actor) : null;
+    if (!selectedTemplate || !templateArtifact) {
+      return { status: 409, body: { error: "routine_quotation_template_not_confirmable" } };
+    }
+    const acceptedFields = new Set([
+      ...quotationRequiredFields(step),
+      ...(selectedTemplate.placeholderKeys ?? []),
+    ]);
+    if (!answers || typeof answers !== "object" || Array.isArray(answers)
+      || Object.keys(answers).length > acceptedFields.size) {
+      return { status: 400, body: { error: "routine_quotation_answers_invalid" } };
+    }
+    const normalizedAnswers = {};
+    for (const [key, value] of Object.entries(answers)) {
+      const normalizedValue = text(value, 1_000);
+      if (!acceptedFields.has(key)
+        || !SAFE_FIELD_RE.test(key)
+        || SENSITIVE_FIELD_RE.test(key)
+        || !normalizedValue
+        || /[\0]/.test(normalizedValue)
+        || /^[=+@]/.test(normalizedValue)) {
+        return { status: 400, body: { error: "routine_quotation_answers_invalid" } };
+      }
+      normalizedAnswers[key] = {
+        value: normalizedValue,
+        confirmedAt: now(),
+        confirmedBy: actorUser(actor),
+      };
+    }
+    runTx(() => {
+      const timestamp = now();
+      stepRun.quotationInputs = {
+        answers: {
+          ...(stepRun.quotationInputs?.answers ?? {}),
+          ...normalizedAnswers,
+        },
+        templateArtifactId: templateArtifact.id,
+        templateFingerprint: templateArtifact.fingerprint,
+        templateConfirmedAt: timestamp,
+        templateConfirmedBy: actorUser(actor),
+        draftRevision: Math.max(1, Number(stepRun.quotationInputs?.draftRevision) || 1),
+      };
+      stepRun.quotationReview = buildQuotationReview(context, step, stepRun, actor);
+      context.run.waitingReason = stepRun.quotationReview?.status === "ready"
+        ? null
+        : "routine_quotation_facts_required";
+      context.run.revision += 1;
+      context.run.updatedAt = timestamp;
+      context.run.updatedBy = actorUser(actor);
+      recordReceipt(
+        context.run,
+        idempotencyKey,
+        "quotation_inputs",
+        stepKey,
+        inputPayloadHash,
+      );
+      event("routine_quotation_inputs_confirmed",
+        "Quotation facts and template selection were confirmed.",
+        context.run, actor, {
+          routineRunId: context.run.id,
+          workItemId: context.workItem.id,
+          stepKey,
+          answerCount: Object.keys(normalizedAnswers).length,
+          templateArtifactId: templateArtifact.id,
+          ready: stepRun.quotationReview?.status === "ready",
+        });
+    });
+    return {
+      status: 200,
+      body: { execution: routineExecutionView(context), replayed: false },
     };
   }
 
@@ -2588,6 +3052,7 @@ export function createBusinessRoutineService({
     getRoutineWorkItemExecution,
     startRoutineWorkItem,
     executeRoutineStep,
+    confirmQuotationInputs,
     completeRoutineStep,
     retryRoutineStep,
     decideRoutineApproval,

@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Select } from "@/components/ui/input";
+import { Input, Select } from "@/components/ui/input";
 import { Modal } from "@/components/ui/modal";
 import { cn } from "@/lib/cn";
 import {
@@ -36,6 +36,7 @@ export function RoutineWorkPanel({
   onStart,
   onCancel,
   onExecute,
+  onQuotationInputs,
   onComplete,
   onPreviewLedger,
   onCommitLedger,
@@ -49,6 +50,11 @@ export function RoutineWorkPanel({
   onStart: RoutineAction;
   onCancel: RoutineAction;
   onExecute: RoutineStepAction;
+  onQuotationInputs: (
+    stepKey: string,
+    templateArtifactId: string,
+    answers: Record<string, string>,
+  ) => void;
   onComplete: RoutineStepAction;
   onPreviewLedger: (stepKey: string, ledgerDefinitionId: string) => void;
   onCommitLedger: (stepKey: string, preview: LedgerUpsertPreview) => void;
@@ -59,9 +65,11 @@ export function RoutineWorkPanel({
   const text = useRoutineWorkLabels();
   const [selectedOrderArtifactId, setSelectedOrderArtifactId] = useState("");
   const [confirmation, setConfirmation] = useState<{
-    type: "ledger" | "approval";
+    type: "ledger" | "approval" | "quotation";
     stepKey: string;
   } | null>(null);
+  const [quotationTemplateArtifactId, setQuotationTemplateArtifactId] = useState("");
+  const [quotationAnswers, setQuotationAnswers] = useState<Record<string, string>>({});
   const active = !terminalRunStates.has(execution.run.status);
   const conditionStep = execution.steps.find((step) => step.run.state === "awaiting_condition");
   const orderRequired = conditionStep ? needsConfirmedOrder(conditionStep) : false;
@@ -113,6 +121,8 @@ export function RoutineWorkPanel({
             ? text.waitingCapacity
             : execution.run.waitingReason === "routine_step_interrupted"
               ? text.interruptedRecovery
+              : execution.run.waitingReason === "routine_quotation_facts_required"
+                ? text.quotationFactsRequired
               : execution.run.waitingReason}
         </p>
       ) : null}
@@ -152,14 +162,41 @@ export function RoutineWorkPanel({
               </ul>
             ) : null}
 
-            {step.run.state === "running" && step.kind !== "ledger_upsert" ? (
-              <Button className="mt-2" size="sm" disabled={pending}
-                onClick={() => governedExecutorKinds.has(step.kind)
-                  ? onExecute(step.key)
-                  : onComplete(step.key)}>
-                {governedExecutorKinds.has(step.kind) ? text.executeStep : text.complete}
-              </Button>
-            ) : null}
+            {step.run.state === "running" && step.kind !== "ledger_upsert" ? (() => {
+              const quotationReview = step.kind === "generate" ? step.run.quotationReview : null;
+              if (quotationReview) {
+                return (
+                  <Button className="mt-2" size="sm" disabled={pending}
+                    onClick={() => {
+                      if (quotationReview.status === "ready") {
+                        onExecute(step.key);
+                        return;
+                      }
+                      setQuotationTemplateArtifactId(
+                        quotationReview.selectedTemplate?.artifactId ?? "",
+                      );
+                      setQuotationAnswers(Object.fromEntries(
+                        quotationReview.fields
+                          .filter((field) => field.state !== "confirmed")
+                          .map((field) => [field.key, ""]),
+                      ));
+                      setConfirmation({ type: "quotation", stepKey: step.key });
+                    }}>
+                    {quotationReview.status === "ready"
+                      ? text.generateQuotation
+                      : text.reviewQuotationInputs}
+                  </Button>
+                );
+              }
+              return (
+                <Button className="mt-2" size="sm" disabled={pending}
+                  onClick={() => governedExecutorKinds.has(step.kind)
+                    ? onExecute(step.key)
+                    : onComplete(step.key)}>
+                  {governedExecutorKinds.has(step.kind) ? text.executeStep : text.complete}
+                </Button>
+              );
+            })() : null}
             {step.run.state === "running" && step.kind === "ledger_upsert" ? (
               <div className="mt-2 space-y-2">
                 {!ledgerDefinitionId ? (
@@ -241,6 +278,131 @@ export function RoutineWorkPanel({
           );
         })}
       </ol>
+      {confirmation?.type === "quotation" ? (() => {
+        const step = execution.steps.find((candidate) => candidate.key === confirmation.stepKey);
+        const review = step?.run.quotationReview;
+        if (!step || !review) return null;
+        const unresolvedFields = review.fields.filter((field) => field.state !== "confirmed");
+        const selectedTemplate = review.templateOptions.find(
+          (option) => option.artifactId === quotationTemplateArtifactId && option.supported,
+        );
+        const reviewFieldKeys = new Set(review.fields.map((field) => field.key));
+        const templateOnlyFields = (selectedTemplate?.placeholderKeys ?? [])
+          .filter((key) => !reviewFieldKeys.has(key))
+          .map((key) => ({
+            key,
+            label: key.replaceAll("_", " "),
+            state: "missing" as const,
+            value: null,
+            conflictingValues: [],
+            sourceSummaries: [],
+            evidenceArtifactIds: [],
+          }));
+        const editableFields = [...unresolvedFields, ...templateOnlyFields];
+        const displayedFields = [...review.fields, ...templateOnlyFields];
+        const answersComplete = editableFields.every((field) =>
+          Boolean(quotationAnswers[field.key]?.trim()));
+        return (
+          <Modal
+            open
+            onClose={() => setConfirmation(null)}
+            title={text.quotationInputDialogTitle}
+            description={text.quotationInputDialogDescription}
+            closeDisabled={pending}
+          >
+            <div className="space-y-3">
+              <label className="block space-y-1 text-sm font-medium">
+                <span>{text.quotationTemplate}</span>
+                <Select
+                  value={quotationTemplateArtifactId}
+                  onChange={(event) => setQuotationTemplateArtifactId(event.target.value)}
+                >
+                  <option value="">—</option>
+                  {review.templateOptions.map((option) => (
+                    <option key={option.artifactId} value={option.artifactId}
+                      disabled={!option.supported}>
+                      {option.label}
+                      {option.supported ? "" : ` · ${text.unsupportedTemplate}`}
+                    </option>
+                  ))}
+                </Select>
+              </label>
+              {!review.templateOptions.some((option) => option.supported) ? (
+                <p className="rounded bg-muted p-2 text-xs text-muted-foreground">
+                  {text.noQuotationTemplates}
+                </p>
+              ) : null}
+              <div className="space-y-2">
+                {displayedFields.map((field) => (
+                  <div key={field.key} className="rounded-md border border-border p-2">
+                    <div className="flex items-center justify-between gap-2">
+                      <label className="text-xs font-medium" htmlFor={`quotation-field-${field.key}`}>
+                        {field.label}
+                      </label>
+                      <Badge tone={field.state === "confirmed" ? "success" : "warning"}>
+                        {field.state === "confirmed"
+                          ? text.confirmedFact
+                          : field.state === "conflict"
+                            ? text.conflictingFact
+                            : text.missingFact}
+                      </Badge>
+                    </div>
+                    {field.state === "confirmed" ? (
+                      <p id={`quotation-field-${field.key}`} className="mt-1 text-sm">{field.value}</p>
+                    ) : (
+                      <Input
+                        id={`quotation-field-${field.key}`}
+                        className="mt-1"
+                        value={quotationAnswers[field.key] ?? ""}
+                        onChange={(event) => setQuotationAnswers((current) => ({
+                          ...current,
+                          [field.key]: event.target.value,
+                        }))}
+                      />
+                    )}
+                    {field.conflictingValues.length ? (
+                      <p className="mt-1 text-xs text-muted-foreground">
+                        {field.conflictingValues.join(" / ")}
+                      </p>
+                    ) : null}
+                    {field.sourceSummaries.length ? (
+                      <p className="mt-1 text-xs text-muted-foreground">
+                        {text.factSources}: {field.sourceSummaries.join(", ")}
+                      </p>
+                    ) : null}
+                  </div>
+                ))}
+              </div>
+              {review.plannedOutputPath ? (
+                <p className="rounded bg-muted p-2 font-mono text-xs">
+                  {text.plannedOutput}: {review.plannedOutputPath}
+                </p>
+              ) : null}
+              <div className="flex justify-end gap-2">
+                <Button size="sm" variant="secondary" disabled={pending}
+                  onClick={() => setConfirmation(null)}>{text.back}</Button>
+                <Button size="sm"
+                  disabled={pending || !quotationTemplateArtifactId || !answersComplete}
+                  onClick={() => {
+                    onQuotationInputs(
+                      step.key,
+                      quotationTemplateArtifactId,
+                      Object.fromEntries(
+                        editableFields.map((field) => [
+                          field.key,
+                          quotationAnswers[field.key]?.trim() ?? "",
+                        ]),
+                      ),
+                    );
+                    setConfirmation(null);
+                  }}>
+                  {text.confirmQuotationInputs}
+                </Button>
+              </div>
+            </div>
+          </Modal>
+        );
+      })() : null}
       {confirmation?.type === "ledger" ? (() => {
         const step = execution.steps.find((candidate) => candidate.key === confirmation.stepKey);
         const preview = ledgerPreviews[confirmation.stepKey];
@@ -301,6 +463,9 @@ export function RoutineWorkPanel({
         const outputs = execution.steps
           .flatMap((candidate) => candidate.run.outputRefs)
           .filter((output) => output.summary);
+        const quotationReview = execution.steps
+          .map((candidate) => candidate.run.quotationReview)
+          .find((review) => review?.status === "generated");
         return (
           <Modal
             open
@@ -312,6 +477,29 @@ export function RoutineWorkPanel({
             <div className="space-y-3">
               <div className="rounded-md border bg-muted/20 p-3">
                 <p className="text-sm font-medium">{step.label}</p>
+                {quotationReview ? (
+                  <div className="mt-2 space-y-1 text-xs">
+                    <p className="font-mono">{quotationReview.plannedOutputPath}</p>
+                    <p>{text.quotationTemplate}: {quotationReview.selectedTemplate?.label}</p>
+                    {quotationReview.fields.map((field) => (
+                      <p key={`${step.key}:approval-field:${field.key}`}>
+                        <span className="font-medium">{field.label}: </span>
+                        {field.value}
+                        {field.sourceSummaries.length
+                          ? ` · ${text.factSources}: ${field.sourceSummaries.join(", ")}`
+                          : ""}
+                      </p>
+                    ))}
+                  </div>
+                ) : null}
+                {quotationReview?.draftPreview ? (
+                  <div className="mt-3">
+                    <p className="text-xs font-medium">{text.quotationDraftPreview}</p>
+                    <pre className="mt-1 max-h-72 overflow-auto whitespace-pre-wrap rounded border bg-background p-2 text-xs">
+                      {quotationReview.draftPreview}
+                    </pre>
+                  </div>
+                ) : null}
                 {outputs.length ? (
                   <ul className="mt-2 list-inside list-disc text-xs text-muted-foreground">
                     {outputs.map((output, index) => (

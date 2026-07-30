@@ -122,12 +122,18 @@ test("deterministic analysis extracts explainable business fields and flags cont
     artifactId: "wfa_1",
     artifactFingerprint: "a".repeat(64),
     relativePath: "询价/RFQ-001.md",
-    content: "询价单\n询价编号：RFQ-001\n客户名称：星海科技\n数量：20\n币种：CNY",
+    content: "询价单\n询价编号：RFQ-001\n客户名称：星海科技\n数量：20\n单价：25.00\n币种：CNY\n税率：13%\n交期：收到订单后 15 天",
   });
   assert.equal(inquiry.documentType, "inquiry");
   assert.ok(inquiry.confidence >= 0.85);
   assert.equal(inquiry.fieldProposals.find((field) => field.key === "inquiry_number").normalizedValue, "RFQ-001");
   assert.equal(inquiry.fieldProposals.find((field) => field.key === "quantity").normalizedValue, "20");
+  assert.equal(inquiry.fieldProposals.find((field) => field.key === "unit_price").normalizedValue, "25.00");
+  assert.equal(inquiry.fieldProposals.find((field) => field.key === "tax_rate").normalizedValue, "13%");
+  assert.equal(
+    inquiry.fieldProposals.find((field) => field.key === "delivery_terms").normalizedValue,
+    "收到订单后 15 天",
+  );
   assert.ok(inquiry.evidenceRefs.every((ref) => ref.location && !ref.location.startsWith("/")));
 
   const conflict = analyzeBusinessDocumentDeterministically({
