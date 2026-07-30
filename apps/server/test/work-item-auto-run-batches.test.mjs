@@ -91,19 +91,31 @@ test("durable work-item batch enforces concurrency and backfills the next slot",
 
   await runScheduledPumps();
   let batch = service.listBatches({}, { teamId: "team_a" }).body.batches[0];
+  let peakActive = batch.active;
   assert.equal(batch.counts.running, 2);
   assert.equal(batch.counts.queued, 3);
   assert.equal(state.autoRuns.length, 2);
 
-  state.autoRuns[0].status = "done";
+  for (let completed = 0; completed < 3; completed += 1) {
+    state.autoRuns[completed].status = "done";
+    await service.sweepBatches();
+    await runScheduledPumps();
+    batch = service.listBatches({}, { teamId: "team_a" }).body.batches[0];
+    peakActive = Math.max(peakActive, batch.active);
+    assert.equal(batch.active, 2, "each completed run backfills exactly one concurrency slot");
+  }
+
+  assert.equal(state.autoRuns.length, 5);
+  state.autoRuns[3].status = "done";
+  state.autoRuns[4].status = "done";
   await service.sweepBatches();
   await runScheduledPumps();
-
   batch = service.listBatches({}, { teamId: "team_a" }).body.batches[0];
-  assert.equal(state.autoRuns.length, 3);
-  assert.equal(batch.counts.running, 2);
-  assert.equal(batch.counts.done, 1);
-  assert.equal(batch.counts.queued, 2);
+  assert.equal(peakActive, 2);
+  assert.equal(batch.status, "completed");
+  assert.equal(batch.counts.done, 5);
+  assert.equal(batch.active, 0);
+  assert.equal(batch.completed, 5);
 });
 
 test("batch listing is team scoped", async () => {

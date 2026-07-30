@@ -5,7 +5,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createInvocationPool, resolveBridgeConcurrency, refreshedConcurrency } from "../src/invocation-pool.mjs";
@@ -197,8 +197,9 @@ test("process-tree guardian kills a real executor when its bridge parent is abse
   skip: process.platform === "win32" && Boolean(process.env.CODEX_PERMISSION_PROFILE),
 }, async () => {
   const cwd = mkdtempSync(join(tmpdir(), "myagenttool-guardian-"));
+  const pidMarker = join(cwd, "grandchild.pid");
   const marker = join(cwd, "grandchild-survived.txt");
-  const grandchild = `setTimeout(() => require("node:fs").writeFileSync(${JSON.stringify(marker)}, "survived"), 800); setInterval(() => {}, 1000);`;
+  const grandchild = `require("node:fs").writeFileSync(${JSON.stringify(pidMarker)}, String(process.pid)); setTimeout(() => require("node:fs").writeFileSync(${JSON.stringify(marker)}, "survived"), 3000); setInterval(() => {}, 1000);`;
   const parent = `require("node:child_process").spawn(process.execPath, ["-e", ${JSON.stringify(grandchild)}], { stdio: "ignore" }); setInterval(() => {}, 1000);`;
   const child = spawn(process.execPath, ["-e", parent], {
     detached: process.platform !== "win32",
@@ -234,7 +235,18 @@ test("process-tree guardian kills a real executor when its bridge parent is abse
       childKilled: child.killed,
       guardianExit,
     })}`);
-    await new Promise((resolve) => setTimeout(resolve, 1_000));
+    await new Promise((resolve) => setTimeout(resolve, 3_500));
+    if (existsSync(pidMarker)) {
+      const grandchildPid = Number(readFileSync(pidMarker, "utf8"));
+      let grandchildAlive = false;
+      try {
+        process.kill(grandchildPid, 0);
+        grandchildAlive = true;
+      } catch (error) {
+        grandchildAlive = error?.code === "EPERM";
+      }
+      assert.equal(grandchildAlive, false, `executor grandchild ${grandchildPid} must be terminated`);
+    }
     assert.equal(existsSync(marker), false, "the executor grandchild must not outlive the Bridge guardian");
   } finally {
     rmSync(cwd, { recursive: true, force: true });
