@@ -772,9 +772,14 @@ test("processes a routine Issue through ledger review, quotation approval, and o
   await expect(dailyWork.getByText("Completed", { exact: true }).first()).toBeVisible();
 });
 
-test("opens the next inquiry from a keyboard-accessible narrow batch view", async ({ page }) => {
-  await page.setViewportSize({ width: 320, height: 844 });
+test("opens the next inquiry from a keyboard-accessible narrow batch view", async ({ page }, testInfo) => {
   await page.goto("/?section=task");
+  await expect(page.getByRole("region", { name: "Inquiry batch" })).toBeVisible();
+  await testInfo.attach("inquiry-batch-desktop", {
+    body: await page.screenshot({ fullPage: true }),
+    contentType: "image/png",
+  });
+  await page.setViewportSize({ width: 320, height: 844 });
   const batch = page.getByRole("region", { name: "Inquiry batch" });
   const next = batch.getByRole("button", { name: "Open next action" });
   await expect(next).toBeVisible();
@@ -782,6 +787,10 @@ test("opens the next inquiry from a keyboard-accessible narrow batch view", asyn
   await expect(next).toBeFocused();
   await next.press("Enter");
   await expect(page.getByRole("dialog", { name: "Local issue details" })).toBeVisible();
+  await testInfo.attach("inquiry-batch-mobile", {
+    body: await page.screenshot({ fullPage: true }),
+    contentType: "image/png",
+  });
   expect(await page.evaluate(() =>
     document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true);
 });
