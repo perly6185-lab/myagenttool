@@ -124,8 +124,6 @@ vi.mock("@/data/use-console-actions", () => ({
     autoRunReadiness: mocks.autoRunReadiness,
     syncWorkItemGithubIssue: mocks.syncWorkItemGithubIssue,
     listAutoRuns: mocks.listAutoRuns,
-    listWorkItemAutoRunBatches: mocks.listWorkItemAutoRunBatches,
-    createWorkItemAutoRunBatch: mocks.createWorkItemAutoRunBatch,
     listPlanningProjects: mocks.listPlanningProjects,
     getPlanningProject: mocks.getPlanningProject,
     createPlanningProject: mocks.createPlanningProject,
@@ -136,6 +134,13 @@ vi.mock("@/data/use-console-actions", () => ({
     reorderPlanningProjectItems: mocks.reorderPlanningProjectItems,
     updatePlanningProjectItems: mocks.updatePlanningProjectItems,
     executePlanningRecommendedAction: mocks.executePlanningRecommendedAction,
+  },
+}));
+
+vi.mock("@/features/tasks/work-item-batch-api", () => ({
+  workItemBatchApi: {
+    list: mocks.listWorkItemAutoRunBatches,
+    create: mocks.createWorkItemAutoRunBatch,
   },
 }));
 

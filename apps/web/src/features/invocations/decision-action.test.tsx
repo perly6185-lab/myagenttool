@@ -12,13 +12,17 @@ import type {
 
 const apiMock = vi.hoisted(() => ({
   fetchState: vi.fn(),
-  approveCodexApproval: vi.fn(),
+  approve: vi.fn(),
 }));
 
 vi.mock("@/lib/api-client", () => ({
   fetchState: apiMock.fetchState,
-  api: {
-    approveCodexApproval: apiMock.approveCodexApproval,
+}));
+
+vi.mock("@/features/approvals/approval-broker-api", () => ({
+  approvalBrokerApi: {
+    approve: apiMock.approve,
+    deny: vi.fn(),
   },
 }));
 
@@ -30,12 +34,12 @@ afterEach(() => {
 describe("DecisionAction timed-out Codex approval recovery", () => {
   it("offers a late approval and sends it through the broker", async () => {
     apiMock.fetchState.mockResolvedValue(snapshot(request()));
-    apiMock.approveCodexApproval.mockResolvedValue({});
+    apiMock.approve.mockResolvedValue({});
     renderWithClient(<DecisionAction event={approvalEvent()} />);
 
     const button = await screen.findByRole("button", { name: "Approve and resume" });
     fireEvent.click(button);
-    await waitFor(() => expect(apiMock.approveCodexApproval).toHaveBeenCalledWith("cdx_1"));
+    await waitFor(() => expect(apiMock.approve).toHaveBeenCalledWith("cdx_1"));
   });
 
   it("shows waiting and resumed states without offering a duplicate action", async () => {
@@ -61,7 +65,7 @@ describe("DecisionAction timed-out Codex approval recovery", () => {
 
   it("surfaces a recovery API failure inline", async () => {
     apiMock.fetchState.mockResolvedValue(snapshot(request()));
-    apiMock.approveCodexApproval.mockRejectedValue(new Error("retry conflict"));
+    apiMock.approve.mockRejectedValue(new Error("retry conflict"));
     renderWithClient(<DecisionAction event={approvalEvent()} />);
 
     fireEvent.click(await screen.findByRole("button", { name: "Approve and resume" }));

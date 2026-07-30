@@ -28,6 +28,7 @@ import { RunTranscriptSection, isTerminalRunStatus } from "@/features/invocation
 import type { InvocationEventSnapshot, DeploymentSnapshot } from "@/lib/console-state";
 import { useVisibleInterval } from "@/hooks/use-visible-interval";
 import { InvocationDispatchHealth } from "@/features/devices/invocation-dispatch-health";
+import { autoRunApi } from "./auto-run-api";
 
 installExecutionUiTranslations();
 
@@ -1590,7 +1591,7 @@ export function AutoRunsView() {
                       variant="secondary"
                       size="sm"
                       disabled={actionRunId === run.id}
-                      onClick={() => void performRunAction(run.id, () => api.reverifyAutoRun(run.id))}
+                      onClick={() => void performRunAction(run.id, () => autoRunApi.reverify(run.id))}
                       title="Run the platform-owned verification checks in this task's worktree."
                     >
                       <ShieldCheck className={cn("mr-1 size-3", actionRunId === run.id && "animate-pulse")} />

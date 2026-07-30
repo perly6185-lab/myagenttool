@@ -50,6 +50,7 @@ import { WorkItemExecutionActions } from "./work-item-execution-actions";
 import { WorkItemExternalSync } from "./work-item-external-sync";
 import { WorkItemAlertAndCostDetails, WorkItemTimeline, WorkItemTraceSummary } from "./work-item-observability";
 import { WorkItemTraceLinks } from "./work-item-trace-links";
+import { workItemBatchApi } from "./work-item-batch-api";
 import type {
   ArticleAnalysis,
   ArticleDerivative,
@@ -1037,7 +1038,7 @@ export function PlanningProjectsPanel({ onChanged = () => {} }: { onChanged?: ()
       api.listPlanningProjects(true) as Promise<{ projects: PlanningProject[] }>,
       api.listWorkItems() as Promise<LocalWorkItemResult>,
       api.listAutoRuns() as Promise<{ autoRuns?: PlanningAutoRun[] }>,
-      api.listWorkItemAutoRunBatches() as Promise<{ batches?: WorkItemAutoRunBatch[] }>,
+      workItemBatchApi.list() as Promise<{ batches?: WorkItemAutoRunBatch[] }>,
     ]).then(async ([result, workItemResult, autoRunResult, batchResult]) => {
       if (cancelled) return;
       setWorkItems(workItemResult.workItems);
@@ -1064,7 +1065,7 @@ export function PlanningProjectsPanel({ onChanged = () => {} }: { onChanged?: ()
       void Promise.all([
         api.getPlanningProject(selectedId) as Promise<{ project: PlanningProject }>,
         api.listAutoRuns() as Promise<{ autoRuns?: PlanningAutoRun[] }>,
-        api.listWorkItemAutoRunBatches() as Promise<{ batches?: WorkItemAutoRunBatch[] }>,
+        workItemBatchApi.list() as Promise<{ batches?: WorkItemAutoRunBatch[] }>,
       ]).then(([detail, runResult, batchResult]) => {
         setProjects((current) => current.map((project) => project.id === selectedId ? detail.project : project));
         setAutoRuns(runResult.autoRuns ?? []);
@@ -1264,7 +1265,7 @@ export function PlanningProjectsPanel({ onChanged = () => {} }: { onChanged?: ()
   };
   const startSelectedBatch = () => {
     if (!selectedWorkItemIds.length) return;
-    void execute(() => api.createWorkItemAutoRunBatch({
+    void execute(() => workItemBatchApi.create({
       workItemIds: selectedWorkItemIds,
       maxConcurrent: Number(batchConcurrency),
       ...(batchAgentId ? { agentId: batchAgentId } : {}),

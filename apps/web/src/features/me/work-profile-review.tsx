@@ -14,10 +14,10 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input, Select } from "@/components/ui/input";
 import { useConsoleState, useRefreshConsoleState } from "@/data/use-console-state";
-import { api } from "@/lib/api-client";
 import { i18n } from "@/lib/i18n";
 import { useAppTranslation } from "@/lib/i18n/use-app-translation";
 import { installWorkProfileTranslations } from "@/lib/i18n/work-profile-resources";
+import { workProfileApi } from "./work-profile-api";
 import type {
   WorkProfileAuditEvent,
   WorkProfileCategory,
@@ -68,7 +68,7 @@ export function WorkProfileReview() {
     if (!value) return;
     await run(
       inference.id,
-      () => api.updateWorkProfileInference(inference.id, {
+      () => workProfileApi.update(inference.id, {
         category: draftCategory,
         value,
         reason: t("workProfile.auditReason"),
@@ -82,7 +82,7 @@ export function WorkProfileReview() {
     const target = deleteTarget;
     await run(
       target.id,
-      () => api.deleteWorkProfileInference(target.id, t("workProfile.deleteReason")),
+      () => workProfileApi.delete(target.id, t("workProfile.deleteReason")),
       () => {
         setDeleteTarget(null);
         if (editingId === target.id) setEditingId(null);
@@ -204,7 +204,7 @@ export function WorkProfileReview() {
                       <Button
                         size="sm"
                         disabled={pending || inference.status === "confirmed"}
-                        onClick={() => run(inference.id, () => api.confirmWorkProfileInference(inference.id))}
+                        onClick={() => run(inference.id, () => workProfileApi.confirm(inference.id))}
                       >
                         <Check />{t("workProfile.confirm")}
                       </Button>
@@ -217,7 +217,7 @@ export function WorkProfileReview() {
                         disabled={pending || inference.status === "rejected"}
                         onClick={() => run(
                           inference.id,
-                          () => api.rejectWorkProfileInference(inference.id, t("workProfile.rejectReason")),
+                          () => workProfileApi.reject(inference.id, t("workProfile.rejectReason")),
                         )}
                       >
                         <X />{t("workProfile.reject")}

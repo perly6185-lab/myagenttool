@@ -49,12 +49,12 @@ vi.mock("@/data/use-console-state", () => ({
   useRefreshConsoleState: () => mocks.refresh,
 }));
 
-vi.mock("@/lib/api-client", () => ({
-  api: {
-    confirmWorkProfileInference: mocks.confirm,
-    updateWorkProfileInference: mocks.update,
-    rejectWorkProfileInference: mocks.reject,
-    deleteWorkProfileInference: mocks.delete,
+vi.mock("./work-profile-api", () => ({
+  workProfileApi: {
+    confirm: mocks.confirm,
+    update: mocks.update,
+    reject: mocks.reject,
+    delete: mocks.delete,
   },
 }));
 

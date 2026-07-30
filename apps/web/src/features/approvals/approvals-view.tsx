@@ -11,6 +11,7 @@ import { useUiStore, type SectionKey } from "@/store/ui-store";
 import type { ClaudeApplyAuthorization, InvocationSnapshot, PendingDecision, PendingDecisionKind, WorktreeSnapshot } from "@/lib/console-state";
 import { RunTranscriptSection } from "@/features/invocations/run-transcript";
 import { useAppTranslation } from "@/lib/i18n/use-app-translation";
+import { approvalBrokerApi } from "./approval-broker-api";
 
 // The Approvals section: ONE queue of every pending human decision, aggregated
 // server-side (read-model `pendingDecisions`) from surfaces that used to be
@@ -248,7 +249,7 @@ function DecisionActions({
             {recoveryInProgress ? (
               <Badge tone="warning">{t("approvals.resuming")}</Badge>
             ) : (
-              <Button variant="primary" size="sm" className="h-7 px-2.5 text-xs" disabled={pending} onClick={() => d.ref?.requestId && act(() => api.approveAgentApproval(d.ref!.requestId!))}>
+              <Button variant="primary" size="sm" className="h-7 px-2.5 text-xs" disabled={pending} onClick={() => d.ref?.requestId && act(() => approvalBrokerApi.approve(d.ref!.requestId!))}>
                 {spin}{t("approvals.approveAndResume")}
               </Button>
             )}
@@ -258,10 +259,10 @@ function DecisionActions({
       }
       return (
         <>
-          <Button variant="primary" size="sm" className="h-7 px-2.5 text-xs" disabled={pending} onClick={() => d.ref?.requestId && act(() => api.approveAgentApproval(d.ref!.requestId!))}>
+          <Button variant="primary" size="sm" className="h-7 px-2.5 text-xs" disabled={pending} onClick={() => d.ref?.requestId && act(() => approvalBrokerApi.approve(d.ref!.requestId!))}>
             {spin}{t("approvals.approve")}
           </Button>
-          <Button variant="ghost" size="sm" className="h-7 px-2 text-xs" disabled={pending} onClick={() => d.ref?.requestId && act(() => api.denyAgentApproval(d.ref!.requestId!))}>
+          <Button variant="ghost" size="sm" className="h-7 px-2 text-xs" disabled={pending} onClick={() => d.ref?.requestId && act(() => approvalBrokerApi.deny(d.ref!.requestId!))}>
             {t("approvals.deny")}
           </Button>
           {openBtn}
