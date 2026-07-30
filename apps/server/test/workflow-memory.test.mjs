@@ -1,5 +1,12 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  renameSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -43,7 +50,10 @@ function fixture() {
   return root;
 }
 
-function setup(root, { embeddingAdapter = null } = {}) {
+function setup(root, {
+  embeddingAdapter = null,
+  now = () => "2026-07-28T12:00:00.000Z",
+} = {}) {
   const state = {
     projects: [{
       id: "project",
@@ -79,7 +89,7 @@ function setup(root, { embeddingAdapter = null } = {}) {
   };
   const service = createWorkflowMemoryService({
     state,
-    now: () => "2026-07-28T12:00:00.000Z",
+    now,
     nextId: (prefix) => `${prefix}_${++id}`,
     appendEvent: (event) => events.push(event),
     createWorkItem,
@@ -830,6 +840,137 @@ test("scans a contained source, confirms cases, derives a profile, and exposes a
       assert.equal(state[key].length, 0, `${key} is deleted with its revoked source`);
     }
     assert.equal(existsSync(join(root, "case-001/客户需求-001.md")), true);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("incremental intake waits for stability and deduplicates copies, moves, and replay", async () => {
+  const root = fixture();
+  let currentTime = "2026-07-28T12:00:00.000Z";
+  const inquiryContent = [
+    "# 询价单",
+    "",
+    "询价编号：RFQ-100",
+    "客户：Acme",
+    "产品：Widget",
+    "数量：10",
+  ].join("\n");
+  try {
+    const { state, service, actor } = setup(root, { now: () => currentTime });
+    const source = service.createSource({
+      projectId: "project",
+      readMode: "supported_text",
+    }, actor).body.source;
+    assert.equal(
+      (await service.scanIncrementalIntake({ sourceId: source.id }, actor)).body.error,
+      "workflow_intake_baseline_required",
+    );
+    await service.scanSource({ sourceId: source.id }, actor);
+    const baselineArtifactCount = state.workflowArtifacts.length;
+
+    mkdirSync(join(root, "incoming"), { recursive: true });
+    writeFileSync(join(root, "incoming/RFQ-100.md"), inquiryContent);
+    const observed = await service.scanIncrementalIntake({ sourceId: source.id }, actor);
+    assert.equal(observed.status, 200);
+    assert.equal(observed.body.intake.waitingStable, 1);
+    assert.equal(observed.body.observations[0].state, "waiting_stable");
+    assert.equal(observed.body.observations[0].signature, undefined);
+    assert.equal(observed.body.observations[0].contentIdentity, undefined);
+    assert.equal(state.workflowArtifacts.length, baselineArtifactCount);
+
+    currentTime = "2026-07-28T12:00:03.000Z";
+    const ready = await service.scanIncrementalIntake({ sourceId: source.id }, actor);
+    assert.equal(ready.body.intake.ready, 1);
+    const readyObservation = ready.body.observations.find((row) =>
+      row.relativePath === "incoming/RFQ-100.md");
+    assert.equal(readyObservation.state, "ready");
+    assert.equal(state.workflowArtifacts.length, baselineArtifactCount + 1);
+    const artifactId = readyObservation.artifactId;
+
+    writeFileSync(join(root, "incoming/RFQ-100-copy.md"), inquiryContent);
+    currentTime = "2026-07-28T12:00:04.000Z";
+    assert.equal(
+      (await service.scanIncrementalIntake({ sourceId: source.id }, actor))
+        .body.intake.waitingStable,
+      1,
+    );
+    currentTime = "2026-07-28T12:00:07.000Z";
+    const duplicate = await service.scanIncrementalIntake({ sourceId: source.id }, actor);
+    const duplicateObservation = duplicate.body.observations.find((row) =>
+      row.relativePath === "incoming/RFQ-100-copy.md");
+    assert.equal(duplicateObservation.state, "duplicate");
+    assert.equal(duplicateObservation.canonicalArtifactId, artifactId);
+    assert.equal(state.workflowArtifacts.length, baselineArtifactCount + 1);
+
+    rmSync(join(root, "incoming/RFQ-100-copy.md"));
+    renameSync(
+      join(root, "incoming/RFQ-100.md"),
+      join(root, "incoming/RFQ-100-renamed.md"),
+    );
+    currentTime = "2026-07-28T12:00:08.000Z";
+    await service.scanIncrementalIntake({ sourceId: source.id }, actor);
+    currentTime = "2026-07-28T12:00:11.000Z";
+    const moved = await service.scanIncrementalIntake({ sourceId: source.id }, actor);
+    const movedObservation = moved.body.observations.find((row) =>
+      row.relativePath === "incoming/RFQ-100-renamed.md");
+    assert.equal(movedObservation.state, "ready");
+    assert.equal(movedObservation.artifactId, artifactId);
+    assert.equal(
+      state.workflowArtifacts.find((artifact) => artifact.id === artifactId).relativePath,
+      "incoming/RFQ-100-renamed.md",
+    );
+    assert.equal(state.workflowArtifacts.length, baselineArtifactCount + 1);
+
+    const replay = await service.scanIncrementalIntake({ sourceId: source.id }, actor);
+    assert.equal(replay.body.intake.ready, 0);
+    assert.equal(replay.body.intake.unchanged, baselineArtifactCount + 1);
+    assert.ok(source.intakeCursor.revision >= 6);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("incremental intake observations survive restart and source revocation stops readiness", async () => {
+  const root = fixture();
+  let currentTime = "2026-07-28T12:00:00.000Z";
+  try {
+    const { state, service, actor } = setup(root, { now: () => currentTime });
+    const source = service.createSource({
+      projectId: "project",
+      readMode: "supported_text",
+    }, actor).body.source;
+    await service.scanSource({ sourceId: source.id }, actor);
+    writeFileSync(join(root, "询价-RFQ-101.md"), "# 询价单\n\n询价编号：RFQ-101\n客户：Beta");
+    await service.scanIncrementalIntake({ sourceId: source.id }, actor);
+    assert.equal(state.workflowIntakeObservations[0].state, "waiting_stable");
+
+    currentTime = "2026-07-28T12:00:03.000Z";
+    let restartedId = 0;
+    const restarted = createWorkflowMemoryService({
+      state,
+      now: () => currentTime,
+      nextId: (prefix) => `${prefix}_restart_${++restartedId}`,
+    });
+    const resumed = await restarted.scanIncrementalIntake({ sourceId: source.id }, actor);
+    assert.equal(resumed.body.intake.ready, 1);
+    assert.equal(state.workflowIntakeObservations[0].state, "ready");
+    assert.equal(state.workflowIntakeReceipts.length, 0);
+
+    const revoked = restarted.revokeSource({
+      sourceId: source.id,
+      expectedRevision: source.revision,
+    }, actor);
+    assert.equal(revoked.status, 200);
+    assert.equal(
+      (await restarted.scanIncrementalIntake({ sourceId: source.id }, actor)).body.error,
+      "workflow_source_revoked",
+    );
+    const foreign = { userId: "user_b", teamId: "team_b", role: "owner" };
+    assert.equal(
+      restarted.listIntakeObservations({ sourceId: source.id }, foreign).status,
+      404,
+    );
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

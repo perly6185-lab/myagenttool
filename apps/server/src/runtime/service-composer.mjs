@@ -3848,6 +3848,8 @@ export function createServerRuntimeServices({
     listWorkflowSources: workflowMemoryService.listSources,
     createWorkflowSource: workflowMemoryService.createSource,
     scanWorkflowSource: workflowMemoryService.scanSource,
+    scanWorkflowIncrementalIntake: workflowMemoryService.scanIncrementalIntake,
+    listWorkflowIntakeObservations: workflowMemoryService.listIntakeObservations,
     cancelWorkflowSourceScan: workflowMemoryService.cancelScan,
     revokeWorkflowSource: workflowMemoryService.revokeSource,
     deleteWorkflowSourceLearning: workflowMemoryService.deleteSourceLearning,
