@@ -31,6 +31,14 @@ export interface WorkflowIntakeObservation {
   reason: string | null;
   artifactId: string | null;
   canonicalArtifactId: string | null;
+  artifactRevision: number | null;
+  extraction: {
+    state: "ready" | "needs_ocr" | "failed" | "limited" | "skipped";
+    pageCount: number | null;
+    characterCount: number;
+    providerId: string | null;
+    localOnly: boolean | null;
+  } | null;
   receiptId?: string | null;
   receipt?: Pick<
     InquiryIntakeReceipt,
@@ -56,6 +64,15 @@ export interface InquiryIntakeReceipt {
   sourceId: string;
   observationId: string;
   artifactId: string;
+  supportingArtifactIds: string[];
+  supportingObservationIds: string[];
+  supportingBindings: Array<{
+    observationId: string;
+    artifactId: string;
+    role: "reference" | "historical_output";
+    documentType: "other_reference" | "inquiry_ledger";
+    pairingEvidence: Array<{ kind: string; value: string }>;
+  }>;
   businessKey: string;
   routineDefinitionId: string;
   routineVersion: number;
@@ -76,6 +93,28 @@ export interface InquiryIntakeInspection {
     artifactId: string;
     relativePath: string;
     revision: number;
+    ocrEvidence: Array<{
+      page: number;
+      confidence: number | null;
+      lineCount: number;
+      preview: string;
+    }>;
+    supportingObservations: Array<{
+      id: string;
+      artifactId: string;
+      relativePath: string;
+      name: string;
+      family: string;
+      extractionState: string;
+      role: "reference" | "historical_output";
+      documentType: "other_reference" | "inquiry_ledger";
+      pairingEvidence: Array<{ kind: string; value: string }>;
+      classification?: Pick<
+        BusinessDocumentClassification,
+        "id" | "artifactId" | "documentType" | "confidence" | "confirmationState"
+        | "analysisState" | "riskSignals" | "fieldProposals" | "revision"
+      >;
+    }>;
   };
   classification: Pick<
     BusinessDocumentClassification,
@@ -134,7 +173,43 @@ export const workflowMemoryApi = {
       "GET",
       `/api/workflow-memory/intake-observations?sourceId=${encodeURIComponent(sourceId)}`,
     ),
-  inspectWorkflowInquiryIntake: (observationId: string) =>
+  getWorkflowOcrReadiness: () =>
+    request<{
+      state: "ready" | "unavailable";
+      providerId: string | null;
+      reason: string | null;
+      localOnly: true;
+      supportedExtensions: string[];
+    }>("GET", "/api/workflow-memory/ocr-readiness"),
+  ocrWorkflowArtifact: (
+    artifactId: string,
+    body: { expectedRevision: number; confirmed: true },
+  ) => request<{ artifact: WorkflowArtifact; replayed: boolean }>(
+    "POST",
+    `/api/workflow-memory/artifacts/${encodeURIComponent(artifactId)}/ocr`,
+    body,
+    true,
+    190_000,
+  ),
+  cancelWorkflowOcrArtifact: (artifactId: string) =>
+    request<{ artifactId: string; cancellationRequested: true }>(
+      "DELETE",
+      `/api/workflow-memory/artifacts/${encodeURIComponent(artifactId)}/ocr`,
+    ),
+  getWorkflowOcrStatus: (artifactId: string) =>
+    request<{
+      state: "idle" | "running" | "completed";
+      completedPages: number;
+      totalPages: number | null;
+    }>(
+      "GET",
+      `/api/workflow-memory/artifacts/${encodeURIComponent(artifactId)}/ocr`,
+    ),
+  inspectWorkflowInquiryIntake: (
+    observationId: string,
+    supportingObservationIds: string[] = [],
+    supportingObservationRoles: Record<string, "reference" | "historical_output"> = {},
+  ) =>
     request<InquiryIntakeInspection | {
       state: "triggered";
       receipt: InquiryIntakeReceipt;
@@ -142,7 +217,7 @@ export const workflowMemoryApi = {
     }>(
       "POST",
       `/api/workflow-memory/intake-observations/${encodeURIComponent(observationId)}/inspect`,
-      {},
+      { supportingObservationIds, supportingObservationRoles },
     ),
   acceptWorkflowInquiryIntake: (
     observationId: string,
@@ -153,6 +228,8 @@ export const workflowMemoryApi = {
       confirmed: true;
       fieldCorrections?: Partial<Record<BusinessFieldProposal["key"], string>>;
       excludedFieldKeys?: BusinessFieldProposal["key"][];
+      supportingObservationIds?: string[];
+      supportingObservationRoles?: Record<string, "reference" | "historical_output">;
     },
   ) => request<{
     state: "triggered";

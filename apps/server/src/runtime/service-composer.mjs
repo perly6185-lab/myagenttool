@@ -48,6 +48,10 @@ import {
   resolveWorkflowEmbeddingConfig,
 } from "../services/workflow-embedding-adapter.mjs";
 import {
+  createLocalWorkflowOcrAdapter,
+  resolveWorkflowOcrConfig,
+} from "../services/workflow-ocr-adapter.mjs";
+import {
   createLocalWorkflowBusinessSemanticAdapter,
   resolveWorkflowBusinessSemanticConfig,
 } from "../services/workflow-business-semantic-adapter.mjs";
@@ -470,6 +474,9 @@ export function createServerRuntimeServices({
     persistStateSoon,
     embeddingAdapter: createLocalWorkflowEmbeddingAdapter({
       config: resolveWorkflowEmbeddingConfig(),
+    }),
+    ocrAdapter: createLocalWorkflowOcrAdapter({
+      config: resolveWorkflowOcrConfig(),
     }),
     createWorkItem: workItemService.createWorkItem,
     recordWorkItemVerification: workItemService.recordVerification,
@@ -4114,6 +4121,10 @@ export function createServerRuntimeServices({
     listWorkflowArtifacts: workflowMemoryService.listArtifacts,
     confirmWorkflowArtifact: workflowMemoryService.confirmArtifact,
     retryWorkflowArtifactExtraction: workflowMemoryService.retryArtifactExtraction,
+    getWorkflowOcrReadiness: workflowMemoryService.getOcrReadiness,
+    ocrWorkflowArtifact: workflowMemoryService.ocrArtifact,
+    getWorkflowOcrStatus: workflowMemoryService.getOcrStatus,
+    cancelWorkflowOcrArtifact: workflowMemoryService.cancelOcrArtifact,
     setWorkflowArtifactExclusion: workflowMemoryService.setArtifactExclusion,
     indexWorkflowSourceEmbeddings: workflowMemoryService.indexSourceEmbeddings,
     proposeWorkflowPairs: workflowMemoryService.pairProposals,

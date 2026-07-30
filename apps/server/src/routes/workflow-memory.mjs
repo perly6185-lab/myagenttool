@@ -25,6 +25,10 @@ export async function handleWorkflowMemoryRoutes({
   listArtifacts,
   confirmArtifact,
   retryArtifactExtraction,
+  getOcrReadiness,
+  ocrArtifact,
+  getOcrStatus,
+  cancelOcrArtifact,
   setArtifactExclusion,
   indexSourceEmbeddings,
   analyzeBusinessDocuments,
@@ -175,7 +179,11 @@ export async function handleWorkflowMemoryRoutes({
     const body = await readJson(req);
     const observationId = decodeURIComponent(intakeObservationAction[1]);
     const result = intakeObservationAction[2] === "inspect"
-      ? await inspectInquiryIntake({ observationId }, actor)
+      ? await inspectInquiryIntake({
+        observationId,
+        supportingObservationIds: body?.supportingObservationIds,
+        supportingObservationRoles: body?.supportingObservationRoles,
+      }, actor)
       : await acceptInquiryIntake({
         observationId,
         expectedRevision: body?.expectedRevision,
@@ -184,6 +192,8 @@ export async function handleWorkflowMemoryRoutes({
         confirmed: body?.confirmed,
         fieldCorrections: body?.fieldCorrections,
         excludedFieldKeys: body?.excludedFieldKeys,
+        supportingObservationIds: body?.supportingObservationIds,
+        supportingObservationRoles: body?.supportingObservationRoles,
       }, actor);
     sendJson(res, result.status, result.body);
     return true;
@@ -541,6 +551,40 @@ export async function handleWorkflowMemoryRoutes({
       artifactId: decodeURIComponent(artifactConfirm[1]),
       role: body?.role,
       expectedRevision: body?.expectedRevision,
+    }, actor);
+    sendJson(res, result.status, result.body);
+    return true;
+  }
+
+  if (url.pathname === "/api/workflow-memory/ocr-readiness" && req.method === "GET") {
+    const result = getOcrReadiness({}, actor);
+    sendJson(res, result.status, result.body);
+    return true;
+  }
+
+  const artifactOcr = url.pathname.match(
+    /^\/api\/workflow-memory\/artifacts\/([^/]+)\/ocr$/,
+  );
+  if (artifactOcr && req.method === "POST") {
+    const body = await readJson(req);
+    const result = await ocrArtifact({
+      artifactId: decodeURIComponent(artifactOcr[1]),
+      expectedRevision: body?.expectedRevision,
+      confirmed: body?.confirmed,
+    }, actor);
+    sendJson(res, result.status, result.body);
+    return true;
+  }
+  if (artifactOcr && req.method === "GET") {
+    const result = getOcrStatus({
+      artifactId: decodeURIComponent(artifactOcr[1]),
+    }, actor);
+    sendJson(res, result.status, result.body);
+    return true;
+  }
+  if (artifactOcr && req.method === "DELETE") {
+    const result = cancelOcrArtifact({
+      artifactId: decodeURIComponent(artifactOcr[1]),
     }, actor);
     sendJson(res, result.status, result.body);
     return true;

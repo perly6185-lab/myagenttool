@@ -10,6 +10,8 @@ function harness({
   readMode = "supported_text",
   observationState = "ready",
   existingCase = null,
+  withSupportingEvidence = false,
+  supportingSourceId = "wfs_a",
 } = {}) {
   let id = 0;
   const calls = { analyze: 0, confirm: 0, createCase: 0, materialize: 0 };
@@ -21,7 +23,13 @@ function harness({
       projectId: "prj_a",
       state: "active",
       readMode,
-    }],
+    }, ...(supportingSourceId !== "wfs_a" ? [{
+      id: supportingSourceId,
+      ownerTeamId: "team_a",
+      projectId: "prj_a",
+      state: "active",
+      readMode,
+    }] : [])],
     workflowArtifacts: [{
       id: "wfa_a",
       ownerTeamId: "team_a",
@@ -30,7 +38,19 @@ function harness({
       availability: "available",
       exclusion: false,
       fingerprint: "a".repeat(64),
-    }],
+    }, ...(withSupportingEvidence ? [{
+      id: "wfa_support",
+      ownerTeamId: "team_a",
+      projectId: "prj_a",
+      sourceId: supportingSourceId,
+      availability: "available",
+      exclusion: false,
+      fingerprint: "b".repeat(64),
+    name: "spec.docx",
+    family: "document",
+    extension: "docx",
+    extraction: { state: "ready" },
+    }] : [])],
     workflowIntakeObservations: [{
       id: "wio_a",
       ownerTeamId: "team_a",
@@ -43,7 +63,19 @@ function harness({
       state: observationState,
       reason: null,
       revision: 3,
-    }],
+    }, ...(withSupportingEvidence ? [{
+      id: "wio_support",
+      ownerTeamId: "team_a",
+      projectId: "prj_a",
+      sourceId: supportingSourceId,
+      artifactId: "wfa_support",
+      canonicalArtifactId: "wfa_support",
+      contentIdentity: "d".repeat(64),
+      relativePath: "inquiries/spec.docx",
+      state: "ready",
+      reason: null,
+      revision: 2,
+    }] : [])],
     workflowIntakeReceipts: [],
     businessCases: existingCase ? [existingCase] : [],
   };
@@ -60,6 +92,16 @@ function harness({
       value: "RFQ-2026-101",
       evidenceRefs: [{ artifactId: "wfa_a", kind: "field", field: "inquiry_number" }],
     }],
+  };
+  const supportingClassification = {
+    id: "bdc_support",
+    revision: 1,
+    artifactId: "wfa_support",
+    artifactFingerprint: "b".repeat(64),
+    documentType: "unknown",
+    confirmationState: "proposed",
+    confidence: 0.55,
+    fieldProposals: [],
   };
   const definition = {
     id: "brd_a",
@@ -81,7 +123,11 @@ function harness({
       sourceId: "wfs_a",
       businessKey: input.businessKey,
       artifactBindings: input.artifactBindings,
-      artifactFingerprints: { wfa_a: "a".repeat(64) },
+      evidenceRefs: input.evidenceRefs,
+      artifactFingerprints: Object.fromEntries(input.artifactBindings.map((binding) => [
+        binding.artifactId,
+        state.workflowArtifacts.find((artifact) => artifact.id === binding.artifactId)?.fingerprint,
+      ])),
     };
     state.businessCases.push(businessCase);
     return { status: 201, body: { businessCase, replayed: false } };
@@ -90,9 +136,15 @@ function harness({
     state,
     now: () => "2026-07-29T12:00:00.000Z",
     nextId: (prefix) => `${prefix}_${++id}`,
-    analyzeArtifact: async () => {
+    analyzeArtifact: async ({ artifactId }) => {
       calls.analyze += 1;
-      return { status: 200, body: { classification, replayed: calls.analyze > 1 } };
+      return {
+        status: 200,
+        body: {
+          classification: artifactId === "wfa_support" ? supportingClassification : classification,
+          replayed: calls.analyze > 1,
+        },
+      };
     },
     confirmClassification: (input) => {
       calls.confirm += 1;
@@ -100,12 +152,14 @@ function harness({
         status: 200,
         body: {
           classification: {
-            ...classification,
-            revision: classification.revision + 1,
+            ...(input.classificationId === "bdc_support" ? supportingClassification : classification),
+            revision: (input.classificationId === "bdc_support"
+              ? supportingClassification
+              : classification).revision + 1,
             documentType: input.documentType,
             confirmationState: "confirmed",
           },
-          entity: {
+          entity: input.documentType === "inquiry_ledger" ? null : {
             id: "bent_a",
             entityType: "inquiry",
             businessKey: input.fieldCorrections?.inquiry_number ?? "RFQ-2026-101",
@@ -164,6 +218,232 @@ test("explicit acceptance creates one confirmed case, pinned routine task, and s
   assert.equal(state.workflowIntakeObservations[0].state, "triggered");
   assert.equal(state.workflowIntakeReceipts.length, 1);
   assert.deepEqual(calls, { analyze: 1, confirm: 1, createCase: 1, materialize: 1 });
+});
+
+test("one primary inquiry binds supporting files to the same case and one local Issue", async () => {
+  const { state, service, calls } = harness({ withSupportingEvidence: true });
+  const inspection = await service.inspect({
+    observationId: "wio_a",
+    supportingObservationIds: ["wio_support"],
+  }, ACTOR);
+  assert.equal(inspection.status, 200);
+  assert.deepEqual(inspection.body.observation.supportingObservations, [{
+    id: "wio_support",
+    artifactId: "wfa_support",
+    relativePath: "inquiries/spec.docx",
+    name: "spec.docx",
+    family: "document",
+    extractionState: "ready",
+    role: "reference",
+    documentType: "other_reference",
+    pairingEvidence: [],
+  }]);
+
+  const result = await service.accept({
+    observationId: "wio_a",
+    supportingObservationIds: ["wio_support"],
+    expectedRevision: 3,
+    idempotencyKey: "accept-case-bundle",
+    routineDefinitionId: "brd_a",
+    confirmed: true,
+  }, ACTOR);
+  assert.equal(result.status, 201);
+  assert.deepEqual(result.body.receipt.supportingArtifactIds, ["wfa_support"]);
+  assert.deepEqual(state.businessCases[0].artifactBindings, [
+    { artifactId: "wfa_a", documentType: "inquiry", roles: ["trigger", "input"] },
+    { artifactId: "wfa_support", documentType: "other_reference", roles: ["reference"] },
+  ]);
+  assert.equal(state.workflowIntakeObservations[0].state, "triggered");
+  assert.equal(state.workflowIntakeObservations[1].state, "triggered");
+  assert.equal(state.workflowIntakeObservations[1].receiptId, result.body.receipt.id);
+  assert.equal(state.workflowIntakeReceipts.length, 1);
+  assert.equal(calls.materialize, 1);
+});
+
+test("an explicitly identified historical workbook is paired as the inquiry ledger output", async () => {
+  const { state, service, calls } = harness({ withSupportingEvidence: true });
+  Object.assign(state.workflowArtifacts[0], {
+    name: "97-动态热机械分析仪DMA.pdf",
+    family: "document",
+    extraction: {
+      state: "ready",
+      ocr: { providerId: "macos-vision" },
+      blocks: [{
+        text: "动态热机械分析仪技术协议 设备型号 DMA850",
+        confidence: 0.91,
+        location: { kind: "page", index: 1 },
+        evidence: [{ text: "设备型号 DMA850" }],
+      }],
+    },
+  });
+  Object.assign(state.workflowArtifacts[1], {
+    name: "97-动态热机械分析仪DMA-信息汇总.xlsx",
+    family: "spreadsheet",
+    extension: "xlsx",
+    extraction: {
+      state: "ready",
+      blocks: [{
+        text: "PDF文件名称：97-动态热机械分析仪DMA.pdf",
+        location: { kind: "sheet_row", sheet: 1, row: 2 },
+      }],
+    },
+  });
+
+  const inspection = await service.inspect({
+    observationId: "wio_a",
+    supportingObservationIds: ["wio_support"],
+    supportingObservationRoles: { wio_support: "historical_output" },
+  }, ACTOR);
+  assert.equal(inspection.status, 200);
+  assert.deepEqual(inspection.body.observation.ocrEvidence, [{
+    page: 1,
+    confidence: 0.91,
+    lineCount: 1,
+    preview: "动态热机械分析仪技术协议 设备型号 DMA850",
+  }]);
+  assert.deepEqual(inspection.body.observation.supportingObservations[0], {
+    id: "wio_support",
+    artifactId: "wfa_support",
+    relativePath: "inquiries/spec.docx",
+    name: "97-动态热机械分析仪DMA-信息汇总.xlsx",
+    family: "spreadsheet",
+    extractionState: "ready",
+    role: "historical_output",
+    documentType: "inquiry_ledger",
+    pairingEvidence: [
+      { kind: "shared_filename_case_key", value: "97" },
+      { kind: "output_references_input", value: "97-动态热机械分析仪DMA.pdf" },
+    ],
+    classification: {
+      id: "bdc_support",
+      artifactId: "wfa_support",
+      documentType: "unknown",
+      confidence: 0.55,
+      confirmationState: "proposed",
+      analysisState: undefined,
+      riskSignals: undefined,
+      fieldProposals: [],
+      revision: 1,
+    },
+  });
+
+  const result = await service.accept({
+    observationId: "wio_a",
+    supportingObservationIds: ["wio_support"],
+    supportingObservationRoles: { wio_support: "historical_output" },
+    expectedRevision: 3,
+    idempotencyKey: "accept-real-pdf-xlsx-pair",
+    routineDefinitionId: "brd_a",
+    confirmed: true,
+  }, ACTOR);
+  assert.equal(result.status, 201);
+  assert.deepEqual(state.businessCases[0].artifactBindings, [
+    { artifactId: "wfa_a", documentType: "inquiry", roles: ["trigger", "input"] },
+    { artifactId: "wfa_support", documentType: "inquiry_ledger", roles: ["output"] },
+  ]);
+  assert.deepEqual(state.businessCases[0].evidenceRefs.slice(-2), [
+    {
+      artifactId: "wfa_support",
+      kind: "shared_filename_case_key",
+      field: null,
+      location: null,
+    },
+    {
+      artifactId: "wfa_support",
+      kind: "output_references_input",
+      field: null,
+      location: null,
+    },
+  ]);
+  assert.equal(result.body.receipt.supportingBindings[0].role, "historical_output");
+  assert.equal(result.body.receipt.supportingBindings[0].pairingEvidence.length, 2);
+  assert.equal(state.workflowIntakeReceipts.length, 1);
+  assert.equal(calls.materialize, 1);
+  assert.equal(calls.confirm, 2);
+  const mismatchedReplay = await service.accept({
+    observationId: "wio_a",
+    supportingObservationIds: [],
+    supportingObservationRoles: {},
+    expectedRevision: state.workflowIntakeObservations[0].revision,
+    idempotencyKey: "changed-real-pdf-xlsx-pair",
+    routineDefinitionId: "brd_a",
+    confirmed: true,
+  }, ACTOR);
+  assert.equal(mismatchedReplay.status, 409);
+  assert.equal(mismatchedReplay.body.error, "workflow_intake_replay_support_conflict");
+  assert.equal(state.workflowIntakeReceipts.length, 1);
+});
+
+test("an unreadable or unpaired file cannot be promoted to a historical inquiry ledger", async () => {
+  const { state, service, calls } = harness({ withSupportingEvidence: true });
+  const image = await service.inspect({
+    observationId: "wio_a",
+    supportingObservationIds: ["wio_support"],
+    supportingObservationRoles: { wio_support: "historical_output" },
+  }, ACTOR);
+  assert.equal(image.status, 409);
+  assert.equal(image.body.error, "workflow_intake_historical_output_not_supported");
+  assert.equal(calls.analyze, 0);
+
+  Object.assign(state.workflowArtifacts[1], {
+    name: "unrelated.xlsx",
+    family: "spreadsheet",
+    extension: "xlsx",
+    extraction: { state: "ready", blocks: [{ text: "unrelated output" }] },
+  });
+  const unpaired = await service.inspect({
+    observationId: "wio_a",
+    supportingObservationIds: ["wio_support"],
+    supportingObservationRoles: { wio_support: "historical_output" },
+  }, ACTOR);
+  assert.equal(unpaired.status, 409);
+  assert.equal(unpaired.body.error, "workflow_intake_historical_output_unpaired");
+  assert.equal(calls.analyze, 0);
+});
+
+test("supporting files from another Workflow Memory source fail closed", async () => {
+  const { service, calls } = harness({
+    withSupportingEvidence: true,
+    supportingSourceId: "wfs_other",
+  });
+  const inspection = await service.inspect({
+    observationId: "wio_a",
+    supportingObservationIds: ["wio_support"],
+  }, ACTOR);
+  assert.equal(inspection.status, 409);
+  assert.equal(inspection.body.error, "workflow_intake_supporting_observation_not_ready");
+  assert.deepEqual(calls, { analyze: 0, confirm: 0, createCase: 0, materialize: 0 });
+});
+
+test("an existing case cannot claim newly supplied supporting evidence without binding it", async () => {
+  const { state, service } = harness({
+    withSupportingEvidence: true,
+    existingCase: {
+      id: "bcs_existing",
+      ownerTeamId: "team_a",
+      projectId: "prj_a",
+      sourceId: "wfs_a",
+      businessKey: "RFQ-2026-101",
+      artifactBindings: [{
+        artifactId: "wfa_a",
+        documentType: "inquiry",
+        roles: ["trigger", "input"],
+      }],
+      artifactFingerprints: { wfa_a: "a".repeat(64) },
+    },
+  });
+  const result = await service.accept({
+    observationId: "wio_a",
+    supportingObservationIds: ["wio_support"],
+    expectedRevision: 3,
+    idempotencyKey: "support-conflict",
+    routineDefinitionId: "brd_a",
+    confirmed: true,
+  }, ACTOR);
+  assert.equal(result.status, 409);
+  assert.equal(result.body.error, "workflow_intake_business_case_support_conflict");
+  assert.equal(state.workflowIntakeObservations[1].state, "ready");
+  assert.equal(state.workflowIntakeReceipts.length, 0);
 });
 
 test("same request replays and changed payload under the same key conflicts", async () => {

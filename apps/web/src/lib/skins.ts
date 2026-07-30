@@ -105,6 +105,42 @@ declare global {
       applyChrome?: (chrome: { bg: string; themeSource: SkinMode; resolved: ResolvedMode }) => void;
       pickLocalOfficeDocument?: () => Promise<{ selectionId: string; absolutePath: string; name: string; type: "docx" | "xlsx" | "pptx"; size: number } | null>;
       pickWorkflowSourceFolder?: () => Promise<{ absolutePath: string; name: string } | null>;
+      pickWorkflowCaseFiles?: () => Promise<{
+        selectionId: string;
+        files: Array<{
+          name: string;
+          extension: string;
+          size: number;
+          readiness: "ready" | "inspect" | "needs_ocr";
+        }>;
+      } | null>;
+      stageWorkflowCase?: (input: {
+        requestId: string;
+        sourceId: string;
+        selectionId?: string;
+        pastedText?: string;
+        primaryKey: string;
+        caseName?: string;
+        authorizationMode: "authorized" | "deidentified";
+        supportingRoles?: Record<string, "reference" | "historical_output">;
+        confirmed: true;
+      }) => Promise<{
+        requestId: string;
+        caseDirectory: string;
+        primaryRelativePath: string;
+        supportingRelativePaths: string[];
+        supportingFileRoles: Record<string, "reference" | "historical_output">;
+        files: Array<{
+          key: string;
+          name: string;
+          relativePath: string;
+          extension: string;
+          size: number;
+          readiness: "ready" | "inspect" | "needs_ocr";
+        }>;
+        authorizationMode: "authorized" | "deidentified";
+        recordedAt: string;
+      }>;
       copySelectedOfficeDocument?: (input: { selectionId: string; worktreeId: string; destination: string; onConflict?: "rename" }) => Promise<{ path: string; bytes: number; type: "docx" | "xlsx" | "pptx" }>;
       openContainedOfficeDocument?: (input: { projectId: string; worktreeId?: string; relativePath: string }) => Promise<{ opened: true }>;
       openContainedAsset?: (input: { projectId: string; worktreeId?: string; relativePath: string }) => Promise<{ opened: true }>;

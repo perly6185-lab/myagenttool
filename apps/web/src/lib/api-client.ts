@@ -1226,6 +1226,7 @@ export async function request<T = unknown>(
   path: string,
   body?: unknown,
   retry = true,
+  timeoutMs = REQUEST_TIMEOUT_MS,
 ): Promise<T> {
   await ensureSession();
   const headers: Record<string, string> = { ...csrfHeaders(method) };
@@ -1235,13 +1236,13 @@ export async function request<T = unknown>(
     headers: Object.keys(headers).length ? headers : undefined,
     credentials: "include",
     body: body ? JSON.stringify(body) : undefined,
-    signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+    signal: AbortSignal.timeout(timeoutMs),
   });
   // Cookie rejected/expired: rediscover once, then replay the request.
   if (response.status === 401 && retry) {
     sessionReady = false;
     await ensureSession();
-    return request<T>(method, path, body, false);
+    return request<T>(method, path, body, false, timeoutMs);
   }
   if (response.status === 204) return undefined as T;
   const data = await response.json().catch(() => ({}));
