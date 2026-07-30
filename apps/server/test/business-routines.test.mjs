@@ -1,5 +1,12 @@
 import assert from "node:assert/strict";
-import { mkdirSync, rmSync } from "node:fs";
+import {
+  mkdirSync,
+  readFileSync,
+  readdirSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -11,6 +18,7 @@ import {
   createBusinessRoutineService,
   routineIdempotencyKeys,
 } from "../src/services/business-routines.mjs";
+import { writeLocalQuotationDraft } from "../src/services/business-routine-executors.mjs";
 import { sameProjectPath } from "../src/services/projects.mjs";
 
 const ACTOR_A = { userId: "usr_a", teamId: "team_a" };
@@ -32,19 +40,23 @@ function harness() {
     workflowArtifacts: [
       {
         id: "wfa_inquiry", ownerTeamId: "team_a", projectId: "prj_a", sourceId: "wfs_a",
-        availability: "available", fingerprint: "a".repeat(64),
+        availability: "available", fingerprint: "a".repeat(64), relativePath: "inquiries/RFQ-2026-001.md",
       },
       {
         id: "wfa_quote", ownerTeamId: "team_a", projectId: "prj_a", sourceId: "wfs_a",
-        availability: "available", fingerprint: "b".repeat(64),
+        availability: "available", fingerprint: "b".repeat(64), relativePath: "quotations/QUO-2026-001.md",
       },
       {
         id: "wfa_foreign", ownerTeamId: "team_b", projectId: "prj_b", sourceId: "wfs_b",
-        availability: "available", fingerprint: "c".repeat(64),
+        availability: "available", fingerprint: "c".repeat(64), relativePath: "foreign.md",
       },
       {
         id: "wfa_order", ownerTeamId: "team_a", projectId: "prj_a", sourceId: "wfs_a",
-        availability: "available", fingerprint: "d".repeat(64),
+        availability: "available", fingerprint: "d".repeat(64), relativePath: "orders/PO-2026-001.md",
+      },
+      {
+        id: "wfa_price", ownerTeamId: "team_a", projectId: "prj_a", sourceId: "wfs_a",
+        availability: "available", fingerprint: "f".repeat(64), relativePath: "references/price-list.md",
       },
     ],
     devices: [{ id: "dev_a", ownerTeamId: "team_a", maxConcurrency: 2 }],
@@ -604,6 +616,7 @@ test("routine Issues materialize once and schedule dependency-safe work with bou
     stepKey: "references",
     expectedRevision: execution.run.revision,
     idempotencyKey: "complete-references",
+    executorId: "local.reference-retrieval.v1",
   }, ACTOR_A).body.execution;
   assert.equal(execution.steps.find((step) => step.key === "quote").run.state, "running");
   execution = service.completeRoutineStep({
@@ -613,6 +626,7 @@ test("routine Issues materialize once and schedule dependency-safe work with bou
     idempotencyKey: "fail-quote",
     succeeded: false,
     errorCode: "quotation_generation_interrupted",
+    executorId: "local.markdown-quotation-draft.v1",
   }, ACTOR_A).body.execution;
   assert.equal(execution.run.status, "failed");
   execution = service.retryRoutineStep({
@@ -627,6 +641,7 @@ test("routine Issues materialize once and schedule dependency-safe work with bou
     stepKey: "quote",
     expectedRevision: execution.run.revision,
     idempotencyKey: "complete-quote",
+    executorId: "local.markdown-quotation-draft.v1",
   }, ACTOR_A).body.execution;
   assert.equal(execution.run.status, "awaiting_approval");
   assert.equal(service.transitionRoutineStep({
@@ -652,6 +667,281 @@ test("routine Issues materialize once and schedule dependency-safe work with bou
   }, ACTOR_A).body.execution;
   assert.equal(execution.run.status, "succeeded");
   assert.equal(execution.steps.find((step) => step.key === "order_handoff").run.state, "skipped");
+});
+
+test("governed executors retrieve current evidence, write one quotation draft, and reuse the order child Issue", () => {
+  const root = join(tmpdir(), `myagenttool-routine-executors-${Date.now()}`);
+  const sourceRoot = join(root, "commercial");
+  mkdirSync(sourceRoot, { recursive: true });
+  try {
+    const { service, state } = harness();
+    state.projects.find((project) => project.id === "prj_a").path = root;
+    state.workflowSources.find((source) => source.id === "wfs_a").relativePath = "commercial";
+    state.businessDocumentClassifications.push(
+      {
+        id: "bdc_price",
+        ownerTeamId: "team_a",
+        projectId: "prj_a",
+        sourceId: "wfs_a",
+        artifactId: "wfa_price",
+        artifactFingerprint: "f".repeat(64),
+        documentType: "price_list",
+        confirmationState: "confirmed",
+      },
+      {
+        id: "bdc_order",
+        ownerTeamId: "team_a",
+        projectId: "prj_a",
+        sourceId: "wfs_a",
+        artifactId: "wfa_order",
+        artifactFingerprint: "d".repeat(64),
+        documentType: "order",
+        confirmationState: "confirmed",
+      },
+    );
+    const { businessCase } = createCaseAndDefinition(service);
+    businessCase.artifactBindings.push({
+      artifactId: "wfa_price",
+      documentType: "price_list",
+      roles: ["reference"],
+    });
+    businessCase.artifactFingerprints.wfa_price = "f".repeat(64);
+    let definition = service.createRoutineDefinition({
+      projectId: "prj_a",
+      sourceId: "wfs_a",
+      name: "Executable commercial inquiry",
+      triggerDocumentTypes: ["inquiry"],
+      steps: [
+        {
+          key: "references",
+          kind: "retrieve",
+          label: "Retrieve approved references",
+          configuration: { documentTypes: ["price_list"] },
+        },
+        {
+          key: "quotation",
+          kind: "generate",
+          label: "Prepare quotation",
+          dependsOn: ["references"],
+          configuration: { outputDirectory: "drafts/quotations" },
+        },
+        {
+          key: "approve",
+          kind: "human_approval",
+          label: "Approve quotation",
+          dependsOn: ["quotation"],
+        },
+        {
+          key: "order_signal",
+          kind: "condition",
+          label: "Check for order",
+          required: false,
+          dependsOn: ["approve"],
+          configuration: { condition: "A confirmed customer order was received." },
+        },
+        {
+          key: "order_handoff",
+          kind: "create_issue",
+          label: "Create order follow-up",
+          required: false,
+          dependsOn: ["order_signal"],
+        },
+      ],
+      evidenceRefs: [{ artifactId: "wfa_inquiry", kind: "historical_case" }],
+      confidence: 0.9,
+    }, ACTOR_A).body.routineDefinition;
+    definition = service.transitionRoutineDefinition({
+      routineDefinitionId: definition.id,
+      expectedRevision: definition.revision,
+      action: "review",
+    }, ACTOR_A).body.routineDefinition;
+    definition = service.publishRoutineDefinition({
+      routineDefinitionId: definition.id,
+      expectedRevision: definition.revision,
+      confirmed: true,
+    }, ACTOR_A).body.routineDefinition;
+    const materialized = service.materializeRoutineIssue({
+      routineDefinitionId: definition.id,
+      businessCaseId: businessCase.id,
+      triggerArtifactIds: ["wfa_inquiry"],
+    }, ACTOR_A).body;
+
+    let execution = service.startRoutineWorkItem({
+      workItemId: materialized.workItem.id,
+      expectedRevision: materialized.execution.run.revision,
+      idempotencyKey: "start-executors",
+    }, ACTOR_A).body.execution;
+    assert.equal(execution.steps.find((step) => step.key === "references").run.state, "running");
+    execution = service.executeRoutineStep({
+      workItemId: materialized.workItem.id,
+      stepKey: "references",
+      expectedRevision: execution.run.revision,
+      idempotencyKey: "execute-references",
+    }, ACTOR_A).body.execution;
+    assert.equal(execution.steps.find((step) => step.key === "references").run.outputRefs[0].artifactId, "wfa_price");
+    assert.equal(execution.steps.find((step) => step.key === "references").run.idempotencyKey, undefined);
+    assert.equal(execution.steps.find((step) => step.key === "quotation").run.state, "running");
+    assert.equal(service.completeRoutineStep({
+      workItemId: materialized.workItem.id,
+      stepKey: "quotation",
+      expectedRevision: execution.run.revision,
+      idempotencyKey: "manual-quotation-bypass",
+    }, ACTOR_A).body.error, "routine_step_requires_governed_executor");
+
+    const generated = service.executeRoutineStep({
+      workItemId: materialized.workItem.id,
+      stepKey: "quotation",
+      expectedRevision: execution.run.revision,
+      idempotencyKey: "execute-quotation",
+    }, ACTOR_A);
+    execution = generated.body.execution;
+    const quotationOutput = execution.steps
+      .find((step) => step.key === "quotation").run.outputRefs[0];
+    assert.match(quotationOutput.relativePath, /^commercial\/drafts\/quotations\/quotation-RFQ-2026-001-r1-[a-f0-9]{8}\.md$/);
+    assert.match(readFileSync(join(root, quotationOutput.relativePath), "utf8"), /Draft only/);
+    assert.equal(execution.run.status, "awaiting_approval");
+    const replay = service.executeRoutineStep({
+      workItemId: materialized.workItem.id,
+      stepKey: "quotation",
+      expectedRevision: 1,
+      idempotencyKey: "execute-quotation",
+    }, ACTOR_A);
+    assert.equal(replay.body.replayed, true);
+    assert.equal(readdirSync(join(sourceRoot, "drafts/quotations")).length, 1);
+
+    execution = service.decideRoutineApproval({
+      workItemId: materialized.workItem.id,
+      stepKey: "approve",
+      expectedRevision: execution.run.revision,
+      idempotencyKey: "approve-generated-quotation",
+      approved: true,
+    }, ACTOR_A).body.execution;
+    const condition = service.decideRoutineCondition({
+      workItemId: materialized.workItem.id,
+      stepKey: "order_signal",
+      expectedRevision: execution.run.revision,
+      idempotencyKey: "confirmed-order-for-executor",
+      outcome: true,
+      triggerArtifactIds: ["wfa_order"],
+    }, ACTOR_A);
+    execution = condition.body.execution;
+    assert.equal(execution.steps.find((step) => step.key === "order_handoff").run.state, "running");
+    const handedOff = service.executeRoutineStep({
+      workItemId: materialized.workItem.id,
+      stepKey: "order_handoff",
+      expectedRevision: execution.run.revision,
+      idempotencyKey: "execute-order-handoff",
+    }, ACTOR_A);
+    assert.equal(handedOff.body.execution.run.status, "succeeded");
+    assert.equal(handedOff.body.childWorkItem.id, condition.body.childWorkItem.id);
+    assert.equal(state.workItems.filter((item) => item.parentId === materialized.workItem.id).length, 1);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("routine executor contracts reject unknown adapters, traversal, and escaping output links", () => {
+  const { service } = harness();
+  assert.equal(service.createRoutineDefinition({
+    projectId: "prj_a",
+    sourceId: "wfs_a",
+    name: "Unsafe executor",
+    triggerDocumentTypes: ["inquiry"],
+    steps: [{
+      key: "quotation",
+      kind: "generate",
+      label: "Prepare quotation",
+      configuration: { executorId: "external.unreviewed.v1" },
+    }],
+    evidenceRefs: [{ artifactId: "wfa_inquiry", kind: "historical_case" }],
+    confidence: 0.9,
+  }, ACTOR_A).body.error, "routine_step_executor_not_allowed");
+  assert.equal(service.createRoutineDefinition({
+    projectId: "prj_a",
+    sourceId: "wfs_a",
+    name: "Traversal output",
+    triggerDocumentTypes: ["inquiry"],
+    steps: [{
+      key: "quotation",
+      kind: "generate",
+      label: "Prepare quotation",
+      configuration: { outputDirectory: "../outside" },
+    }],
+    evidenceRefs: [{ artifactId: "wfa_inquiry", kind: "historical_case" }],
+    confidence: 0.9,
+  }, ACTOR_A).body.error, "routine_output_directory_invalid");
+
+  const root = join(tmpdir(), `myagenttool-routine-link-${Date.now()}`);
+  const sourceRoot = join(root, "commercial");
+  const outside = join(root, "outside");
+  mkdirSync(sourceRoot, { recursive: true });
+  mkdirSync(outside, { recursive: true });
+  symlinkSync(outside, join(sourceRoot, "outputs"));
+  try {
+    const executionHarness = harness();
+    executionHarness.state.projects.find((project) => project.id === "prj_a").path = root;
+    executionHarness.state.workflowSources.find((source) => source.id === "wfs_a").relativePath = "commercial";
+    const { businessCase, definition } = createCaseAndDefinition(executionHarness.service);
+    const materialized = executionHarness.service.materializeRoutineIssue({
+      routineDefinitionId: definition.id,
+      businessCaseId: businessCase.id,
+      triggerArtifactIds: ["wfa_inquiry"],
+    }, ACTOR_A).body;
+    let execution = executionHarness.service.startRoutineWorkItem({
+      workItemId: materialized.workItem.id,
+      expectedRevision: materialized.execution.run.revision,
+      idempotencyKey: "start-link-test",
+    }, ACTOR_A).body.execution;
+    execution = executionHarness.service.completeRoutineStep({
+      workItemId: materialized.workItem.id,
+      stepKey: "extract",
+      expectedRevision: execution.run.revision,
+      idempotencyKey: "complete-link-extract",
+    }, ACTOR_A).body.execution;
+    const result = executionHarness.service.executeRoutineStep({
+      workItemId: materialized.workItem.id,
+      stepKey: "quote",
+      expectedRevision: execution.run.revision,
+      idempotencyKey: "execute-link-quotation",
+    }, ACTOR_A);
+    assert.equal(
+      result.body.execution.steps.find((step) => step.key === "quote").run.errorCode,
+      "routine_output_link_escapes_source",
+    );
+    assert.deepEqual(readdirSync(outside), []);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("quotation draft executor never overwrites an existing file with different content", () => {
+  const root = join(tmpdir(), `myagenttool-routine-conflict-${Date.now()}`);
+  const sourceRoot = join(root, "commercial");
+  mkdirSync(sourceRoot, { recursive: true });
+  try {
+    const input = {
+      projectPath: root,
+      sourceRelativePath: "commercial",
+      outputDirectory: "outputs/quotations",
+      businessKey: "RFQ-2026-009",
+      routineVersion: 1,
+      executionSuffix: "1234abcd",
+      fields: { inquiry_number: "RFQ-2026-009" },
+      evidencePaths: ["inquiries/RFQ-2026-009.md"],
+    };
+    const created = writeLocalQuotationDraft(input);
+    assert.equal(created.ok, true);
+    const target = join(root, created.relativePath);
+    writeFileSync(target, "user-owned content\n", "utf8");
+
+    assert.deepEqual(writeLocalQuotationDraft(input), {
+      ok: false,
+      error: "routine_output_conflict",
+    });
+    assert.equal(readFileSync(target, "utf8"), "user-owned content\n");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
 });
 
 test("routine Issue identity follows the business-case source fingerprint", () => {

@@ -90,6 +90,8 @@ export default function RoutineWorkController({
         ledgerPreviews={ledgerPreviews}
         onStart={() => run(() => routineWorkApi.start(workItemId, execution.run.revision))}
         onCancel={() => run(() => routineWorkApi.cancel(workItemId, execution.run.revision))}
+        onExecute={(stepKey) => run(() =>
+          routineWorkApi.executeStep(workItemId, stepKey, execution.run.revision))}
         onComplete={(stepKey) => run(() =>
           routineWorkApi.complete(workItemId, stepKey, execution.run.revision))}
         onPreviewLedger={previewLedger}

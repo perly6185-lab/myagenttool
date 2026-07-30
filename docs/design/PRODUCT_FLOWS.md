@@ -281,6 +281,7 @@ Open the local Issue created for the inquiry
 -> watch independent reading/reference steps run within computer capacity
 -> preview the exact inquiry-ledger row and changed cells
 -> explicitly approve the governed ledger write
+-> run the allowlisted local quotation step and inspect its versioned draft
 -> review and approve the quotation when asked
 -> preview and approve the quotation-ledger change
 -> record that no confirmed order has arrived

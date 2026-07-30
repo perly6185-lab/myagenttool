@@ -36,7 +36,12 @@ export type RoutineWorkExecution = {
       attempts: number;
       errorCode: string | null;
       conditionOutcome: boolean | null;
-      outputRefs: { kind: "artifact" | "file" | "note"; summary: string }[];
+      outputRefs: {
+        kind: "artifact" | "file" | "note";
+        artifactId?: string | null;
+        relativePath?: string | null;
+        summary: string;
+      }[];
     };
   }[];
 };
@@ -101,6 +106,12 @@ export const routineWorkApi = {
       outputRefs: [],
     },
   ),
+  executeStep: (workItemId: string, stepKey: string, expectedRevision: number) =>
+    request<{ execution: RoutineWorkExecution; childWorkItem?: { id: string } | null }>(
+      "POST",
+      `/api/workflow-memory/routine-work-items/${encodeURIComponent(workItemId)}/steps/${encodeURIComponent(stepKey)}/execute`,
+      { expectedRevision, idempotencyKey: actionKey("execute", stepKey) },
+    ),
   retry: (workItemId: string, stepKey: string, expectedRevision: number) =>
     request<{ execution: RoutineWorkExecution }>(
       "POST",
@@ -163,6 +174,7 @@ const labels = {
     noOrder: "No order received",
     selectOrder: "Confirmed order document",
     complete: "Mark step complete",
+    executeStep: "Run this step",
     reviewLedger: "Review ledger change",
     reviewAndConfirm: "Review and confirm",
     commitLedger: "Approve ledger change",
@@ -220,6 +232,7 @@ const labels = {
     noOrder: "尚未收到订单",
     selectOrder: "已确认的订单文件",
     complete: "标记本步骤完成",
+    executeStep: "执行本步骤",
     reviewLedger: "预览台账变更",
     reviewAndConfirm: "查看并确认",
     commitLedger: "确认并写入台账",

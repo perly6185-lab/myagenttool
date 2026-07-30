@@ -3816,6 +3816,7 @@ export function createServerRuntimeServices({
     createRoutineRun: businessRoutineService.createRoutineRun,
     getRoutineWorkItemExecution: businessRoutineService.getRoutineWorkItemExecution,
     startRoutineWorkItem: businessRoutineService.startRoutineWorkItem,
+    executeRoutineStep: businessRoutineService.executeRoutineStep,
     completeRoutineStep: businessRoutineService.completeRoutineStep,
     retryRoutineStep: businessRoutineService.retryRoutineStep,
     decideRoutineApproval: businessRoutineService.decideRoutineApproval,

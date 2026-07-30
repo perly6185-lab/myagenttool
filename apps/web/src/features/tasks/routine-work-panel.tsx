@@ -15,6 +15,7 @@ type RoutineAction = () => void;
 type RoutineStepAction = (stepKey: string) => void;
 
 const terminalRunStates = new Set(["succeeded", "cancelled"]);
+const governedExecutorKinds = new Set(["retrieve", "generate", "create_issue"]);
 
 function stateTone(state: RoutineStepState) {
   if (state === "succeeded") return "success";
@@ -34,6 +35,7 @@ export function RoutineWorkPanel({
   ledgerPreviews,
   onStart,
   onCancel,
+  onExecute,
   onComplete,
   onPreviewLedger,
   onCommitLedger,
@@ -46,6 +48,7 @@ export function RoutineWorkPanel({
   ledgerPreviews: Record<string, LedgerUpsertPreview>;
   onStart: RoutineAction;
   onCancel: RoutineAction;
+  onExecute: RoutineStepAction;
   onComplete: RoutineStepAction;
   onPreviewLedger: (stepKey: string, ledgerDefinitionId: string) => void;
   onCommitLedger: (stepKey: string, preview: LedgerUpsertPreview) => void;
@@ -150,8 +153,11 @@ export function RoutineWorkPanel({
             ) : null}
 
             {step.run.state === "running" && step.kind !== "ledger_upsert" ? (
-              <Button className="mt-2" size="sm" disabled={pending} onClick={() => onComplete(step.key)}>
-                {text.complete}
+              <Button className="mt-2" size="sm" disabled={pending}
+                onClick={() => governedExecutorKinds.has(step.kind)
+                  ? onExecute(step.key)
+                  : onComplete(step.key)}>
+                {governedExecutorKinds.has(step.kind) ? text.executeStep : text.complete}
               </Button>
             ) : null}
             {step.run.state === "running" && step.kind === "ledger_upsert" ? (
