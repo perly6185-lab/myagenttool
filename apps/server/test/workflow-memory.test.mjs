@@ -926,6 +926,24 @@ test("incremental intake waits for stability and deduplicates copies, moves, and
     assert.equal(replay.body.intake.ready, 0);
     assert.equal(replay.body.intake.unchanged, baselineArtifactCount + 1);
     assert.ok(source.intakeCursor.revision >= 6);
+
+    assert.equal(
+      service.verifyIntakeEvidence({ observationId: movedObservation.id }, actor).status,
+      200,
+    );
+    writeFileSync(
+      join(root, "incoming/RFQ-100-renamed.md"),
+      `${inquiryContent}\n备注：文件仍在写入`,
+    );
+    const changedEvidence = service.verifyIntakeEvidence({
+      observationId: movedObservation.id,
+    }, actor);
+    assert.equal(changedEvidence.status, 409);
+    assert.equal(changedEvidence.body.error, "workflow_intake_evidence_changed");
+    assert.equal(
+      state.workflowIntakeObservations.find((row) => row.id === movedObservation.id).state,
+      "waiting_stable",
+    );
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

@@ -17,6 +17,8 @@ export async function handleWorkflowMemoryRoutes({
   scanSource,
   scanIncrementalIntake,
   listIntakeObservations,
+  inspectInquiryIntake,
+  acceptInquiryIntake,
   cancelScan,
   revokeSource,
   deleteSourceLearning,
@@ -144,6 +146,27 @@ export async function handleWorkflowMemoryRoutes({
       sourceId: url.searchParams.get("sourceId"),
       state: url.searchParams.get("state"),
     }, actor);
+    sendJson(res, result.status, result.body);
+    return true;
+  }
+
+  const intakeObservationAction = url.pathname.match(
+    /^\/api\/workflow-memory\/intake-observations\/([^/]+)\/(inspect|accept)$/,
+  );
+  if (intakeObservationAction && req.method === "POST") {
+    const body = await readJson(req);
+    const observationId = decodeURIComponent(intakeObservationAction[1]);
+    const result = intakeObservationAction[2] === "inspect"
+      ? await inspectInquiryIntake({ observationId }, actor)
+      : await acceptInquiryIntake({
+        observationId,
+        expectedRevision: body?.expectedRevision,
+        idempotencyKey: body?.idempotencyKey,
+        routineDefinitionId: body?.routineDefinitionId,
+        confirmed: body?.confirmed,
+        fieldCorrections: body?.fieldCorrections,
+        excludedFieldKeys: body?.excludedFieldKeys,
+      }, actor);
     sendJson(res, result.status, result.body);
     return true;
   }

@@ -382,6 +382,73 @@ test("workflow memory routes authorize, scan, classify, and enforce tenancy over
   );
   assert.equal(publishedRoutine.status, 200, JSON.stringify(publishedRoutine.body));
   assert.equal(publishedRoutine.body.routineDefinition.state, "published");
+  const inspectedIntake = await call(
+    `/api/workflow-memory/intake-observations/${pendingObservation.id}/inspect`,
+    { method: "POST" },
+  );
+  assert.equal(inspectedIntake.status, 200, JSON.stringify(inspectedIntake.body));
+  assert.equal(inspectedIntake.body.state, "needs_confirmation");
+  assert.equal(inspectedIntake.body.classification.documentType, "inquiry");
+  assert.equal(inspectedIntake.body.classification.artifactFingerprint, undefined);
+  assert.equal(inspectedIntake.body.classification.analysisKey, undefined);
+  assert.equal(inspectedIntake.body.routines[0].id, routineDefinitionId);
+  assert.equal((await call(
+    `/api/workflow-memory/intake-observations/${pendingObservation.id}/inspect`,
+    { method: "POST", token: "tok_b" },
+  )).status, 404);
+  const unconfirmedIntake = await call(
+    `/api/workflow-memory/intake-observations/${pendingObservation.id}/accept`,
+    {
+      method: "POST",
+      body: {
+        expectedRevision: pendingObservation.revision,
+        idempotencyKey: "http-accept-intake",
+        routineDefinitionId,
+        confirmed: false,
+      },
+    },
+  );
+  assert.equal(unconfirmedIntake.status, 400);
+  assert.equal(unconfirmedIntake.body.error, "workflow_intake_confirmation_required");
+  const acceptedIntake = await call(
+    `/api/workflow-memory/intake-observations/${pendingObservation.id}/accept`,
+    {
+      method: "POST",
+      body: {
+        expectedRevision: pendingObservation.revision,
+        idempotencyKey: "http-accept-intake",
+        routineDefinitionId,
+        confirmed: true,
+      },
+    },
+  );
+  assert.equal(acceptedIntake.status, 201, JSON.stringify(acceptedIntake.body));
+  assert.equal(acceptedIntake.body.receipt.businessKey, "RFQ-HTTP-INTAKE");
+  assert.equal(acceptedIntake.body.receipt.routineVersion, 1);
+  assert.equal(acceptedIntake.body.receipt.contentIdentity, undefined);
+  const replayedIntake = await call(
+    `/api/workflow-memory/intake-observations/${pendingObservation.id}/accept`,
+    {
+      method: "POST",
+      body: {
+        expectedRevision: pendingObservation.revision,
+        idempotencyKey: "http-accept-intake",
+        routineDefinitionId,
+        confirmed: true,
+      },
+    },
+  );
+  assert.equal(replayedIntake.status, 200, JSON.stringify(replayedIntake.body));
+  assert.equal(replayedIntake.body.replayed, true);
+  assert.equal(replayedIntake.body.receipt.workItemId, acceptedIntake.body.receipt.workItemId);
+  const triggeredObservations = await call(
+    `/api/workflow-memory/intake-observations?sourceId=${source.id}`,
+  );
+  const triggeredObservation = triggeredObservations.body.observations.find((row) =>
+    row.id === pendingObservation.id);
+  assert.equal(triggeredObservation.state, "triggered");
+  assert.equal(triggeredObservation.receipt.workItemId, acceptedIntake.body.receipt.workItemId);
+  assert.equal(triggeredObservation.receipt.requestHash, undefined);
   const materializedRoutineIssue = await call(
     "/api/workflow-memory/business-cases/bcs_http_1/materialize-routine",
     {
@@ -591,7 +658,7 @@ test("workflow memory routes authorize, scan, classify, and enforce tenancy over
   );
   assert.equal(analyzedSource.status, 200);
   assert.equal(analyzedSource.body.job.total, 6);
-  assert.equal(analyzedSource.body.job.replayed, 1);
+  assert.equal(analyzedSource.body.job.replayed, 2);
   const analysisJobs = await call(
     `/api/workflow-memory/business-document-analysis-jobs?sourceId=${source.id}`,
   );
