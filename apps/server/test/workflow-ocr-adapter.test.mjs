@@ -40,6 +40,7 @@ test("OCR readiness is explicit and unavailable off macOS", () => {
 test("OCR adapter invokes a fixed command and validates bounded page evidence", async () => {
   const calls = [];
   const progress = [];
+  const sourcePath = resolve("/tmp/source.pdf");
   const adapter = createLocalWorkflowOcrAdapter({
     config: {
       enabled: true,
@@ -69,12 +70,12 @@ test("OCR adapter invokes a fixed command and validates bounded page evidence", 
     },
   });
   const result = await adapter.recognizePdf({
-    path: "/tmp/source.pdf",
+    path: sourcePath,
     onProgress: (value) => progress.push(value),
   });
   assert.equal(calls.length, 1);
   assert.equal(calls[0][0], "/usr/bin/swift");
-  assert.deepEqual(calls[0][1], ["/app/ocr.swift", "/tmp/source.pdf"]);
+  assert.deepEqual(calls[0][1], ["/app/ocr.swift", sourcePath]);
   assert.equal(calls[0][2].signal, undefined);
   assert.equal(typeof calls[0][2].onProgress, "function");
   assert.deepEqual(progress, [{ completedPages: 1, totalPages: 1 }]);

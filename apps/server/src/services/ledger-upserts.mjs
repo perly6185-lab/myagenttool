@@ -524,13 +524,15 @@ async function atomicReplace(path, buffer, previewId, mode) {
     handle = null;
     await chmod(temporary, mode & 0o777);
     await rename(temporary, path);
+    let directory = null;
     try {
-      const directory = await open(dirname(path), "r");
+      directory = await open(dirname(path), "r");
       await directory.sync();
-      await directory.close();
     } catch {
       // Some platforms do not permit fsync on a directory. The same-directory
       // atomic rename still prevents a partially written target.
+    } finally {
+      await directory?.close().catch(() => {});
     }
   } catch (error) {
     if (handle) await handle.close().catch(() => {});
