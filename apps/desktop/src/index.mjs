@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
@@ -38,6 +39,7 @@ import { collectApplicationBinaryReadiness } from "./application-binary-readines
 import { collectApplicationCredentialReadiness } from "./application-credential-readiness.mjs";
 import { managedRuntimeBinDirectory, runApprovedApplicationInstall } from "./application-installer.mjs";
 import { registerBridgeWithRetry } from "./bridge-registration-retry.mjs";
+import { startProcessTreeGuardian } from "./process-tree-guardian.mjs";
 import {
   applyClaudeCliResumeArgs,
   claudePermissionRequestSummary,
@@ -112,7 +114,13 @@ const localExecutionPolicyManifest = withBundledAgentProbes(
   createLocalExecutionPolicyManifest({ demoAgentPath, codexFixtureAgentPath }),
 );
 const bridgeTokenPath = resolve(process.env.MYAGENTTOOL_BRIDGE_TOKEN_PATH ?? ".myagenttool/bridge-token.json");
+const bridgeSessionPath = resolve(dirname(bridgeTokenPath), "bridge-session.json");
 let bridgeToken = String(process.env.MYAGENTTOOL_BRIDGE_TOKEN ?? "").trim() || loadBridgeToken();
+// One id per desktop PROCESS, not per credential or request. The server uses it
+// to distinguish a reconnect from a replacement process and reclaim children
+// that cannot possibly still report through the new bridge.
+const bridgeSessionId = randomUUID();
+let bridgeRegistered = false;
 let codexAppServerClient = null;
 let codexAppServerClientKey = null;
 
@@ -391,10 +399,16 @@ let polling = false;
 let auxBusy = false;
 let terminalBusy = false;
 let stopped = false;
+let stopPromise = null;
+let invocationPool = null;
+let cancellationWatcher = null;
+let timer = null;
+let terminalTimer = null;
+let binaryReadinessTimer = null;
 const terminalSessions = new Map();
 
-process.on("SIGINT", stop);
-process.on("SIGTERM", stop);
+process.on("SIGINT", () => void stop("signal"));
+process.on("SIGTERM", () => void stop("signal"));
 
 // Backstop for stray async work (cancel/health pollers, timers) whose rejections
 // aren't caught locally: a transient network error should log and let the bridge
@@ -410,6 +424,7 @@ try {
   const runtimeReadiness = await collectApplicationBinaryReadiness(localExecutionPolicyManifest);
   registration = await registerBridgeWithRetry(() => request("POST", "/api/bridge/register", {
       bridgeVersion: "0.0.0",
+      bridgeSessionId,
       capabilities: ["demo_cli_agent", "managed_terminal_pty", "remote_ssh_relay"],
       runtimeReadiness,
       applicationBinaryReadiness: runtimeReadiness,
@@ -438,6 +453,8 @@ if (registration?.bridgeToken) {
   bridgeToken = registration.bridgeToken;
   saveBridgeToken(bridgeToken, registration.bridgeCredential);
 }
+publishLocalBridgeSession();
+bridgeRegistered = true;
 console.log(`[desktop] registered with ${serverUrl}`);
 
 // Cross-worktree concurrency: honor the server's authoritative cap (echoed on
@@ -451,12 +468,12 @@ let bridgeConcurrency = resolveBridgeConcurrency({
   envValue: process.env.BRIDGE_MAX_CONCURRENT,
 });
 console.log(`[desktop] invocation concurrency: ${bridgeConcurrency}`);
-const invocationPool = createInvocationPool({
+invocationPool = createInvocationPool({
   // A getter, not a number: the pool re-reads it every fill(), so a refreshed
   // cap takes effect on the next tick.
   cap: () => bridgeConcurrency,
   claim: () => request("GET", "/api/bridge/next"),
-  run: (work) => runInvocation(work),
+  run: (work, lifecycle) => runInvocation(work, { shutdownSignal: lifecycle.signal }),
   // runInvocation self-reports every terminal outcome; a reject here is an
   // unexpected bug in the runner itself — log it and free the slot (the pool's
   // finally already decremented), never crash the poll loop.
@@ -467,7 +484,7 @@ const invocationPool = createInvocationPool({
 // watches its own id; the watcher long-polls GET /api/bridge/cancellations?wait=1
 // once for the whole device instead of one cancel-status GET per run. Started
 // once, here.
-const cancellationWatcher = createCancellationWatcher({
+cancellationWatcher = createCancellationWatcher({
   request: (method, path) => request(method, path),
   onError: (error) => logPollError("cancellation", error),
 }).start();
@@ -510,10 +527,10 @@ async function refreshApplicationBinaryReadiness() {
 }
 
 guarded(poll, "bridge")();
-const timer = setInterval(guarded(poll, "bridge"), pollIntervalMs);
+timer = setInterval(guarded(poll, "bridge"), pollIntervalMs);
 guarded(pollTerminal, "terminal")();
-const terminalTimer = setInterval(guarded(pollTerminal, "terminal"), terminalPollIntervalMs);
-const binaryReadinessTimer = setInterval(guarded(refreshApplicationBinaryReadiness, "binary readiness"), binaryReadinessIntervalMs);
+terminalTimer = setInterval(guarded(pollTerminal, "terminal"), terminalPollIntervalMs);
+binaryReadinessTimer = setInterval(guarded(refreshApplicationBinaryReadiness, "binary readiness"), binaryReadinessIntervalMs);
 
 // Aux (non-invocation) work: still single-flight, but decoupled from
 // invocations so a long run no longer starves health/discovery. #1251: one
@@ -924,7 +941,7 @@ function summarizeTerminalOutput(output) {
   return clean ? `Terminal output: ${clean.slice(0, 180)}` : "Terminal output received.";
 }
 
-async function runInvocation(work) {
+async function runInvocation(work, { shutdownSignal = null } = {}) {
   const invocationId = work.invocationId;
   const task = String(work.input?.task ?? "");
   const adapter = work.adapter;
@@ -954,6 +971,7 @@ async function runInvocation(work) {
   let timeoutCause = null;
   let commandTimeoutEvidence = null;
   let spawnError = null;
+  let bridgeStopped = false;
   // #1250: flipped true the instant the child closes and the main flow takes
   // over the terminal outcome. The detached cancel/timeout pollers check it
   // (before AND after their awaits) so they stop posting events once the run is
@@ -986,7 +1004,12 @@ async function runInvocation(work) {
   }
 
   if (isClaudeSdkRuntime(adapter)) {
-    await runClaudeSdkBridgeInvocation(work, { adapter, runtimeName, roundState });
+    await runClaudeSdkBridgeInvocation(work, {
+      adapter,
+      runtimeName,
+      roundState,
+      shutdownSignal,
+    });
     return;
   }
 
@@ -1103,6 +1126,7 @@ async function runInvocation(work) {
       spawnPlan,
       runtimeName,
       roundState,
+      shutdownSignal,
     });
     return;
   }
@@ -1123,6 +1147,7 @@ async function runInvocation(work) {
       windowsHide: true,
       stdio: ["ignore", "pipe", "pipe"]
     });
+    startProcessTreeGuardian(child);
   } catch (error) {
     await sendCodexHookEvent(invocationId, adapter, {
       eventName: "Stop",
@@ -1226,6 +1251,20 @@ async function runInvocation(work) {
       tolerateLateEvent("cancel", invocationId, error);
     }
   });
+  const stopForBridgeShutdown = async () => {
+    if (settled || timedOut || cancelled || bridgeStopped) return;
+    bridgeStopped = true;
+    try {
+      cancelResult = await terminateProcessTree(child);
+    } catch (error) {
+      cancelResult = {
+        ok: false,
+        message: error instanceof Error ? error.message : String(error),
+      };
+    }
+  };
+  shutdownSignal?.addEventListener("abort", stopForBridgeShutdown, { once: true });
+  if (shutdownSignal?.aborted) void stopForBridgeShutdown();
 
   // #1228: line handling is serialized and drained before any outcome is
   // reported. The jsonl handlers await event posts BEFORE returning the
@@ -1266,6 +1305,7 @@ async function runInvocation(work) {
   // in flight bails on its `settled` guard instead of posting after complete.
   settled = true;
   stopWatchingCancel();
+  shutdownSignal?.removeEventListener("abort", stopForBridgeShutdown);
   clearTimeout(timeoutTimer);
   commandWatchdog.dispose();
   // The temp patch file the apply runner read (materialized in governedApplyWrapperArgs)
@@ -1277,6 +1317,19 @@ async function runInvocation(work) {
   // settled and no agent line event can land after the terminal report below.
   await stdoutSink.flush();
   await stderrSink.flush();
+
+  if (bridgeStopped) {
+    await request("POST", "/api/bridge/complete", {
+      invocationId,
+      status: "failed",
+      summary: `${runtimeName} stopped because this Desktop Bridge process was retired.`,
+      result: {
+        ...(finalResult && typeof finalResult === "object" ? finalResult : {}),
+        errorCode: "transport_closed",
+      },
+    });
+    return;
+  }
 
   if (timedOut) {
     const forcedNote = cancelResult?.message ? ` ${cancelResult.message}` : "";
@@ -1364,7 +1417,12 @@ async function runInvocation(work) {
   });
 }
 
-async function runClaudeSdkBridgeInvocation(work, { adapter, runtimeName, roundState }) {
+async function runClaudeSdkBridgeInvocation(work, {
+  adapter,
+  runtimeName,
+  roundState,
+  shutdownSignal = null,
+}) {
   const invocationId = work.invocationId;
   const task = String(work.input?.task ?? "");
   const workspaceBoundary = claudeSdkWorkspaceBoundary({
@@ -1444,7 +1502,15 @@ async function runClaudeSdkBridgeInvocation(work, { adapter, runtimeName, roundS
   let cancelled = false;
   let timedOut = false;
   let settled = false;
+  let bridgeStopped = false;
   let finalResult = null;
+  const stopForBridgeShutdown = () => {
+    if (settled || bridgeStopped) return;
+    bridgeStopped = true;
+    abortController.abort();
+  };
+  shutdownSignal?.addEventListener("abort", stopForBridgeShutdown, { once: true });
+  if (shutdownSignal?.aborted) stopForBridgeShutdown();
 
   const timeoutTimer = setTimeout(async () => {
     if (settled || cancelled || timedOut) return;
@@ -1523,8 +1589,21 @@ async function runClaudeSdkBridgeInvocation(work, { adapter, runtimeName, roundS
     runtimeError = error;
   } finally {
     settled = true;
+    shutdownSignal?.removeEventListener("abort", stopForBridgeShutdown);
     clearTimeout(timeoutTimer);
     stopWatchingCancel();
+  }
+
+  if (bridgeStopped) {
+    await request("POST", "/api/bridge/complete", {
+      invocationId,
+      status: "failed",
+      summary: `${runtimeName} Agent SDK query stopped because this Desktop Bridge process was retired.`,
+      result: claudeSdkCompletionResult(finalResult, roundState, {
+        errorCode: "transport_closed",
+      }),
+    });
+    return;
   }
 
   if (timedOut) {
@@ -1616,6 +1695,7 @@ async function runCodexAppServerInvocation(work, {
   spawnPlan,
   runtimeName,
   roundState,
+  shutdownSignal = null,
 }) {
   const invocationId = work.invocationId;
   const timeoutMs = Number(work.options?.timeoutSeconds ?? adapter.timeoutSeconds ?? 30) * 1000;
@@ -1647,6 +1727,13 @@ async function runCodexAppServerInvocation(work, {
   let cancelRequested = false;
   let finalResult = null;
   let settled = false;
+  const stopForBridgeShutdown = () => {
+    if (settled) return;
+    cancelRequested = true;
+    client.close();
+  };
+  shutdownSignal?.addEventListener("abort", stopForBridgeShutdown, { once: true });
+  if (shutdownSignal?.aborted) stopForBridgeShutdown();
   const stopWatchingCancel = cancellationWatcher.watch(invocationId, async () => {
     if (settled || cancelRequested) return;
     cancelRequested = true;
@@ -1736,6 +1823,7 @@ async function runCodexAppServerInvocation(work, {
     }
   } finally {
     settled = true;
+    shutdownSignal?.removeEventListener("abort", stopForBridgeShutdown);
     stopWatchingCancel();
   }
 
@@ -2543,7 +2631,11 @@ function sharedCodexAppServerClient(plan) {
     codexAppServerClientKey = null;
   }
   if (!codexAppServerClient) {
-    codexAppServerClient = createCodexAppServerClient(plan);
+    codexAppServerClient = createCodexAppServerClient({
+      ...plan,
+      onSpawn: (child) => startProcessTreeGuardian(child),
+      terminateProcess: (child) => void terminateProcessTree(child),
+    });
     codexAppServerClientKey = key;
   }
   return codexAppServerClient;
@@ -3707,8 +3799,13 @@ async function waitForServer() {
 }
 
 async function request(method, path, body) {
+  if (bridgeRegistered && !localBridgeSessionIsCurrent()) {
+    void stop("local_session_superseded");
+    throw new Error("Desktop Bridge process session was superseded locally.");
+  }
   const headers = {
     ...(bridgeToken ? { Authorization: `Bearer ${bridgeToken}` } : {}),
+    "X-MyAgentTool-Bridge-Session": bridgeSessionId,
     ...(body ? { "Content-Type": "application/json" } : {}),
   };
   const response = await fetch(`${serverUrl}${path}`, {
@@ -3721,6 +3818,9 @@ async function request(method, path, body) {
   }
   const data = await response.json();
   if (!response.ok) {
+    if (response.status === 409 && data?.error === "bridge_session_superseded") {
+      void stop("server_session_superseded");
+    }
     throw new Error(`${method} ${path} failed: ${JSON.stringify(data)}`);
   }
   return data;
@@ -3755,12 +3855,45 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-function stop() {
+function publishLocalBridgeSession() {
+  try {
+    mkdirSync(dirname(bridgeSessionPath), { recursive: true });
+    writeFileSync(bridgeSessionPath, `${JSON.stringify({
+      bridgeSessionId,
+      pid: process.pid,
+      startedAt: new Date().toISOString(),
+    })}\n`);
+  } catch (error) {
+    console.warn(`[desktop] could not publish the local bridge session fence: ${error instanceof Error ? error.message : String(error)}`);
+  }
+}
+
+function localBridgeSessionIsCurrent() {
+  try {
+    const record = JSON.parse(readFileSync(bridgeSessionPath, "utf8"));
+    return record?.bridgeSessionId === bridgeSessionId;
+  } catch {
+    // The server-side session fence remains authoritative if the local sidecar
+    // is temporarily unreadable.
+    return true;
+  }
+}
+
+async function stop(reason = "bridge_shutdown") {
+  if (stopPromise) return stopPromise;
   stopped = true;
   clearInterval(timer);
   clearInterval(terminalTimer);
   clearInterval(binaryReadinessTimer);
-  cancellationWatcher.stop();
+  cancellationWatcher?.stop();
   codexAppServerClient?.close();
-  process.exit(0);
+  stopPromise = (async () => {
+    const drained = await invocationPool?.stop({ timeoutMs: 10_000, reason })
+      ?? { drained: true, remaining: 0 };
+    if (!drained.drained) {
+      console.error(`[desktop] forced exit with ${drained.remaining} invocation(s) still draining; process-tree guardians remain armed.`);
+    }
+    process.exit(drained.drained ? 0 : 1);
+  })();
+  return stopPromise;
 }

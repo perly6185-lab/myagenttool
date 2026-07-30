@@ -4,7 +4,12 @@
  */
 import test from "node:test";
 import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { createInvocationPool, resolveBridgeConcurrency, refreshedConcurrency } from "../src/invocation-pool.mjs";
+import { startProcessTreeGuardian } from "../src/process-tree-guardian.mjs";
 
 function deferred() {
   let resolve;
@@ -163,4 +168,75 @@ test("concurrent fill() is a no-op while one is already filling", async () => {
   claimGate.resolve();
   await first;
   assert.equal(claims, 1, "only the first fill issued a claim");
+});
+
+test("stop aborts every active run, drains them, and permanently closes claims", async () => {
+  let claims = 0;
+  const aborted = [];
+  const pool = createInvocationPool({
+    cap: 2,
+    claim: async () => ({ id: ++claims }),
+    run: async (work, { signal }) => {
+      await new Promise((resolve) => {
+        signal.addEventListener("abort", () => {
+          aborted.push(work.id);
+          resolve();
+        }, { once: true });
+      });
+    },
+  });
+  assert.equal(await pool.fill(), 2);
+  const result = await pool.stop({ timeoutMs: 2_000, reason: "test_shutdown" });
+  assert.deepEqual(aborted.sort(), [1, 2]);
+  assert.deepEqual(result, { drained: true, remaining: 0 });
+  assert.equal(await pool.fill(), 0);
+  assert.equal(claims, 2);
+});
+
+test("process-tree guardian kills a real executor when its bridge parent is absent", {
+  skip: process.platform === "win32" && Boolean(process.env.CODEX_PERMISSION_PROFILE),
+}, async () => {
+  const cwd = mkdtempSync(join(tmpdir(), "myagenttool-guardian-"));
+  const marker = join(cwd, "grandchild-survived.txt");
+  const grandchild = `setTimeout(() => require("node:fs").writeFileSync(${JSON.stringify(marker)}, "survived"), 800); setInterval(() => {}, 1000);`;
+  const parent = `require("node:child_process").spawn(process.execPath, ["-e", ${JSON.stringify(grandchild)}], { stdio: "ignore" }); setInterval(() => {}, 1000);`;
+  const child = spawn(process.execPath, ["-e", parent], {
+    detached: process.platform !== "win32",
+    windowsHide: true,
+    stdio: "ignore",
+  });
+  const guardian = startProcessTreeGuardian(child, {
+    parentPid: 2_147_483_647,
+    pollIntervalMs: 50,
+    detached: false,
+    stdio: "inherit",
+  });
+  let guardianExit = null;
+  guardian?.once("exit", (code, signal) => {
+    guardianExit = { code, signal };
+  });
+  const closed = await Promise.race([
+    new Promise((resolve) => child.once("close", () => resolve(true))),
+    new Promise((resolve) => setTimeout(() => resolve(false), 5_000)),
+  ]);
+  if (!closed) {
+    try {
+      if (process.platform === "win32") child.kill();
+      else process.kill(-child.pid, "SIGKILL");
+    } catch {
+      // Best-effort test cleanup.
+    }
+  }
+  try {
+    assert.equal(closed, true, `guardian must terminate the executor tree within the handoff window: ${JSON.stringify({
+      childPid: child.pid,
+      childExitCode: child.exitCode,
+      childKilled: child.killed,
+      guardianExit,
+    })}`);
+    await new Promise((resolve) => setTimeout(resolve, 1_000));
+    assert.equal(existsSync(marker), false, "the executor grandchild must not outlive the Bridge guardian");
+  } finally {
+    rmSync(cwd, { recursive: true, force: true });
+  }
 });

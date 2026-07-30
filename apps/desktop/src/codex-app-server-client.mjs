@@ -35,6 +35,8 @@ export function createCodexAppServerClient({
   cwd,
   env,
   spawnProcess = spawn,
+  onSpawn = () => undefined,
+  terminateProcess = (processHandle) => processHandle.kill("SIGTERM"),
   requestTimeoutMs = DEFAULT_REQUEST_TIMEOUT_MS,
   interruptGraceMs = DEFAULT_INTERRUPT_GRACE_MS,
   clientInfo = {
@@ -175,6 +177,7 @@ export function createCodexAppServerClient({
       windowsHide: true,
       stdio: ["pipe", "pipe", "pipe"],
     });
+    onSpawn(child);
     lineReader = createInterface({ input: child.stdout });
     lineReader.on("line", (line) => {
       const trimmed = String(line ?? "").trim();
@@ -501,7 +504,7 @@ export function createCodexAppServerClient({
     approvalHandlersByThread.clear();
     lineReader?.close();
     if (child && child.exitCode === null) {
-      child.kill("SIGTERM");
+      terminateProcess(child);
     }
     child = null;
     startPromise = null;
