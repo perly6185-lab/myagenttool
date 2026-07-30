@@ -54,6 +54,7 @@ const STEP_TRANSITIONS = {
   cancelled: {},
 };
 const READ_ONLY_STEP_KINDS = new Set(["extract", "retrieve"]);
+const DEVICE_CAPACITY_STEP_KINDS = new Set(["extract", "retrieve", "generate", "create_issue"]);
 const EXECUTABLE_STEP_KINDS = new Set(["retrieve", "generate", "create_issue"]);
 const EXECUTOR_IDS = {
   retrieve: "local.reference-retrieval.v1",
@@ -306,9 +307,16 @@ export function migrateBusinessRoutineState(state) {
       );
     }
   }
-  for (const run of state.routineRuns) {
+  for (const [runIndex, run] of state.routineRuns.entries()) {
     run.actionReceipts ??= [];
     run.waitingReason ??= null;
+    run.capacityQueue ??= run.waitingReason === "device_capacity"
+      ? {
+          state: "waiting",
+          queuedAt: run.updatedAt ?? run.createdAt ?? null,
+          sequence: runIndex + 1,
+        }
+      : null;
     run.cancellationRequestedAt ??= null;
     run.sourceFingerprints ??= (run.triggerArtifactIds ?? [])
       .map((artifactId) => {
@@ -332,6 +340,7 @@ export function migrateBusinessRoutineState(state) {
         stepRun.completedAt ??= run.updatedAt ?? run.createdAt ?? null;
         run.status = "failed";
         run.waitingReason = "routine_step_interrupted";
+        run.capacityQueue = null;
       }
     }
   }
@@ -366,6 +375,7 @@ export function createBusinessRoutineService({
   persistStateSoon = () => {},
   createWorkItem = null,
   recordWorkItemVerification = null,
+  releaseRoutineLedgerReservations = () => {},
   store,
 } = {}) {
   migrateBusinessRoutineState(state);
@@ -986,22 +996,84 @@ export function createBusinessRoutineService({
     return Number.isInteger(configured) ? Math.max(1, Math.min(8, configured)) : 1;
   }
 
+  function routineDeviceKey(run) {
+    const workItem = workItemFor(run.workItemId, { teamId: run.ownerTeamId });
+    return `${run.ownerTeamId}:${workItem?.terminalId ?? `work-item:${run.workItemId}`}`;
+  }
+
+  function nextCapacityQueueSequence() {
+    return state.routineRuns.reduce(
+      (maximum, candidate) => Math.max(maximum, Number(candidate.capacityQueue?.sequence) || 0),
+      0,
+    ) + 1;
+  }
+
+  function markRoutineWaitingForCapacity(run, timestamp) {
+    run.waitingReason = "device_capacity";
+    if (run.capacityQueue?.state !== "waiting") {
+      run.capacityQueue = {
+        state: "waiting",
+        queuedAt: timestamp,
+        sequence: nextCapacityQueueSequence(),
+      };
+    }
+  }
+
+  function clearRoutineCapacityWait(run) {
+    if (run.waitingReason === "device_capacity") run.waitingReason = null;
+    run.capacityQueue = null;
+  }
+
+  function waitingRoutineRunsOnDevice(run) {
+    const deviceKey = routineDeviceKey(run);
+    return state.routineRuns
+      .filter((candidate) =>
+        candidate.ownerTeamId === run.ownerTeamId
+        && routineDeviceKey(candidate) === deviceKey
+        && candidate.waitingReason === "device_capacity"
+        && candidate.capacityQueue?.state === "waiting"
+        && !candidate.cancellationRequestedAt
+        && !["succeeded", "cancelled", "failed"].includes(candidate.status))
+      .sort((left, right) =>
+        (Number(left.capacityQueue.sequence) || 0) - (Number(right.capacityQueue.sequence) || 0)
+        || String(left.capacityQueue.queuedAt ?? "").localeCompare(String(right.capacityQueue.queuedAt ?? ""))
+        || left.id.localeCompare(right.id));
+  }
+
   function activeRoutineStepsOnDevice(run) {
     const workItem = workItemFor(run.workItemId, { teamId: run.ownerTeamId });
     if (!workItem?.terminalId) {
-      return run.stepRuns.filter((row) => row.state === "running").length;
+      const definition = state.routineDefinitions.find((row) =>
+        row.id === run.routineDefinitionId
+        && row.version === run.routineVersion
+        && row.ownerTeamId === run.ownerTeamId);
+      const kindByStep = new Map(definition?.steps.map((step) => [step.key, step.kind]) ?? []);
+      return run.stepRuns.filter((stepRun) =>
+        stepRun.state === "running"
+        && DEVICE_CAPACITY_STEP_KINDS.has(kindByStep.get(stepRun.stepKey))).length;
     }
     return state.routineRuns
       .filter((candidate) => {
         const candidateItem = workItemFor(candidate.workItemId, { teamId: run.ownerTeamId });
         return candidate.ownerTeamId === run.ownerTeamId && candidateItem?.terminalId === workItem.terminalId;
       })
-      .flatMap((candidate) => candidate.stepRuns)
-      .filter((row) => row.state === "running")
+      .flatMap((candidate) => {
+        const definition = state.routineDefinitions.find((row) =>
+          row.id === candidate.routineDefinitionId
+          && row.version === candidate.routineVersion
+          && row.ownerTeamId === candidate.ownerTeamId);
+        const kindByStep = new Map(definition?.steps.map((step) => [step.key, step.kind]) ?? []);
+        return candidate.stepRuns.filter((stepRun) =>
+          stepRun.state === "running"
+          && DEVICE_CAPACITY_STEP_KINDS.has(kindByStep.get(stepRun.stepKey)));
+      })
       .length;
   }
 
-  function scheduleRoutineRun(run, definition, timestamp) {
+  function scheduleRoutineRun(run, definition, timestamp, {
+    ignoreQueue = false,
+    maxStarts = null,
+  } = {}) {
     if (run.cancellationRequestedAt || run.stepRuns.some((row) => row.state === "failed")) {
       recomputeRoutineRunStatus(run);
       return [];
@@ -1027,19 +1099,50 @@ export function createBusinessRoutineService({
       }
     }
     if (started.length) {
-      run.waitingReason = null;
+      clearRoutineCapacityWait(run);
       recomputeRoutineRunStatus(run);
       return started;
+    }
+    if (!eligible.length) {
+      clearRoutineCapacityWait(run);
+      recomputeRoutineRunStatus(run);
+      return [];
+    }
+    const localOnly = eligible.find((step) => !DEVICE_CAPACITY_STEP_KINDS.has(step.kind));
+    if (localOnly) {
+      const stepRun = runByKey.get(localOnly.key);
+      stepRun.state = "running";
+      stepRun.startedAt ??= timestamp;
+      stepRun.completedAt = null;
+      stepRun.errorCode = null;
+      stepRun.attempts += 1;
+      clearRoutineCapacityWait(run);
+      recomputeRoutineRunStatus(run);
+      return [localOnly.key];
+    }
+    if (!ignoreQueue) {
+      const ownSequence = Number(run.capacityQueue?.sequence) || Number.POSITIVE_INFINITY;
+      const earlierWaiter = waitingRoutineRunsOnDevice(run).find((candidate) =>
+        candidate.id !== run.id
+        && (Number(candidate.capacityQueue?.sequence) || 0) < ownSequence);
+      if (earlierWaiter) {
+        markRoutineWaitingForCapacity(run, timestamp);
+        recomputeRoutineRunStatus(run);
+        return [];
+      }
     }
     const active = activeRoutineStepsOnDevice(run);
     let available = Math.max(0, routineDeviceLimit(run) - active);
     if (!available) {
-      run.waitingReason = "device_capacity";
+      markRoutineWaitingForCapacity(run, timestamp);
       recomputeRoutineRunStatus(run);
       return [];
     }
     const readOnly = eligible.filter((step) => READ_ONLY_STEP_KINDS.has(step.kind));
-    const selected = readOnly.length ? readOnly.slice(0, available) : eligible.slice(0, 1);
+    const startLimit = Number.isInteger(maxStarts)
+      ? Math.max(1, Math.min(available, maxStarts))
+      : available;
+    const selected = readOnly.length ? readOnly.slice(0, startLimit) : eligible.slice(0, 1);
     for (const step of selected) {
       const stepRun = runByKey.get(step.key);
       stepRun.state = "running";
@@ -1051,9 +1154,48 @@ export function createBusinessRoutineService({
       available -= 1;
       if (!available) break;
     }
-    run.waitingReason = started.length ? null : run.waitingReason;
+    if (started.length) clearRoutineCapacityWait(run);
     recomputeRoutineRunStatus(run);
     return started;
+  }
+
+  function drainRoutineDeviceQueue(referenceRun, timestamp, actor = null) {
+    const awakened = [];
+    const visited = new Set();
+    while (activeRoutineStepsOnDevice(referenceRun) < routineDeviceLimit(referenceRun)) {
+      const candidate = waitingRoutineRunsOnDevice(referenceRun)
+        .find((row) => !visited.has(row.id));
+      if (!candidate) break;
+      visited.add(candidate.id);
+      const definition = state.routineDefinitions.find((row) =>
+        row.id === candidate.routineDefinitionId
+        && row.version === candidate.routineVersion
+        && row.ownerTeamId === candidate.ownerTeamId);
+      if (!definition) {
+        candidate.waitingReason = "routine_definition_unavailable";
+        candidate.capacityQueue = null;
+        continue;
+      }
+      const startedStepKeys = scheduleRoutineRun(candidate, definition, timestamp, {
+        ignoreQueue: true,
+        maxStarts: 1,
+      });
+      candidate.revision += 1;
+      candidate.updatedAt = timestamp;
+      candidate.updatedBy = actorUser(actor);
+      awakened.push({ routineRunId: candidate.id, startedStepKeys });
+      event("routine_capacity_released",
+        startedStepKeys.length
+          ? "Waiting routine work automatically resumed when device capacity became available."
+          : "Waiting routine work was re-evaluated when device capacity became available.",
+        candidate, actor, {
+          routineRunId: candidate.id,
+          workItemId: candidate.workItemId,
+          startedStepKeys,
+          deviceLimit: routineDeviceLimit(candidate),
+        });
+    }
+    return awakened;
   }
 
   function recordDocumentClassification(input = {}, actor = null) {
@@ -2075,6 +2217,16 @@ export function createBusinessRoutineService({
         revision: context.run.revision,
         waitingReason: context.run.waitingReason,
         cancellationRequestedAt: context.run.cancellationRequestedAt,
+        capacity: {
+          limit: routineDeviceLimit(context.run),
+          active: activeRoutineStepsOnDevice(context.run),
+          state: context.run.waitingReason === "device_capacity" ? "waiting" : "ready",
+          position: context.run.waitingReason === "device_capacity"
+            ? waitingRoutineRunsOnDevice(context.run)
+              .findIndex((candidate) => candidate.id === context.run.id) + 1
+            : null,
+          waitingSince: context.run.capacityQueue?.queuedAt ?? null,
+        },
       },
       availableOrderTriggers,
       steps: context.definition.steps.map((step) => {
@@ -2096,6 +2248,109 @@ export function createBusinessRoutineService({
     const context = routineExecutionContext(workItemId, actor);
     if (context.error) return { status: context.status, body: { error: context.error } };
     return { status: 200, body: { execution: routineExecutionView(context) } };
+  }
+
+  function listRoutineWorkQueue({
+    projectId = null,
+    sourceId = null,
+    includeCompleted = false,
+    limit = 20,
+  } = {}, actor = null) {
+    const boundedLimit = Math.max(1, Math.min(100, Number(limit) || 20));
+    const priority = {
+      awaiting_approval: 0,
+      awaiting_condition: 1,
+      failed: 2,
+      running: 3,
+      planned: 4,
+      succeeded: 5,
+      cancelled: 6,
+    };
+    const items = state.routineRuns
+      .filter((run) =>
+        visible(run, actor)
+        && actorCanAccessProject(state, actor, run.projectId)
+        && (!projectId || run.projectId === projectId)
+        && (!sourceId || run.sourceId === sourceId)
+        && (includeCompleted || !["succeeded", "cancelled"].includes(run.status)))
+      .map((run) => {
+        const workItem = workItemFor(run.workItemId, actor);
+        const definition = state.routineDefinitions.find((row) =>
+          row.id === run.routineDefinitionId
+          && row.version === run.routineVersion
+          && visible(row, actor));
+        if (!workItem || !definition) return null;
+        const execution = routineExecutionView({ workItem, definition, run });
+        const activeStep = execution.steps.find((step) =>
+          ["running", "awaiting_approval", "awaiting_condition", "failed"].includes(step.run.state));
+        const ledgerWait = state.ledgerUpsertPreviews
+          .filter((preview) =>
+            preview.ownerTeamId === run.ownerTeamId
+            && preview.routineRunId === run.id
+            && preview.state === "waiting")
+          .sort((left, right) =>
+            (Number(left.queueSequence) || 0) - (Number(right.queueSequence) || 0))[0] ?? null;
+        const completedSteps = execution.steps.filter((step) =>
+          ["succeeded", "skipped"].includes(step.run.state)).length;
+        const visibleWaitingReason = run.waitingReason ?? (ledgerWait ? "ledger_reservation" : null);
+        let nextAction = "start";
+        if (run.waitingReason === "device_capacity") nextAction = "wait_capacity";
+        else if (ledgerWait) nextAction = "wait_ledger";
+        else if (activeStep?.run.state === "awaiting_approval") nextAction = "review_approval";
+        else if (activeStep?.run.state === "awaiting_condition") nextAction = "decide_condition";
+        else if (activeStep?.run.state === "failed") nextAction = "retry_step";
+        else if (activeStep?.kind === "ledger_upsert") nextAction = "review_ledger";
+        else if (activeStep?.run.state === "running") nextAction = "continue_step";
+        return {
+          workItemId: workItem.id,
+          localRef: workItem.localRef,
+          title: workItem.title,
+          projectId: run.projectId,
+          sourceId: run.sourceId,
+          businessKey: run.businessKey,
+          definitionName: definition.name,
+          routineVersion: definition.version,
+          status: run.status,
+          revision: run.revision,
+          waitingReason: visibleWaitingReason,
+          ledgerQueuePosition: ledgerWait?.queuePosition ?? null,
+          capacity: execution.run.capacity,
+          progress: {
+            completed: completedSteps,
+            total: execution.steps.length,
+          },
+          currentStep: activeStep
+            ? {
+                key: activeStep.key,
+                label: activeStep.label,
+                kind: activeStep.kind,
+                state: activeStep.run.state,
+              }
+            : null,
+          nextAction,
+          updatedAt: run.updatedAt,
+        };
+      })
+      .filter(Boolean)
+      .sort((left, right) =>
+        (priority[left.status] ?? 9) - (priority[right.status] ?? 9)
+        || (left.capacity.position ?? 0) - (right.capacity.position ?? 0)
+        || right.updatedAt.localeCompare(left.updatedAt))
+      .slice(0, boundedLimit);
+    return {
+      status: 200,
+      body: {
+        items,
+        summary: {
+          total: items.length,
+          running: items.filter((item) => item.status === "running").length,
+          waiting: items.filter((item) => Boolean(item.waitingReason)).length,
+          needsAction: items.filter((item) =>
+            ["review_approval", "decide_condition", "retry_step", "review_ledger", "continue_step"]
+              .includes(item.nextAction)).length,
+        },
+      },
+    };
   }
 
   function materializeRoutineIssue({
@@ -2313,6 +2568,7 @@ export function createBusinessRoutineService({
       return { status: 409, body: { error: "routine_run_source_revoked" } };
     }
     let startedStepKeys = [];
+    let awakenedRuns = [];
     runTx(() => {
       const timestamp = now();
       startedStepKeys = scheduleRoutineRun(context.run, context.definition, timestamp);
@@ -2326,10 +2582,16 @@ export function createBusinessRoutineService({
         startedStepKeys,
         waitingReason: context.run.waitingReason,
       });
+      awakenedRuns = drainRoutineDeviceQueue(context.run, timestamp, actor);
     });
     return {
       status: 200,
-      body: { execution: routineExecutionView(context), startedStepKeys, replayed: false },
+      body: {
+        execution: routineExecutionView(context),
+        startedStepKeys,
+        awakenedRuns,
+        replayed: false,
+      },
     };
   }
 
@@ -2382,6 +2644,7 @@ export function createBusinessRoutineService({
       return { status: 404, body: { error: "routine_step_output_artifact_not_found" } };
     }
     let startedStepKeys = [];
+    let awakenedRuns = [];
     runTx(() => {
       const timestamp = now();
       stepRun.state = succeeded === true ? "succeeded" : "failed";
@@ -2405,11 +2668,21 @@ export function createBusinessRoutineService({
           errorCode: stepRun.errorCode,
           startedStepKeys,
       });
+      awakenedRuns = drainRoutineDeviceQueue(context.run, timestamp, actor);
+      const currentAwakening = awakenedRuns.find((row) => row.routineRunId === context.run.id);
+      if (currentAwakening?.startedStepKeys.length) {
+        startedStepKeys = [...new Set([...startedStepKeys, ...currentAwakening.startedStepKeys])];
+      }
     });
     syncRoutineCompletion(context, actor);
     return {
       status: 200,
-      body: { execution: routineExecutionView(context), startedStepKeys, replayed: false },
+      body: {
+        execution: routineExecutionView(context),
+        startedStepKeys,
+        awakenedRuns,
+        replayed: false,
+      },
     };
   }
 
@@ -2652,6 +2925,7 @@ export function createBusinessRoutineService({
       return { status: 409, body: { error: "routine_step_not_retryable", currentState: stepRun.state } };
     }
     let startedStepKeys = [];
+    let awakenedRuns = [];
     runTx(() => {
       const timestamp = now();
       stepRun.state = "pending";
@@ -2669,8 +2943,21 @@ export function createBusinessRoutineService({
         stepKey,
         attempt: stepRun.attempts,
       });
+      awakenedRuns = drainRoutineDeviceQueue(context.run, timestamp, actor);
+      const currentAwakening = awakenedRuns.find((row) => row.routineRunId === context.run.id);
+      if (currentAwakening?.startedStepKeys.length) {
+        startedStepKeys = [...new Set([...startedStepKeys, ...currentAwakening.startedStepKeys])];
+      }
     });
-    return { status: 200, body: { execution: routineExecutionView(context), startedStepKeys, replayed: false } };
+    return {
+      status: 200,
+      body: {
+        execution: routineExecutionView(context),
+        startedStepKeys,
+        awakenedRuns,
+        replayed: false,
+      },
+    };
   }
 
   function decideRoutineApproval({
@@ -2691,6 +2978,7 @@ export function createBusinessRoutineService({
       return { status: 409, body: { error: "routine_approval_not_decidable", currentState: stepRun.state } };
     }
     let startedStepKeys = [];
+    let awakenedRuns = [];
     runTx(() => {
       const timestamp = now();
       stepRun.state = approved ? "succeeded" : "failed";
@@ -2715,9 +3003,22 @@ export function createBusinessRoutineService({
           stepKey,
           startedStepKeys,
       });
+      awakenedRuns = drainRoutineDeviceQueue(context.run, timestamp, actor);
+      const currentAwakening = awakenedRuns.find((row) => row.routineRunId === context.run.id);
+      if (currentAwakening?.startedStepKeys.length) {
+        startedStepKeys = [...new Set([...startedStepKeys, ...currentAwakening.startedStepKeys])];
+      }
     });
     syncRoutineCompletion(context, actor);
-    return { status: 200, body: { execution: routineExecutionView(context), startedStepKeys, replayed: false } };
+    return {
+      status: 200,
+      body: {
+        execution: routineExecutionView(context),
+        startedStepKeys,
+        awakenedRuns,
+        replayed: false,
+      },
+    };
   }
 
   function descendantsOf(definition, rootKey) {
@@ -2806,6 +3107,7 @@ export function createBusinessRoutineService({
       childWorkItem = created.workItem;
     }
     let startedStepKeys = [];
+    let awakenedRuns = [];
     runTx(() => {
       const timestamp = now();
       stepRun.state = "succeeded";
@@ -2834,6 +3136,11 @@ export function createBusinessRoutineService({
         orderArtifactIds: orderArtifacts.map((artifact) => artifact.id),
         childWorkItemId: childWorkItem?.id ?? null,
       });
+      awakenedRuns = drainRoutineDeviceQueue(context.run, timestamp, actor);
+      const currentAwakening = awakenedRuns.find((row) => row.routineRunId === context.run.id);
+      if (currentAwakening?.startedStepKeys.length) {
+        startedStepKeys = [...new Set([...startedStepKeys, ...currentAwakening.startedStepKeys])];
+      }
     });
     syncRoutineCompletion(context, actor);
     return {
@@ -2842,6 +3149,7 @@ export function createBusinessRoutineService({
         execution: routineExecutionView(context),
         childWorkItem: childWorkItem ? publicRoutineWorkItem(childWorkItem) : null,
         startedStepKeys,
+        awakenedRuns,
         replayed: false,
       },
     };
@@ -2859,6 +3167,7 @@ export function createBusinessRoutineService({
     if (["succeeded", "cancelled"].includes(context.run.status)) {
       return { status: 409, body: { error: "routine_run_not_cancellable", currentState: context.run.status } };
     }
+    let awakenedRuns = [];
     runTx(() => {
       const timestamp = now();
       context.run.cancellationRequestedAt = timestamp;
@@ -2869,6 +3178,7 @@ export function createBusinessRoutineService({
           stepRun.errorCode = null;
         }
       }
+      clearRoutineCapacityWait(context.run);
       recomputeRoutineRunStatus(context.run);
       context.run.revision += 1;
       context.run.updatedAt = timestamp;
@@ -2878,8 +3188,13 @@ export function createBusinessRoutineService({
         routineRunId: context.run.id,
         workItemId: context.workItem.id,
       });
+      awakenedRuns = drainRoutineDeviceQueue(context.run, timestamp, actor);
     });
-    return { status: 200, body: { execution: routineExecutionView(context), replayed: false } };
+    releaseRoutineLedgerReservations({ routineRunId: context.run.id }, actor);
+    return {
+      status: 200,
+      body: { execution: routineExecutionView(context), awakenedRuns, replayed: false },
+    };
   }
 
   function transitionRoutineStep({
@@ -2921,11 +3236,38 @@ export function createBusinessRoutineService({
       if (!sourceFor(run.sourceId, actor, { active: true })) {
         return { status: 409, body: { error: "routine_run_source_revoked" } };
       }
+      const earlierWaiter = waitingRoutineRunsOnDevice(run)
+        .some((candidate) => candidate.id !== run.id);
+      if (DEVICE_CAPACITY_STEP_KINDS.has(step.kind)
+        && (activeRoutineStepsOnDevice(run) >= routineDeviceLimit(run) || earlierWaiter)) {
+        const timestamp = now();
+        let awakenedRuns = [];
+        runTx(() => {
+          markRoutineWaitingForCapacity(run, timestamp);
+          recomputeRoutineRunStatus(run);
+          run.revision += 1;
+          run.updatedAt = timestamp;
+          run.updatedBy = actorUser(actor);
+          event("routine_step_waiting_for_capacity",
+            "Business routine step is waiting for local device capacity.",
+            run, actor, {
+              routineRunId: run.id,
+              stepKey,
+              deviceLimit: routineDeviceLimit(run),
+            });
+          awakenedRuns = drainRoutineDeviceQueue(run, timestamp, actor);
+        });
+        return {
+          status: 202,
+          body: { routineRun: run, stepRun, awakenedRuns },
+        };
+      }
     }
     if (action === "skip" && step.required) {
       return { status: 409, body: { error: "required_routine_step_cannot_skip" } };
     }
     const timestamp = now();
+    let awakenedRuns = [];
     runTx(() => {
       stepRun.state = nextState;
       if (nextState === "running" && !stepRun.startedAt) stepRun.startedAt = timestamp;
@@ -2942,8 +3284,11 @@ export function createBusinessRoutineService({
         state: nextState,
         revision: run.revision,
       });
+      if (["succeeded", "skipped", "failed", "cancelled"].includes(nextState)) {
+        awakenedRuns = drainRoutineDeviceQueue(run, timestamp, actor);
+      }
     });
-    return { status: 200, body: { routineRun: run, stepRun } };
+    return { status: 200, body: { routineRun: run, stepRun, awakenedRuns } };
   }
 
   function validateRoutineLedgerStep({
@@ -3035,6 +3380,24 @@ export function createBusinessRoutineService({
       : { ok: false, status: completed.status, error: completed.body.error };
   }
 
+  const recoverableCapacityRuns = state.routineRuns.filter((run) =>
+    run.waitingReason === "device_capacity"
+    && run.capacityQueue?.state === "waiting"
+    && !run.cancellationRequestedAt
+    && !["succeeded", "cancelled", "failed"].includes(run.status));
+  if (recoverableCapacityRuns.length) {
+    runTx(() => {
+      const timestamp = now();
+      const recoveredDevices = new Set();
+      for (const run of recoverableCapacityRuns) {
+        const deviceKey = routineDeviceKey(run);
+        if (recoveredDevices.has(deviceKey)) continue;
+        recoveredDevices.add(deviceKey);
+        drainRoutineDeviceQueue(run, timestamp);
+      }
+    });
+  }
+
   return {
     recordDocumentClassification,
     createBusinessEntity,
@@ -3050,6 +3413,7 @@ export function createBusinessRoutineService({
     materializeRoutineIssue,
     createRoutineRun,
     getRoutineWorkItemExecution,
+    listRoutineWorkQueue,
     startRoutineWorkItem,
     executeRoutineStep,
     confirmQuotationInputs,

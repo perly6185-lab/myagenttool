@@ -64,6 +64,8 @@ export { shouldShowWorkItemCost } from "./task-view-types";
 
 const ArticleWorkflowDialogs = lazy(() => import("./article-workflow-dialogs"));
 const ArticleImportFields = lazy(() => import("./article-import-fields"));
+const RoutineBatchQueue = lazy(() => import("./routine-batch-queue")
+  .then((module) => ({ default: module.RoutineBatchQueue })));
 const RoutineWorkController = lazy(() => import("./routine-work-controller"));
 const WorkItemAcceptanceSection = lazy(() => import("./work-item-acceptance-section")
   .then((module) => ({ default: module.WorkItemAcceptanceSection })));
@@ -509,6 +511,12 @@ export function TaskView() {
 
         {tab === "local" ? (
           <>
+            <Suspense fallback={null}>
+              <RoutineBatchQueue
+                projectId={projectId === "all" ? undefined : projectId}
+                onOpen={setSelectedLocalId}
+              />
+            </Suspense>
             <section className="space-y-2 rounded-lg border border-warning/40 bg-warning/5 p-3">
                 <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
                   <h3 className="text-sm font-semibold">{t("approvals.pending", { count: attentionItems.length })}</h3>

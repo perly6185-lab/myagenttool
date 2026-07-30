@@ -23,8 +23,16 @@ export default function RoutineWorkController({
   const [execution, setExecution] = useState<RoutineWorkExecution | null>(null);
   const [ledgerPreviews, setLedgerPreviews] = useState<Record<string, LedgerUpsertPreview>>({});
 
-  const refresh = () => routineWorkApi.get(workItemId)
-    .then((result) => setExecution(result.execution));
+  const refresh = async () => {
+    const result = await routineWorkApi.get(workItemId);
+    setExecution(result.execution);
+    const previews = await routineWorkApi.listLedgerPreviews(result.execution.run.id);
+    setLedgerPreviews(Object.fromEntries(
+      previews.previews
+        .filter((preview) => preview.routineStepKey)
+        .map((preview) => [preview.routineStepKey!, preview]),
+    ));
+  };
 
   useEffect(() => {
     setExecution(null);

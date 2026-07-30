@@ -40,6 +40,7 @@ function workflowArtifactFingerprint(relativePath, absolutePath) {
 function harness() {
   let id = 0;
   const events = [];
+  const releasedReservations = [];
   const nextId = (prefix) => `${prefix}_${++id}`;
   const state = {
     projects: [
@@ -98,9 +99,10 @@ function harness() {
     nextId,
     appendEvent: (event) => events.push(event),
     createWorkItem,
+    releaseRoutineLedgerReservations: (input) => releasedReservations.push(input),
   });
   const service = createService();
-  return { state, events, service, recreateService: createService };
+  return { state, events, releasedReservations, service, recreateService: createService };
 }
 
 function createCaseAndDefinition(service) {
@@ -1265,7 +1267,7 @@ test("routine Issue identity follows the business-case source fingerprint", () =
 });
 
 test("a confirmed order condition creates one traceable child Issue and cancellation is terminal", () => {
-  const { service, state } = harness();
+  const { service, state, releasedReservations } = harness();
   const { businessCase } = createCaseAndDefinition(service);
   state.businessDocumentClassifications.push({
     id: "bdc_order",
@@ -1369,6 +1371,7 @@ test("a confirmed order condition creates one traceable child Issue and cancella
     idempotencyKey: "cancel-run",
   }, ACTOR_A);
   assert.equal(cancelled.body.execution.run.status, "cancelled");
+  assert.deepEqual(releasedReservations, [{ routineRunId: cancelled.body.execution.run.id }]);
   assert.equal(service.startRoutineWorkItem({
     workItemId: second.workItem.id,
     expectedRevision: cancelled.body.execution.run.revision,
@@ -1476,12 +1479,108 @@ test("device concurrency limits independent read steps across routine Issues", (
     idempotencyKey: "free-one-device-slot",
   }, ACTOR_A).body.execution;
   assert.equal(firstExecution.steps.filter((step) => step.run.state === "running").length, 1);
-  secondExecution = service.startRoutineWorkItem({
+  secondExecution = service.getRoutineWorkItemExecution({
     workItemId: second.workItem.id,
-    expectedRevision: secondExecution.run.revision,
-    idempotencyKey: "continue-second-capacity",
   }, ACTOR_A).body.execution;
   assert.equal(secondExecution.steps.filter((step) => step.run.state === "running").length, 1);
+  assert.equal(secondExecution.run.waitingReason, null);
+  assert.equal(secondExecution.run.capacity.active, 2);
+});
+
+test("five inquiry runs wait fairly, expose queue positions, release on cancel, and recover after restart", () => {
+  const { service, state, recreateService } = harness();
+  const { businessCase } = createCaseAndDefinition(service);
+  let definition = service.createRoutineDefinition({
+    projectId: "prj_a",
+    sourceId: "wfs_a",
+    name: "Five inquiry batch",
+    triggerDocumentTypes: ["inquiry"],
+    steps: [
+      { key: "extract", kind: "extract", label: "Extract inquiry" },
+      { key: "references", kind: "retrieve", label: "Retrieve references" },
+    ],
+    evidenceRefs: [{ artifactId: "wfa_inquiry", kind: "historical_case" }],
+    confidence: 0.9,
+  }, ACTOR_A).body.routineDefinition;
+  definition = service.transitionRoutineDefinition({
+    routineDefinitionId: definition.id,
+    expectedRevision: definition.revision,
+    action: "review",
+  }, ACTOR_A).body.routineDefinition;
+  definition = service.publishRoutineDefinition({
+    routineDefinitionId: definition.id,
+    expectedRevision: definition.revision,
+    confirmed: true,
+  }, ACTOR_A).body.routineDefinition;
+  const cases = [businessCase];
+  for (let index = 2; index <= 5; index += 1) {
+    cases.push(service.createBusinessCase({
+      projectId: "prj_a",
+      sourceId: "wfs_a",
+      businessKey: `RFQ-2026-00${index}`,
+      state: "confirmed",
+      entityIds: [],
+      artifactBindings: [{ artifactId: "wfa_inquiry", documentType: "inquiry", roles: ["trigger"] }],
+      evidenceRefs: [{ artifactId: "wfa_inquiry", kind: "business_key" }],
+      confidence: 0.9,
+    }, ACTOR_A).body.businessCase);
+  }
+  const materialized = cases.map((candidate) => service.materializeRoutineIssue({
+    routineDefinitionId: definition.id,
+    businessCaseId: candidate.id,
+    triggerArtifactIds: ["wfa_inquiry"],
+  }, ACTOR_A).body);
+  const executions = materialized.map((entry, index) => service.startRoutineWorkItem({
+    workItemId: entry.workItem.id,
+    expectedRevision: entry.execution.run.revision,
+    idempotencyKey: `start-five-${index}`,
+  }, ACTOR_A).body.execution);
+
+  assert.equal(state.routineRuns.flatMap((run) => run.stepRuns)
+    .filter((step) => step.state === "running").length, 2);
+  assert.deepEqual(executions.slice(1).map((execution) => execution.run.capacity.position), [1, 2, 3, 4]);
+
+  const firstCompleted = service.completeRoutineStep({
+    workItemId: materialized[0].workItem.id,
+    stepKey: "extract",
+    expectedRevision: executions[0].run.revision,
+    idempotencyKey: "five-free-first",
+  }, ACTOR_A);
+  assert.deepEqual(firstCompleted.body.awakenedRuns[0], {
+    routineRunId: state.routineRuns[1].id,
+    startedStepKeys: ["extract"],
+  });
+
+  const firstCurrent = service.getRoutineWorkItemExecution({
+    workItemId: materialized[0].workItem.id,
+  }, ACTOR_A).body.execution;
+  service.cancelRoutineWorkItem({
+    workItemId: materialized[0].workItem.id,
+    expectedRevision: firstCurrent.run.revision,
+    idempotencyKey: "five-cancel-first",
+  }, ACTOR_A);
+  const third = service.getRoutineWorkItemExecution({
+    workItemId: materialized[2].workItem.id,
+  }, ACTOR_A).body.execution;
+  assert.equal(third.steps.filter((step) => step.run.state === "running").length, 1);
+  assert.equal(state.routineRuns.flatMap((run) => run.stepRuns)
+    .filter((step) => step.state === "running").length, 2);
+
+  const restarted = recreateService();
+  const fourth = restarted.getRoutineWorkItemExecution({
+    workItemId: materialized[3].workItem.id,
+  }, ACTOR_A).body.execution;
+  const fifth = restarted.getRoutineWorkItemExecution({
+    workItemId: materialized[4].workItem.id,
+  }, ACTOR_A).body.execution;
+  assert.equal([
+    ...fourth.steps,
+    ...fifth.steps,
+  ].filter((step) => step.run.state === "running").length, 2);
+  const queue = restarted.listRoutineWorkQueue({ projectId: "prj_a" }, ACTOR_A);
+  assert.equal(queue.status, 200);
+  assert.equal(queue.body.items.length, 4);
+  assert.ok(queue.body.items.every((item) => item.businessKey && item.progress.total === 2));
 });
 
 test("source revocation blocks new routine work but still allows disabling definitions", () => {

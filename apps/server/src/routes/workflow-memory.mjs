@@ -50,9 +50,11 @@ export async function handleWorkflowMemoryRoutes({
   disableLedgerDefinition,
   previewLedgerUpsert,
   commitLedgerUpsertPreview,
+  listLedgerUpsertPreviews,
   listLedgerMutations,
   materializeRoutineIssue,
   getRoutineWorkItemExecution,
+  listRoutineWorkQueue,
   startRoutineWorkItem,
   executeRoutineStep,
   confirmQuotationInputs,
@@ -265,6 +267,21 @@ export async function handleWorkflowMemoryRoutes({
     return true;
   }
 
+  if (url.pathname === "/api/workflow-memory/ledger-upsert-previews" && req.method === "GET") {
+    const states = url.searchParams.get("states")
+      ?.split(",")
+      .map((value) => value.trim())
+      .filter(Boolean);
+    const result = await listLedgerUpsertPreviews({
+      ledgerDefinitionId: url.searchParams.get("ledgerDefinitionId"),
+      routineRunId: url.searchParams.get("routineRunId"),
+      states,
+      limit: url.searchParams.get("limit"),
+    }, actor);
+    sendJson(res, result.status, result.body);
+    return true;
+  }
+
   const ledgerDefinitionAction = url.pathname.match(
     /^\/api\/workflow-memory\/ledger-definitions\/([^/]+)\/(activate|disable|preview-upsert)$/,
   );
@@ -373,6 +390,17 @@ export async function handleWorkflowMemoryRoutes({
       businessCaseId: decodeURIComponent(routineIssueMaterialization[1]),
       routineDefinitionId: body?.routineDefinitionId,
       triggerArtifactIds: body?.triggerArtifactIds,
+    }, actor);
+    sendJson(res, result.status, result.body);
+    return true;
+  }
+
+  if (url.pathname === "/api/workflow-memory/routine-work-queue" && req.method === "GET") {
+    const result = listRoutineWorkQueue({
+      projectId: url.searchParams.get("projectId"),
+      sourceId: url.searchParams.get("sourceId"),
+      includeCompleted: url.searchParams.get("includeCompleted") === "1",
+      limit: url.searchParams.get("limit"),
     }, actor);
     sendJson(res, result.status, result.body);
     return true;

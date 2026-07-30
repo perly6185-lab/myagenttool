@@ -23,6 +23,7 @@ const MAX_ROWS = 100_000;
 const MAX_COLUMNS = 500;
 const PREVIEW_TTL_MS = 15 * 60 * 1_000;
 const STALE_LOCK_MS = 5 * 60 * 1_000;
+const MAX_LEDGER_QUEUE_DEPTH = 100;
 const SAFE_FIELD_RE = /^[a-zA-Z][a-zA-Z0-9_.-]{0,119}$/;
 const FORMULA_PREFIX_RE = /^[=+\-@]/;
 
@@ -92,9 +93,18 @@ function publicPreview(preview) {
     fieldValues: _fieldValues,
     previewDigest: _previewDigest,
     targetPath: _targetPath,
+    queueSequence: _queueSequence,
+    queuePosition: _queuePosition,
     ...result
   } = preview;
-  return result;
+  return {
+    ...result,
+    queue: {
+      state: preview.state === "waiting" ? "waiting" : "ready",
+      position: preview.state === "waiting" ? preview.queuePosition ?? null : null,
+      waitingSince: preview.waitingSince ?? null,
+    },
+  };
 }
 
 function normalizeCellValue(value) {
@@ -561,10 +571,17 @@ export function createLedgerUpsertService({
   state.ledgerDefinitions ??= [];
   state.ledgerUpsertPreviews ??= [];
   state.ledgerMutationAudits ??= [];
+  for (const [index, preview] of state.ledgerUpsertPreviews.entries()) {
+    preview.queueSequence ??= index + 1;
+    preview.queuePosition ??= preview.state === "waiting" ? 1 : null;
+    preview.waitingSince ??= preview.state === "waiting" ? preview.updatedAt ?? preview.createdAt : null;
+    preview.waitingReason ??= preview.state === "waiting" ? "ledger_reservation" : null;
+  }
   const actorTeam = (actor) => actor?.teamId ?? LOCAL_TEAM_ID;
   const actorUser = (actor) => actor?.userId ?? LOCAL_USER_ID;
   const visible = (row, actor) => row?.ownerTeamId === actorTeam(actor);
   const runTx = makeRunTx({ store, persistStateSoon });
+  const promotionByTarget = new Map();
 
   function definitionFor(id, actor) {
     return state.ledgerDefinitions.find((row) => row.id === id && visible(row, actor)) ?? null;
@@ -633,6 +650,193 @@ export function createLedgerUpsertService({
     });
   }
 
+  function nextQueueSequence() {
+    return state.ledgerUpsertPreviews.reduce(
+      (maximum, preview) => Math.max(maximum, Number(preview.queueSequence) || 0),
+      0,
+    ) + 1;
+  }
+
+  function queuedPreviewsForTarget(target, actor) {
+    return state.ledgerUpsertPreviews
+      .filter((preview) =>
+        preview.targetPath === target
+        && visible(preview, actor)
+        && ["pending", "waiting"].includes(preview.state))
+      .sort((left, right) =>
+        (Number(left.queueSequence) || 0) - (Number(right.queueSequence) || 0)
+        || String(left.createdAt ?? "").localeCompare(String(right.createdAt ?? ""))
+        || left.id.localeCompare(right.id));
+  }
+
+  function refreshQueuePositions(target, actor) {
+    const waiting = queuedPreviewsForTarget(target, actor)
+      .filter((preview) => preview.state === "waiting");
+    waiting.forEach((preview, index) => {
+      preview.queuePosition = index + 1;
+    });
+  }
+
+  function invalidatePreview(preview, timestamp, reason) {
+    preview.state = reason === "ledger_preview_expired" ? "expired" : "invalidated";
+    preview.waitingReason = null;
+    preview.queuePosition = null;
+    preview.invalidatedReason = reason;
+    preview.revision += 1;
+    preview.updatedAt = timestamp;
+  }
+
+  function expireTargetPreviews(target, timestamp, actor) {
+    const expired = queuedPreviewsForTarget(target, actor).filter((preview) =>
+      preview.state === "pending"
+      && Date.parse(preview.expiresAt) <= Date.parse(timestamp));
+    if (expired.length) {
+      runTx(() => {
+        for (const preview of expired) {
+          invalidatePreview(preview, timestamp, "ledger_preview_expired");
+        }
+        refreshQueuePositions(target, actor);
+      });
+    }
+    return Boolean(expired.length);
+  }
+
+  async function promoteNextPreviewUnlocked(target, actor) {
+    const timestamp = now();
+    expireTargetPreviews(target, timestamp, actor);
+    const active = queuedPreviewsForTarget(target, actor)
+      .find((preview) => preview.state === "pending");
+    if (active) {
+      const activeDefinition = definitionFor(active.ledgerDefinitionId, actor);
+      const activeContext = activeDefinition ? contextFor(activeDefinition, actor) : null;
+      const validation = !activeDefinition || !activeContext
+        ? { ok: false, error: "ledger_definition_not_active" }
+        : active.routineRunId
+          ? validateRoutineLedgerStep({
+            routineRunId: active.routineRunId,
+            stepKey: active.routineStepKey,
+            ledgerDefinitionId: active.ledgerDefinitionId,
+            businessKey: active.businessKey,
+          }, actor)
+          : { ok: true };
+      if (validation.ok) {
+        refreshQueuePositions(target, actor);
+        return null;
+      }
+      runTx(() => {
+        invalidatePreview(
+          active,
+          timestamp,
+          validation.error ?? "routine_ledger_step_changed",
+        );
+        refreshQueuePositions(target, actor);
+      });
+    }
+    while (true) {
+      const preview = queuedPreviewsForTarget(target, actor)
+        .find((candidate) => candidate.state === "waiting");
+      if (!preview) return null;
+      const definition = definitionFor(preview.ledgerDefinitionId, actor);
+      const context = definition ? contextFor(definition, actor) : null;
+      let routineValidation = { ok: true, routineVersion: preview.routineVersion };
+      if (preview.routineRunId) {
+        routineValidation = validateRoutineLedgerStep({
+          routineRunId: preview.routineRunId,
+          stepKey: preview.routineStepKey,
+          ledgerDefinitionId: preview.ledgerDefinitionId,
+          businessKey: preview.businessKey,
+        }, actor);
+      }
+      if (!definition || !context || !routineValidation.ok) {
+        runTx(() => {
+          invalidatePreview(
+            preview,
+            timestamp,
+            routineValidation.error ?? "ledger_definition_not_active",
+          );
+          refreshQueuePositions(target, actor);
+        });
+        continue;
+      }
+      try {
+        const resolved = await targetFor(definition, context);
+        if (resolved.target !== target) {
+          throw Object.assign(new Error("ledger_target_changed_since_preview"), {
+            code: "ledger_target_changed_since_preview",
+          });
+        }
+        const buffer = await readFile(target);
+        const targetRevision = ledgerContentRevision(buffer, definition.format);
+        const plan = await inspectLedger(
+          buffer,
+          definition,
+          preview.fieldValues,
+          preview.businessKey,
+        );
+        const proposedBuffer = await renderMutation(buffer, definition, {
+          action: plan.action,
+          rowNumber: plan.rowNumber,
+          fieldValues: preview.fieldValues,
+          businessKey: preview.businessKey,
+        });
+        const proposedTargetRevision = ledgerContentRevision(proposedBuffer, definition.format);
+        if (preview.state !== "waiting" || !contextFor(definition, actor)) continue;
+        runTx(() => {
+          preview.action = plan.action;
+          preview.rowNumber = plan.rowNumber;
+          preview.changedCells = plan.changedCells;
+          preview.targetRevision = targetRevision;
+          preview.proposedTargetRevision = proposedTargetRevision;
+          preview.routineRunRevision = routineValidation.routineRunRevision
+            ?? preview.routineRunRevision;
+          preview.approvalRequired = plan.action !== "no_op"
+            && (definition.writePolicy.approval === "always"
+              || (definition.writePolicy.approval === "updates_only" && plan.action === "update"));
+          preview.state = "pending";
+          preview.waitingReason = null;
+          preview.waitingSince = null;
+          preview.queuePosition = null;
+          preview.expiresAt = new Date(Date.parse(timestamp) + PREVIEW_TTL_MS).toISOString();
+          preview.revision += 1;
+          preview.updatedAt = timestamp;
+          refreshQueuePositions(target, actor);
+          event("ledger_upsert_preview_promoted",
+            "The next waiting ledger preview is ready for review and commit.",
+            preview, actor, {
+              ledgerDefinitionId: definition.id,
+              previewId: preview.id,
+              routineRunId: preview.routineRunId,
+              routineStepKey: preview.routineStepKey,
+              action: preview.action,
+            });
+        });
+        return preview;
+      } catch (error) {
+        runTx(() => {
+          invalidatePreview(
+            preview,
+            timestamp,
+            error?.code ?? "ledger_preview_refresh_failed",
+          );
+          refreshQueuePositions(target, actor);
+        });
+      }
+    }
+  }
+
+  async function promoteNextPreview(target, actor) {
+    const previous = promotionByTarget.get(target) ?? Promise.resolve();
+    const current = previous
+      .catch(() => null)
+      .then(() => promoteNextPreviewUnlocked(target, actor));
+    promotionByTarget.set(target, current);
+    try {
+      return await current;
+    } finally {
+      if (promotionByTarget.get(target) === current) promotionByTarget.delete(target);
+    }
+  }
+
   function listDefinitions({ sourceId = null } = {}, actor = null) {
     const rows = state.ledgerDefinitions.filter((row) =>
       visible(row, actor)
@@ -662,6 +866,7 @@ export function createLedgerUpsertService({
     }
     try {
       const { target } = await targetFor(definition, context);
+      await promoteNextPreview(target, actor);
       const buffer = await readFile(target);
       await inspectLedger(buffer, definition);
       runTx(() => {
@@ -830,9 +1035,16 @@ export function createLedgerUpsertService({
         rowNumber: plan.rowNumber,
       }));
       const replay = state.ledgerUpsertPreviews.find((row) =>
-        visible(row, actor) && row.state === "pending" && row.previewDigest === previewDigest
-        && Date.parse(row.expiresAt) > Date.parse(timestamp));
+        visible(row, actor) && ["pending", "waiting"].includes(row.state)
+        && row.previewDigest === previewDigest
+        && (row.state === "waiting" || Date.parse(row.expiresAt) > Date.parse(timestamp)));
       if (replay) return { status: 200, body: { preview: publicPreview(replay), replayed: true } };
+      const activePreview = queuedPreviewsForTarget(target, actor)
+        .find((row) => row.state === "pending");
+      if (queuedPreviewsForTarget(target, actor).length >= MAX_LEDGER_QUEUE_DEPTH) {
+        return { status: 429, body: { error: "ledger_preview_queue_full" } };
+      }
+      const waiting = Boolean(activePreview);
       const preview = {
         id: nextId("lup"),
         schemaVersion: businessRoutineSchemaVersion,
@@ -856,7 +1068,11 @@ export function createLedgerUpsertService({
         fieldValues: fields,
         previewDigest,
         approvalRequired,
-        state: "pending",
+        state: waiting ? "waiting" : "pending",
+        waitingReason: waiting ? "ledger_reservation" : null,
+        waitingSince: waiting ? timestamp : null,
+        queueSequence: nextQueueSequence(),
+        queuePosition: null,
         expiresAt,
         revision: 1,
         createdAt: timestamp,
@@ -865,15 +1081,24 @@ export function createLedgerUpsertService({
       };
       runTx(() => {
         state.ledgerUpsertPreviews.push(preview);
-        event("ledger_upsert_preview_created", "Ledger change preview created.", preview, actor, {
+        refreshQueuePositions(target, actor);
+        event(waiting ? "ledger_upsert_preview_queued" : "ledger_upsert_preview_created",
+          waiting
+            ? "Ledger change preview queued behind an earlier writer."
+            : "Ledger change preview created.",
+          preview, actor, {
           ledgerDefinitionId: definition.id,
           previewId: preview.id,
           routineRunId: preview.routineRunId,
           routineStepKey: preview.routineStepKey,
           action: preview.action,
+          queuePosition: preview.queuePosition,
         });
       });
-      return { status: 201, body: { preview: publicPreview(preview), replayed: false } };
+      return {
+        status: waiting ? 202 : 201,
+        body: { preview: publicPreview(preview), replayed: false },
+      };
     } catch (error) {
       return serviceError(error);
     }
@@ -901,15 +1126,27 @@ export function createLedgerUpsertService({
         body: { error: "ledger_preview_revision_conflict", currentRevision: preview.revision },
       };
     }
+    if (preview.state === "waiting") {
+      refreshQueuePositions(preview.targetPath, actor);
+      return {
+        status: 423,
+        body: {
+          error: "ledger_preview_waiting",
+          currentState: preview.state,
+          preview: publicPreview(preview),
+        },
+      };
+    }
     if (preview.state !== "pending") {
       return { status: 409, body: { error: "ledger_preview_not_committable", currentState: preview.state } };
     }
     if (Date.parse(preview.expiresAt) <= Date.parse(now())) {
+      const timestamp = now();
       runTx(() => {
-        preview.state = "expired";
-        preview.revision += 1;
-        preview.updatedAt = now();
+        invalidatePreview(preview, timestamp, "ledger_preview_expired");
+        refreshQueuePositions(preview.targetPath, actor);
       });
+      await promoteNextPreview(preview.targetPath, actor);
       return { status: 409, body: { error: "ledger_preview_expired" } };
     }
     if (preview.approvalRequired && approved !== true) {
@@ -927,6 +1164,16 @@ export function createLedgerUpsertService({
         expectedRunRevision: preview.routineRunRevision,
       }, actor);
       if (!validation.ok) {
+        const timestamp = now();
+        runTx(() => {
+          invalidatePreview(
+            preview,
+            timestamp,
+            validation.error ?? "routine_ledger_step_changed",
+          );
+          refreshQueuePositions(preview.targetPath, actor);
+        });
+        await promoteNextPreview(preview.targetPath, actor);
         return {
           status: validation.status ?? 409,
           body: { error: validation.error ?? "routine_ledger_step_changed" },
@@ -938,6 +1185,12 @@ export function createLedgerUpsertService({
     try {
       const { target, metadata } = await targetFor(definition, context);
       if (target !== preview.targetPath) {
+        const timestamp = now();
+        runTx(() => {
+          invalidatePreview(preview, timestamp, "ledger_target_changed_since_preview");
+          refreshQueuePositions(preview.targetPath, actor);
+        });
+        await promoteNextPreview(preview.targetPath, actor);
         return { status: 409, body: { error: "ledger_target_changed_since_preview" } };
       }
       lockPath = await acquireLock(target, Date.parse(now()));
@@ -946,6 +1199,12 @@ export function createLedgerUpsertService({
       const recoveredAfterRename = beforeHash === preview.proposedTargetRevision
         && beforeHash !== preview.targetRevision;
       if (beforeHash !== preview.targetRevision && !recoveredAfterRename) {
+        const timestamp = now();
+        runTx(() => {
+          invalidatePreview(preview, timestamp, "ledger_changed_since_preview");
+          refreshQueuePositions(target, actor);
+        });
+        await promoteNextPreview(target, actor);
         return {
           status: 409,
           body: {
@@ -1023,12 +1282,18 @@ export function createLedgerUpsertService({
         routineVersion: mutation.routineVersion,
         sourceArtifactIds: mutation.sourceArtifactIds,
       });
+      if (lockPath) {
+        await unlink(lockPath).catch(() => {});
+        lockPath = null;
+      }
+      const promotedPreview = await promoteNextPreview(target, actor);
       return {
         status: 200,
         body: {
           preview: publicPreview(preview),
           mutation,
           execution: routineCompletion?.execution ?? null,
+          promotedPreview: promotedPreview ? publicPreview(promotedPreview) : null,
           replayed: false,
         },
       };
@@ -1037,6 +1302,18 @@ export function createLedgerUpsertService({
         previewId: preview.id,
         error: error?.code ?? "ledger_operation_failed",
       });
+      if (error?.code !== "ledger_locked" && ["pending", "waiting"].includes(preview.state)) {
+        const timestamp = now();
+        runTx(() => {
+          invalidatePreview(
+            preview,
+            timestamp,
+            error?.code ?? "ledger_operation_failed",
+          );
+          refreshQueuePositions(preview.targetPath, actor);
+        });
+        await promoteNextPreview(preview.targetPath, actor);
+      }
       return serviceError(error);
     } finally {
       if (lockPath) await unlink(lockPath).catch(() => {});
@@ -1052,12 +1329,72 @@ export function createLedgerUpsertService({
     return { status: 200, body: { mutations } };
   }
 
+  async function listPreviews({
+    ledgerDefinitionId = null,
+    routineRunId = null,
+    states = null,
+    limit = 100,
+  } = {}, actor = null) {
+    const boundedLimit = Math.max(1, Math.min(100, Number(limit) || 100));
+    const stateFilter = Array.isArray(states)
+      ? new Set(states.filter((value) =>
+        ["pending", "waiting", "committed", "expired", "invalidated"].includes(value)))
+      : null;
+    const targets = [...new Set(state.ledgerUpsertPreviews
+      .filter((preview) =>
+        visible(preview, actor)
+        && ["pending", "waiting"].includes(preview.state)
+        && (!ledgerDefinitionId || preview.ledgerDefinitionId === ledgerDefinitionId)
+        && (!routineRunId || preview.routineRunId === routineRunId))
+      .map((preview) => preview.targetPath)
+      .filter(Boolean))];
+    for (const target of targets) await promoteNextPreview(target, actor);
+    const previews = state.ledgerUpsertPreviews
+      .filter((preview) =>
+        visible(preview, actor)
+        && actorCanAccessProject(state, actor, preview.projectId)
+        && (!ledgerDefinitionId || preview.ledgerDefinitionId === ledgerDefinitionId)
+        && (!routineRunId || preview.routineRunId === routineRunId)
+        && (!stateFilter || stateFilter.has(preview.state)))
+      .sort((left, right) =>
+        (Number(left.queueSequence) || 0) - (Number(right.queueSequence) || 0))
+      .slice(0, boundedLimit)
+      .map(publicPreview);
+    return { status: 200, body: { previews } };
+  }
+
+  function cancelRoutineReservations({ routineRunId } = {}, actor = null) {
+    const previews = state.ledgerUpsertPreviews.filter((preview) =>
+      preview.routineRunId === routineRunId
+      && visible(preview, actor)
+      && ["pending", "waiting"].includes(preview.state));
+    if (!previews.length) return { status: 200, body: { released: 0 } };
+    const timestamp = now();
+    runTx(() => {
+      for (const preview of previews) {
+        invalidatePreview(preview, timestamp, "routine_cancelled");
+      }
+      for (const target of new Set(previews.map((preview) => preview.targetPath))) {
+        refreshQueuePositions(target, actor);
+      }
+      event("ledger_routine_reservations_released",
+        "Ledger reservations were released because their routine work was cancelled.",
+        previews[0], actor, {
+          routineRunId,
+          previewIds: previews.map((preview) => preview.id),
+        });
+    });
+    return { status: 200, body: { released: previews.length } };
+  }
+
   return {
     listDefinitions,
     activateDefinition,
     disableDefinition,
     previewUpsert,
     commitPreview,
+    listPreviews,
+    cancelRoutineReservations,
     listMutations,
   };
 }

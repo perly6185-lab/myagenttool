@@ -487,6 +487,14 @@ test("workflow memory routes authorize, scan, classify, and enforce tenancy over
   );
   assert.equal(startedRoutine.status, 200, JSON.stringify(startedRoutine.body));
   assert.equal(startedRoutine.body.execution.steps[0].run.state, "running");
+  const routineQueue = await call(
+    "/api/workflow-memory/routine-work-queue?projectId=prj_a&limit=5",
+  );
+  assert.equal(routineQueue.status, 200, JSON.stringify(routineQueue.body));
+  assert.equal(routineQueue.body.items[0].workItemId, routineWorkItemId);
+  assert.equal(routineQueue.body.items[0].businessKey, "RFQ-HTTP-001");
+  assert.equal(routineQueue.body.items[0].capacity.limit >= 1, true);
+  assert.equal(routineQueue.body.items[0].currentStep.key, "register");
   const bypassedRoutine = await call(
     `/api/workflow-memory/routine-work-items/${routineWorkItemId}/steps/register/complete`,
     {
@@ -513,6 +521,12 @@ test("workflow memory routes authorize, scan, classify, and enforce tenancy over
   );
   assert.equal(routineLedgerPreview.status, 201, JSON.stringify(routineLedgerPreview.body));
   assert.equal(routineLedgerPreview.body.preview.action, "insert");
+  const listedRoutinePreviews = await call(
+    `/api/workflow-memory/ledger-upsert-previews?routineRunId=${startedRoutine.body.execution.run.id}&states=pending,waiting`,
+  );
+  assert.equal(listedRoutinePreviews.status, 200, JSON.stringify(listedRoutinePreviews.body));
+  assert.equal(listedRoutinePreviews.body.previews[0].id, routineLedgerPreview.body.preview.id);
+  assert.equal(listedRoutinePreviews.body.previews[0].targetPath, undefined);
   const completedRoutine = await call(
     `/api/workflow-memory/ledger-upsert-previews/${routineLedgerPreview.body.preview.id}/commit`,
     {

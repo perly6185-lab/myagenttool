@@ -118,7 +118,11 @@ export function RoutineWorkPanel({
       {execution.run.waitingReason ? (
         <p className="mt-2 rounded bg-muted p-2 text-xs text-muted-foreground">
           {execution.run.waitingReason === "device_capacity"
-            ? text.waitingCapacity
+            ? `${text.waitingCapacity}${
+              execution.run.capacity.position
+                ? ` ${text.waitingCapacityPosition} ${execution.run.capacity.position}.`
+                : ""
+            }`
             : execution.run.waitingReason === "routine_step_interrupted"
               ? text.interruptedRecovery
               : execution.run.waitingReason === "routine_quotation_facts_required"
@@ -213,6 +217,14 @@ export function RoutineWorkPanel({
                   </Button>
                 ) : (
                   <div className="rounded-md border border-border bg-background p-3">
+                    {ledgerPreview.state === "waiting" ? (
+                      <p className="mb-2 rounded bg-muted p-2 text-xs text-muted-foreground" role="status">
+                        {text.waitingLedger}
+                        {ledgerPreview.queue.position
+                          ? ` ${text.waitingLedgerPosition} ${ledgerPreview.queue.position}.`
+                          : ""}
+                      </p>
+                    ) : null}
                     <p className="text-sm font-medium">
                       {ledgerPreview.action === "insert"
                         ? text.ledgerInsert
@@ -221,7 +233,8 @@ export function RoutineWorkPanel({
                           : text.ledgerNoOp}
                       {ledgerPreview.rowNumber ? ` · ${text.row} ${ledgerPreview.rowNumber}` : ""}
                     </p>
-                    <Button className="mt-3" size="sm" disabled={pending}
+                    <Button className="mt-3" size="sm"
+                      disabled={pending || ledgerPreview.state === "waiting"}
                       onClick={() => setConfirmation({ type: "ledger", stepKey: step.key })}>
                       {text.reviewAndConfirm}
                     </Button>
@@ -416,6 +429,14 @@ export function RoutineWorkPanel({
             closeDisabled={pending}
           >
             <div className="space-y-3">
+              {preview.state === "waiting" ? (
+                <p className="rounded bg-muted p-2 text-xs text-muted-foreground" role="status">
+                  {text.waitingLedger}
+                  {preview.queue.position
+                    ? ` ${text.waitingLedgerPosition} ${preview.queue.position}.`
+                    : ""}
+                </p>
+              ) : null}
               <div className="rounded-md border bg-muted/20 p-3">
                 <p className="text-sm font-medium">
                   {preview.action === "insert"
@@ -446,7 +467,7 @@ export function RoutineWorkPanel({
               <div className="flex justify-end gap-2">
                 <Button size="sm" variant="secondary" disabled={pending}
                   onClick={() => setConfirmation(null)}>{text.back}</Button>
-                <Button size="sm" disabled={pending} onClick={() => {
+                <Button size="sm" disabled={pending || preview.state === "waiting"} onClick={() => {
                   onCommitLedger(step.key, preview);
                   setConfirmation(null);
                 }}>

@@ -50,6 +50,13 @@ export type RoutineWorkExecution = {
     revision: number;
     waitingReason: string | null;
     cancellationRequestedAt: string | null;
+    capacity: {
+      limit: number;
+      active: number;
+      state: "ready" | "waiting";
+      position: number | null;
+      waitingSince: string | null;
+    };
   };
   availableOrderTriggers: { artifactId: string; label: string }[];
   steps: {
@@ -92,9 +99,42 @@ export type LedgerUpsertPreview = {
   }[];
   warnings: string[];
   approvalRequired: boolean;
-  state: "pending" | "committed" | "expired";
+  state: "pending" | "waiting" | "committed" | "expired" | "invalidated";
+  waitingReason: string | null;
+  waitingSince: string | null;
+  queue: {
+    state: "ready" | "waiting";
+    position: number | null;
+    waitingSince: string | null;
+  };
   expiresAt: string;
   revision: number;
+};
+
+export type RoutineQueueItem = {
+  workItemId: string;
+  localRef: string;
+  title: string;
+  projectId: string;
+  sourceId: string;
+  businessKey: string;
+  definitionName: string;
+  routineVersion: number;
+  status: RoutineWorkExecution["run"]["status"];
+  revision: number;
+  waitingReason: string | null;
+  ledgerQueuePosition: number | null;
+  capacity: RoutineWorkExecution["run"]["capacity"];
+  progress: { completed: number; total: number };
+  currentStep: {
+    key: string;
+    label: string;
+    kind: RoutineWorkExecution["steps"][number]["kind"];
+    state: RoutineStepState;
+  } | null;
+  nextAction: "wait_capacity" | "wait_ledger" | "review_approval" | "decide_condition"
+    | "retry_step" | "review_ledger" | "continue_step" | "start";
+  updatedAt: string;
 };
 
 function actionKey(action: string, stepKey = "") {
@@ -104,6 +144,14 @@ function actionKey(action: string, stepKey = "") {
 }
 
 export const routineWorkApi = {
+  listQueue: (projectId?: string) => {
+    const query = new URLSearchParams({ limit: "20" });
+    if (projectId) query.set("projectId", projectId);
+    return request<{
+      items: RoutineQueueItem[];
+      summary: { total: number; running: number; waiting: number; needsAction: number };
+    }>("GET", `/api/workflow-memory/routine-work-queue?${query.toString()}`);
+  },
   get: (workItemId: string) =>
     request<{ execution: RoutineWorkExecution }>(
       "GET",
@@ -196,6 +244,11 @@ export const routineWorkApi = {
     `/api/workflow-memory/ledger-definitions/${encodeURIComponent(ledgerDefinitionId)}/preview-upsert`,
     { routineRunId, routineStepKey },
   ),
+  listLedgerPreviews: (routineRunId: string) =>
+    request<{ previews: LedgerUpsertPreview[] }>(
+      "GET",
+      `/api/workflow-memory/ledger-upsert-previews?routineRunId=${encodeURIComponent(routineRunId)}&states=pending,waiting`,
+    ),
   commitLedger: (previewId: string, expectedRevision: number) =>
     request<{
       preview: LedgerUpsertPreview;
@@ -259,6 +312,17 @@ const labels = {
     required: "Always",
     conditional: "When applicable",
     waitingCapacity: "Waiting for local device capacity. Completed steps are preserved.",
+    waitingCapacityPosition: "Waiting position",
+    waitingLedger: "Waiting for an earlier ledger update to finish. This task will refresh automatically.",
+    waitingLedgerPosition: "Ledger wait position",
+    batchTitle: "Inquiry batch",
+    batchDescription: "See active inquiries and open the next item that needs you.",
+    batchOpen: "Open",
+    batchOpenNext: "Open next action",
+    batchRunning: "Running",
+    batchWaiting: "Waiting",
+    batchNeedsAction: "Needs you",
+    batchProgress: "Progress",
     interruptedRecovery: "A running step was interrupted. Retry that step to continue.",
     quotationFactsRequired: "Confirm the missing or conflicting quotation details before generating the draft.",
     refreshRecovery: "The task changed. Refresh it before trying again.",
@@ -332,6 +396,17 @@ const labels = {
     required: "每次都做",
     conditional: "符合条件时做",
     waitingCapacity: "正在等待本机可用容量，已完成步骤会保留。",
+    waitingCapacityPosition: "排队位置",
+    waitingLedger: "正在等待前一项台账更新完成，本任务会自动刷新。",
+    waitingLedgerPosition: "台账排队位置",
+    batchTitle: "询价批次",
+    batchDescription: "集中查看正在处理的询价，并打开下一项需要你处理的工作。",
+    batchOpen: "打开",
+    batchOpenNext: "打开下一项",
+    batchRunning: "进行中",
+    batchWaiting: "等待中",
+    batchNeedsAction: "需要你处理",
+    batchProgress: "进度",
     interruptedRecovery: "上次运行被中断，请重试失败的步骤后继续。",
     quotationFactsRequired: "生成报价草稿前，请确认缺失或存在冲突的报价信息。",
     refreshRecovery: "任务状态已变化，请刷新后重试。",
