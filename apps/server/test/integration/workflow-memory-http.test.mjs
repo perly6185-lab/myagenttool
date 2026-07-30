@@ -195,6 +195,26 @@ test("workflow memory routes authorize, scan, classify, and enforce tenancy over
   );
   assert.equal(routineCandidates.status, 200);
   assert.equal(routineCandidates.body.count, 0);
+  mkdirSync(join(root, "history", "business", "templates"), { recursive: true });
+  writeFileSync(
+    join(root, "history", "business", "templates", "报价模板.md"),
+    [
+      "# 报价单",
+      "",
+      "| 客户 | 产品 | 数量 | 单价 | 币种 | 税率 | 交期 |",
+      "| --- | --- | ---: | ---: | --- | --- | --- |",
+      "| {{customer}} | {{product}} | {{quantity}} | {{unit_price}} | {{currency}} | {{tax_rate}} | {{delivery_terms}} |",
+    ].join("\n"),
+  );
+  const templateScan = await call(
+    `/api/workflow-memory/sources/${source.id}/scan`,
+    { method: "POST" },
+  );
+  assert.equal(templateScan.status, 200, JSON.stringify(templateScan.body));
+  const rescannedArtifacts = await call(`/api/workflow-memory/artifacts?sourceId=${source.id}`);
+  const quotationTemplate = rescannedArtifacts.body.artifacts.find((artifact) =>
+    artifact.name === "报价模板.md");
+  assert.ok(quotationTemplate);
   const inquiryArtifact = runtimeState.workflowArtifacts.find((artifact) => artifact.id === inquiry.id);
   for (const index of [1, 2, 3]) {
     runtimeState.businessCases.push({
@@ -254,7 +274,7 @@ test("workflow memory routes authorize, scan, classify, and enforce tenancy over
         coverage: 1,
         dependsOn: ["references"],
         evidenceRefs: [{ artifactId: inquiry.id, kind: "coverage", field: null, location: null }],
-        configuration: {},
+        configuration: { templateArtifactIds: [quotationTemplate.id] },
       },
     ],
     evidenceRefs: [{ artifactId: inquiry.id, kind: "routine", field: null, location: null }],
@@ -440,7 +460,7 @@ test("workflow memory routes authorize, scan, classify, and enforce tenancy over
   );
   assert.equal(bypassedQuotation.status, 409);
   assert.equal(bypassedQuotation.body.error, "routine_step_requires_governed_executor");
-  const generatedRoutine = await call(
+  const requestedQuotationInputs = await call(
     `/api/workflow-memory/routine-work-items/${routineWorkItemId}/steps/quotation/execute`,
     {
       method: "POST",
@@ -450,12 +470,60 @@ test("workflow memory routes authorize, scan, classify, and enforce tenancy over
       },
     },
   );
+  assert.equal(requestedQuotationInputs.status, 200, JSON.stringify(requestedQuotationInputs.body));
+  const quotationReview = requestedQuotationInputs.body.execution.steps
+    .find((step) => step.key === "quotation").run.quotationReview;
+  assert.equal(quotationReview.status, "needs_input");
+  assert.equal(quotationReview.templateOptions[0].artifactId, quotationTemplate.id);
+  const answerValues = {
+    customer: "星海科技有限公司",
+    product: "控制器",
+    quantity: "20",
+    unit_price: "100.00",
+    currency: "CNY",
+    tax_rate: "13%",
+    delivery_terms: "收到订单后 15 天",
+  };
+  const confirmedQuotationInputs = await call(
+    `/api/workflow-memory/routine-work-items/${routineWorkItemId}/steps/quotation/quotation-inputs`,
+    {
+      method: "POST",
+      body: {
+        expectedRevision: requestedQuotationInputs.body.execution.run.revision,
+        idempotencyKey: "http-confirm-quotation-inputs",
+        templateArtifactId: quotationTemplate.id,
+        answers: Object.fromEntries(
+          quotationReview.fields
+            .filter((field) => field.state !== "confirmed")
+            .map((field) => [field.key, answerValues[field.key]]),
+        ),
+        confirmed: true,
+      },
+    },
+  );
+  assert.equal(confirmedQuotationInputs.status, 200, JSON.stringify(confirmedQuotationInputs.body));
+  assert.equal(
+    confirmedQuotationInputs.body.execution.steps
+      .find((step) => step.key === "quotation").run.quotationReview.status,
+    "ready",
+  );
+  const generatedRoutine = await call(
+    `/api/workflow-memory/routine-work-items/${routineWorkItemId}/steps/quotation/execute`,
+    {
+      method: "POST",
+      body: {
+        expectedRevision: confirmedQuotationInputs.body.execution.run.revision,
+        idempotencyKey: "http-generate-confirmed-quotation",
+      },
+    },
+  );
   assert.equal(generatedRoutine.status, 200, JSON.stringify(generatedRoutine.body));
   assert.equal(generatedRoutine.body.execution.run.status, "succeeded");
   const quotationOutput = generatedRoutine.body.execution.steps
     .find((step) => step.key === "quotation").run.outputRefs[0];
-  assert.match(quotationOutput.relativePath, /^history\/outputs\/quotations\/quotation-RFQ-HTTP-001-r1-[a-f0-9]{8}\.md$/);
+  assert.match(quotationOutput.relativePath, /^history\/outputs\/quotations\/quotation-RFQ-HTTP-001-r1-d1-[a-f0-9]{8}\.md$/);
   assert.equal(existsSync(join(root, quotationOutput.relativePath)), true);
+  assert.match(readFileSync(join(root, quotationOutput.relativePath), "utf8"), /收到订单后 15 天/);
   const completedRoutineIssue = await call(`/api/work-items/${routineWorkItemId}`);
   assert.equal(completedRoutineIssue.status, 200, JSON.stringify(completedRoutineIssue.body));
   assert.equal(completedRoutineIssue.body.workItem.completionGate.ready, true,
@@ -493,7 +561,7 @@ test("workflow memory routes authorize, scan, classify, and enforce tenancy over
     { method: "POST" },
   );
   assert.equal(analyzedSource.status, 200);
-  assert.equal(analyzedSource.body.job.total, 4);
+  assert.equal(analyzedSource.body.job.total, 5);
   assert.equal(analyzedSource.body.job.replayed, 1);
   const analysisJobs = await call(
     `/api/workflow-memory/business-document-analysis-jobs?sourceId=${source.id}`,

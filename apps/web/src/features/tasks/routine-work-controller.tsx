@@ -92,6 +92,14 @@ export default function RoutineWorkController({
         onCancel={() => run(() => routineWorkApi.cancel(workItemId, execution.run.revision))}
         onExecute={(stepKey) => run(() =>
           routineWorkApi.executeStep(workItemId, stepKey, execution.run.revision))}
+        onQuotationInputs={(stepKey, templateArtifactId, answers) => run(() =>
+          routineWorkApi.confirmQuotationInputs(
+            workItemId,
+            stepKey,
+            execution.run.revision,
+            templateArtifactId,
+            answers,
+          ))}
         onComplete={(stepKey) => run(() =>
           routineWorkApi.complete(workItemId, stepKey, execution.run.revision))}
         onPreviewLedger={previewLedger}

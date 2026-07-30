@@ -1,9 +1,11 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import {
   mkdirSync,
   readFileSync,
   readdirSync,
   rmSync,
+  statSync,
   symlinkSync,
   writeFileSync,
 } from "node:fs";
@@ -18,11 +20,22 @@ import {
   createBusinessRoutineService,
   routineIdempotencyKeys,
 } from "../src/services/business-routines.mjs";
-import { writeLocalQuotationDraft } from "../src/services/business-routine-executors.mjs";
+import {
+  inspectLocalQuotationTemplate,
+  writeLocalQuotationDraft,
+} from "../src/services/business-routine-executors.mjs";
 import { sameProjectPath } from "../src/services/projects.mjs";
 
 const ACTOR_A = { userId: "usr_a", teamId: "team_a" };
 const ACTOR_B = { userId: "usr_b", teamId: "team_b" };
+
+function workflowArtifactFingerprint(relativePath, absolutePath) {
+  const stats = statSync(absolutePath);
+  return createHash("sha256")
+    .update(`${relativePath}\0${stats.size}\0${Math.trunc(stats.mtimeMs)}\0`)
+    .update(readFileSync(absolutePath, "utf8"))
+    .digest("hex");
+}
 
 function harness() {
   let id = 0;
@@ -835,6 +848,263 @@ test("governed executors retrieve current evidence, write one quotation draft, a
     assert.equal(handedOff.body.execution.run.status, "succeeded");
     assert.equal(handedOff.body.childWorkItem.id, condition.body.childWorkItem.id);
     assert.equal(state.workItems.filter((item) => item.parentId === materialized.workItem.id).length, 1);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("confirmed-template quotations block missing and conflicting facts before rendering an audited draft", () => {
+  const root = join(tmpdir(), `myagenttool-confirmed-quotation-${Date.now()}`);
+  const sourceRoot = join(root, "commercial");
+  const templateRelativePath = "templates/quotation-template.md";
+  const templatePath = join(sourceRoot, templateRelativePath);
+  mkdirSync(join(sourceRoot, "templates"), { recursive: true });
+  writeFileSync(templatePath, [
+    "# Quotation",
+    "",
+    "| Customer | Product | Quantity | Unit price | Currency | Tax | Delivery |",
+    "| --- | --- | ---: | ---: | --- | --- | --- |",
+    "| {{customer}} | {{product}} | {{quantity}} | {{unit_price}} | {{currency}} | {{tax_rate}} | {{delivery_terms}} |",
+  ].join("\n"));
+  try {
+    const { service, state } = harness();
+    state.projects.find((project) => project.id === "prj_a").path = root;
+    Object.assign(state.workflowSources.find((source) => source.id === "wfs_a"), {
+      relativePath: "commercial",
+      readMode: "supported_text",
+    });
+    const templateFingerprint = workflowArtifactFingerprint(templateRelativePath, templatePath);
+    state.workflowArtifacts.push({
+      id: "wfa_template",
+      ownerTeamId: "team_a",
+      projectId: "prj_a",
+      sourceId: "wfs_a",
+      availability: "available",
+      fingerprint: templateFingerprint,
+      relativePath: templateRelativePath,
+      name: "quotation-template.md",
+      extension: "md",
+    });
+    const { entity, businessCase } = createCaseAndDefinition(service);
+    Object.assign(entity.fields, {
+      customer: "Acme Original",
+      product: "Controller",
+      currency: "USD",
+    });
+    state.businessDocumentClassifications.push({
+      id: "bdc_inquiry_conflict",
+      ownerTeamId: "team_a",
+      projectId: "prj_a",
+      sourceId: "wfs_a",
+      artifactId: "wfa_inquiry",
+      artifactFingerprint: "a".repeat(64),
+      documentType: "inquiry",
+      confirmationState: "confirmed",
+      fieldProposals: [{
+        key: "customer",
+        value: "Acme Updated",
+        normalizedValue: "Acme Updated",
+        evidenceRefs: [{ artifactId: "wfa_inquiry", kind: "field", field: "customer" }],
+      }],
+    });
+    let definition = service.createRoutineDefinition({
+      projectId: "prj_a",
+      sourceId: "wfs_a",
+      name: "Confirmed template quotation",
+      triggerDocumentTypes: ["inquiry"],
+      steps: [
+        {
+          key: "quotation",
+          kind: "generate",
+          label: "Prepare quotation",
+          configuration: {
+            executorId: "local.confirmed-template-quotation.v2",
+            templateArtifactIds: ["wfa_template"],
+          },
+        },
+        {
+          key: "approval",
+          kind: "human_approval",
+          label: "Approve quotation",
+          dependsOn: ["quotation"],
+        },
+      ],
+      evidenceRefs: [{ artifactId: "wfa_inquiry", kind: "historical_case" }],
+      confidence: 0.9,
+    }, ACTOR_A).body.routineDefinition;
+    definition = service.transitionRoutineDefinition({
+      routineDefinitionId: definition.id,
+      expectedRevision: definition.revision,
+      action: "review",
+    }, ACTOR_A).body.routineDefinition;
+    definition = service.publishRoutineDefinition({
+      routineDefinitionId: definition.id,
+      expectedRevision: definition.revision,
+      confirmed: true,
+    }, ACTOR_A).body.routineDefinition;
+    const materialized = service.materializeRoutineIssue({
+      routineDefinitionId: definition.id,
+      businessCaseId: businessCase.id,
+      triggerArtifactIds: ["wfa_inquiry"],
+    }, ACTOR_A).body;
+    let execution = service.startRoutineWorkItem({
+      workItemId: materialized.workItem.id,
+      expectedRevision: materialized.execution.run.revision,
+      idempotencyKey: "start-confirmed-template",
+    }, ACTOR_A).body.execution;
+
+    execution = service.executeRoutineStep({
+      workItemId: materialized.workItem.id,
+      stepKey: "quotation",
+      expectedRevision: execution.run.revision,
+      idempotencyKey: "inspect-confirmed-template-inputs",
+    }, ACTOR_A).body.execution;
+    const review = execution.steps.find((step) => step.key === "quotation").run.quotationReview;
+    assert.equal(review.status, "needs_input");
+    assert.equal(review.fields.find((field) => field.key === "customer").state, "conflict");
+    assert.equal(review.fields.find((field) => field.key === "unit_price").state, "missing");
+    assert.equal(review.templateOptions[0].supported, true);
+    assert.equal(review.templateOptions[0].fingerprint, undefined);
+
+    assert.equal(service.confirmQuotationInputs({
+      workItemId: materialized.workItem.id,
+      stepKey: "quotation",
+      expectedRevision: execution.run.revision,
+      idempotencyKey: "reject-formula-answer",
+      templateArtifactId: "wfa_template",
+      answers: { unit_price: "=2+2" },
+      confirmed: true,
+    }, ACTOR_A).body.error, "routine_quotation_answers_invalid");
+    const confirmedAnswers = {
+      customer: "Acme Updated",
+      unit_price: "25.00",
+      tax_rate: "10%",
+      delivery_terms: "15 days after order",
+    };
+    const confirmed = service.confirmQuotationInputs({
+      workItemId: materialized.workItem.id,
+      stepKey: "quotation",
+      expectedRevision: execution.run.revision,
+      idempotencyKey: "confirm-quotation-inputs",
+      templateArtifactId: "wfa_template",
+      answers: confirmedAnswers,
+      confirmed: true,
+    }, ACTOR_A);
+    execution = confirmed.body.execution;
+    assert.equal(
+      execution.steps.find((step) => step.key === "quotation").run.quotationReview.status,
+      "ready",
+    );
+    assert.equal(service.confirmQuotationInputs({
+      workItemId: materialized.workItem.id,
+      stepKey: "quotation",
+      expectedRevision: 1,
+      idempotencyKey: "confirm-quotation-inputs",
+      templateArtifactId: "wfa_template",
+      answers: confirmedAnswers,
+      confirmed: true,
+    }, ACTOR_A).body.replayed, true);
+    assert.equal(service.confirmQuotationInputs({
+      workItemId: materialized.workItem.id,
+      stepKey: "quotation",
+      expectedRevision: 1,
+      idempotencyKey: "confirm-quotation-inputs",
+      templateArtifactId: "wfa_template",
+      answers: { ...confirmedAnswers, unit_price: "99.00" },
+      confirmed: true,
+    }, ACTOR_A).body.error, "routine_action_idempotency_conflict");
+
+    execution = service.executeRoutineStep({
+      workItemId: materialized.workItem.id,
+      stepKey: "quotation",
+      expectedRevision: execution.run.revision,
+      idempotencyKey: "generate-confirmed-template",
+    }, ACTOR_A).body.execution;
+    const quotationStep = execution.steps.find((step) => step.key === "quotation");
+    assert.equal(quotationStep.run.quotationReview.status, "generated");
+    assert.match(quotationStep.run.quotationReview.draftPreview, /Acme Updated/);
+    assert.equal(execution.run.status, "awaiting_approval");
+    const output = quotationStep.run.outputRefs.find((row) => row.kind === "file");
+    assert.match(output.relativePath, /quotation-RFQ-2026-001-r1-d1-[a-f0-9]{8}\.md$/);
+    const content = readFileSync(join(root, output.relativePath), "utf8");
+    assert.match(content, /Acme Updated/);
+    assert.match(content, /15 days after order/);
+    assert.doesNotMatch(content, /\{\{/);
+    execution = service.decideRoutineApproval({
+      workItemId: materialized.workItem.id,
+      stepKey: "approval",
+      expectedRevision: execution.run.revision,
+      idempotencyKey: "reject-confirmed-template-draft",
+      approved: false,
+    }, ACTOR_A).body.execution;
+    assert.equal(execution.run.status, "failed");
+    assert.equal(
+      execution.steps.find((step) => step.key === "approval").run.errorCode,
+      "routine_approval_rejected",
+    );
+    assert.equal(state.workItems.filter((item) => item.parentId === materialized.workItem.id).length, 0);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("quotation template inspection refuses drift, active Markdown, links, and unverified Office preservation", () => {
+  const root = join(tmpdir(), `myagenttool-quotation-template-safety-${Date.now()}`);
+  const sourceRoot = join(root, "commercial");
+  mkdirSync(join(sourceRoot, "templates"), { recursive: true });
+  const markdownPath = join(sourceRoot, "templates", "quotation.md");
+  writeFileSync(markdownPath, "# Quote\n\n{{customer}}\n");
+  const relativeTemplatePath = "templates/quotation.md";
+  try {
+    assert.equal(inspectLocalQuotationTemplate({
+      projectPath: root,
+      sourceRelativePath: "commercial",
+      templateRelativePath: relativeTemplatePath,
+      expectedFingerprint: "0".repeat(64),
+    }).error, "routine_template_drifted");
+    assert.equal(inspectLocalQuotationTemplate({
+      projectPath: root,
+      sourceRelativePath: "commercial",
+      templateRelativePath: relativeTemplatePath,
+      sourceReadMode: "metadata_only",
+    }).error, "routine_template_content_access_not_authorized");
+    writeFileSync(markdownPath, "# Quote\n\n<script>alert(1)</script>\n{{customer}}\n");
+    assert.equal(inspectLocalQuotationTemplate({
+      projectPath: root,
+      sourceRelativePath: "commercial",
+      templateRelativePath: relativeTemplatePath,
+    }).error, "routine_template_content_unsafe");
+    writeFileSync(markdownPath, "# Quote\n\n[Customer]({{customer}})\n");
+    assert.equal(inspectLocalQuotationTemplate({
+      projectPath: root,
+      sourceRelativePath: "commercial",
+      templateRelativePath: relativeTemplatePath,
+    }).error, "routine_template_content_unsafe");
+    writeFileSync(markdownPath, "# Quote\n\n<a href=\"{{customer}}\">Customer</a>\n");
+    assert.equal(inspectLocalQuotationTemplate({
+      projectPath: root,
+      sourceRelativePath: "commercial",
+      templateRelativePath: relativeTemplatePath,
+    }).error, "routine_template_content_unsafe");
+    const docxPath = join(sourceRoot, "templates", "quotation.docx");
+    writeFileSync(docxPath, "not a verified office template");
+    assert.deepEqual(inspectLocalQuotationTemplate({
+      projectPath: root,
+      sourceRelativePath: "commercial",
+      templateRelativePath: "templates/quotation.docx",
+    }), {
+      ok: false,
+      error: "routine_template_preservation_unavailable",
+      format: "docx",
+    });
+    const outside = join(root, "outside.md");
+    writeFileSync(outside, "{{customer}}\n");
+    symlinkSync(outside, join(sourceRoot, "templates", "linked.md"));
+    assert.equal(inspectLocalQuotationTemplate({
+      projectPath: root,
+      sourceRelativePath: "commercial",
+      templateRelativePath: "templates/linked.md",
+    }).error, "routine_template_link_not_allowed");
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

@@ -132,9 +132,49 @@ async function mockApi(page: Page) {
     dependsOn: ["approve_quote"],
     configuration: { condition: "A confirmed order was received." },
   }] as const;
+  const quotationReview = (status: "needs_input" | "ready" | "generated") => ({
+    status,
+    fields: [
+      {
+        key: "customer",
+        label: "Customer",
+        state: "confirmed" as const,
+        value: "Acme",
+        conflictingValues: [],
+        sourceSummaries: ["inquiries/INQ-004.md"],
+        evidenceArtifactIds: ["art_1"],
+      },
+      {
+        key: "unit_price",
+        label: "Unit price",
+        state: status === "needs_input" ? "missing" as const : "confirmed" as const,
+        value: status === "needs_input" ? null : "25.00",
+        conflictingValues: [],
+        sourceSummaries: status === "needs_input" ? [] : ["Confirmed by user"],
+        evidenceArtifactIds: [],
+      },
+    ],
+    templateOptions: [{
+      artifactId: "template_1",
+      label: "templates/quotation.md",
+      format: "markdown",
+      supported: true,
+      reason: null,
+      placeholderKeys: ["customer", "unit_price"],
+    }],
+    selectedTemplate: status === "needs_input"
+      ? null
+      : { artifactId: "template_1", label: "templates/quotation.md", format: "markdown" },
+    plannedOutputPath: "sales/history/outputs/quotations/quotation-INQ-004-r1-d1-abcd1234.md",
+    draftRevision: 1,
+    draftPreview: status === "generated"
+      ? "# Quotation\n\nCustomer: Acme\n\nUnit price: 25.00"
+      : null,
+  });
   const step = (
     row: typeof baseSteps[number],
     state: "pending" | "running" | "awaiting_approval" | "awaiting_condition" | "succeeded" | "skipped",
+    review: ReturnType<typeof quotationReview> | null = null,
   ) => ({
     ...row,
     run: {
@@ -142,8 +182,13 @@ async function mockApi(page: Page) {
       attempts: state === "pending" ? 0 : 1,
       errorCode: null,
       conditionOutcome: state === "skipped" ? false : null,
+      quotationReview: review,
       outputRefs: row.key === "generate_quote" && state === "succeeded"
-        ? [{ kind: "file", summary: "quotation-INQ-004.md" }]
+        ? [{
+            kind: "file",
+            relativePath: "sales/history/outputs/quotations/quotation-INQ-004-r1-d1-abcd1234.md",
+            summary: "quotation-INQ-004-r1-d1-abcd1234.md",
+          }]
         : [],
     },
   });
@@ -160,6 +205,7 @@ async function mockApi(page: Page) {
     availableOrderTriggers: [{ artifactId: "order_4", label: "PO-004.pdf" }],
     steps: baseSteps.map((row) => step(row, "pending")),
   };
+  let quotationInputsConfirmed = false;
   await page.route("**/api/**", async (route) => {
     const request = route.request();
     const url = new URL(request.url());
@@ -362,13 +408,56 @@ async function mockApi(page: Page) {
     }
     if (url.pathname.endsWith(`/routine-work-items/${workItem.id}/steps/generate_quote/execute`)
       && request.method() === "POST") {
+      if (!quotationInputsConfirmed) {
+        routineExecution = {
+          ...routineExecution,
+          run: {
+            ...routineExecution.run,
+            status: "running",
+            revision: 4,
+            waitingReason: "routine_quotation_facts_required",
+          },
+          steps: [
+            step(baseSteps[0], "succeeded"),
+            step(baseSteps[1], "running", quotationReview("needs_input")),
+            step(baseSteps[2], "pending"),
+            step(baseSteps[3], "pending"),
+          ],
+        };
+        return route.fulfill({ json: { execution: routineExecution } });
+      }
       routineExecution = {
         ...routineExecution,
-        run: { ...routineExecution.run, status: "awaiting_approval", revision: 4 },
+        run: {
+          ...routineExecution.run,
+          status: "awaiting_approval",
+          revision: 6,
+          waitingReason: null,
+        },
         steps: [
           step(baseSteps[0], "succeeded"),
-          step(baseSteps[1], "succeeded"),
+          step(baseSteps[1], "succeeded", quotationReview("generated")),
           step(baseSteps[2], "awaiting_approval"),
+          step(baseSteps[3], "pending"),
+        ],
+      };
+      return route.fulfill({ json: { execution: routineExecution } });
+    }
+    if (url.pathname.endsWith(`/routine-work-items/${workItem.id}/steps/generate_quote/quotation-inputs`)
+      && request.method() === "POST") {
+      quotationInputsConfirmed = true;
+      routineExecution = {
+        ...routineExecution,
+        run: {
+          ...routineExecution.run,
+          status: "running",
+          revision: 5,
+          waitingReason: null,
+        },
+        steps: [
+          step(baseSteps[0], "succeeded"),
+          step(baseSteps[1], "running", quotationReview("ready")),
+          step(baseSteps[2], "pending"),
           step(baseSteps[3], "pending"),
         ],
       };
@@ -378,7 +467,7 @@ async function mockApi(page: Page) {
       && request.method() === "POST") {
       routineExecution = {
         ...routineExecution,
-        run: { ...routineExecution.run, status: "awaiting_condition", revision: 5 },
+        run: { ...routineExecution.run, status: "awaiting_condition", revision: 7 },
         steps: [
           step(baseSteps[0], "succeeded"),
           step(baseSteps[1], "succeeded"),
@@ -392,7 +481,7 @@ async function mockApi(page: Page) {
       && request.method() === "POST") {
       routineExecution = {
         ...routineExecution,
-        run: { ...routineExecution.run, status: "succeeded", revision: 6 },
+        run: { ...routineExecution.run, status: "succeeded", revision: 8 },
         steps: [
           step(baseSteps[0], "succeeded"),
           step(baseSteps[1], "succeeded"),
@@ -484,9 +573,16 @@ test("processes a routine Issue through ledger review, quotation approval, and o
   await ledgerDialog.getByRole("button", { name: "Approve ledger change" }).click();
 
   await dailyWork.getByRole("button", { name: "Run this step" }).click();
+  await dailyWork.getByRole("button", { name: "Review quotation details" }).click();
+  const quotationDialog = page.getByRole("dialog", { name: "Confirm quotation details" });
+  await quotationDialog.getByLabel("Quotation template").selectOption("template_1");
+  await quotationDialog.getByLabel("Unit price").fill("25.00");
+  await quotationDialog.getByRole("button", { name: "Confirm details" }).click();
+  await dailyWork.getByRole("button", { name: "Generate quotation draft" }).click();
   await dailyWork.getByRole("button", { name: "Approve and continue" }).click();
   const approvalDialog = page.getByRole("dialog", { name: "Review the quotation" });
-  await expect(approvalDialog.getByText("quotation-INQ-004.md")).toBeVisible();
+  await expect(approvalDialog.getByText(/quotation-INQ-004-r1-d1-abcd1234\.md/).first()).toBeVisible();
+  await expect(approvalDialog.getByText(/Unit price: 25.00/).first()).toBeVisible();
   await approvalDialog.getByRole("button", { name: "Approve and continue" }).click();
 
   await dailyWork.getByLabel("Confirmed order document").selectOption("order_4");

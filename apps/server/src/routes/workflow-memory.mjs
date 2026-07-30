@@ -51,6 +51,7 @@ export async function handleWorkflowMemoryRoutes({
   getRoutineWorkItemExecution,
   startRoutineWorkItem,
   executeRoutineStep,
+  confirmQuotationInputs,
   completeRoutineStep,
   retryRoutineStep,
   decideRoutineApproval,
@@ -370,7 +371,7 @@ export async function handleWorkflowMemoryRoutes({
   }
 
   const routineStepAction = url.pathname.match(
-    /^\/api\/workflow-memory\/routine-work-items\/([^/]+)\/steps\/([^/]+)\/(execute|complete|retry|approval|condition)$/,
+    /^\/api\/workflow-memory\/routine-work-items\/([^/]+)\/steps\/([^/]+)\/(execute|quotation-inputs|complete|retry|approval|condition)$/,
   );
   if (routineStepAction && req.method === "POST") {
     const body = await readJson(req);
@@ -383,6 +384,13 @@ export async function handleWorkflowMemoryRoutes({
     let result;
     if (routineStepAction[3] === "execute") {
       result = executeRoutineStep(input, actor);
+    } else if (routineStepAction[3] === "quotation-inputs") {
+      result = confirmQuotationInputs({
+        ...input,
+        templateArtifactId: body?.templateArtifactId,
+        answers: body?.answers,
+        confirmed: body?.confirmed,
+      }, actor);
     } else if (routineStepAction[3] === "complete") {
       result = completeRoutineStep({
         ...input,

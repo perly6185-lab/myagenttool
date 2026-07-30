@@ -11,7 +11,7 @@ import { LOCAL_TEAM_ID, LOCAL_USER_ID } from "../runtime/auth.mjs";
 import { makeRunTx } from "../runtime/store/run-tx.mjs";
 
 export const BUSINESS_DOCUMENT_CLASSIFIER_VERSION = 2;
-export const BUSINESS_FIELD_EXTRACTOR_VERSION = 1;
+export const BUSINESS_FIELD_EXTRACTOR_VERSION = 2;
 
 const MAX_ANALYSIS_TEXT = 96 * 1024;
 const DEFAULT_ANALYSIS_CONCURRENCY = 2;
@@ -37,7 +37,10 @@ const FIELD_DEFINITIONS = [
   { key: "customer", labels: ["客户名称", "客户", "采购方", "买方", "customer name", "customer", "client", "buyer"] },
   { key: "product", labels: ["产品名称", "产品", "品名", "物料名称", "product name", "product", "item", "material"] },
   { key: "quantity", labels: ["数量", "采购数量", "订购数量", "quantity", "qty"] },
+  { key: "unit_price", labels: ["单价", "报价单价", "含税单价", "unit price", "price per unit", "rate"] },
   { key: "currency", labels: ["币种", "货币", "currency"] },
+  { key: "tax_rate", labels: ["税率", "增值税率", "tax rate", "vat rate", "vat"] },
+  { key: "delivery_terms", labels: ["交期", "交货期", "交付周期", "delivery terms", "delivery date", "lead time"] },
   { key: "amount", labels: ["总金额", "报价金额", "订单金额", "合计", "amount", "total amount", "grand total"] },
   { key: "document_date", labels: ["日期", "询价日期", "报价日期", "订单日期", "date", "document date"] },
   { key: "inquiry_number", labels: ["询价编号", "询价单号", "rfq number", "rfq no", "inquiry number", "inquiry no"] },
@@ -113,7 +116,7 @@ function rankedTypes(text) {
 function normalizeFieldValue(key, value) {
   const text = boundedText(value, 1_000);
   if (!text) return null;
-  if (key === "quantity" || key === "amount") {
+  if (key === "quantity" || key === "unit_price" || key === "amount") {
     const number = text.replace(/[,\s]/g, "").match(/-?\d+(?:\.\d+)?/)?.[0];
     return number ?? text;
   }

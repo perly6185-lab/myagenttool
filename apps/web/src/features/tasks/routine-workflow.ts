@@ -11,6 +11,35 @@ export type RoutineStepState =
   | "failed"
   | "cancelled";
 
+export type QuotationReview = {
+  status: "needs_input" | "ready" | "generated";
+  fields: {
+    key: string;
+    label: string;
+    state: "confirmed" | "missing" | "conflict";
+    value: string | null;
+    conflictingValues: string[];
+    sourceSummaries: string[];
+    evidenceArtifactIds: string[];
+  }[];
+  templateOptions: {
+    artifactId: string;
+    label: string;
+    format: string;
+    supported: boolean;
+    reason: string | null;
+    placeholderKeys: string[];
+  }[];
+  selectedTemplate: {
+    artifactId: string;
+    label: string;
+    format: string;
+  } | null;
+  plannedOutputPath: string | null;
+  draftRevision: number;
+  draftPreview: string | null;
+};
+
 export type RoutineWorkExecution = {
   workItemId: string;
   definition: { id: string; name: string; version: number };
@@ -36,6 +65,7 @@ export type RoutineWorkExecution = {
       attempts: number;
       errorCode: string | null;
       conditionOutcome: boolean | null;
+      quotationReview?: QuotationReview | null;
       outputRefs: {
         kind: "artifact" | "file" | "note";
         artifactId?: string | null;
@@ -112,6 +142,23 @@ export const routineWorkApi = {
       `/api/workflow-memory/routine-work-items/${encodeURIComponent(workItemId)}/steps/${encodeURIComponent(stepKey)}/execute`,
       { expectedRevision, idempotencyKey: actionKey("execute", stepKey) },
     ),
+  confirmQuotationInputs: (
+    workItemId: string,
+    stepKey: string,
+    expectedRevision: number,
+    templateArtifactId: string,
+    answers: Record<string, string>,
+  ) => request<{ execution: RoutineWorkExecution }>(
+    "POST",
+    `/api/workflow-memory/routine-work-items/${encodeURIComponent(workItemId)}/steps/${encodeURIComponent(stepKey)}/quotation-inputs`,
+    {
+      expectedRevision,
+      idempotencyKey: actionKey("quotation-inputs", stepKey),
+      templateArtifactId,
+      answers,
+      confirmed: true,
+    },
+  ),
   retry: (workItemId: string, stepKey: string, expectedRevision: number) =>
     request<{ execution: RoutineWorkExecution }>(
       "POST",
@@ -175,6 +222,19 @@ const labels = {
     selectOrder: "Confirmed order document",
     complete: "Mark step complete",
     executeStep: "Run this step",
+    reviewQuotationInputs: "Review quotation details",
+    generateQuotation: "Generate quotation draft",
+    quotationInputDialogTitle: "Confirm quotation details",
+    quotationInputDialogDescription: "Resolve missing or conflicting facts and choose an approved local template.",
+    quotationTemplate: "Quotation template",
+    unsupportedTemplate: "Unavailable until format preservation checks pass",
+    plannedOutput: "Planned local output",
+    missingFact: "Missing",
+    conflictingFact: "Conflicting values",
+    confirmedFact: "Confirmed",
+    confirmQuotationInputs: "Confirm details",
+    noQuotationTemplates: "No supported Markdown quotation template is available in this source.",
+    factSources: "Sources",
     reviewLedger: "Review ledger change",
     reviewAndConfirm: "Review and confirm",
     commitLedger: "Approve ledger change",
@@ -187,6 +247,7 @@ const labels = {
     approvalDialogDescription: "Check the prepared result before allowing the task to continue.",
     approvalNextAction: "After approval, the task will register the quotation and wait for a confirmed order before creating order work.",
     noApprovalOutputs: "No output summary is available. Go back and inspect the generated file before approving.",
+    quotationDraftPreview: "Draft preview",
     back: "Go back",
     ledgerConfigurationMissing: "This ledger needs to be configured before the step can continue.",
     ledgerInsert: "Add row",
@@ -199,6 +260,7 @@ const labels = {
     conditional: "When applicable",
     waitingCapacity: "Waiting for local device capacity. Completed steps are preserved.",
     interruptedRecovery: "A running step was interrupted. Retry that step to continue.",
+    quotationFactsRequired: "Confirm the missing or conflicting quotation details before generating the draft.",
     refreshRecovery: "The task changed. Refresh it before trying again.",
     refreshAction: "Refresh task",
     recoveries: {
@@ -233,6 +295,19 @@ const labels = {
     selectOrder: "已确认的订单文件",
     complete: "标记本步骤完成",
     executeStep: "执行本步骤",
+    reviewQuotationInputs: "检查报价信息",
+    generateQuotation: "生成报价草稿",
+    quotationInputDialogTitle: "确认报价信息",
+    quotationInputDialogDescription: "补齐缺失或冲突的信息，并选择已认可的本地模板。",
+    quotationTemplate: "报价模板",
+    unsupportedTemplate: "格式保存性检查通过前不可使用",
+    plannedOutput: "计划生成到本地",
+    missingFact: "缺失",
+    conflictingFact: "存在冲突",
+    confirmedFact: "已确认",
+    confirmQuotationInputs: "确认这些信息",
+    noQuotationTemplates: "当前来源中没有可用的 Markdown 报价模板。",
+    factSources: "来源",
     reviewLedger: "预览台账变更",
     reviewAndConfirm: "查看并确认",
     commitLedger: "确认并写入台账",
@@ -245,6 +320,7 @@ const labels = {
     approvalDialogDescription: "允许任务继续前，请先检查已经生成的业务结果。",
     approvalNextAction: "确认后，任务会登记报价；只有收到已确认订单后，才会创建订单工作。",
     noApprovalOutputs: "暂时没有可显示的结果摘要，请返回并检查生成文件后再确认。",
+    quotationDraftPreview: "报价草稿预览",
     back: "返回检查",
     ledgerConfigurationMissing: "需要先配置本步骤使用的台账，之后才能继续。",
     ledgerInsert: "新增一行",
@@ -257,6 +333,7 @@ const labels = {
     conditional: "符合条件时做",
     waitingCapacity: "正在等待本机可用容量，已完成步骤会保留。",
     interruptedRecovery: "上次运行被中断，请重试失败的步骤后继续。",
+    quotationFactsRequired: "生成报价草稿前，请确认缺失或存在冲突的报价信息。",
     refreshRecovery: "任务状态已变化，请刷新后重试。",
     refreshAction: "刷新任务",
     recoveries: {
