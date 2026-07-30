@@ -681,6 +681,21 @@ test.beforeEach(async ({ page }) => {
       "myagenttool-ui",
       JSON.stringify({ version: 1, state: { locale: "en" } }),
     );
+    Object.defineProperty(window, "myagenttoolDesktop", {
+      configurable: true,
+      value: {
+        pickWorkflowCaseFiles: async () => ({
+          selectionId: "e2e-case-selection",
+          files: [
+            { name: "RFQ-2026-101.xlsx", extension: "xlsx", size: 42_000, readiness: "ready" },
+            { name: "product-photo.png", extension: "png", size: 84_000, readiness: "needs_ocr" },
+          ],
+        }),
+        stageWorkflowCase: async () => {
+          throw new Error("The visual fixture does not submit data.");
+        },
+      },
+    });
   });
   await mockApi(page);
   await page.goto("/?section=workflowMemory");
@@ -721,6 +736,29 @@ test("lets an ordinary user confirm one new inquiry before a task is created", a
   await expect(page.getByText("Task created")).toBeVisible();
   await expect(page.getByRole("button", { name: "Review inquiry" })).toHaveCount(0);
   await expect(page.getByRole("button", { name: "Open task" })).toBeVisible();
+});
+
+test("shows a clear governed real-case intake dialog on desktop and mobile", async ({ page }, testInfo) => {
+  await page.getByRole("button", { name: "Add real case" }).click();
+  const dialog = page.getByRole("dialog", { name: "Add one real business case" });
+  await dialog.getByRole("button", { name: "Choose files" }).click();
+
+  await expect(dialog.getByText("RFQ-2026-101.xlsx")).toBeVisible();
+  await expect(dialog.getByText("product-photo.png")).toBeVisible();
+  await expect(dialog.getByText("Needs OCR")).toBeVisible();
+  await expect(dialog.getByLabel("I confirm I may use these files in this local workflow.")).not.toBeChecked();
+  await testInfo.attach("real-case-intake-desktop", {
+    body: await page.screenshot({ fullPage: true }),
+    contentType: "image/png",
+  });
+
+  await page.setViewportSize({ width: 390, height: 844 });
+  await expect(dialog).toBeVisible();
+  await expect(dialog.getByRole("button", { name: "Add and review" })).toBeVisible();
+  await testInfo.attach("real-case-intake-mobile", {
+    body: await page.screenshot({ fullPage: true }),
+    contentType: "image/png",
+  });
 });
 
 test("requires explicit review before enabling a discovered work type", async ({ page }) => {

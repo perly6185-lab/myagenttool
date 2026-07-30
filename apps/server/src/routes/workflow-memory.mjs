@@ -175,7 +175,10 @@ export async function handleWorkflowMemoryRoutes({
     const body = await readJson(req);
     const observationId = decodeURIComponent(intakeObservationAction[1]);
     const result = intakeObservationAction[2] === "inspect"
-      ? await inspectInquiryIntake({ observationId }, actor)
+      ? await inspectInquiryIntake({
+        observationId,
+        supportingObservationIds: body?.supportingObservationIds,
+      }, actor)
       : await acceptInquiryIntake({
         observationId,
         expectedRevision: body?.expectedRevision,
@@ -184,6 +187,7 @@ export async function handleWorkflowMemoryRoutes({
         confirmed: body?.confirmed,
         fieldCorrections: body?.fieldCorrections,
         excludedFieldKeys: body?.excludedFieldKeys,
+        supportingObservationIds: body?.supportingObservationIds,
       }, actor);
     sendJson(res, result.status, result.body);
     return true;

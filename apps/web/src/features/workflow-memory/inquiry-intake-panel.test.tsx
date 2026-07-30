@@ -7,6 +7,7 @@ import { i18n } from "@/lib/i18n";
 
 const mocks = vi.hoisted(() => ({
   list: vi.fn(),
+  scanSource: vi.fn(),
   scan: vi.fn(),
   inspect: vi.fn(),
   accept: vi.fn(),
@@ -15,6 +16,7 @@ const mocks = vi.hoisted(() => ({
 vi.mock("@/features/workflow-memory/workflow-memory-api", () => ({
   workflowMemoryApi: {
     listWorkflowIntakeObservations: mocks.list,
+    scanWorkflowSource: mocks.scanSource,
     scanWorkflowIncrementalIntake: mocks.scan,
     inspectWorkflowInquiryIntake: mocks.inspect,
     acceptWorkflowInquiryIntake: mocks.accept,
@@ -69,6 +71,7 @@ function renderPanel(onOpenTask = vi.fn()) {
 beforeEach(async () => {
   await i18n.changeLanguage("en-US");
   Object.values(mocks).forEach((mock) => mock.mockReset());
+  window.myagenttoolDesktop = undefined;
   mocks.list.mockResolvedValue({ observations: [readyObservation], count: 1 });
   mocks.scan.mockResolvedValue({
     source,
@@ -94,6 +97,7 @@ beforeEach(async () => {
       artifactId: "wfa_a",
       relativePath: "RFQ-2026-101.md",
       revision: 3,
+      supportingObservations: [],
     },
     classification: {
       id: "bdc_a",
@@ -164,6 +168,172 @@ describe("InquiryIntakePanel", () => {
         fieldCorrections: { customer: "Acme Ltd" },
       }),
     );
+  });
+
+  it("adds a governed multi-file case and reviews one primary inquiry", async () => {
+    const primary = {
+      ...readyObservation,
+      id: "wio_new",
+      relativePath: "incoming/case/inquiry.xlsx",
+      name: "inquiry.xlsx",
+    };
+    const supporting = {
+      ...readyObservation,
+      id: "wio_image",
+      artifactId: "wfa_image",
+      canonicalArtifactId: "wfa_image",
+      relativePath: "incoming/case/photo.png",
+      name: "photo.png",
+    };
+    const pickWorkflowCaseFiles = vi.fn().mockResolvedValue({
+      selectionId: "selection-1",
+      files: [
+        { name: "inquiry.xlsx", extension: "xlsx", size: 100, readiness: "ready" },
+        { name: "photo.png", extension: "png", size: 20, readiness: "needs_ocr" },
+      ],
+    });
+    const stageWorkflowCase = vi.fn().mockResolvedValue({
+      requestId: "request-1",
+      caseDirectory: "incoming/case",
+      primaryRelativePath: primary.relativePath,
+      supportingRelativePaths: [supporting.relativePath],
+      files: [],
+      authorizationMode: "deidentified",
+      recordedAt: "2026-07-30T12:00:00.000Z",
+    });
+    window.myagenttoolDesktop = { pickWorkflowCaseFiles, stageWorkflowCase };
+    mocks.scan.mockResolvedValue({
+      source,
+      intake: {
+        scanRevision: 2,
+        scannedEntries: 2,
+        skipped: 0,
+        truncated: false,
+        observed: 2,
+        waitingStable: 0,
+        ready: 2,
+        duplicate: 0,
+        blocked: 0,
+        unchanged: 0,
+      },
+      observations: [primary, supporting],
+    });
+    mocks.list.mockResolvedValue({ observations: [primary, supporting], count: 2 });
+    mocks.inspect.mockResolvedValue({
+      state: "needs_confirmation",
+      observation: {
+        id: primary.id,
+        sourceId: "wfs_a",
+        artifactId: "wfa_a",
+        relativePath: primary.relativePath,
+        revision: 3,
+        supportingObservations: [{
+          id: supporting.id,
+          artifactId: "wfa_image",
+          relativePath: supporting.relativePath,
+          name: supporting.name,
+          family: "image",
+          extractionState: "skipped",
+        }],
+      },
+      classification: {
+        id: "bdc_a",
+        revision: 1,
+        documentType: "inquiry",
+        confirmationState: "proposed",
+        confidence: 0.96,
+        fieldProposals: [{
+          key: "inquiry_number",
+          value: "RFQ-2026-101",
+          normalizedValue: "RFQ-2026-101",
+          confidence: 0.98,
+          confirmationState: "proposed",
+          evidenceRefs: [],
+        }],
+      },
+      routines: [{
+        id: "brd_a",
+        name: "Inquiry to quotation",
+        description: "Prepare quotation",
+        version: 4,
+        triggerDocumentTypes: ["inquiry"],
+      }],
+    });
+
+    renderPanel();
+    fireEvent.click(await screen.findByRole("button", { name: "Add real case" }));
+    const addDialog = await screen.findByRole("dialog", { name: "Add one real business case" });
+    fireEvent.click(screen.getByRole("button", { name: "Choose files" }));
+    expect(await screen.findByText("inquiry.xlsx")).toBeTruthy();
+    expect(screen.getByText("Needs OCR")).toBeTruthy();
+    fireEvent.click(screen.getByLabelText("I confirm I may use these files in this local workflow."));
+    fireEvent.click(screen.getByRole("button", { name: "Add and review" }));
+
+    await waitFor(() => expect(stageWorkflowCase).toHaveBeenCalledWith(expect.objectContaining({
+      sourceId: "wfs_a",
+      selectionId: "selection-1",
+      primaryKey: "file:0",
+      authorizationMode: "deidentified",
+      confirmed: true,
+    })));
+    await waitFor(() => expect(mocks.inspect).toHaveBeenCalledWith("wio_new", ["wio_image"]));
+    expect(await screen.findByRole("dialog", { name: "Confirm the new inquiry" })).toBeTruthy();
+    expect(screen.getByText("photo.png · skipped")).toBeTruthy();
+    expect(addDialog.isConnected).toBe(false);
+  });
+
+  it("retries review without copying an already staged case again", async () => {
+    const primary = {
+      ...readyObservation,
+      id: "wio_retry",
+      relativePath: "incoming/retry/inquiry.txt",
+      name: "inquiry.txt",
+    };
+    const pickWorkflowCaseFiles = vi.fn().mockResolvedValue({
+      selectionId: "selection-retry",
+      files: [{ name: "inquiry.txt", extension: "txt", size: 100, readiness: "ready" }],
+    });
+    const stageWorkflowCase = vi.fn().mockResolvedValue({
+      requestId: "request-retry",
+      caseDirectory: "incoming/retry",
+      primaryRelativePath: primary.relativePath,
+      supportingRelativePaths: [],
+      files: [],
+      authorizationMode: "deidentified",
+      recordedAt: "2026-07-30T12:00:00.000Z",
+    });
+    window.myagenttoolDesktop = { pickWorkflowCaseFiles, stageWorkflowCase };
+    mocks.scan
+      .mockRejectedValueOnce(new Error("Scanner temporarily unavailable"))
+      .mockResolvedValueOnce({
+        source,
+        intake: {
+          scanRevision: 2,
+          scannedEntries: 1,
+          skipped: 0,
+          truncated: false,
+          observed: 1,
+          waitingStable: 0,
+          ready: 1,
+          duplicate: 0,
+          blocked: 0,
+          unchanged: 0,
+        },
+        observations: [primary],
+      });
+    mocks.list.mockResolvedValue({ observations: [primary], count: 1 });
+
+    renderPanel();
+    fireEvent.click(await screen.findByRole("button", { name: "Add real case" }));
+    fireEvent.click(screen.getByRole("button", { name: "Choose files" }));
+    expect((await screen.findAllByText("inquiry.txt")).length).toBeGreaterThan(0);
+    fireEvent.click(screen.getByLabelText("I confirm I may use these files in this local workflow."));
+    fireEvent.click(screen.getByRole("button", { name: "Add and review" }));
+
+    expect((await screen.findByRole("alert")).textContent).toContain("Scanner temporarily unavailable");
+    fireEvent.click(screen.getByRole("button", { name: "Retry review" }));
+    await waitFor(() => expect(mocks.inspect).toHaveBeenCalledWith("wio_retry", []));
+    expect(stageWorkflowCase).toHaveBeenCalledTimes(1);
   });
 
   it("opens the created local task and does not offer a second create action", async () => {

@@ -19,6 +19,7 @@ import {
   type InquiryIntakeInspection,
   type WorkflowIntakeObservation,
 } from "@/features/workflow-memory/workflow-memory-api";
+import { RealCaseIntakeDialog } from "@/features/workflow-memory/real-case-intake-dialog";
 import { ApiError, type BusinessFieldProposal, type WorkflowSource } from "@/lib/api-client";
 import { useAppTranslation } from "@/lib/i18n/use-app-translation";
 
@@ -68,8 +69,10 @@ const COPY = {
     triggered: "Task created",
     openTask: "Open task",
     createdWith: "Created with",
+    supportingFiles: "Supporting files",
     missingInquiryNumber: "Add an inquiry number before creating the task.",
     noRoutine: "Publish an inquiry routine before processing new files.",
+    needsOcr: "This file has no readable text layer yet. Run OCR or choose another primary inquiry.",
     genericError: "The inquiry could not be processed.",
   },
   zh: {
@@ -102,8 +105,10 @@ const COPY = {
     triggered: "任务已创建",
     openTask: "打开任务",
     createdWith: "使用工作流",
+    supportingFiles: "参考资料",
     missingInquiryNumber: "请补充询价编号后再创建任务。",
     noRoutine: "请先发布一个询价工作流。",
+    needsOcr: "该文件目前没有可读取的文字层。请先运行 OCR，或选择其他资料作为主询价。",
     genericError: "询价处理失败。",
   },
 } as const;
@@ -154,6 +159,7 @@ export function InquiryIntakePanel({
   const [routineDefinitionId, setRoutineDefinitionId] = useState("");
   const [fieldDrafts, setFieldDrafts] = useState<Record<string, string>>({});
   const [idempotencyKey, setIdempotencyKey] = useState("");
+  const [supportingObservationIds, setSupportingObservationIds] = useState<string[]>([]);
   const [error, setError] = useState<string | null>(null);
   const observationsQuery = useQuery({
     queryKey: ["workflow-memory", "intake-observations", source.id],
@@ -173,6 +179,8 @@ export function InquiryIntakePanel({
     if (caught.code === "workflow_intake_text_access_required") return copy.textAccess;
     if (caught.code === "workflow_intake_business_identity_required") return copy.missingInquiryNumber;
     if (caught.code === "workflow_intake_routine_not_available") return copy.noRoutine;
+    if (caught.code === "workflow_business_analysis_needs_ocr"
+      || caught.code === "workflow_business_analysis_content_unavailable") return copy.needsOcr;
     if (caught.code === "workflow_intake_business_identity_conflict") return copy.identityConflict;
     return caught.message || copy.genericError;
   };
@@ -194,16 +202,20 @@ export function InquiryIntakePanel({
     }
   };
 
-  const inspect = async (observation: WorkflowIntakeObservation) => {
+  const inspect = async (
+    observation: WorkflowIntakeObservation,
+    supportingIds: string[] = [],
+  ) => {
     setPending("inspect");
     setError(null);
     try {
-      const result = await workflowMemoryApi.inspectWorkflowInquiryIntake(observation.id);
+      const result = await workflowMemoryApi.inspectWorkflowInquiryIntake(observation.id, supportingIds);
       if (result.state === "triggered") {
         await refresh();
         return;
       }
       setInspection(result);
+      setSupportingObservationIds(supportingIds);
       setRoutineDefinitionId(result.routines[0]?.id ?? "");
       setFieldDrafts(Object.fromEntries(result.classification.fieldProposals.map((field) => [
         field.key,
@@ -235,8 +247,10 @@ export function InquiryIntakePanel({
         routineDefinitionId,
         confirmed: true,
         fieldCorrections,
+        supportingObservationIds,
       });
       setInspection(null);
+      setSupportingObservationIds([]);
       await refresh();
     } catch (caught) {
       setError(errorText(caught));
@@ -252,14 +266,25 @@ export function InquiryIntakePanel({
           <CardTitle className="text-base">{copy.title}</CardTitle>
           <p className="mt-1 text-xs text-muted-foreground">{copy.hint}</p>
         </div>
-        <Button
-          size="sm"
-          disabled={pending !== null || source.state !== "active" || source.readMode !== "supported_text"}
-          onClick={() => void check()}
-        >
-          {pending === "scan" ? <Loader2 className="animate-spin" /> : <RefreshCw />}
-          {pending === "scan" ? copy.checking : copy.check}
-        </Button>
+        <div className="flex flex-wrap gap-2">
+          <RealCaseIntakeDialog
+            source={source}
+            onPrepared={async (primaryId, supportingIds) => {
+              const observation = (await workflowMemoryApi.listWorkflowIntakeObservations(source.id))
+                .observations.find((row) => row.id === primaryId);
+              if (!observation) throw new Error(copy.genericError);
+              await inspect(observation, supportingIds);
+            }}
+          />
+          <Button
+            size="sm"
+            disabled={pending !== null || source.state !== "active" || source.readMode !== "supported_text"}
+            onClick={() => void check()}
+          >
+            {pending === "scan" ? <Loader2 className="animate-spin" /> : <RefreshCw />}
+            {pending === "scan" ? copy.checking : copy.check}
+          </Button>
+        </div>
       </CardHeader>
       <CardContent className="space-y-3">
         {source.readMode !== "supported_text" ? (
@@ -326,7 +351,10 @@ export function InquiryIntakePanel({
 
       <Modal
         open={Boolean(inspection)}
-        onClose={() => setInspection(null)}
+        onClose={() => {
+          setInspection(null);
+          setSupportingObservationIds([]);
+        }}
         title={copy.reviewTitle}
         description={copy.reviewDescription}
         closeDisabled={pending === "accept"}
@@ -341,6 +369,16 @@ export function InquiryIntakePanel({
               <dd>{copy.inquiry}</dd>
             </dl>
             <p className="text-xs text-muted-foreground">{copy.evidence}</p>
+            {(inspection.observation.supportingObservations ?? []).length ? (
+              <div className="rounded-md border p-3">
+                <p className="text-xs font-medium">{copy.supportingFiles}</p>
+                <ul className="mt-1 space-y-1 text-xs text-muted-foreground">
+                  {(inspection.observation.supportingObservations ?? []).map((item) => (
+                    <li key={item.id}>{item.name} · {item.extractionState}</li>
+                  ))}
+                </ul>
+              </div>
+            ) : null}
             <div className="grid gap-3 sm:grid-cols-2">
               {inspection.classification.fieldProposals.map((field) => (
                 <label key={field.key} className="block min-w-0 space-y-1 text-xs font-medium">
