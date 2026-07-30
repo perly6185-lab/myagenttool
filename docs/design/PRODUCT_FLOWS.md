@@ -218,6 +218,119 @@ Acceptance signals:
 - Understands whether a task may change files.
 - Can reach diff review without seeing raw governance internals first.
 
+## Flow 1A: Workspace Owner Reviews A Discovered Daily Work Type
+
+Primary user: workspace owner during occasional setup
+
+Frequency: low; repeated only when historical work changes
+
+User job: confirm “this is how I work” before the system exposes a reusable
+business task button.
+
+Happy path:
+
+```text
+Open Delivery memory
+-> choose an authorized source
+-> review the discovered daily work and its confirmed examples
+-> inspect always/conditional steps and plain-language evidence
+-> create an editable review draft
+-> adjust trigger, order, references, outputs, ledgers, conditions, and approvals
+-> save the review
+-> explicitly confirm and enable the immutable version
+```
+
+Version and recovery:
+
+```text
+Need to change an enabled work type
+-> create a new draft version
+-> edit and explicitly enable it
+-> old version remains pinned to existing local Issues
+
+Evidence changed or source access was revoked
+-> enabling is blocked with one recovery action
+-> refresh and reconfirm affected cases
+-> create a fresh draft
+```
+
+Acceptance signals:
+
+- The owner sees a business label such as “Commercial inquiry and quotation,”
+  not schema names or execution controls.
+- Enabling is impossible until the explicit review checkbox is selected.
+- Published versions cannot be edited in place.
+- Disabling stops new task creation without erasing history.
+- Keyboard and screen-reader users can identify every editable step and action.
+
+## Flow 1B: Business Operator Processes An Inquiry
+
+Primary user: ordinary business operator
+
+Frequency: high
+
+User job: turn a newly recognized inquiry into the same governed outputs and
+ledgers used in prior successful work, without learning execution internals.
+
+Happy path:
+
+```text
+Open the local Issue created for the inquiry
+-> verify business number, source evidence, and fixed daily-work version
+-> choose "Process inquiry"
+-> watch independent reading/reference steps run within computer capacity
+-> preview the exact inquiry-ledger row and changed cells
+-> explicitly approve the governed ledger write
+-> review and approve the quotation when asked
+-> record that no confirmed order has arrived
+-> finish without an order follow-up Issue
+```
+
+Conditional order path:
+
+```text
+Reach "Was an order received?"
+-> select a currently confirmed order document
+-> confirm the condition
+-> create exactly one linked order-processing child Issue
+-> continue the remaining visible steps
+```
+
+Failure and recovery:
+
+```text
+A step fails or the app restarts while it is running
+-> preserve completed work
+-> show the interrupted or failed step
+-> retry that step
+
+The ledger changed after preview
+-> do not overwrite the concurrent edit
+-> refresh the target and create a new row-level preview
+
+The app stopped after replacing the ledger but before saving the receipt
+-> recognize the previewed after-hash on retry
+-> restore the audit receipt without adding the row again
+
+User cancels
+-> stop all unfinished steps
+-> keep evidence and progress visible
+-> do not silently restart the cancelled run
+```
+
+What not to show:
+
+- Raw Routine schema, Prompt, action receipt, idempotency key, or absolute path.
+- Generic worktree and Auto Run primary actions competing with “Process inquiry.”
+- An order child task before a current confirmed order document is selected.
+
+Acceptance signals:
+
+- A first-time operator can find the single primary action without instruction.
+- Required, conditional, waiting, completed, failed, and skipped steps are distinguishable.
+- Approval and order decisions explain their consequence before proceeding.
+- Duplicate clicks, rescans, retries, and restarts do not duplicate the parent or order child Issue.
+
 ## Flow 2: Advanced Developer Manages Codex Session
 
 Primary user: advanced developer

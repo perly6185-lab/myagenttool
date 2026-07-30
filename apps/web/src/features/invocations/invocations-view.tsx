@@ -208,6 +208,7 @@ export function InvocationsView() {
                   {invocations.map((invocation) => {
                     const active = invocation.id === selected?.id;
                     const traceRecord = traceRecordById.get(invocation.id);
+                    const invocationAgent = (state?.agents ?? []).find((agent) => agent.id === invocation.agentId);
                     const related = traceRecord ? [
                       ...traceRecord.applicationIds.map((id) => `Application · ${id}`),
                       ...traceRecord.channelIds.map((id) => `Channel · ${id}`),
@@ -224,11 +225,18 @@ export function InvocationsView() {
                         )}
                       >
                         <td className="px-3 py-2 text-xs">
-                          <span className="font-mono">{invocation.id}</span>
-                          {traceRecord?.task ? <span className="mt-0.5 block text-muted-foreground">{traceRecord.task}</span> : null}
+                          <span className="block font-medium">
+                            {invocation.input?.task || traceRecord?.task || t("dashboard.untitledTask")}
+                          </span>
+                          <span className="mt-0.5 block font-mono text-[11px] text-muted-foreground">{invocation.id}</span>
                           {related.length ? <span className="mt-1 flex flex-wrap gap-1">{related.map((label) => <Badge key={label} tone="neutral">{label}</Badge>)}</span> : null}
                         </td>
-                        <td className="px-3 py-2 text-muted-foreground">{invocation.agentId ?? "—"}</td>
+                        <td className="px-3 py-2 text-muted-foreground">
+                          <span className="block">{invocationAgent?.name ?? invocation.agentId ?? "—"}</span>
+                          {invocationAgent && invocation.agentId ? (
+                            <span className="block font-mono text-[11px]">{invocation.agentId}</span>
+                          ) : null}
+                        </td>
                         <td className="px-3 py-2 text-muted-foreground">
                           {delivery(t, invocation.delivery?.state)}
                         </td>

@@ -23,6 +23,7 @@ export type SectionKey =
   | "workBoard"
   | "workspace"
   | "documents"
+  | "workflowMemory"
   | "canvas"
   | "compare"
   | "projects"
@@ -153,6 +154,7 @@ export const SECTION_KEYS: SectionKey[] = [
   "workBoard",
   "workspace",
   "documents",
+  "workflowMemory",
   "canvas",
   "compare",
   "projects",

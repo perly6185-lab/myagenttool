@@ -38,6 +38,24 @@ export function registerLocalOfficeDocumentPicker({ ipcMain, dialog, getWindow, 
   });
 }
 
+/** Explicit, one-shot folder selection for the workflow-memory onboarding flow. */
+export function registerWorkflowSourceFolderPicker({ ipcMain, dialog, getWindow }) {
+  ipcMain.removeHandler("workflow-memory:pick-source-folder");
+  ipcMain.handle("workflow-memory:pick-source-folder", async () => {
+    const result = await dialog.showOpenDialog(getWindow(), {
+      title: "Choose requirement and delivery folder",
+      properties: ["openDirectory"],
+    });
+    if (result.canceled || !result.filePaths[0]) return null;
+    const absolutePath = realpathSync(result.filePaths[0]);
+    if (!statSync(absolutePath).isDirectory()) throw new Error("Select a folder.");
+    return {
+      absolutePath,
+      name: absolutePath.split(/[\\/]/).filter(Boolean).at(-1) ?? "Workflow source",
+    };
+  });
+}
+
 export function registerContainedOfficeDocumentOpen({ ipcMain, getState, openPath }) {
   ipcMain.removeHandler("documents:open-contained-office");
   ipcMain.handle("documents:open-contained-office", async (_event, input) => {

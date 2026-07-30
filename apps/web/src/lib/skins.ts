@@ -104,6 +104,7 @@ declare global {
     myagenttoolDesktop?: {
       applyChrome?: (chrome: { bg: string; themeSource: SkinMode; resolved: ResolvedMode }) => void;
       pickLocalOfficeDocument?: () => Promise<{ selectionId: string; absolutePath: string; name: string; type: "docx" | "xlsx" | "pptx"; size: number } | null>;
+      pickWorkflowSourceFolder?: () => Promise<{ absolutePath: string; name: string } | null>;
       copySelectedOfficeDocument?: (input: { selectionId: string; worktreeId: string; destination: string; onConflict?: "rename" }) => Promise<{ path: string; bytes: number; type: "docx" | "xlsx" | "pptx" }>;
       openContainedOfficeDocument?: (input: { projectId: string; worktreeId?: string; relativePath: string }) => Promise<{ opened: true }>;
       openContainedAsset?: (input: { projectId: string; worktreeId?: string; relativePath: string }) => Promise<{ opened: true }>;

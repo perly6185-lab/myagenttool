@@ -67,6 +67,7 @@ export function createInvocationDispatchRuntime({
     // writing the same directory.
     const busyDirs = new Set(inFlight.map(invocationDirKey));
     const dispatchable = state.invocations.filter((item) => {
+      if (!isBridgeExecuted(item)) return false;
       const agent = findAgent(item.agentId);
       return classifyDispatchEligibility(item, {
         agent,
@@ -108,6 +109,7 @@ export function createInvocationDispatchRuntime({
   // ready without depending on the fair-selection order among its queued peers.
   function isInvocationDispatchable(invocation) {
     if (!invocation) return false;
+    if (!isBridgeExecuted(invocation)) return false;
     const inFlight = state.invocations.filter((i) => INFLIGHT_STATUSES.includes(i.status) && isBridgeExecuted(i));
     if (inFlight.length >= (state.device.maxConcurrency || 1)) return false;
     const busyDirs = new Set(inFlight.map(invocationDirKey));

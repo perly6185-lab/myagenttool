@@ -19,7 +19,7 @@ describe("page ownership registry (#1505)", () => {
   });
 
   it("keeps contextual work reachable without promoting it to global navigation", () => {
-    for (const key of ["workBoard", "planning", "workspace", "documents", "canvas"] as const) {
+    for (const key of ["workBoard", "planning", "workspace", "documents", "workflowMemory", "canvas"] as const) {
       expect(pageRegistration(key)).toMatchObject({ surface: "entry", visibility: "contextual" });
     }
   });

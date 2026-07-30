@@ -1136,7 +1136,7 @@ test("agent create idempotency prevents duplicate local issues", () => {
     projectId: "prj_a", title: "Exactly once", idempotencyKey: "create-1",
   }, ACTOR_A);
   const replay = service.createWorkItem({
-    projectId: "prj_a", title: "Ignored replay body", idempotencyKey: "create-1",
+    projectId: "prj_a", title: "", idempotencyKey: "create-1",
   }, ACTOR_A);
   assert.equal(first.status, 201);
   assert.equal(replay.status, 200);
@@ -1148,6 +1148,63 @@ test("agent create idempotency prevents duplicate local issues", () => {
   }, ACTOR_C);
   assert.equal(otherActor.status, 201);
   assert.equal(state.workItems.length, 2);
+});
+
+test("routine-bound local issues pin a published version and dedupe across team actors", () => {
+  const { service, state } = harness();
+  state.workflowSources = [{
+    id: "wfs_1", ownerTeamId: "team_a", projectId: "prj_a", state: "active",
+  }];
+  state.workflowArtifacts = [{
+    id: "wfa_1", ownerTeamId: "team_a", projectId: "prj_a", sourceId: "wfs_1",
+    availability: "available",
+  }];
+  state.routineDefinitions = [{
+    id: "rtd_1", ownerTeamId: "team_a", projectId: "prj_a", sourceId: "wfs_1",
+    version: 2, state: "published",
+  }];
+  state.businessCases = [{
+    id: "bcs_1", ownerTeamId: "team_a", projectId: "prj_a", sourceId: "wfs_1",
+    businessKey: "RFQ-2026-001", state: "confirmed",
+  }];
+  const input = {
+    projectId: "prj_a",
+    title: "Process inquiry RFQ-2026-001",
+    routineDefinitionId: "rtd_1",
+    routineVersion: 2,
+    businessCaseId: "bcs_1",
+    businessKey: "RFQ-2026-001",
+    triggerArtifactIds: ["wfa_1"],
+  };
+  const first = service.createWorkItem(input, ACTOR_A);
+  const replay = service.createWorkItem({ ...input, title: "Ignored duplicate" }, ACTOR_C);
+  assert.equal(first.status, 201);
+  assert.equal(first.body.workItem.type, "task");
+  assert.equal(first.body.workItem.routineDefinitionId, "rtd_1");
+  assert.equal(first.body.workItem.routineVersion, 2);
+  assert.equal(first.body.workItem.routineBindingSchemaVersion, 1);
+  assert.equal(replay.status, 200);
+  assert.equal(replay.body.replayed, true);
+  assert.equal(replay.body.workItem.id, first.body.workItem.id);
+  assert.equal(state.workItems.length, 1);
+
+  assert.equal(service.updateWorkItem({
+    workItemId: first.body.workItem.id,
+    expectedRevision: 1,
+    businessCaseId: "bcs_other",
+  }, ACTOR_A).body.error, "work_item_routine_binding_immutable");
+  assert.equal(service.createWorkItem({ ...input, routineVersion: 1 }, ACTOR_A).body.error,
+    "work_item_routine_definition_not_published_or_version_mismatch");
+  state.businessCases[0].state = "proposed";
+  assert.equal(service.createWorkItem({ ...input, businessKey: "RFQ-2026-002" }, ACTOR_A).body.error,
+    "work_item_business_key_mismatch");
+  assert.equal(service.createWorkItem({ ...input, title: "Unconfirmed case", idempotencyKey: "new" }, ACTOR_A).body.error,
+    "work_item_business_case_not_confirmed");
+  state.businessCases[0].state = "confirmed";
+  state.workflowSources[0].state = "revoked";
+  assert.equal(service.createWorkItem({ ...input, title: "Retry after revoke" }, ACTOR_C).body.replayed, true);
+  assert.equal(service.createWorkItem({ ...input, businessKey: "RFQ-2026-002" }, ACTOR_A).body.error,
+    "work_item_business_key_mismatch");
 });
 
 test("planning automation adds matching work items once", () => {

@@ -9,15 +9,17 @@ import { useAppTranslation } from "@/lib/i18n/use-app-translation";
 // Why a queued invocation isn't running → a tone + a plain-language label. Shares
 // the reason vocabulary the server's dispatch classifier emits (dispatch-
 // eligibility.mjs), so the operator sees exactly what the bridge decided.
-const REASON: Record<string, { tone: "neutral" | "success" | "warning" | "danger"; label: string }> = {
-  dispatchable: { tone: "success", label: "Ready — next up" },
-  waiting_concurrency: { tone: "warning", label: "Waiting for a free slot" },
-  dir_busy: { tone: "neutral", label: "Worktree busy" },
-  wrong_device: { tone: "neutral", label: "Other device" },
-  agent_missing: { tone: "danger", label: "Agent missing" },
-  agent_disabled: { tone: "danger", label: "Agent disabled" },
-  agent_unhealthy: { tone: "danger", label: "Agent unhealthy" },
-  not_queued: { tone: "neutral", label: "Not queued" },
+type ReasonKey = "ready" | "capacity" | "worktree" | "device" | "agentMissing" | "agentDisabled" | "agentUnhealthy" | "notQueued";
+
+const REASON: Record<string, { tone: "neutral" | "success" | "warning" | "danger"; key: ReasonKey }> = {
+  dispatchable: { tone: "success", key: "ready" },
+  waiting_concurrency: { tone: "warning", key: "capacity" },
+  dir_busy: { tone: "neutral", key: "worktree" },
+  wrong_device: { tone: "neutral", key: "device" },
+  agent_missing: { tone: "danger", key: "agentMissing" },
+  agent_disabled: { tone: "danger", key: "agentDisabled" },
+  agent_unhealthy: { tone: "danger", key: "agentUnhealthy" },
+  not_queued: { tone: "neutral", key: "notQueued" },
 };
 
 const pct = (rate: number | null | undefined) => (rate == null ? "—" : `${Math.round(rate * 100)}%`);
@@ -68,21 +70,27 @@ export function InvocationDispatchHealth() {
             <table className="w-full text-xs" data-testid="dispatch-health-queue">
               <thead>
                 <tr className="text-left text-muted-foreground">
-                  <th className="pb-1 font-medium">{t("devicesPage.agent")}</th>
+                  <th className="pb-1 font-medium">{t("devicesPage.task")}</th>
                   <th className="pb-1 font-medium">{t("devicesPage.whyWaiting")}</th>
                   <th className="pb-1 font-medium text-right">{t("devicesPage.waited")}</th>
                 </tr>
               </thead>
               <tbody>
                 {queue.items.map((item) => {
-                  const reason = REASON[item.blockedReason] ?? { tone: "neutral" as const, label: item.blockedReason };
+                  const reason = REASON[item.blockedReason];
+                  const reasonLabel = reason
+                    ? t(`devicesPage.reasons.${reason.key}`)
+                    : item.blockedReason;
                   return (
                     <tr key={item.invocationId} className="border-t border-border">
-                      <td className="py-1 pr-2 font-mono">{item.agentName ?? item.agentId ?? "—"}</td>
+                      <td className="max-w-56 py-1 pr-2">
+                        <span className="block truncate font-medium">{item.task || item.invocationId}</span>
+                        <span className="block truncate text-muted-foreground">{item.agentName ?? item.agentId ?? "—"}</span>
+                      </td>
                       <td className="py-1 pr-2">
-                        <Badge tone={reason.tone}>{reason.label}</Badge>
+                        <Badge tone={reason?.tone ?? "neutral"}>{reasonLabel}</Badge>
                         {item.dispatchAttempts > 1 ? (
-                          <span className="ml-1 text-muted-foreground">·{item.dispatchAttempts} tries</span>
+                          <span className="ml-1 text-muted-foreground">·{t("devicesPage.tries", { count: item.dispatchAttempts })}</span>
                         ) : null}
                       </td>
                       <td className="py-1 text-right tabular-nums text-muted-foreground">{formatDuration(item.queuedForMs)}</td>
@@ -96,15 +104,15 @@ export function InvocationDispatchHealth() {
 
         <p className="text-xs text-muted-foreground">
           {stats.indeterminate ? (
-            <>Dispatch latency: not enough data yet ({stats.sampleSize} settled).</>
+            <>{t("devicesPage.latencyInsufficient", { count: stats.sampleSize })}</>
           ) : (
             <>
-              Median time to dispatch <span className="text-foreground">{formatDuration(stats.medianMsToDispatch)}</span>
-              {" · "}redelivery <span className="text-foreground">{pct(stats.redeliveryRate)}</span>
+              {t("devicesPage.medianDispatch")} <span className="text-foreground">{formatDuration(stats.medianMsToDispatch)}</span>
+              {" · "}{t("devicesPage.redelivery")} <span className="text-foreground">{pct(stats.redeliveryRate)}</span>
               {stats.exhaustedCount > 0 ? (
                 <>
                   {" · "}
-                  <span className="text-foreground">{stats.exhaustedCount}</span> exhausted
+                  {t("devicesPage.exhausted", { count: stats.exhaustedCount })}
                 </>
               ) : null}
             </>
