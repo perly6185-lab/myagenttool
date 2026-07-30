@@ -64,6 +64,7 @@ test("stages several explicitly selected formats as one case with one primary fi
     sourceId: "wfs_a",
     selectionId: selection.selectionId,
     primaryKey: "file:0",
+    supportingRoles: { "file:1": "historical_output", "file:2": "reference" },
     caseName: "RFQ 1001",
     authorizationMode: "deidentified",
     confirmed: true,
@@ -75,12 +76,16 @@ test("stages several explicitly selected formats as one case with one primary fi
   assert.equal(existsSync(join(sourceRoot, result.primaryRelativePath)), true);
   const manifest = JSON.parse(readFileSync(join(sourceRoot, result.caseDirectory, ".case.json"), "utf8"));
   assert.deepEqual(manifest, {
-    schemaVersion: 1,
+    schemaVersion: 2,
     authorizationMode: "deidentified",
     recordedAt: "2026-07-30T12:00:00.000Z",
     primaryFile: "inquiry.xlsx",
-    supportingFiles: ["spec.docx", "photo.png"],
+    supportingFiles: [
+      { name: "spec.docx", role: "historical_output" },
+      { name: "photo.png", role: "reference" },
+    ],
   });
+  assert.deepEqual(Object.values(result.supportingFileRoles), ["historical_output", "reference"]);
   await assert.rejects(() => handlers.get("workflow-memory:stage-case")(null, {
     requestId: "request-2",
     sourceId: "wfs_a",

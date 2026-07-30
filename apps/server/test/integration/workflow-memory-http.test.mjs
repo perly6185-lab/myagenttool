@@ -165,6 +165,20 @@ test("workflow memory routes authorize, scan, classify, and enforce tenancy over
     artifact.name === "新需求-200.md");
   const inquiry = artifacts.body.artifacts.find((artifact) =>
     artifact.name === "询价单-RFQ-HTTP-001.md");
+  const ocrReadiness = await call("/api/workflow-memory/ocr-readiness");
+  assert.equal(ocrReadiness.status, 200);
+  assert.equal(ocrReadiness.body.localOnly, true);
+  assert.equal((await call(
+    `/api/workflow-memory/artifacts/${requirement.id}/ocr`,
+    {
+      method: "POST",
+      body: { expectedRevision: requirement.revision, confirmed: false },
+    },
+  )).body.error, "workflow_ocr_confirmation_required");
+  assert.equal((await call(
+    `/api/workflow-memory/artifacts/${requirement.id}/ocr`,
+    { method: "DELETE" },
+  )).body.error, "workflow_ocr_not_running");
   const businessAnalysis = await call(
     `/api/workflow-memory/artifacts/${inquiry.id}/analyze-business-document`,
     { method: "POST" },

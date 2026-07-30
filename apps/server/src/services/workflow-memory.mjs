@@ -74,6 +74,8 @@ const MAX_CASE_ASSETS = 100;
 const MAX_EXECUTION_ATTEMPTS = 20;
 const WORKFLOW_RETRIEVAL_VERSION = 2;
 const MAX_EMBEDDING_RECORDS_PER_SOURCE = 5_000;
+const MAX_OCR_CHARACTERS = 500_000;
+const MAX_OCR_LINES_PER_PAGE = 2_000;
 export const WORKFLOW_FEEDBACK_VERSION = 1;
 const WORKFLOW_FEEDBACK_REASONS = new Set([
   "content_corrected",
@@ -1214,6 +1216,7 @@ export function createWorkflowMemoryService({
   retryWorkItemRun = null,
   cleanupWorkItemWorktree = null,
   embeddingAdapter = null,
+  ocrAdapter = null,
   store,
 } = {}) {
   const runTx = makeRunTx({ store, persistStateSoon });
@@ -1276,6 +1279,7 @@ export function createWorkflowMemoryService({
   const activeExecutionActions = new Set();
   const activeFeedbackActions = new Set();
   const activePublicationActions = new Set();
+  const activeOcrActions = new Map();
 
   const visible = (record, actor) => record?.ownerTeamId === actorTeam(actor);
   const findSource = (sourceId, actor) =>
@@ -1357,8 +1361,19 @@ export function createWorkflowMemoryService({
       ? state.workflowIntakeReceipts.find((row) =>
         row.id === observation.receiptId && row.ownerTeamId === observation.ownerTeamId)
       : null;
+    const artifact = findArtifact(observation.artifactId, {
+      teamId: observation.ownerTeamId,
+    });
     return {
       ...view,
+      artifactRevision: artifact?.revision ?? null,
+      extraction: artifact?.extraction ? {
+        state: artifact.extraction.state,
+        pageCount: artifact.extraction.pageCount ?? null,
+        characterCount: artifact.extraction.characterCount ?? 0,
+        providerId: artifact.extraction.ocr?.providerId ?? null,
+        localOnly: artifact.extraction.ocr?.localOnly ?? null,
+      } : null,
       receipt: receipt ? {
         id: receipt.id,
         businessKey: receipt.businessKey,
@@ -2589,6 +2604,189 @@ export function createWorkflowMemoryService({
     } catch (error) {
       return errorResult(error);
     }
+  }
+
+  function getOcrReadiness(_input = {}, _actor = null) {
+    const readiness = ocrAdapter?.readiness?.() ?? {
+      state: "unavailable",
+      providerId: null,
+      reason: "workflow_ocr_provider_unavailable",
+    };
+    return {
+      status: 200,
+      body: {
+        state: readiness.state === "ready" ? "ready" : "unavailable",
+        providerId: readiness.providerId ?? null,
+        reason: readiness.reason ?? null,
+        localOnly: true,
+        supportedExtensions: [".pdf"],
+      },
+    };
+  }
+
+  async function ocrArtifact({
+    artifactId,
+    expectedRevision,
+    confirmed,
+  } = {}, actor = null) {
+    if (confirmed !== true) {
+      return { status: 400, body: { error: "workflow_ocr_confirmation_required" } };
+    }
+    const artifact = findArtifact(artifactId, actor);
+    if (!artifact) return { status: 404, body: { error: "workflow_artifact_not_found" } };
+    if (artifact.extraction?.state === "ready" && artifact.extraction?.ocr?.providerId) {
+      return { status: 200, body: { artifact, replayed: true } };
+    }
+    if (artifact.revision !== expectedRevision) {
+      return {
+        status: 409,
+        body: { error: "workflow_artifact_revision_conflict", currentRevision: artifact.revision },
+      };
+    }
+    if (artifact.extension !== "pdf" || artifact.extraction?.state !== "needs_ocr") {
+      return { status: 409, body: { error: "workflow_artifact_ocr_not_applicable" } };
+    }
+    if (artifact.availability !== "available" || artifact.exclusion) {
+      return { status: 409, body: { error: "workflow_artifact_not_available" } };
+    }
+    const source = findSource(artifact.sourceId, actor);
+    const project = state.projects.find((item) =>
+      item.id === artifact.projectId && actorCanAccessProject(state, actor, item.id));
+    if (!source || source.state !== "active" || source.readMode !== "supported_text" || !project) {
+      return { status: 409, body: { error: "workflow_source_revoked" } };
+    }
+    const readiness = getOcrReadiness().body;
+    if (readiness.state !== "ready") {
+      return {
+        status: 409,
+        body: {
+          error: readiness.reason ?? "workflow_ocr_provider_unavailable",
+          readiness,
+        },
+      };
+    }
+    const active = activeOcrActions.get(artifact.id);
+    if (active) return active.promise;
+
+    const controller = new AbortController();
+    const operation = (async () => {
+      const beforeFingerprint = currentArtifactFingerprint(state, source, artifact);
+      if (!beforeFingerprint || beforeFingerprint !== artifact.fingerprint) {
+        return { status: 409, body: { error: "workflow_artifact_changed_rescan_required" } };
+      }
+      try {
+        const { actual } = containedRealDirectory(project.path, source.relativePath);
+        const requested = resolve(actual, artifact.relativePath);
+        const lexical = relative(actual, requested);
+        if (lexical === ".." || lexical.startsWith(`..${sep}`) || isAbsolute(lexical)) {
+          return { status: 409, body: { error: "workflow_artifact_changed_rescan_required" } };
+        }
+        const target = realpathSync(requested);
+        const confined = relative(actual, target);
+        if (confined === ".." || confined.startsWith(`..${sep}`) || isAbsolute(confined)) {
+          return { status: 409, body: { error: "workflow_artifact_changed_rescan_required" } };
+        }
+        const result = await ocrAdapter.recognizePdf({ path: target, signal: controller.signal });
+        if (controller.signal.aborted) {
+          return { status: 409, body: { error: "workflow_ocr_cancelled" } };
+        }
+        const afterFingerprint = currentArtifactFingerprint(state, source, artifact);
+        if (!afterFingerprint || afterFingerprint !== beforeFingerprint) {
+          return { status: 409, body: { error: "workflow_artifact_changed_rescan_required" } };
+        }
+        let remainingCharacters = MAX_OCR_CHARACTERS;
+        const blocks = result.pages.map((page) => {
+          const text = String(page.text ?? "").slice(0, remainingCharacters);
+          remainingCharacters -= text.length;
+          return {
+            kind: "page",
+            text,
+            location: { kind: "page", index: page.index },
+            confidence: page.confidence,
+            evidence: page.evidence.slice(0, MAX_OCR_LINES_PER_PAGE),
+          };
+        }).filter((block) => block.text);
+        const characterCount = blocks.reduce((sum, block) => sum + block.text.length, 0);
+        if (characterCount < 20) {
+          return {
+            status: 422,
+            body: { error: "workflow_ocr_no_text_detected", pageCount: result.pageCount },
+          };
+        }
+        const extraction = {
+          state: "ready",
+          parserVersion: WORKFLOW_DOCUMENT_PARSER_VERSION,
+          blocks,
+          characterCount,
+          truncated: remainingCharacters <= 0,
+          pageCount: result.pageCount,
+          cellCount: null,
+          needsOcr: false,
+          truncatedPages: false,
+          ocr: {
+            providerId: result.providerId,
+            providerVersion: result.providerVersion,
+            localOnly: true,
+            completedAt: now(),
+            averageConfidence: Number((
+              result.pages.reduce((sum, page) => sum + page.confidence, 0)
+              / result.pages.length
+            ).toFixed(4)),
+          },
+        };
+        const inference = classifyWorkflowFile({
+          relativePath: artifact.relativePath,
+          content: extractionText(extraction),
+        });
+        const timestamp = now();
+        runTx(() => {
+          artifact.extraction = extraction;
+          artifact.roleInference = inference;
+          if (artifact.confirmationState === "confirmed") artifact.confirmationState = "changed";
+          if (artifact.confirmationState !== "confirmed") artifact.role = inference.role;
+          artifact.revision = Number(artifact.revision ?? 0) + 1;
+          artifact.updatedAt = timestamp;
+          appendEvent({
+            invocationId: null,
+            type: "workflow_artifact_ocr_completed",
+            level: "info",
+            message: "A scanned PDF was recognized by a local OCR provider.",
+            data: {
+              artifactId: artifact.id,
+              sourceId: source.id,
+              providerId: result.providerId,
+              pageCount: result.pageCount,
+              characterCount,
+            },
+          });
+        });
+        return { status: 200, body: { artifact, replayed: false } };
+      } catch (error) {
+        return errorResult(Object.assign(error instanceof Error ? error : new Error(String(error)), {
+          status: Number(error?.status) || (
+            error?.code === "workflow_ocr_timeout" ? 504
+              : error?.code === "workflow_ocr_cancelled" ? 409
+              : error?.code === "workflow_ocr_provider_unavailable" ? 409
+                : 422
+          ),
+        }));
+      }
+    })();
+    activeOcrActions.set(artifact.id, { promise: operation, controller });
+    try {
+      return await operation;
+    } finally {
+      activeOcrActions.delete(artifact.id);
+    }
+  }
+
+  function cancelOcrArtifact({ artifactId } = {}, actor = null) {
+    const artifact = findArtifact(artifactId, actor);
+    if (!artifact) return { status: 404, body: { error: "workflow_artifact_not_found" } };
+    const action = activeOcrActions.get(artifact.id);
+    if (!action) return { status: 409, body: { error: "workflow_ocr_not_running" } };
+    action.controller.abort();
+    return { status: 202, body: { artifactId: artifact.id, cancellationRequested: true } };
   }
 
   function setArtifactExclusion({
@@ -5782,6 +5980,9 @@ export function createWorkflowMemoryService({
     getArtifactAnalysisInput,
     confirmArtifact,
     retryArtifactExtraction,
+    getOcrReadiness,
+    ocrArtifact,
+    cancelOcrArtifact,
     setArtifactExclusion,
     indexSourceEmbeddings,
     pairProposals,

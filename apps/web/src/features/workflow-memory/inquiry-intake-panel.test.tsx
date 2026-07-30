@@ -11,6 +11,9 @@ const mocks = vi.hoisted(() => ({
   scan: vi.fn(),
   inspect: vi.fn(),
   accept: vi.fn(),
+  ocrReadiness: vi.fn(),
+  ocr: vi.fn(),
+  cancelOcr: vi.fn(),
 }));
 
 vi.mock("@/features/workflow-memory/workflow-memory-api", () => ({
@@ -20,6 +23,9 @@ vi.mock("@/features/workflow-memory/workflow-memory-api", () => ({
     scanWorkflowIncrementalIntake: mocks.scan,
     inspectWorkflowInquiryIntake: mocks.inspect,
     acceptWorkflowInquiryIntake: mocks.accept,
+    getWorkflowOcrReadiness: mocks.ocrReadiness,
+    ocrWorkflowArtifact: mocks.ocr,
+    cancelWorkflowOcrArtifact: mocks.cancelOcr,
   },
 }));
 
@@ -50,6 +56,14 @@ const readyObservation = {
   reason: null,
   artifactId: "wfa_a",
   canonicalArtifactId: "wfa_a",
+  artifactRevision: 2,
+  extraction: {
+    state: "ready" as const,
+    pageCount: null,
+    characterCount: 100,
+    providerId: null,
+    localOnly: null,
+  },
   revision: 3,
   updatedAt: "2026-07-29T12:00:00.000Z",
 };
@@ -137,6 +151,15 @@ beforeEach(async () => {
     replayed: false,
     receipt: { workItemId: "lwi_a" },
   });
+  mocks.ocrReadiness.mockResolvedValue({
+    state: "ready",
+    providerId: "macos-vision",
+    reason: null,
+    localOnly: true,
+    supportedExtensions: [".pdf"],
+  });
+  mocks.ocr.mockResolvedValue({ artifact: {}, replayed: false });
+  mocks.cancelOcr.mockResolvedValue({ artifactId: "wfa_scanned", cancellationRequested: true });
 });
 
 afterEach(cleanup);
@@ -197,6 +220,7 @@ describe("InquiryIntakePanel", () => {
       caseDirectory: "incoming/case",
       primaryRelativePath: primary.relativePath,
       supportingRelativePaths: [supporting.relativePath],
+      supportingFileRoles: { [supporting.relativePath]: "historical_output" },
       files: [],
       authorizationMode: "deidentified",
       recordedAt: "2026-07-30T12:00:00.000Z",
@@ -234,6 +258,9 @@ describe("InquiryIntakePanel", () => {
           name: supporting.name,
           family: "image",
           extractionState: "skipped",
+          role: "historical_output",
+          documentType: "inquiry_ledger",
+          pairingEvidence: [{ kind: "shared_filename_case_key", value: "case" }],
         }],
       },
       classification: {
@@ -266,6 +293,9 @@ describe("InquiryIntakePanel", () => {
     fireEvent.click(screen.getByRole("button", { name: "Choose files" }));
     expect(await screen.findByText("inquiry.xlsx")).toBeTruthy();
     expect(screen.getByText("Needs OCR")).toBeTruthy();
+    fireEvent.change(screen.getByLabelText("photo.png role"), {
+      target: { value: "historical_output" },
+    });
     fireEvent.click(screen.getByLabelText("I confirm I may use these files in this local workflow."));
     fireEvent.click(screen.getByRole("button", { name: "Add and review" }));
 
@@ -274,11 +304,16 @@ describe("InquiryIntakePanel", () => {
       selectionId: "selection-1",
       primaryKey: "file:0",
       authorizationMode: "deidentified",
+      supportingRoles: { "file:1": "historical_output" },
       confirmed: true,
     })));
-    await waitFor(() => expect(mocks.inspect).toHaveBeenCalledWith("wio_new", ["wio_image"]));
+    await waitFor(() => expect(mocks.inspect).toHaveBeenCalledWith(
+      "wio_new",
+      ["wio_image"],
+      { wio_image: "historical_output" },
+    ));
     expect(await screen.findByRole("dialog", { name: "Confirm the new inquiry" })).toBeTruthy();
-    expect(screen.getByText("photo.png · skipped")).toBeTruthy();
+    expect(screen.getByText(/photo\.png · Historical output · skipped/)).toBeTruthy();
     expect(addDialog.isConnected).toBe(false);
   });
 
@@ -298,6 +333,7 @@ describe("InquiryIntakePanel", () => {
       caseDirectory: "incoming/retry",
       primaryRelativePath: primary.relativePath,
       supportingRelativePaths: [],
+      supportingFileRoles: {},
       files: [],
       authorizationMode: "deidentified",
       recordedAt: "2026-07-30T12:00:00.000Z",
@@ -332,8 +368,58 @@ describe("InquiryIntakePanel", () => {
 
     expect((await screen.findByRole("alert")).textContent).toContain("Scanner temporarily unavailable");
     fireEvent.click(screen.getByRole("button", { name: "Retry review" }));
-    await waitFor(() => expect(mocks.inspect).toHaveBeenCalledWith("wio_retry", []));
+    await waitFor(() => expect(mocks.inspect).toHaveBeenCalledWith("wio_retry", [], {}));
     expect(stageWorkflowCase).toHaveBeenCalledTimes(1);
+  });
+
+  it("requires explicit confirmation before local OCR and resumes inquiry review", async () => {
+    const scanned = {
+      ...readyObservation,
+      id: "wio_scanned",
+      name: "97-动态热机械分析仪DMA.pdf",
+      relativePath: "incoming/97/97-动态热机械分析仪DMA.pdf",
+      artifactId: "wfa_scanned",
+      canonicalArtifactId: "wfa_scanned",
+      artifactRevision: 7,
+      extraction: {
+        state: "needs_ocr" as const,
+        pageCount: 6,
+        characterCount: 0,
+        providerId: null,
+        localOnly: null,
+      },
+    };
+    const recognized = {
+      ...scanned,
+      artifactRevision: 8,
+      extraction: {
+        state: "ready" as const,
+        pageCount: 6,
+        characterCount: 4_635,
+        providerId: "macos-vision",
+        localOnly: true,
+      },
+    };
+    mocks.list
+      .mockResolvedValueOnce({ observations: [scanned], count: 1 })
+      .mockResolvedValue({ observations: [recognized], count: 1 });
+
+    renderPanel();
+    fireEvent.click(await screen.findByRole("button", { name: "Run local OCR" }));
+    const dialog = await screen.findByRole("dialog", { name: "Read this scanned PDF locally" });
+    expect(dialog.textContent).toContain("6");
+    await screen.findByText("macos-vision");
+    expect(mocks.ocr).not.toHaveBeenCalled();
+    const submit = screen.getByRole("button", { name: "Read and continue" });
+    expect(submit).toHaveProperty("disabled", true);
+
+    fireEvent.click(screen.getByLabelText("I confirm that this local PDF may be processed by OCR."));
+    fireEvent.click(submit);
+    await waitFor(() => expect(mocks.ocr).toHaveBeenCalledWith("wfa_scanned", {
+      expectedRevision: 7,
+      confirmed: true,
+    }));
+    await waitFor(() => expect(mocks.inspect).toHaveBeenCalledWith("wio_scanned", [], {}));
   });
 
   it("opens the created local task and does not offer a second create action", async () => {

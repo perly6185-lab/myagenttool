@@ -22,6 +22,7 @@ const ALLOWED_EXTENSIONS = new Set([
 ]);
 const IMAGE_EXTENSIONS = new Set([".png", ".jpg", ".jpeg", ".webp"]);
 const AUTHORIZATION_MODES = new Set(["authorized", "deidentified"]);
+const SUPPORTING_ROLES = new Set(["reference", "historical_output"]);
 const SAFE_REQUEST_ID_RE = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$/;
 
 function safeName(value, fallback = "case") {
@@ -151,6 +152,7 @@ export function registerWorkflowCaseIntake({
       primaryKey: input?.primaryKey,
       caseName: input?.caseName ?? "",
       authorizationMode: input?.authorizationMode,
+      supportingRoles: input?.supportingRoles ?? {},
       confirmed: input?.confirmed,
     })).digest("hex");
     const prior = receipts.get(requestId);
@@ -177,6 +179,12 @@ export function registerWorkflowCaseIntake({
       ...(pastedText.trim() ? ["text"] : []),
     ]);
     if (!allowedPrimaryKeys.has(primaryKey)) throw new Error("Choose one primary inquiry.");
+    const supportingRoles = input?.supportingRoles ?? {};
+    if (!supportingRoles || typeof supportingRoles !== "object" || Array.isArray(supportingRoles)
+      || Object.entries(supportingRoles).some(([key, role]) =>
+        !allowedPrimaryKeys.has(key) || key === primaryKey || !SUPPORTING_ROLES.has(role))) {
+      throw new Error("Choose a valid role for each supporting file.");
+    }
     const primaryFile = primaryKey.startsWith("file:")
       ? files[Number(primaryKey.slice(5))]
       : null;
@@ -227,21 +235,28 @@ export function registerWorkflowCaseIntake({
         });
       }
       const primary = staged.find((file) => file.key === primaryKey);
+      const supporting = staged
+        .filter((file) => file.key !== primaryKey)
+        .map((file) => ({
+          ...file,
+          role: supportingRoles[file.key] ?? "reference",
+        }));
       const receipt = {
         requestId,
         caseDirectory: relativeDirectory,
         primaryRelativePath: primary.relativePath,
-        supportingRelativePaths: staged.filter((file) => file.key !== primaryKey).map((file) => file.relativePath),
+        supportingRelativePaths: supporting.map((file) => file.relativePath),
+        supportingFileRoles: Object.fromEntries(supporting.map((file) => [file.relativePath, file.role])),
         files: staged,
         authorizationMode: input.authorizationMode,
         recordedAt: now(),
       };
       writeFileSync(join(destination, ".case.json"), JSON.stringify({
-        schemaVersion: 1,
+        schemaVersion: 2,
         authorizationMode: receipt.authorizationMode,
         recordedAt: receipt.recordedAt,
         primaryFile: primary.name,
-        supportingFiles: staged.filter((file) => file.key !== primaryKey).map((file) => file.name),
+        supportingFiles: supporting.map((file) => ({ name: file.name, role: file.role })),
       }, null, 2), { flag: "wx", mode: 0o600 });
       if (grant) selections.delete(String(input.selectionId));
       receipts.set(receipt.requestId, { requestHash, receipt });

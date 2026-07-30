@@ -7,6 +7,7 @@ import {
   FileSearch,
   Loader2,
   RefreshCw,
+  ScanText,
 } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
@@ -70,9 +71,22 @@ const COPY = {
     openTask: "Open task",
     createdWith: "Created with",
     supportingFiles: "Supporting files",
+    reference: "Reference",
+    historicalOutput: "Historical output",
+    pairedBy: "Paired by",
     missingInquiryNumber: "Add an inquiry number before creating the task.",
     noRoutine: "Publish an inquiry routine before processing new files.",
     needsOcr: "This file has no readable text layer yet. Run OCR or choose another primary inquiry.",
+    runOcr: "Run local OCR",
+    ocrTitle: "Read this scanned PDF locally",
+    ocrDescription: "OCR runs on this Mac. The PDF and recognized text are not uploaded.",
+    ocrProvider: "Local provider",
+    ocrPages: "PDF pages",
+    ocrConfirm: "I confirm that this local PDF may be processed by OCR.",
+    ocrUnavailable: "Local OCR is not available on this device.",
+    ocrRunning: "Reading PDF…",
+    ocrSubmit: "Read and continue",
+    ocrFailed: "Local OCR could not read this PDF.",
     genericError: "The inquiry could not be processed.",
   },
   zh: {
@@ -105,10 +119,23 @@ const COPY = {
     triggered: "任务已创建",
     openTask: "打开任务",
     createdWith: "使用工作流",
-    supportingFiles: "参考资料",
+    supportingFiles: "关联资料",
+    reference: "参考资料",
+    historicalOutput: "历史交付物",
+    pairedBy: "配对依据",
     missingInquiryNumber: "请补充询价编号后再创建任务。",
     noRoutine: "请先发布一个询价工作流。",
     needsOcr: "该文件目前没有可读取的文字层。请先运行 OCR，或选择其他资料作为主询价。",
+    runOcr: "运行本地 OCR",
+    ocrTitle: "在本机读取扫描 PDF",
+    ocrDescription: "OCR 仅在这台 Mac 上运行，PDF 和识别文字不会上传。",
+    ocrProvider: "本地识别组件",
+    ocrPages: "PDF 页数",
+    ocrConfirm: "我确认允许在本机对这份 PDF 进行 OCR。",
+    ocrUnavailable: "当前设备没有可用的本地 OCR。",
+    ocrRunning: "正在读取 PDF……",
+    ocrSubmit: "读取并继续",
+    ocrFailed: "本地 OCR 无法读取这份 PDF。",
     genericError: "询价处理失败。",
   },
 } as const;
@@ -130,6 +157,9 @@ function statusFor(observation: WorkflowIntakeObservation, copy: IntakeCopy) {
   }
   if (observation.state === "triggered") {
     return { label: copy.triggered, tone: "success" as const, detail: null };
+  }
+  if (observation.state === "ready" && observation.extraction?.state === "needs_ocr") {
+    return { label: copy.needsReview, tone: "warning" as const, detail: copy.needsOcr };
   }
   if (observation.state === "ready") {
     return { label: copy.ready, tone: "success" as const, detail: null };
@@ -154,12 +184,17 @@ export function InquiryIntakePanel({
   const language = i18n.resolvedLanguage?.startsWith("zh") ? "zh" : "en";
   const copy = COPY[language];
   const queryClient = useQueryClient();
-  const [pending, setPending] = useState<"scan" | "inspect" | "accept" | null>(null);
+  const [pending, setPending] = useState<"scan" | "inspect" | "accept" | "ocr" | null>(null);
   const [inspection, setInspection] = useState<InquiryIntakeInspection | null>(null);
   const [routineDefinitionId, setRoutineDefinitionId] = useState("");
   const [fieldDrafts, setFieldDrafts] = useState<Record<string, string>>({});
   const [idempotencyKey, setIdempotencyKey] = useState("");
   const [supportingObservationIds, setSupportingObservationIds] = useState<string[]>([]);
+  const [supportingObservationRoles, setSupportingObservationRoles] = useState<
+    Record<string, "reference" | "historical_output">
+  >({});
+  const [ocrTarget, setOcrTarget] = useState<WorkflowIntakeObservation | null>(null);
+  const [ocrConfirmed, setOcrConfirmed] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const observationsQuery = useQuery({
     queryKey: ["workflow-memory", "intake-observations", source.id],
@@ -167,6 +202,11 @@ export function InquiryIntakePanel({
     enabled: Boolean(source.id),
   });
   const observations = observationsQuery.data?.observations ?? [];
+  const ocrReadinessQuery = useQuery({
+    queryKey: ["workflow-memory", "ocr-readiness"],
+    queryFn: () => workflowMemoryApi.getWorkflowOcrReadiness(),
+    enabled: Boolean(ocrTarget),
+  });
 
   const refresh = () => Promise.all([
     queryClient.invalidateQueries({ queryKey: ["workflow-memory", "intake-observations", source.id] }),
@@ -181,6 +221,7 @@ export function InquiryIntakePanel({
     if (caught.code === "workflow_intake_routine_not_available") return copy.noRoutine;
     if (caught.code === "workflow_business_analysis_needs_ocr"
       || caught.code === "workflow_business_analysis_content_unavailable") return copy.needsOcr;
+    if (caught.code?.startsWith("workflow_ocr_")) return caught.message || copy.ocrFailed;
     if (caught.code === "workflow_intake_business_identity_conflict") return copy.identityConflict;
     return caught.message || copy.genericError;
   };
@@ -205,17 +246,23 @@ export function InquiryIntakePanel({
   const inspect = async (
     observation: WorkflowIntakeObservation,
     supportingIds: string[] = [],
+    supportingRoles: Record<string, "reference" | "historical_output"> = {},
   ) => {
+    setSupportingObservationIds(supportingIds);
+    setSupportingObservationRoles(supportingRoles);
     setPending("inspect");
     setError(null);
     try {
-      const result = await workflowMemoryApi.inspectWorkflowInquiryIntake(observation.id, supportingIds);
+      const result = await workflowMemoryApi.inspectWorkflowInquiryIntake(
+        observation.id,
+        supportingIds,
+        supportingRoles,
+      );
       if (result.state === "triggered") {
         await refresh();
         return;
       }
       setInspection(result);
-      setSupportingObservationIds(supportingIds);
       setRoutineDefinitionId(result.routines[0]?.id ?? "");
       setFieldDrafts(Object.fromEntries(result.classification.fieldProposals.map((field) => [
         field.key,
@@ -226,6 +273,43 @@ export function InquiryIntakePanel({
       setError(errorText(caught));
     } finally {
       setPending(null);
+    }
+  };
+
+  const runOcr = async () => {
+    if (!ocrTarget?.artifactId || ocrTarget.artifactRevision == null || !ocrConfirmed) return;
+    const targetId = ocrTarget.id;
+    setPending("ocr");
+    setError(null);
+    try {
+      await workflowMemoryApi.ocrWorkflowArtifact(ocrTarget.artifactId, {
+        expectedRevision: ocrTarget.artifactRevision,
+        confirmed: true,
+      });
+      setOcrTarget(null);
+      setOcrConfirmed(false);
+      await refresh();
+      const refreshed = (await workflowMemoryApi.listWorkflowIntakeObservations(source.id))
+        .observations.find((row) => row.id === targetId);
+      if (!refreshed) throw new Error(copy.genericError);
+      await inspect(refreshed, supportingObservationIds, supportingObservationRoles);
+    } catch (caught) {
+      if (!(caught instanceof ApiError) || caught.code !== "workflow_ocr_cancelled") {
+        setError(errorText(caught));
+      }
+    } finally {
+      setPending(null);
+    }
+  };
+
+  const cancelOcr = async () => {
+    if (!ocrTarget?.artifactId) return;
+    try {
+      await workflowMemoryApi.cancelWorkflowOcrArtifact(ocrTarget.artifactId);
+      setOcrTarget(null);
+      setOcrConfirmed(false);
+    } catch (caught) {
+      setError(errorText(caught));
     }
   };
 
@@ -248,9 +332,11 @@ export function InquiryIntakePanel({
         confirmed: true,
         fieldCorrections,
         supportingObservationIds,
+        supportingObservationRoles,
       });
       setInspection(null);
       setSupportingObservationIds([]);
+      setSupportingObservationRoles({});
       await refresh();
     } catch (caught) {
       setError(errorText(caught));
@@ -269,11 +355,15 @@ export function InquiryIntakePanel({
         <div className="flex flex-wrap gap-2">
           <RealCaseIntakeDialog
             source={source}
-            onPrepared={async (primaryId, supportingIds) => {
+            onPrepared={async (primaryId, supporting) => {
               const observation = (await workflowMemoryApi.listWorkflowIntakeObservations(source.id))
                 .observations.find((row) => row.id === primaryId);
               if (!observation) throw new Error(copy.genericError);
-              await inspect(observation, supportingIds);
+              await inspect(
+                observation,
+                supporting.map((item) => item.observationId),
+                Object.fromEntries(supporting.map((item) => [item.observationId, item.role])),
+              );
             }}
           />
           <Button
@@ -293,7 +383,7 @@ export function InquiryIntakePanel({
             {copy.textAccess}
           </p>
         ) : null}
-        {error ? <p role="alert" className="text-sm text-destructive">{error}</p> : null}
+        {error && !ocrTarget ? <p role="alert" className="text-sm text-destructive">{error}</p> : null}
         <div aria-live="polite" className="space-y-2">
           {!observationsQuery.isLoading && observations.length === 0 ? (
             <p className="text-sm text-muted-foreground">{copy.empty}</p>
@@ -324,7 +414,21 @@ export function InquiryIntakePanel({
                     </p>
                   ) : null}
                 </div>
-                {observation.state === "ready" ? (
+                {observation.state === "ready" && observation.extraction?.state === "needs_ocr" ? (
+                  <Button
+                    size="sm"
+                    variant="secondary"
+                    disabled={pending !== null}
+                    onClick={() => {
+                      setOcrTarget(observation);
+                      setOcrConfirmed(false);
+                      setError(null);
+                    }}
+                  >
+                    <ScanText />
+                    {copy.runOcr}
+                  </Button>
+                ) : observation.state === "ready" ? (
                   <Button
                     size="sm"
                     variant="secondary"
@@ -350,10 +454,73 @@ export function InquiryIntakePanel({
       </CardContent>
 
       <Modal
+        open={Boolean(ocrTarget)}
+        onClose={() => {
+          if (pending === "ocr") return;
+          setOcrTarget(null);
+          setOcrConfirmed(false);
+        }}
+        title={copy.ocrTitle}
+        description={copy.ocrDescription}
+        closeDisabled={pending === "ocr"}
+      >
+        <div className="space-y-4">
+          <dl className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-2 rounded-md border p-3 text-sm">
+            <dt className="text-muted-foreground">{copy.sourceFile}</dt>
+            <dd className="truncate font-medium">{ocrTarget?.name}</dd>
+            <dt className="text-muted-foreground">{copy.ocrPages}</dt>
+            <dd>{ocrTarget?.extraction?.pageCount ?? "—"}</dd>
+            <dt className="text-muted-foreground">{copy.ocrProvider}</dt>
+            <dd>{ocrReadinessQuery.data?.providerId ?? "—"}</dd>
+          </dl>
+          {ocrReadinessQuery.data?.state === "unavailable" ? (
+            <p role="alert" className="flex items-start gap-2 rounded-md border border-warning/40 bg-warning/10 p-3 text-sm">
+              <AlertTriangle className="mt-0.5 size-4 shrink-0 text-warning" />
+              {copy.ocrUnavailable}
+            </p>
+          ) : null}
+          {error ? <p role="alert" className="text-sm text-destructive">{error}</p> : null}
+          <label className="flex items-start gap-2 rounded-md border p-3 text-sm">
+            <input
+              type="checkbox"
+              className="mt-0.5"
+              checked={ocrConfirmed}
+              disabled={pending === "ocr" || ocrReadinessQuery.data?.state !== "ready"}
+              onChange={(event) => setOcrConfirmed(event.target.checked)}
+            />
+            <span>{copy.ocrConfirm}</span>
+          </label>
+          <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
+            <Button
+              variant="secondary"
+              onClick={() => {
+                if (pending === "ocr") {
+                  void cancelOcr();
+                  return;
+                }
+                setOcrTarget(null);
+                setOcrConfirmed(false);
+              }}
+            >
+              {copy.cancel}
+            </Button>
+            <Button
+              disabled={pending === "ocr" || !ocrConfirmed || ocrReadinessQuery.data?.state !== "ready"}
+              onClick={() => void runOcr()}
+            >
+              {pending === "ocr" ? <Loader2 className="animate-spin" /> : <ScanText />}
+              {pending === "ocr" ? copy.ocrRunning : copy.ocrSubmit}
+            </Button>
+          </div>
+        </div>
+      </Modal>
+
+      <Modal
         open={Boolean(inspection)}
         onClose={() => {
           setInspection(null);
           setSupportingObservationIds([]);
+          setSupportingObservationRoles({});
         }}
         title={copy.reviewTitle}
         description={copy.reviewDescription}
@@ -374,7 +541,16 @@ export function InquiryIntakePanel({
                 <p className="text-xs font-medium">{copy.supportingFiles}</p>
                 <ul className="mt-1 space-y-1 text-xs text-muted-foreground">
                   {(inspection.observation.supportingObservations ?? []).map((item) => (
-                    <li key={item.id}>{item.name} · {item.extractionState}</li>
+                    <li key={item.id}>
+                      {item.name} · {item.role === "historical_output"
+                        ? copy.historicalOutput
+                        : copy.reference} · {item.extractionState}
+                      {item.pairingEvidence.length
+                        ? ` · ${copy.pairedBy}: ${item.pairingEvidence
+                          .map((evidence) => evidence.value)
+                          .join(", ")}`
+                        : ""}
+                    </li>
                   ))}
                 </ul>
               </div>

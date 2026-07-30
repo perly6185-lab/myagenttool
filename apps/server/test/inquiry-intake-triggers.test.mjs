@@ -46,9 +46,9 @@ function harness({
       availability: "available",
       exclusion: false,
       fingerprint: "b".repeat(64),
-      name: "spec.docx",
-      family: "document",
-      extraction: { state: "ready" },
+    name: "spec.docx",
+    family: "document",
+    extraction: { state: "ready" },
     }] : [])],
     workflowIntakeObservations: [{
       id: "wio_a",
@@ -112,6 +112,7 @@ function harness({
       sourceId: "wfs_a",
       businessKey: input.businessKey,
       artifactBindings: input.artifactBindings,
+      evidenceRefs: input.evidenceRefs,
       artifactFingerprints: Object.fromEntries(input.artifactBindings.map((binding) => [
         binding.artifactId,
         state.workflowArtifacts.find((artifact) => artifact.id === binding.artifactId)?.fingerprint,
@@ -214,6 +215,9 @@ test("one primary inquiry binds supporting files to the same case and one local 
     name: "spec.docx",
     family: "document",
     extractionState: "ready",
+    role: "reference",
+    documentType: "other_reference",
+    pairingEvidence: [],
   }]);
 
   const result = await service.accept({
@@ -233,6 +237,79 @@ test("one primary inquiry binds supporting files to the same case and one local 
   assert.equal(state.workflowIntakeObservations[0].state, "triggered");
   assert.equal(state.workflowIntakeObservations[1].state, "triggered");
   assert.equal(state.workflowIntakeObservations[1].receiptId, result.body.receipt.id);
+  assert.equal(state.workflowIntakeReceipts.length, 1);
+  assert.equal(calls.materialize, 1);
+});
+
+test("an explicitly identified historical workbook is paired as the inquiry ledger output", async () => {
+  const { state, service, calls } = harness({ withSupportingEvidence: true });
+  Object.assign(state.workflowArtifacts[0], {
+    name: "97-动态热机械分析仪DMA.pdf",
+    family: "document",
+  });
+  Object.assign(state.workflowArtifacts[1], {
+    name: "97-动态热机械分析仪DMA-信息汇总.xlsx",
+    family: "spreadsheet",
+    extraction: {
+      state: "ready",
+      blocks: [{
+        text: "PDF文件名称：97-动态热机械分析仪DMA.pdf",
+        location: { kind: "sheet_row", sheet: 1, row: 2 },
+      }],
+    },
+  });
+
+  const inspection = await service.inspect({
+    observationId: "wio_a",
+    supportingObservationIds: ["wio_support"],
+    supportingObservationRoles: { wio_support: "historical_output" },
+  }, ACTOR);
+  assert.equal(inspection.status, 200);
+  assert.deepEqual(inspection.body.observation.supportingObservations[0], {
+    id: "wio_support",
+    artifactId: "wfa_support",
+    relativePath: "inquiries/spec.docx",
+    name: "97-动态热机械分析仪DMA-信息汇总.xlsx",
+    family: "spreadsheet",
+    extractionState: "ready",
+    role: "historical_output",
+    documentType: "inquiry_ledger",
+    pairingEvidence: [
+      { kind: "shared_filename_case_key", value: "97" },
+      { kind: "output_references_input", value: "97-动态热机械分析仪DMA.pdf" },
+    ],
+  });
+
+  const result = await service.accept({
+    observationId: "wio_a",
+    supportingObservationIds: ["wio_support"],
+    supportingObservationRoles: { wio_support: "historical_output" },
+    expectedRevision: 3,
+    idempotencyKey: "accept-real-pdf-xlsx-pair",
+    routineDefinitionId: "brd_a",
+    confirmed: true,
+  }, ACTOR);
+  assert.equal(result.status, 201);
+  assert.deepEqual(state.businessCases[0].artifactBindings, [
+    { artifactId: "wfa_a", documentType: "inquiry", roles: ["trigger", "input"] },
+    { artifactId: "wfa_support", documentType: "inquiry_ledger", roles: ["output"] },
+  ]);
+  assert.deepEqual(state.businessCases[0].evidenceRefs.slice(-2), [
+    {
+      artifactId: "wfa_support",
+      kind: "shared_filename_case_key",
+      field: null,
+      location: null,
+    },
+    {
+      artifactId: "wfa_support",
+      kind: "output_references_input",
+      field: null,
+      location: null,
+    },
+  ]);
+  assert.equal(result.body.receipt.supportingBindings[0].role, "historical_output");
+  assert.equal(result.body.receipt.supportingBindings[0].pairingEvidence.length, 2);
   assert.equal(state.workflowIntakeReceipts.length, 1);
   assert.equal(calls.materialize, 1);
 });
