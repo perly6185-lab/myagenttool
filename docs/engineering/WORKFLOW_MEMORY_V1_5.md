@@ -10,6 +10,8 @@ V1.5 把 V1.4 已验证的商务 Routine 从固定夹具推进到受控真实目
 - 增量询价接入：[#1564](https://github.com/perly6185-lab/myagenttool/issues/1564)
 - 多询价并发与台账串行：[#1565](https://github.com/perly6185-lab/myagenttool/issues/1565)
 - 真实试运行与发布门禁：[#1566](https://github.com/perly6185-lab/myagenttool/issues/1566)
+- 试运行操作与回滚：
+  [WORKFLOW_MEMORY_V1_5_PILOT.md](WORKFLOW_MEMORY_V1_5_PILOT.md)
 
 ## 阶段 1：受治理 Routine 执行器
 
@@ -103,4 +105,29 @@ POST /api/workflow-memory/intake-observations/{observationId}/accept
 - Markdown 模板已进入受治理试运行，但 DOCX/XLSX 保存性生成仍未启用。
 - 关键事实由已确认记录、当前文档证据和用户补充组成；不会自动推测缺失价格或商业条款。
 - 稳定接入与显式确认触发已形成端到端闭环，但当前只面向 `inquiry` 文档和已发布的询价 Routine。
-- V1.5 扩大灰度前，仍须完成 #1565–#1566 的多询价并发、真实或脱敏案例和发布门禁。
+- 多询价并发和台账串行已由 #1565 完成。扩大灰度前仍须使用 #1566 的正式
+  试运行门禁验证至少十个经授权真实或脱敏案例；仓库内十案例仅是合成演练，
+  不计入真实准确率。
+
+## 阶段 5：真实试运行与发布门禁
+
+阶段 5 增加严格的试运行清单、聚合指标和 Go/No-Go 报告：
+
+- `synthetic`、`deidentified` 和 `real` 数据明确区分；只有后两类且授权信息完整
+  时才计入正式案例。
+- 清单只接受固定字段，不允许携带原文、绝对路径、Prompt、Secret 或文件哈希。
+- 报告角色 Top-1、关系 Top-1/Top-5、未知覆盖、纠正率、完成率、重复数、
+  审批覆盖、恢复和安全结果。
+- 合成演练进入免费 CI 门禁，但即使全绿仍输出正式 `NO_GO`；正式命令必须显式
+  指向本地授权清单。
+- 正式发布要求至少十案例、角色 Top-1 ≥80%、关系 Top-1 ≥75%、零强制未知
+  猜测、零重复写入、100% 修改审批，以及安全和恢复场景全部通过。
+
+```bash
+pnpm eval:commercial-pilot:rehearsal
+
+WORKFLOW_MEMORY_PILOT_MANIFEST=/local/path/pilot-manifest.json \
+pnpm eval:commercial-pilot -- \
+  --out-json .myagenttool/pilot-reports/v1.5.json \
+  --out-md .myagenttool/pilot-reports/v1.5.md
+```
