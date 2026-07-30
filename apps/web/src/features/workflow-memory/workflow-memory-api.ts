@@ -56,6 +56,8 @@ export interface InquiryIntakeReceipt {
   sourceId: string;
   observationId: string;
   artifactId: string;
+  supportingArtifactIds: string[];
+  supportingObservationIds: string[];
   businessKey: string;
   routineDefinitionId: string;
   routineVersion: number;
@@ -76,6 +78,14 @@ export interface InquiryIntakeInspection {
     artifactId: string;
     relativePath: string;
     revision: number;
+    supportingObservations: Array<{
+      id: string;
+      artifactId: string;
+      relativePath: string;
+      name: string;
+      family: string;
+      extractionState: string;
+    }>;
   };
   classification: Pick<
     BusinessDocumentClassification,
@@ -134,7 +144,7 @@ export const workflowMemoryApi = {
       "GET",
       `/api/workflow-memory/intake-observations?sourceId=${encodeURIComponent(sourceId)}`,
     ),
-  inspectWorkflowInquiryIntake: (observationId: string) =>
+  inspectWorkflowInquiryIntake: (observationId: string, supportingObservationIds: string[] = []) =>
     request<InquiryIntakeInspection | {
       state: "triggered";
       receipt: InquiryIntakeReceipt;
@@ -142,7 +152,7 @@ export const workflowMemoryApi = {
     }>(
       "POST",
       `/api/workflow-memory/intake-observations/${encodeURIComponent(observationId)}/inspect`,
-      {},
+      { supportingObservationIds },
     ),
   acceptWorkflowInquiryIntake: (
     observationId: string,
@@ -153,6 +163,7 @@ export const workflowMemoryApi = {
       confirmed: true;
       fieldCorrections?: Partial<Record<BusinessFieldProposal["key"], string>>;
       excludedFieldKeys?: BusinessFieldProposal["key"][];
+      supportingObservationIds?: string[];
     },
   ) => request<{
     state: "triggered";
