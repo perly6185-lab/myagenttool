@@ -325,6 +325,16 @@ export function createWorkItemAutoRunBatchService({
     if (!batch || TERMINAL_BATCH_STATUSES.has(batch.status) || pumping.has(batch.id)) return batch;
     pumping.add(batch.id);
     try {
+      // Always reconcile admitted work before evaluating whether the pinned
+      // agent may start MORE work. A failed invocation can make the agent
+      // unhealthy; checking eligibility first left its batch item permanently
+      // showing "running" even though the Auto-run was already terminal.
+      runTx(() => {
+        syncBatch(batch);
+        settleBatch(batch);
+        batch.updatedAt = now();
+      });
+      if (TERMINAL_BATCH_STATUSES.has(batch.status)) return batch;
       const agentReady = ensureBatchAgent(batch);
       if (!agentReady.ok) {
         runTx(() => {
@@ -334,7 +344,6 @@ export function createWorkItemAutoRunBatchService({
         });
         return batch;
       }
-      runTx(() => syncBatch(batch));
       let active = batch.items.filter((item) => ACTIVE_RUN_STATUSES.has(item.status)).length;
       let attemptedStarts = 0;
       for (const item of batch.items) {

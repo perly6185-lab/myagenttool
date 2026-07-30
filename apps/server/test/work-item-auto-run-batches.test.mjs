@@ -154,6 +154,29 @@ test("global capacity pressure keeps the item queued for a later sweep", async (
   assert.equal(batch.active, 1);
 });
 
+test("batch reconciles a terminal run before rejecting a newly unhealthy agent", async () => {
+  const agent = repoAgent("agt_codex_cli");
+  const { state, service, runScheduledPumps } = fixture({ agents: [agent] });
+  await service.createBatch({
+    workItemIds: ["lwi_1"],
+    maxConcurrent: 1,
+    agentId: agent.id,
+  }, { userId: "usr_a", teamId: "team_a", role: "operator" });
+  await runScheduledPumps();
+  assert.equal(state.workItemAutoRunBatches[0].items[0].status, "running");
+
+  state.autoRuns[0].status = "failed";
+  agent.health.status = "unhealthy";
+  await service.sweepBatches();
+  await runScheduledPumps();
+
+  const batch = service.listBatches({}, { teamId: "team_a" }).body.batches[0];
+  assert.equal(batch.status, "completed_with_failures");
+  assert.equal(batch.items[0].status, "failed");
+  assert.equal(batch.completed, 1);
+  assert.equal(batch.active, 0);
+});
+
 test("batch acceptance is non-blocking even when Auto-run startup is slow", async () => {
   let releaseStart;
   const startGate = new Promise((resolve) => {
