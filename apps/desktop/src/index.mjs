@@ -108,7 +108,15 @@ const binaryReadinessIntervalMs = Number(process.env.BRIDGE_BINARY_READINESS_INT
 // never opens it. Unset means "this device reports holding no credentials".
 const credentialDir = process.env.BRIDGE_CREDENTIAL_DIR ?? null;
 const demoAgentPath = resolve(__dirname, "demo-agent.mjs");
-const codexFixtureAgentPath = resolve(__dirname, "codex-fixture-agent.mjs");
+const bundledCodexFixtureAgentPath = resolve(__dirname, "codex-fixture-agent.mjs");
+// Test-only override: it is honored exclusively when the operator explicitly
+// selects the fixture runtime. Keeping the resolved path in the local policy
+// manifest means an instrumented fixture is checked by the same exact-path gate
+// as the bundled fixture rather than weakening Codex command allowlisting.
+const codexFixtureAgentPath = process.env.MYAGENTTOOL_CODEX_COMMAND === "fixture"
+  && String(process.env.MYAGENTTOOL_CODEX_FIXTURE_PATH ?? "").trim()
+  ? resolve(String(process.env.MYAGENTTOOL_CODEX_FIXTURE_PATH).trim())
+  : bundledCodexFixtureAgentPath;
 const remoteRelayPath = resolve(__dirname, "remote-relay.mjs");
 const localExecutionPolicyManifest = withBundledAgentProbes(
   createLocalExecutionPolicyManifest({ demoAgentPath, codexFixtureAgentPath }),
