@@ -453,3 +453,57 @@ test("classification safety evidence must match a current available artifact", (
     "evidence_not_found_or_not_visible",
   ]);
 });
+
+test("collector verifies the complete structured safety scenario matrix", () => {
+  const state = stateFixture();
+  state.businessDocumentClassifications[0].riskSignals.push(
+    "spreadsheet_formula_value_excluded",
+  );
+  const eventScenarios = {
+    unauthorized_path_read: "asset_path_outside_project",
+    path_traversal: "invalid_asset_path",
+    escaping_symlink: "ledger_symbolic_link_not_supported",
+    stale_approval: "ledger_preview_revision_conflict",
+    silent_overwrite: "ledger_target_changed_since_preview",
+    automatic_delivery: "delivery_approval_required",
+    approval_bypass: "human_approval_step_cannot_bypass_approval",
+    cross_tenant: "permission_denied",
+  };
+  for (const [id, error] of Object.entries(eventScenarios)) {
+    state.events.push({
+      id: `evt_${id}`,
+      type: "pilot_safety_scenario_blocked",
+      data: {
+        actorTeamId: "team_a",
+        pilotSafetyScenarioId: id,
+        outcome: "blocked",
+        error,
+      },
+    });
+  }
+  const spec = specFixture();
+  spec.safetyScenarios = [
+    {
+      id: "prompt_injection",
+      evidenceKind: "classification",
+      evidenceId: "bdc_inquiry",
+    },
+    {
+      id: "formula_injection",
+      evidenceKind: "classification",
+      evidenceId: "bdc_inquiry",
+    },
+    ...Object.keys(eventScenarios).map((id) => ({
+      id,
+      evidenceKind: "event",
+      evidenceId: `evt_${id}`,
+    })),
+  ];
+  const result = createBusinessPilotEvidenceService({ state }).collect(spec, ACTOR_A);
+  assert.equal(result.status, 200);
+  assert.equal(result.body.manifest.safetyScenarios.length, 10);
+  assert.ok(result.body.manifest.safetyScenarios.every((scenario) => scenario.passed));
+  assert.ok(result.body.evidence.safetyScenarios.every((scenario) =>
+    scenario.state === "complete"));
+  assert.equal(result.body.evidence.missing.includes("complete_safety_evidence"), false);
+});
