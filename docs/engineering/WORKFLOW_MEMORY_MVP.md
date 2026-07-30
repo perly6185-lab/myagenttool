@@ -484,7 +484,9 @@ V1.5 由 [#1561](https://github.com/perly6185-lab/myagenttool/issues/1561)
 第一阶段增加受治理本地执行器、独占报价草稿写入和确认订单子 Issue 幂等复用；
 第二阶段增加关键事实缺失/冲突对话、逐任务模板确认、Markdown 占位符渲染、
 审批前来源摘要及 Office 模板保存性拒绝；后续阶段依次补齐增量接入、
-多询价并发和真实试运行门禁。
+多询价并发和真实试运行门禁。阶段 5 的授权清单、指标定义、Go/No-Go、
+删除和回滚步骤见
+[WORKFLOW_MEMORY_V1_5_PILOT.md](WORKFLOW_MEMORY_V1_5_PILOT.md)。
 
 开发范围、执行器契约和本地数据边界见
 [WORKFLOW_MEMORY_V1_5.md](WORKFLOW_MEMORY_V1_5.md)。

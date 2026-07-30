@@ -150,6 +150,7 @@ jobs:
           pnpm ai:eval-subcap
           pnpm test:commercial-routine-release
           pnpm eval:commercial-routine
+          pnpm eval:commercial-pilot:rehearsal
 
   desktop-smoke:
     if: vars.ENABLE_GITHUB_HOSTED_RUNNERS == 'true'
