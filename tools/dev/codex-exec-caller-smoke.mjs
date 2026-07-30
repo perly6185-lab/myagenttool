@@ -29,6 +29,7 @@ const fixtureDir = join(tempRoot, "fixtures");
 const statePath = join(tempRoot, "state.json");
 const codexCapturePath = join(tempRoot, "codex-capture.json");
 const bridgeTokenPath = join(tempRoot, "bridge-token.json");
+const bridgeSessionPath = join(tempRoot, "bridge-session.json");
 const children = [];
 let passed = 0;
 
@@ -88,6 +89,10 @@ try {
     () => readJsonFile(bridgeTokenPath)?.token ?? false,
     "desktop bridge credential",
   );
+  const bridgeSessionId = await waitFor(
+    () => readJsonFile(bridgeSessionPath)?.bridgeSessionId ?? false,
+    "desktop bridge process session",
+  );
 
   const initialState = await request("GET", "/api/state");
   const branchName = `myagenttool/codex-exec-smoke-${Date.now().toString(36)}`;
@@ -111,6 +116,7 @@ try {
     projectId: worktreeCreated.project.id,
     worktreeId: worktreeCreated.worktree.id,
     bridgeToken,
+    bridgeSessionId,
   });
 
   assert(result.changes.length >= 1, "caller should read at least one imported change");
@@ -223,7 +229,12 @@ try {
   }
 }
 
-async function internalCallerAgent({ projectId, worktreeId, bridgeToken }) {
+async function internalCallerAgent({
+  projectId,
+  worktreeId,
+  bridgeToken,
+  bridgeSessionId,
+}) {
   const catalog = await request("GET", "/api/capabilities?providerType=tool");
   const catalogEntry = catalog.capabilities.find((capability) => capability.name === CAPABILITY_NAME);
   assert(catalogEntry, `caller should discover ${CAPABILITY_NAME} when the flag is on`);
@@ -258,7 +269,10 @@ async function internalCallerAgent({ projectId, worktreeId, bridgeToken }) {
   // An exec run carries its approvalMode, so a device-authenticated Codex
   // PermissionRequest hook for this active invocation is governed by the same
   // approval broker as managed sessions.
-  const bridgeHeaders = { Authorization: `Bearer ${bridgeToken}` };
+  const bridgeHeaders = {
+    Authorization: `Bearer ${bridgeToken}`,
+    "X-MyAgentTool-Bridge-Session": bridgeSessionId,
+  };
   const benignHook = await request("POST", "/api/bridge/codex/hooks", {
     invocationId: invoked.invocationId,
     eventName: "PermissionRequest",
