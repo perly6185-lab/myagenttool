@@ -25,6 +25,7 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input, Select } from "@/components/ui/input";
 import { api } from "@/data/use-console-actions";
 import { useConsoleState, useRefreshConsoleState } from "@/data/use-console-state";
+import { CommercialPilotWorkbench } from "@/features/workflow-memory/commercial-pilot-workbench";
 import { workflowMemoryApi } from "@/features/workflow-memory/workflow-memory-api";
 import { InquiryIntakePanel } from "@/features/workflow-memory/inquiry-intake-panel";
 import { RoutineSetupGuide } from "@/features/workflow-memory/routine-setup-guide";
@@ -1049,6 +1050,8 @@ export function WorkflowMemoryView() {
                   setSection("task");
                 }}
               />
+
+              <CommercialPilotWorkbench projectId={selectedSource.projectId} />
 
               <RoutineSetupGuide
                 source={selectedSource}
