@@ -35,6 +35,20 @@ function stateFixture() {
       triggerArtifactIds: ["wfa_inquiry"],
       status: "succeeded",
       actionReceipts: [{ action: "retry", stepKey: "quotation" }],
+      recoveryReceipts: [
+        {
+          kind: "step_retry",
+          stepKey: "quotation",
+          previousErrorCode: "routine_step_interrupted",
+          retriedAt: "2026-07-30T00:00:01.000Z",
+        },
+        {
+          kind: "device_capacity",
+          queuedAt: "2026-07-30T00:00:00.000Z",
+          releasedAt: "2026-07-30T00:00:01.000Z",
+          startedStepKeys: ["quotation"],
+        },
+      ],
       stepRuns: [
         {
           stepKey: "quotation",
@@ -74,6 +88,8 @@ function stateFixture() {
       projectId: "prj_a",
       sourceId: "wfs_a",
       businessKey: "RFQ-001",
+      artifactBindings: [],
+      artifactFingerprints: {},
     }],
     businessCaseCandidates: [{
       id: "bcc_a",
@@ -181,10 +197,13 @@ function specFixture() {
 }
 
 test("collector derives observations from governed runtime evidence", () => {
-  const service = createBusinessPilotEvidenceService({ state: stateFixture() });
+  const serviceState = stateFixture();
+  const service = createBusinessPilotEvidenceService({ state: serviceState });
   const result = service.collect(specFixture(), ACTOR_A);
   assert.equal(result.status, 200);
-  assert.equal(result.body.evidence.state, "complete");
+  assert.equal(result.body.evidence.state, "incomplete");
+  assert.ok(result.body.evidence.missing.includes("minimum_formal_cases"));
+  assert.ok(result.body.evidence.missing.includes("complete_safety_evidence") === false);
   assert.equal(result.body.evidence.cases[0].routineRunId, "rtr_a");
   assert.deepEqual(result.body.manifest.cases[0].observed, {
     documentRole: "inquiry",
@@ -200,6 +219,7 @@ test("collector derives observations from governed runtime evidence", () => {
     quotationMutationCount: 1,
     ledgerMutationCount: 1,
     approvalCount: 2,
+    approvalComplete: true,
     recoveries: [
       { id: "restart", passed: true },
       { id: "concurrency", passed: true },
@@ -210,6 +230,16 @@ test("collector derives observations from governed runtime evidence", () => {
   ]);
   assert.equal(result.body.report.formalEligible, false);
   assert.equal(result.body.report.gate.decision, "no_go");
+  assert.equal(service.verify({ manifest: result.body.manifest }, ACTOR_A).body.verified, true);
+  const tampered = structuredClone(result.body.manifest);
+  tampered.cases[0].observed.completed = false;
+  assert.equal(service.verify({ manifest: tampered }, ACTOR_A).status, 404);
+  assert.equal(service.verify({ manifest: result.body.manifest }, ACTOR_B).status, 404);
+  const restartedService = createBusinessPilotEvidenceService({ state: serviceState });
+  assert.equal(
+    restartedService.verify({ manifest: result.body.manifest }, ACTOR_A).body.verified,
+    true,
+  );
 });
 
 test("collector rejects operator-supplied observed results", () => {
@@ -259,7 +289,33 @@ test("collector derives ordered and rejected outcomes from runtime branches", ()
     ownerTeamId: "team_a",
     projectId: "prj_a",
     parentId: "wit_case_a",
+    labels: ["routine-work", "order-processing"],
   });
+  orderedState.workflowArtifacts.push({
+    id: "wfa_order",
+    ownerTeamId: "team_a",
+    projectId: "prj_a",
+    sourceId: "wfs_a",
+    fingerprint: "b".repeat(64),
+    availability: "available",
+    exclusion: false,
+  });
+  orderedState.businessDocumentClassifications.push({
+    id: "bdc_order",
+    ownerTeamId: "team_a",
+    projectId: "prj_a",
+    sourceId: "wfs_a",
+    artifactId: "wfa_order",
+    artifactFingerprint: "b".repeat(64),
+    documentType: "order",
+    confirmationState: "confirmed",
+  });
+  orderedState.businessCases[0].artifactBindings.push({
+    artifactId: "wfa_order",
+    documentType: "order",
+    roles: ["input"],
+  });
+  orderedState.businessCases[0].artifactFingerprints.wfa_order = "b".repeat(64);
   const orderedSpec = specFixture();
   orderedSpec.cases[0].expectedOutcome = "ordered";
   const ordered = createBusinessPilotEvidenceService({ state: orderedState })
@@ -276,6 +332,41 @@ test("collector derives ordered and rejected outcomes from runtime branches", ()
     .collect(rejectedSpec, ACTOR_A);
   assert.equal(rejected.body.manifest.cases[0].observed.outcome, "rejected");
   assert.equal(rejected.body.manifest.cases[0].observed.completed, true);
+});
+
+test("collector does not infer an order from a generic child issue alone", () => {
+  const state = stateFixture();
+  state.routineRuns[0].stepRuns.push({
+    stepKey: "order_signal",
+    kind: "condition",
+    state: "succeeded",
+    conditionOutcome: true,
+    outputRefs: [],
+  });
+  state.workItems.push({
+    id: "wit_generic_child",
+    ownerTeamId: "team_a",
+    projectId: "prj_a",
+    parentId: "wit_case_a",
+    labels: ["routine-work"],
+  });
+  const result = createBusinessPilotEvidenceService({ state }).collect(specFixture(), ACTOR_A);
+  assert.equal(result.body.manifest.cases[0].observed.outcome, "no_order");
+  assert.equal(result.body.manifest.cases[0].observed.evidenceComplete, false);
+  assert.ok(result.body.evidence.cases[0].missing.includes(
+    "confirmed_order_outcome_evidence",
+  ));
+});
+
+test("collector distinguishes an ordinary retry from restart recovery", () => {
+  const state = stateFixture();
+  state.routineRuns[0].recoveryReceipts[0].previousErrorCode = "routine_step_failed";
+  const result = createBusinessPilotEvidenceService({ state }).collect(specFixture(), ACTOR_A);
+  assert.deepEqual(result.body.manifest.cases[0].observed.recoveries[0], {
+    id: "restart",
+    passed: false,
+  });
+  assert.ok(result.body.evidence.cases[0].missing.includes("successful_recovery_trace"));
 });
 
 test("collector counts duplicate issues, cases, quotations, and ledger rows", () => {
@@ -302,6 +393,7 @@ test("collector counts duplicate issues, cases, quotations, and ledger rows", ()
   assert.equal(observed.duplicateBusinessCaseCount, 1);
   assert.equal(observed.duplicateQuotationCount, 1);
   assert.equal(observed.duplicateLedgerRowCount, 1);
+  assert.equal(observed.approvalComplete, false);
   assert.equal(result.body.report.metrics.duplicates.total, 4);
 });
 
@@ -321,5 +413,43 @@ test("safety evidence fails closed when the referenced record does not prove the
   ]);
   assert.deepEqual(result.body.evidence.safetyScenarios[0].missing, [
     "evidence_does_not_prove_scenario",
+  ]);
+});
+
+test("safety evidence requires a typed blocked outcome, not matching free text", () => {
+  const state = stateFixture();
+  state.events.push({
+    id: "evt_approval_bypass",
+    type: "routine_action_refused",
+    data: {
+      actorTeamId: "team_a",
+      message: "approval_bypass human_approval_step_cannot_bypass_approval blocked",
+    },
+  });
+  const spec = specFixture();
+  spec.safetyScenarios[0] = {
+    id: "approval_bypass",
+    evidenceKind: "event",
+    evidenceId: "evt_approval_bypass",
+  };
+  let result = createBusinessPilotEvidenceService({ state }).collect(spec, ACTOR_A);
+  assert.equal(result.body.manifest.safetyScenarios[0].passed, false);
+
+  Object.assign(state.events.at(-1).data, {
+    pilotSafetyScenarioId: "approval_bypass",
+    outcome: "blocked",
+    error: "human_approval_step_cannot_bypass_approval",
+  });
+  result = createBusinessPilotEvidenceService({ state }).collect(spec, ACTOR_A);
+  assert.equal(result.body.manifest.safetyScenarios[0].passed, true);
+});
+
+test("classification safety evidence must match a current available artifact", () => {
+  const state = stateFixture();
+  state.workflowArtifacts[0].fingerprint = "c".repeat(64);
+  const result = createBusinessPilotEvidenceService({ state }).collect(specFixture(), ACTOR_A);
+  assert.equal(result.body.manifest.safetyScenarios[0].passed, false);
+  assert.deepEqual(result.body.evidence.safetyScenarios[0].missing, [
+    "evidence_not_found_or_not_visible",
   ]);
 });

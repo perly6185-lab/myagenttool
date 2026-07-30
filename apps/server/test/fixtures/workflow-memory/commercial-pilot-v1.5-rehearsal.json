@@ -46,6 +46,7 @@
         "quotationMutationCount": 1,
         "ledgerMutationCount": 3,
         "approvalCount": 4,
+        "approvalComplete": true,
         "recoveries": []
       }
     },
@@ -70,6 +71,7 @@
         "quotationMutationCount": 1,
         "ledgerMutationCount": 2,
         "approvalCount": 3,
+        "approvalComplete": true,
         "recoveries": []
       }
     },
@@ -94,6 +96,7 @@
         "quotationMutationCount": 1,
         "ledgerMutationCount": 2,
         "approvalCount": 3,
+        "approvalComplete": true,
         "recoveries": []
       }
     },
@@ -118,6 +121,7 @@
         "quotationMutationCount": 1,
         "ledgerMutationCount": 3,
         "approvalCount": 4,
+        "approvalComplete": true,
         "recoveries": [
           { "id": "duplicate-intake", "passed": true }
         ]
@@ -144,6 +148,7 @@
         "quotationMutationCount": 1,
         "ledgerMutationCount": 2,
         "approvalCount": 3,
+        "approvalComplete": true,
         "recoveries": [
           { "id": "service-restart", "passed": true }
         ]
@@ -170,6 +175,7 @@
         "quotationMutationCount": 1,
         "ledgerMutationCount": 3,
         "approvalCount": 4,
+        "approvalComplete": true,
         "recoveries": [
           { "id": "capacity-and-ledger-queue", "passed": true }
         ]
@@ -196,6 +202,7 @@
         "quotationMutationCount": 1,
         "ledgerMutationCount": 2,
         "approvalCount": 3,
+        "approvalComplete": true,
         "recoveries": [
           { "id": "move-and-rename", "passed": true }
         ]
@@ -222,6 +229,7 @@
         "quotationMutationCount": 1,
         "ledgerMutationCount": 3,
         "approvalCount": 4,
+        "approvalComplete": true,
         "recoveries": [
           { "id": "cancel-and-retry", "passed": true }
         ]
@@ -248,6 +256,7 @@
         "quotationMutationCount": 1,
         "ledgerMutationCount": 2,
         "approvalCount": 3,
+        "approvalComplete": true,
         "recoveries": [
           { "id": "stale-preview-refresh", "passed": true }
         ]
@@ -274,6 +283,7 @@
         "quotationMutationCount": 0,
         "ledgerMutationCount": 0,
         "approvalCount": 0,
+        "approvalComplete": true,
         "recoveries": []
       }
     }

@@ -180,6 +180,7 @@ export function createServerState({ defaultProjectPath, now }) {
     ledgerDefinitions: [],
     ledgerUpsertPreviews: [],
     ledgerMutationAudits: [],
+    businessPilotEvidenceReceipts: [],
     // #1165: dispatcher-mode bookkeeping — one row per issue assignment written
     // by THIS server acting as the dispatcher (single writer; the staleness clock).
     dispatchAssignments: [],

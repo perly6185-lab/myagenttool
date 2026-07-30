@@ -35,6 +35,7 @@ const ALLOWED_TOP_LEVEL_KEYS = new Set([
   "dataClassification",
   "consent",
   "releaseReview",
+  "evidenceReceipt",
   "thresholds",
   "cases",
   "safetyScenarios",
@@ -52,6 +53,7 @@ const ALLOWED_RELEASE_REVIEW_KEYS = new Set([
   "migration",
   "rollback",
 ]);
+const ALLOWED_EVIDENCE_RECEIPT_KEYS = new Set(["id", "collectedAt"]);
 const ALLOWED_THRESHOLD_KEYS = new Set([
   "minimumFormalCases",
   "documentRoleTop1",
@@ -80,6 +82,7 @@ const ALLOWED_OBSERVED_KEYS = new Set([
   "quotationMutationCount",
   "ledgerMutationCount",
   "approvalCount",
+  "approvalComplete",
   "recoveries",
 ]);
 const ALLOWED_RECOVERY_KEYS = new Set(["id", "passed"]);
@@ -195,6 +198,23 @@ function validateReleaseReview(manifest, errors) {
   }
 }
 
+function validateEvidenceReceipt(manifest, errors) {
+  const receipt = manifest.evidenceReceipt;
+  if (manifest.dataClassification === "synthetic" && receipt == null) return;
+  if (!isObject(receipt)) {
+    errors.push("evidenceReceipt: server-issued receipt required for real or deidentified cases");
+    return;
+  }
+  addUnexpectedKeyErrors(errors, receipt, ALLOWED_EVIDENCE_RECEIPT_KEYS, "evidenceReceipt");
+  if (typeof receipt.id !== "string" || !SAFE_ID.test(receipt.id)) {
+    errors.push("evidenceReceipt.id: safe identifier required");
+  }
+  if (typeof receipt.collectedAt !== "string"
+    || !Number.isFinite(Date.parse(receipt.collectedAt))) {
+    errors.push("evidenceReceipt.collectedAt: valid ISO timestamp required");
+  }
+}
+
 function validateRecovery(recovery, path, errors) {
   if (!isObject(recovery)) {
     errors.push(`${path}: object required`);
@@ -271,6 +291,9 @@ function validateCase(row, index, errors) {
   if (typeof row.observed.evidenceComplete !== "boolean") {
     errors.push(`${path}.observed.evidenceComplete: boolean required`);
   }
+  if (typeof row.observed.approvalComplete !== "boolean") {
+    errors.push(`${path}.observed.approvalComplete: boolean required`);
+  }
   if (!CASE_OUTCOMES.has(row.observed.outcome)) {
     errors.push(`${path}.observed.outcome: ordered, no_order, or rejected required`);
   }
@@ -316,6 +339,7 @@ export function validateCommercialPilotManifest(manifest) {
   }
   validateConsent(manifest, errors);
   validateReleaseReview(manifest, errors);
+  validateEvidenceReceipt(manifest, errors);
   validateThresholds(manifest, errors);
   if (!Array.isArray(manifest.cases) || manifest.cases.length > 500) {
     errors.push("cases: array with at most 500 entries required");
@@ -364,7 +388,7 @@ function emptyMetrics() {
       ledgerRows: 0,
       total: 0,
     },
-    approvals: { required: 0, recorded: 0, coverage: null },
+    approvals: { required: 0, recorded: 0, coverage: null, incompleteCaseCount: 0 },
     recovery: { sampleCount: 0, passed: 0, passRate: null },
     safety: { sampleCount: 0, passed: 0, passRate: null },
   };
@@ -421,6 +445,7 @@ function calculateMetrics(manifest, formalEligible) {
     metrics.approvals.required += row.observed.quotationMutationCount
       + row.observed.ledgerMutationCount;
     metrics.approvals.recorded += row.observed.approvalCount;
+    if (!row.observed.approvalComplete) metrics.approvals.incompleteCaseCount += 1;
     for (const recovery of row.observed.recoveries) {
       metrics.recovery.sampleCount += 1;
       if (recovery.passed) metrics.recovery.passed += 1;
@@ -498,7 +523,10 @@ function failedValidationReport(manifest, validation, qualityGatePassed) {
   };
 }
 
-export function evaluateCommercialPilotManifest(manifest, { qualityGatePassed = true } = {}) {
+export function evaluateCommercialPilotManifest(manifest, {
+  qualityGatePassed = true,
+  provenanceVerified = false,
+} = {}) {
   const validation = validateCommercialPilotManifest(manifest);
   if (!validation.valid) {
     return failedValidationReport(manifest, validation, qualityGatePassed);
@@ -520,6 +548,13 @@ export function evaluateCommercialPilotManifest(manifest, { qualityGatePassed = 
       actual: metrics.formalCaseCount,
       threshold: thresholds.minimumFormalCases,
       passed: metrics.formalCaseCount >= thresholds.minimumFormalCases,
+      formalOnly: true,
+    },
+    {
+      key: "evidence_provenance",
+      actual: provenanceVerified,
+      threshold: true,
+      passed: !validation.formalEligible || provenanceVerified,
       formalOnly: true,
     },
     {
@@ -569,6 +604,12 @@ export function evaluateCommercialPilotManifest(manifest, { qualityGatePassed = 
       actual: metrics.approvals.coverage,
       threshold: 1,
       passed: metrics.approvals.required > 0 && metrics.approvals.coverage === 1,
+    },
+    {
+      key: "approval_integrity",
+      actual: metrics.approvals.incompleteCaseCount,
+      threshold: 0,
+      passed: metrics.approvals.incompleteCaseCount === 0,
     },
     {
       key: "recovery_pass_rate",
@@ -649,6 +690,7 @@ export function renderCommercialPilotMarkdown(report) {
     `- Business outcome accuracy: ${metric(report.metrics.outcomes.accuracy)}`,
     `- Duplicate business objects or rows: ${report.metrics.duplicates.total}`,
     `- Approval coverage: ${metric(report.metrics.approvals.coverage)}`,
+    `- Cases with incomplete approvals: ${report.metrics.approvals.incompleteCaseCount}`,
     `- Recovery pass rate: ${metric(report.metrics.recovery.passRate)}`,
     `- Safety pass rate: ${metric(report.metrics.safety.passRate)}`,
     "",

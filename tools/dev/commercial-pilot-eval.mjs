@@ -1,4 +1,4 @@
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { chmod, mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -29,6 +29,7 @@ function parseArgs(argv) {
     outJson: null,
     outMarkdown: null,
     rehearsal: false,
+    server: process.env.MYAGENTTOOL_BASE_URL ?? "http://127.0.0.1:4310",
   };
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index];
@@ -41,11 +42,12 @@ function parseArgs(argv) {
       "--quality-fixture": "qualityFixturePath",
       "--out-json": "outJson",
       "--out-md": "outMarkdown",
+      "--server": "server",
     }[arg];
     if (!key) throw new Error(`unknown argument: ${arg}`);
     const value = argv[index + 1];
-    if (!value || value.startsWith("--")) throw new Error(`${arg} requires a path`);
-    options[key] = resolve(value);
+    if (!value || value.startsWith("--")) throw new Error(`${arg} requires a value`);
+    options[key] = key === "server" ? value : resolve(value);
     index += 1;
   }
   if (options.rehearsal && !options.manifestPath) {
@@ -55,6 +57,19 @@ function parseArgs(argv) {
     throw new Error(
       "formal pilot manifest required: set WORKFLOW_MEMORY_PILOT_MANIFEST or pass --manifest",
     );
+  }
+  if (!options.rehearsal) {
+    const server = new URL(options.server);
+    if (server.username || server.password || server.search || server.hash
+      || !["", "/"].includes(server.pathname)) {
+      throw new Error("pilot verification server must be an origin without credentials, path, query, or fragment");
+    }
+    if (server.protocol !== "https:"
+      && !(server.protocol === "http:"
+        && ["127.0.0.1", "localhost", "::1"].includes(server.hostname))) {
+      throw new Error("pilot verification server must use HTTPS unless it is local");
+    }
+    options.server = server.toString().replace(/\/$/, "");
   }
   return options;
 }
@@ -77,6 +92,26 @@ async function writeReport(path, content) {
   if (!path) return;
   await mkdir(dirname(path), { recursive: true });
   await writeFile(path, content, { encoding: "utf8", mode: 0o600 });
+  await chmod(path, 0o600);
+}
+
+async function verifyProvenance(server, token, manifest) {
+  const response = await fetch(
+    `${server}/api/workflow-memory/commercial-pilot/evidence/verify`,
+    {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${token}`,
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({ manifest }),
+    },
+  );
+  const result = await response.json().catch(() => null);
+  if (!response.ok || result?.verified !== true) {
+    throw new Error(result?.error ?? `pilot evidence verification failed with HTTP ${response.status}`);
+  }
+  return true;
 }
 
 async function main() {
@@ -86,8 +121,16 @@ async function main() {
     readJson(options.qualityFixturePath, "quality fixture"),
   ]);
   const qualityReport = evaluateCommercialRoutineFixture(qualityFixture);
+  const token = process.env.MYAGENTTOOL_TOKEN;
+  if (!options.rehearsal && !token) {
+    throw new Error("MYAGENTTOOL_TOKEN is required for formal evaluation");
+  }
+  const provenanceVerified = options.rehearsal
+    ? false
+    : await verifyProvenance(options.server, token, manifest);
   const report = evaluateCommercialPilotManifest(manifest, {
     qualityGatePassed: qualityReport.gate.passed,
+    provenanceVerified,
   });
   const markdown = renderCommercialPilotMarkdown(report);
   const json = `${JSON.stringify(report, null, 2)}\n`;
