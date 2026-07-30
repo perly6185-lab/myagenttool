@@ -430,7 +430,13 @@ export function createServerRuntimeServices({
     validateRoutineLedgerStep: businessRoutineService.validateRoutineLedgerStep,
     completeRoutineLedgerStep: businessRoutineService.completeRoutineLedgerStep,
   });
-  const businessPilotEvidenceService = createBusinessPilotEvidenceService({ state });
+  const businessPilotEvidenceService = createBusinessPilotEvidenceService({
+    state,
+    now,
+    nextId,
+    persistStateSoon,
+    store,
+  });
   releaseRoutineLedgerReservations = ledgerUpsertService.cancelRoutineReservations;
   const articleImportConfig = resolveArticleImportConfig();
   const articleImportService = createArticleImportService({
@@ -3835,6 +3841,7 @@ export function createServerRuntimeServices({
     listLedgerUpsertPreviews: ledgerUpsertService.listPreviews,
     listLedgerMutations: ledgerUpsertService.listMutations,
     collectBusinessPilotEvidence: businessPilotEvidenceService.collect,
+    verifyBusinessPilotEvidence: businessPilotEvidenceService.verify,
     materializeRoutineIssue: businessRoutineService.materializeRoutineIssue,
     createRoutineRun: businessRoutineService.createRoutineRun,
     getRoutineWorkItemExecution: businessRoutineService.getRoutineWorkItemExecution,

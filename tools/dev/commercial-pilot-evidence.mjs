@@ -96,6 +96,9 @@ async function main() {
   process.stdout.write([
     `Pilot: ${result.evidence.pilotId}`,
     `Evidence: ${result.evidence.state}`,
+    ...(result.evidence.missing?.length
+      ? [`Missing: ${result.evidence.missing.join(", ")}`]
+      : []),
     `Cases: ${result.evidence.cases.length} (${incompleteCases} incomplete)`,
     `Safety scenarios: ${result.evidence.safetyScenarios.length} (${incompleteSafety} incomplete)`,
     `Preliminary gate (quality fixture pending): ${result.report.gate.decision.toUpperCase()}`,

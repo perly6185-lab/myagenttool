@@ -129,11 +129,18 @@ pnpm eval:commercial-pilot:rehearsal
 MYAGENTTOOL_TOKEN=本地令牌 \
 WORKFLOW_MEMORY_PILOT_SPEC=/local/path/pilot-truth.json \
 pnpm eval:commercial-pilot:evidence -- \
+  --server http://127.0.0.1:4310 \
   --out-evidence .myagenttool/pilot-reports/v1.5-evidence.json \
   --out-manifest .myagenttool/pilot-reports/v1.5-manifest.json
 
+MYAGENTTOOL_TOKEN=本地令牌 \
 WORKFLOW_MEMORY_PILOT_MANIFEST=.myagenttool/pilot-reports/v1.5-manifest.json \
 pnpm eval:commercial-pilot -- \
+  --server http://127.0.0.1:4310 \
   --out-json .myagenttool/pilot-reports/v1.5.json \
   --out-md .myagenttool/pilot-reports/v1.5.md
 ```
+
+正式评估必须连接签发证据回执的同一服务；手工修改或自行拼装清单会因回执摘要
+不一致而失败。总体证据只有在案例数量、模板与结局覆盖、恢复特征和十项结构化
+安全证据均完整时才标记为 `complete`。

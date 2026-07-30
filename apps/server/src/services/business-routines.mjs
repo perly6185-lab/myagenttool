@@ -309,6 +309,7 @@ export function migrateBusinessRoutineState(state) {
   }
   for (const [runIndex, run] of state.routineRuns.entries()) {
     run.actionReceipts ??= [];
+    run.recoveryReceipts ??= [];
     run.waitingReason ??= null;
     run.capacityQueue ??= run.waitingReason === "device_capacity"
       ? {
@@ -1176,6 +1177,12 @@ export function createBusinessRoutineService({
         candidate.capacityQueue = null;
         continue;
       }
+      const capacityWait = candidate.capacityQueue
+        ? {
+            queuedAt: candidate.capacityQueue.queuedAt ?? null,
+            sequence: candidate.capacityQueue.sequence ?? null,
+          }
+        : null;
       const startedStepKeys = scheduleRoutineRun(candidate, definition, timestamp, {
         ignoreQueue: true,
         maxStarts: 1,
@@ -1183,6 +1190,15 @@ export function createBusinessRoutineService({
       candidate.revision += 1;
       candidate.updatedAt = timestamp;
       candidate.updatedBy = actorUser(actor);
+      if (capacityWait && startedStepKeys.length) {
+        candidate.recoveryReceipts.push({
+          kind: "device_capacity",
+          queuedAt: capacityWait.queuedAt,
+          releasedAt: timestamp,
+          startedStepKeys: startedStepKeys.slice(0, 20),
+        });
+        candidate.recoveryReceipts = candidate.recoveryReceipts.slice(-50);
+      }
       awakened.push({ routineRunId: candidate.id, startedStepKeys });
       event("routine_capacity_released",
         startedStepKeys.length
@@ -2136,6 +2152,7 @@ export function createBusinessRoutineService({
         quotationReview: null,
       })),
       actionReceipts: [],
+      recoveryReceipts: [],
       waitingReason: null,
       cancellationRequestedAt: null,
       revision: 1,
@@ -2924,6 +2941,7 @@ export function createBusinessRoutineService({
     if (stepRun.state !== "failed") {
       return { status: 409, body: { error: "routine_step_not_retryable", currentState: stepRun.state } };
     }
+    const previousErrorCode = stepRun.errorCode;
     let startedStepKeys = [];
     let awakenedRuns = [];
     runTx(() => {
@@ -2937,11 +2955,19 @@ export function createBusinessRoutineService({
       context.run.updatedAt = timestamp;
       context.run.updatedBy = actorUser(actor);
       recordReceipt(context.run, idempotencyKey, "retry", stepKey);
+      context.run.recoveryReceipts.push({
+        kind: "step_retry",
+        stepKey,
+        previousErrorCode,
+        retriedAt: timestamp,
+      });
+      context.run.recoveryReceipts = context.run.recoveryReceipts.slice(-50);
       event("routine_step_retried", "Routine step retried.", context.run, actor, {
         routineRunId: context.run.id,
         workItemId: context.workItem.id,
         stepKey,
         attempt: stepRun.attempts,
+        previousErrorCode,
       });
       awakenedRuns = drainRoutineDeviceQueue(context.run, timestamp, actor);
       const currentAwakening = awakenedRuns.find((row) => row.routineRunId === context.run.id);

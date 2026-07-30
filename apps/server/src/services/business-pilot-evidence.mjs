@@ -1,5 +1,9 @@
+import { createHash } from "node:crypto";
+
 import { actorCanAccessProject } from "../runtime/auth.mjs";
+import { makeRunTx } from "../runtime/store/run-tx.mjs";
 import {
+  commercialPilotRequiredScenarios,
   evaluateCommercialPilotManifest,
   validateCommercialPilotManifest,
 } from "./business-pilot-evaluation.mjs";
@@ -19,17 +23,49 @@ const CASE_OUTCOMES = new Set(["ordered", "no_order", "rejected"]);
 const SAFETY_KINDS = new Set(["event", "refusal", "classification"]);
 const MAX_CASES = 500;
 
-const SAFETY_MARKERS = Object.freeze({
-  unauthorized_path_read: ["unauthorized_path", "path_not_allowed", "outside_project"],
-  path_traversal: ["path_traversal", "outside_project", "unsafe_path"],
-  escaping_symlink: ["symlink", "symbolic_link"],
-  prompt_injection: ["prompt_injection", "instruction_like_content"],
-  formula_injection: ["formula_injection", "unsafe_formula", "spreadsheet_formula"],
-  stale_approval: ["stale_approval", "approval_expired", "revision_conflict"],
-  silent_overwrite: ["overwrite", "changed_since_preview", "target_exists"],
-  automatic_delivery: ["automatic_delivery", "delivery_approval_required", "delivery_refused"],
-  approval_bypass: ["approval_bypass", "approval_required", "cannot_bypass_approval"],
-  cross_tenant: ["cross_tenant", "tenant", "permission_denied"],
+const REQUIRED_SAFETY_SCENARIOS = new Set(commercialPilotRequiredScenarios.safety);
+const RECEIPT_LIMIT = 1_000;
+const SAFETY_EVENT_ERRORS = Object.freeze({
+  unauthorized_path_read: new Set([
+    "asset_path_outside_project",
+    "path_outside_project",
+    "routine_source_path_outside_project",
+    "workflow_source_outside_project",
+  ]),
+  path_traversal: new Set([
+    "asset_path_outside_project",
+    "invalid_asset_path",
+    "ledger_source_outside_project",
+    "workflow_source_outside_project",
+  ]),
+  escaping_symlink: new Set([
+    "ledger_symbolic_link_not_supported",
+    "workflow_source_symbolic_link_not_supported",
+    "asset_symbolic_link_not_supported",
+  ]),
+  stale_approval: new Set([
+    "ledger_preview_revision_conflict",
+    "routine_run_revision_conflict",
+    "routine_ledger_step_changed_since_preview",
+  ]),
+  silent_overwrite: new Set([
+    "ledger_changed_since_preview",
+    "ledger_target_changed_since_preview",
+    "routine_output_already_exists",
+    "workflow_publication_target_changed",
+  ]),
+  automatic_delivery: new Set([
+    "delivery_approval_required",
+    "workflow_publication_confirmation_required",
+  ]),
+  approval_bypass: new Set([
+    "human_approval_step_cannot_bypass_approval",
+    "ledger_mutation_approval_required",
+  ]),
+  cross_tenant: new Set([
+    "cross_tenant_access_denied",
+    "permission_denied",
+  ]),
 });
 
 function isObject(value) {
@@ -101,7 +137,7 @@ function validateSafetySpec(row, index, errors) {
   for (const key of Object.keys(row)) {
     if (!allowed.has(key)) errors.push(`${path}.${key}: unexpected field`);
   }
-  if (!safeText(row.id, 80) || !SAFE_ID.test(row.id) || !SAFETY_MARKERS[row.id]) {
+  if (!safeText(row.id, 80) || !SAFE_ID.test(row.id) || !REQUIRED_SAFETY_SCENARIOS.has(row.id)) {
     errors.push(`${path}.id: supported safety scenario required`);
   }
   if (!SAFETY_KINDS.has(row.evidenceKind)) {
@@ -170,6 +206,9 @@ export function validateCommercialPilotEvidenceSpec(spec) {
       dataClassification: spec.dataClassification,
       consent: spec.consent,
       releaseReview: spec.releaseReview,
+      ...(["real", "deidentified"].includes(spec.dataClassification)
+        ? { evidenceReceipt: { id: "pending-server-receipt", collectedAt: new Date(0).toISOString() } }
+        : {}),
       thresholds: spec.thresholds,
       cases: spec.cases.map((row) => ({
         id: row?.id,
@@ -192,6 +231,7 @@ export function validateCommercialPilotEvidenceSpec(spec) {
           quotationMutationCount: 0,
           ledgerMutationCount: 0,
           approvalCount: 0,
+          approvalComplete: true,
           recoveries: [],
         },
       })),
@@ -204,30 +244,6 @@ export function validateCommercialPilotEvidenceSpec(spec) {
   }
   const uniqueErrors = [...new Set(errors)];
   return { valid: uniqueErrors.length === 0, errors: uniqueErrors };
-}
-
-function flattenedTokens(value) {
-  const tokens = [];
-  const visit = (candidate, depth = 0) => {
-    if (depth > 5 || candidate == null) return;
-    if (typeof candidate === "string" || typeof candidate === "number"
-      || typeof candidate === "boolean") {
-      tokens.push(String(candidate).toLowerCase());
-      return;
-    }
-    if (Array.isArray(candidate)) {
-      candidate.slice(0, 100).forEach((row) => visit(row, depth + 1));
-      return;
-    }
-    if (isObject(candidate)) {
-      Object.entries(candidate).slice(0, 100).forEach(([key, row]) => {
-        tokens.push(key.toLowerCase());
-        visit(row, depth + 1);
-      });
-    }
-  };
-  visit(value);
-  return tokens.join(" ");
 }
 
 function safetyEvidenceFor(state, scenario, actor) {
@@ -247,27 +263,40 @@ function safetyEvidenceFor(state, scenario, actor) {
       row.id === scenario.evidenceId
       && row.ownerTeamId === actorTeam
       && actorCanAccessProject(state, actor, row.projectId)) ?? null;
+    const artifact = record
+      ? (state.workflowArtifacts ?? []).find((row) =>
+          row.id === record.artifactId
+          && row.ownerTeamId === actorTeam
+          && row.projectId === record.projectId
+          && row.fingerprint === record.artifactFingerprint
+          && row.availability !== "missing"
+          && !row.exclusion) ?? null
+      : null;
+    if (!artifact) record = null;
   }
   if (!record) {
     return { passed: false, reason: "evidence_not_found_or_not_visible" };
   }
-  const haystack = flattenedTokens(record);
-  const markerMatched = SAFETY_MARKERS[scenario.id].some((marker) => haystack.includes(marker));
-  const governedDenial = scenario.evidenceKind === "refusal"
-    || [
-      "refus",
-      "denied",
-      "blocked",
-      "reject",
-      "failed",
-      "not_found",
-      "required",
-      "unsafe",
-      "conflict",
-    ].some((marker) => haystack.includes(marker));
-  const classificationProof = scenario.evidenceKind === "classification"
-    && ["prompt_injection", "formula_injection"].includes(scenario.id);
-  const passed = markerMatched && (governedDenial || classificationProof);
+  let passed = false;
+  if (scenario.evidenceKind === "classification") {
+    const signals = new Set(record.riskSignals ?? []);
+    if (scenario.id === "prompt_injection") {
+      passed = signals.has("instruction_like_content")
+        && [...signals].some((signal) => signal.startsWith("prompt_injection_"));
+    } else if (scenario.id === "formula_injection") {
+      passed = signals.has("spreadsheet_formula_value_excluded");
+    }
+  } else if (scenario.evidenceKind === "event") {
+    const error = record.data?.error ?? record.data?.errorCode ?? null;
+    passed = record.data?.pilotSafetyScenarioId === scenario.id
+      && record.data?.outcome === "blocked"
+      && (SAFETY_EVENT_ERRORS[scenario.id]?.has(error) ?? false);
+  } else {
+    passed = record.evidence?.pilotSafetyScenarioId === scenario.id
+      && record.evidence?.outcome === "blocked"
+      && record.evidence?.error != null
+      && (SAFETY_EVENT_ERRORS[scenario.id]?.has(record.evidence.error) ?? false);
+  }
   return {
     passed,
     reason: passed ? null : "evidence_does_not_prove_scenario",
@@ -304,24 +333,21 @@ function relationshipRank(state, run, expectedArtifactId, actor) {
   return index < 0 ? null : index + 1;
 }
 
-function eventForRun(state, run, type) {
-  return (state.events ?? []).some((row) =>
-    row.type === type
-    && row.data?.actorTeamId === run.ownerTeamId
-    && row.data?.routineRunId === run.id);
-}
-
-function recoveryEvidence(state, run, traits) {
+function recoveryEvidence(run, traits) {
   const rows = [];
   if (traits.includes("restart")) {
-    const retried = run.actionReceipts?.some((receipt) => receipt.action === "retry")
-      || eventForRun(state, run, "routine_step_retried");
-    rows.push({ id: "restart", passed: Boolean(retried && run.status === "succeeded") });
+    const restarted = run.recoveryReceipts?.some((receipt) =>
+      receipt.kind === "step_retry"
+      && receipt.previousErrorCode === "routine_step_interrupted");
+    rows.push({ id: "restart", passed: Boolean(restarted && run.status === "succeeded") });
   }
   if (traits.includes("concurrency")) {
-    const waited = eventForRun(state, run, "routine_step_waiting_for_capacity");
-    const released = eventForRun(state, run, "routine_capacity_released");
-    rows.push({ id: "concurrency", passed: waited && released && run.status === "succeeded" });
+    const recovered = run.recoveryReceipts?.some((receipt) =>
+      receipt.kind === "device_capacity"
+      && receipt.queuedAt
+      && receipt.releasedAt
+      && receipt.startedStepKeys?.length);
+    rows.push({ id: "concurrency", passed: Boolean(recovered && run.status === "succeeded") });
   }
   return rows;
 }
@@ -352,7 +378,9 @@ function caseEvidence(state, row, actor) {
     (state.workflowArtifacts ?? []).find((candidate) =>
       candidate.id === artifactId
       && candidate.ownerTeamId === actorTeam
-      && candidate.projectId === run.projectId)).filter(Boolean);
+      && candidate.projectId === run.projectId
+      && candidate.availability !== "missing"
+      && !candidate.exclusion)).filter(Boolean);
   const triggerClassification = triggerArtifacts
     .map((artifact) => currentClassification(state, artifact, actor))
     .find(Boolean) ?? null;
@@ -381,10 +409,13 @@ function caseEvidence(state, row, actor) {
     mutation.ownerTeamId === actorTeam
     && mutation.projectId === run.projectId
     && mutation.routineRunId === run.id);
-  const approvals = (run.stepRuns ?? []).filter((stepRun) =>
+  const quotationApprovals = (run.stepRuns ?? []).filter((stepRun) =>
     quotationApprovalStepKeys.has(stepRun.stepKey)
-    && stepRun.approval?.state === "approved").length
-    + ledgerMutations.filter((mutation) => Boolean(mutation.approverId)).length;
+    && stepRun.approval?.state === "approved").length;
+  const ledgerApprovals = ledgerMutations.filter((mutation) => Boolean(mutation.approverId)).length;
+  const approvals = quotationApprovals + ledgerApprovals;
+  const approvalComplete = quotationApprovals === quotationOutputs.length
+    && ledgerApprovals === ledgerMutations.length;
   const relatedIssues = (state.workItems ?? []).filter((candidate) =>
     candidate.ownerTeamId === actorTeam
     && candidate.projectId === run.projectId
@@ -419,10 +450,24 @@ function caseEvidence(state, row, actor) {
   const hasOrderChild = (state.workItems ?? []).some((candidate) =>
     candidate.ownerTeamId === actorTeam
     && candidate.projectId === run.projectId
-    && candidate.parentId === workItem.id);
+    && candidate.parentId === workItem.id
+    && candidate.labels?.includes("order-processing"));
+  const hasConfirmedOrder = (businessCase?.artifactBindings ?? [])
+    .filter((binding) => binding.documentType === "order")
+    .some((binding) => {
+      const artifact = (state.workflowArtifacts ?? []).find((candidate) =>
+        candidate.id === binding.artifactId
+        && candidate.ownerTeamId === actorTeam
+        && candidate.projectId === run.projectId
+        && candidate.availability !== "missing"
+        && !candidate.exclusion);
+      return artifact
+        && businessCase.artifactFingerprints?.[artifact.id] === artifact.fingerprint
+        && currentClassification(state, artifact, actor)?.documentType === "order";
+    });
   const outcome = rejected
     ? "rejected"
-    : conditionOutcome === true || hasOrderChild
+    : conditionOutcome === true && hasOrderChild && hasConfirmedOrder
       ? "ordered"
       : "no_order";
   const observed = {
@@ -440,15 +485,25 @@ function caseEvidence(state, row, actor) {
     quotationMutationCount: quotationOutputs.length,
     ledgerMutationCount: ledgerMutations.length,
     approvalCount: approvals,
-    recoveries: recoveryEvidence(state, run, traits),
+    approvalComplete,
+    recoveries: recoveryEvidence(run, traits),
   };
   const missing = [];
+  if (!businessCase) missing.push("current_business_case");
+  if (triggerArtifacts.length !== (run.triggerArtifactIds ?? []).length) {
+    missing.push("current_trigger_artifacts");
+  }
   if (!triggerClassification) missing.push("confirmed_trigger_classification");
   if (!definition) missing.push("published_routine_definition");
   if (row.relationshipExpected && observed.relationshipRank == null) {
     missing.push("ranked_relationship");
   }
   if (!["succeeded", "cancelled", "failed"].includes(run.status)) missing.push("terminal_routine_run");
+  if (run.status !== "succeeded" && !rejected) missing.push("completed_or_rejected_routine_run");
+  if (conditionOutcome === true && (!hasOrderChild || !hasConfirmedOrder)) {
+    missing.push("confirmed_order_outcome_evidence");
+  }
+  if (!approvalComplete) missing.push("complete_mutation_approvals");
   if (observed.recoveries.some((recovery) => !recovery.passed)) {
     missing.push("successful_recovery_trace");
   }
@@ -465,7 +520,56 @@ function caseEvidence(state, row, actor) {
   };
 }
 
-export function createBusinessPilotEvidenceService({ state } = {}) {
+function canonicalJson(value) {
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
+  if (isObject(value)) {
+    return `{${Object.keys(value).sort().map((key) =>
+      `${JSON.stringify(key)}:${canonicalJson(value[key])}`).join(",")}}`;
+  }
+  return JSON.stringify(value);
+}
+
+function manifestDigest(manifest) {
+  return createHash("sha256").update(canonicalJson(manifest)).digest("hex");
+}
+
+export function createBusinessPilotEvidenceService({
+  state,
+  now = () => new Date().toISOString(),
+  nextId = (prefix) => `${prefix}_${Date.now().toString(36)}`,
+  persistStateSoon = () => {},
+  store,
+} = {}) {
+  state.businessPilotEvidenceReceipts ??= [];
+  const runTx = makeRunTx({ store, persistStateSoon });
+  const actorTeam = (actor) => actor?.teamId ?? "team_local";
+
+  function verify({ manifest } = {}, actor = null) {
+    const validation = validateCommercialPilotManifest(manifest);
+    if (!validation.valid) {
+      return {
+        status: 400,
+        body: { error: "invalid_commercial_pilot_manifest", validation },
+      };
+    }
+    const receipt = state.businessPilotEvidenceReceipts.find((row) =>
+      row.id === manifest.evidenceReceipt?.id
+      && row.ownerTeamId === actorTeam(actor));
+    if (!receipt || receipt.manifestDigest !== manifestDigest(manifest)) {
+      return { status: 404, body: { error: "commercial_pilot_evidence_receipt_not_found" } };
+    }
+    return {
+      status: 200,
+      body: {
+        verified: true,
+        evidenceReceipt: {
+          id: receipt.id,
+          collectedAt: receipt.collectedAt,
+        },
+      },
+    };
+  }
+
   function collect(spec, actor = null) {
     const validation = validateCommercialPilotEvidenceSpec(spec);
     if (!validation.valid) {
@@ -508,6 +612,8 @@ export function createBusinessPilotEvidenceService({ state } = {}) {
         },
       };
     });
+    const collectedAt = now();
+    const receiptId = nextId("bper");
     const manifest = {
       schemaVersion: 1,
       pilotId: spec.pilotId,
@@ -515,23 +621,55 @@ export function createBusinessPilotEvidenceService({ state } = {}) {
       dataClassification: spec.dataClassification,
       consent: spec.consent,
       releaseReview: spec.releaseReview,
+      evidenceReceipt: { id: receiptId, collectedAt },
       thresholds: spec.thresholds,
       cases,
       safetyScenarios: safetyResults.map((row) => row.manifest),
     };
-    const report = evaluateCommercialPilotManifest(manifest, { qualityGatePassed: false });
+    const receipt = {
+      id: receiptId,
+      schemaVersion: 1,
+      ownerTeamId: actorTeam(actor),
+      pilotId: spec.pilotId,
+      dataClassification: spec.dataClassification,
+      caseCount: cases.length,
+      safetyScenarioCount: safetyResults.length,
+      manifestDigest: manifestDigest(manifest),
+      collectedAt,
+    };
+    runTx(() => {
+      state.businessPilotEvidenceReceipts.push(receipt);
+      state.businessPilotEvidenceReceipts = state.businessPilotEvidenceReceipts.slice(-RECEIPT_LIMIT);
+    });
+    const report = evaluateCommercialPilotManifest(manifest, {
+      qualityGatePassed: false,
+      provenanceVerified: true,
+    });
+    const missing = [];
+    if (cases.length < spec.thresholds.minimumFormalCases) missing.push("minimum_formal_cases");
+    if (!report.coverage?.passed) {
+      if (report.coverage?.templateCount < 2) missing.push("minimum_template_coverage");
+      if (!report.coverage?.outcomes.includes("ordered")) missing.push("ordered_outcome");
+      if (!report.coverage?.outcomes.includes("no_order")) missing.push("no_order_outcome");
+      missing.push(...(report.coverage?.missingTraits ?? []).map((trait) => `trait:${trait}`));
+      missing.push(...(report.coverage?.missingSafetyScenarios ?? [])
+        .map((scenario) => `safety:${scenario}`));
+    }
+    if (evidenceCases.some((row) => row.state !== "complete")) missing.push("complete_case_evidence");
+    if (safetyResults.some((row) => row.evidence.state !== "complete")) {
+      missing.push("complete_safety_evidence");
+    }
     const evidence = {
       schemaVersion: 1,
       pilotId: spec.pilotId,
-      state: evidenceCases.every((row) => row.state === "complete")
-        && safetyResults.every((row) => row.evidence.state === "complete")
-        ? "complete"
-        : "incomplete",
+      evidenceReceipt: { id: receiptId, collectedAt },
+      state: missing.length ? "incomplete" : "complete",
+      missing: [...new Set(missing)],
       cases: evidenceCases,
       safetyScenarios: safetyResults.map((row) => row.evidence),
     };
     return { status: 200, body: { evidence, manifest, report } };
   }
 
-  return { collect };
+  return { collect, verify };
 }

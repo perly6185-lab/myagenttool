@@ -40,7 +40,7 @@ test("ten-case synthetic rehearsal proves the harness but cannot pass the formal
     check.key === "formal_case_count" && !check.passed));
 });
 
-test("consented deidentified cases can satisfy the formal gate", () => {
+test("consented deidentified cases require verified server provenance", () => {
   const manifest = rehearsal();
   manifest.pilotId = "deidentified-pilot";
   manifest.dataClassification = "deidentified";
@@ -49,7 +49,14 @@ test("consented deidentified cases can satisfy the formal gate", () => {
     recordedAt: "2026-07-30T00:00:00.000Z",
     scope: "Ten deidentified commercial cases approved for local V1.5 evaluation.",
   };
-  const report = evaluateCommercialPilotManifest(manifest);
+  const unverified = evaluateCommercialPilotManifest(manifest);
+  assert.equal(unverified.formalEligible, false);
+  assert.equal(unverified.gate.passed, false);
+  manifest.evidenceReceipt = {
+    id: "bper_verified",
+    collectedAt: "2026-07-30T00:01:00.000Z",
+  };
+  const report = evaluateCommercialPilotManifest(manifest, { provenanceVerified: true });
   assert.equal(report.formalEligible, true);
   assert.equal(report.metrics.formalCaseCount, 10);
   assert.equal(report.gate.passed, true, JSON.stringify(report.gate, null, 2));
@@ -82,14 +89,22 @@ test("formal gate fails closed on quality, approval, duplicate, safety, and reco
     recordedAt: "2026-07-30T00:00:00.000Z",
     scope: "Approved deidentified cases.",
   };
+  manifest.evidenceReceipt = {
+    id: "bper_regression",
+    collectedAt: "2026-07-30T00:01:00.000Z",
+  };
   manifest.cases[0].observed.duplicateLedgerRowCount = 1;
   manifest.cases[0].observed.outcome = "no_order";
   manifest.cases[1].observed.evidenceComplete = false;
   manifest.cases[1].observed.approvalCount = 0;
+  manifest.cases[1].observed.approvalComplete = false;
   manifest.cases[3].observed.recoveries[0].passed = false;
   manifest.safetyScenarios[0].passed = false;
   manifest.releaseReview.privacy = false;
-  const report = evaluateCommercialPilotManifest(manifest, { qualityGatePassed: false });
+  const report = evaluateCommercialPilotManifest(manifest, {
+    qualityGatePassed: false,
+    provenanceVerified: true,
+  });
   assert.equal(report.gate.passed, false);
   for (const key of [
     "quality_fixture_gate",
@@ -97,12 +112,31 @@ test("formal gate fails closed on quality, approval, duplicate, safety, and reco
     "case_outcome_accuracy",
     "evidence_coverage",
     "approval_coverage",
+    "approval_integrity",
     "recovery_pass_rate",
     "safety_pass_rate",
     "release_review",
   ]) {
     assert.ok(report.gate.checks.some((check) => check.key === key && !check.passed), key);
   }
+});
+
+test("one case cannot compensate for another case's missing approval", () => {
+  const manifest = rehearsal();
+  manifest.cases[0].observed.approvalCount += 1;
+  manifest.cases[1].observed.approvalCount -= 1;
+  manifest.cases[1].observed.approvalComplete = false;
+  const report = evaluateCommercialPilotManifest(manifest);
+  assert.equal(report.metrics.approvals.coverage, 1);
+  assert.equal(report.metrics.approvals.incompleteCaseCount, 1);
+  assert.equal(
+    report.gate.checks.find((check) => check.key === "approval_coverage").passed,
+    true,
+  );
+  assert.equal(
+    report.gate.checks.find((check) => check.key === "approval_integrity").passed,
+    false,
+  );
 });
 
 test("pilot report contains aggregate evidence and a plain go/no-go result", () => {

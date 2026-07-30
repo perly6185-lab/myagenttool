@@ -1380,7 +1380,7 @@ test("a confirmed order condition creates one traceable child Issue and cancella
 });
 
 test("an interrupted running step is recovered as an explicit retry after service restart", () => {
-  const { service, recreateService } = harness();
+  const { service, state, recreateService } = harness();
   const { businessCase, definition } = createCaseAndDefinition(service);
   const materialized = service.materializeRoutineIssue({
     routineDefinitionId: definition.id,
@@ -1410,10 +1410,19 @@ test("an interrupted running step is recovered as an explicit retry after servic
   }, ACTOR_A).body.execution;
   assert.equal(retried.steps.find((step) => step.key === "extract").run.state, "running");
   assert.equal(retried.steps.find((step) => step.key === "extract").run.attempts, 2);
+  assert.deepEqual(
+    state.routineRuns.find((run) => run.id === retried.run.id).recoveryReceipts,
+    [{
+      kind: "step_retry",
+      stepKey: "extract",
+      previousErrorCode: "routine_step_interrupted",
+      retriedAt: "2026-07-29T00:00:00.000Z",
+    }],
+  );
 });
 
 test("device concurrency limits independent read steps across routine Issues", () => {
-  const { service } = harness();
+  const { service, state } = harness();
   const { businessCase } = createCaseAndDefinition(service);
   let definition = service.createRoutineDefinition({
     projectId: "prj_a",
@@ -1485,6 +1494,15 @@ test("device concurrency limits independent read steps across routine Issues", (
   assert.equal(secondExecution.steps.filter((step) => step.run.state === "running").length, 1);
   assert.equal(secondExecution.run.waitingReason, null);
   assert.equal(secondExecution.run.capacity.active, 2);
+  assert.deepEqual(
+    state.routineRuns.find((run) => run.id === secondExecution.run.id).recoveryReceipts,
+    [{
+      kind: "device_capacity",
+      queuedAt: "2026-07-29T00:00:00.000Z",
+      releasedAt: "2026-07-29T00:00:00.000Z",
+      startedStepKeys: ["extract"],
+    }],
+  );
 });
 
 test("five inquiry runs wait fairly, expose queue positions, release on cancel, and recover after restart", () => {
@@ -1721,7 +1739,7 @@ test("routine ledger steps cannot bypass a previewed and audited mutation", () =
   assert.equal(completed.execution.run.status, "succeeded");
 });
 
-test("all V1.4 collections survive persistence alongside V1.3 records", () => {
+test("V1.4 collections and pilot evidence receipts survive persistence", () => {
   const root = join(tmpdir(), `business-routine-persistence-${Date.now()}`);
   const projectPath = join(root, "project");
   const statePath = join(root, "state.json");
@@ -1736,6 +1754,12 @@ test("all V1.4 collections survive persistence alongside V1.3 records", () => {
       ownerTeamId: "team_local",
       projectId: first.defaultProject.id,
       title: "Existing V1.3 local Issue",
+    });
+    first.state.businessPilotEvidenceReceipts.push({
+      id: "bper_persisted",
+      ownerTeamId: "team_local",
+      manifestDigest: "a".repeat(64),
+      collectedAt: now(),
     });
     for (const [index, key] of businessRoutineCollectionKeys.entries()) {
       first.state[key].push({
@@ -1768,6 +1792,7 @@ test("all V1.4 collections survive persistence alongside V1.3 records", () => {
     }).restorePersistentState();
     assert.equal(second.state.workflowProfiles[0].id, "wfp_old");
     assert.equal(second.state.workItems[0].id, "lwi_old");
+    assert.equal(second.state.businessPilotEvidenceReceipts[0].id, "bper_persisted");
     for (const [index, key] of businessRoutineCollectionKeys.entries()) {
       assert.equal(second.state[key][0].id, `v14_${index}`, `${key} restores`);
     }
