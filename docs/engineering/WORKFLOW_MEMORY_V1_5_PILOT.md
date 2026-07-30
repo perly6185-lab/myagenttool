@@ -21,9 +21,10 @@
 扫描 PDF、图片 OCR、音视频、多模态内容和 Office 模板保存性生成不属于 V1.5
 正式保证。Markdown 报价模板仍是唯一启用的受治理生成格式。
 
-## 清单格式
+## 真值清单格式
 
-清单顶层只允许下列字段，额外字段会失败关闭：
+正式采集使用“真值清单”。它只允许填写授权信息、人工确认的期望结果和系统记录 ID；
+不允许填写 `observed` 或任何 `passed` 字段。额外字段会失败关闭：
 
 ```json
 {
@@ -58,40 +59,40 @@
 }
 ```
 
-每个案例记录模板、场景标签、人工真值和聚合观察结果。观察结果只记录数字、
-布尔值和安全标识，不复制原始文件内容：
+每个案例引用已经在产品中运行完成的本地任务。`relationshipArtifactId` 是人工确认
+应当关联的目标文档 ID；没有预期关系时省略该字段：
 
 ```json
 {
   "id": "case-01",
+  "workItemId": "wit_example",
   "templateId": "quotation-template-a",
   "traits": ["missing_fact"],
   "expectedDocumentRole": "inquiry",
   "relationshipExpected": true,
+  "relationshipArtifactId": "wfa_expected_quotation",
   "expectedOutcome": "no_order",
-  "observed": {
-    "documentRole": "inquiry",
-    "relationshipRank": 1,
-    "correctionCount": 1,
-    "completed": true,
-    "duplicateIssueCount": 0,
-    "duplicateBusinessCaseCount": 0,
-    "duplicateQuotationCount": 0,
-    "duplicateLedgerRowCount": 0,
-    "quotationMutationCount": 1,
-    "ledgerMutationCount": 2,
-    "approvalCount": 3,
-    "recoveries": [
-      { "id": "service-restart", "passed": true }
-    ]
-  }
 }
 ```
 
-可从
+安全场景必须引用产品已经产生的事件、拒绝或文档分类记录。系统会检查引用是否属于
+当前团队且内容是否真正证明对应防护，不能通过手写布尔值制造通过结果：
+
+```json
+{
+  "id": "prompt_injection",
+  "evidenceKind": "classification",
+  "evidenceId": "bdc_example"
+}
+```
+
+系统从这些 ID 自动生成正式评测清单中的聚合观察值，包括角色、关系排名、纠正、
+完成、重复 Issue/Business Case/报价/台账行、审批和恢复。输出不包含绝对路径、
+原文、Prompt、Secret 或文件哈希。
+
+旧的人工观察清单仍仅用于仓库内固定合成演练。可从
 `apps/server/test/fixtures/workflow-memory/commercial-pilot-v1.5-rehearsal.json`
-复制完整的十案例结构，但必须保留其 `synthetic` 标记，除非资料所有者完成了真实
-或脱敏资料的授权确认。修改标记不等于获得授权。
+查看评测器结构，但不得把它改名或改标记后作为正式证据。修改标记不等于获得授权。
 
 ## 执行
 
@@ -101,10 +102,26 @@
 pnpm eval:commercial-pilot:rehearsal
 ```
 
-正式试运行：
+正式试运行先从正在运行的本地服务自动收集证据。认证令牌只通过环境变量传入，
+不要放进命令参数或真值清单：
 
 ```bash
-WORKFLOW_MEMORY_PILOT_MANIFEST=/absolute/local/path/pilot-manifest.json \
+MYAGENTTOOL_TOKEN=本地令牌 \
+WORKFLOW_MEMORY_PILOT_SPEC=/absolute/local/path/pilot-truth.json \
+pnpm eval:commercial-pilot:evidence -- \
+  --server http://127.0.0.1:4310 \
+  --out-evidence .myagenttool/pilot-reports/v1.5-evidence.json \
+  --out-manifest .myagenttool/pilot-reports/v1.5-manifest.json
+```
+
+证据状态为 `incomplete` 时，命令退出 `1`，输出会按案例和安全场景列出缺失原因。
+本机以外的服务必须使用 HTTPS。采集接口的初步报告固定把质量夹具视为未完成，
+因此不会单独给出正式 Go。
+
+证据完整后再运行包含固定质量夹具的最终门禁：
+
+```bash
+WORKFLOW_MEMORY_PILOT_MANIFEST=.myagenttool/pilot-reports/v1.5-manifest.json \
 pnpm eval:commercial-pilot -- \
   --out-json .myagenttool/pilot-reports/v1.5.json \
   --out-md .myagenttool/pilot-reports/v1.5.md
@@ -132,6 +149,8 @@ JSON 和 Markdown 报告只包含聚合指标、门禁结果和字段错误。�
 | 未知覆盖 | 应为未知的资料仍保持未知 | 强制猜测数为 0 |
 | 纠正率 | 至少发生一次人工纠正的案例比例 | 如实报告 |
 | 完成率 | 达到明确结束状态的案例比例 | 如实报告 |
+| 证据覆盖 | 每个案例所需运行、分类、关系和恢复记录完整 | 100% |
+| 业务结局一致性 | 系统分支与人工确认的订单/无订单/拒绝结果一致 | 100% |
 | 重复率 | 重复 Issue、Business Case、报价或台账行总数 | 0 |
 | 审批覆盖 | 报价和台账修改对应的审批数 / 修改数 | 100% |
 | 恢复通过率 | 重放、重启、移动、取消及并发恢复结果 | 100% |
@@ -148,7 +167,7 @@ JSON 和 Markdown 报告只包含聚合指标、门禁结果和字段错误。�
 5. 在“任务”页使用“处理询价”主按钮，不需要理解执行器、锁或哈希。
 6. 对每次报价和台账变化分别查看预览并确认。
 7. 有已确认订单时选择订单证据；否则明确选择“尚未收到订单”。
-8. 记录是否完成、纠正次数、重复结果和恢复结果到本地清单。
+8. 在真值清单中只选择任务、模板、期望角色、关系和结果；运行结果由系统自动采集。
 
 等待设备容量或同一台账前序写入时，任务应显示普通业务语言和排队位置。取消一个
 任务不会取消其他询价；服务重启后等待队列会从持久状态恢复。

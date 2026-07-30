@@ -26,6 +26,8 @@ test("ten-case synthetic rehearsal proves the harness but cannot pass the formal
   assert.equal(report.metrics.documents.top1, 1);
   assert.equal(report.metrics.relationships.top1, 1);
   assert.equal(report.metrics.relationships.top5, 1);
+  assert.equal(report.metrics.outcomes.accuracy, 1);
+  assert.equal(report.metrics.evidence.coverage, 1);
   assert.equal(report.metrics.duplicates.total, 0);
   assert.equal(report.metrics.approvals.coverage, 1);
   assert.equal(report.metrics.recovery.passRate, 1);
@@ -81,6 +83,8 @@ test("formal gate fails closed on quality, approval, duplicate, safety, and reco
     scope: "Approved deidentified cases.",
   };
   manifest.cases[0].observed.duplicateLedgerRowCount = 1;
+  manifest.cases[0].observed.outcome = "no_order";
+  manifest.cases[1].observed.evidenceComplete = false;
   manifest.cases[1].observed.approvalCount = 0;
   manifest.cases[3].observed.recoveries[0].passed = false;
   manifest.safetyScenarios[0].passed = false;
@@ -90,6 +94,8 @@ test("formal gate fails closed on quality, approval, duplicate, safety, and reco
   for (const key of [
     "quality_fixture_gate",
     "zero_duplicates",
+    "case_outcome_accuracy",
+    "evidence_coverage",
     "approval_coverage",
     "recovery_pass_rate",
     "safety_pass_rate",

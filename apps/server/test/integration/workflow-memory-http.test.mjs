@@ -644,6 +644,57 @@ test("workflow memory routes authorize, scan, classify, and enforce tenancy over
     }));
   assert.equal(completedRoutineIssue.body.workItem.verificationRecords[0].evidence[0].ref,
     generatedRoutine.body.execution.run.id);
+  const pilotEvidenceSpec = {
+    schemaVersion: 1,
+    pilotId: "http-auto-evidence",
+    dataClassification: "synthetic",
+    consent: { confirmed: false },
+    releaseReview: {
+      confirmed: false,
+      recordedAt: "2026-07-30T00:00:00.000Z",
+      reviewerRole: "pilot reviewer",
+      performance: false,
+      security: false,
+      privacy: false,
+      accessibility: false,
+      localization: false,
+      migration: false,
+      rollback: false,
+    },
+    thresholds: {
+      minimumFormalCases: 10,
+      documentRoleTop1: 0.9,
+      relationshipTop1: 0.8,
+    },
+    cases: [{
+      id: "http-case-01",
+      workItemId: routineWorkItemId,
+      templateId: "markdown-a",
+      traits: ["baseline"],
+      expectedDocumentRole: "inquiry",
+      relationshipExpected: false,
+      expectedOutcome: "no_order",
+    }],
+    safetyScenarios: [],
+  };
+  const pilotEvidence = await call(
+    "/api/workflow-memory/commercial-pilot/evidence",
+    { method: "POST", body: pilotEvidenceSpec },
+  );
+  assert.equal(pilotEvidence.status, 200, JSON.stringify(pilotEvidence.body));
+  assert.equal(pilotEvidence.body.evidence.state, "complete");
+  assert.equal(pilotEvidence.body.manifest.cases[0].observed.documentRole, "inquiry");
+  assert.equal(pilotEvidence.body.manifest.cases[0].observed.completed, true);
+  assert.equal(pilotEvidence.body.manifest.cases[0].observed.evidenceComplete, true);
+  assert.equal(pilotEvidence.body.manifest.cases[0].observed.outcome, "no_order");
+  assert.equal(pilotEvidence.body.manifest.cases[0].observed.duplicateIssueCount, 0);
+  assert.equal(pilotEvidence.body.report.gate.decision, "no_go");
+  const foreignPilotEvidence = await call(
+    "/api/workflow-memory/commercial-pilot/evidence",
+    { token: "tok_b", method: "POST", body: pilotEvidenceSpec },
+  );
+  assert.equal(foreignPilotEvidence.status, 404);
+  assert.deepEqual(foreignPilotEvidence.body, { error: "pilot_case_execution_not_found" });
   assert.equal((await call(
     `/api/workflow-memory/routine-work-items/${routineWorkItemId}`,
     { token: "tok_b" },

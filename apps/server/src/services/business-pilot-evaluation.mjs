@@ -71,6 +71,8 @@ const ALLOWED_OBSERVED_KEYS = new Set([
   "relationshipRank",
   "correctionCount",
   "completed",
+  "evidenceComplete",
+  "outcome",
   "duplicateIssueCount",
   "duplicateBusinessCaseCount",
   "duplicateQuotationCount",
@@ -266,6 +268,12 @@ function validateCase(row, index, errors) {
   if (typeof row.observed.completed !== "boolean") {
     errors.push(`${path}.observed.completed: boolean required`);
   }
+  if (typeof row.observed.evidenceComplete !== "boolean") {
+    errors.push(`${path}.observed.evidenceComplete: boolean required`);
+  }
+  if (!CASE_OUTCOMES.has(row.observed.outcome)) {
+    errors.push(`${path}.observed.outcome: ordered, no_order, or rejected required`);
+  }
   if (!Array.isArray(row.observed.recoveries) || row.observed.recoveries.length > 50) {
     errors.push(`${path}.observed.recoveries: array with at most 50 entries required`);
   } else {
@@ -347,6 +355,8 @@ function emptyMetrics() {
     relationships: { sampleCount: 0, top1: null, top5: null },
     correction: { correctedCaseCount: 0, correctionCount: 0, rate: null },
     completion: { completed: 0, rate: null },
+    evidence: { complete: 0, coverage: null },
+    outcomes: { correct: 0, accuracy: null },
     duplicates: {
       issues: 0,
       businessCases: 0,
@@ -397,6 +407,11 @@ function calculateMetrics(manifest, formalEligible) {
   metrics.correction.rate = ratio(metrics.correction.correctedCaseCount, cases.length);
   metrics.completion.completed = cases.filter((row) => row.observed.completed).length;
   metrics.completion.rate = ratio(metrics.completion.completed, cases.length);
+  metrics.evidence.complete = cases.filter((row) => row.observed.evidenceComplete).length;
+  metrics.evidence.coverage = ratio(metrics.evidence.complete, cases.length);
+  metrics.outcomes.correct = cases.filter((row) =>
+    row.observed.outcome === row.expectedOutcome).length;
+  metrics.outcomes.accuracy = ratio(metrics.outcomes.correct, cases.length);
 
   for (const row of cases) {
     metrics.duplicates.issues += row.observed.duplicateIssueCount;
@@ -526,6 +541,24 @@ export function evaluateCommercialPilotManifest(manifest, { qualityGatePassed = 
       passed: metrics.documents.forcedGuessCount === 0,
     },
     {
+      key: "case_outcome_accuracy",
+      actual: metrics.outcomes.accuracy,
+      threshold: 1,
+      passed: metrics.outcomes.accuracy === 1,
+    },
+    {
+      key: "case_completion_rate",
+      actual: metrics.completion.rate,
+      threshold: 1,
+      passed: metrics.completion.rate === 1,
+    },
+    {
+      key: "evidence_coverage",
+      actual: metrics.evidence.coverage,
+      threshold: 1,
+      passed: metrics.evidence.coverage === 1,
+    },
+    {
       key: "zero_duplicates",
       actual: metrics.duplicates.total,
       threshold: 0,
@@ -612,6 +645,8 @@ export function renderCommercialPilotMarkdown(report) {
     `- Forced unknown guesses: ${report.metrics.documents.forcedGuessCount}`,
     `- Correction rate: ${metric(report.metrics.correction.rate)}`,
     `- Completion rate: ${metric(report.metrics.completion.rate)}`,
+    `- Evidence coverage: ${metric(report.metrics.evidence.coverage)}`,
+    `- Business outcome accuracy: ${metric(report.metrics.outcomes.accuracy)}`,
     `- Duplicate business objects or rows: ${report.metrics.duplicates.total}`,
     `- Approval coverage: ${metric(report.metrics.approvals.coverage)}`,
     `- Recovery pass rate: ${metric(report.metrics.recovery.passRate)}`,

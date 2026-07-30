@@ -213,6 +213,7 @@
     "eval:real": "node tools/dev/eval-real-run.mjs",
     "eval:trend": "node tools/dev/eval-real-run.mjs --trend",
     "eval:commercial-routine": "node tools/dev/commercial-routine-eval.mjs",
+    "eval:commercial-pilot:evidence": "node tools/dev/commercial-pilot-evidence.mjs",
     "eval:commercial-pilot": "node tools/dev/commercial-pilot-eval.mjs",
     "eval:commercial-pilot:rehearsal": "node tools/dev/commercial-pilot-eval.mjs --rehearsal",
     "ai:feedback-triage": "node tools/ai/src/index.mjs feedback-triage",

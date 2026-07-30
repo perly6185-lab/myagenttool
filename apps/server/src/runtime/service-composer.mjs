@@ -66,6 +66,7 @@ import { createDecisionSoftClaimService } from "../services/decision-soft-claims
 import { createIssueClaimService } from "../services/issue-claims.mjs";
 import { createWorkItemService } from "../services/work-items.mjs";
 import { createBusinessRoutineService } from "../services/business-routines.mjs";
+import { createBusinessPilotEvidenceService } from "../services/business-pilot-evidence.mjs";
 import { createLedgerUpsertService } from "../services/ledger-upserts.mjs";
 import { createBusinessDocumentIntelligenceService } from "../services/business-document-intelligence.mjs";
 import { createBusinessCaseDiscoveryService } from "../services/business-case-discovery.mjs";
@@ -429,6 +430,7 @@ export function createServerRuntimeServices({
     validateRoutineLedgerStep: businessRoutineService.validateRoutineLedgerStep,
     completeRoutineLedgerStep: businessRoutineService.completeRoutineLedgerStep,
   });
+  const businessPilotEvidenceService = createBusinessPilotEvidenceService({ state });
   releaseRoutineLedgerReservations = ledgerUpsertService.cancelRoutineReservations;
   const articleImportConfig = resolveArticleImportConfig();
   const articleImportService = createArticleImportService({
@@ -3832,6 +3834,7 @@ export function createServerRuntimeServices({
     commitLedgerUpsertPreview: ledgerUpsertService.commitPreview,
     listLedgerUpsertPreviews: ledgerUpsertService.listPreviews,
     listLedgerMutations: ledgerUpsertService.listMutations,
+    collectBusinessPilotEvidence: businessPilotEvidenceService.collect,
     materializeRoutineIssue: businessRoutineService.materializeRoutineIssue,
     createRoutineRun: businessRoutineService.createRoutineRun,
     getRoutineWorkItemExecution: businessRoutineService.getRoutineWorkItemExecution,

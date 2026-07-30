@@ -126,7 +126,13 @@ POST /api/workflow-memory/intake-observations/{observationId}/accept
 ```bash
 pnpm eval:commercial-pilot:rehearsal
 
-WORKFLOW_MEMORY_PILOT_MANIFEST=/local/path/pilot-manifest.json \
+MYAGENTTOOL_TOKEN=本地令牌 \
+WORKFLOW_MEMORY_PILOT_SPEC=/local/path/pilot-truth.json \
+pnpm eval:commercial-pilot:evidence -- \
+  --out-evidence .myagenttool/pilot-reports/v1.5-evidence.json \
+  --out-manifest .myagenttool/pilot-reports/v1.5-manifest.json
+
+WORKFLOW_MEMORY_PILOT_MANIFEST=.myagenttool/pilot-reports/v1.5-manifest.json \
 pnpm eval:commercial-pilot -- \
   --out-json .myagenttool/pilot-reports/v1.5.json \
   --out-md .myagenttool/pilot-reports/v1.5.md
