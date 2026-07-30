@@ -623,9 +623,9 @@ describe("TaskView local work items", () => {
     expect(screen.getByText("Execution: Claimed")).toBeTruthy();
     expect(screen.getByText("GitHub #42 · Conflict")).toBeTruthy();
     expect(screen.getByText("Conflicting fields: title")).toBeTruthy();
-    expect(screen.getByText("Tests pass · 321 tests")).toBeTruthy();
-    expect(screen.getByText("test · All suites")).toBeTruthy();
-    expect(screen.getByText("run: run:test-1")).toBeTruthy();
+    expect(await screen.findByText("Tests pass · 321 tests")).toBeTruthy();
+    expect(await screen.findByText("test · All suites")).toBeTruthy();
+    expect(await screen.findByText("run: run:test-1")).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Keep local" }));
     await waitFor(() => expect(mocks.syncWorkItemGithubIssue).toHaveBeenCalledWith(
       "lwi_1", { expectedRevision: 1, direction: "resolve_local" },

@@ -403,7 +403,55 @@ pnpm --filter @myagenttool/server typecheck
 pnpm --filter @myagenttool/web typecheck
 ```
 
-后续阶段由 #1553–#1556 负责一键执行、CSV/XLSX 台账更新、普通用户入口优化和发布评测门禁。
+### 阶段 5：Routine 本地 Issue 与可见条件执行
+
+关联 Issue：[#1553](https://github.com/perly6185-lab/myagenttool/issues/1553)。
+
+- 同一租户、Routine 版本、业务编号和触发文件指纹只物化一个本地 Issue；重复扫描、重复点击和重试返回原任务。Issue 与运行固定工作类型版本、业务案例、触发证据和必做验收项。
+- 运行保存步骤尝试次数、结果引用、审批结论、条件结论、等待原因、取消请求和最近 100 个动作回执。所有用户动作要求显式幂等键和运行修订号；同一个键只可重放同一个动作。
+- 调度器只启动依赖已完成或跳过的步骤。提取与检索可以在同一设备的并发上限内并行；生成、台账和创建任务等变更步骤顺序启动。
+- 人工确认和业务条件使用独立等待状态，不能通过通用步骤完成接口、重试、并发请求或服务重启绕过。
+- “未收到订单”会完成条件并跳过其后续分支，不创建订单任务；只有已确认或已修正、文件指纹仍有效的订单才能生成一个带父任务、案例和证据绑定的订单子 Issue。
+- 取消将所有未结束步骤置为终态，之后不能重新开始。服务重启时未完成的运行步骤会转为明确的中断失败，用户可从该步骤重试，已完成步骤不会重复执行。
+- 普通用户在该类本地 Issue 首屏只看到一个“处理询价”主操作，以及编号步骤、进度、审批、订单判断、失败重试和取消。通用工作树/Auto Run 主操作不会与岗位按钮竞争。
+- HTTP 覆盖物化、查看、开始、取消、完成、重试、审批和条件判断，并保持项目、来源和租户边界。
+
+阶段 5 重点回归：
+
+```bash
+node --test apps/server/test/business-routines.test.mjs
+node --test apps/server/test/integration/workflow-memory-http.test.mjs
+pnpm --filter @myagenttool/web exec vitest run src/features/tasks/routine-work-panel.test.tsx
+pnpm --filter @myagenttool/protocol typecheck
+pnpm --filter @myagenttool/server typecheck
+pnpm --filter @myagenttool/web typecheck
+```
+
+### 阶段 6：受治理的 CSV/XLSX 台账更新
+
+关联 Issue：[#1554](https://github.com/perly6185-lab/myagenttool/issues/1554)。
+
+- `LedgerDefinition` 固定授权来源内相对路径、CSV/XLSX 格式、工作表或命名表格、表头行、稳定业务键、备用键、字段映射、必填字段、格式保留和写入审批策略。定义先创建为草稿，只有真实文件、扩展名、表头、工作表/表格和映射全部通过验证后才能启用。
+- 询价、报价和订单台账分别使用询价号、报价号和订单号作为首选稳定键；无首选键时只有配置的备用字段全部存在才会组合成键。相同键和相同内容是 `no_op`，内容变化只更新唯一目标行，重复键会在写入前阻断。
+- 预览绑定文件 SHA-256、业务键、目标行、动作和字段值，15 分钟后失效。界面只显示新增/更新/无需修改、行号和变更单元格，不暴露无关行、绝对路径、临时文件、锁或工作簿内部结构。
+- 需要审批的预览必须由当前操作者显式确认。提交会再次核对预览修订、Routine 步骤修订、定义状态、授权来源、真实路径、文件哈希和排他文件锁；并发编辑、来源撤销、符号链接逃逸、过期预览或缺失审批都会拒绝写入。
+- CSV 保留 BOM、分隔符策略、换行风格和所有无关字段；XLSX 更新保留无关工作表、公式、样式和用户内容，支持工作表区域及显式命名 Table。无法安全保留的公式行插入、映射公式覆盖和未指定的工作表 Table 会在预览阶段阻断。
+- 变更通过同目录临时文件、文件 `fsync` 和原子替换提交，不产生半写入目标。残留锁超过恢复窗口后可安全接管；若进程在原子替换后、审计落盘前中断，重试会识别预览中的目标哈希并补齐审计，不重复增加行。
+- 字符串型公式输入、控制字符映射、绝对路径、目录越界、逃逸链接、超大文件、重复表头和重复业务键均会拒绝。订单台账还必须引用当前业务案例内已确认或已修正的订单证据。
+- 审计保存变更人/审批人、前后文件哈希、变更字段、业务键、来源文件、Routine 版本、运行和步骤；不保存无关台账行。`ledger_upsert` 步骤不能再通过通用“标记完成”接口绕过，只有提交了匹配的审计变更后才会自动完成并继续调度。
+
+阶段 6 重点回归：
+
+```bash
+node --test apps/server/test/ledger-upserts.test.mjs apps/server/test/business-routines.test.mjs
+node --test apps/server/test/integration/workflow-memory-http.test.mjs
+pnpm --filter @myagenttool/web exec vitest run src/features/tasks/routine-work-panel.test.tsx
+pnpm --filter @myagenttool/protocol typecheck
+pnpm --filter @myagenttool/server typecheck
+pnpm --filter @myagenttool/web typecheck
+```
+
+后续阶段由 #1555–#1556 负责普通用户入口优化和发布评测门禁。
 
 ## MVP 之后
 

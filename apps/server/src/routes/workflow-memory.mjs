@@ -40,6 +40,21 @@ export async function handleWorkflowMemoryRoutes({
   createBusinessRoutineDefinitionVersion,
   publishBusinessRoutineDefinition,
   transitionBusinessRoutineDefinition,
+  createLedgerDefinition,
+  listLedgerDefinitions,
+  activateLedgerDefinition,
+  disableLedgerDefinition,
+  previewLedgerUpsert,
+  commitLedgerUpsertPreview,
+  listLedgerMutations,
+  materializeRoutineIssue,
+  getRoutineWorkItemExecution,
+  startRoutineWorkItem,
+  completeRoutineStep,
+  retryRoutineStep,
+  decideRoutineApproval,
+  decideRoutineCondition,
+  cancelRoutineWorkItem,
   pairProposals,
   listCases,
   createCase,
@@ -175,6 +190,88 @@ export async function handleWorkflowMemoryRoutes({
     return true;
   }
 
+  if (url.pathname === "/api/workflow-memory/ledger-definitions") {
+    let result;
+    if (req.method === "GET") {
+      result = listLedgerDefinitions({ sourceId: url.searchParams.get("sourceId") }, actor);
+    } else if (req.method === "POST") {
+      const body = await readJson(req);
+      result = createLedgerDefinition({
+        projectId: body?.projectId,
+        sourceId: body?.sourceId,
+        name: body?.name,
+        documentType: body?.documentType,
+        format: body?.format,
+        relativePath: body?.relativePath,
+        sheet: body?.sheet,
+        table: body?.table,
+        headerRow: body?.headerRow,
+        businessKeyField: body?.businessKeyField,
+        fallbackBusinessKeyFields: body?.fallbackBusinessKeyFields,
+        fieldMappings: body?.fieldMappings,
+        requiredFields: body?.requiredFields,
+        formattingPolicy: body?.formattingPolicy,
+        writePolicy: body?.writePolicy,
+      }, actor);
+    } else return false;
+    sendJson(res, result.status, result.body);
+    return true;
+  }
+
+  if (url.pathname === "/api/workflow-memory/ledger-mutations" && req.method === "GET") {
+    const result = listLedgerMutations({
+      ledgerDefinitionId: url.searchParams.get("ledgerDefinitionId"),
+      routineRunId: url.searchParams.get("routineRunId"),
+    }, actor);
+    sendJson(res, result.status, result.body);
+    return true;
+  }
+
+  const ledgerDefinitionAction = url.pathname.match(
+    /^\/api\/workflow-memory\/ledger-definitions\/([^/]+)\/(activate|disable|preview-upsert)$/,
+  );
+  if (ledgerDefinitionAction && req.method === "POST") {
+    const body = await readJson(req);
+    const ledgerDefinitionId = decodeURIComponent(ledgerDefinitionAction[1]);
+    let result;
+    if (ledgerDefinitionAction[2] === "activate") {
+      result = await activateLedgerDefinition({
+        ledgerDefinitionId,
+        expectedRevision: body?.expectedRevision,
+      }, actor);
+    } else if (ledgerDefinitionAction[2] === "disable") {
+      result = disableLedgerDefinition({
+        ledgerDefinitionId,
+        expectedRevision: body?.expectedRevision,
+      }, actor);
+    } else {
+      result = await previewLedgerUpsert({
+        ledgerDefinitionId,
+        businessKey: body?.businessKey,
+        fields: body?.fields,
+        sourceEvidence: body?.sourceEvidence,
+        routineRunId: body?.routineRunId,
+        routineStepKey: body?.routineStepKey,
+      }, actor);
+    }
+    sendJson(res, result.status, result.body);
+    return true;
+  }
+
+  const ledgerPreviewCommit = url.pathname.match(
+    /^\/api\/workflow-memory\/ledger-upsert-previews\/([^/]+)\/commit$/,
+  );
+  if (ledgerPreviewCommit && req.method === "POST") {
+    const body = await readJson(req);
+    const result = await commitLedgerUpsertPreview({
+      previewId: decodeURIComponent(ledgerPreviewCommit[1]),
+      expectedRevision: body?.expectedRevision,
+      approved: body?.approved,
+    }, actor);
+    sendJson(res, result.status, result.body);
+    return true;
+  }
+
   const artifactBusinessAnalysis = url.pathname.match(
     /^\/api\/workflow-memory\/artifacts\/([^/]+)\/analyze-business-document$/,
   );
@@ -225,6 +322,82 @@ export async function handleWorkflowMemoryRoutes({
     const result = createRoutineDraft({
       discoveryCandidateId: decodeURIComponent(routineCandidateDraft[1]),
     }, actor);
+    sendJson(res, result.status, result.body);
+    return true;
+  }
+
+  const routineIssueMaterialization = url.pathname.match(
+    /^\/api\/workflow-memory\/business-cases\/([^/]+)\/materialize-routine$/,
+  );
+  if (routineIssueMaterialization && req.method === "POST") {
+    const body = await readJson(req);
+    const result = materializeRoutineIssue({
+      businessCaseId: decodeURIComponent(routineIssueMaterialization[1]),
+      routineDefinitionId: body?.routineDefinitionId,
+      triggerArtifactIds: body?.triggerArtifactIds,
+    }, actor);
+    sendJson(res, result.status, result.body);
+    return true;
+  }
+
+  const routineWorkItem = url.pathname.match(
+    /^\/api\/workflow-memory\/routine-work-items\/([^/]+)$/,
+  );
+  if (routineWorkItem && req.method === "GET") {
+    const result = getRoutineWorkItemExecution({
+      workItemId: decodeURIComponent(routineWorkItem[1]),
+    }, actor);
+    sendJson(res, result.status, result.body);
+    return true;
+  }
+
+  const routineWorkItemAction = url.pathname.match(
+    /^\/api\/workflow-memory\/routine-work-items\/([^/]+)\/(start|cancel)$/,
+  );
+  if (routineWorkItemAction && req.method === "POST") {
+    const body = await readJson(req);
+    const input = {
+      workItemId: decodeURIComponent(routineWorkItemAction[1]),
+      expectedRevision: body?.expectedRevision,
+      idempotencyKey: body?.idempotencyKey,
+    };
+    const result = routineWorkItemAction[2] === "start"
+      ? startRoutineWorkItem(input, actor)
+      : cancelRoutineWorkItem(input, actor);
+    sendJson(res, result.status, result.body);
+    return true;
+  }
+
+  const routineStepAction = url.pathname.match(
+    /^\/api\/workflow-memory\/routine-work-items\/([^/]+)\/steps\/([^/]+)\/(complete|retry|approval|condition)$/,
+  );
+  if (routineStepAction && req.method === "POST") {
+    const body = await readJson(req);
+    const input = {
+      workItemId: decodeURIComponent(routineStepAction[1]),
+      stepKey: decodeURIComponent(routineStepAction[2]),
+      expectedRevision: body?.expectedRevision,
+      idempotencyKey: body?.idempotencyKey,
+    };
+    let result;
+    if (routineStepAction[3] === "complete") {
+      result = completeRoutineStep({
+        ...input,
+        succeeded: body?.succeeded,
+        errorCode: body?.errorCode,
+        outputRefs: body?.outputRefs,
+      }, actor);
+    } else if (routineStepAction[3] === "retry") {
+      result = retryRoutineStep(input, actor);
+    } else if (routineStepAction[3] === "approval") {
+      result = decideRoutineApproval({ ...input, approved: body?.approved }, actor);
+    } else {
+      result = decideRoutineCondition({
+        ...input,
+        outcome: body?.outcome,
+        triggerArtifactIds: body?.triggerArtifactIds,
+      }, actor);
+    }
     sendJson(res, result.status, result.body);
     return true;
   }

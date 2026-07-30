@@ -19,6 +19,7 @@ const ACTOR_B = { userId: "usr_b", teamId: "team_b" };
 function harness() {
   let id = 0;
   const events = [];
+  const nextId = (prefix) => `${prefix}_${++id}`;
   const state = {
     projects: [
       { id: "prj_a", ownerTeamId: "team_a" },
@@ -41,15 +42,40 @@ function harness() {
         id: "wfa_foreign", ownerTeamId: "team_b", projectId: "prj_b", sourceId: "wfs_b",
         availability: "available", fingerprint: "c".repeat(64),
       },
+      {
+        id: "wfa_order", ownerTeamId: "team_a", projectId: "prj_a", sourceId: "wfs_a",
+        availability: "available", fingerprint: "d".repeat(64),
+      },
     ],
+    devices: [{ id: "dev_a", ownerTeamId: "team_a", maxConcurrency: 2 }],
+    workItems: [],
   };
-  const service = createBusinessRoutineService({
+  const createWorkItem = (input, actor) => {
+    const replay = state.workItems.find((row) =>
+      row.ownerTeamId === actor.teamId && row.createIdempotencyKey === input.idempotencyKey);
+    if (replay) return { ok: true, status: 200, body: { workItem: replay, replayed: true } };
+    const workItem = {
+      id: nextId("lwi"),
+      localRef: `LOCAL-${state.workItems.length + 1}`,
+      localNumber: state.workItems.length + 1,
+      ownerTeamId: actor.teamId,
+      terminalId: "dev_a",
+      revision: 1,
+      ...input,
+      createIdempotencyKey: input.idempotencyKey,
+    };
+    state.workItems.push(workItem);
+    return { ok: true, status: 201, body: { workItem } };
+  };
+  const createService = () => createBusinessRoutineService({
     state,
     now: () => "2026-07-29T00:00:00.000Z",
-    nextId: (prefix) => `${prefix}_${++id}`,
+    nextId,
     appendEvent: (event) => events.push(event),
+    createWorkItem,
   });
-  return { state, events, service };
+  const service = createService();
+  return { state, events, service, recreateService: createService };
 }
 
 function createCaseAndDefinition(service) {
@@ -265,6 +291,15 @@ test("discovered task types are editable drafts, explicitly published, immutable
   }, ACTOR_A);
   assert.equal(invalidCondition.status, 400);
   assert.equal(invalidCondition.body.error, "routine_step_condition_required");
+  const requiredConditionalDescendant = service.updateRoutineDefinition({
+    routineDefinitionId: updated.body.routineDefinition.id,
+    expectedRevision: updated.body.routineDefinition.revision,
+    steps: updated.body.routineDefinition.steps.map((step, index) => index === 0
+      ? { ...step, kind: "condition", configuration: { condition: "An order was received." } }
+      : step),
+  }, ACTOR_A);
+  assert.equal(requiredConditionalDescendant.status, 400);
+  assert.equal(requiredConditionalDescendant.body.error, "routine_conditional_descendant_must_be_optional");
   assert.equal(service.publishRoutineDefinition({
     routineDefinitionId: updated.body.routineDefinition.id,
     expectedRevision: updated.body.routineDefinition.revision,
@@ -478,6 +513,417 @@ test("routine runs require a confirmed case and human approval cannot be bypasse
   assert.equal(run.status, "succeeded");
 });
 
+test("routine Issues materialize once and schedule dependency-safe work with bounded read concurrency", () => {
+  const { service, state } = harness();
+  const { businessCase } = createCaseAndDefinition(service);
+  let definition = service.createRoutineDefinition({
+    projectId: "prj_a",
+    sourceId: "wfs_a",
+    name: "Process commercial inquiry",
+    description: "Prepare and approve a quotation from an inquiry.",
+    triggerDocumentTypes: ["inquiry"],
+    steps: [
+      { key: "extract", kind: "extract", label: "Read inquiry fields" },
+      { key: "references", kind: "retrieve", label: "Retrieve references" },
+      { key: "quote", kind: "generate", label: "Prepare quotation", dependsOn: ["extract", "references"] },
+      { key: "approve", kind: "human_approval", label: "Approve quotation", dependsOn: ["quote"] },
+      {
+        key: "order_signal",
+        kind: "condition",
+        label: "Check for order",
+        required: false,
+        dependsOn: ["approve"],
+        configuration: { condition: "A confirmed customer order was received." },
+      },
+      {
+        key: "order_handoff",
+        kind: "create_issue",
+        label: "Create order follow-up",
+        required: false,
+        dependsOn: ["order_signal"],
+      },
+    ],
+    evidenceRefs: [{ artifactId: "wfa_inquiry", kind: "historical_case" }],
+    confidence: 0.9,
+  }, ACTOR_A).body.routineDefinition;
+  definition = service.transitionRoutineDefinition({
+    routineDefinitionId: definition.id,
+    expectedRevision: definition.revision,
+    action: "review",
+  }, ACTOR_A).body.routineDefinition;
+  definition = service.publishRoutineDefinition({
+    routineDefinitionId: definition.id,
+    expectedRevision: definition.revision,
+    confirmed: true,
+  }, ACTOR_A).body.routineDefinition;
+
+  const created = service.materializeRoutineIssue({
+    routineDefinitionId: definition.id,
+    businessCaseId: businessCase.id,
+    triggerArtifactIds: ["wfa_inquiry"],
+  }, ACTOR_A);
+  assert.equal(created.status, 201);
+  assert.equal(created.body.workItem.title, "Process inquiry — RFQ-2026-001");
+  assert.equal(created.body.workItem.routineVersion, 1);
+  assert.equal(created.body.workItem.createIdempotencyKey, undefined);
+  assert.equal(created.body.execution.run.actionReceipts, undefined);
+  const replay = service.materializeRoutineIssue({
+    routineDefinitionId: definition.id,
+    businessCaseId: businessCase.id,
+    triggerArtifactIds: ["wfa_inquiry"],
+  }, ACTOR_A);
+  assert.equal(replay.status, 200);
+  assert.equal(replay.body.replayed, true);
+  assert.equal(state.workItems.filter((row) => row.routineDefinitionId === definition.id).length, 1);
+
+  let execution = service.startRoutineWorkItem({
+    workItemId: created.body.workItem.id,
+    expectedRevision: created.body.execution.run.revision,
+    idempotencyKey: "start-1",
+  }, ACTOR_A).body.execution;
+  assert.deepEqual(
+    execution.steps.filter((step) => step.run.state === "running").map((step) => step.key).sort(),
+    ["extract", "references"],
+  );
+  assert.equal(service.startRoutineWorkItem({
+    workItemId: created.body.workItem.id,
+    expectedRevision: 1,
+    idempotencyKey: "start-1",
+  }, ACTOR_A).body.replayed, true);
+
+  execution = service.completeRoutineStep({
+    workItemId: created.body.workItem.id,
+    stepKey: "extract",
+    expectedRevision: execution.run.revision,
+    idempotencyKey: "complete-extract",
+    outputRefs: [{ kind: "note", summary: "Inquiry fields extracted." }],
+  }, ACTOR_A).body.execution;
+  assert.equal(execution.steps.find((step) => step.key === "quote").run.state, "pending");
+  execution = service.completeRoutineStep({
+    workItemId: created.body.workItem.id,
+    stepKey: "references",
+    expectedRevision: execution.run.revision,
+    idempotencyKey: "complete-references",
+  }, ACTOR_A).body.execution;
+  assert.equal(execution.steps.find((step) => step.key === "quote").run.state, "running");
+  execution = service.completeRoutineStep({
+    workItemId: created.body.workItem.id,
+    stepKey: "quote",
+    expectedRevision: execution.run.revision,
+    idempotencyKey: "fail-quote",
+    succeeded: false,
+    errorCode: "quotation_generation_interrupted",
+  }, ACTOR_A).body.execution;
+  assert.equal(execution.run.status, "failed");
+  execution = service.retryRoutineStep({
+    workItemId: created.body.workItem.id,
+    stepKey: "quote",
+    expectedRevision: execution.run.revision,
+    idempotencyKey: "retry-quote",
+  }, ACTOR_A).body.execution;
+  assert.equal(execution.steps.find((step) => step.key === "quote").run.attempts, 2);
+  execution = service.completeRoutineStep({
+    workItemId: created.body.workItem.id,
+    stepKey: "quote",
+    expectedRevision: execution.run.revision,
+    idempotencyKey: "complete-quote",
+  }, ACTOR_A).body.execution;
+  assert.equal(execution.run.status, "awaiting_approval");
+  assert.equal(service.transitionRoutineStep({
+    routineRunId: execution.run.id,
+    stepKey: "approve",
+    expectedRevision: execution.run.revision,
+    action: "succeed",
+  }, ACTOR_A).body.error, "human_approval_step_cannot_bypass_approval");
+  execution = service.decideRoutineApproval({
+    workItemId: created.body.workItem.id,
+    stepKey: "approve",
+    expectedRevision: execution.run.revision,
+    idempotencyKey: "approve-quote",
+    approved: true,
+  }, ACTOR_A).body.execution;
+  assert.equal(execution.run.status, "awaiting_condition");
+  execution = service.decideRoutineCondition({
+    workItemId: created.body.workItem.id,
+    stepKey: "order_signal",
+    expectedRevision: execution.run.revision,
+    idempotencyKey: "no-order",
+    outcome: false,
+  }, ACTOR_A).body.execution;
+  assert.equal(execution.run.status, "succeeded");
+  assert.equal(execution.steps.find((step) => step.key === "order_handoff").run.state, "skipped");
+});
+
+test("routine Issue identity follows the business-case source fingerprint", () => {
+  const { service, state } = harness();
+  const { businessCase, definition } = createCaseAndDefinition(service);
+  const first = service.materializeRoutineIssue({
+    routineDefinitionId: definition.id,
+    businessCaseId: businessCase.id,
+    triggerArtifactIds: ["wfa_inquiry"],
+  }, ACTOR_A).body;
+  let alternateDefinition = service.createRoutineDefinition({
+    projectId: "prj_a",
+    sourceId: "wfs_a",
+    name: "Updated inquiry handling",
+    triggerDocumentTypes: ["inquiry"],
+    steps: [{ key: "extract", kind: "extract", label: "Extract updated inquiry" }],
+    evidenceRefs: [{ artifactId: "wfa_inquiry", kind: "historical_case" }],
+    confidence: 0.9,
+  }, ACTOR_A).body.routineDefinition;
+  alternateDefinition = service.transitionRoutineDefinition({
+    routineDefinitionId: alternateDefinition.id,
+    expectedRevision: alternateDefinition.revision,
+    action: "review",
+  }, ACTOR_A).body.routineDefinition;
+  alternateDefinition = service.publishRoutineDefinition({
+    routineDefinitionId: alternateDefinition.id,
+    expectedRevision: alternateDefinition.revision,
+    confirmed: true,
+  }, ACTOR_A).body.routineDefinition;
+  const sameInquiry = service.materializeRoutineIssue({
+    routineDefinitionId: alternateDefinition.id,
+    businessCaseId: businessCase.id,
+    triggerArtifactIds: ["wfa_inquiry"],
+  }, ACTOR_A);
+  assert.equal(sameInquiry.status, 200);
+  assert.equal(sameInquiry.body.workItem.id, first.workItem.id);
+  assert.equal(sameInquiry.body.execution.definition.id, definition.id);
+
+  state.workflowArtifacts.find((artifact) => artifact.id === "wfa_inquiry").fingerprint = "e".repeat(64);
+  businessCase.artifactFingerprints.wfa_inquiry = "e".repeat(64);
+  const changed = service.materializeRoutineIssue({
+    routineDefinitionId: definition.id,
+    businessCaseId: businessCase.id,
+    triggerArtifactIds: ["wfa_inquiry"],
+  }, ACTOR_A);
+
+  assert.equal(changed.status, 201);
+  assert.notEqual(changed.body.workItem.id, first.workItem.id);
+  assert.equal(state.workItems.filter((item) =>
+    item.businessCaseId === businessCase.id && !item.parentId).length, 2);
+});
+
+test("a confirmed order condition creates one traceable child Issue and cancellation is terminal", () => {
+  const { service, state } = harness();
+  const { businessCase } = createCaseAndDefinition(service);
+  state.businessDocumentClassifications.push({
+    id: "bdc_order",
+    ownerTeamId: "team_a",
+    projectId: "prj_a",
+    sourceId: "wfs_a",
+    artifactId: "wfa_order",
+    artifactFingerprint: "d".repeat(64),
+    documentType: "order",
+    confirmationState: "confirmed",
+  });
+  let definition = service.createRoutineDefinition({
+    projectId: "prj_a",
+    sourceId: "wfs_a",
+    name: "Order-aware inquiry",
+    description: "Create an order follow-up only for a confirmed order.",
+    triggerDocumentTypes: ["inquiry"],
+    steps: [
+      {
+        key: "order_signal",
+        kind: "condition",
+        label: "Check whether an order was received",
+        required: false,
+        configuration: { condition: "A confirmed order was received." },
+      },
+      {
+        key: "order_handoff",
+        kind: "create_issue",
+        label: "Create order follow-up",
+        required: false,
+        dependsOn: ["order_signal"],
+      },
+    ],
+    evidenceRefs: [{ artifactId: "wfa_inquiry", kind: "historical_case" }],
+    confidence: 0.9,
+  }, ACTOR_A).body.routineDefinition;
+  definition = service.transitionRoutineDefinition({
+    routineDefinitionId: definition.id,
+    expectedRevision: definition.revision,
+    action: "review",
+  }, ACTOR_A).body.routineDefinition;
+  definition = service.publishRoutineDefinition({
+    routineDefinitionId: definition.id,
+    expectedRevision: definition.revision,
+    confirmed: true,
+  }, ACTOR_A).body.routineDefinition;
+  const materialized = service.materializeRoutineIssue({
+    routineDefinitionId: definition.id,
+    businessCaseId: businessCase.id,
+    triggerArtifactIds: ["wfa_inquiry"],
+  }, ACTOR_A).body;
+  let execution = service.startRoutineWorkItem({
+    workItemId: materialized.workItem.id,
+    expectedRevision: materialized.execution.run.revision,
+    idempotencyKey: "start-order-check",
+  }, ACTOR_A).body.execution;
+  const decided = service.decideRoutineCondition({
+    workItemId: materialized.workItem.id,
+    stepKey: "order_signal",
+    expectedRevision: execution.run.revision,
+    idempotencyKey: "order-confirmed",
+    outcome: true,
+    triggerArtifactIds: ["wfa_order"],
+  }, ACTOR_A);
+  assert.equal(decided.status, 200);
+  assert.equal(decided.body.childWorkItem.parentId, materialized.workItem.id);
+  assert.equal(decided.body.childWorkItem.businessCaseId, businessCase.id);
+  assert.equal(state.workItems.filter((row) => row.parentId === materialized.workItem.id).length, 1);
+  assert.equal(service.decideRoutineCondition({
+    workItemId: materialized.workItem.id,
+    stepKey: "order_signal",
+    expectedRevision: 1,
+    idempotencyKey: "order-confirmed",
+    outcome: true,
+    triggerArtifactIds: ["wfa_order"],
+  }, ACTOR_A).body.replayed, true);
+
+  const secondCase = service.createBusinessCase({
+    projectId: "prj_a",
+    sourceId: "wfs_a",
+    businessKey: "RFQ-2026-002",
+    state: "confirmed",
+    entityIds: [],
+    artifactBindings: [{ artifactId: "wfa_inquiry", documentType: "inquiry", roles: ["trigger"] }],
+    evidenceRefs: [{ artifactId: "wfa_inquiry", kind: "business_key" }],
+    confidence: 0.9,
+  }, ACTOR_A).body.businessCase;
+  const second = service.materializeRoutineIssue({
+    routineDefinitionId: definition.id,
+    businessCaseId: secondCase.id,
+    triggerArtifactIds: ["wfa_inquiry"],
+  }, ACTOR_A).body;
+  execution = service.startRoutineWorkItem({
+    workItemId: second.workItem.id,
+    expectedRevision: second.execution.run.revision,
+    idempotencyKey: "start-cancel",
+  }, ACTOR_A).body.execution;
+  const cancelled = service.cancelRoutineWorkItem({
+    workItemId: second.workItem.id,
+    expectedRevision: execution.run.revision,
+    idempotencyKey: "cancel-run",
+  }, ACTOR_A);
+  assert.equal(cancelled.body.execution.run.status, "cancelled");
+  assert.equal(service.startRoutineWorkItem({
+    workItemId: second.workItem.id,
+    expectedRevision: cancelled.body.execution.run.revision,
+    idempotencyKey: "restart-cancelled",
+  }, ACTOR_A).body.error, "routine_run_not_startable");
+});
+
+test("an interrupted running step is recovered as an explicit retry after service restart", () => {
+  const { service, recreateService } = harness();
+  const { businessCase, definition } = createCaseAndDefinition(service);
+  const materialized = service.materializeRoutineIssue({
+    routineDefinitionId: definition.id,
+    businessCaseId: businessCase.id,
+    triggerArtifactIds: ["wfa_inquiry"],
+  }, ACTOR_A).body;
+  const started = service.startRoutineWorkItem({
+    workItemId: materialized.workItem.id,
+    expectedRevision: materialized.execution.run.revision,
+    idempotencyKey: "start-before-restart",
+  }, ACTOR_A).body.execution;
+  assert.equal(started.steps.find((step) => step.key === "extract").run.state, "running");
+
+  const restartedService = recreateService();
+  const recovered = restartedService.getRoutineWorkItemExecution({
+    workItemId: materialized.workItem.id,
+  }, ACTOR_A).body.execution;
+  assert.equal(recovered.run.status, "failed");
+  assert.equal(recovered.run.waitingReason, "routine_step_interrupted");
+  assert.equal(recovered.steps.find((step) => step.key === "extract").run.errorCode, "routine_step_interrupted");
+
+  const retried = restartedService.retryRoutineStep({
+    workItemId: materialized.workItem.id,
+    stepKey: "extract",
+    expectedRevision: recovered.run.revision,
+    idempotencyKey: "retry-after-restart",
+  }, ACTOR_A).body.execution;
+  assert.equal(retried.steps.find((step) => step.key === "extract").run.state, "running");
+  assert.equal(retried.steps.find((step) => step.key === "extract").run.attempts, 2);
+});
+
+test("device concurrency limits independent read steps across routine Issues", () => {
+  const { service } = harness();
+  const { businessCase } = createCaseAndDefinition(service);
+  let definition = service.createRoutineDefinition({
+    projectId: "prj_a",
+    sourceId: "wfs_a",
+    name: "Concurrent inquiry reading",
+    triggerDocumentTypes: ["inquiry"],
+    steps: [
+      { key: "extract", kind: "extract", label: "Extract inquiry" },
+      { key: "references", kind: "retrieve", label: "Retrieve references" },
+    ],
+    evidenceRefs: [{ artifactId: "wfa_inquiry", kind: "historical_case" }],
+    confidence: 0.9,
+  }, ACTOR_A).body.routineDefinition;
+  definition = service.transitionRoutineDefinition({
+    routineDefinitionId: definition.id,
+    expectedRevision: definition.revision,
+    action: "review",
+  }, ACTOR_A).body.routineDefinition;
+  definition = service.publishRoutineDefinition({
+    routineDefinitionId: definition.id,
+    expectedRevision: definition.revision,
+    confirmed: true,
+  }, ACTOR_A).body.routineDefinition;
+  const secondCase = service.createBusinessCase({
+    projectId: "prj_a",
+    sourceId: "wfs_a",
+    businessKey: "RFQ-2026-003",
+    state: "confirmed",
+    entityIds: [],
+    artifactBindings: [{ artifactId: "wfa_inquiry", documentType: "inquiry", roles: ["trigger"] }],
+    evidenceRefs: [{ artifactId: "wfa_inquiry", kind: "business_key" }],
+    confidence: 0.9,
+  }, ACTOR_A).body.businessCase;
+  const first = service.materializeRoutineIssue({
+    routineDefinitionId: definition.id,
+    businessCaseId: businessCase.id,
+    triggerArtifactIds: ["wfa_inquiry"],
+  }, ACTOR_A).body;
+  const second = service.materializeRoutineIssue({
+    routineDefinitionId: definition.id,
+    businessCaseId: secondCase.id,
+    triggerArtifactIds: ["wfa_inquiry"],
+  }, ACTOR_A).body;
+
+  let firstExecution = service.startRoutineWorkItem({
+    workItemId: first.workItem.id,
+    expectedRevision: first.execution.run.revision,
+    idempotencyKey: "start-first-concurrent",
+  }, ACTOR_A).body.execution;
+  assert.equal(firstExecution.steps.filter((step) => step.run.state === "running").length, 2);
+  let secondExecution = service.startRoutineWorkItem({
+    workItemId: second.workItem.id,
+    expectedRevision: second.execution.run.revision,
+    idempotencyKey: "start-second-capacity",
+  }, ACTOR_A).body.execution;
+  assert.equal(secondExecution.steps.filter((step) => step.run.state === "running").length, 0);
+  assert.equal(secondExecution.run.waitingReason, "device_capacity");
+
+  firstExecution = service.completeRoutineStep({
+    workItemId: first.workItem.id,
+    stepKey: "extract",
+    expectedRevision: firstExecution.run.revision,
+    idempotencyKey: "free-one-device-slot",
+  }, ACTOR_A).body.execution;
+  assert.equal(firstExecution.steps.filter((step) => step.run.state === "running").length, 1);
+  secondExecution = service.startRoutineWorkItem({
+    workItemId: second.workItem.id,
+    expectedRevision: secondExecution.run.revision,
+    idempotencyKey: "continue-second-capacity",
+  }, ACTOR_A).body.execution;
+  assert.equal(secondExecution.steps.filter((step) => step.run.state === "running").length, 1);
+});
+
 test("source revocation blocks new routine work but still allows disabling definitions", () => {
   const { service, state } = harness();
   const { businessCase, definition } = createCaseAndDefinition(service);
@@ -555,6 +1001,65 @@ test("ledger definitions reject absolute paths and sensitive field mappings", ()
     businessKeyField: "inquiry_number",
     fieldMappings: { inquiry_number: "A", customer: "B" },
   }, ACTOR_A).status, 201);
+});
+
+test("routine ledger steps cannot bypass a previewed and audited mutation", () => {
+  const { service, state } = harness();
+  const { businessCase, definition } = createCaseAndDefinition(service);
+  const ledgerDefinition = service.createLedgerDefinition({
+    projectId: "prj_a",
+    sourceId: "wfs_a",
+    name: "Inquiry ledger",
+    format: "csv",
+    relativePath: "ledgers/inquiry.csv",
+    businessKeyField: "inquiry_number",
+    fieldMappings: { inquiry_number: "Inquiry No", customer: "Customer" },
+  }, ACTOR_A).body.ledgerDefinition;
+  definition.steps = [{
+    key: "register",
+    kind: "ledger_upsert",
+    label: "Register inquiry",
+    required: true,
+    dependsOn: [],
+    configuration: { ledgerDefinitionId: ledgerDefinition.id },
+  }];
+  const materialized = service.materializeRoutineIssue({
+    routineDefinitionId: definition.id,
+    businessCaseId: businessCase.id,
+    triggerArtifactIds: ["wfa_inquiry"],
+  }, ACTOR_A).body;
+  const started = service.startRoutineWorkItem({
+    workItemId: materialized.workItem.id,
+    expectedRevision: materialized.execution.run.revision,
+    idempotencyKey: "start-ledger",
+  }, ACTOR_A).body.execution;
+  assert.equal(service.completeRoutineStep({
+    workItemId: materialized.workItem.id,
+    stepKey: "register",
+    expectedRevision: started.run.revision,
+    idempotencyKey: "manual-bypass",
+  }, ACTOR_A).body.error, "ledger_step_requires_previewed_mutation");
+
+  state.ledgerMutationAudits.push({
+    id: "lma_approved",
+    ownerTeamId: ACTOR_A.teamId,
+    projectId: "prj_a",
+    sourceId: "wfs_a",
+    ledgerDefinitionId: ledgerDefinition.id,
+    routineRunId: started.run.id,
+    routineStepKey: "register",
+    businessKey: businessCase.businessKey,
+    action: "insert",
+  });
+  const completed = service.completeRoutineLedgerStep({
+    routineRunId: started.run.id,
+    stepKey: "register",
+    ledgerDefinitionId: ledgerDefinition.id,
+    mutation: state.ledgerMutationAudits[0],
+    expectedRunRevision: started.run.revision,
+  }, ACTOR_A);
+  assert.equal(completed.ok, true);
+  assert.equal(completed.execution.run.status, "succeeded");
 });
 
 test("all V1.4 collections survive persistence alongside V1.3 records", () => {

@@ -47,12 +47,25 @@ export declare const routineStepRequirements: readonly ["mandatory", "conditiona
 export type RoutineStepRequirement = (typeof routineStepRequirements)[number];
 export declare const ledgerDefinitionStates: readonly ["draft", "active", "disabled"];
 export type LedgerDefinitionState = (typeof ledgerDefinitionStates)[number];
-export declare const routineRunStates: readonly ["planned", "running", "awaiting_approval", "succeeded", "failed", "cancelled"];
+export declare const ledgerApprovalPolicies: readonly ["always", "updates_only"];
+export type LedgerApprovalPolicy = (typeof ledgerApprovalPolicies)[number];
+export declare const ledgerMutationActions: readonly ["insert", "update", "no_op"];
+export type LedgerMutationAction = (typeof ledgerMutationActions)[number];
+export declare const routineRunStates: readonly [
+  "planned",
+  "running",
+  "awaiting_approval",
+  "awaiting_condition",
+  "succeeded",
+  "failed",
+  "cancelled",
+];
 export type RoutineRunState = (typeof routineRunStates)[number];
 export declare const routineStepRunStates: readonly [
   "pending",
   "running",
   "awaiting_approval",
+  "awaiting_condition",
   "succeeded",
   "skipped",
   "failed",
@@ -277,6 +290,19 @@ export type RoutineStepRun = {
   startedAt: IsoDateTime | null;
   completedAt: IsoDateTime | null;
   errorCode: string | null;
+  attempts: number;
+  outputRefs: Array<{
+    kind: "artifact" | "file" | "note";
+    artifactId: string | null;
+    relativePath: string | null;
+    summary: string;
+  }>;
+  approval: {
+    state: "approved" | "rejected";
+    decidedAt: IsoDateTime;
+    decidedBy: string;
+  } | null;
+  conditionOutcome: boolean | null;
 };
 
 export type RoutineRun = {
@@ -290,11 +316,20 @@ export type RoutineRun = {
   businessCaseId: string;
   businessKey: string;
   triggerArtifactIds: string[];
+  sourceFingerprints: string[];
   workItemId: string | null;
   status: RoutineRunState;
   issueIdempotencyKey: string;
   outputPublicationIdempotencyKey: string;
   stepRuns: RoutineStepRun[];
+  actionReceipts: Array<{
+    key: string;
+    action: string;
+    stepKey: string | null;
+    revision: number;
+  }>;
+  waitingReason: string | null;
+  cancellationRequestedAt: IsoDateTime | null;
   revision: number;
   createdAt: IsoDateTime;
   updatedAt: IsoDateTime;
@@ -308,14 +343,80 @@ export type LedgerDefinition = {
   sourceId: string;
   name: string;
   state: LedgerDefinitionState;
+  documentType: "inquiry_ledger" | "quotation_ledger" | "order_ledger";
   format: "csv" | "xlsx";
   relativePath: string;
   sheet: string | null;
+  table: string | null;
+  headerRow: number;
   businessKeyField: string;
+  fallbackBusinessKeyFields: string[];
   fieldMappings: Record<string, string>;
+  requiredFields: string[];
+  formattingPolicy: {
+    preserveStylesAndFormulas: true;
+    csvDelimiter: "," | ";" | "\t";
+  };
+  writePolicy: {
+    approval: LedgerApprovalPolicy;
+    allowInsert: boolean;
+    allowUpdate: boolean;
+  };
   revision: number;
   createdAt: IsoDateTime;
   updatedAt: IsoDateTime;
+};
+
+export type LedgerUpsertPreview = {
+  id: string;
+  schemaVersion: 1;
+  ownerTeamId: string;
+  projectId: string;
+  sourceId: string;
+  ledgerDefinitionId: string;
+  routineRunId: string | null;
+  routineStepKey: string | null;
+  routineRunRevision: number | null;
+  businessKey: string;
+  action: LedgerMutationAction;
+  rowNumber: number | null;
+  changedCells: Array<{
+    field: string;
+    column: string;
+    before: string | number | boolean | null;
+    after: string | number | boolean | null;
+  }>;
+  sourceEvidence: Array<{ artifactId: string; field: string | null }>;
+  warnings: string[];
+  targetRevision: string;
+  proposedTargetRevision: string;
+  approvalRequired: boolean;
+  state: "pending" | "committed" | "expired";
+  expiresAt: IsoDateTime;
+  revision: number;
+  createdAt: IsoDateTime;
+  updatedAt: IsoDateTime;
+};
+
+export type LedgerMutationAudit = {
+  id: string;
+  schemaVersion: 1;
+  ownerTeamId: string;
+  projectId: string;
+  sourceId: string;
+  ledgerDefinitionId: string;
+  previewId: string;
+  routineRunId: string | null;
+  routineStepKey: string | null;
+  routineVersion: number | null;
+  businessKey: string;
+  action: LedgerMutationAction;
+  approverId: string | null;
+  beforeHash: string;
+  afterHash: string;
+  changedFields: string[];
+  sourceArtifactIds: string[];
+  createdAt: IsoDateTime;
 };
 
 export type LocalIssueRoutineBinding = {

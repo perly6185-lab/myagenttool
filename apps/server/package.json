@@ -17,6 +17,7 @@
     "@myagenttool/adapters": "workspace:*",
     "@myagenttool/protocol": "workspace:*",
     "@myagenttool/shared": "workspace:*",
+    "exceljs": "^4.4.0",
     "parse5": "^7.3.0",
     "pdfjs-dist": "^6.1.200",
     "yaml": "^2.8.1"

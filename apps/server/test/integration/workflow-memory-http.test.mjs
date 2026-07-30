@@ -202,8 +202,9 @@ test("workflow memory routes authorize, scan, classify, and enforce tenancy over
       ownerTeamId: "team_a",
       projectId: source.projectId,
       sourceId: source.id,
-      businessKey: `RFQ-HTTP-${index}`,
+      businessKey: index === 1 ? "RFQ-HTTP-001" : `RFQ-HTTP-${index}`,
       state: "confirmed",
+      entityIds: index === 1 ? [confirmedBusiness.body.entity.id] : [],
       artifactBindings: [{
         artifactId: inquiry.id,
         documentType: "inquiry",
@@ -242,6 +243,37 @@ test("workflow memory routes authorize, scan, classify, and enforce tenancy over
   assert.equal(routineDraft.status, 201, JSON.stringify(routineDraft.body));
   assert.equal(routineDraft.body.routineDefinition.state, "draft");
   const routineDefinitionId = routineDraft.body.routineDefinition.id;
+  mkdirSync(join(root, "history", "business", "ledgers"), { recursive: true });
+  const inquiryLedgerPath = join(root, "history", "business", "ledgers", "inquiries.csv");
+  writeFileSync(inquiryLedgerPath, "Inquiry No,Customer,Quantity\n");
+  const ledgerDefinitionCreated = await call("/api/workflow-memory/ledger-definitions", {
+    method: "POST",
+    body: {
+      projectId: "prj_a",
+      sourceId: source.id,
+      name: "Inquiry ledger",
+      documentType: "inquiry_ledger",
+      format: "csv",
+      relativePath: "business/ledgers/inquiries.csv",
+      businessKeyField: "inquiry_number",
+      fieldMappings: {
+        inquiry_number: "Inquiry No",
+        customer: "Customer",
+        quantity: "Quantity",
+      },
+      requiredFields: ["inquiry_number", "customer"],
+      writePolicy: { approval: "always", allowInsert: true, allowUpdate: true },
+    },
+  });
+  assert.equal(ledgerDefinitionCreated.status, 201, JSON.stringify(ledgerDefinitionCreated.body));
+  const ledgerDefinitionActivated = await call(
+    `/api/workflow-memory/ledger-definitions/${ledgerDefinitionCreated.body.ledgerDefinition.id}/activate`,
+    {
+      method: "POST",
+      body: { expectedRevision: ledgerDefinitionCreated.body.ledgerDefinition.revision },
+    },
+  );
+  assert.equal(ledgerDefinitionActivated.status, 200, JSON.stringify(ledgerDefinitionActivated.body));
   const updatedRoutine = await call(
     `/api/workflow-memory/business-routine-definitions/${routineDefinitionId}/update`,
     {
@@ -250,7 +282,13 @@ test("workflow memory routes authorize, scan, classify, and enforce tenancy over
         expectedRevision: routineDraft.body.routineDefinition.revision,
         name: "Commercial inquiry and quotation",
         description: "A reviewed commercial workflow.",
-        steps: routineDraft.body.routineDefinition.steps,
+        steps: routineDraft.body.routineDefinition.steps.map((step) => ({
+          ...step,
+          configuration: {
+            ...step.configuration,
+            ledgerDefinitionId: ledgerDefinitionCreated.body.ledgerDefinition.id,
+          },
+        })),
       },
     },
   );
@@ -271,6 +309,97 @@ test("workflow memory routes authorize, scan, classify, and enforce tenancy over
   );
   assert.equal(publishedRoutine.status, 200, JSON.stringify(publishedRoutine.body));
   assert.equal(publishedRoutine.body.routineDefinition.state, "published");
+  const materializedRoutineIssue = await call(
+    "/api/workflow-memory/business-cases/bcs_http_1/materialize-routine",
+    {
+      method: "POST",
+      body: {
+        routineDefinitionId,
+        triggerArtifactIds: [inquiry.id],
+      },
+    },
+  );
+  assert.equal(materializedRoutineIssue.status, 201, JSON.stringify(materializedRoutineIssue.body));
+  assert.equal(materializedRoutineIssue.body.workItem.routineDefinitionId, routineDefinitionId);
+  assert.equal(materializedRoutineIssue.body.workItem.routineVersion, 1);
+  const routineWorkItemId = materializedRoutineIssue.body.workItem.id;
+  const replayedRoutineIssue = await call(
+    "/api/workflow-memory/business-cases/bcs_http_1/materialize-routine",
+    {
+      method: "POST",
+      body: {
+        routineDefinitionId,
+        triggerArtifactIds: [inquiry.id],
+      },
+    },
+  );
+  assert.equal(replayedRoutineIssue.status, 200);
+  assert.equal(replayedRoutineIssue.body.replayed, true);
+  const startedRoutine = await call(
+    `/api/workflow-memory/routine-work-items/${routineWorkItemId}/start`,
+    {
+      method: "POST",
+      body: {
+        expectedRevision: materializedRoutineIssue.body.execution.run.revision,
+        idempotencyKey: "http-start-routine",
+      },
+    },
+  );
+  assert.equal(startedRoutine.status, 200, JSON.stringify(startedRoutine.body));
+  assert.equal(startedRoutine.body.execution.steps[0].run.state, "running");
+  const bypassedRoutine = await call(
+    `/api/workflow-memory/routine-work-items/${routineWorkItemId}/steps/register/complete`,
+    {
+      method: "POST",
+      body: {
+        expectedRevision: startedRoutine.body.execution.run.revision,
+        idempotencyKey: "http-complete-register",
+        succeeded: true,
+        outputRefs: [{ kind: "note", summary: "Inquiry registered in preview." }],
+      },
+    },
+  );
+  assert.equal(bypassedRoutine.status, 409, JSON.stringify(bypassedRoutine.body));
+  assert.equal(bypassedRoutine.body.error, "ledger_step_requires_previewed_mutation");
+  const routineLedgerPreview = await call(
+    `/api/workflow-memory/ledger-definitions/${ledgerDefinitionCreated.body.ledgerDefinition.id}/preview-upsert`,
+    {
+      method: "POST",
+      body: {
+        routineRunId: startedRoutine.body.execution.run.id,
+        routineStepKey: "register",
+      },
+    },
+  );
+  assert.equal(routineLedgerPreview.status, 201, JSON.stringify(routineLedgerPreview.body));
+  assert.equal(routineLedgerPreview.body.preview.action, "insert");
+  const completedRoutine = await call(
+    `/api/workflow-memory/ledger-upsert-previews/${routineLedgerPreview.body.preview.id}/commit`,
+    {
+      method: "POST",
+      body: {
+        expectedRevision: routineLedgerPreview.body.preview.revision,
+        approved: true,
+      },
+    },
+  );
+  assert.equal(completedRoutine.status, 200, JSON.stringify(completedRoutine.body));
+  assert.equal(completedRoutine.body.execution.run.status, "succeeded");
+  assert.match(readFileSync(inquiryLedgerPath, "utf8"), /RFQ-HTTP-001,星海科技有限公司,20/);
+  const completedRoutineIssue = await call(`/api/work-items/${routineWorkItemId}`);
+  assert.equal(completedRoutineIssue.status, 200, JSON.stringify(completedRoutineIssue.body));
+  assert.equal(completedRoutineIssue.body.workItem.completionGate.ready, true,
+    JSON.stringify({
+      workItem: completedRoutineIssue.body.workItem,
+      events: runtimeState.events.filter((event) =>
+        event.type.startsWith("routine_") || event.type.startsWith("work_item_")).slice(-10),
+    }));
+  assert.equal(completedRoutineIssue.body.workItem.verificationRecords[0].evidence[0].ref,
+    completedRoutine.body.execution.run.id);
+  assert.equal((await call(
+    `/api/workflow-memory/routine-work-items/${routineWorkItemId}`,
+    { token: "tok_b" },
+  )).status, 404);
   const nextRoutineVersion = await call(
     `/api/workflow-memory/business-routine-definitions/${routineDefinitionId}/new-version`,
     {
@@ -615,6 +744,11 @@ test("workflow memory routes authorize, scan, classify, and enforce tenancy over
   );
   assert.equal(included.status, 200);
   assert.equal(included.body.artifact.confirmationState, "changed");
+
+  assert.equal((await call(
+    `/api/workflow-memory/ledger-definitions?sourceId=${source.id}`,
+    { token: "tok_b" },
+  )).body.ledgerDefinitions.length, 0);
 
   const foreignList = await call("/api/workflow-memory/sources", { token: "tok_b" });
   assert.deepEqual(foreignList.body.sources, []);

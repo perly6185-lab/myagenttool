@@ -132,6 +132,8 @@ export const persistedArrayKeys = [
   "routineDefinitions",
   "routineRuns",
   "ledgerDefinitions",
+  "ledgerUpsertPreviews",
+  "ledgerMutationAudits",
   "dispatchAssignments",
   "automations",
   "agentSkills",
@@ -212,6 +214,8 @@ const OWNER_STAMPED_PROJECT_COLLECTIONS = [
   { key: "routineDefinitions", owner: "ownerTeamId" },
   { key: "routineRuns", owner: "ownerTeamId" },
   { key: "ledgerDefinitions", owner: "ownerTeamId" },
+  { key: "ledgerUpsertPreviews", owner: "ownerTeamId" },
+  { key: "ledgerMutationAudits", owner: "ownerTeamId" },
 ];
 
 /**

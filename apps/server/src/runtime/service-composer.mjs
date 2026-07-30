@@ -66,6 +66,7 @@ import { createDecisionSoftClaimService } from "../services/decision-soft-claims
 import { createIssueClaimService } from "../services/issue-claims.mjs";
 import { createWorkItemService } from "../services/work-items.mjs";
 import { createBusinessRoutineService } from "../services/business-routines.mjs";
+import { createLedgerUpsertService } from "../services/ledger-upserts.mjs";
 import { createBusinessDocumentIntelligenceService } from "../services/business-document-intelligence.mjs";
 import { createBusinessCaseDiscoveryService } from "../services/business-case-discovery.mjs";
 import { createArticleImportService, resolveArticleImportConfig } from "../services/article-imports.mjs";
@@ -410,7 +411,19 @@ export function createServerRuntimeServices({
     nextId,
     appendEvent,
     persistStateSoon,
+    createWorkItem: workItemService.createWorkItem,
+    recordWorkItemVerification: workItemService.recordVerification,
     store,
+  });
+  const ledgerUpsertService = createLedgerUpsertService({
+    state,
+    now,
+    nextId,
+    appendEvent,
+    persistStateSoon,
+    store,
+    validateRoutineLedgerStep: businessRoutineService.validateRoutineLedgerStep,
+    completeRoutineLedgerStep: businessRoutineService.completeRoutineLedgerStep,
   });
   const articleImportConfig = resolveArticleImportConfig();
   const articleImportService = createArticleImportService({
@@ -3793,7 +3806,21 @@ export function createServerRuntimeServices({
     publishBusinessRoutineDefinition: businessRoutineService.publishRoutineDefinition,
     transitionRoutineDefinition: businessRoutineService.transitionRoutineDefinition,
     createLedgerDefinition: businessRoutineService.createLedgerDefinition,
+    listLedgerDefinitions: ledgerUpsertService.listDefinitions,
+    activateLedgerDefinition: ledgerUpsertService.activateDefinition,
+    disableLedgerDefinition: ledgerUpsertService.disableDefinition,
+    previewLedgerUpsert: ledgerUpsertService.previewUpsert,
+    commitLedgerUpsertPreview: ledgerUpsertService.commitPreview,
+    listLedgerMutations: ledgerUpsertService.listMutations,
+    materializeRoutineIssue: businessRoutineService.materializeRoutineIssue,
     createRoutineRun: businessRoutineService.createRoutineRun,
+    getRoutineWorkItemExecution: businessRoutineService.getRoutineWorkItemExecution,
+    startRoutineWorkItem: businessRoutineService.startRoutineWorkItem,
+    completeRoutineStep: businessRoutineService.completeRoutineStep,
+    retryRoutineStep: businessRoutineService.retryRoutineStep,
+    decideRoutineApproval: businessRoutineService.decideRoutineApproval,
+    decideRoutineCondition: businessRoutineService.decideRoutineCondition,
+    cancelRoutineWorkItem: businessRoutineService.cancelRoutineWorkItem,
     transitionRoutineStep: businessRoutineService.transitionRoutineStep,
     analyzeWorkflowBusinessDocuments: businessDocumentIntelligenceService.analyzeSource,
     cancelWorkflowBusinessDocumentAnalysis: businessDocumentIntelligenceService.cancelAnalysis,

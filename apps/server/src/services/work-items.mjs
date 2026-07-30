@@ -231,7 +231,7 @@ export function createWorkItemService({
     const device = (state.devices ?? []).find((candidate) => candidate.id === terminalId);
     return Array.isArray(device?.assetResourceClasses) ? device.assetResourceClasses : ["small", "medium"];
   };
-  const validateRoutineBindingContext = (binding, projectId, actor) => {
+  const validateRoutineBindingContext = (binding, projectId, actor, { allowPinnedDefinition = false } = {}) => {
     if (!binding?.routineDefinitionId) return null;
     const teamId = actorTeam(actor);
     const definition = (state.routineDefinitions ?? []).find((row) =>
@@ -239,7 +239,8 @@ export function createWorkItemService({
       && row.ownerTeamId === teamId
       && row.projectId === projectId);
     if (!definition) return { status: 404, error: "work_item_routine_definition_not_found" };
-    if (definition.version !== binding.routineVersion || definition.state !== "published") {
+    if (definition.version !== binding.routineVersion
+      || (!allowPinnedDefinition && definition.state !== "published")) {
       return { status: 409, error: "work_item_routine_definition_not_published_or_version_mismatch" };
     }
     const businessCase = (state.businessCases ?? []).find((row) =>
@@ -271,6 +272,10 @@ export function createWorkItemService({
         && !row.exclusion));
     if (artifacts.some((artifact) => !artifact)) {
       return { status: 404, error: "work_item_routine_trigger_artifact_not_found" };
+    }
+    if (artifacts.some((artifact) =>
+      businessCase.artifactFingerprints?.[artifact.id] !== artifact.fingerprint)) {
+      return { status: 409, error: "work_item_routine_trigger_evidence_changed" };
     }
     return null;
   };
@@ -1559,7 +1564,7 @@ export function createWorkItemService({
     };
   }
 
-  function createWorkItem(input = {}, actor = null) {
+  function createWorkItem(input = {}, actor = null, { allowPinnedRoutineChild = false } = {}) {
     const projectId = String(input.projectId ?? "");
     if (!projectId || !actorCanAccessProject(state, actor, projectId)) {
       return { ok: false, status: 404, body: { error: "project_not_found" } };
@@ -1600,18 +1605,26 @@ export function createWorkItemService({
         && item.createIdempotencyKey === idempotencyKey,
     ) : null;
     if (replay) return { ok: true, status: 200, body: { workItem: workItemView(replay, actor), replayed: true } };
-    const routineContextError = validateRoutineBindingContext(validated.value, projectId, actor);
+    const parentId = input.parentId == null || input.parentId === "" ? null : String(input.parentId);
+    const parent = parentId ? findOwn(parentId, actor) : null;
+    if (parentId && (!parent || parent.projectId !== projectId)) {
+      return { ok: false, status: 400, body: { error: "invalid_work_item_parent" } };
+    }
+    const pinnedRoutineChild = Boolean(allowPinnedRoutineChild
+      && parent
+      && validated.value.routineDefinitionId
+      && parent.routineDefinitionId === validated.value.routineDefinitionId
+      && parent.routineVersion === validated.value.routineVersion
+      && parent.businessCaseId === validated.value.businessCaseId);
+    const routineContextError = validateRoutineBindingContext(validated.value, projectId, actor, {
+      allowPinnedDefinition: pinnedRoutineChild,
+    });
     if (routineContextError) {
       return {
         ok: false,
         status: routineContextError.status,
         body: { error: routineContextError.error },
       };
-    }
-    const parentId = input.parentId == null || input.parentId === "" ? null : String(input.parentId);
-    const parent = parentId ? findOwn(parentId, actor) : null;
-    if (parentId && (!parent || parent.projectId !== projectId)) {
-      return { ok: false, status: 400, body: { error: "invalid_work_item_parent" } };
     }
     const teamId = actorTeam(actor);
     const localNumber = 1 + Math.max(0, ...(state.workItems ?? [])
