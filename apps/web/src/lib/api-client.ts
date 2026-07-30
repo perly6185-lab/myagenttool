@@ -1238,7 +1238,12 @@ export const api = {
     request("POST", `/api/work-items/${encodeURIComponent(id)}/worktrees`, payload),
   startWorkItemAutoRun: (id: string, payload: { agentId?: string; baseBranch?: string } = {}) =>
     request("POST", `/api/work-items/${encodeURIComponent(id)}/auto-runs`, payload),
-  createWorkItemAutoRunBatch: (payload: { workItemIds: string[]; maxConcurrent: number; agentId?: string }) =>
+  createWorkItemAutoRunBatch: (payload: {
+    workItemIds: string[];
+    maxConcurrent: number;
+    agentId?: string;
+    idempotencyKey?: string;
+  }) =>
     request("POST", "/api/work-item-auto-run-batches", payload),
   listWorkItemAutoRunBatches: () =>
     request("GET", "/api/work-item-auto-run-batches"),

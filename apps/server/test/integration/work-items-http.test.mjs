@@ -502,13 +502,55 @@ test("local issues can be queued as a durable concurrency-limited Auto-run batch
 
   const created = await call("/api/work-item-auto-run-batches", {
     method: "POST",
-    body: { workItemIds: [first.id, second.id], maxConcurrent: 1 },
+    body: {
+      workItemIds: [first.id, second.id],
+      maxConcurrent: 1,
+      idempotencyKey: "http-batch-1",
+    },
   });
   assert.equal(created.status, 201);
   assert.equal(created.body.batch.total, 2);
   assert.equal(created.body.batch.maxConcurrent, 1);
-  assert.equal(created.body.batch.counts.running, 1);
-  assert.equal(created.body.batch.counts.queued, 1);
+  assert.equal(created.body.batch.counts.queued, 2);
+  assert.equal(created.body.batch.agentId, "agt_codex_cli");
+  assert.equal(created.body.batch.agentResolution, "canonical_default");
+  assert.equal(created.body.replayed, false);
+
+  const replayed = await call("/api/work-item-auto-run-batches", {
+    method: "POST",
+    body: {
+      workItemIds: [first.id, second.id],
+      maxConcurrent: 1,
+      idempotencyKey: "http-batch-1",
+    },
+  });
+  assert.equal(replayed.status, 200);
+  assert.equal(replayed.body.replayed, true);
+  assert.equal(replayed.body.batch.id, created.body.batch.id);
+
+  const conflict = await call("/api/work-item-auto-run-batches", {
+    method: "POST",
+    body: {
+      workItemIds: [first.id],
+      maxConcurrent: 1,
+      idempotencyKey: "http-batch-1",
+    },
+  });
+  assert.equal(conflict.status, 409);
+  assert.equal(conflict.body.error, "idempotency_key_conflict");
+
+  const demoAgent = await call("/api/work-item-auto-run-batches", {
+    method: "POST",
+    body: {
+      workItemIds: [first.id],
+      maxConcurrent: 1,
+      agentId: "agt_demo_cli",
+      idempotencyKey: "http-batch-demo-agent",
+    },
+  });
+  assert.equal(demoAgent.status, 409);
+  assert.equal(demoAgent.body.error, "batch_agent_not_eligible");
+  assert.equal(demoAgent.body.reason, "demo_agent_not_allowed");
 
   const listed = await call("/api/work-item-auto-run-batches");
   assert.equal(listed.status, 200);

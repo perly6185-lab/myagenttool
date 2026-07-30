@@ -47,6 +47,7 @@ export async function handleWorkItemRoutes({
         workItemIds: body?.workItemIds,
         maxConcurrent: body?.maxConcurrent,
         agentId: body?.agentId,
+        idempotencyKey: body?.idempotencyKey,
       }, actor);
       sendJson(res, result.status, result.body);
       return true;
