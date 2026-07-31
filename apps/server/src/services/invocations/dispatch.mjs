@@ -31,6 +31,18 @@ export function createInvocationDispatchRuntime({
   const bridgeDevice = state.device;
   const isBridgeExecuted = (invocation) => isBridgeExecutedShared(invocation, { findAgent, deviceId: bridgeDevice.id });
   const belongsToThisBridge = (invocation, agent) => belongsToThisBridgeShared(invocation, agent, bridgeDevice.id);
+  const localScheduleOrder = (invocation) => {
+    const autoRunId = invocation.options?.metadata?.autoRunId ?? null;
+    const workItem = (state.workItems ?? []).find((item) =>
+      (item.executionBindings ?? []).some((binding) =>
+        (binding.kind === "auto_run" && binding.targetId === autoRunId)
+        || (binding.kind === "application_invocation" && binding.id === invocation.id)));
+    return workItem?.schedulePlanSource === "urgent_insert"
+      && workItem.priority === "p0"
+      && Number.isFinite(workItem.scheduleOrder)
+      ? workItem.scheduleOrder
+      : 0;
+  };
 
   // Force a terminal status on runs stuck in "cancelling" past a grace (e.g. the
   // bridge died mid-cancel). Otherwise they'd hold a concurrency slot and lock
@@ -122,6 +134,10 @@ export function createInvocationDispatchRuntime({
       levels: [
         { keyOf: (item) => invocationTeamKey(item, state), loadOf: (key) => teamLoad.get(key) ?? 0 },
         { keyOf: (item) => invocationProjectKey(item), loadOf: (key) => projectLoad.get(key) ?? 0 },
+        // Within the fair team/project bucket, a confirmed current-terminal P0
+        // insertion goes to the head. Busy worktrees were already removed by
+        // the eligibility filter above, so this never bypasses dir exclusion.
+        { keyOf: (item) => String(localScheduleOrder(item)), loadOf: (key) => Number(key) || 0 },
       ],
       ageMsOf: (item) => {
         const created = Date.parse(item.createdAt ?? "");

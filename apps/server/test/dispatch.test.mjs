@@ -220,3 +220,68 @@ test("#817: the per-directory guard still holds on the real metadata shape", () 
     "two runs must still never share a working tree",
   );
 });
+
+test("current-terminal urgent P0 is queue-head within its fair team/project bucket", () => {
+  const old = queued("inv_old", "/w-old");
+  old.createdAt = "2026-07-01T00:00:00.000Z";
+  old.projectId = "prj_local";
+  old.options.metadata.projectId = "prj_local";
+  const urgent = queued("inv_urgent", "/w-urgent");
+  urgent.createdAt = "2026-07-01T00:00:10.000Z";
+  urgent.projectId = "prj_local";
+  urgent.options.metadata.projectId = "prj_local";
+  urgent.options.metadata.autoRunId = "run_urgent";
+  const state = {
+    device: { id: "dev", maxConcurrency: 2 },
+    projects: [{ id: "prj_local", ownerTeamId: "team_local" }],
+    invocations: [old, urgent],
+    workItems: [{
+      id: "lwi_urgent",
+      priority: "p0",
+      schedulePlanSource: "urgent_insert",
+      scheduleOrder: -1_000,
+      executionBindings: [{ kind: "auto_run", targetId: "run_urgent" }],
+    }],
+  };
+  const runtime = createInvocationDispatchRuntime({
+    state,
+    now: () => "2026-07-01T00:01:00.000Z",
+    appendEvent: () => {},
+    dispatchLeaseMs: 30_000,
+    findAgent: (id) => agents[id] ?? null,
+    completeInvocation: () => {},
+  });
+  assert.equal(runtime.nextDispatchableInvocation()?.id, "inv_urgent");
+});
+
+test("urgent P0 still waits behind its busy worktree while another local task can run", () => {
+  const runningSame = running("inv_running", "/w-urgent");
+  const urgent = queued("inv_urgent", "/w-urgent");
+  urgent.projectId = "prj_local";
+  urgent.options.metadata.projectId = "prj_local";
+  urgent.options.metadata.autoRunId = "run_urgent";
+  const free = queued("inv_free", "/w-free");
+  free.projectId = "prj_local";
+  free.options.metadata.projectId = "prj_local";
+  const state = {
+    device: { id: "dev", maxConcurrency: 2 },
+    projects: [{ id: "prj_local", ownerTeamId: "team_local" }],
+    invocations: [runningSame, urgent, free],
+    workItems: [{
+      id: "lwi_urgent",
+      priority: "p0",
+      schedulePlanSource: "urgent_insert",
+      scheduleOrder: -1_000,
+      executionBindings: [{ kind: "auto_run", targetId: "run_urgent" }],
+    }],
+  };
+  const runtime = createInvocationDispatchRuntime({
+    state,
+    now: () => "2026-07-01T00:01:00.000Z",
+    appendEvent: () => {},
+    dispatchLeaseMs: 30_000,
+    findAgent: (id) => agents[id] ?? null,
+    completeInvocation: () => {},
+  });
+  assert.equal(runtime.nextDispatchableInvocation()?.id, "inv_free");
+});

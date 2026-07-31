@@ -341,6 +341,9 @@ export function createHttpServer({
   createTroubleshootingReport,
   claimDecision,
   releaseDecisionClaim,
+  applyLocalSchedulePlan,
+  applyLocalScheduleRollover,
+  applyLocalScheduleUrgent,
   createToolInvocation,
   getTool,
   listTools,
@@ -1174,6 +1177,9 @@ export function createHttpServer({
         createTroubleshootingReport,
         claimDecision,
         releaseDecisionClaim,
+        applyLocalSchedulePlan,
+        applyLocalScheduleRollover,
+        applyLocalScheduleUrgent,
       })) {
         return;
       }

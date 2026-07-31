@@ -21,7 +21,8 @@ export default function CreateLocalWorkItemForm({
   onDone: () => void;
   onImportActivityChange: (active: boolean) => void;
 }) {
-  const { t } = useAppTranslation();
+  const { t, i18n } = useAppTranslation();
+  const plannedDateLabel = i18n.language.startsWith("zh") ? "计划日期" : "Planned date";
   const articleText = useArticleTaskLabels();
   const { execute, pending, error } = useAsyncAction();
   const [projectId, setProjectId] = useState(initialProjectId);
@@ -31,6 +32,7 @@ export default function CreateLocalWorkItemForm({
   const [priority, setPriority] = useState<LocalWorkItem["priority"]>("p2");
   const [labels, setLabels] = useState("");
   const [acceptance, setAcceptance] = useState("");
+  const [plannedDate, setPlannedDate] = useState("");
   const [dueDate, setDueDate] = useState("");
   const [milestone, setMilestone] = useState("");
   const [estimatePoints, setEstimatePoints] = useState("0");
@@ -152,6 +154,7 @@ export default function CreateLocalWorkItemForm({
           priority,
           labels: labels.split(",").map((value) => value.trim()).filter(Boolean),
           acceptanceCriteria: acceptance.split("\n").map((value) => value.trim()).filter(Boolean),
+          plannedDate: plannedDate || null,
           dueDate: dueDate || null,
           milestone,
           estimatePoints: Number(estimatePoints),
@@ -247,7 +250,8 @@ export default function CreateLocalWorkItemForm({
       <Field label={t("tasks.acceptanceCriteria")}>
         <textarea className="min-h-20 w-full rounded-md border border-border bg-background p-2 text-sm" value={acceptance} onChange={(event) => setAcceptance(event.target.value)} placeholder={t("tasks.acceptancePlaceholder")} />
       </Field>
-      <div className="grid gap-3 sm:grid-cols-3">
+      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+        <Field label={plannedDateLabel}><Input type="date" value={plannedDate} onChange={(event) => setPlannedDate(event.target.value)} /></Field>
         <Field label={t("taskLocal.dueDate")}><Input type="date" value={dueDate} onChange={(event) => setDueDate(event.target.value)} /></Field>
         <Field label={t("taskLocal.milestone")}><Input value={milestone} onChange={(event) => setMilestone(event.target.value)} /></Field>
         <Field label={t("planningInsights.estimatePoints")}><Input type="number" min="0" max="1000" value={estimatePoints} onChange={(event) => setEstimatePoints(event.target.value)} /></Field>

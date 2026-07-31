@@ -98,6 +98,170 @@ export interface InvocationDispatchHealthResponse {
   };
 }
 
+export interface LocalScheduleCapacityResponse {
+  generatedAt: string;
+  terminal: null | {
+    id: string;
+    name: string | null;
+    status: string;
+    unlinkState: string;
+    bridgeAvailable: boolean;
+  };
+  capacity: {
+    maxConcurrency: number;
+    inFlight: number;
+    utilization: number | null;
+    atCapacity: boolean;
+    availableSlots: number;
+    queueDepth: number;
+    worktreeLocks: number;
+  };
+  work: {
+    total: number;
+    executable: number;
+    attention: number;
+    backlog: number;
+    items: Array<{
+      workItemId: string;
+      localRef: string | null;
+      title: string;
+      projectId: string | null;
+      status: string;
+      priority: string;
+      dueDate: string | null;
+      plannedDate: string | null;
+      carriedFromDate: string | null;
+      schedulePlanSource: "manual" | "auto_plan" | "rollover" | "urgent_insert" | null;
+      scheduleReason: string | null;
+      scheduleOrder: number | null;
+      manuallyPinned: boolean;
+      revision: number;
+      createdAt: string | null;
+      updatedAt: string | null;
+      category: "executable" | "attention" | "backlog";
+      estimate: {
+        minutes: number;
+        source: "history" | "estimate_points" | "default";
+        confidence: "high" | "medium" | "low";
+        sampleSize: number;
+      };
+      readiness: { state: string; reason: string };
+      worktreeIds: string[];
+    }>;
+  };
+  assumptions: {
+    pointMinutes: number;
+    defaultMinutes: number;
+    estimateRangeMinutes: { min: number; max: number };
+  };
+}
+
+export interface LocalSchedulePreviewResponse {
+  generatedAt: string;
+  planRevision: string;
+  terminalId: string | null;
+  horizon: { yesterday: string; today: string; tomorrow: string };
+  assumptions: {
+    workdayMinutes: number;
+    utilization: number;
+    urgentReserve: number;
+    timeZone?: string;
+    grossMinutes: number;
+    allocatableMinutes: number;
+  };
+  days: Array<{
+    date: string;
+    capacityMinutes: number;
+    plannedMinutes: number;
+    availableMinutes: number;
+    items: Array<{
+      workItemId: string;
+      localRef: string | null;
+      title: string;
+      priority: string;
+      status: string;
+      estimatedMinutes: number;
+      estimateConfidence: "high" | "medium" | "low";
+      previousPlannedDate: string | null;
+      pinned: boolean;
+      expectedRevision: number;
+    }>;
+  }>;
+  attention: Array<{ workItemId: string; reason: string }>;
+  unscheduled: Array<{ workItemId: string; reason: string; plannedDate?: string }>;
+}
+
+export interface LocalScheduleRolloverMove {
+  workItemId: string;
+  localRef: string | null;
+  title: string;
+  status: string;
+  sourceDate: string;
+  targetDate: string;
+  expectedRevision: number;
+  runningContextPreserved: boolean;
+  previousPlanSource: string | null;
+  reason: string;
+}
+
+export interface LocalScheduleRolloverResponse {
+  generatedAt: string;
+  rolloverRevision: string;
+  terminalId: string | null;
+  sourceDate: string;
+  targetDate: string;
+  moves: LocalScheduleRolloverMove[];
+  confirmationRequired: LocalScheduleRolloverMove[];
+  unscheduled: Array<{ workItemId: string; reason: string }>;
+}
+
+export interface LocalScheduleUrgentInsertion {
+  workItemId: string;
+  localRef: string | null;
+  title: string;
+  dueDate: string | null;
+  createdAt: string | null;
+  expectedRevision: number;
+  targetDate: string;
+  estimatedMinutes: number;
+  queueOrder: number;
+  activation: "immediate" | "next_eligible" | "head_after_worktree_unlock" | "waiting_terminal";
+  requiresPinnedConfirmation: boolean;
+  reason: string;
+}
+
+export interface LocalScheduleUrgentDisplacement {
+  workItemId: string;
+  localRef: string | null;
+  title: string;
+  priority: string;
+  expectedRevision: number;
+  sourceDate: string;
+  targetDate: string;
+  estimatedMinutes: number;
+  manuallyPinned: boolean;
+  forWorkItemId: string;
+  reason: string;
+}
+
+export interface LocalScheduleUrgentResponse {
+  generatedAt: string;
+  urgentRevision: string;
+  terminalId: string | null;
+  date: string;
+  capacity: {
+    grossMinutes: number;
+    routineMinutes: number;
+    urgentReserveMinutes: number;
+    availableSlots: number;
+    inFlight: number;
+  };
+  insertions: LocalScheduleUrgentInsertion[];
+  displacements: LocalScheduleUrgentDisplacement[];
+  confirmationRequired: LocalScheduleUrgentDisplacement[];
+  unscheduled: Array<{ workItemId: string; reason: string }>;
+}
+
 export type WorkflowArtifactRole = "requirement" | "delivery" | "reference" | "draft" | "unknown";
 
 export interface WorkflowSource {
@@ -1856,6 +2020,7 @@ export const api = {
     request("GET", `/api/projects/${encodeURIComponent(projectId)}/github`),
   listWorkItems: (query: {
     projectId?: string; planningProjectId?: string; status?: string; type?: string; q?: string;
+    assigneeId?: string; plannedDate?: string;
     limit?: string; cursor?: string; updatedSince?: string;
   } = {}) => {
     const params = new URLSearchParams(Object.entries(query).filter(([, value]) => Boolean(value)) as [string, string][]);
@@ -1887,7 +2052,10 @@ export const api = {
     priority?: "p0" | "p1" | "p2" | "p3";
     labels?: string[];
     acceptanceCriteria?: string[];
+    assigneeIds?: string[];
     dueDate?: string | null;
+    plannedDate?: string | null;
+    carriedFromDate?: string | null;
     milestone?: string;
     estimatePoints?: number;
     parentId?: string | null;
@@ -2064,6 +2232,15 @@ export const api = {
   dora: () => request("GET", "/api/dora"),
   dispatchEvaluation: () => request("GET", "/api/dispatch-evaluation"),
   getInvocationDispatchHealth: () => request<InvocationDispatchHealthResponse>("GET", "/api/invocation-dispatch-health"),
+  getLocalScheduleCapacity: () => request<LocalScheduleCapacityResponse>("GET", "/api/local-schedule/capacity"),
+  getLocalSchedulePreview: () => request<LocalSchedulePreviewResponse>("GET", "/api/local-schedule/preview"),
+  applyLocalSchedulePlan: (planRevision: string) => request("POST", "/api/local-schedule/apply", { planRevision }),
+  getLocalScheduleRollover: () => request<LocalScheduleRolloverResponse>("GET", "/api/local-schedule/rollover-preview"),
+  applyLocalScheduleRollover: (rolloverRevision: string, confirmPinned = false) =>
+    request("POST", "/api/local-schedule/rollover", { rolloverRevision, confirmPinned }),
+  getLocalScheduleUrgent: () => request<LocalScheduleUrgentResponse>("GET", "/api/local-schedule/urgent-preview"),
+  applyLocalScheduleUrgent: (urgentRevision: string, confirmPinned = false) =>
+    request("POST", "/api/local-schedule/urgent", { urgentRevision, confirmPinned }),
   loopRoutineRuns: () => request("GET", "/api/loop-routines"),
   loopRoutineFindings: (runId: string) => request("GET", `/api/loop-routines/${encodeURIComponent(runId)}/findings`),
   // Auto-run effective configuration (safe knobs overlaid on env + per-command
