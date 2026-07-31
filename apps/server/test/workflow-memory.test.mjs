@@ -53,6 +53,7 @@ function fixture() {
 function setup(root, {
   embeddingAdapter = null,
   ocrAdapter = null,
+  maxConcurrentOcrActions,
   now = () => "2026-07-28T12:00:00.000Z",
 } = {}) {
   const state = {
@@ -142,6 +143,7 @@ function setup(root, {
     },
     embeddingAdapter,
     ocrAdapter,
+    maxConcurrentOcrActions,
   });
   const actor = { userId: "user_a", teamId: "team_a", role: "owner" };
   return { state, service, actor, events, verificationCalls, executionCalls };
@@ -326,6 +328,80 @@ test("runs raster-image OCR through the generic adapter and keeps image-region e
       width: 1600,
       height: 1200,
     });
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("limits different-artifact OCR to configured device capacity and permits retry", async () => {
+  const root = fixture();
+  try {
+    for (const name of ["scan-a.pdf", "scan-b.pdf", "scan-c.pdf"]) {
+      writeFileSync(join(root, name), `%PDF-1.3\n${name}`);
+    }
+    const pending = [];
+    const ocrAdapter = {
+      readiness: () => ({ state: "ready", providerId: "test-local", reason: null }),
+      recognizePdf: () => new Promise((resolve) => pending.push(resolve)),
+    };
+    const { service, actor } = setup(root, {
+      ocrAdapter,
+      maxConcurrentOcrActions: 2,
+    });
+    const source = service.createSource({
+      projectId: "project",
+      relativePath: ".",
+      readMode: "supported_text",
+      name: "OCR capacity",
+    }, actor).body.source;
+    await service.scanSource({ sourceId: source.id }, actor);
+    const artifacts = ["scan-a.pdf", "scan-b.pdf", "scan-c.pdf"].map((relativePath) => {
+      const artifact = service.listArtifacts({ sourceId: source.id }, actor).body.artifacts
+        .find((row) => row.relativePath === relativePath);
+      artifact.extraction = { state: "needs_ocr", pageCount: 1, needsOcr: true };
+      return artifact;
+    });
+    const recognize = (artifact) => service.ocrArtifact({
+      artifactId: artifact.id,
+      expectedRevision: artifact.revision,
+      confirmed: true,
+    }, actor);
+    const resultFor = (label) => ({
+      providerId: "test-local",
+      providerVersion: "1",
+      inputKind: "pdf",
+      pageCount: 1,
+      pages: [{
+        index: 1,
+        text: `Recognized local document content for ${label}.`,
+        confidence: 0.9,
+        evidence: [],
+      }],
+    });
+
+    const first = recognize(artifacts[0]);
+    const second = recognize(artifacts[1]);
+    assert.equal(pending.length, 2);
+    const atCapacity = await recognize(artifacts[2]);
+    assert.deepEqual(atCapacity, {
+      status: 429,
+      body: {
+        error: "workflow_ocr_capacity_reached",
+        retryable: true,
+        capacity: 2,
+      },
+    });
+    assert.equal(pending.length, 2);
+
+    pending[0](resultFor("A"));
+    assert.equal((await first).status, 200);
+    const retry = recognize(artifacts[2]);
+    assert.equal(pending.length, 3);
+    pending[1](resultFor("B"));
+    pending[2](resultFor("C"));
+    const [secondResult, retryResult] = await Promise.all([second, retry]);
+    assert.equal(secondResult.status, 200);
+    assert.equal(retryResult.status, 200);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

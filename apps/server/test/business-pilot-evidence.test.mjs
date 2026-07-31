@@ -511,6 +511,18 @@ test("collector verifies the complete structured safety scenario matrix", () => 
 
 test("pilot workbench persists human truth, projects honest gaps, and replays collection", () => {
   const state = stateFixture();
+  state.projects.push({ id: "prj_c", ownerTeamId: "team_a" });
+  state.events.push({
+    id: "evt_foreign_approval_bypass",
+    type: "routine_action_refused",
+    data: {
+      actorTeamId: "team_a",
+      projectId: "prj_c",
+      pilotSafetyScenarioId: "approval_bypass",
+      outcome: "blocked",
+      error: "human_approval_step_cannot_bypass_approval",
+    },
+  });
   let ids = 0;
   const service = createBusinessPilotEvidenceService({
     state,
@@ -526,6 +538,8 @@ test("pilot workbench persists human truth, projects honest gaps, and replays co
     evidenceKind: "classification",
     evidenceId: "bdc_inquiry",
   }]);
+  assert.equal(initial.body.eligible.safetyEvidence.some((row) =>
+    row.evidenceId === "evt_foreign_approval_bypass"), false);
   assert.equal(initial.body.progress.caseCount, 0);
   assert.ok(initial.body.progress.missing.includes("minimum_formal_cases"));
   assert.equal(service.getWorkbench({ projectId: "prj_a" }, ACTOR_B).status, 404);
@@ -567,6 +581,20 @@ test("pilot workbench persists human truth, projects honest gaps, and replays co
       evidenceId: "bdc_inquiry",
     }],
   };
+  const foreignEvidenceDraft = structuredClone(draft);
+  foreignEvidenceDraft.safetyScenarios = [{
+    id: "approval_bypass",
+    evidenceKind: "event",
+    evidenceId: "evt_foreign_approval_bypass",
+  }];
+  const foreignEvidence = service.saveWorkbench({
+    projectId: "prj_a",
+    expectedRevision: 0,
+    draft: foreignEvidenceDraft,
+  }, ACTOR_A);
+  assert.equal(foreignEvidence.status, 404);
+  assert.equal(foreignEvidence.body.error, "pilot_safety_evidence_not_found");
+
   const saved = service.saveWorkbench({
     projectId: "prj_a",
     expectedRevision: 0,
@@ -593,7 +621,6 @@ test("pilot workbench persists human truth, projects honest gaps, and replays co
     expectedRevision: 1,
     draft: injected,
   }, ACTOR_A).status, 400);
-  state.projects.push({ id: "prj_c", ownerTeamId: "team_a" });
   const crossProject = service.saveWorkbench({
     projectId: "prj_c",
     expectedRevision: 0,
@@ -625,8 +652,32 @@ test("pilot workbench persists human truth, projects honest gaps, and replays co
   assert.equal(replay.body.replayed, true);
   assert.equal(state.businessPilotEvidenceReceipts.length, 1);
 
+  state.businessDocumentClassifications[0].riskSignals = [];
+  const invalidated = service.getWorkbench({ projectId: "prj_a" }, ACTOR_A);
+  assert.equal(invalidated.body.progress.safety[0].passed, false);
+  const staleAfterEvidenceChange = service.collectWorkbench({
+    projectId: "prj_a",
+    expectedRevision: 1,
+  }, ACTOR_A);
+  assert.equal(staleAfterEvidenceChange.status, 409);
+  assert.equal(staleAfterEvidenceChange.body.error, "commercial_pilot_workbench_revision_conflict");
+  assert.equal(state.businessPilotEvidenceReceipts.length, 1);
+  const recollected = service.collectWorkbench({
+    projectId: "prj_a",
+    expectedRevision: 2,
+  }, ACTOR_A);
+  assert.equal(recollected.status, 200);
+  assert.equal(recollected.body.replayed, false);
+  assert.equal(recollected.body.draft.revision, 3);
+  assert.equal(recollected.body.collection.manifest.safetyScenarios[0].passed, false);
+  assert.notEqual(
+    recollected.body.collection.manifest.evidenceReceipt.id,
+    collected.body.collection.manifest.evidenceReceipt.id,
+  );
+  assert.equal(state.businessPilotEvidenceReceipts.length, 2);
+
   const restarted = createBusinessPilotEvidenceService({ state });
   const restored = restarted.getWorkbench({ projectId: "prj_a" }, ACTOR_A);
-  assert.equal(restored.body.draft.revision, 2);
+  assert.equal(restored.body.draft.revision, 3);
   assert.equal(restored.body.draft.lastCollection.evidence.pilotId, "pilot-workbench");
 });

@@ -365,22 +365,46 @@ export function validateCommercialPilotEvidenceSpec(spec) {
   return { valid: uniqueErrors.length === 0, errors: uniqueErrors };
 }
 
-function safetyEvidenceFor(state, scenario, actor) {
+function evidenceProjectId(state, record, evidenceKind) {
+  const explicitProjectId = record?.projectId
+    ?? record?.data?.projectId
+    ?? record?.evidence?.projectId
+    ?? (record?.subject?.kind === "project" ? record.subject.id : null);
+  if (explicitProjectId) return explicitProjectId;
+  const routineRunId = record?.data?.routineRunId ?? record?.evidence?.routineRunId;
+  if (routineRunId) {
+    return (state.routineRuns ?? []).find((row) => row.id === routineRunId)?.projectId ?? null;
+  }
+  const artifactId = record?.data?.artifactId ?? record?.evidence?.artifactId;
+  if (artifactId) {
+    return (state.workflowArtifacts ?? []).find((row) => row.id === artifactId)?.projectId ?? null;
+  }
+  if (evidenceKind === "refusal" && record?.invocationId) {
+    return (state.invocations ?? []).find((row) => row.id === record.invocationId)?.projectId ?? null;
+  }
+  return null;
+}
+
+function safetyEvidenceFor(state, scenario, actor, projectId = null) {
   const actorTeam = actor?.teamId ?? "team_local";
   let record = null;
   if (scenario.evidenceKind === "event") {
     record = (state.events ?? []).find((row) =>
-      row.id === scenario.evidenceId && row.data?.actorTeamId === actorTeam) ?? null;
+      row.id === scenario.evidenceId
+      && row.data?.actorTeamId === actorTeam
+      && (!projectId || evidenceProjectId(state, row, "event") === projectId)) ?? null;
   } else if (scenario.evidenceKind === "refusal") {
     record = (state.refusals ?? []).find((row) =>
       row.id === scenario.evidenceId
       && (row.evidence?.actorTeamId === actorTeam
         || row.requester?.id === actor?.userId
-        || row.decidedBy?.id === actor?.userId)) ?? null;
+        || row.decidedBy?.id === actor?.userId)
+      && (!projectId || evidenceProjectId(state, row, "refusal") === projectId)) ?? null;
   } else {
     record = (state.businessDocumentClassifications ?? []).find((row) =>
       row.id === scenario.evidenceId
       && row.ownerTeamId === actorTeam
+      && (!projectId || row.projectId === projectId)
       && actorCanAccessProject(state, actor, row.projectId)) ?? null;
     const artifact = record
       ? (state.workflowArtifacts ?? []).find((row) =>
@@ -692,13 +716,13 @@ export function createBusinessPilotEvidenceService({
     };
   }
 
-  function workbenchProgress(spec, actor) {
+  function workbenchProgress(spec, actor, projectId) {
     const templates = new Set(spec.cases.map((row) => row.templateId));
     const outcomes = new Set(spec.cases.map((row) => row.expectedOutcome));
     const traits = new Set(spec.cases.flatMap((row) => row.traits));
     const safety = spec.safetyScenarios.map((row) => ({
       id: row.id,
-      ...safetyEvidenceFor(state, row, actor),
+      ...safetyEvidenceFor(state, row, actor, projectId),
     }));
     const cases = spec.cases.map((row) => {
       const result = caseEvidence(state, row, actor);
@@ -797,7 +821,7 @@ export function createBusinessPilotEvidenceService({
           id: scenarioId,
           evidenceKind: candidate.kind,
           evidenceId: candidate.id,
-        }, actor);
+        }, actor, projectId);
         if (result.passed) {
           safetyEvidence.push({
             id: scenarioId,
@@ -823,7 +847,7 @@ export function createBusinessPilotEvidenceService({
         updatedAt: row?.updatedAt ?? null,
         lastCollection: row?.lastCollection ?? null,
       },
-      progress: workbenchProgress(spec, actor),
+      progress: workbenchProgress(spec, actor, projectId),
       eligible: eligibleWorkbenchData(projectId, actor),
       requiredSafetyScenarios: [...commercialPilotRequiredScenarios.safety],
     };
@@ -873,7 +897,8 @@ export function createBusinessPilotEvidenceService({
       }
     }
     for (const row of spec.safetyScenarios) {
-      if (safetyEvidenceFor(state, row, actor).reason === "evidence_not_found_or_not_visible") {
+      if (safetyEvidenceFor(state, row, actor, projectId).reason
+        === "evidence_not_found_or_not_visible") {
         return { status: 404, body: { error: "pilot_safety_evidence_not_found" } };
       }
     }
@@ -888,14 +913,11 @@ export function createBusinessPilotEvidenceService({
       };
     }
     const timestamp = now();
-    const digest = manifestDigest(spec);
     runTx(() => {
       if (existing) {
         existing.spec = spec;
-        if (existing.lastCollectionDigest !== digest) {
-          existing.lastCollection = null;
-          existing.lastCollectionDigest = null;
-        }
+        existing.lastCollection = null;
+        existing.lastCollectionDigest = null;
         existing.revision += 1;
         existing.updatedAt = timestamp;
         existing.updatedBy = actor?.userId ?? "user_local";
@@ -944,7 +966,23 @@ export function createBusinessPilotEvidenceService({
     };
   }
 
-  function collect(spec, actor = null) {
+  function collectionEvidenceDigest(spec, actor, projectId = null) {
+    return manifestDigest({
+      spec,
+      cases: spec.cases.map((row) => {
+        const result = caseEvidence(state, row, actor);
+        return result.error
+          ? { id: row.id, error: result.error }
+          : { id: row.id, observed: result.observed, evidence: result.evidence };
+      }),
+      safetyScenarios: spec.safetyScenarios.map((scenario) => ({
+        id: scenario.id,
+        ...safetyEvidenceFor(state, scenario, actor, projectId),
+      })),
+    });
+  }
+
+  function collect(spec, actor = null, { projectId = null } = {}) {
     const validation = validateCommercialPilotEvidenceSpec(spec);
     if (!validation.valid) {
       return {
@@ -974,7 +1012,7 @@ export function createBusinessPilotEvidenceService({
       evidenceCases.push(collected.evidence);
     }
     const safetyResults = spec.safetyScenarios.map((scenario) => {
-      const result = safetyEvidenceFor(state, scenario, actor);
+      const result = safetyEvidenceFor(state, scenario, actor, projectId);
       return {
         manifest: { id: scenario.id, passed: result.passed },
         evidence: {
@@ -1056,7 +1094,7 @@ export function createBusinessPilotEvidenceService({
     if (!draft) {
       return { status: 409, body: { error: "commercial_pilot_workbench_not_saved" } };
     }
-    const digest = manifestDigest(draft.spec);
+    const digest = collectionEvidenceDigest(draft.spec, actor, projectId);
     if (draft.revision !== expectedRevision) {
       if (expectedRevision === draft.revision - 1
         && draft.lastCollectionDigest === digest
@@ -1085,7 +1123,7 @@ export function createBusinessPilotEvidenceService({
         body: {
           error: "commercial_pilot_workbench_incomplete",
           validation,
-          progress: workbenchProgress(draft.spec, actor),
+          progress: workbenchProgress(draft.spec, actor, projectId),
         },
       };
     }
@@ -1099,7 +1137,7 @@ export function createBusinessPilotEvidenceService({
         },
       };
     }
-    const result = collect(draft.spec, actor);
+    const result = collect(draft.spec, actor, { projectId });
     if (result.status !== 200) return result;
     const verification = verify({ manifest: result.body.manifest }, actor);
     if (verification.status !== 200) {

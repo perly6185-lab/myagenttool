@@ -46,6 +46,8 @@ const COPY = {
     open: "Open pilot workbench",
     noProject: "Choose a project before preparing a pilot.",
     loading: "Loading pilot evidence…",
+    loadFailed: "Pilot evidence could not be loaded.",
+    retry: "Retry loading",
     cases: "Authorized cases",
     casesHint: "Select authorized real or deidentified routine tasks, then confirm the expected result.",
     authorization: "Data authorization",
@@ -103,6 +105,8 @@ const COPY = {
     open: "打开试运行工作台",
     noProject: "请先选择项目，再准备正式试运行。",
     loading: "正在加载试运行证据…",
+    loadFailed: "试运行证据加载失败。",
+    retry: "重新加载",
     cases: "经授权案例",
     casesHint: "选择已授权的真实或脱敏日常任务，并人工确认预期结果。",
     authorization: "数据授权",
@@ -155,6 +159,111 @@ const COPY = {
     close: "关闭",
   },
 } as const;
+
+const LABELS = {
+  en: {
+    documentRoles: {
+      inquiry: "Inquiry",
+      quotation: "Quotation",
+      order: "Order",
+      inquiry_ledger: "Inquiry ledger",
+      quotation_ledger: "Quotation ledger",
+      order_ledger: "Order ledger",
+      unknown: "Unknown type",
+    },
+    outcomes: {
+      ordered: "Ordered",
+      no_order: "No order",
+      rejected: "Rejected",
+    },
+    traits: {
+      duplicate: "Duplicate handling",
+      missing_fact: "Missing information",
+      conflicting_fact: "Conflicting information",
+      restart: "Interrupted-task recovery",
+      concurrency: "Concurrent processing",
+    },
+    safety: {
+      unauthorized_path_read: "Unauthorized path read",
+      path_traversal: "Path traversal",
+      escaping_symlink: "Escaping symbolic link",
+      prompt_injection: "Prompt injection",
+      formula_injection: "Formula injection",
+      stale_approval: "Stale approval",
+      silent_overwrite: "Silent overwrite",
+      automatic_delivery: "Automatic delivery",
+      approval_bypass: "Approval bypass",
+      cross_tenant: "Cross-tenant access",
+    },
+    review: {
+      performance: "Performance",
+      security: "Security",
+      privacy: "Privacy",
+      accessibility: "Accessibility",
+      localization: "Localization",
+      migration: "Migration",
+      rollback: "Rollback",
+    },
+    evidenceKinds: {
+      event: "Event",
+      refusal: "Refusal",
+      classification: "Classification",
+    },
+  },
+  zh: {
+    documentRoles: {
+      inquiry: "询价单",
+      quotation: "报价单",
+      order: "订单",
+      inquiry_ledger: "询价台账",
+      quotation_ledger: "报价台账",
+      order_ledger: "订单台账",
+      unknown: "未知类型",
+    },
+    outcomes: {
+      ordered: "已下单",
+      no_order: "未下单",
+      rejected: "已拒绝",
+    },
+    traits: {
+      duplicate: "重复处理",
+      missing_fact: "信息缺失",
+      conflicting_fact: "信息冲突",
+      restart: "中断恢复",
+      concurrency: "并发处理",
+    },
+    safety: {
+      unauthorized_path_read: "未授权路径读取",
+      path_traversal: "路径穿越",
+      escaping_symlink: "越界符号链接",
+      prompt_injection: "提示词注入",
+      formula_injection: "公式注入",
+      stale_approval: "过期审批",
+      silent_overwrite: "静默覆盖",
+      automatic_delivery: "自动交付",
+      approval_bypass: "绕过审批",
+      cross_tenant: "跨租户访问",
+    },
+    review: {
+      performance: "性能",
+      security: "安全",
+      privacy: "隐私",
+      accessibility: "无障碍",
+      localization: "本地化",
+      migration: "迁移",
+      rollback: "回滚",
+    },
+    evidenceKinds: {
+      event: "事件",
+      refusal: "拒绝记录",
+      classification: "文件分类",
+    },
+  },
+} as const;
+
+function localizedLabel(labels: Readonly<Record<string, string>>, value: string) {
+  return labels[value] ?? value.replaceAll("_", " ");
+}
 
 const REASONS = {
   en: {
@@ -272,18 +381,21 @@ export function CommercialPilotWorkbench({ projectId }: { projectId: string }) {
   const { i18n } = useAppTranslation();
   const language = i18n.resolvedLanguage?.startsWith("zh") ? "zh" : "en";
   const copy = COPY[language];
+  const labels = LABELS[language];
   const sessionRole = useSessionRole();
   const canManage = ["owner", "admin"].includes(sessionRole);
   const reasonLabel = (reason: string) => {
     if (reason.startsWith("trait:")) {
+      const trait = localizedLabel(labels.traits, reason.slice(6));
       return language === "zh"
-        ? `补充恢复场景：${reason.slice(6)}`
-        : `Add recovery condition: ${reason.slice(6)}`;
+        ? `补充恢复场景：${trait}`
+        : `Add recovery condition: ${trait}`;
     }
     if (reason.startsWith("safety:")) {
+      const scenario = localizedLabel(labels.safety, reason.slice(7));
       return language === "zh"
-        ? `补齐安全证据：${reason.slice(7)}`
-        : `Add safety evidence: ${reason.slice(7)}`;
+        ? `补齐安全证据：${scenario}`
+        : `Add safety evidence: ${scenario}`;
     }
     return REASONS[language][reason as keyof typeof REASONS[typeof language]]
       ?? reason.replaceAll("_", " ");
@@ -454,7 +566,15 @@ export function CommercialPilotWorkbench({ projectId }: { projectId: string }) {
         closeDisabled={busy != null}
       >
         {!projectId ? <p className="text-sm text-muted-foreground">{copy.noProject}</p>
-          : workbenchQuery.isLoading || !workbench || !draft ? (
+          : workbenchQuery.isError ? (
+            <div role="alert" className="space-y-3 rounded-md border border-destructive/40 p-3">
+              <p className="text-sm font-medium text-destructive">{copy.loadFailed}</p>
+              <p className="text-xs text-muted-foreground">{errorText(workbenchQuery.error)}</p>
+              <Button variant="secondary" onClick={() => void workbenchQuery.refetch()}>
+                {copy.retry}
+              </Button>
+            </div>
+          ) : workbenchQuery.isLoading || !workbench || !draft ? (
             <p className="flex items-center gap-2 text-sm text-muted-foreground">
               <Loader2 className="size-4 animate-spin" /> {copy.loading}
             </p>
@@ -573,7 +693,11 @@ export function CommercialPilotWorkbench({ projectId }: { projectId: string }) {
                             expectedDocumentRole: event.target.value as CommercialPilotDocumentRole,
                           })}
                         >
-                          {DOCUMENT_ROLES.map((role) => <option key={role} value={role}>{role}</option>)}
+                          {DOCUMENT_ROLES.map((role) => (
+                            <option key={role} value={role}>
+                              {localizedLabel(labels.documentRoles, role)}
+                            </option>
+                          ))}
                         </Select>
                       </label>
                       <label className="space-y-1 text-xs">
@@ -584,9 +708,11 @@ export function CommercialPilotWorkbench({ projectId }: { projectId: string }) {
                             expectedOutcome: event.target.value as CommercialPilotCaseDraft["expectedOutcome"],
                           })}
                         >
-                          <option value="ordered">ordered</option>
-                          <option value="no_order">no_order</option>
-                          <option value="rejected">rejected</option>
+                          {(["ordered", "no_order", "rejected"] as const).map((outcome) => (
+                            <option key={outcome} value={outcome}>
+                              {localizedLabel(labels.outcomes, outcome)}
+                            </option>
+                          ))}
                         </Select>
                       </label>
                     </div>
@@ -604,7 +730,7 @@ export function CommercialPilotWorkbench({ projectId }: { projectId: string }) {
                                   : row.traits.filter((value) => value !== trait),
                               })}
                             />
-                            {trait}
+                            {localizedLabel(labels.traits, trait)}
                           </label>
                         ))}
                       </div>
@@ -655,7 +781,7 @@ export function CommercialPilotWorkbench({ projectId }: { projectId: string }) {
                       .filter((row) => row.id === scenario);
                     return (
                       <label key={scenario} className="space-y-1 text-xs">
-                        <span>{scenario}</span>
+                        <span>{localizedLabel(labels.safety, scenario)}</span>
                         <Select
                           value={current ? `${current.evidenceKind}:${current.evidenceId}` : ""}
                           onChange={(event) => updateSafety(scenario, event.target.value)}
@@ -669,7 +795,8 @@ export function CommercialPilotWorkbench({ projectId }: { projectId: string }) {
                               key={`${row.evidenceKind}:${row.evidenceId}`}
                               value={`${row.evidenceKind}:${row.evidenceId}`}
                             >
-                              {row.evidenceKind} · {row.evidenceId}
+                              {localizedLabel(labels.evidenceKinds, row.evidenceKind)}
+                              {" · "}{row.evidenceId}
                             </option>
                           ))}
                         </Select>
@@ -709,7 +836,7 @@ export function CommercialPilotWorkbench({ projectId }: { projectId: string }) {
                         },
                       }))}
                     >
-                      {dimension}
+                      {localizedLabel(labels.review, dimension)}
                     </CheckRow>
                   ))}
                 </div>
@@ -747,7 +874,9 @@ export function CommercialPilotWorkbench({ projectId }: { projectId: string }) {
                   <div className="rounded-md bg-muted/40 p-2 text-sm">
                     <span className="text-muted-foreground">{copy.outcomes}</span>
                     <strong className="block">
-                      {workbench.progress.outcomes.join(" · ") || "—"}
+                      {workbench.progress.outcomes
+                        .map((outcome) => localizedLabel(labels.outcomes, outcome))
+                        .join(" · ") || "—"}
                     </strong>
                   </div>
                   <div className="rounded-md bg-muted/40 p-2 text-sm">
@@ -774,7 +903,9 @@ export function CommercialPilotWorkbench({ projectId }: { projectId: string }) {
                 </div>
                 <div className="flex flex-wrap gap-1">
                   {workbench.progress.traits.map((row) => (
-                    <Badge key={row.id} tone={row.complete ? "success" : "neutral"}>{row.id}</Badge>
+                    <Badge key={row.id} tone={row.complete ? "success" : "neutral"}>
+                      {localizedLabel(labels.traits, row.id)}
+                    </Badge>
                   ))}
                 </div>
               </section>

@@ -169,4 +169,54 @@ describe("CommercialPilotWorkbench", () => {
     })]);
     expect(body.draft.cases[0]).not.toHaveProperty("observed");
   });
+
+  it("shows a recoverable load error instead of an endless spinner", async () => {
+    mocks.get.mockRejectedValueOnce(new Error("offline"));
+    renderWorkbench();
+    await waitFor(() => expect(mocks.get).toHaveBeenCalledTimes(1));
+    fireEvent.click(screen.getByRole("button", { name: "Open pilot workbench" }));
+
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toContain("Pilot evidence could not be loaded.");
+    expect(alert.textContent).toContain("offline");
+
+    mocks.get.mockResolvedValueOnce(response());
+    fireEvent.click(screen.getByRole("button", { name: "Retry loading" }));
+    await waitFor(() => expect(mocks.get).toHaveBeenCalledTimes(2));
+    expect(await screen.findByDisplayValue("pilot-prj_a")).toBeTruthy();
+  });
+
+  it("uses human-readable Chinese labels for workflow enums", async () => {
+    await i18n.changeLanguage("zh-CN");
+    const localized = response({
+      cases: [{
+        id: "case-01",
+        workItemId: "wi_1",
+        templateId: "default-a",
+        traits: ["restart"],
+        expectedDocumentRole: "inquiry",
+        relationshipExpected: false,
+        expectedOutcome: "no_order",
+      }],
+    });
+    localized.progress.outcomes = ["no_order"];
+    localized.progress.traits = [{ id: "restart", complete: true }];
+    localized.eligible.safetyEvidence = [{
+      id: "path_traversal",
+      evidenceKind: "event",
+      evidenceId: "evt_path",
+    }];
+    mocks.get.mockResolvedValue(localized);
+
+    renderWorkbench();
+    await waitFor(() => expect(mocks.get).toHaveBeenCalledWith("prj_a"));
+    fireEvent.click(screen.getByRole("button", { name: "打开试运行工作台" }));
+
+    expect(await screen.findByRole("option", { name: "询价单" })).toBeTruthy();
+    expect(screen.getByRole("option", { name: "未下单" })).toBeTruthy();
+    expect(screen.getByText("路径穿越")).toBeTruthy();
+    expect(screen.getAllByText("中断恢复").length).toBeGreaterThan(0);
+    expect(screen.getByText("性能")).toBeTruthy();
+    expect(screen.getByRole("option", { name: "事件 · evt_path" })).toBeTruthy();
+  });
 });
