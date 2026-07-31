@@ -107,7 +107,7 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Run single-chain failure matrix
-        run: pnpm test:batch-chain -- --report ${{ env.BATCH_CHAIN_REPORT }}
+        run: pnpm test:batch-chain --report ${{ env.BATCH_CHAIN_REPORT }}
 
       - name: Upload single-chain report
         if: always()
