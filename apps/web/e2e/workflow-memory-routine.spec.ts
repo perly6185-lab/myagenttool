@@ -670,6 +670,12 @@ async function mockApi(page: Page) {
         samples: [],
       } });
     }
+    if (url.pathname === "/api/workflow-memory/commercial-pilot/workbench") {
+      return route.fulfill({
+        status: 403,
+        json: { error: "pilot_workbench_not_available_in_routine_fixture" },
+      });
+    }
     return route.fulfill({ json: {} });
   });
 }
