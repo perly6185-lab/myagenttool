@@ -3,16 +3,73 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { DashboardView, eventsForInvocation } from "@/features/dashboard/dashboard-view";
 import { i18n } from "@/lib/i18n";
 
-const mocks = vi.hoisted(() => ({ useConsoleState: vi.fn(), useAsyncAction: vi.fn() }));
+const mocks = vi.hoisted(() => ({
+  useConsoleState: vi.fn(),
+  useAsyncAction: vi.fn(),
+  listWorkItems: vi.fn(),
+  getLocalScheduleCapacity: vi.fn(),
+  getLocalSchedulePreview: vi.fn(),
+  applyLocalSchedulePlan: vi.fn(),
+  getLocalScheduleRollover: vi.fn(),
+  applyLocalScheduleRollover: vi.fn(),
+  getLocalScheduleUrgent: vi.fn(),
+  applyLocalScheduleUrgent: vi.fn(),
+}));
 vi.mock("@/data/use-console-state", () => ({ useConsoleState: mocks.useConsoleState }));
-vi.mock("@/data/use-console-actions", () => ({ useAsyncAction: mocks.useAsyncAction, api: {} }));
+vi.mock("@/data/use-console-actions", () => ({
+  useAsyncAction: mocks.useAsyncAction,
+  api: {
+    listWorkItems: mocks.listWorkItems,
+  },
+}));
+vi.mock("@/features/dashboard/local-schedule-api", () => ({
+  localScheduleApi: {
+    capacity: mocks.getLocalScheduleCapacity,
+    preview: mocks.getLocalSchedulePreview,
+    applyPlan: mocks.applyLocalSchedulePlan,
+    rolloverPreview: mocks.getLocalScheduleRollover,
+    applyRollover: mocks.applyLocalScheduleRollover,
+    urgentPreview: mocks.getLocalScheduleUrgent,
+    applyUrgent: mocks.applyLocalScheduleUrgent,
+  },
+}));
 vi.mock("@/features/invocations/run-transcript", () => ({ RunTranscriptSection: () => null }));
 
-beforeEach(async () => { await i18n.changeLanguage("en-US"); });
+beforeEach(async () => {
+  await i18n.changeLanguage("en-US");
+  mocks.listWorkItems.mockResolvedValue({ workItems: [], count: 0 });
+  mocks.getLocalScheduleCapacity.mockResolvedValue({
+    terminal: { bridgeAvailable: false },
+    capacity: { maxConcurrency: 1, availableSlots: 1, queueDepth: 0, worktreeLocks: 0 },
+  });
+  mocks.getLocalSchedulePreview.mockResolvedValue({
+    planRevision: "0123456789abcdef01234567",
+    days: [],
+    attention: [],
+    unscheduled: [],
+  });
+  mocks.applyLocalSchedulePlan.mockResolvedValue({ applied: 0 });
+  mocks.getLocalScheduleRollover.mockResolvedValue({
+    rolloverRevision: "0123456789abcdef01234567",
+    moves: [],
+    confirmationRequired: [],
+    unscheduled: [],
+  });
+  mocks.applyLocalScheduleRollover.mockResolvedValue({ applied: 0 });
+  mocks.getLocalScheduleUrgent.mockResolvedValue({
+    urgentRevision: "0123456789abcdef01234567",
+    insertions: [],
+    displacements: [],
+    confirmationRequired: [],
+    unscheduled: [],
+  });
+  mocks.applyLocalScheduleUrgent.mockResolvedValue({ inserted: 0 });
+});
 
 afterEach(() => {
   cleanup();
   vi.clearAllMocks();
+  window.history.replaceState({}, "", "/");
 });
 
 function setup() {
@@ -23,11 +80,12 @@ function setup() {
 }
 
 describe("DashboardView surfaces (#927)", () => {
-  it("puts the task action first, keeps starter tasks visible, and focuses it from Create", () => {
+  it("keeps the primary task action first, puts the three-day board next, and focuses the task from Create", async () => {
     setup();
     render(<DashboardView surface="overview" />);
     expect(screen.getByText(/Prepare this computer/i)).toBeTruthy();
     expect(screen.getByText("What should your computer do?").closest(".order-1")).toBeTruthy();
+    expect((await screen.findByTestId("daily-work-board")).closest(".order-2")).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Inspect this project" }));
     const taskInput = screen.getByRole("textbox", { name: "Task" }) as HTMLTextAreaElement;
     expect(taskInput.value).toBe(
@@ -56,6 +114,59 @@ describe("DashboardView surfaces (#927)", () => {
     expect(screen.queryByText(/Getting started/i)).toBeNull();
     // You can still start a task from Workspace: the composer is retained.
     expect(screen.getByText("What should your computer do?")).toBeTruthy();
+  });
+
+  it("carries exact Auto-run and refusal targets into their native surfaces", () => {
+    const states = {
+      pending_decision: { count: 0, items: [] },
+      in_progress: { count: 0, items: [] },
+      waiting: { count: 0, items: [] },
+      done: { count: 0, items: [] },
+      failed: { count: 0, items: [] },
+      follow_up: {
+        count: 2,
+        items: [
+          {
+            id: "autorun:aur_real",
+            state: "follow_up",
+            kind: "auto_run",
+            title: "Real failed task",
+            section: "autoRuns",
+            targetId: "aur_real",
+          },
+          {
+            id: "refusal:ref_real",
+            state: "follow_up",
+            kind: "refusal",
+            title: "Real refusal",
+            section: "evidence",
+            targetId: "inv_real",
+          },
+        ],
+      },
+    };
+    mocks.useConsoleState.mockReturnValue({
+      data: {
+        projects: [],
+        worktrees: [],
+        events: [],
+        invocations: [],
+        agents: [],
+        device: { status: "offline" },
+        workBoard: { generatedAt: Date.now(), states },
+      },
+    });
+    mocks.useAsyncAction.mockReturnValue({ execute: vi.fn(), pending: false, error: null });
+
+    const { unmount } = render(<DashboardView surface="overview" />);
+    fireEvent.click(screen.getByRole("button", { name: /Real failed task/ }));
+    expect(new URLSearchParams(window.location.search).get("autoRun")).toBe("aur_real");
+
+    unmount();
+    window.history.replaceState({}, "", "/");
+    render(<DashboardView surface="overview" />);
+    fireEvent.click(screen.getByRole("button", { name: /Real refusal/ }));
+    expect(new URLSearchParams(window.location.search).get("refusal")).toBe("ref_real");
   });
 
   it("shows one obvious run control and swaps it for cancellation while running", () => {

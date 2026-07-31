@@ -65,6 +65,12 @@ export type LocalWorkItem = {
   }[];
   completionGate?: { ready: boolean; missingCriteria: string[]; verificationRequired: boolean };
   dueDate: string | null;
+  plannedDate?: string | null;
+  carriedFromDate?: string | null;
+  schedulePlanSource?: "manual" | "auto_plan" | "rollover" | "urgent_insert" | null;
+  scheduleReason?: string | null;
+  scheduleOrder?: number | null;
+  completedAt?: string | null;
   milestone: string;
   estimatePoints: number;
   revision: number;
@@ -89,6 +95,7 @@ export type LocalWorkItem = {
   subIssuesSummary?: { total: number; completed: number; percentCompleted: number };
   blockedBy?: { id: string; localRef: string; title: string; status: LocalWorkItem["status"]; state: "open" | "closed"; resolved: boolean }[];
   blocks?: { id: string; localRef: string; title: string; status: LocalWorkItem["status"]; state: "open" | "closed" }[];
+  createdAt?: string;
   updatedAt: string;
 };
 export type WorkItemAssetRef = {

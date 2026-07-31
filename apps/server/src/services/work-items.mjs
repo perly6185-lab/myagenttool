@@ -136,6 +136,13 @@ function validateDraft(input, { partial = false } = {}) {
     if (dueDate && !validDateOnly(dueDate)) return { error: "invalid_work_item_due_date" };
     value.dueDate = dueDate;
   }
+  for (const field of ["plannedDate", "carriedFromDate"]) {
+    if (!partial || Object.hasOwn(input, field)) {
+      const date = input[field] == null || input[field] === "" ? null : String(input[field]);
+      if (date && !validDateOnly(date)) return { error: `invalid_work_item_${field.replace(/[A-Z]/g, (letter) => `_${letter.toLowerCase()}`)}` };
+      value[field] = date;
+    }
+  }
   if (!partial || Object.hasOwn(input, "milestone")) {
     const milestone = input.milestone == null ? "" : String(input.milestone).trim();
     if (milestone.length > MAX_MILESTONE) return { error: "invalid_work_item_milestone" };
@@ -483,6 +490,11 @@ export function createWorkItemService({
     const q = String(query.q ?? "").trim().toLowerCase();
     const updatedSince = normalizedUpdatedSince(query.updatedSince);
     if (updatedSince === undefined) return { ok: false, status: 400, body: { error: "invalid_updated_since" } };
+    const plannedDate = String(query.plannedDate ?? "");
+    if (plannedDate && !validDateOnly(plannedDate)) {
+      return { ok: false, status: 400, body: { error: "invalid_work_item_planned_date" } };
+    }
+    const assigneeId = query.assigneeId === "mine" ? actorUser(actor) : String(query.assigneeId ?? "");
     const planningProjectId = String(query.planningProjectId ?? "");
     const planningWorkItemIds = planningProjectId
       ? new Set((state.planningProjectItems ?? [])
@@ -495,7 +507,8 @@ export function createWorkItemService({
       .filter((item) => !query.projectId || item.projectId === query.projectId)
       .filter((item) => !query.status || item.status === query.status)
       .filter((item) => !query.type || item.type === query.type)
-      .filter((item) => !query.assigneeId || item.assigneeIds.includes(query.assigneeId))
+      .filter((item) => !plannedDate || item.plannedDate === plannedDate)
+      .filter((item) => !assigneeId || (item.assigneeIds ?? []).includes(assigneeId))
       .filter((item) => query.includeArchived === "1" || !item.archivedAt)
       .filter((item) => !updatedSince || item.updatedAt > updatedSince)
       .filter((item) => !q || `${item.localRef} ${item.title} ${item.body} ${item.labels.join(" ")}`.toLowerCase().includes(q))
@@ -1592,6 +1605,7 @@ export function createWorkItemService({
     }
     const validated = validateDraft(input);
     if (validated.error) return { ok: false, status: 400, body: { error: validated.error } };
+    if (!Object.hasOwn(input, "assigneeIds")) validated.value.assigneeIds = [actorUser(actor)];
     if (!idempotencyKey && validated.value.routineDefinitionId) {
       idempotencyKey = routineIdempotencyKeys({
         ownerTeamId: actorTeam(actor),
@@ -1650,6 +1664,9 @@ export function createWorkItemService({
       revision: 1,
       state: "open",
       archivedAt: null,
+      completedAt: validated.value.status === "done" ? timestamp : null,
+      schedulePlanSource: validated.value.plannedDate ? "manual" : null,
+      scheduleReason: validated.value.plannedDate ? "manual_schedule" : null,
       createdAt: timestamp,
       updatedAt: timestamp,
       createdBy: actorUser(actor),
@@ -1796,11 +1813,20 @@ export function createWorkItemService({
       }
       validated.value.parentId = parentId;
     }
-    const previous = Object.fromEntries(Object.keys(validated.value).map((key) => [key, item[key]]));
+    const nextValues = { ...validated.value };
+    const timestamp = now();
+    if (Object.hasOwn(validated.value, "plannedDate")) {
+      nextValues.schedulePlanSource = validated.value.plannedDate ? "manual" : null;
+      nextValues.scheduleReason = validated.value.plannedDate ? "manual_schedule" : null;
+    }
+    if (Object.hasOwn(validated.value, "status") && validated.value.status !== item.status) {
+      nextValues.completedAt = validated.value.status === "done" ? timestamp : null;
+    }
+    const previous = Object.fromEntries(Object.keys(nextValues).map((key) => [key, item[key] ?? null]));
     runTx(() => {
-      Object.assign(item, validated.value, {
+      Object.assign(item, nextValues, {
         revision: item.revision + 1,
-        updatedAt: now(),
+        updatedAt: timestamp,
         lastModifiedBy: actorUser(actor),
       });
       if (validated.value.acceptanceCriteria) {
@@ -1808,7 +1834,7 @@ export function createWorkItemService({
           .filter((result) => validated.value.acceptanceCriteria.includes(result.criterion));
       }
       recordActivity(item, actor, "updated", {
-        changes: Object.fromEntries(Object.entries(validated.value).map(([key, value]) => [
+        changes: Object.fromEntries(Object.entries(nextValues).map(([key, value]) => [
           key, { from: previous[key], to: value },
         ])),
       });
@@ -1837,7 +1863,9 @@ export function createWorkItemService({
       unique.set(id, row.expectedRevision);
     }
     const allowedChanges = Object.fromEntries(
-      Object.entries(changes).filter(([key]) => ["status", "priority", "assigneeIds", "dueDate", "milestone", "estimatePoints"].includes(key)),
+      Object.entries(changes).filter(([key]) => [
+        "status", "priority", "assigneeIds", "dueDate", "plannedDate", "carriedFromDate", "milestone", "estimatePoints",
+      ].includes(key)),
     );
     if (Object.keys(allowedChanges).length === 0 || Object.keys(allowedChanges).length !== Object.keys(changes).length) {
       return { ok: false, status: 400, body: { error: "invalid_work_item_bulk_changes" } };
@@ -1872,14 +1900,23 @@ export function createWorkItemService({
     }
     runTx(() => {
       for (const item of targets) {
-        const previous = Object.fromEntries(Object.keys(validated.value).map((key) => [key, item[key]]));
-        Object.assign(item, validated.value, {
+        const nextValues = { ...validated.value };
+        const timestamp = now();
+        if (Object.hasOwn(validated.value, "plannedDate")) {
+          nextValues.schedulePlanSource = validated.value.plannedDate ? "manual" : null;
+          nextValues.scheduleReason = validated.value.plannedDate ? "manual_schedule" : null;
+        }
+        if (Object.hasOwn(validated.value, "status") && validated.value.status !== item.status) {
+          nextValues.completedAt = validated.value.status === "done" ? timestamp : null;
+        }
+        const previous = Object.fromEntries(Object.keys(nextValues).map((key) => [key, item[key] ?? null]));
+        Object.assign(item, nextValues, {
           revision: item.revision + 1,
-          updatedAt: now(),
+          updatedAt: timestamp,
           lastModifiedBy: actorUser(actor),
         });
         recordActivity(item, actor, "bulk_updated", {
-          changes: Object.fromEntries(Object.entries(validated.value).map(([key, value]) => [
+          changes: Object.fromEntries(Object.entries(nextValues).map(([key, value]) => [
             key, { from: previous[key], to: value },
           ])),
         });
@@ -2736,6 +2773,355 @@ export function createWorkItemService({
     return { ok: true, status: 200, body: { workItem: workItemView(item, actor), released: true } };
   }
 
+  function applyLocalSchedulePlan({
+    planRevision,
+    currentPlanRevision,
+    assignments = [],
+  } = {}, actor = null) {
+    if (typeof planRevision !== "string" || !/^[a-f0-9]{24}$/.test(planRevision)) {
+      return { ok: false, status: 400, body: { error: "invalid_schedule_plan_revision" } };
+    }
+    if (planRevision !== currentPlanRevision) {
+      return {
+        ok: false,
+        status: 409,
+        body: { error: "schedule_plan_stale", currentPlanRevision },
+      };
+    }
+    if (!Array.isArray(assignments) || assignments.length > 500) {
+      return { ok: false, status: 400, body: { error: "invalid_schedule_assignments" } };
+    }
+    const ids = new Set();
+    const resolved = [];
+    for (const assignment of assignments) {
+      const workItemId = String(assignment?.workItemId ?? "");
+      const expectedRevision = Number(assignment?.expectedRevision);
+      const plannedDate = String(assignment?.plannedDate ?? "");
+      if (!workItemId || ids.has(workItemId) || !Number.isInteger(expectedRevision) || !validDateOnly(plannedDate)) {
+        return { ok: false, status: 400, body: { error: "invalid_schedule_assignments" } };
+      }
+      ids.add(workItemId);
+      const item = findOwn(workItemId, actor);
+      if (!item || item.terminalId !== localTerminalId() || !(item.assigneeIds ?? []).includes(actorUser(actor))) {
+        return notFound();
+      }
+      if (item.revision !== expectedRevision || item.state === "closed" || item.archivedAt
+        || !["ready", "in_progress"].includes(item.status)) {
+        return {
+          ok: false,
+          status: 409,
+          body: { error: "schedule_plan_stale", workItemId, currentRevision: item.revision },
+        };
+      }
+      resolved.push({ item, plannedDate });
+    }
+
+    const timestamp = now();
+    const changed = resolved.filter(({ item, plannedDate }) => item.plannedDate !== plannedDate);
+    runTx(() => {
+      for (const { item, plannedDate } of changed) {
+        const previousPlannedDate = item.plannedDate ?? null;
+        item.plannedDate = plannedDate;
+        item.schedulePlanSource = "auto_plan";
+        item.scheduleReason = "current_terminal_capacity_plan";
+        item.revision += 1;
+        item.updatedAt = timestamp;
+        item.lastModifiedBy = actorUser(actor);
+        recordActivity(item, actor, "local_schedule_applied", {
+          planRevision,
+          previousPlannedDate,
+          plannedDate,
+        });
+      }
+      if (changed.length > 0) {
+        appendEvent({
+          invocationId: null,
+          type: "local_schedule_applied",
+          level: "info",
+          message: `${changed.length} current-terminal work item(s) scheduled.`,
+          data: {
+            planRevision,
+            terminalId: localTerminalId(),
+            workItemIds: changed.map(({ item }) => item.id),
+            actorTeamId: actorTeam(actor),
+          },
+        });
+      }
+    });
+    return {
+      ok: true,
+      status: 200,
+      body: {
+        planRevision,
+        terminalId: localTerminalId(),
+        applied: changed.length,
+        workItems: resolved.map(({ item }) => workItemView(item, actor)),
+      },
+    };
+  }
+
+  function applyLocalScheduleRollover({
+    rolloverRevision,
+    currentRolloverRevision,
+    sourceDate,
+    moves = [],
+    confirmationMoves = [],
+    confirmPinned = false,
+  } = {}, actor = null) {
+    const operationKey = `${actorTeam(actor)}:${actorUser(actor)}:${sourceDate}:${rolloverRevision}:${confirmPinned ? "confirmed" : "automatic"}`;
+    const replay = (state.localScheduleRollovers ?? []).find((item) => item.operationKey === operationKey);
+    if (replay) return { ok: true, status: 200, body: { ...replay.result, replayed: true } };
+    if (typeof rolloverRevision !== "string" || !/^[a-f0-9]{24}$/.test(rolloverRevision)
+      || !validDateOnly(String(sourceDate ?? ""))) {
+      return { ok: false, status: 400, body: { error: "invalid_rollover_revision" } };
+    }
+    if (rolloverRevision !== currentRolloverRevision) {
+      return {
+        ok: false,
+        status: 409,
+        body: { error: "rollover_plan_stale", currentRolloverRevision },
+      };
+    }
+    const selected = [...moves, ...(confirmPinned ? confirmationMoves : [])];
+    if (selected.length > 500) {
+      return { ok: false, status: 400, body: { error: "invalid_rollover_assignments" } };
+    }
+    const ids = new Set();
+    const resolved = [];
+    for (const move of selected) {
+      const workItemId = String(move?.workItemId ?? "");
+      const targetDate = String(move?.targetDate ?? "");
+      const expectedRevision = Number(move?.expectedRevision);
+      if (!workItemId || ids.has(workItemId) || !validDateOnly(targetDate) || !Number.isInteger(expectedRevision)) {
+        return { ok: false, status: 400, body: { error: "invalid_rollover_assignments" } };
+      }
+      ids.add(workItemId);
+      const item = findOwn(workItemId, actor);
+      if (!item || item.terminalId !== localTerminalId() || !(item.assigneeIds ?? []).includes(actorUser(actor))) {
+        return notFound();
+      }
+      const pinned = Boolean(item.plannedDate && (!item.schedulePlanSource || item.schedulePlanSource === "manual"));
+      if (item.revision !== expectedRevision || item.plannedDate !== sourceDate || item.status === "done"
+        || item.state === "closed" || item.archivedAt || (pinned && !confirmPinned)) {
+        return {
+          ok: false,
+          status: 409,
+          body: { error: pinned && !confirmPinned ? "rollover_confirmation_required" : "rollover_plan_stale", workItemId, currentRevision: item.revision },
+        };
+      }
+      resolved.push({ item, targetDate, pinned });
+    }
+
+    const timestamp = now();
+    const result = {
+      rolloverRevision,
+      terminalId: localTerminalId(),
+      sourceDate,
+      applied: resolved.length,
+      confirmedPinned: resolved.filter((row) => row.pinned).length,
+      workItemIds: resolved.map(({ item }) => item.id),
+      replayed: false,
+    };
+    runTx(() => {
+      for (const { item, targetDate, pinned } of resolved) {
+        const previousPlanSource = item.schedulePlanSource ?? null;
+        item.carriedFromDate ??= sourceDate;
+        item.plannedDate = targetDate;
+        item.schedulePlanSource = "rollover";
+        item.scheduleReason = "unfinished_from_previous_local_day";
+        item.revision += 1;
+        item.updatedAt = timestamp;
+        item.lastModifiedBy = actorUser(actor);
+        recordActivity(item, actor, "local_schedule_rolled_over", {
+          rolloverRevision,
+          sourceDate,
+          targetDate,
+          previousPlanSource,
+          pinnedConfirmed: pinned,
+          executionBindingsPreserved: true,
+        });
+      }
+      (state.localScheduleRollovers ??= []).unshift({
+        operationKey,
+        ownerTeamId: actorTeam(actor),
+        actorId: actorUser(actor),
+        terminalId: localTerminalId(),
+        sourceDate,
+        rolloverRevision,
+        confirmPinned: Boolean(confirmPinned),
+        appliedAt: timestamp,
+        result,
+      });
+      state.localScheduleRollovers = state.localScheduleRollovers.slice(0, 200);
+      if (resolved.length > 0) {
+        appendEvent({
+          invocationId: null,
+          type: "local_schedule_rolled_over",
+          level: "info",
+          message: `${resolved.length} current-terminal work item(s) rolled over from ${sourceDate}.`,
+          data: {
+            rolloverRevision,
+            terminalId: localTerminalId(),
+            sourceDate,
+            workItemIds: result.workItemIds,
+            confirmedPinned: result.confirmedPinned,
+            actorTeamId: actorTeam(actor),
+          },
+        });
+      }
+    });
+    return { ok: true, status: 200, body: result };
+  }
+
+  function applyLocalScheduleUrgent({
+    urgentRevision,
+    currentUrgentRevision,
+    date,
+    insertions = [],
+    displacements = [],
+    confirmationRequired = [],
+    confirmPinned = false,
+  } = {}, actor = null) {
+    const operationKey = `${actorTeam(actor)}:${actorUser(actor)}:${date}:${urgentRevision}:${confirmPinned ? "confirmed" : "automatic"}`;
+    const replay = (state.localScheduleUrgentInsertions ?? []).find((item) => item.operationKey === operationKey);
+    if (replay) return { ok: true, status: 200, body: { ...replay.result, replayed: true } };
+    if (typeof urgentRevision !== "string" || !/^[a-f0-9]{24}$/.test(urgentRevision)
+      || !validDateOnly(String(date ?? ""))) {
+      return { ok: false, status: 400, body: { error: "invalid_urgent_revision" } };
+    }
+    if (urgentRevision !== currentUrgentRevision) {
+      return { ok: false, status: 409, body: { error: "urgent_plan_stale", currentUrgentRevision } };
+    }
+    const firstConfirmationOrder = Math.min(
+      ...insertions.filter((item) => item.requiresPinnedConfirmation).map((item) => item.queueOrder),
+      Number.MAX_SAFE_INTEGER,
+    );
+    const selectedInsertions = insertions.filter((item) =>
+      confirmPinned || (!item.requiresPinnedConfirmation && item.queueOrder < firstConfirmationOrder));
+    const selectedUrgentIds = new Set(selectedInsertions.map((item) => item.workItemId));
+    const selectedDisplacements = [
+      ...displacements.filter((item) => selectedUrgentIds.has(item.forWorkItemId)),
+      ...(confirmPinned ? confirmationRequired.filter((item) => selectedUrgentIds.has(item.forWorkItemId)) : []),
+    ];
+    if (selectedInsertions.length + selectedDisplacements.length > 500) {
+      return { ok: false, status: 400, body: { error: "invalid_urgent_assignments" } };
+    }
+    const insertRows = [];
+    const displacementRows = [];
+    const ids = new Set();
+    for (const insertion of selectedInsertions) {
+      const item = findOwn(insertion.workItemId, actor);
+      if (!item || item.terminalId !== localTerminalId() || !(item.assigneeIds ?? []).includes(actorUser(actor))) {
+        return notFound();
+      }
+      if (ids.has(item.id) || item.revision !== insertion.expectedRevision || item.priority !== "p0"
+        || item.status !== "ready" || item.state === "closed" || item.archivedAt) {
+        return { ok: false, status: 409, body: { error: "urgent_plan_stale", workItemId: item.id, currentRevision: item.revision } };
+      }
+      ids.add(item.id);
+      insertRows.push({ item, insertion });
+    }
+    for (const displacement of selectedDisplacements) {
+      const item = findOwn(displacement.workItemId, actor);
+      if (!item || item.terminalId !== localTerminalId() || !(item.assigneeIds ?? []).includes(actorUser(actor))) {
+        return notFound();
+      }
+      const pinned = Boolean(item.plannedDate && (!item.schedulePlanSource || item.schedulePlanSource === "manual"));
+      if (ids.has(item.id) || item.revision !== displacement.expectedRevision || item.priority === "p0"
+        || item.status !== "ready" || item.plannedDate !== displacement.sourceDate
+        || item.state === "closed" || item.archivedAt || (pinned && !confirmPinned)) {
+        return {
+          ok: false,
+          status: 409,
+          body: { error: pinned && !confirmPinned ? "urgent_confirmation_required" : "urgent_plan_stale", workItemId: item.id, currentRevision: item.revision },
+        };
+      }
+      ids.add(item.id);
+      displacementRows.push({ item, displacement, pinned });
+    }
+
+    const timestamp = now();
+    const result = {
+      urgentRevision,
+      terminalId: localTerminalId(),
+      date,
+      inserted: insertRows.length,
+      displaced: displacementRows.length,
+      confirmedPinned: displacementRows.filter((row) => row.pinned).length,
+      workItemIds: insertRows.map(({ item }) => item.id),
+      displacedWorkItemIds: displacementRows.map(({ item }) => item.id),
+      replayed: false,
+    };
+    runTx(() => {
+      for (const { item, insertion } of insertRows) {
+        item.plannedDate = insertion.targetDate;
+        item.schedulePlanSource = "urgent_insert";
+        item.scheduleReason = insertion.reason;
+        item.scheduleOrder = -1_000 + insertion.queueOrder;
+        item.revision += 1;
+        item.updatedAt = timestamp;
+        item.lastModifiedBy = actorUser(actor);
+        recordActivity(item, actor, "local_schedule_urgent_inserted", {
+          urgentRevision,
+          activation: insertion.activation,
+          queueOrder: insertion.queueOrder,
+          worktreeWait: insertion.activation === "head_after_worktree_unlock",
+          runningWorkPreempted: false,
+        });
+      }
+      for (const { item, displacement, pinned } of displacementRows) {
+        const previousPlanSource = item.schedulePlanSource ?? null;
+        item.plannedDate = displacement.targetDate;
+        item.schedulePlanSource = "urgent_insert";
+        item.scheduleReason = `displaced_by_p0:${displacement.forWorkItemId}`;
+        item.scheduleOrder = null;
+        item.revision += 1;
+        item.updatedAt = timestamp;
+        item.lastModifiedBy = actorUser(actor);
+        recordActivity(item, actor, "local_schedule_displaced_by_urgent", {
+          urgentRevision,
+          forWorkItemId: displacement.forWorkItemId,
+          sourceDate: displacement.sourceDate,
+          targetDate: displacement.targetDate,
+          previousPlanSource,
+          pinnedConfirmed: pinned,
+          runningWorkPreempted: false,
+        });
+      }
+      (state.localScheduleUrgentInsertions ??= []).unshift({
+        operationKey,
+        ownerTeamId: actorTeam(actor),
+        actorId: actorUser(actor),
+        terminalId: localTerminalId(),
+        date,
+        urgentRevision,
+        confirmPinned: Boolean(confirmPinned),
+        appliedAt: timestamp,
+        result,
+      });
+      state.localScheduleUrgentInsertions = state.localScheduleUrgentInsertions.slice(0, 200);
+      if (insertRows.length > 0) {
+        appendEvent({
+          invocationId: null,
+          type: "local_schedule_urgent_inserted",
+          level: "warn",
+          message: `${insertRows.length} P0 work item(s) inserted into the current-terminal schedule.`,
+          data: {
+            urgentRevision,
+            terminalId: localTerminalId(),
+            date,
+            workItemIds: result.workItemIds,
+            displacedWorkItemIds: result.displacedWorkItemIds,
+            confirmedPinned: result.confirmedPinned,
+            runningWorkPreempted: false,
+            actorTeamId: actorTeam(actor),
+          },
+        });
+      }
+    });
+    return { ok: true, status: 200, body: result };
+  }
+
   return {
     listWorkItems, listAttention, getWorkItem, createWorkItem, updateWorkItem, bulkUpdateWorkItems, transitionWorkItem,
     listActivity, listComments, createComment, updateComment, deleteComment,
@@ -2747,5 +3133,8 @@ export function createWorkItemService({
     ingestExternalWebhook, replayExternalWebhook, recordExternalWebhookFailure,
     githubSyncDiagnostics, updateAttention, sweepOperationalAlerts, suggestWorkItemDraft, retryWorkItemAlert,
     startApplicationExecution, requestApplicationExecutionApproval,
+    applyLocalSchedulePlan,
+    applyLocalScheduleRollover,
+    applyLocalScheduleUrgent,
   };
 }

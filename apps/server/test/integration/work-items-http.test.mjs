@@ -106,10 +106,13 @@ async function externalWebhook(provider, payload, {
 test("local work item CRUD is wired through the real HTTP server", async () => {
   const created = await call("/api/work-items", {
     method: "POST",
-    body: { projectId: "prj_a", title: "Plan locally", type: "feature" },
+    body: { projectId: "prj_a", title: "Plan locally", type: "feature", plannedDate: "2026-07-31" },
   });
   assert.equal(created.status, 201);
   assert.equal(created.body.workItem.localRef, "LOCAL-1");
+  assert.deepEqual(created.body.workItem.assigneeIds, ["usr_a"]);
+  assert.equal(created.body.workItem.plannedDate, "2026-07-31");
+  assert.equal(created.body.workItem.completedAt, null);
 
   const updated = await call(`/api/work-items/${created.body.workItem.id}`, {
     method: "PATCH",
@@ -121,6 +124,19 @@ test("local work item CRUD is wired through the real HTTP server", async () => {
   const listed = await call("/api/work-items?status=ready&q=plan");
   assert.equal(listed.status, 200);
   assert.equal(listed.body.count, 1);
+  assert.equal((await call("/api/work-items?assigneeId=mine&plannedDate=2026-07-31")).body.count, 1);
+
+  const completed = await call(`/api/work-items/${created.body.workItem.id}`, {
+    method: "PATCH",
+    body: { expectedRevision: 2, status: "done" },
+  });
+  assert.equal(completed.status, 200);
+  assert.ok(completed.body.workItem.completedAt);
+  const reopened = await call(`/api/work-items/${created.body.workItem.id}`, {
+    method: "PATCH",
+    body: { expectedRevision: 3, status: "ready" },
+  });
+  assert.equal(reopened.body.workItem.completedAt, null);
 });
 
 test("local work item claim lease is wired through HTTP", async () => {
@@ -774,11 +790,13 @@ test("planning fields, bulk updates, and project ordering are wired over HTTP", 
     method: "PATCH",
     body: {
       items: [{ id: first.id, expectedRevision: 1 }, { id: second.id, expectedRevision: 1 }],
-      changes: { status: "ready" },
+      changes: { status: "ready", plannedDate: "2026-08-01", carriedFromDate: "2026-07-31" },
     },
   });
   assert.equal(bulk.status, 200);
   assert.equal(bulk.body.count, 2);
+  assert.ok(bulk.body.workItems.every((item) => item.plannedDate === "2026-08-01"));
+  assert.ok(bulk.body.workItems.every((item) => item.carriedFromDate === "2026-07-31"));
   const project = (await call("/api/planning-projects", {
     method: "POST", body: { name: "Ordered roadmap" },
   })).body.project;

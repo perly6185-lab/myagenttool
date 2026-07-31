@@ -28,6 +28,8 @@ const now = () => new Date().toISOString();
 
 let server;
 let base; // http://127.0.0.1:<port>
+let localTerminalId;
+let testState;
 
 before(async () => {
   const { createServerState } = await import("../../src/runtime/state-factory.mjs");
@@ -35,6 +37,8 @@ before(async () => {
   const { createHttpServer } = await import("../../src/runtime/http-server.mjs");
 
   const { defaultProject, state } = createServerState({ defaultProjectPath: "/tmp", now });
+  testState = state;
+  localTerminalId = state.device.id;
 
   // A second tenant that the platform can't create through the API yet.
   state.teams.push({ id: TEAM_A, name: "Team A" }, { id: TEAM_B, name: "Team B" });
@@ -77,6 +81,42 @@ before(async () => {
     requestedBy: "usr_a",
     createdAt: now(),
   });
+  state.workItems.push(
+    {
+      id: "lwi_team_a",
+      localRef: "LOCAL-A",
+      ownerTeamId: TEAM_A,
+      terminalId: state.device.id,
+      projectId: "projA",
+      title: "Team A local schedule item",
+      state: "open",
+      status: "ready",
+      priority: "p1",
+      estimatePoints: 2,
+      revision: 1,
+      assigneeIds: ["usr_a"],
+      executionBindings: [],
+      createdAt: now(),
+      updatedAt: now(),
+    },
+    {
+      id: "lwi_team_b",
+      localRef: "LOCAL-B",
+      ownerTeamId: TEAM_B,
+      terminalId: state.device.id,
+      projectId: "projB",
+      title: "Team B local schedule item",
+      state: "open",
+      status: "ready",
+      priority: "p2",
+      estimatePoints: 0,
+      revision: 1,
+      assigneeIds: ["usr_b"],
+      executionBindings: [],
+      createdAt: now(),
+      updatedAt: now(),
+    },
+  );
   state.events.push({
     id: "evt_inv_a_created",
     invocationId: "inv_a",
@@ -345,6 +385,173 @@ test("dispatch-health queue is team-scoped; team B never sees team A's queued in
   const foreign = await call("/api/invocation-dispatch-health", { token: "tok_b" });
   assert.equal(foreign.status, 200);
   assert.ok(!foreign.body.queue.items.some((i) => i.invocationId === "inv_a"), "team B's queue excludes team A's invocation");
+});
+
+test("local schedule capacity is current-terminal-only and personal-work scoped", async () => {
+  const teamA = await call("/api/local-schedule/capacity", { token: "tok_a" });
+  assert.equal(teamA.status, 200);
+  assert.equal(teamA.body.terminal.id, localTerminalId);
+  assert.deepEqual(teamA.body.work.items.map((item) => item.workItemId), ["lwi_team_a"]);
+  assert.equal(teamA.body.work.items[0].estimate.source, "estimate_points");
+
+  const teamB = await call("/api/local-schedule/capacity", { token: "tok_b" });
+  assert.equal(teamB.status, 200);
+  assert.deepEqual(teamB.body.work.items.map((item) => item.workItemId), ["lwi_team_b"]);
+  assert.ok(!teamB.body.work.items.some((item) => item.workItemId === "lwi_team_a"));
+});
+
+test("local schedule preview applies atomically and rejects a stale plan revision", async () => {
+  const preview = await call("/api/local-schedule/preview", { token: "tok_a" });
+  assert.equal(preview.status, 200);
+  assert.ok(preview.body.days.some((day) => day.items.some((item) => item.workItemId === "lwi_team_a")));
+
+  const applied = await call("/api/local-schedule/apply", {
+    token: "tok_a",
+    method: "POST",
+    body: { planRevision: preview.body.planRevision },
+  });
+  assert.equal(applied.status, 200);
+  assert.equal(applied.body.applied, 1);
+  assert.equal(applied.body.terminalId, localTerminalId);
+
+  const listed = await call("/api/work-items?assigneeId=mine", { token: "tok_a" });
+  const scheduled = listed.body.workItems.find((item) => item.id === "lwi_team_a");
+  assert.equal(scheduled.plannedDate, preview.body.horizon.today);
+
+  const stale = await call("/api/local-schedule/apply", {
+    token: "tok_a",
+    method: "POST",
+    body: { planRevision: preview.body.planRevision },
+  });
+  assert.equal(stale.status, 409);
+  assert.equal(stale.body.error, "schedule_plan_stale");
+});
+
+test("unfinished-work rollover is idempotent and manual pins require explicit confirmation", async () => {
+  const date = new Date();
+  date.setDate(date.getDate() - 1);
+  const sourceDate = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`;
+  const common = {
+    ownerTeamId: TEAM_A,
+    terminalId: localTerminalId,
+    projectId: "projA",
+    state: "open",
+    priority: "p1",
+    estimatePoints: 1,
+    assigneeIds: ["usr_a"],
+    revision: 1,
+    createdAt: now(),
+    updatedAt: now(),
+  };
+  testState.workItems.push(
+    {
+      ...common,
+      id: "lwi_rollover_auto",
+      localRef: "LOCAL-ROLLOVER-AUTO",
+      title: "Running work from yesterday",
+      status: "in_progress",
+      plannedDate: sourceDate,
+      schedulePlanSource: "auto_plan",
+      executionBindings: [{ kind: "auto_run", targetId: "run_preserved", createdAt: now() }],
+    },
+    {
+      ...common,
+      id: "lwi_rollover_pinned",
+      localRef: "LOCAL-ROLLOVER-PINNED",
+      title: "Pinned work from yesterday",
+      status: "ready",
+      plannedDate: sourceDate,
+      schedulePlanSource: "manual",
+      executionBindings: [],
+    },
+  );
+
+  const preview = await call("/api/local-schedule/rollover-preview", { token: "tok_a" });
+  assert.equal(preview.status, 200);
+  assert.deepEqual(preview.body.moves.map((item) => item.workItemId), ["lwi_rollover_auto"]);
+  assert.deepEqual(preview.body.confirmationRequired.map((item) => item.workItemId), ["lwi_rollover_pinned"]);
+
+  const applied = await call("/api/local-schedule/rollover", {
+    token: "tok_a",
+    method: "POST",
+    body: { rolloverRevision: preview.body.rolloverRevision, confirmPinned: false },
+  });
+  assert.equal(applied.status, 200);
+  assert.equal(applied.body.applied, 1);
+  const running = testState.workItems.find((item) => item.id === "lwi_rollover_auto");
+  assert.equal(running.carriedFromDate, sourceDate);
+  assert.equal(running.schedulePlanSource, "rollover");
+  assert.equal(running.executionBindings[0].targetId, "run_preserved");
+
+  const replay = await call("/api/local-schedule/rollover", {
+    token: "tok_a",
+    method: "POST",
+    body: { rolloverRevision: preview.body.rolloverRevision, confirmPinned: false },
+  });
+  assert.equal(replay.status, 200);
+  assert.equal(replay.body.replayed, true);
+  assert.equal(running.revision, 2, "idempotent replay does not mutate the task twice");
+
+  const pinnedPreview = await call("/api/local-schedule/rollover-preview", { token: "tok_a" });
+  const confirmed = await call("/api/local-schedule/rollover", {
+    token: "tok_a",
+    method: "POST",
+    body: { rolloverRevision: pinnedPreview.body.rolloverRevision, confirmPinned: true },
+  });
+  assert.equal(confirmed.status, 200);
+  assert.equal(confirmed.body.confirmedPinned, 1);
+  assert.notEqual(testState.workItems.find((item) => item.id === "lwi_rollover_pinned").plannedDate, sourceDate);
+});
+
+test("P0 urgent insertion uses the current terminal and is idempotent", async () => {
+  testState.device.status = "online";
+  testState.device.unlinkState = "linked";
+  testState.workItems.push({
+    id: "lwi_urgent_http",
+    localRef: "LOCAL-URGENT-HTTP",
+    ownerTeamId: TEAM_A,
+    terminalId: localTerminalId,
+    projectId: "projA",
+    title: "Urgent HTTP work",
+    state: "open",
+    status: "ready",
+    priority: "p0",
+    estimatePoints: 1,
+    plannedDate: null,
+    schedulePlanSource: null,
+    assigneeIds: ["usr_a"],
+    executionBindings: [],
+    revision: 1,
+    archivedAt: null,
+    createdAt: now(),
+    updatedAt: now(),
+  });
+
+  const preview = await call("/api/local-schedule/urgent-preview", { token: "tok_a" });
+  assert.equal(preview.status, 200);
+  const insertion = preview.body.insertions.find((item) => item.workItemId === "lwi_urgent_http");
+  assert.ok(insertion);
+  assert.equal(insertion.activation, "immediate");
+
+  const applied = await call("/api/local-schedule/urgent", {
+    token: "tok_a",
+    method: "POST",
+    body: { urgentRevision: preview.body.urgentRevision, confirmPinned: false },
+  });
+  assert.equal(applied.status, 200);
+  assert.ok(applied.body.workItemIds.includes("lwi_urgent_http"));
+  const urgent = testState.workItems.find((item) => item.id === "lwi_urgent_http");
+  assert.equal(urgent.schedulePlanSource, "urgent_insert");
+  assert.equal(urgent.scheduleOrder, -1_000);
+
+  const replay = await call("/api/local-schedule/urgent", {
+    token: "tok_a",
+    method: "POST",
+    body: { urgentRevision: preview.body.urgentRevision, confirmPinned: false },
+  });
+  assert.equal(replay.status, 200);
+  assert.equal(replay.body.replayed, true);
+  assert.equal(urgent.revision, 2);
 });
 
 test("decision soft-claim HTTP routes are wired through the composed runtime", async () => {

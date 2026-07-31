@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { StatusBadge } from "@/components/ui/badge";
@@ -11,6 +11,14 @@ import { RunTranscriptSection } from "@/features/invocations/run-transcript";
 import { DecisionAction } from "@/features/invocations/decision-action";
 import { GuidedSetupCard } from "@/features/dashboard/guided-setup-card";
 import { EntryJourney } from "@/features/dashboard/entry-journey";
+import { localScheduleApi } from "@/features/dashboard/local-schedule-api";
+import type { LocalWorkItemResult } from "@/features/tasks/task-view-types";
+import type {
+  LocalScheduleCapacityResponse,
+  LocalSchedulePreviewResponse,
+  LocalScheduleRolloverResponse,
+  LocalScheduleUrgentResponse,
+} from "@/lib/api-client";
 import {
   deriveHomeNextAction,
   hasPendingDecisionForInvocation,
@@ -21,7 +29,7 @@ import { ActionErrorNotice } from "@/components/common/action-error-notice";
 import { useConsoleState } from "@/data/use-console-state";
 import { useAsyncAction, api } from "@/data/use-console-actions";
 import { resolveAgents, resolveInvocation } from "@/features/selection";
-import { useUiStore } from "@/store/ui-store";
+import { useUiStore, type SectionKey } from "@/store/ui-store";
 import {
   adapterText,
   cancellationText,
@@ -35,7 +43,12 @@ import {
   invocationStatus,
   resultHeading,
 } from "@/lib/i18n/readable-labels";
-import type { AgentSnapshot, ConsoleSnapshot, InvocationSnapshot } from "@/lib/console-state";
+
+const DailyWorkBoard = lazy(async () => {
+  const module = await import("@/features/dashboard/daily-work-board");
+  return { default: module.DailyWorkBoard };
+});
+import type { AgentSnapshot, ConsoleSnapshot, InvocationSnapshot, WorkItem } from "@/lib/console-state";
 import { useAppTranslation } from "@/lib/i18n/use-app-translation";
 
 type Translate = ReturnType<typeof useAppTranslation>["t"];
@@ -92,6 +105,8 @@ export function DashboardView({ surface = "overview" }: { surface?: DashboardSur
   const setSelectedAgentId = useUiStore((s) => s.setSelectedAgentId);
   const selectedInvocationId = useUiStore((s) => s.selectedInvocationId);
   const setSelectedInvocationId = useUiStore((s) => s.setSelectedInvocationId);
+  const setSelectedApplicationId = useUiStore((s) => s.setSelectedApplicationId);
+  const setSelectedWorkItemId = useUiStore((s) => s.setSelectedWorkItemId);
   const selectedProjectId = useUiStore((s) => s.selectedProjectId);
   const setSelectedProjectId = useUiStore((s) => s.setSelectedProjectId);
   const selectedWorktreeId = useUiStore((s) => s.selectedWorktreeId);
@@ -101,6 +116,9 @@ export function DashboardView({ surface = "overview" }: { surface?: DashboardSur
   const setResumeFromInvocationId = useUiStore((s) => s.setResumeFromInvocationId);
   const runAction = useAsyncAction();
   const cancelAction = useAsyncAction();
+  const scheduleAction = useAsyncAction();
+  const rolloverAction = useAsyncAction();
+  const urgentAction = useAsyncAction();
   const runInFlightRef = useRef(false);
   const runIdempotencyKeyRef = useRef<string | null>(null);
 
@@ -114,8 +132,44 @@ export function DashboardView({ surface = "overview" }: { surface?: DashboardSur
   }, [targetWorktree?.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const [task, setTask] = useState("");
+  const [dailyWorkItems, setDailyWorkItems] = useState<LocalWorkItemResult["workItems"]>([]);
+  const [localScheduleCapacity, setLocalScheduleCapacity] = useState<LocalScheduleCapacityResponse>();
+  const [localSchedulePreview, setLocalSchedulePreview] = useState<LocalSchedulePreviewResponse>();
+  const [localScheduleRollover, setLocalScheduleRollover] = useState<LocalScheduleRolloverResponse>();
+  const [localScheduleUrgent, setLocalScheduleUrgent] = useState<LocalScheduleUrgentResponse>();
   const taskInputRef = useRef<HTMLTextAreaElement>(null);
   const activityRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (surface !== "overview") return undefined;
+    let cancelled = false;
+    void Promise.all([
+      api.listWorkItems({ assigneeId: "mine", limit: "100" }) as Promise<LocalWorkItemResult>,
+      localScheduleApi.capacity().catch(() => undefined),
+      localScheduleApi.preview().catch(() => undefined),
+      localScheduleApi.rolloverPreview().catch(() => undefined),
+      localScheduleApi.urgentPreview().catch(() => undefined),
+    ])
+      .then(([items, capacity, preview, rollover, urgent]) => {
+        if (!cancelled) {
+          setDailyWorkItems(items.workItems);
+          setLocalScheduleCapacity(capacity);
+          setLocalSchedulePreview(preview);
+          setLocalScheduleRollover(rollover);
+          setLocalScheduleUrgent(urgent);
+        }
+      })
+      .catch(() => {
+        if (!cancelled) {
+          setDailyWorkItems([]);
+          setLocalScheduleCapacity(undefined);
+          setLocalSchedulePreview(undefined);
+          setLocalScheduleRollover(undefined);
+          setLocalScheduleUrgent(undefined);
+        }
+      });
+    return () => { cancelled = true; };
+  }, [surface, state?.workItemSummary?.updatedAt]);
 
   const { agents, agent } = resolveAgents(state, selectedAgentId);
   const invocation = resolveInvocation(state, selectedInvocationId);
@@ -242,6 +296,23 @@ export function DashboardView({ surface = "overview" }: { surface?: DashboardSur
     setSection(action === "handle_approval" ? "approvals" : "invocations");
   }
 
+  function openDailyWorkItem(item: WorkItem) {
+    if (item.section === "task" && item.targetId) setSelectedWorkItemId(item.targetId);
+    if (item.section === "invocations" && item.targetId) setSelectedInvocationId(item.targetId);
+    if (item.section === "applications" && item.targetId) setSelectedApplicationId(item.targetId);
+    if (item.section === "autoRuns" && item.targetId) {
+      const url = new URL(window.location.href);
+      url.searchParams.set("autoRun", item.targetId);
+      window.history.replaceState(window.history.state, "", `${url.pathname}${url.search}${url.hash}`);
+    }
+    if (item.section === "evidence" && item.id.startsWith("refusal:")) {
+      const url = new URL(window.location.href);
+      url.searchParams.set("refusal", item.id.slice("refusal:".length));
+      window.history.replaceState(window.history.state, "", `${url.pathname}${url.search}${url.hash}`);
+    }
+    setSection(item.section as SectionKey);
+  }
+
   const userTask = invocation?.input?.task;
   // Show a final summary block once the run reaches a terminal state.
   const terminalStatus =
@@ -253,9 +324,43 @@ export function DashboardView({ surface = "overview" }: { surface?: DashboardSur
 
   return (
     <div className="flex min-h-full flex-col gap-4">
-      {/* Visual order is task-first on Home while Workspace retains its transcript-first layout. */}
-      {surface === "overview" && activeInvocations.length > 0 ? (
+      {surface === "overview" ? (
         <div className="order-2">
+          <Suspense fallback={null}>
+            <DailyWorkBoard
+              board={state?.workBoard}
+              report={state?.workReport}
+              plannedItems={dailyWorkItems}
+              capacity={localScheduleCapacity}
+              preview={localSchedulePreview}
+              rollover={localScheduleRollover}
+              urgent={localScheduleUrgent}
+              onOpenItem={openDailyWorkItem}
+              onOpenTasks={() => setSection("task")}
+              onApplyPlan={localSchedulePreview ? () => {
+                void scheduleAction.execute(() => localScheduleApi.applyPlan(localSchedulePreview.planRevision));
+              } : undefined}
+              applyingPlan={scheduleAction.pending}
+              onRollover={localScheduleRollover ? (confirmPinned) => {
+                void rolloverAction.execute(() => localScheduleApi.applyRollover(
+                  localScheduleRollover.rolloverRevision,
+                  confirmPinned,
+                ));
+              } : undefined}
+              rollingOver={rolloverAction.pending}
+              onApplyUrgent={localScheduleUrgent ? (confirmPinned) => {
+                void urgentAction.execute(() => localScheduleApi.applyUrgent(
+                  localScheduleUrgent.urgentRevision,
+                  confirmPinned,
+                ));
+              } : undefined}
+              applyingUrgent={urgentAction.pending}
+            />
+          </Suspense>
+        </div>
+      ) : null}
+      {surface === "overview" && activeInvocations.length > 0 ? (
+        <div className="order-3">
           <Card>
             <CardHeader className="flex-row items-center justify-between gap-3 pb-2">
               <div>
@@ -290,10 +395,10 @@ export function DashboardView({ surface = "overview" }: { surface?: DashboardSur
           </Card>
         </div>
       ) : null}
-      {surface === "overview" ? <div className="order-3"><GuidedSetupCard /></div> : null}
-      {surface === "overview" ? <div className="order-4"><EntryJourney onCreate={() => taskInputRef.current?.focus()} /></div> : null}
+      {surface === "overview" ? <div className="order-4"><GuidedSetupCard /></div> : null}
+      {surface === "overview" ? <div className="order-5"><EntryJourney onCreate={() => taskInputRef.current?.focus()} /></div> : null}
       {/* Transcript — the scrolling conversation area. */}
-      {invocation ? <div ref={activityRef} tabIndex={-1} className="order-5 flex min-h-48 flex-1 flex-col outline-none focus-visible:ring-2 focus-visible:ring-ring">
+      {invocation ? <div ref={activityRef} tabIndex={-1} className="order-6 flex min-h-48 flex-1 flex-col outline-none focus-visible:ring-2 focus-visible:ring-ring">
         <Card className="flex min-h-48 flex-1 flex-col">
         <CardHeader>
           <SectionHeading
@@ -324,7 +429,6 @@ export function DashboardView({ surface = "overview" }: { surface?: DashboardSur
         </Card>
       </div> : null}
 
-      {/* The ordinary Home action is first and stays above supporting status. */}
       <Card className={surface === "overview" ? "order-1 shrink-0" : "order-4 shrink-0"}>
         <CardHeader className="pb-2">
           <CardTitle>{t("dashboard.composerTitle")}</CardTitle>

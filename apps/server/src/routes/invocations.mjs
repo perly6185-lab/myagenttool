@@ -1,4 +1,8 @@
 import { computeInvocationDispatchHealth } from "../read-models/invocation-dispatch-health.mjs";
+import { computeLocalScheduleCapacity } from "../read-models/local-schedule-capacity.mjs";
+import { computeLocalSchedulePreview } from "../read-models/local-schedule-preview.mjs";
+import { computeLocalScheduleRollover } from "../read-models/local-schedule-rollover.mjs";
+import { computeLocalScheduleUrgent } from "../read-models/local-schedule-urgent.mjs";
 import { searchTraceRecords } from "../read-models/trace-search.mjs";
 import { denyForeignProject } from "../runtime/auth.mjs";
 
@@ -29,6 +33,9 @@ export async function handleInvocationRoutes({
   createTroubleshootingReport,
   claimDecision,
   releaseDecisionClaim,
+  applyLocalSchedulePlan,
+  applyLocalScheduleRollover,
+  applyLocalScheduleUrgent,
 }) {
   if (req.method === "GET" && url.pathname === "/api/traces") {
     sendJson(res, 200, searchTraceRecords({
@@ -92,6 +99,94 @@ export async function handleInvocationRoutes({
       visibleInvocation,
       visibleProject,
     }));
+    return true;
+  }
+
+  // Planning input for the personal three-day workbench. The read model is
+  // intentionally bound to state.device; it never searches for, scores, or
+  // assigns work to another terminal.
+  if (req.method === "GET" && url.pathname === "/api/local-schedule/capacity") {
+    const generatedAt = new Date().toISOString();
+    sendJson(res, 200, localScheduleCapacityForActor(state, actor, findAgent, generatedAt));
+    return true;
+  }
+
+  if (req.method === "GET" && url.pathname === "/api/local-schedule/preview") {
+    const generatedAt = new Date().toISOString();
+    const capacity = localScheduleCapacityForActor(state, actor, findAgent, generatedAt);
+    sendJson(res, 200, computeLocalSchedulePreview(capacity, { now: () => generatedAt }));
+    return true;
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/local-schedule/apply") {
+    const body = await readJson(req);
+    const generatedAt = new Date().toISOString();
+    const capacity = localScheduleCapacityForActor(state, actor, findAgent, generatedAt);
+    const preview = computeLocalSchedulePreview(capacity, { now: () => generatedAt });
+    const assignments = preview.days.flatMap((day) => day.items.map((item) => ({
+      workItemId: item.workItemId,
+      expectedRevision: item.expectedRevision,
+      plannedDate: day.date,
+    })));
+    const result = applyLocalSchedulePlan({
+      planRevision: body?.planRevision,
+      currentPlanRevision: preview.planRevision,
+      assignments,
+    }, actor);
+    sendJson(res, result.status, result.body);
+    return true;
+  }
+
+  if (req.method === "GET" && url.pathname === "/api/local-schedule/rollover-preview") {
+    const generatedAt = new Date().toISOString();
+    const capacity = localScheduleCapacityForActor(state, actor, findAgent, generatedAt);
+    const schedulePreview = computeLocalSchedulePreview(capacity, { now: () => generatedAt });
+    sendJson(res, 200, computeLocalScheduleRollover(capacity, schedulePreview));
+    return true;
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/local-schedule/rollover") {
+    const body = await readJson(req);
+    const generatedAt = new Date().toISOString();
+    const capacity = localScheduleCapacityForActor(state, actor, findAgent, generatedAt);
+    const schedulePreview = computeLocalSchedulePreview(capacity, { now: () => generatedAt });
+    const rollover = computeLocalScheduleRollover(capacity, schedulePreview);
+    const result = applyLocalScheduleRollover({
+      rolloverRevision: body?.rolloverRevision,
+      currentRolloverRevision: rollover.rolloverRevision,
+      sourceDate: rollover.sourceDate,
+      moves: rollover.moves,
+      confirmationMoves: rollover.confirmationRequired,
+      confirmPinned: body?.confirmPinned === true,
+    }, actor);
+    sendJson(res, result.status, result.body);
+    return true;
+  }
+
+  if (req.method === "GET" && url.pathname === "/api/local-schedule/urgent-preview") {
+    const generatedAt = new Date().toISOString();
+    const capacity = localScheduleCapacityForActor(state, actor, findAgent, generatedAt);
+    const schedulePreview = computeLocalSchedulePreview(capacity, { now: () => generatedAt });
+    sendJson(res, 200, computeLocalScheduleUrgent(capacity, schedulePreview));
+    return true;
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/local-schedule/urgent") {
+    const body = await readJson(req);
+    const generatedAt = new Date().toISOString();
+    const capacity = localScheduleCapacityForActor(state, actor, findAgent, generatedAt);
+    const schedulePreview = computeLocalSchedulePreview(capacity, { now: () => generatedAt });
+    const urgent = computeLocalScheduleUrgent(capacity, schedulePreview);
+    const result = applyLocalScheduleUrgent({
+      urgentRevision: body?.urgentRevision,
+      currentUrgentRevision: urgent.urgentRevision,
+      date: urgent.date,
+      insertions: urgent.insertions,
+      displacements: urgent.displacements,
+      confirmationRequired: urgent.confirmationRequired,
+      confirmPinned: body?.confirmPinned === true,
+    }, actor);
+    sendJson(res, result.status, result.body);
     return true;
   }
 
@@ -405,6 +500,36 @@ function invocationProjectId(invocation) {
     ?? null;
 }
 
+function localScheduleCapacityForActor(state, actor, findAgent, generatedAt) {
+  const teamId = actor?.teamId ?? null;
+  const userId = actor?.userId ?? null;
+  const visibleInvocation = (invocation) => {
+    if (teamId == null) return true;
+    const projectId = invocationProjectId(invocation);
+    if (projectId) {
+      const project = (state.projects ?? []).find((item) => item.id === projectId);
+      return (project?.ownerTeamId ?? null) === teamId;
+    }
+    const requester = (state.users ?? []).find((user) => user.id === invocation?.requestedBy);
+    return (requester?.teamId ?? "team_local") === teamId;
+  };
+  const visibleProject = (projectId) => {
+    if (teamId == null) return true;
+    const project = (state.projects ?? []).find((item) => item.id === projectId);
+    return (project?.ownerTeamId ?? null) === teamId;
+  };
+  const visibleWorkItem = (item) =>
+    (teamId == null || (item.ownerTeamId ?? "team_local") === teamId)
+    && (userId == null || (item.assigneeIds ?? []).includes(userId));
+  return computeLocalScheduleCapacity(state, {
+    findAgent,
+    now: () => generatedAt,
+    visibleInvocation,
+    visibleProject,
+    visibleWorkItem,
+  });
+}
+
 function denyForeignInvocationRead({ res, sendJson, state, actor, invocation }) {
   const projectId = invocationProjectId(invocation);
   if (projectId) {
@@ -458,6 +583,7 @@ function denyForeignInvocationScope({ res, sendJson, state, actor, metadata }) {
     sendJson(res, 404, { error: "worktree_not_found" });
     return true;
   }
+
   const worktreeProjectId = worktree.workspaceProjectId ?? worktree.projectId;
   return denyForeignProject({
     res,
