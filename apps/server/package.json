@@ -23,6 +23,7 @@
     "yaml": "^2.8.1"
   },
   "devDependencies": {
+    "jszip": "^3.10.1",
     "typescript": "^5.7.2"
   }
 }

@@ -14,6 +14,7 @@ export function createInvocationCompletionRuntime({
   findAgent,
   findInvocation,
   closeCodexSession,
+  closeClaudeSession,
   isTerminal,
   recordInvocationLedgerEntry,
   releaseReservationsForInvocation,
@@ -39,8 +40,29 @@ export function createInvocationCompletionRuntime({
     if (isTerminal(invocation.status)) {
       return;
     }
+    // A server deadline first asks the bridge to interrupt the executor. If the
+    // bridge races back with "cancelled" (or any other late terminal result),
+    // preserve the actual cause: this was a bounded execution timeout and must
+    // enter timeout continuation, not look like a human cancellation.
+    const deadlineEnforcement = invocation.deadlineEnforcement;
+    const effectiveBody = deadlineEnforcement?.state === "interrupt_requested"
+      ? {
+          ...body,
+          status: "timed_out",
+          summary: "The invocation exceeded its server-enforced runtime deadline.",
+          result: {
+            ...(body.result ?? {}),
+            errorCode: "execution_timeout",
+            timeoutKind: "server_hard_deadline",
+            deadlineEnforcement: {
+              requestedAt: deadlineEnforcement.requestedAt,
+              deadlineAt: deadlineEnforcement.deadlineAt,
+            },
+          },
+        }
+      : body;
     // One unit of work: every mutation below commits together on exit.
-    runStateTransaction(commitCompletion, () => completeInvocationWork(invocation, body));
+    runStateTransaction(commitCompletion, () => completeInvocationWork(invocation, effectiveBody));
     // Late-bound reaction hook (e.g. auto-run: succeeded -> publish -> open PR).
     // Fire-and-forget AFTER the durable commit, so the reaction always observes a
     // persisted terminal state. The advancer does its own I/O + error handling so
@@ -63,7 +85,8 @@ export function createInvocationCompletionRuntime({
       ? body.summary ?? "Cancellation applied."
       : null;
     invocation.status = terminalStatus;
-    invocation.result = body.result ?? null;
+    const claudeSessionId = body.result?.claudeSessionId ?? null;
+    invocation.result = stripClaudeProviderSessionId(body.result);
     // #913: a succeeded proposal becomes an immutable artifact NOW — stamp its
     // bindings (content hash, validated base commit, descriptor lineage) before
     // anything reads or persists the result. Pure no-op for every other tool.
@@ -104,7 +127,7 @@ export function createInvocationCompletionRuntime({
       message: terminalStatus === "cancelled"
         ? cancellationAppliedMessage
         : body.summary ?? `Invocation ${terminalStatus}.`,
-      data: body.result ?? null
+      data: invocation.result
     });
     const auditSummary = createAuditSummary(invocation, cancellationAppliedMessage ?? body.summary ?? null);
     state.auditSummaries.push(auditSummary);
@@ -186,6 +209,7 @@ export function createInvocationCompletionRuntime({
     }
     attachApplicationResult({ invocation, auditSummary, records: [], outputCollection: "invocations" });
     closeCodexSession(invocation, terminalStatus);
+    closeClaudeSession?.(invocation, terminalStatus, { claudeSessionId });
     updateCompareRunForInvocation(invocation);
     // #890.1 tail: a plain-invocation budget hold (manual/API accept) releases now
     // that the run is terminal — its real ledger spend, recorded just above, gates
@@ -195,6 +219,12 @@ export function createInvocationCompletionRuntime({
       releaseReservationsForInvocation(invocation.id, { outcome: "committed" });
     }
     // No barrier here: the enclosing runStateTransaction commits on exit.
+  }
+
+  function stripClaudeProviderSessionId(result) {
+    if (!result || typeof result !== "object" || Array.isArray(result)) return result ?? null;
+    const { claudeSessionId: _claudeSessionId, ...safe } = result;
+    return safe;
   }
 
   function updateCompareRunForInvocation(invocation) {

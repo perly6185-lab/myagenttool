@@ -190,7 +190,9 @@ function removeIfSameInode(path, expected) {
 }
 
 function syncFile(path) {
-  const descriptor = openSync(path, "r");
+  // Windows requires a writable handle for FlushFileBuffers; a read-only
+  // descriptor can fail with EPERM even though the staged file is writable.
+  const descriptor = openSync(path, "r+");
   try {
     fsyncSync(descriptor);
   } finally {

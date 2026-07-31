@@ -1,0 +1,32 @@
+{
+  "schemaVersion": 1,
+  "predictions": [
+    {
+      "caseId": "ppq-001-procurement",
+      "traits": [
+        "work.procurement.supplier_comparison",
+        "work.procurement.total_cost_delivery_tradeoff",
+        "work.procurement.approval_traceability"
+      ],
+      "narrative": "工作材料体现了多供应商比价、交付权衡和采购审批留痕。"
+    },
+    {
+      "caseId": "ppq-002-warehouse",
+      "traits": [
+        "work.warehouse.cycle_count",
+        "work.warehouse.inventory_variance",
+        "work.warehouse.first_expiry_first_out"
+      ],
+      "narrative": "工作材料体现了循环盘点、库存差异复核和按效期安排出库。"
+    },
+    {
+      "caseId": "ppq-003-business",
+      "traits": [
+        "work.business.proposal_customization",
+        "work.business.negotiation_followup",
+        "work.business.contract_risk_tracking"
+      ],
+      "narrative": "工作材料体现了方案定制、谈判事项跟进和合同风险条款管理。"
+    }
+  ]
+}

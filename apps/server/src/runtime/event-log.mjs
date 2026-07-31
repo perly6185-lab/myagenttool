@@ -66,6 +66,7 @@ export function createEventLogRuntime({
     }
     const handlers = getCodexEventHandlers();
     handlers.updateCodexSessionFromEvent(record);
+    handlers.updateClaudeSessionFromEvent?.(record);
     handlers.createCodexEvidenceRecord(record);
     persistStateSoon();
     return record;

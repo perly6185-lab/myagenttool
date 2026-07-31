@@ -35,7 +35,7 @@ const platformAgent = {
 };
 const agents = { agt_cli: cliAgent, agt_platform: platformAgent };
 
-function runtimeWith(invocations, maxConcurrency = 1) {
+function runtimeWith(invocations, maxConcurrency = 1, options = {}) {
   const state = { invocations, device: { id: "dev", maxConcurrency } };
   return createInvocationDispatchRuntime({
     state,
@@ -44,6 +44,7 @@ function runtimeWith(invocations, maxConcurrency = 1) {
     dispatchLeaseMs: 30_000,
     findAgent: (id) => agents[id] ?? null,
     completeInvocation: () => {},
+    ...options,
   });
 }
 
@@ -76,6 +77,18 @@ test("per-cwd serialization: a queued run whose worktree is busy is skipped for 
     2, // cap allows a second run
   );
   assert.equal(rt.nextDispatchableInvocation()?.id, "inv_other", "skips the busy worktree, picks the free one");
+});
+
+test("a post-execution worktree reaction lease blocks its continuation until cleanup finishes", () => {
+  const blocked = queued("inv_continuation", "/w1");
+  blocked.options.metadata.worktreeId = "wtr_1";
+  const free = queued("inv_other", "/w2");
+  free.options.metadata.worktreeId = "wtr_2";
+  const rt = runtimeWith([blocked, free], 2, {
+    isWorktreeReactionBusy: (invocation) => invocation.options?.metadata?.worktreeId === "wtr_1",
+  });
+  assert.equal(rt.nextDispatchableInvocation()?.id, "inv_other");
+  assert.equal(rt.isInvocationDispatchable(blocked), false);
 });
 
 test("off-device runs don't consume a bridge slot", () => {

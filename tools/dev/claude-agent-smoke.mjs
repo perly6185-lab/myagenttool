@@ -23,7 +23,9 @@ ok("isClaudeCliCommand (incl. claude.ps1)");
 
 // Permission mode allowlist.
 assert.equal(normalizeClaudePermissionMode("acceptEdits"), "acceptEdits");
-assert.equal(normalizeClaudePermissionMode("default"), "plan", "interactive modes fall back to plan");
+assert.equal(normalizeClaudePermissionMode("default"), "default", "SDK ask mode stays interactive");
+assert.equal(normalizeClaudePermissionMode("ask"), "default", "UI ask alias maps to SDK default");
+assert.equal(normalizeClaudePermissionMode("dontAsk"), "dontAsk");
 assert.equal(normalizeClaudePermissionMode(undefined), "plan");
 ok("normalizeClaudePermissionMode allowlist");
 

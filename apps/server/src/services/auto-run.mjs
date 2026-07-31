@@ -15,7 +15,12 @@ import { composeDesignIssueComment, designArtifactIndex, buildDesignImageUrls } 
 import { decompositionTree, issueTreeApplyFailures, humanApprovalRequiredReasons } from "../../../../tools/ai/src/issue-tree-core.mjs";
 import { scoreDecompositionOverlap } from "./auto-run-epic.mjs";
 import { makeRunTx } from "../runtime/store/run-tx.mjs";
-import { buildAutoRunCheckpoint, continuationCheckpointPrompt } from "./auto-run-checkpoint.mjs";
+import {
+  autoRunCheckpointMadeProgress,
+  autoRunStageFromCheckpoint,
+  buildAutoRunCheckpoint,
+  continuationCheckpointPrompt,
+} from "./auto-run-checkpoint.mjs";
 
 // One-click "Auto" orchestrator. It closes the seam the console never had:
 // turning a linked GitHub issue into a worktree AND a started agent run seeded
@@ -59,6 +64,7 @@ export function extractChangeFailureRef(body) {
 export const autoRunStates = [
   "materializing",
   "running",
+  "waiting_capacity",
   "awaiting_approval",
   "verifying",
   "publishing",
@@ -88,7 +94,7 @@ export function syncBoundWorkItemsForAutoRun({ state, autoRun, status, now, next
           ? "blocked"
           : status === "cancelled"
             ? "ready"
-            : ["materializing", "running", "awaiting_approval", "verifying", "publishing"].includes(status)
+            : ["materializing", "running", "waiting_capacity", "awaiting_approval", "verifying", "publishing"].includes(status)
               ? "in_progress"
               : null;
   if (!targetStatus) return [];
@@ -219,6 +225,8 @@ export function createAutoRunService({
   commitWorktreeChanges,
   publishWorktreeBranch,
   createWorktreePr,
+  acquireWorktreeReactionLease = () => true,
+  releaseWorktreeReactionLease = () => undefined,
   verifyWorktree,
   writeIssueStatus,
   decideIssuePath,
@@ -438,6 +446,45 @@ export function createAutoRunService({
   // Reaction states already handled — advancing past them would re-open a PR.
   // `blocked` (verification failed) is terminal here; a human retries/fixes.
   const settledStatuses = new Set(["pr_open", "report_posted", "needs_input", "plan_proposed", "decomposed", "blocked", "done", "failed", "cancelled"]);
+  const CAPACITY_RETRY_DELAYS_MS = [30_000, 90_000, 180_000];
+  const activeReactionControllers = new Map();
+
+  function autoRunReactionSuperseded(autoRun, invocation, phase) {
+    if (
+      autoRun?.invocationId === invocation?.id
+      && !settledStatuses.has(autoRun.status)
+    ) {
+      return false;
+    }
+    appendEvent({
+      invocationId: invocation?.id ?? null,
+      type: "auto_run_reaction_superseded",
+      level: "info",
+      message: `Ignored a stale Auto-run reaction after ${phase}.`,
+      data: {
+        autoRunId: autoRun?.id ?? null,
+        staleInvocationId: invocation?.id ?? null,
+        currentInvocationId: autoRun?.invocationId ?? null,
+        phase,
+      },
+    });
+    return true;
+  }
+
+  function occupiesExecutionSlot(run) {
+    return !settledStatuses.has(run.status) && run.status !== "waiting_capacity";
+  }
+
+  function autoRunTurnTimeoutSeconds(agent) {
+    const configured = Number(state.autoRunSettings?.turnTimeoutSeconds ?? 900);
+    const fallback = Math.max(900, Number(agent?.adapter?.timeoutSeconds ?? 0));
+    return Math.max(60, Math.min(3600, Number.isFinite(configured) ? configured : fallback));
+  }
+
+  function autoRunTotalBudgetSeconds() {
+    const configured = Number(state.autoRunSettings?.totalExecutionBudgetSeconds ?? 2700);
+    return Math.max(600, Math.min(7200, Number.isFinite(configured) ? configured : 2700));
+  }
 
   // The PR body an auto-run opens with, carrying the verification evidence so the
   // pull request is honest about whether checks ran and passed.
@@ -577,7 +624,7 @@ export function createAutoRunService({
     // of the per-project cap. Auto-trigger simply retries next scan (soft queue).
     const globalMax = Number(state.autoRunSettings?.globalMaxConcurrent ?? 0);
     if (globalMax > 0) {
-      const active = (state.autoRuns ?? []).filter((r) => !settledStatuses.has(r.status)).length;
+      const active = (state.autoRuns ?? []).filter(occupiesExecutionSlot).length;
       if (active >= globalMax) {
         throw new Error(`At capacity: ${active}/${globalMax} auto-runs active. Auto-trigger will retry when one frees up.`);
       }
@@ -736,6 +783,13 @@ export function createAutoRunService({
       failoverExcludedAgentIds: [],
       failoverHistory: [],
       failoverOutcome: null,
+      executionStage: "analysis",
+      executionBudget: {
+        startedAt: createdAt,
+        turnTimeoutSeconds: autoRunTurnTimeoutSeconds(agent),
+        totalBudgetSeconds: autoRunTotalBudgetSeconds(),
+        noProgressStreak: 0,
+      },
       createdAt,
       updatedAt: createdAt,
     };
@@ -778,7 +832,7 @@ export function createAutoRunService({
       invocation = createInvocation(task, agent, {
         actor,
         ...codexAutoApprovalOptions(agent),
-        timeoutSeconds: Number(agent.adapter?.timeoutSeconds ?? 600),
+        timeoutSeconds: autoRunTurnTimeoutSeconds(agent),
         // role carries the decided path so role-restricted agent-skills render
         // for this run (creation.mjs → renderAgentSkillsIntoWorktree).
         metadata: {
@@ -849,21 +903,125 @@ export function createAutoRunService({
     });
   }
 
-  // A genuine execution timeout is recoverable on the existing worktree. Make
-  // one bounded continuation instead of immediately dead-ending the local
-  // issue. Dispatch/orphan timeouts keep their existing failover path.
+  // A genuine execution timeout or a lost executor transport is recoverable on
+  // the existing worktree. Continue while the bounded task budget has room and
+  // checkpoint evidence is still advancing; stop a no-progress loop instead of
+  // merely making it longer. Dispatch/orphan timeouts keep their failover path.
   async function continueTimedOutAutoRun(autoRun, invocation) {
     const errorCode = invocation?.result?.errorCode ?? null;
-    if (invocation?.status !== "timed_out" || errorCode !== "execution_timeout") {
+    const recoveryReason = invocation?.status === "timed_out" && errorCode === "execution_timeout"
+      ? "execution_timeout"
+      : invocation?.status === "failed" && errorCode === "transport_closed"
+        ? "transport_closed"
+        : null;
+    if (!recoveryReason) {
       return false;
     }
+    const configuredMaxAttempts = Number(state.autoRunSettings?.maxTimeoutRecoveryAttempts ?? 3);
     const maxAttempts = Math.max(0, Math.min(
-      1,
-      Number(state.autoRunSettings?.maxTimeoutRecoveryAttempts ?? 1),
+      3,
+      Number.isFinite(configuredMaxAttempts) ? configuredMaxAttempts : 3,
     ));
     const attempts = Number(autoRun.timeoutRecoveryAttempts ?? 0);
-    if (attempts >= maxAttempts || autoRunSpendRefusal(autoRun.projectId)) {
-      return false;
+    const checkpoint = buildAutoRunCheckpoint({
+      invocation,
+      events: [
+        ...(state.codexEvidenceRecords ?? []),
+        ...(state.invocationEvents ?? []),
+        ...(state.events ?? []),
+      ],
+      changedFiles: invocation?.result?.continuationCheckpoint?.changedFiles ?? [],
+    });
+    const madeProgress = autoRunCheckpointMadeProgress(
+      checkpoint,
+      autoRun.timeoutRecovery?.checkpoint ?? null,
+    );
+    const previousNoProgressStreak = Number(autoRun.executionBudget?.noProgressStreak ?? 0);
+    const noProgressStreak = madeProgress ? 0 : previousNoProgressStreak + 1;
+    const configuredNoProgressLimit = Number(state.autoRunSettings?.maxNoProgressTimeouts ?? 2);
+    const noProgressLimit = Math.max(1, Math.min(
+      3,
+      Number.isFinite(configuredNoProgressLimit) ? configuredNoProgressLimit : 2,
+    ));
+    const budgetStartedAt = autoRun.executionBudget?.startedAt
+      ?? invocation.createdAt
+      ?? autoRun.updatedAt
+      ?? now();
+    const totalBudgetSeconds = Number(
+      autoRun.executionBudget?.totalBudgetSeconds ?? autoRunTotalBudgetSeconds(),
+    );
+    const elapsedSeconds = Math.max(
+      0,
+      Math.floor((Date.parse(now()) - Date.parse(budgetStartedAt)) / 1000),
+    );
+    const stage = autoRunStageFromCheckpoint(checkpoint);
+    const blockTimeoutRecovery = (reason, code) => {
+      runTx(() => {
+        autoRun.executionStage = stage;
+        autoRun.executionBudget = {
+          ...(autoRun.executionBudget ?? {}),
+          startedAt: budgetStartedAt,
+          turnTimeoutSeconds: autoRun.executionBudget?.turnTimeoutSeconds
+            ?? autoRunTurnTimeoutSeconds(autoRun.agentId ? findAgent(autoRun.agentId) : null),
+          totalBudgetSeconds,
+          elapsedSeconds,
+          noProgressStreak,
+        };
+        setAutoRunStatus(autoRun, "blocked", {
+          error: reason,
+          errorCode: code,
+          timeoutRecovery: {
+            ...(autoRun.timeoutRecovery ?? {}),
+            status: "exhausted",
+            sourceInvocationId: invocation.id,
+            attempt: attempts,
+            checkpoint,
+            updatedAt: now(),
+          },
+        });
+        appendEvent({
+          invocationId: invocation.id,
+          type: "auto_run_timeout_recovery_blocked",
+          level: "warn",
+          message: `Auto-run ${autoRun.id} stopped automatic timeout recovery: ${reason}`,
+          data: {
+            autoRunId: autoRun.id,
+            attempts,
+            maxAttempts,
+            elapsedSeconds,
+            totalBudgetSeconds,
+            noProgressStreak,
+            stage,
+            errorCode: code,
+          },
+        });
+      });
+      return true;
+    };
+    if (noProgressStreak >= noProgressLimit) {
+      return blockTimeoutRecovery(
+        `Automatic continuation stopped after ${noProgressStreak} consecutive timeout checkpoints without meaningful progress.`,
+        "timeout_no_progress",
+      );
+    }
+    if (elapsedSeconds >= totalBudgetSeconds) {
+      return blockTimeoutRecovery(
+        `Automatic continuation reached its ${totalBudgetSeconds}-second task budget.`,
+        "timeout_budget_exhausted",
+      );
+    }
+    if (attempts >= maxAttempts) {
+      return blockTimeoutRecovery(
+        `Automatic continuation exhausted ${maxAttempts} timeout recovery attempts.`,
+        "timeout_retries_exhausted",
+      );
+    }
+    const spendRefusal = autoRunSpendRefusal(autoRun.projectId);
+    if (spendRefusal) {
+      return blockTimeoutRecovery(
+        `Automatic continuation paused: ${spendRefusal}.`,
+        "timeout_recovery_refused",
+      );
     }
     const worktree = state.worktrees.find((item) => item.id === autoRun.worktreeId) ?? null;
     const agent = (autoRun.agentId ? findAgent(autoRun.agentId) : null) ?? defaultAgent();
@@ -874,17 +1032,9 @@ export function createAutoRunService({
     // Reuse only the body captured when this run started. A continuation that
     // inherits approval must never pick up a subsequently edited issue body.
     const path = autoRun.decision?.path ?? "develop";
-    const checkpoint = buildAutoRunCheckpoint({
-      invocation,
-      events: [
-        ...(state.codexEvidenceRecords ?? []),
-        ...(state.invocationEvents ?? []),
-        ...(state.events ?? []),
-      ],
-      changedFiles: invocation?.result?.continuationCheckpoint?.changedFiles ?? [],
-    });
     const task =
       `${roleAutoRunPrompt(autoRun.link, { path, issueBody: autoRun.issueBody ?? null })}\n\n` +
+      `Current recovery stage: ${stage}.\n` +
       continuationCheckpointPrompt(checkpoint);
     const continuationApproval = (state.codexApprovalBrokerRequests ?? []).find((request) =>
       request.invocationId === invocation.id
@@ -893,14 +1043,15 @@ export function createAutoRunService({
 
     let continuation;
     const attempt = attempts + 1;
-    const idempotencyKey = `auto-run:${autoRun.id}:execution-timeout:${invocation.id}:${attempt}`;
+    const idempotencyReason = recoveryReason.replaceAll("_", "-");
+    const idempotencyKey = `auto-run:${autoRun.id}:${idempotencyReason}:${invocation.id}:${attempt}`;
     try {
       continuation = createInvocation(task, agent, {
         requestedBy: invocation.requestedBy ?? "usr_local",
         ...codexAutoApprovalOptions(agent),
         idempotencyKey,
-        preApproved: Boolean(continuationApproval),
-        timeoutSeconds: Number(agent.adapter?.timeoutSeconds ?? 600),
+        preApproved: Boolean(continuationApproval || invocation.options?.preApproved),
+        timeoutSeconds: autoRunTurnTimeoutSeconds(agent),
         codexSessionMode: "continue_last",
         resumeFromInvocationId: invocation.id,
         metadata: {
@@ -910,6 +1061,8 @@ export function createAutoRunService({
           role: path,
           timeoutRecoveryAttempt: attempt,
           timeoutRecoverySourceInvocationId: invocation.id,
+          timeoutRecoveryReason: recoveryReason,
+          executionStage: stage,
           continuationCheckpoint: checkpoint,
           ...(continuationApproval
             ? { codexApprovalContinuationRequestId: continuationApproval.id }
@@ -934,6 +1087,15 @@ export function createAutoRunService({
     runTx(() => {
       autoRun.invocationId = continuation.id;
       autoRun.timeoutRecoveryAttempts = attempt;
+      autoRun.executionStage = stage;
+      autoRun.executionBudget = {
+        ...(autoRun.executionBudget ?? {}),
+        startedAt: budgetStartedAt,
+        turnTimeoutSeconds: autoRunTurnTimeoutSeconds(agent),
+        totalBudgetSeconds,
+        elapsedSeconds,
+        noProgressStreak,
+      };
       autoRun.timeoutRecovery = {
         status: "ready",
         sourceInvocationId: invocation.id,
@@ -951,14 +1113,18 @@ export function createAutoRunService({
         invocationId: continuation.id,
         type: "auto_run_retried",
         level: "info",
-        message: `Auto-run ${autoRun.id} continued after an execution timeout on its existing worktree.`,
+        message: `Auto-run ${autoRun.id} continued after ${recoveryReason === "execution_timeout" ? "an execution timeout" : "an executor transport failure"} on its existing worktree.`,
         data: {
           autoRunId: autoRun.id,
           worktreeId: worktree.id,
           invocationId: continuation.id,
           previousInvocationId: invocation.id,
-          reason: "execution_timeout",
+          reason: recoveryReason,
           attempt: autoRun.timeoutRecoveryAttempts,
+          elapsedSeconds,
+          totalBudgetSeconds,
+          noProgressStreak,
+          stage,
           approvalReused: Boolean(continuationApproval),
         },
       });
@@ -976,18 +1142,295 @@ export function createAutoRunService({
     return true;
   }
 
+  // Provider capacity is transient and does not mean the task failed. Persist a
+  // retry lease instead of occupying an executor slot with a sleeping process.
+  // The boot/periodic reaper below dispatches the same approved task on the same
+  // worktree after bounded backoff, so a server restart cannot lose the wait.
+  function deferProviderCapacityRetry(autoRun, invocation) {
+    if (invocation?.result?.errorCode !== "provider_capacity") return false;
+    const configuredMaxAttempts = Number(
+      state.autoRunSettings?.maxCapacityRetryAttempts ?? CAPACITY_RETRY_DELAYS_MS.length,
+    );
+    const maxAttempts = Math.max(0, Math.min(
+      CAPACITY_RETRY_DELAYS_MS.length,
+      Number.isFinite(configuredMaxAttempts) ? configuredMaxAttempts : CAPACITY_RETRY_DELAYS_MS.length,
+    ));
+    const completedAttempts = Number(autoRun.capacityRetry?.attempt ?? 0);
+    if (completedAttempts >= maxAttempts) {
+      runTx(() => {
+        setAutoRunStatus(autoRun, "blocked", {
+          error: `Model capacity remained unavailable after ${completedAttempts} automatic retries.`,
+          errorCode: "provider_capacity",
+          capacityRetry: {
+            ...(autoRun.capacityRetry ?? {}),
+            status: "exhausted",
+            maxAttempts,
+            sourceInvocationId: invocation.id,
+            lastError: invocation.summary ?? "Selected model is at capacity.",
+            updatedAt: now(),
+          },
+        });
+        appendEvent({
+          invocationId: invocation.id,
+          type: "auto_run_capacity_exhausted",
+          level: "warn",
+          message: `Auto-run ${autoRun.id} exhausted its model-capacity retries.`,
+          data: { autoRunId: autoRun.id, attempts: completedAttempts, maxAttempts },
+        });
+      });
+      return true;
+    }
+
+    const attempt = completedAttempts + 1;
+    const delayMs = CAPACITY_RETRY_DELAYS_MS[attempt - 1];
+    const retryAt = new Date(Date.parse(now()) + delayMs).toISOString();
+    runTx(() => {
+      setAutoRunStatus(autoRun, "waiting_capacity", {
+        error: `Model capacity is temporarily unavailable. Automatic retry ${attempt}/${maxAttempts} is scheduled for ${retryAt}.`,
+        errorCode: "provider_capacity",
+        capacityRetry: {
+          status: "scheduled",
+          attempt,
+          maxAttempts,
+          sourceInvocationId: invocation.id,
+          targetInvocationId: null,
+          retryAt,
+          delayMs,
+          launchFailures: 0,
+          lastError: invocation.summary ?? "Selected model is at capacity.",
+          updatedAt: now(),
+        },
+      });
+      appendEvent({
+        invocationId: invocation.id,
+        type: "auto_run_capacity_waiting",
+        level: "info",
+        message: `Auto-run ${autoRun.id} is waiting for model capacity; retry ${attempt}/${maxAttempts} at ${retryAt}.`,
+        data: {
+          autoRunId: autoRun.id,
+          worktreeId: autoRun.worktreeId,
+          attempt,
+          maxAttempts,
+          retryAt,
+          delayMs,
+        },
+      });
+    });
+    return true;
+  }
+
+  async function retryProviderCapacityAutoRun(autoRun, nowMs) {
+    if (autoRun.status !== "waiting_capacity") return "not_waiting";
+    const retry = autoRun.capacityRetry ?? null;
+    const retryAtMs = Date.parse(retry?.retryAt ?? "");
+    if (!Number.isFinite(retryAtMs) || retryAtMs > nowMs) return "not_due";
+
+    const refusal = autoRunSpendRefusal(autoRun.projectId);
+    if (refusal) {
+      runTx(() => setAutoRunStatus(autoRun, "blocked", {
+        error: `Model-capacity retry paused: ${refusal}.`,
+        errorCode: "provider_capacity",
+        capacityRetry: { ...retry, status: "blocked", updatedAt: now() },
+      }));
+      return "blocked";
+    }
+    const globalMax = Number(state.autoRunSettings?.globalMaxConcurrent ?? 0);
+    const active = (state.autoRuns ?? []).filter(occupiesExecutionSlot).length;
+    if (globalMax > 0 && active >= globalMax) return "slot_unavailable";
+
+    const worktree = state.worktrees.find((item) => item.id === autoRun.worktreeId) ?? null;
+    const agent = (autoRun.agentId ? findAgent(autoRun.agentId) : null) ?? defaultAgent();
+    if (!worktree || !agent || agent.status === "disabled") {
+      runTx(() => setAutoRunStatus(autoRun, "blocked", {
+        error: "Model capacity recovered, but the original worktree or agent is no longer available.",
+        errorCode: "provider_capacity",
+        capacityRetry: { ...retry, status: "blocked", updatedAt: now() },
+      }));
+      return "blocked";
+    }
+
+    const sourceInvocationId = retry.sourceInvocationId ?? autoRun.invocationId;
+    const sourceInvocation = typeof findInvocation === "function"
+      ? findInvocation(sourceInvocationId)
+      : (state.invocations ?? []).find((item) => item.id === sourceInvocationId) ?? null;
+    const path = autoRun.decision?.path ?? "develop";
+    const task =
+      `${roleAutoRunPrompt(autoRun.link, { path, issueBody: autoRun.issueBody ?? null })}\n\n` +
+      "The previous launch stopped only because the selected model had no capacity. " +
+      "Resume this exact task on the existing worktree. Preserve completed work and avoid repeating broad repository discovery.";
+    const continuationApproval = (state.codexApprovalBrokerRequests ?? []).find((request) =>
+      request.invocationId === sourceInvocationId
+      && request.status === "approved"
+      && !request.continuationGrant?.targetInvocationId) ?? null;
+    const attempt = Number(retry.attempt ?? 1);
+    const idempotencyKey = `auto-run:${autoRun.id}:provider-capacity:${sourceInvocationId}:${attempt}`;
+    let continuation;
+    try {
+      continuation = createInvocation(task, agent, {
+        requestedBy: sourceInvocation?.requestedBy ?? "usr_local",
+        ...codexAutoApprovalOptions(agent),
+        // Re-entering the same immutable task after provider refusal is a
+        // continuation of an already-admitted run, not a new authority grant.
+        preApproved: true,
+        timeoutSeconds: autoRunTurnTimeoutSeconds(agent),
+        idempotencyKey,
+        codexSessionMode: "continue_last",
+        resumeFromInvocationId: sourceInvocationId,
+        metadata: {
+          worktreeId: worktree.id,
+          projectId: worktree.projectId,
+          autoRunId: autoRun.id,
+          role: path,
+          capacityRetryAttempt: attempt,
+          capacityRetrySourceInvocationId: sourceInvocationId,
+          ...(continuationApproval
+            ? { codexApprovalContinuationRequestId: continuationApproval.id }
+            : {}),
+        },
+      });
+    } catch (error) {
+      const launchFailures = Number(retry.launchFailures ?? 0) + 1;
+      if (launchFailures >= 3) {
+        runTx(() => setAutoRunStatus(autoRun, "blocked", {
+          error: `Model-capacity retry could not be launched: ${String(error?.message ?? error)}`,
+          errorCode: "provider_capacity",
+          capacityRetry: { ...retry, status: "blocked", launchFailures, updatedAt: now() },
+        }));
+        return "blocked";
+      }
+      runTx(() => {
+        autoRun.capacityRetry = {
+          ...retry,
+          status: "scheduled",
+          launchFailures,
+          retryAt: new Date(Date.parse(now()) + CAPACITY_RETRY_DELAYS_MS[0]).toISOString(),
+          updatedAt: now(),
+        };
+        autoRun.updatedAt = now();
+      });
+      return "launch_deferred";
+    }
+
+    runTx(() => {
+      if (continuationApproval) {
+        continuationApproval.continuationGrant = {
+          targetInvocationId: continuation.id,
+          autoRunId: autoRun.id,
+          worktreeId: worktree.id,
+          grantedAt: now(),
+        };
+        continuationApproval.updatedAt = now();
+      }
+      autoRun.invocationId = continuation.id;
+      autoRun.capacityRetry = {
+        ...retry,
+        status: "ready",
+        targetInvocationId: continuation.id,
+        idempotencyKey,
+        updatedAt: now(),
+      };
+      setAutoRunStatus(autoRun, autoRunStatusForInvocation(continuation), {
+        error: null,
+        errorCode: null,
+      });
+      appendEvent({
+        invocationId: continuation.id,
+        type: "auto_run_capacity_retried",
+        level: "info",
+        message: `Auto-run ${autoRun.id} resumed after waiting for model capacity.`,
+        data: {
+          autoRunId: autoRun.id,
+          worktreeId: worktree.id,
+          invocationId: continuation.id,
+          previousInvocationId: sourceInvocationId,
+          attempt,
+          approvalReused: Boolean(continuationApproval),
+        },
+      });
+    });
+    try {
+      startInvocationIfAllowed(continuation, agent);
+    } catch (error) {
+      const launchFailures = Number(retry.launchFailures ?? 0) + 1;
+      runTx(() => {
+        if (launchFailures >= 3) {
+          setAutoRunStatus(autoRun, "blocked", {
+            error: `Model-capacity retry could not be dispatched: ${String(error?.message ?? error)}`,
+            errorCode: "provider_capacity",
+            capacityRetry: {
+              ...autoRun.capacityRetry,
+              status: "blocked",
+              launchFailures,
+              updatedAt: now(),
+            },
+          });
+          return;
+        }
+        autoRun.invocationId = sourceInvocationId;
+        setAutoRunStatus(autoRun, "waiting_capacity", {
+          error: `Model capacity retry dispatch was deferred: ${String(error?.message ?? error)}`,
+          errorCode: "provider_capacity",
+          capacityRetry: {
+            ...autoRun.capacityRetry,
+            status: "scheduled",
+            launchFailures,
+            retryAt: new Date(Date.parse(now()) + CAPACITY_RETRY_DELAYS_MS[0]).toISOString(),
+            updatedAt: now(),
+          },
+        });
+      });
+      return launchFailures >= 3 ? "blocked" : "launch_deferred";
+    }
+    runTx(() => {
+      if (autoRun.capacityRetry?.targetInvocationId === continuation.id) {
+        autoRun.capacityRetry.status = "dispatched";
+        autoRun.capacityRetry.updatedAt = now();
+      }
+    });
+    return "retried";
+  }
+
   // Reaction: when an auto-run's invocation reaches a terminal state, advance the
   // state machine. On success, publish the branch and open the PR (Phase 2 will
   // front-run a verification gate here). On failure, mark the auto-run failed.
   // Called fire-and-forget from completion, so it never throws.
   async function advanceAutoRunForInvocation(invocation) {
     let autoRun = null;
+    let reactionController = null;
+    let reactionEntry = null;
+    let reactionLeaseHeld = false;
     try {
       autoRun = state.autoRuns.find((item) => item.invocationId === invocation?.id) ?? null;
       if (!autoRun || settledStatuses.has(autoRun.status)) return null;
+      const activeReaction = activeReactionControllers.get(autoRun.id);
+      if (
+        activeReaction?.invocationId === invocation.id
+        && activeReaction?.status === invocation.status
+      ) {
+        return null;
+      }
+      activeReaction?.controller.abort(new Error("Auto-run reaction superseded."));
+      reactionController = new AbortController();
+      reactionEntry = {
+        controller: reactionController,
+        invocationId: invocation.id,
+        status: invocation.status,
+      };
+      activeReactionControllers.set(autoRun.id, reactionEntry);
 
       if (invocation.status === "succeeded") {
         const worktree = state.worktrees.find((item) => item.id === autoRun.worktreeId) ?? null;
+        reactionLeaseHeld = acquireWorktreeReactionLease(autoRun.worktreeId, invocation.id);
+        if (!reactionLeaseHeld) {
+          appendEvent({
+            invocationId: invocation.id,
+            type: "auto_run_reaction_lease_refused",
+            level: "warn",
+            message: "Auto-run post-processing refused to overlap another reaction on this worktree.",
+            data: { autoRunId: autoRun.id, worktreeId: autoRun.worktreeId },
+          });
+          return null;
+        }
 
         // Epic decomposition (opt-in): the deliverable is a PROPOSED plan of child
         // issues, not a diff. Read the agent's decomposition/PLAN.json, build +
@@ -1007,11 +1450,16 @@ export function createAutoRunService({
         if (typeof commitWorktreeChanges === "function") {
           let commitResult;
           try {
-            commitResult = await commitWorktreeChanges(autoRun.worktreeId, { message: commitMessageFor(autoRun) });
+            commitResult = await commitWorktreeChanges(autoRun.worktreeId, {
+              message: commitMessageFor(autoRun),
+              signal: reactionController.signal,
+            });
           } catch (error) {
+            if (autoRunReactionSuperseded(autoRun, invocation, "commit failure")) return null;
             runTx(() => setAutoRunStatus(autoRun, "failed", { error: `Commit failed: ${String(error?.message ?? error)}` }));
             return autoRun;
           }
+          if (autoRunReactionSuperseded(autoRun, invocation, "commit")) return null;
           if (!commitResult.hasCommits) {
             // No diff — route by the decided path instead of treating it as a
             // dead end. A design/prototype run's deliverable IS the findings; a
@@ -1024,6 +1472,7 @@ export function createAutoRunService({
               const summary = extractRunSummary(invocation) ?? "Investigation complete — no code change was needed.";
               maybePostIssueReport(autoRun, worktree, summary);
               const spawn = await maybeSpawnChildIssue(autoRun, worktree, summary);
+              if (autoRunReactionSuperseded(autoRun, invocation, "child issue creation")) return null;
               runTx(() => setAutoRunStatus(autoRun, "report_posted", {
                 report: summary,
                 error: null,
@@ -1071,6 +1520,7 @@ export function createAutoRunService({
             } catch {
               changed = [];
             }
+            if (autoRunReactionSuperseded(autoRun, invocation, "design artifact inspection")) return null;
             const designOnly = changed.length > 0 && changed.every((p) => String(p).startsWith("design/"));
             if (designOnly) {
               // E1: prefer the FULL written brief (design/BRIEF.md) over the thin
@@ -1080,11 +1530,13 @@ export function createAutoRunService({
               // Layer B (opt-in): render + push the mockups so real pixels render
               // inline on the issue; {} when off/unavailable.
               const imageUrls = await maybeHostDesignImages(autoRun, worktree);
+              if (autoRunReactionSuperseded(autoRun, invocation, "design image hosting")) return null;
               // Layer A: the brief IS what a human sees on the issue; index the
               // mockups beneath it so the reader knows a richer visual exists and
               // where to open it. Layer B's URLs embed the previews inline.
               maybePostIssueReport(autoRun, worktree, composeDesignIssueComment({ brief: summary, artifacts: changed, imageUrls }));
               const spawn = await maybeSpawnChildIssue(autoRun, worktree, summary);
+              if (autoRunReactionSuperseded(autoRun, invocation, "child issue creation")) return null;
               runTx(() => setAutoRunStatus(autoRun, "report_posted", {
                 report: summary,
                 designArtifacts: changed,
@@ -1106,6 +1558,7 @@ export function createAutoRunService({
             const summary = brief || extractRunSummary(invocation) || "Prototype spike complete — see the findings.";
             maybePostIssueReport(autoRun, worktree, summary);
             const spawn = await maybeSpawnChildIssue(autoRun, worktree, summary);
+            if (autoRunReactionSuperseded(autoRun, invocation, "child issue creation")) return null;
             runTx(() => setAutoRunStatus(autoRun, "report_posted", {
               report: summary,
               error: null,
@@ -1126,11 +1579,16 @@ export function createAutoRunService({
           : { passed: true, verified: false, summary: "No verification command configured." };
         try {
           if (typeof verifyWorktree === "function") {
-            verification = await verifyWorktree({ worktree, autoRun });
+            verification = await verifyWorktree({
+              worktree,
+              autoRun,
+              signal: reactionController.signal,
+            });
           }
         } catch (error) {
           verification = { passed: false, verified: true, summary: `Verification error: ${String(error?.message ?? error)}` };
         }
+        if (autoRunReactionSuperseded(autoRun, invocation, "verification")) return null;
         if (state.autoRunSettings?.requireVerification && !verification.verified) {
           verification = {
             passed: false,
@@ -1174,7 +1632,7 @@ export function createAutoRunService({
                 repair = createInvocation(repairTask, agent, {
                   preApproved: true, // continuation of an already human-approved run on unchanged content — no re-gate
                   ...codexAutoApprovalOptions(agent),
-                  timeoutSeconds: Number(agent.adapter?.timeoutSeconds ?? 600),
+                  timeoutSeconds: autoRunTurnTimeoutSeconds(agent),
                   metadata: { worktreeId: autoRun.worktreeId, projectId: autoRun.projectId, autoRunId: autoRun.id, role: "develop", repairAttempt: autoRun.repairAttempts },
                 });
               } catch {
@@ -1213,6 +1671,7 @@ export function createAutoRunService({
           } catch {
             judgment = null;
           }
+          if (autoRunReactionSuperseded(autoRun, invocation, "acceptance judgment")) return null;
           autoRun.judgment = judgment
             ? { solved: judgment.solved, confidence: judgment.confidence, summary: judgment.summary ?? null, gaps: judgment.gaps ?? [] }
             : { solved: null, confidence: null, summary: "Judge errored — verdict unavailable.", gaps: [] };
@@ -1234,6 +1693,7 @@ export function createAutoRunService({
           } catch {
             screenshots = [];
           }
+          if (autoRunReactionSuperseded(autoRun, invocation, "visual artifact inspection")) return null;
         }
         // A local issue is deliberately platform-local: its reviewable result is
         // the committed worktree/branch, not a GitHub pull request. Requiring a
@@ -1252,22 +1712,34 @@ export function createAutoRunService({
         }
         setAutoRunStatus(autoRun, "publishing");
         try {
-          await publishWorktreeBranch(autoRun.worktreeId);
+          if (autoRunReactionSuperseded(autoRun, invocation, "before branch publication")) return null;
+          await publishWorktreeBranch(autoRun.worktreeId, { signal: reactionController.signal });
+          if (autoRunReactionSuperseded(autoRun, invocation, "branch publication")) return null;
           // H2: if this run remediates a failed deploy, its issue body carries a
           // `Change-failure: #N` marker — propagate it onto the PR body so DORA's
           // change-failure rate + recovery see the remediation (fix-forward).
           const changeFailureRef = extractChangeFailureRef(autoRun.issueBody);
           const prBody = verificationEvidenceBody(verification, judgment) + (changeFailureRef ? `\n\nChange-failure: #${changeFailureRef}\n` : "");
-          const pr = await createWorktreePr(autoRun.worktreeId, { body: prBody });
+          if (autoRunReactionSuperseded(autoRun, invocation, "before pull request creation")) return null;
+          const pr = await createWorktreePr(autoRun.worktreeId, {
+            body: prBody,
+            signal: reactionController.signal,
+          });
+          if (autoRunReactionSuperseded(autoRun, invocation, "pull request creation")) return null;
           runTx(() => setAutoRunStatus(autoRun, "pr_open", { prNumber: pr?.number ?? null, prUrl: pr?.url ?? null, error: null, ...(screenshots.length ? { screenshots } : {}) }));
           maybeWriteIssueStatus(autoRun, worktree, "review");
         } catch (error) {
+          if (autoRunReactionSuperseded(autoRun, invocation, "publication failure")) return null;
           runTx(() => setAutoRunStatus(autoRun, "failed", { error: String(error?.message ?? error) }));
         }
       } else {
+        if (deferProviderCapacityRetry(autoRun, invocation)) {
+          return autoRun;
+        }
         if (await continueTimedOutAutoRun(autoRun, invocation)) {
           return autoRun;
         }
+        if (autoRunReactionSuperseded(autoRun, invocation, "timeout recovery")) return null;
         // failed | timed_out | cancelled | rejected. Carry the invocation's
         // errorCode onto the run: an infrastructure reclaim (bridge offline →
         // "dispatch_timeout") is distinguishable from a genuine task failure
@@ -1282,11 +1754,22 @@ export function createAutoRunService({
     } catch (error) {
       // Never let a reaction error escape the fire-and-forget caller, but do not
       // leave the operator-facing run stuck in "running" with no explanation.
-      if (autoRun && !settledStatuses.has(autoRun.status)) {
+      if (
+        autoRun
+        && autoRun.invocationId === invocation?.id
+        && !settledStatuses.has(autoRun.status)
+      ) {
         runTx(() => setAutoRunStatus(autoRun, "failed", { error: `Auto-run reaction failed: ${String(error?.message ?? error)}` }));
         return autoRun;
       }
       return null;
+    } finally {
+      if (reactionLeaseHeld) {
+        releaseWorktreeReactionLease(autoRun?.worktreeId, invocation?.id);
+      }
+      if (autoRun && activeReactionControllers.get(autoRun.id) === reactionEntry) {
+        activeReactionControllers.delete(autoRun.id);
+      }
     }
   }
 
@@ -1519,7 +2002,7 @@ export function createAutoRunService({
         requestedBy: retrySourceInvocation?.requestedBy ?? actor?.userId ?? "usr_local",
         ...codexAutoApprovalOptions(agent),
         preApproved: Boolean(approvalRecoveryRequest || timeoutContinuationApproval),
-        timeoutSeconds: Number(agent.adapter?.timeoutSeconds ?? 600),
+        timeoutSeconds: autoRunTurnTimeoutSeconds(agent),
         ...(resumesExecutionTimeout
           ? {
               idempotencyKey: `auto-run:${autoRun.id}:manual-timeout-retry:${timeoutResumeSource.id}:from:${retrySourceInvocationId ?? "none"}`,
@@ -1585,6 +2068,107 @@ export function createAutoRunService({
       throw error;
     }
     return { autoRun, invocation };
+  }
+
+  async function reverifyAutoRun(autoRunId, { actor, terminalId = null } = {}) {
+    const autoRun = state.autoRuns.find((item) => item.id === autoRunId);
+    if (!autoRun) throw new Error("Auto-run not found.");
+    if (autoRun.verificationAttempt?.status === "running") {
+      throw new Error("Platform reverification is already running for this Auto-run.");
+    }
+    if (terminalId && String(terminalId) !== autoRun.terminalId) {
+      throw new Error("This run belongs to a different terminal.");
+    }
+    const recoverableVerificationStatus = ["blocked", "cancelled"].includes(autoRun.status)
+      && (autoRun.link?.type === "local_issue" || Boolean(autoRun.prUrl));
+    if (!["done", "pr_open"].includes(autoRun.status) && !recoverableVerificationStatus) {
+      throw new Error("Only a completed or PR-open Auto-run can be reverified.");
+    }
+    const worktree = state.worktrees.find((item) => item.id === autoRun.worktreeId) ?? null;
+    if (!worktree?.path) {
+      throw new Error("The Auto-run's worktree no longer exists; verification cannot be reproduced.");
+    }
+    if (typeof verifyWorktree !== "function") {
+      throw new Error("No platform verification runner is available.");
+    }
+
+    const previousStatus = ["blocked", "cancelled"].includes(autoRun.status)
+      ? (autoRun.prUrl ? "pr_open" : "done")
+      : autoRun.status;
+    const requestedAt = now();
+    runTx(() => {
+      autoRun.verificationAttempt = {
+        status: "running",
+        requestedAt,
+        requestedBy: actor?.userId ?? null,
+      };
+      autoRun.updatedAt = requestedAt;
+      appendEvent({
+        invocationId: autoRun.invocationId,
+        type: "auto_run_reverification_started",
+        level: "info",
+        message: `Auto-run ${autoRun.id} platform reverification started.`,
+        data: { autoRunId: autoRun.id, worktreeId: autoRun.worktreeId },
+      });
+    });
+
+    let verification;
+    try {
+      verification = await verifyWorktree({ worktree, autoRun });
+    } catch (error) {
+      verification = {
+        passed: false,
+        verified: true,
+        summary: `Verification error: ${String(error?.message ?? error)}`,
+      };
+    }
+
+    runTx(() => {
+      autoRun.verification = {
+        passed: Boolean(verification.passed),
+        verified: Boolean(verification.verified),
+        summary: verification.summary ?? null,
+        ...(Array.isArray(verification.commands) ? { commands: verification.commands } : {}),
+        verifiedAt: now(),
+      };
+      autoRun.verificationAttempt = {
+        ...autoRun.verificationAttempt,
+        status: verification.verified
+          ? (verification.passed ? "passed" : "failed")
+          : "unconfigured",
+        completedAt: now(),
+      };
+      const nextStatus = !verification.verified
+        ? previousStatus
+        : verification.passed
+          ? previousStatus
+          : "blocked";
+      setAutoRunStatus(autoRun, nextStatus, {
+        error: verification.verified && !verification.passed
+          ? verification.summary ?? "Verification failed."
+          : null,
+      });
+      appendEvent({
+        invocationId: autoRun.invocationId,
+        type: "auto_run_reverified",
+        level: verification.verified && verification.passed ? "info" : "warn",
+        message: verification.verified
+          ? `Auto-run ${autoRun.id} platform verification ${verification.passed ? "passed" : "failed"}.`
+          : `Auto-run ${autoRun.id} could not be reverified because no platform verification command was available.`,
+        data: {
+          autoRunId: autoRun.id,
+          worktreeId: autoRun.worktreeId,
+          verified: Boolean(verification.verified),
+          passed: Boolean(verification.passed),
+          commands: Array.isArray(verification.commands) ? verification.commands : [],
+        },
+      });
+    });
+
+    if (!verification.verified) {
+      throw new Error("No platform verification command is configured for this project.");
+    }
+    return { autoRun, verification: autoRun.verification };
   }
 
   // #1268 (3b): after a run fails for an INFRASTRUCTURE reason (the executor died,
@@ -1656,7 +2240,7 @@ export function createAutoRunService({
     try {
       invocation = createInvocation(task, alternate, {
         ...codexAutoApprovalOptions(alternate),
-        timeoutSeconds: Number(alternate.adapter?.timeoutSeconds ?? 600),
+        timeoutSeconds: autoRunTurnTimeoutSeconds(alternate),
         metadata: { worktreeId: worktree.id, projectId: worktree.projectId, autoRunId: autoRun.id, role: path },
       });
       startInvocationIfAllowed(invocation, alternate);
@@ -2405,7 +2989,15 @@ export function createAutoRunService({
     const nowMs = Date.parse(now());
     let reaped = 0;
     let readvanced = 0;
+    let capacityRetried = 0;
+    let capacityBlocked = 0;
     for (const run of [...(state.autoRuns ?? [])]) {
+      if (run.status === "waiting_capacity") {
+        const outcome = await retryProviderCapacityAutoRun(run, nowMs);
+        if (outcome === "retried") capacityRetried += 1;
+        if (outcome === "blocked") capacityBlocked += 1;
+        continue;
+      }
       if (!REAPABLE.has(run.status)) continue;
       const inv = run.invocationId && typeof findInvocation === "function" ? findInvocation(run.invocationId) : null;
       // Crash between completion and reaction: the invocation is terminal but the
@@ -2458,7 +3050,7 @@ export function createAutoRunService({
         },
       }));
     }
-    return { reaped, readvanced, holdsReleased };
+    return { reaped, readvanced, capacityRetried, capacityBlocked, holdsReleased };
   }
 
   function recordRoutingOverride(autoRunId, {
@@ -2514,5 +3106,5 @@ export function createAutoRunService({
     return { ok: true, routingOverride: publicOverride(autoRun.routingOverride), replayed: false };
   }
 
-  return { startAutoRun, advanceAutoRunForInvocation, syncAutoRunOnApproval, syncAutoRunOnDenial, retryAutoRun, attemptFailover, cancelAutoRun, mergeAutoRunPr, recordRoutingOverride, maybeDeployAfterMerge, reapStuckAutoRuns, autoMergeSweep, approveDesign, rejectDesign, answerClarify, approveDecomposition, rejectDecomposition };
+  return { startAutoRun, advanceAutoRunForInvocation, syncAutoRunOnApproval, syncAutoRunOnDenial, retryAutoRun, reverifyAutoRun, attemptFailover, cancelAutoRun, mergeAutoRunPr, recordRoutingOverride, maybeDeployAfterMerge, reapStuckAutoRuns, autoMergeSweep, approveDesign, rejectDesign, answerClarify, approveDecomposition, rejectDecomposition };
 }

@@ -125,6 +125,25 @@ test("Codex accumulates item content, then turn.completed emits one round", () =
   assert.equal(state.currentStartedAt, null);
 });
 
+test("Codex records every path from a multi-file app-server change", () => {
+  const state = newRoundState();
+  codexRoundEmits(state, {
+    item: {
+      type: "file_change",
+      path: "/wt/a.ts",
+      files: [
+        { path: "/wt/a.ts", action: "update" },
+        { path: "/wt/b.ts", action: "create" },
+      ],
+    },
+  }, T0);
+  const emits = codexRoundEmits(state, {
+    type: "turn.completed",
+    usage: {},
+  }, T5);
+  assert.deepEqual(emits.at(-1).data.filesRead, ["/wt/a.ts", "/wt/b.ts"]);
+});
+
 test("Codex turn.failed ends a failed round", () => {
   const state = newRoundState();
   const emits = codexRoundEmits(state, { type: "turn.failed", error: { message: "rate limited" } }, T0);

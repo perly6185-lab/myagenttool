@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { failoverSummary, localQueueSnapshot, runLane } from "./auto-runs-view";
+import { eventsForRun, failoverSummary, localQueueSnapshot, runLane } from "./auto-runs-view";
 import type { AutoRunRecord } from "./auto-runs-view";
 
 const run = (over: Partial<AutoRunRecord>): AutoRunRecord => ({ id: "ar", status: "running", ...over });
@@ -47,6 +47,17 @@ describe("localQueueSnapshot (#1499)", () => {
     expect(snapshot.next?.id).toBe("next");
     expect(snapshot.waiting.map((item) => item.id)).toEqual(["approval", "failed"]);
     expect(snapshot.attentionCount).toBe(2);
+  });
+});
+
+describe("eventsForRun", () => {
+  it("combines Auto-run lifecycle events with live events from its current invocation", () => {
+    const events = [
+      { id: "lifecycle", type: "auto_run_started", createdAt: "2026-07-29T00:00:00.000Z", data: { autoRunId: "aur_1" } },
+      { id: "live", invocationId: "inv_1", type: "command_execution", createdAt: "2026-07-29T00:00:02.000Z", data: {} },
+      { id: "other", invocationId: "inv_2", type: "command_execution", createdAt: "2026-07-29T00:00:01.000Z", data: {} },
+    ];
+    expect(eventsForRun(events, "aur_1", "inv_1").map((event) => event.id)).toEqual(["lifecycle", "live"]);
   });
 });
 

@@ -43,7 +43,7 @@ export function createInvocationEventService({ state, readInvocationEventArchive
     // `before` walks backward from the newest window, while each returned page
     // remains lifecycle-readable from oldest to newest.
     const pageStart = Math.max(0, eligible.length - pageSize);
-    const events = eligible.slice(pageStart).map(publicEvent);
+    const events = eligible.slice(pageStart).map(publicInvocationEvent);
     const hasMore = pageStart > 0;
     const nextCursor = hasMore && events.length > 0
       ? encodeCursor(invocation.id, events[0])
@@ -92,16 +92,46 @@ function isInvocationEvent(event, invocationId) {
     && typeof event.createdAt === "string";
 }
 
-function publicEvent(event) {
+export function publicInvocationEvent(event) {
+  const codexEvent = isCodexProviderEvent(event);
   return {
     id: event.id,
     invocationId: event.invocationId,
     type: event.type,
     level: event.level,
-    message: event.message,
-    data: event.data ?? null,
+    message: codexEvent && String(event.message ?? "").startsWith("Codex thread started:")
+      ? "Codex thread started."
+      : event.message,
+    data: publicEventData(event),
     createdAt: event.createdAt,
   };
+}
+
+function publicEventData(event) {
+  const data = event?.data;
+  if (!data || typeof data !== "object" || Array.isArray(data)) return data ?? null;
+  const {
+    claudeSessionId: _claudeSessionId,
+    resumeSessionId: _resumeSessionId,
+    ...withoutProviderIds
+  } = data;
+  const claudeEvent = String(event?.type ?? "").startsWith("claude_")
+    || ["claude_sdk", "claude_jsonl"].includes(data.source)
+    || data.runtime === "agent_sdk";
+  const codexEvent = isCodexProviderEvent(event);
+  if (!claudeEvent && !codexEvent) return withoutProviderIds;
+  const {
+    sessionId: _sessionId,
+    threadId: _threadId,
+    turnId: _turnId,
+    ...safe
+  } = withoutProviderIds;
+  return safe;
+}
+
+function isCodexProviderEvent(event) {
+  return String(event?.type ?? "").startsWith("codex_")
+    || event?.data?.source === "codex_jsonl";
 }
 
 function compareEvents(left, right) {

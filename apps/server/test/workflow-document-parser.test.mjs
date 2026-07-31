@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
 import { mkdirSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
+import JSZip from "jszip";
 
 import {
   extractionText,
@@ -12,16 +12,16 @@ import {
   WORKFLOW_DOCUMENT_PARSER_VERSION,
 } from "../src/services/workflow-document-parser.mjs";
 
-function archive(root, name, files) {
-  const directory = join(root, `${name}-content`);
-  mkdirSync(directory, { recursive: true });
+async function archive(root, name, files) {
+  const zip = new JSZip();
   for (const [relativePath, content] of Object.entries(files)) {
-    const path = join(directory, relativePath);
-    mkdirSync(join(path, ".."), { recursive: true });
-    writeFileSync(path, content);
+    zip.file(relativePath, content);
   }
   const target = join(root, name);
-  execFileSync("zip", ["-q", "-r", target, "."], { cwd: directory });
+  writeFileSync(target, await zip.generateAsync({
+    type: "nodebuffer",
+    compression: "DEFLATE",
+  }));
   return target;
 }
 
@@ -54,18 +54,18 @@ test("extracts Word paragraphs, PowerPoint slides, and spreadsheet cells without
   const root = join(tmpdir(), `workflow-parser-${Date.now()}-${Math.random()}`);
   mkdirSync(root, { recursive: true });
   try {
-    const docx = archive(root, "sample.docx", {
+    const docx = await archive(root, "sample.docx", {
       "word/document.xml": `
         <w:document xmlns:w="w"><w:body>
         <w:p><w:pPr><w:pStyle w:val="Heading1"/></w:pPr><w:r><w:t>实施方案</w:t></w:r></w:p>
         <w:p><w:r><w:t>按三个阶段交付。</w:t></w:r></w:p>
         </w:body></w:document>`,
     });
-    const pptx = archive(root, "sample.pptx", {
+    const pptx = await archive(root, "sample.pptx", {
       "ppt/slides/slide1.xml": `<p:sld xmlns:p="p" xmlns:a="a"><a:t>项目目标</a:t><a:t>按期上线</a:t></p:sld>`,
       "ppt/slides/slide2.xml": `<p:sld xmlns:p="p" xmlns:a="a"><a:t>实施步骤</a:t></p:sld>`,
     });
-    const xlsx = archive(root, "sample.xlsx", {
+    const xlsx = await archive(root, "sample.xlsx", {
       "xl/sharedStrings.xml": `<sst><si><t>负责人</t></si><si><t>林月</t></si></sst>`,
       "xl/worksheets/sheet1.xml": `
         <worksheet><sheetData><row r="1">

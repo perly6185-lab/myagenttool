@@ -1,0 +1,119 @@
+name: Batch resilience
+
+on:
+  pull_request:
+    types:
+      - opened
+      - synchronize
+      - reopened
+      - ready_for_review
+      - labeled
+  workflow_dispatch:
+    inputs:
+      rounds:
+        description: Complete resilience rounds; use 5 before merge
+        required: true
+        default: "5"
+        type: choice
+        options:
+          - "5"
+          - "20"
+          - "50"
+      runner:
+        description: Operating system for the process-tree penetration
+        required: true
+        default: windows-latest
+        type: choice
+        options:
+          - windows-latest
+          - ubuntu-latest
+          - macos-latest
+  schedule:
+    - cron: "43 6 * * *"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: batch-resilience-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  batch-resilience:
+    if: vars.ENABLE_GITHUB_HOSTED_RUNNERS == 'true'
+    runs-on: ${{ github.event_name == 'workflow_dispatch' && inputs.runner || github.event_name == 'schedule' && 'windows-latest' || 'ubuntu-latest' }}
+    timeout-minutes: 35
+    env:
+      # Every PR gets a fast 3-round gate. Applying resilience-5x promotes the
+      # same immutable PR head to the required pre-merge 5-round penetration;
+      # synchronize events keep it at 5 rounds after later commits.
+      RESILIENCE_ROUNDS: ${{ github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'resilience-5x') && '5' || github.event_name == 'pull_request' && '3' || github.event_name == 'schedule' && '20' || inputs.rounds }}
+      RESILIENCE_REPORT: .myagenttool/reports/batch-resilience.json
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9.15.0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Run batch resilience penetration
+        run: node tools/dev/batch-resilience.mjs --rounds ${{ env.RESILIENCE_ROUNDS }} --report ${{ env.RESILIENCE_REPORT }}
+
+      - name: Upload resilience report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: batch-resilience-${{ runner.os }}-${{ github.run_attempt }}
+          path: ${{ env.RESILIENCE_REPORT }}
+          if-no-files-found: error
+          retention-days: 30
+
+  batch-chain-penetration:
+    if: >-
+      vars.ENABLE_GITHUB_HOSTED_RUNNERS == 'true' &&
+      (github.event_name != 'pull_request' ||
+      contains(github.event.pull_request.labels.*.name, 'resilience-5x'))
+    runs-on: windows-latest
+    timeout-minutes: 20
+    env:
+      BATCH_CHAIN_REPORT: .myagenttool/reports/batch-chain-penetration.json
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9.15.0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Run single-chain failure matrix
+        run: pnpm test:batch-chain --report ${{ env.BATCH_CHAIN_REPORT }}
+
+      - name: Upload single-chain report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: batch-chain-penetration-${{ runner.os }}-${{ github.run_attempt }}
+          path: ${{ env.BATCH_CHAIN_REPORT }}
+          if-no-files-found: error
+          retention-days: 30

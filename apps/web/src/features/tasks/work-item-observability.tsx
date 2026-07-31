@@ -296,12 +296,29 @@ export function WorkItemTimeline({
   expanded?: boolean;
 }) {
   const { t } = useAppTranslation();
+  const [showAll, setShowAll] = useState(false);
   if (!observability?.timeline?.length) return null;
+  const orderedEvents = observability.timeline
+    .slice()
+    .sort((a, b) => Date.parse(a.at) - Date.parse(b.at));
+  const visibleEvents = showAll ? orderedEvents : orderedEvents.slice(-20);
+  const hiddenCount = orderedEvents.length - visibleEvents.length;
   return (
     <details open={expanded || undefined} className="rounded-md border border-border p-3 text-xs">
-      <summary className="cursor-pointer text-sm font-semibold">{t("aiOps.timeline")} · {observability.executionChainId}</summary>
+      <summary className="cursor-pointer text-sm font-semibold">
+        {t("aiOps.timeline")} · {orderedEvents.length} {t("executionUi.events")}
+      </summary>
       <div className="mt-3 space-y-2">
-        {observability.timeline.map((event) => {
+        {hiddenCount > 0 ? (
+          <Button type="button" size="sm" variant="secondary" onClick={() => setShowAll(true)}>
+            {t("executionUi.showEarlier", { count: hiddenCount })}
+          </Button>
+        ) : showAll && orderedEvents.length > 20 ? (
+          <Button type="button" size="sm" variant="secondary" onClick={() => setShowAll(false)}>
+            {t("executionUi.showRecent")}
+          </Button>
+        ) : null}
+        {visibleEvents.map((event) => {
           const identity = taskTraceIdentity(event);
           const stage = event.stage ?? "other";
           return (

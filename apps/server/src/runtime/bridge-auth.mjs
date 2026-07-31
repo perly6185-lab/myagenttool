@@ -3,6 +3,7 @@ import crypto from "node:crypto";
 import { listDevices, primaryDevice } from "./device.mjs";
 
 const TOKEN_BYTES = 32;
+export const BRIDGE_SESSION_HEADER = "x-myagenttool-bridge-session";
 // A bridge credential expires after this much inactivity. An active bridge polls
 // continuously so it never idles out; a LEAKED-but-unused bearer stops working
 // once the TTL elapses, bounding its lifetime without a manual revoke. Uses the
@@ -70,7 +71,7 @@ export function createBridgeCredentialRuntime({ state, now, persistStateSoon, ap
    * its token hash (unlink only stamps `revokedAt`), so its own bridge still
    * resolves here and still gets the 403 it did before.
    */
-  function requireBridgeCredential({ req, res, sendJson }) {
+  function requireBridgeCredential({ req, res, sendJson, allowSessionMismatch = false }) {
     if (!listDevices(state).some((device) => credentialOf(device)?.tokenHash)) {
       sendJson(res, 401, { error: "bridge_credentials_required" });
       return null;
@@ -90,6 +91,17 @@ export function createBridgeCredentialRuntime({ state, now, persistStateSoon, ap
     if (credentialIsIdleExpired(credential)) {
       sendJson(res, 401, { error: "bridge_credentials_expired" });
       return null;
+    }
+    // The bearer identifies a DEVICE and is intentionally long-lived. The
+    // session id identifies one bridge PROCESS. Once a newer process registers,
+    // requests from the superseded process must not be able to ack or complete
+    // work that the replacement has reclaimed.
+    if (!allowSessionMismatch && device.bridgeSessionId) {
+      const requestSessionId = bridgeSessionIdFromRequest(req);
+      if (requestSessionId !== device.bridgeSessionId) {
+        sendJson(res, 409, { error: "bridge_session_superseded" });
+        return null;
+      }
     }
     credential.lastSeenAt = now();
     device.lastSeenAt = credential.lastSeenAt;
@@ -173,9 +185,20 @@ function publicCredential(credential) {
 
 export function publicDeviceView(device) {
   if (!device || typeof device !== "object") return device;
-  const { bridgeCredential, ...rest } = device;
+  const { bridgeCredential, bridgeSessionId: _bridgeSessionId, ...rest } = device;
   return {
     ...rest,
     bridgeCredential: publicCredential(bridgeCredential),
   };
+}
+
+export function normalizeBridgeSessionId(value) {
+  const normalized = String(value ?? "").trim();
+  if (!/^[A-Za-z0-9][A-Za-z0-9._:-]{7,127}$/.test(normalized)) return null;
+  return normalized;
+}
+
+export function bridgeSessionIdFromRequest(req) {
+  const value = req?.headers?.[BRIDGE_SESSION_HEADER];
+  return normalizeBridgeSessionId(Array.isArray(value) ? value[0] : value);
 }

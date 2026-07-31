@@ -3,7 +3,9 @@ import { createInterface } from "node:readline";
 const slow = process.argv.includes("--slow");
 const commandSlow = process.argv.includes("--command-slow");
 const crash = process.argv.includes("--crash");
+const crashOnInitialize = process.argv.includes("--crash-on-initialize");
 const approval = process.argv.includes("--approval");
+const capacity = process.argv.includes("--capacity");
 const expectAuto = process.argv.includes("--expect-auto");
 const reader = createInterface({ input: process.stdin });
 let activeTurn = null;
@@ -25,6 +27,9 @@ reader.on("line", (line) => {
     return;
   }
   if (method === "initialize") {
+    if (crashOnInitialize) {
+      process.exit(18);
+    }
     send({ id, result: { userAgent: "fixture", platformFamily: "windows", platformOs: "windows" } });
     return;
   }
@@ -80,6 +85,8 @@ reader.on("line", (line) => {
           startedAtMs: Date.now(),
         },
       });
+    } else if (capacity) {
+      finishTurn("failed", { message: "Selected model is at capacity. Please try a different model." });
     } else if (!slow) {
       finishTurn("completed");
     }
@@ -93,7 +100,7 @@ reader.on("line", (line) => {
   send({ id, error: { code: -32601, message: `unsupported fixture method ${method}` } });
 });
 
-function finishTurn(status) {
+function finishTurn(status, error = null) {
   if (!activeTurn) return;
   const { threadId, turnId } = activeTurn;
   if (status === "completed") {
@@ -127,7 +134,7 @@ function finishTurn(status) {
         id: turnId,
         status,
         items: [],
-        error: null,
+        error,
       },
     },
   });

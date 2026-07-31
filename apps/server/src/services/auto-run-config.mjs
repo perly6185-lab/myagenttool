@@ -128,6 +128,13 @@ export function normalizeAutoRunSettings(patch = {}, prev = {}) {
     // Self-repair: how many times a develop run may re-attempt after a verify
     // failure (feeding the failure back to the agent) before it blocks. 0 disables.
     maxRepairAttempts: keep("maxRepairAttempts", (v) => clampInt(v, 0, 3)),
+    // Layered execution budget for long coding tasks. A turn stays bounded while
+    // the whole task may continue from durable checkpoints.
+    turnTimeoutSeconds: keep("turnTimeoutSeconds", (v) => clampInt(v, 60, 3600)),
+    totalExecutionBudgetSeconds: keep("totalExecutionBudgetSeconds", (v) => clampInt(v, 600, 7200)),
+    maxTimeoutRecoveryAttempts: keep("maxTimeoutRecoveryAttempts", (v) => clampInt(v, 0, 3)),
+    maxNoProgressTimeouts: keep("maxNoProgressTimeouts", (v) => clampInt(v, 1, 3)),
+    maxCapacityRetryAttempts: keep("maxCapacityRetryAttempts", (v) => clampInt(v, 0, 3)),
     // #890 budget reservations (UI-only). The per-run USD hold placed at admission
     // so concurrent runs can't jointly exceed a hard block budget. 0 = disabled
     // (accounting-only, no admission holds — the default, byte-identical to before).
@@ -246,6 +253,21 @@ export function resolveAutoRunConfig(state = {}, baseEnv = process.env) {
     autoApproveNonCodePaths: Boolean(settings.autoApproveNonCodePaths),
     // Self-repair attempt cap (not env-backed); default 2, 0 disables the loop.
     maxRepairAttempts: Number.isInteger(settings.maxRepairAttempts) ? settings.maxRepairAttempts : 2,
+    // Long-task execution: bounded 15-minute turns within a 45-minute task
+    // budget, with checkpoint-aware recovery and no-progress protection.
+    turnTimeoutSeconds: Number.isInteger(settings.turnTimeoutSeconds) ? settings.turnTimeoutSeconds : 900,
+    totalExecutionBudgetSeconds: Number.isInteger(settings.totalExecutionBudgetSeconds)
+      ? settings.totalExecutionBudgetSeconds
+      : 2700,
+    maxTimeoutRecoveryAttempts: Number.isInteger(settings.maxTimeoutRecoveryAttempts)
+      ? settings.maxTimeoutRecoveryAttempts
+      : 3,
+    maxNoProgressTimeouts: Number.isInteger(settings.maxNoProgressTimeouts)
+      ? settings.maxNoProgressTimeouts
+      : 2,
+    maxCapacityRetryAttempts: Number.isInteger(settings.maxCapacityRetryAttempts)
+      ? settings.maxCapacityRetryAttempts
+      : 3,
     // #890 per-run budget hold at admission (not env-backed); 0 = disabled.
     reservationEstimateUsd: Number(settings.reservationEstimateUsd ?? 0) || 0,
     // A1 alerting: whether an operational-alert webhook is configured.

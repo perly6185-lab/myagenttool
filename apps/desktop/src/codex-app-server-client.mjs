@@ -4,10 +4,30 @@ import { createInterface } from "node:readline";
 const DEFAULT_REQUEST_TIMEOUT_MS = 15_000;
 const DEFAULT_INTERRUPT_GRACE_MS = 10_000;
 
+function providerFailureCode(message) {
+  const text = String(message ?? "").trim();
+  if (!text) return null;
+  return /\b(?:selected\s+)?model\b.*\bat capacity\b/i.test(text)
+    || /\bprovider\b.*\bcapacity\b/i.test(text)
+    || /\bcapacity\b.*\b(?:unavailable|exhausted)\b/i.test(text)
+    ? "provider_capacity"
+    : null;
+}
+
+function transportFailureCode(message) {
+  const text = String(message ?? "").trim();
+  if (!text) return null;
+  return /app-server (?:exited unexpectedly|stdin is not writable)/i.test(text)
+    || /app-server transport closed/i.test(text)
+    ? "transport_closed"
+    : null;
+}
+
 /**
  * Minimal, version-tolerant client for Codex app-server's newline-delimited
  * JSON-RPC transport. One client can run multiple threads and survives between
- * turns; a turn is terminal on `turn/completed`, never on process `close`.
+ * turns; a turn normally completes on `turn/completed`, while process closure
+ * is converted into a typed terminal failure.
  */
 export function createCodexAppServerClient({
   command,
@@ -15,6 +35,8 @@ export function createCodexAppServerClient({
   cwd,
   env,
   spawnProcess = spawn,
+  onSpawn = () => undefined,
+  terminateProcess = (processHandle) => processHandle.kill("SIGTERM"),
   requestTimeoutMs = DEFAULT_REQUEST_TIMEOUT_MS,
   interruptGraceMs = DEFAULT_INTERRUPT_GRACE_MS,
   clientInfo = {
@@ -155,6 +177,7 @@ export function createCodexAppServerClient({
       windowsHide: true,
       stdio: ["pipe", "pipe", "pipe"],
     });
+    onSpawn(child);
     lineReader = createInterface({ input: child.stdout });
     lineReader.on("line", (line) => {
       const trimmed = String(line ?? "").trim();
@@ -232,8 +255,6 @@ export function createCodexAppServerClient({
     onTurnStderr = () => undefined,
     onApprovalRequest = null,
   } = {}) {
-    await start();
-
     let threadId = resumeThreadId;
     let ownsActiveThread = false;
     let turnId = null;
@@ -336,6 +357,12 @@ export function createCodexAppServerClient({
     let interruptWatchTimer = null;
     let interruptGraceTimer = null;
     try {
+      // Keep transport startup inside the terminal-result boundary. Previously,
+      // initialize/start failures escaped runTurn entirely, so the Desktop
+      // Bridge never posted /api/bridge/complete and the invocation remained a
+      // zombie "running" record.
+      await start();
+
       const threadParams = {
         cwd: turnCwd,
         runtimeWorkspaceRoots: roots,
@@ -405,6 +432,7 @@ export function createCodexAppServerClient({
             ? "succeeded"
             : "failed";
       const errorMessage = finalTurn.error?.message ?? null;
+      const providerErrorCode = providerFailureCode(errorMessage);
       return {
         status,
         summary: status === "succeeded"
@@ -416,6 +444,11 @@ export function createCodexAppServerClient({
           transport: "app-server",
           touchedUserFiles,
           timeoutKind,
+          ...(timeoutKind
+            ? { errorCode: "execution_timeout" }
+            : providerErrorCode
+              ? { errorCode: providerErrorCode }
+              : {}),
           output: {
             latestMessage: lastAgentMessage || null,
             usage: normalizeTokenUsage(tokenUsage),
@@ -423,16 +456,21 @@ export function createCodexAppServerClient({
         },
       };
     } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : String(error);
+      const providerErrorCode = providerFailureCode(errorMessage);
+      const transportErrorCode = transportFailureCode(errorMessage);
       return {
         status: timeoutKind ? "timed_out" : cancelRequested ? "cancelled" : "failed",
-        summary: error instanceof Error ? error.message : String(error),
+        summary: errorMessage,
         result: {
           threadId,
           turnId,
           transport: "app-server",
           touchedUserFiles,
           timeoutKind,
-          errorCode: timeoutKind ? "execution_timeout" : "app_server_error",
+          errorCode: timeoutKind
+            ? "execution_timeout"
+            : providerErrorCode ?? transportErrorCode ?? "app_server_error",
         },
       };
     } finally {
@@ -466,7 +504,7 @@ export function createCodexAppServerClient({
     approvalHandlersByThread.clear();
     lineReader?.close();
     if (child && child.exitCode === null) {
-      child.kill("SIGTERM");
+      terminateProcess(child);
     }
     child = null;
     startPromise = null;

@@ -5,10 +5,19 @@
  */
 
 import assert from "node:assert/strict";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { after, test } from "node:test";
 
-import { resolveAutoRunVerifyCommand, runWorktreeVerification } from "../src/services/worktree-verify.mjs";
+import {
+  resolveAutoRunVerificationPlan,
+  resolveAutoRunVerifyCommand,
+  resolveVerificationInvocation,
+  runWorktreeVerification,
+  runWorktreeVerificationPlan,
+} from "../src/services/worktree-verify.mjs";
+import { startVerificationProcessGuardian } from "../src/runtime/verification-process-guardian.mjs";
 
 const saved = process.env.MYAGENTTOOL_AUTORUN_VERIFY_COMMAND_JSON;
 after(() => {
@@ -47,4 +56,139 @@ test("runWorktreeVerification reports a failing command as verified+not-passed (
   assert.equal(result.passed, false);
   assert.equal(result.exitCode, 3);
   assert.match(result.summary, /failed \(exit 3\)/);
+});
+
+test("verification resolves the pnpm JavaScript CLI on Windows without invoking a command shell", () => {
+  assert.deepEqual(resolveVerificationInvocation("pnpm", ["test"], {
+    platform: "win32",
+    env: { npm_execpath: "C:\\tools\\pnpm.cjs" },
+    fileExists: () => true,
+    nodePath: "C:\\node.exe",
+  }), {
+    executable: "C:\\node.exe",
+    args: ["C:\\tools\\pnpm.cjs", "test"],
+  });
+  assert.deepEqual(resolveVerificationInvocation("node", ["--test"], { platform: "win32" }), {
+    executable: "node",
+    args: ["--test"],
+  });
+  assert.deepEqual(resolveVerificationInvocation("pnpm", ["test"], { platform: "linux" }), {
+    executable: "pnpm",
+    args: ["test"],
+  });
+});
+
+test("automatic verification derives targeted tests and typechecks from safe changed paths", () => {
+  const plan = resolveAutoRunVerificationPlan({
+    changedPaths: [
+      "apps/server/src/services/example.mjs",
+      "apps/server/test/example.test.mjs",
+      "apps/web/src/example.tsx",
+      "apps/web/src/example.test.tsx",
+      "../outside.test.mjs",
+    ],
+    env: { MYAGENTTOOL_AUTORUN_VERIFY_AUTO: "1" },
+  });
+  assert.deepEqual(plan, [
+    ["node", "--test", "apps/server/test/example.test.mjs"],
+    ["pnpm", "--filter", "@myagenttool/web", "test:unit", "--", "src/example.test.tsx"],
+    ["pnpm", "--filter", "@myagenttool/server", "typecheck"],
+    ["pnpm", "--filter", "@myagenttool/web", "typecheck"],
+  ]);
+});
+
+test("automatic verification uses the deterministic docs check for Markdown-only changes", () => {
+  assert.deepEqual(resolveAutoRunVerificationPlan({
+    changedPaths: ["README.md"],
+    env: { MYAGENTTOOL_AUTORUN_VERIFY_AUTO: "1" },
+  }), [[
+    "pwsh", "-NoProfile", "-ExecutionPolicy", "Bypass",
+    "-File", "tools/docs/check-markdown-links.ps1",
+  ]]);
+  assert.deepEqual(resolveAutoRunVerificationPlan({
+    changedPaths: ["docs/engineering/reliability.md"],
+    env: { MYAGENTTOOL_AUTORUN_VERIFY_AUTO: "1" },
+  }), [[
+    "pwsh", "-NoProfile", "-ExecutionPolicy", "Bypass",
+    "-File", "tools/docs/check-markdown-links.ps1",
+  ]]);
+  assert.deepEqual(resolveAutoRunVerificationPlan({
+    changedPaths: ["README.md"],
+    env: {},
+  }), []);
+});
+
+test("automatic verification still falls back to repository CI for unclassified changes", () => {
+  assert.deepEqual(resolveAutoRunVerificationPlan({
+    changedPaths: ["config/example.json"],
+    env: { MYAGENTTOOL_AUTORUN_VERIFY_AUTO: "1" },
+  }), [["pnpm", "test:ci"]]);
+});
+
+test("verification plan stops on failure and preserves platform-owned command evidence", async () => {
+  const result = await runWorktreeVerificationPlan({
+    cwd: tmpdir(),
+    commands: [
+      ["node", "-e", "process.exit(0)"],
+      ["node", "-e", "process.exit(4)"],
+      ["node", "-e", "process.exit(0)"],
+    ],
+  });
+  assert.equal(result.verified, true);
+  assert.equal(result.passed, false);
+  assert.equal(result.exitCode, 4);
+  assert.equal(result.commands.length, 2);
+});
+
+test("aborting verification terminates the real subprocess tree", {
+  skip: process.platform === "win32" && Boolean(process.env.CODEX_PERMISSION_PROFILE),
+}, async () => {
+  const cwd = mkdtempSync(join(tmpdir(), "myagenttool-verify-abort-"));
+  const marker = join(cwd, "grandchild-survived.txt");
+  const grandchild = `setTimeout(() => require("node:fs").writeFileSync(${JSON.stringify(marker)}, "survived"), 3000); setInterval(() => {}, 1000);`;
+  const parent = `require("node:child_process").spawn(process.execPath, ["-e", ${JSON.stringify(grandchild)}], { stdio: "ignore" }); setInterval(() => {}, 1000);`;
+  const controller = new AbortController();
+  try {
+    const verification = runWorktreeVerification({
+      cwd,
+      command: [process.execPath, "-e", parent],
+      timeoutMs: 5_000,
+      signal: controller.signal,
+    });
+    setTimeout(() => controller.abort(), 150);
+    const result = await verification;
+    assert.equal(result.aborted, true);
+    assert.equal(result.verified, false);
+    await new Promise((resolve) => setTimeout(resolve, 3_500));
+    assert.equal(existsSync(marker), false, "a grandchild must not survive a superseded verification");
+  } finally {
+    rmSync(cwd, { recursive: true, force: true });
+  }
+});
+
+test("verification guardian kills the real subprocess tree after its Server parent disappears", {
+  skip: process.platform === "win32" && Boolean(process.env.CODEX_PERMISSION_PROFILE),
+}, async () => {
+  const cwd = mkdtempSync(join(tmpdir(), "myagenttool-verify-guardian-"));
+  const marker = join(cwd, "grandchild-survived.txt");
+  const grandchild = `setTimeout(() => require("node:fs").writeFileSync(${JSON.stringify(marker)}, "survived"), 3000); setInterval(() => {}, 1000);`;
+  const parent = `require("node:child_process").spawn(process.execPath, ["-e", ${JSON.stringify(grandchild)}], { stdio: "ignore" }); setInterval(() => {}, 1000);`;
+  try {
+    const result = await runWorktreeVerification({
+      cwd,
+      command: [process.execPath, "-e", parent],
+      timeoutMs: 5_000,
+      startGuardian: (child) => startVerificationProcessGuardian(child, {
+        parentPid: 2_147_483_647,
+        pollIntervalMs: 50,
+        detached: false,
+        stdio: "inherit",
+      }),
+    });
+    assert.equal(result.passed, false);
+    await new Promise((resolve) => setTimeout(resolve, 3_500));
+    assert.equal(existsSync(marker), false, "a verifier grandchild must not outlive a hard-killed Server");
+  } finally {
+    rmSync(cwd, { recursive: true, force: true });
+  }
 });

@@ -110,6 +110,9 @@ export function createAgentService({ state, now, nextId, appendEvent, persistSta
         outputFormat: normalizeCliOutputFormat(body.outputFormat ?? body.adapter?.outputFormat, command),
         sandbox: codexProfile?.sandboxMode ?? body.sandbox ?? body.adapter?.sandbox ?? null,
         permissionMode: codexMode ?? (claudeCommand ? claudeMode : null),
+        ...(claudeCommand && (body.claudeRuntime ?? body.adapter?.claudeRuntime) !== undefined
+          ? { claudeRuntime: normalizeClaudeRuntimeKind(body.claudeRuntime ?? body.adapter?.claudeRuntime) }
+          : {}),
       },
       capabilities: [
         {
@@ -616,14 +619,25 @@ export function isClaudeCliCommand(command) {
   return ["claude", "claude.cmd", "claude.ps1", "claude.exe"].some((name) => normalized === name || normalized.endsWith(`/${name}`) || normalized.endsWith(`\\${name}`));
 }
 
-// Claude Code runs non-interactively via `claude -p` with stream-json events.
-// `plan` is the safe default (no edits); `acceptEdits` and `bypassPermissions`
-// are writable opt-ins. "default"/"auto" are excluded — they block on
-// interactive prompts in a headless bridge. This is Claude's analog of Codex's
-// sandbox mode.
+// Claude Agent SDK supports interactive permission callbacks, so all native
+// headless-safe modes are preserved. UI aliases map to their SDK equivalents.
 export function normalizeClaudePermissionMode(value) {
-  const normalized = String(value ?? "").trim();
-  return ["plan", "acceptEdits", "bypassPermissions"].includes(normalized) ? normalized : "plan";
+  const input = String(value ?? "").trim();
+  const normalized = {
+    ask: "default",
+    approveForMe: "acceptEdits",
+    approve_for_me: "acceptEdits",
+    auto: "acceptEdits",
+    full: "bypassPermissions",
+  }[input] ?? input;
+  return ["default", "acceptEdits", "bypassPermissions", "plan", "dontAsk"].includes(normalized)
+    ? normalized
+    : "plan";
+}
+
+export function normalizeClaudeRuntimeKind(value) {
+  const normalized = String(value ?? "").trim().toLowerCase();
+  return ["sdk", "agent_sdk", "agent-sdk"].includes(normalized) ? "agent_sdk" : "cli";
 }
 
 export function claudeCliArgs(permissionMode = "plan") {
@@ -636,8 +650,8 @@ export function claudeRiskTags() {
 
 export function claudeRegistrationNotes() {
   return {
-    risk: "Runs Claude Code non-interactively (claude -p). Review repository access, permission mode, tool use, and proposed file changes before invoking.",
-    data: "Task input, Claude stream-json events, result text, trace, and result summary are recorded by the local demo server.",
+    risk: "Runs Claude through the Agent SDK by default. Review repository access, permission mode, tool approvals, and proposed file changes before invoking.",
+    data: "Task input, normalized Claude SDK events, result text, trace, and result summary are recorded by the local demo server.",
     cost: "Claude cost is external or unknown to the demo server and remains visible for review.",
     cancellation: "The Desktop Bridge attempts to terminate the Claude process tree when cancellation is requested.",
   };

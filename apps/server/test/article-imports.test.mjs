@@ -394,6 +394,7 @@ source_provider: wechat
     },
   ];
   const state = {
+    projects: [{ id: "prj_1", path: root }],
     workItems: records.map((record) => record.item),
     worktrees: [],
     articleImportJobs: [],
@@ -430,8 +431,10 @@ source_provider: wechat
       },
     });
   }
-  const service = createArticleImportService({
+  let currentTime = "2026-07-28T00:02:00.000Z";
+  const createService = () => createArticleImportService({
     state,
+    now: () => currentTime,
     workItemService: {
       getWorkItem: ({ workItemId }) => {
         const item = state.workItems.find((candidate) => candidate.id === workItemId);
@@ -441,9 +444,13 @@ source_provider: wechat
       },
     },
   });
-  const result = await service.findSimilar({
+  const request = {
     workItemId: "lwi_target",
     jobId: "article_import_target",
+  };
+  const service = createService();
+  const result = await service.findSimilar({
+    ...request,
   });
   assert.equal(result.status, 200);
   assert.equal(result.body.indexedCount, 1);
@@ -451,6 +458,66 @@ source_provider: wechat
   assert.equal(result.body.matches[0].workItemId, "lwi_related");
   assert.equal(result.body.matches[0].worktreeId, "wtr_related");
   assert.ok(result.body.matches[0].score >= 0.12);
+  assert.equal(result.body.reindexedCount, 2);
+  assert.equal(result.body.reusedCount, 0);
+
+  const indexPath = join(root, ".myagenttool", "indexes", "article-similarity-v1.json");
+  const initialIndex = JSON.parse(await readFile(indexPath, "utf8"));
+  assert.equal(initialIndex.schemaVersion, 1);
+  assert.equal(initialIndex.entries.length, 2);
+  assert.ok(initialIndex.entries.every((entry) => /^sha256:[a-f0-9]{64}$/.test(entry.fingerprint)));
+  assert.ok(initialIndex.entries.every((entry) => entry.analyzedAt === currentTime));
+
+  currentTime = "2026-07-28T00:03:00.000Z";
+  const reused = await createService().findSimilar(request);
+  assert.equal(reused.status, 200);
+  assert.equal(reused.body.reindexedCount, 0);
+  assert.equal(reused.body.reusedCount, 2);
+  assert.deepEqual(
+    JSON.parse(await readFile(indexPath, "utf8")).entries.map((entry) => entry.analyzedAt).sort(),
+    initialIndex.entries.map((entry) => entry.analyzedAt).sort(),
+  );
+
+  const related = records.find((record) => record.worktreeId === "wtr_related");
+  const relatedPath = join(
+    root,
+    related.worktreeId,
+    `docs/imported/wechat/2026/07/${related.slug}/article.md`,
+  );
+  await writeFile(relatedPath, `${related.markdown}\n\n# 新增案例\n只重建这篇文章的特征。\n`);
+  currentTime = "2026-07-28T00:04:00.000Z";
+  const changed = await createService().findSimilar(request);
+  assert.equal(changed.status, 200);
+  assert.equal(changed.body.reindexedCount, 1);
+  assert.equal(changed.body.reusedCount, 1);
+  const changedIndex = JSON.parse(await readFile(indexPath, "utf8"));
+  assert.equal(
+    changedIndex.entries.find((entry) => entry.worktreeId === "wtr_related").analyzedAt,
+    currentTime,
+  );
+  assert.equal(
+    changedIndex.entries.find((entry) => entry.worktreeId === "wtr_target").analyzedAt,
+    "2026-07-28T00:02:00.000Z",
+  );
+
+  await rm(relatedPath);
+  const deleted = await createService().findSimilar(request);
+  assert.equal(deleted.status, 200);
+  assert.equal(deleted.body.indexedCount, 0);
+  assert.equal(deleted.body.skippedCount, 1);
+  assert.equal(deleted.body.removedCount, 1);
+  const prunedIndex = JSON.parse(await readFile(indexPath, "utf8"));
+  assert.deepEqual(prunedIndex.entries.map((entry) => entry.worktreeId), ["wtr_target"]);
+
+  await writeFile(indexPath, "{ damaged index");
+  currentTime = "2026-07-28T00:05:00.000Z";
+  const rebuilt = await createService().findSimilar(request);
+  assert.equal(rebuilt.status, 200);
+  assert.equal(rebuilt.body.indexRebuilt, true);
+  assert.equal(rebuilt.body.reindexedCount, 1);
+  const recoveredIndex = JSON.parse(await readFile(indexPath, "utf8"));
+  assert.equal(recoveredIndex.schemaVersion, 1);
+  assert.deepEqual(recoveredIndex.entries.map((entry) => entry.worktreeId), ["wtr_target"]);
 });
 
 test("creates a governed derivative invocation and attaches only its validated Markdown output", async (t) => {

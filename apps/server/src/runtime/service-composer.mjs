@@ -69,6 +69,7 @@ import { convergeAutoRunTerminalState, createAutoRunService } from "../services/
 import { createDecisionSoftClaimService } from "../services/decision-soft-claims.mjs";
 import { createIssueClaimService } from "../services/issue-claims.mjs";
 import { createWorkItemService } from "../services/work-items.mjs";
+import { createWorkItemAutoRunBatchService } from "../services/work-item-auto-run-batches.mjs";
 import { createBusinessRoutineService } from "../services/business-routines.mjs";
 import { createBusinessPilotEvidenceService } from "../services/business-pilot-evidence.mjs";
 import { createLedgerUpsertService } from "../services/ledger-upserts.mjs";
@@ -78,7 +79,11 @@ import { createArticleImportService, resolveArticleImportConfig } from "../servi
 import { createWorkflowMemoryService } from "../services/workflow-memory.mjs";
 import { createInquiryIntakeTriggerService } from "../services/inquiry-intake-triggers.mjs";
 import { createPlanningProjectService } from "../services/planning-projects.mjs";
-import { resolveAutoRunVerifyCommand, resolveAutoRunVerifyCommandFor, runWorktreeVerification } from "../services/worktree-verify.mjs";
+import {
+  autoRunVerificationTimeoutMs,
+  resolveAutoRunVerificationPlan,
+  runWorktreeVerificationPlan,
+} from "../services/worktree-verify.mjs";
 import { resolveStatusWritebackConfig, runIssueAssigneeEdit, runIssueBodyFetch, runIssueClose, runIssueComment, runIssueStatusTransition, runPrChecks, runPrMerge, runPrStateFetch, runIssueStateFetch, runIssueSnapshotFetch, runIssueSnapshotWrite } from "../services/issue-status.mjs";
 import { deciderTimeoutMs, resolveDeciderCommand, runDeciderCommand } from "../services/decision-command.mjs";
 import { childIssueBody, childIssueTitle, extractProjectFieldsBlock, runChildIssueCreate, spawnIssuesConfig } from "../services/auto-run-spawn.mjs";
@@ -122,6 +127,7 @@ export function createServerRuntimeServices({
   let codexEventHandlers = {
     createCodexEvidenceRecord: () => null,
     updateCodexSessionFromEvent: () => null,
+    updateClaudeSessionFromEvent: () => null,
   };
 
   // #1041: every durable flush (persistStateNow AND the debounced persistStateSoon,
@@ -636,6 +642,7 @@ export function createServerRuntimeServices({
   } = createAgentService({ state, now, nextId, appendEvent, persistStateSoon, store });
 
   const {
+    closeClaudeSession,
     closeCodexSession,
     codexApprovalQueue,
     codexSessionForInvocation,
@@ -643,18 +650,24 @@ export function createServerRuntimeServices({
     createCodexEvidenceRecord,
     createCodexImportedEvidenceRecord,
     createManagedCodexSession,
+    createManagedClaudeSession,
     createManagedCodexWorkspace,
     expireCodexApprovalBrokerRequests: expireCodexApprovalBrokerRequestsBase,
     normalizeCodexApprovalMode,
     normalizeCodexSessionMode,
     normalizeCodexWorkspacePolicy,
+    normalizeClaudeSessionMode,
     recordCodexHookEvent,
     repoPathForEvidence,
     resolveCodexApprovalBrokerRequest: resolveCodexApprovalBrokerRequestBase,
     resolveResumeCodexSessionId,
+    resolveResumeClaudeSessionId,
+    resumableClaudeSessions,
     resumableCodexSessions,
+    setClaudeSessionName,
     setCodexSessionName,
     updateCodexSessionFromEvent,
+    updateClaudeSessionFromEvent,
   } = createCodexService({
     state,
     now,
@@ -671,6 +684,7 @@ export function createServerRuntimeServices({
   codexEventHandlers = {
     createCodexEvidenceRecord,
     updateCodexSessionFromEvent,
+    updateClaudeSessionFromEvent,
   };
 
   const {
@@ -861,6 +875,10 @@ export function createServerRuntimeServices({
   // action machinery defined further down. Exception-isolated at the call site —
   // completion never fails because auto-recovery did.
   let orchestrationAutoRecoveryHook = null;
+  // Runtime-only lease: a succeeded invocation keeps its worktree fenced while
+  // commit/verification/publication are in flight. It is intentionally not
+  // persisted — a process crash cannot strand a durable worktree lock.
+  const activeWorktreeReactionLeases = new Map();
 
   // #1302 long-poll: one per-device wakeup shared by the cancellation service
   // (notify when a run is asked to cancel) and the bridge cancellations route
@@ -899,10 +917,14 @@ export function createServerRuntimeServices({
     normalizeCodexApprovalMode,
     normalizeCodexSessionMode,
     normalizeCodexWorkspacePolicy,
+    normalizeClaudeSessionMode,
     createManagedCodexWorkspace,
     createManagedCodexSession,
+    createManagedClaudeSession,
     resolveResumeCodexSessionId,
+    resolveResumeClaudeSessionId,
     closeCodexSession,
+    closeClaudeSession,
     budgetGateForProject,
     // #890.1 tail: hold budget at manual/API accept, release on completion.
     reserveBudget,
@@ -910,6 +932,11 @@ export function createServerRuntimeServices({
     // #968: the Store seam — dispatch claim/ack commit through its unit of work.
     store,
     checkUsageQuota,
+    isWorktreeReactionBusy: (invocation) => {
+      const worktreeId = invocation?.options?.metadata?.worktreeId ?? null;
+      const owner = worktreeId ? activeWorktreeReactionLeases.get(worktreeId) : null;
+      return Boolean(owner && owner !== invocation.id);
+    },
     // #1084: transcript count-cap evictions spill to the retention archive.
     capWithArchive: retentionArchive.capWithArchive,
     onInvocationCompleted: (invocation) => {
@@ -963,6 +990,74 @@ export function createServerRuntimeServices({
     redeliverExpiredDispatches,
     startInvocationIfAllowed,
   } = invocationService;
+
+  // A bridge credential survives process restarts; a bridge session does not.
+  // Registering a new process generation fences work owned by the previous
+  // generation without waiting for the device-level liveness grace. Unacked
+  // leases are safe to requeue immediately. Acked/running work keeps occupying
+  // its worktree through a short executor-drain window, then converges through
+  // dispatch.mjs to transport_closed (or cancelled when cancellation was active).
+  function supersedeBridgeSession(device, bridgeSessionId) {
+    if (!device || !bridgeSessionId || device.bridgeSessionId === bridgeSessionId) {
+      return { changed: false, requeued: 0, reclaimed: 0 };
+    }
+    const previousSessionId = device.bridgeSessionId ?? null;
+    device.bridgeSessionId = bridgeSessionId;
+    device.bridgeSessionStartedAt = now();
+    device.updatedAt = now();
+    let requeued = 0;
+    let reclaimed = 0;
+    for (const invocation of state.invocations ?? []) {
+      const delivery = invocation.delivery ?? {};
+      if (delivery.deviceId !== device.id || delivery.bridgeSessionId === bridgeSessionId) continue;
+      if (invocation.status === "dispatching") {
+        invocation.status = "queued";
+        delivery.state = "redelivering";
+        delivery.leaseExpiresAt = null;
+        invocation.updatedAt = now();
+        requeued += 1;
+        appendEvent({
+          invocationId: invocation.id,
+          type: "delivery_session_requeued",
+          level: "warn",
+          message: "Invocation lease returned to the queue after the Desktop Bridge process restarted.",
+          data: { deviceId: device.id, previousSessionId, bridgeSessionId },
+        });
+        continue;
+      }
+      if (!["running", "cancelling"].includes(invocation.status)) continue;
+      reclaimed += 1;
+      const cancelling = invocation.status === "cancelling";
+      const configuredGraceMs = Number(process.env.MYAGENTTOOL_BRIDGE_SESSION_HANDOFF_GRACE_MS ?? 5_000);
+      const handoffGraceMs = Number.isFinite(configuredGraceMs)
+        ? Math.max(0, Math.min(30_000, configuredGraceMs))
+        : 5_000;
+      delivery.sessionSupersession = {
+        previousSessionId,
+        bridgeSessionId,
+        completeAfter: new Date(Date.now() + handoffGraceMs).toISOString(),
+        terminalStatus: cancelling ? "cancelled" : "failed",
+        errorCode: cancelling ? null : "transport_closed",
+      };
+      invocation.updatedAt = now();
+      appendEvent({
+        invocationId: invocation.id,
+        type: "bridge_session_superseded",
+        level: "warn",
+        message: "Invocation fenced because its Desktop Bridge process was superseded; awaiting bounded executor-tree drain.",
+        data: { deviceId: device.id, previousSessionId, bridgeSessionId, handoffGraceMs, cancelling },
+      });
+    }
+    persistStateSoon();
+    appendEvent({
+      invocationId: null,
+      type: "bridge_session_started",
+      level: "info",
+      message: "Desktop Bridge process session registered.",
+      data: { deviceId: device.id, previousSessionId, bridgeSessionId, requeued, reclaimed },
+    });
+    return { changed: true, requeued, reclaimed };
+  }
 
   // Persisted safe-knob overrides (state.autoRunSettings) overlaid on the env
   // defaults. Empty settings => the env values unchanged. Applied here at
@@ -1179,7 +1274,7 @@ export function createServerRuntimeServices({
     return { ok: true, ...result };
   }
 
-  const { startAutoRun, advanceAutoRunForInvocation, syncAutoRunOnApproval, syncAutoRunOnDenial, retryAutoRun, attemptFailover, cancelAutoRun, mergeAutoRunPr, recordRoutingOverride, reapStuckAutoRuns, autoMergeSweep, approveDesign, rejectDesign, answerClarify, approveDecomposition, rejectDecomposition } = createAutoRunService({
+  const { startAutoRun, advanceAutoRunForInvocation, syncAutoRunOnApproval, syncAutoRunOnDenial, retryAutoRun, reverifyAutoRun, attemptFailover, cancelAutoRun, mergeAutoRunPr, recordRoutingOverride, reapStuckAutoRuns, autoMergeSweep, approveDesign, rejectDesign, answerClarify, approveDecomposition, rejectDecomposition } = createAutoRunService({
     state,
     now,
     nextId,
@@ -1224,10 +1319,21 @@ export function createServerRuntimeServices({
     commitWorktreeChanges,
     publishWorktreeBranch,
     createWorktreePr,
+    acquireWorktreeReactionLease: (worktreeId, invocationId) => {
+      const owner = activeWorktreeReactionLeases.get(worktreeId);
+      if (owner && owner !== invocationId) return false;
+      activeWorktreeReactionLeases.set(worktreeId, invocationId);
+      return true;
+    },
+    releaseWorktreeReactionLease: (worktreeId, invocationId) => {
+      if (activeWorktreeReactionLeases.get(worktreeId) === invocationId) {
+        activeWorktreeReactionLeases.delete(worktreeId);
+      }
+    },
     // Verification gate: run the project-configured command in the worktree.
     // No command configured -> unverified pass-through (PR labeled unverified);
     // a configured command that fails blocks the PR.
-    verifyWorktree: async ({ worktree }) => {
+    verifyWorktree: async ({ worktree, signal = null }) => {
       // A4: resolve the project's chosen allowlisted verify command by NAME
       // (operator-set argv), falling back to the global command.
       const project = (state.projects ?? []).find(
@@ -1236,11 +1342,37 @@ export function createServerRuntimeServices({
         // metadata and does not inherit verifyCommandName.
         (p) => p.id === (worktree?.sourceProjectId ?? worktree?.projectId ?? worktree?.workspaceProjectId),
       ) ?? null;
-      const command = resolveAutoRunVerifyCommandFor({ verifyCommandName: project?.verifyCommandName ?? null });
-      if (!command || !worktree?.path) {
+      let changedPaths = [];
+      if (worktree?.path) {
+        try {
+          const diffArgs = worktree.baseCommit
+            ? ["-C", worktree.path, "diff", "--name-only", worktree.baseCommit, "HEAD", "--"]
+            // Legacy worktrees did not persist their fork SHA. Auto-run commits
+            // are atomic, so the latest commit is the narrowest safe historical
+            // fallback and avoids comparing against a moving local main branch.
+            : ["-C", worktree.path, "diff-tree", "--no-commit-id", "--name-only", "-r", "HEAD", "--"];
+          changedPaths = execFileSync("git", diffArgs, {
+            encoding: "utf8",
+            timeout: 5_000,
+            stdio: ["ignore", "pipe", "ignore"],
+          }).split(/\r?\n/).map((item) => item.trim()).filter(Boolean);
+        } catch {
+          changedPaths = [];
+        }
+      }
+      const commands = resolveAutoRunVerificationPlan({
+        verifyCommandName: project?.verifyCommandName ?? null,
+        changedPaths,
+      });
+      if (!commands.length || !worktree?.path) {
         return { passed: true, verified: false, summary: "No verification command configured — PR opened unverified." };
       }
-      return runWorktreeVerification({ cwd: worktree.path, command });
+      return runWorktreeVerificationPlan({
+        cwd: worktree.path,
+        commands,
+        timeoutMs: autoRunVerificationTimeoutMs(),
+        signal,
+      });
     },
     // Issue status writeback (ready -> in-progress -> review). Undefined when
     // disabled so the orchestrator skips it entirely — no GitHub writes by default.
@@ -1409,6 +1541,19 @@ export function createServerRuntimeServices({
     // Self-healing (H2): file the auto-labeled remediation issue after a failed
     // deploy (gh issue create; gated at call-time on remediateOnDeployFailure).
     fileRemediationIssue: async ({ repoPath, title, body, labels }) => runChildIssueCreate({ cwd: repoPath, title, body, labels }),
+    store,
+  });
+  const workItemAutoRunBatchService = createWorkItemAutoRunBatchService({
+    state,
+    now,
+    nextId,
+    persistStateSoon,
+    appendEvent,
+    getWorkItem: workItemService.getWorkItem,
+    beginExecution: workItemService.beginExecution,
+    abortExecution: workItemService.abortExecution,
+    recordExecutionBinding: workItemService.recordExecutionBinding,
+    startAutoRun,
     store,
   });
   const codexApprovalRecovery = createCodexApprovalRecoveryService({
@@ -1834,7 +1979,7 @@ export function createServerRuntimeServices({
     const req = findOwnChannelTask(id, actor);
     const autoRun = req?.autoRunId ? (state.autoRuns ?? []).find((item) => item.id === req.autoRunId) : null;
     if (!req || req.status !== "routed" || !autoRun) return { status: 404, body: { error: "channel_task_not_found" } };
-    const activeStatuses = ["materializing", "running", "verifying", "publishing", "awaiting_approval"];
+    const activeStatuses = ["materializing", "running", "waiting_capacity", "verifying", "publishing", "awaiting_approval"];
     if (![...activeStatuses, "failed", "blocked"].includes(autoRun.status)) {
       return { status: 409, body: { error: "channel_task_takeover_unavailable", reason: `run_${autoRun.status}` } };
     }
@@ -2192,15 +2337,20 @@ export function createServerRuntimeServices({
     });
   }
 
-  // Bridge liveness (docs/design/BRIDGE_LIVENESS_AND_REFUSAL.md): the device's
+  // Bridge liveness + invocation deadlines
+  // (docs/design/BRIDGE_LIVENESS_AND_REFUSAL.md): the device's
   // lastSeenAt is refreshed on every authenticated bridge request but nothing
   // watched it — a dead bridge stayed "online" forever and runs it had
-  // acknowledged stayed "running" forever. This sweep (index.mjs slow tick)
-  // flips a stale device offline (evented + alerted, restore is symmetric in
-  // requireBridgeCredential) and reaps runs stranded on a provably-gone bridge.
-  // A LIVE bridge enforces its own timeoutSeconds — the server only reaps when
-  // the bridge is offline, so long-running work is never guillotined.
+  // acknowledged stayed "running" forever. A live Bridge is not proof that its
+  // child executor still exists, so this sweep also enforces a server-side hard
+  // deadline. It requests interruption first, then terminalizes after a short
+  // grace; completion normalizes that path to execution_timeout so auto-runs can
+  // resume on their existing worktree.
   const BRIDGE_STALENESS_MS = Number(process.env.MYAGENTTOOL_BRIDGE_STALENESS_MS) || 90_000;
+  const INVOCATION_DEADLINE_GRACE_MS =
+    Number(process.env.MYAGENTTOOL_INVOCATION_DEADLINE_GRACE_MS) || 30_000;
+  const INVOCATION_INTERRUPT_GRACE_MS =
+    Number(process.env.MYAGENTTOOL_INVOCATION_INTERRUPT_GRACE_MS) || 30_000;
   function bridgeLivenessSweep() {
     const device = state.device;
     if (!device) return;
@@ -2225,6 +2375,71 @@ export function createServerRuntimeServices({
           message: "Desktop Bridge stopped responding; the device is offline and queued runs will wait until it returns.",
           data: { deviceId: device.id, lastSeenAt: device.lastSeenAt },
         });
+      }
+    }
+    if (device.status === "online") {
+      for (const invocation of state.invocations) {
+        if (!["running", "cancelling"].includes(invocation.status)) continue;
+        if ((invocation.delivery?.deviceId ?? null) !== device.id) continue;
+
+        const timeoutSeconds = Number(invocation.options?.timeoutSeconds);
+        const acknowledgedAtMs = Date.parse(invocation.delivery?.acknowledgedAt ?? "");
+        if (!Number.isFinite(timeoutSeconds) || timeoutSeconds <= 0 || !Number.isFinite(acknowledgedAtMs)) {
+          continue;
+        }
+        const deadlineAtMs = acknowledgedAtMs + timeoutSeconds * 1000 + INVOCATION_DEADLINE_GRACE_MS;
+        if (nowMs < deadlineAtMs) continue;
+
+        if (!invocation.deadlineEnforcement && invocation.status === "running") {
+          const requestedAt = now();
+          invocation.deadlineEnforcement = {
+            state: "interrupt_requested",
+            requestedAt,
+            deadlineAt: new Date(deadlineAtMs).toISOString(),
+          };
+          cancelInvocation(invocation, { userId: "usr_runtime_deadline" });
+          invocation.cancellation.reason =
+            "The server runtime deadline expired; executor interruption was requested.";
+          appendEvent({
+            invocationId: invocation.id,
+            type: "invocation_deadline_exceeded",
+            level: "warn",
+            message: "Invocation exceeded its runtime deadline; the server requested executor interruption.",
+            data: {
+              timeoutSeconds,
+              graceMs: INVOCATION_DEADLINE_GRACE_MS,
+              deadlineAt: invocation.deadlineEnforcement.deadlineAt,
+            },
+          });
+          persistStateSoon();
+          continue;
+        }
+
+        const interruptRequestedAtMs = Date.parse(invocation.deadlineEnforcement?.requestedAt ?? "");
+        if (
+          invocation.deadlineEnforcement?.state === "interrupt_requested"
+          && Number.isFinite(interruptRequestedAtMs)
+          && nowMs - interruptRequestedAtMs >= INVOCATION_INTERRUPT_GRACE_MS
+        ) {
+          appendEvent({
+            invocationId: invocation.id,
+            type: "invocation_deadline_reclaimed",
+            level: "warn",
+            message: "Executor did not report a terminal result after deadline interruption; the server reclaimed the invocation.",
+            data: {
+              interruptGraceMs: INVOCATION_INTERRUPT_GRACE_MS,
+              requestedAt: invocation.deadlineEnforcement.requestedAt,
+            },
+          });
+          completeInvocation(invocation, {
+            status: "timed_out",
+            result: {
+              summary: "The executor exceeded its configured runtime and stopped reporting progress.",
+              errorCode: "execution_timeout",
+              timeoutKind: "server_hard_deadline",
+            },
+          });
+        }
       }
     }
     if (device.status !== "offline") return;
@@ -3608,6 +3823,8 @@ export function createServerRuntimeServices({
     createCodexChangeReview,
     createCodexExecReview,
     setCodexSessionName,
+    setClaudeSessionName,
+    resumableClaudeSessions,
     resumableCodexSessions,
     isExecChangeApproved,
     execRunPromotionGate,
@@ -3752,10 +3969,12 @@ export function createServerRuntimeServices({
     ensureLocalOrigin,
     startAutoRun,
     retryAutoRun,
+    reverifyAutoRun,
     recoverTimedOutCodexApproval: codexApprovalRecovery.recoverTimedOutApproval,
     processPlanningRecommendedActions,
     cancelAutoRun,
     reapStuckAutoRuns,
+    sweepWorkItemAutoRunBatches: workItemAutoRunBatchService.sweepBatches,
     sweepExpiredClaims,
     sweepAutoRunSloAlerts,
     sweepAlertOutbox: alertOutbox.sweep,
@@ -3801,6 +4020,10 @@ export function createServerRuntimeServices({
     updateWorkItem: workItemService.updateWorkItem,
     bulkUpdateWorkItems: workItemService.bulkUpdateWorkItems,
     transitionWorkItem: workItemService.transitionWorkItem,
+    beginWorkItemExecution: workItemService.beginExecution,
+    abortWorkItemExecution: workItemService.abortExecution,
+    beginWorkItemDelivery: workItemService.beginDelivery,
+    failWorkItemDelivery: workItemService.failDelivery,
     completeWorkItemDelivery: workItemService.completeDelivery,
     listWorkItemActivity: workItemService.listActivity,
     listWorkItemComments: workItemService.listComments,
@@ -3808,6 +4031,8 @@ export function createServerRuntimeServices({
     updateWorkItemComment: workItemService.updateComment,
     deleteWorkItemComment: workItemService.deleteComment,
     recordWorkItemExecutionBinding: workItemService.recordExecutionBinding,
+    createWorkItemAutoRunBatch: workItemAutoRunBatchService.createBatch,
+    listWorkItemAutoRunBatches: workItemAutoRunBatchService.listBatches,
     claimWorkItem: workItemService.claimWorkItem,
     releaseWorkItemClaim: workItemService.releaseWorkItemClaim,
     bindGithubIssue: workItemService.bindGithubIssue,
@@ -4087,6 +4312,7 @@ export function createServerRuntimeServices({
     deviceForToken,
     issueBridgeCredential,
     requireBridgeCredential,
+    supersedeBridgeSession,
     createIntegrationProbeRun,
     registerIntegrationArtifact,
     transitionIntegrationArtifact,

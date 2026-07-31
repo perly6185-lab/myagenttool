@@ -80,6 +80,7 @@ export interface AgentAdapter {
   outputFormat?: string;
   sandbox?: string;
   permissionMode?: string;
+  claudeRuntime?: "cli" | "agent_sdk";
   args?: string[];
   // MCP transport (stdio spawns `command`; http calls `url`).
   transport?: string;
@@ -240,6 +241,7 @@ export type PendingDecisionKind =
   | "merge"
   | "compare_promote"
   | "codex_broker"
+  | "agent_broker"
   | "application_recovery"
   | "lifecycle_approval"
   | "lifecycle_rollback"
@@ -571,10 +573,11 @@ export interface InvocationEventSnapshot {
   } | null;
 }
 
-// A Codex tool-permission request held by the approval broker. When `status` is
+// A coding-agent tool-permission request held by the shared approval broker. When `status` is
 // "pending" the run is blocked until someone approves/denies it (or it times out).
 export interface CodexApprovalBrokerRequest {
   id: string;
+  provider?: "codex" | "claude";
   invocationId?: string;
   toolName?: string;
   summary?: string;
@@ -600,6 +603,17 @@ export interface CodexApprovalBrokerRequest {
     resumedAt?: string | null;
     error?: string | null;
   };
+}
+
+export interface ClaudeSessionSnapshot {
+  id: string;
+  invocationId: string;
+  name?: string | null;
+  repoPath?: string | null;
+  sessionMode?: "new" | "continue_last" | string;
+  startedAt?: string;
+  lastSeenAt?: string;
+  status?: string;
 }
 
 export interface AuditSnapshot {
@@ -1023,6 +1037,62 @@ export interface ProjectTargetSnapshot {
   updatedAt?: string;
 }
 
+export type WorkProfileCategory = "role" | "domain" | "work_type" | "skill" | "preference";
+export type WorkProfileStatus = "pending" | "confirmed" | "rejected";
+
+export interface WorkProfileEvidence {
+  projectId: string;
+  projectName?: string;
+  /** Root of a project the user explicitly registered/authorized. */
+  authorizedDirectory: string;
+  signal?: string;
+  score?: number | null;
+  observations?: number;
+}
+
+export interface WorkProfileInference {
+  id: string;
+  userId: string;
+  ownerTeamId: string;
+  category: WorkProfileCategory;
+  value: string;
+  protocolKind?: "category" | "recurring_activity" | "document_pattern" | "preferred_output";
+  confidence: number;
+  confidenceLevel?: "low" | "medium" | "high";
+  status: WorkProfileStatus;
+  summary?: string;
+  sourceProjectId?: string;
+  sourceSummary?: {
+    summary: string;
+    sources: { kind: string; reference: string; observedAt: string }[];
+    observationCount: number;
+    observedFrom: string;
+    observedTo: string;
+  };
+  autoApplyEligible?: boolean;
+  evidence: WorkProfileEvidence[];
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface WorkProfileSnapshot {
+  category: WorkProfileCategory;
+  value: string;
+  status: WorkProfileStatus;
+  evidence: WorkProfileEvidence[];
+}
+
+export interface WorkProfileAuditEvent {
+  id: string;
+  inferenceId: string;
+  actorId: string;
+  action: "confirmed" | "modified" | "rejected" | "deleted";
+  before: WorkProfileSnapshot;
+  after: WorkProfileSnapshot | null;
+  reason?: string | null;
+  at: string;
+}
+
 export interface WorktreeLink {
   type: "issue" | "pr";
   number: number;
@@ -1241,6 +1311,10 @@ export interface ConsoleSnapshot {
   /** Server-derived, restart-safe path to the first runnable local task. */
   guidedSetup?: GuidedSetupSnapshot;
   projects?: ProjectSnapshot[];
+  /** Reviewable system understanding of the current user's work. */
+  workProfileInferences?: WorkProfileInference[];
+  /** Durable history; delete events retain their pre-delete snapshot. */
+  workProfileAuditEvents?: WorkProfileAuditEvent[];
   currentProjectId?: string | null;
   projectTargets?: ProjectTargetSnapshot[];
   worktrees?: WorktreeSnapshot[];
@@ -1303,6 +1377,7 @@ export interface ConsoleSnapshot {
   discoveryRuns?: DiscoveryRunSnapshot[];
   approvalRequests?: ApprovalSnapshot[];
   codexApprovalBrokerRequests?: CodexApprovalBrokerRequest[];
+  claudeSessions?: ClaudeSessionSnapshot[];
   policyDecisionRecords?: PolicyDecisionSnapshot[];
   troubleshootingReports?: TroubleshootingReport[];
   agentUsageSummaries?: AgentUsageSummary[];

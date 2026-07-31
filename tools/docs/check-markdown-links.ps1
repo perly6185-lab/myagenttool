@@ -7,7 +7,13 @@ $failures = New-Object System.Collections.Generic.List[string]
 Get-ChildItem -Path $root -Recurse -Filter "*.md" -File |
   Where-Object {
     $relative = $_.FullName.Substring($root.Length).TrimStart("\", "/")
-    -not ($relative -match '(^|[\\/])node_modules([\\/]|$)' -or $relative -like ".git*" -or $relative -like ".myagenttool\runtimes*" -or $relative -like "doocs-md*")
+    -not (
+      $relative -match '(^|[\\/])node_modules([\\/]|$)' `
+      -or $relative -like ".git*" `
+      -or $relative -like ".myagenttool\runtimes*" `
+      -or $relative -like "doocs-md*" `
+      -or $relative -match '^apps[\\/]electron[\\/](release|vendor[\\/]portable-git)([\\/]|$)'
+    )
   } |
   ForEach-Object {
   $path = $_.FullName

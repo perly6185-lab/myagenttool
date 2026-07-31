@@ -332,6 +332,19 @@ test("POST /api/invocations guards worktree scope and ignores client control fie
   assert.equal(foreignWorktree.body.error, "worktree_not_found");
   assert.equal(ctx.state.invocations.length, before, "foreign worktree metadata must not create an invocation");
 
+  const unknownWorktree = await call("/api/invocations", {
+    method: "POST",
+    body: {
+      task: "Run with a stale worktree reference.",
+      projectId: "projA",
+      worktreeId: "wt_missing",
+    },
+    token: "tok_a",
+  });
+  assert.equal(unknownWorktree.status, 404);
+  assert.equal(unknownWorktree.body.error, "worktree_not_found");
+  assert.equal(ctx.state.invocations.length, before, "an unknown worktree must not fall back to the project clone");
+
   const spoofedControl = await call("/api/invocations", {
     method: "POST",
     body: {

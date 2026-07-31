@@ -15,9 +15,17 @@ async function assetSize(entry) {
   return (await stat(resolve(dist, entry.file))).size;
 }
 
+function manifestEntry(key) {
+  if (manifest[key]) return manifest[key];
+  const expectedName = key.split("/").at(-1)?.replace(/\.[^.]+$/, "");
+  return Object.values(manifest).find((entry) =>
+    entry?.src === key || (expectedName && entry?.name === expectedName),
+  );
+}
+
 const failures = [];
 for (const [key, limit] of Object.entries(limits)) {
-  const size = await assetSize(manifest[key]);
+  const size = await assetSize(manifestEntry(key));
   console.log(`${key}: ${(size / 1000).toFixed(1)} kB / ${(limit / 1000).toFixed(0)} kB`);
   if (size > limit) failures.push(`${key} exceeds its budget by ${((size - limit) / 1000).toFixed(1)} kB`);
 }

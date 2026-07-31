@@ -216,6 +216,37 @@ export const deploymentModes = [
   "private_deployment",
 ];
 
+// --- Work profile (Local Issue #14) --------------------------------------
+// Runtime mirror of packages/protocol/src/work-profile.ts. Work-profile
+// snapshots are versioned and every inferred fact carries a source summary.
+
+export const workProfileInferenceKinds = [
+  "category",
+  "recurring_activity",
+  "document_pattern",
+  "preferred_output",
+];
+
+export const workProfileConfidenceLevels = [
+  "low",
+  "medium",
+  "high",
+];
+
+export const workProfileEvidenceSourceKinds = [
+  "explicit_user_input",
+  "invocation",
+  "document",
+  "project",
+  "routine",
+];
+
+export const workProfileAuthorizationPermissions = [
+  "read",
+  "update",
+  "use_for_personalization",
+];
+
 export const m0RequiredEventTypes = [
   "invocation_created",
   "invocation_authorized",
@@ -601,6 +632,7 @@ function runM0ProtocolCheck() {
   assertIncludes(deploymentModes, m3RequiredDeploymentModes, "M3 deployment mode");
   runRefusalTaxonomyCheck();
   runRoundTelemetryCheck();
+  runWorkProfileCheck();
   assertIncludes(m0RequiredEventTypes, [
     "invocation_created",
     "delivery_dispatched",
@@ -701,6 +733,29 @@ function runRoundTelemetryCheck() {
       throw new Error(`tool invocation status not a valid round status: ${status}`);
     }
   }
+}
+
+function runWorkProfileCheck() {
+  assertIncludes(
+    workProfileInferenceKinds,
+    ["category", "recurring_activity", "document_pattern", "preferred_output"],
+    "work profile inference kind",
+  );
+  assertIncludes(
+    workProfileConfidenceLevels,
+    ["low", "medium", "high"],
+    "work profile confidence level",
+  );
+  assertIncludes(
+    workProfileEvidenceSourceKinds,
+    ["explicit_user_input", "invocation", "document", "project", "routine"],
+    "work profile evidence source kind",
+  );
+  assertIncludes(
+    workProfileAuthorizationPermissions,
+    ["read", "update", "use_for_personalization"],
+    "work profile authorization permission",
+  );
 }
 
 function assertIncludes(actual, required, label) {

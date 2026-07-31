@@ -55,8 +55,9 @@ const commandPlan = claudeCommandPlan(options.claudeCli, [
 // discarding everything but the final result. Module-scope like options/TOOL:
 // every emitter stamps it on its RESULT.
 const transcriptCollector = createTranscriptCollector();
-const { code, stdout, stderr } = await run(commandPlan.command, commandPlan.args, {
+const { code, stdout, stderr } = await runClaude(commandPlan.command, commandPlan.args, {
   cwd: options.cwd,
+  prompt,
   onStdoutLine: (line) => transcriptCollector.pushLine(line),
 });
 const transcript = transcriptCollector.finish();
@@ -177,6 +178,7 @@ function parseArgs(args) {
     issue: null,
     issueData: null,
     planContext: null,
+    claudeCliExplicit: false,
   };
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index];
@@ -184,6 +186,7 @@ function parseArgs(args) {
       parsed.mode = requireValue(args, ++index, arg);
     } else if (arg === "--claude-cli") {
       parsed.claudeCli = requireValue(args, ++index, arg);
+      parsed.claudeCliExplicit = true;
     } else if (arg === "--cwd") {
       parsed.cwd = requireValue(args, ++index, arg);
     } else if (arg === "--instruction") {
@@ -443,6 +446,74 @@ function run(command, args, options) {
       resolveResult({ code: code ?? 1, stdout, stderr });
     });
   });
+}
+
+async function runClaude(command, args, runOptions) {
+  const requested = String(process.env.MYAGENTTOOL_CLAUDE_RUNTIME ?? "agent_sdk").trim().toLowerCase();
+  const fixtureCli = /\.(mjs|cjs|js)$/i.test(String(options.claudeCli ?? ""));
+  const useCli = ["cli", "claude_cli", "claude-cli"].includes(requested)
+    || options.claudeCliExplicit
+    || fixtureCli;
+  if (useCli) return run(command, args, runOptions);
+  let stdout = "";
+  let stderr = "";
+  let queryHandle = null;
+  try {
+    const sdk = await import("@anthropic-ai/claude-agent-sdk");
+    const configuredExecutable = String(process.env.MYAGENTTOOL_CLAUDE_SDK_EXECUTABLE ?? "").trim();
+    queryHandle = sdk.query({
+      prompt: runOptions.prompt,
+      options: {
+        cwd: runOptions.cwd,
+        permissionMode: "plan",
+        tools: ["Glob", "Grep", "Read"],
+        persistSession: false,
+        includePartialMessages: false,
+        env: {
+          ...process.env,
+          CLAUDE_AGENT_SDK_CLIENT_APP: "myagenttool-governed-wrapper/0.0.0",
+        },
+        ...(configuredExecutable ? { pathToClaudeCodeExecutable: configuredExecutable } : {}),
+        hooks: {
+          PreToolUse: [{
+            hooks: [async (input) => {
+              const allowed = ["Glob", "Grep", "Read"].includes(String(input?.tool_name ?? ""));
+              return allowed
+                ? { continue: true }
+                : {
+                    hookSpecificOutput: {
+                      hookEventName: "PreToolUse",
+                      permissionDecision: "deny",
+                      permissionDecisionReason: "Governed Claude capability wrappers are read-only.",
+                    },
+                  };
+            }],
+          }],
+        },
+      },
+    });
+    let succeeded = false;
+    for await (const message of queryHandle) {
+      const line = JSON.stringify(message);
+      stdout += `${line}\n`;
+      runOptions.onStdoutLine?.(line);
+      if (message?.type === "result") {
+        succeeded = message.subtype === "success";
+        if (!succeeded && Array.isArray(message.errors)) {
+          stderr = message.errors.map(String).join("\n");
+        }
+      }
+    }
+    return { code: succeeded ? 0 : 1, stdout, stderr };
+  } catch (error) {
+    return {
+      code: 127,
+      stdout,
+      stderr: error instanceof Error ? error.message : String(error),
+    };
+  } finally {
+    queryHandle?.close?.();
+  }
 }
 
 function parseReviewOutput(stdout) {

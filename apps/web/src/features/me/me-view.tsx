@@ -6,6 +6,7 @@ import { SkinPicker } from "@/components/layout/skin-picker";
 import { Card, CardContent } from "@/components/ui/card";
 import { usePageNavigation } from "@/hooks/use-page-navigation";
 import { useAppTranslation } from "@/lib/i18n/use-app-translation";
+import { WorkProfileReview } from "./work-profile-review";
 
 export function MeView() {
   const { t } = useAppTranslation();
@@ -27,6 +28,8 @@ export function MeView() {
           <LoginControl expanded />
         </CardContent>
       </Card>
+
+      <WorkProfileReview />
 
       <Card>
         <CardContent className="divide-y divide-border p-0">

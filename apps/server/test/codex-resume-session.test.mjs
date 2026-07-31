@@ -101,6 +101,16 @@ test("an explicit target from another repository is refused", () => {
   );
 });
 
+test("a repository-scoped resume refuses legacy sessions with no repository binding", () => {
+  const { resolveResumeCodexSessionId } = serviceWithSessions([
+    { id: "s1", invocationId: "inv_unbound", codexThreadId: "thread-unbound", userId: "u1", repoPath: null },
+  ]);
+  assert.equal(
+    resolveResumeCodexSessionId({ userId: "u1", repoPath: "/repo", invocationId: "inv_unbound" }),
+    null,
+  );
+});
+
 test("an explicit target that never captured a provider id returns null (no fallthrough to newest)", () => {
   const { resolveResumeCodexSessionId } = serviceWithSessions([
     { id: "s2", invocationId: "inv_other", codexSessionId: "newest", userId: "u1", repoPath: "/repo" },

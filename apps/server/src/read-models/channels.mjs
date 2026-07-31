@@ -79,7 +79,7 @@ export function channelTaskOperations({ requests = [], autoRuns = [], invocation
         : request.status === "human_takeover" ? "human_takeover"
           : runStatus ? `run_${runStatus}` : request.status;
     const failed = ["failed", "blocked"].includes(runStatus);
-    const active = ["materializing", "running", "verifying", "publishing", "awaiting_approval"].includes(runStatus);
+    const active = ["materializing", "running", "waiting_capacity", "verifying", "publishing", "awaiting_approval"].includes(runStatus);
     return {
       ...request,
       stage,

@@ -52,6 +52,10 @@ export function createServerState({ defaultProjectPath, now }) {
     identityRecoveryGrants: [],
     identitySecurityAlerts: [],
     projects: [defaultProject],
+    // User-reviewable system understanding. Evidence paths are only drawn from
+    // directories the user explicitly registered as projects.
+    workProfileInferences: [createInitialWorkProfileInference(defaultProject, now)],
+    workProfileAuditEvents: [],
     applications: [],
     applicationInstallRuns: [],
     applicationRecoveryActions: [],
@@ -146,6 +150,9 @@ export function createServerState({ defaultProjectPath, now }) {
     // Local-first planning records. These are independent of GitHub Issues and
     // may later carry one or more external bindings.
     workItems: [],
+    // Durable manual batches for "run these local tasks with concurrency N".
+    // Pending rows survive a server restart and are resumed by the batch sweep.
+    workItemAutoRunBatches: [],
     workItemComments: [],
     workItemAttentionOperations: [],
     githubWorkItemWebhookDeliveries: [],
@@ -200,6 +207,7 @@ export function createServerState({ defaultProjectPath, now }) {
     troubleshootingReports: [],
     agentUsageSummaries: [],
     codexSessions: [],
+    claudeSessions: [],
     codexWorkspaces: [],
     codexEvidenceRecords: [],
     codexChangeReviews: [],
@@ -264,6 +272,8 @@ export function resetStateForSelfCheck({ state, now }) {
     claudeAgent.updatedAt = now();
   }
   state.invocations = [];
+  state.workProfileInferences = [createInitialWorkProfileInference(state.projects[0], now)];
+  state.workProfileAuditEvents = [];
   state.worktreeReviews = [];
   state.deployments = [];
   state.applications = [];
@@ -324,6 +334,7 @@ export function resetStateForSelfCheck({ state, now }) {
   state.troubleshootingReports = [];
   state.agentUsageSummaries = [];
   state.codexSessions = [];
+  state.claudeSessions = [];
   state.codexWorkspaces = [];
   state.codexEvidenceRecords = [];
   state.codexChangeReviews = [];
@@ -417,6 +428,28 @@ function createProjectTargetRecord(project, now) {
     state: "ready",
     progress: 100,
     message: "Local checkout is ready.",
+    createdAt,
+    updatedAt: createdAt,
+  };
+}
+
+function createInitialWorkProfileInference(project, now) {
+  const createdAt = now();
+  return {
+    id: "wpi_primary_work",
+    userId: "usr_local",
+    ownerTeamId: "team_local",
+    category: "work_type",
+    value: "software_development",
+    confidence: 0.86,
+    status: "pending",
+    summary: "Inferred from repeated work in a registered software project.",
+    evidence: project ? [{
+      projectId: project.id,
+      projectName: project.name,
+      authorizedDirectory: project.path,
+      signal: "registered_project",
+    }] : [],
     createdAt,
     updatedAt: createdAt,
   };
@@ -650,7 +683,7 @@ function createDefaultAgents(now) {
     {
       id: "agt_claude_acceptEdits",
       name: "Claude Code CLI",
-      description: "Runs Claude Code non-interactively (claude -p) through a reviewed local adapter config.",
+      description: "Runs Claude through the Agent SDK by default, with governed local tools and a CLI rollback path.",
       ownerUserId: "usr_local",
       location: { type: "local_device", deviceId: DEFAULT_DEVICE_ID },
       adapter: {

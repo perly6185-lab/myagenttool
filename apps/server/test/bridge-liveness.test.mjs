@@ -17,12 +17,15 @@ let base;
 let state;
 let deps;
 let bridgeToken;
+let bridgeSessionId = "session-one-test";
 let appId;
 let routineId;
 let hookServer;
 const receivedAlerts = [];
+const savedHandoffGrace = process.env.MYAGENTTOOL_BRIDGE_SESSION_HANDOFF_GRACE_MS;
 
 before(async () => {
+  process.env.MYAGENTTOOL_BRIDGE_SESSION_HANDOFF_GRACE_MS = "0";
   const { createServerState } = await import("../src/runtime/state-factory.mjs");
   const { createServerRuntimeServices } = await import("../src/runtime/service-composer.mjs");
   const { createHttpServer } = await import("../src/runtime/http-server.mjs");
@@ -60,7 +63,11 @@ before(async () => {
     body: { approvalToken: "operator-approved" },
   });
 
-  const bridge = await call("/api/bridge/register", { method: "POST", body: { bridgeVersion: "test" } });
+  const bridge = await call("/api/bridge/register", {
+    method: "POST",
+    body: { bridgeVersion: "test", bridgeSessionId },
+    session: bridgeSessionId,
+  });
   bridgeToken = bridge.body.bridgeToken;
 
   hookServer = createHttpReceiver((req, res) => {
@@ -83,6 +90,8 @@ before(async () => {
 after(() => {
   server?.close();
   hookServer?.close();
+  if (savedHandoffGrace === undefined) delete process.env.MYAGENTTOOL_BRIDGE_SESSION_HANDOFF_GRACE_MS;
+  else process.env.MYAGENTTOOL_BRIDGE_SESSION_HANDOFF_GRACE_MS = savedHandoffGrace;
 });
 
 const startRun = async () => {
@@ -159,14 +168,33 @@ test("running watchdog reaps a run stranded on a dead bridge — and only past t
   assert.equal(state.device.status, "online");
 });
 
-test("a running run on a LIVE bridge is never reaped regardless of age", async () => {
+test("a running run on a LIVE bridge is left alone while it is inside its runtime budget", async () => {
   const invocationId = await startRun();
   await leaseNext(invocationId);
   await call("/api/bridge/ack", { method: "POST", body: { invocationId }, token: bridgeToken });
-  invocation(invocationId).delivery.acknowledgedAt = minutesAgo(120); // ancient, but the bridge is alive
   deps.bridgeLivenessSweep();
-  assert.equal(invocation(invocationId).status, "running", "a live bridge owns its own timeouts");
+  assert.equal(invocation(invocationId).status, "running");
   await call("/api/bridge/complete", { method: "POST", body: { invocationId, status: "succeeded", result: { summary: "ok" } }, token: bridgeToken });
+});
+
+test("a LIVE bridge cannot keep a dead child invocation running past its hard deadline", async () => {
+  const invocationId = await startRun();
+  await leaseNext(invocationId);
+  await call("/api/bridge/ack", { method: "POST", body: { invocationId }, token: bridgeToken });
+  invocation(invocationId).options.timeoutSeconds = 30;
+  invocation(invocationId).delivery.acknowledgedAt = minutesAgo(2);
+
+  deps.bridgeLivenessSweep();
+  assert.equal(invocation(invocationId).status, "cancelling");
+  assert.equal(invocation(invocationId).cancellation.state, "requested");
+  assert.ok(events("invocation_deadline_exceeded").some((event) => event.invocationId === invocationId));
+
+  invocation(invocationId).deadlineEnforcement.requestedAt = minutesAgo(1);
+  deps.bridgeLivenessSweep();
+  assert.equal(invocation(invocationId).status, "timed_out");
+  assert.equal(invocation(invocationId).result.errorCode, "execution_timeout");
+  assert.equal(invocation(invocationId).result.timeoutKind, "server_hard_deadline");
+  assert.ok(events("invocation_deadline_reclaimed").some((event) => event.invocationId === invocationId));
 });
 
 test("redelivery is bounded: after 5 leased-and-lapsed attempts the delivery is exhausted", async () => {
@@ -226,11 +254,127 @@ test("the refusal verb: pre-ack only, honest reason + errorCode into recovery; u
   assert.equal(invocation(weird).result.errorCode, undefined);
 });
 
-async function call(path, { method = "GET", body, token } = {}) {
+test("a replacement bridge session fences running work and reclaims it after executor drain", async () => {
+  const invocationId = await startRun();
+  await leaseNext(invocationId);
+  await call("/api/bridge/ack", { method: "POST", body: { invocationId }, token: bridgeToken });
+  assert.equal(invocation(invocationId).status, "running");
+
+  const previousSessionId = bridgeSessionId;
+  const replacementSessionId = "session-two-test";
+  const replacement = await call("/api/bridge/register", {
+    method: "POST",
+    body: { bridgeVersion: "test-replacement", bridgeSessionId: replacementSessionId },
+    token: bridgeToken,
+    session: replacementSessionId,
+  });
+  assert.equal(replacement.status, 200, JSON.stringify(replacement.body));
+  bridgeSessionId = replacementSessionId;
+
+  // The new session cannot claim overlapping work until the old executor-tree
+  // handoff window is reaped. Tests configure that window to zero.
+  const currentPoll = await call("/api/bridge/next", { token: bridgeToken });
+  assert.ok([200, 204].includes(currentPoll.status));
+  const reclaimed = invocation(invocationId);
+  assert.equal(reclaimed.status, "failed");
+  assert.equal(reclaimed.result.errorCode, "transport_closed");
+  assert.ok(events("bridge_session_superseded").some((event) => event.invocationId === invocationId));
+
+  const stalePoll = await call("/api/bridge/next", {
+    token: bridgeToken,
+    session: previousSessionId,
+  });
+  assert.equal(stalePoll.status, 409);
+  assert.equal(stalePoll.body.error, "bridge_session_superseded");
+
+});
+
+test("a cancelling invocation stays cancelled across a bridge replacement", async () => {
+  const invocationId = await startRun();
+  await leaseNext(invocationId);
+  await call("/api/bridge/ack", { method: "POST", body: { invocationId }, token: bridgeToken });
+  const active = invocation(invocationId);
+  active.status = "cancelling";
+  active.cancellation = {
+    state: "requested",
+    requestedAt: now(),
+    requestedBy: "usr_test",
+  };
+
+  const replacementSessionId = "session-three-test";
+  const replacement = await call("/api/bridge/register", {
+    method: "POST",
+    body: { bridgeVersion: "test-replacement", bridgeSessionId: replacementSessionId },
+    token: bridgeToken,
+    session: replacementSessionId,
+  });
+  assert.equal(replacement.status, 200);
+  bridgeSessionId = replacementSessionId;
+  await call("/api/bridge/next", { token: bridgeToken });
+  assert.equal(active.status, "cancelled");
+  assert.equal(active.cancellation.state, "applied");
+  assert.equal(active.result, null);
+});
+
+test("session protocol rejects split identity and allows only an idle legacy rollback", async () => {
+  const activeInvocationId = await startRun();
+  await leaseNext(activeInvocationId);
+  await call("/api/bridge/ack", {
+    method: "POST",
+    body: { invocationId: activeInvocationId },
+    token: bridgeToken,
+  });
+  const unsafeLegacy = await call("/api/bridge/register", {
+    method: "POST",
+    body: { bridgeVersion: "legacy-test" },
+    token: bridgeToken,
+    session: null,
+  });
+  assert.equal(unsafeLegacy.status, 409);
+  assert.equal(unsafeLegacy.body.error, "bridge_session_required");
+  await call("/api/bridge/complete", {
+    method: "POST",
+    body: { invocationId: activeInvocationId, status: "succeeded", result: { summary: "done" } },
+    token: bridgeToken,
+  });
+
+  const mismatch = await call("/api/bridge/register", {
+    method: "POST",
+    body: { bridgeVersion: "test", bridgeSessionId: "session-four-body" },
+    token: bridgeToken,
+    session: "session-four-header",
+  });
+  assert.equal(mismatch.status, 400);
+  assert.equal(mismatch.body.error, "bridge_session_mismatch");
+
+  const legacy = await call("/api/bridge/register", {
+    method: "POST",
+    body: { bridgeVersion: "legacy-test" },
+    token: bridgeToken,
+    session: null,
+  });
+  assert.equal(legacy.status, 200, JSON.stringify(legacy.body));
+  bridgeSessionId = null;
+  const legacyPoll = await call("/api/bridge/next", { token: bridgeToken, session: null });
+  assert.ok([200, 204].includes(legacyPoll.status));
+
+  const replacementSessionId = "session-four-test";
+  const modern = await call("/api/bridge/register", {
+    method: "POST",
+    body: { bridgeVersion: "modern-test", bridgeSessionId: replacementSessionId },
+    token: bridgeToken,
+    session: replacementSessionId,
+  });
+  assert.equal(modern.status, 200);
+  bridgeSessionId = replacementSessionId;
+});
+
+async function call(path, { method = "GET", body, token, session = token ? bridgeSessionId : null } = {}) {
   const response = await fetch(`${base}${path}`, {
     method,
     headers: {
       ...(token ? { authorization: `Bearer ${token}` } : {}),
+      ...(session ? { "x-myagenttool-bridge-session": session } : {}),
       ...(body ? { "content-type": "application/json" } : {}),
     },
     body: body ? JSON.stringify(body) : undefined,

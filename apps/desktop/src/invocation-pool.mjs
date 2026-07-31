@@ -43,17 +43,19 @@ export function refreshedConcurrency(current, { serverMaxConcurrency, envValue }
  * @param {object} opts
  * @param {number|(() => number)} opts.cap - max concurrent runs (or a getter)
  * @param {() => Promise<any>} opts.claim - claim one work item; falsy = nothing queued / server 204
- * @param {(work: any) => Promise<any>} opts.run - run a claimed item to completion
+ * @param {(work: any, lifecycle: { signal: AbortSignal }) => Promise<any>} opts.run - run a claimed item to completion
  * @param {(error: unknown, work: any) => void} [opts.onError] - a run rejected (run itself should normally self-report)
  */
 export function createInvocationPool({ cap, claim, run, onError }) {
   const capacity = typeof cap === "function" ? cap : () => cap;
-  let active = 0;
+  const active = new Set();
   let filling = false;
+  let stopped = false;
 
   return {
     /** In-flight runs right now. */
-    size: () => active,
+    size: () => active.size,
+    stopped: () => stopped,
     /**
      * Claim and launch runs until the pool is full or the server has nothing
      * to give (claim() falsy). Launched runs are NOT awaited — they execute in
@@ -62,26 +64,54 @@ export function createInvocationPool({ cap, claim, run, onError }) {
      * concurrent fill() is a no-op. Returns how many runs it launched.
      */
     async fill() {
-      if (filling) return 0;
+      if (filling || stopped) return 0;
       filling = true;
       let launched = 0;
       try {
-        while (active < capacity()) {
+        while (!stopped && active.size < capacity()) {
           const work = await claim();
-          if (!work) break;
-          active += 1;
+          if (!work || stopped) break;
+          const controller = new AbortController();
+          const entry = { work, controller, promise: null };
+          active.add(entry);
           launched += 1;
-          Promise.resolve()
-            .then(() => run(work))
+          entry.promise = Promise.resolve()
+            .then(() => run(work, { signal: controller.signal }))
             .catch((error) => onError?.(error, work))
             .finally(() => {
-              active -= 1;
+              active.delete(entry);
             });
         }
       } finally {
         filling = false;
       }
       return launched;
+    },
+    /**
+     * Stop accepting claims, signal every active runner, and wait a bounded
+     * interval for their process-tree cleanup/finalizers. The pool deliberately
+     * keeps the entries until each run settles, so callers can distinguish a
+     * clean drain from a forced process exit.
+     */
+    async stop({ timeoutMs = 10_000, reason = "bridge_shutdown" } = {}) {
+      stopped = true;
+      for (const entry of active) {
+        if (!entry.controller.signal.aborted) {
+          entry.controller.abort(new Error(reason));
+        }
+      }
+      if (active.size === 0) return { drained: true, remaining: 0 };
+      const pending = [...active].map((entry) => entry.promise);
+      let timer;
+      const timedOut = new Promise((resolve) => {
+        timer = setTimeout(() => resolve(false), Math.max(0, timeoutMs));
+      });
+      const drained = await Promise.race([
+        Promise.allSettled(pending).then(() => true),
+        timedOut,
+      ]);
+      clearTimeout(timer);
+      return { drained, remaining: active.size };
     },
   };
 }

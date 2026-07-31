@@ -110,6 +110,7 @@
     "ai:coding-adapter-contract": "node tools/ai/src/index.mjs coding-adapter-contract",
     "ai:eval-heldout": "node tools/ai/src/index.mjs eval-heldout",
     "ai:eval-subcap": "node tools/ai/src/index.mjs eval-subcap",
+    "eval:profile-privacy": "node tools/ai/src/evals/profile-privacy-cli.mjs",
     "github:check": "node tools/github/src/index.mjs --check",
     "github:check:issues": "node tools/github/src/index.mjs check-issues",
     "github:check:pr": "node tools/github/src/index.mjs check-pr",
@@ -175,6 +176,8 @@
     "smoke:applications": "node tools/dev/application-registry-smoke.mjs",
     "smoke:agent-skills": "node tools/dev/agent-skills-smoke.mjs",
     "smoke:dispatch-concurrency": "node tools/dev/dispatch-concurrency-smoke.mjs",
+    "test:batch-resilience": "node tools/dev/batch-resilience.mjs",
+    "test:batch-chain": "node tools/dev/batch-chain-penetration.mjs",
     "smoke:channel-providers": "node tools/dev/channel-provider-contract-smoke.mjs",
     "smoke:coding-agent-interface": "node --test apps/server/test/coding-agent-interface.test.mjs apps/server/test/claude-application.test.mjs",
     "benchmark:runtime-health": "node tools/dev/runtime-health-benchmark.mjs",
@@ -227,13 +230,17 @@
     "typescript": "^5.7.2"
   },
   "dependencies": {
-    "@anthropic-ai/claude-code": "2.1.215",
+    "@anthropic-ai/claude-agent-sdk": "0.3.220",
+    "@anthropic-ai/claude-code": "2.1.220",
+    "@anthropic-ai/sdk": "0.115.0",
+    "@modelcontextprotocol/sdk": "1.30.0",
     "@myagenttool/adapters": "workspace:^",
     "@myagenttool/desktop": "workspace:^",
     "@myagenttool/protocol": "workspace:^",
     "@myagenttool/server": "workspace:^",
     "@myagenttool/shared": "workspace:^",
     "@openai/codex": "0.146.0-alpha.3",
-    "node-pty": "^1.1.0"
+    "node-pty": "^1.1.0",
+    "zod": "4.4.3"
   }
 }

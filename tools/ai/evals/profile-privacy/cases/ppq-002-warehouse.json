@@ -1,0 +1,49 @@
+{
+  "id": "ppq-002-warehouse",
+  "scenario": "warehouse",
+  "document": {
+    "filename": "仓库盘点与效期样例.xlsx",
+    "format": "xlsx",
+    "records": [
+      {
+        "location": "循环盘点!A1:E5",
+        "text": "A区账面120，实盘118，差异-2；复盘后登记原因；每周循环盘点"
+      },
+      {
+        "location": "效期管理!A1:D4",
+        "text": "批次B-07临期；按先到期先出调整拣货顺序；高风险库位仅表示库存风险"
+      },
+      {
+        "location": "交接班!A1:C3",
+        "text": "夜班交接员工编号=SYNTH_EMPLOYEE_WH_002；联系电话=SYNTH_PHONE_WH_002"
+      }
+    ]
+  },
+  "oracle": {
+    "expectedTraits": [
+      "work.warehouse.cycle_count",
+      "work.warehouse.inventory_variance",
+      "work.warehouse.first_expiry_first_out"
+    ],
+    "falsePositiveTraits": [
+      "personal.health.insomnia",
+      "personal.personality.risk_taking"
+    ],
+    "sensitiveTraitIds": [
+      "personal.identity.employee_id",
+      "personal.contact.phone"
+    ],
+    "sensitiveFields": [
+      {
+        "id": "employee_id",
+        "value": "SYNTH_EMPLOYEE_WH_002",
+        "synthetic": true
+      },
+      {
+        "id": "employee_phone",
+        "value": "SYNTH_PHONE_WH_002",
+        "synthetic": true
+      }
+    ]
+  }
+}

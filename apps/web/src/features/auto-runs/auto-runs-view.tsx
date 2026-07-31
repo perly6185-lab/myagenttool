@@ -12,6 +12,7 @@ import { reconcileFileLedger, displayPath } from "./file-ledger";
 import { cn } from "@/lib/cn";
 import { shortTime, type Tone } from "@/lib/readable-labels";
 import { useAppTranslation } from "@/lib/i18n/use-app-translation";
+import { installExecutionUiTranslations } from "@/lib/i18n/execution-ui-resources";
 import { AutoRunReadinessCard } from "./auto-run-readiness-card";
 import { AutoRunOnboardingCard } from "./auto-run-onboarding-card";
 import { ReportView } from "./report-view";
@@ -27,6 +28,9 @@ import { RunTranscriptSection, isTerminalRunStatus } from "@/features/invocation
 import type { InvocationEventSnapshot, DeploymentSnapshot } from "@/lib/console-state";
 import { useVisibleInterval } from "@/hooks/use-visible-interval";
 import { InvocationDispatchHealth } from "@/features/devices/invocation-dispatch-health";
+import { autoRunApi } from "./auto-run-api";
+
+installExecutionUiTranslations();
 
 interface AutoRunLink {
   type: "issue" | "pr";
@@ -37,6 +41,7 @@ interface AutoRunLink {
 export interface AutoRunRecord {
   id: string;
   status: string;
+  agentId?: string | null;
   terminalId?: string | null;
   projectId?: string | null;
   link?: AutoRunLink | null;
@@ -49,10 +54,31 @@ export interface AutoRunRecord {
   failoverAttempts?: number;
   failoverHistory?: FailoverTransition[] | null;
   failoverOutcome?: FailoverOutcome | null;
+  executionStage?: "analysis" | "implementation" | "verification" | string | null;
+  timeoutRecoveryAttempts?: number;
+  executionBudget?: {
+    turnTimeoutSeconds?: number;
+    totalBudgetSeconds?: number;
+    elapsedSeconds?: number;
+    noProgressStreak?: number;
+  } | null;
+  capacityRetry?: {
+    status?: string;
+    attempt?: number;
+    maxAttempts?: number;
+    retryAt?: string | null;
+    lastError?: string | null;
+  } | null;
   mergeRisk?: { level: "low" | "medium" | "high"; reasons: string[] } | null;
   prNumber?: number | null;
   prUrl?: string | null;
-  verification?: { passed: boolean; verified: boolean; summary?: string | null } | null;
+  verification?: {
+    passed: boolean;
+    verified: boolean;
+    summary?: string | null;
+    commands?: string[];
+    verifiedAt?: string | null;
+  } | null;
   childIssues?: { number: number; url?: string | null; title?: string | null }[] | null;
   judgment?: { solved: boolean | null; confidence: number | null; summary?: string | null; gaps?: string[] } | null;
   report?: string | null;
@@ -199,9 +225,9 @@ function RoutingFeedback({ run, onSaved }: { run: AutoRunRecord; onSaved: () => 
 }
 
 function statusTone(status: string): Tone {
-  if (status === "pr_open" || status === "report_posted") return "success";
+  if (status === "done" || status === "pr_open" || status === "report_posted") return "success";
   if (status === "failed") return "danger";
-  if (status === "blocked" || status === "awaiting_approval" || status === "needs_input") return "warning";
+  if (status === "blocked" || status === "waiting_capacity" || status === "awaiting_approval" || status === "needs_input") return "warning";
   if (status === "cancelled") return "neutral";
   return "running";
 }
@@ -218,6 +244,7 @@ const STAGES: { key: string; label: string }[] = [
 const STAGE_INDEX: Record<string, number> = {
   materializing: 0,
   running: 1,
+  waiting_capacity: 1,
   awaiting_approval: 1,
   verifying: 2,
   publishing: 3,
@@ -571,17 +598,29 @@ function FailoverTrace({ run }: { run: AutoRunRecord }) {
 // receives them in the state snapshot, so we filter + order them here (oldest→newest)
 // and reuse the invocations EventTimeline. Hidden when a run has no events (evicted
 // from the bounded ring buffer, or none yet).
+export function eventsForRun(
+  events: InvocationEventSnapshot[],
+  runId: string,
+  invocationId?: string | null,
+) {
+  return events
+    .filter((event) => event.data?.autoRunId === runId || Boolean(invocationId && event.invocationId === invocationId))
+    .slice()
+    .sort((a, b) => (a.createdAt < b.createdAt ? -1 : a.createdAt > b.createdAt ? 1 : 0));
+}
+
 function RunTimeline({ runId, invocationId, terminal, events }: { runId: string; invocationId?: string | null; terminal?: boolean; events: InvocationEventSnapshot[] }) {
   const [open, setOpen] = useState(false);
   const runEvents = useMemo(
-    () =>
-      events
-        .filter((e) => e.data?.autoRunId === runId)
-        .slice()
-        .sort((a, b) => (a.createdAt < b.createdAt ? -1 : a.createdAt > b.createdAt ? 1 : 0)),
-    [events, runId],
+    () => eventsForRun(events, runId, invocationId),
+    [events, invocationId, runId],
   );
   if (runEvents.length === 0) return null;
+  const latest = runEvents.at(-1)!;
+  const latestAgeSeconds = Math.max(0, Math.floor((Date.now() - Date.parse(latest.createdAt)) / 1_000));
+  const latestAge = latestAgeSeconds < 60
+    ? `${latestAgeSeconds}s`
+    : `${Math.floor(latestAgeSeconds / 60)}m`;
   return (
     <div className="flex w-full flex-col gap-1.5">
       <button
@@ -589,7 +628,11 @@ function RunTimeline({ runId, invocationId, terminal, events }: { runId: string;
         onClick={() => setOpen((o) => !o)}
         className="flex items-center gap-1 self-start text-xs text-muted-foreground hover:text-foreground"
       >
-        <History className="size-3" /> {open ? "Hide timeline" : `Timeline (${runEvents.length})`}
+        <History className="size-3" />
+        {open ? "收起实时过程" : `实时过程 (${runEvents.length})`}
+        <span className={cn("ml-1", latestAgeSeconds <= 120 ? "text-emerald-600 dark:text-emerald-400" : "text-amber-600 dark:text-amber-400")}>
+          · 最近活动 {latestAge} 前
+        </span>
       </button>
       {open ? (
         <div className="space-y-2 rounded-md border border-border bg-muted/20 p-3">
@@ -625,18 +668,23 @@ export function runLane(run: AutoRunRecord): LaneKey {
 
 export function localQueueSnapshot(runs: AutoRunRecord[]) {
   const running = runs.filter((run) => ["running", "verifying", "publishing"].includes(run.status));
-  const next = runs.find((run) => run.status === "materializing") ?? null;
+  const queued = runs.filter((run) => ["materializing", "waiting_capacity"].includes(run.status));
+  const next = queued[0] ?? null;
   const waiting = runs.filter((run) =>
     ["awaiting_approval", "needs_input", "blocked", "failed"].includes(run.status));
-  return { running, next, waiting, attentionCount: waiting.length };
+  return { running, queued, next, waiting, attentionCount: waiting.length };
 }
-function RunChip({ run }: { run: AutoRunRecord }) {
+function RunChip({ run, onOpen }: { run: AutoRunRecord; onOpen: (runId: string) => void }) {
   const { t } = useAppTranslation();
   const label = run.link ? `#${run.link.number} ${run.link.title}` : run.id;
   return (
-    <div className="flex flex-col gap-1 rounded-md border border-border bg-card p-2 text-xs">
+    <button
+      type="button"
+      onClick={() => onOpen(run.id)}
+      className="flex flex-col gap-1 rounded-md border border-border bg-card p-2 text-left text-xs transition-colors hover:border-primary/50 hover:bg-muted/40"
+    >
       <div className="flex items-center gap-1.5">
-        <Badge tone={statusTone(run.status)}>{t(`autoRuns.status.${run.status}` as never, { defaultValue: run.status })}</Badge>
+        <Badge tone={statusTone(run.status)}>{run.status === "done" ? t("executionUi.done") : t(`autoRuns.status.${run.status}` as never, { defaultValue: run.status })}</Badge>
         {(run.failoverAttempts ?? 0) > 0 ? <Badge tone="warning">failover {run.failoverAttempts}</Badge> : null}
         {run.prUrl ? (
           <a href={run.prUrl} target="_blank" rel="noreferrer" className="inline-flex items-center gap-0.5 text-primary hover:underline">
@@ -651,10 +699,10 @@ function RunChip({ run }: { run: AutoRunRecord }) {
       </div>
       <span className="truncate font-medium text-foreground" title={label}>{label}</span>
       {run.decision ? <span className="text-muted-foreground">{run.decision.path}</span> : null}
-    </div>
+    </button>
   );
 }
-function RunBoard({ runs }: { runs: AutoRunRecord[] }) {
+function RunBoard({ runs, onOpen }: { runs: AutoRunRecord[]; onOpen: (runId: string) => void }) {
   const byLane = useMemo(() => {
     const m: Record<LaneKey, AutoRunRecord[]> = { attention: [], needs_you: [], running: [], pr_open: [], done: [] };
     for (const run of runs) m[runLane(run)].push(run);
@@ -669,7 +717,7 @@ function RunBoard({ runs }: { runs: AutoRunRecord[] }) {
             <span className="rounded bg-muted px-1.5 tabular-nums">{byLane[lane.key].length}</span>
           </div>
           <div className="flex flex-col gap-1.5">
-            {byLane[lane.key].map((run) => <RunChip key={run.id} run={run} />)}
+            {byLane[lane.key].map((run) => <RunChip key={run.id} run={run} onOpen={onOpen} />)}
             {byLane[lane.key].length === 0 ? <span className="px-1 py-2 text-[11px] text-muted-foreground/40">—</span> : null}
           </div>
         </div>
@@ -937,6 +985,10 @@ export function AutoRunsView() {
   const [error, setError] = useState<string | null>(null);
   const [viewMode, setViewMode] = useState<"list" | "board">("list");
   const [focusedRunId, setFocusedRunId] = useState<string | null>(null);
+  const [actionRunId, setActionRunId] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
+  const [runQuery, setRunQuery] = useState("");
+  const [statusFilter, setStatusFilter] = useState("all");
 
   const load = useCallback(async (refresh = false, quiet = false) => {
     if (!quiet) setLoading(true);
@@ -986,6 +1038,59 @@ export function AutoRunsView() {
 
   const rate = summary?.successRate;
   const queue = useMemo(() => localQueueSnapshot(runs), [runs]);
+  const visibleRuns = useMemo(() => runs.filter((run) => {
+    if (statusFilter !== "all" && run.status !== statusFilter) return false;
+    const haystack = [
+      run.id,
+      run.link?.title,
+      run.link?.number,
+      run.agentId,
+      run.branchName,
+    ].filter(Boolean).join(" ").toLowerCase();
+    return !runQuery.trim() || haystack.includes(runQuery.trim().toLowerCase());
+  }), [runQuery, runs, statusFilter]);
+  const attemptMetaById = useMemo(() => {
+    const groups = new Map<string, AutoRunRecord[]>();
+    for (const run of runs) {
+      const key = run.link
+        ? `${run.projectId ?? ""}:${run.link.type}:${run.link.number}`
+        : run.id;
+      groups.set(key, [...(groups.get(key) ?? []), run]);
+    }
+    const result = new Map<string, { attempt: number; total: number }>();
+    for (const rows of groups.values()) {
+      rows
+        .slice()
+        .sort((a, b) => Date.parse(a.createdAt ?? "") - Date.parse(b.createdAt ?? ""))
+        .forEach((run, index) => result.set(run.id, { attempt: index + 1, total: rows.length }));
+    }
+    return result;
+  }, [runs]);
+  const runCenterRows = useMemo(() => {
+    const ids = new Set<string>();
+    return [...queue.running, ...queue.queued, ...queue.waiting]
+      .filter((run) => !ids.has(run.id) && Boolean(ids.add(run.id)))
+      .slice(0, 6);
+  }, [queue]);
+  const openRunFromBoard = (runId: string) => {
+    setViewMode("list");
+    setFocusedRunId(runId);
+    requestAnimationFrame(() => {
+      document.getElementById(`auto-run-${runId}`)?.scrollIntoView({ behavior: "smooth", block: "center" });
+    });
+  };
+  const performRunAction = async (runId: string, action: () => Promise<unknown>) => {
+    setActionRunId(runId);
+    setActionError(null);
+    try {
+      await action();
+      await load(false, true);
+    } catch (caught) {
+      setActionError(caught instanceof Error ? caught.message : t("executionUi.actionFailed"));
+    } finally {
+      setActionRunId(null);
+    }
+  };
 
   return (
     <div className="flex flex-col gap-4">
@@ -1025,15 +1130,66 @@ export function AutoRunsView() {
 
       <section aria-label={t("devicesPage.dispatchQueue")} className="grid gap-3 sm:grid-cols-3">
         <StatTile label={t("autoRuns.status.running")} value={String(queue.running.length)} hint={queue.running[0]?.link?.title ?? t("workBoard.none")} />
-        <StatTile label={t("workBoard.next")} value={queue.next ? "1" : "—"} hint={queue.next?.link?.title ?? t("devicesPage.queueClear")} />
+        <StatTile label={t("executionUi.queueNext")} value={queue.next ? String(queue.queued.length) : "—"} hint={queue.next?.link?.title ?? t("devicesPage.queueClear")} />
         <StatTile
           label={t("devicesPage.whyWaiting")}
           value={String(queue.attentionCount)}
           hint={queue.waiting[0]
-            ? t(`runLabels.resultSummary.${queue.waiting[0].status === "awaiting_approval" ? "waiting_for_local_approval" : queue.waiting[0].status === "failed" ? "failed" : "default"}` as never)
+            ? queue.waiting[0].error
+              ?? t(`runLabels.resultSummary.${queue.waiting[0].status === "awaiting_approval" ? "waiting_for_local_approval" : queue.waiting[0].status === "failed" ? "failed" : "default"}` as never)
             : t("workBoard.none")}
         />
       </section>
+      {runCenterRows.length ? (
+        <section className="rounded-lg border border-border bg-card p-3" aria-label={t("executionUi.runCenter")}>
+          <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+            <div>
+              <h2 className="text-sm font-semibold">{t("executionUi.runCenter")}</h2>
+              <p className="text-xs text-muted-foreground">
+                {t("executionUi.runCenterSummary", {
+                  running: queue.running.length,
+                  queued: queue.queued.length,
+                  attention: queue.attentionCount,
+                })}
+              </p>
+            </div>
+          </div>
+          <div className="grid gap-2 md:grid-cols-2">
+            {runCenterRows.map((run) => {
+              const latestEvent = eventsForRun(consoleState?.events ?? [], run.id, run.invocationId).at(-1);
+              const ageSeconds = latestEvent
+                ? Math.max(0, Math.floor((Date.now() - Date.parse(latestEvent.createdAt)) / 1_000))
+                : null;
+              return (
+                <button
+                  key={`center:${run.id}`}
+                  type="button"
+                  onClick={() => openRunFromBoard(run.id)}
+                  className="flex min-w-0 items-center gap-2 rounded-md border border-border p-2 text-left hover:border-primary/50 hover:bg-muted/40"
+                  title={run.error ?? latestEvent?.message ?? undefined}
+                >
+                  <Badge tone={statusTone(run.status)}>
+                    {run.status === "done" ? t("executionUi.done") : t(`autoRuns.status.${run.status}` as never, { defaultValue: run.status })}
+                  </Badge>
+                  <span className="min-w-0 flex-1 truncate text-xs font-medium">
+                    {run.link ? `#${run.link.number} ${run.link.title}` : run.id}
+                  </span>
+                  <span className={cn(
+                    "shrink-0 text-[10px]",
+                    ageSeconds != null && ageSeconds <= 120 ? "text-emerald-600 dark:text-emerald-400" : "text-muted-foreground",
+                  )}>
+                    {ageSeconds == null
+                      ? t("executionUi.noActivity")
+                      : ageSeconds < 60
+                        ? t("executionUi.secondsAgo", { count: ageSeconds })
+                        : t("taskCockpit.minutesAgo", { count: Math.floor(ageSeconds / 60) })}
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+        </section>
+      ) : null}
       <InvocationDispatchHealth />
 
       <AutoRunOnboardingCard projectId={consoleState?.currentProjectId ?? null} />
@@ -1233,6 +1389,23 @@ export function AutoRunsView() {
       ) : null}
 
       {error ? <p className="text-sm text-red-600 dark:text-red-400">{error}</p> : null}
+      {actionError ? <p role="alert" className="text-sm text-red-600 dark:text-red-400">{actionError}</p> : null}
+      <div className="flex flex-wrap items-center gap-2">
+        <Input
+          value={runQuery}
+          onChange={(event) => setRunQuery(event.target.value)}
+          placeholder={t("executionUi.searchRuns")}
+          className="h-8 min-w-56 flex-1 text-xs"
+        />
+        <Select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)} className="h-8 w-auto text-xs">
+          <option value="all">{t("executionUi.allStatuses")}</option>
+          {[...new Set(runs.map((run) => run.status))].map((status) => (
+            <option key={status} value={status}>
+              {status === "done" ? t("executionUi.done") : t(`autoRuns.status.${status}` as never, { defaultValue: status })}
+            </option>
+          ))}
+        </Select>
+      </div>
 
       {runs.length === 0 && !loading ? (
         <EmptyState
@@ -1240,16 +1413,21 @@ export function AutoRunsView() {
           hint={t("autoRuns.emptyHint")}
         />
       ) : viewMode === "board" ? (
-        <RunBoard runs={runs} />
+        <RunBoard runs={visibleRuns} onOpen={openRunFromBoard} />
       ) : (
         <div className="flex flex-col gap-2">
-          {runs.map((run) => (
+          {visibleRuns.map((run) => (
             <Card key={run.id} id={`auto-run-${run.id}`}
               className={cn("scroll-mt-16 transition-shadow", focusedRunId === run.id && "ring-2 ring-primary shadow-lg")}>
               <CardContent className="flex flex-col gap-2 py-3">
                 <div className="flex items-center justify-between gap-3">
                   <div className="flex min-w-0 items-center gap-2">
-                    <Badge tone={statusTone(run.status)}>{t(`autoRuns.status.${run.status}` as never, { defaultValue: run.status })}</Badge>
+                    <Badge tone={statusTone(run.status)}>{run.status === "done" ? t("executionUi.done") : t(`autoRuns.status.${run.status}` as never, { defaultValue: run.status })}</Badge>
+                    {(attemptMetaById.get(run.id)?.total ?? 1) > 1 ? (
+                      <Badge tone="neutral">
+                        {t("executionUi.attempt", attemptMetaById.get(run.id))}
+                      </Badge>
+                    ) : null}
                     {run.promptInjection?.suspicious ? (
                       <Badge tone="danger" title={t("autoRuns.injectionHint", { markers: run.promptInjection.markers.join(", ") })}>{t("autoRuns.injection")}</Badge>
                     ) : null}
@@ -1333,11 +1511,39 @@ export function AutoRunsView() {
                       <GitBranch className="size-3" /> {run.branchName}
                     </span>
                   ) : null}
+                  {run.executionStage ? (
+                    <span
+                      className="rounded bg-muted px-1.5 py-0.5"
+                      title={`Turn budget ${run.executionBudget?.turnTimeoutSeconds ?? "?"}s · total budget ${run.executionBudget?.totalBudgetSeconds ?? "?"}s · no-progress streak ${run.executionBudget?.noProgressStreak ?? 0}`}
+                    >
+                      {t("executionUi.stage")}: {run.executionStage === "analysis"
+                        ? t("executionUi.analysis")
+                        : run.executionStage === "implementation"
+                          ? t("executionUi.implementation")
+                          : run.executionStage === "verification"
+                            ? t("executionUi.verification")
+                            : run.executionStage}
+                      {(run.timeoutRecoveryAttempts ?? 0) > 0 ? ` · ${t("executionUi.continuation", { count: run.timeoutRecoveryAttempts ?? 0 })}` : ""}
+                      {Number.isFinite(run.executionBudget?.elapsedSeconds)
+                        ? ` · ${t("executionUi.elapsed", { seconds: run.executionBudget?.elapsedSeconds ?? 0 })}`
+                        : ""}
+                    </span>
+                  ) : null}
+                  {run.agentId ? <span>{t("executionUi.agent")}: {run.agentId}</span> : null}
+                  {run.capacityRetry?.status === "scheduled" ? (
+                    <span className="rounded bg-amber-500/10 px-1.5 py-0.5 text-amber-700 dark:text-amber-300" title={run.capacityRetry.lastError ?? undefined}>
+                      容量等待 · 自动重试 {run.capacityRetry.attempt ?? "?"}/{run.capacityRetry.maxAttempts ?? "?"}
+                      {run.capacityRetry.retryAt ? ` · ${new Date(run.capacityRetry.retryAt).toLocaleTimeString()}` : ""}
+                    </span>
+                  ) : null}
                   {run.verification ? (
                     <span className="inline-flex items-center gap-1">
                       <ShieldCheck className="size-3" />
                       {run.verification.verified ? (run.verification.passed ? "verified" : "check failed") : "unverified"}
                     </span>
+                  ) : null}
+                  {run.status === "done" && (!run.verification?.verified || !run.verification?.passed) ? (
+                    <Badge tone="warning">完成但未验证</Badge>
                   ) : null}
                   {run.judgment ? (
                     <span
@@ -1367,23 +1573,41 @@ export function AutoRunsView() {
                     <Button
                       variant="secondary"
                       size="sm"
-                      onClick={() => {
-                        void api.retryAutoRun(run.id).then(() => load()).catch(() => load());
-                      }}
+                      disabled={actionRunId === run.id}
+                      onClick={() => void performRunAction(run.id, () => api.retryAutoRun(run.id))}
                       title={t("autoRuns.retryHint")}
                     >
-                      <RefreshCw className="mr-1 size-3" /> {t("autoRuns.retry")}
+                      <RefreshCw className={cn("mr-1 size-3", actionRunId === run.id && "animate-spin")} /> {t("autoRuns.retry")}
                     </Button>
                   </div>
                 ) : null}
-                {["materializing", "running", "verifying", "publishing"].includes(run.status) ? (
+                {(
+                  (["done", "pr_open"].includes(run.status) && !run.verification?.verified)
+                  || (run.status === "blocked" && run.verification?.verified)
+                  || (run.status === "cancelled" && Boolean(run.verification))
+                ) ? (
                   <div>
                     <Button
                       variant="secondary"
                       size="sm"
+                      disabled={actionRunId === run.id}
+                      onClick={() => void performRunAction(run.id, () => autoRunApi.reverify(run.id))}
+                      title="Run the platform-owned verification checks in this task's worktree."
+                    >
+                      <ShieldCheck className={cn("mr-1 size-3", actionRunId === run.id && "animate-pulse")} />
+                      重新验证
+                    </Button>
+                  </div>
+                ) : null}
+                {["materializing", "running", "waiting_capacity", "verifying", "publishing"].includes(run.status) ? (
+                  <div>
+                    <Button
+                      variant="secondary"
+                      size="sm"
+                      disabled={actionRunId === run.id}
                       onClick={() => {
                         if (!window.confirm("Cancel this run? The running agent is stopped and the run is marked cancelled (its worktree is kept).")) return;
-                        void api.cancelAutoRun(run.id).then(() => load()).catch(() => load());
+                        void performRunAction(run.id, () => api.cancelAutoRun(run.id));
                       }}
                       title={t("autoRuns.cancelHint")}
                     >
@@ -1405,7 +1629,8 @@ export function AutoRunsView() {
                           size="sm"
                           variant="primary"
                           className="h-6 px-2 text-xs"
-                          onClick={() => void api.approveApproval(appr.id).then(() => load()).catch(() => load())}
+                          disabled={actionRunId === run.id}
+                          onClick={() => void performRunAction(run.id, () => api.approveApproval(appr.id))}
                           title={t("autoRuns.approveHint")}
                         >
                           {t("autoRuns.approve")}
@@ -1414,9 +1639,10 @@ export function AutoRunsView() {
                           size="sm"
                           variant="secondary"
                           className="h-6 px-2 text-xs"
+                          disabled={actionRunId === run.id}
                           onClick={() => {
                             if (!window.confirm("Deny this run? The agent will be blocked.")) return;
-                            void api.denyApproval(appr.id).then(() => load()).catch(() => load());
+                            void performRunAction(run.id, () => api.denyApproval(appr.id));
                           }}
                           title={t("autoRuns.denyHint")}
                         >

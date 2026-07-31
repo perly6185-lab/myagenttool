@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
@@ -38,6 +39,18 @@ import { collectApplicationBinaryReadiness } from "./application-binary-readines
 import { collectApplicationCredentialReadiness } from "./application-credential-readiness.mjs";
 import { managedRuntimeBinDirectory, runApprovedApplicationInstall } from "./application-installer.mjs";
 import { registerBridgeWithRetry } from "./bridge-registration-retry.mjs";
+import { startProcessTreeGuardian } from "./process-tree-guardian.mjs";
+import {
+  applyClaudeCliResumeArgs,
+  claudePermissionRequestSummary,
+  claudeSdkCompletionResult,
+  claudeSdkWorkspaceBoundary,
+  claudeSdkExecutionPreview,
+  createClaudeSdkExecutionPlan,
+  isClaudeSdkRuntime,
+  runClaudeSdkQuery,
+  validateClaudeSdkExecutionPlan,
+} from "./claude-sdk-runtime.mjs";
 import {
   createLocalExecutionPolicyManifest,
   localExecutionGate,
@@ -95,13 +108,27 @@ const binaryReadinessIntervalMs = Number(process.env.BRIDGE_BINARY_READINESS_INT
 // never opens it. Unset means "this device reports holding no credentials".
 const credentialDir = process.env.BRIDGE_CREDENTIAL_DIR ?? null;
 const demoAgentPath = resolve(__dirname, "demo-agent.mjs");
-const codexFixtureAgentPath = resolve(__dirname, "codex-fixture-agent.mjs");
+const bundledCodexFixtureAgentPath = resolve(__dirname, "codex-fixture-agent.mjs");
+// Test-only override: it is honored exclusively when the operator explicitly
+// selects the fixture runtime. Keeping the resolved path in the local policy
+// manifest means an instrumented fixture is checked by the same exact-path gate
+// as the bundled fixture rather than weakening Codex command allowlisting.
+const codexFixtureAgentPath = process.env.MYAGENTTOOL_CODEX_COMMAND === "fixture"
+  && String(process.env.MYAGENTTOOL_CODEX_FIXTURE_PATH ?? "").trim()
+  ? resolve(String(process.env.MYAGENTTOOL_CODEX_FIXTURE_PATH).trim())
+  : bundledCodexFixtureAgentPath;
 const remoteRelayPath = resolve(__dirname, "remote-relay.mjs");
 const localExecutionPolicyManifest = withBundledAgentProbes(
   createLocalExecutionPolicyManifest({ demoAgentPath, codexFixtureAgentPath }),
 );
 const bridgeTokenPath = resolve(process.env.MYAGENTTOOL_BRIDGE_TOKEN_PATH ?? ".myagenttool/bridge-token.json");
+const bridgeSessionPath = resolve(dirname(bridgeTokenPath), "bridge-session.json");
 let bridgeToken = String(process.env.MYAGENTTOOL_BRIDGE_TOKEN ?? "").trim() || loadBridgeToken();
+// One id per desktop PROCESS, not per credential or request. The server uses it
+// to distinguish a reconnect from a replacement process and reclaim children
+// that cannot possibly still report through the new bridge.
+const bridgeSessionId = randomUUID();
+let bridgeRegistered = false;
 let codexAppServerClient = null;
 let codexAppServerClientKey = null;
 
@@ -380,10 +407,16 @@ let polling = false;
 let auxBusy = false;
 let terminalBusy = false;
 let stopped = false;
+let stopPromise = null;
+let invocationPool = null;
+let cancellationWatcher = null;
+let timer = null;
+let terminalTimer = null;
+let binaryReadinessTimer = null;
 const terminalSessions = new Map();
 
-process.on("SIGINT", stop);
-process.on("SIGTERM", stop);
+process.on("SIGINT", () => void stop("signal"));
+process.on("SIGTERM", () => void stop("signal"));
 
 // Backstop for stray async work (cancel/health pollers, timers) whose rejections
 // aren't caught locally: a transient network error should log and let the bridge
@@ -399,6 +432,7 @@ try {
   const runtimeReadiness = await collectApplicationBinaryReadiness(localExecutionPolicyManifest);
   registration = await registerBridgeWithRetry(() => request("POST", "/api/bridge/register", {
       bridgeVersion: "0.0.0",
+      bridgeSessionId,
       capabilities: ["demo_cli_agent", "managed_terminal_pty", "remote_ssh_relay"],
       runtimeReadiness,
       applicationBinaryReadiness: runtimeReadiness,
@@ -427,6 +461,8 @@ if (registration?.bridgeToken) {
   bridgeToken = registration.bridgeToken;
   saveBridgeToken(bridgeToken, registration.bridgeCredential);
 }
+publishLocalBridgeSession();
+bridgeRegistered = true;
 console.log(`[desktop] registered with ${serverUrl}`);
 
 // Cross-worktree concurrency: honor the server's authoritative cap (echoed on
@@ -440,12 +476,12 @@ let bridgeConcurrency = resolveBridgeConcurrency({
   envValue: process.env.BRIDGE_MAX_CONCURRENT,
 });
 console.log(`[desktop] invocation concurrency: ${bridgeConcurrency}`);
-const invocationPool = createInvocationPool({
+invocationPool = createInvocationPool({
   // A getter, not a number: the pool re-reads it every fill(), so a refreshed
   // cap takes effect on the next tick.
   cap: () => bridgeConcurrency,
   claim: () => request("GET", "/api/bridge/next"),
-  run: (work) => runInvocation(work),
+  run: (work, lifecycle) => runInvocation(work, { shutdownSignal: lifecycle.signal }),
   // runInvocation self-reports every terminal outcome; a reject here is an
   // unexpected bug in the runner itself — log it and free the slot (the pool's
   // finally already decremented), never crash the poll loop.
@@ -456,7 +492,7 @@ const invocationPool = createInvocationPool({
 // watches its own id; the watcher long-polls GET /api/bridge/cancellations?wait=1
 // once for the whole device instead of one cancel-status GET per run. Started
 // once, here.
-const cancellationWatcher = createCancellationWatcher({
+cancellationWatcher = createCancellationWatcher({
   request: (method, path) => request(method, path),
   onError: (error) => logPollError("cancellation", error),
 }).start();
@@ -499,10 +535,10 @@ async function refreshApplicationBinaryReadiness() {
 }
 
 guarded(poll, "bridge")();
-const timer = setInterval(guarded(poll, "bridge"), pollIntervalMs);
+timer = setInterval(guarded(poll, "bridge"), pollIntervalMs);
 guarded(pollTerminal, "terminal")();
-const terminalTimer = setInterval(guarded(pollTerminal, "terminal"), terminalPollIntervalMs);
-const binaryReadinessTimer = setInterval(guarded(refreshApplicationBinaryReadiness, "binary readiness"), binaryReadinessIntervalMs);
+terminalTimer = setInterval(guarded(pollTerminal, "terminal"), terminalPollIntervalMs);
+binaryReadinessTimer = setInterval(guarded(refreshApplicationBinaryReadiness, "binary readiness"), binaryReadinessIntervalMs);
 
 // Aux (non-invocation) work: still single-flight, but decoupled from
 // invocations so a long run no longer starves health/discovery. #1251: one
@@ -913,7 +949,7 @@ function summarizeTerminalOutput(output) {
   return clean ? `Terminal output: ${clean.slice(0, 180)}` : "Terminal output received.";
 }
 
-async function runInvocation(work) {
+async function runInvocation(work, { shutdownSignal = null } = {}) {
   const invocationId = work.invocationId;
   const task = String(work.input?.task ?? "");
   const adapter = work.adapter;
@@ -943,6 +979,7 @@ async function runInvocation(work) {
   let timeoutCause = null;
   let commandTimeoutEvidence = null;
   let spawnError = null;
+  let bridgeStopped = false;
   // #1250: flipped true the instant the child closes and the main flow takes
   // over the terminal outcome. The detached cancel/timeout pollers check it
   // (before AND after their awaits) so they stop posting events once the run is
@@ -974,7 +1011,31 @@ async function runInvocation(work) {
     return;
   }
 
+  if (isClaudeSdkRuntime(adapter)) {
+    await runClaudeSdkBridgeInvocation(work, {
+      adapter,
+      runtimeName,
+      roundState,
+      shutdownSignal,
+    });
+    return;
+  }
+
   const spawnPlan = createCliSpawnPlan(adapter, { invocationId, task, options: work.options ?? {} });
+  if (isClaudeCliCommand(adapter.command)) {
+    await request("POST", "/api/bridge/events", {
+      invocationId,
+      type: "claude_transport_selected",
+      level: "info",
+      message: "Claude CLI rollback transport selected.",
+      data: {
+        runtime: "cli",
+        cwd: spawnPlan.cwd,
+        sessionMode: work.options?.claudeResumeSessionId ? "resume_exact" : "new",
+        resuming: Boolean(work.options?.claudeResumeSessionId),
+      },
+    });
+  }
   const preview = await executionPreview(adapter, spawnPlan, task);
   await sendCodexHookEvent(invocationId, adapter, {
     eventName: "SessionStart",
@@ -1073,6 +1134,7 @@ async function runInvocation(work) {
       spawnPlan,
       runtimeName,
       roundState,
+      shutdownSignal,
     });
     return;
   }
@@ -1093,6 +1155,7 @@ async function runInvocation(work) {
       windowsHide: true,
       stdio: ["ignore", "pipe", "pipe"]
     });
+    startProcessTreeGuardian(child);
   } catch (error) {
     await sendCodexHookEvent(invocationId, adapter, {
       eventName: "Stop",
@@ -1107,7 +1170,7 @@ async function runInvocation(work) {
     return;
   }
 
-  const timeoutMs = Number(adapter.timeoutSeconds ?? work.options?.timeoutSeconds ?? 30) * 1000;
+  const timeoutMs = Number(work.options?.timeoutSeconds ?? adapter.timeoutSeconds ?? 30) * 1000;
   const commandTimeoutMs = resolveCodexCommandTimeoutMs({
     configuredSeconds:
       work.options?.commandIdleTimeoutSeconds
@@ -1196,6 +1259,20 @@ async function runInvocation(work) {
       tolerateLateEvent("cancel", invocationId, error);
     }
   });
+  const stopForBridgeShutdown = async () => {
+    if (settled || timedOut || cancelled || bridgeStopped) return;
+    bridgeStopped = true;
+    try {
+      cancelResult = await terminateProcessTree(child);
+    } catch (error) {
+      cancelResult = {
+        ok: false,
+        message: error instanceof Error ? error.message : String(error),
+      };
+    }
+  };
+  shutdownSignal?.addEventListener("abort", stopForBridgeShutdown, { once: true });
+  if (shutdownSignal?.aborted) void stopForBridgeShutdown();
 
   // #1228: line handling is serialized and drained before any outcome is
   // reported. The jsonl handlers await event posts BEFORE returning the
@@ -1236,6 +1313,7 @@ async function runInvocation(work) {
   // in flight bails on its `settled` guard instead of posting after complete.
   settled = true;
   stopWatchingCancel();
+  shutdownSignal?.removeEventListener("abort", stopForBridgeShutdown);
   clearTimeout(timeoutTimer);
   commandWatchdog.dispose();
   // The temp patch file the apply runner read (materialized in governedApplyWrapperArgs)
@@ -1247,6 +1325,19 @@ async function runInvocation(work) {
   // settled and no agent line event can land after the terminal report below.
   await stdoutSink.flush();
   await stderrSink.flush();
+
+  if (bridgeStopped) {
+    await request("POST", "/api/bridge/complete", {
+      invocationId,
+      status: "failed",
+      summary: `${runtimeName} stopped because this Desktop Bridge process was retired.`,
+      result: {
+        ...(finalResult && typeof finalResult === "object" ? finalResult : {}),
+        errorCode: "transport_closed",
+      },
+    });
+    return;
+  }
 
   if (timedOut) {
     const forcedNote = cancelResult?.message ? ` ${cancelResult.message}` : "";
@@ -1334,6 +1425,262 @@ async function runInvocation(work) {
   });
 }
 
+async function runClaudeSdkBridgeInvocation(work, {
+  adapter,
+  runtimeName,
+  roundState,
+  shutdownSignal = null,
+}) {
+  const invocationId = work.invocationId;
+  const task = String(work.input?.task ?? "");
+  const workspaceBoundary = claudeSdkWorkspaceBoundary({
+    projectPath: work.project?.path ?? work.options?.metadata?.projectPath,
+    worktreePath: work.options?.metadata?.worktreePath,
+  });
+  const cwd = workspaceBoundary.cwd;
+  const baseEnv = buildEnv(withMinimizedAgentEnv(adapter));
+  const env = isAbsolute(cwd)
+    ? withGitSafeDirectoryEnv(baseEnv, { root: cwd })
+    : baseEnv;
+  const configuredExecutable = String(
+    process.env.MYAGENTTOOL_CLAUDE_SDK_EXECUTABLE ?? "",
+  ).trim();
+  const timeoutMs = Number(work.options?.timeoutSeconds ?? adapter.timeoutSeconds ?? 30) * 1000;
+  const approvedRoots = workspaceBoundary.approvedRoots;
+  const plan = createClaudeSdkExecutionPlan({
+    cwd,
+    permissionMode:
+      work.options?.metadata?.permissionMode
+      ?? adapter.permissionMode
+      ?? "plan",
+    env: {
+      ...env,
+      CLAUDE_AGENT_SDK_CLIENT_APP: "myagenttool-desktop/0.0.0",
+    },
+    executablePath: configuredExecutable && isAbsolute(configuredExecutable)
+      ? configuredExecutable
+      : null,
+    timeoutMs,
+    approvedRoots,
+    resumeSessionId:
+      work.options?.claudeResumeSessionId
+      ?? work.options?.metadata?.claudeResumeSessionId
+      ?? null,
+  });
+  const gate = validateClaudeSdkExecutionPlan(plan, { approvedRoots });
+  if (!gate.allowed) {
+    await request("POST", "/api/bridge/events", {
+      invocationId,
+      type: "local_execution_refused",
+      level: "error",
+      message: gate.reason,
+      data: gate.evidence,
+    });
+    await request("POST", "/api/bridge/complete", {
+      invocationId,
+      status: "failed",
+      summary: gate.reason,
+      result: {
+        touchedUserFiles: false,
+        policyDecision: "local_execution_refused",
+        localExecutionGate: gate.evidence,
+        errorCode: gate.code ?? "policy_blocked",
+      },
+    });
+    return;
+  }
+
+  const preview = claudeSdkExecutionPreview(plan);
+  await request("POST", "/api/bridge/events", {
+    invocationId,
+    type: "claude_transport_selected",
+    level: "info",
+    message: `Claude Agent SDK transport selected in ${plan.permissionMode} mode.`,
+    data: preview,
+  });
+  await request("POST", "/api/bridge/events", {
+    invocationId,
+    type: "execution_preview",
+    level: "info",
+    message: `Execution preview: ${preview.commandLine}`,
+    data: preview,
+  });
+
+  const abortController = new AbortController();
+  let cancelled = false;
+  let timedOut = false;
+  let settled = false;
+  let bridgeStopped = false;
+  let finalResult = null;
+  const stopForBridgeShutdown = () => {
+    if (settled || bridgeStopped) return;
+    bridgeStopped = true;
+    abortController.abort();
+  };
+  shutdownSignal?.addEventListener("abort", stopForBridgeShutdown, { once: true });
+  if (shutdownSignal?.aborted) stopForBridgeShutdown();
+
+  const timeoutTimer = setTimeout(async () => {
+    if (settled || cancelled || timedOut) return;
+    timedOut = true;
+    try {
+      await request("POST", "/api/bridge/events", {
+        invocationId,
+        type: "invocation_timed_out",
+        level: "warn",
+        message: `${runtimeName} Agent SDK query exceeded its configured timeout.`,
+      });
+    } catch (error) {
+      tolerateLateEvent("claude-sdk-timeout", invocationId, error);
+    } finally {
+      abortController.abort();
+    }
+  }, timeoutMs);
+
+  const stopWatchingCancel = cancellationWatcher.watch(invocationId, async () => {
+    if (settled || cancelled || timedOut) return;
+    cancelled = true;
+    try {
+      await request("POST", "/api/bridge/events", {
+        invocationId,
+        type: "cancel_dispatched",
+        level: "info",
+        message: "Desktop Bridge aborted the Claude Agent SDK query.",
+      });
+    } catch (error) {
+      tolerateLateEvent("claude-sdk-cancel", invocationId, error);
+    } finally {
+      abortController.abort();
+    }
+  });
+
+  let outcome = null;
+  let runtimeError = null;
+  try {
+    outcome = await runClaudeSdkQuery({
+      prompt: task,
+      plan,
+      abortController,
+      requestApproval: async (requestDetails) => {
+        const hook = await sendAgentHookEvent(invocationId, "claude", {
+          eventName: "PermissionRequest",
+          toolName: requestDetails.toolName,
+          summary: claudePermissionRequestSummary(requestDetails),
+          timeoutSeconds: process.env.MYAGENTTOOL_CLAUDE_APPROVAL_TIMEOUT_SECONDS,
+        });
+        return waitForAgentApprovalDecision(hook, {
+          signal: requestDetails.signal,
+          timeoutMs: 5 * 60 * 1000,
+        });
+      },
+      onHook: async (hook) => {
+        if (hook.mayHaveTouchedUserFiles && roundState) {
+          roundState.touchedUserFiles = true;
+        }
+        await sendAgentHookEvent(invocationId, "claude", {
+          eventName: hook.eventName,
+          toolName: hook.toolName,
+          summary: hook.reason,
+        });
+      },
+      onMessage: async (message) => {
+        const result = await handleClaudeJsonLine(
+          invocationId,
+          JSON.stringify(message),
+          roundState,
+          "claude_sdk",
+        );
+        if (result) finalResult = result;
+      },
+    });
+  } catch (error) {
+    runtimeError = error;
+  } finally {
+    settled = true;
+    shutdownSignal?.removeEventListener("abort", stopForBridgeShutdown);
+    clearTimeout(timeoutTimer);
+    stopWatchingCancel();
+  }
+
+  if (bridgeStopped) {
+    await request("POST", "/api/bridge/complete", {
+      invocationId,
+      status: "failed",
+      summary: `${runtimeName} Agent SDK query stopped because this Desktop Bridge process was retired.`,
+      result: claudeSdkCompletionResult(finalResult, roundState, {
+        errorCode: "transport_closed",
+      }),
+    });
+    return;
+  }
+
+  if (timedOut) {
+    await request("POST", "/api/bridge/complete", {
+      invocationId,
+      status: "timed_out",
+      summary: `${runtimeName} Agent SDK query exceeded its configured timeout.`,
+      result: claudeSdkCompletionResult(finalResult, roundState, {
+        errorCode: "execution_timeout",
+        timeoutKind: "invocation_total",
+      }),
+    });
+    return;
+  }
+
+  if (cancelled) {
+    await request("POST", "/api/bridge/complete", {
+      invocationId,
+      status: "cancelled",
+      summary: `${runtimeName} Agent SDK query was cancelled locally.`,
+      result: claudeSdkCompletionResult(finalResult, roundState),
+    });
+    return;
+  }
+
+  if (runtimeError) {
+    await request("POST", "/api/bridge/complete", {
+      invocationId,
+      status: "failed",
+      summary: `${runtimeName} Agent SDK failed: ${runtimeError instanceof Error ? runtimeError.message : String(runtimeError)}.`,
+      result: claudeSdkCompletionResult(finalResult, roundState, {
+        errorCode: "runtime_error",
+      }),
+    });
+    return;
+  }
+
+  const resultMessage = outcome?.resultMessage;
+  if (resultMessage?.subtype === "success") {
+    await request("POST", "/api/bridge/complete", {
+      invocationId,
+      status: "succeeded",
+      summary: finalResult?.summary ?? `${runtimeName} Agent SDK completed.`,
+      result: claudeSdkCompletionResult(finalResult, roundState, {
+        claudeSessionId: outcome.sessionId ?? null,
+        claudeSessionMode: preview.sessionMode,
+        runtime: "agent_sdk",
+      }),
+    });
+    return;
+  }
+
+  const errors = Array.isArray(resultMessage?.errors)
+    ? resultMessage.errors.map(String).filter(Boolean)
+    : [];
+  await request("POST", "/api/bridge/complete", {
+    invocationId,
+    status: "failed",
+    summary: errors[0] ?? `${runtimeName} Agent SDK ended without a successful result.`,
+    result: claudeSdkCompletionResult(finalResult, roundState, {
+      claudeSessionId: outcome?.sessionId ?? null,
+      claudeSessionMode: preview.sessionMode,
+      runtime: "agent_sdk",
+      errorCode: "runtime_error",
+      sdkResultSubtype: resultMessage?.subtype ?? null,
+    }),
+  });
+}
+
 // Protocol-client dispatch: the transports live in {mcp,a2a,container}-client
 // modules; this shared glue watches for cancellation (via the shared watcher),
 // forwards client events to the server, and completes the invocation with the
@@ -1356,9 +1703,10 @@ async function runCodexAppServerInvocation(work, {
   spawnPlan,
   runtimeName,
   roundState,
+  shutdownSignal = null,
 }) {
   const invocationId = work.invocationId;
-  const timeoutMs = Number(adapter.timeoutSeconds ?? work.options?.timeoutSeconds ?? 30) * 1000;
+  const timeoutMs = Number(work.options?.timeoutSeconds ?? adapter.timeoutSeconds ?? 30) * 1000;
   const commandTimeoutMs = resolveCodexCommandTimeoutMs({
     configuredSeconds:
       work.options?.commandIdleTimeoutSeconds
@@ -1387,6 +1735,13 @@ async function runCodexAppServerInvocation(work, {
   let cancelRequested = false;
   let finalResult = null;
   let settled = false;
+  const stopForBridgeShutdown = () => {
+    if (settled) return;
+    cancelRequested = true;
+    client.close();
+  };
+  shutdownSignal?.addEventListener("abort", stopForBridgeShutdown, { once: true });
+  if (shutdownSignal?.aborted) stopForBridgeShutdown();
   const stopWatchingCancel = cancellationWatcher.watch(invocationId, async () => {
     if (settled || cancelRequested) return;
     cancelRequested = true;
@@ -1448,8 +1803,35 @@ async function runCodexAppServerInvocation(work, {
         if (parsed) finalResult = parsed;
       },
     });
+  } catch (error) {
+    // Defense in depth: every acknowledged bridge invocation must converge on
+    // /api/bridge/complete even if a future client regression throws instead of
+    // returning a terminal outcome.
+    const summary = error instanceof Error ? error.message : String(error);
+    outcome = {
+      status: "failed",
+      summary,
+      result: {
+        transport: "app-server",
+        errorCode: /app-server (?:exited unexpectedly|stdin is not writable)|app-server transport closed/i.test(summary)
+          ? "transport_closed"
+          : "app_server_error",
+      },
+    };
+    try {
+      await request("POST", "/api/bridge/events", {
+        invocationId,
+        type: "codex_transport_failed",
+        level: "error",
+        message: `Codex app-server transport failed before returning a terminal outcome: ${summary}`,
+        data: { errorCode: outcome.result.errorCode },
+      });
+    } catch (eventError) {
+      tolerateLateEvent("app-server-terminal-fallback", invocationId, eventError);
+    }
   } finally {
     settled = true;
+    shutdownSignal?.removeEventListener("abort", stopForBridgeShutdown);
     stopWatchingCancel();
   }
 
@@ -1828,7 +2210,9 @@ function createCliSpawnPlan(adapter, payload) {
   const codexImageAttachments = isCodexCliCommand(adapter.command) ? prepareCodexImageAttachments(payload) : [];
   const argsTemplate = isCodexCliCommand(adapter.command)
     ? insertCodexImageArgs(codexArgsTemplate(adapter, payload), codexImageAttachments)
-    : codexArgsTemplate(adapter, payload);
+    : isClaudeCliCommand(adapter.command)
+      ? applyClaudeCliResumeArgs(codexArgsTemplate(adapter, payload), payload.options)
+      : codexArgsTemplate(adapter, payload);
   const codexContract = isCodexCliCommand(adapter.command)
     ? applyCodexWorktreeContract(
         applyCodexPermissionMode(renderArgs(argsTemplate, payloadJson, payload), payload),
@@ -2255,7 +2639,11 @@ function sharedCodexAppServerClient(plan) {
     codexAppServerClientKey = null;
   }
   if (!codexAppServerClient) {
-    codexAppServerClient = createCodexAppServerClient(plan);
+    codexAppServerClient = createCodexAppServerClient({
+      ...plan,
+      onSpawn: (child) => startProcessTreeGuardian(child),
+      terminateProcess: (child) => void terminateProcessTree(child),
+    });
     codexAppServerClientKey = key;
   }
   return codexAppServerClient;
@@ -2776,7 +3164,9 @@ function agentRuntimeName(agentName, adapter) {
   const selectedAgentName = typeof agentName === "string" ? agentName.trim() : "";
   if (selectedAgentName) return selectedAgentName;
   if (isCodexCliCommand(adapter?.command)) return "Codex CLI";
-  if (isClaudeCliCommand(adapter?.command)) return "Claude CLI";
+  if (isClaudeCliCommand(adapter?.command)) {
+    return isClaudeSdkRuntime(adapter) ? "Claude Agent SDK" : "Claude CLI";
+  }
   return "Demo CLI Agent";
 }
 
@@ -2803,7 +3193,13 @@ async function terminateProcessTree(child, { graceMs = 2000 } = {}) {
       if (exited) return { ok: true, message: "Windows process tree terminated." };
     }
     const forced = await taskkillTree(child.pid, true);
-    const alreadyExited = child.exitCode !== null || child.killed;
+    // Windows can reject taskkill for a process that is already in its exit
+    // path (notably a Node child under a constrained runner). Give that child a
+    // final bounded close window before declaring cancellation failed.
+    if (!forced.ok && child.exitCode === null) {
+      await awaitChildExit(child, graceMs);
+    }
+    const alreadyExited = child.exitCode !== null;
     return {
       ok: forced.ok || alreadyExited,
       forced: true,
@@ -3026,7 +3422,7 @@ async function sendCodexHookEvent(invocationId, adapter, event) {
   if (adapter?.outputFormat !== "codex_jsonl") {
     return null;
   }
-  return request("POST", "/api/codex/hooks", {
+  return request("POST", "/api/bridge/codex/hooks", {
     invocationId,
     eventName: event.eventName,
     toolName: event.toolName ?? null,
@@ -3036,13 +3432,41 @@ async function sendCodexHookEvent(invocationId, adapter, event) {
 }
 
 async function waitForCodexApprovalDecision(hookResult) {
+  return waitForAgentApprovalDecision(hookResult);
+}
+
+async function sendAgentHookEvent(invocationId, provider, event) {
+  return request("POST", "/api/bridge/agent/hooks", {
+    invocationId,
+    provider,
+    eventName: event.eventName,
+    toolName: event.toolName ?? null,
+    summary: event.summary ?? event.eventName,
+    timeoutSeconds: event.timeoutSeconds ?? null,
+  });
+}
+
+async function waitForAgentApprovalDecision(
+  hookResult,
+  { signal = null, timeoutMs = 5 * 60 * 1000 } = {},
+) {
   const requestId = hookResult?.brokerRequest?.id;
   if (!requestId) {
     return "not_required";
   }
-  const deadline = Date.now() + 5 * 60 * 1000;
+  const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
-    const response = await request("GET", `/api/codex/approval-broker/${encodeURIComponent(requestId)}`);
+    if (signal?.aborted) return "denied";
+    let response;
+    try {
+      response = await request("GET", `/api/bridge/agent/approval-broker/${encodeURIComponent(requestId)}`);
+    } catch {
+      // The control-plane server may briefly restart while a durable approval
+      // is pending. Keep polling until the broker deadline instead of dropping
+      // the executor coroutine and leaving a ghost "running" invocation.
+      await delay(250);
+      continue;
+    }
     const status = response?.approvalRequest?.status;
     if (status === "approved" || status === "denied" || status === "timed_out") {
       return status;
@@ -3072,7 +3496,7 @@ async function emitRoundEvents(invocationId, roundState, event, emitter) {
   }
 }
 
-async function handleClaudeJsonLine(invocationId, line, roundState = null) {
+async function handleClaudeJsonLine(invocationId, line, roundState = null, source = "claude_jsonl") {
   let event;
   try {
     event = JSON.parse(line);
@@ -3112,7 +3536,7 @@ async function handleClaudeJsonLine(invocationId, line, roundState = null) {
       level: event.type === "error" ? "warn" : "info",
       message,
       data: {
-        source: "claude_jsonl",
+        source,
         eventType: event.type ?? null,
         subtype: event.subtype ?? null,
         sessionId: event.session_id ?? event.sessionId ?? null,
@@ -3218,9 +3642,15 @@ async function handleCodexJsonLine(invocationId, line, roundState = null, comman
         commandSummary: codexCommandSummary(event),
         fileChangeSummary: codexFileChangeSummary(event),
         fileChangePath: codexFileChangePath(event),
+        fileChangePaths: codexFileChangePaths(event),
         fileChangeAction: codexFileChangeAction(event),
         diffPreview: codexDiffPreview(event),
-        changeRisk: codexChangeRisk(event)
+        changeRisk: codexChangeRisk(event),
+        fileAccess: codexFileChangePaths(event).map((path) => ({
+          tool: "CodexFileChange",
+          path,
+          mode: "write",
+        })),
       }
     });
   }
@@ -3261,7 +3691,7 @@ async function handleCodexJsonLine(invocationId, line, roundState = null, comman
 }
 
 function codexEventMessage(event) {
-  if (event.type === "thread.started") return `Codex thread started: ${event.thread_id ?? "unknown"}.`;
+  if (event.type === "thread.started") return "Codex thread started.";
   if (event.type === "turn.started") return "Codex turn started.";
   if (event.type === "turn.completed") return "Codex turn completed.";
   if (event.type === "turn.failed") return `Codex turn failed: ${event.error?.message ?? "unknown error"}.`;
@@ -3289,15 +3719,30 @@ function codexFileChangeSummary(event) {
   }
   const path = codexFileChangePath(event);
   const action = codexFileChangeAction(event);
-  return path ? `${action}: ${path}` : action;
+  const count = codexFileChangePaths(event).length;
+  return path ? `${action}: ${path}${count > 1 ? ` (+${count - 1} more)` : ""}` : action;
 }
 
 function codexFileChangePath(event) {
+  return codexFileChangePaths(event)[0] ?? null;
+}
+
+function codexFileChangePaths(event) {
   const item = event.item ?? {};
   if (!["file_change", "file_changes"].includes(item.type)) {
-    return null;
+    return [];
   }
-  return String(item.path ?? item.file ?? item.files?.[0]?.path ?? "").trim() || null;
+  const rows = Array.isArray(item.files)
+    ? item.files
+    : Array.isArray(item.changes)
+      ? item.changes
+      : [];
+  const paths = rows
+    .map((entry) => String(entry?.path ?? "").trim())
+    .filter(Boolean);
+  const direct = String(item.path ?? item.file ?? "").trim();
+  if (direct) paths.unshift(direct);
+  return [...new Set(paths)].slice(0, 200);
 }
 
 function codexFileChangeAction(event) {
@@ -3313,7 +3758,21 @@ function codexDiffPreview(event) {
   if (!["file_change", "file_changes"].includes(item.type)) {
     return null;
   }
-  const diff = String(item.diff ?? item.patch ?? item.diffPreview ?? item.summary ?? "").trim();
+  const rows = Array.isArray(item.files)
+    ? item.files
+    : Array.isArray(item.changes)
+      ? item.changes
+      : [];
+  const multiFileDiff = rows
+    .map((entry) => {
+      const diff = String(entry?.diff ?? entry?.patch ?? "").trim();
+      if (!diff) return "";
+      const path = String(entry?.path ?? "unknown file").trim();
+      return `--- ${path}\n${diff}`;
+    })
+    .filter(Boolean)
+    .join("\n");
+  const diff = String(item.diff ?? item.patch ?? item.diffPreview ?? (multiFileDiff || item.summary) ?? "").trim();
   if (!diff) {
     return null;
   }
@@ -3330,7 +3789,11 @@ function codexChangeRisk(event) {
 }
 
 async function waitForServer() {
-  for (let attempt = 0; attempt < 80; attempt += 1) {
+  // SQLite hydration can legitimately exceed 20 seconds on a large local
+  // history. Keep the bridge patient during startup instead of taking the whole
+  // dev supervisor down while the server is still restoring durable state.
+  const maxAttempts = Math.max(80, Number(process.env.BRIDGE_SERVER_READY_ATTEMPTS ?? 240));
+  for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
     try {
       const health = await request("GET", "/health");
       if (health?.status === "ok") {
@@ -3344,8 +3807,13 @@ async function waitForServer() {
 }
 
 async function request(method, path, body) {
+  if (bridgeRegistered && !localBridgeSessionIsCurrent()) {
+    void stop("local_session_superseded");
+    throw new Error("Desktop Bridge process session was superseded locally.");
+  }
   const headers = {
     ...(bridgeToken ? { Authorization: `Bearer ${bridgeToken}` } : {}),
+    "X-MyAgentTool-Bridge-Session": bridgeSessionId,
     ...(body ? { "Content-Type": "application/json" } : {}),
   };
   const response = await fetch(`${serverUrl}${path}`, {
@@ -3358,6 +3826,9 @@ async function request(method, path, body) {
   }
   const data = await response.json();
   if (!response.ok) {
+    if (response.status === 409 && data?.error === "bridge_session_superseded") {
+      void stop("server_session_superseded");
+    }
     throw new Error(`${method} ${path} failed: ${JSON.stringify(data)}`);
   }
   return data;
@@ -3392,12 +3863,45 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-function stop() {
+function publishLocalBridgeSession() {
+  try {
+    mkdirSync(dirname(bridgeSessionPath), { recursive: true });
+    writeFileSync(bridgeSessionPath, `${JSON.stringify({
+      bridgeSessionId,
+      pid: process.pid,
+      startedAt: new Date().toISOString(),
+    })}\n`);
+  } catch (error) {
+    console.warn(`[desktop] could not publish the local bridge session fence: ${error instanceof Error ? error.message : String(error)}`);
+  }
+}
+
+function localBridgeSessionIsCurrent() {
+  try {
+    const record = JSON.parse(readFileSync(bridgeSessionPath, "utf8"));
+    return record?.bridgeSessionId === bridgeSessionId;
+  } catch {
+    // The server-side session fence remains authoritative if the local sidecar
+    // is temporarily unreadable.
+    return true;
+  }
+}
+
+async function stop(reason = "bridge_shutdown") {
+  if (stopPromise) return stopPromise;
   stopped = true;
   clearInterval(timer);
   clearInterval(terminalTimer);
   clearInterval(binaryReadinessTimer);
-  cancellationWatcher.stop();
+  cancellationWatcher?.stop();
   codexAppServerClient?.close();
-  process.exit(0);
+  stopPromise = (async () => {
+    const drained = await invocationPool?.stop({ timeoutMs: 10_000, reason })
+      ?? { drained: true, remaining: 0 };
+    if (!drained.drained) {
+      console.error(`[desktop] forced exit with ${drained.remaining} invocation(s) still draining; process-tree guardians remain armed.`);
+    }
+    process.exit(drained.drained ? 0 : 1);
+  })();
+  return stopPromise;
 }

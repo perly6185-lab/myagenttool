@@ -102,6 +102,83 @@ test("bridge registration issues a device-bound credential and protects bridge r
   await assertBridgeCredentialRevoked({ token: registered.body.bridgeToken });
 });
 
+test("bridge hook reporting remains device-authenticated when user login is required", async () => {
+  const { createServerState } = await import("../src/runtime/state-factory.mjs");
+  const { createServerRuntimeServices } = await import("../src/runtime/service-composer.mjs");
+  const { createHttpServer } = await import("../src/runtime/http-server.mjs");
+  const created = createServerState({ defaultProjectPath: process.cwd(), now });
+  const { httpDependencies } = createServerRuntimeServices({
+    namespace: "auth-test",
+    protocolVersion: "0.0.0",
+    state: created.state,
+    defaultProject: created.defaultProject,
+    defaultProjectPath: process.cwd(),
+    persistenceEnabled: false,
+    stateStorePath: "/tmp/unused-auth.json",
+    stateSchemaVersion: 1,
+    dispatchLeaseMs: 30_000,
+    now,
+  });
+  const previousRequireAuth = process.env.MYAGENT_REQUIRE_AUTH;
+  process.env.MYAGENT_REQUIRE_AUTH = "1";
+  const authServer = createHttpServer({
+    host: "127.0.0.1",
+    port: 0,
+    namespace: "auth-test",
+    protocolVersion: "0.0.0",
+    ...httpDependencies,
+  });
+  if (previousRequireAuth === undefined) delete process.env.MYAGENT_REQUIRE_AUTH;
+  else process.env.MYAGENT_REQUIRE_AUTH = previousRequireAuth;
+  await new Promise((resolve) => authServer.listen(0, "127.0.0.1", resolve));
+  const authBase = `http://127.0.0.1:${authServer.address().port}`;
+  const authCall = async (path, { method = "GET", body, token } = {}) => {
+    const response = await fetch(`${authBase}${path}`, {
+      method,
+      headers: {
+        ...(token ? { authorization: `Bearer ${token}` } : {}),
+        ...(body ? { "content-type": "application/json" } : {}),
+      },
+      body: body ? JSON.stringify(body) : undefined,
+    });
+    return { status: response.status, body: await response.json().catch(() => null) };
+  };
+  try {
+    const registration = await authCall("/api/bridge/register", {
+      method: "POST",
+      body: { bridgeVersion: "auth-test" },
+    });
+    assert.equal(registration.status, 200);
+    const invocation = bridgeInvocationFixture("inv_auth_hook", {
+      status: "dispatching",
+      deliveryState: "dispatching",
+      deviceId: created.state.device.id,
+    });
+    created.state.invocations.unshift(invocation);
+    assert.equal((await authCall("/api/bridge/ack", {
+      method: "POST",
+      body: { invocationId: invocation.id },
+      token: registration.body.bridgeToken,
+    })).status, 200);
+
+    const legacy = await authCall("/api/codex/hooks", {
+      method: "POST",
+      body: { invocationId: invocation.id, eventName: "SessionStart" },
+      token: registration.body.bridgeToken,
+    });
+    assert.equal(legacy.status, 401, "a device token must not authenticate as a user");
+
+    const bridgeHook = await authCall("/api/bridge/codex/hooks", {
+      method: "POST",
+      body: { invocationId: invocation.id, eventName: "SessionStart" },
+      token: registration.body.bridgeToken,
+    });
+    assert.equal(bridgeHook.status, 202);
+  } finally {
+    await new Promise((resolve) => authServer.close(resolve));
+  }
+});
+
 const protectedBridgeRoutes = [
   { method: "GET", path: "/api/bridge/next" },
   { method: "GET", path: "/api/bridge/aux-next" },
@@ -116,6 +193,9 @@ const protectedBridgeRoutes = [
   { method: "GET", path: "/api/bridge/cancel-status?invocationId=missing" },
   { method: "POST", path: "/api/bridge/ack", body: {} },
   { method: "POST", path: "/api/bridge/events", body: {} },
+  { method: "POST", path: "/api/bridge/codex/hooks", body: {} },
+  { method: "POST", path: "/api/bridge/agent/hooks", body: {} },
+  { method: "GET", path: "/api/bridge/agent/approval-broker/missing" },
   { method: "POST", path: "/api/bridge/complete", body: {} },
   { method: "POST", path: "/api/bridge/refuse", body: {} },
   { method: "GET", path: "/api/bridge/terminal-next" },
@@ -164,6 +244,34 @@ async function assertBridgeWorkOwnership({ token }) {
     token,
   });
   assert.equal(event.status, 200);
+
+  const legacyHook = await call("/api/codex/hooks", {
+    method: "POST",
+    body: { invocationId: ownedInvocation.id, eventName: "SessionStart" },
+    token,
+  });
+  assert.equal(legacyHook.status, 410, "the user-authenticated legacy write endpoint is retired");
+
+  const hook = await call("/api/bridge/codex/hooks", {
+    method: "POST",
+    body: {
+      invocationId: ownedInvocation.id,
+      eventName: "PermissionRequest",
+      toolName: "Bash",
+      summary: "curl -H 'Authorization: Bearer abcdefghijklmnopqrstuvwxyz' https://example.test",
+    },
+    token,
+  });
+  assert.equal(hook.status, 202);
+  assert.match(hook.body.hookEvent.summary, /\[redacted\]/);
+  assert.doesNotMatch(hook.body.hookEvent.summary, /abcdefghijklmnopqrstuvwxyz/);
+
+  const approvalPoll = await call(
+    `/api/bridge/agent/approval-broker/${encodeURIComponent(hook.body.brokerRequest.id)}`,
+    { token },
+  );
+  assert.equal(approvalPoll.status, 200);
+  assert.equal(approvalPoll.body.approvalRequest.id, hook.body.brokerRequest.id);
 
   const complete = await call("/api/bridge/complete", {
     method: "POST",

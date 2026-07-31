@@ -1437,8 +1437,6 @@ export const api = {
       `/api/invocations/${encodeURIComponent(invocationId)}/transcript`,
     ),
   listTools: () => request<{ tools: ToolDescriptor[] }>("GET", "/api/tools"),
-  getTool: (name: string) =>
-    request<{ tool: ToolDescriptor }>("GET", `/api/tools/${encodeURIComponent(name)}`),
   createToolInvocation: (name: string, input: ToolInvocationRequest) =>
     request<ToolInvocationResponse>(
       "POST",
@@ -1485,11 +1483,6 @@ export const api = {
     request<{ applications: KnownApplicationCatalogEntry[] }>(
       "GET",
       "/api/applications/quick-register/catalog",
-    ),
-  listKnownRuntimes: () =>
-    request<{ runtimes: import("./console-state").RuntimeCatalogEntry[] }>(
-      "GET",
-      "/api/runtimes/catalog",
     ),
   quickRegisterApplication: (body: { name: string; projectId?: string | null }) =>
     request<{ application: ApplicationSnapshot; capabilities: ApplicationCapability[]; catalog: KnownApplicationCatalogEntry }>(
@@ -1663,8 +1656,6 @@ export const api = {
     request("POST", `/api/integration-artifacts/${encodeURIComponent(id)}/${action}`),
   builderDraft: (payload: IntegrationPayload) =>
     request("POST", "/api/integration-builder/draft", payload),
-  updateRetention: (payload: Record<string, number>) =>
-    request("PATCH", "/api/integration-retention", payload),
   setBudget: (payload: { projectId: string; limitUsd: number; policy: string }) =>
     request("PUT", "/api/budgets", payload),
   setTeamBudget: (payload: { teamId: string; limitUsd: number; policy: string }) =>
@@ -2108,10 +2099,6 @@ export const api = {
     request("POST", `/api/m3/lifecycle-approvals/${encodeURIComponent(id)}/deny`),
   queueLifecycleRollback: (id: string) =>
     request("POST", `/api/m3/lifecycle-rollbacks/${encodeURIComponent(id)}/queue`),
-  approveCodexApproval: (id: string) =>
-    request("POST", `/api/codex/approval-broker/${encodeURIComponent(id)}/approve`),
-  denyCodexApproval: (id: string) =>
-    request("POST", `/api/codex/approval-broker/${encodeURIComponent(id)}/deny`),
   /** Channel lifecycle (#1090). Enable/allowlist/delivery-retry are approval-gated. */
   enableChannel: (id: string, approvalToken: string) =>
     request("POST", `/api/channels/${encodeURIComponent(id)}/enable`, { approvalToken }),

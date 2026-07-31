@@ -450,9 +450,14 @@ function denyForeignInvocationScope({ res, sendJson, state, actor, metadata }) {
   })) {
     return true;
   }
-  const worktreeId = typeof metadata?.worktreeId === "string" ? metadata.worktreeId : null;
+  const worktreeWasSupplied = metadata?.worktreeId !== undefined && metadata?.worktreeId !== null;
+  if (!worktreeWasSupplied) return false;
+  const worktreeId = typeof metadata.worktreeId === "string" ? metadata.worktreeId.trim() : "";
   const worktree = worktreeId ? (state.worktrees ?? []).find((item) => item.id === worktreeId) : null;
-  if (!worktree) return false;
+  if (!worktree) {
+    sendJson(res, 404, { error: "worktree_not_found" });
+    return true;
+  }
   const worktreeProjectId = worktree.workspaceProjectId ?? worktree.projectId;
   return denyForeignProject({
     res,

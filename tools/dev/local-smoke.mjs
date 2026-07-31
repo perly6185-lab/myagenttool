@@ -190,7 +190,12 @@ try {
   assert(codexWorkspace.policy === "current_repo", "managed Codex workspace should default to current repo policy");
   assert(codexWorkspace.repoPath && codexWorkspace.repoPath !== "bridge_default", "managed Codex workspace should record observed repo path");
   assert(["clean", "dirty", "unknown"].includes(codexWorkspace.dirtyState), "managed Codex workspace should record dirty state");
-  assert(codexSession.codexThreadId === "codex_fixture_thread", "managed Codex session should record Codex thread id from JSONL");
+  const resumableCodexSessions = await request("GET", "/api/codex/sessions/resumable");
+  assert(
+    resumableCodexSessions.sessions.some((item) => item.invocationId === codexFinal.id),
+    "managed Codex session should become resumable after recording its provider thread id",
+  );
+  assert(!("codexThreadId" in codexSession), "public state should not expose the Codex provider thread id");
   assert(codexSession.evidenceIds.length > 0, "managed Codex session should collect evidence event ids");
   assert(codexEvidence.some((item) => item.eventType === "thread.started"), "Codex evidence store should retain thread.started summary");
   const codexChangeEvidence = codexEvidence.find((item) => item.fileChangeSummary);
@@ -369,7 +374,12 @@ try {
   const codexResumeEvents = codexResumeState.events.filter((item) => item.invocationId === codexResumeRun.invocation.id);
   const codexResumePreview = codexResumeEvents.find((item) => item.type === "execution_preview");
   assert(codexResumeSession?.sessionMode === "continue_last", "managed Codex session should record continuation mode");
-  assert(codexResumeSession.codexThreadId === "codex_fixture_thread_resumed", "managed Codex resumed session should record resumed thread id");
+  const resumedCodexSessions = await request("GET", "/api/codex/sessions/resumable");
+  assert(
+    resumedCodexSessions.sessions.some((item) => item.invocationId === codexResumeRun.invocation.id),
+    "managed Codex continuation should become resumable after recording its provider thread id",
+  );
+  assert(!("codexThreadId" in codexResumeSession), "public state should not expose the resumed Codex provider thread id");
   assert(codexResumePreview?.data?.commandLine?.includes("resume"), "Codex continuation preview should use resume command");
   assert(codexResumePreview.data.commandLine.includes("codex_fixture_thread"), "Codex continuation preview should resume the exact resolved session");
   assert(!codexResumePreview.data.commandLine.includes("--last"), "Codex continuation preview should never use process-global session selection");
@@ -428,9 +438,14 @@ try {
       return state;
     }
     if (["failed", "succeeded", "timed_out", "expired"].includes(invocation?.status)) {
+      const terminalEvents = state.events
+        .filter((item) => item.invocationId === codexCancelRun.invocation.id)
+        .slice(0, 8)
+        .map((item) => ({ type: item.type, message: item.message }));
       throw new Error(
         `Codex fixture cancellation ended unexpectedly: ${invocation.status}`
-        + `${invocation.result ? ` (${JSON.stringify(invocation.result)})` : ""}`,
+        + `${invocation.result ? ` (${JSON.stringify(invocation.result)})` : ""}`
+        + ` events=${JSON.stringify(terminalEvents)}`,
       );
     }
     return false;

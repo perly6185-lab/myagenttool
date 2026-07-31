@@ -69,25 +69,27 @@ const CONFIGS: Record<"codex" | "claude", CodingAgentConfig> = {
     title: "Connect Claude Code",
     blurb: (
       <>
-        Registers <code className="font-mono">claude -p</code> (stream-json) with the permission mode you choose.
+        Registers Claude Agent SDK with the permission mode you choose.
       </>
     ),
     modeField: "permissionMode",
     modeLabel: "Permission mode",
     safeMode: "plan",
-    defaultMode: "acceptEdits",
+    defaultMode: "default",
     modes: [
       { value: "plan", label: "Plan", hint: "Plans only; cannot edit files. Safest.", tone: "neutral" },
+      { value: "default", label: "Ask", hint: "Can browse; editing, creating files, and shell commands require approval.", tone: "neutral" },
       {
         value: "acceptEdits",
-        label: "Accept edits",
-        hint: "Auto-accepts file edits in the working directory. Approval required on every run.",
+        label: "Approve for me",
+        hint: "Auto-accepts project file edits; shell commands still pass through the approval broker.",
         tone: "warning",
       },
+      { value: "dontAsk", label: "Don't ask", hint: "Unapproved operations are rejected instead of prompting.", tone: "warning" },
       {
         value: "bypassPermissions",
-        label: "Bypass permissions",
-        hint: "Skips all permission prompts — can edit and run anything. Highest risk.",
+        label: "Full access",
+        hint: "Skips per-tool prompts after the high-risk launch approval. Highest risk.",
         tone: "danger",
       },
     ],

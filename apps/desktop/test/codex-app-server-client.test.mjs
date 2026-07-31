@@ -133,6 +133,20 @@ test("app-server command idle timeout interrupts the turn and reports timed_out"
 
   assert.equal(outcome.status, "timed_out");
   assert.equal(outcome.result.timeoutKind, "command_idle");
+  assert.equal(outcome.result.errorCode, "execution_timeout");
+});
+
+test("app-server total timeout reports the execution-timeout recovery category", async () => {
+  const client = fixtureClient("--slow");
+  const outcome = await client.runTurn({
+    task: "slow turn",
+    cwd: process.cwd(),
+    timeoutMs: 150,
+  });
+
+  assert.equal(outcome.status, "timed_out");
+  assert.equal(outcome.result.timeoutKind, "invocation_total");
+  assert.equal(outcome.result.errorCode, "execution_timeout");
 });
 
 test("app-server transport exit fails an active turn without waiting for invocation timeout", async () => {
@@ -145,8 +159,35 @@ test("app-server transport exit fails an active turn without waiting for invocat
   });
 
   assert.equal(outcome.status, "failed");
+  assert.equal(outcome.result.errorCode, "transport_closed");
   assert.match(outcome.summary, /exited unexpectedly|transport closed/i);
   assert.ok(Date.now() - startedAt < 2_000);
+});
+
+test("app-server startup failure returns a terminal transport outcome instead of throwing", async () => {
+  const client = fixtureClient("--crash-on-initialize");
+  const outcome = await client.runTurn({
+    task: "never starts",
+    cwd: process.cwd(),
+    timeoutMs: 5_000,
+  });
+
+  assert.equal(outcome.status, "failed");
+  assert.equal(outcome.result.errorCode, "transport_closed");
+  assert.match(outcome.summary, /exited unexpectedly|transport closed/i);
+});
+
+test("app-server classifies model capacity as a recoverable provider condition", async () => {
+  const client = fixtureClient("--capacity");
+  const outcome = await client.runTurn({
+    task: "capacity",
+    cwd: process.cwd(),
+    timeoutMs: 5_000,
+  });
+
+  assert.equal(outcome.status, "failed");
+  assert.equal(outcome.result.errorCode, "provider_capacity");
+  assert.match(outcome.summary, /model is at capacity/i);
 });
 
 test("app-server notifications normalize to the existing Codex JSONL vocabulary", () => {
@@ -178,4 +219,23 @@ test("app-server notifications normalize to the existing Codex JSONL vocabulary"
       },
     },
   );
+
+  const fileChange = normalizeCodexAppServerNotification({
+    method: "item/completed",
+    params: {
+      item: {
+        id: "file_1",
+        type: "fileChange",
+        status: "completed",
+        changes: [
+          { path: "src/a.mjs", kind: "update", diff: "@@ a @@" },
+          { path: "src/b.mjs", kind: "create", diff: "@@ b @@" },
+        ],
+      },
+    },
+  });
+  assert.deepEqual(fileChange.item.files, [
+    { path: "src/a.mjs", action: "update", diff: "@@ a @@" },
+    { path: "src/b.mjs", action: "create", diff: "@@ b @@" },
+  ]);
 });

@@ -7,6 +7,7 @@ import { approvalFor } from "@/features/selection";
 import { cn } from "@/lib/cn";
 import { useAppTranslation } from "@/lib/i18n/use-app-translation";
 import type { InvocationEventSnapshot } from "@/lib/console-state";
+import { approvalBrokerApi } from "@/features/approvals/approval-broker-api";
 
 // The actionable "exit" for a decision event in an output stream, so every
 // pending-decision item — not just security approvals — has somewhere to act
@@ -57,7 +58,7 @@ export function DecisionAction({ event }: { event: InvocationEventSnapshot }) {
               {t("approvals.lateApprovalExpired")}
               {recovery?.error ? ` ${t("approvals.lastRecovery", { error: recovery.error })}` : ""}
             </p>
-            <Button size="sm" disabled={pending} onClick={() => execute(() => api.approveCodexApproval(request.id))}>
+            <Button size="sm" disabled={pending} onClick={() => execute(() => approvalBrokerApi.approve(request.id))}>
               {t("approvals.approveAndResume")}
             </Button>
             {error ? <p role="alert" className="text-xs text-destructive">{t("approvals.recoveryFailed", { error })}</p> : null}
@@ -80,10 +81,10 @@ export function DecisionAction({ event }: { event: InvocationEventSnapshot }) {
           ]}
         />
         <div className="flex gap-2">
-          <Button size="sm" disabled={pending} onClick={() => execute(() => api.approveCodexApproval(request.id))}>
+          <Button size="sm" disabled={pending} onClick={() => execute(() => approvalBrokerApi.approve(request.id))}>
             Approve
           </Button>
-          <Button size="sm" variant="secondary" disabled={pending} onClick={() => execute(() => api.denyCodexApproval(request.id))}>
+          <Button size="sm" variant="secondary" disabled={pending} onClick={() => execute(() => approvalBrokerApi.deny(request.id))}>
             Deny
           </Button>
         </div>

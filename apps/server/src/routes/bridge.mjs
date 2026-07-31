@@ -76,6 +76,8 @@ export async function handleBridgeRoutes({
   recordAgentFileAccess,
   recordRequestContext,
   recordRoundEvent,
+  recordCodexHookEvent,
+  expireCodexApprovalBrokerRequests,
   completeInvocation,
   requireBridgeCredential,
 }) {
@@ -328,6 +330,59 @@ export async function handleBridgeRoutes({
   function healthCheckDeviceId(operation) {
     const agent = findAgent(operation?.agentId);
     return operation?.deviceId ?? (agent?.location?.type === "local_device" ? agent.location.deviceId : null);
+  }
+
+  if (req.method === "POST" && ["/api/bridge/codex/hooks", "/api/bridge/agent/hooks"].includes(url.pathname)) {
+    const body = await readJson(req);
+    const invocation = findInvocation(body.invocationId);
+    if (!invocation) {
+      sendJson(res, 404, { error: "invocation_not_found" });
+      return true;
+    }
+    const gate = bridgeInvocationGate(invocation, "agent_hook", {
+      allowedStatuses: ["running", "cancelling"],
+      allowedDeliveryStates: ["acknowledged"],
+    });
+    if (!gate.allowed) {
+      sendJson(res, gate.status, gate.body);
+      return true;
+    }
+    try {
+      const result = recordCodexHookEvent(body);
+      sendJson(res, 202, result);
+    } catch (error) {
+      sendJson(res, 400, {
+        error: "invalid_codex_hook_event",
+        message: error instanceof Error ? error.message : String(error),
+      });
+    }
+    return true;
+  }
+
+  const bridgeApprovalReadMatch = url.pathname.match(/^\/api\/bridge\/agent\/approval-broker\/([^/]+)$/);
+  if (req.method === "GET" && bridgeApprovalReadMatch) {
+    expireCodexApprovalBrokerRequests();
+    const requestId = decodeURIComponent(bridgeApprovalReadMatch[1]);
+    const approvalRequest = state.codexApprovalBrokerRequests.find((item) => item.id === requestId);
+    if (!approvalRequest) {
+      sendJson(res, 404, { error: "codex_approval_request_not_found" });
+      return true;
+    }
+    const invocation = findInvocation(approvalRequest.invocationId);
+    if (!invocation) {
+      sendJson(res, 404, { error: "invocation_not_found" });
+      return true;
+    }
+    const gate = bridgeInvocationGate(invocation, "approval_poll", {
+      allowedStatuses: ["running", "cancelling"],
+      allowedDeliveryStates: ["acknowledged"],
+    });
+    if (!gate.allowed) {
+      sendJson(res, gate.status, gate.body);
+      return true;
+    }
+    sendJson(res, 200, { approvalRequest });
+    return true;
   }
 
   if (req.method === "GET" && url.pathname === "/api/bridge/next") {

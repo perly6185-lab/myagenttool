@@ -24,6 +24,7 @@ export type AgentLocation =
 export type AgentCancellationSupport = "supported" | "unsupported" | "unknown";
 export type AgentEnvironmentPolicy = "inherit_safe" | "explicit_only" | "none";
 export type AgentWorkingDirectoryPolicy = "bridge_default" | "explicit" | "none";
+export type ClaudeRuntimeKind = "cli" | "agent_sdk";
 
 export type AgentAdapter =
   | {
@@ -36,6 +37,10 @@ export type AgentAdapter =
       env?: Record<string, string>;
       timeoutSeconds?: number;
       cancellation?: AgentCancellationSupport;
+      outputFormat?: string;
+      sandbox?: string | null;
+      permissionMode?: string | null;
+      claudeRuntime?: ClaudeRuntimeKind;
     }
   | {
       type: "http";

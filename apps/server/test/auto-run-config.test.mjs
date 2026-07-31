@@ -41,6 +41,28 @@ test("normalize: absent fields carry prior; explicit null clears", () => {
   assert.equal(s.statusWriteback, true, "absent field kept from prev");
 });
 
+test("long-task execution budgets are bounded and have safe defaults", () => {
+  const normalized = normalizeAutoRunSettings({
+    turnTimeoutSeconds: 10_000,
+    totalExecutionBudgetSeconds: 10,
+    maxTimeoutRecoveryAttempts: 99,
+    maxNoProgressTimeouts: 0,
+    maxCapacityRetryAttempts: 99,
+  });
+  assert.equal(normalized.turnTimeoutSeconds, 3600);
+  assert.equal(normalized.totalExecutionBudgetSeconds, 600);
+  assert.equal(normalized.maxTimeoutRecoveryAttempts, 3);
+  assert.equal(normalized.maxNoProgressTimeouts, 1);
+  assert.equal(normalized.maxCapacityRetryAttempts, 3);
+
+  const defaults = resolveAutoRunConfig({}, {});
+  assert.equal(defaults.turnTimeoutSeconds, 900);
+  assert.equal(defaults.totalExecutionBudgetSeconds, 2700);
+  assert.equal(defaults.maxTimeoutRecoveryAttempts, 3);
+  assert.equal(defaults.maxNoProgressTimeouts, 2);
+  assert.equal(defaults.maxCapacityRetryAttempts, 3);
+});
+
 test("overlay: set fields override env keys; unset fields leave env untouched", () => {
   const base = {
     MYAGENTTOOL_AUTOTRIGGER_ENABLED: "0",

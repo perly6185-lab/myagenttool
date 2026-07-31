@@ -29,6 +29,7 @@ import { handleToolRoutes } from "../routes/tools.mjs";
 import { handleWorkItemRoutes } from "../routes/work-items.mjs";
 import { handleWorkflowMemoryRoutes } from "../routes/workflow-memory.mjs";
 import { handlePlanningProjectRoutes } from "../routes/planning-projects.mjs";
+import { handleWorkProfileRoutes } from "../routes/work-profile.mjs";
 import { ensureEventStreamMetrics, eventsAfter } from "../services/event-stream-metrics.mjs";
 import { terminalObservationReadModel } from "../read-models/terminal-observation.mjs";
 
@@ -54,14 +55,19 @@ export function createHttpServer({
   ensureLocalOrigin,
   startAutoRun,
   retryAutoRun,
+  reverifyAutoRun,
   cancelAutoRun,
   mergeAutoRunPr,
   recordRoutingOverride,
   setReportSchedule,
   postReportNow,
   claimIssue,
+  beginWorkItemExecution,
+  abortWorkItemExecution,
   claimWorkItem,
   releaseWorkItemClaim,
+  beginWorkItemDelivery,
+  failWorkItemDelivery,
   bindGithubIssue,
   syncGithubIssue,
   bindExternalIssue,
@@ -253,6 +259,7 @@ export function createHttpServer({
   deviceForToken,
   issueBridgeCredential,
   requireBridgeCredential,
+  supersedeBridgeSession,
   recordCodexHookEvent,
   expireCodexApprovalBrokerRequests,
   resolveCodexApprovalBrokerRequest,
@@ -262,6 +269,8 @@ export function createHttpServer({
   createCodexExecReview,
   setCodexSessionName,
   resumableCodexSessions,
+  setClaudeSessionName,
+  resumableClaudeSessions,
   execRunPromotionGate,
   createDiscoveryRun,
   createIntegrationArtifact,
@@ -363,6 +372,8 @@ export function createHttpServer({
   updateWorkItemComment,
   deleteWorkItemComment,
   recordWorkItemExecutionBinding,
+  createWorkItemAutoRunBatch,
+  listWorkItemAutoRunBatches,
   listPlanningProjects,
   getPlanningProject,
   createPlanningProject,
@@ -576,6 +587,21 @@ export function createHttpServer({
         return;
       }
 
+      if (await handleWorkProfileRoutes({
+        req,
+        res,
+        url,
+        sendJson,
+        readJson,
+        state,
+        actor,
+        now,
+        nextId,
+        persistStateSoon,
+      })) {
+        return;
+      }
+
       if (await handleMailRoutes({ req, res, url, sendJson, readJson, actor, createMailIssueFromImport, replyOnIssue, confirmReplyDraft, sendConfirmedDraft })) {
         return;
       }
@@ -726,9 +752,15 @@ export function createHttpServer({
         deleteComment: deleteWorkItemComment,
         createWorktree,
         startAutoRun,
+        beginExecution: beginWorkItemExecution,
+        abortExecution: abortWorkItemExecution,
         recordExecutionBinding: recordWorkItemExecutionBinding,
+        createAutoRunBatch: createWorkItemAutoRunBatch,
+        listAutoRunBatches: listWorkItemAutoRunBatches,
         promoteWorktreeToBase,
         promoteWorktreeToPullRequest,
+        beginDelivery: beginWorkItemDelivery,
+        failDelivery: failWorkItemDelivery,
         completeDelivery: completeWorkItemDelivery,
         claimWorkItem,
         releaseWorkItemClaim,
@@ -811,6 +843,7 @@ export function createHttpServer({
         ensureLocalOrigin,
         startAutoRun,
         retryAutoRun,
+        reverifyAutoRun,
         cancelAutoRun,
         mergeAutoRunPr,
         recordRoutingOverride,
@@ -938,6 +971,7 @@ export function createHttpServer({
         deviceForToken,
         issueBridgeCredential,
         requireBridgeCredential,
+        supersedeBridgeSession,
       })) {
         return;
       }
@@ -961,6 +995,7 @@ export function createHttpServer({
         createWorktreePr,
         findInvocation,
         appendEvent, setCodexSessionName, resumableCodexSessions,
+        setClaudeSessionName, resumableClaudeSessions,
       })) {
         return;
       }
@@ -1104,6 +1139,8 @@ export function createHttpServer({
         recordAgentFileAccess,
         recordRequestContext,
         recordRoundEvent,
+        recordCodexHookEvent,
+        expireCodexApprovalBrokerRequests,
         completeInvocation,
         requireBridgeCredential,
       })) {

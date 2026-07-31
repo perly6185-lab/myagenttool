@@ -240,6 +240,10 @@ if (typeof httpDependencies.reapStuckAutoRuns === "function") {
   httpDependencies.reapStuckAutoRuns().catch(() => {});
   setInterval(() => httpDependencies.reapStuckAutoRuns().catch(() => {}), 60_000).unref?.();
 }
+if (typeof httpDependencies.sweepWorkItemAutoRunBatches === "function") {
+  httpDependencies.sweepWorkItemAutoRunBatches().catch(() => {});
+  setInterval(() => httpDependencies.sweepWorkItemAutoRunBatches().catch(() => {}), 10_000).unref?.();
+}
 
 // Resume approved Project actions after a restart and keep draining the durable
 // queue. Each execution is moved to running before awaiting external work, so a
@@ -331,9 +335,9 @@ if (typeof httpDependencies.applicationHealthSweep === "function") {
   }, 60_000).unref?.();
 }
 
-// Bridge liveness: flip a stale device offline (evented + alerted) and reap runs
-// stranded on a provably-gone bridge. Restore is symmetric on any authenticated
-// bridge request.
+// Bridge liveness + executor deadline watchdog. A short tick bounds the window
+// where an online bridge with a dead child process can leave a zombie "running"
+// invocation. Restore is symmetric on any authenticated bridge request.
 if (typeof httpDependencies.bridgeLivenessSweep === "function") {
   setInterval(() => {
     try {
@@ -341,7 +345,7 @@ if (typeof httpDependencies.bridgeLivenessSweep === "function") {
     } catch {
       /* best-effort sweep */
     }
-  }, 60_000).unref?.();
+  }, 15_000).unref?.();
 }
 
 // Scheduled work-report → channel push: on a slow tick, post the configured

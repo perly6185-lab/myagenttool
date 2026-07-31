@@ -16,6 +16,7 @@ export function createInvocationDispatchRuntime({
   findAgent,
   completeInvocation,
   store,
+  isWorktreeReactionBusy = () => false,
 }) {
   // #968: route the dispatch claim/ack through the Store's unit of work so it
   // commits synchronously. Before this, the lease + attempt increment persisted
@@ -27,8 +28,9 @@ export function createInvocationDispatchRuntime({
   // Dir-lock, bridge-executed, and belongs-to-this-bridge predicates are shared
   // (dispatch-eligibility.mjs) with the read-model so the operator sees exactly
   // what the bridge decides. Bind the device-id-dependent ones to this device.
-  const isBridgeExecuted = (invocation) => isBridgeExecutedShared(invocation, { findAgent, deviceId: state.device.id });
-  const belongsToThisBridge = (invocation, agent) => belongsToThisBridgeShared(invocation, agent, state.device.id);
+  const bridgeDevice = state.device;
+  const isBridgeExecuted = (invocation) => isBridgeExecutedShared(invocation, { findAgent, deviceId: bridgeDevice.id });
+  const belongsToThisBridge = (invocation, agent) => belongsToThisBridgeShared(invocation, agent, bridgeDevice.id);
 
   // Force a terminal status on runs stuck in "cancelling" past a grace (e.g. the
   // bridge died mid-cancel). Otherwise they'd hold a concurrency slot and lock
@@ -50,7 +52,32 @@ export function createInvocationDispatchRuntime({
     }
   }
 
+  function reclaimSupersededBridgeSessions() {
+    if (typeof completeInvocation !== "function") return;
+    const current = Date.now();
+    for (const invocation of state.invocations) {
+      const supersession = invocation.delivery?.sessionSupersession;
+      if (!supersession || !INFLIGHT_STATUSES.includes(invocation.status)) continue;
+      const completeAt = Date.parse(supersession.completeAfter ?? "");
+      if (Number.isFinite(completeAt) && completeAt > current) continue;
+      delete invocation.delivery.sessionSupersession;
+      const cancelled = supersession.terminalStatus === "cancelled" || invocation.status === "cancelling";
+      completeInvocation(invocation, cancelled
+        ? {
+            status: "cancelled",
+            summary: "Cancellation completed while the superseded Desktop Bridge executor tree drained.",
+            result: null,
+          }
+        : {
+            status: "failed",
+            summary: "Desktop Bridge process restarted before this invocation reported completion.",
+            result: { errorCode: supersession.errorCode ?? "transport_closed" },
+          });
+    }
+  }
+
   function nextDispatchableInvocation() {
+    reclaimSupersededBridgeSessions();
     reclaimStuckCancellations();
     // Only bridge-executed runs count toward the device cap: a long-running
     // platform/HTTP agent (off-device) must not consume a bridge slot and
@@ -59,7 +86,7 @@ export function createInvocationDispatchRuntime({
       (i) => INFLIGHT_STATUSES.includes(i.status) && isBridgeExecuted(i),
     );
     // Authoritative cross-worktree concurrency cap.
-    if (inFlight.length >= (state.device.maxConcurrency || 1)) {
+    if (inFlight.length >= (bridgeDevice.maxConcurrency || 1)) {
       return undefined;
     }
     // Directories occupied by an in-flight run: skip a queued task whose cwd is
@@ -71,7 +98,7 @@ export function createInvocationDispatchRuntime({
       const agent = findAgent(item.agentId);
       return classifyDispatchEligibility(item, {
         agent,
-        dirBusy: busyDirs.has(invocationDirKey(item)),
+        dirBusy: busyDirs.has(invocationDirKey(item)) || isWorktreeReactionBusy(item),
         onThisBridge: agent ? belongsToThisBridge(item, agent) : false,
       }) === DISPATCH_REASONS.DISPATCHABLE;
     });
@@ -111,12 +138,12 @@ export function createInvocationDispatchRuntime({
     if (!invocation) return false;
     if (!isBridgeExecuted(invocation)) return false;
     const inFlight = state.invocations.filter((i) => INFLIGHT_STATUSES.includes(i.status) && isBridgeExecuted(i));
-    if (inFlight.length >= (state.device.maxConcurrency || 1)) return false;
+    if (inFlight.length >= (bridgeDevice.maxConcurrency || 1)) return false;
     const busyDirs = new Set(inFlight.map(invocationDirKey));
     const agent = findAgent(invocation.agentId);
     return classifyDispatchEligibility(invocation, {
       agent,
-      dirBusy: busyDirs.has(invocationDirKey(invocation)),
+      dirBusy: busyDirs.has(invocationDirKey(invocation)) || isWorktreeReactionBusy(invocation),
       onThisBridge: agent ? belongsToThisBridge(invocation, agent) : false,
     }) === DISPATCH_REASONS.DISPATCHABLE;
   }
@@ -126,8 +153,9 @@ export function createInvocationDispatchRuntime({
       invocation.status = "dispatching";
       invocation.delivery.state = "dispatching";
       if (invocation.delivery.deviceId == null) {
-        invocation.delivery.deviceId = state.device.id;
+        invocation.delivery.deviceId = bridgeDevice.id;
       }
+      invocation.delivery.bridgeSessionId = bridgeDevice.bridgeSessionId ?? null;
       invocation.delivery.dispatchAttempts += 1;
       invocation.delivery.lastDispatchAt = now();
       invocation.delivery.leaseExpiresAt = new Date(Date.now() + dispatchLeaseMs).toISOString();
@@ -179,6 +207,7 @@ export function createInvocationDispatchRuntime({
   const MAX_DISPATCH_ATTEMPTS = 5;
 
   function redeliverExpiredDispatches() {
+    reclaimSupersededBridgeSessions();
     const current = Date.now();
     for (const invocation of state.invocations) {
       if (invocation.status !== "dispatching" || invocation.delivery.state !== "dispatching" || !invocation.delivery.leaseExpiresAt) {

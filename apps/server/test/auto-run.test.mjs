@@ -221,7 +221,7 @@ test("startAutoRun materializes the worktree and starts an issue-seeded invocati
   assert.equal(created.options.metadata.role, "develop", "decided path seeded as role for skill selection");
   assert.equal(created.options.metadata.executionChainId, "wi_chain_12");
   assert.equal(created.options.metadata.autonomyProfile, "high");
-  assert.equal(created.options.timeoutSeconds, 600, "invocation records the effective coding-agent timeout");
+  assert.equal(created.options.timeoutSeconds, 900, "invocation records the effective coding-agent turn timeout");
   assert.equal(created.agent.id, "agt_1");
   assert.equal(invocation.input.task, created.task, "invocation carries the seeded prompt");
   assert.equal(calls.startInvocationIfAllowed.length, 1, "the run is actually kicked off");
@@ -845,7 +845,7 @@ test("self-repair: a failing check re-attempts (preApproved), then blocks after 
   assert.equal(autoRun.repairAttempts, 1);
   const repair = calls.createInvocation.at(-1);
   assert.equal(repair.options.preApproved, true, "repair skips the human gate (continuation of an approved run)");
-  assert.equal(repair.options.timeoutSeconds, 600, "repair records the same effective timeout as its adapter");
+  assert.equal(repair.options.timeoutSeconds, 900, "repair records the effective coding-agent turn timeout");
   assert.match(repair.task, /FAILED the verification check/);
   assert.equal(calls.pr.length, 0);
   // 2nd → attempt 2; 3rd → cap reached → block.
@@ -1140,12 +1140,13 @@ test("retryAutoRun restarts a failed run on its existing worktree (pilot #9)", a
   assert.equal(state.worktrees.length, worktreesBefore, "no new worktree — retry reuses the existing one");
   assert.equal(calls.createInvocation.length, 2);
   assert.match(calls.createInvocation[1].task, /implement the change/, "role prompt rebuilt from the decision");
-  assert.equal(calls.createInvocation[1].options.timeoutSeconds, 600, "stored retry budget matches the coding adapter runtime");
+  assert.equal(calls.createInvocation[1].options.timeoutSeconds, 900, "stored retry budget matches the configured turn budget");
 });
 
-test("execution timeout gets one approved, bounded continuation on the same worktree", async () => {
+test("execution timeout obeys a configured one-attempt continuation bound on the same worktree", async () => {
   const agent = fakeAgent({ adapter: { type: "cli", timeoutSeconds: 900 } });
   const { svc, calls } = makeAutoRun({ agent });
+  state.autoRunSettings.maxTimeoutRecoveryAttempts = 1;
   const { autoRun, invocation } = await svc.startAutoRun({
     projectId: sourceProjectId,
     link: { type: "issue", number: 197, title: "Long implementation", url: null, state: "open" },
@@ -1180,7 +1181,7 @@ test("execution timeout gets one approved, bounded continuation on the same work
     status: "timed_out",
     result: { errorCode: "execution_timeout" },
   });
-  assert.equal(autoRun.status, "failed", "the bounded continuation cannot loop forever");
+  assert.equal(autoRun.status, "blocked", "the bounded continuation cannot loop forever and remains operator-recoverable");
   assert.equal(calls.createInvocation.length, 2);
 });
 
@@ -1214,7 +1215,7 @@ test("late approval recovery retries the exact stored task without a second appr
   });
   const retry = calls.createInvocation.at(-1);
   assert.equal(retry.options.preApproved, true);
-  assert.equal(retry.options.timeoutSeconds, 600);
+  assert.equal(retry.options.timeoutSeconds, 900);
   assert.equal(retry.options.metadata.codexApprovalContinuationRequestId, approval.id);
   assert.equal(approval.lateApprovalRecovery.targetInvocationId, invocation.id);
   assert.match(retry.task, /APPROVED ORIGINAL BODY/);
@@ -1235,6 +1236,86 @@ test("retryAutoRun refuses non-settled runs and missing worktrees", async () => 
   autoRun.status = "failed";
   autoRun.worktreeId = "wtr_gone";
   await assert.rejects(() => svc.retryAutoRun(autoRun.id), /no longer exists/);
+});
+
+test("reverifyAutoRun runs the platform gate and upgrades an unverified completed run", async () => {
+  const { svc, calls } = makeAutoRun({
+    verify: {
+      passed: true,
+      verified: true,
+      commands: ["node --test apps/server/test/example.test.mjs"],
+      summary: "targeted test passed",
+    },
+  });
+  const { autoRun } = await svc.startAutoRun({
+    projectId: sourceProjectId,
+    link: { type: "issue", number: 198, title: "Reverify completed work", url: null, state: "open" },
+    agentId: "agt_1",
+    name: "issue-198-reverify",
+  });
+  autoRun.status = "done";
+  autoRun.verification = { passed: true, verified: false, summary: "No verification command configured." };
+
+  const result = await svc.reverifyAutoRun(autoRun.id, { actor: { userId: "usr_owner" } });
+
+  assert.equal(result.autoRun.status, "done");
+  assert.equal(result.autoRun.verification.verified, true);
+  assert.equal(result.autoRun.verification.passed, true);
+  assert.deepEqual(result.autoRun.verification.commands, ["node --test apps/server/test/example.test.mjs"]);
+  assert.equal(calls.verify.length, 1);
+  assert.ok(calls.events.some((event) => event.type === "auto_run_reverified"));
+});
+
+test("reverifyAutoRun blocks a completed run when the reproduced platform check fails", async () => {
+  const { svc } = makeAutoRun({
+    verify: { passed: false, verified: true, summary: "targeted test failed" },
+  });
+  const { autoRun } = await svc.startAutoRun({
+    projectId: sourceProjectId,
+    link: { type: "issue", number: 199, title: "Reject stale success", url: null, state: "open" },
+    agentId: "agt_1",
+    name: "issue-199-reverify-failure",
+  });
+  autoRun.status = "done";
+  autoRun.verification = { passed: true, verified: false, summary: "No verification command configured." };
+
+  await svc.reverifyAutoRun(autoRun.id, { actor: { userId: "usr_owner" } });
+
+  assert.equal(autoRun.status, "blocked");
+  assert.equal(autoRun.verification.verified, true);
+  assert.equal(autoRun.verification.passed, false);
+  assert.match(autoRun.error, /targeted test failed/);
+});
+
+test("reverifyAutoRun keeps the terminal status stable and refuses duplicate verification requests", async () => {
+  let finishVerification;
+  const { svc } = makeAutoRun({
+    verify: () => new Promise((resolve) => {
+      finishVerification = resolve;
+    }),
+  });
+  const { autoRun } = await svc.startAutoRun({
+    projectId: sourceProjectId,
+    link: { type: "local_issue", number: 200, title: "Stable reverify state", url: null, state: "open" },
+    agentId: "agt_1",
+    name: "issue-200-reverify-stable",
+  });
+  autoRun.status = "done";
+  autoRun.verification = { passed: true, verified: false, summary: "No verification command configured." };
+
+  const pending = svc.reverifyAutoRun(autoRun.id, { actor: { userId: "usr_owner" } });
+  await Promise.resolve();
+  assert.equal(autoRun.status, "done", "reverification must not reopen the completed invocation reaction");
+  assert.equal(autoRun.verificationAttempt.status, "running");
+  await assert.rejects(
+    () => svc.reverifyAutoRun(autoRun.id, { actor: { userId: "usr_owner" } }),
+    /already running/,
+  );
+
+  finishVerification({ passed: true, verified: true, summary: "passed" });
+  await pending;
+  assert.equal(autoRun.status, "done");
+  assert.equal(autoRun.verificationAttempt.status, "passed");
 });
 
 test("cancelAutoRun stops an in-flight run: cancels its invocation and settles it as cancelled", async () => {
@@ -1575,7 +1656,7 @@ test("3b: an infra reclaim fails over to a healthy same-device alternate agent",
     assert.equal(autoRun.failoverOutcome.reason, "dispatch_timeout");
     assert.notEqual(autoRun.status, "failed", "the run is live again");
     assert.equal(autoRun.errorCode, null, "the infra code is cleared on the restart");
-    assert.equal(calls.createInvocation.at(-1).options.timeoutSeconds, 600, "failover records the alternate adapter timeout");
+    assert.equal(calls.createInvocation.at(-1).options.timeoutSeconds, 900, "failover records the configured turn timeout");
     assert.ok(calls.events.some((e) => e.type === "auto_run_failed_over" && e.data.toAgentId === "agt_2"));
   } finally {
     state.agents = savedAgents;

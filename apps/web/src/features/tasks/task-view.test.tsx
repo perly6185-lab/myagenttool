@@ -33,6 +33,8 @@ const mocks = vi.hoisted(() => ({
   autoRunReadiness: vi.fn(),
   syncWorkItemGithubIssue: vi.fn(),
   listAutoRuns: vi.fn(),
+  listWorkItemAutoRunBatches: vi.fn(),
+  createWorkItemAutoRunBatch: vi.fn(),
   listPlanningProjects: vi.fn(),
   getPlanningProject: vi.fn(),
   createPlanningProject: vi.fn(),
@@ -135,6 +137,13 @@ vi.mock("@/data/use-console-actions", () => ({
   },
 }));
 
+vi.mock("@/features/tasks/work-item-batch-api", () => ({
+  workItemBatchApi: {
+    list: mocks.listWorkItemAutoRunBatches,
+    create: mocks.createWorkItemAutoRunBatch,
+  },
+}));
+
 vi.mock("@/features/tasks/article-workflow-api", () => ({
   articleApi: {
     inspect: mocks.inspectArticleImport,
@@ -174,6 +183,7 @@ describe("TaskView local work items", () => {
     window.localStorage.clear();
     mocks.listPlanningProjects.mockResolvedValue({ projects: [] });
     mocks.listAutoRuns.mockResolvedValue({ autoRuns: [] });
+    mocks.listWorkItemAutoRunBatches.mockResolvedValue({ batches: [] });
     mocks.listWorkItemAttention.mockResolvedValue({ items: [] });
     mocks.autoRunReadiness.mockResolvedValue({ readiness: { ready: true, checks: [] } });
     mocks.listArticleImports.mockResolvedValue({ jobs: [], latest: null });
@@ -210,7 +220,7 @@ describe("TaskView local work items", () => {
     mocks.createWorkItem.mockResolvedValue({ workItem: { id: "lwi_2" } });
     render(<TaskView />);
     fireEvent.click(screen.getByRole("button", { name: /New local issue/i }));
-    fireEvent.change(screen.getByLabelText("Title"), { target: { value: "Build local board" } });
+    fireEvent.change(await screen.findByLabelText("Title"), { target: { value: "Build local board" } });
     fireEvent.change(screen.getByLabelText("Due date"), { target: { value: "2026-08-15" } });
     fireEvent.change(screen.getByLabelText("Milestone"), { target: { value: "M3" } });
     fireEvent.click(screen.getByRole("button", { name: "Create issue" }));
@@ -889,9 +899,15 @@ describe("TaskView local work items", () => {
     fireEvent.click(await screen.findByText("Deliver approved work"));
     expect(await screen.findByText("Ready for delivery")).toBeTruthy();
     expect(screen.getByText("Approved")).toBeTruthy();
+    mocks.getWorkItem.mockResolvedValue({
+      workItem: { ...item, revision: 4, updatedAt: "2026-07-27T00:01:00.000Z" },
+      observability,
+    });
+    document.dispatchEvent(new Event("visibilitychange"));
+    await waitFor(() => expect(mocks.getWorkItem).toHaveBeenCalledTimes(2));
     fireEvent.click(screen.getByRole("button", { name: "Merge into base" }));
     const dialog = screen.getAllByRole("dialog").at(-1);
     fireEvent.click(within(dialog as HTMLElement).getByRole("button", { name: "Merge into base" }));
-    await waitFor(() => expect(mocks.deliverWorkItem).toHaveBeenCalledWith("lwi_delivery", "local_merge", 3));
+    await waitFor(() => expect(mocks.deliverWorkItem).toHaveBeenCalledWith("lwi_delivery", "local_merge", 4));
   });
 });
