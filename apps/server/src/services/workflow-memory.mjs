@@ -76,6 +76,7 @@ const WORKFLOW_RETRIEVAL_VERSION = 2;
 const MAX_EMBEDDING_RECORDS_PER_SOURCE = 5_000;
 const MAX_OCR_CHARACTERS = 500_000;
 const MAX_OCR_LINES_PER_PAGE = 2_000;
+const OCR_EXTENSIONS = new Set(["pdf", "png", "jpg", "jpeg", "webp"]);
 export const WORKFLOW_FEEDBACK_VERSION = 1;
 const WORKFLOW_FEEDBACK_REASONS = new Set([
   "content_corrected",
@@ -2619,7 +2620,8 @@ export function createWorkflowMemoryService({
         providerId: readiness.providerId ?? null,
         reason: readiness.reason ?? null,
         localOnly: true,
-        supportedExtensions: [".pdf"],
+        supportedExtensions: readiness.supportedExtensions
+          ?? [...OCR_EXTENSIONS].map((extension) => `.${extension}`),
       },
     };
   }
@@ -2643,7 +2645,7 @@ export function createWorkflowMemoryService({
         body: { error: "workflow_artifact_revision_conflict", currentRevision: artifact.revision },
       };
     }
-    if (artifact.extension !== "pdf" || artifact.extraction?.state !== "needs_ocr") {
+    if (!OCR_EXTENSIONS.has(artifact.extension) || artifact.extraction?.state !== "needs_ocr") {
       return { status: 409, body: { error: "workflow_artifact_ocr_not_applicable" } };
     }
     if (artifact.availability !== "available" || artifact.exclusion) {
@@ -2694,7 +2696,12 @@ export function createWorkflowMemoryService({
         if (confined === ".." || confined.startsWith(`..${sep}`) || isAbsolute(confined)) {
           return { status: 409, body: { error: "workflow_artifact_changed_rescan_required" } };
         }
-        const result = await ocrAdapter.recognizePdf({
+        const recognize = ocrAdapter.recognize?.bind(ocrAdapter)
+          ?? ocrAdapter.recognizePdf?.bind(ocrAdapter);
+        if (!recognize) {
+          return { status: 409, body: { error: "workflow_ocr_provider_unavailable" } };
+        }
+        const result = await recognize({
           path: target,
           signal: controller.signal,
           onProgress: (progress) => {
@@ -2716,9 +2723,14 @@ export function createWorkflowMemoryService({
           const text = String(page.text ?? "").slice(0, remainingCharacters);
           remainingCharacters -= text.length;
           return {
-            kind: "page",
+            kind: result.inputKind === "image" ? "image" : "page",
             text,
-            location: { kind: "page", index: page.index },
+            location: {
+              kind: result.inputKind === "image" ? "image" : "page",
+              index: page.index,
+              ...(page.width ? { width: page.width } : {}),
+              ...(page.height ? { height: page.height } : {}),
+            },
             confidence: page.confidence,
             evidence: page.evidence.slice(0, MAX_OCR_LINES_PER_PAGE),
           };
@@ -2743,6 +2755,7 @@ export function createWorkflowMemoryService({
           ocr: {
             providerId: result.providerId,
             providerVersion: result.providerVersion,
+            inputKind: result.inputKind === "image" ? "image" : "pdf",
             localOnly: true,
             completedAt: now(),
             averageConfidence: Number((

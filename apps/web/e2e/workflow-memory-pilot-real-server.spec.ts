@@ -425,6 +425,34 @@ test("shows all ten synthetic cases in the Chinese mobile batch UI", async ({ pa
   });
 });
 
+test("opens the governed pilot workbench on mobile and requires explicit case selection", async ({
+  page,
+}, testInfo) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.addInitScript(() => {
+    window.localStorage.setItem("myagenttool-ui", JSON.stringify({
+      version: 1,
+      state: { locale: "zh-CN", section: "workflowMemory" },
+    }));
+  });
+  await page.goto(`/?section=workflowMemory&api=${encodeURIComponent(apiBase)}`);
+  await expect(page.getByRole("heading", { name: "交付记忆" })).toBeVisible();
+  await page.getByRole("button", { name: "打开试运行工作台" }).click();
+  const workbench = page.getByRole("dialog", { name: "正式试运行" });
+  await expect(workbench).toBeVisible();
+  await expect(workbench.getByText(primaryWorkItemTitle).first()).toBeVisible();
+  const caseLabel = workbench.getByText(primaryWorkItemTitle).first().locator("../..");
+  await caseLabel.getByRole("checkbox").check();
+  await expect(workbench.getByText("case-01")).toBeVisible();
+  await expect(workbench.getByRole("button", { name: "生成证据包" })).toBeDisabled();
+  await page.keyboard.press("Escape");
+  await expect(workbench).toBeHidden();
+  await testInfo.attach("v1.5-pilot-workbench-mobile-zh", {
+    body: await page.screenshot({ fullPage: true }),
+    contentType: "image/png",
+  });
+});
+
 test("shows the ten-case batch and binds one completed UI journey to pilot evidence", async ({ page }, testInfo) => {
   await page.goto(`/?section=task&api=${encodeURIComponent(apiBase)}`);
   const batch = page.getByRole("region", { name: "Inquiry batch" });

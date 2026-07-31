@@ -8,6 +8,7 @@ import {
 
 const ACTOR_A = { userId: "usr_a", teamId: "team_a" };
 const ACTOR_B = { userId: "usr_b", teamId: "team_b" };
+const ACTOR_VIEWER = { userId: "usr_viewer", teamId: "team_a", role: "viewer" };
 
 function stateFixture() {
   return {
@@ -506,4 +507,126 @@ test("collector verifies the complete structured safety scenario matrix", () => 
   assert.ok(result.body.evidence.safetyScenarios.every((scenario) =>
     scenario.state === "complete"));
   assert.equal(result.body.evidence.missing.includes("complete_safety_evidence"), false);
+});
+
+test("pilot workbench persists human truth, projects honest gaps, and replays collection", () => {
+  const state = stateFixture();
+  let ids = 0;
+  const service = createBusinessPilotEvidenceService({
+    state,
+    now: () => "2026-07-30T12:00:00.000Z",
+    nextId: (prefix) => `${prefix}_${++ids}`,
+  });
+  const initial = service.getWorkbench({ projectId: "prj_a" }, ACTOR_A);
+  assert.equal(initial.status, 200);
+  assert.equal(initial.body.draft.revision, 0);
+  assert.equal(initial.body.eligible.workItems[0].id, "wit_case_a");
+  assert.deepEqual(initial.body.eligible.safetyEvidence, [{
+    id: "prompt_injection",
+    evidenceKind: "classification",
+    evidenceId: "bdc_inquiry",
+  }]);
+  assert.equal(initial.body.progress.caseCount, 0);
+  assert.ok(initial.body.progress.missing.includes("minimum_formal_cases"));
+  assert.equal(service.getWorkbench({ projectId: "prj_a" }, ACTOR_B).status, 404);
+  assert.equal(service.getWorkbench({ projectId: "prj_a" }, ACTOR_VIEWER).status, 403);
+
+  const draft = {
+    pilotId: "pilot-workbench",
+    description: "De-identified local commercial pilot.",
+    dataClassification: "deidentified",
+    consent: {
+      confirmed: true,
+      recordedAt: "2026-07-30T11:00:00.000Z",
+      scope: "Local Workflow Memory V1.5 pilot only",
+    },
+    releaseReview: {
+      confirmed: false,
+      recordedAt: "2026-07-30T11:30:00.000Z",
+      reviewerRole: "workspace owner",
+      performance: false,
+      security: false,
+      privacy: false,
+      accessibility: false,
+      localization: false,
+      migration: false,
+      rollback: false,
+    },
+    cases: [{
+      id: "case-01",
+      workItemId: "wit_case_a",
+      templateId: "markdown-a",
+      traits: ["restart", "concurrency"],
+      expectedDocumentRole: "inquiry",
+      relationshipExpected: false,
+      expectedOutcome: "no_order",
+    }],
+    safetyScenarios: [{
+      id: "prompt_injection",
+      evidenceKind: "classification",
+      evidenceId: "bdc_inquiry",
+    }],
+  };
+  const saved = service.saveWorkbench({
+    projectId: "prj_a",
+    expectedRevision: 0,
+    draft,
+  }, ACTOR_A);
+  assert.equal(saved.status, 200);
+  assert.equal(saved.body.draft.revision, 1);
+  assert.equal(saved.body.progress.caseCount, 1);
+  assert.equal(saved.body.progress.completeCaseCount, 1);
+  assert.equal(saved.body.progress.safety[0].passed, true);
+  assert.ok(saved.body.progress.missing.includes("minimum_formal_cases"));
+
+  const stale = service.saveWorkbench({
+    projectId: "prj_a",
+    expectedRevision: 0,
+    draft,
+  }, ACTOR_A);
+  assert.equal(stale.status, 409);
+  assert.equal(stale.body.error, "commercial_pilot_workbench_revision_conflict");
+  const injected = structuredClone(draft);
+  injected.cases[0].observed = { completed: true };
+  assert.equal(service.saveWorkbench({
+    projectId: "prj_a",
+    expectedRevision: 1,
+    draft: injected,
+  }, ACTOR_A).status, 400);
+  state.projects.push({ id: "prj_c", ownerTeamId: "team_a" });
+  const crossProject = service.saveWorkbench({
+    projectId: "prj_c",
+    expectedRevision: 0,
+    draft,
+  }, ACTOR_A);
+  assert.equal(crossProject.status, 404);
+  assert.equal(crossProject.body.error, "pilot_case_execution_not_found");
+
+  const collected = service.collectWorkbench({
+    projectId: "prj_a",
+    expectedRevision: 1,
+  }, ACTOR_A);
+  assert.equal(collected.status, 200);
+  assert.equal(collected.body.replayed, false);
+  assert.equal(collected.body.collection.evidence.state, "incomplete");
+  assert.equal(collected.body.collection.verification.verified, true);
+  assert.equal(collected.body.draft.revision, 2);
+  const coalesced = service.collectWorkbench({
+    projectId: "prj_a",
+    expectedRevision: 1,
+  }, ACTOR_A);
+  assert.equal(coalesced.status, 200);
+  assert.equal(coalesced.body.replayed, true);
+  const replay = service.collectWorkbench({
+    projectId: "prj_a",
+    expectedRevision: 2,
+  }, ACTOR_A);
+  assert.equal(replay.status, 200);
+  assert.equal(replay.body.replayed, true);
+  assert.equal(state.businessPilotEvidenceReceipts.length, 1);
+
+  const restarted = createBusinessPilotEvidenceService({ state });
+  const restored = restarted.getWorkbench({ projectId: "prj_a" }, ACTOR_A);
+  assert.equal(restored.body.draft.revision, 2);
+  assert.equal(restored.body.draft.lastCollection.evidence.pilotId, "pilot-workbench");
 });

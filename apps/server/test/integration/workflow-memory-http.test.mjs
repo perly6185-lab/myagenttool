@@ -735,6 +735,84 @@ test("workflow memory routes authorize, scan, classify, and enforce tenancy over
       body: { manifest: pilotEvidence.body.manifest },
     },
   )).status, 404);
+  const emptyPilotWorkbench = await call(
+    "/api/workflow-memory/commercial-pilot/workbench?projectId=prj_a",
+  );
+  assert.equal(emptyPilotWorkbench.status, 200, JSON.stringify(emptyPilotWorkbench.body));
+  assert.equal(emptyPilotWorkbench.body.draft.revision, 0);
+  assert.ok(emptyPilotWorkbench.body.eligible.workItems
+    .some((item) => item.id === routineWorkItemId));
+  assert.equal((await call(
+    "/api/workflow-memory/commercial-pilot/workbench?projectId=prj_a",
+    { token: "tok_b" },
+  )).status, 404);
+  const pilotWorkbenchDraft = {
+    pilotId: "http-pilot-workbench",
+    description: "HTTP integration pilot",
+    dataClassification: "deidentified",
+    consent: {
+      confirmed: true,
+      recordedAt: "2026-07-30T00:00:00.000Z",
+      scope: "Local authorized pilot evidence only",
+    },
+    releaseReview: pilotEvidenceSpec.releaseReview,
+    cases: pilotEvidenceSpec.cases,
+    safetyScenarios: [],
+  };
+  const savedPilotWorkbench = await call(
+    "/api/workflow-memory/commercial-pilot/workbench",
+    {
+      method: "PUT",
+      body: {
+        projectId: "prj_a",
+        expectedRevision: 0,
+        draft: pilotWorkbenchDraft,
+      },
+    },
+  );
+  assert.equal(savedPilotWorkbench.status, 200, JSON.stringify(savedPilotWorkbench.body));
+  assert.equal(savedPilotWorkbench.body.draft.revision, 1);
+  assert.equal(savedPilotWorkbench.body.progress.caseCount, 1);
+  assert.equal(savedPilotWorkbench.body.progress.readyForCollection, true);
+  const collectedPilotWorkbench = await call(
+    "/api/workflow-memory/commercial-pilot/workbench/collect",
+    {
+      method: "POST",
+      body: {
+        projectId: "prj_a",
+        expectedRevision: 1,
+      },
+    },
+  );
+  assert.equal(collectedPilotWorkbench.status, 200, JSON.stringify(collectedPilotWorkbench.body));
+  assert.equal(collectedPilotWorkbench.body.draft.revision, 2);
+  assert.equal(collectedPilotWorkbench.body.collection.evidence.state, "incomplete");
+  assert.equal(collectedPilotWorkbench.body.replayed, false);
+  const replayedPilotWorkbench = await call(
+    "/api/workflow-memory/commercial-pilot/workbench/collect",
+    {
+      method: "POST",
+      body: {
+        projectId: "prj_a",
+        expectedRevision: 2,
+      },
+    },
+  );
+  assert.equal(replayedPilotWorkbench.status, 200, JSON.stringify(replayedPilotWorkbench.body));
+  assert.equal(replayedPilotWorkbench.body.draft.revision, 2);
+  assert.equal(replayedPilotWorkbench.body.replayed, true);
+  assert.equal((await call(
+    "/api/workflow-memory/commercial-pilot/workbench",
+    {
+      token: "tok_b",
+      method: "PUT",
+      body: {
+        projectId: "prj_a",
+        expectedRevision: 0,
+        draft: pilotWorkbenchDraft,
+      },
+    },
+  )).status, 404);
   assert.equal((await call(
     `/api/workflow-memory/routine-work-items/${routineWorkItemId}`,
     { token: "tok_b" },

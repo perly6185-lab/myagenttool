@@ -670,6 +670,12 @@ async function mockApi(page: Page) {
         samples: [],
       } });
     }
+    if (url.pathname === "/api/workflow-memory/commercial-pilot/workbench") {
+      return route.fulfill({
+        status: 403,
+        json: { error: "pilot_workbench_not_available_in_routine_fixture" },
+      });
+    }
     return route.fulfill({ json: {} });
   });
 }
@@ -746,6 +752,7 @@ test("shows a clear governed real-case intake dialog on desktop and mobile", asy
   await expect(dialog.getByText("RFQ-2026-101.xlsx")).toBeVisible();
   await expect(dialog.getByText("product-photo.png")).toBeVisible();
   await expect(dialog.getByText("Needs OCR")).toBeVisible();
+  await expect(dialog.getByRole("radio", { name: "Primary inquiry: product-photo.png" })).toBeEnabled();
   await expect(dialog.getByLabel("I confirm I may use these files in this local workflow.")).not.toBeChecked();
   await testInfo.attach("real-case-intake-desktop", {
     body: await page.screenshot({ fullPage: true }),

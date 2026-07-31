@@ -58,6 +58,9 @@ export async function handleWorkflowMemoryRoutes({
   listLedgerMutations,
   collectBusinessPilotEvidence,
   verifyBusinessPilotEvidence,
+  getBusinessPilotWorkbench,
+  saveBusinessPilotWorkbench,
+  collectBusinessPilotWorkbench,
   materializeRoutineIssue,
   getRoutineWorkItemExecution,
   listRoutineWorkQueue,
@@ -108,6 +111,29 @@ export async function handleWorkflowMemoryRoutes({
   if (url.pathname === "/api/workflow-memory/commercial-pilot/evidence/verify"
     && req.method === "POST") {
     const result = verifyBusinessPilotEvidence(await readJson(req), actor);
+    sendJson(res, result.status, result.body);
+    return true;
+  }
+
+  if (url.pathname === "/api/workflow-memory/commercial-pilot/workbench"
+    && req.method === "GET") {
+    const result = getBusinessPilotWorkbench({
+      projectId: url.searchParams.get("projectId"),
+    }, actor);
+    sendJson(res, result.status, result.body);
+    return true;
+  }
+
+  if (url.pathname === "/api/workflow-memory/commercial-pilot/workbench"
+    && req.method === "PUT") {
+    const result = saveBusinessPilotWorkbench(await readJson(req), actor);
+    sendJson(res, result.status, result.body);
+    return true;
+  }
+
+  if (url.pathname === "/api/workflow-memory/commercial-pilot/workbench/collect"
+    && req.method === "POST") {
+    const result = collectBusinessPilotWorkbench(await readJson(req), actor);
     sendJson(res, result.status, result.body);
     return true;
   }

@@ -78,18 +78,19 @@ const COPY = {
     noRoutine: "Publish an inquiry routine before processing new files.",
     needsOcr: "This file has no readable text layer yet. Run OCR or choose another primary inquiry.",
     runOcr: "Run local OCR",
-    ocrTitle: "Read this scanned PDF locally",
-    ocrDescription: "OCR runs on this Mac. The PDF and recognized text are not uploaded.",
+    ocrTitle: "Read this scanned file locally",
+    ocrDescription: "OCR runs on this Mac. The file and recognized text are not uploaded.",
     ocrProvider: "Local provider",
     ocrPages: "PDF pages",
+    ocrImage: "Image",
     ocrProgress: "Progress",
-    ocrEvidence: "OCR page evidence",
+    ocrEvidence: "OCR evidence",
     ocrLines: "lines",
-    ocrConfirm: "I confirm that this local PDF may be processed by OCR.",
+    ocrConfirm: "I confirm that this local file may be processed by OCR.",
     ocrUnavailable: "Local OCR is not available on this device.",
-    ocrRunning: "Reading PDF…",
+    ocrRunning: "Reading file…",
     ocrSubmit: "Read and continue",
-    ocrFailed: "Local OCR could not read this PDF.",
+    ocrFailed: "Local OCR could not read this file.",
     historicalOutputInvalid: "Choose a readable XLSX workbook as the historical output.",
     historicalOutputUnpaired: "The historical workbook does not reference this inquiry.",
     replaySupportConflict: "This inquiry was already created with a different set of supporting files.",
@@ -133,18 +134,19 @@ const COPY = {
     noRoutine: "请先发布一个询价工作流。",
     needsOcr: "该文件目前没有可读取的文字层。请先运行 OCR，或选择其他资料作为主询价。",
     runOcr: "运行本地 OCR",
-    ocrTitle: "在本机读取扫描 PDF",
-    ocrDescription: "OCR 仅在这台 Mac 上运行，PDF 和识别文字不会上传。",
+    ocrTitle: "在本机读取扫描文件",
+    ocrDescription: "OCR 仅在这台 Mac 上运行，文件和识别文字不会上传。",
     ocrProvider: "本地识别组件",
     ocrPages: "PDF 页数",
+    ocrImage: "图片",
     ocrProgress: "识别进度",
-    ocrEvidence: "OCR 分页证据",
+    ocrEvidence: "OCR 证据",
     ocrLines: "行",
-    ocrConfirm: "我确认允许在本机对这份 PDF 进行 OCR。",
+    ocrConfirm: "我确认允许在本机对这份文件进行 OCR。",
     ocrUnavailable: "当前设备没有可用的本地 OCR。",
-    ocrRunning: "正在读取 PDF……",
+    ocrRunning: "正在读取文件……",
     ocrSubmit: "读取并继续",
-    ocrFailed: "本地 OCR 无法读取这份 PDF。",
+    ocrFailed: "本地 OCR 无法读取这份文件。",
     historicalOutputInvalid: "请选择可读取的 XLSX 文件作为历史交付物。",
     historicalOutputUnpaired: "该历史交付表与当前询价之间没有可验证的关联。",
     replaySupportConflict: "该询价已使用另一组关联资料创建，请检查原案例。",
@@ -504,8 +506,10 @@ export function InquiryIntakePanel({
           <dl className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-2 rounded-md border p-3 text-sm">
             <dt className="text-muted-foreground">{copy.sourceFile}</dt>
             <dd className="truncate font-medium">{ocrTarget?.name}</dd>
-            <dt className="text-muted-foreground">{copy.ocrPages}</dt>
-            <dd>{ocrTarget?.extraction?.pageCount ?? "—"}</dd>
+            <dt className="text-muted-foreground">
+              {ocrTarget?.name.match(/\.(?:png|jpe?g|webp)$/i) ? copy.ocrImage : copy.ocrPages}
+            </dt>
+            <dd>{ocrTarget?.name.match(/\.(?:png|jpe?g|webp)$/i) ? "1" : ocrTarget?.extraction?.pageCount ?? "—"}</dd>
             <dt className="text-muted-foreground">{copy.ocrProvider}</dt>
             <dd>{ocrReadinessQuery.data?.providerId ?? "—"}</dd>
             <dt className="text-muted-foreground">{copy.ocrProgress}</dt>
@@ -587,8 +591,11 @@ export function InquiryIntakePanel({
                   {inspection.observation.ocrEvidence.map((evidence) => (
                     <li key={evidence.page}>
                       <span className="font-medium text-foreground">
-                        {copy.ocrPages} {evidence.page}
+                        {evidence.kind === "image" ? copy.ocrImage : `${copy.ocrPages} ${evidence.page}`}
                       </span>
+                      {evidence.kind === "image" && evidence.width && evidence.height
+                        ? ` · ${evidence.width}×${evidence.height}`
+                        : ""}
                       {" · "}{evidence.lineCount} {copy.ocrLines}
                       {evidence.confidence == null
                         ? ""
