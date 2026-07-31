@@ -109,7 +109,7 @@ function resolveSourceRoot(state, sourceId) {
   return sourceRoot;
 }
 
-function createCaseDirectory(sourceRoot, caseName) {
+function createCaseDirectory(sourceRoot, caseName, recordedAt) {
   const inbox = join(sourceRoot, "incoming");
   if (existsSync(inbox) && lstatSync(inbox).isSymbolicLink()) {
     throw new Error("The intake destination is not safe.");
@@ -117,7 +117,7 @@ function createCaseDirectory(sourceRoot, caseName) {
   mkdirSync(inbox, { recursive: true });
   const realInbox = realpathSync(inbox);
   if (!contained(sourceRoot, realInbox)) throw new Error("The intake destination escapes the selected folder.");
-  const folderName = `${new Date().toISOString().slice(0, 10)}-${safeName(caseName)}-${randomUUID().slice(0, 8)}`;
+  const folderName = `${recordedAt.slice(0, 10)}-${safeName(caseName)}-${randomUUID().slice(0, 8)}`;
   const destination = join(realInbox, folderName);
   mkdirSync(destination, { recursive: false });
   return { destination, relativeDirectory: relative(sourceRoot, destination).split(sep).join("/") };
@@ -222,7 +222,12 @@ export function registerWorkflowCaseIntake({
       throw new Error("A historical inquiry ledger must be an XLSX workbook.");
     }
     const sourceRoot = resolveSourceRoot(await getState(), String(input?.sourceId ?? ""));
-    const { destination, relativeDirectory } = createCaseDirectory(sourceRoot, input?.caseName);
+    const recordedAt = now();
+    const { destination, relativeDirectory } = createCaseDirectory(
+      sourceRoot,
+      input?.caseName,
+      recordedAt,
+    );
     try {
       const used = new Set();
       const staged = [];
@@ -278,7 +283,7 @@ export function registerWorkflowCaseIntake({
         supportingFileRoles: Object.fromEntries(supporting.map((file) => [file.relativePath, file.role])),
         files: staged,
         authorizationMode: input.authorizationMode,
-        recordedAt: now(),
+        recordedAt,
       };
       writeFileSync(join(destination, ".case.json"), JSON.stringify({
         schemaVersion: 2,
