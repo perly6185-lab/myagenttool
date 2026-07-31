@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { StatusBadge } from "@/components/ui/badge";
@@ -11,7 +11,7 @@ import { RunTranscriptSection } from "@/features/invocations/run-transcript";
 import { DecisionAction } from "@/features/invocations/decision-action";
 import { GuidedSetupCard } from "@/features/dashboard/guided-setup-card";
 import { EntryJourney } from "@/features/dashboard/entry-journey";
-import { DailyWorkBoard } from "@/features/dashboard/daily-work-board";
+import { localScheduleApi } from "@/features/dashboard/local-schedule-api";
 import type { LocalWorkItemResult } from "@/features/tasks/task-view-types";
 import type {
   LocalScheduleCapacityResponse,
@@ -43,6 +43,11 @@ import {
   invocationStatus,
   resultHeading,
 } from "@/lib/i18n/readable-labels";
+
+const DailyWorkBoard = lazy(async () => {
+  const module = await import("@/features/dashboard/daily-work-board");
+  return { default: module.DailyWorkBoard };
+});
 import type { AgentSnapshot, ConsoleSnapshot, InvocationSnapshot, WorkItem } from "@/lib/console-state";
 import { useAppTranslation } from "@/lib/i18n/use-app-translation";
 
@@ -140,10 +145,10 @@ export function DashboardView({ surface = "overview" }: { surface?: DashboardSur
     let cancelled = false;
     void Promise.all([
       api.listWorkItems({ assigneeId: "mine", limit: "100" }) as Promise<LocalWorkItemResult>,
-      (api.getLocalScheduleCapacity() as Promise<LocalScheduleCapacityResponse>).catch(() => undefined),
-      (api.getLocalSchedulePreview() as Promise<LocalSchedulePreviewResponse>).catch(() => undefined),
-      (api.getLocalScheduleRollover() as Promise<LocalScheduleRolloverResponse>).catch(() => undefined),
-      (api.getLocalScheduleUrgent() as Promise<LocalScheduleUrgentResponse>).catch(() => undefined),
+      localScheduleApi.capacity().catch(() => undefined),
+      localScheduleApi.preview().catch(() => undefined),
+      localScheduleApi.rolloverPreview().catch(() => undefined),
+      localScheduleApi.urgentPreview().catch(() => undefined),
     ])
       .then(([items, capacity, preview, rollover, urgent]) => {
         if (!cancelled) {
@@ -321,35 +326,37 @@ export function DashboardView({ surface = "overview" }: { surface?: DashboardSur
     <div className="flex min-h-full flex-col gap-4">
       {surface === "overview" ? (
         <div className="order-1">
-          <DailyWorkBoard
-            board={state?.workBoard}
-            report={state?.workReport}
-            plannedItems={dailyWorkItems}
-            capacity={localScheduleCapacity}
-            preview={localSchedulePreview}
-            rollover={localScheduleRollover}
-            urgent={localScheduleUrgent}
-            onOpenItem={openDailyWorkItem}
-            onOpenTasks={() => setSection("task")}
-            onApplyPlan={localSchedulePreview ? () => {
-              void scheduleAction.execute(() => api.applyLocalSchedulePlan(localSchedulePreview.planRevision));
-            } : undefined}
-            applyingPlan={scheduleAction.pending}
-            onRollover={localScheduleRollover ? (confirmPinned) => {
-              void rolloverAction.execute(() => api.applyLocalScheduleRollover(
-                localScheduleRollover.rolloverRevision,
-                confirmPinned,
-              ));
-            } : undefined}
-            rollingOver={rolloverAction.pending}
-            onApplyUrgent={localScheduleUrgent ? (confirmPinned) => {
-              void urgentAction.execute(() => api.applyLocalScheduleUrgent(
-                localScheduleUrgent.urgentRevision,
-                confirmPinned,
-              ));
-            } : undefined}
-            applyingUrgent={urgentAction.pending}
-          />
+          <Suspense fallback={null}>
+            <DailyWorkBoard
+              board={state?.workBoard}
+              report={state?.workReport}
+              plannedItems={dailyWorkItems}
+              capacity={localScheduleCapacity}
+              preview={localSchedulePreview}
+              rollover={localScheduleRollover}
+              urgent={localScheduleUrgent}
+              onOpenItem={openDailyWorkItem}
+              onOpenTasks={() => setSection("task")}
+              onApplyPlan={localSchedulePreview ? () => {
+                void scheduleAction.execute(() => localScheduleApi.applyPlan(localSchedulePreview.planRevision));
+              } : undefined}
+              applyingPlan={scheduleAction.pending}
+              onRollover={localScheduleRollover ? (confirmPinned) => {
+                void rolloverAction.execute(() => localScheduleApi.applyRollover(
+                  localScheduleRollover.rolloverRevision,
+                  confirmPinned,
+                ));
+              } : undefined}
+              rollingOver={rolloverAction.pending}
+              onApplyUrgent={localScheduleUrgent ? (confirmPinned) => {
+                void urgentAction.execute(() => localScheduleApi.applyUrgent(
+                  localScheduleUrgent.urgentRevision,
+                  confirmPinned,
+                ));
+              } : undefined}
+              applyingUrgent={urgentAction.pending}
+            />
+          </Suspense>
         </div>
       ) : null}
       {surface === "overview" && activeInvocations.length > 0 ? (

@@ -2232,15 +2232,6 @@ export const api = {
   dora: () => request("GET", "/api/dora"),
   dispatchEvaluation: () => request("GET", "/api/dispatch-evaluation"),
   getInvocationDispatchHealth: () => request<InvocationDispatchHealthResponse>("GET", "/api/invocation-dispatch-health"),
-  getLocalScheduleCapacity: () => request<LocalScheduleCapacityResponse>("GET", "/api/local-schedule/capacity"),
-  getLocalSchedulePreview: () => request<LocalSchedulePreviewResponse>("GET", "/api/local-schedule/preview"),
-  applyLocalSchedulePlan: (planRevision: string) => request("POST", "/api/local-schedule/apply", { planRevision }),
-  getLocalScheduleRollover: () => request<LocalScheduleRolloverResponse>("GET", "/api/local-schedule/rollover-preview"),
-  applyLocalScheduleRollover: (rolloverRevision: string, confirmPinned = false) =>
-    request("POST", "/api/local-schedule/rollover", { rolloverRevision, confirmPinned }),
-  getLocalScheduleUrgent: () => request<LocalScheduleUrgentResponse>("GET", "/api/local-schedule/urgent-preview"),
-  applyLocalScheduleUrgent: (urgentRevision: string, confirmPinned = false) =>
-    request("POST", "/api/local-schedule/urgent", { urgentRevision, confirmPinned }),
   loopRoutineRuns: () => request("GET", "/api/loop-routines"),
   loopRoutineFindings: (runId: string) => request("GET", `/api/loop-routines/${encodeURIComponent(runId)}/findings`),
   // Auto-run effective configuration (safe knobs overlaid on env + per-command

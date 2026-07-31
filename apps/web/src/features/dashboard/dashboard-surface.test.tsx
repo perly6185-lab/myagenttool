@@ -20,13 +20,17 @@ vi.mock("@/data/use-console-actions", () => ({
   useAsyncAction: mocks.useAsyncAction,
   api: {
     listWorkItems: mocks.listWorkItems,
-    getLocalScheduleCapacity: mocks.getLocalScheduleCapacity,
-    getLocalSchedulePreview: mocks.getLocalSchedulePreview,
-    applyLocalSchedulePlan: mocks.applyLocalSchedulePlan,
-    getLocalScheduleRollover: mocks.getLocalScheduleRollover,
-    applyLocalScheduleRollover: mocks.applyLocalScheduleRollover,
-    getLocalScheduleUrgent: mocks.getLocalScheduleUrgent,
-    applyLocalScheduleUrgent: mocks.applyLocalScheduleUrgent,
+  },
+}));
+vi.mock("@/features/dashboard/local-schedule-api", () => ({
+  localScheduleApi: {
+    capacity: mocks.getLocalScheduleCapacity,
+    preview: mocks.getLocalSchedulePreview,
+    applyPlan: mocks.applyLocalSchedulePlan,
+    rolloverPreview: mocks.getLocalScheduleRollover,
+    applyRollover: mocks.applyLocalScheduleRollover,
+    urgentPreview: mocks.getLocalScheduleUrgent,
+    applyUrgent: mocks.applyLocalScheduleUrgent,
   },
 }));
 vi.mock("@/features/invocations/run-transcript", () => ({ RunTranscriptSection: () => null }));
@@ -76,11 +80,11 @@ function setup() {
 }
 
 describe("DashboardView surfaces (#927)", () => {
-  it("puts the three-day board first, keeps the task action available, and focuses it from Create", () => {
+  it("puts the three-day board first, keeps the task action available, and focuses it from Create", async () => {
     setup();
     render(<DashboardView surface="overview" />);
     expect(screen.getByText(/Prepare this computer/i)).toBeTruthy();
-    expect(screen.getByTestId("daily-work-board").closest(".order-1")).toBeTruthy();
+    expect((await screen.findByTestId("daily-work-board")).closest(".order-1")).toBeTruthy();
     expect(screen.getByText("What should your computer do?").closest(".order-2")).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Inspect this project" }));
     const taskInput = screen.getByRole("textbox", { name: "Task" }) as HTMLTextAreaElement;
