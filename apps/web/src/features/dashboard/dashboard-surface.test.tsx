@@ -80,12 +80,12 @@ function setup() {
 }
 
 describe("DashboardView surfaces (#927)", () => {
-  it("puts the three-day board first, keeps the task action available, and focuses it from Create", async () => {
+  it("keeps the primary task action first, puts the three-day board next, and focuses the task from Create", async () => {
     setup();
     render(<DashboardView surface="overview" />);
     expect(screen.getByText(/Prepare this computer/i)).toBeTruthy();
-    expect((await screen.findByTestId("daily-work-board")).closest(".order-1")).toBeTruthy();
-    expect(screen.getByText("What should your computer do?").closest(".order-2")).toBeTruthy();
+    expect(screen.getByText("What should your computer do?").closest(".order-1")).toBeTruthy();
+    expect((await screen.findByTestId("daily-work-board")).closest(".order-2")).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Inspect this project" }));
     const taskInput = screen.getByRole("textbox", { name: "Task" }) as HTMLTextAreaElement;
     expect(taskInput.value).toBe(

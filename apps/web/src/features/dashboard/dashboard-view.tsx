@@ -325,7 +325,7 @@ export function DashboardView({ surface = "overview" }: { surface?: DashboardSur
   return (
     <div className="flex min-h-full flex-col gap-4">
       {surface === "overview" ? (
-        <div className="order-1">
+        <div className="order-2">
           <Suspense fallback={null}>
             <DailyWorkBoard
               board={state?.workBoard}
@@ -429,7 +429,7 @@ export function DashboardView({ surface = "overview" }: { surface?: DashboardSur
         </Card>
       </div> : null}
 
-      <Card className={surface === "overview" ? "order-2 shrink-0" : "order-4 shrink-0"}>
+      <Card className={surface === "overview" ? "order-1 shrink-0" : "order-4 shrink-0"}>
         <CardHeader className="pb-2">
           <CardTitle>{t("dashboard.composerTitle")}</CardTitle>
         </CardHeader>

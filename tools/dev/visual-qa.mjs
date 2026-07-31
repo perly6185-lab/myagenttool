@@ -236,6 +236,23 @@ async function captureScreenshots(driver) {
             path: relativeArtifactPath(filePath),
             assertions: { noHorizontalOverflow: true, nonBlank: true, keyPanelsVisible: !scenario.disconnected },
           });
+          if (scenario.name === "ready") {
+            const board = page.locator('[data-testid="daily-work-board"]:visible');
+            await board.waitFor({ timeout: 15_000 });
+            await board.scrollIntoViewIfNeeded();
+            const boardBox = await board.boundingBox();
+            if (!boardBox || boardBox.width > viewport.width + 1) {
+              throw new Error(`daily-work-board/${viewport.name} exceeds its viewport width`);
+            }
+            const boardPath = resolve(screenshotDir, `daily-work-board-${viewport.name}.png`);
+            await board.screenshot({ path: boardPath });
+            screenshots.push({
+              scenario: "daily-work-board",
+              viewport: viewport.name,
+              path: relativeArtifactPath(boardPath),
+              assertions: { noHorizontalOverflow: true, nonBlank: true, keyPanelsVisible: true },
+            });
+          }
           await page.close();
         }
       }
