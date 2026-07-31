@@ -12,6 +12,7 @@ const MAX_ZIP_ENTRIES = 2_000;
 const MAX_PDF_PAGES = 300;
 const MAX_SHEETS = 100;
 const MAX_CELLS = 20_000;
+const OCR_IMAGE_EXTENSIONS = new Set([".png", ".jpg", ".jpeg", ".webp"]);
 
 function decodeXml(value) {
   return String(value ?? "")
@@ -262,6 +263,19 @@ export async function parseWorkflowDocument({
   }
   if (Number(size) > MAX_INPUT_BYTES) {
     return { state: "limited", reason: "document_too_large", parserVersion: WORKFLOW_DOCUMENT_PARSER_VERSION };
+  }
+  if (OCR_IMAGE_EXTENSIONS.has(normalizedExtension)) {
+    return {
+      state: "needs_ocr",
+      parserVersion: WORKFLOW_DOCUMENT_PARSER_VERSION,
+      blocks: [],
+      characterCount: 0,
+      truncated: false,
+      pageCount: 1,
+      cellCount: null,
+      needsOcr: true,
+      truncatedPages: false,
+    };
   }
   if (![".html", ".htm", ".docx", ".pptx", ".xlsx", ".pdf"].includes(normalizedExtension)) {
     return { state: "skipped", reason: "native_text_or_unsupported", parserVersion: WORKFLOW_DOCUMENT_PARSER_VERSION };

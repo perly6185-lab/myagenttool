@@ -1739,7 +1739,7 @@ test("routine ledger steps cannot bypass a previewed and audited mutation", () =
   assert.equal(completed.execution.run.status, "succeeded");
 });
 
-test("V1.4 collections and pilot evidence receipts survive persistence", () => {
+test("V1.4 collections and V1.5 pilot workbench evidence survive persistence", () => {
   const root = join(tmpdir(), `business-routine-persistence-${Date.now()}`);
   const projectPath = join(root, "project");
   const statePath = join(root, "state.json");
@@ -1760,6 +1760,16 @@ test("V1.4 collections and pilot evidence receipts survive persistence", () => {
       ownerTeamId: "team_local",
       manifestDigest: "a".repeat(64),
       collectedAt: now(),
+    });
+    first.state.businessPilotDrafts.push({
+      id: "bpd_persisted",
+      ownerTeamId: "team_local",
+      projectId: first.defaultProject.id,
+      spec: { pilotId: "pilot-persisted" },
+      revision: 2,
+      lastCollectionDigest: "b".repeat(64),
+      lastCollection: { evidence: { state: "incomplete" } },
+      updatedAt: now(),
     });
     for (const [index, key] of businessRoutineCollectionKeys.entries()) {
       first.state[key].push({
@@ -1793,6 +1803,8 @@ test("V1.4 collections and pilot evidence receipts survive persistence", () => {
     assert.equal(second.state.workflowProfiles[0].id, "wfp_old");
     assert.equal(second.state.workItems[0].id, "lwi_old");
     assert.equal(second.state.businessPilotEvidenceReceipts[0].id, "bper_persisted");
+    assert.equal(second.state.businessPilotDrafts[0].id, "bpd_persisted");
+    assert.equal(second.state.businessPilotDrafts[0].lastCollection.evidence.state, "incomplete");
     for (const [index, key] of businessRoutineCollectionKeys.entries()) {
       assert.equal(second.state[key][0].id, `v14_${index}`, `${key} restores`);
     }

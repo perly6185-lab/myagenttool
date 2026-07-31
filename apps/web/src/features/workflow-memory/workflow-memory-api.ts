@@ -95,6 +95,9 @@ export interface InquiryIntakeInspection {
     revision: number;
     ocrEvidence: Array<{
       page: number;
+      kind: "page" | "image";
+      width: number | null;
+      height: number | null;
       confidence: number | null;
       lineCount: number;
       preview: string;
@@ -124,11 +127,173 @@ export interface InquiryIntakeInspection {
   routines: InquiryIntakeRoutine[];
 }
 
+export type CommercialPilotDocumentRole =
+  | "inquiry"
+  | "quotation"
+  | "order"
+  | "inquiry_ledger"
+  | "quotation_ledger"
+  | "order_ledger"
+  | "unknown";
+
+export interface CommercialPilotCaseDraft {
+  id: string;
+  workItemId: string;
+  templateId: string;
+  traits: string[];
+  expectedDocumentRole: CommercialPilotDocumentRole;
+  relationshipExpected: boolean;
+  relationshipArtifactId?: string;
+  expectedOutcome: "ordered" | "no_order" | "rejected";
+}
+
+export interface CommercialPilotSafetyDraft {
+  id: string;
+  evidenceKind: "event" | "refusal" | "classification";
+  evidenceId: string;
+}
+
+export interface CommercialPilotReleaseReview {
+  confirmed: boolean;
+  recordedAt?: string | null;
+  reviewerRole: string;
+  performance: boolean;
+  security: boolean;
+  privacy: boolean;
+  accessibility: boolean;
+  localization: boolean;
+  migration: boolean;
+  rollback: boolean;
+}
+
+export interface CommercialPilotWorkbenchDraftInput {
+  pilotId: string;
+  description?: string;
+  dataClassification: "deidentified" | "real";
+  consent: {
+    confirmed: boolean;
+    recordedAt?: string | null;
+    scope: string;
+  };
+  releaseReview: CommercialPilotReleaseReview;
+  cases: CommercialPilotCaseDraft[];
+  safetyScenarios: CommercialPilotSafetyDraft[];
+}
+
+export interface CommercialPilotWorkbench {
+  draft: CommercialPilotWorkbenchDraftInput & {
+    id: string | null;
+    projectId: string;
+    schemaVersion: 1;
+    thresholds: {
+      minimumFormalCases: number;
+      documentRoleTop1: number;
+      relationshipTop1: number;
+    };
+    revision: number;
+    updatedAt: string | null;
+    lastCollection: CommercialPilotCollection | null;
+  };
+  progress: {
+    caseCount: number;
+    requiredCaseCount: number;
+    completeCaseCount: number;
+    templateCount: number;
+    requiredTemplateCount: number;
+    outcomes: string[];
+    traits: Array<{ id: string; complete: boolean }>;
+    safety: Array<{ id: string; passed: boolean; reason?: string }>;
+    releaseReview: Array<{ id: string; complete: boolean }>;
+    cases: Array<{
+      id: string;
+      workItemId: string;
+      state: "complete" | "incomplete" | "missing";
+      missing: string[];
+    }>;
+    missing: string[];
+    readyForCollection: boolean;
+    validationErrors: string[];
+  };
+  eligible: {
+    workItems: Array<{
+      id: string;
+      localRef: string | null;
+      title: string | null;
+      status: string;
+      businessCaseId: string | null;
+    }>;
+    relationshipArtifacts: Array<{
+      id: string;
+      name: string | null;
+      family: string;
+    }>;
+    safetyEvidence: CommercialPilotSafetyDraft[];
+  };
+  requiredSafetyScenarios: string[];
+}
+
+export interface CommercialPilotCollection {
+  evidence: {
+    state: "complete" | "incomplete";
+    missing: string[];
+  };
+  manifest: Record<string, unknown>;
+  report: {
+    metrics: {
+      formalCaseCount: number;
+      documents: {
+        top1: number | null;
+        unknownCoverage: number | null;
+        forcedGuessCount: number;
+      };
+      relationships: { top1: number | null; top5: number | null };
+      correction: { rate: number | null };
+      completion: { rate: number | null };
+      evidence: { coverage: number | null };
+      outcomes: { accuracy: number | null };
+      duplicates: { total: number };
+      approvals: { coverage: number | null; incompleteCaseCount: number };
+      recovery: { passRate: number | null };
+      safety: { passRate: number | null };
+    };
+    gate: {
+      decision: "go" | "no_go";
+      reasons?: string[];
+    };
+  };
+  verification?: { verified: true };
+}
+
 /**
  * Workflow Memory is route-lazy, so keep its sizeable API surface in the same
  * lazy chunk instead of charging every user for it during application boot.
  */
 export const workflowMemoryApi = {
+  getBusinessPilotWorkbench: (projectId: string) =>
+    request<CommercialPilotWorkbench>(
+      "GET",
+      `/api/workflow-memory/commercial-pilot/workbench?projectId=${encodeURIComponent(projectId)}`,
+    ),
+  saveBusinessPilotWorkbench: (body: {
+    projectId: string;
+    expectedRevision: number;
+    draft: CommercialPilotWorkbenchDraftInput;
+  }) => request<CommercialPilotWorkbench>(
+    "PUT",
+    "/api/workflow-memory/commercial-pilot/workbench",
+    body,
+  ),
+  collectBusinessPilotWorkbench: (body: {
+    projectId: string;
+    expectedRevision: number;
+  }) => request<CommercialPilotWorkbench & {
+    collection: CommercialPilotCollection;
+    replayed: boolean;
+  }>(
+    "POST",
+    "/api/workflow-memory/commercial-pilot/workbench/collect",
+    body,
+  ),
   listWorkflowSources: () =>
     request<{ sources: WorkflowSource[] }>("GET", "/api/workflow-memory/sources"),
   createWorkflowSource: (body: {

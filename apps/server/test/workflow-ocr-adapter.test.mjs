@@ -8,6 +8,7 @@ import { fileURLToPath } from "node:url";
 import {
   createLocalWorkflowOcrAdapter,
   resolveWorkflowOcrConfig,
+  runWorkflowOcrProcess,
 } from "../src/services/workflow-ocr-adapter.mjs";
 import {
   extractionText,
@@ -34,6 +35,7 @@ test("OCR readiness is explicit and unavailable off macOS", () => {
     state: "unavailable",
     providerId: null,
     reason: "workflow_ocr_platform_unsupported",
+    supportedExtensions: [".pdf", ".png", ".jpg", ".jpeg", ".webp"],
   });
 });
 
@@ -87,6 +89,56 @@ test("OCR adapter invokes a fixed command and validates bounded page evidence", 
   });
 });
 
+test("OCR process times out and cancels without leaving a successful result", async () => {
+  await assert.rejects(
+    () => runWorkflowOcrProcess(
+      process.execPath,
+      ["-e", "setInterval(() => {}, 1000)"],
+      { timeoutMs: 20 },
+    ),
+    (error) => error.code === "workflow_ocr_timeout",
+  );
+  const controller = new AbortController();
+  const pending = runWorkflowOcrProcess(
+    process.execPath,
+    ["-e", "setInterval(() => {}, 1000)"],
+    { signal: controller.signal, timeoutMs: 2_000 },
+  );
+  setTimeout(() => controller.abort(), 20);
+  await assert.rejects(
+    () => pending,
+    (error) => error.code === "workflow_ocr_cancelled",
+  );
+});
+
+test("OCR progress callback failures are isolated from the fixed child process", async () => {
+  const output = await runWorkflowOcrProcess(
+    process.execPath,
+    [
+      "-e",
+      "process.stderr.write('MYAGENTTOOL_OCR_PROGRESS 1/1\\n'); process.stdout.write('{}')",
+    ],
+    {
+      timeoutMs: 2_000,
+      onProgress: () => {
+        throw new Error("UI progress listener failed");
+      },
+    },
+  );
+  assert.equal(output, "{}");
+});
+
+test("OCR process kills provider output beyond the fixed byte ceiling", async () => {
+  await assert.rejects(
+    () => runWorkflowOcrProcess(
+      process.execPath,
+      ["-e", "process.stdout.write('x'.repeat(13 * 1024 * 1024))"],
+      { timeoutMs: 2_000 },
+    ),
+    (error) => error.code === "workflow_ocr_output_too_large",
+  );
+});
+
 test("OCR adapter rejects malformed provider results", async () => {
   const adapter = createLocalWorkflowOcrAdapter({
     config: {
@@ -104,24 +156,80 @@ test("OCR adapter rejects malformed provider results", async () => {
   );
 });
 
-test("real DMA PDF/XLSX case OCRs with page evidence and leaves both source files unchanged", {
+test("OCR adapter accepts a raster image and preserves bounded region dimensions", async () => {
+  const adapter = createLocalWorkflowOcrAdapter({
+    config: {
+      enabled: true,
+      providerId: "macos-vision",
+      reason: null,
+      command: "/usr/bin/swift",
+      scriptPath: "/app/ocr.swift",
+    },
+    run: async () => JSON.stringify({
+      providerId: "macos-vision",
+      providerVersion: "test",
+      inputKind: "image",
+      pageCount: 1,
+      pages: [{
+        index: 1,
+        width: 1600,
+        height: 1200,
+        text: "询价编号：IMAGE-101",
+        confidence: 0.91,
+        evidence: [{
+          text: "询价编号：IMAGE-101",
+          confidence: 0.91,
+          box: { x: 0.1, y: 0.2, width: 0.5, height: 0.1 },
+        }],
+      }],
+    }),
+  });
+  const result = await adapter.recognize({ path: "/tmp/inquiry.png" });
+  assert.equal(result.inputKind, "image");
+  assert.equal(result.pages[0].width, 1600);
+  assert.equal(result.pages[0].height, 1200);
+});
+
+test("real multi-format files OCR and parse locally without changing source bytes", {
   skip: process.platform !== "darwin",
   timeout: 30_000,
 }, async () => {
   const pdfPath = resolve(REPO_ROOT, "demos/pdfcli/97-动态热机械分析仪DMA.pdf");
   const xlsxPath = resolve(REPO_ROOT, "demos/pdfcli/97-动态热机械分析仪DMA-信息汇总.xlsx");
-  const before = { pdf: fileHash(pdfPath), xlsx: fileHash(xlsxPath) };
+  const imagePath = resolve(REPO_ROOT, "demos/excalidraw-cli/integrated-desktop.png");
+  const docxPath = resolve(REPO_ROOT, "demos/officecli/officecli-demo.docx");
+  const htmlPath = resolve(REPO_ROOT, "demos/officecli/officecli-demo.html");
+  const before = Object.fromEntries([
+    ["pdf", pdfPath],
+    ["xlsx", xlsxPath],
+    ["image", imagePath],
+    ["docx", docxPath],
+    ["html", htmlPath],
+  ].map(([key, path]) => [key, fileHash(path)]));
   const adapter = createLocalWorkflowOcrAdapter();
   const progress = [];
   assert.equal(adapter.readiness().state, "ready");
 
-  const [ocr, workbook] = await Promise.all([
-    adapter.recognizePdf({ path: pdfPath, onProgress: (value) => progress.push(value) }),
+  const [ocr, imageOcr, workbook, document, html] = await Promise.all([
+    adapter.recognize({ path: pdfPath, onProgress: (value) => progress.push(value) }),
+    adapter.recognize({ path: imagePath }),
     parseWorkflowDocument({
       path: xlsxPath,
       extension: ".xlsx",
       readMode: "supported_text",
       size: statSync(xlsxPath).size,
+    }),
+    parseWorkflowDocument({
+      path: docxPath,
+      extension: ".docx",
+      readMode: "supported_text",
+      size: statSync(docxPath).size,
+    }),
+    parseWorkflowDocument({
+      path: htmlPath,
+      extension: ".html",
+      readMode: "supported_text",
+      size: statSync(htmlPath).size,
     }),
   ]);
 
@@ -134,6 +242,15 @@ test("real DMA PDF/XLSX case OCRs with page evidence and leaves both source file
   assert.equal(ocr.pages.reduce((sum, page) => sum + page.text.length, 0) > 3_000, true);
   assert.equal(workbook.state, "ready");
   assert.match(extractionText(workbook), /97-动态热机械分析仪DMA\.pdf/);
+  assert.equal(imageOcr.inputKind, "image");
+  assert.equal(imageOcr.pageCount, 1);
+  assert.equal(imageOcr.pages[0].width, 1440);
+  assert.equal(imageOcr.pages[0].height, 900);
+  assert.match(imageOcr.pages[0].text, /MyAgentTool/);
+  assert.equal(document.state, "ready");
+  assert.equal(extractionText(document).length > 20, true);
+  assert.equal(html.state, "ready");
+  assert.equal(extractionText(html).length > 20, true);
 
   const primaryFingerprint = before.pdf;
   const outputFingerprint = before.xlsx;
@@ -333,7 +450,13 @@ test("real DMA PDF/XLSX case OCRs with page evidence and leaves both source file
     ["output"],
   ]);
   assert.deepEqual(
-    { pdf: fileHash(pdfPath), xlsx: fileHash(xlsxPath) },
+    Object.fromEntries([
+      ["pdf", pdfPath],
+      ["xlsx", xlsxPath],
+      ["image", imagePath],
+      ["docx", docxPath],
+      ["html", htmlPath],
+    ].map(([key, path]) => [key, fileHash(path)])),
     before,
   );
 });

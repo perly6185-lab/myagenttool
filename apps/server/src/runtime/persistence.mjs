@@ -137,6 +137,7 @@ export const persistedArrayKeys = [
   "ledgerUpsertPreviews",
   "ledgerMutationAudits",
   "businessPilotEvidenceReceipts",
+  "businessPilotDrafts",
   "dispatchAssignments",
   "automations",
   "agentSkills",

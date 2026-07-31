@@ -19,7 +19,7 @@ export function Modal({
   title: string;
   description?: string;
   children: ReactNode;
-  size?: "md" | "lg";
+  size?: "md" | "lg" | "xl";
   closeDisabled?: boolean;
 }) {
   const { t } = useAppTranslation();
@@ -81,7 +81,9 @@ export function Modal({
         aria-labelledby={titleId}
         aria-describedby={description ? descriptionId : undefined}
         tabIndex={-1}
-        className={`relative z-10 max-h-[calc(100vh-2rem)] w-full overflow-y-auto ${size === "lg" ? "max-w-lg" : "max-w-md"} rounded-xl border border-border bg-card p-4 shadow-xl sm:p-5`}
+        className={`relative z-10 max-h-[calc(100vh-2rem)] w-full overflow-y-auto ${
+          size === "xl" ? "max-w-5xl" : size === "lg" ? "max-w-lg" : "max-w-md"
+        } rounded-xl border border-border bg-card p-4 shadow-xl sm:p-5`}
       >
         <button
           type="button"

@@ -153,7 +153,7 @@ export function RealCaseIntakeDialog({
       if (!result) return;
       setSelection(result);
       const firstReadable = result.files.findIndex((file) => file.readiness !== "needs_ocr");
-      if (firstReadable >= 0) setPrimaryKey(`file:${firstReadable}`);
+      if (result.files.length) setPrimaryKey(`file:${firstReadable >= 0 ? firstReadable : 0}`);
       setSupportingRoles(Object.fromEntries(result.files.map((file, index) => [
         `file:${index}`,
         file.extension === "xlsx" && /(?:汇总|台账|结果|交付|output|summary|ledger)/i.test(file.name)
@@ -172,7 +172,7 @@ export function RealCaseIntakeDialog({
       return;
     }
     const primary = items.find((item) => item.key === primaryKey);
-    if (!primary || primary.readiness === "needs_ocr") {
+    if (!primary) {
       setError(copy.selectPrimary);
       return;
     }
@@ -291,7 +291,7 @@ export function RealCaseIntakeDialog({
                     name="primary-case-file"
                     value={item.key}
                     checked={primaryKey === item.key}
-                    disabled={pending || Boolean(stagedCase) || item.readiness === "needs_ocr"}
+                    disabled={pending || Boolean(stagedCase)}
                     aria-label={`${copy.primary}: ${item.name}`}
                     onChange={() => setPrimaryKey(item.key)}
                   />

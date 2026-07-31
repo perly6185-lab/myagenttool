@@ -14,6 +14,9 @@ import test from "node:test";
 
 import { registerWorkflowCaseIntake } from "../src/workflow-case-intake.mjs";
 
+const PNG_HEADER = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+const JPEG_HEADER = Buffer.from([0xff, 0xd8, 0xff, 0xe0]);
+
 function harness({ filePaths = [], sourcePatch = {} } = {}) {
   const root = mkdtempSync(join(tmpdir(), "workflow-case-intake-"));
   const sourceRoot = join(root, "authorized");
@@ -54,7 +57,7 @@ test("stages several explicitly selected formats as one case with one primary fi
   const image = join(external, "photo.png");
   writeFileSync(xlsx, "PK-sheet");
   writeFileSync(docx, "PK-word");
-  writeFileSync(image, Buffer.from([137, 80, 78, 71]));
+  writeFileSync(image, PNG_HEADER);
   const { sourceRoot, handlers } = harness({ filePaths: [xlsx, docx, image] });
 
   const selection = await handlers.get("workflow-memory:pick-case-files")();
@@ -130,20 +133,33 @@ test("pasted text is local, bounded, idempotent, and requires authorization", as
   }), /at most 96 KiB/);
 });
 
-test("images cannot be the primary inquiry before OCR", async () => {
+test("a signature-validated image can be staged as the primary inquiry for OCR", async () => {
   const external = mkdtempSync(join(tmpdir(), "workflow-case-image-"));
   const image = join(external, "scan.jpg");
-  writeFileSync(image, "jpeg");
-  const { handlers } = harness({ filePaths: [image] });
+  writeFileSync(image, JPEG_HEADER);
+  const { sourceRoot, handlers } = harness({ filePaths: [image] });
   const selection = await handlers.get("workflow-memory:pick-case-files")();
-  await assert.rejects(() => handlers.get("workflow-memory:stage-case")(null, {
+  const result = await handlers.get("workflow-memory:stage-case")(null, {
     requestId: "image-1",
     sourceId: "wfs_a",
     selectionId: selection.selectionId,
     primaryKey: "file:0",
     authorizationMode: "authorized",
     confirmed: true,
-  }), /needs OCR/);
+  });
+  assert.equal(result.primaryRelativePath.endsWith("/scan.jpg"), true);
+  assert.equal(existsSync(join(sourceRoot, result.primaryRelativePath)), true);
+});
+
+test("an image extension with a mismatched signature is rejected before authorization", async () => {
+  const external = mkdtempSync(join(tmpdir(), "workflow-case-bad-image-"));
+  const image = join(external, "scan.png");
+  writeFileSync(image, "not a png");
+  const { handlers } = harness({ filePaths: [image] });
+  await assert.rejects(
+    () => handlers.get("workflow-memory:pick-case-files")(),
+    /does not match its file type/,
+  );
 });
 
 test("only an XLSX supporting file can be declared as a historical inquiry ledger", async () => {
@@ -151,7 +167,7 @@ test("only an XLSX supporting file can be declared as a historical inquiry ledge
   const inquiry = join(external, "inquiry.txt");
   const image = join(external, "output.png");
   writeFileSync(inquiry, "RFQ");
-  writeFileSync(image, "image");
+  writeFileSync(image, PNG_HEADER);
   const { handlers } = harness({ filePaths: [inquiry, image] });
   const selection = await handlers.get("workflow-memory:pick-case-files")();
   await assert.rejects(() => handlers.get("workflow-memory:stage-case")(null, {

@@ -159,7 +159,7 @@ beforeEach(async () => {
     providerId: "macos-vision",
     reason: null,
     localOnly: true,
-    supportedExtensions: [".pdf"],
+    supportedExtensions: [".pdf", ".png", ".jpg", ".jpeg", ".webp"],
   });
   mocks.ocr.mockResolvedValue({ artifact: {}, replayed: false });
   mocks.cancelOcr.mockResolvedValue({ artifactId: "wfa_scanned", cancellationRequested: true });
@@ -325,18 +325,18 @@ describe("InquiryIntakePanel", () => {
     expect(addDialog.isConnected).toBe(false);
   });
 
-  it("continues a newly added scanned PDF directly into local OCR", async () => {
+  it("continues a newly added raster image directly into local OCR", async () => {
     const scanned = {
       ...readyObservation,
       id: "wio_added_scan",
       artifactId: "wfa_added_scan",
       canonicalArtifactId: "wfa_added_scan",
       artifactRevision: 4,
-      relativePath: "incoming/dma/97-DMA.pdf",
-      name: "97-DMA.pdf",
+      relativePath: "incoming/dma/97-DMA.png",
+      name: "97-DMA.png",
       extraction: {
         state: "needs_ocr" as const,
-        pageCount: 6,
+        pageCount: 1,
         characterCount: 0,
         providerId: null,
         localOnly: null,
@@ -353,7 +353,7 @@ describe("InquiryIntakePanel", () => {
     const pickWorkflowCaseFiles = vi.fn().mockResolvedValue({
       selectionId: "selection-scanned",
       files: [
-        { name: scanned.name, extension: "pdf", size: 1_000, readiness: "inspect" },
+        { name: scanned.name, extension: "png", size: 1_000, readiness: "needs_ocr" },
         { name: output.name, extension: "xlsx", size: 200, readiness: "ready" },
       ],
     });
@@ -398,7 +398,8 @@ describe("InquiryIntakePanel", () => {
     fireEvent.click(screen.getByLabelText("I confirm I may use these files in this local workflow."));
     fireEvent.click(screen.getByRole("button", { name: "Add and review" }));
 
-    expect(await screen.findByRole("dialog", { name: "Read this scanned PDF locally" })).toBeTruthy();
+    expect(await screen.findByRole("dialog", { name: "Read this scanned file locally" })).toBeTruthy();
+    expect(screen.getByText("Image")).toBeTruthy();
     expect(mocks.inspect).toHaveBeenCalledWith(
       scanned.id,
       [output.id],
@@ -499,14 +500,14 @@ describe("InquiryIntakePanel", () => {
 
     renderPanel();
     fireEvent.click(await screen.findByRole("button", { name: "Run local OCR" }));
-    const dialog = await screen.findByRole("dialog", { name: "Read this scanned PDF locally" });
+    const dialog = await screen.findByRole("dialog", { name: "Read this scanned file locally" });
     expect(dialog.textContent).toContain("6");
     await screen.findByText("macos-vision");
     expect(mocks.ocr).not.toHaveBeenCalled();
     const submit = screen.getByRole("button", { name: "Read and continue" });
     expect(submit).toHaveProperty("disabled", true);
 
-    fireEvent.click(screen.getByLabelText("I confirm that this local PDF may be processed by OCR."));
+    fireEvent.click(screen.getByLabelText("I confirm that this local file may be processed by OCR."));
     fireEvent.click(submit);
     await waitFor(() => expect(mocks.ocr).toHaveBeenCalledWith("wfa_scanned", {
       expectedRevision: 7,

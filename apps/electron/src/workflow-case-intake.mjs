@@ -1,10 +1,13 @@
 import { createHash, randomUUID } from "node:crypto";
 import {
+  closeSync,
   constants,
   copyFileSync,
   existsSync,
   lstatSync,
   mkdirSync,
+  openSync,
+  readSync,
   realpathSync,
   rmSync,
   statSync,
@@ -24,6 +27,31 @@ const IMAGE_EXTENSIONS = new Set([".png", ".jpg", ".jpeg", ".webp"]);
 const AUTHORIZATION_MODES = new Set(["authorized", "deidentified"]);
 const SUPPORTING_ROLES = new Set(["reference", "historical_output"]);
 const SAFE_REQUEST_ID_RE = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$/;
+
+function validImageSignature(path, extension) {
+  const buffer = Buffer.alloc(16);
+  const descriptor = openSync(path, "r");
+  let bytesRead;
+  try {
+    bytesRead = readSync(descriptor, buffer, 0, buffer.length, 0);
+  } finally {
+    closeSync(descriptor);
+  }
+  const header = buffer.subarray(0, bytesRead);
+  if (extension === ".png") {
+    return header.length >= 8
+      && header.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]));
+  }
+  if (extension === ".jpg" || extension === ".jpeg") {
+    return header.length >= 3 && header[0] === 0xff && header[1] === 0xd8 && header[2] === 0xff;
+  }
+  if (extension === ".webp") {
+    return header.length >= 12
+      && header.subarray(0, 4).toString("ascii") === "RIFF"
+      && header.subarray(8, 12).toString("ascii") === "WEBP";
+  }
+  return true;
+}
 
 function safeName(value, fallback = "case") {
   const normalized = String(value ?? "")
@@ -46,6 +74,9 @@ function selectedFile(path) {
   if (!ALLOWED_EXTENSIONS.has(extension)) throw new Error("One selected file type is not supported.");
   if (stats.size <= 0 || stats.size > MAX_FILE_BYTES) {
     throw new Error("Each selected file must be between 1 byte and 24 MiB.");
+  }
+  if (IMAGE_EXTENSIONS.has(extension) && !validImageSignature(path, extension)) {
+    throw new Error("One selected image does not match its file type.");
   }
   return {
     path: realpathSync(path),
@@ -78,7 +109,7 @@ function resolveSourceRoot(state, sourceId) {
   return sourceRoot;
 }
 
-function createCaseDirectory(sourceRoot, caseName) {
+function createCaseDirectory(sourceRoot, caseName, recordedAt) {
   const inbox = join(sourceRoot, "incoming");
   if (existsSync(inbox) && lstatSync(inbox).isSymbolicLink()) {
     throw new Error("The intake destination is not safe.");
@@ -86,7 +117,7 @@ function createCaseDirectory(sourceRoot, caseName) {
   mkdirSync(inbox, { recursive: true });
   const realInbox = realpathSync(inbox);
   if (!contained(sourceRoot, realInbox)) throw new Error("The intake destination escapes the selected folder.");
-  const folderName = `${new Date().toISOString().slice(0, 10)}-${safeName(caseName)}-${randomUUID().slice(0, 8)}`;
+  const folderName = `${recordedAt.slice(0, 10)}-${safeName(caseName)}-${randomUUID().slice(0, 8)}`;
   const destination = join(realInbox, folderName);
   mkdirSync(destination, { recursive: false });
   return { destination, relativeDirectory: relative(sourceRoot, destination).split(sep).join("/") };
@@ -190,15 +221,13 @@ export function registerWorkflowCaseIntake({
       && (!key.startsWith("file:") || files[Number(key.slice(5))]?.extension !== "xlsx"))) {
       throw new Error("A historical inquiry ledger must be an XLSX workbook.");
     }
-    const primaryFile = primaryKey.startsWith("file:")
-      ? files[Number(primaryKey.slice(5))]
-      : null;
-    if (primaryFile?.readiness === "needs_ocr") {
-      throw new Error("An image needs OCR and cannot be the primary inquiry yet.");
-    }
-
     const sourceRoot = resolveSourceRoot(await getState(), String(input?.sourceId ?? ""));
-    const { destination, relativeDirectory } = createCaseDirectory(sourceRoot, input?.caseName);
+    const recordedAt = now();
+    const { destination, relativeDirectory } = createCaseDirectory(
+      sourceRoot,
+      input?.caseName,
+      recordedAt,
+    );
     try {
       const used = new Set();
       const staged = [];
@@ -254,7 +283,7 @@ export function registerWorkflowCaseIntake({
         supportingFileRoles: Object.fromEntries(supporting.map((file) => [file.relativePath, file.role])),
         files: staged,
         authorizationMode: input.authorizationMode,
-        recordedAt: now(),
+        recordedAt,
       };
       writeFileSync(join(destination, ".case.json"), JSON.stringify({
         schemaVersion: 2,
