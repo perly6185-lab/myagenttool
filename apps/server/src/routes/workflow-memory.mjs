@@ -60,7 +60,32 @@ export async function handleWorkflowMemoryRoutes({
   verifyBusinessPilotEvidence,
   getBusinessPilotWorkbench,
   saveBusinessPilotWorkbench,
+  prepareBusinessPilotWorkbench,
+  createBusinessPilotGapIssues,
+  submitBusinessPilotReview,
+  updateBusinessPilotRollout,
   collectBusinessPilotWorkbench,
+  getBusinessPilotCollection,
+  compareBusinessPilotCollections,
+  exportBusinessPilotCollection,
+  revokeBusinessPilotCollection,
+  getWorkflowAdaptiveWorkbench,
+  updateWorkflowAdaptivePolicy,
+  updateWorkflowAdaptiveMonitor,
+  runWorkflowAdaptiveMonitorNow,
+  syncWorkflowAdaptiveOutcomes,
+  listWorkflowAdaptiveLearning,
+  generateWorkflowAdaptiveLearningDraft,
+  evaluateWorkflowAdaptiveLearning,
+  recordWorkflowAdaptiveShadowPreference,
+  previewWorkflowAdaptiveLearningPublication,
+  listWorkflowAdaptiveNotifications,
+  readWorkflowAdaptiveNotification,
+  publishWorkflowAdaptiveLearningDraft,
+  rollbackWorkflowAdaptiveLearningRule,
+  materializeWorkflowAdaptiveSuggestion,
+  reconcileWorkflowAdaptiveWork,
+  recordWorkflowAdaptiveFeedback,
   materializeRoutineIssue,
   getRoutineWorkItemExecution,
   listRoutineWorkQueue,
@@ -101,6 +126,150 @@ export async function handleWorkflowMemoryRoutes({
 }) {
   if (!url.pathname.startsWith("/api/workflow-memory")) return false;
 
+  if (url.pathname === "/api/workflow-memory/adaptive-workbench"
+    && req.method === "GET") {
+    const result = getWorkflowAdaptiveWorkbench({
+      projectId: url.searchParams.get("projectId"),
+      sourceId: url.searchParams.get("sourceId"),
+    }, actor);
+    sendJson(res, result.status, result.body);
+    return true;
+  }
+
+  if (url.pathname === "/api/workflow-memory/adaptive-workbench/policy"
+    && req.method === "PUT") {
+    const result = updateWorkflowAdaptivePolicy(await readJson(req), actor);
+    sendJson(res, result.status, result.body);
+    return true;
+  }
+
+  if (url.pathname === "/api/workflow-memory/adaptive-workbench/monitor"
+    && req.method === "PUT") {
+    const result = updateWorkflowAdaptiveMonitor(await readJson(req), actor);
+    sendJson(res, result.status, result.body);
+    return true;
+  }
+
+  if (url.pathname === "/api/workflow-memory/adaptive-workbench/monitor/run"
+    && req.method === "POST") {
+    const result = await runWorkflowAdaptiveMonitorNow(await readJson(req), actor);
+    sendJson(res, result.status, result.body);
+    return true;
+  }
+
+  if (url.pathname === "/api/workflow-memory/adaptive-workbench/outcomes/sync"
+    && req.method === "POST") {
+    const result = syncWorkflowAdaptiveOutcomes(await readJson(req), actor);
+    sendJson(res, result.status, result.body);
+    return true;
+  }
+
+  if (url.pathname === "/api/workflow-memory/adaptive-workbench/learning") {
+    const input = req.method === "GET" ? {
+      projectId: url.searchParams.get("projectId"),
+      sourceId: url.searchParams.get("sourceId"),
+    } : await readJson(req);
+    const result = req.method === "GET"
+      ? listWorkflowAdaptiveLearning(input, actor)
+      : req.method === "POST"
+        ? generateWorkflowAdaptiveLearningDraft(input, actor)
+        : null;
+    if (!result) return false;
+    sendJson(res, result.status, result.body);
+    return true;
+  }
+
+  const adaptiveLearningAction = url.pathname.match(
+    /^\/api\/workflow-memory\/adaptive-workbench\/learning\/(drafts|rules)\/([^/]+)\/(publish|rollback)$/,
+  );
+  if (adaptiveLearningAction && req.method === "POST") {
+    const input = {
+      ...(await readJson(req)),
+      [adaptiveLearningAction[1] === "drafts" ? "draftId" : "ruleId"]:
+        decodeURIComponent(adaptiveLearningAction[2]),
+    };
+    const result = adaptiveLearningAction[3] === "publish"
+      ? publishWorkflowAdaptiveLearningDraft(input, actor)
+      : rollbackWorkflowAdaptiveLearningRule(input, actor);
+    sendJson(res, result.status, result.body);
+    return true;
+  }
+
+  const adaptiveShadowPreference = url.pathname.match(
+    /^\/api\/workflow-memory\/adaptive-workbench\/learning\/drafts\/([^/]+)\/shadow\/([^/]+)\/preference$/,
+  );
+  if (adaptiveShadowPreference && req.method === "POST") {
+    const result = recordWorkflowAdaptiveShadowPreference({
+      ...(await readJson(req)),
+      draftId: decodeURIComponent(adaptiveShadowPreference[1]),
+      suggestionId: decodeURIComponent(adaptiveShadowPreference[2]),
+    }, actor);
+    sendJson(res, result.status, result.body);
+    return true;
+  }
+
+  const adaptivePublicationPreview = url.pathname.match(
+    /^\/api\/workflow-memory\/adaptive-workbench\/learning\/drafts\/([^/]+)\/publication-preview$/,
+  );
+  if (adaptivePublicationPreview && req.method === "POST") {
+    const result = previewWorkflowAdaptiveLearningPublication({
+      ...(await readJson(req)),
+      draftId: decodeURIComponent(adaptivePublicationPreview[1]),
+    }, actor);
+    sendJson(res, result.status, result.body);
+    return true;
+  }
+
+  if (url.pathname === "/api/workflow-memory/adaptive-workbench/evaluate"
+    && req.method === "POST") {
+    const result = evaluateWorkflowAdaptiveLearning(await readJson(req), actor);
+    sendJson(res, result.status, result.body);
+    return true;
+  }
+
+  if (url.pathname === "/api/workflow-memory/adaptive-workbench/notifications"
+    && req.method === "GET") {
+    const result = listWorkflowAdaptiveNotifications({
+      projectId: url.searchParams.get("projectId"),
+      sourceId: url.searchParams.get("sourceId"),
+    }, actor);
+    sendJson(res, result.status, result.body);
+    return true;
+  }
+
+  const adaptiveNotification = url.pathname.match(
+    /^\/api\/workflow-memory\/adaptive-workbench\/notifications\/([^/]+)\/read$/,
+  );
+  if (adaptiveNotification && req.method === "POST") {
+    const result = readWorkflowAdaptiveNotification({
+      notificationId: decodeURIComponent(adaptiveNotification[1]),
+    }, actor);
+    sendJson(res, result.status, result.body);
+    return true;
+  }
+
+  if (url.pathname === "/api/workflow-memory/adaptive-workbench/reconcile"
+    && req.method === "POST") {
+    const result = reconcileWorkflowAdaptiveWork(await readJson(req), actor);
+    sendJson(res, result.status, result.body);
+    return true;
+  }
+
+  const adaptiveSuggestion = url.pathname.match(
+    /^\/api\/workflow-memory\/adaptive-workbench\/suggestions\/([^/]+)\/(materialize|feedback)$/,
+  );
+  if (adaptiveSuggestion && req.method === "POST") {
+    const input = {
+      ...(await readJson(req)),
+      suggestionId: decodeURIComponent(adaptiveSuggestion[1]),
+    };
+    const result = adaptiveSuggestion[2] === "materialize"
+      ? materializeWorkflowAdaptiveSuggestion(input, actor)
+      : recordWorkflowAdaptiveFeedback(input, actor);
+    sendJson(res, result.status, result.body);
+    return true;
+  }
+
   if (url.pathname === "/api/workflow-memory/commercial-pilot/evidence"
     && req.method === "POST") {
     const result = collectBusinessPilotEvidence(await readJson(req), actor);
@@ -138,6 +307,76 @@ export async function handleWorkflowMemoryRoutes({
     return true;
   }
 
+  if (url.pathname === "/api/workflow-memory/commercial-pilot/workbench/prepare"
+    && req.method === "POST") {
+    const result = prepareBusinessPilotWorkbench(await readJson(req), actor);
+    sendJson(res, result.status, result.body);
+    return true;
+  }
+
+  if (url.pathname === "/api/workflow-memory/commercial-pilot/workbench/gap-issues"
+    && req.method === "POST") {
+    const result = createBusinessPilotGapIssues(await readJson(req), actor);
+    sendJson(res, result.status, result.body);
+    return true;
+  }
+
+  const pilotReview = url.pathname.match(
+    /^\/api\/workflow-memory\/commercial-pilot\/workbench\/reviews\/([^/]+)$/,
+  );
+  if (pilotReview && req.method === "POST") {
+    const result = submitBusinessPilotReview({
+      ...(await readJson(req)),
+      dimension: decodeURIComponent(pilotReview[1]),
+    }, actor);
+    sendJson(res, result.status, result.body);
+    return true;
+  }
+
+  if (url.pathname === "/api/workflow-memory/commercial-pilot/rollout"
+    && req.method === "PUT") {
+    const result = updateBusinessPilotRollout(await readJson(req), actor);
+    sendJson(res, result.status, result.body);
+    return true;
+  }
+
+  if (url.pathname === "/api/workflow-memory/commercial-pilot/collections/compare"
+    && req.method === "POST") {
+    const result = compareBusinessPilotCollections(await readJson(req), actor);
+    sendJson(res, result.status, result.body);
+    return true;
+  }
+
+  const pilotCollectionAction = url.pathname.match(
+    /^\/api\/workflow-memory\/commercial-pilot\/collections\/([^/]+)(?:\/(export|revoke))?$/,
+  );
+  if (pilotCollectionAction) {
+    const collectionId = decodeURIComponent(pilotCollectionAction[1]);
+    const action = pilotCollectionAction[2] ?? "detail";
+    let result;
+    if (action === "detail" && req.method === "GET") {
+      result = getBusinessPilotCollection({
+        projectId: url.searchParams.get("projectId"),
+        collectionId,
+      }, actor);
+    } else if (action === "export" && req.method === "GET") {
+      result = exportBusinessPilotCollection({
+        projectId: url.searchParams.get("projectId"),
+        collectionId,
+        format: url.searchParams.get("format") ?? "markdown",
+      }, actor);
+    } else if (action === "revoke" && req.method === "POST") {
+      result = revokeBusinessPilotCollection({
+        ...(await readJson(req)),
+        collectionId,
+      }, actor);
+    } else {
+      return false;
+    }
+    sendJson(res, result.status, result.body);
+    return true;
+  }
+
   if (url.pathname === "/api/workflow-memory/sources") {
     let result;
     if (req.method === "GET") result = listSources(actor);
@@ -158,6 +397,24 @@ export async function handleWorkflowMemoryRoutes({
       result = await scanSource({ sourceId }, actor);
     } else if (action === "scan-intake" && req.method === "POST") {
       result = await scanIncrementalIntake({ sourceId }, actor);
+      if (result.status === 200) {
+        const artifactIds = [...new Set((result.body.observations ?? [])
+          .filter((row) => row.state === "ready" && row.artifactId)
+          .map((row) => row.artifactId))].slice(0, 10);
+        const analysisResults = await Promise.all(artifactIds.map((artifactId) =>
+          analyzeBusinessDocument({ artifactId }, actor)));
+        result.body.adaptiveAnalysis = {
+          attempted: artifactIds.length,
+          classified: analysisResults.filter((row) => [200, 201].includes(row.status)).length,
+          failed: analysisResults.filter((row) => ![200, 201].includes(row.status)).length,
+          capped: artifactIds.length === 10
+            && (result.body.observations ?? []).filter((row) => row.state === "ready").length > 10,
+        };
+        result.body.adaptiveWork = reconcileWorkflowAdaptiveWork({
+          projectId: result.body.source.projectId,
+          sourceId,
+        }, actor).body;
+      }
     } else if (action === "cancel-scan" && req.method === "POST") {
       result = cancelScan({ sourceId }, actor);
     } else if (action === "revoke" && req.method === "POST") {

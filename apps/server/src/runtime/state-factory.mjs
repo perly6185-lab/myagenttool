@@ -189,6 +189,17 @@ export function createServerState({ defaultProjectPath, now }) {
     ledgerMutationAudits: [],
     businessPilotEvidenceReceipts: [],
     businessPilotDrafts: [],
+    businessPilotCollections: [],
+    businessPilotRollouts: [],
+    // V1.9: per-project assistance boundaries and explicit user feedback for
+    // explainable, local-only job recommendations.
+    workflowAdaptivePolicies: [],
+    workflowAdaptiveFeedback: [],
+    workflowAdaptiveMonitors: [],
+    workflowAdaptiveOutcomes: [],
+    workflowAdaptiveLearningDrafts: [],
+    workflowAdaptiveRules: [],
+    workflowAdaptiveNotifications: [],
     // #1165: dispatcher-mode bookkeeping — one row per issue assignment written
     // by THIS server acting as the dispatcher (single writer; the staleness clock).
     dispatchAssignments: [],

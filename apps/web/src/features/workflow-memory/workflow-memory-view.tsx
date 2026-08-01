@@ -28,6 +28,7 @@ import { useConsoleState, useRefreshConsoleState } from "@/data/use-console-stat
 import { CommercialPilotWorkbench } from "@/features/workflow-memory/commercial-pilot-workbench";
 import { workflowMemoryApi } from "@/features/workflow-memory/workflow-memory-api";
 import { InquiryIntakePanel } from "@/features/workflow-memory/inquiry-intake-panel";
+import { AdaptiveWorkbench } from "@/features/workflow-memory/adaptive-workbench";
 import { RoutineSetupGuide } from "@/features/workflow-memory/routine-setup-guide";
 import { ApiError } from "@/lib/api-client";
 import type {
@@ -650,6 +651,7 @@ export function WorkflowMemoryView() {
   const projects = consoleState?.projects?.filter((project) => project.status !== "archived") ?? [];
   const setSection = useUiStore((state) => state.setSection);
   const setSelectedWorkItemId = useUiStore((state) => state.setSelectedWorkItemId);
+  const setSelectedWorkItemSection = useUiStore((state) => state.setSelectedWorkItemSection);
   const setSelectedWorktreeId = useUiStore((state) => state.setSelectedWorktreeId);
   const queryClient = useQueryClient();
 
@@ -1051,7 +1053,23 @@ export function WorkflowMemoryView() {
                 }}
               />
 
-              <CommercialPilotWorkbench projectId={selectedSource.projectId} />
+              <AdaptiveWorkbench
+                projectId={selectedSource.projectId}
+                sourceId={selectedSource.id}
+                onOpenTask={(workItemId) => {
+                  setSelectedWorkItemId(workItemId);
+                  setSection("task");
+                }}
+              />
+
+              <CommercialPilotWorkbench
+                projectId={selectedSource.projectId}
+                onOpenTask={(workItemId, section) => {
+                  setSelectedWorkItemId(workItemId);
+                  setSelectedWorkItemSection(section);
+                  setSection("task");
+                }}
+              />
 
               <RoutineSetupGuide
                 source={selectedSource}

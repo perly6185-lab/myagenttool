@@ -72,6 +72,7 @@ import { createWorkItemService } from "../services/work-items.mjs";
 import { createWorkItemAutoRunBatchService } from "../services/work-item-auto-run-batches.mjs";
 import { createBusinessRoutineService } from "../services/business-routines.mjs";
 import { createBusinessPilotEvidenceService } from "../services/business-pilot-evidence.mjs";
+import { createWorkflowAdaptiveWorkService } from "../services/workflow-adaptive-work.mjs";
 import { createLedgerUpsertService } from "../services/ledger-upserts.mjs";
 import { createBusinessDocumentIntelligenceService } from "../services/business-document-intelligence.mjs";
 import { createBusinessCaseDiscoveryService } from "../services/business-case-discovery.mjs";
@@ -407,6 +408,7 @@ export function createServerRuntimeServices({
   let resolveWorkItemTeamBudget = () => null;
   let resolveWorkItemApplicationCapability = () => ({ state: "refusal", reason: "resolver_unavailable", capability: null });
   let invokeWorkItemApplicationCapability = () => ({ status: 503, body: { error: "capability_gateway_unavailable" } });
+  let syncAdaptiveWorkItemOutcome = () => {};
   const workItemService = createWorkItemService({
     state, now, nextId, appendEvent, persistStateSoon, store,
     sendAlert: alertOutbox.enqueue,
@@ -416,6 +418,7 @@ export function createServerRuntimeServices({
     resolveApplicationCapability: (input, actor) => resolveWorkItemApplicationCapability(input, actor),
     invokeResolvedCapability: (name, input, actor) => invokeWorkItemApplicationCapability(name, input, actor),
     issueApplicationApprovalGrant: (input, actor) => issueApprovalGrant(input, actor),
+    onWorkItemChanged: (item, actor) => syncAdaptiveWorkItemOutcome(item, actor),
   });
   let releaseRoutineLedgerReservations = () => {};
   const businessRoutineService = createBusinessRoutineService({
@@ -446,6 +449,7 @@ export function createServerRuntimeServices({
     nextId,
     persistStateSoon,
     store,
+    createWorkItem: workItemService.createWorkItem,
   });
   releaseRoutineLedgerReservations = ledgerUpsertService.cancelRoutineReservations;
   const articleImportConfig = resolveArticleImportConfig();
@@ -571,6 +575,39 @@ export function createServerRuntimeServices({
     createBusinessEntity: businessRoutineService.createBusinessEntity,
     store,
   });
+  const workflowAdaptiveWorkService = createWorkflowAdaptiveWorkService({
+    state,
+    now,
+    nextId,
+    appendEvent,
+    persistStateSoon,
+    store,
+    createWorkItem: workItemService.createWorkItem,
+    runIntakeCycle: async ({ projectId, sourceId }, actor) => {
+      const scan = await workflowMemoryService.scanIncrementalIntake({ sourceId }, actor);
+      if (scan.status >= 400) return scan;
+      const artifactIds = [...new Set((scan.body.observations ?? [])
+        .filter((row) => row.state === "ready" && row.artifactId)
+        .map((row) => row.artifactId))].slice(0, 10);
+      const analysis = await Promise.all(artifactIds.map((artifactId) =>
+        businessDocumentIntelligenceService.analyzeArtifact({ artifactId }, actor)));
+      const adaptiveWork = workflowAdaptiveWorkService.reconcile({ projectId, sourceId }, actor);
+      return {
+        status: 200,
+        body: {
+          scan: scan.body,
+          analysis: {
+            attempted: artifactIds.length,
+            classified: analysis.filter((row) => [200, 201].includes(row.status)).length,
+            failed: analysis.filter((row) => ![200, 201].includes(row.status)).length,
+          },
+          adaptiveWork: adaptiveWork.body,
+        },
+      };
+    },
+  });
+  syncAdaptiveWorkItemOutcome = (item, actor) =>
+    workflowAdaptiveWorkService.syncWorkItemOutcome({ workItemId: item.id }, actor);
   const businessCaseDiscoveryService = createBusinessCaseDiscoveryService({
     state,
     now,
@@ -4079,7 +4116,33 @@ export function createServerRuntimeServices({
     verifyBusinessPilotEvidence: businessPilotEvidenceService.verify,
     getBusinessPilotWorkbench: businessPilotEvidenceService.getWorkbench,
     saveBusinessPilotWorkbench: businessPilotEvidenceService.saveWorkbench,
+    prepareBusinessPilotWorkbench: businessPilotEvidenceService.prepareWorkbench,
+    createBusinessPilotGapIssues: businessPilotEvidenceService.createWorkbenchGapIssues,
+    submitBusinessPilotReview: businessPilotEvidenceService.submitWorkbenchReview,
+    updateBusinessPilotRollout: businessPilotEvidenceService.updateWorkbenchRollout,
     collectBusinessPilotWorkbench: businessPilotEvidenceService.collectWorkbench,
+    getBusinessPilotCollection: businessPilotEvidenceService.getWorkbenchCollection,
+    compareBusinessPilotCollections: businessPilotEvidenceService.compareWorkbenchCollections,
+    exportBusinessPilotCollection: businessPilotEvidenceService.exportWorkbenchCollection,
+    revokeBusinessPilotCollection: businessPilotEvidenceService.revokeWorkbenchCollection,
+    getWorkflowAdaptiveWorkbench: workflowAdaptiveWorkService.getWorkbench,
+    updateWorkflowAdaptivePolicy: workflowAdaptiveWorkService.updatePolicy,
+    updateWorkflowAdaptiveMonitor: workflowAdaptiveWorkService.updateMonitor,
+    sweepWorkflowAdaptiveMonitors: workflowAdaptiveWorkService.sweepMonitors,
+    runWorkflowAdaptiveMonitorNow: workflowAdaptiveWorkService.runMonitorNow,
+    syncWorkflowAdaptiveOutcomes: workflowAdaptiveWorkService.syncOutcomes,
+    listWorkflowAdaptiveLearning: workflowAdaptiveWorkService.listLearning,
+    generateWorkflowAdaptiveLearningDraft: workflowAdaptiveWorkService.generateLearningDraft,
+    evaluateWorkflowAdaptiveLearning: workflowAdaptiveWorkService.evaluateAndGovern,
+    recordWorkflowAdaptiveShadowPreference: workflowAdaptiveWorkService.recordShadowPreference,
+    previewWorkflowAdaptiveLearningPublication: workflowAdaptiveWorkService.previewLearningPublication,
+    listWorkflowAdaptiveNotifications: workflowAdaptiveWorkService.listNotifications,
+    readWorkflowAdaptiveNotification: workflowAdaptiveWorkService.readNotification,
+    publishWorkflowAdaptiveLearningDraft: workflowAdaptiveWorkService.publishLearningDraft,
+    rollbackWorkflowAdaptiveLearningRule: workflowAdaptiveWorkService.rollbackLearningRule,
+    materializeWorkflowAdaptiveSuggestion: workflowAdaptiveWorkService.materialize,
+    reconcileWorkflowAdaptiveWork: workflowAdaptiveWorkService.reconcile,
+    recordWorkflowAdaptiveFeedback: workflowAdaptiveWorkService.recordFeedback,
     materializeRoutineIssue: businessRoutineService.materializeRoutineIssue,
     createRoutineRun: businessRoutineService.createRoutineRun,
     getRoutineWorkItemExecution: businessRoutineService.getRoutineWorkItemExecution,

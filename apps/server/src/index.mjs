@@ -244,6 +244,13 @@ if (typeof httpDependencies.sweepWorkItemAutoRunBatches === "function") {
   httpDependencies.sweepWorkItemAutoRunBatches().catch(() => {});
   setInterval(() => httpDependencies.sweepWorkItemAutoRunBatches().catch(() => {}), 10_000).unref?.();
 }
+if (typeof httpDependencies.sweepWorkflowAdaptiveMonitors === "function") {
+  const sweepAdaptiveMonitors = () =>
+    httpDependencies.sweepWorkflowAdaptiveMonitors().catch((error) =>
+      console.error(`[adaptive-monitor] ${error?.message ?? error}`));
+  sweepAdaptiveMonitors();
+  setInterval(sweepAdaptiveMonitors, 60_000).unref?.();
+}
 
 // Resume approved Project actions after a restart and keep draining the durable
 // queue. Each execution is moved to running before awaiting external work, so a

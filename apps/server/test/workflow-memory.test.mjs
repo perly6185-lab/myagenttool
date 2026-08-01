@@ -685,6 +685,60 @@ test("routes governed execution start, cancel, and retry with bounded inputs", a
   assert.ok(calls.every((call) => call.actor === actor));
 });
 
+test("routes adaptive shadow preferences and publication reviews with decoded ids", async () => {
+  const calls = [];
+  const actor = { userId: "user_a", teamId: "team_a" };
+  const invoke = async (path, body, services) => {
+    let response = null;
+    const handled = await handleWorkflowMemoryRoutes({
+      req: { method: "POST" },
+      res: {},
+      url: new URL(path, "http://localhost"),
+      actor,
+      readJson: async () => body,
+      sendJson: (_res, status, payload) => { response = { status, body: payload }; },
+      ...services,
+    });
+    assert.equal(handled, true);
+    return response;
+  };
+  const services = {
+    recordWorkflowAdaptiveShadowPreference: (input, scopedActor) => {
+      calls.push({ action: "preference", input, actor: scopedActor });
+      return { status: 201, body: { comparison: { suggestionId: input.suggestionId } } };
+    },
+    previewWorkflowAdaptiveLearningPublication: (input, scopedActor) => {
+      calls.push({ action: "review", input, actor: scopedActor });
+      return { status: 200, body: { review: { draftId: input.draftId } } };
+    },
+  };
+  assert.equal((await invoke(
+    "/api/workflow-memory/adaptive-workbench/learning/drafts/draft%201/shadow/suggestion%201/preference",
+    { expectedRevision: 2, preferred: "candidate", reason: "better", confirmed: true },
+    services,
+  )).status, 201);
+  assert.equal((await invoke(
+    "/api/workflow-memory/adaptive-workbench/learning/drafts/draft%201/publication-preview",
+    {},
+    services,
+  )).status, 200);
+  assert.deepEqual(calls.map(({ action, input }) => ({ action, input })), [{
+    action: "preference",
+    input: {
+      draftId: "draft 1",
+      suggestionId: "suggestion 1",
+      expectedRevision: 2,
+      preferred: "candidate",
+      reason: "better",
+      confirmed: true,
+    },
+  }, {
+    action: "review",
+    input: { draftId: "draft 1" },
+  }]);
+  assert.ok(calls.every((call) => call.actor === actor));
+});
+
 test("scans a contained source, confirms cases, derives a profile, and exposes a new requirement", async () => {
   const root = fixture();
   try {
@@ -1079,6 +1133,13 @@ test("scans a contained source, confirms cases, derives a profile, and exposes a
       ["routineDefinitions", "rtd_delete"],
       ["routineRuns", "rtr_delete"],
       ["ledgerDefinitions", "ldg_delete"],
+      ["workflowAdaptivePolicies", "awp_delete"],
+      ["workflowAdaptiveFeedback", "awf_delete"],
+      ["workflowAdaptiveMonitors", "awm_delete"],
+      ["workflowAdaptiveOutcomes", "awo_delete"],
+      ["workflowAdaptiveLearningDrafts", "awld_delete"],
+      ["workflowAdaptiveRules", "awr_delete"],
+      ["workflowAdaptiveNotifications", "awn_delete"],
     ]) {
       state[key].push({
         id,
@@ -1115,6 +1176,13 @@ test("scans a contained source, confirms cases, derives a profile, and exposes a
     assert.equal(deleted.body.counts.routineDefinitions, 1);
     assert.equal(deleted.body.counts.routineRuns, 1);
     assert.equal(deleted.body.counts.ledgerDefinitions, 1);
+    assert.equal(deleted.body.counts.adaptivePolicies, 1);
+    assert.equal(deleted.body.counts.adaptiveFeedback, 1);
+    assert.equal(deleted.body.counts.adaptiveMonitors, 1);
+    assert.equal(deleted.body.counts.adaptiveOutcomes, 1);
+    assert.equal(deleted.body.counts.adaptiveLearningDrafts, 1);
+    assert.equal(deleted.body.counts.adaptiveRules, 1);
+    assert.equal(deleted.body.counts.adaptiveNotifications, 1);
     for (const key of [
       "businessDocumentClassifications",
       "businessDocumentAnalysisJobs",
@@ -1125,6 +1193,13 @@ test("scans a contained source, confirms cases, derives a profile, and exposes a
       "routineDefinitions",
       "routineRuns",
       "ledgerDefinitions",
+      "workflowAdaptivePolicies",
+      "workflowAdaptiveFeedback",
+      "workflowAdaptiveMonitors",
+      "workflowAdaptiveOutcomes",
+      "workflowAdaptiveLearningDrafts",
+      "workflowAdaptiveRules",
+      "workflowAdaptiveNotifications",
     ]) {
       assert.equal(state[key].length, 0, `${key} is deleted with its revoked source`);
     }

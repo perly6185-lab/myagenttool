@@ -230,6 +230,9 @@ export function InquiryIntakePanel({
 
   const refresh = () => Promise.all([
     queryClient.invalidateQueries({ queryKey: ["workflow-memory", "intake-observations", source.id] }),
+    queryClient.invalidateQueries({
+      queryKey: ["workflow-memory", "adaptive-workbench", source.projectId, source.id],
+    }),
     queryClient.invalidateQueries({ queryKey: ["workflow-memory", "sources"] }),
   ]);
 

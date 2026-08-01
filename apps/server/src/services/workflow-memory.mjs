@@ -1243,6 +1243,13 @@ export function createWorkflowMemoryService({
     "routineDefinitions",
     "routineRuns",
     "ledgerDefinitions",
+    "workflowAdaptivePolicies",
+    "workflowAdaptiveFeedback",
+    "workflowAdaptiveMonitors",
+    "workflowAdaptiveOutcomes",
+    "workflowAdaptiveLearningDrafts",
+    "workflowAdaptiveRules",
+    "workflowAdaptiveNotifications",
   ]) {
     if (!Array.isArray(state[key])) state[key] = [];
   }
@@ -2364,6 +2371,13 @@ export function createWorkflowMemoryService({
       routineDefinitions: state.routineDefinitions.filter(sourceIdMatches).length,
       routineRuns: state.routineRuns.filter(sourceIdMatches).length,
       ledgerDefinitions: state.ledgerDefinitions.filter(sourceIdMatches).length,
+      adaptivePolicies: state.workflowAdaptivePolicies.filter(sourceIdMatches).length,
+      adaptiveFeedback: state.workflowAdaptiveFeedback.filter(sourceIdMatches).length,
+      adaptiveMonitors: state.workflowAdaptiveMonitors.filter(sourceIdMatches).length,
+      adaptiveOutcomes: state.workflowAdaptiveOutcomes.filter(sourceIdMatches).length,
+      adaptiveLearningDrafts: state.workflowAdaptiveLearningDrafts.filter(sourceIdMatches).length,
+      adaptiveRules: state.workflowAdaptiveRules.filter(sourceIdMatches).length,
+      adaptiveNotifications: state.workflowAdaptiveNotifications.filter(sourceIdMatches).length,
     };
     runTx(() => {
       state.workflowScanJobs.splice(
@@ -2421,6 +2435,13 @@ export function createWorkflowMemoryService({
         "routineDefinitions",
         "routineRuns",
         "ledgerDefinitions",
+        "workflowAdaptivePolicies",
+        "workflowAdaptiveFeedback",
+        "workflowAdaptiveMonitors",
+        "workflowAdaptiveOutcomes",
+        "workflowAdaptiveLearningDrafts",
+        "workflowAdaptiveRules",
+        "workflowAdaptiveNotifications",
       ]) {
         state[key].splice(
           0,

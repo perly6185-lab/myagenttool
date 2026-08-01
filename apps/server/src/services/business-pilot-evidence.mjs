@@ -36,6 +36,8 @@ const RELEASE_REVIEW_DIMENSIONS = Object.freeze([
   "migration",
   "rollback",
 ]);
+const RELEASE_REVIEW_STATUSES = new Set(["pending", "passed", "failed"]);
+const COLLECTION_LIMIT = 1_000;
 
 const REQUIRED_SAFETY_SCENARIOS = new Set(commercialPilotRequiredScenarios.safety);
 const RECEIPT_LIMIT = 1_000;
@@ -162,6 +164,68 @@ function validateSafetySpec(row, index, errors) {
   }
 }
 
+function validateReleaseReviewItems(releaseReview, errors) {
+  if (releaseReview.items == null) return;
+  if (!isObject(releaseReview.items)) {
+    errors.push("releaseReview.items: object required");
+    return;
+  }
+  for (const key of Object.keys(releaseReview.items)) {
+    if (!RELEASE_REVIEW_DIMENSIONS.includes(key)) {
+      errors.push(`releaseReview.items.${key}: unexpected review dimension`);
+    }
+  }
+  for (const dimension of RELEASE_REVIEW_DIMENSIONS) {
+    const item = releaseReview.items[dimension];
+    const path = `releaseReview.items.${dimension}`;
+    if (!isObject(item)) {
+      errors.push(`${path}: review item required`);
+      continue;
+    }
+    for (const key of Object.keys(item)) {
+      if (!["status", "reviewerId", "reviewerRole", "reviewedAt", "note", "evidenceIds"].includes(key)) {
+        errors.push(`${path}.${key}: unexpected field`);
+      }
+    }
+    if (!RELEASE_REVIEW_STATUSES.has(item.status)) {
+      errors.push(`${path}.status: pending, passed, or failed required`);
+    }
+    if (typeof item.reviewerRole !== "string" || item.reviewerRole.length > 80) {
+      errors.push(`${path}.reviewerRole: at most 80 characters required`);
+    }
+    if (item.reviewerId != null
+      && (!safeText(item.reviewerId, 80) || !SAFE_ID.test(item.reviewerId))) {
+      errors.push(`${path}.reviewerId: safe reviewer identifier required when provided`);
+    }
+    if (item.reviewedAt != null && !Number.isFinite(Date.parse(item.reviewedAt))) {
+      errors.push(`${path}.reviewedAt: valid ISO timestamp required when provided`);
+    }
+    if (typeof item.note !== "string" || item.note.length > 500) {
+      errors.push(`${path}.note: at most 500 characters required`);
+    }
+    if (!Array.isArray(item.evidenceIds)
+      || item.evidenceIds.length > 20
+      || item.evidenceIds.some((value) => !safeText(value, 80) || !SAFE_ID.test(value))) {
+      errors.push(`${path}.evidenceIds: at most 20 safe identifiers required`);
+    }
+    if (item.status !== "pending") {
+      if (!safeText(item.reviewerId, 80) || !SAFE_ID.test(item.reviewerId)) {
+        errors.push(`${path}.reviewerId: reviewer identity required after review`);
+      }
+      if (!safeText(item.reviewerRole, 80) || item.reviewerRole.trim().length < 3) {
+        errors.push(`${path}.reviewerRole: reviewer role required after review`);
+      }
+      if (!item.reviewedAt) errors.push(`${path}.reviewedAt: timestamp required after review`);
+      if (!safeText(item.note, 500) || item.note.trim().length < 3) {
+        errors.push(`${path}.note: review explanation required after review`);
+      }
+      if (!Array.isArray(item.evidenceIds) || item.evidenceIds.length === 0) {
+        errors.push(`${path}.evidenceIds: at least one evidence reference required after review`);
+      }
+    }
+  }
+}
+
 function validateWorkbenchSpec(spec) {
   const errors = [];
   const allowed = new Set([
@@ -201,6 +265,8 @@ function validateWorkbenchSpec(spec) {
     || spec.releaseReview.reviewerRole.length > 80
     || RELEASE_REVIEW_DIMENSIONS.some((key) => typeof spec.releaseReview[key] !== "boolean")) {
     errors.push("releaseReview: confirmation, reviewer, timestamp, and seven booleans required");
+  } else {
+    validateReleaseReviewItems(spec.releaseReview, errors);
   }
   if (!Array.isArray(spec.cases) || spec.cases.length > MAX_CASES) {
     errors.push(`cases: array with at most ${MAX_CASES} entries required`);
@@ -225,6 +291,23 @@ function validateWorkbenchSpec(spec) {
 }
 
 function normalizedWorkbenchSpec(spec) {
+  const reviewItems = Object.fromEntries(RELEASE_REVIEW_DIMENSIONS.map((key) => {
+    const item = spec.releaseReview.items?.[key];
+    return [key, {
+      status: RELEASE_REVIEW_STATUSES.has(item?.status) ? item.status : "pending",
+      reviewerRole: safeText(item?.reviewerRole, 80) ?? "",
+      reviewerId: safeText(item?.reviewerId, 80) ?? null,
+      reviewedAt: item?.reviewedAt ?? null,
+      note: safeText(item?.note, 500) ?? "",
+      evidenceIds: Array.isArray(item?.evidenceIds) ? [...new Set(item.evidenceIds)] : [],
+    }];
+  }));
+  const hasReviewItems = isObject(spec.releaseReview.items);
+  const allReviewItemsPassed = RELEASE_REVIEW_DIMENSIONS.every((key) =>
+    reviewItems[key].status === "passed");
+  const distinctReviewers = new Set(RELEASE_REVIEW_DIMENSIONS
+    .map((key) => reviewItems[key].reviewerId)
+    .filter(Boolean));
   return {
     schemaVersion: 1,
     pilotId: spec.pilotId,
@@ -236,15 +319,18 @@ function normalizedWorkbenchSpec(spec) {
       ...(spec.consent.scope.trim() ? { scope: spec.consent.scope.trim() } : {}),
     },
     releaseReview: {
-      confirmed: spec.releaseReview.confirmed,
+      confirmed: hasReviewItems
+        ? allReviewItemsPassed && distinctReviewers.size >= 2
+        : spec.releaseReview.confirmed,
       ...(spec.releaseReview.recordedAt
         ? { recordedAt: spec.releaseReview.recordedAt }
         : {}),
       reviewerRole: spec.releaseReview.reviewerRole.trim(),
       ...Object.fromEntries(RELEASE_REVIEW_DIMENSIONS.map((key) => [
         key,
-        spec.releaseReview[key],
+        hasReviewItems ? reviewItems[key].status === "passed" : spec.releaseReview[key],
       ])),
+      ...(hasReviewItems ? { items: reviewItems } : {}),
     },
     thresholds: { ...PILOT_THRESHOLDS },
     cases: spec.cases.map((row) => ({
@@ -265,6 +351,37 @@ function normalizedWorkbenchSpec(spec) {
       evidenceId: row.evidenceId,
     })),
   };
+}
+
+function evidenceSpecForWorkbench(spec) {
+  const { items: _items, ...releaseReview } = spec.releaseReview;
+  return { ...spec, releaseReview };
+}
+
+function defaultReleaseReviewItems() {
+  return Object.fromEntries(RELEASE_REVIEW_DIMENSIONS.map((key) => [key, {
+    status: "pending",
+    reviewerRole: "",
+    reviewerId: null,
+    reviewedAt: null,
+    note: "",
+    evidenceIds: [],
+  }]));
+}
+
+function defaultWorkbenchReleaseReview(recordedAt = null) {
+  return {
+    confirmed: false,
+    ...(recordedAt ? { recordedAt } : {}),
+    reviewerRole: recordedAt ? "independent reviewers" : "",
+    ...Object.fromEntries(RELEASE_REVIEW_DIMENSIONS.map((key) => [key, false])),
+    items: defaultReleaseReviewItems(),
+  };
+}
+
+function workbenchTruthDigest(spec) {
+  const { releaseReview: _releaseReview, ...truth } = spec;
+  return manifestDigest(truth);
 }
 
 export function validateCommercialPilotEvidenceSpec(spec) {
@@ -682,13 +799,18 @@ export function createBusinessPilotEvidenceService({
   nextId = (prefix) => `${prefix}_${Date.now().toString(36)}`,
   persistStateSoon = () => {},
   store,
+  createWorkItem = null,
 } = {}) {
   state.businessPilotEvidenceReceipts ??= [];
   state.businessPilotDrafts ??= [];
+  state.businessPilotCollections ??= [];
+  state.businessPilotRollouts ??= [];
   const runTx = makeRunTx({ store, persistStateSoon });
   const actorTeam = (actor) => actor?.teamId ?? "team_local";
   const actorCanManagePilot = (actor) =>
     actor?.role == null || ["owner", "admin"].includes(actor.role);
+  const actorCanReviewPilot = (actor) =>
+    actor?.role == null || ["owner", "admin", "operator"].includes(actor.role);
 
   const projectFor = (projectId, actor) =>
     (state.projects ?? []).find((row) =>
@@ -698,6 +820,20 @@ export function createBusinessPilotEvidenceService({
     state.businessPilotDrafts.find((row) =>
       row.projectId === projectId && row.ownerTeamId === actorTeam(actor)) ?? null;
 
+  const rolloutFor = (projectId, actor) =>
+    state.businessPilotRollouts.find((row) =>
+      row.projectId === projectId && row.ownerTeamId === actorTeam(actor)) ?? null;
+
+  function rolloutView(projectId, actor) {
+    const row = rolloutFor(projectId, actor);
+    return {
+      mode: row?.mode ?? "shadow",
+      revision: row?.revision ?? 0,
+      updatedAt: row?.updatedAt ?? null,
+      updatedBy: row?.updatedBy ?? null,
+    };
+  }
+
   function defaultWorkbenchSpec(projectId) {
     const safeProjectId = String(projectId ?? "").replace(/[^a-zA-Z0-9._-]/g, "-").slice(0, 50);
     return {
@@ -705,12 +841,7 @@ export function createBusinessPilotEvidenceService({
       description: "",
       dataClassification: "deidentified",
       consent: { confirmed: false, recordedAt: null, scope: "" },
-      releaseReview: {
-        confirmed: false,
-        recordedAt: null,
-        reviewerRole: "",
-        ...Object.fromEntries(RELEASE_REVIEW_DIMENSIONS.map((key) => [key, false])),
-      },
+      releaseReview: defaultWorkbenchReleaseReview(),
       cases: [],
       safetyScenarios: [],
     };
@@ -755,8 +886,16 @@ export function createBusinessPilotEvidenceService({
       || RELEASE_REVIEW_DIMENSIONS.some((key) => !spec.releaseReview[key])) {
       missing.push("release_review");
     }
+    if (isObject(spec.releaseReview.items)
+      && new Set(RELEASE_REVIEW_DIMENSIONS
+        .map((key) => spec.releaseReview.items[key]?.reviewerId)
+        .filter(Boolean)).size < 2) {
+      missing.push("independent_release_reviewers");
+    }
     if (cases.some((row) => row.state !== "complete")) missing.push("complete_case_evidence");
-    const collectionValidation = validateCommercialPilotEvidenceSpec(spec);
+    const collectionValidation = validateCommercialPilotEvidenceSpec(
+      evidenceSpecForWorkbench(spec),
+    );
     return {
       caseCount: spec.cases.length,
       requiredCaseCount: PILOT_THRESHOLDS.minimumFormalCases,
@@ -766,10 +905,18 @@ export function createBusinessPilotEvidenceService({
       outcomes: [...outcomes].sort(),
       traits: requiredTraits.map((id) => ({ id, complete: traits.has(id) })),
       safety,
-      releaseReview: RELEASE_REVIEW_DIMENSIONS.map((id) => ({
-        id,
-        complete: spec.releaseReview[id],
-      })),
+      releaseReview: RELEASE_REVIEW_DIMENSIONS.map((id) => {
+        const item = spec.releaseReview.items?.[id];
+        return {
+          id,
+          complete: item ? item.status === "passed" : spec.releaseReview[id],
+          status: item?.status ?? (spec.releaseReview[id] ? "passed" : "pending"),
+          reviewerRole: item?.reviewerRole ?? spec.releaseReview.reviewerRole ?? "",
+          reviewerId: item?.reviewerId ?? null,
+          reviewedAt: item?.reviewedAt ?? spec.releaseReview.recordedAt ?? null,
+          evidenceCount: item?.evidenceIds?.length ?? 0,
+        };
+      }),
       cases,
       missing: [...new Set(missing)],
       readyForCollection: collectionValidation.valid,
@@ -788,13 +935,78 @@ export function createBusinessPilotEvidenceService({
           && run.ownerTeamId === actorTeam(actor)
           && run.projectId === projectId))
       .slice(-MAX_CASES)
-      .map((row) => ({
-        id: row.id,
-        localRef: safeText(row.localRef, 80),
-        title: safeText(row.title, 160),
-        status: row.status,
-        businessCaseId: row.businessCaseId ?? null,
-      }));
+      .map((row) => {
+        const run = [...(state.routineRuns ?? [])].reverse().find((candidate) =>
+          candidate.workItemId === row.id
+          && candidate.ownerTeamId === actorTeam(actor)
+          && candidate.projectId === projectId) ?? null;
+        const triggerArtifact = (run?.triggerArtifactIds ?? []).map((artifactId) =>
+          (state.workflowArtifacts ?? []).find((artifact) =>
+            artifact.id === artifactId
+            && artifact.ownerTeamId === actorTeam(actor)
+            && artifact.projectId === projectId
+            && artifact.availability !== "missing"
+            && !artifact.exclusion)).find(Boolean) ?? null;
+        const classification = triggerArtifact
+          ? currentClassification(state, triggerArtifact, actor)
+          : null;
+        const templateArtifactId = (run?.stepRuns ?? []).map((stepRun) =>
+          stepRun.quotationInputs?.templateArtifactId).find(Boolean) ?? null;
+        const suggestedTemplateId = templateArtifactId
+          ?? run?.routineDefinitionId
+          ?? "default-a";
+        const proposal = caseEvidence(state, {
+          id: `proposal-${row.id}`,
+          workItemId: row.id,
+          templateId: suggestedTemplateId,
+          traits: [],
+          expectedDocumentRole: classification?.documentType ?? "unknown",
+          relationshipExpected: false,
+          expectedOutcome: "no_order",
+        }, actor);
+        const suggestedTraits = [];
+        if ((proposal.observed?.duplicateIssueCount ?? 0) > 0
+          || (proposal.observed?.duplicateBusinessCaseCount ?? 0) > 0
+          || (proposal.observed?.duplicateQuotationCount ?? 0) > 0
+          || (proposal.observed?.duplicateLedgerRowCount ?? 0) > 0) {
+          suggestedTraits.push("duplicate");
+        }
+        const quotationReviewFields = (run?.stepRuns ?? [])
+          .flatMap((stepRun) => stepRun.quotationReview?.fields ?? []);
+        if (quotationReviewFields.some((field) => field.state === "missing")) {
+          suggestedTraits.push("missing_fact");
+        }
+        if (quotationReviewFields.some((field) => field.state === "conflict")
+          || (proposal.observed?.correctionCount ?? 0) > 0) {
+          suggestedTraits.push("conflicting_fact");
+        }
+        if (recoveryEvidence(run, ["restart"])[0]?.passed) {
+          suggestedTraits.push("restart");
+        }
+        if (recoveryEvidence(run, ["concurrency"])[0]?.passed) {
+          suggestedTraits.push("concurrency");
+        }
+        const missing = proposal.error ? [proposal.error] : proposal.evidence.missing;
+        const nextAction = missing.some((reason) => [
+          "current_trigger_artifacts",
+          "confirmed_trigger_classification",
+          "ranked_relationship",
+        ].includes(reason)) ? "assets" : "process";
+        return {
+          id: row.id,
+          localRef: safeText(row.localRef, 80),
+          title: safeText(row.title, 160),
+          status: row.status,
+          businessCaseId: row.businessCaseId ?? null,
+          suggestedTemplateId,
+          suggestedDocumentRole: proposal.observed?.documentRole ?? "unknown",
+          suggestedOutcome: proposal.observed?.outcome ?? "rejected",
+          suggestedTraits,
+          evidenceState: proposal.error ? "missing" : proposal.evidence.state,
+          missing,
+          nextAction,
+        };
+      });
     const relationshipArtifacts = (state.workflowArtifacts ?? [])
       .filter((row) =>
         row.ownerTeamId === actorTeam(actor)
@@ -835,9 +1047,67 @@ export function createBusinessPilotEvidenceService({
     return { workItems, relationshipArtifacts, safetyEvidence };
   }
 
+  function gapIdempotencyKey(projectId, pilotId, gapKey, actor) {
+    const digest = createHash("sha256")
+      .update(`${actorTeam(actor)}:${projectId}:${pilotId}:${gapKey}`)
+      .digest("hex")
+      .slice(0, 32);
+    return `commercial-pilot-gap:v1:${digest}`;
+  }
+
+  function workbenchGapDescriptors(spec, progress, projectId, actor) {
+    const descriptors = [];
+    const add = (key, title, reasons, parentId = null) => {
+      if (!reasons.length) return;
+      const idempotencyKey = gapIdempotencyKey(projectId, spec.pilotId, key, actor);
+      const issue = (state.workItems ?? []).find((row) =>
+        row.ownerTeamId === actorTeam(actor)
+        && row.projectId === projectId
+        && row.createIdempotencyKey === idempotencyKey) ?? null;
+      descriptors.push({
+        key,
+        title,
+        reasons: [...new Set(reasons)],
+        parentId,
+        issue: issue ? {
+          id: issue.id,
+          localRef: issue.localRef,
+          status: issue.status,
+        } : null,
+      });
+    };
+    add("coverage", "Complete formal pilot case coverage", progress.missing.filter((reason) =>
+      reason === "minimum_formal_cases"
+      || reason === "minimum_template_coverage"
+      || reason === "ordered_outcome"
+      || reason === "no_order_outcome"
+      || reason.startsWith("trait:")));
+    add("authorization", "Complete formal pilot authorization", progress.missing.filter((reason) =>
+      reason.startsWith("consent_")));
+    add("release-review", "Complete independent release reviews", progress.missing.filter((reason) =>
+      reason.startsWith("release_") || reason === "independent_release_reviewers"));
+    for (const scenario of commercialPilotRequiredScenarios.safety) {
+      add(`safety-${scenario}`, `Prove pilot safety scenario: ${scenario}`, progress.missing.filter((reason) =>
+        reason === `safety:${scenario}`));
+    }
+    for (const row of progress.cases) {
+      add(`case-${row.id}`, `Complete pilot evidence for ${row.id}`, row.missing, row.workItemId);
+    }
+    return descriptors;
+  }
+
   function workbenchView(projectId, actor) {
     const row = draftFor(projectId, actor);
     const spec = row?.spec ?? normalizedWorkbenchSpec(defaultWorkbenchSpec(projectId));
+    const currentDigest = collectionEvidenceDigest(spec, actor, projectId);
+    const history = state.businessPilotCollections
+      .filter((collection) =>
+        collection.ownerTeamId === actorTeam(actor)
+        && collection.projectId === projectId)
+      .slice(-100)
+      .reverse()
+      .map((collection) => collectionSummary(collection, currentDigest));
+    const progress = workbenchProgress(spec, actor, projectId);
     return {
       draft: {
         id: row?.id ?? null,
@@ -847,20 +1117,307 @@ export function createBusinessPilotEvidenceService({
         updatedAt: row?.updatedAt ?? null,
         lastCollection: row?.lastCollection ?? null,
       },
-      progress: workbenchProgress(spec, actor, projectId),
+      progress,
       eligible: eligibleWorkbenchData(projectId, actor),
       requiredSafetyScenarios: [...commercialPilotRequiredScenarios.safety],
+      history,
+      gaps: workbenchGapDescriptors(spec, progress, projectId, actor),
+      rollout: rolloutView(projectId, actor),
+      permissions: {
+        canManage: actorCanManagePilot(actor),
+        canReview: actorCanReviewPilot(actor),
+      },
     };
   }
 
   function getWorkbench({ projectId } = {}, actor = null) {
-    if (!actorCanManagePilot(actor)) {
+    if (!actorCanReviewPilot(actor)) {
       return { status: 403, body: { error: "commercial_pilot_review_forbidden" } };
     }
     if (!projectFor(projectId, actor)) {
       return { status: 404, body: { error: "project_not_found" } };
     }
     return { status: 200, body: workbenchView(projectId, actor) };
+  }
+
+  function prepareWorkbench({
+    projectId,
+    expectedRevision = 0,
+    confirmed,
+    dataClassification = "deidentified",
+    consentScope = "",
+    pilotId = null,
+    description = null,
+  } = {}, actor = null) {
+    if (!actorCanManagePilot(actor)) {
+      return { status: 403, body: { error: "commercial_pilot_review_forbidden" } };
+    }
+    if (!projectFor(projectId, actor)) {
+      return { status: 404, body: { error: "project_not_found" } };
+    }
+    if (rolloutView(projectId, actor).mode === "off") {
+      return { status: 409, body: { error: "commercial_pilot_rollout_disabled" } };
+    }
+    if (confirmed !== true || !safeText(consentScope, 240)
+      || !["deidentified", "real"].includes(dataClassification)) {
+      return { status: 400, body: { error: "commercial_pilot_prepare_confirmation_required" } };
+    }
+    const current = draftFor(projectId, actor);
+    if (Number(expectedRevision) !== Number(current?.revision ?? 0)) {
+      return {
+        status: 409,
+        body: {
+          error: "commercial_pilot_workbench_revision_conflict",
+          currentRevision: current?.revision ?? 0,
+        },
+      };
+    }
+    const eligible = eligibleWorkbenchData(projectId, actor);
+    const remaining = [...eligible.workItems].filter((row) => row.evidenceState !== "missing");
+    const selected = [];
+    const templates = new Set();
+    const outcomes = new Set();
+    while (remaining.length && selected.length < PILOT_THRESHOLDS.minimumFormalCases) {
+      remaining.sort((left, right) => {
+        const score = (row) =>
+          (row.evidenceState === "complete" ? 100 : 0)
+          + (outcomes.has(row.suggestedOutcome) ? 0 : 20)
+          + (templates.has(row.suggestedTemplateId) ? 0 : 10)
+          + (row.suggestedTraits?.length ?? 0);
+        return score(right) - score(left) || String(left.id).localeCompare(String(right.id));
+      });
+      const row = remaining.shift();
+      selected.push(row);
+      templates.add(row.suggestedTemplateId);
+      outcomes.add(row.suggestedOutcome);
+    }
+    const base = current?.spec ?? normalizedWorkbenchSpec(defaultWorkbenchSpec(projectId));
+    const draft = {
+      pilotId: pilotId ?? base.pilotId,
+      description: description ?? base.description ?? "Governed local commercial pilot.",
+      dataClassification,
+      consent: {
+        confirmed: true,
+        recordedAt: now(),
+        scope: consentScope.trim(),
+      },
+      releaseReview: structuredClone(base.releaseReview),
+      cases: selected.map((row, index) => ({
+        id: `case-${String(index + 1).padStart(2, "0")}`,
+        workItemId: row.id,
+        templateId: row.suggestedTemplateId,
+        traits: row.suggestedTraits,
+        expectedDocumentRole: row.suggestedDocumentRole,
+        relationshipExpected: false,
+        expectedOutcome: row.suggestedOutcome,
+      })),
+      safetyScenarios: eligible.safetyEvidence.map((row) => ({ ...row })),
+    };
+    const saved = saveWorkbench({ projectId, expectedRevision, draft }, actor);
+    if (saved.status !== 200) return saved;
+    return {
+      status: 200,
+      body: {
+        ...saved.body,
+        automation: {
+          selectedCaseCount: selected.length,
+          matchedSafetyCount: draft.safetyScenarios.length,
+          eligibleCaseCount: eligible.workItems.length,
+          readyCaseCount: eligible.workItems.filter((row) => row.evidenceState === "complete").length,
+        },
+      },
+    };
+  }
+
+  function createWorkbenchGapIssues({ projectId, expectedRevision, confirmed } = {}, actor = null) {
+    if (!actorCanManagePilot(actor)) {
+      return { status: 403, body: { error: "commercial_pilot_review_forbidden" } };
+    }
+    if (!projectFor(projectId, actor)) {
+      return { status: 404, body: { error: "project_not_found" } };
+    }
+    if (rolloutView(projectId, actor).mode === "off") {
+      return { status: 409, body: { error: "commercial_pilot_rollout_disabled" } };
+    }
+    const draft = draftFor(projectId, actor);
+    if (!draft) {
+      return { status: 409, body: { error: "commercial_pilot_workbench_not_saved" } };
+    }
+    if (draft.revision !== expectedRevision) {
+      return { status: 409, body: {
+        error: "commercial_pilot_workbench_revision_conflict",
+        currentRevision: draft.revision,
+      } };
+    }
+    if (confirmed !== true) {
+      return { status: 400, body: { error: "commercial_pilot_gap_issue_confirmation_required" } };
+    }
+    if (typeof createWorkItem !== "function") {
+      return { status: 503, body: { error: "commercial_pilot_gap_issue_materializer_unavailable" } };
+    }
+    const progress = workbenchProgress(draft.spec, actor, projectId);
+    const gaps = workbenchGapDescriptors(draft.spec, progress, projectId, actor);
+    const issues = [];
+    for (const gap of gaps) {
+      if (gap.issue) {
+        issues.push({ ...gap.issue, gapKey: gap.key, replayed: true });
+        continue;
+      }
+      const created = createWorkItem({
+        projectId,
+        title: gap.title,
+        body: [
+          `Formal pilot: ${draft.spec.pilotId}`,
+          `Gap: ${gap.key}`,
+          "",
+          ...gap.reasons.map((reason) => `- ${reason}`),
+        ].join("\n"),
+        type: "task",
+        status: "ready",
+        priority: "p1",
+        labels: ["workflow-memory", "pilot-evidence-gap"],
+        assigneeIds: [],
+        acceptanceCriteria: gap.reasons.map((reason) => `Resolve ${reason}`),
+        parentId: gap.parentId,
+        idempotencyKey: gapIdempotencyKey(projectId, draft.spec.pilotId, gap.key, actor),
+      }, actor);
+      if (!created?.ok) {
+        return { status: created?.status ?? 500, body: created?.body ?? {
+          error: "commercial_pilot_gap_issue_create_failed",
+        } };
+      }
+      issues.push({
+        id: created.body.workItem.id,
+        localRef: created.body.workItem.localRef,
+        status: created.body.workItem.status,
+        gapKey: gap.key,
+        replayed: Boolean(created.body.replayed),
+      });
+    }
+    return { status: 200, body: { ...workbenchView(projectId, actor), issues } };
+  }
+
+  function submitWorkbenchReview({
+    projectId,
+    dimension,
+    expectedRevision,
+    status,
+    note,
+    evidenceIds,
+  } = {}, actor = null) {
+    if (!actorCanReviewPilot(actor)) {
+      return { status: 403, body: { error: "commercial_pilot_review_forbidden" } };
+    }
+    if (!projectFor(projectId, actor)) {
+      return { status: 404, body: { error: "project_not_found" } };
+    }
+    if (rolloutView(projectId, actor).mode === "off") {
+      return { status: 409, body: { error: "commercial_pilot_rollout_disabled" } };
+    }
+    const draft = draftFor(projectId, actor);
+    if (!draft) {
+      return { status: 409, body: { error: "commercial_pilot_workbench_not_saved" } };
+    }
+    if (draft.revision !== expectedRevision) {
+      return { status: 409, body: {
+        error: "commercial_pilot_workbench_revision_conflict",
+        currentRevision: draft.revision,
+      } };
+    }
+    if (!RELEASE_REVIEW_DIMENSIONS.includes(dimension)
+      || !["passed", "failed"].includes(status)
+      || !safeText(note, 500)
+      || note.trim().length < 3
+      || !Array.isArray(evidenceIds)
+      || evidenceIds.length === 0
+      || evidenceIds.length > 20
+      || evidenceIds.some((value) => !safeText(value, 80) || !SAFE_ID.test(value))) {
+      return { status: 400, body: { error: "commercial_pilot_review_submission_invalid" } };
+    }
+    const userId = safeText(actor?.userId, 80) && SAFE_ID.test(actor.userId)
+      ? actor.userId
+      : "user_local";
+    const reviewItems = isObject(draft.spec.releaseReview.items)
+      ? structuredClone(draft.spec.releaseReview.items)
+      : defaultReleaseReviewItems();
+    reviewItems[dimension] = {
+      status,
+      reviewerId: userId,
+      reviewerRole: safeText(actor?.role, 80) ?? "workspace owner",
+      reviewedAt: now(),
+      note: note.trim(),
+      evidenceIds: [...new Set(evidenceIds)],
+    };
+    const allPassed = RELEASE_REVIEW_DIMENSIONS.every((key) =>
+      reviewItems[key]?.status === "passed");
+    const { schemaVersion: _schemaVersion, thresholds: _thresholds, ...input } = draft.spec;
+    input.releaseReview = {
+      ...input.releaseReview,
+      reviewerRole: "independent reviewers",
+      items: reviewItems,
+      recordedAt: allPassed ? now() : null,
+      confirmed: false,
+    };
+    const validation = validateWorkbenchSpec(input);
+    if (!validation.valid) {
+      return { status: 400, body: {
+        error: "invalid_commercial_pilot_workbench",
+        validation,
+      } };
+    }
+    const spec = normalizedWorkbenchSpec(input);
+    const timestamp = now();
+    runTx(() => {
+      draft.spec = spec;
+      draft.lastCollection = null;
+      draft.lastCollectionDigest = null;
+      draft.revision += 1;
+      draft.updatedAt = timestamp;
+      draft.updatedBy = userId;
+    });
+    return { status: 200, body: {
+      ...workbenchView(projectId, actor),
+      review: { dimension, status, reviewerId: userId },
+    } };
+  }
+
+  function updateWorkbenchRollout({ projectId, expectedRevision = 0, mode } = {}, actor = null) {
+    if (!actorCanManagePilot(actor)) {
+      return { status: 403, body: { error: "commercial_pilot_review_forbidden" } };
+    }
+    if (!projectFor(projectId, actor)) {
+      return { status: 404, body: { error: "project_not_found" } };
+    }
+    if (!["off", "shadow", "enabled"].includes(mode)) {
+      return { status: 400, body: { error: "commercial_pilot_rollout_mode_invalid" } };
+    }
+    const existing = rolloutFor(projectId, actor);
+    if (Number(expectedRevision) !== Number(existing?.revision ?? 0)) {
+      return { status: 409, body: {
+        error: "commercial_pilot_rollout_revision_conflict",
+        currentRevision: existing?.revision ?? 0,
+      } };
+    }
+    const timestamp = now();
+    runTx(() => {
+      if (existing) {
+        existing.mode = mode;
+        existing.revision += 1;
+        existing.updatedAt = timestamp;
+        existing.updatedBy = actor?.userId ?? "user_local";
+      } else {
+        state.businessPilotRollouts.push({
+          id: nextId("bpro"),
+          ownerTeamId: actorTeam(actor),
+          projectId,
+          mode,
+          revision: 1,
+          updatedAt: timestamp,
+          updatedBy: actor?.userId ?? "user_local",
+        });
+      }
+    });
+    return { status: 200, body: { rollout: rolloutView(projectId, actor) } };
   }
 
   function saveWorkbench({ projectId, expectedRevision, draft } = {}, actor = null) {
@@ -878,6 +1435,29 @@ export function createBusinessPilotEvidenceService({
       };
     }
     const spec = normalizedWorkbenchSpec(draft);
+    const existing = draftFor(projectId, actor);
+    if (Number(expectedRevision ?? 0) !== Number(existing?.revision ?? 0)) {
+      return {
+        status: 409,
+        body: {
+          error: "commercial_pilot_workbench_revision_conflict",
+          currentRevision: existing?.revision ?? 0,
+        },
+      };
+    }
+    for (const dimension of RELEASE_REVIEW_DIMENSIONS) {
+      const submitted = draft.releaseReview.items?.[dimension];
+      if (submitted?.status === "pending" || submitted == null) continue;
+      const recorded = existing?.spec.releaseReview.items?.[dimension];
+      if (!recorded || canonicalJson(submitted) !== canonicalJson(recorded)) {
+        return { status: 400, body: { error: "commercial_pilot_review_submission_required" } };
+      }
+    }
+    const truthChanged = !existing
+      || workbenchTruthDigest(spec) !== workbenchTruthDigest(existing.spec);
+    spec.releaseReview = truthChanged || !isObject(existing?.spec.releaseReview.items)
+      ? defaultWorkbenchReleaseReview(now())
+      : structuredClone(existing.spec.releaseReview);
     for (const row of spec.cases) {
       const workItem = (state.workItems ?? []).find((candidate) =>
         candidate.id === row.workItemId
@@ -901,16 +1481,6 @@ export function createBusinessPilotEvidenceService({
         === "evidence_not_found_or_not_visible") {
         return { status: 404, body: { error: "pilot_safety_evidence_not_found" } };
       }
-    }
-    const existing = draftFor(projectId, actor);
-    if (Number(expectedRevision ?? 0) !== Number(existing?.revision ?? 0)) {
-      return {
-        status: 409,
-        body: {
-          error: "commercial_pilot_workbench_revision_conflict",
-          currentRevision: existing?.revision ?? 0,
-        },
-      };
     }
     const timestamp = now();
     runTx(() => {
@@ -951,7 +1521,7 @@ export function createBusinessPilotEvidenceService({
     const receipt = state.businessPilotEvidenceReceipts.find((row) =>
       row.id === manifest.evidenceReceipt?.id
       && row.ownerTeamId === actorTeam(actor));
-    if (!receipt || receipt.manifestDigest !== manifestDigest(manifest)) {
+    if (!receipt || receipt.revokedAt || receipt.manifestDigest !== manifestDigest(manifest)) {
       return { status: 404, body: { error: "commercial_pilot_evidence_receipt_not_found" } };
     }
     return {
@@ -980,6 +1550,25 @@ export function createBusinessPilotEvidenceService({
         ...safetyEvidenceFor(state, scenario, actor, projectId),
       })),
     });
+  }
+
+  function collectionSummary(collection, currentDigest = null) {
+    return {
+      id: collection.id,
+      pilotId: collection.pilotId,
+      draftRevision: collection.draftRevision,
+      evidenceReceiptId: collection.evidenceReceiptId,
+      collectedAt: collection.collectedAt,
+      collectedBy: collection.collectedBy,
+      evidenceState: collection.collection.evidence.state,
+      decision: collection.collection.report.gate.decision,
+      caseCount: collection.collection.manifest.cases.length,
+      safetyPassed: collection.collection.manifest.safetyScenarios
+        .filter((scenario) => scenario.passed).length,
+      safetyTotal: collection.collection.manifest.safetyScenarios.length,
+      current: !collection.revokedAt && currentDigest === collection.evidenceDigest,
+      revokedAt: collection.revokedAt ?? null,
+    };
   }
 
   function collect(spec, actor = null, { projectId = null } = {}) {
@@ -1090,6 +1679,9 @@ export function createBusinessPilotEvidenceService({
     if (!projectFor(projectId, actor)) {
       return { status: 404, body: { error: "project_not_found" } };
     }
+    if (rolloutView(projectId, actor).mode === "off") {
+      return { status: 409, body: { error: "commercial_pilot_rollout_disabled" } };
+    }
     const draft = draftFor(projectId, actor);
     if (!draft) {
       return { status: 409, body: { error: "commercial_pilot_workbench_not_saved" } };
@@ -1116,7 +1708,8 @@ export function createBusinessPilotEvidenceService({
         },
       };
     }
-    const validation = validateCommercialPilotEvidenceSpec(draft.spec);
+    const collectionSpec = evidenceSpecForWorkbench(draft.spec);
+    const validation = validateCommercialPilotEvidenceSpec(collectionSpec);
     if (!validation.valid) {
       return {
         status: 409,
@@ -1137,7 +1730,7 @@ export function createBusinessPilotEvidenceService({
         },
       };
     }
-    const result = collect(draft.spec, actor, { projectId });
+    const result = collect(collectionSpec, actor, { projectId });
     if (result.status !== 200) return result;
     const verification = verify({ manifest: result.body.manifest }, actor);
     if (verification.status !== 200) {
@@ -1152,6 +1745,21 @@ export function createBusinessPilotEvidenceService({
     };
     const timestamp = now();
     runTx(() => {
+      state.businessPilotCollections.push({
+        id: nextId("bpc"),
+        ownerTeamId: actorTeam(actor),
+        projectId,
+        pilotId: draft.spec.pilotId,
+        draftRevision: draft.revision,
+        evidenceDigest: digest,
+        evidenceReceiptId: result.body.manifest.evidenceReceipt.id,
+        collectedAt: timestamp,
+        collectedBy: actor?.userId ?? "user_local",
+        collection: structuredClone(collection),
+        revokedAt: null,
+        revokedBy: null,
+      });
+      state.businessPilotCollections = state.businessPilotCollections.slice(-COLLECTION_LIMIT);
       draft.lastCollectionDigest = digest;
       draft.lastCollection = collection;
       draft.revision += 1;
@@ -1168,11 +1776,145 @@ export function createBusinessPilotEvidenceService({
     };
   }
 
+  function getWorkbenchCollection({ projectId, collectionId } = {}, actor = null) {
+    if (!actorCanReviewPilot(actor)) {
+      return { status: 403, body: { error: "commercial_pilot_review_forbidden" } };
+    }
+    if (!projectFor(projectId, actor)) {
+      return { status: 404, body: { error: "project_not_found" } };
+    }
+    const collection = state.businessPilotCollections.find((row) =>
+      row.id === collectionId
+      && row.projectId === projectId
+      && row.ownerTeamId === actorTeam(actor));
+    if (!collection) {
+      return { status: 404, body: { error: "commercial_pilot_collection_not_found" } };
+    }
+    const draft = draftFor(projectId, actor);
+    const currentDigest = draft
+      ? collectionEvidenceDigest(draft.spec, actor, projectId)
+      : null;
+    return {
+      status: 200,
+      body: {
+        collection: collectionSummary(collection, currentDigest),
+        report: collection.collection.report,
+        verification: collection.collection.verification,
+      },
+    };
+  }
+
+  function compareWorkbenchCollections({ projectId, fromId, toId } = {}, actor = null) {
+    const fromResult = getWorkbenchCollection({ projectId, collectionId: fromId }, actor);
+    if (fromResult.status !== 200) return fromResult;
+    const toResult = getWorkbenchCollection({ projectId, collectionId: toId }, actor);
+    if (toResult.status !== 200) return toResult;
+    const from = fromResult.body.collection;
+    const to = toResult.body.collection;
+    return {
+      status: 200,
+      body: {
+        from,
+        to,
+        changes: {
+          evidenceStateChanged: from.evidenceState !== to.evidenceState,
+          decisionChanged: from.decision !== to.decision,
+          caseCount: to.caseCount - from.caseCount,
+          safetyPassed: to.safetyPassed - from.safetyPassed,
+        },
+      },
+    };
+  }
+
+  function exportWorkbenchCollection({ projectId, collectionId, format = "markdown" } = {}, actor = null) {
+    const detail = getWorkbenchCollection({ projectId, collectionId }, actor);
+    if (detail.status !== 200) return detail;
+    if (!["markdown", "json"].includes(format)) {
+      return { status: 400, body: { error: "commercial_pilot_export_format_invalid" } };
+    }
+    const summary = detail.body.collection;
+    const safeReport = {
+      schemaVersion: 1,
+      pilotId: summary.pilotId,
+      collectedAt: summary.collectedAt,
+      evidenceState: summary.evidenceState,
+      decision: summary.decision,
+      caseCount: summary.caseCount,
+      safety: { passed: summary.safetyPassed, total: summary.safetyTotal },
+      current: summary.current,
+      revokedAt: summary.revokedAt,
+    };
+    const content = format === "json"
+      ? `${JSON.stringify(safeReport, null, 2)}\n`
+      : [
+          `# Commercial pilot ${summary.pilotId}`,
+          "",
+          `- Collected: ${summary.collectedAt}`,
+          `- Evidence: ${summary.evidenceState}`,
+          `- Decision: ${summary.decision}`,
+          `- Cases: ${summary.caseCount}`,
+          `- Safety: ${summary.safetyPassed}/${summary.safetyTotal}`,
+          `- Current: ${summary.current ? "yes" : "no"}`,
+          ...(summary.revokedAt ? [`- Revoked: ${summary.revokedAt}`] : []),
+          "",
+          "This aggregate report contains no source document text or absolute local paths.",
+          "",
+        ].join("\n");
+    return {
+      status: 200,
+      body: {
+        filename: `${summary.pilotId}-${collectionId}.${format === "json" ? "json" : "md"}`,
+        mediaType: format === "json" ? "application/json" : "text/markdown",
+        content,
+      },
+    };
+  }
+
+  function revokeWorkbenchCollection({ projectId, collectionId } = {}, actor = null) {
+    if (!actorCanManagePilot(actor)) {
+      return { status: 403, body: { error: "commercial_pilot_review_forbidden" } };
+    }
+    const detail = getWorkbenchCollection({ projectId, collectionId }, actor);
+    if (detail.status !== 200) return detail;
+    const collection = state.businessPilotCollections.find((row) => row.id === collectionId);
+    if (collection.revokedAt) {
+      return { status: 200, body: { collection: collectionSummary(collection, null), replayed: true } };
+    }
+    const timestamp = now();
+    runTx(() => {
+      collection.revokedAt = timestamp;
+      collection.revokedBy = actor?.userId ?? "user_local";
+      const receipt = state.businessPilotEvidenceReceipts.find((row) =>
+        row.id === collection.evidenceReceiptId && row.ownerTeamId === actorTeam(actor));
+      if (receipt) {
+        receipt.revokedAt = timestamp;
+        receipt.revokedBy = actor?.userId ?? "user_local";
+      }
+      const draft = draftFor(projectId, actor);
+      if (draft?.lastCollection?.manifest?.evidenceReceipt?.id === collection.evidenceReceiptId) {
+        draft.lastCollection = null;
+        draft.lastCollectionDigest = null;
+        draft.revision += 1;
+        draft.updatedAt = timestamp;
+        draft.updatedBy = actor?.userId ?? "user_local";
+      }
+    });
+    return { status: 200, body: { collection: collectionSummary(collection, null), replayed: false } };
+  }
+
   return {
     collect,
     verify,
     getWorkbench,
     saveWorkbench,
+    prepareWorkbench,
+    createWorkbenchGapIssues,
+    submitWorkbenchReview,
+    updateWorkbenchRollout,
     collectWorkbench,
+    getWorkbenchCollection,
+    compareWorkbenchCollections,
+    exportWorkbenchCollection,
+    revokeWorkbenchCollection,
   };
 }

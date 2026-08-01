@@ -9,6 +9,7 @@ import {
 const ACTOR_A = { userId: "usr_a", teamId: "team_a" };
 const ACTOR_B = { userId: "usr_b", teamId: "team_b" };
 const ACTOR_VIEWER = { userId: "usr_viewer", teamId: "team_a", role: "viewer" };
+const ACTOR_OPERATOR = { userId: "usr_operator", teamId: "team_a", role: "operator" };
 
 function stateFixture() {
   return {
@@ -565,6 +566,21 @@ test("pilot workbench persists human truth, projects honest gaps, and replays co
       localization: false,
       migration: false,
       rollback: false,
+      items: Object.fromEntries([
+        "performance",
+        "security",
+        "privacy",
+        "accessibility",
+        "localization",
+        "migration",
+        "rollback",
+      ].map((dimension) => [dimension, {
+        status: "pending",
+        reviewerRole: "",
+        reviewedAt: null,
+        note: "",
+        evidenceIds: [],
+      }])),
     },
     cases: [{
       id: "case-01",
@@ -581,6 +597,13 @@ test("pilot workbench persists human truth, projects honest gaps, and replays co
       evidenceId: "bdc_inquiry",
     }],
   };
+  const invalidIndependentReview = structuredClone(draft);
+  invalidIndependentReview.releaseReview.items.performance.status = "passed";
+  assert.equal(service.saveWorkbench({
+    projectId: "prj_a",
+    expectedRevision: 0,
+    draft: invalidIndependentReview,
+  }, ACTOR_A).status, 400);
   const foreignEvidenceDraft = structuredClone(draft);
   foreignEvidenceDraft.safetyScenarios = [{
     id: "approval_bypass",
@@ -605,6 +628,8 @@ test("pilot workbench persists human truth, projects honest gaps, and replays co
   assert.equal(saved.body.progress.caseCount, 1);
   assert.equal(saved.body.progress.completeCaseCount, 1);
   assert.equal(saved.body.progress.safety[0].passed, true);
+  assert.equal(saved.body.progress.releaseReview.length, 7);
+  assert.equal(saved.body.progress.releaseReview[0].status, "pending");
   assert.ok(saved.body.progress.missing.includes("minimum_formal_cases"));
 
   const stale = service.saveWorkbench({
@@ -638,6 +663,10 @@ test("pilot workbench persists human truth, projects honest gaps, and replays co
   assert.equal(collected.body.collection.evidence.state, "incomplete");
   assert.equal(collected.body.collection.verification.verified, true);
   assert.equal(collected.body.draft.revision, 2);
+  assert.equal(state.businessPilotCollections.length, 1);
+  assert.equal(collected.body.history.length, 1);
+  assert.equal(collected.body.history[0].current, true);
+  const firstCollectionId = collected.body.history[0].id;
   const coalesced = service.collectWorkbench({
     projectId: "prj_a",
     expectedRevision: 1,
@@ -675,9 +704,187 @@ test("pilot workbench persists human truth, projects honest gaps, and replays co
     collected.body.collection.manifest.evidenceReceipt.id,
   );
   assert.equal(state.businessPilotEvidenceReceipts.length, 2);
+  assert.equal(state.businessPilotCollections.length, 2);
+  assert.equal(recollected.body.history.length, 2);
+  const secondCollectionId = recollected.body.history[0].id;
+  assert.equal(recollected.body.history[0].current, true);
+  assert.equal(recollected.body.history[1].current, false);
+
+  const detail = service.getWorkbenchCollection({
+    projectId: "prj_a",
+    collectionId: secondCollectionId,
+  }, ACTOR_A);
+  assert.equal(detail.status, 200);
+  assert.equal(detail.body.collection.caseCount, 1);
+  assert.equal(detail.body.collection.current, true);
+  const comparison = service.compareWorkbenchCollections({
+    projectId: "prj_a",
+    fromId: firstCollectionId,
+    toId: secondCollectionId,
+  }, ACTOR_A);
+  assert.equal(comparison.status, 200);
+  assert.equal(comparison.body.changes.evidenceStateChanged, false);
+  const exported = service.exportWorkbenchCollection({
+    projectId: "prj_a",
+    collectionId: secondCollectionId,
+    format: "markdown",
+  }, ACTOR_A);
+  assert.equal(exported.status, 200);
+  assert.match(exported.body.filename, /\.md$/);
+  assert.match(exported.body.content, /contains no source document text/);
+
+  const revoked = service.revokeWorkbenchCollection({
+    projectId: "prj_a",
+    collectionId: firstCollectionId,
+  }, ACTOR_A);
+  assert.equal(revoked.status, 200);
+  assert.ok(revoked.body.collection.revokedAt);
+  assert.equal(service.verify({ manifest: collected.body.collection.manifest }, ACTOR_A).status, 404);
+  assert.equal(service.revokeWorkbenchCollection({
+    projectId: "prj_a",
+    collectionId: firstCollectionId,
+  }, ACTOR_A).body.replayed, true);
 
   const restarted = createBusinessPilotEvidenceService({ state });
   const restored = restarted.getWorkbench({ projectId: "prj_a" }, ACTOR_A);
   assert.equal(restored.body.draft.revision, 3);
   assert.equal(restored.body.draft.lastCollection.evidence.pilotId, "pilot-workbench");
+});
+
+test("V1.7 prepares a pilot, materializes gap Issues, and records concurrent reviews", () => {
+  const state = stateFixture();
+  let issueSequence = 0;
+  const createWorkItem = (input, actor) => {
+    const existing = state.workItems.find((row) =>
+      row.ownerTeamId === actor.teamId && row.createIdempotencyKey === input.idempotencyKey);
+    if (existing) {
+      return { ok: true, status: 200, body: { workItem: existing, replayed: true } };
+    }
+    issueSequence += 1;
+    const workItem = {
+      ...input,
+      id: `gap_${issueSequence}`,
+      localRef: `LOCAL-GAP-${issueSequence}`,
+      ownerTeamId: actor.teamId,
+      createIdempotencyKey: input.idempotencyKey,
+      revision: 1,
+    };
+    state.workItems.unshift(workItem);
+    return { ok: true, status: 201, body: { workItem, replayed: false } };
+  };
+  const service = createBusinessPilotEvidenceService({
+    state,
+    now: () => "2026-08-01T12:00:00.000Z",
+    nextId: (prefix) => `${prefix}_v17`,
+    createWorkItem,
+  });
+
+  const prepared = service.prepareWorkbench({
+    projectId: "prj_a",
+    expectedRevision: 0,
+    confirmed: true,
+    dataClassification: "deidentified",
+    consentScope: "Authorized deidentified commercial cases in project A",
+  }, ACTOR_A);
+  assert.equal(prepared.status, 200, JSON.stringify(prepared.body));
+  assert.equal(prepared.body.automation.selectedCaseCount, 1);
+  assert.equal(prepared.body.automation.matchedSafetyCount, 1);
+  assert.equal(prepared.body.draft.consent.confirmed, true);
+  assert.equal(prepared.body.draft.cases[0].workItemId, "wit_case_a");
+  assert.ok(prepared.body.draft.cases[0].traits.includes("conflicting_fact"));
+  assert.ok(prepared.body.gaps.some((gap) => gap.key === "coverage"));
+  assert.equal(service.getWorkbench({ projectId: "prj_a" }, ACTOR_OPERATOR).status, 200);
+  assert.equal(service.getWorkbench({ projectId: "prj_a" }, ACTOR_VIEWER).status, 403);
+  const spoofedReview = structuredClone(state.businessPilotDrafts[0].spec);
+  delete spoofedReview.schemaVersion;
+  delete spoofedReview.thresholds;
+  spoofedReview.releaseReview.items.performance = {
+    status: "passed",
+    reviewerId: "fake-reviewer",
+    reviewerRole: "owner",
+    reviewedAt: "2026-08-01T12:00:00.000Z",
+    note: "Fabricated client-side review",
+    evidenceIds: ["fake-evidence"],
+  };
+  const spoofed = service.saveWorkbench({
+    projectId: "prj_a",
+    expectedRevision: 1,
+    draft: spoofedReview,
+  }, ACTOR_A);
+  assert.equal(spoofed.status, 400);
+  assert.equal(spoofed.body.error, "commercial_pilot_review_submission_required");
+
+  const created = service.createWorkbenchGapIssues({
+    projectId: "prj_a",
+    expectedRevision: 1,
+    confirmed: true,
+  }, ACTOR_A);
+  assert.equal(created.status, 200, JSON.stringify(created.body));
+  assert.ok(created.body.issues.length >= 2);
+  assert.ok(created.body.issues.every((issue) => issue.localRef.startsWith("LOCAL-GAP-")));
+  const replayed = service.createWorkbenchGapIssues({
+    projectId: "prj_a",
+    expectedRevision: 1,
+    confirmed: true,
+  }, ACTOR_A);
+  assert.ok(replayed.body.issues.every((issue) => issue.replayed));
+
+  let revision = 1;
+  for (const [index, dimension] of [
+    "performance",
+    "security",
+    "privacy",
+    "accessibility",
+    "localization",
+    "migration",
+    "rollback",
+  ].entries()) {
+    const reviewer = index === 6 ? ACTOR_OPERATOR : ACTOR_A;
+    const reviewed = service.submitWorkbenchReview({
+      projectId: "prj_a",
+      dimension,
+      expectedRevision: revision,
+      status: "passed",
+      note: `${dimension} evidence passed`,
+      evidenceIds: [`evidence-${dimension}`],
+    }, reviewer);
+    assert.equal(reviewed.status, 200, JSON.stringify(reviewed.body));
+    revision += 1;
+  }
+  const reviewed = service.getWorkbench({ projectId: "prj_a" }, ACTOR_A);
+  assert.equal(reviewed.body.draft.revision, 8);
+  assert.equal(reviewed.body.draft.releaseReview.confirmed, true);
+  assert.equal(reviewed.body.progress.missing.includes("independent_release_reviewers"), false);
+  assert.equal(new Set(Object.values(reviewed.body.draft.releaseReview.items)
+    .map((item) => item.reviewerId)).size, 2);
+
+  const changedTruth = structuredClone(state.businessPilotDrafts[0].spec);
+  delete changedTruth.schemaVersion;
+  delete changedTruth.thresholds;
+  changedTruth.description = "Changed pilot truth invalidates prior reviews";
+  const invalidated = service.saveWorkbench({
+    projectId: "prj_a",
+    expectedRevision: 8,
+    draft: changedTruth,
+  }, ACTOR_A);
+  assert.equal(invalidated.status, 200, JSON.stringify(invalidated.body));
+  assert.equal(invalidated.body.draft.revision, 9);
+  assert.equal(invalidated.body.draft.releaseReview.confirmed, false);
+  assert.ok(Object.values(invalidated.body.draft.releaseReview.items)
+    .every((item) => item.status === "pending" && item.reviewerId == null));
+
+  const rollout = service.updateWorkbenchRollout({
+    projectId: "prj_a",
+    expectedRevision: 0,
+    mode: "off",
+  }, ACTOR_A);
+  assert.equal(rollout.status, 200);
+  assert.equal(rollout.body.rollout.mode, "off");
+  assert.equal(service.collectWorkbench({ projectId: "prj_a", expectedRevision: 9 }, ACTOR_A).status, 409);
+  assert.equal(service.prepareWorkbench({
+    projectId: "prj_a",
+    expectedRevision: 9,
+    confirmed: true,
+    consentScope: "Authorized scope",
+  }, ACTOR_A).status, 409);
 });

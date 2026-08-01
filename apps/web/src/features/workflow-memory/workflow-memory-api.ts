@@ -164,6 +164,40 @@ export interface CommercialPilotReleaseReview {
   localization: boolean;
   migration: boolean;
   rollback: boolean;
+  items?: Partial<Record<CommercialPilotReviewDimension, CommercialPilotReviewItem>>;
+}
+
+export type CommercialPilotReviewDimension =
+  | "performance"
+  | "security"
+  | "privacy"
+  | "accessibility"
+  | "localization"
+  | "migration"
+  | "rollback";
+
+export interface CommercialPilotReviewItem {
+  status: "pending" | "passed" | "failed";
+  reviewerRole: string;
+  reviewerId?: string | null;
+  reviewedAt?: string | null;
+  note: string;
+  evidenceIds: string[];
+}
+
+export interface CommercialPilotCollectionSummary {
+  id: string;
+  pilotId: string;
+  draftRevision: number;
+  evidenceReceiptId: string;
+  collectedAt: string;
+  evidenceState: "complete" | "incomplete";
+  decision: "go" | "no_go";
+  caseCount: number;
+  safetyPassed: number;
+  safetyTotal: number;
+  current: boolean;
+  revokedAt: string | null;
 }
 
 export interface CommercialPilotWorkbenchDraftInput {
@@ -203,7 +237,15 @@ export interface CommercialPilotWorkbench {
     outcomes: string[];
     traits: Array<{ id: string; complete: boolean }>;
     safety: Array<{ id: string; passed: boolean; reason?: string }>;
-    releaseReview: Array<{ id: string; complete: boolean }>;
+    releaseReview: Array<{
+      id: string;
+      complete: boolean;
+      status?: "pending" | "passed" | "failed";
+      reviewerRole?: string;
+      reviewerId?: string | null;
+      reviewedAt?: string | null;
+      evidenceCount?: number;
+    }>;
     cases: Array<{
       id: string;
       workItemId: string;
@@ -221,6 +263,13 @@ export interface CommercialPilotWorkbench {
       title: string | null;
       status: string;
       businessCaseId: string | null;
+      suggestedTemplateId?: string;
+      suggestedDocumentRole?: CommercialPilotDocumentRole;
+      suggestedOutcome?: CommercialPilotCaseDraft["expectedOutcome"];
+      suggestedTraits?: string[];
+      evidenceState?: "complete" | "incomplete" | "missing";
+      missing?: string[];
+      nextAction?: "process" | "assets";
     }>;
     relationshipArtifacts: Array<{
       id: string;
@@ -230,6 +279,21 @@ export interface CommercialPilotWorkbench {
     safetyEvidence: CommercialPilotSafetyDraft[];
   };
   requiredSafetyScenarios: string[];
+  history?: CommercialPilotCollectionSummary[];
+  gaps?: Array<{
+    key: string;
+    title: string;
+    reasons: string[];
+    parentId: string | null;
+    issue: { id: string; localRef: string; status: string } | null;
+  }>;
+  rollout?: {
+    mode: "off" | "shadow" | "enabled";
+    revision: number;
+    updatedAt: string | null;
+    updatedBy: string | null;
+  };
+  permissions?: { canManage: boolean; canReview: boolean };
 }
 
 export interface CommercialPilotCollection {
@@ -264,11 +328,394 @@ export interface CommercialPilotCollection {
   verification?: { verified: true };
 }
 
+export type AdaptiveWorkPolicyMode = "observe" | "assist" | "execute";
+
+export interface AdaptiveWorkMonitor {
+  id: string | null;
+  sourceId: string;
+  enabled: boolean;
+  intervalMinutes: number;
+  revision: number;
+  state: "disabled" | "scheduled" | "running" | "recoverable" | "backoff";
+  nextRunAt: string | null;
+  lastRunAt: string | null;
+  lastSuccessAt: string | null;
+  lastError: string | null;
+  consecutiveFailures: number;
+  updatedAt: string | null;
+}
+
+export interface AdaptiveLearningEvaluation {
+  evaluatedAt?: string;
+  evidenceCount: number;
+  accepted: number;
+  rejected: number;
+  acceptanceRate: number | null;
+  rejectionRate?: number | null;
+  trackedOutcomes?: number;
+  completedOutcomes?: number;
+  completionRate: number | null;
+  representative: boolean;
+  passed: boolean;
+  reasons: string[];
+  shadow?: {
+    comparisonCount: number;
+    preferenceCount: number;
+    candidateWins: number;
+    currentWins: number;
+    neitherWins: number;
+    candidateWinRate: number | null;
+    regressionRate: number | null;
+    representative: boolean;
+    required: number;
+  };
+}
+
+export interface AdaptiveShadowComparison {
+  id: string;
+  draftId: string;
+  draftVersion: number;
+  suggestionId: string;
+  baseline: { documentType: string; actions: string[]; confidenceThreshold: number };
+  candidate: { documentType: string; actions: string[]; confidenceThreshold: number };
+  differences: {
+    documentTypeChanged: boolean;
+    actionsChanged: boolean;
+    thresholdChanged: boolean;
+  };
+  preference: {
+    preferred: "current" | "candidate" | "neither";
+    reason: string;
+    confirmed: true;
+    decidedAt: string;
+    decidedBy: string;
+  } | null;
+  evaluatedAt: string | null;
+}
+
+export interface AdaptiveLearningDraft {
+  id: string;
+  version: number;
+  revision: number;
+  status: "shadow" | "published";
+  evaluation: AdaptiveLearningEvaluation;
+  configuration: {
+    documentTypes: Array<{
+      documentType: string;
+      evidenceCount: number;
+      actions: string[];
+      confidenceThreshold: number;
+    }>;
+    typeMappings?: Array<{
+      fromDocumentType: string;
+      toDocumentType: string;
+      evidenceCount: number;
+    }>;
+  };
+  shadowComparisons?: AdaptiveShadowComparison[];
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface AdaptiveLearningPublicationReview {
+  draftId: string;
+  draftVersion: number;
+  draftRevision: number;
+  fingerprint: string;
+  gate: {
+    passed: boolean;
+    reasons: string[];
+    evaluation: AdaptiveLearningEvaluation;
+  };
+  evidence: { count: number; ids: string[] };
+  changes: Array<{
+    documentType: string;
+    before: { actions: string[]; confidenceThreshold: number } | null;
+    after: { actions: string[]; confidenceThreshold: number };
+    actionChanges: { added: string[]; removed: string[] };
+  }>;
+  typeMappings: Array<{
+    fromDocumentType: string;
+    toDocumentType: string;
+    evidenceCount: number;
+  }>;
+  impact: {
+    observedSuggestions: number;
+    affectedSuggestions: number;
+    automationEligible: number;
+    executeMode: boolean;
+  };
+  rollback: { available: boolean; ruleId: string | null; version: number | null };
+  boundary: {
+    candidateAppliedBeforePublish: false;
+    localIssueOnly: true;
+    externalDelivery: false;
+  };
+}
+
+export interface AdaptiveLearningRule {
+  id: string;
+  version: number;
+  revision: number;
+  status: "active" | "superseded" | "rolled_back";
+  previousRuleId: string | null;
+  evaluation: AdaptiveLearningEvaluation;
+  configuration: AdaptiveLearningDraft["configuration"];
+  publishedAt: string;
+}
+
+export interface AdaptiveWorkNotification {
+  id: string;
+  kind: "monitor_failed" | "monitor_recovered" | "automation_downgraded" | string;
+  message: string;
+  state: "unread" | "read";
+  createdAt: string;
+  readAt?: string;
+}
+
+export interface AdaptiveLearningReadiness {
+  evidenceCount: number;
+  accepted: number;
+  rejected: number;
+  draftRequired: number;
+  evaluationRequired: number;
+  canGenerate: boolean;
+  canEvaluate: boolean;
+}
+
+export interface AdaptiveWorkSuggestion {
+  id: string;
+  projectId: string;
+  sourceId: string;
+  observationId: string;
+  artifact: {
+    id: string;
+    name: string | null;
+    family: string;
+    extension: string | null;
+  } | null;
+  documentType: string;
+  detectedDocumentType: string;
+  confidence: number;
+  confirmationState: string | null;
+  readiness: "needs_analysis" | "needs_confirmation" | "ready";
+  reasons: string[];
+  riskSignals: string[];
+  actions: string[];
+  history: Array<{
+    classificationId: string;
+    documentType: string;
+    artifact: { id: string; name: string | null; family: string; extension: string | null } | null;
+    confirmationState: string;
+  }>;
+  automation: {
+    eligible: boolean;
+    confidenceThreshold: number;
+    historyThreshold: number;
+    reasons: string[];
+  };
+  issue: { id: string; localRef: string; title: string; status: string } | null;
+  learnedRule: { id: string; version: number; applied: boolean } | null;
+  outcome: {
+    id: string;
+    suggestionId: string;
+    workItemId: string;
+    status: "active" | "blocked" | "closed" | "completed";
+    workItemStatus: string | null;
+    completedAt: string | null;
+    outputAssets: Array<{ id: string | null; family: string | null; name: string | null; path: string | null }>;
+    verification: Array<{
+      id: string;
+      kind: string;
+      status: string;
+      summary: string | null;
+      recordedAt: string;
+    }>;
+    updatedAt: string;
+  } | null;
+  shadow: AdaptiveShadowComparison | null;
+  feedback: {
+    decision: "accepted" | "rejected";
+    reason: string;
+    note: string | null;
+    createdAt: string;
+  } | null;
+}
+
+export interface AdaptiveWorkWorkbench {
+  policy: {
+    mode: AdaptiveWorkPolicyMode;
+    revision: number;
+    scope: "source" | "inherited" | "project";
+    sourceId: string | null;
+    inheritedMode: AdaptiveWorkPolicyMode | null;
+    updatedAt: string | null;
+    updatedBy: string | null;
+    boundary: { localIssueOnly: true; externalDelivery: false; overwriteFiles: false };
+  };
+  monitor: AdaptiveWorkMonitor | null;
+  suggestions: AdaptiveWorkSuggestion[];
+  metrics: {
+    total: number;
+    ready: number;
+    needsAttention: number;
+    materialized: number;
+    automationEligible: number;
+    accepted: number;
+    rejected: number;
+    acceptanceRate: number | null;
+    tracked: number;
+    completed: number;
+    completionRate: number | null;
+  };
+  permissions: { canUse: boolean; canManage: boolean };
+}
+
 /**
  * Workflow Memory is route-lazy, so keep its sizeable API surface in the same
  * lazy chunk instead of charging every user for it during application boot.
  */
 export const workflowMemoryApi = {
+  getAdaptiveWorkWorkbench: (projectId: string, sourceId?: string) => {
+    const query = new URLSearchParams({ projectId });
+    if (sourceId) query.set("sourceId", sourceId);
+    return request<AdaptiveWorkWorkbench>(
+      "GET",
+      `/api/workflow-memory/adaptive-workbench?${query}`,
+    );
+  },
+  updateAdaptiveWorkPolicy: (body: {
+    projectId: string;
+    sourceId?: string;
+    expectedRevision: number;
+    mode: AdaptiveWorkPolicyMode;
+    confirmed?: true;
+  }) => request<{ policy: AdaptiveWorkWorkbench["policy"] }>(
+    "PUT",
+    "/api/workflow-memory/adaptive-workbench/policy",
+    body,
+  ),
+  updateAdaptiveWorkMonitor: (body: {
+    projectId: string;
+    sourceId: string;
+    expectedRevision: number;
+    enabled: boolean;
+    intervalMinutes: number;
+    confirmed?: true;
+  }) => request<{ monitor: AdaptiveWorkMonitor }>(
+    "PUT",
+    "/api/workflow-memory/adaptive-workbench/monitor",
+    body,
+  ),
+  runAdaptiveWorkMonitorNow: (body: { projectId: string; sourceId: string }) =>
+    request<{
+      result: { monitorId: string; status: "succeeded" | "failed"; error?: string };
+      monitor: AdaptiveWorkMonitor;
+      workbench: AdaptiveWorkWorkbench;
+    }>("POST", "/api/workflow-memory/adaptive-workbench/monitor/run", body),
+  getAdaptiveLearning: (projectId: string, sourceId: string) =>
+    request<{
+      readiness: AdaptiveLearningReadiness;
+      drafts: AdaptiveLearningDraft[];
+      rules: AdaptiveLearningRule[];
+    }>(
+      "GET",
+      `/api/workflow-memory/adaptive-workbench/learning?projectId=${encodeURIComponent(projectId)}&sourceId=${encodeURIComponent(sourceId)}`,
+    ),
+  generateAdaptiveLearningDraft: (body: { projectId: string; sourceId: string }) =>
+    request<{ draft: AdaptiveLearningDraft }>(
+      "POST", "/api/workflow-memory/adaptive-workbench/learning", body,
+    ),
+  evaluateAdaptiveLearning: (body: { projectId: string; sourceId: string }) =>
+    request<{ evaluation: AdaptiveLearningEvaluation; governance: { downgraded: boolean; currentMode: AdaptiveWorkPolicyMode } }>(
+      "POST", "/api/workflow-memory/adaptive-workbench/evaluate", body,
+    ),
+  recordAdaptiveShadowPreference: (
+    draftId: string,
+    suggestionId: string,
+    body: {
+      expectedRevision: number;
+      preferred: "current" | "candidate" | "neither";
+      reason: string;
+      confirmed: true;
+    },
+  ) => request<{ comparison: AdaptiveShadowComparison; draftRevision: number }>(
+    "POST",
+    `/api/workflow-memory/adaptive-workbench/learning/drafts/${encodeURIComponent(draftId)}/shadow/${encodeURIComponent(suggestionId)}/preference`,
+    body,
+  ),
+  previewAdaptiveLearningPublication: (draftId: string) =>
+    request<{ review: AdaptiveLearningPublicationReview }>(
+      "POST",
+      `/api/workflow-memory/adaptive-workbench/learning/drafts/${encodeURIComponent(draftId)}/publication-preview`,
+      {},
+    ),
+  publishAdaptiveLearningDraft: (draftId: string, body: {
+    expectedRevision: number;
+    reviewFingerprint: string;
+    confirmed: true;
+  }) =>
+    request<{ rule: AdaptiveLearningRule }>(
+      "POST",
+      `/api/workflow-memory/adaptive-workbench/learning/drafts/${encodeURIComponent(draftId)}/publish`,
+      body,
+    ),
+  rollbackAdaptiveLearningRule: (ruleId: string, body: { expectedRevision: number; confirmed: true }) =>
+    request<{ rolledBackRuleId: string; activeRule: AdaptiveLearningRule }>(
+      "POST",
+      `/api/workflow-memory/adaptive-workbench/learning/rules/${encodeURIComponent(ruleId)}/rollback`,
+      body,
+    ),
+  getAdaptiveNotifications: (projectId: string, sourceId: string) =>
+    request<{ notifications: AdaptiveWorkNotification[]; unread: number }>(
+      "GET",
+      `/api/workflow-memory/adaptive-workbench/notifications?projectId=${encodeURIComponent(projectId)}&sourceId=${encodeURIComponent(sourceId)}`,
+    ),
+  readAdaptiveNotification: (notificationId: string) => request<{ notification: AdaptiveWorkNotification }>(
+    "POST",
+    `/api/workflow-memory/adaptive-workbench/notifications/${encodeURIComponent(notificationId)}/read`,
+    {},
+  ),
+  materializeAdaptiveWorkSuggestion: (
+    suggestionId: string,
+    body: { projectId: string; sourceId: string; confirmed: true },
+  ) => request<{
+    workItem: { id: string; localRef: string; title: string; status: string };
+    replayed: boolean;
+    workbench: AdaptiveWorkWorkbench;
+  }>(
+    "POST",
+    `/api/workflow-memory/adaptive-workbench/suggestions/${encodeURIComponent(suggestionId)}/materialize`,
+    body,
+  ),
+  reconcileAdaptiveWork: (body: { projectId: string; sourceId: string }) =>
+    request<{
+      mode: AdaptiveWorkPolicyMode;
+      observed: number;
+      prepared: number;
+      autoCreated: number;
+      created: Array<{ suggestionId: string; workItemId: string; localRef: string; replayed: boolean }>;
+      failures: Array<{ suggestionId: string; error: string }>;
+      capped: boolean;
+      workbench: AdaptiveWorkWorkbench;
+    }>("POST", "/api/workflow-memory/adaptive-workbench/reconcile", body),
+  recordAdaptiveWorkFeedback: (
+    suggestionId: string,
+    body: {
+      projectId: string;
+      sourceId: string;
+      decision: "accepted" | "rejected";
+      reason: string;
+      note?: string;
+      correctedDocumentType?: string;
+      correctedActions?: string[];
+      correctionConfirmed?: true;
+    },
+  ) => request<{ feedback: Record<string, unknown>; workbench: AdaptiveWorkWorkbench }>(
+    "POST",
+    `/api/workflow-memory/adaptive-workbench/suggestions/${encodeURIComponent(suggestionId)}/feedback`,
+    body,
+  ),
   getBusinessPilotWorkbench: (projectId: string) =>
     request<CommercialPilotWorkbench>(
       "GET",
@@ -294,6 +741,101 @@ export const workflowMemoryApi = {
     "/api/workflow-memory/commercial-pilot/workbench/collect",
     body,
   ),
+  prepareBusinessPilotWorkbench: (body: {
+    projectId: string;
+    expectedRevision: number;
+    confirmed: true;
+    dataClassification: "deidentified" | "real";
+    consentScope: string;
+    pilotId: string;
+    description?: string;
+  }) => request<CommercialPilotWorkbench & {
+    automation: {
+      selectedCaseCount: number;
+      matchedSafetyCount: number;
+      eligibleCaseCount: number;
+      readyCaseCount: number;
+    };
+  }>("POST", "/api/workflow-memory/commercial-pilot/workbench/prepare", body),
+  createBusinessPilotGapIssues: (body: {
+    projectId: string;
+    expectedRevision: number;
+    confirmed: true;
+  }) => request<CommercialPilotWorkbench & {
+    issues: Array<{
+      id: string;
+      localRef: string;
+      status: string;
+      gapKey: string;
+      replayed: boolean;
+    }>;
+  }>("POST", "/api/workflow-memory/commercial-pilot/workbench/gap-issues", body),
+  submitBusinessPilotReview: (
+    dimension: CommercialPilotReviewDimension,
+    body: {
+      projectId: string;
+      expectedRevision: number;
+      status: "passed" | "failed";
+      note: string;
+      evidenceIds: string[];
+    },
+  ) => request<CommercialPilotWorkbench & {
+    review: {
+      dimension: CommercialPilotReviewDimension;
+      status: "passed" | "failed";
+      reviewerId: string;
+    };
+  }>(
+    "POST",
+    `/api/workflow-memory/commercial-pilot/workbench/reviews/${encodeURIComponent(dimension)}`,
+    body,
+  ),
+  updateBusinessPilotRollout: (body: {
+    projectId: string;
+    expectedRevision: number;
+    mode: "off" | "shadow" | "enabled";
+  }) => request<{ rollout: NonNullable<CommercialPilotWorkbench["rollout"]> }>(
+    "PUT",
+    "/api/workflow-memory/commercial-pilot/rollout",
+    body,
+  ),
+  getBusinessPilotCollection: (projectId: string, collectionId: string) =>
+    request<{
+      collection: CommercialPilotCollectionSummary;
+      report: CommercialPilotCollection["report"];
+      verification: CommercialPilotCollection["verification"];
+    }>(
+      "GET",
+      `/api/workflow-memory/commercial-pilot/collections/${encodeURIComponent(collectionId)}?projectId=${encodeURIComponent(projectId)}`,
+    ),
+  compareBusinessPilotCollections: (body: {
+    projectId: string;
+    fromId: string;
+    toId: string;
+  }) => request<{
+    from: CommercialPilotCollectionSummary;
+    to: CommercialPilotCollectionSummary;
+    changes: {
+      evidenceStateChanged: boolean;
+      decisionChanged: boolean;
+      caseCount: number;
+      safetyPassed: number;
+    };
+  }>("POST", "/api/workflow-memory/commercial-pilot/collections/compare", body),
+  exportBusinessPilotCollection: (
+    projectId: string,
+    collectionId: string,
+    format: "markdown" | "json",
+  ) => request<{ filename: string; mediaType: string; content: string }>(
+    "GET",
+    `/api/workflow-memory/commercial-pilot/collections/${encodeURIComponent(collectionId)}/export?projectId=${encodeURIComponent(projectId)}&format=${format}`,
+  ),
+  revokeBusinessPilotCollection: (projectId: string, collectionId: string) =>
+    request<{ collection: CommercialPilotCollectionSummary; replayed: boolean }>(
+      "POST",
+      `/api/workflow-memory/commercial-pilot/collections/${encodeURIComponent(collectionId)}/revoke`,
+      { projectId },
+    ),
   listWorkflowSources: () =>
     request<{ sources: WorkflowSource[] }>("GET", "/api/workflow-memory/sources"),
   createWorkflowSource: (body: {
@@ -332,6 +874,13 @@ export const workflowMemoryApi = {
         unchanged: number;
       };
       observations: WorkflowIntakeObservation[];
+      adaptiveAnalysis: { attempted: number; classified: number; failed: number; capped: boolean };
+      adaptiveWork: {
+        mode: AdaptiveWorkPolicyMode;
+        observed: number;
+        prepared: number;
+        autoCreated: number;
+      };
     }>("POST", `/api/workflow-memory/sources/${encodeURIComponent(sourceId)}/scan-intake`, {}),
   listWorkflowIntakeObservations: (sourceId: string) =>
     request<{ observations: WorkflowIntakeObservation[]; count: number }>(
@@ -436,6 +985,13 @@ export const workflowMemoryApi = {
         routineDefinitions: number;
         routineRuns: number;
         ledgerDefinitions: number;
+        adaptivePolicies: number;
+        adaptiveFeedback: number;
+        adaptiveMonitors: number;
+        adaptiveOutcomes: number;
+        adaptiveLearningDrafts: number;
+        adaptiveRules: number;
+        adaptiveNotifications: number;
       };
       originalFilesDeleted: false;
     }>(
