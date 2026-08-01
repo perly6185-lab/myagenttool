@@ -59,12 +59,12 @@ export function SessionHistory() {
 
   function open(inv: InvocationSnapshot) {
     setSelectedInvocationId(inv.id);
-    setSection("dashboard"); // the Dashboard transcript reconstructs the selected run
+    setSection("invocations");
   }
 
   // Resume (#163): continue this session's Codex conversation. Restore the run's
   // project/worktree/agent context, arm the composer's resume mode, and jump to
-  // the Dashboard so the next send is a `continue_last` run targeting this session.
+  // an execution composer so the next send is a `continue_last` run targeting this session.
   function resume(inv: InvocationSnapshot) {
     if (inv.projectId) setSelectedProjectId(inv.projectId);
     setSelectedWorktreeIdStore(inv.worktreeId ?? null);

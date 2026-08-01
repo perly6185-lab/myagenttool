@@ -415,6 +415,10 @@ export function buildPublicState({
     autoRuns,
     pendingDecisions: pendingDecisionQueue,
     refusals: visibleRefusals,
+    schedules: (state.runtimeWorkSchedules ?? []).filter((schedule) =>
+      (teamId == null || (schedule.ownerTeamId ?? LOCAL_TEAM_ID) === teamId)
+      && (!actor?.userId || schedule.userId === actor.userId)
+      && (!schedule.terminalId || schedule.terminalId === state.device?.id)),
     now: digestNow,
   });
 

@@ -156,6 +156,24 @@ test("local work item claim lease is wired through HTTP", async () => {
   assert.equal(released.body.released, true);
 });
 
+test("unassigned local work can be assigned to the authenticated user through HTTP", async () => {
+  const item = (await call("/api/work-items", {
+    method: "POST", body: { projectId: "prj_a", title: "Needs an owner", assigneeIds: [] },
+  })).body.workItem;
+  assert.deepEqual(item.assigneeIds, []);
+
+  const assigned = await call(`/api/work-items/${item.id}/assign-to-me`, {
+    method: "POST", body: { expectedRevision: item.revision },
+  });
+  assert.equal(assigned.status, 200);
+  assert.deepEqual(assigned.body.workItem.assigneeIds, ["usr_a"]);
+
+  const foreign = await call(`/api/work-items/${item.id}/assign-to-me`, {
+    token: "tok_b", method: "POST", body: { expectedRevision: assigned.body.workItem.revision },
+  });
+  assert.equal(foreign.status, 404);
+});
+
 test("routing feedback HTTP endpoint enforces tenancy, revision, and idempotency", async () => {
   runtimeState.autoRuns.push({
     id: "aur_feedback_http",

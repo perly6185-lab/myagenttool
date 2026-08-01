@@ -123,10 +123,13 @@ export interface LocalScheduleCapacityResponse {
     backlog: number;
     items: Array<{
       workItemId: string;
+      sourceKind: "work_item" | "auto_run";
+      sourceId: string;
       localRef: string | null;
       title: string;
       projectId: string | null;
       status: string;
+      runtimeState?: string | null;
       priority: string;
       dueDate: string | null;
       plannedDate: string | null;
@@ -176,10 +179,13 @@ export interface LocalSchedulePreviewResponse {
     availableMinutes: number;
     items: Array<{
       workItemId: string;
+      sourceKind: "work_item" | "auto_run";
+      sourceId: string;
       localRef: string | null;
       title: string;
       priority: string;
       status: string;
+      runtimeState?: string | null;
       estimatedMinutes: number;
       estimateConfidence: "high" | "medium" | "low";
       previousPlannedDate: string | null;

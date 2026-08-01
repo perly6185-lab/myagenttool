@@ -4,7 +4,7 @@ import { Clipboard, ExternalLink } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge, StatusBadge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
+import { Input, Select } from "@/components/ui/input";
 import { EmptyState } from "@/components/common/empty-state";
 import { FactList } from "@/components/common/fact-list";
 import { WebNavigationLinkActions } from "@/components/common/web-navigation-link-actions";
@@ -15,7 +15,6 @@ import { DecisionAction } from "@/features/invocations/decision-action";
 import { ImportedUsageTable } from "@/features/economics/imported-usage-table";
 import { useConsoleState } from "@/data/use-console-state";
 import { api } from "@/data/use-console-actions";
-import { resolveInvocation } from "@/features/selection";
 import {
   defaultInvocationRecoverySummary,
   invocationStatusRecoveryReason,
@@ -38,7 +37,7 @@ import {
   recoveryWaitingOn,
   sortedRecoveryActionRequests,
 } from "@/features/recovery/application-recovery-ui";
-import { useUiStore } from "@/store/ui-store";
+import { useUiStore, type InvocationStatusFilter } from "@/store/ui-store";
 import { cn } from "@/lib/cn";
 import { formatDuration, formatTokens } from "@/lib/format";
 import { formatUsd } from "@/lib/money";
@@ -66,6 +65,16 @@ export function matchesTraceQuery(invocation: InvocationSnapshot, state: Console
   return `${JSON.stringify(invocation)} ${JSON.stringify(related)}`.toLowerCase().includes(normalized);
 }
 
+const ACTIVE_INVOCATION_STATUSES = new Set(["queued", "dispatching", "waiting_for_local_approval", "running", "cancelling"]);
+const FAILED_INVOCATION_STATUSES = new Set(["failed", "timed_out", "rejected"]);
+
+export function matchesInvocationStatusFilter(invocation: InvocationSnapshot, filter: InvocationStatusFilter): boolean {
+  if (filter === "active") return ACTIVE_INVOCATION_STATUSES.has(invocation.status ?? "");
+  if (filter === "completed") return invocation.status === "succeeded";
+  if (filter === "failed") return FAILED_INVOCATION_STATUSES.has(invocation.status ?? "");
+  return true;
+}
+
 export function InvocationsView() {
   const { t } = useAppTranslation();
   const { data: state } = useConsoleState();
@@ -74,6 +83,13 @@ export function InvocationsView() {
   const setSection = useUiStore((s) => s.setSection);
   const setSelectedApplicationId = useUiStore((s) => s.setSelectedApplicationId);
   const setSelectedApplicationRun = useUiStore((s) => s.setSelectedApplicationRun);
+  const invocationStatusFilter = useUiStore((s) => s.invocationStatusFilter);
+  const setInvocationStatusFilter = useUiStore((s) => s.setInvocationStatusFilter);
+  const setSelectedProjectId = useUiStore((s) => s.setSelectedProjectId);
+  const setSelectedWorktreeId = useUiStore((s) => s.setSelectedWorktreeId);
+  const setSelectedAgentId = useUiStore((s) => s.setSelectedAgentId);
+  const setResumeFromInvocationId = useUiStore((s) => s.setResumeFromInvocationId);
+  const setComposerDraftTask = useUiStore((s) => s.setComposerDraftTask);
 
   const [traceQuery, setTraceQuery] = useState("");
   const [traceCursor, setTraceCursor] = useState<string | null>(null);
@@ -91,7 +107,7 @@ export function InvocationsView() {
     queryFn: () => searchTraces(normalizedTraceQuery, traceCursor),
     enabled: Boolean(normalizedTraceQuery),
   });
-  const invocations = normalizedTraceQuery
+  const searchedInvocations = normalizedTraceQuery
     ? (traceSearch.data?.records ?? []).map((record) => allInvocations.find((row) => row.id === record.invocationId) ?? ({
         id: record.invocationId,
         status: record.status,
@@ -103,8 +119,9 @@ export function InvocationsView() {
         input: { task: record.task },
       }))
     : allInvocations;
+  const invocations = searchedInvocations.filter((invocation) => matchesInvocationStatusFilter(invocation, invocationStatusFilter));
   const traceRecordById = new Map((traceSearch.data?.records ?? []).map((record) => [record.invocationId, record]));
-  const selected = resolveInvocation(state, selectedInvocationId);
+  const selected = invocations.find((invocation) => invocation.id === selectedInvocationId) ?? invocations[0] ?? null;
   const events = selected
     ? (state?.events ?? []).filter((e) => e.invocationId === selected.id).slice(0, 40)
     : [];
@@ -132,6 +149,17 @@ export function InvocationsView() {
 
   function viewApproval(invocationId: string) {
     setSelectedInvocationId(invocationId);
+    setSection("approvals");
+  }
+
+  function reuseTask(invocation: InvocationSnapshot) {
+    if (!invocation.input?.task) return;
+    if (invocation.projectId) setSelectedProjectId(invocation.projectId);
+    setSelectedWorktreeId(invocation.worktreeId ?? null);
+    if (invocation.agentId) setSelectedAgentId(invocation.agentId);
+    setResumeFromInvocationId(null);
+    setComposerDraftTask(invocation.input.task);
+    setSelectedInvocationId(invocation.id);
     setSection("dashboard");
   }
 
@@ -168,13 +196,25 @@ export function InvocationsView() {
         </CardHeader>
         <CardContent>
           <div className="mb-3 space-y-2">
-            <Input
-              type="search"
-              value={traceQuery}
-              onChange={(event) => setTraceQuery(event.target.value)}
-              aria-label={t("traceSearch.label")}
-              placeholder={t("traceSearch.placeholder")}
-            />
+            <div className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_12rem]">
+              <Input
+                type="search"
+                value={traceQuery}
+                onChange={(event) => setTraceQuery(event.target.value)}
+                aria-label={t("traceSearch.label")}
+                placeholder={t("traceSearch.placeholder")}
+              />
+              <Select
+                value={invocationStatusFilter}
+                onChange={(event) => setInvocationStatusFilter(event.target.value as InvocationStatusFilter)}
+                aria-label={t("runRecords.filterLabel")}
+              >
+                <option value="all">{t("runRecords.filters.all")}</option>
+                <option value="active">{t("runRecords.filters.active")}</option>
+                <option value="completed">{t("runRecords.filters.completed")}</option>
+                <option value="failed">{t("runRecords.filters.failed")}</option>
+              </Select>
+            </div>
             <div className="flex flex-wrap gap-2 text-xs text-muted-foreground">
               <Badge tone="neutral">{t("traceSearch.runs", { count: normalizedTraceQuery ? traceSearch.data?.total ?? 0 : invocations.length })}</Badge>
               <span>{t("traceSearch.scope")}</span>
@@ -283,6 +323,7 @@ export function InvocationsView() {
           onViewApplicationRun={viewApplicationRun}
           onViewInvocation={viewInvocation}
           onViewWebNavigationLink={viewWebNavigationLink}
+          onReuseTask={FAILED_INVOCATION_STATUSES.has(selected.status ?? "") ? () => reuseTask(selected) : undefined}
         />
       ) : null}
 
@@ -484,6 +525,7 @@ function OperatorExplanationCard({
   onViewApplicationRun,
   onViewInvocation,
   onViewWebNavigationLink,
+  onReuseTask,
 }: {
   invocation: InvocationSnapshot;
   state: ConsoleSnapshot | null;
@@ -491,6 +533,7 @@ function OperatorExplanationCard({
   onViewApplicationRun: (applicationId: string, routineId: string, invocationId: string) => void;
   onViewInvocation: (invocationId: string) => void;
   onViewWebNavigationLink: (link: WebNavigationLink) => void;
+  onReuseTask?: () => void;
 }) {
   const { t } = useAppTranslation();
   const [copiedLink, setCopiedLink] = useState(false);
@@ -609,6 +652,11 @@ function OperatorExplanationCard({
         <div className="flex flex-wrap items-center justify-between gap-2">
           <CardTitle>{t("invocations.operatorExplanation")}</CardTitle>
           <div className="flex flex-wrap items-center gap-2">
+            {onReuseTask ? (
+              <Button size="sm" variant="secondary" onClick={onReuseTask}>
+                {t("runRecords.reuseTask")}
+              </Button>
+            ) : null}
             <Button
               size="icon"
               variant="secondary"

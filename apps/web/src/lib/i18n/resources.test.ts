@@ -68,7 +68,7 @@ describe("translation resources", () => {
 
   it("does not expose unexplained architecture nouns on ordinary zh-CN surfaces", () => {
     const zh = resources["zh-CN"].common;
-    const roots = ["entryJourney", "todo", "me", "sessionHistory", "notificationCenter", "dashboard", "guidedSetup", "workBoard"] as const;
+    const roots = ["todo", "me", "sessionHistory", "notificationCenter", "dashboard", "guidedSetup", "workBoard", "runRecords"] as const;
     const allowedTechnicalDetails = new Set(["dashboard.trace"]);
     const forbidden = /\b(?:Agent|Application|Channel|Desktop Bridge|Issue|PR|Worktree|Invocation)\b/;
 

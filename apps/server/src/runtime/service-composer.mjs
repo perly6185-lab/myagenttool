@@ -4072,6 +4072,7 @@ export function createServerRuntimeServices({
     listWorkItemAutoRunBatches: workItemAutoRunBatchService.listBatches,
     claimWorkItem: workItemService.claimWorkItem,
     releaseWorkItemClaim: workItemService.releaseWorkItemClaim,
+    assignWorkItemToSelf: workItemService.assignWorkItemToSelf,
     bindGithubIssue: workItemService.bindGithubIssue,
     syncGithubIssue: workItemService.syncGithubIssue,
     bindExternalIssue: workItemService.bindExternalIssue,

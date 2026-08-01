@@ -39,6 +39,9 @@ const ACTIVE_AUTO_RUN_STATUSES = new Set([
   "materializing", "running", "waiting_capacity", "awaiting_approval", "verifying", "publishing",
   "pr_open", "report_posted", "needs_input", "plan_proposed",
 ]);
+const SCHEDULABLE_RUNTIME_STATES = new Set([
+  "materializing", "running", "waiting_capacity", "verifying", "publishing", "decomposed",
+]);
 
 export function taskTraceStage(type, source = "issue") {
   const value = String(type ?? "").toLowerCase();
@@ -2769,6 +2772,30 @@ export function createWorkItemService({
     return { ok: true, status: active ? 200 : 201, body: { workItem: workItemView(item, actor), claim } };
   }
 
+  function assignWorkItemToSelf({ workItemId, expectedRevision } = {}, actor = null) {
+    const item = findOwn(workItemId, actor);
+    if (!item) return notFound();
+    if (!Number.isInteger(expectedRevision)) {
+      return { ok: false, status: 400, body: { error: "expected_revision_required" } };
+    }
+    if (expectedRevision !== item.revision) {
+      return { ok: false, status: 409, body: { error: "work_item_revision_conflict", currentRevision: item.revision } };
+    }
+    const userId = actorUser(actor);
+    const assigneeIds = item.assigneeIds ?? [];
+    if (assigneeIds.includes(userId)) {
+      return { ok: true, status: 200, body: { workItem: workItemView(item, actor), replayed: true } };
+    }
+    if (assigneeIds.length > 0) {
+      return { ok: false, status: 409, body: { error: "work_item_already_assigned" } };
+    }
+    return updateWorkItem({
+      workItemId,
+      expectedRevision,
+      assigneeIds: [userId],
+    }, actor);
+  }
+
   function releaseWorkItemClaim({ workItemId, idempotencyKey = null } = {}, actor = null) {
     const item = findOwn(workItemId, actor);
     if (!item) return notFound();
@@ -2813,12 +2840,40 @@ export function createWorkItemService({
     const resolved = [];
     for (const assignment of assignments) {
       const workItemId = String(assignment?.workItemId ?? "");
+      const sourceKind = assignment?.sourceKind === "auto_run" ? "auto_run" : "work_item";
+      const sourceId = String(assignment?.sourceId ?? (sourceKind === "work_item" ? workItemId : ""));
       const expectedRevision = Number(assignment?.expectedRevision);
       const plannedDate = String(assignment?.plannedDate ?? "");
-      if (!workItemId || ids.has(workItemId) || !Number.isInteger(expectedRevision) || !validDateOnly(plannedDate)) {
+      const scheduleOrder = Number(assignment?.scheduleOrder);
+      if (!workItemId || !sourceId || ids.has(workItemId) || !Number.isInteger(expectedRevision)
+        || !validDateOnly(plannedDate) || !Number.isInteger(scheduleOrder) || scheduleOrder < 0 || scheduleOrder >= 500) {
         return { ok: false, status: 400, body: { error: "invalid_schedule_assignments" } };
       }
       ids.add(workItemId);
+      if (sourceKind === "auto_run") {
+        if (workItemId !== `autorun:${sourceId}`) {
+          return { ok: false, status: 400, body: { error: "invalid_schedule_assignments" } };
+        }
+        const run = (state.autoRuns ?? []).find((candidate) => candidate.id === sourceId);
+        const schedule = (state.runtimeWorkSchedules ?? []).find((candidate) =>
+          candidate.kind === "auto_run"
+          && candidate.targetId === sourceId
+          && candidate.ownerTeamId === actorTeam(actor)
+          && candidate.userId === actorUser(actor)
+          && candidate.terminalId === localTerminalId()) ?? null;
+        if (!run || !actorCanAccessProject(state, actor, run.projectId)) return notFound();
+        if ((run.terminalId && run.terminalId !== localTerminalId())
+          || !SCHEDULABLE_RUNTIME_STATES.has(run.status)
+          || (Number(schedule?.revision) || 0) !== expectedRevision) {
+          return {
+            ok: false,
+            status: 409,
+            body: { error: "schedule_plan_stale", workItemId, currentRevision: Number(schedule?.revision) || 0 },
+          };
+        }
+        resolved.push({ sourceKind, run, schedule, plannedDate, scheduleOrder });
+        continue;
+      }
       const item = findOwn(workItemId, actor);
       if (!item || item.terminalId !== localTerminalId() || !(item.assigneeIds ?? []).includes(actorUser(actor))) {
         return notFound();
@@ -2831,17 +2886,45 @@ export function createWorkItemService({
           body: { error: "schedule_plan_stale", workItemId, currentRevision: item.revision },
         };
       }
-      resolved.push({ item, plannedDate });
+      resolved.push({ sourceKind, item, plannedDate, scheduleOrder });
     }
 
     const timestamp = now();
-    const changed = resolved.filter(({ item, plannedDate }) => item.plannedDate !== plannedDate);
+    const changed = resolved.filter((entry) => entry.sourceKind === "auto_run"
+      ? entry.schedule?.plannedDate !== entry.plannedDate || entry.schedule?.scheduleOrder !== entry.scheduleOrder
+      : entry.item.plannedDate !== entry.plannedDate || entry.item.scheduleOrder !== entry.scheduleOrder);
     runTx(() => {
-      for (const { item, plannedDate } of changed) {
+      for (const entry of changed) {
+        if (entry.sourceKind === "auto_run") {
+          const previousPlannedDate = entry.schedule?.plannedDate ?? null;
+          const schedule = entry.schedule ?? {
+            id: nextId("rws"),
+            kind: "auto_run",
+            targetId: entry.run.id,
+            ownerTeamId: actorTeam(actor),
+            userId: actorUser(actor),
+            terminalId: localTerminalId(),
+            createdAt: timestamp,
+            revision: 0,
+          };
+          schedule.projectId = entry.run.projectId ?? null;
+          schedule.plannedDate = entry.plannedDate;
+          schedule.schedulePlanSource = "auto_plan";
+          schedule.scheduleReason = "current_terminal_capacity_plan";
+          schedule.scheduleOrder = entry.scheduleOrder;
+          schedule.revision = (Number(schedule.revision) || 0) + 1;
+          schedule.updatedAt = timestamp;
+          if (!entry.schedule) (state.runtimeWorkSchedules ??= []).push(schedule);
+          entry.schedule = schedule;
+          entry.previousPlannedDate = previousPlannedDate;
+          continue;
+        }
+        const { item, plannedDate, scheduleOrder } = entry;
         const previousPlannedDate = item.plannedDate ?? null;
         item.plannedDate = plannedDate;
         item.schedulePlanSource = "auto_plan";
         item.scheduleReason = "current_terminal_capacity_plan";
+        item.scheduleOrder = scheduleOrder;
         item.revision += 1;
         item.updatedAt = timestamp;
         item.lastModifiedBy = actorUser(actor);
@@ -2849,6 +2932,7 @@ export function createWorkItemService({
           planRevision,
           previousPlannedDate,
           plannedDate,
+          scheduleOrder,
         });
       }
       if (changed.length > 0) {
@@ -2860,7 +2944,9 @@ export function createWorkItemService({
           data: {
             planRevision,
             terminalId: localTerminalId(),
-            workItemIds: changed.map(({ item }) => item.id),
+            workItemIds: changed.map((entry) => entry.sourceKind === "auto_run"
+              ? `autorun:${entry.run.id}`
+              : entry.item.id),
             actorTeamId: actorTeam(actor),
           },
         });
@@ -2873,7 +2959,13 @@ export function createWorkItemService({
         planRevision,
         terminalId: localTerminalId(),
         applied: changed.length,
-        workItems: resolved.map(({ item }) => workItemView(item, actor)),
+        workItems: resolved
+          .filter((entry) => entry.sourceKind === "work_item")
+          .map(({ item }) => workItemView(item, actor)),
+        runtimeSchedules: resolved
+          .filter((entry) => entry.sourceKind === "auto_run")
+          .map((entry) => entry.schedule)
+          .filter(Boolean),
       },
     };
   }
@@ -3145,7 +3237,7 @@ export function createWorkItemService({
     listActivity, listComments, createComment, updateComment, deleteComment,
     beginExecution, abortExecution, recordExecutionBinding,
     beginDelivery, failDelivery, completeDelivery,
-    claimWorkItem, releaseWorkItemClaim,
+    claimWorkItem, releaseWorkItemClaim, assignWorkItemToSelf,
     bindGithubIssue, syncGithubIssue, bindExternalIssue, syncExternalIssue, listExternalProviders,
     recordVerification, recordAssetOperation, ingestGithubWebhook, replayGithubWebhook, recordGithubWebhookFailure,
     ingestExternalWebhook, replayExternalWebhook, recordExternalWebhookFailure,

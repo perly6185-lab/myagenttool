@@ -69,7 +69,7 @@ function baseState(run) {
   return "waiting";
 }
 
-function autoRunItem(run, state) {
+function autoRunItem(run, state, schedule = null) {
   return {
     id: `autorun:${run?.id}`,
     state,
@@ -80,6 +80,11 @@ function autoRunItem(run, state) {
     targetId: run?.id ?? null,
     projectId: run?.projectId ?? null,
     updatedAt: autoRunStamp(run),
+    scheduleKey: `autorun:${run?.id}`,
+    plannedDate: schedule?.plannedDate ?? null,
+    schedulePlanSource: schedule?.schedulePlanSource ?? null,
+    scheduleReason: schedule?.scheduleReason ?? null,
+    scheduleOrder: Number.isFinite(schedule?.scheduleOrder) ? schedule.scheduleOrder : null,
   };
 }
 
@@ -101,7 +106,7 @@ function byNewest(a, b) {
  * @param {number} [sources.now] - epoch ms, for the refusal attention window (injectable for tests)
  * @returns {{ generatedAt: number, states: Record<string, {count: number, items: object[]}> }}
  */
-export function workBoard({ autoRuns = [], pendingDecisions = [], refusals = [], now = Date.now() } = {}) {
+export function workBoard({ autoRuns = [], pendingDecisions = [], refusals = [], schedules = [], now = Date.now() } = {}) {
   // Any auto-run with a live gate is represented by its pendingDecisions row, so
   // exclude it from the lifecycle buckets — otherwise the same run would show as
   // both "待决策" and "正在做".
@@ -117,6 +122,9 @@ export function workBoard({ autoRuns = [], pendingDecisions = [], refusals = [],
     failed: [],
     follow_up: [],
   };
+  const scheduleByAutoRunId = new Map(schedules
+    .filter((schedule) => schedule?.kind === "auto_run" && schedule.targetId)
+    .map((schedule) => [schedule.targetId, schedule]));
 
   // 待决策 — the queue verbatim (already oldest-first from pendingDecisions; we
   // re-sort newest-first below like every other lens for a consistent board).
@@ -131,6 +139,11 @@ export function workBoard({ autoRuns = [], pendingDecisions = [], refusals = [],
       targetId: d.targetId ?? null,
       projectId: d.projectId ?? null,
       updatedAt: d.createdAt ?? null,
+      scheduleKey: d?.ref?.autoRunId ? `autorun:${d.ref.autoRunId}` : null,
+      plannedDate: scheduleByAutoRunId.get(d?.ref?.autoRunId)?.plannedDate ?? null,
+      schedulePlanSource: scheduleByAutoRunId.get(d?.ref?.autoRunId)?.schedulePlanSource ?? null,
+      scheduleReason: scheduleByAutoRunId.get(d?.ref?.autoRunId)?.scheduleReason ?? null,
+      scheduleOrder: scheduleByAutoRunId.get(d?.ref?.autoRunId)?.scheduleOrder ?? null,
     });
   }
 
@@ -138,11 +151,12 @@ export function workBoard({ autoRuns = [], pendingDecisions = [], refusals = [],
   for (const run of autoRuns) {
     if (gatedAutoRunIds.has(run?.id)) continue;
     const state = baseState(run);
-    buckets[state].push(autoRunItem(run, state));
+    const schedule = scheduleByAutoRunId.get(run.id) ?? null;
+    buckets[state].push(autoRunItem(run, state, schedule));
     // 要跟进 attention rollup: a failed run is a loose end even after it is
     // terminal, so it also lands here (overlaps `failed` by design).
     if (state === "failed") {
-      buckets.follow_up.push({ ...autoRunItem(run, "failed"), state: "follow_up", reason: "failed run — triage or retry" });
+      buckets.follow_up.push({ ...autoRunItem(run, "failed", schedule), state: "follow_up", reason: "failed run — triage or retry" });
     }
   }
 

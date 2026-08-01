@@ -10,6 +10,7 @@ import {
   RotateCcw,
   Sparkles,
 } from "lucide-react";
+import { useState } from "react";
 import { Badge, StatusBadge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -50,10 +51,18 @@ type Copy = {
   rollover: string;
   planTomorrow: string;
   more: string;
+  less: string;
   terminalOffline: string;
   terminalCapacity: string;
   queueDepth: string;
   worktreeLocks: string;
+  unscheduled: string;
+  unscheduledHint: string;
+  unassigned: string;
+  unassignedHint: string;
+  claim: string;
+  claiming: string;
+  scheduleReasons: Record<string, string>;
   suggestedPlan: string;
   applyPlan: string;
   applyingPlan: string;
@@ -92,11 +101,35 @@ const COPY: Record<"zh" | "en", Copy> = {
     tomorrowHint: "先确定重点，再安排任务顺序",
     rollover: "结转未完成",
     planTomorrow: "规划明天",
-    more: "另有 {{count}} 项",
+    more: "查看另外 {{count}} 项",
+    less: "收起",
     terminalOffline: "本终端不可执行",
     terminalCapacity: "可用槽位 {{available}} / {{total}}",
     queueDepth: "队列 {{count}}",
     worktreeLocks: "工作区锁 {{count}}",
+    unscheduled: "我的未安排",
+    unscheduledHint: "这些工作属于我，但尚未进入今天或明天；先处理阻塞原因，或等待可用容量。",
+    unassigned: "待认领",
+    unassignedHint: "所有尚未分配的本地 Issue 都在这里；认领后才会进入个人调度并占用终端容量。",
+    claim: "认领",
+    claiming: "认领中…",
+    scheduleReasons: {
+      auto_run_failed: "运行失败，需先复盘或重试",
+      auto_run_blocked: "运行被阻塞",
+      auto_run_needs_input: "等待补充信息",
+      auto_run_awaiting_approval: "等待审批",
+      auto_run_decision_required: "等待人工决策",
+      auto_run_pr_open: "等待 PR 处理",
+      auto_run_not_ready: "当前尚不可执行",
+      work_item_blocked: "任务被阻塞",
+      review_required: "等待评审",
+      terminal_unavailable: "本终端不可用",
+      terminal_at_capacity: "本终端容量已满",
+      capacity_exhausted: "今天和明天容量不足",
+      pinned_capacity_exceeded: "固定日期超出容量",
+      pinned_outside_horizon: "固定日期不在两日计划范围内",
+      not_ready: "当前尚不可安排",
+    },
     suggestedPlan: "建议排期 {{count}} 项",
     applyPlan: "应用建议排期",
     applyingPlan: "应用中…",
@@ -147,11 +180,35 @@ const COPY: Record<"zh" | "en", Copy> = {
     tomorrowHint: "Choose priorities before arranging the sequence",
     rollover: "Carry over unfinished",
     planTomorrow: "Plan tomorrow",
-    more: "{{count}} more",
+    more: "Show {{count}} more",
+    less: "Show fewer",
     terminalOffline: "This terminal is unavailable",
     terminalCapacity: "Available slots {{available}} / {{total}}",
     queueDepth: "Queue {{count}}",
     worktreeLocks: "Workspace locks {{count}}",
+    unscheduled: "My unscheduled",
+    unscheduledHint: "These items belong to you but are not on Today or Tomorrow yet. Resolve their blocker or wait for capacity.",
+    unassigned: "Unassigned",
+    unassignedHint: "Every unassigned local Issue appears here. It enters personal scheduling and terminal capacity only after you claim it.",
+    claim: "Claim",
+    claiming: "Claiming…",
+    scheduleReasons: {
+      auto_run_failed: "Run failed; triage or retry first",
+      auto_run_blocked: "Run is blocked",
+      auto_run_needs_input: "Waiting for more information",
+      auto_run_awaiting_approval: "Waiting for approval",
+      auto_run_decision_required: "Waiting for a human decision",
+      auto_run_pr_open: "Waiting for PR handling",
+      auto_run_not_ready: "Not currently executable",
+      work_item_blocked: "Task is blocked",
+      review_required: "Waiting for review",
+      terminal_unavailable: "This terminal is unavailable",
+      terminal_at_capacity: "This terminal is at capacity",
+      capacity_exhausted: "Today and Tomorrow have no remaining capacity",
+      pinned_capacity_exceeded: "Pinned date exceeds capacity",
+      pinned_outside_horizon: "Pinned date is outside the two-day plan",
+      not_ready: "Not currently schedulable",
+    },
     suggestedPlan: "{{count}} suggested",
     applyPlan: "Apply suggested plan",
     applyingPlan: "Applying…",
@@ -200,6 +257,7 @@ const STATE_ACCENT: Record<WorkState, string> = {
 };
 
 type DailyWorkItem = WorkItem & { planningStatus?: LocalWorkItem["status"] };
+type DailyLocalWorkItem = LocalWorkItem & { scheduleReason?: string | null };
 type DailyGroupKey = WorkState | LocalWorkItem["status"];
 
 const GROUP_ORDER: DailyGroupKey[] = [
@@ -280,6 +338,7 @@ export type DailyWorkBoardModel = {
   yesterday: WorkItem[];
   today: WorkItem[];
   tomorrow: WorkItem[];
+  unscheduled: WorkItem[];
   todayCompleted: number;
   todayFailed: number;
   attention: number;
@@ -300,7 +359,7 @@ function localItemTargets(item: LocalWorkItem): Set<string> {
     [binding.targetId, binding.id].filter((value): value is string => Boolean(value))));
 }
 
-function localWorkItemCard(item: LocalWorkItem, runtimeItems: WorkItem[]): DailyWorkItem {
+function localWorkItemCard(item: DailyLocalWorkItem, runtimeItems: WorkItem[]): DailyWorkItem {
   const targets = localItemTargets(item);
   const runtime = runtimeItems.find((candidate) => Boolean(candidate.targetId && targets.has(candidate.targetId)));
   return {
@@ -315,6 +374,10 @@ function localWorkItemCard(item: LocalWorkItem, runtimeItems: WorkItem[]): Daily
     targetId: item.id,
     projectId: item.projectId,
     updatedAt: item.completedAt ?? item.updatedAt,
+    plannedDate: item.plannedDate,
+    schedulePlanSource: item.schedulePlanSource,
+    scheduleReason: item.scheduleReason,
+    scheduleOrder: item.scheduleOrder,
   };
 }
 
@@ -327,7 +390,7 @@ export function buildDailyWorkBoardModel(
   board: WorkBoard | undefined,
   report: WorkReport | undefined,
   now = Date.now(),
-  plannedItems: LocalWorkItem[] = [],
+  plannedItems: DailyLocalWorkItem[] = [],
 ): DailyWorkBoardModel {
   const states = board?.states;
   const yesterdayKey = dateKey(addDays(now, -1));
@@ -337,7 +400,7 @@ export function buildDailyWorkBoardModel(
     states?.failed?.items ?? [],
     states?.done?.items ?? [],
   ]).filter((item) => dateKey(item.updatedAt ?? "") === yesterdayKey);
-  const todayRuntime = uniqueItems([
+  const activeRuntime = uniqueItems([
     states?.pending_decision?.items ?? [],
     states?.in_progress?.items ?? [],
     states?.follow_up?.items ?? [],
@@ -352,6 +415,14 @@ export function buildDailyWorkBoardModel(
       || priorityRank[left.priority] - priorityRank[right.priority]
       || left.id.localeCompare(right.id));
   const tomorrowLocal = plannedItems.filter((item) => item.plannedDate === tomorrowKey && item.status !== "done");
+  const todayRuntime = activeRuntime
+    .filter((item) => item.plannedDate === todayKey || (!item.plannedDate && item.state === "in_progress"))
+    .sort((left, right) => (left.scheduleOrder ?? Number.MAX_SAFE_INTEGER) - (right.scheduleOrder ?? Number.MAX_SAFE_INTEGER));
+  const tomorrowRuntime = activeRuntime
+    .filter((item) => item.plannedDate === tomorrowKey && item.state !== "done")
+    .sort((left, right) => (left.scheduleOrder ?? Number.MAX_SAFE_INTEGER) - (right.scheduleOrder ?? Number.MAX_SAFE_INTEGER));
+  const unscheduledLocal = plannedItems.filter((item) => !item.plannedDate && item.status !== "done");
+  const unscheduledRuntime = activeRuntime.filter((item) => !item.plannedDate && item.state !== "in_progress");
   const yesterday = [
     ...yesterdayLocal.map((item) => localWorkItemCard(item, yesterdayRuntime)),
     ...withoutBoundRuntime(yesterdayRuntime, yesterdayLocal),
@@ -360,12 +431,20 @@ export function buildDailyWorkBoardModel(
     ...todayLocal.map((item) => localWorkItemCard(item, todayRuntime)),
     ...withoutBoundRuntime(todayRuntime, todayLocal),
   ];
-  const tomorrow = tomorrowLocal.map((item) => localWorkItemCard(item, []));
+  const tomorrow = [
+    ...tomorrowLocal.map((item) => localWorkItemCard(item, tomorrowRuntime)),
+    ...withoutBoundRuntime(tomorrowRuntime, tomorrowLocal),
+  ];
+  const unscheduled = [
+    ...unscheduledLocal.map((item) => localWorkItemCard(item, unscheduledRuntime)),
+    ...withoutBoundRuntime(unscheduledRuntime, unscheduledLocal),
+  ];
   const flow = report?.periods.day.flow;
   return {
     yesterday,
     today,
     tomorrow,
+    unscheduled,
     todayCompleted: flow?.completed ?? 0,
     todayFailed: flow?.failed ?? 0,
     attention: (states?.pending_decision?.count ?? 0) + (states?.follow_up?.count ?? 0),
@@ -377,12 +456,20 @@ export function DailyWorkBoard({
   board,
   report,
   plannedItems = [],
+  unassignedItems = [],
   capacity,
   preview,
   rollover,
   urgent,
   onOpenItem,
   onOpenTasks,
+  onOpenAttention,
+  onOpenActive,
+  onOpenCompleted,
+  onOpenFailed,
+  onClaimItem,
+  claimingItemId = null,
+  claimError = null,
   onApplyPlan,
   applyingPlan = false,
   onRollover,
@@ -394,12 +481,20 @@ export function DailyWorkBoard({
   board?: WorkBoard;
   report?: WorkReport;
   plannedItems?: LocalWorkItem[];
+  unassignedItems?: LocalWorkItem[];
   capacity?: LocalScheduleCapacityResponse;
   preview?: LocalSchedulePreviewResponse;
   rollover?: LocalScheduleRolloverResponse;
   urgent?: LocalScheduleUrgentResponse;
   onOpenItem: (item: WorkItem) => void;
   onOpenTasks: () => void;
+  onOpenAttention?: () => void;
+  onOpenActive?: () => void;
+  onOpenCompleted?: () => void;
+  onOpenFailed?: () => void;
+  onClaimItem?: (item: LocalWorkItem) => void;
+  claimingItemId?: string | null;
+  claimError?: string | null;
   onApplyPlan?: () => void;
   applyingPlan?: boolean;
   onRollover?: (confirmPinned: boolean) => void;
@@ -408,6 +503,8 @@ export function DailyWorkBoard({
   applyingUrgent?: boolean;
   now?: number;
 }) {
+  const [unassignedExpanded, setUnassignedExpanded] = useState(false);
+  const [capacityExpanded, setCapacityExpanded] = useState(false);
   const { i18n } = useAppTranslation();
   const locale = i18n.language.startsWith("zh") ? "zh-CN" : "en-US";
   const copy = COPY[locale === "zh-CN" ? "zh" : "en"];
@@ -417,11 +514,33 @@ export function DailyWorkBoard({
   for (const displacement of [...(urgent?.displacements ?? []), ...(urgent?.confirmationRequired ?? [])]) {
     suggestedDates.set(displacement.workItemId, displacement.targetDate);
   }
+  const unscheduledReasons = new Map([
+    ...(preview?.attention ?? []),
+    ...(preview?.unscheduled ?? []),
+  ].map((item) => [item.workItemId, item.reason] as const));
   const previewItems = plannedItems.map((item) => {
     const plannedDate = suggestedDates.get(item.id);
-    return plannedDate && item.plannedDate !== plannedDate ? { ...item, plannedDate } : item;
+    const scheduleReason = unscheduledReasons.get(item.id) ?? null;
+    return { ...item, ...(plannedDate && item.plannedDate !== plannedDate ? { plannedDate } : {}), scheduleReason };
   });
-  const model = buildDailyWorkBoardModel(board, report, now, previewItems);
+  const previewBoard = board ? {
+    ...board,
+    states: Object.fromEntries(Object.entries(board.states).map(([key, state]) => [key, {
+      ...state,
+      items: state.items.map((item) => {
+        const scheduleKey = item.scheduleKey ?? item.id;
+        const suggestedDate = suggestedDates.get(scheduleKey);
+        const unscheduledReason = unscheduledReasons.get(scheduleKey);
+        if (!suggestedDate && !unscheduledReason) return item;
+        return {
+          ...item,
+          plannedDate: suggestedDate ?? item.plannedDate ?? null,
+          scheduleReason: unscheduledReason ?? item.scheduleReason ?? null,
+        };
+      }),
+    }])) as WorkBoard["states"],
+  } : undefined;
+  const model = buildDailyWorkBoardModel(previewBoard, report, now, previewItems);
   const suggestedCount = preview?.days.reduce((count, day) =>
     count + day.items.filter((item) => item.previousPlannedDate !== day.date).length, 0) ?? 0;
   const rolloverCount = (rollover?.moves.length ?? 0) + (rollover?.confirmationRequired.length ?? 0);
@@ -445,18 +564,25 @@ export function DailyWorkBoard({
         </div>
 
         <div className="flex flex-1 flex-wrap items-center gap-x-4 gap-y-2 xl:justify-end">
-          <SummaryMetric label={copy.attention} value={model.attention} tone={model.attention ? "warning" : "neutral"} />
-          <SummaryMetric label={copy.active} value={model.active} tone={model.active ? "running" : "neutral"} />
-          <SummaryMetric label={copy.completed} value={model.todayCompleted} tone="success" />
-          <SummaryMetric label={copy.failed} value={model.todayFailed} tone={model.todayFailed ? "danger" : "neutral"} />
+          <SummaryMetric label={copy.attention} value={model.attention} tone={model.attention ? "warning" : "neutral"} onClick={onOpenAttention} />
+          <SummaryMetric label={copy.active} value={model.active} tone={model.active ? "running" : "neutral"} onClick={onOpenActive} />
+          <SummaryMetric label={copy.completed} value={model.todayCompleted} tone="success" onClick={onOpenCompleted} />
+          <SummaryMetric label={copy.failed} value={model.todayFailed} tone={model.todayFailed ? "danger" : "neutral"} onClick={onOpenFailed} />
           {capacity ? (
-            <StatusBadge tone={capacity.terminal?.bridgeAvailable ? "success" : "warning"}>
-              {capacity.terminal?.bridgeAvailable
-                ? copy.terminalCapacity
-                  .replace("{{available}}", String(capacity.capacity.availableSlots))
-                  .replace("{{total}}", String(capacity.capacity.maxConcurrency))
-                : copy.terminalOffline}
-            </StatusBadge>
+            <button
+              type="button"
+              aria-expanded={capacityExpanded}
+              onClick={() => setCapacityExpanded((expanded) => !expanded)}
+              className="rounded-full focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            >
+              <StatusBadge tone={capacity.terminal?.bridgeAvailable ? "success" : "warning"}>
+                {capacity.terminal?.bridgeAvailable
+                  ? copy.terminalCapacity
+                    .replace("{{available}}", String(capacity.capacity.availableSlots))
+                    .replace("{{total}}", String(capacity.capacity.maxConcurrency))
+                  : copy.terminalOffline}
+              </StatusBadge>
+            </button>
           ) : null}
           {suggestedCount > 0 ? (
             <StatusBadge tone="running">
@@ -471,6 +597,16 @@ export function DailyWorkBoard({
           </Button>
         </div>
       </div>
+
+      {capacityExpanded && capacity ? (
+        <div className="flex flex-wrap gap-x-4 gap-y-1 border-b border-border/80 bg-muted/20 px-5 py-2 text-xs text-muted-foreground" role="status">
+          <span>{copy.queueDepth.replace("{{count}}", String(capacity.capacity.queueDepth))}</span>
+          <span>{copy.worktreeLocks.replace("{{count}}", String(capacity.capacity.worktreeLocks))}</span>
+          <span>{capacity.terminal?.bridgeAvailable ? copy.terminalCapacity
+            .replace("{{available}}", String(capacity.capacity.availableSlots))
+            .replace("{{total}}", String(capacity.capacity.maxConcurrency)) : copy.terminalOffline}</span>
+        </div>
+      ) : null}
 
       <div className="grid grid-flow-col auto-cols-[88%] gap-3 overflow-x-auto p-3 pb-4 [scrollbar-width:thin] lg:grid-flow-row lg:auto-cols-auto lg:grid-cols-[minmax(0,0.9fr)_minmax(0,1.25fr)_minmax(0,0.9fr)] lg:overflow-visible">
         <DayColumn
@@ -575,13 +711,119 @@ export function DailyWorkBoard({
           ) : <Button variant="secondary" size="sm" onClick={onOpenTasks}><Plus />{copy.planTomorrow}</Button>}
         />
       </div>
+      {model.unscheduled.length > 0 ? (
+        <section className="border-t border-border/80 px-4 py-4" data-testid="unscheduled-work">
+          <div className="mb-3 flex flex-wrap items-start justify-between gap-2">
+            <div>
+              <div className="flex items-center gap-2">
+                <h3 className="text-sm font-semibold">{copy.unscheduled}</h3>
+                <Badge tone="warning">{model.unscheduled.length}</Badge>
+              </div>
+              <p className="mt-1 text-xs text-muted-foreground">{copy.unscheduledHint}</p>
+            </div>
+          </div>
+          <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-3">
+            {model.unscheduled.map((item) => (
+              <WorkCard key={item.id} item={item} copy={copy} locale={locale} onOpen={() => onOpenItem(item)} />
+            ))}
+          </div>
+        </section>
+      ) : null}
+      {unassignedItems.length > 0 ? (
+        <section className="border-t border-border/80 px-4 py-4" data-testid="unassigned-work">
+          <div className="mb-3 flex flex-wrap items-start justify-between gap-2">
+            <div>
+              <div className="flex items-center gap-2">
+                <h3 className="text-sm font-semibold">{copy.unassigned}</h3>
+                <Badge tone="neutral">{unassignedItems.length}</Badge>
+              </div>
+              <p className="mt-1 text-xs text-muted-foreground">{copy.unassignedHint}</p>
+            </div>
+          </div>
+          <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-3">
+            {unassignedItems.slice(0, unassignedExpanded ? undefined : 6).map((item) => (
+              <ClaimableWorkCard
+                key={item.id}
+                item={item}
+                copy={copy}
+                locale={locale}
+                claiming={claimingItemId === item.id}
+                claimDisabled={Boolean(claimingItemId)}
+                onOpen={() => onOpenItem(localWorkItemCard(item, []))}
+                onClaim={onClaimItem ? () => onClaimItem(item) : undefined}
+              />
+            ))}
+          </div>
+          {unassignedItems.length > 6 ? (
+            <button
+              type="button"
+              aria-expanded={unassignedExpanded}
+              onClick={() => setUnassignedExpanded((value) => !value)}
+              className="mt-2 w-full rounded px-2 py-2 text-center text-xs font-medium text-primary hover:bg-primary/5"
+            >
+              {unassignedExpanded ? copy.less : copy.more.replace("{{count}}", String(unassignedItems.length - 6))}
+            </button>
+          ) : null}
+          {claimError ? <p className="mt-2 text-xs text-destructive" role="alert">{claimError}</p> : null}
+        </section>
+      ) : null}
     </Card>
   );
 }
 
-function SummaryMetric({ label, value, tone }: { label: string; value: number; tone: Tone }) {
+function ClaimableWorkCard({
+  item,
+  copy,
+  locale,
+  claiming,
+  claimDisabled,
+  onOpen,
+  onClaim,
+}: {
+  item: LocalWorkItem;
+  copy: Copy;
+  locale: string;
+  claiming: boolean;
+  claimDisabled: boolean;
+  onOpen: () => void;
+  onClaim?: () => void;
+}) {
+  const time = relativeTime(item.updatedAt, locale);
   return (
-    <span className="flex items-center gap-1.5 text-xs">
+    <div className="rounded-lg border border-border bg-card px-3 py-2.5">
+      <button type="button" onClick={onOpen} className="group flex w-full min-w-0 items-start gap-2 text-left">
+        <Clock3 className="mt-0.5 size-4 shrink-0 text-muted-foreground" aria-hidden />
+        <span className="min-w-0 flex-1">
+          <span className="block truncate text-sm font-medium">{item.localRef} · {item.title}</span>
+          <span className="mt-0.5 block truncate text-xs text-muted-foreground">{copy.localState[item.status]}</span>
+        </span>
+        <ArrowRight className="mt-0.5 size-3.5 shrink-0 text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100" aria-hidden />
+      </button>
+      <div className="mt-2 flex items-center justify-between gap-2 border-t border-border/60 pt-2">
+        <span className="text-[11px] text-muted-foreground">{time}</span>
+        {onClaim ? (
+          <Button size="sm" variant="secondary" disabled={claimDisabled} onClick={onClaim}>
+            <Plus />{claiming ? copy.claiming : copy.claim}
+          </Button>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
+function SummaryMetric({
+  label,
+  value,
+  tone,
+  onClick,
+}: {
+  label: string;
+  value: number;
+  tone: Tone;
+  onClick?: () => void;
+}) {
+  const content = (
+    <>
       <span className={cn(
         "font-semibold tabular-nums",
         tone === "warning" && "text-warning",
@@ -590,8 +832,13 @@ function SummaryMetric({ label, value, tone }: { label: string; value: number; t
         tone === "danger" && "text-destructive",
       )}>{value}</span>
       <span className="text-muted-foreground">{label}</span>
-    </span>
+    </>
   );
+  return onClick ? (
+    <button type="button" onClick={onClick} className="flex items-center gap-1.5 rounded text-xs hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
+      {content}
+    </button>
+  ) : <span className="flex items-center gap-1.5 text-xs">{content}</span>;
 }
 
 function DayColumn({
@@ -626,6 +873,7 @@ function DayColumn({
   action?: React.ReactNode;
 }) {
   const perGroupLimit = 2;
+  const [expandedGroups, setExpandedGroups] = useState<DailyGroupKey[]>([]);
   const groups = GROUP_ORDER.map((key) => ({
     key,
     items: items.filter((item) => displayState(item) === key),
@@ -657,23 +905,34 @@ function DayColumn({
       </div>
 
       <div className="mt-3 flex flex-1 flex-col gap-2">
-        {items.length ? groups.map((group) => (
-          <div key={group.key} className="space-y-1.5" data-testid={`daily-state-group-${group.key}`}>
-            <div className="flex items-center gap-2 px-1 text-[11px] font-medium text-muted-foreground">
-              <span>{displayStateLabel(group.items[0], copy)}</span>
-              <span className="h-px flex-1 bg-border/70" aria-hidden />
-              <span className="tabular-nums">{group.items.length}</span>
+        {items.length ? groups.map((group) => {
+          const expanded = expandedGroups.includes(group.key);
+          const hiddenCount = Math.max(0, group.items.length - perGroupLimit);
+          return (
+            <div key={group.key} className="space-y-1.5" data-testid={`daily-state-group-${group.key}`}>
+              <div className="flex items-center gap-2 px-1 text-[11px] font-medium text-muted-foreground">
+                <span>{displayStateLabel(group.items[0], copy)}</span>
+                <span className="h-px flex-1 bg-border/70" aria-hidden />
+                <span className="tabular-nums">{group.items.length}</span>
+              </div>
+              {group.items.slice(0, expanded ? undefined : perGroupLimit).map((item) => (
+                <WorkCard key={item.id} item={item} copy={copy} locale={locale} onOpen={() => onOpenItem(item)} />
+              ))}
+              {hiddenCount > 0 ? (
+                <button
+                  type="button"
+                  aria-expanded={expanded}
+                  onClick={() => setExpandedGroups((current) => expanded
+                    ? current.filter((key) => key !== group.key)
+                    : [...current, group.key])}
+                  className="w-full rounded px-1 py-1 text-center text-[11px] font-medium text-primary hover:bg-primary/5"
+                >
+                  {expanded ? copy.less : copy.more.replace("{{count}}", String(hiddenCount))}
+                </button>
+              ) : null}
             </div>
-            {group.items.slice(0, perGroupLimit).map((item) => (
-              <WorkCard key={item.id} item={item} copy={copy} locale={locale} onOpen={() => onOpenItem(item)} />
-            ))}
-            {group.items.length > perGroupLimit ? (
-              <p className="px-1 text-center text-[11px] text-muted-foreground">
-                {copy.more.replace("{{count}}", String(group.items.length - perGroupLimit))}
-              </p>
-            ) : null}
-          </div>
-        )) : (
+          );
+        }) : (
           <div className="grid flex-1 place-items-center rounded-lg border border-dashed border-border/80 bg-background/30 px-4 py-6 text-center">
             <div>
               {featured
@@ -703,6 +962,7 @@ function WorkCard({
   onOpen: () => void;
 }) {
   const time = relativeTime(item.updatedAt, locale);
+  const scheduleReason = item.scheduleReason ? copy.scheduleReasons[item.scheduleReason] ?? item.scheduleReason : null;
   const Icon = item.state === "done"
     ? CheckCircle2
     : item.state === "failed" || item.state === "follow_up"
@@ -723,8 +983,8 @@ function WorkCard({
         <Icon className="mt-0.5 size-4 shrink-0 text-muted-foreground" aria-hidden />
         <span className="min-w-0 flex-1">
           <span className="block truncate text-sm font-medium">{item.title}</span>
-          {item.subtitle || item.reason ? (
-            <span className="mt-0.5 block truncate text-xs text-muted-foreground">{item.reason ?? item.subtitle}</span>
+          {scheduleReason || item.subtitle || item.reason ? (
+            <span className="mt-0.5 block truncate text-xs text-muted-foreground">{scheduleReason ?? item.reason ?? item.subtitle}</span>
           ) : null}
         </span>
         <ArrowRight className="mt-0.5 size-3.5 shrink-0 text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100" aria-hidden />
