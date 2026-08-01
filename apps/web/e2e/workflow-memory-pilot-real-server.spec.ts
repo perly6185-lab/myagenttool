@@ -16,6 +16,14 @@ let root = "";
 let server: Server | null = null;
 let primaryWorkItemTitle = "";
 let primaryWorkItemId = "";
+let primaryProjectId = "";
+let primarySourceId = "";
+const adaptiveFileName = "incoming-RFQ-PILOT-011.xlsx";
+const adaptiveFileNames = [
+  adaptiveFileName,
+  "incoming-RFQ-PILOT-012.xlsx",
+  "incoming-RFQ-PILOT-013.xlsx",
+];
 
 async function call(path: string, options: { method?: string; body?: unknown } = {}) {
   const response = await fetch(`${apiBase}${path}`, {
@@ -153,6 +161,8 @@ test.beforeAll(async () => {
     },
   });
   const source = created.source;
+  primaryProjectId = defaultProject.id;
+  primarySourceId = source.id;
   await call(`/api/workflow-memory/sources/${source.id}/scan`, { method: "POST" });
   const artifacts = (await call(
     `/api/workflow-memory/artifacts?sourceId=${source.id}`,
@@ -185,6 +195,90 @@ test.beforeAll(async () => {
     );
     confirmedInquiries.push({ ...row, confirmed });
   }
+  for (const [index, name] of adaptiveFileNames.entries()) {
+    const suffix = index + 1;
+    state.workflowArtifacts.push({
+      id: `wfa_adaptive_browser_${suffix}`,
+      ownerTeamId: defaultProject.ownerTeamId,
+      projectId: defaultProject.id,
+      sourceId: source.id,
+      name,
+      family: "spreadsheet",
+      extension: "xlsx",
+    });
+    state.workflowIntakeObservations.push({
+      id: `wio_adaptive_browser_${suffix}`,
+      ownerTeamId: defaultProject.ownerTeamId,
+      projectId: defaultProject.id,
+      sourceId: source.id,
+      artifactId: `wfa_adaptive_browser_${suffix}`,
+      state: "ready",
+    });
+    state.businessDocumentClassifications.push({
+      id: `bdc_adaptive_browser_${suffix}`,
+      ownerTeamId: defaultProject.ownerTeamId,
+      projectId: defaultProject.id,
+      sourceId: source.id,
+      artifactId: `wfa_adaptive_browser_${suffix}`,
+      documentType: "inquiry",
+      confirmationState: "confirmed",
+      confidence: 0.98,
+      riskSignals: [],
+      revision: 1,
+    });
+  }
+  state.workflowAdaptiveFeedback.push(...Array.from({ length: 5 }, (_, index) => ({
+    id: `awf_browser_history_${index + 1}`,
+    ownerTeamId: defaultProject.ownerTeamId,
+    projectId: defaultProject.id,
+    sourceId: source.id,
+    suggestionId: `historical_browser_${index + 1}`,
+    documentType: "inquiry",
+    decision: "accepted",
+    reason: "confirmed_historical_workflow",
+    note: null,
+    correctedDocumentType: null,
+    correctedActions: [],
+    correctionConfirmed: false,
+    correction: null,
+    policyMode: "observe",
+    createdAt: now(),
+    createdBy: "user_local",
+  })));
+  state.workflowAdaptiveRules.push({
+    id: "awr_browser_baseline",
+    ownerTeamId: defaultProject.ownerTeamId,
+    projectId: defaultProject.id,
+    sourceId: source.id,
+    draftId: "awld_browser_baseline",
+    version: 1,
+    revision: 1,
+    status: "active",
+    previousRuleId: null,
+    configuration: {
+      documentTypes: [{
+        documentType: "inquiry",
+        evidenceCount: 5,
+        actions: ["核对询价信息", "生成报价单", "更新询价台账", "更新报价台账"],
+        confidenceThreshold: 0.9,
+      }],
+      typeMappings: [],
+    },
+    evaluation: {
+      evidenceCount: 5,
+      accepted: 5,
+      rejected: 0,
+      acceptanceRate: 1,
+      completionRate: null,
+      representative: true,
+      passed: true,
+      reasons: [],
+    },
+    publishedAt: now(),
+    publishedBy: "user_local",
+    createdAt: now(),
+    updatedAt: now(),
+  });
   const caseIds = Array.from({ length: 10 }, (_, index) => `bcs_pilot_${index + 1}`);
   for (const [index, caseId] of caseIds.entries()) {
     const row = confirmedInquiries[index];
@@ -425,7 +519,7 @@ test("shows all ten synthetic cases in the Chinese mobile batch UI", async ({ pa
   });
 });
 
-test("opens the governed pilot workbench on mobile and requires explicit case selection", async ({
+test("auto-prepares authorized pilot cases in the governed mobile workbench", async ({
   page,
 }, testInfo) => {
   await page.setViewportSize({ width: 390, height: 844 });
@@ -440,17 +534,125 @@ test("opens the governed pilot workbench on mobile and requires explicit case se
   await page.getByRole("button", { name: "打开试运行工作台" }).click();
   const workbench = page.getByRole("dialog", { name: "正式试运行" });
   await expect(workbench).toBeVisible();
+  await workbench.getByLabel("授权范围").fill("已授权的本地脱敏商务案例");
+  await workbench.getByRole("checkbox", {
+    name: "我确认这些文件已获授权，仅用于本地试运行。",
+  }).check();
+  await workbench.getByRole("button", { name: "一键准备试运行" }).click();
   await expect(workbench.getByText(primaryWorkItemTitle).first()).toBeVisible();
-  const caseLabel = workbench.getByText(primaryWorkItemTitle).first().locator("../..");
-  await caseLabel.getByRole("checkbox").check();
   await expect(workbench.getByText("case-01")).toBeVisible();
-  await expect(workbench.getByRole("button", { name: "生成证据包" })).toBeDisabled();
+  await expect(workbench.getByText(/^case-/)).toHaveCount(10);
+  await workbench.getByRole("button", { name: "4. 发布评审" }).click();
+  await expect(workbench.getByRole("button", { name: "生成证据包" })).toBeEnabled();
+  await expect(workbench.getByText("证据表单有效，可以生成受治理证据包。")).toBeVisible();
   await page.keyboard.press("Escape");
   await expect(workbench).toBeHidden();
   await testInfo.attach("v1.5-pilot-workbench-mobile-zh", {
     body: await page.screenshot({ fullPage: true }),
     contentType: "image/png",
   });
+});
+
+test("corrects, shadow-evaluates, publishes, and rolls back one learned workflow", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.addInitScript(() => {
+    window.localStorage.setItem("myagenttool-ui", JSON.stringify({
+      version: 1,
+      state: { locale: "zh-CN", section: "workflowMemory" },
+    }));
+  });
+  page.on("dialog", (dialog) => dialog.accept());
+  await page.goto(`/?section=workflowMemory&api=${encodeURIComponent(apiBase)}`);
+  await expect(page.getByRole("heading", { name: "岗位助手" })).toBeVisible();
+
+  const correctedSuggestion = page.locator('[data-testid^="adaptive-suggestion-"]')
+    .filter({ hasText: adaptiveFileName });
+  await correctedSuggestion.getByLabel("反馈原因").selectOption("wrong_document_type");
+  await correctedSuggestion.getByLabel("正确的文件类型").selectOption("price_list");
+  await correctedSuggestion.getByLabel("正确的工作步骤（每行一项）").fill([
+    "核对价格表版本",
+    "将价格表作为报价参考资料",
+  ].join("\n"));
+  await correctedSuggestion.getByRole("checkbox", {
+    name: "我确认以上纠正符合实际工作方式。",
+  }).check();
+  await correctedSuggestion.getByRole("button", { name: "不合适" }).click();
+  await expect(correctedSuggestion.getByText("已记录为不合适")).toBeVisible();
+
+  await page.getByRole("button", { name: "生成学习草稿" }).click();
+  await expect(page.getByText("影子对比（不会影响实际工作）")).toHaveCount(3);
+  for (const name of adaptiveFileNames) {
+    const suggestion = page.locator('[data-testid^="adaptive-suggestion-"]')
+      .filter({ hasText: name });
+    await suggestion.getByRole("button", { name: "候选结果更好" }).click();
+    await expect(suggestion.getByText("已记录对比选择")).toBeVisible();
+  }
+
+  await page.getByRole("button", { name: "运行影子评测" }).click();
+  await expect(page.getByText(/v1.*门禁已通过/)).toBeVisible();
+  const publish = page.getByRole("button", { name: "发布通过门禁的草稿" });
+  await expect(publish).toBeDisabled();
+  await page.getByRole("button", { name: "生成发布评审" }).click();
+  const publicationReview = page.getByTestId("adaptive-publication-review");
+  await expect(publicationReview).toBeVisible();
+  await expect(publicationReview.getByText(/候选规则尚未生效/)).toBeVisible();
+  await expect(publish).toBeEnabled();
+  await publish.click();
+  await expect(correctedSuggestion.getByText(
+    "已发布的人工纠正规则将原识别类型映射为当前结果。",
+  )).toBeVisible();
+
+  const rollback = page.getByRole("button", { name: "回滚规则" });
+  await expect(rollback).toBeEnabled();
+  await rollback.click();
+  await expect.poll(async () => {
+    const learning = await call(
+      `/api/workflow-memory/adaptive-workbench/learning?projectId=${encodeURIComponent(primaryProjectId)}&sourceId=${encodeURIComponent(primarySourceId)}`,
+    );
+    return {
+      baseline: learning.rules.find((rule: { id: string }) =>
+        rule.id === "awr_browser_baseline")?.status,
+      candidate: learning.rules.find((rule: { version: number }) =>
+        rule.version === 2)?.status,
+    };
+  }).toEqual({ baseline: "active", candidate: "rolled_back" });
+  await expect(rollback).toBeDisabled();
+});
+
+test("turns a recognized daily-work file into one confirmed local Issue", async ({ page }) => {
+  await page.addInitScript(() => {
+    window.localStorage.setItem("myagenttool-ui", JSON.stringify({
+      version: 1,
+      state: { locale: "zh-CN", section: "workflowMemory" },
+    }));
+  });
+  await page.goto(`/?section=workflowMemory&api=${encodeURIComponent(apiBase)}`);
+  await expect(page.getByRole("heading", { name: "岗位助手" })).toBeVisible();
+  const suggestion = page.locator('[data-testid^="adaptive-suggestion-"]')
+    .filter({ hasText: adaptiveFileName });
+  await expect(suggestion.getByText(adaptiveFileName)).toBeVisible();
+  await expect(suggestion.getByText(/同目录已有 3 个同类已确认案例可参考/)).toBeVisible();
+  await page.getByLabel("扫描间隔").selectOption("30");
+  await expect(page.getByLabel("扫描间隔")).toHaveValue("30");
+  page.once("dialog", (dialog) => dialog.accept());
+  await page.getByRole("button", { name: "监控已关闭" }).click();
+  await expect(page.getByRole("button", { name: "监控已开启" })).toBeVisible();
+  await page.getByRole("button", { name: "立即检查目录" }).click();
+  await expect(page.getByRole("button", { name: "立即检查目录" })).toBeEnabled();
+  const adaptive = await call(
+    `/api/workflow-memory/adaptive-workbench?projectId=${encodeURIComponent(primaryProjectId)}&sourceId=${encodeURIComponent(primarySourceId)}`,
+  );
+  expect(adaptive.monitor).toMatchObject({ enabled: true, intervalMinutes: 30, state: "scheduled" });
+  expect(adaptive.monitor.lastSuccessAt).toBeTruthy();
+
+  await page.getByLabel("协助级别").selectOption("assist");
+  await expect(page.getByLabel("协助级别")).toHaveValue("assist");
+  page.once("dialog", (dialog) => dialog.accept());
+  await suggestion.getByRole("button", { name: "确认并创建本地 Issue" }).click();
+  await expect(page.getByRole("dialog", { name: "本地 Issue 详情" })).toBeVisible();
+  await expect(page.getByText(/核对询价信息/).first()).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(page.getByRole("dialog", { name: "本地 Issue 详情" })).toBeHidden();
 });
 
 test("shows the ten-case batch and binds one completed UI journey to pilot evidence", async ({ page }, testInfo) => {

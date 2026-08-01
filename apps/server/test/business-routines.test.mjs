@@ -1739,7 +1739,7 @@ test("routine ledger steps cannot bypass a previewed and audited mutation", () =
   assert.equal(completed.execution.run.status, "succeeded");
 });
 
-test("V1.4 collections and V1.5 pilot workbench evidence survive persistence", () => {
+test("V1.4 collections, V1.7 pilot orchestration, and V1.11 assistance survive persistence", () => {
   const root = join(tmpdir(), `business-routine-persistence-${Date.now()}`);
   const projectPath = join(root, "project");
   const statePath = join(root, "state.json");
@@ -1771,6 +1771,54 @@ test("V1.4 collections and V1.5 pilot workbench evidence survive persistence", (
       lastCollection: { evidence: { state: "incomplete" } },
       updatedAt: now(),
     });
+    first.state.businessPilotCollections.push({
+      id: "bpc_persisted",
+      ownerTeamId: "team_local",
+      projectId: first.defaultProject.id,
+      pilotId: "pilot-persisted",
+      draftRevision: 2,
+      evidenceReceiptId: "bper_persisted",
+      collectedAt: now(),
+      collection: { evidence: { state: "incomplete" } },
+      revokedAt: null,
+    });
+    first.state.businessPilotRollouts.push({
+      id: "bpro_persisted",
+      ownerTeamId: "team_local",
+      projectId: first.defaultProject.id,
+      mode: "shadow",
+      revision: 1,
+      updatedAt: now(),
+    });
+    first.state.workflowAdaptivePolicies.push({
+      id: "awp_persisted",
+      ownerTeamId: "team_local",
+      projectId: first.defaultProject.id,
+      mode: "assist",
+      revision: 1,
+    });
+    first.state.workflowAdaptiveFeedback.push({
+      id: "awf_persisted",
+      ownerTeamId: "team_local",
+      projectId: first.defaultProject.id,
+      sourceId: "wfs_old",
+      suggestionId: "aws_old",
+      decision: "accepted",
+    });
+    for (const [index, key] of [
+      "workflowAdaptiveMonitors",
+      "workflowAdaptiveOutcomes",
+      "workflowAdaptiveLearningDrafts",
+      "workflowAdaptiveRules",
+      "workflowAdaptiveNotifications",
+    ].entries()) {
+      first.state[key].push({
+        id: `adaptive_v11_${index}`,
+        ownerTeamId: "team_local",
+        projectId: first.defaultProject.id,
+        sourceId: "wfs_old",
+      });
+    }
     for (const [index, key] of businessRoutineCollectionKeys.entries()) {
       first.state[key].push({
         id: `v14_${index}`,
@@ -1805,6 +1853,19 @@ test("V1.4 collections and V1.5 pilot workbench evidence survive persistence", (
     assert.equal(second.state.businessPilotEvidenceReceipts[0].id, "bper_persisted");
     assert.equal(second.state.businessPilotDrafts[0].id, "bpd_persisted");
     assert.equal(second.state.businessPilotDrafts[0].lastCollection.evidence.state, "incomplete");
+    assert.equal(second.state.businessPilotCollections[0].id, "bpc_persisted");
+    assert.equal(second.state.businessPilotRollouts[0].mode, "shadow");
+    assert.equal(second.state.workflowAdaptivePolicies[0].mode, "assist");
+    assert.equal(second.state.workflowAdaptiveFeedback[0].decision, "accepted");
+    for (const [index, key] of [
+      "workflowAdaptiveMonitors",
+      "workflowAdaptiveOutcomes",
+      "workflowAdaptiveLearningDrafts",
+      "workflowAdaptiveRules",
+      "workflowAdaptiveNotifications",
+    ].entries()) {
+      assert.equal(second.state[key][0].id, `adaptive_v11_${index}`, `${key} restores`);
+    }
     for (const [index, key] of businessRoutineCollectionKeys.entries()) {
       assert.equal(second.state[key][0].id, `v14_${index}`, `${key} restores`);
     }

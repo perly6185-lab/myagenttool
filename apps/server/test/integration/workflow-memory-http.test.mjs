@@ -140,6 +140,14 @@ test("workflow memory routes authorize, scan, classify, and enforce tenancy over
   );
   assert.equal(stableIntake.status, 200);
   assert.equal(stableIntake.body.intake.ready, 1);
+  assert.deepEqual(stableIntake.body.adaptiveAnalysis, {
+    attempted: 1,
+    classified: 1,
+    failed: 0,
+    capped: false,
+  });
+  assert.equal(stableIntake.body.adaptiveWork.mode, "observe");
+  assert.equal(stableIntake.body.adaptiveWork.autoCreated, 0);
   const intakeObservations = await call(
     `/api/workflow-memory/intake-observations?sourceId=${source.id}`,
   );
@@ -197,7 +205,7 @@ test("workflow memory routes authorize, scan, classify, and enforce tenancy over
     `/api/workflow-memory/business-document-classifications?sourceId=${source.id}`,
   );
   assert.equal(classifications.status, 200);
-  assert.equal(classifications.body.count, 1);
+  assert.equal(classifications.body.count, 2);
   assert.equal((await call(
     `/api/workflow-memory/business-document-classifications?sourceId=${source.id}`,
     { token: "tok_b" },
@@ -801,6 +809,78 @@ test("workflow memory routes authorize, scan, classify, and enforce tenancy over
   assert.equal(replayedPilotWorkbench.status, 200, JSON.stringify(replayedPilotWorkbench.body));
   assert.equal(replayedPilotWorkbench.body.draft.revision, 2);
   assert.equal(replayedPilotWorkbench.body.replayed, true);
+  const invalidPreparedPilot = await call(
+    "/api/workflow-memory/commercial-pilot/workbench/prepare",
+    {
+      method: "POST",
+      body: {
+        projectId: "prj_a",
+        expectedRevision: 2,
+        confirmed: false,
+        consentScope: "Authorized local project cases",
+      },
+    },
+  );
+  assert.equal(invalidPreparedPilot.status, 400);
+  const invalidGapIssues = await call(
+    "/api/workflow-memory/commercial-pilot/workbench/gap-issues",
+    {
+      method: "POST",
+      body: { projectId: "prj_a", expectedRevision: 2, confirmed: false },
+    },
+  );
+  assert.equal(invalidGapIssues.status, 400);
+  const submittedPilotReview = await call(
+    "/api/workflow-memory/commercial-pilot/workbench/reviews/performance",
+    {
+      method: "POST",
+      body: {
+        projectId: "prj_a",
+        expectedRevision: 2,
+        status: "passed",
+        note: "Performance evidence passed",
+        evidenceIds: ["http-performance-evidence"],
+      },
+    },
+  );
+  assert.equal(submittedPilotReview.status, 200, JSON.stringify(submittedPilotReview.body));
+  assert.equal(submittedPilotReview.body.review.dimension, "performance");
+  assert.equal(submittedPilotReview.body.draft.revision, 3);
+  const pilotRollout = await call(
+    "/api/workflow-memory/commercial-pilot/rollout",
+    {
+      method: "PUT",
+      body: { projectId: "prj_a", expectedRevision: 0, mode: "shadow" },
+    },
+  );
+  assert.equal(pilotRollout.status, 200);
+  assert.equal(pilotRollout.body.rollout.mode, "shadow");
+  const pilotCollectionId = replayedPilotWorkbench.body.history[0].id;
+  const pilotCollectionDetail = await call(
+    `/api/workflow-memory/commercial-pilot/collections/${pilotCollectionId}?projectId=prj_a`,
+  );
+  assert.equal(pilotCollectionDetail.status, 200, JSON.stringify(pilotCollectionDetail.body));
+  assert.equal(pilotCollectionDetail.body.collection.current, false,
+    "a newly submitted review invalidates the older evidence package");
+  const pilotCollectionExport = await call(
+    `/api/workflow-memory/commercial-pilot/collections/${pilotCollectionId}/export?projectId=prj_a&format=json`,
+  );
+  assert.equal(pilotCollectionExport.status, 200, JSON.stringify(pilotCollectionExport.body));
+  assert.equal(pilotCollectionExport.body.mediaType, "application/json");
+  assert.equal(JSON.parse(pilotCollectionExport.body.content).pilotId, "http-pilot-workbench");
+  const pilotCollectionComparison = await call(
+    "/api/workflow-memory/commercial-pilot/collections/compare",
+    {
+      method: "POST",
+      body: { projectId: "prj_a", fromId: pilotCollectionId, toId: pilotCollectionId },
+    },
+  );
+  assert.equal(pilotCollectionComparison.status, 200);
+  assert.equal(pilotCollectionComparison.body.changes.caseCount, 0);
+  assert.equal((await call(
+    `/api/workflow-memory/commercial-pilot/collections/${pilotCollectionId}?projectId=prj_a`,
+    { token: "tok_b" },
+  )).status, 404);
   assert.equal((await call(
     "/api/workflow-memory/commercial-pilot/workbench",
     {
@@ -1166,6 +1246,162 @@ test("workflow memory routes authorize, scan, classify, and enforce tenancy over
     `/api/workflow-memory/ledger-definitions?sourceId=${source.id}`,
     { token: "tok_b" },
   )).body.ledgerDefinitions.length, 0);
+
+  runtimeState.workflowArtifacts.push({
+    id: "wfa_adaptive_http",
+    ownerTeamId: "team_a",
+    projectId: source.projectId,
+    sourceId: source.id,
+    name: "询价单-RFQ-HTTP-ADAPTIVE.xlsx",
+    family: "spreadsheet",
+    extension: "xlsx",
+  });
+  runtimeState.workflowIntakeObservations.push({
+    id: "wio_adaptive_http",
+    ownerTeamId: "team_a",
+    projectId: source.projectId,
+    sourceId: source.id,
+    artifactId: "wfa_adaptive_http",
+    state: "ready",
+  });
+  runtimeState.businessDocumentClassifications.push({
+    id: "bdc_adaptive_http",
+    ownerTeamId: "team_a",
+    projectId: source.projectId,
+    sourceId: source.id,
+    artifactId: "wfa_adaptive_http",
+    documentType: "inquiry",
+    confirmationState: "confirmed",
+    confidence: 0.98,
+    riskSignals: [],
+    revision: 1,
+  });
+  const adaptiveWorkbench = await call(
+    `/api/workflow-memory/adaptive-workbench?projectId=${source.projectId}&sourceId=${source.id}`,
+  );
+  assert.equal(adaptiveWorkbench.status, 200, JSON.stringify(adaptiveWorkbench.body));
+  assert.equal(adaptiveWorkbench.body.policy.mode, "observe");
+  assert.equal(adaptiveWorkbench.body.suggestions.length, 1);
+  assert.equal(adaptiveWorkbench.body.suggestions[0].documentType, "inquiry");
+  assert.equal(adaptiveWorkbench.body.suggestions[0].readiness, "ready");
+  assert.equal((await call(
+    `/api/workflow-memory/adaptive-workbench?projectId=${source.projectId}&sourceId=${source.id}`,
+    { token: "tok_b" },
+  )).status, 404);
+  const adaptivePolicy = await call("/api/workflow-memory/adaptive-workbench/policy", {
+    method: "PUT",
+    body: {
+      projectId: source.projectId,
+      expectedRevision: adaptiveWorkbench.body.policy.revision,
+      mode: "assist",
+    },
+  });
+  assert.equal(adaptivePolicy.status, 200);
+  assert.equal(adaptivePolicy.body.policy.mode, "assist");
+  const adaptiveMonitor = await call("/api/workflow-memory/adaptive-workbench/monitor", {
+    method: "PUT",
+    body: {
+      projectId: source.projectId,
+      sourceId: source.id,
+      expectedRevision: adaptiveWorkbench.body.monitor.revision,
+      enabled: true,
+      intervalMinutes: 30,
+      confirmed: true,
+    },
+  });
+  assert.equal(adaptiveMonitor.status, 200, JSON.stringify(adaptiveMonitor.body));
+  assert.equal(adaptiveMonitor.body.monitor.enabled, true);
+  assert.equal(adaptiveMonitor.body.monitor.intervalMinutes, 30);
+  const adaptiveIssue = await call(
+    `/api/workflow-memory/adaptive-workbench/suggestions/${adaptiveWorkbench.body.suggestions[0].id}/materialize`,
+    {
+      method: "POST",
+      body: { projectId: source.projectId, sourceId: source.id, confirmed: true },
+    },
+  );
+  assert.equal(adaptiveIssue.status, 201, JSON.stringify(adaptiveIssue.body));
+  assert.ok(adaptiveIssue.body.workItem.localRef.startsWith("LOCAL-"));
+  assert.equal(adaptiveIssue.body.workbench.suggestions[0].issue.id, adaptiveIssue.body.workItem.id);
+  const adaptiveFeedback = await call(
+    `/api/workflow-memory/adaptive-workbench/suggestions/${adaptiveWorkbench.body.suggestions[0].id}/feedback`,
+    {
+      method: "POST",
+      body: {
+        projectId: source.projectId,
+        sourceId: source.id,
+        decision: "accepted",
+        reason: "useful_recommendation",
+      },
+    },
+  );
+  assert.equal(adaptiveFeedback.status, 201);
+  assert.equal(adaptiveFeedback.body.workbench.suggestions[0].feedback.decision, "accepted");
+  const outcomeSync = await call("/api/workflow-memory/adaptive-workbench/outcomes/sync", {
+    method: "POST",
+    body: { projectId: source.projectId, sourceId: source.id },
+  });
+  assert.equal(outcomeSync.status, 200);
+  assert.equal(outcomeSync.body.outcomes.length, 1);
+  const learningDraft = await call("/api/workflow-memory/adaptive-workbench/learning", {
+    method: "POST",
+    body: { projectId: source.projectId, sourceId: source.id },
+  });
+  assert.equal(learningDraft.status, 409);
+  assert.equal(learningDraft.body.error, "adaptive_work_learning_evidence_insufficient");
+  const notifications = await call(
+    `/api/workflow-memory/adaptive-workbench/notifications?projectId=${source.projectId}&sourceId=${source.id}`,
+  );
+  assert.equal(notifications.status, 200);
+  assert.deepEqual(notifications.body.notifications, []);
+  runtimeState.workflowArtifacts.push({
+    id: "wfa_adaptive_auto_http",
+    ownerTeamId: "team_a",
+    projectId: source.projectId,
+    sourceId: source.id,
+    name: "询价单-RFQ-HTTP-AUTO.xlsx",
+    family: "spreadsheet",
+    extension: "xlsx",
+  });
+  runtimeState.workflowIntakeObservations.push({
+    id: "wio_adaptive_auto_http",
+    ownerTeamId: "team_a",
+    projectId: source.projectId,
+    sourceId: source.id,
+    artifactId: "wfa_adaptive_auto_http",
+    state: "ready",
+  });
+  runtimeState.businessDocumentClassifications.push({
+    id: "bdc_adaptive_auto_http",
+    ownerTeamId: "team_a",
+    projectId: source.projectId,
+    sourceId: source.id,
+    artifactId: "wfa_adaptive_auto_http",
+    documentType: "inquiry",
+    confirmationState: "proposed",
+    confidence: 0.98,
+    riskSignals: [],
+    revision: 1,
+  });
+  const executePolicy = await call("/api/workflow-memory/adaptive-workbench/policy", {
+    method: "PUT",
+    body: {
+      projectId: source.projectId,
+      sourceId: source.id,
+      expectedRevision: 0,
+      mode: "execute",
+      confirmed: true,
+    },
+  });
+  assert.equal(executePolicy.status, 200);
+  assert.equal(executePolicy.body.policy.scope, "source");
+  const reconciled = await call("/api/workflow-memory/adaptive-workbench/reconcile", {
+    method: "POST",
+    body: { projectId: source.projectId, sourceId: source.id },
+  });
+  assert.equal(reconciled.status, 200, JSON.stringify(reconciled.body));
+  assert.equal(reconciled.body.autoCreated, 1);
+  assert.equal(reconciled.body.created[0].localRef.startsWith("LOCAL-"), true);
+  assert.equal(reconciled.body.workbench.metrics.materialized, 2);
 
   const foreignList = await call("/api/workflow-memory/sources", { token: "tok_b" });
   assert.deepEqual(foreignList.body.sources, []);

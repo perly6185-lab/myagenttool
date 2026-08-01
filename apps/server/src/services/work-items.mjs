@@ -236,11 +236,19 @@ export function createWorkItemService({
   resolveApplicationCapability = () => ({ state: "refusal", reason: "resolver_unavailable", capability: null }),
   invokeResolvedCapability = () => ({ status: 503, body: { error: "capability_gateway_unavailable" } }),
   issueApplicationApprovalGrant = null,
+  onWorkItemChanged = () => {},
   store,
 }) {
   const runTx = makeRunTx({ store, persistStateSoon });
   const actorTeam = (actor) => actor?.teamId ?? LOCAL_TEAM_ID;
   const actorUser = (actor) => actor?.userId ?? LOCAL_USER_ID;
+  const notifyWorkItemChanged = (item, actor, reason) => {
+    try {
+      onWorkItemChanged(item, actor, reason);
+    } catch {
+      // Outcome projection is best-effort and must never roll back the Issue mutation.
+    }
+  };
   const localTerminalId = () => listDevices(state)[0]?.id ?? null;
   const localAssetResourceClasses = (terminalId) => {
     const device = (state.devices ?? []).find((candidate) => candidate.id === terminalId);
@@ -1486,6 +1494,9 @@ export function createWorkItemService({
           number: binding.number, fields: conflict.fields,
         });
       });
+      if (direction === "resolve_remote") {
+        notifyWorkItemChanged(item, actor, `${normalizedProvider}_conflict_remote_selected`);
+      }
       const payload = Object.fromEntries(GITHUB_SYNC_FIELDS.map((field) => [field, item[field]]));
       return {
         ok: true, status: 200,
@@ -1554,6 +1565,7 @@ export function createWorkItemService({
       binding.remoteDeletedAt = null;
       recordActivity(item, actor, providerActivity("pulled"), { number: binding.number });
     });
+    notifyWorkItemChanged(item, actor, `${normalizedProvider}_pulled`);
     return { ok: true, status: 200, body: { action: "pulled", workItem: workItemView(item, actor) } };
   }
 
@@ -1850,6 +1862,7 @@ export function createWorkItemService({
         data: { workItemId: item.id, revision: item.revision, actorTeamId: actorTeam(actor) },
       });
     });
+    notifyWorkItemChanged(item, actor, "updated");
     return { ok: true, status: 200, body: { workItem: workItemView(item, actor) } };
   }
 
@@ -1925,6 +1938,7 @@ export function createWorkItemService({
         });
       }
     });
+    for (const item of targets) notifyWorkItemChanged(item, actor, "bulk_updated");
     return {
       ok: true, status: 200,
       body: { workItems: targets.map((item) => workItemView(item, actor)), count: targets.length },
@@ -1973,6 +1987,7 @@ export function createWorkItemService({
         data: { workItemId: item.id, revision: item.revision, actorTeamId: actorTeam(actor) },
       });
     });
+    notifyWorkItemChanged(item, actor, action);
     return { ok: true, status: 200, body: { workItem: workItemView(item, actor) } };
   }
 
@@ -2043,6 +2058,7 @@ export function createWorkItemService({
         });
       }
     });
+    notifyWorkItemChanged(item, actor, "verification_recorded");
     return { ok: true, status: 201, body: { verification: record, workItem: workItemView(item, actor) } };
   }
 
@@ -2116,6 +2132,7 @@ export function createWorkItemService({
         },
       });
     });
+    notifyWorkItemChanged(item, actor, "asset_operation_recorded");
     return { ok: true, status: 201, body: {
       operation, workItem: workItemView(item, actor),
     } };
@@ -2708,6 +2725,7 @@ export function createWorkItemService({
         data: { workItemId: item.id, autoRunId: autoRun.id, mode, result },
       });
     });
+    notifyWorkItemChanged(item, actor, "delivery_completed");
     return {
       ok: true,
       status: 200,

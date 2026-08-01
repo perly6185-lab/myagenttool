@@ -26,6 +26,7 @@ function harness({
   resolveApplicationCapability,
   invokeResolvedCapability,
   issueApplicationApprovalGrant,
+  onWorkItemChanged,
 } = {}) {
   let counter = 0;
   const events = [];
@@ -57,9 +58,64 @@ function harness({
     resolveApplicationCapability,
     invokeResolvedCapability,
     issueApplicationApprovalGrant,
+    onWorkItemChanged,
   });
   return { state, events, alerts, service };
 }
+
+test("projects work-item status and verification changes immediately", () => {
+  const changes = [];
+  const { service } = harness({
+    onWorkItemChanged: (item, actor, reason) => changes.push({
+      id: item.id,
+      status: item.status,
+      verificationCount: item.verificationRecords?.length ?? 0,
+      actorId: actor.userId,
+      reason,
+    }),
+  });
+  const created = service.createWorkItem({ projectId: "prj_a", title: "Realtime outcome" }, ACTOR_A).body.workItem;
+  const updated = service.updateWorkItem({
+    workItemId: created.id,
+    expectedRevision: created.revision,
+    status: "ready",
+  }, ACTOR_A);
+  assert.equal(updated.status, 200);
+  const verified = service.recordVerification({
+    workItemId: created.id,
+    expectedRevision: updated.body.workItem.revision,
+    kind: "manual",
+    status: "passed",
+    summary: "Reviewed output",
+    acceptanceResults: [],
+    evidence: [],
+  }, ACTOR_A);
+  assert.equal(verified.status, 201);
+  const bulk = service.bulkUpdateWorkItems({
+    items: [{ id: created.id, expectedRevision: verified.body.workItem.revision }],
+    changes: { status: "blocked" },
+  }, ACTOR_A);
+  assert.equal(bulk.status, 200);
+  assert.deepEqual(changes, [{
+    id: created.id,
+    status: "ready",
+    verificationCount: 0,
+    actorId: "usr_a",
+    reason: "updated",
+  }, {
+    id: created.id,
+    status: "ready",
+    verificationCount: 1,
+    actorId: "usr_a",
+    reason: "verification_recorded",
+  }, {
+    id: created.id,
+    status: "blocked",
+    verificationCount: 1,
+    actorId: "usr_a",
+    reason: "bulk_updated",
+  }]);
+});
 
 test("creates a local work item with server-owned identity and defaults", () => {
   const { service, events, state } = harness();

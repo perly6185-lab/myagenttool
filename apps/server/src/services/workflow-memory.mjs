@@ -76,6 +76,7 @@ const WORKFLOW_RETRIEVAL_VERSION = 2;
 const MAX_EMBEDDING_RECORDS_PER_SOURCE = 5_000;
 const MAX_OCR_CHARACTERS = 500_000;
 const MAX_OCR_LINES_PER_PAGE = 2_000;
+const DEFAULT_MAX_CONCURRENT_OCR_ACTIONS = 2;
 const OCR_EXTENSIONS = new Set(["pdf", "png", "jpg", "jpeg", "webp"]);
 export const WORKFLOW_FEEDBACK_VERSION = 1;
 const WORKFLOW_FEEDBACK_REASONS = new Set([
@@ -1218,6 +1219,7 @@ export function createWorkflowMemoryService({
   cleanupWorkItemWorktree = null,
   embeddingAdapter = null,
   ocrAdapter = null,
+  maxConcurrentOcrActions = DEFAULT_MAX_CONCURRENT_OCR_ACTIONS,
   store,
 } = {}) {
   const runTx = makeRunTx({ store, persistStateSoon });
@@ -1241,6 +1243,13 @@ export function createWorkflowMemoryService({
     "routineDefinitions",
     "routineRuns",
     "ledgerDefinitions",
+    "workflowAdaptivePolicies",
+    "workflowAdaptiveFeedback",
+    "workflowAdaptiveMonitors",
+    "workflowAdaptiveOutcomes",
+    "workflowAdaptiveLearningDrafts",
+    "workflowAdaptiveRules",
+    "workflowAdaptiveNotifications",
   ]) {
     if (!Array.isArray(state[key])) state[key] = [];
   }
@@ -1281,6 +1290,10 @@ export function createWorkflowMemoryService({
   const activeFeedbackActions = new Set();
   const activePublicationActions = new Set();
   const activeOcrActions = new Map();
+  const ocrActionCapacity = Number.isSafeInteger(maxConcurrentOcrActions)
+    && maxConcurrentOcrActions > 0
+    ? maxConcurrentOcrActions
+    : DEFAULT_MAX_CONCURRENT_OCR_ACTIONS;
 
   const visible = (record, actor) => record?.ownerTeamId === actorTeam(actor);
   const findSource = (sourceId, actor) =>
@@ -2358,6 +2371,13 @@ export function createWorkflowMemoryService({
       routineDefinitions: state.routineDefinitions.filter(sourceIdMatches).length,
       routineRuns: state.routineRuns.filter(sourceIdMatches).length,
       ledgerDefinitions: state.ledgerDefinitions.filter(sourceIdMatches).length,
+      adaptivePolicies: state.workflowAdaptivePolicies.filter(sourceIdMatches).length,
+      adaptiveFeedback: state.workflowAdaptiveFeedback.filter(sourceIdMatches).length,
+      adaptiveMonitors: state.workflowAdaptiveMonitors.filter(sourceIdMatches).length,
+      adaptiveOutcomes: state.workflowAdaptiveOutcomes.filter(sourceIdMatches).length,
+      adaptiveLearningDrafts: state.workflowAdaptiveLearningDrafts.filter(sourceIdMatches).length,
+      adaptiveRules: state.workflowAdaptiveRules.filter(sourceIdMatches).length,
+      adaptiveNotifications: state.workflowAdaptiveNotifications.filter(sourceIdMatches).length,
     };
     runTx(() => {
       state.workflowScanJobs.splice(
@@ -2415,6 +2435,13 @@ export function createWorkflowMemoryService({
         "routineDefinitions",
         "routineRuns",
         "ledgerDefinitions",
+        "workflowAdaptivePolicies",
+        "workflowAdaptiveFeedback",
+        "workflowAdaptiveMonitors",
+        "workflowAdaptiveOutcomes",
+        "workflowAdaptiveLearningDrafts",
+        "workflowAdaptiveRules",
+        "workflowAdaptiveNotifications",
       ]) {
         state[key].splice(
           0,
@@ -2669,6 +2696,16 @@ export function createWorkflowMemoryService({
     }
     const active = activeOcrActions.get(artifact.id);
     if (active) return active.promise;
+    if (activeOcrActions.size >= ocrActionCapacity) {
+      return {
+        status: 429,
+        body: {
+          error: "workflow_ocr_capacity_reached",
+          retryable: true,
+          capacity: ocrActionCapacity,
+        },
+      };
+    }
 
     const controller = new AbortController();
     const action = {

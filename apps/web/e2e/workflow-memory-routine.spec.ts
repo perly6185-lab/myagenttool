@@ -670,6 +670,54 @@ async function mockApi(page: Page) {
         samples: [],
       } });
     }
+    if (url.pathname === "/api/workflow-memory/adaptive-workbench") {
+      return route.fulfill({ json: {
+        policy: {
+          mode: "observe",
+          revision: 1,
+          scope: "source",
+          sourceId: source.id,
+          inheritedMode: null,
+          updatedAt: null,
+          updatedBy: null,
+          boundary: { localIssueOnly: true, externalDelivery: false, overwriteFiles: false },
+        },
+        monitor: null,
+        suggestions: [],
+        metrics: {
+          total: 0,
+          ready: 0,
+          needsAttention: 0,
+          materialized: 0,
+          automationEligible: 0,
+          accepted: 0,
+          rejected: 0,
+          acceptanceRate: null,
+          tracked: 0,
+          completed: 0,
+          completionRate: null,
+        },
+        permissions: { canUse: true, canManage: true },
+      } });
+    }
+    if (url.pathname === "/api/workflow-memory/adaptive-workbench/learning") {
+      return route.fulfill({ json: {
+        readiness: {
+          evidenceCount: 0,
+          accepted: 0,
+          rejected: 0,
+          draftRequired: 5,
+          evaluationRequired: 3,
+          canGenerate: false,
+          canEvaluate: false,
+        },
+        drafts: [],
+        rules: [],
+      } });
+    }
+    if (url.pathname === "/api/workflow-memory/adaptive-workbench/notifications") {
+      return route.fulfill({ json: { notifications: [], unread: 0 } });
+    }
     if (url.pathname === "/api/workflow-memory/commercial-pilot/workbench") {
       return route.fulfill({
         status: 403,
