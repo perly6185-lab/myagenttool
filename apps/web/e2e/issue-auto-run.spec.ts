@@ -163,6 +163,8 @@ test("creates an issue, routes AI execution, and reaches reviewed local delivery
   await page.getByRole("button", { name: "Create issue" }).click();
 
   await page.getByText("Implement browser chain").first().click();
+  await page.getByRole("dialog", { name: "Local issue details" })
+    .getByRole("tab", { name: "Process", exact: true }).click();
   const autoRunRequest = page.waitForRequest((request) =>
     request.url().endsWith("/api/work-items/lwi_1/auto-runs") && request.method() === "POST");
   await page.getByRole("button", { name: "Start Auto-run" }).click();
@@ -171,6 +173,7 @@ test("creates an issue, routes AI execution, and reaches reviewed local delivery
   await page.goto("/?section=task");
   await page.getByText("Implement browser chain").first().click();
   const detail = page.getByRole("dialog", { name: "Local issue details" });
+  await detail.getByRole("tab", { name: "Process", exact: true }).click();
   await expect(detail.getByText("Ready for delivery")).toBeVisible();
   await expect(detail.getByText("Review required")).toBeVisible();
   await expect(detail.getByRole("button", { name: "Merge into base" })).toBeDisabled();
@@ -200,7 +203,7 @@ test("restores a task-first Trace after visiting scheduling Settings", async ({ 
   await page.goto("/?section=task&task=lwi_1&taskView=trace");
   const detail = page.getByRole("dialog", { name: "Local issue details" });
   await expect(detail).toBeVisible();
-  await expect(detail.getByRole("button", { name: "Trace", exact: true })).toHaveAttribute("aria-current", "page");
+  await expect(detail.getByRole("tab", { name: "Trace", exact: true })).toHaveAttribute("aria-selected", "true");
   await expect(detail.getByText("usr_local")).toBeVisible();
   await expect(detail.getByText("dev_local")).toBeVisible();
   await expect(detail.getByText("Queued", { exact: true })).toBeVisible();
