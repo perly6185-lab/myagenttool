@@ -62,6 +62,7 @@ export interface PendingLocalDocumentRegistration {
 
 export type PlanningProjectView = "list" | "board" | "roadmap" | "insights" | "executions";
 export type WorkItemSection = "overview" | "process" | "assets" | "verification" | "trace";
+export type InvocationStatusFilter = "all" | "active" | "completed" | "failed";
 export interface PlanningProjectFilters {
   status: string;
   priority: string;
@@ -96,8 +97,12 @@ interface UiState {
   selectedApplicationRun: ApplicationRunSelection | null;
   selectedEvidenceId: string | null;
   selectedAutomationId: string | null;
+  /** Transient filter handed off by Home task statistics to Run records. */
+  invocationStatusFilter: InvocationStatusFilter;
   /** Transient: the invocation whose Codex session the composer will continue on next send (#163). */
   resumeFromInvocationId: string | null;
+  /** Transient task text handed off by a Run-record Reuse action. */
+  composerDraftTask: string | null;
   /** Transient: the project-relative Office document the workspace preview is showing (#1347). */
   officecliPreviewPath: string | null;
   /** Transient handoff from Documents to local project registration. */
@@ -131,7 +136,9 @@ interface UiState {
   setSelectedApplicationRun: (selection: ApplicationRunSelection | null) => void;
   setSelectedEvidenceId: (id: string | null) => void;
   setSelectedAutomationId: (id: string | null) => void;
+  setInvocationStatusFilter: (filter: InvocationStatusFilter) => void;
   setResumeFromInvocationId: (id: string | null) => void;
+  setComposerDraftTask: (task: string | null) => void;
   setOfficecliPreviewPath: (path: string | null) => void;
   setPendingLocalDocumentRegistration: (value: PendingLocalDocumentRegistration | null) => void;
   toggleNavGroup: (group: string) => void;
@@ -356,7 +363,9 @@ export const useUiStore = create<UiState>()(
         selectedApplicationRun: initialNavigation.selectedApplicationRun ?? null,
         selectedEvidenceId: initialNavigation.selectedEvidenceId ?? null,
         selectedAutomationId: initialNavigation.selectedAutomationId ?? null,
+        invocationStatusFilter: "all",
         resumeFromInvocationId: null,
+        composerDraftTask: null,
         officecliPreviewPath: null,
         pendingLocalDocumentRegistration: null,
         collapsedNavGroups: [...DEFAULT_COLLAPSED_NAV_GROUPS],
@@ -388,7 +397,9 @@ export const useUiStore = create<UiState>()(
         setSelectedApplicationRun: (selectedApplicationRun) => set({ selectedApplicationRun }),
         setSelectedEvidenceId: (selectedEvidenceId) => set({ selectedEvidenceId }),
         setSelectedAutomationId: (selectedAutomationId) => set({ selectedAutomationId }),
+        setInvocationStatusFilter: (invocationStatusFilter) => set({ invocationStatusFilter }),
         setResumeFromInvocationId: (resumeFromInvocationId) => set({ resumeFromInvocationId }),
+        setComposerDraftTask: (composerDraftTask) => set({ composerDraftTask }),
         setOfficecliPreviewPath: (officecliPreviewPath) => set({ officecliPreviewPath }),
         setPendingLocalDocumentRegistration: (pendingLocalDocumentRegistration) => set({ pendingLocalDocumentRegistration }),
         toggleNavGroup: (group) =>

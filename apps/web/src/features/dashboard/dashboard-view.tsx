@@ -10,9 +10,8 @@ import { Transcript } from "@/features/invocations/transcript";
 import { RunTranscriptSection } from "@/features/invocations/run-transcript";
 import { DecisionAction } from "@/features/invocations/decision-action";
 import { GuidedSetupCard } from "@/features/dashboard/guided-setup-card";
-import { EntryJourney } from "@/features/dashboard/entry-journey";
 import { localScheduleApi } from "@/features/dashboard/local-schedule-api";
-import type { LocalWorkItemResult } from "@/features/tasks/task-view-types";
+import type { LocalWorkItem } from "@/features/tasks/task-view-types";
 import type {
   LocalScheduleCapacityResponse,
   LocalSchedulePreviewResponse,
@@ -29,7 +28,7 @@ import { ActionErrorNotice } from "@/components/common/action-error-notice";
 import { useConsoleState } from "@/data/use-console-state";
 import { useAsyncAction, api } from "@/data/use-console-actions";
 import { resolveAgents, resolveInvocation } from "@/features/selection";
-import { useUiStore, type SectionKey } from "@/store/ui-store";
+import { useUiStore, type InvocationStatusFilter, type SectionKey } from "@/store/ui-store";
 import {
   adapterText,
   cancellationText,
@@ -114,11 +113,15 @@ export function DashboardView({ surface = "overview" }: { surface?: DashboardSur
   const setSection = useUiStore((s) => s.setSection);
   const resumeFromInvocationId = useUiStore((s) => s.resumeFromInvocationId);
   const setResumeFromInvocationId = useUiStore((s) => s.setResumeFromInvocationId);
+  const composerDraftTask = useUiStore((s) => s.composerDraftTask);
+  const setComposerDraftTask = useUiStore((s) => s.setComposerDraftTask);
+  const setInvocationStatusFilter = useUiStore((s) => s.setInvocationStatusFilter);
   const runAction = useAsyncAction();
   const cancelAction = useAsyncAction();
   const scheduleAction = useAsyncAction();
   const rolloverAction = useAsyncAction();
   const urgentAction = useAsyncAction();
+  const assignmentAction = useAsyncAction();
   const runInFlightRef = useRef(false);
   const runIdempotencyKeyRef = useRef<string | null>(null);
 
@@ -132,7 +135,9 @@ export function DashboardView({ surface = "overview" }: { surface?: DashboardSur
   }, [targetWorktree?.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const [task, setTask] = useState("");
-  const [dailyWorkItems, setDailyWorkItems] = useState<LocalWorkItemResult["workItems"]>([]);
+  const [dailyWorkItems, setDailyWorkItems] = useState<LocalWorkItem[]>([]);
+  const [claimableWorkItems, setClaimableWorkItems] = useState<LocalWorkItem[]>([]);
+  const [claimingWorkItemId, setClaimingWorkItemId] = useState<string | null>(null);
   const [localScheduleCapacity, setLocalScheduleCapacity] = useState<LocalScheduleCapacityResponse>();
   const [localSchedulePreview, setLocalSchedulePreview] = useState<LocalSchedulePreviewResponse>();
   const [localScheduleRollover, setLocalScheduleRollover] = useState<LocalScheduleRolloverResponse>();
@@ -143,16 +148,23 @@ export function DashboardView({ surface = "overview" }: { surface?: DashboardSur
   useEffect(() => {
     if (surface !== "overview") return undefined;
     let cancelled = false;
+    const workItems = import("@/features/dashboard/dashboard-work-items");
     void Promise.all([
-      api.listWorkItems({ assigneeId: "mine", limit: "100" }) as Promise<LocalWorkItemResult>,
+      workItems.then(({ listAllDashboardWorkItems }) => listAllDashboardWorkItems({ assigneeId: "mine" })),
+      workItems.then(({ listAllDashboardWorkItems }) => listAllDashboardWorkItems()),
       localScheduleApi.capacity().catch(() => undefined),
       localScheduleApi.preview().catch(() => undefined),
       localScheduleApi.rolloverPreview().catch(() => undefined),
       localScheduleApi.urgentPreview().catch(() => undefined),
     ])
-      .then(([items, capacity, preview, rollover, urgent]) => {
+      .then(([mine, all, capacity, preview, rollover, urgent]) => {
         if (!cancelled) {
-          setDailyWorkItems(items.workItems);
+          setDailyWorkItems(mine);
+          setClaimableWorkItems(all.filter((item) =>
+            item.assigneeIds.length === 0
+            && !item.archivedAt
+            && (item.businessState ?? item.state) === "open"
+            && item.status !== "done"));
           setLocalScheduleCapacity(capacity);
           setLocalSchedulePreview(preview);
           setLocalScheduleRollover(rollover);
@@ -162,6 +174,7 @@ export function DashboardView({ surface = "overview" }: { surface?: DashboardSur
       .catch(() => {
         if (!cancelled) {
           setDailyWorkItems([]);
+          setClaimableWorkItems([]);
           setLocalScheduleCapacity(undefined);
           setLocalSchedulePreview(undefined);
           setLocalScheduleRollover(undefined);
@@ -171,8 +184,17 @@ export function DashboardView({ surface = "overview" }: { surface?: DashboardSur
     return () => { cancelled = true; };
   }, [surface, state?.workItemSummary?.updatedAt]);
 
+  async function assignDailyWorkItemToMe(item: LocalWorkItem) {
+    setClaimingWorkItemId(item.id);
+    await assignmentAction.execute(async () => {
+      const { assignDashboardWorkItemToMe } = await import("@/features/dashboard/dashboard-work-items");
+      return assignDashboardWorkItemToMe(item.id, item.revision);
+    });
+    setClaimingWorkItemId(null);
+  }
+
   const { agents, agent } = resolveAgents(state, selectedAgentId);
-  const invocation = resolveInvocation(state, selectedInvocationId);
+  const resolvedInvocation = resolveInvocation(state, selectedInvocationId);
   useEffect(() => {
     runIdempotencyKeyRef.current = null;
   }, [agent?.id, projectId, targetWorktree?.id, resumeFromInvocationId]);
@@ -180,6 +202,9 @@ export function DashboardView({ surface = "overview" }: { surface?: DashboardSur
     () => (state?.invocations ?? []).filter((item) => RUNNING_STATES.includes(item.status ?? "")),
     [state?.invocations],
   );
+  const invocation = surface === "overview"
+    ? activeInvocations.find((item) => item.id === selectedInvocationId) ?? activeInvocations[0] ?? null
+    : resolvedInvocation;
   const localInFlightCount = useMemo(
     () => activeInvocations.filter((item) => {
       if (["queued", "waiting_for_local_approval"].includes(item.status ?? "")) return false;
@@ -236,6 +261,14 @@ export function DashboardView({ surface = "overview" }: { surface?: DashboardSur
     [state?.invocations, resumeFromInvocationId],
   );
 
+  useEffect(() => {
+    if (composerDraftTask == null) return;
+    setTask(composerDraftTask);
+    setComposerDraftTask(null);
+    runIdempotencyKeyRef.current = null;
+    taskInputRef.current?.focus();
+  }, [composerDraftTask, setComposerDraftTask]);
+
   async function runTask() {
     if (runInFlightRef.current) return;
     const submitted = task.trim();
@@ -288,12 +321,25 @@ export function DashboardView({ surface = "overview" }: { surface?: DashboardSur
       return;
     }
     if (action === "view_progress") {
-      activityRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
-      activityRef.current?.focus({ preventScroll: true });
+      if (invocation) setSelectedInvocationId(invocation.id);
+      setInvocationStatusFilter("active");
+      setSection("invocations");
       return;
     }
     if (invocation) setSelectedInvocationId(invocation.id);
     setSection(action === "handle_approval" ? "approvals" : "invocations");
+  }
+
+  function openRunFilter(filter: InvocationStatusFilter) {
+    const matching = (state?.invocations ?? []).find((item) => {
+      if (filter === "active") return RUNNING_STATES.includes(item.status ?? "");
+      if (filter === "completed") return item.status === "succeeded";
+      if (filter === "failed") return ["failed", "timed_out", "rejected"].includes(item.status ?? "");
+      return true;
+    });
+    setInvocationStatusFilter(filter);
+    setSelectedInvocationId(matching?.id ?? null);
+    setSection("invocations");
   }
 
   function openDailyWorkItem(item: WorkItem) {
@@ -325,18 +371,30 @@ export function DashboardView({ surface = "overview" }: { surface?: DashboardSur
   return (
     <div className="flex min-h-full flex-col gap-4">
       {surface === "overview" ? (
-        <div className="order-2">
+        <div className="order-3">
           <Suspense fallback={null}>
             <DailyWorkBoard
               board={state?.workBoard}
               report={state?.workReport}
               plannedItems={dailyWorkItems}
+              unassignedItems={claimableWorkItems}
               capacity={localScheduleCapacity}
               preview={localSchedulePreview}
               rollover={localScheduleRollover}
               urgent={localScheduleUrgent}
               onOpenItem={openDailyWorkItem}
               onOpenTasks={() => setSection("task")}
+              onOpenAttention={() => {
+                if ((state?.pendingDecisions?.length ?? 0) > 0) setSection("approvals");
+                else if ((state?.evidenceLedger ?? []).some((item) => item.attention)) setSection("evidence");
+                else setSection("workBoard");
+              }}
+              onOpenActive={() => openRunFilter("active")}
+              onOpenCompleted={() => openRunFilter("completed")}
+              onOpenFailed={() => openRunFilter("failed")}
+              onClaimItem={(item) => { void assignDailyWorkItemToMe(item); }}
+              claimingItemId={claimingWorkItemId}
+              claimError={assignmentAction.error}
               onApplyPlan={localSchedulePreview ? () => {
                 void scheduleAction.execute(() => localScheduleApi.applyPlan(localSchedulePreview.planRevision));
               } : undefined}
@@ -360,7 +418,7 @@ export function DashboardView({ surface = "overview" }: { surface?: DashboardSur
         </div>
       ) : null}
       {surface === "overview" && activeInvocations.length > 0 ? (
-        <div className="order-3">
+        <div className="order-4">
           <Card>
             <CardHeader className="flex-row items-center justify-between gap-3 pb-2">
               <div>
@@ -378,7 +436,11 @@ export function DashboardView({ surface = "overview" }: { surface?: DashboardSur
                   <button
                     key={item.id}
                     type="button"
-                    onClick={() => setSelectedInvocationId(item.id)}
+                    onClick={() => {
+                      setSelectedInvocationId(item.id);
+                      setInvocationStatusFilter("active");
+                      setSection("invocations");
+                    }}
                     className="flex min-w-0 items-center justify-between gap-3 rounded-md border border-border px-3 py-2 text-left hover:bg-muted/50"
                   >
                     <span className="min-w-0">
@@ -395,10 +457,9 @@ export function DashboardView({ surface = "overview" }: { surface?: DashboardSur
           </Card>
         </div>
       ) : null}
-      {surface === "overview" ? <div className="order-4"><GuidedSetupCard /></div> : null}
-      {surface === "overview" ? <div className="order-5"><EntryJourney onCreate={() => taskInputRef.current?.focus()} /></div> : null}
+      {surface === "overview" ? <div className="order-first"><GuidedSetupCard /></div> : null}
       {/* Transcript — the scrolling conversation area. */}
-      {invocation ? <div ref={activityRef} tabIndex={-1} className="order-6 flex min-h-48 flex-1 flex-col outline-none focus-visible:ring-2 focus-visible:ring-ring">
+      {surface === "workspace" && invocation ? <div ref={activityRef} tabIndex={-1} className="order-6 flex min-h-48 flex-1 flex-col outline-none focus-visible:ring-2 focus-visible:ring-ring">
         <Card className="flex min-h-48 flex-1 flex-col">
         <CardHeader>
           <SectionHeading
@@ -430,8 +491,13 @@ export function DashboardView({ surface = "overview" }: { surface?: DashboardSur
       </div> : null}
 
       <Card className={surface === "overview" ? "order-1 shrink-0" : "order-4 shrink-0"}>
-        <CardHeader className="pb-2">
+        <CardHeader className="flex-row items-center justify-between gap-3 pb-2">
           <CardTitle>{t("dashboard.composerTitle")}</CardTitle>
+          {surface === "overview" ? (
+            <Button variant="ghost" size="sm" onClick={() => setSection("invocations")}>
+              {t("shell.navigation.openTrace")}
+            </Button>
+          ) : null}
         </CardHeader>
         <CardContent className="space-y-3">
           {resumeFromInvocationId ? (
@@ -481,16 +547,6 @@ export function DashboardView({ surface = "overview" }: { surface?: DashboardSur
               ))}
             </div>
           ) : null}
-
-          <div className="grid grid-cols-2 gap-3 rounded-lg border border-border bg-muted/30 p-3 text-sm sm:grid-cols-4">
-            <ReviewItem label={t("dashboard.safety")} value={agent?.registrationNotes?.risk ?? t("dashboard.reviewAgent")} />
-            <ReviewItem label={t("dashboard.data")} value={agent?.registrationNotes?.data ?? t("dashboard.recorded")} />
-            <ReviewItem label={t("dashboard.cost")} value={agent?.registrationNotes?.cost ?? costText(agent?.economics)} />
-            <ReviewItem
-              label={t("dashboard.cancellation")}
-              value={agent?.registrationNotes?.cancellation ?? cancellationText(agent?.adapter)}
-            />
-          </div>
 
           <section
             aria-label={t("dashboard.nextAction.label")}
@@ -569,6 +625,15 @@ export function DashboardView({ surface = "overview" }: { surface?: DashboardSur
               {t("dashboard.preRunReview")}
             </summary>
             <div className="space-y-3 pt-3">
+              <div className="grid grid-cols-2 gap-3 rounded-lg border border-border bg-muted/30 p-3 text-sm sm:grid-cols-4">
+                <ReviewItem label={t("dashboard.safety")} value={agent?.registrationNotes?.risk ?? t("dashboard.reviewAgent")} />
+                <ReviewItem label={t("dashboard.data")} value={agent?.registrationNotes?.data ?? t("dashboard.recorded")} />
+                <ReviewItem label={t("dashboard.cost")} value={agent?.registrationNotes?.cost ?? costText(agent?.economics)} />
+                <ReviewItem
+                  label={t("dashboard.cancellation")}
+                  value={agent?.registrationNotes?.cancellation ?? cancellationText(agent?.adapter)}
+                />
+              </div>
               <div className="grid gap-3 sm:grid-cols-2">
                 <Field label={t("dashboard.project")}>
                   <Select

@@ -311,6 +311,12 @@ export interface WorkItem {
   updatedAt?: string | null;
   /** follow_up rows only: why this needs attention. */
   reason?: string;
+  /** Stable key used by the current-terminal scheduler (for example autorun:<id>). */
+  scheduleKey?: string | null;
+  plannedDate?: string | null;
+  schedulePlanSource?: "manual" | "auto_plan" | "rollover" | "urgent_insert" | null;
+  scheduleReason?: string | null;
+  scheduleOrder?: number | null;
 }
 
 export interface WorkBoard {

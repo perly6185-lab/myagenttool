@@ -17,6 +17,12 @@ re-baseline docs + tests
 
 See `docs/engineering/NEXT_PHASE_PLAN_2026-07.md` for the operating plan.
 
+Active product follow-up: [UNFINISHED_ISSUE_SCHEDULING_PLAN.md](UNFINISHED_ISSUE_SCHEDULING_PLAN.md)
+extends the current-terminal three-day scheduler so unfinished Issue/Auto-run
+work is either placed on Today/Tomorrow or shown honestly under Unscheduled with
+a bounded reason. This closes the input-source gap left by #1583 without adding
+multi-terminal behavior.
+
 ## P0 - Baseline and scope control
 
 - **Update planning docs.** Keep this backlog, milestones, ADR 0007, M3 issue

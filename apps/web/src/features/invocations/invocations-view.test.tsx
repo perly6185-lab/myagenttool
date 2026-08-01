@@ -33,6 +33,9 @@ afterEach(() => {
     selectedInvocationId: null,
     selectedApplicationId: null,
     selectedApplicationRun: null,
+    invocationStatusFilter: "all",
+    composerDraftTask: null,
+    resumeFromInvocationId: null,
   });
 });
 
@@ -98,9 +101,9 @@ describe("InvocationsView operator explanation", () => {
     expect(await screen.findByText("Actionable explanation")).toBeTruthy();
 
     fireEvent.click(screen.getByRole("button", { name: /Open approval/i }));
-    expect(useUiStore.getState().section).toBe("dashboard");
+    expect(useUiStore.getState().section).toBe("approvals");
     expect(useUiStore.getState().selectedInvocationId).toBe("inv_action");
-    await waitFor(() => expect(new URLSearchParams(window.location.search).get("section")).toBe("dashboard"));
+    await waitFor(() => expect(new URLSearchParams(window.location.search).get("section")).toBe("approvals"));
     expect(new URLSearchParams(window.location.search).get("invocation")).toBe("inv_action");
 
     useUiStore.setState({ section: "invocations", selectedInvocationId: "inv_action" });
@@ -127,6 +130,47 @@ describe("InvocationsView operator explanation", () => {
       expect(params.get("routine")).toBe("routine_docs_smoke");
       expect(params.get("run")).toBe("inv_action");
     });
+  });
+
+  it("filters Run records from Home statistics and reuses failed task context", async () => {
+    const state = actionExplanationState();
+    state.invocations = [{
+      id: "inv_failed_reuse",
+      status: "failed",
+      agentId: "agt_reuse",
+      projectId: "proj_reuse",
+      worktreeId: "wt_reuse",
+      input: { task: "Repair the failing checks" },
+      options: { metadata: {} },
+    }, {
+      id: "inv_success_hidden",
+      status: "succeeded",
+      agentId: "agt_reuse",
+      projectId: "proj_reuse",
+      input: { task: "Already completed" },
+      options: { metadata: {} },
+    }];
+    apiMock.fetchState.mockResolvedValue(state);
+    useUiStore.setState({
+      section: "invocations",
+      selectedInvocationId: null,
+      invocationStatusFilter: "failed",
+      resumeFromInvocationId: "old_session",
+    });
+
+    renderWithClient(createElement(InvocationsView));
+
+    expect(await screen.findByText("Repair the failing checks")).toBeTruthy();
+    expect(screen.queryByText("Already completed")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Reuse task" }));
+
+    const ui = useUiStore.getState();
+    expect(ui.section).toBe("dashboard");
+    expect(ui.selectedProjectId).toBe("proj_reuse");
+    expect(ui.selectedWorktreeId).toBe("wt_reuse");
+    expect(ui.selectedAgentId).toBe("agt_reuse");
+    expect(ui.resumeFromInvocationId).toBeNull();
+    expect(ui.composerDraftTask).toBe("Repair the failing checks");
   });
 
   it("routes troubleshooting report and source links from server explanation", async () => {
