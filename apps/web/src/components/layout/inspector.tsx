@@ -25,16 +25,10 @@ function HintCard({ title, body }: { title: string; body: string }) {
 // The context each section shows in the right rail, or null when it has none.
 // Sections that return null get no rail at all, so the main column fills the
 // freed width instead of leaving an empty bordered gap.
-function inspectorContent(section: SectionKey, t: ReturnType<typeof useAppTranslation>["t"]): ReactNode {
+export function inspectorContent(section: SectionKey, t: ReturnType<typeof useAppTranslation>["t"]): ReactNode {
   switch (section) {
     case "dashboard":
-      return (
-        <div className="space-y-4">
-          <SessionHistory />
-          <DeviceInspector />
-          <RunContextInspector />
-        </div>
-      );
+      return null;
     case "invocations":
       return (
         <div className="space-y-4">

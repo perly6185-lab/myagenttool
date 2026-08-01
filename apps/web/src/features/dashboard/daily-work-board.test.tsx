@@ -116,6 +116,8 @@ describe("DailyWorkBoard", () => {
     states.in_progress = { count: 1, items: [active] };
     const onOpenItem = vi.fn();
     const onOpenTasks = vi.fn();
+    const onOpenActive = vi.fn();
+    const onOpenCompleted = vi.fn();
 
     render(
       <DailyWorkBoard
@@ -123,6 +125,8 @@ describe("DailyWorkBoard", () => {
         report={report(2, 0)}
         onOpenItem={onOpenItem}
         onOpenTasks={onOpenTasks}
+        onOpenActive={onOpenActive}
+        onOpenCompleted={onOpenCompleted}
         now={now}
       />,
     );
@@ -137,6 +141,42 @@ describe("DailyWorkBoard", () => {
     expect(onOpenItem).toHaveBeenCalledWith(active);
     fireEvent.click(screen.getByRole("button", { name: "Plan tomorrow" }));
     expect(onOpenTasks).toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "1 In progress" }));
+    expect(onOpenActive).toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "2 Completed" }));
+    expect(onOpenCompleted).toHaveBeenCalled();
+  });
+
+  it("expands hidden work so every issue status remains inspectable", () => {
+    const now = new Date(2026, 6, 31, 12).getTime();
+    const states = emptyStates();
+    states.waiting = {
+      count: 4,
+      items: ["one", "two", "three", "four"].map((id) =>
+        ({ ...item(id, "waiting", new Date(now).toISOString()), plannedDate: "2026-07-31" })),
+    };
+
+    render(
+      <DailyWorkBoard
+        board={{ generatedAt: now, states }}
+        report={report(0, 0)}
+        onOpenItem={vi.fn()}
+        onOpenTasks={vi.fn()}
+        now={now}
+      />,
+    );
+
+    expect(screen.queryByText("Task three")).toBeNull();
+    const expand = screen.getByRole("button", { name: "Show 2 more" });
+    expect(expand.getAttribute("aria-expanded")).toBe("false");
+    fireEvent.click(expand);
+
+    expect(screen.getByText("Task three")).toBeTruthy();
+    expect(screen.getByText("Task four")).toBeTruthy();
+    const collapse = screen.getByRole("button", { name: "Show fewer" });
+    expect(collapse.getAttribute("aria-expanded")).toBe("true");
+    fireEvent.click(collapse);
+    expect(screen.queryByText("Task three")).toBeNull();
   });
 
   it("uses personal planned dates for today and tomorrow and deep-links to the local task", () => {
@@ -171,7 +211,7 @@ describe("DailyWorkBoard", () => {
     const states = emptyStates();
     states.pending_decision = {
       count: 1,
-      items: [item("decision", "pending_decision", new Date(now).toISOString())],
+      items: [{ ...item("decision", "pending_decision", new Date(now).toISOString()), plannedDate: "2026-07-31" }],
     };
     states.in_progress = {
       count: 1,
@@ -179,7 +219,7 @@ describe("DailyWorkBoard", () => {
     };
     states.waiting = {
       count: 1,
-      items: [item("waiting", "waiting", new Date(now).toISOString())],
+      items: [{ ...item("waiting", "waiting", new Date(now).toISOString()), plannedDate: "2026-07-31" }],
     };
 
     render(
@@ -195,6 +235,81 @@ describe("DailyWorkBoard", () => {
     expect(screen.getByTestId("daily-state-group-pending_decision").textContent).toContain("Decision");
     expect(screen.getByTestId("daily-state-group-in_progress").textContent).toContain("In progress");
     expect(screen.getByTestId("daily-state-group-waiting").textContent).toContain("Waiting");
+  });
+
+  it("keeps unplanned runtime issues out of Today and explains why they are unscheduled", () => {
+    const now = new Date(2026, 6, 31, 12).getTime();
+    const states = emptyStates();
+    states.follow_up = {
+      count: 1,
+      items: [{
+        ...item("failed", "follow_up", new Date(now).toISOString()),
+        scheduleKey: "autorun:failed",
+      }],
+    };
+
+    const model = buildDailyWorkBoardModel({ generatedAt: now, states }, report(0, 0), now);
+    expect(model.today).toEqual([]);
+    expect(model.unscheduled.map((row) => row.id)).toEqual(["failed"]);
+
+    render(
+      <DailyWorkBoard
+        board={{ generatedAt: now, states }}
+        report={report(0, 0)}
+        preview={{
+          generatedAt: "2026-07-31T04:00:00.000Z",
+          planRevision: "0123456789abcdef01234567",
+          terminalId: "dev-local",
+          horizon: { yesterday: "2026-07-30", today: "2026-07-31", tomorrow: "2026-08-01" },
+          assumptions: { workdayMinutes: 480, utilization: 0.75, urgentReserve: 0.2, grossMinutes: 360, allocatableMinutes: 288 },
+          days: [
+            { date: "2026-07-31", capacityMinutes: 288, plannedMinutes: 0, availableMinutes: 288, items: [] },
+            { date: "2026-08-01", capacityMinutes: 288, plannedMinutes: 0, availableMinutes: 288, items: [] },
+          ],
+          attention: [{ workItemId: "autorun:failed", reason: "auto_run_failed" }],
+          unscheduled: [],
+        }}
+        onOpenItem={vi.fn()}
+        onOpenTasks={vi.fn()}
+        now={now}
+      />,
+    );
+
+    expect(screen.getByTestId("unscheduled-work").textContent).toContain("Run failed; triage or retry first");
+  });
+
+  it("shows every unassigned local issue outside personal capacity and lets the user claim one", () => {
+    const now = new Date(2026, 6, 31, 12).getTime();
+    const unassigned = Array.from({ length: 8 }, (_, index) => localItem({
+      id: `unassigned-${index + 1}`,
+      localRef: `LOCAL-${index + 1}`,
+      title: `Available issue ${index + 1}`,
+      assigneeIds: [],
+      status: index === 0 ? "blocked" : "backlog",
+    }));
+    const onClaimItem = vi.fn();
+    const onOpenItem = vi.fn();
+
+    render(
+      <DailyWorkBoard
+        board={{ generatedAt: now, states: emptyStates() }}
+        report={report(0, 0)}
+        unassignedItems={unassigned}
+        onOpenItem={onOpenItem}
+        onOpenTasks={vi.fn()}
+        onClaimItem={onClaimItem}
+        now={now}
+      />,
+    );
+
+    expect(screen.getByTestId("unassigned-work").textContent).toContain("Unassigned8");
+    expect(screen.queryByText("LOCAL-8 · Available issue 8")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Show 2 more" }));
+    expect(screen.getByText("LOCAL-8 · Available issue 8")).toBeTruthy();
+    fireEvent.click(screen.getAllByRole("button", { name: "Claim" })[0]);
+    expect(onClaimItem).toHaveBeenCalledWith(unassigned[0]);
+    fireEvent.click(screen.getByRole("button", { name: /LOCAL-1 · Available issue 1/ }));
+    expect(onOpenItem).toHaveBeenCalledWith(expect.objectContaining({ targetId: "unassigned-1", section: "task" }));
   });
 
   it("shows the current terminal capacity without implying another terminal can take the work", () => {
@@ -219,6 +334,11 @@ describe("DailyWorkBoard", () => {
     expect(screen.getByText("Available slots 2 / 3")).toBeTruthy();
     expect(screen.getByTestId("local-capacity-summary").textContent).toContain("Queue 4");
     expect(screen.getByTestId("local-capacity-summary").textContent).toContain("Workspace locks 1");
+    const capacityButton = screen.getByRole("button", { name: "Available slots 2 / 3" });
+    expect(capacityButton.getAttribute("aria-expanded")).toBe("false");
+    fireEvent.click(capacityButton);
+    expect(capacityButton.getAttribute("aria-expanded")).toBe("true");
+    expect(screen.getByRole("status").textContent).toContain("Queue 4");
   });
 
   it("renders preview dates without mutating source items and applies only after confirmation", () => {
@@ -239,7 +359,7 @@ describe("DailyWorkBoard", () => {
           days: [
             { date: "2026-07-31", capacityMinutes: 288, plannedMinutes: 0, availableMinutes: 288, items: [] },
             { date: "2026-08-01", capacityMinutes: 288, plannedMinutes: 60, availableMinutes: 228, items: [{
-              workItemId: "suggested", localRef: "LOCAL-1", title: source.title, priority: "p1", status: "ready",
+              workItemId: "suggested", sourceKind: "work_item", sourceId: "suggested", localRef: "LOCAL-1", title: source.title, priority: "p1", status: "ready",
               estimatedMinutes: 60, estimateConfidence: "low", previousPlannedDate: null, pinned: false, expectedRevision: 1,
             }] },
           ],

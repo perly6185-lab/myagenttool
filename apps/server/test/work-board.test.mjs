@@ -84,3 +84,17 @@ test("empty inputs yield all six lenses at zero", () => {
     { pending_decision: 0, in_progress: 0, waiting: 0, done: 0, failed: 0, follow_up: 0 },
   );
 });
+
+test("publishes a persisted runtime schedule on every lens for the same Auto-run", () => {
+  const autoRuns = [{ id: "ar_fail", status: "failed", projectId: "prj_a", updatedAt: "2026-07-17T07:00:00Z" }];
+  const schedules = [{
+    kind: "auto_run", targetId: "ar_fail", plannedDate: "2026-07-18",
+    schedulePlanSource: "auto_plan", scheduleReason: "current_terminal_capacity_plan", scheduleOrder: 2,
+  }];
+  const { states } = workBoard({ autoRuns, schedules, now: NOW });
+  for (const lane of ["failed", "follow_up"]) {
+    assert.equal(states[lane].items[0].scheduleKey, "autorun:ar_fail");
+    assert.equal(states[lane].items[0].plannedDate, "2026-07-18");
+    assert.equal(states[lane].items[0].scheduleOrder, 2);
+  }
+});

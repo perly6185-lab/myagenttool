@@ -123,10 +123,14 @@ export async function handleInvocationRoutes({
     const generatedAt = new Date().toISOString();
     const capacity = localScheduleCapacityForActor(state, actor, findAgent, generatedAt);
     const preview = computeLocalSchedulePreview(capacity, { now: () => generatedAt });
+    let scheduleOrder = 0;
     const assignments = preview.days.flatMap((day) => day.items.map((item) => ({
       workItemId: item.workItemId,
+      sourceKind: item.sourceKind,
+      sourceId: item.sourceId,
       expectedRevision: item.expectedRevision,
       plannedDate: day.date,
+      scheduleOrder: scheduleOrder++,
     })));
     const result = applyLocalSchedulePlan({
       planRevision: body?.planRevision,
@@ -521,12 +525,19 @@ function localScheduleCapacityForActor(state, actor, findAgent, generatedAt) {
   const visibleWorkItem = (item) =>
     (teamId == null || (item.ownerTeamId ?? "team_local") === teamId)
     && (userId == null || (item.assigneeIds ?? []).includes(userId));
+  const visibleAutoRun = (run) => visibleProject(run?.projectId);
+  const visibleRuntimeSchedule = (schedule) =>
+    (teamId == null || (schedule.ownerTeamId ?? "team_local") === teamId)
+    && (userId == null || schedule.userId === userId)
+    && (!schedule.terminalId || schedule.terminalId === state.device?.id);
   return computeLocalScheduleCapacity(state, {
     findAgent,
     now: () => generatedAt,
     visibleInvocation,
     visibleProject,
     visibleWorkItem,
+    visibleAutoRun,
+    visibleRuntimeSchedule,
   });
 }
 

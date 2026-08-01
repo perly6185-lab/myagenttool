@@ -1,12 +1,15 @@
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { DashboardView, eventsForInvocation } from "@/features/dashboard/dashboard-view";
+import { listAllDashboardWorkItems } from "@/features/dashboard/dashboard-work-items";
 import { i18n } from "@/lib/i18n";
+import { useUiStore } from "@/store/ui-store";
 
 const mocks = vi.hoisted(() => ({
   useConsoleState: vi.fn(),
   useAsyncAction: vi.fn(),
   listWorkItems: vi.fn(),
+  assignWorkItemToMe: vi.fn(),
   getLocalScheduleCapacity: vi.fn(),
   getLocalSchedulePreview: vi.fn(),
   applyLocalSchedulePlan: vi.fn(),
@@ -20,6 +23,7 @@ vi.mock("@/data/use-console-actions", () => ({
   useAsyncAction: mocks.useAsyncAction,
   api: {
     listWorkItems: mocks.listWorkItems,
+    assignWorkItemToMe: mocks.assignWorkItemToMe,
   },
 }));
 vi.mock("@/features/dashboard/local-schedule-api", () => ({
@@ -37,6 +41,13 @@ vi.mock("@/features/invocations/run-transcript", () => ({ RunTranscriptSection: 
 
 beforeEach(async () => {
   await i18n.changeLanguage("en-US");
+  useUiStore.setState({
+    section: "dashboard",
+    selectedInvocationId: null,
+    invocationStatusFilter: "all",
+    composerDraftTask: null,
+    resumeFromInvocationId: null,
+  });
   mocks.listWorkItems.mockResolvedValue({ workItems: [], count: 0 });
   mocks.getLocalScheduleCapacity.mockResolvedValue({
     terminal: { bridgeAvailable: false },
@@ -80,19 +91,32 @@ function setup() {
 }
 
 describe("DashboardView surfaces (#927)", () => {
-  it("keeps the primary task action first, puts the three-day board next, and focuses the task from Create", async () => {
+  it("loads every cursor page instead of treating the first 100 local issues as complete", async () => {
+    mocks.listWorkItems
+      .mockResolvedValueOnce({ workItems: [{ id: "first" }], count: 2, hasMore: true, nextCursor: "page-2" })
+      .mockResolvedValueOnce({ workItems: [{ id: "second" }], count: 2, hasMore: false, nextCursor: null });
+
+    const rows = await listAllDashboardWorkItems();
+
+    expect(rows.map((item) => item.id)).toEqual(["first", "second"]);
+    expect(mocks.listWorkItems).toHaveBeenNthCalledWith(1, { limit: "100" });
+    expect(mocks.listWorkItems).toHaveBeenNthCalledWith(2, { limit: "100", cursor: "page-2" });
+  });
+
+  it("prioritizes incomplete setup before task entry and removes the redundant journey", async () => {
     setup();
     render(<DashboardView surface="overview" />);
     expect(screen.getByText(/Prepare this computer/i)).toBeTruthy();
     expect(screen.getByText("What should your computer do?").closest(".order-1")).toBeTruthy();
-    expect((await screen.findByTestId("daily-work-board")).closest(".order-2")).toBeTruthy();
+    expect(screen.getByText(/Prepare this computer/i).closest(".order-first")).toBeTruthy();
+    expect((await screen.findByTestId("daily-work-board")).closest(".order-3")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Open Trace" })).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Inspect this project" }));
     const taskInput = screen.getByRole("textbox", { name: "Task" }) as HTMLTextAreaElement;
     expect(taskInput.value).toBe(
       "Inspect this project, explain its structure, and report risks without changing files.",
     );
-    fireEvent.click(screen.getByRole("button", { name: /1\. Create/ }));
-    expect(document.activeElement).toBe(taskInput);
+    expect(screen.queryByRole("navigation", { name: "Task journey" })).toBeNull();
     expect((screen.getByText("What to know before running").closest("details") as HTMLDetailsElement).open).toBe(false);
   });
 
@@ -189,13 +213,28 @@ describe("DashboardView surfaces (#927)", () => {
     expect(screen.getByRole("button", { name: "View progress" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "Cancel task" })).toBeTruthy();
     expect(document.querySelectorAll("[data-home-primary-action]")).toHaveLength(1);
+    fireEvent.click(screen.getByRole("button", { name: "View progress" }));
+    expect(useUiStore.getState().section).toBe("invocations");
+    expect(useUiStore.getState().invocationStatusFilter).toBe("active");
+    expect(useUiStore.getState().selectedInvocationId).toBe("run-1");
+  });
+
+  it("consumes a reused task draft into the Home composer", async () => {
+    setup();
+    useUiStore.setState({ composerDraftTask: "Repair the failing checks" });
+
+    render(<DashboardView surface="overview" />);
+
+    const taskInput = screen.getByRole("textbox", { name: "Task" }) as HTMLTextAreaElement;
+    await waitFor(() => expect(taskInput.value).toBe("Repair the failing checks"));
+    expect(useUiStore.getState().composerDraftTask).toBeNull();
   });
 
   it.each([
     { status: "waiting_for_local_approval", expected: "Handle approval" },
-    { status: "failed", expected: "Review failure" },
-    { status: "succeeded", expected: "View result" },
-  ])("shows one primary next action for $status", ({ status, expected }) => {
+    { status: "failed", expected: "Run on this computer" },
+    { status: "succeeded", expected: "Run on this computer" },
+  ])("keeps only active or approval state on Home for $status", ({ status, expected }) => {
     mocks.useConsoleState.mockReturnValue({
       data: {
         projects: [{ id: "p1", name: "Example" }],
@@ -232,6 +271,29 @@ describe("DashboardView surfaces (#927)", () => {
     render(<DashboardView surface="overview" />);
     expect(screen.getByRole("button", { name: expected })).toBeTruthy();
     expect(document.querySelectorAll("[data-home-primary-action]")).toHaveLength(1);
+  });
+
+  it("keeps terminal transcripts in Workspace and out of Home", () => {
+    mocks.useConsoleState.mockReturnValue({
+      data: {
+        projects: [{ id: "p1", name: "Example" }],
+        worktrees: [],
+        events: [],
+        invocations: [{ id: "run-1", projectId: "p1", status: "failed", createdAt: "2026-07-27T00:00:00Z", input: { task: "Check the project" } }],
+        agents: [{ id: "agent-1", name: "Local runner", status: "ready", health: { status: "healthy" } }],
+        device: { status: "online" },
+        pendingDecisions: [],
+        evidenceLedger: [],
+      },
+    });
+    mocks.useAsyncAction.mockReturnValue({ execute: vi.fn(), pending: false, error: null });
+
+    const { unmount } = render(<DashboardView surface="overview" />);
+    expect(screen.queryByText("Activity")).toBeNull();
+    unmount();
+
+    render(<DashboardView surface="workspace" />);
+    expect(screen.getByText("Activity")).toBeTruthy();
   });
 
   it("uses ordinary zh-CN terms while preserving a provider-defined assistant name", async () => {

@@ -127,3 +127,34 @@ test("marks otherwise runnable work unavailable when the current terminal bridge
   assert.equal(model.terminal.bridgeAvailable, false);
   assert.deepEqual(model.work.items[0].readiness, { state: "waiting_terminal", reason: "terminal_unavailable" });
 });
+
+test("adds unbound unfinished Auto-runs without duplicating locally bound runs", () => {
+  const model = computeLocalScheduleCapacity(state({
+    autoRuns: [
+      { id: "runtime_ready", projectId: "prj_a", terminalId: "dev_local", status: "waiting_capacity", link: { number: 41, title: "Ready issue" } },
+      { id: "runtime_failed", projectId: "prj_a", terminalId: "dev_local", status: "failed", link: { number: 42, title: "Failed issue" } },
+      { id: "bound", projectId: "prj_a", terminalId: "dev_local", status: "waiting_capacity", link: { number: 43, title: "Bound issue" } },
+    ],
+    workItems: [workItem("local-bound", { executionBindings: [{ kind: "auto_run", targetId: "bound" }] })],
+    runtimeWorkSchedules: [{
+      kind: "auto_run", targetId: "runtime_ready", ownerTeamId: "team_a", userId: "usr_a", terminalId: "dev_local",
+      plannedDate: "2026-08-01", schedulePlanSource: "auto_plan", scheduleReason: "current_terminal_capacity_plan", scheduleOrder: 3, revision: 2,
+    }],
+  }), {
+    findAgent,
+    now: () => NOW,
+    visibleAutoRun: () => true,
+    visibleRuntimeSchedule: (schedule) => schedule.userId === "usr_a",
+  });
+
+  assert.deepEqual(model.work.items.map((row) => row.workItemId), [
+    "local-bound", "autorun:runtime_ready", "autorun:runtime_failed",
+  ]);
+  const ready = model.work.items.find((row) => row.workItemId === "autorun:runtime_ready");
+  assert.equal(ready.sourceKind, "auto_run");
+  assert.equal(ready.plannedDate, "2026-08-01");
+  assert.equal(ready.revision, 2);
+  const failed = model.work.items.find((row) => row.workItemId === "autorun:runtime_failed");
+  assert.equal(failed.category, "attention");
+  assert.deepEqual(failed.readiness, { state: "attention", reason: "auto_run_failed" });
+});

@@ -150,6 +150,10 @@ export function createServerState({ defaultProjectPath, now }) {
     // Local-first planning records. These are independent of GitHub Issues and
     // may later carry one or more external bindings.
     workItems: [],
+    // Personal current-terminal placements for runtime Issue work that has no
+    // durable local Work Item binding. Preview is pure; explicit apply writes
+    // these revisioned rows so the three-day board survives restart.
+    runtimeWorkSchedules: [],
     // Durable manual batches for "run these local tasks with concurrency N".
     // Pending rows survive a server restart and are resumed by the batch sweep.
     workItemAutoRunBatches: [],

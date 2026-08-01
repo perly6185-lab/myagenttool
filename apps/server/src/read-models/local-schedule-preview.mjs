@@ -67,8 +67,11 @@ function planRevision(capacity, horizon, assumptions) {
     assumptions,
     workItems: capacity.work.items.map((item) => ({
       id: item.workItemId,
+      sourceKind: item.sourceKind ?? "work_item",
+      sourceId: item.sourceId ?? item.workItemId,
       revision: item.revision,
       status: item.status,
+      runtimeState: item.runtimeState ?? null,
       priority: item.priority,
       dueDate: item.dueDate,
       plannedDate: item.plannedDate,
@@ -147,10 +150,13 @@ export function computeLocalSchedulePreview(capacity, {
     }
     const row = {
       workItemId: item.workItemId,
+      sourceKind: item.sourceKind ?? "work_item",
+      sourceId: item.sourceId ?? item.workItemId,
       localRef: item.localRef,
       title: item.title,
       priority: item.priority,
       status: item.status,
+      runtimeState: item.runtimeState ?? null,
       estimatedMinutes: minutes,
       estimateConfidence: item.estimate.confidence,
       previousPlannedDate: item.plannedDate,

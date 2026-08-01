@@ -9,6 +9,18 @@ const POINT_MINUTES = 60;
 const DEFAULT_MINUTES = 60;
 const MIN_ESTIMATE_MINUTES = 15;
 const MAX_ESTIMATE_MINUTES = 8 * 60;
+const RUNTIME_EXECUTABLE_STATES = new Set([
+  "materializing", "running", "waiting_capacity", "verifying", "publishing", "decomposed",
+]);
+const RUNTIME_ATTENTION_REASONS = new Map([
+  ["failed", "auto_run_failed"],
+  ["blocked", "auto_run_blocked"],
+  ["needs_input", "auto_run_needs_input"],
+  ["awaiting_approval", "auto_run_awaiting_approval"],
+  ["plan_proposed", "auto_run_decision_required"],
+  ["report_posted", "auto_run_decision_required"],
+  ["pr_open", "auto_run_pr_open"],
+]);
 
 function median(values) {
   if (values.length === 0) return null;
@@ -93,6 +105,53 @@ function worktreeIdsForItem(item) {
   }))];
 }
 
+function autoRunScheduleKey(run) {
+  return `autorun:${run.id}`;
+}
+
+function autoRunTitle(run) {
+  if (run?.link?.number) return `#${run.link.number}${run.link.title ? ` ${run.link.title}` : ""}`;
+  return String(run?.name ?? run?.id ?? "Auto-run");
+}
+
+function autoRunWorktreeIds(run) {
+  return [...new Set([run?.worktreeId, run?.worktree?.id].filter(Boolean))];
+}
+
+function autoRunPriority(run) {
+  return ["p0", "p1", "p2", "p3"].includes(run?.priority) ? run.priority : "p2";
+}
+
+function autoRunPlanningStatus(run) {
+  if (RUNTIME_EXECUTABLE_STATES.has(run?.status)) {
+    return ["materializing", "running", "verifying", "publishing", "decomposed"].includes(run.status)
+      ? "in_progress"
+      : "ready";
+  }
+  if (RUNTIME_ATTENTION_REASONS.has(run?.status)) return "blocked";
+  return "backlog";
+}
+
+function autoRunCategory(run) {
+  if (RUNTIME_EXECUTABLE_STATES.has(run?.status)) return "executable";
+  if (RUNTIME_ATTENTION_REASONS.has(run?.status)) return "attention";
+  return "backlog";
+}
+
+function autoRunReadiness(run, { bridgeAvailable, availableSlots, busyWorktreeIds }) {
+  const attentionReason = RUNTIME_ATTENTION_REASONS.get(run?.status);
+  if (attentionReason) return { state: "attention", reason: attentionReason };
+  if (!RUNTIME_EXECUTABLE_STATES.has(run?.status)) {
+    return { state: "not_ready", reason: "auto_run_not_ready" };
+  }
+  if (autoRunWorktreeIds(run).some((id) => busyWorktreeIds.has(id))) {
+    return { state: "waiting_worktree", reason: "worktree_busy" };
+  }
+  if (!bridgeAvailable) return { state: "waiting_terminal", reason: "terminal_unavailable" };
+  if (availableSlots === 0) return { state: "waiting_capacity", reason: "terminal_at_capacity" };
+  return { state: "ready", reason: "dispatchable" };
+}
+
 function classifyWork(item) {
   if (["blocked", "review"].includes(item.status)
     || ["waiting_capability", "waiting_approval", "refusal"].includes(item.queueReadiness?.state)) {
@@ -126,6 +185,8 @@ export function computeLocalScheduleCapacity(state, {
   visibleInvocation = () => true,
   visibleProject = () => true,
   visibleWorkItem = () => true,
+  visibleAutoRun = () => true,
+  visibleRuntimeSchedule = () => true,
 } = {}) {
   const generatedAt = typeof now === "function" ? now() : new Date().toISOString();
   const device = state?.device ?? null;
@@ -144,14 +205,16 @@ export function computeLocalScheduleCapacity(state, {
   const busyWorktreeIds = new Set(inFlight.map((invocation) => invocation.worktreeId).filter(Boolean));
   const busyDirs = new Set(inFlight.map(invocationDirKey).filter((value) => value !== "__default__"));
 
-  const workItems = (state?.workItems ?? [])
+  const visibleLocalItems = (state?.workItems ?? []).filter(visibleWorkItem);
+  const workItems = visibleLocalItems
     .filter((item) => item.state !== "closed" && item.status !== "done" && !item.archivedAt)
     .filter((item) => !deviceId || !item.terminalId || item.terminalId === deviceId)
-    .filter(visibleWorkItem)
     .map((item) => {
       const category = classifyWork(item);
       return {
         workItemId: item.id,
+        sourceKind: "work_item",
+        sourceId: item.id,
         localRef: item.localRef ?? null,
         title: item.title ?? "",
         projectId: item.projectId ?? null,
@@ -173,6 +236,48 @@ export function computeLocalScheduleCapacity(state, {
         worktreeIds: worktreeIdsForItem(item),
       };
     });
+
+  const boundAutoRunIds = new Set(visibleLocalItems.flatMap((item) =>
+    (item.executionBindings ?? [])
+      .filter((binding) => binding.kind === "auto_run" && binding.targetId)
+      .map((binding) => binding.targetId)));
+  const runtimeSchedules = new Map((state?.runtimeWorkSchedules ?? [])
+    .filter(visibleRuntimeSchedule)
+    .map((schedule) => [`${schedule.kind}:${schedule.targetId}`, schedule]));
+  const runtimeItems = (state?.autoRuns ?? [])
+    .filter((run) => run?.id && !["done", "cancelled"].includes(run.status))
+    .filter((run) => !boundAutoRunIds.has(run.id))
+    .filter((run) => !deviceId || !run.terminalId || run.terminalId === deviceId)
+    .filter(visibleAutoRun)
+    .map((run) => {
+      const schedule = runtimeSchedules.get(`auto_run:${run.id}`) ?? null;
+      return {
+        workItemId: autoRunScheduleKey(run),
+        sourceKind: "auto_run",
+        sourceId: run.id,
+        localRef: run?.link?.number ? `#${run.link.number}` : null,
+        title: autoRunTitle(run),
+        projectId: run.projectId ?? null,
+        status: autoRunPlanningStatus(run),
+        runtimeState: run.status ?? "unknown",
+        priority: autoRunPriority(run),
+        dueDate: run?.link?.dueDate ?? run?.dueDate ?? null,
+        plannedDate: schedule?.plannedDate ?? null,
+        carriedFromDate: schedule?.carriedFromDate ?? null,
+        schedulePlanSource: schedule?.schedulePlanSource ?? null,
+        scheduleReason: schedule?.scheduleReason ?? null,
+        scheduleOrder: Number.isFinite(schedule?.scheduleOrder) ? schedule.scheduleOrder : null,
+        manuallyPinned: schedule?.schedulePlanSource === "manual",
+        revision: Number(schedule?.revision) || 0,
+        createdAt: run.createdAt ?? null,
+        updatedAt: run.updatedAt ?? run.createdAt ?? null,
+        category: autoRunCategory(run),
+        estimate: estimateWorkItem({ executionBindings: [{ kind: "auto_run", targetId: run.id }] }, state),
+        readiness: autoRunReadiness(run, { bridgeAvailable, availableSlots, busyWorktreeIds }),
+        worktreeIds: autoRunWorktreeIds(run),
+      };
+    });
+  workItems.push(...runtimeItems);
 
   const countByCategory = (category) => workItems.filter((item) => item.category === category).length;
   return {

@@ -46,9 +46,9 @@ async function mockReadyHome(page: Page, locale: "en-US" | "zh-CN") {
 }
 
 for (const fixture of [
-  { name: "desktop-en", locale: "en-US" as const, viewport: { width: 1366, height: 768 }, task: "Task", run: "Run on this computer", create: /1\. Create/, starter: "Inspect this project", details: "What to know before running" },
-  { name: "desktop-zh", locale: "zh-CN" as const, viewport: { width: 1366, height: 768 }, task: "任务", run: "在此电脑上运行", create: /1\. 描述任务/, starter: "检查项目", details: "运行前须知" },
-  { name: "mobile-zh", locale: "zh-CN" as const, viewport: { width: 390, height: 844 }, task: "任务", run: "在此电脑上运行", create: /1\. 描述任务/, starter: "检查项目", details: "运行前须知" },
+  { name: "desktop-en", locale: "en-US" as const, viewport: { width: 1366, height: 768 }, task: "Task", run: "Run on this computer", starter: "Inspect this project", details: "What to know before running" },
+  { name: "desktop-zh", locale: "zh-CN" as const, viewport: { width: 1366, height: 768 }, task: "任务", run: "在此电脑上运行", starter: "检查项目", details: "运行前须知" },
+  { name: "mobile-zh", locale: "zh-CN" as const, viewport: { width: 390, height: 844 }, task: "任务", run: "在此电脑上运行", starter: "检查项目", details: "运行前须知" },
 ]) {
   test(`keeps the ${fixture.name} Home composer and primary action above the fold`, async ({ page }, testInfo) => {
     await page.setViewportSize(fixture.viewport);
@@ -70,8 +70,8 @@ for (const fixture of [
 
     await page.screenshot({ path: testInfo.outputPath(`${fixture.name}.png`), fullPage: true });
 
-    await page.getByRole("button", { name: fixture.create }).click();
-    await expect(input).toBeFocused();
+    await expect(page.getByRole("navigation", { name: fixture.locale === "zh-CN" ? "任务流程" : "Task journey" })).toHaveCount(0);
+    await expect(page.getByText(fixture.locale === "zh-CN" ? "任务动态" : "Activity", { exact: true })).toHaveCount(0);
 
     const details = page.locator("details").filter({ hasText: fixture.details }).first();
     await expect(details).not.toHaveAttribute("open", "");
@@ -203,6 +203,7 @@ test("resumes the zh-CN guided setup on mobile after refresh", async ({ page }, 
 const HOME_ACTION_MATRIX = [
   {
     state: "idle",
+    expectedState: "idle",
     status: null,
     en: "Run on this computer",
     zh: "在此电脑上运行",
@@ -210,31 +211,35 @@ const HOME_ACTION_MATRIX = [
   },
   {
     state: "running",
+    expectedState: "running",
     status: "running",
     en: "View progress",
     zh: "查看执行进度",
-    destination: null,
+    destination: "invocations",
   },
   {
     state: "approval",
+    expectedState: "approval",
     status: "waiting_for_local_approval",
     en: "Handle approval",
     zh: "处理审批",
     destination: "approvals",
   },
   {
-    state: "failed",
+    state: "terminal-failed",
+    expectedState: "idle",
     status: "failed",
-    en: "Review failure",
-    zh: "查看失败原因",
-    destination: "invocations",
+    en: "Run on this computer",
+    zh: "在此电脑上运行",
+    destination: null,
   },
   {
-    state: "succeeded",
+    state: "terminal-succeeded",
+    expectedState: "idle",
     status: "succeeded",
-    en: "View result",
-    zh: "查看结果",
-    destination: "invocations",
+    en: "Run on this computer",
+    zh: "在此电脑上运行",
+    destination: null,
   },
 ] as const;
 
@@ -281,7 +286,7 @@ for (const locale of ["en-US", "zh-CN"] as const) {
       }, { language: locale });
       await page.goto("/?section=dashboard");
 
-      const matrix = page.locator(`[data-home-work-state="${fixture.state}"]`);
+      const matrix = page.locator(`[data-home-work-state="${fixture.expectedState}"]`);
       await expect(matrix).toBeVisible();
       const primary = matrix.locator("[data-home-primary-action]");
       await expect(primary).toHaveCount(1);
@@ -297,19 +302,20 @@ for (const locale of ["en-US", "zh-CN"] as const) {
           await expect(page.getByText(accidentalStatus, { exact: true })).toHaveCount(0);
         }
       }
-      if (fixture.state === "idle") {
+      if (fixture.expectedState === "idle") {
         await page.getByRole("textbox", { name: locale === "zh-CN" ? "任务" : "Task" }).fill("Safe synthetic task");
         await expect(primary).toBeEnabled();
+      }
+      if (fixture.state.startsWith("terminal-")) {
+        await expect(page.getByText(locale === "zh-CN" ? "任务动态" : "Activity", { exact: true })).toHaveCount(0);
+        await expect(page.getByText("Synthetic matrix task", { exact: true })).toHaveCount(0);
       }
       await page.screenshot({
         path: testInfo.outputPath(`home-${locale}-${fixture.state}.png`),
         fullPage: true,
       });
 
-      if (fixture.state === "running") {
-        await primary.click();
-        expect(await page.evaluate(() => document.activeElement?.getAttribute("tabindex"))).toBe("-1");
-      } else if (fixture.destination) {
+      if (fixture.destination) {
         await primary.click();
         await expect(page).toHaveURL(new RegExp(`section=${fixture.destination}`));
       }

@@ -427,6 +427,48 @@ test("local schedule preview applies atomically and rejects a stale plan revisio
   assert.equal(stale.body.error, "schedule_plan_stale");
 });
 
+test("unbound Auto-run issue work is planned durably and remains tenant scoped", async () => {
+  const runtime = {
+    id: "aur_schedule_team_a",
+    projectId: "projA",
+    terminalId: localTerminalId,
+    status: "waiting_capacity",
+    link: { number: 99, title: "Schedule this unfinished issue" },
+    createdAt: now(),
+    updatedAt: now(),
+  };
+  testState.autoRuns.push(runtime);
+  try {
+    const teamA = await call("/api/local-schedule/capacity", { token: "tok_a" });
+    assert.ok(teamA.body.work.items.some((item) => item.workItemId === "autorun:aur_schedule_team_a"));
+    const teamB = await call("/api/local-schedule/capacity", { token: "tok_b" });
+    assert.ok(!teamB.body.work.items.some((item) => item.workItemId === "autorun:aur_schedule_team_a"));
+
+    const preview = await call("/api/local-schedule/preview", { token: "tok_a" });
+    const placement = preview.body.days.flatMap((day) => day.items.map((item) => ({ day, item })))
+      .find(({ item }) => item.workItemId === "autorun:aur_schedule_team_a");
+    assert.ok(placement);
+    assert.equal(placement.item.sourceKind, "auto_run");
+
+    const applied = await call("/api/local-schedule/apply", {
+      token: "tok_a",
+      method: "POST",
+      body: { planRevision: preview.body.planRevision },
+    });
+    assert.equal(applied.status, 200);
+    assert.ok(applied.body.runtimeSchedules.some((row) =>
+      row.targetId === runtime.id && row.plannedDate === placement.day.date));
+
+    const publicState = await call("/api/state", { token: "tok_a" });
+    const boardRow = publicState.body.workBoard.states.waiting.items.find((item) => item.targetId === runtime.id);
+    assert.equal(boardRow.plannedDate, placement.day.date);
+    assert.equal(boardRow.schedulePlanSource, "auto_plan");
+  } finally {
+    testState.autoRuns = testState.autoRuns.filter((row) => row.id !== runtime.id);
+    testState.runtimeWorkSchedules = testState.runtimeWorkSchedules.filter((row) => row.targetId !== runtime.id);
+  }
+});
+
 test("unfinished-work rollover is idempotent and manual pins require explicit confirmation", async () => {
   const date = new Date();
   date.setDate(date.getDate() - 1);

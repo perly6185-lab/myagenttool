@@ -7,7 +7,7 @@ export async function handleWorkItemRoutes({
   createWorktree, startAutoRun, beginExecution, abortExecution, recordExecutionBinding,
   createAutoRunBatch, listAutoRunBatches,
   promoteWorktreeToBase, promoteWorktreeToPullRequest, beginDelivery, failDelivery, completeDelivery,
-  claimWorkItem, releaseWorkItemClaim,
+  claimWorkItem, releaseWorkItemClaim, assignWorkItemToSelf,
   bindGithubIssue, syncGithubIssue,
   bindExternalIssue, syncExternalIssue, listExternalProviders,
   fetchExternalIssue, pushExternalIssue,
@@ -280,13 +280,15 @@ export async function handleWorkItemRoutes({
     return false;
   }
 
-  const claimMatch = url.pathname.match(/^\/api\/work-items\/([^/]+)\/(claim|release-claim)$/);
+  const claimMatch = url.pathname.match(/^\/api\/work-items\/([^/]+)\/(claim|release-claim|assign-to-me)$/);
   if (claimMatch && req.method === "POST") {
     const workItemId = decodeURIComponent(claimMatch[1]);
     const body = await readJson(req);
     const result = claimMatch[2] === "claim"
       ? claimWorkItem({ workItemId, ...body }, actor)
-      : releaseWorkItemClaim({ workItemId, ...body }, actor);
+      : claimMatch[2] === "assign-to-me"
+        ? assignWorkItemToSelf({ workItemId, ...body }, actor)
+        : releaseWorkItemClaim({ workItemId, ...body }, actor);
     sendJson(res, result.status, result.body);
     return true;
   }

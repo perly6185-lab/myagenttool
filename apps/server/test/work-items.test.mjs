@@ -943,6 +943,25 @@ test("updates are revision-gated and validate structured fields", () => {
   assert.deepEqual(updated.body.workItem.labels, ["local"]);
 });
 
+test("assigning an unowned work item to self is revision-gated and cannot steal assigned work", () => {
+  const { service } = harness();
+  const item = service.createWorkItem({ projectId: "prj_a", title: "Available", assigneeIds: [] }, ACTOR_A).body.workItem;
+  assert.deepEqual(item.assigneeIds, []);
+  assert.equal(service.assignWorkItemToSelf({ workItemId: item.id }, ACTOR_A).body.error, "expected_revision_required");
+  assert.equal(service.assignWorkItemToSelf({ workItemId: item.id, expectedRevision: 9 }, ACTOR_A).body.error, "work_item_revision_conflict");
+
+  const assigned = service.assignWorkItemToSelf({ workItemId: item.id, expectedRevision: 1 }, ACTOR_A);
+  assert.equal(assigned.status, 200);
+  assert.deepEqual(assigned.body.workItem.assigneeIds, ["usr_a"]);
+  assert.equal(assigned.body.workItem.revision, 2);
+
+  const replayed = service.assignWorkItemToSelf({ workItemId: item.id, expectedRevision: 2 }, ACTOR_A);
+  assert.equal(replayed.status, 200);
+  assert.equal(replayed.body.replayed, true);
+  assert.equal(service.assignWorkItemToSelf({ workItemId: item.id, expectedRevision: 2 }, ACTOR_C).body.error, "work_item_already_assigned");
+  assert.equal(service.assignWorkItemToSelf({ workItemId: item.id, expectedRevision: 2 }, ACTOR_B).status, 404);
+});
+
 test("planning fields validate and bulk updates are atomic", () => {
   const { service } = harness();
   const first = service.createWorkItem({
