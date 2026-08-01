@@ -66,7 +66,6 @@ export function WorkItemTraceSummary({
     0,
   );
   return (
-    <>
     <section aria-label={t("shell.taskTrace.summary")} className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
       <div className="rounded-md border border-border p-3 text-xs">
         <span className="text-muted-foreground">{t("shell.taskTrace.route")}</span>
@@ -89,8 +88,6 @@ export function WorkItemTraceSummary({
         <p className="mt-1 font-semibold">{t("shell.taskTrace.evidenceCount", { count: evidenceCount })}</p>
       </div>
     </section>
-    <WorkItemAssetChain item={item} />
-    </>
   );
 }
 

@@ -7,24 +7,30 @@ import { cn } from "@/lib/cn";
 
 type ContextLabelKey = `shell.contextNav.${"overview" | "process" | "assets" | "verification" | "trace" | "tasks" | "worktrees" | "automation" | "settings"}`;
 
-const TASK_NAV: Array<{ label: ContextLabelKey; section: SectionKey }> = [
-  { label: "shell.contextNav.overview", section: "task" },
-  { label: "shell.contextNav.process", section: "workBoard" },
-  { label: "shell.contextNav.assets", section: "documents" },
-  { label: "shell.contextNav.verification", section: "review" },
-  { label: "shell.contextNav.trace", section: "invocations" },
+const TASK_NAV: Array<[ContextLabelKey, SectionKey]> = [
+  ["shell.contextNav.overview", "task"],
+  ["shell.contextNav.process", "workBoard"],
+  ["shell.contextNav.assets", "documents"],
+  ["shell.contextNav.verification", "review"],
+  ["shell.contextNav.trace", "invocations"],
 ];
 
-const PROJECT_NAV: Array<{ label: ContextLabelKey; section: SectionKey }> = [
-  { label: "shell.contextNav.overview", section: "projects" },
-  { label: "shell.contextNav.tasks", section: "task" },
-  { label: "shell.contextNav.assets", section: "documents" },
-  { label: "shell.contextNav.worktrees", section: "workspace" },
-  { label: "shell.contextNav.automation", section: "automation" },
-  { label: "shell.contextNav.settings", section: "projects" },
+const PROJECT_NAV: Array<[ContextLabelKey, SectionKey]> = [
+  ["shell.contextNav.overview", "projects"],
+  ["shell.contextNav.tasks", "task"],
+  ["shell.contextNav.assets", "documents"],
+  ["shell.contextNav.worktrees", "workspace"],
+  ["shell.contextNav.automation", "automation"],
+  ["shell.contextNav.settings", "projects"],
 ];
 
-export function ContextNavigation() {
+export function ContextNavigation({
+  taskViewSection,
+  onTaskViewSectionChange,
+}: {
+  taskViewSection: SectionKey;
+  onTaskViewSectionChange: (section: SectionKey) => void;
+}) {
   const { t } = useAppTranslation();
   const section = useUiStore((state) => state.section);
   const returnSection = useUiStore((state) => state.surfaceReturnSection);
@@ -54,25 +60,37 @@ export function ContextNavigation() {
     );
   }
 
-  const items = section === "task" ? TASK_NAV : section === "projects" ? PROJECT_NAV : null;
+  const taskMode = section === "task";
+  const items = taskMode ? TASK_NAV : section === "projects" ? PROJECT_NAV : null;
   if (!items) return null;
   return (
-    <nav aria-label={t(section === "task" ? "shell.contextNav.task" : "shell.contextNav.project")} className="flex min-h-10 items-center gap-1 overflow-x-auto border-b border-border px-3 sm:px-6">
-      {items.map((item, index) => (
-        <button
-          key={`${item.label}-${index}`}
-          type="button"
-          onClick={() => navigate(item.section)}
-          className={cn(
-            "whitespace-nowrap rounded px-2 py-1 text-xs",
-            item.section === section && index === 0
-              ? "bg-primary/10 font-medium text-foreground"
-              : "text-muted-foreground hover:bg-muted hover:text-foreground",
-          )}
-        >
-          {t(item.label)}
-        </button>
-      ))}
+    <nav
+      role={taskMode ? "tablist" : undefined}
+      aria-label={t(taskMode ? "shell.contextNav.task" : "shell.contextNav.project")}
+      className="flex min-h-10 items-center gap-1 overflow-x-auto border-b border-border px-3 sm:px-6"
+    >
+      {items.map(([label, target], index) => {
+        const active = taskMode ? target === taskViewSection : index === 0;
+        return (
+          <button
+            key={label}
+            type="button"
+            role={taskMode ? "tab" : undefined}
+            aria-selected={taskMode ? active : undefined}
+            onClick={() => taskMode
+              ? onTaskViewSectionChange(target)
+              : navigate(target)}
+            className={cn(
+              "whitespace-nowrap rounded px-2 py-1 text-xs",
+              active
+                ? "bg-primary/10 font-medium text-foreground"
+                : "text-muted-foreground hover:bg-muted hover:text-foreground",
+            )}
+          >
+            {t(label)}
+          </button>
+        );
+      })}
     </nav>
   );
 }

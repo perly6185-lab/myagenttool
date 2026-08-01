@@ -3789,10 +3789,10 @@ function codexChangeRisk(event) {
 }
 
 async function waitForServer() {
-  // SQLite hydration can legitimately exceed 20 seconds on a large local
-  // history. Keep the bridge patient during startup instead of taking the whole
-  // dev supervisor down while the server is still restoring durable state.
-  const maxAttempts = Math.max(80, Number(process.env.BRIDGE_SERVER_READY_ATTEMPTS ?? 240));
+  // SQLite hydration can exceed a minute on a large local history. Keep the
+  // bridge patient for up to three minutes instead of taking the whole dev
+  // supervisor down while the server is still restoring durable state.
+  const maxAttempts = Math.max(80, Number(process.env.BRIDGE_SERVER_READY_ATTEMPTS ?? 720));
   for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
     try {
       const health = await request("GET", "/health");
