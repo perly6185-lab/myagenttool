@@ -1,5 +1,5 @@
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { ContextNavigation } from "@/components/layout/context-navigation";
 import { useUiStore } from "@/store/ui-store";
 
@@ -11,18 +11,20 @@ afterEach(() => {
 describe("ContextNavigation (#1505)", () => {
   it("shows the task-owned navigation contract", () => {
     useUiStore.setState({ section: "task" });
-    render(<ContextNavigation />);
-    expect(screen.getByRole("navigation", { name: "Task sections" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Overview" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Process" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Assets" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Verification" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Trace" })).toBeTruthy();
+    const onTaskViewSectionChange = vi.fn();
+    render(<ContextNavigation taskViewSection="task" onTaskViewSectionChange={onTaskViewSectionChange} />);
+    expect(screen.getByRole("tablist", { name: "Task sections" })).toBeTruthy();
+    expect(screen.getByRole("tab", { name: "Overview" }).getAttribute("aria-selected")).toBe("true");
+
+    fireEvent.click(screen.getByRole("tab", { name: "Process" }));
+
+    expect(onTaskViewSectionChange).toHaveBeenCalledWith("workBoard");
+    expect(useUiStore.getState().section).toBe("task");
   });
 
   it("returns from Trace to the originating Entry page", () => {
     useUiStore.setState({ section: "invocations", surfaceReturnSection: "task" });
-    render(<ContextNavigation />);
+    render(<ContextNavigation taskViewSection="task" onTaskViewSectionChange={() => {}} />);
     fireEvent.click(screen.getByRole("button", { name: "Return to Tasks" }));
     expect(useUiStore.getState().section).toBe("task");
     expect(useUiStore.getState().surfaceReturnSection).toBeNull();
@@ -34,7 +36,7 @@ describe("ContextNavigation (#1505)", () => {
       surfaceReturnSection: "projects",
       selectedProjectId: "project-42",
     });
-    render(<ContextNavigation />);
+    render(<ContextNavigation taskViewSection="task" onTaskViewSectionChange={() => {}} />);
     fireEvent.click(screen.getByRole("button", { name: "Return to Projects" }));
     expect(useUiStore.getState()).toMatchObject({
       section: "projects",

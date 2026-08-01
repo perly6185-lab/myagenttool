@@ -7,6 +7,7 @@ import { Field } from "@/components/common/field";
 import { EmptyState } from "@/components/common/empty-state";
 import { SectionHeading } from "@/components/common/section-heading";
 import { cn } from "@/lib/cn";
+import { focusQueryTarget } from "@/lib/focus-query";
 import { useAppTranslation } from "@/lib/i18n/use-app-translation";
 import { useConsoleState } from "@/data/use-console-state";
 import { api } from "@/lib/api-client";
@@ -59,12 +60,28 @@ export function EvidenceView() {
   const [lens, setLens] = useState<"evidence" | "refusals">("evidence");
   const [filter, setFilter] = useState<"all" | "attention">("all");
   const [expandedId, setExpandedId] = useState<string | null>(null);
+  const [focusedRefusalId, setFocusedRefusalId] = useState<string | null>(null);
 
   const ledger = state?.evidenceLedger ?? [];
   const refusals = state?.refusals ?? [];
   const attentionCount = useMemo(() => ledger.filter((r) => r.attention).length, [ledger]);
   const rows = useMemo(() => (filter === "attention" ? ledger.filter((r) => r.attention) : ledger), [ledger, filter]);
   const agentName = (id?: string | null) => state?.agents?.find((a) => a.id === id)?.name ?? id ?? t("evidenceDetails.agent");
+
+  useEffect(() => {
+    if (!refusals.length) return;
+    const target = focusQueryTarget(window.location.href, "refusal");
+    if (!target) return;
+    const refusalId = target.id;
+    setLens("refusals");
+    setFocusedRefusalId(refusalId);
+    requestAnimationFrame(() => {
+      document.getElementById(`refusal-${refusalId}`)?.scrollIntoView({ behavior: "smooth", block: "center" });
+    });
+    window.history.replaceState(window.history.state, "", target.nextLocation);
+    const timer = window.setTimeout(() => setFocusedRefusalId(null), 4_000);
+    return () => window.clearTimeout(timer);
+  }, [refusals.length]);
 
   return (
     <div className="space-y-5">
@@ -94,7 +111,7 @@ export function EvidenceView() {
       </div>
 
       {lens === "refusals" ? (
-        <RefusalsLens refusals={refusals} />
+        <RefusalsLens refusals={refusals} focusedRefusalId={focusedRefusalId} />
       ) : (
       <>
       <div className="flex flex-wrap items-end gap-3">
@@ -141,7 +158,7 @@ export function EvidenceView() {
 // code. A refusal is a NORMAL reply — rendered calm, never red, never as an
 // incident. Every refusal shows a remedy (a refusal with no next action is a dead
 // end, and dead ends are what push operators to disable the guardrail).
-function RefusalsLens({ refusals }: { refusals: RefusalRow[] }) {
+function RefusalsLens({ refusals, focusedRefusalId }: { refusals: RefusalRow[]; focusedRefusalId: string | null }) {
   const { t } = useAppTranslation();
   // Loop promotion refusals live in tools/ai (not server state), so fetch them
   // lazily when this lens opens and merge — one lens over both sources (refusal
@@ -180,7 +197,7 @@ function RefusalsLens({ refusals }: { refusals: RefusalRow[] }) {
         <p className="text-xs text-muted-foreground/70">{t("evidence.truncated")}</p>
       ) : null}
       {groups.map((group) => (
-        <RefusalCategorySection key={group.category} group={group} />
+        <RefusalCategorySection key={group.category} group={group} focusedRefusalId={focusedRefusalId} />
       ))}
     </div>
   );
@@ -229,7 +246,7 @@ function RefusalSummaryStrip({ summary }: { summary: RefusalSummary }) {
   );
 }
 
-function RefusalCategorySection({ group }: { group: RefusalCategoryGroup }) {
+function RefusalCategorySection({ group, focusedRefusalId }: { group: RefusalCategoryGroup; focusedRefusalId: string | null }) {
   const { t } = useAppTranslation();
   return (
     <div className="space-y-2">
@@ -252,7 +269,7 @@ function RefusalCategorySection({ group }: { group: RefusalCategoryGroup }) {
               </div>
               <div className="space-y-2">
                 {codeGroup.refusals.map((refusal) => (
-                  <RefusalItem key={refusal.id} refusal={refusal} />
+                  <RefusalItem key={refusal.id} refusal={refusal} focused={focusedRefusalId === refusal.id} />
                 ))}
               </div>
             </CardContent>
@@ -263,14 +280,20 @@ function RefusalCategorySection({ group }: { group: RefusalCategoryGroup }) {
   );
 }
 
-function RefusalItem({ refusal }: { refusal: RefusalRow }) {
+function RefusalItem({ refusal, focused }: { refusal: RefusalRow; focused: boolean }) {
   const { t } = useAppTranslation();
   const [showEvidence, setShowEvidence] = useState(false);
   const appeal = readableAppealTo(refusal.appealTo);
   const age = since(refusal.at);
   const hasEvidence = refusal.evidence && Object.keys(refusal.evidence).length > 0;
   return (
-    <div className="rounded-md border border-border/70 bg-background/60 px-3 py-2.5 text-sm">
+    <div
+      id={`refusal-${refusal.id}`}
+      className={cn(
+        "scroll-mt-16 rounded-md border border-border/70 bg-background/60 px-3 py-2.5 text-sm transition-shadow",
+        focused && "ring-2 ring-primary shadow-lg",
+      )}
+    >
       <div className="flex items-start justify-between gap-3">
         <p className="min-w-0 flex-1 font-medium">{refusal.summary || readableRefusalCode(refusal.code)}</p>
         <div className="flex shrink-0 items-center gap-2">

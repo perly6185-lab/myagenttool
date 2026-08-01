@@ -627,22 +627,34 @@ describe("TaskView local work items", () => {
     mocks.startWorkItemAutoRun.mockResolvedValue({ autoRun: { id: "aur_1", worktreeId: "wtr_2" } });
     render(<TaskView />);
     fireEvent.click(await screen.findByText("Editable issue"));
+    expect(screen.getByRole("dialog", { name: "Local issue details" }).className).toContain("max-w-5xl");
+    const cockpit = (await screen.findByText("Task cockpit")).closest("section");
+    expect(cockpit?.querySelector(".grid")?.className).toContain("xl:grid-cols-4");
+    expect(screen.getByRole("tab", { name: "Overview" }).getAttribute("aria-selected")).toBe("true");
+    fireEvent.click(screen.getByRole("tab", { name: "Assets" }));
+    expect(screen.getByRole("tab", { name: "Assets" }).getAttribute("aria-selected")).toBe("true");
+    expect(cockpit?.hasAttribute("hidden")).toBe(true);
     const title = await screen.findByDisplayValue("Editable issue");
+    expect(title.closest("[hidden]")).toBeNull();
     expect(screen.getByText("Business: Open")).toBeTruthy();
     expect(screen.getByText("Planning: Backlog")).toBeTruthy();
     expect(screen.getByText("Execution: Claimed")).toBeTruthy();
     expect(screen.getByText("GitHub #42 · Conflict")).toBeTruthy();
     expect(screen.getByText("Conflicting fields: title")).toBeTruthy();
+    fireEvent.click(screen.getByRole("tab", { name: "Verification" }));
     expect(await screen.findByText("Tests pass · 321 tests")).toBeTruthy();
     expect(await screen.findByText("test · All suites")).toBeTruthy();
     expect(await screen.findByText("run: run:test-1")).toBeTruthy();
+    fireEvent.click(screen.getByRole("tab", { name: "Trace" }));
     fireEvent.click(screen.getByRole("button", { name: "Keep local" }));
     await waitFor(() => expect(mocks.syncWorkItemGithubIssue).toHaveBeenCalledWith(
       "lwi_1", { expectedRevision: 1, direction: "resolve_local" },
     ));
+    fireEvent.click(screen.getByRole("tab", { name: "Assets" }));
     expect(screen.getByText("No sub-issues")).toBeTruthy();
     expect(screen.getByLabelText("Parent issue")).toBeTruthy();
     fireEvent.change(title, { target: { value: "Edited issue" } });
+    fireEvent.click(screen.getByRole("tab", { name: "Process" }));
     fireEvent.click(screen.getByRole("button", { name: "Create worktree" }));
     expect(mocks.createWorkItemWorktree).not.toHaveBeenCalled();
     const safetyDialog = screen.getAllByRole("dialog").at(-1);
@@ -652,6 +664,7 @@ describe("TaskView local work items", () => {
       title: "Edited issue",
     })));
     await waitFor(() => expect(mocks.createWorkItemWorktree).toHaveBeenCalledWith("lwi_1"));
+    fireEvent.click(screen.getByRole("tab", { name: "Trace" }));
     fireEvent.change(screen.getByPlaceholderText("Add a comment…"), { target: { value: "Looks good" } });
     fireEvent.click(screen.getByRole("button", { name: "Comment" }));
     await waitFor(() => expect(mocks.createWorkItemComment).toHaveBeenCalledWith("lwi_1", "Looks good"));
@@ -781,6 +794,7 @@ describe("TaskView local work items", () => {
     });
     render(<TaskView />);
     fireEvent.click(await screen.findByText("Imported article"));
+    fireEvent.click(await screen.findByRole("tab", { name: "Process" }));
     expect(await screen.findByText(/server restarted during import/i)).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Retry import" }));
     await waitFor(() => expect(mocks.startArticleImport).toHaveBeenCalledWith("lwi_article", {
@@ -897,6 +911,7 @@ describe("TaskView local work items", () => {
     render(<TaskView />);
 
     fireEvent.click(await screen.findByText("Deliver approved work"));
+    fireEvent.click(await screen.findByRole("tab", { name: "Process" }));
     expect(await screen.findByText("Ready for delivery")).toBeTruthy();
     expect(screen.getByText("Approved")).toBeTruthy();
     mocks.getWorkItem.mockResolvedValue({

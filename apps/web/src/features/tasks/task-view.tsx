@@ -10,7 +10,7 @@ import { EmptyState } from "@/components/common/empty-state";
 import { ConfirmModal } from "@/components/common/confirm-modal";
 import { useConsoleState } from "@/data/use-console-state";
 import { useAsyncAction, api } from "@/data/use-console-actions";
-import { useUiStore } from "@/store/ui-store";
+import { type WorkItemSection, useUiStore } from "@/store/ui-store";
 import { cn } from "@/lib/cn";
 import { statusTone } from "@/lib/readable-labels";
 import { invocationStatus } from "@/lib/i18n/readable-labels";
@@ -48,7 +48,7 @@ import { ClaimHistoryList } from "./claim-history-list";
 import { WorktreeOptionsForm } from "./worktree-options-form";
 import { WorkItemExecutionActions } from "./work-item-execution-actions";
 import { WorkItemExternalSync } from "./work-item-external-sync";
-import { WorkItemAlertAndCostDetails, WorkItemTimeline, WorkItemTraceSummary } from "./work-item-observability";
+import { WorkItemAlertAndCostDetails, WorkItemAssetChain, WorkItemTimeline, WorkItemTraceSummary } from "./work-item-observability";
 import { WorkItemTraceLinks } from "./work-item-trace-links";
 import { workItemBatchApi } from "./work-item-batch-api";
 import type {
@@ -825,7 +825,7 @@ export function TaskView() {
       <Modal open={Boolean(selectedLocalId)} onClose={() => {
         if (selectedLocalDirty) setConfirmSelectedLocalClose(true);
         else setSelectedLocalId(null);
-      }} title={t("taskLocal.details")}>
+      }} title={t("taskLocal.details")} size="xl">
         {selectedLocalId ? (
           <LocalWorkItemDetail
             workItemId={selectedLocalId}
@@ -903,7 +903,8 @@ export function TaskView() {
 }
 
 export function PlanningProjectsPanel({ onChanged = () => {} }: { onChanged?: () => void }) {
-  const { t } = useAppTranslation();
+  const { t, i18n } = useAppTranslation();
+  const plannedDateLabel = i18n.language.startsWith("zh") ? "计划日期" : "Planned date";
   const { data: consoleState } = useConsoleState();
   const setSection = useUiStore((state) => state.setSection);
   const { execute, pending, error } = useAsyncAction();
@@ -944,7 +945,7 @@ export function PlanningProjectsPanel({ onChanged = () => {} }: { onChanged?: ()
   };
   const filters = storedFilters ?? { status: "all", priority: "all", milestone: "", due: "all" as const };
   const [selectedWorkItemIds, setSelectedWorkItemIds] = useState<string[]>([]);
-  const [bulkField, setBulkField] = useState<"status" | "priority" | "milestone" | "dueDate" | "estimatePoints" | "remove">("status");
+  const [bulkField, setBulkField] = useState<"status" | "priority" | "milestone" | "plannedDate" | "dueDate" | "estimatePoints" | "remove">("status");
   const [bulkValue, setBulkValue] = useState("ready");
   const [detailWorkItemId, setDetailWorkItemId] = useState<string | null>(null);
   const [detailDirty, setDetailDirty] = useState(false);
@@ -1252,7 +1253,7 @@ export function PlanningProjectsPanel({ onChanged = () => {} }: { onChanged?: ()
       .filter((item) => selectedWorkItemIds.includes(item.id))
       .map((item) => ({ id: item.id, expectedRevision: item.revision }));
     const changes = {
-      [bulkField]: bulkField === "dueDate" ? (bulkValue || null)
+      [bulkField]: bulkField === "dueDate" || bulkField === "plannedDate" ? (bulkValue || null)
         : bulkField === "estimatePoints" ? Number(bulkValue)
           : bulkValue,
     };
@@ -1886,6 +1887,7 @@ export function PlanningProjectsPanel({ onChanged = () => {} }: { onChanged?: ()
                     <option value="status">{t("planningBulk.status")}</option>
                     <option value="priority">{t("planningBulk.priority")}</option>
                     <option value="milestone">{t("planningBulk.milestone")}</option>
+                    <option value="plannedDate">{plannedDateLabel}</option>
                     <option value="dueDate">{t("planningBulk.dueDate")}</option>
                     <option value="estimatePoints">{t("planningBulk.estimatePoints")}</option>
                     <option value="remove">{t("planningBulk.remove")}</option>
@@ -1903,7 +1905,7 @@ export function PlanningProjectsPanel({ onChanged = () => {} }: { onChanged?: ()
                   ) : bulkField === "milestone" ? (
                     <Input value={bulkValue} aria-label={t("planningBulk.value")} onChange={(event) => setBulkValue(event.target.value)}
                       placeholder={t("planningBulk.milestone")} className="h-8 w-auto text-xs" />
-                  ) : bulkField === "dueDate" ? (
+                  ) : bulkField === "dueDate" || bulkField === "plannedDate" ? (
                     <Input type="date" value={bulkValue} aria-label={t("planningBulk.value")} onChange={(event) => setBulkValue(event.target.value)}
                       className="h-8 w-auto text-xs" />
                   ) : bulkField === "estimatePoints" ? (
@@ -1911,7 +1913,7 @@ export function PlanningProjectsPanel({ onChanged = () => {} }: { onChanged?: ()
                       onChange={(event) => setBulkValue(event.target.value)} className="h-8 w-24 text-xs" />
                   ) : null}
                   <Button size="sm" disabled={pending || selectedWorkItemIds.length === 0
-                    || (bulkField !== "remove" && bulkField !== "dueDate" && !bulkValue.trim())}
+                    || (bulkField !== "remove" && bulkField !== "dueDate" && bulkField !== "plannedDate" && !bulkValue.trim())}
                     onClick={applyBulkUpdate}>{t("planningProjects.applyBulk")}</Button>
                 </div>
                 <div className="grid max-h-96 grid-cols-2 gap-2 overflow-auto lg:grid-cols-3">
@@ -2138,7 +2140,7 @@ export function PlanningProjectsPanel({ onChanged = () => {} }: { onChanged?: ()
       <Modal open={Boolean(detailWorkItemId)} onClose={() => {
         if (detailDirty) setConfirmDetailClose(true);
         else setDetailWorkItemId(null);
-      }} title={t("taskLocal.details")}>
+      }} title={t("taskLocal.details")} size="xl">
         {detailWorkItemId ? (
           <LocalWorkItemDetail
             workItemId={detailWorkItemId}
@@ -2338,14 +2340,17 @@ function LocalWorkItemDetail({
   onChanged: () => void;
   onDirtyChange: (dirty: boolean) => void;
 }) {
-  const { t } = useAppTranslation();
+  const { t, i18n } = useAppTranslation();
+  const plannedDateLabel = i18n.language.startsWith("zh") ? "计划日期" : "Planned date";
   const { data: consoleState } = useConsoleState();
   const articleText = useArticleTaskLabels();
   const { execute, pending, error } = useAsyncAction();
   const setSection = useUiStore((state) => state.setSection);
   const setSelectedProjectId = useUiStore((state) => state.setSelectedProjectId);
   const setSelectedWorktreeId = useUiStore((state) => state.setSelectedWorktreeId);
-  const selectedWorkItemSection = useUiStore((state) => state.selectedWorkItemSection) ?? "overview";
+  const storedWorkItemSection = useUiStore((state) => state.selectedWorkItemSection) ?? "overview";
+  const storeSelectedWorkItemSection = useUiStore((state) => state.setSelectedWorkItemSection);
+  const [selectedWorkItemSection, setSelectedWorkItemSection] = useState<WorkItemSection>(storedWorkItemSection);
   const [item, setItem] = useState<LocalWorkItem | null>(null);
   const [comments, setComments] = useState<WorkItemComment[]>([]);
   const [activity, setActivity] = useState<WorkItemActivity[]>([]);
@@ -2357,6 +2362,7 @@ function LocalWorkItemDetail({
   const [priority, setPriority] = useState<LocalWorkItem["priority"]>("p2");
   const [labels, setLabels] = useState("");
   const [acceptance, setAcceptance] = useState("");
+  const [plannedDate, setPlannedDate] = useState("");
   const [dueDate, setDueDate] = useState("");
   const [milestone, setMilestone] = useState("");
   const [estimatePoints, setEstimatePoints] = useState("0");
@@ -2393,6 +2399,7 @@ function LocalWorkItemDetail({
     || priority !== item.priority
     || labels !== item.labels.join(", ")
     || acceptance !== item.acceptanceCriteria.join("\n")
+    || plannedDate !== (item.plannedDate ?? "")
     || dueDate !== (item.dueDate ?? "")
     || milestone !== (item.milestone ?? "")
     || estimatePoints !== String(item.estimatePoints ?? 0)
@@ -2407,6 +2414,7 @@ function LocalWorkItemDetail({
     setPriority(next.priority);
     setLabels(next.labels.join(", "));
     setAcceptance(next.acceptanceCriteria.join("\n"));
+    setPlannedDate(next.plannedDate ?? "");
     setDueDate(next.dueDate ?? "");
     setMilestone(next.milestone ?? "");
     setEstimatePoints(String(next.estimatePoints ?? 0));
@@ -2450,21 +2458,6 @@ function LocalWorkItemDetail({
     void load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [workItemId]);
-  useEffect(() => {
-    if (!item) return;
-    const targets = {
-      overview: "work-item-overview",
-      process: "work-item-execution",
-      assets: "work-item-details",
-      verification: "work-item-acceptance",
-      trace: "work-item-observability",
-    } as const;
-    const frame = requestAnimationFrame(() => {
-      const target = document.getElementById(`${targets[selectedWorkItemSection]}-${workItemId}`);
-      target?.scrollIntoView?.({ block: "start" });
-    });
-    return () => cancelAnimationFrame(frame);
-  }, [item, selectedWorkItemSection, workItemId]);
   useVisibleInterval(() => {
     void (api.getWorkItem(workItemId) as Promise<{ workItem: LocalWorkItem; observability: LocalWorkItemObservability }>)
       .then((detail) => {
@@ -2548,6 +2541,7 @@ function LocalWorkItemDetail({
       priority,
       labels: labels.split(",").map((value) => value.trim()).filter(Boolean),
       acceptanceCriteria: acceptance.split("\n").map((value) => value.trim()).filter(Boolean),
+      plannedDate: plannedDate || null,
       dueDate: dueDate || null,
       milestone,
       estimatePoints: Number(estimatePoints),
@@ -2876,8 +2870,15 @@ function LocalWorkItemDetail({
         ) : null}
         <span>{t("taskLocal.revision", { revision: item.revision })}</span>
       </div>
-      <WorkItemSectionNav itemId={item.id} />
-      {item.routineDefinitionId ? (
+      <WorkItemSectionNav
+        itemId={item.id}
+        activeSection={selectedWorkItemSection}
+        onSectionChange={(section) => {
+          setSelectedWorkItemSection(section);
+          storeSelectedWorkItemSection?.(section);
+        }}
+      />
+      {selectedWorkItemSection === "overview" && item.routineDefinitionId ? (
         <Suspense fallback={<p className="text-xs text-muted-foreground">{t("tasks.loading")}</p>}>
           <RoutineWorkController workItemId={item.id} onChanged={() => {
             onChanged();
@@ -2885,7 +2886,11 @@ function LocalWorkItemDetail({
           }} />
         </Suspense>
       ) : null}
-      <div className="flex items-center gap-1 overflow-x-auto rounded-md border border-border bg-muted/40 p-2 text-xs" aria-label={t("aiOps.timeline")}>
+      <div
+        hidden={selectedWorkItemSection !== "overview"}
+        className="flex items-center gap-1 overflow-x-auto rounded-md border border-border bg-muted/40 p-2 text-xs"
+        aria-label={t("aiOps.timeline")}
+      >
         {externalIssueBinding ? (
           <>
             <a href={externalIssueBinding.url ?? "#"} target={externalIssueBinding.url ? "_blank" : undefined}
@@ -2897,7 +2902,7 @@ function LocalWorkItemDetail({
           </>
         ) : null}
         <button type="button" className="whitespace-nowrap rounded bg-primary px-2 py-1 font-medium text-primary-foreground"
-          onClick={() => document.getElementById(`work-item-overview-${item.id}`)?.scrollIntoView({ behavior: "smooth" })}>
+          onClick={() => setSelectedWorkItemSection("overview")}>
           {item.localRef}
         </button>
         {(item.executionBindings ?? []).map((binding) => (
@@ -2922,7 +2927,13 @@ function LocalWorkItemDetail({
           </>
         ) : null}
       </div>
-      <section id={`work-item-overview-${item.id}`} className="scroll-mt-12 rounded-md border border-border p-3">
+      <section
+        id={`work-item-overview-${item.id}`}
+        role="tabpanel"
+        aria-labelledby={`work-item-tab-overview-${item.id}`}
+        hidden={selectedWorkItemSection !== "overview"}
+        className="rounded-md border border-border p-3"
+      >
         <div className="mb-2 flex items-center justify-between gap-2">
           <div>
             <h3 className="text-sm font-semibold">{t("taskCockpit.title")}</h3>
@@ -2943,7 +2954,7 @@ function LocalWorkItemDetail({
                   : t("taskCockpit.healthy")}
           </Badge>
         </div>
-        <div className="grid grid-cols-2 gap-2 text-xs sm:grid-cols-3 lg:grid-cols-6">
+        <div className="grid grid-cols-2 gap-2 text-xs sm:grid-cols-3 xl:grid-cols-4">
           <div className="rounded bg-muted p-2">
             <span className="block text-muted-foreground">{t("taskCockpit.stage")}</span>
             <strong>{item.executionState
@@ -2967,8 +2978,8 @@ function LocalWorkItemDetail({
             {latestActivity?.message ? <span className="mt-1 block truncate text-[10px] text-muted-foreground" title={latestActivity.message}>{latestActivity.message}</span> : null}
           </div>
           <div className="rounded bg-muted p-2">
-            <span className="block text-muted-foreground">{t("taskCockpit.deadline")}</span>
-            <strong>{item.dueDate || "—"}</strong>
+            <span className="block text-muted-foreground">{plannedDateLabel}</span>
+            <strong>{item.plannedDate || "—"}</strong>
           </div>
           <div className="rounded bg-muted p-2">
             <span className="block text-muted-foreground">{t("taskCockpit.cost")}</span>
@@ -2987,7 +2998,7 @@ function LocalWorkItemDetail({
           </div>
         </div>
       </section>
-      <div id={`work-item-observability-${item.id}`} className="scroll-mt-12">
+      <div hidden={selectedWorkItemSection !== "trace"}>
       <WorkItemAlertAndCostDetails
         observability={observability}
         pending={pending}
@@ -2996,8 +3007,8 @@ function LocalWorkItemDetail({
         }}
       />
       </div>
-      {boundRun?.decision ? (
-        <section id={`work-item-execution-${item.id}`} className="scroll-mt-12 space-y-2 rounded-md border border-border p-3 text-xs">
+      {selectedWorkItemSection === "process" && boundRun?.decision ? (
+        <section className="space-y-2 rounded-md border border-border p-3 text-xs">
           <div className="flex flex-wrap items-center gap-2">
             <h3 className="text-sm font-semibold">{t("taskCockpit.routingTitle")}</h3>
             <Badge tone={boundRun.decision.confidence < 0.6 ? "warning" : "success"}>{boundRun.decision.path}</Badge>
@@ -3064,20 +3075,37 @@ function LocalWorkItemDetail({
           </div>
         </section>
       ) : null}
-      <WorkItemTraceLinks item={item} observability={observability} />
-      <WorkItemTraceSummary item={item} observability={observability} />
-      <WorkItemTimeline observability={observability} expanded={selectedWorkItemSection === "trace"} />
-      <WorkItemExternalSync
-        itemId={item.id}
-        binding={externalIssueBinding}
-        providerLabel={externalProviderLabel}
-        pending={pending}
-        onSync={syncExternal}
-      />
-      <details id={`work-item-details-${item.id}`} className="scroll-mt-12 rounded-md border border-border p-3">
+      <div
+        id={`work-item-trace-${item.id}`}
+        role="tabpanel"
+        aria-labelledby={`work-item-tab-trace-${item.id}`}
+        hidden={selectedWorkItemSection !== "trace"}
+        className="space-y-4"
+      >
+        <WorkItemTraceLinks item={item} observability={observability} />
+        <WorkItemTraceSummary item={item} observability={observability} />
+        <WorkItemTimeline observability={observability} expanded={selectedWorkItemSection === "trace"} />
+        <WorkItemExternalSync
+          itemId={item.id}
+          binding={externalIssueBinding}
+          providerLabel={externalProviderLabel}
+          pending={pending}
+          onSync={syncExternal}
+        />
+      </div>
+      <div
+        id={`work-item-assets-${item.id}`}
+        role="tabpanel"
+        aria-labelledby={`work-item-tab-assets-${item.id}`}
+        hidden={selectedWorkItemSection !== "assets"}
+        className="space-y-4"
+      >
+      <WorkItemAssetChain item={item} />
+      <details className="rounded-md border border-border p-3">
         <summary className="cursor-pointer text-sm font-semibold">{t("taskCockpit.details")}</summary>
         <div className="mt-3 space-y-4">
-      <div className="grid gap-3 sm:grid-cols-3">
+      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+        <Field label={plannedDateLabel}><Input type="date" value={plannedDate} onChange={(event) => setPlannedDate(event.target.value)} /></Field>
         <Field label={t("taskLocal.dueDate")}><Input type="date" value={dueDate} onChange={(event) => setDueDate(event.target.value)} /></Field>
         <Field label={t("taskLocal.milestone")}><Input value={milestone} onChange={(event) => setMilestone(event.target.value)} /></Field>
         <Field label={t("planningInsights.estimatePoints")}><Input type="number" min="0" max="1000" value={estimatePoints} onChange={(event) => setEstimatePoints(event.target.value)} /></Field>
@@ -3164,7 +3192,13 @@ function LocalWorkItemDetail({
       </Field>
         </div>
       </details>
-      <div id={`work-item-acceptance-${item.id}`} className="scroll-mt-12">
+      </div>
+      <div
+        id={`work-item-acceptance-${item.id}`}
+        role="tabpanel"
+        aria-labelledby={`work-item-tab-verification-${item.id}`}
+        hidden={selectedWorkItemSection !== "verification"}
+      >
         <Suspense fallback={null}><WorkItemAcceptanceSection item={item} /></Suspense>
       </div>
       <div aria-live="polite" aria-atomic="true">
@@ -3172,7 +3206,12 @@ function LocalWorkItemDetail({
         {notice ? <p className="text-xs text-success">{notice}</p> : null}
       </div>
       {item.routineDefinitionId ? (
-        <div className="sticky bottom-0 z-10 flex flex-wrap justify-end gap-2 border-t border-border bg-background/95 py-2 backdrop-blur">
+        <div
+          role="tabpanel"
+          aria-labelledby={`work-item-tab-process-${item.id}`}
+          hidden={selectedWorkItemSection !== "process"}
+          className="sticky bottom-0 z-10 flex flex-wrap justify-end gap-2 border-t border-border bg-background/95 py-2 backdrop-blur"
+        >
           <Button variant="secondary" disabled={pending}
             onClick={() => transition(item.state === "open" ? "close" : "reopen")}>
             {t(item.state === "open" ? "taskLocal.close" : "taskLocal.reopen")}
@@ -3182,7 +3221,12 @@ function LocalWorkItemDetail({
           </Button>
         </div>
       ) : (
-        <>
+        <div
+          role="tabpanel"
+          aria-labelledby={`work-item-tab-process-${item.id}`}
+          hidden={selectedWorkItemSection !== "process"}
+          className="space-y-4"
+        >
           {!activeAutoRunId ? (
             <section className="rounded-md border border-border bg-muted/20 p-3 text-xs">
               <label className="grid gap-1 sm:max-w-sm">
@@ -3226,10 +3270,10 @@ function LocalWorkItemDetail({
             onTransition={() => transition(item.state === "open" ? "close" : "reopen")}
             onSave={() => save()}
           />
-        </>
+        </div>
       )}
       {!item.routineDefinitionId && autoRunReadiness?.ready === false ? (
-        <div className="rounded-md border border-destructive/40 bg-destructive/5 p-3 text-xs" role="alert">
+        <div hidden={selectedWorkItemSection !== "process"} className="rounded-md border border-destructive/40 bg-destructive/5 p-3 text-xs" role="alert">
           <strong className="block text-destructive">{t("taskReadiness.blocked")}</strong>
           <ul className="mt-1 list-disc space-y-1 pl-4 text-muted-foreground">
             {autoRunReadiness.checks.filter((check) => check.status === "blocked").map((check) => (
@@ -3239,7 +3283,7 @@ function LocalWorkItemDetail({
         </div>
       ) : null}
       {observability?.delivery ? (
-        <section className="rounded-md border border-amber-500/40 bg-amber-500/5 p-3">
+        <section hidden={selectedWorkItemSection !== "process"} className="rounded-md border border-amber-500/40 bg-amber-500/5 p-3">
           <div className="flex flex-wrap items-start justify-between gap-2">
             <div>
               <h3 className="text-sm font-semibold">{t("taskDelivery.title")}</h3>
@@ -3269,7 +3313,7 @@ function LocalWorkItemDetail({
         </section>
       ) : null}
       {(item.executionBindings?.length ?? 0) > 0 ? (
-        <div className="rounded-md border border-border p-2">
+        <div hidden={selectedWorkItemSection !== "process"} className="rounded-md border border-border p-2">
           <p className="mb-1 text-xs font-medium text-muted-foreground">{t("taskLocal.executions")}</p>
           <ul className="space-y-1">
             {item.executionBindings?.map((binding) => {
@@ -3379,7 +3423,7 @@ function LocalWorkItemDetail({
         </div>
       ) : null}
 
-      <section id={`work-item-collaboration-${item.id}`} className="scroll-mt-12 space-y-2 border-t border-border pt-4">
+      <section hidden={selectedWorkItemSection !== "trace"} className="space-y-2 border-t border-border pt-4">
         <h3 className="text-sm font-semibold">{t("taskLocal.comments")}</h3>
         <div className="flex gap-2">
           <Input value={comment} onChange={(event) => setComment(event.target.value)} placeholder={t("taskLocal.commentPlaceholder")} />
@@ -3411,7 +3455,7 @@ function LocalWorkItemDetail({
         </div>
       </section>
 
-      <section className="space-y-2 border-t border-border pt-4">
+      <section hidden={selectedWorkItemSection !== "trace"} className="space-y-2 border-t border-border pt-4">
         <h3 className="text-sm font-semibold">{t("taskLocal.activity")}</h3>
         <ul className="space-y-1">
           {activity.map((row) => (

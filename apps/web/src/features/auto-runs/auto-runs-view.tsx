@@ -27,6 +27,7 @@ import { EventTimeline } from "@/features/invocations/event-timeline";
 import { RunTranscriptSection, isTerminalRunStatus } from "@/features/invocations/run-transcript";
 import type { InvocationEventSnapshot, DeploymentSnapshot } from "@/lib/console-state";
 import { useVisibleInterval } from "@/hooks/use-visible-interval";
+import { focusQueryTarget } from "@/lib/focus-query";
 import { InvocationDispatchHealth } from "@/features/devices/invocation-dispatch-health";
 import { autoRunApi } from "./auto-run-api";
 
@@ -1023,15 +1024,15 @@ export function AutoRunsView() {
 
   useEffect(() => {
     if (!runs.length) return;
-    const autoRunId = new URLSearchParams(window.location.search).get("autoRun");
-    if (!autoRunId) return;
+    const target = focusQueryTarget(window.location.href, "autoRun");
+    if (!target) return;
+    const autoRunId = target.id;
+    setViewMode("list");
     setFocusedRunId(autoRunId);
     requestAnimationFrame(() => {
       document.getElementById(`auto-run-${autoRunId}`)?.scrollIntoView({ behavior: "smooth", block: "center" });
     });
-    const url = new URL(window.location.href);
-    url.searchParams.delete("autoRun");
-    window.history.replaceState(window.history.state, "", `${url.pathname}${url.search}${url.hash}`);
+    window.history.replaceState(window.history.state, "", target.nextLocation);
     const timer = window.setTimeout(() => setFocusedRunId(null), 4_000);
     return () => window.clearTimeout(timer);
   }, [runs]);
