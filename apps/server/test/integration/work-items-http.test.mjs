@@ -113,6 +113,9 @@ test("local work item CRUD is wired through the real HTTP server", async () => {
   assert.deepEqual(created.body.workItem.assigneeIds, ["usr_a"]);
   assert.equal(created.body.workItem.plannedDate, "2026-07-31");
   assert.equal(created.body.workItem.completedAt, null);
+  assert.equal(created.body.workItem.requesterRelation, "unknown");
+  assert.equal(created.body.workItem.intakeChannel, "unknown");
+  assert.equal(created.body.workItem.waitingOn, "none");
 
   const updated = await call(`/api/work-items/${created.body.workItem.id}`, {
     method: "PATCH",
@@ -137,6 +140,61 @@ test("local work item CRUD is wired through the real HTTP server", async () => {
     body: { expectedRevision: 3, status: "ready" },
   });
   assert.equal(reopened.body.workItem.completedAt, null);
+});
+
+test("structured requester and follow-up context is validated and audited through HTTP", async () => {
+  const created = await call("/api/work-items", {
+    method: "POST",
+    body: {
+      projectId: "prj_a",
+      title: "Customer follow-up",
+      requesterRelation: "customer",
+      requesterName: "张总",
+      requesterOrganization: "远山科技",
+      intakeChannel: "meeting",
+      waitingOn: "me",
+      commitmentDate: "2099-08-07T17:00:00+08:00",
+      nextFollowUpAt: "2099-08-05T10:00:00+08:00",
+    },
+  });
+  assert.equal(created.status, 201);
+  assert.equal(created.body.workItem.requesterRelation, "customer");
+  assert.equal(created.body.workItem.commitmentDate, "2099-08-07T09:00:00.000Z");
+
+  const updated = await call(`/api/work-items/${created.body.workItem.id}`, {
+    method: "PATCH",
+    body: {
+      expectedRevision: created.body.workItem.revision,
+      requesterRelation: "self",
+      intakeChannel: "manual",
+      waitingOn: "me",
+      nextFollowUpAt: null,
+    },
+  });
+  assert.equal(updated.status, 200);
+  assert.equal(updated.body.workItem.requesterUserId, "usr_a");
+  assert.equal(updated.body.workItem.requesterName, null);
+  assert.equal(updated.body.workItem.requesterOrganization, null);
+
+  const activity = await call(`/api/work-items/${created.body.workItem.id}/activity`);
+  assert.equal(activity.status, 200);
+  assert.equal(activity.body.activities[0].details.followUpContextChanged, true);
+  assert.deepEqual(activity.body.activities[0].details.changes.requesterRelation, {
+    from: "customer",
+    to: "self",
+  });
+
+  const foreignRequester = await call("/api/work-items", {
+    method: "POST",
+    body: {
+      projectId: "prj_a",
+      title: "Foreign manager",
+      requesterRelation: "manager",
+      requesterUserId: "usr_b",
+    },
+  });
+  assert.equal(foreignRequester.status, 400);
+  assert.equal(foreignRequester.body.error, "invalid_work_item_requester_user");
 });
 
 test("local work item claim lease is wired through HTTP", async () => {

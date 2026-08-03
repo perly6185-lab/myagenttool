@@ -68,11 +68,13 @@ type IntakeChannel =
   | "phone"
   | "github"
   | "import"
-  | "other";
+  | "other"
+  | "unknown";
 
 type WaitingOn = "me" | "requester" | "internal" | "ai" | "none";
 
 type WorkItemFollowUp = {
+  followUpSchemaVersion: 1;
   requesterRelation: RequesterRelation;
   requesterName: string | null;
   requesterOrganization: string | null;
@@ -91,10 +93,12 @@ type WorkItemFollowUp = {
 
 - `requesterUserId` 只能引用同一租户内可见用户；外部客户使用姓名和组织，不伪造内部用户。
 - 历史任务迁移为 `unknown`，不能默认标记为 `self`。
+- 历史任务的进入渠道同样迁移为 `unknown`，不能猜测为手工创建。
 - 新建手工任务可以预选“自己”，但该字段必须在表单中可见并可编辑。
 - 提出者姓名、组织和外部引用进入现有活动审计，并遵守租户隔离。
 - 现有创建表单的 `sourceMode` 表示文章内容来源，不复用为 `intakeChannel`。
 - 关系人字段不自动注入 Agent 提示词；只有任务执行确实需要时才按策略传入。
+- `lastProgressAt` 和 `lastProgressSummary` 是服务端所有字段；PR 1 只建立兼容契约，后续“记录进展”端点通过追加活动记录更新，通用创建/编辑请求不能伪造历史。
 
 ## 5. 状态模型
 

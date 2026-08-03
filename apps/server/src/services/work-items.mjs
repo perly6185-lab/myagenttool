@@ -6,7 +6,7 @@
 
 import { createHash } from "node:crypto";
 import { normalizeLocalIssueRoutineBinding } from "@myagenttool/protocol/business-routine";
-import { actorCanAccessProject, LOCAL_TEAM_ID, LOCAL_USER_ID } from "../runtime/auth.mjs";
+import { actorCanAccessProject, findUser, LOCAL_TEAM_ID, LOCAL_USER_ID } from "../runtime/auth.mjs";
 import { listDevices } from "../runtime/device.mjs";
 import { backfillTerminalOwnership } from "../runtime/terminal-ownership.mjs";
 import { makeRunTx } from "../runtime/store/run-tx.mjs";
@@ -15,6 +15,12 @@ import { externalIssueProviderReadiness } from "./external-issue-provider.mjs";
 import { ASSET_CAPABILITY_VERBS, evaluateAssetRequirements } from "./asset-capabilities.mjs";
 import { createApplicationExecutionContract } from "./application-execution-contract.mjs";
 import { routineIdempotencyKeys } from "./business-routines.mjs";
+import {
+  WORK_ITEM_FOLLOW_UP_MUTABLE_FIELDS,
+  WORK_ITEM_FOLLOW_UP_SERVER_FIELDS,
+  normalizeWorkItemFollowUpInput,
+  workItemFollowUpContextView,
+} from "./work-item-follow-up.mjs";
 
 const TYPES = new Set(["task", "bug", "feature", "initiative"]);
 const STATUSES = new Set(["backlog", "ready", "in_progress", "review", "blocked", "done"]);
@@ -101,6 +107,9 @@ function validDateOnly(value) {
 
 function validateDraft(input, { partial = false } = {}) {
   const value = {};
+  if (WORK_ITEM_FOLLOW_UP_SERVER_FIELDS.some((field) => Object.hasOwn(input, field))) {
+    return { error: "work_item_follow_up_server_fields_immutable" };
+  }
   if (!partial || Object.hasOwn(input, "title")) {
     const title = String(input.title ?? "").trim();
     if (!title || title.length > MAX_TITLE) return { error: "invalid_work_item_title" };
@@ -175,6 +184,9 @@ function validateDraft(input, { partial = false } = {}) {
     if (!assets) return { error: "invalid_work_item_output_assets" };
     value.outputAssets = assets;
   }
+  const followUp = normalizeWorkItemFollowUpInput(input, { partial });
+  if (followUp.error) return followUp;
+  Object.assign(value, followUp.value);
   const hasRoutineBinding = Object.hasOwn(input, "routineBinding")
     || ROUTINE_BINDING_FIELDS.some((field) => Object.hasOwn(input, field));
   if (hasRoutineBinding) {
@@ -337,6 +349,53 @@ export function createWorkItemService({
     return item && item.ownerTeamId === actorTeam(actor) ? item : null;
   }
 
+  function resolveFollowUpContext(context, actor, { input = {} } = {}) {
+    const value = workItemFollowUpContextView(context);
+    const relation = value.requesterRelation;
+    const explicitRequesterUserId = Object.hasOwn(input, "requesterUserId");
+    const explicitIdentity = ["requesterName", "requesterOrganization", "requesterUserId"]
+      .some((field) => Object.hasOwn(input, field) && input[field] != null && input[field] !== "");
+
+    if (relation === "self") {
+      if (explicitRequesterUserId && value.requesterUserId && value.requesterUserId !== actorUser(actor)) {
+        return { error: "work_item_self_requester_mismatch" };
+      }
+      value.requesterUserId = actorUser(actor);
+      value.requesterName = null;
+      value.requesterOrganization = null;
+    } else if (relation === "unknown") {
+      if (explicitIdentity) return { error: "work_item_unknown_requester_identity_forbidden" };
+      value.requesterUserId = null;
+      value.requesterName = null;
+      value.requesterOrganization = null;
+    } else if (relation === "customer") {
+      if (!value.requesterName) return { error: "work_item_customer_requester_name_required" };
+      if (explicitRequesterUserId && value.requesterUserId) {
+        return { error: "work_item_customer_internal_requester_forbidden" };
+      }
+      value.requesterUserId = null;
+    } else {
+      if (!value.requesterUserId && !value.requesterName) {
+        return { error: "work_item_internal_requester_identity_required" };
+      }
+      if (value.requesterUserId) {
+        const requester = findUser(state, value.requesterUserId);
+        if (!requester || (requester.teamId ?? LOCAL_TEAM_ID) !== actorTeam(actor)) {
+          return { error: "invalid_work_item_requester_user" };
+        }
+      }
+    }
+
+    if (value.waitingOn === "requester" && ["self", "unknown"].includes(relation)) {
+      return { error: "work_item_waiting_on_requester_requires_requester" };
+    }
+    if (Object.hasOwn(input, "nextFollowUpAt") && value.nextFollowUpAt
+      && Date.parse(value.nextFollowUpAt) <= Date.parse(now())) {
+      return { error: "work_item_next_follow_up_at_in_past" };
+    }
+    return { value };
+  }
+
   function applyPlanningAutomation(item, actor) {
     const matchingProjects = (state.planningProjects ?? []).filter((project) =>
       project.ownerTeamId === actorTeam(actor) && !project.archivedAt
@@ -435,6 +494,7 @@ export function createWorkItemService({
     ).length;
     return {
       ...publicItem,
+      ...workItemFollowUpContextView(item),
       assetReadiness: evaluateAssetRequirements(
         item.inputAssets ?? [],
         item.requiredCapabilities ?? [],
@@ -1620,6 +1680,9 @@ export function createWorkItemService({
     }
     const validated = validateDraft(input);
     if (validated.error) return { ok: false, status: 400, body: { error: validated.error } };
+    const followUp = resolveFollowUpContext(validated.value, actor, { input });
+    if (followUp.error) return { ok: false, status: 400, body: { error: followUp.error } };
+    Object.assign(validated.value, followUp.value);
     if (!Object.hasOwn(input, "assigneeIds")) validated.value.assigneeIds = [actorUser(actor)];
     if (!idempotencyKey && validated.value.routineDefinitionId) {
       idempotencyKey = routineIdempotencyKeys({
@@ -1711,6 +1774,7 @@ export function createWorkItemService({
       (state.workItems ??= []).unshift(workItem);
       recordActivity(workItem, actor, "created", {
         title: workItem.title, type: workItem.type, status: workItem.status, priority: workItem.priority,
+        followUpContext: workItemFollowUpContextView(workItem),
         ...(workItem.routineDefinitionId ? {
           routineDefinitionId: workItem.routineDefinitionId,
           routineVersion: workItem.routineVersion,
@@ -1767,6 +1831,17 @@ export function createWorkItemService({
     }
     const validated = validateDraft(changes, { partial: true });
     if (validated.error) return { ok: false, status: 400, body: { error: validated.error } };
+    const followUpContextChanged = WORK_ITEM_FOLLOW_UP_MUTABLE_FIELDS.some((field) => Object.hasOwn(changes, field));
+    if (followUpContextChanged) {
+      const followUp = resolveFollowUpContext({
+        ...workItemFollowUpContextView(item),
+        ...validated.value,
+      }, actor, { input: changes });
+      if (followUp.error) return { ok: false, status: 400, body: { error: followUp.error } };
+      for (const [field, value] of Object.entries(followUp.value)) {
+        if (!Object.is(item[field], value)) validated.value[field] = value;
+      }
+    }
     const nextInputAssets = validated.value.inputAssets ?? item.inputAssets ?? [];
     const nextOutputAssets = validated.value.outputAssets ?? item.outputAssets ?? [];
     if ([...nextInputAssets, ...nextOutputAssets].some((asset) => asset.terminalId !== item.terminalId)) {
@@ -1852,6 +1927,7 @@ export function createWorkItemService({
         changes: Object.fromEntries(Object.entries(nextValues).map(([key, value]) => [
           key, { from: previous[key], to: value },
         ])),
+        ...(followUpContextChanged ? { followUpContextChanged: true } : {}),
       });
       applyPlanningAutomation(item, actor);
       appendEvent({
