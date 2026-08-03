@@ -65,3 +65,16 @@ hard gate.
 - Runtime code is `.mjs` (Node, no build step); `.ts` files are type contracts and the React web app.
 - Commit style: Conventional Commits with a scope, e.g. `fix(bridge): …`, `docs: …`.
 - Never bypass a failing required check or a local approval gate — autonomy never crosses an approval gate.
+
+## Web bundle budgets
+
+Run `pnpm --filter @myagenttool/web build && pnpm check:web-bundle` after changing
+the Web import graph. Initial JavaScript below 780 kB passes quietly; 780 kB
+through 800 kB remains successful but emits an actionable local warning and a
+GitHub Actions annotation/job-summary entry; above 800 kB fails. The existing
+per-entry hard budgets printed by the command remain independently enforced.
+
+Route-only resources and heavy feature modules must stay behind lazy `import()`
+boundaries. Avoid adding a static import from the initial app graph merely to
+reuse a route-local helper; move the helper to a small shared module or keep the
+consumer lazy so unrelated users do not pay its startup cost.
