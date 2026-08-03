@@ -309,29 +309,39 @@ export async function handleInvocationRoutes({
     }
     const agent = body.agentId ? findAgent(body.agentId) : defaultAgent();
     if (!agent) {
-      sendJson(res, 404, { error: "agent_not_found" });
+      sendJson(res, 404, { error: "agent_not_found", message: "The selected Agent is no longer available." });
       return true;
     }
     if (agent.status === "disabled") {
-      sendJson(res, 409, { error: "agent_disabled" });
+      sendJson(res, 409, { error: "agent_disabled", message: "The selected Agent is disabled." });
       return true;
     }
     if (agent.health?.status === "unhealthy") {
       sendJson(res, 409, {
         error: "agent_unhealthy",
-        message: agent.health.message,
+        message: agent.health.message || "The selected Agent is unhealthy.",
       });
       return true;
     }
     if (agent.location.type === "local_device" && state.device.unlinkState !== "linked") {
-      sendJson(res, 409, { error: "device_unlinked" });
+      sendJson(res, 409, { error: "device_unlinked", message: "The local device is unlinked." });
       return true;
     }
     // Idempotency key: accept the standard `Idempotency-Key` header or a body
     // field so a retried create returns the same run instead of a duplicate.
     const invocationOptions = invocationOptionsFromBody(body);
-    if (invocationOptions.model && !agentAdapterSupportsModel(agent.adapter, invocationOptions.model)) {
-      sendJson(res, 400, { error: "model_not_supported" });
+    const rawOptions = body.options && typeof body.options === "object" && !Array.isArray(body.options)
+      ? body.options
+      : {};
+    const hasRequestedModel = rawOptions.model != null && String(rawOptions.model).trim() !== "";
+    // `invocationOptionsFromBody` deliberately strips unsafe model ids. Treat an
+    // explicitly supplied but stripped value as a refusal instead of silently
+    // falling back to the Agent default and running a different snapshot.
+    if (hasRequestedModel && (!invocationOptions.model || !agentAdapterSupportsModel(agent.adapter, invocationOptions.model))) {
+      sendJson(res, 400, {
+        error: "model_not_supported",
+        message: "The selected model is not supported by this Agent.",
+      });
       return true;
     }
     if (denyForeignInvocationScope({ res, sendJson, state, actor, metadata: invocationOptions.metadata })) {
