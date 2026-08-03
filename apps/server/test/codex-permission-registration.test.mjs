@@ -42,3 +42,23 @@ test("legacy Codex sandbox registrations migrate to the nearest permission mode"
   assert.equal(legacyWorkspace.adapter.permissionMode, "ask");
   assert.equal(legacyFull.adapter.permissionMode, "full");
 });
+
+test("coding-agent registration sanitizes the model catalog and constrains its default", () => {
+  const agents = service();
+  const registered = agents.registerAgent({
+    type: "cli",
+    command: "codex",
+    models: ["custom/model", "custom/model", "bad value"],
+    defaultModel: "custom/model",
+  });
+  const invalidDefault = service().registerAgent({
+    type: "cli",
+    command: "codex",
+    models: ["custom/model"],
+    defaultModel: "other/model",
+  });
+
+  assert.deepEqual(registered.adapter.models, ["custom/model"]);
+  assert.equal(registered.adapter.defaultModel, "custom/model");
+  assert.equal(invalidDefault.adapter.defaultModel, null);
+});

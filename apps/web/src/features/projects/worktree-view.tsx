@@ -1,10 +1,10 @@
-import { useEffect, useRef, useState, type ComponentType } from "react";
-import { ChevronDown, ChevronLeft, ChevronRight, File, FileText, Folder, GitBranch, GitCompare, Images, ListChecks, MessageSquare, Paperclip, X } from "lucide-react";
+import { useEffect, useMemo, useRef, useState, type ComponentType } from "react";
+import { ChevronDown, ChevronLeft, ChevronRight, File, FileText, Folder, GitBranch, GitCompare, Images, ListChecks, MessageSquare, X } from "lucide-react";
 import {
-  codexPermissionModeFromLegacySandbox,
   normalizeCodexPermissionMode,
   type CodexPermissionMode,
 } from "@myagenttool/protocol/codex-permissions";
+import { defaultModelForAgentAdapter, modelIdsForAgentAdapter } from "@myagenttool/protocol/agent-models";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -13,6 +13,9 @@ import { Field } from "@/components/common/field";
 import { Modal } from "@/components/ui/modal";
 import { EmptyState } from "@/components/common/empty-state";
 import { DecisionAction } from "@/features/invocations/decision-action";
+import { AgentRunComposer } from "@/features/invocations/agent-run-composer";
+import { permissionModeForAgent } from "@/features/invocations/agent-permission";
+import { WorktreeAttachmentPicker, type StagedWorktreeAttachment } from "@/features/invocations/worktree-attachment-picker";
 import { InvocationEventHistory } from "@/features/invocations/invocation-event-history";
 import { InvocationRefusalHistory } from "@/features/invocations/invocation-refusal-history";
 import { WorktreeLinkPopover } from "@/features/projects/worktree-link-popover";
@@ -95,13 +98,14 @@ export function WorktreeView({ worktree }: { worktree: WorktreeSnapshot }) {
   const previousDefaultTask = useRef(defaultTask);
   const runInFlightRef = useRef(false);
   const runIdempotencyKeyRef = useRef<string | null>(null);
+  const attachmentWorktreeRef = useRef(worktree.id);
   const [task, setTask] = useState<string>(defaultTask);
   const [agentId, setAgentId] = useState(worktree.agentId ?? agents[0]?.id ?? "");
   const [permissionLevel, setPermissionLevel] = useState<CodexPermissionMode>(() => permissionModeForAgent(agents.find((agent) => agent.id === (worktree.agentId ?? agents[0]?.id))));
+  const [selectedModel, setSelectedModel] = useState("");
   // Pasted/picked files to save into the worktree before the run (so the agent
   // can read them). Held as base64 until the run uploads them.
-  const [attachments, setAttachments] = useState<{ name: string; dataBase64: string; size: number; type: string }[]>([]);
-  const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const [attachments, setAttachments] = useState<StagedWorktreeAttachment[]>([]);
   const [tree, setTree] = useState<TreeNode[]>([]);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [loadingDirs, setLoadingDirs] = useState<Set<string>>(new Set());
@@ -146,7 +150,7 @@ export function WorktreeView({ worktree }: { worktree: WorktreeSnapshot }) {
   }, [defaultTask]);
   useEffect(() => {
     runIdempotencyKeyRef.current = null;
-  }, [agentId, permissionLevel, worktree.id]);
+  }, [agentId, permissionLevel, selectedModel, worktree.id]);
 
   function updateTabs(fn: (t: { openFiles: { path: string; name: string }[]; activeTab: string }) => { openFiles: { path: string; name: string }[]; activeTab: string }) {
     setTabsByWt((prev) => ({ ...prev, [worktree.id]: fn(prev[worktree.id] ?? { openFiles: [], activeTab: "session" }) }));
@@ -245,6 +249,7 @@ export function WorktreeView({ worktree }: { worktree: WorktreeSnapshot }) {
     setSessionScope("worktree");
     setSessionQuery("");
     setCreatedInvocation(null);
+    setAttachments([]);
     // Reset the run target to this worktree's own agent (the instance is reused
     // across worktree switches, so a stale agent would otherwise carry over).
     setAgentId(worktree.agentId ?? agents[0]?.id ?? "");
@@ -360,6 +365,16 @@ export function WorktreeView({ worktree }: { worktree: WorktreeSnapshot }) {
     || (createdInvocationAwaitingSnapshot && RUNNING.includes(createdInvocation?.status ?? ""));
   const selectedIsRunning = RUNNING.includes(selectedInvocation?.status ?? "");
   const agent = agents.find((a) => a.id === agentId);
+  const availableModels = useMemo(() => modelIdsForAgentAdapter(agent?.adapter), [agent?.adapter]);
+  const availableModelKey = availableModels.join("\0");
+  const defaultModel = useMemo(() => defaultModelForAgentAdapter(agent?.adapter), [agent?.adapter]);
+  useEffect(() => {
+    setSelectedModel((current) => current && availableModels.includes(current) ? current : "");
+  }, [agent?.id, availableModelKey]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    setPermissionLevel(permissionModeForAgent(agent));
+  }, [agent?.id]); // eslint-disable-line react-hooks/exhaustive-deps
+  attachmentWorktreeRef.current = worktree.id;
   const runDisabled = !state || !task.trim() || !agent || latestIsRunning || pending;
 
   // Read picked/pasted files into base64 and stage them. Awaits all reads so a
@@ -367,9 +382,13 @@ export function WorktreeView({ worktree }: { worktree: WorktreeSnapshot }) {
   // across accumulated state (not per call) and matches the server's limits.
   const MAX_FILE_BYTES = 5 * 1024 * 1024;
   async function addFiles(files: FileList | File[]) {
+    const worktreeId = worktree.id;
+    const remainingSlots = Math.max(0, 6 - attachments.length);
+    if (remainingSlots === 0) return;
     const read = await Promise.all(
       Array.from(files)
         .filter((f) => f.size > 0 && f.size <= MAX_FILE_BYTES)
+        .slice(0, remainingSlots)
         .map(
           (f) =>
             new Promise<{ name: string; dataBase64: string; size: number; type: string } | null>((resolve) => {
@@ -380,6 +399,7 @@ export function WorktreeView({ worktree }: { worktree: WorktreeSnapshot }) {
             }),
         ),
     );
+    if (attachmentWorktreeRef.current !== worktreeId) return;
     const valid = read.filter((a): a is NonNullable<typeof a> => Boolean(a?.dataBase64));
     if (valid.length > 0) {
       runIdempotencyKeyRef.current = null;
@@ -410,7 +430,7 @@ export function WorktreeView({ worktree }: { worktree: WorktreeSnapshot }) {
         agentId || null,
         worktree.projectId,
         worktree.id,
-        { permissionLevel },
+        { permissionLevel, ...(selectedModel ? { model: selectedModel } : {}) },
         idempotencyKey,
       )) as {
         invocation?: InvocationSnapshot;
@@ -539,69 +559,35 @@ export function WorktreeView({ worktree }: { worktree: WorktreeSnapshot }) {
 
           {activeTab === "session" ? (
             <>
-              <Card>
-                <CardHeader>
-                  <CardTitle>{t("worktreeView.runTitle")}</CardTitle>
-                  <p className="select-all break-all font-mono text-[11px] text-muted-foreground">{worktree.path}</p>
-                </CardHeader>
-                <CardContent className="space-y-3">
-                  <Textarea
-                    rows={4}
-                    value={task}
-                    onChange={(e) => {
-                      setTask(e.target.value);
+              <AgentRunComposer
+                title={t("worktreeView.runTitle")}
+                context={worktree.path}
+                task={task}
+                taskLabel={t("worktreeView.task")}
+                rows={4}
+                onTaskChange={(value) => {
+                  setTask(value);
+                  runIdempotencyKeyRef.current = null;
+                }}
+                onTaskPaste={(event) => {
+                  if (event.clipboardData.files.length > 0) {
+                    event.preventDefault();
+                    void addFiles(event.clipboardData.files);
+                  }
+                }}
+              >
+                  <WorktreeAttachmentPicker
+                    attachments={attachments}
+                    onFiles={(files) => { void addFiles(files); }}
+                    onRemove={(index) => {
                       runIdempotencyKeyRef.current = null;
+                      setAttachments((prev) => prev.filter((_, itemIndex) => itemIndex !== index));
                     }}
-                    onPaste={(e) => {
-                      if (e.clipboardData.files.length > 0) {
-                        e.preventDefault();
-                        addFiles(e.clipboardData.files);
-                      }
-                    }}
-                    aria-label={t("worktreeView.task")}
+                    label={t("worktreeView.attach")}
+                    title={t("worktreeView.attachTitle")}
+                    removeLabel={(name) => t("worktreeView.removeAttachment", { name })}
                   />
-                  <div className="flex flex-wrap items-center gap-2">
-                    <input
-                      ref={fileInputRef}
-                      type="file"
-                      multiple
-                      className="hidden"
-                      onChange={(e) => {
-                        if (e.target.files) addFiles(e.target.files);
-                        e.target.value = "";
-                      }}
-                    />
-                    <Button variant="secondary" size="sm" onClick={() => fileInputRef.current?.click()} title={t("worktreeView.attachTitle")}>
-                      <Paperclip className="mr-1 size-3.5" /> {t("worktreeView.attach")}
-                    </Button>
-                    {attachments.map((a, i) => (
-                      <span key={i} className="inline-flex items-center gap-1.5 rounded-md border border-border bg-muted/40 py-1 pl-1.5 pr-2 text-xs">
-                        {a.type.startsWith("image/") ? (
-                          <img
-                            src={`data:${a.type};base64,${a.dataBase64}`}
-                            alt={a.name}
-                            className="size-8 rounded object-cover"
-                          />
-                        ) : (
-                          <File className="size-3 opacity-60" />
-                        )}
-                        <span className="max-w-[160px] truncate">{a.name}</span>
-                        <span className="text-muted-foreground">{(a.size / 1024).toFixed(0)}KB</span>
-                        <button
-                          type="button"
-                          onClick={() => {
-                            runIdempotencyKeyRef.current = null;
-                            setAttachments((prev) => prev.filter((_, j) => j !== i));
-                          }}
-                          aria-label={t("worktreeView.removeAttachment", { name: a.name })}
-                          className="ml-0.5 grid size-4 place-items-center rounded hover:text-destructive"
-                        >
-                          <X className="size-3" />
-                        </button>
-                      </span>
-                    ))}
-                  </div>
-                  <div className="grid gap-3 sm:grid-cols-[1fr_1fr_auto] sm:items-end">
+                  <div className="grid gap-3 sm:grid-cols-[1fr_1fr_1fr_auto] sm:items-end">
                     <Field label={t("officeEditors.agent")}>
                       <Select
                         value={agentId}
@@ -618,6 +604,22 @@ export function WorktreeView({ worktree }: { worktree: WorktreeSnapshot }) {
                             {a.name}
                           </option>
                         ))}
+                      </Select>
+                    </Field>
+                    <Field label={t("worktreeView.model")}>
+                      <Select
+                        value={selectedModel}
+                        onChange={(event) => setSelectedModel(event.target.value)}
+                        aria-label={t("worktreeView.model")}
+                        title={t("worktreeView.modelTitle")}
+                        disabled={availableModels.length === 0}
+                      >
+                        <option value="">
+                          {defaultModel
+                            ? `${t("worktreeView.agentDefaultModel")} (${defaultModel})`
+                            : t("worktreeView.agentDefaultModel")}
+                        </option>
+                        {availableModels.map((model) => <option key={model} value={model}>{model}</option>)}
                       </Select>
                     </Field>
                     <Field label={t("worktreeView.permissions")}>
@@ -637,8 +639,7 @@ export function WorktreeView({ worktree }: { worktree: WorktreeSnapshot }) {
                     </Button>
                   </div>
                   {error ? <p className="text-xs text-destructive">{error}</p> : null}
-                </CardContent>
-              </Card>
+              </AgentRunComposer>
 
               <Card>
                 <CardHeader>
@@ -952,18 +953,6 @@ export function WorktreeView({ worktree }: { worktree: WorktreeSnapshot }) {
         </div>
       </Modal>
     </div>
-  );
-}
-
-function permissionModeForAgent(agent: { adapter?: { command?: string; permissionMode?: string; sandbox?: string } } | undefined): CodexPermissionMode {
-  const command = String(agent?.adapter?.command ?? "").trim().toLowerCase();
-  const isCodex = ["codex", "codex.cmd", "codex.ps1", "codex.exe"].some(
-    (name) => command === name || command.endsWith(`/${name}`) || command.endsWith(`\\${name}`),
-  );
-  if (!isCodex) return "ask";
-  return normalizeCodexPermissionMode(
-    agent?.adapter?.permissionMode
-    ?? codexPermissionModeFromLegacySandbox(agent?.adapter?.sandbox),
   );
 }
 

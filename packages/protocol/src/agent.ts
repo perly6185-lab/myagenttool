@@ -41,6 +41,8 @@ export type AgentAdapter =
       sandbox?: string | null;
       permissionMode?: string | null;
       claudeRuntime?: ClaudeRuntimeKind;
+      models?: string[];
+      defaultModel?: string | null;
     }
   | {
       type: "http";

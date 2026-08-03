@@ -50,6 +50,18 @@ test("app-server turn completes on turn/completed while the persistent child sta
   assert.equal(events.find((event) => event.type === "turn.completed")?.usage?.input_tokens, 7);
 });
 
+test("app-server forwards the selected model when starting a thread", async () => {
+  const client = fixtureClient("--expect-model");
+  const outcome = await client.runTurn({
+    task: "hello",
+    cwd: process.cwd(),
+    model: "gpt-5.6-sol",
+    timeoutMs: 5_000,
+  });
+
+  assert.equal(outcome.status, "succeeded");
+});
+
 test("app-server cancellation uses turn/interrupt and converges on interrupted turn", async () => {
   const client = fixtureClient("--slow");
   let cancelled = false;

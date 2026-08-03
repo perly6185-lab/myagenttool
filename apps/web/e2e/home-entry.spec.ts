@@ -17,6 +17,7 @@ const READY_STATE = {
     status: "enabled",
     health: { status: "healthy" },
     location: { type: "local_device", deviceId: "device-1" },
+    adapter: { type: "cli", command: "codex" },
   }],
   events: [],
   invocations: [],
@@ -57,15 +58,21 @@ for (const fixture of [
 
     const input = page.getByRole("textbox", { name: fixture.task });
     const action = page.getByRole("button", { name: fixture.run });
+    const model = page.getByRole("combobox", { name: fixture.locale === "zh-CN" ? "模型" : "Model" });
     await expect(input).toBeVisible({ timeout: 15_000 });
     await expect(action).toBeVisible();
+    await expect(model).toBeVisible();
+    await model.selectOption("gpt-5.6-sol");
+    await expect(model).toHaveValue("gpt-5.6-sol");
     for (const locator of [input, action]) {
       const box = await locator.boundingBox();
       expect(box).not.toBeNull();
       expect((box?.y ?? Infinity) + (box?.height ?? 0)).toBeLessThanOrEqual(fixture.viewport.height);
     }
 
-    await page.getByRole("button", { name: fixture.starter }).click();
+    await page.getByRole("combobox", {
+      name: fixture.locale === "zh-CN" ? "首次任务模板" : "First task templates",
+    }).selectOption({ label: fixture.starter });
     await expect(action).toBeEnabled();
 
     await page.screenshot({ path: testInfo.outputPath(`${fixture.name}.png`), fullPage: true });
@@ -286,9 +293,9 @@ for (const locale of ["en-US", "zh-CN"] as const) {
       }, { language: locale });
       await page.goto("/?section=dashboard");
 
-      const matrix = page.locator(`[data-home-work-state="${fixture.expectedState}"]`);
-      await expect(matrix).toBeVisible();
-      const primary = matrix.locator("[data-home-primary-action]");
+      const primary = fixture.expectedState === "idle"
+        ? page.locator('[data-home-primary-action="run"]')
+        : page.locator(`[data-home-work-state="${fixture.expectedState}"] [data-home-primary-action]`);
       await expect(primary).toHaveCount(1);
       await expect(primary).toHaveAccessibleName(locale === "zh-CN" ? fixture.zh : fixture.en);
       if (locale === "zh-CN") {

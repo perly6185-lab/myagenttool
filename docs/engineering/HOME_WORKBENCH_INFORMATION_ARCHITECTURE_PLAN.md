@@ -2,7 +2,7 @@
 
 Status: implemented, pending review
 
-Tracking issue: #1593
+Tracking issues: #1593, #1595
 
 ## Decision
 
@@ -21,7 +21,7 @@ their full content.
 
 | Capability | Canonical owner | Home representation |
 | --- | --- | --- |
-| Describe and start work | Home composer and Workspace composer | Compact primary action |
+| Describe and start work | Home composer and Workspace composer | Workspace-style composer with visible execution controls |
 | Continue a previous session | Workspace session history plus composer resume context | Resume banner only after the user chooses Continue |
 | Active progress and cancellation | Run records | Compact active-run summary with View progress and Cancel |
 | Historical status, transcript, result, and failure diagnosis | Run records | Counts and a link; no historical transcript |
@@ -37,9 +37,10 @@ Overview
 ├─ Header: project context + task statistics + available capacity
 ├─ Getting started (first-use or incomplete setup only; takes precedence because it blocks execution)
 ├─ Start or continue work
-│  ├─ compact task input
-│  ├─ primary Run / Continue action
-│  └─ collapsed "Before running" permissions and cost disclosure
+│  ├─ context-aware task input
+│  ├─ visible Agent, permission, and Run / Continue controls
+│  ├─ worktree-bounded attachments
+│  └─ collapsed "Before running" safety, data, cost, and cancellation disclosure
 ├─ Three-day workbench
 │  ├─ Yesterday: outcomes and rollover
 │  ├─ Today: active and planned work
@@ -130,6 +131,40 @@ surface instead of deleting transcript support globally:
 
 Prefer extracting the composer and active-run summary into reusable components before
 further conditional branches are added to `DashboardView`.
+
+## Workspace-style composer refinement (#1595)
+
+Home uses the same visual grammar as the Worktree run composer without pretending
+that every Home task already owns a worktree:
+
+```text
+Context-aware title
+└─ computer / project / explicit worktree path
+Task textarea
+Starter-task shortcuts
+Worktree-bounded attachments
+Agent | permission | Run or Queue
+Conditional status strip (running / approval / failure only)
+Collapsed Before running disclosure
+```
+
+- The idle readiness card is removed; a disabled Run control plus contextual setup
+  guidance communicates readiness without duplicating the composer.
+- Agent, linked model, and permission are primary execution inputs and remain visible
+  in the input's compact bottom toolbar; starter tasks use a compact selector there too.
+- Permission initializes from the selected Agent and is sent in invocation options.
+- The model selector is derived from the selected Agent's registered catalog, with a
+  runtime fallback for Codex and Claude. Changing Agent resets an incompatible model;
+  choosing Agent default omits the per-run override. Explicit selections are persisted
+  on the invocation and forwarded to the CLI or SDK execution plan.
+- Attachments are available only for an explicit worktree because the existing upload
+  API is worktree-confined. Home does not create a worktree implicitly.
+- Running, approval, and failure states retain a compact next-action strip. Historical
+  result and transcript detail remain owned by Run records.
+- The attachment trigger, starter tasks, permission, Agent, and Run action share
+  one wrapping toolbar; attachment chips add height only when files are staged.
+- Home and Worktree share the structural `AgentRunComposer` and attachment picker,
+  while each surface keeps its own execution controller and navigation behavior.
 
 ## Task statistics behavior
 

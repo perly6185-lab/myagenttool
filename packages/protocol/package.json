@@ -31,6 +31,10 @@
       "types": "./src/codex-permissions.ts",
       "default": "./src/codex-permissions.mjs"
     },
+    "./agent-models": {
+      "types": "./src/agent-models.ts",
+      "default": "./src/agent-models.mjs"
+    },
     "./business-routine": {
       "types": "./src/business-routine.ts",
       "default": "./src/business-routine.mjs"

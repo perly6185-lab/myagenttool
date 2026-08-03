@@ -1,3 +1,8 @@
+import {
+  agentAdapterSupportsModel,
+  normalizeAgentModel,
+} from "@myagenttool/protocol/agent-models";
+
 import { computeInvocationDispatchHealth } from "../read-models/invocation-dispatch-health.mjs";
 import { computeLocalScheduleCapacity } from "../read-models/local-schedule-capacity.mjs";
 import { computeLocalSchedulePreview } from "../read-models/local-schedule-preview.mjs";
@@ -325,6 +330,10 @@ export async function handleInvocationRoutes({
     // Idempotency key: accept the standard `Idempotency-Key` header or a body
     // field so a retried create returns the same run instead of a duplicate.
     const invocationOptions = invocationOptionsFromBody(body);
+    if (invocationOptions.model && !agentAdapterSupportsModel(agent.adapter, invocationOptions.model)) {
+      sendJson(res, 400, { error: "model_not_supported" });
+      return true;
+    }
     if (denyForeignInvocationScope({ res, sendJson, state, actor, metadata: invocationOptions.metadata })) {
       return true;
     }
@@ -650,5 +659,7 @@ export function invocationOptionsFromBody(body = {}) {
   // codex falls back to "ask" — a "Full access" run then stalls on every approval.
   const permissionLevel = body.permissionLevel ?? options.permissionLevel;
   if (permissionLevel !== undefined) metadata.permissionMode = permissionLevel;
-  return { ...options, metadata };
+  const model = normalizeAgentModel(options.model);
+  const { model: _untrustedModel, ...safeOptions } = options;
+  return { ...safeOptions, ...(model ? { model } : {}), metadata };
 }

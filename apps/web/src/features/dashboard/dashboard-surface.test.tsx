@@ -8,6 +8,8 @@ import { useUiStore } from "@/store/ui-store";
 const mocks = vi.hoisted(() => ({
   useConsoleState: vi.fn(),
   useAsyncAction: vi.fn(),
+  createInvocation: vi.fn(),
+  uploadWorktreeAttachments: vi.fn(),
   listWorkItems: vi.fn(),
   assignWorkItemToMe: vi.fn(),
   getLocalScheduleCapacity: vi.fn(),
@@ -22,6 +24,8 @@ vi.mock("@/data/use-console-state", () => ({ useConsoleState: mocks.useConsoleSt
 vi.mock("@/data/use-console-actions", () => ({
   useAsyncAction: mocks.useAsyncAction,
   api: {
+    createInvocation: mocks.createInvocation,
+    uploadWorktreeAttachments: mocks.uploadWorktreeAttachments,
     listWorkItems: mocks.listWorkItems,
     assignWorkItemToMe: mocks.assignWorkItemToMe,
   },
@@ -44,6 +48,9 @@ beforeEach(async () => {
   useUiStore.setState({
     section: "dashboard",
     selectedInvocationId: null,
+    selectedProjectId: null,
+    selectedWorktreeId: null,
+    selectedAgentId: null,
     invocationStatusFilter: "all",
     composerDraftTask: null,
     resumeFromInvocationId: null,
@@ -107,11 +114,15 @@ describe("DashboardView surfaces (#927)", () => {
     setup();
     render(<DashboardView surface="overview" />);
     expect(screen.getByText(/Prepare this computer/i)).toBeTruthy();
-    expect(screen.getByText("What should your computer do?").closest(".order-1")).toBeTruthy();
+    expect(screen.getByText("Run an Agent on this computer").closest(".order-1")).toBeTruthy();
     expect(screen.getByText(/Prepare this computer/i).closest(".order-first")).toBeTruthy();
     expect((await screen.findByTestId("daily-work-board")).closest(".order-3")).toBeTruthy();
+    expect((screen.getByRole("button", { name: "Attach" }) as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.getByText("Choose an explicit worktree to attach files safely.")).toBeTruthy();
     expect(screen.getByRole("button", { name: "Open Trace" })).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: "Inspect this project" }));
+    fireEvent.change(screen.getByRole("combobox", { name: "First task templates" }), {
+      target: { value: "inspect" },
+    });
     const taskInput = screen.getByRole("textbox", { name: "Task" }) as HTMLTextAreaElement;
     expect(taskInput.value).toBe(
       "Inspect this project, explain its structure, and report risks without changing files.",
@@ -137,10 +148,10 @@ describe("DashboardView surfaces (#927)", () => {
     // The home/onboarding card is a first-run concern — not duplicated into Workspace.
     expect(screen.queryByText(/Getting started/i)).toBeNull();
     // You can still start a task from Workspace: the composer is retained.
-    expect(screen.getByText("What should your computer do?")).toBeTruthy();
+    expect(screen.getByText("Run an Agent on this computer")).toBeTruthy();
   });
 
-  it("carries exact Auto-run and refusal targets into their native surfaces", () => {
+  it("carries exact Auto-run and refusal targets into their native surfaces", async () => {
     const states = {
       pending_decision: { count: 0, items: [] },
       in_progress: { count: 0, items: [] },
@@ -183,17 +194,17 @@ describe("DashboardView surfaces (#927)", () => {
     mocks.useAsyncAction.mockReturnValue({ execute: vi.fn(), pending: false, error: null });
 
     const { unmount } = render(<DashboardView surface="overview" />);
-    fireEvent.click(screen.getByRole("button", { name: /Real failed task/ }));
+    fireEvent.click(await screen.findByRole("button", { name: /Real failed task/ }));
     expect(new URLSearchParams(window.location.search).get("autoRun")).toBe("aur_real");
 
     unmount();
     window.history.replaceState({}, "", "/");
     render(<DashboardView surface="overview" />);
-    fireEvent.click(screen.getByRole("button", { name: /Real refusal/ }));
+    fireEvent.click(await screen.findByRole("button", { name: /Real refusal/ }));
     expect(new URLSearchParams(window.location.search).get("refusal")).toBe("ref_real");
   });
 
-  it("shows one obvious run control and swaps it for cancellation while running", () => {
+  it("keeps a secondary new-run control while current progress and cancellation take priority", () => {
     mocks.useConsoleState.mockReturnValue({
       data: {
         projects: [{ id: "p1", name: "Example" }],
@@ -209,7 +220,7 @@ describe("DashboardView surfaces (#927)", () => {
     mocks.useAsyncAction.mockReturnValue({ execute: vi.fn(), pending: false, error: null });
 
     render(<DashboardView surface="overview" />);
-    expect(screen.queryByRole("button", { name: "Run on this computer" })).toBeNull();
+    expect((screen.getByRole("button", { name: "Run on this computer" }) as HTMLButtonElement).disabled).toBe(true);
     expect(screen.getByRole("button", { name: "View progress" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "Cancel task" })).toBeTruthy();
     expect(document.querySelectorAll("[data-home-primary-action]")).toHaveLength(1);
@@ -228,6 +239,91 @@ describe("DashboardView surfaces (#927)", () => {
     const taskInput = screen.getByRole("textbox", { name: "Task" }) as HTMLTextAreaElement;
     await waitFor(() => expect(taskInput.value).toBe("Repair the failing checks"));
     expect(useUiStore.getState().composerDraftTask).toBeNull();
+  });
+
+  it("runs from an explicit worktree with the selected permission and uploaded attachments", async () => {
+    mocks.useConsoleState.mockReturnValue({
+      data: {
+        projects: [{ id: "p1", name: "Example", path: "D:\\repo" }],
+        worktrees: [{
+          id: "wt1",
+          projectId: "p1",
+          branch: "feat/demo",
+          path: "D:\\repo-wt",
+          agentId: "agent-1",
+        }],
+        events: [],
+        invocations: [],
+        agents: [{
+          id: "agent-1",
+          name: "Codex CLI",
+          status: "ready",
+          health: { status: "healthy" },
+          adapter: {
+            type: "cli",
+            command: "codex",
+            permissionMode: "auto",
+            models: ["gpt-5.6-sol", "gpt-5.6-terra"],
+            defaultModel: "gpt-5.6-terra",
+          },
+        }],
+        device: { id: "device-1", name: "This computer", status: "online" },
+        pendingDecisions: [],
+        evidenceLedger: [],
+      },
+    });
+    mocks.useAsyncAction.mockReturnValue({
+      execute: vi.fn((operation: () => Promise<unknown>) => operation()),
+      pending: false,
+      error: null,
+    });
+    mocks.uploadWorktreeAttachments.mockResolvedValue({
+      attachments: [{ name: "notes.txt", path: ".myagenttool/attachments/notes.txt" }],
+    });
+    mocks.createInvocation.mockResolvedValue({ invocation: { id: "inv-new" } });
+    useUiStore.setState({
+      selectedProjectId: "p1",
+      selectedWorktreeId: "wt1",
+      selectedAgentId: "agent-1",
+    });
+
+    const { container } = render(<DashboardView surface="overview" />);
+
+    expect(screen.getByText("Run an Agent in this worktree")).toBeTruthy();
+    expect(screen.getAllByText("D:\\repo-wt").length).toBeGreaterThan(0);
+    const permission = screen.getByRole("combobox", { name: "Permission level" }) as HTMLSelectElement;
+    await waitFor(() => expect(permission.value).toBe("auto"));
+    fireEvent.change(permission, { target: { value: "full" } });
+    const model = screen.getByRole("combobox", { name: "Model" }) as HTMLSelectElement;
+    expect(model.value).toBe("");
+    expect(screen.getByRole("option", { name: "Agent default (gpt-5.6-terra)" })).toBeTruthy();
+    expect(Array.from(model.options).map((option) => option.value)).toContain("gpt-5.6-sol");
+    fireEvent.change(model, { target: { value: "gpt-5.6-sol" } });
+
+    const fileInput = container.querySelector('input[type="file"]') as HTMLInputElement;
+    fireEvent.change(fileInput, {
+      target: { files: [new File(["hello"], "notes.txt", { type: "text/plain" })] },
+    });
+    expect(await screen.findByText("notes.txt")).toBeTruthy();
+
+    fireEvent.change(screen.getByRole("textbox", { name: "Task" }), {
+      target: { value: "Review the current change" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Run on this computer" }));
+
+    await waitFor(() => expect(mocks.uploadWorktreeAttachments).toHaveBeenCalledWith("wt1", [{
+      name: "notes.txt",
+      dataBase64: "aGVsbG8=",
+    }]));
+    expect(mocks.createInvocation).toHaveBeenCalledWith(
+      "Review the current change\n\nAttached files (in the worktree):\n- .myagenttool/attachments/notes.txt",
+      "agent-1",
+      "p1",
+      "wt1",
+      { permissionLevel: "full", model: "gpt-5.6-sol" },
+      expect.any(String),
+    );
+    await waitFor(() => expect(screen.queryByText("notes.txt")).toBeNull());
   });
 
   it.each([
@@ -313,7 +409,7 @@ describe("DashboardView surfaces (#927)", () => {
     mocks.useAsyncAction.mockReturnValue({ execute: vi.fn(), pending: false, error: null });
 
     render(<DashboardView surface="overview" />);
-    expect(screen.getByText("任务助手")).toBeTruthy();
+    expect(screen.getByRole("combobox", { name: "任务助手" })).toBeTruthy();
     expect(screen.getByRole("option", { name: /Codex CLI/ })).toBeTruthy();
     expect(screen.getByText("追踪编号（Trace ID）")).toBeTruthy();
     expect(screen.queryByText("Agent")).toBeNull();

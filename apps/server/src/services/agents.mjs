@@ -7,6 +7,10 @@ import {
   codexPermissionProfile,
   normalizeCodexPermissionMode,
 } from "@myagenttool/protocol/codex-permissions";
+import {
+  modelIdsForAgentAdapter,
+  normalizeAgentModel,
+} from "@myagenttool/protocol/agent-models";
 
 import { makeRunTx } from "../runtime/store/run-tx.mjs";
 import { capLifecycleAuditRecords } from "./retention.mjs";
@@ -89,6 +93,11 @@ export function createAgentService({ state, now, nextId, appendEvent, persistSta
           : nextId("agt_cli")));
     const defaultCodingArgs = codexCommand ? codexCliArgs(codexMode) : claudeCommand ? claudeCliArgs(claudeMode) : [];
     const normalizedArgs = args.length > 0 ? args : defaultCodingArgs;
+    const models = normalizeAgentModels(body.models ?? body.adapter?.models);
+    const requestedDefaultModel = normalizeAgentModel(body.defaultModel ?? body.adapter?.defaultModel);
+    const defaultModel = requestedDefaultModel && modelIdsForAgentAdapter({ type: "cli", command, models }).includes(requestedDefaultModel)
+      ? requestedDefaultModel
+      : null;
     return baseAgent({
       id,
       type: "cli",
@@ -110,6 +119,8 @@ export function createAgentService({ state, now, nextId, appendEvent, persistSta
         outputFormat: normalizeCliOutputFormat(body.outputFormat ?? body.adapter?.outputFormat, command),
         sandbox: codexProfile?.sandboxMode ?? body.sandbox ?? body.adapter?.sandbox ?? null,
         permissionMode: codexMode ?? (claudeCommand ? claudeMode : null),
+        models,
+        defaultModel,
         ...(claudeCommand && (body.claudeRuntime ?? body.adapter?.claudeRuntime) !== undefined
           ? { claudeRuntime: normalizeClaudeRuntimeKind(body.claudeRuntime ?? body.adapter?.claudeRuntime) }
           : {}),
@@ -586,6 +597,10 @@ export function isCodexCliCommand(command) {
 
 export function codexCliArgs(permissionMode = "ask") {
   return ["exec", ...codexExecPermissionArgs(permissionMode), "--skip-git-repo-check", "--json", "{{task}}"];
+}
+
+function normalizeAgentModels(values) {
+  return [...new Set((Array.isArray(values) ? values : []).map(normalizeAgentModel).filter(Boolean))];
 }
 
 export function codexCliResumeArgs() {

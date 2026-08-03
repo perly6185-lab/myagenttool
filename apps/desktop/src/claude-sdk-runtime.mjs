@@ -1,5 +1,6 @@
 import { existsSync, realpathSync } from "node:fs";
 import { dirname, isAbsolute, resolve, sep } from "node:path";
+import { normalizeAgentModel } from "@myagenttool/protocol/agent-models";
 
 const CLAUDE_PERMISSION_MODES = new Set([
   "default",
@@ -116,9 +117,11 @@ export function createClaudeSdkExecutionPlan({
   timeoutMs,
   approvedRoots,
   resumeSessionId,
+  model,
 } = {}) {
   const normalizedExecutable = String(executablePath ?? "").trim();
   const normalizedResumeSessionId = String(resumeSessionId ?? "").trim();
+  const normalizedModel = normalizeAgentModel(model);
   return {
     runtime: "agent_sdk",
     cwd: String(cwd ?? ""),
@@ -128,6 +131,7 @@ export function createClaudeSdkExecutionPlan({
     executablePath: normalizedExecutable || null,
     timeoutMs: finitePositive(timeoutMs) ? Number(timeoutMs) : null,
     resumeSessionId: normalizedResumeSessionId || null,
+    model: normalizedModel,
   };
 }
 
@@ -386,6 +390,7 @@ export async function runClaudeSdkQuery({
     includePartialMessages: false,
     persistSession: true,
     ...(plan.resumeSessionId ? { resume: plan.resumeSessionId } : {}),
+    ...(plan.model ? { model: plan.model } : {}),
     ...(plan.permissionMode === "bypassPermissions"
       ? { allowDangerouslySkipPermissions: true }
       : {}),
@@ -419,6 +424,7 @@ export function claudeSdkExecutionPreview(plan) {
     executableSource: plan.executablePath ? "configured_claude" : "sdk_bundled",
     sessionMode: plan.resumeSessionId ? "resume_exact" : "new",
     resuming: Boolean(plan.resumeSessionId),
+    model: plan.model ?? null,
   };
 }
 

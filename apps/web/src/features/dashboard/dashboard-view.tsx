@@ -1,14 +1,20 @@
 import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
+import { ArrowUp } from "lucide-react";
+import { normalizeCodexPermissionMode, type CodexPermissionMode } from "@myagenttool/protocol/codex-permissions";
+import { defaultModelForAgentAdapter, modelIdsForAgentAdapter } from "@myagenttool/protocol/agent-models";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { StatusBadge } from "@/components/ui/badge";
-import { Select, Textarea } from "@/components/ui/input";
+import { Select } from "@/components/ui/input";
 import { Field } from "@/components/common/field";
 import { FactList } from "@/components/common/fact-list";
 import { SectionHeading } from "@/components/common/section-heading";
 import { Transcript } from "@/features/invocations/transcript";
 import { RunTranscriptSection } from "@/features/invocations/run-transcript";
 import { DecisionAction } from "@/features/invocations/decision-action";
+import { AgentRunComposer } from "@/features/invocations/agent-run-composer";
+import { permissionModeForAgent } from "@/features/invocations/agent-permission";
+import { WorktreeAttachmentPicker, type StagedWorktreeAttachment } from "@/features/invocations/worktree-attachment-picker";
 import { GuidedSetupCard } from "@/features/dashboard/guided-setup-card";
 import { localScheduleApi } from "@/features/dashboard/local-schedule-api";
 import type { LocalWorkItem } from "@/features/tasks/task-view-types";
@@ -124,9 +130,11 @@ export function DashboardView({ surface = "overview" }: { surface?: DashboardSur
   const assignmentAction = useAsyncAction();
   const runInFlightRef = useRef(false);
   const runIdempotencyKeyRef = useRef<string | null>(null);
+  const attachmentWorktreeRef = useRef<string | null>(null);
 
   const projects = state?.projects ?? [];
   const projectId = selectedProjectId ?? projects[0]?.id ?? null;
+  const project = projects.find((item) => item.id === projectId) ?? null;
   const targetWorktree =
     (state?.worktrees ?? []).find((w) => w.id === selectedWorktreeId && w.projectId === projectId) ?? null;
 
@@ -135,6 +143,9 @@ export function DashboardView({ surface = "overview" }: { surface?: DashboardSur
   }, [targetWorktree?.id]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const [task, setTask] = useState("");
+  const [permissionLevel, setPermissionLevel] = useState<CodexPermissionMode>("ask");
+  const [selectedModel, setSelectedModel] = useState("");
+  const [attachments, setAttachments] = useState<StagedWorktreeAttachment[]>([]);
   const [dailyWorkItems, setDailyWorkItems] = useState<LocalWorkItem[]>([]);
   const [claimableWorkItems, setClaimableWorkItems] = useState<LocalWorkItem[]>([]);
   const [claimingWorkItemId, setClaimingWorkItemId] = useState<string | null>(null);
@@ -194,10 +205,25 @@ export function DashboardView({ surface = "overview" }: { surface?: DashboardSur
   }
 
   const { agents, agent } = resolveAgents(state, selectedAgentId);
+  const availableModels = useMemo(() => modelIdsForAgentAdapter(agent?.adapter), [agent?.adapter]);
+  const availableModelKey = availableModels.join("\0");
+  const defaultModel = useMemo(() => defaultModelForAgentAdapter(agent?.adapter), [agent?.adapter]);
   const resolvedInvocation = resolveInvocation(state, selectedInvocationId);
   useEffect(() => {
+    setPermissionLevel(permissionModeForAgent(agent));
+  }, [agent?.id]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    // Preserve a compatible explicit choice, but never carry an incompatible
+    // model into a different Agent's invocation.
+    setSelectedModel((current) => current && availableModels.includes(current) ? current : "");
+  }, [agent?.id, availableModelKey]); // eslint-disable-line react-hooks/exhaustive-deps
+  attachmentWorktreeRef.current = targetWorktree?.id ?? null;
+  useEffect(() => {
+    setAttachments([]);
+  }, [targetWorktree?.id]);
+  useEffect(() => {
     runIdempotencyKeyRef.current = null;
-  }, [agent?.id, projectId, targetWorktree?.id, resumeFromInvocationId]);
+  }, [agent?.id, permissionLevel, selectedModel, projectId, targetWorktree?.id, resumeFromInvocationId]);
   const activeInvocations = useMemo(
     () => (state?.invocations ?? []).filter((item) => RUNNING_STATES.includes(item.status ?? "")),
     [state?.invocations],
@@ -269,28 +295,75 @@ export function DashboardView({ surface = "overview" }: { surface?: DashboardSur
     taskInputRef.current?.focus();
   }, [composerDraftTask, setComposerDraftTask]);
 
+  const MAX_ATTACHMENT_BYTES = 5 * 1024 * 1024;
+  async function addFiles(files: FileList | File[]) {
+    const worktreeId = targetWorktree?.id ?? null;
+    if (!worktreeId) return;
+    const remainingSlots = Math.max(0, 6 - attachments.length);
+    if (remainingSlots === 0) return;
+    const read = await Promise.all(
+      Array.from(files)
+        .filter((file) => file.size > 0 && file.size <= MAX_ATTACHMENT_BYTES)
+        .slice(0, remainingSlots)
+        .map((file) => new Promise<StagedWorktreeAttachment | null>((resolve) => {
+          const reader = new FileReader();
+          reader.onload = () => resolve({
+            name: file.name || "file",
+            dataBase64: String(reader.result ?? "").split(",")[1] ?? "",
+            size: file.size,
+            type: file.type,
+          });
+          reader.onerror = () => resolve(null);
+          reader.readAsDataURL(file);
+        })),
+    );
+    if (attachmentWorktreeRef.current !== worktreeId) return;
+    const valid = read.filter((item): item is StagedWorktreeAttachment => Boolean(item?.dataBase64));
+    if (valid.length > 0) {
+      runIdempotencyKeyRef.current = null;
+      setAttachments((current) => [...current, ...valid].slice(0, 6));
+    }
+  }
+
   async function runTask() {
     if (runInFlightRef.current) return;
-    const submitted = task.trim();
+    let submitted = task.trim();
     if (!submitted || !agent) return;
     const resumeId = resumeFromInvocationId;
     const command = String(agent?.adapter?.command ?? "").toLowerCase();
     const claude = ["claude", "claude.exe", "claude.cmd", "claude.ps1"].some(
       (name) => command === name || command.endsWith(`/${name}`) || command.endsWith(`\\${name}`),
     );
-    const options = resumeId
-      ? {
-          ...(claude
-            ? { claudeSessionMode: "continue_last" }
-            : { codexSessionMode: "continue_last" }),
-          resumeFromInvocationId: resumeId,
-        }
-      : undefined;
+    const options = {
+      permissionLevel,
+      ...(selectedModel ? { model: selectedModel } : {}),
+      ...(resumeId
+        ? {
+            ...(claude
+              ? { claudeSessionMode: "continue_last" }
+              : { codexSessionMode: "continue_last" }),
+            resumeFromInvocationId: resumeId,
+          }
+        : {}),
+    };
     const idempotencyKey = runIdempotencyKeyRef.current ?? createClientIdempotencyKey();
     runIdempotencyKeyRef.current = idempotencyKey;
     runInFlightRef.current = true;
     try {
       await runAction.execute(async () => {
+        if (targetWorktree && attachments.length > 0) {
+          const response = (await api.uploadWorktreeAttachments(
+            targetWorktree.id,
+            attachments.map((attachment) => ({
+              name: attachment.name,
+              dataBase64: attachment.dataBase64,
+            })),
+          )) as { attachments?: { name: string; path: string }[] };
+          const saved = response.attachments ?? [];
+          if (saved.length > 0) {
+            submitted += `\n\nAttached files (in the worktree):\n${saved.map((item) => `- ${item.path}`).join("\n")}`;
+          }
+        }
         const created = (await api.createInvocation(
           submitted,
           agent.id,
@@ -301,6 +374,7 @@ export function DashboardView({ surface = "overview" }: { surface?: DashboardSur
         )) as { invocation: { id: string } };
         setSelectedInvocationId(created.invocation.id);
         setTask(""); // clear the composer on send; the task shows as the user bubble
+        setAttachments([]);
         setResumeFromInvocationId(null); // one-shot: consume the resume intent
         runIdempotencyKeyRef.current = null;
         return created;
@@ -367,6 +441,109 @@ export function DashboardView({ surface = "overview" }: { surface?: DashboardSur
   const transcriptSummary = terminalStatus
     ? { text: invocation?.result?.summary, status: terminalStatus }
     : undefined;
+  const composerTitle = targetWorktree
+    ? t("dashboard.runTitle.worktree")
+    : project
+      ? t("dashboard.runTitle.project")
+      : t("dashboard.runTitle.computer");
+  const composerContext = targetWorktree?.path
+    ?? project?.path
+    ?? project?.git?.repoPath
+    ?? project?.name
+    ?? state?.device?.name
+    ?? null;
+  const composerToolbar = (
+    <div className="flex flex-wrap items-center justify-between gap-1.5">
+      <div className="flex min-w-0 flex-wrap items-center gap-1">
+        <WorktreeAttachmentPicker
+          compact
+          attachments={attachments}
+          onFiles={(files) => { void addFiles(files); }}
+          onRemove={(index) => {
+            runIdempotencyKeyRef.current = null;
+            setAttachments((current) => current.filter((_, itemIndex) => itemIndex !== index));
+          }}
+          label={t("worktreeView.attach")}
+          title={t("worktreeView.attachTitle")}
+          removeLabel={(name) => t("worktreeView.removeAttachment", { name })}
+          disabled={!targetWorktree}
+          disabledHint={!targetWorktree ? t("dashboard.attachNeedsWorktree") : undefined}
+        />
+        {!invocation ? (
+          <Select
+            value=""
+            onChange={(event) => {
+              const template = STARTER_TASK_TEMPLATES.find((item) => item.id === event.target.value);
+              if (!template) return;
+              setTask(t(template.taskKey));
+              runIdempotencyKeyRef.current = null;
+            }}
+            aria-label={t("dashboard.firstTaskTemplates")}
+            title={t("dashboard.nextStep")}
+            className="h-8 w-auto max-w-36 border-0 bg-transparent px-2 pr-7 shadow-none focus-visible:ring-1"
+          >
+            <option value="">{t("dashboard.firstTaskTemplates")}</option>
+            {STARTER_TASK_TEMPLATES.map((template) => (
+              <option key={template.id} value={template.id}>{t(template.labelKey)}</option>
+            ))}
+          </Select>
+        ) : null}
+        <Select
+          value={permissionLevel}
+          onChange={(event) => setPermissionLevel(normalizeCodexPermissionMode(event.target.value))}
+          aria-label={t("worktreeView.permissionLevel")}
+          title={t("worktreeView.permissionTitle")}
+          className="h-8 w-auto max-w-36 border-0 bg-transparent px-2 pr-7 shadow-none focus-visible:ring-1"
+        >
+          <option value="ask">{t("worktreeView.permission.ask")}</option>
+          <option value="auto">{t("worktreeView.permission.auto")}</option>
+          <option value="full">{t("worktreeView.permission.full")}</option>
+        </Select>
+      </div>
+      <div className="ml-auto flex min-w-0 items-center gap-1">
+        <Select
+          value={agent?.id ?? ""}
+          onChange={(event) => setSelectedAgentId(event.target.value || null)}
+          aria-label={t("dashboard.agent")}
+          title={agent ? `${agent.name} — ${readableAgentStatus(agent.status)} — ${readableHealthLabel(agent.health)}` : undefined}
+          className="h-8 w-auto max-w-44 border-0 bg-transparent px-2 pr-7 shadow-none focus-visible:ring-1"
+        >
+          {agents.length === 0 ? <option value="">{t("dashboard.noAgent")}</option> : null}
+          {agents.map((item) => (
+            <option key={item.id} value={item.id}>{item.name}</option>
+          ))}
+        </Select>
+        {availableModels.length > 0 ? (
+          <Select
+            value={selectedModel}
+            onChange={(event) => setSelectedModel(event.target.value)}
+            aria-label={t("worktreeView.model")}
+            title={t("worktreeView.modelTitle")}
+            className="h-8 w-auto max-w-40 border-0 bg-transparent px-2 pr-7 shadow-none focus-visible:ring-1"
+          >
+            <option value="">
+              {defaultModel
+                ? `${t("worktreeView.agentDefaultModel")} (${defaultModel})`
+                : t("worktreeView.agentDefaultModel")}
+            </option>
+            {availableModels.map((model) => <option key={model} value={model}>{model}</option>)}
+          </Select>
+        ) : null}
+        <Button
+          data-home-primary-action={homeNextAction.state === "idle" ? "run" : undefined}
+          size="icon"
+          className="size-8 shrink-0 rounded-full"
+          variant={homeNextAction.state === "idle" ? "primary" : "secondary"}
+          disabled={runDisabled}
+          onClick={() => void runTask()}
+          aria-label={willQueue ? t("dashboard.queue") : t("dashboard.run")}
+          title={willQueue ? t("dashboard.queue") : t("dashboard.run")}
+        >
+          <ArrowUp />
+        </Button>
+      </div>
+    </div>
+  );
 
   return (
     <div className="flex min-h-full flex-col gap-4">
@@ -490,17 +667,32 @@ export function DashboardView({ surface = "overview" }: { surface?: DashboardSur
         </Card>
       </div> : null}
 
-      <Card className={surface === "overview" ? "order-1 shrink-0" : "order-4 shrink-0"}>
-        <CardHeader className="flex-row items-center justify-between gap-3 pb-2">
-          <CardTitle>{t("dashboard.composerTitle")}</CardTitle>
-          {surface === "overview" ? (
+      <AgentRunComposer
+        compact
+        className={surface === "overview" ? "order-1 shrink-0" : "order-4 shrink-0"}
+        title={composerTitle}
+        context={composerContext}
+        task={task}
+        taskLabel={t("dashboard.task")}
+        placeholder={t("dashboard.taskPlaceholder")}
+        rows={3}
+        textareaRef={taskInputRef}
+        onTaskChange={(value) => {
+          setTask(value);
+          runIdempotencyKeyRef.current = null;
+        }}
+        onTaskPaste={(event) => {
+          if (targetWorktree && event.clipboardData.files.length > 0) {
+            event.preventDefault();
+            void addFiles(event.clipboardData.files);
+          }
+        }}
+        headerAction={surface === "overview" ? (
             <Button variant="ghost" size="sm" onClick={() => setSection("invocations")}>
               {t("shell.navigation.openTrace")}
             </Button>
           ) : null}
-        </CardHeader>
-        <CardContent className="space-y-3">
-          {resumeFromInvocationId ? (
+        beforeInput={resumeFromInvocationId ? (
             <div className="flex items-center justify-between gap-2 rounded-md border border-primary/40 bg-primary/5 px-3 py-2 text-xs">
               <span className="min-w-0">
                 {t("dashboard.continueSession")}
@@ -517,70 +709,33 @@ export function DashboardView({ surface = "overview" }: { surface?: DashboardSur
               </button>
             </div>
           ) : null}
-          <Textarea
-            ref={taskInputRef}
-            rows={3}
-            value={task}
-            onChange={(e) => {
-              setTask(e.target.value);
-              runIdempotencyKeyRef.current = null;
-            }}
-            aria-label={t("dashboard.task")}
-            placeholder={t("dashboard.taskPlaceholder")}
-          />
-          {!invocation ? (
-            <div className="flex flex-wrap items-center gap-2" aria-label={t("dashboard.firstTaskTemplates")}>
-              <span className="text-xs text-muted-foreground">{t("dashboard.nextStep")}</span>
-              {STARTER_TASK_TEMPLATES.map((template) => (
-                <Button
-                  key={template.id}
-                  type="button"
-                  size="sm"
-                  variant="secondary"
-                  onClick={() => {
-                    setTask(t(template.taskKey));
-                    runIdempotencyKeyRef.current = null;
-                  }}
-                >
-                  {t(template.labelKey)}
-                </Button>
-              ))}
-            </div>
+        toolbar={composerToolbar}
+      >
+          {blockReason && (hasTask || !agent) && !runAction.error ? (
+            <p className="text-xs text-muted-foreground" aria-live="polite">{blockReason}</p>
           ) : null}
 
-          <section
-            aria-label={t("dashboard.nextAction.label")}
-            data-home-work-state={homeNextAction.state}
-            className="flex flex-wrap items-center gap-3 rounded-lg border border-border bg-muted/30 p-3"
-          >
-            <div className="min-w-0 flex-1">
-              <StatusBadge tone={homeStateTone(homeNextAction.state)}>
-                {t(`dashboard.nextAction.state.${homeNextAction.state}` as never)}
-              </StatusBadge>
-              <p className="mt-1 text-xs text-muted-foreground">
-                {t(`dashboard.nextAction.hint.${homeNextAction.state}` as never)}
-              </p>
-            </div>
-            <Button
-              data-home-primary-action={homeNextAction.action}
-              className="min-h-11"
-              disabled={homeNextAction.action === "run" ? runDisabled : false}
-              onClick={() => performPrimaryAction(homeNextAction.action)}
+          {homeNextAction.state !== "idle" ? (
+            <section
+              aria-label={t("dashboard.nextAction.label")}
+              data-home-work-state={homeNextAction.state}
+              className="flex flex-wrap items-center gap-3 rounded-lg border border-border bg-muted/30 p-3"
             >
-              {homeNextAction.action === "run" && willQueue
-                ? t("dashboard.queue")
-                : t(`dashboard.nextAction.action.${homeNextAction.action}` as never)}
-            </Button>
-            {homeNextAction.state === "running" && hasTask ? (
+              <div className="min-w-0 flex-1">
+                <StatusBadge tone={homeStateTone(homeNextAction.state)}>
+                  {t(`dashboard.nextAction.state.${homeNextAction.state}` as never)}
+                </StatusBadge>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  {t(`dashboard.nextAction.hint.${homeNextAction.state}` as never)}
+                </p>
+              </div>
               <Button
+                data-home-primary-action={homeNextAction.action}
                 className="min-h-11"
-                variant="secondary"
-                disabled={runDisabled}
-                onClick={() => void runTask()}
+                onClick={() => performPrimaryAction(homeNextAction.action)}
               >
-                {willQueue ? t("dashboard.queue") : t("dashboard.run")}
+                {t(`dashboard.nextAction.action.${homeNextAction.action}` as never)}
               </Button>
-            ) : null}
             {homeNextAction.state === "running" ? (
               <Button
                 className="min-h-11"
@@ -604,12 +759,8 @@ export function DashboardView({ surface = "overview" }: { surface?: DashboardSur
                 {t("dashboard.retryTask")}
               </Button>
             ) : null}
-            {blockReason && !runAction.error ? (
-              <span className="basis-full text-xs text-muted-foreground" aria-live="polite">
-                {blockReason}
-              </span>
-            ) : null}
-          </section>
+            </section>
+          ) : null}
           {retryableFailure ? (
             <p className="text-xs text-muted-foreground">{t("dashboard.retryHint")}</p>
           ) : null}
@@ -634,7 +785,7 @@ export function DashboardView({ surface = "overview" }: { surface?: DashboardSur
                   value={agent?.registrationNotes?.cancellation ?? cancellationText(agent?.adapter)}
                 />
               </div>
-              <div className="grid gap-3 sm:grid-cols-2">
+              <div className="grid gap-3">
                 <Field label={t("dashboard.project")}>
                   <Select
                     value={projectId ?? ""}
@@ -645,21 +796,6 @@ export function DashboardView({ surface = "overview" }: { surface?: DashboardSur
                     {projects.map((p) => (
                       <option key={p.id} value={p.id}>
                         {p.name}
-                      </option>
-                    ))}
-                  </Select>
-                </Field>
-                <Field label={t("dashboard.agent")}>
-                  <Select
-                    value={agent?.id ?? ""}
-                    onChange={(e) => setSelectedAgentId(e.target.value || null)}
-                    aria-label={t("dashboard.agent")}
-                    title={agent ? `${agent.name} — ${readableAgentStatus(agent.status)} — ${readableHealthLabel(agent.health)}` : undefined}
-                  >
-                    {agents.length === 0 ? <option value="">{t("dashboard.noAgent")}</option> : null}
-                    {agents.map((item) => (
-                      <option key={item.id} value={item.id}>
-                        {item.name} — {readableAgentStatus(item.status)} — {readableHealthLabel(item.health)}
                       </option>
                     ))}
                   </Select>
@@ -698,8 +834,7 @@ export function DashboardView({ surface = "overview" }: { surface?: DashboardSur
               />
             </div>
           </details>
-        </CardContent>
-      </Card>
+      </AgentRunComposer>
     </div>
   );
 }
