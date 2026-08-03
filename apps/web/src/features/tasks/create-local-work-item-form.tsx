@@ -11,12 +11,12 @@ import ArticleImportFields from "./article-import-fields";
 import { useArticleTaskLabels } from "./article-task-labels";
 import {
   DEFAULT_WORK_ITEM_FOLLOW_UP_DRAFT,
-  WorkItemFollowUpFields,
   followUpPayload,
   validateFollowUpDraft,
   type WorkItemFollowUpDraft,
   type WorkItemFollowUpUser,
-} from "./work-item-follow-up-fields";
+} from "./work-item-follow-up-model";
+import { WorkItemFollowUpFields } from "./work-item-follow-up-fields";
 
 export default function CreateLocalWorkItemForm({
   projects,

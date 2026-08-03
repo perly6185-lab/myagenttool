@@ -5,7 +5,7 @@ import {
   isoToLocalDateTimeInput,
   localDateTimeInputToIso,
   validateFollowUpDraft,
-} from "./work-item-follow-up-fields";
+} from "./work-item-follow-up-model";
 
 describe("work item follow-up fields", () => {
   it("uses visible self/manual/me defaults for newly created work", () => {

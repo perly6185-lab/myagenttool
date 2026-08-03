@@ -45,10 +45,8 @@ import {
 import { WorkItemSectionNav } from "./work-item-section-nav";
 import { useSafeNavigation } from "@/hooks/use-safe-navigation";
 import { useVisibleInterval } from "@/hooks/use-visible-interval";
-import { ClaimHistoryList } from "./claim-history-list";
 import { WorktreeOptionsForm } from "./worktree-options-form";
 import { WorkItemExecutionActions } from "./work-item-execution-actions";
-import { WorkItemExternalSync } from "./work-item-external-sync";
 import { WorkItemAlertAndCostDetails, WorkItemAssetChain, WorkItemTimeline, WorkItemTraceSummary } from "./work-item-observability";
 import { WorkItemTraceLinks } from "./work-item-trace-links";
 import { workItemBatchApi } from "./work-item-batch-api";
@@ -64,19 +62,25 @@ import { articleApi } from "./article-workflow-api";
 import { useArticleTaskLabels } from "./article-task-labels";
 import {
   DEFAULT_WORK_ITEM_FOLLOW_UP_DRAFT,
-  WorkItemFollowUpFields,
-  WorkItemFollowUpSummary,
   followUpDraftEquals,
   followUpDraftFromWorkItem,
   followUpPayload,
   validateFollowUpDraft,
   type WorkItemFollowUpDraft,
-} from "./work-item-follow-up-fields";
+} from "./work-item-follow-up-model";
 
 export { shouldShowWorkItemCost } from "./task-view-types";
 
 const ArticleWorkflowDialogs = lazy(() => import("./article-workflow-dialogs"));
 const CreateLocalWorkItemForm = lazy(() => import("./create-local-work-item-form"));
+const WorkItemFollowUpFields = lazy(() => import("./work-item-follow-up-fields")
+  .then((module) => ({ default: module.WorkItemFollowUpFields })));
+const WorkItemFollowUpSummary = lazy(() => import("./work-item-follow-up-fields")
+  .then((module) => ({ default: module.WorkItemFollowUpSummary })));
+const WorkItemExternalSync = lazy(() => import("./work-item-external-sync")
+  .then((module) => ({ default: module.WorkItemExternalSync })));
+const ClaimHistoryList = lazy(() => import("./claim-history-list")
+  .then((module) => ({ default: module.ClaimHistoryList })));
 
 installExecutionUiTranslations();
 installAutoRunTranslations();
@@ -797,7 +801,11 @@ export function TaskView() {
       </CardContent>
 
       <Modal open={Boolean(historyRow)} onClose={() => setHistoryRow(null)} title={historyRow ? t("tasks.claimHistoryId", { number: historyRow.number }) : t("tasks.claimHistory")}>
-        {historyRow ? <ClaimHistoryList events={claimHistory(historyRow)} /> : null}
+        {historyRow ? (
+          <Suspense fallback={null}>
+            <ClaimHistoryList events={claimHistory(historyRow)} />
+          </Suspense>
+        ) : null}
       </Modal>
 
       <Modal
@@ -3019,7 +3027,9 @@ function LocalWorkItemDetail({
             </strong>
           </div>
         </div>
-        <WorkItemFollowUpSummary item={item} users={consoleState?.users ?? []} />
+        <Suspense fallback={null}>
+          <WorkItemFollowUpSummary item={item} users={consoleState?.users ?? []} />
+        </Suspense>
       </section>
       <div hidden={selectedWorkItemSection !== "trace"}>
       <WorkItemAlertAndCostDetails
@@ -3108,13 +3118,15 @@ function LocalWorkItemDetail({
         <WorkItemTraceLinks item={item} observability={observability} />
         <WorkItemTraceSummary item={item} observability={observability} />
         <WorkItemTimeline observability={observability} expanded={selectedWorkItemSection === "trace"} />
-        <WorkItemExternalSync
-          itemId={item.id}
-          binding={externalIssueBinding}
-          providerLabel={externalProviderLabel}
-          pending={pending}
-          onSync={syncExternal}
-        />
+        <Suspense fallback={null}>
+          <WorkItemExternalSync
+            itemId={item.id}
+            binding={externalIssueBinding}
+            providerLabel={externalProviderLabel}
+            pending={pending}
+            onSync={syncExternal}
+          />
+        </Suspense>
       </div>
       <div
         id={`work-item-assets-${item.id}`}
@@ -3213,14 +3225,16 @@ function LocalWorkItemDetail({
       <Field label={t("tasks.acceptanceCriteria")}>
         <textarea className="min-h-24 w-full rounded-md border border-border bg-background p-2 text-sm" value={acceptance} onChange={(event) => setAcceptance(event.target.value)} />
       </Field>
-      <WorkItemFollowUpFields
-        value={followUp}
-        onChange={setFollowUp}
-        users={consoleState?.users ?? []}
-        assigneeIds={assigneeIds}
-        onAssigneeIdsChange={setAssigneeIds}
-        disabled={pending}
-      />
+      <Suspense fallback={null}>
+        <WorkItemFollowUpFields
+          value={followUp}
+          onChange={setFollowUp}
+          users={consoleState?.users ?? []}
+          assigneeIds={assigneeIds}
+          onAssigneeIdsChange={setAssigneeIds}
+          disabled={pending}
+        />
+      </Suspense>
         </div>
       </details>
       </div>

@@ -675,7 +675,7 @@ describe("TaskView local work items", () => {
     const cockpit = (await screen.findByText("Task cockpit")).closest("section");
     expect(cockpit?.querySelector(".grid")?.className).toContain("xl:grid-cols-4");
     expect(screen.getByRole("tab", { name: "Overview" }).getAttribute("aria-selected")).toBe("true");
-    expect(screen.getByText("Customer · Alex Client")).toBeTruthy();
+    expect(await screen.findByText("Customer · Alex Client")).toBeTruthy();
     expect(screen.getByText("Draft sent for review")).toBeTruthy();
     fireEvent.click(screen.getByRole("tab", { name: "Assets" }));
     expect(screen.getByRole("tab", { name: "Assets" }).getAttribute("aria-selected")).toBe("true");
