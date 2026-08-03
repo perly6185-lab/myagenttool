@@ -278,6 +278,25 @@ Issue 详情的“关系与交付”卡和“AI 执行”卡保持分离：
 - AI 生成面向 Boss、上级、客户或同事的汇报草稿；
 - 人工确认后才能外发或关闭任务。
 
+汇报草稿是 Issue 所有的独立、版本化资源，而不是新的任务状态。首阶段服务端契约为：
+
+```text
+POST   /api/work-items/:id/report-drafts
+GET    /api/work-items/:id/report-drafts
+GET    /api/work-items/:id/report-drafts/:draftId
+PATCH  /api/work-items/:id/report-drafts/:draftId
+POST   /api/work-items/:id/report-drafts/:draftId/confirm
+POST   /api/work-items/:id/report-drafts/:draftId/discard
+```
+
+每个草稿固定记录目标关系人、语气、内容、工作项来源 revision、最近进展活动和受限的 AI
+结果摘要引用。生成新草稿会 supersede 尚未确认的旧草稿；来源工作项 revision 变化后，旧草稿
+标记为 stale，不能继续编辑或确认。确认时保存不可变内容快照和摘要，并写入活动审计。
+
+草稿状态仅为 `draft / confirmed / discarded / superseded`。`confirmed` 不代表 `sent`，上述
+接口不接受收件地址、发送、执行、完成或关闭字段，也不改变业务状态、规划状态或执行状态。
+后续外发必须从已确认快照转换为渠道专用草稿，再经过独立的收件人预览、凭证和发送回执门禁。
+
 ## 10. MVP 验收标准
 
 - 新建或编辑 Local Issue 时可以记录提出者关系、姓名、渠道和承诺时间。

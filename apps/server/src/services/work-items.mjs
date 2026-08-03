@@ -22,6 +22,7 @@ import {
   normalizeWorkItemFollowUpInput,
   workItemFollowUpContextView,
 } from "./work-item-follow-up.mjs";
+import { createWorkItemReportDraftService } from "./work-item-report-drafts.mjs";
 
 const TYPES = new Set(["task", "bug", "feature", "initiative"]);
 const STATUSES = new Set(["backlog", "ready", "in_progress", "review", "blocked", "done"]);
@@ -349,6 +350,10 @@ export function createWorkItemService({
     const item = (state.workItems ?? []).find((row) => row.id === String(id));
     return item && item.ownerTeamId === actorTeam(actor) ? item : null;
   }
+
+  const reportDraftService = createWorkItemReportDraftService({
+    state, now, nextId, runTx, findOwn, recordActivity, actorTeam, actorUser,
+  });
 
   function resolveFollowUpContext(context, actor, { input = {} } = {}) {
     const value = workItemFollowUpContextView(context);
@@ -3427,6 +3432,12 @@ export function createWorkItemService({
 
   return {
     listWorkItems, getHomeWorkbench, listAttention, getWorkItem, createWorkItem, updateWorkItem, recordWorkItemProgress, bulkUpdateWorkItems, transitionWorkItem,
+    listReportDrafts: reportDraftService.list,
+    getReportDraft: reportDraftService.get,
+    generateReportDraft: reportDraftService.generate,
+    updateReportDraft: reportDraftService.update,
+    confirmReportDraft: reportDraftService.confirm,
+    discardReportDraft: reportDraftService.discard,
     listActivity, listComments, createComment, updateComment, deleteComment,
     beginExecution, abortExecution, recordExecutionBinding,
     beginDelivery, failDelivery, completeDelivery,
