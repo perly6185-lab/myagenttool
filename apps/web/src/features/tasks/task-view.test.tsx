@@ -60,6 +60,10 @@ vi.mock("@/data/use-console-state", () => ({
     issueClaims: [],
     issueClaimEvents: [],
     agents: [],
+    users: [
+      { id: "usr_local", name: "Current user", teamId: "team_local", role: "member" },
+      { id: "usr_manager", name: "Morgan Manager", teamId: "team_local", role: "manager" },
+    ],
   } }),
 }));
 
@@ -234,6 +238,37 @@ describe("TaskView local work items", () => {
       priority: "p2",
       dueDate: "2026-08-15",
       milestone: "M3",
+      requesterRelation: "self",
+      intakeChannel: "manual",
+      waitingOn: "me",
+    })));
+  });
+
+  it("records customer source and follow-up when creating a local issue", async () => {
+    mocks.listWorkItems.mockResolvedValue({ workItems: [], count: 0 });
+    mocks.createWorkItem.mockResolvedValue({ workItem: { id: "lwi_customer" } });
+    render(<TaskView />);
+    fireEvent.click(screen.getByRole("button", { name: /New local issue/i }));
+    fireEvent.change(await screen.findByLabelText("Title"), { target: { value: "Confirm launch scope" } });
+    fireEvent.change(screen.getByLabelText("Requester relationship"), { target: { value: "customer" } });
+    fireEvent.change(screen.getByLabelText("Requester name"), { target: { value: "Alex Client" } });
+    fireEvent.change(screen.getByLabelText("Organization"), { target: { value: "Acme" } });
+    fireEvent.change(screen.getByLabelText("Intake channel"), { target: { value: "meeting" } });
+    fireEvent.change(screen.getByLabelText("Currently waiting on"), { target: { value: "requester" } });
+    fireEvent.click(screen.getByLabelText("Morgan Manager · manager"));
+    fireEvent.change(screen.getByLabelText("Next follow-up"), { target: { value: "2099-08-05T10:00" } });
+    fireEvent.change(screen.getByLabelText("External reference"), { target: { value: "Weekly sync 42" } });
+    fireEvent.click(screen.getByRole("button", { name: "Create issue" }));
+    await waitFor(() => expect(mocks.createWorkItem).toHaveBeenCalledWith(expect.objectContaining({
+      requesterRelation: "customer",
+      requesterName: "Alex Client",
+      requesterOrganization: "Acme",
+      requesterUserId: null,
+      intakeChannel: "meeting",
+      externalReference: "Weekly sync 42",
+      waitingOn: "requester",
+      assigneeIds: ["usr_manager"],
+      nextFollowUpAt: expect.stringMatching(/^2099-08-05T/),
     })));
   });
 
@@ -276,6 +311,7 @@ describe("TaskView local work items", () => {
       projectId: "prj_1",
       title: "Imported WeChat article",
       labels: expect.arrayContaining(["source:wechat", "content:article"]),
+      intakeChannel: "import",
     })));
     expect(mocks.createWorkItemWorktree).toHaveBeenCalledWith("lwi_article");
     expect(mocks.startArticleImport).toHaveBeenCalledWith("lwi_article", {
@@ -599,6 +635,11 @@ describe("TaskView local work items", () => {
       id: "lwi_1", localRef: "LOCAL-1", projectId: "prj_1",
       title: "Editable issue", body: "Before", type: "task", status: "backlog",
       priority: "p2", state: "open", labels: [], assigneeIds: [],
+      followUpSchemaVersion: 1, requesterRelation: "customer",
+      requesterName: "Alex Client", requesterOrganization: "Acme", requesterUserId: null,
+      intakeChannel: "meeting", externalReference: "Weekly sync 42", waitingOn: "requester",
+      commitmentDate: "2099-08-07T09:00:00.000Z", nextFollowUpAt: "2099-08-05T02:00:00.000Z",
+      lastProgressAt: "2026-07-24T01:00:00.000Z", lastProgressSummary: "Draft sent for review",
       businessState: "open", planningStatus: "backlog", executionState: "claimed",
       externalBindings: [{
         kind: "github_issue", number: 42, url: "https://github.test/issues/42",
@@ -634,6 +675,8 @@ describe("TaskView local work items", () => {
     const cockpit = (await screen.findByText("Task cockpit")).closest("section");
     expect(cockpit?.querySelector(".grid")?.className).toContain("xl:grid-cols-4");
     expect(screen.getByRole("tab", { name: "Overview" }).getAttribute("aria-selected")).toBe("true");
+    expect(screen.getByText("Customer · Alex Client")).toBeTruthy();
+    expect(screen.getByText("Draft sent for review")).toBeTruthy();
     fireEvent.click(screen.getByRole("tab", { name: "Assets" }));
     expect(screen.getByRole("tab", { name: "Assets" }).getAttribute("aria-selected")).toBe("true");
     expect(cockpit?.hasAttribute("hidden")).toBe(true);
@@ -656,6 +699,7 @@ describe("TaskView local work items", () => {
     fireEvent.click(screen.getByRole("tab", { name: "Assets" }));
     expect(screen.getByText("No sub-issues")).toBeTruthy();
     expect(screen.getByLabelText("Parent issue")).toBeTruthy();
+    fireEvent.change(screen.getByLabelText("Currently waiting on"), { target: { value: "ai" } });
     fireEvent.change(title, { target: { value: "Edited issue" } });
     fireEvent.click(screen.getByRole("tab", { name: "Process" }));
     fireEvent.click(screen.getByRole("button", { name: "Create worktree" }));
@@ -665,6 +709,9 @@ describe("TaskView local work items", () => {
     await waitFor(() => expect(mocks.updateWorkItem).toHaveBeenCalledWith("lwi_1", expect.objectContaining({
       expectedRevision: 1,
       title: "Edited issue",
+      requesterRelation: "customer",
+      requesterName: "Alex Client",
+      waitingOn: "ai",
     })));
     await waitFor(() => expect(mocks.createWorkItemWorktree).toHaveBeenCalledWith("lwi_1"));
     fireEvent.click(screen.getByRole("tab", { name: "Trace" }));

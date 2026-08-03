@@ -62,6 +62,16 @@ import type {
 } from "./article-workflow-types";
 import { articleApi } from "./article-workflow-api";
 import { useArticleTaskLabels } from "./article-task-labels";
+import {
+  DEFAULT_WORK_ITEM_FOLLOW_UP_DRAFT,
+  WorkItemFollowUpFields,
+  WorkItemFollowUpSummary,
+  followUpDraftEquals,
+  followUpDraftFromWorkItem,
+  followUpPayload,
+  validateFollowUpDraft,
+  type WorkItemFollowUpDraft,
+} from "./work-item-follow-up-fields";
 
 export { shouldShowWorkItemCost } from "./task-view-types";
 
@@ -802,6 +812,7 @@ export function TaskView() {
           <Suspense fallback={null}>
             <CreateLocalWorkItemForm
               projects={projects}
+              users={state?.users ?? []}
               initialProjectId={projectId === "all" ? projects[0]?.id ?? "" : projectId}
               onImportActivityChange={setCreateArticleImportActive}
               onDone={() => {
@@ -2368,6 +2379,8 @@ function LocalWorkItemDetail({
   const [dueDate, setDueDate] = useState("");
   const [milestone, setMilestone] = useState("");
   const [estimatePoints, setEstimatePoints] = useState("0");
+  const [assigneeIds, setAssigneeIds] = useState<string[]>([]);
+  const [followUp, setFollowUp] = useState<WorkItemFollowUpDraft>({ ...DEFAULT_WORK_ITEM_FOLLOW_UP_DRAFT });
   const [comment, setComment] = useState("");
   const [editingCommentId, setEditingCommentId] = useState<string | null>(null);
   const [editingCommentBody, setEditingCommentBody] = useState("");
@@ -2406,6 +2419,8 @@ function LocalWorkItemDetail({
     || milestone !== (item.milestone ?? "")
     || estimatePoints !== String(item.estimatePoints ?? 0)
     || parentId !== (item.parentId ?? "")
+    || assigneeIds.join("\u0000") !== item.assigneeIds.join("\u0000")
+    || !followUpDraftEquals(followUp, followUpDraftFromWorkItem(item))
   );
   const syncDraft = (next: LocalWorkItem) => {
     setItem(next);
@@ -2421,6 +2436,8 @@ function LocalWorkItemDetail({
     setMilestone(next.milestone ?? "");
     setEstimatePoints(String(next.estimatePoints ?? 0));
     setParentId(next.parentId ?? "");
+    setAssigneeIds(next.assigneeIds);
+    setFollowUp(followUpDraftFromWorkItem(next));
   };
   const load = async () => {
     try {
@@ -2534,6 +2551,7 @@ function LocalWorkItemDetail({
   }
 
   const save = (afterSave?: () => void) => {
+    if (validateFollowUpDraft(followUp)) return;
     void execute(() => api.updateWorkItem(item.id, {
       expectedRevision: item.revision,
       title,
@@ -2543,11 +2561,13 @@ function LocalWorkItemDetail({
       priority,
       labels: labels.split(",").map((value) => value.trim()).filter(Boolean),
       acceptanceCriteria: acceptance.split("\n").map((value) => value.trim()).filter(Boolean),
+      assigneeIds,
       plannedDate: plannedDate || null,
       dueDate: dueDate || null,
       milestone,
       estimatePoints: Number(estimatePoints),
       parentId: parentId || null,
+      ...followUpPayload(followUp),
     })).then((ok) => {
       if (!ok) return;
       setNotice(`${t("taskLocal.save")} ✓`);
@@ -2999,6 +3019,7 @@ function LocalWorkItemDetail({
             </strong>
           </div>
         </div>
+        <WorkItemFollowUpSummary item={item} users={consoleState?.users ?? []} />
       </section>
       <div hidden={selectedWorkItemSection !== "trace"}>
       <WorkItemAlertAndCostDetails
@@ -3192,6 +3213,14 @@ function LocalWorkItemDetail({
       <Field label={t("tasks.acceptanceCriteria")}>
         <textarea className="min-h-24 w-full rounded-md border border-border bg-background p-2 text-sm" value={acceptance} onChange={(event) => setAcceptance(event.target.value)} />
       </Field>
+      <WorkItemFollowUpFields
+        value={followUp}
+        onChange={setFollowUp}
+        users={consoleState?.users ?? []}
+        assigneeIds={assigneeIds}
+        onAssigneeIdsChange={setAssigneeIds}
+        disabled={pending}
+      />
         </div>
       </details>
       </div>
@@ -3218,7 +3247,7 @@ function LocalWorkItemDetail({
             onClick={() => transition(item.state === "open" ? "close" : "reopen")}>
             {t(item.state === "open" ? "taskLocal.close" : "taskLocal.reopen")}
           </Button>
-          <Button variant="secondary" disabled={pending || !title.trim()} onClick={() => save()}>
+          <Button variant="secondary" disabled={pending || !title.trim() || Boolean(validateFollowUpDraft(followUp))} onClick={() => save()}>
             {t("taskLocal.save")}
           </Button>
         </div>
@@ -3259,7 +3288,7 @@ function LocalWorkItemDetail({
             itemId={item.id}
             open={item.state === "open"}
             pending={pending}
-            canSave={Boolean(title.trim())}
+            canSave={Boolean(title.trim()) && !validateFollowUpDraft(followUp)}
             worktreeReady={Boolean(autoRunReadiness && !autoRunReadiness.checks.some((check) => check.key === "git" && check.status === "blocked"))}
             autoRunReady={autoRunReadiness?.ready === true && !activeAutoRunId}
             autoRunBlockedReason={activeAutoRunId
