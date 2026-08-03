@@ -3,6 +3,7 @@ import { createHmac, timingSafeEqual } from "node:crypto";
 export async function handleWorkItemRoutes({
   req, res, url, sendJson, readJson, actor,
   listWorkItems, getHomeWorkbench, listAttention, getWorkItem, createWorkItem, updateWorkItem, recordWorkItemProgress, bulkUpdateWorkItems, transitionWorkItem,
+  listReportDrafts, getReportDraft, generateReportDraft, updateReportDraft, confirmReportDraft, discardReportDraft,
   listActivity, listComments, createComment, updateComment, deleteComment,
   createWorktree, startAutoRun, beginExecution, abortExecution, recordExecutionBinding,
   createAutoRunBatch, listAutoRunBatches,
@@ -268,6 +269,31 @@ export async function handleWorkItemRoutes({
 
   if (url.pathname === "/api/work-items/bulk" && req.method === "PATCH") {
     const result = bulkUpdateWorkItems(await readJson(req), actor);
+    sendJson(res, result.status, result.body);
+    return true;
+  }
+
+  const reportDraftMatch = url.pathname.match(/^\/api\/work-items\/([^/]+)\/report-drafts(?:\/([^/]+)(?:\/(confirm|discard))?)?$/);
+  if (reportDraftMatch) {
+    const workItemId = decodeURIComponent(reportDraftMatch[1]);
+    const draftId = reportDraftMatch[2] ? decodeURIComponent(reportDraftMatch[2]) : null;
+    const command = reportDraftMatch[3] ?? null;
+    let result;
+    if (req.method === "GET" && !draftId) {
+      result = listReportDrafts({ workItemId }, actor);
+    } else if (req.method === "POST" && !draftId) {
+      result = generateReportDraft({ workItemId, ...(await readJson(req)) }, actor);
+    } else if (req.method === "GET" && draftId && !command) {
+      result = getReportDraft({ workItemId, draftId }, actor);
+    } else if (req.method === "PATCH" && draftId && !command) {
+      result = updateReportDraft({ workItemId, draftId, ...(await readJson(req)) }, actor);
+    } else if (req.method === "POST" && draftId && command === "confirm") {
+      result = confirmReportDraft({ workItemId, draftId, ...(await readJson(req)) }, actor);
+    } else if (req.method === "POST" && draftId && command === "discard") {
+      result = discardReportDraft({ workItemId, draftId, ...(await readJson(req)) }, actor);
+    } else {
+      return false;
+    }
     sendJson(res, result.status, result.body);
     return true;
   }

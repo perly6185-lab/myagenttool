@@ -1771,6 +1771,13 @@ test("work items survive a persistent-state restart", () => {
       projectId: first.defaultProject.id, action: "commented", actorId: "usr_local",
       createdAt: now(), details: { commentId: "wic_1" },
     });
+    first.state.workItemReportDrafts.push({
+      id: "wrd_1", workItemId: "lwi_1", ownerTeamId: "team_local",
+      projectId: first.defaultProject.id, status: "draft", revision: 1,
+      audience: { relation: "unknown", name: null, organization: null, userId: null },
+      tone: "concise", content: "Persisted report draft", source: { workItemRevision: 1 },
+      createdAt: now(), updatedAt: now(), createdBy: "usr_local", updatedBy: "usr_local",
+    });
     first.state.workItemAttentionOperations.push({
       attentionId: "github_conflict:lwi_1", ownerTeamId: "team_local",
       handling: { actorId: "usr_local", claimedAt: now(), expiresAt: "2026-07-24T00:15:00.000Z" },
@@ -1811,6 +1818,7 @@ test("work items survive a persistent-state restart", () => {
     assert.equal(second.state.planningProjectItems[0].position, 2000);
     assert.equal(second.state.workItemComments[0].body, "Still here");
     assert.equal(second.state.workItemActivities[0].action, "commented");
+    assert.equal(second.state.workItemReportDrafts[0].content, "Persisted report draft");
     assert.equal(second.state.workItemAttentionOperations[0].handling.actorId, "usr_local");
     assert.equal(second.state.githubWorkItemWebhookDeliveries[0].id, "delivery-persisted");
     assert.equal(second.state.githubWorkItemWebhookFailures[0].reason, "invalid_signature");
@@ -1874,4 +1882,192 @@ test("execution bindings attach worktrees and auto-runs to the local issue", () 
   assert.equal(service.recordExecutionBinding({
     workItemId: item.id, kind: "auto_run", targetId: "aur_evil",
   }, ACTOR_B).status, 404);
+});
+
+test("report drafts capture bounded progress, support editing, and require explicit confirmation", () => {
+  const { service, state } = harness();
+  const created = service.createWorkItem({
+    projectId: "prj_a",
+    title: "Prepare customer rollout",
+    status: "review",
+    requesterRelation: "customer",
+    requesterName: "A. Customer",
+    requesterOrganization: "Example Co",
+    waitingOn: "requester",
+  }, ACTOR_A).body.workItem;
+  const progressed = service.recordWorkItemProgress({
+    workItemId: created.id,
+    expectedRevision: created.revision,
+    idempotencyKey: "progress-before-report",
+    summary: "The rollout checklist passed staging review.",
+    nextFollowUpAt: "2026-07-25T09:00:00.000Z",
+  }, ACTOR_A).body.workItem;
+
+  const generated = service.generateReportDraft({
+    workItemId: created.id,
+    expectedWorkItemRevision: progressed.revision,
+    idempotencyKey: "report-generate-1",
+    tone: "formal",
+  }, ACTOR_A);
+  assert.equal(generated.status, 201);
+  assert.equal(generated.body.reportDraft.schemaVersion, 1);
+  assert.equal(generated.body.reportDraft.status, "draft");
+  assert.equal(generated.body.reportDraft.audience.relation, "customer");
+  assert.match(generated.body.reportDraft.content, /rollout checklist passed staging review/);
+  assert.equal(generated.body.reportDraft.source.progressActivities.length, 1);
+  assert.equal(generated.body.reportDraft.source.executionResults.length, 0);
+  assert.equal(generated.body.reportDraft.generation.generator, "structured");
+  assert.equal(generated.body.reportDraft.generation.modelVersion, null);
+  assert.equal(Object.hasOwn(generated.body.reportDraft, "command"), false);
+
+  const replayed = service.generateReportDraft({
+    workItemId: created.id,
+    expectedWorkItemRevision: progressed.revision,
+    idempotencyKey: "report-generate-1",
+    tone: "formal",
+  }, ACTOR_A);
+  assert.equal(replayed.status, 200);
+  assert.equal(replayed.body.replayed, true);
+  assert.equal(replayed.body.reportDraft.id, generated.body.reportDraft.id);
+
+  const edited = service.updateReportDraft({
+    workItemId: created.id,
+    draftId: generated.body.reportDraft.id,
+    expectedRevision: generated.body.reportDraft.revision,
+    content: "Staging is complete. We are ready for the customer checkpoint.",
+    tone: "concise",
+  }, ACTOR_A);
+  assert.equal(edited.status, 200);
+  assert.equal(edited.body.reportDraft.revision, 2);
+
+  const beforeConfirm = service.getWorkItem({ workItemId: created.id }, ACTOR_A).body.workItem;
+  const confirmed = service.confirmReportDraft({
+    workItemId: created.id,
+    draftId: edited.body.reportDraft.id,
+    expectedRevision: edited.body.reportDraft.revision,
+    idempotencyKey: "report-confirm-1",
+  }, ACTOR_A);
+  assert.equal(confirmed.status, 200);
+  assert.equal(confirmed.body.reportDraft.status, "confirmed");
+  assert.equal(confirmed.body.reportDraft.confirmedSnapshot.content, edited.body.reportDraft.content);
+  assert.equal(confirmed.body.reportDraft.confirmedSnapshot.confirmedBy, ACTOR_A.userId);
+  assert.equal(Object.hasOwn(confirmed.body.reportDraft, "confirmationCommand"), false);
+  const afterConfirm = service.getWorkItem({ workItemId: created.id }, ACTOR_A).body.workItem;
+  assert.equal(afterConfirm.revision, beforeConfirm.revision);
+  assert.equal(afterConfirm.status, "review");
+  assert.equal(afterConfirm.state, "open");
+  assert.equal(service.updateReportDraft({
+    workItemId: created.id,
+    draftId: edited.body.reportDraft.id,
+    expectedRevision: confirmed.body.reportDraft.revision,
+    content: "Mutate confirmed snapshot",
+  }, ACTOR_A).status, 409);
+  assert.deepEqual(
+    state.workItemActivities.slice(0, 3).map((activity) => activity.action),
+    ["report_draft_confirmed", "report_draft_updated", "report_draft_generated"],
+  );
+});
+
+test("report drafts are tenant scoped, stale after source changes, and regenerate safely", () => {
+  const { service } = harness();
+  const created = service.createWorkItem({ projectId: "prj_a", title: "Manager status" }, ACTOR_A).body.workItem;
+  const generated = service.generateReportDraft({
+    workItemId: created.id,
+    expectedWorkItemRevision: created.revision,
+    idempotencyKey: "report-stale-1",
+    audience: { relation: "manager", name: "M. Manager" },
+  }, ACTOR_A).body.reportDraft;
+  assert.equal(service.listReportDrafts({ workItemId: created.id }, ACTOR_B).status, 404);
+  assert.equal(service.getReportDraft({ workItemId: created.id, draftId: generated.id }, ACTOR_B).status, 404);
+  assert.equal(service.generateReportDraft({
+    workItemId: created.id,
+    expectedWorkItemRevision: created.revision,
+    idempotencyKey: "report-stale-1",
+    audience: { relation: "manager", name: "M. Manager" },
+    tone: "warm",
+  }, ACTOR_A).body.error, "work_item_report_idempotency_conflict");
+
+  const changed = service.recordWorkItemProgress({
+    workItemId: created.id,
+    expectedRevision: created.revision,
+    idempotencyKey: "report-stale-progress",
+    summary: "A new dependency changed the delivery plan.",
+  }, ACTOR_A).body.workItem;
+  assert.equal(service.getReportDraft({ workItemId: created.id, draftId: generated.id }, ACTOR_A).body.reportDraft.stale, true);
+  assert.equal(service.confirmReportDraft({
+    workItemId: created.id,
+    draftId: generated.id,
+    expectedRevision: generated.revision,
+    idempotencyKey: "report-stale-confirm",
+  }, ACTOR_A).body.error, "work_item_report_source_stale");
+
+  const regenerated = service.generateReportDraft({
+    workItemId: created.id,
+    expectedWorkItemRevision: changed.revision,
+    idempotencyKey: "report-stale-2",
+    audience: { relation: "manager", name: "M. Manager" },
+  }, ACTOR_A);
+  assert.equal(regenerated.status, 201);
+  assert.match(regenerated.body.reportDraft.content, /new dependency changed the delivery plan/i);
+  assert.equal(service.getReportDraft({ workItemId: created.id, draftId: generated.id }, ACTOR_A).body.reportDraft.status, "superseded");
+  assert.equal(service.listReportDrafts({ workItemId: created.id }, ACTOR_A).body.count, 2);
+});
+
+test("report draft discard is revision gated and idempotent without touching work state", () => {
+  const { service } = harness();
+  const created = service.createWorkItem({ projectId: "prj_a", title: "Internal update" }, ACTOR_A).body.workItem;
+  const draft = service.generateReportDraft({
+    workItemId: created.id,
+    expectedWorkItemRevision: created.revision,
+    idempotencyKey: "report-discard-generate",
+  }, ACTOR_A).body.reportDraft;
+  const discarded = service.discardReportDraft({
+    workItemId: created.id,
+    draftId: draft.id,
+    expectedRevision: draft.revision,
+    idempotencyKey: "report-discard-1",
+  }, ACTOR_A);
+  assert.equal(discarded.status, 200);
+  assert.equal(discarded.body.reportDraft.status, "discarded");
+  const replayed = service.discardReportDraft({
+    workItemId: created.id,
+    draftId: draft.id,
+    expectedRevision: draft.revision,
+    idempotencyKey: "report-discard-1",
+  }, ACTOR_A);
+  assert.equal(replayed.status, 200);
+  assert.equal(replayed.body.replayed, true);
+  const item = service.getWorkItem({ workItemId: created.id }, ACTOR_A).body.workItem;
+  assert.equal(item.revision, created.revision);
+  assert.equal(item.status, "backlog");
+  assert.equal(item.state, "open");
+});
+
+test("report generation includes bounded result summaries but excludes transcripts and side-effect fields", () => {
+  const { service, state } = harness();
+  const created = service.createWorkItem({ projectId: "prj_a", title: "Safe report context" }, ACTOR_A).body.workItem;
+  state.workItems[0].executionBindings = [{ kind: "auto_run", targetId: "run_report" }];
+  state.autoRuns = [{
+    id: "run_report",
+    status: "done",
+    resultSummary: "Verified the bounded rollout result.",
+    transcript: "RAW_TRANSCRIPT_SECRET",
+    credential: "CREDENTIAL_SECRET",
+  }];
+  const generated = service.generateReportDraft({
+    workItemId: created.id,
+    expectedWorkItemRevision: created.revision,
+    idempotencyKey: "report-safe-context",
+  }, ACTOR_A);
+  assert.equal(generated.status, 201);
+  assert.match(generated.body.reportDraft.content, /bounded rollout result/);
+  assert.equal(generated.body.reportDraft.source.executionResults[0].id, "run_report");
+  assert.doesNotMatch(JSON.stringify(generated.body.reportDraft), /RAW_TRANSCRIPT_SECRET|CREDENTIAL_SECRET/);
+  assert.equal(service.generateReportDraft({
+    workItemId: created.id,
+    expectedWorkItemRevision: created.revision,
+    idempotencyKey: "report-forbidden-send",
+    send: true,
+  }, ACTOR_A).body.error, "invalid_work_item_report_generate_fields");
+  assert.equal(service.getWorkItem({ workItemId: created.id }, ACTOR_A).body.workItem.state, "open");
 });

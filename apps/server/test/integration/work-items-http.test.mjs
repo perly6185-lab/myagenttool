@@ -935,3 +935,66 @@ test("planning fields, bulk updates, and project ordering are wired over HTTP", 
   assert.equal(reordered.status, 200);
   assert.deepEqual(reordered.body.project.items.map((row) => row.workItem.id), [second.id, first.id]);
 });
+
+test("governed report drafts are wired through HTTP without sending or closing work", async () => {
+  const created = await call("/api/work-items", {
+    method: "POST",
+    body: {
+      projectId: "prj_a",
+      title: "Customer launch report",
+      status: "review",
+      requesterRelation: "customer",
+      requesterName: "HTTP Customer",
+      waitingOn: "requester",
+    },
+  });
+  assert.equal(created.status, 201);
+  const item = created.body.workItem;
+  const generated = await call(`/api/work-items/${item.id}/report-drafts`, {
+    method: "POST",
+    body: {
+      expectedWorkItemRevision: item.revision,
+      idempotencyKey: "http-report-generate",
+      tone: "concise",
+    },
+  });
+  assert.equal(generated.status, 201);
+  assert.equal(generated.body.reportDraft.status, "draft");
+  assert.equal(generated.body.reportDraft.audience.name, "HTTP Customer");
+  assert.equal((await call(`/api/work-items/${item.id}/report-drafts`, { token: "tok_b" })).status, 404);
+
+  const edited = await call(`/api/work-items/${item.id}/report-drafts/${generated.body.reportDraft.id}`, {
+    method: "PATCH",
+    body: {
+      expectedRevision: generated.body.reportDraft.revision,
+      content: "The launch is ready for the customer review checkpoint.",
+    },
+  });
+  assert.equal(edited.status, 200);
+  const confirmed = await call(`/api/work-items/${item.id}/report-drafts/${edited.body.reportDraft.id}/confirm`, {
+    method: "POST",
+    body: {
+      expectedRevision: edited.body.reportDraft.revision,
+      idempotencyKey: "http-report-confirm",
+    },
+  });
+  assert.equal(confirmed.status, 200);
+  assert.equal(confirmed.body.reportDraft.status, "confirmed");
+  assert.equal(confirmed.body.reportDraft.confirmedSnapshot.content, edited.body.reportDraft.content);
+  const replayed = await call(`/api/work-items/${item.id}/report-drafts/${edited.body.reportDraft.id}/confirm`, {
+    method: "POST",
+    body: {
+      expectedRevision: edited.body.reportDraft.revision,
+      idempotencyKey: "http-report-confirm",
+    },
+  });
+  assert.equal(replayed.status, 200);
+  assert.equal(replayed.body.replayed, true);
+  const unchanged = await call(`/api/work-items/${item.id}`);
+  assert.equal(unchanged.body.workItem.status, "review");
+  assert.equal(unchanged.body.workItem.state, "open");
+  assert.equal(unchanged.body.workItem.revision, item.revision);
+  const listed = await call(`/api/work-items/${item.id}/report-drafts`);
+  assert.equal(listed.status, 200);
+  assert.equal(listed.body.count, 1);
+});
