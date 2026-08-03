@@ -9,6 +9,9 @@ export type GithubItem = {
 };
 export type GithubResult = { available: boolean; message: string; items: GithubItem[] };
 export type WorkItemExecutionState = "unclaimed" | "claimed" | "running" | "awaiting_approval" | "verifying" | "failed" | "completed";
+export type WorkItemRequesterRelation = "boss" | "manager" | "customer" | "colleague" | "self" | "unknown";
+export type WorkItemIntakeChannel = "manual" | "meeting" | "email" | "chat" | "phone" | "github" | "import" | "other" | "unknown";
+export type WorkItemWaitingOn = "me" | "requester" | "internal" | "ai" | "none";
 export type ExternalWorkItemBinding = {
   kind: "github_issue" | "gitlab_issue" | "gitea_issue";
   provider?: "github" | "gitlab" | "gitea";
@@ -38,6 +41,18 @@ export type LocalWorkItem = {
   };
   labels: string[];
   assigneeIds: string[];
+  followUpSchemaVersion: 1;
+  requesterRelation: WorkItemRequesterRelation;
+  requesterName: string | null;
+  requesterOrganization: string | null;
+  requesterUserId: string | null;
+  intakeChannel: WorkItemIntakeChannel;
+  externalReference: string | null;
+  waitingOn: WorkItemWaitingOn;
+  commitmentDate: string | null;
+  nextFollowUpAt: string | null;
+  lastProgressAt: string | null;
+  lastProgressSummary: string | null;
   acceptanceCriteria: string[];
   acceptanceResults?: { criterion: string; status: "passed" | "failed" | "not_tested"; note: string; verificationId: string }[];
   verificationRecords?: {

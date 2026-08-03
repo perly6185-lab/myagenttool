@@ -1508,6 +1508,7 @@ test("normalizeLoadedState: shared boot normalization (SQLite hydrate parity wit
     state.devices = [{ id: "dev_local_001", status: "online" }];
     state.autoRunSettings = { globalMaxConcurrent: 7 };
     state.invocations = [{ id: "inv_dup" }, { id: "inv_dup" }];
+    state.workItems = [{ id: "lwi_legacy" }];
 
     const res = normalizeLoadedState(state, { seededDefaults, defaultProject, sameProjectPath });
 
@@ -1530,6 +1531,10 @@ test("normalizeLoadedState: shared boot normalization (SQLite hydrate parity wit
     //     the shared path repairs either).
     assert.equal(state.invocations.filter((i) => i.id === "inv_dup").length, 1, "duplicate id collapsed");
     assert(res.duplicateIdsRepaired >= 1, "the repair was counted");
+    assert.equal(res.workItemFollowUpBackfilled, 1, "legacy work-item follow-up context was counted");
+    assert.equal(state.workItems[0].requesterRelation, "unknown");
+    assert.equal(state.workItems[0].intakeChannel, "unknown");
+    assert.equal(state.workItems[0].waitingOn, "none");
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

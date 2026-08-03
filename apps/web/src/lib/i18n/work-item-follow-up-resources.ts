@@ -1,0 +1,122 @@
+import { i18n } from "@/lib/i18n";
+
+export const workItemFollowUpTranslations = {
+  "en-US": {
+    title: "Source and follow-up",
+    description: "Record who expects the outcome and who should move the next step forward.",
+    deliveryContext: "Relationship and delivery",
+    requesterRelation: "Requester relationship",
+    requesterName: "Requester name",
+    requesterOrganization: "Organization",
+    internalRequester: "Linked team member",
+    noInternalRequester: "No linked member",
+    intakeChannel: "Intake channel",
+    externalReference: "External reference",
+    waitingOn: "Currently waiting on",
+    commitmentDate: "Commitment time",
+    nextFollowUpAt: "Next follow-up",
+    assignee: "Owner",
+    noMembers: "No team members available",
+    assigneeHint: "Delivery ownership continues to use the issue's existing assignees.",
+    lastProgress: "Latest progress",
+    noProgress: "No progress has been recorded yet.",
+    unlabeledRequester: "Requester not labeled",
+    unlabeledHint: "This is a historical item. Add its source instead of treating it as self-requested.",
+    unassigned: "Unassigned",
+    relation: {
+      boss: "Boss",
+      manager: "Manager",
+      customer: "Customer",
+      colleague: "Colleague",
+      self: "Self",
+      unknown: "Not labeled",
+    },
+    channel: {
+      manual: "Manual entry",
+      meeting: "Meeting",
+      email: "Email",
+      chat: "Chat",
+      phone: "Phone",
+      github: "GitHub",
+      import: "Import",
+      other: "Other",
+      unknown: "Unknown",
+    },
+    waiting: {
+      me: "Me",
+      requester: "Requester",
+      internal: "Internal member",
+      ai: "AI",
+      none: "No one",
+    },
+    validation: {
+      requesterRequired: "Enter the customer name, or change the relationship to Not labeled.",
+      requesterWaitInvalid: "Self-requested or unlabeled work cannot be waiting on a requester.",
+      followUpPast: "Choose a future follow-up time, or clear this field.",
+    },
+  },
+  "zh-CN": {
+    title: "来源与跟进",
+    description: "记录谁期待结果，以及下一步由谁推动。",
+    deliveryContext: "关系与交付",
+    requesterRelation: "提出者关系",
+    requesterName: "提出者姓名",
+    requesterOrganization: "组织",
+    internalRequester: "关联内部成员",
+    noInternalRequester: "不关联成员",
+    intakeChannel: "进入渠道",
+    externalReference: "外部引用",
+    waitingOn: "当前等待谁",
+    commitmentDate: "承诺时间",
+    nextFollowUpAt: "下次跟进",
+    assignee: "负责人",
+    noMembers: "暂无可选团队成员",
+    assigneeHint: "交付负责人继续沿用 Issue 现有的 Assignee，不创建第二套负责人字段。",
+    lastProgress: "最近进展",
+    noProgress: "尚未记录进展。",
+    unlabeledRequester: "提出者未标注",
+    unlabeledHint: "这是历史任务，请补充来源，不会静默按自己提出处理。",
+    unassigned: "未分配",
+    relation: {
+      boss: "Boss",
+      manager: "上级",
+      customer: "客户",
+      colleague: "同事",
+      self: "自己",
+      unknown: "未标注",
+    },
+    channel: {
+      manual: "手工录入",
+      meeting: "会议",
+      email: "邮件",
+      chat: "聊天",
+      phone: "电话",
+      github: "GitHub",
+      import: "导入",
+      other: "其他",
+      unknown: "未知",
+    },
+    waiting: {
+      me: "我",
+      requester: "提出者",
+      internal: "内部成员",
+      ai: "AI",
+      none: "无人",
+    },
+    validation: {
+      requesterRequired: "选择客户时必须填写姓名，或将关系改为“未标注”。",
+      requesterWaitInvalid: "自己提出或未标注的任务不能设置为等待提出者。",
+      followUpPast: "请选择未来的跟进时间，或清空该字段。",
+    },
+  },
+} as const;
+
+let installed = false;
+
+export function installWorkItemFollowUpTranslations() {
+  if (installed) return;
+  installed = true;
+  for (const [locale, translation] of Object.entries(workItemFollowUpTranslations)) {
+    i18n.addResourceBundle(locale, "common", { taskFollowUp: translation }, true, true);
+  }
+}

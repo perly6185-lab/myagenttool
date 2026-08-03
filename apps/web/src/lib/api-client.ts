@@ -2062,6 +2062,15 @@ export const api = {
     labels?: string[];
     acceptanceCriteria?: string[];
     assigneeIds?: string[];
+    requesterRelation?: "boss" | "manager" | "customer" | "colleague" | "self" | "unknown";
+    requesterName?: string | null;
+    requesterOrganization?: string | null;
+    requesterUserId?: string | null;
+    intakeChannel?: "manual" | "meeting" | "email" | "chat" | "phone" | "github" | "import" | "other" | "unknown";
+    externalReference?: string | null;
+    waitingOn?: "me" | "requester" | "internal" | "ai" | "none";
+    commitmentDate?: string | null;
+    nextFollowUpAt?: string | null;
     dueDate?: string | null;
     plannedDate?: string | null;
     carriedFromDate?: string | null;

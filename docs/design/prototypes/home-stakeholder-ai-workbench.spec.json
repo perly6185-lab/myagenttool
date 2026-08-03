@@ -1,0 +1,47 @@
+{
+  "name": "Home Stakeholder And AI Workbench Prototype",
+  "source": "docs/design/HOME_STAKEHOLDER_AI_WORKBENCH_DESIGN.md",
+  "roleFlow": "ordinary developer and delivery owner",
+  "scenario": "Understand who expects each task, who must act next, and what AI is doing.",
+  "frequency": "daily",
+  "ownerSurface": "Home three-day workbench",
+  "visualQaArtifact": "docs/design/prototypes/home-stakeholder-ai-workbench.visual-qa.md",
+  "viewports": [
+    { "name": "desktop", "width": 1366, "height": 900 },
+    { "name": "mobile", "width": 390, "height": 844 }
+  ],
+  "frames": [
+    "Desktop / Needs my attention",
+    "Desktop / All work",
+    "Desktop / AI attention",
+    "Mobile / Stacked"
+  ],
+  "statusAxes": [
+    "business state",
+    "planning state",
+    "waiting on",
+    "derived AI execution state"
+  ],
+  "primaryHomepageActions": [
+    "Review AI result",
+    "Open approval",
+    "Record progress",
+    "Open run"
+  ],
+  "whatNotToShow": [
+    "historical run transcript",
+    "terminal output",
+    "full approval form",
+    "evidence detail",
+    "manual AI status editor",
+    "subjective completion percentage"
+  ],
+  "visualQaTasks": [
+    "Confirm requester, assignee, waiting-on, AI status, and next action are distinguishable on every task card.",
+    "Confirm attention counters behave like filters instead of decorative metrics.",
+    "Confirm AI completed is represented as waiting for human review, not task done.",
+    "Confirm the active AI rail disappears when its state is empty.",
+    "Confirm long task and organization names wrap without pushing the primary action.",
+    "Confirm mobile order is attention, work items, then active AI."
+  ]
+}

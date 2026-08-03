@@ -9,14 +9,24 @@ import type { ArticleImportJob, ArticleInspection } from "./article-workflow-typ
 import { articleApi } from "./article-workflow-api";
 import ArticleImportFields from "./article-import-fields";
 import { useArticleTaskLabels } from "./article-task-labels";
+import {
+  DEFAULT_WORK_ITEM_FOLLOW_UP_DRAFT,
+  followUpPayload,
+  validateFollowUpDraft,
+  type WorkItemFollowUpDraft,
+  type WorkItemFollowUpUser,
+} from "./work-item-follow-up-model";
+import { WorkItemFollowUpFields } from "./work-item-follow-up-fields";
 
 export default function CreateLocalWorkItemForm({
   projects,
+  users,
   initialProjectId,
   onDone,
   onImportActivityChange,
 }: {
   projects: { id: string; name: string }[];
+  users: WorkItemFollowUpUser[];
   initialProjectId: string;
   onDone: () => void;
   onImportActivityChange: (active: boolean) => void;
@@ -36,6 +46,8 @@ export default function CreateLocalWorkItemForm({
   const [dueDate, setDueDate] = useState("");
   const [milestone, setMilestone] = useState("");
   const [estimatePoints, setEstimatePoints] = useState("0");
+  const [assigneeIds, setAssigneeIds] = useState<string[]>([]);
+  const [followUp, setFollowUp] = useState<WorkItemFollowUpDraft>({ ...DEFAULT_WORK_ITEM_FOLLOW_UP_DRAFT });
   const [assistNote, setAssistNote] = useState("");
   const [sourceMode, setSourceMode] = useState<"manual" | "url">("manual");
   const [sourceUrl, setSourceUrl] = useState("");
@@ -82,6 +94,7 @@ export default function CreateLocalWorkItemForm({
     setCreatedWorkItemId(stored.workItemId);
     setCreatedWorktreeId(stored.worktreeId);
     setSourceMode("url");
+    setFollowUp((current) => ({ ...current, intakeChannel: "import" }));
     setSourceUrl(stored.sourceUrl);
     void execute(() => trackImport(stored.workItemId, stored.jobId)).then((ok) => {
       if (ok) onDone();
@@ -137,6 +150,7 @@ export default function CreateLocalWorkItemForm({
   };
 
   const submit = () => {
+    if (validateFollowUpDraft(followUp)) return;
     void execute(async () => {
       let workItemId = createdWorkItemId;
       if (!workItemId) {
@@ -154,10 +168,12 @@ export default function CreateLocalWorkItemForm({
           priority,
           labels: labels.split(",").map((value) => value.trim()).filter(Boolean),
           acceptanceCriteria: acceptance.split("\n").map((value) => value.trim()).filter(Boolean),
+          assigneeIds,
           plannedDate: plannedDate || null,
           dueDate: dueDate || null,
           milestone,
           estimatePoints: Number(estimatePoints),
+          ...followUpPayload(followUp),
         }) as { workItem: { id: string } };
         workItemId = created.workItem.id;
         setCreatedWorkItemId(workItemId);
@@ -212,7 +228,15 @@ export default function CreateLocalWorkItemForm({
         projectId={projectId}
         inspection={inspection}
         pending={pending}
-        onModeChange={setSourceMode}
+        onModeChange={(mode) => {
+          setSourceMode(mode);
+          setFollowUp((current) => ({
+            ...current,
+            intakeChannel: mode === "url"
+              ? "import"
+              : current.intakeChannel === "import" ? "manual" : current.intakeChannel,
+          }));
+        }}
         onUrlChange={(value) => {
           inspectionRequest.current += 1;
           setSourceUrl(value);
@@ -250,6 +274,14 @@ export default function CreateLocalWorkItemForm({
       <Field label={t("tasks.acceptanceCriteria")}>
         <textarea className="min-h-20 w-full rounded-md border border-border bg-background p-2 text-sm" value={acceptance} onChange={(event) => setAcceptance(event.target.value)} placeholder={t("tasks.acceptancePlaceholder")} />
       </Field>
+      <WorkItemFollowUpFields
+        value={followUp}
+        onChange={setFollowUp}
+        users={users}
+        assigneeIds={assigneeIds}
+        onAssigneeIdsChange={setAssigneeIds}
+        disabled={pending || Boolean(createdWorkItemId)}
+      />
       <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
         <Field label={plannedDateLabel}><Input type="date" value={plannedDate} onChange={(event) => setPlannedDate(event.target.value)} /></Field>
         <Field label={t("taskLocal.dueDate")}><Input type="date" value={dueDate} onChange={(event) => setDueDate(event.target.value)} /></Field>
@@ -261,7 +293,7 @@ export default function CreateLocalWorkItemForm({
       <div className="flex justify-end gap-2">
         {activeImport ? <Button variant="secondary" onClick={cancelImport}>{t("tasks.cancel")}</Button> : null}
         <Button
-          disabled={pending || !projectId || (!title.trim() && !createdWorkItemId) || (sourceMode === "url" && (!sourceUrl.trim() || (!inspection && !createdWorkItemId)))}
+          disabled={pending || Boolean(validateFollowUpDraft(followUp)) || !projectId || (!title.trim() && !createdWorkItemId) || (sourceMode === "url" && (!sourceUrl.trim() || (!inspection && !createdWorkItemId)))}
           onClick={submit}
         >
           {sourceMode === "url"

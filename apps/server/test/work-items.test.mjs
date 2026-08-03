@@ -11,6 +11,7 @@ import {
   createWorkItemService,
   taskTraceStage,
 } from "../src/services/work-items.mjs";
+import { backfillWorkItemFollowUpContext } from "../src/services/work-item-follow-up.mjs";
 
 const ACTOR_A = { userId: "usr_a", teamId: "team_a", role: "operator" };
 const ACTOR_B = { userId: "usr_b", teamId: "team_b" };
@@ -36,6 +37,11 @@ function harness({
     workItems: [],
     workItemComments: [],
     workItemActivities: [],
+    users: [
+      { id: "usr_a", teamId: "team_a" },
+      { id: "usr_b", teamId: "team_b" },
+      { id: "usr_c", teamId: "team_a" },
+    ],
     projects: [
       { id: "prj_a", ownerTeamId: "team_a" },
       { id: "prj_b", ownerTeamId: "team_b" },
@@ -137,6 +143,20 @@ test("creates a local work item with server-owned identity and defaults", () => 
     type: "task",
     status: "backlog",
     priority: "p2",
+    followUpContext: {
+      followUpSchemaVersion: 1,
+      requesterRelation: "unknown",
+      requesterName: null,
+      requesterOrganization: null,
+      requesterUserId: null,
+      intakeChannel: "unknown",
+      externalReference: null,
+      waitingOn: "none",
+      commitmentDate: null,
+      nextFollowUpAt: null,
+      lastProgressAt: null,
+      lastProgressSummary: null,
+    },
     principalId: "usr_a",
     deviceId: "dev_local",
     effectiveAuthority: "operator",
@@ -144,6 +164,141 @@ test("creates a local work item with server-owned identity and defaults", () => 
     entryContext: "task",
     traceParent: result.body.workItem.id,
   });
+});
+
+test("creates, normalizes, updates, and audits structured follow-up context", () => {
+  const { service, state } = harness();
+  const created = service.createWorkItem({
+    projectId: "prj_a",
+    title: "Customer delivery",
+    requesterRelation: "customer",
+    requesterName: " 张总 ",
+    requesterOrganization: " 远山科技 ",
+    intakeChannel: "meeting",
+    externalReference: " 客户周会 2026-07-24 ",
+    waitingOn: "me",
+    commitmentDate: "2026-07-25T17:00:00+08:00",
+    nextFollowUpAt: "2026-07-25T10:00:00+08:00",
+  }, ACTOR_A);
+  assert.equal(created.status, 201);
+  assert.deepEqual({
+    requesterRelation: created.body.workItem.requesterRelation,
+    requesterName: created.body.workItem.requesterName,
+    requesterOrganization: created.body.workItem.requesterOrganization,
+    requesterUserId: created.body.workItem.requesterUserId,
+    intakeChannel: created.body.workItem.intakeChannel,
+    externalReference: created.body.workItem.externalReference,
+    waitingOn: created.body.workItem.waitingOn,
+    commitmentDate: created.body.workItem.commitmentDate,
+    nextFollowUpAt: created.body.workItem.nextFollowUpAt,
+  }, {
+    requesterRelation: "customer",
+    requesterName: "张总",
+    requesterOrganization: "远山科技",
+    requesterUserId: null,
+    intakeChannel: "meeting",
+    externalReference: "客户周会 2026-07-24",
+    waitingOn: "me",
+    commitmentDate: "2026-07-25T09:00:00.000Z",
+    nextFollowUpAt: "2026-07-25T02:00:00.000Z",
+  });
+  assert.equal(state.workItemActivities[0].details.followUpContext.requesterRelation, "customer");
+
+  const updated = service.updateWorkItem({
+    workItemId: created.body.workItem.id,
+    expectedRevision: created.body.workItem.revision,
+    requesterRelation: "colleague",
+    requesterUserId: "usr_c",
+    requesterName: null,
+    requesterOrganization: null,
+    intakeChannel: "chat",
+    waitingOn: "internal",
+    nextFollowUpAt: "2026-07-26T09:30:00Z",
+  }, ACTOR_A);
+  assert.equal(updated.status, 200);
+  assert.equal(updated.body.workItem.requesterRelation, "colleague");
+  assert.equal(updated.body.workItem.requesterUserId, "usr_c");
+  assert.equal(updated.body.workItem.waitingOn, "internal");
+  const audit = state.workItemActivities[0];
+  assert.equal(audit.action, "updated");
+  assert.equal(audit.details.followUpContextChanged, true);
+  assert.deepEqual(audit.details.changes.requesterRelation, { from: "customer", to: "colleague" });
+  assert.deepEqual(audit.details.changes.requesterUserId, { from: null, to: "usr_c" });
+});
+
+test("enforces requester identity, tenancy, waiting-on, and follow-up time rules", () => {
+  const { service } = harness();
+  const create = (overrides) => service.createWorkItem({
+    projectId: "prj_a",
+    title: "Validate follow-up",
+    ...overrides,
+  }, ACTOR_A);
+
+  assert.equal(create({ requesterRelation: "vendor" }).body.error, "invalid_work_item_requester_relation");
+  assert.equal(create({ requesterRelation: "customer" }).body.error, "work_item_customer_requester_name_required");
+  assert.equal(create({
+    requesterRelation: "customer", requesterName: "Client", requesterUserId: "usr_c",
+  }).body.error, "work_item_customer_internal_requester_forbidden");
+  assert.equal(create({
+    requesterRelation: "manager", requesterUserId: "usr_b",
+  }).body.error, "invalid_work_item_requester_user");
+  assert.equal(create({
+    requesterRelation: "unknown", requesterName: "Guessed requester",
+  }).body.error, "work_item_unknown_requester_identity_forbidden");
+  assert.equal(create({
+    requesterRelation: "self", requesterUserId: "usr_c",
+  }).body.error, "work_item_self_requester_mismatch");
+  assert.equal(create({
+    requesterRelation: "self", waitingOn: "requester",
+  }).body.error, "work_item_waiting_on_requester_requires_requester");
+  assert.equal(create({
+    nextFollowUpAt: "2026-07-23T23:59:59Z",
+  }).body.error, "work_item_next_follow_up_at_in_past");
+  assert.equal(create({
+    commitmentDate: "2026-02-30T10:00:00Z",
+  }).body.error, "invalid_work_item_commitment_date");
+  assert.equal(create({
+    lastProgressSummary: "Caller supplied history",
+  }).body.error, "work_item_follow_up_server_fields_immutable");
+
+  const own = create({ requesterRelation: "self", intakeChannel: "manual", waitingOn: "me" });
+  assert.equal(own.status, 201);
+  assert.equal(own.body.workItem.requesterUserId, "usr_a");
+  assert.equal(own.body.workItem.requesterName, null);
+  const manager = create({ requesterRelation: "manager", requesterUserId: "usr_c", waitingOn: "requester" });
+  assert.equal(manager.status, 201);
+});
+
+test("backfills legacy work-item follow-up context without inventing requester identity", () => {
+  const state = {
+    workItems: [
+      { id: "legacy" },
+      { id: "partial", requesterRelation: "customer", requesterName: "Existing client" },
+    ],
+  };
+  assert.equal(backfillWorkItemFollowUpContext(state), 2);
+  assert.deepEqual({
+    requesterRelation: state.workItems[0].requesterRelation,
+    requesterName: state.workItems[0].requesterName,
+    intakeChannel: state.workItems[0].intakeChannel,
+    waitingOn: state.workItems[0].waitingOn,
+    commitmentDate: state.workItems[0].commitmentDate,
+    nextFollowUpAt: state.workItems[0].nextFollowUpAt,
+    lastProgressAt: state.workItems[0].lastProgressAt,
+    lastProgressSummary: state.workItems[0].lastProgressSummary,
+  }, {
+    requesterRelation: "unknown",
+    requesterName: null,
+    intakeChannel: "unknown",
+    waitingOn: "none",
+    commitmentDate: null,
+    nextFollowUpAt: null,
+    lastProgressAt: null,
+    lastProgressSummary: null,
+  });
+  assert.equal(state.workItems[1].requesterRelation, "customer");
+  assert.equal(state.workItems[1].requesterName, "Existing client");
+  assert.equal(backfillWorkItemFollowUpContext(state), 0);
 });
 
 test("local delivery closes only after base integration; pull-request delivery stays in review", () => {
