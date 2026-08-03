@@ -25,6 +25,7 @@ import {
 import { GuidedSetupCard } from "@/features/dashboard/guided-setup-card";
 import { localScheduleApi } from "@/features/dashboard/local-schedule-api";
 import type { LocalWorkItem } from "@/features/tasks/task-view-types";
+import type { HomeWorkbench } from "@/features/dashboard/home-workbench-types";
 import type {
   LocalScheduleCapacityResponse,
   LocalSchedulePreviewResponse,
@@ -156,6 +157,7 @@ export function DashboardView({ surface = "overview" }: { surface?: DashboardSur
   const [attachmentFeedback, setAttachmentFeedback] = useState<string | null>(null);
   const [dailyWorkItems, setDailyWorkItems] = useState<LocalWorkItem[]>([]);
   const [claimableWorkItems, setClaimableWorkItems] = useState<LocalWorkItem[]>([]);
+  const [homeWorkbench, setHomeWorkbench] = useState<HomeWorkbench>();
   const [claimingWorkItemId, setClaimingWorkItemId] = useState<string | null>(null);
   const [localScheduleCapacity, setLocalScheduleCapacity] = useState<LocalScheduleCapacityResponse>();
   const [localSchedulePreview, setLocalSchedulePreview] = useState<LocalSchedulePreviewResponse>();
@@ -171,12 +173,13 @@ export function DashboardView({ surface = "overview" }: { surface?: DashboardSur
     void Promise.all([
       workItems.then(({ listAllDashboardWorkItems }) => listAllDashboardWorkItems({ assigneeId: "mine" })),
       workItems.then(({ listAllDashboardWorkItems }) => listAllDashboardWorkItems()),
+      workItems.then(({ getDashboardHomeWorkbench }) => getDashboardHomeWorkbench()),
       localScheduleApi.capacity().catch(() => undefined),
       localScheduleApi.preview().catch(() => undefined),
       localScheduleApi.rolloverPreview().catch(() => undefined),
       localScheduleApi.urgentPreview().catch(() => undefined),
     ])
-      .then(([mine, all, capacity, preview, rollover, urgent]) => {
+      .then(([mine, all, workbench, capacity, preview, rollover, urgent]) => {
         if (!cancelled) {
           setDailyWorkItems(mine);
           setClaimableWorkItems(all.filter((item) =>
@@ -184,6 +187,7 @@ export function DashboardView({ surface = "overview" }: { surface?: DashboardSur
             && !item.archivedAt
             && (item.businessState ?? item.state) === "open"
             && item.status !== "done"));
+          setHomeWorkbench(workbench);
           setLocalScheduleCapacity(capacity);
           setLocalSchedulePreview(preview);
           setLocalScheduleRollover(rollover);
@@ -194,6 +198,7 @@ export function DashboardView({ surface = "overview" }: { surface?: DashboardSur
         if (!cancelled) {
           setDailyWorkItems([]);
           setClaimableWorkItems([]);
+          setHomeWorkbench(undefined);
           setLocalScheduleCapacity(undefined);
           setLocalSchedulePreview(undefined);
           setLocalScheduleRollover(undefined);
@@ -562,6 +567,7 @@ export function DashboardView({ surface = "overview" }: { surface?: DashboardSur
               board={state?.workBoard}
               report={state?.workReport}
               plannedItems={dailyWorkItems}
+              workbench={homeWorkbench}
               unassignedItems={claimableWorkItems}
               capacity={localScheduleCapacity}
               preview={localSchedulePreview}

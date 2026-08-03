@@ -2,7 +2,7 @@ import { createHmac, timingSafeEqual } from "node:crypto";
 
 export async function handleWorkItemRoutes({
   req, res, url, sendJson, readJson, actor,
-  listWorkItems, listAttention, getWorkItem, createWorkItem, updateWorkItem, bulkUpdateWorkItems, transitionWorkItem,
+  listWorkItems, getHomeWorkbench, listAttention, getWorkItem, createWorkItem, updateWorkItem, bulkUpdateWorkItems, transitionWorkItem,
   listActivity, listComments, createComment, updateComment, deleteComment,
   createWorktree, startAutoRun, beginExecution, abortExecution, recordExecutionBinding,
   createAutoRunBatch, listAutoRunBatches,
@@ -256,6 +256,12 @@ export async function handleWorkItemRoutes({
   }
   if (url.pathname === "/api/work-items/attention/actions" && req.method === "POST") {
     const result = updateAttention(await readJson(req), actor);
+    sendJson(res, result.status, result.body);
+    return true;
+  }
+
+  if (url.pathname === "/api/work-items/home-workbench" && req.method === "GET") {
+    const result = getHomeWorkbench(Object.fromEntries(url.searchParams), actor);
     sendJson(res, result.status, result.body);
     return true;
   }

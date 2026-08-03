@@ -1,9 +1,14 @@
 import { api } from "@/data/use-console-actions";
 import type { LocalWorkItem, LocalWorkItemResult } from "@/features/tasks/task-view-types";
 import { request } from "@/lib/api-client";
+import type { HomeWorkbench } from "./home-workbench-types";
 
 export function assignDashboardWorkItemToMe(id: string, expectedRevision: number) {
   return request("POST", `/api/work-items/${encodeURIComponent(id)}/assign-to-me`, { expectedRevision });
+}
+
+export function getDashboardHomeWorkbench(): Promise<HomeWorkbench> {
+  return request("GET", `/api/work-items/home-workbench?assigneeId=mine&timezoneOffset=${new Date().getTimezoneOffset()}`) as Promise<HomeWorkbench>;
 }
 
 export async function listAllDashboardWorkItems(
