@@ -454,6 +454,7 @@ export function WorktreeView({ worktree }: { worktree: WorktreeSnapshot }) {
       }
       // Clear only after the run is created, so a failed create keeps the staged
       // files for a retry instead of silently dropping them.
+      setTask("");
       setAttachments([]);
       setAttachmentFeedback(null);
       runIdempotencyKeyRef.current = null;

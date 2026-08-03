@@ -274,6 +274,7 @@ describe("WorktreeView session history", () => {
     expect(apiMock.uploadWorktreeAttachments.mock.calls[1]?.[2]).toBe(firstKey);
     expect(apiMock.createInvocation.mock.calls[0]?.[5]).toBe(firstKey);
     expect(apiMock.createInvocation.mock.calls[1]?.[5]).toBe(firstKey);
+    await waitFor(() => expect((screen.getByRole("textbox", { name: "Task" }) as HTMLTextAreaElement).value).toBe(""));
     await waitFor(() => expect(screen.queryByText("notes.txt")).toBeNull());
   });
 
