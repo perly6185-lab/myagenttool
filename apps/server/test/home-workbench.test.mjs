@@ -7,7 +7,7 @@ const NOW = "2026-08-03T04:00:00.000Z";
 function item(overrides = {}) {
   return {
     id: "lwi_1", localRef: "LOCAL-1", title: "Ship homepage", projectId: "prj_1",
-    priority: "p2", status: "ready", state: "open", archivedAt: null,
+    revision: 1, priority: "p2", status: "ready", state: "open", archivedAt: null,
     assigneeIds: ["usr_me"], requesterRelation: "customer", requesterName: "Alex",
     requesterOrganization: "Acme", requesterUserId: null, waitingOn: "me",
     executionState: "unclaimed", dueDate: null, plannedDate: null,
@@ -32,6 +32,7 @@ test("home workbench derives ordered primary and secondary attention reasons", (
     nextFollowUpAt: "2026-08-03T03:00:00.000Z",
   })]);
   assert.equal(result.items[0].attentionReason, "overdue");
+  assert.equal(result.items[0].revision, 1);
   assert.deepEqual(result.items[0].secondaryReasons, ["approval_required", "follow_up_due"]);
   assert.equal(result.items[0].needsAttention, true);
   assert.equal(result.items[0].nextAction.kind, "open_approval");

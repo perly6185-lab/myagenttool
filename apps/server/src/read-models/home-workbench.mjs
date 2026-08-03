@@ -143,6 +143,7 @@ export function homeWorkbenchReadModel({
         localRef: item.localRef,
         title: item.title,
         projectId: item.projectId ?? null,
+        revision: item.revision,
         priority: item.priority,
         assignees: (item.assigneeIds ?? []).map((id) => ({ id, name: users.get(id)?.name ?? id })),
         requester: {

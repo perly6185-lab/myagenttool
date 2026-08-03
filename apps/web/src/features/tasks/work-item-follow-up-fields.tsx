@@ -1,5 +1,6 @@
 import { useId } from "react";
 import { Field } from "@/components/common/field";
+import { Button } from "@/components/ui/button";
 import { Input, Select } from "@/components/ui/input";
 import { useAppTranslation } from "@/lib/i18n/use-app-translation";
 import { installWorkItemFollowUpTranslations } from "@/lib/i18n/work-item-follow-up-resources";
@@ -176,9 +177,11 @@ export function WorkItemFollowUpFields({
 export function WorkItemFollowUpSummary({
   item,
   users = [],
+  onRecordProgress,
 }: {
   item: LocalWorkItem;
   users?: WorkItemFollowUpUser[];
+  onRecordProgress?: () => void;
 }) {
   const { t: typedT, i18n } = useAppTranslation();
   const t = typedT as unknown as (key: string) => string;
@@ -211,7 +214,10 @@ export function WorkItemFollowUpSummary({
         <SummaryFact label={t("taskFollowUp.nextFollowUpAt")} value={date(item.nextFollowUpAt)} />
       </dl>
       <div className="mt-3 rounded bg-muted p-2 text-xs">
-        <strong>{t("taskFollowUp.lastProgress")}{item.lastProgressAt ? ` · ${date(item.lastProgressAt)}` : ""}</strong>
+        <div className="flex items-center justify-between gap-2">
+          <strong>{t("taskFollowUp.lastProgress")}{item.lastProgressAt ? ` · ${date(item.lastProgressAt)}` : ""}</strong>
+          {onRecordProgress ? <Button type="button" size="sm" variant="secondary" onClick={onRecordProgress}>{t("taskFollowUp.recordProgress")}</Button> : null}
+        </div>
         <p className="mt-1 text-muted-foreground">{item.lastProgressSummary || t("taskFollowUp.noProgress")}</p>
       </div>
     </section>

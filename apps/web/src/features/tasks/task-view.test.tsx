@@ -20,6 +20,7 @@ const mocks = vi.hoisted(() => ({
   getArticleDerivative: vi.fn(),
   getWorkItem: vi.fn(),
   updateWorkItem: vi.fn(),
+  recordWorkItemProgress: vi.fn(),
   bulkUpdateWorkItems: vi.fn(),
   transitionWorkItem: vi.fn(),
   listWorkItemComments: vi.fn(),
@@ -115,6 +116,7 @@ vi.mock("@/data/use-console-actions", () => ({
     getArticleDerivative: mocks.getArticleDerivative,
     getWorkItem: mocks.getWorkItem,
     updateWorkItem: mocks.updateWorkItem,
+    recordWorkItemProgress: mocks.recordWorkItemProgress,
     bulkUpdateWorkItems: mocks.bulkUpdateWorkItems,
     transitionWorkItem: mocks.transitionWorkItem,
     listWorkItemComments: mocks.listWorkItemComments,
@@ -677,6 +679,7 @@ describe("TaskView local work items", () => {
     expect(screen.getByRole("tab", { name: "Overview" }).getAttribute("aria-selected")).toBe("true");
     expect(await screen.findByText("Customer · Alex Client")).toBeTruthy();
     expect(screen.getByText("Draft sent for review")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Record progress" })).toBeTruthy();
     fireEvent.click(screen.getByRole("tab", { name: "Assets" }));
     expect(screen.getByRole("tab", { name: "Assets" }).getAttribute("aria-selected")).toBe("true");
     expect(cockpit?.hasAttribute("hidden")).toBe(true);

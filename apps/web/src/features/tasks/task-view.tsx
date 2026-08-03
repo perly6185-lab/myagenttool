@@ -77,6 +77,7 @@ const WorkItemFollowUpFields = lazy(() => import("./work-item-follow-up-fields")
   .then((module) => ({ default: module.WorkItemFollowUpFields })));
 const WorkItemFollowUpSummary = lazy(() => import("./work-item-follow-up-fields")
   .then((module) => ({ default: module.WorkItemFollowUpSummary })));
+const WorkItemProgressDialog = lazy(() => import("./work-item-progress-dialog"));
 const WorkItemExternalSync = lazy(() => import("./work-item-external-sync")
   .then((module) => ({ default: module.WorkItemExternalSync })));
 const ClaimHistoryList = lazy(() => import("./claim-history-list")
@@ -2401,6 +2402,7 @@ function LocalWorkItemDetail({
     checks: { key: string; label: string; status: "ok" | "warn" | "blocked"; detail: string }[];
   } | null>(null);
   const [deleteCommentTarget, setDeleteCommentTarget] = useState<WorkItemComment | null>(null);
+  const [progressOpen, setProgressOpen] = useState(false);
   const [deliveryConfirmMode, setDeliveryConfirmMode] = useState<"local_merge" | "pull_request" | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [selectedExecutionAgentId, setSelectedExecutionAgentId] = useState("");
@@ -3028,7 +3030,11 @@ function LocalWorkItemDetail({
           </div>
         </div>
         <Suspense fallback={null}>
-          <WorkItemFollowUpSummary item={item} users={consoleState?.users ?? []} />
+          <WorkItemFollowUpSummary
+            item={item}
+            users={consoleState?.users ?? []}
+            onRecordProgress={() => setProgressOpen(true)}
+          />
         </Suspense>
       </section>
       <div hidden={selectedWorkItemSection !== "trace"}>
@@ -3510,9 +3516,16 @@ function LocalWorkItemDetail({
                   ? articleText.importStarted
                   : row.action === "article_derivative_started"
                     ? articleText.derivativeStarted
-                    : t(`taskLocal.activityAction.${row.action}`, { defaultValue: row.action })}
+                    : row.action === "progress_recorded"
+                      ? (t as unknown as (key: string) => string)("taskFollowUp.progressActivity")
+                      : t(`taskLocal.activityAction.${row.action}`, { defaultValue: row.action })}
               </Badge>
-              <span>{row.actorId}</span>
+              <span>
+                {row.actorId}
+                {row.action === "progress_recorded" && typeof row.details.summary === "string"
+                  ? ` · ${row.details.summary}`
+                  : ""}
+              </span>
               <span className="ml-auto text-muted-foreground">{row.createdAt.replace("T", " ").slice(0, 16)}</span>
             </li>
           ))}
@@ -3540,6 +3553,24 @@ function LocalWorkItemDetail({
           setDeleteCommentTarget(null);
         }}
       />
+      <Suspense fallback={null}>
+        <WorkItemProgressDialog
+          target={item}
+          open={progressOpen}
+          onClose={() => setProgressOpen(false)}
+          onSaved={async (next) => {
+            syncDraft(next);
+            try {
+              const activityResult = await api.listWorkItemActivity(workItemId) as { activities: WorkItemActivity[] };
+              setActivity(activityResult.activities);
+            } catch {
+              // The progress write succeeded; the normal detail refresh will reconcile activity later.
+            }
+            onChanged();
+            setNotice((t as unknown as (key: string) => string)("taskFollowUp.progressSaved"));
+          }}
+        />
+      </Suspense>
       {articleAnalysis || similarArticles || articleDerivativeDialog ? (
         <Suspense fallback={null}>
           <ArticleWorkflowDialogs

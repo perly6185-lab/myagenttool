@@ -393,6 +393,7 @@ export function createHttpServer({
   getWorkItem,
   createWorkItem,
   updateWorkItem,
+  recordWorkItemProgress,
   bulkUpdateWorkItems,
   transitionWorkItem,
   completeWorkItemDelivery,
@@ -799,7 +800,7 @@ export function createHttpServer({
 
       if (await handleWorkItemRoutes({
         req, res, url, sendJson, readJson, actor,
-        listWorkItems, getHomeWorkbench, listAttention: listWorkItemAttention, getWorkItem, createWorkItem, updateWorkItem, bulkUpdateWorkItems, transitionWorkItem,
+        listWorkItems, getHomeWorkbench, listAttention: listWorkItemAttention, getWorkItem, createWorkItem, updateWorkItem, recordWorkItemProgress, bulkUpdateWorkItems, transitionWorkItem,
         listActivity: listWorkItemActivity,
         listComments: listWorkItemComments,
         createComment: createWorkItemComment,
