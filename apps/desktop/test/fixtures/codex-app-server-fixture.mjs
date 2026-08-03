@@ -7,6 +7,7 @@ const crashOnInitialize = process.argv.includes("--crash-on-initialize");
 const approval = process.argv.includes("--approval");
 const capacity = process.argv.includes("--capacity");
 const expectAuto = process.argv.includes("--expect-auto");
+const expectModel = process.argv.includes("--expect-model");
 const reader = createInterface({ input: process.stdin });
 let activeTurn = null;
 
@@ -39,6 +40,10 @@ reader.on("line", (line) => {
   if (method === "thread/start" || method === "thread/resume") {
     if (expectAuto && (params.approvalPolicy !== "on-request" || params.approvalsReviewer !== "auto_review" || params.sandbox !== "workspace-write")) {
       send({ id, error: { code: -32602, message: "permission profile mismatch" } });
+      return;
+    }
+    if (expectModel && params.model !== "gpt-5.6-sol") {
+      send({ id, error: { code: -32602, message: "model mismatch" } });
       return;
     }
     const threadId = params.threadId ?? "thr_fixture";

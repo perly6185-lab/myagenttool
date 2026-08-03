@@ -72,6 +72,7 @@ test("gate allows supported modes inside the approved worktree", () => {
       executableSource: "sdk_bundled",
       sessionMode: "new",
       resuming: false,
+      model: null,
     });
   } finally {
     rmSync(root, { recursive: true, force: true });
@@ -298,6 +299,7 @@ test("runClaudeSdkQuery streams messages and captures terminal result", async ()
       permissionMode: "plan",
       env: { HOME: "/tmp/demo" },
       approvedRoots: [root],
+      model: "claude-sonnet-4-5@20250929",
     });
     const result = await runClaudeSdkQuery({
       prompt: "Review this project",
@@ -326,6 +328,7 @@ test("runClaudeSdkQuery streams messages and captures terminal result", async ()
     assert.equal(typeof queryCalls[0].options.hooks.PostToolUse[0].hooks[0], "function");
     assert.equal(typeof queryCalls[0].options.hooks.FileChanged[0].hooks[0], "function");
     assert.equal(queryCalls[0].options.persistSession, true);
+    assert.equal(queryCalls[0].options.model, "claude-sonnet-4-5@20250929");
     assert.deepEqual(queryCalls[0].options.env, { HOME: "/tmp/demo" });
     assert.deepEqual(received, messages);
     assert.equal(result.sessionId, "sess_1");

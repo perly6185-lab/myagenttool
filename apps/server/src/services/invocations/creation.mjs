@@ -1,3 +1,8 @@
+import {
+  agentAdapterSupportsModel,
+  normalizeAgentModel,
+} from "@myagenttool/protocol/agent-models";
+
 import { renderAgentSkillsIntoWorktree } from "../agent-skills.mjs";
 import { createRefusalRuntime } from "../../runtime/refusal-log.mjs";
 import { teamOf } from "../../runtime/auth.mjs";
@@ -46,6 +51,11 @@ export function createInvocationCreationRuntime({
   function createInvocation(task, agent = defaultAgent(), options = {}) {
     if (!agent) {
       throw new Error("No agent is registered.");
+    }
+    const invocationModel = normalizeAgentModel(options.model);
+    const hasInvocationModel = options.model != null && String(options.model).trim() !== "";
+    if (hasInvocationModel && (!invocationModel || !agentAdapterSupportsModel(agent.adapter, invocationModel))) {
+      throw new Error("The selected model is not supported by this Agent.");
     }
     // Prefer an explicit requestedBy (the scheduler passes the automation's
     // creator), then the acting user, then the local fallback.
@@ -248,6 +258,7 @@ export function createInvocationCreationRuntime({
       options: {
         timeoutSeconds: Number(options.timeoutSeconds ?? 30),
         requireLocalApproval: Boolean(options.requireLocalApproval ?? policy.decision === "requires_local_approval"),
+        ...(invocationModel ? { model: invocationModel } : {}),
         // MCP tool selection (#975): the bridge's MCP client resolves the tool
         // from options.toolName / options.toolArguments, but the gateway never
         // carried them — a multi-tool MCP agent could not be invoked with a

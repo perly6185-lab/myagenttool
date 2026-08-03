@@ -117,3 +117,18 @@ test("invocation inherits the registered Codex Agent permission mode unless the 
   assert.equal(inherited.options.approvalMode, "full");
   assert.equal(overridden.options.approvalMode, "ask");
 });
+
+test("invocation model overrides must belong to the selected Agent catalog", () => {
+  const { svc } = runtime();
+  const codexAgent = {
+    ...agent,
+    adapter: { type: "cli", command: "codex" },
+  };
+
+  const invocation = svc.createInvocation("use a model", codexAgent, { model: "gpt-5.6-sol" });
+  assert.equal(invocation.options.model, "gpt-5.6-sol");
+  assert.throws(
+    () => svc.createInvocation("reject a model", codexAgent, { model: "unsupported/model" }),
+    /not supported by this Agent/,
+  );
+});

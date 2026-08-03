@@ -69,6 +69,7 @@ export interface InvocationCancellation {
 export interface InvocationOptions {
   timeoutSeconds?: number;
   requireLocalApproval?: boolean;
+  model?: string;
   metadata?: JsonObject;
 }
 

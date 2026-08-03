@@ -16,6 +16,7 @@ import { statusTone } from "@/lib/readable-labels";
 import { invocationStatus } from "@/lib/i18n/readable-labels";
 import { useAppTranslation } from "@/lib/i18n/use-app-translation";
 import { installExecutionUiTranslations } from "@/lib/i18n/execution-ui-resources";
+import { installAutoRunTranslations } from "@/lib/i18n/auto-run-resources";
 import { branchFromIssue, worktreeLinkFor } from "@/features/projects/worktree-payload";
 import { githubItemKindLabel, worktreeAutoRunPrompt } from "@myagenttool/protocol/issue-prompt";
 import {
@@ -68,6 +69,7 @@ const ArticleWorkflowDialogs = lazy(() => import("./article-workflow-dialogs"));
 const CreateLocalWorkItemForm = lazy(() => import("./create-local-work-item-form"));
 
 installExecutionUiTranslations();
+installAutoRunTranslations();
 const RoutineBatchQueue = lazy(() => import("./routine-batch-queue")
   .then((module) => ({ default: module.RoutineBatchQueue })));
 const RoutineWorkController = lazy(() => import("./routine-work-controller"));

@@ -81,6 +81,8 @@ export interface AgentAdapter {
   sandbox?: string;
   permissionMode?: string;
   claudeRuntime?: "cli" | "agent_sdk";
+  models?: string[];
+  defaultModel?: string | null;
   args?: string[];
   // MCP transport (stdio spawns `command`; http calls `url`).
   transport?: string;
@@ -472,6 +474,7 @@ export interface InvocationSnapshot {
   explanation?: InvocationExplanation | null;
   createdAt?: string;
   options?: {
+    model?: string;
     metadata?: {
       automationId?: string;
       automationName?: string;

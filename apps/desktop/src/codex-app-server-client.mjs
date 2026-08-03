@@ -247,6 +247,7 @@ export function createCodexAppServerClient({
     sandbox = "workspace-write",
     approvalPolicy = "on-request",
     approvalsReviewer = "user",
+    model = null,
     threadId: resumeThreadId = null,
     timeoutMs = 0,
     commandIdleTimeoutMs = 0,
@@ -369,6 +370,7 @@ export function createCodexAppServerClient({
         approvalPolicy,
         approvalsReviewer,
         sandbox,
+        ...(model ? { model: String(model) } : {}),
       };
       const threadResult = resumeThreadId
         ? await request("thread/resume", { threadId: resumeThreadId, ...threadParams })

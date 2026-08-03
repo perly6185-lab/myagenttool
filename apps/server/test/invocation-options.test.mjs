@@ -43,3 +43,14 @@ test("an explicit metadata.permissionMode is preserved when no permissionLevel i
   const out = invocationOptionsFromBody({ options: { metadata: { permissionMode: "auto" } } });
   assert.equal(out.metadata.permissionMode, "auto");
 });
+
+test("a safe per-run model is preserved outside reserved metadata", () => {
+  const out = invocationOptionsFromBody({ options: { model: "gpt-5.6-sol" } });
+  assert.equal(out.model, "gpt-5.6-sol");
+  assert.equal(out.metadata.model, undefined);
+});
+
+test("an unsafe per-run model is discarded", () => {
+  const out = invocationOptionsFromBody({ options: { model: "gpt-5.6-sol --help" } });
+  assert.equal(out.model, undefined);
+});

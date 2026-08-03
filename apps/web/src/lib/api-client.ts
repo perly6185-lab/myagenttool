@@ -1779,8 +1779,11 @@ export const api = {
       `/api/invocations/${encodeURIComponent(id)}/refusals?${query}`,
     );
   },
-  uploadWorktreeAttachments: (id: string, files: { name: string; dataBase64: string }[]) =>
-    request("POST", `/api/worktrees/${encodeURIComponent(id)}/attachments`, { files }),
+  uploadWorktreeAttachments: (
+    id: string,
+    files: { name: string; dataBase64: string }[],
+    batchId: string,
+  ) => request("POST", `/api/worktrees/${encodeURIComponent(id)}/attachments`, { files, batchId }),
   manageOfficeDocument: (id: string, payload: { operation: "rename" | "move" | "copy" | "delete"; source: string; destination?: string }) =>
     request<{ operation: string; source: string; destination?: string }>(
       "POST",

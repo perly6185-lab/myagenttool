@@ -105,13 +105,13 @@ function runCheck() {
   // React source (and therefore the built bundle) and back the M0 acceptance.
   const source = collectSource(srcDir);
   const expectations = [
-    ["What should your computer do?", "plain-language task composer"],
+    ["Describe the outcome you want", "plain-language task composer"],
     ["Run on this computer", "plain-language run action"],
     ["Safety", "safety review"],
     ["Data", "data review"],
     ["Cost", "cost review"],
     ["Cancellation", "cancellation review"],
-    ["Technical details", "progressive disclosure of technical details"],
+    ["What to know before running", "progressive disclosure of technical details"],
     ["Find local agents", "conservative discovery surface"],
     ["Connect unsupported agent", "integration builder surface"],
     ["resolveApiBase", "localhost-only API override"],

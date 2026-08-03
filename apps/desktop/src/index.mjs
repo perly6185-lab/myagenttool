@@ -32,6 +32,7 @@ import {
   resolveCodexCommandTimeoutMs,
 } from "./codex-command-watchdog.mjs";
 import { withGitSafeDirectoryEnv, withSafeDiscoveryEnv } from "./safe-discovery.mjs";
+import { applyAgentModelArgs } from "./agent-model-selection.mjs";
 import { spawnCapture } from "./spawn-capture.mjs";
 import { isInactiveInvocationError } from "./bridge-events.mjs";
 import { applicationWrapperArgs } from "./application-wrapper-args.mjs";
@@ -1462,6 +1463,7 @@ async function runClaudeSdkBridgeInvocation(work, {
       : null,
     timeoutMs,
     approvedRoots,
+    model: work.options?.model,
     resumeSessionId:
       work.options?.claudeResumeSessionId
       ?? work.options?.metadata?.claudeResumeSessionId
@@ -1778,6 +1780,7 @@ async function runCodexAppServerInvocation(work, {
       sandbox: permissionProfile.sandboxMode,
       approvalPolicy: permissionProfile.approvalPolicy,
       approvalsReviewer: permissionProfile.approvalsReviewer,
+      model: work.options?.model ?? null,
       threadId: work.options?.codexSessionMode === "continue_last"
         ? work.options?.codexResumeSessionId ?? null
         : null,
@@ -2219,13 +2222,14 @@ function createCliSpawnPlan(adapter, payload) {
         { cwd },
       )
     : null;
-  const renderedArgs = codexContract
+  const baseRenderedArgs = codexContract
     ? codexContract.args
     : applicationWrapperArgs(
         governedApplyWrapperArgs(governedExecWrapperArgs(governedReviewWrapperArgs(renderArgs(argsTemplate, payloadJson, payload), payload), payload), payload),
         payload,
         { resolveCwd: (spec, metadata) => normalizedExistingPath(spec.cwd) ?? normalizedExistingPath(metadata?.worktreePath) ?? normalizedExistingPath(metadata?.projectPath) },
       );
+  const renderedArgs = applyAgentModelArgs(baseRenderedArgs, adapter, payload.options?.model);
   const effectiveCodexAdapter = codexCommandOverride && codexCommandOverride !== "fixture"
     ? { ...adapter, command: codexCommandOverride }
     : adapter;
