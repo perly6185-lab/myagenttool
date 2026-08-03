@@ -9,6 +9,78 @@ export type StagedWorktreeAttachment = {
   type: string;
 };
 
+export type WorktreeAttachmentRejectionReason = "empty" | "too_large" | "too_many" | "read_failed";
+
+export type WorktreeAttachmentRejection = {
+  name: string;
+  reason: WorktreeAttachmentRejectionReason;
+};
+
+export type WorktreeAttachmentUploadResponse = {
+  batchId?: string;
+  attachments?: { name: string; path: string; bytes?: number }[];
+  skipped?: { name: string; reason: WorktreeAttachmentRejectionReason | string }[];
+};
+
+export const MAX_WORKTREE_ATTACHMENTS = 6;
+export const MAX_WORKTREE_ATTACHMENT_BYTES = 5 * 1024 * 1024;
+
+export async function stageWorktreeAttachmentFiles(
+  files: FileList | File[],
+  remainingSlots: number,
+): Promise<{ attachments: StagedWorktreeAttachment[]; rejected: WorktreeAttachmentRejection[] }> {
+  const candidates: File[] = [];
+  const rejected: WorktreeAttachmentRejection[] = [];
+  for (const file of Array.from(files)) {
+    const name = file.name || "file";
+    if (file.size === 0) {
+      rejected.push({ name, reason: "empty" });
+    } else if (file.size > MAX_WORKTREE_ATTACHMENT_BYTES) {
+      rejected.push({ name, reason: "too_large" });
+    } else if (candidates.length >= remainingSlots) {
+      rejected.push({ name, reason: "too_many" });
+    } else {
+      candidates.push(file);
+    }
+  }
+
+  const read = await Promise.all(candidates.map((file) => new Promise<{
+    attachment: StagedWorktreeAttachment | null;
+    rejection: WorktreeAttachmentRejection | null;
+  }>((resolve) => {
+    const fail = () => resolve({
+      attachment: null,
+      rejection: { name: file.name || "file", reason: "read_failed" },
+    });
+    const reader = new FileReader();
+    reader.onload = () => {
+      const dataBase64 = String(reader.result ?? "").split(",")[1] ?? "";
+      if (!dataBase64) return fail();
+      resolve({
+        attachment: {
+          name: file.name || "file",
+          dataBase64,
+          size: file.size,
+          type: file.type,
+        },
+        rejection: null,
+      });
+    };
+    reader.onerror = fail;
+    reader.onabort = fail;
+    try {
+      reader.readAsDataURL(file);
+    } catch {
+      fail();
+    }
+  })));
+
+  return {
+    attachments: read.flatMap((item) => item.attachment ? [item.attachment] : []),
+    rejected: [...rejected, ...read.flatMap((item) => item.rejection ? [item.rejection] : [])],
+  };
+}
+
 export function WorktreeAttachmentPicker({
   attachments,
   onFiles,
@@ -18,6 +90,7 @@ export function WorktreeAttachmentPicker({
   removeLabel,
   disabled = false,
   disabledHint,
+  feedback,
   compact = false,
 }: {
   attachments: StagedWorktreeAttachment[];
@@ -28,6 +101,7 @@ export function WorktreeAttachmentPicker({
   removeLabel: (name: string) => string;
   disabled?: boolean;
   disabledHint?: string;
+  feedback?: string | null;
   compact?: boolean;
 }) {
   const inputRef = useRef<HTMLInputElement | null>(null);
@@ -83,6 +157,7 @@ export function WorktreeAttachmentPicker({
       {disabled && disabledHint ? (
         <p className={compact ? "sr-only" : "text-xs text-muted-foreground"}>{disabledHint}</p>
       ) : null}
+      {feedback ? <p className="text-xs text-destructive" aria-live="polite">{feedback}</p> : null}
     </div>
   );
 }

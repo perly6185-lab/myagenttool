@@ -1,4 +1,4 @@
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { constants as fsConstants, copyFileSync, existsSync, lstatSync, mkdirSync, readFileSync, realpathSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { canProvision, denyForeignProject, teamOf, LOCAL_TEAM_ID } from "../runtime/auth.mjs";
@@ -1262,9 +1262,13 @@ export async function handleProjectRoutes({
     if (action === "attachments" && req.method === "POST") {
       try {
         const body = await readJson(req);
-        sendJson(res, 201, saveAttachments(worktree, body.files));
+        sendJson(res, 201, saveAttachments(worktree, body.files, body.batchId));
       } catch (error) {
-        sendJson(res, 400, { error: "worktree_attachment_failed", message: errorMessage(error) });
+        const conflict = error?.code === "attachment_batch_conflict";
+        sendJson(res, conflict ? 409 : 400, {
+          error: conflict ? "worktree_attachment_batch_conflict" : "worktree_attachment_failed",
+          message: errorMessage(error),
+        });
       }
       return true;
     }
@@ -1383,6 +1387,7 @@ function gitSummaryForWorktree(summary) {
 // contained .gitignore so attachments never show up as untracked clutter in the
 // worktree diff or get swept into a commit by ephemeral cleanup.
 const MAX_ATTACHMENT_BYTES = 5 * 1024 * 1024;
+const ATTACHMENT_BATCH_ID_RE = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,199}$/;
 const OFFICE_IMPORT_EXTENSIONS = new Set([".docx", ".xlsx", ".pptx"]);
 
 export function manageOfficeDocument(worktree, body) {
@@ -1426,8 +1431,13 @@ function resolveOfficeDocumentPath(root, input, { mustExist, createParent = fals
   return { absolute, relative: value };
 }
 
-function saveAttachments(worktree, files) {
-  const list = Array.isArray(files) ? files.slice(0, 6) : [];
+function saveAttachments(worktree, files, inputBatchId = null) {
+  const rawList = Array.isArray(files) ? files : [];
+  const list = rawList.slice(0, 6);
+  const batchId = String(inputBatchId ?? "").trim();
+  if (batchId && !ATTACHMENT_BATCH_ID_RE.test(batchId)) {
+    throw new Error("Attachment batch ID is invalid.");
+  }
   const root = resolve(worktree.path);
   const dir = join(root, ".myagenttool", "attachments");
   // Reject a symlinked attachments dir, then realpath-verify it stays under root.
@@ -1441,21 +1451,88 @@ function saveAttachments(worktree, files) {
     throw new Error("Attachment path escapes the worktree root.");
   }
   writeFileSync(join(dir, ".gitignore"), "*\n");
+  const batchToken = batchId
+    ? createHash("sha256").update(batchId).digest("hex").slice(0, 24)
+    : randomBytes(12).toString("hex");
+  const batchDir = join(dir, batchToken);
+  if (existsSync(batchDir) && lstatSync(batchDir).isSymbolicLink()) {
+    throw new Error("Attachment batch path escapes the worktree root.");
+  }
+  mkdirSync(batchDir, { recursive: true });
+  const realBatchDir = realpathSync(batchDir);
+  if (realBatchDir !== realDir && !realBatchDir.startsWith(realDir + sep)) {
+    throw new Error("Attachment batch path escapes the worktree root.");
+  }
+
+  const fingerprint = createHash("sha256");
+  fingerprint.update(`count:${rawList.length}\n`);
   const attachments = [];
   const skipped = [];
-  for (const file of list) {
+  const writes = [];
+  for (const [index, file] of list.entries()) {
     const declaredName =
       basename(String(file?.name ?? "file")).replace(/[^A-Za-z0-9._-]/g, "_").slice(0, 80) || "file";
     const buf = file?.dataBase64 ? Buffer.from(String(file.dataBase64), "base64") : Buffer.alloc(0);
+    const contentHash = createHash("sha256").update(buf).digest("hex");
+    fingerprint.update(`${index}:${declaredName}:${contentHash}:${buf.length}\n`);
     if (buf.length === 0 || buf.length > MAX_ATTACHMENT_BYTES) {
       skipped.push({ name: declaredName, reason: buf.length === 0 ? "empty" : "too_large" });
       continue;
     }
-    const name = `${randomBytes(3).toString("hex")}-${declaredName}`;
-    writeFileSync(join(dir, name), buf);
-    attachments.push({ name: declaredName, path: `.myagenttool/attachments/${name}`, bytes: buf.length });
+    const name = `${String(index + 1).padStart(2, "0")}-${contentHash.slice(0, 16)}-${declaredName}`;
+    const absolute = join(batchDir, name);
+    writes.push({ absolute, buf, contentHash });
+    attachments.push({
+      name: declaredName,
+      path: `.myagenttool/attachments/${batchToken}/${name}`,
+      bytes: buf.length,
+    });
   }
-  return { attachments, skipped };
+  for (const [index, file] of rawList.slice(6, 12).entries()) {
+    const declaredName =
+      basename(String(file?.name ?? "file")).replace(/[^A-Za-z0-9._-]/g, "_").slice(0, 80) || "file";
+    fingerprint.update(`extra:${index + 6}:${declaredName}\n`);
+    skipped.push({ name: declaredName, reason: "too_many" });
+  }
+  const payloadFingerprint = fingerprint.digest("hex");
+  const manifestPath = join(batchDir, "manifest.json");
+  const assertManifestMatches = () => {
+    const manifest = JSON.parse(readFileSync(manifestPath, "utf8"));
+    if (manifest?.fingerprint !== payloadFingerprint) {
+      const error = new Error("Attachment batch was already used with different files.");
+      error.code = "attachment_batch_conflict";
+      throw error;
+    }
+  };
+  if (existsSync(manifestPath)) {
+    assertManifestMatches();
+  }
+  for (const { absolute, buf, contentHash } of writes) {
+    if (existsSync(absolute)) {
+      const existingHash = createHash("sha256").update(readFileSync(absolute)).digest("hex");
+      if (existingHash !== contentHash) {
+        const error = new Error("Attachment batch file does not match its original content.");
+        error.code = "attachment_batch_conflict";
+        throw error;
+      }
+    } else {
+      writeFileSync(absolute, buf, { flag: "wx" });
+    }
+  }
+  if (!existsSync(manifestPath)) {
+    try {
+      writeFileSync(manifestPath, JSON.stringify({
+        version: 1,
+        fingerprint: payloadFingerprint,
+        attachments,
+        skipped,
+      }, null, 2), { flag: "wx" });
+    } catch (error) {
+      if (error?.code !== "EEXIST") throw error;
+      assertManifestMatches();
+    }
+  }
+  return { batchId: batchToken, attachments, skipped };
 }
 
 function slugify(value) {

@@ -13,6 +13,7 @@ import { cn } from "@/lib/cn";
 import { shortTime, type Tone } from "@/lib/readable-labels";
 import { useAppTranslation } from "@/lib/i18n/use-app-translation";
 import { installExecutionUiTranslations } from "@/lib/i18n/execution-ui-resources";
+import { installAutoRunTranslations } from "@/lib/i18n/auto-run-resources";
 import { AutoRunReadinessCard } from "./auto-run-readiness-card";
 import { AutoRunOnboardingCard } from "./auto-run-onboarding-card";
 import { ReportView } from "./report-view";
@@ -32,6 +33,7 @@ import { InvocationDispatchHealth } from "@/features/devices/invocation-dispatch
 import { autoRunApi } from "./auto-run-api";
 
 installExecutionUiTranslations();
+installAutoRunTranslations();
 
 interface AutoRunLink {
   type: "issue" | "pr";

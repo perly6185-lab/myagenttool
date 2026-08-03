@@ -15,7 +15,14 @@ import { EmptyState } from "@/components/common/empty-state";
 import { DecisionAction } from "@/features/invocations/decision-action";
 import { AgentRunComposer } from "@/features/invocations/agent-run-composer";
 import { permissionModeForAgent } from "@/features/invocations/agent-permission";
-import { WorktreeAttachmentPicker, type StagedWorktreeAttachment } from "@/features/invocations/worktree-attachment-picker";
+import {
+  MAX_WORKTREE_ATTACHMENTS,
+  WorktreeAttachmentPicker,
+  stageWorktreeAttachmentFiles,
+  type StagedWorktreeAttachment,
+  type WorktreeAttachmentRejection,
+  type WorktreeAttachmentUploadResponse,
+} from "@/features/invocations/worktree-attachment-picker";
 import { InvocationEventHistory } from "@/features/invocations/invocation-event-history";
 import { InvocationRefusalHistory } from "@/features/invocations/invocation-refusal-history";
 import { WorktreeLinkPopover } from "@/features/projects/worktree-link-popover";
@@ -26,6 +33,9 @@ import { useUiStore } from "@/store/ui-store";
 import { cn } from "@/lib/cn";
 import type { InvocationSnapshot, WorktreeSnapshot } from "@/lib/console-state";
 import { useAppTranslation } from "@/lib/i18n/use-app-translation";
+import { installWorktreeViewTranslations } from "@/lib/i18n/worktree-view-resources";
+
+installWorktreeViewTranslations();
 
 const RUNNING = ["queued", "dispatching", "waiting_for_local_approval", "running", "cancelling"];
 
@@ -106,6 +116,7 @@ export function WorktreeView({ worktree }: { worktree: WorktreeSnapshot }) {
   // Pasted/picked files to save into the worktree before the run (so the agent
   // can read them). Held as base64 until the run uploads them.
   const [attachments, setAttachments] = useState<StagedWorktreeAttachment[]>([]);
+  const [attachmentFeedback, setAttachmentFeedback] = useState<string | null>(null);
   const [tree, setTree] = useState<TreeNode[]>([]);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [loadingDirs, setLoadingDirs] = useState<Set<string>>(new Set());
@@ -250,6 +261,7 @@ export function WorktreeView({ worktree }: { worktree: WorktreeSnapshot }) {
     setSessionQuery("");
     setCreatedInvocation(null);
     setAttachments([]);
+    setAttachmentFeedback(null);
     // Reset the run target to this worktree's own agent (the instance is reused
     // across worktree switches, so a stale agent would otherwise carry over).
     setAgentId(worktree.agentId ?? agents[0]?.id ?? "");
@@ -380,30 +392,24 @@ export function WorktreeView({ worktree }: { worktree: WorktreeSnapshot }) {
   // Read picked/pasted files into base64 and stage them. Awaits all reads so a
   // run that starts right after a paste sees the files; the count cap is applied
   // across accumulated state (not per call) and matches the server's limits.
-  const MAX_FILE_BYTES = 5 * 1024 * 1024;
+  function attachmentRejectionMessage(rejected: WorktreeAttachmentRejection[]) {
+    const reasons = [...new Set(rejected.map((item) => item.reason))]
+      .map((reason) => t(`agentComposer.attachmentReason.${reason}`))
+      .join("; ");
+    return t("agentComposer.attachmentRejected", { reasons });
+  }
+
   async function addFiles(files: FileList | File[]) {
     const worktreeId = worktree.id;
-    const remainingSlots = Math.max(0, 6 - attachments.length);
-    if (remainingSlots === 0) return;
-    const read = await Promise.all(
-      Array.from(files)
-        .filter((f) => f.size > 0 && f.size <= MAX_FILE_BYTES)
-        .slice(0, remainingSlots)
-        .map(
-          (f) =>
-            new Promise<{ name: string; dataBase64: string; size: number; type: string } | null>((resolve) => {
-              const reader = new FileReader();
-              reader.onload = () => resolve({ name: f.name || "file", dataBase64: String(reader.result ?? "").split(",")[1] ?? "", size: f.size, type: f.type });
-              reader.onerror = () => resolve(null);
-              reader.readAsDataURL(f);
-            }),
-        ),
+    const result = await stageWorktreeAttachmentFiles(
+      files,
+      Math.max(0, MAX_WORKTREE_ATTACHMENTS - attachments.length),
     );
     if (attachmentWorktreeRef.current !== worktreeId) return;
-    const valid = read.filter((a): a is NonNullable<typeof a> => Boolean(a?.dataBase64));
-    if (valid.length > 0) {
+    setAttachmentFeedback(result.rejected.length > 0 ? attachmentRejectionMessage(result.rejected) : null);
+    if (result.attachments.length > 0) {
       runIdempotencyKeyRef.current = null;
-      setAttachments((prev) => [...prev, ...valid].slice(0, 6));
+      setAttachments((prev) => [...prev, ...result.attachments].slice(0, MAX_WORKTREE_ATTACHMENTS));
     }
   }
 
@@ -419,8 +425,12 @@ export function WorktreeView({ worktree }: { worktree: WorktreeSnapshot }) {
         const r = (await api.uploadWorktreeAttachments(
           worktree.id,
           attachments.map((a) => ({ name: a.name, dataBase64: a.dataBase64 })),
-        )) as { attachments?: { name: string; path: string }[] };
+          idempotencyKey,
+        )) as WorktreeAttachmentUploadResponse;
         const saved = r.attachments ?? [];
+        if ((r.skipped?.length ?? 0) > 0 || saved.length !== attachments.length) {
+          throw new Error(t("agentComposer.attachmentUploadRejected"));
+        }
         if (saved.length > 0) {
           finalTask += `\n\nAttached files (in the worktree):\n${saved.map((a) => `- ${a.path}`).join("\n")}`;
         }
@@ -439,10 +449,13 @@ export function WorktreeView({ worktree }: { worktree: WorktreeSnapshot }) {
         setCreatedInvocation(created.invocation);
         setSelectedInvocationId(created.invocation.id);
         selectTab("session");
+      } else {
+        throw new Error("Invocation was not created.");
       }
       // Clear only after the run is created, so a failed create keeps the staged
       // files for a retry instead of silently dropping them.
       setAttachments([]);
+      setAttachmentFeedback(null);
       runIdempotencyKeyRef.current = null;
       return created;
     }).finally(() => {
@@ -560,6 +573,7 @@ export function WorktreeView({ worktree }: { worktree: WorktreeSnapshot }) {
           {activeTab === "session" ? (
             <>
               <AgentRunComposer
+                disabled={pending}
                 title={t("worktreeView.runTitle")}
                 context={worktree.path}
                 task={task}
@@ -582,10 +596,12 @@ export function WorktreeView({ worktree }: { worktree: WorktreeSnapshot }) {
                     onRemove={(index) => {
                       runIdempotencyKeyRef.current = null;
                       setAttachments((prev) => prev.filter((_, itemIndex) => itemIndex !== index));
+                      setAttachmentFeedback(null);
                     }}
-                    label={t("worktreeView.attach")}
-                    title={t("worktreeView.attachTitle")}
-                    removeLabel={(name) => t("worktreeView.removeAttachment", { name })}
+                    label={t("agentComposer.attach")}
+                    title={t("agentComposer.attachTitle")}
+                    removeLabel={(name) => t("agentComposer.removeAttachment", { name })}
+                    feedback={attachmentFeedback}
                   />
                   <div className="grid gap-3 sm:grid-cols-[1fr_1fr_1fr_auto] sm:items-end">
                     <Field label={t("officeEditors.agent")}>
@@ -606,36 +622,36 @@ export function WorktreeView({ worktree }: { worktree: WorktreeSnapshot }) {
                         ))}
                       </Select>
                     </Field>
-                    <Field label={t("worktreeView.model")}>
+                    <Field label={t("agentComposer.model")}>
                       <Select
                         value={selectedModel}
                         onChange={(event) => setSelectedModel(event.target.value)}
-                        aria-label={t("worktreeView.model")}
-                        title={t("worktreeView.modelTitle")}
+                        aria-label={t("agentComposer.model")}
+                        title={t("agentComposer.modelTitle")}
                         disabled={availableModels.length === 0}
                       >
                         <option value="">
                           {defaultModel
-                            ? `${t("worktreeView.agentDefaultModel")} (${defaultModel})`
-                            : t("worktreeView.agentDefaultModel")}
+                            ? `${t("agentComposer.agentDefaultModel")} (${defaultModel})`
+                            : t("agentComposer.agentDefaultModel")}
                         </option>
                         {availableModels.map((model) => <option key={model} value={model}>{model}</option>)}
                       </Select>
                     </Field>
-                    <Field label={t("worktreeView.permissions")}>
+                    <Field label={t("agentComposer.permissions")}>
                       <Select
                         value={permissionLevel}
                         onChange={(e) => setPermissionLevel(normalizeCodexPermissionMode(e.target.value))}
-                        aria-label={t("worktreeView.permissionLevel")}
-                        title={t("worktreeView.permissionTitle")}
+                        aria-label={t("agentComposer.permissionLevel")}
+                        title={t("agentComposer.permissionTitle")}
                       >
-                        <option value="ask">{t("worktreeView.permission.ask")}</option>
-                        <option value="auto">{t("worktreeView.permission.auto")}</option>
-                        <option value="full">{t("worktreeView.permission.full")}</option>
+                        <option value="ask">{t("agentComposer.permission.ask")}</option>
+                        <option value="auto">{t("agentComposer.permission.auto")}</option>
+                        <option value="full">{t("agentComposer.permission.full")}</option>
                       </Select>
                     </Field>
                     <Button onClick={run} disabled={runDisabled}>
-                      {t(latestIsRunning ? "worktreeView.running" : "worktreeView.run")}
+                      {t(pending ? "agentComposer.starting" : latestIsRunning ? "worktreeView.running" : "worktreeView.run")}
                     </Button>
                   </div>
                   {error ? <p className="text-xs text-destructive">{error}</p> : null}

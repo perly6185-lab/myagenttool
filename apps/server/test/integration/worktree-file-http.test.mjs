@@ -6,7 +6,7 @@ process.env.MYAGENTTOOL_STATE_DISABLED = "1";
 // Regression for the D3 demo finding.
 
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, symlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, before, test } from "node:test";
@@ -14,6 +14,7 @@ import { after, before, test } from "node:test";
 const now = () => new Date().toISOString();
 let server;
 let base;
+let worktreeDir;
 
 before(async () => {
   const { createServerState } = await import("../../src/runtime/state-factory.mjs");
@@ -22,7 +23,7 @@ before(async () => {
 
   const projectDir = mkdtempSync(join(tmpdir(), "wt-parent-"));
   writeFileSync(join(projectDir, "README.md"), "parent clone\n");
-  const worktreeDir = mkdtempSync(join(tmpdir(), "wt-child-"));
+  worktreeDir = mkdtempSync(join(tmpdir(), "wt-child-"));
   mkdirSync(join(worktreeDir, "design"), { recursive: true });
   // Exists ONLY in the worktree, not the parent clone.
   writeFileSync(join(worktreeDir, "design", "mockup.html"), "<!DOCTYPE html><title>Mockup</title>");
@@ -93,4 +94,63 @@ test("GET /api/worktrees/:id/file returns an image as base64 with a mime type (D
   assert.equal(body.encoding, "base64");
   assert.equal(body.mime, "image/png");
   assert.ok(body.content.length > 0, "base64 image bytes returned");
+});
+
+test("POST /api/worktrees/:id/attachments replays one stable batch for the run idempotency key", async () => {
+  const payload = {
+    batchId: "run-attachment-batch-1",
+    files: [{ name: "notes.txt", dataBase64: Buffer.from("same attachment\n").toString("base64") }],
+  };
+  const first = await fetch(`${base}/api/worktrees/wt1/attachments`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  const replay = await fetch(`${base}/api/worktrees/wt1/attachments`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+  assert.equal(first.status, 201);
+  assert.equal(replay.status, 201);
+  const firstBody = await first.json();
+  const replayBody = await replay.json();
+  assert.deepEqual(replayBody, firstBody, "a retry returns the exact same attachment paths");
+  assert.equal(firstBody.attachments.length, 1);
+  assert.equal(readFileSync(join(worktreeDir, ...firstBody.attachments[0].path.split("/")), "utf8"), "same attachment\n");
+  const batchDir = join(worktreeDir, ".myagenttool", "attachments", firstBody.batchId);
+  assert.equal(readdirSync(batchDir).filter((name) => name !== "manifest.json").length, 1, "retry creates no duplicate file");
+});
+
+test("POST /api/worktrees/:id/attachments rejects reuse with a different snapshot", async () => {
+  const response = await fetch(`${base}/api/worktrees/wt1/attachments`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      batchId: "run-attachment-batch-1",
+      files: [{ name: "notes.txt", dataBase64: Buffer.from("changed attachment\n").toString("base64") }],
+    }),
+  });
+  assert.equal(response.status, 409);
+  assert.equal((await response.json()).error, "worktree_attachment_batch_conflict");
+});
+
+test("POST /api/worktrees/:id/attachments reports every bounded rejection", async () => {
+  const response = await fetch(`${base}/api/worktrees/wt1/attachments`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      batchId: "run-attachment-batch-skipped",
+      files: [
+        { name: "empty.txt", dataBase64: "" },
+        ...Array.from({ length: 6 }, (_, index) => ({
+          name: `file-${index}.txt`,
+          dataBase64: Buffer.from(String(index)).toString("base64"),
+        })),
+      ],
+    }),
+  });
+  assert.equal(response.status, 201);
+  const body = await response.json();
+  assert.deepEqual(body.skipped.map((item) => item.reason), ["empty", "too_many"]);
 });

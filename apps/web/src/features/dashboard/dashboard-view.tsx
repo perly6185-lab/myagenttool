@@ -14,7 +14,14 @@ import { RunTranscriptSection } from "@/features/invocations/run-transcript";
 import { DecisionAction } from "@/features/invocations/decision-action";
 import { AgentRunComposer } from "@/features/invocations/agent-run-composer";
 import { permissionModeForAgent } from "@/features/invocations/agent-permission";
-import { WorktreeAttachmentPicker, type StagedWorktreeAttachment } from "@/features/invocations/worktree-attachment-picker";
+import {
+  MAX_WORKTREE_ATTACHMENTS,
+  WorktreeAttachmentPicker,
+  stageWorktreeAttachmentFiles,
+  type StagedWorktreeAttachment,
+  type WorktreeAttachmentRejection,
+  type WorktreeAttachmentUploadResponse,
+} from "@/features/invocations/worktree-attachment-picker";
 import { GuidedSetupCard } from "@/features/dashboard/guided-setup-card";
 import { localScheduleApi } from "@/features/dashboard/local-schedule-api";
 import type { LocalWorkItem } from "@/features/tasks/task-view-types";
@@ -146,6 +153,7 @@ export function DashboardView({ surface = "overview" }: { surface?: DashboardSur
   const [permissionLevel, setPermissionLevel] = useState<CodexPermissionMode>("ask");
   const [selectedModel, setSelectedModel] = useState("");
   const [attachments, setAttachments] = useState<StagedWorktreeAttachment[]>([]);
+  const [attachmentFeedback, setAttachmentFeedback] = useState<string | null>(null);
   const [dailyWorkItems, setDailyWorkItems] = useState<LocalWorkItem[]>([]);
   const [claimableWorkItems, setClaimableWorkItems] = useState<LocalWorkItem[]>([]);
   const [claimingWorkItemId, setClaimingWorkItemId] = useState<string | null>(null);
@@ -220,6 +228,7 @@ export function DashboardView({ surface = "overview" }: { surface?: DashboardSur
   attachmentWorktreeRef.current = targetWorktree?.id ?? null;
   useEffect(() => {
     setAttachments([]);
+    setAttachmentFeedback(null);
   }, [targetWorktree?.id]);
   useEffect(() => {
     runIdempotencyKeyRef.current = null;
@@ -295,33 +304,25 @@ export function DashboardView({ surface = "overview" }: { surface?: DashboardSur
     taskInputRef.current?.focus();
   }, [composerDraftTask, setComposerDraftTask]);
 
-  const MAX_ATTACHMENT_BYTES = 5 * 1024 * 1024;
+  function attachmentRejectionMessage(rejected: WorktreeAttachmentRejection[]) {
+    const reasons = [...new Set(rejected.map((item) => item.reason))]
+      .map((reason) => t(`agentComposer.attachmentReason.${reason}`))
+      .join("; ");
+    return t("agentComposer.attachmentRejected", { reasons });
+  }
+
   async function addFiles(files: FileList | File[]) {
     const worktreeId = targetWorktree?.id ?? null;
     if (!worktreeId) return;
-    const remainingSlots = Math.max(0, 6 - attachments.length);
-    if (remainingSlots === 0) return;
-    const read = await Promise.all(
-      Array.from(files)
-        .filter((file) => file.size > 0 && file.size <= MAX_ATTACHMENT_BYTES)
-        .slice(0, remainingSlots)
-        .map((file) => new Promise<StagedWorktreeAttachment | null>((resolve) => {
-          const reader = new FileReader();
-          reader.onload = () => resolve({
-            name: file.name || "file",
-            dataBase64: String(reader.result ?? "").split(",")[1] ?? "",
-            size: file.size,
-            type: file.type,
-          });
-          reader.onerror = () => resolve(null);
-          reader.readAsDataURL(file);
-        })),
+    const result = await stageWorktreeAttachmentFiles(
+      files,
+      Math.max(0, MAX_WORKTREE_ATTACHMENTS - attachments.length),
     );
     if (attachmentWorktreeRef.current !== worktreeId) return;
-    const valid = read.filter((item): item is StagedWorktreeAttachment => Boolean(item?.dataBase64));
-    if (valid.length > 0) {
+    setAttachmentFeedback(result.rejected.length > 0 ? attachmentRejectionMessage(result.rejected) : null);
+    if (result.attachments.length > 0) {
       runIdempotencyKeyRef.current = null;
-      setAttachments((current) => [...current, ...valid].slice(0, 6));
+      setAttachments((current) => [...current, ...result.attachments].slice(0, MAX_WORKTREE_ATTACHMENTS));
     }
   }
 
@@ -358,8 +359,12 @@ export function DashboardView({ surface = "overview" }: { surface?: DashboardSur
               name: attachment.name,
               dataBase64: attachment.dataBase64,
             })),
-          )) as { attachments?: { name: string; path: string }[] };
+            idempotencyKey,
+          )) as WorktreeAttachmentUploadResponse;
           const saved = response.attachments ?? [];
+          if ((response.skipped?.length ?? 0) > 0 || saved.length !== attachments.length) {
+            throw new Error(t("agentComposer.attachmentUploadRejected"));
+          }
           if (saved.length > 0) {
             submitted += `\n\nAttached files (in the worktree):\n${saved.map((item) => `- ${item.path}`).join("\n")}`;
           }
@@ -375,6 +380,7 @@ export function DashboardView({ surface = "overview" }: { surface?: DashboardSur
         setSelectedInvocationId(created.invocation.id);
         setTask(""); // clear the composer on send; the task shows as the user bubble
         setAttachments([]);
+        setAttachmentFeedback(null);
         setResumeFromInvocationId(null); // one-shot: consume the resume intent
         runIdempotencyKeyRef.current = null;
         return created;
@@ -462,12 +468,14 @@ export function DashboardView({ surface = "overview" }: { surface?: DashboardSur
           onRemove={(index) => {
             runIdempotencyKeyRef.current = null;
             setAttachments((current) => current.filter((_, itemIndex) => itemIndex !== index));
+            setAttachmentFeedback(null);
           }}
-          label={t("worktreeView.attach")}
-          title={t("worktreeView.attachTitle")}
-          removeLabel={(name) => t("worktreeView.removeAttachment", { name })}
+          label={t("agentComposer.attach")}
+          title={t("agentComposer.attachTitle")}
+          removeLabel={(name) => t("agentComposer.removeAttachment", { name })}
           disabled={!targetWorktree}
           disabledHint={!targetWorktree ? t("dashboard.attachNeedsWorktree") : undefined}
+          feedback={attachmentFeedback}
         />
         {!invocation ? (
           <Select
@@ -491,13 +499,13 @@ export function DashboardView({ surface = "overview" }: { surface?: DashboardSur
         <Select
           value={permissionLevel}
           onChange={(event) => setPermissionLevel(normalizeCodexPermissionMode(event.target.value))}
-          aria-label={t("worktreeView.permissionLevel")}
-          title={t("worktreeView.permissionTitle")}
+          aria-label={t("agentComposer.permissionLevel")}
+          title={t("agentComposer.permissionTitle")}
           className="h-8 w-auto max-w-36 border-0 bg-transparent px-2 pr-7 shadow-none focus-visible:ring-1"
         >
-          <option value="ask">{t("worktreeView.permission.ask")}</option>
-          <option value="auto">{t("worktreeView.permission.auto")}</option>
-          <option value="full">{t("worktreeView.permission.full")}</option>
+          <option value="ask">{t("agentComposer.permission.ask")}</option>
+          <option value="auto">{t("agentComposer.permission.auto")}</option>
+          <option value="full">{t("agentComposer.permission.full")}</option>
         </Select>
       </div>
       <div className="ml-auto flex min-w-0 items-center gap-1">
@@ -517,14 +525,14 @@ export function DashboardView({ surface = "overview" }: { surface?: DashboardSur
           <Select
             value={selectedModel}
             onChange={(event) => setSelectedModel(event.target.value)}
-            aria-label={t("worktreeView.model")}
-            title={t("worktreeView.modelTitle")}
+            aria-label={t("agentComposer.model")}
+            title={t("agentComposer.modelTitle")}
             className="h-8 w-auto max-w-40 border-0 bg-transparent px-2 pr-7 shadow-none focus-visible:ring-1"
           >
             <option value="">
               {defaultModel
-                ? `${t("worktreeView.agentDefaultModel")} (${defaultModel})`
-                : t("worktreeView.agentDefaultModel")}
+                ? `${t("agentComposer.agentDefaultModel")} (${defaultModel})`
+                : t("agentComposer.agentDefaultModel")}
             </option>
             {availableModels.map((model) => <option key={model} value={model}>{model}</option>)}
           </Select>
@@ -536,8 +544,8 @@ export function DashboardView({ surface = "overview" }: { surface?: DashboardSur
           variant={homeNextAction.state === "idle" ? "primary" : "secondary"}
           disabled={runDisabled}
           onClick={() => void runTask()}
-          aria-label={willQueue ? t("dashboard.queue") : t("dashboard.run")}
-          title={willQueue ? t("dashboard.queue") : t("dashboard.run")}
+          aria-label={runAction.pending ? t("agentComposer.starting") : willQueue ? t("dashboard.queue") : t("dashboard.run")}
+          title={runAction.pending ? t("agentComposer.starting") : willQueue ? t("dashboard.queue") : t("dashboard.run")}
         >
           <ArrowUp />
         </Button>
@@ -669,6 +677,7 @@ export function DashboardView({ surface = "overview" }: { surface?: DashboardSur
 
       <AgentRunComposer
         compact
+        disabled={runAction.pending}
         className={surface === "overview" ? "order-1 shrink-0" : "order-4 shrink-0"}
         title={composerTitle}
         context={composerContext}

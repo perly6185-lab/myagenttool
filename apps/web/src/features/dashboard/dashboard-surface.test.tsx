@@ -311,17 +311,19 @@ describe("DashboardView surfaces (#927)", () => {
     });
     fireEvent.click(screen.getByRole("button", { name: "Run on this computer" }));
 
-    await waitFor(() => expect(mocks.uploadWorktreeAttachments).toHaveBeenCalledWith("wt1", [{
-      name: "notes.txt",
-      dataBase64: "aGVsbG8=",
-    }]));
+    await waitFor(() => expect(mocks.uploadWorktreeAttachments).toHaveBeenCalledWith(
+      "wt1",
+      [{ name: "notes.txt", dataBase64: "aGVsbG8=" }],
+      expect.any(String),
+    ));
+    const attachmentBatchId = mocks.uploadWorktreeAttachments.mock.calls[0]?.[2];
     expect(mocks.createInvocation).toHaveBeenCalledWith(
       "Review the current change\n\nAttached files (in the worktree):\n- .myagenttool/attachments/notes.txt",
       "agent-1",
       "p1",
       "wt1",
       { permissionLevel: "full", model: "gpt-5.6-sol" },
-      expect.any(String),
+      attachmentBatchId,
     );
     await waitFor(() => expect(screen.queryByText("notes.txt")).toBeNull());
   });

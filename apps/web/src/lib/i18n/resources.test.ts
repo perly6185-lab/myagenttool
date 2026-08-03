@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
 import { resources } from "@/lib/i18n/resources";
 import { executionUiTranslations } from "@/lib/i18n/execution-ui-resources";
+import { autoRunTranslations } from "@/lib/i18n/auto-run-resources";
 import { workProfileTranslations } from "@/lib/i18n/work-profile-resources";
+import { worktreeViewTranslations } from "@/lib/i18n/worktree-view-resources";
 
 function flatten(value: unknown, prefix = ""): Map<string, string> {
   const result = new Map<string, string>();
@@ -24,7 +26,9 @@ function variables(value: string): string[] {
 describe("translation resources", () => {
   it.each([
     ["executionUi", executionUiTranslations],
+    ["autoRun", autoRunTranslations],
     ["workProfile", workProfileTranslations],
+    ["worktreeView", worktreeViewTranslations],
   ])("keeps lazy %s resources complete and interpolation-compatible", (_name, translations) => {
     const english = flatten(translations["en-US"]);
     const chinese = flatten(translations["zh-CN"]);

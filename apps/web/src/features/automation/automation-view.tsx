@@ -14,6 +14,9 @@ import { cn } from "@/lib/cn";
 import { statusTone } from "@/lib/readable-labels";
 import { invocationStatus } from "@/lib/i18n/readable-labels";
 import { useAppTranslation } from "@/lib/i18n/use-app-translation";
+import { installAutoRunTranslations } from "@/lib/i18n/auto-run-resources";
+
+installAutoRunTranslations();
 import {
   healthFor,
   matchesScheduleFilter,
