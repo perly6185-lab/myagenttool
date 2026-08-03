@@ -365,6 +365,152 @@ test("POST /api/invocations guards worktree scope and ignores client control fie
   assert.equal(spoofedControl.body.invocation.options.metadata.note, "kept");
 });
 
+test("POST /api/invocations rejects stale Agent/model snapshots before reserving idempotency", async (t) => {
+  const agent = ctx.state.agents.find((item) => item.id === "agt_codex_review_diff");
+  assert.ok(agent, "Codex review Agent fixture must exist");
+  const original = {
+    status: agent.status,
+    health: structuredClone(agent.health),
+    adapter: structuredClone(agent.adapter),
+    unlinkState: ctx.state.device.unlinkState,
+  };
+  const footprint = () => ({
+    invocations: ctx.state.invocations.length,
+    events: ctx.state.events.length,
+    traces: ctx.state.traces.length,
+    spans: ctx.state.spans.length,
+    policyDecisions: ctx.state.policyDecisionRecords.length,
+    approvals: ctx.state.approvalRequests.length,
+  });
+  const resetAgent = () => {
+    agent.status = original.status;
+    agent.health = structuredClone(original.health);
+    agent.adapter = structuredClone(original.adapter);
+    ctx.state.device.unlinkState = original.unlinkState;
+  };
+  const assertRejectedWithoutAdmission = async ({ body, status, error, message }) => {
+    const before = footprint();
+    const response = await call("/api/invocations", { method: "POST", token: "tok_a", body });
+    assert.equal(response.status, status);
+    assert.equal(response.body.error, error);
+    assert.equal(response.body.message, message);
+    assert.deepEqual(footprint(), before, `${error} must not persist any admission state`);
+  };
+
+  try {
+    await t.test("unknown Agent", async () => {
+      resetAgent();
+      await assertRejectedWithoutAdmission({
+        body: { task: "Use a removed Agent.", projectId: "projA", agentId: "agt_missing", idempotencyKey: "stale-agent-missing" },
+        status: 404,
+        error: "agent_not_found",
+        message: "The selected Agent is no longer available.",
+      });
+    });
+
+    await t.test("disabled Agent", async () => {
+      resetAgent();
+      agent.status = "disabled";
+      await assertRejectedWithoutAdmission({
+        body: { task: "Use a disabled Agent.", projectId: "projA", agentId: agent.id, idempotencyKey: "stale-agent-disabled" },
+        status: 409,
+        error: "agent_disabled",
+        message: "The selected Agent is disabled.",
+      });
+    });
+
+    await t.test("unhealthy Agent", async () => {
+      resetAgent();
+      agent.health = { ...agent.health, status: "unhealthy", message: "Runtime probe failed." };
+      await assertRejectedWithoutAdmission({
+        body: { task: "Use an unhealthy Agent.", projectId: "projA", agentId: agent.id, idempotencyKey: "stale-agent-unhealthy" },
+        status: 409,
+        error: "agent_unhealthy",
+        message: "Runtime probe failed.",
+      });
+
+      agent.health = { ...agent.health, message: undefined };
+      await assertRejectedWithoutAdmission({
+        body: { task: "Use an unhealthy Agent without probe detail.", projectId: "projA", agentId: agent.id },
+        status: 409,
+        error: "agent_unhealthy",
+        message: "The selected Agent is unhealthy.",
+      });
+    });
+
+    await t.test("unlinked local device", async () => {
+      resetAgent();
+      ctx.state.device.unlinkState = "unlinked";
+      await assertRejectedWithoutAdmission({
+        body: { task: "Use an unlinked device.", projectId: "projA", agentId: agent.id, idempotencyKey: "stale-agent-device" },
+        status: 409,
+        error: "device_unlinked",
+        message: "The local device is unlinked.",
+      });
+    });
+
+    await t.test("unavailable but linked Agent retains queued delivery", async () => {
+      resetAgent();
+      agent.status = "unavailable";
+      const before = ctx.state.invocations.length;
+      const response = await call("/api/invocations", {
+        method: "POST",
+        token: "tok_a",
+        body: {
+          task: "Queue until the linked Agent is available.",
+          projectId: "projA",
+          agentId: agent.id,
+          idempotencyKey: "stale-agent-unavailable",
+        },
+      });
+      assert.equal(response.status, 201);
+      assert.equal(response.body.invocation.status, "queued");
+      assert.equal(ctx.state.invocations.length, before + 1);
+    });
+
+    await t.test("invalid or removed model", async () => {
+      resetAgent();
+      agent.adapter = { ...agent.adapter, models: ["gpt-5.6-sol"], defaultModel: "gpt-5.6-sol" };
+      const base = { task: "Use the selected model.", projectId: "projA", agentId: agent.id };
+      await assertRejectedWithoutAdmission({
+        body: { ...base, idempotencyKey: "invalid-model-syntax", options: { model: "gpt-5.6-sol --help" } },
+        status: 400,
+        error: "model_not_supported",
+        message: "The selected model is not supported by this Agent.",
+      });
+      await assertRejectedWithoutAdmission({
+        body: { ...base, idempotencyKey: "stale-model-retry", options: { model: "gpt-5.6-terra" } },
+        status: 400,
+        error: "model_not_supported",
+        message: "The selected model is not supported by this Agent.",
+      });
+
+      const accepted = await call("/api/invocations", {
+        method: "POST",
+        token: "tok_a",
+        body: { ...base, idempotencyKey: "stale-model-retry", options: { model: "gpt-5.6-sol" } },
+      });
+      assert.equal(accepted.status, 201);
+      assert.equal(accepted.body.invocation.options.model, "gpt-5.6-sol");
+
+      const replay = await call("/api/invocations", {
+        method: "POST",
+        token: "tok_a",
+        body: { ...base, idempotencyKey: "stale-model-retry", options: { model: "gpt-5.6-sol" } },
+      });
+      assert.equal(replay.status, 201);
+      assert.equal(replay.body.invocation.id, accepted.body.invocation.id);
+      assert.equal(
+        ctx.state.invocations.filter((item) => item.idempotencyKey === "stale-model-retry").length,
+        1,
+        "a corrected retry must reserve the idempotency key exactly once",
+      );
+    });
+  } finally {
+    resetAgent();
+  }
+});
+
 test("POST /api/compare-runs rejects foreign project/worktree metadata before child invocation creation", async () => {
   const before = ctx.state.invocations.length;
   const foreignProject = await call("/api/compare-runs", {
