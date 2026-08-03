@@ -348,7 +348,7 @@ function visualScenarios(baseline) {
 
 async function assertVisualState(page, scenario) {
   if (scenario.disconnected) {
-    await page.locator("span:visible", { hasText: "Server is offline." }).first().waitFor({ timeout: 15_000 });
+    await page.getByText(/Server (?:is )?offline\.?/, { exact: true }).first().waitFor({ timeout: 15_000 });
     return;
   }
   if (scenario.name === "runtime-health") {
@@ -365,11 +365,20 @@ async function assertVisualState(page, scenario) {
     empty: "idle",
     ready: "idle",
     running: "running",
-    succeeded: "succeeded",
+    // Completed invocations remain available in history, but Home intentionally
+    // returns to the idle composer instead of keeping a stale result banner.
+    succeeded: "idle",
     approval: "approval",
   }[scenario.name];
   if (expectedHomeState) {
-    await page.locator(`[data-home-work-state="${expectedHomeState}"]:visible`).waitFor();
+    if (expectedHomeState === "idle") {
+      await page.locator('[data-home-primary-action="run"]:visible').waitFor();
+      if (await page.locator("[data-home-work-state]:visible").count() !== 0) {
+        throw new Error(`${scenario.name} renders a work-state banner while idle`);
+      }
+    } else {
+      await page.locator(`[data-home-work-state="${expectedHomeState}"]:visible`).waitFor();
+    }
   }
   const primaryAction = page.locator("[data-home-primary-action]:visible");
   await primaryAction.waitFor();
