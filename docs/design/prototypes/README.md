@@ -3,6 +3,39 @@
 This folder contains low-fidelity, repo-owned prototypes used before production
 Web Console implementation.
 
+## Home Stakeholder And AI Workbench
+
+Files:
+
+- [home-stakeholder-ai-workbench.html](home-stakeholder-ai-workbench.html)
+- [home-stakeholder-ai-workbench.css](home-stakeholder-ai-workbench.css)
+- [home-stakeholder-ai-workbench.js](home-stakeholder-ai-workbench.js)
+- [home-stakeholder-ai-workbench.spec.json](home-stakeholder-ai-workbench.spec.json)
+- [home-stakeholder-ai-workbench.visual-qa.md](home-stakeholder-ai-workbench.visual-qa.md)
+
+Source:
+
+- [HOME_STAKEHOLDER_AI_WORKBENCH_DESIGN.md](../HOME_STAKEHOLDER_AI_WORKBENCH_DESIGN.md)
+
+Use the scene tabs, attention counters, requester filters, and "needs my action"
+toggle to review the relationship between human follow-up and derived AI status.
+The prototype intentionally routes detailed run, approval, and evidence work to
+their canonical surfaces instead of recreating those surfaces on Home.
+
+## Local Issue Follow-up Fields
+
+Files:
+
+- [work-item-follow-up-fields.html](work-item-follow-up-fields.html)
+- [work-item-follow-up-fields.css](work-item-follow-up-fields.css)
+- [work-item-follow-up-fields.js](work-item-follow-up-fields.js)
+- [work-item-follow-up-fields.spec.json](work-item-follow-up-fields.spec.json)
+- [work-item-follow-up-fields.visual-qa.md](work-item-follow-up-fields.visual-qa.md)
+
+This companion prototype freezes the PR 0 form and detail design before the
+structured follow-up fields are added to production. Review create-self,
+edit-customer, delivery detail, historical unknown, and validation-error scenes.
+
 ## Prototype Canvas
 
 [canvas/](canvas/) defines the planned infinite-canvas workflow for reviewing

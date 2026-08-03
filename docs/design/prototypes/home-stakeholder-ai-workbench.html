@@ -1,0 +1,166 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>首页关系人和 AI 工作台原型</title>
+    <link rel="stylesheet" href="./home-stakeholder-ai-workbench.css">
+  </head>
+  <body>
+    <main class="prototype-shell">
+      <header class="topbar">
+        <div>
+          <p class="eyebrow">低保真交互原型</p>
+          <h1>我的工作台</h1>
+          <p class="subtitle">先看需要谁行动，再安排今天和明天</p>
+        </div>
+        <div class="capacity"><span class="online-dot"></span> 本机可执行 · 2 / 3 槽位</div>
+      </header>
+
+      <nav class="state-tabs" aria-label="原型场景">
+        <button class="state-tab is-active" type="button" data-scene="attention">需要我处理</button>
+        <button class="state-tab" type="button" data-scene="all">全部工作</button>
+        <button class="state-tab" type="button" data-scene="ai">AI 需关注</button>
+        <button class="state-tab" type="button" data-scene="clear">暂时清空</button>
+      </nav>
+
+      <section class="attention-grid" aria-label="工作概览">
+        <button class="attention-card is-selected" type="button" data-attention="mine">
+          <span class="attention-label">待我回复</span><strong data-count="mine">3</strong><small>人与 AI 的下一步在我</small>
+        </button>
+        <button class="attention-card" type="button" data-attention="approval">
+          <span class="attention-label">AI 待审批</span><strong data-count="approval">1</strong><small>确认后才能继续执行</small>
+        </button>
+        <button class="attention-card danger" type="button" data-attention="failed">
+          <span class="attention-label">AI 失败</span><strong data-count="failed">1</strong><small>需要复盘或重试</small>
+        </button>
+        <button class="attention-card" type="button" data-attention="due">
+          <span class="attention-label">今天到期</span><strong data-count="due">2</strong><small>按承诺时间排序</small>
+        </button>
+        <button class="attention-card" type="button" data-attention="review">
+          <span class="attention-label">待复核与汇报</span><strong data-count="review">2</strong><small>AI 完成不等于交付完成</small>
+        </button>
+      </section>
+
+      <section class="filter-bar" aria-label="任务关系筛选">
+        <div class="relation-filters">
+          <span class="filter-label">提出者</span>
+          <button class="filter-chip is-active" type="button" data-relation="all">全部</button>
+          <button class="filter-chip" type="button" data-relation="boss">Boss</button>
+          <button class="filter-chip" type="button" data-relation="manager">上级</button>
+          <button class="filter-chip" type="button" data-relation="customer">客户</button>
+          <button class="filter-chip" type="button" data-relation="colleague">同事</button>
+          <button class="filter-chip" type="button" data-relation="self">自己</button>
+        </div>
+        <label class="mine-toggle"><input type="checkbox" checked data-mine-toggle> 只看需要我行动</label>
+      </section>
+
+      <section class="layout">
+        <section class="workbench" aria-labelledby="workbench-title">
+          <div class="section-heading">
+            <div><p class="eyebrow">三日工作台</p><h2 id="workbench-title">今天</h2></div>
+            <button class="text-action" type="button">查看全部任务 →</button>
+          </div>
+
+          <div class="task-list" data-task-list>
+            <article class="task-card urgent" data-relation="customer" data-tags="mine review due">
+              <div class="task-topline">
+                <div class="badges"><span class="badge relation">客户 · 张总</span><span class="badge priority">P1</span></div>
+                <span class="deadline is-due">今天 17:00 前</span>
+              </div>
+              <h3>官网改版方案确认</h3>
+              <p class="task-summary">AI 已完成首版，需要人工确认范围并向客户更新。</p>
+              <div class="status-row">
+                <span><small>负责人</small><strong>我</strong></span>
+                <span><small>人类跟进</small><strong class="warning-text">等我复核</strong></span>
+                <span><small>AI 执行</small><strong class="success-text">草稿已完成</strong></span>
+              </div>
+              <div class="next-action"><span><small>下一步</small>复核草稿并向客户更新</span><button class="primary-action" type="button">复核结果</button></div>
+            </article>
+
+            <article class="task-card" data-relation="manager" data-tags="mine approval due ai">
+              <div class="task-topline">
+                <div class="badges"><span class="badge relation">上级 · 李经理</span><span class="badge priority">P1</span></div>
+                <span class="deadline">今天下班前</span>
+              </div>
+              <h3>月度经营数据报告</h3>
+              <p class="task-summary">数据分析暂停在受控写入前，等待批准生成报表文件。</p>
+              <div class="status-row">
+                <span><small>负责人</small><strong>我</strong></span>
+                <span><small>人类跟进</small><strong class="warning-text">待我审批</strong></span>
+                <span><small>AI 执行</small><strong class="warning-text">等待审批</strong></span>
+              </div>
+              <div class="next-action"><span><small>下一步</small>确认写入范围与目标文件</span><button class="primary-action" type="button">打开审批</button></div>
+            </article>
+
+            <article class="task-card" data-relation="colleague" data-tags="mine failed ai">
+              <div class="task-topline">
+                <div class="badges"><span class="badge relation">同事 · 王工</span><span class="badge priority muted-badge">P2</span></div>
+                <span class="deadline">明天 12:00 前</span>
+              </div>
+              <h3>核对测试环境部署清单</h3>
+              <p class="task-summary">自动检查失败，当前仍由我负责决定是否补充配置后重试。</p>
+              <div class="status-row">
+                <span><small>负责人</small><strong>我</strong></span>
+                <span><small>人类跟进</small><strong class="danger-text">需要处理</strong></span>
+                <span><small>AI 执行</small><strong class="danger-text">执行失败</strong></span>
+              </div>
+              <div class="next-action"><span><small>下一步</small>查看失败原因并补充环境信息</span><button class="secondary-action" type="button">查看运行</button></div>
+            </article>
+
+            <article class="task-card" data-relation="boss" data-tags="waiting">
+              <div class="task-topline">
+                <div class="badges"><span class="badge relation">Boss · 陈总</span><span class="badge priority muted-badge">P2</span></div>
+                <span class="deadline">周五前</span>
+              </div>
+              <h3>下一季度产品方向建议</h3>
+              <p class="task-summary">初步建议已汇报，等待负责人确认优先方向。</p>
+              <div class="status-row">
+                <span><small>负责人</small><strong>我</strong></span>
+                <span><small>人类跟进</small><strong>等提出者回复</strong></span>
+                <span><small>AI 执行</small><strong>未启动</strong></span>
+              </div>
+              <div class="next-action"><span><small>下一步</small>明天 10:00 跟进确认</span><button class="secondary-action" type="button">记录进展</button></div>
+            </article>
+          </div>
+
+          <div class="empty-state" data-empty-state hidden>
+            <div class="empty-icon">✓</div><h3>暂时没有需要你处理的事项</h3>
+            <p>等待中的工作仍保留在全部工作；AI 有新进展时会重新进入关注队列。</p>
+            <button class="secondary-action" type="button">查看全部工作</button>
+          </div>
+
+          <details class="future-group" open>
+            <summary><span><strong>明天</strong><small>2 项已经安排</small></span><span>展开 / 收起</span></summary>
+            <div class="future-row"><span class="badge relation">自己</span><strong>整理本周项目复盘</strong><span>AI 尚未认领</span></div>
+            <div class="future-row"><span class="badge relation">客户 · 林女士</span><strong>确认报价单字段</strong><span>等客户材料</span></div>
+          </details>
+        </section>
+
+        <aside class="ai-rail" aria-labelledby="ai-title" data-ai-rail>
+          <div class="section-heading">
+            <div><p class="eyebrow">实时摘要</p><h2 id="ai-title">AI 正在执行</h2></div>
+            <span class="live-pill"><span></span> 2 活跃</span>
+          </div>
+
+          <article class="ai-run">
+            <div class="ai-run-title"><span class="agent-mark">C</span><div><h3>整理竞品功能对比</h3><p>Codex · 已运行 8 分钟</p></div></div>
+            <div class="progress-track"><span style="width: 64%"></span></div>
+            <div class="ai-run-meta"><span>正在验证引用来源</span><strong>运行中</strong></div>
+            <button class="secondary-action full-width" type="button">查看进度</button>
+          </article>
+
+          <article class="ai-run approval-run">
+            <div class="ai-run-title"><span class="agent-mark warning-mark">A</span><div><h3>月度经营数据报告</h3><p>Auto run · 等待 4 分钟</p></div></div>
+            <p class="approval-copy">请求写入本地报表文件，需要人工确认范围。</p>
+            <button class="primary-action full-width" type="button">打开审批</button>
+          </article>
+
+          <p class="rail-boundary">这里只显示活跃或需关注的 AI。历史结果与失败详情由 Run records 管理。</p>
+        </aside>
+      </section>
+    </main>
+
+    <script src="./home-stakeholder-ai-workbench.js"></script>
+  </body>
+</html>

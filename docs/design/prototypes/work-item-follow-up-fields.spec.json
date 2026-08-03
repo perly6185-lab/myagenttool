@@ -1,0 +1,47 @@
+{
+  "name": "Local Issue Follow-up Fields Prototype",
+  "source": "docs/design/HOME_STAKEHOLDER_AI_WORKBENCH_DESIGN.md",
+  "roleFlow": "ordinary developer and delivery owner",
+  "scenario": "Capture who expects a Local Issue, edit follow-up context, and understand it from issue detail.",
+  "frequency": "daily creation, occasional editing, frequent detail review",
+  "ownerSurfaces": [
+    "Create Local Issue modal",
+    "Local Issue edit surface",
+    "Local Issue detail"
+  ],
+  "visualQaArtifact": "docs/design/prototypes/work-item-follow-up-fields.visual-qa.md",
+  "viewports": [
+    { "name": "desktop", "width": 1366, "height": 900 },
+    { "name": "mobile", "width": 390, "height": 844 }
+  ],
+  "frames": [
+    "Create / Self requester",
+    "Edit / External customer",
+    "Detail / Human review after AI completion",
+    "Historical / Unknown requester",
+    "Validation / Missing external requester and stale follow-up"
+  ],
+  "fieldOwnership": {
+    "requester": "Local Issue structured follow-up context",
+    "assignee": "existing Local Issue assigneeIds",
+    "aiExecution": "derived from invocation or auto-run; read-only",
+    "progressHistory": "append-only activity-backed progress records"
+  },
+  "whatNotToShow": [
+    "requester relation as priority",
+    "requester relation as authorization",
+    "manual AI execution status editor",
+    "external customer represented as an internal user",
+    "old task silently defaulted to self",
+    "article sourceMode reused as intake channel"
+  ],
+  "visualQaTasks": [
+    "Confirm self requester hides redundant name and organization fields.",
+    "Confirm customer editing exposes external name, organization, channel, commitment, and follow-up fields.",
+    "Confirm issue detail separates relation and delivery from derived AI execution.",
+    "Confirm progress updates append a record and can update waiting-on and next follow-up.",
+    "Confirm historical tasks show unknown with an explicit recovery action.",
+    "Confirm validation errors are summarized and attached to their fields.",
+    "Confirm desktop and mobile layouts do not overflow horizontally."
+  ]
+}
