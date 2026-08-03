@@ -24,6 +24,7 @@ import type {
   LocalScheduleUrgentResponse,
 } from "@/lib/api-client";
 import type { LocalWorkItem, WorkItemRequesterRelation } from "@/features/tasks/task-view-types";
+import { WorkItemProgressDialog, type WorkItemProgressTarget } from "@/features/tasks/work-item-progress-dialog";
 import type { HomeAttentionReason, HomeWorkbench, HomeWorkbenchItem } from "./home-workbench-types";
 
 type Tone = "neutral" | "running" | "success" | "warning" | "danger";
@@ -533,6 +534,7 @@ export function DailyWorkBoard({
   onOpenCompleted,
   onOpenFailed,
   onClaimItem,
+  onProgressRecorded,
   claimingItemId = null,
   claimError = null,
   onApplyPlan,
@@ -559,6 +561,7 @@ export function DailyWorkBoard({
   onOpenCompleted?: () => void;
   onOpenFailed?: () => void;
   onClaimItem?: (item: LocalWorkItem) => void;
+  onProgressRecorded?: () => void | Promise<void>;
   claimingItemId?: string | null;
   claimError?: string | null;
   onApplyPlan?: () => void;
@@ -574,6 +577,7 @@ export function DailyWorkBoard({
   const [relationFilter, setRelationFilter] = useState<WorkItemRequesterRelation | "all">("all");
   const [needsMine, setNeedsMine] = useState(false);
   const [overviewFilter, setOverviewFilter] = useState<"waiting_me" | "approval_required" | "ai_failed" | "due_today" | "review_ready" | null>(null);
+  const [progressTarget, setProgressTarget] = useState<WorkItemProgressTarget | null>(null);
   const { i18n } = useAppTranslation();
   const locale = i18n.language.startsWith("zh") ? "zh-CN" : "en-US";
   const copy = COPY[locale === "zh-CN" ? "zh" : "en"];
@@ -643,6 +647,20 @@ export function DailyWorkBoard({
   const urgentCount = urgent?.insertions.length ?? 0;
   const progressTotal = model.todayCompleted + model.today.length;
   const progress = progressTotal ? Math.round((model.todayCompleted / progressTotal) * 100) : 0;
+  const runHomeAction = (item: HomeWorkbenchItem) => {
+    if (item.nextAction.kind === "record_progress") {
+      setProgressTarget({
+        id: item.workItemId,
+        title: item.title,
+        revision: item.revision,
+        requesterRelation: item.requester.relation,
+        waitingOn: item.waitingOn,
+        nextFollowUpAt: item.nextFollowUpAt,
+      });
+      return;
+    }
+    onOpenItem(homeActionWorkItem(item));
+  };
 
   return (
     <Card className="overflow-hidden border-border/80" data-testid="daily-work-board">
@@ -776,6 +794,7 @@ export function DailyWorkBoard({
           copy={copy}
           locale={locale}
           onOpenItem={onOpenItem}
+          onHomeAction={runHomeAction}
           action={rolloverCount > 0 && onRollover ? (
             <Button
               variant="secondary"
@@ -808,6 +827,7 @@ export function DailyWorkBoard({
           copy={copy}
           locale={locale}
           onOpenItem={onOpenItem}
+          onHomeAction={runHomeAction}
           featured
           headerExtra={(
             <div className="mt-3">
@@ -856,6 +876,7 @@ export function DailyWorkBoard({
           copy={copy}
           locale={locale}
           onOpenItem={onOpenItem}
+          onHomeAction={runHomeAction}
           action={suggestedCount > 0 && onApplyPlan ? (
             <div className="flex flex-wrap justify-end gap-2">
               <Button variant="ghost" size="sm" onClick={onOpenTasks}><Plus />{copy.planTomorrow}</Button>
@@ -882,7 +903,7 @@ export function DailyWorkBoard({
                 <button
                   key={item.workItemId}
                   type="button"
-                  onClick={() => onOpenItem(homeActionWorkItem(item))}
+                  onClick={() => runHomeAction(item)}
                   className="rounded-lg border border-border bg-card p-3 text-left hover:bg-muted/45"
                 >
                   <span className="flex items-center justify-between gap-2">
@@ -918,7 +939,7 @@ export function DailyWorkBoard({
                 copy={copy}
                 locale={locale}
                 onOpen={() => onOpenItem(item)}
-                onAction={(item as DailyWorkItem).home ? () => onOpenItem(homeActionWorkItem((item as DailyWorkItem).home!)) : undefined}
+                onAction={(item as DailyWorkItem).home ? () => runHomeAction((item as DailyWorkItem).home!) : undefined}
               />
             ))}
           </div>
@@ -962,6 +983,12 @@ export function DailyWorkBoard({
           {claimError ? <p className="mt-2 text-xs text-destructive" role="alert">{claimError}</p> : null}
         </section>
       ) : null}
+      <WorkItemProgressDialog
+        target={progressTarget}
+        open={Boolean(progressTarget)}
+        onClose={() => setProgressTarget(null)}
+        onSaved={async () => { await onProgressRecorded?.(); }}
+      />
     </Card>
   );
 }
@@ -1048,6 +1075,7 @@ function DayColumn({
   copy,
   locale,
   onOpenItem,
+  onHomeAction,
   featured = false,
   headerExtra,
   action,
@@ -1063,6 +1091,7 @@ function DayColumn({
   copy: Copy;
   locale: string;
   onOpenItem: (item: WorkItem) => void;
+  onHomeAction: (item: HomeWorkbenchItem) => void;
   featured?: boolean;
   headerExtra?: React.ReactNode;
   action?: React.ReactNode;
@@ -1117,7 +1146,7 @@ function DayColumn({
                   copy={copy}
                   locale={locale}
                   onOpen={() => onOpenItem(item)}
-                  onAction={item.home ? () => onOpenItem(homeActionWorkItem(item.home!)) : undefined}
+                  onAction={item.home ? () => onHomeAction(item.home!) : undefined}
                 />
               ))}
               {hiddenCount > 0 ? (

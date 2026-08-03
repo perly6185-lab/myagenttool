@@ -21,6 +21,7 @@ export type HomeWorkbenchItem = {
   localRef: string;
   title: string;
   projectId: string | null;
+  revision: number;
   priority: LocalWorkItem["priority"];
   assignees: { id: string; name: string }[];
   requester: {

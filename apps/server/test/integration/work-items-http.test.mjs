@@ -205,6 +205,46 @@ test("structured requester and follow-up context is validated and audited throug
   assert.equal(foreignRequester.body.error, "invalid_work_item_requester_user");
 });
 
+test("structured progress is recorded and replayed through HTTP", async () => {
+  const created = await call("/api/work-items", {
+    method: "POST",
+    body: {
+      projectId: "prj_a",
+      title: "HTTP progress",
+      requesterRelation: "customer",
+      requesterName: "Client",
+      waitingOn: "me",
+    },
+  });
+  const path = `/api/work-items/${created.body.workItem.id}/progress`;
+  const payload = {
+    expectedRevision: created.body.workItem.revision,
+    idempotencyKey: "http-progress-1",
+    summary: "Prototype shared with the customer",
+    waitingOn: "requester",
+    nextFollowUpAt: "2099-08-06T10:00:00+08:00",
+  };
+  const recorded = await call(path, { method: "POST", body: payload });
+  assert.equal(recorded.status, 201);
+  assert.equal(recorded.body.workItem.lastProgressSummary, payload.summary);
+  assert.equal(recorded.body.workItem.waitingOn, "requester");
+  assert.equal(recorded.body.replayed, false);
+
+  const replayed = await call(path, { method: "POST", body: payload });
+  assert.equal(replayed.status, 200);
+  assert.equal(replayed.body.replayed, true);
+  const activity = await call(`/api/work-items/${created.body.workItem.id}/activity`);
+  assert.equal(activity.body.activities.filter((entry) => entry.action === "progress_recorded").length, 1);
+  assert.equal(activity.body.activities[0].details.summary, payload.summary);
+
+  const conflict = await call(path, {
+    method: "POST",
+    body: { ...payload, summary: "Changed payload" },
+  });
+  assert.equal(conflict.status, 409);
+  assert.equal(conflict.body.error, "work_item_progress_idempotency_conflict");
+});
+
 test("local work item claim lease is wired through HTTP", async () => {
   const item = (await call("/api/work-items", {
     method: "POST", body: { projectId: "prj_a", title: "Agent owned" },

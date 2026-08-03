@@ -1,5 +1,6 @@
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { waitFor, within } from "@testing-library/react";
 import {
   buildDailyWorkBoardModel,
   DailyWorkBoard,
@@ -9,7 +10,15 @@ import type { LocalWorkItem } from "@/features/tasks/task-view-types";
 import type { HomeWorkbench, HomeWorkbenchItem } from "@/features/dashboard/home-workbench-types";
 import { i18n } from "@/lib/i18n";
 
-beforeEach(async () => { await i18n.changeLanguage("en-US"); });
+const apiMocks = vi.hoisted(() => ({ recordWorkItemProgress: vi.fn() }));
+vi.mock("@/data/use-console-actions", () => ({
+  api: { recordWorkItemProgress: apiMocks.recordWorkItemProgress },
+}));
+
+beforeEach(async () => {
+  await i18n.changeLanguage("en-US");
+  apiMocks.recordWorkItemProgress.mockReset();
+});
 afterEach(cleanup);
 
 const emptyStates = (): WorkBoard["states"] => ({
@@ -105,7 +114,7 @@ function localItem(overrides: Partial<LocalWorkItem> = {}): LocalWorkItem {
 function homeItem(overrides: Partial<HomeWorkbenchItem> = {}): HomeWorkbenchItem {
   return {
     workItemId: "lwi-1", localRef: "LOCAL-1", title: "Plan the next release", projectId: "prj-1",
-    priority: "p1", assignees: [{ id: "usr_local", name: "Me" }],
+    revision: 1, priority: "p1", assignees: [{ id: "usr_local", name: "Me" }],
     requester: { relation: "customer", name: "Alex", organization: "Acme" },
     planningStatus: "ready", executionState: "unclaimed", waitingOn: "me",
     attentionReason: null, secondaryReasons: [], needsAttention: true,
@@ -138,6 +147,52 @@ function workbench(items: HomeWorkbenchItem[]): HomeWorkbench {
 }
 
 describe("DailyWorkBoard", () => {
+  it("records progress from a server-derived follow-up action and refreshes the board", async () => {
+    const progressItem = localItem({
+      id: "progress", localRef: "LOCAL-P", title: "Follow up with customer", plannedDate: "2026-07-31",
+    });
+    const progressHome = homeItem({
+      workItemId: progressItem.id,
+      localRef: progressItem.localRef,
+      title: progressItem.title,
+      revision: 4,
+      waitingOn: "requester",
+      attentionReason: "waiting_requester",
+      nextAction: { kind: "record_progress", label: "record_progress", targetId: progressItem.id, section: "task" },
+    });
+    apiMocks.recordWorkItemProgress.mockResolvedValue({
+      workItem: { ...progressItem, revision: 5, lastProgressSummary: "Customer approved the scope" },
+    });
+    const onProgressRecorded = vi.fn();
+    render(
+      <DailyWorkBoard
+        board={{ generatedAt: Date.now(), states: emptyStates() }}
+        report={report(0, 0)}
+        plannedItems={[progressItem]}
+        workbench={workbench([progressHome])}
+        onOpenItem={vi.fn()}
+        onOpenTasks={vi.fn()}
+        onProgressRecorded={onProgressRecorded}
+        now={new Date(2026, 6, 31, 12).getTime()}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Follow up" }));
+    const dialog = screen.getByRole("dialog", { name: "Record progress" });
+    fireEvent.change(within(dialog).getByLabelText("Progress update"), {
+      target: { value: "Customer approved the scope" },
+    });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Save progress" }));
+
+    await waitFor(() => expect(apiMocks.recordWorkItemProgress).toHaveBeenCalledWith("progress", expect.objectContaining({
+      expectedRevision: 4,
+      summary: "Customer approved the scope",
+      waitingOn: "requester",
+    })));
+    await waitFor(() => expect(onProgressRecorded).toHaveBeenCalledTimes(1));
+    expect(screen.queryByRole("dialog", { name: "Record progress" })).toBeNull();
+  });
+
   it("filters relationship work, shows waiting context, and opens the server-derived next action", () => {
     const now = new Date(2026, 6, 31, 12).getTime();
     const customer = localItem({ id: "customer", localRef: "LOCAL-C", title: "Confirm customer scope", plannedDate: "2026-07-31" });

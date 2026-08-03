@@ -1962,6 +1962,103 @@ export function createWorkItemService({
     return { ok: true, status: 200, body: { workItem: workItemView(item, actor) } };
   }
 
+  function recordWorkItemProgress({
+    workItemId,
+    expectedRevision,
+    idempotencyKey,
+    summary,
+    ...changes
+  } = {}, actor = null) {
+    const item = findOwn(workItemId, actor);
+    if (!item) return notFound();
+    const key = typeof idempotencyKey === "string" ? idempotencyKey.trim() : "";
+    const normalizedSummary = typeof summary === "string" ? summary.trim() : "";
+    if (!key || key.length > 200) {
+      return { ok: false, status: 400, body: { error: "work_item_progress_idempotency_key_required" } };
+    }
+    if (!normalizedSummary || normalizedSummary.length > 2_000) {
+      return { ok: false, status: 400, body: { error: "invalid_work_item_progress_summary" } };
+    }
+    const allowedFields = new Set(["waitingOn", "nextFollowUpAt"]);
+    if (Object.keys(changes).some((field) => !allowedFields.has(field))) {
+      return { ok: false, status: 400, body: { error: "invalid_work_item_progress_fields" } };
+    }
+    const followUpInput = Object.fromEntries(Object.entries(changes)
+      .filter(([field]) => allowedFields.has(field)));
+    const normalized = normalizeWorkItemFollowUpInput(followUpInput, { partial: true });
+    if (normalized.error) return { ok: false, status: 400, body: { error: normalized.error } };
+    const progressInput = { summary: normalizedSummary };
+    if (Object.hasOwn(normalized.value, "waitingOn")) progressInput.waitingOn = normalized.value.waitingOn;
+    if (Object.hasOwn(normalized.value, "nextFollowUpAt")) progressInput.nextFollowUpAt = normalized.value.nextFollowUpAt;
+    const replay = (state.workItemActivities ?? []).find((activity) =>
+      activity.workItemId === item.id
+      && activity.ownerTeamId === actorTeam(actor)
+      && activity.actorId === actorUser(actor)
+      && activity.action === "progress_recorded"
+      && activity.details?.idempotencyKey === key);
+    if (replay) {
+      if (JSON.stringify(replay.details?.progressInput) !== JSON.stringify(progressInput)) {
+        return { ok: false, status: 409, body: { error: "work_item_progress_idempotency_conflict" } };
+      }
+      return {
+        ok: true,
+        status: 200,
+        body: { workItem: workItemView(item, actor), activity: replay, replayed: true },
+      };
+    }
+    if (item.state === "closed" || item.status === "done" || item.archivedAt) {
+      return { ok: false, status: 409, body: { error: "work_item_not_open_for_progress" } };
+    }
+    if (!Number.isInteger(expectedRevision)) {
+      return { ok: false, status: 400, body: { error: "expected_revision_required" } };
+    }
+    if (expectedRevision !== item.revision) {
+      return { ok: false, status: 409, body: { error: "work_item_revision_conflict", currentRevision: item.revision } };
+    }
+    const followUp = resolveFollowUpContext({
+      ...workItemFollowUpContextView(item),
+      ...normalized.value,
+    }, actor, { input: followUpInput });
+    if (followUp.error) return { ok: false, status: 400, body: { error: followUp.error } };
+    const timestamp = now();
+    const previous = {
+      waitingOn: item.waitingOn ?? "none",
+      nextFollowUpAt: item.nextFollowUpAt ?? null,
+    };
+    let activity;
+    runTx(() => {
+      Object.assign(item, normalized.value, {
+        lastProgressAt: timestamp,
+        lastProgressSummary: normalizedSummary,
+        revision: item.revision + 1,
+        updatedAt: timestamp,
+        lastModifiedBy: actorUser(actor),
+      });
+      activity = recordActivity(item, actor, "progress_recorded", {
+        idempotencyKey: key,
+        progressInput,
+        summary: normalizedSummary,
+        changes: Object.fromEntries(Object.keys(normalized.value).map((field) => [
+          field,
+          { from: previous[field] ?? null, to: item[field] ?? null },
+        ])),
+      });
+      appendEvent({
+        invocationId: null,
+        type: "work_item_progress_recorded",
+        level: "info",
+        message: `${item.localRef} progress recorded.`,
+        data: { workItemId: item.id, revision: item.revision, activityId: activity.id, actorTeamId: actorTeam(actor) },
+      });
+    });
+    notifyWorkItemChanged(item, actor, "progress_recorded");
+    return {
+      ok: true,
+      status: 201,
+      body: { workItem: workItemView(item, actor), activity, replayed: false },
+    };
+  }
+
   function bulkUpdateWorkItems({ items, changes } = {}, actor = null) {
     if (!Array.isArray(items) || items.length === 0 || items.length > 100 || !changes || typeof changes !== "object") {
       return { ok: false, status: 400, body: { error: "invalid_work_item_bulk_update" } };
@@ -3329,7 +3426,7 @@ export function createWorkItemService({
   }
 
   return {
-    listWorkItems, getHomeWorkbench, listAttention, getWorkItem, createWorkItem, updateWorkItem, bulkUpdateWorkItems, transitionWorkItem,
+    listWorkItems, getHomeWorkbench, listAttention, getWorkItem, createWorkItem, updateWorkItem, recordWorkItemProgress, bulkUpdateWorkItems, transitionWorkItem,
     listActivity, listComments, createComment, updateComment, deleteComment,
     beginExecution, abortExecution, recordExecutionBinding,
     beginDelivery, failDelivery, completeDelivery,

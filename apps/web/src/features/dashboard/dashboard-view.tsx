@@ -158,6 +158,7 @@ export function DashboardView({ surface = "overview" }: { surface?: DashboardSur
   const [dailyWorkItems, setDailyWorkItems] = useState<LocalWorkItem[]>([]);
   const [claimableWorkItems, setClaimableWorkItems] = useState<LocalWorkItem[]>([]);
   const [homeWorkbench, setHomeWorkbench] = useState<HomeWorkbench>();
+  const [dailyRefreshVersion, setDailyRefreshVersion] = useState(0);
   const [claimingWorkItemId, setClaimingWorkItemId] = useState<string | null>(null);
   const [localScheduleCapacity, setLocalScheduleCapacity] = useState<LocalScheduleCapacityResponse>();
   const [localSchedulePreview, setLocalSchedulePreview] = useState<LocalSchedulePreviewResponse>();
@@ -206,7 +207,7 @@ export function DashboardView({ surface = "overview" }: { surface?: DashboardSur
         }
       });
     return () => { cancelled = true; };
-  }, [surface, state?.workItemSummary?.updatedAt]);
+  }, [surface, state?.workItemSummary?.updatedAt, dailyRefreshVersion]);
 
   async function assignDailyWorkItemToMe(item: LocalWorkItem) {
     setClaimingWorkItemId(item.id);
@@ -584,6 +585,7 @@ export function DashboardView({ surface = "overview" }: { surface?: DashboardSur
               onOpenCompleted={() => openRunFilter("completed")}
               onOpenFailed={() => openRunFilter("failed")}
               onClaimItem={(item) => { void assignDailyWorkItemToMe(item); }}
+              onProgressRecorded={() => setDailyRefreshVersion((version) => version + 1)}
               claimingItemId={claimingWorkItemId}
               claimError={assignmentAction.error}
               onApplyPlan={localSchedulePreview ? () => {

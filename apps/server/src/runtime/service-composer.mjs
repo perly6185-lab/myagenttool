@@ -4056,6 +4056,7 @@ export function createServerRuntimeServices({
     getWorkItem: workItemService.getWorkItem,
     createWorkItem: workItemService.createWorkItem,
     updateWorkItem: workItemService.updateWorkItem,
+    recordWorkItemProgress: workItemService.recordWorkItemProgress,
     bulkUpdateWorkItems: workItemService.bulkUpdateWorkItems,
     transitionWorkItem: workItemService.transitionWorkItem,
     beginWorkItemExecution: workItemService.beginExecution,

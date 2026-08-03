@@ -269,6 +269,89 @@ test("enforces requester identity, tenancy, waiting-on, and follow-up time rules
   assert.equal(manager.status, 201);
 });
 
+test("records append-only progress with follow-up changes, audit attribution, and idempotent replay", () => {
+  const changes = [];
+  const { service, state, events } = harness({
+    onWorkItemChanged: (item, actor, reason) => changes.push({
+      id: item.id, actorId: actor.userId, reason,
+    }),
+  });
+  const created = service.createWorkItem({
+    projectId: "prj_a",
+    title: "Customer checkpoint",
+    requesterRelation: "customer",
+    requesterName: "Client",
+    waitingOn: "me",
+  }, ACTOR_A).body.workItem;
+
+  const recorded = service.recordWorkItemProgress({
+    workItemId: created.id,
+    expectedRevision: created.revision,
+    idempotencyKey: "progress-1",
+    summary: "  Demo complete; waiting for customer sign-off.  ",
+    waitingOn: "requester",
+    nextFollowUpAt: "2026-07-25T10:00:00+08:00",
+  }, ACTOR_A);
+
+  assert.equal(recorded.status, 201);
+  assert.equal(recorded.body.replayed, false);
+  assert.equal(recorded.body.workItem.revision, 2);
+  assert.equal(recorded.body.workItem.lastProgressAt, "2026-07-24T00:00:00.000Z");
+  assert.equal(recorded.body.workItem.lastProgressSummary, "Demo complete; waiting for customer sign-off.");
+  assert.equal(recorded.body.workItem.waitingOn, "requester");
+  assert.equal(recorded.body.workItem.nextFollowUpAt, "2026-07-25T02:00:00.000Z");
+  assert.equal(state.workItemActivities[0].action, "progress_recorded");
+  assert.equal(state.workItemActivities[0].details.principalId, "usr_a");
+  assert.deepEqual(state.workItemActivities[0].details.changes.waitingOn, { from: "me", to: "requester" });
+  assert.equal(events.at(-1).type, "work_item_progress_recorded");
+  assert.deepEqual(changes, [{ id: created.id, actorId: "usr_a", reason: "progress_recorded" }]);
+
+  const replayed = service.recordWorkItemProgress({
+    workItemId: created.id,
+    expectedRevision: created.revision,
+    idempotencyKey: "progress-1",
+    summary: "Demo complete; waiting for customer sign-off.",
+    waitingOn: "requester",
+    nextFollowUpAt: "2026-07-25T02:00:00.000Z",
+  }, ACTOR_A);
+  assert.equal(replayed.status, 200);
+  assert.equal(replayed.body.replayed, true);
+  assert.equal(state.workItemActivities.filter((activity) => activity.action === "progress_recorded").length, 1);
+  assert.equal(events.filter((event) => event.type === "work_item_progress_recorded").length, 1);
+
+  const conflictingReplay = service.recordWorkItemProgress({
+    workItemId: created.id,
+    expectedRevision: 2,
+    idempotencyKey: "progress-1",
+    summary: "Different progress",
+  }, ACTOR_A);
+  assert.equal(conflictingReplay.status, 409);
+  assert.equal(conflictingReplay.body.error, "work_item_progress_idempotency_conflict");
+  assert.equal(service.recordWorkItemProgress({
+    workItemId: created.id,
+    expectedRevision: 2,
+    idempotencyKey: "progress-2",
+    summary: "Foreign update",
+  }, ACTOR_B).status, 404);
+});
+
+test("validates progress input and optimistic concurrency", () => {
+  const { service } = harness();
+  const created = service.createWorkItem({ projectId: "prj_a", title: "Progress validation" }, ACTOR_A).body.workItem;
+  const record = (overrides = {}) => service.recordWorkItemProgress({
+    workItemId: created.id,
+    expectedRevision: created.revision,
+    idempotencyKey: "progress-validation",
+    summary: "Checkpoint",
+    ...overrides,
+  }, ACTOR_A);
+  assert.equal(record({ summary: " " }).body.error, "invalid_work_item_progress_summary");
+  assert.equal(record({ idempotencyKey: "" }).body.error, "work_item_progress_idempotency_key_required");
+  assert.equal(record({ expectedRevision: 99 }).body.error, "work_item_revision_conflict");
+  assert.equal(record({ nextFollowUpAt: "2026-07-23T23:59:59Z" }).body.error, "work_item_next_follow_up_at_in_past");
+  assert.equal(record({ waitingOn: "requester" }).body.error, "work_item_waiting_on_requester_requires_requester");
+});
+
 test("backfills legacy work-item follow-up context without inventing requester identity", () => {
   const state = {
     workItems: [
