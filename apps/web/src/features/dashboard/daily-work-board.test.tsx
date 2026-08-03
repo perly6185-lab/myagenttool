@@ -6,6 +6,7 @@ import {
 } from "@/features/dashboard/daily-work-board";
 import type { WorkBoard, WorkItem, WorkReport, WorkState } from "@/lib/console-state";
 import type { LocalWorkItem } from "@/features/tasks/task-view-types";
+import type { HomeWorkbench, HomeWorkbenchItem } from "@/features/dashboard/home-workbench-types";
 import { i18n } from "@/lib/i18n";
 
 beforeEach(async () => { await i18n.changeLanguage("en-US"); });
@@ -101,7 +102,83 @@ function localItem(overrides: Partial<LocalWorkItem> = {}): LocalWorkItem {
   };
 }
 
+function homeItem(overrides: Partial<HomeWorkbenchItem> = {}): HomeWorkbenchItem {
+  return {
+    workItemId: "lwi-1", localRef: "LOCAL-1", title: "Plan the next release", projectId: "prj-1",
+    priority: "p1", assignees: [{ id: "usr_local", name: "Me" }],
+    requester: { relation: "customer", name: "Alex", organization: "Acme" },
+    planningStatus: "ready", executionState: "unclaimed", waitingOn: "me",
+    attentionReason: null, secondaryReasons: [], needsAttention: true,
+    dueDate: null, plannedDate: "2026-07-31", commitmentDate: null, nextFollowUpAt: null,
+    nextAction: { kind: "open_issue", label: "open_issue", targetId: "lwi-1", section: "task" },
+    ai: null,
+    ...overrides,
+  };
+}
+
+function workbench(items: HomeWorkbenchItem[]): HomeWorkbench {
+  const relations = ["boss", "manager", "customer", "colleague", "self", "unknown"] as const;
+  const waiting = ["me", "requester", "internal", "ai", "none"] as const;
+  return {
+    generatedAt: "2026-07-31T04:00:00.000Z",
+    horizon: { today: "2026-07-31", tomorrow: "2026-08-01" },
+    summary: {
+      total: items.length,
+      needsAttention: items.filter((item) => item.needsAttention).length,
+      waitingMe: items.filter((item) => item.waitingOn === "me").length,
+      approvals: items.filter((item) => item.attentionReason === "approval_required").length,
+      aiFailed: items.filter((item) => item.attentionReason === "ai_failed").length,
+      dueToday: items.filter((item) => item.dueDate === "2026-07-31").length,
+      reviewReady: items.filter((item) => item.attentionReason === "review_ready").length,
+      byRelation: Object.fromEntries(relations.map((relation) => [relation, items.filter((item) => item.requester.relation === relation).length])) as HomeWorkbench["summary"]["byRelation"],
+      byWaitingOn: Object.fromEntries(waiting.map((value) => [value, items.filter((item) => item.waitingOn === value).length])) as HomeWorkbench["summary"]["byWaitingOn"],
+    },
+    items,
+  };
+}
+
 describe("DailyWorkBoard", () => {
+  it("filters relationship work, shows waiting context, and opens the server-derived next action", () => {
+    const now = new Date(2026, 6, 31, 12).getTime();
+    const customer = localItem({ id: "customer", localRef: "LOCAL-C", title: "Confirm customer scope", plannedDate: "2026-07-31" });
+    const self = localItem({ id: "self", localRef: "LOCAL-S", title: "Polish internal notes", plannedDate: "2026-07-31", requesterRelation: "self" });
+    const customerHome = homeItem({
+      workItemId: "customer", localRef: "LOCAL-C", title: customer.title,
+      attentionReason: "review_ready", executionState: "completed",
+      nextAction: { kind: "review_result", label: "review_result", targetId: "aur_customer", section: "autoRuns" },
+      ai: { autoRunId: "aur_customer", invocationId: "inv_customer", agentId: "agt_1", agentName: "Codex", status: "done", updatedAt: "2026-07-31T03:00:00.000Z" },
+    });
+    const selfHome = homeItem({
+      workItemId: "self", localRef: "LOCAL-S", title: self.title,
+      requester: { relation: "self", name: null, organization: null },
+      waitingOn: "none", needsAttention: false,
+      nextAction: { kind: "open_issue", label: "open_issue", targetId: "self", section: "task" },
+    });
+    const onOpenItem = vi.fn();
+
+    render(
+      <DailyWorkBoard
+        board={{ generatedAt: now, states: emptyStates() }}
+        report={report(0, 0)}
+        plannedItems={[customer, self]}
+        workbench={workbench([customerHome, selfHome])}
+        onOpenItem={onOpenItem}
+        onOpenTasks={vi.fn()}
+        now={now}
+      />,
+    );
+
+    expect(screen.getByText("Stakeholder follow-up overview")).toBeTruthy();
+    expect(screen.getByText("Customer · Alex")).toBeTruthy();
+    expect(screen.getByText(/People：Waiting on me/)).toBeTruthy();
+    expect(screen.getByTestId("active-ai-work").textContent).toContain("Codex");
+    fireEvent.click(screen.getByRole("button", { name: "Customer 1" }));
+    expect(screen.getAllByText("LOCAL-C · Confirm customer scope").length).toBeGreaterThan(0);
+    expect(screen.queryByText("LOCAL-S · Polish internal notes")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Review" }));
+    expect(onOpenItem).toHaveBeenCalledWith(expect.objectContaining({ section: "autoRuns", targetId: "aur_customer" }));
+  });
+
   it("separates yesterday outcomes from today's current focus without duplicating follow-up items", () => {
     const now = new Date(2026, 6, 31, 12).getTime();
     const yesterday = new Date(2026, 6, 30, 12).toISOString();

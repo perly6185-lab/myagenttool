@@ -8,6 +8,7 @@ import { createHash } from "node:crypto";
 import { normalizeLocalIssueRoutineBinding } from "@myagenttool/protocol/business-routine";
 import { actorCanAccessProject, findUser, LOCAL_TEAM_ID, LOCAL_USER_ID } from "../runtime/auth.mjs";
 import { listDevices } from "../runtime/device.mjs";
+import { homeWorkbenchReadModel } from "../read-models/home-workbench.mjs";
 import { backfillTerminalOwnership } from "../runtime/terminal-ownership.mjs";
 import { makeRunTx } from "../runtime/store/run-tx.mjs";
 import { normalizedUpdatedSince, paginateRows } from "./cursor-pagination.mjs";
@@ -590,6 +591,25 @@ export function createWorkItemService({
     return {
       ok: true, status: 200,
       body: { workItems: page.rows, count: page.rows.length, nextCursor: page.nextCursor, hasMore: page.hasMore },
+    };
+  }
+
+  function getHomeWorkbench(query = {}, actor = null) {
+    const timezoneOffset = Number(query.timezoneOffset ?? 0);
+    if (!Number.isInteger(timezoneOffset) || timezoneOffset < -840 || timezoneOffset > 840) {
+      return { ok: false, status: 400, body: { error: "invalid_timezone_offset" } };
+    }
+    const assigneeId = query.assigneeId === "mine" || query.assigneeId == null
+      ? actorUser(actor)
+      : String(query.assigneeId);
+    const workItems = (state.workItems ?? [])
+      .filter((item) => item.ownerTeamId === actorTeam(actor))
+      .filter((item) => !assigneeId || (item.assigneeIds ?? []).includes(assigneeId))
+      .map((item) => workItemView(item, actor));
+    return {
+      ok: true,
+      status: 200,
+      body: homeWorkbenchReadModel({ state, workItems, now: now(), timezoneOffset }),
     };
   }
 
@@ -3309,7 +3329,7 @@ export function createWorkItemService({
   }
 
   return {
-    listWorkItems, listAttention, getWorkItem, createWorkItem, updateWorkItem, bulkUpdateWorkItems, transitionWorkItem,
+    listWorkItems, getHomeWorkbench, listAttention, getWorkItem, createWorkItem, updateWorkItem, bulkUpdateWorkItems, transitionWorkItem,
     listActivity, listComments, createComment, updateComment, deleteComment,
     beginExecution, abortExecution, recordExecutionBinding,
     beginDelivery, failDelivery, completeDelivery,

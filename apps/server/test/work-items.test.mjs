@@ -1135,6 +1135,22 @@ test("team scoping hides foreign work items and foreign projects", () => {
   assert.equal(service.createWorkItem({ projectId: "prj_b", title: "No" }, ACTOR_A).status, 404);
 });
 
+test("home workbench is assignee-scoped, tenant-safe, and timezone validated", () => {
+  const { service } = harness();
+  const own = service.createWorkItem({
+    projectId: "prj_a", title: "Customer homepage", requesterRelation: "customer",
+    requesterName: "Alex", waitingOn: "me", dueDate: "2026-07-24",
+  }, ACTOR_A).body.workItem;
+  service.createWorkItem({ projectId: "prj_b", title: "Foreign homepage" }, ACTOR_B);
+
+  const result = service.getHomeWorkbench({ assigneeId: "mine", timezoneOffset: -480 }, ACTOR_A);
+  assert.equal(result.status, 200);
+  assert.deepEqual(result.body.items.map((item) => item.workItemId), [own.id]);
+  assert.equal(result.body.items[0].requester.relation, "customer");
+  assert.equal(result.body.summary.waitingMe, 1);
+  assert.equal(service.getHomeWorkbench({ timezoneOffset: "invalid" }, ACTOR_A).status, 400);
+});
+
 test("updates are revision-gated and validate structured fields", () => {
   const { service } = harness();
   const item = service.createWorkItem({ projectId: "prj_a", title: "A" }, ACTOR_A).body.workItem;

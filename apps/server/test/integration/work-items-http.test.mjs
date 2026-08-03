@@ -161,6 +161,14 @@ test("structured requester and follow-up context is validated and audited throug
   assert.equal(created.body.workItem.requesterRelation, "customer");
   assert.equal(created.body.workItem.commitmentDate, "2099-08-07T09:00:00.000Z");
 
+  const workbench = await call("/api/work-items/home-workbench?assigneeId=mine&timezoneOffset=-480");
+  assert.equal(workbench.status, 200);
+  assert.ok(workbench.body.items.some((item) => item.workItemId === created.body.workItem.id
+    && item.requester.relation === "customer"
+    && item.nextAction.section === "task"));
+  assert.ok(workbench.body.summary.byRelation.customer >= 1);
+  assert.equal((await call("/api/work-items/home-workbench?timezoneOffset=not-a-number")).status, 400);
+
   const updated = await call(`/api/work-items/${created.body.workItem.id}`, {
     method: "PATCH",
     body: {
