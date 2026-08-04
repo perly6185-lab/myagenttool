@@ -221,7 +221,7 @@ test("#817: the per-directory guard still holds on the real metadata shape", () 
   );
 });
 
-test("current-terminal urgent P0 is queue-head within its fair team/project bucket", () => {
+test("current-terminal urgent P0 is queue-head on the terminal", () => {
   const old = queued("inv_old", "/w-old");
   old.createdAt = "2026-07-01T00:00:00.000Z";
   old.projectId = "prj_local";
@@ -252,6 +252,49 @@ test("current-terminal urgent P0 is queue-head within its fair team/project buck
     completeInvocation: () => {},
   });
   assert.equal(runtime.nextDispatchableInvocation()?.id, "inv_urgent");
+});
+
+test("#1613: urgent P0 outranks team/project fairness — an older item in an idle project no longer wins", () => {
+  // P0 urgent lives in project A whose team already has a run in flight; an
+  // OLDER normal item waits in idle project B. Pre-#1613 the team fairness
+  // level narrowed the pool to B (load 0, longest wait) before the urgent
+  // level was ever consulted, so the P0 sat behind cross-project work while
+  // its activation reason claimed "immediate". Urgent now outranks fairness.
+  const inv = (id, status, projectId, worktreePath, createdAt, autoRunId = null) => ({
+    id, agentId: "agt_cli", status, createdAt,
+    delivery: { state: status === "queued" ? "queued" : "running", dispatchAttempts: 0 },
+    options: { metadata: { projectId, worktreePath, ...(autoRunId ? { autoRunId } : {}) } },
+  });
+  const state = {
+    device: { id: "dev", maxConcurrency: 3 },
+    projects: [{ id: "prjA", ownerTeamId: "team_a" }, { id: "prjB", ownerTeamId: "team_b" }],
+    invocations: [
+      inv("run_A", "running", "prjA", "/wtA0", "2026-07-01T00:00:00.000Z"),
+      inv("q_B_old", "queued", "prjB", "/wtB1", "2026-07-01T00:00:01.000Z"), // idle tenant, waited longest
+      inv("q_urgent_A", "queued", "prjA", "/wtA1", "2026-07-01T00:00:30.000Z", "run_urgent"),
+    ],
+    workItems: [{
+      id: "lwi_urgent",
+      priority: "p0",
+      schedulePlanSource: "urgent_insert",
+      scheduleOrder: -1_000,
+      executionBindings: [{ kind: "auto_run", targetId: "run_urgent" }],
+    }],
+  };
+  const runtime = createInvocationDispatchRuntime({
+    state,
+    now: () => "2026-07-01T00:01:00.000Z",
+    appendEvent: () => {},
+    dispatchLeaseMs: 30_000,
+    findAgent: (id) => agents[id] ?? null,
+    completeInvocation: () => {},
+  });
+  assert.equal(runtime.nextDispatchableInvocation()?.id, "q_urgent_A",
+    "the confirmed P0 goes first even though its team is loaded and another project waited longer");
+  // With no urgent work queued, fairness is untouched: the idle tenant wins.
+  state.workItems = [];
+  assert.equal(runtime.nextDispatchableInvocation()?.id, "q_B_old",
+    "normal work still follows least-loaded-team fairness");
 });
 
 test("urgent P0 still waits behind its busy worktree while another local task can run", () => {

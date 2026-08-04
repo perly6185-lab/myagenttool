@@ -132,12 +132,16 @@ export function createInvocationDispatchRuntime({
     const nowMs = Date.parse(now());
     return selectFairInvocation(dispatchable, {
       levels: [
+        // A confirmed current-terminal P0 insertion goes first, ahead of team/
+        // project fairness: this selector only ever serves the user's own
+        // terminal, so honoring the explicit "urgent now" decision outranks
+        // balancing that user's projects against each other (#1613). Normal
+        // work all shares order 0, so fairness below is untouched for it. Busy
+        // worktrees were already removed by the eligibility filter above, so
+        // this never bypasses dir exclusion.
+        { keyOf: (item) => String(localScheduleOrder(item)), loadOf: (key) => Number(key) || 0 },
         { keyOf: (item) => invocationTeamKey(item, state), loadOf: (key) => teamLoad.get(key) ?? 0 },
         { keyOf: (item) => invocationProjectKey(item), loadOf: (key) => projectLoad.get(key) ?? 0 },
-        // Within the fair team/project bucket, a confirmed current-terminal P0
-        // insertion goes to the head. Busy worktrees were already removed by
-        // the eligibility filter above, so this never bypasses dir exclusion.
-        { keyOf: (item) => String(localScheduleOrder(item)), loadOf: (key) => Number(key) || 0 },
       ],
       ageMsOf: (item) => {
         const created = Date.parse(item.createdAt ?? "");
