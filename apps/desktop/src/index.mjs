@@ -100,6 +100,9 @@ async function activeRunAsUser() {
   return (await _runAsProbe.promise) ? user : null;
 }
 const serverUrl = process.env.BRIDGE_SERVER_URL ?? "http://127.0.0.1:5001";
+// #1616: per-launch loopback credential handed down by the desktop shell.
+// Absent in `pnpm dev` (the server runs without the gate there).
+const loopbackToken = String(process.env.BRIDGE_LOOPBACK_TOKEN ?? "").trim() || null;
 const pollIntervalMs = Number(process.env.BRIDGE_POLL_INTERVAL_MS ?? 700);
 const terminalPollIntervalMs = Number(process.env.BRIDGE_TERMINAL_POLL_INTERVAL_MS ?? 40);
 const binaryReadinessIntervalMs = Number(process.env.BRIDGE_BINARY_READINESS_INTERVAL_MS ?? 15 * 1000);
@@ -3817,6 +3820,7 @@ async function request(method, path, body) {
   }
   const headers = {
     ...(bridgeToken ? { Authorization: `Bearer ${bridgeToken}` } : {}),
+    ...(loopbackToken ? { "X-Loopback-Token": loopbackToken } : {}),
     "X-MyAgentTool-Bridge-Session": bridgeSessionId,
     ...(body ? { "Content-Type": "application/json" } : {}),
   };
