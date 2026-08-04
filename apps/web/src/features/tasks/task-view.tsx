@@ -927,7 +927,7 @@ export function TaskView() {
 
 export function PlanningProjectsPanel({ onChanged = () => {} }: { onChanged?: () => void }) {
   const { t, i18n } = useAppTranslation();
-  const plannedDateLabel = i18n.language.startsWith("zh") ? "计划日期" : "Planned date";
+  const plannedDateLabel = i18n.language.startsWith("zh") ? "AI 执行日期" : "AI execution date";
   const { data: consoleState } = useConsoleState();
   const setSection = useUiStore((state) => state.setSection);
   const { execute, pending, error } = useAsyncAction();
@@ -2364,7 +2364,8 @@ function LocalWorkItemDetail({
   onDirtyChange: (dirty: boolean) => void;
 }) {
   const { t, i18n } = useAppTranslation();
-  const plannedDateLabel = i18n.language.startsWith("zh") ? "计划日期" : "Planned date";
+  const plannedDateLabel = i18n.language.startsWith("zh") ? "AI 执行日期" : "AI execution date";
+  const expectedCompletionLabel = i18n.language.startsWith("zh") ? "预期完成日期" : "Expected completion date";
   const { data: consoleState } = useConsoleState();
   const articleText = useArticleTaskLabels();
   const { execute, pending, error } = useAsyncAction();
@@ -3165,7 +3166,7 @@ function LocalWorkItemDetail({
         <div className="mt-3 space-y-4">
       <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
         <Field label={plannedDateLabel}><Input type="date" value={plannedDate} onChange={(event) => setPlannedDate(event.target.value)} /></Field>
-        <Field label={t("taskLocal.dueDate")}><Input type="date" value={dueDate} onChange={(event) => setDueDate(event.target.value)} /></Field>
+        <Field label={expectedCompletionLabel}><Input type="date" value={dueDate} onChange={(event) => setDueDate(event.target.value)} /></Field>
         <Field label={t("taskLocal.milestone")}><Input value={milestone} onChange={(event) => setMilestone(event.target.value)} /></Field>
         <Field label={t("planningInsights.estimatePoints")}><Input type="number" min="0" max="1000" value={estimatePoints} onChange={(event) => setEstimatePoints(event.target.value)} /></Field>
       </div>

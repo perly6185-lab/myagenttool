@@ -141,8 +141,8 @@ function waitingLabel(waitingOn, locale) {
 function audienceLabel(audience, locale) {
   return audience.name
     ?? (locale === "zh-CN"
-      ? ({ boss: "负责人", manager: "上级", customer: "客户", colleague: "同事", self: "个人" }[audience.relation])
-      : ({ boss: "Boss", manager: "Manager", customer: "Customer", colleague: "Colleague", self: "Personal" }[audience.relation]))
+      ? ({ boss: "负责人", manager: "上级", customer: "客户", child: "小孩学习", colleague: "同事", self: "个人" }[audience.relation])
+      : ({ boss: "Boss", manager: "Manager", customer: "Customer", child: "Child learning", colleague: "Colleague", self: "Personal" }[audience.relation]))
     ?? (locale === "zh-CN" ? "关系人" : "Stakeholder");
 }
 

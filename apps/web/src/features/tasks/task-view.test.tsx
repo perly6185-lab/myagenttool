@@ -246,7 +246,7 @@ describe("TaskView local work items", () => {
       await screen.findByLabelText("Title", undefined, { timeout: 5_000 }),
       { target: { value: "Build local board" } },
     );
-    fireEvent.change(screen.getByLabelText("Due date"), { target: { value: "2026-08-15" } });
+    fireEvent.change(screen.getByLabelText("Expected completion date"), { target: { value: "2026-08-15" } });
     fireEvent.change(screen.getByLabelText("Milestone"), { target: { value: "M3" } });
     fireEvent.click(screen.getByRole("button", { name: "Create issue" }));
     await waitFor(() => expect(mocks.createWorkItem).toHaveBeenCalledWith(expect.objectContaining({
@@ -268,6 +268,7 @@ describe("TaskView local work items", () => {
     render(<TaskView />);
     fireEvent.click(screen.getByRole("button", { name: /New local issue/i }));
     fireEvent.change(await screen.findByLabelText("Title"), { target: { value: "Confirm launch scope" } });
+    fireEvent.change(screen.getByLabelText("Expected completion date"), { target: { value: "2026-08-15" } });
     fireEvent.change(screen.getByLabelText("Requester relationship"), { target: { value: "customer" } });
     fireEvent.change(screen.getByLabelText("Requester name"), { target: { value: "Alex Client" } });
     fireEvent.change(screen.getByLabelText("Organization"), { target: { value: "Acme" } });
@@ -324,6 +325,7 @@ describe("TaskView local work items", () => {
     fireEvent.click(screen.getByRole("button", { name: "Inspect" }));
     expect(await screen.findByText("Imported WeChat article")).toBeTruthy();
     expect(screen.getByText(/3 images/)).toBeTruthy();
+    fireEvent.change(screen.getByLabelText("Expected completion date"), { target: { value: "2026-08-15" } });
     fireEvent.click(screen.getByRole("button", { name: "Create and import" }));
     await waitFor(() => expect(mocks.createWorkItem).toHaveBeenCalledWith(expect.objectContaining({
       projectId: "prj_1",
@@ -467,6 +469,7 @@ describe("TaskView local work items", () => {
     fireEvent.change(screen.getByLabelText("Public article URL"), { target: { value: "https://example.com/slow" } });
     fireEvent.click(screen.getByRole("button", { name: "Inspect" }));
     await screen.findByText("Slow article");
+    fireEvent.change(screen.getByLabelText("Expected completion date"), { target: { value: "2026-08-15" } });
     fireEvent.click(screen.getByRole("button", { name: "Create and import" }));
     await screen.findByRole("button", { name: "Cancel" });
     await waitFor(() => expect((screen.getByRole("button", { name: "Close" }) as HTMLButtonElement).disabled).toBe(true));

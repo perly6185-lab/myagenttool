@@ -240,6 +240,9 @@ test("enforces requester identity, tenancy, waiting-on, and follow-up time rules
     requesterRelation: "customer", requesterName: "Client", requesterUserId: "usr_c",
   }).body.error, "work_item_customer_internal_requester_forbidden");
   assert.equal(create({
+    requesterRelation: "child", requesterUserId: "usr_c",
+  }).body.error, "work_item_child_internal_requester_forbidden");
+  assert.equal(create({
     requesterRelation: "manager", requesterUserId: "usr_b",
   }).body.error, "invalid_work_item_requester_user");
   assert.equal(create({
@@ -267,6 +270,10 @@ test("enforces requester identity, tenancy, waiting-on, and follow-up time rules
   assert.equal(own.body.workItem.requesterName, null);
   const manager = create({ requesterRelation: "manager", requesterUserId: "usr_c", waitingOn: "requester" });
   assert.equal(manager.status, 201);
+  const child = create({ requesterRelation: "child" });
+  assert.equal(child.status, 201);
+  assert.equal(child.body.workItem.requesterRelation, "child");
+  assert.equal(child.body.workItem.requesterUserId, null);
 });
 
 test("records append-only progress with follow-up changes, audit attribution, and idempotent replay", () => {
@@ -1242,6 +1249,9 @@ test("home workbench is assignee-scoped, tenant-safe, and timezone validated", (
     projectId: "prj_a", title: "Customer homepage", requesterRelation: "customer",
     requesterName: "Alex", waitingOn: "me", dueDate: "2026-07-24",
   }, ACTOR_A).body.workItem;
+  const unassigned = service.createWorkItem({
+    projectId: "prj_a", title: "Unassigned but local", assigneeIds: [], requesterRelation: "child",
+  }, ACTOR_A).body.workItem;
   service.createWorkItem({ projectId: "prj_b", title: "Foreign homepage" }, ACTOR_B);
 
   const result = service.getHomeWorkbench({ assigneeId: "mine", timezoneOffset: -480 }, ACTOR_A);
@@ -1249,6 +1259,9 @@ test("home workbench is assignee-scoped, tenant-safe, and timezone validated", (
   assert.deepEqual(result.body.items.map((item) => item.workItemId), [own.id]);
   assert.equal(result.body.items[0].requester.relation, "customer");
   assert.equal(result.body.summary.waitingMe, 1);
+  const all = service.getHomeWorkbench({ assigneeId: "all", timezoneOffset: -480 }, ACTOR_A);
+  assert.deepEqual(new Set(all.body.items.map((item) => item.workItemId)), new Set([own.id, unassigned.id]));
+  assert.equal(all.body.summary.byRelation.child, 1);
   assert.equal(service.getHomeWorkbench({ timezoneOffset: "invalid" }, ACTOR_A).status, 400);
 });
 

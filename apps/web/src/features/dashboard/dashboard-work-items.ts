@@ -8,11 +8,11 @@ export function assignDashboardWorkItemToMe(id: string, expectedRevision: number
 }
 
 export function getDashboardHomeWorkbench(): Promise<HomeWorkbench> {
-  return request("GET", `/api/work-items/home-workbench?assigneeId=mine&timezoneOffset=${new Date().getTimezoneOffset()}`) as Promise<HomeWorkbench>;
+  return request("GET", `/api/work-items/home-workbench?assigneeId=all&timezoneOffset=${new Date().getTimezoneOffset()}`) as Promise<HomeWorkbench>;
 }
 
 export async function listAllDashboardWorkItems(
-  query: { assigneeId?: string } = {},
+  query: { assigneeId?: string; terminalId?: "local" } = {},
 ): Promise<LocalWorkItem[]> {
   const rows: LocalWorkItem[] = [];
   let cursor: string | undefined;

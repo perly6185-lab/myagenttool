@@ -381,6 +381,11 @@ export function createWorkItemService({
         return { error: "work_item_customer_internal_requester_forbidden" };
       }
       value.requesterUserId = null;
+    } else if (relation === "child") {
+      if (explicitRequesterUserId && value.requesterUserId) {
+        return { error: "work_item_child_internal_requester_forbidden" };
+      }
+      value.requesterUserId = null;
     } else {
       if (!value.requesterUserId && !value.requesterName) {
         return { error: "work_item_internal_requester_identity_required" };
@@ -541,6 +546,7 @@ export function createWorkItemService({
       return { ok: false, status: 400, body: { error: "invalid_work_item_planned_date" } };
     }
     const assigneeId = query.assigneeId === "mine" ? actorUser(actor) : String(query.assigneeId ?? "");
+    const terminalId = query.terminalId === "local" ? localTerminalId() : String(query.terminalId ?? "");
     const planningProjectId = String(query.planningProjectId ?? "");
     const planningWorkItemIds = planningProjectId
       ? new Set((state.planningProjectItems ?? [])
@@ -553,6 +559,7 @@ export function createWorkItemService({
       .filter((item) => !query.projectId || item.projectId === query.projectId)
       .filter((item) => !query.status || item.status === query.status)
       .filter((item) => !query.type || item.type === query.type)
+      .filter((item) => !terminalId || item.terminalId === terminalId)
       .filter((item) => !plannedDate || item.plannedDate === plannedDate)
       .filter((item) => !assigneeId || (item.assigneeIds ?? []).includes(assigneeId))
       .filter((item) => query.includeArchived === "1" || !item.archivedAt)
@@ -575,9 +582,12 @@ export function createWorkItemService({
     }
     const assigneeId = query.assigneeId === "mine" || query.assigneeId == null
       ? actorUser(actor)
-      : String(query.assigneeId);
+      : query.assigneeId === "all"
+        ? ""
+        : String(query.assigneeId);
     const workItems = (state.workItems ?? [])
       .filter((item) => item.ownerTeamId === actorTeam(actor))
+      .filter((item) => query.assigneeId !== "all" || item.terminalId === localTerminalId())
       .filter((item) => !assigneeId || (item.assigneeIds ?? []).includes(assigneeId))
       .map((item) => workItemView(item, actor));
     return {

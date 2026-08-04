@@ -144,7 +144,6 @@ export function DashboardView({ surface = "overview" }: { surface?: DashboardSur
   const scheduleAction = useAsyncAction();
   const rolloverAction = useAsyncAction();
   const urgentAction = useAsyncAction();
-  const assignmentAction = useAsyncAction();
   const runInFlightRef = useRef(false);
   const runIdempotencyKeyRef = useRef<string | null>(null);
   const attachmentWorktreeRef = useRef<string | null>(null);
@@ -165,11 +164,9 @@ export function DashboardView({ surface = "overview" }: { surface?: DashboardSur
   const [attachments, setAttachments] = useState<StagedWorktreeAttachment[]>([]);
   const [attachmentFeedback, setAttachmentFeedback] = useState<string | null>(null);
   const [dailyWorkItems, setDailyWorkItems] = useState<LocalWorkItem[]>([]);
-  const [claimableWorkItems, setClaimableWorkItems] = useState<LocalWorkItem[]>([]);
   const [homeWorkbench, setHomeWorkbench] = useState<HomeWorkbench>();
   const [dailyRefreshVersion, setDailyRefreshVersion] = useState(0);
   const [dailyLoadFailureCount, setDailyLoadFailureCount] = useState(0);
-  const [claimingWorkItemId, setClaimingWorkItemId] = useState<string | null>(null);
   const [localScheduleCapacity, setLocalScheduleCapacity] = useState<LocalScheduleCapacityResponse>();
   const [localSchedulePreview, setLocalSchedulePreview] = useState<LocalSchedulePreviewResponse>();
   const [localScheduleRollover, setLocalScheduleRollover] = useState<LocalScheduleRolloverResponse>();
@@ -182,42 +179,27 @@ export function DashboardView({ surface = "overview" }: { surface?: DashboardSur
     let cancelled = false;
     const workItems = import("@/features/dashboard/dashboard-work-items");
     void Promise.all([
-      settled(workItems.then(({ listAllDashboardWorkItems }) => listAllDashboardWorkItems({ assigneeId: "mine" }))),
-      settled(workItems.then(({ listAllDashboardWorkItems }) => listAllDashboardWorkItems())),
+      settled(workItems.then(({ listAllDashboardWorkItems }) => listAllDashboardWorkItems({ terminalId: "local" }))),
       settled(workItems.then(({ getDashboardHomeWorkbench }) => getDashboardHomeWorkbench())),
       settled(localScheduleApi.capacity()),
       settled(localScheduleApi.preview()),
       settled(localScheduleApi.rolloverPreview()),
       settled(localScheduleApi.urgentPreview()),
     ])
-      .then(([mine, all, workbench, capacity, preview, rollover, urgent]) => {
+      .then(([all, workbench, capacity, preview, rollover, urgent]) => {
         if (!cancelled) {
-          if (mine.ok) setDailyWorkItems(mine.value);
-          if (all.ok) setClaimableWorkItems(all.value.filter((item) =>
-            item.assigneeIds.length === 0
-            && !item.archivedAt
-            && (item.businessState ?? item.state) === "open"
-            && item.status !== "done"));
+          if (all.ok) setDailyWorkItems(all.value);
           if (workbench.ok) setHomeWorkbench(workbench.value);
           if (capacity.ok) setLocalScheduleCapacity(capacity.value);
           if (preview.ok) setLocalSchedulePreview(preview.value);
           if (rollover.ok) setLocalScheduleRollover(rollover.value);
           if (urgent.ok) setLocalScheduleUrgent(urgent.value);
-          setDailyLoadFailureCount([mine, all, workbench, capacity, preview, rollover, urgent]
+          setDailyLoadFailureCount([all, workbench, capacity, preview, rollover, urgent]
             .filter((result) => !result.ok).length);
         }
       });
     return () => { cancelled = true; };
   }, [surface, state?.workItemSummary?.homeWorkbenchUpdatedAt ?? state?.workItemSummary?.updatedAt, dailyRefreshVersion]);
-
-  async function assignDailyWorkItemToMe(item: LocalWorkItem) {
-    setClaimingWorkItemId(item.id);
-    await assignmentAction.execute(async () => {
-      const { assignDashboardWorkItemToMe } = await import("@/features/dashboard/dashboard-work-items");
-      return assignDashboardWorkItemToMe(item.id, item.revision);
-    });
-    setClaimingWorkItemId(null);
-  }
 
   const { agents, agent } = resolveAgents(state, selectedAgentId);
   const availableModels = useMemo(() => modelIdsForAgentAdapter(agent?.adapter), [agent?.adapter]);
@@ -586,7 +568,6 @@ export function DashboardView({ surface = "overview" }: { surface?: DashboardSur
               report={state?.workReport}
               plannedItems={dailyWorkItems}
               workbench={homeWorkbench}
-              unassignedItems={claimableWorkItems}
               capacity={localScheduleCapacity}
               preview={localSchedulePreview}
               rollover={localScheduleRollover}
@@ -601,10 +582,7 @@ export function DashboardView({ surface = "overview" }: { surface?: DashboardSur
               onOpenActive={() => openRunFilter("active")}
               onOpenCompleted={() => openRunFilter("completed")}
               onOpenFailed={() => openRunFilter("failed")}
-              onClaimItem={(item) => { void assignDailyWorkItemToMe(item); }}
               onProgressRecorded={() => setDailyRefreshVersion((version) => version + 1)}
-              claimingItemId={claimingWorkItemId}
-              claimError={assignmentAction.error}
               onApplyPlan={localSchedulePreview ? () => {
                 void scheduleAction.execute(() => localScheduleApi.applyPlan(localSchedulePreview.planRevision));
               } : undefined}

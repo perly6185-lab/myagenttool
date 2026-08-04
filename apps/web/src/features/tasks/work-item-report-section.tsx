@@ -23,7 +23,7 @@ import type {
 installWorkItemFollowUpTranslations();
 installWorkItemReportTranslations();
 
-const RELATIONS: WorkItemRequesterRelation[] = ["boss", "manager", "customer", "colleague", "self", "unknown"];
+const RELATIONS: WorkItemRequesterRelation[] = ["boss", "manager", "customer", "child", "colleague", "self", "unknown"];
 const TONES: WorkItemReportTone[] = ["concise", "formal", "warm"];
 
 type ReportEditorBaseline = {

@@ -69,6 +69,8 @@ type Copy = {
   myWork: string;
   myWorkHint: string;
   allMyWork: string;
+  peopleCategory: string;
+  otherPeople: string;
   needsMine: string;
   waitingMe: string;
   approvals: string;
@@ -79,8 +81,15 @@ type Copy = {
   aiWorkHint: string;
   allAiWork: string;
   aiRunning: string;
+  aiScheduled: string;
   noAiWork: string;
   noAiWorkHint: string;
+  executionDate: string;
+  noExecutionDate: string;
+  expectedCompletion: string;
+  noExpectedCompletion: string;
+  otherDates: string;
+  otherDatesHint: string;
   owner: string;
   waitingLabel: string;
   aiLabel: string;
@@ -107,7 +116,7 @@ type Copy = {
 
 const COPY: Record<"zh" | "en", Copy> = {
   zh: {
-    title: "我的工作",
+    title: "我的任务",
     subtitle: "复盘昨天，执行今天，规划明天",
     overview: "查看全部任务",
     todayProgress: "今日进度",
@@ -118,15 +127,15 @@ const COPY: Record<"zh" | "en", Copy> = {
     yesterday: "昨天",
     today: "今天",
     tomorrow: "明天",
-    review: "复盘与结转",
-    focus: "今日执行",
-    plan: "提前规划",
-    noYesterday: "昨天暂无已记录结果",
-    noToday: "当前没有待执行事项",
-    noTomorrow: "明天还没有安排",
-    yesterdayHint: "完成和失败结果会在这里汇总",
-    todayHint: "当前待决策、进行中和等待事项",
-    tomorrowHint: "先确定重点，再安排任务顺序",
+    review: "应完成 / 已逾期",
+    focus: "今天应完成",
+    plan: "明天应完成",
+    noYesterday: "没有昨天应完成的任务",
+    noToday: "今天没有应完成的任务",
+    noTomorrow: "明天没有应完成的任务",
+    yesterdayHint: "更早未完成的任务也会归入这里",
+    todayHint: "按预期完成日期查看今天的任务",
+    tomorrowHint: "按预期完成日期查看明天的任务",
     rollover: "结转未完成",
     planTomorrow: "规划明天",
     more: "查看另外 {{count}} 项",
@@ -135,32 +144,41 @@ const COPY: Record<"zh" | "en", Copy> = {
     terminalCapacity: "可用槽位 {{available}} / {{total}}",
     queueDepth: "队列 {{count}}",
     worktreeLocks: "工作区锁 {{count}}",
-    unscheduled: "我的未安排",
-    unscheduledHint: "这些工作属于我，但尚未进入今天或明天；先处理阻塞原因，或等待可用容量。",
+    unscheduled: "其他完成日期",
+    unscheduledHint: "显示更晚日期以及尚未设置预期完成日期的任务。",
     unassigned: "待认领",
     unassignedHint: "所有尚未分配的本地 Issue 都在这里；认领后才会进入个人调度并占用终端容量。",
     claim: "认领",
     claiming: "认领中…",
-    myWork: "我的工作",
-    myWorkHint: "只看需要我安排、推进和确认的工作",
-    allMyWork: "全部工作",
+    myWork: "我的任务",
+    myWorkHint: "按任务人员归类和预期完成日期查看本终端 Issue",
+    allMyWork: "全部人员",
+    peopleCategory: "任务人员",
+    otherPeople: "其他 / 未归类",
     needsMine: "需要我处理",
     waitingMe: "待我回复",
     approvals: "AI 待审批",
     aiFailed: "AI 失败",
     dueToday: "今日到期",
     reviewReady: "待复核与汇报",
-    activeAi: "AI 的工作",
-    aiWorkHint: "独立查看 AI 正在执行、等待审批、失败和待复核的任务",
+    activeAi: "AI 的任务",
+    aiWorkHint: "按本终端 AI 执行日期和执行状态查看同一批 Issue",
     allAiWork: "全部 AI 任务",
     aiRunning: "执行中",
+    aiScheduled: "待执行",
     noAiWork: "暂无 AI 任务",
-    noAiWorkHint: "启动或委派任务后，AI 的执行状态会显示在这里",
+    noAiWorkHint: "为 Issue 设置 AI 执行日期或启动执行后会显示在这里",
+    executionDate: "AI 执行日期",
+    noExecutionDate: "未安排执行日期",
+    expectedCompletion: "预期完成",
+    noExpectedCompletion: "未设置预期完成日期",
+    otherDates: "其他日期 / 未安排",
+    otherDatesHint: "显示更晚执行或尚未安排执行日期的 AI 任务。",
     owner: "负责人",
     waitingLabel: "人",
     aiLabel: "AI",
     execution: { unclaimed: "尚未执行", claimed: "已认领", running: "执行中", awaiting_approval: "等待审批", verifying: "验证中", failed: "执行失败", completed: "等待复核" },
-    relation: { boss: "Boss", manager: "上级", customer: "客户", colleague: "同事", self: "自己", unknown: "未标注" },
+    relation: { boss: "老板", manager: "上级", customer: "客户", child: "小孩学习", colleague: "同事", self: "自己", unknown: "未标注" },
     waiting: { me: "等我", requester: "等提出者", internal: "等内部成员", ai: "等 AI", none: "无需等待" },
     attentionReason: {
       overdue: "承诺或截止时间已逾期", approval_required: "需要人工审批", ai_failed: "执行失败，需要人工处理",
@@ -214,7 +232,7 @@ const COPY: Record<"zh" | "en", Copy> = {
     },
   },
   en: {
-    title: "My work",
+    title: "My tasks",
     subtitle: "Review yesterday, execute today, plan tomorrow",
     overview: "View all tasks",
     todayProgress: "Today's progress",
@@ -225,15 +243,15 @@ const COPY: Record<"zh" | "en", Copy> = {
     yesterday: "Yesterday",
     today: "Today",
     tomorrow: "Tomorrow",
-    review: "Review and carry over",
-    focus: "Today's execution",
-    plan: "Plan ahead",
-    noYesterday: "No outcomes recorded yesterday",
-    noToday: "No current work needs action",
-    noTomorrow: "Nothing planned for tomorrow",
-    yesterdayHint: "Completed and failed outcomes appear here",
-    todayHint: "Current decisions, active work, and waiting items",
-    tomorrowHint: "Choose priorities before arranging the sequence",
+    review: "Due / overdue",
+    focus: "Due today",
+    plan: "Due tomorrow",
+    noYesterday: "No tasks were due yesterday",
+    noToday: "No tasks are due today",
+    noTomorrow: "No tasks are due tomorrow",
+    yesterdayHint: "Older unfinished tasks also appear here",
+    todayHint: "Tasks grouped by expected completion date",
+    tomorrowHint: "Tasks grouped by expected completion date",
     rollover: "Carry over unfinished",
     planTomorrow: "Plan tomorrow",
     more: "Show {{count}} more",
@@ -242,32 +260,41 @@ const COPY: Record<"zh" | "en", Copy> = {
     terminalCapacity: "Available slots {{available}} / {{total}}",
     queueDepth: "Queue {{count}}",
     worktreeLocks: "Workspace locks {{count}}",
-    unscheduled: "My unscheduled",
-    unscheduledHint: "These items belong to you but are not on Today or Tomorrow yet. Resolve their blocker or wait for capacity.",
+    unscheduled: "Other completion dates",
+    unscheduledHint: "Tasks due later or missing an expected completion date.",
     unassigned: "Unassigned",
     unassignedHint: "Every unassigned local Issue appears here. It enters personal scheduling and terminal capacity only after you claim it.",
     claim: "Claim",
     claiming: "Claiming…",
-    myWork: "My work",
-    myWorkHint: "Only work that I need to plan, advance, or confirm",
-    allMyWork: "All my work",
+    myWork: "My tasks",
+    myWorkHint: "View this terminal's Issues by person category and expected completion date",
+    allMyWork: "All people",
+    peopleCategory: "Task person",
+    otherPeople: "Other / unlabeled",
     needsMine: "Needs my action",
     waitingMe: "Waiting on me",
     approvals: "AI approvals",
     aiFailed: "AI failed",
     dueToday: "Due today",
     reviewReady: "Review and report",
-    activeAi: "AI work",
-    aiWorkHint: "Track AI execution, approvals, failures, and review-ready results separately",
+    activeAi: "AI tasks",
+    aiWorkHint: "View the same Issues by this terminal's AI execution date and execution state",
     allAiWork: "All AI tasks",
     aiRunning: "Running",
+    aiScheduled: "Scheduled",
     noAiWork: "No AI work yet",
-    noAiWorkHint: "AI execution status will appear here after a task is started or delegated",
+    noAiWorkHint: "Set an AI execution date or start execution to show an Issue here",
+    executionDate: "AI execution date",
+    noExecutionDate: "No execution date",
+    expectedCompletion: "Expected completion",
+    noExpectedCompletion: "Expected completion not set",
+    otherDates: "Other dates / unscheduled",
+    otherDatesHint: "AI tasks scheduled later or missing an execution date.",
     owner: "Owner",
     waitingLabel: "People",
     aiLabel: "AI",
     execution: { unclaimed: "Not started", claimed: "Claimed", running: "Running", awaiting_approval: "Awaiting approval", verifying: "Verifying", failed: "Execution failed", completed: "Ready for review" },
-    relation: { boss: "Boss", manager: "Manager", customer: "Customer", colleague: "Colleague", self: "Self", unknown: "Not labeled" },
+    relation: { boss: "Boss", manager: "Manager", customer: "Customer", child: "Child learning", colleague: "Colleague", self: "Self", unknown: "Not labeled" },
     waiting: { me: "Waiting on me", requester: "Waiting on requester", internal: "Waiting on internal", ai: "Waiting on AI", none: "Not waiting" },
     attentionReason: {
       overdue: "Commitment or due date overdue", approval_required: "Needs human approval", ai_failed: "Execution failed; needs human action",
@@ -340,7 +367,12 @@ const STATE_ACCENT: Record<WorkState, string> = {
   done: "border-l-success",
 };
 
-type DailyWorkItem = WorkItem & { planningStatus?: LocalWorkItem["status"]; home?: HomeWorkbenchItem };
+type DailyWorkItem = WorkItem & {
+  planningStatus?: LocalWorkItem["status"];
+  home?: HomeWorkbenchItem;
+  dueDate?: string | null;
+  requesterRelation?: WorkItemRequesterRelation;
+};
 type DailyLocalWorkItem = LocalWorkItem & { scheduleReason?: string | null };
 type DailyGroupKey = WorkState | LocalWorkItem["status"];
 
@@ -414,6 +446,14 @@ function formatDate(value: number, locale: string): string {
   return new Intl.DateTimeFormat(locale, { month: "numeric", day: "numeric", weekday: "short" }).format(value);
 }
 
+function formatDateOnly(value: string | null | undefined, locale: string): string | null {
+  if (!value) return null;
+  const timestamp = Date.parse(`${value}T12:00:00`);
+  return Number.isFinite(timestamp)
+    ? new Intl.DateTimeFormat(locale, { month: "numeric", day: "numeric" }).format(timestamp)
+    : value;
+}
+
 function relativeTime(value: string | null | undefined, locale: string): string | null {
   if (!value) return null;
   const timestamp = Date.parse(value);
@@ -470,17 +510,11 @@ function localWorkItemCard(
     targetId: item.id,
     projectId: item.projectId,
     updatedAt: item.completedAt ?? item.updatedAt,
-    plannedDate: item.plannedDate,
-    schedulePlanSource: item.schedulePlanSource,
-    scheduleReason: item.scheduleReason,
-    scheduleOrder: item.scheduleOrder,
+    plannedDate: item.dueDate,
+    dueDate: item.dueDate,
+    requesterRelation: item.requesterRelation,
     home,
   };
-}
-
-function withoutBoundRuntime(runtimeItems: WorkItem[], localItems: LocalWorkItem[]): WorkItem[] {
-  const targets = new Set(localItems.flatMap((item) => [...localItemTargets(item)]));
-  return runtimeItems.filter((item) => !item.targetId || !targets.has(item.targetId));
 }
 
 export function buildDailyWorkBoardModel(
@@ -491,70 +525,57 @@ export function buildDailyWorkBoardModel(
   workbenchItems: HomeWorkbenchItem[] = [],
 ): DailyWorkBoardModel {
   const states = board?.states;
-  const yesterdayKey = dateKey(addDays(now, -1));
-  const todayKey = dateKey(now);
-  const tomorrowKey = dateKey(addDays(now, 1));
-  const yesterdayRuntime = uniqueItems([
-    states?.failed?.items ?? [],
-    states?.done?.items ?? [],
-  ]).filter((item) => dateKey(item.updatedAt ?? "") === yesterdayKey);
+  const yesterdayKey = dateKey(addDays(now, -1)) ?? new Date(addDays(now, -1)).toISOString().slice(0, 10);
+  const todayKey = dateKey(now) ?? new Date(now).toISOString().slice(0, 10);
+  const tomorrowKey = dateKey(addDays(now, 1)) ?? new Date(addDays(now, 1)).toISOString().slice(0, 10);
+  const priorityRank = { p0: 0, p1: 1, p2: 2, p3: 3 };
+  const homeById = new Map(workbenchItems.map((item) => [item.workItemId, item]));
+  const homeRank = new Map(workbenchItems.map((item, index) => [item.workItemId, index]));
+  const compareLocal = (left: DailyLocalWorkItem, right: DailyLocalWorkItem) =>
+    (homeRank.get(left.id) ?? Number.MAX_SAFE_INTEGER) - (homeRank.get(right.id) ?? Number.MAX_SAFE_INTEGER)
+    || priorityRank[left.priority] - priorityRank[right.priority]
+    || left.id.localeCompare(right.id);
+  const visibleLocal = plannedItems.filter((item) => !item.archivedAt && item.state !== "closed");
+  const yesterdayLocal = visibleLocal.filter((item) => Boolean(item.dueDate && item.dueDate <= yesterdayKey)).sort(compareLocal);
+  const todayLocal = visibleLocal.filter((item) => item.dueDate === todayKey).sort(compareLocal);
+  const tomorrowLocal = visibleLocal.filter((item) => item.dueDate === tomorrowKey).sort(compareLocal);
+  const otherLocal = visibleLocal
+    .filter((item) => !item.dueDate || item.dueDate > tomorrowKey)
+    .sort((left, right) => String(left.dueDate ?? "9999-12-31").localeCompare(String(right.dueDate ?? "9999-12-31")) || compareLocal(left, right));
+
   const activeRuntime = uniqueItems([
     states?.pending_decision?.items ?? [],
     states?.in_progress?.items ?? [],
     states?.follow_up?.items ?? [],
     states?.waiting?.items ?? [],
   ]);
-  const yesterdayLocal = plannedItems.filter((item) => dateKey(item.completedAt ?? "") === yesterdayKey);
-  const priorityRank = { p0: 0, p1: 1, p2: 2, p3: 3 };
-  const homeById = new Map(workbenchItems.map((item) => [item.workItemId, item]));
-  const homeRank = new Map(workbenchItems.map((item, index) => [item.workItemId, index]));
-  const compareLocal = (left: DailyLocalWorkItem, right: DailyLocalWorkItem) =>
-    (left.scheduleOrder ?? Number.MAX_SAFE_INTEGER) - (right.scheduleOrder ?? Number.MAX_SAFE_INTEGER)
-    || (homeRank.get(left.id) ?? Number.MAX_SAFE_INTEGER) - (homeRank.get(right.id) ?? Number.MAX_SAFE_INTEGER)
-    || priorityRank[left.priority] - priorityRank[right.priority]
-    || left.id.localeCompare(right.id);
-  const todayLocal = plannedItems
-    .filter((item) => item.plannedDate === todayKey)
-    .sort(compareLocal);
-  const tomorrowLocal = plannedItems
-    .filter((item) => item.plannedDate === tomorrowKey && item.status !== "done")
-    .sort(compareLocal);
-  const todayRuntime = activeRuntime
-    .filter((item) => item.plannedDate === todayKey || (!item.plannedDate && item.state === "in_progress"))
-    .sort((left, right) => (left.scheduleOrder ?? Number.MAX_SAFE_INTEGER) - (right.scheduleOrder ?? Number.MAX_SAFE_INTEGER));
-  const tomorrowRuntime = activeRuntime
-    .filter((item) => item.plannedDate === tomorrowKey && item.state !== "done")
-    .sort((left, right) => (left.scheduleOrder ?? Number.MAX_SAFE_INTEGER) - (right.scheduleOrder ?? Number.MAX_SAFE_INTEGER));
-  const unscheduledLocal = plannedItems
-    .filter((item) => !item.plannedDate && item.status !== "done")
-    .sort(compareLocal);
-  const unscheduledRuntime = activeRuntime.filter((item) => !item.plannedDate && item.state !== "in_progress");
-  const yesterday = [
-    ...yesterdayLocal.map((item) => localWorkItemCard(item, yesterdayRuntime, homeById.get(item.id))),
-    ...withoutBoundRuntime(yesterdayRuntime, yesterdayLocal),
-  ];
-  const today = [
-    ...todayLocal.map((item) => localWorkItemCard(item, todayRuntime, homeById.get(item.id))),
-    ...withoutBoundRuntime(todayRuntime, todayLocal),
-  ];
-  const tomorrow = [
-    ...tomorrowLocal.map((item) => localWorkItemCard(item, tomorrowRuntime, homeById.get(item.id))),
-    ...withoutBoundRuntime(tomorrowRuntime, tomorrowLocal),
-  ];
-  const unscheduled = [
-    ...unscheduledLocal.map((item) => localWorkItemCard(item, unscheduledRuntime, homeById.get(item.id))),
-    ...withoutBoundRuntime(unscheduledRuntime, unscheduledLocal),
-  ];
+  const yesterdayRuntime = uniqueItems([states?.failed?.items ?? [], states?.done?.items ?? []])
+    .filter((item) => dateKey(item.updatedAt ?? "") === yesterdayKey);
+  const runtimeFallback = plannedItems.length === 0;
+  const yesterday = runtimeFallback
+    ? yesterdayRuntime
+    : yesterdayLocal.map((item) => localWorkItemCard(item, [], homeById.get(item.id)));
+  const today = runtimeFallback
+    ? activeRuntime.filter((item) => item.plannedDate === todayKey || (!item.plannedDate && item.state === "in_progress"))
+    : todayLocal.map((item) => localWorkItemCard(item, [], homeById.get(item.id)));
+  const tomorrow = runtimeFallback
+    ? activeRuntime.filter((item) => item.plannedDate === tomorrowKey && item.state !== "done")
+    : tomorrowLocal.map((item) => localWorkItemCard(item, [], homeById.get(item.id)));
+  const unscheduled = runtimeFallback
+    ? activeRuntime.filter((item) => !item.plannedDate && item.state !== "in_progress")
+    : otherLocal.map((item) => localWorkItemCard(item, [], homeById.get(item.id)));
   const flow = report?.periods.day.flow;
   return {
     yesterday,
     today,
     tomorrow,
     unscheduled,
-    todayCompleted: flow?.completed ?? 0,
+    todayCompleted: runtimeFallback ? flow?.completed ?? 0 : todayLocal.filter((item) => item.status === "done").length,
     todayFailed: flow?.failed ?? 0,
-    attention: (states?.pending_decision?.count ?? 0) + (states?.follow_up?.count ?? 0),
-    active: states?.in_progress?.count ?? 0,
+    attention: runtimeFallback
+      ? (states?.pending_decision?.count ?? 0) + (states?.follow_up?.count ?? 0)
+      : visibleLocal.filter((item) => item.status === "blocked" || Boolean(item.dueDate && item.dueDate < todayKey)).length,
+    active: runtimeFallback ? states?.in_progress?.count ?? 0 : visibleLocal.filter((item) => ["in_progress", "review"].includes(item.status)).length,
   };
 }
 
@@ -611,12 +632,14 @@ export function DailyWorkBoard({
 }) {
   const [unassignedExpanded, setUnassignedExpanded] = useState(false);
   const [capacityExpanded, setCapacityExpanded] = useState(false);
-  const [myWorkFilter, setMyWorkFilter] = useState<"all" | "needs_attention" | "waiting_me" | "due_today">("all");
-  const [aiWorkFilter, setAiWorkFilter] = useState<"all" | "running" | "awaiting_approval" | "failed" | "completed">("all");
+  const [myWorkFilter, setMyWorkFilter] = useState<WorkItemRequesterRelation | "all" | "other">("all");
+  const [aiWorkFilter, setAiWorkFilter] = useState<"all" | "scheduled" | "running" | "awaiting_approval" | "failed" | "completed">("all");
   const [progressTarget, setProgressTarget] = useState<WorkItemProgressTarget | null>(null);
   const { i18n } = useAppTranslation();
   const locale = i18n.language.startsWith("zh") ? "zh-CN" : "en-US";
   const copy = COPY[locale === "zh-CN" ? "zh" : "en"];
+  const currentDay = workbench?.horizon.today ?? dateKey(now) ?? new Date(now).toISOString().slice(0, 10);
+  const nextDay = workbench?.horizon.tomorrow ?? dateKey(addDays(now, 1)) ?? new Date(addDays(now, 1)).toISOString().slice(0, 10);
   const suggestedDates = new Map(preview?.days.flatMap((day) =>
     day.items.map((item) => [item.workItemId, day.date] as const)) ?? []);
   for (const insertion of urgent?.insertions ?? []) suggestedDates.set(insertion.workItemId, insertion.targetDate);
@@ -650,22 +673,13 @@ export function DailyWorkBoard({
     }])) as WorkBoard["states"],
   } : undefined;
   const workbenchItems = workbench?.items ?? [];
-  const matchesMyWorkFilter = (item: HomeWorkbenchItem) => {
-    if (myWorkFilter === "needs_attention") return item.needsAttention;
-    if (myWorkFilter === "waiting_me") return item.waitingOn === "me";
-    if (myWorkFilter === "due_today") {
-      return item.dueDate === workbench?.horizon.today
-        || Boolean(item.commitmentDate && dateKey(item.commitmentDate) === workbench?.horizon.today);
-    }
-    return true;
-  };
-  const filteredMyWorkItems = workbenchItems.filter(matchesMyWorkFilter);
   const myWorkFilterActive = myWorkFilter !== "all";
-  const filteredIds = new Set(filteredMyWorkItems.map((item) => item.workItemId));
   const baseModel = buildDailyWorkBoardModel(previewBoard, report, now, previewItems, workbenchItems);
   const filterItems = (items: WorkItem[]) => items.filter((item) => {
-    const home = (item as DailyWorkItem).home;
-    return Boolean(home && filteredIds.has(home.workItemId));
+    const row = item as DailyWorkItem;
+    const relation = row.home?.requester.relation ?? row.requesterRelation ?? "unknown";
+    if (myWorkFilter === "other") return relation === "colleague" || relation === "unknown";
+    return relation === myWorkFilter;
   });
   const model = myWorkFilterActive ? {
     ...baseModel,
@@ -674,9 +688,12 @@ export function DailyWorkBoard({
     tomorrow: filterItems(baseModel.tomorrow),
     unscheduled: filterItems(baseModel.unscheduled),
   } : baseModel;
-  const aiWorkItems = workbenchItems.filter((item) => item.ai
-    && ["running", "awaiting_approval", "verifying", "failed", "completed"].includes(item.executionState));
+  const previewById = new Map(previewItems.map((item) => [item.id, item]));
+  const aiWorkItems = workbenchItems
+    .map((item) => ({ ...item, plannedDate: previewById.get(item.workItemId)?.plannedDate ?? item.plannedDate }))
+    .filter((item) => Boolean(item.plannedDate || item.ai));
   const matchesAiWorkFilter = (item: HomeWorkbenchItem) => {
+    if (aiWorkFilter === "scheduled") return item.executionState === "unclaimed" || item.executionState === "claimed";
     if (aiWorkFilter === "running") return item.executionState === "running" || item.executionState === "verifying";
     if (aiWorkFilter === "all") return true;
     return item.executionState === aiWorkFilter;
@@ -684,16 +701,23 @@ export function DailyWorkBoard({
   const filteredAiWorkItems = aiWorkItems.filter(matchesAiWorkFilter);
   const aiCounts = {
     all: aiWorkItems.length,
+    scheduled: aiWorkItems.filter((item) => item.executionState === "unclaimed" || item.executionState === "claimed").length,
     running: aiWorkItems.filter((item) => item.executionState === "running" || item.executionState === "verifying").length,
     awaiting_approval: aiWorkItems.filter((item) => item.executionState === "awaiting_approval").length,
     failed: aiWorkItems.filter((item) => item.executionState === "failed").length,
     completed: aiWorkItems.filter((item) => item.executionState === "completed").length,
   };
+  const aiDateGroups = {
+    yesterday: filteredAiWorkItems.filter((item) => Boolean(item.plannedDate && item.plannedDate < currentDay)),
+    today: filteredAiWorkItems.filter((item) => item.plannedDate === currentDay),
+    tomorrow: filteredAiWorkItems.filter((item) => item.plannedDate === nextDay),
+    other: filteredAiWorkItems.filter((item) => !item.plannedDate || item.plannedDate > nextDay),
+  };
   const suggestedCount = preview?.days.reduce((count, day) =>
     count + day.items.filter((item) => item.previousPlannedDate !== day.date).length, 0) ?? 0;
   const rolloverCount = (rollover?.moves.length ?? 0) + (rollover?.confirmationRequired.length ?? 0);
   const urgentCount = urgent?.insertions.length ?? 0;
-  const progressTotal = model.todayCompleted + model.today.length;
+  const progressTotal = model.today.length;
   const progress = progressTotal ? Math.round((model.todayCompleted / progressTotal) * 100) : 0;
   const runHomeAction = (item: HomeWorkbenchItem) => {
     if (item.nextAction.kind === "record_progress") {
@@ -728,30 +752,6 @@ export function DailyWorkBoard({
         </div>
 
         <div className="flex flex-1 flex-wrap items-center gap-x-4 gap-y-2 xl:justify-end">
-          {capacity ? (
-            <button
-              type="button"
-              aria-expanded={capacityExpanded}
-              onClick={() => setCapacityExpanded((expanded) => !expanded)}
-              className="rounded-full focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-            >
-              <StatusBadge tone={capacity.terminal?.bridgeAvailable ? "success" : "warning"}>
-                {capacity.terminal?.bridgeAvailable
-                  ? copy.terminalCapacity
-                    .replace("{{available}}", String(capacity.capacity.availableSlots))
-                    .replace("{{total}}", String(capacity.capacity.maxConcurrency))
-                  : copy.terminalOffline}
-              </StatusBadge>
-            </button>
-          ) : null}
-          {suggestedCount > 0 ? (
-            <StatusBadge tone="running">
-              {copy.suggestedPlan.replace("{{count}}", String(suggestedCount))}
-            </StatusBadge>
-          ) : null}
-          {urgentCount > 0 ? (
-            <StatusBadge tone="danger">{copy.urgentCount.replace("{{count}}", String(urgentCount))}</StatusBadge>
-          ) : null}
           <Button variant="ghost" size="sm" onClick={onOpenTasks} className="ml-auto">
             {copy.overview}<ArrowRight aria-hidden />
           </Button>
@@ -759,7 +759,11 @@ export function DailyWorkBoard({
       </div>
 
       <section className="border-b border-border/80 bg-muted/10 px-4 py-4" data-testid="my-work-status-cards">
-          <div className="grid grid-cols-2 gap-2 lg:grid-cols-4">
+          <div className="mb-3 flex items-center gap-2">
+            <h3 className="text-sm font-semibold">{copy.peopleCategory}</h3>
+            <span className="text-xs text-muted-foreground">{copy.expectedCompletion} · {copy.yesterday} / {copy.today} / {copy.tomorrow}</span>
+          </div>
+          <div className="grid grid-cols-2 gap-2 md:grid-cols-3 xl:grid-cols-7">
             <WorkStatusFilterCard
               label={copy.allMyWork}
               value={workbench?.summary.total ?? plannedItems.length}
@@ -767,39 +771,28 @@ export function DailyWorkBoard({
               active={myWorkFilter === "all"}
               onClick={() => setMyWorkFilter("all")}
             />
+            {(["self", "boss", "manager", "customer", "child"] as const).map((relation) => (
+              <WorkStatusFilterCard
+                key={relation}
+                label={copy.relation[relation]}
+                value={workbench?.summary.byRelation[relation]
+                  ?? plannedItems.filter((item) => item.requesterRelation === relation).length}
+                tone={relation === "boss" ? "warning" : relation === "customer" ? "running" : relation === "child" ? "success" : "neutral"}
+                active={myWorkFilter === relation}
+                onClick={() => setMyWorkFilter(relation)}
+              />
+            ))}
             <WorkStatusFilterCard
-              label={copy.needsMine}
-              value={workbench?.summary.needsAttention ?? model.attention}
-              tone="warning"
-              active={myWorkFilter === "needs_attention"}
-              onClick={() => setMyWorkFilter("needs_attention")}
-            />
-            <WorkStatusFilterCard
-              label={copy.waitingMe}
-              value={workbench?.summary.waitingMe ?? 0}
-              tone="warning"
-              active={myWorkFilter === "waiting_me"}
-              onClick={() => setMyWorkFilter("waiting_me")}
-            />
-            <WorkStatusFilterCard
-              label={copy.dueToday}
-              value={workbench?.summary.dueToday ?? 0}
-              tone="running"
-              active={myWorkFilter === "due_today"}
-              onClick={() => setMyWorkFilter("due_today")}
+              label={copy.otherPeople}
+              value={workbench
+                ? workbench.summary.byRelation.colleague + workbench.summary.byRelation.unknown
+                : plannedItems.filter((item) => item.requesterRelation === "colleague" || item.requesterRelation === "unknown").length}
+              tone="neutral"
+              active={myWorkFilter === "other"}
+              onClick={() => setMyWorkFilter("other")}
             />
           </div>
         </section>
-
-      {capacityExpanded && capacity ? (
-        <div className="flex flex-wrap gap-x-4 gap-y-1 border-b border-border/80 bg-muted/20 px-5 py-2 text-xs text-muted-foreground" role="status">
-          <span>{copy.queueDepth.replace("{{count}}", String(capacity.capacity.queueDepth))}</span>
-          <span>{copy.worktreeLocks.replace("{{count}}", String(capacity.capacity.worktreeLocks))}</span>
-          <span>{capacity.terminal?.bridgeAvailable ? copy.terminalCapacity
-            .replace("{{available}}", String(capacity.capacity.availableSlots))
-            .replace("{{total}}", String(capacity.capacity.maxConcurrency)) : copy.terminalOffline}</span>
-        </div>
-      ) : null}
 
       <div className="grid grid-flow-col auto-cols-[88%] gap-3 overflow-x-auto p-3 pb-4 [scrollbar-width:thin] lg:grid-flow-row lg:auto-cols-auto lg:grid-cols-[minmax(0,0.9fr)_minmax(0,1.25fr)_minmax(0,0.9fr)] lg:overflow-visible">
         <DayColumn
@@ -816,24 +809,6 @@ export function DailyWorkBoard({
           onOpenItem={onOpenItem}
           onHomeAction={runHomeAction}
           onHomeReport={runHomeReport}
-          action={rolloverCount > 0 && onRollover ? (
-            <Button
-              variant="secondary"
-              size="sm"
-              disabled={rollingOver}
-              onClick={() => {
-                const pinned = rollover?.confirmationRequired.length ?? 0;
-                const confirmPinned = pinned > 0
-                  ? window.confirm(copy.rolloverConfirm.replace("{{count}}", String(pinned)))
-                  : false;
-                if (!confirmPinned && pinned > 0 && (rollover?.moves.length ?? 0) === 0) return;
-                onRollover(confirmPinned);
-              }}
-            >
-              <RotateCcw />
-              {rollingOver ? copy.rollingOver : copy.rolloverCount.replace("{{count}}", String(rolloverCount))}
-            </Button>
-          ) : <Button variant="ghost" size="sm" disabled><RotateCcw />{copy.rollover}</Button>}
         />
 
         <DayColumn
@@ -860,30 +835,8 @@ export function DailyWorkBoard({
               <div className="h-1.5 overflow-hidden rounded-full bg-muted">
                 <div className="h-full rounded-full bg-primary transition-[width]" style={{ width: `${progress}%` }} />
               </div>
-              {capacity ? (
-                <div className="mt-2 flex flex-wrap gap-x-3 gap-y-1 text-[11px] text-muted-foreground" data-testid="local-capacity-summary">
-                  <span>{copy.queueDepth.replace("{{count}}", String(capacity.capacity.queueDepth))}</span>
-                  <span>{copy.worktreeLocks.replace("{{count}}", String(capacity.capacity.worktreeLocks))}</span>
-                </div>
-              ) : null}
             </div>
           )}
-          action={urgentCount > 0 && onApplyUrgent ? (
-            <Button
-              size="sm"
-              disabled={applyingUrgent}
-              onClick={() => {
-                const pinned = urgent?.confirmationRequired.length ?? 0;
-                const confirmPinned = pinned > 0
-                  ? window.confirm(copy.urgentConfirm.replace("{{count}}", String(pinned)))
-                  : false;
-                if (!confirmPinned && pinned > 0 && (urgent?.insertions.every((item) => item.requiresPinnedConfirmation) ?? false)) return;
-                onApplyUrgent(confirmPinned);
-              }}
-            >
-              <AlertTriangle />{applyingUrgent ? copy.insertingUrgent : copy.insertUrgent}
-            </Button>
-          ) : undefined}
         />
 
         <DayColumn
@@ -900,14 +853,6 @@ export function DailyWorkBoard({
           onOpenItem={onOpenItem}
           onHomeAction={runHomeAction}
           onHomeReport={runHomeReport}
-          action={suggestedCount > 0 && onApplyPlan ? (
-            <div className="flex flex-wrap justify-end gap-2">
-              <Button variant="ghost" size="sm" onClick={onOpenTasks}><Plus />{copy.planTomorrow}</Button>
-              <Button size="sm" onClick={onApplyPlan} disabled={applyingPlan}>
-                <Sparkles />{applyingPlan ? copy.applyingPlan : copy.applyPlan}
-              </Button>
-            </div>
-          ) : <Button variant="secondary" size="sm" onClick={onOpenTasks}><Plus />{copy.planTomorrow}</Button>}
         />
       </div>
       {model.unscheduled.length > 0 ? (
@@ -977,27 +922,93 @@ export function DailyWorkBoard({
       </Card>
 
       <Card className="overflow-hidden border-border/80" data-testid="ai-work-section">
-        <div className="flex items-center gap-3 border-b border-border/80 px-5 py-4">
-          <span className="grid size-10 shrink-0 place-items-center rounded-xl bg-primary/10 text-primary">
-            <Bot className="size-5" aria-hidden />
-          </span>
-          <div className="min-w-0 flex-1">
-            <div className="flex items-center gap-2">
-              <h2 className="text-base font-semibold">{copy.activeAi}</h2>
-              <Badge tone={aiWorkItems.length ? "running" : "neutral"}>{aiWorkItems.length}</Badge>
+        <div className="flex flex-col gap-3 border-b border-border/80 px-5 py-4 xl:flex-row xl:items-center">
+          <div className="flex min-w-0 flex-1 items-center gap-3">
+            <span className="grid size-10 shrink-0 place-items-center rounded-xl bg-primary/10 text-primary">
+              <Bot className="size-5" aria-hidden />
+            </span>
+            <div className="min-w-0 flex-1">
+              <div className="flex items-center gap-2">
+                <h2 className="text-base font-semibold">{copy.activeAi}</h2>
+                <Badge tone={aiWorkItems.length ? "running" : "neutral"}>{aiWorkItems.length}</Badge>
+              </div>
+              <p className="mt-0.5 text-xs text-muted-foreground">{copy.aiWorkHint}</p>
             </div>
-            <p className="mt-0.5 text-xs text-muted-foreground">{copy.aiWorkHint}</p>
+          </div>
+          <div className="flex flex-wrap items-center gap-2 xl:justify-end">
+            {suggestedCount > 0 ? (
+              <StatusBadge tone="running">{copy.suggestedPlan.replace("{{count}}", String(suggestedCount))}</StatusBadge>
+            ) : null}
+            {urgentCount > 0 ? (
+              <StatusBadge tone="danger">{copy.urgentCount.replace("{{count}}", String(urgentCount))}</StatusBadge>
+            ) : null}
+            {capacity ? (
+              <button
+                type="button"
+                aria-expanded={capacityExpanded}
+                onClick={() => setCapacityExpanded((expanded) => !expanded)}
+                className="rounded-full focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              >
+                <StatusBadge tone={capacity.terminal?.bridgeAvailable ? "success" : "warning"}>
+                  {capacity.terminal?.bridgeAvailable
+                    ? copy.terminalCapacity
+                      .replace("{{available}}", String(capacity.capacity.availableSlots))
+                      .replace("{{total}}", String(capacity.capacity.maxConcurrency))
+                    : copy.terminalOffline}
+                </StatusBadge>
+              </button>
+            ) : null}
+            {rolloverCount > 0 && onRollover ? (
+              <Button variant="secondary" size="sm" disabled={rollingOver} onClick={() => {
+                const pinned = rollover?.confirmationRequired.length ?? 0;
+                const confirmPinned = pinned > 0 ? window.confirm(copy.rolloverConfirm.replace("{{count}}", String(pinned))) : false;
+                if (!confirmPinned && pinned > 0 && (rollover?.moves.length ?? 0) === 0) return;
+                onRollover(confirmPinned);
+              }}>
+                <RotateCcw />{rollingOver ? copy.rollingOver : copy.rolloverCount.replace("{{count}}", String(rolloverCount))}
+              </Button>
+            ) : null}
+            {urgentCount > 0 && onApplyUrgent ? (
+              <Button size="sm" disabled={applyingUrgent} onClick={() => {
+                const pinned = urgent?.confirmationRequired.length ?? 0;
+                const confirmPinned = pinned > 0 ? window.confirm(copy.urgentConfirm.replace("{{count}}", String(pinned))) : false;
+                if (!confirmPinned && pinned > 0 && (urgent?.insertions.every((item) => item.requiresPinnedConfirmation) ?? false)) return;
+                onApplyUrgent(confirmPinned);
+              }}>
+                <AlertTriangle />{applyingUrgent ? copy.insertingUrgent : copy.insertUrgent}
+              </Button>
+            ) : null}
+            {suggestedCount > 0 && onApplyPlan ? (
+              <Button size="sm" onClick={onApplyPlan} disabled={applyingPlan}>
+                <Sparkles />{applyingPlan ? copy.applyingPlan : copy.applyPlan}
+              </Button>
+            ) : null}
           </div>
         </div>
 
+        {capacityExpanded && capacity ? (
+          <div className="flex flex-wrap gap-x-4 gap-y-1 border-b border-border/80 bg-muted/20 px-5 py-2 text-xs text-muted-foreground" role="status" data-testid="local-capacity-summary">
+            <span>{copy.queueDepth.replace("{{count}}", String(capacity.capacity.queueDepth))}</span>
+            <span>{copy.worktreeLocks.replace("{{count}}", String(capacity.capacity.worktreeLocks))}</span>
+            <span>{copy.executionDate}</span>
+          </div>
+        ) : null}
+
         <section className="border-b border-border/80 bg-muted/10 px-4 py-4" data-testid="ai-work-status-cards">
-          <div className="grid grid-cols-2 gap-2 md:grid-cols-5">
+          <div className="grid grid-cols-2 gap-2 md:grid-cols-3 xl:grid-cols-6">
             <WorkStatusFilterCard
               label={copy.allAiWork}
               value={aiCounts.all}
               tone="neutral"
               active={aiWorkFilter === "all"}
               onClick={() => setAiWorkFilter("all")}
+            />
+            <WorkStatusFilterCard
+              label={copy.aiScheduled}
+              value={aiCounts.scheduled}
+              tone="neutral"
+              active={aiWorkFilter === "scheduled"}
+              onClick={() => setAiWorkFilter("scheduled")}
             />
             <WorkStatusFilterCard
               label={copy.aiRunning}
@@ -1032,36 +1043,54 @@ export function DailyWorkBoard({
 
         <section className="px-4 py-4" data-testid="active-ai-work">
           {filteredAiWorkItems.length ? (
-            <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
-              {filteredAiWorkItems.map((item) => (
-                <div
-                  key={item.workItemId}
-                  className="min-w-0 rounded-xl border border-border bg-card p-3.5 transition-colors hover:bg-muted/35"
-                >
-                  <div className="flex min-w-0 items-start justify-between gap-3">
-                    <button
-                      type="button"
-                      onClick={() => onOpenItem(homeTaskWorkItem(item))}
-                      className="min-w-0 flex-1 text-left"
-                    >
-                      <span className="block text-[11px] text-muted-foreground">{item.localRef}</span>
-                      <strong className="mt-1 block line-clamp-2 text-sm [overflow-wrap:anywhere]">{item.title}</strong>
-                    </button>
-                    <StatusBadge tone={executionTone(item.executionState)}>
-                      {copy.execution[item.executionState]}
-                    </StatusBadge>
+            <div className="space-y-3">
+              <div className="grid grid-flow-col auto-cols-[88%] gap-3 overflow-x-auto pb-1 [scrollbar-width:thin] lg:grid-flow-row lg:auto-cols-auto lg:grid-cols-3 lg:overflow-visible">
+                <AiDateColumn
+                  title={copy.yesterday}
+                  subtitle={copy.executionDate}
+                  date={formatDate(addDays(now, -1), locale)}
+                  items={aiDateGroups.yesterday}
+                  copy={copy}
+                  locale={locale}
+                  onOpenItem={onOpenItem}
+                  onAction={runHomeAction}
+                />
+                <AiDateColumn
+                  title={copy.today}
+                  subtitle={copy.executionDate}
+                  date={formatDate(now, locale)}
+                  items={aiDateGroups.today}
+                  copy={copy}
+                  locale={locale}
+                  onOpenItem={onOpenItem}
+                  onAction={runHomeAction}
+                  featured
+                />
+                <AiDateColumn
+                  title={copy.tomorrow}
+                  subtitle={copy.executionDate}
+                  date={formatDate(addDays(now, 1), locale)}
+                  items={aiDateGroups.tomorrow}
+                  copy={copy}
+                  locale={locale}
+                  onOpenItem={onOpenItem}
+                  onAction={runHomeAction}
+                />
+              </div>
+              {aiDateGroups.other.length ? (
+                <div className="rounded-xl border border-border bg-background/45 p-3.5">
+                  <div className="mb-3 flex items-center gap-2">
+                    <h3 className="text-sm font-semibold">{copy.otherDates}</h3>
+                    <Badge tone="neutral">{aiDateGroups.other.length}</Badge>
+                    <span className="text-xs text-muted-foreground">{copy.otherDatesHint}</span>
                   </div>
-                  <div className="mt-3 flex items-center justify-between gap-3 border-t border-border/70 pt-3">
-                    <span className="min-w-0 truncate text-xs text-muted-foreground">
-                      {item.ai?.agentName ?? item.ai?.agentId ?? copy.aiLabel}
-                      {relativeTime(item.ai?.updatedAt, locale) ? ` · ${relativeTime(item.ai?.updatedAt, locale)}` : ""}
-                    </span>
-                    <Button size="sm" variant="secondary" onClick={() => runHomeAction(item)}>
-                      {copy.nextAction[item.nextAction.kind]}<ArrowRight aria-hidden />
-                    </Button>
+                  <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-3">
+                    {aiDateGroups.other.map((item) => (
+                      <AiWorkCard key={item.workItemId} item={item} copy={copy} locale={locale} onOpenItem={onOpenItem} onAction={runHomeAction} />
+                    ))}
                   </div>
                 </div>
-              ))}
+              ) : null}
             </div>
           ) : (
             <div className="grid min-h-36 place-items-center rounded-xl border border-dashed border-border/80 bg-background/30 px-4 py-6 text-center">
@@ -1081,6 +1110,90 @@ export function DailyWorkBoard({
         onClose={() => setProgressTarget(null)}
         onSaved={async () => { await onProgressRecorded?.(); }}
       />
+    </div>
+  );
+}
+
+function AiDateColumn({
+  title,
+  subtitle,
+  date,
+  items,
+  copy,
+  locale,
+  onOpenItem,
+  onAction,
+  featured = false,
+}: {
+  title: string;
+  subtitle: string;
+  date: string;
+  items: HomeWorkbenchItem[];
+  copy: Copy;
+  locale: string;
+  onOpenItem: (item: WorkItem) => void;
+  onAction: (item: HomeWorkbenchItem) => void;
+  featured?: boolean;
+}) {
+  return (
+    <section className={cn(
+      "min-h-56 snap-start rounded-xl border p-3.5",
+      featured ? "border-primary/35 bg-primary/[0.035]" : "border-border bg-background/45",
+    )}>
+      <div className="flex items-center gap-2">
+        <h3 className="font-semibold">{title}</h3>
+        <Badge tone={featured ? "running" : "neutral"}>{items.length}</Badge>
+        <span className="ml-auto text-[11px] text-muted-foreground">{date}</span>
+      </div>
+      <p className="mt-0.5 text-xs text-muted-foreground">{subtitle}</p>
+      <div className="mt-3 space-y-2">
+        {items.length ? items.map((item) => (
+          <AiWorkCard key={item.workItemId} item={item} copy={copy} locale={locale} onOpenItem={onOpenItem} onAction={onAction} />
+        )) : (
+          <div className="grid min-h-32 place-items-center rounded-lg border border-dashed border-border/80 px-3 text-center text-xs text-muted-foreground">
+            {copy.noAiWork}
+          </div>
+        )}
+      </div>
+    </section>
+  );
+}
+
+function AiWorkCard({
+  item,
+  copy,
+  locale,
+  onOpenItem,
+  onAction,
+}: {
+  item: HomeWorkbenchItem;
+  copy: Copy;
+  locale: string;
+  onOpenItem: (item: WorkItem) => void;
+  onAction: (item: HomeWorkbenchItem) => void;
+}) {
+  const dueDate = formatDateOnly(item.dueDate, locale);
+  const executionDate = formatDateOnly(item.plannedDate, locale);
+  return (
+    <div className="min-w-0 rounded-lg border border-border bg-card p-3 transition-colors hover:bg-muted/35">
+      <div className="flex flex-wrap items-center gap-1.5">
+        <Badge tone="neutral">{copy.relation[item.requester.relation]}</Badge>
+        <StatusBadge tone={executionTone(item.executionState)}>{copy.execution[item.executionState]}</StatusBadge>
+      </div>
+      <button type="button" onClick={() => onOpenItem(homeTaskWorkItem(item))} className="mt-2 block w-full min-w-0 text-left">
+        <span className="block text-[11px] text-muted-foreground">{item.localRef}</span>
+        <strong className="mt-0.5 block line-clamp-2 text-sm [overflow-wrap:anywhere]">{item.title}</strong>
+      </button>
+      <div className="mt-2 grid gap-0.5 text-[11px] text-muted-foreground">
+        <span>{copy.executionDate}：{executionDate ?? copy.noExecutionDate}</span>
+        <span>{copy.expectedCompletion}：{dueDate ?? copy.noExpectedCompletion}</span>
+        <span>{item.ai?.agentName ?? item.ai?.agentId ?? copy.aiLabel}</span>
+      </div>
+      <div className="mt-2 flex justify-end border-t border-border/70 pt-2">
+        <Button size="sm" variant="secondary" onClick={() => onAction(item)}>
+          {copy.nextAction[item.nextAction.kind]}<ArrowRight aria-hidden />
+        </Button>
+      </div>
     </div>
   );
 }
@@ -1308,7 +1421,8 @@ function WorkCard({
   const home = item.home;
   const requester = home
     ? `${copy.relation[home.requester.relation]}${home.requester.name ? ` · ${home.requester.name}` : ""}`
-    : null;
+    : copy.relation[item.requesterRelation ?? "unknown"];
+  const dueDate = formatDateOnly(item.dueDate ?? home?.dueDate, locale);
   return (
     <div
       className={cn(
@@ -1316,13 +1430,15 @@ function WorkCard({
         STATE_ACCENT[item.state],
       )}
     >
-      {home ? (
-        <span className="mb-1.5 flex flex-wrap items-center gap-1.5">
+      <span className="mb-1.5 flex flex-wrap items-center gap-1.5">
           <Badge tone="neutral" className="max-w-full whitespace-normal [overflow-wrap:anywhere]">{requester}</Badge>
+          {home ? (
+            <>
           <Badge tone={home.priority === "p0" ? "danger" : home.priority === "p1" ? "warning" : "neutral"}>{home.priority.toUpperCase()}</Badge>
           {home.attentionReason ? <span className="text-[11px] text-warning">{copy.attentionReason[home.attentionReason]}</span> : null}
+            </>
+          ) : null}
         </span>
-      ) : null}
       <button type="button" onClick={onOpen} className="flex w-full min-w-0 items-start gap-2 text-left">
         <Icon className="mt-0.5 size-4 shrink-0 text-muted-foreground" aria-hidden />
         <span className="min-w-0 flex-1">
@@ -1335,6 +1451,7 @@ function WorkCard({
       </button>
       {home ? (
         <div className="mt-2 grid gap-0.5 text-[11px] text-muted-foreground">
+          <span>{copy.expectedCompletion}：{dueDate ?? copy.noExpectedCompletion}</span>
           <span>{copy.owner}：{home.assignees.map((assignee) => assignee.name).join(", ") || "—"}</span>
           <span>{copy.waitingLabel}：{copy.waiting[home.waitingOn]}</span>
           {home.report ? (
@@ -1343,7 +1460,7 @@ function WorkCard({
             </span>
           ) : null}
         </div>
-      ) : null}
+      ) : <div className="mt-2 text-[11px] text-muted-foreground">{copy.expectedCompletion}：{dueDate ?? copy.noExpectedCompletion}</div>}
       <span className="mt-2 flex items-center justify-between gap-2">
         <StatusBadge tone={displayStateTone(item)}>{displayStateLabel(item, copy)}</StatusBadge>
         <span className="flex items-center gap-2">

@@ -89,9 +89,11 @@ test("home workbench aggregates relationship and waiting counts", () => {
     item({ id: "customer", requesterRelation: "customer", waitingOn: "requester" }),
     item({ id: "boss", requesterRelation: "boss", requesterName: "Boss", waitingOn: "internal" }),
     item({ id: "self", requesterRelation: "self", requesterName: null, waitingOn: "ai" }),
+    item({ id: "child", requesterRelation: "child", requesterName: null, waitingOn: "none" }),
   ]);
   assert.equal(result.summary.byRelation.customer, 1);
   assert.equal(result.summary.byRelation.boss, 1);
+  assert.equal(result.summary.byRelation.child, 1);
   assert.equal(result.summary.byWaitingOn.requester, 1);
   assert.equal(result.summary.byWaitingOn.ai, 1);
 });

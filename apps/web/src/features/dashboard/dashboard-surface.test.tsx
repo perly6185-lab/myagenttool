@@ -92,7 +92,7 @@ beforeEach(async () => {
     horizon: { today: "2026-07-31", tomorrow: "2026-08-01" },
     summary: {
       total: 0, needsAttention: 0, waitingMe: 0, approvals: 0, aiFailed: 0, dueToday: 0, reviewReady: 0,
-      byRelation: { boss: 0, manager: 0, customer: 0, colleague: 0, self: 0, unknown: 0 },
+      byRelation: { boss: 0, manager: 0, customer: 0, child: 0, colleague: 0, self: 0, unknown: 0 },
       byWaitingOn: { me: 0, requester: 0, internal: 0, ai: 0, none: 0 },
     },
     items: [],

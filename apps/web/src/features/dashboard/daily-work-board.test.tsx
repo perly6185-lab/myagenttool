@@ -118,7 +118,7 @@ function homeItem(overrides: Partial<HomeWorkbenchItem> = {}): HomeWorkbenchItem
     requester: { relation: "customer", name: "Alex", organization: "Acme" },
     planningStatus: "ready", executionState: "unclaimed", waitingOn: "me",
     attentionReason: null, secondaryReasons: [], needsAttention: true,
-    dueDate: null, plannedDate: "2026-07-31", commitmentDate: null, nextFollowUpAt: null,
+    dueDate: null, plannedDate: null, commitmentDate: null, nextFollowUpAt: null,
     report: null,
     nextAction: { kind: "open_issue", label: "open_issue", targetId: "lwi-1", section: "task" },
     ai: null,
@@ -127,7 +127,7 @@ function homeItem(overrides: Partial<HomeWorkbenchItem> = {}): HomeWorkbenchItem
 }
 
 function workbench(items: HomeWorkbenchItem[]): HomeWorkbench {
-  const relations = ["boss", "manager", "customer", "colleague", "self", "unknown"] as const;
+  const relations = ["boss", "manager", "customer", "child", "colleague", "self", "unknown"] as const;
   const waiting = ["me", "requester", "internal", "ai", "none"] as const;
   return {
     generatedAt: "2026-07-31T04:00:00.000Z",
@@ -150,7 +150,7 @@ function workbench(items: HomeWorkbenchItem[]): HomeWorkbench {
 describe("DailyWorkBoard", () => {
   it("records progress from a server-derived follow-up action and refreshes the board", async () => {
     const progressItem = localItem({
-      id: "progress", localRef: "LOCAL-P", title: "Follow up with customer", plannedDate: "2026-07-31",
+      id: "progress", localRef: "LOCAL-P", title: "Follow up with customer", dueDate: "2026-07-31", plannedDate: null,
     });
     const progressHome = homeItem({
       workItemId: progressItem.id,
@@ -178,7 +178,7 @@ describe("DailyWorkBoard", () => {
       />,
     );
 
-    fireEvent.click(screen.getByRole("button", { name: "Follow up" }));
+    fireEvent.click(within(screen.getByTestId("my-work-section")).getByRole("button", { name: "Follow up" }));
     const dialog = screen.getByRole("dialog", { name: "Record progress" });
     fireEvent.change(within(dialog).getByLabelText("Progress update"), {
       target: { value: "Customer approved the scope" },
@@ -194,22 +194,24 @@ describe("DailyWorkBoard", () => {
     expect(screen.queryByRole("dialog", { name: "Record progress" })).toBeNull();
   });
 
-  it("keeps my work and AI work in separate cards with independent status filters", () => {
+  it("shows the same Issues by person and due date for me, then by execution date and state for AI", () => {
     const now = new Date(2026, 6, 31, 12).getTime();
-    const customer = localItem({ id: "customer", localRef: "LOCAL-C", title: "Confirm customer scope", plannedDate: "2026-07-31" });
-    const self = localItem({ id: "self", localRef: "LOCAL-S", title: "Polish internal notes", plannedDate: "2026-07-31", requesterRelation: "self" });
+    const customer = localItem({ id: "customer", localRef: "LOCAL-C", title: "Confirm customer scope", dueDate: "2026-07-31", plannedDate: "2026-08-01" });
+    const child = localItem({ id: "child", localRef: "LOCAL-K", title: "Review child learning plan", dueDate: "2026-07-31", plannedDate: null, requesterRelation: "child" });
     const customerHome = homeItem({
       workItemId: "customer", localRef: "LOCAL-C", title: customer.title,
+      dueDate: "2026-07-31", plannedDate: "2026-08-01",
       attentionReason: "review_ready", executionState: "completed",
       report: { id: "wrd_customer", status: "draft", stale: true, updatedAt: "2026-07-31T03:30:00.000Z" },
       nextAction: { kind: "review_result", label: "review_result", targetId: "aur_customer", section: "autoRuns" },
       ai: { autoRunId: "aur_customer", invocationId: "inv_customer", agentId: "agt_1", agentName: "Codex", status: "done", updatedAt: "2026-07-31T03:00:00.000Z" },
     });
-    const selfHome = homeItem({
-      workItemId: "self", localRef: "LOCAL-S", title: self.title,
-      requester: { relation: "self", name: null, organization: null },
+    const childHome = homeItem({
+      workItemId: "child", localRef: "LOCAL-K", title: child.title,
+      dueDate: "2026-07-31", plannedDate: null,
+      requester: { relation: "child", name: null, organization: null },
       waitingOn: "none", needsAttention: false,
-      nextAction: { kind: "open_issue", label: "open_issue", targetId: "self", section: "task" },
+      nextAction: { kind: "open_issue", label: "open_issue", targetId: "child", section: "task" },
     });
     const onOpenItem = vi.fn();
 
@@ -217,8 +219,8 @@ describe("DailyWorkBoard", () => {
       <DailyWorkBoard
         board={{ generatedAt: now, states: emptyStates() }}
         report={report(0, 0)}
-        plannedItems={[customer, self]}
-        workbench={workbench([customerHome, selfHome])}
+        plannedItems={[customer, child]}
+        workbench={workbench([customerHome, childHome])}
         onOpenItem={onOpenItem}
         onOpenTasks={vi.fn()}
         now={now}
@@ -234,16 +236,23 @@ describe("DailyWorkBoard", () => {
     expect(aiWork.textContent).toContain("Codex");
     expect(aiWork.textContent).toContain("Ready for review");
     expect(aiWork.textContent).not.toContain("done");
+    const myToday = within(myWork).getByRole("heading", { name: "Today" }).closest("section");
+    const aiTomorrow = within(aiWork).getByRole("heading", { name: "Tomorrow" }).closest("section");
+    expect(myToday?.textContent).toContain("LOCAL-C · Confirm customer scope");
+    expect(aiTomorrow?.textContent).toContain("LOCAL-C");
+    expect(aiTomorrow?.textContent).toContain("AI execution date：8/1");
+    expect(aiTomorrow?.textContent).toContain("Expected completion：7/31");
 
-    fireEvent.click(within(myWork).getByRole("button", { name: "1 Needs my action" }));
-    expect(within(myWork).getAllByText("LOCAL-C · Confirm customer scope").length).toBeGreaterThan(0);
-    expect(within(myWork).queryByText("LOCAL-S · Polish internal notes")).toBeNull();
+    fireEvent.click(within(myWork).getByRole("button", { name: "1 Child learning" }));
+    expect(within(myWork).getAllByText("LOCAL-K · Review child learning plan").length).toBeGreaterThan(0);
+    expect(within(myWork).queryByText("LOCAL-C · Confirm customer scope")).toBeNull();
     expect(aiWork.textContent).toContain("LOCAL-C");
 
     fireEvent.click(within(aiWork).getByRole("button", { name: "1 Review and report" }));
     expect(within(aiWork).getByText(/LOCAL-C/)).toBeTruthy();
     fireEvent.click(within(aiWork).getByRole("button", { name: "Review" }));
     expect(onOpenItem).toHaveBeenCalledWith(expect.objectContaining({ section: "autoRuns", targetId: "aur_customer" }));
+    fireEvent.click(within(myWork).getByRole("button", { name: "1 Customer" }));
     fireEvent.click(within(myWork).getByRole("button", { name: "Review report" }));
     expect(onOpenItem).toHaveBeenCalledWith(expect.objectContaining({
       kind: "home_report_review", section: "task", targetId: "customer",
@@ -252,8 +261,8 @@ describe("DailyWorkBoard", () => {
 
   it("keeps server attention order inside a schedule group", () => {
     const now = new Date(2026, 6, 31, 12).getTime();
-    const normal = localItem({ id: "normal", localRef: "LOCAL-N", title: "Normal task", plannedDate: "2026-07-31", priority: "p0" });
-    const overdue = localItem({ id: "overdue", localRef: "LOCAL-O", title: "Overdue promise", plannedDate: "2026-07-31", priority: "p3" });
+    const normal = localItem({ id: "normal", localRef: "LOCAL-N", title: "Normal task", dueDate: "2026-07-31", priority: "p0" });
+    const overdue = localItem({ id: "overdue", localRef: "LOCAL-O", title: "Overdue promise", dueDate: "2026-07-31", priority: "p3" });
     const model = buildDailyWorkBoardModel(
       { generatedAt: now, states: emptyStates() },
       report(0, 0),
@@ -270,7 +279,7 @@ describe("DailyWorkBoard", () => {
   it("wraps long stakeholder content and shows human execution labels", () => {
     const now = new Date(2026, 6, 31, 12).getTime();
     const longTitle = "Confirm an unusually long cross-organization delivery commitment without losing the meaningful end of the title";
-    const planned = localItem({ id: "long", localRef: "LOCAL-LONG", title: longTitle, plannedDate: "2026-07-31" });
+    const planned = localItem({ id: "long", localRef: "LOCAL-LONG", title: longTitle, dueDate: "2026-07-31", plannedDate: "2026-07-31" });
     render(
       <DailyWorkBoard
         board={{ generatedAt: now, states: emptyStates() }}
@@ -337,11 +346,11 @@ describe("DailyWorkBoard", () => {
     expect(screen.getByText("Today")).toBeTruthy();
     expect(screen.getByText("Tomorrow")).toBeTruthy();
     expect(screen.getByText("Task active")).toBeTruthy();
-    expect(screen.getByText("Nothing planned for tomorrow")).toBeTruthy();
+    expect(screen.getByText("No tasks are due tomorrow")).toBeTruthy();
 
     fireEvent.click(screen.getByText("Task active"));
     expect(onOpenItem).toHaveBeenCalledWith(active);
-    fireEvent.click(screen.getByRole("button", { name: "Plan tomorrow" }));
+    fireEvent.click(screen.getByRole("button", { name: "View all tasks" }));
     expect(onOpenTasks).toHaveBeenCalled();
     expect(screen.getByTestId("my-work-status-cards")).toBeTruthy();
     expect(screen.getByTestId("ai-work-status-cards")).toBeTruthy();
@@ -380,11 +389,11 @@ describe("DailyWorkBoard", () => {
     expect(screen.queryByText("Task three")).toBeNull();
   });
 
-  it("uses personal planned dates for today and tomorrow and deep-links to the local task", () => {
+  it("uses expected completion dates for my tasks and deep-links to the local task", () => {
     const now = new Date(2026, 6, 31, 12).getTime();
     const states = emptyStates();
-    const today = localItem({ id: "today", localRef: "LOCAL-41", plannedDate: "2026-07-31" });
-    const tomorrow = localItem({ id: "tomorrow", localRef: "LOCAL-23", plannedDate: "2026-08-01" });
+    const today = localItem({ id: "today", localRef: "LOCAL-41", dueDate: "2026-07-31", plannedDate: null });
+    const tomorrow = localItem({ id: "tomorrow", localRef: "LOCAL-23", dueDate: "2026-08-01", plannedDate: null });
     const onOpenItem = vi.fn();
 
     render(
@@ -533,12 +542,13 @@ describe("DailyWorkBoard", () => {
     );
 
     expect(screen.getByText("Available slots 2 / 3")).toBeTruthy();
-    expect(screen.getByTestId("local-capacity-summary").textContent).toContain("Queue 4");
-    expect(screen.getByTestId("local-capacity-summary").textContent).toContain("Workspace locks 1");
     const capacityButton = screen.getByRole("button", { name: "Available slots 2 / 3" });
     expect(capacityButton.getAttribute("aria-expanded")).toBe("false");
+    expect(screen.queryByTestId("local-capacity-summary")).toBeNull();
     fireEvent.click(capacityButton);
     expect(capacityButton.getAttribute("aria-expanded")).toBe("true");
+    expect(screen.getByTestId("local-capacity-summary").textContent).toContain("Queue 4");
+    expect(screen.getByTestId("local-capacity-summary").textContent).toContain("Workspace locks 1");
     expect(screen.getByRole("status").textContent).toContain("Queue 4");
   });
 
@@ -574,7 +584,7 @@ describe("DailyWorkBoard", () => {
       />,
     );
 
-    expect(screen.getByText("LOCAL-1 · Plan the next release")).toBeTruthy();
+    expect(screen.getAllByText("LOCAL-1 · Plan the next release").length).toBeGreaterThan(0);
     expect(source.plannedDate).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Apply suggested plan" }));
     expect(onApplyPlan).toHaveBeenCalledOnce();

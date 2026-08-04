@@ -433,9 +433,10 @@ async function assertVisualState(page, scenario) {
     await page.locator('[data-testid="my-work-status-cards"]:visible').waitFor({ timeout: 15_000 });
     await page.locator('[data-testid="ai-work-status-cards"]:visible').waitFor({ timeout: 15_000 });
     await page.locator('[data-testid="active-ai-work"]:visible').waitFor({ timeout: 15_000 });
-    for (const label of ["My work", "AI work", "Awaiting approval", "Ready for review", "Execution failed"]) {
+    for (const label of ["My tasks", "AI tasks", "Child learning", "AI execution date", "Awaiting approval", "Ready for review", "Execution failed"]) {
       await page.getByText(label, { exact: true }).first().waitFor();
     }
+    await page.getByText("Expected completion", { exact: false }).first().waitFor();
     if ((await myWork.innerText()).includes("Codex")) {
       throw new Error("home-workbench mixes the AI agent status into My work");
     }
@@ -493,15 +494,15 @@ function homeWorkbenchFixture(projectId) {
     labels: [], assigneeIds: ["usr_local"], requesterRelation: "customer", requesterName: "Alex Morgan",
     requesterOrganization: "Acme", requesterUserId: null, intakeChannel: "meeting", externalReference: null,
     waitingOn: "none", commitmentDate: null, nextFollowUpAt: null, lastProgressAt: null, lastProgressSummary: null,
-    acceptanceCriteria: [], dueDate: null, milestone: "", estimatePoints: 1, revision: 1, archivedAt: null,
+    acceptanceCriteria: [], dueDate: date(0), milestone: "", estimatePoints: 1, revision: 1, archivedAt: null,
     plannedDate: date(0), updatedAt: generatedAt, ...overrides,
   });
   const rows = [
-    baseItem("lwi_visual_overdue", "LOCAL-101", "Confirm the overdue customer launch commitment and publish the recovery timeline", { priority: "p0", commitmentDate: new Date(now.getTime() - 86_400_000).toISOString(), waitingOn: "me" }),
-    baseItem("lwi_visual_approval", "LOCAL-102", "Approve the governed production verification step", { priority: "p1", waitingOn: "me" }),
-    baseItem("lwi_visual_failed", "LOCAL-103", "Repair the failed stakeholder summary generation", { status: "blocked", waitingOn: "ai" }),
-    baseItem("lwi_visual_review", "LOCAL-104", "Review a completed AI result before reporting it to leadership", { status: "review", waitingOn: "me" }),
-    baseItem("lwi_visual_long", "LOCAL-105", "Coordinate an unusually long cross-organization delivery commitment without losing the meaningful end of this title on a narrow mobile screen", { plannedDate: date(1), requesterName: "A requester with a very long organization-facing display name", requesterRelation: "manager" }),
+    baseItem("lwi_visual_overdue", "LOCAL-101", "Confirm the overdue customer launch commitment and publish the recovery timeline", { priority: "p0", dueDate: date(-1), commitmentDate: new Date(now.getTime() - 86_400_000).toISOString(), waitingOn: "me" }),
+    baseItem("lwi_visual_approval", "LOCAL-102", "Approve the governed production verification step", { priority: "p1", plannedDate: date(1), waitingOn: "me" }),
+    baseItem("lwi_visual_failed", "LOCAL-103", "Repair the failed child learning summary generation", { status: "blocked", plannedDate: date(-1), requesterRelation: "child", requesterName: null, requesterOrganization: null, waitingOn: "ai" }),
+    baseItem("lwi_visual_review", "LOCAL-104", "Review a completed AI result before reporting it to leadership", { status: "review", dueDate: date(1), waitingOn: "me" }),
+    baseItem("lwi_visual_long", "LOCAL-105", "Coordinate an unusually long cross-organization delivery commitment without losing the meaningful end of this title on a narrow mobile screen", { dueDate: date(1), plannedDate: date(1), requesterName: "A requester with a very long organization-facing display name", requesterRelation: "manager" }),
   ];
   const home = ({ id, executionState, attentionReason, waitingOn, nextAction, ai, secondaryReasons = [] }) => {
     const item = rows.find((candidate) => candidate.id === id);
@@ -528,8 +529,8 @@ function homeWorkbenchFixture(projectId) {
     workbench: {
       generatedAt, horizon: { today: date(0), tomorrow: date(1) },
       summary: {
-        total: items.length, needsAttention: 4, waitingMe: 3, approvals: 1, aiFailed: 1, dueToday: 0, reviewReady: 1,
-        byRelation: { boss: 0, manager: 1, customer: 4, colleague: 0, self: 0, unknown: 0 },
+        total: items.length, needsAttention: 4, waitingMe: 3, approvals: 1, aiFailed: 1, dueToday: 2, reviewReady: 1,
+        byRelation: { boss: 0, manager: 1, customer: 3, child: 1, colleague: 0, self: 0, unknown: 0 },
         byWaitingOn: { me: 3, requester: 0, internal: 0, ai: 1, none: 1 },
       },
       items,

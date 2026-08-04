@@ -9,7 +9,7 @@ export type GithubItem = {
 };
 export type GithubResult = { available: boolean; message: string; items: GithubItem[] };
 export type WorkItemExecutionState = "unclaimed" | "claimed" | "running" | "awaiting_approval" | "verifying" | "failed" | "completed";
-export type WorkItemRequesterRelation = "boss" | "manager" | "customer" | "colleague" | "self" | "unknown";
+export type WorkItemRequesterRelation = "boss" | "manager" | "customer" | "child" | "colleague" | "self" | "unknown";
 export type WorkItemIntakeChannel = "manual" | "meeting" | "email" | "chat" | "phone" | "github" | "import" | "other" | "unknown";
 export type WorkItemWaitingOn = "me" | "requester" | "internal" | "ai" | "none";
 export type ExternalWorkItemBinding = {

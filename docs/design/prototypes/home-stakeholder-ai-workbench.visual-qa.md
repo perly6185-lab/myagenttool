@@ -8,14 +8,15 @@ Result: pass for the production implementation regression scenario; browser capt
 
 | Viewport | Result | Notes |
 | --- | --- | --- |
-| Desktop 1366 × 768 | Pass | “My work” and “AI work” render as independent cards with their own status summaries. |
+| Desktop 1366 × 768 | Pass | “My tasks” and “AI tasks” render as independent cards over the same Issue set. |
 | Mobile 390 × 844 | Pass | Both card summaries collapse to responsive grids; the page has no horizontal overflow. |
 
 ## Scenario checks
 
-- My work contains only personal planning, waiting, due-date, and follow-up context.
-- AI work contains only AI execution, approval, failure, and review-ready status.
-- Selecting a My work status never filters the AI work cards.
+- My tasks groups Issues by task-person category (self, boss, manager, customer, child learning, or other) and expected completion date.
+- AI tasks groups the same Issues by AI execution date and canonical execution state.
+- An Issue may appear under Today in My tasks and Tomorrow in AI tasks when its expected completion and execution dates differ.
+- Selecting a My task-person category never filters the AI task cards.
 - Selecting an AI status never filters the three-day personal plan.
 - Both sections keep a card-based empty state instead of collapsing into a row of zero-count pills.
 - AI completed appears as “waiting for my review,” not as a completed Local Issue.
@@ -25,7 +26,7 @@ Result: pass for the production implementation regression scenario; browser capt
 
 - Task title, requester, deadline, human follow-up, AI status, and next action remain readable at 390 px.
 - Primary actions become full-width below task context on narrow screens.
-- Mobile reading order is My work header, My work status cards, personal work items, AI work header, AI status cards, then AI task cards.
+- Mobile reading order is My tasks header, person-category cards, expected-completion groups, AI tasks header, execution-state cards, then AI execution-date groups.
 - Long content wraps inside the task card instead of pushing the action outside its container.
 - The production scenario uses the real `DashboardView` and `DailyWorkBoard`, not the prototype markup.
 - Bound AI statuses render as localized workflow copy; internal values such as `waiting_for_local_approval` and `report_posted` must not appear.
@@ -33,9 +34,9 @@ Result: pass for the production implementation regression scenario; browser capt
 
 ## Fixes made during review
 
-- Split personal work and AI execution into separate top-level cards.
-- Replaced the mixed relationship/status strip with independent card-based status summaries.
-- Removed AI agent/status copy from personal task cards while preserving human next actions.
+- Split the single-terminal Issue set into independent My tasks and AI tasks projections.
+- Made `dueDate` the expected-completion grouping for My tasks and `plannedDate` the AI-execution grouping for AI tasks.
+- Added child learning as a first-class task-person category and removed AI scheduling/status copy from My task cards.
 
 ## Automated production artifacts
 

@@ -167,7 +167,7 @@ export function homeWorkbenchReadModel({
       };
     });
   items.sort((left, right) => compareItems(left, right, nowMs, today));
-  const byRelation = Object.fromEntries(["boss", "manager", "customer", "colleague", "self", "unknown"]
+  const byRelation = Object.fromEntries(["boss", "manager", "customer", "child", "colleague", "self", "unknown"]
     .map((relation) => [relation, items.filter((item) => item.requester.relation === relation).length]));
   const byWaitingOn = Object.fromEntries(["me", "requester", "internal", "ai", "none"]
     .map((waitingOn) => [waitingOn, items.filter((item) => item.waitingOn === waitingOn).length]));
