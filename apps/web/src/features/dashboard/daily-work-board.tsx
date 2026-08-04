@@ -1,6 +1,8 @@
 import {
   AlertTriangle,
   ArrowRight,
+  Bot,
+  BriefcaseBusiness,
   CalendarDays,
   CheckCircle2,
   CircleDot,
@@ -64,8 +66,9 @@ type Copy = {
   unassignedHint: string;
   claim: string;
   claiming: string;
-  relationshipOverview: string;
-  allRelations: string;
+  myWork: string;
+  myWorkHint: string;
+  allMyWork: string;
   needsMine: string;
   waitingMe: string;
   approvals: string;
@@ -73,6 +76,11 @@ type Copy = {
   dueToday: string;
   reviewReady: string;
   activeAi: string;
+  aiWorkHint: string;
+  allAiWork: string;
+  aiRunning: string;
+  noAiWork: string;
+  noAiWorkHint: string;
   owner: string;
   waitingLabel: string;
   aiLabel: string;
@@ -99,7 +107,7 @@ type Copy = {
 
 const COPY: Record<"zh" | "en", Copy> = {
   zh: {
-    title: "我的三日工作台",
+    title: "我的工作",
     subtitle: "复盘昨天，执行今天，规划明天",
     overview: "查看全部任务",
     todayProgress: "今日进度",
@@ -133,15 +141,21 @@ const COPY: Record<"zh" | "en", Copy> = {
     unassignedHint: "所有尚未分配的本地 Issue 都在这里；认领后才会进入个人调度并占用终端容量。",
     claim: "认领",
     claiming: "认领中…",
-    relationshipOverview: "关系人跟进概览",
-    allRelations: "全部",
-    needsMine: "只看需要我处理",
+    myWork: "我的工作",
+    myWorkHint: "只看需要我安排、推进和确认的工作",
+    allMyWork: "全部工作",
+    needsMine: "需要我处理",
     waitingMe: "待我回复",
     approvals: "AI 待审批",
     aiFailed: "AI 失败",
     dueToday: "今日到期",
     reviewReady: "待复核与汇报",
-    activeAi: "AI 执行与复核",
+    activeAi: "AI 的工作",
+    aiWorkHint: "独立查看 AI 正在执行、等待审批、失败和待复核的任务",
+    allAiWork: "全部 AI 任务",
+    aiRunning: "执行中",
+    noAiWork: "暂无 AI 任务",
+    noAiWorkHint: "启动或委派任务后，AI 的执行状态会显示在这里",
     owner: "负责人",
     waitingLabel: "人",
     aiLabel: "AI",
@@ -149,9 +163,9 @@ const COPY: Record<"zh" | "en", Copy> = {
     relation: { boss: "Boss", manager: "上级", customer: "客户", colleague: "同事", self: "自己", unknown: "未标注" },
     waiting: { me: "等我", requester: "等提出者", internal: "等内部成员", ai: "等 AI", none: "无需等待" },
     attentionReason: {
-      overdue: "承诺或截止时间已逾期", approval_required: "AI 等待人工审批", ai_failed: "AI 执行失败",
-      review_ready: "AI 已完成，等待人工复核", follow_up_due: "已到跟进时间", waiting_requester: "等待提出者回复",
-      waiting_internal: "等待内部成员", ai_running: "AI 正在执行", planned: "已安排",
+      overdue: "承诺或截止时间已逾期", approval_required: "需要人工审批", ai_failed: "执行失败，需要人工处理",
+      review_ready: "结果已就绪，等待人工复核", follow_up_due: "已到跟进时间", waiting_requester: "等待提出者回复",
+      waiting_internal: "等待内部成员", ai_running: "执行中，无需人工处理", planned: "已安排",
     },
     nextAction: { open_issue: "查看任务", record_progress: "跟进", review_result: "复核", open_approval: "审批", open_run: "查看运行", retry: "处理失败" },
     report: { draft: "汇报草稿", confirmed: "汇报已确认", stale: "汇报已过期", prepare: "准备汇报", review: "复核汇报" },
@@ -200,7 +214,7 @@ const COPY: Record<"zh" | "en", Copy> = {
     },
   },
   en: {
-    title: "My three-day workbench",
+    title: "My work",
     subtitle: "Review yesterday, execute today, plan tomorrow",
     overview: "View all tasks",
     todayProgress: "Today's progress",
@@ -234,15 +248,21 @@ const COPY: Record<"zh" | "en", Copy> = {
     unassignedHint: "Every unassigned local Issue appears here. It enters personal scheduling and terminal capacity only after you claim it.",
     claim: "Claim",
     claiming: "Claiming…",
-    relationshipOverview: "Stakeholder follow-up overview",
-    allRelations: "All",
-    needsMine: "Only items needing me",
+    myWork: "My work",
+    myWorkHint: "Only work that I need to plan, advance, or confirm",
+    allMyWork: "All my work",
+    needsMine: "Needs my action",
     waitingMe: "Waiting on me",
     approvals: "AI approvals",
     aiFailed: "AI failed",
     dueToday: "Due today",
     reviewReady: "Review and report",
-    activeAi: "AI execution and review",
+    activeAi: "AI work",
+    aiWorkHint: "Track AI execution, approvals, failures, and review-ready results separately",
+    allAiWork: "All AI tasks",
+    aiRunning: "Running",
+    noAiWork: "No AI work yet",
+    noAiWorkHint: "AI execution status will appear here after a task is started or delegated",
     owner: "Owner",
     waitingLabel: "People",
     aiLabel: "AI",
@@ -250,9 +270,9 @@ const COPY: Record<"zh" | "en", Copy> = {
     relation: { boss: "Boss", manager: "Manager", customer: "Customer", colleague: "Colleague", self: "Self", unknown: "Not labeled" },
     waiting: { me: "Waiting on me", requester: "Waiting on requester", internal: "Waiting on internal", ai: "Waiting on AI", none: "Not waiting" },
     attentionReason: {
-      overdue: "Commitment or due date overdue", approval_required: "AI awaiting human approval", ai_failed: "AI execution failed",
-      review_ready: "AI completed; human review needed", follow_up_due: "Follow-up is due", waiting_requester: "Waiting for requester",
-      waiting_internal: "Waiting for internal member", ai_running: "AI is running", planned: "Planned",
+      overdue: "Commitment or due date overdue", approval_required: "Needs human approval", ai_failed: "Execution failed; needs human action",
+      review_ready: "Result ready for human review", follow_up_due: "Follow-up is due", waiting_requester: "Waiting for requester",
+      waiting_internal: "Waiting for internal member", ai_running: "Execution in progress; no human action", planned: "Planned",
     },
     nextAction: { open_issue: "View task", record_progress: "Follow up", review_result: "Review", open_approval: "Approve", open_run: "View run", retry: "Handle failure" },
     report: { draft: "Report draft", confirmed: "Report confirmed", stale: "Report stale", prepare: "Prepare report", review: "Review report" },
@@ -550,10 +570,6 @@ export function DailyWorkBoard({
   urgent,
   onOpenItem,
   onOpenTasks,
-  onOpenAttention,
-  onOpenActive,
-  onOpenCompleted,
-  onOpenFailed,
   onClaimItem,
   onProgressRecorded,
   claimingItemId = null,
@@ -595,9 +611,8 @@ export function DailyWorkBoard({
 }) {
   const [unassignedExpanded, setUnassignedExpanded] = useState(false);
   const [capacityExpanded, setCapacityExpanded] = useState(false);
-  const [relationFilter, setRelationFilter] = useState<WorkItemRequesterRelation | "all">("all");
-  const [needsMine, setNeedsMine] = useState(false);
-  const [overviewFilter, setOverviewFilter] = useState<"waiting_me" | "approval_required" | "ai_failed" | "due_today" | "review_ready" | null>(null);
+  const [myWorkFilter, setMyWorkFilter] = useState<"all" | "needs_attention" | "waiting_me" | "due_today">("all");
+  const [aiWorkFilter, setAiWorkFilter] = useState<"all" | "running" | "awaiting_approval" | "failed" | "completed">("all");
   const [progressTarget, setProgressTarget] = useState<WorkItemProgressTarget | null>(null);
   const { i18n } = useAppTranslation();
   const locale = i18n.language.startsWith("zh") ? "zh-CN" : "en-US";
@@ -635,33 +650,45 @@ export function DailyWorkBoard({
     }])) as WorkBoard["states"],
   } : undefined;
   const workbenchItems = workbench?.items ?? [];
-  const matchesOverview = (item: HomeWorkbenchItem) => {
-    if (overviewFilter === "waiting_me") return item.waitingOn === "me";
-    if (overviewFilter === "due_today") {
+  const matchesMyWorkFilter = (item: HomeWorkbenchItem) => {
+    if (myWorkFilter === "needs_attention") return item.needsAttention;
+    if (myWorkFilter === "waiting_me") return item.waitingOn === "me";
+    if (myWorkFilter === "due_today") {
       return item.dueDate === workbench?.horizon.today
         || Boolean(item.commitmentDate && dateKey(item.commitmentDate) === workbench?.horizon.today);
     }
-    if (overviewFilter) return item.attentionReason === overviewFilter || item.secondaryReasons.includes(overviewFilter);
     return true;
   };
-  const filteredHomeItems = workbenchItems.filter((item) =>
-    (relationFilter === "all" || item.requester.relation === relationFilter)
-    && (!needsMine || item.needsAttention)
-    && matchesOverview(item));
-  const stakeholderFilterActive = relationFilter !== "all" || needsMine || overviewFilter != null;
-  const filteredIds = new Set(filteredHomeItems.map((item) => item.workItemId));
+  const filteredMyWorkItems = workbenchItems.filter(matchesMyWorkFilter);
+  const myWorkFilterActive = myWorkFilter !== "all";
+  const filteredIds = new Set(filteredMyWorkItems.map((item) => item.workItemId));
   const baseModel = buildDailyWorkBoardModel(previewBoard, report, now, previewItems, workbenchItems);
   const filterItems = (items: WorkItem[]) => items.filter((item) => {
     const home = (item as DailyWorkItem).home;
     return Boolean(home && filteredIds.has(home.workItemId));
   });
-  const model = stakeholderFilterActive ? {
+  const model = myWorkFilterActive ? {
     ...baseModel,
     yesterday: filterItems(baseModel.yesterday),
     today: filterItems(baseModel.today),
     tomorrow: filterItems(baseModel.tomorrow),
     unscheduled: filterItems(baseModel.unscheduled),
   } : baseModel;
+  const aiWorkItems = workbenchItems.filter((item) => item.ai
+    && ["running", "awaiting_approval", "verifying", "failed", "completed"].includes(item.executionState));
+  const matchesAiWorkFilter = (item: HomeWorkbenchItem) => {
+    if (aiWorkFilter === "running") return item.executionState === "running" || item.executionState === "verifying";
+    if (aiWorkFilter === "all") return true;
+    return item.executionState === aiWorkFilter;
+  };
+  const filteredAiWorkItems = aiWorkItems.filter(matchesAiWorkFilter);
+  const aiCounts = {
+    all: aiWorkItems.length,
+    running: aiWorkItems.filter((item) => item.executionState === "running" || item.executionState === "verifying").length,
+    awaiting_approval: aiWorkItems.filter((item) => item.executionState === "awaiting_approval").length,
+    failed: aiWorkItems.filter((item) => item.executionState === "failed").length,
+    completed: aiWorkItems.filter((item) => item.executionState === "completed").length,
+  };
   const suggestedCount = preview?.days.reduce((count, day) =>
     count + day.items.filter((item) => item.previousPlannedDate !== day.date).length, 0) ?? 0;
   const rolloverCount = (rollover?.moves.length ?? 0) + (rollover?.confirmationRequired.length ?? 0);
@@ -685,25 +712,22 @@ export function DailyWorkBoard({
   const runHomeReport = (item: HomeWorkbenchItem) => onOpenItem(homeReportWorkItem(item));
 
   return (
-    <Card className="overflow-hidden border-border/80" data-testid="daily-work-board">
+    <div className="space-y-4" data-testid="daily-work-board">
+      <Card className="overflow-hidden border-border/80" data-testid="my-work-section">
       <div className="flex flex-col gap-4 border-b border-border/80 px-5 py-4 xl:flex-row xl:items-center">
         <div className="flex min-w-0 items-center gap-3">
           <span className="grid size-10 shrink-0 place-items-center rounded-xl bg-primary/10 text-primary">
-            <CalendarDays className="size-5" aria-hidden />
+            <BriefcaseBusiness className="size-5" aria-hidden />
           </span>
           <div className="min-w-0">
             <h2 className="truncate text-base font-semibold">{copy.title}</h2>
             <p className="truncate text-xs text-muted-foreground">
-              {formatDate(now, locale)} · {copy.subtitle}
+              {formatDate(now, locale)} · {copy.myWorkHint}
             </p>
           </div>
         </div>
 
         <div className="flex flex-1 flex-wrap items-center gap-x-4 gap-y-2 xl:justify-end">
-          <SummaryMetric label={copy.attention} value={model.attention} tone={model.attention ? "warning" : "neutral"} onClick={onOpenAttention} />
-          <SummaryMetric label={copy.active} value={model.active} tone={model.active ? "running" : "neutral"} onClick={onOpenActive} />
-          <SummaryMetric label={copy.completed} value={model.todayCompleted} tone="success" onClick={onOpenCompleted} />
-          <SummaryMetric label={copy.failed} value={model.todayFailed} tone={model.todayFailed ? "danger" : "neutral"} onClick={onOpenFailed} />
           {capacity ? (
             <button
               type="button"
@@ -734,64 +758,38 @@ export function DailyWorkBoard({
         </div>
       </div>
 
-      {workbench ? (
-        <section className="border-b border-border/80 bg-muted/10 px-4 py-3" data-testid="stakeholder-workbench-filters">
-          <div className="flex flex-wrap items-center gap-2">
-            <h3 className="mr-2 text-sm font-semibold">{copy.relationshipOverview}</h3>
-            {([
-              ["waiting_me", copy.waitingMe, workbench.summary.waitingMe],
-              ["approval_required", copy.approvals, workbench.summary.approvals],
-              ["ai_failed", copy.aiFailed, workbench.summary.aiFailed],
-              ["due_today", copy.dueToday, workbench.summary.dueToday],
-              ["review_ready", copy.reviewReady, workbench.summary.reviewReady],
-            ] as const).map(([filter, label, value]) => (
-              <button
-                key={filter}
-                type="button"
-                aria-pressed={overviewFilter === filter}
-                onClick={() => setOverviewFilter((current) => current === filter ? null : filter)}
-                className={cn(
-                  "rounded-full border px-2.5 py-1 text-xs transition-colors",
-                  overviewFilter === filter ? "border-primary bg-primary/10 text-primary" : "border-border bg-background hover:bg-muted",
-                )}
-              >
-                <strong className="mr-1 tabular-nums">{value}</strong>{label}
-              </button>
-            ))}
-          </div>
-          <div className="mt-3 flex flex-wrap items-center gap-1.5">
-            {(["all", "boss", "manager", "customer", "colleague", "self", "unknown"] as const).map((relation) => {
-              const count = relation === "all" ? workbench.summary.total : workbench.summary.byRelation[relation];
-              const label = relation === "all" ? copy.allRelations : copy.relation[relation];
-              return (
-                <button
-                  key={relation}
-                  type="button"
-                  aria-pressed={relationFilter === relation}
-                  onClick={() => setRelationFilter(relation)}
-                  className={cn(
-                    "rounded-md px-2 py-1 text-xs",
-                    relationFilter === relation ? "bg-foreground text-background" : "text-muted-foreground hover:bg-muted hover:text-foreground",
-                  )}
-                >
-                  {label} {count}
-                </button>
-              );
-            })}
-            <button
-              type="button"
-              aria-pressed={needsMine}
-              onClick={() => setNeedsMine((value) => !value)}
-              className={cn(
-                "ml-auto rounded-md border px-2.5 py-1 text-xs",
-                needsMine ? "border-warning bg-warning/10 text-warning" : "border-border text-muted-foreground hover:bg-muted",
-              )}
-            >
-              {copy.needsMine} · {workbench.summary.needsAttention}
-            </button>
+      <section className="border-b border-border/80 bg-muted/10 px-4 py-4" data-testid="my-work-status-cards">
+          <div className="grid grid-cols-2 gap-2 lg:grid-cols-4">
+            <WorkStatusFilterCard
+              label={copy.allMyWork}
+              value={workbench?.summary.total ?? plannedItems.length}
+              tone="neutral"
+              active={myWorkFilter === "all"}
+              onClick={() => setMyWorkFilter("all")}
+            />
+            <WorkStatusFilterCard
+              label={copy.needsMine}
+              value={workbench?.summary.needsAttention ?? model.attention}
+              tone="warning"
+              active={myWorkFilter === "needs_attention"}
+              onClick={() => setMyWorkFilter("needs_attention")}
+            />
+            <WorkStatusFilterCard
+              label={copy.waitingMe}
+              value={workbench?.summary.waitingMe ?? 0}
+              tone="warning"
+              active={myWorkFilter === "waiting_me"}
+              onClick={() => setMyWorkFilter("waiting_me")}
+            />
+            <WorkStatusFilterCard
+              label={copy.dueToday}
+              value={workbench?.summary.dueToday ?? 0}
+              tone="running"
+              active={myWorkFilter === "due_today"}
+              onClick={() => setMyWorkFilter("due_today")}
+            />
           </div>
         </section>
-      ) : null}
 
       {capacityExpanded && capacity ? (
         <div className="flex flex-wrap gap-x-4 gap-y-1 border-b border-border/80 bg-muted/20 px-5 py-2 text-xs text-muted-foreground" role="status">
@@ -912,39 +910,6 @@ export function DailyWorkBoard({
           ) : <Button variant="secondary" size="sm" onClick={onOpenTasks}><Plus />{copy.planTomorrow}</Button>}
         />
       </div>
-      {filteredHomeItems.some((item) => item.ai && ["running", "awaiting_approval", "verifying", "failed", "completed"].includes(item.executionState)) ? (
-        <section className="border-t border-border/80 px-4 py-4" data-testid="active-ai-work">
-          <div className="mb-3 flex items-center gap-2">
-            <Sparkles className="size-4 text-primary" aria-hidden />
-            <h3 className="text-sm font-semibold">{copy.activeAi}</h3>
-            <Badge tone="running">
-              {filteredHomeItems.filter((item) => item.ai && ["running", "awaiting_approval", "verifying", "failed", "completed"].includes(item.executionState)).length}
-            </Badge>
-          </div>
-          <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-3">
-            {filteredHomeItems
-              .filter((item) => item.ai && ["running", "awaiting_approval", "verifying", "failed", "completed"].includes(item.executionState))
-              .map((item) => (
-                <button
-                  key={item.workItemId}
-                  type="button"
-                  onClick={() => runHomeAction(item)}
-                  className="min-w-0 rounded-lg border border-border bg-card p-3 text-left hover:bg-muted/45"
-                >
-                  <span className="flex items-center justify-between gap-2">
-                    <strong className="min-w-0 flex-1 text-sm [overflow-wrap:anywhere]">{item.localRef} · {item.title}</strong>
-                    <StatusBadge tone={executionTone(item.executionState)}>
-                      {copy.execution[item.executionState]}
-                    </StatusBadge>
-                  </span>
-                  <span className="mt-1 block text-xs text-muted-foreground">
-                    {item.ai?.agentName ?? item.ai?.agentId ?? copy.aiLabel} · {copy.nextAction[item.nextAction.kind]}
-                  </span>
-                </button>
-              ))}
-          </div>
-        </section>
-      ) : null}
       {model.unscheduled.length > 0 ? (
         <section className="border-t border-border/80 px-4 py-4" data-testid="unscheduled-work">
           <div className="mb-3 flex flex-wrap items-start justify-between gap-2">
@@ -1009,13 +974,114 @@ export function DailyWorkBoard({
           {claimError ? <p className="mt-2 text-xs text-destructive" role="alert">{claimError}</p> : null}
         </section>
       ) : null}
+      </Card>
+
+      <Card className="overflow-hidden border-border/80" data-testid="ai-work-section">
+        <div className="flex items-center gap-3 border-b border-border/80 px-5 py-4">
+          <span className="grid size-10 shrink-0 place-items-center rounded-xl bg-primary/10 text-primary">
+            <Bot className="size-5" aria-hidden />
+          </span>
+          <div className="min-w-0 flex-1">
+            <div className="flex items-center gap-2">
+              <h2 className="text-base font-semibold">{copy.activeAi}</h2>
+              <Badge tone={aiWorkItems.length ? "running" : "neutral"}>{aiWorkItems.length}</Badge>
+            </div>
+            <p className="mt-0.5 text-xs text-muted-foreground">{copy.aiWorkHint}</p>
+          </div>
+        </div>
+
+        <section className="border-b border-border/80 bg-muted/10 px-4 py-4" data-testid="ai-work-status-cards">
+          <div className="grid grid-cols-2 gap-2 md:grid-cols-5">
+            <WorkStatusFilterCard
+              label={copy.allAiWork}
+              value={aiCounts.all}
+              tone="neutral"
+              active={aiWorkFilter === "all"}
+              onClick={() => setAiWorkFilter("all")}
+            />
+            <WorkStatusFilterCard
+              label={copy.aiRunning}
+              value={aiCounts.running}
+              tone="running"
+              active={aiWorkFilter === "running"}
+              onClick={() => setAiWorkFilter("running")}
+            />
+            <WorkStatusFilterCard
+              label={copy.approvals}
+              value={aiCounts.awaiting_approval}
+              tone="warning"
+              active={aiWorkFilter === "awaiting_approval"}
+              onClick={() => setAiWorkFilter("awaiting_approval")}
+            />
+            <WorkStatusFilterCard
+              label={copy.aiFailed}
+              value={aiCounts.failed}
+              tone="danger"
+              active={aiWorkFilter === "failed"}
+              onClick={() => setAiWorkFilter("failed")}
+            />
+            <WorkStatusFilterCard
+              label={copy.reviewReady}
+              value={aiCounts.completed}
+              tone="success"
+              active={aiWorkFilter === "completed"}
+              onClick={() => setAiWorkFilter("completed")}
+            />
+          </div>
+        </section>
+
+        <section className="px-4 py-4" data-testid="active-ai-work">
+          {filteredAiWorkItems.length ? (
+            <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+              {filteredAiWorkItems.map((item) => (
+                <div
+                  key={item.workItemId}
+                  className="min-w-0 rounded-xl border border-border bg-card p-3.5 transition-colors hover:bg-muted/35"
+                >
+                  <div className="flex min-w-0 items-start justify-between gap-3">
+                    <button
+                      type="button"
+                      onClick={() => onOpenItem(homeTaskWorkItem(item))}
+                      className="min-w-0 flex-1 text-left"
+                    >
+                      <span className="block text-[11px] text-muted-foreground">{item.localRef}</span>
+                      <strong className="mt-1 block line-clamp-2 text-sm [overflow-wrap:anywhere]">{item.title}</strong>
+                    </button>
+                    <StatusBadge tone={executionTone(item.executionState)}>
+                      {copy.execution[item.executionState]}
+                    </StatusBadge>
+                  </div>
+                  <div className="mt-3 flex items-center justify-between gap-3 border-t border-border/70 pt-3">
+                    <span className="min-w-0 truncate text-xs text-muted-foreground">
+                      {item.ai?.agentName ?? item.ai?.agentId ?? copy.aiLabel}
+                      {relativeTime(item.ai?.updatedAt, locale) ? ` · ${relativeTime(item.ai?.updatedAt, locale)}` : ""}
+                    </span>
+                    <Button size="sm" variant="secondary" onClick={() => runHomeAction(item)}>
+                      {copy.nextAction[item.nextAction.kind]}<ArrowRight aria-hidden />
+                    </Button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div className="grid min-h-36 place-items-center rounded-xl border border-dashed border-border/80 bg-background/30 px-4 py-6 text-center">
+              <div>
+                <Bot className="mx-auto mb-2 size-6 text-muted-foreground" aria-hidden />
+                <p className="text-sm font-medium">{copy.noAiWork}</p>
+                <p className="mt-1 text-xs text-muted-foreground">{copy.noAiWorkHint}</p>
+              </div>
+            </div>
+          )}
+        </section>
+      </Card>
+
       <WorkItemProgressDialog
         target={progressTarget}
         open={Boolean(progressTarget)}
         onClose={() => setProgressTarget(null)}
         onSaved={async () => { await onProgressRecorded?.(); }}
       />
-    </Card>
+    </div>
   );
 }
 
@@ -1059,34 +1125,39 @@ function ClaimableWorkCard({
   );
 }
 
-function SummaryMetric({
+function WorkStatusFilterCard({
   label,
   value,
   tone,
+  active,
   onClick,
 }: {
   label: string;
   value: number;
   tone: Tone;
-  onClick?: () => void;
+  active: boolean;
+  onClick: () => void;
 }) {
-  const content = (
-    <>
+  return (
+    <button
+      type="button"
+      aria-pressed={active}
+      onClick={onClick}
+      className={cn(
+        "group min-w-0 rounded-xl border bg-card px-3 py-3 text-left transition-colors hover:bg-muted/45 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
+        active ? "border-primary/60 bg-primary/[0.045]" : "border-border",
+      )}
+    >
       <span className={cn(
-        "font-semibold tabular-nums",
+        "block text-xl font-semibold tabular-nums",
         tone === "warning" && "text-warning",
         tone === "running" && "text-primary",
         tone === "success" && "text-success",
         tone === "danger" && "text-destructive",
       )}>{value}</span>
-      <span className="text-muted-foreground">{label}</span>
-    </>
-  );
-  return onClick ? (
-    <button type="button" onClick={onClick} className="flex items-center gap-1.5 rounded text-xs hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
-      {content}
+      <span className={cn("mt-1 block truncate text-xs", active ? "font-medium text-foreground" : "text-muted-foreground")}>{label}</span>
     </button>
-  ) : <span className="flex items-center gap-1.5 text-xs">{content}</span>;
+  );
 }
 
 function DayColumn({
@@ -1265,7 +1336,7 @@ function WorkCard({
       {home ? (
         <div className="mt-2 grid gap-0.5 text-[11px] text-muted-foreground">
           <span>{copy.owner}：{home.assignees.map((assignee) => assignee.name).join(", ") || "—"}</span>
-          <span>{copy.waitingLabel}：{copy.waiting[home.waitingOn]}{home.ai ? ` · ${copy.aiLabel}：${copy.execution[home.executionState]}` : ""}</span>
+          <span>{copy.waitingLabel}：{copy.waiting[home.waitingOn]}</span>
           {home.report ? (
             <span className={home.report.stale ? "text-warning" : ""}>
               {home.report.stale ? copy.report.stale : copy.report[home.report.status]}
@@ -1299,6 +1370,19 @@ function homeActionWorkItem(item: HomeWorkbenchItem): WorkItem {
     title: item.title,
     section: item.nextAction.section,
     targetId: item.nextAction.targetId,
+    projectId: item.projectId,
+    updatedAt: item.ai?.updatedAt ?? null,
+  };
+}
+
+function homeTaskWorkItem(item: HomeWorkbenchItem): WorkItem {
+  return {
+    id: `home:${item.workItemId}:task`,
+    state: item.needsAttention ? "follow_up" : "waiting",
+    kind: "local_work_item",
+    title: item.title,
+    section: "task",
+    targetId: item.workItemId,
     projectId: item.projectId,
     updatedAt: item.ai?.updatedAt ?? null,
   };

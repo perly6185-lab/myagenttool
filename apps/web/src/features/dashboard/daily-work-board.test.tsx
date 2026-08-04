@@ -194,7 +194,7 @@ describe("DailyWorkBoard", () => {
     expect(screen.queryByRole("dialog", { name: "Record progress" })).toBeNull();
   });
 
-  it("filters relationship work, shows waiting context, and opens the server-derived next action", () => {
+  it("keeps my work and AI work in separate cards with independent status filters", () => {
     const now = new Date(2026, 6, 31, 12).getTime();
     const customer = localItem({ id: "customer", localRef: "LOCAL-C", title: "Confirm customer scope", plannedDate: "2026-07-31" });
     const self = localItem({ id: "self", localRef: "LOCAL-S", title: "Polish internal notes", plannedDate: "2026-07-31", requesterRelation: "self" });
@@ -225,19 +225,26 @@ describe("DailyWorkBoard", () => {
       />,
     );
 
-    expect(screen.getByText("Stakeholder follow-up overview")).toBeTruthy();
-    expect(screen.getByText("Customer · Alex")).toBeTruthy();
-    expect(screen.getByText(/People：Waiting on me/)).toBeTruthy();
-    expect(screen.getByText("Report stale")).toBeTruthy();
-    expect(screen.getByTestId("active-ai-work").textContent).toContain("Codex");
-    expect(screen.getByTestId("active-ai-work").textContent).toContain("Ready for review");
-    expect(screen.getByTestId("active-ai-work").textContent).not.toContain("done");
-    fireEvent.click(screen.getByRole("button", { name: "Customer 1" }));
-    expect(screen.getAllByText("LOCAL-C · Confirm customer scope").length).toBeGreaterThan(0);
-    expect(screen.queryByText("LOCAL-S · Polish internal notes")).toBeNull();
-    fireEvent.click(screen.getByRole("button", { name: "Review" }));
+    const myWork = screen.getByTestId("my-work-section");
+    const aiWork = screen.getByTestId("ai-work-section");
+    expect(within(myWork).getByText("Customer · Alex")).toBeTruthy();
+    expect(within(myWork).getByText(/People：Waiting on me/)).toBeTruthy();
+    expect(within(myWork).getByText("Report stale")).toBeTruthy();
+    expect(myWork.textContent).not.toContain("Codex");
+    expect(aiWork.textContent).toContain("Codex");
+    expect(aiWork.textContent).toContain("Ready for review");
+    expect(aiWork.textContent).not.toContain("done");
+
+    fireEvent.click(within(myWork).getByRole("button", { name: "1 Needs my action" }));
+    expect(within(myWork).getAllByText("LOCAL-C · Confirm customer scope").length).toBeGreaterThan(0);
+    expect(within(myWork).queryByText("LOCAL-S · Polish internal notes")).toBeNull();
+    expect(aiWork.textContent).toContain("LOCAL-C");
+
+    fireEvent.click(within(aiWork).getByRole("button", { name: "1 Review and report" }));
+    expect(within(aiWork).getByText(/LOCAL-C/)).toBeTruthy();
+    fireEvent.click(within(aiWork).getByRole("button", { name: "Review" }));
     expect(onOpenItem).toHaveBeenCalledWith(expect.objectContaining({ section: "autoRuns", targetId: "aur_customer" }));
-    fireEvent.click(screen.getByRole("button", { name: "Review report" }));
+    fireEvent.click(within(myWork).getByRole("button", { name: "Review report" }));
     expect(onOpenItem).toHaveBeenCalledWith(expect.objectContaining({
       kind: "home_report_review", section: "task", targetId: "customer",
     }));
@@ -315,8 +322,6 @@ describe("DailyWorkBoard", () => {
     states.in_progress = { count: 1, items: [active] };
     const onOpenItem = vi.fn();
     const onOpenTasks = vi.fn();
-    const onOpenActive = vi.fn();
-    const onOpenCompleted = vi.fn();
 
     render(
       <DailyWorkBoard
@@ -324,8 +329,6 @@ describe("DailyWorkBoard", () => {
         report={report(2, 0)}
         onOpenItem={onOpenItem}
         onOpenTasks={onOpenTasks}
-        onOpenActive={onOpenActive}
-        onOpenCompleted={onOpenCompleted}
         now={now}
       />,
     );
@@ -340,10 +343,9 @@ describe("DailyWorkBoard", () => {
     expect(onOpenItem).toHaveBeenCalledWith(active);
     fireEvent.click(screen.getByRole("button", { name: "Plan tomorrow" }));
     expect(onOpenTasks).toHaveBeenCalled();
-    fireEvent.click(screen.getByRole("button", { name: "1 In progress" }));
-    expect(onOpenActive).toHaveBeenCalled();
-    fireEvent.click(screen.getByRole("button", { name: "2 Completed" }));
-    expect(onOpenCompleted).toHaveBeenCalled();
+    expect(screen.getByTestId("my-work-status-cards")).toBeTruthy();
+    expect(screen.getByTestId("ai-work-status-cards")).toBeTruthy();
+    expect(screen.getByText("No AI work yet")).toBeTruthy();
   });
 
   it("expands hidden work so every issue status remains inspectable", () => {

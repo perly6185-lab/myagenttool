@@ -426,10 +426,21 @@ async function assertVisualState(page, scenario) {
   }
   await page.locator('textarea[aria-label="Task"]:visible').waitFor({ timeout: 15_000 });
   if (scenario.name === "home-workbench") {
-    await page.locator('[data-testid="stakeholder-workbench-filters"]:visible').waitFor({ timeout: 15_000 });
+    const myWork = page.locator('[data-testid="my-work-section"]:visible');
+    const aiWork = page.locator('[data-testid="ai-work-section"]:visible');
+    await myWork.waitFor({ timeout: 15_000 });
+    await aiWork.waitFor({ timeout: 15_000 });
+    await page.locator('[data-testid="my-work-status-cards"]:visible').waitFor({ timeout: 15_000 });
+    await page.locator('[data-testid="ai-work-status-cards"]:visible').waitFor({ timeout: 15_000 });
     await page.locator('[data-testid="active-ai-work"]:visible').waitFor({ timeout: 15_000 });
-    for (const label of ["AI execution and review", "Awaiting approval", "Ready for review", "Execution failed"]) {
+    for (const label of ["My work", "AI work", "Awaiting approval", "Ready for review", "Execution failed"]) {
       await page.getByText(label, { exact: true }).first().waitFor();
+    }
+    if ((await myWork.innerText()).includes("Codex")) {
+      throw new Error("home-workbench mixes the AI agent status into My work");
+    }
+    if (!(await aiWork.innerText()).includes("Codex")) {
+      throw new Error("home-workbench does not expose the AI agent inside AI work");
     }
     const body = await page.locator("body").innerText();
     for (const internal of ["waiting_for_local_approval", "report_posted"]) {

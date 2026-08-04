@@ -8,16 +8,16 @@ Result: pass for the production implementation regression scenario; browser capt
 
 | Viewport | Result | Notes |
 | --- | --- | --- |
-| Desktop 1366 × 768 | Pass | Attention summary, workbench, and AI rail retain clear hierarchy. |
-| Mobile 390 × 844 | Pass | Attention and relation filters scroll within their own rows; the page has no horizontal overflow. |
+| Desktop 1366 × 768 | Pass | “My work” and “AI work” render as independent cards with their own status summaries. |
+| Mobile 390 × 844 | Pass | Both card summaries collapse to responsive grids; the page has no horizontal overflow. |
 
 ## Scenario checks
 
-- Needs my attention shows the three sample tasks whose next action belongs to the current user.
-- Selecting AI failed leaves the failed task visible and exposes its Run records action.
-- All work disables the implicit “needs my action” restriction and restores waiting tasks.
-- Clear state hides the active AI rail and shows one compact actionable empty state.
-- Requester filters do not change planning or AI execution status.
+- My work contains only personal planning, waiting, due-date, and follow-up context.
+- AI work contains only AI execution, approval, failure, and review-ready status.
+- Selecting a My work status never filters the AI work cards.
+- Selecting an AI status never filters the three-day personal plan.
+- Both sections keep a card-based empty state instead of collapsing into a row of zero-count pills.
 - AI completed appears as “waiting for my review,” not as a completed Local Issue.
 - Approval opens a canonical approval action; run history and transcript remain outside Home.
 
@@ -25,7 +25,7 @@ Result: pass for the production implementation regression scenario; browser capt
 
 - Task title, requester, deadline, human follow-up, AI status, and next action remain readable at 390 px.
 - Primary actions become full-width below task context on narrow screens.
-- Mobile reading order is attention summary, filters, work items, then active AI.
+- Mobile reading order is My work header, My work status cards, personal work items, AI work header, AI status cards, then AI task cards.
 - Long content wraps inside the task card instead of pushing the action outside its container.
 - The production scenario uses the real `DashboardView` and `DailyWorkBoard`, not the prototype markup.
 - Bound AI statuses render as localized workflow copy; internal values such as `waiting_for_local_approval` and `report_posted` must not appear.
@@ -33,9 +33,9 @@ Result: pass for the production implementation regression scenario; browser capt
 
 ## Fixes made during review
 
-- Added the failed AI task to the current-user attention queue.
-- Ensured the active AI rail respects its hidden state.
-- Kept the requester filter label on one line while the chips scroll independently.
+- Split personal work and AI execution into separate top-level cards.
+- Replaced the mixed relationship/status strip with independent card-based status summaries.
+- Removed AI agent/status copy from personal task cards while preserving human next actions.
 
 ## Automated production artifacts
 
