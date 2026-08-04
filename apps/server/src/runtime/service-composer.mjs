@@ -409,6 +409,7 @@ export function createServerRuntimeServices({
   let resolveWorkItemApplicationCapability = () => ({ state: "refusal", reason: "resolver_unavailable", capability: null });
   let invokeWorkItemApplicationCapability = () => ({ status: 503, body: { error: "capability_gateway_unavailable" } });
   let syncAdaptiveWorkItemOutcome = () => {};
+  let enqueueWorkItemReportDeliveryBatch = () => ({ ok: false, reason: "delivery_unavailable" });
   const workItemService = createWorkItemService({
     state, now, nextId, appendEvent, persistStateSoon, store,
     sendAlert: alertOutbox.enqueue,
@@ -418,6 +419,8 @@ export function createServerRuntimeServices({
     resolveApplicationCapability: (input, actor) => resolveWorkItemApplicationCapability(input, actor),
     invokeResolvedCapability: (name, input, actor) => invokeWorkItemApplicationCapability(name, input, actor),
     issueApplicationApprovalGrant: (input, actor) => issueApprovalGrant(input, actor),
+    enqueueChannelDeliveryBatch: (input) => enqueueWorkItemReportDeliveryBatch(input),
+    validateApprovalToken,
     onWorkItemChanged: (item, actor) => syncAdaptiveWorkItemOutcome(item, actor),
   });
   let releaseRoutineLedgerReservations = () => {};
@@ -2052,6 +2055,7 @@ export function createServerRuntimeServices({
     resolveSender: (provider) => channelSenders[provider] ?? null,
     validateApprovalToken,
   });
+  enqueueWorkItemReportDeliveryBatch = channelDeliveryService.enqueueChannelDeliveryBatch;
   channelDeliveryHook = channelDeliveryService.notifyInvocationCompleted;
 
   // Scheduled work-report → channel push. Closes over the delivery service's
@@ -4099,6 +4103,10 @@ export function createServerRuntimeServices({
     updateWorkItemReportDraft: workItemService.updateReportDraft,
     confirmWorkItemReportDraft: workItemService.confirmReportDraft,
     discardWorkItemReportDraft: workItemService.discardReportDraft,
+    listWorkItemReportDeliveries: workItemService.listReportDeliveries,
+    getWorkItemReportDelivery: workItemService.getReportDelivery,
+    previewWorkItemReportDelivery: workItemService.previewReportDelivery,
+    sendWorkItemReportDelivery: workItemService.sendReportDelivery,
     retryWorkItemAlert: workItemService.retryWorkItemAlert,
     applyLocalSchedulePlan: workItemService.applyLocalSchedulePlan,
     applyLocalScheduleRollover: workItemService.applyLocalScheduleRollover,

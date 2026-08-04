@@ -9,8 +9,10 @@ import { ApiError } from "@/lib/api-client";
 import { useAppTranslation } from "@/lib/i18n/use-app-translation";
 import { installWorkItemFollowUpTranslations } from "@/lib/i18n/work-item-follow-up-resources";
 import { installWorkItemReportTranslations } from "@/lib/i18n/work-item-report-resources";
+import type { ChannelConversation, ChannelOperations } from "@/lib/console-state";
 import type { LocalWorkItem, WorkItemRequesterRelation } from "./task-view-types";
 import { workItemReportApi } from "./work-item-report-api";
+import { WorkItemReportDeliveryPanel } from "./work-item-report-delivery";
 import type {
   WorkItemReportAudience,
   WorkItemReportDraft,
@@ -46,9 +48,13 @@ function draftTone(status: WorkItemReportDraft["status"], stale: boolean) {
 
 export function WorkItemReportSection({
   item,
+  channels = [],
+  conversations = [],
   onChanged,
 }: {
   item: LocalWorkItem;
+  channels?: ChannelOperations[];
+  conversations?: ChannelConversation[];
   onChanged?: () => void | Promise<void>;
 }) {
   const { t: typedT } = useAppTranslation();
@@ -355,6 +361,16 @@ export function WorkItemReportSection({
         {selected.canEdit ? <Button variant="secondary" size="sm" disabled={Boolean(pending) || !content.trim()} onClick={() => void save()}>{pending === "save" ? t("taskReport.saving") : t("taskReport.save")}</Button> : null}
         {selected.canConfirm ? <Button size="sm" disabled={Boolean(pending)} onClick={() => setConfirmOpen(true)}>{t("taskReport.confirm")}</Button> : null}
       </div>
+
+      {selected.status === "confirmed" ? (
+        <WorkItemReportDeliveryPanel
+          itemId={item.id}
+          draft={selected}
+          channels={channels}
+          conversations={conversations}
+          onSent={onChanged}
+        />
+      ) : null}
 
       <div className="border-t border-border pt-3">
         <h4 className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">{t("taskReport.history")}</h4>

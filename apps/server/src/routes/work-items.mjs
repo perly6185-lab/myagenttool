@@ -4,6 +4,7 @@ export async function handleWorkItemRoutes({
   req, res, url, sendJson, readJson, actor,
   listWorkItems, getHomeWorkbench, listAttention, getWorkItem, createWorkItem, updateWorkItem, recordWorkItemProgress, bulkUpdateWorkItems, transitionWorkItem,
   listReportDrafts, getReportDraft, generateReportDraft, updateReportDraft, confirmReportDraft, discardReportDraft,
+  listReportDeliveries, getReportDelivery, previewReportDelivery, sendReportDelivery,
   listActivity, listComments, createComment, updateComment, deleteComment,
   createWorktree, startAutoRun, beginExecution, abortExecution, recordExecutionBinding,
   createAutoRunBatch, listAutoRunBatches,
@@ -269,6 +270,30 @@ export async function handleWorkItemRoutes({
 
   if (url.pathname === "/api/work-items/bulk" && req.method === "PATCH") {
     const result = bulkUpdateWorkItems(await readJson(req), actor);
+    sendJson(res, result.status, result.body);
+    return true;
+  }
+
+  const reportDeliveryMatch = url.pathname.match(
+    /^\/api\/work-items\/([^/]+)\/report-drafts\/([^/]+)\/deliveries(?:\/([^/]+)(?:\/(send))?)?$/,
+  );
+  if (reportDeliveryMatch) {
+    const workItemId = decodeURIComponent(reportDeliveryMatch[1]);
+    const draftId = decodeURIComponent(reportDeliveryMatch[2]);
+    const deliveryId = reportDeliveryMatch[3] ? decodeURIComponent(reportDeliveryMatch[3]) : null;
+    const command = reportDeliveryMatch[4] ?? null;
+    let result;
+    if (req.method === "GET" && !deliveryId) {
+      result = listReportDeliveries({ workItemId, draftId }, actor);
+    } else if (req.method === "POST" && !deliveryId) {
+      result = previewReportDelivery({ workItemId, draftId, ...(await readJson(req)) }, actor);
+    } else if (req.method === "GET" && deliveryId && !command) {
+      result = getReportDelivery({ workItemId, draftId, deliveryId }, actor);
+    } else if (req.method === "POST" && deliveryId && command === "send") {
+      result = sendReportDelivery({ workItemId, draftId, deliveryId, ...(await readJson(req)) }, actor);
+    } else {
+      result = { status: 405, body: { error: "method_not_allowed" } };
+    }
     sendJson(res, result.status, result.body);
     return true;
   }

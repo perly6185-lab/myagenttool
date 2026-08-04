@@ -1,9 +1,13 @@
 import { createHash } from "node:crypto";
 import { WORK_ITEM_REQUESTER_RELATIONS } from "./work-item-follow-up.mjs";
+import { chunkContent } from "./report-schedule.mjs";
+import { LOCAL_TEAM_ID } from "../runtime/auth.mjs";
 
 const REPORT_TONES = new Set(["concise", "formal", "warm"]);
 const MAX_CONTENT = 20_000;
 const REPORT_DRAFT_SCHEMA_VERSION = 1;
+const REPORT_DELIVERY_SCHEMA_VERSION = 1;
+export const WORK_ITEM_REPORT_DELIVERY_ACTION = "work_item.report.deliver";
 
 function digest(value) {
   return createHash("sha256").update(JSON.stringify(value)).digest("hex");
@@ -143,11 +147,15 @@ export function createWorkItemReportDraftService({
   runTx,
   findOwn,
   recordActivity,
+  appendEvent,
   actorTeam,
   actorUser,
+  enqueueChannelDeliveryBatch = null,
+  validateApprovalToken = null,
 }) {
   const notFound = () => ({ ok: false, status: 404, body: { error: "work_item_report_draft_not_found" } });
   const rows = () => (state.workItemReportDrafts ??= []);
+  const deliveryRows = () => (state.workItemReportDeliveries ??= []);
 
   function findDraft(workItemId, draftId, actor) {
     return rows().find((row) => row.id === String(draftId)
@@ -157,6 +165,47 @@ export function createWorkItemReportDraftService({
 
   function isStale(row, item) {
     return row.source.workItemRevision !== item.revision;
+  }
+
+  function findDelivery(workItemId, draftId, deliveryId, actor) {
+    return deliveryRows().find((row) => row.id === String(deliveryId)
+      && row.workItemId === String(workItemId)
+      && row.reportDraftId === String(draftId)
+      && row.ownerTeamId === actorTeam(actor)) ?? null;
+  }
+
+  function targetFor(channelId, conversationId, actor) {
+    const teamId = actorTeam(actor);
+    const channel = (state.channels ?? []).find((row) => row.id === String(channelId)
+      && (row.ownerTeamId ?? LOCAL_TEAM_ID) === teamId) ?? null;
+    const conversation = channel ? (state.channelConversations ?? []).find((row) =>
+      row.id === String(conversationId) && row.channelId === channel.id) ?? null : null;
+    return channel && conversation ? { channel, conversation } : null;
+  }
+
+  function deliveryView(row) {
+    const children = (state.channelDeliveries ?? []).filter((candidate) =>
+      row.channelDeliveryIds.includes(candidate.id) && candidate.ownerTeamId === row.ownerTeamId);
+    const submitted = row.status === "submitted";
+    const failed = children.some((child) => child.status === "failed_terminal");
+    const delivered = children.length === row.chunkCount && children.every((child) => child.status === "delivered");
+    const status = !submitted ? "preview" : failed ? "failed" : delivered ? "delivered" : "queued";
+    const { command: _command, sendCommand: _sendCommand, ...publicRow } = row;
+    return {
+      ...publicRow,
+      status,
+      canSend: status === "preview",
+      receipt: submitted ? {
+        status,
+        channelDeliveryIds: [...row.channelDeliveryIds],
+        deliveredChunks: children.filter((child) => child.status === "delivered").length,
+        failedChunks: children.filter((child) => child.status === "failed_terminal").length,
+        attempts: children.reduce((total, child) => total + Number(child.attempts ?? 0), 0),
+        providerReceiptIds: children.map((child) => child.providerReceiptId).filter(Boolean),
+        lastErrorCodes: [...new Set(children.map((child) => child.lastErrorCode).filter(Boolean))],
+        updatedAt: children.map((child) => child.updatedAt).filter(Boolean).sort().at(-1) ?? row.sentAt,
+      } : null,
+    };
   }
 
   function view(row, item) {
@@ -411,5 +460,238 @@ export function createWorkItemReportDraftService({
     return { ok: true, status: 200, body: { reportDraft: view(row, item), replayed: false } };
   }
 
-  return { list, get, generate, update, confirm, discard };
+  function listDeliveries({ workItemId, draftId } = {}, actor = null) {
+    const item = findOwn(workItemId, actor);
+    const draft = item ? findDraft(item.id, draftId, actor) : null;
+    if (!draft) return notFound();
+    const reportDeliveries = deliveryRows()
+      .filter((row) => row.workItemId === item.id
+        && row.reportDraftId === draft.id
+        && row.ownerTeamId === actorTeam(actor))
+      .sort((left, right) => String(right.createdAt).localeCompare(String(left.createdAt)))
+      .map(deliveryView);
+    return { ok: true, status: 200, body: { reportDeliveries, count: reportDeliveries.length } };
+  }
+
+  function getDelivery({ workItemId, draftId, deliveryId } = {}, actor = null) {
+    const item = findOwn(workItemId, actor);
+    const draft = item ? findDraft(item.id, draftId, actor) : null;
+    const row = draft ? findDelivery(item.id, draft.id, deliveryId, actor) : null;
+    return row
+      ? { ok: true, status: 200, body: { reportDelivery: deliveryView(row) } }
+      : notFound();
+  }
+
+  function previewDelivery(input = {}, actor = null) {
+    const { workItemId, draftId, channelId, conversationId, idempotencyKey } = input;
+    const allowedFields = new Set(["workItemId", "draftId", "channelId", "conversationId", "idempotencyKey"]);
+    if (Object.keys(input).some((field) => !allowedFields.has(field))) {
+      return { ok: false, status: 400, body: { error: "invalid_work_item_report_delivery_preview_fields" } };
+    }
+    const item = findOwn(workItemId, actor);
+    const draft = item ? findDraft(item.id, draftId, actor) : null;
+    if (!draft) return notFound();
+    if (draft.status !== "confirmed" || !draft.confirmedSnapshot) {
+      return { ok: false, status: 409, body: { error: "work_item_report_not_confirmed" } };
+    }
+    const target = targetFor(channelId, conversationId, actor);
+    if (!target) return { ok: false, status: 404, body: { error: "work_item_report_delivery_target_not_found" } };
+    if (target.channel.status !== "enabled") {
+      return { ok: false, status: 409, body: { error: "work_item_report_delivery_channel_disabled" } };
+    }
+    const key = commandKey(idempotencyKey);
+    if (!key) return { ok: false, status: 400, body: { error: "work_item_report_idempotency_key_required" } };
+    const inputDigest = digest({
+      reportDraftId: draft.id,
+      reportRevision: draft.confirmedSnapshot.revision,
+      contentDigest: draft.confirmedSnapshot.contentDigest,
+      channelId: target.channel.id,
+      conversationId: target.conversation.id,
+    });
+    const replay = deliveryRows().find((row) => row.workItemId === item.id
+      && row.ownerTeamId === actorTeam(actor)
+      && row.createdBy === actorUser(actor)
+      && row.command?.idempotencyKey === key);
+    if (replay) {
+      if (replay.command.inputDigest !== inputDigest) {
+        return { ok: false, status: 409, body: { error: "work_item_report_idempotency_conflict" } };
+      }
+      return { ok: true, status: 200, body: { reportDelivery: deliveryView(replay), replayed: true } };
+    }
+    const chunks = chunkContent(draft.confirmedSnapshot.content);
+    const timestamp = now();
+    const row = {
+      id: nextId("wrdl"),
+      schemaVersion: REPORT_DELIVERY_SCHEMA_VERSION,
+      workItemId: item.id,
+      reportDraftId: draft.id,
+      ownerTeamId: item.ownerTeamId,
+      projectId: item.projectId,
+      status: "preview",
+      revision: 1,
+      confirmedReportRevision: draft.confirmedSnapshot.revision,
+      content: draft.confirmedSnapshot.content,
+      contentDigest: draft.confirmedSnapshot.contentDigest,
+      chunkCount: chunks.length,
+      chunkDigests: chunks.map(digest),
+      target: {
+        channelId: target.channel.id,
+        channelName: target.channel.name,
+        provider: target.channel.provider,
+        conversationId: target.conversation.id,
+        recipientId: target.conversation.externalUserId,
+      },
+      command: { idempotencyKey: key, inputDigest },
+      sendCommand: null,
+      channelDeliveryIds: [],
+      createdBy: actorUser(actor),
+      createdAt: timestamp,
+      sentBy: null,
+      sentAt: null,
+    };
+    runTx(() => {
+      deliveryRows().unshift(row);
+      recordActivity(item, actor, "report_delivery_previewed", {
+        reportDraftId: draft.id,
+        reportDeliveryId: row.id,
+        channelId: row.target.channelId,
+        conversationId: row.target.conversationId,
+        contentDigest: row.contentDigest,
+        chunkCount: row.chunkCount,
+      });
+    });
+    return { ok: true, status: 201, body: { reportDelivery: deliveryView(row), replayed: false } };
+  }
+
+  function sendDelivery(input = {}, actor = null) {
+    const { workItemId, draftId, deliveryId, expectedRevision, idempotencyKey, approvalToken } = input;
+    const allowedFields = new Set([
+      "workItemId", "draftId", "deliveryId", "expectedRevision", "idempotencyKey", "approvalToken",
+    ]);
+    if (Object.keys(input).some((field) => !allowedFields.has(field))) {
+      return { ok: false, status: 400, body: { error: "invalid_work_item_report_delivery_send_fields" } };
+    }
+    const item = findOwn(workItemId, actor);
+    const draft = item ? findDraft(item.id, draftId, actor) : null;
+    const row = draft ? findDelivery(item.id, draft.id, deliveryId, actor) : null;
+    if (!row) return notFound();
+    const key = commandKey(idempotencyKey);
+    if (!key) return { ok: false, status: 400, body: { error: "work_item_report_idempotency_key_required" } };
+    if (row.sendCommand?.idempotencyKey === key) {
+      return { ok: true, status: 200, body: { reportDelivery: deliveryView(row), replayed: true } };
+    }
+    if (row.status !== "preview") {
+      return { ok: false, status: 409, body: { error: "work_item_report_delivery_already_sent" } };
+    }
+    if (!Number.isInteger(expectedRevision)) {
+      return { ok: false, status: 400, body: { error: "expected_report_delivery_revision_required" } };
+    }
+    if (expectedRevision !== row.revision) {
+      return { ok: false, status: 409, body: { error: "work_item_report_delivery_revision_conflict", currentRevision: row.revision } };
+    }
+    const target = targetFor(row.target.channelId, row.target.conversationId, actor);
+    if (!target
+      || target.channel.name !== row.target.channelName
+      || target.channel.provider !== row.target.provider
+      || target.conversation.externalUserId !== row.target.recipientId) {
+      return { ok: false, status: 409, body: { error: "work_item_report_delivery_target_changed" } };
+    }
+    if (target.channel.status !== "enabled") {
+      return { ok: false, status: 409, body: { error: "work_item_report_delivery_channel_disabled" } };
+    }
+    const approval = typeof validateApprovalToken === "function"
+      ? validateApprovalToken(approvalToken, {
+        action: WORK_ITEM_REPORT_DELIVERY_ACTION,
+        targetId: row.id,
+        actor,
+        allowLegacy: false,
+      })
+      : { approved: false, reason: "approval_validator_unavailable" };
+    if (!approval.approved) {
+      return {
+        ok: false,
+        status: 409,
+        body: {
+          error: "approval_required",
+          reason: approval.reason,
+          action: WORK_ITEM_REPORT_DELIVERY_ACTION,
+          targetId: row.id,
+        },
+      };
+    }
+    const chunks = chunkContent(row.content);
+    if (chunks.length !== row.chunkCount
+      || chunks.some((content, index) => digest(content) !== row.chunkDigests[index])) {
+      return { ok: false, status: 409, body: { error: "work_item_report_delivery_preview_changed" } };
+    }
+    const queued = typeof enqueueChannelDeliveryBatch === "function"
+      ? enqueueChannelDeliveryBatch({
+        channelId: row.target.channelId,
+        conversationId: row.target.conversationId,
+        contents: chunks,
+        taskContext: {
+          channelId: row.target.channelId,
+          conversationId: row.target.conversationId,
+          projectId: item.projectId,
+          workItemId: item.id,
+        },
+        sourceContext: {
+          kind: "work_item_report",
+          workItemId: item.id,
+          reportDraftId: draft.id,
+          reportDeliveryId: row.id,
+          contentDigest: row.contentDigest,
+        },
+      })
+      : { ok: false, reason: "delivery_unavailable" };
+    if (!queued.ok) {
+      return { ok: false, status: 503, body: { error: "work_item_report_delivery_enqueue_failed", reason: queued.reason } };
+    }
+    const timestamp = now();
+    runTx(() => {
+      row.status = "submitted";
+      row.revision += 1;
+      row.sendCommand = { idempotencyKey: key, approvalGrantId: approval.grantId ?? null };
+      row.channelDeliveryIds = queued.deliveryIds;
+      row.sentBy = actorUser(actor);
+      row.sentAt = timestamp;
+      recordActivity(item, actor, "report_delivery_sent", {
+        reportDraftId: draft.id,
+        reportDeliveryId: row.id,
+        channelId: row.target.channelId,
+        conversationId: row.target.conversationId,
+        channelDeliveryIds: queued.deliveryIds,
+        contentDigest: row.contentDigest,
+      });
+      appendEvent?.({
+        invocationId: null,
+        type: "work_item_report_delivery_queued",
+        level: "info",
+        message: `${item.localRef} confirmed report queued for ${row.target.provider} delivery.`,
+        data: {
+          workItemId: item.id,
+          reportDraftId: draft.id,
+          reportDeliveryId: row.id,
+          channelId: row.target.channelId,
+          conversationId: row.target.conversationId,
+          channelDeliveryIds: queued.deliveryIds,
+          actorTeamId: item.ownerTeamId,
+        },
+      });
+    });
+    return { ok: true, status: 202, body: { reportDelivery: deliveryView(row), replayed: false } };
+  }
+
+  return {
+    list,
+    get,
+    generate,
+    update,
+    confirm,
+    discard,
+    listDeliveries,
+    getDelivery,
+    previewDelivery,
+    sendDelivery,
+  };
 }

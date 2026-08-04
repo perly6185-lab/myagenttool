@@ -64,15 +64,9 @@ export function createChannelDeliveryService({
   const findConversation = (conversationId) =>
     (state.channelConversations ?? []).find((row) => row.id === conversationId) ?? null;
 
-  /** Queue one outbound message to a conversation. Durable before any send attempt. */
-  function enqueueChannelDelivery({ channelId, conversationId, invocationId = null, content, taskContext = null } = {}) {
-    const channel = findChannel(String(channelId ?? ""));
-    const conversation = findConversation(String(conversationId ?? ""));
-    const text = String(content ?? "").trim();
-    if (!channel || !conversation || conversation.channelId !== channel.id || !text) {
-      return { ok: false, reason: "invalid_delivery" };
-    }
-    const delivery = {
+  function deliveryRow({ channel, conversation, invocationId, content, taskContext, sourceContext, chunkIndex, chunkCount }) {
+    const timestamp = now();
+    return {
       id: nextId(channelIdPrefixes.delivery),
       channelId: channel.id,
       conversationId: conversation.id,
@@ -86,24 +80,77 @@ export function createChannelDeliveryService({
         workItemId: taskContext.workItemId ?? null,
         traceId: taskContext.traceId ?? null,
       } : null,
+      sourceContext: sourceContext?.kind === "work_item_report" ? {
+        kind: "work_item_report",
+        workItemId: sourceContext.workItemId ?? null,
+        reportDraftId: sourceContext.reportDraftId ?? null,
+        reportDeliveryId: sourceContext.reportDeliveryId ?? null,
+        contentDigest: sourceContext.contentDigest ?? null,
+        chunkIndex,
+        chunkCount,
+      } : null,
       // Reply target: a provider whose reply address differs from the sender
       // identity (Teams, #1135) stamps `replyContext` on the conversation; the
       // sender receives it verbatim. Others reply to the sender's id as before.
       toUser: conversation.externalUserId,
       replyContext: conversation.replyContext ?? null,
-      content: text.slice(0, MAX_CONTENT_CHARS),
+      content: content.slice(0, MAX_CONTENT_CHARS),
       status: "queued",
       attempts: 0,
-      nextAttemptAt: now(),
+      nextAttemptAt: timestamp,
       providerReceiptId: null,
       lastErrorCode: null,
-      createdAt: now(),
-      updatedAt: now(),
+      createdAt: timestamp,
+      updatedAt: timestamp,
     };
+  }
+
+  /** Queue a bounded set of chunks atomically before any provider send attempt. */
+  function enqueueChannelDeliveryBatch({
+    channelId,
+    conversationId,
+    invocationId = null,
+    contents,
+    taskContext = null,
+    sourceContext = null,
+  } = {}) {
+    const channel = findChannel(String(channelId ?? ""));
+    const conversation = findConversation(String(conversationId ?? ""));
+    const chunks = Array.isArray(contents) ? contents.map((content) => String(content ?? "")) : [];
+    if (!channel || !conversation || conversation.channelId !== channel.id
+      || !chunks.length || chunks.length > 50
+      || chunks.some((content) => !content.trim() || content.length > MAX_CONTENT_CHARS)) {
+      return { ok: false, reason: "invalid_delivery" };
+    }
+    const deliveries = chunks.map((content, index) => deliveryRow({
+      channel,
+      conversation,
+      invocationId,
+      content,
+      taskContext,
+      sourceContext,
+      chunkIndex: index + 1,
+      chunkCount: chunks.length,
+    }));
     runTx(() => {
-      state.channelDeliveries.push(delivery);
+      state.channelDeliveries.push(...deliveries);
     });
-    return { ok: true, deliveryId: delivery.id };
+    return { ok: true, deliveryIds: deliveries.map((delivery) => delivery.id) };
+  }
+
+  /** Queue one outbound message to a conversation. Durable before any send attempt. */
+  function enqueueChannelDelivery({ channelId, conversationId, invocationId = null, content, taskContext = null, sourceContext = null } = {}) {
+    const result = enqueueChannelDeliveryBatch({
+      channelId,
+      conversationId,
+      invocationId,
+      // Preserve the established single-message behavior while batch callers
+      // (notably immutable report previews) retain exact chunk boundaries.
+      contents: [String(content ?? "").trim()],
+      taskContext,
+      sourceContext,
+    });
+    return result.ok ? { ok: true, deliveryId: result.deliveryIds[0] } : result;
   }
 
   async function attemptDelivery(delivery) {
@@ -325,5 +372,12 @@ export function createChannelDeliveryService({
     return { ok: true, status: 200, body: { deliveryId: delivery.id, status: delivery.status } };
   }
 
-  return { enqueueChannelDelivery, sweepChannelDeliveries, notifyInvocationCompleted, attemptDelivery, retryChannelDelivery };
+  return {
+    enqueueChannelDelivery,
+    enqueueChannelDeliveryBatch,
+    sweepChannelDeliveries,
+    notifyInvocationCompleted,
+    attemptDelivery,
+    retryChannelDelivery,
+  };
 }

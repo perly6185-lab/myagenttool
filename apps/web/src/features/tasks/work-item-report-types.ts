@@ -57,3 +57,40 @@ export type WorkItemReportDraft = {
     confirmedBy: string;
   };
 };
+
+export type WorkItemReportDeliveryStatus = "preview" | "queued" | "delivered" | "failed";
+export type WorkItemReportDelivery = {
+  id: string;
+  schemaVersion: 1;
+  workItemId: string;
+  reportDraftId: string;
+  status: WorkItemReportDeliveryStatus;
+  revision: number;
+  confirmedReportRevision: number;
+  content: string;
+  contentDigest: string;
+  chunkCount: number;
+  target: {
+    channelId: string;
+    channelName: string;
+    provider: string;
+    conversationId: string;
+    recipientId: string;
+  };
+  canSend: boolean;
+  channelDeliveryIds: string[];
+  createdBy: string;
+  createdAt: string;
+  sentBy: string | null;
+  sentAt: string | null;
+  receipt: null | {
+    status: WorkItemReportDeliveryStatus;
+    channelDeliveryIds: string[];
+    deliveredChunks: number;
+    failedChunks: number;
+    attempts: number;
+    providerReceiptIds: string[];
+    lastErrorCodes: string[];
+    updatedAt: string | null;
+  };
+};

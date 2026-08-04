@@ -157,6 +157,29 @@ test("a queued delivery sends, records the provider receipt, and leaves evidence
   assert.equal(harness.events.at(-1).type, "channel_delivery_recorded");
 });
 
+test("a report delivery batch is queued atomically with chunk lineage", () => {
+  const harness = makeDeliveryHarness();
+  const queued = harness.service.enqueueChannelDeliveryBatch({
+    channelId: harness.channelId,
+    conversationId: harness.conversationId,
+    contents: ["Report chunk one", "Report chunk two"],
+    sourceContext: {
+      kind: "work_item_report",
+      workItemId: "lwi_report",
+      reportDraftId: "wrd_report",
+      reportDeliveryId: "wrdl_report",
+      contentDigest: "digest_report",
+    },
+  });
+  assert.equal(queued.ok, true);
+  assert.equal(queued.deliveryIds.length, 2);
+  const rows = harness.state.channelDeliveries.filter((row) => queued.deliveryIds.includes(row.id));
+  assert.equal(rows.length, 2);
+  assert.deepEqual(rows.map((row) => row.sourceContext.chunkIndex), [1, 2]);
+  assert.ok(rows.every((row) => row.sourceContext.chunkCount === 2));
+  assert.ok(rows.every((row) => row.sourceContext.reportDeliveryId === "wrdl_report"));
+});
+
 test("delivery preserves bounded task and trace correlation without attachment payloads", () => {
   const harness = makeDeliveryHarness();
   const queued = harness.service.enqueueChannelDelivery({

@@ -250,6 +250,8 @@ export function createWorkItemService({
   resolveApplicationCapability = () => ({ state: "refusal", reason: "resolver_unavailable", capability: null }),
   invokeResolvedCapability = () => ({ status: 503, body: { error: "capability_gateway_unavailable" } }),
   issueApplicationApprovalGrant = null,
+  enqueueChannelDeliveryBatch = null,
+  validateApprovalToken = null,
   onWorkItemChanged = () => {},
   store,
 }) {
@@ -352,7 +354,17 @@ export function createWorkItemService({
   }
 
   const reportDraftService = createWorkItemReportDraftService({
-    state, now, nextId, runTx, findOwn, recordActivity, actorTeam, actorUser,
+    state,
+    now,
+    nextId,
+    runTx,
+    findOwn,
+    recordActivity,
+    appendEvent,
+    actorTeam,
+    actorUser,
+    enqueueChannelDeliveryBatch,
+    validateApprovalToken,
   });
 
   function resolveFollowUpContext(context, actor, { input = {} } = {}) {
@@ -3438,6 +3450,10 @@ export function createWorkItemService({
     updateReportDraft: reportDraftService.update,
     confirmReportDraft: reportDraftService.confirm,
     discardReportDraft: reportDraftService.discard,
+    listReportDeliveries: reportDraftService.listDeliveries,
+    getReportDelivery: reportDraftService.getDelivery,
+    previewReportDelivery: reportDraftService.previewDelivery,
+    sendReportDelivery: reportDraftService.sendDelivery,
     listActivity, listComments, createComment, updateComment, deleteComment,
     beginExecution, abortExecution, recordExecutionBinding,
     beginDelivery, failDelivery, completeDelivery,

@@ -3046,7 +3046,12 @@ function LocalWorkItemDetail({
           className="rounded-md border border-border p-3"
         >
           <Suspense fallback={<p className="text-sm text-muted-foreground">{t("tasks.loading")}</p>}>
-            <WorkItemReportSection item={item} onChanged={onChanged} />
+            <WorkItemReportSection
+              item={item}
+              channels={consoleState?.channelOperations ?? []}
+              conversations={consoleState?.channelConversations ?? []}
+              onChanged={onChanged}
+            />
           </Suspense>
         </section>
       ) : null}

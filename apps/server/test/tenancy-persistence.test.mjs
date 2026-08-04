@@ -134,6 +134,26 @@ function seedTwoTeams({ projectPathA, projectPathB }) {
     state.worktrees.push({ id: `wt_${team}`, sourceProjectId: proj.id, projectId: proj.id, branchName: `b-${team}` });
     state.applications.push({ id: `app_${team}`, projectId: proj.id, ownerTeamId: team, name: `${team} app` });
   }
+  state.workItemReportDeliveries.push(
+    {
+      id: "wrdl_team_a",
+      workItemId: "lwi_team_a",
+      reportDraftId: "wrd_team_a",
+      projectId: projA.id,
+      ownerTeamId: TEAM_A,
+      content: "team-a-private-confirmed-report",
+      status: "preview",
+    },
+    {
+      id: "wrdl_team_b",
+      workItemId: "lwi_team_b",
+      reportDraftId: "wrd_team_b",
+      projectId: projB.id,
+      ownerTeamId: TEAM_B,
+      content: "team-b-private-confirmed-report",
+      status: "delivered",
+    },
+  );
 
   return { runtime, state, projA, projB };
 }
@@ -195,11 +215,18 @@ test("#891 two-team isolation survives a save→restore round trip", () => {
     // Both projects survived (real paths on disk).
     assert(state.projects.some((p) => p.id === "proj_a"), "proj_a restores");
     assert(state.projects.some((p) => p.id === "proj_b"), "proj_b restores");
+    assert.deepEqual(
+      state.workItemReportDeliveries.map((row) => row.id).sort(),
+      ["wrdl_team_a", "wrdl_team_b"],
+      "report delivery previews and receipts restore durably",
+    );
 
     const actorA = { teamId: TEAM_A };
     const actorB = { teamId: TEAM_B };
     const viewA = publicStateFor(state, { defaultProjectPath: projectPathA, actor: actorA });
     const viewB = publicStateFor(state, { defaultProjectPath: projectPathB, actor: actorB });
+    assert.equal(viewA.workItemReportDeliveries, undefined, "raw report content and delivery targets are not published in /api/state");
+    assert.equal(viewB.workItemReportDeliveries, undefined, "raw report delivery rows stay behind owner-scoped routes");
 
     // Projects, invocations, auto-runs, worktrees, ledger, budgets — each scoped.
     const onlyOwn = (view, own, foreign, key, idOf) => {
@@ -249,7 +276,7 @@ test("#891 two-team isolation survives a save→restore round trip", () => {
     assert.equal(denials[0]?.status, 404, "denial hides existence with a 404");
 
     // Blanket leak scan: no foreign-team identifier appears anywhere in A's snapshot.
-    const leaked = allStrings(viewA).filter((s) => /proj_b|inv_team_b|aur_team_b|wt_team_b|app_team_b|Bravo/.test(s));
+    const leaked = allStrings(viewA).filter((s) => /proj_b|inv_team_b|aur_team_b|wt_team_b|app_team_b|Bravo|team-b-private-confirmed-report/.test(s));
     assert.deepEqual(leaked, [], `no team B identifier may appear in team A's snapshot; leaked: ${leaked.join(", ")}`);
   } finally {
     rmSync(root, { recursive: true, force: true });
