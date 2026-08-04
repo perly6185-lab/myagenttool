@@ -77,6 +77,31 @@ test("follow_up = failed runs + refusals within the 48h window; stale refusals e
   assert.equal(states.failed.count, 1);
 });
 
+test("due work-item reminders enter follow_up with canonical Local Issue navigation", () => {
+  const followUpReminders = [{
+    id: "wfr_1",
+    status: "due",
+    workItemId: "lwi_1",
+    localRef: "LOCAL-9",
+    workItemTitle: "Update the customer",
+    projectId: "prj_a",
+    scheduledFor: "2026-07-17T11:00:00Z",
+  }];
+  const { states } = workBoard({ followUpReminders, now: NOW });
+  assert.deepEqual(states.follow_up.items[0], {
+    id: "followup:wfr_1",
+    state: "follow_up",
+    kind: "work_item_follow_up_reminder",
+    title: "Update the customer",
+    subtitle: "Follow-up due · LOCAL-9",
+    section: "task",
+    targetId: "lwi_1",
+    projectId: "prj_a",
+    updatedAt: "2026-07-17T11:00:00Z",
+    reason: "scheduled stakeholder follow-up is due",
+  });
+});
+
 test("empty inputs yield all six lenses at zero", () => {
   const { states } = workBoard({ now: NOW });
   assert.deepEqual(

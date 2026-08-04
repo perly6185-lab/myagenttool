@@ -297,6 +297,29 @@ POST   /api/work-items/:id/report-drafts/:draftId/discard
 接口不接受收件地址、发送、执行、完成或关闭字段，也不改变业务状态、规划状态或执行状态。
 后续外发必须从已确认快照转换为渠道专用草稿，再经过独立的收件人预览、凭证和发送回执门禁。
 
+PR 7 的跟进提醒是独立于汇报草稿的持久资源。每次设置或改动 `nextFollowUpAt` 都产生新的
+服务端跟进计划版本；到期扫描以 `workItemId + followUpScheduleRevision` 作为稳定去重键，
+普通标题、优先级或其他 Issue revision 变化不会重复提醒。同一计划只有一个提醒记录：
+
+```ts
+type WorkItemFollowUpReminder = {
+  schemaVersion: 1;
+  workItemId: string;
+  ownerTeamId: string;
+  scheduleRevision: number;
+  sourceRevision: number;
+  scheduledFor: string;
+  status: "due" | "resolved";
+  resolution: null | "progress_recorded" | "rescheduled" |
+    "schedule_cleared" | "completed" | "archived";
+};
+```
+
+到期提醒进入现有“需跟进”工作板和通知中心，点击后返回 canonical Local Issue。记录进展、
+重新安排/清除下次跟进、完成、关闭或归档任务会自动解决已有提醒并追加活动审计。浏览器通知
+沿用现有显式开启机制且只显示数量；提醒投影不包含汇报正文、原始 transcript、凭证、收件人
+地址或渠道发送控制。真正外发仍属于 PR 8。
+
 ## 10. MVP 验收标准
 
 - 新建或编辑 Local Issue 时可以记录提出者关系、姓名、渠道和承诺时间。

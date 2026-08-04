@@ -4016,6 +4016,7 @@ export function createServerRuntimeServices({
     sweepAutoRunSloAlerts,
     sweepAlertOutbox: alertOutbox.sweep,
     sweepWorkItemOperationalAlerts: workItemService.sweepOperationalAlerts,
+    sweepWorkItemFollowUpReminders: workItemService.sweepFollowUpReminders,
     flushTraceExport,
     requestObservabilityDeletion,
     autoMergeSweep,

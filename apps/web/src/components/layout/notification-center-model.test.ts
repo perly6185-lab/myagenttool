@@ -55,4 +55,32 @@ describe("notification center model (#1537)", () => {
     expect(model.fallback).toBe(false);
     expect(model.eventIds).toContain("execution:offline");
   });
+
+  it("counts due stakeholder follow-ups once and includes their stable reminder event", () => {
+    const state = {
+      device: { status: "online" },
+      pendingDecisions: [],
+      workBoard: {
+        states: {
+          pending_decision: { count: 0, items: [] },
+          follow_up: { count: 1, items: [{ id: "followup:wfr_1", kind: "work_item_follow_up_reminder", title: "Update customer", section: "task", targetId: "lwi_1" }] },
+          in_progress: { count: 0, items: [] },
+          waiting: { count: 0, items: [] },
+          failed: { count: 0, items: [] },
+          done: { count: 0, items: [] },
+        },
+      },
+      invocations: [],
+    } as unknown as ConsoleSnapshot;
+    const model = deriveNotificationCenterModel(state, {
+      isError: false,
+      isLoading: false,
+      liveUpdates: true,
+    });
+    expect(model.followUps).toEqual({
+      count: 1,
+      items: [{ id: "followup:wfr_1", title: "Update customer" }],
+    });
+    expect(model.eventIds).toContain("followup:wfr_1");
+  });
 });

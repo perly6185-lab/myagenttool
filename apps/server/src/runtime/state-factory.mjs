@@ -164,6 +164,7 @@ export function createServerState({ defaultProjectPath, now }) {
     workItemOperationalAlerts: [],
     workItemActivities: [],
     workItemReportDrafts: [],
+    workItemFollowUpReminders: [],
     planningProjects: [],
     planningProjectItems: [],
     // Epic #1547: local-first, evidence-backed requirement-to-delivery memory.

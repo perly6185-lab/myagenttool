@@ -71,7 +71,7 @@ export const resources = {
       },
       notificationCenter: {
         title: "Notifications", close: "Close notifications", triggerLabel: "Notifications: {{action}} require action, {{unread}} unread", actionCount: "{{count}} require action", unreadCount: "{{count}} unread result", empty: "No work needs your attention.",
-        approvals: "Approvals", approvalsHint: "Safety decisions waiting for you", failures: "Failed runs", failuresHint: "Runs that need recovery", executionOffline: "Execution disconnected", executionOfflineHint: "This computer cannot receive local work", completions: "New results", completionsHint: "Completed since you last reviewed results",
+        approvals: "Approvals", approvalsHint: "Safety decisions waiting for you", failures: "Failed runs", failuresHint: "Runs that need recovery", followUps: "Follow-ups due", followUpsHint: "Stakeholder work ready for progress or rescheduling", executionOffline: "Execution disconnected", executionOfflineHint: "This computer cannot receive local work", completions: "New results", completionsHint: "Completed since you last reviewed results",
         status: { title: "Status center", healthy: "Healthy", fallback: "Periodic refresh", offline: "Offline", server: "Server", computer: "Execution computer", updates: "Updates", connecting: "Connecting", connected: "Connected", online: "Online", unknown: "Not registered", realtime: "Real-time", periodic: "Periodic refresh" },
         browser: { titleSetting: "Browser notifications", privacy: "Optional. Notifications show counts only—never task text, paths, or results.", enable: "Enable", disable: "Disable", denied: "Blocked by browser", unsupported: "Unavailable", title: "MyAgentTool has an update", body: "{{count}} new status update(s). Open MyAgentTool to review." },
       },
@@ -121,6 +121,7 @@ export const resources = {
       actionError: { cause: "Cause", impact: "Impact", remedy: "What to do", retry: "Retry" },
       workBoard: {
         title: "Status", items: "{{count}} items", subtitle: "Every work item by state · newest first", emptyTitle: "Nothing tracked yet", emptyHint: "Auto-runs, pending decisions, and recent refusals land here, grouped by state.", none: "None", more: "+{{count}} more",
+        followUpReminderReason: "Scheduled stakeholder follow-up is due",
         lens: { pending_decision: "Pending decision", follow_up: "Follow-up", in_progress: "In progress", waiting: "Waiting", failed: "Failed", done: "Done" },
         schedule: "Schedule to channel", on: "on", off: "off", next: "next {{time}}", last: "last {{time}}", close: "Close", configure: "Configure", noChannels: "No channels registered — add a WeCom channel first.", noConversations: "No conversations yet — someone must message the bot before reports can be posted.", enabled: "Enabled", channel: "Channel", to: "To", report: "Report", cover: "Cover", cadence: "Cadence", day: "Day", time: "Time", pick: "— pick —", previous: "last period", current: "this period", daily: "daily", weekly: "weekly", save: "Save", postNow: "Post now", postTitle: "Send the configured report to the channel now", posted_one: "Posted ({{count}} message)", posted_other: "Posted ({{count}} messages)", notPosted: "Not posted: {{reason}}", serverTime: "Time is server-local; posts once per period.",
         period: { day: "day", week: "week", month: "month", quarter: "quarter" }, since: "since {{date}}", copyTitle: "Copy this period's Markdown report", copied: "Copied", copy: "Copy report", opened: "Opened", completed: "Completed", failed: "Failed", refusals: "Refusals", refusalsPartial: "Refusals*", refusalHint: "Lower bound — the durable rollup started after this window's start", aging: "Aging >24h",
@@ -267,7 +268,7 @@ export const resources = {
       },
       notificationCenter: {
         title: "通知", close: "关闭通知", triggerLabel: "通知：{{action}} 项需要处理，{{unread}} 项未读", actionCount: "{{count}} 项需要处理", unreadCount: "{{count}} 项未读结果", empty: "当前没有需要处理的工作。",
-        approvals: "待审批", approvalsHint: "等待你确认的安全决策", failures: "运行失败", failuresHint: "需要恢复的运行", executionOffline: "执行已断开", executionOfflineHint: "这台电脑暂时无法接收本地任务", completions: "新结果", completionsHint: "上次查看后新完成的结果",
+        approvals: "待审批", approvalsHint: "等待你确认的安全决策", failures: "运行失败", failuresHint: "需要恢复的运行", followUps: "跟进已到期", followUpsHint: "需要记录进展或重新安排的关系人任务", executionOffline: "执行已断开", executionOfflineHint: "这台电脑暂时无法接收本地任务", completions: "新结果", completionsHint: "上次查看后新完成的结果",
         status: { title: "状态中心", healthy: "正常", fallback: "定时刷新", offline: "离线", server: "服务器", computer: "执行电脑", updates: "更新方式", connecting: "连接中", connected: "已连接", online: "在线", unknown: "未登记", realtime: "实时更新", periodic: "定时刷新" },
         browser: { titleSetting: "浏览器通知", privacy: "可选开启。通知仅显示数量，不包含任务文本、路径或结果。", enable: "开启", disable: "关闭", denied: "已被浏览器阻止", unsupported: "不可用", title: "MyAgentTool 有新动态", body: "有 {{count}} 项新状态，请打开 MyAgentTool 查看。" },
       },
@@ -317,6 +318,7 @@ export const resources = {
       actionError: { cause: "原因", impact: "影响", remedy: "处理方法", retry: "重试" },
       workBoard: {
         title: "状态", items: "{{count}} 项", subtitle: "按状态查看所有待办事项 · 最新优先", emptyTitle: "尚无待办事项", emptyHint: "定时任务、待确认事项和最近未完成的任务会按状态汇总到这里。", none: "无", more: "另有 {{count}} 项",
+        followUpReminderReason: "关系人跟进时间已到",
         lens: { pending_decision: "待决策", follow_up: "需跟进", in_progress: "进行中", waiting: "等待中", failed: "已失败", done: "已完成" },
         schedule: "定时发送到消息渠道", on: "开启", off: "关闭", next: "下次 {{time}}", last: "上次 {{time}}", close: "关闭", configure: "配置", noChannels: "尚未添加消息渠道，请先添加企业微信。", noConversations: "尚无会话；需要有人先向机器人发送消息，才能投递报告。", enabled: "启用", channel: "消息渠道", to: "接收人", report: "报告", cover: "范围", cadence: "频率", day: "星期", time: "时间", pick: "— 选择 —", previous: "上一周期", current: "当前周期", daily: "每天", weekly: "每周", save: "保存", postNow: "立即发送", postTitle: "立即将已配置的报告发送到消息渠道", posted_one: "已发送（{{count}} 条消息）", posted_other: "已发送（{{count}} 条消息）", notPosted: "未发送：{{reason}}", serverTime: "时间以服务器本地时区为准；每周期仅发送一次。",
         period: { day: "日", week: "周", month: "月", quarter: "季度" }, since: "自 {{date}} 起", copyTitle: "复制本周期 Markdown 报告", copied: "已复制", copy: "复制报告", opened: "新增", completed: "完成", failed: "失败", refusals: "拒绝", refusalsPartial: "拒绝*", refusalHint: "这是下限值；持久化汇总在本时间窗口开始后才启用", aging: "超过 24 小时",

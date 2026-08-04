@@ -236,6 +236,25 @@ export function buildPublicState({
     ) || null,
   };
   const workItemIds = new Set(visibleWorkItems.map((item) => item.id));
+  const visibleWorkItemsById = new Map(visibleWorkItems.map((item) => [item.id, item]));
+  const visibleFollowUpReminders = (state.workItemFollowUpReminders ?? []).flatMap((row) => {
+    if (row.status !== "due") return [];
+    if (teamId != null && (row.ownerTeamId ?? LOCAL_TEAM_ID) !== teamId) return [];
+    const item = visibleWorkItemsById.get(row.workItemId);
+    if (!item) return [];
+    return [{
+      id: row.id,
+      workItemId: row.workItemId,
+      projectId: item.projectId ?? null,
+      localRef: item.localRef,
+      workItemTitle: item.title,
+      status: row.status,
+      scheduledFor: row.scheduledFor,
+      sourceRevision: row.sourceRevision,
+      scheduleRevision: row.scheduleRevision,
+      createdAt: row.createdAt,
+    }];
+  });
   const workItemByAutoRunId = new Map();
   for (const item of visibleWorkItems) {
     for (const binding of item.executionBindings ?? []) {
@@ -415,6 +434,7 @@ export function buildPublicState({
     autoRuns,
     pendingDecisions: pendingDecisionQueue,
     refusals: visibleRefusals,
+    followUpReminders: visibleFollowUpReminders,
     schedules: (state.runtimeWorkSchedules ?? []).filter((schedule) =>
       (teamId == null || (schedule.ownerTeamId ?? LOCAL_TEAM_ID) === teamId)
       && (!actor?.userId || schedule.userId === actor.userId)

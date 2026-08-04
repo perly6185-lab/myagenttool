@@ -65,6 +65,7 @@ export function WorkBoardView() {
   const setSection = useUiStore((s) => s.setSection);
   const setSelectedInvocationId = useUiStore((s) => s.setSelectedInvocationId);
   const setSelectedApplicationId = useUiStore((s) => s.setSelectedApplicationId);
+  const setSelectedWorkItemId = useUiStore((s) => s.setSelectedWorkItemId);
   const navigate = usePageNavigation();
 
   const board = state?.workBoard?.states ?? EMPTY_BOARD;
@@ -78,6 +79,7 @@ export function WorkBoardView() {
   const open = (item: WorkItem) => {
     if (item.section === "invocations" && item.targetId) setSelectedInvocationId(item.targetId);
     if (item.section === "applications" && item.targetId) setSelectedApplicationId(item.targetId);
+    if (item.section === "task" && item.targetId) setSelectedWorkItemId(item.targetId);
     setSection(item.section as SectionKey);
   };
 
@@ -401,8 +403,11 @@ function LensColumn({
         <p className="rounded-md border border-dashed border-border px-3 py-4 text-center text-xs text-muted-foreground">{t("workBoard.none")}</p>
       ) : (
         <ul className="flex flex-col gap-1.5">
-          {lens.items.slice(0, 50).map((item) => (
-            <li key={item.id}>
+          {lens.items.slice(0, 50).map((item) => {
+            const reason = item.kind === "work_item_follow_up_reminder"
+              ? t("workBoard.followUpReminderReason")
+              : item.reason;
+            return <li key={item.id}>
               <Card
                 role="button"
                 tabIndex={0}
@@ -418,15 +423,15 @@ function LensColumn({
                       return age ? <span className="shrink-0 text-[10px] text-muted-foreground">{age}</span> : null;
                     })()}
                   </div>
-                  {item.reason ? (
-                    <p className="truncate text-[11px] text-muted-foreground">{item.reason}</p>
+                  {reason ? (
+                    <p className="truncate text-[11px] text-muted-foreground">{reason}</p>
                   ) : item.subtitle ? (
                     <p className="truncate text-[11px] text-muted-foreground">{item.subtitle}</p>
                   ) : null}
                 </CardContent>
               </Card>
-            </li>
-          ))}
+            </li>;
+          })}
           {lens.items.length > 50 ? (
             <li className="px-1 text-[10px] text-muted-foreground">{t("workBoard.more", { count: lens.items.length - 50 })}</li>
           ) : null}

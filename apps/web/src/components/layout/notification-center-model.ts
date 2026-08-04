@@ -8,6 +8,7 @@ export interface NotificationItem {
 export interface NotificationCenterModel {
   approvals: { count: number; items: NotificationItem[] };
   failures: { count: number; items: NotificationItem[] };
+  followUps: { count: number; items: NotificationItem[] };
   completions: { count: number; items: NotificationItem[] };
   offline: boolean;
   fallback: boolean;
@@ -47,6 +48,9 @@ export function deriveNotificationCenterModel(
   const completionItems = board
     ? board.done.items.map(workItem)
     : completedInvocations.map((item) => ({ id: item.id, title: invocationTitle(item) }));
+  const followUpItems = board?.follow_up.items
+    .filter((item) => item.kind === "work_item_follow_up_reminder")
+    .map(workItem) ?? [];
   const offline = options.isError || state?.device?.status === "offline";
 
   return {
@@ -58,6 +62,10 @@ export function deriveNotificationCenterModel(
       count: board?.failed.count ?? failedInvocations.length,
       items: failureItems,
     },
+    followUps: {
+      count: followUpItems.length,
+      items: followUpItems,
+    },
     completions: {
       count: board?.done.count ?? completedInvocations.length,
       items: completionItems,
@@ -67,6 +75,7 @@ export function deriveNotificationCenterModel(
     eventIds: [
       ...approvals.map((item) => `approval:${item.id}`),
       ...failureItems.map((item) => `failure:${item.id}`),
+      ...followUpItems.map((item) => item.id),
       ...completionItems.map((item) => `completion:${item.id}`),
       ...(offline ? ["execution:offline"] : []),
     ],

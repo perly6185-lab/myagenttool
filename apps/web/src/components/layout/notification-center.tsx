@@ -88,7 +88,7 @@ export function NotificationCenter() {
     ? unreadCompletionIds(model.completions.items, seenCompletionIds)
     : [];
   const unreadCount = unreadIds.length;
-  const actionCount = model.approvals.count + model.failures.count + (model.offline ? 1 : 0);
+  const actionCount = model.approvals.count + model.failures.count + model.followUps.count + (model.offline ? 1 : 0);
   const hasDanger = model.failures.count > 0 || model.offline;
 
   const eventSignature = model.eventIds.join("|");
@@ -281,6 +281,16 @@ export function NotificationCenter() {
                 count={model.failures.count}
                 tone="danger"
                 onClick={() => openSection("autoRuns")}
+              />
+            ) : null}
+            {model.followUps.count > 0 ? (
+              <NotificationRow
+                icon={<BellRing className="size-5 text-warning" />}
+                title={t("notificationCenter.followUps")}
+                description={t("notificationCenter.followUpsHint")}
+                count={model.followUps.count}
+                tone="warning"
+                onClick={() => openSection("workBoard")}
               />
             ) : null}
             {model.offline ? (

@@ -5,6 +5,7 @@ import { LOCAL_TEAM_ID, teamOf } from "./auth.mjs";
 import { listDevices } from "./device.mjs";
 import { backfillTerminalOwnership } from "./terminal-ownership.mjs";
 import { backfillWorkItemFollowUpContext } from "../services/work-item-follow-up.mjs";
+import { backfillWorkItemFollowUpReminderState } from "../services/work-item-follow-up-reminders.mjs";
 
 // Durable atomic snapshot write. `writeFileSync` truncates the target in place
 // and does not fsync, so a crash mid-write left a torn file — and restore's
@@ -111,6 +112,7 @@ export const persistedArrayKeys = [
   "workItemComments",
   "workItemActivities",
   "workItemReportDrafts",
+  "workItemFollowUpReminders",
   "workItemAttentionOperations",
   "articleImportJobs",
   "githubWorkItemWebhookDeliveries",
@@ -236,6 +238,7 @@ const OWNER_STAMPED_PROJECT_COLLECTIONS = [
   { key: "workflowAdaptiveLearningDrafts", owner: "ownerTeamId" },
   { key: "workflowAdaptiveRules", owner: "ownerTeamId" },
   { key: "workflowAdaptiveNotifications", owner: "ownerTeamId" },
+  { key: "workItemFollowUpReminders", owner: "ownerTeamId" },
   { key: "businessEntities", owner: "ownerTeamId" },
   { key: "businessCaseCandidates", owner: "ownerTeamId" },
   { key: "businessCases", owner: "ownerTeamId" },
@@ -405,12 +408,14 @@ export function normalizeLoadedState(state, { seededDefaults, defaultProject, sa
 
   const terminalOwnershipBackfilled = backfillTerminalOwnership(state);
   const workItemFollowUpBackfilled = backfillWorkItemFollowUpContext(state);
+  const workItemFollowUpReminderBackfilled = backfillWorkItemFollowUpReminderState(state);
   const ownershipInconsistencies = detectOwnershipInconsistencies(state);
   return {
     duplicateIdsRepaired,
     ownershipInconsistencies,
     terminalOwnershipBackfilled,
     workItemFollowUpBackfilled,
+    workItemFollowUpReminderBackfilled,
   };
 }
 
@@ -569,7 +574,12 @@ export function createPersistenceRuntime({
     else if (isPlainObject(snapshot.device)) state.devices = [snapshot.device];
     if (Number.isFinite(snapshot.idCounter)) state.idCounter = snapshot.idCounter;
 
-    const { duplicateIdsRepaired, ownershipInconsistencies, workItemFollowUpBackfilled } = normalizeLoadedState(state, {
+    const {
+      duplicateIdsRepaired,
+      ownershipInconsistencies,
+      workItemFollowUpBackfilled,
+      workItemFollowUpReminderBackfilled,
+    } = normalizeLoadedState(state, {
       seededDefaults,
       defaultProject,
       sameProjectPath,
@@ -603,7 +613,12 @@ export function createPersistenceRuntime({
       );
     }
 
-    return { duplicateIdsRepaired, ownershipInconsistencies, workItemFollowUpBackfilled };
+    return {
+      duplicateIdsRepaired,
+      ownershipInconsistencies,
+      workItemFollowUpBackfilled,
+      workItemFollowUpReminderBackfilled,
+    };
   }
 
   return {
