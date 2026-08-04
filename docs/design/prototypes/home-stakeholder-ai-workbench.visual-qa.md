@@ -1,14 +1,14 @@
 # Home Stakeholder And AI Workbench Visual QA
 
-Date: 2026-08-03
+Date: 2026-08-04
 
-Result: pass for first product-review prototype
+Result: pass for the production implementation regression scenario; browser capture is the release gate
 
 ## Reviewed viewports
 
 | Viewport | Result | Notes |
 | --- | --- | --- |
-| Desktop 1366 × 900 | Pass | Attention summary, workbench, and AI rail retain clear hierarchy. |
+| Desktop 1366 × 768 | Pass | Attention summary, workbench, and AI rail retain clear hierarchy. |
 | Mobile 390 × 844 | Pass | Attention and relation filters scroll within their own rows; the page has no horizontal overflow. |
 
 ## Scenario checks
@@ -27,6 +27,9 @@ Result: pass for first product-review prototype
 - Primary actions become full-width below task context on narrow screens.
 - Mobile reading order is attention summary, filters, work items, then active AI.
 - Long content wraps inside the task card instead of pushing the action outside its container.
+- The production scenario uses the real `DashboardView` and `DailyWorkBoard`, not the prototype markup.
+- Bound AI statuses render as localized workflow copy; internal values such as `waiting_for_local_approval` and `report_posted` must not appear.
+- The scenario contains overdue, approval, failed, completed/review-ready, and long-title work in the same projection.
 
 ## Fixes made during review
 
@@ -34,7 +37,17 @@ Result: pass for first product-review prototype
 - Ensured the active AI rail respects its hidden state.
 - Kept the requester filter label on one line while the chips scroll independently.
 
-## Production implementation risks
+## Automated production artifacts
+
+- `.myagenttool/visual-qa/screenshots/home-workbench-desktop.png`
+- `.myagenttool/visual-qa/screenshots/home-workbench-mobile.png`
+- `.myagenttool/visual-qa/screenshots/home-workbench-board-desktop.png`
+- `.myagenttool/visual-qa/screenshots/home-workbench-board-mobile.png`
+- `.myagenttool/visual-qa/latest.json` records no-horizontal-overflow, non-blank, and key-panel assertions.
+
+Run `pnpm --filter @myagenttool/web build` followed by `pnpm visual:qa:browser` to refresh and enforce these artifacts.
+
+## Production invariants
 
 - Attention counts and card reasons must come from the same server projection or they can diverge.
 - AI completion must not mutate planning state to `done` without the human review gate.

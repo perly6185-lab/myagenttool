@@ -104,6 +104,14 @@ function createClientIdempotencyKey() {
   return `web-${Date.now()}-${Math.random().toString(36).slice(2)}`;
 }
 
+async function settled<T>(promise: Promise<T>): Promise<{ ok: true; value: T } | { ok: false }> {
+  try {
+    return { ok: true, value: await promise };
+  } catch {
+    return { ok: false };
+  }
+}
+
 /**
  * Where the composer is embedded. "overview" is the home surface and shows the
  * first-run onboarding checklist; "workspace" reuses the same composer + activity
@@ -159,6 +167,7 @@ export function DashboardView({ surface = "overview" }: { surface?: DashboardSur
   const [claimableWorkItems, setClaimableWorkItems] = useState<LocalWorkItem[]>([]);
   const [homeWorkbench, setHomeWorkbench] = useState<HomeWorkbench>();
   const [dailyRefreshVersion, setDailyRefreshVersion] = useState(0);
+  const [dailyLoadFailureCount, setDailyLoadFailureCount] = useState(0);
   const [claimingWorkItemId, setClaimingWorkItemId] = useState<string | null>(null);
   const [localScheduleCapacity, setLocalScheduleCapacity] = useState<LocalScheduleCapacityResponse>();
   const [localSchedulePreview, setLocalSchedulePreview] = useState<LocalSchedulePreviewResponse>();
@@ -172,42 +181,33 @@ export function DashboardView({ surface = "overview" }: { surface?: DashboardSur
     let cancelled = false;
     const workItems = import("@/features/dashboard/dashboard-work-items");
     void Promise.all([
-      workItems.then(({ listAllDashboardWorkItems }) => listAllDashboardWorkItems({ assigneeId: "mine" })),
-      workItems.then(({ listAllDashboardWorkItems }) => listAllDashboardWorkItems()),
-      workItems.then(({ getDashboardHomeWorkbench }) => getDashboardHomeWorkbench()),
-      localScheduleApi.capacity().catch(() => undefined),
-      localScheduleApi.preview().catch(() => undefined),
-      localScheduleApi.rolloverPreview().catch(() => undefined),
-      localScheduleApi.urgentPreview().catch(() => undefined),
+      settled(workItems.then(({ listAllDashboardWorkItems }) => listAllDashboardWorkItems({ assigneeId: "mine" }))),
+      settled(workItems.then(({ listAllDashboardWorkItems }) => listAllDashboardWorkItems())),
+      settled(workItems.then(({ getDashboardHomeWorkbench }) => getDashboardHomeWorkbench())),
+      settled(localScheduleApi.capacity()),
+      settled(localScheduleApi.preview()),
+      settled(localScheduleApi.rolloverPreview()),
+      settled(localScheduleApi.urgentPreview()),
     ])
       .then(([mine, all, workbench, capacity, preview, rollover, urgent]) => {
         if (!cancelled) {
-          setDailyWorkItems(mine);
-          setClaimableWorkItems(all.filter((item) =>
+          if (mine.ok) setDailyWorkItems(mine.value);
+          if (all.ok) setClaimableWorkItems(all.value.filter((item) =>
             item.assigneeIds.length === 0
             && !item.archivedAt
             && (item.businessState ?? item.state) === "open"
             && item.status !== "done"));
-          setHomeWorkbench(workbench);
-          setLocalScheduleCapacity(capacity);
-          setLocalSchedulePreview(preview);
-          setLocalScheduleRollover(rollover);
-          setLocalScheduleUrgent(urgent);
-        }
-      })
-      .catch(() => {
-        if (!cancelled) {
-          setDailyWorkItems([]);
-          setClaimableWorkItems([]);
-          setHomeWorkbench(undefined);
-          setLocalScheduleCapacity(undefined);
-          setLocalSchedulePreview(undefined);
-          setLocalScheduleRollover(undefined);
-          setLocalScheduleUrgent(undefined);
+          if (workbench.ok) setHomeWorkbench(workbench.value);
+          if (capacity.ok) setLocalScheduleCapacity(capacity.value);
+          if (preview.ok) setLocalSchedulePreview(preview.value);
+          if (rollover.ok) setLocalScheduleRollover(rollover.value);
+          if (urgent.ok) setLocalScheduleUrgent(urgent.value);
+          setDailyLoadFailureCount([mine, all, workbench, capacity, preview, rollover, urgent]
+            .filter((result) => !result.ok).length);
         }
       });
     return () => { cancelled = true; };
-  }, [surface, state?.workItemSummary?.updatedAt, dailyRefreshVersion]);
+  }, [surface, state?.workItemSummary?.homeWorkbenchUpdatedAt ?? state?.workItemSummary?.updatedAt, dailyRefreshVersion]);
 
   async function assignDailyWorkItemToMe(item: LocalWorkItem) {
     setClaimingWorkItemId(item.id);
@@ -437,6 +437,11 @@ export function DashboardView({ surface = "overview" }: { surface?: DashboardSur
       url.searchParams.set("autoRun", item.targetId);
       window.history.replaceState(window.history.state, "", `${url.pathname}${url.search}${url.hash}`);
     }
+    if (item.section === "approvals" && item.targetId) {
+      const url = new URL(window.location.href);
+      url.searchParams.set("approval", item.targetId);
+      window.history.replaceState(window.history.state, "", `${url.pathname}${url.search}${url.hash}`);
+    }
     if (item.section === "evidence" && item.id.startsWith("refusal:")) {
       const url = new URL(window.location.href);
       url.searchParams.set("refusal", item.id.slice("refusal:".length));
@@ -563,6 +568,14 @@ export function DashboardView({ surface = "overview" }: { surface?: DashboardSur
     <div className="flex min-h-full flex-col gap-4">
       {surface === "overview" ? (
         <div className="order-3">
+          {dailyLoadFailureCount > 0 ? (
+            <div className="mb-3 flex flex-wrap items-center justify-between gap-2 rounded-md border border-warning/40 bg-warning/5 px-3 py-2 text-sm" role="alert">
+              <span>{t("dashboard.workbenchLoadFailed", { count: dailyLoadFailureCount })}</span>
+              <Button size="sm" variant="secondary" onClick={() => setDailyRefreshVersion((version) => version + 1)}>
+                {t("dashboard.workbenchRetry")}
+              </Button>
+            </div>
+          ) : null}
           <Suspense fallback={null}>
             <DailyWorkBoard
               board={state?.workBoard}

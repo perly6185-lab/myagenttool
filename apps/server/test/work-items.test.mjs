@@ -579,6 +579,24 @@ test("Entry execution state follows the bound Application invocation lifecycle",
   assert.equal(service.getWorkItem({ workItemId: item.id }, ACTOR_A).body.workItem.executionState, "failed");
 });
 
+test("Entry execution state follows the newest binding across Application and Auto-run kinds", () => {
+  const { service, state } = harness();
+  const item = service.createWorkItem({ projectId: "prj_a", title: "Use one execution source" }, ACTOR_A).body.workItem;
+  state.workItems[0].executionBindings = [
+    { kind: "application_invocation", id: "inv-old", createdAt: "2026-07-23T00:00:00.000Z" },
+    { kind: "auto_run", targetId: "ar-new", createdAt: "2026-07-24T00:00:00.000Z" },
+  ];
+  state.invocations = [{ id: "inv-old", status: "failed" }];
+  state.autoRuns = [{ id: "ar-new", status: "running" }];
+  assert.equal(service.getWorkItem({ workItemId: item.id }, ACTOR_A).body.workItem.executionState, "running");
+
+  state.workItems[0].executionBindings.push({
+    kind: "application_invocation", id: "inv-newest", createdAt: "2026-07-25T00:00:00.000Z",
+  });
+  state.invocations.push({ id: "inv-newest", status: "succeeded" });
+  assert.equal(service.getWorkItem({ workItemId: item.id }, ACTOR_A).body.workItem.executionState, "completed");
+});
+
 test("GitHub sync pulls one-sided changes and exposes two-sided conflicts", () => {
   const { service } = harness();
   let item = service.createWorkItem({ projectId: "prj_a", title: "Initial" }, ACTOR_A).body.workItem;

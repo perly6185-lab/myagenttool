@@ -1,3 +1,5 @@
+import { resolveWorkItemExecution } from "../services/work-item-execution.mjs";
+
 export const HOME_ATTENTION_REASON_ORDER = [
   "overdue",
   "approval_required",
@@ -32,30 +34,6 @@ function addUtcDays(dateKey, days) {
 function timestamp(value) {
   const parsed = value ? Date.parse(value) : Number.NaN;
   return Number.isFinite(parsed) ? parsed : Number.POSITIVE_INFINITY;
-}
-
-function latestExecution(item, state) {
-  const bindings = [...(item.executionBindings ?? [])].reverse();
-  const autoRunBinding = bindings.find((binding) => binding.kind === "auto_run");
-  const autoRun = autoRunBinding
-    ? (state.autoRuns ?? []).find((candidate) => candidate.id === autoRunBinding.targetId) ?? null
-    : null;
-  const applicationBinding = bindings.find((binding) => binding.kind === "application_invocation");
-  const invocationId = autoRun?.invocationId
-    ?? applicationBinding?.targetId
-    ?? applicationBinding?.id
-    ?? null;
-  const invocation = invocationId
-    ? (state.invocations ?? []).find((candidate) => candidate.id === invocationId) ?? null
-    : null;
-  const agentId = autoRun?.agentId ?? invocation?.agentId ?? null;
-  const agent = agentId
-    ? (state.agents ?? []).find((candidate) => candidate.id === agentId) ?? null
-    : null;
-  const approval = invocationId
-    ? [...(state.approvalRequests ?? [])].reverse().find((candidate) => candidate.invocationId === invocationId) ?? null
-    : null;
-  return { autoRun, invocation, agent, approval };
 }
 
 function attentionReasons(item, nowMs, today, tomorrow) {
@@ -134,8 +112,9 @@ export function homeWorkbenchReadModel({
   const items = workItems
     .filter((item) => !item.archivedAt && item.state !== "closed" && item.status !== "done")
     .map((item) => {
-      const reasons = attentionReasons(item, nowMs, today, tomorrow);
-      const execution = latestExecution(item, state);
+      const execution = resolveWorkItemExecution(item, state, { now: nowMs });
+      const executionItem = { ...item, executionState: execution.executionState };
+      const reasons = attentionReasons(executionItem, nowMs, today, tomorrow);
       const attentionReason = reasons[0] ?? null;
       const aiStatus = execution.autoRun?.status ?? execution.invocation?.status ?? null;
       return {
@@ -152,7 +131,7 @@ export function homeWorkbenchReadModel({
           organization: item.requesterOrganization ?? null,
         },
         planningStatus: item.status,
-        executionState: item.executionState ?? "unclaimed",
+        executionState: execution.executionState,
         waitingOn: item.waitingOn ?? "none",
         attentionReason,
         secondaryReasons: reasons.slice(1),

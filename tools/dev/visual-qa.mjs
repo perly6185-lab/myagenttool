@@ -211,6 +211,14 @@ async function captureScreenshots(driver) {
             }
             return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(scenario.state) });
           });
+          await page.route("**/api/work-items**", (route) => {
+            if (!scenario.homeFixture) return route.continue();
+            const path = new URL(route.request().url()).pathname;
+            const body = path.endsWith("/home-workbench")
+              ? scenario.homeFixture.workbench
+              : { workItems: scenario.homeFixture.workItems, count: scenario.homeFixture.workItems.length, hasMore: false, nextCursor: null };
+            return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(body) });
+          });
           await page.addInitScript((selection) => {
             window.localStorage.setItem("myagenttool-ui", JSON.stringify({ state: selection, version: 1 }));
           }, scenario.selection);
@@ -236,7 +244,7 @@ async function captureScreenshots(driver) {
             path: relativeArtifactPath(filePath),
             assertions: { noHorizontalOverflow: true, nonBlank: true, keyPanelsVisible: !scenario.disconnected },
           });
-          if (scenario.name === "ready") {
+          if (["ready", "home-workbench"].includes(scenario.name)) {
             const board = page.locator('[data-testid="daily-work-board"]:visible');
             await board.waitFor({ timeout: 15_000 });
             await board.scrollIntoViewIfNeeded();
@@ -244,10 +252,11 @@ async function captureScreenshots(driver) {
             if (!boardBox || boardBox.width > viewport.width + 1) {
               throw new Error(`daily-work-board/${viewport.name} exceeds its viewport width`);
             }
-            const boardPath = resolve(screenshotDir, `daily-work-board-${viewport.name}.png`);
+            const boardName = scenario.name === "home-workbench" ? "home-workbench-board" : "daily-work-board";
+            const boardPath = resolve(screenshotDir, `${boardName}-${viewport.name}.png`);
             await board.screenshot({ path: boardPath });
             screenshots.push({
-              scenario: "daily-work-board",
+              scenario: boardName,
               viewport: viewport.name,
               path: relativeArtifactPath(boardPath),
               assertions: { noHorizontalOverflow: true, nonBlank: true, keyPanelsVisible: true },
@@ -313,9 +322,26 @@ function visualScenarios(baseline) {
       events: [{ id: `evt_${status}`, invocationId: run.id, type: "log", level: status === "failed" ? "error" : "info", message: status === "running" ? "Inspecting the authentication boundary." : "Run reached its final state.", data: { agentId: codexAgent.id }, createdAt: now }],
     };
   };
+  const homeFixture = homeWorkbenchFixture(ready.projects?.[0]?.id ?? null);
   const scenarios = [
     { name: "empty", state: { ...structuredClone(ready), agents: [], device: { ...ready.device, status: "offline" } }, invocationId: null },
     { name: "ready", state: structuredClone(ready), invocationId: null },
+    {
+      name: "home-workbench",
+      state: {
+        ...structuredClone(ready),
+        workItemSummary: {
+          total: homeFixture.workItems.length,
+          open: homeFixture.workItems.length,
+          blocked: 0,
+          activeExecutions: 4,
+          updatedAt: homeFixture.workbench.generatedAt,
+          homeWorkbenchUpdatedAt: homeFixture.workbench.generatedAt,
+        },
+      },
+      invocationId: null,
+      homeFixture,
+    },
     { name: "running", state: withRun("running"), invocationId: "inv_visual_running" },
     { name: "succeeded", state: withRun("succeeded", { summary: "Authentication boundaries reviewed; no unsafe write was performed." }), invocationId: "inv_visual_succeeded" },
     { name: "approval", state: withRun("waiting_for_local_approval"), invocationId: "inv_visual_waiting_for_local_approval" },
@@ -361,6 +387,17 @@ async function assertVisualState(page, scenario) {
     return;
   }
   await page.locator('textarea[aria-label="Task"]:visible').waitFor({ timeout: 15_000 });
+  if (scenario.name === "home-workbench") {
+    await page.locator('[data-testid="stakeholder-workbench-filters"]:visible').waitFor({ timeout: 15_000 });
+    await page.locator('[data-testid="active-ai-work"]:visible').waitFor({ timeout: 15_000 });
+    for (const label of ["AI execution and review", "Awaiting approval", "Ready for review", "Execution failed"]) {
+      await page.getByText(label, { exact: true }).first().waitFor();
+    }
+    const body = await page.locator("body").innerText();
+    for (const internal of ["waiting_for_local_approval", "report_posted"]) {
+      if (body.includes(internal)) throw new Error(`home-workbench exposes internal status ${internal}`);
+    }
+  }
   const expectedHomeState = {
     empty: "idle",
     ready: "idle",
@@ -391,6 +428,64 @@ async function assertVisualState(page, scenario) {
   for (const text of ["Safety", "Data", "Cost", "Computer"]) {
     await page.locator("p:visible, dt:visible", { hasText: new RegExp(`^${text}$`) }).first().waitFor();
   }
+}
+
+function homeWorkbenchFixture(projectId) {
+  const now = new Date();
+  const date = (offset) => {
+    const value = new Date(now);
+    value.setHours(12, 0, 0, 0);
+    value.setDate(value.getDate() + offset);
+    return `${value.getFullYear()}-${String(value.getMonth() + 1).padStart(2, "0")}-${String(value.getDate()).padStart(2, "0")}`;
+  };
+  const generatedAt = now.toISOString();
+  const baseItem = (id, localRef, title, overrides = {}) => ({
+    id, localRef, projectId, title, body: "", type: "task", status: "ready", priority: "p2", state: "open",
+    labels: [], assigneeIds: ["usr_local"], requesterRelation: "customer", requesterName: "Alex Morgan",
+    requesterOrganization: "Acme", requesterUserId: null, intakeChannel: "meeting", externalReference: null,
+    waitingOn: "none", commitmentDate: null, nextFollowUpAt: null, lastProgressAt: null, lastProgressSummary: null,
+    acceptanceCriteria: [], dueDate: null, milestone: "", estimatePoints: 1, revision: 1, archivedAt: null,
+    plannedDate: date(0), updatedAt: generatedAt, ...overrides,
+  });
+  const rows = [
+    baseItem("lwi_visual_overdue", "LOCAL-101", "Confirm the overdue customer launch commitment and publish the recovery timeline", { priority: "p0", commitmentDate: new Date(now.getTime() - 86_400_000).toISOString(), waitingOn: "me" }),
+    baseItem("lwi_visual_approval", "LOCAL-102", "Approve the governed production verification step", { priority: "p1", waitingOn: "me" }),
+    baseItem("lwi_visual_failed", "LOCAL-103", "Repair the failed stakeholder summary generation", { status: "blocked", waitingOn: "ai" }),
+    baseItem("lwi_visual_review", "LOCAL-104", "Review a completed AI result before reporting it to leadership", { status: "review", waitingOn: "me" }),
+    baseItem("lwi_visual_long", "LOCAL-105", "Coordinate an unusually long cross-organization delivery commitment without losing the meaningful end of this title on a narrow mobile screen", { plannedDate: date(1), requesterName: "A requester with a very long organization-facing display name", requesterRelation: "manager" }),
+  ];
+  const home = ({ id, executionState, attentionReason, waitingOn, nextAction, ai, secondaryReasons = [] }) => {
+    const item = rows.find((candidate) => candidate.id === id);
+    return {
+      workItemId: item.id, localRef: item.localRef, title: item.title, projectId, revision: item.revision,
+      priority: item.priority, assignees: [{ id: "usr_local", name: "Me" }],
+      requester: { relation: item.requesterRelation, name: item.requesterName, organization: item.requesterOrganization },
+      planningStatus: item.status, executionState, waitingOn, attentionReason, secondaryReasons,
+      needsAttention: ["overdue", "approval_required", "ai_failed", "review_ready"].includes(attentionReason),
+      dueDate: item.dueDate, plannedDate: item.plannedDate, commitmentDate: item.commitmentDate, nextFollowUpAt: item.nextFollowUpAt,
+      nextAction, ai,
+    };
+  };
+  const ai = (status, id) => ({ autoRunId: id.startsWith("aur") ? id : null, invocationId: id.startsWith("inv") ? id : `inv_${id}`, agentId: "agt_visual_codex", agentName: "Codex CLI", status, updatedAt: generatedAt });
+  const items = [
+    home({ id: "lwi_visual_overdue", executionState: "running", attentionReason: "overdue", waitingOn: "me", secondaryReasons: ["ai_running"], nextAction: { kind: "open_run", label: "open_run", targetId: "aur_overdue", section: "autoRuns" }, ai: ai("running", "aur_overdue") }),
+    home({ id: "lwi_visual_approval", executionState: "awaiting_approval", attentionReason: "approval_required", waitingOn: "me", nextAction: { kind: "open_approval", label: "review_approval", targetId: "apr_visual", section: "approvals" }, ai: ai("waiting_for_local_approval", "inv_approval") }),
+    home({ id: "lwi_visual_failed", executionState: "failed", attentionReason: "ai_failed", waitingOn: "ai", nextAction: { kind: "retry", label: "retry", targetId: "aur_failed", section: "autoRuns" }, ai: ai("failed", "aur_failed") }),
+    home({ id: "lwi_visual_review", executionState: "completed", attentionReason: "review_ready", waitingOn: "me", nextAction: { kind: "review_result", label: "review_result", targetId: "aur_review", section: "autoRuns" }, ai: ai("report_posted", "aur_review") }),
+    home({ id: "lwi_visual_long", executionState: "unclaimed", attentionReason: "planned", waitingOn: "none", nextAction: { kind: "open_issue", label: "open_issue", targetId: "lwi_visual_long", section: "task" }, ai: null }),
+  ];
+  return {
+    workItems: rows,
+    workbench: {
+      generatedAt, horizon: { today: date(0), tomorrow: date(1) },
+      summary: {
+        total: items.length, needsAttention: 4, waitingMe: 3, approvals: 1, aiFailed: 1, dueToday: 0, reviewReady: 1,
+        byRelation: { boss: 0, manager: 1, customer: 4, colleague: 0, self: 0, unknown: 0 },
+        byWaitingOn: { me: 3, requester: 0, internal: 0, ai: 1, none: 1 },
+      },
+      items,
+    },
+  };
 }
 
 function startWebServer() {

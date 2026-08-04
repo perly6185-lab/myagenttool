@@ -227,11 +227,59 @@ describe("DailyWorkBoard", () => {
     expect(screen.getByText("Customer · Alex")).toBeTruthy();
     expect(screen.getByText(/People：Waiting on me/)).toBeTruthy();
     expect(screen.getByTestId("active-ai-work").textContent).toContain("Codex");
+    expect(screen.getByTestId("active-ai-work").textContent).toContain("Ready for review");
+    expect(screen.getByTestId("active-ai-work").textContent).not.toContain("done");
     fireEvent.click(screen.getByRole("button", { name: "Customer 1" }));
     expect(screen.getAllByText("LOCAL-C · Confirm customer scope").length).toBeGreaterThan(0);
     expect(screen.queryByText("LOCAL-S · Polish internal notes")).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Review" }));
     expect(onOpenItem).toHaveBeenCalledWith(expect.objectContaining({ section: "autoRuns", targetId: "aur_customer" }));
+  });
+
+  it("keeps server attention order inside a schedule group", () => {
+    const now = new Date(2026, 6, 31, 12).getTime();
+    const normal = localItem({ id: "normal", localRef: "LOCAL-N", title: "Normal task", plannedDate: "2026-07-31", priority: "p0" });
+    const overdue = localItem({ id: "overdue", localRef: "LOCAL-O", title: "Overdue promise", plannedDate: "2026-07-31", priority: "p3" });
+    const model = buildDailyWorkBoardModel(
+      { generatedAt: now, states: emptyStates() },
+      report(0, 0),
+      now,
+      [normal, overdue],
+      [
+        homeItem({ workItemId: "overdue", localRef: "LOCAL-O", title: overdue.title, attentionReason: "overdue", priority: "p3" }),
+        homeItem({ workItemId: "normal", localRef: "LOCAL-N", title: normal.title, priority: "p0" }),
+      ],
+    );
+    expect(model.today.map((row) => row.targetId)).toEqual(["overdue", "normal"]);
+  });
+
+  it("wraps long stakeholder content and shows human execution labels", () => {
+    const now = new Date(2026, 6, 31, 12).getTime();
+    const longTitle = "Confirm an unusually long cross-organization delivery commitment without losing the meaningful end of the title";
+    const planned = localItem({ id: "long", localRef: "LOCAL-LONG", title: longTitle, plannedDate: "2026-07-31" });
+    render(
+      <DailyWorkBoard
+        board={{ generatedAt: now, states: emptyStates() }}
+        report={report(0, 0)}
+        plannedItems={[planned]}
+        workbench={workbench([homeItem({
+          workItemId: "long",
+          localRef: "LOCAL-LONG",
+          title: longTitle,
+          requester: { relation: "customer", name: "A requester with a very long organization-facing display name", organization: "Acme" },
+          executionState: "awaiting_approval",
+          attentionReason: "approval_required",
+          ai: { autoRunId: null, invocationId: "inv-long", agentId: "agt", agentName: "Codex", status: "waiting_for_local_approval", updatedAt: "2026-07-31T03:00:00.000Z" },
+          nextAction: { kind: "open_approval", label: "review_approval", targetId: "apr-long", section: "approvals" },
+        })])}
+        onOpenItem={vi.fn()}
+        onOpenTasks={vi.fn()}
+        now={now}
+      />,
+    );
+    expect(screen.getAllByText(/LOCAL-LONG/).some((node) => node.className.includes("overflow-wrap"))).toBe(true);
+    expect(screen.getByTestId("active-ai-work").textContent).toContain("Awaiting approval");
+    expect(screen.getByTestId("active-ai-work").textContent).not.toContain("waiting_for_local_approval");
   });
 
   it("separates yesterday outcomes from today's current focus without duplicating follow-up items", () => {

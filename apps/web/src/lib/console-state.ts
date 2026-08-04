@@ -1340,6 +1340,8 @@ export interface ConsoleSnapshot {
     blocked: number;
     activeExecutions: number;
     updatedAt: string | null;
+    /** Changes whenever a Home workbench item, bound execution, or approval changes. */
+    homeWorkbenchUpdatedAt?: string | null;
   };
   workItemAlertSummary?: {
     queued: number;

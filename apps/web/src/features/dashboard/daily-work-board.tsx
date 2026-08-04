@@ -76,6 +76,7 @@ type Copy = {
   owner: string;
   waitingLabel: string;
   aiLabel: string;
+  execution: Record<HomeWorkbenchItem["executionState"], string>;
   relation: Record<WorkItemRequesterRelation, string>;
   waiting: Record<HomeWorkbenchItem["waitingOn"], string>;
   attentionReason: Record<HomeAttentionReason, string>;
@@ -139,10 +140,11 @@ const COPY: Record<"zh" | "en", Copy> = {
     aiFailed: "AI 失败",
     dueToday: "今日到期",
     reviewReady: "待复核与汇报",
-    activeAi: "AI 正在执行",
+    activeAi: "AI 执行与复核",
     owner: "负责人",
     waitingLabel: "人",
     aiLabel: "AI",
+    execution: { unclaimed: "尚未执行", claimed: "已认领", running: "执行中", awaiting_approval: "等待审批", verifying: "验证中", failed: "执行失败", completed: "等待复核" },
     relation: { boss: "Boss", manager: "上级", customer: "客户", colleague: "同事", self: "自己", unknown: "未标注" },
     waiting: { me: "等我", requester: "等提出者", internal: "等内部成员", ai: "等 AI", none: "无需等待" },
     attentionReason: {
@@ -238,10 +240,11 @@ const COPY: Record<"zh" | "en", Copy> = {
     aiFailed: "AI failed",
     dueToday: "Due today",
     reviewReady: "Review and report",
-    activeAi: "AI in progress",
+    activeAi: "AI execution and review",
     owner: "Owner",
     waitingLabel: "People",
     aiLabel: "AI",
+    execution: { unclaimed: "Not started", claimed: "Claimed", running: "Running", awaiting_approval: "Awaiting approval", verifying: "Verifying", failed: "Execution failed", completed: "Ready for review" },
     relation: { boss: "Boss", manager: "Manager", customer: "Customer", colleague: "Colleague", self: "Self", unknown: "Not labeled" },
     waiting: { me: "Waiting on me", requester: "Waiting on requester", internal: "Waiting on internal", ai: "Waiting on AI", none: "Not waiting" },
     attentionReason: {
@@ -350,6 +353,14 @@ function displayStateLabel(item: DailyWorkItem, copy: Copy): string {
 
 function displayStateTone(item: DailyWorkItem): Tone {
   return item.planningStatus ? LOCAL_STATE_TONE[item.planningStatus] : STATE_TONE[item.state];
+}
+
+function executionTone(state: HomeWorkbenchItem["executionState"]): Tone {
+  if (state === "failed") return "danger";
+  if (state === "awaiting_approval") return "warning";
+  if (state === "completed") return "success";
+  if (["running", "verifying"].includes(state)) return "running";
+  return "neutral";
 }
 
 function dateKey(value: number | string): string | null {
@@ -472,22 +483,29 @@ export function buildDailyWorkBoardModel(
   ]);
   const yesterdayLocal = plannedItems.filter((item) => dateKey(item.completedAt ?? "") === yesterdayKey);
   const priorityRank = { p0: 0, p1: 1, p2: 2, p3: 3 };
+  const homeById = new Map(workbenchItems.map((item) => [item.workItemId, item]));
+  const homeRank = new Map(workbenchItems.map((item, index) => [item.workItemId, index]));
+  const compareLocal = (left: DailyLocalWorkItem, right: DailyLocalWorkItem) =>
+    (left.scheduleOrder ?? Number.MAX_SAFE_INTEGER) - (right.scheduleOrder ?? Number.MAX_SAFE_INTEGER)
+    || (homeRank.get(left.id) ?? Number.MAX_SAFE_INTEGER) - (homeRank.get(right.id) ?? Number.MAX_SAFE_INTEGER)
+    || priorityRank[left.priority] - priorityRank[right.priority]
+    || left.id.localeCompare(right.id);
   const todayLocal = plannedItems
     .filter((item) => item.plannedDate === todayKey)
-    .sort((left, right) =>
-      (left.scheduleOrder ?? Number.MAX_SAFE_INTEGER) - (right.scheduleOrder ?? Number.MAX_SAFE_INTEGER)
-      || priorityRank[left.priority] - priorityRank[right.priority]
-      || left.id.localeCompare(right.id));
-  const tomorrowLocal = plannedItems.filter((item) => item.plannedDate === tomorrowKey && item.status !== "done");
+    .sort(compareLocal);
+  const tomorrowLocal = plannedItems
+    .filter((item) => item.plannedDate === tomorrowKey && item.status !== "done")
+    .sort(compareLocal);
   const todayRuntime = activeRuntime
     .filter((item) => item.plannedDate === todayKey || (!item.plannedDate && item.state === "in_progress"))
     .sort((left, right) => (left.scheduleOrder ?? Number.MAX_SAFE_INTEGER) - (right.scheduleOrder ?? Number.MAX_SAFE_INTEGER));
   const tomorrowRuntime = activeRuntime
     .filter((item) => item.plannedDate === tomorrowKey && item.state !== "done")
     .sort((left, right) => (left.scheduleOrder ?? Number.MAX_SAFE_INTEGER) - (right.scheduleOrder ?? Number.MAX_SAFE_INTEGER));
-  const unscheduledLocal = plannedItems.filter((item) => !item.plannedDate && item.status !== "done");
+  const unscheduledLocal = plannedItems
+    .filter((item) => !item.plannedDate && item.status !== "done")
+    .sort(compareLocal);
   const unscheduledRuntime = activeRuntime.filter((item) => !item.plannedDate && item.state !== "in_progress");
-  const homeById = new Map(workbenchItems.map((item) => [item.workItemId, item]));
   const yesterday = [
     ...yesterdayLocal.map((item) => localWorkItemCard(item, yesterdayRuntime, homeById.get(item.id))),
     ...withoutBoundRuntime(yesterdayRuntime, yesterdayLocal),
@@ -887,29 +905,29 @@ export function DailyWorkBoard({
           ) : <Button variant="secondary" size="sm" onClick={onOpenTasks}><Plus />{copy.planTomorrow}</Button>}
         />
       </div>
-      {filteredHomeItems.some((item) => item.ai && ["running", "awaiting_approval", "failed", "completed"].includes(item.executionState)) ? (
+      {filteredHomeItems.some((item) => item.ai && ["running", "awaiting_approval", "verifying", "failed", "completed"].includes(item.executionState)) ? (
         <section className="border-t border-border/80 px-4 py-4" data-testid="active-ai-work">
           <div className="mb-3 flex items-center gap-2">
             <Sparkles className="size-4 text-primary" aria-hidden />
             <h3 className="text-sm font-semibold">{copy.activeAi}</h3>
             <Badge tone="running">
-              {filteredHomeItems.filter((item) => item.ai && ["running", "awaiting_approval", "failed", "completed"].includes(item.executionState)).length}
+              {filteredHomeItems.filter((item) => item.ai && ["running", "awaiting_approval", "verifying", "failed", "completed"].includes(item.executionState)).length}
             </Badge>
           </div>
           <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-3">
             {filteredHomeItems
-              .filter((item) => item.ai && ["running", "awaiting_approval", "failed", "completed"].includes(item.executionState))
+              .filter((item) => item.ai && ["running", "awaiting_approval", "verifying", "failed", "completed"].includes(item.executionState))
               .map((item) => (
                 <button
                   key={item.workItemId}
                   type="button"
                   onClick={() => runHomeAction(item)}
-                  className="rounded-lg border border-border bg-card p-3 text-left hover:bg-muted/45"
+                  className="min-w-0 rounded-lg border border-border bg-card p-3 text-left hover:bg-muted/45"
                 >
                   <span className="flex items-center justify-between gap-2">
-                    <strong className="truncate text-sm">{item.localRef} · {item.title}</strong>
-                    <StatusBadge tone={item.executionState === "failed" ? "danger" : item.executionState === "awaiting_approval" ? "warning" : "running"}>
-                      {item.ai?.status}
+                    <strong className="min-w-0 flex-1 text-sm [overflow-wrap:anywhere]">{item.localRef} · {item.title}</strong>
+                    <StatusBadge tone={executionTone(item.executionState)}>
+                      {copy.execution[item.executionState]}
                     </StatusBadge>
                   </span>
                   <span className="mt-1 block text-xs text-muted-foreground">
@@ -1216,7 +1234,7 @@ function WorkCard({
     >
       {home ? (
         <span className="mb-1.5 flex flex-wrap items-center gap-1.5">
-          <Badge tone="neutral">{requester}</Badge>
+          <Badge tone="neutral" className="max-w-full whitespace-normal [overflow-wrap:anywhere]">{requester}</Badge>
           <Badge tone={home.priority === "p0" ? "danger" : home.priority === "p1" ? "warning" : "neutral"}>{home.priority.toUpperCase()}</Badge>
           {home.attentionReason ? <span className="text-[11px] text-warning">{copy.attentionReason[home.attentionReason]}</span> : null}
         </span>
@@ -1224,7 +1242,7 @@ function WorkCard({
       <button type="button" onClick={onOpen} className="flex w-full min-w-0 items-start gap-2 text-left">
         <Icon className="mt-0.5 size-4 shrink-0 text-muted-foreground" aria-hidden />
         <span className="min-w-0 flex-1">
-          <span className="block truncate text-sm font-medium">{item.title}</span>
+          <span className="line-clamp-2 text-sm font-medium [overflow-wrap:anywhere]">{item.title}</span>
           {scheduleReason || item.subtitle || item.reason ? (
             <span className="mt-0.5 block truncate text-xs text-muted-foreground">{scheduleReason ?? item.reason ?? item.subtitle}</span>
           ) : null}
@@ -1234,7 +1252,7 @@ function WorkCard({
       {home ? (
         <div className="mt-2 grid gap-0.5 text-[11px] text-muted-foreground">
           <span>{copy.owner}：{home.assignees.map((assignee) => assignee.name).join(", ") || "—"}</span>
-          <span>{copy.waitingLabel}：{copy.waiting[home.waitingOn]}{home.ai ? ` · ${copy.aiLabel}：${home.ai.status}` : ""}</span>
+          <span>{copy.waitingLabel}：{copy.waiting[home.waitingOn]}{home.ai ? ` · ${copy.aiLabel}：${copy.execution[home.executionState]}` : ""}</span>
         </div>
       ) : null}
       <span className="mt-2 flex items-center justify-between gap-2">

@@ -27,10 +27,13 @@ function model(workItems, state = {}) {
 
 test("home workbench derives ordered primary and secondary attention reasons", () => {
   const result = model([item({
-    executionState: "awaiting_approval",
+    executionState: "failed",
+    executionBindings: [{ kind: "application_invocation", id: "inv_attention" }],
     commitmentDate: "2026-08-02T04:00:00.000Z",
     nextFollowUpAt: "2026-08-03T03:00:00.000Z",
-  })]);
+  })], {
+    invocations: [{ id: "inv_attention", status: "waiting_for_local_approval", updatedAt: NOW }],
+  });
   assert.equal(result.items[0].attentionReason, "overdue");
   assert.equal(result.items[0].revision, 1);
   assert.deepEqual(result.items[0].secondaryReasons, ["approval_required", "follow_up_due"]);
@@ -58,6 +61,29 @@ test("home workbench projects canonical AI and approval navigation", () => {
   });
 });
 
+test("home workbench uses only the newest execution binding for state and navigation", () => {
+  const result = model([item({
+    executionState: "failed",
+    executionBindings: [
+      { kind: "auto_run", targetId: "aur_old", createdAt: "2026-08-01T04:00:00.000Z" },
+      { kind: "application_invocation", id: "inv_new", createdAt: "2026-08-02T04:00:00.000Z" },
+    ],
+  })], {
+    autoRuns: [{ id: "aur_old", invocationId: "inv_old", status: "failed", updatedAt: "2026-08-01T05:00:00.000Z" }],
+    invocations: [
+      { id: "inv_old", status: "failed", updatedAt: "2026-08-01T05:00:00.000Z" },
+      { id: "inv_new", agentId: "agt_1", status: "running", updatedAt: NOW },
+    ],
+    agents: [{ id: "agt_1", name: "Codex" }],
+  });
+  assert.equal(result.items[0].attentionReason, "ai_running");
+  assert.equal(result.items[0].executionState, "running");
+  assert.equal(result.items[0].nextAction.targetId, "inv_new");
+  assert.equal(result.items[0].nextAction.section, "invocations");
+  assert.equal(result.items[0].ai.status, "running");
+  assert.equal(result.items[0].ai.autoRunId, null);
+});
+
 test("home workbench aggregates relationship and waiting counts", () => {
   const result = model([
     item({ id: "customer", requesterRelation: "customer", waitingOn: "requester" }),
@@ -72,11 +98,16 @@ test("home workbench aggregates relationship and waiting counts", () => {
 
 test("home workbench sorts severely overdue work before approvals and failures", () => {
   const result = model([
-    item({ id: "failed", executionState: "failed" }),
-    item({ id: "approval", executionState: "awaiting_approval" }),
+    item({ id: "failed", executionState: "running", executionBindings: [{ kind: "auto_run", targetId: "aur_failed" }] }),
+    item({ id: "approval", executionState: "failed", executionBindings: [{ kind: "auto_run", targetId: "aur_approval" }] }),
     item({ id: "recent-overdue", commitmentDate: "2026-08-03T03:00:00.000Z" }),
     item({ id: "old-overdue", commitmentDate: "2026-08-01T03:00:00.000Z" }),
-  ]);
+  ], {
+    autoRuns: [
+      { id: "aur_failed", status: "failed", updatedAt: NOW },
+      { id: "aur_approval", status: "awaiting_approval", updatedAt: NOW },
+    ],
+  });
   assert.deepEqual(result.items.map((row) => row.workItemId), ["old-overdue", "recent-overdue", "approval", "failed"]);
 });
 

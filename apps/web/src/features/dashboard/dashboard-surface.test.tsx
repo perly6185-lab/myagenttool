@@ -19,6 +19,7 @@ const mocks = vi.hoisted(() => ({
   applyLocalScheduleRollover: vi.fn(),
   getLocalScheduleUrgent: vi.fn(),
   applyLocalScheduleUrgent: vi.fn(),
+  request: vi.fn(),
 }));
 vi.mock("@/data/use-console-state", () => ({ useConsoleState: mocks.useConsoleState }));
 vi.mock("@/data/use-console-actions", () => ({
@@ -40,6 +41,10 @@ vi.mock("@/features/dashboard/local-schedule-api", () => ({
     urgentPreview: mocks.getLocalScheduleUrgent,
     applyUrgent: mocks.applyLocalScheduleUrgent,
   },
+}));
+vi.mock("@/lib/api-client", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@/lib/api-client")>()),
+  request: mocks.request,
 }));
 vi.mock("@/features/invocations/run-transcript", () => ({ RunTranscriptSection: () => null }));
 
@@ -82,6 +87,16 @@ beforeEach(async () => {
     unscheduled: [],
   });
   mocks.applyLocalScheduleUrgent.mockResolvedValue({ inserted: 0 });
+  mocks.request.mockResolvedValue({
+    generatedAt: "2026-07-31T04:00:00.000Z",
+    horizon: { today: "2026-07-31", tomorrow: "2026-08-01" },
+    summary: {
+      total: 0, needsAttention: 0, waitingMe: 0, approvals: 0, aiFailed: 0, dueToday: 0, reviewReady: 0,
+      byRelation: { boss: 0, manager: 0, customer: 0, colleague: 0, self: 0, unknown: 0 },
+      byWaitingOn: { me: 0, requester: 0, internal: 0, ai: 0, none: 0 },
+    },
+    items: [],
+  });
 });
 
 afterEach(() => {
@@ -151,7 +166,7 @@ describe("DashboardView surfaces (#927)", () => {
     expect(screen.getByText("Run an Agent on this computer")).toBeTruthy();
   });
 
-  it("carries exact Auto-run and refusal targets into their native surfaces", async () => {
+  it("carries exact Auto-run, approval, and refusal targets into their native surfaces", async () => {
     const states = {
       pending_decision: { count: 0, items: [] },
       in_progress: { count: 0, items: [] },
@@ -159,7 +174,7 @@ describe("DashboardView surfaces (#927)", () => {
       done: { count: 0, items: [] },
       failed: { count: 0, items: [] },
       follow_up: {
-        count: 2,
+        count: 3,
         items: [
           {
             id: "autorun:aur_real",
@@ -176,6 +191,14 @@ describe("DashboardView surfaces (#927)", () => {
             title: "Real refusal",
             section: "evidence",
             targetId: "inv_real",
+          },
+          {
+            id: "home:approval",
+            state: "follow_up",
+            kind: "home_open_approval",
+            title: "Exact approval",
+            section: "approvals",
+            targetId: "apr_real",
           },
         ],
       },
@@ -202,6 +225,33 @@ describe("DashboardView surfaces (#927)", () => {
     render(<DashboardView surface="overview" />);
     fireEvent.click(await screen.findByRole("button", { name: /Real refusal/ }));
     expect(new URLSearchParams(window.location.search).get("refusal")).toBe("ref_real");
+
+    unmount();
+    window.history.replaceState({}, "", "/");
+    render(<DashboardView surface="overview" />);
+    fireEvent.click((await screen.findAllByRole("button", { name: /Exact approval/ }))[0]);
+    expect(new URLSearchParams(window.location.search).get("approval")).toBe("apr_real");
+  });
+
+  it("keeps the last successful Home slices when a later refresh partially fails", async () => {
+    setup();
+    const view = render(<DashboardView surface="overview" />);
+    expect(await screen.findByText("This terminal is unavailable")).toBeTruthy();
+    expect(screen.queryByRole("alert", { name: /Home data/ })).toBeNull();
+
+    mocks.getLocalScheduleCapacity.mockRejectedValueOnce(new Error("capacity unavailable"));
+    mocks.useConsoleState.mockReturnValue({
+      data: {
+        projects: [], worktrees: [], events: [], invocations: [], agents: [], device: { status: "offline" },
+        workItemSummary: { total: 0, open: 0, blocked: 0, activeExecutions: 0, updatedAt: null, homeWorkbenchUpdatedAt: "2026-08-01T00:00:00.000Z" },
+      },
+    });
+    view.rerender(<DashboardView surface="overview" />);
+
+    expect((await screen.findByRole("alert")).textContent).toContain("1 Home data source");
+    expect(screen.getByText("This terminal is unavailable")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Retry refresh" }));
+    await waitFor(() => expect(mocks.getLocalScheduleCapacity).toHaveBeenCalledTimes(3));
   });
 
   it("keeps a secondary new-run control while current progress and cancellation take priority", () => {

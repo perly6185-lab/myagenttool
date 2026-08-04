@@ -23,6 +23,7 @@ import {
   workItemFollowUpContextView,
 } from "./work-item-follow-up.mjs";
 import { createWorkItemReportDraftService } from "./work-item-report-drafts.mjs";
+import { resolveWorkItemExecution } from "./work-item-execution.mjs";
 
 const TYPES = new Set(["task", "bug", "feature", "initiative"]);
 const STATUSES = new Set(["backlog", "ready", "in_progress", "review", "blocked", "done"]);
@@ -440,39 +441,7 @@ export function createWorkItemService({
   }
 
   function executionState(item) {
-    const latestApplicationBinding = [...(item.executionBindings ?? [])]
-      .reverse()
-      .find((binding) => binding.kind === "application_invocation");
-    const applicationInvocation = latestApplicationBinding
-      ? (state.invocations ?? []).find((candidate) => candidate.id === latestApplicationBinding.id)
-      : null;
-    if (applicationInvocation) {
-      if (["queued", "dispatching", "running"].includes(applicationInvocation.status)) return "running";
-      if (["waiting_for_local_approval", "awaiting_approval"].includes(applicationInvocation.status)) return "awaiting_approval";
-      if (["verifying"].includes(applicationInvocation.status)) return "verifying";
-      if (["failed", "timed_out", "cancelled", "rejected"].includes(applicationInvocation.status)) return "failed";
-      if (applicationInvocation.status === "succeeded") return "completed";
-    }
-    // A durable task binding whose invocation disappeared across a crash/restart
-    // is recovery work, not an unclaimed task. Surface it to Entry attention so
-    // the user can retry on the same immutable terminal.
-    if (latestApplicationBinding) return "failed";
-    const latestBinding = [...(item.executionBindings ?? [])]
-      .reverse()
-      .find((binding) => binding.kind === "auto_run");
-    const run = latestBinding
-      ? (state.autoRuns ?? []).find((candidate) => candidate.id === latestBinding.targetId)
-      : null;
-    if (run) {
-      if (["materializing", "running", "waiting_capacity", "publishing"].includes(run.status)) return "running";
-      if (["awaiting_approval", "needs_input"].includes(run.status)) return "awaiting_approval";
-      if (["verifying", "pr_open", "report_posted", "plan_proposed"].includes(run.status)) return "verifying";
-      if (["blocked", "failed"].includes(run.status)) return "failed";
-      if (["done", "decomposed"].includes(run.status)) return "completed";
-    }
-    const claimActive = item.claim?.status === "active"
-      && Date.parse(item.claim.leaseExpiresAt) > Date.parse(now());
-    return claimActive ? "claimed" : "unclaimed";
+    return resolveWorkItemExecution(item, state, { now: now() }).executionState;
   }
 
   function completionGate(item) {
