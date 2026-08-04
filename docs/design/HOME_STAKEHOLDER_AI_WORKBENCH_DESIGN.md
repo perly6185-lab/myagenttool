@@ -1,6 +1,6 @@
 # 首页关系人跟进与 AI 执行工作台设计
 
-Status: proposed, ready for product review
+Status: accepted; implementation complete through PR 6 report review UI
 
 Related: `docs/engineering/HOME_WORKBENCH_INFORMATION_ARCHITECTURE_PLAN.md`
 

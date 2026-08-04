@@ -119,6 +119,7 @@ function homeItem(overrides: Partial<HomeWorkbenchItem> = {}): HomeWorkbenchItem
     planningStatus: "ready", executionState: "unclaimed", waitingOn: "me",
     attentionReason: null, secondaryReasons: [], needsAttention: true,
     dueDate: null, plannedDate: "2026-07-31", commitmentDate: null, nextFollowUpAt: null,
+    report: null,
     nextAction: { kind: "open_issue", label: "open_issue", targetId: "lwi-1", section: "task" },
     ai: null,
     ...overrides,
@@ -200,6 +201,7 @@ describe("DailyWorkBoard", () => {
     const customerHome = homeItem({
       workItemId: "customer", localRef: "LOCAL-C", title: customer.title,
       attentionReason: "review_ready", executionState: "completed",
+      report: { id: "wrd_customer", status: "draft", stale: true, updatedAt: "2026-07-31T03:30:00.000Z" },
       nextAction: { kind: "review_result", label: "review_result", targetId: "aur_customer", section: "autoRuns" },
       ai: { autoRunId: "aur_customer", invocationId: "inv_customer", agentId: "agt_1", agentName: "Codex", status: "done", updatedAt: "2026-07-31T03:00:00.000Z" },
     });
@@ -226,12 +228,17 @@ describe("DailyWorkBoard", () => {
     expect(screen.getByText("Stakeholder follow-up overview")).toBeTruthy();
     expect(screen.getByText("Customer · Alex")).toBeTruthy();
     expect(screen.getByText(/People：Waiting on me/)).toBeTruthy();
+    expect(screen.getByText("Report stale")).toBeTruthy();
     expect(screen.getByTestId("active-ai-work").textContent).toContain("Codex");
     fireEvent.click(screen.getByRole("button", { name: "Customer 1" }));
     expect(screen.getAllByText("LOCAL-C · Confirm customer scope").length).toBeGreaterThan(0);
     expect(screen.queryByText("LOCAL-S · Polish internal notes")).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Review" }));
     expect(onOpenItem).toHaveBeenCalledWith(expect.objectContaining({ section: "autoRuns", targetId: "aur_customer" }));
+    fireEvent.click(screen.getByRole("button", { name: "Review report" }));
+    expect(onOpenItem).toHaveBeenCalledWith(expect.objectContaining({
+      kind: "home_report_review", section: "task", targetId: "customer",
+    }));
   });
 
   it("separates yesterday outcomes from today's current focus without duplicating follow-up items", () => {

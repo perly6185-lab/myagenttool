@@ -80,6 +80,7 @@ type Copy = {
   waiting: Record<HomeWorkbenchItem["waitingOn"], string>;
   attentionReason: Record<HomeAttentionReason, string>;
   nextAction: Record<HomeWorkbenchItem["nextAction"]["kind"], string>;
+  report: { draft: string; confirmed: string; stale: string; prepare: string; review: string };
   scheduleReasons: Record<string, string>;
   suggestedPlan: string;
   applyPlan: string;
@@ -151,6 +152,7 @@ const COPY: Record<"zh" | "en", Copy> = {
       waiting_internal: "等待内部成员", ai_running: "AI 正在执行", planned: "已安排",
     },
     nextAction: { open_issue: "查看任务", record_progress: "跟进", review_result: "复核", open_approval: "审批", open_run: "查看运行", retry: "处理失败" },
+    report: { draft: "汇报草稿", confirmed: "汇报已确认", stale: "汇报已过期", prepare: "准备汇报", review: "复核汇报" },
     scheduleReasons: {
       auto_run_failed: "运行失败，需先复盘或重试",
       auto_run_blocked: "运行被阻塞",
@@ -250,6 +252,7 @@ const COPY: Record<"zh" | "en", Copy> = {
       waiting_internal: "Waiting for internal member", ai_running: "AI is running", planned: "Planned",
     },
     nextAction: { open_issue: "View task", record_progress: "Follow up", review_result: "Review", open_approval: "Approve", open_run: "View run", retry: "Handle failure" },
+    report: { draft: "Report draft", confirmed: "Report confirmed", stale: "Report stale", prepare: "Prepare report", review: "Review report" },
     scheduleReasons: {
       auto_run_failed: "Run failed; triage or retry first",
       auto_run_blocked: "Run is blocked",
@@ -661,6 +664,7 @@ export function DailyWorkBoard({
     }
     onOpenItem(homeActionWorkItem(item));
   };
+  const runHomeReport = (item: HomeWorkbenchItem) => onOpenItem(homeReportWorkItem(item));
 
   return (
     <Card className="overflow-hidden border-border/80" data-testid="daily-work-board">
@@ -795,6 +799,7 @@ export function DailyWorkBoard({
           locale={locale}
           onOpenItem={onOpenItem}
           onHomeAction={runHomeAction}
+          onHomeReport={runHomeReport}
           action={rolloverCount > 0 && onRollover ? (
             <Button
               variant="secondary"
@@ -828,6 +833,7 @@ export function DailyWorkBoard({
           locale={locale}
           onOpenItem={onOpenItem}
           onHomeAction={runHomeAction}
+          onHomeReport={runHomeReport}
           featured
           headerExtra={(
             <div className="mt-3">
@@ -877,6 +883,7 @@ export function DailyWorkBoard({
           locale={locale}
           onOpenItem={onOpenItem}
           onHomeAction={runHomeAction}
+          onHomeReport={runHomeReport}
           action={suggestedCount > 0 && onApplyPlan ? (
             <div className="flex flex-wrap justify-end gap-2">
               <Button variant="ghost" size="sm" onClick={onOpenTasks}><Plus />{copy.planTomorrow}</Button>
@@ -940,6 +947,7 @@ export function DailyWorkBoard({
                 locale={locale}
                 onOpen={() => onOpenItem(item)}
                 onAction={(item as DailyWorkItem).home ? () => runHomeAction((item as DailyWorkItem).home!) : undefined}
+                onReport={(item as DailyWorkItem).home ? () => runHomeReport((item as DailyWorkItem).home!) : undefined}
               />
             ))}
           </div>
@@ -1076,6 +1084,7 @@ function DayColumn({
   locale,
   onOpenItem,
   onHomeAction,
+  onHomeReport,
   featured = false,
   headerExtra,
   action,
@@ -1092,6 +1101,7 @@ function DayColumn({
   locale: string;
   onOpenItem: (item: WorkItem) => void;
   onHomeAction: (item: HomeWorkbenchItem) => void;
+  onHomeReport: (item: HomeWorkbenchItem) => void;
   featured?: boolean;
   headerExtra?: React.ReactNode;
   action?: React.ReactNode;
@@ -1147,6 +1157,7 @@ function DayColumn({
                   locale={locale}
                   onOpen={() => onOpenItem(item)}
                   onAction={item.home ? () => onHomeAction(item.home!) : undefined}
+                  onReport={item.home ? () => onHomeReport(item.home!) : undefined}
                 />
               ))}
               {hiddenCount > 0 ? (
@@ -1187,12 +1198,14 @@ function WorkCard({
   locale,
   onOpen,
   onAction,
+  onReport,
 }: {
   item: DailyWorkItem;
   copy: Copy;
   locale: string;
   onOpen: () => void;
   onAction?: () => void;
+  onReport?: () => void;
 }) {
   const time = relativeTime(item.updatedAt, locale);
   const scheduleReason = item.scheduleReason ? copy.scheduleReasons[item.scheduleReason] ?? item.scheduleReason : null;
@@ -1235,6 +1248,11 @@ function WorkCard({
         <div className="mt-2 grid gap-0.5 text-[11px] text-muted-foreground">
           <span>{copy.owner}：{home.assignees.map((assignee) => assignee.name).join(", ") || "—"}</span>
           <span>{copy.waitingLabel}：{copy.waiting[home.waitingOn]}{home.ai ? ` · ${copy.aiLabel}：${home.ai.status}` : ""}</span>
+          {home.report ? (
+            <span className={home.report.stale ? "text-warning" : ""}>
+              {home.report.stale ? copy.report.stale : copy.report[home.report.status]}
+            </span>
+          ) : null}
         </div>
       ) : null}
       <span className="mt-2 flex items-center justify-between gap-2">
@@ -1243,6 +1261,9 @@ function WorkCard({
           {time ? <span className="text-[11px] text-muted-foreground">{time}</span> : null}
           {home && onAction ? (
             <Button size="sm" variant="secondary" onClick={onAction}>{copy.nextAction[home.nextAction.kind]}</Button>
+          ) : null}
+          {home && onReport ? (
+            <Button size="sm" variant="ghost" onClick={onReport}>{home.report ? copy.report.review : copy.report.prepare}</Button>
           ) : null}
         </span>
       </span>
@@ -1262,5 +1283,18 @@ function homeActionWorkItem(item: HomeWorkbenchItem): WorkItem {
     targetId: item.nextAction.targetId,
     projectId: item.projectId,
     updatedAt: item.ai?.updatedAt ?? null,
+  };
+}
+
+function homeReportWorkItem(item: HomeWorkbenchItem): WorkItem {
+  return {
+    id: `home:${item.workItemId}:report`,
+    state: item.report?.stale ? "follow_up" : "waiting",
+    kind: "home_report_review",
+    title: item.title,
+    section: "task",
+    targetId: item.workItemId,
+    projectId: item.projectId,
+    updatedAt: item.report?.updatedAt ?? null,
   };
 }

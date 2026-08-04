@@ -78,6 +78,7 @@ const WorkItemFollowUpFields = lazy(() => import("./work-item-follow-up-fields")
 const WorkItemFollowUpSummary = lazy(() => import("./work-item-follow-up-fields")
   .then((module) => ({ default: module.WorkItemFollowUpSummary })));
 const WorkItemProgressDialog = lazy(() => import("./work-item-progress-dialog"));
+const WorkItemReportSection = lazy(() => import("./work-item-report-section"));
 const WorkItemExternalSync = lazy(() => import("./work-item-external-sync")
   .then((module) => ({ default: module.WorkItemExternalSync })));
 const ClaimHistoryList = lazy(() => import("./claim-history-list")
@@ -3037,6 +3038,18 @@ function LocalWorkItemDetail({
           />
         </Suspense>
       </section>
+      {selectedWorkItemSection === "report" ? (
+        <section
+          id={`work-item-report-${item.id}`}
+          role="tabpanel"
+          aria-labelledby={`work-item-tab-report-${item.id}`}
+          className="rounded-md border border-border p-3"
+        >
+          <Suspense fallback={<p className="text-sm text-muted-foreground">{t("tasks.loading")}</p>}>
+            <WorkItemReportSection item={item} onChanged={onChanged} />
+          </Suspense>
+        </section>
+      ) : null}
       <div hidden={selectedWorkItemSection !== "trace"}>
       <WorkItemAlertAndCostDetails
         observability={observability}

@@ -17,6 +17,7 @@ export function WorkItemSectionNav({
     ["process", t("shell.contextNav.process")],
     ["assets", t("shell.contextNav.assets")],
     ["verification", t("shell.contextNav.verification")],
+    ["report", t("shell.contextNav.report")],
     ["trace", t("shell.contextNav.trace")],
   ];
   return (
