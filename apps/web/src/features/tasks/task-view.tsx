@@ -2416,8 +2416,9 @@ function LocalWorkItemDetail({
     worktreeId: string;
   } | null>(null);
   const [articleDerivative, setArticleDerivative] = useState<ArticleDerivative | null>(null);
+  const [reportDirty, setReportDirty] = useState(false);
 
-  const dirty = item != null && (
+  const taskDirty = item != null && (
     title !== item.title
     || body !== item.body
     || type !== item.type
@@ -2433,6 +2434,7 @@ function LocalWorkItemDetail({
     || assigneeIds.join("\u0000") !== item.assigneeIds.join("\u0000")
     || !followUpDraftEquals(followUp, followUpDraftFromWorkItem(item))
   );
+  const dirty = taskDirty || reportDirty;
   const syncDraft = (next: LocalWorkItem) => {
     setItem(next);
     setTitle(next.title);
@@ -2494,7 +2496,7 @@ function LocalWorkItemDetail({
         setObservability(detail.observability);
         // Preserve an in-progress local edit. With no local draft, refresh the
         // whole record so delivery and save actions use the latest revision.
-        if (!dirty) syncDraft(detail.workItem);
+        if (!taskDirty) syncDraft(detail.workItem);
       })
       .catch(() => {});
   }, 5_000);
@@ -2907,8 +2909,11 @@ function LocalWorkItemDetail({
         itemId={item.id}
         activeSection={selectedWorkItemSection}
         onSectionChange={(section) => {
-          setSelectedWorkItemSection(section);
-          storeSelectedWorkItemSection?.(section);
+          if (section === selectedWorkItemSection) return;
+          requestNavigation(() => {
+            setSelectedWorkItemSection(section);
+            storeSelectedWorkItemSection?.(section);
+          });
         }}
       />
       {selectedWorkItemSection === "overview" && item.routineDefinitionId ? (
@@ -3046,7 +3051,7 @@ function LocalWorkItemDetail({
           className="rounded-md border border-border p-3"
         >
           <Suspense fallback={<p className="text-sm text-muted-foreground">{t("tasks.loading")}</p>}>
-            <WorkItemReportSection item={item} onChanged={onChanged} />
+            <WorkItemReportSection key={item.id} item={item} onChanged={onChanged} onDirtyChange={setReportDirty} />
           </Suspense>
         </section>
       ) : null}
@@ -3607,13 +3612,17 @@ function LocalWorkItemDetail({
       <Modal
         open={safeNavigation.pendingNavigation}
         title={t("taskLocal.details")}
-        description={t("officeEditors.unsaved")}
+        description={reportDirty
+          ? (t as unknown as (key: string) => string)("taskReport.unsavedNavigation")
+          : t("officeEditors.unsaved")}
         onClose={safeNavigation.cancelNavigation}
       >
         <div className="flex flex-wrap justify-end gap-2">
           <Button variant="secondary" onClick={safeNavigation.cancelNavigation}>{t("shared.cancel")}</Button>
           <Button variant="destructive" onClick={safeNavigation.discardAndContinue}>{t("shared.confirm")}</Button>
-          <Button onClick={() => safeNavigation.saveAndContinue((action) => save(action))}>{t("taskLocal.save")}</Button>
+          {!reportDirty ? (
+            <Button onClick={() => safeNavigation.saveAndContinue((action) => save(action))}>{t("taskLocal.save")}</Button>
+          ) : null}
         </div>
       </Modal>
     </div>

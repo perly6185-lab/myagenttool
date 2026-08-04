@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { WORK_ITEM_REQUESTER_RELATIONS } from "./work-item-follow-up.mjs";
 
 const REPORT_TONES = new Set(["concise", "formal", "warm"]);
+const REPORT_LOCALES = new Set(["en-US", "zh-CN"]);
 const MAX_CONTENT = 20_000;
 const REPORT_DRAFT_SCHEMA_VERSION = 1;
 
@@ -45,9 +46,9 @@ function normalizeAudience(input, item) {
   return {
     value: {
       relation,
-      name: name.value,
-      organization: organization.value,
-      userId: userId.value,
+      name: relation === "self" ? null : name.value,
+      organization: relation === "self" ? null : organization.value,
+      userId: relation === "self" ? null : userId.value,
     },
   };
 }
@@ -66,15 +67,39 @@ function progressSources(state, item) {
     .filter((entry) => entry.summary);
 }
 
+function executionSourceProjectId(source) {
+  return source?.projectId
+    ?? source?.options?.metadata?.projectId
+    ?? source?.input?.metadata?.projectId
+    ?? null;
+}
+
+function executionSourceBelongsToItem(state, source, item) {
+  const projectId = executionSourceProjectId(source);
+  if (!projectId || projectId !== item.projectId) return false;
+  const project = (state.projects ?? []).find((candidate) => candidate.id === projectId);
+  if (!project || project.ownerTeamId !== item.ownerTeamId) return false;
+  const stampedTeamIds = [
+    source?.ownerTeamId,
+    source?.teamId,
+    source?.options?.metadata?.teamId,
+  ].filter((teamId) => teamId != null);
+  return stampedTeamIds.every((teamId) => teamId === item.ownerTeamId);
+}
+
 function executionSources(state, item) {
   const rows = [];
   for (const binding of [...(item.executionBindings ?? [])].reverse()) {
     if (rows.length >= 3) break;
-    const id = String(binding.targetId ?? binding.id ?? "");
+    const autoRunBinding = binding.kind === "auto_run";
+    const invocationBinding = binding.kind === "application_invocation";
+    if (!autoRunBinding && !invocationBinding) continue;
+    const id = String(autoRunBinding ? binding.targetId ?? binding.id ?? "" : binding.id ?? binding.targetId ?? "");
     if (!id) continue;
-    const run = (state.autoRuns ?? []).find((candidate) => candidate.id === id);
-    const invocation = (state.invocations ?? []).find((candidate) => candidate.id === id);
-    const source = run ?? invocation;
+    const source = autoRunBinding
+      ? (state.autoRuns ?? []).find((candidate) => candidate.id === id)
+      : (state.invocations ?? []).find((candidate) => candidate.id === id);
+    if (!source || !executionSourceBelongsToItem(state, source, item)) continue;
     const summary = String(
       source?.resultSummary
       ?? source?.reportSummary
@@ -82,9 +107,9 @@ function executionSources(state, item) {
       ?? source?.summary
       ?? "",
     ).trim().slice(0, 2_000);
-    if (!source || !summary) continue;
+    if (!summary) continue;
     rows.push({
-      kind: run ? "auto_run" : "invocation",
+      kind: autoRunBinding ? "auto_run" : "invocation",
       id,
       status: String(source.status ?? "unknown").slice(0, 100),
       summary,
@@ -94,32 +119,63 @@ function executionSources(state, item) {
   return rows;
 }
 
-function waitingLabel(waitingOn) {
-  return {
-    me: "our next action",
-    requester: "the requester",
-    internal: "an internal collaborator",
-    ai: "AI execution",
-    none: "no external dependency",
-  }[waitingOn] ?? "no external dependency";
+function waitingLabel(waitingOn, locale) {
+  const labels = locale === "zh-CN"
+    ? {
+        me: "我方下一步行动",
+        requester: "提出者回复",
+        internal: "内部协作者",
+        ai: "AI 执行",
+        none: "无外部依赖",
+      }
+    : {
+        me: "our next action",
+        requester: "the requester",
+        internal: "an internal collaborator",
+        ai: "AI execution",
+        none: "no external dependency",
+      };
+  return labels[waitingOn] ?? labels.none;
 }
 
-function audienceLabel(audience) {
+function audienceLabel(audience, locale) {
   return audience.name
-    ?? ({ boss: "Boss", manager: "Manager", customer: "Customer", colleague: "Colleague", self: "Personal update" }[audience.relation])
-    ?? "Stakeholder";
+    ?? (locale === "zh-CN"
+      ? ({ boss: "负责人", manager: "上级", customer: "客户", colleague: "同事", self: "个人" }[audience.relation])
+      : ({ boss: "Boss", manager: "Manager", customer: "Customer", colleague: "Colleague", self: "Personal" }[audience.relation]))
+    ?? (locale === "zh-CN" ? "关系人" : "Stakeholder");
 }
 
-function generateContent({ item, audience, tone, progress, executions }) {
+function generateContent({ item, audience, tone, progress, executions, locale }) {
+  if (locale === "zh-CN") {
+    const latest = progress[0]?.summary
+      ?? executions[0]?.summary
+      ?? item.lastProgressSummary
+      ?? "工作已准备进入下一次复核节点。";
+    const lines = [
+      `${audienceLabel(audience, locale)}进展更新 — ${item.title}`,
+      "",
+      `当前进展：${latest}`,
+      `当前等待：${waitingLabel(item.waitingOn, locale)}。`,
+    ];
+    if (item.commitmentDate) lines.push(`承诺时间：${item.commitmentDate}。`);
+    if (item.nextFollowUpAt) lines.push(`下次跟进：${item.nextFollowUpAt}。`);
+    if (progress.length > 1) {
+      lines.push("", "近期检查点：", ...progress.slice(1, 4).map((entry) => `- ${entry.summary}`));
+    }
+    if (tone === "formal") lines.push("", "如需调整优先级或范围，请审阅并告知。");
+    if (tone === "warm") lines.push("", "谢谢，我会在下一个检查点继续同步进展。");
+    return lines.join("\n").trim().slice(0, MAX_CONTENT);
+  }
   const latest = progress[0]?.summary
     ?? executions[0]?.summary
     ?? item.lastProgressSummary
     ?? "Work is prepared for the next review checkpoint.";
   const lines = [
-    `${audienceLabel(audience)} update — ${item.title}`,
+    `${audienceLabel(audience, locale)} update — ${item.title}`,
     "",
     `Current progress: ${latest}`,
-    `Waiting on: ${waitingLabel(item.waitingOn)}.`,
+    `Waiting on: ${waitingLabel(item.waitingOn, locale)}.`,
   ];
   if (item.commitmentDate) lines.push(`Commitment: ${item.commitmentDate}.`);
   if (item.nextFollowUpAt) lines.push(`Next follow-up: ${item.nextFollowUpAt}.`);
@@ -187,8 +243,16 @@ export function createWorkItemReportDraftService({
   }
 
   function generate(input = {}, actor = null) {
-    const { workItemId, expectedWorkItemRevision, idempotencyKey, audience: audienceInput, tone = "concise" } = input;
-    const allowedFields = new Set(["workItemId", "expectedWorkItemRevision", "idempotencyKey", "audience", "tone"]);
+    const localeProvided = Object.hasOwn(input, "locale");
+    const {
+      workItemId,
+      expectedWorkItemRevision,
+      idempotencyKey,
+      audience: audienceInput,
+      tone = "concise",
+      locale = "en-US",
+    } = input;
+    const allowedFields = new Set(["workItemId", "expectedWorkItemRevision", "idempotencyKey", "audience", "tone", "locale"]);
     if (Object.keys(input).some((field) => !allowedFields.has(field))) {
       return { ok: false, status: 400, body: { error: "invalid_work_item_report_generate_fields" } };
     }
@@ -197,9 +261,14 @@ export function createWorkItemReportDraftService({
     const key = commandKey(idempotencyKey);
     if (!key) return { ok: false, status: 400, body: { error: "work_item_report_idempotency_key_required" } };
     if (!REPORT_TONES.has(tone)) return { ok: false, status: 400, body: { error: "invalid_work_item_report_tone" } };
+    if (!REPORT_LOCALES.has(locale)) return { ok: false, status: 400, body: { error: "invalid_work_item_report_locale" } };
     const audience = normalizeAudience(audienceInput, item);
     if (audience.error) return { ok: false, status: 400, body: { error: audience.error } };
-    const normalizedInput = { audience: audience.value, tone };
+    const normalizedInput = {
+      audience: audience.value,
+      tone,
+      ...(localeProvided ? { locale } : {}),
+    };
     const inputDigest = digest(normalizedInput);
     const replay = rows().find((row) => row.workItemId === item.id
       && row.ownerTeamId === actorTeam(actor)
@@ -247,12 +316,13 @@ export function createWorkItemReportDraftService({
       revision: 1,
       audience: audience.value,
       tone,
-      content: generateContent({ item, audience: audience.value, tone, progress, executions }),
+      content: generateContent({ item, audience: audience.value, tone, progress, executions, locale }),
       source,
       generation: {
         generator: "structured",
         policyVersion: "work-item-report-v1",
         modelVersion: null,
+        locale,
         inputDigest,
       },
       command: { idempotencyKey: key, inputDigest },

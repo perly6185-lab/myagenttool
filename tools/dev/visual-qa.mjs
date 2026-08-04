@@ -382,6 +382,19 @@ async function assertVisualState(page, scenario) {
         ? "Confirmed means reviewed. It has not been sent and the task has not been closed."
         : "Confirm report";
     await page.getByText(expected, { exact: scenario.name !== "report-draft" }).first().waitFor();
+    if (scenario.name === "report-stale") {
+      const reportPanel = page.locator(`[id="work-item-report-${scenario.reportFixture.workItem.id}"]`);
+      const controls = reportPanel.locator("select, input, textarea");
+      if (await controls.count() !== 5) {
+        throw new Error(`report-stale expected 5 report editor controls, found ${await controls.count()}`);
+      }
+      if (await reportPanel.locator("select:enabled, input:enabled, textarea:enabled").count()) {
+        throw new Error("report-stale unexpectedly leaves report editor controls enabled");
+      }
+      if (await reportPanel.getByRole("button", { name: "Confirm report" }).count()) {
+        throw new Error("report-stale unexpectedly exposes confirmation");
+      }
+    }
     return;
   }
   await page.locator('textarea[aria-label="Task"]:visible').waitFor({ timeout: 15_000 });
@@ -474,7 +487,7 @@ function reportVisualFixture(status, projectId) {
       progressActivities: [{ activityId: "wia_visual", summary: "QA and release checks passed.", createdAt: "2026-08-03T11:00:00.000Z" }],
       executionResults: [{ kind: "auto_run", id: "aur_visual", status: "completed", summary: "All governed checks passed.", updatedAt: "2026-08-03T11:30:00.000Z" }],
     },
-    generation: { generator: "structured", policyVersion: "work-item-report-v1", modelVersion: null, inputDigest: "visual-input" },
+    generation: { generator: "structured", policyVersion: "work-item-report-v1", modelVersion: null, locale: "en-US", inputDigest: "visual-input" },
     createdBy: "usr_visual",
     updatedBy: "usr_visual",
     createdAt: now,

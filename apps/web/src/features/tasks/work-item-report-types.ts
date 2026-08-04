@@ -1,6 +1,7 @@
 import type { WorkItemRequesterRelation } from "./task-view-types";
 
 export type WorkItemReportTone = "concise" | "formal" | "warm";
+export type WorkItemReportLocale = "en-US" | "zh-CN";
 export type WorkItemReportStatus = "draft" | "confirmed" | "discarded" | "superseded";
 
 export type WorkItemReportAudience = {
@@ -38,6 +39,7 @@ export type WorkItemReportDraft = {
     generator: "structured" | string;
     policyVersion: string;
     modelVersion: string | null;
+    locale?: WorkItemReportLocale;
     inputDigest: string;
   };
   createdBy: string;

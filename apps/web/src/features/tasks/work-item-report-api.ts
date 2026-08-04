@@ -1,5 +1,10 @@
 import { request } from "@/lib/api-client";
-import type { WorkItemReportAudience, WorkItemReportDraft, WorkItemReportTone } from "./work-item-report-types";
+import type {
+  WorkItemReportAudience,
+  WorkItemReportDraft,
+  WorkItemReportLocale,
+  WorkItemReportTone,
+} from "./work-item-report-types";
 
 const base = (workItemId: string) => `/api/work-items/${encodeURIComponent(workItemId)}/report-drafts`;
 
@@ -13,6 +18,7 @@ export const workItemReportApi = {
     idempotencyKey: string;
     audience: WorkItemReportAudience;
     tone: WorkItemReportTone;
+    locale: WorkItemReportLocale;
   }) => request<{ reportDraft: WorkItemReportDraft; replayed: boolean }>("POST", base(workItemId), payload),
   update: (workItemId: string, draftId: string, payload: {
     expectedRevision: number;
