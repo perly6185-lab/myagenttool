@@ -20,6 +20,7 @@ const mocks = vi.hoisted(() => ({
   getArticleDerivative: vi.fn(),
   getWorkItem: vi.fn(),
   updateWorkItem: vi.fn(),
+  recordWorkItemProgress: vi.fn(),
   bulkUpdateWorkItems: vi.fn(),
   transitionWorkItem: vi.fn(),
   listWorkItemComments: vi.fn(),
@@ -45,6 +46,11 @@ const mocks = vi.hoisted(() => ({
   reorderPlanningProjectItems: vi.fn(),
   updatePlanningProjectItems: vi.fn(),
   executePlanningRecommendedAction: vi.fn(),
+  listWorkItemReportDrafts: vi.fn(),
+  generateWorkItemReportDraft: vi.fn(),
+  updateWorkItemReportDraft: vi.fn(),
+  confirmWorkItemReportDraft: vi.fn(),
+  discardWorkItemReportDraft: vi.fn(),
   setSection: vi.fn(),
   setSelectedProjectId: vi.fn(),
   setSelectedWorktreeId: vi.fn(),
@@ -60,6 +66,10 @@ vi.mock("@/data/use-console-state", () => ({
     issueClaims: [],
     issueClaimEvents: [],
     agents: [],
+    users: [
+      { id: "usr_local", name: "Current user", teamId: "team_local", role: "member" },
+      { id: "usr_manager", name: "Morgan Manager", teamId: "team_local", role: "manager" },
+    ],
   } }),
 }));
 
@@ -111,6 +121,7 @@ vi.mock("@/data/use-console-actions", () => ({
     getArticleDerivative: mocks.getArticleDerivative,
     getWorkItem: mocks.getWorkItem,
     updateWorkItem: mocks.updateWorkItem,
+    recordWorkItemProgress: mocks.recordWorkItemProgress,
     bulkUpdateWorkItems: mocks.bulkUpdateWorkItems,
     transitionWorkItem: mocks.transitionWorkItem,
     listWorkItemComments: mocks.listWorkItemComments,
@@ -141,6 +152,16 @@ vi.mock("@/features/tasks/work-item-batch-api", () => ({
   workItemBatchApi: {
     list: mocks.listWorkItemAutoRunBatches,
     create: mocks.createWorkItemAutoRunBatch,
+  },
+}));
+
+vi.mock("@/features/tasks/work-item-report-api", () => ({
+  workItemReportApi: {
+    list: mocks.listWorkItemReportDrafts,
+    generate: mocks.generateWorkItemReportDraft,
+    update: mocks.updateWorkItemReportDraft,
+    confirm: mocks.confirmWorkItemReportDraft,
+    discard: mocks.discardWorkItemReportDraft,
   },
 }));
 
@@ -188,6 +209,7 @@ describe("TaskView local work items", () => {
     mocks.autoRunReadiness.mockResolvedValue({ readiness: { ready: true, checks: [] } });
     mocks.listArticleImports.mockResolvedValue({ jobs: [], latest: null });
     mocks.listArticleDerivatives.mockResolvedValue({ derivatives: [] });
+    mocks.listWorkItemReportDrafts.mockResolvedValue({ reportDrafts: [], count: 0 });
   });
   it("shows local work items as the default source", async () => {
     mocks.listWorkItemAttention.mockResolvedValue({ items: [{
@@ -234,6 +256,37 @@ describe("TaskView local work items", () => {
       priority: "p2",
       dueDate: "2026-08-15",
       milestone: "M3",
+      requesterRelation: "self",
+      intakeChannel: "manual",
+      waitingOn: "me",
+    })));
+  });
+
+  it("records customer source and follow-up when creating a local issue", async () => {
+    mocks.listWorkItems.mockResolvedValue({ workItems: [], count: 0 });
+    mocks.createWorkItem.mockResolvedValue({ workItem: { id: "lwi_customer" } });
+    render(<TaskView />);
+    fireEvent.click(screen.getByRole("button", { name: /New local issue/i }));
+    fireEvent.change(await screen.findByLabelText("Title"), { target: { value: "Confirm launch scope" } });
+    fireEvent.change(screen.getByLabelText("Requester relationship"), { target: { value: "customer" } });
+    fireEvent.change(screen.getByLabelText("Requester name"), { target: { value: "Alex Client" } });
+    fireEvent.change(screen.getByLabelText("Organization"), { target: { value: "Acme" } });
+    fireEvent.change(screen.getByLabelText("Intake channel"), { target: { value: "meeting" } });
+    fireEvent.change(screen.getByLabelText("Currently waiting on"), { target: { value: "requester" } });
+    fireEvent.click(screen.getByLabelText("Morgan Manager · manager"));
+    fireEvent.change(screen.getByLabelText("Next follow-up"), { target: { value: "2099-08-05T10:00" } });
+    fireEvent.change(screen.getByLabelText("External reference"), { target: { value: "Weekly sync 42" } });
+    fireEvent.click(screen.getByRole("button", { name: "Create issue" }));
+    await waitFor(() => expect(mocks.createWorkItem).toHaveBeenCalledWith(expect.objectContaining({
+      requesterRelation: "customer",
+      requesterName: "Alex Client",
+      requesterOrganization: "Acme",
+      requesterUserId: null,
+      intakeChannel: "meeting",
+      externalReference: "Weekly sync 42",
+      waitingOn: "requester",
+      assigneeIds: ["usr_manager"],
+      nextFollowUpAt: expect.stringMatching(/^2099-08-05T/),
     })));
   });
 
@@ -276,6 +329,7 @@ describe("TaskView local work items", () => {
       projectId: "prj_1",
       title: "Imported WeChat article",
       labels: expect.arrayContaining(["source:wechat", "content:article"]),
+      intakeChannel: "import",
     })));
     expect(mocks.createWorkItemWorktree).toHaveBeenCalledWith("lwi_article");
     expect(mocks.startArticleImport).toHaveBeenCalledWith("lwi_article", {
@@ -599,6 +653,11 @@ describe("TaskView local work items", () => {
       id: "lwi_1", localRef: "LOCAL-1", projectId: "prj_1",
       title: "Editable issue", body: "Before", type: "task", status: "backlog",
       priority: "p2", state: "open", labels: [], assigneeIds: [],
+      followUpSchemaVersion: 1, requesterRelation: "customer",
+      requesterName: "Alex Client", requesterOrganization: "Acme", requesterUserId: null,
+      intakeChannel: "meeting", externalReference: "Weekly sync 42", waitingOn: "requester",
+      commitmentDate: "2099-08-07T09:00:00.000Z", nextFollowUpAt: "2099-08-05T02:00:00.000Z",
+      lastProgressAt: "2026-07-24T01:00:00.000Z", lastProgressSummary: "Draft sent for review",
       businessState: "open", planningStatus: "backlog", executionState: "claimed",
       externalBindings: [{
         kind: "github_issue", number: 42, url: "https://github.test/issues/42",
@@ -634,6 +693,10 @@ describe("TaskView local work items", () => {
     const cockpit = (await screen.findByText("Task cockpit")).closest("section");
     expect(cockpit?.querySelector(".grid")?.className).toContain("xl:grid-cols-4");
     expect(screen.getByRole("tab", { name: "Overview" }).getAttribute("aria-selected")).toBe("true");
+    expect(screen.getByRole("tab", { name: "Report" })).toBeTruthy();
+    expect(await screen.findByText("Customer · Alex Client")).toBeTruthy();
+    expect(screen.getByText("Draft sent for review")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Record progress" })).toBeTruthy();
     fireEvent.click(screen.getByRole("tab", { name: "Assets" }));
     expect(screen.getByRole("tab", { name: "Assets" }).getAttribute("aria-selected")).toBe("true");
     expect(cockpit?.hasAttribute("hidden")).toBe(true);
@@ -656,22 +719,77 @@ describe("TaskView local work items", () => {
     fireEvent.click(screen.getByRole("tab", { name: "Assets" }));
     expect(screen.getByText("No sub-issues")).toBeTruthy();
     expect(screen.getByLabelText("Parent issue")).toBeTruthy();
+    fireEvent.change(screen.getByLabelText("Currently waiting on"), { target: { value: "ai" } });
     fireEvent.change(title, { target: { value: "Edited issue" } });
     fireEvent.click(screen.getByRole("tab", { name: "Process" }));
-    fireEvent.click(screen.getByRole("button", { name: "Create worktree" }));
     expect(mocks.createWorkItemWorktree).not.toHaveBeenCalled();
     const safetyDialog = screen.getAllByRole("dialog").at(-1);
     fireEvent.click(within(safetyDialog as HTMLElement).getByRole("button", { name: "Save" }));
     await waitFor(() => expect(mocks.updateWorkItem).toHaveBeenCalledWith("lwi_1", expect.objectContaining({
       expectedRevision: 1,
       title: "Edited issue",
+      requesterRelation: "customer",
+      requesterName: "Alex Client",
+      waitingOn: "ai",
     })));
+    await waitFor(() => expect(screen.getByRole("tab", { name: "Process" }).getAttribute("aria-selected")).toBe("true"));
+    fireEvent.click(screen.getByRole("button", { name: "Create worktree" }));
     await waitFor(() => expect(mocks.createWorkItemWorktree).toHaveBeenCalledWith("lwi_1"));
     fireEvent.click(screen.getByRole("tab", { name: "Trace" }));
     fireEvent.change(screen.getByPlaceholderText("Add a comment…"), { target: { value: "Looks good" } });
     fireEvent.click(screen.getByRole("button", { name: "Comment" }));
     await waitFor(() => expect(mocks.createWorkItemComment).toHaveBeenCalledWith("lwi_1", "Looks good"));
     expect(screen.getByText("Created")).toBeTruthy();
+  });
+
+  it("guards section navigation and detail close when the report has unsaved edits", async () => {
+    const item = {
+      id: "lwi_report_guard", localRef: "LOCAL-88", projectId: "prj_1",
+      title: "Guard report edits", body: "", type: "task", status: "review",
+      priority: "p1", state: "open", labels: [], assigneeIds: [],
+      followUpSchemaVersion: 1, requesterRelation: "customer",
+      requesterName: "Alex", requesterOrganization: "Acme", requesterUserId: null,
+      intakeChannel: "meeting", externalReference: null, waitingOn: "me",
+      commitmentDate: null, nextFollowUpAt: null, lastProgressAt: null, lastProgressSummary: null,
+      acceptanceCriteria: [], revision: 4, archivedAt: null,
+      parentId: null, parent: null, subIssues: [], subIssuesSummary: { total: 0, completed: 0, percentCompleted: 0 },
+      updatedAt: "2026-08-03T12:00:00.000Z",
+    };
+    const reportDraft = {
+      id: "wrd_guard", schemaVersion: 1, workItemId: item.id, status: "draft", revision: 1,
+      audience: { relation: "customer", name: "Alex", organization: "Acme", userId: null },
+      tone: "concise", content: "Original report", stale: false, canEdit: true, canConfirm: true,
+      source: {
+        workItemRevision: 4, capturedAt: item.updatedAt, contextDigest: "digest",
+        progressActivities: [], executionResults: [],
+      },
+      generation: {
+        generator: "structured", policyVersion: "work-item-report-v1", modelVersion: null,
+        locale: "en-US", inputDigest: "input",
+      },
+      createdBy: "usr_local", updatedBy: "usr_local", createdAt: item.updatedAt, updatedAt: item.updatedAt,
+      confirmedAt: null, confirmedBy: null, confirmedSnapshot: null,
+    };
+    mocks.listWorkItems.mockResolvedValue({ workItems: [item], count: 1 });
+    mocks.getWorkItem.mockResolvedValue({ workItem: item, observability: null });
+    mocks.listWorkItemComments.mockResolvedValue({ comments: [] });
+    mocks.listWorkItemActivity.mockResolvedValue({ activities: [] });
+    mocks.listWorkItemReportDrafts.mockResolvedValue({ reportDrafts: [reportDraft], count: 1 });
+
+    render(<TaskView />);
+    fireEvent.click(await screen.findByText("Guard report edits"));
+    fireEvent.click(await screen.findByRole("tab", { name: "Report" }));
+    fireEvent.change(await screen.findByDisplayValue("Original report"), { target: { value: "Protected edit" } });
+
+    fireEvent.click(screen.getByRole("tab", { name: "Overview" }));
+    const navigationDialog = await screen.findByText(/Return to the Report tab to save them/);
+    expect(screen.getByRole("tab", { name: "Report" }).getAttribute("aria-selected")).toBe("true");
+    fireEvent.click(within(navigationDialog.closest('[role="dialog"]') as HTMLElement).getByRole("button", { name: "Cancel" }));
+
+    const detailDialog = screen.getByRole("dialog", { name: "Local issue details" });
+    fireEvent.click(within(detailDialog).getByRole("button", { name: "Close" }));
+    await waitFor(() => expect(screen.getAllByRole("dialog", { name: "Local issue details" })).toHaveLength(2));
+    expect(screen.getByDisplayValue("Protected edit")).toBeTruthy();
   });
 
   it("opens an imported Markdown output directly from its local Issue", async () => {

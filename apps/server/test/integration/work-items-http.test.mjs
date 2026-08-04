@@ -113,6 +113,9 @@ test("local work item CRUD is wired through the real HTTP server", async () => {
   assert.deepEqual(created.body.workItem.assigneeIds, ["usr_a"]);
   assert.equal(created.body.workItem.plannedDate, "2026-07-31");
   assert.equal(created.body.workItem.completedAt, null);
+  assert.equal(created.body.workItem.requesterRelation, "unknown");
+  assert.equal(created.body.workItem.intakeChannel, "unknown");
+  assert.equal(created.body.workItem.waitingOn, "none");
 
   const updated = await call(`/api/work-items/${created.body.workItem.id}`, {
     method: "PATCH",
@@ -137,6 +140,109 @@ test("local work item CRUD is wired through the real HTTP server", async () => {
     body: { expectedRevision: 3, status: "ready" },
   });
   assert.equal(reopened.body.workItem.completedAt, null);
+});
+
+test("structured requester and follow-up context is validated and audited through HTTP", async () => {
+  const created = await call("/api/work-items", {
+    method: "POST",
+    body: {
+      projectId: "prj_a",
+      title: "Customer follow-up",
+      requesterRelation: "customer",
+      requesterName: "张总",
+      requesterOrganization: "远山科技",
+      intakeChannel: "meeting",
+      waitingOn: "me",
+      commitmentDate: "2099-08-07T17:00:00+08:00",
+      nextFollowUpAt: "2099-08-05T10:00:00+08:00",
+    },
+  });
+  assert.equal(created.status, 201);
+  assert.equal(created.body.workItem.requesterRelation, "customer");
+  assert.equal(created.body.workItem.commitmentDate, "2099-08-07T09:00:00.000Z");
+
+  const workbench = await call("/api/work-items/home-workbench?assigneeId=mine&timezoneOffset=-480");
+  assert.equal(workbench.status, 200);
+  assert.ok(workbench.body.items.some((item) => item.workItemId === created.body.workItem.id
+    && item.requester.relation === "customer"
+    && item.nextAction.section === "task"));
+  assert.ok(workbench.body.summary.byRelation.customer >= 1);
+  assert.equal((await call("/api/work-items/home-workbench?timezoneOffset=not-a-number")).status, 400);
+
+  const updated = await call(`/api/work-items/${created.body.workItem.id}`, {
+    method: "PATCH",
+    body: {
+      expectedRevision: created.body.workItem.revision,
+      requesterRelation: "self",
+      intakeChannel: "manual",
+      waitingOn: "me",
+      nextFollowUpAt: null,
+    },
+  });
+  assert.equal(updated.status, 200);
+  assert.equal(updated.body.workItem.requesterUserId, "usr_a");
+  assert.equal(updated.body.workItem.requesterName, null);
+  assert.equal(updated.body.workItem.requesterOrganization, null);
+
+  const activity = await call(`/api/work-items/${created.body.workItem.id}/activity`);
+  assert.equal(activity.status, 200);
+  assert.equal(activity.body.activities[0].details.followUpContextChanged, true);
+  assert.deepEqual(activity.body.activities[0].details.changes.requesterRelation, {
+    from: "customer",
+    to: "self",
+  });
+
+  const foreignRequester = await call("/api/work-items", {
+    method: "POST",
+    body: {
+      projectId: "prj_a",
+      title: "Foreign manager",
+      requesterRelation: "manager",
+      requesterUserId: "usr_b",
+    },
+  });
+  assert.equal(foreignRequester.status, 400);
+  assert.equal(foreignRequester.body.error, "invalid_work_item_requester_user");
+});
+
+test("structured progress is recorded and replayed through HTTP", async () => {
+  const created = await call("/api/work-items", {
+    method: "POST",
+    body: {
+      projectId: "prj_a",
+      title: "HTTP progress",
+      requesterRelation: "customer",
+      requesterName: "Client",
+      waitingOn: "me",
+    },
+  });
+  const path = `/api/work-items/${created.body.workItem.id}/progress`;
+  const payload = {
+    expectedRevision: created.body.workItem.revision,
+    idempotencyKey: "http-progress-1",
+    summary: "Prototype shared with the customer",
+    waitingOn: "requester",
+    nextFollowUpAt: "2099-08-06T10:00:00+08:00",
+  };
+  const recorded = await call(path, { method: "POST", body: payload });
+  assert.equal(recorded.status, 201);
+  assert.equal(recorded.body.workItem.lastProgressSummary, payload.summary);
+  assert.equal(recorded.body.workItem.waitingOn, "requester");
+  assert.equal(recorded.body.replayed, false);
+
+  const replayed = await call(path, { method: "POST", body: payload });
+  assert.equal(replayed.status, 200);
+  assert.equal(replayed.body.replayed, true);
+  const activity = await call(`/api/work-items/${created.body.workItem.id}/activity`);
+  assert.equal(activity.body.activities.filter((entry) => entry.action === "progress_recorded").length, 1);
+  assert.equal(activity.body.activities[0].details.summary, payload.summary);
+
+  const conflict = await call(path, {
+    method: "POST",
+    body: { ...payload, summary: "Changed payload" },
+  });
+  assert.equal(conflict.status, 409);
+  assert.equal(conflict.body.error, "work_item_progress_idempotency_conflict");
 });
 
 test("local work item claim lease is wired through HTTP", async () => {
@@ -828,4 +934,67 @@ test("planning fields, bulk updates, and project ordering are wired over HTTP", 
   });
   assert.equal(reordered.status, 200);
   assert.deepEqual(reordered.body.project.items.map((row) => row.workItem.id), [second.id, first.id]);
+});
+
+test("governed report drafts are wired through HTTP without sending or closing work", async () => {
+  const created = await call("/api/work-items", {
+    method: "POST",
+    body: {
+      projectId: "prj_a",
+      title: "Customer launch report",
+      status: "review",
+      requesterRelation: "customer",
+      requesterName: "HTTP Customer",
+      waitingOn: "requester",
+    },
+  });
+  assert.equal(created.status, 201);
+  const item = created.body.workItem;
+  const generated = await call(`/api/work-items/${item.id}/report-drafts`, {
+    method: "POST",
+    body: {
+      expectedWorkItemRevision: item.revision,
+      idempotencyKey: "http-report-generate",
+      tone: "concise",
+    },
+  });
+  assert.equal(generated.status, 201);
+  assert.equal(generated.body.reportDraft.status, "draft");
+  assert.equal(generated.body.reportDraft.audience.name, "HTTP Customer");
+  assert.equal((await call(`/api/work-items/${item.id}/report-drafts`, { token: "tok_b" })).status, 404);
+
+  const edited = await call(`/api/work-items/${item.id}/report-drafts/${generated.body.reportDraft.id}`, {
+    method: "PATCH",
+    body: {
+      expectedRevision: generated.body.reportDraft.revision,
+      content: "The launch is ready for the customer review checkpoint.",
+    },
+  });
+  assert.equal(edited.status, 200);
+  const confirmed = await call(`/api/work-items/${item.id}/report-drafts/${edited.body.reportDraft.id}/confirm`, {
+    method: "POST",
+    body: {
+      expectedRevision: edited.body.reportDraft.revision,
+      idempotencyKey: "http-report-confirm",
+    },
+  });
+  assert.equal(confirmed.status, 200);
+  assert.equal(confirmed.body.reportDraft.status, "confirmed");
+  assert.equal(confirmed.body.reportDraft.confirmedSnapshot.content, edited.body.reportDraft.content);
+  const replayed = await call(`/api/work-items/${item.id}/report-drafts/${edited.body.reportDraft.id}/confirm`, {
+    method: "POST",
+    body: {
+      expectedRevision: edited.body.reportDraft.revision,
+      idempotencyKey: "http-report-confirm",
+    },
+  });
+  assert.equal(replayed.status, 200);
+  assert.equal(replayed.body.replayed, true);
+  const unchanged = await call(`/api/work-items/${item.id}`);
+  assert.equal(unchanged.body.workItem.status, "review");
+  assert.equal(unchanged.body.workItem.state, "open");
+  assert.equal(unchanged.body.workItem.revision, item.revision);
+  const listed = await call(`/api/work-items/${item.id}/report-drafts`);
+  assert.equal(listed.status, 200);
+  assert.equal(listed.body.count, 1);
 });

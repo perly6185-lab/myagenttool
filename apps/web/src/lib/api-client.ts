@@ -2062,6 +2062,15 @@ export const api = {
     labels?: string[];
     acceptanceCriteria?: string[];
     assigneeIds?: string[];
+    requesterRelation?: "boss" | "manager" | "customer" | "colleague" | "self" | "unknown";
+    requesterName?: string | null;
+    requesterOrganization?: string | null;
+    requesterUserId?: string | null;
+    intakeChannel?: "manual" | "meeting" | "email" | "chat" | "phone" | "github" | "import" | "other" | "unknown";
+    externalReference?: string | null;
+    waitingOn?: "me" | "requester" | "internal" | "ai" | "none";
+    commitmentDate?: string | null;
+    nextFollowUpAt?: string | null;
     dueDate?: string | null;
     plannedDate?: string | null;
     carriedFromDate?: string | null;
@@ -2098,6 +2107,13 @@ export const api = {
     request("POST", `/api/work-items/${encodeURIComponent(id)}/verifications`, payload),
   recordWorkItemAssetOperation: (id: string, payload: Record<string, unknown>) =>
     request("POST", `/api/work-items/${encodeURIComponent(id)}/asset-operations`, payload),
+  recordWorkItemProgress: (id: string, payload: {
+    expectedRevision: number;
+    idempotencyKey: string;
+    summary: string;
+    waitingOn?: "me" | "requester" | "internal" | "ai" | "none";
+    nextFollowUpAt?: string | null;
+  }) => request("POST", `/api/work-items/${encodeURIComponent(id)}/progress`, payload),
   startWorkItemApplication: (id: string, payload: {
     expectedRevision: number;
     intent?: string;

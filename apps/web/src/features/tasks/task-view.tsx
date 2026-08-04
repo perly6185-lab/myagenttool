@@ -45,10 +45,8 @@ import {
 import { WorkItemSectionNav } from "./work-item-section-nav";
 import { useSafeNavigation } from "@/hooks/use-safe-navigation";
 import { useVisibleInterval } from "@/hooks/use-visible-interval";
-import { ClaimHistoryList } from "./claim-history-list";
 import { WorktreeOptionsForm } from "./worktree-options-form";
 import { WorkItemExecutionActions } from "./work-item-execution-actions";
-import { WorkItemExternalSync } from "./work-item-external-sync";
 import { WorkItemAlertAndCostDetails, WorkItemAssetChain, WorkItemTimeline, WorkItemTraceSummary } from "./work-item-observability";
 import { WorkItemTraceLinks } from "./work-item-trace-links";
 import { workItemBatchApi } from "./work-item-batch-api";
@@ -62,11 +60,29 @@ import type {
 } from "./article-workflow-types";
 import { articleApi } from "./article-workflow-api";
 import { useArticleTaskLabels } from "./article-task-labels";
+import {
+  DEFAULT_WORK_ITEM_FOLLOW_UP_DRAFT,
+  followUpDraftEquals,
+  followUpDraftFromWorkItem,
+  followUpPayload,
+  validateFollowUpDraft,
+  type WorkItemFollowUpDraft,
+} from "./work-item-follow-up-model";
 
 export { shouldShowWorkItemCost } from "./task-view-types";
 
 const ArticleWorkflowDialogs = lazy(() => import("./article-workflow-dialogs"));
 const CreateLocalWorkItemForm = lazy(() => import("./create-local-work-item-form"));
+const WorkItemFollowUpFields = lazy(() => import("./work-item-follow-up-fields")
+  .then((module) => ({ default: module.WorkItemFollowUpFields })));
+const WorkItemFollowUpSummary = lazy(() => import("./work-item-follow-up-fields")
+  .then((module) => ({ default: module.WorkItemFollowUpSummary })));
+const WorkItemProgressDialog = lazy(() => import("./work-item-progress-dialog"));
+const WorkItemReportSection = lazy(() => import("./work-item-report-section"));
+const WorkItemExternalSync = lazy(() => import("./work-item-external-sync")
+  .then((module) => ({ default: module.WorkItemExternalSync })));
+const ClaimHistoryList = lazy(() => import("./claim-history-list")
+  .then((module) => ({ default: module.ClaimHistoryList })));
 
 installExecutionUiTranslations();
 installAutoRunTranslations();
@@ -787,7 +803,11 @@ export function TaskView() {
       </CardContent>
 
       <Modal open={Boolean(historyRow)} onClose={() => setHistoryRow(null)} title={historyRow ? t("tasks.claimHistoryId", { number: historyRow.number }) : t("tasks.claimHistory")}>
-        {historyRow ? <ClaimHistoryList events={claimHistory(historyRow)} /> : null}
+        {historyRow ? (
+          <Suspense fallback={null}>
+            <ClaimHistoryList events={claimHistory(historyRow)} />
+          </Suspense>
+        ) : null}
       </Modal>
 
       <Modal
@@ -802,6 +822,7 @@ export function TaskView() {
           <Suspense fallback={null}>
             <CreateLocalWorkItemForm
               projects={projects}
+              users={state?.users ?? []}
               initialProjectId={projectId === "all" ? projects[0]?.id ?? "" : projectId}
               onImportActivityChange={setCreateArticleImportActive}
               onDone={() => {
@@ -2368,6 +2389,8 @@ function LocalWorkItemDetail({
   const [dueDate, setDueDate] = useState("");
   const [milestone, setMilestone] = useState("");
   const [estimatePoints, setEstimatePoints] = useState("0");
+  const [assigneeIds, setAssigneeIds] = useState<string[]>([]);
+  const [followUp, setFollowUp] = useState<WorkItemFollowUpDraft>({ ...DEFAULT_WORK_ITEM_FOLLOW_UP_DRAFT });
   const [comment, setComment] = useState("");
   const [editingCommentId, setEditingCommentId] = useState<string | null>(null);
   const [editingCommentBody, setEditingCommentBody] = useState("");
@@ -2380,6 +2403,7 @@ function LocalWorkItemDetail({
     checks: { key: string; label: string; status: "ok" | "warn" | "blocked"; detail: string }[];
   } | null>(null);
   const [deleteCommentTarget, setDeleteCommentTarget] = useState<WorkItemComment | null>(null);
+  const [progressOpen, setProgressOpen] = useState(false);
   const [deliveryConfirmMode, setDeliveryConfirmMode] = useState<"local_merge" | "pull_request" | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [selectedExecutionAgentId, setSelectedExecutionAgentId] = useState("");
@@ -2392,8 +2416,9 @@ function LocalWorkItemDetail({
     worktreeId: string;
   } | null>(null);
   const [articleDerivative, setArticleDerivative] = useState<ArticleDerivative | null>(null);
+  const [reportDirty, setReportDirty] = useState(false);
 
-  const dirty = item != null && (
+  const taskDirty = item != null && (
     title !== item.title
     || body !== item.body
     || type !== item.type
@@ -2406,7 +2431,10 @@ function LocalWorkItemDetail({
     || milestone !== (item.milestone ?? "")
     || estimatePoints !== String(item.estimatePoints ?? 0)
     || parentId !== (item.parentId ?? "")
+    || assigneeIds.join("\u0000") !== item.assigneeIds.join("\u0000")
+    || !followUpDraftEquals(followUp, followUpDraftFromWorkItem(item))
   );
+  const dirty = taskDirty || reportDirty;
   const syncDraft = (next: LocalWorkItem) => {
     setItem(next);
     setTitle(next.title);
@@ -2421,6 +2449,8 @@ function LocalWorkItemDetail({
     setMilestone(next.milestone ?? "");
     setEstimatePoints(String(next.estimatePoints ?? 0));
     setParentId(next.parentId ?? "");
+    setAssigneeIds(next.assigneeIds);
+    setFollowUp(followUpDraftFromWorkItem(next));
   };
   const load = async () => {
     try {
@@ -2466,7 +2496,7 @@ function LocalWorkItemDetail({
         setObservability(detail.observability);
         // Preserve an in-progress local edit. With no local draft, refresh the
         // whole record so delivery and save actions use the latest revision.
-        if (!dirty) syncDraft(detail.workItem);
+        if (!taskDirty) syncDraft(detail.workItem);
       })
       .catch(() => {});
   }, 5_000);
@@ -2534,6 +2564,7 @@ function LocalWorkItemDetail({
   }
 
   const save = (afterSave?: () => void) => {
+    if (validateFollowUpDraft(followUp)) return;
     void execute(() => api.updateWorkItem(item.id, {
       expectedRevision: item.revision,
       title,
@@ -2543,11 +2574,13 @@ function LocalWorkItemDetail({
       priority,
       labels: labels.split(",").map((value) => value.trim()).filter(Boolean),
       acceptanceCriteria: acceptance.split("\n").map((value) => value.trim()).filter(Boolean),
+      assigneeIds,
       plannedDate: plannedDate || null,
       dueDate: dueDate || null,
       milestone,
       estimatePoints: Number(estimatePoints),
       parentId: parentId || null,
+      ...followUpPayload(followUp),
     })).then((ok) => {
       if (!ok) return;
       setNotice(`${t("taskLocal.save")} ✓`);
@@ -2876,8 +2909,11 @@ function LocalWorkItemDetail({
         itemId={item.id}
         activeSection={selectedWorkItemSection}
         onSectionChange={(section) => {
-          setSelectedWorkItemSection(section);
-          storeSelectedWorkItemSection?.(section);
+          if (section === selectedWorkItemSection) return;
+          requestNavigation(() => {
+            setSelectedWorkItemSection(section);
+            storeSelectedWorkItemSection?.(section);
+          });
         }}
       />
       {selectedWorkItemSection === "overview" && item.routineDefinitionId ? (
@@ -2999,7 +3035,26 @@ function LocalWorkItemDetail({
             </strong>
           </div>
         </div>
+        <Suspense fallback={null}>
+          <WorkItemFollowUpSummary
+            item={item}
+            users={consoleState?.users ?? []}
+            onRecordProgress={() => setProgressOpen(true)}
+          />
+        </Suspense>
       </section>
+      {selectedWorkItemSection === "report" ? (
+        <section
+          id={`work-item-report-${item.id}`}
+          role="tabpanel"
+          aria-labelledby={`work-item-tab-report-${item.id}`}
+          className="rounded-md border border-border p-3"
+        >
+          <Suspense fallback={<p className="text-sm text-muted-foreground">{t("tasks.loading")}</p>}>
+            <WorkItemReportSection key={item.id} item={item} onChanged={onChanged} onDirtyChange={setReportDirty} />
+          </Suspense>
+        </section>
+      ) : null}
       <div hidden={selectedWorkItemSection !== "trace"}>
       <WorkItemAlertAndCostDetails
         observability={observability}
@@ -3087,13 +3142,15 @@ function LocalWorkItemDetail({
         <WorkItemTraceLinks item={item} observability={observability} />
         <WorkItemTraceSummary item={item} observability={observability} />
         <WorkItemTimeline observability={observability} expanded={selectedWorkItemSection === "trace"} />
-        <WorkItemExternalSync
-          itemId={item.id}
-          binding={externalIssueBinding}
-          providerLabel={externalProviderLabel}
-          pending={pending}
-          onSync={syncExternal}
-        />
+        <Suspense fallback={null}>
+          <WorkItemExternalSync
+            itemId={item.id}
+            binding={externalIssueBinding}
+            providerLabel={externalProviderLabel}
+            pending={pending}
+            onSync={syncExternal}
+          />
+        </Suspense>
       </div>
       <div
         id={`work-item-assets-${item.id}`}
@@ -3192,6 +3249,16 @@ function LocalWorkItemDetail({
       <Field label={t("tasks.acceptanceCriteria")}>
         <textarea className="min-h-24 w-full rounded-md border border-border bg-background p-2 text-sm" value={acceptance} onChange={(event) => setAcceptance(event.target.value)} />
       </Field>
+      <Suspense fallback={null}>
+        <WorkItemFollowUpFields
+          value={followUp}
+          onChange={setFollowUp}
+          users={consoleState?.users ?? []}
+          assigneeIds={assigneeIds}
+          onAssigneeIdsChange={setAssigneeIds}
+          disabled={pending}
+        />
+      </Suspense>
         </div>
       </details>
       </div>
@@ -3218,7 +3285,7 @@ function LocalWorkItemDetail({
             onClick={() => transition(item.state === "open" ? "close" : "reopen")}>
             {t(item.state === "open" ? "taskLocal.close" : "taskLocal.reopen")}
           </Button>
-          <Button variant="secondary" disabled={pending || !title.trim()} onClick={() => save()}>
+          <Button variant="secondary" disabled={pending || !title.trim() || Boolean(validateFollowUpDraft(followUp))} onClick={() => save()}>
             {t("taskLocal.save")}
           </Button>
         </div>
@@ -3259,7 +3326,7 @@ function LocalWorkItemDetail({
             itemId={item.id}
             open={item.state === "open"}
             pending={pending}
-            canSave={Boolean(title.trim())}
+            canSave={Boolean(title.trim()) && !validateFollowUpDraft(followUp)}
             worktreeReady={Boolean(autoRunReadiness && !autoRunReadiness.checks.some((check) => check.key === "git" && check.status === "blocked"))}
             autoRunReady={autoRunReadiness?.ready === true && !activeAutoRunId}
             autoRunBlockedReason={activeAutoRunId
@@ -3467,9 +3534,16 @@ function LocalWorkItemDetail({
                   ? articleText.importStarted
                   : row.action === "article_derivative_started"
                     ? articleText.derivativeStarted
-                    : t(`taskLocal.activityAction.${row.action}`, { defaultValue: row.action })}
+                    : row.action === "progress_recorded"
+                      ? (t as unknown as (key: string) => string)("taskFollowUp.progressActivity")
+                      : t(`taskLocal.activityAction.${row.action}`, { defaultValue: row.action })}
               </Badge>
-              <span>{row.actorId}</span>
+              <span>
+                {row.actorId}
+                {row.action === "progress_recorded" && typeof row.details.summary === "string"
+                  ? ` · ${row.details.summary}`
+                  : ""}
+              </span>
               <span className="ml-auto text-muted-foreground">{row.createdAt.replace("T", " ").slice(0, 16)}</span>
             </li>
           ))}
@@ -3497,6 +3571,24 @@ function LocalWorkItemDetail({
           setDeleteCommentTarget(null);
         }}
       />
+      <Suspense fallback={null}>
+        <WorkItemProgressDialog
+          target={item}
+          open={progressOpen}
+          onClose={() => setProgressOpen(false)}
+          onSaved={async (next) => {
+            syncDraft(next);
+            try {
+              const activityResult = await api.listWorkItemActivity(workItemId) as { activities: WorkItemActivity[] };
+              setActivity(activityResult.activities);
+            } catch {
+              // The progress write succeeded; the normal detail refresh will reconcile activity later.
+            }
+            onChanged();
+            setNotice((t as unknown as (key: string) => string)("taskFollowUp.progressSaved"));
+          }}
+        />
+      </Suspense>
       {articleAnalysis || similarArticles || articleDerivativeDialog ? (
         <Suspense fallback={null}>
           <ArticleWorkflowDialogs
@@ -3520,13 +3612,17 @@ function LocalWorkItemDetail({
       <Modal
         open={safeNavigation.pendingNavigation}
         title={t("taskLocal.details")}
-        description={t("officeEditors.unsaved")}
+        description={reportDirty
+          ? (t as unknown as (key: string) => string)("taskReport.unsavedNavigation")
+          : t("officeEditors.unsaved")}
         onClose={safeNavigation.cancelNavigation}
       >
         <div className="flex flex-wrap justify-end gap-2">
           <Button variant="secondary" onClick={safeNavigation.cancelNavigation}>{t("shared.cancel")}</Button>
           <Button variant="destructive" onClick={safeNavigation.discardAndContinue}>{t("shared.confirm")}</Button>
-          <Button onClick={() => safeNavigation.saveAndContinue((action) => save(action))}>{t("taskLocal.save")}</Button>
+          {!reportDirty ? (
+            <Button onClick={() => safeNavigation.saveAndContinue((action) => save(action))}>{t("taskLocal.save")}</Button>
+          ) : null}
         </div>
       </Modal>
     </div>

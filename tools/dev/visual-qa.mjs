@@ -211,6 +211,9 @@ async function captureScreenshots(driver) {
             }
             return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(scenario.state) });
           });
+          if (scenario.reportFixture) {
+            await page.route(/\/api\/work-items(?:[/?].*)?$/, (route) => fulfillReportFixture(route, scenario.reportFixture));
+          }
           await page.addInitScript((selection) => {
             window.localStorage.setItem("myagenttool-ui", JSON.stringify({ state: selection, version: 1 }));
           }, scenario.selection);
@@ -320,6 +323,13 @@ function visualScenarios(baseline) {
     { name: "succeeded", state: withRun("succeeded", { summary: "Authentication boundaries reviewed; no unsafe write was performed." }), invocationId: "inv_visual_succeeded" },
     { name: "approval", state: withRun("waiting_for_local_approval"), invocationId: "inv_visual_waiting_for_local_approval" },
     { name: "runtime-health", state: structuredClone(ready), invocationId: null, section: "devices" },
+    ...["draft", "stale", "confirmed"].map((reportStatus) => ({
+      name: `report-${reportStatus}`,
+      state: structuredClone(ready),
+      invocationId: null,
+      section: "task",
+      reportFixture: reportVisualFixture(reportStatus, ready.projects?.[0]?.id ?? "prj_visual"),
+    })),
     {
       name: "channel-task-failed",
       section: "channels",
@@ -340,6 +350,8 @@ function visualScenarios(baseline) {
       selectedAgentId: scenario.name === "empty" || scenario.disconnected ? null : codexAgent.id,
       selectedInvocationId: scenario.invocationId,
       selectedProjectId: ready.projects?.[0]?.id ?? null,
+      selectedWorkItemId: scenario.reportFixture?.workItem.id ?? null,
+      selectedWorkItemSection: scenario.reportFixture ? "report" : "overview",
       collapsedNavGroups: ["configure", "ledgers"],
       locale: "en-US",
     },
@@ -348,7 +360,7 @@ function visualScenarios(baseline) {
 
 async function assertVisualState(page, scenario) {
   if (scenario.disconnected) {
-    await page.locator("span:visible", { hasText: "Server is offline." }).first().waitFor({ timeout: 15_000 });
+    await page.getByText(/Server (?:is )?offline\.?/, { exact: true }).first().waitFor({ timeout: 15_000 });
     return;
   }
   if (scenario.name === "runtime-health") {
@@ -360,16 +372,50 @@ async function assertVisualState(page, scenario) {
     for (const label of ["Issue #42", "Retry", "Reroute", "Take over"]) await page.getByText(label, { exact: true }).waitFor();
     return;
   }
+  if (scenario.reportFixture) {
+    await page.getByRole("dialog", { name: "Local issue details" }).waitFor({ timeout: 15_000 });
+    await page.getByRole("tab", { name: "Report" }).waitFor();
+    await page.getByText("Stakeholder report", { exact: true }).waitFor();
+    const expected = scenario.name === "report-stale"
+      ? "Source progress changed"
+      : scenario.name === "report-confirmed"
+        ? "Confirmed means reviewed. It has not been sent and the task has not been closed."
+        : "Confirm report";
+    await page.getByText(expected, { exact: scenario.name !== "report-draft" }).first().waitFor();
+    if (scenario.name === "report-stale") {
+      const reportPanel = page.locator(`[id="work-item-report-${scenario.reportFixture.workItem.id}"]`);
+      const controls = reportPanel.locator("select, input, textarea");
+      if (await controls.count() !== 5) {
+        throw new Error(`report-stale expected 5 report editor controls, found ${await controls.count()}`);
+      }
+      if (await reportPanel.locator("select:enabled, input:enabled, textarea:enabled").count()) {
+        throw new Error("report-stale unexpectedly leaves report editor controls enabled");
+      }
+      if (await reportPanel.getByRole("button", { name: "Confirm report" }).count()) {
+        throw new Error("report-stale unexpectedly exposes confirmation");
+      }
+    }
+    return;
+  }
   await page.locator('textarea[aria-label="Task"]:visible').waitFor({ timeout: 15_000 });
   const expectedHomeState = {
     empty: "idle",
     ready: "idle",
     running: "running",
-    succeeded: "succeeded",
+    // Completed invocations remain available in history, but Home intentionally
+    // returns to the idle composer instead of keeping a stale result banner.
+    succeeded: "idle",
     approval: "approval",
   }[scenario.name];
   if (expectedHomeState) {
-    await page.locator(`[data-home-work-state="${expectedHomeState}"]:visible`).waitFor();
+    if (expectedHomeState === "idle") {
+      await page.locator('[data-home-primary-action="run"]:visible').waitFor();
+      if (await page.locator("[data-home-work-state]:visible").count() !== 0) {
+        throw new Error(`${scenario.name} renders a work-state banner while idle`);
+      }
+    } else {
+      await page.locator(`[data-home-work-state="${expectedHomeState}"]:visible`).waitFor();
+    }
   }
   const primaryAction = page.locator("[data-home-primary-action]:visible");
   await primaryAction.waitFor();
@@ -382,6 +428,97 @@ async function assertVisualState(page, scenario) {
   for (const text of ["Safety", "Data", "Cost", "Computer"]) {
     await page.locator("p:visible, dt:visible", { hasText: new RegExp(`^${text}$`) }).first().waitFor();
   }
+}
+
+function reportVisualFixture(status, projectId) {
+  const now = "2026-08-03T12:00:00.000Z";
+  const workItem = {
+    id: "lwi_visual_report",
+    localRef: "LOCAL-77",
+    projectId,
+    title: "Confirm the customer launch plan",
+    body: "Prepare a concise update after review.",
+    type: "task",
+    status: "review",
+    priority: "p1",
+    state: "open",
+    businessState: "open",
+    planningStatus: "review",
+    executionState: "completed",
+    labels: [],
+    assigneeIds: [],
+    followUpSchemaVersion: 1,
+    requesterRelation: "customer",
+    requesterName: "Alex",
+    requesterOrganization: "Acme",
+    requesterUserId: null,
+    intakeChannel: "meeting",
+    externalReference: null,
+    waitingOn: "me",
+    commitmentDate: "2026-08-05T09:00:00.000Z",
+    nextFollowUpAt: "2026-08-04T09:00:00.000Z",
+    lastProgressAt: "2026-08-03T11:00:00.000Z",
+    lastProgressSummary: "QA and release checks passed.",
+    acceptanceCriteria: [],
+    dueDate: null,
+    plannedDate: "2026-08-03",
+    milestone: "Launch",
+    estimatePoints: 2,
+    revision: status === "stale" ? 5 : 4,
+    archivedAt: null,
+    updatedAt: now,
+  };
+  const reportDraft = {
+    id: "wrd_visual_report",
+    schemaVersion: 1,
+    workItemId: workItem.id,
+    status: status === "confirmed" ? "confirmed" : "draft",
+    revision: status === "confirmed" ? 3 : 2,
+    audience: { relation: "customer", name: "Alex", organization: "Acme", userId: null },
+    tone: "concise",
+    content: "Alex update — Confirm the customer launch plan\n\nCurrent progress: QA and release checks passed.\nWaiting on: our next action.",
+    stale: status === "stale",
+    canEdit: status === "draft",
+    canConfirm: status === "draft",
+    source: {
+      workItemRevision: 4,
+      capturedAt: now,
+      contextDigest: "visual-context",
+      progressActivities: [{ activityId: "wia_visual", summary: "QA and release checks passed.", createdAt: "2026-08-03T11:00:00.000Z" }],
+      executionResults: [{ kind: "auto_run", id: "aur_visual", status: "completed", summary: "All governed checks passed.", updatedAt: "2026-08-03T11:30:00.000Z" }],
+    },
+    generation: { generator: "structured", policyVersion: "work-item-report-v1", modelVersion: null, locale: "en-US", inputDigest: "visual-input" },
+    createdBy: "usr_visual",
+    updatedBy: "usr_visual",
+    createdAt: now,
+    updatedAt: now,
+    confirmedAt: status === "confirmed" ? now : null,
+    confirmedBy: status === "confirmed" ? "usr_visual" : null,
+    confirmedSnapshot: null,
+  };
+  return { workItem, reportDraft };
+}
+
+function fulfillReportFixture(route, fixture) {
+  const request = route.request();
+  const url = new URL(request.url());
+  const path = url.pathname;
+  const itemPath = `/api/work-items/${fixture.workItem.id}`;
+  let body = null;
+  if (path === "/api/work-items") {
+    body = { workItems: [fixture.workItem], count: 1, hasMore: false, nextCursor: null };
+  } else if (path === itemPath) {
+    body = { workItem: fixture.workItem, observability: null };
+  } else if (path === `${itemPath}/comments`) {
+    body = { comments: [] };
+  } else if (path === `${itemPath}/activity`) {
+    body = { activities: [] };
+  } else if (path === `${itemPath}/report-drafts`) {
+    body = { reportDrafts: [fixture.reportDraft], count: 1 };
+  }
+  return body
+    ? route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(body) })
+    : route.continue();
 }
 
 function startWebServer() {

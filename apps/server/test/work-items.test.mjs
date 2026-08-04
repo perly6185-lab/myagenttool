@@ -11,6 +11,7 @@ import {
   createWorkItemService,
   taskTraceStage,
 } from "../src/services/work-items.mjs";
+import { backfillWorkItemFollowUpContext } from "../src/services/work-item-follow-up.mjs";
 
 const ACTOR_A = { userId: "usr_a", teamId: "team_a", role: "operator" };
 const ACTOR_B = { userId: "usr_b", teamId: "team_b" };
@@ -36,6 +37,11 @@ function harness({
     workItems: [],
     workItemComments: [],
     workItemActivities: [],
+    users: [
+      { id: "usr_a", teamId: "team_a" },
+      { id: "usr_b", teamId: "team_b" },
+      { id: "usr_c", teamId: "team_a" },
+    ],
     projects: [
       { id: "prj_a", ownerTeamId: "team_a" },
       { id: "prj_b", ownerTeamId: "team_b" },
@@ -137,6 +143,20 @@ test("creates a local work item with server-owned identity and defaults", () => 
     type: "task",
     status: "backlog",
     priority: "p2",
+    followUpContext: {
+      followUpSchemaVersion: 1,
+      requesterRelation: "unknown",
+      requesterName: null,
+      requesterOrganization: null,
+      requesterUserId: null,
+      intakeChannel: "unknown",
+      externalReference: null,
+      waitingOn: "none",
+      commitmentDate: null,
+      nextFollowUpAt: null,
+      lastProgressAt: null,
+      lastProgressSummary: null,
+    },
     principalId: "usr_a",
     deviceId: "dev_local",
     effectiveAuthority: "operator",
@@ -144,6 +164,224 @@ test("creates a local work item with server-owned identity and defaults", () => 
     entryContext: "task",
     traceParent: result.body.workItem.id,
   });
+});
+
+test("creates, normalizes, updates, and audits structured follow-up context", () => {
+  const { service, state } = harness();
+  const created = service.createWorkItem({
+    projectId: "prj_a",
+    title: "Customer delivery",
+    requesterRelation: "customer",
+    requesterName: " 张总 ",
+    requesterOrganization: " 远山科技 ",
+    intakeChannel: "meeting",
+    externalReference: " 客户周会 2026-07-24 ",
+    waitingOn: "me",
+    commitmentDate: "2026-07-25T17:00:00+08:00",
+    nextFollowUpAt: "2026-07-25T10:00:00+08:00",
+  }, ACTOR_A);
+  assert.equal(created.status, 201);
+  assert.deepEqual({
+    requesterRelation: created.body.workItem.requesterRelation,
+    requesterName: created.body.workItem.requesterName,
+    requesterOrganization: created.body.workItem.requesterOrganization,
+    requesterUserId: created.body.workItem.requesterUserId,
+    intakeChannel: created.body.workItem.intakeChannel,
+    externalReference: created.body.workItem.externalReference,
+    waitingOn: created.body.workItem.waitingOn,
+    commitmentDate: created.body.workItem.commitmentDate,
+    nextFollowUpAt: created.body.workItem.nextFollowUpAt,
+  }, {
+    requesterRelation: "customer",
+    requesterName: "张总",
+    requesterOrganization: "远山科技",
+    requesterUserId: null,
+    intakeChannel: "meeting",
+    externalReference: "客户周会 2026-07-24",
+    waitingOn: "me",
+    commitmentDate: "2026-07-25T09:00:00.000Z",
+    nextFollowUpAt: "2026-07-25T02:00:00.000Z",
+  });
+  assert.equal(state.workItemActivities[0].details.followUpContext.requesterRelation, "customer");
+
+  const updated = service.updateWorkItem({
+    workItemId: created.body.workItem.id,
+    expectedRevision: created.body.workItem.revision,
+    requesterRelation: "colleague",
+    requesterUserId: "usr_c",
+    requesterName: null,
+    requesterOrganization: null,
+    intakeChannel: "chat",
+    waitingOn: "internal",
+    nextFollowUpAt: "2026-07-26T09:30:00Z",
+  }, ACTOR_A);
+  assert.equal(updated.status, 200);
+  assert.equal(updated.body.workItem.requesterRelation, "colleague");
+  assert.equal(updated.body.workItem.requesterUserId, "usr_c");
+  assert.equal(updated.body.workItem.waitingOn, "internal");
+  const audit = state.workItemActivities[0];
+  assert.equal(audit.action, "updated");
+  assert.equal(audit.details.followUpContextChanged, true);
+  assert.deepEqual(audit.details.changes.requesterRelation, { from: "customer", to: "colleague" });
+  assert.deepEqual(audit.details.changes.requesterUserId, { from: null, to: "usr_c" });
+});
+
+test("enforces requester identity, tenancy, waiting-on, and follow-up time rules", () => {
+  const { service } = harness();
+  const create = (overrides) => service.createWorkItem({
+    projectId: "prj_a",
+    title: "Validate follow-up",
+    ...overrides,
+  }, ACTOR_A);
+
+  assert.equal(create({ requesterRelation: "vendor" }).body.error, "invalid_work_item_requester_relation");
+  assert.equal(create({ requesterRelation: "customer" }).body.error, "work_item_customer_requester_name_required");
+  assert.equal(create({
+    requesterRelation: "customer", requesterName: "Client", requesterUserId: "usr_c",
+  }).body.error, "work_item_customer_internal_requester_forbidden");
+  assert.equal(create({
+    requesterRelation: "manager", requesterUserId: "usr_b",
+  }).body.error, "invalid_work_item_requester_user");
+  assert.equal(create({
+    requesterRelation: "unknown", requesterName: "Guessed requester",
+  }).body.error, "work_item_unknown_requester_identity_forbidden");
+  assert.equal(create({
+    requesterRelation: "self", requesterUserId: "usr_c",
+  }).body.error, "work_item_self_requester_mismatch");
+  assert.equal(create({
+    requesterRelation: "self", waitingOn: "requester",
+  }).body.error, "work_item_waiting_on_requester_requires_requester");
+  assert.equal(create({
+    nextFollowUpAt: "2026-07-23T23:59:59Z",
+  }).body.error, "work_item_next_follow_up_at_in_past");
+  assert.equal(create({
+    commitmentDate: "2026-02-30T10:00:00Z",
+  }).body.error, "invalid_work_item_commitment_date");
+  assert.equal(create({
+    lastProgressSummary: "Caller supplied history",
+  }).body.error, "work_item_follow_up_server_fields_immutable");
+
+  const own = create({ requesterRelation: "self", intakeChannel: "manual", waitingOn: "me" });
+  assert.equal(own.status, 201);
+  assert.equal(own.body.workItem.requesterUserId, "usr_a");
+  assert.equal(own.body.workItem.requesterName, null);
+  const manager = create({ requesterRelation: "manager", requesterUserId: "usr_c", waitingOn: "requester" });
+  assert.equal(manager.status, 201);
+});
+
+test("records append-only progress with follow-up changes, audit attribution, and idempotent replay", () => {
+  const changes = [];
+  const { service, state, events } = harness({
+    onWorkItemChanged: (item, actor, reason) => changes.push({
+      id: item.id, actorId: actor.userId, reason,
+    }),
+  });
+  const created = service.createWorkItem({
+    projectId: "prj_a",
+    title: "Customer checkpoint",
+    requesterRelation: "customer",
+    requesterName: "Client",
+    waitingOn: "me",
+  }, ACTOR_A).body.workItem;
+
+  const recorded = service.recordWorkItemProgress({
+    workItemId: created.id,
+    expectedRevision: created.revision,
+    idempotencyKey: "progress-1",
+    summary: "  Demo complete; waiting for customer sign-off.  ",
+    waitingOn: "requester",
+    nextFollowUpAt: "2026-07-25T10:00:00+08:00",
+  }, ACTOR_A);
+
+  assert.equal(recorded.status, 201);
+  assert.equal(recorded.body.replayed, false);
+  assert.equal(recorded.body.workItem.revision, 2);
+  assert.equal(recorded.body.workItem.lastProgressAt, "2026-07-24T00:00:00.000Z");
+  assert.equal(recorded.body.workItem.lastProgressSummary, "Demo complete; waiting for customer sign-off.");
+  assert.equal(recorded.body.workItem.waitingOn, "requester");
+  assert.equal(recorded.body.workItem.nextFollowUpAt, "2026-07-25T02:00:00.000Z");
+  assert.equal(state.workItemActivities[0].action, "progress_recorded");
+  assert.equal(state.workItemActivities[0].details.principalId, "usr_a");
+  assert.deepEqual(state.workItemActivities[0].details.changes.waitingOn, { from: "me", to: "requester" });
+  assert.equal(events.at(-1).type, "work_item_progress_recorded");
+  assert.deepEqual(changes, [{ id: created.id, actorId: "usr_a", reason: "progress_recorded" }]);
+
+  const replayed = service.recordWorkItemProgress({
+    workItemId: created.id,
+    expectedRevision: created.revision,
+    idempotencyKey: "progress-1",
+    summary: "Demo complete; waiting for customer sign-off.",
+    waitingOn: "requester",
+    nextFollowUpAt: "2026-07-25T02:00:00.000Z",
+  }, ACTOR_A);
+  assert.equal(replayed.status, 200);
+  assert.equal(replayed.body.replayed, true);
+  assert.equal(state.workItemActivities.filter((activity) => activity.action === "progress_recorded").length, 1);
+  assert.equal(events.filter((event) => event.type === "work_item_progress_recorded").length, 1);
+
+  const conflictingReplay = service.recordWorkItemProgress({
+    workItemId: created.id,
+    expectedRevision: 2,
+    idempotencyKey: "progress-1",
+    summary: "Different progress",
+  }, ACTOR_A);
+  assert.equal(conflictingReplay.status, 409);
+  assert.equal(conflictingReplay.body.error, "work_item_progress_idempotency_conflict");
+  assert.equal(service.recordWorkItemProgress({
+    workItemId: created.id,
+    expectedRevision: 2,
+    idempotencyKey: "progress-2",
+    summary: "Foreign update",
+  }, ACTOR_B).status, 404);
+});
+
+test("validates progress input and optimistic concurrency", () => {
+  const { service } = harness();
+  const created = service.createWorkItem({ projectId: "prj_a", title: "Progress validation" }, ACTOR_A).body.workItem;
+  const record = (overrides = {}) => service.recordWorkItemProgress({
+    workItemId: created.id,
+    expectedRevision: created.revision,
+    idempotencyKey: "progress-validation",
+    summary: "Checkpoint",
+    ...overrides,
+  }, ACTOR_A);
+  assert.equal(record({ summary: " " }).body.error, "invalid_work_item_progress_summary");
+  assert.equal(record({ idempotencyKey: "" }).body.error, "work_item_progress_idempotency_key_required");
+  assert.equal(record({ expectedRevision: 99 }).body.error, "work_item_revision_conflict");
+  assert.equal(record({ nextFollowUpAt: "2026-07-23T23:59:59Z" }).body.error, "work_item_next_follow_up_at_in_past");
+  assert.equal(record({ waitingOn: "requester" }).body.error, "work_item_waiting_on_requester_requires_requester");
+});
+
+test("backfills legacy work-item follow-up context without inventing requester identity", () => {
+  const state = {
+    workItems: [
+      { id: "legacy" },
+      { id: "partial", requesterRelation: "customer", requesterName: "Existing client" },
+    ],
+  };
+  assert.equal(backfillWorkItemFollowUpContext(state), 2);
+  assert.deepEqual({
+    requesterRelation: state.workItems[0].requesterRelation,
+    requesterName: state.workItems[0].requesterName,
+    intakeChannel: state.workItems[0].intakeChannel,
+    waitingOn: state.workItems[0].waitingOn,
+    commitmentDate: state.workItems[0].commitmentDate,
+    nextFollowUpAt: state.workItems[0].nextFollowUpAt,
+    lastProgressAt: state.workItems[0].lastProgressAt,
+    lastProgressSummary: state.workItems[0].lastProgressSummary,
+  }, {
+    requesterRelation: "unknown",
+    requesterName: null,
+    intakeChannel: "unknown",
+    waitingOn: "none",
+    commitmentDate: null,
+    nextFollowUpAt: null,
+    lastProgressAt: null,
+    lastProgressSummary: null,
+  });
+  assert.equal(state.workItems[1].requesterRelation, "customer");
+  assert.equal(state.workItems[1].requesterName, "Existing client");
+  assert.equal(backfillWorkItemFollowUpContext(state), 0);
 });
 
 test("local delivery closes only after base integration; pull-request delivery stays in review", () => {
@@ -980,6 +1218,22 @@ test("team scoping hides foreign work items and foreign projects", () => {
   assert.equal(service.createWorkItem({ projectId: "prj_b", title: "No" }, ACTOR_A).status, 404);
 });
 
+test("home workbench is assignee-scoped, tenant-safe, and timezone validated", () => {
+  const { service } = harness();
+  const own = service.createWorkItem({
+    projectId: "prj_a", title: "Customer homepage", requesterRelation: "customer",
+    requesterName: "Alex", waitingOn: "me", dueDate: "2026-07-24",
+  }, ACTOR_A).body.workItem;
+  service.createWorkItem({ projectId: "prj_b", title: "Foreign homepage" }, ACTOR_B);
+
+  const result = service.getHomeWorkbench({ assigneeId: "mine", timezoneOffset: -480 }, ACTOR_A);
+  assert.equal(result.status, 200);
+  assert.deepEqual(result.body.items.map((item) => item.workItemId), [own.id]);
+  assert.equal(result.body.items[0].requester.relation, "customer");
+  assert.equal(result.body.summary.waitingMe, 1);
+  assert.equal(service.getHomeWorkbench({ timezoneOffset: "invalid" }, ACTOR_A).status, 400);
+});
+
 test("updates are revision-gated and validate structured fields", () => {
   const { service } = harness();
   const item = service.createWorkItem({ projectId: "prj_a", title: "A" }, ACTOR_A).body.workItem;
@@ -1517,6 +1771,13 @@ test("work items survive a persistent-state restart", () => {
       projectId: first.defaultProject.id, action: "commented", actorId: "usr_local",
       createdAt: now(), details: { commentId: "wic_1" },
     });
+    first.state.workItemReportDrafts.push({
+      id: "wrd_1", workItemId: "lwi_1", ownerTeamId: "team_local",
+      projectId: first.defaultProject.id, status: "draft", revision: 1,
+      audience: { relation: "unknown", name: null, organization: null, userId: null },
+      tone: "concise", content: "Persisted report draft", source: { workItemRevision: 1 },
+      createdAt: now(), updatedAt: now(), createdBy: "usr_local", updatedBy: "usr_local",
+    });
     first.state.workItemAttentionOperations.push({
       attentionId: "github_conflict:lwi_1", ownerTeamId: "team_local",
       handling: { actorId: "usr_local", claimedAt: now(), expiresAt: "2026-07-24T00:15:00.000Z" },
@@ -1557,6 +1818,7 @@ test("work items survive a persistent-state restart", () => {
     assert.equal(second.state.planningProjectItems[0].position, 2000);
     assert.equal(second.state.workItemComments[0].body, "Still here");
     assert.equal(second.state.workItemActivities[0].action, "commented");
+    assert.equal(second.state.workItemReportDrafts[0].content, "Persisted report draft");
     assert.equal(second.state.workItemAttentionOperations[0].handling.actorId, "usr_local");
     assert.equal(second.state.githubWorkItemWebhookDeliveries[0].id, "delivery-persisted");
     assert.equal(second.state.githubWorkItemWebhookFailures[0].reason, "invalid_signature");
@@ -1620,4 +1882,322 @@ test("execution bindings attach worktrees and auto-runs to the local issue", () 
   assert.equal(service.recordExecutionBinding({
     workItemId: item.id, kind: "auto_run", targetId: "aur_evil",
   }, ACTOR_B).status, 404);
+});
+
+test("report drafts capture bounded progress, support editing, and require explicit confirmation", () => {
+  const { service, state } = harness();
+  const created = service.createWorkItem({
+    projectId: "prj_a",
+    title: "Prepare customer rollout",
+    status: "review",
+    requesterRelation: "customer",
+    requesterName: "A. Customer",
+    requesterOrganization: "Example Co",
+    waitingOn: "requester",
+  }, ACTOR_A).body.workItem;
+  const progressed = service.recordWorkItemProgress({
+    workItemId: created.id,
+    expectedRevision: created.revision,
+    idempotencyKey: "progress-before-report",
+    summary: "The rollout checklist passed staging review.",
+    nextFollowUpAt: "2026-07-25T09:00:00.000Z",
+  }, ACTOR_A).body.workItem;
+
+  const generated = service.generateReportDraft({
+    workItemId: created.id,
+    expectedWorkItemRevision: progressed.revision,
+    idempotencyKey: "report-generate-1",
+    tone: "formal",
+  }, ACTOR_A);
+  assert.equal(generated.status, 201);
+  assert.equal(generated.body.reportDraft.schemaVersion, 1);
+  assert.equal(generated.body.reportDraft.status, "draft");
+  assert.equal(generated.body.reportDraft.audience.relation, "customer");
+  assert.match(generated.body.reportDraft.content, /rollout checklist passed staging review/);
+  assert.equal(generated.body.reportDraft.source.progressActivities.length, 1);
+  assert.equal(generated.body.reportDraft.source.executionResults.length, 0);
+  assert.equal(generated.body.reportDraft.generation.generator, "structured");
+  assert.equal(generated.body.reportDraft.generation.modelVersion, null);
+  assert.equal(generated.body.reportDraft.generation.locale, "en-US");
+  assert.equal(Object.hasOwn(generated.body.reportDraft, "command"), false);
+
+  const replayed = service.generateReportDraft({
+    workItemId: created.id,
+    expectedWorkItemRevision: progressed.revision,
+    idempotencyKey: "report-generate-1",
+    tone: "formal",
+  }, ACTOR_A);
+  assert.equal(replayed.status, 200);
+  assert.equal(replayed.body.replayed, true);
+  assert.equal(replayed.body.reportDraft.id, generated.body.reportDraft.id);
+
+  const edited = service.updateReportDraft({
+    workItemId: created.id,
+    draftId: generated.body.reportDraft.id,
+    expectedRevision: generated.body.reportDraft.revision,
+    content: "Staging is complete. We are ready for the customer checkpoint.",
+    tone: "concise",
+  }, ACTOR_A);
+  assert.equal(edited.status, 200);
+  assert.equal(edited.body.reportDraft.revision, 2);
+
+  const beforeConfirm = service.getWorkItem({ workItemId: created.id }, ACTOR_A).body.workItem;
+  const confirmed = service.confirmReportDraft({
+    workItemId: created.id,
+    draftId: edited.body.reportDraft.id,
+    expectedRevision: edited.body.reportDraft.revision,
+    idempotencyKey: "report-confirm-1",
+  }, ACTOR_A);
+  assert.equal(confirmed.status, 200);
+  assert.equal(confirmed.body.reportDraft.status, "confirmed");
+  assert.equal(confirmed.body.reportDraft.confirmedSnapshot.content, edited.body.reportDraft.content);
+  assert.equal(confirmed.body.reportDraft.confirmedSnapshot.confirmedBy, ACTOR_A.userId);
+  assert.equal(Object.hasOwn(confirmed.body.reportDraft, "confirmationCommand"), false);
+  const afterConfirm = service.getWorkItem({ workItemId: created.id }, ACTOR_A).body.workItem;
+  assert.equal(afterConfirm.revision, beforeConfirm.revision);
+  assert.equal(afterConfirm.status, "review");
+  assert.equal(afterConfirm.state, "open");
+  assert.equal(service.updateReportDraft({
+    workItemId: created.id,
+    draftId: edited.body.reportDraft.id,
+    expectedRevision: confirmed.body.reportDraft.revision,
+    content: "Mutate confirmed snapshot",
+  }, ACTOR_A).status, 409);
+  assert.deepEqual(
+    state.workItemActivities.slice(0, 3).map((activity) => activity.action),
+    ["report_draft_confirmed", "report_draft_updated", "report_draft_generated"],
+  );
+});
+
+test("report generation follows the requested supported locale and records it", () => {
+  const { service } = harness();
+  const created = service.createWorkItem({
+    projectId: "prj_a",
+    title: "确认客户发布计划",
+    requesterRelation: "customer",
+    requesterName: "张总",
+    waitingOn: "requester",
+  }, ACTOR_A).body.workItem;
+  const progressed = service.recordWorkItemProgress({
+    workItemId: created.id,
+    expectedRevision: created.revision,
+    idempotencyKey: "report-locale-progress",
+    summary: "灰度验证已经通过。",
+  }, ACTOR_A).body.workItem;
+
+  const generated = service.generateReportDraft({
+    workItemId: created.id,
+    expectedWorkItemRevision: progressed.revision,
+    idempotencyKey: "report-locale-zh",
+    locale: "zh-CN",
+    tone: "formal",
+  }, ACTOR_A);
+
+  assert.equal(generated.status, 201);
+  assert.equal(generated.body.reportDraft.generation.locale, "zh-CN");
+  assert.match(generated.body.reportDraft.content, /张总进展更新 — 确认客户发布计划/);
+  assert.match(generated.body.reportDraft.content, /当前进展：灰度验证已经通过。/);
+  assert.match(generated.body.reportDraft.content, /当前等待：提出者回复。/);
+  assert.doesNotMatch(generated.body.reportDraft.content, /Current progress|Waiting on/);
+  assert.equal(service.generateReportDraft({
+    workItemId: created.id,
+    expectedWorkItemRevision: progressed.revision,
+    idempotencyKey: "report-locale-unsupported",
+    locale: "fr-FR",
+  }, ACTOR_A).body.error, "invalid_work_item_report_locale");
+});
+
+test("self report audiences cannot retain hidden identity fields", () => {
+  const { service } = harness();
+  const created = service.createWorkItem({ projectId: "prj_a", title: "Personal checkpoint" }, ACTOR_A).body.workItem;
+  const generated = service.generateReportDraft({
+    workItemId: created.id,
+    expectedWorkItemRevision: created.revision,
+    idempotencyKey: "report-self-audience",
+    audience: { relation: "self", name: "Another user", organization: "Hidden org", userId: "usr_other" },
+  }, ACTOR_A);
+
+  assert.deepEqual(generated.body.reportDraft.audience, {
+    relation: "self",
+    name: null,
+    organization: null,
+    userId: null,
+  });
+  assert.doesNotMatch(generated.body.reportDraft.content, /Another user|Hidden org/);
+});
+
+test("report drafts are tenant scoped, stale after source changes, and regenerate safely", () => {
+  const { service } = harness();
+  const created = service.createWorkItem({ projectId: "prj_a", title: "Manager status" }, ACTOR_A).body.workItem;
+  const generated = service.generateReportDraft({
+    workItemId: created.id,
+    expectedWorkItemRevision: created.revision,
+    idempotencyKey: "report-stale-1",
+    audience: { relation: "manager", name: "M. Manager" },
+  }, ACTOR_A).body.reportDraft;
+  assert.equal(service.listReportDrafts({ workItemId: created.id }, ACTOR_B).status, 404);
+  assert.equal(service.getReportDraft({ workItemId: created.id, draftId: generated.id }, ACTOR_B).status, 404);
+  assert.equal(service.generateReportDraft({
+    workItemId: created.id,
+    expectedWorkItemRevision: created.revision,
+    idempotencyKey: "report-stale-1",
+    audience: { relation: "manager", name: "M. Manager" },
+    tone: "warm",
+  }, ACTOR_A).body.error, "work_item_report_idempotency_conflict");
+
+  const changed = service.recordWorkItemProgress({
+    workItemId: created.id,
+    expectedRevision: created.revision,
+    idempotencyKey: "report-stale-progress",
+    summary: "A new dependency changed the delivery plan.",
+  }, ACTOR_A).body.workItem;
+  assert.equal(service.getReportDraft({ workItemId: created.id, draftId: generated.id }, ACTOR_A).body.reportDraft.stale, true);
+  assert.equal(service.confirmReportDraft({
+    workItemId: created.id,
+    draftId: generated.id,
+    expectedRevision: generated.revision,
+    idempotencyKey: "report-stale-confirm",
+  }, ACTOR_A).body.error, "work_item_report_source_stale");
+
+  const regenerated = service.generateReportDraft({
+    workItemId: created.id,
+    expectedWorkItemRevision: changed.revision,
+    idempotencyKey: "report-stale-2",
+    audience: { relation: "manager", name: "M. Manager" },
+  }, ACTOR_A);
+  assert.equal(regenerated.status, 201);
+  assert.match(regenerated.body.reportDraft.content, /new dependency changed the delivery plan/i);
+  assert.equal(service.getReportDraft({ workItemId: created.id, draftId: generated.id }, ACTOR_A).body.reportDraft.status, "superseded");
+  assert.equal(service.listReportDrafts({ workItemId: created.id }, ACTOR_A).body.count, 2);
+});
+
+test("report draft discard is revision gated and idempotent without touching work state", () => {
+  const { service } = harness();
+  const created = service.createWorkItem({ projectId: "prj_a", title: "Internal update" }, ACTOR_A).body.workItem;
+  const draft = service.generateReportDraft({
+    workItemId: created.id,
+    expectedWorkItemRevision: created.revision,
+    idempotencyKey: "report-discard-generate",
+  }, ACTOR_A).body.reportDraft;
+  const discarded = service.discardReportDraft({
+    workItemId: created.id,
+    draftId: draft.id,
+    expectedRevision: draft.revision,
+    idempotencyKey: "report-discard-1",
+  }, ACTOR_A);
+  assert.equal(discarded.status, 200);
+  assert.equal(discarded.body.reportDraft.status, "discarded");
+  const replayed = service.discardReportDraft({
+    workItemId: created.id,
+    draftId: draft.id,
+    expectedRevision: draft.revision,
+    idempotencyKey: "report-discard-1",
+  }, ACTOR_A);
+  assert.equal(replayed.status, 200);
+  assert.equal(replayed.body.replayed, true);
+  const item = service.getWorkItem({ workItemId: created.id }, ACTOR_A).body.workItem;
+  assert.equal(item.revision, created.revision);
+  assert.equal(item.status, "backlog");
+  assert.equal(item.state, "open");
+});
+
+test("report generation includes bounded result summaries but excludes transcripts and side-effect fields", () => {
+  const { service, state } = harness();
+  const created = service.createWorkItem({ projectId: "prj_a", title: "Safe report context" }, ACTOR_A).body.workItem;
+  state.workItems[0].executionBindings = [{ kind: "auto_run", targetId: "run_report" }];
+  state.autoRuns = [{
+    id: "run_report",
+    projectId: "prj_a",
+    teamId: "team_a",
+    status: "done",
+    resultSummary: "Verified the bounded rollout result.",
+    transcript: "RAW_TRANSCRIPT_SECRET",
+    credential: "CREDENTIAL_SECRET",
+  }];
+  const generated = service.generateReportDraft({
+    workItemId: created.id,
+    expectedWorkItemRevision: created.revision,
+    idempotencyKey: "report-safe-context",
+  }, ACTOR_A);
+  assert.equal(generated.status, 201);
+  assert.match(generated.body.reportDraft.content, /bounded rollout result/);
+  assert.equal(generated.body.reportDraft.source.executionResults[0].id, "run_report");
+  assert.doesNotMatch(JSON.stringify(generated.body.reportDraft), /RAW_TRANSCRIPT_SECRET|CREDENTIAL_SECRET/);
+  assert.equal(service.generateReportDraft({
+    workItemId: created.id,
+    expectedWorkItemRevision: created.revision,
+    idempotencyKey: "report-forbidden-send",
+    send: true,
+  }, ACTOR_A).body.error, "invalid_work_item_report_generate_fields");
+  assert.equal(service.getWorkItem({ workItemId: created.id }, ACTOR_A).body.workItem.state, "open");
+});
+
+test("report generation excludes execution summaries outside the work item project and tenant", () => {
+  const { service, state } = harness();
+  state.projects.push({ id: "prj_c", ownerTeamId: "team_a" });
+  const created = service.createWorkItem({ projectId: "prj_a", title: "Scoped report context" }, ACTOR_A).body.workItem;
+  state.workItems[0].executionBindings = [
+    { kind: "application_invocation", id: "inv_local" },
+    { kind: "auto_run", targetId: "run_foreign_project" },
+    { kind: "auto_run", targetId: "run_same_team_other_project" },
+    { kind: "auto_run", targetId: "run_foreign_team" },
+    { kind: "application_invocation", id: "inv_foreign" },
+    { kind: "application_invocation", id: "inv_projectless" },
+    { kind: "worktree", targetId: "run_wrong_binding_kind" },
+  ];
+  state.autoRuns = [{
+    id: "run_foreign_project",
+    projectId: "prj_b",
+    teamId: "team_b",
+    status: "done",
+    resultSummary: "FOREIGN_PROJECT_SECRET",
+  }, {
+    id: "run_same_team_other_project",
+    projectId: "prj_c",
+    teamId: "team_a",
+    status: "done",
+    resultSummary: "OTHER_PROJECT_SECRET",
+  }, {
+    id: "run_foreign_team",
+    projectId: "prj_a",
+    teamId: "team_b",
+    status: "done",
+    resultSummary: "FOREIGN_TEAM_SECRET",
+  }, {
+    id: "run_wrong_binding_kind",
+    projectId: "prj_a",
+    teamId: "team_a",
+    status: "done",
+    resultSummary: "WRONG_BINDING_KIND_SECRET",
+  }];
+  state.invocations = [{
+    id: "inv_local",
+    options: { metadata: { projectId: "prj_a", teamId: "team_a" } },
+    status: "succeeded",
+    result: { summary: "Included same-project result." },
+  }, {
+    id: "inv_foreign",
+    options: { metadata: { projectId: "prj_b", teamId: "team_b" } },
+    status: "succeeded",
+    result: { summary: "FOREIGN_INVOCATION_SECRET" },
+  }, {
+    id: "inv_projectless",
+    requestedBy: "usr_a",
+    status: "succeeded",
+    result: { summary: "PROJECTLESS_INVOCATION_SECRET" },
+  }];
+
+  const generated = service.generateReportDraft({
+    workItemId: created.id,
+    expectedWorkItemRevision: created.revision,
+    idempotencyKey: "report-scoped-context",
+  }, ACTOR_A);
+
+  assert.equal(generated.status, 201);
+  assert.deepEqual(generated.body.reportDraft.source.executionResults.map((entry) => entry.id), ["inv_local"]);
+  assert.match(generated.body.reportDraft.content, /same-project result/i);
+  assert.doesNotMatch(
+    JSON.stringify(generated.body.reportDraft),
+    /FOREIGN_PROJECT_SECRET|OTHER_PROJECT_SECRET|FOREIGN_TEAM_SECRET|FOREIGN_INVOCATION_SECRET|PROJECTLESS_INVOCATION_SECRET|WRONG_BINDING_KIND_SECRET/,
+  );
 });
