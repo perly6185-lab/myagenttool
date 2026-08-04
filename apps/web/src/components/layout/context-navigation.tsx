@@ -5,7 +5,7 @@ import { useAppTranslation } from "@/lib/i18n/use-app-translation";
 import { type SectionKey, useUiStore } from "@/store/ui-store";
 import { cn } from "@/lib/cn";
 
-type ContextLabelKey = `shell.contextNav.${"overview" | "process" | "assets" | "verification" | "trace" | "tasks" | "worktrees" | "automation" | "settings"}`;
+type ContextLabelKey = `shell.contextNav.${"overview" | "process" | "assets" | "verification" | "report" | "trace" | "tasks" | "worktrees" | "automation" | "settings"}`;
 
 const TASK_NAV: Array<[ContextLabelKey, SectionKey]> = [
   ["shell.contextNav.overview", "task"],

@@ -22,6 +22,16 @@ toggle to review the relationship between human follow-up and derived AI status.
 The prototype intentionally routes detailed run, approval, and evidence work to
 their canonical surfaces instead of recreating those surfaces on Home.
 
+## Work Item Report Review
+
+Production browser visual QA:
+
+- [work-item-report-review.visual-qa.md](work-item-report-review.visual-qa.md)
+
+The review covers ordinary draft, stale-source, and confirmed states in the
+canonical Local Issue report section. Home remains a compact status and
+navigation surface and does not own a second report editor.
+
 ## Local Issue Follow-up Fields
 
 Files:

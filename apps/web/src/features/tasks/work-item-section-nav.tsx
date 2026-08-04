@@ -17,6 +17,7 @@ export function WorkItemSectionNav({
     ["process", t("shell.contextNav.process")],
     ["assets", t("shell.contextNav.assets")],
     ["verification", t("shell.contextNav.verification")],
+    ["report", t("shell.contextNav.report")],
     ["trace", t("shell.contextNav.trace")],
   ];
   return (
@@ -34,7 +35,6 @@ export function WorkItemSectionNav({
           variant={activeSection === section ? "secondary" : "ghost"}
           size="sm"
           aria-selected={activeSection === section}
-          tabIndex={activeSection === section ? 0 : -1}
           onClick={() => onSectionChange(section)}
         >
           {label}

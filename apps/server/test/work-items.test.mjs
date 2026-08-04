@@ -1918,6 +1918,7 @@ test("report drafts capture bounded progress, support editing, and require expli
   assert.equal(generated.body.reportDraft.source.executionResults.length, 0);
   assert.equal(generated.body.reportDraft.generation.generator, "structured");
   assert.equal(generated.body.reportDraft.generation.modelVersion, null);
+  assert.equal(generated.body.reportDraft.generation.locale, "en-US");
   assert.equal(Object.hasOwn(generated.body.reportDraft, "command"), false);
 
   const replayed = service.generateReportDraft({
@@ -1966,6 +1967,63 @@ test("report drafts capture bounded progress, support editing, and require expli
     state.workItemActivities.slice(0, 3).map((activity) => activity.action),
     ["report_draft_confirmed", "report_draft_updated", "report_draft_generated"],
   );
+});
+
+test("report generation follows the requested supported locale and records it", () => {
+  const { service } = harness();
+  const created = service.createWorkItem({
+    projectId: "prj_a",
+    title: "确认客户发布计划",
+    requesterRelation: "customer",
+    requesterName: "张总",
+    waitingOn: "requester",
+  }, ACTOR_A).body.workItem;
+  const progressed = service.recordWorkItemProgress({
+    workItemId: created.id,
+    expectedRevision: created.revision,
+    idempotencyKey: "report-locale-progress",
+    summary: "灰度验证已经通过。",
+  }, ACTOR_A).body.workItem;
+
+  const generated = service.generateReportDraft({
+    workItemId: created.id,
+    expectedWorkItemRevision: progressed.revision,
+    idempotencyKey: "report-locale-zh",
+    locale: "zh-CN",
+    tone: "formal",
+  }, ACTOR_A);
+
+  assert.equal(generated.status, 201);
+  assert.equal(generated.body.reportDraft.generation.locale, "zh-CN");
+  assert.match(generated.body.reportDraft.content, /张总进展更新 — 确认客户发布计划/);
+  assert.match(generated.body.reportDraft.content, /当前进展：灰度验证已经通过。/);
+  assert.match(generated.body.reportDraft.content, /当前等待：提出者回复。/);
+  assert.doesNotMatch(generated.body.reportDraft.content, /Current progress|Waiting on/);
+  assert.equal(service.generateReportDraft({
+    workItemId: created.id,
+    expectedWorkItemRevision: progressed.revision,
+    idempotencyKey: "report-locale-unsupported",
+    locale: "fr-FR",
+  }, ACTOR_A).body.error, "invalid_work_item_report_locale");
+});
+
+test("self report audiences cannot retain hidden identity fields", () => {
+  const { service } = harness();
+  const created = service.createWorkItem({ projectId: "prj_a", title: "Personal checkpoint" }, ACTOR_A).body.workItem;
+  const generated = service.generateReportDraft({
+    workItemId: created.id,
+    expectedWorkItemRevision: created.revision,
+    idempotencyKey: "report-self-audience",
+    audience: { relation: "self", name: "Another user", organization: "Hidden org", userId: "usr_other" },
+  }, ACTOR_A);
+
+  assert.deepEqual(generated.body.reportDraft.audience, {
+    relation: "self",
+    name: null,
+    organization: null,
+    userId: null,
+  });
+  assert.doesNotMatch(generated.body.reportDraft.content, /Another user|Hidden org/);
 });
 
 test("report drafts are tenant scoped, stale after source changes, and regenerate safely", () => {
@@ -2049,6 +2107,8 @@ test("report generation includes bounded result summaries but excludes transcrip
   state.workItems[0].executionBindings = [{ kind: "auto_run", targetId: "run_report" }];
   state.autoRuns = [{
     id: "run_report",
+    projectId: "prj_a",
+    teamId: "team_a",
     status: "done",
     resultSummary: "Verified the bounded rollout result.",
     transcript: "RAW_TRANSCRIPT_SECRET",
@@ -2070,4 +2130,74 @@ test("report generation includes bounded result summaries but excludes transcrip
     send: true,
   }, ACTOR_A).body.error, "invalid_work_item_report_generate_fields");
   assert.equal(service.getWorkItem({ workItemId: created.id }, ACTOR_A).body.workItem.state, "open");
+});
+
+test("report generation excludes execution summaries outside the work item project and tenant", () => {
+  const { service, state } = harness();
+  state.projects.push({ id: "prj_c", ownerTeamId: "team_a" });
+  const created = service.createWorkItem({ projectId: "prj_a", title: "Scoped report context" }, ACTOR_A).body.workItem;
+  state.workItems[0].executionBindings = [
+    { kind: "application_invocation", id: "inv_local" },
+    { kind: "auto_run", targetId: "run_foreign_project" },
+    { kind: "auto_run", targetId: "run_same_team_other_project" },
+    { kind: "auto_run", targetId: "run_foreign_team" },
+    { kind: "application_invocation", id: "inv_foreign" },
+    { kind: "application_invocation", id: "inv_projectless" },
+    { kind: "worktree", targetId: "run_wrong_binding_kind" },
+  ];
+  state.autoRuns = [{
+    id: "run_foreign_project",
+    projectId: "prj_b",
+    teamId: "team_b",
+    status: "done",
+    resultSummary: "FOREIGN_PROJECT_SECRET",
+  }, {
+    id: "run_same_team_other_project",
+    projectId: "prj_c",
+    teamId: "team_a",
+    status: "done",
+    resultSummary: "OTHER_PROJECT_SECRET",
+  }, {
+    id: "run_foreign_team",
+    projectId: "prj_a",
+    teamId: "team_b",
+    status: "done",
+    resultSummary: "FOREIGN_TEAM_SECRET",
+  }, {
+    id: "run_wrong_binding_kind",
+    projectId: "prj_a",
+    teamId: "team_a",
+    status: "done",
+    resultSummary: "WRONG_BINDING_KIND_SECRET",
+  }];
+  state.invocations = [{
+    id: "inv_local",
+    options: { metadata: { projectId: "prj_a", teamId: "team_a" } },
+    status: "succeeded",
+    result: { summary: "Included same-project result." },
+  }, {
+    id: "inv_foreign",
+    options: { metadata: { projectId: "prj_b", teamId: "team_b" } },
+    status: "succeeded",
+    result: { summary: "FOREIGN_INVOCATION_SECRET" },
+  }, {
+    id: "inv_projectless",
+    requestedBy: "usr_a",
+    status: "succeeded",
+    result: { summary: "PROJECTLESS_INVOCATION_SECRET" },
+  }];
+
+  const generated = service.generateReportDraft({
+    workItemId: created.id,
+    expectedWorkItemRevision: created.revision,
+    idempotencyKey: "report-scoped-context",
+  }, ACTOR_A);
+
+  assert.equal(generated.status, 201);
+  assert.deepEqual(generated.body.reportDraft.source.executionResults.map((entry) => entry.id), ["inv_local"]);
+  assert.match(generated.body.reportDraft.content, /same-project result/i);
+  assert.doesNotMatch(
+    JSON.stringify(generated.body.reportDraft),
+    /FOREIGN_PROJECT_SECRET|OTHER_PROJECT_SECRET|FOREIGN_TEAM_SECRET|FOREIGN_INVOCATION_SECRET|PROJECTLESS_INVOCATION_SECRET|WRONG_BINDING_KIND_SECRET/,
+  );
 });

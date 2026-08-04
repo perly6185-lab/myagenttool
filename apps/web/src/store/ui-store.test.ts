@@ -100,6 +100,10 @@ describe("URL navigation helpers", () => {
     });
     expect(new URLSearchParams(search).get("task")).toBe("wi_42");
     expect(new URLSearchParams(search).get("taskView")).toBe("verification");
+    expect(navigationFromSearch("?section=task&task=wi_42&taskView=report")).toMatchObject({
+      selectedWorkItemId: "wi_42",
+      selectedWorkItemSection: "report",
+    });
   });
 
   it("parses valid navigation params and ignores unknown sections", () => {
