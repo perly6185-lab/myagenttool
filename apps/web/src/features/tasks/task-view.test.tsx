@@ -46,6 +46,11 @@ const mocks = vi.hoisted(() => ({
   reorderPlanningProjectItems: vi.fn(),
   updatePlanningProjectItems: vi.fn(),
   executePlanningRecommendedAction: vi.fn(),
+  listWorkItemReportDrafts: vi.fn(),
+  generateWorkItemReportDraft: vi.fn(),
+  updateWorkItemReportDraft: vi.fn(),
+  confirmWorkItemReportDraft: vi.fn(),
+  discardWorkItemReportDraft: vi.fn(),
   setSection: vi.fn(),
   setSelectedProjectId: vi.fn(),
   setSelectedWorktreeId: vi.fn(),
@@ -150,6 +155,16 @@ vi.mock("@/features/tasks/work-item-batch-api", () => ({
   },
 }));
 
+vi.mock("@/features/tasks/work-item-report-api", () => ({
+  workItemReportApi: {
+    list: mocks.listWorkItemReportDrafts,
+    generate: mocks.generateWorkItemReportDraft,
+    update: mocks.updateWorkItemReportDraft,
+    confirm: mocks.confirmWorkItemReportDraft,
+    discard: mocks.discardWorkItemReportDraft,
+  },
+}));
+
 vi.mock("@/features/tasks/article-workflow-api", () => ({
   articleApi: {
     inspect: mocks.inspectArticleImport,
@@ -194,6 +209,7 @@ describe("TaskView local work items", () => {
     mocks.autoRunReadiness.mockResolvedValue({ readiness: { ready: true, checks: [] } });
     mocks.listArticleImports.mockResolvedValue({ jobs: [], latest: null });
     mocks.listArticleDerivatives.mockResolvedValue({ derivatives: [] });
+    mocks.listWorkItemReportDrafts.mockResolvedValue({ reportDrafts: [], count: 0 });
   });
   it("shows local work items as the default source", async () => {
     mocks.listWorkItemAttention.mockResolvedValue({ items: [{
@@ -677,6 +693,7 @@ describe("TaskView local work items", () => {
     const cockpit = (await screen.findByText("Task cockpit")).closest("section");
     expect(cockpit?.querySelector(".grid")?.className).toContain("xl:grid-cols-4");
     expect(screen.getByRole("tab", { name: "Overview" }).getAttribute("aria-selected")).toBe("true");
+    expect(screen.getByRole("tab", { name: "Report" })).toBeTruthy();
     expect(await screen.findByText("Customer · Alex Client")).toBeTruthy();
     expect(screen.getByText("Draft sent for review")).toBeTruthy();
     expect(screen.getByRole("button", { name: "Record progress" })).toBeTruthy();
@@ -705,7 +722,6 @@ describe("TaskView local work items", () => {
     fireEvent.change(screen.getByLabelText("Currently waiting on"), { target: { value: "ai" } });
     fireEvent.change(title, { target: { value: "Edited issue" } });
     fireEvent.click(screen.getByRole("tab", { name: "Process" }));
-    fireEvent.click(screen.getByRole("button", { name: "Create worktree" }));
     expect(mocks.createWorkItemWorktree).not.toHaveBeenCalled();
     const safetyDialog = screen.getAllByRole("dialog").at(-1);
     fireEvent.click(within(safetyDialog as HTMLElement).getByRole("button", { name: "Save" }));
@@ -716,12 +732,64 @@ describe("TaskView local work items", () => {
       requesterName: "Alex Client",
       waitingOn: "ai",
     })));
+    await waitFor(() => expect(screen.getByRole("tab", { name: "Process" }).getAttribute("aria-selected")).toBe("true"));
+    fireEvent.click(screen.getByRole("button", { name: "Create worktree" }));
     await waitFor(() => expect(mocks.createWorkItemWorktree).toHaveBeenCalledWith("lwi_1"));
     fireEvent.click(screen.getByRole("tab", { name: "Trace" }));
     fireEvent.change(screen.getByPlaceholderText("Add a comment…"), { target: { value: "Looks good" } });
     fireEvent.click(screen.getByRole("button", { name: "Comment" }));
     await waitFor(() => expect(mocks.createWorkItemComment).toHaveBeenCalledWith("lwi_1", "Looks good"));
     expect(screen.getByText("Created")).toBeTruthy();
+  });
+
+  it("guards section navigation and detail close when the report has unsaved edits", async () => {
+    const item = {
+      id: "lwi_report_guard", localRef: "LOCAL-88", projectId: "prj_1",
+      title: "Guard report edits", body: "", type: "task", status: "review",
+      priority: "p1", state: "open", labels: [], assigneeIds: [],
+      followUpSchemaVersion: 1, requesterRelation: "customer",
+      requesterName: "Alex", requesterOrganization: "Acme", requesterUserId: null,
+      intakeChannel: "meeting", externalReference: null, waitingOn: "me",
+      commitmentDate: null, nextFollowUpAt: null, lastProgressAt: null, lastProgressSummary: null,
+      acceptanceCriteria: [], revision: 4, archivedAt: null,
+      parentId: null, parent: null, subIssues: [], subIssuesSummary: { total: 0, completed: 0, percentCompleted: 0 },
+      updatedAt: "2026-08-03T12:00:00.000Z",
+    };
+    const reportDraft = {
+      id: "wrd_guard", schemaVersion: 1, workItemId: item.id, status: "draft", revision: 1,
+      audience: { relation: "customer", name: "Alex", organization: "Acme", userId: null },
+      tone: "concise", content: "Original report", stale: false, canEdit: true, canConfirm: true,
+      source: {
+        workItemRevision: 4, capturedAt: item.updatedAt, contextDigest: "digest",
+        progressActivities: [], executionResults: [],
+      },
+      generation: {
+        generator: "structured", policyVersion: "work-item-report-v1", modelVersion: null,
+        locale: "en-US", inputDigest: "input",
+      },
+      createdBy: "usr_local", updatedBy: "usr_local", createdAt: item.updatedAt, updatedAt: item.updatedAt,
+      confirmedAt: null, confirmedBy: null, confirmedSnapshot: null,
+    };
+    mocks.listWorkItems.mockResolvedValue({ workItems: [item], count: 1 });
+    mocks.getWorkItem.mockResolvedValue({ workItem: item, observability: null });
+    mocks.listWorkItemComments.mockResolvedValue({ comments: [] });
+    mocks.listWorkItemActivity.mockResolvedValue({ activities: [] });
+    mocks.listWorkItemReportDrafts.mockResolvedValue({ reportDrafts: [reportDraft], count: 1 });
+
+    render(<TaskView />);
+    fireEvent.click(await screen.findByText("Guard report edits"));
+    fireEvent.click(await screen.findByRole("tab", { name: "Report" }));
+    fireEvent.change(await screen.findByDisplayValue("Original report"), { target: { value: "Protected edit" } });
+
+    fireEvent.click(screen.getByRole("tab", { name: "Overview" }));
+    const navigationDialog = await screen.findByText(/Return to the Report tab to save them/);
+    expect(screen.getByRole("tab", { name: "Report" }).getAttribute("aria-selected")).toBe("true");
+    fireEvent.click(within(navigationDialog.closest('[role="dialog"]') as HTMLElement).getByRole("button", { name: "Cancel" }));
+
+    const detailDialog = screen.getByRole("dialog", { name: "Local issue details" });
+    fireEvent.click(within(detailDialog).getByRole("button", { name: "Close" }));
+    await waitFor(() => expect(screen.getAllByRole("dialog", { name: "Local issue details" })).toHaveLength(2));
+    expect(screen.getByDisplayValue("Protected edit")).toBeTruthy();
   });
 
   it("opens an imported Markdown output directly from its local Issue", async () => {

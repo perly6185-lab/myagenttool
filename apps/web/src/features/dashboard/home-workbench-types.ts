@@ -39,6 +39,12 @@ export type HomeWorkbenchItem = {
   plannedDate: string | null;
   commitmentDate: string | null;
   nextFollowUpAt: string | null;
+  report: null | {
+    id: string;
+    status: "draft" | "confirmed";
+    stale: boolean;
+    updatedAt: string;
+  };
   nextAction: {
     kind: "open_issue" | "record_progress" | "review_result" | "open_approval" | "open_run" | "retry";
     label: string;

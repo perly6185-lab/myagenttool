@@ -61,7 +61,7 @@ export interface PendingLocalDocumentRegistration {
 }
 
 export type PlanningProjectView = "list" | "board" | "roadmap" | "insights" | "executions";
-export type WorkItemSection = "overview" | "process" | "assets" | "verification" | "trace";
+export type WorkItemSection = "overview" | "process" | "assets" | "verification" | "report" | "trace";
 export type InvocationStatusFilter = "all" | "active" | "completed" | "failed";
 export interface PlanningProjectFilters {
   status: string;
@@ -245,7 +245,7 @@ export function navigationFromSearch(search: string): UrlNavigationState {
   navigation.selectedAutomationId = automationId;
   if (section === "task" || params.has("task") || params.has("taskView")) {
     navigation.selectedWorkItemId = workItemId;
-    navigation.selectedWorkItemSection = ["process", "assets", "verification", "trace"].includes(workItemSectionParam ?? "")
+    navigation.selectedWorkItemSection = ["process", "assets", "verification", "report", "trace"].includes(workItemSectionParam ?? "")
       ? workItemSectionParam as WorkItemSection
       : "overview";
   }
@@ -464,7 +464,7 @@ export const useUiStore = create<UiState>()(
         if (!["list", "board", "roadmap", "insights", "executions"].includes(merged.planningProjectView)) {
           merged.planningProjectView = "list";
         }
-        if (!["overview", "process", "assets", "verification", "trace"].includes(merged.selectedWorkItemSection)) {
+          if (!["overview", "process", "assets", "verification", "report", "trace"].includes(merged.selectedWorkItemSection)) {
           merged.selectedWorkItemSection = "overview";
         }
         if (!merged.planningProjectFilters || typeof merged.planningProjectFilters !== "object") {

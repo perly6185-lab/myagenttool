@@ -128,6 +128,7 @@ export function DashboardView({ surface = "overview" }: { surface?: DashboardSur
   const setSelectedInvocationId = useUiStore((s) => s.setSelectedInvocationId);
   const setSelectedApplicationId = useUiStore((s) => s.setSelectedApplicationId);
   const setSelectedWorkItemId = useUiStore((s) => s.setSelectedWorkItemId);
+  const setSelectedWorkItemSection = useUiStore((s) => s.setSelectedWorkItemSection);
   const selectedProjectId = useUiStore((s) => s.selectedProjectId);
   const setSelectedProjectId = useUiStore((s) => s.setSelectedProjectId);
   const selectedWorktreeId = useUiStore((s) => s.selectedWorktreeId);
@@ -429,7 +430,10 @@ export function DashboardView({ surface = "overview" }: { surface?: DashboardSur
   }
 
   function openDailyWorkItem(item: WorkItem) {
-    if (item.section === "task" && item.targetId) setSelectedWorkItemId(item.targetId);
+    if (item.section === "task" && item.targetId) {
+      setSelectedWorkItemId(item.targetId);
+      if (item.kind === "home_report_review") setSelectedWorkItemSection("report");
+    }
     if (item.section === "invocations" && item.targetId) setSelectedInvocationId(item.targetId);
     if (item.section === "applications" && item.targetId) setSelectedApplicationId(item.targetId);
     if (item.section === "autoRuns" && item.targetId) {

@@ -78,6 +78,20 @@ function nextAction(item, reasons, execution) {
   return { kind: "open_issue", label: "open_issue", targetId: item.id, section: "task" };
 }
 
+function reportDraftSummary(state, item) {
+  const draft = (state.workItemReportDrafts ?? []).find((candidate) =>
+    candidate.workItemId === item.id
+    && candidate.ownerTeamId === item.ownerTeamId
+    && ["draft", "confirmed"].includes(candidate.status));
+  if (!draft) return null;
+  return {
+    id: draft.id,
+    status: draft.status,
+    stale: draft.source?.workItemRevision !== item.revision,
+    updatedAt: draft.updatedAt ?? draft.createdAt,
+  };
+}
+
 function overdueAge(item, nowMs, today) {
   const values = [];
   if (item.commitmentDate && timestamp(item.commitmentDate) < nowMs) values.push(nowMs - timestamp(item.commitmentDate));
@@ -140,6 +154,7 @@ export function homeWorkbenchReadModel({
         plannedDate: item.plannedDate ?? null,
         commitmentDate: item.commitmentDate ?? null,
         nextFollowUpAt: item.nextFollowUpAt ?? null,
+        report: reportDraftSummary(state, item),
         nextAction: nextAction(item, reasons, execution),
         ai: aiStatus ? {
           autoRunId: execution.autoRun?.id ?? null,
