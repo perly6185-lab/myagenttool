@@ -89,6 +89,23 @@ test("requires confirmation before displacing a manually pinned task", () => {
   assert.deepEqual(urgent.displacements, []);
 });
 
+test("#1614: urgentRevision ignores slot/readiness churn but tracks urgent content", () => {
+  const p0 = source("p0", { priority: "p0" });
+  const base = computeLocalScheduleUrgent(...input([p0], { availableSlots: 1 }));
+
+  // Dispatch activity: a slot fills and readiness flips. Content unchanged.
+  const busyP0 = source("p0", { priority: "p0", readiness: { state: "waiting_capacity", reason: "terminal_at_capacity" } });
+  const busy = computeLocalScheduleUrgent(...input([busyP0], { availableSlots: 0 }));
+  assert.notEqual(busy.insertions[0].activation, base.insertions[0].activation,
+    "fixture sanity: the activation label really did change");
+  assert.equal(busy.urgentRevision, base.urgentRevision,
+    "slot/readiness churn must not invalidate a confirmed urgent plan");
+
+  // A real content change — the item's revision moved — must invalidate.
+  const edited = computeLocalScheduleUrgent(...input([source("p0", { priority: "p0", revision: 2 })], { availableSlots: 1 }));
+  assert.notEqual(edited.urgentRevision, base.urgentRevision);
+});
+
 test("prefers an unpinned victim before considering a lower-priority manual pin", () => {
   const p0 = source("p0", { priority: "p0", estimate: { minutes: 200, confidence: "medium" } });
   const unpinned = source("unpinned", { priority: "p2", estimate: { minutes: 200, confidence: "medium" } });
