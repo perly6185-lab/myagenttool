@@ -41,14 +41,14 @@ try {
   // affordances survived the React migration.
   const consoleSource = await waitFor(async () => {
     const source = await fetchConsoleSource(webUrl);
-    return source.includes("What should your computer do?") ? source : false;
+    return source.includes("Describe the outcome you want") ? source : false;
   }, "web console bundle");
   assert(consoleSource.includes("Run on this computer"), "web console should offer a plain-language run action");
   assert(
     ["Safety", "Data", "Cost", "Cancellation"].every((label) => consoleSource.includes(label)),
     "web console should show pre-run review categories",
   );
-  assert(consoleSource.includes("Technical details"), "web console should hide advanced details behind disclosure");
+  assert(consoleSource.includes("What to know before running"), "web console should hide advanced details behind disclosure");
 
   const offlineCreated = await request("POST", "/api/invocations", {
     task: "Run the M0 acceptance offline queue test.",
