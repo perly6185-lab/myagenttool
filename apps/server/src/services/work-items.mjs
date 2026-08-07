@@ -28,6 +28,14 @@ import { resolveWorkItemExecution } from "./work-item-execution.mjs";
 const TYPES = new Set(["task", "bug", "feature", "initiative"]);
 const STATUSES = new Set(["backlog", "ready", "in_progress", "review", "blocked", "done"]);
 const PRIORITIES = new Set(["p0", "p1", "p2", "p3"]);
+// Friendly aliases normalized to canonical p0–p3 before validation, so callers
+// may pass "critical"/"high"/"medium"/"low" etc. (mirrors the alias→canonical
+// pattern in normalizeClaudePermissionMode). Invalid values still reject.
+const PRIORITY_ALIASES = { critical: "p0", urgent: "p0", high: "p1", medium: "p2", normal: "p2", low: "p3" };
+function normalizePriority(value) {
+  const candidate = String(value ?? "").toLowerCase().trim();
+  return PRIORITY_ALIASES[candidate] ?? candidate;
+}
 const MAX_TITLE = 300;
 const MAX_BODY = 200_000;
 const MAX_LABELS = 50;
@@ -131,7 +139,9 @@ function validateDraft(input, { partial = false } = {}) {
     ["priority", PRIORITIES, "p2"],
   ]) {
     if (!partial || Object.hasOwn(input, field)) {
-      const candidate = String(input[field] ?? fallback);
+      const candidate = field === "priority"
+        ? normalizePriority(input[field] ?? fallback)
+        : String(input[field] ?? fallback);
       if (!allowed.has(candidate)) return { error: `invalid_work_item_${field}` };
       value[field] = candidate;
     }

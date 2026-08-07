@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { randomBytes } from "node:crypto";
 import { appendFileSync, existsSync, mkdirSync } from "node:fs";
 import http from "node:http";
 import net from "node:net";
@@ -18,7 +19,15 @@ if (process.argv.includes("--check")) {
   process.exit(0);
 }
 
-const { app, BrowserWindow, dialog, ipcMain, nativeTheme, shell } = await import("electron");
+const { app, BrowserWindow, dialog, ipcMain, nativeTheme, session, shell } = await import("electron");
+
+// #1616 loopback trust boundary: a fresh per-launch credential shared only
+// with the processes this shell spawns. The server rejects /api requests
+// without it, so "another local process found the port" no longer grants
+// owner-authority control of the plane. Never placed in argv (visible to ps)
+// — the renderer gets it injected at the network layer, not exposed to page JS.
+const loopbackToken = randomBytes(32).toString("hex");
+const loopbackHeaders = { "X-Loopback-Token": loopbackToken };
 
 const smokeMode = process.argv.includes("--smoke") || process.env.MYAGENTTOOL_ELECTRON_SMOKE === "1";
 const host = "127.0.0.1";
@@ -77,6 +86,7 @@ async function startApp() {
   startNodeService("server", paths.serverEntry, {
     SERVER_HOST: host,
     SERVER_PORT: String(serverPort),
+    MYAGENT_LOOPBACK_TOKEN: loopbackToken,
     MYAGENTTOOL_STATE_PATH: join(app.getPath("userData"), "state", "local-demo-state.json"),
     MYAGENTTOOL_PROJECT_PATH: process.env.MYAGENTTOOL_PROJECT_PATH ?? app.getPath("documents"),
   }, paths.runtimeRoot);
@@ -85,6 +95,7 @@ async function startApp() {
 
   startNodeService("desktop", paths.desktopEntry, {
     BRIDGE_SERVER_URL: serverUrl,
+    BRIDGE_LOOPBACK_TOKEN: loopbackToken,
     BRIDGE_TERMINAL_POLL_INTERVAL_MS: process.env.BRIDGE_TERMINAL_POLL_INTERVAL_MS ?? "40",
     MYAGENTTOOL_BRIDGE_TOKEN_PATH: join(app.getPath("userData"), "state", "bridge-token.json"),
     ...bundledAgentEnv({ appRoot: paths.runtimeRoot, resourcesRoot: paths.resourcesRoot, execPath: process.execPath }),
@@ -106,6 +117,17 @@ async function startApp() {
     app.exit(0);
     return;
   }
+
+  // Renderer → server requests get the launch token stamped at the network
+  // layer. The page JS never sees the token (nothing to exfiltrate via XSS),
+  // and the web bundle needs no desktop-specific auth code. Scoped to the
+  // server origin only.
+  session.defaultSession.webRequest.onBeforeSendHeaders(
+    { urls: [`${serverUrl}/*`] },
+    (details, callback) => {
+      callback({ requestHeaders: { ...details.requestHeaders, ...loopbackHeaders } });
+    },
+  );
 
   createMainWindow(`${webUrl}/?api=${encodeURIComponent(serverUrl)}`, serverUrl);
 }
@@ -155,7 +177,7 @@ function registerSkinIpc() {
 
 function createMainWindow(url, serverUrl) {
   registerSkinIpc();
-  const getState = async () => (await (await fetch(`${serverUrl}/api/state`)).json());
+  const getState = async () => (await (await fetch(`${serverUrl}/api/state`, { headers: loopbackHeaders })).json());
   registerLocalOfficeDocumentPicker({ ipcMain, dialog, getWindow: () => mainWindow, getWorktrees: async () => (await getState()).worktrees ?? [] });
   registerWorkflowSourceFolderPicker({ ipcMain, dialog, getWindow: () => mainWindow });
   registerWorkflowCaseIntake({ ipcMain, dialog, getWindow: () => mainWindow, getState });
@@ -343,7 +365,7 @@ async function waitForJson(url, predicate, label, timeoutMs = 30_000) {
 
 function getStatus(url) {
   return new Promise((resolveStatus, reject) => {
-    const req = http.get(url, (res) => {
+    const req = http.get(url, { headers: loopbackHeaders }, (res) => {
       res.resume();
       resolveStatus(res.statusCode ?? 0);
     });
@@ -356,7 +378,7 @@ function getStatus(url) {
 
 function getJson(url) {
   return new Promise((resolveJson, reject) => {
-    const req = http.get(url, (res) => {
+    const req = http.get(url, { headers: loopbackHeaders }, (res) => {
       const chunks = [];
       res.on("data", (chunk) => chunks.push(chunk));
       res.on("end", () => {

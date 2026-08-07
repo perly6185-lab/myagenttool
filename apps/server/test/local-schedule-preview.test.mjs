@@ -50,7 +50,7 @@ test("preserves an in-horizon pinned date and never charges attention work to ca
   const preview = computeLocalSchedulePreview(capacity([
     item("pinned", { plannedDate: "2026-08-01", schedulePlanSource: "manual", manuallyPinned: true, estimate: { minutes: 120, confidence: "medium" } }),
     item("blocked", { status: "blocked", category: "attention", readiness: { state: "blocked", reason: "work_item_blocked" }, estimate: { minutes: 400, confidence: "low" } }),
-  ]), { now: () => NOW, utilization: 1, urgentReserve: 0 });
+  ]), { now: () => NOW, utilization: 1, urgentReserve: 0, timeZone: "UTC" });
 
   assert.deepEqual(preview.days[0].items, []);
   assert.deepEqual(preview.days[1].items.map((row) => row.workItemId), ["pinned"]);

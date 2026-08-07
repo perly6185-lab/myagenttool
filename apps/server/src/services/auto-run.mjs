@@ -624,6 +624,14 @@ export function createAutoRunService({
     if (agent.health?.status === "unhealthy") {
       throw new Error(`The selected agent is unhealthy: ${agent.health.message ?? "run its health check and resolve the reported problem first."}`);
     }
+    // A local-device agent (Codex/Claude via the desktop bridge) is "unavailable"
+    // when no bridge is online. Without this gate the auto-run is accepted but the
+    // invocation stalls in "dispatching" forever — only the bridge polls
+    // /api/bridge/next and actually executes it. Fail fast with an actionable
+    // message instead of hanging silently.
+    if (agent.location?.type === "local_device" && agent.status === "unavailable") {
+      throw new Error("No device is online to run this agent. Start the desktop bridge (or link a device) before starting an auto-run.");
+    }
     const agentTerminalId = agent.location?.type === "local_device" ? agent.location.deviceId ?? null : null;
     const owningTerminalId = terminalId ? String(terminalId) : agentTerminalId;
     if (owningTerminalId && agentTerminalId !== owningTerminalId) {
@@ -1712,9 +1720,19 @@ export function createAutoRunService({
               }
             }
           }
-          const blockReason = repairRefusal
-            ? `Self-repair paused: ${repairRefusal}. ${verification.summary ?? ""}`.trim()
-            : verification.summary ?? "Verification failed.";
+          // A failed verification that actually ran a check is sometimes an
+          // environment mismatch rather than a code defect — most often the
+          // auto-derived whole-repo `pnpm test:ci` fallback against a worktree
+          // whose repo has no such script. Surface the escape hatch on the
+          // blocked reason so the operator isn't left guessing. (Repair prompt
+          // above intentionally gets the raw summary — this is operator-only.)
+          const verifyHint = verification.verified && !verification.passed
+            && /test:ci|typecheck|--test/.test(String(verification.summary ?? ""))
+              ? " If this is an auto-derived check the worktree repo cannot run, set MYAGENTTOOL_AUTORUN_VERIFY_AUTO=0 or configure an explicit verify command."
+              : "";
+          const blockReason = ((repairRefusal
+            ? `Self-repair paused: ${repairRefusal}. ${verification.summary ?? ""}`
+            : verification.summary ?? "Verification failed.") + verifyHint).trim();
           runTx(() => setAutoRunStatus(autoRun, "blocked", { error: blockReason }));
           return autoRun;
         }

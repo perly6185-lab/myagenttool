@@ -63,6 +63,14 @@ before(async () => {
     { token: "tok_b", userId: "usr_b", expiresAt },
   );
   state.projects.push({ id: "prj_a", name: "Workflow fixtures", ownerTeamId: "team_a", path: root });
+  // Simulate an online bridge so local CLI agents are "available" at auto-run
+  // admission (these tests exercise the HTTP path, not bridge execution);
+  // startAutoRun now refuses an unavailable agent rather than stalling.
+  state.device.status = "online";
+  state.device.unlinkState = "linked";
+  for (const agent of state.agents) {
+    if (agent.location?.type === "local_device") agent.status = "available";
+  }
 
   const { httpDependencies } = createServerRuntimeServices({
     namespace: "test",

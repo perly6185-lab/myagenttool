@@ -2,6 +2,7 @@ import http from "node:http";
 import { timingSafeEqual } from "node:crypto";
 import { resolveActor } from "./auth.mjs";
 import { identityPolicyFromEnv } from "./identity-policy.mjs";
+import { configuredLoopbackToken, hostAllowed, loopbackTokenValid } from "./loopback-guard.mjs";
 import { validSessionCsrf } from "../services/identity-security.mjs";
 import { handleAgentRoutes } from "../routes/agents.mjs";
 import { handleAgentSkillRoutes } from "../routes/agent-skills.mjs";
@@ -460,8 +461,17 @@ export function createHttpServer({
   identityProviderCore = null,
 }) {
   const identityPolicy = identityPolicyFromEnv();
+  const loopbackToken = configuredLoopbackToken();
   return http.createServer(async (req, res) => {
     try {
+      // #1616 outer perimeter, before anything else: a Host header that names
+      // a non-loopback hostname is a DNS-rebinding probe (or a misconfigured
+      // proxy), never the desktop shell, the bridge, or the local console.
+      if (!hostAllowed(req.headers?.host)) {
+        sendJson(res, 403, { error: "host_not_allowed", message: "Requests must address the control plane by a loopback hostname." });
+        return;
+      }
+
       setCors(req, res);
 
       if (req.method === "OPTIONS") {
@@ -502,6 +512,35 @@ export function createHttpServer({
         sendJson(res, 200, terminalObservationReadModel(snapshot, workItemsResult.body?.workItems ?? [], { now }));
         return;
       }
+      // #1616 launch-token gate: when the desktop shell configured a loopback
+      // token, every /api request must carry it — or ride a cookie session
+      // that could only have been established through it. This is what stops
+      // an arbitrary local process from driving the control plane. The
+      // observation endpoint keeps its own >=24-char read-only token (above);
+      // bridge and webhook paths are NOT exempt — the bridge is spawned with
+      // the token, and external webhooks cannot reach loopback in this mode.
+      if (loopbackToken && url.pathname.startsWith("/api/")) {
+        const authorized = loopbackTokenValid(req, loopbackToken)
+          || (actor.authenticated && actor.authMethod === "cookie");
+        if (!authorized) {
+          sendJson(res, 401, { error: "loopback_token_required", message: "This control plane only accepts requests from the desktop shell that launched it." });
+          return;
+        }
+      }
+
+      // #1616 content-type gate: a cross-site "simple request" can execute a
+      // blind write with text/plain or urlencoded bodies even when CORS hides
+      // the response. Every JSON route parses via readJson, so a declared
+      // non-JSON body on a write is never legitimate. Absent Content-Type is
+      // allowed: browsers always declare one when they attach a body.
+      if (["POST", "PUT", "PATCH"].includes(req.method) && url.pathname.startsWith("/api/")) {
+        const contentType = String(req.headers["content-type"] ?? "").trim().toLowerCase();
+        if (contentType && !contentType.startsWith("application/json")) {
+          sendJson(res, 415, { error: "unsupported_content_type", message: "API writes must declare application/json." });
+          return;
+        }
+      }
+
       const bridgePath = url.pathname.startsWith("/api/bridge/");
       // External providers authenticate webhook deliveries with endpoint-specific
       // signatures, so a user bearer token must not block those callbacks first.
@@ -1323,7 +1362,7 @@ function setCors(req, res) {
     res.setHeader("Vary", "Origin");
   }
   res.setHeader("Access-Control-Allow-Methods", "GET,POST,PUT,PATCH,DELETE,OPTIONS");
-  res.setHeader("Access-Control-Allow-Headers", "Authorization,Content-Type,Range,X-CSRF-Token");
+  res.setHeader("Access-Control-Allow-Headers", "Authorization,Content-Type,Range,X-CSRF-Token,X-Loopback-Token");
   res.setHeader("Access-Control-Expose-Headers", "Accept-Ranges,Content-Length,Content-Range");
 }
 
