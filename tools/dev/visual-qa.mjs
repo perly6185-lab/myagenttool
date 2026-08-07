@@ -36,7 +36,7 @@ const screenshotResult = browserAutomation.driver
 // Top-level nav surfaces (stable keys) the console must expose. Labels are
 // localized and therefore no longer live as English literals in sections.ts.
 const NAV_SURFACES = [
-  "dashboard", "projects", "task", "automation", "agentSkills", "invocations",
+  "dashboard", "projects", "task", "externalWork", "automation", "agentSkills", "invocations",
   "agents", "devices", "discovery", "integrations", "tools", "review",
   "applications", "economics", "audit"
 ];
@@ -236,6 +236,20 @@ async function captureScreenshots(driver) {
               return route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(body) });
             });
           }
+          if (scenario.externalFixture) {
+            await page.route(/\/api\/projects\/[^/]+\/github(?:\?.*)?$/, (route) => route.fulfill({
+              status: 200,
+              contentType: "application/json",
+              body: JSON.stringify({
+                available: true,
+                message: "",
+                items: [
+                  { type: "issue", number: 42, title: "Investigate the authentication regression", headRefName: null, author: "alex", url: "https://example.test/issues/42", state: "open" },
+                  { type: "pr", number: 43, title: "Harden authentication boundaries", headRefName: "fix/auth-boundary", author: "alex", url: "https://example.test/pulls/43", state: "open" },
+                ],
+              }),
+            }));
+          }
           if (scenario.reportFixture) {
             await page.route(/\/api\/work-items(?:[/?].*)?$/, (route) => fulfillReportFixture(route, scenario.reportFixture));
           }
@@ -363,6 +377,24 @@ function visualScenarios(baseline) {
       invocationId: null,
       homeFixture,
     },
+    {
+      name: "local-task-center",
+      state: structuredClone(homeState),
+      invocationId: null,
+      section: "task",
+      homeFixture,
+    },
+    {
+      name: "external-work",
+      state: {
+        ...structuredClone(homeState),
+        projectTargets: [{ projectId: ready.projects?.[0]?.id ?? "prj_visual", state: "ready" }],
+      },
+      invocationId: null,
+      section: "externalWork",
+      homeFixture,
+      externalFixture: true,
+    },
     { name: "work-item-summary-review", state: structuredClone(homeState), invocationId: null, homeFixture, workItemId: "lwi_visual_review" },
     { name: "work-item-summary-completed", state: structuredClone(homeState), invocationId: null, homeFixture, workItemId: "lwi_visual_completed" },
     { name: "work-item-summary-failed", state: structuredClone(homeState), invocationId: null, homeFixture, workItemId: "lwi_visual_failed" },
@@ -434,8 +466,24 @@ async function assertVisualState(page, scenario) {
     for (const label of ["Issue #42", "Retry", "Reroute", "Take over"]) await page.getByText(label, { exact: true }).waitFor();
     return;
   }
+  if (scenario.name === "local-task-center") {
+    await page.getByRole("heading", { name: "Tasks", exact: true }).waitFor({ timeout: 15_000 });
+    const title = page.getByText("Confirm the overdue customer launch commitment and publish the recovery timeline", { exact: true });
+    await (page.viewportSize().width < 640 ? title.first() : title.last()).waitFor();
+    if (await page.getByRole("tab", { name: /Issue inbox/ }).count()) {
+      throw new Error("local task center exposes the external Issue inbox");
+    }
+    return;
+  }
+  if (scenario.name === "external-work") {
+    await page.getByRole("heading", { name: "External work", exact: true }).waitFor({ timeout: 15_000 });
+    await page.getByRole("tab", { name: /Issue inbox/ }).waitFor();
+    const title = page.getByText("Investigate the authentication regression", { exact: true });
+    await (page.viewportSize().width < 640 ? title.first() : title.last()).waitFor();
+    return;
+  }
   if (scenario.reportFixture) {
-    await page.getByRole("dialog", { name: "Local issue details" }).waitFor({ timeout: 15_000 });
+    await page.getByRole("dialog", { name: "Task details" }).waitFor({ timeout: 15_000 });
     await page.getByRole("tab", { name: "Report" }).waitFor();
     await page.getByText("Stakeholder report", { exact: true }).waitFor();
     const expected = scenario.name === "report-stale"

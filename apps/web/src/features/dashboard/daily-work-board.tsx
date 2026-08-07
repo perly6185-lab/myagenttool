@@ -652,6 +652,36 @@ function executionLabel(item: HomeWorkbenchItem, copy: Copy): string {
     : copy.execution[item.executionState];
 }
 
+function homeVisibilityRank(item: HomeWorkbenchItem): number {
+  if (item.attentionReason === "ai_failed" || item.executionState === "failed") return 0;
+  if (item.attentionReason === "approval_required" || item.executionState === "awaiting_approval") return 1;
+  if (["claimed", "running", "verifying"].includes(item.executionState)) return 2;
+  if (item.attentionReason === "review_ready" || item.executionState === "completed") return 3;
+  return 5;
+}
+
+function homeActivityTime(item: HomeWorkbenchItem): number {
+  const value = Date.parse(item.ai?.updatedAt ?? item.completedAt ?? "");
+  return Number.isFinite(value) ? value : 0;
+}
+
+function compareHomeVisibility(left: HomeWorkbenchItem, right: HomeWorkbenchItem): number {
+  const leftRank = homeVisibilityRank(left);
+  const rightRank = homeVisibilityRank(right);
+  const rankDifference = leftRank - rightRank;
+  if (rankDifference) return rankDifference;
+  if (leftRank === 5) return 0;
+  return homeActivityTime(right) - homeActivityTime(left)
+    || right.workItemId.localeCompare(left.workItemId);
+}
+
+function compareDailyVisibility(left: DailyWorkItem, right: DailyWorkItem): number {
+  if (left.home && right.home) return compareHomeVisibility(left.home, right.home);
+  if (left.home) return -1;
+  if (right.home) return 1;
+  return Date.parse(right.updatedAt ?? "") - Date.parse(left.updatedAt ?? "");
+}
+
 function dateKey(value: number | string): string | null {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) return null;
@@ -1002,13 +1032,13 @@ export function DailyWorkBoard({
     completed: aiWorkItems.filter((item) => item.executionState === "completed").length,
   };
   const aiDateGroups = {
-    yesterday: filteredAiWorkItems.filter((item) => Boolean(item.plannedDate && item.plannedDate < currentDay)),
-    today: filteredAiWorkItems.filter((item) => item.plannedDate === currentDay),
-    tomorrow: filteredAiWorkItems.filter((item) => item.plannedDate === nextDay),
+    yesterday: filteredAiWorkItems.filter((item) => Boolean(item.plannedDate && item.plannedDate < currentDay)).sort(compareHomeVisibility),
+    today: filteredAiWorkItems.filter((item) => item.plannedDate === currentDay).sort(compareHomeVisibility),
+    tomorrow: filteredAiWorkItems.filter((item) => item.plannedDate === nextDay).sort(compareHomeVisibility),
     other: filteredAiWorkItems
       .filter((item) => !item.plannedDate || item.plannedDate > nextDay)
-      .sort((left, right) => String(left.plannedDate ?? "9999-12-31").localeCompare(String(right.plannedDate ?? "9999-12-31"))
-        || left.workItemId.localeCompare(right.workItemId)),
+      .sort((left, right) => compareHomeVisibility(left, right)
+        || String(left.plannedDate ?? "9999-12-31").localeCompare(String(right.plannedDate ?? "9999-12-31"))),
   };
   const suggestedCount = preview?.days.reduce((count, day) =>
     count + day.items.filter((item) => item.previousPlannedDate !== day.date).length, 0) ?? 0;
@@ -1705,6 +1735,7 @@ export function DailyWorkBoard({
                 onAction={runHomeAction}
                 focusedWorkItemId={focusedIssue?.view === "ai" ? focusedIssue.workItemId : null}
                 onLocateMy={(item) => locateIssue("my", item.workItemId)}
+                showAll={aiWorkFilter === "failed"}
               />
               <AiDateColumn
                 testId="today-execution-column"
@@ -1719,6 +1750,7 @@ export function DailyWorkBoard({
                 focusedWorkItemId={focusedIssue?.view === "ai" ? focusedIssue.workItemId : null}
                 onLocateMy={(item) => locateIssue("my", item.workItemId)}
                 featured
+                showAll={aiWorkFilter === "failed"}
               />
               <AiDateColumn
                 testId="tomorrow-execution-column"
@@ -1732,6 +1764,7 @@ export function DailyWorkBoard({
                 onAction={runHomeAction}
                 focusedWorkItemId={focusedIssue?.view === "ai" ? focusedIssue.workItemId : null}
                 onLocateMy={(item) => locateIssue("my", item.workItemId)}
+                showAll={aiWorkFilter === "failed"}
               />
               <AiDateColumn
                 testId="other-execution-column"
@@ -1745,6 +1778,7 @@ export function DailyWorkBoard({
                 onAction={runHomeAction}
                 focusedWorkItemId={focusedIssue?.view === "ai" ? focusedIssue.workItemId : null}
                 onLocateMy={(item) => locateIssue("my", item.workItemId)}
+                showAll={aiWorkFilter === "failed"}
               />
             </div>
           </div>
@@ -1915,6 +1949,7 @@ function AiDateColumn({
   focusedWorkItemId,
   onLocateMy,
   featured = false,
+  showAll = false,
 }: {
   testId?: string;
   title: string;
@@ -1928,14 +1963,16 @@ function AiDateColumn({
   focusedWorkItemId: string | null;
   onLocateMy: (item: HomeWorkbenchItem) => void;
   featured?: boolean;
+  showAll?: boolean;
 }) {
   const [expanded, setExpanded] = useState(false);
   const revealFocused = Boolean(focusedWorkItemId && items.some((item) => item.workItemId === focusedWorkItemId));
-  const completedItems = items.filter((item) => item.executionState === "completed").slice(0, 2);
-  const scheduledItems = items
-    .filter((item) => item.executionState !== "completed")
-    .slice(0, Math.max(0, 2 - completedItems.length));
-  const visibleItems = expanded || revealFocused ? items : [...scheduledItems, ...completedItems];
+  const leadingItems = items.slice(0, 2);
+  const completedItem = items.find((item) => item.executionState === "completed");
+  const collapsedItems = completedItem && !leadingItems.includes(completedItem)
+    ? [...leadingItems, completedItem]
+    : leadingItems;
+  const visibleItems = expanded || revealFocused || showAll ? items : collapsedItems;
   const hiddenCount = Math.max(0, items.length - visibleItems.length);
   return (
     <section className={cn(
@@ -1965,7 +2002,7 @@ function AiDateColumn({
             {copy.noAiWork}
           </div>
         )}
-        {items.length > 2 && !revealFocused ? (
+        {hiddenCount > 0 && !revealFocused && !showAll ? (
           <button
             type="button"
             aria-expanded={expanded}
@@ -2459,7 +2496,7 @@ function DayColumn({
   const [expandedGroups, setExpandedGroups] = useState<DailyGroupKey[]>([]);
   const groups = GROUP_ORDER.map((key) => ({
     key,
-    items: items.filter((item) => displayState(item) === key),
+    items: items.filter((item) => displayState(item) === key).sort(compareDailyVisibility),
   })).filter((group) => group.items.length > 0);
   return (
     <section className={cn(

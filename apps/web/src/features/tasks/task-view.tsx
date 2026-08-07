@@ -1,5 +1,5 @@
 import { lazy, Suspense, useEffect, useMemo, useState } from "react";
-import { Hand, History, RefreshCw, ExternalLink, GitBranch, Workflow, Zap, Plus, MessageSquare, Trash2, Pencil, FolderKanban, ArrowUp, ArrowDown, Star, Bell, Download } from "lucide-react";
+import { Hand, History, RefreshCw, ExternalLink, GitBranch, GitPullRequest, Workflow, Zap, Plus, MessageSquare, Trash2, Pencil, FolderKanban, ArrowUp, ArrowDown, Star, Bell, Download } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -108,7 +108,7 @@ const WorkItemAcceptanceSection = lazy(() => import("./work-item-acceptance-sect
 // Task = GitHub issues/PRs across repo-backed projects, surfaced as work items.
 // Mirrors the project's existing per-worktree GitHub list, lifted to a top-level
 // board with project/type/search filters.
-export function TaskView() {
+export function TaskView({ localOnly = false }: { localOnly?: boolean } = {}) {
   const { t, i18n } = useAppTranslation();
   const { data: state } = useConsoleState();
   const { execute, pending, error } = useAsyncAction();
@@ -568,6 +568,7 @@ export function TaskView() {
     const projectName = projects.find((project) => project.id === item.projectId)?.name ?? "";
     return !q || `${item.localRef} ${item.title} ${item.labels.join(" ")} ${projectName}`.toLowerCase().includes(q);
   });
+  const taskTabs: readonly TaskTab[] = localOnly ? ["local"] : TABS;
 
   return (
     <Card>
@@ -589,9 +590,15 @@ export function TaskView() {
           <Button variant="secondary" size="sm" onClick={() => setPlanningOpen(true)}>
             <FolderKanban className="mr-1 size-4" /> {t("planningProjects.title")}
           </Button>
-          <Button variant="secondary" size="sm" onClick={() => setExternalImportOpen(true)}>
-            <Download className="mr-1 size-4" /> {i18n.language.startsWith("zh") ? "导入外部 Issue" : "Import external issue"}
-          </Button>
+          {localOnly ? (
+            <Button variant="secondary" size="sm" onClick={() => navigate("externalWork")}>
+              <GitPullRequest className="mr-1 size-4" /> {t("externalWork.title")}
+            </Button>
+          ) : (
+            <Button variant="secondary" size="sm" onClick={() => setExternalImportOpen(true)}>
+              <Download className="mr-1 size-4" /> {i18n.language.startsWith("zh") ? "导入外部 Issue" : "Import external issue"}
+            </Button>
+          )}
           <Button size="sm" onClick={() => setCreateLocalOpen(true)}>
             <Plus className="mr-1 size-4" /> {t("tasks.newLocal")}
           </Button>
@@ -601,7 +608,7 @@ export function TaskView() {
         <div className="flex flex-wrap items-center gap-2">
           {/* Type tabs */}
           <div className="flex gap-1 rounded-lg bg-muted p-0.5 text-xs">
-            {TABS.map((key) => (
+            {taskTabs.map((key) => (
               <button
                 key={key}
                 type="button"

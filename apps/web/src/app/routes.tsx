@@ -9,7 +9,8 @@ const WorkflowMemoryView = lazy(() => import("@/features/workflow-memory/workflo
 const CanvasView = lazy(() => import("@/features/canvas/canvas-view").then((m) => ({ default: m.CanvasView })));
 const CompareView = lazy(() => import("@/features/compare/compare-view").then((m) => ({ default: m.CompareView })));
 const ProjectsView = lazy(() => import("@/features/projects/projects-view").then((m) => ({ default: m.ProjectsView })));
-const TaskView = lazy(() => import("@/features/tasks/task-view").then((m) => ({ default: m.TaskView })));
+const LocalTasksView = lazy(() => import("@/features/tasks/local-tasks-view").then((m) => ({ default: m.LocalTasksView })));
+const ExternalWorkView = lazy(() => import("@/features/tasks/external-work-view").then((m) => ({ default: m.ExternalWorkView })));
 const PlanningProjectsView = lazy(() => import("@/features/planning/planning-projects-view").then((m) => ({ default: m.PlanningProjectsView })));
 const AutoRunsView = lazy(() => import("@/features/auto-runs/auto-runs-view").then((m) => ({ default: m.AutoRunsView })));
 const ApprovalsView = lazy(() => import("@/features/approvals/approvals-view").then((m) => ({ default: m.ApprovalsView })));
@@ -45,7 +46,8 @@ export const SECTION_VIEWS: Record<SectionKey, ComponentType> = {
   compare: CompareView,
   projects: ProjectsView,
   planning: PlanningProjectsView,
-  task: TaskView,
+  task: LocalTasksView,
+  externalWork: ExternalWorkView,
   autoRuns: AutoRunsView,
   approvals: ApprovalsView,
   evidence: EvidenceView,

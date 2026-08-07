@@ -978,6 +978,60 @@ describe("DailyWorkBoard", () => {
     expect(within(screen.getByTestId("today-execution-column")).getByText("LOCAL-COMPLETED")).toBeTruthy();
   });
 
+  it("keeps the newest failed AI task visible and reveals every failure when filtered", () => {
+    const now = new Date(2026, 7, 7, 12).getTime();
+    const ids = ["old-1", "old-2", "old-3", "local-60"];
+    const plannedItems = ids.map((id, index) => localItem({
+      id,
+      localRef: id === "local-60" ? "LOCAL-60" : `LOCAL-${index + 1}`,
+      title: id === "local-60" ? "Propagate the current-terminal timezone" : `Older failed task ${index + 1}`,
+      status: "blocked",
+      dueDate: null,
+      plannedDate: null,
+    }));
+    const workbenchItems = plannedItems.map((plannedItem, index) => homeItem({
+      workItemId: plannedItem.id,
+      localRef: plannedItem.localRef,
+      title: plannedItem.title,
+      planningStatus: "blocked",
+      executionState: "failed",
+      waitingOn: "none",
+      attentionReason: "ai_failed",
+      needsAttention: true,
+      nextAction: { kind: "retry", label: "retry", targetId: `aur-${plannedItem.id}`, section: "autoRuns" },
+      ai: {
+        autoRunId: `aur-${plannedItem.id}`,
+        invocationId: `inv-${plannedItem.id}`,
+        agentId: "agt_codex_cli",
+        agentName: "Codex CLI",
+        status: "blocked",
+        updatedAt: index === ids.length - 1 ? "2026-08-07T04:00:00.000Z" : `2026-08-0${index + 1}T04:00:00.000Z`,
+      },
+    }));
+
+    render(
+      <DailyWorkBoard
+        board={{ generatedAt: now, states: emptyStates() }}
+        report={report(0, 0)}
+        plannedItems={plannedItems}
+        workbench={workbench(workbenchItems)}
+        onOpenItem={vi.fn()}
+        onOpenTasks={vi.fn()}
+        now={now}
+      />,
+    );
+
+    expect(within(screen.getByTestId("other-completion-column")).getByText(/LOCAL-60 ·/)).toBeTruthy();
+
+    activateWorkTab("ai");
+    const aiOther = screen.getByTestId("other-execution-column");
+    expect(within(aiOther).getByText("LOCAL-60")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: /AI failed$/ }));
+    for (const plannedItem of plannedItems) {
+      expect(within(aiOther).getByText(plannedItem.localRef)).toBeTruthy();
+    }
+  });
+
   it("shows every unassigned local issue outside personal capacity and lets the user claim one", () => {
     const now = new Date(2026, 6, 31, 12).getTime();
     const unassigned = Array.from({ length: 8 }, (_, index) => localItem({
