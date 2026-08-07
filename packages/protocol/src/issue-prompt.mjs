@@ -63,7 +63,8 @@ export function worktreeAutoRunPrompt(item) {
 
 // Role-specific instructions for a decided auto-run path. The develop role
 // implements; design and clarify explicitly must NOT change product code (their
-// deliverable is the final summary); prototype builds a throwaway spike.
+// deliverable is the final summary); prototype builds a throwaway spike; evaluate
+// explores, runs, and reports on a project's real user experience.
 const ROLE_INSTRUCTIONS = {
   develop:
     "First, orient: locate the files relevant to this issue and outline your approach before " +
@@ -104,6 +105,24 @@ const ROLE_INSTRUCTIONS = {
     "{ milestone, area, type, risk, platform, priority }. Keep each child scoped to one PR's worth of " +
     "work with concrete acceptance criteria. Also repeat a short summary of the breakdown as your " +
     "final message. Nothing is created from this yet — a human approves the plan first.",
+
+  evaluate:
+    "Explore the codebase to understand what this project does and how to run it. " +
+    "Identify the build system (package.json scripts, Makefile, docker-compose, pip, " +
+    "go build, etc.), dependencies, and the commands to start the application. " +
+    "Then actually run it — start the service, try its main features (if it has an " +
+    "HTTP API, call it; if it has a CLI, demo it; if it outputs something, capture " +
+    "screenshots or logs). Record real outputs (API responses, logs, screenshots)— " +
+    "not just your analysis. When done, write a structured evaluation report to " +
+    "evaluate/REPORT.md in this format:\n" +
+    "- ## Overview: one paragraph on what this project is and does\n" +
+    "- ## Getting Started: clone + install + run (the commands you actually ran)\n" +
+    "- ## Running the application: what happened when you started it (ports, output)\n" +
+    "- ## Key features tried: feature list with real `curl`/CLI/demo outputs\n" +
+    "- ## Impressions: what worked well, pain points, friction, quality of docs\n" +
+    "Also repeat a short version as your final summary, AND end with a single line:\n" +
+    "EvalResult: { overall: \"seamless | smooth | rough | broken\", keyInsight: \"...\" }\n" +
+    "Do NOT modify product code — the deliverable is the experience report.",
 };
 
 /**

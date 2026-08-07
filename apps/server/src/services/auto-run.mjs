@@ -1533,7 +1533,7 @@ export function createAutoRunService({
             // decision fall back to the legacy intent mapping.
             const path = autoRun.decision?.path
               ?? ({ investigation: "design", question: "clarify" }[autoRun.intent] ?? "develop");
-            if (path === "design" || path === "prototype") {
+            if (path === "design" || path === "prototype" || path === "evaluate") {
               const summary = extractRunSummary(invocation) ?? "Investigation complete — no code change was needed.";
               maybePostIssueReport(autoRun, worktree, summary);
               const spawn = await maybeSpawnChildIssue(autoRun, worktree, summary);
