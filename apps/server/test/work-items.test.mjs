@@ -1347,12 +1347,24 @@ test("home workbench is assignee-scoped, tenant-safe, and timezone validated", (
   assert.equal(service.getHomeWorkbench({ timezoneOffset: "invalid" }, ACTOR_A).status, 400);
 });
 
+test("priority accepts friendly aliases normalized to p0–p3", () => {
+  const { service } = harness();
+  const medium = service.createWorkItem({ projectId: "prj_a", title: "M", priority: "medium" }, ACTOR_A).body.workItem;
+  assert.equal(medium.priority, "p2");
+  const urgent = service.createWorkItem({ projectId: "prj_a", title: "U", priority: "URGENT" }, ACTOR_A).body.workItem;
+  assert.equal(urgent.priority, "p0");
+  const high = service.updateWorkItem({ workItemId: medium.id, expectedRevision: medium.revision, priority: "high" }, ACTOR_A).body.workItem;
+  assert.equal(high.priority, "p1");
+  // Genuinely invalid values still reject.
+  assert.equal(service.createWorkItem({ projectId: "prj_a", title: "X", priority: "nope" }, ACTOR_A).status, 400);
+});
+
 test("updates are revision-gated and validate structured fields", () => {
   const { service } = harness();
   const item = service.createWorkItem({ projectId: "prj_a", title: "A" }, ACTOR_A).body.workItem;
   assert.equal(service.updateWorkItem({ workItemId: item.id, title: "B" }, ACTOR_A).body.error, "expected_revision_required");
   assert.equal(service.updateWorkItem({ workItemId: item.id, expectedRevision: 9, title: "B" }, ACTOR_A).status, 409);
-  assert.equal(service.updateWorkItem({ workItemId: item.id, expectedRevision: 1, priority: "urgent" }, ACTOR_A).status, 400);
+  assert.equal(service.updateWorkItem({ workItemId: item.id, expectedRevision: 1, priority: "nope" }, ACTOR_A).status, 400);
   const updated = service.updateWorkItem({
     workItemId: item.id,
     expectedRevision: 1,

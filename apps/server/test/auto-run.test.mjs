@@ -276,6 +276,22 @@ test("an auto-run without an explicit agent honors the project's configured Code
   assert.equal(autoRun.agentId, "agt_codex_cli");
 });
 
+test("an unavailable local-device agent (no bridge online) is blocked before any worktree or invocation", async () => {
+  const agent = fakeAgent({ adapter: { type: "cli", command: "codex" }, status: "unavailable" });
+  const { svc, calls } = makeAutoRun({ agent });
+
+  await assert.rejects(
+    () => svc.startAutoRun({
+      projectId: sourceProjectId,
+      link: { type: "issue", number: 1299, title: "No bridge", url: null, state: "open" },
+      agentId: agent.id,
+      name: "issue-1299-no-bridge",
+    }),
+    /No device is online/,
+  );
+  assert.equal(calls.createInvocation.length, 0, "no invocation is created when the agent has no online device");
+});
+
 test("an explicitly unhealthy agent is blocked before a worktree or invocation is created", async () => {
   const agent = fakeAgent({
     adapter: { type: "cli", command: "codex" },
@@ -835,6 +851,22 @@ test("verification gate: a passing check opens the PR with verification evidence
   assert.equal(calls.pr.length, 1);
   assert.match(calls.pr[0].payload.body, /## Verification/);
   assert.match(calls.pr[0].payload.body, /passed/);
+});
+
+test("verification gate: an auto-derived check failure surfaces the escape hatch on the blocked reason", async () => {
+  const { svc } = makeAutoRun({ verify: { passed: false, verified: true, summary: "`pnpm test:ci` failed (exit 1)." } });
+  state.autoRunSettings = { maxRepairAttempts: 0 };
+  const { autoRun, invocation } = await svc.startAutoRun({
+    projectId: sourceProjectId,
+    link: { type: "issue", number: 311, title: "Derived check fails", url: null, state: "open" },
+    agentId: "agt_1",
+    name: "issue-311-derived",
+  });
+
+  await svc.advanceAutoRunForInvocation({ ...invocation, status: "succeeded" });
+
+  assert.equal(autoRun.status, "blocked");
+  assert.match(autoRun.error, /MYAGENTTOOL_AUTORUN_VERIFY_AUTO/);
 });
 
 test("verification gate: a failing check blocks the PR", async () => {

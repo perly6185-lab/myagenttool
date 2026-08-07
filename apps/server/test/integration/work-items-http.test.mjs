@@ -40,6 +40,15 @@ before(async () => {
     { id: "prj_a", ownerTeamId: "team_a", path: projectAPath },
     { id: "prj_b", ownerTeamId: "team_b", path: "/tmp/b" },
   );
+  // Simulate an online bridge so local CLI agents are "available" at auto-run
+  // admission. These tests exercise the HTTP creation path, not bridge execution,
+  // and startAutoRun now refuses an unavailable agent rather than accepting a run
+  // that would stall in "dispatching" forever.
+  state.device.status = "online";
+  state.device.unlinkState = "linked";
+  for (const agent of state.agents) {
+    if (agent.location?.type === "local_device") agent.status = "available";
+  }
   const { httpDependencies } = createServerRuntimeServices({
     namespace: "test", protocolVersion: "0.0.0", state, defaultProject, defaultProjectPath: "/tmp",
     persistenceEnabled: false, stateStorePath: "/tmp/unused.json", stateSchemaVersion: 1, dispatchLeaseMs: 30_000, now,
