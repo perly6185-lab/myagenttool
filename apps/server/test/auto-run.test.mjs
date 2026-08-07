@@ -41,6 +41,8 @@ function fakeAgent(overrides = {}) {
 // hands the invocation layer. `invocationStatus` controls the gate outcome.
 function makeAutoRun({
   agent = fakeAgent(),
+  findAgent: injectedFindAgent = undefined,
+  defaultAgent: injectedDefaultAgent = undefined,
   invocationStatus = "queued",
   publishThrows = false,
   createInvocationThrows = false,
@@ -94,8 +96,8 @@ function makeAutoRun({
     persistStateSoon: () => {},
     createWorktree: projectSvc.createWorktree,
     destroyWorktree: projectSvc.destroyWorktree,
-    findAgent: (id) => (agent && agent.id === id ? agent : null),
-    defaultAgent: () => agent,
+    findAgent: injectedFindAgent ?? ((id) => (agent && agent.id === id ? agent : null)),
+    defaultAgent: injectedDefaultAgent ?? (() => agent),
     createInvocation: (task, ag, options) => {
       calls.createInvocation.push({ task, agent: ag, options });
       if (createInvocationThrows) throw new Error("dispatch exploded");
@@ -253,6 +255,25 @@ test("Codex auto-runs use broker auto mode while preserving the normal invocatio
 
   assert.equal(calls.createInvocation[0].options.approvalMode, "auto");
   assert.equal(calls.createInvocation[0].options.preApproved, undefined, "auto broker mode does not bypass invocation admission");
+});
+
+test("an auto-run without an explicit agent honors the project's configured Codex agent", async () => {
+  const demoAgent = fakeAgent({ id: "agt_demo_cli", name: "Demo CLI Agent" });
+  const codexAgent = fakeAgent({ id: "agt_codex_cli", name: "Codex CLI", adapter: { type: "cli", command: "codex" } });
+  state.projects.find((project) => project.id === sourceProjectId).defaultAgentId = codexAgent.id;
+  const { svc, calls } = makeAutoRun({
+    agent: demoAgent,
+    findAgent: (id) => [demoAgent, codexAgent].find((candidate) => candidate.id === id) ?? null,
+  });
+
+  const { autoRun } = await svc.startAutoRun({
+    projectId: sourceProjectId,
+    link: { type: "issue", number: 1203, title: "Use the project agent", url: null, state: "open" },
+    name: "issue-1203-project-agent",
+  });
+
+  assert.equal(calls.createInvocation[0].agent.id, "agt_codex_cli");
+  assert.equal(autoRun.agentId, "agt_codex_cli");
 });
 
 test("an explicitly unhealthy agent is blocked before a worktree or invocation is created", async () => {
@@ -1143,6 +1164,29 @@ test("retryAutoRun restarts a failed run on its existing worktree (pilot #9)", a
   assert.equal(calls.createInvocation.length, 2);
   assert.match(calls.createInvocation[1].task, /implement the change/, "role prompt rebuilt from the decision");
   assert.equal(calls.createInvocation[1].options.timeoutSeconds, 900, "stored retry budget matches the configured turn budget");
+});
+
+test("retryAutoRun migrates a legacy Demo Agent failure to the project's Codex agent", async () => {
+  const demoAgent = fakeAgent({ id: "agt_demo_cli", name: "Demo CLI Agent" });
+  const codexAgent = fakeAgent({ id: "agt_codex_cli", name: "Codex CLI", adapter: { type: "cli", command: "codex" } });
+  state.projects.find((project) => project.id === sourceProjectId).defaultAgentId = codexAgent.id;
+  const { svc, calls } = makeAutoRun({
+    agent: demoAgent,
+    findAgent: (id) => [demoAgent, codexAgent].find((candidate) => candidate.id === id) ?? null,
+  });
+  const { autoRun, worktree } = await svc.startAutoRun({
+    projectId: sourceProjectId,
+    link: { type: "local_issue", number: 60, title: "Retry with Codex", url: null, state: "open" },
+    agentId: demoAgent.id,
+    name: "local-60-retry-with-codex",
+  });
+  autoRun.status = "failed";
+
+  await svc.retryAutoRun(autoRun.id);
+
+  assert.equal(calls.createInvocation.at(-1).agent.id, "agt_codex_cli");
+  assert.equal(autoRun.agentId, "agt_codex_cli");
+  assert.equal(worktree.agentId, "agt_codex_cli");
 });
 
 test("execution timeout obeys a configured one-attempt continuation bound on the same worktree", async () => {

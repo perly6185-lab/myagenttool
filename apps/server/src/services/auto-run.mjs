@@ -610,7 +610,11 @@ export function createAutoRunService({
         throw error;
       }
     }
-    const agent = agentId ? findAgent(agentId) : defaultAgent();
+    const projectDefaultAgentId = projectId
+      ? state.projects?.find((project) => project.id === projectId)?.defaultAgentId ?? null
+      : null;
+    const resolvedAgentId = agentId || projectDefaultAgentId;
+    const agent = resolvedAgentId ? findAgent(resolvedAgentId) : defaultAgent();
     if (!agent) {
       throw new Error("No agent is registered to run this issue.");
     }
@@ -1940,7 +1944,15 @@ export function createAutoRunService({
     }
     const worktree = state.worktrees.find((item) => item.id === autoRun.worktreeId) ?? null;
     if (!worktree) throw new Error("The auto-run's worktree no longer exists; start a fresh run instead.");
-    const agent = (autoRun.agentId ? findAgent(autoRun.agentId) : null) ?? defaultAgent();
+    const previousAgent = autoRun.agentId ? findAgent(autoRun.agentId) : null;
+    const configuredRetryAgentId = autoRun.projectId
+      ? state.projects?.find((project) => project.id === autoRun.projectId)?.defaultAgentId ?? null
+      : null;
+    const configuredRetryAgent = configuredRetryAgentId ? findAgent(configuredRetryAgentId) : null;
+    const migrateDemoAgent = autoRun.agentId === "agt_demo_cli";
+    const agent = migrateDemoAgent
+      ? (configuredRetryAgent?.id !== "agt_demo_cli" ? configuredRetryAgent : null) ?? defaultAgent()
+      : previousAgent ?? defaultAgent();
     if (!agent) throw new Error("No agent is registered to retry this run.");
     if (agent.status === "disabled") throw new Error("The selected agent is disabled.");
     if (autoRun.terminalId && (agent.location?.type !== "local_device" || agent.location.deviceId !== autoRun.terminalId)) {
@@ -2100,6 +2112,8 @@ export function createAutoRunService({
         // restart after dispatch can then reconcile the durable recovery claim
         // instead of leaving the auto-run pointed at its expired invocation.
         autoRun.invocationId = invocation.id;
+        autoRun.agentId = agent.id;
+        if (migrateDemoAgent) worktree.agentId = agent.id;
         // Fresh repair budget for the retry — otherwise a run that exhausted its
         // repairs stays at the cap and the retried attempt gets zero self-repair.
         autoRun.repairAttempts = 0;
@@ -2110,7 +2124,14 @@ export function createAutoRunService({
           type: "auto_run_retried",
           level: "info",
           message: `Auto-run ${autoRun.id} retried on its existing worktree.`,
-          data: { autoRunId: autoRun.id, worktreeId: worktree.id, invocationId: invocation.id, status: autoRun.status },
+          data: {
+            autoRunId: autoRun.id,
+            worktreeId: worktree.id,
+            invocationId: invocation.id,
+            status: autoRun.status,
+            agentId: agent.id,
+            ...(migrateDemoAgent ? { migratedFromAgentId: "agt_demo_cli" } : {}),
+          },
         });
       });
       startInvocationIfAllowed(invocation, agent);

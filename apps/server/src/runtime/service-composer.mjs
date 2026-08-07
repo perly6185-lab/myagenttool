@@ -61,7 +61,7 @@ import { createIntegrationService } from "../services/integrations.mjs";
 import { createInvocationEventService } from "../services/invocation-events.mjs";
 import { createInvocationRefusalService } from "../services/invocation-refusals.mjs";
 import { createInvocationTraceService } from "../services/invocation-trace.mjs";
-import { createInvocationService } from "../services/invocations.mjs";
+import { createInvocationService, selectDefaultAgent } from "../services/invocations.mjs";
 import { createCancellationSignal } from "../services/cancellation-signal.mjs";
 import { createM3Service } from "../services/m3.mjs";
 import { createProjectService, sameProjectPath } from "../services/projects.mjs";
@@ -3358,7 +3358,7 @@ export function createServerRuntimeServices({
   }
 
   function defaultAgent() {
-    return invocationService?.defaultAgent() ?? state.agents.find((item) => item.id === "agt_demo_cli") ?? state.agents.find((item) => item.adapter.type !== "platform") ?? state.agents[0] ?? null;
+    return invocationService?.defaultAgent() ?? selectDefaultAgent(state.agents);
   }
 
   function uniqueStrings(values) {
