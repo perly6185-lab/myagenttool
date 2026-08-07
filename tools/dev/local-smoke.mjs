@@ -27,7 +27,11 @@ try {
   }, "server health");
 
   const offlineCreated = await request("POST", "/api/invocations", {
-    task: "Run the M0 offline queue smoke test."
+    // Keep this transport smoke on the deterministic demo adapter. Canonical
+    // no-agent selection is covered separately; this scenario only verifies
+    // that a specifically selected offline agent dispatches after reconnect.
+    task: "Run the M0 offline queue smoke test.",
+    agentId: "agt_demo_cli"
   });
   const offlineInvocationId = offlineCreated.invocation.id;
   const queuedState = await request("GET", "/api/state");
