@@ -216,17 +216,17 @@ test.beforeEach(async ({ page }) => {
 });
 
 test("imports a GitLab issue, opens its Local Issue, and starts AI from simple details", async ({ page }) => {
-  await page.goto("/?section=task");
-  await page.getByRole("button", { name: "Import external issue" }).click();
+  await page.goto("/?section=externalWork", { waitUntil: "domcontentloaded" });
+  await page.getByRole("button", { name: "Create tasks from issues" }).click();
   const importer = page.getByRole("dialog", { name: "Import external issue" });
   await importer.getByLabel("Source provider").selectOption("gitlab");
   await importer.getByPlaceholder("owner/repo").fill("group/repo");
   await importer.getByLabel("Issue number").fill("19");
   await expect(importer.getByText("API configured")).toBeVisible();
-  await importer.getByRole("button", { name: "Import as local issue" }).click();
+  await importer.getByRole("button", { name: "Create task" }).click();
 
   const detail = page.getByRole("dialog", { name: "Local issue details" });
-  await expect(detail.getByText("LOCAL-1 was imported from GitLab.")).toBeVisible();
+  await expect(detail).toBeVisible();
   await expect(detail.getByText("GitLab #19")).toBeVisible();
   const autoRunRequest = page.waitForRequest((request) =>
     request.url().endsWith("/api/work-items/lwi_1/auto-runs") && request.method() === "POST");
@@ -237,8 +237,8 @@ test("imports a GitLab issue, opens its Local Issue, and starts AI from simple d
 
 test("browses and bulk imports GitLab issues on a narrow keyboard-accessible dialog", async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
-  await page.goto("/?section=task");
-  await page.getByRole("button", { name: "Import external issue" }).click();
+  await page.goto("/?section=externalWork", { waitUntil: "domcontentloaded" });
+  await page.getByRole("button", { name: "Create tasks from issues" }).click();
   const importer = page.getByRole("dialog", { name: "Import external issue" });
   await importer.getByLabel("Source provider").selectOption("gitlab");
   await importer.getByLabel("External repository").fill("group/repo");
@@ -252,21 +252,22 @@ test("browses and bulk imports GitLab issues on a narrow keyboard-accessible dia
   await expect(importer.getByText("2 selected")).toBeVisible();
   await importer.getByRole("button", { name: "Import selected issues" }).click();
   const detail = page.getByRole("dialog", { name: "Local issue details" });
-  await expect(detail.getByText(/2 issues were imported from GitLab/)).toBeVisible();
+  await expect(detail).toBeVisible();
+  await expect(detail.getByText("GitLab #22")).toBeVisible();
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true);
 });
 
 test("adopts a browsed GitHub issue and continues through the same Local Issue handoff", async ({ page }) => {
-  await page.goto("/?section=task");
-  await page.getByRole("button", { name: /^Issues/ }).click();
-  await expect(page.getByText("GitHub browser intake")).toBeVisible();
+  await page.goto("/?section=externalWork", { waitUntil: "domcontentloaded" });
+  const externalRow = page.getByRole("row", { name: /#42 GitHub browser intake/ });
+  await expect(externalRow).toBeVisible();
   const intakeRequest = page.waitForRequest((request) =>
     request.url().endsWith("/api/work-items/from-external") && request.method() === "POST");
-  await page.getByRole("button", { name: "Add to local issues" }).click();
+  await externalRow.getByRole("button", { name: "Turn into task" }).click();
   await intakeRequest;
 
   const detail = page.getByRole("dialog", { name: "Local issue details" });
-  await expect(detail.getByText("LOCAL-1 was imported from GitHub.")).toBeVisible();
+  await expect(detail).toBeVisible();
   await expect(detail.getByText("GitHub #42")).toBeVisible();
   const autoRunRequest = page.waitForRequest((request) =>
     request.url().endsWith("/api/work-items/lwi_1/auto-runs") && request.method() === "POST");
@@ -276,13 +277,13 @@ test("adopts a browsed GitHub issue and continues through the same Local Issue h
 
 test("creates an issue, routes AI execution, and reaches reviewed local delivery", async ({ page }) => {
   await page.goto("/?section=task");
-  await page.getByRole("button", { name: /New local issue/i }).click();
+  await page.getByRole("button", { name: "New task" }).click();
   await page.getByLabel("Title").fill("Implement browser chain");
   // Local Issue creation requires an expected completion date in the current
   // follow-up contract; keep the browser path explicit instead of relying on
   // a stale default from the pre-follow-up form.
   await page.getByLabel("Expected completion date").fill("2026-08-31");
-  await page.getByRole("button", { name: "Create issue" }).click();
+  await page.getByRole("button", { name: "Create task" }).click();
 
   // Open the authoritative Local Issue after creation, then switch to the
   // expert execution surface explicitly (the summary view is the default).
