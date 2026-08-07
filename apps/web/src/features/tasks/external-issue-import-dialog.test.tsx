@@ -56,7 +56,7 @@ afterEach(() => {
 });
 
 describe("external issue import", () => {
-  it("preflights GitHub and imports into a Local Issue without starting AI", async () => {
+  it("preflights GitHub and creates a task without starting AI", async () => {
     const onImported = vi.fn();
     render(
       <ExternalIssueImportDialog
@@ -71,7 +71,7 @@ describe("external issue import", () => {
 
     expect(await screen.findByText("The repository and GitHub CLI connection are ready.")).toBeTruthy();
     fireEvent.change(screen.getByLabelText("Issue number"), { target: { value: "42" } });
-    fireEvent.click(screen.getByRole("button", { name: "Import as local issue" }));
+    fireEvent.click(screen.getByRole("button", { name: "Create task" }));
 
     await waitFor(() => expect(mocks.createWorkItemFromExternal).toHaveBeenCalledWith({
       projectId: "prj_1",
@@ -100,10 +100,10 @@ describe("external issue import", () => {
     expect(await screen.findByText(/API not configured/)).toBeTruthy();
     fireEvent.change(screen.getByPlaceholderText("owner/repo"), { target: { value: "owner/repo" } });
     fireEvent.change(screen.getByLabelText("Issue number"), { target: { value: "7" } });
-    expect(screen.getByRole("button", { name: "Import as local issue" }).hasAttribute("disabled")).toBe(true);
+    expect(screen.getByRole("button", { name: "Create task" }).hasAttribute("disabled")).toBe(true);
   });
 
-  it("opens an already-linked Local Issue instead of leaving a duplicate error", async () => {
+  it("opens an already-linked task instead of leaving a duplicate error", async () => {
     const onImported = vi.fn();
     mocks.createWorkItemFromExternal.mockRejectedValue(new ApiError(
       "external_issue_already_linked",
@@ -125,7 +125,7 @@ describe("external issue import", () => {
     fireEvent.change(screen.getByLabelText("Source provider"), { target: { value: "gitlab" } });
     fireEvent.change(screen.getByPlaceholderText("owner/repo"), { target: { value: "group/repo" } });
     fireEvent.change(screen.getByLabelText("Issue number"), { target: { value: "19" } });
-    fireEvent.click(screen.getByRole("button", { name: "Import as local issue" }));
+    fireEvent.click(screen.getByRole("button", { name: "Create task" }));
 
     await waitFor(() => expect(onImported).toHaveBeenCalledWith(imported, { provider: "gitlab", duplicate: true }));
     expect(screen.queryByRole("alert")).toBeNull();

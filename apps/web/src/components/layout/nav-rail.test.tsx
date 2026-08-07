@@ -31,12 +31,13 @@ afterEach(async () => {
 });
 
 describe("NavRail collapsible groups (#928)", () => {
-  it("shows only the five ordinary Entry destinations by default", () => {
+  it("shows local tasks and external work as separate ordinary destinations", () => {
     mockEmptyState();
     useUiStore.setState({ section: "dashboard", collapsedNavGroups: [...DEFAULT_COLLAPSED_NAV_GROUPS] });
     renderNav();
     expect(screen.getByText("Home")).toBeTruthy();
     expect(screen.getByText("Tasks")).toBeTruthy();
+    expect(screen.getByText("External work")).toBeTruthy();
     expect(screen.getByText("Projects")).toBeTruthy();
     expect(screen.getByText("Queue")).toBeTruthy();
     expect(screen.getByText("Needs attention")).toBeTruthy();
@@ -77,6 +78,7 @@ describe("NavRail collapsible groups (#928)", () => {
     renderNav();
     expect(screen.getByText("首页")).toBeTruthy();
     expect(screen.getByText("任务")).toBeTruthy();
+    expect(screen.getByText("外部协作")).toBeTruthy();
     expect(screen.queryByText("文档")).toBeNull();
     expect(screen.getByRole("navigation", { name: "工作台栏目" })).toBeTruthy();
   });

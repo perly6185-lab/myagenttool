@@ -8,6 +8,7 @@ import {
   Files,
   Gauge,
   GitCompare,
+  GitPullRequest,
   Inbox,
   KanbanSquare,
   LayoutDashboard,
@@ -71,6 +72,7 @@ export const SECTIONS: SectionDef[] = [
   // Run — the ways work executes.
   { key: "autoRuns", labelKey: "sections.autoRuns.label", icon: Bot, blurbKey: "sections.autoRuns.blurb", group: "run" },
   { key: "task", labelKey: "sections.task.label", icon: ListTodo, blurbKey: "sections.task.blurb", group: "run" },
+  { key: "externalWork", labelKey: "sections.externalWork.label", icon: GitPullRequest, blurbKey: "sections.externalWork.blurb", group: "run" },
   { key: "compare", labelKey: "sections.compare.label", icon: GitCompare, blurbKey: "sections.compare.blurb", group: "run" },
   { key: "automation", labelKey: "sections.automation.label", icon: Workflow, blurbKey: "sections.automation.blurb", group: "run" },
   { key: "routines", labelKey: "sections.routines.label", icon: Repeat, blurbKey: "sections.routines.blurb", group: "run" },
@@ -118,7 +120,7 @@ export interface PageRegistration extends SectionDef {
   legacyAliases: readonly string[];
 }
 
-const ENTRY_PRIMARY = new Set<SectionKey>(["dashboard", "task", "projects", "autoRuns", "approvals"]);
+const ENTRY_PRIMARY = new Set<SectionKey>(["dashboard", "task", "externalWork", "projects", "autoRuns", "approvals"]);
 const ENTRY_CONTEXTUAL = new Set<SectionKey>([
   "me", "workBoard", "planning", "workspace", "documents", "workflowMemory", "canvas",
 ]);
@@ -170,7 +172,7 @@ export const PAGE_REGISTRY: PageRegistration[] = SECTIONS.map((section) => {
   };
 });
 
-const ENTRY_ORDER: SectionKey[] = ["dashboard", "task", "projects", "autoRuns", "approvals"];
+const ENTRY_ORDER: SectionKey[] = ["dashboard", "task", "externalWork", "projects", "autoRuns", "approvals"];
 export const ENTRY_SECTIONS = ENTRY_ORDER.map((key) => pageRegistration(key));
 
 export const SURFACE_GROUPS: Array<{

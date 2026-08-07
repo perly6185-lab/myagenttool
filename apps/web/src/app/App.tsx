@@ -35,11 +35,11 @@ export function App() {
   return (
     <div className="flex h-full overflow-hidden">
       <CommandPalette />
-      {/* Keep the selected Local Issue open on ordinary entry surfaces. When
+      {/* Keep the selected task open on ordinary entry surfaces. When
           navigating into Trace/Settings, unmount the modal so the contextual
           return control remains clickable; the selection stays in the store
           and is restored when the operator returns to Tasks. */}
-      {pageRegistration(section).surface === "entry" && section !== "task" ? (
+      {pageRegistration(section).surface === "entry" ? (
         <Suspense fallback={null}>
           <WorkItemDetailShell />
         </Suspense>

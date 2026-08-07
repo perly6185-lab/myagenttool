@@ -8,10 +8,11 @@ describe("page ownership registry (#1505)", () => {
     expect(new Set(PAGE_REGISTRY.map((page) => page.key)).size).toBe(SECTION_KEYS.length);
   });
 
-  it("keeps the ordinary Entry surface to five task-oriented destinations", () => {
+  it("keeps local tasks and external collaboration as separate ordinary destinations", () => {
     expect(ENTRY_SECTIONS.map((page) => page.key)).toEqual([
       "dashboard",
       "task",
+      "externalWork",
       "projects",
       "autoRuns",
       "approvals",

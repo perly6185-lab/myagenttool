@@ -253,18 +253,18 @@ describe("TaskView local work items", () => {
     expect(screen.getAllByText("Conflict")).toHaveLength(2);
   });
 
-  it("creates a local issue from the modal", async () => {
+  it("creates a task from the modal", async () => {
     mocks.listWorkItems.mockResolvedValue({ workItems: [], count: 0 });
     mocks.createWorkItem.mockResolvedValue({ workItem: { id: "lwi_2" } });
     render(<TaskView />);
-    fireEvent.click(screen.getByRole("button", { name: /New local issue/i }));
+    fireEvent.click(screen.getByRole("button", { name: /New task/i }));
     fireEvent.change(
       await screen.findByLabelText("Title", undefined, { timeout: 5_000 }),
       { target: { value: "Build local board" } },
     );
     fireEvent.change(screen.getByLabelText("Expected completion date"), { target: { value: "2026-08-15" } });
     fireEvent.change(screen.getByLabelText("Milestone"), { target: { value: "M3" } });
-    fireEvent.click(screen.getByRole("button", { name: "Create issue" }));
+    fireEvent.click(screen.getByRole("button", { name: "Create task" }));
     await waitFor(() => expect(mocks.createWorkItem).toHaveBeenCalledWith(expect.objectContaining({
       projectId: "prj_1",
       title: "Build local board",
@@ -278,11 +278,11 @@ describe("TaskView local work items", () => {
     })));
   });
 
-  it("records customer source and follow-up when creating a local issue", async () => {
+  it("records customer source and follow-up when creating a task", async () => {
     mocks.listWorkItems.mockResolvedValue({ workItems: [], count: 0 });
     mocks.createWorkItem.mockResolvedValue({ workItem: { id: "lwi_customer" } });
     render(<TaskView />);
-    fireEvent.click(screen.getByRole("button", { name: /New local issue/i }));
+    fireEvent.click(screen.getByRole("button", { name: /New task/i }));
     fireEvent.change(await screen.findByLabelText("Title"), { target: { value: "Confirm launch scope" } });
     fireEvent.change(screen.getByLabelText("Expected completion date"), { target: { value: "2026-08-15" } });
     fireEvent.change(screen.getByLabelText("Requester relationship"), { target: { value: "customer" } });
@@ -293,7 +293,7 @@ describe("TaskView local work items", () => {
     fireEvent.click(screen.getByLabelText("Morgan Manager · manager"));
     fireEvent.change(screen.getByLabelText("Next follow-up"), { target: { value: "2099-08-05T10:00" } });
     fireEvent.change(screen.getByLabelText("External reference"), { target: { value: "Weekly sync 42" } });
-    fireEvent.click(screen.getByRole("button", { name: "Create issue" }));
+    fireEvent.click(screen.getByRole("button", { name: "Create task" }));
     await waitFor(() => expect(mocks.createWorkItem).toHaveBeenCalledWith(expect.objectContaining({
       requesterRelation: "customer",
       requesterName: "Alex Client",
@@ -333,7 +333,7 @@ describe("TaskView local work items", () => {
       },
     });
     render(<TaskView />);
-    fireEvent.click(screen.getByRole("button", { name: /New local issue/i }));
+    fireEvent.click(screen.getByRole("button", { name: /New task/i }));
     fireEvent.click(await screen.findByRole("button", { name: "Import link" }));
     fireEvent.change(screen.getByLabelText("Public article URL"), {
       target: { value: "https://mp.weixin.qq.com/s/example" },
@@ -361,7 +361,7 @@ describe("TaskView local work items", () => {
     let resolveInspection!: (value: unknown) => void;
     mocks.inspectArticleImport.mockReturnValue(new Promise((resolve) => { resolveInspection = resolve; }));
     render(<TaskView />);
-    fireEvent.click(screen.getByRole("button", { name: /New local issue/i }));
+    fireEvent.click(screen.getByRole("button", { name: /New task/i }));
     fireEvent.click(await screen.findByRole("button", { name: "Import link" }));
     const input = screen.getByLabelText("Public article URL");
     fireEvent.change(input, { target: { value: "https://example.com/a" } });
@@ -403,7 +403,7 @@ describe("TaskView local work items", () => {
       },
     });
     render(<TaskView />);
-    fireEvent.click(screen.getByRole("button", { name: /New local issue/i }));
+    fireEvent.click(screen.getByRole("button", { name: /New task/i }));
     await waitFor(() => expect(mocks.getArticleImport).toHaveBeenCalledWith("lwi_resume", "article_import_resume"));
     expect(window.localStorage.getItem("myagenttool.article-import.active.v1")).toBeNull();
   });
@@ -442,7 +442,7 @@ describe("TaskView local work items", () => {
       },
     });
     render(<TaskView />);
-    fireEvent.click(screen.getByRole("button", { name: /New local issue/i }));
+    fireEvent.click(screen.getByRole("button", { name: /New task/i }));
     expect(await screen.findByText(/server restarted during import/i)).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Retry import" }));
     await waitFor(() => expect(mocks.startArticleImport).toHaveBeenCalledWith("lwi_resume", {
@@ -480,7 +480,7 @@ describe("TaskView local work items", () => {
     });
     mocks.getArticleImport.mockReturnValue(new Promise(() => {}));
     render(<TaskView />);
-    fireEvent.click(screen.getByRole("button", { name: /New local issue/i }));
+    fireEvent.click(screen.getByRole("button", { name: /New task/i }));
     fireEvent.click(await screen.findByRole("button", { name: "Import link" }));
     fireEvent.change(screen.getByLabelText("Public article URL"), { target: { value: "https://example.com/slow" } });
     fireEvent.click(screen.getByRole("button", { name: "Inspect" }));
@@ -492,7 +492,7 @@ describe("TaskView local work items", () => {
     expect(window.localStorage.getItem("myagenttool.article-import.active.v1")).toContain("article_import_slow");
   });
 
-  it("filters local issues by planning project and manages membership", async () => {
+  it("filters tasks by planning project and manages membership", async () => {
     const item = {
       id: "lwi_1", localRef: "LOCAL-1", projectId: "prj_1", title: "Roadmap issue",
       body: "", type: "task", status: "backlog", priority: "p2", state: "open",
