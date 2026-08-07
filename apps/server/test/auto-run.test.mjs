@@ -628,6 +628,21 @@ test("a failing body fetch degrades to a title-only prompt (run proceeds)", asyn
   assert.ok(!calls.createInvocation[0].task.includes("description:"), "no body block");
 });
 
+test("an evaluate-decided run gets the evaluate role prompt (no implementation)", async () => {
+  const { svc, calls } = makeAutoRun({
+    decideIssuePath: async () => ({ path: "evaluate", confidence: 0.9, rationale: "experience assessment" }),
+  });
+  await svc.startAutoRun({
+    projectId: sourceProjectId,
+    link: { type: "issue", number: 83, title: "Experience: new-project", url: null, state: "open" },
+    agentId: "agt_1",
+    name: "issue-83-evaluate",
+  });
+  assert.match(calls.createInvocation[0].task, /Do NOT modify/, "evaluate role forbids product-code changes");
+  assert.match(calls.createInvocation[0].task, /evaluate\/REPORT/, "evaluate role writes to evaluate/REPORT.md");
+  assert.equal(calls.createInvocation[0].options.metadata.role, "evaluate", "evaluate path seeded as role");
+});
+
 test("a design-decided run gets the design role prompt (no implementation)", async () => {
   const { svc, calls } = makeAutoRun({
     decideIssuePath: async () => ({ path: "design", confidence: 0.9, rationale: "open solution space" }),
@@ -735,6 +750,22 @@ test("a failing spawner still parks the run as report_posted (best-effort)", asy
   assert.equal(autoRun.status, "report_posted");
   assert.match(autoRun.spawnError, /gh not authenticated/);
   assert.equal(autoRun.childIssues, undefined);
+});
+
+test("a no-diff evaluate run parks as report_posted (like a design)", async () => {
+  const { svc } = makeAutoRun({
+    commit: { committed: false, hasCommits: false },
+    decideIssuePath: async () => ({ path: "evaluate", confidence: 0.9, rationale: "evaluate project" }),
+  });
+  const { autoRun, invocation } = await svc.startAutoRun({
+    projectId: sourceProjectId,
+    link: { type: "issue", number: 1301, title: "Evaluate: small-project", url: null, state: "open" },
+    agentId: "agt_1",
+    name: "issue-1301-evaluate",
+  });
+  await svc.advanceAutoRunForInvocation({ ...invocation, status: "succeeded" });
+  assert.equal(autoRun.status, "report_posted");
+  assert.match(autoRun.report, /.+/, "evaluate run records a report summary");
 });
 
 test("a broken decision agent falls back to the heuristic (run never fails)", async () => {

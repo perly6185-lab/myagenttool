@@ -16,16 +16,16 @@ import { isSpawnedChildBody } from "./auto-run-spawn.mjs";
 //   decompose — an epic/initiative: break it into governed child issues (a plan,
 //               not a diff). Opt-in (epicDecomposition); EPIC_DECOMPOSITION_PLAN.md.
 
-export const AUTO_RUN_PATHS = ["develop", "design", "prototype", "clarify", "decompose"];
+export const AUTO_RUN_PATHS = ["develop", "design", "prototype", "clarify", "decompose", "evaluate"];
 export const ROUTING_POLICY_VERSION = "2026-07-25.1";
 
 // Paths whose output is not a product diff. A low-confidence agent decision may
 // not send work down these (or spawn issues) — it degrades to clarify instead.
-const HEAVY_PATHS = new Set(["design", "prototype", "decompose"]);
+const HEAVY_PATHS = new Set(["design", "prototype", "decompose", "evaluate"]);
 
-const INTENT_TO_PATH = { change: "develop", investigation: "design", question: "clarify" };
+const INTENT_TO_PATH = { change: "develop", investigation: "design", question: "clarify", exploration: "evaluate" };
 // Legacy `intent` field kept on records for continuity with pre-decision runs.
-const PATH_TO_INTENT = { develop: "change", design: "investigation", prototype: "investigation", clarify: "question", decompose: "investigation" };
+const PATH_TO_INTENT = { develop: "change", design: "investigation", prototype: "investigation", clarify: "question", decompose: "investigation", evaluate: "exploration" };
 
 /**
  * Deterministic epic/initiative detector. An epic is a PARENT of work, not a work

@@ -7,7 +7,7 @@
 // This is a conservative title heuristic (the default). A richer LLM classifier
 // can be injected to override it; it should return one of AUTO_RUN_INTENTS.
 
-export const AUTO_RUN_INTENTS = ["change", "investigation", "question"];
+export const AUTO_RUN_INTENTS = ["change", "investigation", "question", "exploration"];
 
 // A title that reads as a decision to be made, not work to be done.
 const QUESTION_LEAD_RE = /^\s*(should we|shall we|can we|do we|is it worth|worth it to|which\b|what should|how should|when should)\b/i;
@@ -28,6 +28,12 @@ const CHANGE_LEAD_RE = /^\s*(add|fix|implement|create|build|make|update|upgrade|
 export function classifyIntentFromText(title, body = "") {
   const text = String(title ?? "").trim();
   if (/\?\s*$/.test(text) || QUESTION_LEAD_RE.test(text)) return "question";
+  // "onboard"/"experience"/"try out" are exploration intents, routed to the
+  // evaluate path (an experiential assessment, not a design deliverable).
+  // "evaluate"/"evaluation" are deliberately NOT here — INVESTIGATION_RE already
+  // covers them, and the explosive regex was catching investigation body text.
+  const EXPLORATION_RE = /\b(onboard(?:ing)?|experience\s+report|try\s+out|trial\s+run|walkthrough|usage\s+report|quick\s+start)\b/i;
+  if (EXPLORATION_RE.test(text) || EXPLORATION_RE.test(String(body ?? "").slice(0, 400))) return "exploration";
   if (INVESTIGATION_RE.test(text)) return "investigation";
   // Body-aware fallback: a NEUTRAL title (no clear change verb) whose body reads
   // as an investigation routes to design. A change-shaped title is never

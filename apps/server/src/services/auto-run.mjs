@@ -1525,6 +1525,17 @@ export function createAutoRunService({
             return autoRun;
           }
           if (autoRunReactionSuperseded(autoRun, invocation, "commit")) return null;
+          // evaluate runs produce a report (evaluate/REPORT.md), so they
+          // have commits — but the deliverable is the report, not product
+          // code. Park as report_posted before the verify → publish path
+          // would send it to done (the file is proof of work, not a diff).
+          const resolvedPath = autoRun.decision?.path ?? ({ investigation: "design", question: "clarify" }[autoRun.intent] ?? "develop");
+          if (commitResult.hasCommits && resolvedPath === "evaluate") {
+            const summary = extractRunSummary(invocation) ?? "Evaluation complete — see evaluate/REPORT.md for the detailed report.";
+            runTx(() => setAutoRunStatus(autoRun, "report_posted", { report: summary }));
+            maybeWriteIssueStatus(autoRun, worktree, "review");
+            return autoRun;
+          }
           if (!commitResult.hasCommits) {
             // No diff — route by the decided path instead of treating it as a
             // dead end. A design/prototype run's deliverable IS the findings; a
@@ -1533,7 +1544,7 @@ export function createAutoRunService({
             // decision fall back to the legacy intent mapping.
             const path = autoRun.decision?.path
               ?? ({ investigation: "design", question: "clarify" }[autoRun.intent] ?? "develop");
-            if (path === "design" || path === "prototype") {
+            if (path === "design" || path === "prototype" || path === "evaluate") {
               const summary = extractRunSummary(invocation) ?? "Investigation complete — no code change was needed.";
               maybePostIssueReport(autoRun, worktree, summary);
               const spawn = await maybeSpawnChildIssue(autoRun, worktree, summary);
