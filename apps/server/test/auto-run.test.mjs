@@ -82,6 +82,7 @@ function makeAutoRun({
   runDeploy = undefined,
   runRollback = undefined,
   fileRemediationIssue = undefined,
+  requireLocalIssueForDevelopment = false,
 } = {}) {
   const calls = { createInvocation: [], startInvocationIfAllowed: [], commit: [], publish: [], pr: [], verify: [], status: [], report: [], merge: [], autoApprove: [], render: [], childCreate: [], events: [] };
   let counter = 0;
@@ -159,6 +160,7 @@ function makeAutoRun({
     runDeploy,
     runRollback,
     fileRemediationIssue,
+    requireLocalIssueForDevelopment,
     autoApproveInvocation: autoApproveInvocation
       ? (args) => { calls.autoApprove.push(args); return autoApproveInvocation(args); }
       : undefined,
@@ -1435,6 +1437,30 @@ test("startAutoRun validates the link and the device link state", async () => {
     }),
     /unlinked/i,
   );
+});
+
+test("production local-first mode refuses an unbound external issue and records the Local Issue", async () => {
+  state.workItems = [{
+    id: "lwi_1",
+    projectId: sourceProjectId,
+    ownerTeamId: "team_a",
+    archivedAt: null,
+  }];
+  const { svc } = makeAutoRun({ requireLocalIssueForDevelopment: true });
+  const link = { type: "issue", number: 88, title: "Imported issue", url: null, state: "open" };
+  await assert.rejects(
+    () => svc.startAutoRun({ projectId: sourceProjectId, link, agentId: "agt_1", actor: { userId: "usr_a", teamId: "team_a" } }),
+    (error) => error?.code === "local_issue_required",
+  );
+  const started = await svc.startAutoRun({
+    projectId: sourceProjectId,
+    link,
+    localIssueId: "lwi_1",
+    agentId: "agt_1",
+    actor: { userId: "usr_a", teamId: "team_a" },
+    name: "local-1-imported-issue",
+  });
+  assert.equal(started.autoRun.localIssueId, "lwi_1");
 });
 
 test("mergeAutoRunPr: a pr_open run merges (human step) and flips to MERGED", async () => {

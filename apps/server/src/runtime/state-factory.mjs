@@ -150,6 +150,9 @@ export function createServerState({ defaultProjectPath, now }) {
     // Local-first planning records. These are independent of GitHub Issues and
     // may later carry one or more external bindings.
     workItems: [],
+    // Private task-level reference material metadata. Raw bytes live beside the
+    // state store under task-materials; only bounded metadata is durable here.
+    taskMaterialDrafts: [],
     // Personal current-terminal placements for runtime Issue work that has no
     // durable local Work Item binding. Preview is pure; explicit apply writes
     // these revisioned rows so the three-day board survives restart.

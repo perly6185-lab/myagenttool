@@ -157,6 +157,7 @@ export async function handleProjectRoutes({
 
   if (req.method === "POST" && url.pathname === "/api/worktrees") {
     const body = await readJson(req);
+    if (rejectUnboundIssueDevelopment({ state, actor, projectId: body?.projectId, body, sendJson, res })) return true;
     await createWorktreeResponse({ body, createWorktree, sendJson, res });
     return true;
   }
@@ -588,6 +589,7 @@ export async function handleProjectRoutes({
       const result = await startAutoRun({
         projectId,
         link: body.link,
+        localIssueId: body.localIssueId,
         agentId: body.agentId,
         name: body.name ?? body.branchName,
         baseBranch: body.baseBranch ?? body.startPoint,
@@ -595,7 +597,10 @@ export async function handleProjectRoutes({
       });
       sendJson(res, 201, result);
     } catch (error) {
-      sendJson(res, 400, { error: "auto_run_failed", message: errorMessage(error) });
+      sendJson(res, error?.code === "local_issue_required" ? 409 : 400, {
+        error: error?.code ?? "auto_run_failed",
+        message: errorMessage(error),
+      });
     }
     return true;
   }
@@ -656,6 +661,7 @@ export async function handleProjectRoutes({
       return true;
     }
     const body = await readJson(req);
+    if (rejectUnboundIssueDevelopment({ state, actor, projectId, body, sendJson, res })) return true;
     await createWorktreeResponse({
       body: {
         ...body,
@@ -1322,6 +1328,24 @@ async function createWorktreeResponse({ body, createWorktree, sendJson, res }) {
     return;
   }
   sendJson(res, 201, result);
+}
+
+function rejectUnboundIssueDevelopment({ state, actor, projectId, body, sendJson, res }) {
+  if (body?.link?.type !== "issue") return false;
+  const localIssueId = String(body?.localIssueId ?? "").trim();
+  const teamId = actor?.teamId ?? LOCAL_TEAM_ID;
+  const localIssue = (state.workItems ?? []).find((item) =>
+    item.id === localIssueId
+    && item.projectId === projectId
+    && (item.ownerTeamId ?? LOCAL_TEAM_ID) === teamId
+    && !item.archivedAt,
+  );
+  if (localIssue) return false;
+  sendJson(res, 409, {
+    error: "local_issue_required",
+    message: "Create or link a Local Issue before creating a development worktree for an external Issue.",
+  });
+  return true;
 }
 
 function projectForWorktree(state, worktree) {

@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { AppWindow, Bot, ExternalLink, GitMerge, Hand, HelpCircle, Inbox, ListChecks, Loader2, MessagesSquare, PenLine, RotateCcw, Route, ShieldAlert, Sparkles, Trophy, Wrench, type LucideIcon } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -11,6 +11,7 @@ import { useUiStore, type SectionKey } from "@/store/ui-store";
 import type { ClaudeApplyAuthorization, InvocationSnapshot, PendingDecision, PendingDecisionKind, WorktreeSnapshot } from "@/lib/console-state";
 import { RunTranscriptSection } from "@/features/invocations/run-transcript";
 import { useAppTranslation } from "@/lib/i18n/use-app-translation";
+import { focusQueryTarget } from "@/lib/focus-query";
 import { approvalBrokerApi } from "./approval-broker-api";
 
 // The Approvals section: ONE queue of every pending human decision, aggregated
@@ -54,8 +55,27 @@ export function ApprovalsView() {
   const setSection = useUiStore((s) => s.setSection);
   const setSelectedInvocationId = useUiStore((s) => s.setSelectedInvocationId);
   const setSelectedApplicationId = useUiStore((s) => s.setSelectedApplicationId);
+  const [focusedApprovalId, setFocusedApprovalId] = useState<string | null>(null);
+  const focusedDecisionRef = useRef<HTMLLIElement>(null);
+  const didFocusApprovalRef = useRef(false);
 
   const decisions = state?.pendingDecisions ?? [];
+
+  useEffect(() => {
+    const focus = focusQueryTarget(window.location.href, "approval");
+    if (!focus) return;
+    setFocusedApprovalId(focus.id);
+    window.history.replaceState(window.history.state, "", focus.nextLocation);
+  }, []);
+
+  useEffect(() => {
+    if (!focusedApprovalId || didFocusApprovalRef.current) return;
+    const target = focusedDecisionRef.current;
+    if (!target) return;
+    didFocusApprovalRef.current = true;
+    target.scrollIntoView({ block: "center", behavior: "smooth" });
+    target.focus({ preventScroll: true });
+  }, [decisions, focusedApprovalId]);
 
   // #1151: a decision that raced another operator answers 200 + alreadyDecided
   // instead of an indistinguishable success — tell the loser who won and when.
@@ -140,9 +160,17 @@ export function ApprovalsView() {
             const meta = KIND_META[d.kind];
             const Icon = meta?.icon ?? Inbox;
             const age = since(d.createdAt);
+            const focused = focusedApprovalId != null
+              && (d.id === focusedApprovalId || d.ref?.approvalId === focusedApprovalId);
             return (
-              <li key={d.id}>
-                <Card>
+              <li
+                key={d.id}
+                ref={focused ? focusedDecisionRef : undefined}
+                tabIndex={focused ? -1 : undefined}
+                aria-current={focused ? "true" : undefined}
+                className="rounded-lg outline-none focus-visible:ring-2 focus-visible:ring-primary"
+              >
+                <Card className={cn(focused && "border-primary ring-2 ring-primary/20")}>
                   <CardContent className="flex flex-wrap items-center gap-x-3 gap-y-2 py-3">
                     <span className="grid size-8 shrink-0 place-items-center rounded-md bg-muted text-muted-foreground">
                       <Icon className="size-4" />

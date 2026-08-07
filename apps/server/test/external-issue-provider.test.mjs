@@ -38,6 +38,40 @@ test("GitLab client uses scoped env credential, encoded project path, and normal
   assert.equal(JSON.stringify(result).includes("private-value"), false);
 });
 
+test("GitLab issue browser searches, paginates, and returns normalized open issues", async () => {
+  const calls = [];
+  const client = createExternalIssueProviderClient({
+    provider: "gitlab",
+    env: { MYAGENTTOOL_GITLAB_BASE_URL: "https://gitlab.example", MYAGENTTOOL_GITLAB_TOKEN: "token" },
+    fetchImpl: async (url) => {
+      calls.push(url);
+      return response(200, [{ iid: 21, title: "Search hit", description: "Body", state: "opened", labels: ["p1"], web_url: "https://gitlab.example/a/b/-/issues/21" }], { "x-next-page": "3" });
+    },
+  });
+  const result = await client.listIssues({ repository: "a/b", query: "search hit", page: 2, perPage: 1 });
+  assert.equal(result.ok, true);
+  assert.equal(result.issues[0].number, 21);
+  assert.equal(result.hasMore, true);
+  assert.equal(result.nextPage, 3);
+  assert.match(calls[0], /search=search\+hit/);
+  assert.match(calls[0], /page=2/);
+});
+
+test("Gitea issue browser excludes pull requests and uses bounded pagination", async () => {
+  const client = createExternalIssueProviderClient({
+    provider: "gitea",
+    env: { MYAGENTTOOL_GITEA_BASE_URL: "https://gitea.example", MYAGENTTOOL_GITEA_TOKEN: "token" },
+    fetchImpl: async () => response(200, [
+      { number: 31, title: "Issue", state: "open", labels: [] },
+      { number: 32, title: "PR", state: "open", labels: [], pull_request: { merged: false } },
+    ]),
+  });
+  const result = await client.listIssues({ repository: "a/b", page: 1, perPage: 2 });
+  assert.deepEqual(result.issues.map((issue) => issue.number), [31]);
+  assert.equal(result.hasMore, true);
+  assert.equal(result.nextPage, 2);
+});
+
 test("Gitea client retries transient failures and updates via PATCH", async () => {
   const calls = [];
   const replies = [

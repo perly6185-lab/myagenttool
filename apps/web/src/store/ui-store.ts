@@ -62,6 +62,7 @@ export interface PendingLocalDocumentRegistration {
 
 export type PlanningProjectView = "list" | "board" | "roadmap" | "insights" | "executions";
 export type WorkItemSection = "overview" | "process" | "assets" | "verification" | "report" | "trace";
+export type WorkItemDetailMode = "summary" | "expert";
 export type InvocationStatusFilter = "all" | "active" | "completed" | "failed";
 export interface PlanningProjectFilters {
   status: string;
@@ -85,6 +86,8 @@ interface UiState {
   selectedArtifactId: string | null;
   selectedProjectId: string | null;
   selectedWorkItemId: string | null;
+  selectedWorkItemMode: WorkItemDetailMode;
+  workItemDetailPreference: WorkItemDetailMode;
   selectedWorkItemSection: WorkItemSection;
   selectedPlanningProjectId: string | null;
   planningProjectView: PlanningProjectView;
@@ -124,6 +127,10 @@ interface UiState {
   setSelectedArtifactId: (id: string | null) => void;
   setSelectedProjectId: (id: string | null) => void;
   setSelectedWorkItemId: (id: string | null) => void;
+  openWorkItem: (id: string, options?: { mode?: WorkItemDetailMode; section?: WorkItemSection }) => void;
+  closeWorkItem: () => void;
+  setSelectedWorkItemMode: (mode: WorkItemDetailMode) => void;
+  setWorkItemDetailPreference: (mode: WorkItemDetailMode) => void;
   setSelectedWorkItemSection: (section: WorkItemSection) => void;
   setSelectedPlanningProjectId: (id: string | null) => void;
   setPlanningProjectView: (view: PlanningProjectView) => void;
@@ -197,6 +204,7 @@ export interface UrlNavigationState {
   selectedAutomationId?: string | null;
   selectedPlanningProjectId?: string | null;
   selectedWorkItemId?: string | null;
+  selectedWorkItemMode?: WorkItemDetailMode;
   selectedWorkItemSection?: WorkItemSection;
   planningProjectView?: PlanningProjectView;
   planningProjectFilters?: PlanningProjectFilters;
@@ -205,7 +213,7 @@ export interface UrlNavigationState {
 const NAVIGATION_SEARCH_KEYS = [
   "section", "invocation", "application", "routine", "run", "evidence", "automation",
   "planningProject", "planningView", "planningStatus", "planningPriority", "planningMilestone", "planningDue",
-  "task", "taskView",
+  "task", "taskMode", "taskView",
 ] as const;
 
 function stringParam(params: URLSearchParams, key: string): string | null {
@@ -233,6 +241,7 @@ export function navigationFromSearch(search: string): UrlNavigationState {
   const planningViewParam = stringParam(params, "planningView");
   const planningDueParam = stringParam(params, "planningDue");
   const workItemId = stringParam(params, "task");
+  const workItemModeParam = stringParam(params, "taskMode");
   const workItemSectionParam = stringParam(params, "taskView");
   const navigation: UrlNavigationState = {};
   if (section) navigation.section = section;
@@ -243,12 +252,11 @@ export function navigationFromSearch(search: string): UrlNavigationState {
     : null;
   navigation.selectedEvidenceId = evidenceId;
   navigation.selectedAutomationId = automationId;
-  if (section === "task" || params.has("task") || params.has("taskView")) {
-    navigation.selectedWorkItemId = workItemId;
-    navigation.selectedWorkItemSection = ["process", "assets", "verification", "report", "trace"].includes(workItemSectionParam ?? "")
-      ? workItemSectionParam as WorkItemSection
-      : "overview";
-  }
+  navigation.selectedWorkItemId = workItemId;
+  navigation.selectedWorkItemMode = workItemModeParam === "expert" ? "expert" : "summary";
+  navigation.selectedWorkItemSection = ["process", "assets", "verification", "report", "trace"].includes(workItemSectionParam ?? "")
+    ? workItemSectionParam as WorkItemSection
+    : "overview";
   if (section === "planning" || NAVIGATION_SEARCH_KEYS.some((key) => key.startsWith("planning") && params.has(key))) {
     navigation.selectedPlanningProjectId = planningProjectId;
     navigation.planningProjectView = ["board", "roadmap", "insights", "executions"].includes(planningViewParam ?? "")
@@ -278,6 +286,7 @@ function applyUrlNavigation<T extends Partial<UiState>>(state: T, navigation: Ur
   if (navigation.selectedEvidenceId !== undefined) state.selectedEvidenceId = navigation.selectedEvidenceId;
   if (navigation.selectedAutomationId !== undefined) state.selectedAutomationId = navigation.selectedAutomationId;
   if (navigation.selectedWorkItemId !== undefined) state.selectedWorkItemId = navigation.selectedWorkItemId;
+  if (navigation.selectedWorkItemMode !== undefined) state.selectedWorkItemMode = navigation.selectedWorkItemMode;
   if (navigation.selectedWorkItemSection !== undefined) state.selectedWorkItemSection = navigation.selectedWorkItemSection;
   if (navigation.selectedPlanningProjectId !== undefined) state.selectedPlanningProjectId = navigation.selectedPlanningProjectId;
   if (navigation.planningProjectView !== undefined) state.planningProjectView = navigation.planningProjectView;
@@ -301,6 +310,7 @@ export function searchFromNavigationState(search: string, state: Pick<UiState,
   | "planningProjectView"
   | "planningProjectFilters"
   | "selectedWorkItemId"
+  | "selectedWorkItemMode"
   | "selectedWorkItemSection"
 >>): string {
   const params = new URLSearchParams(search);
@@ -315,8 +325,9 @@ export function searchFromNavigationState(search: string, state: Pick<UiState,
   }
   if (state.selectedEvidenceId) params.set("evidence", state.selectedEvidenceId);
   if (state.selectedAutomationId) params.set("automation", state.selectedAutomationId);
-  if (state.section === "task" && state.selectedWorkItemId) {
+  if (state.selectedWorkItemId) {
     params.set("task", state.selectedWorkItemId);
+    if (state.selectedWorkItemMode === "expert") params.set("taskMode", "expert");
     const workItemSection = state.selectedWorkItemSection ?? "overview";
     if (workItemSection !== "overview") params.set("taskView", workItemSection);
   }
@@ -341,7 +352,7 @@ export function searchFromNavigationState(search: string, state: Pick<UiState,
  */
 export const useUiStore = create<UiState>()(
   persist(
-    (set) => {
+    (set, get) => {
       const initialNavigation = navigationFromCurrentUrl();
       return {
         section: initialNavigation.section ?? "dashboard",
@@ -351,6 +362,8 @@ export const useUiStore = create<UiState>()(
         selectedArtifactId: null,
         selectedProjectId: null,
         selectedWorkItemId: initialNavigation.selectedWorkItemId ?? null,
+        selectedWorkItemMode: initialNavigation.selectedWorkItemMode ?? "summary",
+        workItemDetailPreference: "summary",
         selectedWorkItemSection: initialNavigation.selectedWorkItemSection ?? "overview",
         selectedPlanningProjectId: initialNavigation.selectedPlanningProjectId ?? null,
         planningProjectView: initialNavigation.planningProjectView ?? "list",
@@ -383,8 +396,17 @@ export const useUiStore = create<UiState>()(
         setSelectedProjectId: (selectedProjectId) => set({ selectedProjectId }),
         setSelectedWorkItemId: (selectedWorkItemId) => set({
           selectedWorkItemId,
+          selectedWorkItemMode: selectedWorkItemId ? get().workItemDetailPreference : get().selectedWorkItemMode,
           selectedWorkItemSection: "overview",
         }),
+        openWorkItem: (selectedWorkItemId, options) => set({
+          selectedWorkItemId,
+          selectedWorkItemMode: options?.mode ?? get().workItemDetailPreference,
+          selectedWorkItemSection: options?.section ?? "overview",
+        }),
+        closeWorkItem: () => set({ selectedWorkItemId: null }),
+        setSelectedWorkItemMode: (selectedWorkItemMode) => set({ selectedWorkItemMode }),
+        setWorkItemDetailPreference: (workItemDetailPreference) => set({ workItemDetailPreference }),
         setSelectedWorkItemSection: (selectedWorkItemSection) => set({ selectedWorkItemSection }),
         setSelectedPlanningProjectId: (selectedPlanningProjectId) => set({ selectedPlanningProjectId }),
         setPlanningProjectView: (planningProjectView) => set({ planningProjectView }),
@@ -422,6 +444,8 @@ export const useUiStore = create<UiState>()(
         selectedArtifactId: state.selectedArtifactId,
         selectedProjectId: state.selectedProjectId,
         selectedWorkItemId: state.selectedWorkItemId,
+        selectedWorkItemMode: state.selectedWorkItemMode,
+        workItemDetailPreference: state.workItemDetailPreference,
         selectedWorkItemSection: state.selectedWorkItemSection,
         selectedPlanningProjectId: state.selectedPlanningProjectId,
         planningProjectView: state.planningProjectView,
@@ -461,6 +485,8 @@ export const useUiStore = create<UiState>()(
         // Old blobs have no locale and keep the system-detected current value;
         // stale/unsupported saved values never escape into i18next or the DOM.
         if (!isSupportedLocale(saved.locale)) merged.locale = current.locale;
+        if (!['summary', 'expert'].includes(merged.selectedWorkItemMode)) merged.selectedWorkItemMode = "summary";
+        if (!['summary', 'expert'].includes(merged.workItemDetailPreference)) merged.workItemDetailPreference = "summary";
         if (!["list", "board", "roadmap", "insights", "executions"].includes(merged.planningProjectView)) {
           merged.planningProjectView = "list";
         }

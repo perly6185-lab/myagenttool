@@ -104,6 +104,23 @@ describe("URL navigation helpers", () => {
       selectedWorkItemId: "wi_42",
       selectedWorkItemSection: "report",
     });
+    const overlaySearch = searchFromNavigationState("", {
+      section: "dashboard",
+      selectedInvocationId: null,
+      selectedApplicationId: null,
+      selectedApplicationRun: null,
+      selectedEvidenceId: null,
+      selectedAutomationId: null,
+      selectedWorkItemId: "wi_home",
+      selectedWorkItemMode: "expert",
+      selectedWorkItemSection: "process",
+    });
+    expect(navigationFromSearch(overlaySearch)).toMatchObject({
+      section: "dashboard",
+      selectedWorkItemId: "wi_home",
+      selectedWorkItemMode: "expert",
+      selectedWorkItemSection: "process",
+    });
   });
 
   it("parses valid navigation params and ignores unknown sections", () => {
@@ -120,6 +137,9 @@ describe("URL navigation helpers", () => {
       // A focused schedule is part of navigation now (#849) — an attention badge
       // that cannot be linked to is a dead end.
       selectedAutomationId: null,
+      selectedWorkItemId: null,
+      selectedWorkItemMode: "summary",
+      selectedWorkItemSection: "overview",
     });
 
     expect(navigationFromSearch("?section=missing&application=app_1&routine=routine_1")).toMatchObject({

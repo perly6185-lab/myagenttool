@@ -17,6 +17,9 @@ beforeEach(() => {
     selectedApplicationId: null,
     selectedApplicationRun: null,
     selectedEvidenceId: null,
+    selectedWorkItemId: null,
+    selectedWorkItemMode: "summary",
+    selectedWorkItemSection: "overview",
     selectedPlanningProjectId: null,
     planningProjectView: "list",
     planningProjectFilters: { status: "all", priority: "all", milestone: "", due: "all" },
@@ -56,6 +59,20 @@ describe("useUrlNavigationSync", () => {
       expect(params.get("section")).toBe("invocations");
       expect(params.get("invocation")).toBe("inv_result");
       expect(params.get("evidence")).toBe("ev_result");
+    });
+  });
+
+  it("keeps an in-place task detail in the current surface URL", async () => {
+    render(<SyncHarness />);
+
+    useUiStore.getState().openWorkItem("lwi_home", { mode: "expert", section: "process" });
+
+    await waitFor(() => {
+      const params = new URLSearchParams(window.location.search);
+      expect(params.get("section")).toBe("dashboard");
+      expect(params.get("task")).toBe("lwi_home");
+      expect(params.get("taskMode")).toBe("expert");
+      expect(params.get("taskView")).toBe("process");
     });
   });
 

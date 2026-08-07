@@ -1008,7 +1008,12 @@ const SERVER_PORT = "5001";
 const FALLBACK_API_BASE = `http://127.0.0.1:${SERVER_PORT}`;
 
 export class ApiError extends Error {
-  constructor(public readonly code: string, message: string, public readonly status: number) {
+  constructor(
+    public readonly code: string,
+    message: string,
+    public readonly status: number,
+    public readonly details?: Record<string, unknown>,
+  ) {
     super(message);
     this.name = "ApiError";
   }
@@ -1440,6 +1445,81 @@ async function requestBytes(path: string, retry = true): Promise<ArrayBuffer> {
   }
   return response.arrayBuffer();
 }
+
+async function requestRaw<T>(method: string, path: string, body: Blob, contentType: string, retry = true, userSignal?: AbortSignal): Promise<T> {
+  await ensureSession();
+  const controller = new AbortController();
+  const timeout = window.setTimeout(() => controller.abort(new DOMException("Request timed out", "TimeoutError")), REQUEST_TIMEOUT_MS);
+  const abortFromUser = () => controller.abort(userSignal?.reason);
+  if (userSignal?.aborted) abortFromUser();
+  else userSignal?.addEventListener("abort", abortFromUser, { once: true });
+  let response: Response;
+  try {
+    response = await fetch(`${apiBase}${path}`, {
+      method,
+      credentials: "include",
+      headers: { ...csrfHeaders(method), "Content-Type": contentType || "application/octet-stream" },
+      body,
+      signal: controller.signal,
+    });
+  } finally {
+    window.clearTimeout(timeout);
+    userSignal?.removeEventListener("abort", abortFromUser);
+  }
+  if (response.status === 401 && retry) {
+    sessionReady = false;
+    await ensureSession();
+    return requestRaw<T>(method, path, body, contentType, false, userSignal);
+  }
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    const record = data as { message?: string; error?: string };
+    throw new ApiError(
+      record.error ?? "request_failed",
+      record.message ?? record.error ?? `${method} ${path} failed.`,
+      response.status,
+      data && typeof data === "object" ? data as Record<string, unknown> : undefined,
+    );
+  }
+  return data as T;
+}
+
+export type TaskMaterialAsset = {
+  id: string;
+  clientFileId: string;
+  originalName: string;
+  family: string;
+  mimeType: string | null;
+  size: number;
+  hash: string;
+  resourceClass: "small" | "medium" | "large";
+  activeContent: boolean;
+  readiness: { state: string; reason: string };
+};
+
+export type TaskMaterialDraft = {
+  id: string;
+  projectId: string;
+  status: "draft" | "claimed" | "expired" | "purged";
+  revision: number;
+  workItemId: string | null;
+  assets: TaskMaterialAsset[];
+  createdAt: string;
+  updatedAt: string;
+  expiresAt: string;
+};
+
+export type TaskMaterialStorage = {
+  usedBytes: number;
+  limitBytes: number;
+  reclaimableBytes: number;
+  draftCount: number;
+  fileCount: number;
+  completedTaskCount: number;
+  expiredDraftCount: number;
+  retentionDays: number;
+  previewToken: string;
+};
 
 async function requestByteRange(path: string, start: number, end: number, retry = true): Promise<{ data: ArrayBuffer; total: number }> {
   await ensureSession();
@@ -1912,6 +1992,7 @@ export const api = {
       prNumber?: number;
       agentId?: string;
       startPoint?: string;
+      localIssueId?: string;
       link?: { type: "issue" | "pr"; number: number; title: string; url: string | null; state: string };
     },
   ) =>
@@ -1925,6 +2006,7 @@ export const api = {
       agentId?: string;
       name?: string;
       baseBranch?: string;
+      localIssueId?: string;
     },
   ) => request("POST", `/api/projects/${encodeURIComponent(projectId)}/auto-runs`, payload),
   // Creates a platform-managed bare repo and points the project's origin at it —
@@ -2051,6 +2133,37 @@ export const api = {
   ) => request("POST", "/api/work-items/attention/actions", { attentionIds, action, note, ...options }),
   getWorkItemGithubDiagnostics: () =>
     request("GET", "/api/work-items/github/diagnostics"),
+  getTaskMaterialStorage: () =>
+    request<TaskMaterialStorage>("GET", "/api/task-materials/storage"),
+  cleanupTaskMaterialStorage: (previewToken: string) =>
+    request<{ reclaimedBytes: number; fileCount: number; draftCount: number; usage: TaskMaterialStorage }>(
+      "POST",
+      "/api/task-materials/storage/cleanup",
+      { previewToken },
+    ),
+  createTaskMaterialDraft: (projectId: string) =>
+    request<{ draft: TaskMaterialDraft }>("POST", `/api/projects/${encodeURIComponent(projectId)}/task-material-drafts`, {}),
+  getTaskMaterialDraft: (projectId: string, draftId: string) =>
+    request<{ draft: TaskMaterialDraft }>("GET", `/api/projects/${encodeURIComponent(projectId)}/task-material-drafts/${encodeURIComponent(draftId)}`),
+  uploadTaskMaterialFile: (projectId: string, draftId: string, fileId: string, file: File, signal?: AbortSignal) =>
+    requestRaw<{ draft: TaskMaterialDraft; asset: TaskMaterialAsset }>(
+      "PUT",
+      `/api/projects/${encodeURIComponent(projectId)}/task-material-drafts/${encodeURIComponent(draftId)}/files/${encodeURIComponent(fileId)}?name=${encodeURIComponent(file.name || "reference-file")}`,
+      file,
+      file.type || "application/octet-stream",
+      true,
+      signal,
+    ),
+  removeTaskMaterialFile: (projectId: string, draftId: string, assetId: string, revision: number) =>
+    request<{ draft: TaskMaterialDraft }>("DELETE", `/api/projects/${encodeURIComponent(projectId)}/task-material-drafts/${encodeURIComponent(draftId)}/files/${encodeURIComponent(assetId)}?revision=${revision}`),
+  addWorkItemMaterials: (workItemId: string, payload: { expectedRevision: number; materialDraftId: string; materialDraftRevision: number }) =>
+    request("POST", `/api/work-items/${encodeURIComponent(workItemId)}/materials`, payload),
+  removeWorkItemMaterial: (workItemId: string, assetId: string, expectedRevision: number) =>
+    request("DELETE", `/api/work-items/${encodeURIComponent(workItemId)}/materials/${encodeURIComponent(assetId)}`, { expectedRevision }),
+  restoreWorkItemMaterial: (workItemId: string, assetId: string, expectedRevision: number) =>
+    request("POST", `/api/work-items/${encodeURIComponent(workItemId)}/materials/${encodeURIComponent(assetId)}/restore`, { expectedRevision }),
+  taskMaterialContentUrl: (workItemId: string, assetId: string, download = false) =>
+    `${apiBase}/api/work-items/${encodeURIComponent(workItemId)}/materials/${encodeURIComponent(assetId)}/content${download ? "?download=1" : ""}`,
   replayWorkItemGithubDelivery: (deliveryId: string) =>
     request("POST", `/api/work-items/github/deliveries/${encodeURIComponent(deliveryId)}/replay`),
   createWorkItem: (payload: {
@@ -2062,7 +2175,7 @@ export const api = {
     labels?: string[];
     acceptanceCriteria?: string[];
     assigneeIds?: string[];
-    requesterRelation?: "boss" | "manager" | "customer" | "colleague" | "self" | "unknown";
+    requesterRelation?: "boss" | "manager" | "customer" | "child" | "colleague" | "self" | "unknown";
     requesterName?: string | null;
     requesterOrganization?: string | null;
     requesterUserId?: string | null;
@@ -2083,7 +2196,35 @@ export const api = {
     businessCaseId?: string;
     businessKey?: string;
     triggerArtifactIds?: string[];
+    inputAssets?: Array<{
+      id: string | null;
+      path: string;
+      family: string;
+      terminalId: string;
+      size?: number | null;
+      resourceClass?: "small" | "medium" | "large" | "unknown";
+      hash: string | null;
+      version: string | null;
+      worktreeId?: string | null;
+      capabilities: string[];
+      readiness: { state: "ready" | "waiting_capability"; reason: string };
+    }>;
+    materialDraftId?: string;
+    materialDraftRevision?: number;
   }) => request("POST", "/api/work-items", payload),
+  createWorkItemFromExternal: (payload: {
+    projectId: string;
+    provider: "github" | "gitlab" | "gitea";
+    issueNumber: number;
+    repository?: string;
+    relation?: "source" | "related" | "duplicate" | "parent" | "blocks";
+    isPrimary?: boolean;
+    syncPolicy?: "manual" | "webhook_pull" | "bidirectional";
+    type?: "task" | "bug" | "feature" | "initiative";
+    priority?: "p0" | "p1" | "p2" | "p3";
+    plannedDate?: string | null;
+    acceptanceCriteria?: string[];
+  }) => request("POST", "/api/work-items/from-external", payload),
   getWorkItem: (id: string) => request("GET", `/api/work-items/${encodeURIComponent(id)}`),
   suggestWorkItemDraft: (payload: { projectId: string; title: string; body?: string }) =>
     request("POST", "/api/work-items/assist/draft", payload),
@@ -2097,6 +2238,15 @@ export const api = {
     request("POST", `/api/work-items/${encodeURIComponent(id)}/github/link`, payload),
   listWorkItemExternalProviders: () =>
     request("GET", "/api/work-items/providers"),
+  getWorkItemExternalIssueFunnel: (projectId?: string) =>
+    request("GET", `/api/work-items/external-funnel${projectId ? `?projectId=${encodeURIComponent(projectId)}` : ""}`),
+  listWorkItemExternalIssues: (payload: { provider: "gitlab" | "gitea"; projectId: string; repository: string; query?: string; page?: number; limit?: number }) => {
+    const query = new URLSearchParams({ provider: payload.provider, projectId: payload.projectId, repository: payload.repository });
+    if (payload.query) query.set("q", payload.query);
+    query.set("page", String(payload.page ?? 1));
+    query.set("limit", String(payload.limit ?? 20));
+    return request("GET", `/api/work-items/external-issues?${query}`);
+  },
   bindWorkItemExternalIssue: (id: string, payload: Record<string, unknown>) =>
     request("POST", `/api/work-items/${encodeURIComponent(id)}/external-bindings`, payload),
   syncWorkItemExternalIssue: (id: string, provider: string, payload: Record<string, unknown>) =>

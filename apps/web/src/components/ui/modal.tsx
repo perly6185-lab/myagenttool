@@ -19,7 +19,7 @@ export function Modal({
   title: string;
   description?: string;
   children: ReactNode;
-  size?: "md" | "lg" | "xl";
+  size?: "md" | "lg" | "xl" | "2xl" | "full";
   closeDisabled?: boolean;
 }) {
   const { t } = useAppTranslation();
@@ -68,7 +68,7 @@ export function Modal({
   if (!open) return null;
 
   return createPortal(
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4">
+    <div className={`fixed inset-0 z-50 flex items-center justify-center ${size === "full" ? "p-0 sm:p-4" : "p-4"}`}>
       <div
         className="absolute inset-0 bg-black/50"
         onClick={closeDisabled ? undefined : onClose}
@@ -82,8 +82,9 @@ export function Modal({
         aria-describedby={description ? descriptionId : undefined}
         tabIndex={-1}
         className={`relative z-10 max-h-[calc(100vh-2rem)] w-full overflow-y-auto ${
-          size === "xl" ? "max-w-5xl" : size === "lg" ? "max-w-lg" : "max-w-md"
-        } rounded-xl border border-border bg-card p-4 shadow-xl sm:p-5`}
+          size === "full" ? "h-full max-h-none max-w-7xl rounded-none sm:h-auto sm:max-h-[calc(100vh-2rem)] sm:rounded-xl"
+            : size === "2xl" ? "max-w-6xl rounded-xl" : size === "xl" ? "max-w-5xl rounded-xl" : size === "lg" ? "max-w-lg rounded-xl" : "max-w-md rounded-xl"
+        } border border-border bg-card p-4 shadow-xl sm:p-5`}
       >
         <button
           type="button"

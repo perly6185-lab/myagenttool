@@ -223,6 +223,28 @@ export function buildPublicState({
   const visibleWorkItems = (state.workItems ?? []).filter(
     (item) => teamId == null || (item.ownerTeamId ?? LOCAL_TEAM_ID) === teamId,
   );
+  const boundAutoRunIds = new Set();
+  const boundInvocationIds = new Set();
+  for (const item of visibleWorkItems) {
+    for (const binding of item.executionBindings ?? []) {
+      if (binding.kind === "auto_run" && binding.targetId) boundAutoRunIds.add(binding.targetId);
+      if (binding.kind === "application_invocation" && (binding.id ?? binding.targetId)) {
+        boundInvocationIds.add(binding.id ?? binding.targetId);
+      }
+    }
+  }
+  const boundAutoRuns = autoRuns.filter((run) => boundAutoRunIds.has(run.id));
+  for (const run of boundAutoRuns) {
+    if (run.invocationId) boundInvocationIds.add(run.invocationId);
+  }
+  const boundInvocations = visibleInvocations.filter((invocation) => boundInvocationIds.has(invocation.id));
+  const boundApprovals = approvalRequests.filter((approval) => boundInvocationIds.has(approval.invocationId));
+  const workbenchVersionTimestamps = [
+    ...visibleWorkItems.map((item) => item.updatedAt),
+    ...boundAutoRuns.map((run) => run.updatedAt ?? run.createdAt),
+    ...boundInvocations.map((invocation) => invocation.updatedAt ?? invocation.completedAt ?? invocation.createdAt),
+    ...boundApprovals.map((approval) => approval.updatedAt ?? approval.decidedAt ?? approval.createdAt),
+  ].filter(Boolean);
   const workItemSummary = {
     total: visibleWorkItems.length,
     open: visibleWorkItems.filter((item) => (item.businessState ?? item.state) === "open").length,
@@ -232,6 +254,10 @@ export function buildPublicState({
     ).length,
     updatedAt: visibleWorkItems.reduce(
       (latest, item) => item.updatedAt > latest ? item.updatedAt : latest,
+      "",
+    ) || null,
+    homeWorkbenchUpdatedAt: workbenchVersionTimestamps.reduce(
+      (latest, value) => value > latest ? value : latest,
       "",
     ) || null,
   };

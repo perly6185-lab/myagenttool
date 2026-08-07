@@ -54,7 +54,7 @@ async function requestJson(url, options, { fetchImpl, sleep, attempts }) {
     try {
       const response = await fetchImpl(url, options);
       lastStatus = response.status;
-      if (response.ok) return { ok: true, json: await response.json(), attempts: attempt };
+      if (response.ok) return { ok: true, json: await response.json(), headers: response.headers, attempts: attempt };
       if (!RETRYABLE.has(response.status) || attempt === attempts) {
         return { ok: false, error: `provider_http_${response.status}`, status: response.status, attempts: attempt };
       }
@@ -83,6 +83,25 @@ function snapshot(provider, repository, issue) {
     updatedAt: issue.updated_at,
     provider,
   };
+}
+
+function listEndpoint(config, repository, { query = "", page = 1, perPage = 20 } = {}) {
+  const repo = String(repository ?? "").trim();
+  if (!repo) return null;
+  const safePage = Math.max(1, Math.floor(Number(page) || 1));
+  const safePerPage = Math.max(1, Math.min(50, Math.floor(Number(perPage) || 20)));
+  if (config.id === "gitlab") {
+    const params = new URLSearchParams({ state: "opened", scope: "all", page: String(safePage), per_page: String(safePerPage) });
+    if (String(query).trim()) params.set("search", String(query).trim());
+    return `${config.baseUrl}/api/v4/projects/${encodeURIComponent(repo)}/issues?${params}`;
+  }
+  if (config.id === "gitea" && repo.split("/").length === 2) {
+    const [owner, name] = repo.split("/").map(encodeURIComponent);
+    const params = new URLSearchParams({ state: "open", type: "issues", page: String(safePage), limit: String(safePerPage) });
+    if (String(query).trim()) params.set("q", String(query).trim());
+    return `${config.baseUrl}/api/v1/repos/${owner}/${name}/issues?${params}`;
+  }
+  return null;
 }
 
 export function createExternalIssueProviderClient({
@@ -117,5 +136,22 @@ export function createExternalIssueProviderClient({
     return result.ok ? { ...result, issue: snapshot(config.id, repository, result.json) } : result;
   }
 
-  return { provider: config?.id ?? provider, readiness, fetchIssue, updateIssue };
+  async function listIssues({ repository, query = "", page = 1, perPage = 20 } = {}) {
+    const url = config && listEndpoint(config, repository, { query, page, perPage });
+    if (!config || !readiness.configured) return { ok: false, error: "provider_credentials_not_configured" };
+    if (!url) return { ok: false, error: "invalid_provider_repository_or_issue" };
+    const result = await requestJson(url, { headers: headers(config) }, { fetchImpl, sleep, attempts });
+    if (!result.ok) return result;
+    const rows = Array.isArray(result.json) ? result.json : [];
+    const issues = rows.filter((issue) => !issue?.pull_request).map((issue) => snapshot(config.id, repository, issue));
+    const normalizedPage = Math.max(1, Math.floor(Number(page) || 1));
+    const normalizedPerPage = Math.max(1, Math.min(50, Math.floor(Number(perPage) || 20)));
+    const gitlabNext = config.id === "gitlab" ? Number(result.headers?.get?.("x-next-page")) : 0;
+    const hasMore = config.id === "gitlab"
+      ? Number.isInteger(gitlabNext) && gitlabNext > normalizedPage
+      : rows.length >= normalizedPerPage;
+    return { ok: true, issues, page: normalizedPage, perPage: normalizedPerPage, hasMore, nextPage: hasMore ? (gitlabNext || normalizedPage + 1) : null };
+  }
+
+  return { provider: config?.id ?? provider, readiness, fetchIssue, updateIssue, listIssues };
 }

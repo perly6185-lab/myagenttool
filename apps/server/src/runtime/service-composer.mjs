@@ -69,6 +69,7 @@ import { convergeAutoRunTerminalState, createAutoRunService } from "../services/
 import { createDecisionSoftClaimService } from "../services/decision-soft-claims.mjs";
 import { createIssueClaimService } from "../services/issue-claims.mjs";
 import { createWorkItemService } from "../services/work-items.mjs";
+import { createTaskMaterialService } from "../services/task-materials.mjs";
 import { createWorkItemAutoRunBatchService } from "../services/work-item-auto-run-batches.mjs";
 import { createBusinessRoutineService } from "../services/business-routines.mjs";
 import { createBusinessPilotEvidenceService } from "../services/business-pilot-evidence.mjs";
@@ -409,6 +410,9 @@ export function createServerRuntimeServices({
   let resolveWorkItemApplicationCapability = () => ({ state: "refusal", reason: "resolver_unavailable", capability: null });
   let invokeWorkItemApplicationCapability = () => ({ status: 503, body: { error: "capability_gateway_unavailable" } });
   let syncAdaptiveWorkItemOutcome = () => {};
+  const taskMaterialService = createTaskMaterialService({
+    state, stateStorePath, now, nextId, persistStateSoon, appendEvent, store,
+  });
   const workItemService = createWorkItemService({
     state, now, nextId, appendEvent, persistStateSoon, store,
     sendAlert: alertOutbox.enqueue,
@@ -419,6 +423,8 @@ export function createServerRuntimeServices({
     invokeResolvedCapability: (name, input, actor) => invokeWorkItemApplicationCapability(name, input, actor),
     issueApplicationApprovalGrant: (input, actor) => issueApprovalGrant(input, actor),
     onWorkItemChanged: (item, actor) => syncAdaptiveWorkItemOutcome(item, actor),
+    claimTaskMaterialDraft: taskMaterialService.claimDraft,
+    resolveClaimedTaskMaterial: taskMaterialService.resolveClaimedAsset,
   });
   let releaseRoutineLedgerReservations = () => {};
   const businessRoutineService = createBusinessRoutineService({
@@ -524,6 +530,7 @@ export function createServerRuntimeServices({
       const result = await startAutoRun({
         projectId: item.projectId,
         link,
+        localIssueId: item.id,
         name: `local-${item.localNumber}-${slug}${attemptSuffix}`,
         baseBranch,
         agentId,
@@ -531,6 +538,7 @@ export function createServerRuntimeServices({
         issueBody,
         executionChainId: item.id,
         terminalId: item.terminalId,
+        taskMaterialWorkItemId: item.id,
         autonomyProfile: item.planningProjects?.some((project) => project.autonomyProfile === "cautious")
           ? "cautious"
           : item.planningProjects?.some((project) => project.autonomyProfile === "high")
@@ -1327,6 +1335,9 @@ export function createServerRuntimeServices({
     // it when the run settles.
     claimIssueForRun: claimIssue,
     releaseIssueClaimsForAutoRun,
+    // Development execution is admitted only from a durable Local Issue.
+    // External GitHub/GitLab issues remain intake/context records.
+    requireLocalIssueForDevelopment: true,
     // A1 alerting: best-effort operational webhook (budget breach, stuck reap).
     sendAlert: alertOutbox.enqueue,
     // O1 reliability: find a run's invocation for stuck/crash reconcile.
@@ -1578,6 +1589,7 @@ export function createServerRuntimeServices({
     // Self-healing (H2): file the auto-labeled remediation issue after a failed
     // deploy (gh issue create; gated at call-time on remediateOnDeployFailure).
     fileRemediationIssue: async ({ repoPath, title, body, labels }) => runChildIssueCreate({ cwd: repoPath, title, body, labels }),
+    materializeTaskMaterials: taskMaterialService.materialize,
     store,
   });
   const workItemAutoRunBatchService = createWorkItemAutoRunBatchService({
@@ -3998,6 +4010,13 @@ export function createServerRuntimeServices({
     addProject,
     cloneProject,
     createBlankProject,
+    createTaskMaterialDraft: taskMaterialService.createDraft,
+    getTaskMaterialDraft: taskMaterialService.getDraft,
+    uploadTaskMaterialFile: taskMaterialService.uploadFile,
+    removeTaskMaterialFile: taskMaterialService.removeFile,
+    readTaskMaterialContent: taskMaterialService.readContent,
+    previewTaskMaterialCleanup: taskMaterialService.cleanupPreview,
+    executeTaskMaterialCleanup: taskMaterialService.executeCleanup,
     createWorktree,
     createWorktreePr,
     publishWorktreeBranch,
@@ -4016,6 +4035,7 @@ export function createServerRuntimeServices({
     sweepAutoRunSloAlerts,
     sweepAlertOutbox: alertOutbox.sweep,
     sweepWorkItemOperationalAlerts: workItemService.sweepOperationalAlerts,
+    sweepTaskMaterialDrafts: taskMaterialService.sweepExpired,
     flushTraceExport,
     requestObservabilityDeletion,
     autoMergeSweep,
@@ -4055,6 +4075,10 @@ export function createServerRuntimeServices({
     listWorkItemAttention: workItemService.listAttention,
     getWorkItem: workItemService.getWorkItem,
     createWorkItem: workItemService.createWorkItem,
+    createWorkItemFromExternal: workItemService.createWorkItemFromExternal,
+    addWorkItemMaterials: workItemService.addMaterials,
+    removeWorkItemMaterial: workItemService.removeMaterial,
+    restoreWorkItemMaterial: workItemService.restoreMaterial,
     updateWorkItem: workItemService.updateWorkItem,
     recordWorkItemProgress: workItemService.recordWorkItemProgress,
     bulkUpdateWorkItems: workItemService.bulkUpdateWorkItems,
@@ -4080,6 +4104,7 @@ export function createServerRuntimeServices({
     bindExternalIssue: workItemService.bindExternalIssue,
     syncExternalIssue: workItemService.syncExternalIssue,
     listWorkItemExternalProviders: workItemService.listExternalProviders,
+    getWorkItemExternalIssueFunnel: workItemService.getExternalIssueFunnel,
     recordWorkItemVerification: workItemService.recordVerification,
     recordWorkItemAssetOperation: workItemService.recordAssetOperation,
     startWorkItemApplicationExecution: workItemService.startApplicationExecution,
@@ -4249,6 +4274,8 @@ export function createServerRuntimeServices({
       const result = await createExternalIssueProviderClient({ provider }).fetchIssue({ repository, issueNumber });
       return result.ok ? result.issue : result;
     },
+    listWorkItemExternalIssues: ({ provider, repository, query, page, perPage }) =>
+      createExternalIssueProviderClient({ provider }).listIssues({ repository, query, page, perPage }),
     pushWorkItemExternalIssue: ({ provider, repository, issueNumber, payload }) =>
       createExternalIssueProviderClient({ provider }).updateIssue({ repository, issueNumber, payload }),
     listPlanningProjects: planningProjectService.listProjects,

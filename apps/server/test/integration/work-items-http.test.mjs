@@ -419,6 +419,122 @@ test("GitHub issue binding and sync are wired through HTTP", async () => {
   assert.equal(pulled.body.workItem.title, "Updated remotely");
 });
 
+test("external issue intake creates a Local Issue and direct issue execution is refused", async () => {
+  const imported = await call("/api/work-items/from-external", {
+    method: "POST",
+    body: {
+      projectId: "prj_a",
+      provider: "gitlab",
+      relation: "source",
+      remote: {
+        number: 301,
+        title: "Imported GitLab task",
+        body: "Remote task body",
+        state: "open",
+        labels: ["intake"],
+        repository: "acme/repo",
+        url: "https://gitlab.example/acme/repo/-/issues/301",
+        updatedAt: "2026-07-24T00:00:00.000Z",
+      },
+    },
+  });
+  assert.equal(imported.status, 201);
+  assert.equal(imported.body.workItem.localRef.startsWith("LOCAL-"), true);
+  assert.equal(imported.body.workItem.body, "Remote task body");
+  assert.equal(imported.body.binding.relation, "source");
+  assert.equal(imported.body.binding.isPrimary, true);
+
+  const direct = await call("/api/projects/prj_a/auto-runs", {
+    method: "POST",
+    body: {
+      link: { type: "issue", number: 302, title: "Must be imported first", url: null, state: "open" },
+    },
+  });
+  assert.equal(direct.status, 409);
+  assert.equal(direct.body.error, "local_issue_required");
+});
+
+test("external issue intake rejects incomplete provider coordinates before fetching", async () => {
+  const unsupported = await call("/api/work-items/from-external", {
+    method: "POST",
+    body: { projectId: "prj_a", provider: "bitbucket", issueNumber: 12 },
+  });
+  assert.equal(unsupported.status, 400);
+  assert.equal(unsupported.body.error, "unsupported_external_provider");
+
+  const missingRepository = await call("/api/work-items/from-external", {
+    method: "POST",
+    body: { projectId: "prj_a", provider: "gitlab", issueNumber: 12 },
+  });
+  assert.equal(missingRepository.status, 400);
+  assert.equal(missingRepository.body.error, "invalid_provider_repository_or_issue");
+
+  const missingNumber = await call("/api/work-items/from-external", {
+    method: "POST",
+    body: { projectId: "prj_a", provider: "gitea", repository: "acme/repo" },
+  });
+  assert.equal(missingNumber.status, 400);
+  assert.equal(missingNumber.body.error, "invalid_external_issue_number");
+});
+
+test("project external issue controls are persisted and enforced by intake and writeback routes", async () => {
+  const disabledIntake = await call("/api/projects/prj_a", {
+    method: "PATCH",
+    body: { externalIssuePolicy: { intakeEnabled: false, writebackEnabled: true, autoExecutionEnabled: false, emergencyStop: false } },
+  });
+  assert.equal(disabledIntake.status, 200);
+  assert.equal(disabledIntake.body.project.externalIssuePolicy.intakeEnabled, false);
+
+  const refused = await call("/api/work-items/from-external", {
+    method: "POST",
+    body: {
+      projectId: "prj_a", provider: "gitlab",
+      remote: { number: 401, title: "Blocked intake", body: "", state: "open", repository: "acme/repo" },
+    },
+  });
+  assert.equal(refused.status, 409);
+  assert.equal(refused.body.error, "external_issue_intake_disabled");
+
+  await call("/api/projects/prj_a", {
+    method: "PATCH",
+    body: { externalIssuePolicy: { intakeEnabled: true, writebackEnabled: true, autoExecutionEnabled: false, emergencyStop: false } },
+  });
+  const imported = await call("/api/work-items/from-external", {
+    method: "POST",
+    body: {
+      projectId: "prj_a", provider: "gitlab",
+      remote: { number: 402, title: "Writeback governed", body: "", state: "open", repository: "acme/repo", updatedAt: "2026-07-24T00:00:00.000Z" },
+    },
+  });
+  await call("/api/projects/prj_a", {
+    method: "PATCH",
+    body: { externalIssuePolicy: { intakeEnabled: true, writebackEnabled: false, autoExecutionEnabled: false, emergencyStop: false } },
+  });
+  const blockedPush = await call(`/api/work-items/${imported.body.workItem.id}/external-bindings/gitlab/sync`, {
+    method: "POST",
+    body: { expectedRevision: imported.body.workItem.revision, direction: "push" },
+  });
+  assert.equal(blockedPush.status, 409);
+  assert.equal(blockedPush.body.error, "external_issue_writeback_disabled");
+
+  await call("/api/projects/prj_a", {
+    method: "PATCH",
+    body: { externalIssuePolicy: { intakeEnabled: true, writebackEnabled: true, autoExecutionEnabled: false, emergencyStop: true } },
+  });
+  const stoppedWebhook = await externalWebhook("gitlab", {
+    project: { path_with_namespace: "acme/repo" },
+    object_attributes: { iid: 402, title: "Must not overwrite", state: "opened", labels: [], updated_at: "2026-07-25T00:00:00.000Z" },
+  }, { deliveryId: "gitlab-emergency-stop" });
+  assert.equal(stoppedWebhook.status, 202);
+  assert.equal(stoppedWebhook.body.reason, "external_issue_emergency_stop");
+  assert.equal((await call(`/api/work-items/${imported.body.workItem.id}`)).body.workItem.title, "Writeback governed");
+
+  await call("/api/projects/prj_a", {
+    method: "PATCH",
+    body: { externalIssuePolicy: { intakeEnabled: true, writebackEnabled: true, autoExecutionEnabled: false, emergencyStop: false } },
+  });
+});
+
 test("GitHub webhook uses HMAC auth, supports rotation, and keeps replay team scoped", async () => {
   const item = (await call("/api/work-items", {
     method: "POST", body: { projectId: "prj_a", title: "Webhook linked" },

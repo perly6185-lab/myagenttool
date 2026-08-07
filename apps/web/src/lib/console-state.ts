@@ -1012,6 +1012,12 @@ export interface ProjectSnapshot {
   budgetPoolId: string | null;
   defaultAgentId: string | null;
   verifyCommandName?: string | null;
+  externalIssuePolicy?: {
+    intakeEnabled: boolean;
+    writebackEnabled: boolean;
+    autoExecutionEnabled: boolean;
+    emergencyStop: boolean;
+  };
   status: "active" | "archived";
   isolation: "shared" | "worktree";
   createdAt: string;
@@ -1340,6 +1346,8 @@ export interface ConsoleSnapshot {
     blocked: number;
     activeExecutions: number;
     updatedAt: string | null;
+    /** Changes whenever a Home workbench item, bound execution, or approval changes. */
+    homeWorkbenchUpdatedAt?: string | null;
   };
   workItemAlertSummary?: {
     queued: number;
