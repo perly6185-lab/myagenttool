@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { DashboardView, eventsForInvocation } from "@/features/dashboard/dashboard-view";
 import { listAllDashboardWorkItems } from "@/features/dashboard/dashboard-work-items";
@@ -20,6 +20,7 @@ const mocks = vi.hoisted(() => ({
   getLocalScheduleUrgent: vi.fn(),
   applyLocalScheduleUrgent: vi.fn(),
   request: vi.fn(),
+  autoRunReadiness: vi.fn(),
 }));
 vi.mock("@/data/use-console-state", () => ({ useConsoleState: mocks.useConsoleState }));
 vi.mock("@/data/use-console-actions", () => ({
@@ -29,6 +30,7 @@ vi.mock("@/data/use-console-actions", () => ({
     uploadWorktreeAttachments: mocks.uploadWorktreeAttachments,
     listWorkItems: mocks.listWorkItems,
     assignWorkItemToMe: mocks.assignWorkItemToMe,
+    autoRunReadiness: mocks.autoRunReadiness,
   },
 }));
 vi.mock("@/features/dashboard/local-schedule-api", () => ({
@@ -59,8 +61,13 @@ beforeEach(async () => {
     invocationStatusFilter: "all",
     composerDraftTask: null,
     resumeFromInvocationId: null,
+    selectedWorkItemId: null,
+    selectedWorkItemMode: "summary",
+    workItemDetailPreference: "summary",
+    selectedWorkItemSection: "overview",
   });
   mocks.listWorkItems.mockResolvedValue({ workItems: [], count: 0 });
+  mocks.autoRunReadiness.mockResolvedValue({ readiness: { ready: true, checks: [] } });
   mocks.getLocalScheduleCapacity.mockResolvedValue({
     terminal: { bridgeAvailable: false },
     capacity: { maxConcurrency: 1, availableSlots: 1, queueDepth: 0, worktreeLocks: 0 },
@@ -125,25 +132,30 @@ describe("DashboardView surfaces (#927)", () => {
     expect(mocks.listWorkItems).toHaveBeenNthCalledWith(2, { limit: "100", cursor: "page-2" });
   });
 
-  it("prioritizes incomplete setup before task entry and removes the redundant journey", async () => {
+  it("keeps Home usable when the workbench returns an incomplete success payload", async () => {
+    setup();
+    mocks.request.mockResolvedValueOnce({});
+
+    render(<DashboardView surface="overview" />);
+
+    expect(await screen.findByTestId("home-task-composer-inline")).toBeTruthy();
+    expect((await screen.findByRole("alert")).textContent).toContain("1 Home data source");
+  });
+
+  it("prioritizes incomplete setup before task entry and removes the temporary run entry", async () => {
     setup();
     render(<DashboardView surface="overview" />);
     expect(screen.getByText(/Prepare this computer/i)).toBeTruthy();
-    expect(screen.getByText("Run an Agent on this computer").closest(".order-1")).toBeTruthy();
     expect(screen.getByText(/Prepare this computer/i).closest(".order-first")).toBeTruthy();
-    expect((await screen.findByTestId("daily-work-board")).closest(".order-3")).toBeTruthy();
-    expect((screen.getByRole("button", { name: "Attach" }) as HTMLButtonElement).disabled).toBe(true);
-    expect(screen.getByText("Choose an explicit worktree to attach files safely.")).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Open Trace" })).toBeTruthy();
-    fireEvent.change(screen.getByRole("combobox", { name: "First task templates" }), {
-      target: { value: "inspect" },
-    });
-    const taskInput = screen.getByRole("textbox", { name: "Task" }) as HTMLTextAreaElement;
-    expect(taskInput.value).toBe(
-      "Inspect this project, explain its structure, and report risks without changing files.",
-    );
+    expect((await screen.findByTestId("daily-work-board")).className).toContain("min-w-0");
+    expect((await screen.findByTestId("my-work-section")).className).toContain("min-w-0");
+    const brief = await screen.findByTestId("daily-coordination-brief");
+    const createLayout = await screen.findByTestId("daily-brief-create-layout");
+    expect(within(createLayout).getByTestId("home-task-composer-inline")).toBeTruthy();
+    expect(createLayout.className).toContain("lg:grid-cols-[minmax(0,1.45fr)_minmax(340px,0.9fr)]");
+    expect(brief.parentElement?.parentElement).toBe(createLayout);
+    expect(screen.queryByText("Advanced: run AI without adding a tracked task")).toBeNull();
     expect(screen.queryByRole("navigation", { name: "Task journey" })).toBeNull();
-    expect((screen.getByText("What to know before running").closest("details") as HTMLDetailsElement).open).toBe(false);
   });
 
   it("keeps concurrent task events isolated even when both tasks use the same Agent", () => {
@@ -229,8 +241,47 @@ describe("DashboardView surfaces (#927)", () => {
     unmount();
     window.history.replaceState({}, "", "/");
     render(<DashboardView surface="overview" />);
+    const otherCompletion = (await screen.findAllByTestId("other-completion-column")).at(-1)!;
+    fireEvent.click(within(otherCompletion).getByRole("button", { name: "Show 1 more" }));
     fireEvent.click((await screen.findAllByRole("button", { name: /Exact approval/ }))[0]);
     expect(new URLSearchParams(window.location.search).get("approval")).toBe("apr_real");
+  });
+
+  it("opens an ordinary task detail in place without replacing Home with the task list", async () => {
+    mocks.useConsoleState.mockReturnValue({
+      data: {
+        projects: [], worktrees: [], events: [], invocations: [], agents: [], device: { status: "offline" },
+        workBoard: {
+          generatedAt: Date.now(),
+          states: {
+            pending_decision: { count: 0, items: [] },
+            in_progress: { count: 0, items: [] },
+            waiting: { count: 0, items: [] },
+            done: { count: 0, items: [] },
+            failed: { count: 0, items: [] },
+            follow_up: {
+              count: 1,
+              items: [{
+                id: "local:lwi_home",
+                state: "follow_up",
+                kind: "local_work_item",
+                title: "Review the customer task",
+                section: "task",
+                targetId: "lwi_home",
+              }],
+            },
+          },
+        },
+      },
+    });
+    mocks.useAsyncAction.mockReturnValue({ execute: vi.fn(), pending: false, error: null });
+
+    render(<DashboardView surface="overview" />);
+    fireEvent.click(await screen.findByRole("button", { name: /Review the customer task/ }));
+
+    expect(useUiStore.getState().section).toBe("dashboard");
+    expect(useUiStore.getState().selectedWorkItemId).toBe("lwi_home");
+    expect(useUiStore.getState().selectedWorkItemMode).toBe("summary");
   });
 
   it("keeps the last successful Home slices when a later refresh partially fails", async () => {
@@ -254,6 +305,17 @@ describe("DashboardView surfaces (#927)", () => {
     await waitFor(() => expect(mocks.getLocalScheduleCapacity).toHaveBeenCalledTimes(3));
   });
 
+  it("refreshes both Home board projections when a task detail changes", async () => {
+    setup();
+    render(<DashboardView surface="overview" />);
+    await waitFor(() => expect(mocks.request).toHaveBeenCalledTimes(1));
+
+    fireEvent(window, new Event("myagenttool:state-change"));
+
+    await waitFor(() => expect(mocks.request).toHaveBeenCalledTimes(2));
+    expect(mocks.listWorkItems).toHaveBeenCalledTimes(2);
+  });
+
   it("keeps a secondary new-run control while current progress and cancellation take priority", () => {
     mocks.useConsoleState.mockReturnValue({
       data: {
@@ -270,7 +332,7 @@ describe("DashboardView surfaces (#927)", () => {
     mocks.useAsyncAction.mockReturnValue({ execute: vi.fn(), pending: false, error: null });
 
     render(<DashboardView surface="overview" />);
-    expect((screen.getByRole("button", { name: "Run on this computer" }) as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.queryByRole("button", { name: "Run on this computer" })).toBeNull();
     expect(screen.getByRole("button", { name: "View progress" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "Cancel task" })).toBeTruthy();
     expect(document.querySelectorAll("[data-home-primary-action]")).toHaveLength(1);
@@ -280,11 +342,51 @@ describe("DashboardView surfaces (#927)", () => {
     expect(useUiStore.getState().selectedInvocationId).toBe("run-1");
   });
 
+  it("opens a tracked running task in simple details instead of sending ordinary users to Trace", async () => {
+    mocks.useConsoleState.mockReturnValue({
+      data: {
+        projects: [{ id: "p1", name: "Example" }],
+        worktrees: [],
+        events: [],
+        invocations: [{ id: "run-tracked", projectId: "p1", status: "running", createdAt: "2026-08-05T00:00:00Z", input: { task: "Prepare the customer brief" } }],
+        agents: [{ id: "agent-1", name: "Local runner", status: "ready", health: { status: "healthy" } }],
+        device: { status: "online" },
+        pendingDecisions: [],
+        evidenceLedger: [],
+      },
+    });
+    mocks.useAsyncAction.mockReturnValue({ execute: vi.fn(), pending: false, error: null });
+    mocks.request.mockResolvedValue({
+      generatedAt: "2026-08-05T00:00:00Z",
+      horizon: { today: "2026-08-05", tomorrow: "2026-08-06" },
+      summary: {
+        total: 1, needsAttention: 0, waitingMe: 0, approvals: 0, aiFailed: 0, dueToday: 1, reviewReady: 0,
+        byRelation: { boss: 0, manager: 0, customer: 0, child: 0, colleague: 0, self: 1, unknown: 0 },
+        byWaitingOn: { me: 0, requester: 0, internal: 0, ai: 1, none: 0 },
+      },
+      items: [{
+        workItemId: "lwi-tracked", localRef: "LOCAL-7", title: "Prepare the customer brief", projectId: "p1", revision: 1,
+        priority: "p2", assignees: [], requester: { relation: "self", name: null, organization: null },
+        planningStatus: "in_progress", executionState: "running", waitingOn: "ai", attentionReason: "ai_running", secondaryReasons: [],
+        needsAttention: false, dueDate: "2026-08-05", plannedDate: "2026-08-05", commitmentDate: null, nextFollowUpAt: null, report: null,
+        nextAction: { kind: "open_run", label: "Open run", targetId: "run-tracked", section: "invocations" },
+        ai: { autoRunId: "aur-tracked", invocationId: "run-tracked", agentId: "agent-1", agentName: "Local runner", status: "running", updatedAt: "2026-08-05T00:00:00Z" },
+      }],
+    });
+
+    render(<DashboardView surface="overview" />);
+    fireEvent.click(await screen.findByRole("button", { name: "Open task" }));
+
+    expect(useUiStore.getState().section).toBe("dashboard");
+    expect(useUiStore.getState().selectedWorkItemId).toBe("lwi-tracked");
+    expect(useUiStore.getState().selectedWorkItemMode).toBe("summary");
+  });
+
   it("consumes a reused task draft into the Home composer", async () => {
     setup();
     useUiStore.setState({ composerDraftTask: "Repair the failing checks" });
 
-    render(<DashboardView surface="overview" />);
+    render(<DashboardView surface="workspace" />);
 
     const taskInput = screen.getByRole("textbox", { name: "Task" }) as HTMLTextAreaElement;
     await waitFor(() => expect(taskInput.value).toBe("Repair the failing checks"));
@@ -337,7 +439,7 @@ describe("DashboardView surfaces (#927)", () => {
       selectedAgentId: "agent-1",
     });
 
-    const { container } = render(<DashboardView surface="overview" />);
+    const { container } = render(<DashboardView surface="workspace" />);
 
     expect(screen.getByText("Run an Agent in this worktree")).toBeTruthy();
     expect(screen.getAllByText("D:\\repo-wt").length).toBeGreaterThan(0);
@@ -350,7 +452,7 @@ describe("DashboardView surfaces (#927)", () => {
     expect(Array.from(model.options).map((option) => option.value)).toContain("gpt-5.6-sol");
     fireEvent.change(model, { target: { value: "gpt-5.6-sol" } });
 
-    const fileInput = container.querySelector('input[type="file"]') as HTMLInputElement;
+    const fileInput = Array.from(container.querySelectorAll<HTMLInputElement>('input[type="file"]')).at(-1) as HTMLInputElement;
     fireEvent.change(fileInput, {
       target: { files: [new File(["hello"], "notes.txt", { type: "text/plain" })] },
     });
@@ -379,10 +481,10 @@ describe("DashboardView surfaces (#927)", () => {
   });
 
   it.each([
-    { status: "waiting_for_local_approval", expected: "Handle approval" },
-    { status: "failed", expected: "Run on this computer" },
-    { status: "succeeded", expected: "Run on this computer" },
-  ])("keeps only active or approval state on Home for $status", ({ status, expected }) => {
+    { status: "waiting_for_local_approval", expected: null, approval: true },
+    { status: "failed", expected: null, approval: false },
+    { status: "succeeded", expected: null, approval: false },
+  ])("keeps only active or approval state on Home for $status", ({ status, expected, approval }) => {
     mocks.useConsoleState.mockReturnValue({
       data: {
         projects: [{ id: "p1", name: "Example" }],
@@ -417,8 +519,13 @@ describe("DashboardView surfaces (#927)", () => {
     mocks.useAsyncAction.mockReturnValue({ execute: vi.fn(), pending: false, error: null });
 
     render(<DashboardView surface="overview" />);
-    expect(screen.getByRole("button", { name: expected })).toBeTruthy();
-    expect(document.querySelectorAll("[data-home-primary-action]")).toHaveLength(1);
+    if (approval) {
+      expect(screen.getByTestId("ai-approval-card")).toBeTruthy();
+    }
+    if (expected) {
+      expect(screen.getByRole("button", { name: expected })).toBeTruthy();
+    }
+    expect(document.querySelectorAll("[data-home-primary-action]")).toHaveLength(expected ? 1 : 0);
   });
 
   it("keeps terminal transcripts in Workspace and out of Home", () => {
@@ -460,7 +567,7 @@ describe("DashboardView surfaces (#927)", () => {
     });
     mocks.useAsyncAction.mockReturnValue({ execute: vi.fn(), pending: false, error: null });
 
-    render(<DashboardView surface="overview" />);
+    render(<DashboardView surface="workspace" />);
     expect(screen.getByRole("combobox", { name: "任务助手" })).toBeTruthy();
     expect(screen.getByRole("option", { name: /Codex CLI/ })).toBeTruthy();
     expect(screen.getByText("追踪编号（Trace ID）")).toBeTruthy();

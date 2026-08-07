@@ -1,8 +1,34 @@
 import { createHmac, timingSafeEqual } from "node:crypto";
 
+function externalIssuePolicyFor(state, projectId) {
+  const policy = state?.projects?.find((project) => project.id === projectId)?.externalIssuePolicy ?? {};
+  return {
+    intakeEnabled: policy.intakeEnabled !== false,
+    writebackEnabled: policy.writebackEnabled !== false,
+    autoExecutionEnabled: policy.autoExecutionEnabled === true,
+    emergencyStop: policy.emergencyStop === true,
+  };
+}
+
+function externalOperationBlocked(policy, operation) {
+  if (policy.emergencyStop) return "external_issue_emergency_stop";
+  if (operation === "intake" && !policy.intakeEnabled) return "external_issue_intake_disabled";
+  if (operation === "writeback" && !policy.writebackEnabled) return "external_issue_writeback_disabled";
+  return null;
+}
+
+function externalBindingEmergencyStopped(state, provider, repository, issueNumber) {
+  return (state?.workItems ?? []).some((item) =>
+    (item.externalBindings ?? []).some((binding) =>
+      (binding.provider === provider || binding.kind === `${provider}_issue`)
+      && binding.number === Number(issueNumber)
+      && (!repository || !binding.repository || binding.repository === repository))
+    && externalIssuePolicyFor(state, item.projectId).emergencyStop);
+}
+
 export async function handleWorkItemRoutes({
-  req, res, url, sendJson, readJson, actor,
-  listWorkItems, getHomeWorkbench, listAttention, getWorkItem, createWorkItem, updateWorkItem, recordWorkItemProgress, bulkUpdateWorkItems, transitionWorkItem,
+  req, res, url, sendJson, readJson, actor, state,
+  listWorkItems, getHomeWorkbench, listAttention, getWorkItem, createWorkItem, createWorkItemFromExternal, updateWorkItem, recordWorkItemProgress, bulkUpdateWorkItems, transitionWorkItem,
   listReportDrafts, getReportDraft, generateReportDraft, updateReportDraft, confirmReportDraft, discardReportDraft,
   listActivity, listComments, createComment, updateComment, deleteComment,
   createWorktree, startAutoRun, beginExecution, abortExecution, recordExecutionBinding,
@@ -10,8 +36,8 @@ export async function handleWorkItemRoutes({
   promoteWorktreeToBase, promoteWorktreeToPullRequest, beginDelivery, failDelivery, completeDelivery,
   claimWorkItem, releaseWorkItemClaim, assignWorkItemToSelf,
   bindGithubIssue, syncGithubIssue,
-  bindExternalIssue, syncExternalIssue, listExternalProviders,
-  fetchExternalIssue, pushExternalIssue,
+  bindExternalIssue, syncExternalIssue, listExternalProviders, getExternalIssueFunnel,
+  fetchExternalIssue, listExternalIssues, pushExternalIssue,
   fetchGithubIssue, pushGithubIssue,
   recordVerification,
   recordAssetOperation,
@@ -35,6 +61,9 @@ export async function handleWorkItemRoutes({
   createArticleDerivative,
   listArticleDerivatives,
   getArticleDerivative,
+  addMaterials,
+  removeMaterial,
+  restoreMaterial,
 }) {
   if (url.pathname === "/api/work-item-auto-run-batches") {
     if (req.method === "GET") {
@@ -102,6 +131,10 @@ export async function handleWorkItemRoutes({
       repository,
       updatedAt: issue.updated_at,
     } : null;
+    if (snapshot && externalBindingEmergencyStopped(state, provider, repository, snapshot.number)) {
+      sendJson(res, 202, { accepted: true, ignored: true, reason: "external_issue_emergency_stop", provider });
+      return true;
+    }
     const result = ingestExternalWebhook({ provider, deliveryId, event, snapshot });
     sendJson(res, result.status, result.body);
     return true;
@@ -134,6 +167,10 @@ export async function handleWorkItemRoutes({
         reason: "invalid_json",
       });
       sendJson(res, 400, { error: "invalid_json" });
+      return true;
+    }
+    if (externalBindingEmergencyStopped(state, "github", payload.repository?.full_name, payload.issue?.number)) {
+      sendJson(res, 202, { accepted: true, ignored: true, reason: "external_issue_emergency_stop", provider: "github" });
       return true;
     }
     const result = ingestGithubWebhook({
@@ -312,6 +349,118 @@ export async function handleWorkItemRoutes({
     return false;
   }
 
+  if (url.pathname === "/api/work-items/external-funnel" && req.method === "GET") {
+    const result = getExternalIssueFunnel({ projectId: url.searchParams.get("projectId") ?? undefined }, actor);
+    sendJson(res, result.status, result.body);
+    return true;
+  }
+
+  if (url.pathname === "/api/work-items/external-issues" && req.method === "GET") {
+    const provider = String(url.searchParams.get("provider") ?? "").toLowerCase();
+    const projectId = String(url.searchParams.get("projectId") ?? "");
+    const repository = String(url.searchParams.get("repository") ?? "").trim();
+    const project = state?.projects?.find((candidate) => candidate.id === projectId
+      && (actor?.teamId == null || (candidate.ownerTeamId ?? "team_local") === actor.teamId));
+    if (!project) {
+      sendJson(res, 404, { error: "project_not_found" });
+      return true;
+    }
+    if (!["gitlab", "gitea"].includes(provider) || !repository) {
+      sendJson(res, 400, { error: "invalid_provider_repository_or_issue", provider });
+      return true;
+    }
+    const intakeBlock = externalOperationBlocked(externalIssuePolicyFor(state, projectId), "intake");
+    if (intakeBlock) {
+      sendJson(res, 409, { error: intakeBlock, provider, projectId });
+      return true;
+    }
+    const result = await listExternalIssues({
+      provider,
+      repository,
+      query: url.searchParams.get("q") ?? "",
+      page: Number(url.searchParams.get("page") ?? 1),
+      perPage: Number(url.searchParams.get("limit") ?? 20),
+    });
+    sendJson(res, result.ok ? 200 : result.error === "provider_credentials_not_configured" ? 503 : 502, result);
+    return true;
+  }
+
+  // External issues enter the development system through this intake path.
+  // The endpoint snapshots the remote issue first, creates the Local Issue
+  // with that content, and records the provider/repository/number relation in
+  // the same service boundary. It never starts a worktree or an Agent.
+  if (url.pathname === "/api/work-items/from-external" && req.method === "POST") {
+    const body = await readJson(req);
+    const provider = String(body?.provider ?? "").toLowerCase();
+    const projectId = String(body?.projectId ?? "");
+    const issueNumber = Number(body?.issueNumber ?? body?.remote?.number);
+    if (!["github", "gitlab", "gitea"].includes(provider)) {
+      sendJson(res, 400, { error: "unsupported_external_provider", provider });
+      return true;
+    }
+    if (!projectId) {
+      sendJson(res, 400, { error: "invalid_external_issue_project", provider });
+      return true;
+    }
+    const intakeBlock = externalOperationBlocked(externalIssuePolicyFor(state, projectId), "intake");
+    if (intakeBlock) {
+      sendJson(res, 409, { error: intakeBlock, provider, projectId });
+      return true;
+    }
+    if (!Number.isInteger(issueNumber) || issueNumber < 1) {
+      sendJson(res, 400, { error: "invalid_external_issue_number", provider });
+      return true;
+    }
+    if (!body?.remote && provider !== "github" && !String(body?.repository ?? "").trim()) {
+      sendJson(res, 400, { error: "invalid_provider_repository_or_issue", provider });
+      return true;
+    }
+    const remote = body?.remote ?? (provider === "github"
+      ? await fetchGithubIssue({ projectId, issueNumber })
+      : await fetchExternalIssue({ provider, repository: body?.repository, issueNumber }));
+    if (!remote || remote.ok === false) {
+      sendJson(res, remote?.error === "provider_credentials_not_configured" ? 503 : 502, {
+        error: remote?.error ?? "external_issue_fetch_failed", provider,
+      });
+      return true;
+    }
+    const result = createWorkItemFromExternal({
+      ...body,
+      projectId,
+      provider,
+      remote,
+    }, actor);
+    sendJson(res, result.status, result.body);
+    return true;
+  }
+
+  const restoreMaterialMatch = url.pathname.match(/^\/api\/work-items\/([^/]+)\/materials\/([^/]+)\/restore$/);
+  if (restoreMaterialMatch && req.method === "POST") {
+    const result = restoreMaterial({
+      workItemId: decodeURIComponent(restoreMaterialMatch[1]),
+      assetId: decodeURIComponent(restoreMaterialMatch[2]),
+      ...(await readJson(req)),
+    }, actor);
+    sendJson(res, result.status, result.body);
+    return true;
+  }
+
+  const materialsMatch = url.pathname.match(/^\/api\/work-items\/([^/]+)\/materials(?:\/([^/]+))?$/);
+  if (materialsMatch && req.method === "POST" && !materialsMatch[2]) {
+    const result = addMaterials({ workItemId: decodeURIComponent(materialsMatch[1]), ...(await readJson(req)) }, actor);
+    sendJson(res, result.status, result.body);
+    return true;
+  }
+  if (materialsMatch && req.method === "DELETE" && materialsMatch[2]) {
+    const result = removeMaterial({
+      workItemId: decodeURIComponent(materialsMatch[1]),
+      assetId: decodeURIComponent(materialsMatch[2]),
+      ...(await readJson(req)),
+    }, actor);
+    sendJson(res, result.status, result.body);
+    return true;
+  }
+
   const claimMatch = url.pathname.match(/^\/api\/work-items\/([^/]+)\/(claim|release-claim|assign-to-me)$/);
   if (claimMatch && req.method === "POST") {
     const workItemId = decodeURIComponent(claimMatch[1]);
@@ -343,6 +492,11 @@ export async function handleWorkItemRoutes({
       sendJson(res, detail.status, detail.body);
       return true;
     }
+    const intakeBlock = externalOperationBlocked(externalIssuePolicyFor(state, detail.body.workItem.projectId), "intake");
+    if (intakeBlock) {
+      sendJson(res, 409, { error: intakeBlock, projectId: detail.body.workItem.projectId });
+      return true;
+    }
     const body = await readJson(req);
     const provider = String(body?.provider ?? "").toLowerCase();
     const remote = body?.remote ?? (provider && body?.repository && body?.issueNumber
@@ -368,6 +522,13 @@ export async function handleWorkItemRoutes({
     const detail = getWorkItem({ workItemId: decodeURIComponent(externalSyncMatch[1]) }, actor);
     if (!detail.ok) {
       sendJson(res, detail.status, detail.body);
+      return true;
+    }
+    const externalPolicy = externalIssuePolicyFor(state, detail.body.workItem.projectId);
+    const syncOperation = ["push", "resolve_local"].includes(body?.direction) ? "writeback" : "sync";
+    const syncBlock = externalOperationBlocked(externalPolicy, syncOperation);
+    if (syncBlock) {
+      sendJson(res, 409, { error: syncBlock, provider, projectId: detail.body.workItem.projectId });
       return true;
     }
     const binding = detail.body.workItem.externalBindings?.find((candidate) => candidate.provider === provider || candidate.kind === `${provider}_issue`);
@@ -432,11 +593,26 @@ export async function handleWorkItemRoutes({
       return true;
     }
     const item = detail.body.workItem;
+    const githubOperation = githubMatch[2] === "link"
+      ? "intake"
+      : ["push", "resolve_local"].includes(body?.direction) ? "writeback" : "sync";
+    const githubBlock = externalOperationBlocked(externalIssuePolicyFor(state, item.projectId), githubOperation);
+    if (githubBlock) {
+      sendJson(res, 409, { error: githubBlock, provider: "github", projectId: item.projectId });
+      return true;
+    }
     if (githubMatch[2] === "link") {
       const issueNumber = Number(body?.issueNumber ?? body?.remote?.number);
       const remote = body?.remote ?? await fetchGithubIssue({ projectId: item.projectId, issueNumber });
       const result = remote
-        ? bindGithubIssue({ workItemId, expectedRevision: body?.expectedRevision, remote }, actor)
+        ? bindGithubIssue({
+          workItemId,
+          expectedRevision: body?.expectedRevision,
+          relation: body?.relation,
+          isPrimary: body?.isPrimary,
+          syncPolicy: body?.syncPolicy,
+          remote,
+        }, actor)
         : { status: 502, body: { error: "github_issue_fetch_failed" } };
       sendJson(res, result.status, result.body);
       return true;
@@ -649,9 +825,10 @@ export async function handleWorkItemRoutes({
         item.acceptanceCriteria?.length ? `Acceptance criteria:\n${item.acceptanceCriteria.map((value) => `- ${value}`).join("\n")}` : "",
       ].filter(Boolean).join("\n\n");
       const result = await startAutoRun({
-        projectId: item.projectId, link, name, baseBranch: body?.baseBranch,
+        projectId: item.projectId, link, localIssueId: item.id, name, baseBranch: body?.baseBranch,
         agentId: body?.agentId, actor, issueBody,
         executionChainId: item.id,
+        taskMaterialWorkItemId: item.id,
         terminalId: item.terminalId,
         autonomyProfile: item.planningProjects?.some((project) => project.autonomyProfile === "cautious")
           ? "cautious"

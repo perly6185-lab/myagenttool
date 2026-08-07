@@ -25,6 +25,7 @@ import { backfillProjectGitFacts } from "../services/projects.mjs";
 import { backfillApplicationRuntimeMetadata } from "../services/applications.mjs";
 import { handleReviewFindingRoutes } from "../routes/review-findings.mjs";
 import { handleTerminalRoutes } from "../routes/terminal.mjs";
+import { handleTaskMaterialRoutes } from "../routes/task-materials.mjs";
 import { handleToolRoutes } from "../routes/tools.mjs";
 import { handleWorkItemRoutes } from "../routes/work-items.mjs";
 import { handleWorkflowMemoryRoutes } from "../routes/workflow-memory.mjs";
@@ -47,6 +48,13 @@ export function createHttpServer({
   addProject,
   cloneProject,
   createBlankProject,
+  createTaskMaterialDraft,
+  getTaskMaterialDraft,
+  uploadTaskMaterialFile,
+  removeTaskMaterialFile,
+  readTaskMaterialContent,
+  previewTaskMaterialCleanup,
+  executeTaskMaterialCleanup,
   createWorktree,
   createWorktreePr,
   publishWorktreeBranch,
@@ -74,7 +82,9 @@ export function createHttpServer({
   bindExternalIssue,
   syncExternalIssue,
   listWorkItemExternalProviders,
+  getWorkItemExternalIssueFunnel,
   fetchWorkItemExternalIssue,
+  listWorkItemExternalIssues,
   pushWorkItemExternalIssue,
   fetchWorkItemGithubIssue,
   pushWorkItemGithubIssue,
@@ -108,6 +118,9 @@ export function createHttpServer({
   createArticleDerivative,
   listArticleDerivatives,
   getArticleDerivative,
+  addWorkItemMaterials,
+  removeWorkItemMaterial,
+  restoreWorkItemMaterial,
   listWorkflowSources,
   createWorkflowSource,
   scanWorkflowSource,
@@ -398,6 +411,7 @@ export function createHttpServer({
   listWorkItemAttention,
   getWorkItem,
   createWorkItem,
+  createWorkItemFromExternal,
   updateWorkItem,
   recordWorkItemProgress,
   bulkUpdateWorkItems,
@@ -805,8 +819,8 @@ export function createHttpServer({
       }
 
       if (await handleWorkItemRoutes({
-        req, res, url, sendJson, readJson, actor,
-        listWorkItems, getHomeWorkbench, listAttention: listWorkItemAttention, getWorkItem, createWorkItem, updateWorkItem, recordWorkItemProgress, bulkUpdateWorkItems, transitionWorkItem,
+        req, res, url, sendJson, readJson, actor, state,
+        listWorkItems, getHomeWorkbench, listAttention: listWorkItemAttention, getWorkItem, createWorkItem, createWorkItemFromExternal, updateWorkItem, recordWorkItemProgress, bulkUpdateWorkItems, transitionWorkItem,
         listReportDrafts: listWorkItemReportDrafts,
         getReportDraft: getWorkItemReportDraft,
         generateReportDraft: generateWorkItemReportDraft,
@@ -838,7 +852,9 @@ export function createHttpServer({
         bindExternalIssue,
         syncExternalIssue,
         listExternalProviders: listWorkItemExternalProviders,
+        getExternalIssueFunnel: getWorkItemExternalIssueFunnel,
         fetchExternalIssue: fetchWorkItemExternalIssue,
+        listExternalIssues: listWorkItemExternalIssues,
         pushExternalIssue: pushWorkItemExternalIssue,
         fetchGithubIssue: fetchWorkItemGithubIssue,
         pushGithubIssue: pushWorkItemGithubIssue,
@@ -866,6 +882,9 @@ export function createHttpServer({
         createArticleDerivative,
         listArticleDerivatives,
         getArticleDerivative,
+        addMaterials: addWorkItemMaterials,
+        removeMaterial: removeWorkItemMaterial,
+        restoreMaterial: restoreWorkItemMaterial,
       })) {
         return;
       }
@@ -889,6 +908,19 @@ export function createHttpServer({
       }
 
       if (handleLoopRoutineRoutes({ req, res, url, sendJson, currentLoopRoutineProjectContext })) {
+        return;
+      }
+
+      if (await handleTaskMaterialRoutes({
+        req, res, url, sendJson, readJson, state, actor,
+        createTaskMaterialDraft,
+        getTaskMaterialDraft,
+        uploadTaskMaterialFile,
+        removeTaskMaterialFile,
+        readTaskMaterialContent,
+        previewTaskMaterialCleanup,
+        executeTaskMaterialCleanup,
+      })) {
         return;
       }
 

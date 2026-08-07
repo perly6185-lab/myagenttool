@@ -5,19 +5,13 @@ import {
   buildDailyWorkBoardModel,
   DailyWorkBoard,
 } from "@/features/dashboard/daily-work-board";
-import type { WorkBoard, WorkItem, WorkReport, WorkState } from "@/lib/console-state";
+import type { PendingDecision, WorkBoard, WorkItem, WorkReport, WorkState } from "@/lib/console-state";
 import type { LocalWorkItem } from "@/features/tasks/task-view-types";
 import type { HomeWorkbench, HomeWorkbenchItem } from "@/features/dashboard/home-workbench-types";
 import { i18n } from "@/lib/i18n";
 
-const apiMocks = vi.hoisted(() => ({ recordWorkItemProgress: vi.fn() }));
-vi.mock("@/data/use-console-actions", () => ({
-  api: { recordWorkItemProgress: apiMocks.recordWorkItemProgress },
-}));
-
 beforeEach(async () => {
   await i18n.changeLanguage("en-US");
-  apiMocks.recordWorkItemProgress.mockReset();
 });
 afterEach(cleanup);
 
@@ -147,8 +141,12 @@ function workbench(items: HomeWorkbenchItem[]): HomeWorkbench {
   };
 }
 
+function activateWorkTab(view: "my" | "ai") {
+  fireEvent.click(screen.getByRole("tab", { name: view === "ai" ? /^AI tasks/ : /^My tasks/ }));
+}
+
 describe("DailyWorkBoard", () => {
-  it("records progress from a server-derived follow-up action and refreshes the board", async () => {
+  it("opens the simple task detail for a server-derived follow-up action", () => {
     const progressItem = localItem({
       id: "progress", localRef: "LOCAL-P", title: "Follow up with customer", dueDate: "2026-07-31", plannedDate: null,
     });
@@ -161,37 +159,24 @@ describe("DailyWorkBoard", () => {
       attentionReason: "waiting_requester",
       nextAction: { kind: "record_progress", label: "record_progress", targetId: progressItem.id, section: "task" },
     });
-    apiMocks.recordWorkItemProgress.mockResolvedValue({
-      workItem: { ...progressItem, revision: 5, lastProgressSummary: "Customer approved the scope" },
-    });
-    const onProgressRecorded = vi.fn();
+    const onOpenItem = vi.fn();
     render(
       <DailyWorkBoard
         board={{ generatedAt: Date.now(), states: emptyStates() }}
         report={report(0, 0)}
         plannedItems={[progressItem]}
         workbench={workbench([progressHome])}
-        onOpenItem={vi.fn()}
+        onOpenItem={onOpenItem}
         onOpenTasks={vi.fn()}
-        onProgressRecorded={onProgressRecorded}
         now={new Date(2026, 6, 31, 12).getTime()}
       />,
     );
 
     fireEvent.click(within(screen.getByTestId("my-work-section")).getByRole("button", { name: "Follow up" }));
-    const dialog = screen.getByRole("dialog", { name: "Record progress" });
-    fireEvent.change(within(dialog).getByLabelText("Progress update"), {
-      target: { value: "Customer approved the scope" },
-    });
-    fireEvent.click(within(dialog).getByRole("button", { name: "Save progress" }));
-
-    await waitFor(() => expect(apiMocks.recordWorkItemProgress).toHaveBeenCalledWith("progress", expect.objectContaining({
-      expectedRevision: 4,
-      summary: "Customer approved the scope",
-      waitingOn: "requester",
-    })));
-    await waitFor(() => expect(onProgressRecorded).toHaveBeenCalledTimes(1));
-    expect(screen.queryByRole("dialog", { name: "Record progress" })).toBeNull();
+    expect(onOpenItem).toHaveBeenCalledWith(expect.objectContaining({
+      targetId: "progress",
+      section: "task",
+    }));
   });
 
   it("shows the same Issues by person and due date for me, then by execution date and state for AI", () => {
@@ -231,27 +216,35 @@ describe("DailyWorkBoard", () => {
     const aiWork = screen.getByTestId("ai-work-section");
     expect(within(myWork).getByText("Customer · Alex")).toBeTruthy();
     expect(within(myWork).getByText(/People：Waiting on me/)).toBeTruthy();
+    expect(within(myWork).getByText("AI：8/1 · Ready for review")).toBeTruthy();
     expect(within(myWork).getByText("Report stale")).toBeTruthy();
     expect(myWork.textContent).not.toContain("Codex");
     expect(aiWork.textContent).toContain("Codex");
     expect(aiWork.textContent).toContain("Ready for review");
     expect(aiWork.textContent).not.toContain("done");
     const myToday = within(myWork).getByRole("heading", { name: "Today" }).closest("section");
+    activateWorkTab("ai");
     const aiTomorrow = within(aiWork).getByRole("heading", { name: "Tomorrow" }).closest("section");
     expect(myToday?.textContent).toContain("LOCAL-C · Confirm customer scope");
     expect(aiTomorrow?.textContent).toContain("LOCAL-C");
     expect(aiTomorrow?.textContent).toContain("AI execution date：8/1");
     expect(aiTomorrow?.textContent).toContain("Expected completion：7/31");
+    expect(within(myWork).getByText("AI execution is after expected completion")).toBeTruthy();
+    expect(within(aiWork).getByText("AI execution is after expected completion")).toBeTruthy();
 
+    activateWorkTab("my");
     fireEvent.click(within(myWork).getByRole("button", { name: "1 Child learning" }));
     expect(within(myWork).getAllByText("LOCAL-K · Review child learning plan").length).toBeGreaterThan(0);
+    expect(within(myWork).getByText("AI：Not linked")).toBeTruthy();
     expect(within(myWork).queryByText("LOCAL-C · Confirm customer scope")).toBeNull();
     expect(aiWork.textContent).toContain("LOCAL-C");
 
+    activateWorkTab("ai");
     fireEvent.click(within(aiWork).getByRole("button", { name: "1 Review and report" }));
     expect(within(aiWork).getByText(/LOCAL-C/)).toBeTruthy();
     fireEvent.click(within(aiWork).getByRole("button", { name: "Review" }));
-    expect(onOpenItem).toHaveBeenCalledWith(expect.objectContaining({ section: "autoRuns", targetId: "aur_customer" }));
+    expect(onOpenItem).toHaveBeenCalledWith(expect.objectContaining({ section: "task", targetId: "customer" }));
+    activateWorkTab("my");
     fireEvent.click(within(myWork).getByRole("button", { name: "1 Customer" }));
     fireEvent.click(within(myWork).getByRole("button", { name: "Review report" }));
     expect(onOpenItem).toHaveBeenCalledWith(expect.objectContaining({
@@ -274,6 +267,24 @@ describe("DailyWorkBoard", () => {
       ],
     );
     expect(model.today.map((row) => row.targetId)).toEqual(["overdue", "normal"]);
+  });
+
+  it("keeps a recently closed local task on the completion board", () => {
+    const now = new Date(2026, 6, 31, 12).getTime();
+    const completed = localItem({
+      id: "closed", localRef: "LOCAL-CLOSED", state: "closed", status: "review",
+      dueDate: "2026-08-02", completedAt: "2026-07-31T08:00:00.000Z", updatedAt: "2026-07-31T08:00:00.000Z",
+    });
+    const model = buildDailyWorkBoardModel(
+      { generatedAt: now, states: emptyStates() },
+      report(0, 0),
+      now,
+      [completed],
+      [homeItem({ workItemId: completed.id, localRef: completed.localRef, planningStatus: "done", executionState: "completed", waitingOn: "none", completedAt: completed.completedAt })],
+    );
+    expect(model.today.map((row) => row.targetId)).toEqual(["closed"]);
+    expect(model.today[0].state).toBe("done");
+    expect((model.today[0] as WorkItem & { planningStatus?: string }).planningStatus).toBe("done");
   });
 
   it("wraps long stakeholder content and shows human execution labels", () => {
@@ -303,6 +314,43 @@ describe("DailyWorkBoard", () => {
     expect(screen.getAllByText(/LOCAL-LONG/).some((node) => node.className.includes("overflow-wrap"))).toBe(true);
     expect(screen.getByTestId("active-ai-work").textContent).toContain("Awaiting approval");
     expect(screen.getByTestId("active-ai-work").textContent).not.toContain("waiting_for_local_approval");
+  });
+
+  it("renders one compact approval card per pending decision at the tab edge", () => {
+    const now = new Date(2026, 6, 31, 12).getTime();
+    const approvals: PendingDecision[] = [
+      { id: "approval-1", kind: "invocation_approval", title: "Install dependencies", section: "approvals" },
+      { id: "approval-2", kind: "invocation_approval", title: "Push the release branch", section: "approvals" },
+    ];
+    const onOpenApproval = vi.fn();
+    const { rerender } = render(
+      <DailyWorkBoard
+        board={{ generatedAt: now, states: emptyStates() }}
+        report={report(0, 0)}
+        approvals={approvals}
+        onOpenApproval={onOpenApproval}
+        onOpenItem={vi.fn()}
+        onOpenTasks={vi.fn()}
+        now={now}
+      />,
+    );
+
+    expect(screen.getAllByTestId("ai-approval-card")).toHaveLength(2);
+    fireEvent.click(screen.getByRole("button", { name: "AI approvals: Install dependencies" }));
+    expect(onOpenApproval).toHaveBeenCalledWith(approvals[0]);
+
+    rerender(
+      <DailyWorkBoard
+        board={{ generatedAt: now, states: emptyStates() }}
+        report={report(0, 0)}
+        approvals={[]}
+        onOpenApproval={onOpenApproval}
+        onOpenItem={vi.fn()}
+        onOpenTasks={vi.fn()}
+        now={now}
+      />,
+    );
+    expect(screen.queryByTestId("ai-approval-cards")).toBeNull();
   });
 
   it("separates yesterday outcomes from today's current focus without duplicating follow-up items", () => {
@@ -342,9 +390,9 @@ describe("DailyWorkBoard", () => {
       />,
     );
 
-    expect(screen.getByText("Yesterday")).toBeTruthy();
-    expect(screen.getByText("Today")).toBeTruthy();
-    expect(screen.getByText("Tomorrow")).toBeTruthy();
+    expect(screen.getAllByText("Yesterday")).toHaveLength(2);
+    expect(screen.getAllByText("Today")).toHaveLength(2);
+    expect(screen.getAllByText("Tomorrow")).toHaveLength(2);
     expect(screen.getByText("Task active")).toBeTruthy();
     expect(screen.getByText("No tasks are due tomorrow")).toBeTruthy();
 
@@ -354,7 +402,9 @@ describe("DailyWorkBoard", () => {
     expect(onOpenTasks).toHaveBeenCalled();
     expect(screen.getByTestId("my-work-status-cards")).toBeTruthy();
     expect(screen.getByTestId("ai-work-status-cards")).toBeTruthy();
-    expect(screen.getByText("No AI work yet")).toBeTruthy();
+    expect(screen.getByTestId("ai-execution-timeline")).toBeTruthy();
+    expect(screen.getByTestId("ai-date-columns")).toBeTruthy();
+    expect(screen.getAllByText("No AI work yet")).toHaveLength(4);
   });
 
   it("expands hidden work so every issue status remains inspectable", () => {
@@ -485,7 +535,447 @@ describe("DailyWorkBoard", () => {
       />,
     );
 
-    expect(screen.getByTestId("unscheduled-work").textContent).toContain("Run failed; triage or retry first");
+    expect(screen.getByTestId("other-completion-column").textContent).toContain("Run failed; triage or retry first");
+  });
+
+  it("surfaces unscheduled AI work and completed work awaiting human review in both views", () => {
+    const now = new Date(2026, 6, 31, 12).getTime();
+    const unscheduled = localItem({ id: "ai-unscheduled", localRef: "LOCAL-AU", title: "Schedule linked AI", dueDate: "2026-07-31", plannedDate: null });
+    const review = localItem({ id: "ai-review", localRef: "LOCAL-AR", title: "Review completed AI", dueDate: "2026-07-31", plannedDate: "2026-07-31" });
+    const ai = (id: string): NonNullable<HomeWorkbenchItem["ai"]> => ({
+      autoRunId: `aur-${id}`,
+      invocationId: `inv-${id}`,
+      agentId: "agt-codex",
+      agentName: "Codex",
+      status: "ready",
+      updatedAt: "2026-07-31T03:00:00.000Z",
+    });
+
+    render(
+      <DailyWorkBoard
+        board={{ generatedAt: now, states: emptyStates() }}
+        report={report(0, 0)}
+        plannedItems={[unscheduled, review]}
+        workbench={workbench([
+          homeItem({
+            workItemId: unscheduled.id,
+            localRef: unscheduled.localRef,
+            title: unscheduled.title,
+            dueDate: unscheduled.dueDate,
+            plannedDate: null,
+            executionState: "claimed",
+            ai: ai(unscheduled.id),
+          }),
+          homeItem({
+            workItemId: review.id,
+            localRef: review.localRef,
+            title: review.title,
+            dueDate: review.dueDate,
+            plannedDate: review.plannedDate,
+            executionState: "completed",
+            ai: ai(review.id),
+          }),
+        ])}
+        onOpenItem={vi.fn()}
+        onOpenTasks={vi.fn()}
+        now={now}
+      />,
+    );
+
+    const myWork = screen.getByTestId("my-work-section");
+    expect(within(myWork).getByText("AI：No execution date · Claimed")).toBeTruthy();
+    expect(within(myWork).getByText("AI：7/31 · Ready for review")).toBeTruthy();
+    const aiWork = screen.getByTestId("ai-work-section");
+    expect(within(myWork).getByText("AI is linked but has no execution date")).toBeTruthy();
+    expect(within(aiWork).getByText("AI is linked but has no execution date")).toBeTruthy();
+    expect(within(myWork).getByText("AI completed; awaiting human review")).toBeTruthy();
+    expect(within(aiWork).getByText("AI completed; awaiting human review")).toBeTruthy();
+  });
+
+  it("deduplicates urgent work into one action queue step per Issue and edits its execution date in place", async () => {
+    const now = new Date(2026, 6, 31, 12).getTime();
+    const late = localItem({ id: "late", localRef: "LOCAL-LATE", title: "Move the AI execution", dueDate: "2026-07-31", plannedDate: "2026-08-01" });
+    const approval = localItem({ id: "approval", localRef: "LOCAL-APP", title: "Approve the release", dueDate: "2026-07-31", plannedDate: "2026-07-31" });
+    const onOpenItem = vi.fn();
+    const onUpdatePlannedDate = vi.fn().mockResolvedValue(undefined);
+
+    render(
+      <DailyWorkBoard
+        board={{ generatedAt: now, states: emptyStates() }}
+        report={report(0, 0)}
+        plannedItems={[late, approval]}
+        workbench={workbench([
+          homeItem({ workItemId: late.id, localRef: late.localRef, title: late.title, dueDate: late.dueDate, plannedDate: late.plannedDate }),
+          homeItem({
+            workItemId: approval.id,
+            localRef: approval.localRef,
+            title: approval.title,
+            dueDate: approval.dueDate,
+            plannedDate: approval.plannedDate,
+            attentionReason: "approval_required",
+            executionState: "awaiting_approval",
+            nextAction: { kind: "open_approval", label: "open_approval", targetId: "apr-release", section: "approvals" },
+          }),
+        ])}
+        onOpenItem={onOpenItem}
+        onOpenTasks={vi.fn()}
+        onUpdatePlannedDate={onUpdatePlannedDate}
+        now={now}
+      />,
+    );
+
+    expect(screen.queryByTestId("unified-action-queue")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Review today's actions" }));
+    const queue = screen.getByTestId("unified-action-queue");
+    expect(within(queue).getAllByTestId(/^action-queue-/)).toHaveLength(2);
+    const approvalRow = within(queue).getByTestId("action-queue-approval");
+    const lateRow = within(queue).getByTestId("action-queue-late");
+    expect(approvalRow.compareDocumentPosition(lateRow) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(within(queue).getByText("AI execution is after expected completion")).toBeTruthy();
+
+    fireEvent.click(within(queue).getByRole("button", { name: "Adjust execution date" }));
+    const scheduleDialog = screen.getByRole("dialog", { name: "Schedule AI execution" });
+    const dateInput = within(scheduleDialog).getByLabelText("AI execution date") as HTMLInputElement;
+    expect(dateInput.value).toBe("2026-08-01");
+    fireEvent.change(dateInput, { target: { value: "2026-07-31" } });
+    fireEvent.click(within(scheduleDialog).getByRole("button", { name: "Save date" }));
+    await waitFor(() => expect(onUpdatePlannedDate).toHaveBeenCalledWith(expect.objectContaining({ workItemId: "late" }), "2026-07-31"));
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Schedule AI execution" })).toBeNull());
+    fireEvent.click(within(queue).getByRole("button", { name: "Approve" }));
+    expect(onOpenItem).toHaveBeenCalledWith(expect.objectContaining({ section: "task", targetId: "approval" }));
+  });
+
+  it("keeps the execution-date editor open when saving fails", async () => {
+    const now = new Date(2026, 6, 31, 12).getTime();
+    const late = localItem({ id: "late-error", localRef: "LOCAL-LATE", title: "Move the AI execution", dueDate: "2026-07-31", plannedDate: "2026-08-01" });
+    render(
+      <DailyWorkBoard
+        board={{ generatedAt: now, states: emptyStates() }}
+        report={report(0, 0)}
+        plannedItems={[late]}
+        workbench={workbench([homeItem({ workItemId: late.id, localRef: late.localRef, title: late.title, dueDate: late.dueDate, plannedDate: late.plannedDate })])}
+        onOpenItem={vi.fn()}
+        onOpenTasks={vi.fn()}
+        onUpdatePlannedDate={vi.fn().mockRejectedValue(new Error("revision conflict"))}
+        now={now}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Review today's actions" }));
+    fireEvent.click(screen.getByRole("button", { name: "Adjust execution date" }));
+    const scheduleDialog = screen.getByRole("dialog", { name: "Schedule AI execution" });
+    fireEvent.click(within(scheduleDialog).getByRole("button", { name: "Save date" }));
+    expect((await within(scheduleDialog).findByRole("alert")).textContent).toBe("Could not save the execution date. Try again.");
+    expect(screen.getByRole("dialog", { name: "Schedule AI execution" })).toBeTruthy();
+  });
+
+  it("turns live work into a coordination brief and a bounded focus session", async () => {
+    const now = new Date(2026, 6, 31, 12).getTime();
+    const late = localItem({ id: "brief-late", localRef: "LOCAL-LATE", title: "Realign the AI date", dueDate: "2026-07-31", plannedDate: "2026-08-01" });
+    const approval = localItem({ id: "brief-approval", localRef: "LOCAL-APP", title: "Approve the release", dueDate: "2026-07-31", plannedDate: "2026-07-31" });
+    const rows = [
+      homeItem({ workItemId: late.id, localRef: late.localRef, title: late.title, dueDate: late.dueDate, plannedDate: late.plannedDate }),
+      homeItem({
+        workItemId: approval.id,
+        localRef: approval.localRef,
+        title: approval.title,
+        dueDate: approval.dueDate,
+        plannedDate: approval.plannedDate,
+        attentionReason: "approval_required",
+        executionState: "awaiting_approval",
+        nextAction: { kind: "open_approval", label: "open_approval", targetId: "apr-brief", section: "approvals" },
+      }),
+    ];
+    const onStartFocusSession = vi.fn();
+    const onEndFocusSession = vi.fn();
+    render(
+      <DailyWorkBoard
+        board={{ generatedAt: now, states: emptyStates() }}
+        report={report(0, 0)}
+        plannedItems={[late, approval]}
+        workbench={workbench(rows)}
+        onOpenItem={vi.fn()}
+        onOpenTasks={vi.fn()}
+        onStartFocusSession={onStartFocusSession}
+        onEndFocusSession={onEndFocusSession}
+        now={now}
+      />,
+    );
+
+    const brief = screen.getByTestId("daily-coordination-brief");
+    expect(within(brief).getByText("Today: 2 due, 2 need your action, AI scheduled or running: 1.")).toBeTruthy();
+    expect(within(brief).getByText("Date conflicts between your expectation and AI execution: 1.")).toBeTruthy();
+    expect(within(brief).getByText("LOCAL-APP · Approve the release")).toBeTruthy();
+
+    fireEvent.click(within(brief).getByRole("button", { name: "Start first action" }));
+    expect(onStartFocusSession).toHaveBeenCalledTimes(1);
+    let focus = screen.getByRole("dialog", { name: "Focus session" });
+    expect(within(focus).getByText("Item 1 of 2")).toBeTruthy();
+    expect(within(focus).getByText("Approve the release")).toBeTruthy();
+    fireEvent.click(within(focus).getByRole("button", { name: "Next" }));
+    focus = screen.getByRole("dialog", { name: "Focus session" });
+    expect(within(focus).getByText("Item 2 of 2")).toBeTruthy();
+    expect(within(focus).getByText("Realign the AI date")).toBeTruthy();
+    fireEvent.click(within(focus).getByRole("button", { name: "End focus" }));
+    expect(onEndFocusSession).toHaveBeenCalledTimes(1);
+    expect(screen.queryByRole("dialog", { name: "Focus session" })).toBeNull();
+  });
+
+  it("resumes an unresolved launched Issue instead of skipping it", async () => {
+    const now = new Date(2026, 6, 31, 12).getTime();
+    const first = homeItem({ workItemId: "focus-first", localRef: "LOCAL-1", title: "First decision", dueDate: "2026-07-31", plannedDate: "2026-07-31", attentionReason: "approval_required" });
+    const second = homeItem({ workItemId: "focus-second", localRef: "LOCAL-2", title: "Second decision", dueDate: "2026-07-31", plannedDate: "2026-07-31", attentionReason: "overdue" });
+    render(
+      <DailyWorkBoard
+        board={{ generatedAt: now, states: emptyStates() }}
+        report={report(0, 0)}
+        plannedItems={[]}
+        workbench={workbench([first, second])}
+        onOpenItem={vi.fn()}
+        onOpenTasks={vi.fn()}
+        focusSessionActive
+        focusPendingWorkItemId="focus-first"
+        now={now}
+      />,
+    );
+
+    const focus = await screen.findByRole("dialog", { name: "Focus session" });
+    expect(within(focus).getByText("First decision")).toBeTruthy();
+  });
+
+  it("continues with the next Issue only after the previous action resolves", async () => {
+    const now = new Date(2026, 6, 31, 12).getTime();
+    const first = homeItem({ workItemId: "focus-first", localRef: "LOCAL-1", title: "First decision", dueDate: "2026-07-31", plannedDate: "2026-07-31", attentionReason: "approval_required" });
+    const second = homeItem({ workItemId: "focus-second", localRef: "LOCAL-2", title: "Second decision", dueDate: "2026-07-31", plannedDate: "2026-07-31", attentionReason: "overdue" });
+    render(
+      <DailyWorkBoard
+        board={{ generatedAt: now, states: emptyStates() }}
+        report={report(0, 0)}
+        plannedItems={[]}
+        workbench={workbench([first, second])}
+        onOpenItem={vi.fn()}
+        onOpenTasks={vi.fn()}
+        focusSessionActive
+        focusResolvedWorkItemId="focus-first"
+        now={now}
+      />,
+    );
+
+    const focus = await screen.findByRole("dialog", { name: "Focus session" });
+    expect(within(focus).getByText("Second decision")).toBeTruthy();
+  });
+
+  it("returns to the same focus Issue when execution-date editing is cancelled", async () => {
+    const now = new Date(2026, 6, 31, 12).getTime();
+    const late = homeItem({ workItemId: "focus-late", localRef: "LOCAL-LATE", title: "Realign execution", dueDate: "2026-07-31", plannedDate: "2026-08-01" });
+    const onFocusActionResolved = vi.fn();
+    render(
+      <DailyWorkBoard
+        board={{ generatedAt: now, states: emptyStates() }}
+        report={report(0, 0)}
+        plannedItems={[]}
+        workbench={workbench([late])}
+        onOpenItem={vi.fn()}
+        onOpenTasks={vi.fn()}
+        onUpdatePlannedDate={vi.fn()}
+        focusSessionActive
+        focusPendingWorkItemId="focus-late"
+        onFocusActionResolved={onFocusActionResolved}
+        now={now}
+      />,
+    );
+
+    let focus = await screen.findByRole("dialog", { name: "Focus session" });
+    fireEvent.click(within(focus).getByRole("button", { name: "Adjust execution date" }));
+    const schedule = screen.getByRole("dialog", { name: "Schedule AI execution" });
+    fireEvent.click(within(schedule).getByRole("button", { name: "Cancel" }));
+    focus = await screen.findByRole("dialog", { name: "Focus session" });
+    expect(within(focus).getByText("Realign execution")).toBeTruthy();
+    expect(onFocusActionResolved).not.toHaveBeenCalled();
+  });
+
+  it("locates, reveals, and highlights the same Issue across both boards", async () => {
+    const now = new Date(2026, 6, 31, 12).getTime();
+    const rows = [
+      localItem({ id: "first", localRef: "LOCAL-1", title: "First personal task", dueDate: "2026-07-31", plannedDate: "2026-07-31", requesterRelation: "child" }),
+      localItem({ id: "second", localRef: "LOCAL-2", title: "Second personal task", dueDate: "2026-07-31", plannedDate: "2026-07-31" }),
+      localItem({ id: "target", localRef: "LOCAL-T", title: "Cross-board target", dueDate: "2026-07-31", plannedDate: "2026-08-01" }),
+    ];
+    const homes = rows.map((row) => homeItem({
+      workItemId: row.id,
+      localRef: row.localRef,
+      title: row.title,
+      dueDate: row.dueDate,
+      plannedDate: row.plannedDate,
+      requester: { relation: row.requesterRelation, name: null, organization: null },
+    }));
+
+    render(
+      <DailyWorkBoard
+        board={{ generatedAt: now, states: emptyStates() }}
+        report={report(0, 0)}
+        plannedItems={rows}
+        workbench={workbench(homes)}
+        onOpenItem={vi.fn()}
+        onOpenTasks={vi.fn()}
+        now={now}
+      />,
+    );
+
+    const myWork = screen.getByTestId("my-work-section");
+    const aiWork = screen.getByTestId("ai-work-section");
+    fireEvent.click(within(myWork).getByRole("button", { name: "1 Child learning" }));
+    expect(within(myWork).queryByText("LOCAL-T · Cross-board target")).toBeNull();
+
+    activateWorkTab("ai");
+    const aiTarget = within(aiWork).getByText("Cross-board target").closest<HTMLElement>('[data-work-view="ai"]')!;
+    fireEvent.click(within(aiTarget).getByRole("button", { name: "Locate in My tasks" }));
+    await waitFor(() => {
+      const myTarget = document.querySelector<HTMLElement>('[data-work-view="my"][data-work-item-id="target"]');
+      expect(myTarget).toBeTruthy();
+      expect(myTarget?.className).toContain("ring-primary/35");
+      expect(document.activeElement).toBe(myTarget);
+    });
+    expect(within(myWork).getByRole("button", { name: "1 Child learning" }).getAttribute("aria-pressed")).toBe("true");
+    expect(within(myWork).getByText("Temporarily showing this Issue without changing your filter")).toBeTruthy();
+
+    activateWorkTab("my");
+    fireEvent.click(within(myWork).getByRole("button", { name: "Back to AI tasks" }));
+    await waitFor(() => expect(within(myWork).queryByText("LOCAL-T · Cross-board target")).toBeNull());
+    activateWorkTab("my");
+    expect(within(myWork).getByRole("button", { name: "1 Child learning" }).getAttribute("aria-pressed")).toBe("true");
+
+    fireEvent.click(within(myWork).getByRole("button", { name: "3 All people" }));
+    fireEvent.click(within(screen.getByTestId("today-completion-column")).getByRole("button", { name: "Show 1 more" }));
+    const myTarget = (await within(myWork).findByText("LOCAL-T · Cross-board target"))
+      .closest<HTMLElement>('[data-work-view="my"]')!;
+    activateWorkTab("ai");
+    fireEvent.click(within(aiWork).getByRole("button", { name: /Running/ }));
+    expect(within(aiWork).queryByText("Cross-board target")).toBeNull();
+    activateWorkTab("my");
+    fireEvent.click(within(myTarget).getByRole("button", { name: "Locate in AI tasks" }));
+    await waitFor(() => {
+      const focusedAiTarget = document.querySelector<HTMLElement>('[data-work-view="ai"][data-work-item-id="target"]');
+      expect(focusedAiTarget?.className).toContain("ring-primary/35");
+      expect(document.activeElement).toBe(focusedAiTarget);
+    });
+    expect(within(aiWork).getByRole("button", { name: /Running/ }).getAttribute("aria-pressed")).toBe("true");
+    fireEvent.click(within(aiWork).getByRole("button", { name: "Back to My tasks" }));
+    await waitFor(() => expect(within(aiWork).queryByText("Cross-board target")).toBeNull());
+  });
+
+  it("keeps dated and undated cards expandable in the fourth columns after Tomorrow", () => {
+    const now = new Date(2026, 6, 31, 12).getTime();
+    const plannedItems = [
+      localItem({ id: "future-1", localRef: "LOCAL-F1", title: "First future follow-up", dueDate: "2026-08-03", plannedDate: "2026-08-04" }),
+      localItem({ id: "future-2", localRef: "LOCAL-F2", title: "Second future follow-up", dueDate: "2026-08-04", plannedDate: "2026-08-05" }),
+      localItem({ id: "undated", localRef: "LOCAL-U", title: "Unscheduled follow-up", dueDate: null, plannedDate: null }),
+    ];
+    const workbenchItems = plannedItems.map((plannedItem) => homeItem({
+      workItemId: plannedItem.id,
+      localRef: plannedItem.localRef,
+      title: plannedItem.title,
+      requester: { relation: "child", name: null, organization: null },
+      dueDate: plannedItem.dueDate,
+      plannedDate: plannedItem.plannedDate,
+      ai: {
+        autoRunId: null,
+        invocationId: `inv-${plannedItem.id}`,
+        agentId: "agt-codex",
+        agentName: "Codex",
+        status: "waiting_for_local_approval",
+        updatedAt: "2026-07-31T03:00:00.000Z",
+      },
+    }));
+    const onOpenItem = vi.fn();
+
+    render(
+      <DailyWorkBoard
+        board={{ generatedAt: now, states: emptyStates() }}
+        report={report(0, 0)}
+        plannedItems={plannedItems}
+        workbench={workbench(workbenchItems)}
+        onOpenItem={onOpenItem}
+        onOpenTasks={vi.fn()}
+        now={now}
+      />,
+    );
+
+    const myWork = screen.getByTestId("my-work-section");
+    const aiWork = screen.getByTestId("ai-work-section");
+    const myColumns = [
+      screen.getByTestId("yesterday-completion-column"),
+      screen.getByTestId("today-completion-column"),
+      screen.getByTestId("tomorrow-completion-column"),
+      screen.getByTestId("other-completion-column"),
+    ];
+    const aiColumns = [
+      screen.getByTestId("yesterday-execution-column"),
+      screen.getByTestId("today-execution-column"),
+      screen.getByTestId("tomorrow-execution-column"),
+      screen.getByTestId("other-execution-column"),
+    ];
+    for (const columns of [myColumns, aiColumns]) {
+      for (let index = 1; index < columns.length; index += 1) {
+        expect(columns[index - 1].compareDocumentPosition(columns[index]) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+      }
+    }
+    expect(within(myWork).getByText("Expected completion · Yesterday / Today / Tomorrow / Other completion dates")).toBeTruthy();
+    expect(screen.getAllByText("Swipe horizontally to view all 4 columns")).toHaveLength(2);
+
+    const myTomorrow = within(myWork).getByRole("heading", { name: "Tomorrow" }).closest("section")!;
+    const myOther = screen.getByTestId("other-completion-column");
+    expect(myTomorrow.compareDocumentPosition(myOther) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+
+    expect(myOther.textContent).toContain("Expected completion：8/3");
+    expect(myOther.textContent).not.toContain("LOCAL-U · Unscheduled follow-up");
+    fireEvent.click(within(myOther).getByRole("button", { name: "Show 1 more" }));
+    expect(myOther.textContent).toContain("LOCAL-U · Unscheduled follow-up");
+    expect(myOther.textContent).toContain("Expected completion：Expected completion not set");
+    fireEvent.click(within(myOther).getByRole("button", { name: /LOCAL-U · Unscheduled follow-up/ }));
+
+    activateWorkTab("ai");
+    const aiTomorrow = within(aiWork).getByRole("heading", { name: "Tomorrow" }).closest("section")!;
+    const aiOther = screen.getByTestId("other-execution-column");
+    expect(within(aiOther).getByRole("heading", { name: "Other execution dates / unscheduled" })).toBeTruthy();
+    expect(aiTomorrow.compareDocumentPosition(aiOther) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(aiOther.textContent).toContain("AI execution date：8/4");
+    expect(aiOther.textContent).not.toContain("LOCAL-U");
+    fireEvent.click(within(aiOther).getByRole("button", { name: "Show 1 more" }));
+    expect(aiOther.textContent).toContain("LOCAL-U");
+    expect(aiOther.textContent).toContain("AI execution date：No execution date");
+    expect(onOpenItem).toHaveBeenCalledWith(expect.objectContaining({ targetId: "undated", section: "task" }));
+  });
+
+  it("keeps a completed AI task visible in a collapsed Today execution column", () => {
+    const now = new Date(2026, 6, 31, 12).getTime();
+    const plannedItems = ["a", "b", "completed"].map((id) => localItem({
+      id, localRef: `LOCAL-${id.toUpperCase()}`, title: `Task ${id}`, dueDate: "2026-07-31", plannedDate: "2026-07-31",
+      ...(id === "completed" ? { state: "closed" as const, status: "review" as const, updatedAt: "2026-07-31T08:00:00.000Z" } : {}),
+    }));
+    const workbenchItems = plannedItems.map((plannedItem) => homeItem({
+      workItemId: plannedItem.id,
+      localRef: plannedItem.localRef,
+      title: plannedItem.title,
+      plannedDate: "2026-07-31",
+      executionState: plannedItem.id === "completed" ? "completed" : "unclaimed",
+      planningStatus: plannedItem.id === "completed" ? "done" : "ready",
+      waitingOn: "none",
+      completedAt: plannedItem.id === "completed" ? plannedItem.updatedAt : null,
+    }));
+    render(
+      <DailyWorkBoard
+        board={{ generatedAt: now, states: emptyStates() }}
+        report={report(0, 0)}
+        plannedItems={plannedItems}
+        workbench={workbench(workbenchItems)}
+        onOpenItem={vi.fn()}
+        onOpenTasks={vi.fn()}
+        now={now}
+      />,
+    );
+    activateWorkTab("ai");
+    expect(within(screen.getByTestId("today-execution-column")).getByText("LOCAL-COMPLETED")).toBeTruthy();
   });
 
   it("shows every unassigned local issue outside personal capacity and lets the user claim one", () => {
@@ -541,6 +1031,7 @@ describe("DailyWorkBoard", () => {
       />,
     );
 
+    activateWorkTab("ai");
     expect(screen.getByText("Available slots 2 / 3")).toBeTruthy();
     const capacityButton = screen.getByRole("button", { name: "Available slots 2 / 3" });
     expect(capacityButton.getAttribute("aria-expanded")).toBe("false");
@@ -584,6 +1075,7 @@ describe("DailyWorkBoard", () => {
       />,
     );
 
+    activateWorkTab("ai");
     expect(screen.getAllByText("LOCAL-1 · Plan the next release").length).toBeGreaterThan(0);
     expect(source.plannedDate).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Apply suggested plan" }));
@@ -623,10 +1115,53 @@ describe("DailyWorkBoard", () => {
       />,
     );
 
+    activateWorkTab("ai");
     fireEvent.click(screen.getByRole("button", { name: "Roll over 2" }));
     expect(confirm).toHaveBeenCalledOnce();
     expect(onRollover).toHaveBeenCalledWith(true);
     confirm.mockRestore();
+  });
+
+  it("prompts once per local day before carrying yesterday's unfinished work", async () => {
+    const now = new Date(2026, 6, 31, 12).getTime();
+    const promptKey = "myagenttool:rollover-prompt:2026-07-30";
+    window.localStorage.removeItem(promptKey);
+    const onRollover = vi.fn();
+    const rollover = {
+      generatedAt: "2026-07-31T04:00:00.000Z",
+      rolloverRevision: "0123456789abcdef01234567",
+      terminalId: "dev-local",
+      sourceDate: "2026-07-30",
+      targetDate: "2026-07-31",
+      moves: [{
+        workItemId: "auto-prompt", localRef: "LOCAL-AP", title: "Carry unfinished work", status: "ready" as const,
+        sourceDate: "2026-07-30", targetDate: "2026-07-31", expectedRevision: 1,
+        runningContextPreserved: false, previousPlanSource: "auto_plan", reason: "unfinished_from_previous_local_day",
+      }],
+      confirmationRequired: [],
+      unscheduled: [],
+    };
+    const { unmount } = render(
+      <DailyWorkBoard
+        board={{ generatedAt: now, states: emptyStates() }}
+        report={report(0, 0)}
+        rollover={rollover}
+        autoRolloverPrompt
+        onOpenItem={vi.fn()}
+        onOpenTasks={vi.fn()}
+        onRollover={onRollover}
+        now={now}
+      />,
+    );
+
+    expect(await screen.findByRole("dialog", { name: "Unfinished work from yesterday" })).toBeTruthy();
+    expect(screen.getByText("Carry unfinished work")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Carry all to today" }));
+    expect(onRollover).toHaveBeenCalledWith(true);
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "Unfinished work from yesterday" })).toBeNull());
+    expect(window.localStorage.getItem(promptKey)).toBe("dismissed");
+    unmount();
+    window.localStorage.removeItem(promptKey);
   });
 
   it("previews an urgent insertion and only applies it from the explicit P0 action", () => {
@@ -665,6 +1200,7 @@ describe("DailyWorkBoard", () => {
       />,
     );
 
+    activateWorkTab("ai");
     expect(screen.getByText("1 P0 pending")).toBeTruthy();
     expect(screen.getByText("LOCAL-P0 · Restore production")).toBeTruthy();
     expect(screen.getByText("LOCAL-P3 · Polish docs")).toBeTruthy();

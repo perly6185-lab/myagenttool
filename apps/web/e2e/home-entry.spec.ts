@@ -1,4 +1,4 @@
-import { expect, test, type Page } from "playwright/test";
+import { expect, test, type Page, type Route } from "playwright/test";
 
 const READY_STATE = {
   device: {
@@ -29,10 +29,39 @@ const READY_STATE = {
   evidenceLedger: [],
 };
 
+const EMPTY_HOME_WORKBENCH = {
+  generatedAt: "2026-08-06T00:00:00.000Z",
+  horizon: { today: "2026-08-06", tomorrow: "2026-08-07" },
+  summary: {
+    total: 0, needsAttention: 0, waitingMe: 0, approvals: 0, aiFailed: 0, dueToday: 0, reviewReady: 0,
+    byRelation: { boss: 0, manager: 0, customer: 0, child: 0, colleague: 0, self: 0, unknown: 0 },
+    byWaitingOn: { me: 0, requester: 0, internal: 0, ai: 0, none: 0 },
+  },
+  items: [],
+};
+
+function dashboardFallback(pathname: string) {
+  if (pathname === "/api/work-items/home-workbench") return EMPTY_HOME_WORKBENCH;
+  if (pathname === "/api/work-items") return { workItems: [], count: 0, hasMore: false, nextCursor: null };
+  if (/^\/api\/projects\/[^/]+\/auto-run-readiness$/.test(pathname)) return { readiness: { ready: true, checks: [] } };
+  if (pathname === "/api/local-schedule/capacity") return {
+    terminal: { bridgeAvailable: true },
+    capacity: { maxConcurrency: 1, availableSlots: 1, queueDepth: 0, worktreeLocks: 0 },
+  };
+  if (pathname === "/api/local-schedule/preview") return { planRevision: "0123456789abcdef01234567", days: [], attention: [], unscheduled: [] };
+  if (pathname === "/api/local-schedule/rollover-preview") return { rolloverRevision: "0123456789abcdef01234567", moves: [], confirmationRequired: [], unscheduled: [] };
+  if (pathname === "/api/local-schedule/urgent-preview") return { urgentRevision: "0123456789abcdef01234567", insertions: [], displacements: [], confirmationRequired: [], unscheduled: [] };
+  return {};
+}
+
+function fulfillDashboardFallback(route: Route) {
+  return route.fulfill({ json: dashboardFallback(new URL(route.request().url()).pathname) });
+}
+
 async function mockReadyHome(page: Page, locale: "en-US" | "zh-CN") {
-  await page.route("**/api/**", (route) => route.fulfill({
-    json: route.request().url().endsWith("/api/state") ? READY_STATE : {},
-  }));
+  await page.route("**/api/**", (route) => route.request().url().endsWith("/api/state")
+    ? route.fulfill({ json: READY_STATE })
+    : fulfillDashboardFallback(route));
   await page.addInitScript(({ language }) => {
     window.localStorage.setItem("myagenttool-ui", JSON.stringify({
       version: 1,
@@ -47,32 +76,21 @@ async function mockReadyHome(page: Page, locale: "en-US" | "zh-CN") {
 }
 
 for (const fixture of [
-  { name: "desktop-en", locale: "en-US" as const, viewport: { width: 1366, height: 768 }, task: "Task", run: "Run on this computer", starter: "Inspect this project", details: "What to know before running" },
-  { name: "desktop-zh", locale: "zh-CN" as const, viewport: { width: 1366, height: 768 }, task: "任务", run: "在此电脑上运行", starter: "检查项目", details: "运行前须知" },
-  { name: "mobile-zh", locale: "zh-CN" as const, viewport: { width: 390, height: 844 }, task: "任务", run: "在此电脑上运行", starter: "检查项目", details: "运行前须知" },
+  { name: "desktop-en", locale: "en-US" as const, viewport: { width: 1366, height: 768 }, task: "Create a task", run: "Create and let AI work", details: "Add completion criteria or references" },
+  { name: "desktop-zh", locale: "zh-CN" as const, viewport: { width: 1366, height: 768 }, task: "创建一个任务", run: "创建并交给 AI", details: "补充完成标准或参考资料" },
+  { name: "mobile-zh", locale: "zh-CN" as const, viewport: { width: 390, height: 844 }, task: "创建一个任务", run: "创建并交给 AI", details: "补充完成标准或参考资料" },
 ]) {
-  test(`keeps the ${fixture.name} Home composer and primary action above the fold`, async ({ page }, testInfo) => {
+  test(`keeps the ${fixture.name} tracked-task composer usable without horizontal overflow`, async ({ page }, testInfo) => {
     await page.setViewportSize(fixture.viewport);
     await mockReadyHome(page, fixture.locale);
     await page.goto("/?section=dashboard");
 
     const input = page.getByRole("textbox", { name: fixture.task });
     const action = page.getByRole("button", { name: fixture.run });
-    const model = page.getByRole("combobox", { name: fixture.locale === "zh-CN" ? "模型" : "Model" });
     await expect(input).toBeVisible({ timeout: 15_000 });
     await expect(action).toBeVisible();
-    await expect(model).toBeVisible();
-    await model.selectOption("gpt-5.6-sol");
-    await expect(model).toHaveValue("gpt-5.6-sol");
-    for (const locator of [input, action]) {
-      const box = await locator.boundingBox();
-      expect(box).not.toBeNull();
-      expect((box?.y ?? Infinity) + (box?.height ?? 0)).toBeLessThanOrEqual(fixture.viewport.height);
-    }
-
-    await page.getByRole("combobox", {
-      name: fixture.locale === "zh-CN" ? "首次任务模板" : "First task templates",
-    }).selectOption({ label: fixture.starter });
+    await expect(action).toBeDisabled();
+    await input.fill(fixture.locale === "zh-CN" ? "整理客户反馈并输出建议" : "Summarize customer feedback and recommend next steps");
     await expect(action).toBeEnabled();
 
     await page.screenshot({ path: testInfo.outputPath(`${fixture.name}.png`), fullPage: true });
@@ -83,16 +101,7 @@ for (const fixture of [
     const details = page.locator("details").filter({ hasText: fixture.details }).first();
     await expect(details).not.toHaveAttribute("open", "");
     await details.locator("summary").click();
-    await expect(page.getByRole("combobox", {
-      name: fixture.locale === "zh-CN" ? "项目" : "Project",
-      exact: true,
-    })).toBeVisible();
-    if (fixture.locale === "zh-CN") {
-      const assistantPicker = page.getByRole("combobox", { name: "任务助手" });
-      await expect(assistantPicker).toBeVisible();
-      await expect(page.getByText("追踪编号（Trace ID）")).toBeVisible();
-      await expect(assistantPicker).toContainText("Local runner");
-    }
+    await expect(page.getByText(fixture.locale === "zh-CN" ? "完成标准（可选）" : "Definition of done (optional)")).toBeVisible();
 
     const width = await page.evaluate(() => ({
       viewport: window.innerWidth,
@@ -102,105 +111,82 @@ for (const fixture of [
   });
 }
 
-test("submits one explicit-worktree Home snapshot with matching attachment and invocation idempotency", async ({ page }) => {
-  let uploadBody: Record<string, unknown> | null = null;
-  let invocationBody: Record<string, unknown> | null = null;
-  const state = {
-    ...READY_STATE,
-    worktrees: [{
-      id: "worktree-1",
-      projectId: "project-1",
-      targetId: "target-1",
-      branch: "feat/home-submit",
-      path: "D:\\repo-worktree",
-      isMain: false,
-      agentId: "agent-1",
-      createdAt: "2026-08-03T00:00:00.000Z",
-    }],
-    agents: [{
-      ...READY_STATE.agents[0],
-      adapter: {
-        type: "cli",
-        command: "codex",
-        permissionMode: "auto",
-        models: ["gpt-5.6-sol", "gpt-5.6-terra"],
-        defaultModel: "gpt-5.6-terra",
-      },
-    }],
-  };
+test("creates a Home Local Issue first, then starts AI from simple details", async ({ page }) => {
+  let createdPayload: Record<string, unknown> | null = null;
+  let workItem: Record<string, unknown> | null = null;
+  let started = false;
   await page.route("**/api/**", async (route) => {
-    const pathname = new URL(route.request().url()).pathname;
-    if (pathname === "/api/state") return route.fulfill({ json: state });
-    if (pathname === "/api/worktrees/worktree-1/attachments") {
-      uploadBody = route.request().postDataJSON() as Record<string, unknown>;
-      return route.fulfill({
-        status: 201,
-        json: {
-          batchId: "stable-batch",
-          attachments: [{
-            name: "notes.txt",
-            path: ".myagenttool/attachments/stable-batch/notes.txt",
-            bytes: 5,
-          }],
-          skipped: [],
-        },
-      });
+    const request = route.request();
+    const pathname = new URL(request.url()).pathname;
+    if (pathname === "/api/state") return route.fulfill({ json: READY_STATE });
+    if (/^\/api\/projects\/[^/]+\/auto-run-readiness$/.test(pathname)) {
+      return route.fulfill({ json: { readiness: { ready: true, checks: [] } } });
     }
-    if (pathname === "/api/invocations") {
-      invocationBody = route.request().postDataJSON() as Record<string, unknown>;
-      return route.fulfill({
-        status: 201,
-        json: {
-          invocation: {
-            id: "inv-browser-submit",
-            status: "queued",
-            projectId: "project-1",
-            worktreeId: "worktree-1",
-            agentId: "agent-1",
-            input: { task: invocationBody.task },
-          },
-        },
-      });
+    if (pathname === "/api/work-items" && request.method() === "POST") {
+      createdPayload = request.postDataJSON() as Record<string, unknown>;
+      workItem = {
+        id: "lwi_home", localRef: "LOCAL-1", projectId: "project-1",
+        title: createdPayload.title, body: createdPayload.body, type: "task", priority: "p2",
+        status: "backlog", state: "open", labels: [], assigneeIds: [], acceptanceCriteria: [],
+        waitingOn: createdPayload.waitingOn, plannedDate: createdPayload.plannedDate, dueDate: createdPayload.dueDate,
+        executionState: "unclaimed", executionBindings: [], revision: 1, archivedAt: null,
+        updatedAt: "2026-08-06T00:00:00.000Z",
+      };
+      return route.fulfill({ status: 201, json: { workItem } });
     }
-    return route.fulfill({ json: {} });
+    if (pathname === "/api/work-items/lwi_home/auto-runs" && request.method() === "POST") {
+      started = true;
+      workItem = {
+        ...workItem,
+        waitingOn: "ai",
+        executionState: "running",
+        executionBindings: [{ kind: "auto_run", targetId: "aur_home", worktreeId: "wt_home", createdAt: "2026-08-06T00:01:00.000Z" }],
+        revision: 2,
+      };
+      return route.fulfill({ status: 201, json: { autoRun: { id: "aur_home", status: "queued", worktreeId: "wt_home" } } });
+    }
+    if (pathname === "/api/work-items/lwi_home" && request.method() === "GET") {
+      return route.fulfill({ json: {
+        workItem,
+        observability: {
+          latestRun: started ? { id: "aur_home", status: "running", updatedAt: "2026-08-06T00:01:00.000Z" } : null,
+          delivery: null,
+        },
+      } });
+    }
+    if (pathname === "/api/work-items/lwi_home/comments") return route.fulfill({ json: { comments: [] } });
+    if (pathname === "/api/work-items" && request.method() === "GET") {
+      return route.fulfill({ json: { workItems: workItem ? [workItem] : [], count: workItem ? 1 : 0, hasMore: false, nextCursor: null } });
+    }
+    return fulfillDashboardFallback(route);
   });
   await page.addInitScript(() => {
     window.localStorage.setItem("myagenttool-ui", JSON.stringify({
       version: 1,
-      state: {
-        section: "dashboard",
-        locale: "en-US",
-        selectedAgentId: "agent-1",
-        selectedProjectId: "project-1",
-        selectedWorktreeId: "worktree-1",
-      },
+      state: { section: "dashboard", locale: "en-US", selectedProjectId: "project-1" },
     }));
   });
   await page.goto("/?section=dashboard");
 
-  await page.locator('input[type="file"]').setInputFiles({
-    name: "notes.txt",
-    mimeType: "text/plain",
-    buffer: Buffer.from("hello"),
-  });
-  await page.getByRole("textbox", { name: "Task" }).fill("Review the current change");
-  await page.getByRole("combobox", { name: "Model" }).selectOption("gpt-5.6-sol");
-  await page.getByRole("combobox", { name: "Permission level" }).selectOption("full");
-  await page.getByRole("button", { name: "Run on this computer" }).click();
+  await page.getByRole("textbox", { name: "Create a task" }).fill("Prepare the weekly customer update");
+  await page.getByRole("button", { name: "Create task only" }).click();
 
-  await expect.poll(() => invocationBody).not.toBeNull();
-  expect(uploadBody).toEqual({
-    files: [{ name: "notes.txt", dataBase64: "aGVsbG8=" }],
-    batchId: expect.any(String),
-  });
-  expect(invocationBody).toEqual({
-    task: "Review the current change\n\nAttached files (in the worktree):\n- .myagenttool/attachments/stable-batch/notes.txt",
-    agentId: "agent-1",
+  await expect(page.getByText("Task created and added to your boards.")).toBeVisible();
+  expect(createdPayload).toEqual(expect.objectContaining({
     projectId: "project-1",
-    worktreeId: "worktree-1",
-    options: { permissionLevel: "full", model: "gpt-5.6-sol" },
-    idempotencyKey: uploadBody?.batchId,
-  });
+    title: "Prepare the weekly customer update",
+    waitingOn: "none",
+    plannedDate: null,
+  }));
+  expect(started).toBe(false);
+  await page.getByRole("button", { name: "View task" }).click();
+
+  const detail = page.getByRole("dialog", { name: "Task details" });
+  await expect(detail.getByRole("heading", { name: "Prepare the weekly customer update" })).toBeVisible();
+  await detail.getByRole("button", { name: "Let AI start" }).click();
+  await expect(detail.getByText(/AI has started/)).toBeVisible();
+  expect(started).toBe(true);
+  await expect(detail.getByText("AI working", { exact: true })).toBeVisible();
 });
 
 test("submits one Worktree snapshot with matching attachment and invocation idempotency", async ({ page }) => {
@@ -271,7 +257,7 @@ test("submits one Worktree snapshot with matching attachment and invocation idem
         },
       });
     }
-    return route.fulfill({ json: {} });
+    return fulfillDashboardFallback(route);
   });
   await page.addInitScript(() => {
     window.localStorage.setItem("myagenttool-ui", JSON.stringify({
@@ -381,7 +367,7 @@ test("resumes the zh-CN guided setup on mobile after refresh", async ({ page }, 
       };
       return route.fulfill({ json: { guidedSetup: state.guidedSetup } });
     }
-    return route.fulfill({ json: {} });
+    return fulfillDashboardFallback(route);
   });
   await page.addInitScript(() => {
     window.localStorage.setItem("myagenttool-ui", JSON.stringify({
@@ -422,8 +408,8 @@ const HOME_ACTION_MATRIX = [
     state: "idle",
     expectedState: "idle",
     status: null,
-    en: "Run on this computer",
-    zh: "在此电脑上运行",
+    en: "Create and let AI work",
+    zh: "创建并交给 AI",
     destination: null,
   },
   {
@@ -438,24 +424,24 @@ const HOME_ACTION_MATRIX = [
     state: "approval",
     expectedState: "approval",
     status: "waiting_for_local_approval",
-    en: "Handle approval",
-    zh: "处理审批",
+    en: "AI approvals: Synthetic approval",
+    zh: "AI 待审批: Synthetic approval",
     destination: "approvals",
   },
   {
     state: "terminal-failed",
     expectedState: "idle",
     status: "failed",
-    en: "Run on this computer",
-    zh: "在此电脑上运行",
+    en: "Create and let AI work",
+    zh: "创建并交给 AI",
     destination: null,
   },
   {
     state: "terminal-succeeded",
     expectedState: "idle",
     status: "succeeded",
-    en: "Run on this computer",
-    zh: "在此电脑上运行",
+    en: "Create and let AI work",
+    zh: "创建并交给 AI",
     destination: null,
   },
 ] as const;
@@ -487,9 +473,9 @@ for (const locale of ["en-US", "zh-CN"] as const) {
             }]
           : [],
       };
-      await page.route("**/api/**", (route) => route.fulfill({
-        json: route.request().url().endsWith("/api/state") ? state : {},
-      }));
+      await page.route("**/api/**", (route) => route.request().url().endsWith("/api/state")
+        ? route.fulfill({ json: state })
+        : fulfillDashboardFallback(route));
       await page.addInitScript(({ language }) => {
         window.localStorage.setItem("myagenttool-ui", JSON.stringify({
           version: 1,
@@ -504,8 +490,10 @@ for (const locale of ["en-US", "zh-CN"] as const) {
       await page.goto("/?section=dashboard");
 
       const primary = fixture.expectedState === "idle"
-        ? page.locator('[data-home-primary-action="run"]')
-        : page.locator(`[data-home-work-state="${fixture.expectedState}"] [data-home-primary-action]`);
+        ? page.getByRole("button", { name: locale === "zh-CN" ? fixture.zh : fixture.en })
+        : fixture.expectedState === "approval"
+          ? page.getByRole("button", { name: locale === "zh-CN" ? fixture.zh : fixture.en })
+          : page.locator(`[data-home-work-state="${fixture.expectedState}"] [data-home-primary-action]`);
       await expect(primary).toHaveCount(1);
       await expect(primary).toHaveAccessibleName(locale === "zh-CN" ? fixture.zh : fixture.en);
       if (locale === "zh-CN") {
@@ -520,7 +508,7 @@ for (const locale of ["en-US", "zh-CN"] as const) {
         }
       }
       if (fixture.expectedState === "idle") {
-        await page.getByRole("textbox", { name: locale === "zh-CN" ? "任务" : "Task" }).fill("Safe synthetic task");
+        await page.getByRole("textbox", { name: locale === "zh-CN" ? "创建一个任务" : "Create a task" }).fill("Safe synthetic task");
         await expect(primary).toBeEnabled();
       }
       if (fixture.state.startsWith("terminal-")) {

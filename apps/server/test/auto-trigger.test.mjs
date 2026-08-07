@@ -147,6 +147,53 @@ test("scanOnce keeps going when one project's issue list or a startAutoRun throw
   assert.equal(result.started, 1, "the failing project is skipped, the other still runs");
 });
 
+test("local-first auto-trigger only starts issues already linked to a Local Issue", async () => {
+  const state = makeState();
+  state.workItems = [{
+    id: "lwi_42",
+    projectId: "prj_repo",
+    state: "open",
+    archivedAt: null,
+    externalBindings: [{ kind: "github_issue", provider: "github", number: 42 }],
+  }];
+  const started = [];
+  const runtime = createAutoTriggerRuntime({
+    state,
+    requireLocalIssueForDevelopment: true,
+    config: { enabled: true, label: "auto", maxConcurrent: 5, requireProjectFields: false },
+    listLabeledIssues: async () => [
+      { number: 42, title: "bound", state: "open" },
+      { number: 43, title: "unbound", state: "open" },
+    ],
+    startAutoRun: (args) => started.push(args),
+  });
+  const result = await runtime.scanOnce();
+  assert.equal(result.started, 1);
+  assert.equal(started[0].link.number, 42);
+  assert.equal(started[0].localIssueId, "lwi_42");
+});
+
+test("local-first auto-trigger obeys the project automatic execution and emergency-stop controls", async () => {
+  const state = makeState();
+  state.projects[0].externalIssuePolicy = { intakeEnabled: true, writebackEnabled: true, autoExecutionEnabled: false, emergencyStop: false };
+  state.workItems = [{ id: "lwi_42", projectId: "prj_repo", state: "open", archivedAt: null, externalBindings: [{ kind: "github_issue", provider: "github", number: 42 }] }];
+  const started = [];
+  let listed = 0;
+  const runtime = createAutoTriggerRuntime({
+    state,
+    requireLocalIssueForDevelopment: true,
+    config: { enabled: true, label: "auto", maxConcurrent: 5, requireProjectFields: false },
+    listLabeledIssues: async () => { listed += 1; return [{ number: 42, title: "bound", state: "open" }]; },
+    startAutoRun: (args) => started.push(args),
+  });
+  assert.deepEqual(await runtime.scanOnce(), { enabled: true, scanned: 0, started: 0, assigned: 0 });
+  assert.equal(listed, 0);
+  state.projects[0].externalIssuePolicy.autoExecutionEnabled = true;
+  assert.equal((await runtime.scanOnce()).started, 1);
+  state.projects[0].externalIssuePolicy.emergencyStop = true;
+  assert.equal((await runtime.scanOnce()).scanned, 0);
+});
+
 // ── #1165 dispatch mode ───────────────────────────────────────────────────────
 
 test("#1165 config parses dispatch role, server id, worker list, caps", () => {

@@ -1,5 +1,5 @@
 import { lazy, Suspense, useEffect, useMemo, useState } from "react";
-import { Hand, History, RefreshCw, ExternalLink, GitBranch, Workflow, Zap, Plus, MessageSquare, Trash2, Pencil, FolderKanban, ArrowUp, ArrowDown, Star, Bell } from "lucide-react";
+import { Hand, History, RefreshCw, ExternalLink, GitBranch, Workflow, Zap, Plus, MessageSquare, Trash2, Pencil, FolderKanban, ArrowUp, ArrowDown, Star, Bell, Download } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -44,10 +44,10 @@ import {
 } from "./task-view-types";
 import { WorkItemSectionNav } from "./work-item-section-nav";
 import { useSafeNavigation } from "@/hooks/use-safe-navigation";
+import { usePageNavigation } from "@/hooks/use-page-navigation";
 import { useVisibleInterval } from "@/hooks/use-visible-interval";
 import { WorktreeOptionsForm } from "./worktree-options-form";
 import { WorkItemExecutionActions } from "./work-item-execution-actions";
-import { WorkItemAlertAndCostDetails, WorkItemAssetChain, WorkItemTimeline, WorkItemTraceSummary } from "./work-item-observability";
 import { WorkItemTraceLinks } from "./work-item-trace-links";
 import { workItemBatchApi } from "./work-item-batch-api";
 import type {
@@ -60,6 +60,7 @@ import type {
 } from "./article-workflow-types";
 import { articleApi } from "./article-workflow-api";
 import { useArticleTaskLabels } from "./article-task-labels";
+import { ApiError } from "@/lib/api-client";
 import {
   DEFAULT_WORK_ITEM_FOLLOW_UP_DRAFT,
   followUpDraftEquals,
@@ -81,6 +82,18 @@ const WorkItemProgressDialog = lazy(() => import("./work-item-progress-dialog"))
 const WorkItemReportSection = lazy(() => import("./work-item-report-section"));
 const WorkItemExternalSync = lazy(() => import("./work-item-external-sync")
   .then((module) => ({ default: module.WorkItemExternalSync })));
+const ExternalIssueImportDialog = lazy(() => import("./external-issue-import-dialog")
+  .then((module) => ({ default: module.ExternalIssueImportDialog })));
+const WorkItemSummaryView = lazy(() => import("./work-item-summary-view")
+  .then((module) => ({ default: module.WorkItemSummaryView })));
+const WorkItemAlertAndCostDetails = lazy(() => import("./work-item-observability")
+  .then((module) => ({ default: module.WorkItemAlertAndCostDetails })));
+const WorkItemAssetChain = lazy(() => import("./work-item-observability")
+  .then((module) => ({ default: module.WorkItemAssetChain })));
+const WorkItemTimeline = lazy(() => import("./work-item-observability")
+  .then((module) => ({ default: module.WorkItemTimeline })));
+const WorkItemTraceSummary = lazy(() => import("./work-item-observability")
+  .then((module) => ({ default: module.WorkItemTraceSummary })));
 const ClaimHistoryList = lazy(() => import("./claim-history-list")
   .then((module) => ({ default: module.ClaimHistoryList })));
 
@@ -96,10 +109,12 @@ const WorkItemAcceptanceSection = lazy(() => import("./work-item-acceptance-sect
 // Mirrors the project's existing per-worktree GitHub list, lifted to a top-level
 // board with project/type/search filters.
 export function TaskView() {
-  const { t } = useAppTranslation();
+  const { t, i18n } = useAppTranslation();
   const { data: state } = useConsoleState();
   const { execute, pending, error } = useAsyncAction();
   const setSection = useUiStore((s) => s.setSection);
+  const navigate = usePageNavigation();
+  const setSelectedWorkItemSection = useUiStore((s) => s.setSelectedWorkItemSection);
   const setSelectedProjectId = useUiStore((s) => s.setSelectedProjectId);
   const setSelectedWorktreeId = useUiStore((s) => s.setSelectedWorktreeId);
   const worktrees = state?.worktrees ?? [];
@@ -152,10 +167,52 @@ export function TaskView() {
     setSelectedWorktreeId(worktreeId);
     setSection("projects");
   }
-  // One-click Auto: materialize a worktree from the item and start an
-  // issue-seeded agent run in it, then jump into that worktree. Merge stays human.
+  // GitHub Issues are intake records. They must first become Local Issues;
+  // only the Local Issue detail can start a code-writing Agent run.
   function autoRunIssue(row: Row) {
     void execute(async () => {
+      if (row.type === "issue") {
+        const existing = localRows.find((item) =>
+          item.projectId === row.projectId
+          && item.externalBindings?.some((binding) =>
+            (binding.provider === "github" || binding.kind === "github_issue")
+            && binding.number === row.number),
+        );
+        if (existing) {
+          setTab("local");
+          setSelectedLocalId(existing.id);
+          return existing;
+        }
+        let created: { workItem: LocalWorkItem };
+        try {
+          created = await api.createWorkItemFromExternal({
+            projectId: row.projectId,
+            provider: "github",
+            issueNumber: row.number,
+            relation: "source",
+            isPrimary: true,
+            syncPolicy: "manual",
+          }) as { workItem: LocalWorkItem };
+        } catch (caught) {
+          if (caught instanceof ApiError && caught.code === "external_issue_already_linked") {
+            const duplicate = caught.details?.workItem as LocalWorkItem | undefined;
+            if (duplicate?.id) {
+              setLocalRows((current) => [duplicate, ...current.filter((item) => item.id !== duplicate.id)]);
+              setTab("local");
+              setSelectedLocalId(duplicate.id);
+              setImportHandoff({ workItemId: duplicate.id, localRef: duplicate.localRef, provider: "GitHub", duplicate: true });
+              return duplicate;
+            }
+          }
+          throw caught;
+        }
+        setLocalRows((current) => [created.workItem, ...current.filter((item) => item.id !== created.workItem.id)]);
+        setTab("local");
+        setSelectedLocalId(created.workItem.id);
+        setImportHandoff({ workItemId: created.workItem.id, localRef: created.workItem.localRef, provider: "GitHub", duplicate: false });
+        setNotice(`${created.workItem.localRef} · ${t("tasks.adoptedLocal")} ✓`);
+        return created;
+      }
       const r = (await api.startAutoRun(row.projectId, {
         link: worktreeLinkFor(row),
         name: branchFromIssue(row),
@@ -196,6 +253,10 @@ export function TaskView() {
   const [attentionItems, setAttentionItems] = useState<WorkItemAttention[]>([]);
   const [attentionNextCursor, setAttentionNextCursor] = useState<string | null>(null);
   const [attentionMetrics, setAttentionMetrics] = useState<WorkItemAttentionMetrics | null>(null);
+  const [externalFunnel, setExternalFunnel] = useState<{
+    metrics: { total: number; notStarted: number; running: number; review: number; completed: number; stalled: number };
+    stalls: { kind: "execution_failed" | "writeback_pending" | "imported_not_started" | "review_waiting"; workItemId: string; localRef: string; title: string; provider: string; issueNumber: number; since: string }[];
+  } | null>(null);
   const [attentionKind, setAttentionKind] = useState("");
   const [attentionSla, setAttentionSla] = useState("");
   const [attentionHandler, setAttentionHandler] = useState("");
@@ -208,15 +269,60 @@ export function TaskView() {
   const [planningProjects, setPlanningProjects] = useState<PlanningProject[]>([]);
   const [planningProjectId, setPlanningProjectId] = useState("all");
   const [createLocalOpen, setCreateLocalOpen] = useState(false);
+  const [externalImportOpen, setExternalImportOpen] = useState(false);
+  const [importHandoff, setImportHandoff] = useState<{
+    workItemId: string;
+    localRef: string;
+    provider: string;
+    duplicate: boolean;
+    importedCount?: number;
+    failedCount?: number;
+  } | null>(null);
   const [createArticleImportActive, setCreateArticleImportActive] = useState(false);
   const [planningOpen, setPlanningOpen] = useState(false);
   const storedSelectedLocalId = useUiStore((state) => state.selectedWorkItemId);
   const persistSelectedLocalId = useUiStore((state) => state.setSelectedWorkItemId);
+  const storedSelectedLocalMode = useUiStore((state) => state.selectedWorkItemMode) ?? "summary";
+  const detailPreference = useUiStore((state) => state.workItemDetailPreference) ?? "summary";
+  const persistSelectedLocalMode = useUiStore((state) => state.setSelectedWorkItemMode);
+  const persistDetailPreference = useUiStore((state) => state.setWorkItemDetailPreference);
   const [selectedLocalId, setSelectedLocalIdState] = useState<string | null>(storedSelectedLocalId ?? null);
+  const [selectedLocalMode, setSelectedLocalModeState] = useState(storedSelectedLocalId ? storedSelectedLocalMode : detailPreference);
   const setSelectedLocalId = (id: string | null) => {
     setSelectedLocalIdState(id);
     persistSelectedLocalId?.(id);
+    if (id) {
+      // Routine-bound work exposes its governed step controls only in the
+      // expert surface. Keep ordinary tasks on the user's preferred detail
+      // mode, while preserving the established routine execution entry point.
+      const nextMode = localRows.find((item) => item.id === id)?.routineDefinitionId
+        ? "expert"
+        : detailPreference;
+      setSelectedLocalModeState(nextMode);
+      persistSelectedLocalMode?.(nextMode);
+    }
   };
+  const setSelectedLocalMode = (mode: "summary" | "expert") => {
+    setSelectedLocalModeState(mode);
+    persistSelectedLocalMode?.(mode);
+  };
+  // URL navigation is applied to the shared store after the first render.
+  // Mirror that deep-link state into the task surface so `taskMode=expert`
+  // and `taskView=...` open the authoritative detail instead of leaving the
+  // modal in its summary default.
+  useEffect(() => {
+    // A local close already updates the component state. Do not treat a
+    // mocked or not-yet-hydrated null store value as an instruction to close
+    // a detail the user just opened.
+    if (storedSelectedLocalId && storedSelectedLocalId !== selectedLocalId) {
+      setSelectedLocalIdState(storedSelectedLocalId);
+    }
+  }, [selectedLocalId, storedSelectedLocalId]);
+  useEffect(() => {
+    if (storedSelectedLocalId && selectedLocalMode !== storedSelectedLocalMode) {
+      setSelectedLocalModeState(storedSelectedLocalMode);
+    }
+  }, [selectedLocalMode, storedSelectedLocalId, storedSelectedLocalMode]);
   const [selectedLocalDirty, setSelectedLocalDirty] = useState(false);
   const [confirmSelectedLocalClose, setConfirmSelectedLocalClose] = useState(false);
   const [loading, setLoading] = useState(false);
@@ -333,6 +439,14 @@ export function TaskView() {
       cancelled = true;
     };
   }, [projectId, planningProjectId, nonce]);
+
+  useEffect(() => {
+    let cancelled = false;
+    void (api.getWorkItemExternalIssueFunnel(projectId === "all" ? undefined : projectId) as Promise<typeof externalFunnel>)
+      .then((result) => { if (!cancelled) setExternalFunnel(result); })
+      .catch(() => { if (!cancelled) setExternalFunnel(null); });
+    return () => { cancelled = true; };
+  }, [nonce, projectId]);
 
   useEffect(() => {
     void (api.listWorkItemAttention({
@@ -475,6 +589,9 @@ export function TaskView() {
           <Button variant="secondary" size="sm" onClick={() => setPlanningOpen(true)}>
             <FolderKanban className="mr-1 size-4" /> {t("planningProjects.title")}
           </Button>
+          <Button variant="secondary" size="sm" onClick={() => setExternalImportOpen(true)}>
+            <Download className="mr-1 size-4" /> {i18n.language.startsWith("zh") ? "导入外部 Issue" : "Import external issue"}
+          </Button>
           <Button size="sm" onClick={() => setCreateLocalOpen(true)}>
             <Plus className="mr-1 size-4" /> {t("tasks.newLocal")}
           </Button>
@@ -533,6 +650,50 @@ export function TaskView() {
 
         {tab === "local" ? (
           <>
+            {externalFunnel?.metrics?.total ? (
+              <section className="space-y-3 rounded-lg border border-border bg-muted/20 p-3" aria-label={i18n.language.startsWith("zh") ? "外部 Issue 执行漏斗" : "External issue execution funnel"}>
+                <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                  <div>
+                    <h3 className="text-sm font-semibold">{i18n.language.startsWith("zh") ? "外部 Issue 执行漏斗" : "External issue execution funnel"}</h3>
+                    <p className="text-xs text-muted-foreground">{i18n.language.startsWith("zh") ? "从导入到执行、审核与回写，停滞超过 24 小时会出现在下方。" : "From intake through execution, review, and writeback. Items stalled over 24 hours appear below."}</p>
+                  </div>
+                  <Badge tone={externalFunnel.metrics.stalled ? "warning" : "success"}>{externalFunnel.metrics.stalled} {i18n.language.startsWith("zh") ? "项待处理" : "need attention"}</Badge>
+                </div>
+                <div className="grid grid-cols-2 gap-2 text-xs sm:grid-cols-4">
+                  <div className="rounded bg-background p-2"><strong>{externalFunnel.metrics.notStarted}</strong> {i18n.language.startsWith("zh") ? "未开始" : "not started"}</div>
+                  <div className="rounded bg-background p-2"><strong>{externalFunnel.metrics.running}</strong> {i18n.language.startsWith("zh") ? "执行中" : "running"}</div>
+                  <div className="rounded bg-background p-2"><strong>{externalFunnel.metrics.review}</strong> {i18n.language.startsWith("zh") ? "待审核" : "in review"}</div>
+                  <div className="rounded bg-background p-2"><strong>{externalFunnel.metrics.completed}</strong> {i18n.language.startsWith("zh") ? "已完成" : "completed"}</div>
+                </div>
+                {externalFunnel.stalls.length ? (
+                  <div className="grid gap-2 lg:grid-cols-2" aria-live="polite">
+                    {externalFunnel.stalls.map((stall) => (
+                      <div key={`${stall.workItemId}-${stall.kind}`} className="flex flex-col gap-2 rounded-lg border border-warning/35 bg-background p-3 sm:flex-row sm:items-center sm:justify-between">
+                        <div className="min-w-0">
+                          <p className="truncate text-sm font-medium">{stall.localRef} · {stall.title}</p>
+                          <p className="text-xs text-muted-foreground">
+                            {stall.provider} #{stall.issueNumber} · {stall.kind === "execution_failed"
+                              ? i18n.language.startsWith("zh") ? "执行失败" : "execution failed"
+                              : stall.kind === "writeback_pending"
+                                ? i18n.language.startsWith("zh") ? "等待外部回写" : "writeback pending"
+                                : stall.kind === "review_waiting"
+                                  ? i18n.language.startsWith("zh") ? "等待审核超过 24 小时" : "review waiting over 24 hours"
+                                  : i18n.language.startsWith("zh") ? "导入后超过 24 小时未开始" : "not started within 24 hours of intake"}
+                          </p>
+                        </div>
+                        <Button size="sm" variant="secondary" onClick={() => {
+                          setSelectedLocalId(stall.workItemId);
+                          if (stall.kind === "writeback_pending" || stall.kind === "execution_failed") {
+                            setSelectedWorkItemSection(stall.kind === "writeback_pending" ? "trace" : "process");
+                            setSelectedLocalMode("expert");
+                          }
+                        }}>{i18n.language.startsWith("zh") ? "继续处理" : "Continue"}</Button>
+                      </div>
+                    ))}
+                  </div>
+                ) : null}
+              </section>
+            ) : null}
             <Suspense fallback={null}>
               <RoutineBatchQueue
                 projectId={projectId === "all" ? undefined : projectId}
@@ -765,6 +926,26 @@ export function TaskView() {
                           <Workflow className="mr-1 size-3.5" /> {t("tasks.automate")}
                         </Button>
                         {(() => {
+                          if (r.type === "issue") {
+                            const local = localRows.find((item) =>
+                              item.projectId === r.projectId
+                              && item.externalBindings?.some((binding) =>
+                                (binding.provider === "github" || binding.kind === "github_issue")
+                                && binding.number === r.number),
+                            );
+                            return local ? (
+                              <Button variant="secondary" size="sm" disabled={pending} onClick={() => {
+                                setTab("local");
+                                setSelectedLocalId(local.id);
+                              }} title={t("taskActions.openLocalHint")}>
+                                <Plus className="mr-1 size-3.5" /> {t("tasks.openLocal")}
+                              </Button>
+                            ) : (
+                              <Button size="sm" disabled={pending} onClick={() => autoRunIssue(r)} title={t("taskActions.adoptLocalHint")}>
+                                <Plus className="mr-1 size-3.5" /> {t("tasks.adoptLocal")}
+                              </Button>
+                            );
+                          }
                           const wt = linkedWorktree(r);
                           return wt ? (
                             <Button variant="secondary" size="sm" onClick={() => openWorktree(wt.id, r.projectId)} title={`Open worktree ${wt.branch}`}>
@@ -836,6 +1017,33 @@ export function TaskView() {
         ) : null}
       </Modal>
 
+      {externalImportOpen ? (
+        <Suspense fallback={null}>
+          <ExternalIssueImportDialog
+            open
+            projects={projects}
+            repoProjectIds={repoProjectIds}
+            initialProjectId={projectId === "all" ? projects[0]?.id : projectId}
+            onClose={() => setExternalImportOpen(false)}
+            onImported={(workItem, context) => {
+              setLocalRows((current) => [workItem, ...current.filter((item) => item.id !== workItem.id)]);
+              setExternalImportOpen(false);
+              setTab("local");
+              setSelectedLocalId(workItem.id);
+              setImportHandoff({
+                workItemId: workItem.id,
+                localRef: workItem.localRef,
+                provider: context.provider === "github" ? "GitHub" : context.provider === "gitlab" ? "GitLab" : "Gitea",
+                duplicate: context.duplicate,
+                importedCount: context.importedCount,
+                failedCount: context.failedCount,
+              });
+              setNonce((value) => value + 1);
+            }}
+          />
+        </Suspense>
+      ) : null}
+
       <Modal open={planningOpen} onClose={() => setPlanningOpen(false)} title={t("planningProjects.title")}>
         <div className="mb-3 flex justify-end">
           <Button variant="secondary" size="sm" onClick={() => { setPlanningOpen(false); setSection("planning"); }}>
@@ -848,14 +1056,81 @@ export function TaskView() {
       <Modal open={Boolean(selectedLocalId)} onClose={() => {
         if (selectedLocalDirty) setConfirmSelectedLocalClose(true);
         else setSelectedLocalId(null);
-      }} title={t("taskLocal.details")} size="xl">
+      }} title={t("taskLocal.details")} size={selectedLocalMode === "expert" ? "full" : "2xl"}>
         {selectedLocalId ? (
-          <LocalWorkItemDetail
-            workItemId={selectedLocalId}
-            projects={projects}
-            onDirtyChange={setSelectedLocalDirty}
-            onChanged={() => setNonce((value) => value + 1)}
-          />
+          <div className="space-y-4">
+            {importHandoff?.workItemId === selectedLocalId ? (
+              <div className="flex flex-col gap-2 rounded-lg border border-success/35 bg-success/[0.06] p-3 text-sm sm:flex-row sm:items-center sm:justify-between" role="status">
+                <div>
+                  <p className="font-medium">
+                    {importHandoff.duplicate
+                      ? i18n.language.startsWith("zh")
+                        ? `该 ${importHandoff.provider} Issue 已属于 ${importHandoff.localRef}，已为你打开原任务。`
+                        : `That ${importHandoff.provider} issue already belongs to ${importHandoff.localRef}; the existing task is open.`
+                      : importHandoff.importedCount && importHandoff.importedCount > 1
+                        ? i18n.language.startsWith("zh")
+                          ? `已从 ${importHandoff.provider} 导入 ${importHandoff.importedCount} 个 Issue，并打开 ${importHandoff.localRef}。`
+                          : `${importHandoff.importedCount} issues were imported from ${importHandoff.provider}; ${importHandoff.localRef} is open.`
+                        : i18n.language.startsWith("zh")
+                          ? `${importHandoff.localRef} 已从 ${importHandoff.provider} 导入。`
+                          : `${importHandoff.localRef} was imported from ${importHandoff.provider}.`}
+                  </p>
+                  {!importHandoff.duplicate ? (
+                    <p className="mt-1 text-xs text-muted-foreground">
+                      {i18n.language.startsWith("zh")
+                        ? "下一步：确认任务目标和参考材料，然后点击“交给 AI 开始处理”。"
+                        : "Next: review the goal and reference materials, then choose “Let AI start”."}
+                    </p>
+                  ) : null}
+                  {importHandoff.failedCount ? (
+                    <p className="mt-1 text-xs text-destructive" role="alert">
+                      {i18n.language.startsWith("zh")
+                        ? `${importHandoff.failedCount} 个 Issue 导入失败；请重新打开导入窗口后重试。`
+                        : `${importHandoff.failedCount} issues failed to import; reopen the importer to retry them.`}
+                    </p>
+                  ) : null}
+                </div>
+                <Button size="sm" variant="ghost" onClick={() => setImportHandoff(null)}>
+                  {i18n.language.startsWith("zh") ? "知道了" : "Got it"}
+                </Button>
+              </div>
+            ) : null}
+            <div className="inline-flex rounded-lg border border-border bg-muted/40 p-1" aria-label={i18n.language.startsWith("zh") ? "详情显示方式" : "Detail display mode"}>
+              <Button size="sm" disabled={selectedLocalDirty && selectedLocalMode !== "summary"} variant={selectedLocalMode === "summary" ? "secondary" : "ghost"} aria-pressed={selectedLocalMode === "summary"} onClick={() => setSelectedLocalMode("summary")}>
+                {i18n.language.startsWith("zh") ? "简洁详情" : "Simple details"}
+              </Button>
+              <Button size="sm" disabled={selectedLocalDirty && selectedLocalMode !== "expert"} variant={selectedLocalMode === "expert" ? "secondary" : "ghost"} aria-pressed={selectedLocalMode === "expert"} onClick={() => setSelectedLocalMode("expert")}>
+                {i18n.language.startsWith("zh") ? "专业详情" : "Expert details"}
+              </Button>
+            </div>
+            {detailPreference !== selectedLocalMode ? (
+              <Button size="sm" variant="ghost" onClick={() => persistDetailPreference?.(selectedLocalMode)}>
+                {i18n.language.startsWith("zh") ? "设为默认视图" : "Make this my default"}
+              </Button>
+            ) : null}
+            {selectedLocalMode === "summary" ? (
+              <Suspense fallback={<p className="text-sm text-muted-foreground">{t("tasks.loading")}</p>}>
+                <WorkItemSummaryView
+                  workItemId={selectedLocalId}
+                  onDirtyChange={setSelectedLocalDirty}
+                  onOpenSetup={(section) => {
+                    navigate(section);
+                  }}
+                  onOpenExpert={(section = "overview") => {
+                    setSelectedWorkItemSection(section);
+                    setSelectedLocalMode("expert");
+                  }}
+                />
+              </Suspense>
+            ) : (
+              <LocalWorkItemDetail
+                workItemId={selectedLocalId}
+                projects={projects}
+                onDirtyChange={setSelectedLocalDirty}
+                onChanged={() => setNonce((value) => value + 1)}
+              />
+            )}
+          </div>
         ) : null}
       </Modal>
       <ConfirmModal
@@ -2352,7 +2627,7 @@ function LocalWorkItemTable({
   );
 }
 
-function LocalWorkItemDetail({
+export function LocalWorkItemDetail({
   workItemId,
   projects,
   onChanged,
@@ -3057,13 +3332,15 @@ function LocalWorkItemDetail({
         </section>
       ) : null}
       <div hidden={selectedWorkItemSection !== "trace"}>
-      <WorkItemAlertAndCostDetails
-        observability={observability}
-        pending={pending}
-        onRetryAlert={(alertId) => {
-          void execute(() => api.retryWorkItemAlert(item.id, alertId)).then((ok) => { if (ok) void load(); });
-        }}
-      />
+      <Suspense fallback={null}>
+        <WorkItemAlertAndCostDetails
+          observability={observability}
+          pending={pending}
+          onRetryAlert={(alertId) => {
+            void execute(() => api.retryWorkItemAlert(item.id, alertId)).then((ok) => { if (ok) void load(); });
+          }}
+        />
+      </Suspense>
       </div>
       {selectedWorkItemSection === "process" && boundRun?.decision ? (
         <section className="space-y-2 rounded-md border border-border p-3 text-xs">
@@ -3141,8 +3418,10 @@ function LocalWorkItemDetail({
         className="space-y-4"
       >
         <WorkItemTraceLinks item={item} observability={observability} />
-        <WorkItemTraceSummary item={item} observability={observability} />
-        <WorkItemTimeline observability={observability} expanded={selectedWorkItemSection === "trace"} />
+        <Suspense fallback={null}>
+          <WorkItemTraceSummary item={item} observability={observability} />
+          <WorkItemTimeline observability={observability} expanded={selectedWorkItemSection === "trace"} />
+        </Suspense>
         <Suspense fallback={null}>
           <WorkItemExternalSync
             itemId={item.id}
@@ -3160,7 +3439,7 @@ function LocalWorkItemDetail({
         hidden={selectedWorkItemSection !== "assets"}
         className="space-y-4"
       >
-      <WorkItemAssetChain item={item} />
+      <Suspense fallback={null}><WorkItemAssetChain item={item} /></Suspense>
       <details className="rounded-md border border-border p-3">
         <summary className="cursor-pointer text-sm font-semibold">{t("taskCockpit.details")}</summary>
         <div className="mt-3 space-y-4">

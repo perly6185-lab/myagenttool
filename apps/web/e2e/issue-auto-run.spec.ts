@@ -3,6 +3,8 @@ import { expect, test, type Page } from "playwright/test";
 const project = { id: "prj_1", name: "E2E Repository", status: "active" };
 let workItem: Record<string, unknown> | null;
 let autoRunStarted: boolean;
+let importedViaExternal: boolean;
+let autoRunReady: boolean;
 
 async function mockApi(page: Page) {
   await page.route("**/api/**", async (route) => {
@@ -12,7 +14,7 @@ async function mockApi(page: Page) {
     if (url.pathname === "/api/state") return route.fulfill({ json: {
       currentProjectId: project.id,
       projects: [project],
-      projectTargets: [],
+      projectTargets: [{ projectId: project.id, state: "ready", rootPath: "/tmp/e2e-repository" }],
       worktrees: autoRunStarted ? [{ id: "wt_1", projectId: project.id, branchName: "ai/e2e-route", path: "/tmp/e2e" }] : [],
       invocations: workItem ? [{
         id: "inv_1",
@@ -39,6 +41,56 @@ async function mockApi(page: Page) {
         updatedAt: "2026-07-24T00:00:00.000Z",
       };
       return route.fulfill({ status: 201, json: { workItem } });
+    }
+    if (url.pathname === "/api/work-items/providers" && method === "GET") {
+      return route.fulfill({ json: {
+        providers: [
+          { id: "github", label: "GitHub", apiSync: true, webhook: true },
+          { id: "gitlab", label: "GitLab", apiSync: true, webhook: false },
+          { id: "gitea", label: "Gitea", apiSync: false, webhook: false },
+        ],
+      } });
+    }
+    if (url.pathname === "/api/work-items/external-funnel" && method === "GET") {
+      return route.fulfill({ json: { metrics: { total: 0, notStarted: 0, running: 0, review: 0, completed: 0, stalled: 0 }, stalls: [] } });
+    }
+    if (url.pathname === "/api/work-items/external-issues" && method === "GET") {
+      return route.fulfill({ json: {
+        ok: true,
+        issues: [
+          { number: 21, title: "Mobile browse one", body: "", state: "open", labels: ["p1"], repository: "group/repo", url: null },
+          { number: 22, title: "Mobile browse two", body: "", state: "open", labels: [], repository: "group/repo", url: null },
+        ],
+        page: 1,
+        hasMore: false,
+      } });
+    }
+    if (url.pathname === "/api/work-items/from-external" && method === "POST") {
+      const body = request.postDataJSON();
+      const provider = body.provider === "github" ? "github" : "gitlab";
+      const providerLabel = provider === "github" ? "GitHub" : "GitLab";
+      const externalUrl = provider === "github"
+        ? `https://github.example/acme/repo/issues/${body.issueNumber}`
+        : `https://gitlab.example/group/repo/-/issues/${body.issueNumber}`;
+      importedViaExternal = true;
+      workItem = {
+        id: "lwi_1", localRef: "LOCAL-1", projectId: project.id,
+        title: `Imported ${providerLabel} issue`, body: "Implement the provider handoff.", type: "task", priority: "p2",
+        status: "backlog", state: "open", labels: ["provider"], assigneeIds: ["usr_local"],
+        followUpSchemaVersion: 1, requesterRelation: "unknown", requesterName: null,
+        requesterOrganization: null, requesterUserId: null, intakeChannel: "import",
+        externalReference: externalUrl, waitingOn: "none",
+        commitmentDate: null, nextFollowUpAt: null, lastProgressAt: null, lastProgressSummary: null,
+        acceptanceCriteria: [], dueDate: null, plannedDate: null, revision: 2, archivedAt: null,
+        updatedAt: "2026-07-24T00:00:00.000Z", executionState: "unclaimed", executionBindings: [],
+        externalBindings: [{
+          kind: `${provider}_issue`, provider, resourceType: "issue", number: body.issueNumber,
+          url: externalUrl, repository: body.repository ?? "acme/repo",
+          relation: "source", isPrimary: true, syncPolicy: "manual", conflict: null,
+          lastSyncedAt: "2026-07-24T00:00:00.000Z",
+        }],
+      };
+      return route.fulfill({ status: 201, json: { workItem, created: true } });
     }
     if (url.pathname === "/api/work-items/attention") {
       return route.fulfill({ json: { items: [], metrics: { backlog: 0, breached: 0 } } });
@@ -86,7 +138,7 @@ async function mockApi(page: Page) {
           id: "aur_1", status: "done", updatedAt: "2026-07-24T00:02:00.000Z",
           invocationId: "inv_1", agentId: "agt_1",
           localDelivery: { worktreeId: "wt_1", branchName: "ai/e2e-route" },
-        } : {
+        } : importedViaExternal ? null : {
           id: "aur_trace", status: "queued", updatedAt: "2026-07-24T00:01:00.000Z",
           invocationId: "inv_1", agentId: "agt_1",
         },
@@ -137,10 +189,15 @@ async function mockApi(page: Page) {
       } });
     }
     if (url.pathname === `/api/projects/${project.id}/auto-run-readiness`) {
-      return route.fulfill({ json: { readiness: { ready: true, checks: [] } } });
+      return route.fulfill({ json: { readiness: autoRunReady
+        ? { ready: true, checks: [] }
+        : { ready: false, checks: [{ key: "agent", label: "Coding agent", status: "blocked", detail: "No default agent is configured." }] } } });
     }
     if (url.pathname.startsWith("/api/projects/") && url.pathname.endsWith("/github")) {
-      return route.fulfill({ json: { issues: [], pullRequests: [] } });
+      return route.fulfill({ json: { available: true, message: "", items: [{
+        type: "issue", number: 42, title: "GitHub browser intake", headRefName: null,
+        author: "octocat", url: "https://github.example/acme/repo/issues/42", state: "open",
+      }] } });
     }
     return route.fulfill({ json: {} });
   });
@@ -149,6 +206,8 @@ async function mockApi(page: Page) {
 test.beforeEach(async ({ page }) => {
   workItem = null;
   autoRunStarted = false;
+  importedViaExternal = false;
+  autoRunReady = true;
   await page.addInitScript(() => {
     window.localStorage.setItem("myagenttool.token", "e2e-token");
     window.localStorage.setItem("myagenttool-ui", JSON.stringify({ version: 1, state: { locale: "en" } }));
@@ -156,15 +215,83 @@ test.beforeEach(async ({ page }) => {
   await mockApi(page);
 });
 
+test("imports a GitLab issue, opens its Local Issue, and starts AI from simple details", async ({ page }) => {
+  await page.goto("/?section=task");
+  await page.getByRole("button", { name: "Import external issue" }).click();
+  const importer = page.getByRole("dialog", { name: "Import external issue" });
+  await importer.getByLabel("Source provider").selectOption("gitlab");
+  await importer.getByPlaceholder("owner/repo").fill("group/repo");
+  await importer.getByLabel("Issue number").fill("19");
+  await expect(importer.getByText("API configured")).toBeVisible();
+  await importer.getByRole("button", { name: "Import as local issue" }).click();
+
+  const detail = page.getByRole("dialog", { name: "Local issue details" });
+  await expect(detail.getByText("LOCAL-1 was imported from GitLab.")).toBeVisible();
+  await expect(detail.getByText("GitLab #19")).toBeVisible();
+  const autoRunRequest = page.waitForRequest((request) =>
+    request.url().endsWith("/api/work-items/lwi_1/auto-runs") && request.method() === "POST");
+  await detail.getByRole("button", { name: "Let AI start" }).click();
+  await autoRunRequest;
+  await expect(detail.getByText(/AI has started/)).toBeVisible();
+});
+
+test("browses and bulk imports GitLab issues on a narrow keyboard-accessible dialog", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto("/?section=task");
+  await page.getByRole("button", { name: "Import external issue" }).click();
+  const importer = page.getByRole("dialog", { name: "Import external issue" });
+  await importer.getByLabel("Source provider").selectOption("gitlab");
+  await importer.getByLabel("External repository").fill("group/repo");
+  await importer.getByLabel("Search titles or descriptions").fill("mobile");
+  await importer.getByRole("button", { name: "Find issues" }).click();
+  const first = importer.getByRole("checkbox", { name: /#21 Mobile browse one/ });
+  await first.focus();
+  await expect(first).toBeFocused();
+  await first.press("Space");
+  await importer.getByRole("checkbox", { name: /#22 Mobile browse two/ }).check();
+  await expect(importer.getByText("2 selected")).toBeVisible();
+  await importer.getByRole("button", { name: "Import selected issues" }).click();
+  const detail = page.getByRole("dialog", { name: "Local issue details" });
+  await expect(detail.getByText(/2 issues were imported from GitLab/)).toBeVisible();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true);
+});
+
+test("adopts a browsed GitHub issue and continues through the same Local Issue handoff", async ({ page }) => {
+  await page.goto("/?section=task");
+  await page.getByRole("button", { name: /^Issues/ }).click();
+  await expect(page.getByText("GitHub browser intake")).toBeVisible();
+  const intakeRequest = page.waitForRequest((request) =>
+    request.url().endsWith("/api/work-items/from-external") && request.method() === "POST");
+  await page.getByRole("button", { name: "Add to local issues" }).click();
+  await intakeRequest;
+
+  const detail = page.getByRole("dialog", { name: "Local issue details" });
+  await expect(detail.getByText("LOCAL-1 was imported from GitHub.")).toBeVisible();
+  await expect(detail.getByText("GitHub #42")).toBeVisible();
+  const autoRunRequest = page.waitForRequest((request) =>
+    request.url().endsWith("/api/work-items/lwi_1/auto-runs") && request.method() === "POST");
+  await detail.getByRole("button", { name: "Let AI start" }).click();
+  await autoRunRequest;
+});
+
 test("creates an issue, routes AI execution, and reaches reviewed local delivery", async ({ page }) => {
   await page.goto("/?section=task");
   await page.getByRole("button", { name: /New local issue/i }).click();
   await page.getByLabel("Title").fill("Implement browser chain");
+  // Local Issue creation requires an expected completion date in the current
+  // follow-up contract; keep the browser path explicit instead of relying on
+  // a stale default from the pre-follow-up form.
+  await page.getByLabel("Expected completion date").fill("2026-08-31");
   await page.getByRole("button", { name: "Create issue" }).click();
 
-  await page.getByText("Implement browser chain").first().click();
-  await page.getByRole("dialog", { name: "Local issue details" })
-    .getByRole("tab", { name: "Process", exact: true }).click();
+  // Open the authoritative Local Issue after creation, then switch to the
+  // expert execution surface explicitly (the summary view is the default).
+  await page.goto("/?section=task&task=lwi_1");
+  const createdDetail = page.getByRole("dialog", { name: "Local issue details" });
+  await createdDetail.getByRole("button", { name: "Expert details" }).click();
+  await expect(createdDetail.getByRole("button", { name: "Expert details" })).toHaveAttribute("aria-pressed", "true");
+  await expect(createdDetail.getByRole("tab", { name: "Process", exact: true })).toBeVisible();
+  await createdDetail.getByRole("tab", { name: "Process", exact: true }).click();
   const autoRunRequest = page.waitForRequest((request) =>
     request.url().endsWith("/api/work-items/lwi_1/auto-runs") && request.method() === "POST");
   await page.getByRole("button", { name: "Start Auto-run" }).click();
@@ -173,6 +300,7 @@ test("creates an issue, routes AI execution, and reaches reviewed local delivery
   await page.goto("/?section=task");
   await page.getByText("Implement browser chain").first().click();
   const detail = page.getByRole("dialog", { name: "Local issue details" });
+  await detail.getByRole("button", { name: "Expert details" }).click();
   await detail.getByRole("tab", { name: "Process", exact: true }).click();
   await expect(detail.getByText("Ready for delivery")).toBeVisible();
   await expect(detail.getByText("Review required")).toBeVisible();
@@ -192,6 +320,33 @@ test("creates an issue, routes AI execution, and reaches reviewed local delivery
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth)).toBe(true);
 });
 
+test("keeps the Local Issue selected while fixing preflight and rechecks after returning", async ({ page }) => {
+  autoRunReady = false;
+  importedViaExternal = true;
+  workItem = {
+    id: "lwi_1", localRef: "LOCAL-1", projectId: project.id,
+    title: "Restore the execution setup", body: "Start after the coding agent is configured.", type: "task", priority: "p2",
+    status: "backlog", state: "open", labels: [], assigneeIds: [], acceptanceCriteria: [],
+    waitingOn: "none", plannedDate: null, dueDate: "2026-08-31",
+    executionState: "unclaimed", executionBindings: [], revision: 1, archivedAt: null,
+    updatedAt: "2026-08-06T00:00:00.000Z",
+  };
+  await page.goto("/?section=task&task=lwi_1");
+  const detail = page.getByRole("dialog", { name: "Local issue details" });
+  await expect(detail.getByRole("alert", { name: "Preflight" })).toContainText("No default agent is configured");
+  await detail.getByRole("button", { name: "Open setup and fix" }).click();
+
+  await expect(page).toHaveURL(/section=agents.*task=lwi_1/);
+  await expect(page.getByRole("heading", { name: "Agents" })).toBeVisible();
+  await page.getByRole("button", { name: "Return to Tasks" }).click();
+  await expect(page).toHaveURL(/section=task.*task=lwi_1/);
+  await expect(detail).toBeVisible();
+
+  autoRunReady = true;
+  await detail.getByRole("button", { name: "Recheck" }).click();
+  await expect(detail.getByRole("button", { name: "Let AI start" })).toBeEnabled();
+});
+
 test("restores a task-first Trace after visiting scheduling Settings", async ({ page }) => {
   workItem = {
     id: "lwi_1", localRef: "LOCAL-1", projectId: project.id,
@@ -200,7 +355,7 @@ test("restores a task-first Trace after visiting scheduling Settings", async ({ 
     acceptanceCriteria: [], verificationRecords: [], revision: 1, archivedAt: null,
     updatedAt: "2026-07-24T00:00:00.000Z",
   };
-  await page.goto("/?section=task&task=lwi_1&taskView=trace");
+  await page.goto("/?section=task&task=lwi_1&taskMode=expert&taskView=trace");
   const detail = page.getByRole("dialog", { name: "Local issue details" });
   await expect(detail).toBeVisible();
   await expect(detail.getByRole("tab", { name: "Trace", exact: true })).toHaveAttribute("aria-selected", "true");

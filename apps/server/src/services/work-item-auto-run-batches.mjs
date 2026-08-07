@@ -227,11 +227,13 @@ export function createWorkItemAutoRunBatchService({
       const result = await startAutoRun({
         projectId: item.projectId,
         link,
+        localIssueId: item.id,
         name,
         agentId: batch.agentId,
         actor,
         issueBody,
         executionChainId: item.id,
+        taskMaterialWorkItemId: item.id,
         terminalId: item.terminalId,
         autonomyProfile: item.planningProjects?.some((project) => project.autonomyProfile === "cautious")
           ? "cautious"

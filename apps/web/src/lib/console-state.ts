@@ -1012,6 +1012,12 @@ export interface ProjectSnapshot {
   budgetPoolId: string | null;
   defaultAgentId: string | null;
   verifyCommandName?: string | null;
+  externalIssuePolicy?: {
+    intakeEnabled: boolean;
+    writebackEnabled: boolean;
+    autoExecutionEnabled: boolean;
+    emergencyStop: boolean;
+  };
   status: "active" | "archived";
   isolation: "shared" | "worktree";
   createdAt: string;

@@ -106,6 +106,7 @@ export const persistedArrayKeys = [
   "issueClaims",
   "issueClaimEvents",
   "workItems",
+  "taskMaterialDrafts",
   "runtimeWorkSchedules",
   "workItemAutoRunBatches",
   "workItemComments",

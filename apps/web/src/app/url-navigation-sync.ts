@@ -43,7 +43,10 @@ export function useUrlNavigationSync() {
     const unsubscribe = useUiStore.subscribe((state, previousState) => {
       if (applyingUrlRef.current) return;
       const search = searchFromNavigationState(window.location.search, state);
-      if (state.section !== previousState.section) pushUrlSearch(search);
+      if (
+        state.section !== previousState.section
+        || (state.selectedWorkItemId && !previousState.selectedWorkItemId)
+      ) pushUrlSearch(search);
       else replaceUrlSearch(search);
     });
     window.addEventListener("popstate", applyLocationToStore);

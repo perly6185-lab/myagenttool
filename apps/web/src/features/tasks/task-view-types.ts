@@ -16,6 +16,11 @@ export type ExternalWorkItemBinding = {
   kind: "github_issue" | "gitlab_issue" | "gitea_issue";
   provider?: "github" | "gitlab" | "gitea";
   resourceType?: "issue";
+  relation?: "source" | "related" | "duplicate" | "parent" | "blocks";
+  isPrimary?: boolean;
+  syncPolicy?: "manual" | "webhook_pull" | "bidirectional";
+  linkedAt?: string | null;
+  linkedBy?: string | null;
   externalId?: string;
   bindingId?: string;
   number: number; url: string | null; lastSyncedAt: string;
@@ -61,6 +66,7 @@ export type LocalWorkItem = {
     evidence: { kind: string; ref: string; summary: string; assetId?: string | null; hash?: string | null; version?: string | null; terminalId?: string | null }[]; recordedAt: string; recordedBy: string;
   }[];
   inputAssets?: WorkItemAssetRef[];
+  materialChangesPending?: boolean;
   outputAssets?: WorkItemAssetRef[];
   requiredCapabilities?: string[];
   assetReadiness?: { state: "ready" | "waiting_capability" | "refused"; reason: string; terminalId: string };
@@ -115,8 +121,10 @@ export type LocalWorkItem = {
 };
 export type WorkItemAssetRef = {
   id: string | null;
+  originalName?: string;
   path: string;
   family: string;
+  mimeType?: string | null;
   terminalId: string;
   size?: number | null;
   resourceClass?: "small" | "medium" | "large" | "unknown";

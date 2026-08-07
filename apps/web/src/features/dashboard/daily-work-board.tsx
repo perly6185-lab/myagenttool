@@ -1,5 +1,6 @@
 import {
   AlertTriangle,
+  ArrowLeft,
   ArrowRight,
   Bot,
   BriefcaseBusiness,
@@ -11,13 +12,17 @@ import {
   Plus,
   RotateCcw,
   Sparkles,
+  X,
 } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { Badge, StatusBadge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
+import { Modal } from "@/components/ui/modal";
 import { cn } from "@/lib/cn";
-import type { WorkBoard, WorkItem, WorkReport, WorkState } from "@/lib/console-state";
+import type { PendingDecision, WorkBoard, WorkItem, WorkReport, WorkState } from "@/lib/console-state";
 import { useAppTranslation } from "@/lib/i18n/use-app-translation";
 import type {
   LocalScheduleCapacityResponse,
@@ -26,7 +31,6 @@ import type {
   LocalScheduleUrgentResponse,
 } from "@/lib/api-client";
 import type { LocalWorkItem, WorkItemRequesterRelation } from "@/features/tasks/task-view-types";
-import { WorkItemProgressDialog, type WorkItemProgressTarget } from "@/features/tasks/work-item-progress-dialog";
 import type { HomeAttentionReason, HomeWorkbench, HomeWorkbenchItem } from "./home-workbench-types";
 
 type Tone = "neutral" | "running" | "success" | "warning" | "danger";
@@ -39,6 +43,7 @@ type Copy = {
   attention: string;
   active: string;
   completed: string;
+  completedOn: string;
   failed: string;
   yesterday: string;
   today: string;
@@ -62,6 +67,7 @@ type Copy = {
   worktreeLocks: string;
   unscheduled: string;
   unscheduledHint: string;
+  columnSwipeHint: string;
   unassigned: string;
   unassignedHint: string;
   claim: string;
@@ -93,6 +99,72 @@ type Copy = {
   owner: string;
   waitingLabel: string;
   aiLabel: string;
+  coordination: {
+    aiNotLinked: string;
+    executionAfterCompletion: string;
+    aiUnscheduled: string;
+    reviewPending: string;
+    locateAi: string;
+    locateMy: string;
+    located: string;
+    backToAi: string;
+    backToMy: string;
+  };
+  actionQueue: {
+    title: string;
+    hint: string;
+    all: string;
+    urgent: string;
+    pending: string;
+    review: string;
+    adjustExecution: string;
+    scheduleAi: string;
+    scheduleTitle: string;
+    scheduleHint: string;
+    saveSchedule: string;
+    savingSchedule: string;
+    cancelSchedule: string;
+    scheduleError: string;
+  };
+  rolloverPrompt: {
+    title: string;
+    description: string;
+    plan: string;
+    pinnedLabel: string;
+    pinned: string;
+    unscheduled: string;
+    all: string;
+    individual: string;
+    later: string;
+    open: string;
+    unavailable: string;
+  };
+  dailyBrief: {
+    title: string;
+    summary: string;
+    due: string;
+    actions: string;
+    aiMoving: string;
+    conflict: string;
+    nextUp: string;
+    allClear: string;
+    startFocus: string;
+    reviewPlan: string;
+  };
+  focusMode: {
+    title: string;
+    position: string;
+    timeline: string;
+    commitmentDate: string;
+    followUpDate: string;
+    noDate: string;
+    expectedOutcome: string;
+    outcomeNext: string;
+    outcomeSchedule: string;
+    previous: string;
+    next: string;
+    exit: string;
+  };
   execution: Record<HomeWorkbenchItem["executionState"], string>;
   relation: Record<WorkItemRequesterRelation, string>;
   waiting: Record<HomeWorkbenchItem["waitingOn"], string>;
@@ -123,6 +195,7 @@ const COPY: Record<"zh" | "en", Copy> = {
     attention: "待处理",
     active: "进行中",
     completed: "已完成",
+    completedOn: "完成日期",
     failed: "失败",
     yesterday: "昨天",
     today: "今天",
@@ -146,12 +219,13 @@ const COPY: Record<"zh" | "en", Copy> = {
     worktreeLocks: "工作区锁 {{count}}",
     unscheduled: "其他完成日期",
     unscheduledHint: "显示更晚日期以及尚未设置预期完成日期的任务。",
+    columnSwipeHint: "左右滑动查看全部 4 列",
     unassigned: "待认领",
     unassignedHint: "所有尚未分配的本地 Issue 都在这里；认领后才会进入个人调度并占用终端容量。",
     claim: "认领",
     claiming: "认领中…",
     myWork: "我的任务",
-    myWorkHint: "按任务人员归类和预期完成日期查看本终端 Issue",
+    myWorkHint: "同一批 Issue 的人员负责与预期完成视角",
     allMyWork: "全部人员",
     peopleCategory: "任务人员",
     otherPeople: "其他 / 未归类",
@@ -162,7 +236,7 @@ const COPY: Record<"zh" | "en", Copy> = {
     dueToday: "今日到期",
     reviewReady: "待复核与汇报",
     activeAi: "AI 的任务",
-    aiWorkHint: "按本终端 AI 执行日期和执行状态查看同一批 Issue",
+    aiWorkHint: "同一批 Issue 的 AI 执行日期与执行状态视角",
     allAiWork: "全部 AI 任务",
     aiRunning: "执行中",
     aiScheduled: "待执行",
@@ -172,11 +246,77 @@ const COPY: Record<"zh" | "en", Copy> = {
     noExecutionDate: "未安排执行日期",
     expectedCompletion: "预期完成",
     noExpectedCompletion: "未设置预期完成日期",
-    otherDates: "其他日期 / 未安排",
+    otherDates: "其他执行日期 / 未安排",
     otherDatesHint: "显示更晚执行或尚未安排执行日期的 AI 任务。",
     owner: "负责人",
     waitingLabel: "人",
     aiLabel: "AI",
+    coordination: {
+      aiNotLinked: "未关联",
+      executionAfterCompletion: "AI 执行晚于预期完成",
+      aiUnscheduled: "AI 已关联，但尚未安排执行日期",
+      reviewPending: "AI 已完成，等待人工复核",
+      locateAi: "在 AI 看板定位",
+      locateMy: "在个人看板定位",
+      located: "已临时显示对应 Issue，原筛选保持不变",
+      backToAi: "返回 AI 看板",
+      backToMy: "返回个人看板",
+    },
+    actionQueue: {
+      title: "现在需要我行动",
+      hint: "合并个人与 AI 视角，每个 Issue 只保留一个下一步",
+      all: "全部",
+      urgent: "需重点处理",
+      pending: "待行动",
+      review: "待复核",
+      adjustExecution: "调整执行日期",
+      scheduleAi: "安排 AI",
+      scheduleTitle: "安排 AI 执行日期",
+      scheduleHint: "保存后会刷新两个看板中的同一 Issue。",
+      saveSchedule: "保存日期",
+      savingSchedule: "正在保存…",
+      cancelSchedule: "取消",
+      scheduleError: "执行日期保存失败，请重试。",
+    },
+    rolloverPrompt: {
+      title: "昨日未完成事项",
+      description: "有 {{count}} 项未完成工作需要安排，避免它们被遗漏。",
+      plan: "以下事项可以进入今天的执行计划",
+      pinnedLabel: "固定日期",
+      pinned: "其中 {{count}} 项是手动固定日期，全部结转后会移动到今天。",
+      unscheduled: "有 {{count}} 项暂时没有可用执行日期，请稍后调整容量或日期。",
+      all: "全部结转到今天",
+      individual: "逐项处理",
+      later: "暂不处理",
+      open: "查看任务",
+      unavailable: "暂时无法安排",
+    },
+    dailyBrief: {
+      title: "今日协同简报",
+      summary: "今天有 {{due}} 项预期完成，当前 {{actions}} 项需要你行动；AI 已安排或执行中 {{ai}} 项。",
+      due: "今日到期",
+      actions: "需要我行动",
+      aiMoving: "AI 推进中",
+      conflict: "其中 {{count}} 项存在个人预期与 AI 执行日期冲突。",
+      nextUp: "建议先处理",
+      allClear: "当前没有需要你介入的事项，AI 会继续按计划推进。",
+      startFocus: "开始第一个行动",
+      reviewPlan: "查看今日行动",
+    },
+    focusMode: {
+      title: "专注处理",
+      position: "第 {{current}} / {{total}} 项",
+      timeline: "时间安排",
+      commitmentDate: "承诺日期",
+      followUpDate: "下次跟进",
+      noDate: "未设置",
+      expectedOutcome: "完成这一步后",
+      outcomeNext: "系统会刷新状态，并继续显示下一项需要你处理的工作。",
+      outcomeSchedule: "个人预期与 AI 执行安排会重新对齐。",
+      previous: "上一项",
+      next: "下一项",
+      exit: "结束专注",
+    },
     execution: { unclaimed: "尚未执行", claimed: "已认领", running: "执行中", awaiting_approval: "等待审批", verifying: "验证中", failed: "执行失败", completed: "等待复核" },
     relation: { boss: "老板", manager: "上级", customer: "客户", child: "小孩学习", colleague: "同事", self: "自己", unknown: "未标注" },
     waiting: { me: "等我", requester: "等提出者", internal: "等内部成员", ai: "等 AI", none: "无需等待" },
@@ -239,6 +379,7 @@ const COPY: Record<"zh" | "en", Copy> = {
     attention: "Attention",
     active: "In progress",
     completed: "Completed",
+    completedOn: "Completed on",
     failed: "Failed",
     yesterday: "Yesterday",
     today: "Today",
@@ -262,12 +403,13 @@ const COPY: Record<"zh" | "en", Copy> = {
     worktreeLocks: "Workspace locks {{count}}",
     unscheduled: "Other completion dates",
     unscheduledHint: "Tasks due later or missing an expected completion date.",
+    columnSwipeHint: "Swipe horizontally to view all 4 columns",
     unassigned: "Unassigned",
     unassignedHint: "Every unassigned local Issue appears here. It enters personal scheduling and terminal capacity only after you claim it.",
     claim: "Claim",
     claiming: "Claiming…",
     myWork: "My tasks",
-    myWorkHint: "View this terminal's Issues by person category and expected completion date",
+    myWorkHint: "People ownership and expected completion for the same Issues",
     allMyWork: "All people",
     peopleCategory: "Task person",
     otherPeople: "Other / unlabeled",
@@ -278,7 +420,7 @@ const COPY: Record<"zh" | "en", Copy> = {
     dueToday: "Due today",
     reviewReady: "Review and report",
     activeAi: "AI tasks",
-    aiWorkHint: "View the same Issues by this terminal's AI execution date and execution state",
+    aiWorkHint: "AI execution dates and states for the same Issues",
     allAiWork: "All AI tasks",
     aiRunning: "Running",
     aiScheduled: "Scheduled",
@@ -288,11 +430,77 @@ const COPY: Record<"zh" | "en", Copy> = {
     noExecutionDate: "No execution date",
     expectedCompletion: "Expected completion",
     noExpectedCompletion: "Expected completion not set",
-    otherDates: "Other dates / unscheduled",
+    otherDates: "Other execution dates / unscheduled",
     otherDatesHint: "AI tasks scheduled later or missing an execution date.",
     owner: "Owner",
     waitingLabel: "People",
     aiLabel: "AI",
+    coordination: {
+      aiNotLinked: "Not linked",
+      executionAfterCompletion: "AI execution is after expected completion",
+      aiUnscheduled: "AI is linked but has no execution date",
+      reviewPending: "AI completed; awaiting human review",
+      locateAi: "Locate in AI tasks",
+      locateMy: "Locate in My tasks",
+      located: "Temporarily showing this Issue without changing your filter",
+      backToAi: "Back to AI tasks",
+      backToMy: "Back to My tasks",
+    },
+    actionQueue: {
+      title: "Needs my action now",
+      hint: "One next step per Issue across the people and AI views",
+      all: "All",
+      urgent: "Needs attention",
+      pending: "Pending action",
+      review: "Ready for review",
+      adjustExecution: "Adjust execution date",
+      scheduleAi: "Schedule AI",
+      scheduleTitle: "Schedule AI execution",
+      scheduleHint: "Saving refreshes the same Issue in both boards.",
+      saveSchedule: "Save date",
+      savingSchedule: "Saving…",
+      cancelSchedule: "Cancel",
+      scheduleError: "Could not save the execution date. Try again.",
+    },
+    rolloverPrompt: {
+      title: "Unfinished work from yesterday",
+      description: "{{count}} unfinished item(s) need a plan so they do not get lost.",
+      plan: "These items can move into today's execution plan",
+      pinnedLabel: "Pinned",
+      pinned: "{{count}} item(s) have manually pinned dates and will move to today when carried over.",
+      unscheduled: "{{count}} item(s) have no feasible execution date yet. Adjust capacity or dates later.",
+      all: "Carry all to today",
+      individual: "Handle one by one",
+      later: "Not now",
+      open: "View task",
+      unavailable: "Not schedulable yet",
+    },
+    dailyBrief: {
+      title: "Today's coordination brief",
+      summary: "Today: {{due}} due, {{actions}} need your action, AI scheduled or running: {{ai}}.",
+      due: "Due today",
+      actions: "Needs my action",
+      aiMoving: "AI moving",
+      conflict: "Date conflicts between your expectation and AI execution: {{count}}.",
+      nextUp: "Start with",
+      allClear: "Nothing needs your intervention now. AI will keep moving the plan forward.",
+      startFocus: "Start first action",
+      reviewPlan: "Review today's actions",
+    },
+    focusMode: {
+      title: "Focus session",
+      position: "Item {{current}} of {{total}}",
+      timeline: "Timeline",
+      commitmentDate: "Commitment date",
+      followUpDate: "Next follow-up",
+      noDate: "Not set",
+      expectedOutcome: "After this step",
+      outcomeNext: "The board refreshes and continues with the next item that needs you.",
+      outcomeSchedule: "Your expected completion and the AI execution plan will be realigned.",
+      previous: "Previous",
+      next: "Next",
+      exit: "End focus",
+    },
     execution: { unclaimed: "Not started", claimed: "Claimed", running: "Running", awaiting_approval: "Awaiting approval", verifying: "Verifying", failed: "Execution failed", completed: "Ready for review" },
     relation: { boss: "Boss", manager: "Manager", customer: "Customer", child: "Child learning", colleague: "Colleague", self: "Self", unknown: "Not labeled" },
     waiting: { me: "Waiting on me", requester: "Waiting on requester", internal: "Waiting on internal", ai: "Waiting on AI", none: "Not waiting" },
@@ -374,7 +582,10 @@ type DailyWorkItem = WorkItem & {
   requesterRelation?: WorkItemRequesterRelation;
 };
 type DailyLocalWorkItem = LocalWorkItem & { scheduleReason?: string | null };
+type ActionQueueFilter = "all" | "danger" | "warning" | "running";
 type DailyGroupKey = WorkState | LocalWorkItem["status"];
+type WorkView = "my" | "ai";
+type FocusedIssue = { workItemId: string; view: WorkView; originView: WorkView; nonce: number };
 
 const GROUP_ORDER: DailyGroupKey[] = [
   "pending_decision",
@@ -398,6 +609,23 @@ const LOCAL_STATE_TONE: Record<LocalWorkItem["status"], Tone> = {
   done: "success",
 };
 
+const RECENT_COMPLETION_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
+
+function isCompletedLocal(item: LocalWorkItem): boolean {
+  return item.state === "closed" || item.status === "done";
+}
+
+function completionDate(item: LocalWorkItem): string | null {
+  return isCompletedLocal(item) ? dateKey(item.completedAt ?? item.updatedAt) : item.dueDate;
+}
+
+function isVisibleLocal(item: LocalWorkItem, now: number): boolean {
+  if (item.archivedAt) return false;
+  if (!isCompletedLocal(item)) return true;
+  const finishedAt = Date.parse(item.completedAt ?? item.updatedAt ?? "");
+  return Number.isFinite(finishedAt) && finishedAt >= now - RECENT_COMPLETION_RETENTION_MS;
+}
+
 function displayState(item: DailyWorkItem): DailyGroupKey {
   return item.planningStatus ?? item.state;
 }
@@ -416,6 +644,12 @@ function executionTone(state: HomeWorkbenchItem["executionState"]): Tone {
   if (state === "completed") return "success";
   if (["running", "verifying"].includes(state)) return "running";
   return "neutral";
+}
+
+function executionLabel(item: HomeWorkbenchItem, copy: Copy): string {
+  return item.executionState === "completed" && item.planningStatus === "done"
+    ? copy.completed
+    : copy.execution[item.executionState];
 }
 
 function dateKey(value: number | string): string | null {
@@ -448,7 +682,7 @@ function formatDate(value: number, locale: string): string {
 
 function formatDateOnly(value: string | null | undefined, locale: string): string | null {
   if (!value) return null;
-  const timestamp = Date.parse(`${value}T12:00:00`);
+  const timestamp = value.includes("T") ? Date.parse(value) : Date.parse(`${value}T12:00:00`);
   return Number.isFinite(timestamp)
     ? new Intl.DateTimeFormat(locale, { month: "numeric", day: "numeric" }).format(timestamp)
     : value;
@@ -500,8 +734,8 @@ function localWorkItemCard(
   const runtime = runtimeItems.find((candidate) => Boolean(candidate.targetId && targets.has(candidate.targetId)));
   return {
     id: `local:${item.id}`,
-    state: runtime?.state ?? LOCAL_STATUS_STATE[item.status],
-    planningStatus: item.status,
+    state: runtime?.state ?? (isCompletedLocal(item) ? "done" : LOCAL_STATUS_STATE[item.status]),
+    planningStatus: isCompletedLocal(item) ? "done" : item.status,
     kind: "local_work_item",
     title: `${item.localRef} · ${item.title}`,
     subtitle: runtime?.reason ?? runtime?.subtitle,
@@ -535,13 +769,14 @@ export function buildDailyWorkBoardModel(
     (homeRank.get(left.id) ?? Number.MAX_SAFE_INTEGER) - (homeRank.get(right.id) ?? Number.MAX_SAFE_INTEGER)
     || priorityRank[left.priority] - priorityRank[right.priority]
     || left.id.localeCompare(right.id);
-  const visibleLocal = plannedItems.filter((item) => !item.archivedAt && item.state !== "closed");
-  const yesterdayLocal = visibleLocal.filter((item) => Boolean(item.dueDate && item.dueDate <= yesterdayKey)).sort(compareLocal);
-  const todayLocal = visibleLocal.filter((item) => item.dueDate === todayKey).sort(compareLocal);
-  const tomorrowLocal = visibleLocal.filter((item) => item.dueDate === tomorrowKey).sort(compareLocal);
+  const visibleLocal = plannedItems.filter((item) => isVisibleLocal(item, now));
+  const localDate = (item: DailyLocalWorkItem) => completionDate(item);
+  const yesterdayLocal = visibleLocal.filter((item) => Boolean(localDate(item) && localDate(item)! <= yesterdayKey)).sort(compareLocal);
+  const todayLocal = visibleLocal.filter((item) => localDate(item) === todayKey).sort(compareLocal);
+  const tomorrowLocal = visibleLocal.filter((item) => localDate(item) === tomorrowKey).sort(compareLocal);
   const otherLocal = visibleLocal
-    .filter((item) => !item.dueDate || item.dueDate > tomorrowKey)
-    .sort((left, right) => String(left.dueDate ?? "9999-12-31").localeCompare(String(right.dueDate ?? "9999-12-31")) || compareLocal(left, right));
+    .filter((item) => !localDate(item) || localDate(item)! > tomorrowKey)
+    .sort((left, right) => String(localDate(left) ?? "9999-12-31").localeCompare(String(localDate(right) ?? "9999-12-31")) || compareLocal(left, right));
 
   const activeRuntime = uniqueItems([
     states?.pending_decision?.items ?? [],
@@ -570,12 +805,12 @@ export function buildDailyWorkBoardModel(
     today,
     tomorrow,
     unscheduled,
-    todayCompleted: runtimeFallback ? flow?.completed ?? 0 : todayLocal.filter((item) => item.status === "done").length,
+    todayCompleted: runtimeFallback ? flow?.completed ?? 0 : todayLocal.filter(isCompletedLocal).length,
     todayFailed: flow?.failed ?? 0,
     attention: runtimeFallback
       ? (states?.pending_decision?.count ?? 0) + (states?.follow_up?.count ?? 0)
-      : visibleLocal.filter((item) => item.status === "blocked" || Boolean(item.dueDate && item.dueDate < todayKey)).length,
-    active: runtimeFallback ? states?.in_progress?.count ?? 0 : visibleLocal.filter((item) => ["in_progress", "review"].includes(item.status)).length,
+      : visibleLocal.filter((item) => !isCompletedLocal(item) && (item.status === "blocked" || Boolean(item.dueDate && item.dueDate < todayKey))).length,
+    active: runtimeFallback ? states?.in_progress?.count ?? 0 : visibleLocal.filter((item) => !isCompletedLocal(item) && ["in_progress", "review"].includes(item.status)).length,
   };
 }
 
@@ -588,11 +823,22 @@ export function DailyWorkBoard({
   capacity,
   preview,
   rollover,
+  autoRolloverPrompt = false,
   urgent,
+  approvals = [],
   onOpenItem,
+  onOpenApproval,
   onOpenTasks,
   onClaimItem,
-  onProgressRecorded,
+  onUpdatePlannedDate,
+  dailyBriefContainer,
+  focusSessionActive = false,
+  focusPendingWorkItemId = null,
+  focusResolvedWorkItemId = null,
+  onStartFocusSession,
+  onFocusActionLaunched,
+  onFocusActionResolved,
+  onEndFocusSession,
   claimingItemId = null,
   claimError = null,
   onApplyPlan,
@@ -611,7 +857,10 @@ export function DailyWorkBoard({
   capacity?: LocalScheduleCapacityResponse;
   preview?: LocalSchedulePreviewResponse;
   rollover?: LocalScheduleRolloverResponse;
+  autoRolloverPrompt?: boolean;
   urgent?: LocalScheduleUrgentResponse;
+  approvals?: PendingDecision[];
+  onOpenApproval?: (decision: PendingDecision) => void;
   onOpenItem: (item: WorkItem) => void;
   onOpenTasks: () => void;
   onOpenAttention?: () => void;
@@ -619,12 +868,20 @@ export function DailyWorkBoard({
   onOpenCompleted?: () => void;
   onOpenFailed?: () => void;
   onClaimItem?: (item: LocalWorkItem) => void;
-  onProgressRecorded?: () => void | Promise<void>;
+  onUpdatePlannedDate?: (item: HomeWorkbenchItem, plannedDate: string) => void | Promise<void>;
+  dailyBriefContainer?: HTMLElement | null;
+  focusSessionActive?: boolean;
+  focusPendingWorkItemId?: string | null;
+  focusResolvedWorkItemId?: string | null;
+  onStartFocusSession?: () => void;
+  onFocusActionLaunched?: (workItemId: string) => void;
+  onFocusActionResolved?: (workItemId: string) => void;
+  onEndFocusSession?: () => void;
   claimingItemId?: string | null;
   claimError?: string | null;
   onApplyPlan?: () => void;
   applyingPlan?: boolean;
-  onRollover?: (confirmPinned: boolean) => void;
+  onRollover?: (confirmPinned: boolean) => void | Promise<unknown>;
   rollingOver?: boolean;
   onApplyUrgent?: (confirmPinned: boolean) => void;
   applyingUrgent?: boolean;
@@ -632,9 +889,22 @@ export function DailyWorkBoard({
 }) {
   const [unassignedExpanded, setUnassignedExpanded] = useState(false);
   const [capacityExpanded, setCapacityExpanded] = useState(false);
+  const [actionQueueExpanded, setActionQueueExpanded] = useState(false);
+  const [actionQueueFilter, setActionQueueFilter] = useState<ActionQueueFilter>("all");
+  const [rolloverPromptOpen, setRolloverPromptOpen] = useState(false);
+  const [activeWorkView, setActiveWorkView] = useState<WorkView>("my");
   const [myWorkFilter, setMyWorkFilter] = useState<WorkItemRequesterRelation | "all" | "other">("all");
   const [aiWorkFilter, setAiWorkFilter] = useState<"all" | "scheduled" | "running" | "awaiting_approval" | "failed" | "completed">("all");
-  const [progressTarget, setProgressTarget] = useState<WorkItemProgressTarget | null>(null);
+  const [focusedIssue, setFocusedIssue] = useState<FocusedIssue | null>(null);
+  const [scheduleTarget, setScheduleTarget] = useState<HomeWorkbenchItem | null>(null);
+  const [scheduleDate, setScheduleDate] = useState("");
+  const [schedulePending, setSchedulePending] = useState(false);
+  const [scheduleError, setScheduleError] = useState<string | null>(null);
+  const [focusTargetId, setFocusTargetId] = useState<string | null>(null);
+  const myDateColumnsRef = useRef<HTMLDivElement>(null);
+  const aiDateColumnsRef = useRef<HTMLDivElement>(null);
+  const myMobilePositioned = useRef(false);
+  const aiMobilePositioned = useRef(false);
   const { i18n } = useAppTranslation();
   const locale = i18n.language.startsWith("zh") ? "zh-CN" : "en-US";
   const copy = COPY[locale === "zh-CN" ? "zh" : "en"];
@@ -673,10 +943,17 @@ export function DailyWorkBoard({
     }])) as WorkBoard["states"],
   } : undefined;
   const workbenchItems = workbench?.items ?? [];
+  const previewById = new Map(previewItems.map((item) => [item.id, item]));
+  const projectedWorkbenchItems = workbenchItems.map((item) => ({
+    ...item,
+    plannedDate: previewById.get(item.workItemId)?.plannedDate ?? item.plannedDate,
+  }));
   const myWorkFilterActive = myWorkFilter !== "all";
-  const baseModel = buildDailyWorkBoardModel(previewBoard, report, now, previewItems, workbenchItems);
+  const baseModel = buildDailyWorkBoardModel(previewBoard, report, now, previewItems, projectedWorkbenchItems);
   const filterItems = (items: WorkItem[]) => items.filter((item) => {
     const row = item as DailyWorkItem;
+    const workItemId = row.home?.workItemId ?? row.targetId;
+    if (focusedIssue?.view === "my" && focusedIssue.workItemId === workItemId) return true;
     const relation = row.home?.requester.relation ?? row.requesterRelation ?? "unknown";
     if (myWorkFilter === "other") return relation === "colleague" || relation === "unknown";
     return relation === myWorkFilter;
@@ -688,17 +965,34 @@ export function DailyWorkBoard({
     tomorrow: filterItems(baseModel.tomorrow),
     unscheduled: filterItems(baseModel.unscheduled),
   } : baseModel;
-  const previewById = new Map(previewItems.map((item) => [item.id, item]));
-  const aiWorkItems = workbenchItems
-    .map((item) => ({ ...item, plannedDate: previewById.get(item.workItemId)?.plannedDate ?? item.plannedDate }))
+  const aiWorkItems = projectedWorkbenchItems
     .filter((item) => Boolean(item.plannedDate || item.ai));
+  const actionQueue = buildActionQueue(projectedWorkbenchItems, copy);
+  const actionQueueCounts: Record<ActionQueueFilter, number> = {
+    all: actionQueue.length,
+    danger: actionQueue.filter((item) => item.tone === "danger").length,
+    warning: actionQueue.filter((item) => item.tone === "warning").length,
+    running: actionQueue.filter((item) => item.tone === "running").length,
+  };
+  const filteredActionQueue = actionQueueFilter === "all"
+    ? actionQueue
+    : actionQueue.filter((item) => item.tone === actionQueueFilter);
+  const todayDueCount = projectedWorkbenchItems.filter((item) => item.dueDate === currentDay && item.planningStatus !== "done").length;
+  const aiMovingCount = projectedWorkbenchItems.filter((item) =>
+    item.plannedDate && ["unclaimed", "claimed", "running", "verifying"].includes(item.executionState)).length;
+  const scheduleConflictCount = actionQueue.filter((item) => item.action === "schedule").length;
+  const focusedActionIndex = focusTargetId
+    ? actionQueue.findIndex((entry) => entry.item.workItemId === focusTargetId)
+    : -1;
+  const focusedAction = focusedActionIndex >= 0 ? actionQueue[focusedActionIndex] : null;
   const matchesAiWorkFilter = (item: HomeWorkbenchItem) => {
     if (aiWorkFilter === "scheduled") return item.executionState === "unclaimed" || item.executionState === "claimed";
     if (aiWorkFilter === "running") return item.executionState === "running" || item.executionState === "verifying";
     if (aiWorkFilter === "all") return true;
     return item.executionState === aiWorkFilter;
   };
-  const filteredAiWorkItems = aiWorkItems.filter(matchesAiWorkFilter);
+  const filteredAiWorkItems = aiWorkItems.filter((item) =>
+    (focusedIssue?.view === "ai" && focusedIssue.workItemId === item.workItemId) || matchesAiWorkFilter(item));
   const aiCounts = {
     all: aiWorkItems.length,
     scheduled: aiWorkItems.filter((item) => item.executionState === "unclaimed" || item.executionState === "claimed").length,
@@ -711,33 +1005,357 @@ export function DailyWorkBoard({
     yesterday: filteredAiWorkItems.filter((item) => Boolean(item.plannedDate && item.plannedDate < currentDay)),
     today: filteredAiWorkItems.filter((item) => item.plannedDate === currentDay),
     tomorrow: filteredAiWorkItems.filter((item) => item.plannedDate === nextDay),
-    other: filteredAiWorkItems.filter((item) => !item.plannedDate || item.plannedDate > nextDay),
+    other: filteredAiWorkItems
+      .filter((item) => !item.plannedDate || item.plannedDate > nextDay)
+      .sort((left, right) => String(left.plannedDate ?? "9999-12-31").localeCompare(String(right.plannedDate ?? "9999-12-31"))
+        || left.workItemId.localeCompare(right.workItemId)),
   };
   const suggestedCount = preview?.days.reduce((count, day) =>
     count + day.items.filter((item) => item.previousPlannedDate !== day.date).length, 0) ?? 0;
   const rolloverCount = (rollover?.moves.length ?? 0) + (rollover?.confirmationRequired.length ?? 0);
+  const rolloverPromptItems = [
+    ...(rollover?.moves ?? []).map((item) => ({
+      workItemId: item.workItemId,
+      localRef: item.localRef,
+      title: item.title,
+      targetDate: item.targetDate,
+      pinned: false,
+      unscheduled: false,
+      reason: null,
+    })),
+    ...(rollover?.confirmationRequired ?? []).map((item) => ({
+      workItemId: item.workItemId,
+      localRef: item.localRef,
+      title: item.title,
+      targetDate: item.targetDate,
+      pinned: true,
+      unscheduled: false,
+      reason: null,
+    })),
+    ...(rollover?.unscheduled ?? []).map((item) => {
+      const workItem = projectedWorkbenchItems.find((candidate) => candidate.workItemId === item.workItemId);
+      return {
+        workItemId: item.workItemId,
+        localRef: workItem?.localRef ?? item.workItemId,
+        title: workItem?.title ?? item.workItemId,
+        targetDate: null,
+        pinned: false,
+        unscheduled: true,
+        reason: item.reason,
+      };
+    }),
+  ];
+  const rolloverPromptKey = `myagenttool:rollover-prompt:${rollover?.sourceDate ?? ""}`;
   const urgentCount = urgent?.insertions.length ?? 0;
   const progressTotal = model.today.length;
   const progress = progressTotal ? Math.round((model.todayCompleted / progressTotal) * 100) : 0;
   const runHomeAction = (item: HomeWorkbenchItem) => {
-    if (item.nextAction.kind === "record_progress") {
-      setProgressTarget({
-        id: item.workItemId,
-        title: item.title,
-        revision: item.revision,
-        requesterRelation: item.requester.relation,
-        waitingOn: item.waitingOn,
-        nextFollowUpAt: item.nextFollowUpAt,
-      });
-      return;
-    }
-    onOpenItem(homeActionWorkItem(item));
+    onOpenItem(homeTaskWorkItem(item));
   };
   const runHomeReport = (item: HomeWorkbenchItem) => onOpenItem(homeReportWorkItem(item));
+  const locateIssue = (view: WorkView, workItemId: string) => {
+    setActiveWorkView(view);
+    setFocusedIssue({ workItemId, view, originView: view === "my" ? "ai" : "my", nonce: Date.now() });
+  };
+  const returnFromLocate = () => {
+    if (!focusedIssue) return;
+    const { originView, workItemId } = focusedIssue;
+    setActiveWorkView(originView);
+    setFocusedIssue(null);
+    window.requestAnimationFrame(() => {
+      const element = document.querySelector<HTMLElement>(
+        `[data-work-view="${originView}"][data-work-item-id="${workItemId}"]`,
+      );
+      element?.scrollIntoView?.({ behavior: "smooth", block: "center", inline: "center" });
+      element?.focus({ preventScroll: true });
+    });
+  };
+  const openScheduleDialog = (item: HomeWorkbenchItem) => {
+    setScheduleTarget(item);
+    setScheduleDate(item.plannedDate ?? (item.dueDate && item.dueDate >= currentDay ? item.dueDate : currentDay));
+    setScheduleError(null);
+  };
+  const saveSchedule = async () => {
+    if (!scheduleTarget || !scheduleDate || !onUpdatePlannedDate) return;
+    setSchedulePending(true);
+    setScheduleError(null);
+    try {
+      await onUpdatePlannedDate(scheduleTarget, scheduleDate);
+      onFocusActionResolved?.(scheduleTarget.workItemId);
+      setScheduleTarget(null);
+    } catch {
+      setScheduleError(copy.actionQueue.scheduleError);
+    } finally {
+      setSchedulePending(false);
+    }
+  };
+  const startFocusSession = () => {
+    const first = actionQueue[0];
+    if (!first) return;
+    onStartFocusSession?.();
+    setFocusTargetId(first.item.workItemId);
+  };
+  const reviewTodayPlan = () => {
+    setActionQueueFilter("all");
+    setActionQueueExpanded(true);
+  };
+  const dismissRolloverPrompt = () => {
+    try {
+      if (rollover?.sourceDate) window.localStorage.setItem(rolloverPromptKey, "dismissed");
+    } catch {
+      // Some embedded/browser privacy modes disable localStorage. The prompt
+      // still dismisses for the current render in that case.
+    }
+    setRolloverPromptOpen(false);
+  };
+  const applyAllRollover = async () => {
+    if (!onRollover || rolloverCount === 0) return;
+    const result = await onRollover(true);
+    if (result !== false) dismissRolloverPrompt();
+  };
+  const handleIndividualRollover = () => {
+    dismissRolloverPrompt();
+    if (actionQueue.length) setActionQueueExpanded(true);
+  };
+  const openRolloverItem = (workItemId: string) => {
+    const item = projectedWorkbenchItems.find((candidate) => candidate.workItemId === workItemId);
+    if (!item) return;
+    dismissRolloverPrompt();
+    onOpenItem(homeTaskWorkItem(item));
+  };
+  const launchFocusAction = (entry: ActionQueueItem) => {
+    onFocusActionLaunched?.(entry.item.workItemId);
+    setFocusTargetId(null);
+    if (entry.action === "schedule") openScheduleDialog(entry.item);
+    else runHomeAction(entry.item);
+  };
+
+  useEffect(() => {
+    if (!focusTargetId || focusedActionIndex >= 0) return;
+    setFocusTargetId(null);
+  }, [focusTargetId, focusedActionIndex]);
+
+  useEffect(() => {
+    if (!autoRolloverPrompt || !rollover?.sourceDate || !rolloverPromptItems.length) return;
+    try {
+      if (window.localStorage.getItem(rolloverPromptKey) === "dismissed") return;
+    } catch {
+      // Continue when localStorage is unavailable.
+    }
+    setRolloverPromptOpen(true);
+  }, [autoRolloverPrompt, rollover?.sourceDate, rolloverPromptKey, rolloverPromptItems.length]);
+
+  useEffect(() => {
+    if (!focusSessionActive || focusTargetId || scheduleTarget) return;
+    const pending = actionQueue.find((entry) => entry.item.workItemId === focusPendingWorkItemId);
+    const next = pending ?? actionQueue.find((entry) => entry.item.workItemId !== focusResolvedWorkItemId);
+    if (next) setFocusTargetId(next.item.workItemId);
+  }, [actionQueue, focusPendingWorkItemId, focusResolvedWorkItemId, focusSessionActive, focusTargetId, scheduleTarget]);
+
+  useEffect(() => {
+    if (!focusedIssue) return;
+    const frame = window.requestAnimationFrame(() => {
+      const element = document.querySelector<HTMLElement>(
+        `[data-work-view="${focusedIssue.view}"][data-work-item-id="${focusedIssue.workItemId}"]`,
+      );
+      element?.scrollIntoView?.({ behavior: "smooth", block: "center", inline: "center" });
+      element?.focus({ preventScroll: true });
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [focusedIssue, myWorkFilter, aiWorkFilter]);
+
+  useEffect(() => {
+    if (!window.matchMedia?.("(max-width: 1023px)").matches) return;
+    const frame = window.requestAnimationFrame(() => {
+      const positionToday = (container: HTMLDivElement | null, testId: string) => {
+        const today = container?.querySelector<HTMLElement>(`[data-testid="${testId}"]`);
+        if (!container || !today) return false;
+        container.scrollTo?.({ left: Math.max(0, today.offsetLeft - 12), behavior: "auto" });
+        return true;
+      };
+      if (activeWorkView === "my" && !myMobilePositioned.current && positionToday(myDateColumnsRef.current, "today-completion-column")) {
+        myMobilePositioned.current = true;
+      }
+      if (activeWorkView === "ai" && !aiMobilePositioned.current && positionToday(aiDateColumnsRef.current, "today-execution-column")) {
+        aiMobilePositioned.current = true;
+      }
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [activeWorkView, aiWorkItems.length]);
+
+  const dailyBrief = workbench ? (
+        <DailyCoordinationBrief
+          copy={copy}
+          todayDueCount={todayDueCount}
+          actionCount={actionQueue.length}
+          aiMovingCount={aiMovingCount}
+          scheduleConflictCount={scheduleConflictCount}
+          firstAction={actionQueue[0] ?? null}
+          onStartFocus={startFocusSession}
+          onReviewPlan={reviewTodayPlan}
+        />
+      ) : null;
 
   return (
-    <div className="space-y-4" data-testid="daily-work-board">
-      <Card className="overflow-hidden border-border/80" data-testid="my-work-section">
+    <div className="min-w-0 space-y-4" data-testid="daily-work-board">
+      {dailyBriefContainer && dailyBrief ? createPortal(dailyBrief, dailyBriefContainer) : dailyBrief}
+      {actionQueueExpanded && actionQueue.length ? (
+        <TodayActionDrawer
+          items={filteredActionQueue}
+          totalItems={actionQueue.length}
+          counts={actionQueueCounts}
+          filter={actionQueueFilter}
+          copy={copy}
+          locale={locale}
+          onClose={() => setActionQueueExpanded(false)}
+          onFilterChange={setActionQueueFilter}
+          onOpenItem={(item) => onOpenItem(homeTaskWorkItem(item))}
+          onRunAction={runHomeAction}
+          onSchedule={(item) => onUpdatePlannedDate ? openScheduleDialog(item) : onOpenItem(homeTaskWorkItem(item))}
+        />
+      ) : null}
+      <Modal
+        open={rolloverPromptOpen}
+        onClose={dismissRolloverPrompt}
+        closeDisabled={rollingOver}
+        title={copy.rolloverPrompt.title}
+        description={copy.rolloverPrompt.description.replace("{{count}}", String(rolloverPromptItems.length))}
+        size="lg"
+      >
+        <div className="space-y-4" data-testid="rollover-prompt">
+          <div className="flex flex-wrap items-center gap-2 rounded-lg border border-primary/25 bg-primary/5 px-3.5 py-3 text-sm">
+            <Badge tone="warning">{formatDateOnly(rollover?.sourceDate, locale) ?? rollover?.sourceDate}</Badge>
+            <ArrowRight className="size-4 text-muted-foreground" aria-hidden />
+            <Badge tone="running">{formatDateOnly(rollover?.targetDate, locale) ?? rollover?.targetDate}</Badge>
+            <span className="text-muted-foreground">{copy.rolloverPrompt.plan}</span>
+          </div>
+
+          {rollover?.confirmationRequired.length ? (
+            <p className="text-xs text-warning">
+              {copy.rolloverPrompt.pinned.replace("{{count}}", String(rollover.confirmationRequired.length))}
+            </p>
+          ) : null}
+          {rollover?.unscheduled.length ? (
+            <p className="text-xs text-warning">
+              {copy.rolloverPrompt.unscheduled.replace("{{count}}", String(rollover.unscheduled.length))}
+            </p>
+          ) : null}
+
+          <div className="max-h-72 divide-y divide-border/70 overflow-y-auto rounded-lg border border-border/80">
+            {rolloverPromptItems.map((item) => (
+              <div key={item.workItemId} className="flex items-center gap-3 px-3.5 py-3">
+                <div className="min-w-0 flex-1">
+                  <p className="text-[11px] text-muted-foreground">{item.localRef}</p>
+                  <p className="mt-0.5 text-sm font-medium [overflow-wrap:anywhere]">{item.title}</p>
+                  <p className="mt-1 text-xs text-muted-foreground">
+                    {item.unscheduled
+                      ? (copy.scheduleReasons[item.reason ?? ""] ?? copy.rolloverPrompt.unavailable)
+                      : `${formatDateOnly(item.targetDate, locale) ?? item.targetDate}`}
+                  </p>
+                </div>
+                {item.pinned ? <Badge tone="warning">{copy.rolloverPrompt.pinnedLabel}</Badge> : null}
+                {item.unscheduled ? <Badge tone="neutral">{copy.rolloverPrompt.unavailable}</Badge> : null}
+                {!item.unscheduled && projectedWorkbenchItems.some((candidate) => candidate.workItemId === item.workItemId) ? (
+                  <Button size="sm" variant="ghost" onClick={() => openRolloverItem(item.workItemId)}>
+                    {copy.rolloverPrompt.open}
+                  </Button>
+                ) : null}
+              </div>
+            ))}
+          </div>
+
+          <div className="grid gap-2 sm:grid-cols-3">
+            <Button
+              className="w-full sm:col-span-2"
+              disabled={rollingOver || rolloverCount === 0}
+              onClick={() => void applyAllRollover()}
+            >
+              <RotateCcw aria-hidden />
+              {rollingOver ? copy.rollingOver : copy.rolloverPrompt.all}
+            </Button>
+            <Button variant="secondary" className="w-full" disabled={rollingOver} onClick={handleIndividualRollover}>
+              {copy.rolloverPrompt.individual}
+            </Button>
+          </div>
+          <Button variant="ghost" className="w-full" disabled={rollingOver} onClick={dismissRolloverPrompt}>
+            {copy.rolloverPrompt.later}
+          </Button>
+        </div>
+      </Modal>
+      <div className="flex w-full min-w-0 flex-wrap items-center gap-2" data-testid="work-view-tabs">
+        <div
+          className="inline-flex w-fit max-w-full items-center gap-1 rounded-lg border border-border/80 bg-muted/30 p-1"
+          role="tablist"
+          aria-label={`${copy.myWork} / ${copy.activeAi}`}
+        >
+          <button
+            type="button"
+            role="tab"
+            id="my-work-tab"
+            aria-selected={activeWorkView === "my"}
+            aria-controls="my-work-panel"
+            onClick={() => setActiveWorkView("my")}
+            className={cn(
+              "flex min-w-0 items-center justify-start gap-1.5 rounded-md px-2.5 py-1.5 text-sm transition-colors",
+              activeWorkView === "my"
+                ? "bg-background font-semibold text-foreground shadow-sm"
+                : "text-muted-foreground hover:bg-background/70 hover:text-foreground",
+            )}
+          >
+            <BriefcaseBusiness className="size-4" aria-hidden />
+            <span>{copy.myWork}</span>
+            <Badge tone="neutral">{workbench?.summary.total ?? plannedItems.length}</Badge>
+          </button>
+          <button
+            type="button"
+            role="tab"
+            id="ai-work-tab"
+            aria-selected={activeWorkView === "ai"}
+            aria-controls="ai-work-panel"
+            onClick={() => setActiveWorkView("ai")}
+            className={cn(
+              "flex min-w-0 items-center justify-start gap-1.5 rounded-md px-2.5 py-1.5 text-sm transition-colors",
+              activeWorkView === "ai"
+                ? "bg-background font-semibold text-foreground shadow-sm"
+                : "text-muted-foreground hover:bg-background/70 hover:text-foreground",
+            )}
+          >
+            <Bot className="size-4" aria-hidden />
+            <span>{copy.activeAi}</span>
+            <Badge tone={aiWorkItems.length ? "running" : "neutral"}>{aiWorkItems.length}</Badge>
+          </button>
+        </div>
+        {approvals.length ? (
+          <div
+            className="ml-auto flex min-w-0 max-w-full flex-1 items-center justify-end gap-2 overflow-x-auto"
+            aria-label={copy.approvals}
+            data-testid="ai-approval-cards"
+          >
+            {approvals.map((decision) => (
+              <button
+                key={decision.id}
+                type="button"
+                onClick={() => onOpenApproval?.(decision)}
+                className="flex min-w-0 max-w-64 shrink-0 items-center gap-2 rounded-lg border border-warning/40 bg-warning/5 px-2.5 py-1.5 text-left transition-colors hover:border-warning/70 hover:bg-warning/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-primary"
+                aria-label={`${copy.approvals}: ${decision.title}`}
+                data-testid="ai-approval-card"
+              >
+                <span className="grid size-7 shrink-0 place-items-center rounded-md bg-warning/15 text-warning">
+                  <AlertTriangle className="size-3.5" aria-hidden />
+                </span>
+                <span className="min-w-0">
+                  <span className="block truncate text-[11px] font-medium text-warning">{copy.approvals}</span>
+                  <span className="block truncate text-xs font-medium text-foreground">{decision.title}</span>
+                </span>
+                <ArrowRight className="size-3.5 shrink-0 text-muted-foreground" aria-hidden />
+              </button>
+            ))}
+          </div>
+        ) : null}
+      </div>
+
+      <div id="my-work-panel" role="tabpanel" aria-labelledby="my-work-tab" hidden={activeWorkView !== "my"}>
+      <Card className="min-w-0 overflow-hidden border-border/80" data-testid="my-work-section">
       <div className="flex flex-col gap-4 border-b border-border/80 px-5 py-4 xl:flex-row xl:items-center">
         <div className="flex min-w-0 items-center gap-3">
           <span className="grid size-10 shrink-0 place-items-center rounded-xl bg-primary/10 text-primary">
@@ -761,7 +1379,7 @@ export function DailyWorkBoard({
       <section className="border-b border-border/80 bg-muted/10 px-4 py-4" data-testid="my-work-status-cards">
           <div className="mb-3 flex items-center gap-2">
             <h3 className="text-sm font-semibold">{copy.peopleCategory}</h3>
-            <span className="text-xs text-muted-foreground">{copy.expectedCompletion} · {copy.yesterday} / {copy.today} / {copy.tomorrow}</span>
+            <span className="text-xs text-muted-foreground">{copy.expectedCompletion} · {copy.yesterday} / {copy.today} / {copy.tomorrow} / {copy.unscheduled}</span>
           </div>
           <div className="grid grid-cols-2 gap-2 md:grid-cols-3 xl:grid-cols-7">
             <WorkStatusFilterCard
@@ -794,9 +1412,22 @@ export function DailyWorkBoard({
           </div>
         </section>
 
-      <div className="grid grid-flow-col auto-cols-[88%] gap-3 overflow-x-auto p-3 pb-4 [scrollbar-width:thin] lg:grid-flow-row lg:auto-cols-auto lg:grid-cols-[minmax(0,0.9fr)_minmax(0,1.25fr)_minmax(0,0.9fr)] lg:overflow-visible">
+      {focusedIssue?.view === "my" ? (
+        <LocateContextBar copy={copy} originView={focusedIssue.originView} onReturn={returnFromLocate} />
+      ) : null}
+      <div className="flex items-center justify-end gap-1 px-4 pt-3 text-[11px] text-muted-foreground lg:hidden">
+        <span>{copy.columnSwipeHint}</span>
+        <ArrowRight className="size-3.5" aria-hidden />
+      </div>
+      <div
+        ref={myDateColumnsRef}
+        className="grid grid-flow-col auto-cols-[88%] gap-3 overflow-x-auto p-3 pb-4 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring [scrollbar-width:thin] lg:grid-flow-row lg:auto-cols-auto lg:grid-cols-4 lg:overflow-visible"
+        data-testid="my-date-columns"
+        aria-label={copy.columnSwipeHint}
+        tabIndex={0}
+      >
         <DayColumn
-          className="order-2 lg:order-1"
+          testId="yesterday-completion-column"
           title={copy.yesterday}
           subtitle={copy.review}
           date={formatDate(addDays(now, -1), locale)}
@@ -809,10 +1440,12 @@ export function DailyWorkBoard({
           onOpenItem={onOpenItem}
           onHomeAction={runHomeAction}
           onHomeReport={runHomeReport}
+          focusedWorkItemId={focusedIssue?.view === "my" ? focusedIssue.workItemId : null}
+          onLocateAi={(item) => locateIssue("ai", item.workItemId)}
         />
 
         <DayColumn
-          className="order-1 lg:order-2"
+          testId="today-completion-column"
           title={copy.today}
           subtitle={copy.focus}
           date={formatDate(now, locale)}
@@ -825,6 +1458,8 @@ export function DailyWorkBoard({
           onOpenItem={onOpenItem}
           onHomeAction={runHomeAction}
           onHomeReport={runHomeReport}
+          focusedWorkItemId={focusedIssue?.view === "my" ? focusedIssue.workItemId : null}
+          onLocateAi={(item) => locateIssue("ai", item.workItemId)}
           featured
           headerExtra={(
             <div className="mt-3">
@@ -840,7 +1475,7 @@ export function DailyWorkBoard({
         />
 
         <DayColumn
-          className="order-3"
+          testId="tomorrow-completion-column"
           title={copy.tomorrow}
           subtitle={copy.plan}
           date={formatDate(addDays(now, 1), locale)}
@@ -853,34 +1488,27 @@ export function DailyWorkBoard({
           onOpenItem={onOpenItem}
           onHomeAction={runHomeAction}
           onHomeReport={runHomeReport}
+          focusedWorkItemId={focusedIssue?.view === "my" ? focusedIssue.workItemId : null}
+          onLocateAi={(item) => locateIssue("ai", item.workItemId)}
+        />
+        <DayColumn
+          testId="other-completion-column"
+          title={copy.unscheduled}
+          subtitle={copy.unscheduledHint}
+          date=""
+          icon={CalendarDays}
+          items={model.unscheduled}
+          emptyTitle={copy.unscheduled}
+          emptyHint={copy.unscheduledHint}
+          copy={copy}
+          locale={locale}
+          onOpenItem={onOpenItem}
+          onHomeAction={runHomeAction}
+          onHomeReport={runHomeReport}
+          focusedWorkItemId={focusedIssue?.view === "my" ? focusedIssue.workItemId : null}
+          onLocateAi={(item) => locateIssue("ai", item.workItemId)}
         />
       </div>
-      {model.unscheduled.length > 0 ? (
-        <section className="border-t border-border/80 px-4 py-4" data-testid="unscheduled-work">
-          <div className="mb-3 flex flex-wrap items-start justify-between gap-2">
-            <div>
-              <div className="flex items-center gap-2">
-                <h3 className="text-sm font-semibold">{copy.unscheduled}</h3>
-                <Badge tone="warning">{model.unscheduled.length}</Badge>
-              </div>
-              <p className="mt-1 text-xs text-muted-foreground">{copy.unscheduledHint}</p>
-            </div>
-          </div>
-          <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-3">
-            {model.unscheduled.map((item) => (
-              <WorkCard
-                key={item.id}
-                item={item}
-                copy={copy}
-                locale={locale}
-                onOpen={() => onOpenItem(item)}
-                onAction={(item as DailyWorkItem).home ? () => runHomeAction((item as DailyWorkItem).home!) : undefined}
-                onReport={(item as DailyWorkItem).home ? () => runHomeReport((item as DailyWorkItem).home!) : undefined}
-              />
-            ))}
-          </div>
-        </section>
-      ) : null}
       {unassignedItems.length > 0 ? (
         <section className="border-t border-border/80 px-4 py-4" data-testid="unassigned-work">
           <div className="mb-3 flex flex-wrap items-start justify-between gap-2">
@@ -920,8 +1548,10 @@ export function DailyWorkBoard({
         </section>
       ) : null}
       </Card>
+      </div>
 
-      <Card className="overflow-hidden border-border/80" data-testid="ai-work-section">
+      <div id="ai-work-panel" role="tabpanel" aria-labelledby="ai-work-tab" hidden={activeWorkView !== "ai"}>
+      <Card className="min-w-0 overflow-hidden border-border/80" data-testid="ai-work-section">
         <div className="flex flex-col gap-3 border-b border-border/80 px-5 py-4 xl:flex-row xl:items-center">
           <div className="flex min-w-0 flex-1 items-center gap-3">
             <span className="grid size-10 shrink-0 place-items-center rounded-xl bg-primary/10 text-primary">
@@ -1042,79 +1672,238 @@ export function DailyWorkBoard({
         </section>
 
         <section className="px-4 py-4" data-testid="active-ai-work">
-          {filteredAiWorkItems.length ? (
-            <div className="space-y-3">
-              <div className="grid grid-flow-col auto-cols-[88%] gap-3 overflow-x-auto pb-1 [scrollbar-width:thin] lg:grid-flow-row lg:auto-cols-auto lg:grid-cols-3 lg:overflow-visible">
-                <AiDateColumn
-                  title={copy.yesterday}
-                  subtitle={copy.executionDate}
-                  date={formatDate(addDays(now, -1), locale)}
-                  items={aiDateGroups.yesterday}
-                  copy={copy}
-                  locale={locale}
-                  onOpenItem={onOpenItem}
-                  onAction={runHomeAction}
-                />
-                <AiDateColumn
-                  title={copy.today}
-                  subtitle={copy.executionDate}
-                  date={formatDate(now, locale)}
-                  items={aiDateGroups.today}
-                  copy={copy}
-                  locale={locale}
-                  onOpenItem={onOpenItem}
-                  onAction={runHomeAction}
-                  featured
-                />
-                <AiDateColumn
-                  title={copy.tomorrow}
-                  subtitle={copy.executionDate}
-                  date={formatDate(addDays(now, 1), locale)}
-                  items={aiDateGroups.tomorrow}
-                  copy={copy}
-                  locale={locale}
-                  onOpenItem={onOpenItem}
-                  onAction={runHomeAction}
-                />
-              </div>
-              {aiDateGroups.other.length ? (
-                <div className="rounded-xl border border-border bg-background/45 p-3.5">
-                  <div className="mb-3 flex items-center gap-2">
-                    <h3 className="text-sm font-semibold">{copy.otherDates}</h3>
-                    <Badge tone="neutral">{aiDateGroups.other.length}</Badge>
-                    <span className="text-xs text-muted-foreground">{copy.otherDatesHint}</span>
-                  </div>
-                  <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-3">
-                    {aiDateGroups.other.map((item) => (
-                      <AiWorkCard key={item.workItemId} item={item} copy={copy} locale={locale} onOpenItem={onOpenItem} onAction={runHomeAction} />
-                    ))}
-                  </div>
-                </div>
-              ) : null}
+          {focusedIssue?.view === "ai" ? (
+            <LocateContextBar copy={copy} originView={focusedIssue.originView} onReturn={returnFromLocate} />
+          ) : null}
+          <div className="space-y-3" data-testid="ai-execution-timeline">
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-xs font-semibold text-foreground">{copy.executionDate}</span>
+              <span className="text-[11px] text-muted-foreground">
+                {filteredAiWorkItems.length ? `${filteredAiWorkItems.length} · ${copy.allAiWork}` : copy.noAiWorkHint}
+              </span>
             </div>
-          ) : (
-            <div className="grid min-h-36 place-items-center rounded-xl border border-dashed border-border/80 bg-background/30 px-4 py-6 text-center">
-              <div>
-                <Bot className="mx-auto mb-2 size-6 text-muted-foreground" aria-hidden />
-                <p className="text-sm font-medium">{copy.noAiWork}</p>
-                <p className="mt-1 text-xs text-muted-foreground">{copy.noAiWorkHint}</p>
-              </div>
+            <div className="flex items-center justify-end gap-1 text-[11px] text-muted-foreground lg:hidden">
+              <span>{copy.columnSwipeHint}</span>
+              <ArrowRight className="size-3.5" aria-hidden />
             </div>
-          )}
+            <div
+              ref={aiDateColumnsRef}
+              className="grid grid-flow-col auto-cols-[88%] gap-3 overflow-x-auto pb-1 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring [scrollbar-width:thin] lg:grid-flow-row lg:auto-cols-auto lg:grid-cols-4 lg:overflow-visible"
+              data-testid="ai-date-columns"
+              aria-label={copy.columnSwipeHint}
+              tabIndex={0}
+            >
+              <AiDateColumn
+                testId="yesterday-execution-column"
+                title={copy.yesterday}
+                subtitle={copy.executionDate}
+                date={formatDate(addDays(now, -1), locale)}
+                items={aiDateGroups.yesterday}
+                copy={copy}
+                locale={locale}
+                onOpenItem={onOpenItem}
+                onAction={runHomeAction}
+                focusedWorkItemId={focusedIssue?.view === "ai" ? focusedIssue.workItemId : null}
+                onLocateMy={(item) => locateIssue("my", item.workItemId)}
+              />
+              <AiDateColumn
+                testId="today-execution-column"
+                title={copy.today}
+                subtitle={copy.executionDate}
+                date={formatDate(now, locale)}
+                items={aiDateGroups.today}
+                copy={copy}
+                locale={locale}
+                onOpenItem={onOpenItem}
+                onAction={runHomeAction}
+                focusedWorkItemId={focusedIssue?.view === "ai" ? focusedIssue.workItemId : null}
+                onLocateMy={(item) => locateIssue("my", item.workItemId)}
+                featured
+              />
+              <AiDateColumn
+                testId="tomorrow-execution-column"
+                title={copy.tomorrow}
+                subtitle={copy.executionDate}
+                date={formatDate(addDays(now, 1), locale)}
+                items={aiDateGroups.tomorrow}
+                copy={copy}
+                locale={locale}
+                onOpenItem={onOpenItem}
+                onAction={runHomeAction}
+                focusedWorkItemId={focusedIssue?.view === "ai" ? focusedIssue.workItemId : null}
+                onLocateMy={(item) => locateIssue("my", item.workItemId)}
+              />
+              <AiDateColumn
+                testId="other-execution-column"
+                title={copy.otherDates}
+                subtitle={copy.otherDatesHint}
+                date=""
+                items={aiDateGroups.other}
+                copy={copy}
+                locale={locale}
+                onOpenItem={onOpenItem}
+                onAction={runHomeAction}
+                focusedWorkItemId={focusedIssue?.view === "ai" ? focusedIssue.workItemId : null}
+                onLocateMy={(item) => locateIssue("my", item.workItemId)}
+              />
+            </div>
+          </div>
         </section>
       </Card>
+      </div>
 
-      <WorkItemProgressDialog
-        target={progressTarget}
-        open={Boolean(progressTarget)}
-        onClose={() => setProgressTarget(null)}
-        onSaved={async () => { await onProgressRecorded?.(); }}
-      />
+      <Modal
+        open={Boolean(focusedAction)}
+        onClose={() => {
+          setFocusTargetId(null);
+          onEndFocusSession?.();
+        }}
+        title={copy.focusMode.title}
+        description={copy.focusMode.position
+          .replace("{{current}}", String(focusedActionIndex + 1))
+          .replace("{{total}}", String(actionQueue.length))}
+        size="lg"
+      >
+        {focusedAction ? (
+          <div className="space-y-4" data-testid="focus-session">
+            <div className="rounded-xl border border-primary/25 bg-primary/5 p-5">
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="text-xs font-medium text-muted-foreground">{focusedAction.item.localRef}</span>
+                <StatusBadge tone={LOCAL_STATE_TONE[focusedAction.item.planningStatus]}>
+                  {copy.localState[focusedAction.item.planningStatus]}
+                </StatusBadge>
+                <StatusBadge tone={executionTone(focusedAction.item.executionState)}>
+                  {executionLabel(focusedAction.item, copy)}
+                </StatusBadge>
+              </div>
+              <h3 className="mt-3 text-xl font-semibold leading-snug [overflow-wrap:anywhere]">{focusedAction.item.title}</h3>
+              <p className={cn(
+                "mt-2 text-sm font-medium",
+                focusedAction.tone === "danger" && "text-destructive",
+                focusedAction.tone === "warning" && "text-warning",
+                focusedAction.tone === "running" && "text-primary",
+              )}>{focusedAction.reason}</p>
+            </div>
+
+            <div className="grid gap-3 sm:grid-cols-2">
+              {[
+                [copy.owner, focusedAction.item.assignees.length ? focusedAction.item.assignees.map((assignee) => assignee.name).join(", ") : copy.unassigned],
+                [copy.peopleCategory, `${copy.relation[focusedAction.item.requester.relation]}${focusedAction.item.requester.name ? ` · ${focusedAction.item.requester.name}` : ""}`],
+                [copy.waitingLabel, copy.waiting[focusedAction.item.waitingOn]],
+                [copy.aiLabel, focusedAction.item.ai?.agentName ?? focusedAction.item.ai?.agentId ?? copy.coordination.aiNotLinked],
+              ].map(([label, value]) => (
+                <div key={label} className="rounded-lg border border-border bg-muted/20 px-3.5 py-3">
+                  <p className="text-[11px] font-medium text-muted-foreground">{label}</p>
+                  <p className="mt-1 text-sm font-medium [overflow-wrap:anywhere]">{value}</p>
+                </div>
+              ))}
+            </div>
+
+            <div className="rounded-lg border border-border bg-muted/20 p-4">
+              <p className="text-xs font-semibold">{copy.focusMode.timeline}</p>
+              <div className="mt-3 grid gap-3 text-xs sm:grid-cols-2">
+                <div>
+                  <p className="text-muted-foreground">{copy.expectedCompletion}</p>
+                  <p className="mt-1 font-medium">{formatDateOnly(focusedAction.item.dueDate, locale) ?? copy.noExpectedCompletion}</p>
+                </div>
+                <div>
+                  <p className="text-muted-foreground">{copy.executionDate}</p>
+                  <p className="mt-1 font-medium">{formatDateOnly(focusedAction.item.plannedDate, locale) ?? copy.noExecutionDate}</p>
+                </div>
+                <div>
+                  <p className="text-muted-foreground">{copy.focusMode.commitmentDate}</p>
+                  <p className="mt-1 font-medium">{formatDateOnly(focusedAction.item.commitmentDate, locale) ?? copy.focusMode.noDate}</p>
+                </div>
+                <div>
+                  <p className="text-muted-foreground">{copy.focusMode.followUpDate}</p>
+                  <p className="mt-1 font-medium">{formatDateOnly(focusedAction.item.nextFollowUpAt, locale) ?? copy.focusMode.noDate}</p>
+                </div>
+              </div>
+            </div>
+
+            <div className="rounded-lg border border-border bg-muted/20 px-3.5 py-3">
+              <p className="text-xs font-medium">{copy.focusMode.expectedOutcome}</p>
+              <p className="mt-1 text-xs text-muted-foreground">
+                {focusedAction.action === "schedule" ? copy.focusMode.outcomeSchedule : copy.focusMode.outcomeNext}
+              </p>
+            </div>
+            <Button className="w-full" onClick={() => launchFocusAction(focusedAction)}>
+              {focusedAction.actionLabel}<ArrowRight aria-hidden />
+            </Button>
+            <div className="grid grid-cols-2 gap-2">
+              <Button
+                variant="secondary"
+                disabled={focusedActionIndex <= 0}
+                onClick={() => setFocusTargetId(actionQueue[focusedActionIndex - 1]?.item.workItemId ?? null)}
+              >
+                <ArrowLeft aria-hidden />{copy.focusMode.previous}
+              </Button>
+              <Button
+                variant="secondary"
+                disabled={focusedActionIndex >= actionQueue.length - 1}
+                onClick={() => setFocusTargetId(actionQueue[focusedActionIndex + 1]?.item.workItemId ?? null)}
+              >
+                {copy.focusMode.next}<ArrowRight aria-hidden />
+              </Button>
+            </div>
+            <Button
+              className="w-full"
+              variant="ghost"
+              onClick={() => {
+                setFocusTargetId(null);
+                onEndFocusSession?.();
+              }}
+            >
+              {copy.focusMode.exit}
+            </Button>
+          </div>
+        ) : null}
+      </Modal>
+
+      <Modal
+        open={Boolean(scheduleTarget)}
+        onClose={schedulePending ? () => undefined : () => setScheduleTarget(null)}
+        closeDisabled={schedulePending}
+        title={copy.actionQueue.scheduleTitle}
+        description={copy.actionQueue.scheduleHint}
+      >
+        <div className="space-y-4">
+          <div className="rounded-lg border border-border bg-muted/20 p-3">
+            <p className="text-xs text-muted-foreground">{scheduleTarget?.localRef}</p>
+            <p className="mt-0.5 text-sm font-medium">{scheduleTarget?.title}</p>
+            <p className="mt-2 text-xs text-muted-foreground">
+              {copy.expectedCompletion}：{formatDateOnly(scheduleTarget?.dueDate ?? null, locale) ?? copy.noExpectedCompletion}
+            </p>
+          </div>
+          <label className="block space-y-1.5 text-sm">
+            <span>{copy.executionDate}</span>
+            <Input
+              type="date"
+              aria-label={copy.executionDate}
+              value={scheduleDate}
+              min={currentDay}
+              disabled={schedulePending}
+              onChange={(event) => setScheduleDate(event.target.value)}
+            />
+          </label>
+          {scheduleError ? <p className="text-sm text-destructive" role="alert">{scheduleError}</p> : null}
+          <div className="flex flex-col-reverse gap-2 sm:flex-row sm:justify-end">
+            <Button variant="secondary" disabled={schedulePending} onClick={() => setScheduleTarget(null)}>
+              {copy.actionQueue.cancelSchedule}
+            </Button>
+            <Button className="w-full sm:w-auto" disabled={schedulePending || !scheduleDate} onClick={() => void saveSchedule()}>
+              {schedulePending ? copy.actionQueue.savingSchedule : copy.actionQueue.saveSchedule}
+            </Button>
+          </div>
+        </div>
+      </Modal>
+
     </div>
   );
 }
 
 function AiDateColumn({
+  testId,
   title,
   subtitle,
   date,
@@ -1123,8 +1912,11 @@ function AiDateColumn({
   locale,
   onOpenItem,
   onAction,
+  focusedWorkItemId,
+  onLocateMy,
   featured = false,
 }: {
+  testId?: string;
   title: string;
   subtitle: string;
   date: string;
@@ -1133,27 +1925,56 @@ function AiDateColumn({
   locale: string;
   onOpenItem: (item: WorkItem) => void;
   onAction: (item: HomeWorkbenchItem) => void;
+  focusedWorkItemId: string | null;
+  onLocateMy: (item: HomeWorkbenchItem) => void;
   featured?: boolean;
 }) {
+  const [expanded, setExpanded] = useState(false);
+  const revealFocused = Boolean(focusedWorkItemId && items.some((item) => item.workItemId === focusedWorkItemId));
+  const completedItems = items.filter((item) => item.executionState === "completed").slice(0, 2);
+  const scheduledItems = items
+    .filter((item) => item.executionState !== "completed")
+    .slice(0, Math.max(0, 2 - completedItems.length));
+  const visibleItems = expanded || revealFocused ? items : [...scheduledItems, ...completedItems];
+  const hiddenCount = Math.max(0, items.length - visibleItems.length);
   return (
     <section className={cn(
-      "min-h-56 snap-start rounded-xl border p-3.5",
+      "min-h-40 snap-start rounded-xl border p-3.5",
       featured ? "border-primary/35 bg-primary/[0.035]" : "border-border bg-background/45",
-    )}>
+    )} data-testid={testId}>
       <div className="flex items-center gap-2">
         <h3 className="font-semibold">{title}</h3>
         <Badge tone={featured ? "running" : "neutral"}>{items.length}</Badge>
-        <span className="ml-auto text-[11px] text-muted-foreground">{date}</span>
+        {date ? <span className="ml-auto text-[11px] text-muted-foreground">{date}</span> : null}
       </div>
       <p className="mt-0.5 text-xs text-muted-foreground">{subtitle}</p>
       <div className="mt-3 space-y-2">
-        {items.length ? items.map((item) => (
-          <AiWorkCard key={item.workItemId} item={item} copy={copy} locale={locale} onOpenItem={onOpenItem} onAction={onAction} />
+        {items.length ? visibleItems.map((item) => (
+          <AiWorkCard
+            key={item.workItemId}
+            item={item}
+            copy={copy}
+            locale={locale}
+            onOpenItem={onOpenItem}
+            onAction={onAction}
+            focused={focusedWorkItemId === item.workItemId}
+            onLocateMy={() => onLocateMy(item)}
+          />
         )) : (
-          <div className="grid min-h-32 place-items-center rounded-lg border border-dashed border-border/80 px-3 text-center text-xs text-muted-foreground">
+          <div className="grid min-h-20 place-items-center rounded-lg border border-dashed border-border/80 px-3 text-center text-xs text-muted-foreground">
             {copy.noAiWork}
           </div>
         )}
+        {items.length > 2 && !revealFocused ? (
+          <button
+            type="button"
+            aria-expanded={expanded}
+            onClick={() => setExpanded((value) => !value)}
+            className="w-full rounded px-2 py-2 text-center text-xs font-medium text-primary hover:bg-primary/5"
+          >
+            {expanded ? copy.less : copy.more.replace("{{count}}", String(hiddenCount))}
+          </button>
+        ) : null}
       </div>
     </section>
   );
@@ -1165,35 +1986,355 @@ function AiWorkCard({
   locale,
   onOpenItem,
   onAction,
+  focused,
+  onLocateMy,
 }: {
   item: HomeWorkbenchItem;
   copy: Copy;
   locale: string;
   onOpenItem: (item: WorkItem) => void;
   onAction: (item: HomeWorkbenchItem) => void;
+  focused: boolean;
+  onLocateMy: () => void;
 }) {
   const dueDate = formatDateOnly(item.dueDate, locale);
+  const completedDate = formatDateOnly(item.completedAt, locale);
   const executionDate = formatDateOnly(item.plannedDate, locale);
   return (
-    <div className="min-w-0 rounded-lg border border-border bg-card p-3 transition-colors hover:bg-muted/35">
-      <div className="flex flex-wrap items-center gap-1.5">
+    <div
+      className={cn(
+        "min-w-0 rounded-lg border border-border bg-card p-2.5 transition-all hover:bg-muted/35 focus:outline-none",
+        focused && "border-primary ring-2 ring-primary/35",
+      )}
+      data-work-item-id={item.workItemId}
+      data-work-view="ai"
+      tabIndex={-1}
+    >
+      <div className="flex flex-wrap items-center gap-1">
         <Badge tone="neutral">{copy.relation[item.requester.relation]}</Badge>
-        <StatusBadge tone={executionTone(item.executionState)}>{copy.execution[item.executionState]}</StatusBadge>
+        <StatusBadge tone={executionTone(item.executionState)}>{executionLabel(item, copy)}</StatusBadge>
       </div>
-      <button type="button" onClick={() => onOpenItem(homeTaskWorkItem(item))} className="mt-2 block w-full min-w-0 text-left">
+      <button type="button" onClick={() => onOpenItem(homeTaskWorkItem(item))} className="mt-1.5 block w-full min-w-0 text-left">
         <span className="block text-[11px] text-muted-foreground">{item.localRef}</span>
-        <strong className="mt-0.5 block line-clamp-2 text-sm [overflow-wrap:anywhere]">{item.title}</strong>
+        <strong className="mt-0.5 block line-clamp-2 text-[13px] [overflow-wrap:anywhere]">{item.title}</strong>
       </button>
-      <div className="mt-2 grid gap-0.5 text-[11px] text-muted-foreground">
+      <div className="mt-1.5 grid grid-cols-2 gap-x-3 gap-y-0.5 text-[10px] text-muted-foreground">
         <span>{copy.executionDate}：{executionDate ?? copy.noExecutionDate}</span>
-        <span>{copy.expectedCompletion}：{dueDate ?? copy.noExpectedCompletion}</span>
-        <span>{item.ai?.agentName ?? item.ai?.agentId ?? copy.aiLabel}</span>
+        {completedDate ? <span>{copy.completedOn}：{completedDate}</span> : <span>{copy.expectedCompletion}：{dueDate ?? copy.noExpectedCompletion}</span>}
+        <span className="col-span-2">{item.ai?.agentName ?? item.ai?.agentId ?? copy.aiLabel}</span>
       </div>
-      <div className="mt-2 flex justify-end border-t border-border/70 pt-2">
-        <Button size="sm" variant="secondary" onClick={() => onAction(item)}>
+      <WorkCoordinationNotice item={item} copy={copy} />
+      <div className="mt-1.5 flex flex-wrap items-center justify-end gap-1 border-t border-border/70 pt-1.5">
+        <Button size="sm" variant="primary" onClick={() => onAction(item)}>
           {copy.nextAction[item.nextAction.kind]}<ArrowRight aria-hidden />
         </Button>
+        <Button size="sm" variant="ghost" onClick={onLocateMy}>{copy.coordination.locateMy}</Button>
       </div>
+    </div>
+  );
+}
+
+type CoordinationKind = "late_execution" | "unscheduled" | "review_pending";
+
+function coordinationNotice(item: HomeWorkbenchItem, copy: Copy): { kind: CoordinationKind; label: string; tone: "danger" | "warning" | "running" } | null {
+  if (item.dueDate && item.plannedDate && item.plannedDate > item.dueDate) {
+    return { kind: "late_execution", label: copy.coordination.executionAfterCompletion, tone: "danger" };
+  }
+  if (item.ai && !item.plannedDate) {
+    return { kind: "unscheduled", label: copy.coordination.aiUnscheduled, tone: "warning" };
+  }
+  if (item.executionState === "completed" && item.planningStatus !== "done") {
+    return { kind: "review_pending", label: copy.coordination.reviewPending, tone: "running" };
+  }
+  return null;
+}
+
+function WorkCoordinationNotice({ item, copy }: { item: HomeWorkbenchItem; copy: Copy }) {
+  const notice = coordinationNotice(item, copy);
+  if (!notice) return null;
+  return (
+    <p
+      className={cn(
+        "mt-1 text-[10px] font-medium",
+        notice.tone === "danger" && "text-destructive",
+        notice.tone === "warning" && "text-warning",
+        notice.tone === "running" && "text-primary",
+      )}
+      data-testid={`work-coordination-${item.workItemId}`}
+    >
+      {notice.label}
+    </p>
+  );
+}
+
+type ActionQueueItem = {
+  item: HomeWorkbenchItem;
+  reason: string;
+  tone: "danger" | "warning" | "running";
+  action: "next" | "schedule";
+  actionLabel: string;
+  rank: number;
+};
+
+function buildActionQueue(items: HomeWorkbenchItem[], copy: Copy): ActionQueueItem[] {
+  return items.flatMap((item): ActionQueueItem[] => {
+    const attention = item.attentionReason;
+    if (attention === "ai_failed") {
+      return [{ item, reason: copy.attentionReason.ai_failed, tone: "danger", action: "next", actionLabel: copy.nextAction[item.nextAction.kind], rank: 0 }];
+    }
+    if (attention === "approval_required") {
+      return [{ item, reason: copy.attentionReason.approval_required, tone: "warning", action: "next", actionLabel: copy.nextAction[item.nextAction.kind], rank: 1 }];
+    }
+    if (attention === "review_ready" || (item.executionState === "completed" && item.planningStatus !== "done")) {
+      return [{ item, reason: copy.coordination.reviewPending, tone: "running", action: "next", actionLabel: copy.nextAction[item.nextAction.kind], rank: 2 }];
+    }
+    if (attention === "overdue") {
+      return [{ item, reason: copy.attentionReason.overdue, tone: "danger", action: "next", actionLabel: copy.nextAction[item.nextAction.kind], rank: 3 }];
+    }
+    if (attention === "follow_up_due" || attention === "waiting_requester" || attention === "waiting_internal") {
+      return [{ item, reason: copy.attentionReason[attention], tone: "warning", action: "next", actionLabel: copy.nextAction[item.nextAction.kind], rank: 4 }];
+    }
+    const coordination = coordinationNotice(item, copy);
+    if (coordination?.kind === "late_execution") {
+      return [{ item, reason: coordination.label, tone: "danger", action: "schedule", actionLabel: copy.actionQueue.adjustExecution, rank: 5 }];
+    }
+    if (coordination?.kind === "unscheduled") {
+      return [{ item, reason: coordination.label, tone: "warning", action: "schedule", actionLabel: copy.actionQueue.scheduleAi, rank: 6 }];
+    }
+    return [];
+  }).sort((left, right) => left.rank - right.rank
+    || String(left.item.dueDate ?? "9999-12-31").localeCompare(String(right.item.dueDate ?? "9999-12-31"))
+    || left.item.workItemId.localeCompare(right.item.workItemId));
+}
+
+function DailyCoordinationBrief({
+  copy,
+  todayDueCount,
+  actionCount,
+  aiMovingCount,
+  scheduleConflictCount,
+  firstAction,
+  onStartFocus,
+  onReviewPlan,
+}: {
+  copy: Copy;
+  todayDueCount: number;
+  actionCount: number;
+  aiMovingCount: number;
+  scheduleConflictCount: number;
+  firstAction: ActionQueueItem | null;
+  onStartFocus: () => void;
+  onReviewPlan: () => void;
+}) {
+  const summary = copy.dailyBrief.summary
+    .replace("{{due}}", String(todayDueCount))
+    .replace("{{actions}}", String(actionCount))
+    .replace("{{ai}}", String(aiMovingCount));
+  const conflict = copy.dailyBrief.conflict.replace("{{count}}", String(scheduleConflictCount));
+  return (
+    <Card className="h-full min-w-0 overflow-hidden border-primary/30 bg-gradient-to-br from-primary/[0.08] via-card to-card" data-testid="daily-coordination-brief">
+      <div className="flex h-full flex-col gap-4 p-5">
+        <div className="flex items-start gap-3">
+          <span className="grid size-10 shrink-0 place-items-center rounded-xl bg-primary text-primary-foreground shadow-sm">
+            <Sparkles className="size-5" aria-hidden />
+          </span>
+          <div className="min-w-0 flex-1">
+            <div className="flex flex-wrap items-center gap-2">
+              <h2 className="text-base font-semibold">{copy.dailyBrief.title}</h2>
+              {actionCount ? <Badge tone="warning">{actionCount}</Badge> : <Badge tone="success">✓</Badge>}
+            </div>
+            <p className="mt-1 text-sm leading-relaxed text-foreground/90">{summary}</p>
+            {scheduleConflictCount ? <p className="mt-1 text-xs font-medium text-warning">{conflict}</p> : null}
+          </div>
+        </div>
+
+        <div className="grid grid-cols-3 gap-2" data-testid="daily-brief-metrics">
+          {[
+            [todayDueCount, copy.dailyBrief.due, "text-foreground"],
+            [actionCount, copy.dailyBrief.actions, actionCount ? "text-warning" : "text-foreground"],
+            [aiMovingCount, copy.dailyBrief.aiMoving, aiMovingCount ? "text-primary" : "text-foreground"],
+          ].map(([value, label, tone]) => (
+            <div key={String(label)} className="rounded-lg border border-border/70 bg-background/45 px-3 py-2">
+              <p className={cn("text-lg font-semibold tabular-nums", tone)}>{value}</p>
+              <p className="mt-0.5 truncate text-[11px] text-muted-foreground">{label}</p>
+            </div>
+          ))}
+        </div>
+
+        <div className="mt-auto">
+          {firstAction ? (
+            <div className="rounded-lg border border-border/80 bg-background/55 px-3 py-2.5">
+              <p className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">{copy.dailyBrief.nextUp}</p>
+              <p className="mt-1 text-sm font-medium [overflow-wrap:anywhere]">{firstAction.item.localRef} · {firstAction.item.title}</p>
+              <p className="mt-0.5 text-xs text-muted-foreground">{firstAction.reason}</p>
+            </div>
+          ) : <p className="text-sm text-muted-foreground">{copy.dailyBrief.allClear}</p>}
+          {firstAction ? (
+            <div className="mt-3 grid gap-2 sm:flex sm:flex-wrap">
+              <Button className="w-full sm:w-auto" onClick={onStartFocus}>
+                {copy.dailyBrief.startFocus}<ArrowRight aria-hidden />
+              </Button>
+              <Button className="w-full sm:w-auto" variant="secondary" onClick={onReviewPlan}>
+                <ListChecks aria-hidden />{copy.dailyBrief.reviewPlan}
+              </Button>
+            </div>
+          ) : null}
+        </div>
+      </div>
+    </Card>
+  );
+}
+
+function TodayActionDrawer({
+  items,
+  totalItems,
+  counts,
+  filter,
+  copy,
+  locale,
+  onClose,
+  onFilterChange,
+  onOpenItem,
+  onRunAction,
+  onSchedule,
+}: {
+  items: ActionQueueItem[];
+  totalItems: number;
+  counts: Record<ActionQueueFilter, number>;
+  filter: ActionQueueFilter;
+  copy: Copy;
+  locale: string;
+  onClose: () => void;
+  onFilterChange: (filter: ActionQueueFilter) => void;
+  onOpenItem: (item: HomeWorkbenchItem) => void;
+  onRunAction: (item: HomeWorkbenchItem) => void;
+  onSchedule: (item: HomeWorkbenchItem) => void;
+}) {
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") onClose();
+    };
+    document.body.style.overflow = "hidden";
+    window.addEventListener("keydown", onKey);
+    return () => {
+      document.body.style.overflow = "";
+      window.removeEventListener("keydown", onKey);
+    };
+  }, [onClose]);
+
+  const filters: Array<[ActionQueueFilter, string, number]> = [
+    ["all", copy.actionQueue.all, counts.all],
+    ["danger", copy.actionQueue.urgent, counts.danger],
+    ["warning", copy.actionQueue.pending, counts.warning],
+    ["running", copy.actionQueue.review, counts.running],
+  ];
+
+  return createPortal(
+    <div className="fixed inset-0 z-40" data-testid="unified-action-queue">
+      <button
+        type="button"
+        aria-label={copy.less}
+        className="absolute inset-0 bg-black/50 backdrop-blur-[1px]"
+        onClick={onClose}
+      />
+      <aside
+        role="dialog"
+        aria-modal="true"
+        aria-label={copy.actionQueue.title}
+        className="absolute right-0 top-0 flex h-full w-full max-w-xl flex-col border-l border-border bg-card shadow-2xl"
+      >
+        <div className="border-b border-border/80 px-5 pb-4 pt-5 sm:px-6">
+          <div className="flex items-start gap-3">
+            <span className="grid size-9 shrink-0 place-items-center rounded-lg bg-primary/10 text-primary">
+              <ListChecks className="size-4" aria-hidden />
+            </span>
+            <div className="min-w-0 flex-1">
+              <div className="flex items-center gap-2">
+                <h2 className="font-semibold">{copy.actionQueue.title}</h2>
+                <Badge tone="warning">{totalItems}</Badge>
+              </div>
+              <p className="mt-0.5 text-xs leading-relaxed text-muted-foreground">{copy.actionQueue.hint}</p>
+            </div>
+            <button type="button" onClick={onClose} aria-label={copy.less} className="grid size-8 shrink-0 place-items-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground">
+              <X className="size-4" aria-hidden />
+            </button>
+          </div>
+          <div className="mt-4 flex gap-1 overflow-x-auto rounded-lg border border-border/70 bg-muted/30 p-1" role="tablist" aria-label={copy.actionQueue.title}>
+            {filters.map(([value, label, count]) => (
+              <button
+                key={value}
+                type="button"
+                role="tab"
+                aria-selected={filter === value}
+                onClick={() => onFilterChange(value)}
+                className={cn(
+                  "shrink-0 rounded-md px-3 py-1.5 text-xs transition-colors",
+                  filter === value ? "bg-background font-semibold text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground",
+                )}
+              >
+                {label}<span className="ml-1.5 tabular-nums">{count}</span>
+              </button>
+            ))}
+          </div>
+        </div>
+        <div className="min-h-0 flex-1 overflow-y-auto divide-y divide-border/70">
+          {items.length ? items.map(({ item, reason, tone, action, actionLabel }) => {
+            const dueDate = formatDateOnly(item.dueDate, locale) ?? copy.noExpectedCompletion;
+            const executionDate = formatDateOnly(item.plannedDate, locale) ?? copy.noExecutionDate;
+            return (
+              <div key={item.workItemId} className="flex flex-col gap-3 px-5 py-4 sm:px-6" data-testid={`action-queue-${item.workItemId}`}>
+                <button type="button" onClick={() => onOpenItem(item)} className="min-w-0 text-left">
+                  <span className="block text-[11px] text-muted-foreground">{item.localRef}</span>
+                  <span className="mt-0.5 block text-sm font-medium [overflow-wrap:anywhere]">{item.title}</span>
+                  <span className={cn(
+                    "mt-1 block text-xs font-medium",
+                    tone === "danger" && "text-destructive",
+                    tone === "warning" && "text-warning",
+                    tone === "running" && "text-primary",
+                  )}>{reason}</span>
+                </button>
+                <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+                  <span className="text-[11px] text-muted-foreground">
+                    {copy.expectedCompletion} {dueDate} → {copy.executionDate} {executionDate}
+                  </span>
+                  <Button className="w-full sm:w-auto" size="sm" variant={tone === "danger" ? "primary" : "secondary"} onClick={() => action === "schedule" ? onSchedule(item) : onRunAction(item)}>
+                    {actionLabel}<ArrowRight aria-hidden />
+                  </Button>
+                </div>
+              </div>
+            );
+          }) : (
+            <div className="px-6 py-12 text-center text-sm text-muted-foreground">
+              {copy.dailyBrief.allClear}
+            </div>
+          )}
+        </div>
+      </aside>
+    </div>,
+    document.body,
+  );
+}
+
+function LocateContextBar({
+  copy,
+  originView,
+  onReturn,
+}: {
+  copy: Copy;
+  originView: WorkView;
+  onReturn: () => void;
+}) {
+  return (
+    <div
+      className="mb-3 flex flex-col gap-2 rounded-lg border border-primary/25 bg-primary/5 px-3 py-2.5 sm:flex-row sm:items-center sm:justify-between"
+      role="status"
+      data-testid="cross-board-location"
+    >
+      <span className="text-xs text-foreground">{copy.coordination.located}</span>
+      <Button size="sm" variant="ghost" className="w-full sm:w-auto" onClick={onReturn}>
+        <ArrowLeft aria-hidden />
+        {originView === "my" ? copy.coordination.backToMy : copy.coordination.backToAi}
+      </Button>
     </div>
   );
 }
@@ -1275,6 +2416,7 @@ function WorkStatusFilterCard({
 
 function DayColumn({
   className,
+  testId,
   title,
   subtitle,
   date,
@@ -1287,11 +2429,14 @@ function DayColumn({
   onOpenItem,
   onHomeAction,
   onHomeReport,
+  focusedWorkItemId,
+  onLocateAi,
   featured = false,
   headerExtra,
   action,
 }: {
   className?: string;
+  testId?: string;
   title: string;
   subtitle: string;
   date: string;
@@ -1304,6 +2449,8 @@ function DayColumn({
   onOpenItem: (item: WorkItem) => void;
   onHomeAction: (item: HomeWorkbenchItem) => void;
   onHomeReport: (item: HomeWorkbenchItem) => void;
+  focusedWorkItemId: string | null;
+  onLocateAi: (item: HomeWorkbenchItem) => void;
   featured?: boolean;
   headerExtra?: React.ReactNode;
   action?: React.ReactNode;
@@ -1321,7 +2468,7 @@ function DayColumn({
         ? "border-primary/35 bg-primary/[0.035] shadow-[0_0_0_1px_hsl(var(--primary)/0.04)]"
         : "border-border bg-background/45",
       className,
-    )}>
+    )} data-testid={testId}>
       <div className="flex items-start gap-2.5">
         <span className={cn(
           "mt-0.5 grid size-8 shrink-0 place-items-center rounded-lg",
@@ -1333,7 +2480,7 @@ function DayColumn({
           <div className="flex items-center gap-2">
             <h3 className="font-semibold">{title}</h3>
             <Badge tone={featured ? "running" : "neutral"}>{items.length}</Badge>
-            <span className="ml-auto text-[11px] text-muted-foreground">{date}</span>
+            {date ? <span className="ml-auto text-[11px] text-muted-foreground">{date}</span> : null}
           </div>
           <p className="mt-0.5 text-xs text-muted-foreground">{subtitle}</p>
           {headerExtra}
@@ -1343,6 +2490,7 @@ function DayColumn({
       <div className="mt-3 flex flex-1 flex-col gap-2">
         {items.length ? groups.map((group) => {
           const expanded = expandedGroups.includes(group.key);
+          const revealFocused = Boolean(focusedWorkItemId && group.items.some((item) => (item as DailyWorkItem).home?.workItemId === focusedWorkItemId));
           const hiddenCount = Math.max(0, group.items.length - perGroupLimit);
           return (
             <div key={group.key} className="space-y-1.5" data-testid={`daily-state-group-${group.key}`}>
@@ -1351,7 +2499,7 @@ function DayColumn({
                 <span className="h-px flex-1 bg-border/70" aria-hidden />
                 <span className="tabular-nums">{group.items.length}</span>
               </div>
-              {group.items.slice(0, expanded ? undefined : perGroupLimit).map((item) => (
+              {group.items.slice(0, expanded || revealFocused ? undefined : perGroupLimit).map((item) => (
                 <WorkCard
                   key={item.id}
                   item={item}
@@ -1360,9 +2508,11 @@ function DayColumn({
                   onOpen={() => onOpenItem(item)}
                   onAction={item.home ? () => onHomeAction(item.home!) : undefined}
                   onReport={item.home ? () => onHomeReport(item.home!) : undefined}
+                  focused={Boolean(item.home && focusedWorkItemId === item.home.workItemId)}
+                  onLocateAi={item.home && (item.home.ai || item.home.plannedDate) ? () => onLocateAi(item.home!) : undefined}
                 />
               ))}
-              {hiddenCount > 0 ? (
+              {hiddenCount > 0 && !revealFocused ? (
                 <button
                   type="button"
                   aria-expanded={expanded}
@@ -1401,6 +2551,8 @@ function WorkCard({
   onOpen,
   onAction,
   onReport,
+  focused,
+  onLocateAi,
 }: {
   item: DailyWorkItem;
   copy: Copy;
@@ -1408,6 +2560,8 @@ function WorkCard({
   onOpen: () => void;
   onAction?: () => void;
   onReport?: () => void;
+  focused: boolean;
+  onLocateAi?: () => void;
 }) {
   const time = relativeTime(item.updatedAt, locale);
   const scheduleReason = item.scheduleReason ? copy.scheduleReasons[item.scheduleReason] ?? item.scheduleReason : null;
@@ -1423,14 +2577,20 @@ function WorkCard({
     ? `${copy.relation[home.requester.relation]}${home.requester.name ? ` · ${home.requester.name}` : ""}`
     : copy.relation[item.requesterRelation ?? "unknown"];
   const dueDate = formatDateOnly(item.dueDate ?? home?.dueDate, locale);
+  const completedDate = formatDateOnly(home?.completedAt ?? null, locale);
+  const executionDate = formatDateOnly(home?.plannedDate, locale);
   return (
     <div
       className={cn(
-        "group w-full rounded-lg border border-border border-l-2 bg-card px-3 py-2.5 text-left transition-colors hover:bg-muted/45",
+        "group w-full rounded-lg border border-border border-l-2 bg-card px-2.5 py-2 text-left transition-colors hover:bg-muted/45",
         STATE_ACCENT[item.state],
+        focused && "ring-2 ring-primary/35",
       )}
+      data-work-item-id={home?.workItemId ?? item.targetId}
+      data-work-view="my"
+      tabIndex={-1}
     >
-      <span className="mb-1.5 flex flex-wrap items-center gap-1.5">
+      <span className="mb-1 flex flex-wrap items-center gap-1">
           <Badge tone="neutral" className="max-w-full whitespace-normal [overflow-wrap:anywhere]">{requester}</Badge>
           {home ? (
             <>
@@ -1442,7 +2602,7 @@ function WorkCard({
       <button type="button" onClick={onOpen} className="flex w-full min-w-0 items-start gap-2 text-left">
         <Icon className="mt-0.5 size-4 shrink-0 text-muted-foreground" aria-hidden />
         <span className="min-w-0 flex-1">
-          <span className="line-clamp-2 text-sm font-medium [overflow-wrap:anywhere]">{item.title}</span>
+          <span className="line-clamp-2 text-[13px] font-medium [overflow-wrap:anywhere]">{item.title}</span>
           {scheduleReason || item.subtitle || item.reason ? (
             <span className="mt-0.5 block truncate text-xs text-muted-foreground">{scheduleReason ?? item.reason ?? item.subtitle}</span>
           ) : null}
@@ -1450,46 +2610,44 @@ function WorkCard({
         <ArrowRight className="mt-0.5 size-3.5 shrink-0 text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100" aria-hidden />
       </button>
       {home ? (
-        <div className="mt-2 grid gap-0.5 text-[11px] text-muted-foreground">
-          <span>{copy.expectedCompletion}：{dueDate ?? copy.noExpectedCompletion}</span>
+        <div className="mt-1.5 grid grid-cols-2 gap-x-3 gap-y-0.5 text-[10px] text-muted-foreground">
+          {completedDate ? <span>{copy.completedOn}：{completedDate}</span> : <span>{copy.expectedCompletion}：{dueDate ?? copy.noExpectedCompletion}</span>}
+          <span>
+            {copy.aiLabel}：{home.ai || home.plannedDate
+              ? `${executionDate ?? copy.noExecutionDate} · ${executionLabel(home, copy)}`
+              : copy.coordination.aiNotLinked}
+          </span>
           <span>{copy.owner}：{home.assignees.map((assignee) => assignee.name).join(", ") || "—"}</span>
           <span>{copy.waitingLabel}：{copy.waiting[home.waitingOn]}</span>
           {home.report ? (
-            <span className={home.report.stale ? "text-warning" : ""}>
+            <span className={cn("col-span-2", home.report.stale ? "text-warning" : "")}>
               {home.report.stale ? copy.report.stale : copy.report[home.report.status]}
             </span>
           ) : null}
+          <WorkCoordinationNotice item={home} copy={copy} />
         </div>
-      ) : <div className="mt-2 text-[11px] text-muted-foreground">{copy.expectedCompletion}：{dueDate ?? copy.noExpectedCompletion}</div>}
-      <span className="mt-2 flex items-center justify-between gap-2">
-        <StatusBadge tone={displayStateTone(item)}>{displayStateLabel(item, copy)}</StatusBadge>
-        <span className="flex items-center gap-2">
+      ) : <div className="mt-1.5 text-[10px] text-muted-foreground">{completedDate ? `${copy.completedOn}：${completedDate}` : `${copy.expectedCompletion}：${dueDate ?? copy.noExpectedCompletion}`}</div>}
+      <div className="mt-1.5 space-y-1.5 border-t border-border/70 pt-1.5">
+        <div className="flex items-center justify-between gap-2">
+          <StatusBadge tone={displayStateTone(item)}>{displayStateLabel(item, copy)}</StatusBadge>
           {time ? <span className="text-[11px] text-muted-foreground">{time}</span> : null}
+        </div>
+        <div className="flex flex-wrap items-center justify-end gap-1">
           {home && onAction ? (
-            <Button size="sm" variant="secondary" onClick={onAction}>{copy.nextAction[home.nextAction.kind]}</Button>
+            <Button size="sm" variant="primary" onClick={onAction}>{copy.nextAction[home.nextAction.kind]}</Button>
           ) : null}
-          {home && onReport ? (
-            <Button size="sm" variant="ghost" onClick={onReport}>{home.report ? copy.report.review : copy.report.prepare}</Button>
-          ) : null}
-        </span>
-      </span>
+          <div className="flex flex-wrap items-center gap-1">
+            {onLocateAi ? (
+              <Button size="sm" variant="ghost" onClick={onLocateAi}>{copy.coordination.locateAi}</Button>
+            ) : null}
+            {home && onReport ? (
+              <Button size="sm" variant="ghost" onClick={onReport}>{home.report ? copy.report.review : copy.report.prepare}</Button>
+            ) : null}
+          </div>
+        </div>
+      </div>
     </div>
   );
-}
-
-function homeActionWorkItem(item: HomeWorkbenchItem): WorkItem {
-  return {
-    id: `home:${item.workItemId}:${item.nextAction.kind}`,
-    state: item.executionState === "failed"
-      ? "failed"
-      : item.executionState === "running" ? "in_progress" : item.needsAttention ? "follow_up" : "waiting",
-    kind: `home_${item.nextAction.kind}`,
-    title: item.title,
-    section: item.nextAction.section,
-    targetId: item.nextAction.targetId,
-    projectId: item.projectId,
-    updatedAt: item.ai?.updatedAt ?? null,
-  };
 }
 
 function homeTaskWorkItem(item: HomeWorkbenchItem): WorkItem {

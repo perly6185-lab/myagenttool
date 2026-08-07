@@ -280,6 +280,14 @@ if (typeof httpDependencies.sweepExpiredClaims === "function") {
   setInterval(sweepClaims, 60_000).unref?.();
 }
 
+if (typeof httpDependencies.sweepTaskMaterialDrafts === "function") {
+  const sweepTaskMaterials = () => {
+    try { httpDependencies.sweepTaskMaterialDrafts(); } catch { /* best-effort bounded cleanup */ }
+  };
+  sweepTaskMaterials();
+  setInterval(sweepTaskMaterials, 60_000).unref?.();
+}
+
 // O5.2 follow-up: close the SLO → alert loop. Evaluate the loop's SLOs on a slow
 // tick and dispatch an operational alert when the below-target set changes
 // (throttled internally; no-op when SLOs are on target or there is no data).

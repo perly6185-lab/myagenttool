@@ -127,11 +127,21 @@ test("home workbench sorts severely overdue work before approvals and failures",
   assert.deepEqual(result.items.map((row) => row.workItemId), ["old-overdue", "recent-overdue", "approval", "failed"]);
 });
 
-test("home workbench excludes completed, closed, and archived work", () => {
+test("home workbench keeps recent completed work visible but excludes archived work", () => {
   const result = model([
     item({ id: "done", status: "done" }),
     item({ id: "closed", state: "closed" }),
     item({ id: "archived", archivedAt: NOW }),
   ]);
+  assert.equal(result.summary.total, 2);
+  assert.deepEqual(result.items.map((row) => row.workItemId), ["closed", "done"]);
+  assert.equal(result.items[0].planningStatus, "done");
+  assert.equal(result.items[0].executionState, "completed");
+  assert.equal(result.items[0].waitingOn, "none");
+  assert.equal(result.items[0].completedAt, NOW);
+});
+
+test("home workbench drops completed work outside the recent visibility window", () => {
+  const result = model([item({ id: "old", state: "closed", updatedAt: "2026-06-01T04:00:00.000Z" })]);
   assert.equal(result.summary.total, 0);
 });

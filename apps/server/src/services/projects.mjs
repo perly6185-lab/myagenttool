@@ -44,6 +44,7 @@ export function createProjectRecord(
     defaultAgentId,
     status,
     isolation,
+    externalIssuePolicy,
   } = {},
   { nextId, now = defaultNow } = {}
 ) {
@@ -58,6 +59,7 @@ export function createProjectRecord(
     defaultAgentId: defaultAgentId ? String(defaultAgentId) : null,
     status: status === "archived" ? "archived" : "active",
     isolation: isolation === "worktree" ? "worktree" : "shared",
+    externalIssuePolicy: normalizeExternalIssuePolicy(externalIssuePolicy),
     path: projectPath,
     host,
     git: {
@@ -381,6 +383,7 @@ export function createProjectService({ state, now, nextId, appendEvent, persistS
       defaultAgentId: body.agentId ?? sourceProject.defaultAgentId,
       status: sourceProject.status,
       isolation: sourceProject.isolation,
+      externalIssuePolicy: sourceProject.externalIssuePolicy,
       worktree: {
         id: worktree.id,
         sourceProjectId: sourceProject.id,
@@ -429,6 +432,9 @@ export function createProjectService({ state, now, nextId, appendEvent, persistS
     // resolution time; blank clears the selection.
     if (body.verifyCommandName !== undefined) {
       project.verifyCommandName = body.verifyCommandName ? String(body.verifyCommandName).trim() || null : null;
+    }
+    if (body.externalIssuePolicy !== undefined) {
+      project.externalIssuePolicy = normalizeExternalIssuePolicy(body.externalIssuePolicy, project.externalIssuePolicy);
     }
     project.updatedAt = now();
     ensureProjectTarget(project);
@@ -965,6 +971,17 @@ export function createProjectService({ state, now, nextId, appendEvent, persistS
     state.projectTargets.unshift(target);
     return target;
   }
+}
+
+export function normalizeExternalIssuePolicy(value = {}, fallback = {}) {
+  const source = value && typeof value === "object" ? value : {};
+  const previous = fallback && typeof fallback === "object" ? fallback : {};
+  return {
+    intakeEnabled: source.intakeEnabled === undefined ? previous.intakeEnabled !== false : source.intakeEnabled !== false,
+    writebackEnabled: source.writebackEnabled === undefined ? previous.writebackEnabled !== false : source.writebackEnabled !== false,
+    autoExecutionEnabled: source.autoExecutionEnabled === undefined ? previous.autoExecutionEnabled === true : source.autoExecutionEnabled === true,
+    emergencyStop: source.emergencyStop === undefined ? previous.emergencyStop === true : source.emergencyStop === true,
+  };
 }
 
 export function normalizeProjectPath(value) {

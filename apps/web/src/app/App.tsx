@@ -3,8 +3,9 @@ import { Topbar } from "@/components/layout/topbar";
 import { Inspector } from "@/components/layout/inspector";
 import { CommandPalette } from "@/components/layout/command-palette";
 import { ErrorBoundary } from "@/components/common/error-boundary";
-import { Suspense, useState } from "react";
+import { lazy, Suspense, useState } from "react";
 import { SECTION_VIEWS } from "@/app/routes";
+import { pageRegistration } from "@/app/sections";
 import { useUrlNavigationSync } from "@/app/url-navigation-sync";
 import { useSkinSync } from "@/app/use-skin-sync";
 import { useLocaleSync } from "@/app/use-locale-sync";
@@ -13,6 +14,8 @@ import { useAppTranslation } from "@/lib/i18n/use-app-translation";
 import { useControlPlaneEvents } from "@/app/use-control-plane-events";
 import { ContextNavigation } from "@/components/layout/context-navigation";
 import { MobileBottomNavigation } from "@/components/layout/mobile-bottom-navigation";
+
+const WorkItemDetailShell = lazy(() => import("@/features/tasks/work-item-detail-shell"));
 
 /**
  * Three-pane control-plane shell: nav rail (domains) · main outlet (active
@@ -32,6 +35,15 @@ export function App() {
   return (
     <div className="flex h-full overflow-hidden">
       <CommandPalette />
+      {/* Keep the selected Local Issue open on ordinary entry surfaces. When
+          navigating into Trace/Settings, unmount the modal so the contextual
+          return control remains clickable; the selection stays in the store
+          and is restored when the operator returns to Tasks. */}
+      {pageRegistration(section).surface === "entry" && section !== "task" ? (
+        <Suspense fallback={null}>
+          <WorkItemDetailShell />
+        </Suspense>
+      ) : null}
       <NavRail />
       <div className="flex min-w-0 flex-1 flex-col">
         <Topbar />

@@ -28,6 +28,8 @@ function harness({
   invokeResolvedCapability,
   issueApplicationApprovalGrant,
   onWorkItemChanged,
+  claimTaskMaterialDraft,
+  resolveClaimedTaskMaterial,
 } = {}) {
   let counter = 0;
   const events = [];
@@ -65,6 +67,8 @@ function harness({
     invokeResolvedCapability,
     issueApplicationApprovalGrant,
     onWorkItemChanged,
+    claimTaskMaterialDraft,
+    resolveClaimedTaskMaterial,
   });
   return { state, events, alerts, service };
 }
@@ -164,6 +168,59 @@ test("creates a local work item with server-owned identity and defaults", () => 
     entryContext: "task",
     traceParent: result.body.workItem.id,
   });
+});
+
+test("adds, removes, and restores task materials with revision and completed-task guards", () => {
+  const claims = [];
+  const materialAsset = {
+    id: "asset_1", originalName: "brief.txt", path: ".myagenttool/inputs/work/asset_1--brief.txt",
+    family: "text", mimeType: "text/plain", terminalId: "dev_local", size: 5,
+    resourceClass: "small", hash: "hash", version: null, worktreeId: null, capabilities: [],
+    readiness: { state: "ready", reason: "task_material_claimed" },
+  };
+  const { service } = harness({
+    claimTaskMaterialDraft: (input) => {
+      claims.push(input);
+      return { ok: true, assets: [{ ...materialAsset, path: `.myagenttool/inputs/${input.workItemId}/asset_1--brief.txt`, terminalId: input.terminalId }] };
+    },
+    resolveClaimedTaskMaterial: () => ({ ok: true, asset: materialAsset }),
+  });
+  const created = service.createWorkItem({ projectId: "prj_a", title: "Material task" }, ACTOR_A).body.workItem;
+  const added = service.addMaterials({
+    workItemId: created.id,
+    expectedRevision: created.revision,
+    materialDraftId: "draft_1",
+    materialDraftRevision: 1,
+  }, ACTOR_A);
+  assert.equal(added.status, 200);
+  assert.equal(added.body.workItem.inputAssets[0].originalName, "brief.txt");
+  assert.equal(added.body.appliesTo, "next_execution");
+  assert.equal(added.body.workItem.materialChangesPending, true);
+  assert.equal(claims[0].deferPersist, true);
+
+  const bound = service.recordExecutionBinding({ workItemId: created.id, kind: "auto_run", targetId: "run_materials" }, ACTOR_A);
+  assert.equal(bound.body.workItem.materialChangesPending, false);
+
+  const removed = service.removeMaterial({ workItemId: created.id, assetId: "asset_1", expectedRevision: bound.body.workItem.revision }, ACTOR_A);
+  assert.equal(removed.status, 200);
+  assert.equal(removed.body.workItem.inputAssets.length, 0);
+  assert.equal(removed.body.workItem.materialChangesPending, true);
+
+  const restored = service.restoreMaterial({ workItemId: created.id, assetId: "asset_1", expectedRevision: removed.body.workItem.revision }, ACTOR_A);
+  assert.equal(restored.status, 200);
+  assert.equal(restored.body.workItem.inputAssets[0].originalName, "brief.txt");
+  assert.equal(restored.body.workItem.materialChangesPending, true);
+
+  const closed = service.transitionWorkItem({ workItemId: created.id, action: "close", expectedRevision: restored.body.workItem.revision }, ACTOR_A);
+  assert.equal(closed.status, 200);
+  const rejected = service.addMaterials({
+    workItemId: created.id,
+    expectedRevision: closed.body.workItem.revision,
+    materialDraftId: "draft_2",
+    materialDraftRevision: 1,
+  }, ACTOR_A);
+  assert.equal(rejected.status, 409);
+  assert.equal(rejected.body.error, "work_item_reopen_required_for_materials");
 });
 
 test("creates, normalizes, updates, and audits structured follow-up context", () => {
@@ -689,8 +746,13 @@ test("external issue contract supports GitLab and Gitea without overstating adap
     provider: linked.body.binding.provider,
     resourceType: linked.body.binding.resourceType,
     externalId: linked.body.binding.externalId,
+    relation: linked.body.binding.relation,
+    isPrimary: linked.body.binding.isPrimary,
+    syncPolicy: linked.body.binding.syncPolicy,
+    linkedBy: linked.body.binding.linkedBy,
   }, {
     kind: "gitlab_issue", provider: "gitlab", resourceType: "issue", externalId: "18",
+    relation: "source", isPrimary: true, syncPolicy: "manual", linkedBy: "usr_a",
   });
   assert.equal(linked.body.binding.bindingId, "gitlab:issue:acme/repo:18");
 
@@ -703,6 +765,26 @@ test("external issue contract supports GitLab and Gitea without overstating adap
   assert.equal(service.bindExternalIssue({
     workItemId: item.id, expectedRevision: pulled.body.workItem.revision, provider: "bitbucket", remote,
   }, ACTOR_A).body.error, "unsupported_external_provider");
+});
+
+test("external intake creates a Local Issue before execution and preserves the source relation", () => {
+  const { service } = harness();
+  const imported = service.createWorkItemFromExternal({
+    projectId: "prj_a",
+    provider: "gitlab",
+    remote: {
+      number: 19, title: "Imported from GitLab", body: "Remote description", state: "open", labels: ["bug"],
+      url: "https://gitlab.example/acme/repo/-/issues/19", repository: "acme/repo",
+      updatedAt: "2026-07-24T00:00:00.000Z",
+    },
+  }, ACTOR_A);
+  assert.equal(imported.status, 201);
+  assert.equal(imported.body.created, true);
+  assert.equal(imported.body.workItem.title, "Imported from GitLab");
+  assert.equal(imported.body.workItem.body, "Remote description");
+  assert.deepEqual(imported.body.workItem.externalBindings[0], imported.body.binding);
+  assert.equal(imported.body.binding.relation, "source");
+  assert.equal(imported.body.binding.isPrimary, true);
 });
 
 test("GitLab and Gitea webhook ingestion is idempotent, tenant-aware, and replayable", () => {
@@ -1715,6 +1797,8 @@ test("close, reopen, archive and restore preserve the record", () => {
   const item = service.createWorkItem({ projectId: "prj_a", title: "A" }, ACTOR_A).body.workItem;
   const closed = service.transitionWorkItem({ workItemId: item.id, expectedRevision: 1, action: "close" }, ACTOR_A);
   assert.equal(closed.body.workItem.state, "closed");
+  assert.ok(closed.body.workItem.completedAt);
+  assert.equal(closed.body.workItem.waitingOn, "none");
   const archived = service.transitionWorkItem({ workItemId: item.id, expectedRevision: 2, action: "archive" }, ACTOR_A);
   assert.ok(archived.body.workItem.archivedAt);
   assert.equal(service.listWorkItems({}, ACTOR_A).body.count, 0);
@@ -1722,6 +1806,7 @@ test("close, reopen, archive and restore preserve the record", () => {
   assert.equal(restored.body.workItem.archivedAt, null);
   const reopened = service.transitionWorkItem({ workItemId: item.id, expectedRevision: 4, action: "reopen" }, ACTOR_A);
   assert.equal(reopened.body.workItem.state, "open");
+  assert.equal(reopened.body.workItem.completedAt, null);
 });
 
 test("list supports project, status, type, assignee and text filters", () => {
@@ -2231,4 +2316,26 @@ test("report generation excludes execution summaries outside the work item proje
     JSON.stringify(generated.body.reportDraft),
     /FOREIGN_PROJECT_SECRET|OTHER_PROJECT_SECRET|FOREIGN_TEAM_SECRET|FOREIGN_INVOCATION_SECRET|PROJECTLESS_INVOCATION_SECRET|WRONG_BINDING_KIND_SECRET/,
   );
+});
+
+test("external issue funnel reports stages and actionable stalls without crossing tenants", () => {
+  const { service, state } = harness({ clock: () => "2026-07-26T12:00:00.000Z" });
+  const imported = service.createWorkItemFromExternal({
+    projectId: "prj_a", provider: "gitlab",
+    remote: { number: 71, title: "Stalled intake", body: "", state: "open", labels: [], repository: "a/repo", updatedAt: "2026-07-24T00:00:00.000Z" },
+  }, ACTOR_A).body.workItem;
+  const stored = state.workItems.find((item) => item.id === imported.id);
+  stored.createdAt = "2026-07-24T00:00:00.000Z";
+  stored.externalBindings[0].linkedAt = "2026-07-24T00:00:00.000Z";
+  service.createWorkItemFromExternal({
+    projectId: "prj_b", provider: "gitea",
+    remote: { number: 72, title: "Foreign", body: "", state: "open", labels: [], repository: "b/repo", updatedAt: "2026-07-24T00:00:00.000Z" },
+  }, ACTOR_B);
+
+  const result = service.getExternalIssueFunnel({}, ACTOR_A);
+  assert.equal(result.body.metrics.total, 1);
+  assert.equal(result.body.metrics.notStarted, 1);
+  assert.equal(result.body.metrics.stalled, 1);
+  assert.equal(result.body.stalls[0].kind, "imported_not_started");
+  assert.equal(result.body.stalls[0].workItemId, imported.id);
 });

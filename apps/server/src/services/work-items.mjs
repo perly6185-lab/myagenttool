@@ -41,6 +41,8 @@ const ROUTINE_BINDING_FIELDS = [
   "triggerArtifactIds",
 ];
 const GITHUB_SYNC_FIELDS = ["title", "body", "state", "labels", "milestone", "assigneeIds"];
+const EXTERNAL_RELATIONS = new Set(["source", "related", "duplicate", "parent", "blocks"]);
+const EXTERNAL_SYNC_POLICIES = new Set(["manual", "webhook_pull", "bidirectional"]);
 const VERIFICATION_KINDS = new Set(["test", "lint", "typecheck", "manual", "review"]);
 const VERIFICATION_STATUSES = new Set(["passed", "failed"]);
 const EXECUTION_OPERATION_TTL_MS = 30 * 60_000;
@@ -219,8 +221,10 @@ function normalizeAssetRefs(input) {
     if (!capabilities || capabilities.some((verb) => !ASSET_CAPABILITY_VERBS.includes(verb))) return null;
     assets.push({
       id: String(candidate.id ?? "").slice(0, 100) || null,
+      originalName: candidate.originalName ? String(candidate.originalName).replace(/[\r\n\t]/g, " ").slice(0, 200) : undefined,
       path,
       family: String(candidate.family ?? "unknown").slice(0, 40),
+      mimeType: candidate.mimeType ? String(candidate.mimeType).slice(0, 120) : null,
       terminalId,
       size: Number.isSafeInteger(candidate.size) && candidate.size >= 0 ? candidate.size : null,
       resourceClass: ["small", "medium", "large", "unknown"].includes(candidate.resourceClass)
@@ -252,6 +256,8 @@ export function createWorkItemService({
   invokeResolvedCapability = () => ({ status: 503, body: { error: "capability_gateway_unavailable" } }),
   issueApplicationApprovalGrant = null,
   onWorkItemChanged = () => {},
+  claimTaskMaterialDraft = null,
+  resolveClaimedTaskMaterial = null,
   store,
 }) {
   const runTx = makeRunTx({ store, persistStateSoon });
@@ -474,6 +480,7 @@ export function createWorkItemService({
     ).length;
     return {
       ...publicItem,
+      completedAt: publicItem.completedAt ?? ((item.state === "closed" || item.status === "done") ? item.updatedAt : null),
       ...workItemFollowUpContextView(item),
       assetReadiness: evaluateAssetRequirements(
         item.inputAssets ?? [],
@@ -1452,6 +1459,11 @@ export function createWorkItemService({
       externalId,
       bindingId: binding.bindingId
         ?? [provider ?? "unknown", resourceType, binding.repository ?? "repository", externalId].join(":"),
+      relation: EXTERNAL_RELATIONS.has(binding.relation) ? binding.relation : "source",
+      isPrimary: binding.isPrimary !== false,
+      syncPolicy: EXTERNAL_SYNC_POLICIES.has(binding.syncPolicy) ? binding.syncPolicy : "manual",
+      linkedAt: binding.linkedAt ?? null,
+      linkedBy: binding.linkedBy ?? null,
     };
   }
 
@@ -1477,7 +1489,15 @@ export function createWorkItemService({
     };
   }
 
-  function bindExternalIssue({ workItemId, expectedRevision, provider = "github", remote } = {}, actor = null) {
+  function bindExternalIssue({
+    workItemId,
+    expectedRevision,
+    provider = "github",
+    remote,
+    relation = "source",
+    isPrimary = true,
+    syncPolicy = "manual",
+  } = {}, actor = null) {
     const normalizedProvider = String(provider).toLowerCase();
     if (!["github", "gitlab", "gitea"].includes(normalizedProvider)) {
       return { ok: false, status: 400, body: { error: "unsupported_external_provider" } };
@@ -1489,8 +1509,20 @@ export function createWorkItemService({
     }
     const snapshot = normalizeGithubSnapshot(remote);
     if (!snapshot) return { ok: false, status: 400, body: { error: "invalid_external_issue_snapshot", provider: normalizedProvider } };
+    const normalizedRelation = String(relation ?? "source").toLowerCase();
+    const normalizedSyncPolicy = String(syncPolicy ?? "manual").toLowerCase();
+    if (!EXTERNAL_RELATIONS.has(normalizedRelation)) {
+      return { ok: false, status: 400, body: { error: "invalid_external_issue_relation", provider: normalizedProvider } };
+    }
+    if (!EXTERNAL_SYNC_POLICIES.has(normalizedSyncPolicy)) {
+      return { ok: false, status: 400, body: { error: "invalid_external_issue_sync_policy", provider: normalizedProvider } };
+    }
+    const primary = Boolean(isPrimary) && normalizedRelation === "source";
     if (externalIssueBinding(item, normalizedProvider)) {
       return { ok: false, status: 409, body: { error: "external_issue_already_bound", provider: normalizedProvider } };
+    }
+    if (primary && (item.externalBindings ?? []).some((candidate) => candidate.isPrimary !== false)) {
+      return { ok: false, status: 409, body: { error: "external_primary_source_already_bound", provider: normalizedProvider } };
     }
     const duplicate = (state.workItems ?? []).find((candidate) =>
       candidate.ownerTeamId === actorTeam(actor) && candidate.projectId === item.projectId
@@ -1509,12 +1541,73 @@ export function createWorkItemService({
       syncedLocalRevision: item.revision, remoteUpdatedAt: snapshot.updatedAt,
       baseline: Object.fromEntries(GITHUB_SYNC_FIELDS.map((field) => [field, snapshot[field]])),
       conflict: null, lastSyncedAt: now(),
+      relation: normalizedRelation,
+      isPrimary: primary,
+      syncPolicy: normalizedSyncPolicy,
+      linkedAt: now(),
+      linkedBy: actorUser(actor),
     };
     runTx(() => {
       item.externalBindings.push(binding);
       recordActivity(item, actor, `${normalizedProvider}_linked`, { provider: normalizedProvider, number: snapshot.number, url: snapshot.url });
     });
     return { ok: true, status: 201, body: { workItem: workItemView(item, actor), binding: externalBindingView(binding) } };
+  }
+
+  function createWorkItemFromExternal({
+    projectId,
+    provider = "github",
+    remote,
+    relation = "source",
+    isPrimary = true,
+    syncPolicy = "manual",
+    ...input
+  } = {}, actor = null) {
+    const normalizedProvider = String(provider).toLowerCase();
+    if (!["github", "gitlab", "gitea"].includes(normalizedProvider)) {
+      return { ok: false, status: 400, body: { error: "unsupported_external_provider" } };
+    }
+    const snapshot = normalizeGithubSnapshot(remote);
+    if (!snapshot) {
+      return { ok: false, status: 400, body: { error: "invalid_external_issue_snapshot", provider: normalizedProvider } };
+    }
+    const duplicate = (state.workItems ?? []).find((candidate) =>
+      candidate.ownerTeamId === actorTeam(actor)
+      && candidate.projectId === projectId
+      && (candidate.externalBindings ?? []).some((binding) =>
+        providerOfBinding(binding) === normalizedProvider
+        && binding.number === snapshot.number
+        && (binding.repository ?? null) === (snapshot.repository ?? null)));
+    if (duplicate) {
+      return {
+        ok: false,
+        status: 409,
+        body: { error: "external_issue_already_linked", provider: normalizedProvider, workItemId: duplicate.id, workItem: workItemView(duplicate, actor) },
+      };
+    }
+    const created = createWorkItem({
+      ...input,
+      projectId,
+      title: input.title ?? snapshot.title,
+      body: input.body ?? snapshot.body,
+      labels: input.labels ?? snapshot.labels,
+      intakeChannel: input.intakeChannel ?? (normalizedProvider === "github" ? "github" : "import"),
+      externalReference: input.externalReference ?? snapshot.url,
+    }, actor);
+    if (!created.ok) return created;
+    const linked = bindExternalIssue({
+      workItemId: created.body.workItem.id,
+      expectedRevision: created.body.workItem.revision,
+      provider: normalizedProvider,
+      remote: snapshot,
+      relation,
+      isPrimary,
+      syncPolicy,
+    }, actor);
+    if (!linked.ok) {
+      return { ...linked, body: { ...linked.body, workItemId: created.body.workItem.id } };
+    }
+    return { ok: true, status: 201, body: { ...linked.body, created: true } };
   }
 
   function bindGithubIssue(input = {}, actor = null) {
@@ -1755,7 +1848,27 @@ export function createWorkItemService({
       lastModifiedBy: actorUser(actor),
       externalBindings: [],
       executionBindings: [],
+      materialChangesPending: false,
     };
+    const materialDraftId = input.materialDraftId == null ? null : String(input.materialDraftId).trim();
+    if (materialDraftId) {
+      if (typeof claimTaskMaterialDraft !== "function") {
+        return { ok: false, status: 503, body: { error: "task_material_service_unavailable" } };
+      }
+      const claimed = claimTaskMaterialDraft({
+        projectId,
+        draftId: materialDraftId,
+        expectedRevision: input.materialDraftRevision,
+        workItemId: workItem.id,
+        terminalId: workItem.terminalId,
+        deferPersist: true,
+      }, actor);
+      if (!claimed.ok) {
+        return { ok: false, status: claimed.status ?? 409, body: { error: claimed.error ?? "task_material_claim_failed" } };
+      }
+      workItem.materialDraftId = materialDraftId;
+      workItem.inputAssets = claimed.assets;
+    }
     const assetReadiness = evaluateAssetRequirements(
       workItem.inputAssets,
       workItem.requiredCapabilities,
@@ -2148,12 +2261,20 @@ export function createWorkItemService({
     }
     const pastTense = { close: "closed", reopen: "reopened", archive: "archived", restore: "restored" }[action];
     runTx(() => {
-      if (action === "close") item.state = "closed";
-      if (action === "reopen") item.state = "open";
+      const transitionAt = now();
+      if (action === "close") {
+        item.state = "closed";
+        item.completedAt = item.completedAt ?? transitionAt;
+        item.waitingOn = "none";
+      }
+      if (action === "reopen") {
+        item.state = "open";
+        item.completedAt = null;
+      }
       if (action === "archive") item.archivedAt = now();
       if (action === "restore") item.archivedAt = null;
       item.revision += 1;
-      item.updatedAt = now();
+      item.updatedAt = transitionAt;
       item.lastModifiedBy = actorUser(actor);
       recordActivity(item, actor, action, { state: item.state, archivedAt: item.archivedAt });
       appendEvent({
@@ -2697,6 +2818,7 @@ export function createWorkItemService({
     };
     runTx(() => {
       item.executionBindings = [...(item.executionBindings ?? []), binding];
+      if (kind === "worktree" || kind === "auto_run") item.materialChangesPending = false;
       if (operationId != null) {
         item.executionOperation = null;
         if (item.claim?.status === "active" && item.claim.executionOperationId === String(operationId)) {
@@ -2880,6 +3002,8 @@ export function createWorkItemService({
       } else {
         item.status = "done";
         item.state = "closed";
+        item.completedAt = deliveredAt;
+        item.waitingOn = "none";
       }
       item.revision += 1;
       item.updatedAt = deliveredAt;
@@ -3409,8 +3533,136 @@ export function createWorkItemService({
     return { ok: true, status: 200, body: result };
   }
 
+  function getExternalIssueFunnel({ projectId } = {}, actor = null) {
+    const visible = (state.workItems ?? []).filter((item) =>
+      item.ownerTeamId === actorTeam(actor)
+      && (!projectId || item.projectId === String(projectId))
+      && (item.externalBindings?.length ?? 0) > 0);
+    const stages = { notStarted: 0, running: 0, review: 0, completed: 0 };
+    const stalls = [];
+    const cutoff = Date.parse(now()) - 24 * 60 * 60 * 1_000;
+    for (const item of visible) {
+      const execution = executionState(item);
+      const completed = item.state === "closed" || item.status === "done";
+      const review = !completed && (item.status === "review" || execution === "completed" || execution === "awaiting_approval");
+      const running = !completed && !review && ["claimed", "running", "verifying"].includes(execution);
+      const stage = completed ? "completed" : review ? "review" : running ? "running" : "notStarted";
+      stages[stage] += 1;
+      const primary = item.externalBindings.find((binding) => binding.isPrimary !== false) ?? item.externalBindings[0];
+      const since = primary.linkedAt ?? item.createdAt ?? item.updatedAt;
+      const stale = Number.isFinite(Date.parse(since)) && Date.parse(since) < cutoff;
+      let kind = null;
+      if (execution === "failed") kind = "execution_failed";
+      else if (completed && primary.syncPolicy === "manual" && primary.syncedLocalRevision !== item.revision) kind = "writeback_pending";
+      else if (stage === "notStarted" && stale) kind = "imported_not_started";
+      else if (stage === "review" && stale) kind = "review_waiting";
+      if (kind) stalls.push({
+        kind,
+        workItemId: item.id,
+        localRef: item.localRef,
+        title: item.title,
+        provider: providerOfBinding(primary),
+        issueNumber: primary.number,
+        since,
+      });
+    }
+    stalls.sort((a, b) => String(a.since).localeCompare(String(b.since)));
+    return {
+      ok: true,
+      status: 200,
+      body: { metrics: { total: visible.length, ...stages, stalled: stalls.length }, stalls: stalls.slice(0, 20) },
+    };
+  }
+
+  function addMaterials({ workItemId, expectedRevision, materialDraftId, materialDraftRevision } = {}, actor = null) {
+    const item = findOwn(workItemId, actor);
+    if (!item) return notFound();
+    if (item.state === "closed" || item.status === "done") {
+      return { ok: false, status: 409, body: { error: "work_item_reopen_required_for_materials" } };
+    }
+    if (!Number.isInteger(expectedRevision)) return { ok: false, status: 400, body: { error: "expected_revision_required" } };
+    if (expectedRevision !== item.revision) return { ok: false, status: 409, body: { error: "work_item_revision_conflict", currentRevision: item.revision } };
+    if ((item.inputAssets ?? []).length > 94) return { ok: false, status: 409, body: { error: "work_item_material_limit_exceeded" } };
+    if (typeof claimTaskMaterialDraft !== "function") {
+      return { ok: false, status: 503, body: { error: "task_material_service_unavailable" } };
+    }
+    const claimed = claimTaskMaterialDraft({
+      projectId: item.projectId,
+      draftId: materialDraftId,
+      expectedRevision: materialDraftRevision,
+      workItemId: item.id,
+      terminalId: item.terminalId,
+      deferPersist: true,
+    }, actor);
+    if (!claimed.ok) return { ok: false, status: claimed.status ?? 409, body: { error: claimed.error ?? "task_material_claim_failed" } };
+    const existingIds = new Set((item.inputAssets ?? []).map((asset) => asset.id).filter(Boolean));
+    const additions = claimed.assets.filter((asset) => !existingIds.has(asset.id));
+    if (!additions.length) return { ok: true, status: 200, body: { workItem: workItemView(item, actor), replayed: true, appliesTo: "next_execution" } };
+    const active = ["claimed", "running", "awaiting_approval", "verifying"].includes(executionState(item));
+    runTx(() => {
+      item.inputAssets = [...(item.inputAssets ?? []), ...additions];
+      item.materialDraftIds = [...new Set([...(item.materialDraftIds ?? []), String(materialDraftId)])];
+      item.materialChangesPending = true;
+      item.revision += 1;
+      item.updatedAt = now();
+      item.lastModifiedBy = actorUser(actor);
+      recordActivity(item, actor, "materials_added", { assetIds: additions.map((asset) => asset.id), appliesTo: active ? "future_execution" : "next_execution" });
+    });
+    return { ok: true, status: 200, body: { workItem: workItemView(item, actor), appliesTo: active ? "future_execution" : "next_execution" } };
+  }
+
+  function removeMaterial({ workItemId, assetId, expectedRevision } = {}, actor = null) {
+    const item = findOwn(workItemId, actor);
+    if (!item) return notFound();
+    if (item.state === "closed" || item.status === "done") {
+      return { ok: false, status: 409, body: { error: "work_item_reopen_required_for_materials" } };
+    }
+    if (!Number.isInteger(expectedRevision)) return { ok: false, status: 400, body: { error: "expected_revision_required" } };
+    if (expectedRevision !== item.revision) return { ok: false, status: 409, body: { error: "work_item_revision_conflict", currentRevision: item.revision } };
+    const asset = (item.inputAssets ?? []).find((candidate) => candidate.id === String(assetId));
+    if (!asset) return { ok: false, status: 404, body: { error: "task_material_not_found" } };
+    const active = ["claimed", "running", "awaiting_approval", "verifying"].includes(executionState(item));
+    runTx(() => {
+      item.inputAssets = (item.inputAssets ?? []).filter((candidate) => candidate.id !== asset.id);
+      item.materialChangesPending = true;
+      item.revision += 1;
+      item.updatedAt = now();
+      item.lastModifiedBy = actorUser(actor);
+      recordActivity(item, actor, "material_removed", { assetId: asset.id, appliesTo: active ? "future_execution" : "next_execution" });
+    });
+    return { ok: true, status: 200, body: { workItem: workItemView(item, actor), appliesTo: active ? "future_execution" : "next_execution" } };
+  }
+
+  function restoreMaterial({ workItemId, assetId, expectedRevision } = {}, actor = null) {
+    const item = findOwn(workItemId, actor);
+    if (!item) return notFound();
+    if (item.state === "closed" || item.status === "done") {
+      return { ok: false, status: 409, body: { error: "work_item_reopen_required_for_materials" } };
+    }
+    if (!Number.isInteger(expectedRevision)) return { ok: false, status: 400, body: { error: "expected_revision_required" } };
+    if (expectedRevision !== item.revision) return { ok: false, status: 409, body: { error: "work_item_revision_conflict", currentRevision: item.revision } };
+    if ((item.inputAssets ?? []).some((candidate) => candidate.id === String(assetId))) {
+      return { ok: true, status: 200, body: { workItem: workItemView(item, actor), replayed: true, appliesTo: "next_execution" } };
+    }
+    if (typeof resolveClaimedTaskMaterial !== "function") {
+      return { ok: false, status: 503, body: { error: "task_material_service_unavailable" } };
+    }
+    const resolved = resolveClaimedTaskMaterial({ workItemId: item.id, assetId, terminalId: item.terminalId }, actor);
+    if (!resolved.ok) return { ok: false, status: resolved.status ?? 404, body: { error: resolved.error ?? "task_material_not_found" } };
+    const active = ["claimed", "running", "awaiting_approval", "verifying"].includes(executionState(item));
+    runTx(() => {
+      item.inputAssets = [...(item.inputAssets ?? []), resolved.asset];
+      item.materialChangesPending = true;
+      item.revision += 1;
+      item.updatedAt = now();
+      item.lastModifiedBy = actorUser(actor);
+      recordActivity(item, actor, "material_restored", { assetId: resolved.asset.id, appliesTo: active ? "future_execution" : "next_execution" });
+    });
+    return { ok: true, status: 200, body: { workItem: workItemView(item, actor), appliesTo: active ? "future_execution" : "next_execution" } };
+  }
+
   return {
-    listWorkItems, getHomeWorkbench, listAttention, getWorkItem, createWorkItem, updateWorkItem, recordWorkItemProgress, bulkUpdateWorkItems, transitionWorkItem,
+    listWorkItems, getHomeWorkbench, listAttention, getWorkItem, createWorkItem, createWorkItemFromExternal, updateWorkItem, recordWorkItemProgress, bulkUpdateWorkItems, transitionWorkItem,
     listReportDrafts: reportDraftService.list,
     getReportDraft: reportDraftService.get,
     generateReportDraft: reportDraftService.generate,
@@ -3421,7 +3673,7 @@ export function createWorkItemService({
     beginExecution, abortExecution, recordExecutionBinding,
     beginDelivery, failDelivery, completeDelivery,
     claimWorkItem, releaseWorkItemClaim, assignWorkItemToSelf,
-    bindGithubIssue, syncGithubIssue, bindExternalIssue, syncExternalIssue, listExternalProviders,
+    bindGithubIssue, syncGithubIssue, bindExternalIssue, syncExternalIssue, listExternalProviders, getExternalIssueFunnel,
     recordVerification, recordAssetOperation, ingestGithubWebhook, replayGithubWebhook, recordGithubWebhookFailure,
     ingestExternalWebhook, replayExternalWebhook, recordExternalWebhookFailure,
     githubSyncDiagnostics, updateAttention, sweepOperationalAlerts, suggestWorkItemDraft, retryWorkItemAlert,
@@ -3429,5 +3681,8 @@ export function createWorkItemService({
     applyLocalSchedulePlan,
     applyLocalScheduleRollover,
     applyLocalScheduleUrgent,
+    addMaterials,
+    removeMaterial,
+    restoreMaterial,
   };
 }

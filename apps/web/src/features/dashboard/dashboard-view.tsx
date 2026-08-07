@@ -1,5 +1,5 @@
 import { lazy, Suspense, useEffect, useMemo, useRef, useState } from "react";
-import { ArrowUp } from "lucide-react";
+import { ArrowRight, ArrowUp, Bot } from "lucide-react";
 import { normalizeCodexPermissionMode, type CodexPermissionMode } from "@myagenttool/protocol/codex-permissions";
 import { defaultModelForAgentAdapter, modelIdsForAgentAdapter } from "@myagenttool/protocol/agent-models";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -23,6 +23,7 @@ import {
   type WorktreeAttachmentUploadResponse,
 } from "@/features/invocations/worktree-attachment-picker";
 import { GuidedSetupCard } from "@/features/dashboard/guided-setup-card";
+import { HomeTaskComposer } from "@/features/dashboard/home-task-composer";
 import { localScheduleApi } from "@/features/dashboard/local-schedule-api";
 import type { LocalWorkItem } from "@/features/tasks/task-view-types";
 import type { HomeWorkbench } from "@/features/dashboard/home-workbench-types";
@@ -41,6 +42,7 @@ import { STARTER_TASK_TEMPLATES } from "@/features/dashboard/starter-task-templa
 import { ActionErrorNotice } from "@/components/common/action-error-notice";
 import { useConsoleState } from "@/data/use-console-state";
 import { useAsyncAction, api } from "@/data/use-console-actions";
+import { usePageNavigation } from "@/hooks/use-page-navigation";
 import { resolveAgents, resolveInvocation } from "@/features/selection";
 import { useUiStore, type InvocationStatusFilter, type SectionKey } from "@/store/ui-store";
 import {
@@ -61,7 +63,7 @@ const DailyWorkBoard = lazy(async () => {
   const module = await import("@/features/dashboard/daily-work-board");
   return { default: module.DailyWorkBoard };
 });
-import type { AgentSnapshot, ConsoleSnapshot, InvocationSnapshot, WorkItem } from "@/lib/console-state";
+import type { AgentSnapshot, ConsoleSnapshot, InvocationSnapshot, PendingDecision, WorkItem } from "@/lib/console-state";
 import { useAppTranslation } from "@/lib/i18n/use-app-translation";
 
 type Translate = ReturnType<typeof useAppTranslation>["t"];
@@ -127,13 +129,13 @@ export function DashboardView({ surface = "overview" }: { surface?: DashboardSur
   const selectedInvocationId = useUiStore((s) => s.selectedInvocationId);
   const setSelectedInvocationId = useUiStore((s) => s.setSelectedInvocationId);
   const setSelectedApplicationId = useUiStore((s) => s.setSelectedApplicationId);
-  const setSelectedWorkItemId = useUiStore((s) => s.setSelectedWorkItemId);
-  const setSelectedWorkItemSection = useUiStore((s) => s.setSelectedWorkItemSection);
+  const openWorkItem = useUiStore((s) => s.openWorkItem);
   const selectedProjectId = useUiStore((s) => s.selectedProjectId);
   const setSelectedProjectId = useUiStore((s) => s.setSelectedProjectId);
   const selectedWorktreeId = useUiStore((s) => s.selectedWorktreeId);
   const setSelectedWorktreeId = useUiStore((s) => s.setSelectedWorktreeId);
   const setSection = useUiStore((s) => s.setSection);
+  const navigate = usePageNavigation();
   const resumeFromInvocationId = useUiStore((s) => s.resumeFromInvocationId);
   const setResumeFromInvocationId = useUiStore((s) => s.setResumeFromInvocationId);
   const composerDraftTask = useUiStore((s) => s.composerDraftTask);
@@ -166,6 +168,18 @@ export function DashboardView({ surface = "overview" }: { surface?: DashboardSur
   const [dailyWorkItems, setDailyWorkItems] = useState<LocalWorkItem[]>([]);
   const [homeWorkbench, setHomeWorkbench] = useState<HomeWorkbench>();
   const [dailyRefreshVersion, setDailyRefreshVersion] = useState(0);
+  const [dailyBriefContainer, setDailyBriefContainer] = useState<HTMLDivElement | null>(null);
+  const [homeFocusSession, setHomeFocusSession] = useState<{
+    active: boolean;
+    projectId: string | null;
+    pendingWorkItemId: string | null;
+    resolvedWorkItemId: string | null;
+  }>({
+    active: false,
+    projectId: null,
+    pendingWorkItemId: null,
+    resolvedWorkItemId: null,
+  });
   const [dailyLoadFailureCount, setDailyLoadFailureCount] = useState(0);
   const [localScheduleCapacity, setLocalScheduleCapacity] = useState<LocalScheduleCapacityResponse>();
   const [localSchedulePreview, setLocalSchedulePreview] = useState<LocalSchedulePreviewResponse>();
@@ -173,6 +187,32 @@ export function DashboardView({ surface = "overview" }: { surface?: DashboardSur
   const [localScheduleUrgent, setLocalScheduleUrgent] = useState<LocalScheduleUrgentResponse>();
   const taskInputRef = useRef<HTMLTextAreaElement>(null);
   const activityRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    setHomeFocusSession((current) => current.active && current.projectId !== projectId
+      ? { active: false, projectId: null, pendingWorkItemId: null, resolvedWorkItemId: null }
+      : current);
+  }, [projectId]);
+
+  useEffect(() => {
+    const refreshDailyWork = (event: Event) => {
+      setDailyRefreshVersion((version) => version + 1);
+      const detail = (event as CustomEvent<{ source?: string; workItemId?: string }>).detail;
+      const resolvesFocusStep = [
+        "work-item-start-ai",
+        "work-item-request-changes",
+        "work-item-completed",
+        "work-item-retry",
+        "work-item-progress",
+      ].includes(detail?.source ?? "");
+      if (!resolvesFocusStep || !detail?.workItemId) return;
+      setHomeFocusSession((current) => current.pendingWorkItemId === detail.workItemId
+        ? { ...current, pendingWorkItemId: null, resolvedWorkItemId: detail.workItemId ?? null }
+        : current);
+    };
+    window.addEventListener("myagenttool:state-change", refreshDailyWork);
+    return () => window.removeEventListener("myagenttool:state-change", refreshDailyWork);
+  }, []);
 
   useEffect(() => {
     if (surface !== "overview") return undefined;
@@ -229,6 +269,18 @@ export function DashboardView({ surface = "overview" }: { surface?: DashboardSur
   const invocation = surface === "overview"
     ? activeInvocations.find((item) => item.id === selectedInvocationId) ?? activeInvocations[0] ?? null
     : resolvedInvocation;
+  const trackedInvocationItem = invocation
+    ? homeWorkbench?.items?.find((item) => item.ai?.invocationId === invocation.id) ?? null
+    : null;
+  const attachmentWorktree = targetWorktree
+    ?? (state?.worktrees ?? []).find((item) => item.projectId === projectId)
+    ?? null;
+  const hasPriorityWork = Boolean(
+    invocation
+    || homeWorkbench?.summary?.needsAttention
+    || homeWorkbench?.summary?.waitingMe
+    || homeWorkbench?.summary?.reviewReady,
+  );
   const localInFlightCount = useMemo(
     () => activeInvocations.filter((item) => {
       if (["queued", "waiting_for_local_approval"].includes(item.status ?? "")) return false;
@@ -246,6 +298,7 @@ export function DashboardView({ surface = "overview" }: { surface?: DashboardSur
       projectId,
     ),
   });
+  const trackedWorkItemId = homeNextAction.state === "running" ? trackedInvocationItem?.workItemId ?? null : null;
   const unhealthy = agent?.health?.status === "unhealthy";
   const disabledAgent = agent?.status === "disabled";
   const localOffline = agent?.location?.type === "local_device" && state?.device?.status !== "online";
@@ -413,8 +466,10 @@ export function DashboardView({ surface = "overview" }: { surface?: DashboardSur
 
   function openDailyWorkItem(item: WorkItem) {
     if (item.section === "task" && item.targetId) {
-      setSelectedWorkItemId(item.targetId);
-      if (item.kind === "home_report_review") setSelectedWorkItemSection("report");
+      openWorkItem(item.targetId, item.kind === "home_report_review"
+        ? { mode: "expert", section: "report" }
+        : undefined);
+      return;
     }
     if (item.section === "invocations" && item.targetId) setSelectedInvocationId(item.targetId);
     if (item.section === "applications" && item.targetId) setSelectedApplicationId(item.targetId);
@@ -434,6 +489,13 @@ export function DashboardView({ surface = "overview" }: { surface?: DashboardSur
       window.history.replaceState(window.history.state, "", `${url.pathname}${url.search}${url.hash}`);
     }
     setSection(item.section as SectionKey);
+  }
+
+  function openApproval(decision: PendingDecision) {
+    const url = new URL(window.location.href);
+    url.searchParams.set("approval", decision.ref?.approvalId ?? decision.id);
+    window.history.replaceState(window.history.state, "", `${url.pathname}${url.search}${url.hash}`);
+    setSection("approvals");
   }
 
   const userTask = invocation?.input?.task;
@@ -553,7 +615,26 @@ export function DashboardView({ surface = "overview" }: { surface?: DashboardSur
   return (
     <div className="flex min-h-full flex-col gap-4">
       {surface === "overview" ? (
-        <div className="order-3">
+        <>
+          <div data-testid="daily-brief-create-layout" className={`${hasPriorityWork ? "order-1" : "order-2"} grid min-w-0 items-stretch gap-4 lg:grid-cols-[minmax(0,1.45fr)_minmax(340px,0.9fr)]`}>
+            <div ref={setDailyBriefContainer} className="min-w-0" />
+            <div className="min-w-0">
+              <HomeTaskComposer
+                inline
+                projectId={projectId}
+                projectName={project?.name}
+                worktreeId={attachmentWorktree?.id}
+                terminalId={state?.device?.id}
+                unavailable={!state}
+                showTrigger={false}
+                onCreated={() => setDailyRefreshVersion((version) => version + 1)}
+                onOpenTask={(workItemId) => openWorkItem(workItemId)}
+                onOpenSetup={(section) => navigate(section)}
+                onOpenProjects={() => navigate("projects")}
+              />
+            </div>
+          </div>
+          <div className={`${hasPriorityWork ? "order-2" : "order-3"} min-w-0`}>
           {dailyLoadFailureCount > 0 ? (
             <div className="mb-3 flex flex-wrap items-center justify-between gap-2 rounded-md border border-warning/40 bg-warning/5 px-3 py-2 text-sm" role="alert">
               <span>{t("dashboard.workbenchLoadFailed", { count: dailyLoadFailureCount })}</span>
@@ -571,7 +652,11 @@ export function DashboardView({ surface = "overview" }: { surface?: DashboardSur
               capacity={localScheduleCapacity}
               preview={localSchedulePreview}
               rollover={localScheduleRollover}
+              autoRolloverPrompt={surface === "overview"}
               urgent={localScheduleUrgent}
+              approvals={state?.pendingDecisions}
+              onOpenApproval={openApproval}
+              dailyBriefContainer={dailyBriefContainer}
               onOpenItem={openDailyWorkItem}
               onOpenTasks={() => setSection("task")}
               onOpenAttention={() => {
@@ -582,17 +667,48 @@ export function DashboardView({ surface = "overview" }: { surface?: DashboardSur
               onOpenActive={() => openRunFilter("active")}
               onOpenCompleted={() => openRunFilter("completed")}
               onOpenFailed={() => openRunFilter("failed")}
-              onProgressRecorded={() => setDailyRefreshVersion((version) => version + 1)}
+              onUpdatePlannedDate={async (item, plannedDate) => {
+                await api.updateWorkItem(item.workItemId, {
+                  expectedRevision: item.revision,
+                  plannedDate,
+                });
+                setDailyRefreshVersion((version) => version + 1);
+              }}
+              focusSessionActive={homeFocusSession.active && homeFocusSession.projectId === projectId}
+              focusPendingWorkItemId={homeFocusSession.pendingWorkItemId}
+              focusResolvedWorkItemId={homeFocusSession.resolvedWorkItemId}
+              onStartFocusSession={() => setHomeFocusSession({
+                active: true,
+                projectId,
+                pendingWorkItemId: null,
+                resolvedWorkItemId: null,
+              })}
+              onFocusActionLaunched={(workItemId) => setHomeFocusSession({
+                active: true,
+                projectId,
+                pendingWorkItemId: workItemId,
+                resolvedWorkItemId: null,
+              })}
+              onFocusActionResolved={(workItemId) => setHomeFocusSession({
+                active: true,
+                projectId,
+                pendingWorkItemId: null,
+                resolvedWorkItemId: workItemId,
+              })}
+              onEndFocusSession={() => setHomeFocusSession({
+                active: false,
+                projectId: null,
+                pendingWorkItemId: null,
+                resolvedWorkItemId: null,
+              })}
               onApplyPlan={localSchedulePreview ? () => {
                 void scheduleAction.execute(() => localScheduleApi.applyPlan(localSchedulePreview.planRevision));
               } : undefined}
               applyingPlan={scheduleAction.pending}
-              onRollover={localScheduleRollover ? (confirmPinned) => {
-                void rolloverAction.execute(() => localScheduleApi.applyRollover(
+              onRollover={localScheduleRollover ? (confirmPinned) => rolloverAction.execute(() => localScheduleApi.applyRollover(
                   localScheduleRollover.rolloverRevision,
                   confirmPinned,
-                ));
-              } : undefined}
+                )) : undefined}
               rollingOver={rolloverAction.pending}
               onApplyUrgent={localScheduleUrgent ? (confirmPinned) => {
                 void urgentAction.execute(() => localScheduleApi.applyUrgent(
@@ -603,9 +719,61 @@ export function DashboardView({ surface = "overview" }: { surface?: DashboardSur
               applyingUrgent={urgentAction.pending}
             />
           </Suspense>
-        </div>
+          </div>
+        </>
       ) : null}
-      {surface === "overview" && activeInvocations.length > 0 ? (
+      {surface === "overview" && invocation && homeNextAction.state !== "approval" ? (
+        <Card
+          className="order-0 border-primary/30"
+          data-testid="home-ai-work-status"
+          data-home-work-state={homeNextAction.state}
+        >
+          <CardContent className="flex flex-col gap-4 pt-5 sm:flex-row sm:items-center">
+            <span className="grid size-11 shrink-0 place-items-center rounded-xl bg-primary/10 text-primary">
+              <Bot className="size-5" aria-hidden />
+            </span>
+            <div className="min-w-0 flex-1">
+              <div className="flex flex-wrap items-center gap-2">
+                <h2 className="font-semibold">{t("dashboard.simpleRun.title")}</h2>
+                <StatusBadge tone={homeStateTone(homeNextAction.state)}>
+                  {t(`dashboard.nextAction.state.${homeNextAction.state}` as never)}
+                </StatusBadge>
+              </div>
+              <p className="mt-1 truncate text-sm font-medium [overflow-wrap:anywhere]">
+                {trackedInvocationItem?.title ?? invocation.input?.task ?? t("dashboard.untitledTask")}
+              </p>
+              <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
+                {trackedInvocationItem ? t("dashboard.simpleRun.trackedHint") : t("dashboard.simpleRun.temporaryHint")}
+              </p>
+            </div>
+            <div className="grid shrink-0 gap-2 sm:flex">
+              <Button
+                className="min-h-11"
+                data-home-primary-action={trackedWorkItemId ? "open_task" : homeNextAction.action}
+                onClick={() => trackedWorkItemId
+                  ? openWorkItem(trackedWorkItemId)
+                  : performPrimaryAction(homeNextAction.action)}
+              >
+                {trackedWorkItemId
+                  ? t("dashboard.simpleRun.openTask")
+                  : t(`dashboard.nextAction.action.${homeNextAction.action}` as never)}
+                <ArrowRight aria-hidden />
+              </Button>
+              {homeNextAction.state === "running" ? (
+                <Button
+                  className="min-h-11"
+                  variant="secondary"
+                  disabled={cancelDisabled || cancelAction.pending}
+                  onClick={() => void cancelTask()}
+                >
+                  {t("dashboard.cancel")}
+                </Button>
+              ) : null}
+            </div>
+          </CardContent>
+        </Card>
+      ) : null}
+      {surface === "overview" && activeInvocations.length > 1 ? (
         <div className="order-4">
           <Card>
             <CardHeader className="flex-row items-center justify-between gap-3 pb-2">
@@ -645,7 +813,7 @@ export function DashboardView({ surface = "overview" }: { surface?: DashboardSur
           </Card>
         </div>
       ) : null}
-      {surface === "overview" ? <div className="order-first"><GuidedSetupCard /></div> : null}
+      {surface === "overview" && !invocation ? <div className="order-first"><GuidedSetupCard /></div> : null}
       {/* Transcript — the scrolling conversation area. */}
       {surface === "workspace" && invocation ? <div ref={activityRef} tabIndex={-1} className="order-6 flex min-h-48 flex-1 flex-col outline-none focus-visible:ring-2 focus-visible:ring-ring">
         <Card className="flex min-h-48 flex-1 flex-col">
@@ -678,10 +846,13 @@ export function DashboardView({ surface = "overview" }: { surface?: DashboardSur
         </Card>
       </div> : null}
 
+      {surface === "workspace" ? (
+      <details className="contents" open>
+        <summary className="hidden">{t("dashboard.temporaryRun")}</summary>
       <AgentRunComposer
         compact
         disabled={runAction.pending}
-        className={surface === "overview" ? "order-1 shrink-0" : "order-4 shrink-0"}
+        className="order-4 shrink-0"
         title={composerTitle}
         context={composerContext}
         task={task}
@@ -699,11 +870,7 @@ export function DashboardView({ surface = "overview" }: { surface?: DashboardSur
             void addFiles(event.clipboardData.files);
           }
         }}
-        headerAction={surface === "overview" ? (
-            <Button variant="ghost" size="sm" onClick={() => setSection("invocations")}>
-              {t("shell.navigation.openTrace")}
-            </Button>
-          ) : null}
+        headerAction={null}
         beforeInput={resumeFromInvocationId ? (
             <div className="flex items-center justify-between gap-2 rounded-md border border-primary/40 bg-primary/5 px-3 py-2 text-xs">
               <span className="min-w-0">
@@ -847,6 +1014,8 @@ export function DashboardView({ surface = "overview" }: { surface?: DashboardSur
             </div>
           </details>
       </AgentRunComposer>
+      </details>
+      ) : null}
     </div>
   );
 }

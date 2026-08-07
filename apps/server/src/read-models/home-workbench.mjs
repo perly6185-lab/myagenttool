@@ -20,6 +20,7 @@ const NEEDS_ATTENTION = new Set([
   "review_ready",
   "follow_up_due",
 ]);
+const HOME_COMPLETED_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
 
 function localDateKey(timestamp, timezoneOffset = 0) {
   return new Date(timestamp - timezoneOffset * 60_000).toISOString().slice(0, 10);
@@ -34,6 +35,24 @@ function addUtcDays(dateKey, days) {
 function timestamp(value) {
   const parsed = value ? Date.parse(value) : Number.NaN;
   return Number.isFinite(parsed) ? parsed : Number.POSITIVE_INFINITY;
+}
+
+function completedTimestamp(item) {
+  const parsed = item.completedAt ? Date.parse(item.completedAt) : Number.NaN;
+  if (Number.isFinite(parsed)) return parsed;
+  const fallback = item.updatedAt ? Date.parse(item.updatedAt) : Number.NaN;
+  return Number.isFinite(fallback) ? fallback : null;
+}
+
+function isCompleted(item) {
+  return item.state === "closed" || item.status === "done";
+}
+
+function isVisibleHomeItem(item, nowMs) {
+  if (item.archivedAt) return false;
+  if (!isCompleted(item)) return true;
+  const finishedAt = completedTimestamp(item);
+  return finishedAt != null && finishedAt >= nowMs - HOME_COMPLETED_RETENTION_MS;
 }
 
 function attentionReasons(item, nowMs, today, tomorrow) {
@@ -100,6 +119,9 @@ function overdueAge(item, nowMs, today) {
 }
 
 function compareItems(left, right, nowMs, today) {
+  const leftCompleted = left.executionState === "completed" && left.planningStatus === "done";
+  const rightCompleted = right.executionState === "completed" && right.planningStatus === "done";
+  if (leftCompleted !== rightCompleted) return leftCompleted ? 1 : -1;
   const leftOverdue = left.attentionReason === "overdue" ? overdueAge(left, nowMs, today) : 0;
   const rightOverdue = right.attentionReason === "overdue" ? overdueAge(right, nowMs, today) : 0;
   if (leftOverdue !== rightOverdue) return rightOverdue - leftOverdue;
@@ -124,13 +146,16 @@ export function homeWorkbenchReadModel({
   const tomorrow = addUtcDays(today, 1);
   const users = new Map((state.users ?? []).map((user) => [user.id, user]));
   const items = workItems
-    .filter((item) => !item.archivedAt && item.state !== "closed" && item.status !== "done")
+    .filter((item) => isVisibleHomeItem(item, nowMs))
     .map((item) => {
       const execution = resolveWorkItemExecution(item, state, { now: nowMs });
-      const executionItem = { ...item, executionState: execution.executionState };
+      const completed = isCompleted(item);
+      const executionState = completed ? "completed" : execution.executionState;
+      const executionItem = { ...item, executionState };
       const reasons = attentionReasons(executionItem, nowMs, today, tomorrow);
       const attentionReason = reasons[0] ?? null;
       const aiStatus = execution.autoRun?.status ?? execution.invocation?.status ?? null;
+      const waitingOn = completed ? "none" : (item.waitingOn ?? "none");
       return {
         workItemId: item.id,
         localRef: item.localRef,
@@ -144,16 +169,17 @@ export function homeWorkbenchReadModel({
           name: item.requesterName ?? (item.requesterUserId ? users.get(item.requesterUserId)?.name ?? null : null),
           organization: item.requesterOrganization ?? null,
         },
-        planningStatus: item.status,
-        executionState: execution.executionState,
-        waitingOn: item.waitingOn ?? "none",
+        planningStatus: completed ? "done" : item.status,
+        executionState,
+        waitingOn,
         attentionReason,
         secondaryReasons: reasons.slice(1),
-        needsAttention: Boolean(attentionReason && NEEDS_ATTENTION.has(attentionReason)) || item.waitingOn === "me",
+        needsAttention: Boolean(attentionReason && NEEDS_ATTENTION.has(attentionReason)) || waitingOn === "me",
         dueDate: item.dueDate ?? null,
         plannedDate: item.plannedDate ?? null,
         commitmentDate: item.commitmentDate ?? null,
         nextFollowUpAt: item.nextFollowUpAt ?? null,
+        completedAt: completed ? (item.completedAt ?? item.updatedAt ?? null) : null,
         report: reportDraftSummary(state, item),
         nextAction: nextAction(item, reasons, execution),
         ai: aiStatus ? {
