@@ -2940,7 +2940,7 @@ export function createAutoRunService({
   // answers are posted back to the issue (so a re-triggered run has the context)
   // and recorded; the human then re-labels the issue `auto` (or starts it) to
   // proceed with the answers in the issue body. Human-only, audited.
-  async function answerClarify(autoRunId, { actor, answers } = {}) {
+  async function answerClarify(autoRunId, { actor, answers, selectedAction, repoUrl } = {}) {
     const autoRun = state.autoRuns.find((item) => item.id === autoRunId);
     if (!autoRun) throw new Error("Auto-run not found.");
     if ((autoRun.decision?.path ?? null) !== "clarify") throw new Error("Only a clarify run's questions can be answered.");
@@ -2964,7 +2964,13 @@ export function createAutoRunService({
     ].filter((l) => l !== null).join("\n");
     return runTx(() => {
       maybePostIssueReport(autoRun, worktree, body);
-      autoRun.clarifyAnswer = { by, at: now(), text: text.slice(0, 4000) };
+      autoRun.clarifyAnswer = {
+        by, at: now(), text: text.slice(0, 4000),
+        // Carry a structured chosen action + payload so the route handler can
+        // auto-trigger a fresh run (clone → evaluate / develop / etc.).
+        ...(selectedAction ? { selectedAction: String(selectedAction).slice(0, 64) } : {}),
+        ...(repoUrl ? { repoUrl: String(repoUrl).slice(0, 500) } : {}),
+      };
       appendEvent({
         invocationId: autoRun.invocationId,
         type: "auto_run_clarify_answered",
@@ -2972,7 +2978,9 @@ export function createAutoRunService({
         message: `Auto-run ${autoRun.id} clarify questions answered by ${by}.`,
         data: { autoRunId: autoRun.id, issue: autoRun.link?.number ?? null },
       });
-      return { ok: true };
+      // Signal the route handler to auto-trigger a fresh run with the chosen
+      // action payload (clone → evaluate / develop etc.) when applicable.
+      return { ok: true, shouldRetry: Boolean(selectedAction), repoUrl: repoUrl ?? null };
     });
   }
 

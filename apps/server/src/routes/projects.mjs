@@ -354,9 +354,41 @@ export async function handleProjectRoutes({
   if (clarifyAnswerMatch && req.method === "POST") {
     if (denyForeignAutoRun(decodeURIComponent(clarifyAnswerMatch[1]))) return true;
     try {
-      const body = await readJson(req);
-      const result = await answerClarify(decodeURIComponent(clarifyAnswerMatch[1]), { actor, answers: body?.answers });
+      const ranBody = await readJson(req);
+      const result = await answerClarify(decodeURIComponent(clarifyAnswerMatch[1]), {
+        actor,
+        answers: ranBody?.answers,
+        selectedAction: ranBody?.selectedAction,
+        repoUrl: ranBody?.repoUrl,
+      });
       sendJson(res, 200, result);
+      // When a structured action was chosen (e.g. "evaluate"), auto-trigger a
+      // fresh run: clone the repo → startAutoRun with the new project & path.
+      // Fire-and-forget so the clarify-answer response is not delayed by clone.
+      if (result.shouldRetry && result.repoUrl && typeof cloneProject === "function" && typeof startAutoRun === "function") {
+        const autoRun = state.autoRuns.find((item) => item.id === decodeURIComponent(clarifyAnswerMatch[1]));
+        const link = autoRun?.link ?? null;
+        const agentId = autoRun?.agentId ?? null;
+        const issueBody = autoRun?.issueBody ?? null;
+        if (link && agentId) {
+          const parentPath = defaultProjectPath ?? state.projects[0]?.path ?? process.cwd();
+          (async () => {
+            try {
+              const project = await cloneProject({ gitUrl: result.repoUrl, parentPath, name: ranBody?.repoName ?? undefined });
+              await startAutoRun({
+                projectId: project.id,
+                link,
+                agentId,
+                name: link?.title ?? undefined,
+                issueBody,
+              });
+            } catch {
+              // Best-effort: if the auto-triggered clone or run fails, the
+              // clarify answer itself already succeeded.
+            }
+          })();
+        }
+      }
     } catch (error) {
       sendJson(res, 400, { error: "clarify_answer_failed", message: errorMessage(error) });
     }

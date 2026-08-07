@@ -67,7 +67,28 @@ export function intentForPath(path) {
 
 /** Today's title+body heuristic mapped onto the decision contract. Always available. */
 export function heuristicDecision(link, issueBody = null) {
-  const intent = classifyIntentFromText(link?.title ?? "", issueBody ?? "");
+  const body = String(issueBody ?? "");
+  const intent = classifyIntentFromText(link?.title ?? "", body);
+  // If the body references a GitHub URL but the title does not make the
+  // user's intent clear, route to clarify with structured suggested actions
+  // so the human can choose (evaluate / develop / reference-only).
+  const gitUrl = body.match(/(https?:\/\/github\.com\/[^\s)]+\.git\b|https?:\/\/github\.com\/[^\s)]+(?!\/))/i)?.[0] ?? null;
+  if (gitUrl && intent !== "exploration") {
+    return {
+      path: "clarify",
+      spawnChildIssues: false,
+      confidence: 0.3,
+      rationale: `Body references ${gitUrl} but the title does not make the user's intent clear.`,
+      clarifyingQuestions: ["What do you want to do with this GitHub repository?"],
+      suggestedActions: [
+        { id: "evaluate", label: "评估体验", description: "探索项目、启动试用、输出体验报告", payload: { path: "evaluate", repoUrl: gitUrl } },
+        { id: "develop", label: "改代码", description: "在项目中修改代码、修复问题或实现功能", payload: { path: "develop", repoUrl: gitUrl } },
+        { id: "ignore", label: "只是参考链接", description: "这个 URL 只是引用,不需要操作项目", payload: null },
+      ],
+      decidedBy: "heuristic",
+      via: "heuristic",
+    };
+  }
   return {
     path: INTENT_TO_PATH[intent] ?? "develop",
     spawnChildIssues: false,
@@ -91,6 +112,18 @@ export function normalizeDecision(raw) {
     rationale: typeof raw.rationale === "string" ? raw.rationale.slice(0, 2000) : "",
     clarifyingQuestions: Array.isArray(raw.clarifyingQuestions)
       ? raw.clarifyingQuestions.filter((q) => typeof q === "string" && q.trim()).slice(0, 5)
+      : [],
+    // Structured action suggestions for clarify/needs-input runs (e.g. the
+    // heuristic detected a GitHub URL in the body but the user's intent —
+    // evaluate vs. reference vs. develop — is ambiguous). Each action carries
+    // a payload that the retry cycle passes back to startAutoRun.
+    suggestedActions: Array.isArray(raw.suggestedActions)
+      ? raw.suggestedActions.filter((a) => a?.id && a?.label).map((a) => ({
+          id: String(a.id),
+          label: String(a.label).slice(0, 80),
+          description: typeof a.description === "string" ? a.description.slice(0, 200) : "",
+          payload: a.payload ?? null,
+        })).slice(0, 5)
       : [],
     decidedBy: "agent",
   };
