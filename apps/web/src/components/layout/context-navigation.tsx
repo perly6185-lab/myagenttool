@@ -38,7 +38,7 @@ export function ContextNavigation({
   const navigate = usePageNavigation();
   const page = pageRegistration(section);
 
-  if (page.surface !== "entry" && returnSection) {
+  if (returnSection) {
     const origin = pageRegistration(returnSection);
     return (
       <div className="flex min-h-10 items-center gap-2 border-b border-border bg-muted/30 px-3 sm:px-6">
@@ -54,7 +54,7 @@ export function ContextNavigation({
           {t("shell.contextNav.returnTo", { destination: t(pageNavigationLabelKey(origin)) })}
         </button>
         <span className="text-xs text-muted-foreground">
-          {t(page.surface === "settings" ? "shell.navigation.settingsHint" : "shell.navigation.traceHint")}
+          {t(`shell.navigation.${page.surface}Hint`)}
         </span>
       </div>
     );

@@ -5,6 +5,7 @@ export const HOME_ATTENTION_REASON_ORDER = [
   "approval_required",
   "ai_failed",
   "review_ready",
+  "user_action_required",
   "follow_up_due",
   "waiting_requester",
   "waiting_internal",
@@ -18,6 +19,7 @@ const NEEDS_ATTENTION = new Set([
   "approval_required",
   "ai_failed",
   "review_ready",
+  "user_action_required",
   "follow_up_due",
 ]);
 const HOME_COMPLETED_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
@@ -58,16 +60,23 @@ function isVisibleHomeItem(item, nowMs) {
 function attentionReasons(item, nowMs, today, tomorrow) {
   if (item.state === "closed" || item.status === "done" || item.archivedAt) return [];
   const reasons = [];
-  const overdueCommitment = item.commitmentDate && timestamp(item.commitmentDate) < nowMs;
-  const overdueDueDate = item.dueDate && item.dueDate < today;
+  const aiOwnsNextStep = item.waitingOn !== "me"
+    && item.hasAiExecution
+    && ["claimed", "running", "verifying"].includes(item.executionState);
+  const overdueCommitment = !aiOwnsNextStep && item.commitmentDate && timestamp(item.commitmentDate) < nowMs;
+  const overdueDueDate = !aiOwnsNextStep && item.dueDate && item.dueDate < today;
   if (overdueCommitment || overdueDueDate) reasons.push("overdue");
   if (item.executionState === "awaiting_approval") reasons.push("approval_required");
   if (item.executionState === "failed") reasons.push("ai_failed");
   if (item.executionState === "completed") reasons.push("review_ready");
-  if (item.nextFollowUpAt && timestamp(item.nextFollowUpAt) <= nowMs) reasons.push("follow_up_due");
-  if (item.waitingOn === "requester") reasons.push("waiting_requester");
-  if (item.waitingOn === "internal") reasons.push("waiting_internal");
-  if (item.executionState === "running") reasons.push("ai_running");
+  const humanFollowUpDue = ["me", "requester", "internal"].includes(item.waitingOn)
+    && item.nextFollowUpAt
+    && timestamp(item.nextFollowUpAt) <= nowMs;
+  if (humanFollowUpDue) reasons.push("follow_up_due");
+  if (item.waitingOn === "me" && !aiOwnsNextStep && !reasons.some((reason) => NEEDS_ATTENTION.has(reason))) {
+    reasons.push("user_action_required");
+  }
+  if (item.hasAiExecution && item.executionState === "running") reasons.push("ai_running");
   if (item.plannedDate === today || item.plannedDate === tomorrow) reasons.push("planned");
   return HOME_ATTENTION_REASON_ORDER.filter((reason) => reasons.includes(reason));
 }
@@ -88,10 +97,13 @@ function nextAction(item, reasons, execution) {
   if (reasons.includes("review_ready")) {
     return { kind: "review_result", label: "review_result", targetId: runTarget, section: execution.autoRun ? "autoRuns" : "invocations" };
   }
+  if (reasons.includes("user_action_required")) {
+    return { kind: "record_progress", label: "record_progress", targetId: item.id, section: "task" };
+  }
   if (reasons.includes("ai_running")) {
     return { kind: "open_run", label: "open_run", targetId: runTarget, section: execution.autoRun ? "autoRuns" : "invocations" };
   }
-  if (reasons.some((reason) => ["follow_up_due", "waiting_requester", "waiting_internal"].includes(reason))) {
+  if (reasons.includes("follow_up_due")) {
     return { kind: "record_progress", label: "record_progress", targetId: item.id, section: "task" };
   }
   return { kind: "open_issue", label: "open_issue", targetId: item.id, section: "task" };
@@ -151,7 +163,11 @@ export function homeWorkbenchReadModel({
       const execution = resolveWorkItemExecution(item, state, { now: nowMs });
       const completed = isCompleted(item);
       const executionState = completed ? "completed" : execution.executionState;
-      const executionItem = { ...item, executionState };
+      const executionItem = {
+        ...item,
+        executionState,
+        hasAiExecution: Boolean(execution.autoRun || execution.invocation),
+      };
       const reasons = attentionReasons(executionItem, nowMs, today, tomorrow);
       const attentionReason = reasons[0] ?? null;
       const aiStatus = execution.autoRun?.status ?? execution.invocation?.status ?? null;

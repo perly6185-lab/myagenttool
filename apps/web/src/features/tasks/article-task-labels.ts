@@ -15,7 +15,7 @@ const labels = {
     interrupted: "The server restarted during import. No partial files were kept; retry to continue.",
     creatingWorktree: "Creating an isolated worktree…",
     importQueued: "Article import queued…",
-    createAndImport: "Create and import",
+    createAndRun: "Create and let AI handle it",
     importState: {
       queued: "Waiting in the import queue…",
       running: "Downloading article and media…",
@@ -46,7 +46,7 @@ const labels = {
     interrupted: "导入期间服务发生重启，未保留不完整文件；可点击重试继续。",
     creatingWorktree: "正在创建隔离工作树…",
     importQueued: "文章导入已排队…",
-    createAndImport: "创建并导入",
+    createAndRun: "创建并交给 AI 处理",
     importState: {
       queued: "正在等待导入队列…",
       running: "正在下载正文和媒体…",

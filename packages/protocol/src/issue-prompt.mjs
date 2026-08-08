@@ -44,6 +44,18 @@ export const SAFE_REPOSITORY_DISCOVERY_INSTRUCTIONS =
   "narrow and bounded; if a search is slow, stop it and reduce its paths instead of retrying the " +
   "same broad command.";
 
+const USER_FACING_DELIVERY_INSTRUCTIONS =
+  "Your final response is shown directly to the task owner, who may not be technical. Use the " +
+  "same primary language as the task title and description. Start with the outcome in plain " +
+  "language; do not make a file list or implementation jargon the summary. Use these short " +
+  "sections: Result, What changed, Checks performed, Remaining risks, and Recommended next step. " +
+  "State explicitly whether the result is ready for the owner to accept. If a check was not run " +
+  "or a risk remains, say so clearly and explain what the owner should do next. Report each result " +
+  "against the acceptance criteria and owner verification SOP confirmed before execution. Never " +
+  "invent, relax, or rewrite completion criteria after the work has started; if the execution " +
+  "contract is missing or contradictory, stop and request clarification instead of declaring a " +
+  "final result.";
+
 /**
  * The task prompt an agent receives when it is pointed at a worktree created
  * from a GitHub issue/PR. `item` is the worktree link shape
@@ -214,5 +226,5 @@ export function roleAutoRunPrompt(item, { path = "develop", issueBody = null, ve
     verifyCommand && (path === "develop" || path === "prototype")
       ? `\n\nYour change will be verified by running: \`${String(verifyCommand).slice(0, 300)}\`. Make sure it passes before you finish.`
       : "";
-  return `${item?.type === "local_issue" ? "" : "GitHub "}${label} #${number}: ${title}.${urlLine}${body}\n\n${instructions}\n\n${SAFE_REPOSITORY_DISCOVERY_INSTRUCTIONS}${verifyLine}`;
+  return `${item?.type === "local_issue" ? "" : "GitHub "}${label} #${number}: ${title}.${urlLine}${body}\n\n${instructions}\n\n${USER_FACING_DELIVERY_INSTRUCTIONS}\n\n${SAFE_REPOSITORY_DISCOVERY_INSTRUCTIONS}${verifyLine}`;
 }

@@ -4,7 +4,8 @@ import type { LocalWorkItem } from "./task-view-types";
 
 export function WorkItemAcceptanceSection({ item }: { item: LocalWorkItem }) {
   const { t } = useAppTranslation();
-  if (!item.acceptanceCriteria.length && !item.verificationRecords?.length) return null;
+  const criteria = item.reviewContract?.acceptanceCriteria ?? item.acceptanceCriteria;
+  if (!criteria.length && !item.verificationRecords?.length) return null;
   return (
     <section className="space-y-2 rounded-md border border-border p-3">
       <div className="flex items-center justify-between">
@@ -14,8 +15,9 @@ export function WorkItemAcceptanceSection({ item }: { item: LocalWorkItem }) {
         </Badge>
       </div>
       <ul className="space-y-1">
-        {item.acceptanceCriteria.map((criterion) => {
-          const result = item.acceptanceResults?.find((candidate) => candidate.criterion === criterion);
+        {criteria.map((criterion) => {
+          const result = item.reviewEvidence?.find((candidate) => candidate.criterion === criterion)
+            ?? item.acceptanceResults?.find((candidate) => candidate.criterion === criterion);
           return (
             <li key={criterion} className="flex items-start justify-between gap-2 text-xs">
               <span>{criterion}{result?.note ? ` · ${result.note}` : ""}</span>
@@ -26,6 +28,11 @@ export function WorkItemAcceptanceSection({ item }: { item: LocalWorkItem }) {
           );
         })}
       </ul>
+      {item.reviewContract ? (
+        <p className="font-mono text-[10px] text-muted-foreground">
+          {item.reviewContract.schemaVersion} · {item.reviewContract.digest?.slice(0, 12) ?? item.reviewContract.id}
+        </p>
+      ) : null}
       {(item.verificationRecords ?? []).map((record) => (
         <div key={record.id} className="rounded bg-muted p-2 text-xs">
           <div className="flex justify-between gap-2">

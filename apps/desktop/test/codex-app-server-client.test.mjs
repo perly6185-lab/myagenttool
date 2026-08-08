@@ -189,6 +189,42 @@ test("app-server startup failure returns a terminal transport outcome instead of
   assert.match(outcome.summary, /exited unexpectedly|transport closed/i);
 });
 
+test("app-server gives cold initialization its own timeout budget", async () => {
+  const client = createCodexAppServerClient({
+    command: process.execPath,
+    args: [fixture, "--slow-initialize"],
+    cwd: process.cwd(),
+    env: process.env,
+    requestTimeoutMs: 25,
+    initializeTimeoutMs: 500,
+  });
+  clients.push(client);
+
+  const outcome = await client.runTurn({ task: "cold start", cwd: process.cwd(), timeoutMs: 2_000 });
+
+  assert.equal(outcome.status, "succeeded");
+  assert.equal(client.snapshot().running, true);
+});
+
+test("app-server terminates a child that exceeds the cold-start timeout", async () => {
+  const client = createCodexAppServerClient({
+    command: process.execPath,
+    args: [fixture, "--slow-initialize"],
+    cwd: process.cwd(),
+    env: process.env,
+    requestTimeoutMs: 500,
+    initializeTimeoutMs: 10,
+  });
+  clients.push(client);
+
+  const outcome = await client.runTurn({ task: "stuck cold start", cwd: process.cwd(), timeoutMs: 2_000 });
+  await new Promise((resolveWait) => setTimeout(resolveWait, 100));
+
+  assert.equal(outcome.status, "failed");
+  assert.match(outcome.summary, /initialize timed out/i);
+  assert.equal(client.snapshot().running, false);
+});
+
 test("app-server classifies model capacity as a recoverable provider condition", async () => {
   const client = fixtureClient("--capacity");
   const outcome = await client.runTurn({

@@ -72,6 +72,16 @@ async function call(path, { token = "tok_a", method = "GET", body } = {}) {
   return { status: response.status, body: await response.json() };
 }
 
+async function waitForValue(read, { timeoutMs = 5_000, intervalMs = 20 } = {}) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const value = read();
+    if (value) return value;
+    await new Promise((resolve) => setTimeout(resolve, intervalMs));
+  }
+  throw new Error("Timed out waiting for background work-item Auto-run progress.");
+}
+
 async function webhook(payload, { secret = process.env.MYAGENTTOOL_GITHUB_WEBHOOK_SECRET, deliveryId = "delivery-http" } = {}) {
   const raw = JSON.stringify(payload);
   const signature = `sha256=${createHmac("sha256", secret).update(raw).digest("hex")}`;
@@ -737,7 +747,11 @@ test("a local issue creates a linked git worktree without a GitHub issue binding
 
 test("approved local delivery fast-forwards the base and only then closes the issue", async () => {
   const item = (await call("/api/work-items", {
-    method: "POST", body: { projectId: "prj_a", title: "Deliver over HTTP" },
+    method: "POST", body: {
+      projectId: "prj_a",
+      title: "Deliver over HTTP",
+      acceptanceCriteria: ["The delivery is ready to apply"],
+    },
   })).body.workItem;
   const created = await call(`/api/work-items/${item.id}/worktrees`, { method: "POST", body: {} });
   const worktree = created.body.worktree;
@@ -764,9 +778,22 @@ test("approved local delivery fast-forwards the base and only then closes the is
   });
   assert.equal(review.status, 201);
 
-  const detail = await call(`/api/work-items/${item.id}`);
+  let detail = await call(`/api/work-items/${item.id}`);
   assert.equal(detail.body.observability.nextAction, "review_delivery");
   assert.equal(detail.body.observability.delivery.mode, "local_merge");
+  const verified = await call(`/api/work-items/${item.id}/verifications`, {
+    method: "POST",
+    body: {
+      expectedRevision: detail.body.workItem.revision,
+      kind: "review",
+      status: "passed",
+      summary: "Delivery reviewed",
+      acceptanceResults: [{ criterion: "The delivery is ready to apply", status: "passed" }],
+      evidence: [{ kind: "run", ref: `worktree:${worktree.id}`, summary: "Approved worktree review" }],
+    },
+  });
+  assert.equal(verified.status, 201);
+  detail = await call(`/api/work-items/${item.id}`);
   const delivered = await call(`/api/work-items/${item.id}/delivery/local`, {
     method: "POST", body: { expectedRevision: detail.body.workItem.revision },
   });
@@ -787,30 +814,63 @@ test("a local issue starts an auto-run with its local body and acceptance criter
     },
   })).body.workItem;
   const result = await call(`/api/work-items/${item.id}/auto-runs`, { method: "POST", body: {} });
-  assert.equal(result.status, 201);
-  assert.equal(result.body.autoRun.link.type, "local_issue");
-  assert.equal(result.body.autoRun.issueBody.includes("Implement the local workflow."), true);
-  assert.equal(result.body.autoRun.issueBody.includes("The local path is tested"), true);
-  assert.equal(result.body.autoRun.executionChainId, item.id);
-  assert.equal(result.body.autoRun.autonomyProfile, "standard");
-  assert.equal(result.body.autoRun.terminalId, item.terminalId);
-  const invocation = runtimeState.invocations.find((row) => row.id === result.body.autoRun.invocationId);
+  assert.equal(result.status, 202);
+  assert.equal(result.body.autoRun.phase, "understanding");
+  assert.equal(result.body.autoRun.worktreeId, null);
+  assert.equal(result.body.autoRun.decision, null, "routing is performed after the HTTP handoff");
+  const autoRun = await waitForValue(() => {
+    const candidate = runtimeState.autoRuns.find((row) => row.id === result.body.autoRun.id);
+    return candidate?.invocationId ? candidate : null;
+  });
+  assert.equal(autoRun.link.type, "local_issue");
+  assert.equal(autoRun.issueBody.includes("Implement the local workflow."), true);
+  assert.equal(autoRun.issueBody.includes("The local path is tested"), true);
+  assert.match(autoRun.issueBody, /Acceptance criteria \(frozen for this run\)/);
+  assert.match(autoRun.issueBody, /Owner verification SOP \(frozen for this run\)/);
+  assert.equal(autoRun.executionChainId, item.id);
+  assert.equal(autoRun.autonomyProfile, "standard");
+  assert.equal(autoRun.terminalId, item.terminalId);
+  assert.match(autoRun.branchName, /-autorun-\d+$/, "the AI branch cannot collide with a manually created worktree branch");
+  const invocation = runtimeState.invocations.find((row) => row.id === autoRun.invocationId);
   assert.equal(invocation.terminalId, item.terminalId);
   assert.equal(invocation.options.metadata.executionChainId, item.id);
   const approval = runtimeState.approvalRequests.find((row) => row.invocationId === invocation.id);
   if (approval) assert.equal(approval.terminalId, item.terminalId);
   const detail = await call(`/api/work-items/${item.id}`);
-  assert.equal(detail.body.workItem.executionBindings.some((binding) => binding.kind === "auto_run"), true);
+  const binding = detail.body.workItem.executionBindings.find((candidate) => candidate.kind === "auto_run");
+  assert.equal(binding?.targetId, autoRun.id);
+  assert.equal(binding?.worktreeId, autoRun.worktreeId);
+});
+
+test("a local issue without a confirmed execution contract is prepared after handoff and starts AI", async () => {
+  const item = (await call("/api/work-items", {
+    method: "POST",
+    body: { projectId: "prj_a", title: "Run without explicit criteria", body: "Keep the workflow predictable." },
+  })).body.workItem;
+  const result = await call(`/api/work-items/${item.id}/auto-runs`, { method: "POST", body: {} });
+  assert.equal(result.status, 202, JSON.stringify(result.body));
+  assert.equal(result.body.autoRun.phase, "understanding");
+  const autoRun = await waitForValue(() => {
+    const candidate = runtimeState.autoRuns.find((row) => row.id === result.body.autoRun.id);
+    return candidate?.executionPlan?.status === "ready" && candidate?.invocationId ? candidate : null;
+  });
+  assert.equal(autoRun.link.type, "local_issue");
+  assert.equal(autoRun.executionPlan.confirmedBy, "ai_policy");
+  assert.ok(autoRun.executionPlan.acceptanceCriteria.length > 0);
+  assert.ok(autoRun.executionPlan.verificationSop.length > 0);
+  const detail = await call(`/api/work-items/${item.id}`);
+  assert.equal(detail.body.workItem.executionContractSource, "assisted");
+  assert.ok(detail.body.workItem.executionContractConfirmedAt);
 });
 
 test("local issues can be queued as a durable concurrency-limited Auto-run batch", async () => {
   const first = (await call("/api/work-items", {
     method: "POST",
-    body: { projectId: "prj_a", title: "Batch task one" },
+    body: { projectId: "prj_a", title: "Batch task one", acceptanceCriteria: ["Batch task one is complete"] },
   })).body.workItem;
   const second = (await call("/api/work-items", {
     method: "POST",
-    body: { projectId: "prj_a", title: "Batch task two" },
+    body: { projectId: "prj_a", title: "Batch task two", acceptanceCriteria: ["Batch task two is complete"] },
   })).body.workItem;
 
   const created = await call("/api/work-item-auto-run-batches", {
@@ -1010,7 +1070,11 @@ test("planning projects manage local issue membership over HTTP", async () => {
 
 test("planning AI plans are review-only and autonomy reaches local executions", async () => {
   const item = (await call("/api/work-items", {
-    method: "POST", body: { projectId: "prj_a", title: "Cautious planning work" },
+    method: "POST", body: {
+      projectId: "prj_a",
+      title: "Cautious planning work",
+      acceptanceCriteria: ["The planned change meets its stated goal"],
+    },
   })).body.workItem;
   const project = (await call("/api/planning-projects", {
     method: "POST", body: { name: "Governed plan", autonomyProfile: "cautious" },
@@ -1023,7 +1087,7 @@ test("planning AI plans are review-only and autonomy reaches local executions", 
   assert.equal(suggestion.body.plan.requiresApproval, true);
   assert.equal(suggestion.body.plan.autonomyProfile, "cautious");
   const execution = await call(`/api/work-items/${item.id}/auto-runs`, { method: "POST", body: {} });
-  assert.equal(execution.status, 201);
+  assert.equal(execution.status, 202);
   assert.equal(execution.body.autoRun.autonomyProfile, "cautious");
 });
 

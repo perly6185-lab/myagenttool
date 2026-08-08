@@ -173,6 +173,15 @@ async function mockApi(page: Page) {
         },
       } } });
     }
+    if (url.pathname === "/api/work-items/lwi_1" && method === "PATCH") {
+      const body = request.postDataJSON();
+      workItem = {
+        ...workItem,
+        ...body,
+        revision: Number(workItem?.revision ?? 0) + 1,
+      };
+      return route.fulfill({ json: { workItem } });
+    }
     if (url.pathname.endsWith("/comments")) return route.fulfill({ json: { comments: [] } });
     if (url.pathname.endsWith("/activity")) return route.fulfill({ json: { activities: [] } });
     if (url.pathname === "/api/work-items/lwi_1/auto-runs" && method === "POST") {
@@ -215,7 +224,7 @@ test.beforeEach(async ({ page }) => {
   await mockApi(page);
 });
 
-test("imports a GitLab issue, opens its Local Issue, and starts AI from simple details", async ({ page }) => {
+test("imports a GitLab issue, opens its Local Issue, and schedules AI from simple details", async ({ page }) => {
   await page.goto("/?section=externalWork", { waitUntil: "domcontentloaded" });
   await page.getByRole("button", { name: "Create tasks from issues" }).click();
   const importer = page.getByRole("dialog", { name: "Import external issue" });
@@ -228,11 +237,15 @@ test("imports a GitLab issue, opens its Local Issue, and starts AI from simple d
   const detail = page.getByRole("dialog", { name: "Local issue details" });
   await expect(detail).toBeVisible();
   await expect(detail.getByText("GitLab #19")).toBeVisible();
-  const autoRunRequest = page.waitForRequest((request) =>
-    request.url().endsWith("/api/work-items/lwi_1/auto-runs") && request.method() === "POST");
+  const scheduleRequest = page.waitForRequest((request) =>
+    request.url().endsWith("/api/work-items/lwi_1") && request.method() === "PATCH");
   await detail.getByRole("button", { name: "Let AI start" }).click();
-  await autoRunRequest;
-  await expect(detail.getByText(/AI has started/)).toBeVisible();
+  expect((await scheduleRequest).postDataJSON()).toMatchObject({
+    executionPolicy: "auto",
+    status: "ready",
+    waitingOn: "ai",
+  });
+  await expect(detail.getByText(/task is set to automatic/i)).toBeVisible();
 });
 
 test("browses and bulk imports GitLab issues on a narrow keyboard-accessible dialog", async ({ page }) => {
@@ -269,10 +282,14 @@ test("adopts a browsed GitHub issue and continues through the same Local Issue h
   const detail = page.getByRole("dialog", { name: "Local issue details" });
   await expect(detail).toBeVisible();
   await expect(detail.getByText("GitHub #42")).toBeVisible();
-  const autoRunRequest = page.waitForRequest((request) =>
-    request.url().endsWith("/api/work-items/lwi_1/auto-runs") && request.method() === "POST");
+  const scheduleRequest = page.waitForRequest((request) =>
+    request.url().endsWith("/api/work-items/lwi_1") && request.method() === "PATCH");
   await detail.getByRole("button", { name: "Let AI start" }).click();
-  await autoRunRequest;
+  expect((await scheduleRequest).postDataJSON()).toMatchObject({
+    executionPolicy: "auto",
+    status: "ready",
+    waitingOn: "ai",
+  });
 });
 
 test("creates an issue, routes AI execution, and reaches reviewed local delivery", async ({ page }) => {
@@ -337,8 +354,8 @@ test("keeps the Local Issue selected while fixing preflight and rechecks after r
   await expect(detail.getByRole("alert", { name: "Preflight" })).toContainText("No default agent is configured");
   await detail.getByRole("button", { name: "Open setup and fix" }).click();
 
-  await expect(page).toHaveURL(/section=agents.*task=lwi_1/);
-  await expect(page.getByRole("heading", { name: "Agents" })).toBeVisible();
+  await expect(page).toHaveURL(/section=autoRuns.*task=lwi_1/);
+  await expect(page.getByRole("heading", { name: "Auto-runs" })).toBeVisible();
   await page.getByRole("button", { name: "Return to Tasks" }).click();
   await expect(page).toHaveURL(/section=task.*task=lwi_1/);
   await expect(detail).toBeVisible();

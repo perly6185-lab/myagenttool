@@ -5,6 +5,7 @@ import { makeRunTx } from "./store/run-tx.mjs";
 import { createEventLogRuntime } from "./event-log.mjs";
 import { createRefusalRuntime } from "./refusal-log.mjs";
 import { createBridgeCredentialRuntime } from "./bridge-auth.mjs";
+import { currentDeviceTimeZone, findDevice, listDevices } from "./device.mjs";
 import { captureSeededDefaults, createPersistenceRuntime, normalizeLoadedState, persistedArrayKeys, persistedObjectKeys } from "./persistence.mjs";
 import { createReadModelRuntime } from "./read-models.mjs";
 import { createInMemoryStore } from "./store/in-memory-store.mjs";
@@ -42,6 +43,11 @@ import { createClaudeApplyImportService } from "../services/claude-apply-imports
 import { isGovernedClaudeApplyAgent } from "../services/claude-apply-agent.mjs";
 import { createCodexReviewImportService } from "../services/codex-review-imports.mjs";
 import { createCodexExecImportService } from "../services/codex-exec-imports.mjs";
+import {
+  CODEX_REVIEW_TOOL_CONTRACT,
+  createCodexReviewAgentRegistration,
+  isGovernedCodexReviewAgent,
+} from "../services/codex-agent.mjs";
 import { createRoundTelemetryRuntime } from "../services/round-telemetry.mjs";
 import {
   createLocalWorkflowEmbeddingAdapter,
@@ -71,6 +77,8 @@ import { createIssueClaimService } from "../services/issue-claims.mjs";
 import { createWorkItemService } from "../services/work-items.mjs";
 import { createTaskMaterialService } from "../services/task-materials.mjs";
 import { createWorkItemAutoRunBatchService } from "../services/work-item-auto-run-batches.mjs";
+import { createWorkItemAutoRunUnderstandingService } from "../services/work-item-auto-run-understanding.mjs";
+import { createWorkItemAutoSchedulerService } from "../services/work-item-auto-scheduler.mjs";
 import { createBusinessRoutineService } from "../services/business-routines.mjs";
 import { createBusinessPilotEvidenceService } from "../services/business-pilot-evidence.mjs";
 import { createWorkflowAdaptiveWorkService } from "../services/workflow-adaptive-work.mjs";
@@ -410,6 +418,7 @@ export function createServerRuntimeServices({
   let resolveWorkItemApplicationCapability = () => ({ state: "refusal", reason: "resolver_unavailable", capability: null });
   let invokeWorkItemApplicationCapability = () => ({ status: 503, body: { error: "capability_gateway_unavailable" } });
   let syncAdaptiveWorkItemOutcome = () => {};
+  let requestWorkItemAutoSchedulerSweep = () => {};
   const taskMaterialService = createTaskMaterialService({
     state, stateStorePath, now, nextId, persistStateSoon, appendEvent, store,
   });
@@ -422,7 +431,10 @@ export function createServerRuntimeServices({
     resolveApplicationCapability: (input, actor) => resolveWorkItemApplicationCapability(input, actor),
     invokeResolvedCapability: (name, input, actor) => invokeWorkItemApplicationCapability(name, input, actor),
     issueApplicationApprovalGrant: (input, actor) => issueApprovalGrant(input, actor),
-    onWorkItemChanged: (item, actor) => syncAdaptiveWorkItemOutcome(item, actor),
+    onWorkItemChanged: (item, actor) => {
+      syncAdaptiveWorkItemOutcome(item, actor);
+      requestWorkItemAutoSchedulerSweep();
+    },
     claimTaskMaterialDraft: taskMaterialService.claimDraft,
     resolveClaimedTaskMaterial: taskMaterialService.resolveClaimedAsset,
   });
@@ -531,7 +543,7 @@ export function createServerRuntimeServices({
         projectId: item.projectId,
         link,
         localIssueId: item.id,
-        name: `local-${item.localNumber}-${slug}${attemptSuffix}`,
+        name: `local-${item.localNumber}-${slug}-autorun-${Number(item.revision) || 0}${attemptSuffix}`,
         baseBranch,
         agentId,
         actor,
@@ -685,6 +697,23 @@ export function createServerRuntimeServices({
     nextBridgeHealthCheck,
     registerAgent,
   } = createAgentService({ state, now, nextId, appendEvent, persistStateSoon, store });
+  // The delivery-review stage is product behavior, not an operator-only tool
+  // setup step. Register its fixed read-only wrapper automatically whenever the
+  // local installation contains it. The wrapper invokes the user's existing
+  // local Codex CLI, so no second sign-in or separate credentials are needed.
+  const codexReviewWrapperPath = resolve("tools/agents/codex-review-wrapper.mjs");
+  if (
+    persistenceEnabled
+    && existsSync(codexReviewWrapperPath)
+    && !(state.agents ?? []).some(isGovernedCodexReviewAgent)
+  ) {
+    const reviewDevice = listDevices(state)[0] ?? null;
+    const reviewOwner = reviewDevice?.ownerUserId ?? "usr_local";
+    registerAgent(createCodexReviewAgentRegistration({
+      wrapperScriptPath: codexReviewWrapperPath,
+      costOwner: reviewOwner,
+    }), { userId: reviewOwner });
+  }
 
   const {
     closeClaudeSession,
@@ -1319,7 +1348,7 @@ export function createServerRuntimeServices({
     return { ok: true, ...result };
   }
 
-  const { startAutoRun, advanceAutoRunForInvocation, syncAutoRunOnApproval, syncAutoRunOnDenial, retryAutoRun, reverifyAutoRun, attemptFailover, cancelAutoRun, mergeAutoRunPr, recordRoutingOverride, reapStuckAutoRuns, autoMergeSweep, approveDesign, rejectDesign, answerClarify, approveDecomposition, rejectDecomposition } = createAutoRunService({
+  const { reserveAutoRun, decideReservedAutoRun, attachAutoRunExecutionPlan, failAutoRunUnderstanding, deferAutoRunUnderstanding, startAutoRun, advanceAutoRunForInvocation, syncAutoRunOnApproval, syncAutoRunOnDenial, retryAutoRun, reverifyAutoRun, attemptFailover, cancelAutoRun, stopAutoRunDelivery, mergeAutoRunPr, recordRoutingOverride, reapStuckAutoRuns, reconcileDeliveryReviews, autoMergeSweep, approveDesign, rejectDesign, answerClarify, approveDecomposition, rejectDecomposition } = createAutoRunService({
     state,
     now,
     nextId,
@@ -1440,7 +1469,11 @@ export function createServerRuntimeServices({
     decideIssuePath: (() => {
       const command = resolveDeciderCommand(autoRunEnv);
       return command
-        ? async ({ link, issueBody }) => runDeciderCommand({ command, input: { link, issueBody }, timeoutMs: deciderTimeoutMs(autoRunEnv) })
+        ? async ({ link, issueBody, projectContext }) => runDeciderCommand({
+            command,
+            input: { link, issueBody, projectContext },
+            timeoutMs: deciderTimeoutMs(autoRunEnv),
+          })
         : undefined;
     })(),
     // Decision confidence gate + fast-path (settings overlaid on env); passed so
@@ -1513,6 +1546,50 @@ export function createServerRuntimeServices({
         return { review, diffLines, files };
       };
     })(),
+    // Every completed local code delivery gets a second, read-only Codex pass.
+    // This is the same governed reviewer exposed by the tool registry, so it
+    // inherits the Desktop Bridge's local Codex login and cannot modify files.
+    startDeliveryReview: async ({ autoRun, worktree }) => {
+      const reviewer = (state.agents ?? []).find(isGovernedCodexReviewAgent) ?? null;
+      if (!reviewer || reviewer.status === "disabled" || reviewer.health?.status === "unhealthy") {
+        throw new Error("The governed Codex reviewer is not available on this device.");
+      }
+      const reviewerDevice = reviewer.location?.type === "local_device"
+        ? findDevice(state, reviewer.location.deviceId)
+        : null;
+      if (reviewer.location?.type === "local_device" && reviewerDevice?.unlinkState !== "linked") {
+        throw new Error("The local device is not connected, so Codex review cannot start yet.");
+      }
+      const taskContext = [
+        `Review the completed delivery for local task ${autoRun.link?.number ?? autoRun.id}: ${autoRun.link?.title ?? "Untitled task"}.`,
+        "Judge whether the committed change solves the task, introduces regressions, and includes adequate tests.",
+        autoRun.issueBody ? `Task and acceptance context:\n${String(autoRun.issueBody).slice(0, 850)}` : null,
+      ].filter(Boolean).join("\n\n").slice(0, 1200);
+      const invocation = createInvocation(`Review the completed local task delivery for ${autoRun.link?.title ?? autoRun.id}.`, reviewer, {
+        actor: { userId: autoRun.requestedBy ?? "usr_local", teamId: autoRun.teamId ?? "team_local", role: "operator" },
+        requestedBy: autoRun.requestedBy ?? "usr_local",
+        metadata: {
+          tool: CODEX_REVIEW_TOOL_CONTRACT.name,
+          toolVersion: CODEX_REVIEW_TOOL_CONTRACT.version,
+          projectId: autoRun.projectId,
+          worktreeId: worktree.id,
+          severityFloor: "medium",
+          instruction: taskContext,
+          ...(typeof worktree.baseCommit === "string" && /^[0-9a-f]{40}$/i.test(worktree.baseCommit)
+            ? { reviewBaseRef: worktree.baseCommit.toLowerCase() }
+            : {}),
+          autoRunId: autoRun.id,
+          role: "delivery_review",
+        },
+        // Native Codex review can inspect call sites and tests beyond the patch.
+        // Keep it asynchronous and allow the same turn budget as a coding run;
+        // the UI polls progress and the retry policy prevents runaway attempts.
+        timeoutSeconds: 900,
+      });
+      startInvocationIfAllowed(invocation, reviewer);
+      return invocation;
+    },
+    submitDeliveryReview: submitWorktreeReview,
     // Read a small text file from a worktree (e.g. design/BRIEF.md) — used to
     // surface the FULL design/prototype brief in the report, not just the thin
     // terminal summary. Null if absent/oversized.
@@ -1593,6 +1670,17 @@ export function createServerRuntimeServices({
     materializeTaskMaterials: taskMaterialService.materialize,
     store,
   });
+  const workItemAutoRunUnderstandingService = createWorkItemAutoRunUnderstandingService({
+    state,
+    getWorkItem: workItemService.getWorkItem,
+    prepareExecutionContract: workItemService.prepareExecutionContract,
+    decideReservedAutoRun,
+    attachAutoRunExecutionPlan,
+    failAutoRunUnderstanding,
+    deferAutoRunUnderstanding,
+    startAutoRun,
+    searchProjectContent,
+  });
   const workItemAutoRunBatchService = createWorkItemAutoRunBatchService({
     state,
     now,
@@ -1603,9 +1691,26 @@ export function createServerRuntimeServices({
     beginExecution: workItemService.beginExecution,
     abortExecution: workItemService.abortExecution,
     recordExecutionBinding: workItemService.recordExecutionBinding,
-    startAutoRun,
+    reserveAutoRun,
+    enqueueAutoRunUnderstanding: workItemAutoRunUnderstandingService.enqueue,
     store,
   });
+  const workItemAutoSchedulerService = createWorkItemAutoSchedulerService({
+    state,
+    now,
+    appendEvent,
+    getWorkItem: workItemService.getWorkItem,
+    beginExecution: workItemService.beginExecution,
+    abortExecution: workItemService.abortExecution,
+    recordExecutionBinding: workItemService.recordExecutionBinding,
+    reserveAutoRun,
+    enqueueAutoRunUnderstanding: workItemAutoRunUnderstandingService.enqueue,
+    failAutoRunUnderstanding,
+    timeZone: () => currentDeviceTimeZone(state),
+  });
+  requestWorkItemAutoSchedulerSweep = () => {
+    setImmediate(() => void workItemAutoSchedulerService.sweep().catch(() => {}));
+  };
   const codexApprovalRecovery = createCodexApprovalRecoveryService({
     state,
     now,
@@ -1620,6 +1725,7 @@ export function createServerRuntimeServices({
   advanceAutoRunHook = async (invocation) => {
     const result = await advanceAutoRunForInvocation(invocation);
     await codexApprovalRecovery.resumeForSettledInvocation(invocation);
+    requestWorkItemAutoSchedulerSweep();
     return result;
   };
   approvalAutoRunHook = syncAutoRunOnApproval;
@@ -1631,6 +1737,14 @@ export function createServerRuntimeServices({
   queueMicrotask(() => {
     void codexApprovalRecovery.reconcilePendingRecoveries().catch(() => {});
   });
+  queueMicrotask(() => {
+    void workItemAutoRunUnderstandingService.reconcile().catch(() => {});
+  });
+  // Let the HTTP listener bind before historical delivery review reconciliation;
+  // this work may create and persist an invocation on a large local state file.
+  setTimeout(() => {
+    void reconcileDeliveryReviews({ ignoreRetryDelay: true }).catch(() => {});
+  }, 1_000).unref?.();
 
   // Routing-evaluation disposition refresh (slice 5): bounded, throttled,
   // read-only gh; persists only when something changed.
@@ -4024,14 +4138,21 @@ export function createServerRuntimeServices({
     promoteWorktreeToBase,
     promoteWorktreeToPullRequest,
     ensureLocalOrigin,
+    enqueueWorkItemAutoRunUnderstanding: workItemAutoRunUnderstandingService.enqueue,
+    reconcileWorkItemAutoRunUnderstanding: workItemAutoRunUnderstandingService.reconcile,
+    reserveAutoRun,
+    attachAutoRunExecutionPlan,
+    failAutoRunUnderstanding,
     startAutoRun,
     retryAutoRun,
     reverifyAutoRun,
     recoverTimedOutCodexApproval: codexApprovalRecovery.recoverTimedOutApproval,
     processPlanningRecommendedActions,
     cancelAutoRun,
+    stopAutoRunDelivery,
     reapStuckAutoRuns,
     sweepWorkItemAutoRunBatches: workItemAutoRunBatchService.sweepBatches,
+    sweepWorkItemAutoScheduler: workItemAutoSchedulerService.sweep,
     sweepExpiredClaims,
     sweepAutoRunSloAlerts,
     sweepAlertOutbox: alertOutbox.sweep,
@@ -4097,6 +4218,7 @@ export function createServerRuntimeServices({
     recordWorkItemExecutionBinding: workItemService.recordExecutionBinding,
     createWorkItemAutoRunBatch: workItemAutoRunBatchService.createBatch,
     listWorkItemAutoRunBatches: workItemAutoRunBatchService.listBatches,
+    previewWorkItemAutoScheduler: workItemAutoSchedulerService.preview,
     claimWorkItem: workItemService.claimWorkItem,
     releaseWorkItemClaim: workItemService.releaseWorkItemClaim,
     assignWorkItemToSelf: workItemService.assignWorkItemToSelf,
@@ -4119,6 +4241,7 @@ export function createServerRuntimeServices({
     updateWorkItemAttention: workItemService.updateAttention,
     getWorkItemGithubSyncDiagnostics: workItemService.githubSyncDiagnostics,
     suggestWorkItemDraft: workItemService.suggestWorkItemDraft,
+    prepareWorkItemExecutionContract: workItemService.prepareExecutionContract,
     listWorkItemReportDrafts: workItemService.listReportDrafts,
     getWorkItemReportDraft: workItemService.getReportDraft,
     generateWorkItemReportDraft: workItemService.generateReportDraft,

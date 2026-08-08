@@ -127,6 +127,13 @@ const localExecutionPolicyManifest = withBundledAgentProbes(
 );
 const bridgeTokenPath = resolve(process.env.MYAGENTTOOL_BRIDGE_TOKEN_PATH ?? ".myagenttool/bridge-token.json");
 const bridgeSessionPath = resolve(dirname(bridgeTokenPath), "bridge-session.json");
+// Keep Codex authentication/configuration in the user's native CODEX_HOME, but
+// move its mutable SQLite runtime state into the bridge-owned state directory.
+// This matters when the bridge is launched from a sandboxed parent that may read
+// the signed-in user's Codex home but cannot create/update databases there.
+const codexRuntimeStatePath = resolve(
+  process.env.MYAGENTTOOL_CODEX_SQLITE_HOME ?? join(dirname(bridgeTokenPath), "codex-state"),
+);
 let bridgeToken = String(process.env.MYAGENTTOOL_BRIDGE_TOKEN ?? "").trim() || loadBridgeToken();
 // One id per desktop PROCESS, not per credential or request. The server uses it
 // to distinguish a reconnect from a replacement process and reclaim children
@@ -378,6 +385,9 @@ if (process.argv.includes("--check")) {
   if (process.platform === "win32" && defaultHomeEnv.CODEX_HOME !== "C:\\Users\\demo\\.codex") {
     throw new Error("Codex child environment should default to the user Codex home.");
   }
+  if (codexEnv.CODEX_SQLITE_HOME !== codexRuntimeStatePath || codexEnv.CODEX_SQLITE_HOME === codexEnv.CODEX_HOME) {
+    throw new Error("Codex mutable state should use the bridge-owned runtime directory without replacing the user's login home.");
+  }
   if (codexEnv.OPENAI_BASE_URL !== "http://127.0.0.1:8787/v1") {
     throw new Error("Codex child local env injection is not configured.");
   }
@@ -401,6 +411,11 @@ if (process.argv.includes("--check")) {
   console.log("[desktop:check] local demo bridge check OK");
   process.exit(0);
 }
+
+// CODEX_SQLITE_HOME is a public Codex CLI/app-server location override and its
+// directory must exist before the runtime starts. No credential file is read or
+// copied: Codex continues to own authentication through the original CODEX_HOME.
+mkdirSync(codexRuntimeStatePath, { recursive: true, mode: 0o700 });
 
 // #1242: `polling` guards the poll TICK against re-entry (the claim round trips),
 // NOT the runs themselves — invocations run concurrently in invocationPool up to
@@ -433,9 +448,12 @@ process.on("unhandledRejection", (reason) => {
 await waitForServer();
 let registration;
 try {
-  const runtimeReadiness = await collectApplicationBinaryReadiness(localExecutionPolicyManifest);
+  const runtimeReadiness = await collectApplicationBinaryReadiness(localExecutionPolicyManifest, {
+    environmentForCommand: (command) => buildEnv({ command, environmentPolicy: "inherit_safe" }),
+  });
   registration = await registerBridgeWithRetry(() => request("POST", "/api/bridge/register", {
       bridgeVersion: "0.0.0",
+      timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
       bridgeSessionId,
       capabilities: ["demo_cli_agent", "managed_terminal_pty", "remote_ssh_relay"],
       runtimeReadiness,
@@ -516,8 +534,11 @@ function logPollError(label, error) {
 const guarded = (fn, label) => () => Promise.resolve().then(fn).catch((error) => logPollError(label, error));
 
 async function refreshApplicationBinaryReadiness() {
-  const runtimeReadiness = await collectApplicationBinaryReadiness(localExecutionPolicyManifest);
+  const runtimeReadiness = await collectApplicationBinaryReadiness(localExecutionPolicyManifest, {
+    environmentForCommand: (command) => buildEnv({ command, environmentPolicy: "inherit_safe" }),
+  });
   const response = await request("POST", "/api/bridge/readiness", {
+    timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
     runtimeReadiness,
     applicationBinaryReadiness: runtimeReadiness,
     // A credential revoked in the provider's account shows up here as the sidecar
@@ -2303,6 +2324,12 @@ function governedReviewWrapperArgs(renderedArgs, payload) {
   if (severityFloor && !hasFlag(injected, "--severity-floor")) {
     injected.push("--severity-floor", severityFloor);
   }
+  const reviewBaseRef = typeof metadata.reviewBaseRef === "string" && /^[0-9a-f]{40}$/i.test(metadata.reviewBaseRef)
+    ? metadata.reviewBaseRef.toLowerCase()
+    : null;
+  if (reviewBaseRef && !hasFlag(injected, "--base-ref")) {
+    injected.push("--base-ref", reviewBaseRef);
+  }
   // Present only for claude.propose.patch — the change to propose. Read-only:
   // the wrapper stays in plan mode and outputs a diff as text, never applies it.
   const task = boundedString(metadata.task, 4000);
@@ -2969,6 +2996,9 @@ function withCodexUserDefaults(env) {
     if (root) {
       nextEnv.CODEX_HOME = resolve(root, ".codex");
     }
+  }
+  if (!nextEnv.CODEX_SQLITE_HOME) {
+    nextEnv.CODEX_SQLITE_HOME = codexRuntimeStatePath;
   }
   return nextEnv;
 }

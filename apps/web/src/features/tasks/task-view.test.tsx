@@ -307,7 +307,7 @@ describe("TaskView local work items", () => {
     })));
   });
 
-  it("inspects and imports a public article into an issue worktree", async () => {
+  it("inspects a public article and creates an automatically scheduled AI issue", async () => {
     mocks.listWorkItems.mockResolvedValue({ workItems: [], count: 0 });
     mocks.inspectArticleImport.mockResolvedValue({
       inspection: {
@@ -323,15 +323,6 @@ describe("TaskView local work items", () => {
       },
     });
     mocks.createWorkItem.mockResolvedValue({ workItem: { id: "lwi_article" } });
-    mocks.createWorkItemWorktree.mockResolvedValue({ worktree: { id: "wtr_article" } });
-    mocks.startArticleImport.mockResolvedValue({
-      job: {
-        id: "article_import_1",
-        state: "completed",
-        progress: { stage: "completed", completed: 1, total: 1 },
-        error: null,
-      },
-    });
     render(<TaskView />);
     fireEvent.click(screen.getByRole("button", { name: /New task/i }));
     fireEvent.click(await screen.findByRole("button", { name: "Import link" }));
@@ -342,18 +333,20 @@ describe("TaskView local work items", () => {
     expect(await screen.findByText("Imported WeChat article")).toBeTruthy();
     expect(screen.getByText(/3 images/)).toBeTruthy();
     fireEvent.change(screen.getByLabelText("Expected completion date"), { target: { value: "2026-08-15" } });
-    fireEvent.click(screen.getByRole("button", { name: "Create and import" }));
+    fireEvent.click(screen.getByRole("button", { name: "Create and let AI handle it" }));
     await waitFor(() => expect(mocks.createWorkItem).toHaveBeenCalledWith(expect.objectContaining({
       projectId: "prj_1",
       title: "Imported WeChat article",
       labels: expect.arrayContaining(["source:wechat", "content:article"]),
       intakeChannel: "import",
+      status: "ready",
+      executionPolicy: "auto",
+      waitingOn: "ai",
+      plannedDate: expect.stringMatching(/^\d{4}-\d{2}-\d{2}$/),
     })));
-    expect(mocks.createWorkItemWorktree).toHaveBeenCalledWith("lwi_article");
-    expect(mocks.startArticleImport).toHaveBeenCalledWith("lwi_article", {
-      url: "https://mp.weixin.qq.com/s/example",
-      worktreeId: "wtr_article",
-    });
+    expect(mocks.createWorkItem.mock.calls.at(-1)?.[0]).not.toHaveProperty("assigneeIds");
+    expect(mocks.createWorkItemWorktree).not.toHaveBeenCalled();
+    expect(mocks.startArticleImport).not.toHaveBeenCalled();
   });
 
   it("ignores a stale inspection response after the URL changes", async () => {
@@ -382,114 +375,7 @@ describe("TaskView local work items", () => {
     });
     await waitFor(() => expect(mocks.inspectArticleImport).toHaveBeenCalled());
     expect(screen.queryByText("Stale article A")).toBeNull();
-    expect((screen.getByRole("button", { name: "Create and import" }) as HTMLButtonElement).disabled).toBe(true);
-  });
-
-  it("resumes a stored article import when the creation dialog is reopened", async () => {
-    window.localStorage.setItem("myagenttool.article-import.active.v1", JSON.stringify({
-      projectId: "prj_1",
-      workItemId: "lwi_resume",
-      worktreeId: "wtr_resume",
-      jobId: "article_import_resume",
-      sourceUrl: "https://example.com/resume",
-    }));
-    mocks.listWorkItems.mockResolvedValue({ workItems: [], count: 0 });
-    mocks.getArticleImport.mockResolvedValue({
-      job: {
-        id: "article_import_resume",
-        state: "completed",
-        progress: { stage: "completed", completed: 1, total: 1 },
-        error: null,
-      },
-    });
-    render(<TaskView />);
-    fireEvent.click(screen.getByRole("button", { name: /New task/i }));
-    await waitFor(() => expect(mocks.getArticleImport).toHaveBeenCalledWith("lwi_resume", "article_import_resume"));
-    expect(window.localStorage.getItem("myagenttool.article-import.active.v1")).toBeNull();
-  });
-
-  it("offers a one-click retry when a persisted import was interrupted by restart", async () => {
-    mocks.execute.mockImplementationOnce(async (fn: () => Promise<unknown>) => {
-      try {
-        await fn();
-        return true;
-      } catch {
-        return false;
-      }
-    });
-    window.localStorage.setItem("myagenttool.article-import.active.v1", JSON.stringify({
-      projectId: "prj_1",
-      workItemId: "lwi_resume",
-      worktreeId: "wtr_resume",
-      jobId: "article_import_old",
-      sourceUrl: "https://example.com/resume",
-    }));
-    mocks.listWorkItems.mockResolvedValue({ workItems: [], count: 0 });
-    mocks.getArticleImport.mockResolvedValue({
-      job: {
-        id: "article_import_old",
-        state: "failed",
-        progress: { stage: "failed", completed: 0, total: 1 },
-        error: "article_import_interrupted",
-      },
-    });
-    mocks.startArticleImport.mockResolvedValue({
-      job: {
-        id: "article_import_retry",
-        state: "completed",
-        progress: { stage: "completed", completed: 1, total: 1 },
-        error: null,
-      },
-    });
-    render(<TaskView />);
-    fireEvent.click(screen.getByRole("button", { name: /New task/i }));
-    expect(await screen.findByText(/server restarted during import/i)).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: "Retry import" }));
-    await waitFor(() => expect(mocks.startArticleImport).toHaveBeenCalledWith("lwi_resume", {
-      url: "https://example.com/resume",
-      worktreeId: "wtr_resume",
-    }));
-    expect(mocks.createWorkItem).not.toHaveBeenCalled();
-    expect(mocks.createWorkItemWorktree).not.toHaveBeenCalled();
-  });
-
-  it("keeps the creation dialog open while an article import is active", async () => {
-    mocks.listWorkItems.mockResolvedValue({ workItems: [], count: 0 });
-    mocks.inspectArticleImport.mockResolvedValue({
-      inspection: {
-        canonicalUrl: "https://example.com/slow",
-        provider: "web",
-        contentType: "article",
-        title: "Slow article",
-        author: null,
-        publishedAt: null,
-        publishedAtSource: "imported",
-        textLength: 20,
-        mediaCounts: { images: 1, audio: 0, video: 0 },
-      },
-    });
-    mocks.createWorkItem.mockResolvedValue({ workItem: { id: "lwi_slow" } });
-    mocks.createWorkItemWorktree.mockResolvedValue({ worktree: { id: "wtr_slow" } });
-    mocks.startArticleImport.mockResolvedValue({
-      job: {
-        id: "article_import_slow",
-        state: "queued",
-        progress: { stage: "queued", completed: 0, total: 1 },
-        error: null,
-      },
-    });
-    mocks.getArticleImport.mockReturnValue(new Promise(() => {}));
-    render(<TaskView />);
-    fireEvent.click(screen.getByRole("button", { name: /New task/i }));
-    fireEvent.click(await screen.findByRole("button", { name: "Import link" }));
-    fireEvent.change(screen.getByLabelText("Public article URL"), { target: { value: "https://example.com/slow" } });
-    fireEvent.click(screen.getByRole("button", { name: "Inspect" }));
-    await screen.findByText("Slow article");
-    fireEvent.change(screen.getByLabelText("Expected completion date"), { target: { value: "2026-08-15" } });
-    fireEvent.click(screen.getByRole("button", { name: "Create and import" }));
-    await screen.findByRole("button", { name: "Cancel" });
-    await waitFor(() => expect((screen.getByRole("button", { name: "Close" }) as HTMLButtonElement).disabled).toBe(true));
-    expect(window.localStorage.getItem("myagenttool.article-import.active.v1")).toContain("article_import_slow");
+    expect((screen.getByRole("button", { name: "Create and let AI handle it" }) as HTMLButtonElement).disabled).toBe(true);
   });
 
   it("filters tasks by planning project and manages membership", async () => {
@@ -1070,6 +956,69 @@ describe("TaskView local work items", () => {
     const dialog = screen.getAllByRole("dialog").at(-1);
     fireEvent.click(within(dialog as HTMLElement).getByRole("button", { name: "Merge into base" }));
     await waitFor(() => expect(mocks.deliverWorkItem).toHaveBeenCalledWith("lwi_delivery", "local_merge", 4));
+  });
+
+  it("shows task run history only when the server reports a failure or rerun", async () => {
+    const item = {
+      id: "lwi_history", localRef: "LOCAL-60", projectId: "prj_1",
+      title: "Retry a local task", body: "", type: "task", status: "in_progress",
+      priority: "p1", state: "open", labels: [], assigneeIds: [],
+      acceptanceCriteria: [], verificationRecords: [], completionGate: {
+        ready: false, missingCriteria: [], verificationRequired: false,
+      },
+      revision: 2, archivedAt: null, updatedAt: "2026-08-07T02:00:00.000Z",
+      executionBindings: [{
+        kind: "auto_run", targetId: "aur_history", worktreeId: "wtr_history",
+        createdAt: "2026-08-07T01:00:00.000Z",
+      }],
+    };
+    const observability = {
+      nextAction: "monitor_execution",
+      attention: [],
+      latestRun: {
+        id: "aur_history", status: "running", updatedAt: "2026-08-07T02:00:00.000Z",
+        invocationId: "inv_retry",
+      },
+      runHistory: [],
+      activeClaim: null,
+      cost: { knownUsd: 0, unknownEntries: 0, entryCount: 0, projectBudget: null, teamBudget: null },
+      alerts: { queued: 0, failed: 0, sent: 0, skipped: 0, items: [] },
+    };
+    mocks.listWorkItems.mockResolvedValue({ workItems: [item], count: 1 });
+    mocks.getWorkItem.mockResolvedValue({ workItem: item, observability });
+    mocks.listWorkItemComments.mockResolvedValue({ comments: [] });
+    mocks.listWorkItemActivity.mockResolvedValue({ activities: [] });
+    render(<TaskView />);
+
+    fireEvent.click(await screen.findByText("Retry a local task"));
+    await openExpertDetails();
+    fireEvent.click(await screen.findByRole("tab", { name: "Process" }));
+    expect(screen.queryByLabelText("Run history")).toBeNull();
+
+    mocks.getWorkItem.mockResolvedValue({
+      workItem: item,
+      observability: {
+        ...observability,
+        runHistory: [{
+          invocationId: "inv_first", autoRunId: "aur_history", attempt: 1, status: "failed",
+          createdAt: "2026-08-07T01:00:00.000Z", startedAt: "2026-08-07T01:00:01.000Z",
+          completedAt: "2026-08-07T01:05:00.000Z", errorCode: "transport_closed",
+          summary: "The local connection closed.", current: false,
+        }, {
+          invocationId: "inv_retry", autoRunId: "aur_history", attempt: 2, status: "running",
+          createdAt: "2026-08-07T02:00:00.000Z", startedAt: "2026-08-07T02:00:01.000Z",
+          completedAt: null, errorCode: null, summary: null, current: true,
+        }],
+      },
+    });
+    document.dispatchEvent(new Event("visibilitychange"));
+
+    const history = await screen.findByLabelText("Run history");
+    expect(within(history).getByText("Attempt 1")).toBeTruthy();
+    expect(within(history).getByText("Attempt 2")).toBeTruthy();
+    expect(within(history).getByText("The local connection closed.")).toBeTruthy();
+    expect(within(history).getByText("Reason: transport_closed")).toBeTruthy();
+    expect(within(history).getByText("Current")).toBeTruthy();
   });
 
   it("shows the external issue funnel and plain-language stalled recovery", async () => {

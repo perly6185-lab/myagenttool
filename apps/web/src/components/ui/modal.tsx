@@ -11,6 +11,7 @@ export function Modal({
   title,
   description,
   children,
+  footer,
   size = "md",
   closeDisabled = false,
 }: {
@@ -19,6 +20,7 @@ export function Modal({
   title: string;
   description?: string;
   children: ReactNode;
+  footer?: ReactNode;
   size?: "md" | "lg" | "xl" | "2xl" | "full";
   closeDisabled?: boolean;
 }) {
@@ -81,7 +83,7 @@ export function Modal({
         aria-labelledby={titleId}
         aria-describedby={description ? descriptionId : undefined}
         tabIndex={-1}
-        className={`relative z-10 max-h-[calc(100vh-2rem)] w-full overflow-y-auto ${
+        className={`relative z-10 flex max-h-[calc(100vh-2rem)] w-full flex-col overflow-hidden ${
           size === "full" ? "h-full max-h-none max-w-7xl rounded-none sm:h-auto sm:max-h-[calc(100vh-2rem)] sm:rounded-xl"
             : size === "2xl" ? "max-w-6xl rounded-xl" : size === "xl" ? "max-w-5xl rounded-xl" : size === "lg" ? "max-w-lg rounded-xl" : "max-w-md rounded-xl"
         } border border-border bg-card p-4 shadow-xl sm:p-5`}
@@ -95,9 +97,12 @@ export function Modal({
         >
           <X className="size-4" />
         </button>
-        <h2 id={titleId} className="text-base font-semibold">{title}</h2>
-        {description ? <p id={descriptionId} className="mt-0.5 text-sm text-muted-foreground">{description}</p> : null}
-        <div className="mt-4">{children}</div>
+        <div className="shrink-0 pr-8">
+          <h2 id={titleId} className="text-base font-semibold">{title}</h2>
+          {description ? <p id={descriptionId} className="mt-0.5 text-sm text-muted-foreground">{description}</p> : null}
+        </div>
+        <div className="mt-4 min-h-0 overflow-y-auto">{children}</div>
+        {footer ? <div className="mt-4 shrink-0 border-t border-border pt-4">{footer}</div> : null}
       </div>
     </div>,
     document.body,

@@ -64,6 +64,7 @@ test("home workbench projects canonical AI and approval navigation", () => {
 test("home workbench uses only the newest execution binding for state and navigation", () => {
   const result = model([item({
     executionState: "failed",
+    waitingOn: "ai",
     executionBindings: [
       { kind: "auto_run", targetId: "aur_old", createdAt: "2026-08-01T04:00:00.000Z" },
       { kind: "application_invocation", id: "inv_new", createdAt: "2026-08-02T04:00:00.000Z" },
@@ -96,6 +97,56 @@ test("home workbench aggregates relationship and waiting counts", () => {
   assert.equal(result.summary.byRelation.child, 1);
   assert.equal(result.summary.byWaitingOn.requester, 1);
   assert.equal(result.summary.byWaitingOn.ai, 1);
+  assert.equal(result.items.find((row) => row.workItemId === "customer").needsAttention, false);
+  assert.equal(result.items.find((row) => row.workItemId === "boss").needsAttention, false);
+});
+
+test("home workbench only asks for participation when a person can act", () => {
+  const result = model([
+    item({ id: "mine", waitingOn: "me" }),
+    item({ id: "requester-early", waitingOn: "requester", nextFollowUpAt: "2026-08-04T03:00:00.000Z" }),
+    item({ id: "requester-due", waitingOn: "requester", nextFollowUpAt: "2026-08-03T03:00:00.000Z" }),
+    item({
+      id: "ai-running", waitingOn: "ai", dueDate: "2026-08-01",
+      nextFollowUpAt: "2026-08-03T03:00:00.000Z", executionState: "running",
+      executionBindings: [{ kind: "application_invocation", id: "inv_ai_running" }],
+    }),
+  ], {
+    invocations: [{ id: "inv_ai_running", status: "running", updatedAt: NOW }],
+  });
+
+  const byId = Object.fromEntries(result.items.map((row) => [row.workItemId, row]));
+  assert.equal(byId.mine.attentionReason, "user_action_required");
+  assert.equal(byId.mine.needsAttention, true);
+  assert.equal(byId.mine.nextAction.kind, "record_progress");
+  assert.equal(byId["requester-early"].attentionReason, null);
+  assert.equal(byId["requester-early"].needsAttention, false);
+  assert.equal(byId["requester-due"].attentionReason, "follow_up_due");
+  assert.equal(byId["requester-due"].needsAttention, true);
+  assert.equal(byId["ai-running"].attentionReason, "ai_running");
+  assert.equal(byId["ai-running"].needsAttention, false);
+});
+
+test("review waiting on me stays actionable when only a worktree claim is active", () => {
+  const result = model([item({
+    id: "worktree-review",
+    status: "review",
+    waitingOn: "me",
+    claim: {
+      status: "active",
+      claimedBy: "worktree:wtr_1",
+      leaseExpiresAt: "2026-08-03T05:00:00.000Z",
+    },
+  })]);
+
+  const row = result.items[0];
+  assert.equal(row.planningStatus, "review");
+  assert.equal(row.executionState, "claimed");
+  assert.equal(row.waitingOn, "me");
+  assert.equal(row.attentionReason, "user_action_required");
+  assert.equal(row.needsAttention, true);
+  assert.equal(row.nextAction.kind, "record_progress");
+  assert.equal(row.ai, null);
 });
 
 test("home workbench exposes compact report status without report content", () => {

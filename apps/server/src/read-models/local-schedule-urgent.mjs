@@ -29,15 +29,12 @@ function revisionFor(capacity, schedulePreview, urgentItems) {
   return createHash("sha256").update(JSON.stringify({
     terminalId: capacity?.terminal?.id ?? null,
     schedulePlanRevision: schedulePreview.planRevision,
-    availableSlots: capacity?.capacity?.availableSlots ?? 0,
-    inFlight: capacity?.capacity?.inFlight ?? 0,
     urgentItems: urgentItems.map((item) => ({
       id: item.workItemId,
       revision: item.revision,
       dueDate: item.dueDate,
       createdAt: item.createdAt,
       plannedDate: item.plannedDate,
-      readiness: item.readiness,
     })),
   })).digest("hex").slice(0, 24);
 }

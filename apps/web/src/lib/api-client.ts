@@ -106,6 +106,7 @@ export interface LocalScheduleCapacityResponse {
     status: string;
     unlinkState: string;
     bridgeAvailable: boolean;
+    timeZone?: string;
   };
   capacity: {
     maxConcurrency: number;
@@ -2171,9 +2172,12 @@ export const api = {
     title: string;
     body?: string;
     type?: "task" | "bug" | "feature" | "initiative";
+    status?: "backlog" | "ready" | "in_progress" | "review" | "blocked" | "done";
     priority?: "p0" | "p1" | "p2" | "p3";
+    executionPolicy?: "inherit" | "auto" | "manual" | "paused";
     labels?: string[];
     acceptanceCriteria?: string[];
+    verificationSop?: string[];
     assigneeIds?: string[];
     requesterRelation?: "boss" | "manager" | "customer" | "child" | "colleague" | "self" | "unknown";
     requesterName?: string | null;
@@ -2185,6 +2189,7 @@ export const api = {
     commitmentDate?: string | null;
     nextFollowUpAt?: string | null;
     dueDate?: string | null;
+    notBefore?: string | null;
     plannedDate?: string | null;
     carriedFromDate?: string | null;
     milestone?: string;
@@ -2298,7 +2303,10 @@ export const api = {
   createWorkItemWorktree: (id: string, payload: { agentId?: string; baseBranch?: string } = {}) =>
     request("POST", `/api/work-items/${encodeURIComponent(id)}/worktrees`, payload),
   startWorkItemAutoRun: (id: string, payload: { agentId?: string; baseBranch?: string } = {}) =>
-    request("POST", `/api/work-items/${encodeURIComponent(id)}/auto-runs`, payload),
+    request("POST", `/api/work-items/${encodeURIComponent(id)}/auto-runs`, {
+      ...payload,
+      timezoneOffset: new Date().getTimezoneOffset(),
+    }),
   deliverWorkItem: (id: string, mode: "local_merge" | "pull_request", expectedRevision: number) =>
     request("POST", `/api/work-items/${encodeURIComponent(id)}/delivery/${mode === "local_merge" ? "local" : "pull-request"}`, {
       expectedRevision,
@@ -2382,9 +2390,13 @@ export const api = {
     }),
   // U1: can this project run an auto-run, and what's missing?
   autoRunReadiness: (projectId: string) => request("GET", `/api/projects/${encodeURIComponent(projectId)}/auto-run-readiness`),
-  // Retry a failed/blocked auto-run on its existing worktree.
-  retryAutoRun: (id: string) => request("POST", `/api/auto-runs/${encodeURIComponent(id)}/retry`),
+  // Retry a failed/blocked run, or revise a completed local delivery, in its existing worktree.
+  retryAutoRun: (id: string, feedback?: string) => request("POST", `/api/auto-runs/${encodeURIComponent(id)}/retry`, {
+    timezoneOffset: new Date().getTimezoneOffset(),
+    ...(feedback?.trim() ? { feedback: feedback.trim() } : {}),
+  }),
   cancelAutoRun: (id: string) => request("POST", `/api/auto-runs/${encodeURIComponent(id)}/cancel`),
+  stopAutoRunDelivery: (id: string, reason?: string) => request("POST", `/api/auto-runs/${encodeURIComponent(id)}/stop-delivery`, { reason }),
   // Human-triggered PR merge for a pr_open auto-run (merge stays human — a person
   // clicks Merge in the console; runs `gh pr merge` server-side).
   mergeAutoRunPr: (id: string) => request("POST", `/api/auto-runs/${encodeURIComponent(id)}/merge`),

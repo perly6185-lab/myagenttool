@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { detectPromptInjection, roleAutoRunPrompt } from "@myagenttool/protocol/issue-prompt";
 
 import { teamOf } from "../runtime/auth.mjs";
@@ -37,6 +38,8 @@ import {
 // non-code paths (a design brief / a clarify question / a throwaway spike),
 // never `develop` (which edits product code and opens a PR).
 const AUTO_APPROVABLE_PATHS = new Set(["design", "clarify", "prototype", "decompose"]);
+const DELIVERY_REVIEW_MAX_ATTEMPTS = 3;
+const DELIVERY_REVIEW_RETRY_DELAY_MS = 5 * 60_000;
 
 function isCodexAgent(agent) {
   const command = String(agent?.adapter?.command ?? "").trim().toLowerCase();
@@ -49,6 +52,43 @@ function codexAutoApprovalOptions(agent) {
   // requests proceed without parking the run, while sensitive requests still
   // require a human. Invocation admission and merge policy remain unchanged.
   return isCodexAgent(agent) ? { approvalMode: "auto" } : {};
+}
+
+function localDateKeyForOffset(value, timezoneOffset = 0) {
+  const normalizedOffset = Number(timezoneOffset);
+  if (!Number.isInteger(normalizedOffset) || normalizedOffset < -840 || normalizedOffset > 840) {
+    throw new Error("The current-terminal timezone offset is invalid.");
+  }
+  const timestamp = typeof value === "number" ? value : Date.parse(value);
+  if (!Number.isFinite(timestamp)) throw new Error("The retry time is invalid.");
+  return new Date(timestamp - normalizedOffset * 60_000).toISOString().slice(0, 10);
+}
+
+function scheduleBoundWorkItemsForRetry({ state, autoRun, plannedDate, actorId, now, nextId }) {
+  const changed = [];
+  for (const item of state.workItems ?? []) {
+    if (!(item.executionBindings ?? []).some((binding) =>
+      binding.kind === "auto_run" && binding.targetId === autoRun.id)) continue;
+    if (item.plannedDate === plannedDate) continue;
+    const previousPlannedDate = item.plannedDate ?? null;
+    item.plannedDate = plannedDate;
+    item.schedulePlanSource = "manual";
+    item.scheduleReason = "manual_retry_today";
+    item.revision = (Number(item.revision) || 0) + 1;
+    item.updatedAt = now();
+    (state.workItemActivities ??= []).unshift({
+      id: nextId("wia"),
+      workItemId: item.id,
+      ownerTeamId: item.ownerTeamId,
+      projectId: item.projectId,
+      action: "execution_retry_scheduled",
+      actorId,
+      createdAt: item.updatedAt,
+      details: { autoRunId: autoRun.id, previousPlannedDate, plannedDate },
+    });
+    changed.push(item);
+  }
+  return changed;
 }
 
 // Fallback Project Fields for a self-healing remediation issue (H2) when the
@@ -84,7 +124,7 @@ export function syncBoundWorkItemsForAutoRun({ state, autoRun, status, now, next
     && autoRun.localDelivery
     && autoRun.localDelivery.mode !== "pull_request"
     && !autoRun.localDelivery.deliveredAt;
-  const targetStatus = ["pr_open", "report_posted", "plan_proposed"].includes(status)
+  const targetStatus = ["pr_open", "report_posted", "plan_proposed", "needs_input"].includes(status)
     ? "review"
     : awaitingLocalDelivery
       ? "review"
@@ -100,8 +140,12 @@ export function syncBoundWorkItemsForAutoRun({ state, autoRun, status, now, next
   if (!targetStatus) return [];
   const changed = [];
   for (const item of state.workItems ?? []) {
-    if (!(item.executionBindings ?? []).some((binding) =>
-      binding.kind === "auto_run" && binding.targetId === autoRun.id)) continue;
+    const autoRunBindings = (item.executionBindings ?? []).filter((binding) => binding.kind === "auto_run");
+    if (!autoRunBindings.some((binding) => binding.targetId === autoRun.id)) continue;
+    // A retried Issue keeps older Runs for audit. Only its newest bound Run may
+    // project planning/waiting state; otherwise a delayed reconciliation of an
+    // earlier failure can overwrite a later successful review result.
+    if (autoRunBindings.at(-1)?.targetId !== autoRun.id) continue;
     let verificationRecorded = false;
     if (["pr_open", "report_posted", "done", "blocked"].includes(status)
       && autoRun.verification?.verified
@@ -139,7 +183,16 @@ export function syncBoundWorkItemsForAutoRun({ state, autoRun, status, now, next
         (item.acceptanceResults ?? []).some((result) => result.criterion === criterion && result.status === "passed"))
         && (item.verificationRecords ?? []).some((record) => record.status === "passed"));
     const effectiveTargetStatus = targetStatus === "done" && !completionReady ? "review" : targetStatus;
-    if (item.status === effectiveTargetStatus) {
+    const targetWaitingOn = ["needs_input", "awaiting_approval"].includes(status)
+      ? "me"
+      : effectiveTargetStatus === "in_progress"
+        ? "ai"
+        : ["review", "blocked"].includes(effectiveTargetStatus)
+          ? "me"
+          : ["done", "ready"].includes(effectiveTargetStatus)
+            ? "none"
+            : item.waitingOn;
+    if (item.status === effectiveTargetStatus && item.waitingOn === targetWaitingOn) {
       if (verificationRecorded) {
         item.revision = (Number(item.revision) || 0) + 1;
         item.updatedAt = now();
@@ -152,7 +205,9 @@ export function syncBoundWorkItemsForAutoRun({ state, autoRun, status, now, next
       continue;
     }
     const previousStatus = item.status;
+    const previousWaitingOn = item.waitingOn ?? "none";
     item.status = effectiveTargetStatus;
+    item.waitingOn = targetWaitingOn;
     if (effectiveTargetStatus === "done") item.state = "closed";
     item.revision = (Number(item.revision) || 0) + 1;
     item.updatedAt = now();
@@ -166,6 +221,7 @@ export function syncBoundWorkItemsForAutoRun({ state, autoRun, status, now, next
       createdAt: item.updatedAt,
       details: {
         autoRunId: autoRun.id, autoRunStatus: status, from: previousStatus, to: effectiveTargetStatus,
+        waitingOn: { from: previousWaitingOn, to: targetWaitingOn },
         ...(targetStatus === "done" && !completionReady ? { completionBlocked: true } : {}),
       },
     });
@@ -241,6 +297,8 @@ export function createAutoRunService({
   spawnChildIssue,
   judgeAcceptance,
   reviewDiff,
+  startDeliveryReview,
+  submitDeliveryReview,
   listWorktreeChangedFiles,
   worktreeHeadSha,
   readWorktreeTextFile,
@@ -300,6 +358,8 @@ export function createAutoRunService({
     const result = invocation?.result;
     if (!result) return null;
     if (typeof result === "string") return result.slice(0, 4000);
+    if (typeof result.output?.latestMessage === "string") return result.output.latestMessage.slice(0, 4000);
+    if (typeof result.output?.summary === "string") return result.output.summary.slice(0, 4000);
     if (typeof result.summary === "string") return result.summary.slice(0, 4000);
     if (typeof result.text === "string") return result.text.slice(0, 4000);
     try {
@@ -533,6 +593,11 @@ export function createAutoRunService({
 
   function setAutoRunStatus(autoRun, status, extra) {
     autoRun.status = status;
+    if (status === "needs_input") autoRun.phase = "waiting_for_input";
+    else if (["verifying", "publishing"].includes(status)) autoRun.phase = "verifying";
+    else if (["pr_open", "report_posted", "plan_proposed", "decomposed", "done"].includes(status)) autoRun.phase = "review_ready";
+    else if (status === "failed") autoRun.phase = "failed";
+    else if (status === "cancelled") autoRun.phase = "cancelled";
     autoRun.updatedAt = now();
     if (extra) Object.assign(autoRun, extra);
     syncBoundWorkItemsForAutoRun({ state, autoRun, status, now, nextId });
@@ -563,6 +628,586 @@ export function createAutoRunService({
     });
   }
 
+  function deliveryReviewFindings(invocation) {
+    return (Array.isArray(invocation?.result?.output?.findings) ? invocation.result.output.findings : [])
+      .filter((finding) => finding && typeof finding === "object" && !Array.isArray(finding))
+      .map((finding) => ({
+        severity: ["low", "medium", "high"].includes(String(finding.severity)) ? String(finding.severity) : "medium",
+        file: String(finding.file ?? "").slice(0, 400),
+        line: Number.isInteger(Number(finding.line)) && Number(finding.line) > 0 ? Number(finding.line) : null,
+        message: String(finding.message ?? "").slice(0, 2000),
+        suggestion: String(finding.suggestion ?? "").slice(0, 2000) || null,
+        confidence: ["low", "medium", "high"].includes(String(finding.confidence)) ? String(finding.confidence) : "medium",
+      }))
+      .filter((finding) => finding.file && finding.message)
+      .slice(0, 100);
+  }
+
+  function summaryIndicatesCleanDeliveryReview(value) {
+    const summary = String(value ?? "");
+    const clean = [
+      /\bno\s+(?:findings?|issues?|bugs?|regressions?)(?:\s+(?:were\s+)?(?:found|identified|detected))?\b/i,
+      /\bno\s+actionable(?:\s+[a-z-]+){0,6}\s+(?:findings?|issues?|bugs?|regressions?)(?:\s+(?:were\s+)?(?:found|identified|detected))?\b/i,
+      /\bpatch is correct\b/i,
+      /\blooks good\b/i,
+    ].some((pattern) => pattern.test(summary));
+    const contradictory = /\b(?:but|however|although|yet)\b[\s\S]{0,300}\b(?:issue|bug|regression|failure|incorrect|missing|broken)\b/i.test(summary);
+    return clean && !contradictory;
+  }
+
+  function completeDeliveryReview(invocation) {
+    const autoRun = (state.autoRuns ?? []).find((run) => run.deliveryReview?.invocationId === invocation?.id) ?? null;
+    if (!autoRun) return autoRun;
+    if (invocation.status !== "succeeded") {
+      return runTx(() => {
+        autoRun.deliveryReview = {
+          ...autoRun.deliveryReview,
+          status: "failed",
+          completedAt: invocation.completedAt ?? now(),
+          summary: invocation.result?.summary ?? `AI review ${invocation.status}.`,
+          errorCode: invocation.result?.errorCode ?? null,
+          nextRetryAt: Number(autoRun.deliveryReview?.attempts ?? 0) < DELIVERY_REVIEW_MAX_ATTEMPTS
+            ? new Date(Date.parse(now()) + DELIVERY_REVIEW_RETRY_DELAY_MS).toISOString()
+            : null,
+        };
+        autoRun.updatedAt = now();
+        appendEvent({
+          invocationId: invocation.id,
+          type: "auto_run_delivery_review_failed",
+          level: "warn",
+          message: `AI delivery review failed for Auto-run ${autoRun.id}.`,
+          data: { autoRunId: autoRun.id, worktreeId: autoRun.worktreeId, status: invocation.status },
+        });
+        return autoRun;
+      });
+    }
+    const findings = deliveryReviewFindings(invocation);
+    const blockingFindings = findings.filter((finding) => ["medium", "high"].includes(finding.severity));
+    const reportedVerdict = invocation.result?.output?.verdict;
+    const summary = String(
+      invocation.result?.output?.summary
+      ?? invocation.result?.summary
+      ?? (blockingFindings.length ? `AI review found ${blockingFindings.length} blocking issue(s).` : "AI review found no blocking issues."),
+    ).slice(0, 2000);
+    const unstructured = invocation.result?.output?.structured === false;
+    const verdict = unstructured && !blockingFindings.length
+      ? summaryIndicatesCleanDeliveryReview(summary) ? "approved" : "changes_requested"
+      : ["approved", "changes_requested"].includes(reportedVerdict)
+        ? reportedVerdict
+        : blockingFindings.length ? "changes_requested" : "approved";
+    if (
+      autoRun.deliveryReview?.status === "completed"
+      && autoRun.deliveryReview.verdict === verdict
+      && autoRun.deliveryReview.summary === summary
+    ) return autoRun;
+    let review = null;
+    try {
+      review = typeof submitDeliveryReview === "function"
+        ? submitDeliveryReview({
+          worktreeId: autoRun.worktreeId,
+          verdict,
+          summary,
+          comments: findings.map((finding) => ({
+            path: finding.file,
+            line: finding.line,
+            severity: finding.severity,
+            body: finding.message,
+            suggestion: finding.suggestion,
+          })),
+          actor: { userId: "usr_autorun_review", teamId: autoRun.teamId ?? null, role: "operator" },
+          source: "ai",
+          reviewerName: "Codex",
+          reviewInvocationId: invocation.id,
+        })
+        : null;
+    } catch (error) {
+      return runTx(() => {
+        autoRun.deliveryReview = {
+          ...autoRun.deliveryReview,
+          status: "failed",
+          completedAt: invocation.completedAt ?? now(),
+          summary: `AI review could not be recorded: ${String(error?.message ?? error)}`.slice(0, 2000),
+          errorCode: "review_record_failed",
+          nextRetryAt: Number(autoRun.deliveryReview?.attempts ?? 0) < DELIVERY_REVIEW_MAX_ATTEMPTS
+            ? new Date(Date.parse(now()) + DELIVERY_REVIEW_RETRY_DELAY_MS).toISOString()
+            : null,
+        };
+        autoRun.updatedAt = now();
+        return autoRun;
+      });
+    }
+    return runTx(() => {
+      autoRun.deliveryReview = {
+        ...autoRun.deliveryReview,
+        status: "completed",
+        verdict,
+        summary,
+        findings,
+        reviewedCommit: review?.reviewedCommit ?? null,
+        completedAt: invocation.completedAt ?? now(),
+        errorCode: null,
+        structured: !unstructured,
+      };
+      autoRun.updatedAt = now();
+      appendEvent({
+        invocationId: invocation.id,
+        type: "auto_run_delivery_review_completed",
+        level: verdict === "approved" ? "info" : "warn",
+        message: `AI delivery review ${verdict === "approved" ? "approved" : "requested changes for"} Auto-run ${autoRun.id}.`,
+        data: { autoRunId: autoRun.id, worktreeId: autoRun.worktreeId, verdict, findingCount: findings.length },
+      });
+      return autoRun;
+    });
+  }
+
+  async function ensureDeliveryReview(autoRun, { ignoreRetryDelay = false } = {}) {
+    if (
+      autoRun?.status !== "done"
+      || autoRun.link?.type !== "local_issue"
+      || !autoRun.localDelivery?.worktreeId
+      || typeof startDeliveryReview !== "function"
+    ) return null;
+    if (["queued", "running", "completed"].includes(autoRun.deliveryReview?.status)) return autoRun.deliveryReview;
+    const previousAttempts = Number(autoRun.deliveryReview?.attempts ?? 0);
+    if (previousAttempts >= DELIVERY_REVIEW_MAX_ATTEMPTS) return autoRun.deliveryReview;
+    if (!ignoreRetryDelay && autoRun.deliveryReview?.nextRetryAt && Date.parse(autoRun.deliveryReview.nextRetryAt) > Date.parse(now())) {
+      return autoRun.deliveryReview;
+    }
+    const attempts = previousAttempts + 1;
+    const worktree = (state.worktrees ?? []).find((item) => item.id === autoRun.localDelivery.worktreeId) ?? null;
+    if (!worktree) return null;
+    const currentHead = typeof worktreeHeadSha === "function" ? worktreeHeadSha(worktree.id) : null;
+    const existing = (state.worktreeReviews ?? []).find((review) =>
+      review.worktreeId === autoRun.localDelivery.worktreeId
+      && review.source === "ai"
+      && review.reviewedCommit
+      && (!currentHead || review.reviewedCommit === currentHead));
+    if (existing) {
+      return runTx(() => {
+        autoRun.deliveryReview = {
+          status: "completed",
+          invocationId: existing.reviewInvocationId ?? null,
+          reviewer: existing.reviewerName ?? "Codex",
+          startedAt: existing.createdAt ?? now(),
+          completedAt: existing.createdAt ?? now(),
+          verdict: existing.verdict,
+          summary: existing.summary ?? null,
+          findings: (existing.comments ?? []).map((comment) => ({
+            severity: comment.severity ?? "medium",
+            file: comment.path ?? "",
+            line: comment.line ?? null,
+            message: comment.body ?? "",
+            suggestion: comment.suggestion ?? null,
+            confidence: null,
+          })).filter((finding) => finding.file && finding.message),
+          reviewedCommit: existing.reviewedCommit,
+          errorCode: null,
+          structured: true,
+          attempts: Math.max(1, previousAttempts),
+          reusedReviewId: existing.id ?? null,
+        };
+        autoRun.updatedAt = now();
+        return autoRun.deliveryReview;
+      });
+    }
+    try {
+      const invocation = await startDeliveryReview({ autoRun, worktree });
+      if (!invocation?.id) throw new Error("No AI review invocation was created.");
+      return runTx(() => {
+        autoRun.deliveryReview = {
+          status: invocation.status === "running" ? "running" : "queued",
+          invocationId: invocation.id,
+          reviewer: "codex",
+          startedAt: now(),
+          completedAt: null,
+          verdict: null,
+          summary: null,
+          findings: [],
+          reviewedCommit: null,
+          errorCode: null,
+          nextRetryAt: null,
+          attempts,
+        };
+        autoRun.updatedAt = now();
+        appendEvent({
+          invocationId: invocation.id,
+          type: "auto_run_delivery_review_started",
+          level: "info",
+          message: `Started an independent Codex delivery review for Auto-run ${autoRun.id}.`,
+          data: { autoRunId: autoRun.id, worktreeId: autoRun.worktreeId },
+        });
+        return autoRun.deliveryReview;
+      });
+    } catch (error) {
+      return runTx(() => {
+        autoRun.deliveryReview = {
+          status: "unavailable",
+          invocationId: null,
+          reviewer: "codex",
+          startedAt: now(),
+          completedAt: now(),
+          verdict: null,
+          summary: String(error?.message ?? error).slice(0, 2000),
+          findings: [],
+          reviewedCommit: null,
+          errorCode: "review_unavailable",
+          nextRetryAt: attempts < DELIVERY_REVIEW_MAX_ATTEMPTS
+            ? new Date(Date.parse(now()) + DELIVERY_REVIEW_RETRY_DELAY_MS).toISOString()
+            : null,
+          attempts,
+        };
+        autoRun.updatedAt = now();
+        return autoRun.deliveryReview;
+      });
+    }
+  }
+
+  async function reconcileDeliveryReviews({ ignoreRetryDelay = false } = {}) {
+    const reviewableRunIds = new Set((state.workItems ?? [])
+      .filter((item) => !item.archivedAt && item.state !== "closed")
+      .flatMap((item) => (item.executionBindings ?? [])
+        .filter((binding) => binding.kind === "auto_run")
+        .map((binding) => binding.targetId)));
+    const reportHydrationCandidate = (state.autoRuns ?? [])
+      .filter((autoRun) => {
+        const worktree = (state.worktrees ?? []).find((item) => item.id === autoRun.localDelivery?.worktreeId) ?? null;
+        return (
+          reviewableRunIds.has(autoRun.id)
+          && autoRun.status === "done"
+          && autoRun.link?.type === "local_issue"
+          && autoRun.localDelivery?.worktreeId
+          && (!autoRun.deliveryReport?.changedFilesHydratedAt
+            || !Object.hasOwn(autoRun.deliveryReport ?? {}, "changedFilesBaseCommit")
+            || autoRun.deliveryReport?.changedFilesBaseCommit !== (worktree?.baseCommit ?? null))
+        );
+      })
+      .sort((left, right) => Number(right.link?.number ?? 0) - Number(left.link?.number ?? 0))[0] ?? null;
+    if (reportHydrationCandidate && typeof listWorktreeChangedFiles === "function") {
+      try {
+        const reportWorktree = (state.worktrees ?? []).find((item) => item.id === reportHydrationCandidate.localDelivery.worktreeId) ?? null;
+        const changedFiles = (await listWorktreeChangedFiles(reportHydrationCandidate.localDelivery.worktreeId)) ?? [];
+        const originalInvocation = (state.invocations ?? []).find((item) => item.id === reportHydrationCandidate.invocationId) ?? null;
+        runTx(() => {
+          reportHydrationCandidate.deliveryReport = {
+            summary: reportHydrationCandidate.deliveryReport?.summary ?? extractRunSummary(originalInvocation),
+            verification: reportHydrationCandidate.deliveryReport?.verification
+              ?? (reportHydrationCandidate.verification ? { ...reportHydrationCandidate.verification } : null),
+            changedFiles: changedFiles.map(String).filter(Boolean).slice(0, 100),
+            changedFilesBaseCommit: reportWorktree?.baseCommit ?? null,
+            completedAt: reportHydrationCandidate.deliveryReport?.completedAt
+              ?? originalInvocation?.completedAt
+              ?? reportHydrationCandidate.updatedAt
+              ?? now(),
+            changedFilesHydratedAt: now(),
+          };
+          reportHydrationCandidate.updatedAt = now();
+        });
+      } catch {
+        // A missing legacy worktree should not block newer delivery reviews.
+      }
+    }
+    // Older Codex CLI builds can return a complete native review as text even
+    // when an output schema is supplied. Re-evaluate any such completed review
+    // with the current fail-closed classifier so a clearly clean conclusion is
+    // not left behind as a false "changes requested" verdict after an upgrade.
+    for (const autoRun of state.autoRuns ?? []) {
+      if (autoRun.deliveryReview?.status !== "completed") continue;
+      const invocation = (state.invocations ?? []).find((item) => item.id === autoRun.deliveryReview.invocationId) ?? null;
+      if (invocation?.status === "succeeded" && invocation.result?.output?.structured === false) {
+        completeDeliveryReview(invocation);
+      }
+    }
+    const pending = (state.autoRuns ?? []).filter((autoRun) =>
+      reviewableRunIds.has(autoRun.id)
+      && autoRun.status === "done"
+      && autoRun.link?.type === "local_issue"
+      && autoRun.localDelivery?.worktreeId
+      && Number(autoRun.deliveryReview?.attempts ?? 0) < DELIVERY_REVIEW_MAX_ATTEMPTS
+      && !["queued", "running", "completed"].includes(autoRun.deliveryReview?.status))
+      .sort((left, right) =>
+        Number(right.link?.number ?? 0) - Number(left.link?.number ?? 0)
+        || String(right.updatedAt ?? "").localeCompare(String(left.updatedAt ?? "")));
+    // Boot may contain many historical deliveries. Starting all reviews in one
+    // microtask causes a persistence/dispatch storm and can delay the HTTP
+    // listener. Reconcile one newest delivery per sweep; newly completed runs
+    // still enter the fast path directly in advanceAutoRunForInvocation.
+    const batch = pending.slice(0, 1);
+    for (const autoRun of batch) await ensureDeliveryReview(autoRun, { ignoreRetryDelay });
+    return { checked: batch.length, pending: pending.length };
+  }
+
+  // Persist the user-visible AI Run before any writable workspace or agent
+  // invocation exists. This is the read-only understanding boundary used by
+  // Local Issues: routing and contract drafting may happen after this record is
+  // visible, while materialization remains forbidden until a frozen execution
+  // plan is attached.
+  async function reserveAutoRun({
+    projectId, link, agentId, name, baseBranch, actor, issueBody: suppliedIssueBody,
+    executionChainId = null, autonomyProfile = "standard", terminalId = null,
+    taskMaterialWorkItemId = null, localIssueId = null,
+    scheduler = null,
+  } = {}) {
+    const normalizedLink = normalizeWorktreeLink(link);
+    if (!normalizedLink) throw new Error("A GitHub issue or PR link is required to start an auto-run.");
+    const projectDefaultAgentId = projectId
+      ? state.projects?.find((project) => project.id === projectId)?.defaultAgentId ?? null
+      : null;
+    const resolvedAgentId = agentId || projectDefaultAgentId;
+    const agent = resolvedAgentId ? findAgent(resolvedAgentId) : defaultAgent();
+    if (!agent) throw new Error("No agent is registered to run this issue.");
+    if (agent.status === "disabled") throw new Error("The selected agent is disabled.");
+    if (agent.health?.status === "unhealthy") {
+      throw new Error(`The selected agent is unhealthy: ${agent.health.message ?? "run its health check and resolve the reported problem first."}`);
+    }
+    const agentTerminalId = agent.location?.type === "local_device" ? agent.location.deviceId ?? null : null;
+    const owningTerminalId = terminalId ? String(terminalId) : agentTerminalId;
+    if (owningTerminalId && agentTerminalId !== owningTerminalId) {
+      throw new Error("The selected agent does not belong to this task's terminal.");
+    }
+    const issueBody = typeof suppliedIssueBody === "string"
+      ? suppliedIssueBody
+      : await maybeFetchIssueBody(normalizedLink, projectId ?? state.currentProjectId);
+    const injection = detectPromptInjection(issueBody);
+    const createdAt = now();
+    const autoRun = {
+      id: nextId("aur_demo"),
+      status: "materializing",
+      phase: "understanding",
+      projectId: projectId ?? null,
+      teamId: projectId ? teamOf(state.projects?.find((project) => project.id === projectId) ?? null) : null,
+      worktreeId: null,
+      invocationId: null,
+      agentId: agent.id,
+      terminalId: owningTerminalId,
+      link: normalizedLink,
+      localIssueId: localIssueId ?? taskMaterialWorkItemId ?? null,
+      executionChainId: executionChainId ? String(executionChainId) : null,
+      autonomyProfile: ["cautious", "standard", "high"].includes(autonomyProfile) ? autonomyProfile : "standard",
+      decision: null,
+      intent: null,
+      issueBody: typeof issueBody === "string" && issueBody ? issueBody.slice(0, 8000) : null,
+      promptInjection: injection.suspicious ? { suspicious: true, markers: injection.markers } : null,
+      requestedBy: actor?.userId ?? "usr_local",
+      executionStage: "analysis",
+      executionPlan: { status: "analyzing" },
+      launchContext: {
+        name: name ?? null,
+        baseBranch: baseBranch ?? null,
+        taskMaterialWorkItemId: taskMaterialWorkItemId ?? null,
+      },
+      scheduler: scheduler?.source === "work_item_auto_scheduler" ? {
+        source: "work_item_auto_scheduler",
+        operationId: scheduler.operationId ? String(scheduler.operationId) : null,
+        workItemRevision: Number.isInteger(scheduler.workItemRevision) ? scheduler.workItemRevision : null,
+        selectedAt: scheduler.selectedAt ?? createdAt,
+        priority: ["p0", "p1", "p2", "p3"].includes(scheduler.priority) ? scheduler.priority : "p2",
+        rank: Array.isArray(scheduler.rank) ? scheduler.rank.slice(0, 6) : null,
+      } : null,
+      errorCode: null,
+      createdAt,
+      updatedAt: createdAt,
+    };
+    runTx(() => {
+      state.autoRuns.unshift(autoRun);
+      appendEvent({
+        invocationId: null,
+        type: "auto_run_understanding_started",
+        level: "info",
+        message: `Auto-run ${autoRun.id} entered read-only task understanding.`,
+        data: { autoRunId: autoRun.id, localIssueId: autoRun.localIssueId, path: null },
+      });
+    });
+    return { autoRun, worktree: null, invocation: null };
+  }
+
+  async function decideReservedAutoRun(autoRunId, { projectContext = null, contextSummary = null } = {}) {
+    const autoRun = state.autoRuns.find((item) => item.id === String(autoRunId)) ?? null;
+    if (!autoRun) throw new Error("Auto-run not found.");
+    if (autoRun.decision?.path) {
+      if (contextSummary && !autoRun.understandingContext) {
+        runTx(() => {
+          autoRun.understandingContext = contextSummary;
+          autoRun.updatedAt = now();
+        });
+      }
+      return { autoRun, decision: autoRun.decision, replayed: true };
+    }
+    if (autoRun.worktreeId || autoRun.invocationId) {
+      throw new Error("Task routing must finish before a writable workspace is created.");
+    }
+    const decision = await resolveDecision({
+      link: autoRun.link,
+      issueBody: autoRun.issueBody,
+      projectContext,
+      decideIssuePath,
+      minConfidence: decisionSettings?.minConfidence,
+      fastPath: decisionSettings?.fastPath,
+      epicDecomposition: state.autoRunSettings?.epicDecomposition === true,
+    });
+    runTx(() => {
+      autoRun.decision = decision;
+      autoRun.intent = intentForPath(decision.path);
+      autoRun.understandingContext = contextSummary ?? null;
+      autoRun.updatedAt = now();
+      appendEvent({
+        invocationId: null,
+        type: "auto_run_understanding_decided",
+        level: "info",
+        message: `Auto-run ${autoRun.id} completed background task routing.`,
+        data: {
+          autoRunId: autoRun.id,
+          path: decision.path,
+          decidedBy: decision.decidedBy,
+          confidence: decision.confidence,
+          rationale: decision.rationale,
+        },
+      });
+    });
+    return { autoRun, decision, replayed: false };
+  }
+
+  function attachAutoRunExecutionPlan(autoRunId, executionPlan = {}) {
+    const autoRun = state.autoRuns.find((item) => item.id === autoRunId);
+    if (!autoRun) throw new Error("Auto-run not found.");
+    if (autoRun.worktreeId || autoRun.invocationId) {
+      throw new Error("The execution plan must be frozen before implementation starts.");
+    }
+    if (!autoRun.decision?.path) {
+      throw new Error("Task understanding must choose an execution path before the contract can be prepared.");
+    }
+    const criteria = Array.isArray(executionPlan.acceptanceCriteria)
+      ? executionPlan.acceptanceCriteria.filter(Boolean).map(String)
+      : [];
+    const sop = Array.isArray(executionPlan.verificationSop)
+      ? executionPlan.verificationSop.filter(Boolean).map(String)
+      : [];
+    if (!criteria.length || !sop.length) {
+      throw new Error("Acceptance criteria and a verification SOP are required before implementation starts.");
+    }
+    if (autoRun.decision?.path === "clarify") {
+      if (autoRun.executionContract) {
+        throw new Error("A clarification Run cannot replace an already frozen execution contract.");
+      }
+      const draftSignature = JSON.stringify({ criteria, sop });
+      const currentSignature = JSON.stringify({
+        criteria: autoRun.executionPlan?.acceptanceCriteria ?? [],
+        sop: autoRun.executionPlan?.verificationSop ?? [],
+      });
+      if (autoRun.executionPlan?.status === "needs_input" && draftSignature === currentSignature) {
+        return { autoRun, executionPlan: autoRun.executionPlan, executionContract: null, replayed: true };
+      }
+      runTx(() => {
+        autoRun.executionPlan = {
+          ...executionPlan,
+          status: "needs_input",
+          acceptanceCriteria: criteria,
+          verificationSop: sop,
+          confirmedBy: null,
+          confirmedAt: null,
+        };
+        setAutoRunStatus(autoRun, "needs_input");
+        appendEvent({
+          invocationId: null,
+          type: "auto_run_execution_plan_needs_input",
+          level: "info",
+          message: `Auto-run ${autoRun.id} prepared an execution-plan draft and is waiting for clarification.`,
+          data: { autoRunId: autoRun.id, questions: autoRun.decision?.clarifyingQuestions ?? [] },
+        });
+      });
+      return { autoRun, executionPlan: autoRun.executionPlan, executionContract: null };
+    }
+    if (!executionPlan.confirmedAt) {
+      throw new Error("A confirmed execution contract is required before implementation starts.");
+    }
+    const confirmedBy = executionPlan.confirmedBy ?? "ai_policy";
+    const digest = createHash("sha256").update(JSON.stringify({
+      autoRunId: autoRun.id,
+      workItemId: autoRun.localIssueId ?? autoRun.executionChainId ?? null,
+      acceptanceCriteria: criteria,
+      verificationSop: sop,
+      confirmedBy,
+      confirmedAt: executionPlan.confirmedAt,
+    })).digest("hex");
+    if (autoRun.executionContract) {
+      if (autoRun.executionContract.digest === digest) {
+        return {
+          autoRun,
+          executionPlan: autoRun.executionPlan,
+          executionContract: autoRun.executionContract,
+          replayed: true,
+        };
+      }
+      throw new Error("The execution contract is already frozen for this Run.");
+    }
+    runTx(() => {
+      autoRun.executionPlan = {
+        ...executionPlan,
+        status: "ready",
+        acceptanceCriteria: criteria,
+        verificationSop: sop,
+      };
+      autoRun.executionContract = {
+        schemaVersion: "execution-contract-v2",
+        id: executionPlan.contractId ?? `contract:${autoRun.id}:${executionPlan.confirmedAt}`,
+        workItemId: autoRun.localIssueId ?? autoRun.executionChainId ?? null,
+        workItemRevision: (state.workItems ?? []).find((item) =>
+          item.id === (autoRun.localIssueId ?? autoRun.executionChainId))?.revision ?? null,
+        autoRunId: autoRun.id,
+        acceptanceCriteria: criteria,
+        verificationSop: sop,
+        confirmedBy,
+        confirmedAt: executionPlan.confirmedAt,
+        digest,
+        readOnly: true,
+      };
+      autoRun.executionContractId = autoRun.executionContract.id;
+      autoRun.phase = "planning";
+      autoRun.updatedAt = now();
+      appendEvent({
+        invocationId: null,
+        type: "auto_run_execution_contract_frozen",
+        level: "info",
+        message: `Auto-run ${autoRun.id} froze its execution contract before materialization.`,
+        data: {
+          autoRunId: autoRun.id,
+          contractId: autoRun.executionContract.id,
+          confirmedBy: autoRun.executionContract.confirmedBy,
+          waitingForInput: false,
+        },
+      });
+    });
+    return { autoRun, executionPlan: autoRun.executionPlan, executionContract: autoRun.executionContract };
+  }
+
+  function failAutoRunUnderstanding(autoRunId, error) {
+    const autoRun = state.autoRuns.find((item) => item.id === autoRunId);
+    if (!autoRun) return null;
+    if (autoRun.status === "failed") return autoRun;
+    runTx(() => setAutoRunStatus(autoRun, "failed", {
+      error: `Task understanding failed: ${String(error?.message ?? error)}`,
+    }));
+    return autoRun;
+  }
+
+  function deferAutoRunUnderstanding(autoRunId, error) {
+    const autoRun = state.autoRuns.find((item) => item.id === autoRunId);
+    if (!autoRun) return null;
+    runTx(() => {
+      autoRun.status = "waiting_capacity";
+      autoRun.phase = autoRun.executionContract ? "planning" : "understanding";
+      autoRun.error = String(error?.message ?? error).slice(0, 1_000);
+      autoRun.updatedAt = now();
+      appendEvent({
+        invocationId: null,
+        type: "auto_run_understanding_waiting_capacity",
+        level: "info",
+        message: `Auto-run ${autoRun.id} is waiting for execution capacity.`,
+        data: { autoRunId: autoRun.id, reason: autoRun.error },
+      });
+    });
+    return autoRun;
+  }
+
   // Start an auto-run for a linked issue/PR: materialize the worktree, seed the
   // agent prompt from the issue, and start the invocation inside the worktree.
   // `name` is the branch name the caller already derives (shared branchFromIssue),
@@ -571,6 +1216,7 @@ export function createAutoRunService({
     projectId, link, agentId, name, baseBranch, actor, issueBody: suppliedIssueBody,
     executionChainId = null, autonomyProfile = "standard", terminalId = null,
     taskMaterialWorkItemId = null, localIssueId = null,
+    existingAutoRunId = null, decisionOverride = null, executionPlan = null,
   } = {}) {
     const resolvedAutonomyProfile = ["cautious", "standard", "high"].includes(autonomyProfile)
       ? autonomyProfile
@@ -578,6 +1224,18 @@ export function createAutoRunService({
     const normalizedLink = normalizeWorktreeLink(link);
     if (!normalizedLink) {
       throw new Error("A GitHub issue or PR link is required to start an auto-run.");
+    }
+    const pendingAutoRun = existingAutoRunId
+      ? state.autoRuns.find((item) => item.id === String(existingAutoRunId)) ?? null
+      : null;
+    if (existingAutoRunId && !pendingAutoRun) throw new Error("The reserved auto-run was not found.");
+    if (pendingAutoRun?.invocationId) {
+      return {
+        autoRun: pendingAutoRun,
+        worktree: state.worktrees.find((item) => item.id === pendingAutoRun.worktreeId) ?? null,
+        invocation: typeof findInvocation === "function" ? findInvocation(pendingAutoRun.invocationId) : null,
+        replayed: true,
+      };
     }
     // A remote GitHub/GitLab issue is context, not an execution identity. In
     // production, code-development runs must be admitted through a Local Issue
@@ -614,7 +1272,7 @@ export function createAutoRunService({
     const projectDefaultAgentId = projectId
       ? state.projects?.find((project) => project.id === projectId)?.defaultAgentId ?? null
       : null;
-    const resolvedAgentId = agentId || projectDefaultAgentId;
+    const resolvedAgentId = agentId || pendingAutoRun?.agentId || projectDefaultAgentId;
     const agent = resolvedAgentId ? findAgent(resolvedAgentId) : defaultAgent();
     if (!agent) {
       throw new Error("No agent is registered to run this issue.");
@@ -675,14 +1333,14 @@ export function createAutoRunService({
     // of the per-project cap. Auto-trigger simply retries next scan (soft queue).
     const globalMax = Number(state.autoRunSettings?.globalMaxConcurrent ?? 0);
     if (globalMax > 0) {
-      const active = (state.autoRuns ?? []).filter(occupiesExecutionSlot).length;
+      const active = (state.autoRuns ?? []).filter((run) => run.id !== pendingAutoRun?.id && occupiesExecutionSlot(run)).length;
       if (active >= globalMax) {
         throw new Error(`At capacity: ${active}/${globalMax} auto-runs active. Auto-trigger will retry when one frees up.`);
       }
     }
 
-    const autoRunId = nextId("aur_demo");
-    const createdAt = now();
+    const autoRunId = pendingAutoRun?.id ?? nextId("aur_demo");
+    const createdAt = pendingAutoRun?.createdAt ?? now();
 
     // #1143 issue claim gate: take (or renew) the issue's develop lease
     // SYNCHRONOUSLY, before any spend, so a colleague already developing this
@@ -745,7 +1403,8 @@ export function createAutoRunService({
       // Both the decider and the role prompt get the issue body when it's readable.
       issueBody = typeof suppliedIssueBody === "string"
         ? suppliedIssueBody
-        : await maybeFetchIssueBody(normalizedLink, projectId ?? state.currentProjectId);
+        : pendingAutoRun?.issueBody
+          ?? await maybeFetchIssueBody(normalizedLink, projectId ?? state.currentProjectId);
       // B1a: scan the untrusted issue body for prompt-injection markers. A hit
       // never blocks the run (avoids weaponizing false positives into a DoS), but
       // it is recorded, alerted, and — crucially — makes the run ineligible for
@@ -759,29 +1418,81 @@ export function createAutoRunService({
           data: { link: normalizedLink, markers: injection.markers },
         });
       }
-      decision = await resolveDecision({
-        link: normalizedLink,
-        issueBody,
-        decideIssuePath,
-        // Console-saved overrides when present; undefined falls back to the env
-        // defaults inside resolveDecision (decisionConfig()).
-        minConfidence: decisionSettings?.minConfidence,
-        fastPath: decisionSettings?.fastPath,
-        // Opt-in: an epic/initiative routes to decompose (a plan, not a diff).
-        epicDecomposition: state.autoRunSettings?.epicDecomposition === true,
-      });
+      decision = decisionOverride
+        ? { ...(pendingAutoRun?.decision ?? {}), ...decisionOverride }
+        : pendingAutoRun?.decision
+          ?? await resolveDecision({
+            link: normalizedLink,
+            issueBody,
+            decideIssuePath,
+            // Console-saved overrides when present; undefined falls back to the env
+            // defaults inside resolveDecision (decisionConfig()).
+            minConfidence: decisionSettings?.minConfidence,
+            fastPath: decisionSettings?.fastPath,
+            // Opt-in: an epic/initiative routes to decompose (a plan, not a diff).
+            epicDecomposition: state.autoRunSettings?.epicDecomposition === true,
+          });
+
+      // Local Issue implementation may only cross the read-only boundary after
+      // a Run-scoped execution contract has been frozen. This check runs before
+      // createWorktree, so a missing or stale plan cannot produce file changes.
+      const frozenPlan = executionPlan ?? pendingAutoRun?.executionPlan ?? null;
+      if (normalizedLink.type === "local_issue" && pendingAutoRun) {
+        const planReady = frozenPlan?.status === "ready"
+          && Array.isArray(frozenPlan.acceptanceCriteria) && frozenPlan.acceptanceCriteria.length > 0
+          && Array.isArray(frozenPlan.verificationSop) && frozenPlan.verificationSop.length > 0
+          && Boolean(frozenPlan.confirmedAt);
+        if (!planReady) {
+          const error = new Error("A frozen execution contract is required before the writable workspace can be created.");
+          error.code = "auto_run_execution_contract_required";
+          throw error;
+        }
+      }
 
       // 1. Materialize the worktree from the issue.
-      ({ worktree } = createWorktree({
-        projectId,
-        name: name || `issue-${normalizedLink.number}`,
-        baseBranch,
-        // Fork from the FRESH remote base (origin/<base>), not the stale local branch —
-        // otherwise every run's PR conflicts with work merged since the local checkout.
-        fetchBase: true,
-        agentId: agent.id,
-        link: normalizedLink,
-      }));
+      worktree = pendingAutoRun?.worktreeId
+        ? state.worktrees.find((item) => item.id === pendingAutoRun.worktreeId) ?? null
+        : null;
+      if (!worktree) {
+        ({ worktree } = createWorktree({
+          projectId,
+          name: name || `issue-${normalizedLink.number}`,
+          baseBranch,
+          // Fork from the FRESH remote base (origin/<base>), not the stale local branch —
+          // otherwise every run's PR conflicts with work merged since the local checkout.
+          fetchBase: true,
+          agentId: agent.id,
+          link: normalizedLink,
+        }));
+      }
+      // A reserved Local Issue Run is bound to its task before a worktree
+      // exists. Enrich that same binding after materialization so capacity,
+      // delivery, and task detail views all point at the actual workspace.
+      if (pendingAutoRun) {
+        runTx(() => {
+          pendingAutoRun.worktreeId = worktree.id;
+          pendingAutoRun.branchName = worktree.branchName ?? worktree.branch ?? null;
+          pendingAutoRun.updatedAt = now();
+          for (const item of state.workItems ?? []) {
+            const binding = (item.executionBindings ?? []).find((candidate) =>
+              candidate.kind === "auto_run" && candidate.targetId === autoRunId);
+            if (!binding || binding.worktreeId === worktree.id) continue;
+            binding.worktreeId = worktree.id;
+            item.revision = (Number(item.revision) || 0) + 1;
+            item.updatedAt = now();
+            (state.workItemActivities ??= []).unshift({
+              id: nextId("wia"),
+              workItemId: item.id,
+              ownerTeamId: item.ownerTeamId,
+              projectId: item.projectId,
+              action: "execution_worktree_materialized",
+              actorId: actor?.userId ?? pendingAutoRun.requestedBy ?? "usr_local",
+              createdAt: item.updatedAt,
+              details: { autoRunId, worktreeId: worktree.id },
+            });
+          }
+        });
+      }
       if (taskMaterialWorkItemId && typeof materializeTaskMaterials === "function") {
         const prepared = await materializeTaskMaterials({ workItemId: taskMaterialWorkItemId, worktree, actor });
         if (!prepared?.ok) {
@@ -811,6 +1522,11 @@ export function createAutoRunService({
       if (typeof releaseIssueClaimsForAutoRun === "function") {
         releaseIssueClaimsForAutoRun(autoRunId, { outcome: "released_failed" });
       }
+      if (pendingAutoRun) {
+        runTx(() => setAutoRunStatus(pendingAutoRun, "failed", {
+          error: `Could not enter implementation: ${String(error?.message ?? error)}`,
+        }));
+      }
       throw error;
     }
 
@@ -819,7 +1535,7 @@ export function createAutoRunService({
     // autoRuns, would re-pick this issue every tick and pile up orphan worktrees.
     const resolvedProjectId = worktree.sourceProjectId ?? worktree.projectId ?? projectId ?? null;
     const owningProject = resolvedProjectId ? (state.projects ?? []).find((p) => p.id === resolvedProjectId) ?? null : null;
-    const autoRun = {
+    let autoRun = {
       id: autoRunId,
       status: "materializing",
       projectId: resolvedProjectId,
@@ -853,6 +1569,7 @@ export function createAutoRunService({
       // "dispatch_timeout" | "orphaned" | "stuck" for an infrastructure reclaim, or
       // null for a genuine task failure — the infra-vs-task signal #3 keys off.
       errorCode: null,
+      error: null,
       // #1268 (3b): same-device failover bookkeeping — how many times this run has
       // been re-dispatched to an alternate agent, and which agents are already spent
       // (excluded so failover can't ping-pong back to a dead one).
@@ -861,6 +1578,13 @@ export function createAutoRunService({
       failoverHistory: [],
       failoverOutcome: null,
       executionStage: "analysis",
+      executionPlan: executionPlan ?? pendingAutoRun?.executionPlan ?? null,
+      executionContract: pendingAutoRun?.executionContract ?? null,
+      phase: decision.path === "clarify"
+        ? "understanding"
+        : decision.path === "develop"
+          ? "implementing"
+          : "planning",
       executionBudget: {
         startedAt: createdAt,
         turnTimeoutSeconds: autoRunTurnTimeoutSeconds(agent),
@@ -871,7 +1595,11 @@ export function createAutoRunService({
       updatedAt: createdAt,
     };
     runTx(() => {
-      state.autoRuns.unshift(autoRun);
+      if (pendingAutoRun) {
+        Object.assign(pendingAutoRun, autoRun);
+        autoRun = pendingAutoRun;
+      }
+      else state.autoRuns.unshift(autoRun);
       // The routing decision is auditable evidence: path, who decided, and why.
       appendEvent({
         invocationId: null,
@@ -893,6 +1621,7 @@ export function createAutoRunService({
           clarifyingQuestions: decision.clarifyingQuestions,
           executionChainId: autoRun.executionChainId,
           autonomyProfile: autoRun.autonomyProfile,
+          scheduler: autoRun.scheduler,
         },
       });
     });
@@ -1141,6 +1870,7 @@ export function createAutoRunService({
           timeoutRecoveryReason: recoveryReason,
           executionStage: stage,
           continuationCheckpoint: checkpoint,
+          scheduler: autoRun.scheduler,
           ...(continuationApproval
             ? { codexApprovalContinuationRequestId: continuationApproval.id }
             : {}),
@@ -1360,6 +2090,7 @@ export function createAutoRunService({
           role: path,
           capacityRetryAttempt: attempt,
           capacityRetrySourceInvocationId: sourceInvocationId,
+          scheduler: autoRun.scheduler,
           ...(continuationApproval
             ? { codexApprovalContinuationRequestId: continuationApproval.id }
             : {}),
@@ -1477,6 +2208,10 @@ export function createAutoRunService({
     let reactionEntry = null;
     let reactionLeaseHeld = false;
     try {
+      const deliveryReviewRun = (state.autoRuns ?? []).find(
+        (item) => item.deliveryReview?.invocationId === invocation?.id,
+      ) ?? null;
+      if (deliveryReviewRun) return completeDeliveryReview(invocation);
       autoRun = state.autoRuns.find((item) => item.invocationId === invocation?.id) ?? null;
       if (!autoRun || settledStatuses.has(autoRun.status)) return null;
       const activeReaction = activeReactionControllers.get(autoRun.id);
@@ -1725,7 +2460,7 @@ export function createAutoRunService({
                   preApproved: true, // continuation of an already human-approved run on unchanged content — no re-gate
                   ...codexAutoApprovalOptions(agent),
                   timeoutSeconds: autoRunTurnTimeoutSeconds(agent),
-                  metadata: { worktreeId: autoRun.worktreeId, projectId: autoRun.projectId, autoRunId: autoRun.id, role: "develop", repairAttempt: autoRun.repairAttempts },
+                  metadata: { worktreeId: autoRun.worktreeId, projectId: autoRun.projectId, autoRunId: autoRun.id, role: "develop", repairAttempt: autoRun.repairAttempts, scheduler: autoRun.scheduler },
                 });
               } catch {
                 repair = null;
@@ -1787,12 +2522,14 @@ export function createAutoRunService({
         // D5 (visual acceptance): surface any image files the change produced
         // (e.g. an operator's playwright verify command writing screenshots into
         // the worktree) so a human sees the visual before merging.
+        let changedFiles = [];
         let screenshots = [];
         if (typeof listWorktreeChangedFiles === "function") {
           try {
-            const changed = (await listWorktreeChangedFiles(autoRun.worktreeId)) ?? [];
-            screenshots = changed.filter((f) => /\.(png|jpe?g|gif|webp|avif|svg)$/i.test(String(f))).slice(0, 20);
+            changedFiles = (await listWorktreeChangedFiles(autoRun.worktreeId)) ?? [];
+            screenshots = changedFiles.filter((f) => /\.(png|jpe?g|gif|webp|avif|svg)$/i.test(String(f))).slice(0, 20);
           } catch {
+            changedFiles = [];
             screenshots = [];
           }
           if (autoRunReactionSuperseded(autoRun, invocation, "visual artifact inspection")) return null;
@@ -1808,8 +2545,17 @@ export function createAutoRunService({
               worktreeId: autoRun.worktreeId,
               branchName: worktree.branchName ?? worktree.branch ?? autoRun.branchName ?? null,
             },
+            deliveryReport: {
+              summary: extractRunSummary(invocation),
+              verification: autoRun.verification ? { ...autoRun.verification } : null,
+              changedFiles: changedFiles.map(String).filter(Boolean).slice(0, 100),
+              changedFilesBaseCommit: worktree.baseCommit ?? null,
+              changedFilesHydratedAt: now(),
+              completedAt: invocation.completedAt ?? now(),
+            },
             ...(screenshots.length ? { screenshots } : {}),
           }));
+          await ensureDeliveryReview(autoRun);
           return autoRun;
         }
         setAutoRunStatus(autoRun, "publishing");
@@ -1950,7 +2696,10 @@ export function createAutoRunService({
     if (terminalId && String(terminalId) !== autoRun.terminalId) {
       throw new Error("This run belongs to a different terminal.");
     }
-    if (settledStatuses.has(autoRun.status)) {
+    // `needs_input` is settled only from the invocation-reaction perspective:
+    // there is no more agent output to advance. It remains operator-cancellable
+    // while the human decides whether to answer the clarification.
+    if (settledStatuses.has(autoRun.status) && autoRun.status !== "needs_input") {
       throw new Error("This run has already settled; only an in-flight run can be cancelled.");
     }
     if (autoRun.invocationId && typeof cancelInvocation === "function") {
@@ -1968,14 +2717,79 @@ export function createAutoRunService({
       }
     }
     return runTx(() => {
+      autoRun.clarificationResume = null;
       setAutoRunStatus(autoRun, "cancelled", { error: null });
       return autoRun;
+    });
+  }
+
+  function stopAutoRunDelivery(autoRunId, { actor, reason = null } = {}) {
+    const autoRun = state.autoRuns.find((item) => item.id === autoRunId);
+    if (!autoRun) throw new Error("Auto-run not found.");
+    if (autoRun.deliveryStopped) return { autoRun, replayed: true };
+    if (!["pr_open", "report_posted", "plan_proposed", "done", "blocked"].includes(autoRun.status)) {
+      throw new Error("Delivery can be stopped only after AI has produced a reviewable result.");
+    }
+    const stoppedAt = now();
+    const stoppedBy = actor?.userId ?? "usr_local";
+    const note = String(reason ?? "").trim().slice(0, 2_000);
+    return runTx(() => {
+      autoRun.deliveryStopped = {
+        stoppedAt,
+        stoppedBy,
+        reason: note || null,
+        worktreeKept: Boolean(autoRun.worktreeId),
+        pullRequestKept: Boolean(autoRun.prNumber || autoRun.prUrl),
+      };
+      autoRun.updatedAt = stoppedAt;
+      for (const item of state.workItems ?? []) {
+        if (!(item.executionBindings ?? []).some((binding) =>
+          binding.kind === "auto_run" && binding.targetId === autoRun.id)) continue;
+        item.status = "done";
+        item.state = "closed";
+        item.waitingOn = "none";
+        item.completedAt = stoppedAt;
+        item.revision = (Number(item.revision) || 0) + 1;
+        item.updatedAt = stoppedAt;
+        item.lastModifiedBy = stoppedBy;
+        (state.workItemActivities ??= []).unshift({
+          id: nextId("wia"),
+          workItemId: item.id,
+          ownerTeamId: item.ownerTeamId,
+          projectId: item.projectId,
+          action: "delivery_stopped",
+          actorId: stoppedBy,
+          createdAt: stoppedAt,
+          details: {
+            autoRunId: autoRun.id,
+            reason: note || null,
+            worktreeKept: Boolean(autoRun.worktreeId),
+            pullRequestKept: Boolean(autoRun.prNumber || autoRun.prUrl),
+          },
+        });
+      }
+      appendEvent({
+        invocationId: autoRun.invocationId ?? null,
+        type: "auto_run_delivery_stopped",
+        level: "info",
+        message: `Delivery for Auto-run ${autoRun.id} was stopped by ${stoppedBy}; generated work was kept for audit.`,
+        data: {
+          autoRunId: autoRun.id,
+          stoppedBy,
+          reason: note || null,
+          worktreeKept: Boolean(autoRun.worktreeId),
+          pullRequestKept: Boolean(autoRun.prNumber || autoRun.prUrl),
+        },
+      });
+      return { autoRun, replayed: false };
     });
   }
 
   async function retryAutoRun(autoRunId, {
     actor,
     terminalId = null,
+    timezoneOffset = 0,
+    feedback = null,
     approvalRecoveryRequestId = null,
     approvalRecoveryClaimToken = null,
   } = {}) {
@@ -1984,9 +2798,12 @@ export function createAutoRunService({
     if (terminalId && String(terminalId) !== autoRun.terminalId) {
       throw new Error("This run belongs to a different terminal.");
     }
-    if (!["failed", "blocked"].includes(autoRun.status)) {
-      throw new Error("Only a failed or blocked auto-run can be retried.");
+    const revisingLocalDelivery = autoRun.status === "done" && autoRun.link?.type === "local_issue";
+    if (!["failed", "blocked"].includes(autoRun.status) && !revisingLocalDelivery) {
+      throw new Error("Only a failed or blocked auto-run, or a reviewable local delivery, can be retried.");
     }
+    const retryStartedAt = now();
+    const retryPlannedDate = localDateKeyForOffset(retryStartedAt, timezoneOffset);
     const worktree = state.worktrees.find((item) => item.id === autoRun.worktreeId) ?? null;
     if (!worktree) throw new Error("The auto-run's worktree no longer exists; start a fresh run instead.");
     const previousAgent = autoRun.agentId ? findAgent(autoRun.agentId) : null;
@@ -2092,19 +2909,23 @@ export function createAutoRunService({
     // claim before creating an invocation so a simultaneous late-approval
     // recovery (or a second retry click) cannot launch a duplicate run.
     if (
-      !["failed", "blocked"].includes(autoRun.status)
+      (!["failed", "blocked"].includes(autoRun.status) && !revisingLocalDelivery)
       || (autoRun.invocationId ?? null) !== retrySourceInvocationId
     ) {
       throw new Error("Another retry has already started for this auto-run.");
     }
     const retryPath = autoRun.decision?.path ?? "develop";
-    const task = approvalRecoveryRequest
+    const reviewerFeedback = String(feedback ?? "").trim().slice(0, 4000);
+    const baseTask = approvalRecoveryRequest
       ? `${roleAutoRunPrompt(autoRun.link, { path: retryPath, issueBody })}\n\n` +
         "The earlier launch expired while waiting for approval. That exact task has now been approved. " +
         "Resume on this existing worktree without repeating broad repository discovery."
       : resumesExecutionTimeout
         ? `${roleAutoRunPrompt(autoRun.link, { path: retryPath, issueBody })}\n\n${continuationCheckpointPrompt(retryCheckpoint)}`
         : roleAutoRunPrompt(autoRun.link, { path: retryPath, issueBody });
+    const task = reviewerFeedback
+      ? `${baseTask}\n\nThe delivered change was reviewed and needs another pass. Address this feedback without expanding scope:\n\n${reviewerFeedback}`
+      : baseTask;
     let invocation;
     try {
       invocation = createInvocation(task, agent, {
@@ -2126,6 +2947,7 @@ export function createAutoRunService({
           projectId: worktree.projectId,
           autoRunId: autoRun.id,
           role: retryPath,
+          scheduler: autoRun.scheduler,
           ...(resumesExecutionTimeout
             ? {
                 timeoutRecoverySourceInvocationId: timeoutResumeSource.id,
@@ -2163,7 +2985,37 @@ export function createAutoRunService({
         // repairs stays at the cap and the retried attempt gets zero self-repair.
         autoRun.repairAttempts = 0;
         autoRun.timeoutRecoveryAttempts = 0;
+        // A manual retry is a new operator-requested execution window. Reusing
+        // the original run's startedAt made an old failure immediately exhaust
+        // the wall-clock recovery budget, even though the new invocation had
+        // only just started.
+        autoRun.executionBudget = {
+          startedAt: retryStartedAt,
+          turnTimeoutSeconds: autoRunTurnTimeoutSeconds(agent),
+          totalBudgetSeconds: autoRunTotalBudgetSeconds(),
+          elapsedSeconds: 0,
+          noProgressStreak: 0,
+        };
+        autoRun.timeoutRecovery = null;
+        if (revisingLocalDelivery) {
+          autoRun.deliveryHistory = [{
+            report: autoRun.deliveryReport ?? null,
+            review: autoRun.deliveryReview ?? null,
+            localDelivery: autoRun.localDelivery ?? null,
+            supersededAt: now(),
+          }, ...(autoRun.deliveryHistory ?? [])].slice(0, 20);
+          autoRun.deliveryReport = null;
+          autoRun.deliveryReview = null;
+        }
         setAutoRunStatus(autoRun, autoRunStatusForInvocation(invocation), { error: null, prNumber: null, prUrl: null });
+        scheduleBoundWorkItemsForRetry({
+          state,
+          autoRun,
+          plannedDate: retryPlannedDate,
+          actorId: actor?.userId ?? "usr_local",
+          now,
+          nextId,
+        });
         appendEvent({
           invocationId: invocation.id,
           type: "auto_run_retried",
@@ -2175,6 +3027,7 @@ export function createAutoRunService({
             invocationId: invocation.id,
             status: autoRun.status,
             agentId: agent.id,
+            recoveryBudgetStartedAt: retryStartedAt,
             ...(migrateDemoAgent ? { migratedFromAgentId: "agt_demo_cli" } : {}),
           },
         });
@@ -2360,7 +3213,7 @@ export function createAutoRunService({
       invocation = createInvocation(task, alternate, {
         ...codexAutoApprovalOptions(alternate),
         timeoutSeconds: autoRunTurnTimeoutSeconds(alternate),
-        metadata: { worktreeId: worktree.id, projectId: worktree.projectId, autoRunId: autoRun.id, role: path },
+        metadata: { worktreeId: worktree.id, projectId: worktree.projectId, autoRunId: autoRun.id, role: path, scheduler: autoRun.scheduler },
       });
       startInvocationIfAllowed(invocation, alternate);
     } catch (error) {
@@ -2952,52 +3805,300 @@ export function createAutoRunService({
   // review "missing" => never auto-merges (falls to the human merge dialog).
   // Respects the kill switch + circuit breaker; every auto-merge is audited +
   // alerted. Merge itself still goes through mergeAutoRunPr (re-fetches checks).
-  // E3 (decision-path expansion): a human answers a clarify run's questions. The
-  // answers are posted back to the issue (so a re-triggered run has the context)
-  // and recorded; the human then re-labels the issue `auto` (or starts it) to
-  // proceed with the answers in the issue body. Human-only, audited.
+  // E3 (decision-path expansion): a human answer resumes understanding for the
+  // SAME Auto-run. The answer is new routing input, not implicit permission to
+  // develop: free-text answers re-route the same run. Structured repository
+  // actions retain their payload so the HTTP boundary can clone and start the
+  // selected repository flow.
   async function answerClarify(autoRunId, { actor, answers, selectedAction, repoUrl } = {}) {
     const autoRun = state.autoRuns.find((item) => item.id === autoRunId);
     if (!autoRun) throw new Error("Auto-run not found.");
-    if ((autoRun.decision?.path ?? null) !== "clarify") throw new Error("Only a clarify run's questions can be answered.");
-    // #1151: answering leaves the run at needs_input, so a second answer would
-    // repeat the issue comment and overwrite the recorded answer. First answer wins.
+    // #1151: a repeated answer must not dispatch another continuation or
+    // overwrite the recorded customer decision. First answer wins.
     if (autoRun.clarifyAnswer) {
-      return { ok: true, alreadyDecided: { decidedBy: autoRun.clarifyAnswer.by ?? null, decidedAt: autoRun.clarifyAnswer.at ?? null, status: "answered" } };
+      return {
+        ok: true,
+        alreadyDecided: { decidedBy: autoRun.clarifyAnswer.by ?? null, decidedAt: autoRun.clarifyAnswer.at ?? null, status: "answered" },
+        shouldRetry: Boolean(autoRun.clarifyAnswer.repoUrl && autoRun.clarifyAnswer.selectedAction),
+        repoUrl: autoRun.clarifyAnswer.repoUrl ?? null,
+        selectedAction: autoRun.clarifyAnswer.selectedAction ?? null,
+      };
     }
+    if ((autoRun.decision?.path ?? null) !== "clarify") throw new Error("Only a clarify run's questions can be answered.");
     if (autoRun.status !== "needs_input") throw new Error("Only a run awaiting input can be answered.");
     const text = String(answers ?? "").trim();
     if (!text) throw new Error("An answer is required.");
+    if (autoRun.clarificationResume?.status === "processing") {
+      return { ok: true, resumed: false, reason: "clarification_resume_in_progress" };
+    }
     const by = actor?.userId ?? "usr_local";
     const worktree = state.worktrees.find((item) => item.id === autoRun.worktreeId) ?? null;
     const questions = autoRun.decision?.clarifyingQuestions ?? [];
+    const answerText = text.slice(0, 4000);
+    const chosenAction = String(selectedAction ?? "").trim().slice(0, 64);
+    const chosenRepoUrl = String(repoUrl ?? "").trim().slice(0, 500);
     const body = [
       `Clarifications from ${by}:`,
       "",
       ...(questions.length ? questions.map((q, i) => `> ${q}`) : []),
       questions.length ? "" : null,
-      text,
+      answerText,
+      chosenAction ? `Selected action: ${chosenAction}` : null,
+      chosenRepoUrl ? `Repository: ${chosenRepoUrl}` : null,
     ].filter((l) => l !== null).join("\n");
-    return runTx(() => {
-      maybePostIssueReport(autoRun, worktree, body);
-      autoRun.clarifyAnswer = {
-        by, at: now(), text: text.slice(0, 4000),
-        // Carry a structured chosen action + payload so the route handler can
-        // auto-trigger a fresh run (clone → evaluate / develop / etc.).
-        ...(selectedAction ? { selectedAction: String(selectedAction).slice(0, 64) } : {}),
-        ...(repoUrl ? { repoUrl: String(repoUrl).slice(0, 500) } : {}),
-      };
-      appendEvent({
-        invocationId: autoRun.invocationId,
-        type: "auto_run_clarify_answered",
-        level: "info",
-        message: `Auto-run ${autoRun.id} clarify questions answered by ${by}.`,
-        data: { autoRunId: autoRun.id, issue: autoRun.link?.number ?? null },
+
+    // Preserve the human answer at the tail even when the original issue body is
+    // already near the prompt budget. The answer is the most recent routing input.
+    const boundedAnswerBody = body.length > 12_000 ? body.slice(-12_000) : body;
+    const baseBudget = Math.max(0, 12_000 - boundedAnswerBody.length - 2);
+    const baseBody = String(autoRun.issueBody ?? "").slice(0, baseBudget);
+    const clarifiedIssueBody = [baseBody, boundedAnswerBody].filter(Boolean).join("\n\n");
+
+    if (chosenAction) {
+      return runTx(() => {
+        maybePostIssueReport(autoRun, worktree, body);
+        autoRun.issueBody = clarifiedIssueBody;
+        autoRun.clarifyAnswer = {
+          by, at: now(), text: answerText,
+          selectedAction: chosenAction,
+          ...(chosenRepoUrl ? { repoUrl: chosenRepoUrl } : {}),
+        };
+        autoRun.clarificationContinuation = {
+          status: "pending",
+          action: chosenAction,
+          repoUrl: chosenRepoUrl || null,
+          requestedAt: now(),
+          requestedBy: by,
+          attemptCount: 0,
+        };
+        appendEvent({
+          invocationId: autoRun.invocationId,
+          type: "auto_run_clarify_answered",
+          level: "info",
+          message: `Auto-run ${autoRun.id} structured clarification answered by ${by}.`,
+          data: { autoRunId: autoRun.id, issue: autoRun.link?.number ?? null, selectedAction: chosenAction },
+        });
+        return { ok: true, shouldRetry: Boolean(chosenRepoUrl), repoUrl: chosenRepoUrl || null, selectedAction: chosenAction };
       });
-      // Signal the route handler to auto-trigger a fresh run with the chosen
-      // action payload (clone → evaluate / develop etc.) when applicable.
-      return { ok: true, shouldRetry: Boolean(selectedAction), repoUrl: repoUrl ?? null };
+    }
+
+    const agent = autoRun.agentId && typeof findAgent === "function"
+      ? findAgent(autoRun.agentId)
+      : typeof defaultAgent === "function" ? defaultAgent() : null;
+    if (!agent || agent.status === "disabled") {
+      throw new Error("The execution environment is unavailable; enable or select an agent before answering.");
+    }
+    let localWorkItem = null;
+    if (autoRun.link?.type === "local_issue") {
+      localWorkItem = (state.workItems ?? []).find((item) =>
+        item.id === autoRun.localIssueId
+        || item.id === autoRun.executionChainId
+        || item.localNumber === autoRun.link?.number);
+      if (!localWorkItem
+        || !(localWorkItem.acceptanceCriteria ?? []).length
+        || !(localWorkItem.verificationSop ?? []).length
+        || (worktree && !localWorkItem.executionContractConfirmedAt)) {
+        throw new Error("The work item execution contract must be prepared before the clarification can resume.");
+      }
+    }
+    const plan = autoRun.executionPlan ?? null;
+    if (!worktree && (!plan || !(plan.acceptanceCriteria ?? []).length || !(plan.verificationSop ?? []).length)) {
+      throw new Error("The Auto-run execution plan must be prepared before the clarification can resume.");
+    }
+
+    const answerAt = now();
+    const resumeToken = nextId("clarify_resume");
+    runTx(() => {
+      autoRun.clarificationResume = { status: "processing", token: resumeToken, by, startedAt: answerAt };
+      autoRun.phase = "understanding";
+      autoRun.updatedAt = answerAt;
     });
+
+    try {
+      const nextDecision = await resolveDecision({
+        link: autoRun.link,
+        issueBody: clarifiedIssueBody,
+        decideIssuePath,
+        minConfidence: decisionSettings?.minConfidence,
+        // The answer exists specifically to resolve ambiguity, so do not let a
+        // title-only fast path bypass it.
+        fastPath: false,
+        epicDecomposition: state.autoRunSettings?.epicDecomposition === true,
+      });
+      if (autoRun.status !== "needs_input" || autoRun.clarificationResume?.token !== resumeToken) {
+        return { ok: true, resumed: false, reason: "clarification_resume_cancelled", autoRun };
+      }
+      const nextPath = nextDecision.path;
+      const revisedPlan = plan ? {
+        ...plan,
+        taskUnderstanding: nextDecision.taskUnderstanding || plan.taskUnderstanding || "",
+        acceptanceCriteria: (nextDecision.acceptanceCriteria ?? []).length
+          ? nextDecision.acceptanceCriteria
+          : plan.acceptanceCriteria,
+        verificationSop: (nextDecision.verificationSop ?? []).length
+          ? nextDecision.verificationSop
+          : plan.verificationSop,
+        risks: (nextDecision.risks ?? []).length ? nextDecision.risks : plan.risks ?? [],
+        suggestedRoute: nextPath,
+        evidence: nextDecision.evidence ?? plan.evidence ?? null,
+      } : null;
+
+      runTx(() => {
+        autoRun.issueBody = clarifiedIssueBody;
+        autoRun.decisionHistory = [autoRun.decision, ...(autoRun.decisionHistory ?? [])].filter(Boolean).slice(0, 10);
+        autoRun.decision = { ...nextDecision, clarifiedBy: by, clarifiedAt: answerAt };
+        autoRun.intent = intentForPath(nextPath);
+        autoRun.updatedAt = answerAt;
+        if (localWorkItem && revisedPlan) {
+          localWorkItem.acceptanceCriteria = [...revisedPlan.acceptanceCriteria];
+          localWorkItem.verificationSop = [...revisedPlan.verificationSop];
+          if (nextPath !== "clarify") {
+            localWorkItem.executionContractConfirmedAt = answerAt;
+            localWorkItem.executionContractSource = "clarification_confirmed";
+            (state.workItemActivities ??= []).unshift({
+              id: nextId("wia"),
+              workItemId: localWorkItem.id,
+              ownerTeamId: localWorkItem.ownerTeamId,
+              projectId: localWorkItem.projectId,
+              action: "execution_contract_confirmed_after_clarification",
+              actorId: by,
+              createdAt: answerAt,
+              details: { autoRunId: autoRun.id, path: nextPath },
+            });
+          }
+          localWorkItem.revision = (Number(localWorkItem.revision) || 0) + 1;
+          localWorkItem.updatedAt = answerAt;
+          localWorkItem.lastModifiedBy = by;
+        }
+      });
+
+      let frozen = null;
+      if (!worktree && revisedPlan) {
+        frozen = attachAutoRunExecutionPlan(autoRun.id, {
+          ...revisedPlan,
+          confirmedBy: nextPath === "clarify" ? null : "user",
+          confirmedAt: nextPath === "clarify" ? null : answerAt,
+        });
+      }
+
+      runTx(() => {
+        autoRun.clarificationHistory = [{
+          by,
+          at: answerAt,
+          questions,
+          answer: answerText,
+          resolvedPath: nextPath,
+        }, ...(autoRun.clarificationHistory ?? [])].slice(0, 10);
+        autoRun.clarifyAnswer = nextPath === "clarify" ? null : { by, at: answerAt, text: answerText };
+        if (nextPath === "clarify") {
+          autoRun.clarificationResume = null;
+          autoRun.phase = "waiting_for_input";
+        }
+        appendEvent({
+          invocationId: autoRun.invocationId,
+          type: "auto_run_clarify_answered",
+          level: "info",
+          message: `Auto-run ${autoRun.id} clarification was answered and re-routed to ${nextPath}.`,
+          data: { autoRunId: autoRun.id, issue: autoRun.link?.number ?? null, path: nextPath },
+        });
+      });
+      maybePostIssueReport(autoRun, worktree, body);
+
+      if (nextPath === "clarify") {
+        return { ok: true, resumed: true, waitingForInput: true, autoRun };
+      }
+
+      if (autoRun.status !== "needs_input" || autoRun.clarificationResume?.token !== resumeToken) {
+        return { ok: true, resumed: false, reason: "clarification_resume_cancelled", autoRun };
+      }
+
+      if (!worktree) {
+        const resumed = await startAutoRun({
+          projectId: autoRun.projectId,
+          link: autoRun.link,
+          localIssueId: autoRun.localIssueId,
+          name: autoRun.launchContext?.name,
+          baseBranch: autoRun.launchContext?.baseBranch,
+          agentId: autoRun.agentId,
+          actor,
+          issueBody: clarifiedIssueBody,
+          executionChainId: autoRun.executionChainId,
+          taskMaterialWorkItemId: autoRun.launchContext?.taskMaterialWorkItemId ?? autoRun.localIssueId,
+          terminalId: autoRun.terminalId,
+          autonomyProfile: autoRun.autonomyProfile,
+          existingAutoRunId: autoRun.id,
+          executionPlan: frozen.executionPlan,
+        });
+        runTx(() => {
+          autoRun.clarificationResume = null;
+          appendEvent({
+            invocationId: resumed.invocation?.id ?? null,
+            type: "auto_run_resumed_after_clarification",
+            level: "info",
+            message: `Auto-run ${autoRun.id} materialized and resumed after clarification.`,
+            data: { autoRunId: autoRun.id, worktreeId: resumed.worktree?.id ?? null, answeredBy: by, path: nextPath },
+          });
+        });
+        return { ok: true, resumed: true, ...resumed };
+      }
+
+      const verifyProject = state.projects.find((project) => project.id === autoRun.projectId) ?? null;
+      const verifyCmdArr = resolveAutoRunVerifyCommandFor({ verifyCommandName: verifyProject?.verifyCommandName ?? null });
+      const verifyCommand = Array.isArray(verifyCmdArr) && verifyCmdArr.length ? verifyCmdArr.join(" ") : null;
+      const task = roleAutoRunPrompt(autoRun.link, { path: nextPath, issueBody: clarifiedIssueBody, verifyCommand });
+      const invocation = createInvocation(task, agent, {
+        actor,
+        ...codexAutoApprovalOptions(agent),
+        timeoutSeconds: autoRunTurnTimeoutSeconds(agent),
+        metadata: {
+          worktreeId: worktree.id,
+          projectId: worktree.projectId,
+          autoRunId: autoRun.id,
+          role: nextPath,
+          executionChainId: autoRun.executionChainId,
+          autonomyProfile: autoRun.autonomyProfile,
+          scheduler: autoRun.scheduler,
+          resumedFromClarification: true,
+        },
+      });
+      runTx(() => {
+        autoRun.clarificationResume = null;
+        autoRun.invocationId = invocation.id;
+        autoRun.phase = nextPath === "develop" ? "implementing" : "planning";
+        autoRun.executionStage = nextPath === "develop" ? "execution" : "analysis";
+        setAutoRunStatus(autoRun, autoRunStatusForInvocation(invocation), { error: null });
+        appendEvent({
+          invocationId: invocation.id,
+          type: "auto_run_resumed_after_clarification",
+          level: "info",
+          message: `Auto-run ${autoRun.id} resumed after clarification.`,
+          data: { autoRunId: autoRun.id, worktreeId: worktree.id, answeredBy: by, path: nextPath },
+        });
+      });
+      startInvocationIfAllowed(invocation, agent);
+      return { ok: true, resumed: true, autoRun, invocation };
+    } catch (error) {
+      runTx(() => {
+        if (autoRun.clarificationResume?.token === resumeToken) autoRun.clarificationResume = null;
+        // Once a route was resolved and recorded, a dispatch failure is a normal
+        // failed Run and can use the existing retry path. Validation/decision
+        // failures leave needs_input intact so the same answer can be retried.
+        if (autoRun.status === "cancelled") {
+          return;
+        }
+        if (autoRun.clarifyAnswer) {
+          if (autoRun.status === "needs_input") {
+            setAutoRunStatus(autoRun, "failed", {
+              error: `The clarified run could not resume: ${String(error?.message ?? error)}`,
+            });
+          }
+        } else {
+          autoRun.phase = "waiting_for_input";
+          autoRun.updatedAt = now();
+        }
+      });
+      throw error;
+    }
   }
 
   const breakerOpen = () => {
@@ -3177,7 +4278,17 @@ export function createAutoRunService({
         },
       }));
     }
-    return { reaped, readvanced, capacityRetried, capacityBlocked, holdsReleased };
+    const deliveryReviews = await reconcileDeliveryReviews();
+    // The status and the "who acts next" field form one user-facing state.
+    // Re-converge all durable runs on boot/tick so a crash or an upgrade cannot
+    // leave a review card saying both "waiting for you" and "waiting on AI".
+    const workItemsConverged = runTx(() => (state.autoRuns ?? []).reduce(
+      (count, autoRun) => count + syncBoundWorkItemsForAutoRun({
+        state, autoRun, status: autoRun.status, now, nextId,
+      }).length,
+      0,
+    ));
+    return { reaped, readvanced, capacityRetried, capacityBlocked, holdsReleased, deliveryReviews, workItemsConverged };
   }
 
   function recordRoutingOverride(autoRunId, {
@@ -3233,5 +4344,5 @@ export function createAutoRunService({
     return { ok: true, routingOverride: publicOverride(autoRun.routingOverride), replayed: false };
   }
 
-  return { startAutoRun, advanceAutoRunForInvocation, syncAutoRunOnApproval, syncAutoRunOnDenial, retryAutoRun, reverifyAutoRun, attemptFailover, cancelAutoRun, mergeAutoRunPr, recordRoutingOverride, maybeDeployAfterMerge, reapStuckAutoRuns, autoMergeSweep, approveDesign, rejectDesign, answerClarify, approveDecomposition, rejectDecomposition };
+  return { reserveAutoRun, decideReservedAutoRun, attachAutoRunExecutionPlan, failAutoRunUnderstanding, deferAutoRunUnderstanding, startAutoRun, advanceAutoRunForInvocation, syncAutoRunOnApproval, syncAutoRunOnDenial, retryAutoRun, reverifyAutoRun, attemptFailover, cancelAutoRun, stopAutoRunDelivery, mergeAutoRunPr, recordRoutingOverride, maybeDeployAfterMerge, reapStuckAutoRuns, reconcileDeliveryReviews, autoMergeSweep, approveDesign, rejectDesign, answerClarify, approveDecomposition, rejectDecomposition };
 }

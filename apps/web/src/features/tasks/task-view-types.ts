@@ -35,6 +35,7 @@ export type LocalWorkItem = {
   type: "task" | "bug" | "feature" | "initiative";
   status: "backlog" | "ready" | "in_progress" | "review" | "blocked" | "done";
   priority: "p0" | "p1" | "p2" | "p3";
+  executionPolicy?: "inherit" | "auto" | "manual" | "paused";
   state: "open" | "closed";
   businessState?: "open" | "closed";
   planningStatus?: LocalWorkItem["status"];
@@ -59,11 +60,47 @@ export type LocalWorkItem = {
   lastProgressAt: string | null;
   lastProgressSummary: string | null;
   acceptanceCriteria: string[];
+  acceptanceCriteriaSource?: "manual" | "body_extracted" | "assisted" | "structured" | "body_unstructured" | null;
+  verificationSop?: string[];
+  executionContractSource?: "manual" | "body_extracted" | "assisted" | null;
+  executionContractConfirmedAt?: string | null;
+  executionContractGate?: {
+    ready: boolean;
+    missing: ("acceptance_criteria" | "verification_sop" | "confirmation" | "confirmed_before_execution")[];
+    source: string | null;
+    confirmedAt: string | null;
+    latestAttemptStartedAt?: string | null;
+  };
+  reviewContract?: {
+    schemaVersion: "legacy-v1" | "execution-contract-v2" | string;
+    id: string;
+    workItemId: string;
+    workItemRevision: number | null;
+    autoRunId: string | null;
+    acceptanceCriteria: string[];
+    verificationSop: string[];
+    confirmedBy: string | null;
+    confirmedAt: string | null;
+    digest: string | null;
+    readOnly: true;
+  } | null;
+  reviewEvidence?: {
+    criterion: string;
+    status: "passed" | "failed" | "not_tested";
+    note: string;
+    verificationId: string | null;
+    command: string | null;
+    verificationSummary: string | null;
+    evidence: { kind: string; ref: string; summary: string; assetId?: string | null; hash?: string | null; version?: string | null; terminalId?: string | null }[];
+    sourceAutoRunId: string | null;
+    reviewedBy: string | null;
+    reviewedAt: string | null;
+  }[];
   acceptanceResults?: { criterion: string; status: "passed" | "failed" | "not_tested"; note: string; verificationId: string }[];
   verificationRecords?: {
     id: string; kind: "test" | "lint" | "typecheck" | "manual" | "review";
     status: "passed" | "failed"; command: string | null; summary: string;
-    evidence: { kind: string; ref: string; summary: string; assetId?: string | null; hash?: string | null; version?: string | null; terminalId?: string | null }[]; recordedAt: string; recordedBy: string;
+    evidence: { kind: string; ref: string; summary: string; assetId?: string | null; hash?: string | null; version?: string | null; terminalId?: string | null }[]; recordedAt: string; recordedBy: string; sourceAutoRunId?: string | null;
   }[];
   inputAssets?: WorkItemAssetRef[];
   materialChangesPending?: boolean;
@@ -86,6 +123,7 @@ export type LocalWorkItem = {
   }[];
   completionGate?: { ready: boolean; missingCriteria: string[]; verificationRequired: boolean };
   dueDate: string | null;
+  notBefore?: string | null;
   plannedDate?: string | null;
   carriedFromDate?: string | null;
   schedulePlanSource?: "manual" | "auto_plan" | "rollover" | "urgent_insert" | null;
@@ -271,9 +309,20 @@ export type WorkItemAttentionMetrics = {
 export type LocalWorkItemAutoRun = {
   id: string;
   status: string;
+  phase?: "queued" | "understanding" | "waiting_for_input" | "planning" | "implementing" | "verifying" | "review_ready" | "failed" | "cancelled" | null;
   updatedAt: string;
   invocationId?: string | null;
   agentId?: string | null;
+  understandingContext?: {
+    version: string;
+    digest: string;
+    documentPaths: string[];
+    relatedFiles: { path: string; line: number; term: string }[];
+    similarTasks: { localRef: string | null; title: string; score: number }[];
+    verificationCommand: string[];
+    truncated: boolean;
+    redactions?: number;
+  } | null;
   decision?: {
     path: string; decidedBy: string; confidence: number; rationale?: string | null;
     via?: string | null; latencyMs?: number | null; clarifyingQuestions?: string[] | null;
@@ -286,6 +335,33 @@ export type LocalWorkItemAutoRun = {
     worktreeId: string; branchName: string | null; mode?: "local_merge" | "pull_request";
     deliveredAt?: string | null; promotedAt?: string | null; prNumber?: number | null; prUrl?: string | null;
   } | null;
+  clarifyAnswer?: { by?: string | null; at?: string | null; text?: string | null } | null;
+  deliveryReport?: {
+    summary: string | null;
+    verification: { passed: boolean; verified: boolean; summary: string | null } | null;
+    changedFiles: string[];
+    completedAt: string | null;
+  } | null;
+  deliveryReview?: {
+    status: "queued" | "running" | "completed" | "failed" | "unavailable";
+    invocationId: string | null;
+    reviewer: string;
+    startedAt: string | null;
+    completedAt: string | null;
+    verdict: "approved" | "changes_requested" | null;
+    summary: string | null;
+    findings: { severity: "low" | "medium" | "high"; file: string; line: number | null; message: string; suggestion: string | null; confidence: "low" | "medium" | "high" }[];
+    reviewedCommit: string | null;
+    errorCode: string | null;
+    nextRetryAt?: string | null;
+  } | null;
+  deliveryStopped?: {
+    stoppedAt: string;
+    stoppedBy: string;
+    reason: string | null;
+    worktreeKept: boolean;
+    pullRequestKept: boolean;
+  } | null;
   routingOverride?: {
     recommendedPath: string | null; actualPath: string; reason: string;
     actorId: string; recordedAt: string; revision: number;
@@ -296,16 +372,35 @@ export type LocalWorkItemObservability = {
   nextAction: "review_approval" | "review_delivery" | "resolve_sync_conflict" | "inspect_failure" | "none" | "monitor_execution" | "start_execution";
   attention: WorkItemAttention[];
   latestRun: LocalWorkItemAutoRun | null;
+  runHistory?: {
+    invocationId: string;
+    autoRunId: string | null;
+    attempt: number;
+    status: string;
+    createdAt: string | null;
+    startedAt: string | null;
+    completedAt: string | null;
+    errorCode: string | null;
+    summary: string | null;
+    current: boolean;
+  }[];
   delivery?: {
     state: "awaiting_review";
     mode: "local_merge" | "pull_request";
     worktreeId: string;
     branchName: string | null;
     remoteUrl: string | null;
+    report: LocalWorkItemAutoRun["deliveryReport"];
+    aiReview: LocalWorkItemAutoRun["deliveryReview"];
     review: {
       verdict: "approved" | "changes_requested";
+      summary: string | null;
+      comments: { path: string | null; body: string; line?: number; severity?: "low" | "medium" | "high"; suggestion?: string }[];
       reviewedCommit: string | null;
       reviewedBy: string | null;
+      source: "human" | "ai";
+      reviewerName: string | null;
+      reviewInvocationId: string | null;
       createdAt: string | null;
     } | null;
   } | null;

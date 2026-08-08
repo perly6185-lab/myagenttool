@@ -401,8 +401,10 @@ test("local schedule capacity is current-terminal-only and personal-work scoped"
 });
 
 test("local schedule preview applies atomically and rejects a stale plan revision", async () => {
+  testState.device.timeZone = "Asia/Shanghai";
   const preview = await call("/api/local-schedule/preview", { token: "tok_a" });
   assert.equal(preview.status, 200);
+  assert.equal(preview.body.assumptions.timeZone, "Asia/Shanghai");
   assert.ok(preview.body.days.some((day) => day.items.some((item) => item.workItemId === "lwi_team_a")));
 
   const applied = await call("/api/local-schedule/apply", {

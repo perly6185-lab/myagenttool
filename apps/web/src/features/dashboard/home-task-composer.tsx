@@ -69,6 +69,9 @@ export function HomeTaskComposer({
     due: "希望完成",
     criteria: "完成标准（可选）",
     criteriaHint: "每行一项，例如：覆盖全部反馈\n给出明确优先级\n输出可分享的文档",
+    sop: "验收 SOP（交给 AI 前必填）",
+    sopHint: "每行一步，例如：按真实使用流程检查结果\n核对自动验证证据\n确认风险后再审核通过",
+    contractReview: "已生成执行方案草案。请先确认或修改完成标准和验收 SOP，再次点击“创建并交给 AI”才会启动。",
     more: "补充完成标准或参考资料",
     attach: "添加参考文件",
     attachDrop: "拖放文件到这里，或点击选择文件",
@@ -81,13 +84,12 @@ export function HomeTaskComposer({
     createAi: "创建并交给 AI",
     creating: "正在创建…",
     created: "任务已创建并加入看板。",
-    aiStarted: "任务已创建，AI 已开始处理。",
-    partial: "任务已创建，但 AI 暂时无法开始。你可以在任务详情中重试。",
+    aiStarted: "任务已创建，AI 会自动处理；需要你时会提醒。",
     failed: "任务创建失败，请检查项目和网络状态后重试。",
     preflight: "执行前检查",
     preflightChecking: "正在确认 AI、代码仓库和安全开关…",
     preflightBlocked: "AI 暂时不能启动，请先处理以下问题。",
-    preflightWarning: "AI 可以启动，但建议留意以下提醒。",
+    preflightWarning: "任务可以加入自动队列；AI 会在条件满足时开始，请留意以下信息。",
     preflightUnavailable: "暂时无法完成执行前检查，请重新检查。",
     preflightRetry: "重新检查",
     preflightSetup: "去设置并修复",
@@ -105,6 +107,9 @@ export function HomeTaskComposer({
     due: "Complete by",
     criteria: "Definition of done (optional)",
     criteriaHint: "One item per line, for example:\nCover every feedback item\nAssign a clear priority\nProduce a shareable document",
+    sop: "Verification SOP (required before AI starts)",
+    sopHint: "One step per line, for example:\nExercise the real user flow\nReview automated evidence\nConfirm risks before approval",
+    contractReview: "An execution-plan draft is ready. Review or edit the completion criteria and verification SOP, then click “Create and let AI work” again to start.",
     more: "Add completion criteria or references",
     attach: "Add reference files",
     attachDrop: "Drop files here or choose files",
@@ -117,13 +122,12 @@ export function HomeTaskComposer({
     createAi: "Create and let AI work",
     creating: "Creating…",
     created: "Task created and added to your boards.",
-    aiStarted: "Task created. AI has started working.",
-    partial: "The task was created, but AI could not start yet. Retry from task details.",
+    aiStarted: "Task created. AI will work automatically and notify you only when needed.",
     failed: "The task could not be created. Check the project and connection, then retry.",
     preflight: "Preflight",
     preflightChecking: "Checking the AI, repository, and safety controls…",
     preflightBlocked: "AI cannot start yet. Resolve these issues first.",
-    preflightWarning: "AI can start, with these recommendations.",
+    preflightWarning: "The task can join the automatic queue. AI will start when ready; note the following.",
     preflightUnavailable: "Preflight could not be completed. Recheck before starting AI.",
     preflightRetry: "Recheck",
     preflightSetup: "Open setup and fix",
@@ -138,6 +142,8 @@ export function HomeTaskComposer({
   const [goal, setGoal] = useState("");
   const [dueDate, setDueDate] = useState(() => localDateKey(1));
   const [criteria, setCriteria] = useState("");
+  const [verificationSop, setVerificationSop] = useState("");
+  const [detailsOpen, setDetailsOpen] = useState(false);
   const [attachments, setAttachments] = useState<TaskMaterialSelection[]>([]);
   const [attachmentFeedback, setAttachmentFeedback] = useState<string | null>(null);
   const [pendingMode, setPendingMode] = useState<CreateMode | null>(null);
@@ -158,8 +164,11 @@ export function HomeTaskComposer({
   const title = useMemo(() => goal.trim().split(/\r?\n/)[0]?.slice(0, 200) ?? "", [goal]);
   const filesReady = attachments.every((attachment) => attachment.status === "ready");
   const canCreate = Boolean(projectId && title && dueDate && !pendingMode && filesReady && !unavailable);
-  const canCreateWithAi = canCreate && readiness?.ready === true && !readinessLoading;
-  const readinessWarnings = readiness?.checks.filter((check) => check.status === "warn") ?? [];
+  const readinessBlocking = readiness?.checks.filter((check) => check.status === "blocked" && check.key !== "capacity") ?? [];
+  const readinessWarnings = readiness?.checks.filter((check) => check.status === "warn" || (check.status === "blocked" && check.key === "capacity")) ?? [];
+  const capacityBlocked = readiness?.checks.some((check) => check.status === "blocked" && check.key === "capacity") ?? false;
+  const queueReady = readinessBlocking.length === 0 && (readiness?.ready === true || capacityBlocked);
+  const canCreateWithAi = canCreate && queueReady && !readinessLoading;
 
   async function loadReadiness(targetProjectId = projectId) {
     const requestId = ++readinessRequest.current;
@@ -286,7 +295,10 @@ export function HomeTaskComposer({
       if (mode === "ai") {
         const latestReadiness = await loadReadiness(projectId);
         if (projectIdRef.current !== projectId) return;
-        if (!latestReadiness?.ready) {
+        const latestBlocking = latestReadiness?.checks.some((check) => check.status === "blocked" && check.key !== "capacity") ?? true;
+        const latestCapacityBlocked = latestReadiness?.checks.some((check) => check.status === "blocked" && check.key === "capacity") ?? false;
+        const latestQueueReady = !latestBlocking && (latestReadiness?.ready === true || latestCapacityBlocked);
+        if (!latestQueueReady) {
           setFeedback({ tone: "warning", text: copy.preflightBlocked });
           return;
         }
@@ -297,8 +309,11 @@ export function HomeTaskComposer({
         title,
         body: goal.trim(),
         type: "task",
+        status: mode === "ai" ? "ready" : "backlog",
         priority: "p2",
+        executionPolicy: mode === "ai" ? "auto" : "manual",
         acceptanceCriteria: criteria.split(/\r?\n/).map((value) => value.trim()).filter(Boolean),
+        verificationSop: verificationSop.split(/\r?\n/).map((value) => value.trim()).filter(Boolean),
         requesterRelation: "self",
         intakeChannel: "manual",
         waitingOn: mode === "ai" ? "ai" : "none",
@@ -309,17 +324,14 @@ export function HomeTaskComposer({
       }) as { workItem: LocalWorkItem };
       created = response.workItem;
       if (mode === "ai") {
-        try {
-          await api.startWorkItemAutoRun(created.id);
-          setFeedback({ tone: "success", text: copy.aiStarted, workItemId: created.id });
-        } catch {
-          setFeedback({ tone: "warning", text: copy.partial, workItemId: created.id });
-        }
+        setFeedback({ tone: "success", text: copy.aiStarted, workItemId: created.id });
       } else {
         setFeedback({ tone: "success", text: copy.created, workItemId: created.id });
       }
       setGoal("");
       setCriteria("");
+      setVerificationSop("");
+      setDetailsOpen(false);
       setAttachments([]);
       materialDraft.current = null;
       setAttachmentFeedback(null);
@@ -362,36 +374,40 @@ export function HomeTaskComposer({
             <Input aria-label={copy.due} type="date" value={dueDate} min={localDateKey()} onChange={(event) => { setDueDate(event.target.value); idempotencyKey.current = null; setFeedback(null); }} />
           </label>
           <Button className="w-full" variant="secondary" disabled={!canCreate} onClick={() => void create("task")}>{pendingMode === "task" ? copy.creating : copy.create}</Button>
-          <Button className="w-full" data-home-create-action="create-ai" disabled={!canCreateWithAi} title={!readiness?.ready ? copy.preflightBlocked : undefined} onClick={() => void create("ai")}><Sparkles aria-hidden />{pendingMode === "ai" ? copy.creating : copy.createAi}</Button>
+          <Button className="w-full" data-home-create-action="create-ai" disabled={!canCreateWithAi} title={!queueReady ? copy.preflightBlocked : undefined} onClick={() => void create("ai")}><Sparkles aria-hidden />{pendingMode === "ai" ? copy.creating : copy.createAi}</Button>
         </div>
-        {projectId && !unavailable && (readinessLoading || readiness?.ready === false || readinessWarnings.length > 0) ? (
-          <section className={`rounded-lg border px-3 py-2 text-sm ${readiness?.ready === false ? "border-warning/40 bg-warning/[0.06]" : "border-border bg-muted/30"}`} aria-label={copy.preflight} role={readiness?.ready === false ? "alert" : "status"}>
+        {projectId && !unavailable && (readinessLoading || readinessBlocking.length > 0 || readinessWarnings.length > 0) ? (
+          <section className={`rounded-lg border px-3 py-2 text-sm ${readinessBlocking.length > 0 ? "border-warning/40 bg-warning/[0.06]" : "border-border bg-muted/30"}`} aria-label={copy.preflight} role={readinessBlocking.length > 0 ? "alert" : "status"}>
             <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
               <div className="min-w-0">
                 <p className="flex items-center gap-2 font-medium">
                   {readinessLoading ? <LoaderCircle className="size-4 animate-spin" aria-hidden /> : <AlertTriangle className="size-4 text-warning" aria-hidden />}
-                  {readinessLoading ? copy.preflightChecking : readiness?.ready === false ? copy.preflightBlocked : copy.preflightWarning}
+                  {readinessLoading ? copy.preflightChecking : readinessBlocking.length > 0 ? copy.preflightBlocked : copy.preflightWarning}
                 </p>
                 {!readinessLoading ? <ul className="mt-1 list-disc space-y-1 pl-5 text-xs text-muted-foreground">
-                  {(readiness?.checks ?? []).filter((check) => check.status === (readiness?.ready === false ? "blocked" : "warn")).map((check) => (
+                  {(readinessBlocking.length > 0 ? readinessBlocking : readinessWarnings).map((check) => (
                     <li key={check.key}><span className="font-medium text-foreground">{check.label}:</span> {check.detail}</li>
                   ))}
                 </ul> : null}
               </div>
               {!readinessLoading ? <div className="flex shrink-0 flex-wrap gap-1">
                 <Button size="sm" variant="ghost" onClick={() => { void loadReadiness(); }}><RefreshCw aria-hidden />{copy.preflightRetry}</Button>
-                {readiness?.ready === false && onOpenSetup ? <Button size="sm" variant="secondary" onClick={() => onOpenSetup(readinessSetupSection(readiness))}>{copy.preflightSetup}</Button> : null}
+                {readinessBlocking.length > 0 && readiness && onOpenSetup ? <Button size="sm" variant="secondary" onClick={() => onOpenSetup(readinessSetupSection({ ...readiness, checks: readinessBlocking }))}>{copy.preflightSetup}</Button> : null}
               </div> : null}
             </div>
           </section>
         ) : null}
-        <details className="group rounded-lg border border-border px-3 py-2">
+        <details className="group rounded-lg border border-border px-3 py-2" open={detailsOpen} onToggle={(event) => setDetailsOpen(event.currentTarget.open)}>
           <summary className="flex cursor-pointer list-none items-center justify-between gap-2 text-sm font-medium text-muted-foreground">
             {copy.more}<ChevronDown className="size-4 transition-transform group-open:rotate-180" aria-hidden />
           </summary>
           <label className="mt-3 grid gap-1 text-xs font-medium text-muted-foreground">
             {copy.criteria}
             <textarea className="min-h-24 rounded-md border border-border bg-background p-2 text-sm text-foreground" value={criteria} placeholder={copy.criteriaHint} onChange={(event) => { setCriteria(event.target.value); idempotencyKey.current = null; setFeedback(null); }} />
+          </label>
+          <label className="mt-3 grid gap-1 text-xs font-medium text-muted-foreground">
+            {copy.sop}
+            <textarea className="min-h-24 rounded-md border border-border bg-background p-2 text-sm text-foreground" value={verificationSop} placeholder={copy.sopHint} onChange={(event) => { setVerificationSop(event.target.value); idempotencyKey.current = null; setFeedback(null); }} />
           </label>
           <div className="mt-3 border-t border-border pt-3">
             <TaskMaterialPicker

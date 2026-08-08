@@ -10,6 +10,7 @@ const mocks = vi.hoisted(() => ({
   uploadTaskMaterialFile: vi.fn(),
   removeTaskMaterialFile: vi.fn(),
   autoRunReadiness: vi.fn(),
+  suggestWorkItemDraft: vi.fn(),
 }));
 
 vi.mock("@/data/use-console-actions", () => ({
@@ -20,12 +21,19 @@ vi.mock("@/data/use-console-actions", () => ({
     uploadTaskMaterialFile: mocks.uploadTaskMaterialFile,
     removeTaskMaterialFile: mocks.removeTaskMaterialFile,
     autoRunReadiness: mocks.autoRunReadiness,
+    suggestWorkItemDraft: mocks.suggestWorkItemDraft,
   },
 }));
 
 beforeEach(async () => {
   await i18n.changeLanguage("en-US");
   mocks.autoRunReadiness.mockResolvedValue({ readiness: { ready: true, checks: [] } });
+  mocks.suggestWorkItemDraft.mockResolvedValue({
+    draft: {
+      acceptanceCriteria: ["The requested outcome is complete"],
+      verificationSop: ["Exercise the real user flow", "Review automated evidence"],
+    },
+  });
 });
 
 afterEach(() => {
@@ -56,9 +64,8 @@ describe("HomeTaskComposer", () => {
     expect(onOpenProjects).toHaveBeenCalledTimes(1);
   });
 
-  it("creates one durable task and starts AI from the ordinary Home flow", async () => {
+  it("creates one durable task that the scheduler will run automatically", async () => {
     mocks.createWorkItem.mockResolvedValue({ workItem: { id: "lwi_new" } });
-    mocks.startWorkItemAutoRun.mockResolvedValue({ autoRun: { id: "aur_new" } });
     const onCreated = vi.fn();
     const onOpenTask = vi.fn();
     render(<HomeTaskComposer projectId="prj_1" projectName="Customer work" onCreated={onCreated} onOpenTask={onOpenTask} />);
@@ -79,21 +86,24 @@ describe("HomeTaskComposer", () => {
       title: "Prepare the weekly customer update",
       body: "Prepare the weekly customer update\nUse plain language.",
       acceptanceCriteria: ["Cover every open risk", "Produce a shareable document"],
+      verificationSop: [],
       waitingOn: "ai",
+      executionPolicy: "auto",
+      status: "ready",
       plannedDate: expect.stringMatching(/^\d{4}-\d{2}-\d{2}$/),
       idempotencyKey: expect.any(String),
     })));
-    expect(mocks.startWorkItemAutoRun).toHaveBeenCalledWith("lwi_new");
-    expect(await screen.findByText("Task created. AI has started working.")).toBeTruthy();
+    expect(mocks.startWorkItemAutoRun).not.toHaveBeenCalled();
+    expect(mocks.suggestWorkItemDraft).not.toHaveBeenCalled();
+    expect(await screen.findByText(/AI will work automatically/)).toBeTruthy();
     expect(onCreated).toHaveBeenCalledTimes(1);
 
     fireEvent.click(screen.getByRole("button", { name: "View task" }));
     expect(onOpenTask).toHaveBeenCalledWith("lwi_new");
   });
 
-  it("keeps the created task accessible when AI cannot start", async () => {
+  it("keeps an automatically queued task accessible without a second start request", async () => {
     mocks.createWorkItem.mockResolvedValue({ workItem: { id: "lwi_partial" } });
-    mocks.startWorkItemAutoRun.mockRejectedValue(new Error("offline"));
     const onOpenTask = vi.fn();
     render(<HomeTaskComposer projectId="prj_1" onCreated={() => {}} onOpenTask={onOpenTask} />);
     openComposer();
@@ -102,7 +112,8 @@ describe("HomeTaskComposer", () => {
     await waitFor(() => expect((screen.getByRole("button", { name: "Create and let AI work" }) as HTMLButtonElement).disabled).toBe(false));
     fireEvent.click(screen.getByRole("button", { name: "Create and let AI work" }));
 
-    expect(await screen.findByText(/task was created, but AI could not start/i)).toBeTruthy();
+    expect(await screen.findByText(/AI will work automatically/)).toBeTruthy();
+    expect(mocks.startWorkItemAutoRun).not.toHaveBeenCalled();
     fireEvent.click(screen.getByRole("button", { name: "View task" }));
     expect(onOpenTask).toHaveBeenCalledWith("lwi_partial");
   });
@@ -142,7 +153,7 @@ describe("HomeTaskComposer", () => {
       materialDraftRevision: 1,
     })));
     expect(mocks.createWorkItem.mock.calls[0]?.[0]).not.toHaveProperty("inputAssets");
-    expect(mocks.createWorkItem.mock.calls[0]?.[0]).toEqual(expect.objectContaining({ waitingOn: "none", plannedDate: null }));
+    expect(mocks.createWorkItem.mock.calls[0]?.[0]).toEqual(expect.objectContaining({ waitingOn: "none", plannedDate: null, executionPolicy: "manual" }));
   });
 
   it("blocks create-and-run before creating a task and routes the user to the precise setup section", async () => {
@@ -157,8 +168,26 @@ describe("HomeTaskComposer", () => {
     expect((screen.getByRole("button", { name: "Create and let AI work" }) as HTMLButtonElement).disabled).toBe(true);
     fireEvent.click(screen.getByRole("button", { name: "Open setup and fix" }));
 
-    expect(onOpenSetup).toHaveBeenCalledWith("agents");
+    expect(onOpenSetup).toHaveBeenCalledWith("autoRuns");
     expect(mocks.createWorkItem).not.toHaveBeenCalled();
+  });
+
+  it("queues an AI task while execution capacity is temporarily full", async () => {
+    mocks.autoRunReadiness.mockResolvedValue({
+      readiness: { ready: false, checks: [{ key: "capacity", label: "Capacity", status: "blocked", detail: "At capacity: 1/1." }] },
+    });
+    mocks.createWorkItem.mockResolvedValue({ workItem: { id: "lwi_queued" } });
+    render(<HomeTaskComposer inline projectId="prj_1" onCreated={() => {}} onOpenTask={() => {}} />);
+
+    fireEvent.change(screen.getByRole("textbox", { name: "Create a task" }), { target: { value: "Queue the next task" } });
+    const action = await screen.findByRole("button", { name: "Create and let AI work" });
+    await waitFor(() => expect((action as HTMLButtonElement).disabled).toBe(false));
+    fireEvent.click(action);
+
+    await waitFor(() => expect(mocks.createWorkItem).toHaveBeenCalledWith(expect.objectContaining({
+      status: "ready",
+      executionPolicy: "auto",
+    })));
   });
 
   it("clears project-bound material state on project switch and disables creation while offline", async () => {

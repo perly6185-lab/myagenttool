@@ -95,6 +95,8 @@ const WorkItemTimeline = lazy(() => import("./work-item-observability")
   .then((module) => ({ default: module.WorkItemTimeline })));
 const WorkItemTraceSummary = lazy(() => import("./work-item-observability")
   .then((module) => ({ default: module.WorkItemTraceSummary })));
+const WorkItemRoutingSection = lazy(() => import("./work-item-routing-section")
+  .then((module) => ({ default: module.WorkItemRoutingSection })));
 const ClaimHistoryList = lazy(() => import("./claim-history-list")
   .then((module) => ({ default: module.ClaimHistoryList })));
 
@@ -279,7 +281,6 @@ export function TaskView({ localOnly = false }: { localOnly?: boolean } = {}) {
     importedCount?: number;
     failedCount?: number;
   } | null>(null);
-  const [createArticleImportActive, setCreateArticleImportActive] = useState(false);
   const [planningOpen, setPlanningOpen] = useState(false);
   const storedSelectedLocalId = useUiStore((state) => state.selectedWorkItemId);
   const persistSelectedLocalId = useUiStore((state) => state.setSelectedWorkItemId);
@@ -1001,11 +1002,8 @@ export function TaskView({ localOnly = false }: { localOnly?: boolean } = {}) {
 
       <Modal
         open={createLocalOpen}
-        onClose={() => {
-          if (!createArticleImportActive) setCreateLocalOpen(false);
-        }}
+        onClose={() => setCreateLocalOpen(false)}
         title={t("tasks.newLocal")}
-        closeDisabled={createArticleImportActive}
       >
         {createLocalOpen ? (
           <Suspense fallback={null}>
@@ -1013,9 +1011,7 @@ export function TaskView({ localOnly = false }: { localOnly?: boolean } = {}) {
               projects={projects}
               users={state?.users ?? []}
               initialProjectId={projectId === "all" ? projects[0]?.id ?? "" : projectId}
-              onImportActivityChange={setCreateArticleImportActive}
               onDone={() => {
-                setCreateArticleImportActive(false);
                 setCreateLocalOpen(false);
                 setTab("local");
                 setNonce((value) => value + 1);
@@ -1210,7 +1206,7 @@ export function TaskView({ localOnly = false }: { localOnly?: boolean } = {}) {
 
 export function PlanningProjectsPanel({ onChanged = () => {} }: { onChanged?: () => void }) {
   const { t, i18n } = useAppTranslation();
-  const plannedDateLabel = i18n.language.startsWith("zh") ? "AI 执行日期" : "AI execution date";
+  const plannedDateLabel = i18n.language.startsWith("zh") ? "计划 AI 执行日期" : "Planned AI execution date";
   const { data: consoleState } = useConsoleState();
   const setSection = useUiStore((state) => state.setSection);
   const { execute, pending, error } = useAsyncAction();
@@ -2647,8 +2643,9 @@ export function LocalWorkItemDetail({
   onDirtyChange: (dirty: boolean) => void;
 }) {
   const { t, i18n } = useAppTranslation();
-  const plannedDateLabel = i18n.language.startsWith("zh") ? "AI 执行日期" : "AI execution date";
+  const plannedDateLabel = i18n.language.startsWith("zh") ? "计划 AI 执行日期" : "Planned AI execution date";
   const expectedCompletionLabel = i18n.language.startsWith("zh") ? "预期完成日期" : "Expected completion date";
+  const verificationSopLabel = i18n.language.startsWith("zh") ? "验收 SOP" : "Verification SOP";
   const { data: consoleState } = useConsoleState();
   const articleText = useArticleTaskLabels();
   const { execute, pending, error } = useAsyncAction();
@@ -2669,6 +2666,7 @@ export function LocalWorkItemDetail({
   const [priority, setPriority] = useState<LocalWorkItem["priority"]>("p2");
   const [labels, setLabels] = useState("");
   const [acceptance, setAcceptance] = useState("");
+  const [verificationSop, setVerificationSop] = useState("");
   const [plannedDate, setPlannedDate] = useState("");
   const [dueDate, setDueDate] = useState("");
   const [milestone, setMilestone] = useState("");
@@ -2710,6 +2708,7 @@ export function LocalWorkItemDetail({
     || priority !== item.priority
     || labels !== item.labels.join(", ")
     || acceptance !== item.acceptanceCriteria.join("\n")
+    || verificationSop !== (item.verificationSop ?? []).join("\n")
     || plannedDate !== (item.plannedDate ?? "")
     || dueDate !== (item.dueDate ?? "")
     || milestone !== (item.milestone ?? "")
@@ -2728,6 +2727,7 @@ export function LocalWorkItemDetail({
     setPriority(next.priority);
     setLabels(next.labels.join(", "));
     setAcceptance(next.acceptanceCriteria.join("\n"));
+    setVerificationSop((next.verificationSop ?? []).join("\n"));
     setPlannedDate(next.plannedDate ?? "");
     setDueDate(next.dueDate ?? "");
     setMilestone(next.milestone ?? "");
@@ -2858,6 +2858,7 @@ export function LocalWorkItemDetail({
       priority,
       labels: labels.split(",").map((value) => value.trim()).filter(Boolean),
       acceptanceCriteria: acceptance.split("\n").map((value) => value.trim()).filter(Boolean),
+      verificationSop: verificationSop.split("\n").map((value) => value.trim()).filter(Boolean),
       assigneeIds,
       plannedDate: plannedDate || null,
       dueDate: dueDate || null,
@@ -3351,95 +3352,54 @@ export function LocalWorkItemDetail({
       </Suspense>
       </div>
       {selectedWorkItemSection === "process" && boundRun?.decision ? (
-        <section className="space-y-2 rounded-md border border-border p-3 text-xs">
+        <Suspense fallback={null}>
+          <WorkItemRoutingSection
+            run={boundRun}
+            observability={observability}
+            pending={pending}
+            onOpen={() => openAutoRun(boundRun.id)}
+            onAnswer={async (action) => {
+              await execute(async () => {
+                const response = await api.answerClarify(boundRun.id, {
+                  answers: action.label,
+                  selectedAction: action.id,
+                  repoUrl: action.payload?.repoUrl,
+                }) as { retryError?: { message?: string } | null };
+                if (response.retryError) throw new Error(response.retryError.message ?? t("executionUi.routingEvidence.repositoryStartFailed"));
+                void load();
+              });
+            }}
+          />
+        </Suspense>
+      ) : null}
+      {selectedWorkItemSection === "process" && observability?.runHistory?.length ? (
+        <section className="space-y-3 rounded-md border border-border p-3" aria-label={t("taskRunHistory.title")}>
           <div className="flex flex-wrap items-center gap-2">
-            <h3 className="text-sm font-semibold">{t("taskCockpit.routingTitle")}</h3>
-            <Badge tone={boundRun.decision.confidence < 0.6 ? "warning" : "success"}>{boundRun.decision.path}</Badge>
-            <span>{Math.round(boundRun.decision.confidence * 100)}%</span>
-            <span className="text-muted-foreground">{boundRun.decision.via ?? boundRun.decision.decidedBy}</span>
-            {boundRun.decision.latencyMs != null
-              ? <span className="text-muted-foreground">{boundRun.decision.latencyMs} ms</span>
-              : null}
+            <History className="size-4 text-muted-foreground" aria-hidden="true" />
+            <h3 className="text-sm font-semibold">{t("taskRunHistory.title")}</h3>
+            <Badge tone="neutral">{observability.runHistory.length}</Badge>
           </div>
-          {boundRun.decision.rationale ? <p className="whitespace-pre-wrap">{boundRun.decision.rationale}</p> : null}
-          {boundRun.decision.evidence ? (
-            <p className="font-mono text-[10px] text-muted-foreground">
-              policy {boundRun.decision.evidence.policyVersion}
-              {boundRun.decision.evidence.modelVersion ? ` · model ${boundRun.decision.evidence.modelVersion}` : ""}
-              {` · input ${boundRun.decision.evidence.inputDigest.slice(0, 12)}`}
-            </p>
-          ) : null}
-          {(boundRun.decision.clarifyingQuestions ?? []).length ? (
-            <ul className="list-inside list-disc text-muted-foreground">
-              {boundRun.decision.clarifyingQuestions?.map((question) => <li key={question}>{question}</li>)}
-            </ul>
-          ) : null}
-          {(boundRun.decision.suggestedActions ?? []).length ? (
-            <div className="mt-3 flex flex-wrap gap-2">
-              {(boundRun.decision.suggestedActions ?? []).map((action: { id: string; label: string; description?: string; payload?: { repoUrl?: string } | null }) => (
-                <Button
-                  key={action.id}
-                  variant={action.id === "evaluate" ? "primary" : "secondary"}
-                  size="sm"
-                  disabled={pending}
-                  onClick={async () => {
-                    await execute(async () => {
-                      await api.answerClarify(boundRun.id, {
-                        answers: action.label,
-                        selectedAction: action.id,
-                        repoUrl: action.payload?.repoUrl,
-                      });
-                      void load();
-                    });
-                  }}
-                >
-                  {action.label}
-                </Button>
-              ))}
-            </div>
-          ) : null}
-          {observability?.routingExplanation ? (
-            <details>
-              <summary className="cursor-pointer font-semibold">{t("aiOps.whyRoute")}</summary>
-              <div className="mt-2 space-y-1">
-                {observability.routingExplanation.humanCorrection ? (
-                  <p className="rounded bg-muted p-2 font-semibold">
-                    Human correction → {observability.routingExplanation.humanCorrection.actualPath}: {observability.routingExplanation.humanCorrection.reason}
+          <p className="text-xs text-muted-foreground">{t("taskRunHistory.hint")}</p>
+          <ol className="space-y-2">
+            {observability.runHistory.map((run) => (
+              <li key={run.invocationId} className="rounded-md bg-muted/50 px-3 py-2 text-xs">
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="font-semibold">{t("taskRunHistory.attempt", { count: run.attempt })}</span>
+                  <Badge tone={statusTone(run.status)}>{invocationStatus(t, run.status)}</Badge>
+                  {run.current ? <Badge tone="running">{t("taskRunHistory.current")}</Badge> : null}
+                  <time className="ml-auto text-muted-foreground" dateTime={run.createdAt ?? undefined}>
+                    {run.createdAt ? new Date(run.createdAt).toLocaleString(i18n.language) : "-"}
+                  </time>
+                </div>
+                {run.summary ? <p className="mt-1 whitespace-pre-wrap text-muted-foreground">{run.summary}</p> : null}
+                {run.errorCode ? (
+                  <p className="mt-1 font-mono text-[11px] text-destructive">
+                    {t("taskRunHistory.errorCode", { code: run.errorCode })}
                   </p>
                 ) : null}
-                {observability.routingExplanation.candidates.map((candidate) => (
-                  <p key={candidate.path} className={candidate.selected ? "font-semibold" : "text-muted-foreground"}>
-                    {candidate.path}{candidate.score != null ? ` ${Math.round(candidate.score * 100)}%` : ""}: {candidate.reason}
-                  </p>
-                ))}
-              </div>
-            </details>
-          ) : null}
-          {observability?.estimate ? (
-            <p className="text-muted-foreground">
-              {observability.estimate.remainingMs != null
-                ? `Estimated remaining ${Math.ceil(observability.estimate.remainingMs / 60_000)} min`
-                : t("aiOps.estimateUnavailable")}
-              {` · ${observability.estimate.confidence} confidence · ${observability.estimate.sampleCount} comparable runs`}
-              {observability.estimate.p90DurationMs != null
-                ? ` · p90 ${Math.ceil(observability.estimate.p90DurationMs / 60_000)} min`
-                : ""}
-              {observability.estimate.calibrationMaeMs != null
-                ? ` · historical MAE ${Math.ceil(observability.estimate.calibrationMaeMs / 60_000)} min`
-                : ""}
-            </p>
-          ) : null}
-          <div className="flex items-center gap-2">
-            <Badge tone={statusTone(boundRun.status)}>
-              {t(`autoRuns.status.${boundRun.status}` as never, { defaultValue: boundRun.status })}
-            </Badge>
-            {boundRun.terminalOutcome
-              ? <span>{boundRun.terminalOutcome.disposition} · {boundRun.terminalOutcome.source}</span>
-              : null}
-            <Button className="ml-auto" variant="secondary" size="sm" onClick={() => openAutoRun(boundRun.id)}>
-              {t("taskCockpit.openAutoRuns")}
-            </Button>
-          </div>
+              </li>
+            ))}
+          </ol>
         </section>
       ) : null}
       {(boundRun?.status === "report_posted" && boundRun?.report) ? (
@@ -3566,6 +3526,9 @@ export function LocalWorkItemDetail({
       <Field label={t("tasks.labels")}><Input value={labels} onChange={(event) => setLabels(event.target.value)} /></Field>
       <Field label={t("tasks.acceptanceCriteria")}>
         <textarea className="min-h-24 w-full rounded-md border border-border bg-background p-2 text-sm" value={acceptance} onChange={(event) => setAcceptance(event.target.value)} />
+      </Field>
+      <Field label={verificationSopLabel}>
+        <textarea className="min-h-24 w-full rounded-md border border-border bg-background p-2 text-sm" value={verificationSop} onChange={(event) => setVerificationSop(event.target.value)} />
       </Field>
       <Suspense fallback={null}>
         <WorkItemFollowUpFields

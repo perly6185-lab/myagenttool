@@ -56,6 +56,20 @@ export function primaryDevice(state) {
   return listDevices(state)[0] ?? null;
 }
 
+export function normalizeDeviceTimeZone(value) {
+  const candidate = String(value ?? "").trim();
+  if (!candidate || candidate.length > 100) return null;
+  try {
+    return new Intl.DateTimeFormat("en-US", { timeZone: candidate }).resolvedOptions().timeZone;
+  } catch {
+    return null;
+  }
+}
+
+export function currentDeviceTimeZone(state) {
+  return normalizeDeviceTimeZone(primaryDevice(state)?.timeZone) ?? "UTC";
+}
+
 /**
  * Install `state.device` as a live accessor over `state.devices[0]`.
  *

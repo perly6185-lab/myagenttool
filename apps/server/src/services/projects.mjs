@@ -45,6 +45,8 @@ export function createProjectRecord(
     status,
     isolation,
     externalIssuePolicy,
+    autoExecutionEnabled = false,
+    futurePullForwardEnabled = true,
   } = {},
   { nextId, now = defaultNow } = {}
 ) {
@@ -60,6 +62,8 @@ export function createProjectRecord(
     status: status === "archived" ? "archived" : "active",
     isolation: isolation === "worktree" ? "worktree" : "shared",
     externalIssuePolicy: normalizeExternalIssuePolicy(externalIssuePolicy),
+    autoExecutionEnabled: autoExecutionEnabled === true,
+    futurePullForwardEnabled: futurePullForwardEnabled !== false,
     path: projectPath,
     host,
     git: {
@@ -131,6 +135,8 @@ export function createProjectService({ state, now, nextId, appendEvent, persistS
       defaultAgentId: body.defaultAgentId,
       status: body.status,
       isolation: body.isolation,
+      autoExecutionEnabled: body.autoExecutionEnabled,
+      futurePullForwardEnabled: body.futurePullForwardEnabled,
     }, { nextId, now });
     // Capture git facts (remote/default/current branch) from the real root — #160.
     project.git = readGitFacts(project.path);
@@ -146,6 +152,12 @@ export function createProjectService({ state, now, nextId, appendEvent, persistS
         existing.defaultAgentId = project.defaultAgentId ?? existing.defaultAgentId ?? null;
         existing.status = project.status ?? existing.status ?? "active";
         existing.isolation = project.isolation ?? existing.isolation ?? "shared";
+        if (Object.hasOwn(body, "autoExecutionEnabled")) {
+          existing.autoExecutionEnabled = body.autoExecutionEnabled === true;
+        }
+        if (Object.hasOwn(body, "futurePullForwardEnabled")) {
+          existing.futurePullForwardEnabled = body.futurePullForwardEnabled !== false;
+        }
         existing.updatedAt = now();
         ensureProjectTarget(existing);
         selectProject(existing.id);
@@ -223,6 +235,8 @@ export function createProjectService({ state, now, nextId, appendEvent, persistS
       ownerTeamId: body.ownerTeamId,
       budgetPoolId: body.budgetPoolId,
       defaultAgentId: body.defaultAgentId,
+      autoExecutionEnabled: body.autoExecutionEnabled,
+      futurePullForwardEnabled: body.futurePullForwardEnabled,
     });
   }
 
@@ -427,6 +441,8 @@ export function createProjectService({ state, now, nextId, appendEvent, persistS
     if (body.isolation !== undefined) project.isolation = body.isolation === "worktree" ? "worktree" : "shared";
     if (body.defaultAgentId !== undefined) project.defaultAgentId = body.defaultAgentId ? String(body.defaultAgentId) : null;
     if (body.budgetPoolId !== undefined) project.budgetPoolId = body.budgetPoolId ? String(body.budgetPoolId) : null;
+    if (body.autoExecutionEnabled !== undefined) project.autoExecutionEnabled = body.autoExecutionEnabled === true;
+    if (body.futurePullForwardEnabled !== undefined) project.futurePullForwardEnabled = body.futurePullForwardEnabled !== false;
     // A4: the project's chosen verify command NAME (a key into the operator's
     // env allowlist — never a command). Unknown names harmlessly fall back at
     // resolution time; blank clears the selection.
@@ -783,15 +799,42 @@ export function createProjectService({ state, now, nextId, appendEvent, persistS
   // request changes) + optional comments — recorded so a promote/merge can be
   // GATED on it. The diff is a flat patch (no per-line ids), so comments anchor at
   // the file level; a null path is a general comment on the whole change.
-  function submitWorktreeReview({ worktreeId, verdict, comments, summary, actor } = {}) {
+  function submitWorktreeReview({
+    worktreeId,
+    verdict,
+    comments,
+    summary,
+    actor,
+    source = "human",
+    reviewerName = null,
+    reviewInvocationId = null,
+  } = {}) {
     const worktree = worktreeRecord(worktreeId);
     if (!worktree) throw new Error("Worktree not found.");
     const normalizedVerdict = verdict === "approved" ? "approved" : verdict === "changes_requested" ? "changes_requested" : null;
     if (!normalizedVerdict) throw new Error("Review verdict must be 'approved' or 'changes_requested'.");
+    const worktreeRoot = worktree.worktreePath ?? worktree.path ?? null;
+    const normalizeReviewPath = (value) => {
+      const candidate = String(value ?? "").trim();
+      if (!candidate) return null;
+      const slashPath = candidate.replaceAll("\\", "/");
+      if (slashPath.split("/").includes("..")) return null;
+      if (!isAbsolute(candidate)) return slashPath.replace(/^\.\//, "");
+      if (!worktreeRoot) return null;
+      const rel = relative(resolve(worktreeRoot), resolve(candidate));
+      const escapes = rel === ".." || rel.startsWith(`..${sep}`);
+      return rel && !escapes && !isAbsolute(rel) ? rel.replaceAll("\\", "/") : null;
+    };
     const cleanComments = Array.isArray(comments)
       ? comments
           .filter((c) => c && typeof c === "object")
-          .map((c) => ({ path: c.path ? String(c.path).slice(0, 400) : null, body: String(c.body ?? "").slice(0, 2000) }))
+          .map((c) => ({
+            path: normalizeReviewPath(c.path)?.slice(0, 400) ?? null,
+            body: String(c.body ?? "").slice(0, 2000),
+            ...(Number.isInteger(Number(c.line)) && Number(c.line) > 0 ? { line: Number(c.line) } : {}),
+            ...(["low", "medium", "high"].includes(String(c.severity)) ? { severity: String(c.severity) } : {}),
+            ...(String(c.suggestion ?? "").trim() ? { suggestion: String(c.suggestion).slice(0, 2000) } : {}),
+          }))
           .filter((c) => c.body.trim())
           .slice(0, 100)
       : [];
@@ -803,6 +846,11 @@ export function createProjectService({ state, now, nextId, appendEvent, persistS
       summary: String(summary ?? "").slice(0, 2000) || null,
       comments: cleanComments,
       reviewedBy: actor?.userId ?? "usr_local",
+      ...(source === "ai" ? {
+        source: "ai",
+        reviewerName: String(reviewerName ?? "AI reviewer").slice(0, 120),
+        reviewInvocationId: String(reviewInvocationId ?? "").slice(0, 160) || null,
+      } : {}),
       reviewedCommit: worktreeHeadCommit(worktree.id), // bind the verdict to this exact diff
       createdAt: now(),
     };
@@ -1323,15 +1371,19 @@ export function readProjectDocuments(project, { type = "all", search = "", limit
   return { projectId: project.id, documents, truncated, scanned };
 }
 
-export function searchProjectContent(project, { query = "", include = "", exclude = "" } = {}) {
+export function searchProjectContent(project, { query = "", queries = null, include = "", exclude = "" } = {}) {
   const root = resolve(project.path);
-  const needle = String(query ?? "").trim().toLowerCase();
-  if (!needle) {
+  const requestedQueries = Array.isArray(queries)
+    ? [...new Set(queries.map((value) => String(value ?? "").trim().toLowerCase()).filter(Boolean))].slice(0, 8)
+    : [];
+  const needles = requestedQueries.length ? requestedQueries : [String(query ?? "").trim().toLowerCase()].filter(Boolean);
+  if (!needles.length) {
     return { projectId: project.id, query: "", results: [] };
   }
-  if (needle.length < 2) {
+  if (needles.some((needle) => needle.length < 2)) {
     throw new Error("Search text must be at least 2 characters.");
   }
+  const multiQuery = requestedQueries.length > 0;
   const includePatterns = splitGlobInput(include);
   const excludePatterns = splitGlobInput(exclude);
   const results = [];
@@ -1373,17 +1425,20 @@ export function searchProjectContent(project, { query = "", include = "", exclud
     const lines = text.split(/\r?\n/);
     for (let index = 0; index < lines.length; index += 1) {
       const line = lines[index];
-      if (!line.toLowerCase().includes(needle)) continue;
+      const lowerLine = line.toLowerCase();
+      const matchedTerm = needles.find((needle) => lowerLine.includes(needle));
+      if (!matchedTerm) continue;
       results.push({
         path: relPath,
         line: index + 1,
         preview: line.trim().slice(0, 180),
+        ...(multiQuery ? { term: matchedTerm } : {}),
       });
       if (results.length >= 80) return false;
     }
     return true;
   });
-  return { projectId: project.id, query, include, exclude, results, stats };
+  return { projectId: project.id, query: multiQuery ? "" : query, ...(multiQuery ? { queries: needles } : {}), include, exclude, results, stats };
 }
 
 function walkProjectFiles(root, directory, visit) {
@@ -1692,6 +1747,10 @@ function worktreeDiff(worktree, { projectTargets = [] } = {}) {
   // merge-base(@{u},HEAD)=HEAD => an EMPTY diff that blinds every post-publish
   // consumer (the auto-merge review, a re-run judge). (C1 pilot finding).
   const baseCandidates = [
+    // The immutable fork point is authoritative. In particular, fetchBase can
+    // fork from origin/main while baseBranch remains the user-facing "HEAD";
+    // comparing that run with a stale local main over-reports unrelated files.
+    worktree.baseCommit,
     worktree.baseBranch && worktree.baseBranch !== "HEAD" ? worktree.baseBranch : null,
     target?.defaultBranch,
     repoDefaultBranch(),
