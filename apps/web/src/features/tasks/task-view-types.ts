@@ -382,6 +382,20 @@ export type LocalWorkItemObservability = {
     verification: { passed: boolean; verified: boolean; summary: string | null } | null;
     deliveredAt: string | null;
   } | null;
+  outcomeHistory?: Array<{
+    version: number;
+    status: "pending" | "available" | "missing";
+    summary: string | null;
+    fullReport: string | null;
+    highlights: string[];
+    warnings: string[];
+    files: string[];
+    verification: { passed: boolean; verified: boolean; summary: string | null } | null;
+    deliveredAt: string | null;
+    invocationId: string | null;
+    supersededAt: string | null;
+    supersededByFeedback: string | null;
+  }>;
   runHistory?: {
     invocationId: string;
     autoRunId: string | null;

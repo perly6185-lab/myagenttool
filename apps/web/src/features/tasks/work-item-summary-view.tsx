@@ -773,6 +773,7 @@ export function WorkItemSummaryView({
   const [actionError, setActionError] = useState<string | null>(null);
   const [changeRequestOpen, setChangeRequestOpen] = useState(false);
   const [changeRequest, setChangeRequest] = useState("");
+  const [feedbackMode, setFeedbackMode] = useState<"revision" | "follow_up">("revision");
   const [acceptOpen, setAcceptOpen] = useState(false);
   const [reportOpen, setReportOpen] = useState(false);
   const [completionWriteback, setCompletionWriteback] = useState<"local_only" | "sync_close">("local_only");
@@ -804,6 +805,7 @@ export function WorkItemSummaryView({
     setActionError(null);
     setChangeRequestOpen(false);
     setChangeRequest("");
+    setFeedbackMode("revision");
     setAcceptOpen(false);
     setReportOpen(false);
     setCompletionWriteback("local_only");
@@ -1153,8 +1155,9 @@ export function WorkItemSummaryView({
       setActionPending(null);
     }
   };
-  const sendChangeRequest = async (bodyOverride?: string) => {
+  const sendChangeRequest = async (bodyOverride?: string, modeOverride?: "revision" | "follow_up") => {
     const body = (bodyOverride ?? changeRequest).trim();
+    const mode = modeOverride ?? feedbackMode;
     if (!body || actionPending) return;
     setActionPending("changes");
     setActionError(null);
@@ -1162,7 +1165,7 @@ export function WorkItemSummaryView({
     try {
       await api.createWorkItemComment(item.id, body);
       commentSaved = true;
-      if (observability?.delivery && observability.latestRun?.id) {
+      if (observability?.latestRun?.id) {
         await api.retryAutoRun(observability.latestRun.id, body);
       } else {
         await api.startWorkItemAutoRun(item.id);
@@ -1171,7 +1174,9 @@ export function WorkItemSummaryView({
       setChangeRequestOpen(false);
       setResultExpanded(false);
       setReportOpen(false);
-      setSyncNotice(copy.changesSent);
+      setSyncNotice(mode === "follow_up"
+        ? language === "zh" ? "问题已交给 AI。AI 会沿用当前任务和材料继续处理，并生成新版结果。" : "Your question was sent to AI. It will continue with the same task and materials and produce a new result."
+        : copy.changesSent);
       if (bodyOverride) setMaterialNotice(copy.materialReprocessStarted);
       window.dispatchEvent(new CustomEvent("myagenttool:state-change", { detail: { source: "work-item-request-changes", workItemId: item.id } }));
       setRefreshVersion((version) => version + 1);
@@ -1728,6 +1733,25 @@ export function WorkItemSummaryView({
               </ul>
             ) : <p className="mt-1.5 text-sm text-muted-foreground">{copy.noDeliverableFiles}</p>}
           </div>
+          {observability?.outcomeHistory?.length ? (
+            <details className="mt-3 rounded-lg border border-border bg-background/60 px-3 py-2.5">
+              <summary className="cursor-pointer text-sm font-medium">
+                {language === "zh" ? `历史结果（${observability.outcomeHistory.length}）` : `Previous results (${observability.outcomeHistory.length})`}
+              </summary>
+              <ol className="mt-2 space-y-2">
+                {observability.outcomeHistory.map((previous) => (
+                  <li key={`${previous.invocationId ?? "result"}-${previous.version}`} className="rounded-md bg-muted/40 px-3 py-2 text-sm">
+                    <p className="text-xs font-medium text-muted-foreground">
+                      {language === "zh" ? `第 ${previous.version} 版` : `Version ${previous.version}`}
+                      {previous.supersededAt ? ` · ${new Date(previous.supersededAt).toLocaleString()}` : ""}
+                    </p>
+                    <p className="mt-1 leading-relaxed">{previous.summary ?? (language === "zh" ? "该版本没有可读摘要" : "No readable summary for this version")}</p>
+                    {previous.supersededByFeedback ? <p className="mt-1 text-xs text-muted-foreground">{language === "zh" ? "修改要求" : "Requested change"}: {previous.supersededByFeedback}</p> : null}
+                  </li>
+                ))}
+              </ol>
+            </details>
+          ) : null}
         </section>
       ) : null}
 
@@ -1787,16 +1811,18 @@ export function WorkItemSummaryView({
           ) : null}
           {changeRequestOpen ? (
             <div className="mt-3 rounded-lg border border-border bg-background p-3">
-              <Textarea rows={3} autoFocus value={changeRequest} placeholder={copy.changePlaceholder} onChange={(event) => setChangeRequest(event.target.value)} />
+              <p className="mb-2 text-sm font-semibold">{feedbackMode === "follow_up" ? language === "zh" ? "继续追问 AI" : "Ask AI a follow-up" : copy.requestChanges}</p>
+              <Textarea rows={3} autoFocus value={changeRequest} placeholder={feedbackMode === "follow_up" ? language === "zh" ? "例如：第二个结论依据是什么？请补充原文证据。" : "For example: What supports the second conclusion? Add source evidence." : copy.changePlaceholder} onChange={(event) => setChangeRequest(event.target.value)} />
               <div className="mt-2 flex flex-wrap justify-end gap-2">
                 <Button variant="ghost" disabled={Boolean(actionPending)} onClick={() => { setChangeRequestOpen(false); setChangeRequest(""); }}>{language === "zh" ? "取消" : "Cancel"}</Button>
-                <Button disabled={!changeRequest.trim() || Boolean(actionPending)} onClick={() => void sendChangeRequest()}>{actionPending === "changes" ? copy.sendingChanges : copy.sendChanges}</Button>
+                <Button disabled={!changeRequest.trim() || Boolean(actionPending)} onClick={() => void sendChangeRequest()}>{actionPending === "changes" ? copy.sendingChanges : feedbackMode === "follow_up" ? language === "zh" ? "提交追问" : "Send follow-up" : copy.sendChanges}</Button>
               </div>
             </div>
           ) : (
             <div className="mt-4 grid gap-2 sm:flex sm:justify-end">
               <Button variant="ghost" disabled={Boolean(actionPending)} onClick={() => void stopDelivery()}>{language === "zh" ? "停止交付" : "Stop delivery"}</Button>
-              <Button variant="secondary" disabled={Boolean(actionPending)} onClick={() => setChangeRequestOpen(true)}>{copy.requestChanges}</Button>
+              <Button variant="secondary" disabled={Boolean(actionPending)} onClick={() => { setFeedbackMode("follow_up"); setChangeRequestOpen(true); }}><MessageSquare aria-hidden />{language === "zh" ? "继续追问" : "Ask follow-up"}</Button>
+              <Button variant="secondary" disabled={Boolean(actionPending)} onClick={() => { setFeedbackMode("revision"); setChangeRequestOpen(true); }}>{copy.requestChanges}</Button>
               <Button
                 disabled={!executionContractReady || Boolean(actionPending) || Boolean(observability?.delivery && observability.delivery.review?.verdict !== "approved")}
                 onClick={() => { setCompletionWriteback("local_only"); setAcceptOpen(true); }}
@@ -2031,7 +2057,7 @@ export function WorkItemSummaryView({
           <div className="space-y-3">
             {changeRequestOpen ? (
               <div className="rounded-lg border border-primary/30 bg-primary/[0.035] p-3">
-                <label className="text-sm font-semibold" htmlFor={`report-change-request-${item.id}`}>{copy.requestChanges}</label>
+                <label className="text-sm font-semibold" htmlFor={`report-change-request-${item.id}`}>{feedbackMode === "follow_up" ? language === "zh" ? "继续追问 AI" : "Ask AI a follow-up" : copy.requestChanges}</label>
                 <p className="mt-1 text-xs leading-relaxed text-muted-foreground">{deliveryDecision.revisionEffect}</p>
                 <Textarea
                   id={`report-change-request-${item.id}`}
@@ -2039,14 +2065,14 @@ export function WorkItemSummaryView({
                   rows={3}
                   autoFocus
                   value={changeRequest}
-                  placeholder={copy.changePlaceholder}
+                  placeholder={feedbackMode === "follow_up" ? language === "zh" ? "例如：第二个结论依据是什么？请补充原文证据。" : "For example: What supports the second conclusion? Add source evidence." : copy.changePlaceholder}
                   onChange={(event) => setChangeRequest(event.target.value)}
                 />
                 <div className="mt-2 flex flex-wrap justify-end gap-2">
                   <Button variant="ghost" disabled={Boolean(actionPending)} onClick={() => { setChangeRequestOpen(false); setChangeRequest(""); }}>{language === "zh" ? "取消修改" : "Cancel revision"}</Button>
                   <Button disabled={!changeRequest.trim() || Boolean(actionPending)} onClick={() => void sendChangeRequest()}>
                     <RefreshCw className={actionPending === "changes" ? "animate-spin" : ""} aria-hidden />
-                    {actionPending === "changes" ? copy.sendingChanges : copy.sendChanges}
+                    {actionPending === "changes" ? copy.sendingChanges : feedbackMode === "follow_up" ? language === "zh" ? "提交追问" : "Send follow-up" : copy.sendChanges}
                   </Button>
                 </div>
               </div>
@@ -2057,7 +2083,10 @@ export function WorkItemSummaryView({
               </Button>
               <div className="flex flex-wrap justify-end gap-2">
                 <Button variant="ghost" disabled={Boolean(actionPending)} onClick={() => setReportOpen(false)}>{language === "zh" ? "关闭" : "Close"}</Button>
-                <Button variant="secondary" disabled={Boolean(actionPending)} onClick={() => setChangeRequestOpen(true)}>
+                <Button variant="secondary" disabled={Boolean(actionPending)} onClick={() => { setFeedbackMode("follow_up"); setChangeRequestOpen(true); }}>
+                  <MessageSquare aria-hidden />{language === "zh" ? "继续追问" : "Ask follow-up"}
+                </Button>
+                <Button variant="secondary" disabled={Boolean(actionPending)} onClick={() => { setFeedbackMode("revision"); setChangeRequestOpen(true); }}>
                   <RefreshCw aria-hidden />{copy.requestChanges}
                 </Button>
                 <Button
