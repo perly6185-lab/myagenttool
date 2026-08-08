@@ -1548,6 +1548,7 @@ export function createWorkItemService({
           latestRun: latestRun ? {
             id: latestRun.id,
             status: latestRun.status,
+            phase: latestRun.phase ?? null,
             updatedAt: latestRun.updatedAt,
             decision: latestRun.decision ?? null,
             routingOverride: latestRun.routingOverride ? {
