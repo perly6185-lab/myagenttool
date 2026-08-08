@@ -78,6 +78,7 @@ import { createWorkItemService } from "../services/work-items.mjs";
 import { createTaskMaterialService } from "../services/task-materials.mjs";
 import { createWorkItemAutoRunBatchService } from "../services/work-item-auto-run-batches.mjs";
 import { createWorkItemAutoRunUnderstandingService } from "../services/work-item-auto-run-understanding.mjs";
+import { createWorkItemAutoSchedulerService } from "../services/work-item-auto-scheduler.mjs";
 import { createBusinessRoutineService } from "../services/business-routines.mjs";
 import { createBusinessPilotEvidenceService } from "../services/business-pilot-evidence.mjs";
 import { createWorkflowAdaptiveWorkService } from "../services/workflow-adaptive-work.mjs";
@@ -1688,6 +1689,11 @@ export function createServerRuntimeServices({
     reserveAutoRun,
     enqueueAutoRunUnderstanding: workItemAutoRunUnderstandingService.enqueue,
     store,
+  });
+  const workItemAutoSchedulerService = createWorkItemAutoSchedulerService({
+    state,
+    now,
+    appendEvent,
   });
   const codexApprovalRecovery = createCodexApprovalRecoveryService({
     state,
@@ -4128,6 +4134,7 @@ export function createServerRuntimeServices({
     cancelAutoRun,
     reapStuckAutoRuns,
     sweepWorkItemAutoRunBatches: workItemAutoRunBatchService.sweepBatches,
+    sweepWorkItemAutoScheduler: workItemAutoSchedulerService.sweep,
     sweepExpiredClaims,
     sweepAutoRunSloAlerts,
     sweepAlertOutbox: alertOutbox.sweep,
@@ -4193,6 +4200,7 @@ export function createServerRuntimeServices({
     recordWorkItemExecutionBinding: workItemService.recordExecutionBinding,
     createWorkItemAutoRunBatch: workItemAutoRunBatchService.createBatch,
     listWorkItemAutoRunBatches: workItemAutoRunBatchService.listBatches,
+    previewWorkItemAutoScheduler: workItemAutoSchedulerService.preview,
     claimWorkItem: workItemService.claimWorkItem,
     releaseWorkItemClaim: workItemService.releaseWorkItemClaim,
     assignWorkItemToSelf: workItemService.assignWorkItemToSelf,

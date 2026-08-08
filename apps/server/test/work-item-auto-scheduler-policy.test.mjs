@@ -37,6 +37,18 @@ test("future planned work remains eligible and fills otherwise idle capacity", (
   assert.equal(plan.decisions[0].eligible, true);
 });
 
+test("a project can disable future pull-forward without making today's work manual", () => {
+  const future = item("future", { plannedDate: "2026-08-20" });
+  const today = item("today", { plannedDate: "2026-08-08" });
+  const plan = planAutoExecutionQueue([future, today], {
+    projects: [{ id: "prj_auto", autoExecutionEnabled: true, futurePullForwardEnabled: false }],
+    today: "2026-08-08",
+    now: NOW,
+  });
+  assert.deepEqual(plan.eligible.map((row) => row.id), ["today"]);
+  assert.deepEqual(plan.decisions.find((row) => row.workItemId === "future").reasons, ["future_pull_forward_disabled"]);
+});
+
 test("notBefore is a hard eligibility boundary while plannedDate is soft", () => {
   const decision = evaluateAutoExecutionCandidate(item("later", {
     plannedDate: "2026-08-20",

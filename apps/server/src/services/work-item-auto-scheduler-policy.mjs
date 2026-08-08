@@ -95,6 +95,9 @@ export function evaluateAutoExecutionCandidate(item, {
   if (notBefore != null && notBefore > nowMs) reasons.push("not_before_reached");
 
   const normalizedToday = dateOnly(today ?? now) ?? new Date(nowMs).toISOString().slice(0, 10);
+  if (dateOnly(item?.plannedDate) > normalizedToday && project?.futurePullForwardEnabled === false) {
+    reasons.push("future_pull_forward_disabled");
+  }
   return {
     workItemId: String(item?.id ?? item?.workItemId ?? ""),
     eligible: reasons.length === 0,

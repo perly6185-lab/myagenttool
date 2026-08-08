@@ -244,6 +244,11 @@ if (typeof httpDependencies.sweepWorkItemAutoRunBatches === "function") {
   httpDependencies.sweepWorkItemAutoRunBatches().catch(() => {});
   setInterval(() => httpDependencies.sweepWorkItemAutoRunBatches().catch(() => {}), 10_000).unref?.();
 }
+if (typeof httpDependencies.sweepWorkItemAutoScheduler === "function") {
+  const sweepAutoScheduler = () => httpDependencies.sweepWorkItemAutoScheduler().catch(() => {});
+  sweepAutoScheduler();
+  setInterval(sweepAutoScheduler, 30_000).unref?.();
+}
 if (typeof httpDependencies.reconcileWorkItemAutoRunUnderstanding === "function") {
   const reconcileUnderstanding = () =>
     httpDependencies.reconcileWorkItemAutoRunUnderstanding().catch(() => {});

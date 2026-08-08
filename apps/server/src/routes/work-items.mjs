@@ -34,6 +34,7 @@ export async function handleWorkItemRoutes({
   createWorktree, enqueueAutoRunUnderstanding, reserveAutoRun, failAutoRunUnderstanding,
   startAutoRun, beginExecution, abortExecution, recordExecutionBinding,
   createAutoRunBatch, listAutoRunBatches,
+  previewAutoScheduler,
   promoteWorktreeToBase, promoteWorktreeToPullRequest, beginDelivery, failDelivery, completeDelivery,
   claimWorkItem, releaseWorkItemClaim, assignWorkItemToSelf,
   bindGithubIssue, syncGithubIssue,
@@ -67,6 +68,10 @@ export async function handleWorkItemRoutes({
   removeMaterial,
   restoreMaterial,
 }) {
+  if (url.pathname === "/api/work-item-auto-scheduler" && req.method === "GET") {
+    sendJson(res, 200, previewAutoScheduler({ teamId: actor?.teamId ?? null }));
+    return true;
+  }
   if (url.pathname === "/api/work-item-auto-run-batches") {
     if (req.method === "GET") {
       const result = listAutoRunBatches({}, actor);
