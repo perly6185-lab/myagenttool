@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { classifyIntentFromText } from "./auto-run-intent.mjs";
+import { detectArticleSource } from "./article-imports.mjs";
 import { isSpawnedChildBody } from "./auto-run-spawn.mjs";
 
 // The issue decision step (ISSUE_DECISION_AGENT_PLAN.md slice 1). An injectable
@@ -16,16 +17,16 @@ import { isSpawnedChildBody } from "./auto-run-spawn.mjs";
 //   decompose — an epic/initiative: break it into governed child issues (a plan,
 //               not a diff). Opt-in (epicDecomposition); EPIC_DECOMPOSITION_PLAN.md.
 
-export const AUTO_RUN_PATHS = ["develop", "design", "prototype", "clarify", "decompose", "evaluate"];
+export const AUTO_RUN_PATHS = ["develop", "design", "prototype", "clarify", "decompose", "evaluate", "summarize"];
 export const ROUTING_POLICY_VERSION = "2026-07-25.1";
 
 // Paths whose output is not a product diff. A low-confidence agent decision may
 // not send work down these (or spawn issues) — it degrades to clarify instead.
-const HEAVY_PATHS = new Set(["design", "prototype", "decompose", "evaluate"]);
+const HEAVY_PATHS = new Set(["design", "prototype", "decompose", "evaluate", "summarize"]);
 
-const INTENT_TO_PATH = { change: "develop", investigation: "design", question: "clarify", exploration: "evaluate" };
+const INTENT_TO_PATH = { change: "develop", investigation: "design", question: "clarify", exploration: "evaluate", reading: "summarize" };
 // Legacy `intent` field kept on records for continuity with pre-decision runs.
-const PATH_TO_INTENT = { develop: "change", design: "investigation", prototype: "investigation", clarify: "question", decompose: "investigation", evaluate: "exploration" };
+const PATH_TO_INTENT = { develop: "change", design: "investigation", prototype: "investigation", clarify: "question", decompose: "investigation", evaluate: "exploration", summarize: "reading" };
 
 /**
  * Deterministic epic/initiative detector. An epic is a PARENT of work, not a work
@@ -69,6 +70,28 @@ export function intentForPath(path) {
 export function heuristicDecision(link, issueBody = null) {
   const body = String(issueBody ?? "");
   const intent = classifyIntentFromText(link?.title ?? "", body);
+  // An article URL (WeChat/Zhihu/Juejin/Jiansu/Xiaohongshu) in the body is an
+  // unambiguous "read + summarize" intent — route straight to summarize (the
+  // article-imports pipeline downloads it into the worktree, the agent reads +
+  // summarizes). Checked before the GitHub-URL branch: an article provider is
+  // never a repo, so there is nothing to clarify.
+  const articleUrl = body.match(/https?:\/\/[^\s)]+/i)?.[0] ?? null;
+  if (articleUrl) {
+    try {
+      const provider = detectArticleSource(articleUrl);
+      if (provider && provider !== "web") {
+        return {
+          path: "summarize",
+          spawnChildIssues: false,
+          confidence: 0.9,
+          rationale: `Body references a ${provider} article (${articleUrl}).`,
+          clarifyingQuestions: [],
+          decidedBy: "heuristic",
+          via: "heuristic",
+        };
+      }
+    } catch { /* not a URL detectArticleSource can parse — fall through */ }
+  }
   // If the body references a GitHub URL but the title does not make the
   // user's intent clear, route to clarify with structured suggested actions
   // so the human can choose (evaluate / develop / reference-only).

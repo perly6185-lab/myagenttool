@@ -77,7 +77,7 @@ import { createWorkflowAdaptiveWorkService } from "../services/workflow-adaptive
 import { createLedgerUpsertService } from "../services/ledger-upserts.mjs";
 import { createBusinessDocumentIntelligenceService } from "../services/business-document-intelligence.mjs";
 import { createBusinessCaseDiscoveryService } from "../services/business-case-discovery.mjs";
-import { createArticleImportService, resolveArticleImportConfig } from "../services/article-imports.mjs";
+import { createArticleImportService, resolveArticleImportConfig, importArticleToWorktree } from "../services/article-imports.mjs";
 import { createWorkflowMemoryService } from "../services/workflow-memory.mjs";
 import { createInquiryIntakeTriggerService } from "../services/inquiry-intake-triggers.mjs";
 import { createPlanningProjectService } from "../services/planning-projects.mjs";
@@ -1362,6 +1362,7 @@ export function createServerRuntimeServices({
     destroyWorktree,
     findAgent,
     defaultAgent,
+    importArticleToWorktree,
     createInvocation,
     startInvocationIfAllowed,
     commitWorktreeChanges,
