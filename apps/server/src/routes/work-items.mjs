@@ -31,7 +31,8 @@ export async function handleWorkItemRoutes({
   listWorkItems, getHomeWorkbench, listAttention, getWorkItem, createWorkItem, createWorkItemFromExternal, updateWorkItem, recordWorkItemProgress, bulkUpdateWorkItems, transitionWorkItem,
   listReportDrafts, getReportDraft, generateReportDraft, updateReportDraft, confirmReportDraft, discardReportDraft,
   listActivity, listComments, createComment, updateComment, deleteComment,
-  createWorktree, startAutoRun, beginExecution, abortExecution, recordExecutionBinding,
+  createWorktree, enqueueAutoRunUnderstanding, reserveAutoRun, failAutoRunUnderstanding,
+  startAutoRun, beginExecution, abortExecution, recordExecutionBinding,
   createAutoRunBatch, listAutoRunBatches,
   promoteWorktreeToBase, promoteWorktreeToPullRequest, beginDelivery, failDelivery, completeDelivery,
   claimWorkItem, releaseWorkItemClaim, assignWorkItemToSelf,
@@ -50,6 +51,7 @@ export async function handleWorkItemRoutes({
   updateAttention,
   githubSyncDiagnostics,
   suggestWorkItemDraft,
+  prepareExecutionContract,
   retryWorkItemAlert,
   inspectArticleImport,
   startArticleImport,
@@ -731,6 +733,10 @@ export async function handleWorkItemRoutes({
       sendJson(res, 409, { error: "work_item_acceptance_incomplete", ...item.completionGate });
       return true;
     }
+    if (!item.executionContractGate?.ready) {
+      sendJson(res, 409, { error: "work_item_execution_contract_required", ...item.executionContractGate });
+      return true;
+    }
     const autoRun = detail.body.observability?.latestRun ?? null;
     const worktreeId = autoRun?.localDelivery?.worktreeId ?? null;
     if (!worktreeId || autoRun?.status !== "done" || autoRun.localDelivery?.deliveredAt) {
@@ -790,9 +796,28 @@ export async function handleWorkItemRoutes({
       sendJson(res, detail.status, detail.body);
       return true;
     }
-    const item = detail.body.workItem;
+    let item = detail.body.workItem;
     const body = await readJson(req);
     const kind = executionMatch[2] === "worktrees" ? "worktree" : "auto_run";
+    if (kind === "auto_run" && (!item.plannedDate || item.waitingOn !== "ai")) {
+      const timezoneOffset = Number(body?.timezoneOffset ?? 0);
+      if (!Number.isInteger(timezoneOffset) || timezoneOffset < -840 || timezoneOffset > 840) {
+        sendJson(res, 400, { error: "invalid_terminal_timezone_offset" });
+        return true;
+      }
+      const localToday = new Date(Date.now() - timezoneOffset * 60_000).toISOString().slice(0, 10);
+      const scheduled = updateWorkItem({
+        workItemId,
+        expectedRevision: item.revision,
+        ...(!item.plannedDate ? { plannedDate: localToday } : {}),
+        ...(item.waitingOn !== "ai" ? { waitingOn: "ai" } : {}),
+      }, actor);
+      if (!scheduled.ok) {
+        sendJson(res, scheduled.status, scheduled.body);
+        return true;
+      }
+      item = scheduled.body.workItem;
+    }
     const admission = beginExecution({
       workItemId,
       kind,
@@ -806,6 +831,8 @@ export async function handleWorkItemRoutes({
     const slug = String(item.title ?? "work").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 40) || "work";
     const name = body?.name ?? `local-${item.localNumber}-${slug}`;
     const link = { type: "local_issue", number: item.localNumber, title: item.title, url: null, state: item.state };
+    let reservedAutoRun = null;
+    let executionBindingRecorded = false;
     try {
       if (executionMatch[2] === "worktrees") {
         const result = createWorktree({
@@ -820,13 +847,12 @@ export async function handleWorkItemRoutes({
         sendJson(res, 201, result);
         return true;
       }
-      const issueBody = [
-        item.body,
-        item.acceptanceCriteria?.length ? `Acceptance criteria:\n${item.acceptanceCriteria.map((value) => `- ${value}`).join("\n")}` : "",
-      ].filter(Boolean).join("\n\n");
-      const result = await startAutoRun({
+      // Persist the Run before drafting or checking its execution contract. At
+      // this point there is deliberately no worktree and therefore no writable
+      // execution environment.
+      const reserved = await reserveAutoRun({
         projectId: item.projectId, link, localIssueId: item.id, name, baseBranch: body?.baseBranch,
-        agentId: body?.agentId, actor, issueBody,
+        agentId: body?.agentId, actor, issueBody: item.body,
         executionChainId: item.id,
         taskMaterialWorkItemId: item.id,
         terminalId: item.terminalId,
@@ -836,18 +862,25 @@ export async function handleWorkItemRoutes({
             ? "high"
             : "standard",
       });
+      reservedAutoRun = reserved.autoRun;
       const recorded = recordExecutionBinding({
-        workItemId, kind: "auto_run", targetId: result.autoRun.id, worktreeId: result.worktree?.id ?? result.autoRun.worktreeId,
+        workItemId, kind: "auto_run", targetId: reserved.autoRun.id, worktreeId: null,
         operationId,
       }, actor);
       if (!recorded.ok) throw new Error(recorded.body?.error ?? "work_item_execution_binding_failed");
-      sendJson(res, 201, result);
+      executionBindingRecorded = true;
+      item = recorded.body.workItem;
+      enqueueAutoRunUnderstanding(reserved.autoRun.id);
+      sendJson(res, 202, { autoRun: reserved.autoRun, worktree: null, invocation: null });
     } catch (error) {
-      abortExecution({
-        workItemId,
-        operationId,
-        reason: error instanceof Error ? error.message : String(error),
-      }, actor);
+      if (reservedAutoRun) failAutoRunUnderstanding(reservedAutoRun.id, error);
+      if (!executionBindingRecorded) {
+        abortExecution({
+          workItemId,
+          operationId,
+          reason: error instanceof Error ? error.message : String(error),
+        }, actor);
+      }
       sendJson(res, 400, { error: "work_item_execution_failed", message: error instanceof Error ? error.message : String(error) });
     }
     return true;

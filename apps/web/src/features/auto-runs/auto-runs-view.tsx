@@ -58,6 +58,7 @@ export interface AutoRunRecord {
   failoverHistory?: FailoverTransition[] | null;
   failoverOutcome?: FailoverOutcome | null;
   executionStage?: "analysis" | "implementation" | "verification" | string | null;
+  phase?: "queued" | "understanding" | "waiting_for_input" | "planning" | "implementing" | "verifying" | "review_ready" | "failed" | "cancelled" | null;
   timeoutRecoveryAttempts?: number;
   executionBudget?: {
     turnTimeoutSeconds?: number;
@@ -1514,18 +1515,20 @@ export function AutoRunsView() {
                       <GitBranch className="size-3" /> {run.branchName}
                     </span>
                   ) : null}
-                  {run.executionStage ? (
+                  {run.phase || run.executionStage ? (
                     <span
                       className="rounded bg-muted px-1.5 py-0.5"
                       title={`Turn budget ${run.executionBudget?.turnTimeoutSeconds ?? "?"}s · total budget ${run.executionBudget?.totalBudgetSeconds ?? "?"}s · no-progress streak ${run.executionBudget?.noProgressStreak ?? 0}`}
                     >
-                      {t("executionUi.stage")}: {run.executionStage === "analysis"
-                        ? t("executionUi.analysis")
-                        : run.executionStage === "implementation"
-                          ? t("executionUi.implementation")
-                          : run.executionStage === "verification"
-                            ? t("executionUi.verification")
-                            : run.executionStage}
+                      {t("executionUi.stage")}: {run.phase
+                        ? t(`executionUi.phase.${run.phase}`)
+                        : run.executionStage === "analysis"
+                          ? t("executionUi.analysis")
+                          : run.executionStage === "implementation"
+                            ? t("executionUi.implementation")
+                            : run.executionStage === "verification"
+                              ? t("executionUi.verification")
+                              : run.executionStage}
                       {(run.timeoutRecoveryAttempts ?? 0) > 0 ? ` · ${t("executionUi.continuation", { count: run.timeoutRecoveryAttempts ?? 0 })}` : ""}
                       {Number.isFinite(run.executionBudget?.elapsedSeconds)
                         ? ` · ${t("executionUi.elapsed", { seconds: run.executionBudget?.elapsedSeconds ?? 0 })}`

@@ -1209,7 +1209,7 @@ export function TaskView({ localOnly = false }: { localOnly?: boolean } = {}) {
 
 export function PlanningProjectsPanel({ onChanged = () => {} }: { onChanged?: () => void }) {
   const { t, i18n } = useAppTranslation();
-  const plannedDateLabel = i18n.language.startsWith("zh") ? "AI 执行日期" : "AI execution date";
+  const plannedDateLabel = i18n.language.startsWith("zh") ? "计划 AI 执行日期" : "Planned AI execution date";
   const { data: consoleState } = useConsoleState();
   const setSection = useUiStore((state) => state.setSection);
   const { execute, pending, error } = useAsyncAction();
@@ -2646,8 +2646,9 @@ export function LocalWorkItemDetail({
   onDirtyChange: (dirty: boolean) => void;
 }) {
   const { t, i18n } = useAppTranslation();
-  const plannedDateLabel = i18n.language.startsWith("zh") ? "AI 执行日期" : "AI execution date";
+  const plannedDateLabel = i18n.language.startsWith("zh") ? "计划 AI 执行日期" : "Planned AI execution date";
   const expectedCompletionLabel = i18n.language.startsWith("zh") ? "预期完成日期" : "Expected completion date";
+  const verificationSopLabel = i18n.language.startsWith("zh") ? "验收 SOP" : "Verification SOP";
   const { data: consoleState } = useConsoleState();
   const articleText = useArticleTaskLabels();
   const { execute, pending, error } = useAsyncAction();
@@ -2668,6 +2669,7 @@ export function LocalWorkItemDetail({
   const [priority, setPriority] = useState<LocalWorkItem["priority"]>("p2");
   const [labels, setLabels] = useState("");
   const [acceptance, setAcceptance] = useState("");
+  const [verificationSop, setVerificationSop] = useState("");
   const [plannedDate, setPlannedDate] = useState("");
   const [dueDate, setDueDate] = useState("");
   const [milestone, setMilestone] = useState("");
@@ -2709,6 +2711,7 @@ export function LocalWorkItemDetail({
     || priority !== item.priority
     || labels !== item.labels.join(", ")
     || acceptance !== item.acceptanceCriteria.join("\n")
+    || verificationSop !== (item.verificationSop ?? []).join("\n")
     || plannedDate !== (item.plannedDate ?? "")
     || dueDate !== (item.dueDate ?? "")
     || milestone !== (item.milestone ?? "")
@@ -2727,6 +2730,7 @@ export function LocalWorkItemDetail({
     setPriority(next.priority);
     setLabels(next.labels.join(", "));
     setAcceptance(next.acceptanceCriteria.join("\n"));
+    setVerificationSop((next.verificationSop ?? []).join("\n"));
     setPlannedDate(next.plannedDate ?? "");
     setDueDate(next.dueDate ?? "");
     setMilestone(next.milestone ?? "");
@@ -2857,6 +2861,7 @@ export function LocalWorkItemDetail({
       priority,
       labels: labels.split(",").map((value) => value.trim()).filter(Boolean),
       acceptanceCriteria: acceptance.split("\n").map((value) => value.trim()).filter(Boolean),
+      verificationSop: verificationSop.split("\n").map((value) => value.trim()).filter(Boolean),
       assigneeIds,
       plannedDate: plannedDate || null,
       dueDate: dueDate || null,
@@ -3417,6 +3422,36 @@ export function LocalWorkItemDetail({
           </div>
         </section>
       ) : null}
+      {selectedWorkItemSection === "process" && observability?.runHistory?.length ? (
+        <section className="space-y-3 rounded-md border border-border p-3" aria-label={t("taskRunHistory.title")}>
+          <div className="flex flex-wrap items-center gap-2">
+            <History className="size-4 text-muted-foreground" aria-hidden="true" />
+            <h3 className="text-sm font-semibold">{t("taskRunHistory.title")}</h3>
+            <Badge tone="neutral">{observability.runHistory.length}</Badge>
+          </div>
+          <p className="text-xs text-muted-foreground">{t("taskRunHistory.hint")}</p>
+          <ol className="space-y-2">
+            {observability.runHistory.map((run) => (
+              <li key={run.invocationId} className="rounded-md bg-muted/50 px-3 py-2 text-xs">
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="font-semibold">{t("taskRunHistory.attempt", { count: run.attempt })}</span>
+                  <Badge tone={statusTone(run.status)}>{invocationStatus(t, run.status)}</Badge>
+                  {run.current ? <Badge tone="running">{t("taskRunHistory.current")}</Badge> : null}
+                  <time className="ml-auto text-muted-foreground" dateTime={run.createdAt ?? undefined}>
+                    {run.createdAt ? new Date(run.createdAt).toLocaleString(i18n.language) : "-"}
+                  </time>
+                </div>
+                {run.summary ? <p className="mt-1 whitespace-pre-wrap text-muted-foreground">{run.summary}</p> : null}
+                {run.errorCode ? (
+                  <p className="mt-1 font-mono text-[11px] text-destructive">
+                    {t("taskRunHistory.errorCode", { code: run.errorCode })}
+                  </p>
+                ) : null}
+              </li>
+            ))}
+          </ol>
+        </section>
+      ) : null}
       <div
         id={`work-item-trace-${item.id}`}
         role="tabpanel"
@@ -3535,6 +3570,9 @@ export function LocalWorkItemDetail({
       <Field label={t("tasks.labels")}><Input value={labels} onChange={(event) => setLabels(event.target.value)} /></Field>
       <Field label={t("tasks.acceptanceCriteria")}>
         <textarea className="min-h-24 w-full rounded-md border border-border bg-background p-2 text-sm" value={acceptance} onChange={(event) => setAcceptance(event.target.value)} />
+      </Field>
+      <Field label={verificationSopLabel}>
+        <textarea className="min-h-24 w-full rounded-md border border-border bg-background p-2 text-sm" value={verificationSop} onChange={(event) => setVerificationSop(event.target.value)} />
       </Field>
       <Suspense fallback={null}>
         <WorkItemFollowUpFields

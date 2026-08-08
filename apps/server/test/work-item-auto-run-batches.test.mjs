@@ -32,7 +32,10 @@ function fixture({
       projectId: "prj_a",
       title: `Task ${number}`,
       body: "",
-      acceptanceCriteria: [],
+      acceptanceCriteria: [`Task ${number} is complete`],
+      verificationSop: ["Review the result"],
+      executionContractConfirmedAt: "2026-07-29T00:00:00.000Z",
+      executionContractGate: { ready: true, missing: [], source: "manual", confirmedAt: "2026-07-29T00:00:00.000Z" },
       state: "open",
       planningProjects: [],
       terminalId: "dev_a",
@@ -55,11 +58,12 @@ function fixture({
     schedulePump: (callback, options) => {
       scheduledPumps.push({ callback, options });
     },
-    startAutoRun: startAutoRunOverride ?? (async ({ executionChainId }) => {
+    reserveAutoRun: startAutoRunOverride ?? (async ({ executionChainId }) => {
       const run = { id: `aur_${++sequence}`, status: "running", worktreeId: `wtr_${sequence}`, executionChainId };
       state.autoRuns.push(run);
       return { autoRun: run, worktree: { id: run.worktreeId } };
     }),
+    enqueueAutoRunUnderstanding: () => true,
   });
   return {
     state,

@@ -32,8 +32,9 @@ export default function CreateLocalWorkItemForm({
   onImportActivityChange: (active: boolean) => void;
 }) {
   const { t, i18n } = useAppTranslation();
-  const plannedDateLabel = i18n.language.startsWith("zh") ? "AI 执行日期" : "AI execution date";
+  const plannedDateLabel = i18n.language.startsWith("zh") ? "计划 AI 执行日期" : "Planned AI execution date";
   const expectedCompletionLabel = i18n.language.startsWith("zh") ? "预期完成日期" : "Expected completion date";
+  const verificationSopLabel = i18n.language.startsWith("zh") ? "验收 SOP" : "Verification SOP";
   const articleText = useArticleTaskLabels();
   const { execute, pending, error } = useAsyncAction();
   const [projectId, setProjectId] = useState(initialProjectId);
@@ -43,6 +44,7 @@ export default function CreateLocalWorkItemForm({
   const [priority, setPriority] = useState<LocalWorkItem["priority"]>("p2");
   const [labels, setLabels] = useState("");
   const [acceptance, setAcceptance] = useState("");
+  const [verificationSop, setVerificationSop] = useState("");
   const [plannedDate, setPlannedDate] = useState("");
   const [dueDate, setDueDate] = useState("");
   const [milestone, setMilestone] = useState("");
@@ -110,6 +112,7 @@ export default function CreateLocalWorkItemForm({
       type: LocalWorkItem["type"];
       priority: LocalWorkItem["priority"];
       acceptanceCriteria: string[];
+      verificationSop: string[];
       suggestedRoute: string;
       risks: string[];
       evidence: { generator: string; policyVersion: string; confidence: number };
@@ -124,6 +127,7 @@ export default function CreateLocalWorkItemForm({
       setType(draft.type);
       setPriority(draft.priority);
       setAcceptance(draft.acceptanceCriteria.join("\n"));
+      setVerificationSop(draft.verificationSop.join("\n"));
       setAssistNote(
         `Suggested route: ${draft.suggestedRoute}. ${draft.evidence.generator} ${Math.round(draft.evidence.confidence * 100)}%. ${draft.risks.join(" ")}`,
       );
@@ -169,6 +173,7 @@ export default function CreateLocalWorkItemForm({
           priority,
           labels: labels.split(",").map((value) => value.trim()).filter(Boolean),
           acceptanceCriteria: acceptance.split("\n").map((value) => value.trim()).filter(Boolean),
+          verificationSop: verificationSop.split("\n").map((value) => value.trim()).filter(Boolean),
           assigneeIds,
           plannedDate: plannedDate || null,
           dueDate: dueDate || null,
@@ -274,6 +279,9 @@ export default function CreateLocalWorkItemForm({
       </Field>
       <Field label={t("tasks.acceptanceCriteria")}>
         <textarea className="min-h-20 w-full rounded-md border border-border bg-background p-2 text-sm" value={acceptance} onChange={(event) => setAcceptance(event.target.value)} placeholder={t("tasks.acceptancePlaceholder")} />
+      </Field>
+      <Field label={verificationSopLabel}>
+        <textarea className="min-h-20 w-full rounded-md border border-border bg-background p-2 text-sm" value={verificationSop} onChange={(event) => setVerificationSop(event.target.value)} placeholder={i18n.language.startsWith("zh") ? "每行一步；交给 AI 前请与完成标准一起确认。" : "One step per line; confirm together with completion criteria before AI starts."} />
       </Field>
       <WorkItemFollowUpFields
         value={followUp}

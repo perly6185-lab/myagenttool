@@ -62,6 +62,42 @@ const SCHEDULABLE_RUNTIME_STATES = new Set([
   "materializing", "running", "waiting_capacity", "verifying", "publishing", "decomposed",
 ]);
 
+const ACCEPTANCE_HEADING_PATTERN = /^(#{1,6})\s*(acceptance(?:\s+criteria)?|definition\s+of\s+done|验收标准|完成标准)\s*[:：]?\s*$/i;
+
+export function extractAcceptanceCriteriaFromBody(body) {
+  const lines = String(body ?? "").split(/\r?\n/);
+  const headingIndex = lines.findIndex((line) => ACCEPTANCE_HEADING_PATTERN.test(line.trim()));
+  if (headingIndex < 0) return [];
+  const headingLevel = lines[headingIndex].trim().match(/^#+/)?.[0].length ?? 6;
+  const criteria = [];
+  for (const rawLine of lines.slice(headingIndex + 1)) {
+    const line = rawLine.trim();
+    const nextHeading = line.match(/^(#{1,6})\s+/);
+    if (nextHeading && nextHeading[1].length <= headingLevel) break;
+    const bullet = line.match(/^(?:[-*+]\s+|\d+[.)]\s+)(?:\[[ xX]\]\s*)?(.+)$/);
+    if (!bullet) continue;
+    const criterion = bullet[1].trim();
+    if (criterion && criterion.length <= 2_000 && !criteria.includes(criterion)) criteria.push(criterion);
+    if (criteria.length >= 100) break;
+  }
+  return criteria;
+}
+
+export function defaultVerificationSop({ title = "", body = "" } = {}) {
+  const chinese = /[\u3400-\u9fff]/.test(`${title}${body}`);
+  return chinese ? [
+    "按实际使用方式逐项检查验收标准描述的行为，并记录每一项是否通过。",
+    "查看自动测试、类型检查或其他验证证据，确认它们对应当前这版交付。",
+    "查看独立代码复核结论，确认不存在阻止交付的问题。",
+    "确认变更范围与任务目标一致，并了解应用变更或创建 Pull Request 的影响与风险。",
+  ] : [
+    "Exercise each acceptance criterion through the real user flow and record whether it passes.",
+    "Review automated test, typecheck, or other verification evidence and confirm it belongs to this delivery.",
+    "Review the independent code-review conclusion and confirm that no delivery-blocking issue remains.",
+    "Confirm that the change stays within the task goal and understand the impact and risk of applying it or creating a pull request.",
+  ];
+}
+
 export function taskTraceStage(type, source = "issue") {
   const value = String(type ?? "").toLowerCase();
   if (value === "created" || value === "invocation_created") return "creation";
@@ -157,6 +193,11 @@ function validateDraft(input, { partial = false } = {}) {
     const acceptanceCriteria = strings(input.acceptanceCriteria ?? [], { limit: 100, maxLength: 2_000 });
     if (!acceptanceCriteria) return { error: "invalid_work_item_acceptance_criteria" };
     value.acceptanceCriteria = acceptanceCriteria;
+  }
+  if (!partial || Object.hasOwn(input, "verificationSop")) {
+    const verificationSop = strings(input.verificationSop ?? [], { limit: 30, maxLength: 2_000 });
+    if (!verificationSop) return { error: "invalid_work_item_verification_sop" };
+    value.verificationSop = verificationSop;
   }
   if (!partial || Object.hasOwn(input, "dueDate")) {
     const dueDate = input.dueDate == null || input.dueDate === "" ? null : String(input.dueDate);
@@ -475,8 +516,50 @@ export function createWorkItemService({
     return { ready: missingCriteria.length === 0 && !verificationRequired, missingCriteria, verificationRequired };
   }
 
+  function executionContractGate(item) {
+    const missing = [];
+    if (!(item.acceptanceCriteria ?? []).length) missing.push("acceptance_criteria");
+    if (!(item.verificationSop ?? []).length) missing.push("verification_sop");
+    if (!item.executionContractConfirmedAt) missing.push("confirmation");
+    const latestRun = [...(item.executionBindings ?? [])].reverse()
+      .filter((binding) => binding.kind === "auto_run")
+      .map((binding) => (state.autoRuns ?? []).find((candidate) => candidate.id === binding.targetId))
+      .find(Boolean) ?? null;
+    const latestAttemptStartedAt = latestRun?.executionBudget?.startedAt ?? latestRun?.createdAt ?? null;
+    if (item.executionContractConfirmedAt && latestAttemptStartedAt
+      && Date.parse(item.executionContractConfirmedAt) > Date.parse(latestAttemptStartedAt)) {
+      missing.push("confirmed_before_execution");
+    }
+    return {
+      ready: missing.length === 0,
+      missing,
+      source: item.executionContractSource ?? null,
+      confirmedAt: item.executionContractConfirmedAt ?? null,
+      latestAttemptStartedAt,
+    };
+  }
+
+  function executionContractDefinitionGate(item) {
+    const missing = [];
+    if (!(item.acceptanceCriteria ?? []).length) missing.push("acceptance_criteria");
+    if (!(item.verificationSop ?? []).length) missing.push("verification_sop");
+    if (!item.executionContractConfirmedAt) missing.push("confirmation");
+    return {
+      ready: missing.length === 0,
+      missing,
+      source: item.executionContractSource ?? null,
+      confirmedAt: item.executionContractConfirmedAt ?? null,
+    };
+  }
+
   function workItemView(item, actor) {
     const { createIdempotencyKey: _createIdempotencyKey, ...publicItem } = item;
+    const bodyAcceptanceCriteria = (item.acceptanceCriteria ?? []).length
+      ? []
+      : extractAcceptanceCriteriaFromBody(item.body);
+    const visibleAcceptanceCriteria = (publicItem.acceptanceCriteria ?? []).length
+      ? publicItem.acceptanceCriteria
+      : bodyAcceptanceCriteria;
     const derivedExecutionState = executionState(item);
     const memberships = (state.planningProjectItems ?? []).filter(
       (row) => row.workItemId === item.id && row.ownerTeamId === actorTeam(actor),
@@ -490,6 +573,10 @@ export function createWorkItemService({
     ).length;
     return {
       ...publicItem,
+      acceptanceCriteria: visibleAcceptanceCriteria,
+      acceptanceCriteriaSource: (publicItem.acceptanceCriteria ?? []).length
+        ? publicItem.executionContractSource ?? "structured"
+        : bodyAcceptanceCriteria.length ? "body_unstructured" : null,
       completedAt: publicItem.completedAt ?? ((item.state === "closed" || item.status === "done") ? item.updatedAt : null),
       ...workItemFollowUpContextView(item),
       assetReadiness: evaluateAssetRequirements(
@@ -507,7 +594,8 @@ export function createWorkItemService({
         planning: item.status,
         execution: derivedExecutionState,
       },
-      completionGate: completionGate(item),
+      completionGate: completionGate({ ...item, acceptanceCriteria: visibleAcceptanceCriteria }),
+      executionContractGate: executionContractGate(item),
       parent: parent ? {
         id: parent.id, localRef: parent.localRef, title: parent.title,
         status: parent.status, state: parent.state,
@@ -1137,8 +1225,8 @@ export function createWorkItemService({
     const runIds = new Set((item.executionBindings ?? [])
       .filter((binding) => binding.kind === "auto_run")
       .map((binding) => binding.targetId));
-    const latestRun = (state.autoRuns ?? [])
-      .filter((run) => runIds.has(run.id))
+    const boundRuns = (state.autoRuns ?? []).filter((run) => runIds.has(run.id));
+    const latestRun = boundRuns
       .sort((left, right) => String(right.updatedAt ?? "").localeCompare(String(left.updatedAt ?? "")))[0] ?? null;
     const pendingLocalDelivery = latestRun?.status === "done"
       && latestRun.link?.type === "local_issue"
@@ -1155,9 +1243,63 @@ export function createWorkItemService({
     const deliveryMode = deliveryRemoteUrl && /github\.com[/:]/i.test(deliveryRemoteUrl)
       ? "pull_request"
       : "local_merge";
-    const invocationIds = new Set((state.autoRuns ?? [])
-      .filter((run) => runIds.has(run.id) && run.invocationId)
+    const currentInvocationIds = new Set(boundRuns
+      .filter((run) => run.invocationId)
       .map((run) => run.invocationId));
+    const relatedInvocations = (state.invocations ?? [])
+      .filter((invocation) => {
+        const autoRunId = invocation.options?.metadata?.autoRunId;
+        return (autoRunId && runIds.has(autoRunId)) || currentInvocationIds.has(invocation.id);
+      })
+      .sort((left, right) =>
+        String(left.createdAt ?? "").localeCompare(String(right.createdAt ?? ""))
+        || String(left.id).localeCompare(String(right.id)));
+    const runInvocations = relatedInvocations.filter(
+      (invocation) => invocation.options?.metadata?.role !== "delivery_review",
+    );
+    const latestExecutionInvocation = runInvocations.find((invocation) => invocation.id === latestRun?.invocationId) ?? null;
+    const reviewInvocation = latestRun?.deliveryReview?.invocationId
+      ? relatedInvocations.find((invocation) => invocation.id === latestRun.deliveryReview.invocationId) ?? null
+      : null;
+    const projectedDeliveryReview = latestRun?.deliveryReview
+      ? {
+        ...latestRun.deliveryReview,
+        status: latestRun.deliveryReview.status === "queued" && reviewInvocation?.status === "running"
+          ? "running"
+          : latestRun.deliveryReview.status,
+      }
+      : null;
+    const projectedDeliveryReport = latestRun?.deliveryReport ?? (pendingLocalDelivery ? {
+      summary: latestExecutionInvocation?.result?.output?.latestMessage
+        ?? latestExecutionInvocation?.result?.output?.summary
+        ?? latestExecutionInvocation?.result?.summary
+        ?? null,
+      verification: latestRun?.verification ? { ...latestRun.verification } : null,
+      changedFiles: [],
+      completedAt: latestExecutionInvocation?.completedAt ?? latestRun?.updatedAt ?? null,
+    } : null);
+    const invocationIds = new Set(relatedInvocations.map((invocation) => invocation.id));
+    const failureStatuses = new Set(["failed", "timed_out", "cancelled", "rejected", "expired"]);
+    const showRunHistory = runInvocations.length > 1
+      || runInvocations.some((invocation) => failureStatuses.has(invocation.status));
+    const runHistory = showRunHistory
+      ? runInvocations.map((invocation, index) => ({
+        invocationId: invocation.id,
+        autoRunId: invocation.options?.metadata?.autoRunId
+          ?? boundRuns.find((run) => run.invocationId === invocation.id)?.id
+          ?? null,
+        attempt: index + 1,
+        status: invocation.status,
+        createdAt: invocation.createdAt ?? null,
+        startedAt: invocation.startedAt ?? null,
+        completedAt: invocation.completedAt ?? null,
+        errorCode: invocation.result?.errorCode ?? null,
+        summary: invocation.result?.summary
+          ? String(invocation.result.summary).slice(0, 500)
+          : null,
+        current: invocation.id === latestRun?.invocationId,
+      }))
+      : [];
     const activeClaim = item.claim?.status === "active" && Date.parse(item.claim.leaseExpiresAt) > Date.parse(now())
       ? item.claim
       : null;
@@ -1322,17 +1464,27 @@ export function createWorkItemService({
             invocationId: latestRun.invocationId ?? null,
             agentId: latestRun.agentId ?? null,
             localDelivery: latestRun.localDelivery ?? null,
+            deliveryReport: projectedDeliveryReport,
+            deliveryReview: projectedDeliveryReview,
           } : null,
+          runHistory,
           delivery: pendingLocalDelivery ? {
             state: "awaiting_review",
             mode: deliveryMode,
             worktreeId: deliveryWorktree?.id ?? latestRun.localDelivery.worktreeId,
             branchName: latestRun.localDelivery.branchName ?? deliveryWorktree?.branchName ?? null,
             remoteUrl: deliveryRemoteUrl,
+            report: projectedDeliveryReport,
+            aiReview: projectedDeliveryReview,
             review: deliveryReview ? {
               verdict: deliveryReview.verdict,
+              summary: deliveryReview.summary ?? null,
+              comments: Array.isArray(deliveryReview.comments) ? deliveryReview.comments : [],
               reviewedCommit: deliveryReview.reviewedCommit ?? null,
               reviewedBy: deliveryReview.reviewedBy ?? null,
+              source: deliveryReview.source ?? "human",
+              reviewerName: deliveryReview.reviewerName ?? null,
+              reviewInvocationId: deliveryReview.reviewInvocationId ?? null,
               createdAt: deliveryReview.createdAt ?? null,
             } : null,
           } : null,
@@ -1396,7 +1548,8 @@ export function createWorkItemService({
     const type = /bug|fix|error|fail|崩溃|错误|修复/.test(lower) ? "bug"
       : /initiative|epic|项目|计划/.test(lower) ? "initiative"
         : /feature|新增|支持|能力/.test(lower) ? "feature" : "task";
-    const acceptanceCriteria = [
+    const extractedCriteria = extractAcceptanceCriteriaFromBody(body);
+    const acceptanceCriteria = extractedCriteria.length ? extractedCriteria : [
       `The requested outcome for “${title}” is demonstrably complete.`,
       "Automated verification covers the primary success path.",
       ...(type === "bug" ? ["A regression test reproduces the prior failure and passes after the fix."] : []),
@@ -1407,6 +1560,8 @@ export function createWorkItemService({
           title, body: body || `Implement ${title} with a user-visible result and documented verification.`,
           type, priority: /urgent|critical|p0|紧急|严重/.test(lower) ? "p0" : "p2",
           acceptanceCriteria,
+          verificationSop: defaultVerificationSop({ title, body }),
+          executionContractSource: extractedCriteria.length ? "body_extracted" : "assisted",
           suggestedRoute: type === "initiative" ? "decompose" : body.length < 40 ? "clarify" : "develop",
           risks: [
             ...(!body ? ["The problem statement needs more context."] : []),
@@ -1419,6 +1574,82 @@ export function createWorkItemService({
             inputDigest: createHash("sha256").update(JSON.stringify({ projectId, title, body })).digest("hex"),
             confidence: body.length >= 120 ? 0.78 : body.length >= 40 ? 0.65 : 0.45,
           },
+        },
+      },
+    };
+  }
+
+  function prepareExecutionContract({ workItemId, expectedRevision, confirm = true, draftOverride = null } = {}, actor = null) {
+    const item = findOwn(workItemId, actor);
+    if (!item) return notFound();
+    if (!Number.isInteger(expectedRevision)) {
+      return { ok: false, status: 400, body: { error: "expected_revision_required" } };
+    }
+    if (expectedRevision !== item.revision) {
+      return { ok: false, status: 409, body: { error: "work_item_revision_conflict", currentRevision: item.revision } };
+    }
+    const currentGate = executionContractDefinitionGate(item);
+    if (currentGate.ready && confirm) {
+      return { ok: true, status: 200, body: { workItem: workItemView(item, actor), replayed: true } };
+    }
+    const assisted = suggestWorkItemDraft({ projectId: item.projectId, title: item.title, body: item.body }, actor);
+    if (!assisted.ok) return assisted;
+    const assistedDraft = assisted.body?.draft ?? {};
+    const override = draftOverride && typeof draftOverride === "object" ? draftOverride : null;
+    const draft = override ? {
+      ...assistedDraft,
+      ...override,
+      acceptanceCriteria: Array.isArray(override.acceptanceCriteria) && override.acceptanceCriteria.length
+        ? override.acceptanceCriteria
+        : assistedDraft.acceptanceCriteria,
+      verificationSop: Array.isArray(override.verificationSop) && override.verificationSop.length
+        ? override.verificationSop
+        : assistedDraft.verificationSop,
+      risks: Array.isArray(override.risks) ? override.risks : assistedDraft.risks,
+      evidence: {
+        ...(assistedDraft.evidence ?? {}),
+        ...(override.evidence ?? {}),
+      },
+    } : assistedDraft;
+    const acceptanceCriteria = (item.acceptanceCriteria ?? []).length
+      ? [...item.acceptanceCriteria]
+      : strings(draft.acceptanceCriteria ?? [], { limit: 30, maxLength: 2_000 });
+    const verificationSop = (item.verificationSop ?? []).length
+      ? [...item.verificationSop]
+      : strings(draft.verificationSop ?? [], { limit: 30, maxLength: 2_000 });
+    if (!acceptanceCriteria?.length || !verificationSop?.length) {
+      return { ok: false, status: 409, body: { error: "work_item_execution_contract_assistance_incomplete" } };
+    }
+    const timestamp = now();
+    runTx(() => {
+      item.acceptanceCriteria = acceptanceCriteria;
+      item.verificationSop = verificationSop;
+      item.executionContractSource = override ? "agent_assisted" : "assisted";
+      item.executionContractConfirmedAt = confirm ? timestamp : null;
+      item.revision += 1;
+      item.updatedAt = timestamp;
+      item.lastModifiedBy = actorUser(actor);
+      recordActivity(item, actor, "execution_contract_prepared", {
+        source: item.executionContractSource,
+        confirmed: confirm,
+        policyVersion: draft.evidence?.policyVersion ?? null,
+        confidence: draft.evidence?.confidence ?? null,
+        suggestedRoute: draft.suggestedRoute ?? null,
+      });
+    });
+    return {
+      ok: true,
+      status: 200,
+      body: {
+        workItem: workItemView(item, actor),
+        draft: {
+          taskUnderstanding: draft.taskUnderstanding ?? "",
+          acceptanceCriteria,
+          verificationSop,
+          suggestedRoute: draft.suggestedRoute ?? null,
+          risks: draft.risks ?? [],
+          evidence: draft.evidence ?? null,
+          confirmedAt: confirm ? timestamp : null,
         },
       },
     };
@@ -1835,6 +2066,23 @@ export function createWorkItemService({
       .filter((item) => item.ownerTeamId === teamId)
       .map((item) => Number(item.localNumber) || 0));
     const timestamp = now();
+    const suppliedCriteria = validated.value.acceptanceCriteria ?? [];
+    const extractedCriteria = suppliedCriteria.length
+      ? []
+      : extractAcceptanceCriteriaFromBody(validated.value.body);
+    const contractCriteria = suppliedCriteria.length ? suppliedCriteria : extractedCriteria;
+    if (contractCriteria.length) {
+      validated.value.acceptanceCriteria = contractCriteria;
+      validated.value.verificationSop = validated.value.verificationSop?.length
+        ? validated.value.verificationSop
+        : defaultVerificationSop(validated.value);
+      validated.value.executionContractSource = suppliedCriteria.length ? "manual" : "body_extracted";
+      validated.value.executionContractConfirmedAt = timestamp;
+    } else {
+      validated.value.verificationSop = [];
+      validated.value.executionContractSource = null;
+      validated.value.executionContractConfirmedAt = null;
+    }
     const workItem = {
       id: nextId("lwi"),
       localNumber,
@@ -1974,6 +2222,30 @@ export function createWorkItemService({
     if ([...nextInputAssets, ...nextOutputAssets].some((asset) => asset.terminalId !== item.terminalId)) {
       return { ok: false, status: 409, body: { error: "asset_terminal_mismatch", terminalId: item.terminalId } };
     }
+    const timestamp = now();
+    const contractInputChanged = Object.hasOwn(changes, "acceptanceCriteria")
+      || Object.hasOwn(changes, "verificationSop")
+      || (Object.hasOwn(changes, "body") && !(item.acceptanceCriteria ?? []).length);
+    if (contractInputChanged) {
+      let nextCriteria = validated.value.acceptanceCriteria ?? item.acceptanceCriteria ?? [];
+      if (!Object.hasOwn(changes, "acceptanceCriteria") && !nextCriteria.length && Object.hasOwn(changes, "body")) {
+        nextCriteria = extractAcceptanceCriteriaFromBody(validated.value.body);
+      }
+      if (nextCriteria.length) {
+        validated.value.acceptanceCriteria = nextCriteria;
+        validated.value.verificationSop = validated.value.verificationSop?.length
+          ? validated.value.verificationSop
+          : (item.verificationSop?.length ? item.verificationSop : defaultVerificationSop({ ...item, ...validated.value }));
+        validated.value.executionContractSource = Object.hasOwn(changes, "acceptanceCriteria")
+          ? "manual"
+          : "body_extracted";
+        validated.value.executionContractConfirmedAt = timestamp;
+      } else {
+        validated.value.verificationSop = [];
+        validated.value.executionContractSource = null;
+        validated.value.executionContractConfirmedAt = null;
+      }
+    }
     if (validated.value.status === "done") {
       const gate = completionGate({ ...item, ...validated.value });
       if (!gate.ready) return { ok: false, status: 409, body: { error: "work_item_acceptance_incomplete", ...gate } };
@@ -2031,7 +2303,6 @@ export function createWorkItemService({
       validated.value.parentId = parentId;
     }
     const nextValues = { ...validated.value };
-    const timestamp = now();
     if (Object.hasOwn(validated.value, "plannedDate")) {
       nextValues.schedulePlanSource = validated.value.plannedDate ? "manual" : null;
       nextValues.scheduleReason = validated.value.plannedDate ? "manual_schedule" : null;
@@ -2722,6 +2993,10 @@ export function createWorkItemService({
       };
     }
     if (kind === "auto_run") {
+      // Handing a task to AI creates the durable Run first. Acceptance criteria
+      // and the verification SOP are established during that Run's read-only
+      // understanding phase; the hard contract gate lives immediately before
+      // worktree materialization instead of blocking Run creation here.
       const activeRun = activeBoundAutoRun(item);
       if (activeRun) {
         return {
@@ -3686,7 +3961,7 @@ export function createWorkItemService({
     bindGithubIssue, syncGithubIssue, bindExternalIssue, syncExternalIssue, listExternalProviders, getExternalIssueFunnel,
     recordVerification, recordAssetOperation, ingestGithubWebhook, replayGithubWebhook, recordGithubWebhookFailure,
     ingestExternalWebhook, replayExternalWebhook, recordExternalWebhookFailure,
-    githubSyncDiagnostics, updateAttention, sweepOperationalAlerts, suggestWorkItemDraft, retryWorkItemAlert,
+    githubSyncDiagnostics, updateAttention, sweepOperationalAlerts, suggestWorkItemDraft, prepareExecutionContract, retryWorkItemAlert,
     startApplicationExecution, requestApplicationExecutionApproval,
     applyLocalSchedulePlan,
     applyLocalScheduleRollover,

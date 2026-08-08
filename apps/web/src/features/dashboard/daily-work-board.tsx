@@ -72,6 +72,9 @@ type Copy = {
   unassignedHint: string;
   claim: string;
   claiming: string;
+  handOffAi: string;
+  handingOffAi: string;
+  handOffAiError: string;
   myWork: string;
   myWorkHint: string;
   allMyWork: string;
@@ -224,6 +227,9 @@ const COPY: Record<"zh" | "en", Copy> = {
     unassignedHint: "所有尚未分配的本地 Issue 都在这里；认领后才会进入个人调度并占用终端容量。",
     claim: "认领",
     claiming: "认领中…",
+    handOffAi: "交给 AI",
+    handingOffAi: "正在交给 AI…",
+    handOffAiError: "暂时无法交给 AI，请打开任务检查执行条件后重试。",
     myWork: "我的任务",
     myWorkHint: "同一批 Issue 的人员负责与预期完成视角",
     allMyWork: "全部人员",
@@ -235,13 +241,13 @@ const COPY: Record<"zh" | "en", Copy> = {
     aiFailed: "AI 失败",
     dueToday: "今日到期",
     reviewReady: "待复核与汇报",
-    activeAi: "AI 的任务",
-    aiWorkHint: "同一批 Issue 的 AI 执行日期与执行状态视角",
-    allAiWork: "全部 AI 任务",
+    activeAi: "AI 执行",
+    aiWorkHint: "已交给 AI 的任务及执行状态；任务仍保留在“我的任务”中",
+    allAiWork: "全部 AI 执行",
     aiRunning: "执行中",
     aiScheduled: "待执行",
-    noAiWork: "暂无 AI 任务",
-    noAiWorkHint: "为 Issue 设置 AI 执行日期或启动执行后会显示在这里",
+    noAiWork: "暂无 AI 执行",
+    noAiWorkHint: "从“我的任务”点击“交给 AI”后会显示在这里",
     executionDate: "AI 执行日期",
     noExecutionDate: "未安排执行日期",
     expectedCompletion: "预期完成",
@@ -252,7 +258,7 @@ const COPY: Record<"zh" | "en", Copy> = {
     waitingLabel: "人",
     aiLabel: "AI",
     coordination: {
-      aiNotLinked: "未关联",
+      aiNotLinked: "未交给 AI",
       executionAfterCompletion: "AI 执行晚于预期完成",
       aiUnscheduled: "AI 已关联，但尚未安排执行日期",
       reviewPending: "AI 已完成，等待人工复核",
@@ -328,6 +334,7 @@ const COPY: Record<"zh" | "en", Copy> = {
     nextAction: { open_issue: "查看任务", record_progress: "跟进", review_result: "复核", open_approval: "审批", open_run: "查看运行", retry: "处理失败" },
     report: { draft: "汇报草稿", confirmed: "汇报已确认", stale: "汇报已过期", prepare: "准备汇报", review: "复核汇报" },
     scheduleReasons: {
+      manual_retry_today: "重新执行，已安排到今天",
       auto_run_failed: "运行失败，需先复盘或重试",
       auto_run_blocked: "运行被阻塞",
       auto_run_needs_input: "等待补充信息",
@@ -408,6 +415,9 @@ const COPY: Record<"zh" | "en", Copy> = {
     unassignedHint: "Every unassigned local Issue appears here. It enters personal scheduling and terminal capacity only after you claim it.",
     claim: "Claim",
     claiming: "Claiming…",
+    handOffAi: "Hand off to AI",
+    handingOffAi: "Handing off…",
+    handOffAiError: "Could not hand this task to AI. Open the task, check its execution requirements, and try again.",
     myWork: "My tasks",
     myWorkHint: "People ownership and expected completion for the same Issues",
     allMyWork: "All people",
@@ -419,13 +429,13 @@ const COPY: Record<"zh" | "en", Copy> = {
     aiFailed: "AI failed",
     dueToday: "Due today",
     reviewReady: "Review and report",
-    activeAi: "AI tasks",
-    aiWorkHint: "AI execution dates and states for the same Issues",
-    allAiWork: "All AI tasks",
+    activeAi: "AI execution",
+    aiWorkHint: "Tasks handed to AI and their execution states; they remain in My tasks",
+    allAiWork: "All AI execution",
     aiRunning: "Running",
     aiScheduled: "Scheduled",
-    noAiWork: "No AI work yet",
-    noAiWorkHint: "Set an AI execution date or start execution to show an Issue here",
+    noAiWork: "No AI execution yet",
+    noAiWorkHint: "Use Hand off to AI from My tasks to show a task here",
     executionDate: "AI execution date",
     noExecutionDate: "No execution date",
     expectedCompletion: "Expected completion",
@@ -436,7 +446,7 @@ const COPY: Record<"zh" | "en", Copy> = {
     waitingLabel: "People",
     aiLabel: "AI",
     coordination: {
-      aiNotLinked: "Not linked",
+      aiNotLinked: "Not handed to AI",
       executionAfterCompletion: "AI execution is after expected completion",
       aiUnscheduled: "AI is linked but has no execution date",
       reviewPending: "AI completed; awaiting human review",
@@ -512,6 +522,7 @@ const COPY: Record<"zh" | "en", Copy> = {
     nextAction: { open_issue: "View task", record_progress: "Follow up", review_result: "Review", open_approval: "Approve", open_run: "View run", retry: "Handle failure" },
     report: { draft: "Report draft", confirmed: "Report confirmed", stale: "Report stale", prepare: "Prepare report", review: "Review report" },
     scheduleReasons: {
+      manual_retry_today: "Retry scheduled for today",
       auto_run_failed: "Run failed; triage or retry first",
       auto_run_blocked: "Run is blocked",
       auto_run_needs_input: "Waiting for more information",
@@ -585,6 +596,16 @@ type DailyLocalWorkItem = LocalWorkItem & { scheduleReason?: string | null };
 type ActionQueueFilter = "all" | "danger" | "warning" | "running";
 type DailyGroupKey = WorkState | LocalWorkItem["status"];
 type WorkView = "my" | "ai";
+
+export function hasAiExecution(item: HomeWorkbenchItem): boolean {
+  return Boolean(item.ai);
+}
+
+export function canHandOffToAi(item: HomeWorkbenchItem): boolean {
+  return !hasAiExecution(item)
+    && item.executionState === "unclaimed"
+    && item.planningStatus === "ready";
+}
 type FocusedIssue = { workItemId: string; view: WorkView; originView: WorkView; nonce: number };
 
 const GROUP_ORDER: DailyGroupKey[] = [
@@ -860,6 +881,7 @@ export function DailyWorkBoard({
   onOpenApproval,
   onOpenTasks,
   onClaimItem,
+  onStartAi,
   onUpdatePlannedDate,
   dailyBriefContainer,
   focusSessionActive = false,
@@ -898,6 +920,7 @@ export function DailyWorkBoard({
   onOpenCompleted?: () => void;
   onOpenFailed?: () => void;
   onClaimItem?: (item: LocalWorkItem) => void;
+  onStartAi?: (item: HomeWorkbenchItem) => void | Promise<void>;
   onUpdatePlannedDate?: (item: HomeWorkbenchItem, plannedDate: string) => void | Promise<void>;
   dailyBriefContainer?: HTMLElement | null;
   focusSessionActive?: boolean;
@@ -930,6 +953,8 @@ export function DailyWorkBoard({
   const [scheduleDate, setScheduleDate] = useState("");
   const [schedulePending, setSchedulePending] = useState(false);
   const [scheduleError, setScheduleError] = useState<string | null>(null);
+  const [startingAiWorkItemId, setStartingAiWorkItemId] = useState<string | null>(null);
+  const [startAiError, setStartAiError] = useState<string | null>(null);
   const [focusTargetId, setFocusTargetId] = useState<string | null>(null);
   const myDateColumnsRef = useRef<HTMLDivElement>(null);
   const aiDateColumnsRef = useRef<HTMLDivElement>(null);
@@ -995,8 +1020,7 @@ export function DailyWorkBoard({
     tomorrow: filterItems(baseModel.tomorrow),
     unscheduled: filterItems(baseModel.unscheduled),
   } : baseModel;
-  const aiWorkItems = projectedWorkbenchItems
-    .filter((item) => Boolean(item.plannedDate || item.ai));
+  const aiWorkItems = projectedWorkbenchItems.filter(hasAiExecution);
   const actionQueue = buildActionQueue(projectedWorkbenchItems, copy);
   const actionQueueCounts: Record<ActionQueueFilter, number> = {
     all: actionQueue.length,
@@ -1008,8 +1032,8 @@ export function DailyWorkBoard({
     ? actionQueue
     : actionQueue.filter((item) => item.tone === actionQueueFilter);
   const todayDueCount = projectedWorkbenchItems.filter((item) => item.dueDate === currentDay && item.planningStatus !== "done").length;
-  const aiMovingCount = projectedWorkbenchItems.filter((item) =>
-    item.plannedDate && ["unclaimed", "claimed", "running", "verifying"].includes(item.executionState)).length;
+  const aiMovingCount = aiWorkItems.filter((item) =>
+    ["unclaimed", "claimed", "running", "verifying"].includes(item.executionState)).length;
   const scheduleConflictCount = actionQueue.filter((item) => item.action === "schedule").length;
   const focusedActionIndex = focusTargetId
     ? actionQueue.findIndex((entry) => entry.item.workItemId === focusTargetId)
@@ -1083,6 +1107,18 @@ export function DailyWorkBoard({
     onOpenItem(homeTaskWorkItem(item));
   };
   const runHomeReport = (item: HomeWorkbenchItem) => onOpenItem(homeReportWorkItem(item));
+  const handOffToAi = async (item: HomeWorkbenchItem) => {
+    if (!onStartAi || !canHandOffToAi(item)) return;
+    setStartingAiWorkItemId(item.workItemId);
+    setStartAiError(null);
+    try {
+      await onStartAi(item);
+    } catch {
+      setStartAiError(copy.handOffAiError);
+    } finally {
+      setStartingAiWorkItemId(null);
+    }
+  };
   const locateIssue = (view: WorkView, workItemId: string) => {
     setActiveWorkView(view);
     setFocusedIssue({ workItemId, view, originView: view === "my" ? "ai" : "my", nonce: Date.now() });
@@ -1445,6 +1481,7 @@ export function DailyWorkBoard({
       {focusedIssue?.view === "my" ? (
         <LocateContextBar copy={copy} originView={focusedIssue.originView} onReturn={returnFromLocate} />
       ) : null}
+      {startAiError ? <p className="mx-4 mt-3 text-xs text-destructive" role="alert">{startAiError}</p> : null}
       <div className="flex items-center justify-end gap-1 px-4 pt-3 text-[11px] text-muted-foreground lg:hidden">
         <span>{copy.columnSwipeHint}</span>
         <ArrowRight className="size-3.5" aria-hidden />
@@ -1470,6 +1507,8 @@ export function DailyWorkBoard({
           onOpenItem={onOpenItem}
           onHomeAction={runHomeAction}
           onHomeReport={runHomeReport}
+          onStartAi={onStartAi ? handOffToAi : undefined}
+          startingAiWorkItemId={startingAiWorkItemId}
           focusedWorkItemId={focusedIssue?.view === "my" ? focusedIssue.workItemId : null}
           onLocateAi={(item) => locateIssue("ai", item.workItemId)}
         />
@@ -1488,6 +1527,8 @@ export function DailyWorkBoard({
           onOpenItem={onOpenItem}
           onHomeAction={runHomeAction}
           onHomeReport={runHomeReport}
+          onStartAi={onStartAi ? handOffToAi : undefined}
+          startingAiWorkItemId={startingAiWorkItemId}
           focusedWorkItemId={focusedIssue?.view === "my" ? focusedIssue.workItemId : null}
           onLocateAi={(item) => locateIssue("ai", item.workItemId)}
           featured
@@ -1518,6 +1559,8 @@ export function DailyWorkBoard({
           onOpenItem={onOpenItem}
           onHomeAction={runHomeAction}
           onHomeReport={runHomeReport}
+          onStartAi={onStartAi ? handOffToAi : undefined}
+          startingAiWorkItemId={startingAiWorkItemId}
           focusedWorkItemId={focusedIssue?.view === "my" ? focusedIssue.workItemId : null}
           onLocateAi={(item) => locateIssue("ai", item.workItemId)}
         />
@@ -1535,6 +1578,8 @@ export function DailyWorkBoard({
           onOpenItem={onOpenItem}
           onHomeAction={runHomeAction}
           onHomeReport={runHomeReport}
+          onStartAi={onStartAi ? handOffToAi : undefined}
+          startingAiWorkItemId={startingAiWorkItemId}
           focusedWorkItemId={focusedIssue?.view === "my" ? focusedIssue.workItemId : null}
           onLocateAi={(item) => locateIssue("ai", item.workItemId)}
         />
@@ -2074,7 +2119,7 @@ function AiWorkCard({
 type CoordinationKind = "late_execution" | "unscheduled" | "review_pending";
 
 function coordinationNotice(item: HomeWorkbenchItem, copy: Copy): { kind: CoordinationKind; label: string; tone: "danger" | "warning" | "running" } | null {
-  if (item.dueDate && item.plannedDate && item.plannedDate > item.dueDate) {
+  if (hasAiExecution(item) && item.dueDate && item.plannedDate && item.plannedDate > item.dueDate) {
     return { kind: "late_execution", label: copy.coordination.executionAfterCompletion, tone: "danger" };
   }
   if (item.ai && !item.plannedDate) {
@@ -2466,6 +2511,8 @@ function DayColumn({
   onOpenItem,
   onHomeAction,
   onHomeReport,
+  onStartAi,
+  startingAiWorkItemId,
   focusedWorkItemId,
   onLocateAi,
   featured = false,
@@ -2486,6 +2533,8 @@ function DayColumn({
   onOpenItem: (item: WorkItem) => void;
   onHomeAction: (item: HomeWorkbenchItem) => void;
   onHomeReport: (item: HomeWorkbenchItem) => void;
+  onStartAi?: (item: HomeWorkbenchItem) => void;
+  startingAiWorkItemId: string | null;
   focusedWorkItemId: string | null;
   onLocateAi: (item: HomeWorkbenchItem) => void;
   featured?: boolean;
@@ -2545,8 +2594,10 @@ function DayColumn({
                   onOpen={() => onOpenItem(item)}
                   onAction={item.home ? () => onHomeAction(item.home!) : undefined}
                   onReport={item.home ? () => onHomeReport(item.home!) : undefined}
+                  onStartAi={item.home && canHandOffToAi(item.home) && onStartAi ? () => onStartAi(item.home!) : undefined}
+                  startingAi={Boolean(item.home && startingAiWorkItemId === item.home.workItemId)}
                   focused={Boolean(item.home && focusedWorkItemId === item.home.workItemId)}
-                  onLocateAi={item.home && (item.home.ai || item.home.plannedDate) ? () => onLocateAi(item.home!) : undefined}
+                  onLocateAi={item.home && hasAiExecution(item.home) ? () => onLocateAi(item.home!) : undefined}
                 />
               ))}
               {hiddenCount > 0 && !revealFocused ? (
@@ -2588,6 +2639,8 @@ function WorkCard({
   onOpen,
   onAction,
   onReport,
+  onStartAi,
+  startingAi,
   focused,
   onLocateAi,
 }: {
@@ -2597,6 +2650,8 @@ function WorkCard({
   onOpen: () => void;
   onAction?: () => void;
   onReport?: () => void;
+  onStartAi?: () => void;
+  startingAi: boolean;
   focused: boolean;
   onLocateAi?: () => void;
 }) {
@@ -2650,7 +2705,7 @@ function WorkCard({
         <div className="mt-1.5 grid grid-cols-2 gap-x-3 gap-y-0.5 text-[10px] text-muted-foreground">
           {completedDate ? <span>{copy.completedOn}：{completedDate}</span> : <span>{copy.expectedCompletion}：{dueDate ?? copy.noExpectedCompletion}</span>}
           <span>
-            {copy.aiLabel}：{home.ai || home.plannedDate
+            {copy.aiLabel}：{hasAiExecution(home)
               ? `${executionDate ?? copy.noExecutionDate} · ${executionLabel(home, copy)}`
               : copy.coordination.aiNotLinked}
           </span>
@@ -2670,8 +2725,13 @@ function WorkCard({
           {time ? <span className="text-[11px] text-muted-foreground">{time}</span> : null}
         </div>
         <div className="flex flex-wrap items-center justify-end gap-1">
+          {onStartAi ? (
+            <Button size="sm" variant="primary" disabled={startingAi} onClick={onStartAi}>
+              <Bot aria-hidden />{startingAi ? copy.handingOffAi : copy.handOffAi}
+            </Button>
+          ) : null}
           {home && onAction ? (
-            <Button size="sm" variant="primary" onClick={onAction}>{copy.nextAction[home.nextAction.kind]}</Button>
+            <Button size="sm" variant={onStartAi ? "secondary" : "primary"} onClick={onAction}>{copy.nextAction[home.nextAction.kind]}</Button>
           ) : null}
           <div className="flex flex-wrap items-center gap-1">
             {onLocateAi ? (

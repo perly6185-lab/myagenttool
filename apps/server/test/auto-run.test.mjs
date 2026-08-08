@@ -40,6 +40,7 @@ function fakeAgent(overrides = {}) {
 // Build an auto-run service over the real project service, capturing what it
 // hands the invocation layer. `invocationStatus` controls the gate outcome.
 function makeAutoRun({
+  clock = () => new Date().toISOString(),
   agent = fakeAgent(),
   findAgent: injectedFindAgent = undefined,
   defaultAgent: injectedDefaultAgent = undefined,
@@ -85,12 +86,15 @@ function makeAutoRun({
   runRollback = undefined,
   fileRemediationIssue = undefined,
   requireLocalIssueForDevelopment = false,
+  startDeliveryReview = undefined,
+  submitDeliveryReview = undefined,
+  worktreeHeadSha = undefined,
 } = {}) {
-  const calls = { createInvocation: [], startInvocationIfAllowed: [], commit: [], publish: [], pr: [], verify: [], status: [], report: [], merge: [], autoApprove: [], render: [], childCreate: [], events: [] };
+  const calls = { createInvocation: [], startInvocationIfAllowed: [], commit: [], publish: [], pr: [], verify: [], status: [], report: [], merge: [], autoApprove: [], render: [], childCreate: [], deliveryReviewStart: [], deliveryReviewSubmit: [], events: [] };
   let counter = 0;
   const svc = createAutoRunService({
     state,
-    now: () => new Date().toISOString(),
+    now: clock,
     nextId: (p) => `${p}_${++counter}`,
     appendEvent: (event) => calls.events.push(event),
     persistStateSoon: () => {},
@@ -163,6 +167,13 @@ function makeAutoRun({
     runRollback,
     fileRemediationIssue,
     requireLocalIssueForDevelopment,
+    startDeliveryReview: startDeliveryReview
+      ? async (args) => { calls.deliveryReviewStart.push(args); return startDeliveryReview(args); }
+      : undefined,
+    submitDeliveryReview: submitDeliveryReview
+      ? (args) => { calls.deliveryReviewSubmit.push(args); return submitDeliveryReview(args); }
+      : undefined,
+    worktreeHeadSha,
     autoApproveInvocation: autoApproveInvocation
       ? (args) => { calls.autoApprove.push(args); return autoApproveInvocation(args); }
       : undefined,
@@ -241,6 +252,152 @@ test("startAutoRun materializes the worktree and starts an issue-seeded invocati
   assert.equal(autoRun.autonomyProfile, "high");
   // #1152: the owning team is stamped at creation, not re-derived per read.
   assert.equal(autoRun.teamId, "team_a");
+});
+
+test("a reserved Local Issue Run is durable before its writable workspace exists", async () => {
+  const { svc, calls } = makeAutoRun();
+  const link = { type: "local_issue", number: 1301, title: "Understand before writing", url: null, state: "open" };
+  const reserved = await svc.reserveAutoRun({
+    projectId: sourceProjectId,
+    link,
+    localIssueId: "wi_1301",
+    agentId: "agt_1",
+    name: "local-1301-understand-before-writing",
+    issueBody: "Implement the requested behavior and verify the primary success path without changing unrelated behavior.",
+  });
+  await svc.decideReservedAutoRun(reserved.autoRun.id, {
+    projectContext: {
+      digest: "context-full",
+      documents: [{ path: "README.md", excerpt: "Raw context used only during decision." }],
+    },
+    contextSummary: {
+      version: "work-item-understanding-context-v1",
+      digest: "context-full",
+      documentPaths: ["README.md"],
+      relatedFiles: [],
+      similarTasks: [],
+      verificationCommand: [],
+      truncated: false,
+      redactions: 0,
+    },
+  });
+
+  assert.equal(state.autoRuns.length, 1);
+  assert.equal(reserved.autoRun.phase, "understanding");
+  assert.equal(reserved.autoRun.worktreeId, null);
+  assert.equal(reserved.autoRun.invocationId, null);
+  assert.equal(state.worktrees.length, 0);
+  assert.equal(calls.createInvocation.length, 0);
+  assert.deepEqual(reserved.autoRun.understandingContext.documentPaths, ["README.md"]);
+  assert.equal("documents" in reserved.autoRun.understandingContext, false, "the Run persists only the safe context summary");
+
+  const frozen = svc.attachAutoRunExecutionPlan(reserved.autoRun.id, {
+    acceptanceCriteria: ["The requested behavior is observable."],
+    verificationSop: ["Run the focused automated test."],
+    confirmedBy: "ai_policy",
+    confirmedAt: "2026-08-07T00:00:00.000Z",
+  });
+  const replay = svc.attachAutoRunExecutionPlan(reserved.autoRun.id, {
+    acceptanceCriteria: ["The requested behavior is observable."],
+    verificationSop: ["Run the focused automated test."],
+    confirmedBy: "ai_policy",
+    confirmedAt: "2026-08-07T00:00:00.000Z",
+  });
+  assert.equal(replay.replayed, true);
+  assert.match(frozen.executionContract.digest, /^[0-9a-f]{64}$/);
+  assert.throws(() => svc.attachAutoRunExecutionPlan(reserved.autoRun.id, {
+    acceptanceCriteria: ["A changed criterion must not replace the frozen contract."],
+    verificationSop: ["Run the focused automated test."],
+    confirmedBy: "ai_policy",
+    confirmedAt: "2026-08-07T00:00:00.000Z",
+  }), /already frozen/i);
+  const started = await svc.startAutoRun({
+    projectId: sourceProjectId,
+    link,
+    localIssueId: "wi_1301",
+    agentId: "agt_1",
+    name: "local-1301-understand-before-writing",
+    issueBody: reserved.autoRun.issueBody,
+    existingAutoRunId: reserved.autoRun.id,
+    executionPlan: frozen.executionPlan,
+  });
+
+  assert.equal(started.autoRun.id, reserved.autoRun.id, "implementation continues the reserved Run");
+  assert.equal(state.autoRuns.length, 1, "no second history Run is created");
+  assert.ok(started.worktree?.id);
+  assert.equal(state.worktrees.length, 1);
+  assert.equal(calls.createInvocation.length, 1);
+});
+
+test("a reserved Local Issue Run cannot materialize before its contract is frozen", async () => {
+  const { svc, calls } = makeAutoRun();
+  const link = { type: "local_issue", number: 1302, title: "Block early writes", url: null, state: "open" };
+  const reserved = await svc.reserveAutoRun({
+    projectId: sourceProjectId,
+    link,
+    localIssueId: "wi_1302",
+    agentId: "agt_1",
+    name: "local-1302-block-early-writes",
+    issueBody: "Implement this task only after its acceptance and verification contract is established.",
+  });
+
+  await assert.rejects(
+    () => svc.startAutoRun({
+      projectId: sourceProjectId,
+      link,
+      localIssueId: "wi_1302",
+      agentId: "agt_1",
+      name: "local-1302-block-early-writes",
+      existingAutoRunId: reserved.autoRun.id,
+    }),
+    /frozen execution contract/i,
+  );
+  assert.equal(state.worktrees.length, 0);
+  assert.equal(calls.createInvocation.length, 0);
+});
+
+test("a recovered reserved Run reuses a materialized worktree when invocation startup was interrupted", async () => {
+  const { svc, calls } = makeAutoRun();
+  const link = { type: "local_issue", number: 1304, title: "Resume materialization", url: null, state: "open" };
+  const reserved = await svc.reserveAutoRun({
+    projectId: sourceProjectId,
+    link,
+    localIssueId: "wi_1304",
+    agentId: "agt_1",
+    name: "local-1304-resume-materialization",
+    issueBody: "Resume safely after the writable workspace is created but before the invocation starts.",
+  });
+  await svc.decideReservedAutoRun(reserved.autoRun.id);
+  const frozen = svc.attachAutoRunExecutionPlan(reserved.autoRun.id, {
+    acceptanceCriteria: ["The interrupted Run resumes without a duplicate workspace."],
+    verificationSop: ["Verify the original workspace is reused."],
+    confirmedBy: "ai_policy",
+    confirmedAt: "2026-08-07T00:00:00.000Z",
+  });
+  const { worktree } = projectSvc.createWorktree({
+    projectId: sourceProjectId,
+    name: "local-1304-resume-materialization",
+    agentId: "agt_1",
+    link,
+  });
+  reserved.autoRun.worktreeId = worktree.id;
+  reserved.autoRun.status = "materializing";
+  reserved.autoRun.phase = "planning";
+
+  const resumed = await svc.startAutoRun({
+    projectId: sourceProjectId,
+    link,
+    localIssueId: "wi_1304",
+    agentId: "agt_1",
+    name: "local-1304-resume-materialization",
+    existingAutoRunId: reserved.autoRun.id,
+    executionPlan: frozen.executionPlan,
+  });
+
+  assert.equal(resumed.worktree.id, worktree.id);
+  assert.equal(state.worktrees.length, 1);
+  assert.equal(calls.createInvocation.length, 1);
+  assert.equal(reserved.autoRun.invocationId, "inv_fake_1");
 });
 
 test("Codex auto-runs use broker auto mode while preserving the normal invocation gate", async () => {
@@ -421,6 +578,193 @@ test("a successful local issue completes on its committed worktree without a rem
   assert.equal(calls.verify.length, 1, "the configured verification gate still runs");
   assert.equal(calls.publish.length, 0, "local issue completion never pushes a branch");
   assert.equal(calls.pr.length, 0, "local issue completion never opens a GitHub PR");
+});
+
+test("a local delivery produces a readable report and records an independent Codex review", async () => {
+  const { svc, calls } = makeAutoRun({
+    listWorktreeChangedFiles: async () => ["apps/server/src/routes/agents.mjs", "apps/server/test/agents.test.mjs"],
+    startDeliveryReview: async () => ({ id: "inv_delivery_review", status: "queued" }),
+    submitDeliveryReview: (review) => ({ ...review, reviewedCommit: "commit_reviewed" }),
+    worktreeHeadSha: () => "commit_reviewed",
+  });
+  const { autoRun, invocation } = await svc.startAutoRun({
+    projectId: sourceProjectId,
+    link: { type: "local_issue", number: 60, title: "Persist the terminal timezone", url: null, state: "open" },
+    agentId: "agt_1",
+    name: "local-60-timezone",
+    issueBody: "Persist the reported timezone and cover it with a regression test.",
+  });
+
+  await svc.advanceAutoRunForInvocation({
+    ...invocation,
+    status: "succeeded",
+    completedAt: "2026-08-07T08:00:00.000Z",
+    result: { output: { latestMessage: "Timezone propagation was implemented and verified." } },
+  });
+
+  assert.equal(autoRun.deliveryReport.summary, "Timezone propagation was implemented and verified.");
+  assert.deepEqual(autoRun.deliveryReport.changedFiles, ["apps/server/src/routes/agents.mjs", "apps/server/test/agents.test.mjs"]);
+  assert.equal(autoRun.deliveryReview.status, "queued");
+  assert.equal(calls.deliveryReviewStart.length, 1);
+
+  await svc.advanceAutoRunForInvocation({
+    id: "inv_delivery_review",
+    status: "succeeded",
+    completedAt: "2026-08-07T08:01:00.000Z",
+    result: {
+      output: {
+        summary: "The route updates memory but does not persist the timezone.",
+        findings: [{
+          severity: "high",
+          file: "apps/server/src/routes/agents.mjs",
+          line: 170,
+          message: "The authenticated re-registration path does not schedule persistence.",
+          suggestion: "Call persistStateSoon after the timezone changes.",
+          confidence: "high",
+        }],
+      },
+    },
+  });
+
+  assert.equal(autoRun.deliveryReview.status, "completed");
+  assert.equal(autoRun.deliveryReview.verdict, "changes_requested");
+  assert.equal(calls.deliveryReviewSubmit.length, 1);
+  assert.equal(calls.deliveryReviewSubmit[0].source, "ai");
+  assert.equal(calls.deliveryReviewSubmit[0].comments[0].path, "apps/server/src/routes/agents.mjs");
+
+  await svc.advanceAutoRunForInvocation({
+    id: "inv_delivery_review",
+    status: "succeeded",
+    completedAt: "2026-08-07T08:02:00.000Z",
+    result: {
+      output: {
+        structured: false,
+        verdict: "changes_requested",
+        summary: "Targeted tests pass, with no actionable regressions identified.",
+        findings: [],
+      },
+    },
+  });
+  assert.equal(autoRun.deliveryReview.verdict, "approved", "a clearly clean text review corrects a stale fail-closed verdict");
+  assert.equal(autoRun.deliveryReview.structured, false);
+  assert.equal(calls.deliveryReviewSubmit.length, 2);
+});
+
+test("reconciliation backfills changed files for a historical local delivery", async () => {
+  let listCalls = 0;
+  const { svc } = makeAutoRun({
+    listWorktreeChangedFiles: async () => (++listCalls === 1 ? [] : [
+      "apps/server/src/routes/agents.mjs",
+      "apps/server/test/device-time-zone.test.mjs",
+    ]),
+  });
+  const { autoRun, invocation } = await svc.startAutoRun({
+    projectId: sourceProjectId,
+    link: { type: "local_issue", number: 63, title: "Hydrate delivery files", url: null, state: "open" },
+    agentId: "agt_1",
+    name: "local-63-hydrate-delivery-files",
+  });
+  await svc.advanceAutoRunForInvocation({ ...invocation, status: "succeeded" });
+  autoRun.deliveryReport.changedFiles = [];
+  delete autoRun.deliveryReport.changedFilesHydratedAt;
+  state.workItems = [{
+    id: "lwi_63",
+    state: "open",
+    executionBindings: [{ kind: "auto_run", targetId: autoRun.id }],
+  }];
+
+  await svc.reconcileDeliveryReviews();
+
+  assert.deepEqual(autoRun.deliveryReport.changedFiles, [
+    "apps/server/src/routes/agents.mjs",
+    "apps/server/test/device-time-zone.test.mjs",
+  ]);
+  assert.ok(autoRun.deliveryReport.changedFilesHydratedAt);
+});
+
+test("a failed delivery review backs off and stops after three attempts", async () => {
+  let currentTime = Date.parse("2026-08-07T08:00:00.000Z");
+  let reviewSequence = 0;
+  const { svc, calls } = makeAutoRun({
+    clock: () => new Date(currentTime).toISOString(),
+    startDeliveryReview: async () => ({ id: `inv_delivery_review_${++reviewSequence}`, status: "queued" }),
+  });
+  const { autoRun, invocation } = await svc.startAutoRun({
+    projectId: sourceProjectId,
+    link: { type: "local_issue", number: 62, title: "Bound review retries", url: null, state: "open" },
+    agentId: "agt_1",
+    name: "local-62-review-retries",
+  });
+  state.workItems = [{
+    id: "lwi_62",
+    state: "open",
+    executionBindings: [{ kind: "auto_run", targetId: autoRun.id }],
+  }];
+
+  await svc.advanceAutoRunForInvocation({ ...invocation, status: "succeeded" });
+  assert.equal(autoRun.deliveryReview.attempts, 1);
+
+  await svc.advanceAutoRunForInvocation({
+    id: "inv_delivery_review_1",
+    status: "failed",
+    result: { errorCode: "execution_timeout", summary: "Review timed out." },
+  });
+  assert.equal(autoRun.deliveryReview.status, "failed");
+  assert.equal(autoRun.deliveryReview.nextRetryAt, "2026-08-07T08:05:00.000Z");
+
+  await svc.reconcileDeliveryReviews();
+  assert.equal(calls.deliveryReviewStart.length, 1, "the retry delay is respected");
+
+  currentTime += 5 * 60_000;
+  await svc.reconcileDeliveryReviews();
+  assert.equal(autoRun.deliveryReview.attempts, 2);
+  await svc.advanceAutoRunForInvocation({ id: "inv_delivery_review_2", status: "failed" });
+
+  currentTime += 5 * 60_000;
+  await svc.reconcileDeliveryReviews();
+  assert.equal(autoRun.deliveryReview.attempts, 3);
+  await svc.advanceAutoRunForInvocation({ id: "inv_delivery_review_3", status: "failed" });
+  assert.equal(autoRun.deliveryReview.nextRetryAt, null);
+
+  currentTime += 60 * 60_000;
+  const reconciled = await svc.reconcileDeliveryReviews({ ignoreRetryDelay: true });
+  assert.equal(calls.deliveryReviewStart.length, 3);
+  assert.equal(reconciled.checked, 0, "an exhausted review is not retried at boot or by the sweeper");
+});
+
+test("review feedback revises the same completed local delivery and preserves its prior result", async () => {
+  const { svc, calls } = makeAutoRun({
+    listWorktreeChangedFiles: async () => ["apps/server/src/routes/agents.mjs"],
+  });
+  const { autoRun, invocation } = await svc.startAutoRun({
+    projectId: sourceProjectId,
+    link: { type: "local_issue", number: 61, title: "Revise the delivery", url: null, state: "open" },
+    agentId: "agt_1",
+    name: "local-61-revise",
+  });
+  await svc.advanceAutoRunForInvocation({
+    ...invocation,
+    status: "succeeded",
+    result: { output: { latestMessage: "First delivery." } },
+  });
+  autoRun.deliveryReview = {
+    status: "completed",
+    verdict: "changes_requested",
+    summary: "Persistence is missing.",
+    findings: [],
+  };
+
+  await svc.retryAutoRun(autoRun.id, {
+    actor: { userId: "usr_x", teamId: "team_a" },
+    feedback: "Call persistStateSoon after the timezone changes.",
+  });
+
+  assert.equal(autoRun.status, "running");
+  assert.equal(autoRun.deliveryReport, null);
+  assert.equal(autoRun.deliveryReview, null);
+  assert.equal(autoRun.deliveryHistory.length, 1);
+  assert.equal(autoRun.deliveryHistory[0].report.summary, "First delivery.");
+  assert.match(calls.createInvocation.at(-1).task, /Call persistStateSoon after the timezone changes/);
 });
 
 test("advanceAutoRunForInvocation marks the auto-run failed when the run fails", async () => {
@@ -1056,7 +1400,8 @@ test("self-repair uses the body approved at start, never a live re-fetch (TOCTOU
 });
 
 test("retryAutoRun resets repairAttempts so the retry gets a fresh repair budget", async () => {
-  const { svc } = makeAutoRun({});
+  const retryStartedAt = "2026-08-07T07:05:00.000Z";
+  const { svc } = makeAutoRun({ clock: () => retryStartedAt });
   const { autoRun } = await svc.startAutoRun({
     projectId: sourceProjectId,
     link: { type: "issue", number: 183, title: "Retry", url: null, state: "open" },
@@ -1064,8 +1409,59 @@ test("retryAutoRun resets repairAttempts so the retry gets a fresh repair budget
   });
   autoRun.status = "blocked";
   autoRun.repairAttempts = 2; // exhausted before the retry
+  autoRun.timeoutRecoveryAttempts = 3;
+  autoRun.timeoutRecovery = { status: "exhausted", sourceInvocationId: autoRun.invocationId };
+  autoRun.executionBudget = {
+    startedAt: "2026-08-06T00:00:00.000Z",
+    turnTimeoutSeconds: 900,
+    totalBudgetSeconds: 2700,
+    elapsedSeconds: 111900,
+    noProgressStreak: 2,
+  };
   await svc.retryAutoRun(autoRun.id);
   assert.equal(autoRun.repairAttempts, 0, "the retry restores the self-repair budget");
+  assert.equal(autoRun.timeoutRecoveryAttempts, 0, "the retry restores the timeout-continuation attempt budget");
+  assert.deepEqual(autoRun.executionBudget, {
+    startedAt: retryStartedAt,
+    turnTimeoutSeconds: 900,
+    totalBudgetSeconds: 2700,
+    elapsedSeconds: 0,
+    noProgressStreak: 0,
+  });
+  assert.equal(autoRun.timeoutRecovery, null, "stale recovery state does not leak into the new execution window");
+});
+
+test("retryAutoRun schedules its bound local task for the current terminal day", async () => {
+  const clock = () => "2026-08-06T16:30:00.000Z";
+  const { svc } = makeAutoRun({ clock });
+  const { autoRun } = await svc.startAutoRun({
+    projectId: sourceProjectId,
+    link: { type: "local_issue", number: 60, title: "Retry today", url: null, state: "open" },
+    agentId: "agt_1", name: "local-60-retry-today",
+  });
+  state.workItems = [{
+    id: "lwi_60",
+    ownerTeamId: "team_a",
+    projectId: sourceProjectId,
+    status: "blocked",
+    state: "open",
+    revision: 3,
+    plannedDate: "2026-08-09",
+    schedulePlanSource: "manual",
+    scheduleReason: "manual_schedule",
+    executionBindings: [{ kind: "auto_run", targetId: autoRun.id }],
+  }];
+  autoRun.status = "blocked";
+
+  await svc.retryAutoRun(autoRun.id, { timezoneOffset: -480 });
+
+  assert.equal(state.workItems[0].plannedDate, "2026-08-07");
+  assert.equal(state.workItems[0].schedulePlanSource, "manual");
+  assert.equal(state.workItems[0].scheduleReason, "manual_retry_today");
+  assert.ok(state.workItemActivities.some((activity) =>
+    activity.action === "execution_retry_scheduled"
+    && activity.details.previousPlannedDate === "2026-08-09"
+    && activity.details.plannedDate === "2026-08-07"));
 });
 
 test("verification gate: an unconfigured gate opens the PR but labels it unverified", async () => {
@@ -2207,7 +2603,7 @@ test("E2: a develop run with commits still goes to a PR (prototype routing is pa
 
 const clarifyDecision = async () => ({ path: "clarify", spawnChildIssues: false, confidence: 0.9, rationale: "Under-specified.", clarifyingQuestions: ["Which cache backend?", "TTL policy?"] });
 
-test("E3: answerClarify on a needs_input clarify run posts answers to the issue + records them", async () => {
+test("E3: answerClarify posts the answer and resumes the same run in develop", async () => {
   const { svc, calls } = makeAutoRun({ decideIssuePath: clarifyDecision, commit: { committed: false, hasCommits: false } });
   const { autoRun, invocation } = await svc.startAutoRun({ projectId: sourceProjectId, link: { type: "issue", number: 110, title: "Add the cache layer", url: null, state: "open" }, agentId: "agt_1", name: "i-110" });
   await svc.advanceAutoRunForInvocation({ ...invocation, status: "succeeded", result: "questions" });
@@ -2216,9 +2612,64 @@ test("E3: answerClarify on a needs_input clarify run posts answers to the issue 
 
   const result = await svc.answerClarify(autoRun.id, { actor: { userId: "usr_pm" }, answers: "Use Redis, TTL 5 min." });
   assert.equal(result.ok, true);
+  assert.equal(result.resumed, true);
   assert.equal(autoRun.clarifyAnswer.by, "usr_pm");
   assert.match(autoRun.clarifyAnswer.text, /Redis/);
   assert.equal(calls.report.length, before + 1, "answers posted to the issue");
+  assert.equal(autoRun.decision.path, "develop");
+  assert.equal(autoRun.phase, "implementing");
+  assert.equal(autoRun.status, "running");
+  assert.equal(calls.createInvocation.length, 2, "a continuation is created on the existing Auto-run");
+  assert.match(calls.createInvocation[1].task, /Use Redis, TTL 5 min/);
+});
+
+test("E3: a reserved clarify Run waits without a worktree and materializes only after the answer", async () => {
+  const { svc, calls } = makeAutoRun({ decideIssuePath: clarifyDecision });
+  state.workItems = [{
+    id: "wi_clarify_reserved",
+    localNumber: 1303,
+    acceptanceCriteria: ["The selected cache policy is implemented."],
+    verificationSop: ["Run the cache behavior test."],
+    executionContractConfirmedAt: null,
+  }];
+  const link = { type: "local_issue", number: 1303, title: "Choose cache behavior", url: null, state: "open" };
+  const reserved = await svc.reserveAutoRun({
+    projectId: sourceProjectId,
+    link,
+    localIssueId: "wi_clarify_reserved",
+    agentId: "agt_1",
+    name: "local-1303-choose-cache-behavior",
+    issueBody: "Choose and implement the cache behavior after the product decision is supplied.",
+  });
+  await svc.decideReservedAutoRun(reserved.autoRun.id);
+  svc.attachAutoRunExecutionPlan(reserved.autoRun.id, {
+    acceptanceCriteria: state.workItems[0].acceptanceCriteria,
+    verificationSop: state.workItems[0].verificationSop,
+    confirmedBy: "ai_policy",
+    confirmedAt: null,
+  });
+
+  assert.equal(reserved.autoRun.status, "needs_input");
+  assert.equal(reserved.autoRun.phase, "waiting_for_input");
+  assert.equal(reserved.autoRun.worktreeId, null);
+  assert.equal(reserved.autoRun.executionContract, undefined, "the draft is not frozen before the answer");
+  assert.equal(reserved.autoRun.executionPlan.confirmedAt, null);
+  assert.equal(state.worktrees.length, 0);
+  assert.equal(calls.createInvocation.length, 0);
+
+  const answered = await svc.answerClarify(reserved.autoRun.id, {
+    actor: { userId: "usr_pm" },
+    answers: "Use Redis with a five-minute TTL.",
+  });
+  assert.equal(answered.resumed, true);
+  assert.equal(answered.autoRun.id, reserved.autoRun.id);
+  assert.equal(state.autoRuns.length, 1);
+  assert.equal(state.worktrees.length, 1);
+  assert.equal(calls.createInvocation.length, 1);
+  assert.equal(reserved.autoRun.decision.path, "develop");
+  assert.equal(reserved.autoRun.phase, "implementing");
+  assert.equal(reserved.autoRun.executionContract.confirmedBy, "user");
+  assert.ok(state.workItems[0].executionContractConfirmedAt);
 });
 
 test("E3: answerClarify refuses non-clarify / non-needs_input runs + empty answers", async () => {

@@ -1,7 +1,10 @@
 #!/usr/bin/env node
 import { spawn } from "node:child_process";
 import { existsSync } from "node:fs";
-import { isAbsolute } from "node:path";
+import { dirname, isAbsolute, relative, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+
+const reviewOutputSchemaPath = resolve(dirname(fileURLToPath(import.meta.url)), "codex-review-output.schema.json");
 
 const options = parseArgs(process.argv.slice(2));
 if (options.mode !== "diff-review") fail(`Unsupported Codex review mode: ${options.mode}`);
@@ -10,7 +13,13 @@ requireReviewCwd(options);
 console.log(`Codex review started: ${options.mode}`);
 
 const prompt = buildPrompt(options);
-const commandPlan = codexCommandPlan(options.codexCli, ["exec", "--json", prompt]);
+const commandArgs = options.baseRef
+  // Native review owns the base selection and read-only posture. Codex forbids
+  // a custom prompt together with --base, so task context remains in the
+  // delivery report while the reviewer concentrates on the exact code range.
+  ? ["exec", "review", "--base", options.baseRef, "--ephemeral", "-c", "model_reasoning_effort=low", "--output-schema", reviewOutputSchemaPath, "--json"]
+  : ["exec", "--sandbox", "read-only", "--ephemeral", "--json", "-c", "model_reasoning_effort=low", prompt];
+const commandPlan = codexCommandPlan(options.codexCli, commandArgs);
 const { code, stdout, stderr } = await run(commandPlan.command, commandPlan.args, {
   cwd: options.cwd,
 });
@@ -22,7 +31,8 @@ if (code !== 0) {
 }
 
 const review = parseReviewOutput(stdout);
-const findings = normalizeFindings(review.findings);
+const findings = normalizeFindings(review.findings, options.cwd)
+  .filter((finding) => severityRank(finding.severity) >= severityRank(options.severityFloor));
 console.log(`RESULT ${JSON.stringify({
   summary: summarizeFindings(findings, review.summary),
   touchedUserFiles: false,
@@ -34,6 +44,12 @@ console.log(`RESULT ${JSON.stringify({
     instruction: options.instruction,
     summary: review.summary ?? null,
     findings,
+    verdict: review.overallCorrectness === "patch is correct"
+      ? "approved"
+      : review.overallCorrectness === "patch is incorrect" || findings.length
+        ? "changes_requested"
+        : "approved",
+    structured: review.structured,
   },
   cost: {
     model: "codex",
@@ -55,6 +71,7 @@ function parseArgs(args) {
     cwd: null,
     instruction: null,
     severityFloor: "low",
+    baseRef: null,
   };
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index];
@@ -68,6 +85,8 @@ function parseArgs(args) {
       parsed.instruction = normalizeInstruction(requireValue(args, ++index, arg));
     } else if (arg === "--severity-floor") {
       parsed.severityFloor = normalizeSeverity(requireValue(args, ++index, arg));
+    } else if (arg === "--base-ref") {
+      parsed.baseRef = normalizeBaseRef(requireValue(args, ++index, arg));
     } else if (arg === "--help" || arg === "-h") {
       printHelp();
       process.exit(0);
@@ -110,6 +129,12 @@ function normalizeSeverity(value) {
   return text;
 }
 
+function normalizeBaseRef(value) {
+  const text = String(value ?? "").trim();
+  if (!/^[0-9a-f]{40}$/i.test(text)) fail("--base-ref must be a full commit SHA.");
+  return text.toLowerCase();
+}
+
 function buildPrompt(value) {
   return [
     "Review the current worktree diff for bugs, regressions, and missing tests.",
@@ -147,7 +172,11 @@ function parseReviewOutput(stdout) {
   const text = String(stdout ?? "").trim();
   if (!text) fail("Codex produced no review output.");
   const direct = parseJsonMaybe(text);
-  if (direct) return normalizeReviewObject(direct);
+  if (direct) {
+    if (Array.isArray(direct.findings)) return normalizeReviewObject(direct);
+    const candidate = extractReviewFromCodexEvent(direct);
+    if (candidate) return normalizeReviewObject(candidate);
+  }
   const lines = text.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
   // Capture the turn's real token usage (previously dropped) so the server can
   // attribute measured tokens for the review run.
@@ -167,7 +196,7 @@ function parseReviewOutput(stdout) {
     const candidate = extractReviewFromCodexEvent(parsed);
     if (candidate) return { ...normalizeReviewObject(candidate), ...usageTokens };
   }
-  fail("Codex produced malformed review JSON.", { stdoutPreview: text.slice(0, 500) });
+  fail("Codex produced malformed review JSON.", { stdoutPreview: text.slice(0, 2000) });
 }
 
 function codexUsageTokens(usage) {
@@ -181,10 +210,17 @@ function codexUsageTokens(usage) {
 }
 
 function parseJsonMaybe(text) {
+  const normalized = String(text ?? "").trim();
   try {
-    return JSON.parse(text);
+    return JSON.parse(normalized);
   } catch {
-    return null;
+    const fenced = normalized.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/i);
+    if (!fenced) return null;
+    try {
+      return JSON.parse(fenced[1]);
+    } catch {
+      return null;
+    }
   }
 }
 
@@ -198,7 +234,15 @@ function extractReviewFromCodexEvent(event) {
     ?? event.response?.output_text
     ?? null;
   if (!text) return null;
-  return parseJsonMaybe(String(text).trim());
+  const normalized = String(text).trim();
+  return parseJsonMaybe(normalized) ?? {
+    summary: normalized,
+    findings: [],
+    overall_correctness: /(?:^|\b)(?:no\s+(?:actionable\s+)?(?:findings?|issues?|bugs?|regressions?)(?:\s+(?:were\s+)?(?:found|identified|detected))?|patch is correct|looks good)(?:\b|[.!])/i.test(normalized)
+      ? "patch is correct"
+      : "patch is incorrect",
+    __unstructured: true,
+  };
 }
 
 function normalizeReviewObject(value) {
@@ -206,23 +250,58 @@ function normalizeReviewObject(value) {
     fail("Codex review output must be an object.");
   }
   return {
-    summary: typeof value.summary === "string" ? value.summary.trim() : null,
+    summary: typeof value.summary === "string"
+      ? value.summary.trim()
+      : typeof value.overall_explanation === "string"
+        ? value.overall_explanation.trim()
+        : null,
     findings: Array.isArray(value.findings) ? value.findings : [],
+    overallCorrectness: ["patch is correct", "patch is incorrect"].includes(value.overall_correctness)
+      ? value.overall_correctness
+      : null,
+    structured: value.__unstructured !== true,
   };
 }
 
-function normalizeFindings(findings) {
+function normalizeFindings(findings, cwd = null) {
   return findings
     .filter((item) => item && typeof item === "object" && !Array.isArray(item))
     .map((item) => ({
-      severity: normalizeFindingEnum(item.severity, "medium", ["low", "medium", "high"]),
-      file: String(item.file ?? "").trim(),
-      line: normalizeLine(item.line),
-      message: String(item.message ?? "").trim(),
+      severity: normalizeFindingSeverity(item),
+      file: normalizeFindingPath(item.file ?? item.code_location?.absolute_file_path, cwd),
+      line: normalizeLine(item.line ?? item.code_location?.line_range?.start),
+      message: String(item.message ?? [item.title, item.body].filter(Boolean).join(": ")).trim(),
       suggestion: String(item.suggestion ?? "").trim(),
-      confidence: normalizeFindingEnum(item.confidence, "medium", ["low", "medium", "high"]),
+      confidence: normalizeFindingConfidence(item),
     }))
     .filter((item) => item.file && item.message);
+}
+
+function normalizeFindingSeverity(item) {
+  if (["low", "medium", "high"].includes(String(item?.severity))) return String(item.severity);
+  const priority = Number(item?.priority);
+  if (priority <= 1) return "high";
+  if (priority === 2) return "medium";
+  if (priority >= 3) return "low";
+  return "medium";
+}
+
+function normalizeFindingConfidence(item) {
+  if (["low", "medium", "high"].includes(String(item?.confidence))) return String(item.confidence);
+  const score = Number(item?.confidence_score);
+  if (Number.isFinite(score)) return score >= 0.85 ? "high" : score >= 0.6 ? "medium" : "low";
+  return "medium";
+}
+
+function normalizeFindingPath(value, cwd) {
+  const path = String(value ?? "").trim();
+  if (!path || !cwd || !isAbsolute(path)) return path;
+  const rel = relative(cwd, path);
+  return rel && !rel.startsWith("..") && !isAbsolute(rel) ? rel.replaceAll("\\", "/") : path;
+}
+
+function severityRank(value) {
+  return { low: 1, medium: 2, high: 3 }[value] ?? 2;
 }
 
 function normalizeFindingEnum(value, fallback, allowed) {

@@ -142,10 +142,71 @@ function workbench(items: HomeWorkbenchItem[]): HomeWorkbench {
 }
 
 function activateWorkTab(view: "my" | "ai") {
-  fireEvent.click(screen.getByRole("tab", { name: view === "ai" ? /^AI tasks/ : /^My tasks/ }));
+  fireEvent.click(screen.getByRole("tab", { name: view === "ai" ? /^AI execution/ : /^My tasks/ }));
+}
+
+function aiBinding(id: string, status = "queued"): NonNullable<HomeWorkbenchItem["ai"]> {
+  return {
+    autoRunId: `aur-${id}`,
+    invocationId: `inv-${id}`,
+    agentId: "agt-codex",
+    agentName: "Codex",
+    status,
+    updatedAt: "2026-07-31T03:00:00.000Z",
+  };
 }
 
 describe("DailyWorkBoard", () => {
+  it("keeps ownership in My tasks and uses AI execution only as a handed-off subset", async () => {
+    const now = new Date(2026, 6, 31, 12).getTime();
+    const task = localItem({
+      id: "handoff",
+      localRef: "LOCAL-H",
+      title: "Implement the dashboard change",
+      dueDate: "2026-07-31",
+      plannedDate: "2026-07-31",
+    });
+    const beforeHandoff = homeItem({
+      workItemId: task.id,
+      localRef: task.localRef,
+      title: task.title,
+      dueDate: task.dueDate,
+      plannedDate: task.plannedDate,
+      waitingOn: "none",
+    });
+    const onStartAi = vi.fn().mockResolvedValue(undefined);
+    const props = {
+      board: { generatedAt: now, states: emptyStates() },
+      report: report(0, 0),
+      plannedItems: [task],
+      onOpenItem: vi.fn(),
+      onOpenTasks: vi.fn(),
+      onStartAi,
+      now,
+    };
+    const { rerender } = render(
+      <DailyWorkBoard {...props} workbench={workbench([beforeHandoff])} />,
+    );
+
+    expect(within(screen.getByTestId("my-work-section")).getByText("LOCAL-H · Implement the dashboard change")).toBeTruthy();
+    activateWorkTab("ai");
+    expect(within(screen.getByTestId("ai-work-section")).queryByText("Implement the dashboard change")).toBeNull();
+
+    activateWorkTab("my");
+    fireEvent.click(within(screen.getByTestId("my-work-section")).getByRole("button", { name: "Hand off to AI" }));
+    await waitFor(() => expect(onStartAi).toHaveBeenCalledWith(expect.objectContaining({ workItemId: "handoff" })));
+
+    rerender(
+      <DailyWorkBoard
+        {...props}
+        workbench={workbench([{ ...beforeHandoff, executionState: "claimed", ai: aiBinding("handoff") }])}
+      />,
+    );
+    expect(within(screen.getByTestId("my-work-section")).getByText("LOCAL-H · Implement the dashboard change")).toBeTruthy();
+    activateWorkTab("ai");
+    expect(within(screen.getByTestId("ai-work-section")).getByText("Implement the dashboard change")).toBeTruthy();
+  });
+
   it("opens the simple task detail for a server-derived follow-up action", () => {
     const progressItem = localItem({
       id: "progress", localRef: "LOCAL-P", title: "Follow up with customer", dueDate: "2026-07-31", plannedDate: null,
@@ -235,7 +296,7 @@ describe("DailyWorkBoard", () => {
     activateWorkTab("my");
     fireEvent.click(within(myWork).getByRole("button", { name: "1 Child learning" }));
     expect(within(myWork).getAllByText("LOCAL-K · Review child learning plan").length).toBeGreaterThan(0);
-    expect(within(myWork).getByText("AI：Not linked")).toBeTruthy();
+    expect(within(myWork).getByText("AI：Not handed to AI")).toBeTruthy();
     expect(within(myWork).queryByText("LOCAL-C · Confirm customer scope")).toBeNull();
     expect(aiWork.textContent).toContain("LOCAL-C");
 
@@ -404,7 +465,7 @@ describe("DailyWorkBoard", () => {
     expect(screen.getByTestId("ai-work-status-cards")).toBeTruthy();
     expect(screen.getByTestId("ai-execution-timeline")).toBeTruthy();
     expect(screen.getByTestId("ai-date-columns")).toBeTruthy();
-    expect(screen.getAllByText("No AI work yet")).toHaveLength(4);
+    expect(screen.getAllByText("No AI execution yet")).toHaveLength(4);
   });
 
   it("expands hidden work so every issue status remains inspectable", () => {
@@ -605,7 +666,7 @@ describe("DailyWorkBoard", () => {
         report={report(0, 0)}
         plannedItems={[late, approval]}
         workbench={workbench([
-          homeItem({ workItemId: late.id, localRef: late.localRef, title: late.title, dueDate: late.dueDate, plannedDate: late.plannedDate }),
+          homeItem({ workItemId: late.id, localRef: late.localRef, title: late.title, dueDate: late.dueDate, plannedDate: late.plannedDate, ai: aiBinding(late.id) }),
           homeItem({
             workItemId: approval.id,
             localRef: approval.localRef,
@@ -614,6 +675,7 @@ describe("DailyWorkBoard", () => {
             plannedDate: approval.plannedDate,
             attentionReason: "approval_required",
             executionState: "awaiting_approval",
+            ai: aiBinding(approval.id, "waiting_for_local_approval"),
             nextAction: { kind: "open_approval", label: "open_approval", targetId: "apr-release", section: "approvals" },
           }),
         ])}
@@ -653,7 +715,7 @@ describe("DailyWorkBoard", () => {
         board={{ generatedAt: now, states: emptyStates() }}
         report={report(0, 0)}
         plannedItems={[late]}
-        workbench={workbench([homeItem({ workItemId: late.id, localRef: late.localRef, title: late.title, dueDate: late.dueDate, plannedDate: late.plannedDate })])}
+        workbench={workbench([homeItem({ workItemId: late.id, localRef: late.localRef, title: late.title, dueDate: late.dueDate, plannedDate: late.plannedDate, ai: aiBinding(late.id) })])}
         onOpenItem={vi.fn()}
         onOpenTasks={vi.fn()}
         onUpdatePlannedDate={vi.fn().mockRejectedValue(new Error("revision conflict"))}
@@ -674,7 +736,7 @@ describe("DailyWorkBoard", () => {
     const late = localItem({ id: "brief-late", localRef: "LOCAL-LATE", title: "Realign the AI date", dueDate: "2026-07-31", plannedDate: "2026-08-01" });
     const approval = localItem({ id: "brief-approval", localRef: "LOCAL-APP", title: "Approve the release", dueDate: "2026-07-31", plannedDate: "2026-07-31" });
     const rows = [
-      homeItem({ workItemId: late.id, localRef: late.localRef, title: late.title, dueDate: late.dueDate, plannedDate: late.plannedDate }),
+      homeItem({ workItemId: late.id, localRef: late.localRef, title: late.title, dueDate: late.dueDate, plannedDate: late.plannedDate, ai: aiBinding(late.id) }),
       homeItem({
         workItemId: approval.id,
         localRef: approval.localRef,
@@ -683,6 +745,7 @@ describe("DailyWorkBoard", () => {
         plannedDate: approval.plannedDate,
         attentionReason: "approval_required",
         executionState: "awaiting_approval",
+        ai: aiBinding(approval.id, "waiting_for_local_approval"),
         nextAction: { kind: "open_approval", label: "open_approval", targetId: "apr-brief", section: "approvals" },
       }),
     ];
@@ -767,7 +830,7 @@ describe("DailyWorkBoard", () => {
 
   it("returns to the same focus Issue when execution-date editing is cancelled", async () => {
     const now = new Date(2026, 6, 31, 12).getTime();
-    const late = homeItem({ workItemId: "focus-late", localRef: "LOCAL-LATE", title: "Realign execution", dueDate: "2026-07-31", plannedDate: "2026-08-01" });
+    const late = homeItem({ workItemId: "focus-late", localRef: "LOCAL-LATE", title: "Realign execution", dueDate: "2026-07-31", plannedDate: "2026-08-01", ai: aiBinding("focus-late") });
     const onFocusActionResolved = vi.fn();
     render(
       <DailyWorkBoard
@@ -808,6 +871,7 @@ describe("DailyWorkBoard", () => {
       dueDate: row.dueDate,
       plannedDate: row.plannedDate,
       requester: { relation: row.requesterRelation, name: null, organization: null },
+      ai: aiBinding(row.id),
     }));
 
     render(
@@ -962,6 +1026,7 @@ describe("DailyWorkBoard", () => {
       planningStatus: plannedItem.id === "completed" ? "done" : "ready",
       waitingOn: "none",
       completedAt: plannedItem.id === "completed" ? plannedItem.updatedAt : null,
+      ai: aiBinding(plannedItem.id, plannedItem.id === "completed" ? "done" : "queued"),
     }));
     render(
       <DailyWorkBoard

@@ -69,6 +69,9 @@ export function HomeTaskComposer({
     due: "希望完成",
     criteria: "完成标准（可选）",
     criteriaHint: "每行一项，例如：覆盖全部反馈\n给出明确优先级\n输出可分享的文档",
+    sop: "验收 SOP（交给 AI 前必填）",
+    sopHint: "每行一步，例如：按真实使用流程检查结果\n核对自动验证证据\n确认风险后再审核通过",
+    contractReview: "已生成执行方案草案。请先确认或修改完成标准和验收 SOP，再次点击“创建并交给 AI”才会启动。",
     more: "补充完成标准或参考资料",
     attach: "添加参考文件",
     attachDrop: "拖放文件到这里，或点击选择文件",
@@ -105,6 +108,9 @@ export function HomeTaskComposer({
     due: "Complete by",
     criteria: "Definition of done (optional)",
     criteriaHint: "One item per line, for example:\nCover every feedback item\nAssign a clear priority\nProduce a shareable document",
+    sop: "Verification SOP (required before AI starts)",
+    sopHint: "One step per line, for example:\nExercise the real user flow\nReview automated evidence\nConfirm risks before approval",
+    contractReview: "An execution-plan draft is ready. Review or edit the completion criteria and verification SOP, then click “Create and let AI work” again to start.",
     more: "Add completion criteria or references",
     attach: "Add reference files",
     attachDrop: "Drop files here or choose files",
@@ -138,6 +144,8 @@ export function HomeTaskComposer({
   const [goal, setGoal] = useState("");
   const [dueDate, setDueDate] = useState(() => localDateKey(1));
   const [criteria, setCriteria] = useState("");
+  const [verificationSop, setVerificationSop] = useState("");
+  const [detailsOpen, setDetailsOpen] = useState(false);
   const [attachments, setAttachments] = useState<TaskMaterialSelection[]>([]);
   const [attachmentFeedback, setAttachmentFeedback] = useState<string | null>(null);
   const [pendingMode, setPendingMode] = useState<CreateMode | null>(null);
@@ -299,6 +307,7 @@ export function HomeTaskComposer({
         type: "task",
         priority: "p2",
         acceptanceCriteria: criteria.split(/\r?\n/).map((value) => value.trim()).filter(Boolean),
+        verificationSop: verificationSop.split(/\r?\n/).map((value) => value.trim()).filter(Boolean),
         requesterRelation: "self",
         intakeChannel: "manual",
         waitingOn: mode === "ai" ? "ai" : "none",
@@ -320,6 +329,8 @@ export function HomeTaskComposer({
       }
       setGoal("");
       setCriteria("");
+      setVerificationSop("");
+      setDetailsOpen(false);
       setAttachments([]);
       materialDraft.current = null;
       setAttachmentFeedback(null);
@@ -385,13 +396,17 @@ export function HomeTaskComposer({
             </div>
           </section>
         ) : null}
-        <details className="group rounded-lg border border-border px-3 py-2">
+        <details className="group rounded-lg border border-border px-3 py-2" open={detailsOpen} onToggle={(event) => setDetailsOpen(event.currentTarget.open)}>
           <summary className="flex cursor-pointer list-none items-center justify-between gap-2 text-sm font-medium text-muted-foreground">
             {copy.more}<ChevronDown className="size-4 transition-transform group-open:rotate-180" aria-hidden />
           </summary>
           <label className="mt-3 grid gap-1 text-xs font-medium text-muted-foreground">
             {copy.criteria}
             <textarea className="min-h-24 rounded-md border border-border bg-background p-2 text-sm text-foreground" value={criteria} placeholder={copy.criteriaHint} onChange={(event) => { setCriteria(event.target.value); idempotencyKey.current = null; setFeedback(null); }} />
+          </label>
+          <label className="mt-3 grid gap-1 text-xs font-medium text-muted-foreground">
+            {copy.sop}
+            <textarea className="min-h-24 rounded-md border border-border bg-background p-2 text-sm text-foreground" value={verificationSop} placeholder={copy.sopHint} onChange={(event) => { setVerificationSop(event.target.value); idempotencyKey.current = null; setFeedback(null); }} />
           </label>
           <div className="mt-3 border-t border-border pt-3">
             <TaskMaterialPicker

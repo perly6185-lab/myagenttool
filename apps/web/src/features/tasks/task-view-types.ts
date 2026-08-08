@@ -59,6 +59,17 @@ export type LocalWorkItem = {
   lastProgressAt: string | null;
   lastProgressSummary: string | null;
   acceptanceCriteria: string[];
+  acceptanceCriteriaSource?: "manual" | "body_extracted" | "assisted" | "structured" | "body_unstructured" | null;
+  verificationSop?: string[];
+  executionContractSource?: "manual" | "body_extracted" | "assisted" | null;
+  executionContractConfirmedAt?: string | null;
+  executionContractGate?: {
+    ready: boolean;
+    missing: ("acceptance_criteria" | "verification_sop" | "confirmation" | "confirmed_before_execution")[];
+    source: string | null;
+    confirmedAt: string | null;
+    latestAttemptStartedAt?: string | null;
+  };
   acceptanceResults?: { criterion: string; status: "passed" | "failed" | "not_tested"; note: string; verificationId: string }[];
   verificationRecords?: {
     id: string; kind: "test" | "lint" | "typecheck" | "manual" | "review";
@@ -271,9 +282,20 @@ export type WorkItemAttentionMetrics = {
 export type LocalWorkItemAutoRun = {
   id: string;
   status: string;
+  phase?: "queued" | "understanding" | "waiting_for_input" | "planning" | "implementing" | "verifying" | "review_ready" | "failed" | "cancelled" | null;
   updatedAt: string;
   invocationId?: string | null;
   agentId?: string | null;
+  understandingContext?: {
+    version: string;
+    digest: string;
+    documentPaths: string[];
+    relatedFiles: { path: string; line: number; term: string }[];
+    similarTasks: { localRef: string | null; title: string; score: number }[];
+    verificationCommand: string[];
+    truncated: boolean;
+    redactions?: number;
+  } | null;
   decision?: {
     path: string; decidedBy: string; confidence: number; rationale?: string | null;
     via?: string | null; latencyMs?: number | null; clarifyingQuestions?: string[] | null;
@@ -283,6 +305,26 @@ export type LocalWorkItemAutoRun = {
   localDelivery?: {
     worktreeId: string; branchName: string | null; mode?: "local_merge" | "pull_request";
     deliveredAt?: string | null; promotedAt?: string | null; prNumber?: number | null; prUrl?: string | null;
+  } | null;
+  clarifyAnswer?: { by?: string | null; at?: string | null; text?: string | null } | null;
+  deliveryReport?: {
+    summary: string | null;
+    verification: { passed: boolean; verified: boolean; summary: string | null } | null;
+    changedFiles: string[];
+    completedAt: string | null;
+  } | null;
+  deliveryReview?: {
+    status: "queued" | "running" | "completed" | "failed" | "unavailable";
+    invocationId: string | null;
+    reviewer: string;
+    startedAt: string | null;
+    completedAt: string | null;
+    verdict: "approved" | "changes_requested" | null;
+    summary: string | null;
+    findings: { severity: "low" | "medium" | "high"; file: string; line: number | null; message: string; suggestion: string | null; confidence: "low" | "medium" | "high" }[];
+    reviewedCommit: string | null;
+    errorCode: string | null;
+    nextRetryAt?: string | null;
   } | null;
   routingOverride?: {
     recommendedPath: string | null; actualPath: string; reason: string;
@@ -294,16 +336,35 @@ export type LocalWorkItemObservability = {
   nextAction: "review_approval" | "review_delivery" | "resolve_sync_conflict" | "inspect_failure" | "none" | "monitor_execution" | "start_execution";
   attention: WorkItemAttention[];
   latestRun: LocalWorkItemAutoRun | null;
+  runHistory?: {
+    invocationId: string;
+    autoRunId: string | null;
+    attempt: number;
+    status: string;
+    createdAt: string | null;
+    startedAt: string | null;
+    completedAt: string | null;
+    errorCode: string | null;
+    summary: string | null;
+    current: boolean;
+  }[];
   delivery?: {
     state: "awaiting_review";
     mode: "local_merge" | "pull_request";
     worktreeId: string;
     branchName: string | null;
     remoteUrl: string | null;
+    report: LocalWorkItemAutoRun["deliveryReport"];
+    aiReview: LocalWorkItemAutoRun["deliveryReview"];
     review: {
       verdict: "approved" | "changes_requested";
+      summary: string | null;
+      comments: { path: string | null; body: string; line?: number; severity?: "low" | "medium" | "high"; suggestion?: string }[];
       reviewedCommit: string | null;
       reviewedBy: string | null;
+      source: "human" | "ai";
+      reviewerName: string | null;
+      reviewInvocationId: string | null;
       createdAt: string | null;
     } | null;
   } | null;

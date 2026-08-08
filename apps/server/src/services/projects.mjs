@@ -783,7 +783,16 @@ export function createProjectService({ state, now, nextId, appendEvent, persistS
   // request changes) + optional comments — recorded so a promote/merge can be
   // GATED on it. The diff is a flat patch (no per-line ids), so comments anchor at
   // the file level; a null path is a general comment on the whole change.
-  function submitWorktreeReview({ worktreeId, verdict, comments, summary, actor } = {}) {
+  function submitWorktreeReview({
+    worktreeId,
+    verdict,
+    comments,
+    summary,
+    actor,
+    source = "human",
+    reviewerName = null,
+    reviewInvocationId = null,
+  } = {}) {
     const worktree = worktreeRecord(worktreeId);
     if (!worktree) throw new Error("Worktree not found.");
     const normalizedVerdict = verdict === "approved" ? "approved" : verdict === "changes_requested" ? "changes_requested" : null;
@@ -791,7 +800,13 @@ export function createProjectService({ state, now, nextId, appendEvent, persistS
     const cleanComments = Array.isArray(comments)
       ? comments
           .filter((c) => c && typeof c === "object")
-          .map((c) => ({ path: c.path ? String(c.path).slice(0, 400) : null, body: String(c.body ?? "").slice(0, 2000) }))
+          .map((c) => ({
+            path: c.path ? String(c.path).slice(0, 400) : null,
+            body: String(c.body ?? "").slice(0, 2000),
+            ...(Number.isInteger(Number(c.line)) && Number(c.line) > 0 ? { line: Number(c.line) } : {}),
+            ...(["low", "medium", "high"].includes(String(c.severity)) ? { severity: String(c.severity) } : {}),
+            ...(String(c.suggestion ?? "").trim() ? { suggestion: String(c.suggestion).slice(0, 2000) } : {}),
+          }))
           .filter((c) => c.body.trim())
           .slice(0, 100)
       : [];
@@ -803,6 +818,11 @@ export function createProjectService({ state, now, nextId, appendEvent, persistS
       summary: String(summary ?? "").slice(0, 2000) || null,
       comments: cleanComments,
       reviewedBy: actor?.userId ?? "usr_local",
+      ...(source === "ai" ? {
+        source: "ai",
+        reviewerName: String(reviewerName ?? "AI reviewer").slice(0, 120),
+        reviewInvocationId: String(reviewInvocationId ?? "").slice(0, 160) || null,
+      } : {}),
       reviewedCommit: worktreeHeadCommit(worktree.id), // bind the verdict to this exact diff
       createdAt: now(),
     };
@@ -1323,15 +1343,19 @@ export function readProjectDocuments(project, { type = "all", search = "", limit
   return { projectId: project.id, documents, truncated, scanned };
 }
 
-export function searchProjectContent(project, { query = "", include = "", exclude = "" } = {}) {
+export function searchProjectContent(project, { query = "", queries = null, include = "", exclude = "" } = {}) {
   const root = resolve(project.path);
-  const needle = String(query ?? "").trim().toLowerCase();
-  if (!needle) {
+  const requestedQueries = Array.isArray(queries)
+    ? [...new Set(queries.map((value) => String(value ?? "").trim().toLowerCase()).filter(Boolean))].slice(0, 8)
+    : [];
+  const needles = requestedQueries.length ? requestedQueries : [String(query ?? "").trim().toLowerCase()].filter(Boolean);
+  if (!needles.length) {
     return { projectId: project.id, query: "", results: [] };
   }
-  if (needle.length < 2) {
+  if (needles.some((needle) => needle.length < 2)) {
     throw new Error("Search text must be at least 2 characters.");
   }
+  const multiQuery = requestedQueries.length > 0;
   const includePatterns = splitGlobInput(include);
   const excludePatterns = splitGlobInput(exclude);
   const results = [];
@@ -1373,17 +1397,20 @@ export function searchProjectContent(project, { query = "", include = "", exclud
     const lines = text.split(/\r?\n/);
     for (let index = 0; index < lines.length; index += 1) {
       const line = lines[index];
-      if (!line.toLowerCase().includes(needle)) continue;
+      const lowerLine = line.toLowerCase();
+      const matchedTerm = needles.find((needle) => lowerLine.includes(needle));
+      if (!matchedTerm) continue;
       results.push({
         path: relPath,
         line: index + 1,
         preview: line.trim().slice(0, 180),
+        ...(multiQuery ? { term: matchedTerm } : {}),
       });
       if (results.length >= 80) return false;
     }
     return true;
   });
-  return { projectId: project.id, query, include, exclude, results, stats };
+  return { projectId: project.id, query: multiQuery ? "" : query, ...(multiQuery ? { queries: needles } : {}), include, exclude, results, stats };
 }
 
 function walkProjectFiles(root, directory, visit) {

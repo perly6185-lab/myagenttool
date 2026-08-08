@@ -135,6 +135,17 @@ test("searchProjectContent does NOT return contents of .gitignore'd or secret fi
   assert.ok(!paths.includes(".env"), "the .gitignore'd .env is NOT searched/returned");
 });
 
+test("searchProjectContent matches several understanding terms in one bounded scan", async () => {
+  const { searchProjectContent } = await import("../src/services/projects.mjs");
+  const dir = mkdtempSync(join(tmpdir(), "prj-search-multi-"));
+  execFileSync("git", ["init", "-b", "main", dir], { encoding: "utf8" });
+  writeFileSync(join(dir, "schedule.mjs"), "const timezone = terminal.timezone;\nconst preview = computePreview();\n");
+  const out = searchProjectContent({ id: "p", path: dir }, { queries: ["timezone", "preview"] });
+  assert.deepEqual(out.queries, ["timezone", "preview"]);
+  assert.deepEqual(out.results.map((result) => result.term), ["timezone", "preview"]);
+  assert.equal(out.stats.scannedFiles > 0, true);
+});
+
 test("readGitFacts reports null (not 'HEAD') for a detached HEAD (review F)", () => {
   const dir = mkdtempSync(join(tmpdir(), "prj-detached-"));
   execFileSync("git", ["init", "-b", "main", dir], { encoding: "utf8" });

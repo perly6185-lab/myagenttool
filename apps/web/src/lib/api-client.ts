@@ -2174,6 +2174,7 @@ export const api = {
     priority?: "p0" | "p1" | "p2" | "p3";
     labels?: string[];
     acceptanceCriteria?: string[];
+    verificationSop?: string[];
     assigneeIds?: string[];
     requesterRelation?: "boss" | "manager" | "customer" | "child" | "colleague" | "self" | "unknown";
     requesterName?: string | null;
@@ -2298,7 +2299,10 @@ export const api = {
   createWorkItemWorktree: (id: string, payload: { agentId?: string; baseBranch?: string } = {}) =>
     request("POST", `/api/work-items/${encodeURIComponent(id)}/worktrees`, payload),
   startWorkItemAutoRun: (id: string, payload: { agentId?: string; baseBranch?: string } = {}) =>
-    request("POST", `/api/work-items/${encodeURIComponent(id)}/auto-runs`, payload),
+    request("POST", `/api/work-items/${encodeURIComponent(id)}/auto-runs`, {
+      ...payload,
+      timezoneOffset: new Date().getTimezoneOffset(),
+    }),
   deliverWorkItem: (id: string, mode: "local_merge" | "pull_request", expectedRevision: number) =>
     request("POST", `/api/work-items/${encodeURIComponent(id)}/delivery/${mode === "local_merge" ? "local" : "pull-request"}`, {
       expectedRevision,
@@ -2382,8 +2386,11 @@ export const api = {
     }),
   // U1: can this project run an auto-run, and what's missing?
   autoRunReadiness: (projectId: string) => request("GET", `/api/projects/${encodeURIComponent(projectId)}/auto-run-readiness`),
-  // Retry a failed/blocked auto-run on its existing worktree.
-  retryAutoRun: (id: string) => request("POST", `/api/auto-runs/${encodeURIComponent(id)}/retry`),
+  // Retry a failed/blocked run, or revise a completed local delivery, in its existing worktree.
+  retryAutoRun: (id: string, feedback?: string) => request("POST", `/api/auto-runs/${encodeURIComponent(id)}/retry`, {
+    timezoneOffset: new Date().getTimezoneOffset(),
+    ...(feedback?.trim() ? { feedback: feedback.trim() } : {}),
+  }),
   cancelAutoRun: (id: string) => request("POST", `/api/auto-runs/${encodeURIComponent(id)}/cancel`),
   // Human-triggered PR merge for a pr_open auto-run (merge stays human — a person
   // clicks Merge in the console; runs `gh pr merge` server-side).

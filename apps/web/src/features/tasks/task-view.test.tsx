@@ -1072,6 +1072,69 @@ describe("TaskView local work items", () => {
     await waitFor(() => expect(mocks.deliverWorkItem).toHaveBeenCalledWith("lwi_delivery", "local_merge", 4));
   });
 
+  it("shows task run history only when the server reports a failure or rerun", async () => {
+    const item = {
+      id: "lwi_history", localRef: "LOCAL-60", projectId: "prj_1",
+      title: "Retry a local task", body: "", type: "task", status: "in_progress",
+      priority: "p1", state: "open", labels: [], assigneeIds: [],
+      acceptanceCriteria: [], verificationRecords: [], completionGate: {
+        ready: false, missingCriteria: [], verificationRequired: false,
+      },
+      revision: 2, archivedAt: null, updatedAt: "2026-08-07T02:00:00.000Z",
+      executionBindings: [{
+        kind: "auto_run", targetId: "aur_history", worktreeId: "wtr_history",
+        createdAt: "2026-08-07T01:00:00.000Z",
+      }],
+    };
+    const observability = {
+      nextAction: "monitor_execution",
+      attention: [],
+      latestRun: {
+        id: "aur_history", status: "running", updatedAt: "2026-08-07T02:00:00.000Z",
+        invocationId: "inv_retry",
+      },
+      runHistory: [],
+      activeClaim: null,
+      cost: { knownUsd: 0, unknownEntries: 0, entryCount: 0, projectBudget: null, teamBudget: null },
+      alerts: { queued: 0, failed: 0, sent: 0, skipped: 0, items: [] },
+    };
+    mocks.listWorkItems.mockResolvedValue({ workItems: [item], count: 1 });
+    mocks.getWorkItem.mockResolvedValue({ workItem: item, observability });
+    mocks.listWorkItemComments.mockResolvedValue({ comments: [] });
+    mocks.listWorkItemActivity.mockResolvedValue({ activities: [] });
+    render(<TaskView />);
+
+    fireEvent.click(await screen.findByText("Retry a local task"));
+    await openExpertDetails();
+    fireEvent.click(await screen.findByRole("tab", { name: "Process" }));
+    expect(screen.queryByLabelText("Run history")).toBeNull();
+
+    mocks.getWorkItem.mockResolvedValue({
+      workItem: item,
+      observability: {
+        ...observability,
+        runHistory: [{
+          invocationId: "inv_first", autoRunId: "aur_history", attempt: 1, status: "failed",
+          createdAt: "2026-08-07T01:00:00.000Z", startedAt: "2026-08-07T01:00:01.000Z",
+          completedAt: "2026-08-07T01:05:00.000Z", errorCode: "transport_closed",
+          summary: "The local connection closed.", current: false,
+        }, {
+          invocationId: "inv_retry", autoRunId: "aur_history", attempt: 2, status: "running",
+          createdAt: "2026-08-07T02:00:00.000Z", startedAt: "2026-08-07T02:00:01.000Z",
+          completedAt: null, errorCode: null, summary: null, current: true,
+        }],
+      },
+    });
+    document.dispatchEvent(new Event("visibilitychange"));
+
+    const history = await screen.findByLabelText("Run history");
+    expect(within(history).getByText("Attempt 1")).toBeTruthy();
+    expect(within(history).getByText("Attempt 2")).toBeTruthy();
+    expect(within(history).getByText("The local connection closed.")).toBeTruthy();
+    expect(within(history).getByText("Reason: transport_closed")).toBeTruthy();
+    expect(within(history).getByText("Current")).toBeTruthy();
+  });
+
   it("shows the external issue funnel and plain-language stalled recovery", async () => {
     mocks.listWorkItems.mockResolvedValue({ workItems: [], count: 0 });
     mocks.getWorkItemExternalIssueFunnel.mockResolvedValue({

@@ -667,6 +667,12 @@ export function DashboardView({ surface = "overview" }: { surface?: DashboardSur
               onOpenActive={() => openRunFilter("active")}
               onOpenCompleted={() => openRunFilter("completed")}
               onOpenFailed={() => openRunFilter("failed")}
+              onStartAi={async (item) => {
+                await api.startWorkItemAutoRun(item.workItemId);
+                window.dispatchEvent(new CustomEvent("myagenttool:state-change", {
+                  detail: { source: "dashboard-hand-off-ai", workItemId: item.workItemId },
+                }));
+              }}
               onUpdatePlannedDate={async (item, plannedDate) => {
                 await api.updateWorkItem(item.workItemId, {
                   expectedRevision: item.revision,

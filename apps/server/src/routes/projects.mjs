@@ -253,7 +253,12 @@ export async function handleProjectRoutes({
     if (denyForeignAutoRun(decodeURIComponent(autoRunRetryMatch[1]))) return true;
     try {
       const body = await readJson(req);
-      const result = await retryAutoRun(decodeURIComponent(autoRunRetryMatch[1]), { actor, terminalId: body?.terminalId });
+      const result = await retryAutoRun(decodeURIComponent(autoRunRetryMatch[1]), {
+        actor,
+        terminalId: body?.terminalId,
+        timezoneOffset: body?.timezoneOffset,
+        feedback: body?.feedback,
+      });
       sendJson(res, 200, result);
     } catch (error) {
       sendJson(res, 400, { error: "auto_run_retry_failed", message: errorMessage(error) });

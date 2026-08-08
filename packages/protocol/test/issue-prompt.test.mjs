@@ -60,6 +60,11 @@ test("roleAutoRunPrompt includes the issue body and the develop role instruction
   assert.match(prompt, /Repository discovery safety/, "discovery is bounded");
   assert.match(prompt, /node_modules.*apps\/electron\/release.*\.git/, "known large metadata trees are explicitly excluded");
   assert.match(prompt, /implement the change/, "develop role instructions");
+  assert.match(prompt, /shown directly to the task owner/, "the agent writes for a nontechnical owner");
+  assert.match(prompt, /Result, What changed, Checks performed, Remaining risks, and Recommended next step/, "the final report is decision-oriented");
+  assert.match(prompt, /whether the result is ready for the owner to accept/, "the final report gives an explicit recommendation");
+  assert.match(prompt, /acceptance criteria and owner verification SOP confirmed before execution/, "the final report uses the pre-execution contract");
+  assert.match(prompt, /Never invent, relax, or rewrite completion criteria after the work has started/, "review cannot invent criteria after execution");
   assert.doesNotMatch(prompt, /Commit your work/);
   assert.match(prompt, /platform stages and commits the work/);
 });
@@ -103,7 +108,8 @@ test("roleAutoRunPrompt caps an oversized issue body", () => {
     { type: "issue", number: 8, title: "Big", url: null },
     { path: "develop", issueBody: "x".repeat(10_000) },
   );
-  assert.ok(prompt.length < 8_000, "body capped");
+  assert.ok(prompt.length < 9_000, "body stays capped while fixed safety and delivery guidance remains present");
+  assert.ok(!prompt.includes("x".repeat(6_001)), "the untrusted body itself is still capped at 6000 characters");
 });
 
 test("B1a: roleAutoRunPrompt wraps the untrusted body in isolation delimiters", () => {

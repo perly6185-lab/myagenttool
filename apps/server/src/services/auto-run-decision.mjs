@@ -8,7 +8,9 @@ import { isSpawnedChildBody } from "./auto-run-spawn.mjs";
 // code routes: nothing here executes side effects.
 //
 // Contract: { path, spawnChildIssues, confidence, rationale, clarifyingQuestions,
-// decidedBy }. Paths:
+// taskUnderstanding?, acceptanceCriteria?, verificationSop?, risks?, decidedBy }.
+// The optional planning fields let the same read-only decision hop provide the
+// initial execution-plan draft; code still validates and freezes it separately.
 //   develop   — concrete, scoped change: go straight to the change flow.
 //   design    — open solution space: the deliverable is a design, not a diff.
 //   prototype — deep uncertainty: a runnable spike is worth more than analysis.
@@ -84,6 +86,10 @@ export function normalizeDecision(raw) {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return null;
   if (!AUTO_RUN_PATHS.includes(raw.path)) return null;
   const confidence = Number(raw.confidence);
+  const stringList = (value, limit, maxLength = 2_000) => Array.isArray(value)
+    ? value.filter((item) => typeof item === "string" && item.trim())
+      .map((item) => item.trim().slice(0, maxLength)).slice(0, limit)
+    : [];
   return {
     path: raw.path,
     spawnChildIssues: raw.spawnChildIssues === true,
@@ -92,6 +98,12 @@ export function normalizeDecision(raw) {
     clarifyingQuestions: Array.isArray(raw.clarifyingQuestions)
       ? raw.clarifyingQuestions.filter((q) => typeof q === "string" && q.trim()).slice(0, 5)
       : [],
+    taskUnderstanding: typeof raw.taskUnderstanding === "string"
+      ? raw.taskUnderstanding.trim().slice(0, 4_000)
+      : "",
+    acceptanceCriteria: stringList(raw.acceptanceCriteria, 30),
+    verificationSop: stringList(raw.verificationSop, 30),
+    risks: stringList(raw.risks, 20, 1_000),
     decidedBy: "agent",
   };
 }
@@ -107,6 +119,7 @@ export function normalizeDecision(raw) {
 export async function resolveDecision({
   link,
   issueBody = null,
+  projectContext = null,
   decideIssuePath,
   minConfidence = decisionConfig().minConfidence,
   fastPath = decisionConfig().fastPath,
@@ -124,6 +137,7 @@ export async function resolveDecision({
         number: link?.number ?? null,
         title: link?.title ?? "",
         body: issueBody ?? "",
+        projectContextDigest: projectContext?.digest ?? null,
       })).digest("hex"),
     },
   });
@@ -150,7 +164,7 @@ export async function resolveDecision({
   const startedAt = Date.now();
   let decision = null;
   try {
-    decision = normalizeDecision(await decideIssuePath({ link, issueBody }));
+    decision = normalizeDecision(await decideIssuePath({ link, issueBody, projectContext }));
   } catch {
     decision = null;
   }

@@ -10,6 +10,7 @@ const mocks = vi.hoisted(() => ({
   uploadTaskMaterialFile: vi.fn(),
   removeTaskMaterialFile: vi.fn(),
   autoRunReadiness: vi.fn(),
+  suggestWorkItemDraft: vi.fn(),
 }));
 
 vi.mock("@/data/use-console-actions", () => ({
@@ -20,12 +21,19 @@ vi.mock("@/data/use-console-actions", () => ({
     uploadTaskMaterialFile: mocks.uploadTaskMaterialFile,
     removeTaskMaterialFile: mocks.removeTaskMaterialFile,
     autoRunReadiness: mocks.autoRunReadiness,
+    suggestWorkItemDraft: mocks.suggestWorkItemDraft,
   },
 }));
 
 beforeEach(async () => {
   await i18n.changeLanguage("en-US");
   mocks.autoRunReadiness.mockResolvedValue({ readiness: { ready: true, checks: [] } });
+  mocks.suggestWorkItemDraft.mockResolvedValue({
+    draft: {
+      acceptanceCriteria: ["The requested outcome is complete"],
+      verificationSop: ["Exercise the real user flow", "Review automated evidence"],
+    },
+  });
 });
 
 afterEach(() => {
@@ -79,11 +87,13 @@ describe("HomeTaskComposer", () => {
       title: "Prepare the weekly customer update",
       body: "Prepare the weekly customer update\nUse plain language.",
       acceptanceCriteria: ["Cover every open risk", "Produce a shareable document"],
+      verificationSop: [],
       waitingOn: "ai",
       plannedDate: expect.stringMatching(/^\d{4}-\d{2}-\d{2}$/),
       idempotencyKey: expect.any(String),
     })));
     expect(mocks.startWorkItemAutoRun).toHaveBeenCalledWith("lwi_new");
+    expect(mocks.suggestWorkItemDraft).not.toHaveBeenCalled();
     expect(await screen.findByText("Task created. AI has started working.")).toBeTruthy();
     expect(onCreated).toHaveBeenCalledTimes(1);
 

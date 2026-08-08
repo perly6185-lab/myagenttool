@@ -6,11 +6,14 @@ import { i18n } from "@/lib/i18n";
 
 const mocks = vi.hoisted(() => ({
   getWorkItem: vi.fn(),
+  updateWorkItem: vi.fn(),
+  suggestWorkItemDraft: vi.fn(),
   listWorkItemComments: vi.fn(),
   createWorkItemComment: vi.fn(),
   recordWorkItemProgress: vi.fn(),
   retryAutoRun: vi.fn(),
   startWorkItemAutoRun: vi.fn(),
+  answerClarify: vi.fn(),
   autoRunReadiness: vi.fn(),
   recordWorkItemVerification: vi.fn(),
   transitionWorkItem: vi.fn(),
@@ -29,11 +32,14 @@ vi.mock("@/data/use-console-state", () => ({
 vi.mock("@/data/use-console-actions", () => ({
   api: {
     getWorkItem: mocks.getWorkItem,
+    updateWorkItem: mocks.updateWorkItem,
+    suggestWorkItemDraft: mocks.suggestWorkItemDraft,
     listWorkItemComments: mocks.listWorkItemComments,
     createWorkItemComment: mocks.createWorkItemComment,
     recordWorkItemProgress: mocks.recordWorkItemProgress,
     retryAutoRun: mocks.retryAutoRun,
     startWorkItemAutoRun: mocks.startWorkItemAutoRun,
+    answerClarify: mocks.answerClarify,
     autoRunReadiness: mocks.autoRunReadiness,
     recordWorkItemVerification: mocks.recordWorkItemVerification,
     transitionWorkItem: mocks.transitionWorkItem,
@@ -72,6 +78,10 @@ function item(overrides: Partial<LocalWorkItem> = {}): LocalWorkItem {
     lastProgressAt: null,
     lastProgressSummary: "AI is preparing the draft.",
     acceptanceCriteria: ["Customer-ready summary"],
+    verificationSop: ["Review the customer-facing result"],
+    executionContractSource: "manual",
+    executionContractConfirmedAt: "2026-08-05T00:00:00.000Z",
+    executionContractGate: { ready: true, missing: [], source: "manual", confirmedAt: "2026-08-05T00:00:00.000Z" },
     dueDate: "2026-08-06",
     plannedDate: "2026-08-05",
     milestone: "",
@@ -203,7 +213,7 @@ describe("work item summary presentation", () => {
     fireEvent.click(await screen.findByRole("button", { name: "Let AI start" }));
 
     await waitFor(() => expect(mocks.startWorkItemAutoRun).toHaveBeenCalledWith("lwi_1"));
-    expect(await screen.findByText(/AI has started\. My tasks/)).toBeTruthy();
+    expect(await screen.findByText(/understanding the task and establishing the execution and acceptance basis/i)).toBeTruthy();
     expect(onOpenExpert).not.toHaveBeenCalled();
   });
 
@@ -308,9 +318,9 @@ describe("work item summary presentation", () => {
     });
     render(<WorkItemSummaryView workItemId="lwi_1" onOpenExpert={onOpenExpert} />);
 
-    fireEvent.click(await screen.findByRole("button", { name: "Review result" }));
-    expect(screen.getByLabelText("Confirm whether the result is usable, or describe what AI should change.").className).toContain("sticky");
-    expect(screen.getByText("Delivered result")).toBeTruthy();
+    const deliveredTitle = await screen.findByText("What AI delivered");
+    const decisionTitle = screen.getByText("Make the final decision");
+    expect(deliveredTitle.compareDocumentPosition(decisionTitle) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
     expect(screen.getAllByText("The customer update is ready to send.").length).toBeGreaterThan(0);
     expect(screen.getByText("customer-update.md")).toBeTruthy();
     expect(screen.getByText("1 passed · 0 need review")).toBeTruthy();
@@ -318,11 +328,251 @@ describe("work item summary presentation", () => {
     expect(onOpenExpert).not.toHaveBeenCalled();
 
     fireEvent.click(screen.getByRole("button", { name: "Hide result" }));
-    expect(screen.queryByText("Delivered result")).toBeNull();
+    expect(screen.queryByText("What AI delivered")).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Review result" }));
 
     fireEvent.click(screen.getByRole("button", { name: "View full report" }));
+    const report = screen.getByRole("dialog", { name: "What AI delivered" });
+    expect(within(report).getAllByText("The customer update is ready to send.").length).toBeGreaterThan(0);
+    expect(within(report).getByRole("button", { name: "Ask AI to revise" })).toBeTruthy();
+    expect(within(report).getByRole("button", { name: "Approve and complete task" })).toBeTruthy();
+    fireEvent.click(within(report).getByRole("button", { name: "Ask AI to revise" }));
+    expect(within(report).getByPlaceholderText(/Tell AI what to change/)).toBeTruthy();
+    fireEvent.click(within(report).getByRole("button", { name: "Cancel revision" }));
+    expect(onOpenExpert).not.toHaveBeenCalled();
+    fireEvent.click(within(report).getByRole("button", { name: "Open expert details" }));
     expect(onOpenExpert).toHaveBeenCalledWith("report");
+  });
+
+  it("hands the task to AI with one click and lets the run establish its execution contract", async () => {
+    const unplanned = item({
+      status: "backlog",
+      executionState: "unclaimed",
+      plannedDate: null,
+      acceptanceCriteria: [],
+      verificationSop: [],
+      executionContractGate: { ready: false, missing: ["acceptance_criteria", "verification_sop", "confirmation"], source: null, confirmedAt: null },
+    });
+    mocks.getWorkItem.mockResolvedValue({ workItem: unplanned });
+    mocks.startWorkItemAutoRun.mockResolvedValue({ autoRun: { id: "aur_new", phase: "understanding" } });
+    render(<WorkItemSummaryView workItemId="lwi_1" onOpenExpert={() => {}} />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Let AI start" }));
+    await waitFor(() => expect(mocks.startWorkItemAutoRun).toHaveBeenCalledWith("lwi_1"));
+    expect(mocks.suggestWorkItemDraft).not.toHaveBeenCalled();
+    expect(mocks.updateWorkItem).not.toHaveBeenCalled();
+    expect(await screen.findByText(/understanding the task and establishing the execution and acceptance basis/i)).toBeTruthy();
+  });
+
+  it("answers AI clarification from the task and resumes the same run", async () => {
+    mocks.getWorkItem.mockResolvedValue({
+      workItem: item({ executionState: "awaiting_approval", waitingOn: "me" }),
+      observability: {
+        latestRun: {
+          id: "aur_clarify",
+          status: "needs_input",
+          phase: "waiting_for_input",
+          updatedAt: "2026-08-07T01:00:00.000Z",
+          decision: {
+            path: "clarify",
+            decidedBy: "agent",
+            confidence: 0.8,
+            clarifyingQuestions: ["Should an invalid timezone fall back to UTC or stop scheduling?"],
+          },
+        },
+      },
+    });
+    mocks.answerClarify.mockResolvedValue({ ok: true, resumed: true });
+    render(<WorkItemSummaryView workItemId="lwi_1" onOpenExpert={() => {}} />);
+
+    expect(await screen.findByText("AI needs your decision before continuing")).toBeTruthy();
+    fireEvent.change(screen.getByPlaceholderText(/Answer the questions above/), { target: { value: "Fall back to UTC and record a warning." } });
+    fireEvent.click(screen.getByRole("button", { name: "Submit and continue" }));
+
+    await waitFor(() => expect(mocks.answerClarify).toHaveBeenCalledWith("aur_clarify", "Fall back to UTC and record a warning."));
+    expect(await screen.findByText(/continue in the same task run/i)).toBeTruthy();
+  });
+
+  it("explains project context as planning input rather than completion evidence", async () => {
+    mocks.getWorkItem.mockResolvedValue({
+      workItem: item(),
+      observability: {
+        latestRun: {
+          id: "aur_context",
+          status: "running",
+          phase: "understanding",
+          updatedAt: "2026-08-07T01:00:00.000Z",
+          understandingContext: {
+            version: "work-item-understanding-context-v1",
+            digest: "a".repeat(64),
+            documentPaths: ["README.md", "AGENTS.md"],
+            relatedFiles: [{ path: "src/schedule.mjs", line: 12, term: "timezone" }],
+            similarTasks: [{ localRef: "LOCAL-59", title: "Persist timezone", score: 0.5 }],
+            verificationCommand: ["pnpm", "test"],
+            truncated: true,
+            redactions: 1,
+          },
+        },
+      },
+    });
+
+    render(<WorkItemSummaryView workItemId="lwi_1" onOpenExpert={() => {}} />);
+
+    expect(await screen.findByRole("region", { name: "Context AI used to understand the task" })).toBeTruthy();
+    expect(screen.getByText("README.md, AGENTS.md")).toBeTruthy();
+    expect(screen.getByText("1 relevant locations · 1 similar tasks")).toBeTruthy();
+    expect(screen.getByText("pnpm test")).toBeTruthy();
+    expect(screen.getByText(/does not mean the task is complete or accepted/i)).toBeTruthy();
+    expect(screen.getByText(/1 possible credentials were hidden/i)).toBeTruthy();
+  });
+
+  it("does not invent acceptance criteria during review and blocks approval for a legacy run without a contract", async () => {
+    const withoutCriteria = item({
+      status: "review",
+      executionState: "completed",
+      acceptanceCriteria: [],
+      verificationSop: [],
+      executionContractSource: null,
+      executionContractConfirmedAt: null,
+      executionContractGate: {
+        ready: false,
+        missing: ["acceptance_criteria", "verification_sop", "confirmation"],
+        source: null,
+        confirmedAt: null,
+      },
+    });
+    mocks.getWorkItem.mockResolvedValue({ workItem: withoutCriteria });
+    render(<WorkItemSummaryView workItemId="lwi_1" onOpenExpert={() => {}} />);
+
+    expect(await screen.findByText(/no pre-execution acceptance basis/i)).toBeTruthy();
+    expect(screen.queryByText(/AI-suggested completion criteria/i)).toBeNull();
+    expect(screen.getByText("Not established")).toBeTruthy();
+    expect((screen.getByRole("button", { name: "Approve and complete task" }) as HTMLButtonElement).disabled).toBe(true);
+    expect(mocks.updateWorkItem).not.toHaveBeenCalled();
+  });
+
+  it("shows the Codex delivery verdict and sends review findings back to the same run", async () => {
+    mocks.getWorkItem.mockResolvedValue({
+      workItem: item({ status: "review", executionState: "completed" }),
+      observability: {
+        latestRun: { id: "aur_60", status: "done" },
+        delivery: {
+          state: "awaiting_review",
+          mode: "local_merge",
+          worktreeId: "wtr_60",
+          branchName: "local-60-timezone",
+          remoteUrl: null,
+          report: {
+            summary: "Propagated the terminal timezone through local scheduling.",
+            verification: { passed: true, verified: true, summary: "Server regression tests passed." },
+            changedFiles: ["apps/server/src/routes/agents.mjs"],
+            completedAt: "2026-08-07T08:00:00.000Z",
+          },
+          aiReview: {
+            status: "completed",
+            invocationId: "inv_review_60",
+            reviewer: "codex",
+            startedAt: "2026-08-07T08:00:00.000Z",
+            completedAt: "2026-08-07T08:01:00.000Z",
+            verdict: "changes_requested",
+            summary: "The new timezone is not persisted after registration.",
+            findings: [],
+            reviewedCommit: "abc123",
+            errorCode: null,
+          },
+          review: {
+            verdict: "changes_requested",
+            summary: "The new timezone is not persisted after registration.",
+            comments: [{
+              path: "apps/server/src/routes/agents.mjs",
+              line: 170,
+              severity: "high",
+              body: "The registration path updates memory but does not schedule persistence.",
+              suggestion: "Call persistStateSoon after the timezone changes.",
+            }],
+            reviewedCommit: "abc123",
+            reviewedBy: "usr_autorun_review",
+            source: "ai",
+            reviewerName: "Codex",
+            reviewInvocationId: "inv_review_60",
+            createdAt: "2026-08-07T08:01:00.000Z",
+          },
+        },
+      },
+    });
+    mocks.createWorkItemComment.mockResolvedValue({ comment: { id: "comment_review_60" } });
+    mocks.retryAutoRun.mockResolvedValue({ autoRun: { id: "aur_60", status: "running" } });
+    render(<WorkItemSummaryView workItemId="lwi_1" onOpenExpert={() => {}} />);
+
+    expect(await screen.findByText("Codex review conclusion")).toBeTruthy();
+    expect(screen.getAllByText("The new timezone is not persisted after registration.").length).toBeGreaterThan(0);
+    expect(screen.getByText("apps/server/src/routes/agents.mjs:170")).toBeTruthy();
+    expect(screen.getByText("Propagated the terminal timezone through local scheduling.")).toBeTruthy();
+    expect(screen.getByText("Server regression tests passed.")).toBeTruthy();
+    expect(screen.getByText("Do not accept this result yet")).toBeTruthy();
+    expect(screen.getByText("Result risk: High")).toBeTruthy();
+    expect(screen.getAllByText(/1 product file/).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/Keep the current result and history without applying it/).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/another AI run may take time and incur cost/).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/Apply this 1-file delivery to the local base branch/).length).toBeGreaterThan(0);
+
+    fireEvent.click(screen.getByRole("button", { name: "Send back to AI" }));
+    await waitFor(() => expect(mocks.retryAutoRun).toHaveBeenCalledWith(
+      "aur_60",
+      expect.stringContaining("updates memory but does not schedule persistence"),
+    ));
+    expect(mocks.startWorkItemAutoRun).not.toHaveBeenCalled();
+  });
+
+  it("explains a safe reviewed delivery and the real effect of confirming it", async () => {
+    mocks.getWorkItem.mockResolvedValue({
+      workItem: item({ status: "review", executionState: "completed" }),
+      observability: {
+        latestRun: { id: "aur_approved", status: "done" },
+        delivery: {
+          state: "awaiting_review",
+          mode: "pull_request",
+          worktreeId: "wtr_approved",
+          branchName: "local-approved",
+          remoteUrl: null,
+          report: {
+            summary: "Implemented the requested behavior.",
+            verification: { passed: true, verified: true, summary: "Relevant tests passed." },
+            changedFiles: ["apps/server/src/feature.mjs", "apps/server/test/feature.test.mjs", "docs/feature.md"],
+            completedAt: "2026-08-07T08:00:00.000Z",
+          },
+          aiReview: {
+            status: "completed", invocationId: "inv_approved", reviewer: "codex",
+            startedAt: "2026-08-07T08:00:00.000Z", completedAt: "2026-08-07T08:01:00.000Z",
+            verdict: "approved", summary: "No actionable regressions found.", findings: [],
+            reviewedCommit: "abc123", errorCode: null,
+          },
+          review: {
+            verdict: "approved", summary: "No actionable regressions found.", comments: [],
+            reviewedCommit: "abc123", reviewedBy: "usr_autorun_review", source: "ai",
+            reviewerName: "Codex", reviewInvocationId: "inv_approved", createdAt: "2026-08-07T08:01:00.000Z",
+          },
+        },
+      },
+    });
+    render(<WorkItemSummaryView workItemId="lwi_1" onOpenExpert={() => {}} />);
+
+    expect(await screen.findByText("Result passed Codex review and automated verification")).toBeTruthy();
+    expect(screen.getByText("Result risk: Low")).toBeTruthy();
+    expect(screen.getAllByText(/1 product file, 1 test file, 1 documentation or configuration file/).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/Create a pull request for later merge/).length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/remote base branch is not changed directly/).length).toBeGreaterThan(0);
+    expect(screen.getByRole("button", { name: "Approve and create pull request" })).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: "View full report" }));
+    const report = screen.getByRole("dialog", { name: "What AI delivered" });
+    expect(within(report).getByText("Available actions and impact")).toBeTruthy();
+    expect(within(report).getByText("AI's original delivery note (may contain technical terms)")).toBeTruthy();
+    expect(within(report).getByRole("button", { name: "Open expert details" })).toBeTruthy();
+    fireEvent.click(within(report).getByRole("button", { name: "Approve and create pull request" }));
+    expect(screen.queryByRole("dialog", { name: "What AI delivered" })).toBeNull();
+    expect(screen.getByRole("dialog", { name: "Approve and create a pull request?" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Create pull request" })).toBeTruthy();
   });
 
   it("offers a material-specific rerun only when a change is waiting for the next execution", async () => {
@@ -350,8 +600,7 @@ describe("work item summary presentation", () => {
     mocks.startWorkItemAutoRun.mockResolvedValue({ autoRun: { id: "aur_revision", status: "materializing" } });
     render(<WorkItemSummaryView workItemId="lwi_1" onOpenExpert={() => {}} />);
 
-    fireEvent.click(await screen.findByRole("button", { name: "Review result" }));
-    fireEvent.click(screen.getByRole("button", { name: "Request changes" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Ask AI to revise" }));
     fireEvent.change(screen.getByPlaceholderText(/Tell AI what to change/), {
       target: { value: "Add the missing customer risks." },
     });
@@ -371,10 +620,9 @@ describe("work item summary presentation", () => {
     mocks.transitionWorkItem.mockResolvedValue({ workItem: completedItem });
     render(<WorkItemSummaryView workItemId="lwi_1" onOpenExpert={() => {}} />);
 
-    fireEvent.click(await screen.findByRole("button", { name: "Review result" }));
-    fireEvent.click(screen.getByRole("button", { name: "Accept and complete" }));
-    const dialog = screen.getByRole("dialog", { name: "Accept the result and complete this task?" });
-    fireEvent.click(within(dialog).getByRole("button", { name: "Complete task" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Approve and complete task" }));
+    const dialog = screen.getByRole("dialog", { name: "Confirm this result and complete the task?" });
+    fireEvent.click(within(dialog).getByRole("button", { name: "Confirm and complete" }));
 
     await waitFor(() => expect(mocks.recordWorkItemVerification).toHaveBeenCalledWith("lwi_1", expect.objectContaining({
       expectedRevision: 2,
@@ -402,12 +650,19 @@ describe("work item summary presentation", () => {
     mocks.syncWorkItemExternalIssue.mockResolvedValue({ workItem: completedItem });
     render(<WorkItemSummaryView workItemId="lwi_1" onOpenExpert={() => {}} />);
 
-    fireEvent.click(await screen.findByRole("button", { name: "Review result" }));
-    fireEvent.click(screen.getByRole("button", { name: "Accept and complete" }));
-    const dialog = screen.getByRole("dialog", { name: "Accept the result and complete this task?" });
+    const currentProgress = await screen.findByText("Current progress");
+    const deliveryResult = screen.getByText("What AI delivered");
+    const collaboration = screen.getByText("Collaboration handoff");
+    const externalSource = screen.getByText("External issue source");
+    expect(currentProgress.compareDocumentPosition(deliveryResult) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(deliveryResult.compareDocumentPosition(collaboration) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(collaboration.compareDocumentPosition(externalSource) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+
+    fireEvent.click(await screen.findByRole("button", { name: "Approve and complete task" }));
+    const dialog = screen.getByRole("dialog", { name: "Confirm this result and complete the task?" });
     expect(within(dialog).getByRole("radio", { name: /Complete the local task only/ })).toBeTruthy();
     fireEvent.click(within(dialog).getByRole("radio", { name: /Complete locally and write back/ }));
-    fireEvent.click(within(dialog).getByRole("button", { name: "Complete task" }));
+    fireEvent.click(within(dialog).getByRole("button", { name: "Confirm and complete" }));
 
     await waitFor(() => expect(mocks.transitionWorkItem).toHaveBeenCalledWith("lwi_1", "close", 2));
     expect(mocks.syncWorkItemExternalIssue).toHaveBeenCalledWith("lwi_1", "gitlab", { expectedRevision: 3, direction: "push" });
@@ -426,10 +681,9 @@ describe("work item summary presentation", () => {
     const onOpenExpert = vi.fn();
     render(<WorkItemSummaryView workItemId="lwi_1" onOpenExpert={onOpenExpert} />);
 
-    fireEvent.click(await screen.findByRole("button", { name: "Review result" }));
-    fireEvent.click(screen.getByRole("button", { name: "Accept and complete" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Approve and complete task" }));
     fireEvent.click(screen.getByRole("radio", { name: /Complete locally and write back/ }));
-    fireEvent.click(screen.getByRole("button", { name: "Complete task" }));
+    fireEvent.click(screen.getByRole("button", { name: "Confirm and complete" }));
 
     expect(await screen.findByText(/local task is complete, but external writeback failed/i)).toBeTruthy();
     expect(screen.getByText("This work is complete")).toBeTruthy();
@@ -477,7 +731,7 @@ describe("work item summary presentation", () => {
     expect(screen.getByText(/Both views represent this same task/)).toBeTruthy();
     expect(screen.getByTestId("work-item-collaboration-path").textContent).toContain("My plan");
     expect(screen.getByTestId("work-item-collaboration-path").textContent).toContain("AI execution");
-    expect(screen.getByTestId("work-item-collaboration-path").textContent).toContain("My confirmation");
+    expect(screen.getByTestId("work-item-collaboration-path").textContent).toContain("AI review and my confirmation");
     expect(screen.getByRole("alert").textContent).toContain("scheduled after the expected completion date");
   });
 

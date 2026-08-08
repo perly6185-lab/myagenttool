@@ -9,6 +9,7 @@ import { sameProjectPath } from "../src/services/projects.mjs";
 import {
   backfillWorkItemTerminalOwnership,
   createWorkItemService,
+  extractAcceptanceCriteriaFromBody,
   taskTraceStage,
 } from "../src/services/work-items.mjs";
 import { backfillWorkItemFollowUpContext } from "../src/services/work-item-follow-up.mjs";
@@ -1482,9 +1483,23 @@ test("parent and sub-issues expose progress and reject hierarchy cycles", () => 
   }, ACTOR_A).status, 400);
 });
 
-test("execution admission claims the item and rejects duplicate auto-runs", () => {
+test("execution admission creates the Run before its contract and rejects duplicate auto-runs", () => {
   const { service, state } = harness();
-  const item = service.createWorkItem({ projectId: "prj_a", title: "Run once" }, ACTOR_A).body.workItem;
+  const blocked = service.createWorkItem({ projectId: "prj_a", title: "Not planned" }, ACTOR_A).body.workItem;
+  const missingContract = service.beginExecution({ workItemId: blocked.id, kind: "auto_run" }, ACTOR_A);
+  assert.equal(missingContract.status, 201);
+  service.abortExecution({
+    workItemId: blocked.id,
+    operationId: missingContract.body.operation.id,
+    reason: "test cleanup",
+  }, ACTOR_A);
+
+  const item = service.createWorkItem({
+    projectId: "prj_a",
+    title: "Run once",
+    acceptanceCriteria: ["The requested behavior works"],
+  }, ACTOR_A).body.workItem;
+  assert.equal(item.executionContractGate.ready, true);
 
   const admitted = service.beginExecution({
     workItemId: item.id,
@@ -1658,6 +1673,246 @@ test("detail returns an authoritative per-item observability snapshot", () => {
       lastError: null,
     }],
   });
+});
+
+test("extracts explicit Markdown acceptance criteria before execution", () => {
+  assert.deepEqual(extractAcceptanceCriteriaFromBody([
+    "## Context",
+    "Keep this text out.",
+    "## Acceptance",
+    "- [ ] Uses the terminal timezone",
+    "- Preview and apply agree",
+    "## Notes",
+    "- Not a criterion",
+  ].join("\n")), ["Uses the terminal timezone", "Preview and apply agree"]);
+  const { service } = harness();
+  const item = service.createWorkItem({
+    projectId: "prj_a",
+    title: "Timezone scheduling",
+    body: "## Acceptance\n- [ ] Preview uses the terminal timezone",
+  }, ACTOR_A).body.workItem;
+  assert.deepEqual(item.acceptanceCriteria, ["Preview uses the terminal timezone"]);
+  assert.equal(item.executionContractSource, "body_extracted");
+  assert.equal(item.executionContractGate.ready, true);
+  assert.ok(item.verificationSop.length > 0);
+});
+
+test("AI handoff prepares a missing execution contract in one governed service action", () => {
+  const { service } = harness();
+  const item = service.createWorkItem({
+    projectId: "prj_a",
+    title: "Prepare a customer update",
+    body: "Summarize the current delivery status and the open risks for the customer.",
+  }, ACTOR_A).body.workItem;
+  assert.equal(item.executionContractGate.ready, false);
+
+  const prepared = service.prepareExecutionContract({
+    workItemId: item.id,
+    expectedRevision: item.revision,
+  }, ACTOR_A);
+  assert.equal(prepared.status, 200);
+  assert.equal(prepared.body.workItem.executionContractSource, "assisted");
+  assert.equal(prepared.body.workItem.executionContractGate.ready, true);
+  assert.ok(prepared.body.workItem.acceptanceCriteria.length > 0);
+  assert.ok(prepared.body.workItem.verificationSop.length > 0);
+
+  const replayed = service.prepareExecutionContract({
+    workItemId: item.id,
+    expectedRevision: prepared.body.workItem.revision,
+  }, ACTOR_A);
+  assert.equal(replayed.body.replayed, true);
+});
+
+test("AI handoff can prepare a clarification draft without confirming it", () => {
+  const { service } = harness();
+  const item = service.createWorkItem({
+    projectId: "prj_a",
+    title: "Choose the compatibility behavior",
+    body: "The product owner must decide whether legacy clients fall back or fail closed.",
+  }, ACTOR_A).body.workItem;
+  const prepared = service.prepareExecutionContract({
+    workItemId: item.id,
+    expectedRevision: item.revision,
+    confirm: false,
+  }, ACTOR_A);
+
+  assert.equal(prepared.status, 200);
+  assert.ok(prepared.body.workItem.acceptanceCriteria.length > 0);
+  assert.ok(prepared.body.workItem.verificationSop.length > 0);
+  assert.equal(prepared.body.workItem.executionContractConfirmedAt, null);
+  assert.equal(prepared.body.workItem.executionContractGate.ready, false);
+  assert.equal(prepared.body.draft.confirmedAt, null);
+});
+
+test("AI handoff prefers a validated decision-agent execution-plan draft", () => {
+  const { service } = harness();
+  const item = service.createWorkItem({
+    projectId: "prj_a",
+    title: "Use model-produced acceptance",
+    body: "A configured decision agent has enough context to produce the execution basis.",
+  }, ACTOR_A).body.workItem;
+  const prepared = service.prepareExecutionContract({
+    workItemId: item.id,
+    expectedRevision: item.revision,
+    draftOverride: {
+      taskUnderstanding: "Make the behavior observable to the user.",
+      acceptanceCriteria: ["The user can observe the new behavior."],
+      verificationSop: ["Run the focused integration test."],
+      risks: ["Existing clients may require compatibility coverage."],
+      evidence: { generator: "decision_agent", modelVersion: "test-model" },
+    },
+  }, ACTOR_A);
+
+  assert.equal(prepared.status, 200);
+  assert.equal(prepared.body.workItem.executionContractSource, "agent_assisted");
+  assert.deepEqual(prepared.body.workItem.acceptanceCriteria, ["The user can observe the new behavior."]);
+  assert.deepEqual(prepared.body.workItem.verificationSop, ["Run the focused integration test."]);
+  assert.equal(prepared.body.draft.taskUnderstanding, "Make the behavior observable to the user.");
+  assert.equal(prepared.body.draft.evidence.generator, "decision_agent");
+});
+
+test("a contract confirmed after a historical run cannot approve that older result", () => {
+  const { service, state } = harness();
+  const item = service.createWorkItem({ projectId: "prj_a", title: "Legacy result" }, ACTOR_A).body.workItem;
+  state.autoRuns = [{ id: "aur_legacy", status: "done", createdAt: "2026-07-23T00:00:00.000Z" }];
+  const bound = service.recordExecutionBinding({
+    workItemId: item.id,
+    kind: "auto_run",
+    targetId: "aur_legacy",
+    worktreeId: "wtr_legacy",
+  }, ACTOR_A).body.workItem;
+  const prepared = service.updateWorkItem({
+    workItemId: item.id,
+    expectedRevision: bound.revision,
+    acceptanceCriteria: ["The legacy result matches the goal"],
+    verificationSop: ["Review the legacy result"],
+  }, ACTOR_A).body.workItem;
+  assert.equal(prepared.executionContractGate.ready, false);
+  assert.deepEqual(prepared.executionContractGate.missing, ["confirmed_before_execution"]);
+});
+
+test("detail only exposes run history after a failure or rerun", () => {
+  const { service, state } = harness();
+  const item = service.createWorkItem({ projectId: "prj_a", title: "Keep retry evidence" }, ACTOR_A).body.workItem;
+  state.autoRuns = [{
+    id: "aur_history", projectId: "prj_a", status: "done", invocationId: "inv_first",
+    createdAt: "2026-07-24T00:01:00.000Z", updatedAt: "2026-07-24T00:02:00.000Z",
+  }];
+  state.workItems[0].executionBindings = [{
+    kind: "auto_run", targetId: "aur_history", worktreeId: "wtr_history",
+    createdAt: "2026-07-24T00:01:00.000Z",
+  }];
+  state.invocations = [{
+    id: "inv_first", status: "succeeded", createdAt: "2026-07-24T00:01:00.000Z",
+    completedAt: "2026-07-24T00:02:00.000Z",
+    options: { metadata: { autoRunId: "aur_history" } },
+    result: { summary: "Completed normally" },
+  }];
+
+  let detail = service.getWorkItem({ workItemId: item.id }, ACTOR_A).body;
+  assert.deepEqual(detail.observability.runHistory, []);
+
+  state.invocations[0].status = "failed";
+  state.invocations[0].result = { summary: "The first attempt failed", errorCode: "transport_closed" };
+  detail = service.getWorkItem({ workItemId: item.id }, ACTOR_A).body;
+  assert.equal(detail.observability.runHistory.length, 1);
+  assert.deepEqual(detail.observability.runHistory[0], {
+    invocationId: "inv_first",
+    autoRunId: "aur_history",
+    attempt: 1,
+    status: "failed",
+    createdAt: "2026-07-24T00:01:00.000Z",
+    startedAt: null,
+    completedAt: "2026-07-24T00:02:00.000Z",
+    errorCode: "transport_closed",
+    summary: "The first attempt failed",
+    current: true,
+  });
+
+  state.autoRuns[0].status = "running";
+  state.autoRuns[0].invocationId = "inv_retry";
+  state.autoRuns[0].updatedAt = "2026-07-24T00:03:00.000Z";
+  state.invocations.push({
+    id: "inv_retry", status: "running", createdAt: "2026-07-24T00:03:00.000Z",
+    startedAt: "2026-07-24T00:03:01.000Z",
+    options: { metadata: { autoRunId: "aur_history" } },
+  });
+  state.invocationEvents = [{
+    id: "evt_old", invocationId: "inv_first", type: "invocation_failed",
+    createdAt: "2026-07-24T00:02:00.000Z", message: "First attempt failed", data: {},
+  }];
+  detail = service.getWorkItem({ workItemId: item.id }, ACTOR_A).body;
+  assert.deepEqual(detail.observability.runHistory.map((run) => ({
+    invocationId: run.invocationId, attempt: run.attempt, current: run.current,
+  })), [
+    { invocationId: "inv_first", attempt: 1, current: false },
+    { invocationId: "inv_retry", attempt: 2, current: true },
+  ]);
+  assert.ok(detail.observability.timeline.some((entry) => entry.id === "evt_old"));
+});
+
+test("detail exposes the readable delivery report and independent AI review", () => {
+  const { service, state } = harness();
+  const item = service.createWorkItem({ projectId: "prj_a", title: "Review timezone delivery" }, ACTOR_A).body.workItem;
+  state.autoRuns = [{
+    id: "aur_delivery_review",
+    projectId: "prj_a",
+    status: "done",
+    invocationId: "inv_delivery",
+    link: { type: "local_issue", number: item.localNumber },
+    localDelivery: { worktreeId: "wtr_delivery", branchName: "local-timezone" },
+    deliveryReport: {
+      summary: "Propagated the terminal timezone.",
+      verification: { passed: true, verified: true, summary: "Regression tests passed." },
+      changedFiles: ["apps/server/src/routes/agents.mjs"],
+      completedAt: "2026-07-24T00:02:00.000Z",
+    },
+    deliveryReview: {
+      status: "completed",
+      invocationId: "inv_delivery_review",
+      verdict: "changes_requested",
+      summary: "Persistence is missing.",
+      findings: [],
+    },
+    updatedAt: "2026-07-24T00:02:00.000Z",
+  }];
+  state.workItems[0].executionBindings = [{
+    kind: "auto_run", targetId: "aur_delivery_review", worktreeId: "wtr_delivery",
+    createdAt: "2026-07-24T00:01:00.000Z",
+  }];
+  state.worktrees = [{ id: "wtr_delivery", branchName: "local-timezone" }];
+  state.worktreeReviews = [{
+    id: "wrv_ai",
+    worktreeId: "wtr_delivery",
+    verdict: "changes_requested",
+    summary: "Persistence is missing.",
+    comments: [{ path: "apps/server/src/routes/agents.mjs", line: 170, severity: "high", body: "Persist the changed timezone." }],
+    reviewedCommit: "abc123",
+    reviewedBy: "usr_autorun_review",
+    source: "ai",
+    reviewerName: "Codex",
+    reviewInvocationId: "inv_delivery_review",
+    createdAt: "2026-07-24T00:03:00.000Z",
+  }];
+  state.invocations = [
+    { id: "inv_delivery", status: "succeeded", options: { metadata: { autoRunId: "aur_delivery_review" } } },
+    { id: "inv_delivery_review", status: "succeeded", options: { metadata: { autoRunId: "aur_delivery_review", role: "delivery_review" } } },
+  ];
+
+  const detail = service.getWorkItem({ workItemId: item.id }, ACTOR_A).body.observability;
+  assert.equal(detail.delivery.report.summary, "Propagated the terminal timezone.");
+  assert.deepEqual(detail.delivery.report.changedFiles, ["apps/server/src/routes/agents.mjs"]);
+  assert.equal(detail.delivery.aiReview.verdict, "changes_requested");
+  assert.equal(detail.delivery.review.source, "ai");
+  assert.equal(detail.delivery.review.reviewerName, "Codex");
+  assert.equal(detail.delivery.review.comments[0].severity, "high");
+  assert.deepEqual(detail.runHistory, [], "the independent review is not presented as another execution attempt");
+
+  state.autoRuns[0].deliveryReview = { ...state.autoRuns[0].deliveryReview, status: "queued", verdict: null };
+  state.invocations[1].status = "running";
+  state.worktreeReviews = [];
+  const running = service.getWorkItem({ workItemId: item.id }, ACTOR_A).body.observability;
+  assert.equal(running.delivery.aiReview.status, "running", "an acknowledged review is no longer shown as merely queued");
 });
 
 test("AI issue assistance returns an editable draft without creating work", () => {
