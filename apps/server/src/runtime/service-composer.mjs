@@ -5,6 +5,7 @@ import { makeRunTx } from "./store/run-tx.mjs";
 import { createEventLogRuntime } from "./event-log.mjs";
 import { createRefusalRuntime } from "./refusal-log.mjs";
 import { createBridgeCredentialRuntime } from "./bridge-auth.mjs";
+import { findDevice, listDevices } from "./device.mjs";
 import { captureSeededDefaults, createPersistenceRuntime, normalizeLoadedState, persistedArrayKeys, persistedObjectKeys } from "./persistence.mjs";
 import { createReadModelRuntime } from "./read-models.mjs";
 import { createInMemoryStore } from "./store/in-memory-store.mjs";
@@ -701,10 +702,12 @@ export function createServerRuntimeServices({
     && existsSync(codexReviewWrapperPath)
     && !(state.agents ?? []).some(isGovernedCodexReviewAgent)
   ) {
+    const reviewDevice = listDevices(state)[0] ?? null;
+    const reviewOwner = reviewDevice?.ownerUserId ?? "usr_local";
     registerAgent(createCodexReviewAgentRegistration({
       wrapperScriptPath: codexReviewWrapperPath,
-      costOwner: state.device?.ownerUserId ?? "usr_local",
-    }), { userId: state.device?.ownerUserId ?? "usr_local" });
+      costOwner: reviewOwner,
+    }), { userId: reviewOwner });
   }
 
   const {
@@ -1545,7 +1548,10 @@ export function createServerRuntimeServices({
       if (!reviewer || reviewer.status === "disabled" || reviewer.health?.status === "unhealthy") {
         throw new Error("The governed Codex reviewer is not available on this device.");
       }
-      if (reviewer.location?.type === "local_device" && state.device?.unlinkState === "unlinked") {
+      const reviewerDevice = reviewer.location?.type === "local_device"
+        ? findDevice(state, reviewer.location.deviceId)
+        : null;
+      if (reviewer.location?.type === "local_device" && reviewerDevice?.unlinkState !== "linked") {
         throw new Error("The local device is not connected, so Codex review cannot start yet.");
       }
       const taskContext = [
