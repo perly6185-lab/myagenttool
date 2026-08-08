@@ -60,8 +60,9 @@ function isVisibleHomeItem(item, nowMs) {
 function attentionReasons(item, nowMs, today, tomorrow) {
   if (item.state === "closed" || item.status === "done" || item.archivedAt) return [];
   const reasons = [];
-  const aiOwnsNextStep = item.waitingOn === "ai"
-    || ["claimed", "running", "verifying"].includes(item.executionState);
+  const aiOwnsNextStep = item.waitingOn !== "me"
+    && item.hasAiExecution
+    && ["claimed", "running", "verifying"].includes(item.executionState);
   const overdueCommitment = !aiOwnsNextStep && item.commitmentDate && timestamp(item.commitmentDate) < nowMs;
   const overdueDueDate = !aiOwnsNextStep && item.dueDate && item.dueDate < today;
   if (overdueCommitment || overdueDueDate) reasons.push("overdue");
@@ -75,7 +76,7 @@ function attentionReasons(item, nowMs, today, tomorrow) {
   if (item.waitingOn === "me" && !aiOwnsNextStep && !reasons.some((reason) => NEEDS_ATTENTION.has(reason))) {
     reasons.push("user_action_required");
   }
-  if (item.executionState === "running") reasons.push("ai_running");
+  if (item.hasAiExecution && item.executionState === "running") reasons.push("ai_running");
   if (item.plannedDate === today || item.plannedDate === tomorrow) reasons.push("planned");
   return HOME_ATTENTION_REASON_ORDER.filter((reason) => reasons.includes(reason));
 }
@@ -162,7 +163,11 @@ export function homeWorkbenchReadModel({
       const execution = resolveWorkItemExecution(item, state, { now: nowMs });
       const completed = isCompleted(item);
       const executionState = completed ? "completed" : execution.executionState;
-      const executionItem = { ...item, executionState };
+      const executionItem = {
+        ...item,
+        executionState,
+        hasAiExecution: Boolean(execution.autoRun || execution.invocation),
+      };
       const reasons = attentionReasons(executionItem, nowMs, today, tomorrow);
       const attentionReason = reasons[0] ?? null;
       const aiStatus = execution.autoRun?.status ?? execution.invocation?.status ?? null;
