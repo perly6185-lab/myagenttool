@@ -149,6 +149,39 @@ test("review waiting on me stays actionable when only a worktree claim is active
   assert.equal(row.ai, null);
 });
 
+test("a posted AI report is a result-review task even when execution projection still says verifying", () => {
+  const result = model([item({
+    id: "article-review",
+    localRef: "LOCAL-64",
+    status: "review",
+    waitingOn: "me",
+    executionState: "verifying",
+    executionBindings: [{ kind: "auto_run", targetId: "aur_article", createdAt: NOW }],
+  })], {
+    autoRuns: [{
+      id: "aur_article",
+      invocationId: "inv_article",
+      status: "report_posted",
+      phase: "review_ready",
+      report: "# Article report\n\nThe platform turns AI work into a repeatable delivery loop.",
+      updatedAt: NOW,
+    }],
+    invocations: [{ id: "inv_article", status: "succeeded", updatedAt: NOW }],
+  });
+
+  const row = result.items[0];
+  assert.equal(row.executionState, "verifying", "the expert execution projection remains available");
+  assert.equal(row.userStatus, "ready_for_review");
+  assert.equal(row.attentionReason, "review_ready");
+  assert.equal(row.needsAttention, true);
+  assert.deepEqual(row.nextAction, {
+    kind: "review_result", label: "review_result", targetId: "article-review", section: "task",
+  });
+  assert.equal(row.result.status, "available");
+  assert.equal(row.result.needsReview, true);
+  assert.match(row.result.summary, /repeatable delivery loop/);
+});
+
 test("home workbench exposes compact report status without report content", () => {
   const result = model([item({ revision: 3 })], {
     workItemReportDrafts: [{

@@ -1,4 +1,5 @@
 import { resolveWorkItemExecution } from "../services/work-item-execution.mjs";
+import { projectWorkItemOutcome } from "../services/work-item-outcome.mjs";
 
 export const HOME_ATTENTION_REASON_ORDER = [
   "overdue",
@@ -57,18 +58,36 @@ function isVisibleHomeItem(item, nowMs) {
   return finishedAt != null && finishedAt >= nowMs - HOME_COMPLETED_RETENTION_MS;
 }
 
+const ACTIVE_AUTO_RUN_STATUSES = new Set(["materializing", "running", "waiting_capacity", "verifying", "publishing"]);
+const REVIEWABLE_AUTO_RUN_STATUSES = new Set(["done", "pr_open", "report_posted", "plan_proposed", "decomposed"]);
+const ACTIVE_INVOCATION_STATUSES = new Set(["queued", "running", "starting"]);
+
+function userStatus(item, execution, completed) {
+  if (completed) return "completed";
+  const autoRunStatus = execution.autoRun?.status ?? null;
+  const invocationStatus = execution.invocation?.status ?? null;
+  if (REVIEWABLE_AUTO_RUN_STATUSES.has(autoRunStatus) || execution.autoRun?.phase === "review_ready") return "ready_for_review";
+  if (autoRunStatus === "failed" || invocationStatus === "failed") return "needs_action";
+  if (autoRunStatus === "blocked") return "blocked";
+  if (["awaiting_approval", "needs_input"].includes(autoRunStatus) || invocationStatus === "waiting_for_local_approval") return "needs_action";
+  if (ACTIVE_AUTO_RUN_STATUSES.has(autoRunStatus) || (!execution.autoRun && ACTIVE_INVOCATION_STATUSES.has(invocationStatus))) return "ai_working";
+  if (execution.executionState === "completed") return "ready_for_review";
+  if (item.waitingOn === "me") return "needs_action";
+  if (item.status === "blocked") return "blocked";
+  if (["requester", "internal"].includes(item.waitingOn)) return "waiting";
+  return item.plannedDate ? "scheduled" : "not_started";
+}
+
 function attentionReasons(item, nowMs, today, tomorrow) {
   if (item.state === "closed" || item.status === "done" || item.archivedAt) return [];
   const reasons = [];
-  const aiOwnsNextStep = item.waitingOn !== "me"
-    && item.hasAiExecution
-    && ["claimed", "running", "verifying"].includes(item.executionState);
+  const aiOwnsNextStep = item.userStatus === "ai_working";
   const overdueCommitment = !aiOwnsNextStep && item.commitmentDate && timestamp(item.commitmentDate) < nowMs;
   const overdueDueDate = !aiOwnsNextStep && item.dueDate && item.dueDate < today;
   if (overdueCommitment || overdueDueDate) reasons.push("overdue");
   if (item.executionState === "awaiting_approval") reasons.push("approval_required");
   if (item.executionState === "failed") reasons.push("ai_failed");
-  if (item.executionState === "completed") reasons.push("review_ready");
+  if (item.userStatus === "ready_for_review") reasons.push("review_ready");
   const humanFollowUpDue = ["me", "requester", "internal"].includes(item.waitingOn)
     && item.nextFollowUpAt
     && timestamp(item.nextFollowUpAt) <= nowMs;
@@ -76,9 +95,12 @@ function attentionReasons(item, nowMs, today, tomorrow) {
   if (item.waitingOn === "me" && !aiOwnsNextStep && !reasons.some((reason) => NEEDS_ATTENTION.has(reason))) {
     reasons.push("user_action_required");
   }
-  if (item.hasAiExecution && item.executionState === "running") reasons.push("ai_running");
+  if (item.userStatus === "ai_working") reasons.push("ai_running");
   if (item.plannedDate === today || item.plannedDate === tomorrow) reasons.push("planned");
-  return HOME_ATTENTION_REASON_ORDER.filter((reason) => reasons.includes(reason));
+  const ordered = HOME_ATTENTION_REASON_ORDER.filter((reason) => reasons.includes(reason));
+  return item.userStatus === "ready_for_review"
+    ? ["review_ready", ...ordered.filter((reason) => reason !== "review_ready")]
+    : ordered;
 }
 
 function nextAction(item, reasons, execution) {
@@ -95,7 +117,7 @@ function nextAction(item, reasons, execution) {
     return { kind: "retry", label: "retry", targetId: runTarget, section: execution.autoRun ? "autoRuns" : "invocations" };
   }
   if (reasons.includes("review_ready")) {
-    return { kind: "review_result", label: "review_result", targetId: runTarget, section: execution.autoRun ? "autoRuns" : "invocations" };
+    return { kind: "review_result", label: "review_result", targetId: item.id, section: "task" };
   }
   if (reasons.includes("user_action_required")) {
     return { kind: "record_progress", label: "record_progress", targetId: item.id, section: "task" };
@@ -163,15 +185,26 @@ export function homeWorkbenchReadModel({
       const execution = resolveWorkItemExecution(item, state, { now: nowMs });
       const completed = isCompleted(item);
       const executionState = completed ? "completed" : execution.executionState;
+      const projectedUserStatus = userStatus(item, execution, completed);
       const executionItem = {
         ...item,
         executionState,
+        userStatus: projectedUserStatus,
         hasAiExecution: Boolean(execution.autoRun || execution.invocation),
       };
       const reasons = attentionReasons(executionItem, nowMs, today, tomorrow);
       const attentionReason = reasons[0] ?? null;
       const aiStatus = execution.autoRun?.status ?? execution.invocation?.status ?? null;
       const waitingOn = completed ? "none" : (item.waitingOn ?? "none");
+      const outcome = execution.autoRun ? projectWorkItemOutcome({
+        item,
+        latestRun: execution.autoRun,
+        deliveryReport: execution.autoRun.deliveryReport ?? null,
+        invocationSummary: execution.invocation?.result?.output?.latestMessage
+          ?? execution.invocation?.result?.output?.summary
+          ?? execution.invocation?.result?.summary
+          ?? null,
+      }) : null;
       return {
         workItemId: item.id,
         localRef: item.localRef,
@@ -187,6 +220,7 @@ export function homeWorkbenchReadModel({
         },
         planningStatus: completed ? "done" : item.status,
         executionState,
+        userStatus: projectedUserStatus,
         waitingOn,
         attentionReason,
         secondaryReasons: reasons.slice(1),
@@ -197,6 +231,12 @@ export function homeWorkbenchReadModel({
         nextFollowUpAt: item.nextFollowUpAt ?? null,
         completedAt: completed ? (item.completedAt ?? item.updatedAt ?? null) : null,
         report: reportDraftSummary(state, item),
+        result: outcome && outcome.status !== "pending" ? {
+          status: outcome.status,
+          summary: outcome.summary,
+          updatedAt: outcome.deliveredAt,
+          needsReview: projectedUserStatus === "ready_for_review",
+        } : null,
         nextAction: nextAction(item, reasons, execution),
         ai: aiStatus ? {
           autoRunId: execution.autoRun?.id ?? null,
