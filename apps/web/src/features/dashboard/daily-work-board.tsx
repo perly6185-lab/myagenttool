@@ -299,7 +299,7 @@ const COPY: Record<"zh" | "en", Copy> = {
     },
     dailyBrief: {
       title: "今日协同简报",
-      summary: "今天有 {{due}} 项预期完成，当前 {{actions}} 项需要你行动；AI 已安排或执行中 {{ai}} 项。",
+      summary: "今天有 {{due}} 项预期完成，当前 {{actions}} 项需要你行动；AI 正在处理 {{ai}} 项。",
       due: "今日到期",
       actions: "需要我行动",
       aiMoving: "AI 推进中",
@@ -331,7 +331,7 @@ const COPY: Record<"zh" | "en", Copy> = {
       review_ready: "结果已就绪，等待人工复核", user_action_required: "轮到你处理", follow_up_due: "已到跟进时间", waiting_requester: "等待提出者回复",
       waiting_internal: "等待内部成员", ai_running: "执行中，无需人工处理", planned: "已安排",
     },
-    nextAction: { open_issue: "查看任务", record_progress: "跟进", review_result: "复核", open_approval: "审批", open_run: "查看运行", retry: "处理失败" },
+    nextAction: { open_issue: "查看任务", record_progress: "跟进", review_result: "审核结果", open_approval: "审批", open_run: "查看运行", retry: "处理失败" },
     report: { draft: "汇报草稿", confirmed: "汇报已确认", stale: "汇报已过期", prepare: "准备汇报", review: "复核汇报" },
     scheduleReasons: {
       manual_retry_today: "重新执行，已安排到今天",
@@ -487,7 +487,7 @@ const COPY: Record<"zh" | "en", Copy> = {
     },
     dailyBrief: {
       title: "Today's coordination brief",
-      summary: "Today: {{due}} due, {{actions}} need your action, AI scheduled or running: {{ai}}.",
+      summary: "Today: {{due}} due, {{actions}} need your action, AI is working on: {{ai}}.",
       due: "Due today",
       actions: "Needs my action",
       aiMoving: "AI moving",
@@ -519,7 +519,7 @@ const COPY: Record<"zh" | "en", Copy> = {
       review_ready: "Result ready for human review", user_action_required: "Needs your action", follow_up_due: "Follow-up is due", waiting_requester: "Waiting for requester",
       waiting_internal: "Waiting for internal member", ai_running: "Execution in progress; no human action", planned: "Planned",
     },
-    nextAction: { open_issue: "View task", record_progress: "Follow up", review_result: "Review", open_approval: "Approve", open_run: "View run", retry: "Handle failure" },
+    nextAction: { open_issue: "View task", record_progress: "Follow up", review_result: "Review result", open_approval: "Approve", open_run: "View run", retry: "Handle failure" },
     report: { draft: "Report draft", confirmed: "Report confirmed", stale: "Report stale", prepare: "Prepare report", review: "Review report" },
     scheduleReasons: {
       manual_retry_today: "Retry scheduled for today",
@@ -601,6 +601,14 @@ export function hasAiExecution(item: HomeWorkbenchItem): boolean {
   return Boolean(item.ai);
 }
 
+function isAiWorking(item: HomeWorkbenchItem): boolean {
+  return item.userStatus ? item.userStatus === "ai_working" : ["claimed", "running", "verifying"].includes(item.executionState);
+}
+
+function isAiResultReady(item: HomeWorkbenchItem): boolean {
+  return item.userStatus ? item.userStatus === "ready_for_review" : item.executionState === "completed";
+}
+
 export function canHandOffToAi(item: HomeWorkbenchItem): boolean {
   return !hasAiExecution(item)
     && item.executionState === "unclaimed"
@@ -659,7 +667,8 @@ function displayStateTone(item: DailyWorkItem): Tone {
   return item.planningStatus ? LOCAL_STATE_TONE[item.planningStatus] : STATE_TONE[item.state];
 }
 
-function executionTone(state: HomeWorkbenchItem["executionState"]): Tone {
+function executionTone(state: HomeWorkbenchItem["executionState"], userStatus?: HomeWorkbenchItem["userStatus"]): Tone {
+  if (userStatus === "ready_for_review" || userStatus === "completed") return "success";
   if (state === "failed") return "danger";
   if (state === "awaiting_approval") return "warning";
   if (state === "completed") return "success";
@@ -668,6 +677,8 @@ function executionTone(state: HomeWorkbenchItem["executionState"]): Tone {
 }
 
 function executionLabel(item: HomeWorkbenchItem, copy: Copy): string {
+  if (item.userStatus === "ready_for_review") return copy.attentionReason.review_ready;
+  if (item.userStatus === "ai_working") return copy.execution.running;
   return item.executionState === "completed" && item.planningStatus === "done"
     ? copy.completed
     : copy.execution[item.executionState];
@@ -676,8 +687,9 @@ function executionLabel(item: HomeWorkbenchItem, copy: Copy): string {
 function homeVisibilityRank(item: HomeWorkbenchItem): number {
   if (item.attentionReason === "ai_failed" || item.executionState === "failed") return 0;
   if (item.attentionReason === "approval_required" || item.executionState === "awaiting_approval") return 1;
+  if (item.userStatus === "ready_for_review" || item.attentionReason === "review_ready") return 2;
   if (["claimed", "running", "verifying"].includes(item.executionState)) return 2;
-  if (item.attentionReason === "review_ready" || item.executionState === "completed") return 3;
+  if (item.executionState === "completed") return 3;
   return 5;
 }
 
@@ -1032,16 +1044,16 @@ export function DailyWorkBoard({
     ? actionQueue
     : actionQueue.filter((item) => item.tone === actionQueueFilter);
   const todayDueCount = projectedWorkbenchItems.filter((item) => item.dueDate === currentDay && item.planningStatus !== "done").length;
-  const aiMovingCount = aiWorkItems.filter((item) =>
-    ["unclaimed", "claimed", "running", "verifying"].includes(item.executionState)).length;
+  const aiMovingCount = aiWorkItems.filter(isAiWorking).length;
   const scheduleConflictCount = actionQueue.filter((item) => item.action === "schedule").length;
   const focusedActionIndex = focusTargetId
     ? actionQueue.findIndex((entry) => entry.item.workItemId === focusTargetId)
     : -1;
   const focusedAction = focusedActionIndex >= 0 ? actionQueue[focusedActionIndex] : null;
   const matchesAiWorkFilter = (item: HomeWorkbenchItem) => {
-    if (aiWorkFilter === "scheduled") return item.executionState === "unclaimed" || item.executionState === "claimed";
-    if (aiWorkFilter === "running") return item.executionState === "running" || item.executionState === "verifying";
+    if (aiWorkFilter === "scheduled") return (!item.userStatus && (item.executionState === "unclaimed" || item.executionState === "claimed")) || item.userStatus === "scheduled";
+    if (aiWorkFilter === "running") return isAiWorking(item);
+    if (aiWorkFilter === "completed") return isAiResultReady(item) || item.userStatus === "completed";
     if (aiWorkFilter === "all") return true;
     return item.executionState === aiWorkFilter;
   };
@@ -1049,11 +1061,11 @@ export function DailyWorkBoard({
     (focusedIssue?.view === "ai" && focusedIssue.workItemId === item.workItemId) || matchesAiWorkFilter(item));
   const aiCounts = {
     all: aiWorkItems.length,
-    scheduled: aiWorkItems.filter((item) => item.executionState === "unclaimed" || item.executionState === "claimed").length,
-    running: aiWorkItems.filter((item) => item.executionState === "running" || item.executionState === "verifying").length,
+    scheduled: aiWorkItems.filter((item) => (!item.userStatus && (item.executionState === "unclaimed" || item.executionState === "claimed")) || item.userStatus === "scheduled").length,
+    running: aiWorkItems.filter(isAiWorking).length,
     awaiting_approval: aiWorkItems.filter((item) => item.executionState === "awaiting_approval").length,
     failed: aiWorkItems.filter((item) => item.executionState === "failed").length,
-    completed: aiWorkItems.filter((item) => item.executionState === "completed").length,
+    completed: aiWorkItems.filter((item) => isAiResultReady(item) || item.userStatus === "completed").length,
   };
   const aiDateGroups = {
     yesterday: filteredAiWorkItems.filter((item) => Boolean(item.plannedDate && item.plannedDate < currentDay)).sort(compareHomeVisibility),
@@ -1851,7 +1863,7 @@ export function DailyWorkBoard({
                 <StatusBadge tone={LOCAL_STATE_TONE[focusedAction.item.planningStatus]}>
                   {copy.localState[focusedAction.item.planningStatus]}
                 </StatusBadge>
-                <StatusBadge tone={executionTone(focusedAction.item.executionState)}>
+                <StatusBadge tone={executionTone(focusedAction.item.executionState, focusedAction.item.userStatus)}>
                   {executionLabel(focusedAction.item, copy)}
                 </StatusBadge>
               </div>
@@ -2094,7 +2106,7 @@ function AiWorkCard({
     >
       <div className="flex flex-wrap items-center gap-1">
         <Badge tone="neutral">{copy.relation[item.requester.relation]}</Badge>
-        <StatusBadge tone={executionTone(item.executionState)}>{executionLabel(item, copy)}</StatusBadge>
+        <StatusBadge tone={executionTone(item.executionState, item.userStatus)}>{executionLabel(item, copy)}</StatusBadge>
       </div>
       <button type="button" onClick={() => onOpenItem(homeTaskWorkItem(item))} className="mt-1.5 block w-full min-w-0 text-left">
         <span className="block text-[11px] text-muted-foreground">{item.localRef}</span>
@@ -2106,6 +2118,11 @@ function AiWorkCard({
         <span className="col-span-2">{item.ai?.agentName ?? item.ai?.agentId ?? copy.aiLabel}</span>
       </div>
       <WorkCoordinationNotice item={item} copy={copy} />
+      {item.result?.summary ? (
+        <p className="mt-1.5 line-clamp-2 rounded-md bg-success/[0.06] px-2 py-1.5 text-[11px] leading-relaxed text-foreground" data-testid={`result-summary-${item.workItemId}`}>
+          <span className="font-medium">{item.result.needsReview ? copy.attentionReason.review_ready : copy.completed}：</span>{item.result.summary}
+        </p>
+      ) : null}
       <div className="mt-1.5 flex flex-wrap items-center justify-end gap-1 border-t border-border/70 pt-1.5">
         <Button size="sm" variant="primary" onClick={() => onAction(item)}>
           {copy.nextAction[item.nextAction.kind]}<ArrowRight aria-hidden />
@@ -2125,7 +2142,7 @@ function coordinationNotice(item: HomeWorkbenchItem, copy: Copy): { kind: Coordi
   if (item.ai && !item.plannedDate) {
     return { kind: "unscheduled", label: copy.coordination.aiUnscheduled, tone: "warning" };
   }
-  if (item.executionState === "completed" && item.planningStatus !== "done") {
+  if ((item.userStatus === "ready_for_review" || item.executionState === "completed") && item.planningStatus !== "done") {
     return { kind: "review_pending", label: copy.coordination.reviewPending, tone: "running" };
   }
   return null;
@@ -2714,6 +2731,11 @@ function WorkCard({
           {home.report ? (
             <span className={cn("col-span-2", home.report.stale ? "text-warning" : "")}>
               {home.report.stale ? copy.report.stale : copy.report[home.report.status]}
+            </span>
+          ) : null}
+          {home.result?.summary ? (
+            <span className="col-span-2 line-clamp-2 rounded bg-success/[0.06] px-2 py-1 text-foreground" data-testid={`result-summary-${home.workItemId}`}>
+              {home.result.needsReview ? copy.attentionReason.review_ready : copy.completed}：{home.result.summary}
             </span>
           ) : null}
           <WorkCoordinationNotice item={home} copy={copy} />

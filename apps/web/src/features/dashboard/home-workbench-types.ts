@@ -32,6 +32,7 @@ export type HomeWorkbenchItem = {
   };
   planningStatus: LocalWorkItem["status"];
   executionState: WorkItemExecutionState;
+  userStatus?: "not_started" | "scheduled" | "ai_working" | "waiting" | "needs_action" | "ready_for_review" | "blocked" | "completed";
   waitingOn: WorkItemWaitingOn;
   attentionReason: HomeAttentionReason | null;
   secondaryReasons: HomeAttentionReason[];
@@ -46,6 +47,12 @@ export type HomeWorkbenchItem = {
     status: "draft" | "confirmed";
     stale: boolean;
     updatedAt: string;
+  };
+  result?: null | {
+    status: "available" | "missing";
+    summary: string | null;
+    updatedAt: string | null;
+    needsReview: boolean;
   };
   nextAction: {
     kind: "open_issue" | "record_progress" | "review_result" | "open_approval" | "open_run" | "retry";

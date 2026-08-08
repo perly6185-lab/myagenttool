@@ -248,10 +248,11 @@ describe("DailyWorkBoard", () => {
     const customerHome = homeItem({
       workItemId: "customer", localRef: "LOCAL-C", title: customer.title,
       dueDate: "2026-07-31", plannedDate: "2026-08-01",
-      attentionReason: "review_ready", executionState: "completed",
+      attentionReason: "review_ready", executionState: "verifying", userStatus: "ready_for_review",
+      result: { status: "available", summary: "The customer scope is ready to confirm.", updatedAt: "2026-07-31T03:00:00.000Z", needsReview: true },
       report: { id: "wrd_customer", status: "draft", stale: true, updatedAt: "2026-07-31T03:30:00.000Z" },
-      nextAction: { kind: "review_result", label: "review_result", targetId: "aur_customer", section: "autoRuns" },
-      ai: { autoRunId: "aur_customer", invocationId: "inv_customer", agentId: "agt_1", agentName: "Codex", status: "done", updatedAt: "2026-07-31T03:00:00.000Z" },
+      nextAction: { kind: "review_result", label: "review_result", targetId: "customer", section: "task" },
+      ai: { autoRunId: "aur_customer", invocationId: "inv_customer", agentId: "agt_1", agentName: "Codex", status: "report_posted", updatedAt: "2026-07-31T03:00:00.000Z" },
     });
     const childHome = homeItem({
       workItemId: "child", localRef: "LOCAL-K", title: child.title,
@@ -278,12 +279,14 @@ describe("DailyWorkBoard", () => {
     const aiWork = screen.getByTestId("ai-work-section");
     expect(within(myWork).getByText("Customer · Alex")).toBeTruthy();
     expect(within(myWork).getByText(/People：Waiting on me/)).toBeTruthy();
-    expect(within(myWork).getByText("AI：8/1 · Ready for review")).toBeTruthy();
+    expect(within(myWork).getByText("AI：8/1 · Result ready for human review")).toBeTruthy();
     expect(within(myWork).getByText("Report stale")).toBeTruthy();
     expect(myWork.textContent).not.toContain("Codex");
     expect(aiWork.textContent).toContain("Codex");
-    expect(aiWork.textContent).toContain("Ready for review");
-    expect(aiWork.textContent).not.toContain("done");
+    expect(aiWork.textContent).toContain("Result ready for human review");
+    expect(aiWork.textContent).not.toContain("report_posted");
+    expect(screen.getAllByTestId("result-summary-customer").length).toBeGreaterThan(0);
+    expect(screen.getAllByText(/The customer scope is ready to confirm/).length).toBeGreaterThan(0);
     const myToday = within(myWork).getByRole("heading", { name: "Today" }).closest("section");
     activateWorkTab("ai");
     const aiTomorrow = within(aiWork).getByRole("heading", { name: "Tomorrow" }).closest("section");
@@ -304,7 +307,7 @@ describe("DailyWorkBoard", () => {
     activateWorkTab("ai");
     fireEvent.click(within(aiWork).getByRole("button", { name: "1 Review and report" }));
     expect(within(aiWork).getByText(/LOCAL-C/)).toBeTruthy();
-    fireEvent.click(within(aiWork).getByRole("button", { name: "Review" }));
+    fireEvent.click(within(aiWork).getByRole("button", { name: "Review result" }));
     expect(onOpenItem).toHaveBeenCalledWith(expect.objectContaining({ section: "task", targetId: "customer" }));
     activateWorkTab("my");
     fireEvent.click(within(myWork).getByRole("button", { name: "1 Customer" }));
@@ -767,7 +770,7 @@ describe("DailyWorkBoard", () => {
     );
 
     const brief = screen.getByTestId("daily-coordination-brief");
-    expect(within(brief).getByText("Today: 2 due, 2 need your action, AI scheduled or running: 1.")).toBeTruthy();
+    expect(within(brief).getByText("Today: 2 due, 2 need your action, AI is working on: 0.")).toBeTruthy();
     expect(within(brief).getByText("Date conflicts between your expectation and AI execution: 1.")).toBeTruthy();
     expect(within(brief).getByText("LOCAL-APP · Approve the release")).toBeTruthy();
 
