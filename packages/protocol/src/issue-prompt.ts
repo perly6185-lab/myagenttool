@@ -32,7 +32,7 @@ export declare function worktreeAutoRunPrompt(item: WorktreeLinkItem): string;
 export declare function roleAutoRunPrompt(
   item: WorktreeLinkItem,
   options?: {
-    path?: "develop" | "design" | "prototype" | "clarify" | "decompose" | "evaluate";
+    path?: "develop" | "design" | "prototype" | "clarify" | "decompose" | "evaluate" | "summarize";
     issueBody?: string | null;
     verifyCommand?: string | null;
   },
