@@ -349,6 +349,7 @@ describe("TaskView local work items", () => {
       labels: expect.arrayContaining(["source:wechat", "content:article"]),
       intakeChannel: "import",
     })));
+    expect(mocks.createWorkItem.mock.calls.at(-1)?.[0]).not.toHaveProperty("assigneeIds");
     expect(mocks.createWorkItemWorktree).toHaveBeenCalledWith("lwi_article");
     expect(mocks.startArticleImport).toHaveBeenCalledWith("lwi_article", {
       url: "https://mp.weixin.qq.com/s/example",

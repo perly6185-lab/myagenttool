@@ -981,7 +981,7 @@ test("queues an Issue-bound import and attaches generated output assets", async 
   t.after(() => rm(worktreePath, { recursive: true, force: true }));
   const item = {
     id: "lwi_1", localNumber: 1, projectId: "prj_1", terminalId: "dev_1",
-    revision: 1, labels: [], outputAssets: [],
+    revision: 1, status: "backlog", waitingOn: "none", labels: [], outputAssets: [],
   };
   const updates = [];
   const bindings = [];
@@ -1041,6 +1041,8 @@ test("queues an Issue-bound import and attaches generated output assets", async 
   assert.equal(bindings[0].kind, "article_import");
   assert.equal(updates.length, 1);
   assert.deepEqual(updates[0].labels, ["source:wechat", "content:article"]);
+  assert.equal(updates[0].status, "review");
+  assert.equal(updates[0].waitingOn, "me");
   assert.equal(updates[0].outputAssets.length, 3);
   assert.match(updates[0].outputAssets[0].path, /article\.md$/);
   assert.match(updates[0].outputAssets[1].path, /article\.html$/);

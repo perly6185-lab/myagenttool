@@ -1684,11 +1684,15 @@ export function createArticleImportService({
       ];
       const providerLabel = `source:${result.inspection.provider}`;
       const contentLabel = `content:${result.inspection.contentType}`;
+      const readyForReview = stored.state !== "closed"
+        && !stored.archivedAt
+        && ["backlog", "ready", "in_progress", "review"].includes(stored.status);
       const updated = workItemService.updateWorkItem({
         workItemId: stored.id,
         expectedRevision: stored.revision,
         labels: [...new Set([...(stored.labels ?? []), providerLabel, contentLabel])],
         outputAssets,
+        ...(readyForReview ? { status: "review", waitingOn: "me" } : {}),
       }, job.actor);
       if (!updated.ok) throw articleError(updated.body?.error ?? "article_import_asset_binding_failed");
       workItemService.createComment({ workItemId: stored.id, body: [

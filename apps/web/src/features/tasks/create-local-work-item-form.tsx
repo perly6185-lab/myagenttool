@@ -174,7 +174,7 @@ export default function CreateLocalWorkItemForm({
           labels: labels.split(",").map((value) => value.trim()).filter(Boolean),
           acceptanceCriteria: acceptance.split("\n").map((value) => value.trim()).filter(Boolean),
           verificationSop: verificationSop.split("\n").map((value) => value.trim()).filter(Boolean),
-          assigneeIds,
+          ...(assigneeIds.length ? { assigneeIds } : {}),
           plannedDate: plannedDate || null,
           dueDate: dueDate || null,
           milestone,
