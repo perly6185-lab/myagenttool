@@ -913,6 +913,7 @@ export function createAutoRunService({
     projectId, link, agentId, name, baseBranch, actor, issueBody: suppliedIssueBody,
     executionChainId = null, autonomyProfile = "standard", terminalId = null,
     taskMaterialWorkItemId = null, localIssueId = null,
+    scheduler = null,
   } = {}) {
     const normalizedLink = normalizeWorktreeLink(link);
     if (!normalizedLink) throw new Error("A GitHub issue or PR link is required to start an auto-run.");
@@ -962,6 +963,11 @@ export function createAutoRunService({
         baseBranch: baseBranch ?? null,
         taskMaterialWorkItemId: taskMaterialWorkItemId ?? null,
       },
+      scheduler: scheduler?.source === "work_item_auto_scheduler" ? {
+        source: "work_item_auto_scheduler",
+        workItemRevision: Number.isInteger(scheduler.workItemRevision) ? scheduler.workItemRevision : null,
+        selectedAt: scheduler.selectedAt ?? createdAt,
+      } : null,
       errorCode: null,
       createdAt,
       updatedAt: createdAt,

@@ -418,6 +418,7 @@ export function createServerRuntimeServices({
   let resolveWorkItemApplicationCapability = () => ({ state: "refusal", reason: "resolver_unavailable", capability: null });
   let invokeWorkItemApplicationCapability = () => ({ status: 503, body: { error: "capability_gateway_unavailable" } });
   let syncAdaptiveWorkItemOutcome = () => {};
+  let requestWorkItemAutoSchedulerSweep = () => {};
   const taskMaterialService = createTaskMaterialService({
     state, stateStorePath, now, nextId, persistStateSoon, appendEvent, store,
   });
@@ -430,7 +431,10 @@ export function createServerRuntimeServices({
     resolveApplicationCapability: (input, actor) => resolveWorkItemApplicationCapability(input, actor),
     invokeResolvedCapability: (name, input, actor) => invokeWorkItemApplicationCapability(name, input, actor),
     issueApplicationApprovalGrant: (input, actor) => issueApprovalGrant(input, actor),
-    onWorkItemChanged: (item, actor) => syncAdaptiveWorkItemOutcome(item, actor),
+    onWorkItemChanged: (item, actor) => {
+      syncAdaptiveWorkItemOutcome(item, actor);
+      requestWorkItemAutoSchedulerSweep();
+    },
     claimTaskMaterialDraft: taskMaterialService.claimDraft,
     resolveClaimedTaskMaterial: taskMaterialService.resolveClaimedAsset,
   });
@@ -1694,7 +1698,16 @@ export function createServerRuntimeServices({
     state,
     now,
     appendEvent,
+    getWorkItem: workItemService.getWorkItem,
+    beginExecution: workItemService.beginExecution,
+    abortExecution: workItemService.abortExecution,
+    recordExecutionBinding: workItemService.recordExecutionBinding,
+    reserveAutoRun,
+    enqueueAutoRunUnderstanding: workItemAutoRunUnderstandingService.enqueue,
   });
+  requestWorkItemAutoSchedulerSweep = () => {
+    setImmediate(() => void workItemAutoSchedulerService.sweep());
+  };
   const codexApprovalRecovery = createCodexApprovalRecoveryService({
     state,
     now,
@@ -1709,6 +1722,7 @@ export function createServerRuntimeServices({
   advanceAutoRunHook = async (invocation) => {
     const result = await advanceAutoRunForInvocation(invocation);
     await codexApprovalRecovery.resumeForSettledInvocation(invocation);
+    requestWorkItemAutoSchedulerSweep();
     return result;
   };
   approvalAutoRunHook = syncAutoRunOnApproval;

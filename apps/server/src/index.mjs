@@ -247,7 +247,7 @@ if (typeof httpDependencies.sweepWorkItemAutoRunBatches === "function") {
 if (typeof httpDependencies.sweepWorkItemAutoScheduler === "function") {
   const sweepAutoScheduler = () => httpDependencies.sweepWorkItemAutoScheduler().catch(() => {});
   sweepAutoScheduler();
-  setInterval(sweepAutoScheduler, 30_000).unref?.();
+  setInterval(sweepAutoScheduler, 10_000).unref?.();
 }
 if (typeof httpDependencies.reconcileWorkItemAutoRunUnderstanding === "function") {
   const reconcileUnderstanding = () =>
