@@ -3,6 +3,7 @@ import { Hand, History, RefreshCw, ExternalLink, GitBranch, GitPullRequest, Work
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { MarkdownBlock } from "@/components/ui/markdown-block";
 import { Input, Select, Textarea } from "@/components/ui/input";
 import { Field } from "@/components/common/field";
 import { Modal } from "@/components/ui/modal";
@@ -3439,6 +3440,12 @@ export function LocalWorkItemDetail({
               {t("taskCockpit.openAutoRuns")}
             </Button>
           </div>
+        </section>
+      ) : null}
+      {(boundRun?.status === "report_posted" && boundRun?.report) ? (
+        <section className="space-y-2 rounded-md border border-border p-3 text-xs">
+          <h3 className="text-sm font-semibold">Report</h3>
+          <MarkdownBlock text={boundRun.report} />
         </section>
       ) : null}
       <div
