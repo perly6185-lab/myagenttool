@@ -23,6 +23,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/input";
 import { Modal } from "@/components/ui/modal";
+import { MarkdownBlock } from "@/components/ui/markdown-block";
 import { api } from "@/data/use-console-actions";
 import { useConsoleState } from "@/data/use-console-state";
 import { useAppTranslation } from "@/lib/i18n/use-app-translation";
@@ -939,6 +940,7 @@ export function WorkItemSummaryView({
     (item.reviewEvidence ?? item.acceptanceResults ?? []).some((result) => result.criterion === criterion && result.status === "passed")).length;
   const acceptanceNeedsReview = reviewAcceptanceCriteria.length - acceptancePassed;
   const outputAssets = item.outputAssets ?? [];
+  const outcome = observability?.outcome ?? null;
   const deliveryReport = observability?.delivery?.report ?? observability?.latestRun?.deliveryReport ?? null;
   const deliveryAiReview = observability?.delivery?.aiReview ?? observability?.latestRun?.deliveryReview ?? null;
   const deliveryReview = observability?.delivery?.review ?? null;
@@ -952,13 +954,20 @@ export function WorkItemSummaryView({
       ...(finding.suggestion ? { suggestion: finding.suggestion } : {}),
     }));
   const changedFiles = deliveryReport?.changedFiles ?? [];
+  const resultSummary = outcome?.summary ?? deliveryReport?.summary ?? item.lastProgressSummary ?? null;
+  const fullResult = outcome?.fullReport ?? deliveryReport?.summary ?? item.lastProgressSummary ?? null;
+  const resultVerification = outcome?.verification ?? deliveryReport?.verification ?? null;
+  const resultFiles = outcome?.files?.length
+    ? outcome.files
+    : [...new Set([...outputAssets.map((asset) => asset.path), ...changedFiles])];
+  const outcomeReady = outcome == null || outcome.status === "available";
   const deliveryDecision = deriveDeliveryDecision({
     language,
     mode: observability?.delivery?.mode ?? null,
     changedFiles,
     reviewVerdict: deliveryReview?.verdict ?? deliveryAiReview?.verdict ?? null,
     reviewStatus: deliveryAiReview?.status ?? null,
-    verification: deliveryReport?.verification ?? null,
+    verification: resultVerification,
   });
   const acceptActionLabel = observability?.delivery?.mode === "pull_request"
     ? language === "zh" ? "审核通过并创建 Pull Request" : "Approve and create pull request"
@@ -1611,8 +1620,35 @@ export function WorkItemSummaryView({
               <h4 id={`${resultSectionId}-title`} className="text-sm font-semibold">{copy.deliverableTitle}</h4>
               <p className="mt-1 text-sm leading-relaxed text-muted-foreground">{copy.deliverableHint}</p>
             </div>
-            <Button size="sm" variant="secondary" onClick={() => setReportOpen(true)}>{copy.fullReport}</Button>
+            <Button size="sm" variant="secondary" disabled={!fullResult} onClick={() => setReportOpen(true)}>{copy.fullReport}</Button>
           </div>
+          {outcome?.status === "missing" ? (
+            <div className="mt-3 rounded-lg border border-destructive/35 bg-destructive/[0.05] px-3 py-2.5 text-sm" role="alert">
+              <p className="font-semibold">{language === "zh" ? "结果暂时无法读取" : "The result is temporarily unavailable"}</p>
+              <p className="mt-1 text-muted-foreground">{language === "zh" ? "系统记录到 AI 已结束，但没有取得可审核的结果。请重试或查看专业详情，在结果恢复前不能确认完成。" : "AI has finished, but no reviewable result was returned. Retry or open expert details; completion stays disabled until the result is restored."}</p>
+            </div>
+          ) : resultSummary ? (
+            <div className="mt-3 rounded-lg border border-primary/25 bg-background/80 px-4 py-3">
+              <p className="text-xs font-medium text-muted-foreground">{language === "zh" ? "一句话结论" : "At a glance"}</p>
+              <p className="mt-1 text-base font-medium leading-relaxed">{resultSummary}</p>
+            </div>
+          ) : null}
+          {outcome?.highlights?.length ? (
+            <div className="mt-3">
+              <p className="text-xs font-medium text-muted-foreground">{language === "zh" ? "关键结果" : "Key results"}</p>
+              <ul className="mt-1.5 grid gap-2 sm:grid-cols-2">
+                {outcome.highlights.map((highlight) => <li key={highlight} className="rounded-lg bg-background/70 px-3 py-2 text-sm">{highlight}</li>)}
+              </ul>
+            </div>
+          ) : null}
+          {outcome?.warnings?.length ? (
+            <div className="mt-3 rounded-lg border border-warning/35 bg-warning/[0.06] px-3 py-2.5">
+              <p className="text-xs font-semibold text-warning">{language === "zh" ? "需要注意" : "Needs attention"}</p>
+              <ul className="mt-1.5 list-disc space-y-1 pl-5 text-sm">
+                {outcome.warnings.map((warning) => <li key={warning}>{warning}</li>)}
+              </ul>
+            </div>
+          ) : null}
           <div className="mt-3">
             <DeliveryDecisionCard decision={deliveryDecision} copy={copy} />
           </div>
@@ -1668,12 +1704,12 @@ export function WorkItemSummaryView({
           <div className="mt-3 grid gap-3 sm:grid-cols-2">
             <div className="rounded-lg bg-background/70 px-3 py-2 text-sm">
               <p className="text-xs text-muted-foreground">{copy.originalAiNote}</p>
-              <p className="mt-1 whitespace-pre-wrap leading-relaxed">{deliveryReport?.summary || item.lastProgressSummary || copy.noDeliverableSummary}</p>
+              <p className="mt-1 whitespace-pre-wrap leading-relaxed">{resultSummary || copy.noDeliverableSummary}</p>
             </div>
             <div className="rounded-lg bg-background/70 px-3 py-2 text-sm">
-              <p className="text-xs text-muted-foreground">{deliveryReport?.verification ? copy.verificationEvidence : copy.acceptanceResult}</p>
-              <p className="mt-1">{deliveryReport?.verification
-                ? deliveryReport.verification.summary ?? (deliveryReport.verification.passed ? copy.aiReviewApproved : copy.aiReviewChanges)
+              <p className="text-xs text-muted-foreground">{resultVerification ? copy.verificationEvidence : copy.acceptanceResult}</p>
+              <p className="mt-1">{resultVerification
+                ? resultVerification.summary ?? (resultVerification.passed ? copy.aiReviewApproved : copy.aiReviewChanges)
                 : reviewAcceptanceCriteria.length || item.acceptanceResults?.length
                   ? `${acceptancePassed} ${copy.passed} · ${Math.max(0, acceptanceNeedsReview)} ${copy.needsReview}`
                   : copy.noAcceptanceResult}</p>
@@ -1681,18 +1717,12 @@ export function WorkItemSummaryView({
           </div>
           <div className="mt-3">
             <p className="text-xs text-muted-foreground">{copy.deliverableFiles}</p>
-            {outputAssets.length || changedFiles.length ? (
+            {resultFiles.length ? (
               <ul className="mt-1.5 grid gap-1.5 sm:grid-cols-2">
-                {outputAssets.slice(0, 4).map((asset, index) => (
-                  <li key={`${asset.id ?? asset.path}-${index}`} className="min-w-0 rounded-lg bg-background/70 px-3 py-2 text-sm [overflow-wrap:anywhere]">
+                {resultFiles.slice(0, 8).map((path) => (
+                  <li key={path} title={path} className="min-w-0 rounded-lg bg-background/70 px-3 py-2 font-mono text-xs [overflow-wrap:anywhere]">
                     <FileText className="mr-1.5 inline size-3.5 text-muted-foreground" aria-hidden />
-                    {asset.path.split(/[\\/]/).at(-1) ?? asset.path}
-                  </li>
-                ))}
-                {changedFiles.slice(0, Math.max(0, 8 - outputAssets.length)).map((path) => (
-                  <li key={path} className="min-w-0 rounded-lg bg-background/70 px-3 py-2 font-mono text-xs [overflow-wrap:anywhere]">
-                    <FileText className="mr-1.5 inline size-3.5 text-muted-foreground" aria-hidden />
-                    {path}
+                    {path.split(/[\\/]/).at(-1) ?? path}
                   </li>
                 ))}
               </ul>
@@ -2031,7 +2061,7 @@ export function WorkItemSummaryView({
                   <RefreshCw aria-hidden />{copy.requestChanges}
                 </Button>
                 <Button
-                  disabled={!executionContractReady || Boolean(actionPending) || Boolean(observability?.delivery && observability.delivery.review?.verdict !== "approved")}
+                  disabled={!executionContractReady || !outcomeReady || Boolean(actionPending) || Boolean(observability?.delivery && observability.delivery.review?.verdict !== "approved")}
                   onClick={() => { setReportOpen(false); setCompletionWriteback("local_only"); setAcceptOpen(true); }}
                 >
                   <CheckCircle2 aria-hidden />{acceptActionLabel}
@@ -2082,14 +2112,14 @@ export function WorkItemSummaryView({
 
           <section className="rounded-lg border border-border bg-background/70 p-4">
             <h3 className="text-sm font-semibold">{copy.originalAiNote}</h3>
-            <p className="mt-2 whitespace-pre-wrap text-sm leading-relaxed">{deliveryReport?.summary || item.lastProgressSummary || copy.noDeliverableSummary}</p>
+            {fullResult ? <MarkdownBlock text={fullResult} className="mt-2" /> : <p className="mt-2 text-sm text-muted-foreground">{copy.noDeliverableSummary}</p>}
           </section>
 
           <section className="rounded-lg border border-border bg-background/70 p-4">
-            <h3 className="text-sm font-semibold">{deliveryReport?.verification ? copy.verificationEvidence : copy.acceptanceResult}</h3>
+            <h3 className="text-sm font-semibold">{resultVerification ? copy.verificationEvidence : copy.acceptanceResult}</h3>
             <p className="mt-2 whitespace-pre-wrap text-sm leading-relaxed">
-              {deliveryReport?.verification?.summary
-                ?? (deliveryReport?.verification?.passed ? copy.aiReviewApproved : null)
+              {resultVerification?.summary
+                ?? (resultVerification?.passed ? copy.aiReviewApproved : null)
                 ?? (reviewAcceptanceCriteria.length || item.acceptanceResults?.length
                   ? `${acceptancePassed} ${copy.passed} · ${Math.max(0, acceptanceNeedsReview)} ${copy.needsReview}`
                   : copy.noAcceptanceResult)}
@@ -2098,15 +2128,9 @@ export function WorkItemSummaryView({
 
           <section className="rounded-lg border border-border bg-background/70 p-4">
             <h3 className="text-sm font-semibold">{copy.deliverableFiles}</h3>
-            {outputAssets.length || changedFiles.length ? (
+            {resultFiles.length ? (
               <ul className="mt-2 grid gap-2 sm:grid-cols-2">
-                {outputAssets.map((asset, index) => (
-                  <li key={`${asset.id ?? asset.path}-report-${index}`} className="rounded-md bg-muted/45 px-3 py-2 text-sm [overflow-wrap:anywhere]">
-                    <FileText className="mr-1.5 inline size-3.5 text-muted-foreground" aria-hidden />
-                    {asset.path}
-                  </li>
-                ))}
-                {changedFiles.map((path) => (
+                {resultFiles.map((path) => (
                   <li key={`${path}-report`} className="rounded-md bg-muted/45 px-3 py-2 font-mono text-xs [overflow-wrap:anywhere]">
                     <FileText className="mr-1.5 inline size-3.5 text-muted-foreground" aria-hidden />
                     {path}
@@ -2161,7 +2185,7 @@ export function WorkItemSummaryView({
           {actionError ? <p className="text-sm text-destructive" role="alert">{actionError}</p> : null}
           <div className="flex justify-end gap-2">
             <Button variant="secondary" disabled={actionPending === "complete"} onClick={() => setAcceptOpen(false)}>{language === "zh" ? "取消" : "Cancel"}</Button>
-            <Button disabled={!executionContractReady || actionPending === "complete"} onClick={() => void acceptAndComplete()}>
+            <Button disabled={!executionContractReady || !outcomeReady || actionPending === "complete"} onClick={() => void acceptAndComplete()}>
               <CheckCircle2 aria-hidden />
               {actionPending === "complete" ? copy.accepting : acceptDialogConfirm}
             </Button>
