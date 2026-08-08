@@ -1543,7 +1543,9 @@ export function createAutoRunService({
           // would send it to done (the file is proof of work, not a diff).
           const resolvedPath = autoRun.decision?.path ?? ({ investigation: "design", question: "clarify" }[autoRun.intent] ?? "develop");
           if (commitResult.hasCommits && (resolvedPath === "evaluate" || resolvedPath === "summarize")) {
-            const summary = extractRunSummary(invocation) ?? "Evaluation complete — see evaluate/REPORT.md for the detailed report.";
+            const reportFile = resolvedPath === "summarize" ? "summary/REPORT.md" : "evaluate/REPORT.md";
+            const fileReport = typeof readWorktreeTextFile === "function" ? readWorktreeTextFile(autoRun.worktreeId, reportFile) : null;
+            const summary = (fileReport && fileReport.trim()) || extractRunSummary(invocation) || "Evaluation complete — see evaluate/REPORT.md for the detailed report.";
             runTx(() => setAutoRunStatus(autoRun, "report_posted", { report: summary }));
             maybeWriteIssueStatus(autoRun, worktree, "review");
             return autoRun;
@@ -1557,7 +1559,9 @@ export function createAutoRunService({
             const path = autoRun.decision?.path
               ?? ({ investigation: "design", question: "clarify" }[autoRun.intent] ?? "develop");
             if (path === "design" || path === "prototype" || path === "evaluate" || path === "summarize") {
-              const summary = extractRunSummary(invocation) ?? "Investigation complete — no code change was needed.";
+              const reportFile = path === "summarize" ? "summary/REPORT.md" : (path === "evaluate" ? "evaluate/REPORT.md" : null);
+              const fileReport = reportFile && typeof readWorktreeTextFile === "function" ? readWorktreeTextFile(autoRun.worktreeId, reportFile) : null;
+              const summary = (fileReport && fileReport.trim()) || extractRunSummary(invocation) || "Investigation complete — no code change was needed.";
               maybePostIssueReport(autoRun, worktree, summary);
               const spawn = await maybeSpawnChildIssue(autoRun, worktree, summary);
               if (autoRunReactionSuperseded(autoRun, invocation, "child issue creation")) return null;
