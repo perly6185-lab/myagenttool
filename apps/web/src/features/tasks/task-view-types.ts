@@ -277,6 +277,7 @@ export type LocalWorkItemAutoRun = {
   decision?: {
     path: string; decidedBy: string; confidence: number; rationale?: string | null;
     via?: string | null; latencyMs?: number | null; clarifyingQuestions?: string[] | null;
+    suggestedActions?: Array<{ id: string; label: string; description?: string; payload?: { repoUrl?: string } | null }> | null;
     evidence?: { policyVersion: string; modelVersion: string | null; minConfidence: number; inputDigest: string } | null;
   } | null;
   terminalOutcome?: { disposition: "MERGED" | "CLOSED"; source: string; convergedAt: string } | null;

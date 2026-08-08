@@ -3375,7 +3375,7 @@ export function LocalWorkItemDetail({
           ) : null}
           {(boundRun.decision.suggestedActions ?? []).length ? (
             <div className="mt-3 flex flex-wrap gap-2">
-              {boundRun.decision.suggestedActions.map((action: { id: string; label: string; description?: string; payload?: { repoUrl?: string } | null }) => (
+              {(boundRun.decision.suggestedActions ?? []).map((action: { id: string; label: string; description?: string; payload?: { repoUrl?: string } | null }) => (
                 <Button
                   key={action.id}
                   variant={action.id === "evaluate" ? "primary" : "secondary"}
@@ -3386,7 +3386,7 @@ export function LocalWorkItemDetail({
                       await api.answerClarify(boundRun.id, {
                         answers: action.label,
                         selectedAction: action.id,
-                        repoUrl: action.payload?.repoUrl ?? null,
+                        repoUrl: action.payload?.repoUrl,
                       });
                       void load();
                     });
