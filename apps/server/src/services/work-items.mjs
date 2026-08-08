@@ -24,6 +24,7 @@ import {
 } from "./work-item-follow-up.mjs";
 import { createWorkItemReportDraftService } from "./work-item-report-drafts.mjs";
 import { resolveWorkItemExecution } from "./work-item-execution.mjs";
+import { projectWorkItemOutcome } from "./work-item-outcome.mjs";
 
 const TYPES = new Set(["task", "bug", "feature", "initiative"]);
 const STATUSES = new Set(["backlog", "ready", "in_progress", "review", "blocked", "done"]);
@@ -1376,6 +1377,15 @@ export function createWorkItemService({
       changedFiles: [],
       completedAt: latestExecutionInvocation?.completedAt ?? latestRun?.updatedAt ?? null,
     } : null);
+    const taskOutcome = projectWorkItemOutcome({
+      item,
+      latestRun,
+      deliveryReport: projectedDeliveryReport,
+      invocationSummary: latestExecutionInvocation?.result?.output?.latestMessage
+        ?? latestExecutionInvocation?.result?.output?.summary
+        ?? latestExecutionInvocation?.result?.summary
+        ?? null,
+    });
     const invocationIds = new Set(relatedInvocations.map((invocation) => invocation.id));
     const failureStatuses = new Set(["failed", "timed_out", "cancelled", "rejected", "expired"]);
     const showRunHistory = runInvocations.length > 1
@@ -1567,6 +1577,7 @@ export function createWorkItemService({
             deliveryReport: projectedDeliveryReport,
             deliveryReview: projectedDeliveryReview,
           } : null,
+          outcome: taskOutcome,
           runHistory,
           delivery: pendingLocalDelivery ? {
             state: "awaiting_review",
