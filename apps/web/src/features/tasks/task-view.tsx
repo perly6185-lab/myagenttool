@@ -3373,6 +3373,30 @@ export function LocalWorkItemDetail({
               {boundRun.decision.clarifyingQuestions?.map((question) => <li key={question}>{question}</li>)}
             </ul>
           ) : null}
+          {(boundRun.decision.suggestedActions ?? []).length ? (
+            <div className="mt-3 flex flex-wrap gap-2">
+              {(boundRun.decision.suggestedActions ?? []).map((action: { id: string; label: string; description?: string; payload?: { repoUrl?: string } | null }) => (
+                <Button
+                  key={action.id}
+                  variant={action.id === "evaluate" ? "primary" : "secondary"}
+                  size="sm"
+                  disabled={pending}
+                  onClick={async () => {
+                    await execute(async () => {
+                      await api.answerClarify(boundRun.id, {
+                        answers: action.label,
+                        selectedAction: action.id,
+                        repoUrl: action.payload?.repoUrl,
+                      });
+                      void load();
+                    });
+                  }}
+                >
+                  {action.label}
+                </Button>
+              ))}
+            </div>
+          ) : null}
           {observability?.routingExplanation ? (
             <details>
               <summary className="cursor-pointer font-semibold">{t("aiOps.whyRoute")}</summary>

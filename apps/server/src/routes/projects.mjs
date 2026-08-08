@@ -354,9 +354,41 @@ export async function handleProjectRoutes({
   if (clarifyAnswerMatch && req.method === "POST") {
     if (denyForeignAutoRun(decodeURIComponent(clarifyAnswerMatch[1]))) return true;
     try {
-      const body = await readJson(req);
-      const result = await answerClarify(decodeURIComponent(clarifyAnswerMatch[1]), { actor, answers: body?.answers });
-      sendJson(res, 200, result);
+      const ranBody = await readJson(req);
+      const result = await answerClarify(decodeURIComponent(clarifyAnswerMatch[1]), {
+        actor,
+        answers: ranBody?.answers,
+        selectedAction: ranBody?.selectedAction,
+        repoUrl: ranBody?.repoUrl,
+      });
+      // When a structured action was chosen (e.g. "evaluate"), clone the repo
+      // and start a fresh auto-run BEFORE returning — the clone latency is
+      // a few seconds for typical repos, and synchronous avoids async-after-
+      // response races that crash the server.
+      let retryRun = null;
+      if (result.shouldRetry && result.repoUrl && typeof cloneProject === "function" && typeof startAutoRun === "function") {
+        const autoRun = state.autoRuns.find((item) => item.id === decodeURIComponent(clarifyAnswerMatch[1]));
+        const link = autoRun?.link ?? null;
+        const agentId = autoRun?.agentId ?? null;
+        const issueBody = autoRun?.issueBody ?? null;
+        if (link && agentId) {
+          const parentPath = state.projects[0]?.path ?? process.cwd();
+          try {
+            const project = await cloneProject({ gitUrl: result.repoUrl, parentPath, name: ranBody?.repoName ?? undefined });
+            const fresh = await startAutoRun({
+              projectId: project.id,
+              link,
+              agentId,
+              name: link?.title ?? undefined,
+              issueBody,
+            });
+            retryRun = { id: fresh.autoRun?.id ?? fresh.id, status: fresh.autoRun?.status ?? fresh.status };
+          } catch {
+            // Best-effort: clone or run failed — the clarify answer still succeeded.
+          }
+        }
+      }
+      sendJson(res, 200, { ...result, retryRun });
     } catch (error) {
       sendJson(res, 400, { error: "clarify_answer_failed", message: errorMessage(error) });
     }

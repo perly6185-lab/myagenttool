@@ -21,7 +21,7 @@ export function ClarifyAnswer({ run, onDone }: { run: AutoRunRecord; onDone: () 
 
   const submit = async () => {
     if (!text.trim()) return;
-    const ok = await execute(() => api.answerClarify(run.id, text));
+    const ok = await execute(() => api.answerClarify(run.id, { answers: text }));
     if (ok) {
       setOpen(false);
       setText("");
