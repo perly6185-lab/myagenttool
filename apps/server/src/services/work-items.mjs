@@ -1321,6 +1321,7 @@ export function createWorkItemService({
             terminalOutcome: latestRun.terminalOutcome ?? null,
             invocationId: latestRun.invocationId ?? null,
             agentId: latestRun.agentId ?? null,
+            report: latestRun.report ?? null,
             localDelivery: latestRun.localDelivery ?? null,
           } : null,
           delivery: pendingLocalDelivery ? {
