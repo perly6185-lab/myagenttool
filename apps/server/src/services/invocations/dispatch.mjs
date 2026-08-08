@@ -7,7 +7,7 @@ import {
   isBridgeExecuted as isBridgeExecutedShared,
 } from "./dispatch-eligibility.mjs";
 import { invocationProjectKey, invocationTeamKey, selectFairInvocation } from "./dispatch-fairness.mjs";
-import { autoExecutionDispatchScore } from "../work-item-auto-scheduler-policy.mjs";
+import { autoExecutionDateKey, autoExecutionDispatchScore } from "../work-item-auto-scheduler-policy.mjs";
 
 export function createInvocationDispatchRuntime({
   state,
@@ -41,9 +41,10 @@ export function createInvocationDispatchRuntime({
   };
   const dispatchPriority = (invocation) => {
     const workItem = boundWorkItem(invocation);
+    const today = autoExecutionDateKey(now());
     return workItem
-      ? autoExecutionDispatchScore(workItem, { today: now().slice(0, 10) })
-      : autoExecutionDispatchScore({ priority: "p2" }, { today: now().slice(0, 10) });
+      ? autoExecutionDispatchScore(workItem, { today })
+      : autoExecutionDispatchScore({ priority: "p2" }, { today });
   };
 
   // Force a terminal status on runs stuck in "cancelling" past a grace (e.g. the

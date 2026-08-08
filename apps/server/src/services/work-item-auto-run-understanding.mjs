@@ -25,11 +25,19 @@ export function createWorkItemAutoRunUnderstandingService({
     };
   }
 
+  function hasExecutionBinding(autoRun) {
+    const workItemId = autoRun?.localIssueId ?? autoRun?.executionChainId ?? null;
+    const workItem = (state.workItems ?? []).find((item) => item.id === workItemId) ?? null;
+    return Boolean(workItem && (workItem.executionBindings ?? []).some((binding) =>
+      binding.kind === "auto_run" && binding.targetId === autoRun.id));
+  }
+
   function recoverable(autoRun) {
     return Boolean(
       autoRun
       && autoRun.link?.type === "local_issue"
       && !autoRun.invocationId
+      && hasExecutionBinding(autoRun)
       && ["materializing", "waiting_capacity"].includes(autoRun.status)
       && RECOVERABLE_PHASES.has(autoRun.phase ?? "understanding"),
     );

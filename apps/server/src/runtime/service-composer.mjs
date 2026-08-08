@@ -1704,9 +1704,10 @@ export function createServerRuntimeServices({
     recordExecutionBinding: workItemService.recordExecutionBinding,
     reserveAutoRun,
     enqueueAutoRunUnderstanding: workItemAutoRunUnderstandingService.enqueue,
+    failAutoRunUnderstanding,
   });
   requestWorkItemAutoSchedulerSweep = () => {
-    setImmediate(() => void workItemAutoSchedulerService.sweep());
+    setImmediate(() => void workItemAutoSchedulerService.sweep().catch(() => {}));
   };
   const codexApprovalRecovery = createCodexApprovalRecoveryService({
     state,

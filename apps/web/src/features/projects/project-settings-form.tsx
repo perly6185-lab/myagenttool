@@ -59,11 +59,11 @@ export function ProjectSettingsForm({ project, onDone }: { project: ProjectSnaps
             onChange={(event) => setAutoExecutionEnabled(event.target.checked)}
           />
           <span>
-            <span className="font-medium">{zh ? "AI 自动处理本项目任务" : "Let AI process project tasks automatically"}</span>
+            <span className="font-medium">{zh ? "本项目任务默认交给 AI" : "Let AI handle project tasks by default"}</span>
             <span className="mt-1 block text-xs leading-relaxed text-muted-foreground">
               {zh
-                ? "开启后，AI 会按截止风险和优先级选择任务；只有需要你决定或审核时才会提醒。"
-                : "AI selects work by deadline risk and priority, and only notifies you when a decision or review is needed."}
+                ? "开启后，新任务默认自动处理；你仍可单独暂停或手动交给 AI。"
+                : "New tasks inherit automatic handling; individual tasks can still be paused or handed to AI manually."}
             </span>
           </span>
         </label>

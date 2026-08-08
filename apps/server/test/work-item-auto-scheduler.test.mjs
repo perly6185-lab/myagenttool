@@ -89,7 +89,7 @@ test("scheduler defaults on safely and the global kill switch stops it", async (
   assert.equal(enabled.service.mode(), "enabled");
   enabled.state.projects[0].autoExecutionEnabled = false;
   assert.deepEqual(await enabled.service.sweep(), {
-    mode: "enabled", swept: 0, selected: 0, eligibleCount: 0, recoveredBindings: 0, starts: [],
+    mode: "enabled", swept: 1, selected: 0, eligibleCount: 0, recoveredBindings: 0, starts: [],
   });
 
   const stopped = fixture("enabled");
@@ -133,7 +133,12 @@ test("recovers a reserved Run that lost its work-item binding before restart", a
     createdBy: "usr_a",
     executionOperation: { id: "weo_1", kind: "auto_run", status: "starting" },
   });
-  state.autoRuns.push({ id: "aur_orphan", status: "materializing", localIssueId: "lwi_1" });
+  state.autoRuns.push({
+    id: "aur_orphan",
+    status: "materializing",
+    localIssueId: "lwi_1",
+    scheduler: { source: "work_item_auto_scheduler", operationId: "weo_1" },
+  });
   let enqueued = 0;
   const service = createWorkItemAutoSchedulerService({
     state,
@@ -162,10 +167,12 @@ test("isolates orphan binding recovery failures so another Run can recover", asy
     id: "lwi_2",
     localRef: "LOCAL-2",
     executionBindings: [],
+    executionOperation: { id: "weo_2", kind: "auto_run", status: "starting" },
   });
+  state.workItems[0].executionOperation = { id: "weo_1", kind: "auto_run", status: "starting" };
   state.autoRuns.push(
-    { id: "aur_broken", status: "materializing", localIssueId: "lwi_1" },
-    { id: "aur_recoverable", status: "materializing", localIssueId: "lwi_2" },
+    { id: "aur_broken", status: "materializing", localIssueId: "lwi_1", scheduler: { source: "work_item_auto_scheduler", operationId: "weo_1" } },
+    { id: "aur_recoverable", status: "materializing", localIssueId: "lwi_2", scheduler: { source: "work_item_auto_scheduler", operationId: "weo_2" } },
   );
   let enqueued = 0;
   const service = createWorkItemAutoSchedulerService({
@@ -185,4 +192,152 @@ test("isolates orphan binding recovery failures so another Run can recover", asy
   const metrics = service.preview({ teamId: "team_a" }).metrics;
   assert.equal(metrics.recoveredBindings, 1);
   assert.equal(metrics.recoveryFailures, 1);
+});
+
+test("shadow mode never repairs or enqueues an orphaned Run", async () => {
+  const { state } = fixture("shadow");
+  state.workItems[0].executionOperation = { id: "weo_1", kind: "auto_run", status: "starting" };
+  state.autoRuns.push({
+    id: "aur_orphan",
+    status: "materializing",
+    localIssueId: "lwi_1",
+    scheduler: { source: "work_item_auto_scheduler", operationId: "weo_1" },
+  });
+  let recorded = 0;
+  let enqueued = 0;
+  const service = createWorkItemAutoSchedulerService({
+    state,
+    now: () => "2026-08-08T04:00:00.000Z",
+    recordExecutionBinding: () => { recorded += 1; return { ok: true }; },
+    enqueueAutoRunUnderstanding: () => { enqueued += 1; },
+  });
+
+  const result = await service.sweep();
+  assert.equal(result.recoveredBindings, 0);
+  assert.equal(recorded, 0);
+  assert.equal(enqueued, 0);
+  assert.equal(state.workItems[0].executionBindings.length, 0);
+});
+
+test("does not claim or fail an unbound Run created outside the scheduler", async () => {
+  const { state } = fixture("enabled");
+  state.workItems[0].executionOperation = { id: "weo_manual", kind: "auto_run", status: "starting" };
+  state.autoRuns.push({
+    id: "aur_manual",
+    status: "materializing",
+    localIssueId: "lwi_1",
+  });
+  let recorded = 0;
+  let failed = 0;
+  const service = createWorkItemAutoSchedulerService({
+    state,
+    now: () => "2026-08-08T04:00:00.000Z",
+    recordExecutionBinding: () => { recorded += 1; return { ok: true }; },
+    failAutoRunUnderstanding: () => { failed += 1; },
+  });
+
+  const result = await service.sweep();
+  assert.equal(result.recoveredBindings, 0);
+  assert.equal(recorded, 0);
+  assert.equal(failed, 0);
+});
+
+test("an explicit automatic task runs even when its project defaults to manual", async () => {
+  const { state } = fixture("enabled");
+  state.projects[0].autoExecutionEnabled = false;
+  Object.assign(state.workItems[0], {
+    executionPolicy: "auto",
+    localNumber: 1,
+    title: "Explicit handoff",
+    body: "",
+    terminalId: "dev_local",
+  });
+  const service = createWorkItemAutoSchedulerService({
+    state,
+    now: () => "2026-08-08T04:00:00.000Z",
+    getWorkItem: () => ({ ok: true, body: { workItem: state.workItems[0] } }),
+    beginExecution: () => ({ ok: true, body: { operation: { id: "weo_1" } } }),
+    abortExecution: () => ({ ok: true }),
+    reserveAutoRun: async () => {
+      const autoRun = { id: "aur_1", status: "materializing", localIssueId: "lwi_1" };
+      state.autoRuns.push(autoRun);
+      return { autoRun };
+    },
+    recordExecutionBinding: ({ targetId }) => {
+      state.workItems[0].executionBindings.push({ kind: "auto_run", targetId });
+      return { ok: true };
+    },
+    enqueueAutoRunUnderstanding: () => true,
+  });
+
+  const result = await service.sweep();
+  assert.equal(result.starts[0].started, true);
+});
+
+test("a permanently unavailable queue head does not starve the next task", async () => {
+  const { state } = fixture("enabled");
+  Object.assign(state.workItems[0], {
+    priority: "p0",
+    localNumber: 1,
+    title: "Unavailable terminal",
+    terminalId: "dev_missing",
+  });
+  state.workItems.push({
+    ...structuredClone(state.workItems[0]),
+    id: "lwi_2",
+    localNumber: 2,
+    title: "Runnable task",
+    priority: "p1",
+    terminalId: "dev_local",
+    executionBindings: [],
+  });
+  const service = createWorkItemAutoSchedulerService({
+    state,
+    now: () => "2026-08-08T04:00:00.000Z",
+    getWorkItem: ({ workItemId }) => ({ ok: true, body: { workItem: state.workItems.find((item) => item.id === workItemId) } }),
+    beginExecution: ({ workItemId }) => ({ ok: true, body: { operation: { id: `weo_${workItemId}` } } }),
+    abortExecution: () => ({ ok: true }),
+    reserveAutoRun: async ({ localIssueId }) => {
+      const autoRun = { id: `aur_${localIssueId}`, status: "materializing", localIssueId };
+      state.autoRuns.push(autoRun);
+      return { autoRun };
+    },
+    recordExecutionBinding: ({ workItemId, targetId }) => {
+      state.workItems.find((item) => item.id === workItemId).executionBindings.push({ kind: "auto_run", targetId });
+      return { ok: true };
+    },
+    enqueueAutoRunUnderstanding: () => true,
+  });
+
+  const result = await service.sweep();
+  assert.deepEqual(result.starts.map((row) => row.reason ?? row.workItemId), ["repository_agent_unavailable", "lwi_2"]);
+});
+
+test("a failed binding marks the reserved Run failed before reconciliation", async () => {
+  const { state } = fixture("enabled");
+  Object.assign(state.workItems[0], { localNumber: 1, title: "Binding failure", terminalId: "dev_local" });
+  let failedRunId = null;
+  const service = createWorkItemAutoSchedulerService({
+    state,
+    now: () => "2026-08-08T04:00:00.000Z",
+    getWorkItem: () => ({ ok: true, body: { workItem: state.workItems[0] } }),
+    beginExecution: () => ({ ok: true, body: { operation: { id: "weo_1" } } }),
+    abortExecution: () => ({ ok: true }),
+    reserveAutoRun: async () => {
+      const autoRun = { id: "aur_orphan", status: "materializing", localIssueId: "lwi_1" };
+      state.autoRuns.push(autoRun);
+      return { autoRun };
+    },
+    recordExecutionBinding: () => ({ ok: false, body: { error: "work_item_execution_operation_conflict" } }),
+    enqueueAutoRunUnderstanding: () => true,
+    failAutoRunUnderstanding: (id) => {
+      failedRunId = id;
+      state.autoRuns.find((run) => run.id === id).status = "failed";
+    },
+  });
+
+  const result = await service.sweep();
+  assert.equal(result.starts[0].started, false);
+  assert.equal(failedRunId, "aur_orphan");
+  assert.equal(state.autoRuns[0].status, "failed");
 });

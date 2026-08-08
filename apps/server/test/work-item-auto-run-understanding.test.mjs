@@ -16,6 +16,7 @@ function fixture({ decisionPath = "develop", existingPlan = null, capacityOnce =
     executionContractConfirmedAt: null,
     executionContractSource: null,
     terminalId: "dev_a",
+    executionBindings: [{ kind: "auto_run", targetId: "aur_1" }],
   };
   const autoRun = {
     id: "aur_1",
@@ -39,7 +40,7 @@ function fixture({ decisionPath = "develop", existingPlan = null, capacityOnce =
     worktreeId: null,
     invocationId: null,
   };
-  const state = { autoRuns: [autoRun] };
+  const state = { autoRuns: [autoRun], workItems: [workItem] };
   const calls = { prepare: 0, attach: 0, start: 0, fail: 0, defer: 0, projectContext: null, contextSummary: null };
   const scheduled = [];
   const service = createWorkItemAutoRunUnderstandingService({
@@ -159,4 +160,14 @@ test("capacity pressure parks the durable Run and a later sweep resumes it", asy
   assert.equal(calls.start, 2);
   assert.equal(autoRun.status, "running");
   assert.equal(autoRun.invocationId, "inv_1");
+});
+
+test("an unbound reserved Run is never reconciled into execution", async () => {
+  const { service, workItem, calls } = fixture();
+  workItem.executionBindings = [];
+
+  const result = await service.reconcile();
+  assert.equal(result.checked, 0);
+  assert.equal(calls.prepare, 0);
+  assert.equal(calls.start, 0);
 });

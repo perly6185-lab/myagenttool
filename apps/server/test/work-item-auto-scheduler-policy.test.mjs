@@ -2,11 +2,17 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import {
+  autoExecutionDateKey,
   evaluateAutoExecutionCandidate,
   planAutoExecutionQueue,
 } from "../src/services/work-item-auto-scheduler-policy.mjs";
 
 const NOW = "2026-08-08T04:00:00.000Z";
+
+test("scheduler date keys honor the local business timezone around UTC midnight", () => {
+  assert.equal(autoExecutionDateKey("2026-08-07T17:00:00.000Z", { timeZone: "Asia/Shanghai" }), "2026-08-08");
+  assert.equal(autoExecutionDateKey("2026-08-07T17:00:00.000Z", { timeZone: "America/Los_Angeles" }), "2026-08-07");
+});
 
 function item(id, overrides = {}) {
   return {

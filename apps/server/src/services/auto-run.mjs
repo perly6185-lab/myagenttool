@@ -965,6 +965,7 @@ export function createAutoRunService({
       },
       scheduler: scheduler?.source === "work_item_auto_scheduler" ? {
         source: "work_item_auto_scheduler",
+        operationId: scheduler.operationId ? String(scheduler.operationId) : null,
         workItemRevision: Number.isInteger(scheduler.workItemRevision) ? scheduler.workItemRevision : null,
         selectedAt: scheduler.selectedAt ?? createdAt,
         priority: ["p0", "p1", "p2", "p3"].includes(scheduler.priority) ? scheduler.priority : "p2",

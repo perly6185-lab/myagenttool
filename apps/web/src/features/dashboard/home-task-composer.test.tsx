@@ -89,6 +89,7 @@ describe("HomeTaskComposer", () => {
       verificationSop: [],
       waitingOn: "ai",
       executionPolicy: "auto",
+      status: "ready",
       plannedDate: expect.stringMatching(/^\d{4}-\d{2}-\d{2}$/),
       idempotencyKey: expect.any(String),
     })));
@@ -169,6 +170,24 @@ describe("HomeTaskComposer", () => {
 
     expect(onOpenSetup).toHaveBeenCalledWith("agents");
     expect(mocks.createWorkItem).not.toHaveBeenCalled();
+  });
+
+  it("queues an AI task while execution capacity is temporarily full", async () => {
+    mocks.autoRunReadiness.mockResolvedValue({
+      readiness: { ready: false, checks: [{ key: "capacity", label: "Capacity", status: "blocked", detail: "At capacity: 1/1." }] },
+    });
+    mocks.createWorkItem.mockResolvedValue({ workItem: { id: "lwi_queued" } });
+    render(<HomeTaskComposer inline projectId="prj_1" onCreated={() => {}} onOpenTask={() => {}} />);
+
+    fireEvent.change(screen.getByRole("textbox", { name: "Create a task" }), { target: { value: "Queue the next task" } });
+    const action = await screen.findByRole("button", { name: "Create and let AI work" });
+    await waitFor(() => expect((action as HTMLButtonElement).disabled).toBe(false));
+    fireEvent.click(action);
+
+    await waitFor(() => expect(mocks.createWorkItem).toHaveBeenCalledWith(expect.objectContaining({
+      status: "ready",
+      executionPolicy: "auto",
+    })));
   });
 
   it("clears project-bound material state on project switch and disables creation while offline", async () => {

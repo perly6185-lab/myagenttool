@@ -10,7 +10,7 @@ The planned date is guidance, not a reservation. Future work may be pulled forwa
 
 ## Controls users need to understand
 
-- Project: **AI automatically processes tasks**. Existing projects default to off; a project must opt in.
+- Project: **Tasks default to automatic execution**. Existing projects default to manual inheritance; an individual **let AI work** action overrides that default for its task.
 - Project: **Pull future work forward when idle**. Defaults on after project opt-in.
 - Task: automatic, manual, or paused. New **let AI work** tasks explicitly select automatic mode.
 - Task: **Mark urgent** maps to `p0`; **Pause future AI work** never forcibly cancels an active run.
@@ -52,7 +52,7 @@ The same urgency score is used by the real invocation selector, so priority surv
 The internal scheduler mode is `off`, `shadow`, or `enabled`.
 
 - `shadow`: records the task that would be selected without creating execution state.
-- `enabled`: admits work only for projects with `autoExecutionEnabled: true`.
+- `enabled`: admits inherited automatic work for opted-in projects and explicit task-level automatic work for any project.
 - `off`: stops new automatic admissions. Existing runs retain their ordinary cancel/review controls.
 
 The application default is `enabled`, while existing projects remain safe because project opt-in defaults to false. For a conservative rollout, set the internal mode to `shadow`, inspect the preview endpoint, enable selected projects, then move to `enabled`. Rollback is immediate: set mode to `off` or activate the global autonomy kill switch. No data migration rollback is required because the added fields are optional and backward compatible.

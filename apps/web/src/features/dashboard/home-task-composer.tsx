@@ -89,7 +89,7 @@ export function HomeTaskComposer({
     preflight: "执行前检查",
     preflightChecking: "正在确认 AI、代码仓库和安全开关…",
     preflightBlocked: "AI 暂时不能启动，请先处理以下问题。",
-    preflightWarning: "AI 可以启动，但建议留意以下提醒。",
+    preflightWarning: "任务可以加入自动队列；AI 会在条件满足时开始，请留意以下信息。",
     preflightUnavailable: "暂时无法完成执行前检查，请重新检查。",
     preflightRetry: "重新检查",
     preflightSetup: "去设置并修复",
@@ -127,7 +127,7 @@ export function HomeTaskComposer({
     preflight: "Preflight",
     preflightChecking: "Checking the AI, repository, and safety controls…",
     preflightBlocked: "AI cannot start yet. Resolve these issues first.",
-    preflightWarning: "AI can start, with these recommendations.",
+    preflightWarning: "The task can join the automatic queue. AI will start when ready; note the following.",
     preflightUnavailable: "Preflight could not be completed. Recheck before starting AI.",
     preflightRetry: "Recheck",
     preflightSetup: "Open setup and fix",
@@ -164,8 +164,11 @@ export function HomeTaskComposer({
   const title = useMemo(() => goal.trim().split(/\r?\n/)[0]?.slice(0, 200) ?? "", [goal]);
   const filesReady = attachments.every((attachment) => attachment.status === "ready");
   const canCreate = Boolean(projectId && title && dueDate && !pendingMode && filesReady && !unavailable);
-  const canCreateWithAi = canCreate && readiness?.ready === true && !readinessLoading;
-  const readinessWarnings = readiness?.checks.filter((check) => check.status === "warn") ?? [];
+  const readinessBlocking = readiness?.checks.filter((check) => check.status === "blocked" && check.key !== "capacity") ?? [];
+  const readinessWarnings = readiness?.checks.filter((check) => check.status === "warn" || (check.status === "blocked" && check.key === "capacity")) ?? [];
+  const capacityBlocked = readiness?.checks.some((check) => check.status === "blocked" && check.key === "capacity") ?? false;
+  const queueReady = readinessBlocking.length === 0 && (readiness?.ready === true || capacityBlocked);
+  const canCreateWithAi = canCreate && queueReady && !readinessLoading;
 
   async function loadReadiness(targetProjectId = projectId) {
     const requestId = ++readinessRequest.current;
@@ -292,7 +295,10 @@ export function HomeTaskComposer({
       if (mode === "ai") {
         const latestReadiness = await loadReadiness(projectId);
         if (projectIdRef.current !== projectId) return;
-        if (!latestReadiness?.ready) {
+        const latestBlocking = latestReadiness?.checks.some((check) => check.status === "blocked" && check.key !== "capacity") ?? true;
+        const latestCapacityBlocked = latestReadiness?.checks.some((check) => check.status === "blocked" && check.key === "capacity") ?? false;
+        const latestQueueReady = !latestBlocking && (latestReadiness?.ready === true || latestCapacityBlocked);
+        if (!latestQueueReady) {
           setFeedback({ tone: "warning", text: copy.preflightBlocked });
           return;
         }
@@ -303,6 +309,7 @@ export function HomeTaskComposer({
         title,
         body: goal.trim(),
         type: "task",
+        status: mode === "ai" ? "ready" : "backlog",
         priority: "p2",
         executionPolicy: mode === "ai" ? "auto" : "manual",
         acceptanceCriteria: criteria.split(/\r?\n/).map((value) => value.trim()).filter(Boolean),
@@ -367,25 +374,25 @@ export function HomeTaskComposer({
             <Input aria-label={copy.due} type="date" value={dueDate} min={localDateKey()} onChange={(event) => { setDueDate(event.target.value); idempotencyKey.current = null; setFeedback(null); }} />
           </label>
           <Button className="w-full" variant="secondary" disabled={!canCreate} onClick={() => void create("task")}>{pendingMode === "task" ? copy.creating : copy.create}</Button>
-          <Button className="w-full" data-home-create-action="create-ai" disabled={!canCreateWithAi} title={!readiness?.ready ? copy.preflightBlocked : undefined} onClick={() => void create("ai")}><Sparkles aria-hidden />{pendingMode === "ai" ? copy.creating : copy.createAi}</Button>
+          <Button className="w-full" data-home-create-action="create-ai" disabled={!canCreateWithAi} title={!queueReady ? copy.preflightBlocked : undefined} onClick={() => void create("ai")}><Sparkles aria-hidden />{pendingMode === "ai" ? copy.creating : copy.createAi}</Button>
         </div>
-        {projectId && !unavailable && (readinessLoading || readiness?.ready === false || readinessWarnings.length > 0) ? (
-          <section className={`rounded-lg border px-3 py-2 text-sm ${readiness?.ready === false ? "border-warning/40 bg-warning/[0.06]" : "border-border bg-muted/30"}`} aria-label={copy.preflight} role={readiness?.ready === false ? "alert" : "status"}>
+        {projectId && !unavailable && (readinessLoading || readinessBlocking.length > 0 || readinessWarnings.length > 0) ? (
+          <section className={`rounded-lg border px-3 py-2 text-sm ${readinessBlocking.length > 0 ? "border-warning/40 bg-warning/[0.06]" : "border-border bg-muted/30"}`} aria-label={copy.preflight} role={readinessBlocking.length > 0 ? "alert" : "status"}>
             <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
               <div className="min-w-0">
                 <p className="flex items-center gap-2 font-medium">
                   {readinessLoading ? <LoaderCircle className="size-4 animate-spin" aria-hidden /> : <AlertTriangle className="size-4 text-warning" aria-hidden />}
-                  {readinessLoading ? copy.preflightChecking : readiness?.ready === false ? copy.preflightBlocked : copy.preflightWarning}
+                  {readinessLoading ? copy.preflightChecking : readinessBlocking.length > 0 ? copy.preflightBlocked : copy.preflightWarning}
                 </p>
                 {!readinessLoading ? <ul className="mt-1 list-disc space-y-1 pl-5 text-xs text-muted-foreground">
-                  {(readiness?.checks ?? []).filter((check) => check.status === (readiness?.ready === false ? "blocked" : "warn")).map((check) => (
+                  {(readinessBlocking.length > 0 ? readinessBlocking : readinessWarnings).map((check) => (
                     <li key={check.key}><span className="font-medium text-foreground">{check.label}:</span> {check.detail}</li>
                   ))}
                 </ul> : null}
               </div>
               {!readinessLoading ? <div className="flex shrink-0 flex-wrap gap-1">
                 <Button size="sm" variant="ghost" onClick={() => { void loadReadiness(); }}><RefreshCw aria-hidden />{copy.preflightRetry}</Button>
-                {readiness?.ready === false && onOpenSetup ? <Button size="sm" variant="secondary" onClick={() => onOpenSetup(readinessSetupSection(readiness))}>{copy.preflightSetup}</Button> : null}
+                {readinessBlocking.length > 0 && readiness && onOpenSetup ? <Button size="sm" variant="secondary" onClick={() => onOpenSetup(readinessSetupSection({ ...readiness, checks: readinessBlocking }))}>{copy.preflightSetup}</Button> : null}
               </div> : null}
             </div>
           </section>

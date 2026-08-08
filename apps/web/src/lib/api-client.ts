@@ -2171,6 +2171,7 @@ export const api = {
     title: string;
     body?: string;
     type?: "task" | "bug" | "feature" | "initiative";
+    status?: "backlog" | "ready" | "in_progress" | "review" | "blocked" | "done";
     priority?: "p0" | "p1" | "p2" | "p3";
     executionPolicy?: "inherit" | "auto" | "manual" | "paused";
     labels?: string[];

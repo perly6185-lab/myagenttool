@@ -1,5 +1,5 @@
 import { resolveWorkItemExecution } from "./work-item-execution.mjs";
-import { planAutoExecutionQueue } from "./work-item-auto-scheduler-policy.mjs";
+import { autoExecutionDateKey, planAutoExecutionQueue } from "./work-item-auto-scheduler-policy.mjs";
 
 const MODES = new Set(["off", "shadow", "enabled"]);
 const ACTIVE_RUN_STATUSES = new Set([
@@ -11,11 +11,6 @@ function modeFor(state) {
   if (state?.autoRunSettings?.autonomyKillSwitch === true) return "off";
   const configured = state?.autoRunSettings?.workItemAutoSchedulerMode;
   return MODES.has(configured) ? configured : "enabled";
-}
-
-function dateKey(value) {
-  const parsed = new Date(value);
-  return Number.isNaN(parsed.getTime()) ? new Date().toISOString().slice(0, 10) : parsed.toISOString().slice(0, 10);
 }
 
 function dateOnly(value) {
@@ -43,6 +38,8 @@ export function createWorkItemAutoSchedulerService({
   recordExecutionBinding = null,
   reserveAutoRun = null,
   enqueueAutoRunUnderstanding = null,
+  failAutoRunUnderstanding = null,
+  timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone,
 } = {}) {
   const signatures = new Map();
   let sweeping = false;
@@ -84,7 +81,7 @@ export function createWorkItemAutoSchedulerService({
       .filter((project) => !projectId || project.id === projectId);
     const plan = planAutoExecutionQueue(items, {
       projects,
-      today: dateKey(timestamp),
+      today: autoExecutionDateKey(timestamp, { timeZone }),
       now: timestamp,
     });
     return {
@@ -133,7 +130,23 @@ export function createWorkItemAutoSchedulerService({
       if (!ACTIVE_RUN_STATUSES.has(run.status) || !run.localIssueId) continue;
       const item = (state.workItems ?? []).find((candidate) => candidate.id === run.localIssueId);
       if (!item || (item.executionBindings ?? []).some((binding) => binding.kind === "auto_run" && binding.targetId === run.id)) continue;
-      const operation = item.executionOperation?.kind === "auto_run" ? item.executionOperation : null;
+      if (run.scheduler?.source !== "work_item_auto_scheduler") continue;
+      const operationId = run.scheduler.operationId ?? null;
+      const operation = item.executionOperation?.kind === "auto_run"
+        && item.executionOperation.id === operationId
+        ? item.executionOperation
+        : null;
+      if (!operation) {
+        metrics.recoveryFailures += 1;
+        if (typeof failAutoRunUnderstanding === "function") {
+          try {
+            failAutoRunUnderstanding(run.id, new Error("Automatic scheduler recovery could not verify the original execution admission."));
+          } catch {
+            // Keep scanning; one failed cleanup must not stop other recoveries.
+          }
+        }
+        continue;
+      }
       let result;
       try {
         result = recordExecutionBinding({
@@ -179,6 +192,8 @@ export function createWorkItemAutoSchedulerService({
     const operationId = admission.body.operation.id;
     const slug = String(item.title ?? "work").toLowerCase()
       .replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 40) || "work";
+    let reservedAutoRun = null;
+    let executionBindingRecorded = false;
     try {
       const result = await reserveAutoRun({
         projectId: item.projectId,
@@ -205,12 +220,14 @@ export function createWorkItemAutoSchedulerService({
           : item.planningProjects?.some((project) => project.autonomyProfile === "high") ? "high" : "standard",
         scheduler: {
           source: "work_item_auto_scheduler",
+          operationId,
           workItemRevision: item.revision,
           selectedAt: now(),
           priority: item.priority,
           rank: decision?.rank?.slice(0, 6) ?? null,
         },
       });
+      reservedAutoRun = result.autoRun;
       const recorded = recordExecutionBinding({
         workItemId: item.id,
         kind: "auto_run",
@@ -219,10 +236,11 @@ export function createWorkItemAutoSchedulerService({
         operationId,
       }, actor);
       if (!recorded.ok) throw new Error(recorded.body?.error ?? "work_item_execution_binding_failed");
+      executionBindingRecorded = true;
       enqueueAutoRunUnderstanding(result.autoRun.id);
       metrics.starts += 1;
       metrics.lastStartedAt = now();
-      if (dateOnly(item.plannedDate) > dateKey(now())) metrics.futurePullForwards += 1;
+      if (dateOnly(item.plannedDate) > autoExecutionDateKey(now(), { timeZone })) metrics.futurePullForwards += 1;
       appendEvent({
         invocationId: null,
         type: "work_item_auto_scheduler_started",
@@ -233,6 +251,13 @@ export function createWorkItemAutoSchedulerService({
       return { started: true, workItemId: item.id, autoRunId: result.autoRun.id };
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
+      if (reservedAutoRun && !executionBindingRecorded && typeof failAutoRunUnderstanding === "function") {
+        try {
+          failAutoRunUnderstanding(reservedAutoRun.id, error);
+        } catch {
+          // The admission abort below still releases the task even if Run cleanup fails.
+        }
+      }
       abortExecution({ workItemId: item.id, operationId, reason: message }, actor);
       if (message.startsWith("At capacity:")) {
         metrics.capacityDeferrals += 1;
@@ -258,12 +283,12 @@ export function createWorkItemAutoSchedulerService({
     metrics.sweeps += 1;
     metrics.lastSweepAt = now();
     if (mode === "off") return { mode, swept: 0, selected: 0 };
-    const recoveredBindings = recoverOrphanedBindings();
+    const recoveredBindings = mode === "enabled" ? recoverOrphanedBindings() : 0;
 
-    const teamIds = [...new Set((state.projects ?? [])
-      .filter((project) => project.autoExecutionEnabled === true)
-      .map((project) => project.ownerTeamId)
-      .filter(Boolean))];
+    const teamIds = [...new Set([
+      ...(state.projects ?? []).map((project) => project.ownerTeamId),
+      ...(state.workItems ?? []).map((item) => item.ownerTeamId),
+    ].filter(Boolean))];
     let selected = 0;
     let eligibleCount = 0;
     const starts = [];
@@ -275,8 +300,10 @@ export function createWorkItemAutoSchedulerService({
       signatures.set(teamId, signature);
       if (repeated && mode === "shadow") continue;
       if (!result.nextWorkItemId) continue;
-      selected += 1;
-      if (mode === "shadow") metrics.shadowSelections += 1;
+      if (mode === "shadow") {
+        selected += 1;
+        metrics.shadowSelections += 1;
+      }
       if (!repeated) appendEvent({
         invocationId: null,
         type: "work_item_auto_scheduler_decision",
@@ -289,10 +316,16 @@ export function createWorkItemAutoSchedulerService({
           eligibleWorkItemIds: result.eligibleWorkItemIds,
         },
       });
-      if (mode === "enabled" && result.nextWorkItemId) {
-        const candidate = (state.workItems ?? []).find((item) => item.id === result.nextWorkItemId);
-        const decision = result.decisions.find((row) => row.workItemId === result.nextWorkItemId) ?? null;
-        if (candidate) starts.push(await startCandidate(candidate, decision));
+      if (mode === "enabled") {
+        for (const workItemId of result.eligibleWorkItemIds.slice(0, 25)) {
+          const candidate = (state.workItems ?? []).find((item) => item.id === workItemId);
+          const decision = result.decisions.find((row) => row.workItemId === workItemId) ?? null;
+          if (!candidate) continue;
+          selected += 1;
+          const outcome = await startCandidate(candidate, decision);
+          starts.push(outcome);
+          if (outcome.started || ["waiting_capacity", "scheduler_dependencies_unavailable"].includes(outcome.reason)) break;
+        }
       }
     }
     metrics.lastEligibleCount = eligibleCount;

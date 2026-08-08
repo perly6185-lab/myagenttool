@@ -14,6 +14,26 @@ function dateOnly(value) {
   return match?.[0] ?? null;
 }
 
+export function autoExecutionDateKey(value = new Date(), {
+  timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone,
+} = {}) {
+  const parsed = value instanceof Date ? value : new Date(value);
+  const instant = Number.isNaN(parsed.getTime()) ? new Date() : parsed;
+  try {
+    const parts = new Intl.DateTimeFormat("en-US", {
+      timeZone,
+      year: "numeric",
+      month: "2-digit",
+      day: "2-digit",
+    }).formatToParts(instant);
+    const values = Object.fromEntries(parts.map((part) => [part.type, part.value]));
+    if (values.year && values.month && values.day) return `${values.year}-${values.month}-${values.day}`;
+  } catch {
+    // Invalid or unavailable time zones fall back to the instant's UTC date.
+  }
+  return instant.toISOString().slice(0, 10);
+}
+
 function timestamp(value, fallback = Number.MAX_SAFE_INTEGER) {
   const parsed = Date.parse(value ?? "");
   return Number.isFinite(parsed) ? parsed : fallback;
@@ -65,8 +85,8 @@ function rankFor(item, today) {
   ];
 }
 
-export function autoExecutionDispatchScore(item, { today = new Date().toISOString().slice(0, 10) } = {}) {
-  const rank = rankFor(item, dateOnly(today) ?? new Date().toISOString().slice(0, 10));
+export function autoExecutionDispatchScore(item, { today = autoExecutionDateKey() } = {}) {
+  const rank = rankFor(item, dateOnly(today) ?? autoExecutionDateKey());
   return (Number(rank[0]) * 1_000_000)
     + (Number(rank[1]) * 10_000)
     + (Number(rank[2]) * 100)
@@ -102,7 +122,7 @@ export function evaluateAutoExecutionCandidate(item, {
   const nowMs = timestamp(now, Date.now());
   if (notBefore != null && notBefore > nowMs) reasons.push("not_before_reached");
 
-  const normalizedToday = dateOnly(today ?? now) ?? new Date(nowMs).toISOString().slice(0, 10);
+  const normalizedToday = dateOnly(today) ?? autoExecutionDateKey(nowMs);
   if (dateOnly(item?.plannedDate) > normalizedToday && project?.futurePullForwardEnabled === false) {
     reasons.push("future_pull_forward_disabled");
   }

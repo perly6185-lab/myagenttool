@@ -43,7 +43,7 @@ describe("ProjectSettingsForm", () => {
   it("offers two plain-language automatic-work controls and saves both", async () => {
     render(<ProjectSettingsForm project={project} />);
 
-    const automatic = screen.getByRole("checkbox", { name: /process project tasks automatically/i });
+    const automatic = screen.getByRole("checkbox", { name: /handle project tasks by default/i });
     const pullForward = screen.getByRole("checkbox", { name: /pull future work forward/i });
     expect((pullForward as HTMLInputElement).disabled).toBe(true);
 
