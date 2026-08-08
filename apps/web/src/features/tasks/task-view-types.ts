@@ -372,6 +372,16 @@ export type LocalWorkItemObservability = {
   nextAction: "review_approval" | "review_delivery" | "resolve_sync_conflict" | "inspect_failure" | "none" | "monitor_execution" | "start_execution";
   attention: WorkItemAttention[];
   latestRun: LocalWorkItemAutoRun | null;
+  outcome?: {
+    status: "pending" | "available" | "missing";
+    summary: string | null;
+    fullReport: string | null;
+    highlights: string[];
+    warnings: string[];
+    files: string[];
+    verification: { passed: boolean; verified: boolean; summary: string | null } | null;
+    deliveredAt: string | null;
+  } | null;
   runHistory?: {
     invocationId: string;
     autoRunId: string | null;
