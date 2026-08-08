@@ -830,6 +830,7 @@ test("a local issue starts an auto-run with its local body and acceptance criter
   assert.equal(autoRun.executionChainId, item.id);
   assert.equal(autoRun.autonomyProfile, "standard");
   assert.equal(autoRun.terminalId, item.terminalId);
+  assert.match(autoRun.branchName, /-autorun-\d+$/, "the AI branch cannot collide with a manually created worktree branch");
   const invocation = runtimeState.invocations.find((row) => row.id === autoRun.invocationId);
   assert.equal(invocation.terminalId, item.terminalId);
   assert.equal(invocation.options.metadata.executionChainId, item.id);

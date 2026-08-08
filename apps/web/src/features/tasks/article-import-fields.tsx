@@ -18,7 +18,7 @@ const labels = {
     images: "images",
     audio: "audio",
     video: "video",
-    publicOnly: "Only publicly accessible HTTPS pages are supported. Login and access controls are never bypassed.",
+    publicOnly: "Only publicly accessible HTTPS pages are supported. AI will download the article into its isolated workspace, then read, summarize, and deliver the result.",
     provider: { wechat: "WeChat", xiaohongshu: "Xiaohongshu", zhihu: "Zhihu", juejin: "Juejin", jianshu: "Jianshu", web: "Web" },
   },
   zh: {
@@ -33,7 +33,7 @@ const labels = {
     images: "张图片",
     audio: "个音频",
     video: "个视频",
-    publicOnly: "仅支持可公开访问的 HTTPS 页面，不会绕过登录、验证码或访问限制。",
+    publicOnly: "仅支持可公开访问的 HTTPS 页面。AI 会在隔离工作区下载文章，再阅读、总结并交付结果；不会绕过登录、验证码或访问限制。",
     provider: { wechat: "公众号", xiaohongshu: "小红书", zhihu: "知乎", juejin: "掘金", jianshu: "简书", web: "其他网页" },
   },
 } as const;

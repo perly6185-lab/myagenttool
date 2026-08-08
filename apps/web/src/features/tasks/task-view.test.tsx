@@ -307,7 +307,7 @@ describe("TaskView local work items", () => {
     })));
   });
 
-  it("inspects and imports a public article into an issue worktree", async () => {
+  it("inspects a public article and creates an automatically scheduled AI issue", async () => {
     mocks.listWorkItems.mockResolvedValue({ workItems: [], count: 0 });
     mocks.inspectArticleImport.mockResolvedValue({
       inspection: {
@@ -323,15 +323,6 @@ describe("TaskView local work items", () => {
       },
     });
     mocks.createWorkItem.mockResolvedValue({ workItem: { id: "lwi_article" } });
-    mocks.createWorkItemWorktree.mockResolvedValue({ worktree: { id: "wtr_article" } });
-    mocks.startArticleImport.mockResolvedValue({
-      job: {
-        id: "article_import_1",
-        state: "completed",
-        progress: { stage: "completed", completed: 1, total: 1 },
-        error: null,
-      },
-    });
     render(<TaskView />);
     fireEvent.click(screen.getByRole("button", { name: /New task/i }));
     fireEvent.click(await screen.findByRole("button", { name: "Import link" }));
@@ -342,19 +333,20 @@ describe("TaskView local work items", () => {
     expect(await screen.findByText("Imported WeChat article")).toBeTruthy();
     expect(screen.getByText(/3 images/)).toBeTruthy();
     fireEvent.change(screen.getByLabelText("Expected completion date"), { target: { value: "2026-08-15" } });
-    fireEvent.click(screen.getByRole("button", { name: "Create and import" }));
+    fireEvent.click(screen.getByRole("button", { name: "Create and let AI handle it" }));
     await waitFor(() => expect(mocks.createWorkItem).toHaveBeenCalledWith(expect.objectContaining({
       projectId: "prj_1",
       title: "Imported WeChat article",
       labels: expect.arrayContaining(["source:wechat", "content:article"]),
       intakeChannel: "import",
+      status: "ready",
+      executionPolicy: "auto",
+      waitingOn: "ai",
+      plannedDate: expect.stringMatching(/^\d{4}-\d{2}-\d{2}$/),
     })));
     expect(mocks.createWorkItem.mock.calls.at(-1)?.[0]).not.toHaveProperty("assigneeIds");
-    expect(mocks.createWorkItemWorktree).toHaveBeenCalledWith("lwi_article");
-    expect(mocks.startArticleImport).toHaveBeenCalledWith("lwi_article", {
-      url: "https://mp.weixin.qq.com/s/example",
-      worktreeId: "wtr_article",
-    });
+    expect(mocks.createWorkItemWorktree).not.toHaveBeenCalled();
+    expect(mocks.startArticleImport).not.toHaveBeenCalled();
   });
 
   it("ignores a stale inspection response after the URL changes", async () => {
@@ -383,114 +375,7 @@ describe("TaskView local work items", () => {
     });
     await waitFor(() => expect(mocks.inspectArticleImport).toHaveBeenCalled());
     expect(screen.queryByText("Stale article A")).toBeNull();
-    expect((screen.getByRole("button", { name: "Create and import" }) as HTMLButtonElement).disabled).toBe(true);
-  });
-
-  it("resumes a stored article import when the creation dialog is reopened", async () => {
-    window.localStorage.setItem("myagenttool.article-import.active.v1", JSON.stringify({
-      projectId: "prj_1",
-      workItemId: "lwi_resume",
-      worktreeId: "wtr_resume",
-      jobId: "article_import_resume",
-      sourceUrl: "https://example.com/resume",
-    }));
-    mocks.listWorkItems.mockResolvedValue({ workItems: [], count: 0 });
-    mocks.getArticleImport.mockResolvedValue({
-      job: {
-        id: "article_import_resume",
-        state: "completed",
-        progress: { stage: "completed", completed: 1, total: 1 },
-        error: null,
-      },
-    });
-    render(<TaskView />);
-    fireEvent.click(screen.getByRole("button", { name: /New task/i }));
-    await waitFor(() => expect(mocks.getArticleImport).toHaveBeenCalledWith("lwi_resume", "article_import_resume"));
-    expect(window.localStorage.getItem("myagenttool.article-import.active.v1")).toBeNull();
-  });
-
-  it("offers a one-click retry when a persisted import was interrupted by restart", async () => {
-    mocks.execute.mockImplementationOnce(async (fn: () => Promise<unknown>) => {
-      try {
-        await fn();
-        return true;
-      } catch {
-        return false;
-      }
-    });
-    window.localStorage.setItem("myagenttool.article-import.active.v1", JSON.stringify({
-      projectId: "prj_1",
-      workItemId: "lwi_resume",
-      worktreeId: "wtr_resume",
-      jobId: "article_import_old",
-      sourceUrl: "https://example.com/resume",
-    }));
-    mocks.listWorkItems.mockResolvedValue({ workItems: [], count: 0 });
-    mocks.getArticleImport.mockResolvedValue({
-      job: {
-        id: "article_import_old",
-        state: "failed",
-        progress: { stage: "failed", completed: 0, total: 1 },
-        error: "article_import_interrupted",
-      },
-    });
-    mocks.startArticleImport.mockResolvedValue({
-      job: {
-        id: "article_import_retry",
-        state: "completed",
-        progress: { stage: "completed", completed: 1, total: 1 },
-        error: null,
-      },
-    });
-    render(<TaskView />);
-    fireEvent.click(screen.getByRole("button", { name: /New task/i }));
-    expect(await screen.findByText(/server restarted during import/i)).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: "Retry import" }));
-    await waitFor(() => expect(mocks.startArticleImport).toHaveBeenCalledWith("lwi_resume", {
-      url: "https://example.com/resume",
-      worktreeId: "wtr_resume",
-    }));
-    expect(mocks.createWorkItem).not.toHaveBeenCalled();
-    expect(mocks.createWorkItemWorktree).not.toHaveBeenCalled();
-  });
-
-  it("keeps the creation dialog open while an article import is active", async () => {
-    mocks.listWorkItems.mockResolvedValue({ workItems: [], count: 0 });
-    mocks.inspectArticleImport.mockResolvedValue({
-      inspection: {
-        canonicalUrl: "https://example.com/slow",
-        provider: "web",
-        contentType: "article",
-        title: "Slow article",
-        author: null,
-        publishedAt: null,
-        publishedAtSource: "imported",
-        textLength: 20,
-        mediaCounts: { images: 1, audio: 0, video: 0 },
-      },
-    });
-    mocks.createWorkItem.mockResolvedValue({ workItem: { id: "lwi_slow" } });
-    mocks.createWorkItemWorktree.mockResolvedValue({ worktree: { id: "wtr_slow" } });
-    mocks.startArticleImport.mockResolvedValue({
-      job: {
-        id: "article_import_slow",
-        state: "queued",
-        progress: { stage: "queued", completed: 0, total: 1 },
-        error: null,
-      },
-    });
-    mocks.getArticleImport.mockReturnValue(new Promise(() => {}));
-    render(<TaskView />);
-    fireEvent.click(screen.getByRole("button", { name: /New task/i }));
-    fireEvent.click(await screen.findByRole("button", { name: "Import link" }));
-    fireEvent.change(screen.getByLabelText("Public article URL"), { target: { value: "https://example.com/slow" } });
-    fireEvent.click(screen.getByRole("button", { name: "Inspect" }));
-    await screen.findByText("Slow article");
-    fireEvent.change(screen.getByLabelText("Expected completion date"), { target: { value: "2026-08-15" } });
-    fireEvent.click(screen.getByRole("button", { name: "Create and import" }));
-    await screen.findByRole("button", { name: "Cancel" });
-    await waitFor(() => expect((screen.getByRole("button", { name: "Close" }) as HTMLButtonElement).disabled).toBe(true));
-    expect(window.localStorage.getItem("myagenttool.article-import.active.v1")).toContain("article_import_slow");
+    expect((screen.getByRole("button", { name: "Create and let AI handle it" }) as HTMLButtonElement).disabled).toBe(true);
   });
 
   it("filters tasks by planning project and manages membership", async () => {

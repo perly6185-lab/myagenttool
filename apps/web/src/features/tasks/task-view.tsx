@@ -281,7 +281,6 @@ export function TaskView({ localOnly = false }: { localOnly?: boolean } = {}) {
     importedCount?: number;
     failedCount?: number;
   } | null>(null);
-  const [createArticleImportActive, setCreateArticleImportActive] = useState(false);
   const [planningOpen, setPlanningOpen] = useState(false);
   const storedSelectedLocalId = useUiStore((state) => state.selectedWorkItemId);
   const persistSelectedLocalId = useUiStore((state) => state.setSelectedWorkItemId);
@@ -1003,11 +1002,8 @@ export function TaskView({ localOnly = false }: { localOnly?: boolean } = {}) {
 
       <Modal
         open={createLocalOpen}
-        onClose={() => {
-          if (!createArticleImportActive) setCreateLocalOpen(false);
-        }}
+        onClose={() => setCreateLocalOpen(false)}
         title={t("tasks.newLocal")}
-        closeDisabled={createArticleImportActive}
       >
         {createLocalOpen ? (
           <Suspense fallback={null}>
@@ -1015,9 +1011,7 @@ export function TaskView({ localOnly = false }: { localOnly?: boolean } = {}) {
               projects={projects}
               users={state?.users ?? []}
               initialProjectId={projectId === "all" ? projects[0]?.id ?? "" : projectId}
-              onImportActivityChange={setCreateArticleImportActive}
               onDone={() => {
-                setCreateArticleImportActive(false);
                 setCreateLocalOpen(false);
                 setTab("local");
                 setNonce((value) => value + 1);

@@ -140,8 +140,12 @@ export function syncBoundWorkItemsForAutoRun({ state, autoRun, status, now, next
   if (!targetStatus) return [];
   const changed = [];
   for (const item of state.workItems ?? []) {
-    if (!(item.executionBindings ?? []).some((binding) =>
-      binding.kind === "auto_run" && binding.targetId === autoRun.id)) continue;
+    const autoRunBindings = (item.executionBindings ?? []).filter((binding) => binding.kind === "auto_run");
+    if (!autoRunBindings.some((binding) => binding.targetId === autoRun.id)) continue;
+    // A retried Issue keeps older Runs for audit. Only its newest bound Run may
+    // project planning/waiting state; otherwise a delayed reconciliation of an
+    // earlier failure can overwrite a later successful review result.
+    if (autoRunBindings.at(-1)?.targetId !== autoRun.id) continue;
     let verificationRecorded = false;
     if (["pr_open", "report_posted", "done", "blocked"].includes(status)
       && autoRun.verification?.verified

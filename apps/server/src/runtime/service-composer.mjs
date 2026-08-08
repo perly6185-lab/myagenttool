@@ -543,7 +543,7 @@ export function createServerRuntimeServices({
         projectId: item.projectId,
         link,
         localIssueId: item.id,
-        name: `local-${item.localNumber}-${slug}${attemptSuffix}`,
+        name: `local-${item.localNumber}-${slug}-autorun-${Number(item.revision) || 0}${attemptSuffix}`,
         baseBranch,
         agentId,
         actor,

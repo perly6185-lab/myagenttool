@@ -834,7 +834,7 @@ export async function handleWorkItemRoutes({
     }
     const operationId = admission.body.operation.id;
     const slug = String(item.title ?? "work").toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 40) || "work";
-    const name = body?.name ?? `local-${item.localNumber}-${slug}`;
+    const name = body?.name ?? `local-${item.localNumber}-${slug}${kind === "auto_run" ? `-autorun-${Number(item.revision) || 0}` : ""}`;
     const link = { type: "local_issue", number: item.localNumber, title: item.title, url: null, state: item.state };
     let reservedAutoRun = null;
     let executionBindingRecorded = false;

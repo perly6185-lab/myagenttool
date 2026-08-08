@@ -209,7 +209,7 @@ export function createWorkItemAutoSchedulerService({
           plannedDate: item.plannedDate ?? null,
         },
         localIssueId: item.id,
-        name: `local-${item.localNumber}-${slug}`,
+        name: `local-${item.localNumber}-${slug}-autorun-${Number(item.revision) || 0}`,
         agentId: agent.id,
         actor,
         issueBody: item.body,

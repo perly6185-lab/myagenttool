@@ -45,6 +45,7 @@ test("enabled mode admits one task, binds its reserved Run, and does not duplica
   });
   let beginCount = 0;
   let enqueueCount = 0;
+  let reservedName = null;
   const service = createWorkItemAutoSchedulerService({
     state,
     now: () => "2026-08-08T04:00:00.000Z",
@@ -52,7 +53,8 @@ test("enabled mode admits one task, binds its reserved Run, and does not duplica
     getWorkItem: ({ workItemId }) => ({ ok: true, body: { workItem: state.workItems.find((item) => item.id === workItemId) } }),
     beginExecution: () => ({ ok: true, body: { operation: { id: `weo_${++beginCount}` } } }),
     abortExecution: () => ({ ok: true }),
-    reserveAutoRun: async () => {
+    reserveAutoRun: async ({ name }) => {
+      reservedName = name;
       const autoRun = { id: "aur_1", status: "materializing", localIssueId: "lwi_1", executionChainId: "lwi_1" };
       state.autoRuns.push(autoRun);
       return { autoRun, worktree: null };
@@ -67,6 +69,7 @@ test("enabled mode admits one task, binds its reserved Run, and does not duplica
   assert.equal(first.starts[0].started, true);
   assert.equal(beginCount, 1);
   assert.equal(enqueueCount, 1);
+  assert.equal(reservedName, "local-1-implement-queue-autorun-0");
   assert.equal(service.preview({ teamId: "team_a" }).metrics.futurePullForwards, 1);
   await service.sweep();
   assert.equal(beginCount, 1, "an active Run prevents duplicate scheduler admission");

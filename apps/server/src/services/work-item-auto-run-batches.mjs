@@ -210,7 +210,7 @@ export function createWorkItemAutoRunBatchService({
     const operationId = admission.body.operation.id;
     const slug = String(item.title ?? "work").toLowerCase()
       .replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 40) || "work";
-    const name = `local-${item.localNumber}-${slug}`;
+    const name = `local-${item.localNumber}-${slug}-autorun-${Number(item.revision) || 0}`;
     const link = {
       type: "local_issue",
       number: item.localNumber,
