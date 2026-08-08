@@ -14,6 +14,7 @@ const mocks = vi.hoisted(() => ({
   retryAutoRun: vi.fn(),
   startWorkItemAutoRun: vi.fn(),
   answerClarify: vi.fn(),
+  cancelAutoRun: vi.fn(),
   autoRunReadiness: vi.fn(),
   recordWorkItemVerification: vi.fn(),
   transitionWorkItem: vi.fn(),
@@ -40,6 +41,7 @@ vi.mock("@/data/use-console-actions", () => ({
     retryAutoRun: mocks.retryAutoRun,
     startWorkItemAutoRun: mocks.startWorkItemAutoRun,
     answerClarify: mocks.answerClarify,
+    cancelAutoRun: mocks.cancelAutoRun,
     autoRunReadiness: mocks.autoRunReadiness,
     recordWorkItemVerification: mocks.recordWorkItemVerification,
     transitionWorkItem: mocks.transitionWorkItem,
@@ -391,6 +393,33 @@ describe("work item summary presentation", () => {
 
     await waitFor(() => expect(mocks.answerClarify).toHaveBeenCalledWith("aur_clarify", "Fall back to UTC and record a warning."));
     expect(await screen.findByText(/continue in the same task run/i)).toBeTruthy();
+  });
+
+  it("lets the user stop an AI run while it is waiting for clarification", async () => {
+    mocks.getWorkItem.mockResolvedValue({
+      workItem: item({ executionState: "awaiting_approval", waitingOn: "me" }),
+      observability: {
+        latestRun: {
+          id: "aur_clarify_stop",
+          status: "needs_input",
+          phase: "waiting_for_input",
+          updatedAt: "2026-08-07T01:00:00.000Z",
+          decision: {
+            path: "clarify",
+            decidedBy: "agent",
+            confidence: 0.8,
+            clarifyingQuestions: ["Which behavior should be used?"],
+          },
+        },
+      },
+    });
+    mocks.cancelAutoRun.mockResolvedValue({ id: "aur_clarify_stop", status: "cancelled" });
+    render(<WorkItemSummaryView workItemId="lwi_1" onOpenExpert={() => {}} />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Stop AI" }));
+
+    await waitFor(() => expect(mocks.cancelAutoRun).toHaveBeenCalledWith("aur_clarify_stop"));
+    expect(await screen.findByText(/AI run was stopped/i)).toBeTruthy();
   });
 
   it("explains project context as planning input rather than completion evidence", async () => {

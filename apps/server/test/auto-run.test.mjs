@@ -682,6 +682,54 @@ test("reconciliation backfills changed files for a historical local delivery", a
   assert.ok(autoRun.deliveryReport.changedFilesHydratedAt);
 });
 
+test("reconciliation hydrates a reused AI review and then advances to the next delivery", async () => {
+  const initial = makeAutoRun();
+  const older = await initial.svc.startAutoRun({
+    projectId: sourceProjectId,
+    link: { type: "local_issue", number: 64, title: "Older delivery", url: null, state: "open" },
+    agentId: "agt_1",
+    name: "local-64-older",
+  });
+  await initial.svc.advanceAutoRunForInvocation({ ...older.invocation, status: "succeeded" });
+  const newer = await initial.svc.startAutoRun({
+    projectId: sourceProjectId,
+    link: { type: "local_issue", number: 65, title: "Newer delivery", url: null, state: "open" },
+    agentId: "agt_1",
+    name: "local-65-newer",
+  });
+  await initial.svc.advanceAutoRunForInvocation({ ...newer.invocation, status: "succeeded" });
+  state.workItems = [
+    { id: "lwi_64", state: "open", executionBindings: [{ kind: "auto_run", targetId: older.autoRun.id }] },
+    { id: "lwi_65", state: "open", executionBindings: [{ kind: "auto_run", targetId: newer.autoRun.id }] },
+  ];
+  state.worktreeReviews = [{
+    id: "wrv_existing_ai",
+    worktreeId: newer.worktree.id,
+    source: "ai",
+    reviewerName: "Codex",
+    reviewInvocationId: "inv_existing_ai_review",
+    verdict: "approved",
+    summary: "Existing review is clean.",
+    comments: [],
+    reviewedCommit: `head-${newer.worktree.id}`,
+    createdAt: "2026-08-07T08:00:00.000Z",
+  }];
+  let reviewSequence = 0;
+  const reconciler = makeAutoRun({
+    startDeliveryReview: async () => ({ id: `inv_reconciled_${++reviewSequence}`, status: "queued" }),
+    worktreeHeadSha: (worktreeId) => `head-${worktreeId}`,
+  });
+
+  await reconciler.svc.reconcileDeliveryReviews();
+  assert.equal(newer.autoRun.deliveryReview.status, "completed");
+  assert.equal(newer.autoRun.deliveryReview.reusedReviewId, "wrv_existing_ai");
+  assert.equal(reconciler.calls.deliveryReviewStart.length, 0);
+
+  await reconciler.svc.reconcileDeliveryReviews();
+  assert.equal(older.autoRun.deliveryReview.status, "queued");
+  assert.equal(reconciler.calls.deliveryReviewStart.length, 1, "the reused newest review no longer starves the older delivery");
+});
+
 test("a failed delivery review backs off and stops after three attempts", async () => {
   let currentTime = Date.parse("2026-08-07T08:00:00.000Z");
   let reviewSequence = 0;
@@ -1869,6 +1917,30 @@ test("cancelAutoRun is settled (advance skips it) and refuses an already-settled
   assert.throws(() => svc.cancelAutoRun("aur_nope"), /not found/i);
 });
 
+test("cancelAutoRun stops a clarification Run before its execution contract is confirmed", () => {
+  const { svc } = makeAutoRun();
+  state.workItems = [{
+    id: "wi_waiting_clarification",
+    localNumber: 188,
+    acceptanceCriteria: ["A decision is recorded."],
+    verificationSop: ["Inspect the decision record."],
+    executionContractConfirmedAt: null,
+  }];
+  const autoRun = {
+    id: "aur_waiting_clarification",
+    status: "needs_input",
+    phase: "waiting_for_input",
+    localIssueId: "wi_waiting_clarification",
+    link: { type: "local_issue", number: 188, title: "Choose behavior" },
+    decision: { path: "clarify", clarifyingQuestions: ["Which behavior?"] },
+  };
+  state.autoRuns.push(autoRun);
+
+  svc.cancelAutoRun(autoRun.id, { actor: { userId: "usr_owner" } });
+  assert.equal(autoRun.status, "cancelled");
+  assert.equal(autoRun.phase, "cancelled");
+});
+
 async function judgeRun(svc, number, name) {
   const { autoRun, invocation } = await svc.startAutoRun({
     projectId: sourceProjectId,
@@ -2601,7 +2673,9 @@ test("E2: a develop run with commits still goes to a PR (prototype routing is pa
   assert.equal(calls.pr.length, 1);
 });
 
-const clarifyDecision = async () => ({ path: "clarify", spawnChildIssues: false, confidence: 0.9, rationale: "Under-specified.", clarifyingQuestions: ["Which cache backend?", "TTL policy?"] });
+const clarifyDecision = async ({ issueBody } = {}) => String(issueBody ?? "").includes("Clarifications from")
+  ? ({ path: "develop", spawnChildIssues: false, confidence: 0.95, rationale: "The requested implementation is now specified.", clarifyingQuestions: [] })
+  : ({ path: "clarify", spawnChildIssues: false, confidence: 0.9, rationale: "Under-specified.", clarifyingQuestions: ["Which cache backend?", "TTL policy?"] });
 
 test("E3: answerClarify posts the answer and resumes the same run in develop", async () => {
   const { svc, calls } = makeAutoRun({ decideIssuePath: clarifyDecision, commit: { committed: false, hasCommits: false } });
@@ -2681,6 +2755,82 @@ test("E3: answerClarify refuses non-clarify / non-needs_input runs + empty answe
   const r2 = await svc2.startAutoRun({ projectId: sourceProjectId, link: { type: "issue", number: 112, title: "Add the cache layer", url: null, state: "open" }, agentId: "agt_1", name: "i-112" });
   await svc2.advanceAutoRunForInvocation({ ...r2.invocation, status: "succeeded" });
   await assert.rejects(() => svc2.answerClarify(r2.autoRun.id, { answers: "x" }), /Only a clarify run/);
+});
+
+test("E3: an unavailable agent does not consume the clarification answer", async () => {
+  const agent = fakeAgent();
+  const { svc } = makeAutoRun({ agent, decideIssuePath: clarifyDecision, commit: { committed: false, hasCommits: false } });
+  const { autoRun, invocation } = await svc.startAutoRun({
+    projectId: sourceProjectId,
+    link: { type: "issue", number: 113, title: "Add the cache layer", url: null, state: "open" },
+    agentId: agent.id,
+    name: "i-113",
+  });
+  await svc.advanceAutoRunForInvocation({ ...invocation, status: "succeeded", result: "questions" });
+  agent.status = "disabled";
+
+  await assert.rejects(
+    () => svc.answerClarify(autoRun.id, { actor: { userId: "usr_pm" }, answers: "Use Redis." }),
+    /execution environment is unavailable/i,
+  );
+  assert.equal(autoRun.clarifyAnswer, undefined);
+  assert.equal(autoRun.status, "needs_input");
+
+  agent.status = "active";
+  const retried = await svc.answerClarify(autoRun.id, { actor: { userId: "usr_pm" }, answers: "Use Redis." });
+  assert.equal(retried.resumed, true);
+  assert.equal(autoRun.decision.path, "develop");
+});
+
+test("E3: cancelling while clarification is being re-evaluated prevents dispatch", async () => {
+  let decisionCalls = 0;
+  let resolveSecondDecision;
+  const decideIssuePath = async () => {
+    decisionCalls += 1;
+    if (decisionCalls === 1) {
+      return { path: "clarify", spawnChildIssues: false, confidence: 0.9, rationale: "Need a choice.", clarifyingQuestions: ["Which option?"] };
+    }
+    return new Promise((resolveDecision) => { resolveSecondDecision = resolveDecision; });
+  };
+  const { svc, calls } = makeAutoRun({ decideIssuePath, commit: { committed: false, hasCommits: false } });
+  const { autoRun, invocation } = await svc.startAutoRun({
+    projectId: sourceProjectId,
+    link: { type: "issue", number: 115, title: "Add the selected option", url: null, state: "open" },
+    agentId: "agt_1",
+    name: "i-115",
+  });
+  await svc.advanceAutoRunForInvocation({ ...invocation, status: "succeeded", result: "questions" });
+
+  const answering = svc.answerClarify(autoRun.id, { actor: { userId: "usr_pm" }, answers: "Use option A." });
+  await Promise.resolve();
+  svc.cancelAutoRun(autoRun.id, { actor: { userId: "usr_pm" } });
+  resolveSecondDecision({ path: "develop", spawnChildIssues: false, confidence: 0.95, rationale: "Choice received.", clarifyingQuestions: [] });
+  const result = await answering;
+
+  assert.equal(result.resumed, false);
+  assert.equal(result.reason, "clarification_resume_cancelled");
+  assert.equal(autoRun.status, "cancelled");
+  assert.equal(calls.createInvocation.length, 1, "cancellation wins before a continuation can be dispatched");
+});
+
+test("E3: clarification re-routes from the answer instead of forcing develop", async () => {
+  const decideIssuePath = async ({ issueBody } = {}) => String(issueBody ?? "").includes("Clarifications from")
+    ? ({ path: "design", spawnChildIssues: false, confidence: 0.95, rationale: "The requester wants a report only.", clarifyingQuestions: [] })
+    : ({ path: "clarify", spawnChildIssues: false, confidence: 0.9, rationale: "Ask whether code is wanted.", clarifyingQuestions: ["Should this change code?"] });
+  const { svc, calls } = makeAutoRun({ decideIssuePath, commit: { committed: false, hasCommits: false } });
+  const { autoRun, invocation } = await svc.startAutoRun({
+    projectId: sourceProjectId,
+    link: { type: "issue", number: 114, title: "Add a cache policy", url: null, state: "open" },
+    agentId: "agt_1",
+    name: "i-114",
+  });
+  await svc.advanceAutoRunForInvocation({ ...invocation, status: "succeeded", result: "questions" });
+
+  const resumed = await svc.answerClarify(autoRun.id, { actor: { userId: "usr_pm" }, answers: "Report only; do not modify code." });
+  assert.equal(resumed.resumed, true);
+  assert.equal(autoRun.decision.path, "design");
+  assert.equal(calls.createInvocation.at(-1).options.metadata.role, "design");
+  assert.match(calls.createInvocation.at(-1).task, /Report only; do not modify code/);
 });
 
 test("D5: a develop run whose change includes screenshots surfaces them on the pr_open card", async () => {

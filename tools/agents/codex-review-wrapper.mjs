@@ -295,9 +295,11 @@ function normalizeFindingConfidence(item) {
 
 function normalizeFindingPath(value, cwd) {
   const path = String(value ?? "").trim();
-  if (!path || !cwd || !isAbsolute(path)) return path;
-  const rel = relative(cwd, path);
-  return rel && !rel.startsWith("..") && !isAbsolute(rel) ? rel.replaceAll("\\", "/") : path;
+  if (!path || !cwd) return "";
+  const absolutePath = isAbsolute(path) ? resolve(path) : resolve(cwd, path);
+  const rel = relative(resolve(cwd), absolutePath);
+  const escapes = rel === ".." || rel.startsWith(`..${process.platform === "win32" ? "\\" : "/"}`);
+  return rel && !escapes && !isAbsolute(rel) ? rel.replaceAll("\\", "/") : "";
 }
 
 function severityRank(value) {

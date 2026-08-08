@@ -755,9 +755,37 @@ export function createAutoRunService({
     const currentHead = typeof worktreeHeadSha === "function" ? worktreeHeadSha(worktree.id) : null;
     const existing = (state.worktreeReviews ?? []).find((review) =>
       review.worktreeId === autoRun.localDelivery.worktreeId
+      && review.source === "ai"
       && review.reviewedCommit
       && (!currentHead || review.reviewedCommit === currentHead));
-    if (existing) return existing;
+    if (existing) {
+      return runTx(() => {
+        autoRun.deliveryReview = {
+          status: "completed",
+          invocationId: existing.reviewInvocationId ?? null,
+          reviewer: existing.reviewerName ?? "Codex",
+          startedAt: existing.createdAt ?? now(),
+          completedAt: existing.createdAt ?? now(),
+          verdict: existing.verdict,
+          summary: existing.summary ?? null,
+          findings: (existing.comments ?? []).map((comment) => ({
+            severity: comment.severity ?? "medium",
+            file: comment.path ?? "",
+            line: comment.line ?? null,
+            message: comment.body ?? "",
+            suggestion: comment.suggestion ?? null,
+            confidence: null,
+          })).filter((finding) => finding.file && finding.message),
+          reviewedCommit: existing.reviewedCommit,
+          errorCode: null,
+          structured: true,
+          attempts: Math.max(1, previousAttempts),
+          reusedReviewId: existing.id ?? null,
+        };
+        autoRun.updatedAt = now();
+        return autoRun.deliveryReview;
+      });
+    }
     try {
       const invocation = await startDeliveryReview({ autoRun, worktree });
       if (!invocation?.id) throw new Error("No AI review invocation was created.");
@@ -2600,23 +2628,13 @@ export function createAutoRunService({
   function cancelAutoRun(autoRunId, { actor, terminalId = null } = {}) {
     const autoRun = state.autoRuns.find((item) => item.id === autoRunId);
     if (!autoRun) throw new Error("Auto-run not found.");
-    if (autoRun.link?.type === "local_issue") {
-      const workItem = (state.workItems ?? []).find((item) =>
-        item.id === autoRun.localIssueId
-        || item.id === autoRun.executionChainId
-        || item.localNumber === autoRun.link?.number);
-      if ((autoRun.localIssueId || workItem)
-        && (!workItem
-        || !(workItem.acceptanceCriteria ?? []).length
-        || !(workItem.verificationSop ?? []).length
-        || !workItem.executionContractConfirmedAt)) {
-        throw new Error("work_item_execution_contract_required");
-      }
-    }
     if (terminalId && String(terminalId) !== autoRun.terminalId) {
       throw new Error("This run belongs to a different terminal.");
     }
-    if (settledStatuses.has(autoRun.status)) {
+    // `needs_input` is settled only from the invocation-reaction perspective:
+    // there is no more agent output to advance. It remains operator-cancellable
+    // while the human decides whether to answer the clarification.
+    if (settledStatuses.has(autoRun.status) && autoRun.status !== "needs_input") {
       throw new Error("This run has already settled; only an in-flight run can be cancelled.");
     }
     if (autoRun.invocationId && typeof cancelInvocation === "function") {
@@ -2634,6 +2652,7 @@ export function createAutoRunService({
       }
     }
     return runTx(() => {
+      autoRun.clarificationResume = null;
       setAutoRunStatus(autoRun, "cancelled", { error: null });
       return autoRun;
     });
@@ -3658,11 +3677,9 @@ export function createAutoRunService({
   // review "missing" => never auto-merges (falls to the human merge dialog).
   // Respects the kill switch + circuit breaker; every auto-merge is audited +
   // alerted. Merge itself still goes through mergeAutoRunPr (re-fetches checks).
-  // E3 (decision-path expansion): a human answers a clarify run's questions.
-  // Persist the answer and resume the SAME Auto-run on its existing worktree so
-  // the customer does not have to re-label, re-create, or manually retry the
-  // task. The clarify invocation is read-only; only this resumed develop phase
-  // may produce the implementation diff.
+  // E3 (decision-path expansion): a human answer resumes understanding for the
+  // SAME Auto-run. The answer is new routing input, not implicit permission to
+  // develop: the run may resolve to any supported path or ask another question.
   async function answerClarify(autoRunId, { actor, answers } = {}) {
     const autoRun = state.autoRuns.find((item) => item.id === autoRunId);
     if (!autoRun) throw new Error("Auto-run not found.");
@@ -3675,39 +3692,25 @@ export function createAutoRunService({
     if (autoRun.status !== "needs_input") throw new Error("Only a run awaiting input can be answered.");
     const text = String(answers ?? "").trim();
     if (!text) throw new Error("An answer is required.");
+    if (autoRun.clarificationResume?.status === "processing") {
+      return { ok: true, resumed: false, reason: "clarification_resume_in_progress" };
+    }
     const by = actor?.userId ?? "usr_local";
     const worktree = state.worktrees.find((item) => item.id === autoRun.worktreeId) ?? null;
     const questions = autoRun.decision?.clarifyingQuestions ?? [];
+    const answerText = text.slice(0, 4000);
     const body = [
       `Clarifications from ${by}:`,
       "",
       ...(questions.length ? questions.map((q, i) => `> ${q}`) : []),
       questions.length ? "" : null,
-      text,
+      answerText,
     ].filter((l) => l !== null).join("\n");
-    runTx(() => {
-      maybePostIssueReport(autoRun, worktree, body);
-      autoRun.clarifyAnswer = { by, at: now(), text: text.slice(0, 4000) };
-      autoRun.clarificationHistory = [{
-        by,
-        at: autoRun.clarifyAnswer.at,
-        questions,
-        answer: autoRun.clarifyAnswer.text,
-      }, ...(autoRun.clarificationHistory ?? [])].slice(0, 10);
-      appendEvent({
-        invocationId: autoRun.invocationId,
-        type: "auto_run_clarify_answered",
-        level: "info",
-        message: `Auto-run ${autoRun.id} clarify questions answered by ${by}.`,
-        data: { autoRunId: autoRun.id, issue: autoRun.link?.number ?? null },
-      });
-    });
-
     const agent = autoRun.agentId && typeof findAgent === "function"
       ? findAgent(autoRun.agentId)
       : typeof defaultAgent === "function" ? defaultAgent() : null;
     if (!agent || agent.status === "disabled") {
-      return { ok: true, resumed: false, reason: "execution_environment_unavailable" };
+      throw new Error("The execution environment is unavailable; enable or select an agent before answering.");
     }
     let localWorkItem = null;
     if (autoRun.link?.type === "local_issue") {
@@ -3719,54 +3722,128 @@ export function createAutoRunService({
         || !(localWorkItem.acceptanceCriteria ?? []).length
         || !(localWorkItem.verificationSop ?? []).length
         || (worktree && !localWorkItem.executionContractConfirmedAt)) {
-        return { ok: true, resumed: false, reason: "work_item_execution_contract_required" };
+        throw new Error("The work item execution contract must be prepared before the clarification can resume.");
       }
     }
+    const plan = autoRun.executionPlan ?? null;
+    if (!worktree && (!plan || !(plan.acceptanceCriteria ?? []).length || !(plan.verificationSop ?? []).length)) {
+      throw new Error("The Auto-run execution plan must be prepared before the clarification can resume.");
+    }
 
-    const clarifiedIssueBody = [autoRun.issueBody, body].filter(Boolean).join("\n\n").slice(0, 12_000);
-    if (!worktree) {
-      const plan = autoRun.executionPlan ?? null;
-      if (!plan || !(plan.acceptanceCriteria ?? []).length || !(plan.verificationSop ?? []).length) {
-        return { ok: true, resumed: false, reason: "auto_run_execution_contract_required" };
+    const answerAt = now();
+    const resumeToken = nextId("clarify_resume");
+    runTx(() => {
+      autoRun.clarificationResume = { status: "processing", token: resumeToken, by, startedAt: answerAt };
+      autoRun.phase = "understanding";
+      autoRun.updatedAt = answerAt;
+    });
+
+    // Preserve the human answer at the tail even when the original issue body is
+    // already near the prompt budget. The answer is the most recent routing input.
+    const boundedAnswerBody = body.length > 12_000 ? body.slice(-12_000) : body;
+    const baseBudget = Math.max(0, 12_000 - boundedAnswerBody.length - 2);
+    const baseBody = String(autoRun.issueBody ?? "").slice(0, baseBudget);
+    const clarifiedIssueBody = [baseBody, boundedAnswerBody].filter(Boolean).join("\n\n");
+
+    try {
+      const nextDecision = await resolveDecision({
+        link: autoRun.link,
+        issueBody: clarifiedIssueBody,
+        decideIssuePath,
+        minConfidence: decisionSettings?.minConfidence,
+        // The answer exists specifically to resolve ambiguity, so do not let a
+        // title-only fast path bypass it.
+        fastPath: false,
+        epicDecomposition: state.autoRunSettings?.epicDecomposition === true,
+      });
+      if (autoRun.status !== "needs_input" || autoRun.clarificationResume?.token !== resumeToken) {
+        return { ok: true, resumed: false, reason: "clarification_resume_cancelled", autoRun };
       }
-      const confirmedAt = autoRun.clarifyAnswer.at;
+      const nextPath = nextDecision.path;
+      const revisedPlan = plan ? {
+        ...plan,
+        taskUnderstanding: nextDecision.taskUnderstanding || plan.taskUnderstanding || "",
+        acceptanceCriteria: (nextDecision.acceptanceCriteria ?? []).length
+          ? nextDecision.acceptanceCriteria
+          : plan.acceptanceCriteria,
+        verificationSop: (nextDecision.verificationSop ?? []).length
+          ? nextDecision.verificationSop
+          : plan.verificationSop,
+        risks: (nextDecision.risks ?? []).length ? nextDecision.risks : plan.risks ?? [],
+        suggestedRoute: nextPath,
+        evidence: nextDecision.evidence ?? plan.evidence ?? null,
+      } : null;
+
       runTx(() => {
+        autoRun.issueBody = clarifiedIssueBody;
         autoRun.decisionHistory = [autoRun.decision, ...(autoRun.decisionHistory ?? [])].filter(Boolean).slice(0, 10);
-        autoRun.decision = {
-          ...autoRun.decision,
-          path: "develop",
-          decidedBy: "human_clarification",
-          via: "clarify_answer",
-          rationale: "The requester answered the blocking questions; resume implementation in the same run.",
-          clarifyingQuestions: [],
-        };
-        autoRun.intent = intentForPath("develop");
-        autoRun.phase = "planning";
-        autoRun.updatedAt = now();
-        if (localWorkItem) {
-          localWorkItem.executionContractConfirmedAt = confirmedAt;
-          localWorkItem.executionContractSource = "clarification_confirmed";
+        autoRun.decision = { ...nextDecision, clarifiedBy: by, clarifiedAt: answerAt };
+        autoRun.intent = intentForPath(nextPath);
+        autoRun.updatedAt = answerAt;
+        if (localWorkItem && revisedPlan) {
+          localWorkItem.acceptanceCriteria = [...revisedPlan.acceptanceCriteria];
+          localWorkItem.verificationSop = [...revisedPlan.verificationSop];
+          if (nextPath !== "clarify") {
+            localWorkItem.executionContractConfirmedAt = answerAt;
+            localWorkItem.executionContractSource = "clarification_confirmed";
+            (state.workItemActivities ??= []).unshift({
+              id: nextId("wia"),
+              workItemId: localWorkItem.id,
+              ownerTeamId: localWorkItem.ownerTeamId,
+              projectId: localWorkItem.projectId,
+              action: "execution_contract_confirmed_after_clarification",
+              actorId: by,
+              createdAt: answerAt,
+              details: { autoRunId: autoRun.id, path: nextPath },
+            });
+          }
           localWorkItem.revision = (Number(localWorkItem.revision) || 0) + 1;
-          localWorkItem.updatedAt = confirmedAt;
+          localWorkItem.updatedAt = answerAt;
           localWorkItem.lastModifiedBy = by;
-          (state.workItemActivities ??= []).unshift({
-            id: nextId("wia"),
-            workItemId: localWorkItem.id,
-            ownerTeamId: localWorkItem.ownerTeamId,
-            projectId: localWorkItem.projectId,
-            action: "execution_contract_confirmed_after_clarification",
-            actorId: by,
-            createdAt: confirmedAt,
-            details: { autoRunId: autoRun.id },
-          });
         }
       });
-      const frozen = attachAutoRunExecutionPlan(autoRun.id, {
-        ...plan,
-        confirmedBy: "user",
-        confirmedAt,
+
+      let frozen = null;
+      if (!worktree && revisedPlan) {
+        frozen = attachAutoRunExecutionPlan(autoRun.id, {
+          ...revisedPlan,
+          confirmedBy: nextPath === "clarify" ? null : "user",
+          confirmedAt: nextPath === "clarify" ? null : answerAt,
+        });
+      }
+
+      runTx(() => {
+        autoRun.clarificationHistory = [{
+          by,
+          at: answerAt,
+          questions,
+          answer: answerText,
+          resolvedPath: nextPath,
+        }, ...(autoRun.clarificationHistory ?? [])].slice(0, 10);
+        autoRun.clarifyAnswer = nextPath === "clarify" ? null : { by, at: answerAt, text: answerText };
+        if (nextPath === "clarify") {
+          autoRun.clarificationResume = null;
+          autoRun.phase = "waiting_for_input";
+        }
+        appendEvent({
+          invocationId: autoRun.invocationId,
+          type: "auto_run_clarify_answered",
+          level: "info",
+          message: `Auto-run ${autoRun.id} clarification was answered and re-routed to ${nextPath}.`,
+          data: { autoRunId: autoRun.id, issue: autoRun.link?.number ?? null, path: nextPath },
+        });
       });
-      try {
+      maybePostIssueReport(autoRun, worktree, body);
+
+      if (nextPath === "clarify") {
+        return { ok: true, resumed: true, waitingForInput: true, autoRun };
+      }
+
+      if (autoRun.status !== "needs_input" || autoRun.clarificationResume?.token !== resumeToken) {
+        return { ok: true, resumed: false, reason: "clarification_resume_cancelled", autoRun };
+      }
+
+      if (!worktree) {
         const resumed = await startAutoRun({
           projectId: autoRun.projectId,
           link: autoRun.link,
@@ -3782,43 +3859,25 @@ export function createAutoRunService({
           autonomyProfile: autoRun.autonomyProfile,
           existingAutoRunId: autoRun.id,
           executionPlan: frozen.executionPlan,
-          decisionOverride: {
-            path: "develop",
-            decidedBy: "human_clarification",
-            via: "clarify_answer",
-            rationale: "The requester answered the blocking questions; resume implementation in the same run.",
-            clarifyingQuestions: [],
-          },
         });
         runTx(() => {
-          autoRun.issueBody = clarifiedIssueBody;
+          autoRun.clarificationResume = null;
           appendEvent({
             invocationId: resumed.invocation?.id ?? null,
             type: "auto_run_resumed_after_clarification",
             level: "info",
             message: `Auto-run ${autoRun.id} materialized and resumed after clarification.`,
-            data: { autoRunId: autoRun.id, worktreeId: resumed.worktree?.id ?? null, answeredBy: by },
+            data: { autoRunId: autoRun.id, worktreeId: resumed.worktree?.id ?? null, answeredBy: by, path: nextPath },
           });
         });
         return { ok: true, resumed: true, ...resumed };
-      } catch (error) {
-        runTx(() => setAutoRunStatus(autoRun, "failed", {
-          error: `The clarified run could not enter implementation: ${String(error?.message ?? error)}`,
-        }));
-        throw error;
       }
-    }
-    const verifyProject = state.projects.find((project) => project.id === autoRun.projectId) ?? null;
-    const verifyCmdArr = resolveAutoRunVerifyCommandFor({ verifyCommandName: verifyProject?.verifyCommandName ?? null });
-    const verifyCommand = Array.isArray(verifyCmdArr) && verifyCmdArr.length ? verifyCmdArr.join(" ") : null;
-    const task = roleAutoRunPrompt(autoRun.link, {
-      path: "develop",
-      issueBody: clarifiedIssueBody,
-      verifyCommand,
-    });
-    let invocation;
-    try {
-      invocation = createInvocation(task, agent, {
+
+      const verifyProject = state.projects.find((project) => project.id === autoRun.projectId) ?? null;
+      const verifyCmdArr = resolveAutoRunVerifyCommandFor({ verifyCommandName: verifyProject?.verifyCommandName ?? null });
+      const verifyCommand = Array.isArray(verifyCmdArr) && verifyCmdArr.length ? verifyCmdArr.join(" ") : null;
+      const task = roleAutoRunPrompt(autoRun.link, { path: nextPath, issueBody: clarifiedIssueBody, verifyCommand });
+      const invocation = createInvocation(task, agent, {
         actor,
         ...codexAutoApprovalOptions(agent),
         timeoutSeconds: autoRunTurnTimeoutSeconds(agent),
@@ -3826,44 +3885,50 @@ export function createAutoRunService({
           worktreeId: worktree.id,
           projectId: worktree.projectId,
           autoRunId: autoRun.id,
-          role: "develop",
+          role: nextPath,
           executionChainId: autoRun.executionChainId,
           autonomyProfile: autoRun.autonomyProfile,
           resumedFromClarification: true,
         },
       });
       runTx(() => {
-        autoRun.issueBody = clarifiedIssueBody;
-        autoRun.decisionHistory = [autoRun.decision, ...(autoRun.decisionHistory ?? [])].filter(Boolean).slice(0, 10);
-        autoRun.decision = {
-          ...autoRun.decision,
-          path: "develop",
-          decidedBy: "human_clarification",
-          via: "clarify_answer",
-          rationale: `The requester answered the blocking questions; resume implementation in the same run.`,
-          clarifyingQuestions: [],
-        };
-        autoRun.intent = intentForPath("develop");
+        autoRun.clarificationResume = null;
         autoRun.invocationId = invocation.id;
-        autoRun.phase = "implementing";
-        autoRun.executionStage = "execution";
+        autoRun.phase = nextPath === "develop" ? "implementing" : "planning";
+        autoRun.executionStage = nextPath === "develop" ? "execution" : "analysis";
         setAutoRunStatus(autoRun, autoRunStatusForInvocation(invocation), { error: null });
         appendEvent({
           invocationId: invocation.id,
           type: "auto_run_resumed_after_clarification",
           level: "info",
           message: `Auto-run ${autoRun.id} resumed after clarification.`,
-          data: { autoRunId: autoRun.id, worktreeId: worktree.id, answeredBy: by },
+          data: { autoRunId: autoRun.id, worktreeId: worktree.id, answeredBy: by, path: nextPath },
         });
       });
       startInvocationIfAllowed(invocation, agent);
+      return { ok: true, resumed: true, autoRun, invocation };
     } catch (error) {
-      runTx(() => setAutoRunStatus(autoRun, "failed", {
-        error: `The clarified run could not resume: ${String(error?.message ?? error)}`,
-      }));
+      runTx(() => {
+        if (autoRun.clarificationResume?.token === resumeToken) autoRun.clarificationResume = null;
+        // Once a route was resolved and recorded, a dispatch failure is a normal
+        // failed Run and can use the existing retry path. Validation/decision
+        // failures leave needs_input intact so the same answer can be retried.
+        if (autoRun.status === "cancelled") {
+          return;
+        }
+        if (autoRun.clarifyAnswer) {
+          if (autoRun.status === "needs_input") {
+            setAutoRunStatus(autoRun, "failed", {
+              error: `The clarified run could not resume: ${String(error?.message ?? error)}`,
+            });
+          }
+        } else {
+          autoRun.phase = "waiting_for_input";
+          autoRun.updatedAt = now();
+        }
+      });
       throw error;
     }
-    return { ok: true, resumed: true, autoRun, invocation };
   }
 
   const breakerOpen = () => {

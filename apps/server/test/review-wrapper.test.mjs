@@ -229,6 +229,54 @@ test("codex wrapper normalizes native review findings", () => {
   });
 });
 
+test("codex wrapper drops absolute and relative findings outside the review worktree", () => {
+  const capture = join(workdir, "outside-path-capture.json");
+  const native = JSON.stringify({
+    overall_correctness: "patch is incorrect",
+    overall_explanation: "Only the in-worktree finding is valid.",
+    findings: [
+      {
+        title: "[P1] Valid finding",
+        body: "This file belongs to the reviewed patch.",
+        priority: 1,
+        confidence_score: 0.95,
+        code_location: {
+          absolute_file_path: join(workdir, "src/inside.mjs"),
+          line_range: { start: 4, end: 4 },
+        },
+      },
+      {
+        title: "[P1] Outside absolute path",
+        body: "This path must not leave the worktree.",
+        priority: 1,
+        confidence_score: 0.95,
+        code_location: {
+          absolute_file_path: resolve(workdir, "../outside-secret.txt"),
+          line_range: { start: 1, end: 1 },
+        },
+      },
+      {
+        title: "[P1] Traversal path",
+        body: "Relative traversal must also be rejected.",
+        priority: 1,
+        confidence_score: 0.95,
+        code_location: {
+          absolute_file_path: "../outside-relative.txt",
+          line_range: { start: 1, end: 1 },
+        },
+      },
+    ],
+  });
+  const stub = writeCodexStub(capture, native);
+  const res = runWrapper(codexWrapper, [
+    "--mode", "diff-review", "--cwd", workdir, "--codex-cli", stub,
+    "--base-ref", "c".repeat(40), "--severity-floor", "medium",
+  ], { STUB_CAPTURE: capture });
+  assert.equal(res.status, 0, res.stderr || res.stdout);
+  const payload = resultPayload(res.stdout);
+  assert.deepEqual(payload.output.findings.map((finding) => finding.file), ["src/inside.mjs"]);
+});
+
 test("codex wrapper fails on malformed review JSON", () => {
   const capture = join(workdir, "bad-capture.json");
   const stub = writeCodexStub(capture, "this is not json\n");

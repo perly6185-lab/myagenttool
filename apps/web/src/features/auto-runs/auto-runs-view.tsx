@@ -1605,7 +1605,7 @@ export function AutoRunsView() {
                     </Button>
                   </div>
                 ) : null}
-                {["materializing", "running", "waiting_capacity", "verifying", "publishing"].includes(run.status) ? (
+                {["materializing", "running", "waiting_capacity", "verifying", "publishing", "needs_input"].includes(run.status) ? (
                   <div>
                     <Button
                       variant="secondary"

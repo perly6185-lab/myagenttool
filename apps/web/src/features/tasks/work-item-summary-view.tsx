@@ -16,6 +16,7 @@ import {
   UserRound,
   Wrench,
   Trash2,
+  X,
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Badge } from "@/components/ui/badge";
@@ -772,6 +773,7 @@ export function WorkItemSummaryView({
   const [commentError, setCommentError] = useState<string | null>(null);
   const [clarifyAnswer, setClarifyAnswer] = useState("");
   const [clarifyPending, setClarifyPending] = useState(false);
+  const [clarifyStopPending, setClarifyStopPending] = useState(false);
   const [clarifyError, setClarifyError] = useState<string | null>(null);
   const [materialPendingId, setMaterialPendingId] = useState<string | null>(null);
   const [materialError, setMaterialError] = useState<string | null>(null);
@@ -1193,17 +1195,47 @@ export function WorkItemSummaryView({
     setClarifyPending(true);
     setClarifyError(null);
     try {
-      await api.answerClarify(run.id, answer);
+      const response = await api.answerClarify(run.id, answer) as {
+        resumed?: boolean;
+        waitingForInput?: boolean;
+        alreadyDecided?: unknown;
+        reason?: string;
+      };
+      if (response.resumed !== true && !response.alreadyDecided) {
+        throw new Error(response.reason ?? "clarification_resume_failed");
+      }
       setClarifyAnswer("");
-      setSyncNotice(language === "zh"
-        ? "你的回答已交给 AI，AI 将在同一次任务运行中继续处理。"
-        : "Your answer was sent to AI. It will continue in the same task run.");
+      setSyncNotice(response.waitingForInput
+        ? language === "zh"
+          ? "AI 已重新理解你的回答，但仍需要你确认一个问题。"
+          : "AI reconsidered your answer and still needs one more decision."
+        : language === "zh"
+          ? "你的回答已交给 AI，AI 将在同一次任务运行中继续处理。"
+          : "Your answer was sent to AI. It will continue in the same task run.");
       setRefreshVersion((version) => version + 1);
       window.dispatchEvent(new CustomEvent("myagenttool:state-change", { detail: { source: "work-item-clarification-answered", workItemId: item.id, autoRunId: run.id } }));
     } catch {
       setClarifyError(language === "zh" ? "回答暂时无法提交，请稍后重试。" : "The answer could not be submitted. Try again later.");
     } finally {
       setClarifyPending(false);
+    }
+  };
+  const stopAiClarification = async () => {
+    const run = observability?.latestRun;
+    if (!run || run.status !== "needs_input" || clarifyStopPending || clarifyPending) return;
+    setClarifyStopPending(true);
+    setClarifyError(null);
+    try {
+      await api.cancelAutoRun(run.id);
+      setSyncNotice(language === "zh"
+        ? "本次 AI 处理已停止，任务和已有信息仍会保留。"
+        : "This AI run was stopped. The task and its existing information were kept.");
+      setRefreshVersion((version) => version + 1);
+      window.dispatchEvent(new CustomEvent("myagenttool:state-change", { detail: { source: "work-item-clarification-stopped", workItemId: item.id, autoRunId: run.id } }));
+    } catch {
+      setClarifyError(language === "zh" ? "暂时无法停止 AI，请稍后重试。" : "AI could not be stopped. Try again shortly.");
+    } finally {
+      setClarifyStopPending(false);
     }
   };
   const acceptAndComplete = async () => {
@@ -1439,8 +1471,12 @@ export function WorkItemSummaryView({
                   onChange={(event) => setClarifyAnswer(event.target.value)}
                 />
                 {clarifyError ? <p className="mt-2 text-sm text-destructive" role="alert">{clarifyError}</p> : null}
-                <div className="mt-3 flex justify-end">
-                  <Button disabled={!clarifyAnswer.trim() || clarifyPending} onClick={() => void answerAiClarification()}>
+                <div className="mt-3 flex flex-wrap justify-between gap-2">
+                  <Button variant="secondary" disabled={clarifyPending || clarifyStopPending} onClick={() => void stopAiClarification()}>
+                    {clarifyStopPending ? <RefreshCw className="animate-spin" aria-hidden /> : <X aria-hidden />}
+                    {clarifyStopPending ? language === "zh" ? "正在停止" : "Stopping" : language === "zh" ? "停止 AI" : "Stop AI"}
+                  </Button>
+                  <Button disabled={!clarifyAnswer.trim() || clarifyPending || clarifyStopPending} onClick={() => void answerAiClarification()}>
                     {clarifyPending ? <RefreshCw className="animate-spin" aria-hidden /> : <ArrowRight aria-hidden />}
                     {clarifyPending ? language === "zh" ? "正在提交" : "Submitting" : language === "zh" ? "提交并让 AI 继续" : "Submit and continue"}
                   </Button>

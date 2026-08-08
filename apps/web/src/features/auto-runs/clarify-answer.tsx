@@ -21,7 +21,13 @@ export function ClarifyAnswer({ run, onDone }: { run: AutoRunRecord; onDone: () 
 
   const submit = async () => {
     if (!text.trim()) return;
-    const ok = await execute(() => api.answerClarify(run.id, text));
+    const ok = await execute(async () => {
+      const response = await api.answerClarify(run.id, text) as { resumed?: boolean; alreadyDecided?: unknown; reason?: string };
+      if (response.resumed !== true && !response.alreadyDecided) {
+        throw new Error(response.reason ?? "The clarification could not resume yet.");
+      }
+      return response;
+    });
     if (ok) {
       setOpen(false);
       setText("");

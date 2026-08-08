@@ -797,11 +797,23 @@ export function createProjectService({ state, now, nextId, appendEvent, persistS
     if (!worktree) throw new Error("Worktree not found.");
     const normalizedVerdict = verdict === "approved" ? "approved" : verdict === "changes_requested" ? "changes_requested" : null;
     if (!normalizedVerdict) throw new Error("Review verdict must be 'approved' or 'changes_requested'.");
+    const worktreeRoot = worktree.worktreePath ?? worktree.path ?? null;
+    const normalizeReviewPath = (value) => {
+      const candidate = String(value ?? "").trim();
+      if (!candidate) return null;
+      const slashPath = candidate.replaceAll("\\", "/");
+      if (slashPath.split("/").includes("..")) return null;
+      if (!isAbsolute(candidate)) return slashPath.replace(/^\.\//, "");
+      if (!worktreeRoot) return null;
+      const rel = relative(resolve(worktreeRoot), resolve(candidate));
+      const escapes = rel === ".." || rel.startsWith(`..${sep}`);
+      return rel && !escapes && !isAbsolute(rel) ? rel.replaceAll("\\", "/") : null;
+    };
     const cleanComments = Array.isArray(comments)
       ? comments
           .filter((c) => c && typeof c === "object")
           .map((c) => ({
-            path: c.path ? String(c.path).slice(0, 400) : null,
+            path: normalizeReviewPath(c.path)?.slice(0, 400) ?? null,
             body: String(c.body ?? "").slice(0, 2000),
             ...(Number.isInteger(Number(c.line)) && Number(c.line) > 0 ? { line: Number(c.line) } : {}),
             ...(["low", "medium", "high"].includes(String(c.severity)) ? { severity: String(c.severity) } : {}),
