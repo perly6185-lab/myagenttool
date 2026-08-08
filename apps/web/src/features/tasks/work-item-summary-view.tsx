@@ -1201,7 +1201,7 @@ export function WorkItemSummaryView({
     setClarifyPending(true);
     setClarifyError(null);
     try {
-      const response = await api.answerClarify(run.id, answer) as {
+      const response = await api.answerClarify(run.id, { answers: answer }) as {
         resumed?: boolean;
         waitingForInput?: boolean;
         alreadyDecided?: unknown;

@@ -397,7 +397,9 @@ describe("work item summary presentation", () => {
     fireEvent.change(screen.getByPlaceholderText(/Answer the questions above/), { target: { value: "Fall back to UTC and record a warning." } });
     fireEvent.click(screen.getByRole("button", { name: "Submit and continue" }));
 
-    await waitFor(() => expect(mocks.answerClarify).toHaveBeenCalledWith("aur_clarify", "Fall back to UTC and record a warning."));
+    await waitFor(() => expect(mocks.answerClarify).toHaveBeenCalledWith("aur_clarify", {
+      answers: "Fall back to UTC and record a warning.",
+    }));
     expect(await screen.findByText(/continue in the same task run/i)).toBeTruthy();
   });
 

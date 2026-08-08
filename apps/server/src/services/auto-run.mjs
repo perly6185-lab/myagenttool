@@ -259,6 +259,7 @@ export function createAutoRunService({
   destroyWorktree,
   findAgent,
   defaultAgent,
+  importArticleToWorktree,
   budgetStatusFor,
   reserveBudget,
   releaseReservationsForAutoRun,
@@ -1497,6 +1498,17 @@ export function createAutoRunService({
             .join("\n\n");
         }
       }
+      // summarize path: download the article into the worktree before the agent
+      // reads + summarizes it. Best-effort — a download failure lets the run
+      // proceed (the agent reports the gap rather than the whole run failing).
+      if (decision.path === "summarize" && typeof importArticleToWorktree === "function") {
+        const articleUrl = String(issueBody ?? "").match(/https?:\/\/[^\s)]+/i)?.[0] ?? null;
+        if (articleUrl) {
+          try {
+            await importArticleToWorktree({ url: articleUrl, worktreePath: worktree.path ?? worktree.worktreePath, workItemId: executionChainId });
+          } catch { /* best-effort: the agent run still proceeds */ }
+        }
+      }
     } catch (error) {
       if (typeof releaseIssueClaimsForAutoRun === "function") {
         releaseIssueClaimsForAutoRun(autoRunId, { outcome: "released_failed" });
@@ -2256,9 +2268,11 @@ export function createAutoRunService({
           // code. Park as report_posted before the verify → publish path
           // would send it to done (the file is proof of work, not a diff).
           const resolvedPath = autoRun.decision?.path ?? ({ investigation: "design", question: "clarify" }[autoRun.intent] ?? "develop");
-          if (commitResult.hasCommits && resolvedPath === "evaluate") {
-            const summary = extractRunSummary(invocation) ?? "Evaluation complete — see evaluate/REPORT.md for the detailed report.";
-            runTx(() => setAutoRunStatus(autoRun, "report_posted", { report: summary }));
+          if (commitResult.hasCommits && (resolvedPath === "evaluate" || resolvedPath === "summarize")) {
+            const reportFile = resolvedPath === "summarize" ? "summary/REPORT.md" : "evaluate/REPORT.md";
+            const fileReport = typeof readWorktreeTextFile === "function" ? readWorktreeTextFile(autoRun.worktreeId, reportFile) : null;
+            const summary = (fileReport && fileReport.trim()) || extractRunSummary(invocation) || "Evaluation complete — see evaluate/REPORT.md for the detailed report.";
+            runTx(() => { autoRun.report = summary; setAutoRunStatus(autoRun, "report_posted", { report: summary }); });
             maybeWriteIssueStatus(autoRun, worktree, "review");
             return autoRun;
           }
@@ -2270,17 +2284,19 @@ export function createAutoRunService({
             // decision fall back to the legacy intent mapping.
             const path = autoRun.decision?.path
               ?? ({ investigation: "design", question: "clarify" }[autoRun.intent] ?? "develop");
-            if (path === "design" || path === "prototype" || path === "evaluate") {
-              const summary = extractRunSummary(invocation) ?? "Investigation complete — no code change was needed.";
+            if (path === "design" || path === "prototype" || path === "evaluate" || path === "summarize") {
+              const reportFile = path === "summarize" ? "summary/REPORT.md" : (path === "evaluate" ? "evaluate/REPORT.md" : null);
+              const fileReport = reportFile && typeof readWorktreeTextFile === "function" ? readWorktreeTextFile(autoRun.worktreeId, reportFile) : null;
+              const summary = (fileReport && fileReport.trim()) || extractRunSummary(invocation) || "Investigation complete — no code change was needed.";
               maybePostIssueReport(autoRun, worktree, summary);
               const spawn = await maybeSpawnChildIssue(autoRun, worktree, summary);
               if (autoRunReactionSuperseded(autoRun, invocation, "child issue creation")) return null;
-              runTx(() => setAutoRunStatus(autoRun, "report_posted", {
+              runTx(() => { autoRun.report = summary; setAutoRunStatus(autoRun, "report_posted", {
                 report: summary,
                 error: null,
                 ...(spawn?.child ? { childIssues: [spawn.child] } : {}),
                 ...(spawn?.error ? { spawnError: spawn.error } : {}),
-              }));
+              }); });
               // The design is delivered and waits on a human — the issue label
               // should say review, not linger at in-progress. (Pilot finding.)
               maybeWriteIssueStatus(autoRun, worktree, "review");
@@ -3720,8 +3736,10 @@ export function createAutoRunService({
   // alerted. Merge itself still goes through mergeAutoRunPr (re-fetches checks).
   // E3 (decision-path expansion): a human answer resumes understanding for the
   // SAME Auto-run. The answer is new routing input, not implicit permission to
-  // develop: the run may resolve to any supported path or ask another question.
-  async function answerClarify(autoRunId, { actor, answers } = {}) {
+  // develop: free-text answers re-route the same run. Structured repository
+  // actions retain their payload so the HTTP boundary can clone and start the
+  // selected repository flow.
+  async function answerClarify(autoRunId, { actor, answers, selectedAction, repoUrl } = {}) {
     const autoRun = state.autoRuns.find((item) => item.id === autoRunId);
     if (!autoRun) throw new Error("Auto-run not found.");
     // #1151: a repeated answer must not dispatch another continuation or
@@ -3740,13 +3758,45 @@ export function createAutoRunService({
     const worktree = state.worktrees.find((item) => item.id === autoRun.worktreeId) ?? null;
     const questions = autoRun.decision?.clarifyingQuestions ?? [];
     const answerText = text.slice(0, 4000);
+    const chosenAction = String(selectedAction ?? "").trim().slice(0, 64);
+    const chosenRepoUrl = String(repoUrl ?? "").trim().slice(0, 500);
     const body = [
       `Clarifications from ${by}:`,
       "",
       ...(questions.length ? questions.map((q, i) => `> ${q}`) : []),
       questions.length ? "" : null,
       answerText,
+      chosenAction ? `Selected action: ${chosenAction}` : null,
+      chosenRepoUrl ? `Repository: ${chosenRepoUrl}` : null,
     ].filter((l) => l !== null).join("\n");
+
+    // Preserve the human answer at the tail even when the original issue body is
+    // already near the prompt budget. The answer is the most recent routing input.
+    const boundedAnswerBody = body.length > 12_000 ? body.slice(-12_000) : body;
+    const baseBudget = Math.max(0, 12_000 - boundedAnswerBody.length - 2);
+    const baseBody = String(autoRun.issueBody ?? "").slice(0, baseBudget);
+    const clarifiedIssueBody = [baseBody, boundedAnswerBody].filter(Boolean).join("\n\n");
+
+    if (chosenAction) {
+      return runTx(() => {
+        maybePostIssueReport(autoRun, worktree, body);
+        autoRun.issueBody = clarifiedIssueBody;
+        autoRun.clarifyAnswer = {
+          by, at: now(), text: answerText,
+          selectedAction: chosenAction,
+          ...(chosenRepoUrl ? { repoUrl: chosenRepoUrl } : {}),
+        };
+        appendEvent({
+          invocationId: autoRun.invocationId,
+          type: "auto_run_clarify_answered",
+          level: "info",
+          message: `Auto-run ${autoRun.id} structured clarification answered by ${by}.`,
+          data: { autoRunId: autoRun.id, issue: autoRun.link?.number ?? null, selectedAction: chosenAction },
+        });
+        return { ok: true, shouldRetry: Boolean(chosenRepoUrl), repoUrl: chosenRepoUrl || null };
+      });
+    }
+
     const agent = autoRun.agentId && typeof findAgent === "function"
       ? findAgent(autoRun.agentId)
       : typeof defaultAgent === "function" ? defaultAgent() : null;
@@ -3778,13 +3828,6 @@ export function createAutoRunService({
       autoRun.phase = "understanding";
       autoRun.updatedAt = answerAt;
     });
-
-    // Preserve the human answer at the tail even when the original issue body is
-    // already near the prompt budget. The answer is the most recent routing input.
-    const boundedAnswerBody = body.length > 12_000 ? body.slice(-12_000) : body;
-    const baseBudget = Math.max(0, 12_000 - boundedAnswerBody.length - 2);
-    const baseBody = String(autoRun.issueBody ?? "").slice(0, baseBudget);
-    const clarifiedIssueBody = [baseBody, boundedAnswerBody].filter(Boolean).join("\n\n");
 
     try {
       const nextDecision = await resolveDecision({

@@ -7,7 +7,7 @@
 // This is a conservative title heuristic (the default). A richer LLM classifier
 // can be injected to override it; it should return one of AUTO_RUN_INTENTS.
 
-export const AUTO_RUN_INTENTS = ["change", "investigation", "question", "exploration"];
+export const AUTO_RUN_INTENTS = ["change", "investigation", "question", "exploration", "reading"];
 
 // A title that reads as a decision to be made, not work to be done.
 const QUESTION_LEAD_RE = /^\s*(should we|shall we|can we|do we|is it worth|worth it to|which\b|what should|how should|when should)\b/i;

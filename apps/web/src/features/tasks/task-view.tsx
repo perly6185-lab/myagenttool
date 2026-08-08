@@ -3,6 +3,7 @@ import { Hand, History, RefreshCw, ExternalLink, GitBranch, GitPullRequest, Work
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { MarkdownBlock } from "@/components/ui/markdown-block";
 import { Input, Select, Textarea } from "@/components/ui/input";
 import { Field } from "@/components/common/field";
 import { Modal } from "@/components/ui/modal";
@@ -3378,6 +3379,30 @@ export function LocalWorkItemDetail({
               {boundRun.decision.clarifyingQuestions?.map((question) => <li key={question}>{question}</li>)}
             </ul>
           ) : null}
+          {(boundRun.decision.suggestedActions ?? []).length ? (
+            <div className="mt-3 flex flex-wrap gap-2">
+              {(boundRun.decision.suggestedActions ?? []).map((action: { id: string; label: string; description?: string; payload?: { repoUrl?: string } | null }) => (
+                <Button
+                  key={action.id}
+                  variant={action.id === "evaluate" ? "primary" : "secondary"}
+                  size="sm"
+                  disabled={pending}
+                  onClick={async () => {
+                    await execute(async () => {
+                      await api.answerClarify(boundRun.id, {
+                        answers: action.label,
+                        selectedAction: action.id,
+                        repoUrl: action.payload?.repoUrl,
+                      });
+                      void load();
+                    });
+                  }}
+                >
+                  {action.label}
+                </Button>
+              ))}
+            </div>
+          ) : null}
           {observability?.routingExplanation ? (
             <details>
               <summary className="cursor-pointer font-semibold">{t("aiOps.whyRoute")}</summary>
@@ -3450,6 +3475,12 @@ export function LocalWorkItemDetail({
               </li>
             ))}
           </ol>
+        </section>
+      ) : null}
+      {(boundRun?.status === "report_posted" && boundRun?.report) ? (
+        <section className="space-y-2 rounded-md border border-border p-3 text-xs">
+          <h3 className="text-sm font-semibold">Report</h3>
+          <MarkdownBlock text={boundRun.report} />
         </section>
       ) : null}
       <div

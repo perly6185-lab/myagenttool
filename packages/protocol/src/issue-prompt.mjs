@@ -135,6 +135,14 @@ const ROLE_INSTRUCTIONS = {
     "Also repeat a short version as your final summary, AND end with a single line:\n" +
     "EvalResult: { overall: \"seamless | smooth | rough | broken\", keyInsight: \"...\" }\n" +
     "Do NOT modify product code — the deliverable is the experience report.",
+
+  summarize:
+    "An article was just imported into this worktree (under an article/provider/date/ " +
+    "directory, or a newly-added .md file). Read it and produce a structured summary in Chinese: " +
+    "核心主题(一句话)、关键观点(3-5 条,每条带原文支撑)、可行动的要点、作者的结论。 " +
+    "Write the full summary to summary/REPORT.md so it is preserved. Do NOT modify the original " +
+    "article file. End your final message with a single line: " +
+    "SummaryResult: { overall: \"...\", keyInsight: \"...\" }.",
 };
 
 /**

@@ -1146,6 +1146,21 @@ test("a failing spawner still parks the run as report_posted (best-effort)", asy
   assert.equal(autoRun.childIssues, undefined);
 });
 
+test("a summarize run parks as report_posted (like evaluate)", async () => {
+  const { svc } = makeAutoRun({
+    commit: { committed: true, hasCommits: true },
+    decideIssuePath: async () => ({ path: "summarize", confidence: 0.9, rationale: "summarize article" }),
+  });
+  const { autoRun, invocation } = await svc.startAutoRun({
+    projectId: sourceProjectId,
+    link: { type: "issue", number: 1302, title: "Summarize article", url: null, state: "open" },
+    agentId: "agt_1",
+    name: "issue-1302-summarize",
+  });
+  await svc.advanceAutoRunForInvocation({ ...invocation, status: "succeeded" });
+  assert.equal(autoRun.status, "report_posted");
+});
+
 test("a no-diff evaluate run parks as report_posted (like a design)", async () => {
   const { svc } = makeAutoRun({
     commit: { committed: false, hasCommits: false },

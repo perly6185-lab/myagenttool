@@ -273,3 +273,13 @@ test("resolveDecision does NOT re-decompose a spawned child even with an [Epic] 
   const e = await resolveDecision({ link: { title: "[Epic]: Real", number: 10 }, issueBody: "## Project Fields\nType: epic", decideIssuePath: undefined, epicDecomposition: true });
   assert.equal(e.path, "decompose");
 });
+
+test("resolveDecision routes an article URL to summarize (heuristic floor)", async () => {
+  const d = await resolveDecision({ link: { title: "看看这篇文章", number: 11, type: "local_issue" }, issueBody: "https://mp.weixin.qq.com/s/abc123" });
+  assert.equal(d.path, "summarize");
+});
+
+test("resolveDecision keeps a GitHub URL on clarify (not summarize)", async () => {
+  const d = await resolveDecision({ link: { title: "看看", number: 12 }, issueBody: "https://github.com/nuno-faria/tiler.git" });
+  assert.equal(d.path, "clarify");
+});

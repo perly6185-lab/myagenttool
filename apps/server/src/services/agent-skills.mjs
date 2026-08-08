@@ -38,7 +38,7 @@ function isGitTracked(root, relPath) {
 
 export const AGENT_SKILL_TARGETS = ["claude", "codex"];
 // Auto-run decision roles a skill can restrict itself to (see AgentSkill.paths).
-export const AGENT_SKILL_PATHS = ["develop", "design", "prototype", "clarify", "evaluate"];
+export const AGENT_SKILL_PATHS = ["develop", "design", "prototype", "clarify", "evaluate", "summarize"];
 
 const SKILL_BLOCK_START = "<!-- myagent:skills:start -->";
 const SKILL_BLOCK_END = "<!-- myagent:skills:end -->";

@@ -2405,8 +2405,8 @@ export const api = {
   designApproval: (id: string, action: "approve" | "reject", feedback?: string) =>
     request("POST", `/api/auto-runs/${encodeURIComponent(id)}/design-approval`, { action, feedback }),
   // E3: answer a clarify run's questions (posted back to the issue).
-  answerClarify: (id: string, answers: string) =>
-    request("POST", `/api/auto-runs/${encodeURIComponent(id)}/clarify-answer`, { answers }),
+  answerClarify: (id: string, { answers, selectedAction, repoUrl, repoName }: { answers?: string; selectedAction?: string; repoUrl?: string; repoName?: string }) =>
+    request("POST", `/api/auto-runs/${encodeURIComponent(id)}/clarify-answer`, { answers, selectedAction, repoUrl, repoName }),
   // Epic S3: the human decomposition gate — approve spawns the N governed child issues.
   decompositionApproval: (id: string, action: "approve" | "reject", feedback?: string) =>
     request("POST", `/api/auto-runs/${encodeURIComponent(id)}/decomposition-approval`, { action, feedback }),
