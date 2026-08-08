@@ -117,6 +117,10 @@ describe("work item summary presentation", () => {
     expect(deriveWorkItemUserStatus(item({ status: "blocked", executionState: "unclaimed" }))).toBe("blocked");
     expect(deriveWorkItemUserStatus(item({ executionState: "running" }))).toBe("ai_working");
     expect(deriveWorkItemUserStatus(item({ executionState: "unclaimed", plannedDate: null, waitingOn: "requester" }))).toBe("waiting");
+    expect(deriveWorkItemUserStatus(
+      item({ status: "review", executionState: "verifying", waitingOn: "me" }),
+      { id: "aur_report", status: "report_posted", phase: "review_ready", updatedAt: "2026-08-05T01:00:00.000Z" },
+    )).toBe("ready_for_review");
   });
 
   it("shows safe reference actions and explains removal during an active AI run", async () => {

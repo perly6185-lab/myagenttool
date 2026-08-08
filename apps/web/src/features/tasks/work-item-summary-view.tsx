@@ -31,16 +31,9 @@ import { WorkItemProgressDialog, type WorkItemProgressTarget } from "./work-item
 import { TaskMaterialEditor } from "./task-material-editor";
 import { readinessSetupSection, type AutoRunReadiness } from "./auto-run-readiness-ui";
 import type { LocalWorkItem, LocalWorkItemAutoRun, LocalWorkItemObservability, WorkItemComment, WorkItemExecutionState } from "./task-view-types";
+import { deriveWorkItemUserStatus, type WorkItemUserStatus } from "./work-item-user-status";
 
-export type WorkItemUserStatus =
-  | "not_started"
-  | "scheduled"
-  | "ai_working"
-  | "waiting"
-  | "needs_action"
-  | "ready_for_review"
-  | "blocked"
-  | "completed";
+export { deriveWorkItemUserStatus } from "./work-item-user-status";
 
 type SummaryCopy = {
   loading: string;
@@ -581,20 +574,6 @@ const WAITING_LABEL: Record<"zh" | "en", Record<LocalWorkItem["waitingOn"], stri
   en: { me: "Me", requester: "Requester", internal: "Internal teammate", ai: "AI", none: "No one" },
 };
 
-export function deriveWorkItemUserStatus(item: LocalWorkItem): WorkItemUserStatus {
-  if (item.state === "closed" || item.status === "done" || item.planningStatus === "done") return "completed";
-  if (item.executionState === "failed") return "needs_action";
-  if (item.executionState === "awaiting_approval") return "needs_action";
-  if (item.executionState === "completed") return "ready_for_review";
-  if (["claimed", "running", "verifying"].includes(item.executionState ?? "")) return "ai_working";
-  if (item.waitingOn === "me") return "needs_action";
-  if (item.status === "blocked" || item.planningStatus === "blocked") return "blocked";
-  if (item.status === "review" || item.planningStatus === "review") return "ready_for_review";
-  if (["requester", "internal"].includes(item.waitingOn)) return "waiting";
-  if (item.plannedDate) return "scheduled";
-  return "not_started";
-}
-
 function expertSectionFor(item: LocalWorkItem, status: WorkItemUserStatus): WorkItemSection {
   if (item.executionState === "failed" || status === "blocked") return "process";
   if (item.executionState === "awaiting_approval") return "verification";
@@ -843,7 +822,7 @@ export function WorkItemSummaryView({
         setItem(detail.value.workItem);
         setObservability(detail.value.observability ?? null);
         if (
-          deriveWorkItemUserStatus(detail.value.workItem) === "ready_for_review"
+          deriveWorkItemUserStatus(detail.value.workItem, detail.value.observability?.latestRun ?? null) === "ready_for_review"
           && resultAutoOpenedFor.current !== detail.value.workItem.id
         ) {
           setResultExpanded(true);
@@ -877,9 +856,9 @@ export function WorkItemSummaryView({
   }, [changeRequest, comment, onDirtyChange]);
 
   useEffect(() => {
-    onCompletedChange?.(item ? deriveWorkItemUserStatus(item) === "completed" : null);
+    onCompletedChange?.(item ? deriveWorkItemUserStatus(item, observability?.latestRun ?? null) === "completed" : null);
     return () => onCompletedChange?.(null);
-  }, [item, onCompletedChange]);
+  }, [item, observability?.latestRun, onCompletedChange]);
 
   useEffect(() => {
     const reviewStatus = observability?.delivery?.aiReview?.status;
@@ -915,7 +894,7 @@ export function WorkItemSummaryView({
     );
   }
 
-  const status = deriveWorkItemUserStatus(item);
+  const status = deriveWorkItemUserStatus(item, observability?.latestRun ?? null);
   const failed = item.executionState === "failed";
   const materialChangesApplyOnRerun = ["claimed", "running", "awaiting_approval", "verifying"].includes(item.executionState ?? "");
   const dateLocale = language === "zh" ? "zh-CN" : "en-US";
