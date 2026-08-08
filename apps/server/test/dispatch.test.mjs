@@ -254,6 +254,38 @@ test("current-terminal urgent P0 is queue-head within its fair team/project buck
   assert.equal(runtime.nextDispatchableInvocation()?.id, "inv_urgent");
 });
 
+test("deadline risk and normal priority reach the real invocation selector", () => {
+  const overdue = queued("inv_overdue", "/w-overdue");
+  overdue.createdAt = "2026-08-08T00:00:10.000Z";
+  overdue.projectId = "prj_local";
+  overdue.options.metadata = { projectId: "prj_local", autoRunId: "run_overdue" };
+  const futureHigh = queued("inv_future", "/w-future");
+  futureHigh.createdAt = "2026-08-08T00:00:00.000Z";
+  futureHigh.projectId = "prj_local";
+  futureHigh.options.metadata = { projectId: "prj_local", autoRunId: "run_future" };
+  const state = {
+    device: { id: "dev", maxConcurrency: 2 },
+    projects: [{ id: "prj_local", ownerTeamId: "team_local" }],
+    invocations: [futureHigh, overdue],
+    workItems: [{
+      id: "lwi_overdue", priority: "p3", dueDate: "2026-08-07",
+      executionBindings: [{ kind: "auto_run", targetId: "run_overdue" }],
+    }, {
+      id: "lwi_future", priority: "p1", plannedDate: "2026-08-20",
+      executionBindings: [{ kind: "auto_run", targetId: "run_future" }],
+    }],
+  };
+  const runtime = createInvocationDispatchRuntime({
+    state,
+    now: () => "2026-08-08T01:00:00.000Z",
+    appendEvent: () => {}, dispatchLeaseMs: 30_000,
+    findAgent: (id) => agents[id] ?? null, completeInvocation: () => {},
+  });
+  assert.equal(runtime.nextDispatchableInvocation()?.id, "inv_overdue");
+  state.workItems[0].dueDate = null;
+  assert.equal(runtime.nextDispatchableInvocation()?.id, "inv_future", "P1 future work beats ordinary P3 when neither has deadline risk");
+});
+
 test("urgent P0 still waits behind its busy worktree while another local task can run", () => {
   const runningSame = running("inv_running", "/w-urgent");
   const urgent = queued("inv_urgent", "/w-urgent");

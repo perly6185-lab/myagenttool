@@ -65,6 +65,14 @@ function rankFor(item, today) {
   ];
 }
 
+export function autoExecutionDispatchScore(item, { today = new Date().toISOString().slice(0, 10) } = {}) {
+  const rank = rankFor(item, dateOnly(today) ?? new Date().toISOString().slice(0, 10));
+  return (Number(rank[0]) * 1_000_000)
+    + (Number(rank[1]) * 10_000)
+    + (Number(rank[2]) * 100)
+    + Number(rank[3]);
+}
+
 function compareRank(left, right) {
   const length = Math.max(left.length, right.length);
   for (let index = 0; index < length; index += 1) {

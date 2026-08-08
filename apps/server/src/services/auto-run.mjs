@@ -967,6 +967,8 @@ export function createAutoRunService({
         source: "work_item_auto_scheduler",
         workItemRevision: Number.isInteger(scheduler.workItemRevision) ? scheduler.workItemRevision : null,
         selectedAt: scheduler.selectedAt ?? createdAt,
+        priority: ["p0", "p1", "p2", "p3"].includes(scheduler.priority) ? scheduler.priority : "p2",
+        rank: Array.isArray(scheduler.rank) ? scheduler.rank.slice(0, 6) : null,
       } : null,
       errorCode: null,
       createdAt,
@@ -1570,6 +1572,7 @@ export function createAutoRunService({
           clarifyingQuestions: decision.clarifyingQuestions,
           executionChainId: autoRun.executionChainId,
           autonomyProfile: autoRun.autonomyProfile,
+          scheduler: autoRun.scheduler,
         },
       });
     });
@@ -1818,6 +1821,7 @@ export function createAutoRunService({
           timeoutRecoveryReason: recoveryReason,
           executionStage: stage,
           continuationCheckpoint: checkpoint,
+          scheduler: autoRun.scheduler,
           ...(continuationApproval
             ? { codexApprovalContinuationRequestId: continuationApproval.id }
             : {}),
@@ -2037,6 +2041,7 @@ export function createAutoRunService({
           role: path,
           capacityRetryAttempt: attempt,
           capacityRetrySourceInvocationId: sourceInvocationId,
+          scheduler: autoRun.scheduler,
           ...(continuationApproval
             ? { codexApprovalContinuationRequestId: continuationApproval.id }
             : {}),
@@ -2402,7 +2407,7 @@ export function createAutoRunService({
                   preApproved: true, // continuation of an already human-approved run on unchanged content — no re-gate
                   ...codexAutoApprovalOptions(agent),
                   timeoutSeconds: autoRunTurnTimeoutSeconds(agent),
-                  metadata: { worktreeId: autoRun.worktreeId, projectId: autoRun.projectId, autoRunId: autoRun.id, role: "develop", repairAttempt: autoRun.repairAttempts },
+                  metadata: { worktreeId: autoRun.worktreeId, projectId: autoRun.projectId, autoRunId: autoRun.id, role: "develop", repairAttempt: autoRun.repairAttempts, scheduler: autoRun.scheduler },
                 });
               } catch {
                 repair = null;
@@ -2826,6 +2831,7 @@ export function createAutoRunService({
           projectId: worktree.projectId,
           autoRunId: autoRun.id,
           role: retryPath,
+          scheduler: autoRun.scheduler,
           ...(resumesExecutionTimeout
             ? {
                 timeoutRecoverySourceInvocationId: timeoutResumeSource.id,
@@ -3091,7 +3097,7 @@ export function createAutoRunService({
       invocation = createInvocation(task, alternate, {
         ...codexAutoApprovalOptions(alternate),
         timeoutSeconds: autoRunTurnTimeoutSeconds(alternate),
-        metadata: { worktreeId: worktree.id, projectId: worktree.projectId, autoRunId: autoRun.id, role: path },
+        metadata: { worktreeId: worktree.id, projectId: worktree.projectId, autoRunId: autoRun.id, role: path, scheduler: autoRun.scheduler },
       });
       startInvocationIfAllowed(invocation, alternate);
     } catch (error) {
@@ -3894,6 +3900,7 @@ export function createAutoRunService({
           role: nextPath,
           executionChainId: autoRun.executionChainId,
           autonomyProfile: autoRun.autonomyProfile,
+          scheduler: autoRun.scheduler,
           resumedFromClarification: true,
         },
       });

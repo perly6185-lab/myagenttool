@@ -7,6 +7,7 @@ import {
   isBridgeExecuted as isBridgeExecutedShared,
 } from "./dispatch-eligibility.mjs";
 import { invocationProjectKey, invocationTeamKey, selectFairInvocation } from "./dispatch-fairness.mjs";
+import { autoExecutionDispatchScore } from "../work-item-auto-scheduler-policy.mjs";
 
 export function createInvocationDispatchRuntime({
   state,
@@ -31,17 +32,18 @@ export function createInvocationDispatchRuntime({
   const bridgeDevice = state.device;
   const isBridgeExecuted = (invocation) => isBridgeExecutedShared(invocation, { findAgent, deviceId: bridgeDevice.id });
   const belongsToThisBridge = (invocation, agent) => belongsToThisBridgeShared(invocation, agent, bridgeDevice.id);
-  const localScheduleOrder = (invocation) => {
+  const boundWorkItem = (invocation) => {
     const autoRunId = invocation.options?.metadata?.autoRunId ?? null;
-    const workItem = (state.workItems ?? []).find((item) =>
+    return (state.workItems ?? []).find((item) =>
       (item.executionBindings ?? []).some((binding) =>
         (binding.kind === "auto_run" && binding.targetId === autoRunId)
-        || (binding.kind === "application_invocation" && binding.id === invocation.id)));
-    return workItem?.schedulePlanSource === "urgent_insert"
-      && workItem.priority === "p0"
-      && Number.isFinite(workItem.scheduleOrder)
-      ? workItem.scheduleOrder
-      : 0;
+        || (binding.kind === "application_invocation" && (binding.id === invocation.id || binding.targetId === invocation.id)))) ?? null;
+  };
+  const dispatchPriority = (invocation) => {
+    const workItem = boundWorkItem(invocation);
+    return workItem
+      ? autoExecutionDispatchScore(workItem, { today: now().slice(0, 10) })
+      : autoExecutionDispatchScore({ priority: "p2" }, { today: now().slice(0, 10) });
   };
 
   // Force a terminal status on runs stuck in "cancelling" past a grace (e.g. the
@@ -132,12 +134,13 @@ export function createInvocationDispatchRuntime({
     const nowMs = Date.parse(now());
     return selectFairInvocation(dispatchable, {
       levels: [
+        // Urgency and deadline risk are global within this bridge. Fairness then
+        // rotates teams/projects inside the same urgency band, so a burst cannot
+        // starve peers without allowing routine work to jump ahead of a P0 or an
+        // overdue commitment.
+        { keyOf: (item) => String(dispatchPriority(item)), loadOf: (key) => Number(key) },
         { keyOf: (item) => invocationTeamKey(item, state), loadOf: (key) => teamLoad.get(key) ?? 0 },
         { keyOf: (item) => invocationProjectKey(item), loadOf: (key) => projectLoad.get(key) ?? 0 },
-        // Within the fair team/project bucket, a confirmed current-terminal P0
-        // insertion goes to the head. Busy worktrees were already removed by
-        // the eligibility filter above, so this never bypasses dir exclusion.
-        { keyOf: (item) => String(localScheduleOrder(item)), loadOf: (key) => Number(key) || 0 },
       ],
       ageMsOf: (item) => {
         const created = Date.parse(item.createdAt ?? "");

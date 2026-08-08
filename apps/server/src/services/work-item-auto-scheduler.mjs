@@ -115,7 +115,7 @@ export function createWorkItemAutoSchedulerService({
     };
   }
 
-  async function startCandidate(candidate) {
+  async function startCandidate(candidate, decision = null) {
     if (![getWorkItem, beginExecution, abortExecution, recordExecutionBinding, reserveAutoRun, enqueueAutoRunUnderstanding]
       .every((dependency) => typeof dependency === "function")) {
       return { started: false, reason: "scheduler_dependencies_unavailable" };
@@ -159,6 +159,8 @@ export function createWorkItemAutoSchedulerService({
           source: "work_item_auto_scheduler",
           workItemRevision: item.revision,
           selectedAt: now(),
+          priority: item.priority,
+          rank: decision?.rank?.slice(0, 6) ?? null,
         },
       });
       const recorded = recordExecutionBinding({
@@ -237,7 +239,8 @@ export function createWorkItemAutoSchedulerService({
       });
       if (mode === "enabled" && result.nextWorkItemId) {
         const candidate = (state.workItems ?? []).find((item) => item.id === result.nextWorkItemId);
-        if (candidate) starts.push(await startCandidate(candidate));
+        const decision = result.decisions.find((row) => row.workItemId === result.nextWorkItemId) ?? null;
+        if (candidate) starts.push(await startCandidate(candidate, decision));
       }
     }
     metrics.lastEligibleCount = eligibleCount;
