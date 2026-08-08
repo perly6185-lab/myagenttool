@@ -372,8 +372,23 @@ describe("work item summary presentation", () => {
           verification: null,
           deliveredAt: "2026-08-08T12:49:03.984Z",
         },
+        outcomeHistory: [{
+          version: 1,
+          status: "available",
+          summary: "The first result lacked source evidence.",
+          fullReport: "# First result\n\nThe first result lacked source evidence.",
+          highlights: [],
+          warnings: [],
+          files: [],
+          verification: null,
+          deliveredAt: "2026-08-08T12:30:00.000Z",
+          invocationId: "inv_report_v1",
+          supersededAt: "2026-08-08T12:40:00.000Z",
+          supersededByFeedback: "Add source evidence.",
+        }],
       },
     });
+    mocks.retryAutoRun.mockResolvedValue({ autoRun: { id: "aur_report", status: "running" } });
     render(<WorkItemSummaryView workItemId="lwi_1" onOpenExpert={() => {}} />);
 
     expect(await screen.findByText("Ready for your review")).toBeTruthy();
@@ -382,11 +397,18 @@ describe("work item summary presentation", () => {
     expect(screen.getByText("Production reliability matters")).toBeTruthy();
     expect(screen.getByText("The financing figure was not independently verified.")).toBeTruthy();
     expect(screen.getByText("REPORT.md")).toBeTruthy();
+    fireEvent.click(screen.getByText("Previous results (1)"));
+    expect(screen.getByText("The first result lacked source evidence.")).toBeTruthy();
 
     fireEvent.click(screen.getByRole("button", { name: "View full report" }));
     const report = screen.getByRole("dialog", { name: "What AI delivered" });
     expect(within(report).getByRole("heading", { name: "Article report" })).toBeTruthy();
     expect(within(report).getByRole("button", { name: "Approve and complete task" })).toBeTruthy();
+    fireEvent.click(within(report).getByRole("button", { name: "Ask follow-up" }));
+    fireEvent.change(within(report).getByPlaceholderText(/What supports the second conclusion/), { target: { value: "Show the source for the second conclusion." } });
+    fireEvent.click(within(report).getByRole("button", { name: "Send follow-up" }));
+    await waitFor(() => expect(mocks.retryAutoRun).toHaveBeenCalledWith("aur_report", "Show the source for the second conclusion."));
+    expect(mocks.startWorkItemAutoRun).not.toHaveBeenCalled();
   });
 
   it("hands the task to AI with one click and lets the run establish its execution contract", async () => {

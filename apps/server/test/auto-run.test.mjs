@@ -814,7 +814,35 @@ test("review feedback revises the same completed local delivery and preserves it
   assert.equal(autoRun.deliveryReview, null);
   assert.equal(autoRun.deliveryHistory.length, 1);
   assert.equal(autoRun.deliveryHistory[0].report.summary, "First delivery.");
+  assert.equal(autoRun.outcomeHistory.length, 1);
+  assert.equal(autoRun.outcomeHistory[0].report, "First delivery.");
   assert.match(calls.createInvocation.at(-1).task, /Call persistStateSoon after the timezone changes/);
+});
+
+test("review feedback revises a posted local report and preserves its prior result", async () => {
+  const { svc, calls } = makeAutoRun();
+  const { autoRun } = await svc.startAutoRun({
+    projectId: sourceProjectId,
+    link: { type: "local_issue", number: 64, title: "Summarize an article", url: null, state: "open" },
+    agentId: "agt_1",
+    name: "local-64-revise-report",
+  });
+  autoRun.decision = { path: "summarize", confidence: 0.9, rationale: "article summary" };
+  autoRun.status = "report_posted";
+  autoRun.phase = "review_ready";
+  autoRun.report = "# Summary\n\nThe workflow platform has a differentiated product loop.";
+
+  await svc.retryAutoRun(autoRun.id, {
+    actor: { userId: "usr_x", teamId: "team_a" },
+    feedback: "Add the key evidence and local archive path.",
+  });
+
+  assert.equal(autoRun.status, "running");
+  assert.equal(autoRun.report, null);
+  assert.equal(autoRun.outcomeHistory.length, 1);
+  assert.match(autoRun.outcomeHistory[0].report, /differentiated product loop/);
+  assert.equal(autoRun.outcomeHistory[0].supersededByFeedback, "Add the key evidence and local archive path.");
+  assert.match(calls.createInvocation.at(-1).task, /Add the key evidence and local archive path/);
 });
 
 test("advanceAutoRunForInvocation marks the auto-run failed when the run fails", async () => {

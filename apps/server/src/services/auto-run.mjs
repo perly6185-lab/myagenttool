@@ -2798,9 +2798,10 @@ export function createAutoRunService({
     if (terminalId && String(terminalId) !== autoRun.terminalId) {
       throw new Error("This run belongs to a different terminal.");
     }
-    const revisingLocalDelivery = autoRun.status === "done" && autoRun.link?.type === "local_issue";
-    if (!["failed", "blocked"].includes(autoRun.status) && !revisingLocalDelivery) {
-      throw new Error("Only a failed or blocked auto-run, or a reviewable local delivery, can be retried.");
+    const revisingLocalOutcome = autoRun.link?.type === "local_issue"
+      && ["done", "report_posted", "plan_proposed"].includes(autoRun.status);
+    if (!["failed", "blocked"].includes(autoRun.status) && !revisingLocalOutcome) {
+      throw new Error("Only a failed or blocked auto-run, or a reviewable local outcome, can be retried.");
     }
     const retryStartedAt = now();
     const retryPlannedDate = localDateKeyForOffset(retryStartedAt, timezoneOffset);
@@ -2909,7 +2910,7 @@ export function createAutoRunService({
     // claim before creating an invocation so a simultaneous late-approval
     // recovery (or a second retry click) cannot launch a duplicate run.
     if (
-      (!["failed", "blocked"].includes(autoRun.status) && !revisingLocalDelivery)
+      (!["failed", "blocked"].includes(autoRun.status) && !revisingLocalOutcome)
       || (autoRun.invocationId ?? null) !== retrySourceInvocationId
     ) {
       throw new Error("Another retry has already started for this auto-run.");
@@ -2997,7 +2998,20 @@ export function createAutoRunService({
           noProgressStreak: 0,
         };
         autoRun.timeoutRecovery = null;
-        if (revisingLocalDelivery) {
+        if (revisingLocalOutcome) {
+          autoRun.outcomeHistory = [{
+            status: autoRun.status,
+            report: autoRun.report ?? autoRun.deliveryReport?.summary ?? null,
+            deliveryReport: autoRun.deliveryReport ?? null,
+            verification: autoRun.verification ?? null,
+            invocationId: retrySourceInvocationId,
+            completedAt: autoRun.deliveryReport?.completedAt ?? autoRun.updatedAt ?? null,
+            supersededAt: now(),
+            supersededByFeedback: reviewerFeedback || null,
+          }, ...(autoRun.outcomeHistory ?? [])].slice(0, 20);
+          autoRun.report = null;
+        }
+        if (revisingLocalOutcome && autoRun.deliveryReport) {
           autoRun.deliveryHistory = [{
             report: autoRun.deliveryReport ?? null,
             review: autoRun.deliveryReview ?? null,

@@ -1386,6 +1386,21 @@ export function createWorkItemService({
         ?? latestExecutionInvocation?.result?.summary
         ?? null,
     });
+    const outcomeHistory = (latestRun?.outcomeHistory ?? []).map((entry, index, entries) => ({
+      version: entries.length - index,
+      ...projectWorkItemOutcome({
+        item,
+        latestRun: {
+          status: entry.status,
+          report: entry.report,
+          updatedAt: entry.completedAt ?? entry.supersededAt,
+        },
+        deliveryReport: entry.deliveryReport,
+      }),
+      invocationId: entry.invocationId ?? null,
+      supersededAt: entry.supersededAt ?? null,
+      supersededByFeedback: entry.supersededByFeedback ?? null,
+    }));
     const invocationIds = new Set(relatedInvocations.map((invocation) => invocation.id));
     const failureStatuses = new Set(["failed", "timed_out", "cancelled", "rejected", "expired"]);
     const showRunHistory = runInvocations.length > 1
@@ -1578,6 +1593,7 @@ export function createWorkItemService({
             deliveryReview: projectedDeliveryReview,
           } : null,
           outcome: taskOutcome,
+          outcomeHistory,
           runHistory,
           delivery: pendingLocalDelivery ? {
             state: "awaiting_review",
