@@ -45,6 +45,8 @@ export function createProjectRecord(
     status,
     isolation,
     externalIssuePolicy,
+    autoExecutionEnabled = false,
+    futurePullForwardEnabled = true,
   } = {},
   { nextId, now = defaultNow } = {}
 ) {
@@ -60,6 +62,8 @@ export function createProjectRecord(
     status: status === "archived" ? "archived" : "active",
     isolation: isolation === "worktree" ? "worktree" : "shared",
     externalIssuePolicy: normalizeExternalIssuePolicy(externalIssuePolicy),
+    autoExecutionEnabled: autoExecutionEnabled === true,
+    futurePullForwardEnabled: futurePullForwardEnabled !== false,
     path: projectPath,
     host,
     git: {
@@ -131,6 +135,8 @@ export function createProjectService({ state, now, nextId, appendEvent, persistS
       defaultAgentId: body.defaultAgentId,
       status: body.status,
       isolation: body.isolation,
+      autoExecutionEnabled: body.autoExecutionEnabled,
+      futurePullForwardEnabled: body.futurePullForwardEnabled,
     }, { nextId, now });
     // Capture git facts (remote/default/current branch) from the real root — #160.
     project.git = readGitFacts(project.path);
@@ -146,6 +152,12 @@ export function createProjectService({ state, now, nextId, appendEvent, persistS
         existing.defaultAgentId = project.defaultAgentId ?? existing.defaultAgentId ?? null;
         existing.status = project.status ?? existing.status ?? "active";
         existing.isolation = project.isolation ?? existing.isolation ?? "shared";
+        if (Object.hasOwn(body, "autoExecutionEnabled")) {
+          existing.autoExecutionEnabled = body.autoExecutionEnabled === true;
+        }
+        if (Object.hasOwn(body, "futurePullForwardEnabled")) {
+          existing.futurePullForwardEnabled = body.futurePullForwardEnabled !== false;
+        }
         existing.updatedAt = now();
         ensureProjectTarget(existing);
         selectProject(existing.id);
@@ -223,6 +235,8 @@ export function createProjectService({ state, now, nextId, appendEvent, persistS
       ownerTeamId: body.ownerTeamId,
       budgetPoolId: body.budgetPoolId,
       defaultAgentId: body.defaultAgentId,
+      autoExecutionEnabled: body.autoExecutionEnabled,
+      futurePullForwardEnabled: body.futurePullForwardEnabled,
     });
   }
 
@@ -427,6 +441,8 @@ export function createProjectService({ state, now, nextId, appendEvent, persistS
     if (body.isolation !== undefined) project.isolation = body.isolation === "worktree" ? "worktree" : "shared";
     if (body.defaultAgentId !== undefined) project.defaultAgentId = body.defaultAgentId ? String(body.defaultAgentId) : null;
     if (body.budgetPoolId !== undefined) project.budgetPoolId = body.budgetPoolId ? String(body.budgetPoolId) : null;
+    if (body.autoExecutionEnabled !== undefined) project.autoExecutionEnabled = body.autoExecutionEnabled === true;
+    if (body.futurePullForwardEnabled !== undefined) project.futurePullForwardEnabled = body.futurePullForwardEnabled !== false;
     // A4: the project's chosen verify command NAME (a key into the operator's
     // env allowlist — never a command). Unknown names harmlessly fall back at
     // resolution time; blank clears the selection.

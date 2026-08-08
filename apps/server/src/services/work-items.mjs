@@ -28,6 +28,7 @@ import { resolveWorkItemExecution } from "./work-item-execution.mjs";
 const TYPES = new Set(["task", "bug", "feature", "initiative"]);
 const STATUSES = new Set(["backlog", "ready", "in_progress", "review", "blocked", "done"]);
 const PRIORITIES = new Set(["p0", "p1", "p2", "p3"]);
+const EXECUTION_POLICIES = new Set(["inherit", "auto", "manual", "paused"]);
 // Friendly aliases normalized to canonical p0–p3 before validation, so callers
 // may pass "critical"/"high"/"medium"/"low" etc. (mirrors the alias→canonical
 // pattern in normalizeClaudePermissionMode). Invalid values still reject.
@@ -154,6 +155,19 @@ function validDateOnly(value) {
   return parsed.getUTCFullYear() === year && parsed.getUTCMonth() === month - 1 && parsed.getUTCDate() === day;
 }
 
+function normalizeIsoDateTime(value) {
+  if (value == null || value === "") return { ok: true, value: null };
+  if (typeof value !== "string" || value.length > 50
+    || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}/.test(value)
+    || !/(?:Z|[+-]\d{2}:\d{2})$/.test(value)) {
+    return { ok: false };
+  }
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed)
+    ? { ok: true, value: new Date(parsed).toISOString() }
+    : { ok: false };
+}
+
 function validateDraft(input, { partial = false } = {}) {
   const value = {};
   if (WORK_ITEM_FOLLOW_UP_SERVER_FIELDS.some((field) => Object.hasOwn(input, field))) {
@@ -173,12 +187,15 @@ function validateDraft(input, { partial = false } = {}) {
     ["type", TYPES, "task"],
     ["status", STATUSES, "backlog"],
     ["priority", PRIORITIES, "p2"],
+    ["executionPolicy", EXECUTION_POLICIES, "inherit"],
   ]) {
     if (!partial || Object.hasOwn(input, field)) {
       const candidate = field === "priority"
         ? normalizePriority(input[field] ?? fallback)
         : String(input[field] ?? fallback);
-      if (!allowed.has(candidate)) return { error: `invalid_work_item_${field}` };
+      if (!allowed.has(candidate)) {
+        return { error: `invalid_work_item_${field.replace(/[A-Z]/g, (letter) => `_${letter.toLowerCase()}`)}` };
+      }
       value[field] = candidate;
     }
   }
@@ -203,6 +220,11 @@ function validateDraft(input, { partial = false } = {}) {
     const dueDate = input.dueDate == null || input.dueDate === "" ? null : String(input.dueDate);
     if (dueDate && !validDateOnly(dueDate)) return { error: "invalid_work_item_due_date" };
     value.dueDate = dueDate;
+  }
+  if (!partial || Object.hasOwn(input, "notBefore")) {
+    const notBefore = normalizeIsoDateTime(input.notBefore);
+    if (!notBefore.ok) return { error: "invalid_work_item_not_before" };
+    value.notBefore = notBefore.value;
   }
   for (const field of ["plannedDate", "carriedFromDate"]) {
     if (!partial || Object.hasOwn(input, field)) {

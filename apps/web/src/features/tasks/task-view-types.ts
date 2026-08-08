@@ -35,6 +35,7 @@ export type LocalWorkItem = {
   type: "task" | "bug" | "feature" | "initiative";
   status: "backlog" | "ready" | "in_progress" | "review" | "blocked" | "done";
   priority: "p0" | "p1" | "p2" | "p3";
+  executionPolicy?: "inherit" | "auto" | "manual" | "paused";
   state: "open" | "closed";
   businessState?: "open" | "closed";
   planningStatus?: LocalWorkItem["status"];
@@ -97,6 +98,7 @@ export type LocalWorkItem = {
   }[];
   completionGate?: { ready: boolean; missingCriteria: string[]; verificationRequired: boolean };
   dueDate: string | null;
+  notBefore?: string | null;
   plannedDate?: string | null;
   carriedFromDate?: string | null;
   schedulePlanSource?: "manual" | "auto_plan" | "rollover" | "urgent_insert" | null;

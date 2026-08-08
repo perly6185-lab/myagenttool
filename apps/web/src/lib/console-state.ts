@@ -1011,6 +1011,8 @@ export interface ProjectSnapshot {
   ownerTeamId: string;
   budgetPoolId: string | null;
   defaultAgentId: string | null;
+  autoExecutionEnabled?: boolean;
+  futurePullForwardEnabled?: boolean;
   verifyCommandName?: string | null;
   externalIssuePolicy?: {
     intakeEnabled: boolean;

@@ -71,6 +71,18 @@ test("addProject captures git metadata on register + exposes activeCheckoutId", 
   assert.equal(target.defaultBranch, "main");
 });
 
+test("project automatic execution is opt-in and future pull-forward can be configured", () => {
+  const project = svc.addProject({ name: "Auto", path: repoDir });
+  assert.equal(project.autoExecutionEnabled, false, "existing and newly registered projects start safely disabled");
+  assert.equal(project.futurePullForwardEnabled, true);
+  const updated = svc.updateProject(project.id, {
+    autoExecutionEnabled: true,
+    futurePullForwardEnabled: false,
+  });
+  assert.equal(updated.autoExecutionEnabled, true);
+  assert.equal(updated.futurePullForwardEnabled, false);
+});
+
 test("addProject on a non-repo folder omits git metadata gracefully", () => {
   const p = svc.addProject({ name: "Plain", path: plainDir, ownerTeamId: "team_a" });
   assert.equal(p.git.isRepo, false);

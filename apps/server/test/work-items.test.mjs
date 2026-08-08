@@ -1360,6 +1360,25 @@ test("priority accepts friendly aliases normalized to p0–p3", () => {
   assert.equal(service.createWorkItem({ projectId: "prj_a", title: "X", priority: "nope" }, ACTOR_A).status, 400);
 });
 
+test("validates automatic execution policy and normalizes the hard not-before boundary", () => {
+  const { service } = harness();
+  const created = service.createWorkItem({
+    projectId: "prj_a",
+    title: "Run when allowed",
+    executionPolicy: "auto",
+    notBefore: "2026-08-09T08:30:00+08:00",
+  }, ACTOR_A);
+  assert.equal(created.status, 201);
+  assert.equal(created.body.workItem.executionPolicy, "auto");
+  assert.equal(created.body.workItem.notBefore, "2026-08-09T00:30:00.000Z");
+  assert.equal(service.createWorkItem({
+    projectId: "prj_a", title: "Bad policy", executionPolicy: "sometimes",
+  }, ACTOR_A).body.error, "invalid_work_item_execution_policy");
+  assert.equal(service.createWorkItem({
+    projectId: "prj_a", title: "Bad boundary", notBefore: "2026-08-09",
+  }, ACTOR_A).body.error, "invalid_work_item_not_before");
+});
+
 test("updates are revision-gated and validate structured fields", () => {
   const { service } = harness();
   const item = service.createWorkItem({ projectId: "prj_a", title: "A" }, ACTOR_A).body.workItem;

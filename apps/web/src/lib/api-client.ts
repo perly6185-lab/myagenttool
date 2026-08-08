@@ -2172,6 +2172,7 @@ export const api = {
     body?: string;
     type?: "task" | "bug" | "feature" | "initiative";
     priority?: "p0" | "p1" | "p2" | "p3";
+    executionPolicy?: "inherit" | "auto" | "manual" | "paused";
     labels?: string[];
     acceptanceCriteria?: string[];
     verificationSop?: string[];
@@ -2186,6 +2187,7 @@ export const api = {
     commitmentDate?: string | null;
     nextFollowUpAt?: string | null;
     dueDate?: string | null;
+    notBefore?: string | null;
     plannedDate?: string | null;
     carriedFromDate?: string | null;
     milestone?: string;
