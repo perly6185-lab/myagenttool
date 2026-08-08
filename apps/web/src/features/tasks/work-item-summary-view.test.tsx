@@ -198,7 +198,7 @@ describe("work item summary presentation", () => {
     window.removeEventListener("myagenttool:state-change", changed);
   });
 
-  it("starts AI from a newly created tracked task without opening expert details", async () => {
+  it("enables automatic AI work from a tracked task without opening expert details", async () => {
     mocks.getWorkItem.mockResolvedValue({
       workItem: item({
         status: "ready",
@@ -208,14 +208,15 @@ describe("work item summary presentation", () => {
         executionBindings: [],
       }),
     });
-    mocks.startWorkItemAutoRun.mockResolvedValue({ autoRun: { id: "aur_1", status: "materializing" } });
+    mocks.updateWorkItem.mockResolvedValue({ workItem: item({ status: "ready", executionPolicy: "auto", waitingOn: "ai" }) });
     const onOpenExpert = vi.fn();
     render(<WorkItemSummaryView workItemId="lwi_1" onOpenExpert={onOpenExpert} />);
 
     fireEvent.click(await screen.findByRole("button", { name: "Let AI start" }));
 
-    await waitFor(() => expect(mocks.startWorkItemAutoRun).toHaveBeenCalledWith("lwi_1"));
-    expect(await screen.findByText(/understanding the task and establishing the execution and acceptance basis/i)).toBeTruthy();
+    await waitFor(() => expect(mocks.updateWorkItem).toHaveBeenCalledWith("lwi_1", expect.objectContaining({ executionPolicy: "auto", waitingOn: "ai" })));
+    expect(mocks.startWorkItemAutoRun).not.toHaveBeenCalled();
+    expect(await screen.findByText(/set to automatic/i)).toBeTruthy();
     expect(onOpenExpert).not.toHaveBeenCalled();
   });
 
@@ -356,14 +357,19 @@ describe("work item summary presentation", () => {
       executionContractGate: { ready: false, missing: ["acceptance_criteria", "verification_sop", "confirmation"], source: null, confirmedAt: null },
     });
     mocks.getWorkItem.mockResolvedValue({ workItem: unplanned });
-    mocks.startWorkItemAutoRun.mockResolvedValue({ autoRun: { id: "aur_new", phase: "understanding" } });
+    mocks.updateWorkItem.mockResolvedValue({ workItem: item({ status: "ready", executionPolicy: "auto", waitingOn: "ai" }) });
     render(<WorkItemSummaryView workItemId="lwi_1" onOpenExpert={() => {}} />);
 
     fireEvent.click(await screen.findByRole("button", { name: "Let AI start" }));
-    await waitFor(() => expect(mocks.startWorkItemAutoRun).toHaveBeenCalledWith("lwi_1"));
+    await waitFor(() => expect(mocks.updateWorkItem).toHaveBeenCalledWith("lwi_1", expect.objectContaining({
+      expectedRevision: unplanned.revision,
+      executionPolicy: "auto",
+      waitingOn: "ai",
+      status: "ready",
+    })));
     expect(mocks.suggestWorkItemDraft).not.toHaveBeenCalled();
-    expect(mocks.updateWorkItem).not.toHaveBeenCalled();
-    expect(await screen.findByText(/understanding the task and establishing the execution and acceptance basis/i)).toBeTruthy();
+    expect(mocks.startWorkItemAutoRun).not.toHaveBeenCalled();
+    expect(await screen.findByText(/set to automatic/i)).toBeTruthy();
   });
 
   it("answers AI clarification from the task and resumes the same run", async () => {

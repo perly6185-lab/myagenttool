@@ -244,7 +244,7 @@ export function resolveAutoRunConfig(state = {}, baseEnv = process.env) {
     autoTrigger,
     workItemAutoSchedulerMode: ["shadow", "enabled"].includes(settings.workItemAutoSchedulerMode)
       ? settings.workItemAutoSchedulerMode
-      : "off",
+      : settings.workItemAutoSchedulerMode === "off" ? "off" : "enabled",
     statusWriteback: resolveStatusWritebackConfig(env).enabled,
     spawnIssues: spawnIssuesConfig(env).enabled,
     decision,

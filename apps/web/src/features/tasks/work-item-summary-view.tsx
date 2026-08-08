@@ -789,7 +789,7 @@ export function WorkItemSummaryView({
   const [retryError, setRetryError] = useState<string | null>(null);
   const [resultExpanded, setResultExpanded] = useState(false);
   const [discussionOpen, setDiscussionOpen] = useState(false);
-  const [actionPending, setActionPending] = useState<"start" | "changes" | "complete" | "reopen" | null>(null);
+  const [actionPending, setActionPending] = useState<"start" | "changes" | "complete" | "reopen" | "policy" | "priority" | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [changeRequestOpen, setChangeRequestOpen] = useState(false);
   const [changeRequest, setChangeRequest] = useState("");
@@ -1144,10 +1144,16 @@ export function WorkItemSummaryView({
     setActionPending("start");
     setActionError(null);
     try {
-      await api.startWorkItemAutoRun(item.id);
+      const response = await api.updateWorkItem(item.id, {
+        expectedRevision: item.revision,
+        executionPolicy: "auto",
+        waitingOn: "ai",
+        ...(item.status === "backlog" ? { status: "ready" } : {}),
+      }) as { workItem: LocalWorkItem };
+      setItem(response.workItem);
       setSyncNotice(language === "zh"
-        ? "任务已交给 AI，正在理解任务并建立本次执行与验收依据；需要你决定时会在当前任务中提问。"
-        : "The task is now with AI. It is understanding the task and establishing the execution and acceptance basis; it will ask here if a decision is needed.");
+        ? "任务已设为自动处理。AI 会按截止风险和优先级开始；需要你决定时会在当前任务中提问。"
+        : "The task is set to automatic. AI will start based on deadline risk and priority, and ask here only when a decision is needed.");
       window.dispatchEvent(new CustomEvent("myagenttool:state-change", { detail: { source: "work-item-start-ai", workItemId: item.id } }));
       setRefreshVersion((version) => version + 1);
     } catch {
@@ -1218,6 +1224,42 @@ export function WorkItemSummaryView({
       setClarifyError(language === "zh" ? "回答暂时无法提交，请稍后重试。" : "The answer could not be submitted. Try again later.");
     } finally {
       setClarifyPending(false);
+    }
+  };
+  const setAutomaticExecution = async (executionPolicy: "auto" | "paused") => {
+    if (actionPending) return;
+    setActionPending("policy");
+    setActionError(null);
+    try {
+      const response = await api.updateWorkItem(item.id, {
+        expectedRevision: item.revision,
+        executionPolicy,
+        ...(executionPolicy === "auto" ? { waitingOn: "ai" } : {}),
+      }) as { workItem: LocalWorkItem };
+      setItem(response.workItem);
+      setSyncNotice(executionPolicy === "auto"
+        ? language === "zh" ? "AI 自动处理已恢复；资源可用时会继续。" : "Automatic AI work resumed and will continue when capacity is available."
+        : language === "zh" ? "已暂停后续 AI 自动处理；当前运行不会被强制中断。" : "Future automatic AI work is paused; a currently running task is not forcibly interrupted.");
+      window.dispatchEvent(new CustomEvent("myagenttool:state-change", { detail: { source: "work-item-execution-policy", workItemId: item.id } }));
+    } catch {
+      setActionError(language === "zh" ? "自动处理设置更新失败，请重试。" : "The automatic-work setting could not be updated. Try again.");
+    } finally {
+      setActionPending(null);
+    }
+  };
+  const markUrgent = async () => {
+    if (actionPending || item.priority === "p0") return;
+    setActionPending("priority");
+    setActionError(null);
+    try {
+      const response = await api.updateWorkItem(item.id, { expectedRevision: item.revision, priority: "p0" }) as { workItem: LocalWorkItem };
+      setItem(response.workItem);
+      setSyncNotice(language === "zh" ? "已加急，调度时会优先处理。" : "Marked urgent. The scheduler will prioritize this task.");
+      window.dispatchEvent(new CustomEvent("myagenttool:state-change", { detail: { source: "work-item-priority", workItemId: item.id } }));
+    } catch {
+      setActionError(language === "zh" ? "加急失败，请重试。" : "The task could not be marked urgent. Try again.");
+    } finally {
+      setActionPending(null);
     }
   };
   const stopAiClarification = async () => {
@@ -1374,6 +1416,17 @@ export function WorkItemSummaryView({
           <span className="inline-flex items-center gap-1"><CalendarDays className="size-3.5" aria-hidden />{dueDate}</span>
           <span className="inline-flex items-center gap-1"><Clock3 className="size-3.5" aria-hidden />{copy.waitingOn}: {WAITING_LABEL[language][item.waitingOn ?? "none"]}</span>
         </div>
+        {item.state !== "closed" ? <div className="mt-3 flex flex-wrap gap-2">
+          {item.priority !== "p0" ? <Button size="sm" variant="secondary" disabled={Boolean(actionPending)} onClick={() => void markUrgent()}>
+            {language === "zh" ? "加急" : "Mark urgent"}
+          </Button> : null}
+          {item.executionPolicy === "auto" ? <Button size="sm" variant="ghost" disabled={Boolean(actionPending)} onClick={() => void setAutomaticExecution("paused")}>
+            {language === "zh" ? "暂停后续 AI 处理" : "Pause future AI work"}
+          </Button> : null}
+          {item.executionPolicy === "paused" ? <Button size="sm" variant="secondary" disabled={Boolean(actionPending)} onClick={() => void setAutomaticExecution("auto")}>
+            <Bot aria-hidden />{language === "zh" ? "恢复 AI 自动处理" : "Resume automatic AI work"}
+          </Button> : null}
+        </div> : null}
       </header>
 
       {status !== "completed" ? <section className="rounded-xl border border-primary/30 bg-primary/[0.055] p-4" aria-labelledby={`work-item-next-${item.id}`}>

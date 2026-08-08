@@ -81,6 +81,21 @@ test("unchanged shadow decisions are logged once and off mode is inert", async (
   assert.equal(disabled.events.length, 0);
 });
 
+test("scheduler defaults on safely and the global kill switch stops it", async () => {
+  const enabled = fixture(undefined);
+  delete enabled.state.autoRunSettings.workItemAutoSchedulerMode;
+  assert.equal(enabled.service.mode(), "enabled");
+  enabled.state.projects[0].autoExecutionEnabled = false;
+  assert.deepEqual(await enabled.service.sweep(), {
+    mode: "enabled", swept: 0, selected: 0, eligibleCount: 0, starts: [],
+  });
+
+  const stopped = fixture("enabled");
+  stopped.state.autoRunSettings.autonomyKillSwitch = true;
+  assert.equal(stopped.service.mode(), "off");
+  assert.deepEqual(await stopped.service.sweep(), { mode: "off", swept: 0, selected: 0 });
+});
+
 test("capacity refusal aborts admission and stays an internal retry state", async () => {
   const { state, events } = fixture("enabled");
   Object.assign(state.workItems[0], {

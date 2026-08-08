@@ -2195,6 +2195,7 @@ export function createWorkItemService({
         },
       });
     });
+    notifyWorkItemChanged(workItem, actor, "created");
     return { ok: true, status: 201, body: { workItem: workItemView(workItem, actor) } };
   }
 

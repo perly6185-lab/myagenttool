@@ -64,9 +64,8 @@ describe("HomeTaskComposer", () => {
     expect(onOpenProjects).toHaveBeenCalledTimes(1);
   });
 
-  it("creates one durable task and starts AI from the ordinary Home flow", async () => {
+  it("creates one durable task that the scheduler will run automatically", async () => {
     mocks.createWorkItem.mockResolvedValue({ workItem: { id: "lwi_new" } });
-    mocks.startWorkItemAutoRun.mockResolvedValue({ autoRun: { id: "aur_new" } });
     const onCreated = vi.fn();
     const onOpenTask = vi.fn();
     render(<HomeTaskComposer projectId="prj_1" projectName="Customer work" onCreated={onCreated} onOpenTask={onOpenTask} />);
@@ -89,21 +88,21 @@ describe("HomeTaskComposer", () => {
       acceptanceCriteria: ["Cover every open risk", "Produce a shareable document"],
       verificationSop: [],
       waitingOn: "ai",
+      executionPolicy: "auto",
       plannedDate: expect.stringMatching(/^\d{4}-\d{2}-\d{2}$/),
       idempotencyKey: expect.any(String),
     })));
-    expect(mocks.startWorkItemAutoRun).toHaveBeenCalledWith("lwi_new");
+    expect(mocks.startWorkItemAutoRun).not.toHaveBeenCalled();
     expect(mocks.suggestWorkItemDraft).not.toHaveBeenCalled();
-    expect(await screen.findByText("Task created. AI has started working.")).toBeTruthy();
+    expect(await screen.findByText(/AI will work automatically/)).toBeTruthy();
     expect(onCreated).toHaveBeenCalledTimes(1);
 
     fireEvent.click(screen.getByRole("button", { name: "View task" }));
     expect(onOpenTask).toHaveBeenCalledWith("lwi_new");
   });
 
-  it("keeps the created task accessible when AI cannot start", async () => {
+  it("keeps an automatically queued task accessible without a second start request", async () => {
     mocks.createWorkItem.mockResolvedValue({ workItem: { id: "lwi_partial" } });
-    mocks.startWorkItemAutoRun.mockRejectedValue(new Error("offline"));
     const onOpenTask = vi.fn();
     render(<HomeTaskComposer projectId="prj_1" onCreated={() => {}} onOpenTask={onOpenTask} />);
     openComposer();
@@ -112,7 +111,8 @@ describe("HomeTaskComposer", () => {
     await waitFor(() => expect((screen.getByRole("button", { name: "Create and let AI work" }) as HTMLButtonElement).disabled).toBe(false));
     fireEvent.click(screen.getByRole("button", { name: "Create and let AI work" }));
 
-    expect(await screen.findByText(/task was created, but AI could not start/i)).toBeTruthy();
+    expect(await screen.findByText(/AI will work automatically/)).toBeTruthy();
+    expect(mocks.startWorkItemAutoRun).not.toHaveBeenCalled();
     fireEvent.click(screen.getByRole("button", { name: "View task" }));
     expect(onOpenTask).toHaveBeenCalledWith("lwi_partial");
   });
@@ -152,7 +152,7 @@ describe("HomeTaskComposer", () => {
       materialDraftRevision: 1,
     })));
     expect(mocks.createWorkItem.mock.calls[0]?.[0]).not.toHaveProperty("inputAssets");
-    expect(mocks.createWorkItem.mock.calls[0]?.[0]).toEqual(expect.objectContaining({ waitingOn: "none", plannedDate: null }));
+    expect(mocks.createWorkItem.mock.calls[0]?.[0]).toEqual(expect.objectContaining({ waitingOn: "none", plannedDate: null, executionPolicy: "manual" }));
   });
 
   it("blocks create-and-run before creating a task and routes the user to the precise setup section", async () => {

@@ -84,8 +84,7 @@ export function HomeTaskComposer({
     createAi: "创建并交给 AI",
     creating: "正在创建…",
     created: "任务已创建并加入看板。",
-    aiStarted: "任务已创建，AI 已开始处理。",
-    partial: "任务已创建，但 AI 暂时无法开始。你可以在任务详情中重试。",
+    aiStarted: "任务已创建，AI 会自动处理；需要你时会提醒。",
     failed: "任务创建失败，请检查项目和网络状态后重试。",
     preflight: "执行前检查",
     preflightChecking: "正在确认 AI、代码仓库和安全开关…",
@@ -123,8 +122,7 @@ export function HomeTaskComposer({
     createAi: "Create and let AI work",
     creating: "Creating…",
     created: "Task created and added to your boards.",
-    aiStarted: "Task created. AI has started working.",
-    partial: "The task was created, but AI could not start yet. Retry from task details.",
+    aiStarted: "Task created. AI will work automatically and notify you only when needed.",
     failed: "The task could not be created. Check the project and connection, then retry.",
     preflight: "Preflight",
     preflightChecking: "Checking the AI, repository, and safety controls…",
@@ -306,6 +304,7 @@ export function HomeTaskComposer({
         body: goal.trim(),
         type: "task",
         priority: "p2",
+        executionPolicy: mode === "ai" ? "auto" : "manual",
         acceptanceCriteria: criteria.split(/\r?\n/).map((value) => value.trim()).filter(Boolean),
         verificationSop: verificationSop.split(/\r?\n/).map((value) => value.trim()).filter(Boolean),
         requesterRelation: "self",
@@ -318,12 +317,7 @@ export function HomeTaskComposer({
       }) as { workItem: LocalWorkItem };
       created = response.workItem;
       if (mode === "ai") {
-        try {
-          await api.startWorkItemAutoRun(created.id);
-          setFeedback({ tone: "success", text: copy.aiStarted, workItemId: created.id });
-        } catch {
-          setFeedback({ tone: "warning", text: copy.partial, workItemId: created.id });
-        }
+        setFeedback({ tone: "success", text: copy.aiStarted, workItemId: created.id });
       } else {
         setFeedback({ tone: "success", text: copy.created, workItemId: created.id });
       }

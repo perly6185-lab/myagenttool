@@ -111,6 +111,7 @@ test("resolveAutoRunConfig with empty state reflects env defaults", () => {
   assert.equal(cfg.autoTrigger.enabled, true);
   assert.equal(cfg.autoTrigger.label, "auto", "env/default label");
   assert.equal(cfg.commands.verify, false);
+  assert.equal(cfg.workItemAutoSchedulerMode, "enabled", "project/task opt-in remains the execution gate");
 });
 
 test("requireChecksGreenToMerge: normalized bool + exposed in effective config", () => {

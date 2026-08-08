@@ -8,8 +8,9 @@ const ACTIVE_RUN_STATUSES = new Set([
 ]);
 
 function modeFor(state) {
+  if (state?.autoRunSettings?.autonomyKillSwitch === true) return "off";
   const configured = state?.autoRunSettings?.workItemAutoSchedulerMode;
-  return MODES.has(configured) ? configured : "off";
+  return MODES.has(configured) ? configured : "enabled";
 }
 
 function dateKey(value) {

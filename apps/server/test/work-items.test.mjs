@@ -109,6 +109,12 @@ test("projects work-item status and verification changes immediately", () => {
   assert.equal(bulk.status, 200);
   assert.deepEqual(changes, [{
     id: created.id,
+    status: "backlog",
+    verificationCount: 0,
+    actorId: "usr_a",
+    reason: "created",
+  }, {
+    id: created.id,
     status: "ready",
     verificationCount: 0,
     actorId: "usr_a",
@@ -369,7 +375,10 @@ test("records append-only progress with follow-up changes, audit attribution, an
   assert.equal(state.workItemActivities[0].details.principalId, "usr_a");
   assert.deepEqual(state.workItemActivities[0].details.changes.waitingOn, { from: "me", to: "requester" });
   assert.equal(events.at(-1).type, "work_item_progress_recorded");
-  assert.deepEqual(changes, [{ id: created.id, actorId: "usr_a", reason: "progress_recorded" }]);
+  assert.deepEqual(changes, [
+    { id: created.id, actorId: "usr_a", reason: "created" },
+    { id: created.id, actorId: "usr_a", reason: "progress_recorded" },
+  ]);
 
   const replayed = service.recordWorkItemProgress({
     workItemId: created.id,
