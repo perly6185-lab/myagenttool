@@ -232,7 +232,7 @@ test("imports a GitLab issue, opens its Local Issue, and starts AI from simple d
     request.url().endsWith("/api/work-items/lwi_1/auto-runs") && request.method() === "POST");
   await detail.getByRole("button", { name: "Let AI start" }).click();
   await autoRunRequest;
-  await expect(detail.getByText(/AI has started/)).toBeVisible();
+  await expect(detail.getByText(/understanding the task and establishing the execution and acceptance basis/i)).toBeVisible();
 });
 
 test("browses and bulk imports GitLab issues on a narrow keyboard-accessible dialog", async ({ page }) => {

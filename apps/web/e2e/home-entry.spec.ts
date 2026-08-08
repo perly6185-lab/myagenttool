@@ -184,7 +184,7 @@ test("creates a Home Local Issue first, then starts AI from simple details", asy
   const detail = page.getByRole("dialog", { name: "Task details" });
   await expect(detail.getByRole("heading", { name: "Prepare the weekly customer update" })).toBeVisible();
   await detail.getByRole("button", { name: "Let AI start" }).click();
-  await expect(detail.getByText(/AI has started/)).toBeVisible();
+  await expect(detail.getByText(/understanding the task and establishing the execution and acceptance basis/i)).toBeVisible();
   expect(started).toBe(true);
   await expect(detail.getByText("AI working", { exact: true })).toBeVisible();
 });
