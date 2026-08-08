@@ -361,34 +361,34 @@ export async function handleProjectRoutes({
         selectedAction: ranBody?.selectedAction,
         repoUrl: ranBody?.repoUrl,
       });
-      sendJson(res, 200, result);
-      // When a structured action was chosen (e.g. "evaluate"), auto-trigger a
-      // fresh run: clone the repo → startAutoRun with the new project & path.
-      // Fire-and-forget so the clarify-answer response is not delayed by clone.
+      // When a structured action was chosen (e.g. "evaluate"), clone the repo
+      // and start a fresh auto-run BEFORE returning — the clone latency is
+      // a few seconds for typical repos, and synchronous avoids async-after-
+      // response races that crash the server.
+      let retryRun = null;
       if (result.shouldRetry && result.repoUrl && typeof cloneProject === "function" && typeof startAutoRun === "function") {
         const autoRun = state.autoRuns.find((item) => item.id === decodeURIComponent(clarifyAnswerMatch[1]));
         const link = autoRun?.link ?? null;
         const agentId = autoRun?.agentId ?? null;
         const issueBody = autoRun?.issueBody ?? null;
         if (link && agentId) {
-          const parentPath = defaultProjectPath ?? state.projects[0]?.path ?? process.cwd();
-          (async () => {
-            try {
-              const project = await cloneProject({ gitUrl: result.repoUrl, parentPath, name: ranBody?.repoName ?? undefined });
-              await startAutoRun({
-                projectId: project.id,
-                link,
-                agentId,
-                name: link?.title ?? undefined,
-                issueBody,
-              });
-            } catch {
-              // Best-effort: if the auto-triggered clone or run fails, the
-              // clarify answer itself already succeeded.
-            }
-          })();
+          const parentPath = state.projects[0]?.path ?? process.cwd();
+          try {
+            const project = await cloneProject({ gitUrl: result.repoUrl, parentPath, name: ranBody?.repoName ?? undefined });
+            const fresh = await startAutoRun({
+              projectId: project.id,
+              link,
+              agentId,
+              name: link?.title ?? undefined,
+              issueBody,
+            });
+            retryRun = { id: fresh.autoRun?.id ?? fresh.id, status: fresh.autoRun?.status ?? fresh.status };
+          } catch {
+            // Best-effort: clone or run failed — the clarify answer still succeeded.
+          }
         }
       }
+      sendJson(res, 200, { ...result, retryRun });
     } catch (error) {
       sendJson(res, 400, { error: "clarify_answer_failed", message: errorMessage(error) });
     }
