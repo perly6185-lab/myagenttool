@@ -1546,7 +1546,7 @@ export function createAutoRunService({
             const reportFile = resolvedPath === "summarize" ? "summary/REPORT.md" : "evaluate/REPORT.md";
             const fileReport = typeof readWorktreeTextFile === "function" ? readWorktreeTextFile(autoRun.worktreeId, reportFile) : null;
             const summary = (fileReport && fileReport.trim()) || extractRunSummary(invocation) || "Evaluation complete — see evaluate/REPORT.md for the detailed report.";
-            runTx(() => setAutoRunStatus(autoRun, "report_posted", { report: summary }));
+            runTx(() => { autoRun.report = summary; setAutoRunStatus(autoRun, "report_posted", { report: summary }); });
             maybeWriteIssueStatus(autoRun, worktree, "review");
             return autoRun;
           }
@@ -1565,12 +1565,12 @@ export function createAutoRunService({
               maybePostIssueReport(autoRun, worktree, summary);
               const spawn = await maybeSpawnChildIssue(autoRun, worktree, summary);
               if (autoRunReactionSuperseded(autoRun, invocation, "child issue creation")) return null;
-              runTx(() => setAutoRunStatus(autoRun, "report_posted", {
+              runTx(() => { autoRun.report = summary; setAutoRunStatus(autoRun, "report_posted", {
                 report: summary,
                 error: null,
                 ...(spawn?.child ? { childIssues: [spawn.child] } : {}),
                 ...(spawn?.error ? { spawnError: spawn.error } : {}),
-              }));
+              }); });
               // The design is delivered and waits on a human — the issue label
               // should say review, not linger at in-progress. (Pilot finding.)
               maybeWriteIssueStatus(autoRun, worktree, "review");
