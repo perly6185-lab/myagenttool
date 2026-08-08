@@ -217,7 +217,8 @@ describe("DailyWorkBoard", () => {
       title: progressItem.title,
       revision: 4,
       waitingOn: "requester",
-      attentionReason: "waiting_requester",
+      attentionReason: "follow_up_due",
+      nextFollowUpAt: "2026-07-31T03:00:00.000Z",
       nextAction: { kind: "record_progress", label: "record_progress", targetId: progressItem.id, section: "task" },
     });
     const onOpenItem = vi.fn();

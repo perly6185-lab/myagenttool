@@ -43,6 +43,7 @@ export function createWorkItemAutoSchedulerService({
 } = {}) {
   const signatures = new Map();
   let sweeping = false;
+  const resolvedTimeZone = () => typeof timeZone === "function" ? timeZone() : timeZone;
   const metrics = {
     sweeps: 0,
     shadowSelections: 0,
@@ -81,7 +82,7 @@ export function createWorkItemAutoSchedulerService({
       .filter((project) => !projectId || project.id === projectId);
     const plan = planAutoExecutionQueue(items, {
       projects,
-      today: autoExecutionDateKey(timestamp, { timeZone }),
+      today: autoExecutionDateKey(timestamp, { timeZone: resolvedTimeZone() }),
       now: timestamp,
     });
     return {
@@ -240,7 +241,7 @@ export function createWorkItemAutoSchedulerService({
       enqueueAutoRunUnderstanding(result.autoRun.id);
       metrics.starts += 1;
       metrics.lastStartedAt = now();
-      if (dateOnly(item.plannedDate) > autoExecutionDateKey(now(), { timeZone })) metrics.futurePullForwards += 1;
+      if (dateOnly(item.plannedDate) > autoExecutionDateKey(now(), { timeZone: resolvedTimeZone() })) metrics.futurePullForwards += 1;
       appendEvent({
         invocationId: null,
         type: "work_item_auto_scheduler_started",

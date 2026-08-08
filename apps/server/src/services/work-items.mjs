@@ -336,6 +336,36 @@ export function createWorkItemService({
   const runTx = makeRunTx({ store, persistStateSoon });
   const actorTeam = (actor) => actor?.teamId ?? LOCAL_TEAM_ID;
   const actorUser = (actor) => actor?.userId ?? LOCAL_USER_ID;
+  const legacyContractCandidates = (state.workItems ?? []).filter((item) =>
+    !item.executionContractSnapshot && item.executionContractConfirmedAt
+    && (item.acceptanceCriteria ?? []).length && (item.verificationSop ?? []).length);
+  if (legacyContractCandidates.length) runTx(() => {
+    for (const item of legacyContractCandidates) {
+      const confirmedBy = ["assisted", "agent_assisted"].includes(item.executionContractSource)
+        ? "ai_policy"
+        : item.lastModifiedBy ?? item.createdBy ?? "legacy_user";
+      item.executionContractSnapshot = {
+        schemaVersion: "legacy-v1",
+        id: `contract:legacy:${item.id}:${item.executionContractConfirmedAt}`,
+        workItemId: item.id,
+        workItemRevision: item.revision ?? null,
+        autoRunId: null,
+        acceptanceCriteria: [...item.acceptanceCriteria],
+        verificationSop: [...item.verificationSop],
+        confirmedBy,
+        confirmedAt: item.executionContractConfirmedAt,
+        digest: createHash("sha256").update(JSON.stringify({
+          schemaVersion: "legacy-v1",
+          workItemId: item.id,
+          acceptanceCriteria: item.acceptanceCriteria,
+          verificationSop: item.verificationSop,
+          confirmedAt: item.executionContractConfirmedAt,
+        })).digest("hex"),
+        readOnly: true,
+        migratedAt: now(),
+      };
+    }
+  });
   const notifyWorkItemChanged = (item, actor, reason) => {
     try {
       onWorkItemChanged(item, actor, reason);
@@ -561,6 +591,49 @@ export function createWorkItemService({
     };
   }
 
+  function reviewContract(item) {
+    const latestRun = [...(item.executionBindings ?? [])].reverse()
+      .filter((binding) => binding.kind === "auto_run")
+      .map((binding) => (state.autoRuns ?? []).find((candidate) => candidate.id === binding.targetId))
+      .find(Boolean) ?? null;
+    const contract = latestRun?.executionContract ?? item.executionContractSnapshot ?? null;
+    if (!contract) return null;
+    return {
+      schemaVersion: contract.schemaVersion ?? "execution-contract-v2",
+      id: contract.id,
+      workItemId: contract.workItemId ?? item.id,
+      workItemRevision: contract.workItemRevision ?? null,
+      autoRunId: contract.autoRunId ?? latestRun?.id ?? null,
+      acceptanceCriteria: [...(contract.acceptanceCriteria ?? [])],
+      verificationSop: [...(contract.verificationSop ?? [])],
+      confirmedBy: contract.confirmedBy ?? null,
+      confirmedAt: contract.confirmedAt ?? null,
+      digest: contract.digest ?? null,
+      readOnly: true,
+    };
+  }
+
+  function reviewEvidence(item, contract) {
+    if (!contract) return [];
+    const verificationById = new Map((item.verificationRecords ?? []).map((record) => [record.id, record]));
+    return contract.acceptanceCriteria.map((criterion) => {
+      const result = (item.acceptanceResults ?? []).find((candidate) => candidate.criterion === criterion) ?? null;
+      const verification = result?.verificationId ? verificationById.get(result.verificationId) ?? null : null;
+      return {
+        criterion,
+        status: result?.status ?? "not_tested",
+        note: result?.note ?? "",
+        verificationId: verification?.id ?? null,
+        command: verification?.command ?? null,
+        verificationSummary: verification?.summary ?? null,
+        evidence: [...(verification?.evidence ?? [])],
+        sourceAutoRunId: verification?.sourceAutoRunId ?? contract.autoRunId ?? null,
+        reviewedBy: verification?.recordedBy ?? null,
+        reviewedAt: verification?.recordedAt ?? null,
+      };
+    });
+  }
+
   function executionContractDefinitionGate(item) {
     const missing = [];
     if (!(item.acceptanceCriteria ?? []).length) missing.push("acceptance_criteria");
@@ -583,6 +656,7 @@ export function createWorkItemService({
       ? publicItem.acceptanceCriteria
       : bodyAcceptanceCriteria;
     const derivedExecutionState = executionState(item);
+    const frozenReviewContract = reviewContract(item);
     const memberships = (state.planningProjectItems ?? []).filter(
       (row) => row.workItemId === item.id && row.ownerTeamId === actorTeam(actor),
     );
@@ -618,6 +692,8 @@ export function createWorkItemService({
       },
       completionGate: completionGate({ ...item, acceptanceCriteria: visibleAcceptanceCriteria }),
       executionContractGate: executionContractGate(item),
+      reviewContract: frozenReviewContract,
+      reviewEvidence: reviewEvidence(item, frozenReviewContract),
       parent: parent ? {
         id: parent.id, localRef: parent.localRef, title: parent.title,
         status: parent.status, state: parent.state,

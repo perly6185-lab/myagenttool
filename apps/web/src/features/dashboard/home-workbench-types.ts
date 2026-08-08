@@ -10,6 +10,7 @@ export type HomeAttentionReason =
   | "approval_required"
   | "ai_failed"
   | "review_ready"
+  | "user_action_required"
   | "follow_up_due"
   | "waiting_requester"
   | "waiting_internal"

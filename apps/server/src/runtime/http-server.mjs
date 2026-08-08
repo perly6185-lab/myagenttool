@@ -70,6 +70,7 @@ export function createHttpServer({
   retryAutoRun,
   reverifyAutoRun,
   cancelAutoRun,
+  stopAutoRunDelivery,
   mergeAutoRunPr,
   recordRoutingOverride,
   setReportSchedule,
@@ -990,6 +991,7 @@ export function createHttpServer({
         currentProject,
         addProject,
         cloneProject,
+        createWorkItem,
         createBlankProject,
         createWorktree,
         createWorktreePr,
@@ -999,6 +1001,7 @@ export function createHttpServer({
         retryAutoRun,
         reverifyAutoRun,
         cancelAutoRun,
+        stopAutoRunDelivery,
         mergeAutoRunPr,
         recordRoutingOverride,
         setReportSchedule,
@@ -1109,6 +1112,7 @@ export function createHttpServer({
         sendJson,
         readJson,
         state,
+        actor,
         now,
         appendEvent,
         isAgentDisabled,
@@ -1126,6 +1130,7 @@ export function createHttpServer({
         issueBridgeCredential,
         requireBridgeCredential,
         supersedeBridgeSession,
+        persistStateSoon,
       })) {
         return;
       }

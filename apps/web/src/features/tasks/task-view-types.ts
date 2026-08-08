@@ -71,11 +71,36 @@ export type LocalWorkItem = {
     confirmedAt: string | null;
     latestAttemptStartedAt?: string | null;
   };
+  reviewContract?: {
+    schemaVersion: "legacy-v1" | "execution-contract-v2" | string;
+    id: string;
+    workItemId: string;
+    workItemRevision: number | null;
+    autoRunId: string | null;
+    acceptanceCriteria: string[];
+    verificationSop: string[];
+    confirmedBy: string | null;
+    confirmedAt: string | null;
+    digest: string | null;
+    readOnly: true;
+  } | null;
+  reviewEvidence?: {
+    criterion: string;
+    status: "passed" | "failed" | "not_tested";
+    note: string;
+    verificationId: string | null;
+    command: string | null;
+    verificationSummary: string | null;
+    evidence: { kind: string; ref: string; summary: string; assetId?: string | null; hash?: string | null; version?: string | null; terminalId?: string | null }[];
+    sourceAutoRunId: string | null;
+    reviewedBy: string | null;
+    reviewedAt: string | null;
+  }[];
   acceptanceResults?: { criterion: string; status: "passed" | "failed" | "not_tested"; note: string; verificationId: string }[];
   verificationRecords?: {
     id: string; kind: "test" | "lint" | "typecheck" | "manual" | "review";
     status: "passed" | "failed"; command: string | null; summary: string;
-    evidence: { kind: string; ref: string; summary: string; assetId?: string | null; hash?: string | null; version?: string | null; terminalId?: string | null }[]; recordedAt: string; recordedBy: string;
+    evidence: { kind: string; ref: string; summary: string; assetId?: string | null; hash?: string | null; version?: string | null; terminalId?: string | null }[]; recordedAt: string; recordedBy: string; sourceAutoRunId?: string | null;
   }[];
   inputAssets?: WorkItemAssetRef[];
   materialChangesPending?: boolean;
@@ -329,6 +354,13 @@ export type LocalWorkItemAutoRun = {
     reviewedCommit: string | null;
     errorCode: string | null;
     nextRetryAt?: string | null;
+  } | null;
+  deliveryStopped?: {
+    stoppedAt: string;
+    stoppedBy: string;
+    reason: string | null;
+    worktreeKept: boolean;
+    pullRequestKept: boolean;
   } | null;
   routingOverride?: {
     recommendedPath: string | null; actualPath: string; reason: string;

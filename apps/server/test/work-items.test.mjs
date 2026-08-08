@@ -1369,6 +1369,105 @@ test("priority accepts friendly aliases normalized to p0–p3", () => {
   assert.equal(service.createWorkItem({ projectId: "prj_a", title: "X", priority: "nope" }, ACTOR_A).status, 400);
 });
 
+test("review detail uses the immutable Run contract and maps criterion evidence without adopting later task edits", () => {
+  const { state, service } = harness();
+  const created = service.createWorkItem({
+    projectId: "prj_a",
+    title: "Frozen review basis",
+    acceptanceCriteria: ["Original criterion"],
+    verificationSop: ["Run the original verification"],
+  }, ACTOR_A).body.workItem;
+  const internal = state.workItems.find((item) => item.id === created.id);
+  internal.executionBindings.push({ kind: "auto_run", targetId: "aur_frozen", createdAt: "2026-07-24T00:01:00.000Z" });
+  internal.acceptanceResults = [{
+    criterion: "Original criterion",
+    status: "passed",
+    note: "Verified before review",
+    verificationId: "wvr_frozen",
+    updatedAt: "2026-07-24T00:02:00.000Z",
+  }];
+  internal.verificationRecords = [{
+    id: "wvr_frozen",
+    kind: "test",
+    status: "passed",
+    command: "pnpm test",
+    summary: "All tests passed",
+    evidence: [{ kind: "commit", ref: "abc123", summary: "Verified commit" }],
+    sourceAutoRunId: "aur_frozen",
+    recordedAt: "2026-07-24T00:02:00.000Z",
+    recordedBy: "usr_autorun",
+  }];
+  state.autoRuns = [{
+    id: "aur_frozen",
+    status: "done",
+    createdAt: "2026-07-24T00:01:00.000Z",
+    executionContract: {
+      schemaVersion: "execution-contract-v2",
+      id: "contract:aur_frozen",
+      workItemId: created.id,
+      workItemRevision: 1,
+      autoRunId: "aur_frozen",
+      acceptanceCriteria: ["Original criterion"],
+      verificationSop: ["Run the original verification"],
+      confirmedBy: "user",
+      confirmedAt: "2026-07-24T00:00:30.000Z",
+      digest: "frozen-digest",
+      readOnly: true,
+    },
+  }];
+  internal.acceptanceCriteria = ["Later edited criterion"];
+  internal.verificationSop = ["Later edited verification"];
+
+  const detail = service.getWorkItem({ workItemId: created.id }, ACTOR_A).body.workItem;
+  assert.deepEqual(detail.reviewContract.acceptanceCriteria, ["Original criterion"]);
+  assert.deepEqual(detail.reviewContract.verificationSop, ["Run the original verification"]);
+  assert.equal(detail.reviewContract.digest, "frozen-digest");
+  assert.deepEqual(detail.reviewEvidence, [{
+    criterion: "Original criterion",
+    status: "passed",
+    note: "Verified before review",
+    verificationId: "wvr_frozen",
+    command: "pnpm test",
+    verificationSummary: "All tests passed",
+    evidence: [{ kind: "commit", ref: "abc123", summary: "Verified commit" }],
+    sourceAutoRunId: "aur_frozen",
+    reviewedBy: "usr_autorun",
+    reviewedAt: "2026-07-24T00:02:00.000Z",
+  }]);
+});
+
+test("legacy confirmed contracts migrate once to a read-only legacy-v1 snapshot", () => {
+  let persisted = 0;
+  const first = harness();
+  const created = first.service.createWorkItem({
+    projectId: "prj_a",
+    title: "Legacy confirmed task",
+    acceptanceCriteria: ["Legacy criterion"],
+    verificationSop: ["Legacy verification"],
+  }, ACTOR_A).body.workItem;
+  const migrated = createWorkItemService({
+    state: first.state,
+    now: () => "2026-07-25T00:00:00.000Z",
+    nextId: (prefix) => `${prefix}_migration`,
+    persistStateSoon: () => { persisted += 1; },
+  });
+
+  const detail = migrated.getWorkItem({ workItemId: created.id }, ACTOR_A).body.workItem;
+  assert.equal(detail.reviewContract.schemaVersion, "legacy-v1");
+  assert.equal(detail.reviewContract.readOnly, true);
+  assert.deepEqual(detail.reviewContract.acceptanceCriteria, ["Legacy criterion"]);
+  assert.match(detail.reviewContract.digest, /^[a-f0-9]{64}$/);
+  assert.equal(persisted, 1);
+
+  createWorkItemService({
+    state: first.state,
+    now: () => "2026-07-26T00:00:00.000Z",
+    nextId: (prefix) => `${prefix}_replay`,
+    persistStateSoon: () => { persisted += 1; },
+  });
+  assert.equal(persisted, 1, "the durable migration is not repeated");
+});
+
 test("validates automatic execution policy and normalizes the hard not-before boundary", () => {
   const { service } = harness();
   const created = service.createWorkItem({

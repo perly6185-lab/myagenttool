@@ -34,6 +34,208 @@ const IMAGE_MIME = {
   ".avif": "image/avif",
 };
 
+function canonicalRepositoryUrl(value) {
+  return String(value ?? "")
+    .trim()
+    .replace(/\/+$/, "")
+    .replace(/\.git$/i, "")
+    .toLowerCase();
+}
+
+function continuationRunView(run) {
+  if (!run) return null;
+  return { id: run.autoRun?.id ?? run.id, status: run.autoRun?.status ?? run.status };
+}
+
+/**
+ * Continue a structured clarification in a repository selected by the user.
+ *
+ * The continuation is deliberately checkpointed on the source Auto-run. A
+ * retry therefore reuses the cloned project and governed Local Issue instead
+ * of creating duplicate repositories, tasks, or runs.
+ */
+export async function continueStructuredClarification({
+  state,
+  autoRunId,
+  result,
+  requestBody = {},
+  actor,
+  cloneProject,
+  createWorkItem,
+  startAutoRun,
+  persistStateSoon = () => {},
+} = {}) {
+  if (!result?.shouldRetry || !result?.repoUrl) {
+    return { retryRun: null, retryError: null, continuation: null };
+  }
+  const autoRun = state.autoRuns.find((item) => item.id === autoRunId);
+  if (!autoRun) {
+    return {
+      retryRun: null,
+      retryError: { code: "auto_run_not_found", message: "The answered AI run could not be found.", retryable: false },
+      continuation: null,
+    };
+  }
+  const selectedPath = ["evaluate", "develop"].includes(String(result.selectedAction ?? requestBody.selectedAction ?? ""))
+    ? String(result.selectedAction ?? requestBody.selectedAction)
+    : null;
+  if (!selectedPath) {
+    return {
+      retryRun: null,
+      retryError: { code: "invalid_structured_action", message: "Choose Evaluate or Develop before continuing.", retryable: true },
+      continuation: null,
+    };
+  }
+  if (typeof cloneProject !== "function" || typeof createWorkItem !== "function" || typeof startAutoRun !== "function") {
+    return {
+      retryRun: null,
+      retryError: { code: "structured_continuation_unavailable", message: "Repository continuation is not available on this server.", retryable: true },
+      continuation: null,
+    };
+  }
+
+  const requestedAt = autoRun.clarifyAnswer?.at ?? new Date().toISOString();
+  const operation = autoRun.clarificationContinuation ?? {
+    status: "pending",
+    action: selectedPath,
+    repoUrl: result.repoUrl,
+    requestedAt,
+    requestedBy: actor?.userId ?? "usr_local",
+    attemptCount: 0,
+  };
+  autoRun.clarificationContinuation = operation;
+  operation.action = selectedPath;
+  operation.repoUrl = result.repoUrl;
+  operation.attemptCount = Number(operation.attemptCount ?? 0) + 1;
+  operation.status = "processing";
+  operation.lastAttemptAt = new Date().toISOString();
+  operation.error = null;
+  persistStateSoon();
+
+  try {
+    const completedRun = operation.retryRunId
+      ? state.autoRuns.find((item) => item.id === operation.retryRunId)
+      : null;
+    if (completedRun) {
+      operation.status = "completed";
+      persistStateSoon();
+      return {
+        retryRun: continuationRunView(completedRun),
+        retryError: null,
+        continuation: { status: operation.status, projectId: operation.projectId ?? null, localIssueId: operation.localIssueId ?? null },
+      };
+    }
+
+    const expectedRepo = canonicalRepositoryUrl(result.repoUrl);
+    let project = operation.projectId
+      ? state.projects.find((item) => item.id === operation.projectId)
+      : null;
+    if (!project) {
+      project = state.projects.find((item) =>
+        (item.ownerTeamId ?? "team_local") === (actor?.teamId ?? "team_local")
+        && canonicalRepositoryUrl(item.git?.remoteUrl) === expectedRepo) ?? null;
+    }
+    if (!project) {
+      const parentPath = state.projects[0]?.path ?? process.cwd();
+      project = await cloneProject({
+        gitUrl: result.repoUrl,
+        parentPath,
+        name: requestBody.repoName ?? undefined,
+        ownerTeamId: actor?.teamId ?? "team_local",
+      });
+    }
+    operation.projectId = project.id;
+    persistStateSoon();
+
+    let localIssue = operation.localIssueId
+      ? (state.workItems ?? []).find((item) => item.id === operation.localIssueId && item.projectId === project.id)
+      : null;
+    if (!localIssue) {
+      const sourceWorkItem = (state.workItems ?? []).find((item) =>
+        item.id === autoRun.localIssueId
+        || item.id === autoRun.executionChainId
+        || (autoRun.link?.type === "local_issue" && item.localNumber === autoRun.link?.number));
+      const created = await createWorkItem({
+        projectId: project.id,
+        title: sourceWorkItem?.title ?? autoRun.link?.title ?? autoRun.name ?? "AI repository task",
+        body: sourceWorkItem?.body ?? autoRun.issueBody ?? "",
+        type: sourceWorkItem?.type ?? "task",
+        priority: sourceWorkItem?.priority ?? "p2",
+        labels: sourceWorkItem?.labels ?? [],
+        acceptanceCriteria: sourceWorkItem?.acceptanceCriteria ?? autoRun.executionPlan?.acceptanceCriteria ?? [],
+        verificationSop: sourceWorkItem?.verificationSop ?? autoRun.executionPlan?.verificationSop ?? [],
+        executionPolicy: "manual",
+        idempotencyKey: `structured-clarification:${autoRun.id}`,
+      }, actor);
+      if (!created?.ok) {
+        const error = new Error(created?.body?.message ?? created?.body?.error ?? "The target Local Issue could not be created.");
+        error.code = created?.body?.error ?? "local_issue_create_failed";
+        throw error;
+      }
+      localIssue = created.body.workItem;
+    }
+    operation.localIssueId = localIssue.id;
+    persistStateSoon();
+
+    const existingRun = state.autoRuns.find((item) =>
+      item.id !== autoRun.id
+      && item.projectId === project.id
+      && (item.localIssueId === localIssue.id || item.executionChainId === localIssue.id));
+    const fresh = existingRun ?? await startAutoRun({
+      projectId: project.id,
+      link: {
+        type: "local_issue",
+        number: localIssue.localNumber,
+        title: localIssue.title,
+        url: null,
+        state: "open",
+      },
+      agentId: autoRun.agentId,
+      name: localIssue.title,
+      issueBody: localIssue.body,
+      actor,
+      localIssueId: localIssue.id,
+      taskMaterialWorkItemId: localIssue.id,
+      executionChainId: localIssue.id,
+      terminalId: localIssue.terminalId ?? null,
+      autonomyProfile: autoRun.autonomyProfile ?? "standard",
+      decisionOverride: {
+        path: selectedPath,
+        confidence: 1,
+        rationale: `The user selected the structured ${selectedPath} action.`,
+        clarifyingQuestions: [],
+        suggestedActions: [],
+        decidedBy: "user",
+        via: "clarification",
+      },
+    });
+    const retryRun = continuationRunView(fresh);
+    operation.retryRunId = retryRun.id;
+    operation.status = "completed";
+    operation.completedAt = new Date().toISOString();
+    operation.error = null;
+    persistStateSoon();
+    return {
+      retryRun,
+      retryError: null,
+      continuation: { status: operation.status, projectId: project.id, localIssueId: localIssue.id },
+    };
+  } catch (error) {
+    operation.status = "failed";
+    operation.failedAt = new Date().toISOString();
+    operation.error = {
+      code: error?.code ?? "structured_continuation_failed",
+      message: errorMessage(error),
+    };
+    persistStateSoon();
+    return {
+      retryRun: null,
+      retryError: { ...operation.error, retryable: true },
+      continuation: { status: operation.status, projectId: operation.projectId ?? null, localIssueId: operation.localIssueId ?? null },
+    };
+  }
+}
+
 export async function handleProjectRoutes({
   req,
   res,
@@ -47,6 +249,7 @@ export async function handleProjectRoutes({
   currentProject,
   addProject,
   cloneProject,
+  createWorkItem,
   createBlankProject,
   createWorktree,
   createWorktreePr,
@@ -56,6 +259,7 @@ export async function handleProjectRoutes({
   retryAutoRun,
   reverifyAutoRun,
   cancelAutoRun,
+  stopAutoRunDelivery,
   mergeAutoRunPr,
   recordRoutingOverride,
   setReportSchedule,
@@ -279,6 +483,19 @@ export async function handleProjectRoutes({
     return true;
   }
 
+  const autoRunStopDeliveryMatch = url.pathname.match(/^\/api\/auto-runs\/([^\/]+)\/stop-delivery$/);
+  if (autoRunStopDeliveryMatch && req.method === "POST") {
+    if (denyForeignAutoRun(decodeURIComponent(autoRunStopDeliveryMatch[1]))) return true;
+    try {
+      const body = await readJson(req);
+      const result = stopAutoRunDelivery(decodeURIComponent(autoRunStopDeliveryMatch[1]), { actor, reason: body?.reason });
+      sendJson(res, 200, result);
+    } catch (error) {
+      sendJson(res, 400, { error: "auto_run_stop_delivery_failed", message: errorMessage(error) });
+    }
+    return true;
+  }
+
   const autoRunReverifyMatch = url.pathname.match(/^\/api\/auto-runs\/([^\/]+)\/reverify$/);
   if (autoRunReverifyMatch && req.method === "POST") {
     if (denyForeignAutoRun(decodeURIComponent(autoRunReverifyMatch[1]))) return true;
@@ -366,46 +583,18 @@ export async function handleProjectRoutes({
         selectedAction: ranBody?.selectedAction,
         repoUrl: ranBody?.repoUrl,
       });
-      // When a structured action was chosen (e.g. "evaluate"), clone the repo
-      // and start a fresh auto-run BEFORE returning — the clone latency is
-      // a few seconds for typical repos, and synchronous avoids async-after-
-      // response races that crash the server.
-      let retryRun = null;
-      if (result.shouldRetry && result.repoUrl && typeof cloneProject === "function" && typeof startAutoRun === "function") {
-        const autoRun = state.autoRuns.find((item) => item.id === decodeURIComponent(clarifyAnswerMatch[1]));
-        const link = autoRun?.link ?? null;
-        const agentId = autoRun?.agentId ?? null;
-        const issueBody = autoRun?.issueBody ?? null;
-        if (link && agentId) {
-          const parentPath = state.projects[0]?.path ?? process.cwd();
-          try {
-            const project = await cloneProject({ gitUrl: result.repoUrl, parentPath, name: ranBody?.repoName ?? undefined });
-            const selectedPath = ["evaluate", "develop"].includes(String(ranBody?.selectedAction ?? ""))
-              ? String(ranBody.selectedAction)
-              : null;
-            const fresh = await startAutoRun({
-              projectId: project.id,
-              link,
-              agentId,
-              name: link?.title ?? undefined,
-              issueBody,
-              decisionOverride: selectedPath ? {
-                path: selectedPath,
-                confidence: 1,
-                rationale: `The user selected the structured ${selectedPath} action.`,
-                clarifyingQuestions: [],
-                suggestedActions: [],
-                decidedBy: "user",
-                via: "clarification",
-              } : null,
-            });
-            retryRun = { id: fresh.autoRun?.id ?? fresh.id, status: fresh.autoRun?.status ?? fresh.status };
-          } catch {
-            // Best-effort: clone or run failed — the clarify answer still succeeded.
-          }
-        }
-      }
-      sendJson(res, 200, { ...result, retryRun });
+      const continuation = await continueStructuredClarification({
+        state,
+        autoRunId: decodeURIComponent(clarifyAnswerMatch[1]),
+        result,
+        requestBody: ranBody,
+        actor,
+        cloneProject,
+        createWorkItem,
+        startAutoRun,
+        persistStateSoon,
+      });
+      sendJson(res, 200, { ...result, ...continuation });
     } catch (error) {
       sendJson(res, 400, { error: "clarify_answer_failed", message: errorMessage(error) });
     }

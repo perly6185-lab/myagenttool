@@ -383,6 +383,7 @@ function createDefaultDevice(now) {
     defaultShell: process.platform === "win32" ? "powershell" : "bash",
     pathFormat: process.platform === "win32" ? "windows" : "posix",
     bridgeVersion: "0.0.0",
+    timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
     status: "offline",
     unlinkState: "linked",
     lastSeenAt: null,

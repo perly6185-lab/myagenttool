@@ -1958,6 +1958,54 @@ test("cancelAutoRun stops a clarification Run before its execution contract is c
   assert.equal(autoRun.phase, "cancelled");
 });
 
+test("stopAutoRunDelivery closes the task without merging and keeps generated work for audit", () => {
+  const { svc, calls } = makeAutoRun();
+  const autoRun = {
+    id: "aur_reviewable_delivery",
+    projectId: sourceProjectId,
+    status: "done",
+    phase: "review_ready",
+    invocationId: "inv_done",
+    worktreeId: "wtr_kept",
+    prNumber: 77,
+    prUrl: "https://github.com/o/r/pull/77",
+    updatedAt: "2026-08-08T00:00:00.000Z",
+  };
+  const workItem = {
+    id: "lwi_reviewable_delivery",
+    ownerTeamId: "team_local",
+    projectId: sourceProjectId,
+    status: "review",
+    state: "open",
+    waitingOn: "me",
+    revision: 3,
+    executionBindings: [{ kind: "auto_run", targetId: autoRun.id }],
+  };
+  state.autoRuns.push(autoRun);
+  state.workItems = [workItem];
+
+  const stopped = svc.stopAutoRunDelivery(autoRun.id, {
+    actor: { userId: "usr_owner" },
+    reason: "Do not ship this result.",
+  });
+
+  assert.equal(stopped.replayed, false);
+  assert.deepEqual(autoRun.deliveryStopped, {
+    stoppedAt: autoRun.deliveryStopped.stoppedAt,
+    stoppedBy: "usr_owner",
+    reason: "Do not ship this result.",
+    worktreeKept: true,
+    pullRequestKept: true,
+  });
+  assert.equal(workItem.status, "done");
+  assert.equal(workItem.state, "closed");
+  assert.equal(workItem.waitingOn, "none");
+  assert.equal(workItem.revision, 4);
+  assert.equal(state.workItemActivities[0].action, "delivery_stopped");
+  assert.equal(calls.merge.length, 0, "stopping delivery never merges the PR");
+  assert.equal(svc.stopAutoRunDelivery(autoRun.id).replayed, true, "repeated clicks are idempotent");
+});
+
 async function judgeRun(svc, number, name) {
   const { autoRun, invocation } = await svc.startAutoRun({
     projectId: sourceProjectId,

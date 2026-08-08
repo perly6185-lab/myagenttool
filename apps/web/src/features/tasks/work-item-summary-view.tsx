@@ -789,7 +789,7 @@ export function WorkItemSummaryView({
   const [retryError, setRetryError] = useState<string | null>(null);
   const [resultExpanded, setResultExpanded] = useState(false);
   const [discussionOpen, setDiscussionOpen] = useState(false);
-  const [actionPending, setActionPending] = useState<"start" | "changes" | "complete" | "reopen" | "policy" | "priority" | null>(null);
+  const [actionPending, setActionPending] = useState<"start" | "changes" | "complete" | "reopen" | "policy" | "priority" | "stop-delivery" | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [changeRequestOpen, setChangeRequestOpen] = useState(false);
   const [changeRequest, setChangeRequest] = useState("");
@@ -928,6 +928,8 @@ export function WorkItemSummaryView({
   const hasBoundAutoRun = item.executionBindings?.some((binding) => binding.kind === "auto_run") ?? false;
   const hasAiExecution = hasBoundAutoRun || Boolean(item.executionState && item.executionState !== "unclaimed");
   const executionContractReady = item.executionContractGate?.ready === true;
+  const reviewAcceptanceCriteria = item.reviewContract?.acceptanceCriteria ?? item.acceptanceCriteria;
+  const reviewVerificationSop = item.reviewContract?.verificationSop ?? item.verificationSop ?? [];
   const executionContractDefined = Boolean(
     item.acceptanceCriteria.length
     && item.verificationSop?.length
@@ -954,8 +956,9 @@ export function WorkItemSummaryView({
   const phaseDescription = aiPhaseDescription(observability?.latestRun?.phase, language);
   const understandingContext = observability?.latestRun?.understandingContext ?? null;
   const resultSectionId = `work-item-result-${item.id}`;
-  const acceptancePassed = item.acceptanceResults?.filter((result) => result.status === "passed").length ?? 0;
-  const acceptanceNeedsReview = (item.acceptanceResults?.length ?? item.acceptanceCriteria.length) - acceptancePassed;
+  const acceptancePassed = reviewAcceptanceCriteria.filter((criterion) =>
+    (item.reviewEvidence ?? item.acceptanceResults ?? []).some((result) => result.criterion === criterion && result.status === "passed")).length;
+  const acceptanceNeedsReview = reviewAcceptanceCriteria.length - acceptancePassed;
   const outputAssets = item.outputAssets ?? [];
   const deliveryReport = observability?.delivery?.report ?? observability?.latestRun?.deliveryReport ?? null;
   const deliveryAiReview = observability?.delivery?.aiReview ?? observability?.latestRun?.deliveryReview ?? null;
@@ -1280,6 +1283,30 @@ export function WorkItemSummaryView({
       setClarifyStopPending(false);
     }
   };
+  const stopDelivery = async () => {
+    const run = observability?.latestRun;
+    if (!run || actionPending) return;
+    const confirmed = window.confirm(language === "zh"
+      ? "停止本次交付？任务会结束，但 AI 生成的工作区或 PR 会保留供审计，不会合入主分支。"
+      : "Stop this delivery? The task will end, while the AI worktree or PR remains available for audit and will not be merged.");
+    if (!confirmed) return;
+    setActionPending("stop-delivery");
+    setActionError(null);
+    try {
+      await api.stopAutoRunDelivery(run.id, language === "zh" ? "用户在审核阶段停止交付。" : "The user stopped delivery during review.");
+      setSyncNotice(language === "zh"
+        ? "已停止交付；生成内容已保留，但不会进入主分支。"
+        : "Delivery stopped. Generated work was kept and will not enter the base branch.");
+      setResultExpanded(false);
+      setReportOpen(false);
+      setRefreshVersion((version) => version + 1);
+      window.dispatchEvent(new CustomEvent("myagenttool:state-change", { detail: { source: "work-item-delivery-stopped", workItemId: item.id, autoRunId: run.id } }));
+    } catch {
+      setActionError(language === "zh" ? "暂时无法停止交付，请重试。" : "Delivery could not be stopped. Try again.");
+    } finally {
+      setActionPending(null);
+    }
+  };
   const acceptAndComplete = async () => {
     if (actionPending) return;
     if (!executionContractReady) {
@@ -1296,14 +1323,14 @@ export function WorkItemSummaryView({
     setActionError(null);
     try {
       let current = item;
-      if (item.acceptanceCriteria.length && acceptancePassed < item.acceptanceCriteria.length) {
+      if (reviewAcceptanceCriteria.length && acceptancePassed < reviewAcceptanceCriteria.length) {
         const verification = await api.recordWorkItemVerification(item.id, {
           expectedRevision: item.revision,
           kind: "manual",
           status: "passed",
           command: null,
           summary: language === "zh" ? "用户已审核交付结果并确认符合完成标准。" : "The user reviewed the delivered result and accepted the completion criteria.",
-          acceptanceResults: item.acceptanceCriteria.map((criterion) => ({
+          acceptanceResults: reviewAcceptanceCriteria.map((criterion) => ({
             criterion,
             status: "passed",
             note: language === "zh" ? "用户确认" : "Accepted by user",
@@ -1668,7 +1695,7 @@ export function WorkItemSummaryView({
               <p className="text-xs text-muted-foreground">{deliveryReport?.verification ? copy.verificationEvidence : copy.acceptanceResult}</p>
               <p className="mt-1">{deliveryReport?.verification
                 ? deliveryReport.verification.summary ?? (deliveryReport.verification.passed ? copy.aiReviewApproved : copy.aiReviewChanges)
-                : item.acceptanceCriteria.length || item.acceptanceResults?.length
+                : reviewAcceptanceCriteria.length || item.acceptanceResults?.length
                   ? `${acceptancePassed} ${copy.passed} · ${Math.max(0, acceptanceNeedsReview)} ${copy.needsReview}`
                   : copy.noAcceptanceResult}</p>
             </div>
@@ -1759,6 +1786,7 @@ export function WorkItemSummaryView({
             </div>
           ) : (
             <div className="mt-4 grid gap-2 sm:flex sm:justify-end">
+              <Button variant="ghost" disabled={Boolean(actionPending)} onClick={() => void stopDelivery()}>{language === "zh" ? "停止交付" : "Stop delivery"}</Button>
               <Button variant="secondary" disabled={Boolean(actionPending)} onClick={() => setChangeRequestOpen(true)}>{copy.requestChanges}</Button>
               <Button
                 disabled={!executionContractReady || Boolean(actionPending) || Boolean(observability?.delivery && observability.delivery.review?.verdict !== "approved")}
@@ -1780,12 +1808,12 @@ export function WorkItemSummaryView({
           <div className="flex flex-wrap items-center gap-2"><CheckCircle2 className="size-4 text-primary" aria-hidden /><h4 className="text-sm font-semibold">{language === "zh" ? "执行与验收依据" : "Execution and acceptance basis"}</h4><Badge tone={executionContractReady ? "success" : "warning"}>{executionContractReady ? language === "zh" ? "执行前已确认" : "Confirmed before execution" : language === "zh" ? "尚未建立" : "Not established"}</Badge></div>
           {item.acceptanceCriteriaSource === "body_unstructured" ? <p className="mt-2 text-xs leading-relaxed text-warning">{language === "zh" ? "系统在原任务正文中找到了验收标准，但本次运行开始前没有把它与 SOP 一起确认为执行契约。" : "Acceptance criteria were found in the original task body, but they were not confirmed together with an SOP before this run."}</p> : null}
           <p className="mt-3 text-xs font-medium text-muted-foreground">{copy.acceptance}</p>
-          {item.acceptanceCriteria?.length ? (
-            <ul className="mt-2 space-y-1.5 text-sm">{item.acceptanceCriteria.map((criterion) => <li key={criterion} className="flex gap-2"><span aria-hidden>✓</span><span>{criterion}</span></li>)}</ul>
+          {reviewAcceptanceCriteria.length ? (
+            <ul className="mt-2 space-y-1.5 text-sm">{reviewAcceptanceCriteria.map((criterion) => <li key={criterion} className="flex gap-2"><span aria-hidden>✓</span><span>{criterion}</span></li>)}</ul>
           ) : <p className="mt-2 text-sm text-muted-foreground">{copy.noAcceptance}</p>}
           <p className="mt-4 text-xs font-medium text-muted-foreground">{language === "zh" ? "验收 SOP" : "Verification SOP"}</p>
-          {item.verificationSop?.length ? (
-            <ol className="mt-2 space-y-1.5 text-sm">{item.verificationSop.map((step, index) => <li key={`${index}-${step}`} className="flex gap-2"><span className="text-primary">{index + 1}.</span><span>{step}</span></li>)}</ol>
+          {reviewVerificationSop.length ? (
+            <ol className="mt-2 space-y-1.5 text-sm">{reviewVerificationSop.map((step, index) => <li key={`${index}-${step}`} className="flex gap-2"><span className="text-primary">{index + 1}.</span><span>{step}</span></li>)}</ol>
           ) : <p className="mt-2 text-sm text-muted-foreground">{language === "zh" ? "尚未设置验收 SOP。AI 自动执行前必须先补全。" : "No verification SOP is set. Complete it before AI execution."}</p>}
         </section>
       </div>
@@ -2083,7 +2111,7 @@ export function WorkItemSummaryView({
             <p className="mt-2 whitespace-pre-wrap text-sm leading-relaxed">
               {deliveryReport?.verification?.summary
                 ?? (deliveryReport?.verification?.passed ? copy.aiReviewApproved : null)
-                ?? (item.acceptanceCriteria.length || item.acceptanceResults?.length
+                ?? (reviewAcceptanceCriteria.length || item.acceptanceResults?.length
                   ? `${acceptancePassed} ${copy.passed} · ${Math.max(0, acceptanceNeedsReview)} ${copy.needsReview}`
                   : copy.noAcceptanceResult)}
             </p>

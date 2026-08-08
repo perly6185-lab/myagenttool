@@ -5,7 +5,7 @@ import { makeRunTx } from "./store/run-tx.mjs";
 import { createEventLogRuntime } from "./event-log.mjs";
 import { createRefusalRuntime } from "./refusal-log.mjs";
 import { createBridgeCredentialRuntime } from "./bridge-auth.mjs";
-import { findDevice, listDevices } from "./device.mjs";
+import { currentDeviceTimeZone, findDevice, listDevices } from "./device.mjs";
 import { captureSeededDefaults, createPersistenceRuntime, normalizeLoadedState, persistedArrayKeys, persistedObjectKeys } from "./persistence.mjs";
 import { createReadModelRuntime } from "./read-models.mjs";
 import { createInMemoryStore } from "./store/in-memory-store.mjs";
@@ -1348,7 +1348,7 @@ export function createServerRuntimeServices({
     return { ok: true, ...result };
   }
 
-  const { reserveAutoRun, decideReservedAutoRun, attachAutoRunExecutionPlan, failAutoRunUnderstanding, deferAutoRunUnderstanding, startAutoRun, advanceAutoRunForInvocation, syncAutoRunOnApproval, syncAutoRunOnDenial, retryAutoRun, reverifyAutoRun, attemptFailover, cancelAutoRun, mergeAutoRunPr, recordRoutingOverride, reapStuckAutoRuns, reconcileDeliveryReviews, autoMergeSweep, approveDesign, rejectDesign, answerClarify, approveDecomposition, rejectDecomposition } = createAutoRunService({
+  const { reserveAutoRun, decideReservedAutoRun, attachAutoRunExecutionPlan, failAutoRunUnderstanding, deferAutoRunUnderstanding, startAutoRun, advanceAutoRunForInvocation, syncAutoRunOnApproval, syncAutoRunOnDenial, retryAutoRun, reverifyAutoRun, attemptFailover, cancelAutoRun, stopAutoRunDelivery, mergeAutoRunPr, recordRoutingOverride, reapStuckAutoRuns, reconcileDeliveryReviews, autoMergeSweep, approveDesign, rejectDesign, answerClarify, approveDecomposition, rejectDecomposition } = createAutoRunService({
     state,
     now,
     nextId,
@@ -1706,6 +1706,7 @@ export function createServerRuntimeServices({
     reserveAutoRun,
     enqueueAutoRunUnderstanding: workItemAutoRunUnderstandingService.enqueue,
     failAutoRunUnderstanding,
+    timeZone: () => currentDeviceTimeZone(state),
   });
   requestWorkItemAutoSchedulerSweep = () => {
     setImmediate(() => void workItemAutoSchedulerService.sweep().catch(() => {}));
@@ -4148,6 +4149,7 @@ export function createServerRuntimeServices({
     recoverTimedOutCodexApproval: codexApprovalRecovery.recoverTimedOutApproval,
     processPlanningRecommendedActions,
     cancelAutoRun,
+    stopAutoRunDelivery,
     reapStuckAutoRuns,
     sweepWorkItemAutoRunBatches: workItemAutoRunBatchService.sweepBatches,
     sweepWorkItemAutoScheduler: workItemAutoSchedulerService.sweep,

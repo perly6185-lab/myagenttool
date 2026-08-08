@@ -95,6 +95,8 @@ const WorkItemTimeline = lazy(() => import("./work-item-observability")
   .then((module) => ({ default: module.WorkItemTimeline })));
 const WorkItemTraceSummary = lazy(() => import("./work-item-observability")
   .then((module) => ({ default: module.WorkItemTraceSummary })));
+const WorkItemRoutingSection = lazy(() => import("./work-item-routing-section")
+  .then((module) => ({ default: module.WorkItemRoutingSection })));
 const ClaimHistoryList = lazy(() => import("./claim-history-list")
   .then((module) => ({ default: module.ClaimHistoryList })));
 
@@ -3356,96 +3358,25 @@ export function LocalWorkItemDetail({
       </Suspense>
       </div>
       {selectedWorkItemSection === "process" && boundRun?.decision ? (
-        <section className="space-y-2 rounded-md border border-border p-3 text-xs">
-          <div className="flex flex-wrap items-center gap-2">
-            <h3 className="text-sm font-semibold">{t("taskCockpit.routingTitle")}</h3>
-            <Badge tone={boundRun.decision.confidence < 0.6 ? "warning" : "success"}>{boundRun.decision.path}</Badge>
-            <span>{Math.round(boundRun.decision.confidence * 100)}%</span>
-            <span className="text-muted-foreground">{boundRun.decision.via ?? boundRun.decision.decidedBy}</span>
-            {boundRun.decision.latencyMs != null
-              ? <span className="text-muted-foreground">{boundRun.decision.latencyMs} ms</span>
-              : null}
-          </div>
-          {boundRun.decision.rationale ? <p className="whitespace-pre-wrap">{boundRun.decision.rationale}</p> : null}
-          {boundRun.decision.evidence ? (
-            <p className="font-mono text-[10px] text-muted-foreground">
-              policy {boundRun.decision.evidence.policyVersion}
-              {boundRun.decision.evidence.modelVersion ? ` · model ${boundRun.decision.evidence.modelVersion}` : ""}
-              {` · input ${boundRun.decision.evidence.inputDigest.slice(0, 12)}`}
-            </p>
-          ) : null}
-          {(boundRun.decision.clarifyingQuestions ?? []).length ? (
-            <ul className="list-inside list-disc text-muted-foreground">
-              {boundRun.decision.clarifyingQuestions?.map((question) => <li key={question}>{question}</li>)}
-            </ul>
-          ) : null}
-          {(boundRun.decision.suggestedActions ?? []).length ? (
-            <div className="mt-3 flex flex-wrap gap-2">
-              {(boundRun.decision.suggestedActions ?? []).map((action: { id: string; label: string; description?: string; payload?: { repoUrl?: string } | null }) => (
-                <Button
-                  key={action.id}
-                  variant={action.id === "evaluate" ? "primary" : "secondary"}
-                  size="sm"
-                  disabled={pending}
-                  onClick={async () => {
-                    await execute(async () => {
-                      await api.answerClarify(boundRun.id, {
-                        answers: action.label,
-                        selectedAction: action.id,
-                        repoUrl: action.payload?.repoUrl,
-                      });
-                      void load();
-                    });
-                  }}
-                >
-                  {action.label}
-                </Button>
-              ))}
-            </div>
-          ) : null}
-          {observability?.routingExplanation ? (
-            <details>
-              <summary className="cursor-pointer font-semibold">{t("aiOps.whyRoute")}</summary>
-              <div className="mt-2 space-y-1">
-                {observability.routingExplanation.humanCorrection ? (
-                  <p className="rounded bg-muted p-2 font-semibold">
-                    Human correction → {observability.routingExplanation.humanCorrection.actualPath}: {observability.routingExplanation.humanCorrection.reason}
-                  </p>
-                ) : null}
-                {observability.routingExplanation.candidates.map((candidate) => (
-                  <p key={candidate.path} className={candidate.selected ? "font-semibold" : "text-muted-foreground"}>
-                    {candidate.path}{candidate.score != null ? ` ${Math.round(candidate.score * 100)}%` : ""}: {candidate.reason}
-                  </p>
-                ))}
-              </div>
-            </details>
-          ) : null}
-          {observability?.estimate ? (
-            <p className="text-muted-foreground">
-              {observability.estimate.remainingMs != null
-                ? `Estimated remaining ${Math.ceil(observability.estimate.remainingMs / 60_000)} min`
-                : t("aiOps.estimateUnavailable")}
-              {` · ${observability.estimate.confidence} confidence · ${observability.estimate.sampleCount} comparable runs`}
-              {observability.estimate.p90DurationMs != null
-                ? ` · p90 ${Math.ceil(observability.estimate.p90DurationMs / 60_000)} min`
-                : ""}
-              {observability.estimate.calibrationMaeMs != null
-                ? ` · historical MAE ${Math.ceil(observability.estimate.calibrationMaeMs / 60_000)} min`
-                : ""}
-            </p>
-          ) : null}
-          <div className="flex items-center gap-2">
-            <Badge tone={statusTone(boundRun.status)}>
-              {t(`autoRuns.status.${boundRun.status}` as never, { defaultValue: boundRun.status })}
-            </Badge>
-            {boundRun.terminalOutcome
-              ? <span>{boundRun.terminalOutcome.disposition} · {boundRun.terminalOutcome.source}</span>
-              : null}
-            <Button className="ml-auto" variant="secondary" size="sm" onClick={() => openAutoRun(boundRun.id)}>
-              {t("taskCockpit.openAutoRuns")}
-            </Button>
-          </div>
-        </section>
+        <Suspense fallback={null}>
+          <WorkItemRoutingSection
+            run={boundRun}
+            observability={observability}
+            pending={pending}
+            onOpen={() => openAutoRun(boundRun.id)}
+            onAnswer={async (action) => {
+              await execute(async () => {
+                const response = await api.answerClarify(boundRun.id, {
+                  answers: action.label,
+                  selectedAction: action.id,
+                  repoUrl: action.payload?.repoUrl,
+                }) as { retryError?: { message?: string } | null };
+                if (response.retryError) throw new Error(response.retryError.message ?? t("executionUi.routingEvidence.repositoryStartFailed"));
+                void load();
+              });
+            }}
+          />
+        </Suspense>
       ) : null}
       {selectedWorkItemSection === "process" && observability?.runHistory?.length ? (
         <section className="space-y-3 rounded-md border border-border p-3" aria-label={t("taskRunHistory.title")}>

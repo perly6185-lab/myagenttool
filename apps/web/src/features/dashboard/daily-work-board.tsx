@@ -328,7 +328,7 @@ const COPY: Record<"zh" | "en", Copy> = {
     waiting: { me: "等我", requester: "等提出者", internal: "等内部成员", ai: "等 AI", none: "无需等待" },
     attentionReason: {
       overdue: "承诺或截止时间已逾期", approval_required: "需要人工审批", ai_failed: "执行失败，需要人工处理",
-      review_ready: "结果已就绪，等待人工复核", follow_up_due: "已到跟进时间", waiting_requester: "等待提出者回复",
+      review_ready: "结果已就绪，等待人工复核", user_action_required: "轮到你处理", follow_up_due: "已到跟进时间", waiting_requester: "等待提出者回复",
       waiting_internal: "等待内部成员", ai_running: "执行中，无需人工处理", planned: "已安排",
     },
     nextAction: { open_issue: "查看任务", record_progress: "跟进", review_result: "复核", open_approval: "审批", open_run: "查看运行", retry: "处理失败" },
@@ -516,7 +516,7 @@ const COPY: Record<"zh" | "en", Copy> = {
     waiting: { me: "Waiting on me", requester: "Waiting on requester", internal: "Waiting on internal", ai: "Waiting on AI", none: "Not waiting" },
     attentionReason: {
       overdue: "Commitment or due date overdue", approval_required: "Needs human approval", ai_failed: "Execution failed; needs human action",
-      review_ready: "Result ready for human review", follow_up_due: "Follow-up is due", waiting_requester: "Waiting for requester",
+      review_ready: "Result ready for human review", user_action_required: "Needs your action", follow_up_due: "Follow-up is due", waiting_requester: "Waiting for requester",
       waiting_internal: "Waiting for internal member", ai_running: "Execution in progress; no human action", planned: "Planned",
     },
     nextAction: { open_issue: "View task", record_progress: "Follow up", review_result: "Review", open_approval: "Approve", open_run: "View run", retry: "Handle failure" },
@@ -2173,7 +2173,7 @@ function buildActionQueue(items: HomeWorkbenchItem[], copy: Copy): ActionQueueIt
     if (attention === "overdue") {
       return [{ item, reason: copy.attentionReason.overdue, tone: "danger", action: "next", actionLabel: copy.nextAction[item.nextAction.kind], rank: 3 }];
     }
-    if (attention === "follow_up_due" || attention === "waiting_requester" || attention === "waiting_internal") {
+    if (attention === "user_action_required" || attention === "follow_up_due") {
       return [{ item, reason: copy.attentionReason[attention], tone: "warning", action: "next", actionLabel: copy.nextAction[item.nextAction.kind], rank: 4 }];
     }
     const coordination = coordinationNotice(item, copy);

@@ -106,6 +106,7 @@ export interface LocalScheduleCapacityResponse {
     status: string;
     unlinkState: string;
     bridgeAvailable: boolean;
+    timeZone?: string;
   };
   capacity: {
     maxConcurrency: number;
@@ -2395,6 +2396,7 @@ export const api = {
     ...(feedback?.trim() ? { feedback: feedback.trim() } : {}),
   }),
   cancelAutoRun: (id: string) => request("POST", `/api/auto-runs/${encodeURIComponent(id)}/cancel`),
+  stopAutoRunDelivery: (id: string, reason?: string) => request("POST", `/api/auto-runs/${encodeURIComponent(id)}/stop-delivery`, { reason }),
   // Human-triggered PR merge for a pr_open auto-run (merge stays human — a person
   // clicks Merge in the console; runs `gh pr merge` server-side).
   mergeAutoRunPr: (id: string) => request("POST", `/api/auto-runs/${encodeURIComponent(id)}/merge`),

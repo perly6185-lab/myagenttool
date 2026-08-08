@@ -1143,15 +1143,20 @@ export function createAutoRunService({
         verificationSop: sop,
       };
       autoRun.executionContract = {
+        schemaVersion: "execution-contract-v2",
         id: executionPlan.contractId ?? `contract:${autoRun.id}:${executionPlan.confirmedAt}`,
         workItemId: autoRun.localIssueId ?? autoRun.executionChainId ?? null,
+        workItemRevision: (state.workItems ?? []).find((item) =>
+          item.id === (autoRun.localIssueId ?? autoRun.executionChainId))?.revision ?? null,
         autoRunId: autoRun.id,
         acceptanceCriteria: criteria,
         verificationSop: sop,
         confirmedBy,
         confirmedAt: executionPlan.confirmedAt,
         digest,
+        readOnly: true,
       };
+      autoRun.executionContractId = autoRun.executionContract.id;
       autoRun.phase = "planning";
       autoRun.updatedAt = now();
       appendEvent({
@@ -2714,6 +2719,68 @@ export function createAutoRunService({
     });
   }
 
+  function stopAutoRunDelivery(autoRunId, { actor, reason = null } = {}) {
+    const autoRun = state.autoRuns.find((item) => item.id === autoRunId);
+    if (!autoRun) throw new Error("Auto-run not found.");
+    if (autoRun.deliveryStopped) return { autoRun, replayed: true };
+    if (!["pr_open", "report_posted", "plan_proposed", "done", "blocked"].includes(autoRun.status)) {
+      throw new Error("Delivery can be stopped only after AI has produced a reviewable result.");
+    }
+    const stoppedAt = now();
+    const stoppedBy = actor?.userId ?? "usr_local";
+    const note = String(reason ?? "").trim().slice(0, 2_000);
+    return runTx(() => {
+      autoRun.deliveryStopped = {
+        stoppedAt,
+        stoppedBy,
+        reason: note || null,
+        worktreeKept: Boolean(autoRun.worktreeId),
+        pullRequestKept: Boolean(autoRun.prNumber || autoRun.prUrl),
+      };
+      autoRun.updatedAt = stoppedAt;
+      for (const item of state.workItems ?? []) {
+        if (!(item.executionBindings ?? []).some((binding) =>
+          binding.kind === "auto_run" && binding.targetId === autoRun.id)) continue;
+        item.status = "done";
+        item.state = "closed";
+        item.waitingOn = "none";
+        item.completedAt = stoppedAt;
+        item.revision = (Number(item.revision) || 0) + 1;
+        item.updatedAt = stoppedAt;
+        item.lastModifiedBy = stoppedBy;
+        (state.workItemActivities ??= []).unshift({
+          id: nextId("wia"),
+          workItemId: item.id,
+          ownerTeamId: item.ownerTeamId,
+          projectId: item.projectId,
+          action: "delivery_stopped",
+          actorId: stoppedBy,
+          createdAt: stoppedAt,
+          details: {
+            autoRunId: autoRun.id,
+            reason: note || null,
+            worktreeKept: Boolean(autoRun.worktreeId),
+            pullRequestKept: Boolean(autoRun.prNumber || autoRun.prUrl),
+          },
+        });
+      }
+      appendEvent({
+        invocationId: autoRun.invocationId ?? null,
+        type: "auto_run_delivery_stopped",
+        level: "info",
+        message: `Delivery for Auto-run ${autoRun.id} was stopped by ${stoppedBy}; generated work was kept for audit.`,
+        data: {
+          autoRunId: autoRun.id,
+          stoppedBy,
+          reason: note || null,
+          worktreeKept: Boolean(autoRun.worktreeId),
+          pullRequestKept: Boolean(autoRun.prNumber || autoRun.prUrl),
+        },
+      });
+      return { autoRun, replayed: false };
+    });
+  }
+
   async function retryAutoRun(autoRunId, {
     actor,
     terminalId = null,
@@ -3745,7 +3812,13 @@ export function createAutoRunService({
     // #1151: a repeated answer must not dispatch another continuation or
     // overwrite the recorded customer decision. First answer wins.
     if (autoRun.clarifyAnswer) {
-      return { ok: true, alreadyDecided: { decidedBy: autoRun.clarifyAnswer.by ?? null, decidedAt: autoRun.clarifyAnswer.at ?? null, status: "answered" } };
+      return {
+        ok: true,
+        alreadyDecided: { decidedBy: autoRun.clarifyAnswer.by ?? null, decidedAt: autoRun.clarifyAnswer.at ?? null, status: "answered" },
+        shouldRetry: Boolean(autoRun.clarifyAnswer.repoUrl && autoRun.clarifyAnswer.selectedAction),
+        repoUrl: autoRun.clarifyAnswer.repoUrl ?? null,
+        selectedAction: autoRun.clarifyAnswer.selectedAction ?? null,
+      };
     }
     if ((autoRun.decision?.path ?? null) !== "clarify") throw new Error("Only a clarify run's questions can be answered.");
     if (autoRun.status !== "needs_input") throw new Error("Only a run awaiting input can be answered.");
@@ -3786,6 +3859,14 @@ export function createAutoRunService({
           selectedAction: chosenAction,
           ...(chosenRepoUrl ? { repoUrl: chosenRepoUrl } : {}),
         };
+        autoRun.clarificationContinuation = {
+          status: "pending",
+          action: chosenAction,
+          repoUrl: chosenRepoUrl || null,
+          requestedAt: now(),
+          requestedBy: by,
+          attemptCount: 0,
+        };
         appendEvent({
           invocationId: autoRun.invocationId,
           type: "auto_run_clarify_answered",
@@ -3793,7 +3874,7 @@ export function createAutoRunService({
           message: `Auto-run ${autoRun.id} structured clarification answered by ${by}.`,
           data: { autoRunId: autoRun.id, issue: autoRun.link?.number ?? null, selectedAction: chosenAction },
         });
-        return { ok: true, shouldRetry: Boolean(chosenRepoUrl), repoUrl: chosenRepoUrl || null };
+        return { ok: true, shouldRetry: Boolean(chosenRepoUrl), repoUrl: chosenRepoUrl || null, selectedAction: chosenAction };
       });
     }
 
@@ -4259,5 +4340,5 @@ export function createAutoRunService({
     return { ok: true, routingOverride: publicOverride(autoRun.routingOverride), replayed: false };
   }
 
-  return { reserveAutoRun, decideReservedAutoRun, attachAutoRunExecutionPlan, failAutoRunUnderstanding, deferAutoRunUnderstanding, startAutoRun, advanceAutoRunForInvocation, syncAutoRunOnApproval, syncAutoRunOnDenial, retryAutoRun, reverifyAutoRun, attemptFailover, cancelAutoRun, mergeAutoRunPr, recordRoutingOverride, maybeDeployAfterMerge, reapStuckAutoRuns, reconcileDeliveryReviews, autoMergeSweep, approveDesign, rejectDesign, answerClarify, approveDecomposition, rejectDecomposition };
+  return { reserveAutoRun, decideReservedAutoRun, attachAutoRunExecutionPlan, failAutoRunUnderstanding, deferAutoRunUnderstanding, startAutoRun, advanceAutoRunForInvocation, syncAutoRunOnApproval, syncAutoRunOnDenial, retryAutoRun, reverifyAutoRun, attemptFailover, cancelAutoRun, stopAutoRunDelivery, mergeAutoRunPr, recordRoutingOverride, maybeDeployAfterMerge, reapStuckAutoRuns, reconcileDeliveryReviews, autoMergeSweep, approveDesign, rejectDesign, answerClarify, approveDecomposition, rejectDecomposition };
 }

@@ -98,6 +98,27 @@ test("scheduler defaults on safely and the global kill switch stops it", async (
   assert.deepEqual(await stopped.service.sweep(), { mode: "off", swept: 0, selected: 0 });
 });
 
+test("scheduler resolves the current terminal time zone for every preview", () => {
+  const { state } = fixture();
+  state.projects[0].futurePullForwardEnabled = false;
+  state.workItems[0].plannedDate = "2026-08-08";
+  let timeZone = "America/Los_Angeles";
+  const service = createWorkItemAutoSchedulerService({
+    state,
+    now: () => "2026-08-08T04:00:00.000Z",
+    timeZone: () => timeZone,
+  });
+
+  const beforeLocalMidnight = service.preview({ teamId: "team_a" });
+  assert.equal(beforeLocalMidnight.nextWorkItemId, null);
+  assert.deepEqual(beforeLocalMidnight.decisions[0].reasons, ["future_pull_forward_disabled"]);
+
+  timeZone = "Asia/Shanghai";
+  const afterLocalMidnight = service.preview({ teamId: "team_a" });
+  assert.equal(afterLocalMidnight.nextWorkItemId, "lwi_1");
+  assert.deepEqual(afterLocalMidnight.decisions[0].reasons, []);
+});
+
 test("capacity refusal aborts admission and stays an internal retry state", async () => {
   const { state, events } = fixture("enabled");
   Object.assign(state.workItems[0], {

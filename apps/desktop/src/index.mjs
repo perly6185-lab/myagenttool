@@ -453,6 +453,7 @@ try {
   });
   registration = await registerBridgeWithRetry(() => request("POST", "/api/bridge/register", {
       bridgeVersion: "0.0.0",
+      timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
       bridgeSessionId,
       capabilities: ["demo_cli_agent", "managed_terminal_pty", "remote_ssh_relay"],
       runtimeReadiness,
@@ -537,6 +538,7 @@ async function refreshApplicationBinaryReadiness() {
     environmentForCommand: (command) => buildEnv({ command, environmentPolicy: "inherit_safe" }),
   });
   const response = await request("POST", "/api/bridge/readiness", {
+    timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
     runtimeReadiness,
     applicationBinaryReadiness: runtimeReadiness,
     // A credential revoked in the provider's account shows up here as the sidecar
