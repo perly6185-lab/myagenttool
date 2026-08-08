@@ -1,0 +1,22 @@
+{
+  "schemaVersion": 2,
+  "status": "complete",
+  "title": "让你通过手机语音远程指挥 AI 编程代理，任务完成时自动回拨通知",
+  "sourceProvider": "wechat",
+  "contentType": "article",
+  "sourceUrl": "https://mp.weixin.qq.com/s/DvO9AEFLx7XLoOqRuQxXJg",
+  "canonicalUrl": "https://mp.weixin.qq.com/s/DvO9AEFLx7XLoOqRuQxXJg",
+  "resolvedUrl": "https://mp.weixin.qq.com/s/DvO9AEFLx7XLoOqRuQxXJg",
+  "author": "魏咕咕响",
+  "publishedAt": "2026-07-29",
+  "publishedAtSource": "source",
+  "importedAt": "2026-08-08T07:01:32.312Z",
+  "localIssueId": "lwi_7905",
+  "outputs": {
+    "markdown": "article.md",
+    "html": "article.html",
+    "manifest": "manifest.json"
+  },
+  "media": [],
+  "warnings": []
+}
