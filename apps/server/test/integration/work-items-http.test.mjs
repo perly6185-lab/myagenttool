@@ -745,6 +745,60 @@ test("a local issue creates a linked git worktree without a GitHub issue binding
   assert.equal(activity.body.activities.some((row) => row.action === "worktree_created"), true);
 });
 
+test("a report-only AI task reaches the same simple result review flow through HTTP", async () => {
+  const created = await call("/api/work-items", {
+    method: "POST",
+    body: {
+      projectId: "prj_a",
+      title: "Archive and summarize the article",
+      dueDate: "2099-08-08",
+      waitingOn: "me",
+    },
+  });
+  const stored = runtimeState.workItems.find((candidate) => candidate.id === created.body.workItem.id);
+  const completedAt = new Date().toISOString();
+  const autoRun = {
+    id: `aur_report_${stored.localNumber}`,
+    status: "report_posted",
+    phase: "review_ready",
+    projectId: stored.projectId,
+    invocationId: `inv_report_${stored.localNumber}`,
+    link: { type: "local_issue", number: stored.localNumber, title: stored.title },
+    decision: { path: "summarize", confidence: 0.93, rationale: "Article summary requested" },
+    report: "# Article result\n\nThe platform packages AI work into a repeatable delivery workflow.\n\n### Local archive\n\n- artifacts/article.md",
+    createdAt: completedAt,
+    updatedAt: completedAt,
+  };
+  runtimeState.autoRuns.unshift(autoRun);
+  runtimeState.invocations.unshift({
+    id: autoRun.invocationId,
+    status: "succeeded",
+    options: { metadata: { autoRunId: autoRun.id, role: "summarize" } },
+    createdAt: completedAt,
+    completedAt,
+    updatedAt: completedAt,
+  });
+  stored.executionBindings.push({ kind: "auto_run", targetId: autoRun.id, createdAt: completedAt });
+  stored.status = "review";
+  stored.waitingOn = "me";
+
+  const detail = await call(`/api/work-items/${stored.id}`);
+  assert.equal(detail.status, 200);
+  assert.equal(detail.body.observability.latestRun.status, "report_posted");
+  assert.equal(detail.body.observability.outcome.status, "available");
+  assert.match(detail.body.observability.outcome.summary, /repeatable delivery workflow/);
+
+  const home = await call("/api/work-items/home-workbench?assigneeId=mine&timezoneOffset=-480");
+  const row = home.body.items.find((candidate) => candidate.workItemId === stored.id);
+  assert.equal(row.userStatus, "ready_for_review");
+  assert.equal(row.attentionReason, "review_ready");
+  assert.equal(row.nextAction.kind, "review_result");
+  assert.equal(row.nextAction.targetId, stored.id);
+  assert.equal(row.nextAction.section, "task");
+  assert.equal(row.result.status, "available");
+  assert.match(row.result.summary, /repeatable delivery workflow/);
+});
+
 test("approved local delivery fast-forwards the base and only then closes the issue", async () => {
   const item = (await call("/api/work-items", {
     method: "POST", body: {

@@ -196,14 +196,27 @@ export function homeWorkbenchReadModel({
       const attentionReason = reasons[0] ?? null;
       const aiStatus = execution.autoRun?.status ?? execution.invocation?.status ?? null;
       const waitingOn = completed ? "none" : (item.waitingOn ?? "none");
+      const invocationSummary = execution.invocation?.result?.output?.latestMessage
+        ?? execution.invocation?.result?.output?.summary
+        ?? execution.invocation?.result?.summary
+        ?? null;
+      const projectedDeliveryReport = execution.autoRun?.deliveryReport ?? (
+        execution.autoRun?.status === "done"
+        && execution.autoRun?.link?.type === "local_issue"
+        && execution.autoRun?.localDelivery
+        ? {
+            summary: invocationSummary,
+            verification: execution.autoRun.verification ?? null,
+            changedFiles: [],
+            completedAt: execution.invocation?.completedAt ?? execution.autoRun.updatedAt ?? null,
+          }
+        : null
+      );
       const outcome = execution.autoRun ? projectWorkItemOutcome({
         item,
         latestRun: execution.autoRun,
-        deliveryReport: execution.autoRun.deliveryReport ?? null,
-        invocationSummary: execution.invocation?.result?.output?.latestMessage
-          ?? execution.invocation?.result?.output?.summary
-          ?? execution.invocation?.result?.summary
-          ?? null,
+        deliveryReport: projectedDeliveryReport,
+        invocationSummary,
       }) : null;
       return {
         workItemId: item.id,

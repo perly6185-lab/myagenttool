@@ -182,6 +182,40 @@ test("a posted AI report is a result-review task even when execution projection 
   assert.match(row.result.summary, /repeatable delivery loop/);
 });
 
+test("a completed local delivery keeps its readable result on the home card", () => {
+  const result = model([item({
+    id: "completed-delivery",
+    localRef: "LOCAL-59",
+    status: "review",
+    state: "closed",
+    completedAt: NOW,
+    waitingOn: "me",
+    executionBindings: [{ kind: "auto_run", targetId: "aur_delivery", createdAt: NOW }],
+  })], {
+    autoRuns: [{
+      id: "aur_delivery",
+      invocationId: "inv_delivery",
+      status: "done",
+      link: { type: "local_issue", number: 59, title: "Review DMA protocol" },
+      localDelivery: { worktreeId: "wtr_delivery", branchName: "delivery-59" },
+      updatedAt: NOW,
+    }],
+    invocations: [{
+      id: "inv_delivery",
+      status: "succeeded",
+      result: { output: { latestMessage: "The protocol review and quotation checklist are ready." } },
+      completedAt: NOW,
+      updatedAt: NOW,
+    }],
+  });
+
+  const row = result.items[0];
+  assert.equal(row.userStatus, "completed");
+  assert.equal(row.result.status, "available");
+  assert.equal(row.result.needsReview, false);
+  assert.match(row.result.summary, /quotation checklist are ready/);
+});
+
 test("home workbench exposes compact report status without report content", () => {
   const result = model([item({ revision: 3 })], {
     workItemReportDrafts: [{
