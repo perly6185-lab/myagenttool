@@ -351,6 +351,44 @@ describe("work item summary presentation", () => {
     expect(onOpenExpert).toHaveBeenCalledWith("report");
   });
 
+  it("shows a report-only AI outcome with the same review experience", async () => {
+    mocks.getWorkItem.mockResolvedValue({
+      workItem: item({ status: "review", executionState: "verifying", waitingOn: "me" }),
+      observability: {
+        latestRun: {
+          id: "aur_report",
+          status: "report_posted",
+          phase: "review_ready",
+          updatedAt: "2026-08-08T12:49:03.984Z",
+          report: "# Article report\n\n## Core result\n\nAI is safer inside a deterministic workflow.",
+        },
+        outcome: {
+          status: "available",
+          summary: "AI is safer inside a deterministic workflow.",
+          fullReport: "# Article report\n\n## Core result\n\nAI is safer inside a deterministic workflow.",
+          highlights: ["Production reliability matters", "AI must degrade safely"],
+          warnings: ["The financing figure was not independently verified."],
+          files: ["summary/REPORT.md"],
+          verification: null,
+          deliveredAt: "2026-08-08T12:49:03.984Z",
+        },
+      },
+    });
+    render(<WorkItemSummaryView workItemId="lwi_1" onOpenExpert={() => {}} />);
+
+    expect(await screen.findByText("Ready for your review")).toBeTruthy();
+    expect(screen.queryByText("AI is working")).toBeNull();
+    expect(screen.getAllByText("AI is safer inside a deterministic workflow.").length).toBeGreaterThan(0);
+    expect(screen.getByText("Production reliability matters")).toBeTruthy();
+    expect(screen.getByText("The financing figure was not independently verified.")).toBeTruthy();
+    expect(screen.getByText("REPORT.md")).toBeTruthy();
+
+    fireEvent.click(screen.getByRole("button", { name: "View full report" }));
+    const report = screen.getByRole("dialog", { name: "What AI delivered" });
+    expect(within(report).getByRole("heading", { name: "Article report" })).toBeTruthy();
+    expect(within(report).getByRole("button", { name: "Approve and complete task" })).toBeTruthy();
+  });
+
   it("hands the task to AI with one click and lets the run establish its execution contract", async () => {
     const unplanned = item({
       status: "backlog",
@@ -548,7 +586,7 @@ describe("work item summary presentation", () => {
     expect(await screen.findByText("Codex review conclusion")).toBeTruthy();
     expect(screen.getAllByText("The new timezone is not persisted after registration.").length).toBeGreaterThan(0);
     expect(screen.getByText("apps/server/src/routes/agents.mjs:170")).toBeTruthy();
-    expect(screen.getByText("Propagated the terminal timezone through local scheduling.")).toBeTruthy();
+    expect(screen.getAllByText("Propagated the terminal timezone through local scheduling.").length).toBeGreaterThan(0);
     expect(screen.getByText("Server regression tests passed.")).toBeTruthy();
     expect(screen.getByText("Do not accept this result yet")).toBeTruthy();
     expect(screen.getByText("Result risk: High")).toBeTruthy();
