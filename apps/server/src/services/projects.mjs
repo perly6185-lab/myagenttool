@@ -1747,6 +1747,10 @@ function worktreeDiff(worktree, { projectTargets = [] } = {}) {
   // merge-base(@{u},HEAD)=HEAD => an EMPTY diff that blinds every post-publish
   // consumer (the auto-merge review, a re-run judge). (C1 pilot finding).
   const baseCandidates = [
+    // The immutable fork point is authoritative. In particular, fetchBase can
+    // fork from origin/main while baseBranch remains the user-facing "HEAD";
+    // comparing that run with a stale local main over-reports unrelated files.
+    worktree.baseCommit,
     worktree.baseBranch && worktree.baseBranch !== "HEAD" ? worktree.baseBranch : null,
     target?.defaultBranch,
     repoDefaultBranch(),

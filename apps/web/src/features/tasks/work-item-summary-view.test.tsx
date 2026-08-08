@@ -233,7 +233,7 @@ describe("work item summary presentation", () => {
     expect((await screen.findByRole("alert", { name: "Preflight" })).textContent).toContain("No default agent is configured");
     expect((screen.getByRole("button", { name: "Let AI start" }) as HTMLButtonElement).disabled).toBe(true);
     fireEvent.click(screen.getByRole("button", { name: "Open setup and fix" }));
-    expect(onOpenSetup).toHaveBeenCalledWith("agents");
+    expect(onOpenSetup).toHaveBeenCalledWith("autoRuns");
     expect(mocks.startWorkItemAutoRun).not.toHaveBeenCalled();
   });
 

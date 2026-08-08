@@ -539,7 +539,9 @@ export function createHttpServer({
       // the response. Every JSON route parses via readJson, so a declared
       // non-JSON body on a write is never legitimate. Absent Content-Type is
       // allowed: browsers always declare one when they attach a body.
-      if (["POST", "PUT", "PATCH"].includes(req.method) && url.pathname.startsWith("/api/")) {
+      const binaryTaskMaterialUpload = req.method === "PUT"
+        && /^\/api\/projects\/[^/]+\/task-material-drafts\/[^/]+\/files\/[^/]+$/.test(url.pathname);
+      if (["POST", "PUT", "PATCH"].includes(req.method) && url.pathname.startsWith("/api/") && !binaryTaskMaterialUpload) {
         const contentType = String(req.headers["content-type"] ?? "").trim().toLowerCase();
         if (contentType && !contentType.startsWith("application/json")) {
           sendJson(res, 415, { error: "unsupported_content_type", message: "API writes must declare application/json." });

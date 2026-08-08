@@ -44,4 +44,19 @@ describe("ContextNavigation (#1505)", () => {
       selectedProjectId: "project-42",
     });
   });
+
+  it("returns from contextual Auto-runs setup to the selected task", () => {
+    useUiStore.setState({
+      section: "autoRuns",
+      surfaceReturnSection: "task",
+      selectedWorkItemId: "lwi-42",
+    });
+    render(<ContextNavigation taskViewSection="task" onTaskViewSectionChange={() => {}} />);
+    fireEvent.click(screen.getByRole("button", { name: "Return to Tasks" }));
+    expect(useUiStore.getState()).toMatchObject({
+      section: "task",
+      surfaceReturnSection: null,
+      selectedWorkItemId: "lwi-42",
+    });
+  });
 });

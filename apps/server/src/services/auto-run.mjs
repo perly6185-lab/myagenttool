@@ -124,7 +124,7 @@ export function syncBoundWorkItemsForAutoRun({ state, autoRun, status, now, next
     && autoRun.localDelivery
     && autoRun.localDelivery.mode !== "pull_request"
     && !autoRun.localDelivery.deliveredAt;
-  const targetStatus = ["pr_open", "report_posted", "plan_proposed"].includes(status)
+  const targetStatus = ["pr_open", "report_posted", "plan_proposed", "needs_input"].includes(status)
     ? "review"
     : awaitingLocalDelivery
       ? "review"
@@ -179,7 +179,16 @@ export function syncBoundWorkItemsForAutoRun({ state, autoRun, status, now, next
         (item.acceptanceResults ?? []).some((result) => result.criterion === criterion && result.status === "passed"))
         && (item.verificationRecords ?? []).some((record) => record.status === "passed"));
     const effectiveTargetStatus = targetStatus === "done" && !completionReady ? "review" : targetStatus;
-    if (item.status === effectiveTargetStatus) {
+    const targetWaitingOn = ["needs_input", "awaiting_approval"].includes(status)
+      ? "me"
+      : effectiveTargetStatus === "in_progress"
+        ? "ai"
+        : ["review", "blocked"].includes(effectiveTargetStatus)
+          ? "me"
+          : ["done", "ready"].includes(effectiveTargetStatus)
+            ? "none"
+            : item.waitingOn;
+    if (item.status === effectiveTargetStatus && item.waitingOn === targetWaitingOn) {
       if (verificationRecorded) {
         item.revision = (Number(item.revision) || 0) + 1;
         item.updatedAt = now();
@@ -192,7 +201,9 @@ export function syncBoundWorkItemsForAutoRun({ state, autoRun, status, now, next
       continue;
     }
     const previousStatus = item.status;
+    const previousWaitingOn = item.waitingOn ?? "none";
     item.status = effectiveTargetStatus;
+    item.waitingOn = targetWaitingOn;
     if (effectiveTargetStatus === "done") item.state = "closed";
     item.revision = (Number(item.revision) || 0) + 1;
     item.updatedAt = now();
@@ -206,6 +217,7 @@ export function syncBoundWorkItemsForAutoRun({ state, autoRun, status, now, next
       createdAt: item.updatedAt,
       details: {
         autoRunId: autoRun.id, autoRunStatus: status, from: previousStatus, to: effectiveTargetStatus,
+        waitingOn: { from: previousWaitingOn, to: targetWaitingOn },
         ...(targetStatus === "done" && !completionReady ? { completionBlocked: true } : {}),
       },
     });
@@ -627,8 +639,15 @@ export function createAutoRunService({
   }
 
   function summaryIndicatesCleanDeliveryReview(value) {
-    return /(?:^|\b)(?:no\s+(?:actionable\s+)?(?:findings?|issues?|bugs?|regressions?)(?:\s+(?:were\s+)?(?:found|identified|detected))?|patch is correct|looks good)(?:\b|[.!])/i
-      .test(String(value ?? ""));
+    const summary = String(value ?? "");
+    const clean = [
+      /\bno\s+(?:findings?|issues?|bugs?|regressions?)(?:\s+(?:were\s+)?(?:found|identified|detected))?\b/i,
+      /\bno\s+actionable(?:\s+[a-z-]+){0,6}\s+(?:findings?|issues?|bugs?|regressions?)(?:\s+(?:were\s+)?(?:found|identified|detected))?\b/i,
+      /\bpatch is correct\b/i,
+      /\blooks good\b/i,
+    ].some((pattern) => pattern.test(summary));
+    const contradictory = /\b(?:but|however|although|yet)\b[\s\S]{0,300}\b(?:issue|bug|regression|failure|incorrect|missing|broken)\b/i.test(summary);
+    return clean && !contradictory;
   }
 
   function completeDeliveryReview(invocation) {
@@ -845,15 +864,22 @@ export function createAutoRunService({
         .filter((binding) => binding.kind === "auto_run")
         .map((binding) => binding.targetId)));
     const reportHydrationCandidate = (state.autoRuns ?? [])
-      .filter((autoRun) =>
-        reviewableRunIds.has(autoRun.id)
-        && autoRun.status === "done"
-        && autoRun.link?.type === "local_issue"
-        && autoRun.localDelivery?.worktreeId
-        && !autoRun.deliveryReport?.changedFilesHydratedAt)
+      .filter((autoRun) => {
+        const worktree = (state.worktrees ?? []).find((item) => item.id === autoRun.localDelivery?.worktreeId) ?? null;
+        return (
+          reviewableRunIds.has(autoRun.id)
+          && autoRun.status === "done"
+          && autoRun.link?.type === "local_issue"
+          && autoRun.localDelivery?.worktreeId
+          && (!autoRun.deliveryReport?.changedFilesHydratedAt
+            || !Object.hasOwn(autoRun.deliveryReport ?? {}, "changedFilesBaseCommit")
+            || autoRun.deliveryReport?.changedFilesBaseCommit !== (worktree?.baseCommit ?? null))
+        );
+      })
       .sort((left, right) => Number(right.link?.number ?? 0) - Number(left.link?.number ?? 0))[0] ?? null;
     if (reportHydrationCandidate && typeof listWorktreeChangedFiles === "function") {
       try {
+        const reportWorktree = (state.worktrees ?? []).find((item) => item.id === reportHydrationCandidate.localDelivery.worktreeId) ?? null;
         const changedFiles = (await listWorktreeChangedFiles(reportHydrationCandidate.localDelivery.worktreeId)) ?? [];
         const originalInvocation = (state.invocations ?? []).find((item) => item.id === reportHydrationCandidate.invocationId) ?? null;
         runTx(() => {
@@ -862,6 +888,7 @@ export function createAutoRunService({
             verification: reportHydrationCandidate.deliveryReport?.verification
               ?? (reportHydrationCandidate.verification ? { ...reportHydrationCandidate.verification } : null),
             changedFiles: changedFiles.map(String).filter(Boolean).slice(0, 100),
+            changedFilesBaseCommit: reportWorktree?.baseCommit ?? null,
             completedAt: reportHydrationCandidate.deliveryReport?.completedAt
               ?? originalInvocation?.completedAt
               ?? reportHydrationCandidate.updatedAt
@@ -2497,6 +2524,7 @@ export function createAutoRunService({
               summary: extractRunSummary(invocation),
               verification: autoRun.verification ? { ...autoRun.verification } : null,
               changedFiles: changedFiles.map(String).filter(Boolean).slice(0, 100),
+              changedFilesBaseCommit: worktree.baseCommit ?? null,
               changedFilesHydratedAt: now(),
               completedAt: invocation.completedAt ?? now(),
             },
@@ -4123,7 +4151,16 @@ export function createAutoRunService({
       }));
     }
     const deliveryReviews = await reconcileDeliveryReviews();
-    return { reaped, readvanced, capacityRetried, capacityBlocked, holdsReleased, deliveryReviews };
+    // The status and the "who acts next" field form one user-facing state.
+    // Re-converge all durable runs on boot/tick so a crash or an upgrade cannot
+    // leave a review card saying both "waiting for you" and "waiting on AI".
+    const workItemsConverged = runTx(() => (state.autoRuns ?? []).reduce(
+      (count, autoRun) => count + syncBoundWorkItemsForAutoRun({
+        state, autoRun, status: autoRun.status, now, nextId,
+      }).length,
+      0,
+    ));
+    return { reaped, readvanced, capacityRetried, capacityBlocked, holdsReleased, deliveryReviews, workItemsConverged };
   }
 
   function recordRoutingOverride(autoRunId, {

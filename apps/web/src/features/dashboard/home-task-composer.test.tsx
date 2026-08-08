@@ -168,7 +168,7 @@ describe("HomeTaskComposer", () => {
     expect((screen.getByRole("button", { name: "Create and let AI work" }) as HTMLButtonElement).disabled).toBe(true);
     fireEvent.click(screen.getByRole("button", { name: "Open setup and fix" }));
 
-    expect(onOpenSetup).toHaveBeenCalledWith("agents");
+    expect(onOpenSetup).toHaveBeenCalledWith("autoRuns");
     expect(mocks.createWorkItem).not.toHaveBeenCalled();
   });
 

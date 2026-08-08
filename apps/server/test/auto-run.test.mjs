@@ -640,7 +640,7 @@ test("a local delivery produces a readable report and records an independent Cod
       output: {
         structured: false,
         verdict: "changes_requested",
-        summary: "Targeted tests pass, with no actionable regressions identified.",
+        summary: "The added validation report accurately reflects the supplied PDF and Excel data. No actionable factual or consistency issues were identified.",
         findings: [],
       },
     },
@@ -658,7 +658,7 @@ test("reconciliation backfills changed files for a historical local delivery", a
       "apps/server/test/device-time-zone.test.mjs",
     ]),
   });
-  const { autoRun, invocation } = await svc.startAutoRun({
+  const { autoRun, invocation, worktree } = await svc.startAutoRun({
     projectId: sourceProjectId,
     link: { type: "local_issue", number: 63, title: "Hydrate delivery files", url: null, state: "open" },
     agentId: "agt_1",
@@ -667,6 +667,7 @@ test("reconciliation backfills changed files for a historical local delivery", a
   await svc.advanceAutoRunForInvocation({ ...invocation, status: "succeeded" });
   autoRun.deliveryReport.changedFiles = [];
   delete autoRun.deliveryReport.changedFilesHydratedAt;
+  delete autoRun.deliveryReport.changedFilesBaseCommit;
   state.workItems = [{
     id: "lwi_63",
     state: "open",
@@ -680,6 +681,7 @@ test("reconciliation backfills changed files for a historical local delivery", a
     "apps/server/test/device-time-zone.test.mjs",
   ]);
   assert.ok(autoRun.deliveryReport.changedFilesHydratedAt);
+  assert.equal(autoRun.deliveryReport.changedFilesBaseCommit, worktree.baseCommit);
 });
 
 test("reconciliation hydrates a reused AI review and then advances to the next delivery", async () => {

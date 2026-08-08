@@ -29,17 +29,18 @@ export function App() {
   useLocaleSync();
   useControlPlaneEvents();
   const section = useUiStore((s) => s.section);
+  const returnSection = useUiStore((s) => s.surfaceReturnSection);
   const [taskViewSection, setTaskViewSection] = useState<SectionKey>("task");
   const View = SECTION_VIEWS[section === "task" ? taskViewSection : section];
 
   return (
     <div className="flex h-full overflow-hidden">
       <CommandPalette />
-      {/* Keep the selected task open on ordinary entry surfaces. When
-          navigating into Trace/Settings, unmount the modal so the contextual
-          return control remains clickable; the selection stays in the store
-          and is restored when the operator returns to Tasks. */}
-      {pageRegistration(section).surface === "entry" ? (
+      {/* Outside the task center, keep the selected task open on ordinary Entry
+          surfaces. During a contextual setup/Trace visit, unmount the modal so
+          the destination and return control remain usable; the selection stays
+          in the store and is restored when the operator returns to Tasks. */}
+      {pageRegistration(section).surface === "entry" && section !== "task" && !returnSection ? (
         <Suspense fallback={null}>
           <WorkItemDetailShell />
         </Suspense>

@@ -28,7 +28,7 @@ const workflowPath = resolve(repoRoot, ".github/workflows/ci.yml");
 /** Minimal parser for this workflow's shape: jobs → steps with name/run|uses.
  *  Handles single-line `run: cmd` and block `run: |` + indented lines. */
 export function parseWorkflowJobs(yamlText) {
-  const lines = yamlText.split("\n");
+  const lines = yamlText.split(/\r?\n/);
   const jobs = new Map();
   let inJobs = false;
   let currentJob = null;

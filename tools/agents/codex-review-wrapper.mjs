@@ -14,10 +14,11 @@ console.log(`Codex review started: ${options.mode}`);
 
 const prompt = buildPrompt(options);
 const commandArgs = options.baseRef
-  // Native review owns the base selection and read-only posture. Codex forbids
-  // a custom prompt together with --base, so task context remains in the
-  // delivery report while the reviewer concentrates on the exact code range.
-  ? ["exec", "review", "--base", options.baseRef, "--ephemeral", "-c", "model_reasoning_effort=low", "--output-schema", reviewOutputSchemaPath, "--json"]
+  // Pin the native review sandbox explicitly. On Windows the implicit native
+  // review default can inherit workspace-write and leave inspection artifacts
+  // in the delivery worktree. Codex forbids a custom prompt with --base, so the
+  // task context remains in the delivery report.
+  ? ["exec", "review", "-c", 'sandbox_mode="read-only"', "--base", options.baseRef, "--ephemeral", "-c", "model_reasoning_effort=low", "--output-schema", reviewOutputSchemaPath, "--json"]
   : ["exec", "--sandbox", "read-only", "--ephemeral", "--json", "-c", "model_reasoning_effort=low", prompt];
 const commandPlan = codexCommandPlan(options.codexCli, commandArgs);
 const { code, stdout, stderr } = await run(commandPlan.command, commandPlan.args, {

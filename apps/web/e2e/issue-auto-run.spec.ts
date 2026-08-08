@@ -354,8 +354,8 @@ test("keeps the Local Issue selected while fixing preflight and rechecks after r
   await expect(detail.getByRole("alert", { name: "Preflight" })).toContainText("No default agent is configured");
   await detail.getByRole("button", { name: "Open setup and fix" }).click();
 
-  await expect(page).toHaveURL(/section=agents.*task=lwi_1/);
-  await expect(page.getByRole("heading", { name: "Agents" })).toBeVisible();
+  await expect(page).toHaveURL(/section=autoRuns.*task=lwi_1/);
+  await expect(page.getByRole("heading", { name: "Auto-runs" })).toBeVisible();
   await page.getByRole("button", { name: "Return to Tasks" }).click();
   await expect(page).toHaveURL(/section=task.*task=lwi_1/);
   await expect(detail).toBeVisible();

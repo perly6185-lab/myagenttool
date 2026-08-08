@@ -189,10 +189,10 @@ test("codex wrapper binds delivery review to the recorded base commit", () => {
   ], { STUB_CAPTURE: capture });
   assert.equal(res.status, 0, res.stderr || res.stdout);
   const captured = JSON.parse(readFileSync(capture, "utf8"));
-  assert.deepEqual(captured.args.slice(0, 5), ["exec", "review", "--base", base, "--ephemeral"]);
-  assert.deepEqual(captured.args.slice(5, 8), ["-c", "model_reasoning_effort=low", "--output-schema"]);
-  assert.match(captured.args[8], /codex-review-output\.schema\.json$/);
-  assert.equal(captured.args[9], "--json");
+  assert.deepEqual(captured.args.slice(0, 7), ["exec", "review", "-c", 'sandbox_mode="read-only"', "--base", base, "--ephemeral"]);
+  assert.deepEqual(captured.args.slice(7, 10), ["-c", "model_reasoning_effort=low", "--output-schema"]);
+  assert.match(captured.args[10], /codex-review-output\.schema\.json$/);
+  assert.equal(captured.args[11], "--json");
 });
 
 test("codex wrapper normalizes native review findings", () => {

@@ -15,7 +15,8 @@ export function usePageNavigation() {
   return useCallback((target: SectionKey) => {
     const sourcePage = pageRegistration(section);
     const targetPage = pageRegistration(target);
-    if (sourcePage.surface === "entry" && targetPage.surface !== "entry") {
+    const opensTaskRunSetup = section === "task" && target === "autoRuns";
+    if (sourcePage.surface === "entry" && (targetPage.surface !== "entry" || opensTaskRunSetup)) {
       setSurfaceReturnSection(section);
     } else if (targetPage.surface === "entry") {
       setSurfaceReturnSection(null);

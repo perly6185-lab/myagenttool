@@ -120,3 +120,14 @@ test("declared non-JSON writes are 415 — the cross-site simple-request vector"
     assert.equal((await response.json()).error, "unsupported_content_type");
   }
 });
+
+test("the task-material PUT can carry binary content past the JSON gate", async () => {
+  const response = await fetch(`${base}/api/projects/prj_myagenttool/task-material-drafts/draft_1/files/file_1?name=reference.pdf`, {
+    method: "PUT",
+    headers: { "content-type": "application/pdf", "x-loopback-token": LOOPBACK_TOKEN },
+    body: "%PDF-1.7",
+  });
+
+  assert.equal(response.status, 404, "the binary upload reaches ordinary task-material routing instead of being rejected as non-JSON");
+  assert.equal((await response.json()).error, "task_material_draft_not_found");
+});
