@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 
-import { renderOfficecliPreview, readOfficecliDocParagraphs, readOfficecliSheet, OfficecliPreviewError } from "../src/services/officecli-preview.mjs";
+import { renderOfficecliPreview, readOfficecliDocParagraphs, readOfficecliSheet, resolveOfficecliInvocation, OfficecliPreviewError } from "../src/services/officecli-preview.mjs";
 
 function projectWith(files = { "demo.xlsx": "x" }) {
   const root = mkdtempSync(join(tmpdir(), "officecli-preview-"));
@@ -29,6 +29,19 @@ const htmlRun = (html) => async (_cmd, argv) => {
   assert.deepEqual(argv, ["view", "demo.xlsx", "html"], "renders via the stdout-default html mode");
   return { stdout: html };
 };
+
+test("resolves the npm OfficeCLI JavaScript entrypoint on Windows without invoking a command shim", () => {
+  const cli = "C:\\Users\\demo\\AppData\\Roaming\\npm\\node_modules\\@officecli\\officecli\\officecli.js";
+  assert.deepEqual(resolveOfficecliInvocation("officecli", ["--version"], {
+    platform: "win32",
+    env: { APPDATA: "C:\\Users\\demo\\AppData\\Roaming" },
+    fileExists: (candidate) => candidate === cli,
+    nodePath: "C:\\node\\node.exe",
+  }), {
+    executable: "C:\\node\\node.exe",
+    args: [cli, "--version"],
+  });
+});
 
 test("renders a document to a transient text/html artifact (no 20k cap, not persisted)", async () => {
   const root = projectWith();

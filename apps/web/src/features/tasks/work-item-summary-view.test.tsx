@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { deriveWorkItemUserStatus, WorkItemSummaryView } from "./work-item-summary-view";
 import type { LocalWorkItem } from "./task-view-types";
 import { i18n } from "@/lib/i18n";
+import { useUiStore } from "@/store/ui-store";
 
 const mocks = vi.hoisted(() => ({
   getWorkItem: vi.fn(),
@@ -23,6 +24,15 @@ const mocks = vi.hoisted(() => ({
   syncWorkItemGithubIssue: vi.fn(),
   removeWorkItemMaterial: vi.fn(),
   restoreWorkItemMaterial: vi.fn(),
+  projectAssetDescriptor: vi.fn(),
+  projectAssetPreview: vi.fn(),
+  projectAssetPreviewBytes: vi.fn(),
+  projectPdfSource: vi.fn(),
+  officecliPreview: vi.fn(),
+  readWorktreeFile: vi.fn(),
+  revealProjectAsset: vi.fn(),
+  revealTaskMaterial: vi.fn(),
+  previewTaskMaterialOffice: vi.fn(),
   taskMaterialContentUrl: vi.fn((workItemId, assetId, download = false) => `/materials/${workItemId}/${assetId}${download ? "?download=1" : ""}`),
 }));
 
@@ -50,6 +60,15 @@ vi.mock("@/data/use-console-actions", () => ({
     syncWorkItemGithubIssue: mocks.syncWorkItemGithubIssue,
     removeWorkItemMaterial: mocks.removeWorkItemMaterial,
     restoreWorkItemMaterial: mocks.restoreWorkItemMaterial,
+    projectAssetDescriptor: mocks.projectAssetDescriptor,
+    projectAssetPreview: mocks.projectAssetPreview,
+    projectAssetPreviewBytes: mocks.projectAssetPreviewBytes,
+    projectPdfSource: mocks.projectPdfSource,
+    officecliPreview: mocks.officecliPreview,
+    readWorktreeFile: mocks.readWorktreeFile,
+    revealProjectAsset: mocks.revealProjectAsset,
+    revealTaskMaterial: mocks.revealTaskMaterial,
+    previewTaskMaterialOffice: mocks.previewTaskMaterialOffice,
     taskMaterialContentUrl: mocks.taskMaterialContentUrl,
   },
 }));
@@ -98,13 +117,23 @@ function item(overrides: Partial<LocalWorkItem> = {}): LocalWorkItem {
 
 beforeEach(async () => {
   await i18n.changeLanguage("en-US");
+  window.history.replaceState({}, "", "/?section=dashboard");
+  useUiStore.setState({
+    section: "dashboard", surfaceReturnSection: null, selectedWorkItemId: "lwi_1",
+    selectedProjectId: null, selectedWorktreeId: null, officecliPreviewPath: null,
+  });
   mocks.listWorkItemComments.mockResolvedValue({ comments: [] });
   mocks.autoRunReadiness.mockResolvedValue({ readiness: { ready: true, checks: [] } });
+  mocks.projectAssetDescriptor.mockResolvedValue({ descriptor: { path: "summary/REPORT.md" } });
+  mocks.projectAssetPreview.mockResolvedValue({ path: "summary/REPORT.md", text: "# Report\n\nThe report is ready.", size: 40, truncated: false });
+  mocks.readWorktreeFile.mockResolvedValue({ content: "plain text", truncated: false });
+  window.myagenttoolDesktop = undefined;
 });
 
 afterEach(() => {
   cleanup();
   vi.clearAllMocks();
+  window.history.replaceState({}, "", "/");
 });
 
 describe("work item summary presentation", () => {
@@ -142,6 +171,9 @@ describe("work item summary presentation", () => {
     expect(screen.getByText(/Materials used by this AI run will not change/)).toBeTruthy();
     expect(screen.getByRole("button", { name: "Preview: brief.txt" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "Download: brief.txt" })).toBeTruthy();
+    mocks.revealTaskMaterial.mockResolvedValue({ revealed: true, name: "brief.txt" });
+    fireEvent.click(screen.getByRole("button", { name: "Open containing folder: brief.txt" }));
+    await waitFor(() => expect(mocks.revealTaskMaterial).toHaveBeenCalledWith("lwi_1", "asset_1"));
     fireEvent.click(screen.getByRole("button", { name: "Preview: brief.txt" }));
     const preview = screen.getByRole("dialog", { name: "brief.txt" });
     expect(within(preview).getByTitle("Preview: brief.txt").getAttribute("src")).toBe("/materials/lwi_1/asset_1");
@@ -179,6 +211,49 @@ describe("work item summary presentation", () => {
     expect(screen.queryByText(/Auto-run/i)).toBeNull();
     fireEvent.click(screen.getByRole("button", { name: "Review and resolve" }));
     expect(onOpenExpert).toHaveBeenCalledWith("process");
+  });
+
+  it("previews an Excel reference file inside the task with OfficeCLI", async () => {
+    const withWorkbook = item({
+      inputAssets: [{
+        id: "asset_xlsx", originalName: "DMA-information.xlsx", path: ".myagenttool/inputs/lwi_1/asset_xlsx--DMA-information.xlsx",
+        family: "document", mimeType: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", terminalId: "dev_local", size: 6144,
+        resourceClass: "small", hash: "hash", version: null, worktreeId: null, capabilities: [],
+        readiness: { state: "ready", reason: "task_material_claimed" },
+      }],
+    });
+    mocks.getWorkItem.mockResolvedValue({ workItem: withWorkbook });
+    mocks.previewTaskMaterialOffice.mockResolvedValue({
+      path: "DMA-information.xlsx", content: "<table><tr><td>DMA 242 E</td></tr></table>", mime: "text/html", encoding: "utf8", bytes: 52,
+    });
+    render(<WorkItemSummaryView workItemId="lwi_1" onOpenExpert={() => {}} />);
+
+    expect(await screen.findByRole("button", { name: "Preview: DMA-information.xlsx" })).toBeTruthy();
+    expect(screen.queryByText("This format supports download only")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Preview: DMA-information.xlsx" }));
+
+    await waitFor(() => expect(mocks.previewTaskMaterialOffice).toHaveBeenCalledWith("lwi_1", "asset_xlsx"));
+    const preview = await screen.findByRole("dialog", { name: "DMA-information.xlsx" });
+    expect(within(preview).getByTitle("Preview: DMA-information.xlsx").getAttribute("srcdoc")).toContain("DMA 242 E");
+  });
+
+  it("keeps produced files visible when the latest AI run failed", async () => {
+    mocks.getWorkItem.mockResolvedValue({
+      workItem: item({
+        executionState: "failed",
+        outputAssets: [{
+          id: "asset_failed_run", path: "deliverables/verified.xlsx", family: "excel", terminalId: "local",
+          hash: "sha256", version: "1", worktreeId: "wtr_1", capabilities: ["preview"],
+          readiness: { state: "ready", reason: "available_on_owning_terminal" },
+        }],
+      }),
+      observability: { latestRun: { id: "aur_failed", status: "failed" } },
+    });
+    render(<WorkItemSummaryView workItemId="lwi_1" onOpenExpert={() => {}} />);
+
+    expect(await screen.findByText("Files involved")).toBeTruthy();
+    expect(screen.getByText("verified.xlsx")).toBeTruthy();
+    expect(screen.getByText(/did not finish normally/)).toBeTruthy();
   });
 
   it("retries a failed AI run in simple details after a plain-language confirmation", async () => {
@@ -409,6 +484,144 @@ describe("work item summary presentation", () => {
     fireEvent.click(within(report).getByRole("button", { name: "Send follow-up" }));
     await waitFor(() => expect(mocks.retryAutoRun).toHaveBeenCalledWith("aur_report", "Show the source for the second conclusion."));
     expect(mocks.startWorkItemAutoRun).not.toHaveBeenCalled();
+  });
+
+  it("previews a Markdown deliverable in a modal without leaving the task", async () => {
+    mocks.getWorkItem.mockResolvedValue({
+      workItem: item({ status: "review", executionState: "completed", waitingOn: "me" }),
+      observability: {
+        latestRun: { id: "aur_report", status: "report_posted", phase: "review_ready", updatedAt: "2026-08-08T12:49:03.984Z" },
+        outcome: {
+          status: "available",
+          summary: "The report is ready.",
+          fullReport: "# Report\n\nThe report is ready.",
+          highlights: [], warnings: [], files: ["summary/REPORT.md"],
+          fileEntries: [{
+            name: "REPORT.md", path: "summary/REPORT.md", projectId: "prj_1", worktreeId: "wtr_1",
+            status: "available", preview: "document",
+          }],
+          verification: null,
+          deliveredAt: "2026-08-08T12:49:03.984Z",
+        },
+      },
+    });
+    mocks.projectAssetPreview.mockResolvedValue({
+      path: "summary/REPORT.md",
+      text: "---\ntitle: \"Customer report\"\nauthor: \"Morgan\"\npublished_at: 2026-08-08\nsource_provider: local\n---\nThe report is ready.\n\n![Architecture](assets/diagram.png)",
+      size: 140,
+      truncated: false,
+    });
+    mocks.projectAssetPreviewBytes.mockResolvedValue(new ArrayBuffer(8));
+    render(<WorkItemSummaryView workItemId="lwi_1" onOpenExpert={() => {}} />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Browse file: REPORT.md" }));
+
+    await waitFor(() => expect(mocks.projectAssetDescriptor).toHaveBeenCalledWith("prj_1", "summary/REPORT.md", "wtr_1"));
+    const preview = await screen.findByRole("dialog", { name: "REPORT.md" });
+    expect(within(preview).getByRole("heading", { name: "Customer report" })).toBeTruthy();
+    expect(within(preview).getByText(/Author: Morgan/)).toBeTruthy();
+    expect(within(preview).getByText("The report is ready.")).toBeTruthy();
+    expect(within(preview).getByText("Document images: 1")).toBeTruthy();
+    expect(within(preview).getByRole("button", { name: "Show first image" })).toBeTruthy();
+    await waitFor(() => expect(mocks.projectAssetPreviewBytes).toHaveBeenCalledWith("prj_1", "summary/assets/diagram.png", "wtr_1"));
+    expect(new URLSearchParams(window.location.search).get("document")).toBeNull();
+    expect(useUiStore.getState().section).toBe("dashboard");
+  });
+
+  it("reveals a deliverable in its local folder without leaving the task", async () => {
+    const revealContainedAsset = vi.fn().mockResolvedValue({ revealed: true });
+    window.myagenttoolDesktop = { revealContainedAsset };
+    mocks.getWorkItem.mockResolvedValue({
+      workItem: item({ status: "review", executionState: "completed", waitingOn: "me" }),
+      observability: {
+        latestRun: { id: "aur_report", status: "report_posted", phase: "review_ready", updatedAt: "2026-08-08T12:49:03.984Z" },
+        outcome: {
+          status: "available", summary: "The report is ready.", fullReport: "# Report", highlights: [], warnings: [],
+          files: ["deliverables/report.xlsx"],
+          fileEntries: [{ name: "report.xlsx", path: "deliverables/report.xlsx", projectId: "prj_1", worktreeId: "wtr_1", status: "available", preview: "document" }],
+          verification: null, deliveredAt: "2026-08-08T12:49:03.984Z",
+        },
+      },
+    });
+    render(<WorkItemSummaryView workItemId="lwi_1" onOpenExpert={() => {}} />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Open containing folder: report.xlsx" }));
+
+    await waitFor(() => expect(revealContainedAsset).toHaveBeenCalledWith({
+      projectId: "prj_1", worktreeId: "wtr_1", relativePath: "deliverables/report.xlsx",
+    }));
+    expect(useUiStore.getState().section).toBe("dashboard");
+    expect(window.location.search).toBe("?section=dashboard");
+  });
+
+  it("reveals a deliverable through the local server when the page is open in a browser", async () => {
+    mocks.revealProjectAsset.mockResolvedValue({ revealed: true, path: "deliverables/report.xlsx" });
+    mocks.getWorkItem.mockResolvedValue({
+      workItem: item({ status: "review", executionState: "completed", waitingOn: "me" }),
+      observability: {
+        latestRun: { id: "aur_report", status: "report_posted", phase: "review_ready", updatedAt: "2026-08-08T12:49:03.984Z" },
+        outcome: {
+          status: "available", summary: "The report is ready.", fullReport: "# Report", highlights: [], warnings: [],
+          files: ["deliverables/report.xlsx"],
+          fileEntries: [{ name: "report.xlsx", path: "deliverables/report.xlsx", projectId: "prj_1", worktreeId: "wtr_1", status: "available", preview: "document" }],
+          verification: null, deliveredAt: "2026-08-08T12:49:03.984Z",
+        },
+      },
+    });
+    render(<WorkItemSummaryView workItemId="lwi_1" onOpenExpert={() => {}} />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Open containing folder: report.xlsx" }));
+
+    await waitFor(() => expect(mocks.revealProjectAsset).toHaveBeenCalledWith("prj_1", "deliverables/report.xlsx", "wtr_1"));
+    expect(useUiStore.getState().section).toBe("dashboard");
+  });
+
+  it("previews source and configuration deliveries with wrapping in the same modal", async () => {
+    mocks.getWorkItem.mockResolvedValue({
+      workItem: item({ status: "review", executionState: "completed", waitingOn: "me" }),
+      observability: {
+        latestRun: { id: "aur_code", status: "report_posted", phase: "review_ready", updatedAt: "2026-08-08T12:49:03.984Z" },
+        outcome: {
+          status: "available", summary: "The configuration is ready.", fullReport: "# Result", highlights: [], warnings: [],
+          files: ["config/release.json"],
+          fileEntries: [{ name: "release.json", path: "config/release.json", projectId: "prj_1", worktreeId: "wtr_1", status: "available", preview: "unsupported" }],
+          verification: null, deliveredAt: "2026-08-08T12:49:03.984Z",
+        },
+      },
+    });
+    mocks.readWorktreeFile.mockResolvedValue({ content: '{"enabled":true,"channels":["stable"]}', truncated: false });
+    render(<WorkItemSummaryView workItemId="lwi_1" onOpenExpert={() => {}} />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Browse file: release.json" }));
+
+    await waitFor(() => expect(mocks.projectAssetDescriptor).toHaveBeenCalledWith("prj_1", "config/release.json", "wtr_1"));
+    const preview = await screen.findByRole("dialog", { name: "release.json" });
+    expect(within(preview).getByText(/"enabled": true/)).toBeTruthy();
+    expect(useUiStore.getState().section).toBe("dashboard");
+    expect(window.location.search).toBe("?section=dashboard");
+  });
+
+  it("keeps review actions usable when a deliverable moved", async () => {
+    mocks.projectAssetDescriptor.mockRejectedValue(new Error("not found"));
+    mocks.getWorkItem.mockResolvedValue({
+      workItem: item({ status: "review", executionState: "completed", waitingOn: "me" }),
+      observability: {
+        latestRun: { id: "aur_report", status: "report_posted", phase: "review_ready", updatedAt: "2026-08-08T12:49:03.984Z" },
+        outcome: {
+          status: "available", summary: "The report is ready.", fullReport: "# Report", highlights: [], warnings: [],
+          files: ["summary/REPORT.md"],
+          fileEntries: [{ name: "REPORT.md", path: "summary/REPORT.md", projectId: "prj_1", worktreeId: "wtr_1", status: "available", preview: "document" }],
+          verification: null, deliveredAt: "2026-08-08T12:49:03.984Z",
+        },
+      },
+    });
+    render(<WorkItemSummaryView workItemId="lwi_1" onOpenExpert={() => {}} />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Browse file: REPORT.md" }));
+
+    expect((await screen.findByRole("alert")).textContent).toMatch(/keep reviewing or try again/i);
+    expect(useUiStore.getState().section).toBe("dashboard");
+    expect(screen.getByRole("button", { name: "Approve and complete task" })).toBeTruthy();
   });
 
   it("hands the task to AI with one click and lets the run establish its execution contract", async () => {

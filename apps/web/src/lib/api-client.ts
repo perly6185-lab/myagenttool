@@ -1946,6 +1946,12 @@ export const api = {
       "GET",
       `/api/projects/${encodeURIComponent(id)}/asset-capabilities?path=${encodeURIComponent(path)}${worktreeId ? `&worktree=${encodeURIComponent(worktreeId)}` : ""}`,
     ),
+  revealProjectAsset: (id: string, path: string, worktreeId?: string) =>
+    request<{ revealed: true; path: string }>(
+      "POST",
+      `/api/projects/${encodeURIComponent(id)}/asset-reveal`,
+      { path, ...(worktreeId ? { worktreeId } : {}) },
+    ),
   projectAssetPreview: (id: string, path: string, worktreeId?: string) =>
     request<{ path: string; family: "markdown"; text: string; size: number; truncated: boolean }>(
       "GET",
@@ -2165,6 +2171,17 @@ export const api = {
     request("POST", `/api/work-items/${encodeURIComponent(workItemId)}/materials/${encodeURIComponent(assetId)}/restore`, { expectedRevision }),
   taskMaterialContentUrl: (workItemId: string, assetId: string, download = false) =>
     `${apiBase}/api/work-items/${encodeURIComponent(workItemId)}/materials/${encodeURIComponent(assetId)}/content${download ? "?download=1" : ""}`,
+  revealTaskMaterial: (workItemId: string, assetId: string) =>
+    request<{ revealed: true; name: string | null }>(
+      "POST",
+      `/api/work-items/${encodeURIComponent(workItemId)}/materials/${encodeURIComponent(assetId)}/reveal`,
+      {},
+    ),
+  previewTaskMaterialOffice: (workItemId: string, assetId: string) =>
+    request<{ path: string; content: string; mime: string; encoding: string; bytes: number }>(
+      "GET",
+      `/api/work-items/${encodeURIComponent(workItemId)}/materials/${encodeURIComponent(assetId)}/office-preview`,
+    ),
   replayWorkItemGithubDelivery: (deliveryId: string) =>
     request("POST", `/api/work-items/github/deliveries/${encodeURIComponent(deliveryId)}/replay`),
   createWorkItem: (payload: {

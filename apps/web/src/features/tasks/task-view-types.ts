@@ -379,6 +379,7 @@ export type LocalWorkItemObservability = {
     highlights: string[];
     warnings: string[];
     files: string[];
+    fileEntries?: WorkItemOutcomeFile[];
     verification: { passed: boolean; verified: boolean; summary: string | null } | null;
     deliveredAt: string | null;
   } | null;
@@ -390,6 +391,7 @@ export type LocalWorkItemObservability = {
     highlights: string[];
     warnings: string[];
     files: string[];
+    fileEntries?: WorkItemOutcomeFile[];
     verification: { passed: boolean; verified: boolean; summary: string | null } | null;
     deliveredAt: string | null;
     invocationId: string | null;
@@ -456,6 +458,16 @@ export type LocalWorkItemObservability = {
     humanCorrection?: { actualPath: string; reason: string; actorId: string; recordedAt: string } | null;
     candidates: { path: string; selected: boolean; score?: number | null; reason: string }[];
   } | null;
+};
+
+export type WorkItemOutcomeFile = {
+  name: string;
+  path: string | null;
+  projectId: string | null;
+  worktreeId: string | null;
+  status: "available" | "unavailable";
+  preview: "document" | "unsupported";
+  unavailableReason?: string;
 };
 export type Row = GithubItem & { projectId: string; projectName: string };
 export const TASK_TABS = ["local", "issue", "pr"] as const;

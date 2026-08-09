@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, symlink
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { copySelectedOfficeDocument, describeLocalOfficeDocument, registerContainedAssetOpen, registerContainedOfficeDocumentOpen, registerLocalOfficeDocumentPicker, registerWorkflowSourceFolderPicker, resolveContainedAsset, resolveContainedOfficeDocument } from "../src/local-office-document-picker.mjs";
+import { copySelectedOfficeDocument, describeLocalOfficeDocument, registerContainedAssetOpen, registerContainedAssetReveal, registerContainedOfficeDocumentOpen, registerLocalOfficeDocumentPicker, registerWorkflowSourceFolderPicker, resolveContainedAsset, resolveContainedOfficeDocument } from "../src/local-office-document-picker.mjs";
 
 test("describes only a selected regular Office document", () => {
   const root = mkdtempSync(join(tmpdir(), "office-picker-"));
@@ -126,4 +126,22 @@ test("opens only supported regular assets contained by the selected project", as
   assert.deepEqual(await handlers.get("assets:open-contained")(null, { projectId: "project", relativePath: "diagram.png" }), { opened: true });
   assert.deepEqual(opened, [realpathSync(image)]);
   await assert.rejects(() => handlers.get("assets:open-contained")(null, { projectId: "project", relativePath: "secret.env" }), (error) => error.message === "The requested asset could not be opened safely." && !error.message.includes(root));
+});
+
+test("reveals only a supported asset contained by the selected project", async () => {
+  const root = mkdtempSync(join(tmpdir(), "asset-reveal-"));
+  const file = join(root, "report.xlsx");
+  writeFileSync(file, "PK-sheet");
+  const state = { projects: [{ id: "project", path: root }], worktrees: [] };
+  const handlers = new Map();
+  const ipcMain = { removeHandler: (name) => handlers.delete(name), handle: (name, handler) => handlers.set(name, handler) };
+  const revealed = [];
+  registerContainedAssetReveal({ ipcMain, getState: async () => state, revealPath: async (path) => { revealed.push(path); } });
+
+  assert.deepEqual(await handlers.get("assets:reveal-contained")(null, { projectId: "project", relativePath: "report.xlsx" }), { revealed: true });
+  assert.deepEqual(revealed, [realpathSync(file)]);
+  await assert.rejects(
+    () => handlers.get("assets:reveal-contained")(null, { projectId: "project", relativePath: "../report.xlsx" }),
+    (error) => error.message === "The requested asset could not be located safely." && !error.message.includes(root),
+  );
 });

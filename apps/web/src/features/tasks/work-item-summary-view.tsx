@@ -8,6 +8,8 @@ import {
   CircleDot,
   Clock3,
   FileText,
+  FolderOpen,
+  ImageIcon,
   Download,
   Eye,
   ExternalLink,
@@ -21,17 +23,18 @@ import {
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { OfficeDocumentFrame } from "@/components/common/office-document-frame";
 import { Textarea } from "@/components/ui/input";
 import { Modal } from "@/components/ui/modal";
 import { MarkdownBlock } from "@/components/ui/markdown-block";
 import { api } from "@/data/use-console-actions";
 import { useConsoleState } from "@/data/use-console-state";
 import { useAppTranslation } from "@/lib/i18n/use-app-translation";
-import type { SectionKey, WorkItemSection } from "@/store/ui-store";
+import { type SectionKey, type WorkItemSection } from "@/store/ui-store";
 import { WorkItemProgressDialog, type WorkItemProgressTarget } from "./work-item-progress-dialog";
 import { TaskMaterialEditor } from "./task-material-editor";
 import { readinessSetupSection, type AutoRunReadiness } from "./auto-run-readiness-ui";
-import type { LocalWorkItem, LocalWorkItemAutoRun, LocalWorkItemObservability, WorkItemComment, WorkItemExecutionState } from "./task-view-types";
+import type { LocalWorkItem, LocalWorkItemAutoRun, LocalWorkItemObservability, WorkItemComment, WorkItemExecutionState, WorkItemOutcomeFile } from "./task-view-types";
 import { deriveWorkItemUserStatus, type WorkItemUserStatus } from "./work-item-user-status";
 
 export { deriveWorkItemUserStatus } from "./work-item-user-status";
@@ -131,6 +134,22 @@ type SummaryCopy = {
   deliverableSummary: string;
   deliverableFiles: string;
   noDeliverableFiles: string;
+  browseDeliverableFile: string;
+  deliverableFileOpening: string;
+  deliverableFileOpenHint: string;
+  deliverableFileUnavailable: string;
+  deliverableFileUnsupported: string;
+  openDeliverableFolder: string;
+  deliverableFolderUnavailable: string;
+  deliverablePreviewDescription: string;
+  deliverablePreviewLoading: string;
+  deliverablePreviewTruncated: string;
+  deliverablePreviewImageUnavailable: string;
+  deliverablePreviewSource: string;
+  deliverablePreviewAuthor: string;
+  deliverablePreviewPublished: string;
+  deliverablePreviewImages: string;
+  deliverablePreviewShowFirstImage: string;
   noDeliverableSummary: string;
   noAcceptanceResult: string;
   acceptanceResult: string;
@@ -317,6 +336,22 @@ const COPY: Record<"zh" | "en", SummaryCopy> = {
     deliverableSummary: "AI 完成的工作",
     deliverableFiles: "涉及的文件",
     noDeliverableFiles: "这次没有可直接打开的附件；代码变更仍保存在任务工作区。",
+    browseDeliverableFile: "浏览文件",
+    deliverableFileOpening: "正在打开",
+    deliverableFileOpenHint: "在当前任务中预览",
+    deliverableFileUnavailable: "暂时无法打开这个文件。文件可能已被移动，你仍可继续审核或稍后重试。",
+    deliverableFileUnsupported: "暂不支持在线浏览",
+    openDeliverableFolder: "打开所在文件夹",
+    deliverableFolderUnavailable: "暂时无法打开所在文件夹。请确认本地桌面 Bridge 正在运行，且文件未被移动。",
+    deliverablePreviewDescription: "任务内只读预览，不会跳离当前工作。Markdown 已按正文排版展示。",
+    deliverablePreviewLoading: "正在准备预览…",
+    deliverablePreviewTruncated: "文件较大，当前仅展示可安全读取的部分。",
+    deliverablePreviewImageUnavailable: "配图暂时无法显示",
+    deliverablePreviewSource: "来源",
+    deliverablePreviewAuthor: "作者",
+    deliverablePreviewPublished: "发布日期",
+    deliverablePreviewImages: "正文配图：{count} 张",
+    deliverablePreviewShowFirstImage: "查看首图",
     noDeliverableSummary: "AI 已结束处理，但没有附带可直接阅读的结果摘要；可进入完整报告核对详情。",
     noAcceptanceResult: "本任务未设置完成标准，请结合任务目标人工确认。",
     acceptanceResult: "完成标准",
@@ -501,6 +536,22 @@ const COPY: Record<"zh" | "en", SummaryCopy> = {
     deliverableSummary: "What AI completed",
     deliverableFiles: "Files involved",
     noDeliverableFiles: "There are no attachments to open; code changes remain in the task workspace.",
+    browseDeliverableFile: "Browse file",
+    deliverableFileOpening: "Opening",
+    deliverableFileOpenHint: "Preview inside this task",
+    deliverableFileUnavailable: "This file cannot be opened right now. It may have moved; you can keep reviewing or try again later.",
+    deliverableFileUnsupported: "Preview is not supported yet",
+    openDeliverableFolder: "Open containing folder",
+    deliverableFolderUnavailable: "The containing folder could not be opened. Check that the local Desktop Bridge is running and the file has not moved.",
+    deliverablePreviewDescription: "Read-only preview inside this task. Markdown is formatted as a document.",
+    deliverablePreviewLoading: "Preparing preview…",
+    deliverablePreviewTruncated: "This file is large, so only the safely readable portion is shown.",
+    deliverablePreviewImageUnavailable: "Image preview unavailable",
+    deliverablePreviewSource: "Source",
+    deliverablePreviewAuthor: "Author",
+    deliverablePreviewPublished: "Published",
+    deliverablePreviewImages: "Document images: {count}",
+    deliverablePreviewShowFirstImage: "Show first image",
     noDeliverableSummary: "AI finished, but no readable result summary was attached. Open the full report to review the details.",
     noAcceptanceResult: "No completion criteria were set. Review the outcome against the task goal.",
     acceptanceResult: "Definition of done",
@@ -725,6 +776,285 @@ function deriveDeliveryDecision({
   };
 }
 
+const BROWSABLE_DELIVERY_EXTENSIONS = new Set([
+  ".docx", ".xlsx", ".pptx", ".pdf", ".dxf", ".dwg",
+  ".md", ".mdx", ".html", ".png", ".jpg", ".jpeg", ".gif", ".webp", ".avif", ".svg",
+  ".mp3", ".m4a", ".ogg", ".wav", ".mp4", ".webm", ".mov", ".canvas", ".excalidraw",
+]);
+const MARKDOWN_DELIVERY_EXTENSIONS = new Set([".md", ".mdx"]);
+const IMAGE_DELIVERY_EXTENSIONS = new Set([".png", ".jpg", ".jpeg", ".gif", ".webp", ".avif"]);
+const OFFICE_DELIVERY_EXTENSIONS = new Set([".docx", ".xlsx", ".pptx"]);
+
+function normalizedDeliveryPath(path: string) {
+  return path.trim().replaceAll("\\", "/");
+}
+
+function deliveryFileName(path: string) {
+  return normalizedDeliveryPath(path).split("/").filter(Boolean).at(-1) ?? path;
+}
+
+function deliveryFileCanUseLegacyPath(path: string) {
+  const normalized = normalizedDeliveryPath(path).replace(/^\.\//, "");
+  return Boolean(normalized
+    && !normalized.startsWith("/")
+    && !/^[a-z]:\//i.test(normalized)
+    && normalized !== ".."
+    && !normalized.startsWith("../")
+    && !normalized.includes("/../"));
+}
+
+function browsableDeliveryPath(path: string) {
+  const name = deliveryFileName(path).toLowerCase();
+  const dot = name.lastIndexOf(".");
+  return dot >= 0 && BROWSABLE_DELIVERY_EXTENSIONS.has(name.slice(dot));
+}
+
+type DeliveryPreview =
+  | { kind: "markdown"; text: string; truncated: boolean }
+  | { kind: "text"; text: string; truncated: boolean }
+  | { kind: "image"; source: string }
+  | { kind: "pdf"; source: string }
+  | { kind: "office"; html: string };
+
+type MarkdownDocument = {
+  body: string;
+  metadata: Record<string, string>;
+};
+
+function deliveryExtension(path: string) {
+  const name = deliveryFileName(path).toLowerCase();
+  const dot = name.lastIndexOf(".");
+  return dot >= 0 ? name.slice(dot) : "";
+}
+
+function isOfficeMaterial(asset: NonNullable<LocalWorkItem["inputAssets"]>[number]) {
+  return OFFICE_DELIVERY_EXTENSIONS.has(deliveryExtension(asset.originalName ?? asset.path));
+}
+
+function parseMarkdownDocument(text: string): MarkdownDocument {
+  const normalized = text.replaceAll("\r\n", "\n");
+  const frontMatter = normalized.match(/^---\n([\s\S]*?)\n---(?:\n|$)/);
+  if (!frontMatter) return { body: normalized, metadata: {} };
+  const metadata: Record<string, string> = {};
+  for (const line of frontMatter[1].split("\n")) {
+    const match = line.match(/^([a-zA-Z0-9_-]+):\s*(.*?)\s*$/);
+    if (!match || !match[2]) continue;
+    const value = match[2].replace(/^(?:"([\s\S]*)"|'([\s\S]*)')$/, "$1$2");
+    metadata[match[1]] = value;
+  }
+  let body = normalized.slice(frontMatter[0].length).trimStart();
+  if (metadata.title && !/^#\s+/m.test(body)) body = `# ${metadata.title}\n\n${body}`;
+  return { body, metadata };
+}
+
+function resolveDeliveryAssetPath(markdownPath: string, reference: string) {
+  if (!reference || /^(?:https?:|data:|blob:|#)/i.test(reference)) return null;
+  const cleanReference = reference.replace(/^<|>$/g, "").split(/[?#]/, 1)[0].replaceAll("\\", "/");
+  if (!cleanReference || cleanReference.startsWith("/") || /^[a-z]:\//i.test(cleanReference)) return null;
+  const parts = normalizedDeliveryPath(markdownPath).split("/").filter(Boolean);
+  parts.pop();
+  for (const segment of cleanReference.split("/")) {
+    if (!segment || segment === ".") continue;
+    if (segment === "..") {
+      if (!parts.length) return null;
+      parts.pop();
+    } else {
+      parts.push(segment);
+    }
+  }
+  return parts.join("/");
+}
+
+function markdownImageReferences(text: string) {
+  const references = new Set<string>();
+  for (const match of text.matchAll(/!\[[^\]]*\]\(([^)\s]+)(?:\s+["'][^)]*)?\)/g)) {
+    const reference = match[1]?.replace(/^<|>$/g, "");
+    if (reference && !/^(?:https?:|data:|blob:|#)/i.test(reference)) references.add(reference);
+  }
+  return [...references].slice(0, 12);
+}
+
+function markdownImageCount(text: string) {
+  return [...text.matchAll(/!\[[^\]]*\]\(([^)\s]+)(?:\s+["'][^)]*)?\)/g)].length;
+}
+
+function imageMime(path: string) {
+  const extension = deliveryExtension(path);
+  if (extension === ".png") return "image/png";
+  if (extension === ".gif") return "image/gif";
+  if (extension === ".webp") return "image/webp";
+  if (extension === ".avif") return "image/avif";
+  return "image/jpeg";
+}
+
+function DeliveryMarkdownDocument({ file, text, copy }: { file: WorkItemOutcomeFile; text: string; copy: SummaryCopy }) {
+  const document = useMemo(() => parseMarkdownDocument(text), [text]);
+  const articleRef = useRef<HTMLElement>(null);
+  const imageCount = useMemo(() => markdownImageCount(document.body), [document.body]);
+  const [imageSources, setImageSources] = useState<Record<string, string>>({});
+
+  useEffect(() => {
+    if (!file.projectId || !file.path) return undefined;
+    let cancelled = false;
+    const objectUrls: string[] = [];
+    const references = markdownImageReferences(document.body);
+    if (!references.length) return undefined;
+    void Promise.all(references.map(async (reference) => {
+      const assetPath = resolveDeliveryAssetPath(file.path!, reference);
+      if (!assetPath) return null;
+      try {
+        const bytes = await api.projectAssetPreviewBytes(file.projectId!, assetPath, file.worktreeId ?? undefined);
+        const source = URL.createObjectURL(new Blob([bytes], { type: imageMime(assetPath) }));
+        objectUrls.push(source);
+        return [reference, source] as const;
+      } catch {
+        return null;
+      }
+    })).then((entries) => {
+      if (cancelled) {
+        for (const source of objectUrls) URL.revokeObjectURL(source);
+        return;
+      }
+      setImageSources(Object.fromEntries(entries.filter((entry): entry is readonly [string, string] => Boolean(entry))));
+    });
+    return () => {
+      cancelled = true;
+      for (const source of objectUrls) URL.revokeObjectURL(source);
+    };
+  }, [document.body, file.path, file.projectId, file.worktreeId]);
+
+  const metadata = [
+    document.metadata.author ? `${copy.deliverablePreviewAuthor}: ${document.metadata.author}` : null,
+    document.metadata.published_at ? `${copy.deliverablePreviewPublished}: ${document.metadata.published_at}` : null,
+    document.metadata.source_provider ? `${copy.deliverablePreviewSource}: ${document.metadata.source_provider}` : null,
+  ].filter(Boolean);
+  const showFirstImage = () => {
+    articleRef.current?.querySelector<HTMLElement>("img, [role='img']")?.scrollIntoView({ behavior: "smooth", block: "center" });
+  };
+  return (
+    <article ref={articleRef} className="mx-auto max-w-4xl px-1 pb-6 sm:px-5">
+      {metadata.length ? <p className="mb-5 rounded-lg border border-border bg-muted/30 px-3 py-2 text-xs leading-relaxed text-muted-foreground">{metadata.join(" · ")}</p> : null}
+      {imageCount ? (
+        <div className="mb-5 flex flex-wrap items-center gap-2 rounded-lg border border-primary/25 bg-primary/[0.045] px-3 py-2 text-sm" role="status">
+          <ImageIcon className="size-4 text-primary" aria-hidden />
+          <span className="mr-auto">{copy.deliverablePreviewImages.replace("{count}", String(imageCount))}</span>
+          <Button type="button" size="sm" variant="secondary" onClick={showFirstImage}>{copy.deliverablePreviewShowFirstImage}</Button>
+        </div>
+      ) : null}
+      <MarkdownBlock
+        text={document.body}
+        variant="document"
+        imageUnavailableLabel={copy.deliverablePreviewImageUnavailable}
+        resolveImageSrc={(src) => /^(?:https?:|data:|blob:)/i.test(src) ? src : imageSources[src] ?? null}
+      />
+    </article>
+  );
+}
+
+function DeliverableFileList({
+  entries,
+  copy,
+  openingKey,
+  error,
+  limit,
+  onOpen,
+}: {
+  entries: WorkItemOutcomeFile[];
+  copy: SummaryCopy;
+  openingKey: string | null;
+  error: string | null;
+  limit?: number;
+  onOpen: (file: WorkItemOutcomeFile) => void;
+}) {
+  const [revealingKey, setRevealingKey] = useState<string | null>(null);
+  const [revealError, setRevealError] = useState<string | null>(null);
+  const revealBridge = window.myagenttoolDesktop?.revealContainedAsset;
+  const visible = typeof limit === "number" ? entries.slice(0, limit) : entries;
+  if (!visible.length) return <p className="mt-1.5 text-sm text-muted-foreground">{copy.noDeliverableFiles}</p>;
+  return (
+    <>
+      <ul className="mt-1.5 grid gap-1.5 sm:grid-cols-2">
+        {visible.map((file) => {
+          const key = `${file.projectId ?? "project"}:${file.worktreeId ?? "base"}:${file.path ?? file.name}`;
+          const opening = openingKey === key;
+          const canOpen = file.status === "available"
+            && Boolean(file.projectId && file.path)
+            && (file.preview === "document" || Boolean(file.worktreeId));
+          const canReveal = file.status === "available" && Boolean(file.projectId && file.path);
+          const revealing = revealingKey === key;
+          const reveal = async () => {
+            if (!file.projectId || !file.path) return;
+            setRevealError(null);
+            setRevealingKey(key);
+            try {
+              if (revealBridge) {
+                await revealBridge({
+                  projectId: file.projectId,
+                  relativePath: file.path,
+                  ...(file.worktreeId ? { worktreeId: file.worktreeId } : {}),
+                });
+              } else {
+                await api.revealProjectAsset(file.projectId, file.path, file.worktreeId ?? undefined);
+              }
+            } catch {
+              setRevealError(copy.deliverableFolderUnavailable);
+            } finally {
+              setRevealingKey(null);
+            }
+          };
+          const content = (
+            <>
+              {opening
+                ? <RefreshCw className="size-3.5 shrink-0 animate-spin text-primary" aria-hidden />
+                : canOpen
+                  ? <FileText className="size-3.5 shrink-0 text-primary" aria-hidden />
+                  : <FileText className="size-3.5 shrink-0 text-muted-foreground" aria-hidden />}
+              <span className="min-w-0 flex-1">
+                <span className="block truncate font-mono text-xs">{file.name}</span>
+                <span className="block text-[11px] text-muted-foreground">
+                  {opening ? copy.deliverableFileOpening : canOpen ? copy.deliverableFileOpenHint : copy.deliverableFileUnsupported}
+                </span>
+              </span>
+              {canOpen ? <Eye className="size-3.5 shrink-0 text-muted-foreground" aria-hidden /> : null}
+            </>
+          );
+          return (
+            <li key={key} title={file.path ?? file.name} className="min-w-0">
+              <div className="flex overflow-hidden rounded-lg bg-background/70">
+                {canOpen ? (
+                  <button
+                    type="button"
+                    className="flex min-w-0 flex-1 items-center gap-2 px-3 py-2 text-left transition-colors hover:bg-accent focus-visible:z-10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-wait"
+                    aria-label={`${copy.browseDeliverableFile}: ${file.name}`}
+                    disabled={Boolean(openingKey)}
+                    onClick={() => onOpen(file)}
+                  >
+                    {content}
+                  </button>
+                ) : <div className="flex min-w-0 flex-1 items-center gap-2 px-3 py-2 opacity-75" aria-disabled="true">{content}</div>}
+                {canReveal ? (
+                  <button
+                    type="button"
+                    className="grid w-11 shrink-0 place-items-center border-l border-border/70 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:z-10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-wait"
+                    aria-label={`${copy.openDeliverableFolder}: ${file.name}`}
+                    title={copy.openDeliverableFolder}
+                    disabled={Boolean(revealingKey)}
+                    onClick={() => void reveal()}
+                  >
+                    {revealing ? <RefreshCw className="size-4 animate-spin" aria-hidden /> : <FolderOpen className="size-4" aria-hidden />}
+                  </button>
+                ) : null}
+              </div>
+            </li>
+          );
+        })}
+      </ul>
+      {error ? <p className="mt-2 rounded-md border border-warning/40 bg-warning/[0.07] px-3 py-2 text-sm" role="alert">{error}</p> : null}
+      {revealError ? <p className="mt-2 rounded-md border border-warning/40 bg-warning/[0.07] px-3 py-2 text-sm" role="alert">{revealError}</p> : null}
+    </>
+  );
+}
+
 export function WorkItemSummaryView({
   workItemId,
   onOpenExpert,
@@ -779,6 +1109,16 @@ export function WorkItemSummaryView({
   const [completionWriteback, setCompletionWriteback] = useState<"local_only" | "sync_close">("local_only");
   const [reopenConfirmOpen, setReopenConfirmOpen] = useState(false);
   const [previewAsset, setPreviewAsset] = useState<NonNullable<LocalWorkItem["inputAssets"]>[number] | null>(null);
+  const [materialOfficePreview, setMaterialOfficePreview] = useState<string | null>(null);
+  const [materialPreviewPending, setMaterialPreviewPending] = useState(false);
+  const [materialPreviewError, setMaterialPreviewError] = useState<string | null>(null);
+  const [materialRevealPendingId, setMaterialRevealPendingId] = useState<string | null>(null);
+  const [materialRevealError, setMaterialRevealError] = useState<string | null>(null);
+  const [openingResultFileKey, setOpeningResultFileKey] = useState<string | null>(null);
+  const [resultFileError, setResultFileError] = useState<string | null>(null);
+  const [resultPreviewFile, setResultPreviewFile] = useState<WorkItemOutcomeFile | null>(null);
+  const [resultPreview, setResultPreview] = useState<DeliveryPreview | null>(null);
+  const resultPreviewRequest = useRef(0);
   const resultAutoOpenedFor = useRef<string | null>(null);
 
   useEffect(() => {
@@ -794,6 +1134,11 @@ export function WorkItemSummaryView({
     setMaterialUndo(null);
     setMaterialNotice(null);
     setMaterialAddUndo(null);
+    setMaterialRevealPendingId(null);
+    setMaterialRevealError(null);
+    setMaterialOfficePreview(null);
+    setMaterialPreviewPending(false);
+    setMaterialPreviewError(null);
     setLoadError(null);
     setSyncNotice(null);
     setRetryOpen(false);
@@ -811,6 +1156,11 @@ export function WorkItemSummaryView({
     setCompletionWriteback("local_only");
     setReopenConfirmOpen(false);
     setPreviewAsset(null);
+    setOpeningResultFileKey(null);
+    setResultFileError(null);
+    setResultPreviewFile(null);
+    setResultPreview(null);
+    resultPreviewRequest.current += 1;
     resultAutoOpenedFor.current = null;
   }, [workItemId]);
 
@@ -884,6 +1234,12 @@ export function WorkItemSummaryView({
     const timer = window.setTimeout(() => setMaterialAddUndo(null), 8_000);
     return () => window.clearTimeout(timer);
   }, [materialAddUndo]);
+
+  useEffect(() => {
+    if (resultPreview?.kind !== "image") return undefined;
+    const source = resultPreview.source;
+    return () => URL.revokeObjectURL(source);
+  }, [resultPreview]);
 
   const owners = useMemo(() => item?.assigneeIds?.map((id) =>
     consoleState?.users?.find((user) => user.id === id)?.name ?? id) ?? [], [consoleState?.users, item?.assigneeIds]);
@@ -962,6 +1318,24 @@ export function WorkItemSummaryView({
   const resultFiles = outcome?.files?.length
     ? outcome.files
     : [...new Set([...outputAssets.map((asset) => asset.path), ...changedFiles])];
+  const resultWorktreeId = observability?.delivery?.worktreeId
+    ?? [...(item.executionBindings ?? [])].reverse().find((binding) =>
+      binding.kind === "auto_run" && binding.targetId === observability?.latestRun?.id)?.worktreeId
+    ?? outputAssets.find((asset) => asset.worktreeId)?.worktreeId
+    ?? null;
+  const resultFileEntries: WorkItemOutcomeFile[] = outcome?.fileEntries?.length
+    ? outcome.fileEntries
+    : resultFiles.map((rawPath) => {
+      const path = deliveryFileCanUseLegacyPath(rawPath) ? normalizedDeliveryPath(rawPath).replace(/^\.\//, "") : null;
+      return {
+        name: deliveryFileName(rawPath),
+        path,
+        projectId: item.projectId,
+        worktreeId: resultWorktreeId,
+        status: path ? "available" : "unavailable",
+        preview: path && browsableDeliveryPath(path) ? "document" : "unsupported",
+      };
+    });
   const outcomeReady = outcome == null || outcome.status === "available";
   const deliveryDecision = deriveDeliveryDecision({
     language,
@@ -989,6 +1363,69 @@ export function WorkItemSummaryView({
     `${finding.severity ? `[${finding.severity}] ` : ""}${finding.path ?? "Code"}${finding.line ? `:${finding.line}` : ""}: ${finding.body}`,
     finding.suggestion ? `Suggested fix: ${finding.suggestion}` : null,
   ].filter(Boolean).join("\n")).join("\n\n");
+
+  const openResultFile = async (file: WorkItemOutcomeFile) => {
+    if (!file.projectId || !file.path || (file.preview === "unsupported" && !file.worktreeId)) {
+      setResultFileError(copy.deliverableFileUnavailable);
+      return;
+    }
+    const requestId = resultPreviewRequest.current + 1;
+    resultPreviewRequest.current = requestId;
+    const key = `${file.projectId}:${file.worktreeId ?? "base"}:${file.path}`;
+    setResultPreviewFile(file);
+    setResultPreview(null);
+    setOpeningResultFileKey(key);
+    setResultFileError(null);
+    try {
+      await api.projectAssetDescriptor(file.projectId, file.path, file.worktreeId ?? undefined);
+      if (requestId !== resultPreviewRequest.current) return;
+      const extension = deliveryExtension(file.path);
+      if (MARKDOWN_DELIVERY_EXTENSIONS.has(extension)) {
+        const preview = await api.projectAssetPreview(file.projectId, file.path, file.worktreeId ?? undefined);
+        if (requestId === resultPreviewRequest.current) {
+          setResultPreview({ kind: "markdown", text: preview.text, truncated: preview.truncated });
+        }
+        return;
+      }
+      if (IMAGE_DELIVERY_EXTENSIONS.has(extension)) {
+        const bytes = await api.projectAssetPreviewBytes(file.projectId, file.path, file.worktreeId ?? undefined);
+        const source = URL.createObjectURL(new Blob([bytes], { type: imageMime(file.path) }));
+        if (requestId === resultPreviewRequest.current) setResultPreview({ kind: "image", source });
+        else URL.revokeObjectURL(source);
+        return;
+      }
+      if (extension === ".pdf") {
+        const source = await api.projectPdfSource(file.projectId, file.path, file.worktreeId ?? undefined);
+        if (requestId === resultPreviewRequest.current) setResultPreview({ kind: "pdf", source: source.url });
+        return;
+      }
+      if (OFFICE_DELIVERY_EXTENSIONS.has(extension)) {
+        const preview = await api.officecliPreview(file.projectId, file.path, file.worktreeId ?? undefined);
+        if (requestId === resultPreviewRequest.current) setResultPreview({ kind: "office", html: preview.content });
+        return;
+      }
+      if (!file.worktreeId) throw new Error("worktree_required");
+      const preview = await api.readWorktreeFile(file.worktreeId, file.path) as { content: string; truncated?: boolean };
+      let text = preview.content;
+      if (extension === ".json") {
+        try { text = JSON.stringify(JSON.parse(text), null, 2); } catch { /* Keep the original text. */ }
+      }
+      if (requestId === resultPreviewRequest.current) {
+        setResultPreview({ kind: "text", text, truncated: Boolean(preview.truncated) });
+      }
+    } catch {
+      if (requestId === resultPreviewRequest.current) setResultFileError(copy.deliverableFileUnavailable);
+    } finally {
+      if (requestId === resultPreviewRequest.current) setOpeningResultFileKey(null);
+    }
+  };
+  const closeResultPreview = () => {
+    resultPreviewRequest.current += 1;
+    setOpeningResultFileKey(null);
+    setResultPreviewFile(null);
+    setResultPreview(null);
+    setResultFileError(null);
+  };
   const primaryExternalBinding = item.externalBindings?.find((binding) => binding.isPrimary !== false)
     ?? item.externalBindings?.[0]
     ?? null;
@@ -1024,8 +1461,27 @@ export function WorkItemSummaryView({
       setCommentPending(false);
     }
   };
-  const previewMaterial = (assetId: string) => {
-    setPreviewAsset(item.inputAssets?.find((asset) => asset.id === assetId) ?? null);
+  const previewMaterial = async (assetId: string) => {
+    const asset = item.inputAssets?.find((candidate) => candidate.id === assetId) ?? null;
+    setPreviewAsset(asset);
+    setMaterialOfficePreview(null);
+    setMaterialPreviewError(null);
+    if (!asset || !isOfficeMaterial(asset)) return;
+    setMaterialPreviewPending(true);
+    try {
+      const preview = await api.previewTaskMaterialOffice(item.id, assetId);
+      setMaterialOfficePreview(preview.content);
+    } catch {
+      setMaterialPreviewError(copy.deliverableFileUnavailable);
+    } finally {
+      setMaterialPreviewPending(false);
+    }
+  };
+  const closeMaterialPreview = () => {
+    setPreviewAsset(null);
+    setMaterialOfficePreview(null);
+    setMaterialPreviewPending(false);
+    setMaterialPreviewError(null);
   };
   const downloadMaterial = (assetId: string) => {
     const anchor = document.createElement("a");
@@ -1220,6 +1676,17 @@ export function WorkItemSummaryView({
       setClarifyError(language === "zh" ? "回答暂时无法提交，请稍后重试。" : "The answer could not be submitted. Try again later.");
     } finally {
       setClarifyPending(false);
+    }
+  };
+  const revealMaterial = async (assetId: string) => {
+    setMaterialRevealPendingId(assetId);
+    setMaterialRevealError(null);
+    try {
+      await api.revealTaskMaterial(item.id, assetId);
+    } catch {
+      setMaterialRevealError(copy.deliverableFolderUnavailable);
+    } finally {
+      setMaterialRevealPendingId(null);
     }
   };
   const setAutomaticExecution = async (executionPolicy: "auto" | "paused") => {
@@ -1618,6 +2085,26 @@ export function WorkItemSummaryView({
         </section>
       ) : null}
 
+      {failed && resultFileEntries.length ? (
+        <section className="rounded-xl border border-border bg-background/70 p-4" aria-label={copy.deliverableFiles}>
+          <h4 className="text-sm font-semibold">{copy.deliverableFiles}</h4>
+          <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
+            {language === "zh"
+              ? "本次执行虽未正常结束，但已产生以下文件，可以直接查看。"
+              : "The run did not finish normally, but these files were produced and remain available to review."}
+          </p>
+          <div className="mt-3">
+            <DeliverableFileList
+              entries={resultFileEntries}
+              copy={copy}
+              openingKey={openingResultFileKey}
+              error={resultPreviewFile ? null : resultFileError}
+              onOpen={(file) => void openResultFile(file)}
+            />
+          </div>
+        </section>
+      ) : null}
+
       {(status === "ready_for_review" || status === "completed") && resultExpanded ? (
         <section id={resultSectionId} className="scroll-mt-4 rounded-xl border border-success/30 bg-success/[0.035] p-4" aria-labelledby={`${resultSectionId}-title`}>
           <div className="flex flex-wrap items-start justify-between gap-2">
@@ -1722,16 +2209,14 @@ export function WorkItemSummaryView({
           </div>
           <div className="mt-3">
             <p className="text-xs text-muted-foreground">{copy.deliverableFiles}</p>
-            {resultFiles.length ? (
-              <ul className="mt-1.5 grid gap-1.5 sm:grid-cols-2">
-                {resultFiles.slice(0, 8).map((path) => (
-                  <li key={path} title={path} className="min-w-0 rounded-lg bg-background/70 px-3 py-2 font-mono text-xs [overflow-wrap:anywhere]">
-                    <FileText className="mr-1.5 inline size-3.5 text-muted-foreground" aria-hidden />
-                    {path.split(/[\\/]/).at(-1) ?? path}
-                  </li>
-                ))}
-              </ul>
-            ) : <p className="mt-1.5 text-sm text-muted-foreground">{copy.noDeliverableFiles}</p>}
+            <DeliverableFileList
+              entries={resultFileEntries}
+              copy={copy}
+              openingKey={openingResultFileKey}
+              error={resultPreviewFile ? null : resultFileError}
+              limit={8}
+              onOpen={(file) => void openResultFile(file)}
+            />
           </div>
           {observability?.outcomeHistory?.length ? (
             <details className="mt-3 rounded-lg border border-border bg-background/60 px-3 py-2.5">
@@ -1885,10 +2370,11 @@ export function WorkItemSummaryView({
                 <Badge tone="neutral">{asset.readiness?.state === "ready" ? copy.fileReady : copy.filePreparing}</Badge>
                 {asset.id && asset.readiness?.reason === "task_material_claimed" ? (
                   <span className="flex shrink-0 flex-wrap items-center gap-1">
-                    {(asset.mimeType?.startsWith("text/") || asset.mimeType?.startsWith("image/") || asset.mimeType === "application/pdf" || asset.mimeType === "application/json") ? (
-                      <Button size="sm" variant="ghost" aria-label={`${copy.previewFile}: ${asset.originalName ?? asset.path}`} onClick={() => previewMaterial(asset.id!)}><Eye className="size-3.5" aria-hidden />{copy.previewFile}</Button>
+                    {(asset.mimeType?.startsWith("text/") || asset.mimeType?.startsWith("image/") || asset.mimeType === "application/pdf" || asset.mimeType === "application/json" || isOfficeMaterial(asset)) ? (
+                      <Button size="sm" variant="ghost" aria-label={`${copy.previewFile}: ${asset.originalName ?? asset.path}`} onClick={() => void previewMaterial(asset.id!)}><Eye className="size-3.5" aria-hidden />{copy.previewFile}</Button>
                     ) : <Badge tone="neutral">{copy.downloadOnly}</Badge>}
                     <Button size="sm" variant="ghost" aria-label={`${copy.downloadFile}: ${asset.originalName ?? asset.path}`} onClick={() => downloadMaterial(asset.id!)}><Download className="size-3.5" aria-hidden />{copy.downloadFile}</Button>
+                    <Button size="sm" variant="ghost" aria-label={`${copy.openDeliverableFolder}: ${asset.originalName ?? asset.path}`} title={copy.openDeliverableFolder} disabled={materialRevealPendingId === asset.id} onClick={() => void revealMaterial(asset.id!)}>{materialRevealPendingId === asset.id ? <RefreshCw className="size-3.5 animate-spin" aria-hidden /> : <FolderOpen className="size-3.5" aria-hidden />}{copy.openDeliverableFolder}</Button>
                     {status !== "completed" ? <Button size="sm" variant="ghost" className="hover:text-destructive" aria-label={`${copy.removeFile}: ${asset.originalName ?? asset.path}`} disabled={materialPendingId === asset.id} onClick={() => void removeMaterial(asset.id!)}><Trash2 className="size-3.5" aria-hidden />{copy.removeFile}</Button> : null}
                   </span>
                 ) : null}
@@ -1896,6 +2382,7 @@ export function WorkItemSummaryView({
             ))}
           </div>
         ) : null}
+        {materialRevealError ? <p className="mt-2 rounded-md border border-warning/40 bg-warning/[0.07] px-3 py-2 text-sm" role="alert">{materialRevealError}</p> : null}
         {materialNotice ? (
           <div className="mt-2 flex items-start gap-2 rounded-lg border border-success/30 bg-success/[0.06] px-3 py-2 text-sm" role="status">
             <CheckCircle2 className="mt-0.5 size-4 shrink-0 text-success" aria-hidden />
@@ -2157,16 +2644,13 @@ export function WorkItemSummaryView({
 
           <section className="rounded-lg border border-border bg-background/70 p-4">
             <h3 className="text-sm font-semibold">{copy.deliverableFiles}</h3>
-            {resultFiles.length ? (
-              <ul className="mt-2 grid gap-2 sm:grid-cols-2">
-                {resultFiles.map((path) => (
-                  <li key={`${path}-report`} className="rounded-md bg-muted/45 px-3 py-2 font-mono text-xs [overflow-wrap:anywhere]">
-                    <FileText className="mr-1.5 inline size-3.5 text-muted-foreground" aria-hidden />
-                    {path}
-                  </li>
-                ))}
-              </ul>
-            ) : <p className="mt-2 text-sm text-muted-foreground">{copy.noDeliverableFiles}</p>}
+            <DeliverableFileList
+              entries={resultFileEntries}
+              copy={copy}
+              openingKey={openingResultFileKey}
+              error={resultPreviewFile ? null : resultFileError}
+              onOpen={(file) => void openResultFile(file)}
+            />
           </section>
 
         </div>
@@ -2234,19 +2718,69 @@ export function WorkItemSummaryView({
         </div>
       </Modal>
       <Modal
+        open={Boolean(resultPreviewFile)}
+        onClose={closeResultPreview}
+        title={resultPreviewFile?.name ?? copy.browseDeliverableFile}
+        description={copy.deliverablePreviewDescription}
+        size="2xl"
+      >
+        {resultPreviewFile?.path ? <p className="mb-3 truncate font-mono text-[11px] text-muted-foreground" title={resultPreviewFile.path}>{resultPreviewFile.path}</p> : null}
+        {openingResultFileKey && !resultPreview ? (
+          <p className="flex min-h-48 items-center justify-center gap-2 text-sm text-muted-foreground" role="status">
+            <RefreshCw className="size-4 animate-spin" aria-hidden />
+            {copy.deliverablePreviewLoading}
+          </p>
+        ) : resultFileError && !resultPreview ? (
+          <div className="grid min-h-48 place-items-center text-center">
+            <div>
+              <p className="text-sm text-destructive" role="alert">{resultFileError}</p>
+              {resultPreviewFile ? <Button className="mt-3" variant="secondary" onClick={() => void openResultFile(resultPreviewFile)}>{copy.retry}</Button> : null}
+            </div>
+          </div>
+        ) : resultPreview?.kind === "markdown" && resultPreviewFile ? (
+          <>
+            {resultPreview.truncated ? <p className="mb-3 rounded-md border border-warning/40 bg-warning/[0.07] px-3 py-2 text-sm">{copy.deliverablePreviewTruncated}</p> : null}
+            <DeliveryMarkdownDocument file={resultPreviewFile} text={resultPreview.text} copy={copy} />
+          </>
+        ) : resultPreview?.kind === "text" ? (
+          <>
+            {resultPreview.truncated ? <p className="mb-3 rounded-md border border-warning/40 bg-warning/[0.07] px-3 py-2 text-sm">{copy.deliverablePreviewTruncated}</p> : null}
+            <pre className="min-h-48 whitespace-pre-wrap break-words rounded-lg border border-border bg-background p-4 font-mono text-xs leading-6">{resultPreview.text}</pre>
+          </>
+        ) : resultPreview?.kind === "image" ? (
+          <div className="grid min-h-[28rem] place-items-center rounded-lg border border-border bg-background p-4">
+            <img src={resultPreview.source} alt={resultPreviewFile?.name ?? ""} className="max-h-[70vh] max-w-full object-contain" />
+          </div>
+        ) : resultPreview?.kind === "pdf" ? (
+          <iframe className="h-[70vh] w-full rounded-lg border border-border bg-background" src={resultPreview.source} title={resultPreviewFile?.name ?? "PDF"} />
+        ) : resultPreview?.kind === "office" ? (
+          <OfficeDocumentFrame title={resultPreviewFile?.name ?? "Document"} content={resultPreview.html} className="min-h-[70vh]" />
+        ) : null}
+      </Modal>
+      <Modal
         open={Boolean(previewAsset)}
-        onClose={() => setPreviewAsset(null)}
+        onClose={closeMaterialPreview}
         title={previewAsset?.originalName ?? previewAsset?.path.split("/").pop() ?? copy.previewFile}
         description={item.title}
         size="full"
       >
         {previewAsset?.id ? (
           <div className="space-y-3">
-            <iframe
-              className="h-[65vh] w-full rounded-lg border border-border bg-background"
-              src={api.taskMaterialContentUrl(item.id, previewAsset.id)}
-              title={`${copy.previewFile}: ${previewAsset.originalName ?? previewAsset.path}`}
-            />
+            {isOfficeMaterial(previewAsset) ? (
+              materialPreviewPending ? (
+                <p className="flex min-h-48 items-center justify-center gap-2 text-sm text-muted-foreground" role="status"><RefreshCw className="size-4 animate-spin" aria-hidden />{copy.deliverablePreviewLoading}</p>
+              ) : materialPreviewError ? (
+                <p className="grid min-h-48 place-items-center text-sm text-destructive" role="alert">{materialPreviewError}</p>
+              ) : materialOfficePreview ? (
+                <OfficeDocumentFrame title={`${copy.previewFile}: ${previewAsset.originalName ?? previewAsset.path}`} content={materialOfficePreview} className="min-h-[65vh] rounded-lg border border-border" />
+              ) : null
+            ) : (
+              <iframe
+                className="h-[65vh] w-full rounded-lg border border-border bg-background"
+                src={api.taskMaterialContentUrl(item.id, previewAsset.id)}
+                title={`${copy.previewFile}: ${previewAsset.originalName ?? previewAsset.path}`}
+              />
+            )}
             <div className="flex justify-end">
               <Button variant="secondary" onClick={() => downloadMaterial(previewAsset.id!)}><Download aria-hidden />{copy.downloadFile}</Button>
             </div>

@@ -60,11 +60,110 @@ function linkedFilesFrom(markdown) {
   return files;
 }
 
+const BROWSABLE_DOCUMENT_EXTENSIONS = new Set([
+  ".docx", ".xlsx", ".pptx", ".pdf", ".dxf", ".dwg",
+  ".md", ".mdx", ".html", ".png", ".jpg", ".jpeg", ".gif", ".webp", ".avif", ".svg",
+  ".mp3", ".m4a", ".ogg", ".wav", ".mp4", ".webm", ".mov", ".canvas", ".excalidraw",
+]);
+
+function normalizedFilePath(value) {
+  return String(value ?? "").trim().replaceAll("\\", "/").replace(/\/+$/, "");
+}
+
+function portableAbsolutePath(value) {
+  return value.startsWith("/") || /^[a-z]:\//i.test(value);
+}
+
+function safeRelativePath(value) {
+  const normalized = normalizedFilePath(value).replace(/^\.\//, "");
+  if (!normalized || portableAbsolutePath(normalized)) return null;
+  if (normalized === ".." || normalized.startsWith("../") || normalized.includes("/../")) return null;
+  return normalized;
+}
+
+function relativePathInsideRoot(candidate, root) {
+  const normalizedCandidate = normalizedFilePath(candidate);
+  const normalizedRoot = normalizedFilePath(root);
+  if (!normalizedCandidate || !normalizedRoot) return null;
+  const windowsPath = /^[a-z]:\//i.test(normalizedCandidate) || /^[a-z]:\//i.test(normalizedRoot);
+  const comparableCandidate = windowsPath ? normalizedCandidate.toLowerCase() : normalizedCandidate;
+  const comparableRoot = windowsPath ? normalizedRoot.toLowerCase() : normalizedRoot;
+  if (!comparableCandidate.startsWith(`${comparableRoot}/`)) return null;
+  return safeRelativePath(normalizedCandidate.slice(normalizedRoot.length + 1));
+}
+
+function fileName(path) {
+  return normalizedFilePath(path).split("/").filter(Boolean).at(-1) ?? "File";
+}
+
+function fileExtension(path) {
+  const name = fileName(path).toLowerCase();
+  const dot = name.lastIndexOf(".");
+  return dot >= 0 ? name.slice(dot) : "";
+}
+
+function projectFileEntries({ item, deliveryReport, fullReport, invocationSummary, fileContext }) {
+  const defaultWorktreeId = fileContext?.worktreeId ?? null;
+  const candidates = [
+    ...(item?.outputAssets ?? []).map((asset) => ({
+      path: asset?.path,
+      worktreeId: asset?.worktreeId ?? defaultWorktreeId,
+    })),
+    ...(deliveryReport?.changedFiles ?? []).map((path) => ({ path, worktreeId: defaultWorktreeId })),
+    ...linkedFilesFrom(fullReport).map((path) => ({ path, worktreeId: defaultWorktreeId })),
+    ...linkedFilesFrom(invocationSummary).map((path) => ({ path, worktreeId: defaultWorktreeId })),
+  ].filter((candidate) => candidate.path);
+  const scopes = (fileContext?.scopes ?? [])
+    .filter((scope) => scope?.root)
+    .sort((left, right) => normalizedFilePath(right.root).length - normalizedFilePath(left.root).length);
+  const entries = [];
+  const seen = new Set();
+
+  for (const candidate of candidates) {
+    const originalPath = normalizedFilePath(candidate.path);
+    let path = safeRelativePath(originalPath);
+    let worktreeId = candidate.worktreeId ?? defaultWorktreeId;
+    let status = "available";
+    let unavailableReason = null;
+
+    if (portableAbsolutePath(originalPath)) {
+      const matchingScope = scopes.find((scope) => relativePathInsideRoot(originalPath, scope.root));
+      path = matchingScope ? relativePathInsideRoot(originalPath, matchingScope.root) : null;
+      worktreeId = matchingScope?.worktreeId ?? null;
+      if (!path) {
+        status = "unavailable";
+        unavailableReason = "outside_registered_project";
+      }
+    } else if (!path) {
+      status = "unavailable";
+      unavailableReason = "invalid_relative_path";
+    }
+
+    const name = fileName(originalPath);
+    const key = `${fileContext?.projectId ?? ""}:${worktreeId ?? "base"}:${path ?? name}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const browsable = status === "available" && BROWSABLE_DOCUMENT_EXTENSIONS.has(fileExtension(path ?? name));
+    entries.push({
+      name,
+      path,
+      projectId: fileContext?.projectId ?? null,
+      worktreeId,
+      status,
+      preview: browsable ? "document" : "unsupported",
+      ...(unavailableReason ? { unavailableReason } : {}),
+    });
+    if (entries.length >= 50) break;
+  }
+  return entries;
+}
+
 export function projectWorkItemOutcome({
   item,
   latestRun,
   deliveryReport,
   invocationSummary = null,
+  fileContext = null,
 } = {}) {
   const fullReport = latestRun?.report ?? deliveryReport?.summary ?? null;
   if (!fullReport) {
@@ -75,17 +174,13 @@ export function projectWorkItemOutcome({
       highlights: [],
       warnings: [],
       files: [],
+      fileEntries: [],
       verification: null,
       deliveredAt: null,
     };
   }
 
-  const fileCandidates = [
-    ...(item?.outputAssets ?? []).map((asset) => asset?.path),
-    ...(deliveryReport?.changedFiles ?? []),
-    ...linkedFilesFrom(fullReport),
-    ...linkedFilesFrom(invocationSummary),
-  ].filter(Boolean).map((path) => String(path).replaceAll("\\", "/"));
+  const fileEntries = projectFileEntries({ item, deliveryReport, fullReport, invocationSummary, fileContext });
 
   return {
     status: "available",
@@ -93,7 +188,10 @@ export function projectWorkItemOutcome({
     fullReport,
     highlights: highlightsFrom(fullReport),
     warnings: warningsFrom(fullReport),
-    files: [...new Set(fileCandidates)].slice(0, 50),
+    // Keep the legacy string list for older web clients, but never expose an
+    // absolute host path. New clients use fileEntries for scoped browsing.
+    files: fileEntries.map((entry) => entry.path ?? entry.name),
+    fileEntries,
     verification: deliveryReport?.verification ? { ...deliveryReport.verification } : null,
     deliveredAt: deliveryReport?.completedAt ?? latestRun?.updatedAt ?? null,
   };
