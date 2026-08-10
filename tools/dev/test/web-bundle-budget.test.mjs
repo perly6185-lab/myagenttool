@@ -51,7 +51,7 @@ test("route-only chunks stay outside the initial JS calculation", async () => {
 test("existing per-entry hard budgets and the 800 kB initial hard limit remain unchanged", () => {
   assert.deepEqual(ENTRY_BUNDLE_LIMITS, {
     "index.html": 525_000,
-    "src/features/tasks/task-view.tsx": 140_000,
+    "src/features/tasks/local-tasks-view.tsx": 140_000,
     "src/features/auto-runs/auto-runs-view.tsx": 110_000,
   });
   assert.equal(INITIAL_JS_HARD_LIMIT_BYTES, 800_000);

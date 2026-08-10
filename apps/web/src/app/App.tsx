@@ -1,7 +1,6 @@
 import { NavRail } from "@/components/layout/nav-rail";
 import { Topbar } from "@/components/layout/topbar";
 import { Inspector } from "@/components/layout/inspector";
-import { CommandPalette } from "@/components/layout/command-palette";
 import { ErrorBoundary } from "@/components/common/error-boundary";
 import { lazy, Suspense } from "react";
 import { SECTION_VIEWS } from "@/app/routes";
@@ -20,6 +19,9 @@ import { usePageNavigation } from "@/hooks/use-page-navigation";
 import { Button } from "@/components/ui/button";
 
 const WorkItemDetailShell = lazy(() => import("@/features/tasks/work-item-detail-shell"));
+const CommandPalette = lazy(() => import("@/components/layout/command-palette").then((module) => ({
+  default: module.CommandPalette,
+})));
 const MySettingsDialog = lazy(() => import("@/features/settings/my-settings-dialog").then((module) => ({
   default: module.MySettingsDialog,
 })));
@@ -63,7 +65,9 @@ export function App() {
 
   return (
     <div className="flex h-full overflow-hidden">
-      <CommandPalette />
+      <Suspense fallback={null}>
+        <CommandPalette />
+      </Suspense>
       {settingsDialogOpen ? (
         <Suspense fallback={null}>
           <MySettingsDialog />
