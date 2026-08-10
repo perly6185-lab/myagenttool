@@ -195,6 +195,7 @@ export async function inspectArticle({
   }
   const html = page.bytes.toString("utf8");
   const provider = detectArticleSource(page.url);
+  assertArticlePage(html, page.url, provider);
   const parsed = parseArticleDocument(html, page.url, provider, limits.mediaCount);
   return {
     sourceUrl: String(url),
@@ -213,6 +214,18 @@ export async function inspectArticle({
     fetchedAt: new Date().toISOString(),
     _document: parsed,
   };
+}
+
+function assertArticlePage(html, pageUrl, provider) {
+  if (provider !== "wechat") return;
+  const path = new URL(pageUrl).pathname.toLowerCase();
+  const challengePage = path.includes("wappoc_appmsgcaptcha")
+    || path.includes("verifycode")
+    || /wappoc_appmsgcaptcha|poc_token|完成验证后即可继续访问|环境异常/i.test(html);
+  if (challengePage) throw articleError("article_download_challenge");
+  const hasArticleRoot = /\bid\s*=\s*["']js_content["']/i.test(html)
+    || /\bclass\s*=\s*["'][^"']*\brich_media_content\b/i.test(html);
+  if (!hasArticleRoot) throw articleError("article_content_incomplete");
 }
 
 export async function importArticleToWorktree({
@@ -2671,7 +2684,8 @@ function articleFailure(error) {
   const code = String(error?.code ?? error?.message ?? "article_import_failed");
   const status = code === "work_item_not_found" ? 404
     : code.includes("already_active") || code.includes("conflict") ? 409
-      : code.includes("timeout") || code.includes("download_http_5") ? 503
+      : code.includes("timeout") || code.includes("download_http_5")
+        || code.includes("download_challenge") || code.includes("content_incomplete") ? 503
         : 400;
   return { ok: false, status, body: { error: code } };
 }

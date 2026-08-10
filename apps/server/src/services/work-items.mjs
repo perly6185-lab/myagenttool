@@ -656,7 +656,8 @@ export function createWorkItemService({
     const visibleAcceptanceCriteria = (publicItem.acceptanceCriteria ?? []).length
       ? publicItem.acceptanceCriteria
       : bodyAcceptanceCriteria;
-    const derivedExecutionState = executionState(item);
+    const derivedExecution = resolveWorkItemExecution(item, state, { now: now() });
+    const derivedExecutionState = derivedExecution.executionState;
     const frozenReviewContract = reviewContract(item);
     const memberships = (state.planningProjectItems ?? []).filter(
       (row) => row.workItemId === item.id && row.ownerTeamId === actorTeam(actor),
@@ -686,6 +687,7 @@ export function createWorkItemService({
       businessState: item.state,
       planningStatus: item.status,
       executionState: derivedExecutionState,
+      executionKind: derivedExecution.binding?.kind ?? null,
       statusModel: {
         business: item.state,
         planning: item.status,

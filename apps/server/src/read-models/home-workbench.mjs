@@ -190,7 +190,7 @@ export function homeWorkbenchReadModel({
         ...item,
         executionState,
         userStatus: projectedUserStatus,
-        hasAiExecution: Boolean(execution.autoRun || execution.invocation),
+        hasManagedExecution: Boolean(execution.binding),
       };
       const reasons = attentionReasons(executionItem, nowMs, today, tomorrow);
       const attentionReason = reasons[0] ?? null;
@@ -233,6 +233,13 @@ export function homeWorkbenchReadModel({
         },
         planningStatus: completed ? "done" : item.status,
         executionState,
+        executionKind: execution.binding?.kind ?? null,
+        executionUpdatedAt: execution.articleImport?.completedAt
+          ?? execution.articleImport?.startedAt
+          ?? execution.articleImport?.createdAt
+          ?? execution.autoRun?.updatedAt
+          ?? execution.invocation?.updatedAt
+          ?? null,
         userStatus: projectedUserStatus,
         waitingOn,
         attentionReason,

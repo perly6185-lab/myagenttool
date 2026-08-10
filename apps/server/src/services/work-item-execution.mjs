@@ -6,6 +6,8 @@ const AUTO_RUN_APPROVAL = new Set(["awaiting_approval", "needs_input"]);
 const AUTO_RUN_VERIFYING = new Set(["verifying", "pr_open", "report_posted", "plan_proposed"]);
 const AUTO_RUN_FAILED = new Set(["blocked", "failed", "cancelled"]);
 const AUTO_RUN_COMPLETED = new Set(["done", "decomposed"]);
+const ARTICLE_IMPORT_RUNNING = new Set(["queued", "running"]);
+const ARTICLE_IMPORT_FAILED = new Set(["failed", "canceled"]);
 
 function parsedTimestamp(value) {
   const parsed = value ? Date.parse(value) : Number.NaN;
@@ -19,13 +21,20 @@ function parsedTimestamp(value) {
 export function latestWorkItemExecutionBinding(item) {
   return (item.executionBindings ?? [])
     .map((binding, index) => ({ binding, index, createdAt: parsedTimestamp(binding.createdAt) }))
-    .filter(({ binding }) => ["application_invocation", "auto_run"].includes(binding.kind))
+    .filter(({ binding }) => ["application_invocation", "auto_run", "article_import", "article_derivative"].includes(binding.kind))
     .sort((left, right) => {
       if (left.createdAt != null && right.createdAt != null && left.createdAt !== right.createdAt) {
         return right.createdAt - left.createdAt;
       }
       return right.index - left.index;
     })[0]?.binding ?? null;
+}
+
+function articleImportExecutionState(job) {
+  if (ARTICLE_IMPORT_RUNNING.has(job.state)) return "running";
+  if (ARTICLE_IMPORT_FAILED.has(job.state)) return "failed";
+  if (job.state === "completed") return "completed";
+  return null;
 }
 
 function applicationExecutionState(invocation) {
@@ -51,9 +60,19 @@ export function resolveWorkItemExecution(item, state, { now = Date.now() } = {})
   const autoRun = binding?.kind === "auto_run"
     ? (state.autoRuns ?? []).find((candidate) => candidate.id === binding.targetId) ?? null
     : null;
+  const articleImport = binding?.kind === "article_import"
+    ? (state.articleImportJobs ?? []).find((candidate) => candidate.id === binding.targetId) ?? null
+    : null;
+  const articleDerivativeInvocation = binding?.kind === "article_derivative"
+    ? (state.invocations ?? []).find((candidate) =>
+      candidate.options?.metadata?.articleDerivative?.id === binding.targetId
+      && candidate.options?.metadata?.articleDerivative?.workItemId === item.id) ?? null
+    : null;
   const invocationId = binding?.kind === "application_invocation"
     ? binding.id ?? binding.targetId ?? null
-    : autoRun?.invocationId ?? null;
+    : binding?.kind === "article_derivative"
+      ? articleDerivativeInvocation?.id ?? null
+      : autoRun?.invocationId ?? null;
   const invocation = invocationId
     ? (state.invocations ?? []).find((candidate) => candidate.id === invocationId) ?? null
     : null;
@@ -71,6 +90,10 @@ export function resolveWorkItemExecution(item, state, { now = Date.now() } = {})
     executionState = applicationExecutionState(invocation);
   } else if (binding?.kind === "auto_run" && autoRun) {
     executionState = autoRunExecutionState(autoRun);
+  } else if (binding?.kind === "article_import" && articleImport) {
+    executionState = articleImportExecutionState(articleImport);
+  } else if (binding?.kind === "article_derivative" && invocation) {
+    executionState = applicationExecutionState(invocation);
   }
   // A durable binding whose target disappeared or whose status is unknown is
   // recovery work, never an apparently unclaimed task.
@@ -84,5 +107,5 @@ export function resolveWorkItemExecution(item, state, { now = Date.now() } = {})
     executionState = claimActive ? "claimed" : "unclaimed";
   }
 
-  return { binding, autoRun, invocation, agent, approval, executionState };
+  return { binding, autoRun, articleImport, invocation, agent, approval, executionState };
 }

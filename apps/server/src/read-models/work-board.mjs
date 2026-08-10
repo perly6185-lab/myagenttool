@@ -78,6 +78,7 @@ function autoRunItem(run, state, schedule = null) {
     subtitle: truncate([run?.status ? String(run.status).replaceAll("_", " ") : null, run?.summary].filter(Boolean).join(" · ")),
     section: "autoRuns",
     targetId: run?.id ?? null,
+    workItemId: run?.localIssueId ?? null,
     projectId: run?.projectId ?? null,
     updatedAt: autoRunStamp(run),
     scheduleKey: `autorun:${run?.id}`,
@@ -125,6 +126,9 @@ export function workBoard({ autoRuns = [], pendingDecisions = [], refusals = [],
   const scheduleByAutoRunId = new Map(schedules
     .filter((schedule) => schedule?.kind === "auto_run" && schedule.targetId)
     .map((schedule) => [schedule.targetId, schedule]));
+  const workItemByAutoRunId = new Map(autoRuns
+    .filter((run) => run?.id && run?.localIssueId)
+    .map((run) => [run.id, run.localIssueId]));
 
   // 待决策 — the queue verbatim (already oldest-first from pendingDecisions; we
   // re-sort newest-first below like every other lens for a consistent board).
@@ -137,6 +141,7 @@ export function workBoard({ autoRuns = [], pendingDecisions = [], refusals = [],
       subtitle: d.subtitle ?? "",
       section: d.section,
       targetId: d.targetId ?? null,
+      workItemId: d?.ref?.autoRunId ? workItemByAutoRunId.get(d.ref.autoRunId) ?? null : null,
       projectId: d.projectId ?? null,
       updatedAt: d.createdAt ?? null,
       scheduleKey: d?.ref?.autoRunId ? `autorun:${d.ref.autoRunId}` : null,

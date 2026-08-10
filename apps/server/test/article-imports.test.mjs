@@ -205,6 +205,31 @@ test("inspects WeChat lazy images while preserving content order", async () => {
   assert.match(result.markdownPreview, /第一段[\s\S]+MYAGENTTOOL_MEDIA_0[\s\S]+第二段/);
 });
 
+test("rejects a WeChat verification challenge instead of importing an empty article", async () => {
+  await assert.rejects(
+    inspectArticle({
+      url: "https://mp.weixin.qq.com/s/challenged",
+      resolveHostname: PUBLIC_DNS,
+      fetchImpl: async () => htmlResponse(`<!doctype html><html><body>
+        <form action="/mp/wappoc_appmsgcaptcha"><input name="poc_token"></form>
+        <p>完成验证后即可继续访问</p>
+      </body></html>`),
+    }),
+    (error) => error.code === "article_download_challenge",
+  );
+});
+
+test("rejects an incomplete WeChat shell without the real article body", async () => {
+  await assert.rejects(
+    inspectArticle({
+      url: "https://mp.weixin.qq.com/s/incomplete",
+      resolveHostname: PUBLIC_DNS,
+      fetchImpl: async () => htmlResponse("<!doctype html><html><body><p>微信文章加载中</p></body></html>"),
+    }),
+    (error) => error.code === "article_content_incomplete",
+  );
+});
+
 test("recovers Xiaohongshu note metadata and direct media from hydration data", async () => {
   const result = await inspectArticle({
     url: "https://www.xiaohongshu.com/explore/note-1",
@@ -820,7 +845,7 @@ test("preserves the source calendar date instead of shifting it to UTC", async (
     resolveHostname: PUBLIC_DNS,
     fetchImpl: async () => htmlResponse(`
       <meta property="article:published_time" content="2026-07-27T00:30:00+08:00">
-      <article>offset</article>
+      <div id="js_content">offset</div>
     `),
   });
   assert.equal(offsetResult.publishedAt, "2026-07-27");
@@ -829,7 +854,7 @@ test("preserves the source calendar date instead of shifting it to UTC", async (
   const epochResult = await inspectArticle({
     url: "https://mp.weixin.qq.com/s/epoch",
     resolveHostname: PUBLIC_DNS,
-    fetchImpl: async () => htmlResponse(`<article>epoch</article><script>var publish_time = "${epoch}";</script>`),
+    fetchImpl: async () => htmlResponse(`<div id="js_content">epoch</div><script>var publish_time = "${epoch}";</script>`),
   });
   assert.equal(epochResult.publishedAt, "2026-07-27");
 });
