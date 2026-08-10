@@ -1,4 +1,4 @@
-import { History, Languages, Palette, Settings, UserRound } from "lucide-react";
+import { Languages, ListTree, Palette, Settings, UserRound } from "lucide-react";
 import type { ReactNode } from "react";
 import { LanguagePicker } from "@/components/layout/language-picker";
 import { LoginControl } from "@/components/layout/login-control";
@@ -6,18 +6,21 @@ import { SkinPicker } from "@/components/layout/skin-picker";
 import { Card, CardContent } from "@/components/ui/card";
 import { usePageNavigation } from "@/hooks/use-page-navigation";
 import { useAppTranslation } from "@/lib/i18n/use-app-translation";
-import { WorkProfileReview } from "./work-profile-review";
+import { useUiStore } from "@/store/ui-store";
 
-export function MeView() {
+export function MeView({ embedded = false }: { embedded?: boolean }) {
   const { t } = useAppTranslation();
   const navigate = usePageNavigation();
+  const professionalTaskView = useUiStore((state) => state.workItemDetailPreference) === "expert";
+  const setWorkItemDetailPreference = useUiStore((state) => state.setWorkItemDetailPreference);
+  const setTaskArea = useUiStore((state) => state.setTaskArea);
 
   return (
-    <div className="mx-auto flex w-full max-w-2xl flex-col gap-3">
-      <div>
+    <div className={`mx-auto flex w-full max-w-2xl flex-col gap-3 ${embedded ? "pb-4" : ""}`}>
+      {!embedded ? <div>
         <h1 className="text-lg font-semibold">{t("me.title")}</h1>
         <p className="text-sm text-muted-foreground">{t("me.description")}</p>
-      </div>
+      </div> : null}
 
       <Card>
         <CardContent className="p-4">
@@ -29,8 +32,6 @@ export function MeView() {
         </CardContent>
       </Card>
 
-      <WorkProfileReview />
-
       <Card>
         <CardContent className="divide-y divide-border p-0">
           <PreferenceRow icon={Languages} label={t("me.language")}>
@@ -39,10 +40,33 @@ export function MeView() {
           <PreferenceRow icon={Palette} label={t("me.appearance")}>
             <SkinPicker alwaysVisible />
           </PreferenceRow>
+          <PreferenceRow
+            icon={ListTree}
+            label={t("me.professionalTaskView")}
+            description={t("me.professionalTaskViewHint")}
+          >
+            <button
+              type="button"
+              role="switch"
+              aria-checked={professionalTaskView}
+              aria-label={t("me.professionalTaskView")}
+              onClick={() => {
+                const next = professionalTaskView ? "summary" : "expert";
+                setWorkItemDetailPreference(next);
+                if (next === "summary") setTaskArea("overview");
+              }}
+              className={`relative h-6 w-11 rounded-full transition-colors ${professionalTaskView ? "bg-primary" : "bg-muted-foreground/35"}`}
+            >
+              <span
+                className={`absolute top-0.5 size-5 rounded-full bg-background shadow-sm transition-transform ${professionalTaskView ? "translate-x-5" : "translate-x-0.5"}`}
+                aria-hidden="true"
+              />
+            </button>
+          </PreferenceRow>
         </CardContent>
       </Card>
 
-      <Card>
+      {!embedded ? <Card>
         <CardContent className="divide-y divide-border p-0">
           <Destination
             icon={Settings}
@@ -50,14 +74,8 @@ export function MeView() {
             description={t("me.settingsHint")}
             onClick={() => navigate("settings")}
           />
-          <Destination
-            icon={History}
-            label={t("me.trace")}
-            description={t("me.traceHint")}
-            onClick={() => navigate("invocations")}
-          />
         </CardContent>
-      </Card>
+      </Card> : null}
     </div>
   );
 }
@@ -65,16 +83,21 @@ export function MeView() {
 function PreferenceRow({
   icon: Icon,
   label,
+  description,
   children,
 }: {
   icon: typeof UserRound;
   label: string;
+  description?: string;
   children: ReactNode;
 }) {
   return (
     <div className="flex min-h-14 flex-wrap items-center gap-x-3 gap-y-2 px-3 py-2">
       <Icon className="size-5 shrink-0 text-muted-foreground" aria-hidden="true" />
-      <span className="text-sm font-medium">{label}</span>
+      <span className="min-w-0 flex-1">
+        <span className="block text-sm font-medium">{label}</span>
+        {description ? <span className="block text-xs text-muted-foreground">{description}</span> : null}
+      </span>
       <div className="w-full pl-8 sm:ml-auto sm:w-auto sm:pl-0">{children}</div>
     </div>
   );

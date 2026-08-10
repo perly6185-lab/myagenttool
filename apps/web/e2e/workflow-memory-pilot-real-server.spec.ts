@@ -530,7 +530,7 @@ test("auto-prepares authorized pilot cases in the governed mobile workbench", as
     }));
   });
   await page.goto(`/?section=workflowMemory&api=${encodeURIComponent(apiBase)}`);
-  await expect(page.getByRole("heading", { name: "交付记忆" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "交付记忆", exact: true }).last()).toBeVisible();
   await page.getByRole("button", { name: "打开试运行工作台" }).click();
   const workbench = page.getByRole("dialog", { name: "正式试运行" });
   await expect(workbench).toBeVisible();

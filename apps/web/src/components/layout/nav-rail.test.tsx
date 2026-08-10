@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { cleanup, render, screen } from "@testing-library/react";
 import { createElement, type ReactElement } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { NavRail } from "@/components/layout/nav-rail";
@@ -7,7 +7,10 @@ import { DEFAULT_COLLAPSED_NAV_GROUPS, useUiStore } from "@/store/ui-store";
 import { i18n } from "@/lib/i18n";
 
 const stateMock = vi.hoisted(() => ({ useConsoleState: vi.fn() }));
-vi.mock("@/data/use-console-state", () => ({ useConsoleState: stateMock.useConsoleState }));
+vi.mock("@/data/use-console-state", () => ({
+  useConsoleState: stateMock.useConsoleState,
+  useRefreshConsoleState: () => vi.fn(),
+}));
 
 function mockEmptyState() {
   stateMock.useConsoleState.mockReturnValue({
@@ -31,44 +34,40 @@ afterEach(async () => {
 });
 
 describe("NavRail collapsible groups (#928)", () => {
-  it("shows local tasks and external work as separate ordinary destinations", () => {
+  it("keeps the ordinary navigation to four clear destinations", () => {
     mockEmptyState();
     useUiStore.setState({ section: "dashboard", collapsedNavGroups: [...DEFAULT_COLLAPSED_NAV_GROUPS] });
     renderNav();
-    expect(screen.getByText("Home")).toBeTruthy();
-    expect(screen.getByText("Tasks")).toBeTruthy();
-    expect(screen.getByText("External work")).toBeTruthy();
+    expect(screen.getByText("My home")).toBeTruthy();
+    expect(screen.getByText("My tasks")).toBeTruthy();
     expect(screen.getByText("Projects")).toBeTruthy();
-    expect(screen.getByText("Queue")).toBeTruthy();
-    expect(screen.getByText("Needs attention")).toBeTruthy();
+    expect(screen.queryByText("Needs me")).toBeNull();
+    expect(screen.getByText("My settings")).toBeTruthy();
+    expect(screen.queryByText("External work")).toBeNull();
+    expect(screen.queryByText("Queue")).toBeNull();
+    expect(screen.queryByText("Needs attention")).toBeNull();
     expect(screen.queryByText("Documents")).toBeNull(); // contextual — deep-link only
     expect(screen.queryByText("Agents")).toBeNull(); // Settings — collapsed
     expect(screen.queryByText("Economics")).toBeNull();
   });
 
-  it("force-opens the collapsed group that holds the active section (deep-link safety)", () => {
+  it("keeps ordinary destinations visible on a professional deep link", () => {
     mockEmptyState();
     useUiStore.setState({ section: "economics", collapsedNavGroups: [...DEFAULT_COLLAPSED_NAV_GROUPS] });
     renderNav();
-    // Settings is collapsed by default, but the active section lives there → shown anyway.
-    expect(screen.getByText("Economics")).toBeTruthy();
+    expect(screen.getByText("My home")).toBeTruthy();
+    expect(screen.getByText("My settings")).toBeTruthy();
+    expect(screen.queryByText("Economics")).toBeNull();
   });
 
-  it("toggles a collapsed group open from its header", () => {
+  it("does not expose Settings and Trace as global groups", () => {
     mockEmptyState();
     useUiStore.setState({ section: "dashboard", collapsedNavGroups: [...DEFAULT_COLLAPSED_NAV_GROUPS] });
     renderNav();
     expect(screen.queryByText("Agents")).toBeNull();
-    fireEvent.click(screen.getByText("Settings"));
-    expect(screen.getByText("Agents")).toBeTruthy();
-  });
-
-  it("opens Settings home directly while the Settings group remains collapsed", () => {
-    mockEmptyState();
-    useUiStore.setState({ section: "dashboard", collapsedNavGroups: [...DEFAULT_COLLAPSED_NAV_GROUPS] });
-    renderNav();
-    fireEvent.click(screen.getByRole("button", { name: "Open Settings" }));
-    expect(useUiStore.getState().section).toBe("settings");
+    expect(screen.queryByText("Settings")).toBeNull();
+    expect(screen.queryByText("Trace")).toBeNull();
+    expect(screen.queryByText("Agents")).toBeNull();
   });
 
   it("renders stable navigation keys in Simplified Chinese", async () => {
@@ -76,9 +75,11 @@ describe("NavRail collapsible groups (#928)", () => {
     useUiStore.setState({ section: "dashboard", locale: "zh-CN", collapsedNavGroups: [...DEFAULT_COLLAPSED_NAV_GROUPS] });
     await i18n.changeLanguage("zh-CN");
     renderNav();
-    expect(screen.getByText("首页")).toBeTruthy();
-    expect(screen.getByText("任务")).toBeTruthy();
-    expect(screen.getByText("外部协作")).toBeTruthy();
+    expect(screen.getByText("我的首页")).toBeTruthy();
+    expect(screen.getByText("我的任务")).toBeTruthy();
+    expect(screen.getByText("我的设置")).toBeTruthy();
+    expect(screen.queryByText("外部协作")).toBeNull();
+    expect(screen.queryByText("待我处理")).toBeNull();
     expect(screen.queryByText("文档")).toBeNull();
     expect(screen.getByRole("navigation", { name: "工作台栏目" })).toBeTruthy();
   });

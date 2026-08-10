@@ -1,13 +1,27 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { Search, CornerDownLeft } from "lucide-react";
-import { PAGE_REGISTRY, SURFACE_GROUPS, pageNavigationLabelKey } from "@/app/sections";
+import { ENTRY_SECTIONS, SURFACE_GROUPS, pageNavigationLabelKey, pageRegistration } from "@/app/sections";
 import { cn } from "@/lib/cn";
 import { useAppTranslation } from "@/lib/i18n/use-app-translation";
 import { usePageNavigation } from "@/hooks/use-page-navigation";
+import { MY_SETTINGS_SECTION_KEYS } from "@/features/settings/my-settings-model";
+import { type SectionKey, useUiStore } from "@/store/ui-store";
+import { canDiscoverProfessionalPage, type SessionRole } from "@/app/page-access";
+import { useSessionUser } from "@/hooks/use-session-user";
 
-const COMMAND_PAGES = SURFACE_GROUPS.flatMap((surface) =>
-  PAGE_REGISTRY.filter((page) => page.surface === surface.key));
+const MY_SETTINGS_PAGES = MY_SETTINGS_SECTION_KEYS.map((key) => pageRegistration(key));
+
+function commandPages(section: SectionKey, query: string, role?: SessionRole) {
+  const settingsHome = pageRegistration("settings");
+  const professionalContext = pageRegistration(section).surface !== "entry";
+  // Keep the empty palette ordinary and compact. Once a user deliberately
+  // searches, allow a direct role-filtered jump into My settings.
+  const pages = professionalContext || query.trim()
+    ? [...ENTRY_SECTIONS, settingsHome, ...MY_SETTINGS_PAGES.filter((page) => canDiscoverProfessionalPage(page.key, role))]
+    : [...ENTRY_SECTIONS, settingsHome];
+  return [...new Map(pages.map((page) => [page.key, page])).values()];
+}
 
 // ⌘K / Ctrl-K command palette: jump to any of the console's sections from
 // anywhere. Filters by label / blurb / group; arrow keys + Enter to navigate,
@@ -17,6 +31,8 @@ export function CommandPalette() {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
   const [active, setActive] = useState(0);
+  const section = useUiStore((state) => state.section);
+  const sessionUser = useSessionUser();
   const navigate = usePageNavigation();
   const inputRef = useRef<HTMLInputElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
@@ -24,13 +40,14 @@ export function CommandPalette() {
   const pointerRef = useRef({ x: -1, y: -1 });
 
   const results = useMemo(() => {
+    const availablePages = commandPages(section, query, sessionUser?.role);
     const q = query.trim().toLowerCase();
-    if (!q) return COMMAND_PAGES;
-    return COMMAND_PAGES.filter((page) =>
+    if (!q) return availablePages;
+    return availablePages.filter((page) =>
       t(pageNavigationLabelKey(page)).toLowerCase().includes(q)
       || t(page.blurbKey).toLowerCase().includes(q)
       || t(`shell.navigation.${page.surface}`).toLowerCase().includes(q));
-  }, [i18n.resolvedLanguage, query, t]);
+  }, [i18n.resolvedLanguage, query, section, sessionUser?.role, t]);
 
   // Mirror results/active into refs so the window key handler can read the
   // latest without re-subscribing on every keystroke.

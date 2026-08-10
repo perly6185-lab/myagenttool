@@ -1,13 +1,19 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { CommandPalette } from "./command-palette";
 import { useUiStore } from "@/store/ui-store";
-import { SECTIONS } from "@/app/sections";
 
 // jsdom doesn't implement scrollIntoView; the palette calls it on the active row.
 Element.prototype.scrollIntoView = () => {};
 
-afterEach(cleanup);
+const sessionMocks = vi.hoisted(() => ({ role: "owner" as "owner" | "admin" | "operator" | "viewer" }));
+vi.mock("@/hooks/use-session-user", () => ({ useSessionUser: () => ({ id: "usr_test", role: sessionMocks.role }) }));
+
+afterEach(() => {
+  cleanup();
+  sessionMocks.role = "owner";
+  useUiStore.setState({ section: "dashboard", surfaceReturnSection: null });
+});
 
 // The listeners live on window; dispatch there directly so the tests exercise
 // the real global key handling rather than a component-local binding.
@@ -48,13 +54,33 @@ describe("CommandPalette", () => {
   });
 
   it("navigates with Arrow + Enter to the highlighted section and closes", () => {
-    useUiStore.getState().setSection(SECTIONS[0].key); // known start = first section
+    useUiStore.getState().setSection("dashboard");
     render(<CommandPalette />);
     open();
     press({ key: "ArrowDown" }); // highlight moves to the second result
     press({ key: "Enter" });
-    expect(useUiStore.getState().section).toBe(SECTIONS[1].key);
+    expect(useUiStore.getState().section).toBe("task");
     expect(screen.queryByRole("dialog")).toBeNull();
+  });
+
+  it("keeps the empty palette concise but reveals professional pages on deliberate search", () => {
+    useUiStore.setState({ section: "dashboard" });
+    render(<CommandPalette />);
+    open();
+    expect(screen.queryByRole("option", { name: /Applications/ })).toBeNull();
+    fireEvent.change(screen.getByRole("combobox"), { target: { value: "Applications" } });
+    expect(screen.getByRole("option", { name: /Applications/ })).toBeTruthy();
+  });
+
+  it("filters management commands for a verified viewer", () => {
+    sessionMocks.role = "viewer";
+    useUiStore.setState({ section: "settings" });
+    render(<CommandPalette />);
+    open();
+    fireEvent.change(screen.getByRole("combobox"), { target: { value: "Agents" } });
+    expect(screen.queryAllByRole("option")).toHaveLength(0);
+    fireEvent.change(screen.getByRole("combobox"), { target: { value: "Invocations" } });
+    expect(screen.getByRole("option", { name: /Invocations/ })).toBeTruthy();
   });
 
   it("resets the highlight to the top match when the query changes", () => {
@@ -62,10 +88,10 @@ describe("CommandPalette", () => {
     open();
     press({ key: "ArrowDown" });
     press({ key: "ArrowDown" }); // active is now index 2
-    fireEvent.change(screen.getByRole("combobox"), { target: { value: "agent" } });
+    fireEvent.change(screen.getByRole("combobox"), { target: { value: "task" } });
     // A fresh query must re-highlight its first result, not leave it on a stale row.
     const options = screen.getAllByRole("option");
-    expect(options.length).toBeGreaterThan(1); // "agent" matches several sections
+    expect(options.length).toBeGreaterThan(1); // label and supporting copy match several destinations
     expect(options[0].getAttribute("aria-selected")).toBe("true");
     expect(options[1].getAttribute("aria-selected")).toBe("false");
   });

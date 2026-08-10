@@ -3,6 +3,7 @@ import type { ConsoleSnapshot, InvocationSnapshot, PendingDecision, WorkItem } f
 export interface NotificationItem {
   id: string;
   title: string;
+  target: "work_item" | "invocation" | "decision";
 }
 
 export interface NotificationCenterModel {
@@ -19,11 +20,11 @@ function invocationTitle(item: InvocationSnapshot): string {
 }
 
 function decisionItem(item: PendingDecision): NotificationItem {
-  return { id: item.id, title: item.title };
+  return { id: item.id, title: item.title, target: "decision" };
 }
 
 function workItem(item: WorkItem): NotificationItem {
-  return { id: item.id, title: item.title };
+  return { id: item.id, title: item.title, target: "work_item" };
 }
 
 /**
@@ -43,10 +44,10 @@ export function deriveNotificationCenterModel(
 
   const failureItems = board
     ? board.failed.items.map(workItem)
-    : failedInvocations.map((item) => ({ id: item.id, title: invocationTitle(item) }));
+    : failedInvocations.map((item) => ({ id: item.id, title: invocationTitle(item), target: "invocation" as const }));
   const completionItems = board
     ? board.done.items.map(workItem)
-    : completedInvocations.map((item) => ({ id: item.id, title: invocationTitle(item) }));
+    : completedInvocations.map((item) => ({ id: item.id, title: invocationTitle(item), target: "invocation" as const }));
   const offline = options.isError || state?.device?.status === "offline";
 
   return {

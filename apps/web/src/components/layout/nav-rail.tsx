@@ -3,7 +3,6 @@ import { useQueries } from "@tanstack/react-query";
 import { ChevronRight, GitBranch, Hexagon, Plus, Settings } from "lucide-react";
 import {
   ENTRY_SECTIONS,
-  PAGE_REGISTRY,
   SURFACE_GROUPS,
   pageNavigationLabelKey,
   pageRegistration,
@@ -20,19 +19,20 @@ import { WorktreeLinkPopover } from "@/features/projects/worktree-link-popover";
 import type { ProjectSnapshot } from "@/lib/console-state";
 import { useAppTranslation } from "@/lib/i18n/use-app-translation";
 import { usePageNavigation } from "@/hooks/use-page-navigation";
+import { useCurrentProjectSelection } from "@/hooks/use-current-project-selection";
 
 export function NavRail() {
   const { t } = useAppTranslation();
   const section = useUiStore((s) => s.section);
+  const settingsDialogOpen = useUiStore((s) => s.settingsDialogOpen)
+    || section === "me"
+    || section === "settings"
+    || pageRegistration(section).surface !== "entry";
   const navigate = usePageNavigation();
-  const collapsedNavGroups = useUiStore((s) => s.collapsedNavGroups);
-  const toggleNavGroup = useUiStore((s) => s.toggleNavGroup);
   const { data: state } = useConsoleState();
   const pendingCount = state?.pendingDecisions?.length ?? 0;
   const attentionCount = state?.evidenceLedger?.filter((r) => r.attention).length ?? 0;
   const [showRegister, setShowRegister] = useState(false);
-  // The active section's group is always shown, so a deep-link never lands in a collapsed group.
-  const activeGroup = pageRegistration(section).surface;
 
   return (
     <nav
@@ -50,39 +50,14 @@ export function NavRail() {
       </div>
 
       <ul className="flex flex-1 flex-col gap-0.5 overflow-y-auto px-3 py-2">
-        {SURFACE_GROUPS.map((grp, gi) => {
-          // Collapsed groups hide their items, but the group holding the active
-          // section is force-open so navigation is never stranded behind a caret.
-          const groupOpen = grp.key === activeGroup || !collapsedNavGroups.includes(grp.key);
+        {SURFACE_GROUPS.filter((grp) => grp.key === "entry").map((grp) => {
           return (
-          // Space groups apart from the second onward. (A `first:` variant on the
-          // header can't do this — each header is the first child of its own <li>,
-          // so `:first-child` matched every header and the spacing never rendered.)
-          <li key={grp.key} className={cn(gi > 0 && "mt-2")}>
-            <div className="flex items-center">
-              <button
-                type="button"
-                onClick={() => toggleNavGroup(grp.key)}
-                aria-expanded={groupOpen}
-                className="flex flex-1 items-center gap-1 rounded px-2 pb-1 pt-1 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground/80 hover:text-sidebar-foreground"
-              >
-                <ChevronRight className={cn("size-3 shrink-0 transition-transform", groupOpen && "rotate-90")} />
-                {t(grp.labelKey)}
-              </button>
-              {grp.key === "settings" ? (
-                <button type="button" onClick={() => navigate("settings")} aria-label={t("shell.navigation.openSettings")} title={t("shell.navigation.openSettings")} className="grid size-6 place-items-center rounded text-muted-foreground hover:bg-sidebar-accent hover:text-sidebar-foreground">
-                  <Settings className="size-3.5" />
-                </button>
-              ) : null}
-            </div>
-            {groupOpen ? (
+          <li key={grp.key}>
+            <p className="px-2 pb-1 pt-1 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground/80">{t(grp.labelKey)}</p>
             <ul className="flex flex-col gap-0.5">
-              {(grp.key === "entry"
-                ? ENTRY_SECTIONS
-                : PAGE_REGISTRY.filter((item) => item.surface === grp.key && item.visibility !== "contextual")
-              ).map((item) => {
+              {ENTRY_SECTIONS.map((item) => {
           const Icon = item.icon;
-          const active = item.key === section;
+          const active = item.key === "me" ? settingsDialogOpen : item.key === section && !settingsDialogOpen;
           const isProjects = item.key === "projects";
           return (
             <li key={item.key}>
@@ -143,7 +118,6 @@ export function NavRail() {
           );
               })}
             </ul>
-            ) : null}
           </li>
           );
         })}
@@ -170,10 +144,9 @@ export function NavRail() {
 function ProjectTree() {
   const { t } = useAppTranslation();
   const { data: state } = useConsoleState();
-  const setSection = useUiStore((s) => s.setSection);
-  const selectedProjectId = useUiStore((s) => s.selectedProjectId);
+  const projectSelection = useCurrentProjectSelection();
+  const navigate = usePageNavigation();
   const selectedWorktreeId = useUiStore((s) => s.selectedWorktreeId);
-  const setSelectedProjectId = useUiStore((s) => s.setSelectedProjectId);
   const setSelectedWorktreeId = useUiStore((s) => s.setSelectedWorktreeId);
 
   const projects = (state?.projects ?? []).filter((p) => p.status !== "archived");
@@ -200,19 +173,20 @@ function ProjectTree() {
   if (projects.length === 0) return null;
 
   function openProject(id: string) {
-    setSelectedProjectId(id);
-    setSelectedWorktreeId(null);
-    setSection("projects");
+    navigate("projects");
+    void projectSelection.selectProject(id, state?.currentProjectId);
   }
   function openWorktree(projectId: string, worktreeId: string) {
-    setSelectedProjectId(projectId);
-    setSelectedWorktreeId(worktreeId);
-    setSection("projects");
+    navigate("projects");
+    void projectSelection.selectProject(projectId, state?.currentProjectId).then((succeeded) => {
+      if (succeeded) setSelectedWorktreeId(worktreeId);
+    });
   }
 
   return (
     <>
     <ul className="mb-1 ml-3 mt-0.5 space-y-0.5 border-l border-sidebar-border/70 pl-2">
+      {projectSelection.error ? <li role="alert" className="px-1 py-1 text-xs text-destructive">{t("shell.projectSwitchFailed")}</li> : null}
       {projects.map((project) => {
         const projWorktrees = worktrees.filter((w) => w.projectId === project.id && !w.ephemeral);
         const isRepo = readyProjectIds.has(project.id);
@@ -220,8 +194,8 @@ function ProjectTree() {
         // Repo-backed projects always have a branch node to reveal; others need
         // an explicit worktree before the row is expandable.
         const hasChildren = isRepo || projWorktrees.length > 0;
-        const isOpen = expanded[project.id] ?? true;
-        const projActive = project.id === selectedProjectId && !selectedWorktreeId;
+        const isOpen = expanded[project.id] ?? false;
+        const projActive = project.id === state?.currentProjectId && !selectedWorktreeId;
         return (
           <li key={project.id}>
             <div

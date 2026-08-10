@@ -102,7 +102,7 @@ export type PageSurface = "entry" | "settings" | "trace";
 export type PageOwnerContext = "global" | "task" | "project";
 export type PageVisibility = "primary" | "secondary" | "contextual";
 export type PageAuthority = "ordinary" | "manage" | "audit";
-export type NavigationLabelKey = `shell.navigation.${"home" | "tasks" | "projects" | "queue" | "attention"}`;
+export type NavigationLabelKey = `shell.navigation.${"home" | "tasks" | "projects" | "todo" | "queue" | "attention"}`;
 export type SurfaceLabelKey = `shell.navigation.${PageSurface}`;
 export type SurfaceDescriptionKey = `shell.navigation.${PageSurface}Hint`;
 
@@ -120,9 +120,9 @@ export interface PageRegistration extends SectionDef {
   legacyAliases: readonly string[];
 }
 
-const ENTRY_PRIMARY = new Set<SectionKey>(["dashboard", "task", "externalWork", "projects", "autoRuns", "approvals"]);
+const ENTRY_PRIMARY = new Set<SectionKey>(["dashboard", "task", "projects", "me"]);
 const ENTRY_CONTEXTUAL = new Set<SectionKey>([
-  "me", "workBoard", "planning", "workspace", "documents", "workflowMemory", "canvas",
+  "workBoard", "externalWork", "autoRuns", "approvals", "planning", "workspace", "documents", "workflowMemory", "canvas",
 ]);
 const TRACE_SECTIONS = new Set<SectionKey>([
   "compare", "evidence", "review", "evalTrend", "invocations", "audit",
@@ -172,7 +172,7 @@ export const PAGE_REGISTRY: PageRegistration[] = SECTIONS.map((section) => {
   };
 });
 
-const ENTRY_ORDER: SectionKey[] = ["dashboard", "task", "externalWork", "projects", "autoRuns", "approvals"];
+const ENTRY_ORDER: SectionKey[] = ["dashboard", "task", "projects", "me"];
 export const ENTRY_SECTIONS = ENTRY_ORDER.map((key) => pageRegistration(key));
 
 export const SURFACE_GROUPS: Array<{
