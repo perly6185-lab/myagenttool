@@ -3,7 +3,7 @@ import { Loader2, MessageSquareReply } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { api, useAsyncAction } from "@/data/use-console-actions";
-import type { AutoRunRecord } from "./auto-runs-view";
+import type { AutoRunRecord } from "./auto-run-model";
 import { useAppTranslation } from "@/lib/i18n/use-app-translation";
 
 // E3 (decision-path expansion): answer a clarify run's questions inline. The
