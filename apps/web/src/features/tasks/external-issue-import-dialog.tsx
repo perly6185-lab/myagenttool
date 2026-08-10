@@ -11,6 +11,24 @@ import { useAppTranslation } from "@/lib/i18n/use-app-translation";
 import type { LocalWorkItem } from "./task-view-types";
 
 type ProviderId = "github" | "gitlab" | "gitea";
+const LAST_EXTERNAL_PROVIDER_KEY = "myagenttool:last-external-issue-provider";
+
+function rememberedProvider(): ProviderId {
+  try {
+    const value = localStorage.getItem(LAST_EXTERNAL_PROVIDER_KEY);
+    return value === "gitlab" || value === "gitea" ? value : "github";
+  } catch {
+    return "github";
+  }
+}
+
+function rememberProvider(provider: ProviderId) {
+  try {
+    localStorage.setItem(LAST_EXTERNAL_PROVIDER_KEY, provider);
+  } catch {
+    // The selection still works for this dialog when storage is unavailable.
+  }
+}
 
 type ProviderReadiness = {
   id: ProviderId;
@@ -183,7 +201,7 @@ export function ExternalIssueImportDialog({
     const preferredProject = initialProjectId && projects.some((project) => project.id === initialProjectId)
       ? initialProjectId
       : projects[0]?.id ?? "";
-    setProvider("github");
+    setProvider(rememberedProvider());
     setProjectId(preferredProject);
     setRepository("");
     setIssueNumber("");
@@ -361,7 +379,9 @@ export function ExternalIssueImportDialog({
         <div className="grid gap-3 sm:grid-cols-2">
           <Field label={copy.provider}>
             <Select value={provider} onChange={(event) => {
-              setProvider(event.target.value as ProviderId);
+              const nextProvider = event.target.value as ProviderId;
+              setProvider(nextProvider);
+              rememberProvider(nextProvider);
               setSubmitError(null);
               setBrowseIssues([]);
               setBrowseLoaded(false);

@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { AlertTriangle, CalendarDays, CheckCircle2, ChevronDown, LoaderCircle, Plus, RefreshCw, Sparkles } from "lucide-react";
+import { AlertTriangle, CalendarDays, CheckCircle2, ChevronDown, FolderKanban, LoaderCircle, Plus, RefreshCw, Sparkles } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -19,6 +19,15 @@ import { readinessSetupSection, type AutoRunReadiness } from "@/features/tasks/a
 
 type CreateMode = "task" | "ai";
 
+export type HomeTaskReviewFacts = {
+  computer: string;
+  agent: string;
+  risk: string;
+  cost: string;
+  data: string;
+  cancellation: string;
+};
+
 function localDateKey(offsetDays = 0) {
   const value = new Date();
   value.setDate(value.getDate() + offsetDays);
@@ -36,6 +45,9 @@ function clientKey() {
 export function HomeTaskComposer({
   projectId,
   projectName,
+  projects = [],
+  onProjectChange,
+  projectError,
   unavailable = false,
   onCreated,
   onOpenTask,
@@ -45,9 +57,15 @@ export function HomeTaskComposer({
   onOpenChange,
   showTrigger = true,
   inline = false,
+  draftGoal,
+  onDraftGoalApplied,
+  reviewFacts,
 }: {
   projectId: string | null;
   projectName?: string | null;
+  projects?: Array<{ id: string; name: string }>;
+  onProjectChange?: (projectId: string) => Promise<unknown> | unknown;
+  projectError?: string | null;
   worktreeId?: string | null;
   terminalId?: string | null;
   unavailable?: boolean;
@@ -59,6 +77,9 @@ export function HomeTaskComposer({
   onOpenChange?: (open: boolean) => void;
   showTrigger?: boolean;
   inline?: boolean;
+  draftGoal?: string | null;
+  onDraftGoalApplied?: () => void;
+  reviewFacts?: HomeTaskReviewFacts | null;
 }) {
   const { i18n } = useAppTranslation();
   const zh = i18n.language.startsWith("zh");
@@ -66,12 +87,22 @@ export function HomeTaskComposer({
     title: "创建一个任务",
     description: "描述你希望最终完成的事情，系统会把它加入任务看板并持续跟踪。",
     placeholder: "例如：整理本周客户反馈，并输出按优先级排序的改进建议",
-    due: "希望完成",
+    due: "希望完成（可选）",
+    project: "当前项目",
     criteria: "完成标准（可选）",
     criteriaHint: "每行一项，例如：覆盖全部反馈\n给出明确优先级\n输出可分享的文档",
     sop: "验收 SOP（交给 AI 前必填）",
     sopHint: "每行一步，例如：按真实使用流程检查结果\n核对自动验证证据\n确认风险后再审核通过",
-    contractReview: "已生成执行方案草案。请先确认或修改完成标准和验收 SOP，再次点击“创建并交给 AI”才会启动。",
+    contractReview: "执行方案草案已生成。确认完成标准和验收步骤后，再明确启动 AI。",
+    contractFailed: "暂时无法生成可靠的执行方案。任务尚未创建，请稍后重试。",
+    reviewTitle: "AI 启动前请确认",
+    reviewHint: "下列方案和运行边界确认后才会加入自动队列。",
+    reviewComputer: "运行电脑",
+    reviewAgent: "任务助手",
+    reviewRisk: "可能影响",
+    reviewCost: "费用",
+    reviewData: "数据处理",
+    reviewCancellation: "如何停止",
     more: "补充完成标准或参考资料",
     attach: "添加参考文件",
     attachDrop: "拖放文件到这里，或点击选择文件",
@@ -81,7 +112,9 @@ export function HomeTaskComposer({
     attachmentRejected: "部分文件未能添加。单个文件不能超过 5MB，最多添加 6 个非空文件。",
     attachmentUploadFailed: "参考文件上传失败，任务尚未创建。请重试或先移除文件。",
     create: "仅创建任务",
-    createAi: "创建并交给 AI",
+    prepareAi: "生成执行方案",
+    confirmAi: "确认并交给 AI",
+    preparing: "正在生成方案…",
     creating: "正在创建…",
     created: "任务已创建并加入看板。",
     aiStarted: "任务已创建，AI 会自动处理；需要你时会提醒。",
@@ -94,6 +127,7 @@ export function HomeTaskComposer({
     preflightRetry: "重新检查",
     preflightSetup: "去设置并修复",
     projectChanged: "项目已切换，原项目的参考文件已清除。",
+    projectSwitchFailed: "项目切换失败，仍保留原项目。",
     openProjects: "打开项目设置",
     view: "查看任务",
     noProject: "请先选择或创建一个项目。",
@@ -104,12 +138,22 @@ export function HomeTaskComposer({
     title: "Create a task",
     description: "Describe the outcome you want. It will be added to your task boards and tracked through completion.",
     placeholder: "For example: Summarize this week's customer feedback and rank the recommended improvements",
-    due: "Complete by",
+    due: "Complete by (optional)",
+    project: "Current project",
     criteria: "Definition of done (optional)",
     criteriaHint: "One item per line, for example:\nCover every feedback item\nAssign a clear priority\nProduce a shareable document",
     sop: "Verification SOP (required before AI starts)",
     sopHint: "One step per line, for example:\nExercise the real user flow\nReview automated evidence\nConfirm risks before approval",
-    contractReview: "An execution-plan draft is ready. Review or edit the completion criteria and verification SOP, then click “Create and let AI work” again to start.",
+    contractReview: "The execution-plan draft is ready. Review its completion criteria and verification steps, then explicitly start AI.",
+    contractFailed: "A reliable execution plan could not be prepared. No task was created; try again shortly.",
+    reviewTitle: "Confirm before AI starts",
+    reviewHint: "The task joins the automatic queue only after you confirm this plan and its run boundaries.",
+    reviewComputer: "Computer",
+    reviewAgent: "Task assistant",
+    reviewRisk: "Possible impact",
+    reviewCost: "Cost",
+    reviewData: "Data handling",
+    reviewCancellation: "How to stop",
     more: "Add completion criteria or references",
     attach: "Add reference files",
     attachDrop: "Drop files here or choose files",
@@ -119,7 +163,9 @@ export function HomeTaskComposer({
     attachmentRejected: "Some files could not be added. Each file must be non-empty and under 5MB; up to 6 files are allowed.",
     attachmentUploadFailed: "Reference files could not be uploaded, so the task was not created. Retry or remove the files.",
     create: "Create task only",
-    createAi: "Create and let AI work",
+    prepareAi: "Generate execution plan",
+    confirmAi: "Confirm and let AI work",
+    preparing: "Generating plan…",
     creating: "Creating…",
     created: "Task created and added to your boards.",
     aiStarted: "Task created. AI will work automatically and notify you only when needed.",
@@ -132,6 +178,7 @@ export function HomeTaskComposer({
     preflightRetry: "Recheck",
     preflightSetup: "Open setup and fix",
     projectChanged: "The project changed, so reference files from the previous project were cleared.",
+    projectSwitchFailed: "The project could not be switched, so the previous project remains active.",
     openProjects: "Open project setup",
     view: "View task",
     noProject: "Choose or create a project first.",
@@ -140,16 +187,18 @@ export function HomeTaskComposer({
     tomorrow: "Tomorrow",
   };
   const [goal, setGoal] = useState("");
-  const [dueDate, setDueDate] = useState(() => localDateKey(1));
+  const [dueDate, setDueDate] = useState("");
   const [criteria, setCriteria] = useState("");
   const [verificationSop, setVerificationSop] = useState("");
   const [detailsOpen, setDetailsOpen] = useState(false);
   const [attachments, setAttachments] = useState<TaskMaterialSelection[]>([]);
   const [attachmentFeedback, setAttachmentFeedback] = useState<string | null>(null);
   const [pendingMode, setPendingMode] = useState<CreateMode | null>(null);
+  const [projectPending, setProjectPending] = useState(false);
   const [feedback, setFeedback] = useState<{ tone: "success" | "warning" | "danger"; text: string; workItemId?: string } | null>(null);
   const [readiness, setReadiness] = useState<AutoRunReadiness | null>(null);
   const [readinessLoading, setReadinessLoading] = useState(false);
+  const [planReviewed, setPlanReviewed] = useState(false);
   const [internalOpen, setInternalOpen] = useState(false);
   const open = openProp ?? internalOpen;
   const setOpen = (next: boolean) => {
@@ -163,7 +212,7 @@ export function HomeTaskComposer({
   const projectIdRef = useRef(projectId);
   const title = useMemo(() => goal.trim().split(/\r?\n/)[0]?.slice(0, 200) ?? "", [goal]);
   const filesReady = attachments.every((attachment) => attachment.status === "ready");
-  const canCreate = Boolean(projectId && title && dueDate && !pendingMode && filesReady && !unavailable);
+  const canCreate = Boolean(projectId && title && !pendingMode && filesReady && !unavailable);
   const readinessBlocking = readiness?.checks.filter((check) => check.status === "blocked" && check.key !== "capacity") ?? [];
   const readinessWarnings = readiness?.checks.filter((check) => check.status === "warn" || (check.status === "blocked" && check.key === "capacity")) ?? [];
   const capacityBlocked = readiness?.checks.some((check) => check.status === "blocked" && check.key === "capacity") ?? false;
@@ -207,6 +256,7 @@ export function HomeTaskComposer({
       materialDraftPromise.current = null;
       idempotencyKey.current = null;
       setFeedback(null);
+      setPlanReviewed(false);
       setAttachmentFeedback(hadAttachments ? copy.projectChanged : null);
     }
     setReadiness(null);
@@ -214,6 +264,15 @@ export function HomeTaskComposer({
     // The project boundary deliberately invalidates draft state exactly once.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [projectId, unavailable]);
+
+  useEffect(() => {
+    const next = draftGoal?.trim();
+    if (!next) return;
+    setGoal(next);
+    setPlanReviewed(false);
+    setFeedback(null);
+    onDraftGoalApplied?.();
+  }, [draftGoal, onDraftGoalApplied]);
 
   function rememberDraft(next: TaskMaterialDraft) {
     if (!materialDraft.current || next.revision >= materialDraft.current.revision) materialDraft.current = next;
@@ -261,6 +320,8 @@ export function HomeTaskComposer({
     setAttachmentFeedback(result.rejected ? copy.attachmentRejected : null);
     if (result.selected.length) {
       idempotencyKey.current = null;
+      setPlanReviewed(false);
+      setFeedback(null);
       setAttachments((current) => [...current, ...result.selected].slice(0, MAX_TASK_MATERIALS));
       await Promise.all(result.selected.map((item) => uploadAttachment(item)));
     }
@@ -279,12 +340,14 @@ export function HomeTaskComposer({
       }
     }
     idempotencyKey.current = null;
+    setPlanReviewed(false);
+    setFeedback(null);
     setAttachments((current) => current.filter((candidate) => candidate.id !== item.id));
     setAttachmentFeedback(null);
   }
 
   async function create(mode: CreateMode) {
-    if (!projectId || !title || !dueDate || pendingMode) return;
+    if (!projectId || !title || pendingMode) return;
     setPendingMode(mode);
     setFeedback(null);
     const key = idempotencyKey.current ?? clientKey();
@@ -302,6 +365,22 @@ export function HomeTaskComposer({
           setFeedback({ tone: "warning", text: copy.preflightBlocked });
           return;
         }
+        if (!planReviewed) {
+          const response = await api.suggestWorkItemDraft({ projectId, title, body: goal.trim() }) as {
+            draft?: { acceptanceCriteria?: string[]; verificationSop?: string[] };
+          };
+          const suggestedCriteria = response.draft?.acceptanceCriteria?.filter(Boolean) ?? [];
+          const suggestedSop = response.draft?.verificationSop?.filter(Boolean) ?? [];
+          const nextCriteria = criteria.trim() || suggestedCriteria.join("\n");
+          const nextSop = verificationSop.trim() || suggestedSop.join("\n");
+          if (!nextCriteria || !nextSop) throw new Error("execution_plan_incomplete");
+          setCriteria(nextCriteria);
+          setVerificationSop(nextSop);
+          setDetailsOpen(true);
+          setPlanReviewed(true);
+          setFeedback({ tone: "warning", text: copy.contractReview });
+          return;
+        }
       }
       const draft = materialDraft.current;
       const response = await api.createWorkItem({
@@ -317,7 +396,7 @@ export function HomeTaskComposer({
         requesterRelation: "self",
         intakeChannel: "manual",
         waitingOn: mode === "ai" ? "ai" : "none",
-        dueDate,
+        dueDate: dueDate || null,
         plannedDate: mode === "ai" ? localDateKey() : null,
         ...(attachments.length && draft ? { materialDraftId: draft.id, materialDraftRevision: draft.revision } : {}),
         idempotencyKey: key,
@@ -332,6 +411,7 @@ export function HomeTaskComposer({
       setCriteria("");
       setVerificationSop("");
       setDetailsOpen(false);
+      setPlanReviewed(false);
       setAttachments([]);
       materialDraft.current = null;
       setAttachmentFeedback(null);
@@ -339,7 +419,7 @@ export function HomeTaskComposer({
       onCreated();
       window.dispatchEvent(new CustomEvent("myagenttool:state-change", { detail: { source: "home-task-create", workItemId: created.id } }));
     } catch {
-      setFeedback({ tone: "danger", text: copy.failed });
+      setFeedback({ tone: "danger", text: mode === "ai" && !planReviewed ? copy.contractFailed : copy.failed });
     } finally {
       setPendingMode(null);
     }
@@ -364,17 +444,38 @@ export function HomeTaskComposer({
           placeholder={copy.placeholder}
           onChange={(event) => {
             setGoal(event.target.value);
+            setPlanReviewed(false);
             idempotencyKey.current = null;
             setFeedback(null);
           }}
         />
+        {projectId && projects.length > 1 && onProjectChange ? (
+          <label className="grid min-w-0 gap-1 text-xs font-medium text-muted-foreground">
+            <span className="inline-flex items-center gap-1"><FolderKanban className="size-3.5" aria-hidden />{copy.project}</span>
+            <select
+              aria-label={copy.project}
+              className="h-9 w-full rounded-md border border-border bg-background px-3 text-sm text-foreground"
+              value={projectId}
+              disabled={projectPending || Boolean(pendingMode)}
+              onChange={(event) => {
+                const nextProjectId = event.target.value;
+                setProjectPending(true);
+                setFeedback(null);
+                void Promise.resolve(onProjectChange(nextProjectId)).finally(() => setProjectPending(false));
+              }}
+            >
+              {projects.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
+            </select>
+            {projectError ? <span role="alert" className="text-xs text-destructive">{copy.projectSwitchFailed} {projectError}</span> : null}
+          </label>
+        ) : null}
         <div className="grid gap-2 sm:grid-cols-[minmax(150px,0.8fr)_minmax(0,1fr)_minmax(0,1.15fr)] sm:items-end">
           <label className="grid min-w-0 gap-1 text-xs font-medium text-muted-foreground">
             <span className="inline-flex items-center gap-1"><CalendarDays className="size-3.5" aria-hidden />{copy.due}</span>
-            <Input aria-label={copy.due} type="date" value={dueDate} min={localDateKey()} onChange={(event) => { setDueDate(event.target.value); idempotencyKey.current = null; setFeedback(null); }} />
+            <Input aria-label={copy.due} type="date" value={dueDate} min={localDateKey()} onChange={(event) => { setDueDate(event.target.value); setPlanReviewed(false); idempotencyKey.current = null; setFeedback(null); }} />
           </label>
           <Button className="w-full" variant="secondary" disabled={!canCreate} onClick={() => void create("task")}>{pendingMode === "task" ? copy.creating : copy.create}</Button>
-          <Button className="w-full" data-home-create-action="create-ai" disabled={!canCreateWithAi} title={!queueReady ? copy.preflightBlocked : undefined} onClick={() => void create("ai")}><Sparkles aria-hidden />{pendingMode === "ai" ? copy.creating : copy.createAi}</Button>
+          <Button className="w-full" data-home-create-action="create-ai" disabled={!canCreateWithAi} title={!queueReady ? copy.preflightBlocked : undefined} onClick={() => void create("ai")}><Sparkles aria-hidden />{pendingMode === "ai" ? (planReviewed ? copy.creating : copy.preparing) : planReviewed ? copy.confirmAi : copy.prepareAi}</Button>
         </div>
         {projectId && !unavailable && (readinessLoading || readinessBlocking.length > 0 || readinessWarnings.length > 0) ? (
           <section className={`rounded-lg border px-3 py-2 text-sm ${readinessBlocking.length > 0 ? "border-warning/40 bg-warning/[0.06]" : "border-border bg-muted/30"}`} aria-label={copy.preflight} role={readinessBlocking.length > 0 ? "alert" : "status"}>
@@ -395,6 +496,27 @@ export function HomeTaskComposer({
                 {readinessBlocking.length > 0 && readiness && onOpenSetup ? <Button size="sm" variant="secondary" onClick={() => onOpenSetup(readinessSetupSection({ ...readiness, checks: readinessBlocking }))}>{copy.preflightSetup}</Button> : null}
               </div> : null}
             </div>
+          </section>
+        ) : null}
+        {planReviewed ? (
+          <section className="rounded-lg border border-primary/35 bg-primary/[0.045] px-3 py-3 text-sm" aria-label={copy.reviewTitle}>
+            <h3 className="font-semibold">{copy.reviewTitle}</h3>
+            <p className="mt-1 text-xs leading-relaxed text-muted-foreground">{copy.reviewHint}</p>
+            <dl className="mt-3 grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+              {[
+                [copy.reviewComputer, reviewFacts?.computer ?? projectName ?? "—"],
+                [copy.reviewAgent, reviewFacts?.agent ?? "—"],
+                [copy.reviewRisk, reviewFacts?.risk ?? (zh ? "尚未明确；执行期间仍受安全开关限制" : "Not specified; safety controls still apply")],
+                [copy.reviewCost, reviewFacts?.cost ?? (zh ? "未知" : "Unknown")],
+                [copy.reviewData, reviewFacts?.data ?? (zh ? "任务输入、结果和审查记录会被保存" : "Task input, result, and review records are saved")],
+                [copy.reviewCancellation, reviewFacts?.cancellation ?? (zh ? "可停止；正在执行的本地操作可能需要等待安全退出" : "Can be stopped; local work may need time to exit safely")],
+              ].map(([label, value]) => (
+                <div key={label} className="rounded-md bg-background/75 px-3 py-2">
+                  <dt className="text-xs text-muted-foreground">{label}</dt>
+                  <dd className="mt-1 font-medium leading-relaxed">{value}</dd>
+                </div>
+              ))}
+            </dl>
           </section>
         ) : null}
         <details className="group rounded-lg border border-border px-3 py-2" open={detailsOpen} onToggle={(event) => setDetailsOpen(event.currentTarget.open)}>
@@ -441,7 +563,6 @@ export function HomeTaskComposer({
             {feedback.workItemId ? <Button size="sm" variant="secondary" onClick={() => { setOpen(false); onOpenTask(feedback.workItemId!); }}>{copy.view}</Button> : null}
           </div>
         ) : null}
-        {projectName ? <p className="text-[11px] text-muted-foreground">{projectName}</p> : null}
       </CardContent>
     </Card>
   );

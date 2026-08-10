@@ -22,6 +22,7 @@ describe("ui-store persistence", () => {
     });
     useUiStore.getState().setSelectedEvidenceId("ev_123");
     useUiStore.getState().setLocale("zh-CN");
+    useUiStore.getState().setWorkItemDetailPreference("expert");
 
     const raw = localStorage.getItem("myagenttool-ui");
     expect(raw).toBeTruthy();
@@ -36,6 +37,7 @@ describe("ui-store persistence", () => {
     });
     expect(parsed.state.selectedEvidenceId).toBe("ev_123");
     expect(parsed.state.locale).toBe("zh-CN");
+    expect(parsed.state.workItemDetailPreference).toBe("expert");
     // Setter functions must never be serialized.
     expect(parsed.state.setSection).toBeUndefined();
     expect(parsed.state.setSelectedApplicationId).toBeUndefined();
@@ -82,6 +84,77 @@ describe("nav group collapse (#928)", () => {
 });
 
 describe("URL navigation helpers", () => {
+  it("deep-links directly to the requested external-work inbox", () => {
+    expect(navigationFromSearch("?section=externalWork&externalTab=pr")).toMatchObject({
+      section: "externalWork",
+      selectedExternalWorkTab: "pr",
+    });
+    const search = searchFromNavigationState("", {
+      section: "externalWork",
+      selectedInvocationId: null,
+      selectedApplicationId: null,
+      selectedApplicationRun: null,
+      selectedEvidenceId: null,
+      selectedAutomationId: null,
+      selectedExternalWorkTab: "pr",
+    });
+    expect(new URLSearchParams(search).get("externalTab")).toBe("pr");
+  });
+
+  it("round-trips the restored My settings context", () => {
+    const parsed = navigationFromSearch("?section=settings&settingsCategory=diagnostics&settingsQuery=run%20record");
+    expect(parsed).toMatchObject({ section: "settings", settingsCategory: "diagnostics", settingsQuery: "run record" });
+    const search = searchFromNavigationState("", {
+      section: "settings",
+      selectedInvocationId: null,
+      selectedApplicationId: null,
+      selectedApplicationRun: null,
+      selectedEvidenceId: null,
+      selectedAutomationId: null,
+      settingsCategory: "diagnostics",
+      settingsQuery: "run record",
+    });
+    const params = new URLSearchParams(search);
+    expect(params.get("settingsCategory")).toBe("diagnostics");
+    expect(params.get("settingsQuery")).toBe("run record");
+  });
+
+  it("uses the preferred task detail density without changing task data", () => {
+    useUiStore.getState().setWorkItemDetailPreference("expert");
+    useUiStore.getState().setSelectedWorkItemId("wi_42");
+    expect(useUiStore.getState()).toMatchObject({
+      selectedWorkItemId: "wi_42",
+      selectedWorkItemMode: "expert",
+      selectedWorkItemSection: "overview",
+    });
+
+    useUiStore.getState().setWorkItemDetailPreference("summary");
+    useUiStore.getState().openWorkItem("wi_43");
+    expect(useUiStore.getState()).toMatchObject({
+      selectedWorkItemId: "wi_43",
+      selectedWorkItemMode: "summary",
+    });
+  });
+
+  it("round-trips the modal context for professional pages that also have task entry routes", () => {
+    expect(navigationFromSearch("?section=autoRuns&settingsOpen=true&settingsCategory=automation")).toMatchObject({
+      section: "autoRuns",
+      settingsDialogOpen: true,
+      settingsCategory: "automation",
+    });
+    const search = searchFromNavigationState("", {
+      section: "autoRuns",
+      selectedInvocationId: null,
+      selectedApplicationId: null,
+      selectedApplicationRun: null,
+      selectedEvidenceId: null,
+      selectedAutomationId: null,
+      settingsDialogOpen: true,
+      settingsCategory: "automation",
+    });
+    expect(new URLSearchParams(search).get("settingsOpen")).toBe("true");
+  });
+
   it("round-trips a task detail and its task-first section", () => {
     expect(navigationFromSearch("?section=task&task=wi_42&taskView=trace")).toMatchObject({
       section: "task",
@@ -140,6 +213,7 @@ describe("URL navigation helpers", () => {
       selectedWorkItemId: null,
       selectedWorkItemMode: "summary",
       selectedWorkItemSection: "overview",
+      taskArea: "overview",
     });
 
     expect(navigationFromSearch("?section=missing&application=app_1&routine=routine_1")).toMatchObject({

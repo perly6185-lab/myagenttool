@@ -2,6 +2,7 @@ import { useEffect, useId, useRef, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { X } from "lucide-react";
 import { useAppTranslation } from "@/lib/i18n/use-app-translation";
+import { cn } from "@/lib/cn";
 
 // Minimal centered modal with backdrop + Escape to close. No focus-trap library;
 // enough for the project-register dialog.
@@ -12,8 +13,10 @@ export function Modal({
   description,
   children,
   footer,
+  headerActions,
   size = "md",
   closeDisabled = false,
+  bodyClassName,
 }: {
   open: boolean;
   onClose: () => void;
@@ -21,8 +24,10 @@ export function Modal({
   description?: string;
   children: ReactNode;
   footer?: ReactNode;
-  size?: "md" | "lg" | "xl" | "2xl" | "full";
+  headerActions?: ReactNode;
+  size?: "md" | "lg" | "xl" | "2xl" | "full" | "viewport";
   closeDisabled?: boolean;
+  bodyClassName?: string;
 }) {
   const { t } = useAppTranslation();
   const dialogRef = useRef<HTMLDivElement>(null);
@@ -70,7 +75,7 @@ export function Modal({
   if (!open) return null;
 
   return createPortal(
-    <div className={`fixed inset-0 z-50 flex items-center justify-center ${size === "full" ? "p-0 sm:p-4" : "p-4"}`}>
+    <div className={`fixed inset-0 z-50 flex items-center justify-center ${size === "full" ? "p-0 sm:p-4" : size === "viewport" ? "p-2 sm:p-4" : "p-4"}`}>
       <div
         className="absolute inset-0 bg-black/50"
         onClick={closeDisabled ? undefined : onClose}
@@ -84,24 +89,28 @@ export function Modal({
         aria-describedby={description ? descriptionId : undefined}
         tabIndex={-1}
         className={`relative z-10 flex max-h-[calc(100vh-2rem)] w-full flex-col overflow-hidden ${
-          size === "full" ? "h-full max-h-none max-w-7xl rounded-none sm:h-auto sm:max-h-[calc(100vh-2rem)] sm:rounded-xl"
+          size === "viewport" ? "h-[calc(100vh-1rem)] max-h-none max-w-[calc(100vw-1rem)] rounded-xl sm:h-[calc(100vh-2rem)] sm:max-w-[calc(100vw-2rem)]"
+            : size === "full" ? "h-full max-h-none max-w-7xl rounded-none sm:h-auto sm:max-h-[calc(100vh-2rem)] sm:rounded-xl"
             : size === "2xl" ? "max-w-6xl rounded-xl" : size === "xl" ? "max-w-5xl rounded-xl" : size === "lg" ? "max-w-lg rounded-xl" : "max-w-md rounded-xl"
         } border border-border bg-card p-4 shadow-xl sm:p-5`}
       >
-        <button
-          type="button"
-          onClick={closeDisabled ? undefined : onClose}
-          disabled={closeDisabled}
-          aria-label={t("shell.close")}
-          className="absolute right-3 top-3 grid size-7 place-items-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground"
-        >
-          <X className="size-4" />
-        </button>
-        <div className="shrink-0 pr-8">
+        <div className="absolute right-3 top-3 flex items-center gap-1">
+          <button
+            type="button"
+            onClick={closeDisabled ? undefined : onClose}
+            disabled={closeDisabled}
+            aria-label={t("shell.close")}
+            className="order-2 grid size-7 place-items-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground"
+          >
+            <X className="size-4" />
+          </button>
+          {headerActions ? <div className="order-1 flex items-center gap-1">{headerActions}</div> : null}
+        </div>
+        <div className={cn("shrink-0", headerActions ? "pr-20" : "pr-8")}>
           <h2 id={titleId} className="text-base font-semibold">{title}</h2>
           {description ? <p id={descriptionId} className="mt-0.5 text-sm text-muted-foreground">{description}</p> : null}
         </div>
-        <div className="mt-4 min-h-0 overflow-y-auto">{children}</div>
+        <div className={cn("mt-4 min-h-0 overflow-y-auto", bodyClassName)}>{children}</div>
         {footer ? <div className="mt-4 shrink-0 border-t border-border pt-4">{footer}</div> : null}
       </div>
     </div>,

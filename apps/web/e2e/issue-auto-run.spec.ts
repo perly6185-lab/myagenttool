@@ -42,6 +42,14 @@ async function mockApi(page: Page) {
       };
       return route.fulfill({ status: 201, json: { workItem } });
     }
+    if (url.pathname === "/api/work-items/assist/draft" && method === "POST") {
+      return route.fulfill({ json: {
+        draft: {
+          acceptanceCriteria: ["Provider handoff is complete"],
+          verificationSop: ["Verify the provider handoff end to end"],
+        },
+      } });
+    }
     if (url.pathname === "/api/work-items/providers" && method === "GET") {
       return route.fulfill({ json: {
         providers: [
@@ -175,9 +183,15 @@ async function mockApi(page: Page) {
     }
     if (url.pathname === "/api/work-items/lwi_1" && method === "PATCH") {
       const body = request.postDataJSON();
+      const establishesExecutionContract = Array.isArray(body.acceptanceCriteria) && Array.isArray(body.verificationSop);
       workItem = {
         ...workItem,
         ...body,
+        ...(establishesExecutionContract ? {
+          executionContractSource: "assisted",
+          executionContractConfirmedAt: "2026-07-24T00:00:30.000Z",
+          executionContractGate: { ready: true, missing: [], source: "assisted", confirmedAt: "2026-07-24T00:00:30.000Z" },
+        } : {}),
         revision: Number(workItem?.revision ?? 0) + 1,
       };
       return route.fulfill({ json: { workItem } });
@@ -237,8 +251,20 @@ test("imports a GitLab issue, opens its Local Issue, and schedules AI from simpl
   const detail = page.getByRole("dialog", { name: "Local issue details" });
   await expect(detail).toBeVisible();
   await expect(detail.getByText("GitLab #19")).toBeVisible();
+  const planRequest = page.waitForRequest((request) =>
+    request.url().endsWith("/api/work-items/lwi_1")
+      && request.method() === "PATCH"
+      && Array.isArray(request.postDataJSON().acceptanceCriteria));
+  await detail.getByRole("button", { name: "Let AI start" }).click();
+  expect((await planRequest).postDataJSON()).toMatchObject({
+    acceptanceCriteria: ["Provider handoff is complete"],
+    verificationSop: ["Verify the provider handoff end to end"],
+  });
+  await expect(detail.getByText(/execution plan is ready/i)).toBeVisible();
   const scheduleRequest = page.waitForRequest((request) =>
-    request.url().endsWith("/api/work-items/lwi_1") && request.method() === "PATCH");
+    request.url().endsWith("/api/work-items/lwi_1")
+      && request.method() === "PATCH"
+      && request.postDataJSON().executionPolicy === "auto");
   await detail.getByRole("button", { name: "Let AI start" }).click();
   expect((await scheduleRequest).postDataJSON()).toMatchObject({
     executionPolicy: "auto",
@@ -282,8 +308,17 @@ test("adopts a browsed GitHub issue and continues through the same Local Issue h
   const detail = page.getByRole("dialog", { name: "Local issue details" });
   await expect(detail).toBeVisible();
   await expect(detail.getByText("GitHub #42")).toBeVisible();
+  const planRequest = page.waitForRequest((request) =>
+    request.url().endsWith("/api/work-items/lwi_1")
+      && request.method() === "PATCH"
+      && Array.isArray(request.postDataJSON().acceptanceCriteria));
+  await detail.getByRole("button", { name: "Let AI start" }).click();
+  await planRequest;
+  await expect(detail.getByText(/execution plan is ready/i)).toBeVisible();
   const scheduleRequest = page.waitForRequest((request) =>
-    request.url().endsWith("/api/work-items/lwi_1") && request.method() === "PATCH");
+    request.url().endsWith("/api/work-items/lwi_1")
+      && request.method() === "PATCH"
+      && request.postDataJSON().executionPolicy === "auto");
   await detail.getByRole("button", { name: "Let AI start" }).click();
   expect((await scheduleRequest).postDataJSON()).toMatchObject({
     executionPolicy: "auto",
@@ -295,19 +330,15 @@ test("adopts a browsed GitHub issue and continues through the same Local Issue h
 test("creates an issue, routes AI execution, and reaches reviewed local delivery", async ({ page }) => {
   await page.goto("/?section=task");
   await page.getByRole("button", { name: "New task" }).click();
-  await page.getByLabel("Title").fill("Implement browser chain");
-  // Local Issue creation requires an expected completion date in the current
-  // follow-up contract; keep the browser path explicit instead of relying on
-  // a stale default from the pre-follow-up form.
-  await page.getByLabel("Expected completion date").fill("2026-08-31");
-  await page.getByRole("button", { name: "Create task" }).click();
+  await page.getByRole("textbox", { name: "Create a task" }).fill("Implement browser chain");
+  await page.getByRole("button", { name: "Create task only" }).click();
 
   // Open the authoritative Local Issue after creation, then switch to the
   // expert execution surface explicitly (the summary view is the default).
   await page.goto("/?section=task&task=lwi_1");
   const createdDetail = page.getByRole("dialog", { name: "Local issue details" });
-  await createdDetail.getByRole("button", { name: "Expert details" }).click();
-  await expect(createdDetail.getByRole("button", { name: "Expert details" })).toHaveAttribute("aria-pressed", "true");
+  await createdDetail.getByRole("button", { name: "Technical and audit details" }).click();
+  await expect(createdDetail.getByRole("button", { name: "Back to task summary" })).toBeVisible();
   await expect(createdDetail.getByRole("tab", { name: "Process", exact: true })).toBeVisible();
   await createdDetail.getByRole("tab", { name: "Process", exact: true }).click();
   const autoRunRequest = page.waitForRequest((request) =>
@@ -318,7 +349,7 @@ test("creates an issue, routes AI execution, and reaches reviewed local delivery
   await page.goto("/?section=task");
   await page.getByText("Implement browser chain").first().click();
   const detail = page.getByRole("dialog", { name: "Local issue details" });
-  await detail.getByRole("button", { name: "Expert details" }).click();
+  await detail.getByRole("button", { name: "Technical and audit details" }).click();
   await detail.getByRole("tab", { name: "Process", exact: true }).click();
   await expect(detail.getByText("Ready for delivery")).toBeVisible();
   await expect(detail.getByText("Review required")).toBeVisible();
@@ -356,7 +387,7 @@ test("keeps the Local Issue selected while fixing preflight and rechecks after r
 
   await expect(page).toHaveURL(/section=autoRuns.*task=lwi_1/);
   await expect(page.getByRole("heading", { name: "Auto-runs" })).toBeVisible();
-  await page.getByRole("button", { name: "Return to Tasks" }).click();
+  await page.getByRole("button", { name: "Return to My tasks" }).click();
   await expect(page).toHaveURL(/section=task.*task=lwi_1/);
   await expect(detail).toBeVisible();
 
@@ -386,14 +417,15 @@ test("restores a task-first Trace after visiting scheduling Settings", async ({ 
 
   await detail.getByRole("button", { name: "Invocations" }).click();
   await expect(page).toHaveURL(/section=invocations.*invocation=inv_1/);
-  await expect(page.getByRole("heading", { name: "Invocations" })).toBeVisible();
-  await page.getByRole("button", { name: "Return to Tasks" }).click();
+  const settings = page.getByRole("dialog", { name: "My settings" });
+  await expect(settings.getByRole("heading", { name: "Invocations" })).toBeVisible();
+  await settings.getByRole("button", { name: "Close" }).click();
   await expect(page).toHaveURL(/section=task.*task=lwi_1.*taskView=trace/);
   await expect(page.getByRole("dialog", { name: "Local issue details" })).toBeVisible();
 
   await detail.getByRole("button", { name: "Scheduling settings" }).click();
   await expect(page).toHaveURL(/section=automation/);
-  await page.getByRole("button", { name: "Return to Tasks" }).click();
+  await page.getByRole("dialog", { name: "My settings" }).getByRole("button", { name: "Close" }).click();
 
   await expect(page).toHaveURL(/section=task.*task=lwi_1.*taskView=trace/);
   await expect(page.getByRole("dialog", { name: "Local issue details" })).toBeVisible();

@@ -64,6 +64,26 @@ describe("HomeTaskComposer", () => {
     expect(onOpenProjects).toHaveBeenCalledTimes(1);
   });
 
+  it("shows and switches the project context inside the ordinary composer", async () => {
+    const onProjectChange = vi.fn().mockResolvedValue(undefined);
+    render(
+      <HomeTaskComposer
+        inline
+        projectId="prj_1"
+        projectName="Customer one"
+        projects={[{ id: "prj_1", name: "Customer one" }, { id: "prj_2", name: "Customer two" }]}
+        onProjectChange={onProjectChange}
+        onCreated={() => {}}
+        onOpenTask={() => {}}
+      />,
+    );
+
+    const project = screen.getByRole("combobox", { name: "Current project" }) as HTMLSelectElement;
+    expect(project.value).toBe("prj_1");
+    fireEvent.change(project, { target: { value: "prj_2" } });
+    await waitFor(() => expect(onProjectChange).toHaveBeenCalledWith("prj_2"));
+  });
+
   it("creates one durable task that the scheduler will run automatically", async () => {
     mocks.createWorkItem.mockResolvedValue({ workItem: { id: "lwi_new" } });
     const onCreated = vi.fn();
@@ -78,15 +98,19 @@ describe("HomeTaskComposer", () => {
     fireEvent.change(screen.getByPlaceholderText(/One item per line/), {
       target: { value: "Cover every open risk\nProduce a shareable document" },
     });
-    await waitFor(() => expect((screen.getByRole("button", { name: "Create and let AI work" }) as HTMLButtonElement).disabled).toBe(false));
-    fireEvent.click(screen.getByRole("button", { name: "Create and let AI work" }));
+    await waitFor(() => expect((screen.getByRole("button", { name: "Generate execution plan" }) as HTMLButtonElement).disabled).toBe(false));
+    fireEvent.click(screen.getByRole("button", { name: "Generate execution plan" }));
+    expect(await screen.findByText(/execution-plan draft is ready/i)).toBeTruthy();
+    expect(screen.getByRole("region", { name: "Confirm before AI starts" })).toBeTruthy();
+    expect(mocks.createWorkItem).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "Confirm and let AI work" }));
 
     await waitFor(() => expect(mocks.createWorkItem).toHaveBeenCalledWith(expect.objectContaining({
       projectId: "prj_1",
       title: "Prepare the weekly customer update",
       body: "Prepare the weekly customer update\nUse plain language.",
       acceptanceCriteria: ["Cover every open risk", "Produce a shareable document"],
-      verificationSop: [],
+      verificationSop: ["Exercise the real user flow", "Review automated evidence"],
       waitingOn: "ai",
       executionPolicy: "auto",
       status: "ready",
@@ -94,7 +118,7 @@ describe("HomeTaskComposer", () => {
       idempotencyKey: expect.any(String),
     })));
     expect(mocks.startWorkItemAutoRun).not.toHaveBeenCalled();
-    expect(mocks.suggestWorkItemDraft).not.toHaveBeenCalled();
+    expect(mocks.suggestWorkItemDraft).toHaveBeenCalledTimes(1);
     expect(await screen.findByText(/AI will work automatically/)).toBeTruthy();
     expect(onCreated).toHaveBeenCalledTimes(1);
 
@@ -102,15 +126,17 @@ describe("HomeTaskComposer", () => {
     expect(onOpenTask).toHaveBeenCalledWith("lwi_new");
   });
 
-  it("keeps an automatically queued task accessible without a second start request", async () => {
+  it("keeps an automatically queued task accessible after explicit plan confirmation", async () => {
     mocks.createWorkItem.mockResolvedValue({ workItem: { id: "lwi_partial" } });
     const onOpenTask = vi.fn();
     render(<HomeTaskComposer projectId="prj_1" onCreated={() => {}} onOpenTask={onOpenTask} />);
     openComposer();
 
     fireEvent.change(screen.getByRole("textbox", { name: "Create a task" }), { target: { value: "Draft a launch note" } });
-    await waitFor(() => expect((screen.getByRole("button", { name: "Create and let AI work" }) as HTMLButtonElement).disabled).toBe(false));
-    fireEvent.click(screen.getByRole("button", { name: "Create and let AI work" }));
+    await waitFor(() => expect((screen.getByRole("button", { name: "Generate execution plan" }) as HTMLButtonElement).disabled).toBe(false));
+    fireEvent.click(screen.getByRole("button", { name: "Generate execution plan" }));
+    await screen.findByText(/execution-plan draft is ready/i);
+    fireEvent.click(screen.getByRole("button", { name: "Confirm and let AI work" }));
 
     expect(await screen.findByText(/AI will work automatically/)).toBeTruthy();
     expect(mocks.startWorkItemAutoRun).not.toHaveBeenCalled();
@@ -165,7 +191,7 @@ describe("HomeTaskComposer", () => {
 
     fireEvent.change(screen.getByRole("textbox", { name: "Create a task" }), { target: { value: "Prepare a release note" } });
     expect((await screen.findByRole("alert", { name: "Preflight" })).textContent).toContain("No default agent");
-    expect((screen.getByRole("button", { name: "Create and let AI work" }) as HTMLButtonElement).disabled).toBe(true);
+    expect((screen.getByRole("button", { name: "Generate execution plan" }) as HTMLButtonElement).disabled).toBe(true);
     fireEvent.click(screen.getByRole("button", { name: "Open setup and fix" }));
 
     expect(onOpenSetup).toHaveBeenCalledWith("autoRuns");
@@ -180,9 +206,11 @@ describe("HomeTaskComposer", () => {
     render(<HomeTaskComposer inline projectId="prj_1" onCreated={() => {}} onOpenTask={() => {}} />);
 
     fireEvent.change(screen.getByRole("textbox", { name: "Create a task" }), { target: { value: "Queue the next task" } });
-    const action = await screen.findByRole("button", { name: "Create and let AI work" });
+    const action = await screen.findByRole("button", { name: "Generate execution plan" });
     await waitFor(() => expect((action as HTMLButtonElement).disabled).toBe(false));
     fireEvent.click(action);
+    await screen.findByText(/execution-plan draft is ready/i);
+    fireEvent.click(screen.getByRole("button", { name: "Confirm and let AI work" }));
 
     await waitFor(() => expect(mocks.createWorkItem).toHaveBeenCalledWith(expect.objectContaining({
       status: "ready",

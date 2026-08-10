@@ -13,8 +13,9 @@ import { Button } from "@/components/ui/button";
 import {
   deriveNotificationCenterModel,
   unreadCompletionIds,
+  type NotificationItem,
 } from "@/components/layout/notification-center-model";
-import type { SectionKey } from "@/store/ui-store";
+import { useUiStore, type SectionKey } from "@/store/ui-store";
 
 const COMPLETION_SEEN_KEY = "myagenttool-notification-completions-seen-v1";
 const DELIVERY_ENABLED_KEY = "myagenttool-browser-notifications-v1";
@@ -56,6 +57,8 @@ export function NotificationCenter() {
   const { t } = useAppTranslation();
   const { data: state, isError, isLoading } = useConsoleState();
   const navigate = usePageNavigation();
+  const openWorkItem = useUiStore((store) => store.openWorkItem);
+  const setSelectedInvocationId = useUiStore((store) => store.setSelectedInvocationId);
   const liveUpdates = useSyncExternalStore(
     subscribeControlPlaneStream,
     isControlPlaneStreamConnected,
@@ -88,6 +91,7 @@ export function NotificationCenter() {
     ? unreadCompletionIds(model.completions.items, seenCompletionIds)
     : [];
   const unreadCount = unreadIds.length;
+  const unreadCompletionItems = model.completions.items.filter((item) => unreadIds.includes(item.id));
   const actionCount = model.approvals.count + model.failures.count + (model.offline ? 1 : 0);
   const hasDanger = model.failures.count > 0 || model.offline;
 
@@ -158,6 +162,21 @@ export function NotificationCenter() {
   function openSection(section: SectionKey) {
     setOpen(false);
     navigate(section);
+  }
+
+  function openNotificationItem(item: NotificationItem, fallback: SectionKey) {
+    setOpen(false);
+    if (item.target === "work_item") {
+      navigate("task");
+      openWorkItem(item.id, { mode: "summary" });
+      return;
+    }
+    if (item.target === "invocation") {
+      setSelectedInvocationId(item.id);
+      navigate("invocations");
+      return;
+    }
+    navigate(fallback);
   }
 
   function markResultsRead() {
@@ -264,24 +283,30 @@ export function NotificationCenter() {
               <p className="px-3 py-4 text-center text-sm text-muted-foreground">{t("notificationCenter.empty")}</p>
             ) : null}
             {model.approvals.count > 0 ? (
-              <NotificationRow
-                icon={<ShieldCheck className="size-5 text-warning" />}
-                title={t("notificationCenter.approvals")}
-                description={t("notificationCenter.approvalsHint")}
-                count={model.approvals.count}
-                tone="warning"
-                onClick={() => openSection("approvals")}
-              />
+              <NotificationGroup>
+                <NotificationRow
+                  icon={<ShieldCheck className="size-5 text-warning" />}
+                  title={t("notificationCenter.approvals")}
+                  description={t("notificationCenter.approvalsHint")}
+                  count={model.approvals.count}
+                  tone="warning"
+                  onClick={() => openSection("approvals")}
+                />
+                <NotificationItemLinks items={model.approvals.items} onOpen={(item) => openNotificationItem(item, "approvals")} />
+              </NotificationGroup>
             ) : null}
             {model.failures.count > 0 ? (
-              <NotificationRow
-                icon={<CircleAlert className="size-5 text-destructive" />}
-                title={t("notificationCenter.failures")}
-                description={t("notificationCenter.failuresHint")}
-                count={model.failures.count}
-                tone="danger"
-                onClick={() => openSection("autoRuns")}
-              />
+              <NotificationGroup>
+                <NotificationRow
+                  icon={<CircleAlert className="size-5 text-destructive" />}
+                  title={t("notificationCenter.failures")}
+                  description={t("notificationCenter.failuresHint")}
+                  count={model.failures.count}
+                  tone="danger"
+                  onClick={() => openSection("workBoard")}
+                />
+                <NotificationItemLinks items={model.failures.items} onOpen={(item) => openNotificationItem(item, "workBoard")} />
+              </NotificationGroup>
             ) : null}
             {model.offline ? (
               <NotificationRow
@@ -294,17 +319,23 @@ export function NotificationCenter() {
               />
             ) : null}
             {unreadCount > 0 ? (
-              <NotificationRow
-                icon={<CheckCircle2 className="size-5 text-success" />}
-                title={t("notificationCenter.completions")}
-                description={t("notificationCenter.completionsHint")}
-                count={unreadCount}
-                tone="success"
-                onClick={() => {
+              <NotificationGroup>
+                <NotificationRow
+                  icon={<CheckCircle2 className="size-5 text-success" />}
+                  title={t("notificationCenter.completions")}
+                  description={t("notificationCenter.completionsHint")}
+                  count={unreadCount}
+                  tone="success"
+                  onClick={() => {
+                    markResultsRead();
+                    openSection("workBoard");
+                  }}
+                />
+                <NotificationItemLinks items={unreadCompletionItems} onOpen={(item) => {
                   markResultsRead();
-                  openSection("invocations");
-                }}
-              />
+                  openNotificationItem(item, "workBoard");
+                }} />
+              </NotificationGroup>
             ) : null}
 
             <details className="mt-2 rounded-lg border border-border bg-background/40" open={model.offline || model.fallback}>
@@ -371,6 +402,36 @@ export function NotificationCenter() {
         </div>
       ) : null}
     </div>
+  );
+}
+
+function NotificationGroup({ children }: { children: ReactNode }) {
+  return <section className="rounded-lg hover:bg-muted/20">{children}</section>;
+}
+
+function NotificationItemLinks({
+  items,
+  onOpen,
+}: {
+  items: NotificationItem[];
+  onOpen: (item: NotificationItem) => void;
+}) {
+  if (!items.length) return null;
+  return (
+    <ul className="space-y-1 px-3 pb-2 pl-11">
+      {items.slice(0, 4).map((item) => (
+        <li key={`${item.target}:${item.id}`}>
+          <button
+            type="button"
+            className="min-h-9 w-full truncate rounded-md px-2 text-left text-xs font-medium text-primary hover:bg-primary/10"
+            title={item.title}
+            onClick={() => onOpen(item)}
+          >
+            {item.title}
+          </button>
+        </li>
+      ))}
+    </ul>
   );
 }
 

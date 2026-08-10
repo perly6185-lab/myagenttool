@@ -42,6 +42,7 @@ import { STARTER_TASK_TEMPLATES } from "@/features/dashboard/starter-task-templa
 import { ActionErrorNotice } from "@/components/common/action-error-notice";
 import { useConsoleState } from "@/data/use-console-state";
 import { useAsyncAction, api } from "@/data/use-console-actions";
+import { useCurrentProjectSelection } from "@/hooks/use-current-project-selection";
 import { usePageNavigation } from "@/hooks/use-page-navigation";
 import { resolveAgents, resolveInvocation } from "@/features/selection";
 import { useUiStore, type InvocationStatusFilter, type SectionKey } from "@/store/ui-store";
@@ -130,11 +131,9 @@ export function DashboardView({ surface = "overview" }: { surface?: DashboardSur
   const setSelectedInvocationId = useUiStore((s) => s.setSelectedInvocationId);
   const setSelectedApplicationId = useUiStore((s) => s.setSelectedApplicationId);
   const openWorkItem = useUiStore((s) => s.openWorkItem);
-  const selectedProjectId = useUiStore((s) => s.selectedProjectId);
   const setSelectedProjectId = useUiStore((s) => s.setSelectedProjectId);
   const selectedWorktreeId = useUiStore((s) => s.selectedWorktreeId);
   const setSelectedWorktreeId = useUiStore((s) => s.setSelectedWorktreeId);
-  const setSection = useUiStore((s) => s.setSection);
   const navigate = usePageNavigation();
   const resumeFromInvocationId = useUiStore((s) => s.resumeFromInvocationId);
   const setResumeFromInvocationId = useUiStore((s) => s.setResumeFromInvocationId);
@@ -146,12 +145,16 @@ export function DashboardView({ surface = "overview" }: { surface?: DashboardSur
   const scheduleAction = useAsyncAction();
   const rolloverAction = useAsyncAction();
   const urgentAction = useAsyncAction();
+  const projectSelection = useCurrentProjectSelection();
   const runInFlightRef = useRef(false);
   const runIdempotencyKeyRef = useRef<string | null>(null);
   const attachmentWorktreeRef = useRef<string | null>(null);
 
   const projects = state?.projects ?? [];
-  const projectId = selectedProjectId ?? projects[0]?.id ?? null;
+  // The server-selected project is the single business context. The local
+  // selection remains useful for focusing a project/worktree page, but must
+  // never silently change where Home creates a task.
+  const projectId = state?.currentProjectId ?? projects[0]?.id ?? null;
   const project = projects.find((item) => item.id === projectId) ?? null;
   const targetWorktree =
     (state?.worktrees ?? []).find((w) => w.id === selectedWorktreeId && w.projectId === projectId) ?? null;
@@ -339,12 +342,12 @@ export function DashboardView({ surface = "overview" }: { surface?: DashboardSur
   );
 
   useEffect(() => {
-    if (composerDraftTask == null) return;
+    if (surface !== "workspace" || composerDraftTask == null) return;
     setTask(composerDraftTask);
     setComposerDraftTask(null);
     runIdempotencyKeyRef.current = null;
     taskInputRef.current?.focus();
-  }, [composerDraftTask, setComposerDraftTask]);
+  }, [composerDraftTask, setComposerDraftTask, surface]);
 
   function attachmentRejectionMessage(rejected: WorktreeAttachmentRejection[]) {
     const reasons = [...new Set(rejected.map((item) => item.reason))]
@@ -445,11 +448,11 @@ export function DashboardView({ surface = "overview" }: { surface?: DashboardSur
     if (action === "view_progress") {
       if (invocation) setSelectedInvocationId(invocation.id);
       setInvocationStatusFilter("active");
-      setSection("invocations");
+      navigate("invocations");
       return;
     }
     if (invocation) setSelectedInvocationId(invocation.id);
-    setSection(action === "handle_approval" ? "approvals" : "invocations");
+    navigate(action === "handle_approval" ? "approvals" : "invocations");
   }
 
   function openRunFilter(filter: InvocationStatusFilter) {
@@ -461,7 +464,7 @@ export function DashboardView({ surface = "overview" }: { surface?: DashboardSur
     });
     setInvocationStatusFilter(filter);
     setSelectedInvocationId(matching?.id ?? null);
-    setSection("invocations");
+    navigate("invocations");
   }
 
   function openDailyWorkItem(item: WorkItem) {
@@ -488,14 +491,14 @@ export function DashboardView({ surface = "overview" }: { surface?: DashboardSur
       url.searchParams.set("refusal", item.id.slice("refusal:".length));
       window.history.replaceState(window.history.state, "", `${url.pathname}${url.search}${url.hash}`);
     }
-    setSection(item.section as SectionKey);
+    navigate(item.section as SectionKey);
   }
 
   function openApproval(decision: PendingDecision) {
     const url = new URL(window.location.href);
     url.searchParams.set("approval", decision.ref?.approvalId ?? decision.id);
     window.history.replaceState(window.history.state, "", `${url.pathname}${url.search}${url.hash}`);
-    setSection("approvals");
+    navigate("approvals");
   }
 
   const userTask = invocation?.input?.task;
@@ -616,13 +619,26 @@ export function DashboardView({ surface = "overview" }: { surface?: DashboardSur
     <div className="flex min-h-full flex-col gap-4">
       {surface === "overview" ? (
         <>
-          <div data-testid="daily-brief-create-layout" className={`${hasPriorityWork ? "order-1" : "order-2"} grid min-w-0 items-stretch gap-4 lg:grid-cols-[minmax(0,1.45fr)_minmax(340px,0.9fr)]`}>
+          <div data-testid="daily-brief-create-layout" className={`${hasPriorityWork ? "order-1 lg:grid-cols-1" : "order-2 lg:grid-cols-[minmax(0,1.45fr)_minmax(340px,0.9fr)]"} grid min-w-0 items-stretch gap-4`}>
             <div ref={setDailyBriefContainer} className="min-w-0" />
             <div className="min-w-0">
               <HomeTaskComposer
                 inline
                 projectId={projectId}
                 projectName={project?.name}
+                projects={projects.map((item) => ({ id: item.id, name: item.name }))}
+                onProjectChange={(nextProjectId) => projectSelection.selectProject(nextProjectId, projectId)}
+                projectError={projectSelection.error}
+                draftGoal={composerDraftTask}
+                onDraftGoalApplied={() => setComposerDraftTask(null)}
+                reviewFacts={{
+                  computer: state?.device ? `${state.device.name} — ${readableAgentStatus(state.device.status)}` : "—",
+                  agent: agent?.name ?? t("dashboard.noAgent"),
+                  risk: agent?.registrationNotes?.risk ?? t("dashboard.reviewAgent"),
+                  cost: agent?.registrationNotes?.cost ?? costText(agent?.economics),
+                  data: agent?.registrationNotes?.data ?? t("dashboard.recorded"),
+                  cancellation: agent?.registrationNotes?.cancellation ?? cancellationText(agent?.adapter),
+                }}
                 worktreeId={attachmentWorktree?.id}
                 terminalId={state?.device?.id}
                 unavailable={!state}
@@ -658,11 +674,11 @@ export function DashboardView({ surface = "overview" }: { surface?: DashboardSur
               onOpenApproval={openApproval}
               dailyBriefContainer={dailyBriefContainer}
               onOpenItem={openDailyWorkItem}
-              onOpenTasks={() => setSection("task")}
+              onOpenTasks={() => navigate("task")}
               onOpenAttention={() => {
-                if ((state?.pendingDecisions?.length ?? 0) > 0) setSection("approvals");
-                else if ((state?.evidenceLedger ?? []).some((item) => item.attention)) setSection("evidence");
-                else setSection("workBoard");
+                if ((state?.pendingDecisions?.length ?? 0) > 0) navigate("approvals");
+                else if ((state?.evidenceLedger ?? []).some((item) => item.attention)) navigate("evidence");
+                else navigate("workBoard");
               }}
               onOpenActive={() => openRunFilter("active")}
               onOpenCompleted={() => openRunFilter("completed")}
@@ -801,7 +817,7 @@ export function DashboardView({ surface = "overview" }: { surface?: DashboardSur
                     onClick={() => {
                       setSelectedInvocationId(item.id);
                       setInvocationStatusFilter("active");
-                      setSection("invocations");
+                      navigate("invocations");
                     }}
                     className="flex min-w-0 items-center justify-between gap-3 rounded-md border border-border px-3 py-2 text-left hover:bg-muted/50"
                   >
@@ -846,7 +862,7 @@ export function DashboardView({ surface = "overview" }: { surface?: DashboardSur
             events={events}
             renderAction={(event) => <DecisionAction event={event} />}
             summary={transcriptSummary}
-            onOpenReview={() => setSection("review")}
+            onOpenReview={() => navigate("review")}
           />
         </div>
         </Card>

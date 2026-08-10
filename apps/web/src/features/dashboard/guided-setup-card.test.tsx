@@ -14,7 +14,7 @@ vi.mock("@/lib/api-client", () => ({ commandGuidedSetup: stateMock.commandGuided
 beforeEach(async () => {
   await i18n.changeLanguage("en-US");
   window.localStorage.clear();
-  useUiStore.setState({ section: "dashboard" });
+  useUiStore.setState({ section: "dashboard", composerDraftTask: null, selectedWorkItemId: null });
 });
 
 afterEach(() => {
@@ -23,6 +23,68 @@ afterEach(() => {
 });
 
 describe("GuidedSetupCard", () => {
+  it("prepares a bounded read-only first task after setup becomes ready", () => {
+    stateMock.useConsoleState.mockReturnValue({
+      data: {
+        guidedSetup: {
+          version: 1,
+          status: "ready",
+          currentStep: "complete",
+          reason: "ready",
+          action: null,
+          runId: "gsr_ready",
+          completedCount: 3,
+          totalCount: 3,
+          steps: [
+            { key: "computer", state: "complete" },
+            { key: "workspace", state: "complete" },
+            { key: "execution", state: "complete" },
+          ],
+        },
+        workBoard: { states: { done: { count: 0, items: [] } } },
+      },
+      refetch: vi.fn(),
+    });
+
+    render(<GuidedSetupCard />);
+    fireEvent.click(screen.getByRole("button", { name: "Prepare safe test" }));
+
+    expect(useUiStore.getState().section).toBe("dashboard");
+    expect(useUiStore.getState().composerDraftTask).toContain("without changing files");
+  });
+
+  it("opens the completed safe-test result and remembers the review", () => {
+    window.localStorage.setItem("myagenttool-guided-safe-test:gsr_completed", JSON.stringify({ baselineDoneIds: [] }));
+    stateMock.useConsoleState.mockReturnValue({
+      data: {
+        guidedSetup: {
+          version: 1,
+          status: "ready",
+          currentStep: "complete",
+          reason: "ready",
+          action: null,
+          runId: "gsr_completed",
+          completedCount: 3,
+          totalCount: 3,
+          steps: [
+            { key: "computer", state: "complete" },
+            { key: "workspace", state: "complete" },
+            { key: "execution", state: "complete" },
+          ],
+        },
+        workBoard: { states: { done: { count: 1, items: [{ id: "lwi_safe", title: "Safe test" }] } } },
+      },
+      refetch: vi.fn(),
+    });
+
+    render(<GuidedSetupCard />);
+    fireEvent.click(screen.getByRole("button", { name: "Review first result" }));
+
+    expect(useUiStore.getState().section).toBe("task");
+    expect(useUiStore.getState().selectedWorkItemId).toBe("lwi_safe");
+    expect(window.localStorage.getItem("myagenttool-guided-safe-test:gsr_completed")).toBe("reviewed");
+  });
+
   it("starts with one server command, then shows one primary recovery action", async () => {
     stateMock.useConsoleState.mockReturnValue({
       data: {

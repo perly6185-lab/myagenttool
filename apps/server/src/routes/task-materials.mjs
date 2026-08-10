@@ -1,4 +1,7 @@
 import { actorCanAccessProject } from "../runtime/auth.mjs";
+import { revealFileInFileManager } from "../services/asset-reveal.mjs";
+import { basename, dirname } from "node:path";
+import { OfficecliPreviewError, renderOfficecliPreview } from "../services/officecli-preview.mjs";
 
 export async function handleTaskMaterialRoutes({
   req,
@@ -53,6 +56,49 @@ export async function handleTaskMaterialRoutes({
       "Content-Security-Policy": "sandbox; default-src 'none'; img-src 'self' data:; style-src 'unsafe-inline'",
     });
     res.end(result.bytes);
+    return true;
+  }
+
+  const revealMatch = url.pathname.match(/^\/api\/work-items\/([^/]+)\/materials\/([^/]+)\/reveal$/);
+  if (revealMatch && req.method === "POST") {
+    const result = readTaskMaterialContent({
+      workItemId: decodeURIComponent(revealMatch[1]),
+      assetId: decodeURIComponent(revealMatch[2]),
+    }, actor);
+    if (result.status !== 200) {
+      sendJson(res, result.status, { error: result.error });
+      return true;
+    }
+    try {
+      await revealFileInFileManager({ target: result.localPath });
+      sendJson(res, 200, { revealed: true, name: result.asset.originalName ?? null });
+    } catch {
+      sendJson(res, 500, { error: "task_material_reveal_failed", message: "The reference file could not be located in the local file manager." });
+    }
+    return true;
+  }
+
+  const officePreviewMatch = url.pathname.match(/^\/api\/work-items\/([^/]+)\/materials\/([^/]+)\/office-preview$/);
+  if (officePreviewMatch && req.method === "GET") {
+    const result = readTaskMaterialContent({
+      workItemId: decodeURIComponent(officePreviewMatch[1]),
+      assetId: decodeURIComponent(officePreviewMatch[2]),
+    }, actor);
+    if (result.status !== 200) {
+      sendJson(res, result.status, { error: result.error });
+      return true;
+    }
+    try {
+      const preview = await renderOfficecliPreview({
+        projectPath: dirname(result.localPath),
+        relativeFile: basename(result.localPath),
+      });
+      sendJson(res, 200, { ...preview, path: result.asset.originalName ?? preview.path });
+    } catch (error) {
+      const code = error instanceof OfficecliPreviewError ? error.code : "preview_failed";
+      const status = code === "not_found" ? 404 : code === "officecli_unavailable" ? 503 : 400;
+      sendJson(res, status, { error: code, message: error instanceof OfficecliPreviewError ? error.message : "Reference file preview is unavailable." });
+    }
     return true;
   }
 

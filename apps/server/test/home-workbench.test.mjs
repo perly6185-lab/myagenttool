@@ -61,6 +61,32 @@ test("home workbench projects canonical AI and approval navigation", () => {
   });
 });
 
+test("home workbench projects an Issue-bound article import as managed execution", () => {
+  const result = model([item({
+    id: "article-import",
+    localRef: "LOCAL-5",
+    status: "done",
+    state: "closed",
+    executionBindings: [{ kind: "article_import", targetId: "article_import_1", createdAt: NOW }],
+  })], {
+    articleImportJobs: [{
+      id: "article_import_1",
+      workItemId: "article-import",
+      state: "completed",
+      createdAt: "2026-08-03T03:58:00.000Z",
+      completedAt: NOW,
+      result: { markdownPath: "docs/imported/article.md" },
+    }],
+  });
+
+  const row = result.items[0];
+  assert.equal(row.executionKind, "article_import");
+  assert.equal(row.executionState, "completed");
+  assert.equal(row.executionUpdatedAt, NOW);
+  assert.equal(row.userStatus, "completed");
+  assert.equal(row.ai, null, "a system import must not be mislabeled as an Agent run");
+});
+
 test("home workbench uses only the newest execution binding for state and navigation", () => {
   const result = model([item({
     executionState: "failed",

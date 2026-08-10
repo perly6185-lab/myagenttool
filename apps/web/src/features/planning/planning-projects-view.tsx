@@ -1,6 +1,6 @@
 import { FolderKanban } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { PlanningProjectsPanel } from "@/features/tasks/task-view";
+import { PlanningProjectsPanel } from "@/features/tasks/planning-projects-panel";
 import { useAppTranslation } from "@/lib/i18n/use-app-translation";
 
 export function PlanningProjectsView() {

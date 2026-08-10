@@ -83,9 +83,11 @@ type Copy = {
   needsMine: string;
   waitingMe: string;
   approvals: string;
+  automationApprovals: string;
   aiFailed: string;
   dueToday: string;
   reviewReady: string;
+  automationCompleted: string;
   activeAi: string;
   aiWorkHint: string;
   allAiWork: string;
@@ -193,7 +195,7 @@ const COPY: Record<"zh" | "en", Copy> = {
   zh: {
     title: "我的任务",
     subtitle: "复盘昨天，执行今天，规划明天",
-    overview: "查看全部任务",
+    overview: "查看我的任务",
     todayProgress: "今日进度",
     attention: "待处理",
     active: "进行中",
@@ -238,39 +240,41 @@ const COPY: Record<"zh" | "en", Copy> = {
     needsMine: "需要我处理",
     waitingMe: "待我回复",
     approvals: "AI 待审批",
-    aiFailed: "AI 失败",
+    automationApprovals: "待审批",
+    aiFailed: "自动执行失败",
     dueToday: "今日到期",
     reviewReady: "待复核与汇报",
-    activeAi: "AI 执行",
-    aiWorkHint: "已交给 AI 的任务及执行状态；任务仍保留在“我的任务”中",
-    allAiWork: "全部 AI 执行",
+    automationCompleted: "已完成",
+    activeAi: "自动执行",
+    aiWorkHint: "由系统导入或 Agent 自动处理的任务；任务仍统一保留在“我的任务”中",
+    allAiWork: "全部自动执行",
     aiRunning: "执行中",
     aiScheduled: "待执行",
-    noAiWork: "暂无 AI 执行",
-    noAiWorkHint: "从“我的任务”点击“交给 AI”后会显示在这里",
-    executionDate: "AI 执行日期",
+    noAiWork: "暂无自动执行",
+    noAiWorkHint: "系统导入或交给 AI 的任务会显示在这里",
+    executionDate: "自动执行日期",
     noExecutionDate: "未安排执行日期",
     expectedCompletion: "预期完成",
     noExpectedCompletion: "未设置预期完成日期",
     otherDates: "其他执行日期 / 未安排",
-    otherDatesHint: "显示更晚执行或尚未安排执行日期的 AI 任务。",
+    otherDatesHint: "显示更晚执行或尚未安排执行日期的自动任务。",
     owner: "负责人",
     waitingLabel: "人",
-    aiLabel: "AI",
+    aiLabel: "自动执行",
     coordination: {
-      aiNotLinked: "未交给 AI",
-      executionAfterCompletion: "AI 执行晚于预期完成",
-      aiUnscheduled: "AI 已关联，但尚未安排执行日期",
-      reviewPending: "AI 已完成，等待人工复核",
-      locateAi: "在 AI 看板定位",
+      aiNotLinked: "尚未自动执行",
+      executionAfterCompletion: "自动执行晚于预期完成",
+      aiUnscheduled: "自动执行已关联，但尚未安排执行日期",
+      reviewPending: "自动执行已完成，等待人工复核",
+      locateAi: "在自动执行看板定位",
       locateMy: "在个人看板定位",
       located: "已临时显示对应 Issue，原筛选保持不变",
-      backToAi: "返回 AI 看板",
+      backToAi: "返回自动执行看板",
       backToMy: "返回个人看板",
     },
     actionQueue: {
-      title: "现在需要我行动",
-      hint: "合并个人与 AI 视角，每个 Issue 只保留一个下一步",
+      title: "需要我处理",
+      hint: "只显示确实需要你决策、复核、补充信息或处理异常的任务；每个 Issue 只保留一个下一步",
       all: "全部",
       urgent: "需重点处理",
       pending: "待行动",
@@ -299,15 +303,15 @@ const COPY: Record<"zh" | "en", Copy> = {
     },
     dailyBrief: {
       title: "今日协同简报",
-      summary: "今天有 {{due}} 项预期完成，当前 {{actions}} 项需要你行动；AI 正在处理 {{ai}} 项。",
+      summary: "今天有 {{due}} 项预期完成，当前 {{actions}} 项需要你行动；自动处理中的任务有 {{ai}} 项。",
       due: "今日到期",
-      actions: "需要我行动",
-      aiMoving: "AI 推进中",
-      conflict: "其中 {{count}} 项存在个人预期与 AI 执行日期冲突。",
+      actions: "需要我处理",
+      aiMoving: "自动处理中",
+      conflict: "其中 {{count}} 项存在个人预期与自动执行日期冲突。",
       nextUp: "建议先处理",
-      allClear: "当前没有需要你介入的事项，AI 会继续按计划推进。",
+      allClear: "当前没有需要你介入的事项，自动任务会继续按计划推进。",
       startFocus: "开始第一个行动",
-      reviewPlan: "查看今日行动",
+      reviewPlan: "查看需要我处理",
     },
     focusMode: {
       title: "专注处理",
@@ -318,7 +322,7 @@ const COPY: Record<"zh" | "en", Copy> = {
       noDate: "未设置",
       expectedOutcome: "完成这一步后",
       outcomeNext: "系统会刷新状态，并继续显示下一项需要你处理的工作。",
-      outcomeSchedule: "个人预期与 AI 执行安排会重新对齐。",
+      outcomeSchedule: "个人预期与自动执行安排会重新对齐。",
       previous: "上一项",
       next: "下一项",
       exit: "结束专注",
@@ -381,7 +385,7 @@ const COPY: Record<"zh" | "en", Copy> = {
   en: {
     title: "My tasks",
     subtitle: "Review yesterday, execute today, plan tomorrow",
-    overview: "View all tasks",
+    overview: "View my tasks",
     todayProgress: "Today's progress",
     attention: "Attention",
     active: "In progress",
@@ -426,39 +430,41 @@ const COPY: Record<"zh" | "en", Copy> = {
     needsMine: "Needs my action",
     waitingMe: "Waiting on me",
     approvals: "AI approvals",
-    aiFailed: "AI failed",
+    automationApprovals: "Approval required",
+    aiFailed: "Automation failed",
     dueToday: "Due today",
     reviewReady: "Review and report",
-    activeAi: "AI execution",
-    aiWorkHint: "Tasks handed to AI and their execution states; they remain in My tasks",
-    allAiWork: "All AI execution",
+    automationCompleted: "Completed",
+    activeAi: "Automated work",
+    aiWorkHint: "System imports and Agent-managed tasks; every task remains in My tasks",
+    allAiWork: "All automated work",
     aiRunning: "Running",
     aiScheduled: "Scheduled",
-    noAiWork: "No AI execution yet",
-    noAiWorkHint: "Use Hand off to AI from My tasks to show a task here",
-    executionDate: "AI execution date",
+    noAiWork: "No automated work yet",
+    noAiWorkHint: "System imports and tasks handed to AI appear here",
+    executionDate: "Automated execution date",
     noExecutionDate: "No execution date",
     expectedCompletion: "Expected completion",
     noExpectedCompletion: "Expected completion not set",
     otherDates: "Other execution dates / unscheduled",
-    otherDatesHint: "AI tasks scheduled later or missing an execution date.",
+    otherDatesHint: "Automated tasks scheduled later or missing an execution date.",
     owner: "Owner",
     waitingLabel: "People",
-    aiLabel: "AI",
+    aiLabel: "Automation",
     coordination: {
-      aiNotLinked: "Not handed to AI",
-      executionAfterCompletion: "AI execution is after expected completion",
-      aiUnscheduled: "AI is linked but has no execution date",
-      reviewPending: "AI completed; awaiting human review",
-      locateAi: "Locate in AI tasks",
+      aiNotLinked: "Not automated yet",
+      executionAfterCompletion: "Automated execution is after expected completion",
+      aiUnscheduled: "Automated execution has no execution date",
+      reviewPending: "Automated execution completed; awaiting human review",
+      locateAi: "Locate in automated work",
       locateMy: "Locate in My tasks",
       located: "Temporarily showing this Issue without changing your filter",
-      backToAi: "Back to AI tasks",
+      backToAi: "Back to automated work",
       backToMy: "Back to My tasks",
     },
     actionQueue: {
-      title: "Needs my action now",
-      hint: "One next step per Issue across the people and AI views",
+      title: "Needs my action",
+      hint: "Only tasks that need your decision, review, input, or exception handling; one next step per Issue",
       all: "All",
       urgent: "Needs attention",
       pending: "Pending action",
@@ -487,15 +493,15 @@ const COPY: Record<"zh" | "en", Copy> = {
     },
     dailyBrief: {
       title: "Today's coordination brief",
-      summary: "Today: {{due}} due, {{actions}} need your action, AI is working on: {{ai}}.",
+      summary: "Today: {{due}} due, {{actions}} need your action, automated work in progress: {{ai}}.",
       due: "Due today",
       actions: "Needs my action",
-      aiMoving: "AI moving",
-      conflict: "Date conflicts between your expectation and AI execution: {{count}}.",
+      aiMoving: "Automation moving",
+      conflict: "Date conflicts between your expectation and automated execution: {{count}}.",
       nextUp: "Start with",
-      allClear: "Nothing needs your intervention now. AI will keep moving the plan forward.",
+      allClear: "Nothing needs your intervention now. Automated work will keep moving the plan forward.",
       startFocus: "Start first action",
-      reviewPlan: "Review today's actions",
+      reviewPlan: "Review needs my action",
     },
     focusMode: {
       title: "Focus session",
@@ -506,7 +512,7 @@ const COPY: Record<"zh" | "en", Copy> = {
       noDate: "Not set",
       expectedOutcome: "After this step",
       outcomeNext: "The board refreshes and continues with the next item that needs you.",
-      outcomeSchedule: "Your expected completion and the AI execution plan will be realigned.",
+      outcomeSchedule: "Your expected completion and the automated execution plan will be realigned.",
       previous: "Previous",
       next: "Next",
       exit: "End focus",
@@ -597,20 +603,29 @@ type ActionQueueFilter = "all" | "danger" | "warning" | "running";
 type DailyGroupKey = WorkState | LocalWorkItem["status"];
 type WorkView = "my" | "ai";
 
-export function hasAiExecution(item: HomeWorkbenchItem): boolean {
-  return Boolean(item.ai);
+export function hasAutomatedExecution(item: HomeWorkbenchItem): boolean {
+  return Boolean(item.executionKind || item.ai);
 }
+
+export const hasAiExecution = hasAutomatedExecution;
 
 function isAiWorking(item: HomeWorkbenchItem): boolean {
   return item.userStatus ? item.userStatus === "ai_working" : ["claimed", "running", "verifying"].includes(item.executionState);
 }
 
-function isAiResultReady(item: HomeWorkbenchItem): boolean {
-  return item.userStatus ? item.userStatus === "ready_for_review" : item.executionState === "completed";
+function isAutomationReviewReady(item: HomeWorkbenchItem): boolean {
+  return item.userStatus
+    ? item.userStatus === "ready_for_review"
+    : item.executionState === "completed" && item.planningStatus !== "done";
+}
+
+function isAutomationCompleted(item: HomeWorkbenchItem): boolean {
+  return item.userStatus === "completed"
+    || (item.executionState === "completed" && item.planningStatus === "done");
 }
 
 export function canHandOffToAi(item: HomeWorkbenchItem): boolean {
-  return !hasAiExecution(item)
+  return !hasAutomatedExecution(item)
     && item.executionState === "unclaimed"
     && item.planningStatus === "ready";
 }
@@ -684,6 +699,18 @@ function executionLabel(item: HomeWorkbenchItem, copy: Copy): string {
     : copy.execution[item.executionState];
 }
 
+function executionTypeLabel(item: HomeWorkbenchItem, locale: string, copy: Copy): string {
+  if (item.executionKind === "article_import") return locale.startsWith("zh") ? "公众号导入" : "Article import";
+  if (item.executionKind === "article_derivative") return locale.startsWith("zh") ? "内容衍生" : "Article derivative";
+  if (item.ai) return "Agent";
+  return copy.aiLabel;
+}
+
+function executionActorLabel(item: HomeWorkbenchItem, locale: string, copy: Copy): string {
+  if (item.executionKind === "article_import") return executionTypeLabel(item, locale, copy);
+  return item.ai?.agentName ?? item.ai?.agentId ?? executionTypeLabel(item, locale, copy);
+}
+
 function homeVisibilityRank(item: HomeWorkbenchItem): number {
   if (item.attentionReason === "ai_failed" || item.executionState === "failed") return 0;
   if (item.attentionReason === "approval_required" || item.executionState === "awaiting_approval") return 1;
@@ -694,7 +721,7 @@ function homeVisibilityRank(item: HomeWorkbenchItem): number {
 }
 
 function homeActivityTime(item: HomeWorkbenchItem): number {
-  const value = Date.parse(item.ai?.updatedAt ?? item.completedAt ?? "");
+  const value = Date.parse(item.executionUpdatedAt ?? item.ai?.updatedAt ?? item.completedAt ?? "");
   return Number.isFinite(value) ? value : 0;
 }
 
@@ -959,7 +986,7 @@ export function DailyWorkBoard({
   const [rolloverPromptOpen, setRolloverPromptOpen] = useState(false);
   const [activeWorkView, setActiveWorkView] = useState<WorkView>("my");
   const [myWorkFilter, setMyWorkFilter] = useState<WorkItemRequesterRelation | "all" | "other">("all");
-  const [aiWorkFilter, setAiWorkFilter] = useState<"all" | "scheduled" | "running" | "awaiting_approval" | "failed" | "completed">("all");
+  const [aiWorkFilter, setAiWorkFilter] = useState<"all" | "scheduled" | "running" | "awaiting_approval" | "failed" | "review_ready" | "completed">("all");
   const [focusedIssue, setFocusedIssue] = useState<FocusedIssue | null>(null);
   const [scheduleTarget, setScheduleTarget] = useState<HomeWorkbenchItem | null>(null);
   const [scheduleDate, setScheduleDate] = useState("");
@@ -1032,7 +1059,7 @@ export function DailyWorkBoard({
     tomorrow: filterItems(baseModel.tomorrow),
     unscheduled: filterItems(baseModel.unscheduled),
   } : baseModel;
-  const aiWorkItems = projectedWorkbenchItems.filter(hasAiExecution);
+  const aiWorkItems = projectedWorkbenchItems.filter(hasAutomatedExecution);
   const actionQueue = buildActionQueue(projectedWorkbenchItems, copy);
   const actionQueueCounts: Record<ActionQueueFilter, number> = {
     all: actionQueue.length,
@@ -1053,7 +1080,8 @@ export function DailyWorkBoard({
   const matchesAiWorkFilter = (item: HomeWorkbenchItem) => {
     if (aiWorkFilter === "scheduled") return (!item.userStatus && (item.executionState === "unclaimed" || item.executionState === "claimed")) || item.userStatus === "scheduled";
     if (aiWorkFilter === "running") return isAiWorking(item);
-    if (aiWorkFilter === "completed") return isAiResultReady(item) || item.userStatus === "completed";
+    if (aiWorkFilter === "review_ready") return isAutomationReviewReady(item);
+    if (aiWorkFilter === "completed") return isAutomationCompleted(item);
     if (aiWorkFilter === "all") return true;
     return item.executionState === aiWorkFilter;
   };
@@ -1065,7 +1093,8 @@ export function DailyWorkBoard({
     running: aiWorkItems.filter(isAiWorking).length,
     awaiting_approval: aiWorkItems.filter((item) => item.executionState === "awaiting_approval").length,
     failed: aiWorkItems.filter((item) => item.executionState === "failed").length,
-    completed: aiWorkItems.filter((item) => isAiResultReady(item) || item.userStatus === "completed").length,
+    reviewReady: aiWorkItems.filter(isAutomationReviewReady).length,
+    completed: aiWorkItems.filter(isAutomationCompleted).length,
   };
   const aiDateGroups = {
     yesterday: filteredAiWorkItems.filter((item) => Boolean(item.plannedDate && item.plannedDate < currentDay)).sort(compareHomeVisibility),
@@ -1712,7 +1741,7 @@ export function DailyWorkBoard({
         ) : null}
 
         <section className="border-b border-border/80 bg-muted/10 px-4 py-4" data-testid="ai-work-status-cards">
-          <div className="grid grid-cols-2 gap-2 md:grid-cols-3 xl:grid-cols-6">
+          <div className="grid grid-cols-2 gap-2 md:grid-cols-4 xl:grid-cols-7">
             <WorkStatusFilterCard
               label={copy.allAiWork}
               value={aiCounts.all}
@@ -1735,7 +1764,7 @@ export function DailyWorkBoard({
               onClick={() => setAiWorkFilter("running")}
             />
             <WorkStatusFilterCard
-              label={copy.approvals}
+              label={copy.automationApprovals}
               value={aiCounts.awaiting_approval}
               tone="warning"
               active={aiWorkFilter === "awaiting_approval"}
@@ -1750,6 +1779,13 @@ export function DailyWorkBoard({
             />
             <WorkStatusFilterCard
               label={copy.reviewReady}
+              value={aiCounts.reviewReady}
+              tone="success"
+              active={aiWorkFilter === "review_ready"}
+              onClick={() => setAiWorkFilter("review_ready")}
+            />
+            <WorkStatusFilterCard
+              label={copy.automationCompleted}
               value={aiCounts.completed}
               tone="success"
               active={aiWorkFilter === "completed"}
@@ -2115,7 +2151,7 @@ function AiWorkCard({
       <div className="mt-1.5 grid grid-cols-2 gap-x-3 gap-y-0.5 text-[10px] text-muted-foreground">
         <span>{copy.executionDate}：{executionDate ?? copy.noExecutionDate}</span>
         {completedDate ? <span>{copy.completedOn}：{completedDate}</span> : <span>{copy.expectedCompletion}：{dueDate ?? copy.noExpectedCompletion}</span>}
-        <span className="col-span-2">{item.ai?.agentName ?? item.ai?.agentId ?? copy.aiLabel}</span>
+        <span className="col-span-2">{executionActorLabel(item, locale, copy)}</span>
       </div>
       <WorkCoordinationNotice item={item} copy={copy} />
       {item.result?.summary ? (
@@ -2136,10 +2172,10 @@ function AiWorkCard({
 type CoordinationKind = "late_execution" | "unscheduled" | "review_pending";
 
 function coordinationNotice(item: HomeWorkbenchItem, copy: Copy): { kind: CoordinationKind; label: string; tone: "danger" | "warning" | "running" } | null {
-  if (hasAiExecution(item) && item.dueDate && item.plannedDate && item.plannedDate > item.dueDate) {
+  if (hasAutomatedExecution(item) && item.dueDate && item.plannedDate && item.plannedDate > item.dueDate) {
     return { kind: "late_execution", label: copy.coordination.executionAfterCompletion, tone: "danger" };
   }
-  if (item.ai && !item.plannedDate) {
+  if (hasAutomatedExecution(item) && !item.plannedDate) {
     return { kind: "unscheduled", label: copy.coordination.aiUnscheduled, tone: "warning" };
   }
   if ((item.userStatus === "ready_for_review" || item.executionState === "completed") && item.planningStatus !== "done") {
@@ -2177,6 +2213,7 @@ type ActionQueueItem = {
 
 function buildActionQueue(items: HomeWorkbenchItem[], copy: Copy): ActionQueueItem[] {
   return items.flatMap((item): ActionQueueItem[] => {
+    if (item.planningStatus === "done") return [];
     const attention = item.attentionReason;
     if (attention === "ai_failed") {
       return [{ item, reason: copy.attentionReason.ai_failed, tone: "danger", action: "next", actionLabel: copy.nextAction[item.nextAction.kind], rank: 0 }];
@@ -2184,7 +2221,7 @@ function buildActionQueue(items: HomeWorkbenchItem[], copy: Copy): ActionQueueIt
     if (attention === "approval_required") {
       return [{ item, reason: copy.attentionReason.approval_required, tone: "warning", action: "next", actionLabel: copy.nextAction[item.nextAction.kind], rank: 1 }];
     }
-    if (attention === "review_ready" || (item.executionState === "completed" && item.planningStatus !== "done")) {
+    if (attention === "review_ready" || item.executionState === "completed") {
       return [{ item, reason: copy.coordination.reviewPending, tone: "running", action: "next", actionLabel: copy.nextAction[item.nextAction.kind], rank: 2 }];
     }
     if (attention === "overdue") {
@@ -2193,6 +2230,10 @@ function buildActionQueue(items: HomeWorkbenchItem[], copy: Copy): ActionQueueIt
     if (attention === "user_action_required" || attention === "follow_up_due") {
       return [{ item, reason: copy.attentionReason[attention], tone: "warning", action: "next", actionLabel: copy.nextAction[item.nextAction.kind], rank: 4 }];
     }
+    // Scheduling metadata must never turn work that is already moving into a
+    // human interruption. The execution continues and can be inspected under
+    // Task status if needed.
+    if (isAiWorking(item)) return [];
     const coordination = coordinationNotice(item, copy);
     if (coordination?.kind === "late_execution") {
       return [{ item, reason: coordination.label, tone: "danger", action: "schedule", actionLabel: copy.actionQueue.adjustExecution, rank: 5 }];
@@ -2230,6 +2271,21 @@ function DailyCoordinationBrief({
     .replace("{{actions}}", String(actionCount))
     .replace("{{ai}}", String(aiMovingCount));
   const conflict = copy.dailyBrief.conflict.replace("{{count}}", String(scheduleConflictCount));
+  if (todayDueCount === 0 && actionCount === 0 && aiMovingCount === 0) {
+    return (
+      <Card className="h-full min-w-0 border-primary/20 bg-primary/[0.035]" data-testid="daily-coordination-brief" data-compact="true">
+        <div className="flex h-full items-center gap-3 p-4">
+          <span className="grid size-9 shrink-0 place-items-center rounded-lg bg-success/10 text-success">
+            <CheckCircle2 className="size-4" aria-hidden />
+          </span>
+          <div className="min-w-0">
+            <h2 className="text-sm font-semibold">{copy.dailyBrief.title}</h2>
+            <p className="mt-0.5 text-sm text-muted-foreground">{copy.dailyBrief.allClear}</p>
+          </div>
+        </div>
+      </Card>
+    );
+  }
   return (
     <Card className="h-full min-w-0 overflow-hidden border-primary/30 bg-gradient-to-br from-primary/[0.08] via-card to-card" data-testid="daily-coordination-brief">
       <div className="flex h-full flex-col gap-4 p-5">
@@ -2614,7 +2670,7 @@ function DayColumn({
                   onStartAi={item.home && canHandOffToAi(item.home) && onStartAi ? () => onStartAi(item.home!) : undefined}
                   startingAi={Boolean(item.home && startingAiWorkItemId === item.home.workItemId)}
                   focused={Boolean(item.home && focusedWorkItemId === item.home.workItemId)}
-                  onLocateAi={item.home && hasAiExecution(item.home) ? () => onLocateAi(item.home!) : undefined}
+                  onLocateAi={item.home && hasAutomatedExecution(item.home) ? () => onLocateAi(item.home!) : undefined}
                 />
               ))}
               {hiddenCount > 0 && !revealFocused ? (
@@ -2687,7 +2743,6 @@ function WorkCard({
     : copy.relation[item.requesterRelation ?? "unknown"];
   const dueDate = formatDateOnly(item.dueDate ?? home?.dueDate, locale);
   const completedDate = formatDateOnly(home?.completedAt ?? null, locale);
-  const executionDate = formatDateOnly(home?.plannedDate, locale);
   return (
     <div
       className={cn(
@@ -2722,8 +2777,8 @@ function WorkCard({
         <div className="mt-1.5 grid grid-cols-2 gap-x-3 gap-y-0.5 text-[10px] text-muted-foreground">
           {completedDate ? <span>{copy.completedOn}：{completedDate}</span> : <span>{copy.expectedCompletion}：{dueDate ?? copy.noExpectedCompletion}</span>}
           <span>
-            {copy.aiLabel}：{hasAiExecution(home)
-              ? `${executionDate ?? copy.noExecutionDate} · ${executionLabel(home, copy)}`
+            {copy.aiLabel}：{hasAutomatedExecution(home)
+              ? `${executionTypeLabel(home, locale, copy)} · ${executionLabel(home, copy)}`
               : copy.coordination.aiNotLinked}
           </span>
           <span>{copy.owner}：{home.assignees.map((assignee) => assignee.name).join(", ") || "—"}</span>
@@ -2778,7 +2833,7 @@ function homeTaskWorkItem(item: HomeWorkbenchItem): WorkItem {
     section: "task",
     targetId: item.workItemId,
     projectId: item.projectId,
-    updatedAt: item.ai?.updatedAt ?? null,
+    updatedAt: item.executionUpdatedAt ?? item.ai?.updatedAt ?? null,
   };
 }
 

@@ -1,6 +1,6 @@
 export const ENTRY_BUNDLE_LIMITS = Object.freeze({
   "index.html": 525_000,
-  "src/features/tasks/task-view.tsx": 140_000,
+  "src/features/tasks/local-tasks-view.tsx": 140_000,
   "src/features/auto-runs/auto-runs-view.tsx": 110_000,
 });
 

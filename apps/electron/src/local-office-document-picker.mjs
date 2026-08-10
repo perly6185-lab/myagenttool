@@ -96,6 +96,24 @@ export function registerContainedAssetOpen({ ipcMain, getState, openPath }) {
   });
 }
 
+export function registerContainedAssetReveal({ ipcMain, getState, revealPath }) {
+  ipcMain.removeHandler("assets:reveal-contained");
+  ipcMain.handle("assets:reveal-contained", async (_event, input) => {
+    let target;
+    try {
+      target = resolveContainedAsset(await getState(), input);
+    } catch {
+      throw new Error("The requested asset could not be located safely.");
+    }
+    try {
+      await revealPath(target);
+    } catch {
+      throw new Error("The system file manager could not locate this asset.");
+    }
+    return { revealed: true };
+  });
+}
+
 export function resolveContainedOfficeDocument(state, input) {
   const requestedExtension = extname(String(input?.relativePath ?? "")).toLowerCase();
   if (!OFFICE_TYPES.has(requestedExtension)) throw new Error("Only .docx, .xlsx, and .pptx documents can be opened.");

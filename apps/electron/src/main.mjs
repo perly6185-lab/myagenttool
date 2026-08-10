@@ -8,7 +8,7 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { bundledAgentEnv } from "./bundled-agent-runtime.mjs";
 import { overlayFromChrome, readSkinSettings, registerSkinChrome } from "./skin-chrome.mjs";
-import { registerContainedAssetOpen, registerContainedOfficeDocumentOpen, registerLocalOfficeDocumentPicker, registerWorkflowSourceFolderPicker } from "./local-office-document-picker.mjs";
+import { registerContainedAssetOpen, registerContainedAssetReveal, registerContainedOfficeDocumentOpen, registerLocalOfficeDocumentPicker, registerWorkflowSourceFolderPicker } from "./local-office-document-picker.mjs";
 import { registerWorkflowCaseIntake } from "./workflow-case-intake.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -183,6 +183,7 @@ function createMainWindow(url, serverUrl) {
   registerWorkflowCaseIntake({ ipcMain, dialog, getWindow: () => mainWindow, getState });
   registerContainedOfficeDocumentOpen({ ipcMain, getState, openPath: (path) => shell.openPath(path) });
   registerContainedAssetOpen({ ipcMain, getState, openPath: (path) => shell.openPath(path) });
+  registerContainedAssetReveal({ ipcMain, getState, revealPath: (path) => shell.showItemInFolder(path) });
   const chrome = readSkinSettings(skinStateDir());
   nativeTheme.themeSource = chrome.themeSource;
 

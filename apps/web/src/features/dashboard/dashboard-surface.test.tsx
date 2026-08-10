@@ -142,6 +142,25 @@ describe("DashboardView surfaces (#927)", () => {
     expect((await screen.findByRole("alert")).textContent).toContain("1 Home data source");
   });
 
+  it("uses the server current project instead of a stale local project selection", async () => {
+    useUiStore.setState({ selectedProjectId: "project-stale" });
+    mocks.useConsoleState.mockReturnValue({
+      data: {
+        currentProjectId: "project-current",
+        projects: [
+          { id: "project-current", name: "Current customer" },
+          { id: "project-stale", name: "Old customer" },
+        ],
+        worktrees: [], events: [], invocations: [], agents: [], device: { status: "offline" },
+      },
+    });
+    mocks.useAsyncAction.mockReturnValue({ execute: vi.fn(), pending: false, error: null });
+
+    render(<DashboardView surface="overview" />);
+
+    expect((await screen.findByRole("combobox", { name: "Current project" }) as HTMLSelectElement).value).toBe("project-current");
+  });
+
   it("prioritizes incomplete setup before task entry and removes the temporary run entry", async () => {
     setup();
     render(<DashboardView surface="overview" />);

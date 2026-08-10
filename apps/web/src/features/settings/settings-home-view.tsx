@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useState } from "react";
-import { AlertTriangle, CheckCircle2, HardDrive, Search, Trash2 } from "lucide-react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { AlertTriangle, ArrowLeft, CheckCircle2, ChevronRight, Clock3, HardDrive, Search, Star, Trash2 } from "lucide-react";
 import { pageRegistration } from "@/app/sections";
 import { SectionHeading } from "@/components/common/section-heading";
 import { Button } from "@/components/ui/button";
@@ -14,8 +14,13 @@ import { usePageNavigation } from "@/hooks/use-page-navigation";
 import { ApiError, type TaskMaterialStorage } from "@/lib/api-client";
 import { useAppTranslation } from "@/lib/i18n/use-app-translation";
 import { deriveApplicationDependencyState } from "./application-dependency-state";
-
-const DOMAIN_KEYS = ["projects", "agents", "agentSkills", "devices", "discovery", "integrations", "tools", "applications", "channels", "automation", "routines", "economics"] as const;
+import { MY_SETTINGS_CATEGORIES, settingsSearchAliases, type MySettingsCategoryKey } from "./my-settings-model";
+import { canDiscoverProfessionalPage, canManageProfessionalSettings } from "@/app/page-access";
+import { useSessionUser } from "@/hooks/use-session-user";
+import { useUiStore } from "@/store/ui-store";
+import { WorkProfileReview } from "@/features/me/work-profile-review";
+import { AdvancedProjectsSettings } from "@/features/projects/projects-view";
+import { ReportSchedulePanel } from "@/features/work-board/work-board-view";
 
 function formatBytes(bytes: number, locale: string) {
   if (bytes < 1024) return `${bytes} B`;
@@ -29,11 +34,28 @@ function formatBytes(bytes: number, locale: string) {
   return `${new Intl.NumberFormat(locale, { maximumFractionDigits: value >= 10 ? 1 : 2 }).format(value)} ${unit}`;
 }
 
-export function SettingsHomeView() {
+function matchesSettingsQuery(text: string, query: string): boolean {
+  const searchable = text.toLowerCase();
+  return query.split(/\s+/).filter(Boolean).every((token) => searchable.includes(token));
+}
+
+export function SettingsHomeView({ embedded = false }: { embedded?: boolean }) {
   const { t, i18n } = useAppTranslation();
   const navigate = usePageNavigation();
   const { data: state } = useConsoleState();
-  const [query, setQuery] = useState("");
+  const sessionUser = useSessionUser();
+  const canManage = canManageProfessionalSettings(sessionUser?.role);
+  const query = useUiStore((store) => store.settingsQuery);
+  const setQuery = useUiStore((store) => store.setSettingsQuery);
+  const selectedCategory = useUiStore((store) => store.settingsCategory);
+  const setSelectedCategory = useUiStore((store) => store.setSettingsCategory);
+  const settingsScrollTop = useUiStore((store) => store.settingsScrollTop);
+  const setSettingsScrollTop = useUiStore((store) => store.setSettingsScrollTop);
+  const recentSections = useUiStore((store) => store.recentSettingsSections);
+  const favoriteSections = useUiStore((store) => store.favoriteSettingsSections);
+  const toggleFavorite = useUiStore((store) => store.toggleFavoriteSettingsSection);
+  const rootRef = useRef<HTMLDivElement>(null);
+  const restoredScrollTopRef = useRef(settingsScrollTop);
   const [applicationId, setApplicationId] = useState("");
   const [materialStorage, setMaterialStorage] = useState<TaskMaterialStorage | null>(null);
   const [storageLoading, setStorageLoading] = useState(true);
@@ -44,6 +66,8 @@ export function SettingsHomeView() {
   const [externalPolicy, setExternalPolicy] = useState({ intakeEnabled: true, writebackEnabled: true, autoExecutionEnabled: false, emergencyStop: false });
   const [externalPolicyPending, setExternalPolicyPending] = useState(false);
   const [externalPolicyNotice, setExternalPolicyNotice] = useState<string | null>(null);
+  const [profileOpen, setProfileOpen] = useState(false);
+  const [advancedProjectsOpen, setAdvancedProjectsOpen] = useState(false);
   const zh = i18n.language.startsWith("zh");
   const externalCopy = zh ? {
     title: "外部 Issue 项目开关",
@@ -135,6 +159,25 @@ export function SettingsHomeView() {
   useEffect(() => { void loadMaterialStorage(); }, []);
 
   useEffect(() => {
+    if (embedded) return undefined;
+    const main = rootRef.current?.closest("main");
+    if (!main) return undefined;
+    const frame = requestAnimationFrame(() => {
+      main.scrollTop = restoredScrollTopRef.current;
+    });
+    return () => {
+      cancelAnimationFrame(frame);
+      setSettingsScrollTop(main.scrollTop);
+    };
+  }, [embedded, setSettingsScrollTop]);
+
+  useEffect(() => {
+    if (!selectedCategory || query.trim()) return undefined;
+    const frame = requestAnimationFrame(() => document.getElementById(`settings-category-${selectedCategory}`)?.focus());
+    return () => cancelAnimationFrame(frame);
+  }, [query, selectedCategory]);
+
+  useEffect(() => {
     const policy = currentProject?.externalIssuePolicy;
     setExternalPolicy({
       intakeEnabled: policy?.intakeEnabled !== false,
@@ -178,8 +221,28 @@ export function SettingsHomeView() {
     }
   }
   const normalized = query.trim().toLowerCase();
-  const domains = useMemo(() => DOMAIN_KEYS.map((key) => pageRegistration(key))
-    .filter((page) => !normalized || `${t(page.labelKey)} ${t(page.blurbKey)}`.toLowerCase().includes(normalized)), [normalized, t]);
+  const categoryAttention: Record<MySettingsCategoryKey, number> = {
+    execution: state ? (state.device?.status === "online" ? 0 : 1) + (state.agents ?? []).filter((item) => item.status === "disabled" || item.health?.status === "unhealthy").length : 0,
+    connections: (state?.applications ?? []).filter((item) => item.status !== "active" || item.localReadiness?.state === "repair_required").length
+      + (state?.channelOperations ?? []).filter((item) => !item.ready || item.health === "attention").length,
+    automation: (state?.scheduleHealth ?? []).filter((item) => item.needsAttention).length,
+    governance: state?.pendingDecisions?.length ?? 0,
+    resources: (state?.budgetStatuses ?? []).filter((item) => item.over).length,
+    diagnostics: (state?.invocations ?? []).filter((item) => ["failed", "timed_out", "refused"].includes(item.status ?? "")).length,
+  };
+  const categories = useMemo(() => MY_SETTINGS_CATEGORIES.map((category) => ({
+    ...category,
+    pages: category.sections
+      .filter((key) => canDiscoverProfessionalPage(key, sessionUser?.role))
+      .map((key) => pageRegistration(key))
+      .filter((page) => !normalized || matchesSettingsQuery(`${t(page.labelKey)} ${t(page.blurbKey)} ${settingsSearchAliases(page.key)}`, normalized)),
+  })).filter((category) => category.pages.length > 0), [normalized, sessionUser?.role, t]);
+  const quickAccessPages = useMemo(() => {
+    const keys = [...favoriteSections, ...recentSections.filter((key) => !favoriteSections.includes(key))];
+    return keys
+      .filter((key, index) => keys.indexOf(key) === index && canDiscoverProfessionalPage(key, sessionUser?.role))
+      .map((key) => pageRegistration(key));
+  }, [favoriteSections, recentSections, sessionUser?.role]);
 
   const readyAgents = (state?.agents ?? []).filter((item) => item.status !== "disabled" && item.health?.status !== "unhealthy").length;
   const readyApplications = (state?.applications ?? []).filter((item) => item.status === "active" && item.localReadiness?.state !== "repair_required").length;
@@ -212,11 +275,176 @@ export function SettingsHomeView() {
     { key: "tool", ready: matchedCapabilities.length > 0, reason: matchedCapabilities.join(", ") || t("settingsHome.noActualLink"), section: "tools" as const },
     { key: "channel", ready: (state?.channelOperations ?? []).some((item) => relatedChannelIds.has(item.id) && item.ready && item.health !== "attention"), reason: [...relatedChannelIds].join(", ") || t("settingsHome.noActualLink"), section: "channels" as const, optional: true },
   ];
+  const settingSearchTargets = [
+    { id: "settings-personalization", title: zh ? "AI 个性化" : "AI personalization", description: zh ? "查看和修正 AI 对你工作方式的理解" : "Review and correct how AI understands your work" },
+    ...(canManage ? [
+    { id: "settings-recommended", title: t("settingsHome.recommended"), description: needsFix.map((item) => t(item.fix)).join(" ") },
+    { id: "settings-readiness", title: t("settingsHome.health"), description: checks.map((item) => t(item.label)).join(" ") },
+    { id: "settings-projects", title: zh ? "高级项目设置" : "Advanced project settings", description: zh ? "仓库、工作树、隔离、预算和归档" : "Repository, worktree, isolation, budget, and archive controls" },
+    { id: "settings-external-issues", title: externalCopy.title, description: externalCopy.description },
+    { id: "settings-storage", title: storageCopy.title, description: storageCopy.description },
+    ...(state?.reportSchedule ? [{ id: "settings-report-schedule", title: zh ? "定时报告" : "Scheduled reports", description: zh ? "配置任务状态报告的发送周期与接收位置" : "Configure when task-status reports are sent and where they are delivered" }] : []),
+    { id: "settings-capability-path", title: t("settingsHome.setupGuide"), description: t("settingsHome.setupGuideHint") },
+    ] : []),
+  ];
+  const matchingSettingTargets = normalized
+    ? settingSearchTargets.filter((item) => matchesSettingsQuery(`${item.title} ${item.description}`, normalized))
+    : [];
 
   return (
-    <div className="space-y-5">
-      <SectionHeading eyebrow={t("settingsHome.eyebrow")} title={t("settingsHome.title")} description={t("settingsHome.description")} />
-      <Card>
+    <div ref={rootRef} className="space-y-5">
+      {!embedded ? <SectionHeading eyebrow={t("settingsHome.eyebrow")} title={t("settingsHome.title")} description={t("settingsHome.description")} /> : null}
+      {!embedded ? <Card>
+        <CardHeader>
+          <CardTitle>{t("settingsHome.professionalAreas")}</CardTitle>
+          <p className="text-sm text-muted-foreground">{t("settingsHome.professionalAreasHint")}</p>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div className="relative">
+            <Search className="pointer-events-none absolute left-3 top-3 size-4 text-muted-foreground" />
+            <Input value={query} onChange={(event) => setQuery(event.target.value)} className="pl-9" aria-label={t("settingsHome.search")} placeholder={t("settingsHome.searchPlaceholder")} />
+          </div>
+          {!normalized && !selectedCategory && quickAccessPages.length ? (
+            <section className="space-y-2" aria-labelledby="settings-quick-access">
+              <h2 id="settings-quick-access" className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">{zh ? "收藏与最近访问" : "Favorites and recent"}</h2>
+              <div className="flex flex-wrap gap-2">
+                {quickAccessPages.map((page) => {
+                  const favorite = favoriteSections.includes(page.key);
+                  return (
+                    <div key={page.key} className="flex items-center rounded-lg border bg-muted/15">
+                      <button type="button" onClick={() => navigate(page.key)} className="flex items-center gap-2 rounded-l-lg px-3 py-2 text-sm hover:bg-muted">
+                        {favorite ? <Star className="size-3.5 fill-current text-warning" aria-hidden /> : <Clock3 className="size-3.5 text-muted-foreground" aria-hidden />}
+                        {t(page.labelKey)}
+                      </button>
+                      <button type="button" aria-label={favorite ? `${zh ? "取消收藏" : "Remove from favorites"} ${t(page.labelKey)}` : `${zh ? "收藏" : "Favorite"} ${t(page.labelKey)}`} onClick={() => toggleFavorite(page.key)} className="rounded-r-lg border-l p-2 text-muted-foreground hover:bg-muted hover:text-foreground">
+                        <Star className={`size-3.5 ${favorite ? "fill-current text-warning" : ""}`} aria-hidden />
+                      </button>
+                    </div>
+                  );
+                })}
+              </div>
+            </section>
+          ) : null}
+          {normalized || selectedCategory ? (
+            <div className="space-y-3">
+              {!normalized && selectedCategory ? (
+                <button type="button" className="inline-flex items-center gap-1 rounded px-2 py-1 text-sm text-muted-foreground hover:bg-muted hover:text-foreground" onClick={() => {
+                  const previousCategory = selectedCategory;
+                  setSelectedCategory(null);
+                  requestAnimationFrame(() => document.getElementById(`settings-category-button-${previousCategory}`)?.focus());
+                }}>
+                  <ArrowLeft className="size-4" aria-hidden />{t("settingsHome.allCategories")}
+                </button>
+              ) : null}
+              <div className="grid gap-3 lg:grid-cols-2">
+                {categories.filter((category) => normalized || !selectedCategory || category.key === selectedCategory).map((category) => (
+                  <section key={category.key} className="rounded-xl border bg-muted/15 p-3" aria-labelledby={`settings-category-${category.key}`}>
+                    <h2 id={`settings-category-${category.key}`} tabIndex={-1} className="text-sm font-semibold outline-none">{t(`settingsHome.categories.${category.key}.title`)}</h2>
+                    <p className="mb-2 text-xs text-muted-foreground">{t(`settingsHome.categories.${category.key}.hint`)}</p>
+                    <div className="grid gap-1 sm:grid-cols-2">
+                      {category.pages.map((page) => {
+                        const Icon = page.icon;
+                        const favorite = favoriteSections.includes(page.key);
+                        return (
+                          <div key={page.key} className="flex min-w-0 items-start rounded-lg hover:bg-muted">
+                            <button type="button" onClick={() => navigate(page.key)} className="flex min-w-0 flex-1 items-start gap-2 p-2 text-left">
+                              <Icon className="mt-0.5 size-4 shrink-0 text-muted-foreground" aria-hidden />
+                              <span className="min-w-0"><strong className="block text-sm font-medium">{t(page.labelKey)}</strong><span className="block text-xs text-muted-foreground">{t(page.blurbKey)}</span></span>
+                            </button>
+                            <button type="button" aria-label={favorite ? `${zh ? "取消收藏" : "Remove from favorites"} ${t(page.labelKey)}` : `${zh ? "收藏" : "Favorite"} ${t(page.labelKey)}`} onClick={() => toggleFavorite(page.key)} className="m-1 rounded p-1.5 text-muted-foreground hover:bg-background hover:text-foreground">
+                              <Star className={`size-3.5 ${favorite ? "fill-current text-warning" : ""}`} aria-hidden />
+                            </button>
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </section>
+                ))}
+              </div>
+            </div>
+          ) : (
+            <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+              {categories.map((category) => (
+                <button id={`settings-category-button-${category.key}`} key={category.key} type="button" onClick={() => {
+                  setSelectedCategory(category.key);
+                  requestAnimationFrame(() => document.getElementById(`settings-category-${category.key}`)?.focus());
+                }} className="flex min-h-28 items-start gap-3 rounded-xl border bg-muted/15 p-4 text-left hover:bg-muted/50">
+                  <span className="min-w-0 flex-1">
+                    <span className="block text-sm font-semibold">{t(`settingsHome.categories.${category.key}.title`)}</span>
+                    <span className="mt-1 block text-xs text-muted-foreground">{t(`settingsHome.categories.${category.key}.hint`)}</span>
+                    <span className="mt-3 block text-[11px] text-muted-foreground">{t("settingsHome.capabilityCount", { count: category.pages.length })}</span>
+                    {categoryAttention[category.key] ? <span className="mt-1 block text-[11px] font-medium text-warning">{t("shell.attention", { count: categoryAttention[category.key] })}</span> : null}
+                  </span>
+                  <ChevronRight className="mt-0.5 size-4 shrink-0 text-muted-foreground" aria-hidden />
+                </button>
+              ))}
+            </div>
+          )}
+          {matchingSettingTargets.length ? (
+            <div className="grid gap-2 sm:grid-cols-2" aria-label={t("settingsHome.search")}>
+              {matchingSettingTargets.map((item) => (
+                <button key={item.id} type="button" className="flex items-center justify-between gap-3 rounded-lg border p-3 text-left hover:bg-muted" onClick={() => document.getElementById(item.id)?.scrollIntoView({ behavior: "smooth", block: "start" })}>
+                  <span><strong className="block text-sm">{item.title}</strong><span className="block text-xs text-muted-foreground">{item.description}</span></span>
+                  <ChevronRight className="size-4 shrink-0 text-muted-foreground" aria-hidden />
+                </button>
+              ))}
+            </div>
+          ) : null}
+          {!categories.length && !matchingSettingTargets.length ? <p className="text-sm text-muted-foreground">{t("settingsHome.noMatch")}</p> : null}
+          {!canManage && sessionUser?.role ? (
+            <p className="rounded-lg border bg-muted/30 p-3 text-xs text-muted-foreground" role="status">
+              {t("settingsRole.limited", { role: t(`identity.role.${sessionUser.role}`) })}
+            </p>
+          ) : null}
+        </CardContent>
+      </Card> : null}
+      <Card id="settings-personalization">
+        <CardHeader>
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <div>
+              <CardTitle>{zh ? "AI 个性化" : "AI personalization"}</CardTitle>
+              <p className="text-sm text-muted-foreground">{zh ? "低频核实 AI 对你的角色、领域和工作偏好的理解。" : "Occasionally review how AI understands your role, domain, and work preferences."}</p>
+            </div>
+            <Button size="sm" variant="secondary" onClick={() => setProfileOpen((open) => !open)}>{profileOpen ? (zh ? "收起" : "Close") : (zh ? "查看工作画像" : "Review work profile")}</Button>
+          </div>
+        </CardHeader>
+        {profileOpen ? <CardContent><WorkProfileReview /></CardContent> : null}
+      </Card>
+      {canManage ? <>
+      {needsFix.length ? (
+        <Card id="settings-recommended">
+          <CardHeader><CardTitle>{t("settingsHome.recommended")}</CardTitle></CardHeader>
+          <CardContent className="space-y-2">
+            {needsFix.map((check, index) => (
+              <button key={check.key} type="button" onClick={() => navigate(check.section)} className="flex w-full items-center justify-between rounded-lg border px-3 py-2 text-left text-sm hover:bg-muted">
+                <span>{index + 1}. {t(check.fix)}</span><span aria-hidden>→</span>
+              </button>
+            ))}
+          </CardContent>
+        </Card>
+      ) : null}
+      <Card id="settings-projects">
+        <CardHeader>
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <div>
+              <CardTitle>{zh ? "高级项目设置" : "Advanced project settings"}</CardTitle>
+              <p className="text-sm text-muted-foreground">{zh ? "管理仓库、工作树、运行隔离、预算和归档。普通项目页不会显示这些低频选项。" : "Manage repositories, worktrees, run isolation, budgets, and archives outside the everyday project view."}</p>
+            </div>
+            <Button size="sm" variant="secondary" onClick={() => setAdvancedProjectsOpen((open) => !open)}>{advancedProjectsOpen ? (zh ? "收起" : "Close") : (zh ? "打开高级设置" : "Open advanced settings")}</Button>
+          </div>
+        </CardHeader>
+        {advancedProjectsOpen ? <CardContent><AdvancedProjectsSettings /></CardContent> : null}
+      </Card>
+      {state?.reportSchedule ? (
+        <section id="settings-report-schedule" aria-label={zh ? "报告调度" : "Report schedule"}>
+          <ReportSchedulePanel
+            schedule={state.reportSchedule}
+            channels={(state.channelOperations ?? []).map((channel) => ({ id: channel.id, name: channel.name }))}
+            conversations={state.channelConversations ?? []}
+          />
+        </section>
+      ) : null}
+      <Card id="settings-external-issues">
         <CardHeader>
           <CardTitle>{externalCopy.title}</CardTitle>
           <p className="text-sm text-muted-foreground">{currentProject ? `${currentProject.name} · ${externalCopy.description}` : externalCopy.unavailable}</p>
@@ -247,7 +475,7 @@ export function SettingsHomeView() {
           </div>
         </CardContent>
       </Card>
-      <Card>
+      <Card id="settings-readiness">
         <CardHeader><CardTitle>{t("settingsHome.health")}</CardTitle></CardHeader>
         <CardContent className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
           {checks.map((check) => (
@@ -263,7 +491,7 @@ export function SettingsHomeView() {
           ))}
         </CardContent>
       </Card>
-      <Card>
+      <Card id="settings-storage">
         <CardHeader>
           <CardTitle className="flex items-center gap-2"><HardDrive className="size-5" aria-hidden />{storageCopy.title}</CardTitle>
           <p className="text-sm text-muted-foreground">{storageCopy.description}</p>
@@ -302,19 +530,7 @@ export function SettingsHomeView() {
           ) : <div className="flex flex-wrap items-center justify-between gap-2"><p className="text-sm text-warning" role="alert">{storageCopy.unavailable}</p><Button size="sm" variant="secondary" onClick={() => { void loadMaterialStorage(); }}>{storageCopy.retry}</Button></div>}
         </CardContent>
       </Card>
-      {needsFix.length ? (
-        <Card>
-          <CardHeader><CardTitle>{t("settingsHome.recommended")}</CardTitle></CardHeader>
-          <CardContent className="space-y-2">
-            {needsFix.map((check, index) => (
-              <button key={check.key} type="button" onClick={() => navigate(check.section)} className="flex w-full items-center justify-between rounded-lg border px-3 py-2 text-left text-sm hover:bg-muted">
-                <span>{index + 1}. {t(check.fix)}</span><span aria-hidden>→</span>
-              </button>
-            ))}
-          </CardContent>
-        </Card>
-      ) : null}
-      <Card>
+      <Card id="settings-capability-path">
         <CardHeader><CardTitle>{t("settingsHome.setupGuide")}</CardTitle><p className="text-sm text-muted-foreground">{t("settingsHome.setupGuideHint")}</p></CardHeader>
         <CardContent className="space-y-3">
           <Select aria-label={t("settingsHome.applicationPicker")} value={selectedApplication?.id ?? ""} onChange={(event) => setApplicationId(event.target.value)}>
@@ -334,19 +550,7 @@ export function SettingsHomeView() {
           </div>
         </CardContent>
       </Card>
-      <div className="relative">
-        <Search className="pointer-events-none absolute left-3 top-3 size-4 text-muted-foreground" />
-        <Input value={query} onChange={(event) => setQuery(event.target.value)} className="pl-9" aria-label={t("settingsHome.search")} placeholder={t("settingsHome.searchPlaceholder")} />
-      </div>
-      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-        {domains.map((page) => {
-          const Icon = page.icon;
-          return <button key={page.key} type="button" onClick={() => navigate(page.key)} className="rounded-xl border bg-card p-4 text-left hover:bg-muted">
-            <Icon className="mb-3 size-5" /><strong className="block text-sm">{t(page.labelKey)}</strong><span className="text-xs text-muted-foreground">{t(page.blurbKey)}</span>
-          </button>;
-        })}
-      </div>
-      {!domains.length ? <p className="text-sm text-muted-foreground">{t("settingsHome.noMatch")}</p> : null}
+      </> : null}
       <Modal open={cleanupOpen} onClose={() => setCleanupOpen(false)} title={storageCopy.confirmTitle} description={storageCopy.confirmDescription} closeDisabled={cleanupPending}>
         <div className="space-y-4">
           <p className="text-sm text-muted-foreground">{storageCopy.scope

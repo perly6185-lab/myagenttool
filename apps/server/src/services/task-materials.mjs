@@ -393,7 +393,7 @@ export function createTaskMaterialService({ state, stateStorePath, now, nextId, 
       if (createHash("sha256").update(bytes).digest("hex") !== asset.hash) {
         return { status: 409, error: "task_material_integrity_mismatch" };
       }
-      return { status: 200, asset: publicDraft({ assets: [asset] }).assets[0], bytes };
+      return { status: 200, asset: publicDraft({ assets: [asset] }).assets[0], bytes, localPath: path };
     }
     return { status: 404, error: "task_material_not_found" };
   }

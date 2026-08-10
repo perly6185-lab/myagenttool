@@ -268,10 +268,11 @@ export function WorktreeView({ worktree }: { worktree: WorktreeSnapshot }) {
     loadTree();
   }, [worktree.id]);
 
-  // Documents can hand an Office file to an existing worktree editor. Consume
-  // the transient path once the target worktree is mounted, then open its file tab.
+  // Documents and task results can hand a governed file to this worktree.
+  // Consume the transient path once the target worktree is mounted, then open
+  // the existing rendered Office view or read-only source/text view.
   useEffect(() => {
-    if (!requestedOfficeDocument || !/\.(docx|xlsx|pptx)$/i.test(requestedOfficeDocument)) return;
+    if (!requestedOfficeDocument) return;
     openFile(requestedOfficeDocument, requestedOfficeDocument.split("/").pop() ?? requestedOfficeDocument);
     setOfficecliPreviewPath(null);
   }, [worktree.id, requestedOfficeDocument]);

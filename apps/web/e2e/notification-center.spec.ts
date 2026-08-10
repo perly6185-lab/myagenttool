@@ -127,6 +127,25 @@ test("does not invent completion unread items after refresh", async ({ page }) =
   await expect(page.getByRole("dialog", { name: "Notifications" }).getByText("Periodic refresh", { exact: true }).first()).toBeVisible();
 });
 
+test("opens the exact failed task from its notification title", async ({ page }) => {
+  await routeState(page, () => ({
+    device: { id: "device-1", name: "Workstation", status: "online" },
+    pendingDecisions: [],
+    evidenceLedger: [],
+    invocations: [],
+    workBoard: board({ failed: 1, failureId: "failed-direct" }),
+  }));
+  await page.goto("/?section=dashboard");
+
+  await page.getByRole("button", { name: /Notifications:/ }).click();
+  await page.getByRole("dialog", { name: "Notifications" })
+    .getByRole("button", { name: "Sensitive failure title", exact: true })
+    .click();
+
+  await expect(page).toHaveURL(/section=task/);
+  await expect(page).toHaveURL(/task=failed-direct/);
+});
+
 test("browser delivery is explicit, disableable, and privacy-safe", async ({ page }) => {
   let currentState: State = {
     device: { id: "device-1", name: "Workstation", status: "online" },

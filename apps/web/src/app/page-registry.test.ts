@@ -8,19 +8,17 @@ describe("page ownership registry (#1505)", () => {
     expect(new Set(PAGE_REGISTRY.map((page) => page.key)).size).toBe(SECTION_KEYS.length);
   });
 
-  it("keeps local tasks and external collaboration as separate ordinary destinations", () => {
+  it("keeps the ordinary shell to four stable destinations", () => {
     expect(ENTRY_SECTIONS.map((page) => page.key)).toEqual([
       "dashboard",
       "task",
-      "externalWork",
       "projects",
-      "autoRuns",
-      "approvals",
+      "me",
     ]);
   });
 
   it("keeps contextual work reachable without promoting it to global navigation", () => {
-    for (const key of ["workBoard", "planning", "workspace", "documents", "workflowMemory", "canvas"] as const) {
+    for (const key of ["workBoard", "externalWork", "planning", "workspace", "documents", "workflowMemory", "canvas"] as const) {
       expect(pageRegistration(key)).toMatchObject({ surface: "entry", visibility: "contextual" });
     }
   });

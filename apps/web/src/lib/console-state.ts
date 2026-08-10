@@ -309,6 +309,8 @@ export interface WorkItem {
   /** Native section to deep-link to for the full context. */
   section: string;
   targetId?: string | null;
+  /** Durable ordinary-user task linked to this execution row, when available. */
+  workItemId?: string | null;
   projectId?: string | null;
   updatedAt?: string | null;
   /** follow_up rows only: why this needs attention. */

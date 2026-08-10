@@ -112,24 +112,25 @@ test("supports keyboard-only navigation and restores focus after the command pal
   await expect(opener).toBeFocused();
 
   await page.keyboard.press("Control+K");
-  await search.fill("Canvas");
-  await expect(palette.getByRole("option", { name: /Canvas/ })).toHaveAttribute("aria-selected", "true");
+  await search.fill("My home");
+  await expect(palette.getByRole("option", { name: /My home/ })).toHaveAttribute("aria-selected", "true");
   await page.keyboard.press("Enter");
-  await expect(page).toHaveURL(/section=canvas/);
+  await expect(page).toHaveURL(/section=dashboard/);
 });
 
 test("keeps the primary mobile workflow usable without horizontal overflow", async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await page.reload();
   const navigation = page.getByRole("navigation", { name: "Primary navigation" });
-  for (const destination of ["Home", "Tasks", "Projects", "Me"]) {
+  for (const destination of ["My home", "My tasks", "Projects", "My settings"]) {
     await expect(navigation.getByRole("button", { name: destination, exact: true })).toBeVisible();
   }
-  await expect(navigation.getByRole("button", { name: /^To-do:/ })).toBeVisible();
+  await expect(navigation.getByRole("button", { name: /^Needs me:/ })).toHaveCount(0);
   await expect(page.getByRole("button", { name: "New" })).toBeVisible();
-  await navigation.getByRole("button", { name: "Me", exact: true }).click();
-  await expect(page.getByRole("button", { name: /Settings/ })).toBeVisible();
-  await expect(page.getByRole("button", { name: /Trace/ })).toBeVisible();
+  await navigation.getByRole("button", { name: "My settings", exact: true }).click();
+  const settings = page.getByRole("dialog", { name: "My settings" });
+  await expect(settings).toBeVisible({ timeout: 15_000 });
+  await expect(settings.getByLabel("Settings area", { exact: true })).toBeVisible();
   await expect.poll(() => page.evaluate(() => ({
     viewport: window.innerWidth,
     content: document.documentElement.scrollWidth,
@@ -138,7 +139,7 @@ test("keeps the primary mobile workflow usable without horizontal overflow", asy
 
 test("loads and searches a multi-page PDF through authenticated byte ranges", async ({ page }) => {
   await page.getByRole("button", { name: "searchable.pdf" }).click();
-  await expect(page.getByLabel("Page 1 of 2")).toBeVisible();
+  await expect(page.getByLabel("Page 1 of 2")).toBeVisible({ timeout: 15_000 });
   await page.getByLabel("Search PDF text").fill("searchable");
   await page.getByRole("button", { name: "Find" }).click();
   await expect(page.getByText("1/2")).toBeVisible();

@@ -23,6 +23,7 @@ import { PdfDocumentReadError, readProjectPdf } from "../services/pdf-document-r
 import { CadPreviewError, inspectCadDocument, renderCadDocument } from "../services/cad-preview.mjs";
 import { assetCapabilityMatrix, deriveAssetRuntimeReadiness, describeProjectAsset, summarizeAssetForRemote } from "../services/asset-capabilities.mjs";
 import { AssetPreviewError, readAssetPreview } from "../services/asset-preview.mjs";
+import { revealAssetInFileManager } from "../services/asset-reveal.mjs";
 
 const IMAGE_MIME = {
   ".png": "image/png",
@@ -1010,6 +1011,28 @@ export async function handleProjectRoutes({
       "discover", "preview", "inspect", "create", "edit", "transform",
       "render", "compare", "export", "open_external", "attach_evidence",
     ], families: assetCapabilityMatrix() });
+    return true;
+  }
+
+  const assetRevealMatch = url.pathname.match(/^\/api\/projects\/([^/]+)\/asset-reveal$/);
+  if (assetRevealMatch && req.method === "POST") {
+    const project = state.projects.find((item) => item.id === decodeURIComponent(assetRevealMatch[1]));
+    if (!project) { sendJson(res, 404, { error: "project_not_found" }); return true; }
+    if (denyForeignProject({ res, sendJson, state, actor, projectId: project.id, notFound: { error: "project_not_found" } })) return true;
+    const body = await readJson(req);
+    const worktreeId = String(body.worktreeId ?? "").trim();
+    const worktree = worktreeId ? (state.worktrees ?? []).find((item) => item.id === worktreeId && item.projectId === project.id) : null;
+    if (worktreeId && !worktree) { sendJson(res, 404, { error: "worktree_not_found" }); return true; }
+    try {
+      const root = worktree?.path ?? worktree?.worktreePath ?? project.path;
+      const result = await revealAssetInFileManager({ projectRoot: root, relativePath: body.path });
+      sendJson(res, 200, result);
+    } catch (error) {
+      const code = error?.code ?? "asset_reveal_failed";
+      const status = code === "ENOENT" ? 404
+        : code === "asset_path_outside_project" || code === "invalid_asset_path" || code === "asset_not_file" ? 400 : 500;
+      sendJson(res, status, { error: code, message: "The file could not be located in the local file manager." });
+    }
     return true;
   }
 

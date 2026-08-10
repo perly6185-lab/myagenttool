@@ -656,7 +656,8 @@ export function createWorkItemService({
     const visibleAcceptanceCriteria = (publicItem.acceptanceCriteria ?? []).length
       ? publicItem.acceptanceCriteria
       : bodyAcceptanceCriteria;
-    const derivedExecutionState = executionState(item);
+    const derivedExecution = resolveWorkItemExecution(item, state, { now: now() });
+    const derivedExecutionState = derivedExecution.executionState;
     const frozenReviewContract = reviewContract(item);
     const memberships = (state.planningProjectItems ?? []).filter(
       (row) => row.workItemId === item.id && row.ownerTeamId === actorTeam(actor),
@@ -686,6 +687,7 @@ export function createWorkItemService({
       businessState: item.state,
       planningStatus: item.status,
       executionState: derivedExecutionState,
+      executionKind: derivedExecution.binding?.kind ?? null,
       statusModel: {
         business: item.state,
         planning: item.status,
@@ -1338,6 +1340,24 @@ export function createWorkItemService({
       ? (state.worktreeReviews ?? []).find((review) => review.worktreeId === deliveryWorktree.id) ?? null
       : null;
     const deliveryProject = (state.projects ?? []).find((project) => project.id === item.projectId) ?? null;
+    const latestRunBinding = [...(item.executionBindings ?? [])].reverse().find(
+      (binding) => binding.kind === "auto_run" && binding.targetId === latestRun?.id,
+    ) ?? null;
+    const outcomeWorktreeId = latestRun?.localDelivery?.worktreeId ?? latestRunBinding?.worktreeId ?? null;
+    const boundWorktreeIds = new Set((item.executionBindings ?? [])
+      .map((binding) => binding.worktreeId)
+      .filter(Boolean));
+    if (outcomeWorktreeId) boundWorktreeIds.add(outcomeWorktreeId);
+    const outcomeFileContext = {
+      projectId: item.projectId,
+      worktreeId: outcomeWorktreeId,
+      scopes: [
+        ...(deliveryProject?.path ? [{ root: deliveryProject.path, worktreeId: null }] : []),
+        ...(state.worktrees ?? [])
+          .filter((worktree) => boundWorktreeIds.has(worktree.id) && worktree.projectId === item.projectId)
+          .map((worktree) => ({ root: worktree.path ?? worktree.worktreePath, worktreeId: worktree.id })),
+      ].filter((scope) => scope.root),
+    };
     const deliveryRemoteUrl = deliveryProject?.git?.remoteUrl ?? null;
     const deliveryMode = deliveryRemoteUrl && /github\.com[/:]/i.test(deliveryRemoteUrl)
       ? "pull_request"
@@ -1385,6 +1405,7 @@ export function createWorkItemService({
         ?? latestExecutionInvocation?.result?.output?.summary
         ?? latestExecutionInvocation?.result?.summary
         ?? null,
+      fileContext: outcomeFileContext,
     });
     const outcomeHistory = (latestRun?.outcomeHistory ?? []).map((entry, index, entries) => ({
       version: entries.length - index,
@@ -1396,6 +1417,7 @@ export function createWorkItemService({
           updatedAt: entry.completedAt ?? entry.supersededAt,
         },
         deliveryReport: entry.deliveryReport,
+        fileContext: outcomeFileContext,
       }),
       invocationId: entry.invocationId ?? null,
       supersededAt: entry.supersededAt ?? null,

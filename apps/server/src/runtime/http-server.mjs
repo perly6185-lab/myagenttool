@@ -3,6 +3,7 @@ import { timingSafeEqual } from "node:crypto";
 import { resolveActor } from "./auth.mjs";
 import { identityPolicyFromEnv } from "./identity-policy.mjs";
 import { configuredLoopbackToken, hostAllowed, loopbackTokenValid } from "./loopback-guard.mjs";
+import { authorizeProfessionalRequest, professionalRoleForbiddenBody } from "./route-authority.mjs";
 import { validSessionCsrf } from "../services/identity-security.mjs";
 import { handleAgentRoutes } from "../routes/agents.mjs";
 import { handleAgentSkillRoutes } from "../routes/agent-skills.mjs";
@@ -567,6 +568,12 @@ export function createHttpServer({
       const mutating = ["POST", "PUT", "PATCH", "DELETE"].includes(req.method);
       if (mutating && !publicPath && actor.authMethod === "cookie" && !validSessionCsrf(req, actor)) {
         sendJson(res, 403, { error: "csrf_invalid", message: "A valid CSRF token is required." });
+        return;
+      }
+
+      const professionalAuthority = authorizeProfessionalRequest(actor, req.method, url.pathname);
+      if (!publicPath && !professionalAuthority.allowed) {
+        sendJson(res, 403, professionalRoleForbiddenBody(professionalAuthority.capability));
         return;
       }
 

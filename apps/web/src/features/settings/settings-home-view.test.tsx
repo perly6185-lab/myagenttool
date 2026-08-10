@@ -2,6 +2,7 @@ import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/re
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { SettingsHomeView } from "@/features/settings/settings-home-view";
 import { i18n } from "@/lib/i18n";
+import { useUiStore } from "@/store/ui-store";
 
 const mocks = vi.hoisted(() => ({
   useConsoleState: vi.fn(),
@@ -9,12 +10,15 @@ const mocks = vi.hoisted(() => ({
   getTaskMaterialStorage: vi.fn(),
   cleanupTaskMaterialStorage: vi.fn(),
   updateProject: vi.fn(),
+  role: "owner" as "owner" | "admin" | "operator" | "viewer",
 }));
 vi.mock("@/data/use-console-state", () => ({ useConsoleState: mocks.useConsoleState }));
 vi.mock("@/data/use-console-actions", () => ({ api: mocks }));
 vi.mock("@/hooks/use-page-navigation", () => ({ usePageNavigation: () => mocks.navigate }));
+vi.mock("@/hooks/use-session-user", () => ({ useSessionUser: () => ({ id: "usr_test", role: mocks.role }) }));
 
 beforeEach(async () => {
+  mocks.role = "owner";
   await i18n.changeLanguage("en-US");
   mocks.useConsoleState.mockReturnValue({ data: { device: { status: "offline" }, agents: [], applications: [], channelOperations: [] } });
   mocks.getTaskMaterialStorage.mockResolvedValue({
@@ -45,10 +49,46 @@ beforeEach(async () => {
     },
   });
   mocks.updateProject.mockResolvedValue({ project: { id: "prj_1" } });
+  useUiStore.setState({
+    settingsCategory: null,
+    settingsQuery: "",
+    settingsScrollTop: 0,
+    recentSettingsSections: [],
+    favoriteSettingsSections: [],
+  });
 });
 afterEach(() => { cleanup(); vi.clearAllMocks(); });
 
 describe("SettingsHomeView", () => {
+  it("organizes professional capabilities into second-level areas", () => {
+    render(<SettingsHomeView />);
+    expect(screen.getByRole("button", { name: "Review work profile" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Open advanced settings" })).toBeTruthy();
+    for (const area of ["Execution & Agents", "Apps & connections", "Automation", "Projects & governance", "Cost & storage", "Records & diagnostics"]) {
+      expect(screen.getByRole("button", { name: new RegExp(area) })).toBeTruthy();
+    }
+    expect(screen.queryByText("Invocations")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: /Records & diagnostics/ }));
+    fireEvent.click(screen.getByText("Invocations"));
+    expect(mocks.navigate).toHaveBeenCalledWith("invocations");
+  });
+
+  it("shows operators operational records without management controls", () => {
+    mocks.role = "operator";
+    render(<SettingsHomeView />);
+    const search = screen.getByLabelText("Search settings");
+    fireEvent.change(search, { target: { value: "Invocations" } });
+    expect(screen.getByText("Invocations")).toBeTruthy();
+    fireEvent.change(search, { target: { value: "Auto-runs" } });
+    expect(screen.getByText("Auto-runs")).toBeTruthy();
+    fireEvent.change(search, { target: { value: "Approvals" } });
+    expect(screen.getByText("Approvals")).toBeTruthy();
+    fireEvent.change(search, { target: { value: "Agents" } });
+    expect(screen.queryByText("Agents")).toBeNull();
+    expect(screen.queryByText("External issue project controls")).toBeNull();
+    expect(screen.getByRole("status").textContent).toContain("Operator access");
+  });
+
   it("shows readiness and routes the recommended safe fix", () => {
     render(<SettingsHomeView />);
     expect(screen.getByText("Recommended next steps")).toBeTruthy();
@@ -61,6 +101,21 @@ describe("SettingsHomeView", () => {
     fireEvent.change(screen.getByLabelText("Search settings"), { target: { value: "channel" } });
     expect(screen.getByText("Channels")).toBeTruthy();
     expect(screen.queryByText("Agents")).toBeNull();
+  });
+
+  it("restores settings context and supports alias search and favorites", () => {
+    const { unmount } = render(<SettingsHomeView />);
+    fireEvent.click(screen.getByRole("button", { name: /Records & diagnostics/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Favorite Invocations" }));
+    expect(useUiStore.getState().settingsCategory).toBe("diagnostics");
+    expect(useUiStore.getState().favoriteSettingsSections).toContain("invocations");
+
+    unmount();
+    render(<SettingsHomeView />);
+    expect(screen.getByText("Invocations")).toBeTruthy();
+    fireEvent.change(screen.getByLabelText("Search settings"), { target: { value: "budget" } });
+    expect(screen.getByText("Economics")).toBeTruthy();
+    expect(useUiStore.getState().settingsQuery).toBe("budget");
   });
 
   it("connects Application, Agent, Tool, and optional Channel setup", () => {
