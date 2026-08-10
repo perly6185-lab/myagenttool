@@ -20,7 +20,7 @@
 
 import { execFile } from "node:child_process";
 import { existsSync, realpathSync } from "node:fs";
-import { join, relative, resolve, sep } from "node:path";
+import { join, relative, resolve, sep, win32 } from "node:path";
 import { promisify } from "node:util";
 
 import { parseAddr } from "./officecli-sheet-ops.mjs";
@@ -43,8 +43,8 @@ export function resolveOfficecliInvocation(command, args = [], {
 } = {}) {
   if (platform !== "win32" || command !== "officecli") return { executable: command, args };
   const candidates = [
-    env.APPDATA ? join(env.APPDATA, "npm", "node_modules", "@officecli", "officecli", "officecli.js") : null,
-    env.npm_config_prefix ? join(env.npm_config_prefix, "node_modules", "@officecli", "officecli", "officecli.js") : null,
+    env.APPDATA ? win32.join(env.APPDATA, "npm", "node_modules", "@officecli", "officecli", "officecli.js") : null,
+    env.npm_config_prefix ? win32.join(env.npm_config_prefix, "node_modules", "@officecli", "officecli", "officecli.js") : null,
   ].filter(Boolean);
   const cli = candidates.find((candidate) => fileExists(candidate));
   return cli ? { executable: nodePath, args: [cli, ...args] } : { executable: command, args };
