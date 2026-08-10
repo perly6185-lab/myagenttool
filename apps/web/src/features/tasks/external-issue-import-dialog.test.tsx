@@ -30,6 +30,7 @@ const imported = {
 } as LocalWorkItem;
 
 beforeEach(async () => {
+  localStorage.clear();
   await i18n.changeLanguage("en-US");
   mocks.listWorkItemExternalProviders.mockResolvedValue({
     providers: [
@@ -56,6 +57,21 @@ afterEach(() => {
 });
 
 describe("external issue import", () => {
+  it("remembers the last provider without putting provider shortcuts in the task header", async () => {
+    const first = render(
+      <ExternalIssueImportDialog open projects={projects} repoProjectIds={new Set(["prj_1"])} onClose={() => {}} onImported={() => {}} />,
+    );
+    await screen.findByText("The repository and GitHub CLI connection are ready.");
+    fireEvent.change(screen.getByLabelText("Source provider"), { target: { value: "gitlab" } });
+    first.unmount();
+
+    render(
+      <ExternalIssueImportDialog open projects={projects} repoProjectIds={new Set(["prj_1"])} onClose={() => {}} onImported={() => {}} />,
+    );
+    expect((screen.getByLabelText("Source provider") as HTMLSelectElement).value).toBe("gitlab");
+    expect(await screen.findByText("API configured")).toBeTruthy();
+  });
+
   it("preflights GitHub and creates a task without starting AI", async () => {
     const onImported = vi.fn();
     render(

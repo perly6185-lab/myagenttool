@@ -34,8 +34,23 @@ import { type SectionKey, type WorkItemSection } from "@/store/ui-store";
 import { WorkItemProgressDialog, type WorkItemProgressTarget } from "./work-item-progress-dialog";
 import { TaskMaterialEditor } from "./task-material-editor";
 import { readinessSetupSection, type AutoRunReadiness } from "./auto-run-readiness-ui";
-import type { LocalWorkItem, LocalWorkItemAutoRun, LocalWorkItemObservability, WorkItemComment, WorkItemExecutionState, WorkItemOutcomeFile } from "./task-view-types";
+import type { LocalWorkItem, LocalWorkItemAutoRun, LocalWorkItemObservability, WorkItemComment, WorkItemExecutionKind, WorkItemExecutionState, WorkItemOutcomeFile } from "./task-view-types";
 import { deriveWorkItemUserStatus, type WorkItemUserStatus } from "./work-item-user-status";
+import {
+  browsableDeliveryPath,
+  deliveryExtension,
+  deliveryFileCanUseLegacyPath,
+  deliveryFileName,
+  imageMime,
+  isOfficeDeliveryPath,
+  isOfficeMaterial,
+  markdownImageCount,
+  markdownImageReferences,
+  normalizedDeliveryPath,
+  parseMarkdownDocument,
+  resolveDeliveryAssetPath,
+  type DeliveryPreview,
+} from "./work-item-delivery-preview-model";
 
 export { deriveWorkItemUserStatus } from "./work-item-user-status";
 
@@ -184,6 +199,8 @@ type SummaryCopy = {
   accepting: string;
   completedTitle: string;
   completedHint: string;
+  reuseTask: string;
+  createFollowUp: string;
   reviewDecisionTitle: string;
   reviewDecisionHint: string;
   completionFailed: string;
@@ -386,6 +403,8 @@ const COPY: Record<"zh" | "en", SummaryCopy> = {
     accepting: "正在完成…",
     completedTitle: "这项工作已完成",
     completedHint: "最终成果、确认记录和协作过程都已保留，你可以随时回来查看。",
+    reuseTask: "复用为新任务",
+    createFollowUp: "创建后续任务",
     reviewDecisionTitle: "请做最后确认",
     reviewDecisionHint: "结果符合任务目标就确认完成；如果不符合，告诉 AI 需要改什么，它会继续在同一任务中处理。",
     completionFailed: "暂时无法完成任务。请核对未通过的完成标准或稍后重试。",
@@ -586,6 +605,8 @@ const COPY: Record<"zh" | "en", SummaryCopy> = {
     accepting: "Completing…",
     completedTitle: "This work is complete",
     completedHint: "The final result, your confirmation, and the collaboration history have all been preserved for later review.",
+    reuseTask: "Reuse as new task",
+    createFollowUp: "Create follow-up",
     reviewDecisionTitle: "Make the final decision",
     reviewDecisionHint: "Confirm completion if the result meets the goal. Otherwise, tell AI what to revise and it will continue in this task.",
     completionFailed: "The task could not be completed. Review unfinished criteria or try again shortly.",
@@ -620,6 +641,50 @@ const AI_LABEL: Record<"zh" | "en", Record<WorkItemExecutionState, string>> = {
   zh: { unclaimed: "尚未执行", claimed: "已认领", running: "执行中", awaiting_approval: "等待审批", verifying: "验证中", failed: "执行失败", completed: "等待复核" },
   en: { unclaimed: "Not started", claimed: "Claimed", running: "Running", awaiting_approval: "Awaiting approval", verifying: "Verifying", failed: "Execution failed", completed: "Awaiting review" },
 };
+
+function latestExecutionKind(item: LocalWorkItem): WorkItemExecutionKind | null {
+  if (item.executionKind) return item.executionKind;
+  return [...(item.executionBindings ?? [])].reverse().find((binding) =>
+    ["auto_run", "application_invocation", "article_import", "article_derivative"].includes(binding.kind))?.kind as WorkItemExecutionKind | undefined ?? null;
+}
+
+function resultPresentation(kind: WorkItemExecutionKind | null, language: "zh" | "en") {
+  if (kind === "article_import") {
+    return language === "zh" ? {
+      title: "公众号导入结果",
+      hint: "查看导入内容、验收结论和结果文件；技术证据仍完整保留。",
+      originalNote: "原始导入说明",
+      noSummary: "公众号内容已完成导入，结果文件已保存到当前任务。",
+      executionLabel: "公众号导入",
+      collaborationHint: "Local Issue 统一记录导入执行、结果文件和人工验收；它们始终属于同一个任务。",
+      completedScope: "导入完成了什么",
+    } : {
+      title: "Article import result",
+      hint: "Review the imported content, acceptance result, and output files; technical evidence remains available.",
+      originalNote: "Original import note",
+      noSummary: "The article import completed and its output files are attached to this task.",
+      executionLabel: "Article import",
+      collaborationHint: "The Local Issue keeps the import run, output files, and human acceptance together as one task.",
+      completedScope: "What the import produced",
+    };
+  }
+  return {
+    title: COPY[language].deliverableTitle,
+    hint: COPY[language].deliverableHint,
+    originalNote: COPY[language].originalAiNote,
+    noSummary: COPY[language].noDeliverableSummary,
+    executionLabel: COPY[language].aiExecution,
+    collaborationHint: COPY[language].collaborationHint,
+    completedScope: COPY[language].completedScope,
+  };
+}
+
+function executionStateLabel(item: LocalWorkItem, language: "zh" | "en") {
+  if (item.executionState === "completed" && (item.state === "closed" || item.status === "done")) {
+    return language === "zh" ? "已完成" : "Completed";
+  }
+  return item.executionState ? AI_LABEL[language][item.executionState] : COPY[language].noAi;
+}
 
 const WAITING_LABEL: Record<"zh" | "en", Record<LocalWorkItem["waitingOn"], string>> = {
   zh: { me: "我", requester: "提出者", internal: "内部成员", ai: "AI", none: "无需等待" },
@@ -675,7 +740,17 @@ function aiPhaseDescription(phase: LocalWorkItemAutoRun["phase"], language: "zh"
   return descriptions[language][phase];
 }
 
-function changedFileScope(paths: string[], language: "zh" | "en") {
+function changedFileScope(paths: string[], language: "zh" | "en", executionKind: WorkItemExecutionKind | null, resultFiles: string[]) {
+  if (executionKind === "article_import") {
+    if (!resultFiles.length) {
+      return language === "zh"
+        ? "公众号正文已完成导入，当前没有可直接打开的结果文件。"
+        : "The article content was imported, but no directly browsable output file is available.";
+    }
+    return language === "zh"
+      ? `公众号正文已完成导入，并在当前 Local Issue 中生成 ${resultFiles.length} 个结果文件。`
+      : `The article content was imported and ${resultFiles.length} output file${resultFiles.length === 1 ? "" : "s"} were attached to this Local Issue.`;
+  }
   const tests = paths.filter((path) => /(?:^|[\\/])(?:test|tests|__tests__)(?:[\\/])|\.(?:test|spec)\.[^.]+$/i.test(path)).length;
   const docsAndConfig = paths.filter((path) =>
     /(?:^|[\\/])docs?(?:[\\/])|\.md$/i.test(path)
@@ -701,6 +776,8 @@ function deriveDeliveryDecision({
   reviewVerdict,
   reviewStatus,
   verification,
+  executionKind,
+  resultFiles,
 }: {
   language: "zh" | "en";
   mode: "local_merge" | "pull_request" | null;
@@ -708,8 +785,10 @@ function deriveDeliveryDecision({
   reviewVerdict: "approved" | "changes_requested" | null;
   reviewStatus: string | null;
   verification: { passed: boolean; verified: boolean; summary: string | null } | null;
+  executionKind: WorkItemExecutionKind | null;
+  resultFiles: string[];
 }): DeliveryDecision {
-  const scope = changedFileScope(changedFiles, language);
+  const scope = changedFileScope(changedFiles, language, executionKind, resultFiles);
   const verifiedPass = verification?.verified === true && verification.passed === true;
   const verifiedFail = verification?.verified === true && verification.passed === false;
   const reviewWaiting = !reviewVerdict && ["queued", "running"].includes(reviewStatus ?? "");
@@ -754,6 +833,19 @@ function deriveDeliveryDecision({
       confirmEffect, confirmRisk, revisionEffect, revisionRisk,
     };
   }
+  if (executionKind === "article_import" && verifiedPass) {
+    return {
+      state: "ready", risk: "low", scope,
+      headline: language === "zh" ? "公众号导入结果已通过任务验收" : "The article import passed task acceptance",
+      checks: language === "zh"
+        ? "完成标准和验证记录均已通过，导入产物已绑定到当前 Local Issue。"
+        : "The completion criteria and verification record passed, and the imported outputs are attached to this Local Issue.",
+      recommendation: language === "zh"
+        ? "任务已经完成；需要时可直接查看、下载或复用结果文件。"
+        : "The task is complete. Review, download, or reuse the output files when needed.",
+      confirmEffect, confirmRisk, revisionEffect, revisionRisk,
+    };
+  }
   if (reviewVerdict === "approved" && verifiedPass) {
     return {
       state: "ready", risk: "low", scope,
@@ -776,116 +868,8 @@ function deriveDeliveryDecision({
   };
 }
 
-const BROWSABLE_DELIVERY_EXTENSIONS = new Set([
-  ".docx", ".xlsx", ".pptx", ".pdf", ".dxf", ".dwg",
-  ".md", ".mdx", ".html", ".png", ".jpg", ".jpeg", ".gif", ".webp", ".avif", ".svg",
-  ".mp3", ".m4a", ".ogg", ".wav", ".mp4", ".webm", ".mov", ".canvas", ".excalidraw",
-]);
 const MARKDOWN_DELIVERY_EXTENSIONS = new Set([".md", ".mdx"]);
 const IMAGE_DELIVERY_EXTENSIONS = new Set([".png", ".jpg", ".jpeg", ".gif", ".webp", ".avif"]);
-const OFFICE_DELIVERY_EXTENSIONS = new Set([".docx", ".xlsx", ".pptx"]);
-
-function normalizedDeliveryPath(path: string) {
-  return path.trim().replaceAll("\\", "/");
-}
-
-function deliveryFileName(path: string) {
-  return normalizedDeliveryPath(path).split("/").filter(Boolean).at(-1) ?? path;
-}
-
-function deliveryFileCanUseLegacyPath(path: string) {
-  const normalized = normalizedDeliveryPath(path).replace(/^\.\//, "");
-  return Boolean(normalized
-    && !normalized.startsWith("/")
-    && !/^[a-z]:\//i.test(normalized)
-    && normalized !== ".."
-    && !normalized.startsWith("../")
-    && !normalized.includes("/../"));
-}
-
-function browsableDeliveryPath(path: string) {
-  const name = deliveryFileName(path).toLowerCase();
-  const dot = name.lastIndexOf(".");
-  return dot >= 0 && BROWSABLE_DELIVERY_EXTENSIONS.has(name.slice(dot));
-}
-
-type DeliveryPreview =
-  | { kind: "markdown"; text: string; truncated: boolean }
-  | { kind: "text"; text: string; truncated: boolean }
-  | { kind: "image"; source: string }
-  | { kind: "pdf"; source: string }
-  | { kind: "office"; html: string };
-
-type MarkdownDocument = {
-  body: string;
-  metadata: Record<string, string>;
-};
-
-function deliveryExtension(path: string) {
-  const name = deliveryFileName(path).toLowerCase();
-  const dot = name.lastIndexOf(".");
-  return dot >= 0 ? name.slice(dot) : "";
-}
-
-function isOfficeMaterial(asset: NonNullable<LocalWorkItem["inputAssets"]>[number]) {
-  return OFFICE_DELIVERY_EXTENSIONS.has(deliveryExtension(asset.originalName ?? asset.path));
-}
-
-function parseMarkdownDocument(text: string): MarkdownDocument {
-  const normalized = text.replaceAll("\r\n", "\n");
-  const frontMatter = normalized.match(/^---\n([\s\S]*?)\n---(?:\n|$)/);
-  if (!frontMatter) return { body: normalized, metadata: {} };
-  const metadata: Record<string, string> = {};
-  for (const line of frontMatter[1].split("\n")) {
-    const match = line.match(/^([a-zA-Z0-9_-]+):\s*(.*?)\s*$/);
-    if (!match || !match[2]) continue;
-    const value = match[2].replace(/^(?:"([\s\S]*)"|'([\s\S]*)')$/, "$1$2");
-    metadata[match[1]] = value;
-  }
-  let body = normalized.slice(frontMatter[0].length).trimStart();
-  if (metadata.title && !/^#\s+/m.test(body)) body = `# ${metadata.title}\n\n${body}`;
-  return { body, metadata };
-}
-
-function resolveDeliveryAssetPath(markdownPath: string, reference: string) {
-  if (!reference || /^(?:https?:|data:|blob:|#)/i.test(reference)) return null;
-  const cleanReference = reference.replace(/^<|>$/g, "").split(/[?#]/, 1)[0].replaceAll("\\", "/");
-  if (!cleanReference || cleanReference.startsWith("/") || /^[a-z]:\//i.test(cleanReference)) return null;
-  const parts = normalizedDeliveryPath(markdownPath).split("/").filter(Boolean);
-  parts.pop();
-  for (const segment of cleanReference.split("/")) {
-    if (!segment || segment === ".") continue;
-    if (segment === "..") {
-      if (!parts.length) return null;
-      parts.pop();
-    } else {
-      parts.push(segment);
-    }
-  }
-  return parts.join("/");
-}
-
-function markdownImageReferences(text: string) {
-  const references = new Set<string>();
-  for (const match of text.matchAll(/!\[[^\]]*\]\(([^)\s]+)(?:\s+["'][^)]*)?\)/g)) {
-    const reference = match[1]?.replace(/^<|>$/g, "");
-    if (reference && !/^(?:https?:|data:|blob:|#)/i.test(reference)) references.add(reference);
-  }
-  return [...references].slice(0, 12);
-}
-
-function markdownImageCount(text: string) {
-  return [...text.matchAll(/!\[[^\]]*\]\(([^)\s]+)(?:\s+["'][^)]*)?\)/g)].length;
-}
-
-function imageMime(path: string) {
-  const extension = deliveryExtension(path);
-  if (extension === ".png") return "image/png";
-  if (extension === ".gif") return "image/gif";
-  if (extension === ".webp") return "image/webp";
-  if (extension === ".avif") return "image/avif";
-  return "image/jpeg";
-}
 
 function DeliveryMarkdownDocument({ file, text, copy }: { file: WorkItemOutcomeFile; text: string; copy: SummaryCopy }) {
   const document = useMemo(() => parseMarkdownDocument(text), [text]);
@@ -1062,6 +1046,7 @@ export function WorkItemSummaryView({
   onOpenSetup,
   onDirtyChange,
   onCompletedChange,
+  onCreateTaskDraft,
 }: {
   workItemId: string;
   onOpenExpert: (section?: WorkItemSection) => void;
@@ -1069,6 +1054,7 @@ export function WorkItemSummaryView({
   onOpenSetup?: (section: SectionKey) => void;
   onDirtyChange?: (dirty: boolean) => void;
   onCompletedChange?: (completed: boolean | null) => void;
+  onCreateTaskDraft?: (draft: string) => void;
 }) {
   const { i18n } = useAppTranslation();
   const language = i18n.language.startsWith("zh") ? "zh" : "en";
@@ -1263,8 +1249,10 @@ export function WorkItemSummaryView({
   const plannedDate = item.plannedDate
     ? new Intl.DateTimeFormat(dateLocale, { month: "short", day: "numeric", year: "numeric" }).format(new Date(`${item.plannedDate}T00:00:00`))
     : copy.unscheduled;
+  const executionKind = latestExecutionKind(item);
+  const presentation = resultPresentation(executionKind, language);
   const hasBoundAutoRun = item.executionBindings?.some((binding) => binding.kind === "auto_run") ?? false;
-  const hasAiExecution = hasBoundAutoRun || Boolean(item.executionState && item.executionState !== "unclaimed");
+  const hasManagedExecution = Boolean(executionKind) || Boolean(item.executionState && item.executionState !== "unclaimed");
   const executionContractReady = item.executionContractGate?.ready === true;
   const reviewAcceptanceCriteria = item.reviewContract?.acceptanceCriteria ?? item.acceptanceCriteria;
   const reviewVerificationSop = item.reviewContract?.verificationSop ?? item.verificationSop ?? [];
@@ -1273,12 +1261,12 @@ export function WorkItemSummaryView({
     && item.verificationSop?.length
     && item.executionContractConfirmedAt,
   );
-  const scheduleConflict = hasAiExecution && Boolean(item.dueDate && item.plannedDate && item.plannedDate > item.dueDate);
+  const scheduleConflict = hasManagedExecution && Boolean(item.dueDate && item.plannedDate && item.plannedDate > item.dueDate);
   const collaborationStage = status === "completed"
     ? 3
     : status === "ready_for_review"
       ? 2
-      : hasAiExecution
+      : hasManagedExecution
       ? 1
       : 0;
   const startEligible = ["not_started", "scheduled"].includes(status) && !hasBoundAutoRun && !observability?.latestRun;
@@ -1297,6 +1285,7 @@ export function WorkItemSummaryView({
   const acceptancePassed = reviewAcceptanceCriteria.filter((criterion) =>
     (item.reviewEvidence ?? item.acceptanceResults ?? []).some((result) => result.criterion === criterion && result.status === "passed")).length;
   const acceptanceNeedsReview = reviewAcceptanceCriteria.length - acceptancePassed;
+  const latestPassedVerification = [...(item.verificationRecords ?? [])].reverse().find((record) => record.status === "passed") ?? null;
   const outputAssets = item.outputAssets ?? [];
   const outcome = observability?.outcome ?? null;
   const deliveryReport = observability?.delivery?.report ?? observability?.latestRun?.deliveryReport ?? null;
@@ -1312,9 +1301,13 @@ export function WorkItemSummaryView({
       ...(finding.suggestion ? { suggestion: finding.suggestion } : {}),
     }));
   const changedFiles = deliveryReport?.changedFiles ?? [];
-  const resultSummary = outcome?.summary ?? deliveryReport?.summary ?? item.lastProgressSummary ?? null;
+  const resultSummary = outcome?.summary ?? deliveryReport?.summary ?? item.lastProgressSummary
+    ?? (executionKind === "article_import" ? latestPassedVerification?.summary ?? null : null);
   const fullResult = outcome?.fullReport ?? deliveryReport?.summary ?? item.lastProgressSummary ?? null;
-  const resultVerification = outcome?.verification ?? deliveryReport?.verification ?? null;
+  const resultVerification = outcome?.verification ?? deliveryReport?.verification
+    ?? (latestPassedVerification && acceptanceNeedsReview === 0
+      ? { verified: true, passed: true, summary: latestPassedVerification.summary }
+      : null);
   const resultFiles = outcome?.files?.length
     ? outcome.files
     : [...new Set([...outputAssets.map((asset) => asset.path), ...changedFiles])];
@@ -1344,6 +1337,8 @@ export function WorkItemSummaryView({
     reviewVerdict: deliveryReview?.verdict ?? deliveryAiReview?.verdict ?? null,
     reviewStatus: deliveryAiReview?.status ?? null,
     verification: resultVerification,
+    executionKind,
+    resultFiles,
   });
   const acceptActionLabel = observability?.delivery?.mode === "pull_request"
     ? language === "zh" ? "审核通过并创建 Pull Request" : "Approve and create pull request"
@@ -1399,7 +1394,7 @@ export function WorkItemSummaryView({
         if (requestId === resultPreviewRequest.current) setResultPreview({ kind: "pdf", source: source.url });
         return;
       }
-      if (OFFICE_DELIVERY_EXTENSIONS.has(extension)) {
+      if (isOfficeDeliveryPath(file.path)) {
         const preview = await api.officecliPreview(file.projectId, file.path, file.worktreeId ?? undefined);
         if (requestId === resultPreviewRequest.current) setResultPreview({ kind: "office", html: preview.content });
         return;
@@ -1582,6 +1577,32 @@ export function WorkItemSummaryView({
       setSyncNotice(language === "zh"
         ? "重新执行所需的完成标准和 SOP 已建立。请先核对内容，再选择“让 AI 继续修改”启动新一轮执行；旧结果仍不能据此审核通过。"
         : "The criteria and SOP for a new run are ready. Review them, then choose Ask AI to revise to start a new run. The old result still cannot be approved against this later contract.");
+    } catch {
+      setActionError(language === "zh" ? "执行方案暂时无法生成，请稍后重试。" : "The execution plan could not be prepared. Try again later.");
+    } finally {
+      setActionPending(null);
+    }
+  };
+  const prepareStartExecutionPlan = async () => {
+    if (actionPending || executionContractDefined) return;
+    setActionPending("start");
+    setActionError(null);
+    try {
+      const assisted = await api.suggestWorkItemDraft({ projectId: item.projectId, title: item.title, body: item.body }) as {
+        draft: { acceptanceCriteria: string[]; verificationSop: string[] };
+      };
+      if (!assisted.draft.acceptanceCriteria?.length || !assisted.draft.verificationSop?.length) {
+        throw new Error("execution_plan_incomplete");
+      }
+      const prepared = await api.updateWorkItem(item.id, {
+        expectedRevision: item.revision,
+        acceptanceCriteria: assisted.draft.acceptanceCriteria,
+        verificationSop: assisted.draft.verificationSop,
+      }) as { workItem: LocalWorkItem };
+      setItem(prepared.workItem);
+      setSyncNotice(language === "zh"
+        ? "执行方案已生成。请核对任务目标、完成标准和验证 SOP；确认无误后，再次选择“让 AI 开始”。"
+        : "The execution plan is ready. Review the goal, completion criteria, and verification SOP, then choose Let AI start again to confirm.");
     } catch {
       setActionError(language === "zh" ? "执行方案暂时无法生成，请稍后重试。" : "The execution plan could not be prepared. Try again later.");
     } finally {
@@ -1846,6 +1867,10 @@ export function WorkItemSummaryView({
     }
     if (startEligible) {
       if (!canStartAi) return;
+      if (!executionContractDefined) {
+        void prepareStartExecutionPlan();
+        return;
+      }
       void startAiWork();
       return;
     }
@@ -2070,6 +2095,10 @@ export function WorkItemSummaryView({
                   {resultExpanded ? copy.hideResult : copy.action.completed}
                   <ChevronDown className={`transition-transform ${resultExpanded ? "rotate-180" : ""}`} aria-hidden />
                 </Button>
+                {onCreateTaskDraft ? <Button size="sm" variant="secondary" onClick={() => onCreateTaskDraft([item.title, item.body?.trim()].filter(Boolean).join("\n"))}>{copy.reuseTask}</Button> : null}
+                {onCreateTaskDraft ? <Button size="sm" variant="secondary" onClick={() => onCreateTaskDraft(language === "zh"
+                  ? `基于“${item.title}”的结果继续：${resultSummary ?? "请说明下一步目标"}`
+                  : `Follow up on “${item.title}”: ${resultSummary ?? "describe the next outcome"}`)}>{copy.createFollowUp}</Button> : null}
                 {onOpenTaskCenter ? <Button size="sm" variant="secondary" onClick={onOpenTaskCenter}>{copy.taskCenter}</Button> : null}
               </div>
             </div>
@@ -2109,8 +2138,8 @@ export function WorkItemSummaryView({
         <section id={resultSectionId} className="scroll-mt-4 rounded-xl border border-success/30 bg-success/[0.035] p-4" aria-labelledby={`${resultSectionId}-title`}>
           <div className="flex flex-wrap items-start justify-between gap-2">
             <div>
-              <h4 id={`${resultSectionId}-title`} className="text-sm font-semibold">{copy.deliverableTitle}</h4>
-              <p className="mt-1 text-sm leading-relaxed text-muted-foreground">{copy.deliverableHint}</p>
+              <h4 id={`${resultSectionId}-title`} className="text-sm font-semibold">{presentation.title}</h4>
+              <p className="mt-1 text-sm leading-relaxed text-muted-foreground">{presentation.hint}</p>
             </div>
             <Button size="sm" variant="secondary" disabled={!fullResult} onClick={() => setReportOpen(true)}>{copy.fullReport}</Button>
           </div>
@@ -2142,7 +2171,7 @@ export function WorkItemSummaryView({
             </div>
           ) : null}
           <div className="mt-3">
-            <DeliveryDecisionCard decision={deliveryDecision} copy={copy} />
+            <DeliveryDecisionCard decision={deliveryDecision} copy={copy} scopeLabel={presentation.completedScope} />
           </div>
           {observability?.delivery ? (
             <div className={`mt-3 rounded-lg border px-3 py-3 ${deliveryReview?.verdict === "approved" ? "border-success/35 bg-success/[0.06]" : deliveryReview?.verdict === "changes_requested" ? "border-destructive/35 bg-destructive/[0.05]" : "border-warning/35 bg-warning/[0.05]"}`}>
@@ -2195,8 +2224,8 @@ export function WorkItemSummaryView({
           ) : null}
           <div className="mt-3 grid gap-3 sm:grid-cols-2">
             <div className="rounded-lg bg-background/70 px-3 py-2 text-sm">
-              <p className="text-xs text-muted-foreground">{copy.originalAiNote}</p>
-              <p className="mt-1 whitespace-pre-wrap leading-relaxed">{resultSummary || copy.noDeliverableSummary}</p>
+              <p className="text-xs text-muted-foreground">{presentation.originalNote}</p>
+              <p className="mt-1 whitespace-pre-wrap leading-relaxed">{resultSummary || presentation.noSummary}</p>
             </div>
             <div className="rounded-lg bg-background/70 px-3 py-2 text-sm">
               <p className="text-xs text-muted-foreground">{resultVerification ? copy.verificationEvidence : copy.acceptanceResult}</p>
@@ -2411,7 +2440,7 @@ export function WorkItemSummaryView({
 
       <section className="rounded-xl border border-border p-4" aria-labelledby={`work-item-collaboration-${item.id}`}>
         <h4 id={`work-item-collaboration-${item.id}`} className="text-sm font-semibold">{copy.collaborationTitle}</h4>
-        <p className="mt-1 text-sm leading-relaxed text-muted-foreground">{copy.collaborationHint}</p>
+        <p className="mt-1 text-sm leading-relaxed text-muted-foreground">{presentation.collaborationHint}</p>
         <ol className="mt-4 grid gap-2 sm:grid-cols-3" data-testid="work-item-collaboration-path">
           <CollaborationStage
             active={collaborationStage === 0}
@@ -2422,10 +2451,10 @@ export function WorkItemSummaryView({
           />
           <CollaborationStage
             active={collaborationStage === 1}
-            complete={hasAiExecution && collaborationStage > 1}
+            complete={hasManagedExecution && collaborationStage > 1}
             icon={Bot}
-            label={copy.aiExecution}
-            detail={`${plannedDate} · ${item.executionState ? AI_LABEL[language][item.executionState] : copy.noAi}`}
+            label={presentation.executionLabel}
+            detail={`${plannedDate} · ${executionStateLabel(item, language)}`}
           />
           <CollaborationStage
             active={collaborationStage === 2}
@@ -2536,7 +2565,7 @@ export function WorkItemSummaryView({
       <Modal
         open={reportOpen}
         onClose={() => setReportOpen(false)}
-        title={copy.deliverableTitle}
+        title={presentation.title}
         description={copy.fullReportDescription}
         size="xl"
         closeDisabled={Boolean(actionPending)}
@@ -2827,9 +2856,11 @@ function CollaborationStage({
 function DeliveryDecisionCard({
   decision,
   copy,
+  scopeLabel,
 }: {
   decision: DeliveryDecision;
   copy: SummaryCopy;
+  scopeLabel?: string;
 }) {
   const tone = decision.state === "ready" ? "success" : decision.state === "changes" ? "danger" : decision.state === "waiting" ? "neutral" : "warning";
   const riskLabel = {
@@ -2855,7 +2886,7 @@ function DeliveryDecisionCard({
       </div>
       <div className="mt-3 grid gap-3 lg:grid-cols-3">
         <div className="rounded-md bg-background/75 px-3 py-2.5">
-          <p className="text-xs font-medium text-muted-foreground">{copy.completedScope}</p>
+          <p className="text-xs font-medium text-muted-foreground">{scopeLabel ?? copy.completedScope}</p>
           <p className="mt-1.5 text-sm leading-relaxed">{decision.scope}</p>
         </div>
         <div className="rounded-md bg-background/75 px-3 py-2.5">

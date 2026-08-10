@@ -1,4 +1,5 @@
 import type {
+  WorkItemExecutionKind,
   WorkItemExecutionState,
   WorkItemRequesterRelation,
   WorkItemWaitingOn,
@@ -32,6 +33,8 @@ export type HomeWorkbenchItem = {
   };
   planningStatus: LocalWorkItem["status"];
   executionState: WorkItemExecutionState;
+  executionKind: WorkItemExecutionKind | null;
+  executionUpdatedAt: string | null;
   userStatus?: "not_started" | "scheduled" | "ai_working" | "waiting" | "needs_action" | "ready_for_review" | "blocked" | "completed";
   waitingOn: WorkItemWaitingOn;
   attentionReason: HomeAttentionReason | null;

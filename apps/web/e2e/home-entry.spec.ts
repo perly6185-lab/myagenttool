@@ -76,9 +76,9 @@ async function mockReadyHome(page: Page, locale: "en-US" | "zh-CN") {
 }
 
 for (const fixture of [
-  { name: "desktop-en", locale: "en-US" as const, viewport: { width: 1366, height: 768 }, task: "Create a task", run: "Create and let AI work", details: "Add completion criteria or references" },
-  { name: "desktop-zh", locale: "zh-CN" as const, viewport: { width: 1366, height: 768 }, task: "创建一个任务", run: "创建并交给 AI", details: "补充完成标准或参考资料" },
-  { name: "mobile-zh", locale: "zh-CN" as const, viewport: { width: 390, height: 844 }, task: "创建一个任务", run: "创建并交给 AI", details: "补充完成标准或参考资料" },
+  { name: "desktop-en", locale: "en-US" as const, viewport: { width: 1366, height: 768 }, task: "Create a task", run: "Generate execution plan", details: "Add completion criteria or references" },
+  { name: "desktop-zh", locale: "zh-CN" as const, viewport: { width: 1366, height: 768 }, task: "创建一个任务", run: "生成执行方案", details: "补充完成标准或参考资料" },
+  { name: "mobile-zh", locale: "zh-CN" as const, viewport: { width: 390, height: 844 }, task: "创建一个任务", run: "生成执行方案", details: "补充完成标准或参考资料" },
 ]) {
   test(`keeps the ${fixture.name} tracked-task composer usable without horizontal overflow`, async ({ page }, testInfo) => {
     await page.setViewportSize(fixture.viewport);
@@ -111,10 +111,10 @@ for (const fixture of [
   });
 }
 
-test("creates a Home Local Issue first, then starts AI from simple details", async ({ page }) => {
+test("creates a Home task, reviews its plan, then schedules AI from simple details", async ({ page }) => {
   let createdPayload: Record<string, unknown> | null = null;
   let workItem: Record<string, unknown> | null = null;
-  let started = false;
+  let scheduled = false;
   await page.route("**/api/**", async (route) => {
     const request = route.request();
     const pathname = new URL(request.url()).pathname;
@@ -134,8 +134,37 @@ test("creates a Home Local Issue first, then starts AI from simple details", asy
       };
       return route.fulfill({ status: 201, json: { workItem } });
     }
+    if (pathname === "/api/work-items/assist/draft" && request.method() === "POST") {
+      return route.fulfill({ json: {
+        draft: {
+          acceptanceCriteria: ["Customer-ready weekly update"],
+          verificationSop: ["Review the update for accuracy and plain language"],
+        },
+      } });
+    }
+    if (pathname === "/api/work-items/lwi_home" && request.method() === "PATCH") {
+      const changes = request.postDataJSON() as Record<string, unknown>;
+      if (Array.isArray(changes.acceptanceCriteria)) {
+        workItem = {
+          ...workItem,
+          acceptanceCriteria: changes.acceptanceCriteria,
+          verificationSop: changes.verificationSop,
+          executionContractSource: "assisted",
+          executionContractConfirmedAt: "2026-08-06T00:01:00.000Z",
+          executionContractGate: { ready: true, missing: [], source: "assisted", confirmedAt: "2026-08-06T00:01:00.000Z" },
+          revision: 2,
+        };
+      } else {
+        scheduled = true;
+        workItem = {
+          ...workItem,
+          ...changes,
+          revision: 3,
+        };
+      }
+      return route.fulfill({ json: { workItem } });
+    }
     if (pathname === "/api/work-items/lwi_home/auto-runs" && request.method() === "POST") {
-      started = true;
       workItem = {
         ...workItem,
         waitingOn: "ai",
@@ -149,7 +178,7 @@ test("creates a Home Local Issue first, then starts AI from simple details", asy
       return route.fulfill({ json: {
         workItem,
         observability: {
-          latestRun: started ? { id: "aur_home", status: "running", updatedAt: "2026-08-06T00:01:00.000Z" } : null,
+          latestRun: null,
           delivery: null,
         },
       } });
@@ -178,15 +207,19 @@ test("creates a Home Local Issue first, then starts AI from simple details", asy
     waitingOn: "none",
     plannedDate: null,
   }));
-  expect(started).toBe(false);
+  expect(scheduled).toBe(false);
   await page.getByRole("button", { name: "View task" }).click();
 
   const detail = page.getByRole("dialog", { name: "Task details" });
   await expect(detail.getByRole("heading", { name: "Prepare the weekly customer update" })).toBeVisible();
   await detail.getByRole("button", { name: "Let AI start" }).click();
-  await expect(detail.getByText(/understanding the task and establishing the execution and acceptance basis/i)).toBeVisible();
-  expect(started).toBe(true);
-  await expect(detail.getByText("AI working", { exact: true })).toBeVisible();
+  await expect(detail.getByText(/execution plan is ready/i)).toBeVisible();
+  expect(scheduled).toBe(false);
+  await expect(detail.getByText("Customer-ready weekly update")).toBeVisible();
+
+  await detail.getByRole("button", { name: "Let AI start" }).click();
+  await expect(detail.getByText(/set to automatic/i)).toBeVisible();
+  expect(scheduled).toBe(true);
 });
 
 test("submits one Worktree snapshot with matching attachment and invocation idempotency", async ({ page }) => {
@@ -408,8 +441,8 @@ const HOME_ACTION_MATRIX = [
     state: "idle",
     expectedState: "idle",
     status: null,
-    en: "Create and let AI work",
-    zh: "创建并交给 AI",
+    en: "Generate execution plan",
+    zh: "生成执行方案",
     destination: null,
   },
   {
@@ -432,16 +465,16 @@ const HOME_ACTION_MATRIX = [
     state: "terminal-failed",
     expectedState: "idle",
     status: "failed",
-    en: "Create and let AI work",
-    zh: "创建并交给 AI",
+    en: "Generate execution plan",
+    zh: "生成执行方案",
     destination: null,
   },
   {
     state: "terminal-succeeded",
     expectedState: "idle",
     status: "succeeded",
-    en: "Create and let AI work",
-    zh: "创建并交给 AI",
+    en: "Generate execution plan",
+    zh: "生成执行方案",
     destination: null,
   },
 ] as const;

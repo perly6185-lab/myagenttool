@@ -111,6 +111,7 @@ function homeItem(overrides: Partial<HomeWorkbenchItem> = {}): HomeWorkbenchItem
     revision: 1, priority: "p1", assignees: [{ id: "usr_local", name: "Me" }],
     requester: { relation: "customer", name: "Alex", organization: "Acme" },
     planningStatus: "ready", executionState: "unclaimed", waitingOn: "me",
+    executionKind: null, executionUpdatedAt: null,
     attentionReason: null, secondaryReasons: [], needsAttention: true,
     dueDate: null, plannedDate: null, commitmentDate: null, nextFollowUpAt: null,
     report: null,
@@ -142,7 +143,7 @@ function workbench(items: HomeWorkbenchItem[]): HomeWorkbench {
 }
 
 function activateWorkTab(view: "my" | "ai") {
-  fireEvent.click(screen.getByRole("tab", { name: view === "ai" ? /^AI execution/ : /^My tasks/ }));
+  fireEvent.click(screen.getByRole("tab", { name: view === "ai" ? /^Automated work/ : /^My tasks/ }));
 }
 
 function aiBinding(id: string, status = "queued"): NonNullable<HomeWorkbenchItem["ai"]> {
@@ -157,6 +158,42 @@ function aiBinding(id: string, status = "queued"): NonNullable<HomeWorkbenchItem
 }
 
 describe("DailyWorkBoard", () => {
+  it("collapses an all-zero daily brief into one clear message", () => {
+    render(
+      <DailyWorkBoard
+        board={{ generatedAt: 0, states: emptyStates() }}
+        report={report(0, 0)}
+        plannedItems={[]}
+        workbench={workbench([])}
+        onOpenItem={vi.fn()}
+        onOpenTasks={vi.fn()}
+      />,
+    );
+    expect(screen.getByTestId("daily-coordination-brief").getAttribute("data-compact")).toBe("true");
+    expect(screen.getByText("Nothing needs your intervention now. Automated work will keep moving the plan forward.")).toBeTruthy();
+    expect(screen.queryByTestId("daily-brief-metrics")).toBeNull();
+  });
+
+  it("does not turn running or completed automation into work that needs my action", () => {
+    render(
+      <DailyWorkBoard
+        board={{ generatedAt: 0, states: emptyStates() }}
+        report={report(0, 0)}
+        plannedItems={[]}
+        workbench={workbench([
+          homeItem({ workItemId: "running", localRef: "LOCAL-R", executionState: "running", planningStatus: "in_progress", plannedDate: null, userStatus: "ai_working", ai: aiBinding("running", "running") }),
+          homeItem({ workItemId: "completed", localRef: "LOCAL-D", executionState: "completed", planningStatus: "done", plannedDate: null, userStatus: "completed", ai: aiBinding("completed", "done") }),
+        ])}
+        onOpenItem={vi.fn()}
+        onOpenTasks={vi.fn()}
+      />,
+    );
+
+    const brief = screen.getByTestId("daily-coordination-brief");
+    expect(within(brief).getByText("Today: 0 due, 0 need your action, automated work in progress: 1.")).toBeTruthy();
+    expect(within(brief).queryByRole("button", { name: "Review needs my action" })).toBeNull();
+  });
+
   it("keeps ownership in My tasks and uses AI execution only as a handed-off subset", async () => {
     const now = new Date(2026, 6, 31, 12).getTime();
     const task = localItem({
@@ -205,6 +242,55 @@ describe("DailyWorkBoard", () => {
     expect(within(screen.getByTestId("my-work-section")).getByText("LOCAL-H · Implement the dashboard change")).toBeTruthy();
     activateWorkTab("ai");
     expect(within(screen.getByTestId("ai-work-section")).getByText("Implement the dashboard change")).toBeTruthy();
+  });
+
+  it("includes an Issue-bound article import in automated work without labeling it as AI", () => {
+    const now = new Date(2026, 6, 31, 12).getTime();
+    const imported = localItem({
+      id: "article-import",
+      localRef: "LOCAL-5",
+      title: "Import a WeChat article",
+      status: "done",
+      state: "closed",
+      plannedDate: "2026-07-31",
+      completedAt: "2026-07-31T03:00:00.000Z",
+    });
+    const importedHome = homeItem({
+      workItemId: imported.id,
+      localRef: imported.localRef,
+      title: imported.title,
+      planningStatus: "done",
+      executionState: "completed",
+      executionKind: "article_import",
+      executionUpdatedAt: imported.completedAt,
+      userStatus: "completed",
+      plannedDate: imported.plannedDate,
+      completedAt: imported.completedAt,
+      waitingOn: "none",
+      needsAttention: false,
+    });
+
+    render(
+      <DailyWorkBoard
+        board={{ generatedAt: now, states: emptyStates() }}
+        report={report(0, 0)}
+        plannedItems={[imported]}
+        workbench={workbench([importedHome])}
+        onOpenItem={vi.fn()}
+        onOpenTasks={vi.fn()}
+        now={now}
+      />,
+    );
+
+    expect(screen.getByRole("tab", { name: /^Automated work 1$/ })).toBeTruthy();
+    expect(within(screen.getByTestId("my-work-section")).getByText("Automation：Article import · Completed")).toBeTruthy();
+    activateWorkTab("ai");
+    const automatedWork = screen.getByTestId("ai-work-section");
+    expect(within(automatedWork).getByRole("button", { name: "0 Review and report" })).toBeTruthy();
+    expect(within(automatedWork).getByRole("button", { name: "1 Completed" })).toBeTruthy();
+    expect(within(automatedWork).getByText("Import a WeChat article")).toBeTruthy();
+    expect(within(automatedWork).getByText("Article import")).toBeTruthy();
+    expect(automatedWork.textContent).not.toContain("Codex");
   });
 
   it("opens the simple task detail for a server-derived follow-up action", () => {
@@ -279,7 +365,7 @@ describe("DailyWorkBoard", () => {
     const aiWork = screen.getByTestId("ai-work-section");
     expect(within(myWork).getByText("Customer · Alex")).toBeTruthy();
     expect(within(myWork).getByText(/People：Waiting on me/)).toBeTruthy();
-    expect(within(myWork).getByText("AI：8/1 · Result ready for human review")).toBeTruthy();
+    expect(within(myWork).getByText("Automation：Agent · Result ready for human review")).toBeTruthy();
     expect(within(myWork).getByText("Report stale")).toBeTruthy();
     expect(myWork.textContent).not.toContain("Codex");
     expect(aiWork.textContent).toContain("Codex");
@@ -292,15 +378,15 @@ describe("DailyWorkBoard", () => {
     const aiTomorrow = within(aiWork).getByRole("heading", { name: "Tomorrow" }).closest("section");
     expect(myToday?.textContent).toContain("LOCAL-C · Confirm customer scope");
     expect(aiTomorrow?.textContent).toContain("LOCAL-C");
-    expect(aiTomorrow?.textContent).toContain("AI execution date：8/1");
+    expect(aiTomorrow?.textContent).toContain("Automated execution date：8/1");
     expect(aiTomorrow?.textContent).toContain("Expected completion：7/31");
-    expect(within(myWork).getByText("AI execution is after expected completion")).toBeTruthy();
-    expect(within(aiWork).getByText("AI execution is after expected completion")).toBeTruthy();
+    expect(within(myWork).getByText("Automated execution is after expected completion")).toBeTruthy();
+    expect(within(aiWork).getByText("Automated execution is after expected completion")).toBeTruthy();
 
     activateWorkTab("my");
     fireEvent.click(within(myWork).getByRole("button", { name: "1 Child learning" }));
     expect(within(myWork).getAllByText("LOCAL-K · Review child learning plan").length).toBeGreaterThan(0);
-    expect(within(myWork).getByText("AI：Not handed to AI")).toBeTruthy();
+    expect(within(myWork).getByText("Automation：Not automated yet")).toBeTruthy();
     expect(within(myWork).queryByText("LOCAL-C · Confirm customer scope")).toBeNull();
     expect(aiWork.textContent).toContain("LOCAL-C");
 
@@ -463,13 +549,13 @@ describe("DailyWorkBoard", () => {
 
     fireEvent.click(screen.getByText("Task active"));
     expect(onOpenItem).toHaveBeenCalledWith(active);
-    fireEvent.click(screen.getByRole("button", { name: "View all tasks" }));
+    fireEvent.click(screen.getByRole("button", { name: "View my tasks" }));
     expect(onOpenTasks).toHaveBeenCalled();
     expect(screen.getByTestId("my-work-status-cards")).toBeTruthy();
     expect(screen.getByTestId("ai-work-status-cards")).toBeTruthy();
     expect(screen.getByTestId("ai-execution-timeline")).toBeTruthy();
     expect(screen.getByTestId("ai-date-columns")).toBeTruthy();
-    expect(screen.getAllByText("No AI execution yet")).toHaveLength(4);
+    expect(screen.getAllByText("No automated work yet")).toHaveLength(4);
   });
 
   it("expands hidden work so every issue status remains inspectable", () => {
@@ -648,13 +734,13 @@ describe("DailyWorkBoard", () => {
     );
 
     const myWork = screen.getByTestId("my-work-section");
-    expect(within(myWork).getByText("AI：No execution date · Claimed")).toBeTruthy();
-    expect(within(myWork).getByText("AI：7/31 · Ready for review")).toBeTruthy();
+    expect(within(myWork).getAllByText("Automation：Agent · Claimed").length).toBeGreaterThan(0);
+    expect(within(myWork).getAllByText("Automation：Agent · Ready for review").length).toBeGreaterThan(0);
     const aiWork = screen.getByTestId("ai-work-section");
-    expect(within(myWork).getByText("AI is linked but has no execution date")).toBeTruthy();
-    expect(within(aiWork).getByText("AI is linked but has no execution date")).toBeTruthy();
-    expect(within(myWork).getByText("AI completed; awaiting human review")).toBeTruthy();
-    expect(within(aiWork).getByText("AI completed; awaiting human review")).toBeTruthy();
+    expect(within(myWork).getByText("Automated execution has no execution date")).toBeTruthy();
+    expect(within(aiWork).getByText("Automated execution has no execution date")).toBeTruthy();
+    expect(within(myWork).getByText("Automated execution completed; awaiting human review")).toBeTruthy();
+    expect(within(aiWork).getByText("Automated execution completed; awaiting human review")).toBeTruthy();
   });
 
   it("deduplicates urgent work into one action queue step per Issue and edits its execution date in place", async () => {
@@ -691,17 +777,17 @@ describe("DailyWorkBoard", () => {
     );
 
     expect(screen.queryByTestId("unified-action-queue")).toBeNull();
-    fireEvent.click(screen.getByRole("button", { name: "Review today's actions" }));
+    fireEvent.click(screen.getByRole("button", { name: "Review needs my action" }));
     const queue = screen.getByTestId("unified-action-queue");
     expect(within(queue).getAllByTestId(/^action-queue-/)).toHaveLength(2);
     const approvalRow = within(queue).getByTestId("action-queue-approval");
     const lateRow = within(queue).getByTestId("action-queue-late");
     expect(approvalRow.compareDocumentPosition(lateRow) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-    expect(within(queue).getByText("AI execution is after expected completion")).toBeTruthy();
+    expect(within(queue).getByText("Automated execution is after expected completion")).toBeTruthy();
 
     fireEvent.click(within(queue).getByRole("button", { name: "Adjust execution date" }));
     const scheduleDialog = screen.getByRole("dialog", { name: "Schedule AI execution" });
-    const dateInput = within(scheduleDialog).getByLabelText("AI execution date") as HTMLInputElement;
+    const dateInput = within(scheduleDialog).getByLabelText("Automated execution date") as HTMLInputElement;
     expect(dateInput.value).toBe("2026-08-01");
     fireEvent.change(dateInput, { target: { value: "2026-07-31" } });
     fireEvent.click(within(scheduleDialog).getByRole("button", { name: "Save date" }));
@@ -727,7 +813,7 @@ describe("DailyWorkBoard", () => {
       />,
     );
 
-    fireEvent.click(screen.getByRole("button", { name: "Review today's actions" }));
+    fireEvent.click(screen.getByRole("button", { name: "Review needs my action" }));
     fireEvent.click(screen.getByRole("button", { name: "Adjust execution date" }));
     const scheduleDialog = screen.getByRole("dialog", { name: "Schedule AI execution" });
     fireEvent.click(within(scheduleDialog).getByRole("button", { name: "Save date" }));
@@ -770,8 +856,8 @@ describe("DailyWorkBoard", () => {
     );
 
     const brief = screen.getByTestId("daily-coordination-brief");
-    expect(within(brief).getByText("Today: 2 due, 2 need your action, AI is working on: 0.")).toBeTruthy();
-    expect(within(brief).getByText("Date conflicts between your expectation and AI execution: 1.")).toBeTruthy();
+    expect(within(brief).getByText("Today: 2 due, 2 need your action, automated work in progress: 0.")).toBeTruthy();
+    expect(within(brief).getByText("Date conflicts between your expectation and automated execution: 1.")).toBeTruthy();
     expect(within(brief).getByText("LOCAL-APP · Approve the release")).toBeTruthy();
 
     fireEvent.click(within(brief).getByRole("button", { name: "Start first action" }));
@@ -908,7 +994,7 @@ describe("DailyWorkBoard", () => {
     expect(within(myWork).getByText("Temporarily showing this Issue without changing your filter")).toBeTruthy();
 
     activateWorkTab("my");
-    fireEvent.click(within(myWork).getByRole("button", { name: "Back to AI tasks" }));
+    fireEvent.click(within(myWork).getByRole("button", { name: "Back to automated work" }));
     await waitFor(() => expect(within(myWork).queryByText("LOCAL-T · Cross-board target")).toBeNull());
     activateWorkTab("my");
     expect(within(myWork).getByRole("button", { name: "1 Child learning" }).getAttribute("aria-pressed")).toBe("true");
@@ -921,7 +1007,7 @@ describe("DailyWorkBoard", () => {
     fireEvent.click(within(aiWork).getByRole("button", { name: /Running/ }));
     expect(within(aiWork).queryByText("Cross-board target")).toBeNull();
     activateWorkTab("my");
-    fireEvent.click(within(myTarget).getByRole("button", { name: "Locate in AI tasks" }));
+    fireEvent.click(within(myTarget).getByRole("button", { name: "Locate in automated work" }));
     await waitFor(() => {
       const focusedAiTarget = document.querySelector<HTMLElement>('[data-work-view="ai"][data-work-item-id="target"]');
       expect(focusedAiTarget?.className).toContain("ring-primary/35");
@@ -1007,11 +1093,11 @@ describe("DailyWorkBoard", () => {
     const aiOther = screen.getByTestId("other-execution-column");
     expect(within(aiOther).getByRole("heading", { name: "Other execution dates / unscheduled" })).toBeTruthy();
     expect(aiTomorrow.compareDocumentPosition(aiOther) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-    expect(aiOther.textContent).toContain("AI execution date：8/4");
+    expect(aiOther.textContent).toContain("Automated execution date：8/4");
     expect(aiOther.textContent).not.toContain("LOCAL-U");
     fireEvent.click(within(aiOther).getByRole("button", { name: "Show 1 more" }));
     expect(aiOther.textContent).toContain("LOCAL-U");
-    expect(aiOther.textContent).toContain("AI execution date：No execution date");
+    expect(aiOther.textContent).toContain("Automated execution date：No execution date");
     expect(onOpenItem).toHaveBeenCalledWith(expect.objectContaining({ targetId: "undated", section: "task" }));
   });
 
@@ -1095,7 +1181,7 @@ describe("DailyWorkBoard", () => {
     activateWorkTab("ai");
     const aiOther = screen.getByTestId("other-execution-column");
     expect(within(aiOther).getByText("LOCAL-60")).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: /AI failed$/ }));
+    fireEvent.click(screen.getByRole("button", { name: /Automation failed$/ }));
     for (const plannedItem of plannedItems) {
       expect(within(aiOther).getByText(plannedItem.localRef)).toBeTruthy();
     }

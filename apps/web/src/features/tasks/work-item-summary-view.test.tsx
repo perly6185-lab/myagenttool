@@ -137,6 +137,79 @@ afterEach(() => {
 });
 
 describe("work item summary presentation", () => {
+  it("turns a completed result into a reusable task or follow-up draft", async () => {
+    const onCreateTaskDraft = vi.fn();
+    mocks.getWorkItem.mockResolvedValue({
+      workItem: item({
+        state: "closed",
+        status: "done",
+        executionState: "completed",
+        lastProgressSummary: "The customer update was delivered.",
+      }),
+    });
+    render(<WorkItemSummaryView workItemId="lwi_1" onOpenExpert={() => {}} onCreateTaskDraft={onCreateTaskDraft} />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "Reuse as new task" }));
+    expect(onCreateTaskDraft).toHaveBeenLastCalledWith("Prepare customer update\nSummarize the outcome in plain language.");
+
+    fireEvent.click(screen.getByRole("button", { name: "Create follow-up" }));
+    expect(onCreateTaskDraft).toHaveBeenLastCalledWith(expect.stringContaining("Follow up on “Prepare customer update”"));
+  });
+
+  it("presents an Issue-bound article import as a completed managed execution", async () => {
+    mocks.getWorkItem.mockResolvedValue({
+      workItem: item({
+        state: "closed",
+        status: "done",
+        waitingOn: "none",
+        executionState: "completed",
+        executionKind: "article_import",
+        executionBindings: [{
+          kind: "article_import",
+          targetId: "article_import_1",
+          worktreeId: "wtr_article",
+          createdAt: "2026-08-05T00:00:00.000Z",
+        }],
+        acceptanceResults: [{
+          criterion: "Customer-ready summary",
+          status: "passed",
+          note: "Imported and checked",
+          verificationId: "ver_article",
+        }],
+        verificationRecords: [{
+          id: "ver_article",
+          kind: "manual",
+          status: "passed",
+          command: null,
+          summary: "Imported the public article and verified its output files.",
+          evidence: [],
+          recordedAt: "2026-08-05T01:00:00.000Z",
+          recordedBy: "usr_1",
+        }],
+        outputAssets: [{
+          id: "asset_article",
+          path: "docs/imported/article.md",
+          family: "markdown",
+          terminalId: "dev_local",
+          hash: null,
+          version: null,
+          worktreeId: "wtr_article",
+          capabilities: [],
+          readiness: { state: "ready", reason: "article_import_completed" },
+        }],
+      }),
+    });
+    render(<WorkItemSummaryView workItemId="lwi_1" onOpenExpert={() => {}} />);
+
+    fireEvent.click(await screen.findByRole("button", { name: "View result" }));
+    expect(screen.getByText("Article import result")).toBeTruthy();
+    expect(screen.getByText("The article import passed task acceptance")).toBeTruthy();
+    expect(screen.getByText("Imported the public article and verified its output files.")).toBeTruthy();
+    expect(screen.getByText("Article import")).toBeTruthy();
+    expect(screen.queryByText("What AI delivered")).toBeNull();
+    expect(screen.queryByText(/review evidence is incomplete/i)).toBeNull();
+  });
+
   it("derives one user-facing status from business, planning, and execution state", () => {
     expect(deriveWorkItemUserStatus(item({ state: "closed" }))).toBe("completed");
     expect(deriveWorkItemUserStatus(item({ executionState: "failed" }))).toBe("needs_action");
@@ -624,7 +697,7 @@ describe("work item summary presentation", () => {
     expect(screen.getByRole("button", { name: "Approve and complete task" })).toBeTruthy();
   });
 
-  it("hands the task to AI with one click and lets the run establish its execution contract", async () => {
+  it("prepares and confirms the execution contract before handing the task to AI", async () => {
     const unplanned = item({
       status: "backlog",
       executionState: "unclaimed",
@@ -634,17 +707,37 @@ describe("work item summary presentation", () => {
       executionContractGate: { ready: false, missing: ["acceptance_criteria", "verification_sop", "confirmation"], source: null, confirmedAt: null },
     });
     mocks.getWorkItem.mockResolvedValue({ workItem: unplanned });
-    mocks.updateWorkItem.mockResolvedValue({ workItem: item({ status: "ready", executionPolicy: "auto", waitingOn: "ai" }) });
+    mocks.suggestWorkItemDraft.mockResolvedValue({
+      draft: { acceptanceCriteria: ["Customer-ready summary"], verificationSop: ["Review the customer-facing result"] },
+    });
+    const prepared = item({
+      status: "backlog", executionState: "unclaimed", plannedDate: null,
+      executionContractSource: "assisted", executionContractConfirmedAt: "2026-08-05T00:01:00.000Z",
+      executionContractGate: { ready: true, missing: [], source: "assisted", confirmedAt: "2026-08-05T00:01:00.000Z" },
+      revision: 3,
+    });
+    mocks.updateWorkItem
+      .mockResolvedValueOnce({ workItem: prepared })
+      .mockResolvedValueOnce({ workItem: item({ status: "ready", executionPolicy: "auto", waitingOn: "ai", revision: 4 }) });
     render(<WorkItemSummaryView workItemId="lwi_1" onOpenExpert={() => {}} />);
 
     fireEvent.click(await screen.findByRole("button", { name: "Let AI start" }));
-    await waitFor(() => expect(mocks.updateWorkItem).toHaveBeenCalledWith("lwi_1", expect.objectContaining({
+    await waitFor(() => expect(mocks.updateWorkItem).toHaveBeenCalledWith("lwi_1", {
       expectedRevision: unplanned.revision,
+      acceptanceCriteria: ["Customer-ready summary"],
+      verificationSop: ["Review the customer-facing result"],
+    }));
+    expect(await screen.findByText(/execution plan is ready/i)).toBeTruthy();
+    expect(mocks.updateWorkItem).toHaveBeenCalledTimes(1);
+
+    fireEvent.click(screen.getByRole("button", { name: "Let AI start" }));
+    await waitFor(() => expect(mocks.updateWorkItem).toHaveBeenCalledWith("lwi_1", expect.objectContaining({
+      expectedRevision: prepared.revision,
       executionPolicy: "auto",
       waitingOn: "ai",
       status: "ready",
     })));
-    expect(mocks.suggestWorkItemDraft).not.toHaveBeenCalled();
+    expect(mocks.suggestWorkItemDraft).toHaveBeenCalledTimes(1);
     expect(mocks.startWorkItemAutoRun).not.toHaveBeenCalled();
     expect(await screen.findByText(/set to automatic/i)).toBeTruthy();
   });

@@ -58,6 +58,13 @@ const mocks = vi.hoisted(() => ({
   setSelectedWorkItemId: vi.fn(),
   setSelectedWorkItemMode: vi.fn(),
   setSelectedWorkItemSection: vi.fn(),
+  setSelectedExternalWorkTab: vi.fn(),
+  setSettingsQuery: vi.fn(),
+  setSettingsCategory: vi.fn(),
+  setSettingsDialogOpen: vi.fn(),
+  setSurfaceReturnSection: vi.fn(),
+  setTaskArea: vi.fn(),
+  recordRecentSettingsSection: vi.fn(),
   execute: vi.fn(async (fn: () => Promise<unknown>) => { await fn(); return true; }),
 }));
 
@@ -186,7 +193,15 @@ vi.mock("@/features/tasks/article-workflow-api", () => ({
 }));
 vi.mock("@/store/ui-store", () => ({
   useUiStore: (selector: (state: Record<string, unknown>) => unknown) => selector({
+    section: "task",
     setSection: mocks.setSection,
+    setSurfaceReturnSection: mocks.setSurfaceReturnSection,
+    setTaskArea: mocks.setTaskArea,
+    settingsDialogOpen: false,
+    setSettingsDialogOpen: mocks.setSettingsDialogOpen,
+    setSettingsCategory: mocks.setSettingsCategory,
+    setSettingsQuery: mocks.setSettingsQuery,
+    recordRecentSettingsSection: mocks.recordRecentSettingsSection,
     setSelectedProjectId: mocks.setSelectedProjectId,
     selectedWorkItemId: null,
     selectedWorkItemMode: "summary",
@@ -194,6 +209,7 @@ vi.mock("@/store/ui-store", () => ({
     setSelectedWorkItemId: mocks.setSelectedWorkItemId,
     setSelectedWorkItemMode: mocks.setSelectedWorkItemMode,
     setSelectedWorkItemSection: mocks.setSelectedWorkItemSection,
+    setSelectedExternalWorkTab: mocks.setSelectedExternalWorkTab,
     selectedPlanningProjectId: null,
     planningProjectView: "list",
     planningProjectFilters: { status: "all", priority: "all", milestone: "", due: "all" },
@@ -225,7 +241,7 @@ describe("TaskView local work items", () => {
   });
 
   async function openExpertDetails() {
-    fireEvent.click(await screen.findByRole("button", { name: "Expert details" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Technical and audit details" }));
   }
   it("shows local work items as the default source", async () => {
     mocks.listWorkItemAttention.mockResolvedValue({ items: [{
@@ -276,6 +292,53 @@ describe("TaskView local work items", () => {
       intakeChannel: "manual",
       waitingOn: "me",
     })));
+  });
+
+  it("uses the same low-decision creator on the ordinary task page", async () => {
+    mocks.listWorkItems.mockResolvedValue({ workItems: [], count: 0 });
+    mocks.createWorkItem.mockResolvedValue({ workItem: { id: "lwi_simple" } });
+    render(<TaskView localOnly />);
+
+    expect(screen.getByText("Local").parentElement?.className).toContain("hidden");
+    const moreTools = screen.getByText("More task tools");
+    expect(moreTools).toBeTruthy();
+    fireEvent.click(moreTools);
+    fireEvent.click(screen.getByRole("button", { name: "Task status" }));
+    expect(mocks.setSection).toHaveBeenCalledWith("workBoard");
+    fireEvent.click(screen.getByRole("button", { name: /New task/i }));
+    fireEvent.change(await screen.findByRole("textbox", { name: "Create a task" }), {
+      target: { value: "Prepare a short customer update" },
+    });
+    expect(screen.queryByLabelText("Priority")).toBeNull();
+    expect(screen.queryByLabelText("Verification SOP")).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Create task only" }));
+
+    await waitFor(() => expect(mocks.createWorkItem).toHaveBeenCalledWith(expect.objectContaining({
+      projectId: "prj_1",
+      title: "Prepare a short customer update",
+      dueDate: null,
+      priority: "p2",
+      executionPolicy: "manual",
+    })));
+  });
+
+  it("places External work after New task and opens the requested external-work tab", async () => {
+    mocks.listWorkItems.mockResolvedValue({ workItems: [], count: 0 });
+    render(<TaskView localOnly />);
+
+    const newTask = screen.getByRole("button", { name: /New task/i });
+    const externalWork = screen.getByRole("button", { name: "External work" });
+    expect(newTask.compareDocumentPosition(externalWork) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+
+    fireEvent.click(externalWork);
+    fireEvent.click(screen.getByRole("menuitem", { name: /Change requests/ }));
+    expect(mocks.setSelectedExternalWorkTab).toHaveBeenCalledWith("pr");
+    expect(mocks.setSection).toHaveBeenCalledWith("externalWork");
+
+    fireEvent.click(externalWork);
+    fireEvent.click(screen.getByRole("menuitem", { name: /External issue settings/ }));
+    expect(mocks.setSection).toHaveBeenCalledWith("settings");
+    expect(mocks.setSettingsQuery).toHaveBeenCalledWith("external issue");
   });
 
   it("records customer source and follow-up when creating a task", async () => {

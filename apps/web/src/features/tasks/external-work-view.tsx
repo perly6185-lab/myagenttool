@@ -17,8 +17,6 @@ import type { GithubResult, LocalWorkItem, LocalWorkItemResult, Row } from "./ta
 const ExternalIssueImportDialog = lazy(() => import("./external-issue-import-dialog")
   .then((module) => ({ default: module.ExternalIssueImportDialog })));
 
-type ExternalTab = "issue" | "pr";
-
 /**
  * External code-host records are intake and delivery context, not Tasks.
  * Issues may become a local task; PRs/MRs remain reviewable code changes.
@@ -31,6 +29,8 @@ export function ExternalWorkView() {
   const openWorkItem = useUiStore((store) => store.openWorkItem);
   const setSelectedProjectId = useUiStore((store) => store.setSelectedProjectId);
   const setSelectedWorktreeId = useUiStore((store) => store.setSelectedWorktreeId);
+  const restoredTab = useUiStore((store) => store.selectedExternalWorkTab);
+  const rememberTab = useUiStore((store) => store.setSelectedExternalWorkTab);
   const projects = useMemo(
     () => (state?.projects ?? []).filter((project) => project.status !== "archived"),
     [state?.projects],
@@ -46,8 +46,8 @@ export function ExternalWorkView() {
     () => projects.filter((project) => repoProjectIds.has(project.id)),
     [projects, repoProjectIds],
   );
-  const [tab, setTab] = useState<ExternalTab>("issue");
   const [projectId, setProjectId] = useState("all");
+  const [tab, setTab] = useState(restoredTab ?? "issue");
   const [query, setQuery] = useState("");
   const [rows, setRows] = useState<Row[]>([]);
   const [localRows, setLocalRows] = useState<LocalWorkItem[]>([]);
@@ -55,6 +55,13 @@ export function ExternalWorkView() {
   const [notice, setNotice] = useState<string | null>(null);
   const [importOpen, setImportOpen] = useState(false);
   const [nonce, setNonce] = useState(0);
+
+  useEffect(() => setTab(restoredTab ?? "issue"), [restoredTab]);
+
+  function selectTab(next: "issue" | "pr") {
+    setTab(next);
+    rememberTab?.(next);
+  }
 
   const targetProjects = projectId === "all"
     ? repoProjects
@@ -206,7 +213,7 @@ export function ExternalWorkView() {
                 type="button"
                 role="tab"
                 aria-selected={tab === key}
-                onClick={() => setTab(key)}
+                onClick={() => selectTab(key)}
                 className={cn(
                   "rounded-md px-3 py-1.5 font-medium transition",
                   tab === key ? "bg-background text-foreground shadow-sm" : "text-muted-foreground hover:text-foreground",
