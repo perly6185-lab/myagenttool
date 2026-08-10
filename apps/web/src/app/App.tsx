@@ -2,7 +2,7 @@ import { NavRail } from "@/components/layout/nav-rail";
 import { Topbar } from "@/components/layout/topbar";
 import { Inspector } from "@/components/layout/inspector";
 import { ErrorBoundary } from "@/components/common/error-boundary";
-import { lazy, Suspense } from "react";
+import { lazy, Suspense, useEffect, useState } from "react";
 import { SECTION_VIEWS } from "@/app/routes";
 import { pageRegistration } from "@/app/sections";
 import { useUrlNavigationSync } from "@/app/url-navigation-sync";
@@ -33,6 +33,26 @@ const TASK_AREA_VIEWS: Record<TaskArea, keyof typeof SECTION_VIEWS> = {
   verification: "review",
   trace: "invocations",
 };
+
+function DeferredCommandPalette() {
+  const [mounted, setMounted] = useState(false);
+  useEffect(() => {
+    if (mounted) return;
+    const open = (event: KeyboardEvent) => {
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === "k") {
+        event.preventDefault();
+        setMounted(true);
+      }
+    };
+    window.addEventListener("keydown", open);
+    return () => window.removeEventListener("keydown", open);
+  }, [mounted]);
+  return mounted ? (
+    <Suspense fallback={null}>
+      <CommandPalette initiallyOpen />
+    </Suspense>
+  ) : null;
+}
 
 /**
  * Three-pane control-plane shell: nav rail (domains) · main outlet (active
@@ -65,9 +85,7 @@ export function App() {
 
   return (
     <div className="flex h-full overflow-hidden">
-      <Suspense fallback={null}>
-        <CommandPalette />
-      </Suspense>
+      <DeferredCommandPalette />
       {settingsDialogOpen ? (
         <Suspense fallback={null}>
           <MySettingsDialog />

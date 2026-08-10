@@ -26,9 +26,9 @@ function commandPages(section: SectionKey, query: string, role?: SessionRole) {
 // ⌘K / Ctrl-K command palette: jump to any of the console's sections from
 // anywhere. Filters by label / blurb / group; arrow keys + Enter to navigate,
 // Esc or backdrop to close. Companion to the grouped nav — the fast path.
-export function CommandPalette() {
+export function CommandPalette({ initiallyOpen = false }: { initiallyOpen?: boolean } = {}) {
   const { t, i18n } = useAppTranslation();
-  const [open, setOpen] = useState(false);
+  const [open, setOpen] = useState(initiallyOpen);
   const [query, setQuery] = useState("");
   const [active, setActive] = useState(0);
   const section = useUiStore((state) => state.section);
