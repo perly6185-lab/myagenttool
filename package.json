@@ -136,6 +136,7 @@
     "visual:qa": "node tools/dev/visual-qa.mjs",
     "visual:qa:browser": "node tools/dev/visual-qa.mjs --require-browser",
     "visual:qa:rounds": "node tools/dev/round-telemetry-shot.mjs",
+    "feishu:import": "node tools/feishu-doc-imports/src/cli.mjs",
     "smoke:ci": "node tools/dev/run-ci-smokes.mjs",
     "smoke:ssh-target": "node tools/dev/ssh-target-smoke.mjs",
     "smoke:terminal": "node tools/dev/terminal-smoke.mjs",
