@@ -113,7 +113,7 @@ export function NavRail() {
                   </button>
                 ) : null}
               </div>
-              {isProjects ? <ProjectTree /> : null}
+              {isProjects && section !== "workflowMemory" ? <ProjectTree /> : null}
             </li>
           );
               })}

@@ -52,6 +52,34 @@ test("workflow memory folder picker returns only an explicitly selected real dir
   assert.equal(await handlers.get("workflow-memory:pick-source-folder")(), null);
 });
 
+test("workflow memory folder picker preserves a real Windows-style employee folder name with Chinese and spaces", async () => {
+  const root = mkdtempSync(join(tmpdir(), "workflow-source-picker-i18n-"));
+  const selectedFolder = join(root, "销售部 历史工作 2026");
+  mkdirSync(selectedFolder);
+  const handlers = new Map();
+  const ipcMain = {
+    removeHandler: (name) => handlers.delete(name),
+    handle: (name, handler) => handlers.set(name, handler),
+  };
+  let receivedOptions = null;
+  registerWorkflowSourceFolderPicker({
+    ipcMain,
+    dialog: {
+      showOpenDialog: async (_window, options) => {
+        receivedOptions = options;
+        return { canceled: false, filePaths: [selectedFolder] };
+      },
+    },
+    getWindow: () => null,
+  });
+
+  assert.deepEqual(await handlers.get("workflow-memory:pick-source-folder")(), {
+    absolutePath: realpathSync(selectedFolder),
+    name: "销售部 历史工作 2026",
+  });
+  assert.deepEqual(receivedOptions.properties, ["openDirectory"]);
+});
+
 test("copies a selected Office document only into a confined Worktree destination", () => {
   const root = mkdtempSync(join(tmpdir(), "office-copy-"));
   const source = join(root, "source.docx");

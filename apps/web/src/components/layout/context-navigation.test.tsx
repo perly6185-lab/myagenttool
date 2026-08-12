@@ -37,7 +37,7 @@ describe("ContextNavigation (#1505)", () => {
       selectedProjectId: "project-42",
     });
     render(<ContextNavigation taskArea="overview" onTaskAreaChange={() => {}} />);
-    fireEvent.click(screen.getByRole("button", { name: "Return to Projects" }));
+    fireEvent.click(screen.getByRole("button", { name: "Return to My projects" }));
     expect(useUiStore.getState()).toMatchObject({
       section: "projects",
       surfaceReturnSection: null,

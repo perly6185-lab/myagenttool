@@ -35,6 +35,7 @@ import { handlePlanningProjectRoutes } from "../routes/planning-projects.mjs";
 import { handleWorkProfileRoutes } from "../routes/work-profile.mjs";
 import { ensureEventStreamMetrics, eventsAfter } from "../services/event-stream-metrics.mjs";
 import { terminalObservationReadModel } from "../read-models/terminal-observation.mjs";
+import { buildConsoleState, CONSOLE_STATE_MEDIA_TYPE } from "../read-models/state.mjs";
 
 export function createHttpServer({
   host,
@@ -108,6 +109,18 @@ export function createHttpServer({
   updateWorkItemAttention,
   getWorkItemGithubSyncDiagnostics,
   suggestWorkItemDraft,
+  listMyTemplateRoutingFeedback,
+  removeMyTemplateRoutingFeedback,
+  previewMyTemplateDraft,
+  listMyTemplateDrafts,
+  reviewMyTemplateDraft,
+  listSimilarMyTemplateWorkItems,
+  createMyTemplateDraft,
+  addMyTemplateLearningCase,
+  activateMyTemplateDraft,
+  listMyTemplateOutcomeFeedback,
+  recordMyTemplateOutcomeFeedback,
+  resumeMyTemplateGovernanceObservation,
   prepareWorkItemExecutionContract,
   listWorkItemReportDrafts,
   getWorkItemReportDraft,
@@ -131,6 +144,11 @@ export function createHttpServer({
   restoreWorkItemMaterial,
   listWorkflowSources,
   createWorkflowSource,
+  listTemplateLearningTasks,
+  createTemplateLearningTask,
+  stageTemplateLearningFile,
+  startTemplateLearningTask,
+  completeTemplateLearningTask,
   scanWorkflowSource,
   scanWorkflowIncrementalIntake,
   listWorkflowIntakeObservations,
@@ -187,8 +205,10 @@ export function createHttpServer({
   exportBusinessPilotCollection,
   revokeBusinessPilotCollection,
   getWorkflowAdaptiveWorkbench,
+  getWorkflowMemoryInsights,
   updateWorkflowAdaptivePolicy,
   updateWorkflowAdaptiveMonitor,
+  updateWorkflowAdaptiveAutomation,
   runWorkflowAdaptiveMonitorNow,
   syncWorkflowAdaptiveOutcomes,
   listWorkflowAdaptiveLearning,
@@ -209,6 +229,9 @@ export function createHttpServer({
   startRoutineWorkItem,
   executeRoutineStep,
   confirmQuotationInputs,
+  bindRoutineLedger,
+  requestRoutineStepReview,
+  resumeRoutineRecovery,
   completeRoutineStep,
   retryRoutineStep,
   decideRoutineApproval,
@@ -543,7 +566,10 @@ export function createHttpServer({
       // allowed: browsers always declare one when they attach a body.
       const binaryTaskMaterialUpload = req.method === "PUT"
         && /^\/api\/projects\/[^/]+\/task-material-drafts\/[^/]+\/files\/[^/]+$/.test(url.pathname);
-      if (["POST", "PUT", "PATCH"].includes(req.method) && url.pathname.startsWith("/api/") && !binaryTaskMaterialUpload) {
+      const binaryTemplateLearningUpload = req.method === "POST"
+        && /^\/api\/workflow-memory\/template-learning\/[^/]+\/files$/.test(url.pathname);
+      if (["POST", "PUT", "PATCH"].includes(req.method) && url.pathname.startsWith("/api/")
+        && !binaryTaskMaterialUpload && !binaryTemplateLearningUpload) {
         const contentType = String(req.headers["content-type"] ?? "").trim().toLowerCase();
         if (contentType && !contentType.startsWith("application/json")) {
           sendJson(res, 415, { error: "unsupported_content_type", message: "API writes must declare application/json." });
@@ -601,7 +627,11 @@ export function createHttpServer({
         // Stage 2 (#1342): backfill executionScope + runtimeRequirements onto legacy
         // Application descriptors persisted before the dual-layer model (idempotent).
         backfillApplicationRuntimeMetadata(state.applications);
-        sendJson(res, 200, publicState(actor));
+        const snapshot = publicState(actor);
+        const acceptsConsoleState = String(req.headers.accept ?? "")
+          .split(",")
+          .some((value) => value.trim().split(";")[0] === CONSOLE_STATE_MEDIA_TYPE);
+        sendJson(res, 200, acceptsConsoleState ? buildConsoleState(snapshot) : snapshot);
         return;
       }
 
@@ -760,6 +790,11 @@ export function createHttpServer({
         actor,
         listSources: listWorkflowSources,
         createSource: createWorkflowSource,
+        listTemplateLearningTasks,
+        createTemplateLearningTask,
+        stageTemplateLearningFile,
+        startTemplateLearningTask,
+        completeTemplateLearningTask,
         scanSource: scanWorkflowSource,
         scanIncrementalIntake: scanWorkflowIncrementalIntake,
         listIntakeObservations: listWorkflowIntakeObservations,
@@ -816,8 +851,10 @@ export function createHttpServer({
         exportBusinessPilotCollection,
         revokeBusinessPilotCollection,
         getWorkflowAdaptiveWorkbench,
+        getWorkflowMemoryInsights,
         updateWorkflowAdaptivePolicy,
         updateWorkflowAdaptiveMonitor,
+        updateWorkflowAdaptiveAutomation,
         runWorkflowAdaptiveMonitorNow,
         syncWorkflowAdaptiveOutcomes,
         listWorkflowAdaptiveLearning,
@@ -838,6 +875,9 @@ export function createHttpServer({
         startRoutineWorkItem,
         executeRoutineStep,
         confirmQuotationInputs,
+        bindRoutineLedger,
+        requestRoutineStepReview,
+        resumeRoutineRecovery,
         completeRoutineStep,
         retryRoutineStep,
         decideRoutineApproval,
@@ -931,6 +971,18 @@ export function createHttpServer({
         updateAttention: updateWorkItemAttention,
         githubSyncDiagnostics: getWorkItemGithubSyncDiagnostics,
         suggestWorkItemDraft,
+        listMyTemplateRoutingFeedback,
+        removeMyTemplateRoutingFeedback,
+        previewMyTemplateDraft,
+        listMyTemplateDrafts,
+        reviewMyTemplateDraft,
+        listSimilarMyTemplateWorkItems,
+        createMyTemplateDraft,
+        addMyTemplateLearningCase,
+        activateMyTemplateDraft,
+        listMyTemplateOutcomeFeedback,
+        recordMyTemplateOutcomeFeedback,
+        resumeMyTemplateGovernanceObservation,
         prepareExecutionContract: prepareWorkItemExecutionContract,
         retryWorkItemAlert,
         inspectArticleImport,

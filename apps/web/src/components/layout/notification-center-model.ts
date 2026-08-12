@@ -3,7 +3,7 @@ import type { ConsoleSnapshot, InvocationSnapshot, PendingDecision, WorkItem } f
 export interface NotificationItem {
   id: string;
   title: string;
-  target: "work_item" | "invocation" | "decision";
+  target: "work_item" | "invocation" | "decision" | "template";
 }
 
 export interface NotificationCenterModel {

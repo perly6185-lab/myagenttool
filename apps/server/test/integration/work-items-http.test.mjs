@@ -122,6 +122,37 @@ async function externalWebhook(provider, payload, {
   return { status: response.status, body: await response.json() };
 }
 
+test("learned My template choices are visible and removable through the real HTTP server", async () => {
+  runtimeState.myTemplateRoutingFeedback.push(
+    {
+      id: "mtf_http_a", ownerTeamId: "team_a", projectId: "prj_a", workItemId: "missing_a",
+      intentTerms: ["询价"], rejectedOutput: "报价单", selectedOutput: "询价汇总表",
+      reason: "user_corrected_desired_output", createdBy: "usr_a", createdAt: "2026-08-11T00:00:00.000Z",
+    },
+    {
+      id: "mtf_http_b", ownerTeamId: "team_b", projectId: "prj_b", workItemId: "missing_b",
+      intentTerms: ["合同"], rejectedOutput: "合同摘要", selectedOutput: "合同登记表",
+      reason: "user_corrected_desired_output", createdBy: "usr_b", createdAt: "2026-08-11T00:00:00.000Z",
+    },
+  );
+
+  const listed = await call("/api/work-items/my-template-learning?projectId=prj_a");
+  assert.equal(listed.status, 200);
+  assert.equal(listed.body.count, 1);
+  assert.equal(listed.body.feedback[0].selectedOutput, "询价汇总表");
+  assert.equal((await call("/api/work-items/my-template-learning", { token: "tok_b" })).body.count, 1);
+  assert.equal((await call("/api/work-items/my-template-learning/mtf_http_a", {
+    token: "tok_b", method: "DELETE",
+  })).status, 404);
+
+  const removed = await call("/api/work-items/my-template-learning/mtf_http_a", { method: "DELETE" });
+  assert.equal(removed.status, 200);
+  assert.equal(removed.body.affectsFutureMatchesOnly, true);
+  assert.equal((await call("/api/work-items/my-template-learning?projectId=prj_a")).body.count, 0);
+  runtimeState.myTemplateRoutingFeedback = runtimeState.myTemplateRoutingFeedback
+    .filter((feedback) => feedback.id !== "mtf_http_b");
+});
+
 test("local work item CRUD is wired through the real HTTP server", async () => {
   const created = await call("/api/work-items", {
     method: "POST",
@@ -991,6 +1022,9 @@ test("AI assistance and alert retry routes are scoped and governed", async () =>
   });
   assert.equal(draft.status, 200);
   assert.equal(draft.body.draft.type, "bug");
+  assert.deepEqual(draft.body.draft.templateMatch.decision, {
+    kind: "no_match", confidence: "low", reason: "insufficient_evidence",
+  });
   assert.equal((await call("/api/work-items/assist/draft", {
     token: "tok_b", method: "POST", body: { projectId: "prj_a", title: "Foreign" },
   })).status, 404);
@@ -1240,4 +1274,168 @@ test("governed report drafts are wired through HTTP without sending or closing w
   const listed = await call(`/api/work-items/${item.id}/report-drafts`);
   assert.equal(listed.status, 200);
   assert.equal(listed.body.count, 1);
+});
+
+test("completed My template result feedback is recorded and summarized through HTTP", async () => {
+  const workItem = {
+    id: "lwi_template_outcome_http", localRef: "LOCAL-OUTCOME", ownerTeamId: "team_a", projectId: "prj_a",
+    title: "Summarize inquiry", body: "Produce an inquiry summary.", type: "task", priority: "p2",
+    status: "done", state: "closed", revision: 1, labels: [], assigneeIds: ["usr_a"],
+    acceptanceCriteria: [], verificationSop: [], acceptanceResults: [], verificationRecords: [],
+    inputAssets: [], outputAssets: [], requiredCapabilities: [], externalBindings: [], executionBindings: [],
+    terminalId: runtimeState.device.id, createdBy: "usr_a", lastModifiedBy: "usr_a",
+    createdAt: "2026-08-11T00:00:00.000Z", updatedAt: "2026-08-11T00:01:00.000Z",
+    myTemplateBinding: {
+      schemaVersion: 1, definitionId: "rtd_outcome_http", familyId: "family_outcome_http", version: 1,
+      name: "Inquiry summary", expectedOutput: "Inquiry summary", matchReasons: ["Expected result matched"],
+      snapshot: { name: "Inquiry summary", description: "Summarize inquiries", expectedOutput: "Inquiry summary", steps: [] },
+      snapshotHash: "outcome-http-hash", matchedAt: "2026-08-11T00:00:00.000Z",
+    },
+  };
+  runtimeState.workItems.push(workItem);
+
+  const recorded = await call(`/api/work-items/${workItem.id}/my-template-outcome-feedback`, {
+    method: "POST", body: { outcome: "needs_quality_adjustment" },
+  });
+  assert.equal(recorded.status, 200);
+  assert.equal(recorded.body.feedback.outcome, "needs_quality_adjustment");
+  assert.equal(recorded.body.workItem.myTemplateOutcomeFeedback.outcome, "needs_quality_adjustment");
+  assert.equal((await call(`/api/work-items/${workItem.id}/my-template-outcome-feedback`, {
+    token: "tok_b", method: "POST", body: { outcome: "wrong_result" },
+  })).status, 404);
+
+  runtimeState.routineDefinitions.push({
+    id: "rtd_outcome_http", familyId: "family_outcome_http", projectId: "prj_a", ownerTeamId: "team_a",
+    state: "published", version: 1, name: "Inquiry summary", description: "Summarize inquiries",
+    triggerDocumentTypes: ["inquiry"], steps: [],
+  });
+  runtimeState.myTemplateOutcomeFeedback.push(
+    ...["wrong_result", "met_expectations", "wrong_result", "met_expectations", "wrong_result"].map((outcome, index) => ({
+      id: `mtof_outcome_http_${index}`, ownerTeamId: "team_a", projectId: "prj_a",
+      workItemId: `missing_outcome_http_${index}`, definitionId: "rtd_outcome_http",
+      familyId: "family_outcome_http", version: 1, outcome, note: "", revision: 1,
+      createdAt: `2026-08-11T01:0${index}:00.000Z`, updatedAt: `2026-08-11T01:0${index}:00.000Z`,
+    })),
+  );
+
+  const summary = await call("/api/work-items/my-template-outcomes?projectId=prj_a");
+  assert.equal(summary.status, 200);
+  assert.equal(summary.body.summaries.find((entry) => entry.familyId === "family_outcome_http").needsQualityAdjustment, 1);
+  assert.equal(summary.body.summaries.find((entry) => entry.familyId === "family_outcome_http").governance.state, "paused");
+  assert.equal(summary.body.feedback.find((entry) => entry.workItemId === workItem.id).workItem.localRef, "LOCAL-OUTCOME");
+  assert.equal((await call("/api/work-items/my-template-governance/family_outcome_http/resume-observation", {
+    token: "tok_b", method: "POST", body: { projectId: "prj_a", confirm: true },
+  })).status, 404);
+  assert.equal((await call("/api/work-items/my-template-governance/family_outcome_http/resume-observation", {
+    method: "POST", body: { projectId: "prj_a", confirm: false },
+  })).status, 400);
+  const resumed = await call("/api/work-items/my-template-governance/family_outcome_http/resume-observation", {
+    method: "POST", body: { projectId: "prj_a", confirm: true },
+  });
+  assert.equal(resumed.status, 200);
+  assert.equal(resumed.body.governance.manualObservation, true);
+  assert.equal(resumed.body.governance.matchingFeedbackCount, 0);
+  assert.equal((await call("/api/work-items/my-template-outcomes", { token: "tok_b" })).body.feedback
+    .some((entry) => entry.workItemId === workItem.id), false);
+  runtimeState.workItems = runtimeState.workItems.filter((entry) => entry.id !== workItem.id);
+  runtimeState.routineDefinitions = runtimeState.routineDefinitions.filter((entry) => entry.id !== "rtd_outcome_http");
+  runtimeState.myTemplateOutcomeFeedback = runtimeState.myTemplateOutcomeFeedback
+    .filter((entry) => entry.familyId !== "family_outcome_http");
+  runtimeState.myTemplateGovernanceInterventions = runtimeState.myTemplateGovernanceInterventions
+    .filter((entry) => entry.familyId !== "family_outcome_http");
+});
+
+test("completed ordinary tasks can create tenant-scoped learning My template drafts through HTTP", async () => {
+  const created = await call("/api/work-items", {
+    method: "POST",
+    body: { projectId: "prj_a", title: "HTTP 客户回访汇总" },
+  });
+  assert.equal(created.status, 201);
+  const stored = runtimeState.workItems.find((item) => item.id === created.body.workItem.id);
+  stored.status = "done";
+  stored.outputAssets = [{ id: "http-output", path: "回访汇总.xlsx", family: "spreadsheet" }];
+
+  const preview = await call(`/api/work-items/${stored.id}/my-template-draft`);
+  assert.equal(preview.status, 200);
+  assert.equal(preview.body.eligible, true);
+  assert.equal(preview.body.suggestion.expectedOutput, "回访汇总.xlsx");
+  assert.equal((await call(`/api/work-items/${stored.id}/my-template-draft`, { token: "tok_b" })).status, 404);
+
+  const saved = await call(`/api/work-items/${stored.id}/my-template-draft`, {
+    method: "POST",
+    body: {
+      expectedRevision: stored.revision,
+      confirm: true,
+      name: "客户回访汇总",
+      typicalInput: "客户回访记录",
+      expectedOutput: "客户回访汇总表",
+      idempotencyKey: "http-task-template",
+    },
+  });
+  assert.equal(saved.status, 201);
+  assert.equal(saved.body.draft.state, "needs_review");
+  assert.equal(saved.body.draft.casesRequired, 1);
+  assert.equal(saved.body.workItem.myTemplateDraft.id, saved.body.draft.id);
+  assert.equal(saved.body.workItem.myTemplateBinding, undefined);
+
+  const similarCreated = await call("/api/work-items", {
+    method: "POST", body: { projectId: "prj_a", title: "客户回访汇总 九月" },
+  });
+  const similarStored = runtimeState.workItems.find((item) => item.id === similarCreated.body.workItem.id);
+  similarStored.status = "done";
+  similarStored.outputAssets = [{ id: "http-output-similar", path: "客户回访汇总表.xlsx", family: "spreadsheet" }];
+  const suggestions = await call(`/api/work-items/my-template-drafts/${saved.body.draft.id}/similar-work-items`);
+  assert.equal(suggestions.status, 200);
+  assert.ok(suggestions.body.suggestions.some((entry) => entry.workItem.id === similarStored.id));
+  assert.equal((await call(`/api/work-items/my-template-drafts/${saved.body.draft.id}/similar-work-items`, { token: "tok_b" })).status, 404);
+  const added = await call(`/api/work-items/my-template-drafts/${saved.body.draft.id}/cases`, {
+    method: "POST",
+    body: {
+      workItemId: similarStored.id,
+      expectedDraftRevision: saved.body.draft.revision,
+      expectedWorkItemRevision: similarStored.revision,
+      confirm: true,
+    },
+  });
+  assert.equal(added.status, 201);
+  assert.equal(added.body.draft.caseCount, 2);
+  assert.equal(added.body.draft.state, "needs_review");
+  assert.equal(similarStored.myTemplateBinding, undefined);
+
+  const review = await call(`/api/work-items/my-template-drafts/${saved.body.draft.id}/review`);
+  assert.equal(review.status, 200);
+  assert.equal(review.body.readiness.canEnable, true);
+  assert.equal(review.body.cases.length, 2);
+  assert.equal((await call(`/api/work-items/my-template-drafts/${saved.body.draft.id}/review`, { token: "tok_b" })).status, 404);
+  assert.equal((await call(`/api/work-items/my-template-drafts/${saved.body.draft.id}/activate`, {
+    token: "tok_b", method: "POST",
+    body: { expectedDraftRevision: added.body.draft.revision, confirm: true },
+  })).status, 404);
+  assert.equal((await call(`/api/work-items/my-template-drafts/${saved.body.draft.id}/activate`, {
+    method: "POST",
+    body: { expectedDraftRevision: added.body.draft.revision, confirm: false },
+  })).body.error, "my_template_activation_confirmation_required");
+  const activated = await call(`/api/work-items/my-template-drafts/${saved.body.draft.id}/activate`, {
+    method: "POST",
+    body: {
+      expectedDraftRevision: added.body.draft.revision,
+      confirm: true,
+      name: "客户回访分析",
+      typicalInput: "客户回访记录",
+      expectedOutput: "客户回访汇总表",
+    },
+  });
+  assert.equal(activated.status, 201);
+  assert.equal(activated.body.draft.state, "ready");
+  assert.equal(activated.body.definition.state, "published");
+  assert.equal(activated.body.review.futureBehavior.participatesInMatching, true);
+  assert.equal(stored.myTemplateBinding, undefined);
+  const definitions = await call("/api/workflow-memory/business-routine-definitions");
+  const activatedDefinition = definitions.body.routineDefinitions.find((entry) => entry.id === activated.body.definition.id);
+  assert.equal(activatedDefinition.evidenceHealth.state, "valid");
+
+  const listA = await call("/api/work-items/my-template-drafts");
+  const listB = await call("/api/work-items/my-template-drafts", { token: "tok_b" });
+  assert.ok(listA.body.drafts.some((draft) => draft.id === saved.body.draft.id));
+  assert.ok(listB.body.drafts.every((draft) => draft.id !== saved.body.draft.id));
 });

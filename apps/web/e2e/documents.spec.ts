@@ -122,7 +122,7 @@ test("keeps the primary mobile workflow usable without horizontal overflow", asy
   await page.setViewportSize({ width: 390, height: 844 });
   await page.reload();
   const navigation = page.getByRole("navigation", { name: "Primary navigation" });
-  for (const destination of ["My home", "My tasks", "Projects", "My settings"]) {
+  for (const destination of ["My home", "My tasks", "My projects", "My settings"]) {
     await expect(navigation.getByRole("button", { name: destination, exact: true })).toBeVisible();
   }
   await expect(navigation.getByRole("button", { name: /^Needs me:/ })).toHaveCount(0);

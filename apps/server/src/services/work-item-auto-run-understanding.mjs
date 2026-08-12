@@ -2,6 +2,39 @@ import { buildWorkItemUnderstandingContext } from "./work-item-understanding-con
 
 const RECOVERABLE_PHASES = new Set(["understanding", "planning"]);
 
+export function workItemTemplateInstructions(workItem) {
+  const binding = workItem?.myTemplateBinding;
+  if (!binding?.name || !binding?.snapshot) return "";
+  const contract = binding.snapshot.templateContract;
+  const steps = Array.isArray(binding.snapshot.steps)
+    ? binding.snapshot.steps
+      .filter((step) => step?.label)
+      .map((step, index) => `${index + 1}. ${String(step.label).trim()}`)
+    : [];
+  const mappings = Array.isArray(contract?.fieldMappings)
+    ? contract.fieldMappings.slice(0, 30).map((mapping) =>
+      `- ${mapping.column}: ${mapping.source}${mapping.confidence === "needs_confirmation" ? " (leave blank and request confirmation if unavailable)" : ""}`)
+    : [];
+  return [
+    `My template (pinned for this run): ${binding.name} v${binding.version}`,
+    contract?.inputSummary ? `Typical input: ${contract.inputSummary}` : "",
+    binding.expectedOutput ? `Expected output: ${binding.expectedOutput}` : "",
+    contract?.outputFileName ? `Preserve the confirmed output format and filename pattern from: ${contract.outputFileName}` : "",
+    contract?.outputColumns?.length ? `Required output columns in order: ${contract.outputColumns.slice(0, 50).join(" | ")}` : "",
+    contract?.outputColumns?.length
+      ? "After writing the result, reopen it and compare every output column name and Unicode text value exactly with this contract; a readable file or matching column count alone is not sufficient. On Windows, do not pipe non-ASCII program source through the shell in a way that can change its encoding."
+      : "",
+    "When copying an input filename into the result, use the user-visible original filename and remove internal storage prefixes such as task-material IDs.",
+    "Honor the project's documented deliverables/output directory when one is defined, and keep the final result there instead of the repository root.",
+    mappings.length ? `Learned field mapping:\n${mappings.join("\n")}` : "",
+    contract?.uncertainFields?.length
+      ? `Do not invent values for these fields: ${contract.uncertainFields.slice(0, 30).join(", ")}. Leave them blank and clearly ask for confirmation.`
+      : "",
+    steps.length ? `Processing steps learned from approved history:\n${steps.join("\n")}` : "",
+    "Use this frozen template as the working method. The task goal and acceptance criteria still define the result to deliver.",
+  ].filter(Boolean).join("\n");
+}
+
 export function createWorkItemAutoRunUnderstandingService({
   state,
   getWorkItem,
@@ -118,6 +151,7 @@ export function createWorkItemAutoRunUnderstandingService({
 
       const issueBody = [
         workItem.body,
+        workItemTemplateInstructions(workItem),
         `Acceptance criteria (frozen for this run):\n${workItem.acceptanceCriteria.map((value) => `- ${value}`).join("\n")}`,
         `Owner verification SOP (frozen for this run):\n${workItem.verificationSop.map((value, index) => `${index + 1}. ${value}`).join("\n")}`,
       ].filter(Boolean).join("\n\n");

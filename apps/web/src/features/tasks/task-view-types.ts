@@ -150,6 +150,50 @@ export type LocalWorkItem = {
   businessCaseId?: string;
   businessKey?: string;
   triggerArtifactIds?: string[];
+  myTemplateBinding?: {
+    schemaVersion: 1;
+    definitionId: string;
+    familyId: string;
+    version: number;
+    name: string;
+    expectedOutput: string;
+    matchReasons: string[];
+    snapshot: {
+      name: string;
+      description: string;
+      expectedOutput: string;
+      steps: Array<{ key: string; kind: string; label: string; required: boolean }>;
+    };
+    snapshotHash: string;
+    matchedAt: string;
+  };
+  myTemplateOutcomeFeedback?: {
+    id: string;
+    outcome: "met_expectations" | "wrong_result" | "needs_quality_adjustment";
+    note: string;
+    definitionId: string;
+    familyId: string;
+    version: number;
+    revision: number;
+    createdAt: string;
+    updatedAt: string;
+  } | null;
+  myTemplateDraft?: {
+    id: string;
+    projectId: string;
+    name: string;
+    typicalInput: string;
+    expectedOutput: string;
+    applicability: string;
+    steps: string[];
+    state: "learning" | "needs_review" | "ready" | "rejected";
+    caseCount: number;
+    casesRequired: number;
+    revision: number;
+    origin: { kind: "work_item"; workItemId: string; localRef: string | null; title: string };
+    createdAt: string;
+    updatedAt: string;
+  } | null;
   parentId?: string | null;
   parent?: { id: string; localRef: string; title: string; status: LocalWorkItem["status"]; state: "open" | "closed" } | null;
   subIssues?: { id: string; localRef: string; title: string; status: LocalWorkItem["status"]; state: "open" | "closed" }[];
@@ -286,7 +330,7 @@ export type WorkItemActivity = {
 };
 export type WorkItemAttention = {
   id: string;
-  kind: "github_conflict" | "github_deleted" | "execution_approval" | "verification_failed" | "acceptance_blocked" | "recommended_action_approval" | "governed_action";
+  kind: "github_conflict" | "github_deleted" | "execution_approval" | "execution_input" | "verification_failed" | "acceptance_blocked" | "recommended_action_approval" | "governed_action";
   severity: "low" | "medium" | "high";
   workItemId: string | null;
   planningProjectId?: string | null;
@@ -371,7 +415,7 @@ export type LocalWorkItemAutoRun = {
 };
 export type LocalWorkItemObservability = {
   executionChainId?: string;
-  nextAction: "review_approval" | "review_delivery" | "resolve_sync_conflict" | "inspect_failure" | "none" | "monitor_execution" | "start_execution";
+  nextAction: "answer_ai" | "review_approval" | "review_delivery" | "resolve_sync_conflict" | "inspect_failure" | "none" | "monitor_execution" | "start_execution";
   attention: WorkItemAttention[];
   latestRun: LocalWorkItemAutoRun | null;
   outcome?: {

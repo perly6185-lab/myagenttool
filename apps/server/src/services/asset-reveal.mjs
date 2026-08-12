@@ -20,6 +20,25 @@ export async function revealAssetInFileManager({ projectRoot, relativePath, plat
   return { revealed: true, path: confined.relativePath };
 }
 
+export async function openAssetInSystemApplication({ projectRoot, relativePath, platform = process.platform, launch = launchDetached }) {
+  const confined = resolveConfinedAssetPath(projectRoot, relativePath);
+  if (!statSync(confined.target).isFile()) {
+    const error = new Error("asset_not_file");
+    error.code = "asset_not_file";
+    throw error;
+  }
+  const command = platform === "win32" ? "rundll32.exe" : platform === "darwin" ? "open" : "xdg-open";
+  const args = platform === "win32"
+    ? ["url.dll,FileProtocolHandler", confined.target]
+    : [confined.target];
+  await launch(command, args, {
+    detached: true,
+    stdio: "ignore",
+    windowsHide: true,
+  });
+  return { opened: true, path: confined.relativePath };
+}
+
 export async function revealFileInFileManager({ target, platform = process.platform, launch = launchDetached }) {
   if (!statSync(target).isFile()) {
     const error = new Error("asset_not_file");

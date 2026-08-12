@@ -45,7 +45,7 @@ test.beforeEach(async ({ page }) => {
 
 test("keeps ordinary desktop navigation concise and nests professional capabilities under Me", async ({ page }) => {
   const navigation = page.getByRole("navigation", { name: "Control plane sections" });
-  for (const destination of ["My home", "My tasks", "Projects", "My settings"]) {
+  for (const destination of ["My home", "My tasks", "My projects", "My settings"]) {
     await expect(navigation.getByRole("button", { name: destination, exact: true })).toBeVisible();
   }
   await expect(navigation.getByRole("button", { name: /^Needs me/ })).toHaveCount(0);
@@ -144,7 +144,7 @@ test("offers four mobile destinations and keeps task status as a secondary task 
   await page.setViewportSize({ width: 390, height: 844 });
   await page.reload();
   const navigation = page.getByRole("navigation", { name: "Primary navigation" });
-  for (const destination of ["My home", "My tasks", "Projects", "My settings"]) {
+  for (const destination of ["My home", "My tasks", "My projects", "My settings"]) {
     await expect(navigation.getByRole("button", { name: destination, exact: true })).toBeVisible();
   }
   await expect(navigation.getByRole("button", { name: /^Needs me/ })).toHaveCount(0);
@@ -209,7 +209,7 @@ for (const width of [320, 390, 430]) {
     });
     await page.reload();
     const navigation = page.getByRole("navigation", { name: "主导航" });
-    for (const destination of ["我的首页", "我的任务", "项目", "我的设置"]) {
+    for (const destination of ["我的首页", "我的任务", "我的项目", "我的设置"]) {
       await expect(navigation.getByRole("button", { name: destination, exact: true })).toBeVisible();
     }
     await expect(navigation.getByRole("button", { name: /^待我处理/ })).toHaveCount(0);

@@ -331,7 +331,7 @@ test("creates an issue, routes AI execution, and reaches reviewed local delivery
   await page.goto("/?section=task");
   await page.getByRole("button", { name: "New task" }).click();
   await page.getByRole("textbox", { name: "Create a task" }).fill("Implement browser chain");
-  await page.getByRole("button", { name: "Create task only" }).click();
+  await page.getByRole("button", { name: "Save only" }).click();
 
   // Open the authoritative Local Issue after creation, then switch to the
   // expert execution surface explicitly (the summary view is the default).

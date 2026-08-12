@@ -702,6 +702,7 @@ export function TaskView({ localOnly = false }: { localOnly?: boolean } = {}) {
                       <option value="github_conflict">{t("taskLocal.github.conflict")}</option>
                       <option value="github_deleted">{t("workItemGithub.deleted")}</option>
                       <option value="execution_approval">{t("approvals.kind.invocation_approval")}</option>
+                      <option value="execution_input">{i18n.language.startsWith("zh") ? "AI 等待回答" : "AI needs an answer"}</option>
                       <option value="verification_failed">{t("approvals.testsFailed")}</option>
                       <option value="acceptance_blocked">{t("tasks.acceptanceCriteria")}</option>
                       <option value="recommended_action_approval">{t("planningDecision.nextActions")}</option>
@@ -763,6 +764,7 @@ export function TaskView({ localOnly = false }: { localOnly?: boolean } = {}) {
                         {attention.kind === "github_conflict" ? t("taskLocal.github.conflict")
                           : attention.kind === "github_deleted" ? t("workItemGithub.deleted")
                           : attention.kind === "execution_approval" ? t("approvals.kind.invocation_approval")
+                          : attention.kind === "execution_input" ? i18n.language.startsWith("zh") ? "AI 等待回答" : "AI needs an answer"
                           : attention.kind === "verification_failed" ? t("approvals.testsFailed")
                           : attention.kind === "acceptance_blocked" ? t("tasks.acceptanceCriteria")
                           : t("planningDecision.nextActions")}
@@ -1116,6 +1118,10 @@ export function TaskView({ localOnly = false }: { localOnly?: boolean } = {}) {
                     onOpenExpert={(section = "overview") => {
                       setSelectedWorkItemSection(section);
                       setSelectedLocalMode("expert");
+                    }}
+                    onOpenWorkItem={(id) => {
+                      setSelectedLocalId(id);
+                      setSelectedLocalMode("summary");
                     }}
                     onCreateTaskDraft={(draft) => {
                       setComposerDraftTask(draft);

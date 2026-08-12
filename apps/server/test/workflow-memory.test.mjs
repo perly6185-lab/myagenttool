@@ -685,6 +685,78 @@ test("routes governed execution start, cancel, and retry with bounded inputs", a
   assert.ok(calls.every((call) => call.actor === actor));
 });
 
+test("routes task-local ledger binding and persistent source-review recovery", async () => {
+  const calls = [];
+  const actor = { userId: "user_a", teamId: "team_a" };
+  const services = {
+    bindRoutineLedger: (input, scopedActor) => {
+      calls.push({ action: "bind-ledger", input, actor: scopedActor });
+      return { status: 200, body: { execution: { workItemId: input.workItemId } } };
+    },
+    requestRoutineStepReview: (input, scopedActor) => {
+      calls.push({ action: "request-review", input, actor: scopedActor });
+      return { status: 200, body: { execution: { workItemId: input.workItemId } } };
+    },
+    resumeRoutineRecovery: (input, scopedActor) => {
+      calls.push({ action: "resume", input, actor: scopedActor });
+      return { status: 200, body: { execution: { workItemId: input.workItemId } } };
+    },
+  };
+  const invoke = async (path, body) => {
+    let response = null;
+    const handled = await handleWorkflowMemoryRoutes({
+      req: { method: "POST" },
+      res: {},
+      url: new URL(path, "http://localhost"),
+      actor,
+      readJson: async () => body,
+      sendJson: (_res, status, payload) => { response = { status, body: payload }; },
+      ...services,
+    });
+    assert.equal(handled, true);
+    return response;
+  };
+
+  assert.equal((await invoke(
+    "/api/workflow-memory/routine-work-items/work%201/steps/register/ledger-binding",
+    { expectedRevision: 4, idempotencyKey: "bind-1", ledgerDefinitionId: "ledger_a" },
+  )).status, 200);
+  assert.equal((await invoke(
+    "/api/workflow-memory/routine-work-items/work%201/steps/extract/review-request",
+    { expectedRevision: 5, idempotencyKey: "review-1" },
+  )).status, 200);
+  assert.equal((await invoke(
+    "/api/workflow-memory/routine-work-items/work%201/resume",
+    { expectedRevision: 6, idempotencyKey: "resume-1" },
+  )).status, 200);
+  assert.deepEqual(calls.map(({ action, input }) => ({ action, input })), [{
+    action: "bind-ledger",
+    input: {
+      workItemId: "work 1",
+      stepKey: "register",
+      expectedRevision: 4,
+      idempotencyKey: "bind-1",
+      ledgerDefinitionId: "ledger_a",
+    },
+  }, {
+    action: "request-review",
+    input: {
+      workItemId: "work 1",
+      stepKey: "extract",
+      expectedRevision: 5,
+      idempotencyKey: "review-1",
+    },
+  }, {
+    action: "resume",
+    input: {
+      workItemId: "work 1",
+      expectedRevision: 6,
+      idempotencyKey: "resume-1",
+    },
+  }]);
+  assert.ok(calls.every((call) => call.actor === actor));
+});
+
 test("routes adaptive shadow preferences and publication reviews with decoded ids", async () => {
   const calls = [];
   const actor = { userId: "user_a", teamId: "team_a" };

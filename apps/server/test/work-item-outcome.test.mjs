@@ -75,6 +75,35 @@ test("never exposes an absolute path outside a registered project or worktree", 
   assert.doesNotMatch(JSON.stringify(outcome), /Users[\\/]operator/);
 });
 
+test("normalizes angle-bracket markdown destinations into one browsable worktree file", () => {
+  const outcome = projectWorkItemOutcome({
+    item: {},
+    latestRun: {
+      status: "done",
+      report: "结果见 [采购清单.xlsx](<D:/worktree/deliverables/采购清单.xlsx>)。",
+    },
+    deliveryReport: {
+      summary: "结果见 [采购清单.xlsx](<D:/worktree/deliverables/采购清单.xlsx>)。",
+      changedFiles: [".myagenttool/inputs/lwi_1/.gitignore", "deliverables/采购清单.xlsx"],
+    },
+    fileContext: {
+      projectId: "prj_1",
+      worktreeId: "wtr_1",
+      scopes: [{ root: "D:/worktree", worktreeId: "wtr_1" }],
+    },
+  });
+
+  assert.deepEqual(outcome.files, ["deliverables/采购清单.xlsx"]);
+  assert.deepEqual(outcome.fileEntries, [{
+    name: "采购清单.xlsx",
+    path: "deliverables/采购清单.xlsx",
+    projectId: "prj_1",
+    worktreeId: "wtr_1",
+    status: "available",
+    preview: "document",
+  }]);
+});
+
 test("marks a terminal run without a readable result as missing", () => {
   const outcome = projectWorkItemOutcome({
     item: {},

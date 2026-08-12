@@ -2432,6 +2432,7 @@ export function createAutoRunService({
           const maxRepairs = state.autoRunSettings?.maxRepairAttempts ?? 2;
           const attempts = autoRun.repairAttempts ?? 0;
           const repairEligible = verification.verified
+            && verification.repairable !== false
             && maxRepairs > 0
             && attempts < maxRepairs
             && (autoRun.decision?.path ?? "develop") === "develop";

@@ -109,6 +109,26 @@ test("with the launch token, the API works; /health stays open for liveness", as
   assert.ok((await withToken.json()).device !== undefined, "returns the real state snapshot");
 });
 
+test("the browser media type selects a bounded console state without changing the default API", async () => {
+  const compactResponse = await fetch(`${base}/api/state`, {
+    headers: {
+      accept: "application/vnd.myagenttool.console-state+json",
+      "x-loopback-token": LOOPBACK_TOKEN,
+    },
+  });
+  assert.equal(compactResponse.status, 200);
+  const compact = await compactResponse.json();
+  assert.equal(compact.stateWindow?.projection, "console");
+  assert.equal(typeof compact.stateWindow?.totals?.invocations, "number");
+
+  const fullResponse = await fetch(`${base}/api/state`, {
+    headers: { "x-loopback-token": LOOPBACK_TOKEN },
+  });
+  assert.equal(fullResponse.status, 200);
+  const full = await fullResponse.json();
+  assert.equal(full.stateWindow, undefined, "legacy/default clients keep the complete public snapshot");
+});
+
 test("declared non-JSON writes are 415 — the cross-site simple-request vector", async () => {
   for (const contentType of ["text/plain", "application/x-www-form-urlencoded", "multipart/form-data; boundary=x"]) {
     const response = await fetch(`${base}/api/agents`, {
@@ -130,4 +150,15 @@ test("the task-material PUT can carry binary content past the JSON gate", async 
 
   assert.equal(response.status, 404, "the binary upload reaches ordinary task-material routing instead of being rejected as non-JSON");
   assert.equal((await response.json()).error, "task_material_draft_not_found");
+});
+
+test("the template-learning POST can carry only its bounded file body past the JSON gate", async () => {
+  const response = await fetch(`${base}/api/workflow-memory/template-learning/missing/files?caseId=case-1&role=input&filename=sample.md`, {
+    method: "POST",
+    headers: { "content-type": "text/markdown", "x-loopback-token": LOOPBACK_TOKEN },
+    body: "historical input",
+  });
+
+  assert.equal(response.status, 404, "the exact upload route reaches template-learning routing instead of the JSON gate");
+  assert.equal((await response.json()).error, "template_learning_task_not_found");
 });

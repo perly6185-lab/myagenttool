@@ -145,7 +145,7 @@ function fixture() {
     nextId,
     createBusinessCase: routineService.createBusinessCase,
   });
-  return { state, service, sharedPrice };
+  return { state, service, routineService, sharedPrice };
 }
 
 test("link scoring prefers business identifiers and retains source evidence", () => {
@@ -201,6 +201,170 @@ test("case discovery supports staged, one-to-many and shared-reference relations
     candidate.artifactBindings.some((binding) => binding.artifactId === sharedPrice)));
   assert.ok(result.body.candidates.every((candidate) =>
     !candidate.artifactBindings.some((binding) => binding.artifactId.includes("unmatched"))));
+});
+
+test("template learning preserves user-declared input/output pairs when business numbers differ", () => {
+  const { state, service } = fixture();
+  state.templateLearningTasks = [{
+    id: "learning_1",
+    sourceId: "source_1",
+    ownerTeamId: ACTOR.teamId,
+    cases: ["001", "002", "003"].map((number) => ({
+      id: `case-${number}`,
+      files: [
+        { role: "input", relativePath: `commercial/${number}/inquiry.md` },
+        { role: "output", relativePath: `commercial/${number}/quotation.md` },
+      ],
+    })),
+  }];
+  for (const classification of state.businessDocumentClassifications.filter((row) =>
+    /^artifact_(001|002|003)_quotation$/.test(row.artifactId))) {
+    classification.fieldProposals = classification.fieldProposals
+      .filter((proposal) => proposal.key !== "inquiry_number");
+  }
+
+  const result = service.discoverBusinessCases({ sourceId: "source_1" }, ACTOR);
+  assert.equal(result.status, 200);
+  assert.equal(result.body.pairingMode, "user_declared_template_cases");
+  assert.equal(result.body.count, 3);
+  assert.ok(result.body.candidates.every((candidate) => candidate.confidence === 1));
+  assert.ok(result.body.candidates.every((candidate) =>
+    candidate.artifactBindings.some((binding) => binding.roles.includes("input"))
+    && candidate.artifactBindings.some((binding) => binding.roles.includes("output"))));
+  assert.ok(result.body.candidates.every((candidate) =>
+    candidate.links.every((link) => link.evidenceRefs.every((ref) => ref.kind === "template_learning_pair"))));
+});
+
+test("one explicit template-learning case creates a routine ready for recommendation", () => {
+  const { state, service } = fixture();
+  state.workflowSources.find((source) => source.id === "source_1").purpose = "template_learning";
+  state.templateLearningTasks = [{
+    id: "learning_trial",
+    sourceId: "source_1",
+    ownerTeamId: ACTOR.teamId,
+    cases: [{
+      id: "case-trial",
+      files: [
+        { role: "input", relativePath: "commercial/001/inquiry.md" },
+        { role: "output", relativePath: "commercial/001/quotation.md" },
+      ],
+    }],
+  }];
+  const discovered = service.discoverBusinessCases({ sourceId: "source_1" }, ACTOR);
+  assert.equal(discovered.body.count, 1);
+  const candidate = discovered.body.candidates[0];
+  assert.equal(service.reviewBusinessCaseCandidate({
+    candidateId: candidate.id,
+    expectedRevision: candidate.revision,
+    action: "confirm",
+  }, ACTOR).status, 200);
+  const routine = service.discoverRoutine({ sourceId: "source_1" }, ACTOR);
+  assert.equal(routine.status, 201);
+  assert.equal(routine.body.candidate.minimumCaseCount, 1);
+  assert.equal(routine.body.candidate.templateMaturity, "stable");
+});
+
+test("one explicit template case may use reference documents as its declared input", () => {
+  const { state, service } = fixture();
+  state.workflowSources.find((source) => source.id === "source_1").purpose = "template_learning";
+  state.templateLearningTasks = [{
+    id: "learning_reference_input",
+    sourceId: "source_1",
+    ownerTeamId: ACTOR.teamId,
+    cases: [{
+      id: "case-reference",
+      files: [
+        { role: "input", relativePath: "commercial/001/inquiry.md" },
+        { role: "output", relativePath: "commercial/001/quotation.md" },
+      ],
+    }],
+  }];
+  const inputClassification = state.businessDocumentClassifications.find((row) =>
+    row.artifactId === "artifact_001_inquiry");
+  inputClassification.documentType = "other_reference";
+
+  const discovered = service.discoverBusinessCases({ sourceId: "source_1" }, ACTOR);
+  const candidate = discovered.body.candidates[0];
+  assert.ok(candidate.artifactBindings.some((binding) =>
+    binding.documentType === "other_reference" && binding.roles.includes("input")));
+  assert.equal(service.reviewBusinessCaseCandidate({
+    candidateId: candidate.id,
+    expectedRevision: candidate.revision,
+    action: "confirm",
+  }, ACTOR).status, 200);
+  const routine = service.discoverRoutine({ sourceId: "source_1" }, ACTOR);
+  assert.equal(routine.status, 201);
+  assert.equal(routine.body.candidate.minimumCaseCount, 1);
+});
+
+test("template learning derives a generic input-output contract instead of forcing inquiry and quotation", () => {
+  const { state, service, routineService } = fixture();
+  const source = state.workflowSources.find((row) => row.id === "source_1");
+  source.purpose = "template_learning";
+  const input = state.workflowArtifacts.find((row) => row.id === "artifact_001_inquiry");
+  Object.assign(input, {
+    name: "气体腐蚀试验箱技术协议.pdf",
+    extension: "pdf",
+    relativePath: "cases/case-1/raw/inputs/气体腐蚀试验箱技术协议.pdf",
+    extraction: { blocks: [{ kind: "heading", text: "气体腐蚀试验箱技术协议" }, { kind: "text", text: "生产厂家：南京五和\n设备型号：WHQ-2000B\n数量：1套\n保修期1年\n第三方校准" }] },
+  });
+  const output = state.workflowArtifacts.find((row) => row.id === "artifact_001_quotation");
+  Object.assign(output, {
+    name: "采购清单.xlsx",
+    extension: "xlsx",
+    relativePath: "cases/case-1/raw/outputs/采购清单.xlsx",
+    extraction: { blocks: [{ kind: "row", text: "A: 序号 | B: 文件名 | C: 品牌/厂家 | D: 产品名利 | E: 型号 | F: 报价单价 | G: 报价总价" }] },
+  });
+  state.businessDocumentClassifications.find((row) => row.artifactId === input.id).documentType = "other_reference";
+  state.templateLearningTasks = [{
+    id: "learning_contract",
+    sourceId: source.id,
+    ownerTeamId: ACTOR.teamId,
+    cases: [{
+      id: "case-1",
+      files: [
+        { role: "input", relativePath: input.relativePath },
+        { role: "output", relativePath: output.relativePath },
+      ],
+    }],
+  }];
+
+  const discovered = service.discoverBusinessCases({ sourceId: source.id }, ACTOR);
+  const caseCandidate = discovered.body.candidates[0];
+  assert.equal(service.reviewBusinessCaseCandidate({
+    candidateId: caseCandidate.id,
+    expectedRevision: caseCandidate.revision,
+    action: "confirm",
+  }, ACTOR).status, 200);
+  const routine = service.discoverRoutine({ sourceId: source.id }, ACTOR);
+
+  assert.equal(routine.status, 201);
+  assert.equal(routine.body.candidate.name, "设备技术协议生成采购清单");
+  assert.equal(routine.body.candidate.description, "收到：设备技术协议 PDF\n得到：采购清单 Excel");
+  assert.deepEqual(routine.body.candidate.steps.map((step) => step.key), [
+    "read_inputs", "map_output_fields", "generate_output", "review_output",
+  ]);
+  assert.deepEqual(routine.body.candidate.templateContract.outputColumns, [
+    "序号", "文件名", "品牌/厂家", "产品名称", "型号", "报价单价", "报价总价",
+  ]);
+  assert.deepEqual(routine.body.candidate.templateContract.uncertainFields, ["报价单价", "报价总价"]);
+  const draft = routineService.createRoutineDraftFromDiscovery({
+    discoveryCandidateId: routine.body.candidate.id,
+  }, ACTOR);
+  assert.equal(draft.status, 201);
+  assert.equal(draft.body.routineDefinition.name, "设备技术协议生成采购清单");
+  assert.deepEqual(draft.body.routineDefinition.templateContract.outputColumns,
+    routine.body.candidate.templateContract.outputColumns);
+  const listedDraft = routineService.listRoutineDefinitions({ sourceId: source.id }, ACTOR)
+    .body.routineDefinitions.find((definition) => definition.id === draft.body.routineDefinition.id);
+  assert.equal(listedDraft.evidenceHealth.state, "valid");
+  const published = routineService.publishRoutineDefinition({
+    routineDefinitionId: draft.body.routineDefinition.id,
+    expectedRevision: draft.body.routineDefinition.revision,
+    confirmed: true,
+  }, ACTOR);
+  assert.equal(published.status, 200);
+  assert.equal(published.body.routineDefinition.state, "published");
 });
 
 test("candidate corrections create history and changed evidence blocks confirmation", () => {

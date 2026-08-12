@@ -17,8 +17,8 @@ import { LOCAL_TEAM_ID } from "../runtime/auth.mjs";
 import { makeRunTx } from "../runtime/store/run-tx.mjs";
 
 export const MAX_TASK_MATERIALS = 6;
-export const MAX_TASK_MATERIAL_BYTES = 5 * 1024 * 1024;
-export const MAX_TASK_MATERIAL_TOTAL_BYTES = 30 * 1024 * 1024;
+export const MAX_TASK_MATERIAL_BYTES = 50 * 1024 * 1024;
+export const MAX_TASK_MATERIAL_TOTAL_BYTES = 200 * 1024 * 1024;
 const DRAFT_TTL_MS = 24 * 60 * 60 * 1_000;
 const SAFE_NAME_FALLBACK = "reference-file";
 const DEFAULT_LOCAL_STORE_CAP_BYTES = 1024 * 1024 * 1024;

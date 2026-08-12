@@ -588,32 +588,32 @@ export function createCodexService({
     const linkedAutoRun = (state.autoRuns ?? []).find(
       (autoRun) => autoRun.invocationId === invocation?.id,
     );
-    const text = [
+    const taskText = [
       // Auto-run prompts wrap the issue with a fixed untrusted-input warning
       // containing words such as "secrets" and "credentials". Reviewing that
       // wrapper made every otherwise-low-risk Auto-run pause at the broker.
       // Use the original issue specification when it is available; direct
       // invocations still review their submitted task.
       linkedAutoRun?.issueBody ?? invocation?.input?.task,
-      body?.summary,
-      body?.toolName,
       policy?.reason,
     ].map((item) => String(item ?? "").toLowerCase()).join(" ");
-    return [
+    const commandText = [body?.summary, body?.toolName]
+      .map((item) => String(item ?? "").toLowerCase()).join(" ");
+    const sensitiveContext = [
       "auth.json",
       "private key",
       "password",
       "secret",
       "token",
       "credential",
-      "rm -rf",
-      "delete",
-      "remove-item",
-      "format",
       "registry",
       "full access",
       "dangerously",
-    ].some((pattern) => text.includes(pattern));
+    ].some((pattern) => taskText.includes(pattern) || commandText.includes(pattern));
+    const destructiveCommand = ["rm -rf", "delete", "remove-item", "format-volume"]
+      .some((pattern) => commandText.includes(pattern))
+      || /\bformat(?:\.com)?\s+[a-z]:/iu.test(commandText);
+    return sensitiveContext || destructiveCommand;
   }
 
   function isClaudeSdkAgent(agent) {

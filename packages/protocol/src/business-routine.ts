@@ -12,11 +12,27 @@ export declare const businessDocumentTypes: readonly [
   "price_list",
   "customer_reference",
   "other_reference",
+  "contract_review",
+  "purchase_request",
+  "customer_complaint",
+  "weekly_report",
+  "project_acceptance",
   "unknown",
 ];
 export type BusinessDocumentType = (typeof businessDocumentTypes)[number];
 
-export declare const businessEntityTypes: readonly ["customer", "product", "inquiry", "quotation", "order"];
+export declare const businessEntityTypes: readonly [
+  "customer",
+  "product",
+  "inquiry",
+  "quotation",
+  "order",
+  "contract_review",
+  "purchase_request",
+  "customer_complaint",
+  "weekly_report",
+  "project_acceptance",
+];
 export type BusinessEntityType = (typeof businessEntityTypes)[number];
 
 export declare const routineArtifactRoles: readonly ["trigger", "input", "output", "reference"];
@@ -226,6 +242,24 @@ export type RoutineDiscoveryStep = RoutineStep & {
   explanation: string;
 };
 
+export type TemplateLearningContract = {
+  version: 1;
+  inputSummary: string;
+  inputFormats: string[];
+  inputArtifactIds: string[];
+  outputSummary: string;
+  outputFormat: string;
+  outputFileName: string;
+  outputArtifactIds: string[];
+  outputColumns: string[];
+  fieldMappings: Array<{
+    column: string;
+    source: string;
+    confidence: "supported" | "needs_confirmation";
+  }>;
+  uncertainFields: string[];
+};
+
 export type RoutineDiscoveryCandidate = {
   id: string;
   familyId: string;
@@ -234,6 +268,7 @@ export type RoutineDiscoveryCandidate = {
   projectId: string;
   sourceId: string;
   name: string;
+  description?: string | null;
   version: number;
   state: RoutineDiscoveryCandidateState;
   triggerDocumentTypes: BusinessDocumentType[];
@@ -243,6 +278,7 @@ export type RoutineDiscoveryCandidate = {
   steps: RoutineDiscoveryStep[];
   evidenceRefs: RoutineEvidenceRef[];
   confidence: number;
+  templateContract?: TemplateLearningContract | null;
   supersedesId: string | null;
   supersededById: string | null;
   revision: number;
@@ -278,6 +314,7 @@ export type RoutineDefinition = {
   evidenceRefs: RoutineEvidenceRef[];
   evidenceFingerprints: Record<string, string>;
   confidence: number;
+  templateContract?: TemplateLearningContract | null;
   supersedesId: string | null;
   supersededById: string | null;
   revision: number;
@@ -306,6 +343,7 @@ export type RoutineStepRun = {
     decidedBy: string;
   } | null;
   conditionOutcome: boolean | null;
+  ledgerDefinitionId?: string | null;
 };
 
 export type RoutineRun = {
@@ -331,6 +369,12 @@ export type RoutineRun = {
     stepKey: string | null;
     revision: number;
   }>;
+  recoveryIntent?: {
+    kind: "retry_after_source_review";
+    stepKey: string;
+    requestedAt: IsoDateTime;
+    requestedBy: string;
+  } | null;
   waitingReason: string | null;
   cancellationRequestedAt: IsoDateTime | null;
   revision: number;

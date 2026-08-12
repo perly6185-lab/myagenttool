@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
-import { Bell, BellRing, CheckCircle2, CircleAlert, ShieldCheck, WifiOff, X } from "lucide-react";
+import { useQuery } from "@tanstack/react-query";
+import { Bell, BellRing, CheckCircle2, CircleAlert, ShieldCheck, Sparkles, WifiOff, X } from "lucide-react";
 import { useConsoleState } from "@/data/use-console-state";
 import {
   isControlPlaneStreamConnected,
@@ -16,6 +17,7 @@ import {
   type NotificationItem,
 } from "@/components/layout/notification-center-model";
 import { useUiStore, type SectionKey } from "@/store/ui-store";
+import { workflowMemoryApi } from "@/features/workflow-memory/workflow-memory-api";
 
 const COMPLETION_SEEN_KEY = "myagenttool-notification-completions-seen-v1";
 const DELIVERY_ENABLED_KEY = "myagenttool-browser-notifications-v1";
@@ -68,6 +70,21 @@ export function NotificationCenter() {
     () => deriveNotificationCenterModel(state, { isError, isLoading, liveUpdates }),
     [isError, isLoading, liveUpdates, state],
   );
+  const templateTasksQuery = useQuery({
+    queryKey: ["workflow-memory", "template-learning-tasks"],
+    queryFn: () => workflowMemoryApi.listTemplateLearningTasks(),
+    enabled: Boolean(state),
+    refetchInterval: 5_000,
+  });
+  const templateAlerts = (templateTasksQuery.data?.tasks ?? [])
+    .filter((task) => task.stage === "needs_case_review" || task.stage === "failed");
+  const templateItems: NotificationItem[] = templateAlerts.map((task) => ({
+    id: task.id,
+    title: task.stage === "failed"
+      ? `${task.name || t("notificationCenter.templatesUntitled")} · ${t("notificationCenter.templatesFailed")}`
+      : task.name || t("notificationCenter.templatesUntitled"),
+    target: "template",
+  }));
   const [open, setOpen] = useState(false);
   const [seenCompletionIds, setSeenCompletionIds] = useState<Set<string> | null>(null);
   const [deliveryEnabled, setDeliveryEnabled] = useState(readDeliveryEnabled);
@@ -92,20 +109,24 @@ export function NotificationCenter() {
     : [];
   const unreadCount = unreadIds.length;
   const unreadCompletionItems = model.completions.items.filter((item) => unreadIds.includes(item.id));
-  const actionCount = model.approvals.count + model.failures.count + (model.offline ? 1 : 0);
-  const hasDanger = model.failures.count > 0 || model.offline;
+  const actionCount = model.approvals.count + model.failures.count + templateAlerts.length + (model.offline ? 1 : 0);
+  const hasDanger = model.failures.count > 0 || templateAlerts.some((task) => task.stage === "failed") || model.offline;
 
-  const eventSignature = model.eventIds.join("|");
+  const notificationEventIds = [
+    ...model.eventIds,
+    ...templateAlerts.map((task) => `template:${task.id}:${task.stage}`),
+  ];
+  const eventSignature = notificationEventIds.join("|");
   useEffect(() => {
     if (!state || !deliveryEnabled || permission !== "granted") return;
     const prior = readStringArray(DELIVERY_BASELINE_KEY);
     if (prior === null) {
-      writeStringArray(DELIVERY_BASELINE_KEY, model.eventIds);
+      writeStringArray(DELIVERY_BASELINE_KEY, notificationEventIds);
       return;
     }
     const priorSet = new Set(prior);
-    const newIds = model.eventIds.filter((id) => !priorSet.has(id));
-    writeStringArray(DELIVERY_BASELINE_KEY, model.eventIds);
+    const newIds = notificationEventIds.filter((id) => !priorSet.has(id));
+    writeStringArray(DELIVERY_BASELINE_KEY, notificationEventIds);
     if (newIds.length === 0) return;
     try {
       const notice = new Notification(t("notificationCenter.browser.title"), {
@@ -114,13 +135,15 @@ export function NotificationCenter() {
       });
       notice.onclick = () => {
         window.focus();
-        navigate("workBoard");
+        navigate(newIds.some((id) => id.startsWith("template:")) ? "workflowMemory" : "workBoard");
         notice.close();
       };
     } catch {
       // The in-app center remains authoritative when OS delivery is unavailable.
     }
-  }, [deliveryEnabled, eventSignature, model.eventIds, navigate, permission, state, t]);
+  // eventSignature is the stable dependency for the derived list.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [deliveryEnabled, eventSignature, navigate, permission, state, t]);
 
   useEffect(() => {
     if (!open) return;
@@ -176,6 +199,15 @@ export function NotificationCenter() {
       navigate("invocations");
       return;
     }
+    if (item.target === "template") {
+      const task = templateAlerts.find((candidate) => candidate.id === item.id);
+      const url = new URL(window.location.href);
+      url.searchParams.set("section", "workflowMemory");
+      if (task?.stage === "needs_case_review") url.searchParams.set("sourceId", task.sourceId);
+      else url.searchParams.delete("sourceId");
+      window.location.assign(url.toString());
+      return;
+    }
     navigate(fallback);
   }
 
@@ -192,7 +224,7 @@ export function NotificationCenter() {
       : await Notification.requestPermission();
     setPermission(next);
     if (next === "granted") {
-      writeStringArray(DELIVERY_BASELINE_KEY, model.eventIds);
+      writeStringArray(DELIVERY_BASELINE_KEY, notificationEventIds);
       try {
         localStorage.setItem(DELIVERY_ENABLED_KEY, "true");
       } catch {
@@ -281,6 +313,21 @@ export function NotificationCenter() {
           <div className="overflow-y-auto p-2">
             {actionCount === 0 && unreadCount === 0 ? (
               <p className="px-3 py-4 text-center text-sm text-muted-foreground">{t("notificationCenter.empty")}</p>
+            ) : null}
+            {templateAlerts.length > 0 ? (
+              <NotificationGroup>
+                <NotificationRow
+                  icon={<Sparkles className="size-5 text-primary" />}
+                  title={t("notificationCenter.templates")}
+                  description={templateAlerts.some((task) => task.stage === "failed")
+                    ? t("notificationCenter.templatesFailedHint")
+                    : t("notificationCenter.templatesHint")}
+                  count={templateAlerts.length}
+                  tone={templateAlerts.some((task) => task.stage === "failed") ? "danger" : "warning"}
+                  onClick={() => openSection("workflowMemory")}
+                />
+                <NotificationItemLinks items={templateItems} onOpen={(item) => openNotificationItem(item, "workflowMemory")} />
+              </NotificationGroup>
             ) : null}
             {model.approvals.count > 0 ? (
               <NotificationGroup>

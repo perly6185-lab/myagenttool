@@ -11,6 +11,120 @@ import { withLocalApplicationReadiness } from "../services/application-readiness
 import { deriveGuidedReadiness } from "../services/guided-readiness.mjs";
 import { publicInvocationEvent } from "../services/invocation-events.mjs";
 
+export const CONSOLE_STATE_MEDIA_TYPE = "application/vnd.myagenttool.console-state+json";
+
+const CONSOLE_INVOCATION_LIMIT = 300;
+const CONSOLE_ATTENTION_INVOCATION_LIMIT = 100;
+const CONSOLE_RELATED_LIMITS = Object.freeze({
+  events: 500,
+  traces: 600,
+  spans: 800,
+  auditSummaries: 600,
+  quotaDecisionRecords: 600,
+  aiUsageRecords: 600,
+  invocationRounds: 1_200,
+  toolInvocationRecords: 1_200,
+  approvalRequests: 600,
+  policyDecisionRecords: 600,
+  troubleshootingReports: 600,
+  codexSessions: 600,
+  claudeSessions: 600,
+  codexWorkspaces: 600,
+  codexEvidenceRecords: 1_000,
+  codexChangeReviews: 600,
+  codexExecChangeReviews: 600,
+  codexHookEvents: 1_000,
+  evidenceCenterRecords: 1_200,
+  evidenceLedger: 500,
+  refusals: 600,
+});
+
+/**
+ * The canonical public state remains intentionally complete for API clients and
+ * compatibility tests. The browser polls much more frequently and only renders a
+ * recent working set, so it asks for this bounded projection via Accept. Keep
+ * active, pending-decision, and attention runs even when they are older than the
+ * normal recent window; all invocation-linked collections then follow the same
+ * retained id set so a row never opens into an unrelated dossier.
+ */
+export function buildConsoleState(publicState) {
+  const invocations = Array.isArray(publicState?.invocations) ? publicState.invocations : [];
+  const recentInvocations = invocations
+    .map((invocation, index) => ({ invocation, index }))
+    .sort((left, right) => consoleInvocationTimestamp(right.invocation) - consoleInvocationTimestamp(left.invocation) || left.index - right.index)
+    .map(({ invocation }) => invocation);
+  const protectedInvocationIds = consoleProtectedInvocationIds(publicState);
+  const retainedInvocationIds = new Set();
+
+  for (const invocation of recentInvocations) {
+    if (!protectedInvocationIds.has(invocation?.id)) continue;
+    if (invocation?.id) retainedInvocationIds.add(invocation.id);
+  }
+  for (const invocation of recentInvocations) {
+    if (retainedInvocationIds.size >= CONSOLE_INVOCATION_LIMIT) break;
+    if (!invocation?.id || retainedInvocationIds.has(invocation.id)) continue;
+    retainedInvocationIds.add(invocation.id);
+  }
+  const retainedInvocations = recentInvocations.filter((invocation) => retainedInvocationIds.has(invocation?.id));
+
+  const totals = { invocations: invocations.length };
+  const truncated = [];
+  const result = { ...publicState, invocations: retainedInvocations };
+  if (retainedInvocations.length < invocations.length) truncated.push("invocations");
+
+  for (const [key, limit] of Object.entries(CONSOLE_RELATED_LIMITS)) {
+    const source = Array.isArray(publicState?.[key]) ? publicState[key] : [];
+    const retained = source
+      .filter((row) => !row?.invocationId || retainedInvocationIds.has(row.invocationId))
+      .slice(0, limit);
+    result[key] = retained;
+    totals[key] = source.length;
+    if (retained.length < source.length) truncated.push(key);
+  }
+
+  result.stateWindow = {
+    projection: "console",
+    invocationLimit: CONSOLE_INVOCATION_LIMIT,
+    totals,
+    truncated,
+  };
+  return result;
+}
+
+function consoleInvocationTimestamp(invocation) {
+  for (const value of [invocation?.updatedAt, invocation?.completedAt, invocation?.createdAt]) {
+    const timestamp = Date.parse(value ?? "");
+    if (Number.isFinite(timestamp)) return timestamp;
+  }
+  return 0;
+}
+
+function consoleProtectedInvocationIds(state) {
+  const protectedIds = new Set();
+  const activeStatuses = new Set([
+    "queued",
+    "dispatching",
+    "waiting_for_local_approval",
+    "running",
+    "cancelling",
+  ]);
+  for (const invocation of state?.invocations ?? []) {
+    if (invocation?.id && activeStatuses.has(invocation.status)) protectedIds.add(invocation.id);
+  }
+  for (const decision of state?.pendingDecisions ?? []) {
+    const invocationId = decision?.ref?.invocationId ?? decision?.invocationId;
+    if (invocationId) protectedIds.add(invocationId);
+  }
+  let attentionCount = 0;
+  for (const row of state?.evidenceLedger ?? []) {
+    if (!row?.attention || !row?.invocationId) continue;
+    protectedIds.add(row.invocationId);
+    attentionCount += 1;
+    if (attentionCount >= CONSOLE_ATTENTION_INVOCATION_LIMIT) break;
+  }
+  return protectedIds;
+}
+
 export function buildPublicState({
   namespace,
   protocolVersion,
@@ -52,7 +166,7 @@ export function buildPublicState({
     if (!String(event?.type ?? "").startsWith("ssh.target.")) return true;
     return sshTargetIdVisible(event?.data?.targetId);
   };
-  const projects = (state.projects ?? []).filter((p) => projectVisible(p.id));
+  const projects = (state.projects ?? []).filter((p) => projectVisible(p.id) && p.hiddenFromNavigation !== true);
   const profileVisible = (row) => {
     if (teamId != null && (row?.ownerTeamId ?? LOCAL_TEAM_ID) !== teamId) return false;
     return !actor?.userId || (row?.userId ?? LOCAL_USER_ID) === actor.userId;

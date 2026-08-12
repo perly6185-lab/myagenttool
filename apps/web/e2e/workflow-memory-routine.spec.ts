@@ -387,6 +387,9 @@ async function mockApi(page: Page) {
       routineDefinitions.splice(0, routineDefinitions.length, routineDefinition);
       return route.fulfill({ json: { routineDefinition, replayed: false } });
     }
+    if (url.pathname === "/api/work-items/my-template-learning") {
+      return route.fulfill({ json: { feedback: [], count: 0 } });
+    }
     if (url.pathname === "/api/work-items" && request.method() === "GET") {
       return route.fulfill({ json: { workItems: [workItem], count: 1 } });
     }
@@ -753,8 +756,21 @@ test.beforeEach(async ({ page }) => {
   });
   await mockApi(page);
   await page.goto("/?section=workflowMemory");
+  await expect(page.getByRole("heading", { name: "我的模版", exact: true }).last()).toBeVisible();
+  await page.getByRole("button", { name: /查看和管理|继续完成/ }).first().click();
+  await expect(page.getByRole("heading", { name: "创建我的模版", exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "高级调整" }).click();
   await expect(page.getByRole("heading", { name: "Delivery memory" })).toBeVisible();
 });
+
+async function openAdvancedWorkTools(page: import("@playwright/test").Page) {
+  const summary = page.getByText("Advanced learning and pilot tools", { exact: true });
+  const details = page.locator("#advanced-workflow-tools");
+  if (!(await details.evaluate((element: HTMLDetailsElement) => element.open))) {
+    await summary.click();
+  }
+  await expect(details).toHaveAttribute("open", "");
+}
 
 test("guides an ordinary user from discovered work to task-type review", async ({ page }) => {
   const setup = page.getByRole("region", { name: "Set up your daily work" });
@@ -773,6 +789,7 @@ test("guides an ordinary user from discovered work to task-type review", async (
 });
 
 test("lets an ordinary user confirm one new inquiry before a task is created", async ({ page }) => {
+  await openAdvancedWorkTools(page);
   await expect(page.getByText("RFQ-1002.md", { exact: true })).toBeVisible();
   await page.getByRole("button", { name: "Review inquiry" }).click();
   const dialog = page.getByRole("dialog", { name: "Confirm the new inquiry" });
@@ -793,6 +810,7 @@ test("lets an ordinary user confirm one new inquiry before a task is created", a
 });
 
 test("shows a clear governed real-case intake dialog on desktop and mobile", async ({ page }, testInfo) => {
+  await openAdvancedWorkTools(page);
   await page.getByRole("button", { name: "Add real case" }).click();
   const dialog = page.getByRole("dialog", { name: "Add one real business case" });
   await dialog.getByRole("button", { name: "Choose files" }).click();
@@ -818,8 +836,12 @@ test("shows a clear governed real-case intake dialog on desktop and mobile", asy
 
 test("requires explicit review before enabling a discovered work type", async ({ page }) => {
   const setup = page.getByRole("region", { name: "Set up your daily work" });
+  const created = page.waitForResponse((response) =>
+    response.request().method() === "POST"
+    && response.url().endsWith("/business-routine-candidates/rdc_1/create-draft"));
   await setup.getByRole("button", { name: "Review this task type" }).click();
-  const enable = await page.getByRole("button", { name: "Enable this work type" });
+  await created;
+  const enable = page.getByRole("button", { name: "Enable this work type" });
   await expect(enable).toBeDisabled();
   await page.getByLabel(
     "I reviewed the trigger, steps, outputs, ledgers, and approval points.",
@@ -830,7 +852,10 @@ test("requires explicit review before enabling a discovered work type", async ({
     && request.url().endsWith("/business-routine-definitions/rtn_1/publish"));
   await enable.click();
   expect((await publish).postDataJSON()).toMatchObject({ confirmed: true });
-  await expect(setup.getByText("Ready to use")).toBeVisible();
+  const learned = page.getByRole("region", {
+    name: "This computer has learned how you do this work",
+  });
+  await expect(learned.getByText("Ready to use")).toBeVisible();
 });
 
 test("processes a routine Issue through ledger review, quotation approval, and order handoff", async ({ page }) => {
@@ -853,7 +878,7 @@ test("processes a routine Issue through ledger review, quotation approval, and o
   await quotationDialog.getByLabel("Unit price").fill("25.00");
   await quotationDialog.getByRole("button", { name: "Confirm details" }).click();
   await dailyWork.getByRole("button", { name: "Generate quotation draft" }).click();
-  await dailyWork.getByRole("button", { name: "Approve and continue" }).click();
+  await dailyWork.getByRole("button", { name: "Review result" }).click();
   const approvalDialog = page.getByRole("dialog", { name: "Review the quotation" });
   await expect(approvalDialog.getByText(/quotation-INQ-004-r1-d1-abcd1234\.md/).first()).toBeVisible();
   await expect(approvalDialog.getByText(/Unit price: 25.00/).first()).toBeVisible();
@@ -891,6 +916,9 @@ test("opens the next inquiry from a keyboard-accessible narrow batch view", asyn
 test("keeps the guided setup usable on a narrow screen and by keyboard", async ({ page }) => {
   await page.setViewportSize({ width: 320, height: 844 });
   await page.reload();
+  await page.getByRole("button", { name: "高级调整" }).click();
+  await expect(page.getByRole("heading", { name: "Delivery memory" })).toBeVisible();
+  await openAdvancedWorkTools(page);
   const intakeButton = page.getByRole("button", { name: "Review inquiry" });
   await intakeButton.focus();
   await expect(intakeButton).toBeFocused();

@@ -150,6 +150,15 @@ export function createServerState({ defaultProjectPath, now }) {
     // Local-first planning records. These are independent of GitHub Issues and
     // may later carry one or more external bindings.
     workItems: [],
+    myTemplateRoutingFeedback: [],
+    myTemplateOutcomeFeedback: [],
+    myTemplateGovernanceInterventions: [],
+    // A completed ordinary task can seed a new personal template. These rows
+    // remain outside routineDefinitions until enough cases are reviewed and
+    // the user explicitly enables the template.
+    myTemplateDrafts: [],
+    myTemplateLearningCases: [],
+    templateLearningTasks: [],
     // Private task-level reference material metadata. Raw bytes live beside the
     // state store under task-materials; only bounded metadata is durable here.
     taskMaterialDrafts: [],

@@ -2,9 +2,11 @@ import { resolveWorkItemExecution } from "../services/work-item-execution.mjs";
 import { projectWorkItemOutcome } from "../services/work-item-outcome.mjs";
 
 export const HOME_ATTENTION_REASON_ORDER = [
+  "ai_needs_input",
   "overdue",
   "approval_required",
   "ai_failed",
+  "dependency_blocked",
   "review_ready",
   "user_action_required",
   "follow_up_due",
@@ -16,9 +18,11 @@ export const HOME_ATTENTION_REASON_ORDER = [
 
 const PRIORITY_RANK = { p0: 0, p1: 1, p2: 2, p3: 3 };
 const NEEDS_ATTENTION = new Set([
+  "ai_needs_input",
   "overdue",
   "approval_required",
   "ai_failed",
+  "dependency_blocked",
   "review_ready",
   "user_action_required",
   "follow_up_due",
@@ -85,8 +89,10 @@ function attentionReasons(item, nowMs, today, tomorrow) {
   const overdueCommitment = !aiOwnsNextStep && item.commitmentDate && timestamp(item.commitmentDate) < nowMs;
   const overdueDueDate = !aiOwnsNextStep && item.dueDate && item.dueDate < today;
   if (overdueCommitment || overdueDueDate) reasons.push("overdue");
-  if (item.executionState === "awaiting_approval") reasons.push("approval_required");
+  if (item.autoRunStatus === "needs_input") reasons.push("ai_needs_input");
+  if (item.executionState === "awaiting_approval" && item.autoRunStatus !== "needs_input") reasons.push("approval_required");
   if (item.executionState === "failed") reasons.push("ai_failed");
+  if (item.hasUnresolvedDependencies) reasons.push("dependency_blocked");
   if (item.userStatus === "ready_for_review") reasons.push("review_ready");
   const humanFollowUpDue = ["me", "requester", "internal"].includes(item.waitingOn)
     && item.nextFollowUpAt
@@ -105,6 +111,9 @@ function attentionReasons(item, nowMs, today, tomorrow) {
 
 function nextAction(item, reasons, execution) {
   const runTarget = execution.autoRun?.id ?? execution.invocation?.id ?? item.id;
+  if (reasons.includes("ai_needs_input")) {
+    return { kind: "answer_ai", label: "answer_ai", targetId: item.id, section: "task" };
+  }
   if (reasons.includes("approval_required")) {
     return {
       kind: "open_approval",
@@ -129,6 +138,87 @@ function nextAction(item, reasons, execution) {
     return { kind: "record_progress", label: "record_progress", targetId: item.id, section: "task" };
   }
   return { kind: "open_issue", label: "open_issue", targetId: item.id, section: "task" };
+}
+
+function userAction(item, reasons, execution, workItemsById) {
+  if (reasons.includes("ai_needs_input")) {
+    const questions = execution.autoRun?.decision?.clarifyingQuestions?.filter(Boolean) ?? [];
+    return {
+      required: true,
+      kind: "answer_question",
+      title: "answer_ai_question",
+      reason: "ai_cannot_continue_without_answer",
+      instruction: questions[0] ?? null,
+      questions,
+      suggestedActions: execution.autoRun?.decision?.suggestedActions ?? [],
+      primaryAction: "answer_ai",
+      target: { section: "task", id: item.id },
+      resumeAfterAction: true,
+      requestedBy: "ai",
+      requiresPermission: true,
+    };
+  }
+  if (reasons.includes("approval_required")) {
+    return {
+      required: true,
+      kind: "approve",
+      title: "review_approval",
+      reason: "execution_waiting_for_approval",
+      instruction: null,
+      primaryAction: "open_approval",
+      target: { section: "approvals", id: execution.approval?.id ?? execution.autoRun?.id ?? execution.invocation?.id ?? item.id },
+      resumeAfterAction: true,
+      requestedBy: "system",
+      requiresPermission: true,
+    };
+  }
+  if (reasons.includes("dependency_blocked")) {
+    const dependency = (item.dependencyIds ?? [])
+      .map((id) => workItemsById.get(id))
+      .find((candidate) => candidate && candidate.state !== "closed" && candidate.status !== "done") ?? null;
+    return {
+      required: true,
+      kind: "resolve_dependency",
+      title: "resolve_dependency",
+      reason: "waiting_for_dependency",
+      instruction: dependency ? `${dependency.localRef} · ${dependency.title}` : null,
+      dependency: dependency ? { id: dependency.id, localRef: dependency.localRef, title: dependency.title } : null,
+      primaryAction: "view_dependency",
+      target: { section: "task", id: dependency?.id ?? item.id },
+      resumeAfterAction: false,
+      requestedBy: "system",
+      requiresPermission: false,
+    };
+  }
+  if (reasons.includes("ai_failed")) {
+    return {
+      required: true,
+      kind: "retry",
+      title: "handle_ai_failure",
+      reason: "ai_execution_failed",
+      instruction: null,
+      primaryAction: "retry",
+      target: { section: "task", id: item.id },
+      resumeAfterAction: true,
+      requestedBy: "system",
+      requiresPermission: true,
+    };
+  }
+  if (reasons.includes("user_action_required") || reasons.includes("follow_up_due")) {
+    return {
+      required: true,
+      kind: "update_progress",
+      title: "update_progress",
+      reason: reasons.includes("follow_up_due") ? "follow_up_due" : "waiting_for_user",
+      instruction: null,
+      primaryAction: "record_progress",
+      target: { section: "task", id: item.id },
+      resumeAfterAction: false,
+      requestedBy: "system",
+      requiresPermission: true,
+    };
+  }
+  return null;
 }
 
 function reportDraftSummary(state, item) {
@@ -179,6 +269,7 @@ export function homeWorkbenchReadModel({
   const today = localDateKey(nowMs, timezoneOffset);
   const tomorrow = addUtcDays(today, 1);
   const users = new Map((state.users ?? []).map((user) => [user.id, user]));
+  const workItemsById = new Map(workItems.map((item) => [item.id, item]));
   const items = workItems
     .filter((item) => isVisibleHomeItem(item, nowMs))
     .map((item) => {
@@ -191,6 +282,11 @@ export function homeWorkbenchReadModel({
         executionState,
         userStatus: projectedUserStatus,
         hasManagedExecution: Boolean(execution.binding),
+        autoRunStatus: execution.autoRun?.status ?? null,
+        hasUnresolvedDependencies: (item.dependencyIds ?? []).some((id) => {
+          const dependency = workItemsById.get(id);
+          return dependency && dependency.state !== "closed" && dependency.status !== "done";
+        }),
       };
       const reasons = attentionReasons(executionItem, nowMs, today, tomorrow);
       const attentionReason = reasons[0] ?? null;
@@ -258,6 +354,7 @@ export function homeWorkbenchReadModel({
           needsReview: projectedUserStatus === "ready_for_review",
         } : null,
         nextAction: nextAction(item, reasons, execution),
+        userAction: userAction(item, reasons, execution, workItemsById),
         ai: aiStatus ? {
           autoRunId: execution.autoRun?.id ?? null,
           invocationId: execution.invocation?.id ?? execution.autoRun?.invocationId ?? null,
