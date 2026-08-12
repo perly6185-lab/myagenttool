@@ -11,11 +11,16 @@
 //      inside the page context (`/space/api/docx/pages/client_vars`, guest
 //      session, no credentials), paginating over `next_cursors` until
 //      `has_more` is false. Blocks are merged into one map by id.
-//   3. Images are captured from the browser's own image/* responses during a
-//      top-to-bottom scroll pass — the browser has already handled CORS and any
-//      decryption, so we receive final plaintext bytes. Where the request URL
-//      exposes the file token we record it for precise block association;
-//      otherwise the orchestrator falls back to positional matching.
+//   3. Images are captured AUTHORITATIVELY by fetching each image's file token
+//      directly through the public drive-stream cover endpoint, from inside the
+//      page context (the guest session that already rendered the doc). Every
+//      image block carries its token at data.image.token, so this captures 100%
+//      of images deterministically — including images inside grids and
+//      multi-column layouts that never enter the viewport and so never lazy-load.
+//      Each capture is keyed by token, so import-doc places it at its exact
+//      block placeholder (no positional guessing). The scroll pass below still
+//      runs and its response interception is kept as a secondary, best-effort
+//      source for any token the direct fetch could not resolve.
 //
 // This module owns NO disk writes and NO security-sensitive state; it returns
 // structured data for import-doc to persist.
@@ -64,6 +69,11 @@ export async function renderFeishuDoc({ url, canonicalUrl, config, signal }) {
     // Track the doc id the SPA uses for its own content calls (robust against
     // wiki-vs-docx token differences — we let the SPA tell us the canonical id).
     let capturedDocId = null;
+    // Track the drive-stream CDN origin the SPA uses for its own image requests
+    // (varies per tenant: internal-api-drive-stream.feishu.cn / .larksuite.com).
+    // Observed at runtime so per-token image fetches reuse the exact origin the
+    // SPA trusts; falls back to a host-derived guess if none is observed.
+    let driveOrigin = null;
     /** @type {CapturedImage[]} */
     const images = [];
     const seenSha = new Set();
@@ -73,6 +83,13 @@ export async function renderFeishuDoc({ url, canonicalUrl, config, signal }) {
       if (u.includes(CLIENT_VARS_PATH)) {
         const id = new URL(u, canonicalUrl).searchParams.get("id");
         if (id && !capturedDocId) capturedDocId = id;
+      }
+      if (!driveOrigin && /\/space\/api\/box\/stream\/download\//.test(u)) {
+        try {
+          driveOrigin = new URL(u).origin;
+        } catch {
+          /* keep null — derive later */
+        }
       }
     });
 
@@ -159,7 +176,19 @@ export async function renderFeishuDoc({ url, canonicalUrl, config, signal }) {
     }
 
     // --- Scroll pass to trigger image loads ------------------------------------
+    // Secondary capture source: response interception catches whatever the SPA
+    // lazy-loads during the scroll. The authoritative capture (every token,
+    // fetched directly) runs next and is what makes grids/multi-column images
+    // resolve; this pass mostly serves to observe the drive-stream origin.
     await scrollToBottom(page, limits);
+
+    // --- Authoritative image capture: fetch every token directly --------------
+    await fetchImagesByToken(page, blockMap, {
+      limits,
+      origin: driveOrigin || deriveDriveOrigin(canonicalUrl),
+      images,
+      seenSha,
+    });
 
     const rootId = findRootId(blockMap, blockSequence);
     const title = await extractTitle(page, blockMap, blockSequence, rootId);
@@ -203,6 +232,152 @@ async function scrollToBottom(page, limits) {
   }
   // Final settle so trailing image responses flush.
   await page.waitForTimeout(500).catch(() => {});
+}
+
+/**
+ * Authoritatively capture every document image by fetching its file token
+ * through the public drive-stream cover endpoint, from inside the page's guest
+ * session. This does not depend on the SPA lazy-loading anything, so images
+ * inside grids / multi-column layouts — which the scroll pass never brings into
+ * the viewport — are captured here. Each capture carries its token, so import-doc
+ * maps it to its exact `feishu-asset://<token>` placeholder (no positional guess).
+ *
+ * Tokens already captured by the scroll-interception pass are skipped (the two
+ * capture paths are complementary; dedup is by sha256). Failures for an
+ * individual token are non-fatal — import-doc records any unresolved slot in the
+ * manifest so nothing is silently dropped.
+ *
+ * @param {import("playwright").Page} page
+ * @param {Record<string, any>} blockMap
+ * @param {{ limits: Record<string, number>, origin: string, images: CapturedImage[], seenSha: Set<string> }} ctx
+ */
+async function fetchImagesByToken(page, blockMap, { limits, origin, images, seenSha }) {
+  // Skip tokens the scroll-interception pass already captured (with a token).
+  const haveToken = new Set(images.filter((i) => i.token).map((i) => i.token));
+  /** @type {{ token: string, url: string }[]} */
+  const entries = [];
+  const queued = new Set();
+  for (const b of Object.values(blockMap)) {
+    if (b?.data?.type !== "image") continue;
+    const token = b?.data?.image?.token;
+    if (!token || typeof token !== "string") continue;
+    if (queued.has(token)) continue; // a doc may reference the same image twice
+    queued.add(token);
+    if (haveToken.has(token)) continue;
+    if (entries.length >= limits.assetCount) break;
+    entries.push({ token, url: coverUrlFor(origin, token) });
+  }
+  if (entries.length === 0) return;
+
+  const results = await page
+    .evaluate(
+      async (args) => {
+        const { entries, concurrency, maxBytes, totalCap } = args;
+        const out = new Array(entries.length);
+        let cursor = 0;
+        let total = 0;
+        const encode = (bytes) => {
+          let bin = "";
+          for (let i = 0; i < bytes.length; i += 0x8000) {
+            bin += String.fromCharCode.apply(null, bytes.subarray(i, i + 0x8000));
+          }
+          return btoa(bin);
+        };
+        const run = async () => {
+          while (true) {
+            const i = cursor++;
+            if (i >= entries.length) return;
+            const { token, url } = entries[i];
+            try {
+              if (total >= totalCap) {
+                out[i] = { token, skipped: true };
+                continue;
+              }
+              const r = await fetch(url, { credentials: "include" });
+              if (!r.ok) {
+                out[i] = { token, status: r.status };
+                continue;
+              }
+              const contentType = (r.headers.get("content-type") || "").split(";")[0].trim();
+              const ab = await r.arrayBuffer();
+              const bytes = new Uint8Array(ab);
+              if (bytes.length === 0) {
+                out[i] = { token, empty: true };
+                continue;
+              }
+              if (bytes.length > maxBytes) {
+                out[i] = { token, tooLarge: bytes.length };
+                continue;
+              }
+              total += bytes.length;
+              out[i] = { token, ok: true, contentType, n: bytes.length, b64: encode(bytes) };
+            } catch (e) {
+              out[i] = { token, error: String((e && e.message) || e).slice(0, 160) };
+            }
+          }
+        };
+        await Promise.all(Array.from({ length: Math.max(1, concurrency) }, run));
+        return out;
+      },
+      {
+        entries,
+        concurrency: Math.max(1, limits.assetConcurrency || 4),
+        maxBytes: limits.assetBytes,
+        totalCap: limits.assetTotalBytes,
+      },
+    )
+    .catch(() => []);
+
+  const { createHash } = await import("node:crypto");
+  for (const r of results || []) {
+    if (!r || !r.ok || !r.b64) continue;
+    const buf = Buffer.from(r.b64, "base64");
+    const sha = createHash("sha256").update(buf).digest("hex");
+    if (seenSha.has(sha)) continue;
+    if (images.length >= limits.assetCount) break;
+    const total = images.reduce((n, i) => n + i.bytes.length, 0);
+    if (total + buf.length > limits.assetTotalBytes) break;
+    seenSha.add(sha);
+    images.push({
+      bytes: buf,
+      contentType: (r.contentType || "image/png").toLowerCase(),
+      sourceUrl: coverUrlFor(origin, r.token),
+      token: r.token,
+      sha,
+    });
+  }
+}
+
+/**
+ * Build the public drive-stream cover URL for an image file token. The query is
+ * the minimal set proven (against the probe document) to return 200 for every
+ * token on a public doc — the per-image `mount_node_token` the SPA includes is
+ * not required, so a token alone is sufficient.
+ *
+ * @param {string} origin
+ * @param {string} token
+ * @returns {string}
+ */
+function coverUrlFor(origin, token) {
+  return `${origin}/space/api/box/stream/download/v2/cover/${encodeURIComponent(token)}/?fallback_source=1&mount_point=docx_image&policy=equal&width=1280&height=1280`;
+}
+
+/**
+ * Derive the drive-stream CDN origin for a tenant from its doc URL. Preferred at
+ * runtime by observing the SPA's own image requests (driveOrigin); this is the
+ * static fallback when none was observed (e.g. a doc with no SPA-loaded images).
+ *
+ * @param {string} canonicalUrl
+ * @returns {string}
+ */
+function deriveDriveOrigin(canonicalUrl) {
+  try {
+    const h = new URL(canonicalUrl).hostname.toLowerCase();
+    if (h.endsWith(".larksuite.com")) return "https://internal-api-drive-stream.larksuite.com";
+    return "https://internal-api-drive-stream.feishu.cn";
+  } catch {
+    return "https://internal-api-drive-stream.feishu.cn";
+  }
 }
 
 /**

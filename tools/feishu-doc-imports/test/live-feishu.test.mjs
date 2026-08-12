@@ -43,8 +43,24 @@ test(
       const hasTail = /最后说句实在话|Rock/.test(md);
       assert.ok(hasTail, "tail section missing — document appears truncated");
 
-      // Images: the probe document has many images; at least one should resolve.
+      // Images: EVERY image slot must resolve — no missing images, no
+      // placeholders. This is the completeness invariant: the document has 15
+      // image blocks (including grid/multi-column images that never lazy-load),
+      // and the per-token drive-stream fetch must capture all of them so each is
+      // restored at its exact position. asset_count must equal image_slots and
+      // nothing may be left as an uncaptured placeholder.
+      assert.equal(
+        manifest.images_not_captured.length,
+        0,
+        `images not captured: ${JSON.stringify(manifest.images_not_captured)}`,
+      );
+      assert.equal(
+        manifest.asset_count,
+        manifest.image_slots,
+        `asset_count (${manifest.asset_count}) != image_slots (${manifest.image_slots})`,
+      );
       assert.ok(result.assetCount >= 1, `expected >=1 asset, got ${result.assetCount}`);
+      assert.ok(!/<!-- image not captured -->/.test(md), "doc.md contains an uncaptured-image placeholder");
     } finally {
       await fs.rm(outDir, { recursive: true, force: true }).catch(() => {});
     }
