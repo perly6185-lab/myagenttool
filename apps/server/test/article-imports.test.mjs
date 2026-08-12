@@ -28,6 +28,8 @@ test("detects source providers and builds deterministic source/date paths", () =
   assert.equal(detectArticleSource("https://zhuanlan.zhihu.com/p/123"), "zhihu");
   assert.equal(detectArticleSource("https://juejin.cn/post/123"), "juejin");
   assert.equal(detectArticleSource("https://www.jianshu.com/p/123"), "jianshu");
+  assert.equal(detectArticleSource("https://mynhkbykqf.feishu.cn/wiki/CHDzwTXYriLNIpk2HsRcx2VWnQe"), "feishu");
+  assert.equal(detectArticleSource("https://tenant.larksuite.com/docx/CHDzwTXYriLNIpk2HsRcx2VWnQe"), "feishu");
   assert.equal(detectArticleSource("https://example.com/post"), "web");
   assert.equal(
     canonicalizeArticleUrl("https://EXAMPLE.com/post?utm_source=test&id=1#part"),
