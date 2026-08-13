@@ -96,6 +96,17 @@ test("persistence restores active control-plane records across runtime restart",
       createdAt: now(),
       updatedAt: now(),
     });
+    first.state.mailTaskLinks.push({
+      id: "mailtask_1",
+      messageId: "<restart@example.com>",
+      workItemId: "lwi_restart",
+      localRef: "LOCAL-88",
+      title: "Restart-safe mail task",
+      projectId: first.defaultProject.id,
+      ownerTeamId: "team_local",
+      createdAt: now(),
+      updatedAt: now(),
+    });
     first.state.retentionSettings.logsDays = 99;
 
     createPersistenceRuntime({
@@ -139,6 +150,7 @@ test("persistence restores active control-plane records across runtime restart",
     assert.equal(second.state.myTemplateDrafts[0]?.id, "mtd_1", "task-seeded template draft should restore");
     assert.equal(second.state.myTemplateLearningCases[0]?.id, "mtlc_1", "task-seeded learning case should restore");
     assert.equal(second.state.mailMessageStates[0]?.messageId, "<restart@example.com>", "local mail read state should restore");
+    assert.equal(second.state.mailTaskLinks[0]?.workItemId, "lwi_restart", "mail-to-task links should restore");
     assert.equal(second.state.retentionSettings.logsDays, 99);
   } finally {
     rmSync(root, { recursive: true, force: true });

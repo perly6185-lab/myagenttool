@@ -1,13 +1,15 @@
 import { randomUUID } from "node:crypto";
-import { chmodSync, copyFileSync, lstatSync, mkdirSync, realpathSync, writeFileSync } from "node:fs";
+import { chmodSync, copyFileSync, existsSync, lstatSync, mkdirSync, readdirSync, realpathSync, unlinkSync, writeFileSync } from "node:fs";
 import { basename, join } from "node:path";
 
 const MAX_FILES = 10;
 const MAX_TOTAL_BYTES = 25 * 1024 * 1024;
+const DEFAULT_RETENTION_MS = 30 * 24 * 60 * 60 * 1_000;
 
 export function registerMailOutboundAttachmentHandler({ ipcMain, dialog, getWindow, attachmentRoot }) {
   ipcMain.removeHandler("mail:pick-outbound-attachments");
   ipcMain.removeHandler("mail:stage-pasted-attachments");
+  pruneStagedMailAttachments(attachmentRoot);
 
   ipcMain.handle("mail:pick-outbound-attachments", async () => {
     const chosen = await dialog.showOpenDialog(getWindow(), {
@@ -42,6 +44,19 @@ export function registerMailOutboundAttachmentHandler({ ipcMain, dialog, getWind
       return { ok: false, error: publicCode(error) };
     }
   });
+}
+
+export function pruneStagedMailAttachments(root, { now = Date.now(), retentionMs = DEFAULT_RETENTION_MS } = {}) {
+  if (!root || !existsSync(root)) return { removed: 0 };
+  let removed = 0;
+  for (const name of readdirSync(root)) {
+    if (!/^mailatt_[a-f0-9-]{36}\.(?:bin|json)$/.test(name)) continue;
+    const path = join(root, name);
+    const info = lstatSync(path);
+    if (!info.isFile() || info.isSymbolicLink() || now - info.mtimeMs < retentionMs) continue;
+    try { unlinkSync(path); removed += 1; } catch { /* best-effort orphan cleanup */ }
+  }
+  return { removed };
 }
 
 function stageFile(root, file) {

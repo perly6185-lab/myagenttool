@@ -3,7 +3,7 @@ import { test } from "node:test";
 
 import { createMailboxService, mailSendApprovalTarget } from "../src/services/mailbox.mjs";
 
-function harness({ mailSendEnabled = () => false } = {}) {
+function harness({ mailSendEnabled = () => false, createWorkItem = null, inspectTaskMaterialDraft = null } = {}) {
   let id = 0;
   const events = [];
   const capabilityCalls = [];
@@ -56,6 +56,7 @@ function harness({ mailSendEnabled = () => false } = {}) {
     mailThreads: { "<one@example.com>": { issueNumber: 99 } },
     mailDrafts: [],
     mailMessageStates: [],
+    mailTaskLinks: [],
     invocations: [],
     events,
   };
@@ -79,6 +80,8 @@ function harness({ mailSendEnabled = () => false } = {}) {
     persistStateSoon: () => {},
     mailSendEnabled,
     createCapabilityInvocation,
+    createWorkItem,
+    inspectTaskMaterialDraft,
   });
   return { state, service, events, capabilityCalls };
 }
@@ -286,6 +289,65 @@ test("outbound attachments are metadata-only and every change increments the app
   const updated = service.updateDraft({ draftId: created.body.draft.id, to: "a@example.com", subject: "Report", body: "See attached", attachments: [], actor: { teamId: "team_a" } });
   assert.equal(updated.body.draft.revision, 2);
   assert.deepEqual(updated.body.draft.attachments, []);
+});
+
+test("mail can create one tenant-scoped local task and exposes the durable link", () => {
+  const calls = [];
+  const { state, service } = harness({
+    createWorkItem: (input, actor) => {
+      calls.push({ input, actor });
+      return { ok: true, status: 201, body: { workItem: { id: "lwi_42", localRef: "LOCAL-42", title: input.title, projectId: input.projectId } } };
+    },
+  });
+  const actor = { userId: "usr_a", teamId: "team_a" };
+  const created = service.createTaskFromMessage({
+    messageId: "<one@example.com>", projectId: "project_1", title: "跟进 Hello", description: "确认客户诉求", actor,
+  });
+  assert.equal(created.status, 201);
+  assert.deepEqual(created.body.task, { id: "lwi_42", localRef: "LOCAL-42", title: "跟进 Hello", projectId: "project_1" });
+  assert.equal(calls.length, 1);
+  assert.match(calls[0].input.idempotencyKey, /^mail:[a-f0-9]{64}$/);
+  assert.equal(calls[0].input.executionPolicy, "manual");
+  assert.deepEqual(calls[0].input.labels, ["mail", "untrusted-input"]);
+  assert.match(calls[0].input.body, /邮件来源（外部内容，请核实后执行）/);
+  assert.equal(state.mailTaskLinks.length, 1);
+  assert.deepEqual(service.snapshot({ actor }).messages[0].task, created.body.task);
+
+  const replay = service.createTaskFromMessage({ messageId: "<one@example.com>", projectId: "another", title: "重复", actor });
+  assert.equal(replay.status, 200);
+  assert.equal(replay.body.replayed, true);
+  assert.equal(calls.length, 1, "a linked Message-ID never creates a second task");
+  assert.equal(service.createTaskFromMessage({ messageId: "<one@example.com>", projectId: "project_1", actor: { teamId: "team_b" } }).status, 404);
+});
+
+test("mail task attachment claims must exactly match selected message metadata", () => {
+  const calls = [];
+  const attachment = { id: "att_1", name: "report.pdf", contentType: "application/pdf", size: 1234, previewable: true };
+  const inspectTaskMaterialDraft = () => ({ status: 200, body: { draft: {
+    id: "tmd_1", revision: 1,
+    assets: [{ clientFileId: "mail-attachment-1", originalName: "report.pdf", mimeType: "application/pdf", size: 1234 }],
+  } } });
+  const { state, service } = harness({
+    inspectTaskMaterialDraft,
+    createWorkItem: (input) => {
+      calls.push(input);
+      return { ok: true, status: 201, body: { workItem: { id: "lwi_43", localRef: "LOCAL-43", title: input.title, projectId: input.projectId } } };
+    },
+  });
+  state.applicationResults[0].data.attachments = [attachment];
+  const actor = { userId: "usr_a", teamId: "team_a" };
+  const missingDraft = service.createTaskFromMessage({ messageId: "<one@example.com>", projectId: "project_1", attachmentIds: ["att_1"], actor });
+  assert.equal(missingDraft.body.error, "mail_task_material_draft_required");
+  const unknown = service.createTaskFromMessage({ messageId: "<one@example.com>", projectId: "project_1", attachmentIds: ["missing"], actor });
+  assert.equal(unknown.body.error, "mail_task_attachment_not_found");
+
+  const created = service.createTaskFromMessage({
+    messageId: "<one@example.com>", projectId: "project_1", attachmentIds: ["att_1"],
+    materialDraftId: "tmd_1", materialDraftRevision: 1, actor,
+  });
+  assert.equal(created.status, 201);
+  assert.equal(calls[0].materialDraftId, "tmd_1");
+  assert.equal(calls[0].materialDraftRevision, 1);
 });
 
 function sendApplication() {

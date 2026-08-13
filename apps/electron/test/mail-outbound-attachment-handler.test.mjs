@@ -1,10 +1,10 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 
-import { registerMailOutboundAttachmentHandler } from "../src/mail-outbound-attachment-handler.mjs";
+import { pruneStagedMailAttachments, registerMailOutboundAttachmentHandler } from "../src/mail-outbound-attachment-handler.mjs";
 
 test("picker stages a private copy and returns metadata without the source path", async () => {
   const root = mkdtempSync(join(tmpdir(), "mat-mail-outbound-"));
@@ -45,4 +45,22 @@ test("pasted file bytes are staged locally and bounded", async () => {
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
+});
+
+test("staged attachment orphans older than the retention window are pruned safely", () => {
+  const root = mkdtempSync(join(tmpdir(), "mat-mail-retention-"));
+  try {
+    const ref = "mailatt_12345678-1234-1234-1234-123456789abc";
+    const old = new Date("2026-06-01T00:00:00Z");
+    for (const extension of ["bin", "json"]) {
+      const path = join(root, `${ref}.${extension}`);
+      writeFileSync(path, "x");
+      utimesSync(path, old, old);
+    }
+    const unrelated = join(root, "keep-me.txt");
+    writeFileSync(unrelated, "safe");
+    const result = pruneStagedMailAttachments(root, { now: Date.parse("2026-08-13T00:00:00Z") });
+    assert.equal(result.removed, 2);
+    assert.equal(existsSync(unrelated), true);
+  } finally { rmSync(root, { recursive: true, force: true }); }
 });

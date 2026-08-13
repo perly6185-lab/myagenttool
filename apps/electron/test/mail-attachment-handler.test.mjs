@@ -37,6 +37,21 @@ test("download writes only to the native-dialog selection and returns no path", 
   assert.equal(existsSync(join(root, "attacker")), false);
 });
 
+test("task transfer returns attachment bytes without exposing a local path", async () => {
+  const handlers = harness();
+  const result = await handlers.get("mail:read-attachment-for-task")(null, { messageId: "<m@x>", folderPath: "INBOX", attachmentId: "attachment-1" });
+  assert.equal(result.ok, true);
+  assert.deepEqual({ ...result.attachment, data: undefined }, {
+    id: "attachment-1",
+    name: "note.txt",
+    contentType: "text/plain",
+    size: 5,
+    data: undefined,
+  });
+  assert.equal(Buffer.from(result.attachment.data).toString("utf8"), "hello");
+  assert.equal("path" in result.attachment, false);
+});
+
 test("attachment failures expose only allowlisted ordinary error codes", async () => {
   const handlers = harness({ readAttachment: async () => { throw new Error("credential path C:\\secret"); } });
   assert.deepEqual(await handlers.get("mail:preview-attachment")(null, {}), { ok: false, error: "attachment_unavailable" });

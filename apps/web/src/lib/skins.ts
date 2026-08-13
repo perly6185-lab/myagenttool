@@ -161,6 +161,10 @@ declare global {
         | { ok: true; saved: boolean; name?: string }
         | { ok: false; error: "attachment_not_found" | "download_too_large" | "attachment_unavailable" }
       >;
+      readMailAttachmentForTask?: (input: { messageId: string; folderPath?: string; attachmentId: string }) => Promise<
+        | { ok: true; attachment: { id: string; name: string; contentType: string; size: number; data: ArrayBuffer } }
+        | { ok: false; error: "attachment_not_found" | "download_too_large" | "attachment_unavailable" }
+      >;
       connect163MailSend?: (input: { email: string; authorizationCode: string }) => Promise<
         | { ok: true; account: { provider: string; email: string; canReceive: boolean; canSend: true } }
         | { ok: false; error: "platform_not_supported" | "invalid_email" | "invalid_authorization_code" | "verification_failed" | "save_failed" }

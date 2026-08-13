@@ -21,6 +21,7 @@ contextBridge.exposeInMainWorld("myagenttoolDesktop", {
   connect163MailSend: (input) => ipcRenderer.invoke("mail:connect-163-send", input),
   previewMailAttachment: (input) => ipcRenderer.invoke("mail:preview-attachment", input),
   downloadMailAttachment: (input) => ipcRenderer.invoke("mail:download-attachment", input),
+  readMailAttachmentForTask: (input) => ipcRenderer.invoke("mail:read-attachment-for-task", input),
   pickOutboundMailAttachments: () => ipcRenderer.invoke("mail:pick-outbound-attachments"),
   stagePastedMailAttachments: (input) => ipcRenderer.invoke("mail:stage-pasted-attachments", input),
 });
