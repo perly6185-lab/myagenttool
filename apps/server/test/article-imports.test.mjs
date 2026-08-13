@@ -1188,6 +1188,80 @@ test("enforces the global queue, rejects duplicate Issue work, and cleans cancel
   assert.equal(firstFiles.some((entry) => String(entry).endsWith("article.md")), false);
 });
 
+test("recovers Jianshu article body and lazy-loaded media from __NEXT_DATA__ hydration", async () => {
+  const result = await inspectArticle({
+    url: "https://www.jianshu.com/p/abc123",
+    resolveHostname: PUBLIC_DNS,
+    fetchImpl: async () => htmlResponse(jianshuFixture()),
+  });
+  assert.equal(result.provider, "jianshu");
+  assert.equal(result.contentType, "article");
+  assert.equal(result.title, "简书完整正文示例");
+  assert.equal(result.author, "简作者");
+  assert.equal(result.publishedAt, "2026-07-27");
+  assert.equal(result.publishedAtSource, "source");
+  // The full body comes from free_content, not the truncated SSR intro.
+  assert.ok(result.textLength > 50, `textLength too small: ${result.textLength}`);
+  assert.match(result.markdownPreview, /完整正文第一段/);
+  assert.match(result.markdownPreview, /第二段正文继续/);
+  assert.doesNotMatch(result.markdownPreview, /SSR 开头残段/);
+  // The protocol-relative data-original-src image resolves to https.
+  assert.deepEqual(result.mediaCounts, { images: 1, audio: 0, video: 0 });
+  assert.equal(result.media[0].type, "image");
+  assert.equal(result.media[0].sourceUrl, "https://upload-images.jianshu.io/upload_images/test-article-001.jpg");
+  assert.equal(result.media[0].alt, "简书插图一");
+});
+
+test("imports a Jianshu article with media substituted in place", async (t) => {
+  const worktreePath = await mkdtemp(join(tmpdir(), "myagenttool-jianshu-"));
+  t.after(() => rm(worktreePath, { recursive: true, force: true }));
+  const result = await importArticleToWorktree({
+    url: "https://www.jianshu.com/p/abc123",
+    worktreePath,
+    workItemId: "lwi_jianshu",
+    importedAt: "2026-07-28T01:02:03.000Z",
+    resolveHostname: PUBLIC_DNS,
+    fetchImpl: async (url) => {
+      if (String(url).includes("upload-images.jianshu.io")) {
+        return new Response(Buffer.from([0xff, 0xd8, 0xff, 0x01]), {
+          status: 200,
+          headers: { "content-type": "image/jpeg" },
+        });
+      }
+      return htmlResponse(jianshuFixture());
+    },
+  });
+  assert.match(result.relativeDirectory, /^docs\/imported\/jianshu\/2026\/07\//);
+  assert.deepEqual(result.mediaCounts, { images: 1, audio: 0, video: 0 });
+  const markdown = await readFile(join(worktreePath, result.markdownPath), "utf8");
+  const manifest = JSON.parse(await readFile(join(worktreePath, result.manifestPath), "utf8"));
+  const assets = await readdir(join(worktreePath, result.relativeDirectory, "assets"));
+  assert.equal(assets.length, 1);
+  assert.equal(manifest.sourceProvider, "jianshu");
+  assert.equal(manifest.status, "complete");
+  assert.equal(manifest.publishedAt, "2026-07-27");
+  assert.equal(manifest.publishedAtSource, "source");
+  assert.equal(manifest.media.length, 1);
+  assert.equal(manifest.warnings.length, 0);
+  assert.match(markdown, /source_provider: jianshu/);
+  assert.match(markdown, /!\[简书插图一\]\(assets\/[^)]+\.jpg\)/);
+  assert.doesNotMatch(markdown, /upload-images\.jianshu\.io/);
+});
+
+test("falls back to the generic path when Jianshu has no __NEXT_DATA__ payload", async () => {
+  const result = await inspectArticle({
+    url: "https://www.jianshu.com/p/no-hydration",
+    resolveHostname: PUBLIC_DNS,
+    fetchImpl: async () => htmlResponse(`<!doctype html><html><head><title>简SSR标题</title></head><body><article><p>仅有 SSR 残段正文。</p></article></body></html>`),
+  });
+  assert.equal(result.provider, "jianshu");
+  // No hydration JSON → generic path, never throws, still returns a usable inspection.
+  assert.equal(result.publishedAtSource, "imported");
+  assert.ok(result.textLength > 0);
+  assert.match(result.markdownPreview, /仅有 SSR 残段正文/);
+  assert.deepEqual(result.mediaCounts, { images: 0, audio: 0, video: 0 });
+});
+
 async function waitForJobState(service, workItemId, jobId, expected) {
   let lastState = "unknown";
   for (let attempts = 0; attempts < 1_000; attempts += 1) {
@@ -1222,6 +1296,24 @@ function wechatFixture() {
         <img data-src="https://mmbiz.qpic.cn/image-2" alt="图二">
         <img data-src="https://mmbiz.qpic.cn/image-3" alt="图三">
       </div>
+    </body>
+  </html>`;
+}
+
+function jianshuFixture() {
+  const note = {
+    public_title: "简书完整正文示例",
+    user: { nickname: "简作者" },
+    // first_shared_at is a Unix timestamp in seconds (jianshu convention).
+    first_shared_at: Math.floor(Date.parse("2026-07-27T08:30:00+08:00") / 1000),
+    free_content: '<p>这是简书文章的完整正文第一段。在 Next.js 单页应用中，这段内容由 __NEXT_DATA__ 的 JSON 在客户端 hydrate，通用 HTML 抓取只能拿到 SSR 开头。</p><div class="image-package"><img data-original-src="//upload-images.jianshu.io/upload_images/test-article-001.jpg" alt="简书插图一"></div><p>第二段正文继续，验证图片被原位还原。</p>',
+  };
+  return `<!doctype html>
+  <html>
+    <head><title>${note.public_title} - 简书</title></head>
+    <body>
+      <article><p>SSR 开头残段。</p></article>
+      <script id="__NEXT_DATA__" type="application/json">${JSON.stringify({ props: { initialState: { note: { data: note } } } })}</script>
     </body>
   </html>`;
 }

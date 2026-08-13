@@ -222,7 +222,24 @@ export async function inspectArticle({
   const html = page.bytes.toString("utf8");
   const provider = detectArticleSource(page.url);
   assertArticlePage(html, page.url, provider);
-  const parsed = parseArticleDocument(html, page.url, provider, limits.mediaCount);
+  // Jianshu is a Next.js SPA: the full body is NOT in SSR HTML, it is hydrated
+  // client-side from <script id="__NEXT_DATA__">. The generic parse5 walker only
+  // sees the small server-rendered intro. When we can extract the note's
+  // free_content from the embedded JSON, convert that (the selectors in
+  // findProviderContent won't match a bare fragment, so it falls back to <body>
+  // — i.e. the whole free_content) and override title/author/publishedAt from the
+  // authoritative JSON. If __NEXT_DATA__/free_content is absent, fall through to
+  // the generic path so we are never worse than today.
+  const jianshu = provider === "jianshu" ? extractJianshuNote(html) : null;
+  let parsed;
+  if (jianshu) {
+    parsed = parseArticleDocument(`<html><body>${jianshu.freeContent}</body></html>`, page.url, "jianshu", limits.mediaCount);
+    if (jianshu.title) parsed.title = jianshu.title;
+    if (jianshu.author) parsed.author = jianshu.author;
+    if (jianshu.publishedAt) parsed.publishedAt = jianshu.publishedAt;
+  } else {
+    parsed = parseArticleDocument(html, page.url, provider, limits.mediaCount);
+  }
   return {
     sourceUrl: String(url),
     canonicalUrl,
@@ -2076,6 +2093,34 @@ function parseArticleDocument(html, pageUrl, provider, mediaCount = ARTICLE_IMPO
   };
 }
 
+// Extract jianshu's server-emitted Next.js hydration state. Jianshu renders the
+// article body (free_content) inside <script id="__NEXT_DATA__"> as JSON, not in
+// SSR HTML; this pulls title/author/publishedAt/freeContent from that JSON so the
+// generic pipeline can convert the real body instead of the truncated intro.
+// Returns null when the payload or free_content is absent (caller falls back to
+// the generic HTML path).
+function extractJianshuNote(html) {
+  const match = html.match(/<script id="__NEXT_DATA__"[^>]*>([\s\S]*?)<\/script>/);
+  if (!match) return null;
+  let data;
+  try {
+    data = JSON.parse(match[1]);
+  } catch {
+    return null;
+  }
+  const note = data?.props?.initialState?.note?.data;
+  if (!note || typeof note.free_content !== "string" || !note.free_content.trim()) return null;
+  const publishedAt = note.first_shared_at
+    ? new Date(note.first_shared_at * 1000).toISOString().slice(0, 10)
+    : null;
+  return {
+    title: note.public_title || null,
+    author: note.user?.nickname || null,
+    publishedAt,
+    freeContent: note.free_content,
+  };
+}
+
 function providerFieldText(document, provider, field) {
   const classes = {
     zhihu: field === "title" ? ["Post-Title"] : ["AuthorInfo-name"],
@@ -2174,6 +2219,7 @@ function renderMedia(node, type, context) {
   const rawUrl = firstNonEmpty(
     attr(node, "data-src"),
     attr(node, "data-original"),
+    attr(node, "data-original-src"),
     attr(node, "data-url"),
     attr(node, type === "audio" ? "data-audio-url" : "data-video-url"),
     attr(node, "src"),
