@@ -2092,6 +2092,7 @@ export function createServerRuntimeServices({
   const mailboxService = createMailboxService({
     state, now, nextId, appendEvent, persistStateSoon, store,
     mailSendEnabled: isMailSendEnabled,
+    createCapabilityInvocation,
   });
 
   // Channel Registry (S2, #1090/ADR 0012): owner-team-scoped channel lifecycle
@@ -4350,6 +4351,7 @@ export function createServerRuntimeServices({
     confirmReplyDraft,
     sendConfirmedDraft,
     mailboxSnapshot: mailboxService.snapshot,
+    startMailboxSync: mailboxService.startSync,
     createMailboxDraft: mailboxService.createDraft,
     updateMailboxDraft: mailboxService.updateDraft,
     deleteMailboxDraft: mailboxService.deleteDraft,

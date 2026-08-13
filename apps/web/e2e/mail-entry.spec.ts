@@ -9,9 +9,10 @@ const MAILBOX = {
   accounts: [{
     id: "app_163_mail_v2", provider: "netease", name: "163 Mail", status: "connected", statusDetail: "ready",
     canReceive: true, canSend: false, readApplicationId: "app_163_mail_v2", sendApplicationId: null,
-    syncCapability: "app.app_163_mail_v2.list_unread", fetchCapability: "app.app_163_mail_v2.fetch",
+    fetchCapability: "app.app_163_mail_v2.fetch",
   }],
   connection: { status: "connected", message: "163 Mail" },
+  sync: { status: "idle", invocationId: null, lastCompletedAt: null, lastSucceededAt: "2026-08-13T02:00:00.000Z" },
   folders: [{ id: "inbox", count: 2, unread: 2 }, { id: "drafts", count: 1 }, { id: "sent", count: 0 }, { id: "outbox", count: 0 }],
   messages: [
     { id: "m1", messageId: "m1", from: "示例客户 <customer@example.com>", subject: "确认交付范围", date: "2026-08-13T02:00:00.000Z", body: "你好，请确认本周交付范围。", preview: "你好，请确认本周交付范围。", unread: true, fetched: true, inReplyTo: null, references: [], applicationId: "app_163_mail_v2", issueNumber: null, createdAt: "2026-08-13T02:00:00.000Z" },
@@ -22,10 +23,19 @@ const MAILBOX = {
 };
 
 async function mockMail(page: Page) {
+  let syncing = false;
   await page.route("**/api/**", (route) => {
     const path = new URL(route.request().url()).pathname;
     if (path === "/api/state") return route.fulfill({ json: STATE });
-    if (path === "/api/mailbox") return route.fulfill({ json: MAILBOX });
+    if (path === "/api/mailbox/sync") {
+      syncing = true;
+      return route.fulfill({ json: { sync: { status: "syncing", invocationId: "inv_sync", lastCompletedAt: null, lastSucceededAt: MAILBOX.sync.lastSucceededAt }, reused: false } });
+    }
+    if (path === "/api/mailbox") {
+      if (!syncing) return route.fulfill({ json: MAILBOX });
+      syncing = false;
+      return route.fulfill({ json: { ...MAILBOX, sync: { status: "succeeded", invocationId: "inv_sync", lastCompletedAt: "2026-08-13T03:00:00.000Z", lastSucceededAt: "2026-08-13T03:00:00.000Z" } } });
+    }
     return route.fulfill({ json: {} });
   });
   await page.addInitScript(() => {
@@ -45,6 +55,8 @@ for (const fixture of [
     await expect(page.getByRole("heading", { name: "我的邮箱" })).toBeVisible();
     await expect(page.getByText("确认交付范围", { exact: true })).toBeVisible();
     await expect(page.getByText("发件尚未连接")).toBeVisible();
+    await page.getByRole("button", { name: "收取新邮件" }).click();
+    await expect(page.getByText("收取完成，收件箱已更新。")).toBeVisible();
     await page.getByText("确认交付范围", { exact: true }).click();
     await expect(page.getByLabel("确认交付范围").getByText("你好，请确认本周交付范围。")).toBeVisible();
     await expect(page.getByText(/系统只把它当作内容展示/)).toBeVisible();

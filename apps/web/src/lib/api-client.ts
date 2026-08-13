@@ -37,8 +37,14 @@ export interface MailboxAccount {
   canSend: boolean;
   readApplicationId: string;
   sendApplicationId: string | null;
-  syncCapability: string | null;
   fetchCapability: string | null;
+}
+
+export interface MailboxSync {
+  status: "idle" | "syncing" | "succeeded" | "failed";
+  invocationId: string | null;
+  lastCompletedAt: string | null;
+  lastSucceededAt: string | null;
 }
 
 export interface MailboxMessage {
@@ -78,6 +84,7 @@ export interface MailboxDraft {
 export interface MailboxSnapshot {
   accounts: MailboxAccount[];
   connection: { status: "connected" | "not_connected" | "needs_attention"; message: string };
+  sync: MailboxSync;
   folders: Array<{ id: "inbox" | "drafts" | "sent" | "outbox"; count: number; unread?: number }>;
   messages: MailboxMessage[];
   drafts: MailboxDraft[];
@@ -1781,6 +1788,7 @@ async function requestResult(
 
 export const api = {
   getMailbox: () => request<MailboxSnapshot>("GET", "/api/mailbox"),
+  syncMailbox: () => request<{ sync: MailboxSync; reused: boolean }>("POST", "/api/mailbox/sync"),
   createMailDraft: (body: { to: string; subject: string; body: string; inReplyTo?: string | null; references?: string[] }) =>
     request<{ draft: MailboxDraft }>("POST", "/api/mail/drafts", body),
   updateMailDraft: (id: string, body: { to: string; subject: string; body: string }) =>

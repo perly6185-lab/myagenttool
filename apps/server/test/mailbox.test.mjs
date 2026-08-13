@@ -6,6 +6,7 @@ import { createMailboxService, mailSendApprovalTarget } from "../src/services/ma
 function harness({ mailSendEnabled = () => false } = {}) {
   let id = 0;
   const events = [];
+  const capabilityCalls = [];
   const state = {
     device: {
       applicationCredentialReadiness: [
@@ -54,7 +55,20 @@ function harness({ mailSendEnabled = () => false } = {}) {
     ],
     mailThreads: { "<one@example.com>": { issueNumber: 99 } },
     mailDrafts: [],
+    invocations: [],
     events,
+  };
+  const createCapabilityInvocation = (name, input, actor) => {
+    capabilityCalls.push({ name, input, actor });
+    const invocation = {
+      id: `inv_${capabilityCalls.length}`,
+      status: "queued",
+      createdAt: "2026-08-13T03:00:00.000Z",
+      updatedAt: "2026-08-13T03:00:00.000Z",
+      options: { metadata: { capability: name, applicationId: "app_163_mail_v2" } },
+    };
+    state.invocations.unshift(invocation);
+    return { status: 202, body: { invocationId: invocation.id, invocation } };
   };
   const service = createMailboxService({
     state,
@@ -63,8 +77,9 @@ function harness({ mailSendEnabled = () => false } = {}) {
     appendEvent: (event) => events.push(event),
     persistStateSoon: () => {},
     mailSendEnabled,
+    createCapabilityInvocation,
   });
-  return { state, service, events };
+  return { state, service, events, capabilityCalls };
 }
 
 test("mailbox snapshot turns imported mail into a deduplicated ordinary-user inbox", () => {
@@ -73,12 +88,51 @@ test("mailbox snapshot turns imported mail into a deduplicated ordinary-user inb
   assert.equal(snapshot.connection.status, "connected");
   assert.equal(snapshot.accounts.length, 1);
   assert.equal(snapshot.accounts[0].name, "163 Mail");
-  assert.equal(snapshot.accounts[0].syncCapability, "app.app_163_mail_v2.list_unread");
+  assert.equal(snapshot.accounts[0].syncCapability, undefined, "internal capability names stay out of the ordinary-user API");
   assert.equal(snapshot.accounts[0].fetchCapability, "app.app_163_mail_v2.fetch");
+  assert.equal(snapshot.sync.status, "idle");
   assert.equal(snapshot.messages.length, 2, "header + fetched body merge by Message-ID");
   assert.equal(snapshot.messages[0].body, "Body text");
   assert.equal(snapshot.messages[0].issueNumber, 99);
   assert(!JSON.stringify(snapshot).includes("must not leak"), "foreign-team mail stays hidden");
+});
+
+test("one-click sync dispatches a server-owned capability and reuses the active run", () => {
+  const { state, service, capabilityCalls } = harness();
+  const actor = { userId: "usr_a", teamId: "team_a" };
+  const started = service.startSync({ actor });
+  assert.equal(started.status, 202);
+  assert.equal(started.body.sync.status, "syncing");
+  assert.equal(started.body.reused, false);
+  assert.deepEqual(capabilityCalls, [{
+    name: "app.app_163_mail_v2.list_unread",
+    input: { limit: 50 },
+    actor,
+  }]);
+
+  const repeated = service.startSync({ actor });
+  assert.equal(repeated.status, 202);
+  assert.equal(repeated.body.reused, true);
+  assert.equal(capabilityCalls.length, 1, "an in-flight receive run is never duplicated");
+
+  state.invocations[0].status = "succeeded";
+  state.invocations[0].completedAt = "2026-08-13T03:01:00.000Z";
+  const completed = service.snapshot({ actor });
+  assert.deepEqual(completed.sync, {
+    status: "succeeded",
+    invocationId: "inv_1",
+    lastCompletedAt: "2026-08-13T03:01:00.000Z",
+    lastSucceededAt: "2026-08-13T03:01:00.000Z",
+  });
+});
+
+test("sync refuses disconnected mailboxes and exposes no internal dispatch failure", () => {
+  const { state, service, capabilityCalls } = harness();
+  state.device.applicationCredentialReadiness = [];
+  const result = service.startSync({ actor: { teamId: "team_a" } });
+  assert.equal(result.status, 409);
+  assert.deepEqual(result.body, { error: "mailbox_not_connected" });
+  assert.equal(capabilityCalls.length, 0);
 });
 
 test("user drafts may be incomplete, remain tenant scoped, and increment revision on edit", () => {

@@ -6,6 +6,7 @@ import { i18n } from "@/lib/i18n";
 
 const mocks = vi.hoisted(() => ({
   getMailbox: vi.fn(),
+  syncMailbox: vi.fn(),
   invokeCapability: vi.fn(),
   createMailDraft: vi.fn(),
   updateMailDraft: vi.fn(),
@@ -25,9 +26,10 @@ const connectedMailbox = {
   accounts: [{
     id: "app_163_mail_v2", provider: "netease", name: "163 Mail", status: "connected", statusDetail: "ready",
     canReceive: true, canSend: true, readApplicationId: "app_163_mail_v2", sendApplicationId: "app_gmail_send",
-    syncCapability: "app.app_163_mail_v2.list_unread", fetchCapability: "app.app_163_mail_v2.fetch",
+    fetchCapability: "app.app_163_mail_v2.fetch",
   }],
   connection: { status: "connected", message: "163 Mail" },
+  sync: { status: "idle", invocationId: null, lastCompletedAt: null, lastSucceededAt: null },
   folders: [{ id: "inbox", count: 1, unread: 1 }, { id: "drafts", count: 0 }, { id: "sent", count: 0 }, { id: "outbox", count: 0 }],
   messages: [{
     id: "<one@example.com>", messageId: "<one@example.com>", from: "Alice <alice@example.com>", subject: "Project update",
@@ -46,6 +48,7 @@ function renderView() {
 beforeEach(async () => {
   await i18n.changeLanguage("zh-CN");
   mocks.getMailbox.mockResolvedValue(connectedMailbox);
+  mocks.syncMailbox.mockResolvedValue({ sync: { status: "syncing", invocationId: "inv_sync", lastCompletedAt: null, lastSucceededAt: null }, reused: false });
   mocks.invokeCapability.mockResolvedValue({ invocationId: "inv_1", status: "queued" });
   mocks.createMailDraft.mockResolvedValue({ draft: {
     id: "maildraft_1", status: "draft", revision: 1, origin: "user", to: "bob@example.com", subject: "Hello", body: "Message body",
@@ -68,6 +71,26 @@ describe("MailView ordinary-user flow", () => {
     fireEvent.click(screen.getByRole("button", { name: "回复" }));
     expect(screen.getByRole("dialog", { name: "写邮件" })).toBeTruthy();
     expect((screen.getByLabelText("收件人") as HTMLInputElement).value).toBe("Alice <alice@example.com>");
+  });
+
+  it("keeps one-click receiving busy until the real sync completes", async () => {
+    const completed = {
+      ...connectedMailbox,
+      sync: {
+        status: "succeeded",
+        invocationId: "inv_sync",
+        lastCompletedAt: "2026-08-13T03:00:00.000Z",
+        lastSucceededAt: "2026-08-13T03:00:00.000Z",
+      },
+    };
+    mocks.getMailbox.mockResolvedValueOnce(connectedMailbox).mockResolvedValue(completed);
+    renderView();
+    await screen.findByText("Project update");
+    fireEvent.click(screen.getByRole("button", { name: "收取新邮件" }));
+    await waitFor(() => expect(mocks.syncMailbox).toHaveBeenCalledTimes(1));
+    expect(await screen.findByText("收取完成，收件箱已更新。")).toBeTruthy();
+    expect(screen.getByText(/上次收取：/)).toBeTruthy();
+    expect(mocks.invokeCapability).not.toHaveBeenCalled();
   });
 
   it("saves a user draft, reviews exact content, then uses a revision-bound send grant", async () => {
