@@ -10,6 +10,7 @@ import {
   MAX_TASK_MATERIALS,
   TaskMaterialPicker,
   selectTaskMaterialFiles,
+  taskMaterialFilesFromClipboard,
   type TaskMaterialSelection,
 } from "@/features/dashboard/task-material-picker";
 import type { TaskMaterialDraft } from "@/lib/api-client";
@@ -161,8 +162,9 @@ export function HomeTaskComposer({
     reviewData: "数据处理",
     reviewCancellation: "如何停止",
     more: "更多选项",
-    attach: "添加参考文件",
-    attachDrop: "拖放文件到这里，或点击选择文件",
+    attach: "附件（可选）",
+    attachDrop: "点击选择或拖放文件",
+    attachPaste: "也可以直接粘贴文件或截图",
     attachLimit: "最多 6 个文件，每个不超过 50MB",
     retryAttachment: "重试",
     removeAttachment: "移除 {{name}}",
@@ -230,8 +232,9 @@ export function HomeTaskComposer({
     reviewData: "Data handling",
     reviewCancellation: "How to stop",
     more: "More options",
-    attach: "Add reference files",
-    attachDrop: "Drop files here or choose files",
+    attach: "Attachments (optional)",
+    attachDrop: "Choose or drop files",
+    attachPaste: "You can also paste files or screenshots",
     attachLimit: "Up to 6 files, 50MB each",
     retryAttachment: "Retry",
     removeAttachment: "Remove {{name}}",
@@ -618,7 +621,17 @@ export function HomeTaskComposer({
             </Button>
           </div>
         ) : null}
-        <div id="home-task-composer-fields" className={`space-y-3 ${inline && !mobileOpen ? "hidden sm:block" : ""}`}>
+        <div
+          id="home-task-composer-fields"
+          className={`space-y-3 ${inline && !mobileOpen ? "hidden sm:block" : ""}`}
+          onPaste={(event) => {
+            if (!projectId || blocked) return;
+            const pastedFiles = taskMaterialFilesFromClipboard(event.clipboardData);
+            if (!pastedFiles.length) return;
+            event.preventDefault();
+            void addFiles(pastedFiles);
+          }}
+        >
         <textarea
           aria-label={copy.title}
           disabled={blocked}
@@ -632,6 +645,26 @@ export function HomeTaskComposer({
             idempotencyKey.current = null;
             setFeedback(null);
           }}
+        />
+        <TaskMaterialPicker
+          files={attachments}
+          onFiles={(files) => { void addFiles(files); }}
+          onRemove={(id) => {
+            const item = attachments.find((candidate) => candidate.id === id);
+            if (item) void removeAttachment(item);
+          }}
+          onRetry={(id) => {
+            const item = attachments.find((candidate) => candidate.id === id);
+            if (item) void uploadAttachment(item);
+          }}
+          label={copy.attach}
+          dropLabel={copy.attachDrop}
+          pasteLabel={copy.attachPaste}
+          limitLabel={copy.attachLimit}
+          retryLabel={copy.retryAttachment}
+          removeLabel={(name) => copy.removeAttachment.replace("{{name}}", name)}
+          disabled={!projectId || blocked}
+          feedback={attachmentFeedback}
         />
         <div className="grid gap-2 sm:grid-cols-2 sm:items-end">
           <Button className="w-full" disabled={!canCreate} onClick={() => void create("task")}>{pendingMode === "task" ? copy.creating : copy.create}</Button>
@@ -759,27 +792,6 @@ export function HomeTaskComposer({
             {copy.sop}
             <textarea className="min-h-24 rounded-md border border-border bg-background p-2 text-sm text-foreground" value={verificationSop} placeholder={copy.sopHint} disabled={blocked} onChange={(event) => { setVerificationSop(event.target.value); idempotencyKey.current = null; setFeedback(null); }} />
           </label>
-          <div className="mt-3 border-t border-border pt-3">
-            <TaskMaterialPicker
-              files={attachments}
-              onFiles={(files) => { void addFiles(files); }}
-              onRemove={(id) => {
-                const item = attachments.find((candidate) => candidate.id === id);
-                if (item) void removeAttachment(item);
-              }}
-              onRetry={(id) => {
-                const item = attachments.find((candidate) => candidate.id === id);
-                if (item) void uploadAttachment(item);
-              }}
-              label={copy.attach}
-              dropLabel={copy.attachDrop}
-              limitLabel={copy.attachLimit}
-              retryLabel={copy.retryAttachment}
-              removeLabel={(name) => copy.removeAttachment.replace("{{name}}", name)}
-              disabled={!projectId || blocked}
-              feedback={attachmentFeedback}
-            />
-          </div>
         </details>
         {blocked
           ? <p className="text-sm text-warning" role="status">{readOnly ? copy.readOnly : copy.unavailable}</p>

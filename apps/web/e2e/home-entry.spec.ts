@@ -177,9 +177,9 @@ async function mockReadyHome(page: Page, locale: "en-US" | "zh-CN") {
 }
 
 for (const fixture of [
-  { name: "desktop-en", locale: "en-US" as const, viewport: { width: 1366, height: 768 }, task: "Create a task", run: "Let AI handle it", details: "More options" },
-  { name: "desktop-zh", locale: "zh-CN" as const, viewport: { width: 1366, height: 768 }, task: "创建一个任务", run: "交给 AI", details: "更多选项" },
-  { name: "mobile-zh", locale: "zh-CN" as const, viewport: { width: 390, height: 844 }, task: "创建一个任务", run: "交给 AI", details: "更多选项" },
+  { name: "desktop-en", locale: "en-US" as const, viewport: { width: 1366, height: 768 }, task: "Create a task", run: "Let AI handle it", details: "More options", attachments: "Attachments (optional)", paste: "You can also paste files or screenshots" },
+  { name: "desktop-zh", locale: "zh-CN" as const, viewport: { width: 1366, height: 768 }, task: "创建一个任务", run: "交给 AI", details: "更多选项", attachments: "附件（可选）", paste: "也可以直接粘贴文件或截图" },
+  { name: "mobile-zh", locale: "zh-CN" as const, viewport: { width: 390, height: 844 }, task: "创建一个任务", run: "交给 AI", details: "更多选项", attachments: "附件（可选）", paste: "也可以直接粘贴文件或截图" },
 ]) {
   test(`keeps the ${fixture.name} tracked-task composer usable without horizontal overflow`, async ({ page }, testInfo) => {
     await page.setViewportSize(fixture.viewport);
@@ -202,6 +202,8 @@ for (const fixture of [
     const action = page.getByRole("button", { name: fixture.run });
     await expect(input).toBeVisible({ timeout: 15_000 });
     await expect(action).toBeVisible();
+    await expect(page.getByLabel(fixture.attachments)).toBeAttached();
+    await expect(page.getByText(fixture.paste, { exact: true })).toBeVisible();
     await expect(page.getByTestId("home-task-composer").getByText("Example project", { exact: true })).toBeVisible();
     await expect(page.getByText(fixture.locale === "zh-CN"
       ? "调度范围：所有项目"
@@ -226,6 +228,7 @@ for (const fixture of [
 
     const details = page.locator("details").filter({ hasText: fixture.details }).first();
     await expect(details).not.toHaveAttribute("open", "");
+    await expect(page.getByText(fixture.paste, { exact: true })).toBeVisible();
     await details.locator("summary").click();
     await expect(page.getByText(fixture.locale === "zh-CN" ? "完成标准（可选）" : "Definition of done (optional)")).toBeVisible();
 

@@ -108,6 +108,8 @@ describe("HomeTaskComposer", () => {
     );
 
     expect(screen.getByText("More options").closest("details")?.hasAttribute("open")).toBe(false);
+    expect(screen.getByLabelText("Attachments (optional)")).toBeTruthy();
+    expect(screen.getByText("You can also paste files or screenshots")).toBeTruthy();
     fireEvent.click(screen.getByText("More options"));
     const project = screen.getByRole("combobox", { name: "New task project" }) as HTMLSelectElement;
     expect(project.value).toBe("prj_1");
@@ -362,8 +364,8 @@ describe("HomeTaskComposer", () => {
     openComposer();
 
     fireEvent.change(screen.getByRole("textbox", { name: "Create a task" }), { target: { value: "Summarize the attached brief" } });
-    fireEvent.click(screen.getByText("More options"));
-    const fileInput = document.querySelector('input[type="file"]') as HTMLInputElement;
+    expect(screen.getByText("More options").closest("details")?.hasAttribute("open")).toBe(false);
+    const fileInput = screen.getByLabelText("Attachments (optional)") as HTMLInputElement;
     fireEvent.change(fileInput, { target: { files: [new File(["brief"], "brief.txt", { type: "text/plain" })] } });
     expect(await screen.findByText("brief.txt")).toBeTruthy();
     await waitFor(() => expect(mocks.uploadTaskMaterialFile).toHaveBeenCalledWith(
@@ -379,6 +381,35 @@ describe("HomeTaskComposer", () => {
     expect(mocks.createWorkItem.mock.calls[0]?.[0]).toEqual(expect.objectContaining({ waitingOn: "none", plannedDate: null, executionPolicy: "manual" }));
   });
 
+  it("pastes a clipboard file or screenshot into the primary task composer", async () => {
+    const draft = {
+      id: "draft_paste", projectId: "prj_1", status: "draft", revision: 0, workItemId: null,
+      assets: [], createdAt: "2026-08-05T00:00:00Z", updatedAt: "2026-08-05T00:00:00Z", expiresAt: "2026-08-06T00:00:00Z",
+    } as const;
+    mocks.createTaskMaterialDraft.mockResolvedValue({ draft });
+    mocks.uploadTaskMaterialFile.mockResolvedValue({
+      draft: { ...draft, revision: 1, assets: [{ id: "asset_paste", originalName: "screenshot.png" }] },
+      asset: { id: "asset_paste", originalName: "screenshot.png" },
+    });
+    render(<HomeTaskComposer projectId="prj_1" onCreated={() => {}} onOpenTask={() => {}} />);
+    openComposer();
+
+    const screenshot = new File(["image"], "screenshot.png", { type: "image/png" });
+    const taskInput = screen.getByRole("textbox", { name: "Create a task" });
+    fireEvent.paste(taskInput, {
+      clipboardData: {
+        files: [],
+        items: [{ kind: "file", getAsFile: () => screenshot }],
+      },
+    });
+
+    expect(await screen.findByText("screenshot.png")).toBeTruthy();
+    await waitFor(() => expect(mocks.uploadTaskMaterialFile).toHaveBeenCalledWith(
+      "prj_1", "draft_paste", expect.any(String), screenshot,
+    ));
+    expect(screen.getByText("More options").closest("details")?.hasAttribute("open")).toBe(false);
+  });
+
   it("includes uploaded file metadata when asking for the AI plan", async () => {
     const draft = {
       id: "draft_ai", projectId: "prj_1", status: "draft", revision: 0, workItemId: null,
@@ -391,8 +422,7 @@ describe("HomeTaskComposer", () => {
     });
     render(<HomeTaskComposer inline projectId="prj_1" onCreated={() => {}} onOpenTask={() => {}} />);
     fireEvent.change(screen.getByRole("textbox", { name: "Create a task" }), { target: { value: "Turn this into a purchasing list" } });
-    fireEvent.click(screen.getByText("More options"));
-    fireEvent.change(document.querySelector('input[type="file"]') as HTMLInputElement, {
+    fireEvent.change(screen.getByLabelText("Attachments (optional)"), {
       target: { files: [new File(["pdf"], "设备技术协议.pdf", { type: "application/pdf" })] },
     });
     await waitFor(() => expect(mocks.uploadTaskMaterialFile).toHaveBeenCalled());
@@ -449,8 +479,7 @@ describe("HomeTaskComposer", () => {
     mocks.uploadTaskMaterialFile.mockResolvedValue({ draft: { ...draft, revision: 1 }, asset: { id: "asset_1" } });
     const view = render(<HomeTaskComposer inline projectId="prj_1" onCreated={() => {}} onOpenTask={() => {}} />);
     fireEvent.change(screen.getByRole("textbox", { name: "Create a task" }), { target: { value: "Review the brief" } });
-    fireEvent.click(screen.getByText("More options"));
-    fireEvent.change(document.querySelector('input[type="file"]') as HTMLInputElement, {
+    fireEvent.change(screen.getByLabelText("Attachments (optional)"), {
       target: { files: [new File(["brief"], "brief.txt", { type: "text/plain" })] },
     });
     expect(await screen.findByText("brief.txt")).toBeTruthy();
