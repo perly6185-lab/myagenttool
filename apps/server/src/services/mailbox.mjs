@@ -9,6 +9,7 @@
  */
 
 import { makeRunTx } from "../runtime/store/run-tx.mjs";
+import { listDevices } from "../runtime/device.mjs";
 
 const MAX_RECIPIENT = 998;
 const MAX_SUBJECT = 400;
@@ -43,7 +44,7 @@ export function createMailboxService({
     );
     const accounts = mailboxAccounts(applications, {
       sendEnabled: Boolean(mailSendEnabled()),
-      credentialReadiness: state.device?.applicationCredentialReadiness ?? [],
+      credentialReadiness: listDevices(state)[0]?.applicationCredentialReadiness ?? [],
     });
     const messages = mailboxMessages(results, state.mailThreads ?? {}).slice(0, MAX_MESSAGES);
     const publicDrafts = drafts.map(publicDraft).sort(compareRecent);
