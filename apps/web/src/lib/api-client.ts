@@ -27,6 +27,63 @@ import type {
   ToolInvocationResponse,
 } from "@/lib/console-state";
 
+export interface MailboxAccount {
+  id: string;
+  provider: string;
+  name: string;
+  status: "connected" | "needs_attention";
+  statusDetail: string;
+  canReceive: boolean;
+  canSend: boolean;
+  readApplicationId: string;
+  sendApplicationId: string | null;
+  syncCapability: string | null;
+  fetchCapability: string | null;
+}
+
+export interface MailboxMessage {
+  id: string;
+  messageId: string;
+  from: string;
+  subject: string;
+  date: string | null;
+  body: string | null;
+  preview: string;
+  unread: boolean;
+  fetched: boolean;
+  inReplyTo: string | null;
+  references: string[];
+  applicationId: string | null;
+  issueNumber: number | null;
+  createdAt: string | null;
+}
+
+export interface MailboxDraft {
+  id: string;
+  status: "draft" | "sending" | "sent" | "send_unconfirmed" | string;
+  revision: number;
+  origin: "user" | "reply" | "legacy" | string;
+  to: string;
+  subject: string;
+  body: string;
+  inReplyTo: string | null;
+  references: string[];
+  createdAt: string | null;
+  updatedAt: string | null;
+  sentAt: string | null;
+  sendError: string | null;
+  approvalTarget: string;
+}
+
+export interface MailboxSnapshot {
+  accounts: MailboxAccount[];
+  connection: { status: "connected" | "not_connected" | "needs_attention"; message: string };
+  folders: Array<{ id: "inbox" | "drafts" | "sent" | "outbox"; count: number; unread?: number }>;
+  messages: MailboxMessage[];
+  drafts: MailboxDraft[];
+  updatedAt: string | null;
+}
+
 export interface LoopRefusalsResponse {
   refusals: RefusalRow[];
   scannedRuns: number;
@@ -1723,6 +1780,19 @@ async function requestResult(
 }
 
 export const api = {
+  getMailbox: () => request<MailboxSnapshot>("GET", "/api/mailbox"),
+  createMailDraft: (body: { to: string; subject: string; body: string; inReplyTo?: string | null; references?: string[] }) =>
+    request<{ draft: MailboxDraft }>("POST", "/api/mail/drafts", body),
+  updateMailDraft: (id: string, body: { to: string; subject: string; body: string }) =>
+    request<{ draft: MailboxDraft }>("PATCH", `/api/mail/drafts/${encodeURIComponent(id)}`, body),
+  deleteMailDraft: (id: string) =>
+    request<{ deleted: boolean; draftId: string }>("DELETE", `/api/mail/drafts/${encodeURIComponent(id)}`),
+  sendMailDraft: (id: string, approvalToken: string) =>
+    request<{ status: string; draftId: string; sendInvocationId: string }>(
+      "POST",
+      `/api/mail/drafts/${encodeURIComponent(id)}/send`,
+      { approvalToken },
+    ),
   updateDevice: (payload: { maxConcurrency?: number }) => request("PATCH", "/api/device", payload),
   reportWebPerformance: (payload: {
     name: "CLS" | "FCP" | "INP" | "LCP";

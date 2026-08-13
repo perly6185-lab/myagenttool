@@ -29,7 +29,8 @@ import { createApplicationStatsRuntime } from "../services/application-stats.mjs
 import { createCapabilityService } from "../services/capabilities.mjs";
 import { createMailIssueWriteService } from "../services/mail-issue-write.mjs";
 import { createMailReplyDraftService } from "../services/mail-reply-draft.mjs";
-import { createMailSendService } from "../services/mail-send.mjs";
+import { createMailSendService, isMailSendEnabled } from "../services/mail-send.mjs";
+import { createMailboxService } from "../services/mailbox.mjs";
 import { createChannelService } from "../services/channels.mjs";
 import { createCanvasSceneService } from "../services/canvas-scenes.mjs";
 import { CANVAS_APPLICATION_ID, createCanvasCapabilityHandlers } from "../services/canvas-capabilities.mjs";
@@ -2085,6 +2086,13 @@ export function createServerRuntimeServices({
   });
   mailSendHooks = mailSendService;
   const { sendConfirmedDraft } = mailSendService;
+
+  // Ordinary-user mailbox surface. This is a read model over imported mail and
+  // a bounded store for user-authored drafts; credentials remain device-local.
+  const mailboxService = createMailboxService({
+    state, now, nextId, appendEvent, persistStateSoon, store,
+    mailSendEnabled: isMailSendEnabled,
+  });
 
   // Channel Registry (S2, #1090/ADR 0012): owner-team-scoped channel lifecycle
   // + fail-closed identity mappings. Readiness is env-presence booleans; enable
@@ -4341,6 +4349,10 @@ export function createServerRuntimeServices({
     replyOnIssue,
     confirmReplyDraft,
     sendConfirmedDraft,
+    mailboxSnapshot: mailboxService.snapshot,
+    createMailboxDraft: mailboxService.createDraft,
+    updateMailboxDraft: mailboxService.updateDraft,
+    deleteMailboxDraft: mailboxService.deleteDraft,
     registerChannel: channelService.registerChannel,
     listChannels: channelService.listChannels,
     enableChannel: channelService.enableChannel,

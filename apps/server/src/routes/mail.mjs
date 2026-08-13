@@ -4,7 +4,47 @@
  * Message-ID idempotency key.
  */
 
-export async function handleMailRoutes({ req, res, url, sendJson, readJson, actor, createMailIssueFromImport, replyOnIssue, confirmReplyDraft, sendConfirmedDraft }) {
+export async function handleMailRoutes({
+  req,
+  res,
+  url,
+  sendJson,
+  readJson,
+  actor,
+  createMailIssueFromImport,
+  replyOnIssue,
+  confirmReplyDraft,
+  sendConfirmedDraft,
+  mailboxSnapshot,
+  createMailboxDraft,
+  updateMailboxDraft,
+  deleteMailboxDraft,
+}) {
+  if (req.method === "GET" && url.pathname === "/api/mailbox" && typeof mailboxSnapshot === "function") {
+    sendJson(res, 200, mailboxSnapshot({ actor }));
+    return true;
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/mail/drafts" && typeof createMailboxDraft === "function") {
+    const body = await readJson(req);
+    const result = createMailboxDraft({ ...body, actor });
+    sendJson(res, result.status, result.body);
+    return true;
+  }
+
+  const draftMatch = url.pathname.match(/^\/api\/mail\/drafts\/([^/]+)$/);
+  if (req.method === "PATCH" && draftMatch && typeof updateMailboxDraft === "function") {
+    const body = await readJson(req);
+    const result = updateMailboxDraft({ ...body, draftId: decodeURIComponent(draftMatch[1]), actor });
+    sendJson(res, result.status, result.body);
+    return true;
+  }
+  if (req.method === "DELETE" && draftMatch && typeof deleteMailboxDraft === "function") {
+    const result = deleteMailboxDraft({ draftId: decodeURIComponent(draftMatch[1]), actor });
+    sendJson(res, result.status, result.body);
+    return true;
+  }
+
   if (req.method === "POST" && url.pathname === "/api/mail/issues") {
     const body = await readJson(req);
     // The client names a Message-ID; the issue body is the server's transcription

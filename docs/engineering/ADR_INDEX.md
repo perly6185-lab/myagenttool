@@ -24,6 +24,7 @@ This index lists accepted engineering decisions that guide implementation.
 - [ADR 0018: Per-subject deletion erases observability content through the retention chokepoint, but shielded evidence is retained-of-record and only PII-redacted](ADR_0018_OBSERVABILITY_DATA_DELETION.md)
 - [ADR 0019: Durable observability history is an indexed SQLite table outside the state mirror, with the JSONL archive as the memory-backing/degraded fallback](ADR_0019_OBSERVABILITY_HISTORY_TABLE.md)
 - [ADR 0023: Claude Agent SDK is an opt-in local runtime behind the existing governance plane](ADR_0023_CLAUDE_AGENT_SDK_RUNTIME.md)
+- [ADR 0024: User-authored mail is a revision-bound server draft before it can cross the send gate](ADR_0024_USER_AUTHORED_MAIL_DRAFT.md)
 
 ## Proposed
 
