@@ -7,6 +7,11 @@ function harness({ mailSendEnabled = () => false } = {}) {
   let id = 0;
   const events = [];
   const state = {
+    device: {
+      applicationCredentialReadiness: [
+        { applicationId: "app_163_mail_v2", provider: "netease", scope: "imap.readonly", status: "present" },
+      ],
+    },
     applications: [
       {
         id: "app_163_mail_v2",
@@ -14,7 +19,6 @@ function harness({ mailSendEnabled = () => false } = {}) {
         status: "active",
         ownerTeamId: "team_a",
         source: { credential: { provider: "netease", scope: "imap.readonly" } },
-        credentialReadiness: { status: "authorized" },
         capabilityFacades: [
           { id: "list_unread", agentToolName: "mail_list_unread" },
           { id: "fetch", agentToolName: "mail_fetch" },
@@ -119,14 +123,15 @@ test("send readiness is honest about the flag and separate authorized credential
 
   const enabled = harness({ mailSendEnabled: () => true });
   enabled.state.applications.push(sendApplication());
+  enabled.state.device.applicationCredentialReadiness.push({ applicationId: "app_163_send", provider: "netease", scope: "smtp.send", status: "present" });
   assert.equal(enabled.service.snapshot({ actor: { teamId: "team_a" } }).accounts[0].canSend, true);
-  enabled.state.applications.at(-1).credentialReadiness.status = "missing";
+  enabled.state.device.applicationCredentialReadiness = enabled.state.device.applicationCredentialReadiness.filter((row) => row.applicationId !== "app_163_send");
   assert.equal(enabled.service.snapshot({ actor: { teamId: "team_a" } }).accounts[0].canSend, false);
 });
 
 test("receive readiness does not claim connected before the device reports its credential", () => {
   const { state, service } = harness();
-  state.applications[0].credentialReadiness = { status: "missing" };
+  state.device.applicationCredentialReadiness = [];
   const account = service.snapshot({ actor: { teamId: "team_a" } }).accounts[0];
   assert.equal(account.canReceive, false);
   assert.equal(account.status, "needs_attention");
@@ -140,7 +145,6 @@ function sendApplication() {
     status: "active",
     ownerTeamId: "team_a",
     source: { credential: { provider: "netease", scope: "smtp.send" } },
-    credentialReadiness: { status: "authorized" },
     capabilityFacades: [{ id: "send", agentToolName: "mail_send" }],
   };
 }

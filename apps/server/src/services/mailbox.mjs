@@ -41,7 +41,10 @@ export function createMailboxService({
     const drafts = (state.mailDrafts ?? []).filter((draft) =>
       teamId == null || (draft.ownerTeamId ?? "team_local") === teamId,
     );
-    const accounts = mailboxAccounts(applications, { sendEnabled: Boolean(mailSendEnabled()) });
+    const accounts = mailboxAccounts(applications, {
+      sendEnabled: Boolean(mailSendEnabled()),
+      credentialReadiness: state.device?.applicationCredentialReadiness ?? [],
+    });
     const messages = mailboxMessages(results, state.mailThreads ?? {}).slice(0, MAX_MESSAGES);
     const publicDrafts = drafts.map(publicDraft).sort(compareRecent);
 
@@ -157,7 +160,7 @@ export function mailSendApprovalTarget(draft) {
   return revision > 0 ? `${draft.id}@${revision}` : draft?.id ?? "";
 }
 
-function mailboxAccounts(applications, { sendEnabled = false } = {}) {
+function mailboxAccounts(applications, { sendEnabled = false, credentialReadiness = [] } = {}) {
   const readApps = applications
     .filter((application) => mailTools(application).some((tool) => ["mail_list_unread", "mail_fetch"].includes(tool)))
     .filter((application) => !application.successorApplicationId)
@@ -169,8 +172,7 @@ function mailboxAccounts(applications, { sendEnabled = false } = {}) {
     if (providers.has(provider)) continue;
     const send = sendApps.find((candidate) => providerOf(candidate) === provider) ?? null;
     const active = ["active", "registered"].includes(application.status);
-    const receiveCredentialReady = !application.source?.credential
-      || application.credentialReadiness?.status === "authorized";
+    const receiveCredentialReady = credentialReadyForApplication(application, credentialReadiness);
     const canReceive = active && receiveCredentialReady;
     providers.set(provider, {
       id: application.id,
@@ -183,7 +185,7 @@ function mailboxAccounts(applications, { sendEnabled = false } = {}) {
         sendEnabled
         && send
         && ["active", "registered"].includes(send.status)
-        && send.credentialReadiness?.status === "authorized"
+        && credentialReadyForApplication(send, credentialReadiness)
       ),
       readApplicationId: application.id,
       sendApplicationId: send?.id ?? null,
@@ -192,6 +194,18 @@ function mailboxAccounts(applications, { sendEnabled = false } = {}) {
     });
   }
   return [...providers.values()];
+}
+
+function credentialReadyForApplication(application, readiness) {
+  const required = application?.source?.credential ?? null;
+  if (!required) return true;
+  const held = readiness.find((row) => row.applicationId === application.id);
+  return Boolean(
+    held
+    && held.provider === required.provider
+    && held.scope === required.scope
+    && ["present", "authorized"].includes(held.status),
+  );
 }
 
 function mailboxConnection(accounts) {
