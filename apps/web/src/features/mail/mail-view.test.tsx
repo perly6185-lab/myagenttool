@@ -12,14 +12,14 @@ const mocks = vi.hoisted(() => ({
   deleteMailDraft: vi.fn(),
   issueApprovalGrant: vi.fn(),
   sendMailDraft: vi.fn(),
-  navigate: vi.fn(),
+  getMailConnectorStatus: vi.fn(),
+  connect163Mail: vi.fn(),
 }));
 
 vi.mock("@/lib/api-client", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/lib/api-client")>();
   return { ...actual, api: mocks };
 });
-vi.mock("@/hooks/use-page-navigation", () => ({ usePageNavigation: () => mocks.navigate }));
 
 const connectedMailbox = {
   accounts: [{
@@ -53,6 +53,7 @@ beforeEach(async () => {
   } });
   mocks.issueApprovalGrant.mockResolvedValue({ token: "grant_1", grantId: "grant_1", expiresAt: "later" });
   mocks.sendMailDraft.mockResolvedValue({ status: "sending", draftId: "maildraft_1", sendInvocationId: "inv_send" });
+  delete window.myagenttoolDesktop;
 });
 
 afterEach(() => { cleanup(); vi.clearAllMocks(); });
@@ -84,12 +85,32 @@ describe("MailView ordinary-user flow", () => {
     expect(mocks.sendMailDraft).toHaveBeenCalledWith("maildraft_1", "grant_1");
   });
 
-  it("gives an understandable connection path instead of protocol fields", async () => {
+  it("gives browser users an understandable desktop connection path instead of protocol fields", async () => {
     mocks.getMailbox.mockResolvedValueOnce({ ...connectedMailbox, accounts: [], connection: { status: "not_connected", message: "" }, messages: [], folders: connectedMailbox.folders.map((folder) => ({ ...folder, count: 0 })) });
     renderView();
     expect(await screen.findByText("连接你的邮箱")).toBeTruthy();
     expect(screen.getByText(/不需要在这里填写 IMAP、SMTP/)).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "打开邮箱连接设置" }));
-    expect(mocks.navigate).toHaveBeenCalledWith("applications");
+    expect(screen.getByRole("dialog", { name: "连接邮箱" })).toBeTruthy();
+    expect(screen.getByText(/请在 MyAgentTool 桌面版中连接邮箱/)).toBeTruthy();
+  });
+
+  it("guides a desktop user through local 163 verification and reports receive/send separately", async () => {
+    mocks.getMailConnectorStatus.mockResolvedValue({ desktop: true, providers: [
+      { id: "netease_163", name: "163 邮箱", available: true, connected: false, account: null },
+      { id: "gmail", name: "Gmail", available: false, connected: false, account: null },
+    ] });
+    mocks.connect163Mail.mockResolvedValue({ ok: true, account: { provider: "netease", email: "user@163.com", canReceive: true, canSend: false } });
+    window.myagenttoolDesktop = { getMailConnectorStatus: mocks.getMailConnectorStatus, connect163Mail: mocks.connect163Mail };
+    mocks.getMailbox.mockResolvedValue({ ...connectedMailbox, accounts: [], connection: { status: "not_connected", message: "" }, messages: [], folders: connectedMailbox.folders.map((folder) => ({ ...folder, count: 0 })) });
+    renderView();
+    fireEvent.click(await screen.findByRole("button", { name: "打开邮箱连接设置" }));
+    expect(await screen.findByText("即将支持")).toBeTruthy();
+    fireEvent.change(screen.getByLabelText("163 邮箱地址"), { target: { value: "user@163.com" } });
+    fireEvent.change(screen.getByLabelText("客户端授权码"), { target: { value: "local-code" } });
+    fireEvent.click(screen.getByRole("button", { name: "连接并测试收件" }));
+    expect(await screen.findByText("收件连接成功")).toBeTruthy();
+    expect(screen.getByText(/发件权限仍保持关闭/)).toBeTruthy();
+    expect(mocks.connect163Mail).toHaveBeenCalledWith({ email: "user@163.com", authorizationCode: "local-code" });
   });
 });

@@ -16,4 +16,6 @@ contextBridge.exposeInMainWorld("myagenttoolDesktop", {
   openContainedOfficeDocument: (input) => ipcRenderer.invoke("documents:open-contained-office", input),
   openContainedAsset: (input) => ipcRenderer.invoke("assets:open-contained", input),
   revealContainedAsset: (input) => ipcRenderer.invoke("assets:reveal-contained", input),
+  getMailConnectorStatus: () => ipcRenderer.invoke("mail:get-connector-status"),
+  connect163Mail: (input) => ipcRenderer.invoke("mail:connect-163", input),
 });

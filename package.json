@@ -245,6 +245,8 @@
     "@myagenttool/server": "workspace:^",
     "@myagenttool/shared": "workspace:^",
     "@openai/codex": "0.146.0-alpha.3",
+    "imapflow": "^1.0.195",
+    "mailparser": "^3.7.4",
     "node-pty": "^1.1.0",
     "zod": "4.4.3"
   }

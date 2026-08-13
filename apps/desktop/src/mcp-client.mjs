@@ -12,6 +12,7 @@
  */
 
 import { spawn } from "node:child_process";
+import { resolve } from "node:path";
 import { describeMcpToolCall } from "@myagenttool/adapters/mcp";
 
 const PROTOCOL_VERSION = "2025-03-26";
@@ -55,7 +56,26 @@ export function buildMcpChildEnv(adapter) {
   }
   const explicit = adapter && typeof adapter.env === "object" && !Array.isArray(adapter.env) ? adapter.env : {};
   for (const [key, value] of Object.entries(explicit)) env[String(key)] = String(value);
+  // Packaged Electron is also the app's trusted Node runtime. Only the exact
+  // shell-provided mail entry may opt into ELECTRON_RUN_AS_NODE; the
+  // control-plane adapter remains environment-free (ADR 0010), and an
+  // arbitrary MCP registration cannot acquire this process mode.
+  const trustedMailEntry = String(process.env.MYAGENTTOOL_MAIL_MCP_ENTRY ?? "");
+  const trustedMailNode = String(process.env.MYAGENTTOOL_MAIL_MCP_NODE ?? "");
+  if (
+    process.env.MYAGENTTOOL_MAIL_MCP_ELECTRON_RUN_AS_NODE === "1"
+    && sameExecutablePath(adapter?.command, trustedMailNode)
+    && sameExecutablePath(adapter?.args?.[0], trustedMailEntry)
+  ) {
+    env.ELECTRON_RUN_AS_NODE = "1";
+  }
   return env;
+}
+
+function sameExecutablePath(left, right) {
+  if (!left || !right) return false;
+  const normalize = (value) => process.platform === "win32" ? resolve(String(value)).toLowerCase() : resolve(String(value));
+  return normalize(left) === normalize(right);
 }
 
 /** One newline-delimited JSON-RPC session over a child process's stdio. */

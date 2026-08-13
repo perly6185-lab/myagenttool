@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   AlertTriangle,
@@ -11,13 +11,13 @@ import {
   Reply,
   Search,
   Send,
+  ShieldCheck,
 } from "lucide-react";
 import { SectionHeading } from "@/components/common/section-heading";
 import { Button } from "@/components/ui/button";
 import { Modal } from "@/components/ui/modal";
 import { api, ApiError, type MailboxDraft, type MailboxMessage } from "@/lib/api-client";
 import { useAppTranslation } from "@/lib/i18n/use-app-translation";
-import { usePageNavigation } from "@/hooks/use-page-navigation";
 import { cn } from "@/lib/cn";
 
 type FolderId = "inbox" | "drafts" | "sent" | "outbox";
@@ -51,6 +51,36 @@ const COPY = {
     connectSimple: "不需要在这里填写 IMAP、SMTP 或服务器地址。",
     attention: "邮箱需要重新连接",
     attentionAction: "检查连接",
+    manageConnection: "管理邮箱连接",
+    receiveReady: "收件已连接",
+    sendNotReady: "发件尚未连接",
+    connectorTitle: "连接邮箱",
+    connectorDescription: "跟着两步完成；系统会自动验证，不需要填写服务器地址。",
+    provider163: "163 邮箱",
+    provider163Hint: "当前支持收取和阅读邮件",
+    providerGmail: "Gmail",
+    comingSoon: "即将支持",
+    desktopOnly: "请在 MyAgentTool 桌面版中连接邮箱。网页不会接触你的登录信息。",
+    accountEmail: "163 邮箱地址",
+    authorizationCode: "客户端授权码",
+    authorizationPlaceholder: "不是邮箱登录密码",
+    authHelpTitle: "先在 163 邮箱中取得授权码",
+    authHelp: "登录 163 网页邮箱，在设置中开启 IMAP 服务并新建客户端授权码，然后把授权码粘贴到这里。界面名称可能因账号版本略有不同。",
+    localSecret: "授权码只保存在这台电脑，并由当前 Windows 用户加密保护。",
+    connectAndTest: "连接并测试收件",
+    testing: "正在验证…",
+    connectSuccess: "收件连接成功",
+    connectSuccessHint: "现在可以回到收件箱收取新邮件。发件权限仍保持关闭。",
+    done: "完成",
+    reconnect: "重新连接",
+    errors: {
+      invalid_email: "请输入完整的 163 邮箱地址。",
+      invalid_authorization_code: "请输入 163 客户端授权码。",
+      verification_failed: "验证失败。请确认 IMAP 服务已开启，并检查邮箱地址和授权码。",
+      save_failed: "连接已验证，但本机保存失败。请稍后重试。",
+      platform_not_supported: "当前连接助手仅支持 Windows 桌面版。",
+      unavailable: "连接助手暂时不可用，请重新打开桌面版后再试。",
+    },
     composeTitle: "写邮件",
     editDraftTitle: "编辑草稿",
     composeHint: "先保存为草稿。真正发送前会再次显示完整内容供你确认。",
@@ -108,6 +138,36 @@ const COPY = {
     connectSimple: "You do not need to enter IMAP, SMTP, or server addresses here.",
     attention: "Your email needs to be reconnected",
     attentionAction: "Check connection",
+    manageConnection: "Manage connection",
+    receiveReady: "Receiving connected",
+    sendNotReady: "Sending not connected",
+    connectorTitle: "Connect email",
+    connectorDescription: "Two guided steps; no server addresses are required.",
+    provider163: "163 Mail",
+    provider163Hint: "Receiving and reading are currently supported",
+    providerGmail: "Gmail",
+    comingSoon: "Coming soon",
+    desktopOnly: "Connect email in the MyAgentTool desktop app. The web page never handles your sign-in details.",
+    accountEmail: "163 email address",
+    authorizationCode: "Client authorization code",
+    authorizationPlaceholder: "Not your mailbox password",
+    authHelpTitle: "Get an authorization code from 163 Mail first",
+    authHelp: "Sign in to 163 webmail, enable IMAP in Settings, and create a client authorization code. Setting names may vary slightly by account version.",
+    localSecret: "The code stays on this computer and is encrypted for the current Windows user.",
+    connectAndTest: "Connect and test receiving",
+    testing: "Verifying…",
+    connectSuccess: "Receiving connected",
+    connectSuccessHint: "You can now retrieve new messages. Sending permission remains off.",
+    done: "Done",
+    reconnect: "Reconnect",
+    errors: {
+      invalid_email: "Enter a complete 163 Mail address.",
+      invalid_authorization_code: "Enter the 163 client authorization code.",
+      verification_failed: "Verification failed. Check that IMAP is enabled, then verify the address and authorization code.",
+      save_failed: "The account was verified, but could not be saved on this computer. Try again.",
+      platform_not_supported: "The connection assistant currently requires the Windows desktop app.",
+      unavailable: "The connection assistant is unavailable. Reopen the desktop app and try again.",
+    },
     composeTitle: "New email",
     editDraftTitle: "Edit draft",
     composeHint: "Save a draft first. You will review the complete email again before it is sent.",
@@ -142,7 +202,6 @@ const COPY = {
 export function MailView() {
   const { i18n } = useAppTranslation();
   const copy = i18n.language.startsWith("zh") ? COPY.zh : COPY.en;
-  const navigate = usePageNavigation();
   const queryClient = useQueryClient();
   const mailbox = useQuery({ queryKey: ["mailbox"], queryFn: api.getMailbox, refetchInterval: 4_000 });
   const [folder, setFolder] = useState<FolderId>("inbox");
@@ -152,6 +211,7 @@ export function MailView() {
   const [reviewDraft, setReviewDraft] = useState<MailboxDraft | null>(null);
   const [busy, setBusy] = useState<"sync" | "fetch" | "save" | "send" | "delete" | null>(null);
   const [notice, setNotice] = useState<{ tone: "info" | "error"; text: string } | null>(null);
+  const [connectorOpen, setConnectorOpen] = useState(false);
   const data = mailbox.data;
   const account = data?.accounts.find((item) => item.canReceive) ?? data?.accounts[0] ?? null;
   const selectedMessage = data?.messages.find((message) => message.id === selectedMessageId) ?? null;
@@ -287,13 +347,13 @@ export function MailView() {
           <h2 className="mt-4 text-lg font-semibold">{copy.connectTitle}</h2>
           <p className="mx-auto mt-2 max-w-lg text-sm text-muted-foreground">{copy.connectHint}</p>
           <p className="mx-auto mt-1 max-w-lg text-xs text-muted-foreground">{copy.connectSimple}</p>
-          <Button className="mt-5" onClick={() => navigate("applications")}>{copy.connectAction}</Button>
+          <Button className="mt-5" onClick={() => setConnectorOpen(true)}>{copy.connectAction}</Button>
         </section>
       ) : (
         <>
           <div className={cn("flex flex-wrap items-center justify-between gap-2 rounded-xl border px-3 py-2 text-sm", account?.canReceive ? "bg-card" : "border-warning/40 bg-warning/10")}>
-            <div className="flex items-center gap-2"><span className={cn("size-2 rounded-full", account?.canReceive ? "bg-emerald-500" : "bg-amber-500")} /><span className="font-medium">{account?.name}</span><span className="text-muted-foreground">{account?.canReceive ? copy.connected : copy.attention}</span></div>
-            <div className="flex items-center gap-2"><span className="text-xs text-muted-foreground">{account?.canSend ? copy.connected : copy.receiveOnly}</span>{!account?.canReceive ? <Button size="sm" variant="secondary" onClick={() => navigate("applications")}>{copy.attentionAction}</Button> : null}</div>
+            <div className="flex items-center gap-2"><span className={cn("size-2 rounded-full", account?.canReceive ? "bg-emerald-500" : "bg-amber-500")} /><span className="font-medium">{account?.name}</span><span className="text-muted-foreground">{account?.canReceive ? copy.receiveReady : copy.attention}</span></div>
+            <div className="flex items-center gap-2"><span className="text-xs text-muted-foreground">{account?.canSend ? copy.connected : copy.sendNotReady}</span><Button size="sm" variant="secondary" onClick={() => setConnectorOpen(true)}>{account?.canReceive ? copy.manageConnection : copy.attentionAction}</Button></div>
           </div>
 
           <div className="overflow-hidden rounded-2xl border bg-card lg:grid lg:min-h-[620px] lg:grid-cols-[11rem_minmax(18rem,23rem)_minmax(0,1fr)]">
@@ -328,8 +388,58 @@ export function MailView() {
 
       <ComposeModal copy={copy} value={compose} onChange={setCompose} busy={busy} canSend={Boolean(account?.canSend)} onClose={() => setCompose(null)} onSave={() => compose && void persistDraft(compose)} onReview={() => void reviewForSend()} onDelete={() => void removeDraft()} />
       <SendReviewModal copy={copy} draft={reviewDraft} pending={busy === "send"} onClose={() => setReviewDraft(null)} onSend={() => void sendDraft()} />
+      <MailConnectionModal copy={copy} open={connectorOpen} onClose={() => setConnectorOpen(false)} onConnected={() => {
+        void queryClient.invalidateQueries({ queryKey: ["mailbox"] });
+        window.setTimeout(() => { void queryClient.invalidateQueries({ queryKey: ["mailbox"] }); }, 2_000);
+      }} />
     </div>
   );
+}
+
+function MailConnectionModal({ copy, open, onClose, onConnected }: { copy: typeof COPY.zh | typeof COPY.en; open: boolean; onClose: () => void; onConnected: () => void }) {
+  const bridge = window.myagenttoolDesktop;
+  const [email, setEmail] = useState("");
+  const [authorizationCode, setAuthorizationCode] = useState("");
+  const [connectedEmail, setConnectedEmail] = useState<string | null>(null);
+  const [pending, setPending] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!open || !bridge?.getMailConnectorStatus) return;
+    void bridge.getMailConnectorStatus().then((status) => {
+      const provider = status.providers.find((item) => item.id === "netease_163");
+      if (provider?.account) setEmail(provider.account);
+      if (provider?.connected) setConnectedEmail(provider.account);
+    }).catch(() => setError(copy.errors.unavailable));
+  }, [bridge, copy.errors.unavailable, open]);
+
+  async function connect() {
+    if (!bridge?.connect163Mail) { setError(copy.errors.unavailable); return; }
+    setPending(true);
+    setError(null);
+    const result = await bridge.connect163Mail({ email, authorizationCode }).catch(() => ({ ok: false as const, error: "unavailable" as const }));
+    setPending(false);
+    if (!result.ok) {
+      setError(copy.errors[result.error as keyof typeof copy.errors] ?? copy.errors.unavailable);
+      return;
+    }
+    setAuthorizationCode("");
+    setConnectedEmail(result.account.email);
+    onConnected();
+  }
+
+  return <Modal open={open} title={copy.connectorTitle} description={copy.connectorDescription} size="lg" onClose={onClose} closeDisabled={pending} footer={connectedEmail ? <div className="flex justify-end"><Button onClick={onClose}>{copy.done}</Button></div> : undefined}>
+    {!bridge?.getMailConnectorStatus ? <div className="rounded-xl border bg-muted/40 p-4 text-sm text-muted-foreground">{copy.desktopOnly}</div> : connectedEmail ? <div className="space-y-4 text-center"><span className="mx-auto grid size-12 place-items-center rounded-full bg-emerald-500/10 text-emerald-600"><ShieldCheck /></span><div><h3 className="font-semibold">{copy.connectSuccess}</h3><p className="mt-1 text-sm text-muted-foreground">{connectedEmail}</p><p className="mt-2 text-sm text-muted-foreground">{copy.connectSuccessHint}</p></div><Button variant="secondary" onClick={() => { setConnectedEmail(null); setError(null); }}>{copy.reconnect}</Button></div> : <div className="space-y-4">
+      <div className="grid gap-2 sm:grid-cols-2">
+        <div className="rounded-xl border border-primary/40 bg-primary/5 p-3"><div className="flex items-center justify-between gap-2"><span className="font-medium">{copy.provider163}</span><span className="rounded-full bg-emerald-500/10 px-2 py-0.5 text-xs text-emerald-600">{copy.receiveReady}</span></div><p className="mt-1 text-xs text-muted-foreground">{copy.provider163Hint}</p></div>
+        <div className="rounded-xl border bg-muted/30 p-3 opacity-70"><div className="flex items-center justify-between gap-2"><span className="font-medium">{copy.providerGmail}</span><span className="rounded-full bg-muted px-2 py-0.5 text-xs text-muted-foreground">{copy.comingSoon}</span></div></div>
+      </div>
+      <div className="rounded-xl border bg-muted/30 p-3"><p className="text-sm font-medium">1. {copy.authHelpTitle}</p><p className="mt-1 text-xs leading-5 text-muted-foreground">{copy.authHelp}</p></div>
+      <div className="space-y-3"><p className="text-sm font-medium">2. {copy.connectAndTest}</p><label className="block text-sm font-medium">{copy.accountEmail}<input autoFocus autoComplete="email" value={email} onChange={(event) => setEmail(event.target.value)} placeholder="name@163.com" className="mt-1 w-full rounded-md border bg-background px-3 py-2 font-normal outline-none focus:ring-2 focus:ring-ring" /></label><label className="block text-sm font-medium">{copy.authorizationCode}<input type="password" autoComplete="off" value={authorizationCode} onChange={(event) => setAuthorizationCode(event.target.value)} placeholder={copy.authorizationPlaceholder} className="mt-1 w-full rounded-md border bg-background px-3 py-2 font-normal outline-none focus:ring-2 focus:ring-ring" /></label><p className="flex gap-2 text-xs leading-5 text-muted-foreground"><ShieldCheck className="mt-0.5 size-4 shrink-0 text-emerald-600" />{copy.localSecret}</p></div>
+      {error ? <div role="alert" className="rounded-lg border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">{error}</div> : null}
+      <Button className="w-full" onClick={() => void connect()} disabled={pending}><RefreshCw className={cn(pending && "animate-spin")} />{pending ? copy.testing : copy.connectAndTest}</Button>
+    </div>}
+  </Modal>;
 }
 
 interface ComposeState {

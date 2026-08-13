@@ -44,7 +44,7 @@ for (const fixture of [
 
     await expect(page.getByRole("heading", { name: "我的邮箱" })).toBeVisible();
     await expect(page.getByText("确认交付范围", { exact: true })).toBeVisible();
-    await expect(page.getByText("当前可收件；发件权限尚未连接")).toBeVisible();
+    await expect(page.getByText("发件尚未连接")).toBeVisible();
     await page.getByText("确认交付范围", { exact: true }).click();
     await expect(page.getByLabel("确认交付范围").getByText("你好，请确认本周交付范围。")).toBeVisible();
     await expect(page.getByText(/系统只把它当作内容展示/)).toBeVisible();
@@ -60,3 +60,28 @@ for (const fixture of [
     await page.screenshot({ path: testInfo.outputPath(`${fixture.name}-mailbox.png`), fullPage: true });
   });
 }
+
+test("connects 163 Mail through the ordinary-user desktop assistant", async ({ page }, testInfo) => {
+  await page.setViewportSize({ width: 1100, height: 820 });
+  await mockMail(page);
+  await page.addInitScript(() => {
+    (window as any).myagenttoolDesktop = {
+      getMailConnectorStatus: async () => ({ desktop: true, providers: [
+        { id: "netease_163", name: "163 邮箱", available: true, connected: false, account: null },
+        { id: "gmail", name: "Gmail", available: false, connected: false, account: null },
+      ] }),
+      connect163Mail: async ({ email }: { email: string }) => ({ ok: true, account: { provider: "netease", email, canReceive: true, canSend: false } }),
+    };
+  });
+  await page.goto("/?section=mail");
+  await page.getByRole("button", { name: "管理邮箱连接" }).click();
+  const dialog = page.getByRole("dialog", { name: "连接邮箱" });
+  await expect(dialog.getByText("Gmail")).toBeVisible();
+  await expect(dialog.getByText("即将支持")).toBeVisible();
+  await dialog.getByLabel("163 邮箱地址").fill("user@163.com");
+  await dialog.getByLabel("客户端授权码").fill("local-only-code");
+  await dialog.getByRole("button", { name: "连接并测试收件" }).click();
+  await expect(dialog.getByText("收件连接成功")).toBeVisible();
+  await expect(dialog.getByText(/发件权限仍保持关闭/)).toBeVisible();
+  await page.screenshot({ path: testInfo.outputPath("mail-connection-success.png"), fullPage: true });
+});
