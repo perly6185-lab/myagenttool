@@ -39,10 +39,10 @@ async function call(path: string, options: { method?: string; body?: unknown } =
 }
 
 async function openAdvancedWorkflowMemory(page: Page) {
-  await expect(page.getByRole("heading", { name: "我的模版", exact: true }).last()).toBeVisible();
+  await expect(page.getByRole("heading", { name: "我的模板", exact: true }).last()).toBeVisible();
   await page.getByRole("button", { name: /查看和管理|继续完成/ }).first().click();
-  await expect(page.getByRole("heading", { name: "创建我的模版", exact: true })).toBeVisible();
-  await page.getByRole("button", { name: "高级调整" }).click();
+  await expect(page.getByRole("heading", { name: "创建我的模板", exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "需要调整" }).click();
   await expect(page.getByRole("heading", { name: "教 AI 做你的日常工作", exact: true })).toBeVisible();
 }
 
@@ -495,6 +495,9 @@ test.beforeAll(async () => {
     ));
   }
   expect(materialized.map((row) => row.workItem.id)).toHaveLength(10);
+  const persistedSource = state.workflowSources.find((item: { id: string }) => item.id === source.id);
+  if (!persistedSource) throw new Error("pilot workflow source unavailable");
+  persistedSource.purpose = "template_learning";
   primaryWorkItemTitle = materialized[0].workItem.title;
   primaryWorkItemId = materialized[0].workItem.id;
 });

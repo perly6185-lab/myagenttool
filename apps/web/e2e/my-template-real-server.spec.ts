@@ -154,5 +154,5 @@ test("learns one real input-result pair and automatically matches a Chinese loca
   expect(created.workItem.myTemplateBinding.name).toBe(selected.name);
   expect(created.workItem.myTemplateBinding.version).toBe(1);
   expect(created.workItem.myTemplateBinding.snapshot.steps.map((step: { key: string }) => step.key))
-    .toContain("quotation_generation");
+    .toContain("generate_output");
 });

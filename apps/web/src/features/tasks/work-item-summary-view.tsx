@@ -1706,22 +1706,22 @@ export function WorkItemSummaryView({
         const manualObservation = assisted.draft.templateMatch.clarification?.reason === "manual_resume_observation";
         setSyncNotice(manualObservation
           ? (language === "zh"
-              ? "你已将这个模版恢复到观察期。本次确认后才会使用，积累新的成功结果后才恢复自动套用。"
+              ? "你已将这个模板恢复到观察期。本次确认后才会使用，积累新的成功结果后才恢复自动套用。"
               : "You returned this template to observation. Confirm it for now; automatic use resumes after new successful results.")
           : governancePaused
           ? (language === "zh"
-              ? "这个模版近期多次产生错误结果类型，已暂停自动套用。你仍可确认本次使用。"
+              ? "这个模板近期多次产生错误结果类型，已暂停自动套用。你仍可确认本次使用。"
               : "This template repeatedly produced the wrong result type, so automatic matching is paused. You can still confirm it for this task.")
           : governanceWatch
             ? (language === "zh"
-                ? "这个模版近期出现过多次结果类型不符，系统已降低推荐优先级。本次确认后才会使用。"
+                ? "这个模板近期出现过多次结果类型不符，系统已降低推荐优先级。本次确认后才会使用。"
                 : "This template recently produced several wrong result types. It will be used only after you confirm.")
             : learnedConflict
           ? (language === "zh"
               ? "你以前对此类任务选择过不同结果。请确认这次想得到什么，系统不会擅自猜测。"
               : "You previously chose different results for this kind of task. Confirm this result so the system does not guess.")
           : (language === "zh"
-              ? "系统找到了多种可能结果。请只确认这次想得到什么，不需要选择模版。"
+              ? "系统找到了多种可能结果。请只确认这次想得到什么，不需要选择模板。"
               : "Several results may fit. Confirm only the result you want; you do not need to choose a template."));
         return;
       }
@@ -1855,11 +1855,11 @@ export function WorkItemSummaryView({
       setItem(response.workItem);
       setTemplateDraftOpen(false);
       setSyncNotice(language === "zh"
-        ? "已保存为新的“我的模版”，目前处于学习中；不会改变原任务，也不会立即自动套用。"
+        ? "已保存为新的“我的模板”，目前处于学习中；不会改变原任务，也不会立即自动套用。"
         : "Saved as a new learning My template. The original task is unchanged and it will not be applied automatically yet.");
       window.dispatchEvent(new CustomEvent("myagenttool:state-change", { detail: { source: "my-template-draft", workItemId: item.id } }));
     } catch {
-      setTemplateDraftError(language === "zh" ? "暂时无法保存为我的模版，请稍后重试。" : "The My template could not be saved. Try again later.");
+      setTemplateDraftError(language === "zh" ? "暂时无法保存为我的模板，请稍后重试。" : "The My template could not be saved. Try again later.");
     } finally {
       setTemplateDraftPending(false);
     }
@@ -2451,7 +2451,7 @@ export function WorkItemSummaryView({
                 ) : (
                   <Button size="sm" variant="secondary" disabled={templateDraftPending} onClick={() => { void openTemplateDraft(); }}>
                     <BrainCircuit aria-hidden />
-                    {language === "zh" ? "保存为我的模版" : "Save as My template"}
+                    {language === "zh" ? "保存为我的模板" : "Save as My template"}
                   </Button>
                 ) : null}
                 {onOpenTaskCenter ? <Button size="sm" variant="secondary" onClick={onOpenTaskCenter}>{copy.taskCenter}</Button> : null}
@@ -2462,7 +2462,7 @@ export function WorkItemSummaryView({
             <div className="mt-4 rounded-lg border border-primary/25 bg-background/75 p-3" aria-label={language === "zh" ? "这次结果符合预期吗？" : "Did this result meet your expectations?"}>
               <h5 className="text-sm font-semibold">{language === "zh" ? "这次结果符合预期吗？" : "Did this result meet your expectations?"}</h5>
               <p className="mt-1 text-xs text-muted-foreground">
-                {language === "zh" ? "只评价实际结果。电脑离线、权限或运行失败不会被算成模版问题。" : "Rate only the actual result. Offline computers, permissions, and run failures are not treated as template problems."}
+                {language === "zh" ? "只评价实际结果。电脑离线、权限或运行失败不会被算成模板问题。" : "Rate only the actual result. Offline computers, permissions, and run failures are not treated as template problems."}
               </p>
               {item.myTemplateOutcomeFeedback && !templateOutcomeEditing ? (
                 <div className="mt-3 flex flex-wrap items-center gap-2">
@@ -2771,7 +2771,7 @@ export function WorkItemSummaryView({
                 {language === "zh" ? "预计得到：" : "Expected result: "}{item.myTemplateBinding.expectedOutput}
               </p>
               <p className="mt-1 text-xs text-muted-foreground">
-                {language === "zh" ? "来自我的模版：" : "From My templates: "}{item.myTemplateBinding.name}
+                {language === "zh" ? "来自我的模板：" : "From My templates: "}{item.myTemplateBinding.name}
               </p>
             </div>
             {canCorrectMyTemplate && !templateCorrectionOpen ? (
@@ -2783,7 +2783,7 @@ export function WorkItemSummaryView({
           {learnedTemplateMatch ? (
             <p className="mt-3 rounded-lg border border-primary/20 bg-background/70 p-2.5 text-xs leading-relaxed text-muted-foreground">
               {language === "zh"
-                ? "系统发现这项任务与之前由你纠正过的任务相似，因此优先采用这个结果。你可以在“我的模版”中的“系统记住的选择”查看或撤销。"
+                ? "系统发现这项任务与之前由你纠正过的任务相似，因此优先采用这个结果。你可以在“我的模板”中的“系统记住的选择”查看或撤销。"
                 : "This task looks similar to one you corrected before, so that result was preferred. You can review or remove the preference in My templates under Learned choices."}
             </p>
           ) : null}
@@ -2810,7 +2810,7 @@ export function WorkItemSummaryView({
                   ))}
                 </div>
               ) : !templateCorrectionError ? (
-                <p className="mt-3 text-sm text-muted-foreground">{language === "zh" ? "还没有其他可用结果，可以先到“我的模版”继续完善。" : "No other result is available yet. Add one in My templates first."}</p>
+                <p className="mt-3 text-sm text-muted-foreground">{language === "zh" ? "还没有其他可用结果，可以先到“我的模板”继续完善。" : "No other result is available yet. Add one in My templates first."}</p>
               ) : null}
               {templateCorrectionError ? <p className="mt-3 text-sm text-destructive" role="alert">{templateCorrectionError}</p> : null}
               <Button className="mt-3" size="sm" variant="ghost" disabled={templateCorrectionPending} onClick={() => { setTemplateCorrectionOpen(false); setTemplateCorrectionError(null); }}>
@@ -3034,9 +3034,9 @@ export function WorkItemSummaryView({
       <Modal
         open={templateDraftOpen}
         onClose={() => { if (!templateDraftPending) setTemplateDraftOpen(false); }}
-        title={language === "zh" ? "保存为新的“我的模版”" : "Save as a new My template"}
+        title={language === "zh" ? "保存为新的“我的模板”" : "Save as a new My template"}
         description={language === "zh"
-          ? "系统已根据这次任务整理输入和结果。保存后即可到“我的模版”检查学习结果，并由你决定是否启用。"
+          ? "系统已根据这次任务整理输入和结果。保存后即可到“我的模板”检查学习结果，并由你决定是否启用。"
           : "The input and result were extracted from this task. After saving, review what was learned in My templates and decide whether to enable it."}
         closeDisabled={templateDraftPending}
         footer={(
@@ -3049,7 +3049,7 @@ export function WorkItemSummaryView({
               onClick={() => { void saveTemplateDraft(); }}
             >
               {templateDraftPending ? <RefreshCw className="animate-spin" aria-hidden /> : <BrainCircuit aria-hidden />}
-              {templateDraftPending ? (language === "zh" ? "正在整理…" : "Saving…") : (language === "zh" ? "确认并保存模版" : "Confirm and save template")}
+              {templateDraftPending ? (language === "zh" ? "正在整理…" : "Saving…") : (language === "zh" ? "确认并保存模板" : "Confirm and save template")}
             </Button>
           </div>
         )}
@@ -3066,7 +3066,7 @@ export function WorkItemSummaryView({
               {templateDraftPreview.reasons.includes("task_result_evidence_required")
                 ? (language === "zh" ? "还没有可确认的结果文件、交付说明或通过记录。请先补充并确认任务结果。" : "No confirmable result file, delivery summary, or passed check is available yet.")
                 : templateDraftPreview.reasons.includes("task_already_used_my_template")
-                  ? (language === "zh" ? "这项任务已经使用了现有模版，不会再创建一个重复的新模版。" : "This task already used an existing template, so a duplicate will not be created.")
+                  ? (language === "zh" ? "这项任务已经使用了现有模板，不会再创建一个重复的新模板。" : "This task already used an existing template, so a duplicate will not be created.")
                   : (language === "zh" ? "请先完成这项任务。" : "Complete this task first.")}
             </p>
           </div>

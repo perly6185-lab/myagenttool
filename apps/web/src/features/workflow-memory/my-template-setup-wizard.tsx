@@ -76,8 +76,12 @@ function learnedImageMime(extension: string) {
   return extension === ".png" ? "image/png" : extension === ".webp" ? "image/webp" : "application/octet-stream";
 }
 
+function learnedFilePath(artifact: WorkflowArtifact) {
+  return artifact.relativePath?.trim() || artifact.name;
+}
+
 function learnedFileRole(artifact: WorkflowArtifact): "input" | "output" | "reference" | "unknown" {
-  const path = artifact.relativePath.replaceAll("\\", "/");
+  const path = learnedFilePath(artifact).replaceAll("\\", "/");
   if (path.includes("/raw/inputs/")) return "input";
   if (path.includes("/raw/outputs/")) return "output";
   if (path.includes("/raw/references/")) return "reference";
@@ -236,8 +240,8 @@ export function MyTemplateSetupWizard({
   const source = (sourcesQuery.data?.sources ?? []).find((item) => item.id === sourceId) ?? null;
   const allArtifacts = artifactsQuery.data?.artifacts ?? [];
   const artifacts = source?.purpose === "template_learning"
-    ? allArtifacts.filter((artifact) => artifact.relativePath !== "manifest.json"
-      && !artifact.relativePath.endsWith("/source-manifest.json"))
+    ? allArtifacts.filter((artifact) => learnedFilePath(artifact) !== "manifest.json"
+      && !learnedFilePath(artifact).endsWith("/source-manifest.json"))
     : allArtifacts;
   const visibleArtifactIds = new Set(artifacts.map((artifact) => artifact.id));
   const classifications = (classificationsQuery.data?.classifications ?? [])
@@ -322,8 +326,9 @@ export function MyTemplateSetupWizard({
     }
     try {
       const bridge = window.myagenttoolDesktop?.openContainedAsset;
-      if (bridge) await bridge({ projectId, relativePath: artifact.relativePath });
-      else await api.openProjectAsset(projectId, artifact.relativePath);
+      const relativePath = learnedFilePath(artifact);
+      if (bridge) await bridge({ projectId, relativePath });
+      else await api.openProjectAsset(projectId, relativePath);
     } catch {
       setFileActionError(`无法打开“${artifact.name}”。请确认文件仍在学习目录中。`);
     } finally {
@@ -348,22 +353,22 @@ export function MyTemplateSetupWizard({
       const extension = learnedFileExtension(artifact);
       let preview: LearnedFilePreview;
       if (extension === ".md" || extension === ".mdx") {
-        const result = await api.projectAssetPreview(projectId, artifact.relativePath);
+        const result = await api.projectAssetPreview(projectId, learnedFilePath(artifact));
         preview = { kind: "markdown", text: result.text, truncated: result.truncated };
       } else if ([".txt", ".csv", ".json"].includes(extension)) {
-        const result = await api.projectAssetPreview(projectId, artifact.relativePath);
+        const result = await api.projectAssetPreview(projectId, learnedFilePath(artifact));
         let text = result.text;
         if (extension === ".json") {
           try { text = JSON.stringify(JSON.parse(text), null, 2); } catch { /* Show original invalid JSON safely. */ }
         }
         preview = { kind: "text", text, truncated: result.truncated };
       } else if ([".png", ".jpg", ".jpeg", ".webp"].includes(extension)) {
-        const bytes = await api.projectAssetPreviewBytes(projectId, artifact.relativePath);
+        const bytes = await api.projectAssetPreviewBytes(projectId, learnedFilePath(artifact));
         preview = { kind: "image", source: URL.createObjectURL(new Blob([bytes], { type: learnedImageMime(extension) })) };
       } else if (extension === ".pdf") {
         preview = { kind: "pdf" };
       } else if ([".docx", ".xlsx", ".pptx"].includes(extension)) {
-        const result = await api.officecliPreview(projectId, artifact.relativePath);
+        const result = await api.officecliPreview(projectId, learnedFilePath(artifact));
         preview = { kind: "office", html: result.content };
       } else {
         throw new Error("preview_unsupported");
@@ -397,8 +402,9 @@ export function MyTemplateSetupWizard({
     }
     try {
       const bridge = window.myagenttoolDesktop?.revealContainedAsset;
-      if (bridge) await bridge({ projectId, relativePath: artifact.relativePath });
-      else await api.revealProjectAsset(projectId, artifact.relativePath);
+      const relativePath = learnedFilePath(artifact);
+      if (bridge) await bridge({ projectId, relativePath });
+      else await api.revealProjectAsset(projectId, relativePath);
     } catch {
       setFileActionError(`无法定位“${artifact.name}”。请确认文件仍在学习目录中。`);
     } finally {
@@ -527,8 +533,8 @@ export function MyTemplateSetupWizard({
                       <FileText className="mt-0.5 size-4 shrink-0 text-primary" aria-hidden />
                       <div className="min-w-0 flex-1">
                         <p className="truncate text-sm font-medium" title={artifact.name}>{artifact.name}</p>
-                        {artifact.relativePath !== artifact.name
-                          ? <p className="truncate text-xs text-muted-foreground" title={artifact.relativePath}>安全副本位置：{artifact.relativePath}</p>
+                        {learnedFilePath(artifact) !== artifact.name
+                          ? <p className="truncate text-xs text-muted-foreground" title={learnedFilePath(artifact)}>安全副本位置：{learnedFilePath(artifact)}</p>
                           : null}
                       </div>
                       <div className="flex shrink-0 flex-wrap gap-1">
@@ -597,7 +603,10 @@ export function MyTemplateSetupWizard({
             </div>
             <p className="mt-3 text-xs text-muted-foreground">这里引用的是上方同一组安全副本，只展示关联关系，不会重复保存文件。</p>
             <p className="mt-4 text-sm text-muted-foreground">模板已经保存并启用，无需继续训练。</p>
-            <Button className="mt-3" onClick={onBack}><ArrowLeft />返回我的模板</Button>
+            <div className="mt-3 flex flex-wrap gap-2">
+              <Button onClick={onBack}><ArrowLeft />返回我的模板</Button>
+              <Button variant="secondary" onClick={onOpenAdvanced}>需要调整</Button>
+            </div>
           </CardContent>
         </Card>
       ) : reviewReady ? (
@@ -706,7 +715,7 @@ export function MyTemplateSetupWizard({
         ) : null}
         bodyClassName="min-h-72"
       >
-        {previewArtifact ? <p className="mb-3 truncate font-mono text-[11px] text-muted-foreground" title={previewArtifact.relativePath}>{previewArtifact.relativePath}</p> : null}
+        {previewArtifact ? <p className="mb-3 truncate font-mono text-[11px] text-muted-foreground" title={learnedFilePath(previewArtifact)}>{learnedFilePath(previewArtifact)}</p> : null}
         {filePreviewPending ? (
           <p className="flex min-h-64 items-center justify-center gap-2 text-sm text-muted-foreground" role="status"><Loader2 className="animate-spin" />正在准备预览…</p>
         ) : filePreviewError ? (
@@ -724,7 +733,7 @@ export function MyTemplateSetupWizard({
         ) : filePreview?.kind === "image" ? (
           <div className="grid min-h-[28rem] place-items-center rounded-lg border bg-background p-4"><img src={filePreview.source} alt={previewArtifact?.name ?? ""} className="max-h-[70vh] max-w-full object-contain" /></div>
         ) : filePreview?.kind === "pdf" && previewArtifact && source ? (
-          <div className="min-h-[65vh] overflow-hidden rounded-lg border bg-background"><PdfDocumentViewer projectId={source.projectId} path={previewArtifact.relativePath} /></div>
+          <div className="min-h-[65vh] overflow-hidden rounded-lg border bg-background"><PdfDocumentViewer projectId={source.projectId} path={learnedFilePath(previewArtifact)} /></div>
         ) : filePreview?.kind === "office" ? (
           <OfficeDocumentFrame title={previewArtifact?.name ?? "文档"} content={filePreview.html} className="min-h-[65vh] rounded-lg border" />
         ) : null}

@@ -5,6 +5,7 @@ const source = {
   projectId: "prj_1",
   name: "Sales history",
   relativePath: "sales/history",
+  purpose: "template_learning",
   readMode: "supported_text",
   state: "active",
   scanState: "ready",
@@ -756,10 +757,10 @@ test.beforeEach(async ({ page }) => {
   });
   await mockApi(page);
   await page.goto("/?section=workflowMemory");
-  await expect(page.getByRole("heading", { name: "我的模版", exact: true }).last()).toBeVisible();
+  await expect(page.getByRole("heading", { name: "我的模板", exact: true }).last()).toBeVisible();
   await page.getByRole("button", { name: /查看和管理|继续完成/ }).first().click();
-  await expect(page.getByRole("heading", { name: "创建我的模版", exact: true })).toBeVisible();
-  await page.getByRole("button", { name: "高级调整" }).click();
+  await expect(page.getByRole("heading", { name: "创建我的模板", exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "需要调整" }).click();
   await expect(page.getByRole("heading", { name: "Delivery memory" })).toBeVisible();
 });
 
@@ -916,7 +917,7 @@ test("opens the next inquiry from a keyboard-accessible narrow batch view", asyn
 test("keeps the guided setup usable on a narrow screen and by keyboard", async ({ page }) => {
   await page.setViewportSize({ width: 320, height: 844 });
   await page.reload();
-  await page.getByRole("button", { name: "高级调整" }).click();
+  await page.getByRole("button", { name: "需要调整" }).click();
   await expect(page.getByRole("heading", { name: "Delivery memory" })).toBeVisible();
   await openAdvancedWorkTools(page);
   const intakeButton = page.getByRole("button", { name: "Review inquiry" });
