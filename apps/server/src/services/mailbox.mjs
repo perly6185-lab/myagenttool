@@ -15,8 +15,11 @@ const MAX_RECIPIENT = 998;
 const MAX_SUBJECT = 400;
 const MAX_BODY = 20_000;
 const MAX_DRAFTS = 200;
-const MAX_MESSAGES = 500;
+const MAX_MESSAGES = 10_000;
 const MAX_MESSAGE_STATES = 10_000;
+const MAX_SEARCH = 200;
+const MAX_DRAFT_ATTACHMENTS = 10;
+const MAX_DRAFT_ATTACHMENT_BYTES = 25 * 1024 * 1024;
 const DEFAULT_PAGE_SIZE = 25;
 const MAX_PAGE_SIZE = 50;
 const ACTIVE_SYNC_STATUSES = new Set(["queued", "waiting_for_local_approval", "dispatching", "running", "cancelling"]);
@@ -35,7 +38,7 @@ export function createMailboxService({
 }) {
   const runTx = makeRunTx({ store, persistStateSoon });
 
-  function snapshot({ actor = null, page = 1, pageSize = DEFAULT_PAGE_SIZE } = {}) {
+  function snapshot({ actor = null, page = 1, pageSize = DEFAULT_PAGE_SIZE, folder = "inbox", query = "" } = {}) {
     const teamId = actor?.teamId ?? null;
     const applications = (state.applications ?? []).filter((application) =>
       teamId == null || (application.ownerTeamId ?? "team_local") === teamId,
@@ -51,13 +54,19 @@ export function createMailboxService({
       sendEnabled: Boolean(mailSendEnabled()),
       credentialReadiness: listDevices(state)[0]?.applicationCredentialReadiness ?? [],
     });
-    const allMessages = mailboxMessages(
+    const importedMessages = mailboxMessages(
       results,
       state.mailThreads ?? {},
       (state.mailMessageStates ?? []).filter((row) => teamId == null || (row.ownerTeamId ?? "team_local") === teamId),
     ).slice(0, MAX_MESSAGES);
+    const providerFolders = mailboxProviderFolders(results, importedMessages);
+    const requestedFolder = providerFolders.some((item) => item.id === folder) ? folder : "inbox";
+    const normalizedQuery = normalizeSearchQuery(query);
+    const allMessages = importedMessages
+      .filter((message) => (message.folderId ?? "inbox") === requestedFolder)
+      .filter((message) => matchesMailSearch(message, normalizedQuery));
     const pagination = mailboxPagination(allMessages.length, page, pageSize);
-    const messages = allMessages.slice(pagination.offset, pagination.offset + pagination.pageSize);
+    const messages = allMessages.slice(pagination.offset, pagination.offset + pagination.pageSize).map(publicMessage);
     const publicDrafts = drafts.map(publicDraft).sort(compareRecent);
 
     return {
@@ -65,12 +74,14 @@ export function createMailboxService({
       connection: mailboxConnection(accounts),
       sync: mailboxSync(state.invocations ?? [], accounts),
       folders: [
-        { id: "inbox", count: allMessages.length, unread: allMessages.filter((message) => message.unread).length },
+        ...providerFolders,
         { id: "drafts", count: publicDrafts.filter((draft) => draft.status === "draft").length },
         { id: "sent", count: publicDrafts.filter((draft) => draft.status === "sent").length },
         { id: "outbox", count: publicDrafts.filter((draft) => ["sending", "send_unconfirmed"].includes(draft.status)).length },
       ],
       messages,
+      query: normalizedQuery,
+      selectedFolder: requestedFolder,
       pagination: publicPagination(pagination),
       drafts: publicDrafts,
       updatedAt: latestTimestamp([...results, ...drafts, ...applications]),
@@ -81,34 +92,32 @@ export function createMailboxService({
     const normalizedId = cap(String(messageId ?? "").trim(), MAX_RECIPIENT);
     const teamId = actor?.teamId ?? "team_local";
     if (!normalizedId) return { ok: false, status: 400, body: { error: "mail_message_invalid" } };
-    const visible = (state.applicationResults ?? []).some((record) =>
-      record.source === "mail_headers"
-      && (record.ownerTeamId ?? "team_local") === teamId
-      && recordContainsMessage(record, normalizedId),
-    );
-    if (!visible) return { ok: false, status: 404, body: { error: "mail_message_not_found" } };
+    const teamResults = (state.applicationResults ?? []).filter((record) => record.source === "mail_headers" && (record.ownerTeamId ?? "team_local") === teamId);
+    const message = mailboxMessages(teamResults, state.mailThreads ?? {}, []).find((item) => item.messageId === normalizedId);
+    if (!message) return { ok: false, status: 404, body: { error: "mail_message_not_found" } };
+    const application = (state.applications ?? []).find((item) => item.id === message.applicationId && !item.successorApplicationId)
+      ?? (state.applications ?? []).find((item) => !item.successorApplicationId && capabilityName(item, "mail_set_read"));
+    const capability = application ? capabilityName(application, "mail_set_read") : null;
+    if (!capability || typeof createCapabilityInvocation !== "function") {
+      persistLocalReadState(normalizedId, read, teamId);
+      return { ok: true, status: 200, body: { messageId: normalizedId, unread: read === false } };
+    }
+    const result = createCapabilityInvocation(capability, { messageId: normalizedId, folderPath: message.folderPath ?? "INBOX", read: read !== false }, actor);
+    if (!result || result.status >= 400) return { ok: false, status: 409, body: { error: "mail_read_state_sync_failed" } };
+    return { ok: true, status: 202, body: { messageId: normalizedId, unread: read === false, pending: true, invocationId: result.body?.invocationId ?? null } };
+  }
+
+  function persistLocalReadState(messageId, read, teamId) {
     runTx(() => {
-      state.mailMessageStates = (state.mailMessageStates ?? []).filter((row) =>
-        !(row.messageId === normalizedId && (row.ownerTeamId ?? "team_local") === teamId),
-      );
+      state.mailMessageStates = (state.mailMessageStates ?? []).filter((row) => !(row.messageId === messageId && (row.ownerTeamId ?? "team_local") === teamId));
       if (read !== false) {
         const readAt = now();
-        state.mailMessageStates.unshift({
-          id: nextId("mailmsgstate"),
-          messageId: normalizedId,
-          ownerTeamId: teamId,
-          readAt,
-          createdAt: readAt,
-          updatedAt: readAt,
-        });
-        const ownRows = state.mailMessageStates
-          .filter((row) => (row.ownerTeamId ?? "team_local") === teamId)
-          .slice(0, MAX_MESSAGE_STATES);
+        state.mailMessageStates.unshift({ id: nextId("mailmsgstate"), messageId, ownerTeamId: teamId, readAt, createdAt: readAt, updatedAt: readAt });
+        const ownRows = state.mailMessageStates.filter((row) => (row.ownerTeamId ?? "team_local") === teamId).slice(0, MAX_MESSAGE_STATES);
         const otherRows = state.mailMessageStates.filter((row) => (row.ownerTeamId ?? "team_local") !== teamId);
         state.mailMessageStates = [...ownRows, ...otherRows];
       }
     });
-    return { ok: true, status: 200, body: { messageId: normalizedId, unread: read === false } };
   }
 
   function startSync({ actor = null } = {}) {
@@ -131,7 +140,10 @@ export function createMailboxService({
     if (typeof createCapabilityInvocation !== "function") {
       return { ok: false, status: 503, body: { error: "mail_sync_unavailable" } };
     }
-    const result = createCapabilityInvocation(account.syncCapability, { limit: 50 }, actor);
+    const cursors = latestMailboxCursors((state.applicationResults ?? []).filter((record) =>
+      record.source === "mail_headers" && (teamId == null || (record.ownerTeamId ?? "team_local") === teamId),
+    ));
+    const result = createCapabilityInvocation(account.syncCapability, account.incrementalSync ? { limit: 50, cursors } : { limit: 50 }, actor);
     if (!result || result.status >= 400) {
       return { ok: false, status: 409, body: { error: "mail_sync_unavailable" } };
     }
@@ -142,18 +154,20 @@ export function createMailboxService({
     };
   }
 
-  function createDraft({ to, subject, body, inReplyTo = null, references = [], actor = null } = {}) {
-    const normalized = validateDraftFields({ to, subject, body });
+  function createDraft({ to, subject, body, attachments = [], inReplyTo = null, references = [], actor = null } = {}) {
+    const normalized = validateDraftFields({ to, subject, body, attachments });
     if (!normalized.ok) return normalized;
     const draft = {
       id: nextId("maildraft"),
       status: "draft",
       revision: 1,
       origin: "user",
+      provider: preferredMailProvider(state.applications ?? [], actor),
       to: normalized.to,
       subject: normalized.subject,
       body: normalized.body,
       bodyFormat: "plain_text",
+      attachments: normalized.attachments,
       inReplyTo: cap(inReplyTo, MAX_RECIPIENT) || null,
       references: Array.isArray(references)
         ? references.map((entry) => cap(entry, MAX_RECIPIENT)).filter(Boolean).slice(0, 50)
@@ -179,19 +193,20 @@ export function createMailboxService({
     return { ok: true, status: 201, body: { draft: publicDraft(draft) } };
   }
 
-  function updateDraft({ draftId, to, subject, body, actor = null } = {}) {
+  function updateDraft({ draftId, to, subject, body, attachments = [], actor = null } = {}) {
     const draft = findDraft(draftId, actor);
     if (!draft) return { ok: false, status: 404, body: { error: "mail_draft_not_found" } };
     if (draft.status !== "draft") {
       return { ok: false, status: 409, body: { error: "mail_draft_not_editable", status: draft.status } };
     }
-    const normalized = validateDraftFields({ to, subject, body });
+    const normalized = validateDraftFields({ to, subject, body, attachments });
     if (!normalized.ok) return normalized;
     runTx(() => {
       draft.to = normalized.to;
       draft.subject = normalized.subject;
       draft.body = normalized.body;
       draft.bodyFormat = "plain_text";
+      draft.attachments = normalized.attachments;
       draft.revision = Number(draft.revision ?? 0) + 1;
       draft.updatedAt = now();
       appendEvent({
@@ -241,7 +256,7 @@ export function mailSendApprovalTarget(draft) {
 
 function mailboxAccounts(applications, { sendEnabled = false, credentialReadiness = [] } = {}) {
   const readApps = applications
-    .filter((application) => mailTools(application).some((tool) => ["mail_list_unread", "mail_fetch"].includes(tool)))
+    .filter((application) => mailTools(application).some((tool) => ["mail_sync", "mail_list_unread", "mail_fetch"].includes(tool)))
     .filter((application) => !application.successorApplicationId)
     .sort(compareApplicationReadiness);
   const sendApps = applications.filter((application) => mailTools(application).includes("mail_send"));
@@ -268,8 +283,10 @@ function mailboxAccounts(applications, { sendEnabled = false, credentialReadines
       ),
       readApplicationId: application.id,
       sendApplicationId: send?.id ?? null,
-      syncCapability: capabilityName(application, "mail_list_unread"),
+      syncCapability: capabilityName(application, "mail_sync") ?? capabilityName(application, "mail_list_unread"),
       fetchCapability: capabilityName(application, "mail_fetch"),
+      incrementalSync: Boolean(capabilityName(application, "mail_sync")),
+      providerReadState: Boolean(capabilityName(application, "mail_set_read")),
     });
   }
   return [...providers.values()];
@@ -336,6 +353,15 @@ function mailboxMessages(results, threads, readStates = []) {
       for (const header of record.data.headers ?? []) mergeMessage(messages, header, record, true, threads);
     } else if (record.data?.kind === "message") {
       mergeMessage(messages, record.data, record, true, threads);
+    } else if (record.data?.kind === "mailbox_sync") {
+      for (const header of record.data.messages ?? []) mergeMessage(messages, header, record, header.unread !== false, threads);
+      for (const readState of record.data.readStates ?? []) {
+        const entry = [...messages.entries()].find(([, message]) => message.folderId === readState.folderId && message.providerUid === readState.uid);
+        if (entry) messages.set(entry[0], { ...entry[1], unread: readState.unread });
+      }
+    } else if (record.data?.kind === "read_state") {
+      const existing = messages.get(record.data.messageId);
+      if (existing) messages.set(record.data.messageId, { ...existing, unread: record.data.read !== true });
     }
   }
   const readIds = new Set(readStates.filter((row) => row?.readAt).map((row) => row.messageId));
@@ -347,6 +373,7 @@ function mailboxMessages(results, threads, readStates = []) {
 function recordContainsMessage(record, messageId) {
   if (record.data?.kind === "message") return record.data.messageId === messageId;
   if (record.data?.kind === "unread_headers") return (record.data.headers ?? []).some((header) => header.messageId === messageId);
+  if (record.data?.kind === "mailbox_sync") return (record.data.messages ?? []).some((header) => header.messageId === messageId);
   return false;
 }
 
@@ -375,7 +402,10 @@ function mergeMessage(messages, input, record, unread, threads) {
     date,
     body,
     preview: body ? body.replace(/\s+/g, " ").trim().slice(0, 160) : "",
-    unread: previous.unread ?? unread,
+    unread: typeof input?.unread === "boolean" ? input.unread : previous.unread ?? unread,
+    folderId: cap(input?.folderId, 100) || previous.folderId || "inbox",
+    folderPath: cap(input?.folderPath, MAX_RECIPIENT) || previous.folderPath || "INBOX",
+    providerUid: Number.isInteger(input?.uid) ? input.uid : previous.providerUid ?? null,
     fetched: Boolean(body),
     inReplyTo: cap(input?.inReplyTo, MAX_RECIPIENT) || previous.inReplyTo || null,
     references: Array.isArray(input?.references) ? input.references.slice(0, 50) : previous.references ?? [],
@@ -385,6 +415,65 @@ function mergeMessage(messages, input, record, unread, threads) {
     issueNumber: threads?.[messageId]?.issueNumber ?? null,
     createdAt: record.createdAt ?? previous.createdAt ?? date,
   });
+}
+
+function publicMessage(message) {
+  const { providerUid: _providerUid, ...value } = message;
+  return value;
+}
+
+function mailboxProviderFolders(results, messages) {
+  const latestById = new Map();
+  for (const record of [...results].sort((left, right) => timestampOf(left) - timestampOf(right))) {
+    if (record.data?.kind !== "mailbox_sync") continue;
+    for (const folder of record.data.folders ?? []) latestById.set(folder.id, folder);
+  }
+  if (!latestById.has("inbox")) latestById.set("inbox", { id: "inbox", name: "Inbox", count: 0, unread: null, specialUse: "\\Inbox" });
+  return [...latestById.values()]
+    .map((folder) => {
+      const cached = messages.filter((message) => message.folderId === folder.id);
+      return {
+        id: folder.id,
+        name: folder.name,
+        kind: "provider",
+        specialUse: folder.specialUse ?? null,
+        count: cached.length,
+        unread: cached.filter((message) => message.unread).length,
+        cursorReset: folder.cursorReset === true,
+        syncError: folder.syncError === true,
+      };
+    })
+    .sort((left, right) => folderRank(left) - folderRank(right) || left.name.localeCompare(right.name));
+}
+
+function latestMailboxCursors(results) {
+  const byPath = new Map();
+  for (const record of [...results].sort((left, right) => timestampOf(left) - timestampOf(right))) {
+    if (record.data?.kind !== "mailbox_sync") continue;
+    for (const cursor of record.data.cursors ?? []) byPath.set(cursor.folderPath, cursor);
+  }
+  return [...byPath.values()].slice(0, 20).map(({ folderPath, uidValidity, lastUid }) => ({ folderPath, uidValidity, lastUid }));
+}
+
+function normalizeSearchQuery(value) {
+  return cap(String(value ?? "").trim(), MAX_SEARCH).normalize("NFKC").toLocaleLowerCase();
+}
+
+function matchesMailSearch(message, query) {
+  if (!query) return true;
+  return [message.from, message.subject, message.preview, message.body]
+    .filter((value) => typeof value === "string")
+    .some((value) => value.normalize("NFKC").toLocaleLowerCase().includes(query));
+}
+
+function folderRank(folder) {
+  if (folder.id === "inbox" || folder.specialUse === "\\Inbox") return 0;
+  if (folder.specialUse === "\\Sent") return 1;
+  if (folder.specialUse === "\\Drafts") return 2;
+  if (folder.specialUse === "\\Archive") return 3;
+  if (folder.specialUse === "\\Trash") return 8;
+  if (folder.specialUse === "\\Junk") return 9;
+  return 5;
 }
 
 function publicDraft(draft) {
@@ -398,6 +487,7 @@ function publicDraft(draft) {
     body: draft.body ?? "",
     inReplyTo: draft.inReplyTo ?? null,
     references: Array.isArray(draft.references) ? draft.references : [],
+    attachments: Array.isArray(draft.attachments) ? draft.attachments : [],
     createdAt: draft.createdAt ?? null,
     updatedAt: draft.updatedAt ?? draft.createdAt ?? null,
     sentAt: draft.sentAt ?? null,
@@ -406,7 +496,7 @@ function publicDraft(draft) {
   };
 }
 
-function validateDraftFields({ to, subject, body }) {
+function validateDraftFields({ to, subject, body, attachments = [] }) {
   const normalizedTo = cap(String(to ?? "").trim(), MAX_RECIPIENT);
   const normalizedSubject = cap(String(subject ?? "").trim(), MAX_SUBJECT);
   const normalizedBody = cap(String(body ?? ""), MAX_BODY);
@@ -414,7 +504,30 @@ function validateDraftFields({ to, subject, body }) {
   // fail-closed on recipient/body, and the client highlights missing fields
   // before asking for an approval grant.
   if (normalizedTo && !validRecipientList(normalizedTo)) return { ok: false, status: 422, body: { error: "mail_recipient_invalid" } };
-  return { ok: true, to: normalizedTo, subject: normalizedSubject, body: normalizedBody };
+  const normalizedAttachments = normalizeDraftAttachments(attachments);
+  if (!normalizedAttachments.ok) return normalizedAttachments;
+  return { ok: true, to: normalizedTo, subject: normalizedSubject, body: normalizedBody, attachments: normalizedAttachments.attachments };
+}
+
+function normalizeDraftAttachments(input) {
+  if (!Array.isArray(input) || input.length > MAX_DRAFT_ATTACHMENTS) return { ok: false, status: 422, body: { error: "mail_attachments_invalid" } };
+  const attachments = [];
+  const refs = new Set();
+  let total = 0;
+  for (const item of input) {
+    const ref = cap(item?.ref, 80);
+    const name = cap(item?.name, 255);
+    const contentType = cap(item?.contentType, 127) || "application/octet-stream";
+    const size = Number(item?.size);
+    if (!/^mailatt_[a-f0-9-]{36}$/.test(ref) || !name || !Number.isInteger(size) || size < 0 || size > MAX_DRAFT_ATTACHMENT_BYTES || refs.has(ref)) {
+      return { ok: false, status: 422, body: { error: "mail_attachments_invalid" } };
+    }
+    refs.add(ref);
+    total += size;
+    if (total > MAX_DRAFT_ATTACHMENT_BYTES) return { ok: false, status: 422, body: { error: "mail_attachments_too_large" } };
+    attachments.push({ ref, name, contentType, size });
+  }
+  return { ok: true, attachments };
 }
 
 function validRecipientList(value) {
@@ -437,6 +550,15 @@ function capabilityName(application, toolName) {
 
 function providerOf(application) {
   return String(application.source?.credential?.provider ?? application.source?.manifest?.provider ?? "mail").toLowerCase();
+}
+
+function preferredMailProvider(applications, actor) {
+  const application = applications.find((item) =>
+    !item.successorApplicationId
+    && (!actor?.teamId || (item.ownerTeamId ?? "team_local") === actor.teamId)
+    && mailTools(item).some((tool) => ["mail_sync", "mail_list_unread", "mail_fetch"].includes(tool)),
+  );
+  return application ? providerOf(application) : null;
 }
 
 function providerLabel(provider, fallback) {

@@ -238,6 +238,56 @@ test("receive readiness does not claim connected before the device reports its c
   assert.equal(account.statusDetail, "credential_not_authorized");
 });
 
+test("provider folders, local search, and incremental cursors are applied before pagination", () => {
+  const { state, service, capabilityCalls } = harness();
+  state.applications[0].capabilityFacades.unshift(
+    { id: "sync", agentToolName: "mail_sync" },
+    { id: "set_read", agentToolName: "mail_set_read" },
+  );
+  state.applicationResults.push({
+    id: "appres_sync", source: "mail_headers", applicationId: "app_163_mail_v2", ownerTeamId: "team_a", createdAt: "2026-08-13T02:30:00.000Z",
+    data: {
+      kind: "mailbox_sync",
+      folders: [
+        { id: "inbox", path: "INBOX", name: "Inbox", specialUse: "\\Inbox", count: 2, unread: 1 },
+        { id: "provider-sent", path: "Sent", name: "已发送", specialUse: "\\Sent", count: 1, unread: 0 },
+      ],
+      messages: [{ messageId: "<sent@example.com>", from: "Me", subject: "Quarterly needle", date: "2026-08-13T02:20:00Z", folderId: "provider-sent", folderPath: "Sent", uid: 7, unread: false }],
+      cursors: [{ folderId: "provider-sent", folderPath: "Sent", uidValidity: "991", lastUid: 7 }],
+    },
+  });
+  const searched = service.snapshot({ actor: { teamId: "team_a" }, folder: "provider-sent", query: "NEEDLE", pageSize: 1 });
+  assert.equal(searched.pagination.total, 1);
+  assert.equal(searched.messages[0].subject, "Quarterly needle");
+  assert.equal(searched.folders.some((folder) => folder.id === "provider-sent" && folder.name === "已发送"), true);
+
+  service.startSync({ actor: { userId: "usr_a", teamId: "team_a" } });
+  assert.deepEqual(capabilityCalls.at(-1).input.cursors, [{ folderPath: "Sent", uidValidity: "991", lastUid: 7 }]);
+});
+
+test("provider read changes dispatch first and become visible only from a confirmed receipt", () => {
+  const { state, service, capabilityCalls } = harness();
+  state.applications[0].capabilityFacades.push({ id: "set_read", agentToolName: "mail_set_read" });
+  const actor = { userId: "usr_a", teamId: "team_a" };
+  const result = service.setMessageRead({ messageId: "<one@example.com>", read: true, actor });
+  assert.equal(result.status, 202);
+  assert.equal(service.snapshot({ actor }).messages[0].unread, true, "no optimistic provider mutation is persisted");
+  assert.deepEqual(capabilityCalls[0].input, { messageId: "<one@example.com>", folderPath: "INBOX", read: true });
+  state.applicationResults.push({ id: "read_receipt", source: "mail_headers", ownerTeamId: "team_a", createdAt: "2026-08-13T04:00:00Z", data: { kind: "read_state", messageId: "<one@example.com>", folderId: "inbox", folderPath: "INBOX", read: true } });
+  assert.equal(service.snapshot({ actor }).messages[0].unread, false);
+});
+
+test("outbound attachments are metadata-only and every change increments the approval revision", () => {
+  const { state, service } = harness();
+  const attachment = { ref: "mailatt_12345678-1234-1234-1234-123456789abc", name: "report.pdf", contentType: "application/pdf", size: 1234 };
+  const created = service.createDraft({ to: "a@example.com", subject: "Report", body: "See attached", attachments: [attachment], actor: { teamId: "team_a" } });
+  assert.deepEqual(created.body.draft.attachments, [attachment]);
+  assert(!JSON.stringify(state.mailDrafts[0]).includes("C:\\"));
+  const updated = service.updateDraft({ draftId: created.body.draft.id, to: "a@example.com", subject: "Report", body: "See attached", attachments: [], actor: { teamId: "team_a" } });
+  assert.equal(updated.body.draft.revision, 2);
+  assert.deepEqual(updated.body.draft.attachments, []);
+});
+
 function sendApplication() {
   return {
     id: "app_163_send",

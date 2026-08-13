@@ -4,8 +4,8 @@ import { attachmentMetadataOf, previewKind } from "./message.mjs";
 const MAX_PREVIEW_BYTES = 5 * 1024 * 1024;
 const MAX_DOWNLOAD_BYTES = 25 * 1024 * 1024;
 
-export async function read163Attachment({ messageId, attachmentId, purpose = "preview" }) {
-  const { parsed } = await fetch163ParsedMessage(messageId);
+export async function read163Attachment({ messageId, folderPath = "INBOX", attachmentId, purpose = "preview" }) {
+  const { parsed } = await fetch163ParsedMessage(messageId, folderPath);
   const attachments = parsed?.attachments ?? [];
   const index = attachmentIndex(attachmentId, attachments.length);
   if (index < 0) throw publicAttachmentError("attachment_not_found");

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useDeferredValue, useEffect, useMemo, useState } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   AlertTriangle,
@@ -8,6 +8,7 @@ import {
   Download,
   Eye,
   FilePenLine,
+  Folder,
   Inbox,
   Mail,
   MailOpen,
@@ -18,16 +19,17 @@ import {
   Search,
   Send,
   ShieldCheck,
+  X,
 } from "lucide-react";
 import { SectionHeading } from "@/components/common/section-heading";
 import { Button } from "@/components/ui/button";
 import { Modal } from "@/components/ui/modal";
-import { api, ApiError, type MailboxDraft, type MailboxMessage } from "@/lib/api-client";
+import { api, ApiError, type MailboxDraft, type MailboxMessage, type MailDraftAttachment } from "@/lib/api-client";
 import { mailApi } from "@/features/mail/mail-api";
 import { useAppTranslation } from "@/lib/i18n/use-app-translation";
 import { cn } from "@/lib/cn";
 
-type FolderId = "inbox" | "drafts" | "sent" | "outbox";
+type FolderId = string;
 
 const COPY = {
   zh: {
@@ -40,7 +42,8 @@ const COPY = {
     syncComplete: "收取完成，收件箱已更新。",
     syncFailed: "暂时无法收取新邮件。已有邮件仍然保留，请重试；若持续失败，请检查连接。",
     lastSynced: "上次收取：{{time}}",
-    search: "搜索当前页的发件人、主题或正文",
+    search: "搜索此文件夹内已收取的邮件",
+    searchEmpty: "没有找到匹配的邮件",
     previousPage: "上一页",
     nextPage: "下一页",
     pageStatus: "第 {{page}} / {{total}} 页",
@@ -56,7 +59,9 @@ const COPY = {
     downloadSaved: "附件已保存：{{name}}",
     downloadTooLarge: "附件超过当前 25 MB 下载限制。",
     desktopAttachmentOnly: "请在 MyAgentTool 桌面版中预览或下载附件。",
-    localReadHint: "已读状态仅保存在 MyAgentTool，不会修改服务商邮箱。",
+    localReadHint: "已读状态会同步到邮箱服务商；同步失败时会保留原状态并提示重试。",
+    cursorReset: "邮箱文件夹发生变化，已安全重新收取最近邮件。",
+    folderSyncError: "部分文件夹暂时无法更新，其他邮件已正常保留。请稍后再次收取。",
     connected: "已连接",
     receiveOnly: "当前可收件；发件权限尚未连接",
     folders: { inbox: "收件箱", drafts: "草稿", sent: "已发送", outbox: "发件箱" },
@@ -83,7 +88,7 @@ const COPY = {
     connectorTitle: "连接邮箱",
     connectorDescription: "跟着两步完成；系统会自动验证，不需要填写服务器地址。",
     provider163: "163 邮箱",
-    provider163Hint: "当前支持收取和阅读邮件",
+    provider163Hint: "支持文件夹、增量收取和服务商已读状态同步",
     providerGmail: "Gmail",
     comingSoon: "即将支持",
     desktopOnly: "请在 MyAgentTool 桌面版中连接邮箱。网页不会接触你的登录信息。",
@@ -96,9 +101,12 @@ const COPY = {
     connectAndTest: "连接并测试收件",
     testing: "正在验证…",
     connectSuccess: "收件连接成功",
-    connectSuccessHint: "现在可以回到收件箱收取新邮件。发件权限仍保持关闭。",
+    connectSuccessHint: "现在可以收取各文件夹的新邮件并同步已读状态；发件可在下一步单独连接。",
     done: "完成",
     reconnect: "重新连接",
+    connectSend: "连接发件权限",
+    connectSendHint: "发件授权与收件分开保存。连接后，每封邮件仍会在发送前要求你完整确认。",
+    sendConnected: "发件权限已连接",
     errors: {
       invalid_email: "请输入完整的 163 邮箱地址。",
       invalid_authorization_code: "请输入 163 客户端授权码。",
@@ -134,6 +142,12 @@ const COPY = {
     noSubject: "（无主题）",
     close: "关闭",
     saved: "草稿已保存",
+    addAttachments: "添加附件",
+    pasteAttachments: "也可以直接粘贴复制的文件",
+    attachmentLimit: "最多 10 个附件，总计不超过 25 MB",
+    removeAttachment: "移除 {{name}}",
+    outboundAttachmentFailed: "无法添加附件。请确认文件总计不超过 25 MB 后重试。",
+    outboundDesktopOnly: "请在 MyAgentTool 桌面版中添加附件。",
     status: { draft: "草稿", sending: "发送中", sent: "已发送", send_unconfirmed: "请检查是否已发送" },
   },
   en: {
@@ -146,7 +160,8 @@ const COPY = {
     syncComplete: "Mail received. Your inbox is up to date.",
     syncFailed: "New mail could not be retrieved. Existing mail is safe. Try again, then check the connection if it continues.",
     lastSynced: "Last checked: {{time}}",
-    search: "Search sender, subject, or body on this page",
+    search: "Search received mail in this folder",
+    searchEmpty: "No matching messages",
     previousPage: "Previous",
     nextPage: "Next",
     pageStatus: "Page {{page}} of {{total}}",
@@ -162,7 +177,9 @@ const COPY = {
     downloadSaved: "Attachment saved: {{name}}",
     downloadTooLarge: "The attachment exceeds the current 25 MB download limit.",
     desktopAttachmentOnly: "Use the MyAgentTool desktop app to preview or download attachments.",
-    localReadHint: "Read state is stored in MyAgentTool and does not change your provider mailbox.",
+    localReadHint: "Read state syncs with your email provider. If syncing fails, the previous state is kept so you can retry.",
+    cursorReset: "This mailbox folder changed, so recent mail was safely retrieved again.",
+    folderSyncError: "Some folders could not be updated. Other mail is safe; try Get new mail again later.",
     connected: "Connected",
     receiveOnly: "Receiving is ready; sending is not connected yet",
     folders: { inbox: "Inbox", drafts: "Drafts", sent: "Sent", outbox: "Outbox" },
@@ -189,7 +206,7 @@ const COPY = {
     connectorTitle: "Connect email",
     connectorDescription: "Two guided steps; no server addresses are required.",
     provider163: "163 Mail",
-    provider163Hint: "Receiving and reading are currently supported",
+    provider163Hint: "Folders, incremental retrieval, and provider read-state sync are supported",
     providerGmail: "Gmail",
     comingSoon: "Coming soon",
     desktopOnly: "Connect email in the MyAgentTool desktop app. The web page never handles your sign-in details.",
@@ -202,9 +219,12 @@ const COPY = {
     connectAndTest: "Connect and test receiving",
     testing: "Verifying…",
     connectSuccess: "Receiving connected",
-    connectSuccessHint: "You can now retrieve new messages. Sending permission remains off.",
+    connectSuccessHint: "You can now retrieve folder updates and sync read state. Sending can be connected separately next.",
     done: "Done",
     reconnect: "Reconnect",
+    connectSend: "Connect sending",
+    connectSendHint: "Sending permission is stored separately from receiving. Every message still requires a complete review before sending.",
+    sendConnected: "Sending connected",
     errors: {
       invalid_email: "Enter a complete 163 Mail address.",
       invalid_authorization_code: "Enter the 163 client authorization code.",
@@ -240,6 +260,12 @@ const COPY = {
     noSubject: "(no subject)",
     close: "Close",
     saved: "Draft saved",
+    addAttachments: "Add attachments",
+    pasteAttachments: "You can also paste copied files here",
+    attachmentLimit: "Up to 10 attachments, 25 MB total",
+    removeAttachment: "Remove {{name}}",
+    outboundAttachmentFailed: "Attachments could not be added. Check that the total is under 25 MB and try again.",
+    outboundDesktopOnly: "Add attachments in the MyAgentTool desktop app.",
     status: { draft: "Draft", sending: "Sending", sent: "Sent", send_unconfirmed: "Check whether sent" },
   },
 } as const;
@@ -249,9 +275,11 @@ export function MailView() {
   const copy = i18n.language.startsWith("zh") ? COPY.zh : COPY.en;
   const queryClient = useQueryClient();
   const [page, setPage] = useState(1);
-  const mailbox = useQuery({ queryKey: ["mailbox", page], queryFn: () => mailApi.getMailbox(page), refetchInterval: 4_000 });
   const [folder, setFolder] = useState<FolderId>("inbox");
   const [query, setQuery] = useState("");
+  const deferredQuery = useDeferredValue(query);
+  const systemFolder = ["drafts", "sent", "outbox"].includes(folder);
+  const mailbox = useQuery({ queryKey: ["mailbox", page, folder, systemFolder ? "" : deferredQuery], queryFn: () => mailApi.getMailbox(page, systemFolder ? "inbox" : folder, systemFolder ? "" : deferredQuery), refetchInterval: 4_000 });
   const [selectedMessageId, setSelectedMessageId] = useState<string | null>(null);
   const [compose, setCompose] = useState<ComposeState | null>(null);
   const [reviewDraft, setReviewDraft] = useState<MailboxDraft | null>(null);
@@ -264,6 +292,10 @@ export function MailView() {
   const account = data?.accounts.find((item) => item.canReceive) ?? data?.accounts[0] ?? null;
   const selectedMessage = data?.messages.find((message) => message.id === selectedMessageId) ?? null;
   const syncing = busy === "sync" || data?.sync?.status === "syncing";
+  const providerFolders = (data?.folders ?? []).filter((item) => item.kind === "provider");
+  const folderName = copy.folders[folder as keyof typeof copy.folders]
+    ?? providerFolders.find((item) => item.id === folder)?.name
+    ?? folder;
   const lastSyncText = data?.sync?.lastSucceededAt
     ? copy.lastSynced.replace("{{time}}", new Intl.DateTimeFormat(i18n.language, { dateStyle: "short", timeStyle: "short" }).format(new Date(data.sync.lastSucceededAt)))
     : null;
@@ -283,16 +315,21 @@ export function MailView() {
     if (data?.pagination && data.pagination.page !== page) setPage(data.pagination.page);
   }, [data?.pagination, page]);
 
+  useEffect(() => {
+    setPage(1);
+    setSelectedMessageId(null);
+  }, [deferredQuery, folder]);
+
   const visibleMessages = useMemo(() => {
     const needle = query.trim().toLowerCase();
     const matches = (value: string) => !needle || value.toLowerCase().includes(needle);
-    if (folder === "inbox") {
-      return (data?.messages ?? []).filter((message) => matches(`${message.from} ${message.subject} ${message.preview}`));
+    if (!systemFolder) {
+      return data?.messages ?? [];
     }
     return (data?.drafts ?? [])
       .filter((draft) => folder === "drafts" ? draft.status === "draft" : folder === "sent" ? draft.status === "sent" : ["sending", "send_unconfirmed"].includes(draft.status))
       .filter((draft) => matches(`${draft.to} ${draft.subject} ${draft.body}`));
-  }, [data?.drafts, data?.messages, folder, query]);
+  }, [data?.drafts, data?.messages, folder, query, systemFolder]);
 
   async function syncMail() {
     if (!account?.canReceive) return;
@@ -319,7 +356,7 @@ export function MailView() {
     if ((message.fetched && message.attachmentMetadataLoaded) || !account?.fetchCapability || busy === "fetch") return;
     setBusy("fetch");
     try {
-      await api.invokeCapability(account.fetchCapability, { messageId: message.messageId });
+      await api.invokeCapability(account.fetchCapability, account.incrementalSync ? { messageId: message.messageId, folderPath: message.folderPath } : { messageId: message.messageId });
       window.setTimeout(() => { void queryClient.invalidateQueries({ queryKey: ["mailbox"] }); }, 800);
     } catch {
       setNotice({ tone: "error", text: copy.bodyUnavailable });
@@ -341,7 +378,7 @@ export function MailView() {
   async function previewAttachment(message: MailboxMessage, attachment: MailboxMessage["attachments"][number]) {
     const bridge = window.myagenttoolDesktop;
     if (!bridge?.previewMailAttachment) { setNotice({ tone: "error", text: copy.desktopAttachmentOnly }); return; }
-    const result = await bridge.previewMailAttachment({ messageId: message.messageId, attachmentId: attachment.id }).catch(() => ({ ok: false as const, error: "attachment_unavailable" as const }));
+    const result = await bridge.previewMailAttachment({ messageId: message.messageId, folderPath: message.folderPath, attachmentId: attachment.id }).catch(() => ({ ok: false as const, error: "attachment_unavailable" as const }));
     if (!result.ok) {
       const text = result.error === "preview_not_supported" ? copy.previewUnsupported : result.error === "preview_too_large" ? copy.previewTooLarge : copy.attachmentUnavailable;
       setNotice({ tone: "error", text });
@@ -353,7 +390,7 @@ export function MailView() {
   async function downloadAttachment(message: MailboxMessage, attachment: MailboxMessage["attachments"][number]) {
     const bridge = window.myagenttoolDesktop;
     if (!bridge?.downloadMailAttachment) { setNotice({ tone: "error", text: copy.desktopAttachmentOnly }); return; }
-    const result = await bridge.downloadMailAttachment({ messageId: message.messageId, attachmentId: attachment.id }).catch(() => ({ ok: false as const, error: "attachment_unavailable" as const }));
+    const result = await bridge.downloadMailAttachment({ messageId: message.messageId, folderPath: message.folderPath, attachmentId: attachment.id }).catch(() => ({ ok: false as const, error: "attachment_unavailable" as const }));
     if (!result.ok) {
       setNotice({ tone: "error", text: result.error === "download_too_large" ? copy.downloadTooLarge : copy.attachmentUnavailable });
     } else if (result.saved) {
@@ -363,21 +400,56 @@ export function MailView() {
 
   function startCompose(message?: MailboxMessage) {
     const subject = message ? `Re: ${message.subject.replace(/^(\s*re\s*:\s*)+/i, "")}` : "";
-    setCompose({ id: null, to: message?.from ?? "", subject, body: "", inReplyTo: message?.messageId ?? null, references: message ? [...message.references, message.messageId] : [] });
+    setCompose({ id: null, to: message?.from ?? "", subject, body: "", attachments: [], inReplyTo: message?.messageId ?? null, references: message ? [...message.references, message.messageId] : [] });
     setNotice(null);
   }
 
   function editDraft(draft: MailboxDraft) {
-    setCompose({ id: draft.id, to: draft.to, subject: draft.subject, body: draft.body, inReplyTo: draft.inReplyTo, references: draft.references });
+    setCompose({ id: draft.id, to: draft.to, subject: draft.subject, body: draft.body, attachments: draft.attachments ?? [], inReplyTo: draft.inReplyTo, references: draft.references });
     setNotice(null);
+  }
+
+  function mergeComposeAttachments(attachments: MailDraftAttachment[]) {
+    if (!compose) return;
+    const merged = [...compose.attachments];
+    for (const attachment of attachments) if (!merged.some((item) => item.ref === attachment.ref)) merged.push(attachment);
+    if (merged.length > 10 || merged.reduce((sum, item) => sum + item.size, 0) > 25 * 1024 * 1024) {
+      setNotice({ tone: "error", text: copy.outboundAttachmentFailed });
+      return;
+    }
+    setCompose({ ...compose, attachments: merged });
+  }
+
+  async function pickComposeAttachments() {
+    const bridge = window.myagenttoolDesktop;
+    if (!bridge?.pickOutboundMailAttachments) { setNotice({ tone: "error", text: copy.outboundDesktopOnly }); return; }
+    const result = await bridge.pickOutboundMailAttachments().catch(() => ({ ok: false as const, error: "attachment_stage_failed" as const }));
+    if (!result.ok) { setNotice({ tone: "error", text: copy.outboundAttachmentFailed }); return; }
+    mergeComposeAttachments(result.attachments);
+  }
+
+  async function pasteComposeAttachments(files: File[]) {
+    if (!files.length) return;
+    const bridge = window.myagenttoolDesktop;
+    if (!bridge?.stagePastedMailAttachments) { setNotice({ tone: "error", text: copy.outboundDesktopOnly }); return; }
+    let staged: Array<{ name: string; contentType: string; data: ArrayBuffer }>;
+    try {
+      staged = await Promise.all(files.slice(0, 10).map(async (file) => ({ name: file.name, contentType: file.type || "application/octet-stream", data: await file.arrayBuffer() })));
+    } catch {
+      setNotice({ tone: "error", text: copy.outboundAttachmentFailed });
+      return;
+    }
+    const result = await bridge.stagePastedMailAttachments({ files: staged }).catch(() => ({ ok: false as const, error: "attachment_stage_failed" as const }));
+    if (!result.ok) { setNotice({ tone: "error", text: copy.outboundAttachmentFailed }); return; }
+    mergeComposeAttachments(result.attachments);
   }
 
   async function persistDraft(value: ComposeState) {
     setBusy("save");
     try {
       const result = value.id
-        ? await api.updateMailDraft(value.id, { to: value.to, subject: value.subject, body: value.body })
-        : await api.createMailDraft({ to: value.to, subject: value.subject, body: value.body, inReplyTo: value.inReplyTo, references: value.references });
+        ? await api.updateMailDraft(value.id, { to: value.to, subject: value.subject, body: value.body, attachments: value.attachments })
+        : await api.createMailDraft({ to: value.to, subject: value.subject, body: value.body, attachments: value.attachments, inReplyTo: value.inReplyTo, references: value.references });
       await queryClient.invalidateQueries({ queryKey: ["mailbox"] });
       setCompose((current) => current ? { ...current, id: result.draft.id } : current);
       setNotice({ tone: "info", text: copy.saved });
@@ -446,6 +518,8 @@ export function MailView() {
       </div>
 
       {notice ? <div role={notice.tone === "error" ? "alert" : "status"} className={cn("rounded-lg border px-3 py-2 text-sm", notice.tone === "error" ? "border-destructive/40 bg-destructive/10 text-destructive" : "border-primary/30 bg-primary/5 text-foreground")}>{notice.text}</div> : null}
+      {data?.folders.some((item) => item.syncError) ? <div role="alert" className="rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-sm">{copy.folderSyncError}</div> : null}
+      {data?.folders.some((item) => item.cursorReset) ? <div role="status" className="rounded-lg border border-primary/30 bg-primary/5 px-3 py-2 text-sm">{copy.cursorReset}</div> : null}
 
       {!data?.accounts.length ? (
         <section className="rounded-2xl border bg-card p-6 text-center sm:p-10">
@@ -464,26 +538,27 @@ export function MailView() {
 
           <div className="overflow-hidden rounded-2xl border bg-card lg:grid lg:min-h-[620px] lg:grid-cols-[11rem_minmax(18rem,23rem)_minmax(0,1fr)]">
             <aside className="border-b p-2 lg:border-b-0 lg:border-r" aria-label={copy.title}>
-              <div className="grid grid-cols-4 gap-1 lg:block lg:space-y-1">
-                {(["inbox", "drafts", "sent", "outbox"] as FolderId[]).map((id) => {
-                  const count = data.folders.find((item) => item.id === id)?.count ?? 0;
-                  const Icon = id === "inbox" ? Inbox : id === "drafts" ? FilePenLine : Send;
-                  return <button key={id} type="button" aria-current={folder === id ? "page" : undefined} onClick={() => { setFolder(id); setSelectedMessageId(null); }} className={cn("flex min-w-0 items-center justify-center gap-1 rounded-lg px-2 py-2 text-xs sm:text-sm lg:w-full lg:justify-start lg:gap-2 lg:px-3", folder === id ? "bg-primary/10 font-medium text-primary" : "text-muted-foreground hover:bg-muted hover:text-foreground")}><Icon className="size-4 shrink-0" /><span className="truncate">{copy.folders[id]}</span><span className="shrink-0 text-[11px] tabular-nums lg:ml-auto">{count}</span></button>;
+              <div className="flex gap-1 overflow-x-auto lg:block lg:space-y-1">
+                {[...providerFolders, ...(["drafts", "sent", "outbox"] as const).map((id) => data.folders.find((item) => item.id === id) ?? { id, count: 0 })].map((item) => {
+                  const id = item.id;
+                  const Icon = id === "inbox" ? Inbox : id === "drafts" ? FilePenLine : item.kind === "provider" ? Folder : Send;
+                  const label = copy.folders[id as keyof typeof copy.folders] ?? item.name ?? id;
+                  return <button key={id} type="button" aria-current={folder === id ? "page" : undefined} onClick={() => { setFolder(id); setSelectedMessageId(null); }} className={cn("flex min-w-max items-center justify-center gap-1 rounded-lg px-2 py-2 text-xs sm:text-sm lg:w-full lg:min-w-0 lg:justify-start lg:gap-2 lg:px-3", folder === id ? "bg-primary/10 font-medium text-primary" : "text-muted-foreground hover:bg-muted hover:text-foreground")}><Icon className="size-4 shrink-0" /><span className="truncate">{label}</span><span className="shrink-0 text-[11px] tabular-nums lg:ml-auto">{item.count}</span></button>;
                 })}
               </div>
             </aside>
 
-            <section className={cn("min-w-0 border-r", selectedMessage ? "hidden lg:block" : "block")} aria-label={copy.folders[folder]}>
+            <section className={cn("min-w-0 border-r", selectedMessage ? "hidden lg:block" : "block")} aria-label={folderName}>
               <div className="border-b p-3">
                 <label className="flex items-center gap-2 rounded-lg border bg-background px-3 py-2 text-sm focus-within:ring-2 focus-within:ring-ring"><Search className="size-4 text-muted-foreground" /><span className="sr-only">{copy.search}</span><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder={copy.search} className="min-w-0 flex-1 bg-transparent outline-none" /></label>
               </div>
               <div className="max-h-[70vh] overflow-y-auto lg:max-h-[560px]">
-                {visibleMessages.length ? visibleMessages.map((entry) => folder === "inbox"
+                {visibleMessages.length ? visibleMessages.map((entry) => !systemFolder
                   ? <MessageRow key={(entry as MailboxMessage).id} message={entry as MailboxMessage} selected={selectedMessageId === (entry as MailboxMessage).id} onOpen={openMessage} />
                   : <DraftRow key={(entry as MailboxDraft).id} draft={entry as MailboxDraft} copy={copy} onOpen={folder === "drafts" ? editDraft : undefined} />)
-                  : <div className="p-8 text-center"><p className="font-medium">{folder === "inbox" ? copy.emptyInbox : copy.emptyFolder}</p>{folder === "inbox" ? <p className="mt-1 text-sm text-muted-foreground">{copy.emptyInboxHint}</p> : null}</div>}
+                  : <div className="p-8 text-center"><p className="font-medium">{!systemFolder ? (query.trim() ? copy.searchEmpty : copy.emptyInbox) : copy.emptyFolder}</p>{!systemFolder && !query.trim() ? <p className="mt-1 text-sm text-muted-foreground">{copy.emptyInboxHint}</p> : null}</div>}
               </div>
-              {folder === "inbox" && data.pagination.totalPages > 1 ? <div className="flex items-center justify-between gap-2 border-t p-2"><Button size="sm" variant="ghost" disabled={!data.pagination.hasPrevious} onClick={() => { setPage((value) => Math.max(1, value - 1)); setSelectedMessageId(null); }}><ChevronLeft />{copy.previousPage}</Button><span className="text-xs text-muted-foreground">{copy.pageStatus.replace("{{page}}", String(data.pagination.page)).replace("{{total}}", String(data.pagination.totalPages))}</span><Button size="sm" variant="ghost" disabled={!data.pagination.hasNext} onClick={() => { setPage((value) => value + 1); setSelectedMessageId(null); }}>{copy.nextPage}<ChevronRight /></Button></div> : null}
+              {!systemFolder && data.pagination.totalPages > 1 ? <div className="flex items-center justify-between gap-2 border-t p-2"><Button size="sm" variant="ghost" disabled={!data.pagination.hasPrevious} onClick={() => { setPage((value) => Math.max(1, value - 1)); setSelectedMessageId(null); }}><ChevronLeft />{copy.previousPage}</Button><span className="text-xs text-muted-foreground">{copy.pageStatus.replace("{{page}}", String(data.pagination.page)).replace("{{total}}", String(data.pagination.totalPages))}</span><Button size="sm" variant="ghost" disabled={!data.pagination.hasNext} onClick={() => { setPage((value) => value + 1); setSelectedMessageId(null); }}>{copy.nextPage}<ChevronRight /></Button></div> : null}
             </section>
 
             <section className={cn("min-w-0", selectedMessage ? "block" : "hidden lg:block")} aria-label={selectedMessage?.subject ?? copy.choose}>
@@ -493,7 +568,7 @@ export function MailView() {
         </>
       )}
 
-      <ComposeModal copy={copy} value={compose} onChange={setCompose} busy={busy} canSend={Boolean(account?.canSend)} onClose={() => setCompose(null)} onSave={() => compose && void persistDraft(compose)} onReview={() => void reviewForSend()} onDelete={() => void removeDraft()} />
+      <ComposeModal copy={copy} value={compose} onChange={setCompose} busy={busy} canSend={Boolean(account?.canSend)} onClose={() => setCompose(null)} onSave={() => compose && void persistDraft(compose)} onReview={() => void reviewForSend()} onDelete={() => void removeDraft()} onPickAttachments={() => void pickComposeAttachments()} onPasteAttachments={(files) => void pasteComposeAttachments(files)} onRemoveAttachment={(ref) => setCompose((current) => current ? { ...current, attachments: current.attachments.filter((item) => item.ref !== ref) } : current)} />
       <SendReviewModal copy={copy} draft={reviewDraft} pending={busy === "send"} onClose={() => setReviewDraft(null)} onSend={() => void sendDraft()} />
       <MailConnectionModal copy={copy} open={connectorOpen} onClose={() => setConnectorOpen(false)} onConnected={() => {
         void queryClient.invalidateQueries({ queryKey: ["mailbox"] });
@@ -509,6 +584,7 @@ function MailConnectionModal({ copy, open, onClose, onConnected }: { copy: typeo
   const [email, setEmail] = useState("");
   const [authorizationCode, setAuthorizationCode] = useState("");
   const [connectedEmail, setConnectedEmail] = useState<string | null>(null);
+  const [sendConnected, setSendConnected] = useState(false);
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -518,6 +594,7 @@ function MailConnectionModal({ copy, open, onClose, onConnected }: { copy: typeo
       const provider = status.providers.find((item) => item.id === "netease_163");
       if (provider?.account) setEmail(provider.account);
       if (provider?.connected) setConnectedEmail(provider.account);
+      setSendConnected(provider?.sendConnected === true);
     }).catch(() => setError(copy.errors.unavailable));
   }, [bridge, copy.errors.unavailable, open]);
 
@@ -536,8 +613,20 @@ function MailConnectionModal({ copy, open, onClose, onConnected }: { copy: typeo
     onConnected();
   }
 
-  return <Modal open={open} title={copy.connectorTitle} description={copy.connectorDescription} size="lg" onClose={onClose} closeDisabled={pending} footer={connectedEmail ? <div className="flex justify-end"><Button onClick={onClose}>{copy.done}</Button></div> : undefined}>
-    {!bridge?.getMailConnectorStatus ? <div className="rounded-xl border bg-muted/40 p-4 text-sm text-muted-foreground">{copy.desktopOnly}</div> : connectedEmail ? <div className="space-y-4 text-center"><span className="mx-auto grid size-12 place-items-center rounded-full bg-emerald-500/10 text-emerald-600"><ShieldCheck /></span><div><h3 className="font-semibold">{copy.connectSuccess}</h3><p className="mt-1 text-sm text-muted-foreground">{connectedEmail}</p><p className="mt-2 text-sm text-muted-foreground">{copy.connectSuccessHint}</p></div><Button variant="secondary" onClick={() => { setConnectedEmail(null); setError(null); }}>{copy.reconnect}</Button></div> : <div className="space-y-4">
+  async function connectSend() {
+    if (!bridge?.connect163MailSend) { setError(copy.errors.unavailable); return; }
+    setPending(true);
+    setError(null);
+    const result = await bridge.connect163MailSend({ email, authorizationCode }).catch(() => ({ ok: false as const, error: "unavailable" as const }));
+    setPending(false);
+    if (!result.ok) { setError(copy.errors[result.error as keyof typeof copy.errors] ?? copy.errors.unavailable); return; }
+    setAuthorizationCode("");
+    setSendConnected(true);
+    onConnected();
+  }
+
+  return <Modal open={open} title={copy.connectorTitle} description={copy.connectorDescription} size="lg" onClose={onClose} closeDisabled={pending} footer={connectedEmail && sendConnected ? <div className="flex justify-end"><Button onClick={onClose}>{copy.done}</Button></div> : undefined}>
+    {!bridge?.getMailConnectorStatus ? <div className="rounded-xl border bg-muted/40 p-4 text-sm text-muted-foreground">{copy.desktopOnly}</div> : connectedEmail ? <div className="space-y-4 text-center"><span className="mx-auto grid size-12 place-items-center rounded-full bg-emerald-500/10 text-emerald-600"><ShieldCheck /></span><div><h3 className="font-semibold">{copy.connectSuccess}</h3><p className="mt-1 text-sm text-muted-foreground">{connectedEmail}</p></div>{sendConnected ? <div className="rounded-xl border border-emerald-500/30 bg-emerald-500/5 p-3 text-sm text-emerald-700">{copy.sendConnected}</div> : <div className="space-y-3 rounded-xl border bg-muted/20 p-4 text-left"><p className="text-sm font-medium">{copy.connectSend}</p><p className="text-xs leading-5 text-muted-foreground">{copy.connectSendHint}</p><label className="block text-sm font-medium">{copy.authorizationCode}<input type="password" autoComplete="off" value={authorizationCode} onChange={(event) => setAuthorizationCode(event.target.value)} placeholder={copy.authorizationPlaceholder} className="mt-1 w-full rounded-md border bg-background px-3 py-2 font-normal outline-none focus:ring-2 focus:ring-ring" /></label>{error ? <div role="alert" className="rounded-lg border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">{error}</div> : null}<Button className="w-full" onClick={() => void connectSend()} disabled={pending}><Send />{pending ? copy.testing : copy.connectSend}</Button></div>}<Button variant="secondary" onClick={() => { setConnectedEmail(null); setSendConnected(false); setError(null); }}>{copy.reconnect}</Button></div> : <div className="space-y-4">
       <div className="grid gap-2 sm:grid-cols-2">
         <div className="rounded-xl border border-primary/40 bg-primary/5 p-3"><div className="flex items-center justify-between gap-2"><span className="font-medium">{copy.provider163}</span><span className="rounded-full bg-emerald-500/10 px-2 py-0.5 text-xs text-emerald-600">{copy.receiveReady}</span></div><p className="mt-1 text-xs text-muted-foreground">{copy.provider163Hint}</p></div>
         <div className="rounded-xl border bg-muted/30 p-3 opacity-70"><div className="flex items-center justify-between gap-2"><span className="font-medium">{copy.providerGmail}</span><span className="rounded-full bg-muted px-2 py-0.5 text-xs text-muted-foreground">{copy.comingSoon}</span></div></div>
@@ -555,6 +644,7 @@ interface ComposeState {
   to: string;
   subject: string;
   body: string;
+  attachments: MailDraftAttachment[];
   inReplyTo: string | null;
   references: string[];
 }
@@ -588,15 +678,15 @@ function AttachmentPreviewModal({ copy, preview, onClose }: { copy: typeof COPY.
   return <Modal open title={copy.previewTitle} description={`${preview.name} · ${formatBytes(preview.size)}`} size="lg" onClose={onClose} footer={<Button variant="secondary" onClick={onClose}>{copy.close}</Button>}><div className="max-h-[65vh] overflow-auto rounded-lg border bg-background p-3">{preview.kind === "text" ? <pre className="whitespace-pre-wrap break-words text-sm">{preview.text}</pre> : preview.kind === "image" && dataUrl ? <img src={dataUrl} alt={preview.name} className="mx-auto max-h-[58vh] max-w-full object-contain" /> : preview.kind === "pdf" && dataUrl ? <iframe title={preview.name} src={dataUrl} className="h-[58vh] w-full border-0" sandbox="" /> : null}</div></Modal>;
 }
 
-function ComposeModal({ copy, value, onChange, busy, canSend, onClose, onSave, onReview, onDelete }: { copy: typeof COPY.zh | typeof COPY.en; value: ComposeState | null; onChange: (value: ComposeState | null) => void; busy: string | null; canSend: boolean; onClose: () => void; onSave: () => void; onReview: () => void; onDelete: () => void }) {
+function ComposeModal({ copy, value, onChange, busy, canSend, onClose, onSave, onReview, onDelete, onPickAttachments, onPasteAttachments, onRemoveAttachment }: { copy: typeof COPY.zh | typeof COPY.en; value: ComposeState | null; onChange: (value: ComposeState | null) => void; busy: string | null; canSend: boolean; onClose: () => void; onSave: () => void; onReview: () => void; onDelete: () => void; onPickAttachments: () => void; onPasteAttachments: (files: File[]) => void; onRemoveAttachment: (ref: string) => void }) {
   if (!value) return null;
   const update = (field: "to" | "subject" | "body", next: string) => onChange({ ...value, [field]: next });
-  return <Modal open title={value.id ? copy.editDraftTitle : copy.composeTitle} description={copy.composeHint} size="lg" onClose={onClose} footer={<div className="flex flex-wrap items-center justify-between gap-2"><div>{value.id ? <Button variant="ghost" onClick={onDelete} disabled={busy === "delete"}>{copy.deleteDraft}</Button> : null}</div><div className="flex flex-wrap gap-2"><Button variant="secondary" onClick={onSave} disabled={busy === "save"}>{busy === "save" ? copy.saving : copy.save}</Button><Button onClick={onReview} disabled={busy === "save" || !canSend}><Send />{copy.reviewSend}</Button></div></div>}><div className="space-y-3"><label className="block text-sm font-medium">{copy.to}<input autoFocus value={value.to} onChange={(event) => update("to", event.target.value)} placeholder={copy.toPlaceholder} className="mt-1 w-full rounded-md border bg-background px-3 py-2 font-normal outline-none focus:ring-2 focus:ring-ring" /></label><label className="block text-sm font-medium">{copy.subject}<input value={value.subject} onChange={(event) => update("subject", event.target.value)} placeholder={copy.subjectPlaceholder} className="mt-1 w-full rounded-md border bg-background px-3 py-2 font-normal outline-none focus:ring-2 focus:ring-ring" /></label><label className="block text-sm font-medium">{copy.body}<textarea value={value.body} onChange={(event) => update("body", event.target.value)} placeholder={copy.bodyPlaceholder} className="mt-1 min-h-64 w-full resize-y rounded-md border bg-background px-3 py-2 font-normal leading-6 outline-none focus:ring-2 focus:ring-ring" /></label>{!canSend ? <p className="text-xs text-muted-foreground">{copy.sendUnavailable}</p> : null}</div></Modal>;
+  return <Modal open title={value.id ? copy.editDraftTitle : copy.composeTitle} description={copy.composeHint} size="lg" onClose={onClose} footer={<div className="flex flex-wrap items-center justify-between gap-2"><div>{value.id ? <Button variant="ghost" onClick={onDelete} disabled={busy === "delete"}>{copy.deleteDraft}</Button> : null}</div><div className="flex flex-wrap gap-2"><Button variant="secondary" onClick={onSave} disabled={busy === "save"}>{busy === "save" ? copy.saving : copy.save}</Button><Button onClick={onReview} disabled={busy === "save" || !canSend}><Send />{copy.reviewSend}</Button></div></div>}><div className="space-y-3" onPaste={(event) => { const files = [...event.clipboardData.files]; if (files.length) { event.preventDefault(); onPasteAttachments(files); } }}><label className="block text-sm font-medium">{copy.to}<input autoFocus value={value.to} onChange={(event) => update("to", event.target.value)} placeholder={copy.toPlaceholder} className="mt-1 w-full rounded-md border bg-background px-3 py-2 font-normal outline-none focus:ring-2 focus:ring-ring" /></label><label className="block text-sm font-medium">{copy.subject}<input value={value.subject} onChange={(event) => update("subject", event.target.value)} placeholder={copy.subjectPlaceholder} className="mt-1 w-full rounded-md border bg-background px-3 py-2 font-normal outline-none focus:ring-2 focus:ring-ring" /></label><label className="block text-sm font-medium">{copy.body}<textarea value={value.body} onChange={(event) => update("body", event.target.value)} placeholder={copy.bodyPlaceholder} className="mt-1 min-h-64 w-full resize-y rounded-md border bg-background px-3 py-2 font-normal leading-6 outline-none focus:ring-2 focus:ring-ring" /></label><section className="rounded-lg border bg-muted/20 p-3" aria-label={copy.attachments}><div className="flex flex-wrap items-center justify-between gap-2"><div><p className="text-sm font-medium">{copy.attachments}</p><p className="text-xs text-muted-foreground">{copy.pasteAttachments} · {copy.attachmentLimit}</p></div><Button type="button" size="sm" variant="secondary" onClick={onPickAttachments}><Paperclip />{copy.addAttachments}</Button></div>{value.attachments.length ? <div className="mt-3 space-y-2">{value.attachments.map((attachment) => <div key={attachment.ref} className="flex min-w-0 items-center gap-2 rounded-md bg-background px-3 py-2"><Paperclip className="size-4 shrink-0 text-muted-foreground" /><span className="min-w-0 flex-1 truncate text-sm">{attachment.name}</span><span className="text-xs text-muted-foreground">{formatBytes(attachment.size)}</span><button type="button" className="rounded p-1 hover:bg-muted" aria-label={copy.removeAttachment.replace("{{name}}", attachment.name)} onClick={() => onRemoveAttachment(attachment.ref)}><X className="size-4" /></button></div>)}</div> : null}</section>{!canSend ? <p className="text-xs text-muted-foreground">{copy.sendUnavailable}</p> : null}</div></Modal>;
 }
 
 function SendReviewModal({ copy, draft, pending, onClose, onSend }: { copy: typeof COPY.zh | typeof COPY.en; draft: MailboxDraft | null; pending: boolean; onClose: () => void; onSend: () => void }) {
   if (!draft) return null;
-  return <Modal open title={copy.sendReviewTitle} description={copy.sendReviewHint} size="lg" onClose={onClose} closeDisabled={pending} footer={<div className="flex justify-end gap-2"><Button variant="secondary" onClick={onClose} disabled={pending}>{copy.close}</Button><Button onClick={onSend} disabled={pending}><Send />{pending ? copy.sending : copy.sendNow}</Button></div>}><dl className="space-y-3 text-sm"><div><dt className="text-xs text-muted-foreground">{copy.to}</dt><dd className="mt-1 break-words font-medium">{draft.to}</dd></div><div><dt className="text-xs text-muted-foreground">{copy.subject}</dt><dd className="mt-1 break-words font-medium">{draft.subject || copy.noSubject}</dd></div><div><dt className="text-xs text-muted-foreground">{copy.body}</dt><dd className="mt-1 max-h-64 overflow-y-auto whitespace-pre-wrap break-words rounded-lg border bg-background p-3 leading-6">{draft.body}</dd></div></dl></Modal>;
+  return <Modal open title={copy.sendReviewTitle} description={copy.sendReviewHint} size="lg" onClose={onClose} closeDisabled={pending} footer={<div className="flex justify-end gap-2"><Button variant="secondary" onClick={onClose} disabled={pending}>{copy.close}</Button><Button onClick={onSend} disabled={pending}><Send />{pending ? copy.sending : copy.sendNow}</Button></div>}><dl className="space-y-3 text-sm"><div><dt className="text-xs text-muted-foreground">{copy.to}</dt><dd className="mt-1 break-words font-medium">{draft.to}</dd></div><div><dt className="text-xs text-muted-foreground">{copy.subject}</dt><dd className="mt-1 break-words font-medium">{draft.subject || copy.noSubject}</dd></div><div><dt className="text-xs text-muted-foreground">{copy.body}</dt><dd className="mt-1 max-h-64 overflow-y-auto whitespace-pre-wrap break-words rounded-lg border bg-background p-3 leading-6">{draft.body}</dd></div>{draft.attachments?.length ? <div><dt className="text-xs text-muted-foreground">{copy.attachments}</dt><dd className="mt-1 space-y-1">{draft.attachments.map((attachment) => <div key={attachment.ref} className="flex items-center gap-2 rounded-md border px-3 py-2"><Paperclip className="size-4" /><span className="min-w-0 flex-1 truncate">{attachment.name}</span><span className="text-xs text-muted-foreground">{formatBytes(attachment.size)}</span></div>)}</dd></div> : null}</dl></Modal>;
 }
 
 function shortDate(value: string | null) { const date = value ? new Date(value) : null; return date && Number.isFinite(date.getTime()) ? new Intl.DateTimeFormat(undefined, { month: "short", day: "numeric" }).format(date) : ""; }

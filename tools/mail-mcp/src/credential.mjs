@@ -21,7 +21,7 @@ export function readCredential(path = defaultCredentialPath()) {
     throw new Error(`not_authorized: run tools/mail-mcp/setup-163.ps1 on this device`);
   }
   const record = JSON.parse(readFileSync(path, "utf8"));
-  if (record.provider !== "netease" || record.scope !== "imap.readonly" || !record.username || !record.protectedAuthorizationCode) {
+  if (record.provider !== "netease" || !["imap.readonly", "imap.mail"].includes(record.scope) || !record.username || !record.protectedAuthorizationCode) {
     throw new Error("not_authorized: the 163 Mail credential record is invalid");
   }
   return {

@@ -6,10 +6,11 @@ import test from "node:test";
 
 import { protectForCurrentWindowsUser, registerMailAccountConnector } from "../src/mail-account-connector.mjs";
 
-function harness({ verifyCredential = async () => undefined, existingApplicationId = null } = {}) {
+function harness({ verifyCredential = async () => undefined, verifySendCredential = async () => undefined, existingApplicationId = null } = {}) {
   const root = mkdtempSync(join(tmpdir(), "mail-connector-"));
   const handlers = new Map();
   const requests = [];
+  let modernRegistered = false;
   registerMailAccountConnector({
     ipcMain: {
       removeHandler: (name) => handlers.delete(name),
@@ -21,9 +22,11 @@ function harness({ verifyCredential = async () => undefined, existingApplication
     nodeCommand: "electron.exe",
     requestServer: async (method, path, body) => {
       requests.push({ method, path, body });
-      return path === "/api/mailbox" ? { accounts: existingApplicationId ? [{ provider: "netease", readApplicationId: existingApplicationId }] : [] } : {};
+      if (path === "/api/applications/register" && body?.capabilityFacades?.some((facade) => facade.agentToolName === "mail_sync")) modernRegistered = true;
+      return path === "/api/mailbox" ? { accounts: existingApplicationId ? [{ provider: "netease", readApplicationId: existingApplicationId }] : modernRegistered ? [{ provider: "netease", readApplicationId: "app_163_mail", incrementalSync: true, providerReadState: true }] : [] } : {};
     },
     verifyCredential,
+    verifySendCredential,
     protectSecret: (secret) => `dpapi:${Buffer.from(secret).toString("base64")}`,
     now: () => "2026-08-13T08:00:00.000Z",
   });
@@ -51,7 +54,7 @@ test("connect verifies first, registers the app, and persists only a protected s
   assert.deepEqual(JSON.parse(readFileSync(readinessPath, "utf8")), {
     applicationId: "app_163_mail",
     provider: "netease",
-    scope: "imap.readonly",
+    scope: "imap.mail",
     obtainedAt: "2026-08-13T08:00:00.000Z",
   });
 });
@@ -74,12 +77,28 @@ test("status exposes account metadata but never the protected credential", async
   assert.equal(status.providers[1].available, false, "Gmail is clearly marked unavailable instead of pretending to connect");
 });
 
-test("reconnection keeps a migrated application id and reports readiness for that revision", async () => {
+test("reconnection registers a full mailbox capability beside the legacy read-only app", async () => {
   const { root, handlers, requests } = harness({ existingApplicationId: "app_163_mail_v2" });
   const result = await handlers.get("mail:connect-163")(null, { email: "user@163.com", authorizationCode: "secret" });
   assert.equal(result.ok, true);
-  assert.equal(requests.some((item) => item.path === "/api/applications/register"), false);
-  assert.equal(existsSync(join(root, "credential-readiness", "app_163_mail_v2.json")), true);
+  const registration = requests.find((item) => item.path === "/api/applications/register");
+  assert.equal(registration.body.replacesApplicationId, undefined);
+  assert.equal(registration.body.id, "app_163_mail_v2_folders");
+  assert.equal(existsSync(join(root, "credential-readiness", "app_163_mail_v2_folders.json")), true);
+});
+
+test("send authorization is verified and stored as a separate write credential", async () => {
+  const seen = [];
+  const { root, handlers, requests } = harness({ verifySendCredential: async (credential) => seen.push(credential) });
+  const result = await handlers.get("mail:connect-163-send")(null, { email: "user@163.com", authorizationCode: "send-code" });
+  assert.equal(result.ok, true);
+  assert.deepEqual(seen, [{ username: "user@163.com", authorizationCode: "send-code" }]);
+  const credential = JSON.parse(readFileSync(join(root, "mail", "163-send.json"), "utf8"));
+  assert.equal(credential.scope, "smtp.send");
+  assert(!JSON.stringify(requests).includes("send-code"));
+  const registration = requests.find((item) => item.path === "/api/applications/register");
+  assert.equal(registration.body.source.credential.write, true);
+  assert.equal(registration.body.capabilityFacades[0].directInvocation, false);
 });
 
 test("invalid addresses are rejected before verification", async () => {

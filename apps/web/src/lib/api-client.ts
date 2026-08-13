@@ -38,6 +38,8 @@ export interface MailboxAccount {
   readApplicationId: string;
   sendApplicationId: string | null;
   fetchCapability: string | null;
+  incrementalSync: boolean;
+  providerReadState: boolean;
 }
 
 export interface MailboxSync {
@@ -56,6 +58,8 @@ export interface MailboxMessage {
   body: string | null;
   preview: string;
   unread: boolean;
+  folderId: string;
+  folderPath: string;
   fetched: boolean;
   inReplyTo: string | null;
   references: string[];
@@ -76,6 +80,7 @@ export interface MailboxDraft {
   body: string;
   inReplyTo: string | null;
   references: string[];
+  attachments: MailDraftAttachment[];
   createdAt: string | null;
   updatedAt: string | null;
   sentAt: string | null;
@@ -83,12 +88,21 @@ export interface MailboxDraft {
   approvalTarget: string;
 }
 
+export interface MailDraftAttachment {
+  ref: string;
+  name: string;
+  contentType: string;
+  size: number;
+}
+
 export interface MailboxSnapshot {
   accounts: MailboxAccount[];
   connection: { status: "connected" | "not_connected" | "needs_attention"; message: string };
   sync: MailboxSync;
-  folders: Array<{ id: "inbox" | "drafts" | "sent" | "outbox"; count: number; unread?: number }>;
+  folders: Array<{ id: string; name?: string; kind?: "provider"; specialUse?: string | null; count: number; unread?: number; cursorReset?: boolean; syncError?: boolean }>;
   messages: MailboxMessage[];
+  query: string;
+  selectedFolder: string;
   pagination: { page: number; pageSize: number; total: number; totalPages: number; hasPrevious: boolean; hasNext: boolean };
   drafts: MailboxDraft[];
   updatedAt: string | null;
@@ -1791,9 +1805,9 @@ async function requestResult(
 
 export const api = {
   syncMailbox: () => request<{ sync: MailboxSync; reused: boolean }>("POST", "/api/mailbox/sync"),
-  createMailDraft: (body: { to: string; subject: string; body: string; inReplyTo?: string | null; references?: string[] }) =>
+  createMailDraft: (body: { to: string; subject: string; body: string; attachments?: MailDraftAttachment[]; inReplyTo?: string | null; references?: string[] }) =>
     request<{ draft: MailboxDraft }>("POST", "/api/mail/drafts", body),
-  updateMailDraft: (id: string, body: { to: string; subject: string; body: string }) =>
+  updateMailDraft: (id: string, body: { to: string; subject: string; body: string; attachments?: MailDraftAttachment[] }) =>
     request<{ draft: MailboxDraft }>("PATCH", `/api/mail/drafts/${encodeURIComponent(id)}`, body),
   deleteMailDraft: (id: string) =>
     request<{ deleted: boolean; draftId: string }>("DELETE", `/api/mail/drafts/${encodeURIComponent(id)}`),
