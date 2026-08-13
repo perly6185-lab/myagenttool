@@ -2093,6 +2093,8 @@ export function createServerRuntimeServices({
     state, now, nextId, appendEvent, persistStateSoon, store,
     mailSendEnabled: isMailSendEnabled,
     createCapabilityInvocation,
+    createWorkItem: workItemService.createWorkItem,
+    inspectTaskMaterialDraft: taskMaterialService.getDraft,
   });
 
   // Channel Registry (S2, #1090/ADR 0012): owner-team-scoped channel lifecycle
@@ -4356,6 +4358,7 @@ export function createServerRuntimeServices({
     createMailboxDraft: mailboxService.createDraft,
     updateMailboxDraft: mailboxService.updateDraft,
     deleteMailboxDraft: mailboxService.deleteDraft,
+    createMailboxTask: mailboxService.createTaskFromMessage,
     registerChannel: channelService.registerChannel,
     listChannels: channelService.listChannels,
     enableChannel: channelService.enableChannel,

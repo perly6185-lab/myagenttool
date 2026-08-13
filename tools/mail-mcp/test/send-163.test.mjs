@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -21,6 +21,8 @@ test("send resolves opaque attachment refs locally and returns only the provider
     assert.deepEqual(result, { sent: true, sentMessageId: "<receipt@163.com>" });
     assert.equal(sent.attachments[0].path, join(root, `${attachment.ref}.bin`));
     assert(!JSON.stringify(result).includes(root));
+    assert.equal(existsSync(join(root, `${attachment.ref}.bin`)), false);
+    assert.equal(existsSync(join(root, `${attachment.ref}.json`)), false);
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 

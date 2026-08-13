@@ -21,6 +21,7 @@ export async function handleMailRoutes({
   createMailboxDraft,
   updateMailboxDraft,
   deleteMailboxDraft,
+  createMailboxTask,
 }) {
   if (req.method === "GET" && url.pathname === "/api/mailbox" && typeof mailboxSnapshot === "function") {
     sendJson(res, 200, mailboxSnapshot({ actor, page: url.searchParams.get("page"), pageSize: url.searchParams.get("pageSize"), folder: url.searchParams.get("folder") ?? "inbox", query: url.searchParams.get("q") ?? "" }));
@@ -35,6 +36,14 @@ export async function handleMailRoutes({
       return true;
     }
     const result = setMailboxMessageRead({ messageId: decodeURIComponent(readMatch[1]), read: body.read, actor });
+    sendJson(res, result.status, result.body);
+    return true;
+  }
+
+  const taskMatch = url.pathname.match(/^\/api\/mailbox\/messages\/([^/]+)\/task$/);
+  if (req.method === "POST" && taskMatch && typeof createMailboxTask === "function") {
+    const body = await readJson(req);
+    const result = createMailboxTask({ ...body, messageId: decodeURIComponent(taskMatch[1]), actor });
     sendJson(res, result.status, result.body);
     return true;
   }

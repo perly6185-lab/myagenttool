@@ -2,7 +2,7 @@ import { expect, test, type Page } from "playwright/test";
 
 const STATE = {
   device: { id: "device-1", name: "Synthetic computer", status: "online", platform: "windows", architecture: "x64" },
-  projects: [], worktrees: [], projectTargets: [], pendingDecisions: [], evidenceLedger: [], invocations: [], events: [],
+  projects: [{ id: "project_1", name: "客户交付", status: "active", color: "blue", ownerTeamId: "team_local", budgetPoolId: null, defaultAgentId: null, isolation: "shared", createdAt: "2026-08-01T00:00:00.000Z" }], worktrees: [], projectTargets: [], pendingDecisions: [], evidenceLedger: [], invocations: [], events: [],
 };
 
 const MAILBOX = {
@@ -15,8 +15,8 @@ const MAILBOX = {
   sync: { status: "idle", invocationId: null, lastCompletedAt: null, lastSucceededAt: "2026-08-13T02:00:00.000Z" },
   folders: [{ id: "inbox", count: 2, unread: 2 }, { id: "drafts", count: 1 }, { id: "sent", count: 0 }, { id: "outbox", count: 0 }],
   messages: [
-    { id: "m1", messageId: "m1", from: "示例客户 <customer@example.com>", subject: "确认交付范围", date: "2026-08-13T02:00:00.000Z", body: "你好，请确认本周交付范围。", preview: "你好，请确认本周交付范围。", unread: true, fetched: true, inReplyTo: null, references: [], attachments: [{ id: "attachment-1", name: "范围说明.txt", contentType: "text/plain", size: 24, previewable: true }], attachmentMetadataLoaded: true, applicationId: "app_163_mail_v2", issueNumber: null, createdAt: "2026-08-13T02:00:00.000Z" },
-    { id: "m2", messageId: "m2", from: "同事 <team@example.com>", subject: "周会资料", date: "2026-08-12T02:00:00.000Z", body: null, preview: "", unread: true, fetched: false, inReplyTo: null, references: [], attachments: [], attachmentMetadataLoaded: false, applicationId: "app_163_mail_v2", issueNumber: null, createdAt: "2026-08-12T02:00:00.000Z" },
+    { id: "m1", messageId: "m1", from: "示例客户 <customer@example.com>", subject: "确认交付范围", date: "2026-08-13T02:00:00.000Z", body: "你好，请确认本周交付范围。", preview: "你好，请确认本周交付范围。", unread: true, fetched: true, inReplyTo: null, references: [], attachments: [{ id: "attachment-1", name: "范围说明.txt", contentType: "text/plain", size: 24, previewable: true }], attachmentMetadataLoaded: true, applicationId: "app_163_mail_v2", issueNumber: null, task: null, createdAt: "2026-08-13T02:00:00.000Z" },
+    { id: "m2", messageId: "m2", from: "同事 <team@example.com>", subject: "周会资料", date: "2026-08-12T02:00:00.000Z", body: null, preview: "", unread: true, fetched: false, inReplyTo: null, references: [], attachments: [], attachmentMetadataLoaded: false, applicationId: "app_163_mail_v2", issueNumber: null, task: null, createdAt: "2026-08-12T02:00:00.000Z" },
   ],
   pagination: { page: 1, pageSize: 25, total: 2, totalPages: 1, hasPrevious: false, hasNext: false },
   drafts: [{ id: "d1", status: "draft", revision: 1, origin: "user", to: "buyer@example.com", subject: "报价说明", body: "您好，附件是报价说明。", inReplyTo: null, references: [], createdAt: "2026-08-13T01:00:00.000Z", updatedAt: "2026-08-13T01:00:00.000Z", sentAt: null, sendError: null, approvalTarget: "d1@1" }],
@@ -33,6 +33,7 @@ async function mockMail(page: Page) {
       return route.fulfill({ json: { sync: { status: "syncing", invocationId: "inv_sync", lastCompletedAt: null, lastSucceededAt: MAILBOX.sync.lastSucceededAt }, reused: false } });
     }
     if (path.endsWith("/read")) return route.fulfill({ json: { messageId: "m1", unread: false } });
+    if (path.endsWith("/task")) return route.fulfill({ json: { task: { id: "lwi_42", localRef: "LOCAL-42", title: "确认交付范围", projectId: "project_1" }, replayed: false } });
     if (path === "/api/mailbox") {
       if (!syncing) return route.fulfill({ json: MAILBOX });
       syncing = false;
@@ -62,6 +63,12 @@ for (const fixture of [
     await page.getByText("确认交付范围", { exact: true }).click();
     await expect(page.getByLabel("确认交付范围").getByText("你好，请确认本周交付范围。")).toBeVisible();
     await expect(page.getByText(/系统只把它当作内容展示/)).toBeVisible();
+
+    await page.getByRole("button", { name: "转为任务" }).click();
+    const taskDialog = page.getByRole("dialog", { name: "确认任务内容" });
+    await expect(taskDialog.getByLabel("所属项目")).toHaveValue("project_1");
+    await expect(taskDialog.getByLabel(/范围说明\.txt/)).not.toBeChecked();
+    await taskDialog.getByText("关闭", { exact: true }).click();
 
     await page.getByRole("button", { name: "写邮件" }).click();
     const dialog = page.getByRole("dialog", { name: "写邮件" });

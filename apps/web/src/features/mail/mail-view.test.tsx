@@ -17,6 +17,9 @@ const mocks = vi.hoisted(() => ({
   getMailConnectorStatus: vi.fn(),
   connect163Mail: vi.fn(),
   connect163MailSend: vi.fn(),
+  createMailTask: vi.fn(),
+  createTaskMaterialDraft: vi.fn(),
+  uploadTaskMaterialFile: vi.fn(),
 }));
 
 vi.mock("@/lib/api-client", async (importOriginal) => {
@@ -26,6 +29,10 @@ vi.mock("@/lib/api-client", async (importOriginal) => {
 
 vi.mock("@/features/mail/mail-api", () => ({
   mailApi: { getMailbox: mocks.getMailbox, setMessageRead: mocks.setMailMessageRead },
+}));
+
+vi.mock("@/data/use-console-state", () => ({
+  useConsoleState: () => ({ data: { projects: [{ id: "project_1", name: "客户项目", status: "active" }] } }),
 }));
 
 const connectedMailbox = {
@@ -40,7 +47,7 @@ const connectedMailbox = {
   messages: [{
     id: "<one@example.com>", messageId: "<one@example.com>", from: "Alice <alice@example.com>", subject: "Project update",
     date: "2026-08-13T01:00:00.000Z", body: "The latest project update is attached.", preview: "The latest project update is attached.",
-    unread: true, folderId: "inbox", folderPath: "INBOX", fetched: true, inReplyTo: null, references: [], attachments: [{ id: "attachment-1", name: "notes.txt", contentType: "text/plain", size: 5, previewable: true }], attachmentMetadataLoaded: true, applicationId: "app_163_mail_v2", issueNumber: null, createdAt: "2026-08-13T01:00:00.000Z",
+    unread: true, folderId: "inbox", folderPath: "INBOX", fetched: true, inReplyTo: null, references: [], attachments: [{ id: "attachment-1", name: "notes.txt", contentType: "text/plain", size: 5, previewable: true }], attachmentMetadataLoaded: true, applicationId: "app_163_mail_v2", issueNumber: null, task: null, createdAt: "2026-08-13T01:00:00.000Z",
   }],
   query: "",
   selectedFolder: "inbox",
@@ -66,6 +73,9 @@ beforeEach(async () => {
   } });
   mocks.issueApprovalGrant.mockResolvedValue({ token: "grant_1", grantId: "grant_1", expiresAt: "later" });
   mocks.sendMailDraft.mockResolvedValue({ status: "sending", draftId: "maildraft_1", sendInvocationId: "inv_send" });
+  mocks.createMailTask.mockResolvedValue({ task: { id: "lwi_42", localRef: "LOCAL-42", title: "Project update", projectId: "project_1" }, replayed: false });
+  mocks.createTaskMaterialDraft.mockResolvedValue({ draft: { id: "tmd_1", revision: 0, assets: [] } });
+  mocks.uploadTaskMaterialFile.mockResolvedValue({ draft: { id: "tmd_1", revision: 1, assets: [] }, asset: {} });
   delete window.myagenttoolDesktop;
 });
 
@@ -97,6 +107,25 @@ describe("MailView ordinary-user flow", () => {
     fireEvent.click(screen.getByRole("button", { name: "下载" }));
     await waitFor(() => expect(downloadMailAttachment).toHaveBeenCalledWith({ messageId: "<one@example.com>", folderPath: "INBOX", attachmentId: "attachment-1" }));
     expect(await screen.findByText("附件已保存：notes.txt")).toBeTruthy();
+  });
+
+  it("reviews an email as a manual local task and keeps attachments opt-in", async () => {
+    renderView();
+    fireEvent.click(await screen.findByText("Project update"));
+    fireEvent.click(screen.getByRole("button", { name: "转为任务" }));
+    expect(await screen.findByRole("dialog", { name: "确认任务内容" })).toBeTruthy();
+    expect((screen.getByLabelText("所属项目") as HTMLSelectElement).value).toBe("project_1");
+    expect((screen.getByLabelText(/notes\.txt/) as HTMLInputElement).checked).toBe(false);
+    fireEvent.change(screen.getByLabelText("任务标题"), { target: { value: "跟进项目更新" } });
+    fireEvent.click(screen.getByRole("button", { name: "创建任务" }));
+    await waitFor(() => expect(mocks.createMailTask).toHaveBeenCalledWith("<one@example.com>", expect.objectContaining({
+      projectId: "project_1",
+      title: "跟进项目更新",
+      attachmentIds: [],
+    })));
+    expect(mocks.createTaskMaterialDraft).not.toHaveBeenCalled();
+    expect(await screen.findByText("任务 LOCAL-42 已创建。")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "查看任务" })).toBeTruthy();
   });
 
   it("moves between bounded inbox pages without making users change a page size", async () => {

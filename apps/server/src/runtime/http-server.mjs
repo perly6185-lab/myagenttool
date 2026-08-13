@@ -438,6 +438,7 @@ export function createHttpServer({
   createMailboxDraft,
   updateMailboxDraft,
   deleteMailboxDraft,
+  createMailboxTask,
   listCanvasScenes,
   getCanvasScene,
   createCanvasScene,
@@ -747,7 +748,7 @@ export function createHttpServer({
       if (await handleMailRoutes({
         req, res, url, sendJson, readJson, actor,
         createMailIssueFromImport, replyOnIssue, confirmReplyDraft, sendConfirmedDraft,
-        mailboxSnapshot, startMailboxSync, setMailboxMessageRead, createMailboxDraft, updateMailboxDraft, deleteMailboxDraft,
+        mailboxSnapshot, startMailboxSync, setMailboxMessageRead, createMailboxDraft, updateMailboxDraft, deleteMailboxDraft, createMailboxTask,
       })) {
         return;
       }

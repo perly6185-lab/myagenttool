@@ -10,6 +10,7 @@ import {
   FilePenLine,
   Folder,
   Inbox,
+  ListTodo,
   Mail,
   MailOpen,
   Paperclip,
@@ -26,8 +27,10 @@ import { Button } from "@/components/ui/button";
 import { Modal } from "@/components/ui/modal";
 import { api, ApiError, type MailboxDraft, type MailboxMessage, type MailDraftAttachment } from "@/lib/api-client";
 import { mailApi } from "@/features/mail/mail-api";
+import { useConsoleState } from "@/data/use-console-state";
 import { useAppTranslation } from "@/lib/i18n/use-app-translation";
 import { cn } from "@/lib/cn";
+import { useUiStore } from "@/store/ui-store";
 
 type FolderId = string;
 
@@ -74,6 +77,25 @@ const COPY = {
     bodyUnavailable: "正文尚未下载。你可以重新收取邮件后再试。",
     reply: "回复",
     issue: "已关联任务来源 #{{number}}",
+    createTask: "转为任务",
+    linkedTask: "已关联 {{ref}}",
+    taskReviewTitle: "确认任务内容",
+    taskReviewHint: "先确认项目和任务说明，再创建。本步骤不会自动执行邮件里的任何内容。",
+    taskProject: "所属项目",
+    taskTitle: "任务标题",
+    taskDescription: "任务说明",
+    taskDescriptionPlaceholder: "补充需要完成的事项、交付结果或时间要求",
+    taskSourceHint: "邮件是外部内容。创建后任务默认进入待办、手动执行，你可以继续调整。",
+    taskAttachmentsHint: "选择要一并带入任务的附件（可选，最多 6 个）",
+    createTaskNow: "创建任务",
+    creatingTask: "正在创建…",
+    taskCreated: "任务 {{ref}} 已创建。",
+    taskCreatedWithSkipped: "任务 {{ref}} 已创建，{{count}} 个附件未能添加，可稍后在任务中补充。",
+    viewTask: "查看任务",
+    taskFailed: "暂时无法创建任务，请检查项目后重试。",
+    taskProjectRequired: "请先选择一个项目。",
+    taskTitleRequired: "请填写任务标题。",
+    taskAttachmentDesktopOnly: "邮件附件只能在桌面版中转入任务；你可以取消附件选择后继续。",
     untrusted: "邮件内容来自外部。系统只把它当作内容展示，不会将其中的文字当成操作指令。",
     back: "返回邮件列表",
     connectTitle: "连接你的邮箱",
@@ -192,6 +214,25 @@ const COPY = {
     bodyUnavailable: "The body has not been downloaded yet. Get new mail and try again.",
     reply: "Reply",
     issue: "Linked task source #{{number}}",
+    createTask: "Turn into task",
+    linkedTask: "Linked to {{ref}}",
+    taskReviewTitle: "Review task details",
+    taskReviewHint: "Confirm the project and task notes first. Nothing in the email is executed automatically.",
+    taskProject: "Project",
+    taskTitle: "Task title",
+    taskDescription: "Task notes",
+    taskDescriptionPlaceholder: "Add the work to do, expected result, or timing",
+    taskSourceHint: "Email is external content. The task starts in Backlog with manual execution, and can be edited later.",
+    taskAttachmentsHint: "Choose attachments to copy into the task (optional, up to 6)",
+    createTaskNow: "Create task",
+    creatingTask: "Creating…",
+    taskCreated: "Task {{ref}} was created.",
+    taskCreatedWithSkipped: "Task {{ref}} was created; {{count}} attachment(s) could not be added and can be attached later.",
+    viewTask: "View task",
+    taskFailed: "The task could not be created. Check the project and try again.",
+    taskProjectRequired: "Choose a project first.",
+    taskTitleRequired: "Add a task title.",
+    taskAttachmentDesktopOnly: "Email attachments can only be copied in the desktop app. Deselect them to continue.",
     untrusted: "Email comes from outside. It is displayed as content and is never treated as an instruction.",
     back: "Back to message list",
     connectTitle: "Connect your email",
@@ -274,6 +315,10 @@ export function MailView() {
   const { i18n } = useAppTranslation();
   const copy = i18n.language.startsWith("zh") ? COPY.zh : COPY.en;
   const queryClient = useQueryClient();
+  const consoleState = useConsoleState();
+  const selectedProjectId = useUiStore((state) => state.selectedProjectId);
+  const openWorkItem = useUiStore((state) => state.openWorkItem);
+  const setSection = useUiStore((state) => state.setSection);
   const [page, setPage] = useState(1);
   const [folder, setFolder] = useState<FolderId>("inbox");
   const [query, setQuery] = useState("");
@@ -283,16 +328,19 @@ export function MailView() {
   const [selectedMessageId, setSelectedMessageId] = useState<string | null>(null);
   const [compose, setCompose] = useState<ComposeState | null>(null);
   const [reviewDraft, setReviewDraft] = useState<MailboxDraft | null>(null);
-  const [busy, setBusy] = useState<"sync" | "fetch" | "save" | "send" | "delete" | null>(null);
+  const [busy, setBusy] = useState<"sync" | "fetch" | "save" | "send" | "delete" | "task" | null>(null);
   const [notice, setNotice] = useState<{ tone: "info" | "error"; text: string } | null>(null);
   const [connectorOpen, setConnectorOpen] = useState(false);
   const [pendingSyncId, setPendingSyncId] = useState<string | null>(null);
   const [attachmentPreview, setAttachmentPreview] = useState<AttachmentPreview | null>(null);
+  const [taskDraft, setTaskDraft] = useState<MailTaskDraft | null>(null);
+  const [createdTask, setCreatedTask] = useState<MailboxMessage["task"]>(null);
   const data = mailbox.data;
   const account = data?.accounts.find((item) => item.canReceive) ?? data?.accounts[0] ?? null;
   const selectedMessage = data?.messages.find((message) => message.id === selectedMessageId) ?? null;
   const syncing = busy === "sync" || data?.sync?.status === "syncing";
   const providerFolders = (data?.folders ?? []).filter((item) => item.kind === "provider");
+  const projects = (consoleState.data?.projects ?? []).filter((project) => project.status === "active");
   const folderName = copy.folders[folder as keyof typeof copy.folders]
     ?? providerFolders.find((item) => item.id === folder)?.name
     ?? folder;
@@ -395,6 +443,94 @@ export function MailView() {
       setNotice({ tone: "error", text: result.error === "download_too_large" ? copy.downloadTooLarge : copy.attachmentUnavailable });
     } else if (result.saved) {
       setNotice({ tone: "info", text: copy.downloadSaved.replace("{{name}}", result.name ?? attachment.name) });
+    }
+  }
+
+  function showTask(task: NonNullable<MailboxMessage["task"]>) {
+    openWorkItem(task.id);
+    setSection("task");
+  }
+
+  function startTask(message: MailboxMessage) {
+    if (message.task) { showTask(message.task); return; }
+    const projectId = projects.some((project) => project.id === selectedProjectId)
+      ? selectedProjectId!
+      : projects[0]?.id ?? "";
+    setTaskDraft({
+      message,
+      projectId,
+      title: message.subject || copy.noSubject,
+      description: message.body || message.preview || "",
+      attachmentIds: [],
+    });
+    setNotice(null);
+  }
+
+  async function createTaskFromMail() {
+    if (!taskDraft) return;
+    if (!taskDraft.projectId) { setNotice({ tone: "error", text: copy.taskProjectRequired }); return; }
+    if (!taskDraft.title.trim()) { setNotice({ tone: "error", text: copy.taskTitleRequired }); return; }
+    const selected = taskDraft.message.attachments.filter((attachment) => taskDraft.attachmentIds.includes(attachment.id)).slice(0, 6);
+    const bridge = window.myagenttoolDesktop;
+    if (selected.length && !bridge?.readMailAttachmentForTask) {
+      setNotice({ tone: "error", text: copy.taskAttachmentDesktopOnly });
+      return;
+    }
+    setBusy("task");
+    setNotice(null);
+    try {
+      let materialDraftId: string | undefined;
+      let materialDraftRevision: number | undefined;
+      const uploadedIds: string[] = [];
+      let skipped = 0;
+      if (selected.length) {
+        const material = await api.createTaskMaterialDraft(taskDraft.projectId);
+        materialDraftId = material.draft.id;
+        materialDraftRevision = material.draft.revision;
+        for (const attachment of selected) {
+          try {
+            const read = await bridge!.readMailAttachmentForTask!({
+              messageId: taskDraft.message.messageId,
+              folderPath: taskDraft.message.folderPath,
+              attachmentId: attachment.id,
+            });
+            if (!read.ok) { skipped += 1; continue; }
+            const file = new File([read.attachment.data], attachment.name, { type: attachment.contentType || "application/octet-stream" });
+            const uploaded = await api.uploadTaskMaterialFile(
+              taskDraft.projectId,
+              materialDraftId,
+              `mail-attachment-${uploadedIds.length + 1}`,
+              file,
+            );
+            uploadedIds.push(attachment.id);
+            materialDraftRevision = uploaded.draft.revision;
+          } catch {
+            skipped += 1;
+          }
+        }
+      }
+      const result = await api.createMailTask(taskDraft.message.messageId, {
+        projectId: taskDraft.projectId,
+        title: taskDraft.title.trim(),
+        description: taskDraft.description,
+        attachmentIds: uploadedIds,
+        ...(uploadedIds.length && materialDraftId ? { materialDraftId, materialDraftRevision } : {}),
+      });
+      setCreatedTask(result.task);
+      setTaskDraft(null);
+      setNotice({
+        tone: "info",
+        text: (skipped ? copy.taskCreatedWithSkipped.replace("{{count}}", String(skipped)) : copy.taskCreated)
+          .replace("{{ref}}", result.task.localRef),
+      });
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["mailbox"] }),
+        queryClient.invalidateQueries({ queryKey: ["console-state"] }),
+      ]);
+    } catch {
+      setNotice({ tone: "error", text: copy.taskFailed });
+    } finally {
+      setBusy(null);
     }
   }
 
@@ -517,7 +653,7 @@ export function MailView() {
         </div>
       </div>
 
-      {notice ? <div role={notice.tone === "error" ? "alert" : "status"} className={cn("rounded-lg border px-3 py-2 text-sm", notice.tone === "error" ? "border-destructive/40 bg-destructive/10 text-destructive" : "border-primary/30 bg-primary/5 text-foreground")}>{notice.text}</div> : null}
+      {notice ? <div role={notice.tone === "error" ? "alert" : "status"} className={cn("flex flex-wrap items-center justify-between gap-2 rounded-lg border px-3 py-2 text-sm", notice.tone === "error" ? "border-destructive/40 bg-destructive/10 text-destructive" : "border-primary/30 bg-primary/5 text-foreground")}><span>{notice.text}</span>{notice.tone === "info" && createdTask ? <Button size="sm" variant="secondary" onClick={() => showTask(createdTask)}><ListTodo />{copy.viewTask}</Button> : null}</div> : null}
       {data?.folders.some((item) => item.syncError) ? <div role="alert" className="rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-sm">{copy.folderSyncError}</div> : null}
       {data?.folders.some((item) => item.cursorReset) ? <div role="status" className="rounded-lg border border-primary/30 bg-primary/5 px-3 py-2 text-sm">{copy.cursorReset}</div> : null}
 
@@ -562,7 +698,7 @@ export function MailView() {
             </section>
 
             <section className={cn("min-w-0", selectedMessage ? "block" : "hidden lg:block")} aria-label={selectedMessage?.subject ?? copy.choose}>
-              {selectedMessage ? <MessageDetail message={selectedMessage} copy={copy} loading={busy === "fetch" && !selectedMessage.fetched} onBack={() => setSelectedMessageId(null)} onReply={() => startCompose(selectedMessage)} onMarkUnread={() => void markUnread(selectedMessage)} onPreview={(attachment) => void previewAttachment(selectedMessage, attachment)} onDownload={(attachment) => void downloadAttachment(selectedMessage, attachment)} /> : <div className="grid h-full min-h-80 place-items-center p-8 text-center text-sm text-muted-foreground"><div><Mail className="mx-auto mb-3 size-8 opacity-40" />{copy.choose}</div></div>}
+              {selectedMessage ? <MessageDetail message={selectedMessage} copy={copy} loading={busy === "fetch" && !selectedMessage.fetched} onBack={() => setSelectedMessageId(null)} onReply={() => startCompose(selectedMessage)} onCreateTask={() => startTask(selectedMessage)} onMarkUnread={() => void markUnread(selectedMessage)} onPreview={(attachment) => void previewAttachment(selectedMessage, attachment)} onDownload={(attachment) => void downloadAttachment(selectedMessage, attachment)} /> : <div className="grid h-full min-h-80 place-items-center p-8 text-center text-sm text-muted-foreground"><div><Mail className="mx-auto mb-3 size-8 opacity-40" />{copy.choose}</div></div>}
             </section>
           </div>
         </>
@@ -575,6 +711,7 @@ export function MailView() {
         window.setTimeout(() => { void queryClient.invalidateQueries({ queryKey: ["mailbox"] }); }, 2_000);
       }} />
       <AttachmentPreviewModal copy={copy} preview={attachmentPreview} onClose={() => setAttachmentPreview(null)} />
+      <MailTaskReviewModal copy={copy} value={taskDraft} projects={projects} pending={busy === "task"} onChange={setTaskDraft} onClose={() => setTaskDraft(null)} onCreate={() => void createTaskFromMail()} />
     </div>
   );
 }
@@ -649,6 +786,14 @@ interface ComposeState {
   references: string[];
 }
 
+interface MailTaskDraft {
+  message: MailboxMessage;
+  projectId: string;
+  title: string;
+  description: string;
+  attachmentIds: string[];
+}
+
 interface AttachmentPreview {
   id: string;
   name: string;
@@ -668,8 +813,34 @@ function DraftRow({ draft, copy, onOpen }: { draft: MailboxDraft; copy: typeof C
   return onOpen ? <button type="button" onClick={() => onOpen(draft)} className="block w-full border-b p-3 text-left hover:bg-muted/50">{content}</button> : <article className="border-b p-3">{content}</article>;
 }
 
-function MessageDetail({ message, copy, loading, onBack, onReply, onMarkUnread, onPreview, onDownload }: { message: MailboxMessage; copy: typeof COPY.zh | typeof COPY.en; loading: boolean; onBack: () => void; onReply: () => void; onMarkUnread: () => void; onPreview: (attachment: MailboxMessage["attachments"][number]) => void; onDownload: (attachment: MailboxMessage["attachments"][number]) => void }) {
-  return <div className="flex h-full min-h-0 flex-col"><div className="border-b p-4"><Button className="mb-3 lg:hidden" size="sm" variant="ghost" onClick={onBack}><ArrowLeft />{copy.back}</Button><div className="flex flex-wrap items-start justify-between gap-3"><div className="min-w-0"><h2 className="break-words text-lg font-semibold">{message.subject}</h2><p className="mt-2 break-words text-sm">{message.from}</p><time className="text-xs text-muted-foreground">{longDate(message.date)}</time></div><div className="flex flex-wrap gap-2"><Button size="sm" variant="ghost" onClick={onMarkUnread}><MailOpen />{copy.markUnread}</Button><Button size="sm" variant="secondary" onClick={onReply}><Reply />{copy.reply}</Button></div></div>{message.issueNumber ? <p className="mt-3 text-xs text-primary">{copy.issue.replace("{{number}}", String(message.issueNumber))}</p> : null}<p className="mt-2 text-[11px] text-muted-foreground">{copy.localReadHint}</p></div><div className="border-b bg-amber-500/5 px-4 py-2 text-xs text-muted-foreground"><AlertTriangle className="mr-1 inline size-3.5 text-amber-500" />{copy.untrusted}</div><div className="min-h-0 flex-1 overflow-y-auto p-4 sm:p-6">{loading ? <p role="status" className="text-sm text-muted-foreground">{copy.loadingBody}</p> : message.body ? <div className="whitespace-pre-wrap break-words text-sm leading-7">{message.body}</div> : <p className="text-sm text-muted-foreground">{copy.bodyUnavailable}</p>}{message.attachments?.length ? <section className="mt-6 border-t pt-4" aria-label={copy.attachments}><h3 className="flex items-center gap-2 text-sm font-semibold"><Paperclip className="size-4" />{copy.attachments} ({message.attachments.length})</h3><div className="mt-2 space-y-2">{message.attachments.map((attachment) => <article key={attachment.id} className="flex flex-wrap items-center justify-between gap-2 rounded-lg border bg-muted/20 p-3"><div className="min-w-0"><p className="truncate text-sm font-medium">{attachment.name}</p><p className="text-xs text-muted-foreground">{formatBytes(attachment.size)}</p></div><div className="flex gap-2">{attachment.previewable ? <Button size="sm" variant="ghost" onClick={() => onPreview(attachment)}><Eye />{copy.previewAttachment}</Button> : null}<Button size="sm" variant="secondary" onClick={() => onDownload(attachment)}><Download />{copy.downloadAttachment}</Button></div></article>)}</div></section> : null}</div></div>;
+function MessageDetail({ message, copy, loading, onBack, onReply, onCreateTask, onMarkUnread, onPreview, onDownload }: { message: MailboxMessage; copy: typeof COPY.zh | typeof COPY.en; loading: boolean; onBack: () => void; onReply: () => void; onCreateTask: () => void; onMarkUnread: () => void; onPreview: (attachment: MailboxMessage["attachments"][number]) => void; onDownload: (attachment: MailboxMessage["attachments"][number]) => void }) {
+  return <div className="flex h-full min-h-0 flex-col"><div className="border-b p-4"><Button className="mb-3 lg:hidden" size="sm" variant="ghost" onClick={onBack}><ArrowLeft />{copy.back}</Button><div className="flex flex-wrap items-start justify-between gap-3"><div className="min-w-0"><h2 className="break-words text-lg font-semibold">{message.subject}</h2><p className="mt-2 break-words text-sm">{message.from}</p><time className="text-xs text-muted-foreground">{longDate(message.date)}</time></div><div className="flex flex-wrap gap-2"><Button size="sm" variant="ghost" onClick={onMarkUnread}><MailOpen />{copy.markUnread}</Button><Button size="sm" variant="secondary" onClick={onReply}><Reply />{copy.reply}</Button><Button size="sm" onClick={onCreateTask}><ListTodo />{message.task ? copy.linkedTask.replace("{{ref}}", message.task.localRef) : copy.createTask}</Button></div></div>{message.issueNumber ? <p className="mt-3 text-xs text-primary">{copy.issue.replace("{{number}}", String(message.issueNumber))}</p> : null}<p className="mt-2 text-[11px] text-muted-foreground">{copy.localReadHint}</p></div><div className="border-b bg-amber-500/5 px-4 py-2 text-xs text-muted-foreground"><AlertTriangle className="mr-1 inline size-3.5 text-amber-500" />{copy.untrusted}</div><div className="min-h-0 flex-1 overflow-y-auto p-4 sm:p-6">{loading ? <p role="status" className="text-sm text-muted-foreground">{copy.loadingBody}</p> : message.body ? <div className="whitespace-pre-wrap break-words text-sm leading-7">{message.body}</div> : <p className="text-sm text-muted-foreground">{copy.bodyUnavailable}</p>}{message.attachments?.length ? <section className="mt-6 border-t pt-4" aria-label={copy.attachments}><h3 className="flex items-center gap-2 text-sm font-semibold"><Paperclip className="size-4" />{copy.attachments} ({message.attachments.length})</h3><div className="mt-2 space-y-2">{message.attachments.map((attachment) => <article key={attachment.id} className="flex flex-wrap items-center justify-between gap-2 rounded-lg border bg-muted/20 p-3"><div className="min-w-0"><p className="truncate text-sm font-medium">{attachment.name}</p><p className="text-xs text-muted-foreground">{formatBytes(attachment.size)}</p></div><div className="flex gap-2">{attachment.previewable ? <Button size="sm" variant="ghost" onClick={() => onPreview(attachment)}><Eye />{copy.previewAttachment}</Button> : null}<Button size="sm" variant="secondary" onClick={() => onDownload(attachment)}><Download />{copy.downloadAttachment}</Button></div></article>)}</div></section> : null}</div></div>;
+}
+
+function MailTaskReviewModal({ copy, value, projects, pending, onChange, onClose, onCreate }: {
+  copy: typeof COPY.zh | typeof COPY.en;
+  value: MailTaskDraft | null;
+  projects: Array<{ id: string; name: string }>;
+  pending: boolean;
+  onChange: (value: MailTaskDraft | null) => void;
+  onClose: () => void;
+  onCreate: () => void;
+}) {
+  if (!value) return null;
+  const toggleAttachment = (id: string) => {
+    const selected = value.attachmentIds.includes(id);
+    if (!selected && value.attachmentIds.length >= 6) return;
+    onChange({ ...value, attachmentIds: selected ? value.attachmentIds.filter((item) => item !== id) : [...value.attachmentIds, id] });
+  };
+  return <Modal open title={copy.taskReviewTitle} description={copy.taskReviewHint} size="lg" onClose={onClose} closeDisabled={pending} footer={<div className="flex justify-end gap-2"><Button variant="secondary" onClick={onClose} disabled={pending}>{copy.close}</Button><Button onClick={onCreate} disabled={pending || !value.projectId || !value.title.trim()}><ListTodo />{pending ? copy.creatingTask : copy.createTaskNow}</Button></div>}>
+    <div className="space-y-4">
+      <div className="rounded-lg border border-amber-500/40 bg-amber-500/5 px-3 py-2 text-xs leading-5 text-muted-foreground"><AlertTriangle className="mr-1 inline size-3.5 text-amber-500" />{copy.taskSourceHint}</div>
+      <label className="block text-sm font-medium">{copy.taskProject}<select autoFocus value={value.projectId} onChange={(event) => onChange({ ...value, projectId: event.target.value })} className="mt-1 w-full rounded-md border bg-background px-3 py-2 font-normal outline-none focus:ring-2 focus:ring-ring"><option value="">—</option>{projects.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}</select></label>
+      <label className="block text-sm font-medium">{copy.taskTitle}<input value={value.title} maxLength={300} onChange={(event) => onChange({ ...value, title: event.target.value })} className="mt-1 w-full rounded-md border bg-background px-3 py-2 font-normal outline-none focus:ring-2 focus:ring-ring" /></label>
+      <label className="block text-sm font-medium">{copy.taskDescription}<textarea value={value.description} maxLength={20_000} onChange={(event) => onChange({ ...value, description: event.target.value })} placeholder={copy.taskDescriptionPlaceholder} className="mt-1 min-h-36 w-full resize-y rounded-md border bg-background px-3 py-2 font-normal leading-6 outline-none focus:ring-2 focus:ring-ring" /></label>
+      {value.message.attachments.length ? <fieldset className="rounded-lg border bg-muted/20 p-3"><legend className="px-1 text-sm font-medium">{copy.attachments}</legend><p className="mb-2 text-xs text-muted-foreground">{copy.taskAttachmentsHint}</p><div className="space-y-2">{value.message.attachments.map((attachment) => <label key={attachment.id} className="flex cursor-pointer items-center gap-3 rounded-md bg-background px-3 py-2"><input type="checkbox" checked={value.attachmentIds.includes(attachment.id)} disabled={!value.attachmentIds.includes(attachment.id) && value.attachmentIds.length >= 6} onChange={() => toggleAttachment(attachment.id)} /><Paperclip className="size-4 shrink-0 text-muted-foreground" /><span className="min-w-0 flex-1 truncate text-sm">{attachment.name}</span><span className="text-xs text-muted-foreground">{formatBytes(attachment.size)}</span></label>)}</div></fieldset> : null}
+    </div>
+  </Modal>;
 }
 
 function AttachmentPreviewModal({ copy, preview, onClose }: { copy: typeof COPY.zh | typeof COPY.en; preview: AttachmentPreview | null; onClose: () => void }) {

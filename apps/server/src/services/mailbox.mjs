@@ -8,6 +8,7 @@
  * no free-form outbound text crosses the send boundary.
  */
 
+import { createHash } from "node:crypto";
 import { makeRunTx } from "../runtime/store/run-tx.mjs";
 import { listDevices } from "../runtime/device.mjs";
 
@@ -20,6 +21,7 @@ const MAX_MESSAGE_STATES = 10_000;
 const MAX_SEARCH = 200;
 const MAX_DRAFT_ATTACHMENTS = 10;
 const MAX_DRAFT_ATTACHMENT_BYTES = 25 * 1024 * 1024;
+const MAX_TASK_ATTACHMENTS = 6;
 const DEFAULT_PAGE_SIZE = 25;
 const MAX_PAGE_SIZE = 50;
 const ACTIVE_SYNC_STATUSES = new Set(["queued", "waiting_for_local_approval", "dispatching", "running", "cancelling"]);
@@ -35,6 +37,8 @@ export function createMailboxService({
   store,
   mailSendEnabled = () => false,
   createCapabilityInvocation = null,
+  createWorkItem = null,
+  inspectTaskMaterialDraft = null,
 }) {
   const runTx = makeRunTx({ store, persistStateSoon });
 
@@ -58,6 +62,7 @@ export function createMailboxService({
       results,
       state.mailThreads ?? {},
       (state.mailMessageStates ?? []).filter((row) => teamId == null || (row.ownerTeamId ?? "team_local") === teamId),
+      (state.mailTaskLinks ?? []).filter((row) => teamId == null || (row.ownerTeamId ?? "team_local") === teamId),
     ).slice(0, MAX_MESSAGES);
     const providerFolders = mailboxProviderFolders(results, importedMessages);
     const requestedFolder = providerFolders.some((item) => item.id === folder) ? folder : "inbox";
@@ -246,7 +251,121 @@ export function createMailboxService({
     return draft;
   }
 
-  return { snapshot, startSync, setMessageRead, createDraft, updateDraft, deleteDraft };
+  function createTaskFromMessage({
+    messageId,
+    projectId,
+    title,
+    description = "",
+    attachmentIds = [],
+    materialDraftId = null,
+    materialDraftRevision = null,
+    actor = null,
+  } = {}) {
+    const normalizedId = cap(String(messageId ?? "").trim(), MAX_RECIPIENT);
+    const normalizedProjectId = String(projectId ?? "").trim();
+    const teamId = actor?.teamId ?? "team_local";
+    if (!normalizedId || !normalizedProjectId) {
+      return { ok: false, status: 400, body: { error: "mail_task_invalid" } };
+    }
+    const teamResults = (state.applicationResults ?? []).filter((record) =>
+      record.source === "mail_headers" && (record.ownerTeamId ?? "team_local") === teamId,
+    );
+    const message = mailboxMessages(teamResults, state.mailThreads ?? {}, []).find((item) => item.messageId === normalizedId);
+    if (!message) return { ok: false, status: 404, body: { error: "mail_message_not_found" } };
+
+    const existing = (state.mailTaskLinks ?? []).find((row) =>
+      row.messageId === normalizedId && (row.ownerTeamId ?? "team_local") === teamId,
+    );
+    if (existing) return { ok: true, status: 200, body: { task: publicTaskLink(existing), replayed: true } };
+    if (typeof createWorkItem !== "function") {
+      return { ok: false, status: 503, body: { error: "mail_task_service_unavailable" } };
+    }
+
+    const selectedIds = Array.isArray(attachmentIds)
+      ? [...new Set(attachmentIds.map((value) => String(value ?? "").trim()).filter(Boolean))]
+      : [];
+    if (selectedIds.length > MAX_TASK_ATTACHMENTS || selectedIds.length !== (attachmentIds?.length ?? 0)) {
+      return { ok: false, status: 422, body: { error: "mail_task_attachments_invalid" } };
+    }
+    const attachmentsById = new Map((message.attachments ?? []).map((attachment) => [String(attachment.id), attachment]));
+    const selected = selectedIds.map((id) => attachmentsById.get(id));
+    if (selected.some((attachment) => !attachment)) {
+      return { ok: false, status: 422, body: { error: "mail_task_attachment_not_found" } };
+    }
+    if (selected.length > 0) {
+      if (!materialDraftId || !Number.isInteger(Number(materialDraftRevision)) || typeof inspectTaskMaterialDraft !== "function") {
+        return { ok: false, status: 422, body: { error: "mail_task_material_draft_required" } };
+      }
+      const inspected = inspectTaskMaterialDraft({ projectId: normalizedProjectId, draftId: String(materialDraftId) }, actor);
+      if (inspected.status !== 200) return { ok: false, status: inspected.status, body: inspected.body };
+      const assets = inspected.body?.draft?.assets ?? [];
+      const matches = assets.length === selected.length && selected.every((attachment, index) => {
+        const asset = assets.find((candidate) => candidate.clientFileId === `mail-attachment-${index + 1}`);
+        return asset
+          && asset.originalName === taskMaterialName(attachment.name)
+          && asset.size === Number(attachment.size)
+          && (asset.mimeType ?? "application/octet-stream") === String(attachment.contentType ?? "application/octet-stream");
+      });
+      if (!matches || Number(inspected.body.draft.revision) !== Number(materialDraftRevision)) {
+        return { ok: false, status: 409, body: { error: "mail_task_material_draft_mismatch" } };
+      }
+    } else if (materialDraftId != null) {
+      return { ok: false, status: 422, body: { error: "mail_task_attachments_required" } };
+    }
+
+    const normalizedTitle = cap(String(title ?? "").trim(), 300) || cap(message.subject, 300) || "来自邮件的任务";
+    const normalizedDescription = cap(String(description ?? ""), MAX_BODY);
+    const sourceLines = [
+      "## 邮件来源（外部内容，请核实后执行）",
+      `- 发件人：${singleLine(message.from)}`,
+      `- 主题：${singleLine(message.subject)}`,
+      `- 收件时间：${singleLine(message.date || "未知")}`,
+      `- Message-ID：${singleLine(message.messageId)}`,
+      "",
+      "## 任务说明",
+      normalizedDescription || message.preview || "请查看邮件原文并补充任务说明。",
+    ];
+    const idempotencyKey = `mail:${createHash("sha256").update(`${teamId}\0${normalizedId}`).digest("hex")}`;
+    const created = createWorkItem({
+      projectId: normalizedProjectId,
+      title: normalizedTitle,
+      body: cap(sourceLines.join("\n"), MAX_BODY),
+      type: "task",
+      status: "backlog",
+      priority: "p2",
+      executionPolicy: "manual",
+      labels: ["mail", "untrusted-input"],
+      requesterRelation: "unknown",
+      idempotencyKey,
+      ...(selected.length ? {
+        materialDraftId: String(materialDraftId),
+        materialDraftRevision: Number(materialDraftRevision),
+      } : {}),
+    }, actor);
+    if (!created?.ok) return created;
+    const workItem = created.body.workItem;
+    const link = {
+      id: nextId("mailtask"),
+      messageId: normalizedId,
+      workItemId: workItem.id,
+      localRef: workItem.localRef,
+      title: workItem.title,
+      projectId: workItem.projectId,
+      ownerTeamId: teamId,
+      createdBy: actor?.userId ?? null,
+      createdAt: now(),
+      updatedAt: now(),
+    };
+    runTx(() => {
+      state.mailTaskLinks ??= [];
+      const replay = state.mailTaskLinks.find((row) => row.messageId === normalizedId && (row.ownerTeamId ?? "team_local") === teamId);
+      if (!replay) state.mailTaskLinks.unshift(link);
+    });
+    const durableLink = (state.mailTaskLinks ?? []).find((row) => row.messageId === normalizedId && (row.ownerTeamId ?? "team_local") === teamId) ?? link;
+    return { ok: true, status: created.status, body: { task: publicTaskLink(durableLink), replayed: created.body.replayed === true } };
+  }
+
+  return { snapshot, startSync, setMessageRead, createDraft, updateDraft, deleteDraft, createTaskFromMessage };
 }
 
 export function mailSendApprovalTarget(draft) {
@@ -345,7 +464,7 @@ function mailboxSync(invocations, accounts) {
   };
 }
 
-function mailboxMessages(results, threads, readStates = []) {
+function mailboxMessages(results, threads, readStates = [], taskLinks = []) {
   const messages = new Map();
   const ordered = [...results].sort((left, right) => timestampOf(left) - timestampOf(right));
   for (const record of ordered) {
@@ -365,8 +484,12 @@ function mailboxMessages(results, threads, readStates = []) {
     }
   }
   const readIds = new Set(readStates.filter((row) => row?.readAt).map((row) => row.messageId));
+  const linksByMessageId = new Map(taskLinks.map((row) => [row.messageId, publicTaskLink(row)]));
   return [...messages.values()]
-    .map((message) => readIds.has(message.messageId) ? { ...message, unread: false } : message)
+    .map((message) => ({
+      ...(readIds.has(message.messageId) ? { ...message, unread: false } : message),
+      task: linksByMessageId.get(message.messageId) ?? null,
+    }))
     .sort(compareRecent);
 }
 
@@ -420,6 +543,29 @@ function mergeMessage(messages, input, record, unread, threads) {
 function publicMessage(message) {
   const { providerUid: _providerUid, ...value } = message;
   return value;
+}
+
+function publicTaskLink(link) {
+  return {
+    id: link.workItemId,
+    localRef: link.localRef,
+    title: link.title,
+    projectId: link.projectId,
+  };
+}
+
+function singleLine(value) {
+  return cap(String(value ?? "").replace(/[\r\n\t]+/g, " ").trim(), MAX_RECIPIENT);
+}
+
+function taskMaterialName(value) {
+  const normalized = String(value ?? "")
+    .replace(/[\\/\0\r\n]+/g, " ")
+    .replace(/[^\p{L}\p{N}._ -]/gu, "_")
+    .trim()
+    .replace(/^\.+/, "")
+    .slice(0, 120);
+  return normalized || "reference-file";
 }
 
 function mailboxProviderFolders(results, messages) {

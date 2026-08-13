@@ -102,6 +102,7 @@ export const persistedArrayKeys = [
   "applicationResults",
   "mailDrafts",
   "mailMessageStates",
+  "mailTaskLinks",
   "mailReplies",
   "budgets",
   "budgetReservations",

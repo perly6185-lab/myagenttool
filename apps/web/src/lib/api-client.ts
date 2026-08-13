@@ -67,6 +67,7 @@ export interface MailboxMessage {
   attachmentMetadataLoaded: boolean;
   applicationId: string | null;
   issueNumber: number | null;
+  task: { id: string; localRef: string; title: string; projectId: string } | null;
   createdAt: string | null;
 }
 
@@ -1805,6 +1806,18 @@ async function requestResult(
 
 export const api = {
   syncMailbox: () => request<{ sync: MailboxSync; reused: boolean }>("POST", "/api/mailbox/sync"),
+  createMailTask: (messageId: string, body: {
+    projectId: string;
+    title: string;
+    description?: string;
+    attachmentIds?: string[];
+    materialDraftId?: string;
+    materialDraftRevision?: number;
+  }) => request<{ task: { id: string; localRef: string; title: string; projectId: string }; replayed: boolean }>(
+    "POST",
+    `/api/mailbox/messages/${encodeURIComponent(messageId)}/task`,
+    body,
+  ),
   createMailDraft: (body: { to: string; subject: string; body: string; attachments?: MailDraftAttachment[]; inReplyTo?: string | null; references?: string[] }) =>
     request<{ draft: MailboxDraft }>("POST", "/api/mail/drafts", body),
   updateMailDraft: (id: string, body: { to: string; subject: string; body: string; attachments?: MailDraftAttachment[] }) =>

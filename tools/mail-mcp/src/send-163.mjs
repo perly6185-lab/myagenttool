@@ -1,4 +1,4 @@
-import { existsSync, lstatSync, readFileSync, realpathSync } from "node:fs";
+import { existsSync, lstatSync, readFileSync, realpathSync, unlinkSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import nodemailer from "nodemailer";
@@ -30,10 +30,25 @@ export async function send163Mail(args, { credential = readSendCredential(), att
     });
     const sentMessageId = bounded(receipt?.messageId, 998);
     if (!sentMessageId) throw new Error("mail_send_receipt_missing");
+    cleanupSentAttachments(args?.attachments, attachmentRoot);
     return { sent: true, sentMessageId };
   } finally {
     transport.close();
   }
+}
+
+export function cleanupSentAttachments(input, root = defaultAttachmentRoot()) {
+  if (!Array.isArray(input)) return { removed: 0 };
+  const resolvedRoot = resolve(root);
+  let removed = 0;
+  for (const item of input) {
+    const ref = bounded(item?.ref, 80);
+    if (!/^mailatt_[a-f0-9-]{36}$/.test(ref)) continue;
+    for (const extension of ["bin", "json"]) {
+      try { unlinkSync(join(resolvedRoot, `${ref}.${extension}`)); removed += 1; } catch { /* receipt is authoritative; cleanup is best effort */ }
+    }
+  }
+  return { removed };
 }
 
 export function resolveAttachments(input, root = defaultAttachmentRoot()) {

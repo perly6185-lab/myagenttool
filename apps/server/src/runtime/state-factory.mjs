@@ -137,6 +137,7 @@ export function createServerState({ defaultProjectPath, now }) {
     applicationResults: [],
     mailDrafts: [],
     mailMessageStates: [],
+    mailTaskLinks: [],
     mailReplies: [],
     budgets: [],
     // #890: in-flight budget holds placed at admission and released on settle so
@@ -345,6 +346,7 @@ export function resetStateForSelfCheck({ state, now }) {
   state.applicationResults = [];
   state.mailDrafts = [];
   state.mailMessageStates = [];
+  state.mailTaskLinks = [];
   state.mailReplies = [];
   state.budgets = [];
   state.decisionSoftClaims = [];

@@ -4,6 +4,7 @@ import { basename } from "node:path";
 export function registerMailAttachmentHandler({ ipcMain, dialog, getWindow, readAttachment }) {
   ipcMain.removeHandler("mail:preview-attachment");
   ipcMain.removeHandler("mail:download-attachment");
+  ipcMain.removeHandler("mail:read-attachment-for-task");
 
   ipcMain.handle("mail:preview-attachment", async (_event, input) => {
     try {
@@ -37,6 +38,33 @@ export function registerMailAttachmentHandler({ ipcMain, dialog, getWindow, read
       if (chosen.canceled || !chosen.filePath) return { ok: true, saved: false };
       writeFileSync(chosen.filePath, attachment.content, { flag: "w" });
       return { ok: true, saved: true, name: basename(chosen.filePath) };
+    } catch (error) {
+      return { ok: false, error: publicCode(error) };
+    }
+  });
+
+  ipcMain.handle("mail:read-attachment-for-task", async (_event, input) => {
+    try {
+      const attachment = await readAttachment({
+        messageId: bounded(input?.messageId, 998),
+        folderPath: bounded(input?.folderPath ?? "INBOX", 998),
+        attachmentId: bounded(input?.attachmentId, 100),
+        purpose: "download",
+      });
+      const bytes = attachment.content.buffer.slice(
+        attachment.content.byteOffset,
+        attachment.content.byteOffset + attachment.content.byteLength,
+      );
+      return {
+        ok: true,
+        attachment: {
+          id: bounded(input?.attachmentId, 100),
+          name: safeFilename(attachment.name),
+          contentType: bounded(attachment.contentType || "application/octet-stream", 127),
+          size: attachment.content.length,
+          data: bytes,
+        },
+      };
     } catch (error) {
       return { ok: false, error: publicCode(error) };
     }
