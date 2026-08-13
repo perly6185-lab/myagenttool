@@ -16,12 +16,19 @@ export async function handleMailRoutes({
   confirmReplyDraft,
   sendConfirmedDraft,
   mailboxSnapshot,
+  startMailboxSync,
   createMailboxDraft,
   updateMailboxDraft,
   deleteMailboxDraft,
 }) {
   if (req.method === "GET" && url.pathname === "/api/mailbox" && typeof mailboxSnapshot === "function") {
     sendJson(res, 200, mailboxSnapshot({ actor }));
+    return true;
+  }
+
+  if (req.method === "POST" && url.pathname === "/api/mailbox/sync" && typeof startMailboxSync === "function") {
+    const result = startMailboxSync({ actor });
+    sendJson(res, result.status, result.body);
     return true;
   }
 

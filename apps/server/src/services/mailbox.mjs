@@ -16,6 +16,7 @@ const MAX_SUBJECT = 400;
 const MAX_BODY = 20_000;
 const MAX_DRAFTS = 200;
 const MAX_MESSAGES = 500;
+const ACTIVE_SYNC_STATUSES = new Set(["queued", "waiting_for_local_approval", "dispatching", "running", "cancelling"]);
 
 const cap = (value, max) => typeof value === "string" ? value.slice(0, max) : "";
 
@@ -27,6 +28,7 @@ export function createMailboxService({
   persistStateSoon = () => {},
   store,
   mailSendEnabled = () => false,
+  createCapabilityInvocation = null,
 }) {
   const runTx = makeRunTx({ store, persistStateSoon });
 
@@ -50,8 +52,9 @@ export function createMailboxService({
     const publicDrafts = drafts.map(publicDraft).sort(compareRecent);
 
     return {
-      accounts,
+      accounts: accounts.map(publicMailboxAccount),
       connection: mailboxConnection(accounts),
+      sync: mailboxSync(state.invocations ?? [], accounts),
       folders: [
         { id: "inbox", count: messages.length, unread: messages.filter((message) => message.unread).length },
         { id: "drafts", count: publicDrafts.filter((draft) => draft.status === "draft").length },
@@ -61,6 +64,37 @@ export function createMailboxService({
       messages,
       drafts: publicDrafts,
       updatedAt: latestTimestamp([...results, ...drafts, ...applications]),
+    };
+  }
+
+  function startSync({ actor = null } = {}) {
+    const teamId = actor?.teamId ?? null;
+    const applications = (state.applications ?? []).filter((application) =>
+      teamId == null || (application.ownerTeamId ?? "team_local") === teamId,
+    );
+    const accounts = mailboxAccounts(applications, {
+      sendEnabled: Boolean(mailSendEnabled()),
+      credentialReadiness: listDevices(state)[0]?.applicationCredentialReadiness ?? [],
+    });
+    const account = accounts.find((candidate) => candidate.canReceive && candidate.syncCapability) ?? null;
+    if (!account) {
+      return { ok: false, status: 409, body: { error: "mailbox_not_connected" } };
+    }
+    const current = mailboxSync(state.invocations ?? [], [account]);
+    if (current.status === "syncing") {
+      return { ok: true, status: 202, body: { sync: current, reused: true } };
+    }
+    if (typeof createCapabilityInvocation !== "function") {
+      return { ok: false, status: 503, body: { error: "mail_sync_unavailable" } };
+    }
+    const result = createCapabilityInvocation(account.syncCapability, { limit: 50 }, actor);
+    if (!result || result.status >= 400) {
+      return { ok: false, status: 409, body: { error: "mail_sync_unavailable" } };
+    }
+    return {
+      ok: true,
+      status: 202,
+      body: { sync: mailboxSync(state.invocations ?? [], [account]), reused: false },
     };
   }
 
@@ -153,7 +187,7 @@ export function createMailboxService({
     return draft;
   }
 
-  return { snapshot, createDraft, updateDraft, deleteDraft };
+  return { snapshot, startSync, createDraft, updateDraft, deleteDraft };
 }
 
 export function mailSendApprovalTarget(draft) {
@@ -215,6 +249,39 @@ function mailboxConnection(accounts) {
     return { status: "connected", message: accounts.length === 1 ? accounts[0].name : `${accounts.length} accounts connected` };
   }
   return { status: "needs_attention", message: "Reconnect your email account to continue." };
+}
+
+function publicMailboxAccount(account) {
+  const { syncCapability: _internalSyncCapability, ...publicAccount } = account;
+  return publicAccount;
+}
+
+function mailboxSync(invocations, accounts) {
+  const capabilityNames = new Set(accounts.map((account) => account.syncCapability).filter(Boolean));
+  const applicationIds = new Set(accounts.map((account) => account.readApplicationId).filter(Boolean));
+  const matching = invocations
+    .filter((invocation) => {
+      const metadata = invocation?.options?.metadata ?? {};
+      return capabilityNames.has(metadata.capability) && applicationIds.has(metadata.applicationId);
+    })
+    .sort((left, right) => timestampOf(right) - timestampOf(left));
+  const latest = matching[0] ?? null;
+  const lastSuccess = matching.find((invocation) => invocation.status === "succeeded") ?? null;
+  const status = !latest
+    ? "idle"
+    : ACTIVE_SYNC_STATUSES.has(latest.status)
+      ? "syncing"
+      : latest.status === "succeeded"
+        ? "succeeded"
+        : "failed";
+  return {
+    status,
+    invocationId: latest?.id ?? null,
+    lastCompletedAt: latest && !ACTIVE_SYNC_STATUSES.has(latest.status)
+      ? latest.completedAt ?? latest.updatedAt ?? null
+      : null,
+    lastSucceededAt: lastSuccess?.completedAt ?? lastSuccess?.updatedAt ?? null,
+  };
 }
 
 function mailboxMessages(results, threads) {

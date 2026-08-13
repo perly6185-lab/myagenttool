@@ -30,6 +30,9 @@ const COPY = {
     compose: "写邮件",
     sync: "收取新邮件",
     syncing: "正在收取…",
+    syncComplete: "收取完成，收件箱已更新。",
+    syncFailed: "暂时无法收取新邮件。已有邮件仍然保留，请重试；若持续失败，请检查连接。",
+    lastSynced: "上次收取：{{time}}",
     search: "搜索发件人、主题或正文",
     connected: "已连接",
     receiveOnly: "当前可收件；发件权限尚未连接",
@@ -117,6 +120,9 @@ const COPY = {
     compose: "New email",
     sync: "Get new mail",
     syncing: "Getting mail…",
+    syncComplete: "Mail received. Your inbox is up to date.",
+    syncFailed: "New mail could not be retrieved. Existing mail is safe. Try again, then check the connection if it continues.",
+    lastSynced: "Last checked: {{time}}",
     search: "Search sender, subject, or body",
     connected: "Connected",
     receiveOnly: "Receiving is ready; sending is not connected yet",
@@ -212,9 +218,25 @@ export function MailView() {
   const [busy, setBusy] = useState<"sync" | "fetch" | "save" | "send" | "delete" | null>(null);
   const [notice, setNotice] = useState<{ tone: "info" | "error"; text: string } | null>(null);
   const [connectorOpen, setConnectorOpen] = useState(false);
+  const [pendingSyncId, setPendingSyncId] = useState<string | null>(null);
   const data = mailbox.data;
   const account = data?.accounts.find((item) => item.canReceive) ?? data?.accounts[0] ?? null;
   const selectedMessage = data?.messages.find((message) => message.id === selectedMessageId) ?? null;
+  const syncing = busy === "sync" || data?.sync?.status === "syncing";
+  const lastSyncText = data?.sync?.lastSucceededAt
+    ? copy.lastSynced.replace("{{time}}", new Intl.DateTimeFormat(i18n.language, { dateStyle: "short", timeStyle: "short" }).format(new Date(data.sync.lastSucceededAt)))
+    : null;
+
+  useEffect(() => {
+    if (!pendingSyncId || data?.sync?.invocationId !== pendingSyncId) return;
+    if (data.sync.status === "succeeded") {
+      setPendingSyncId(null);
+      setNotice({ tone: "info", text: copy.syncComplete });
+    } else if (data.sync.status === "failed") {
+      setPendingSyncId(null);
+      setNotice({ tone: "error", text: copy.syncFailed });
+    }
+  }, [copy.syncComplete, copy.syncFailed, data?.sync?.invocationId, data?.sync?.status, pendingSyncId]);
 
   const visibleMessages = useMemo(() => {
     const needle = query.trim().toLowerCase();
@@ -228,14 +250,15 @@ export function MailView() {
   }, [data?.drafts, data?.messages, folder, query]);
 
   async function syncMail() {
-    if (!account?.syncCapability) return;
+    if (!account?.canReceive) return;
     setBusy("sync");
     setNotice(null);
     try {
-      await api.invokeCapability(account.syncCapability, {});
-      window.setTimeout(() => { void queryClient.invalidateQueries({ queryKey: ["mailbox"] }); }, 800);
+      const result = await api.syncMailbox();
+      setPendingSyncId(result.sync.invocationId);
+      await queryClient.invalidateQueries({ queryKey: ["mailbox"] });
     } catch {
-      setNotice({ tone: "error", text: copy.attention });
+      setNotice({ tone: "error", text: copy.syncFailed });
     } finally {
       setBusy(null);
     }
@@ -334,7 +357,7 @@ export function MailView() {
       <div className="flex flex-wrap items-start justify-between gap-3">
         <SectionHeading eyebrow={copy.eyebrow} title={copy.title} description={copy.description} />
         <div className="flex flex-wrap gap-2">
-          {account?.canReceive ? <Button variant="secondary" onClick={() => void syncMail()} disabled={busy === "sync"}><RefreshCw className={cn(busy === "sync" && "animate-spin")} />{busy === "sync" ? copy.syncing : copy.sync}</Button> : null}
+          {account?.canReceive ? <Button variant="secondary" onClick={() => void syncMail()} disabled={syncing}><RefreshCw className={cn(syncing && "animate-spin")} />{syncing ? copy.syncing : copy.sync}</Button> : null}
           <Button onClick={() => startCompose()}><PenLine />{copy.compose}</Button>
         </div>
       </div>
@@ -352,7 +375,7 @@ export function MailView() {
       ) : (
         <>
           <div className={cn("flex flex-wrap items-center justify-between gap-2 rounded-xl border px-3 py-2 text-sm", account?.canReceive ? "bg-card" : "border-warning/40 bg-warning/10")}>
-            <div className="flex items-center gap-2"><span className={cn("size-2 rounded-full", account?.canReceive ? "bg-emerald-500" : "bg-amber-500")} /><span className="font-medium">{account?.name}</span><span className="text-muted-foreground">{account?.canReceive ? copy.receiveReady : copy.attention}</span></div>
+            <div className="flex flex-wrap items-center gap-2"><span className={cn("size-2 rounded-full", account?.canReceive ? "bg-emerald-500" : "bg-amber-500")} /><span className="font-medium">{account?.name}</span><span className="text-muted-foreground">{account?.canReceive ? copy.receiveReady : copy.attention}</span>{lastSyncText ? <span className="text-xs text-muted-foreground">{lastSyncText}</span> : null}</div>
             <div className="flex items-center gap-2"><span className="text-xs text-muted-foreground">{account?.canSend ? copy.connected : copy.sendNotReady}</span><Button size="sm" variant="secondary" onClick={() => setConnectorOpen(true)}>{account?.canReceive ? copy.manageConnection : copy.attentionAction}</Button></div>
           </div>
 

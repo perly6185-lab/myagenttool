@@ -13,19 +13,24 @@ import { buildMcpChildEnv } from "../src/mcp-client.mjs";
 test("scoped env excludes bridge secrets, keeps run essentials, merges operator env", () => {
   const savedSecret = process.env.MYAGENT_BRIDGE_SECRET;
   const savedPath = process.env.PATH;
+  const savedAppData = process.env.APPDATA;
   try {
     process.env.MYAGENT_BRIDGE_SECRET = "super-secret-token";
     process.env.PATH = "/usr/bin:/bin";
+    process.env.APPDATA = "C:\\Users\\person\\Redirected\\Roaming";
 
     const env = buildMcpChildEnv({ command: "npx", env: { MCP_ROOT: "/data" } });
 
     assert.equal(env.MYAGENT_BRIDGE_SECRET, undefined, "a bridge-only secret is NOT forwarded to the MCP child");
     assert.equal(env.PATH, "/usr/bin:/bin", "PATH is forwarded so the server can be found/run");
+    assert.equal(env.APPDATA, "C:\\Users\\person\\Redirected\\Roaming", "the mail runtime keeps the non-secret Windows credential base path");
     assert.equal(env.MCP_ROOT, "/data", "operator-configured env is merged in");
   } finally {
     if (savedSecret === undefined) delete process.env.MYAGENT_BRIDGE_SECRET;
     else process.env.MYAGENT_BRIDGE_SECRET = savedSecret;
     process.env.PATH = savedPath;
+    if (savedAppData === undefined) delete process.env.APPDATA;
+    else process.env.APPDATA = savedAppData;
   }
 });
 

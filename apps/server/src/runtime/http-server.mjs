@@ -433,6 +433,7 @@ export function createHttpServer({
   confirmReplyDraft,
   sendConfirmedDraft,
   mailboxSnapshot,
+  startMailboxSync,
   createMailboxDraft,
   updateMailboxDraft,
   deleteMailboxDraft,
@@ -745,7 +746,7 @@ export function createHttpServer({
       if (await handleMailRoutes({
         req, res, url, sendJson, readJson, actor,
         createMailIssueFromImport, replyOnIssue, confirmReplyDraft, sendConfirmedDraft,
-        mailboxSnapshot, createMailboxDraft, updateMailboxDraft, deleteMailboxDraft,
+        mailboxSnapshot, startMailboxSync, createMailboxDraft, updateMailboxDraft, deleteMailboxDraft,
       })) {
         return;
       }
