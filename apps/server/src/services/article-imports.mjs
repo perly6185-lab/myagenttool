@@ -10,6 +10,7 @@ import { parse } from "parse5";
 
 import { actorCanAccessProject } from "../runtime/auth.mjs";
 import { makeRunTx } from "../runtime/store/run-tx.mjs";
+import { importFeishuDocToWorktree } from "./feishu-doc-imports.mjs";
 import { validateExternalWebhookTarget } from "./auto-run-alerts.mjs";
 
 export const ARTICLE_IMPORT_LIMITS = Object.freeze({
@@ -48,7 +49,7 @@ const MEDIA_EXTENSIONS = new Map([
   ["video/quicktime", ".mov"],
 ]);
 
-const ARTICLE_PROVIDERS = new Set(["wechat", "xiaohongshu", "zhihu", "juejin", "jianshu", "web"]);
+const ARTICLE_PROVIDERS = new Set(["feishu", "wechat", "xiaohongshu", "zhihu", "juejin", "jianshu", "web"]);
 const ARTICLE_SIMILARITY_INDEX_SCHEMA_VERSION = 1;
 const ARTICLE_SIMILARITY_INDEX_MAX_BYTES = 64 * 1024 * 1024;
 const ARTICLE_DERIVATIVE_KINDS = new Set(["article_rewrite", "video_script"]);
@@ -142,6 +143,9 @@ const TRACKING_PARAMS = new Set(["from", "isappinstalled", "scene", "clicktime",
 
 export function detectArticleSource(value) {
   const hostname = new URL(value).hostname.toLowerCase();
+  if (hostname === "feishu.cn" || hostname.endsWith(".feishu.cn") || hostname === "larksuite.com" || hostname.endsWith(".larksuite.com")) {
+    return "feishu";
+  }
   if (hostname === "mp.weixin.qq.com" || hostname.endsWith(".weixin.qq.com")) return "wechat";
   if (hostname === "xiaohongshu.com" || hostname.endsWith(".xiaohongshu.com") || hostname === "xhslink.com") {
     return "xiaohongshu";
@@ -180,6 +184,28 @@ export async function inspectArticle({
   limits = ARTICLE_IMPORT_LIMITS,
 } = {}) {
   const canonicalUrl = canonicalizeArticleUrl(url);
+  if (detectArticleSource(canonicalUrl) === "feishu") {
+    // Feishu docs are JS-rendered SPAs; the plain-HTTP preview cannot read them
+    // and launching a browser here would block the preview for ~a minute. Return
+    // a synthetic inspection; the real title and media are resolved at import.
+    return {
+      sourceUrl: String(url),
+      canonicalUrl,
+      resolvedUrl: canonicalUrl,
+      provider: "feishu",
+      contentType: "document",
+      title: "Feishu document",
+      author: null,
+      publishedAt: null,
+      publishedAtSource: "imported",
+      textLength: 0,
+      media: [],
+      mediaCounts: { images: 0, audio: 0, video: 0 },
+      markdownPreview: "",
+      fetchedAt: new Date().toISOString(),
+      _document: { media: [] },
+    };
+  }
   const page = await fetchPublicResource(canonicalUrl, {
     fetchImpl,
     resolveHostname,
@@ -238,6 +264,17 @@ export async function importArticleToWorktree({
   signal,
   limits = ARTICLE_IMPORT_LIMITS,
 } = {}) {
+  // Feishu public docs are JS-rendered SPAs the plain-HTTP importer cannot read;
+  // delegate to the Playwright-backed fetcher (see feishu-doc-imports.mjs). A
+  // malformed URL throws here and falls through to inspectArticle, whose
+  // canonicalization raises the canonical article_url_refused error.
+  try {
+    if (detectArticleSource(url) === "feishu") {
+      return importFeishuDocToWorktree({ url, worktreePath, workItemId, importedAt, signal });
+    }
+  } catch {
+    /* fall through to inspectArticle */
+  }
   const inspection = await inspectArticle({ url, fetchImpl, resolveHostname, signal, limits });
   const publishedAt = inspection.publishedAt ?? importedAt.slice(0, 10);
   const relativeDirectory = buildArticleRelativeDirectory({
