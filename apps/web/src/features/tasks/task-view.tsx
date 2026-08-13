@@ -40,6 +40,7 @@ import {
   type WorkItemAttentionMetrics,
 } from "./task-view-types";
 import { WorktreeOptionsForm } from "./worktree-options-form";
+import { deriveWorkItemUserStatus, type WorkItemUserStatus } from "./work-item-user-status";
 
 export { shouldShowWorkItemCost } from "./task-view-types";
 
@@ -55,6 +56,32 @@ installExecutionUiTranslations();
 installAutoRunTranslations();
 const RoutineBatchQueue = lazy(() => import("./routine-batch-queue")
   .then((module) => ({ default: module.RoutineBatchQueue })));
+
+type LocalTaskQuickFilter = "all" | "needs_action" | "ready_for_review" | "ai_working" | "completed";
+
+const LOCAL_TASK_PRIORITY: Record<WorkItemUserStatus, number> = {
+  needs_action: 0,
+  ready_for_review: 1,
+  blocked: 2,
+  ai_working: 3,
+  scheduled: 4,
+  not_started: 5,
+  waiting: 6,
+  completed: 7,
+};
+
+function matchesLocalTaskFilter(status: WorkItemUserStatus, filter: LocalTaskQuickFilter) {
+  return filter === "all" || status === filter;
+}
+
+function compareLocalTasksForOrdinaryUsers(left: LocalWorkItem, right: LocalWorkItem) {
+  const statusDelta = LOCAL_TASK_PRIORITY[deriveWorkItemUserStatus(left)]
+    - LOCAL_TASK_PRIORITY[deriveWorkItemUserStatus(right)];
+  if (statusDelta) return statusDelta;
+  const leftDue = left.dueDate ?? "9999-12-31";
+  const rightDue = right.dueDate ?? "9999-12-31";
+  return leftDue.localeCompare(rightDue) || right.updatedAt.localeCompare(left.updatedAt);
+}
 
 // Task = GitHub issues/PRs across repo-backed projects, surfaced as work items.
 // Mirrors the project's existing per-worktree GitHub list, lifted to a top-level
@@ -203,6 +230,7 @@ export function TaskView({ localOnly = false }: { localOnly?: boolean } = {}) {
   const [query, setQuery] = useState("");
   const [rows, setRows] = useState<Row[]>([]);
   const [localRows, setLocalRows] = useState<LocalWorkItem[]>([]);
+  const [localTaskFilter, setLocalTaskFilter] = useState<LocalTaskQuickFilter>("all");
   const [localNextCursor, setLocalNextCursor] = useState<string | null>(null);
   const [attentionItems, setAttentionItems] = useState<WorkItemAttention[]>([]);
   const [attentionNextCursor, setAttentionNextCursor] = useState<string | null>(null);
@@ -514,11 +542,23 @@ export function TaskView({ localOnly = false }: { localOnly?: boolean } = {}) {
       if (!q) return true;
       return r.title.toLowerCase().includes(q) || String(r.number).includes(q) || r.projectName.toLowerCase().includes(q);
     });
-  const visibleLocal = localRows.filter((item) => {
-    const q = query.trim().toLowerCase();
-    const projectName = projects.find((project) => project.id === item.projectId)?.name ?? "";
-    return !q || `${item.localRef} ${item.title} ${item.labels.join(" ")} ${projectName}`.toLowerCase().includes(q);
-  });
+  const localTaskStatusCounts = localRows.reduce<Record<LocalTaskQuickFilter, number>>((counts, item) => {
+    const status = deriveWorkItemUserStatus(item);
+    counts.all += 1;
+    if (status === "needs_action" || status === "ready_for_review" || status === "ai_working" || status === "completed") {
+      counts[status] += 1;
+    }
+    return counts;
+  }, { all: 0, needs_action: 0, ready_for_review: 0, ai_working: 0, completed: 0 });
+  const visibleLocal = localRows
+    .filter((item) => {
+      const q = query.trim().toLowerCase();
+      const projectName = projects.find((project) => project.id === item.projectId)?.name ?? "";
+      return !q || `${item.localRef} ${item.title} ${item.labels.join(" ")} ${projectName}`.toLowerCase().includes(q);
+    })
+    .filter((item) => !localOnly || preferredLocalMode !== "summary"
+      || matchesLocalTaskFilter(deriveWorkItemUserStatus(item), localTaskFilter))
+    .sort(localOnly && preferredLocalMode === "summary" ? compareLocalTasksForOrdinaryUsers : () => 0);
   const taskTabs: readonly TaskTab[] = localOnly ? ["local"] : TABS;
 
   return (
@@ -611,6 +651,32 @@ export function TaskView({ localOnly = false }: { localOnly?: boolean } = {}) {
             className="h-8 max-w-xs text-xs"
           />
         </div>
+        {localOnly && preferredLocalMode === "summary" ? (
+          <div className="flex flex-wrap items-center gap-2" aria-label={i18n.language.startsWith("zh") ? "按进展筛选任务" : "Filter tasks by progress"}>
+            {([
+              ["all", i18n.language.startsWith("zh") ? "全部" : "All"],
+              ["needs_action", i18n.language.startsWith("zh") ? "需要你处理" : "Needs you"],
+              ["ready_for_review", i18n.language.startsWith("zh") ? "等你确认" : "Ready for you"],
+              ["ai_working", i18n.language.startsWith("zh") ? "AI 处理中" : "AI working"],
+              ["completed", i18n.language.startsWith("zh") ? "已完成" : "Completed"],
+            ] as const).map(([key, label]) => (
+              <button
+                key={key}
+                type="button"
+                aria-pressed={localTaskFilter === key}
+                onClick={() => setLocalTaskFilter(key)}
+                className={cn(
+                  "rounded-full border px-3 py-1.5 text-xs font-medium transition",
+                  localTaskFilter === key
+                    ? "border-primary bg-primary/10 text-primary"
+                    : "border-border text-muted-foreground hover:border-primary/40 hover:text-foreground",
+                )}
+              >
+                {label} <span className="ml-1 tabular-nums">{localTaskStatusCounts[key]}</span>
+              </button>
+            ))}
+          </div>
+        ) : null}
         {localOnly ? (
           <details className="rounded-lg border border-border px-3 py-2 text-sm">
             <summary className="cursor-pointer font-medium text-muted-foreground">

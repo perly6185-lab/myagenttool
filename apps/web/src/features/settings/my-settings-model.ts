@@ -40,7 +40,7 @@ const SETTINGS_SEARCH_ALIASES: Partial<Record<SectionKey, readonly string[]>> = 
   economics: ["budget", "cost", "usage", "token", "预算", "费用", "用量"],
   invocations: ["run", "execution record", "调用", "运行记录", "执行记录"],
   evidence: ["proof", "artifact", "证据", "产物"],
-  review: ["finding", "code review", "审查", "发现"],
+  review: ["finding", "code review", "technical review", "代码审查", "技术审查", "发现"],
   compare: ["benchmark", "parallel", "对照", "并行"],
   evalTrend: ["evaluation", "regression", "quality", "评测", "回归", "质量"],
 };

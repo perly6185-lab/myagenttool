@@ -296,9 +296,9 @@ describe("MyTemplatesView", () => {
     renderView();
 
     expect(await screen.findByText("实际任务反馈")).toBeTruthy();
-    expect(screen.getByText("匹配前会先确认")).toBeTruthy();
+    expect(screen.getByText("使用前确认")).toBeTruthy();
     expect(screen.getByText(/4 次反馈 · 1 次符合预期 · 2 次结果类型不对 · 1 次内容需调整/)).toBeTruthy();
-    expect(screen.getByText(/已降低推荐优先级/)).toBeTruthy();
+    expect(screen.getByText(/近期有较多“结果类型不对”的反馈.*使用前会先请你确认/)).toBeTruthy();
   });
 
   it("shows when repeated wrong result types pause automatic matching and explains recovery", async () => {
@@ -317,8 +317,8 @@ describe("MyTemplatesView", () => {
     });
     renderView();
 
-    expect(await screen.findByText("已暂停自动匹配")).toBeTruthy();
-    expect(screen.getByText(/修正误标反馈或产生新的成功结果后会自动恢复/)).toBeTruthy();
+    expect(await screen.findByText("已暂停")).toBeTruthy();
+    expect(screen.getByText(/系统已暂停使用.*手动恢复/)).toBeTruthy();
   });
 
   it("shows which tasks affected governance and lets the user correct a mislabeled result", async () => {
@@ -340,9 +340,9 @@ describe("MyTemplatesView", () => {
       }], count: 5,
     });
     renderView();
-    fireEvent.click(await screen.findByRole("button", { name: "查看使用记录" }));
+    fireEvent.click(await screen.findByRole("button", { name: "查看使用情况" }));
 
-    expect(screen.getByRole("heading", { name: /客户询价报价 · 治理明细/ })).toBeTruthy();
+    expect(screen.getByRole("heading", { name: /客户询价报价 · 使用情况/ })).toBeTruthy();
     expect(screen.getByText(/LOC-18 生成客户报价/)).toBeTruthy();
     expect(screen.getByText("降低匹配可信度")).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "修正反馈" }));
@@ -367,11 +367,10 @@ describe("MyTemplatesView", () => {
       }], count: 5,
     });
     renderView();
-    fireEvent.click(await screen.findByRole("button", { name: "查看使用记录" }));
-    fireEvent.click(screen.getByRole("button", { name: "恢复到观察期" }));
-    expect(screen.getByRole("heading", { name: "恢复到观察期？" })).toBeTruthy();
-    expect(screen.getByText(/仍会重新进入观察或暂停/)).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: "确认恢复观察" }));
+    fireEvent.click(await screen.findByRole("button", { name: "恢复使用" }));
+    expect(screen.getByRole("heading", { name: "恢复使用这个模板？" })).toBeTruthy();
+    expect(screen.getByText(/必要时再次暂停/)).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "确认恢复" }));
 
     await waitFor(() => expect(mocks.resumeGovernance).toHaveBeenCalledWith("family-1", {
       projectId: "project-1", confirm: true,
@@ -396,8 +395,8 @@ describe("MyTemplatesView", () => {
     });
     renderView();
 
-    expect(await screen.findByText("人工观察中")).toBeTruthy();
-    expect(screen.getByText(/使用前仍需确认.*新的成功结果后才恢复自动套用/)).toBeTruthy();
+    expect(await screen.findByText("使用前确认")).toBeTruthy();
+    expect(screen.getByText(/每次使用前都会请你确认.*新的成功结果后.*恢复自动使用/)).toBeTruthy();
   });
 
   it("opens the simple three-step wizard and keeps the existing editor behind Advanced", async () => {
