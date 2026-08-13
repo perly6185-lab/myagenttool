@@ -45,11 +45,11 @@ test("fetch imports attachment metadata only and rejects forged identifiers", ()
   const parsed = parseMailApplicationResult({ text: JSON.stringify({
     messageId: "<m@x>",
     attachments: [
-      { id: "attachment-1", name: "safe.pdf", contentType: "application/pdf", size: 1200, previewable: true, dataBase64: "must-not-survive" },
+      { id: "attachment-1", name: "safe.pdf", contentType: "application/pdf", size: 1200, sha256: "a".repeat(64), previewable: true, dataBase64: "must-not-survive" },
       { id: "../../escape", name: "bad", contentType: "text/plain", size: 1, previewable: true },
     ],
   }) });
-  assert.deepEqual(parsed.attachments, [{ id: "attachment-1", name: "safe.pdf", contentType: "application/pdf", size: 1200, previewable: true }]);
+  assert.deepEqual(parsed.attachments, [{ id: "attachment-1", name: "safe.pdf", contentType: "application/pdf", size: 1200, sha256: "a".repeat(64), previewable: true }]);
   assert(!JSON.stringify(parsed).includes("must-not-survive"));
 });
 

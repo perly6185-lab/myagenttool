@@ -111,6 +111,10 @@ const COPY = {
     connectorDescription: "跟着两步完成；系统会自动验证，不需要填写服务器地址。",
     provider163: "163 邮箱",
     provider163Hint: "支持文件夹、增量收取和服务商已读状态同步",
+    upgradeBadge: "需要升级",
+    upgradeTitle: "升级现有邮箱连接",
+    upgradeHint: "为了继续使用文件夹、增量收取和服务商已读同步，请重新输入一次客户端授权码。原有邮件和草稿不会丢失。",
+    upgradeAction: "升级并测试收件",
     providerGmail: "Gmail",
     comingSoon: "即将支持",
     desktopOnly: "请在 MyAgentTool 桌面版中连接邮箱。网页不会接触你的登录信息。",
@@ -248,6 +252,10 @@ const COPY = {
     connectorDescription: "Two guided steps; no server addresses are required.",
     provider163: "163 Mail",
     provider163Hint: "Folders, incremental retrieval, and provider read-state sync are supported",
+    upgradeBadge: "Upgrade needed",
+    upgradeTitle: "Upgrade your existing connection",
+    upgradeHint: "Re-enter your client authorization code to keep using folders, incremental retrieval, and provider read-state sync. Existing mail and drafts are preserved.",
+    upgradeAction: "Upgrade and test receiving",
     providerGmail: "Gmail",
     comingSoon: "Coming soon",
     desktopOnly: "Connect email in the MyAgentTool desktop app. The web page never handles your sign-in details.",
@@ -329,12 +337,11 @@ export function MailView() {
   const [compose, setCompose] = useState<ComposeState | null>(null);
   const [reviewDraft, setReviewDraft] = useState<MailboxDraft | null>(null);
   const [busy, setBusy] = useState<"sync" | "fetch" | "save" | "send" | "delete" | "task" | null>(null);
-  const [notice, setNotice] = useState<{ tone: "info" | "error"; text: string } | null>(null);
+  const [notice, setNotice] = useState<{ tone: "info" | "error"; text: string; task?: NonNullable<MailboxMessage["task"]> } | null>(null);
   const [connectorOpen, setConnectorOpen] = useState(false);
   const [pendingSyncId, setPendingSyncId] = useState<string | null>(null);
   const [attachmentPreview, setAttachmentPreview] = useState<AttachmentPreview | null>(null);
   const [taskDraft, setTaskDraft] = useState<MailTaskDraft | null>(null);
-  const [createdTask, setCreatedTask] = useState<MailboxMessage["task"]>(null);
   const data = mailbox.data;
   const account = data?.accounts.find((item) => item.canReceive) ?? data?.accounts[0] ?? null;
   const selectedMessage = data?.messages.find((message) => message.id === selectedMessageId) ?? null;
@@ -482,19 +489,28 @@ export function MailView() {
       let materialDraftId: string | undefined;
       let materialDraftRevision: number | undefined;
       const uploadedIds: string[] = [];
-      let skipped = 0;
-      if (selected.length) {
+      const transferable = selected.filter((attachment) => /^[a-f0-9]{64}$/.test(attachment.sha256 ?? ""));
+      let skipped = selected.length - transferable.length;
+      if (transferable.length) {
         const material = await api.createTaskMaterialDraft(taskDraft.projectId);
         materialDraftId = material.draft.id;
         materialDraftRevision = material.draft.revision;
-        for (const attachment of selected) {
+        for (const attachment of transferable) {
           try {
             const read = await bridge!.readMailAttachmentForTask!({
               messageId: taskDraft.message.messageId,
               folderPath: taskDraft.message.folderPath,
               attachmentId: attachment.id,
             });
-            if (!read.ok) { skipped += 1; continue; }
+            if (!read.ok
+              || read.attachment.id !== attachment.id
+              || read.attachment.size !== attachment.size
+              || read.attachment.data.byteLength !== attachment.size
+              || read.attachment.contentType.toLowerCase() !== (attachment.contentType || "application/octet-stream").toLowerCase()
+              || read.attachment.sha256 !== attachment.sha256) {
+              skipped += 1;
+              continue;
+            }
             const file = new File([read.attachment.data], attachment.name, { type: attachment.contentType || "application/octet-stream" });
             const uploaded = await api.uploadTaskMaterialFile(
               taskDraft.projectId,
@@ -516,12 +532,12 @@ export function MailView() {
         attachmentIds: uploadedIds,
         ...(uploadedIds.length && materialDraftId ? { materialDraftId, materialDraftRevision } : {}),
       });
-      setCreatedTask(result.task);
       setTaskDraft(null);
       setNotice({
         tone: "info",
         text: (skipped ? copy.taskCreatedWithSkipped.replace("{{count}}", String(skipped)) : copy.taskCreated)
           .replace("{{ref}}", result.task.localRef),
+        task: result.task,
       });
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: ["mailbox"] }),
@@ -653,7 +669,7 @@ export function MailView() {
         </div>
       </div>
 
-      {notice ? <div role={notice.tone === "error" ? "alert" : "status"} className={cn("flex flex-wrap items-center justify-between gap-2 rounded-lg border px-3 py-2 text-sm", notice.tone === "error" ? "border-destructive/40 bg-destructive/10 text-destructive" : "border-primary/30 bg-primary/5 text-foreground")}><span>{notice.text}</span>{notice.tone === "info" && createdTask ? <Button size="sm" variant="secondary" onClick={() => showTask(createdTask)}><ListTodo />{copy.viewTask}</Button> : null}</div> : null}
+      {notice ? <div role={notice.tone === "error" ? "alert" : "status"} className={cn("flex flex-wrap items-center justify-between gap-2 rounded-lg border px-3 py-2 text-sm", notice.tone === "error" ? "border-destructive/40 bg-destructive/10 text-destructive" : "border-primary/30 bg-primary/5 text-foreground")}><span>{notice.text}</span>{notice.tone === "info" && notice.task ? <Button size="sm" variant="secondary" onClick={() => showTask(notice.task!)}><ListTodo />{copy.viewTask}</Button> : null}</div> : null}
       {data?.folders.some((item) => item.syncError) ? <div role="alert" className="rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-sm">{copy.folderSyncError}</div> : null}
       {data?.folders.some((item) => item.cursorReset) ? <div role="status" className="rounded-lg border border-primary/30 bg-primary/5 px-3 py-2 text-sm">{copy.cursorReset}</div> : null}
 
@@ -722,6 +738,7 @@ function MailConnectionModal({ copy, open, onClose, onConnected }: { copy: typeo
   const [authorizationCode, setAuthorizationCode] = useState("");
   const [connectedEmail, setConnectedEmail] = useState<string | null>(null);
   const [sendConnected, setSendConnected] = useState(false);
+  const [upgradeNeeded, setUpgradeNeeded] = useState(false);
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -731,6 +748,7 @@ function MailConnectionModal({ copy, open, onClose, onConnected }: { copy: typeo
       const provider = status.providers.find((item) => item.id === "netease_163");
       if (provider?.account) setEmail(provider.account);
       if (provider?.connected) setConnectedEmail(provider.account);
+      setUpgradeNeeded(provider?.upgradeNeeded === true);
       setSendConnected(provider?.sendConnected === true);
     }).catch(() => setError(copy.errors.unavailable));
   }, [bridge, copy.errors.unavailable, open]);
@@ -747,6 +765,7 @@ function MailConnectionModal({ copy, open, onClose, onConnected }: { copy: typeo
     }
     setAuthorizationCode("");
     setConnectedEmail(result.account.email);
+    setUpgradeNeeded(false);
     onConnected();
   }
 
@@ -765,13 +784,14 @@ function MailConnectionModal({ copy, open, onClose, onConnected }: { copy: typeo
   return <Modal open={open} title={copy.connectorTitle} description={copy.connectorDescription} size="lg" onClose={onClose} closeDisabled={pending} footer={connectedEmail && sendConnected ? <div className="flex justify-end"><Button onClick={onClose}>{copy.done}</Button></div> : undefined}>
     {!bridge?.getMailConnectorStatus ? <div className="rounded-xl border bg-muted/40 p-4 text-sm text-muted-foreground">{copy.desktopOnly}</div> : connectedEmail ? <div className="space-y-4 text-center"><span className="mx-auto grid size-12 place-items-center rounded-full bg-emerald-500/10 text-emerald-600"><ShieldCheck /></span><div><h3 className="font-semibold">{copy.connectSuccess}</h3><p className="mt-1 text-sm text-muted-foreground">{connectedEmail}</p></div>{sendConnected ? <div className="rounded-xl border border-emerald-500/30 bg-emerald-500/5 p-3 text-sm text-emerald-700">{copy.sendConnected}</div> : <div className="space-y-3 rounded-xl border bg-muted/20 p-4 text-left"><p className="text-sm font-medium">{copy.connectSend}</p><p className="text-xs leading-5 text-muted-foreground">{copy.connectSendHint}</p><label className="block text-sm font-medium">{copy.authorizationCode}<input type="password" autoComplete="off" value={authorizationCode} onChange={(event) => setAuthorizationCode(event.target.value)} placeholder={copy.authorizationPlaceholder} className="mt-1 w-full rounded-md border bg-background px-3 py-2 font-normal outline-none focus:ring-2 focus:ring-ring" /></label>{error ? <div role="alert" className="rounded-lg border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">{error}</div> : null}<Button className="w-full" onClick={() => void connectSend()} disabled={pending}><Send />{pending ? copy.testing : copy.connectSend}</Button></div>}<Button variant="secondary" onClick={() => { setConnectedEmail(null); setSendConnected(false); setError(null); }}>{copy.reconnect}</Button></div> : <div className="space-y-4">
       <div className="grid gap-2 sm:grid-cols-2">
-        <div className="rounded-xl border border-primary/40 bg-primary/5 p-3"><div className="flex items-center justify-between gap-2"><span className="font-medium">{copy.provider163}</span><span className="rounded-full bg-emerald-500/10 px-2 py-0.5 text-xs text-emerald-600">{copy.receiveReady}</span></div><p className="mt-1 text-xs text-muted-foreground">{copy.provider163Hint}</p></div>
+        <div className="rounded-xl border border-primary/40 bg-primary/5 p-3"><div className="flex items-center justify-between gap-2"><span className="font-medium">{copy.provider163}</span><span className={cn("rounded-full px-2 py-0.5 text-xs", upgradeNeeded ? "bg-amber-500/10 text-amber-700" : "bg-emerald-500/10 text-emerald-600")}>{upgradeNeeded ? copy.upgradeBadge : copy.receiveReady}</span></div><p className="mt-1 text-xs text-muted-foreground">{copy.provider163Hint}</p></div>
         <div className="rounded-xl border bg-muted/30 p-3 opacity-70"><div className="flex items-center justify-between gap-2"><span className="font-medium">{copy.providerGmail}</span><span className="rounded-full bg-muted px-2 py-0.5 text-xs text-muted-foreground">{copy.comingSoon}</span></div></div>
       </div>
+      {upgradeNeeded ? <div className="rounded-xl border border-amber-500/40 bg-amber-500/5 p-3"><p className="text-sm font-medium">{copy.upgradeTitle}</p><p className="mt-1 text-xs leading-5 text-muted-foreground">{copy.upgradeHint}</p></div> : null}
       <div className="rounded-xl border bg-muted/30 p-3"><p className="text-sm font-medium">1. {copy.authHelpTitle}</p><p className="mt-1 text-xs leading-5 text-muted-foreground">{copy.authHelp}</p></div>
       <div className="space-y-3"><p className="text-sm font-medium">2. {copy.connectAndTest}</p><label className="block text-sm font-medium">{copy.accountEmail}<input autoFocus autoComplete="email" value={email} onChange={(event) => setEmail(event.target.value)} placeholder="name@163.com" className="mt-1 w-full rounded-md border bg-background px-3 py-2 font-normal outline-none focus:ring-2 focus:ring-ring" /></label><label className="block text-sm font-medium">{copy.authorizationCode}<input type="password" autoComplete="off" value={authorizationCode} onChange={(event) => setAuthorizationCode(event.target.value)} placeholder={copy.authorizationPlaceholder} className="mt-1 w-full rounded-md border bg-background px-3 py-2 font-normal outline-none focus:ring-2 focus:ring-ring" /></label><p className="flex gap-2 text-xs leading-5 text-muted-foreground"><ShieldCheck className="mt-0.5 size-4 shrink-0 text-emerald-600" />{copy.localSecret}</p></div>
       {error ? <div role="alert" className="rounded-lg border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">{error}</div> : null}
-      <Button className="w-full" onClick={() => void connect()} disabled={pending}><RefreshCw className={cn(pending && "animate-spin")} />{pending ? copy.testing : copy.connectAndTest}</Button>
+      <Button className="w-full" onClick={() => void connect()} disabled={pending}><RefreshCw className={cn(pending && "animate-spin")} />{pending ? copy.testing : upgradeNeeded ? copy.upgradeAction : copy.connectAndTest}</Button>
     </div>}
   </Modal>;
 }

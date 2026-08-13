@@ -232,6 +232,12 @@ function createMainWindow(url, serverUrl) {
     dialog,
     getWindow: () => mainWindow,
     attachmentRoot: join(app.getPath("appData"), "myagenttool", "mail", "outbox-attachments"),
+    getReferencedAttachmentRefs: async () => {
+      const response = await fetch(`${serverUrl}/api/mailbox`, { headers: loopbackHeaders });
+      if (!response.ok) throw new Error("mailbox_attachment_refs_unavailable");
+      const mailbox = await response.json();
+      return (mailbox?.drafts ?? []).flatMap((draft) => (draft?.attachments ?? []).map((attachment) => attachment?.ref).filter(Boolean));
+    },
   });
   const chrome = readSkinSettings(skinStateDir());
   nativeTheme.themeSource = chrome.themeSource;

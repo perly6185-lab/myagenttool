@@ -12,6 +12,8 @@
  *                         references, body }
  */
 
+import { createHash } from "node:crypto";
+
 export function formatAddresses(addresses = []) {
   return addresses.map(({ name, address }) => (name ? `${name} <${address}>` : address)).filter(Boolean).join(", ");
 }
@@ -63,11 +65,13 @@ export function attachmentMetadataOf(attachment, index) {
   const name = String(attachment?.filename ?? `attachment-${Number(index) + 1}`).slice(0, 255);
   const contentType = String(attachment?.contentType ?? "application/octet-stream").toLowerCase().slice(0, 127);
   const size = Number.isFinite(attachment?.size) ? Math.max(0, Number(attachment.size)) : attachment?.content?.length ?? 0;
+  const content = Buffer.from(attachment?.content ?? []);
   return {
     id: `attachment-${Number(index) + 1}`,
     name,
     contentType,
     size,
+    sha256: createHash("sha256").update(content).digest("hex"),
     previewable: previewKind(contentType) !== null,
   };
 }

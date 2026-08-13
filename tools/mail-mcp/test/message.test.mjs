@@ -76,8 +76,8 @@ test("messageRecordOf exposes bounded attachment metadata but never bytes", () =
     { filename: "macro.docm", contentType: "application/vnd.ms-word.document.macroenabled.12", size: 99, content: Buffer.from("macro") },
   ] });
   assert.deepEqual(record.attachments, [
-    { id: "attachment-1", name: "diagram.png", contentType: "image/png", size: 1234, previewable: true },
-    { id: "attachment-2", name: "macro.docm", contentType: "application/vnd.ms-word.document.macroenabled.12", size: 99, previewable: false },
+    { id: "attachment-1", name: "diagram.png", contentType: "image/png", size: 1234, sha256: "0f4f9b1e5b00181f65e71a7c501f03a2512913d3ebe08c91d2edf43f2d443bdb", previewable: true },
+    { id: "attachment-2", name: "macro.docm", contentType: "application/vnd.ms-word.document.macroenabled.12", size: 99, sha256: "27d66c0dcef19a926429158d80111b954a5c23d076833347da3e27b91e4b423d", previewable: false },
   ]);
   assert(!JSON.stringify(record).includes("secret-binary"));
 });

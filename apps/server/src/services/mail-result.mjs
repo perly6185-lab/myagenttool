@@ -170,6 +170,7 @@ function normalizeAttachment(value) {
     name,
     contentType: cap(value.contentType, 127) ?? "application/octet-stream",
     size: Number.isFinite(value.size) ? Math.max(0, Math.min(Number(value.size), 25 * 1024 * 1024)) : 0,
+    sha256: /^[a-f0-9]{64}$/.test(String(value.sha256 ?? "")) ? String(value.sha256) : null,
     previewable: value.previewable === true,
   };
 }

@@ -57,6 +57,7 @@ function harness({ mailSendEnabled = () => false, createWorkItem = null, inspect
     mailDrafts: [],
     mailMessageStates: [],
     mailTaskLinks: [],
+    workItems: [],
     invocations: [],
     events,
   };
@@ -320,12 +321,42 @@ test("mail can create one tenant-scoped local task and exposes the durable link"
   assert.equal(service.createTaskFromMessage({ messageId: "<one@example.com>", projectId: "project_1", actor: { teamId: "team_b" } }).status, 404);
 });
 
+test("mail task retry repairs a missing durable link without duplicating work across teammates", () => {
+  const calls = [];
+  const { state, service } = harness({
+    createWorkItem: (input) => {
+      calls.push(input);
+      return { ok: true, status: 201, body: { workItem: { id: "lwi_recovered", localRef: "LOCAL-77", title: input.title, projectId: input.projectId } } };
+    },
+  });
+  const first = service.createTaskFromMessage({
+    messageId: "<one@example.com>", projectId: "project_1", title: "跟进", actor: { userId: "usr_a", teamId: "team_a" },
+  });
+  assert.equal(first.status, 201);
+  state.mailTaskLinks = [];
+  state.workItems.push({
+    id: "lwi_recovered", localRef: "LOCAL-77", title: "跟进", projectId: "project_1",
+    ownerTeamId: "team_a", createdBy: "usr_a", createIdempotencyKey: calls[0].idempotencyKey,
+  });
+
+  const retry = service.createTaskFromMessage({
+    messageId: "<one@example.com>", projectId: "project_1", title: "重复", actor: { userId: "usr_b", teamId: "team_a" },
+  });
+  assert.equal(retry.status, 200);
+  assert.equal(retry.body.replayed, true);
+  assert.equal(retry.body.task.id, "lwi_recovered");
+  assert.equal(calls.length, 1);
+  assert.equal(state.mailTaskLinks.length, 1);
+});
+
 test("mail task attachment claims must exactly match selected message metadata", () => {
   const calls = [];
-  const attachment = { id: "att_1", name: "report.pdf", contentType: "application/pdf", size: 1234, previewable: true };
+  const expectedHash = "a".repeat(64);
+  let assetHash = "b".repeat(64);
+  const attachment = { id: "att_1", name: "report.pdf", contentType: "application/pdf", size: 1234, sha256: expectedHash, previewable: true };
   const inspectTaskMaterialDraft = () => ({ status: 200, body: { draft: {
     id: "tmd_1", revision: 1,
-    assets: [{ clientFileId: "mail-attachment-1", originalName: "report.pdf", mimeType: "application/pdf", size: 1234 }],
+    assets: [{ clientFileId: "mail-attachment-1", originalName: "report.pdf", mimeType: "application/pdf", size: 1234, hash: assetHash }],
   } } });
   const { state, service } = harness({
     inspectTaskMaterialDraft,
@@ -341,6 +372,14 @@ test("mail task attachment claims must exactly match selected message metadata",
   const unknown = service.createTaskFromMessage({ messageId: "<one@example.com>", projectId: "project_1", attachmentIds: ["missing"], actor });
   assert.equal(unknown.body.error, "mail_task_attachment_not_found");
 
+  const forged = service.createTaskFromMessage({
+    messageId: "<one@example.com>", projectId: "project_1", attachmentIds: ["att_1"],
+    materialDraftId: "tmd_1", materialDraftRevision: 1, actor,
+  });
+  assert.equal(forged.body.error, "mail_task_material_draft_mismatch");
+  assert.equal(calls.length, 0);
+
+  assetHash = expectedHash;
   const created = service.createTaskFromMessage({
     messageId: "<one@example.com>", projectId: "project_1", attachmentIds: ["att_1"],
     materialDraftId: "tmd_1", materialDraftRevision: 1, actor,

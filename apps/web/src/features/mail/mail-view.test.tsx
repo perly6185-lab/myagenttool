@@ -47,7 +47,7 @@ const connectedMailbox = {
   messages: [{
     id: "<one@example.com>", messageId: "<one@example.com>", from: "Alice <alice@example.com>", subject: "Project update",
     date: "2026-08-13T01:00:00.000Z", body: "The latest project update is attached.", preview: "The latest project update is attached.",
-    unread: true, folderId: "inbox", folderPath: "INBOX", fetched: true, inReplyTo: null, references: [], attachments: [{ id: "attachment-1", name: "notes.txt", contentType: "text/plain", size: 5, previewable: true }], attachmentMetadataLoaded: true, applicationId: "app_163_mail_v2", issueNumber: null, task: null, createdAt: "2026-08-13T01:00:00.000Z",
+    unread: true, folderId: "inbox", folderPath: "INBOX", fetched: true, inReplyTo: null, references: [], attachments: [{ id: "attachment-1", name: "notes.txt", contentType: "text/plain", size: 5, sha256: "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824", previewable: true }], attachmentMetadataLoaded: true, applicationId: "app_163_mail_v2", issueNumber: null, task: null, createdAt: "2026-08-13T01:00:00.000Z",
   }],
   query: "",
   selectedFolder: "inbox",
@@ -126,6 +126,35 @@ describe("MailView ordinary-user flow", () => {
     expect(mocks.createTaskMaterialDraft).not.toHaveBeenCalled();
     expect(await screen.findByText("任务 LOCAL-42 已创建。")).toBeTruthy();
     expect(screen.getByRole("button", { name: "查看任务" })).toBeTruthy();
+  });
+
+  it("skips an attachment whose provider bytes no longer match and still creates the task", async () => {
+    const readMailAttachmentForTask = vi.fn().mockResolvedValue({ ok: true, attachment: {
+      id: "attachment-1", name: "notes.txt", contentType: "text/plain", size: 4,
+      sha256: "0".repeat(64), data: new TextEncoder().encode("oops").buffer,
+    } });
+    window.myagenttoolDesktop = { readMailAttachmentForTask };
+    renderView();
+    fireEvent.click(await screen.findByText("Project update"));
+    fireEvent.click(screen.getByRole("button", { name: "转为任务" }));
+    fireEvent.click(screen.getByLabelText(/notes\.txt/));
+    fireEvent.click(screen.getByRole("button", { name: "创建任务" }));
+    await waitFor(() => expect(mocks.createMailTask).toHaveBeenCalledWith("<one@example.com>", expect.objectContaining({ attachmentIds: [] })));
+    expect(mocks.uploadTaskMaterialFile).not.toHaveBeenCalled();
+    expect(await screen.findByText(/1 个附件未能添加/)).toBeTruthy();
+  });
+
+  it("shows the task action only on the task-created notice", async () => {
+    const downloadMailAttachment = vi.fn().mockResolvedValue({ ok: true, saved: true, name: "notes.txt" });
+    window.myagenttoolDesktop = { downloadMailAttachment };
+    renderView();
+    fireEvent.click(await screen.findByText("Project update"));
+    fireEvent.click(screen.getByRole("button", { name: "转为任务" }));
+    fireEvent.click(screen.getByRole("button", { name: "创建任务" }));
+    expect(await screen.findByRole("button", { name: "查看任务" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "下载" }));
+    expect(await screen.findByText("附件已保存：notes.txt")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "查看任务" })).toBeNull();
   });
 
   it("moves between bounded inbox pages without making users change a page size", async () => {
@@ -244,5 +273,20 @@ describe("MailView ordinary-user flow", () => {
     expect(await screen.findByText("收件连接成功")).toBeTruthy();
     expect(screen.getByText(/发件授权与收件分开保存/)).toBeTruthy();
     expect(mocks.connect163Mail).toHaveBeenCalledWith({ email: "user@163.com", authorizationCode: "local-code" });
+  });
+
+  it("explains legacy connection upgrades and offers one clear reauthorization action", async () => {
+    mocks.getMailConnectorStatus.mockResolvedValue({ desktop: true, providers: [
+      { id: "netease_163", name: "163 邮箱", available: true, connected: false, upgradeNeeded: true, sendConnected: false, account: "legacy@163.com" },
+      { id: "gmail", name: "Gmail", available: false, connected: false, account: null },
+    ] });
+    window.myagenttoolDesktop = { getMailConnectorStatus: mocks.getMailConnectorStatus };
+    renderView();
+    await screen.findByText("Project update");
+    fireEvent.click(screen.getByRole("button", { name: "管理邮箱连接" }));
+    expect(await screen.findByText("升级现有邮箱连接")).toBeTruthy();
+    expect(screen.getByText(/原有邮件和草稿不会丢失/)).toBeTruthy();
+    expect(screen.getByRole("button", { name: "升级并测试收件" })).toBeTruthy();
+    expect((screen.getByLabelText("163 邮箱地址") as HTMLInputElement).value).toBe("legacy@163.com");
   });
 });

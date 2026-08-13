@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { writeFileSync } from "node:fs";
 import { basename } from "node:path";
 
@@ -62,6 +63,7 @@ export function registerMailAttachmentHandler({ ipcMain, dialog, getWindow, read
           name: safeFilename(attachment.name),
           contentType: bounded(attachment.contentType || "application/octet-stream", 127),
           size: attachment.content.length,
+          sha256: createHash("sha256").update(attachment.content).digest("hex"),
           data: bytes,
         },
       };
