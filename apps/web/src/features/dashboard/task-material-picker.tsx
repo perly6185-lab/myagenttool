@@ -31,6 +31,15 @@ export function selectTaskMaterialFiles(files: FileList | File[], remaining: num
   return { selected, rejected };
 }
 
+export function taskMaterialFilesFromClipboard(clipboardData: Pick<DataTransfer, "files" | "items">): File[] {
+  const directFiles = Array.from(clipboardData.files ?? []);
+  if (directFiles.length) return directFiles;
+  return Array.from(clipboardData.items ?? [])
+    .filter((item) => item.kind === "file")
+    .map((item) => item.getAsFile())
+    .filter((file): file is File => Boolean(file));
+}
+
 export function TaskMaterialPicker({
   files,
   onFiles,
@@ -39,6 +48,7 @@ export function TaskMaterialPicker({
   onCancel,
   label,
   dropLabel,
+  pasteLabel,
   limitLabel,
   removeLabel,
   retryLabel,
@@ -48,12 +58,13 @@ export function TaskMaterialPicker({
   disabled = false,
 }: {
   files: TaskMaterialSelection[];
-  onFiles: (files: FileList) => void;
+  onFiles: (files: FileList | File[]) => void;
   onRemove: (id: string) => void;
   onRetry: (id: string) => void;
   onCancel?: (id: string) => void;
   label: string;
   dropLabel: string;
+  pasteLabel?: string;
   limitLabel: string;
   removeLabel: (name: string) => string;
   retryLabel: string;
@@ -66,11 +77,16 @@ export function TaskMaterialPicker({
   const [dragging, setDragging] = useState(false);
   return (
     <div className="space-y-2">
+      <div className="flex flex-wrap items-baseline justify-between gap-2">
+        <p className="text-xs font-medium text-foreground">{label}</p>
+        <p className="text-xs text-muted-foreground">{limitLabel}</p>
+      </div>
       <input
         ref={inputRef}
         type="file"
         multiple
         className="hidden"
+        aria-label={label}
         disabled={disabled}
         onChange={(event) => {
           if (event.target.files) onFiles(event.target.files);
@@ -92,7 +108,10 @@ export function TaskMaterialPicker({
         }}
       >
         <Paperclip className="size-4" aria-hidden />
-        <span>{dropLabel}</span>
+        <span className="text-center">
+          <span className="block">{dropLabel}</span>
+          {pasteLabel ? <span className="mt-1 block text-xs text-muted-foreground">{pasteLabel}</span> : null}
+        </span>
       </button>
       <div className="flex flex-wrap gap-2">
         {files.map((item) => (
@@ -117,9 +136,7 @@ export function TaskMaterialPicker({
           </span>
         ))}
       </div>
-      <p className="text-xs text-muted-foreground">{limitLabel}</p>
       {feedback ? <p className="text-xs text-destructive" role="alert">{feedback}</p> : null}
-      <span className="sr-only">{label}</span>
     </div>
   );
 }

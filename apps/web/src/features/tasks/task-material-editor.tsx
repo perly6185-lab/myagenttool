@@ -223,7 +223,7 @@ export function TaskMaterialEditor({ item, onUpdated }: { item: LocalWorkItem; o
     await reconcileCancellation(selection);
   }
 
-  async function addFiles(input: FileList) {
+  async function addFiles(input: FileList | File[]) {
     const result = selectTaskMaterialFiles(input, Math.max(0, MAX_TASK_MATERIALS - files.length));
     setFeedback(result.rejected ? copy.rejected : null);
     if (!result.selected.length) return;
