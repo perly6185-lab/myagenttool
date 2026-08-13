@@ -124,8 +124,8 @@ const OUTCOME_COPY: Record<MyTemplateOutcomeFeedback["outcome"], string> = {
 };
 
 const STATE_COPY: Record<MyTemplateState, { label: string; tone: "success" | "warning" | "neutral" }> = {
-  ready: { label: "已就绪", tone: "success" },
-  needs_review: { label: "需要确认", tone: "warning" },
+  ready: { label: "已启用", tone: "success" },
+  needs_review: { label: "待确认", tone: "warning" },
   learning: { label: "学习中", tone: "warning" },
   paused: { label: "已暂停", tone: "neutral" },
 };
@@ -626,7 +626,7 @@ export function MyTemplatesView() {
 
       {templates.length || taskDrafts.length ? (
         <div className="flex flex-wrap gap-2 text-sm">
-          <Badge tone="success">{readyCount} 个已就绪</Badge>
+          <Badge tone="success">{readyCount} 个已启用</Badge>
           {attentionCount ? <Badge tone="warning">{attentionCount} 个需要继续</Badge> : null}
         </div>
       ) : null}
@@ -818,10 +818,9 @@ export function MyTemplatesView() {
                       <div className="flex flex-wrap items-center justify-between gap-2">
                         <p className="font-medium">实际任务反馈</p>
                         <Badge tone={governance?.state === "paused" || governance?.state === "watch" ? "warning" : governance?.state === "trusted" ? "success" : "neutral"}>
-                          {governance?.state === "paused" ? "已暂停自动匹配"
-                            : governance?.manualObservation ? "人工观察中"
-                              : governance?.state === "watch" ? "匹配前会先确认"
-                              : governance?.state === "trusted" ? "自动匹配正常" : "正在积累反馈"}
+                          {governance?.state === "paused" ? "已暂停"
+                            : governance?.manualObservation || governance?.state === "watch" ? "使用前确认"
+                              : governance?.state === "trusted" ? "已启用" : "学习中"}
                         </Badge>
                       </div>
                       <p className="mt-1 text-xs text-muted-foreground">
@@ -830,17 +829,24 @@ export function MyTemplatesView() {
                         {outcomeSummary.needsQualityAdjustment ? ` · ${outcomeSummary.needsQualityAdjustment} 次内容需调整` : ""}
                       </p>
                       {governance?.manualObservation ? (
-                        <p className="mt-2 text-xs text-muted-foreground">你已人工恢复观察；恢复前反馈保留为历史记录。新任务使用前仍需确认，积累新的成功结果后才恢复自动套用。</p>
+                        <p className="mt-2 text-xs text-muted-foreground">这个模板已经恢复使用，目前每次使用前都会请你确认。积累新的成功结果后，会恢复自动使用。</p>
                       ) : governance?.state === "watch" ? (
-                        <p className="mt-2 text-xs text-warning">近期“结果类型不对”的反馈偏多，系统已降低推荐优先级，并会在使用前请你确认。</p>
+                        <p className="mt-2 text-xs text-warning">近期有较多“结果类型不对”的反馈，使用前会先请你确认。</p>
                       ) : governance?.state === "paused" ? (
-                        <p className="mt-2 text-xs text-warning">近期多次产生错误结果类型，系统不会再自动套用。你仍可在任务中确认使用；修正误标反馈或产生新的成功结果后会自动恢复。</p>
+                        <p className="mt-2 text-xs text-warning">近期多次产生错误结果类型，系统已暂停使用。修正误标反馈后，你也可以手动恢复。</p>
                       ) : outcomeSummary.needsQualityAdjustment ? (
-                        <p className="mt-2 text-xs text-muted-foreground">内容质量问题不会被算作匹配错误，也不会因此暂停自动匹配。</p>
+                        <p className="mt-2 text-xs text-muted-foreground">内容质量反馈只用于改进结果，不会因此暂停这个模板。</p>
                       ) : null}
-                      <Button className="mt-2" size="sm" variant="ghost" onClick={() => setDetailFamilyId(template.familyId)}>
-                        <Eye />查看使用记录
-                      </Button>
+                      <div className="mt-2 flex flex-wrap gap-2">
+                        <Button size="sm" variant="ghost" onClick={() => setDetailFamilyId(template.familyId)}>
+                          <Eye />查看使用情况
+                        </Button>
+                        {governance?.state === "paused" ? (
+                          <Button size="sm" variant="secondary" onClick={() => { setResumeError(null); setResumeFamilyId(template.familyId); }}>
+                            <RotateCcw />恢复使用
+                          </Button>
+                        ) : null}
+                      </div>
                     </div>
                   ) : null}
                   <div className="mt-3 flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
@@ -1079,8 +1085,8 @@ export function MyTemplatesView() {
       <Modal
         open={Boolean(detailFamilyId)}
         onClose={() => setDetailFamilyId(null)}
-        title={`${templates.find((template) => template.familyId === detailFamilyId)?.name ?? "我的模板"} · 治理明细`}
-        description="查看哪些真实任务影响了当前判断。你可以修正误标，但历史反馈不会被静默删除。"
+        title={`${templates.find((template) => template.familyId === detailFamilyId)?.name ?? "我的模板"} · 使用情况`}
+        description="查看哪些真实任务影响了当前状态。你可以修正误标，已有记录仍会保留。"
         footer={(() => {
           const summary = detailFamilyId ? outcomeSummaryByFamily.get(detailFamilyId) : null;
           return (
@@ -1088,7 +1094,7 @@ export function MyTemplatesView() {
               <Button variant="secondary" onClick={() => setDetailFamilyId(null)}>关闭</Button>
               {summary?.governance.state === "paused" ? (
                 <Button onClick={() => { setResumeError(null); setResumeFamilyId(detailFamilyId); }}>
-                  <RotateCcw />恢复到观察期
+                  <RotateCcw />恢复使用
                 </Button>
               ) : null}
             </div>
@@ -1103,11 +1109,9 @@ export function MyTemplatesView() {
               {summary ? (
                 <div className="rounded-lg border bg-muted/20 p-3">
                   <p className="font-medium">
-                    当前状态：{summary.governance.state === "paused" ? "已暂停自动匹配"
-                      : summary.governance.manualObservation ? "人工观察中"
-                        : summary.governance.state === "watch" ? "匹配前会先确认"
-                        : summary.governance.state === "trusted" ? "自动匹配正常"
-                          : summary.governance.manualObservation ? "人工观察中" : "正在积累反馈"}
+                    当前状态：{summary.governance.state === "paused" ? "已暂停"
+                      : summary.governance.manualObservation || summary.governance.state === "watch" ? "使用前确认"
+                        : summary.governance.state === "trusted" ? "已启用" : "学习中"}
                   </p>
                   <p className="mt-1 text-xs text-muted-foreground">
                     当前判断使用 {summary.governance.matchingFeedbackCount} 条结果类型反馈。
@@ -1184,21 +1188,21 @@ export function MyTemplatesView() {
       <Modal
         open={Boolean(resumeFamilyId)}
         onClose={() => !resumePending && setResumeFamilyId(null)}
-        title="恢复到观察期？"
-        description="系统会重新考虑这个模板，但使用前仍会请你确认，并从后续新任务开始累计判断。"
+        title="恢复使用这个模板？"
+        description="恢复后不会立即自动使用。新任务使用前仍会请你确认，并从后续新任务开始累计判断。"
         closeDisabled={resumePending}
         footer={(
           <div className="flex justify-end gap-2">
             <Button variant="secondary" disabled={resumePending} onClick={() => setResumeFamilyId(null)}>取消</Button>
             <Button disabled={resumePending} onClick={() => { void resumeObservation(); }}>
-              {resumePending ? <Loader2 className="animate-spin" /> : <RotateCcw />}确认恢复观察
+              {resumePending ? <Loader2 className="animate-spin" /> : <RotateCcw />}确认恢复
             </Button>
           </div>
         )}
       >
         <div className="space-y-2 text-sm">
-          <p>恢复前的反馈会继续显示为历史记录，但不再参与当前自动匹配判断。</p>
-          <p className="text-muted-foreground">如果后续再次出现连续的结果类型错误，系统仍会重新进入观察或暂停。</p>
+          <p>恢复前的反馈会继续显示为历史记录，但不再影响当前是否使用这个模板。</p>
+          <p className="text-muted-foreground">如果后续再次连续出现错误结果类型，系统仍会先要求确认，必要时再次暂停。</p>
           {resumeError ? <p role="alert" className="text-destructive">{resumeError}</p> : null}
         </div>
       </Modal>

@@ -322,6 +322,38 @@ describe("TaskView local work items", () => {
     })));
   });
 
+  it("puts tasks needing the user first and offers plain-language progress filters", async () => {
+    const base = {
+      projectId: "prj_1", body: "", type: "task", priority: "p2", state: "open",
+      labels: [], assigneeIds: [], dueDate: null, milestone: "", updatedAt: "2026-08-10T00:00:00.000Z",
+    };
+    mocks.listWorkItems.mockResolvedValue({
+      workItems: [
+        { ...base, id: "done", localRef: "LOCAL-4", title: "Newest completed task", status: "done", state: "closed", updatedAt: "2026-08-13T04:00:00.000Z" },
+        { ...base, id: "working", localRef: "LOCAL-3", title: "AI working task", status: "in_progress", executionState: "running", updatedAt: "2026-08-13T03:00:00.000Z" },
+        { ...base, id: "review", localRef: "LOCAL-2", title: "Result ready task", status: "review", executionState: "completed", updatedAt: "2026-08-13T02:00:00.000Z" },
+        { ...base, id: "action", localRef: "LOCAL-1", title: "Failed task needs help", status: "in_progress", executionState: "failed", updatedAt: "2026-08-13T01:00:00.000Z" },
+      ],
+      count: 4,
+    });
+    render(<TaskView localOnly />);
+
+    const needsHelp = await screen.findByRole("button", { name: "Failed task needs help" });
+    const readyResult = screen.getByRole("button", { name: "Result ready task" });
+    const aiWorking = screen.getByRole("button", { name: "AI working task" });
+    const completed = screen.getByRole("button", { name: "Newest completed task" });
+    expect(needsHelp.compareDocumentPosition(readyResult) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(readyResult.compareDocumentPosition(aiWorking) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    expect(aiWorking.compareDocumentPosition(completed) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+
+    expect(screen.getByRole("button", { name: "Needs you 1" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Ready for you 1" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Ready for you 1" }));
+    expect(screen.getByRole("button", { name: "Result ready task" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Failed task needs help" })).toBeNull();
+    expect(screen.queryByRole("button", { name: "AI working task" })).toBeNull();
+  });
+
   it("places External work after New task and opens the requested external-work tab", async () => {
     mocks.listWorkItems.mockResolvedValue({ workItems: [], count: 0 });
     render(<TaskView localOnly />);

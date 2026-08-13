@@ -61,6 +61,13 @@ export function ReviewView() {
         description={t("reviewPage.description")}
       />
 
+      <div className="flex flex-col gap-3 rounded-lg border border-primary/25 bg-primary/[0.045] p-4 text-sm sm:flex-row sm:items-center sm:justify-between">
+        <p className="max-w-3xl text-muted-foreground">{t("reviewPage.resultReviewHint")}</p>
+        <Button className="shrink-0" size="sm" variant="secondary" onClick={() => setSection("task")}>
+          {t("reviewPage.openTasks")}
+        </Button>
+      </div>
+
       <div className="flex flex-wrap items-end gap-3">
         <Field label={t("reviewPage.source")} className="w-40">
           <Select value={source} onChange={(e) => setSource(e.target.value as typeof source)}>
