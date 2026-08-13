@@ -1,4 +1,4 @@
-import { FolderKanban, Home, Mail, SquareCheckBig, UserRound } from "lucide-react";
+import { FolderKanban, Home, Inbox, SquareCheckBig, UserRound } from "lucide-react";
 import { usePageNavigation } from "@/hooks/use-page-navigation";
 import { cn } from "@/lib/cn";
 import { useAppTranslation } from "@/lib/i18n/use-app-translation";
@@ -13,7 +13,7 @@ const ITEMS: Array<{
   icon: typeof Home;
 }> = [
   { key: "home", section: "dashboard", icon: Home },
-  { key: "mail", section: "mail", icon: Mail },
+  { key: "mail", section: "mail", icon: Inbox },
   { key: "tasks", section: "task", icon: SquareCheckBig },
   { key: "projects", section: "projects", icon: FolderKanban },
   { key: "me", section: "me", icon: UserRound },

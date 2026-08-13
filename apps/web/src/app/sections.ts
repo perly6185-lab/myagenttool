@@ -15,7 +15,6 @@ import {
   ListChecks,
   ListTodo,
   MessagesSquare,
-  Mail,
   MonitorSmartphone,
   PanelsTopLeft,
   UserRound,
@@ -63,7 +62,7 @@ export interface SectionDef {
 export const SECTIONS: SectionDef[] = [
   // Work — the daily home: start a task, live in a project.
   { key: "dashboard", labelKey: "sections.dashboard.label", icon: LayoutDashboard, blurbKey: "sections.dashboard.blurb", group: "work" },
-  { key: "mail", labelKey: "sections.mail.label", icon: Mail, blurbKey: "sections.mail.blurb", group: "work" },
+  { key: "mail", labelKey: "sections.mail.label", icon: Inbox, blurbKey: "sections.mail.blurb", group: "work" },
   { key: "me", labelKey: "sections.me.label", icon: UserRound, blurbKey: "sections.me.blurb", group: "work" },
   { key: "workBoard", labelKey: "sections.workBoard.label", icon: KanbanSquare, blurbKey: "sections.workBoard.blurb", group: "work" },
   { key: "planning", labelKey: "sections.planning.label", icon: CalendarRange, blurbKey: "sections.planning.blurb", group: "work" },
