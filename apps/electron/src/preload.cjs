@@ -18,6 +18,9 @@ contextBridge.exposeInMainWorld("myagenttoolDesktop", {
   revealContainedAsset: (input) => ipcRenderer.invoke("assets:reveal-contained", input),
   getMailConnectorStatus: () => ipcRenderer.invoke("mail:get-connector-status"),
   connect163Mail: (input) => ipcRenderer.invoke("mail:connect-163", input),
+  connect163MailSend: (input) => ipcRenderer.invoke("mail:connect-163-send", input),
   previewMailAttachment: (input) => ipcRenderer.invoke("mail:preview-attachment", input),
   downloadMailAttachment: (input) => ipcRenderer.invoke("mail:download-attachment", input),
+  pickOutboundMailAttachments: () => ipcRenderer.invoke("mail:pick-outbound-attachments"),
+  stagePastedMailAttachments: (input) => ipcRenderer.invoke("mail:stage-pasted-attachments", input),
 });

@@ -8,8 +8,8 @@
  *   2. draft binding       — the draftbox row exists (tenancy-scoped), is
  *                            status "draft" (single-use: sent/sending/
  *                            send_unconfirmed rows refuse), fields present
- *   3. application + agent — app_gmail_send registered + credential authorized,
- *                            the send agent registered/enabled and allowlisting
+ *   3. application + agent — one provider-matched send Application registered
+ *                            + credential authorized, and its agent allowlisting
  *                            mail_send (resolved BEFORE the grant burns)
  *   4. approval            — a single-use grant bound to (mail.send, draftId)
  *
@@ -25,7 +25,6 @@
  */
 
 import { makeRunTx } from "../runtime/store/run-tx.mjs";
-import { GMAIL_SEND_APPLICATION_ID } from "./gmail-send-application.mjs";
 import { mailSendApprovalTarget } from "./mailbox.mjs";
 
 export const MAIL_SEND_ACTION = "mail.send";
@@ -72,9 +71,9 @@ export function createMailSendService({
     if (!draft.to || !draft.body) {
       return { ok: false, status: 409, body: { error: "mail_draft_incomplete", draftId: draft.id } };
     }
-    const application = typeof findApplication === "function" ? findApplication(GMAIL_SEND_APPLICATION_ID) : null;
+    const application = findSendApplication(state.applications ?? [], draft, findApplication);
     if (!application || !["registered", "active"].includes(application.status)) {
-      return { ok: false, status: 409, body: { error: "send_application_not_available", message: "app_gmail_send is not registered/active. Register it (write-credential class, ADR 0014) first." } };
+      return { ok: false, status: 409, body: { error: "send_application_not_available", message: "No active send application is available for this mailbox." } };
     }
     // Credential readiness (ADR 0010): fail closed — send authority must be
     // explicitly authorized on the device before anything can go out.
@@ -120,6 +119,9 @@ export function createMailSendService({
       inReplyTo: draft.inReplyTo ?? null,
       references: Array.isArray(draft.references) ? draft.references : [],
       body: draft.body,
+      attachments: Array.isArray(draft.attachments)
+        ? draft.attachments.map(({ ref, name, contentType, size }) => ({ ref, name, contentType, size }))
+        : [],
     };
     const invocation = createInvocation(`Send confirmed mail draft ${draft.id} to ${draft.to}.`, agent, {
       actor,
@@ -127,9 +129,9 @@ export function createMailSendService({
       toolName,
       toolArguments,
       metadata: {
-        capability: `app.${GMAIL_SEND_APPLICATION_ID}.send`,
+        capability: `app.${application.id}.${facade.id}`,
         providerType: "application",
-        applicationId: GMAIL_SEND_APPLICATION_ID,
+        applicationId: application.id,
         applicationAction: `agent:${agent.id}:${toolName}`,
         mailSendDraftId: draft.id,
       },
@@ -247,6 +249,16 @@ export function createMailSendService({
   }
 
   return { sendConfirmedDraft, recordMailSendResult, reconcileMailSendTermination };
+}
+
+function findSendApplication(applications, draft, findApplication) {
+  const provider = String(draft?.provider ?? "").toLowerCase();
+  const candidates = applications
+    .filter((application) => !application.successorApplicationId && ["registered", "active"].includes(application.status))
+    .filter((application) => (application.capabilityFacades ?? []).some((facade) => facade.id === "send" && (facade.agentToolName ?? facade.toolName) === "mail_send"))
+    .filter((application) => !provider || String(application.source?.credential?.provider ?? "").toLowerCase() === provider);
+  const selected = candidates.length === 1 ? candidates[0] : candidates.find((application) => application.id === "app_gmail_send") ?? null;
+  return selected && typeof findApplication === "function" ? findApplication(selected.id) : selected;
 }
 
 function stringOrNull(value) {

@@ -96,6 +96,6 @@ test("connects 163 Mail through the ordinary-user desktop assistant", async ({ p
   await dialog.getByLabel("客户端授权码").fill("local-only-code");
   await dialog.getByRole("button", { name: "连接并测试收件" }).click();
   await expect(dialog.getByText("收件连接成功")).toBeVisible();
-  await expect(dialog.getByText(/发件权限仍保持关闭/)).toBeVisible();
+  await expect(dialog.getByText(/发件授权与收件分开保存/)).toBeVisible();
   await page.screenshot({ path: testInfo.outputPath("mail-connection-success.png"), fullPage: true });
 });

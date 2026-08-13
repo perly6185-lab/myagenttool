@@ -9,6 +9,7 @@ export function registerMailAttachmentHandler({ ipcMain, dialog, getWindow, read
     try {
       const preview = await readAttachment({
         messageId: bounded(input?.messageId, 998),
+        folderPath: bounded(input?.folderPath ?? "INBOX", 998),
         attachmentId: bounded(input?.attachmentId, 100),
         purpose: "preview",
       });
@@ -23,6 +24,7 @@ export function registerMailAttachmentHandler({ ipcMain, dialog, getWindow, read
     try {
       const attachment = await readAttachment({
         messageId: bounded(input?.messageId, 998),
+        folderPath: bounded(input?.folderPath ?? "INBOX", 998),
         attachmentId: bounded(input?.attachmentId, 100),
         purpose: "download",
       });

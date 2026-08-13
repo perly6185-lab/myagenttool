@@ -23,7 +23,7 @@ export async function handleMailRoutes({
   deleteMailboxDraft,
 }) {
   if (req.method === "GET" && url.pathname === "/api/mailbox" && typeof mailboxSnapshot === "function") {
-    sendJson(res, 200, mailboxSnapshot({ actor, page: url.searchParams.get("page"), pageSize: url.searchParams.get("pageSize") }));
+    sendJson(res, 200, mailboxSnapshot({ actor, page: url.searchParams.get("page"), pageSize: url.searchParams.get("pageSize"), folder: url.searchParams.get("folder") ?? "inbox", query: url.searchParams.get("q") ?? "" }));
     return true;
   }
 

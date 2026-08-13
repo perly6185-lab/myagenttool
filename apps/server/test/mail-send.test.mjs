@@ -96,6 +96,7 @@ function sendHarness({ draftStatus = "draft", credential = "authorized", withAge
       inReplyTo: "<orig@example.com>",
       references: ["<orig@example.com>"],
       body: "Fixed in v2. Thanks for the report.",
+      attachments: [],
       ownerTeamId: "team_a",
       provenance: { originalMessageId: "<orig@example.com>", issueNumber: 42 },
     }],
@@ -155,6 +156,7 @@ test("a confirmed draft sends with one approved action; the payload is resolved 
       inReplyTo: "<orig@example.com>",
       references: ["<orig@example.com>"],
       body: "Fixed in v2. Thanks for the report.",
+      attachments: [],
     }, "every outbound field comes from the draft row — nothing from the call");
     assert.equal(invocation.options.toolName, "mail_send");
     assert.equal(state.mailDrafts[0].status, "sending");

@@ -16,6 +16,7 @@ const mocks = vi.hoisted(() => ({
   sendMailDraft: vi.fn(),
   getMailConnectorStatus: vi.fn(),
   connect163Mail: vi.fn(),
+  connect163MailSend: vi.fn(),
 }));
 
 vi.mock("@/lib/api-client", async (importOriginal) => {
@@ -31,16 +32,18 @@ const connectedMailbox = {
   accounts: [{
     id: "app_163_mail_v2", provider: "netease", name: "163 Mail", status: "connected", statusDetail: "ready",
     canReceive: true, canSend: true, readApplicationId: "app_163_mail_v2", sendApplicationId: "app_gmail_send",
-    fetchCapability: "app.app_163_mail_v2.fetch",
+    fetchCapability: "app.app_163_mail_v2.fetch", incrementalSync: true, providerReadState: true,
   }],
   connection: { status: "connected", message: "163 Mail" },
   sync: { status: "idle", invocationId: null, lastCompletedAt: null, lastSucceededAt: null },
-  folders: [{ id: "inbox", count: 1, unread: 1 }, { id: "drafts", count: 0 }, { id: "sent", count: 0 }, { id: "outbox", count: 0 }],
+  folders: [{ id: "inbox", name: "Inbox", kind: "provider", specialUse: "\\Inbox", count: 1, unread: 1 }, { id: "drafts", count: 0 }, { id: "sent", count: 0 }, { id: "outbox", count: 0 }],
   messages: [{
     id: "<one@example.com>", messageId: "<one@example.com>", from: "Alice <alice@example.com>", subject: "Project update",
     date: "2026-08-13T01:00:00.000Z", body: "The latest project update is attached.", preview: "The latest project update is attached.",
-    unread: true, fetched: true, inReplyTo: null, references: [], attachments: [{ id: "attachment-1", name: "notes.txt", contentType: "text/plain", size: 5, previewable: true }], attachmentMetadataLoaded: true, applicationId: "app_163_mail_v2", issueNumber: null, createdAt: "2026-08-13T01:00:00.000Z",
+    unread: true, folderId: "inbox", folderPath: "INBOX", fetched: true, inReplyTo: null, references: [], attachments: [{ id: "attachment-1", name: "notes.txt", contentType: "text/plain", size: 5, previewable: true }], attachmentMetadataLoaded: true, applicationId: "app_163_mail_v2", issueNumber: null, createdAt: "2026-08-13T01:00:00.000Z",
   }],
+  query: "",
+  selectedFolder: "inbox",
   pagination: { page: 1, pageSize: 25, total: 1, totalPages: 1, hasPrevious: false, hasNext: false },
   drafts: [],
   updatedAt: "2026-08-13T01:00:00.000Z",
@@ -59,7 +62,7 @@ beforeEach(async () => {
   mocks.invokeCapability.mockResolvedValue({ invocationId: "inv_1", status: "queued" });
   mocks.createMailDraft.mockResolvedValue({ draft: {
     id: "maildraft_1", status: "draft", revision: 1, origin: "user", to: "bob@example.com", subject: "Hello", body: "Message body",
-    inReplyTo: null, references: [], createdAt: "2026-08-13T02:00:00.000Z", updatedAt: "2026-08-13T02:00:00.000Z", sentAt: null, sendError: null, approvalTarget: "maildraft_1@1",
+    inReplyTo: null, references: [], attachments: [], createdAt: "2026-08-13T02:00:00.000Z", updatedAt: "2026-08-13T02:00:00.000Z", sentAt: null, sendError: null, approvalTarget: "maildraft_1@1",
   } });
   mocks.issueApprovalGrant.mockResolvedValue({ token: "grant_1", grantId: "grant_1", expiresAt: "later" });
   mocks.sendMailDraft.mockResolvedValue({ status: "sending", draftId: "maildraft_1", sendInvocationId: "inv_send" });
@@ -92,7 +95,7 @@ describe("MailView ordinary-user flow", () => {
     expect(screen.getByText("hello")).toBeTruthy();
     fireEvent.click(screen.getAllByRole("button", { name: "关闭" }).at(-1)!);
     fireEvent.click(screen.getByRole("button", { name: "下载" }));
-    await waitFor(() => expect(downloadMailAttachment).toHaveBeenCalledWith({ messageId: "<one@example.com>", attachmentId: "attachment-1" }));
+    await waitFor(() => expect(downloadMailAttachment).toHaveBeenCalledWith({ messageId: "<one@example.com>", folderPath: "INBOX", attachmentId: "attachment-1" }));
     expect(await screen.findByText("附件已保存：notes.txt")).toBeTruthy();
   });
 
@@ -116,7 +119,7 @@ describe("MailView ordinary-user flow", () => {
     expect(screen.getByText("第 1 / 2 页")).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "下一页" }));
     expect(await screen.findByText("Second page message")).toBeTruthy();
-    expect(mocks.getMailbox).toHaveBeenCalledWith(2);
+    expect(mocks.getMailbox).toHaveBeenCalledWith(2, "inbox", "");
     expect((screen.getByRole("button", { name: "上一页" }) as HTMLButtonElement).disabled).toBe(false);
   });
 
@@ -138,6 +141,36 @@ describe("MailView ordinary-user flow", () => {
     expect(await screen.findByText("收取完成，收件箱已更新。")).toBeTruthy();
     expect(screen.getByText(/上次收取：/)).toBeTruthy();
     expect(mocks.invokeCapability).not.toHaveBeenCalled();
+  });
+
+  it("searches the whole local folder before pagination and opens provider folders", async () => {
+    const withFolder = { ...connectedMailbox, folders: [...connectedMailbox.folders, { id: "provider-sent", name: "服务商已发送", kind: "provider", specialUse: "\\Sent", count: 3, unread: 0 }] };
+    mocks.getMailbox.mockResolvedValue(withFolder);
+    renderView();
+    await screen.findByText("Project update");
+    fireEvent.change(screen.getByPlaceholderText("搜索此文件夹内已收取的邮件"), { target: { value: "quarterly" } });
+    await waitFor(() => expect(mocks.getMailbox).toHaveBeenCalledWith(1, "inbox", "quarterly"));
+    fireEvent.click(await screen.findByRole("button", { name: /服务商已发送/ }));
+    await waitFor(() => expect(mocks.getMailbox).toHaveBeenCalledWith(1, "provider-sent", "quarterly"));
+  });
+
+  it("adds outbound attachments beside the editor through picker or paste", async () => {
+    const picked = { ref: "mailatt_12345678-1234-1234-1234-123456789abc", name: "report.pdf", contentType: "application/pdf", size: 1200 };
+    const pasted = { ref: "mailatt_22345678-1234-1234-1234-123456789abc", name: "notes.txt", contentType: "text/plain", size: 5 };
+    const pickOutboundMailAttachments = vi.fn().mockResolvedValue({ ok: true, attachments: [picked] });
+    const stagePastedMailAttachments = vi.fn().mockResolvedValue({ ok: true, attachments: [pasted] });
+    window.myagenttoolDesktop = { pickOutboundMailAttachments, stagePastedMailAttachments };
+    renderView();
+    await screen.findByText("Project update");
+    fireEvent.click(screen.getByRole("button", { name: "写邮件" }));
+    fireEvent.click(screen.getByRole("button", { name: "添加附件" }));
+    expect(await screen.findByText("report.pdf")).toBeTruthy();
+    fireEvent.paste(screen.getByLabelText("正文"), { clipboardData: { files: [{ name: "notes.txt", type: "text/plain", arrayBuffer: async () => new TextEncoder().encode("hello").buffer }] } });
+    expect(await screen.findByText("notes.txt")).toBeTruthy();
+    fireEvent.change(screen.getByLabelText("收件人"), { target: { value: "bob@example.com" } });
+    fireEvent.change(screen.getByLabelText("正文"), { target: { value: "See attached" } });
+    fireEvent.click(screen.getByRole("button", { name: /保存草稿/ }));
+    await waitFor(() => expect(mocks.createMailDraft).toHaveBeenCalledWith(expect.objectContaining({ attachments: [picked, pasted] })));
   });
 
   it("saves a user draft, reviews exact content, then uses a revision-bound send grant", async () => {
@@ -180,7 +213,7 @@ describe("MailView ordinary-user flow", () => {
     fireEvent.change(screen.getByLabelText("客户端授权码"), { target: { value: "local-code" } });
     fireEvent.click(screen.getByRole("button", { name: "连接并测试收件" }));
     expect(await screen.findByText("收件连接成功")).toBeTruthy();
-    expect(screen.getByText(/发件权限仍保持关闭/)).toBeTruthy();
+    expect(screen.getByText(/发件授权与收件分开保存/)).toBeTruthy();
     expect(mocks.connect163Mail).toHaveBeenCalledWith({ email: "user@163.com", authorizationCode: "local-code" });
   });
 });

@@ -12,6 +12,7 @@ import { registerContainedAssetOpen, registerContainedAssetReveal, registerConta
 import { registerWorkflowCaseIntake } from "./workflow-case-intake.mjs";
 import { registerMailAccountConnector } from "./mail-account-connector.mjs";
 import { registerMailAttachmentHandler } from "./mail-attachment-handler.mjs";
+import { registerMailOutboundAttachmentHandler } from "./mail-outbound-attachment-handler.mjs";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(__dirname, "../../..");
@@ -212,6 +213,10 @@ function createMainWindow(url, serverUrl) {
       const module = await import(pathToFileURL(join(paths.runtimeRoot, "tools", "mail-mcp", "src", "verify-163.mjs")).href);
       return module.verify163Credential(credential);
     },
+    verifySendCredential: async (credential) => {
+      const module = await import(pathToFileURL(join(paths.runtimeRoot, "tools", "mail-mcp", "src", "send-163.mjs")).href);
+      return module.verify163SendCredential(credential);
+    },
   });
   registerMailAttachmentHandler({
     ipcMain,
@@ -221,6 +226,12 @@ function createMainWindow(url, serverUrl) {
       const module = await import(pathToFileURL(join(paths.runtimeRoot, "tools", "mail-mcp", "src", "attachment-163.mjs")).href);
       return module.read163Attachment(input);
     },
+  });
+  registerMailOutboundAttachmentHandler({
+    ipcMain,
+    dialog,
+    getWindow: () => mainWindow,
+    attachmentRoot: join(app.getPath("appData"), "myagenttool", "mail", "outbox-attachments"),
   });
   const chrome = readSkinSettings(skinStateDir());
   nativeTheme.themeSource = chrome.themeSource;

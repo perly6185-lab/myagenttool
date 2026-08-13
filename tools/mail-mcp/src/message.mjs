@@ -16,7 +16,7 @@ export function formatAddresses(addresses = []) {
   return addresses.map(({ name, address }) => (name ? `${name} <${address}>` : address)).filter(Boolean).join(", ");
 }
 
-export function headerOf(message) {
+export function headerOf(message, context = {}) {
   if (!message?.envelope) return null;
   const envelope = message.envelope;
   return {
@@ -30,6 +30,10 @@ export function headerOf(message) {
     date: envelope.date instanceof Date && !Number.isNaN(envelope.date.getTime())
       ? envelope.date.toISOString()
       : String(envelope.date ?? ""),
+    ...(Number.isInteger(message.uid) ? { uid: message.uid } : {}),
+    ...(context.folderId ? { folderId: String(context.folderId) } : {}),
+    ...(context.folderPath ? { folderPath: String(context.folderPath) } : {}),
+    ...(message.flags instanceof Set ? { unread: !message.flags.has("\\Seen") } : {}),
   };
 }
 
